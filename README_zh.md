@@ -1,5 +1,7 @@
 # CombatBench: 人形机器人对战基准平台
 
+![CombatBench Hero](assets/images/hero.png)
+
 CombatBench 是一个用于人形机器人对战的开源仿真环境。它提供了一个基于 MuJoCo 的标准化环境，其中两个 21自由度 (21-DOF) 的人形机器人可以互相进行格斗。
 
 ## 特性

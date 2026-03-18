@@ -1,5 +1,7 @@
 # CombatBench: Humanoid Robot Combat Benchmark
 
+![CombatBench Hero](assets/images/hero.png)
+
 CombatBench is the open-source simulation environment for humanoid robot combat. It provides a standardized MuJoCo-based environment where two 21-DOF humanoid robots can fight against each other.
 
 ## Features
