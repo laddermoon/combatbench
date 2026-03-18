@@ -1,0 +1,19 @@
+{"type": "plane", "name": "地面", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, 3.05, 0], [-3.05, 3.05, 0]], "texture": "textures/floor.png"}
+{"type": "plane", "name": "天花板", "corners": [[-3.05, -3.05, 6.10], [3.05, -3.05, 6.10], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/ceiling.png"}
+{"type": "plane", "name": "南墙", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, -3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "北墙", "corners": [[-3.05, 3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "西墙", "corners": [[-3.05, -3.05, 0], [-3.05, 3.05, 0], [-3.05, 3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "东墙", "corners": [[3.05, -3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "light", "name": "西南角灯", "position": [-3, -3, 5]}
+{"type": "light", "name": "东南角灯", "position": [3, -3, 5]}
+{"type": "light", "name": "西北角灯", "position": [-3, 3, 5]}
+{"type": "light", "name": "东北角灯", "position": [3, 3, 5]}
+{"type": "camera", "name": "西南角摄像机", "position": [-3, -3, 4], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "东南角摄像机", "position": [3, -3, 4], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "西北角摄像机", "position": [-3, 3, 4], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "东北角摄像机", "position": [3, 3, 4], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "南墙摄像机", "position": [0, -3, 3], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "北墙摄像机", "position": [0, 3, 3], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "西墙摄像机", "position": [-3, 0, 3], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "东墙摄像机", "position": [3, 0, 3], "look_at": [0, 0, 1.5]}
+{"type": "camera", "name": "天花板摄像机", "position": [0, 0, 6], "look_at": [0, 0, 1.5]}

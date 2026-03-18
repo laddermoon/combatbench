@@ -1,0 +1,35 @@
+<mujoco model="Laddermoon_Arena">
+    <visual>
+        <global offwidth="640" offheight="480" />
+        <headlight ambient="0.4 0.4 0.4" diffuse="0.4 0.4 0.4" />
+    </visual>
+    <asset>
+        <texture name="tex_floor" type="2d" file="textures/floor.png" />
+        <material name="mat_floor" texture="tex_floor" texrepeat="1 1" texuniform="false" emission="1" shininess="0" specular="0" />
+        <texture name="tex_ceiling" type="2d" file="textures/ceiling.png" />
+        <material name="mat_ceiling" texture="tex_ceiling" texrepeat="1 1" texuniform="false" emission="1" shininess="0" specular="0" />
+        <texture name="tex_wall" type="2d" file="textures/wall.png" />
+        <material name="mat_wall" texture="tex_wall" texrepeat="1 1" texuniform="false" emission="1" shininess="0" specular="0" />
+    </asset>
+    <worldbody>
+        <light name="西南角灯" pos="-3 -3 5" directional="false" />
+        <light name="东南角灯" pos="3 -3 5" directional="false" />
+        <light name="西北角灯" pos="-3 3 5" directional="false" />
+        <light name="东北角灯" pos="3 3 5" directional="false" />
+        <camera name="西南角摄像机" pos="-3 -3 4" xyaxes="0.7071 -0.7071 0.0000 0.3590 0.3590 0.8615" />
+        <camera name="东南角摄像机" pos="3 -3 4" xyaxes="0.7071 0.7071 -0.0000 -0.3590 0.3590 0.8615" />
+        <camera name="西北角摄像机" pos="-3 3 4" xyaxes="-0.7071 -0.7071 0.0000 0.3590 -0.3590 0.8615" />
+        <camera name="东北角摄像机" pos="3 3 4" xyaxes="-0.7071 0.7071 0.0000 -0.3590 -0.3590 0.8615" />
+        <camera name="南墙摄像机" pos="0 -3 3" xyaxes="1.0000 -0.0000 0.0000 0.0000 0.4472 0.8944" />
+        <camera name="北墙摄像机" pos="0 3 3" xyaxes="-1.0000 -0.0000 0.0000 0.0000 -0.4472 0.8944" />
+        <camera name="西墙摄像机" pos="-3 0 3" xyaxes="0.0000 -1.0000 0.0000 0.4472 0.0000 0.8944" />
+        <camera name="东墙摄像机" pos="3 0 3" xyaxes="0.0000 1.0000 -0.0000 -0.4472 0.0000 0.8944" />
+        <camera name="天花板摄像机" pos="0 0 6" xyaxes="1.0000 0.0000 0.0000 -0.0000 1.0000 0.0000" />
+        <geom name="地面" type="plane" pos="0.0 0.0 0.0" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" material="mat_floor" />
+        <geom name="天花板" type="plane" pos="0.0 0.0 6.1" size="3.05 3.05 0.1" xyaxes="-1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" material="mat_ceiling" />
+        <geom name="南墙" type="plane" pos="0.0 -3.05 3.05" size="3.05 3.05 0.1" xyaxes="-1.0000 -0.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="北墙" type="plane" pos="0.0 3.05 3.05" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="西墙" type="plane" pos="-3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="0.0000 1.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="东墙" type="plane" pos="3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="-0.0000 -1.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+    </worldbody>
+</mujoco>
