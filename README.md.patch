@@ -1,0 +1,19 @@
+--- /data1/mono/things/combatbench/combatbench/README.md
++++ /data1/mono/things/combatbench/combatbench/README.md
+@@ -48,8 +48,8 @@
+ 
+ ## Documentation
+ 
+-- [Combat Rules](docs/RULE.md)
+-- [Environment Details](docs/ENVIRONMENT.md)
+-- [Robot Specifications](docs/ROBOT.md)
+-- [Observation Space](docs/OBSERVATION.md)
+-- [Scene Overview](docs/SCENE.md)
+-- [Policy Submission Guide](docs/SUBMISSION.md)
++- [Combat Rules](docs/RULE.md) / [中文规则](docs/RULE_zh.md)
++- [Environment Details](docs/ENVIRONMENT.md) / [中文环境](docs/ENVIRONMENT_zh.md)
++- [Robot Specifications](docs/ROBOT.md) / [中文机器人](docs/ROBOT_zh.md)
++- [Observation Space](docs/OBSERVATION.md) / [中文观测](docs/OBSERVATION_zh.md)
++- [Scene Overview](docs/SCENE.md) / [中文场景](docs/SCENE_zh.md)
++- [Policy Submission Guide](docs/SUBMISSION.md) / [中文提交指南](docs/SUBMISSION_zh.md)
+ 
