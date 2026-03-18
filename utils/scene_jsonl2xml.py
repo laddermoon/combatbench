@@ -2,7 +2,7 @@ import json
 import math
 import os
 
-# --- 基础向量数学 ---
+# --- Basic vector math ---
 def sub(a, b): return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
 def add(a, b): return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]
 def dot(a, b): return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
@@ -37,7 +37,7 @@ def generate_mujoco_xml(jsonl_path, output_xml_path):
                 corners = data["corners"]
                 texture_path = data.get("texture")
                 
-                # 材质资源
+                # Material resources
                 mat_name = ""
                 if texture_path:
                     tex_name = "tex_" + os.path.splitext(os.path.basename(texture_path))[0]

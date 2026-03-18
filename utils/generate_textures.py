@@ -25,7 +25,7 @@ def generate_wall_texture(width=1024, height=1024):
         width: Texture width in pixels
         height: Texture height in pixels
     """
-    # Create image with off-white (米白色) background
+    # Create image with off-white (Off-white) background
     # Off-white: RGB(245, 245, 238) - warm off-white
     img = Image.new('RGB', (width, height), color=(245, 245, 238))
     draw = ImageDraw.Draw(img)

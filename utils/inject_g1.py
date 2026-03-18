@@ -9,7 +9,7 @@ def add_suffix_to_names(root, suffix, color_rgba):
     # Attribute names that need suffix
     ref_attrs = {'name', 'body', 'body1', 'body2', 'joint', 'target', 
                  'material', 'texture', 'mesh', 'class', 'childclass', 'tendon',
-                 'site', 'objname', 'joint'}  # 添加site和sensor相关属性
+                 'site', 'objname', 'joint'}  # Add site and sensor related attributes
 
     for elem in root.iter():
         # 1. Process attribute suffix
@@ -19,7 +19,7 @@ def add_suffix_to_names(root, suffix, color_rgba):
             # Special handling for joint in actuator
             if elem.tag == 'motor' and attr == 'joint':
                 elem.set(attr, f"{value}{suffix}")
-            # 处理sensor中的site属性
+            # Process site attribute in sensor
             if elem.tag in ['force', 'framequat', 'gyro', 'accelerometer', 'framepos', 'framelinvel'] and attr == 'site':
                 elem.set(attr, f"{value}{suffix}")
 
@@ -35,23 +35,23 @@ def add_suffix_to_names(root, suffix, color_rgba):
 def get_yaw(pos, target):
     """
     Calculate Yaw angle in degrees towards target point
-    由于 G1 机器人的 compiler 设定是 angle="radian"，我们必须返回弧degrees值，而不是角degrees值。
+    Since G1 compiler uses angle="radian", we must return radian values, not degree values.
     """
     return math.atan2(target[1] - pos[1], target[0] - pos[0])
 
 def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
     """
-    Main assembly logic - G1机器人版本
+    Main assembly logic - G1 robot version
     robots_config: list of dicts, e.g., [{"pos": [1,0], "target": [0,0], "suffix": "_red", "color": "1 0 0 1"}]
     """
     # Load main scene
     arena_tree = ET.parse(arena_xml)
     arena_root = arena_tree.getroot()
     
-    # 确保compiler设置存在（G1需要meshdir）
+    # Ensure compiler settings exist (G1 requires meshdir)
     compiler = arena_root.find('compiler')
     if compiler is None:
-        # 从机器人XML复制compiler设置
+        # Copy compiler settings from robot XML
         robot_tree_temp = ET.parse(robot_xml)
         robot_compiler = robot_tree_temp.getroot().find('compiler')
         if robot_compiler is not None:
@@ -72,7 +72,7 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
     tendon_root = get_or_create(arena_root, 'tendon')
     contact_root = get_or_create(arena_root, 'contact')
     default_root = get_or_create(arena_root, 'default')
-    sensor_root = get_or_create(arena_root, 'sensor')  # G1有sensor
+    sensor_root = get_or_create(arena_root, 'sensor')  # G1 has sensors
 
     for cfg in robots_config:
         # Reload robot template each time
@@ -117,7 +117,7 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
                     if default_root.find(child.tag) is None:
                         default_root.append(child)
 
-        # 7. 移动 Sensors (G1特有)
+        # 7. Move Sensors (G1 specific)
         rob_sensors = robot_root.findall('sensor')
         if rob_sensors is not None:
             for rob_sensor in rob_sensors:
@@ -131,9 +131,9 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
             if main_body is not None:
                 # Set coordinates and orientation
                 yaw = get_yaw(cfg["pos"], cfg["target"])
-                # G1机器人pelvisInitial position是z=0.793，这是站立高degrees
+                # G1 robot pelvis initial position is z=0.793, this is standing height
                 main_body.set('pos', f"{cfg['pos'][0]} {cfg['pos'][1]} {cfg.get('z', 0.793)}")
-                # 移除原有的quat属性，使用euler设置朝向
+                # Remove original quat attribute, use euler to set orientation
                 if 'quat' in main_body.attrib:
                     del main_body.attrib['quat']
                 main_body.set('euler', f"0 0 {yaw}")
@@ -145,14 +145,14 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
 
 # --- Execution area ---
 if __name__ == "__main__":
-    # 配置两个对战G1机器人
+    # Configure two battling G1 robots
     battle_configs = [
         {
             "suffix": "_red",
             "color": "1 0.2 0.2 1",
             "pos": [-1.5, 0],
             "target": [0, 0],
-            "z": 0.793  # G1站立高degrees
+            "z": 0.793  # G1 standing height
         },
         {
             "suffix": "_blue",
@@ -164,8 +164,8 @@ if __name__ == "__main__":
     ]
 
     assemble_battle_scene(
-        robot_xml="g1_29dof_no_hand.xml",   # G1机器人文件
-        arena_xml="scene.xml",              # 环境文件
+        robot_xml="g1_29dof_no_hand.xml",   # G1 robot file
+        arena_xml="scene.xml",              # Environment file
         output_xml="battle_g1.xml",          # Output result
         robots_config=battle_configs
     )

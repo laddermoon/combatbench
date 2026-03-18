@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-从MuJoCo XML场景文件获取所有相机在初始状态下的截图
-支持增强渲染效果：阴影、抗锯齿、光照优化
+Capture all cameras at initial state from MuJoCo XML scene file
+Supports enhanced rendering: shadows, anti-aliasing, lighting optimization
 """
 
 import os
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 import numpy as np
 
-# 设置headless渲染
+# Set headless rendering
 os.environ.setdefault('MUJOCO_GL', 'osmesa')
 
 import mujoco
@@ -18,38 +18,38 @@ import mujoco
 def capture_cameras(xml_path, output_dir, width=640, height=480, 
                     enable_shadow=True, enable_antialias=True):
     """
-    从XML场景文件获取所有相机截图
+    Get all camera captures from XML scene file
     
     Args:
-        xml_path: MuJoCo XML场景文件路径
-        output_dir: 输出目录
-        width: 图像宽degrees
-        height: 图像高degrees
-        enable_shadow: 启用阴影
-        enable_antialias: 启用抗锯齿
+        xml_path: MuJoCo XML scene file path
+        output_dir: Output directory
+        width: Image width
+        height: Image height
+        enable_shadow: Enable shadow
+        enable_antialias: Enable anti-alias
     """
-    # 加载场景
+    # Load scene
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
     
-    # 设置渲染points辨率
+    # Set rendering resolution
     model.vis.global_.offwidth = width
     model.vis.global_.offheight = height
     
-    # 增强渲染设置
-    # 阴影通过renderer.enable_shadow()设置，不需要在model.vis中设置
+    # Enhanced rendering settings
+    # Shadow is set via renderer.enable_shadow(), no need to set in model.vis
     
-    # 设置背景色（可选）
-    # model.vis.global_.rgba = [0.8, 0.9, 1.0, 1.0]  # 浅蓝色背景
+    # Set background color (optional)
+    # model.vis.global_.rgba = [0.8, 0.9, 1.0, 1.0]  # Light blue background
     
-    # 初始化场景
+    # Initialize scene
     mujoco.mj_forward(model, data)
     
-    # 创建输出目录
+    # Create output directory
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 获取所有相机
+    # Get all cameras
     n_cameras = model.ncam
     print(f'Scene: {xml_path}')
     print(f'Render resolution: {width}x{height}')
@@ -61,23 +61,23 @@ def capture_cameras(xml_path, output_dir, width=640, height=480,
         print('No cameras found in scene.')
         return
     
-    # 创建渲染器 (注意: MuJoCo Renderer参数顺序是 height, width)
+    # Create renderer (Note: MuJoCo Renderer parameter order is height, width)
     renderer = mujoco.Renderer(model, height, width)
     
-    # 渲染每个相机
+    # Render each camera
     for cam_id in range(n_cameras):
-        # 获取相机名称
+        # Get camera name
         cam_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, cam_id)
         if cam_name is None:
             cam_name = f'camera_{cam_id}'
         
-        # 更新场景（可添加更多渲染选项）
+        # Update scene (can add more rendering options)
         renderer.update_scene(data, camera=cam_id)
         
-        # 渲染
+        # Render
         image = renderer.render()
         
-        # 保存图片
+        # Save image
         output_path = output_dir / f'{cam_name}.png'
         import imageio
         imageio.imwrite(str(output_path), image)
@@ -102,7 +102,7 @@ def main():
     width = int(sys.argv[3]) if len(sys.argv) > 3 else 640
     height = int(sys.argv[4]) if len(sys.argv) > 4 else 480
     
-    # 检查是否禁用阴影
+    # Check if shadow is disabled
     enable_shadow = '--no-shadow' not in sys.argv
     
     capture_cameras(xml_path, output_dir, width, height, enable_shadow=enable_shadow)

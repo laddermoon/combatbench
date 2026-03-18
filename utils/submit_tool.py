@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 def verify_submission(submission_dir):
-    """验证提交目录是否包含有效的策略"""
+    """Verify if submission directory contains valid policy"""
     print(f"Verifying submission in {submission_dir}...")
     
     sub_path = Path(submission_dir)
@@ -19,7 +19,7 @@ def verify_submission(submission_dir):
         return False
         
     try:
-        # 动态导入策略文件
+        # Dynamically import policy file
         spec = importlib.util.spec_from_file_location("policy", str(policy_file))
         policy_module = importlib.util.module_from_spec(spec)
         sys.path.insert(0, str(sub_path))
@@ -31,7 +31,7 @@ def verify_submission(submission_dir):
             
         print("✅ Found CombatPolicy class.")
         
-        # 简单模拟实例化
+        # Simple mock instantiation
         class MockSpace:
             def __init__(self, shape):
                 self.shape = shape
@@ -42,7 +42,7 @@ def verify_submission(submission_dir):
         policy = policy_module.CombatPolicy(obs_space, act_space)
         print("✅ Policy instantiated successfully.")
         
-        # 测试 act 函数
+        # Test act function
         mock_obs = np.zeros(100)
         action = policy.act(mock_obs)
         if not isinstance(action, np.ndarray) or action.shape != (21,):
@@ -60,7 +60,7 @@ def verify_submission(submission_dir):
             sys.path.remove(str(sub_path))
 
 def pack_submission(submission_dir, output_file="submission.zip"):
-    """打包提交文件"""
+    """Pack submission file"""
     if not verify_submission(submission_dir):
         print("❌ Cannot pack: Verification failed.")
         sys.exit(1)
