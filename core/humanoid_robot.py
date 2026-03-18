@@ -4,11 +4,12 @@ MuJoCo Humanoid 机器人包装 (21 DOF)
 
 import numpy as np
 import mujoco
+from .base_robot import BaseRobot
 
 
-class HumanoidRobot:
+class HumanoidRobot(BaseRobot):
     """
-    基于 MuJoCo 的 humanoid 模型，21 个可控 DOF。
+    Based on MuJoCo humanoid model, 21 controllable DOFs.
     """
 
     ACTION_DIM = 21
@@ -21,15 +22,11 @@ class HumanoidRobot:
         'shoulder1_left', 'shoulder2_left', 'elbow_left'
     ]
 
-    # 初始姿态（直立，全零）
+    # Initial posture (upright, all zeros)
     INITIAL_POSITION = {joint: [0.0] for joint in CONTROLLED_JOINTS}
 
     def __init__(self, physics_engine, position, orientation, robot_id="robot", color=(0.8, 0.2, 0.2)):
-        self.physics = physics_engine
-        self.model = physics_engine.model
-        self.data = physics_engine.data
-        self.robot_id = robot_id
-        self.color = color
+        super().__init__(physics_engine, position, orientation, robot_id, color)
         
         self.suffix = '_a' if self.robot_id == 'robot_a' else '_b'
         self.suffix = '_red' if self.robot_id == 'robot_a' else '_blue' # battle_v1.xmluses _red and _blue
@@ -50,7 +47,7 @@ class HumanoidRobot:
                 print(f"Warning: Exception getting joint {full_name}: {e}")
         return indices
 
-    def set_joint_targets(self, action):
+    def apply_action(self, action):
         action = np.clip(action, -1.0, 1.0)
         action_idx = 0
         for joint in self.CONTROLLED_JOINTS:
@@ -262,3 +259,18 @@ class HumanoidRobot:
             obs_list.append(np.zeros(64))
 
         return np.concatenate(obs_list).astype(np.float32)
+
+    def reset(self, position, orientation):
+        """
+        Implementation of abstract method from BaseRobot
+        """
+        # Currently envs/combat_gym.py resets directly via self.data.qpos
+        # This is a stub for future internal refactoring
+        pass
+
+    def get_visual_observation(self, camera_name: str) -> np.ndarray:
+        """
+        Get the visual observation from a specific camera on the robot.
+        Future support for pure vision-based RL.
+        """
+        raise NotImplementedError("Pure visual observation is planned for future versions.")

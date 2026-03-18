@@ -8,6 +8,8 @@ CombatBench is the open-source simulation environment for humanoid robot combat.
 - **Official Combat Arena**: Standardized 6.1m x 6.1m closed room with proper lighting and camera setups.
 - **Gymnasium Interface**: Standard RL environment interface (`reset`, `step`, etc.).
 - **Headless Rendering**: EGL-based fast rendering for generating combat replay videos.
+- **Extensibility**: Designed to support future robots (like Unitree G1) and pure vision-based RL observation spaces.
+
 
 ## Project Structure
 
@@ -53,6 +55,7 @@ python run_without_policy.py
 - [Robot Specifications](docs/ROBOT.md)
 - [Observation Space](docs/OBSERVATION.md)
 - [Scene Overview](docs/SCENE.md)
+- [Policy Submission Guide](docs/SUBMISSION.md)
 
 ## Contributing
 
