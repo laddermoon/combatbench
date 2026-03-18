@@ -148,9 +148,9 @@ class CombatGymEnv(gym.Env):
             self.actions['robot_b'] = action_dict['robot_b']
 
         if self.actions['robot_a'] is not None:
-            self.robot_a.set_joint_targets(self.actions['robot_a'])
+            self.robot_a.apply_action(self.actions['robot_a'])
         if self.actions['robot_b'] is not None:
-            self.robot_b.set_joint_targets(self.actions['robot_b'])
+            self.robot_b.apply_action(self.actions['robot_b'])
 
         all_collisions = []
         for i in range(self.action_steps):

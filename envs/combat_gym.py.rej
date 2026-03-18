@@ -1,0 +1,8 @@
+--- combat_gym.py
++++ combat_gym.py
+@@ -150,3 +150,3 @@
+         for _ in range(self.action_steps):
+-            self.robot_a.set_joint_targets(self.actions['robot_a'])
+-            self.robot_b.set_joint_targets(self.actions['robot_b'])
++            self.robot_a.apply_action(self.actions['robot_a'])
++            self.robot_b.apply_action(self.actions['robot_b'])
