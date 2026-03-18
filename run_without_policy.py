@@ -1,5 +1,5 @@
 """
-测试入口脚本：在无策略的情况下运行一次完整的 Episode (30秒)
+Test entry script: Run a complete Episode (30s) without policy
 """
 
 import sys
@@ -13,33 +13,33 @@ from envs.combat_gym import CombatGymEnv
 
 def main():
     print("=" * 60)
-    print("CombatBench 21DOF 测试运行 (无策略)")
+    print("CombatBench 21DOF Test Run (No Policy)")
     print("=" * 60)
 
-    # 1. 创建环境，开启 rgb_array 渲染模式
+    # 1. Create environment, enable rgb_array render mode
     env = CombatGymEnv(
         render_mode="rgb_array", 
         match_duration=30.0,
         control_frequency=20
     )
     
-    # 2. 重置环境
+    # 2. Reset environment
     obs, info = env.reset()
-    print(f"环境已重置，初始位置: {info['positions']}")
-    print(f"初始血量: {info['scores']}")
+    print(f"Environment reset, Initial position: {info['positions']}")
+    print(f"Initial HP: {info['scores']}")
     print("-" * 60)
 
     max_steps = int(env.match_duration * env.control_frequency)
     step_count = 0
     
-    # 无策略：保持各个关节全零 (直立) 或者可以做微小随机扰动
-    # 此处我们让它施加微小噪声
+    # No policy: Keep all joints at zero (upright) or apply tiny random perturbations
+    # Here we apply tiny noise
     action_dim = env.robot_a.ACTION_DIM
     
-    print(f"开始运行，预计最大步数: {max_steps} 步 (30秒)")
+    print(f"Starting run, estimated max steps: {max_steps} steps (30seconds)")
     
     while True:
-        # 给一点微小的随机力，让机器人不至于完全僵硬
+        # Apply tiny random force so robots are not completely stiff
         action = {
             'robot_a': np.random.uniform(-0.1, 0.1, action_dim),
             'robot_b': np.random.uniform(-0.1, 0.1, action_dim)
@@ -48,31 +48,31 @@ def main():
         obs, reward, terminated, truncated, info = env.step(action)
         step_count += 1
         
-        # 简单输出状态（每 100 步输出一次）
+        # Simple status output (every 100 steps)
         if step_count % 100 == 0:
-            print(f"Step {step_count:03d} - 血量: {info['scores']}, " 
-                  f"距离: {np.linalg.norm(info['positions']['robot_a'] - info['positions']['robot_b']):.2f}m")
+            print(f"Step {step_count:03d} - HP: {info['scores']}, " 
+                  f"Distance: {np.linalg.norm(info['positions']['robot_a'] - info['positions']['robot_b']):.2f}m")
             
-        # 检查是否发生有效攻击（掉血）
+        # Check for valid attacks (HP deduction)
         if info['hit_records']['robot_a']:
-            print(f"[Step {step_count}] 🔴 Robot A 被击中！详细: {info['hit_records']['robot_a']}")
+            print(f"[Step {step_count}] 🔴 Robot A hit! Details: {info['hit_records']['robot_a']}")
         if info['hit_records']['robot_b']:
-            print(f"[Step {step_count}] 🔵 Robot B 被击中！详细: {info['hit_records']['robot_b']}")
+            print(f"[Step {step_count}] 🔵 Robot B hit! Details: {info['hit_records']['robot_b']}")
 
         if terminated or truncated:
             break
 
     print("-" * 60)
-    print(f"Episode 结束。总步数: {step_count}")
-    print(f"最终结果: {info['end_reason']}")
-    print(f"最终血量: {info['scores']}")
+    print(f"Episode ended. Total steps: {step_count}")
+    print(f"Final result: {info['end_reason']}")
+    print(f"Final HP: {info['scores']}")
     
-    # 3. 保存视频
-    print("\n正在保存视频...")
+    # 3. Save video
+    print("\nSaving video...")
     video_path = Path(__file__).parent / 'no_policy_test.mp4'
     env.save_video(str(video_path), fps=env.video_sample_frequency)
-    print(f"视频已保存至: {video_path}")
-    print(f"总录制帧数: {len(env.get_video_buffer())}")
+    print(f"Video saved to: {video_path}")
+    print(f"Total recorded frames: {len(env.get_video_buffer())}")
 
     env.close()
 

@@ -1,18 +1,26 @@
-关于机器人的设计
+# Robot Design
 
+## 21-DoF Model Choice
 
-MuJoCo中的是21自由度的
-https://github.com/google-deepmind/mujoco/blob/main/model/humanoid/humanoid.xml
+In CombatBench, the robots utilize a **21 Degrees of Freedom (DoF)** configuration based on the [official MuJoCo humanoid model](https://github.com/google-deepmind/mujoco/blob/main/model/humanoid/humanoid.xml). 
 
+Note that standard Gymnasium environments (e.g., Humanoid-v5) typically use a 17-DoF model that lacks ankle joints. We specifically chose the 21-DoF model for the following reasons:
 
-gymnasium 中的Humanoid V5是17自由度的，没有踝关节。
-https://gymnasium.farama.org/environments/mujoco/humanoid/
+### 1. Physical Dynamics: Ankle Joints and Directional Changes
+- **Ankle Advantage:** The 21-DoF model has 4 additional degrees of freedom located in the ankles (X and Y axis rotational drives for both feet).
+- **Critical Role in Combat:** In combat scenarios (fighting, dodging, quick dashes), the ankles are the core for providing explosive propulsion and maintaining dynamic balance.
+- **Lateral Movement:** The 17-DoF model lacks ankle drives, meaning that during intense lateral movement or when receiving lateral impacts, it must compensate by swinging its torso and hips, resulting in stiff movements and making it prone to falling over.
 
+### 2. Action Space: Agility in Attack and Defense
+- **Limitations of 17-DoF:** It was designed as a simplified version meant primarily for basic "walking" tasks. In a combat scenario, if the robot needs to execute complex footwork or lower its center of gravity (e.g., dodging in boxing), a 17-DoF robot might fall into a "balance trap", sacrificing wide attacking motions just to maintain stability.
+- **Anthropomorphism of 21-DoF:** State-of-the-art research on highly difficult control tasks (such as a humanoid wielding a badminton racket) typically favors a 21-DoF or higher configuration to ensure agility and energy efficiency.
 
-为什么选择21自由度：
+### 3. Trade-offs in Reinforcement Learning (RL) Training
+| Feature | 17-DoF (Humanoid-v5) | 21-DoF (MuJoCo Prototype) |
+|---|---|---|
+| **Convergence Speed** | Faster, smaller action space | Slower, needs more samples for foot coordination |
+| **Balance Stability** | Worse, prone to "physics explosions" | Better, allows fine pressure adjustments |
+| **Sim-to-Real** | Extremely difficult (real robots have ankles) | Better, physical topology closer to real hardware |
 
-如果你要开发一个仿真机器人对战平台，建议选择 21 自由度（DOF） 的模型，甚至考虑自由度更高的商业机器人模型。以下是基于物理特性、动作控制及训练效率的详细对比分析：1. 物理层面的考量：足底反馈与变向能力21 自由度的优势（含踝关节）： 21 自由度模型相比 17 自由度模型多出的 4 个自由度位于踝关节（Ankles），即双脚各增加了 X 轴和 Y 轴的旋转驱动 。对战中的关键作用： 在对战场景（如格斗、躲闪、快速突进）中，踝关节是提供爆发性推进力和维持动态平衡的核心 。侧向移动与支撑： 17 自由度模型由于没有踝关节驱动，在进行剧烈的侧向位移或受到侧向冲击时，只能靠摆动躯干和胯部来代偿，动作会显得极其僵硬且容易倾倒 。足底推进： 踝关节驱动可以产生更自然的支撑相推進力，对于对战所需的“急停急起”至关重要 。2. 动作空间的广度：攻击与防御的灵活性17 自由度的局限： 它是为了“行走”这一单一任务而设计的简化版 。在对战平台中，如果机器人需要进行复杂的步法变换或重心压低动作（如拳击中的闪躲），17 自由度可能会导致 Agent 陷入“平衡陷阱”，即为了平衡而无法做出大幅度的攻击动作。21 自由度的拟人化： 在现有的高难度控制研究中（如挥舞羽毛球拍的 Humanoid 仿真），研究者通常倾向于使用 21 自由度或更高的配置，以确保动作的敏捷性和能量效率。3. 强化学习（RL）训练的权衡特性17 自由度 (Humanoid-v5)21 自由度 (MuJoCo 原型)收敛速度较快，动作空间小，搜索效率高 。较慢，需要更多样本来协调足部动作。平衡稳定性较差，容易发生“物理爆炸”而中断。较好，具有更精细的压力调节能力。Sim-to-Real极难，现实机器人几乎都有踝关节 。较好，物理拓扑更接近真实硬件。4. 开发建议：为什么不直接用“标准”的 17 自由度？虽然 Gymnasium Humanoid-v5 使用的是 17 自由度，但它是为了方便学术论文对齐实验结果（Benchmark） 。对于对战平台这种应用导向的项目，你应该追求上限而非基准：首选 21 自由度： 能够实现侧移步、后撤步和更稳定的下盘支撑，对战观赏性和逻辑性更强 。利用现代工具解决训练慢的问题： 既然自由度增加会提升训练难度，建议搭配 MJX (MuJoCo XLA)。MJX 允许在 GPU 上运行数千个并行环境，即使是高自由度的复杂对战策略，也可以在数分钟内完成初步训练，弥补了 21 自由度带来的计算开销 。兼容性： 如果你使用 Gymnasium-v5 框架，你可以通过 xml_file 参数加载 MuJoCo GitHub 官方的 21 自由度 humanoid.xml，同时利用 v5 改进的奖励函数逻辑和观测值剪枝技术 。总结结论：做对战平台请务必开启踝关节（21 自由度）。在激烈的机器人对抗中，足部的微调能力是胜负的关键，17 自由度的机器人在对抗性运动中会表现得像“穿了冰鞋的木偶”。
-
-
-宇树G1
-https://huggingface.co/lerobot/unitree-g1-mujoco/blob/main/assets/g1_29dof_no_hand.xml
+### Conclusion
+For combat platforms, enabling the ankles (21 DoF) is essential. The ability to fine-tune foot placement is the key to winning in fierce robotic combat. A 17-DoF robot engaged in combative sports behaves like a "wooden puppet on ice skates". Therefore, CombatBench strictly utilizes the 21-DoF model to maximize the ceiling of agility and realism.

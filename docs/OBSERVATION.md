@@ -1,185 +1,132 @@
-## 三、观测空间设计
+# Observation Space Design
 
-### 3.1 总体架构
+## I. Overall Architecture
 
 ```
-观测空间 (Observation Space)
+Observation Space
 │
-├── 模块一：本体感知 (Proprioception) - 42维
-│   ├── 关节角度 (21维)
-│   └── 关节角速度 (21维)
+├── Module 1: Proprioception (42 dims)
+│   ├── Joint Angles (21 dims)
+│   └── Joint Velocities (21 dims)
 │
-├── 模块二：全局状态 (Root State) - 13维
-│   ├── 位置与朝向 (7维)
-│   └── 运动速度 (6维)
+├── Module 2: Root State (13 dims)
+│   ├── Position and Orientation (7 dims)
+│   └── Linear & Angular Velocity (6 dims)
 │
-├── 模块三：触觉力反馈 (Tactile & Force) - 8维
-│   ├── 足底触地感 (2维)
-│   └── 外部受力感 (6维)
+├── Module 3: Tactile & Force Feedback (8 dims)
+│   ├── Foot Contact (2 dims)
+│   └── External Forces (6 dims)
 │
-└── 模块四：对手观测 (Opponent) - 52维
-    ├── 对手基础位姿 (10维)
-    ├── 对手关键点位置 (24维)
-    └── 对手关键点速度 (18维)
+└── Module 4: Opponent Observation (64 dims)
+    ├── Opponent Base Pose (10 dims)
+    ├── Opponent Keypoint Positions (27 dims)
+    └── Opponent Keypoint Velocities (27 dims)
 
-总计：115 维
-```
-
----
-
-## 四、模块详细定义
-
-### 4.1 模块一：本体感知 (42维)
-
-**功能：** 机器人的"肌肉感"，决定肢体控制精度
-
-#### 关节角度 (21维) - `qpos[7:28]`
-
-| 关节组 | 索引范围 | 关节名称 | 功能描述 |
-|--------|----------|----------|----------|
-| 核心躯干 | 0-2 | abdomen_z/y/x | 腰部转动、俯仰、侧弯 |
-| 右腿 | 3-8 | hip_x/z/y, knee, ankle_y/x | 支撑、位移、踢击 |
-| 左腿 | 9-14 | hip_x/z/y, knee, ankle_y/x | 与右腿对称 |
-| 右臂 | 15-17 | shoulder1/2, elbow | 进攻侧，打击轨迹 |
-| 左臂 | 18-20 | shoulder1/2, elbow | 防御侧，辅助攻击 |
-
-**物理量：** 弧度 (Radians)
-
-#### 关节角速度 (21维) - `qvel[6:27]`
-
-对应上述 21 个关节的角速度。
-
-**物理量：** 弧度/秒 (rad/s)
-
-**作用：** 决定动作动量，如重拳挥出速度
-
----
-
-### 4.2 模块二：全局状态 (13维)
-
-**功能：** 机器人的"空间感"，描述在世界中的处境
-
-#### 位置与朝向 (7维)
-
-| 数据项 | 维度 | 说明 |
-|--------|------|------|
-| 高度 (Z轴) | 1 | 判断是否倒地，格斗核心指标 |
-| 局部朝向 | 6 | 世界坐标四元数 → 局部旋转矩阵（前两列） |
-
-**注意：** 不提供绝对 X/Y 坐标，避免位置依赖
-
-#### 运动速度 (6维)
-
-| 数据项 | 维度 | 说明 |
-|--------|------|------|
-| 平移速度 | 3 | $v_x, v_y, v_z$，判断冲刺或被击退 |
-| 角速度 | 3 | 等效陀螺仪，感知被击中时的晃动 |
-
----
-
-### 4.3 模块三：触觉力反馈 (8维)
-
-**功能：** 机器人的"体感"，学习格挡和发力
-
-| 数据项 | 维度 | 说明 |
-|--------|------|------|
-| 足底触地感 | 2 | 左右脚是否接触地面（0 或 1） |
-| 外部受力感 | 6 | 躯干、头部、双手、双脚的受力矢量 |
-
-**简化建议：** 仅取受力模长（标量），减小维度以加速训练
-
----
-
-### 4.4 模块四：对手观测 (64维)
-
-**原则：** "以我为中心" + "动静结合"
-
-**坐标系：** 所有坐标转换至自身局部坐标系
-
-#### 4.4.1 对手基础位姿 (10维)
-
-| 数据项 | 维度 | 物理含义 |
-|--------|------|----------|
-| 相对位置 | 3 | 对手躯干中心 - 自身躯干中心 |
-| 相对速度 | 3 | 判断对手冲刺或逃跑 |
-| 相对朝向 | 4 | 四元数差值，判断对手是否正对 |
-
-#### 4.4.2 对手关键点位置 (27维)
-
-| 关键点 | 维度 | 作用 |
-|--------|------|------|
-| 头部 (Head) | 3 | 高位攻击（击头）目标 |
-| 左右拳 (Hands) | 6 | 判断摆拳、格挡或垂臂 |
-| 左右肘 (Elbows) | 6 | 格挡姿态检测 |
-| 左右膝 (Knees) | 6 | 蹬腿预警 |
-| 左右脚 (Feet) | 6 | 移动步法判断 |
-
-#### 4.4.3 对手关键点速度 (27维)
-
-**作用：** 区分"手臂晃动"和"重拳来袭"
-
-| 关键点 | 维度 |
-|--------|------|
-| 头部速度 | 3 |
-| 左右拳速度 | 6 |
-| 左右肘速度 | 6 |
-| 左右膝速度 | 6 |
-| 左右脚速度 | 6 |
-
-**关键价值：**
-- 速度为 0 → 静态格挡姿态
-- 高速接近 → 即将命中，需要躲避
-- 速度方向 → 打击轨迹预测
-
----
-
-## 五、维度汇总表
-
-| 模块 | 子项 | 维度 | 数据来源 |
-|------|------|------|----------|
-| **本体感知** | 关节角度 | 17 | qpos[7:24] |
-| | 关节角速度 | 17 | qvel[6:23] |
-| **全局状态** | 位置与朝向 | 7 | qpos[0:7] 转换 |
-| | 运动速度 | 6 | qvel[0:6] |
-| **触觉力反馈** | 足底触地 | 2 | contact 传感器 |
-| | 外部受力 | 6 | cfrc_ext |
-| **对手观测** | 基础位姿 | 10 | 相对计算 |
-| | 关键点位置 | 27 | xpos 计算 |
-| | 关键点速度 | 27 | xvel 计算 |
-| **总计** | - | **119** | - |
-
----
-
-## 六、示例：右直拳控制
-
-```python
-# 右直拳需要控制的关节（17 DOF 索引）
-action[11]  # right_shoulder1: 肩部前后摆动（伸拳主轴）
-action[13]  # right_elbow: 肘部伸展/弯曲
-
----
-
-## 六、示例：右直拳控制
-
-```python
-# 右直拳需要控制的关节
-action[15]  # right_shoulder1: 肩部前后摆动（伸拳主轴）
-action[17]  # right_elbow: 肘部伸展/弯曲
-
-# 观测对应数据
-punch_angle = self.data.qpos[7 + 15]  # 肩部当前角度
-punch_vel = self.data.qvel[6 + 15]    # 肩部当前角速度
+Total: 127 Dimensions
 ```
 
 ---
 
-## 七、注意事项
+## II. Module Definitions
 
-1. **头部关节：** Humanoid-v5 默认头部无独立关节，需通过 abdomen_z 扭腰带动
-2. **坐标系转换：** 所有对手观测需转换至自身局部坐标系
-3. **简化策略：** 初期 Baseline 可简化受力观测为标量模长
-4. **避免位置依赖：** 不提供绝对世界坐标 X/Y
+### 2.1 Module 1: Proprioception (42 dims)
+
+**Function:** The robot's "muscle sense", determining the accuracy of limb control.
+
+#### Joint Angles (21 dims)
+| Joint Group | Indices | Joint Names | Description |
+|---|---|---|---|
+| Core Torso | 0-2 | abdomen_z/y/x | Waist rotation, pitch, lateral bending |
+| Right Leg | 3-8 | hip_x/z/y, knee, ankle_y/x | Support, movement, kicking |
+| Left Leg | 9-14 | hip_x/z/y, knee, ankle_y/x | Symmetrical to right leg |
+| Right Arm | 15-17 | shoulder1/2, elbow | Attacking side, strike trajectory |
+| Left Arm | 18-20 | shoulder1/2, elbow | Defensive side, auxiliary attack |
+
+**Unit:** Radians
+
+#### Joint Velocities (21 dims)
+Corresponding to the angular velocities of the 21 joints above.
+
+**Unit:** rad/s
+**Function:** Determines the momentum of actions, such as the velocity of a heavy punch.
 
 ---
 
-*本定义方案基于 MuJoCo Humanoid-v5 物理模型，适用于格斗仿真环境开发。*
+### 2.2 Module 2: Root State (13 dims)
+
+**Function:** The robot's "spatial sense", describing its situation in the world.
+
+#### Position and Orientation (7 dims)
+| Data Item | Dims | Description |
+|---|---|---|
+| Height (Z-axis) | 1 | Judges if fallen, core combat metric |
+| Local Orientation | 6 | World quaternion → Local rotation matrix (first two columns) |
+
+**Note:** Absolute X/Y coordinates are intentionally omitted to avoid position dependency.
+
+#### Velocity (6 dims)
+| Data Item | Dims | Description |
+|---|---|---|
+| Linear Velocity | 3 | $v_x, v_y, v_z$, judges dashing or being knocked back |
+| Angular Velocity | 3 | Equivalent to a gyroscope, sensing shaking when hit |
+
+---
+
+### 2.3 Module 3: Tactile & Force Feedback (8 dims)
+
+**Function:** The robot's "somatosensory", learning blocking and force generation.
+
+| Data Item | Dims | Description |
+|---|---|---|
+| Foot Contact | 2 | Whether left/right foot is touching the ground (0 or 1) |
+| External Forces | 6 | Force vectors on torso, head, hands, and feet |
+
+**Simplification Tip:** Taking only the force magnitude (scalar) can reduce dimensionality to accelerate training.
+
+---
+
+### 2.4 Module 4: Opponent Observation (64 dims)
+
+**Principle:** Egocentric + Kinematic
+
+**Coordinate System:** All opponent coordinates are transformed into the ego robot's local coordinate frame.
+
+#### 2.4.1 Opponent Base Pose (10 dims)
+| Data Item | Dims | Physical Meaning |
+|---|---|---|
+| Relative Position | 3 | Opponent torso center - Ego torso center |
+| Relative Velocity | 3 | Judges if opponent is rushing or retreating |
+| Relative Orientation | 4 | Quaternion difference, judges if facing each other |
+
+#### 2.4.2 Opponent Keypoint Positions (27 dims)
+| Keypoint | Dims | Role |
+|---|---|---|
+| Head | 3 | High-level attack target |
+| Left/Right Hands | 6 | Detects hooks, blocks, or lowered arms |
+| Left/Right Elbows | 6 | Blocking stance detection |
+| Left/Right Knees | 6 | Kick warning |
+| Left/Right Feet | 6 | Footwork judgment |
+
+#### 2.4.3 Opponent Keypoint Velocities (27 dims)
+**Role:** Distinguishes between "arm swaying" and "incoming heavy punches".
+
+| Keypoint | Dims |
+|---|---|
+| Head Velocity | 3 |
+| Left/Right Hand Velocity | 6 |
+| Left/Right Elbow Velocity | 6 |
+| Left/Right Knee Velocity | 6 |
+| Left/Right Foot Velocity | 6 |
+
+**Critical Value:**
+- Speed = 0 → Static blocking stance
+- High-speed approach → Imminent hit, dodge required
+- Velocity direction → Strike trajectory prediction
+
+---
+
+## III. Notes
+
+1. **Coordinate Transformation:** All opponent observations must be transformed to the ego's local coordinate system.
+2. **Simplification Strategy:** For early baselines, external force observations can be simplified to scalar magnitudes.
+3. **Avoid Position Dependency:** Absolute world X/Y coordinates are intentionally omitted from observations.

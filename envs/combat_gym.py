@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import sys
 
-# 添加父目录到路径以导入本地模块
+# Add parent directory to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.physics import PhysicsEngine
@@ -15,8 +15,8 @@ from core.scoring import ScoreCalculator
 
 class CombatGymEnv(gym.Env):
     """
-    双机器人对抗 Gym 环境 (V1.0 - 21DOF)
-    单回合 Episode (30s)
+    Dual Robot Combat Gym Environment (V1.0 - 21DOF)
+    Single round Episode (30s)
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
@@ -25,10 +25,10 @@ class CombatGymEnv(gym.Env):
         render_mode=None,
         arena_xml=None,
         dt=0.002,
-        initial_distance=2.0,  # 规则：初始距离两米相向而立
+        initial_distance=2.0,  # Rule: Initial distance 2 meters facing each other
         control_frequency=20,
         video_sample_frequency=10,
-        match_duration=30.0,   # 单回合时长 30 秒
+        match_duration=30.0,   # Single roundduration 30 seconds
     ):
         super().__init__()
         
@@ -63,7 +63,7 @@ class CombatGymEnv(gym.Env):
             "robot_b": spaces.Box(low=-1.0, high=1.0, shape=(action_dim,), dtype=np.float32),
         })
 
-        # 观测空间：42 + 13 + 8 + 64 = 127维
+        # Observation space：42 + 13 + 8 + 64 = 127dims
         obs_dim = 127
         self.observation_space = spaces.Dict({
             "robot_a_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
@@ -83,7 +83,7 @@ class CombatGymEnv(gym.Env):
         self.physics_step_count = 0
         self.max_steps = int(match_duration * control_frequency)
 
-        # 缓存相机状态用于平滑跟随
+        # Cache camera state for smooth tracking
         self._prev_cam_pos = None
         self._prev_lookat = None
 
@@ -91,7 +91,7 @@ class CombatGymEnv(gym.Env):
         super().reset(seed=seed)
 
         if not hasattr(self, '_robots_created'):
-            # Robot A: 面向 +X 
+            # Robot A: facing +X 
             pos_a = [-self.initial_distance / 2, 0, 1.4]
             orn_a = [1, 0, 0, 0] 
 
@@ -99,9 +99,9 @@ class CombatGymEnv(gym.Env):
                 self.physics, pos_a, orn_a, robot_id="robot_a", color=(0.8, 0.2, 0.2)
             )
 
-            # Robot B: 面向 -X 
+            # Robot B: facing -X 
             pos_b = [self.initial_distance / 2, 0, 1.4]
-            orn_b = [0, 0, 0, 1]  #绕Z轴旋转180度
+            orn_b = [0, 0, 0, 1]  #Rotate 180 degrees around Z axis
 
             self.robot_b = HumanoidRobot(
                 self.physics, pos_b, orn_b, robot_id="robot_b", color=(0.2, 0.2, 0.8)
@@ -122,7 +122,7 @@ class CombatGymEnv(gym.Env):
         self._prev_cam_pos = None
         self._prev_lookat = None
 
-        # 触发一次 forward 让位置和速度生效
+        # Trigger one forward to apply position and velocity
         import mujoco
         mujoco.mj_forward(self.physics.model, self.physics.data)
 
@@ -239,7 +239,7 @@ class CombatGymEnv(gym.Env):
             pos_b = self.robot_b.get_position()
             center = (pos_a + pos_b) / 2.0
             
-            # 基础视点：两个机器人的中心，高度稍微调低一点(看腰部)
+            # Base viewpoint: center of two robots, height slightly lowered (waist level)
             target_lookat = center.copy()
             target_lookat[2] = 1.0  
             
@@ -250,23 +250,23 @@ class CombatGymEnv(gym.Env):
             else:
                 direction = np.array([1.0, 0.0, 0.0])
 
-            # 期望从两人的侧面看过去 (方向的法向量对应的方位角)
-            # arctan2(y, x) 得到向量在 XY 平面的角度
+            # Expect to look from the side of the two (Azimuth angle corresponding to the normal vector of direction)
+            # arctan2(y, x) Get the angle of the vector on the XY plane
             dir_angle = np.degrees(np.arctan2(direction[1], direction[0]))
             
-            # 摄像机位于侧面，所以方位角 + 90 度
+            # Camera is on the side, so azimuth + 90 degrees
             target_azi = dir_angle + 90.0
-            target_ele = -20.0  # 俯视 20 度
+            target_ele = -20.0  # look down 20 degrees
             
-            # 摄像机距离：基础距离为两人的间距乘以1.5，限制在 2.5 ~ 4.0 之间
+            # Camera distance: base distance is spacing * 1.5, limited between 2.5 and 4.0
             target_dist = max(2.5, min(4.0, dist_ab * 1.5))
             
-            # --- 边界限制 (防止摄像机退到墙外) ---
-            # 房间边界大约是 x,y \in [-3.05, 3.05]
-            # 我们预留 0.5 的安全距离 -> 墙壁限制在 2.55
+            # --- Boundary limit (prevent camera from moving outside walls) ---
+            # Room boundary is approx x,y \in [-3.05, 3.05]
+            # We reserve 0.5 safe distance -> wall limit at 2.55
             limit = 2.55
             
-            # 在 MuJoCo 中，给定方位角、仰角和距离，相机在世界坐标系的水平偏移大概是：
+            # In MuJoCo, given azimuth, elevation and distance, camera's horizontal offset in world coords is approx:
             # dx = -dist * cos(azi) * cos(ele)
             # dy = -dist * sin(azi) * cos(ele)
             azi_rad = np.radians(target_azi)
@@ -278,23 +278,23 @@ class CombatGymEnv(gym.Env):
             cam_x = target_lookat[0] + dx
             cam_y = target_lookat[1] + dy
             
-            # 如果预期的 X 坐标超出房间，通过缩短 distance 来逼近墙壁
+            # If expected X exceeds room, shorten distance to approach wall
             if abs(cam_x) > limit:
                 max_dx = limit - target_lookat[0] if cam_x > 0 else -limit - target_lookat[0]
                 factor = -np.cos(azi_rad) * np.cos(ele_rad)
                 if abs(factor) > 1e-6:
                     target_dist = min(target_dist, abs(max_dx / factor))
                     
-            # 如果预期的 Y 坐标超出房间
+            # If expected Y exceeds room
             if abs(cam_y) > limit:
                 max_dy = limit - target_lookat[1] if cam_y > 0 else -limit - target_lookat[1]
                 factor = -np.sin(azi_rad) * np.cos(ele_rad)
                 if abs(factor) > 1e-6:
                     target_dist = min(target_dist, abs(max_dy / factor))
 
-            # --- 平滑滤波 (EMA) ---
-            alpha_pos = 0.05  # 平滑极坐标和距离的系数
-            alpha_look = 0.1  # 平滑观测焦点的系数
+            # --- Smooth filtering (EMA) ---
+            alpha_pos = 0.05  # Smoothing coefficient for polar coords and distance
+            alpha_look = 0.1  # Smoothing coefficient for observation focus
             
             if getattr(self, '_prev_azi', None) is None:
                 azi = target_azi
@@ -302,14 +302,14 @@ class CombatGymEnv(gym.Env):
                 dist = target_dist
                 lookat = target_lookat.copy()
             else:
-                # 角度平滑需要处理 360 度循环跳变
+                # 角degrees平滑需要处理 360 degrees循环跳变
                 diff = (target_azi - self._prev_azi + 180) % 360 - 180
                 azi = self._prev_azi + diff * alpha_pos
                 ele = self._prev_ele * (1.0 - alpha_pos) + target_ele * alpha_pos
                 dist = self._prev_dist * (1.0 - alpha_pos) + target_dist * alpha_pos
                 lookat = self._prev_lookat * (1.0 - alpha_look) + target_lookat * alpha_look
                 
-            # 更新缓存
+            # Update cache
             self._prev_azi = azi
             self._prev_ele = ele
             self._prev_dist = dist

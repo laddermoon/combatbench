@@ -23,8 +23,8 @@ def capture_cameras(xml_path, output_dir, width=640, height=480,
     Args:
         xml_path: MuJoCo XML场景文件路径
         output_dir: 输出目录
-        width: 图像宽度
-        height: 图像高度
+        width: 图像宽degrees
+        height: 图像高degrees
         enable_shadow: 启用阴影
         enable_antialias: 启用抗锯齿
     """
@@ -32,7 +32,7 @@ def capture_cameras(xml_path, output_dir, width=640, height=480,
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
     
-    # 设置渲染分辨率
+    # 设置渲染points辨率
     model.vis.global_.offwidth = width
     model.vis.global_.offheight = height
     

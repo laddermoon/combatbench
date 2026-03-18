@@ -1,10 +1,10 @@
-# 策略提交指南 (Policy Submission Guide)
+# Policy Submission Guide
 
-欢迎参与 CombatBench 的机器人对战挑战！本指南将向您展示如何提交您的控制策略（Policy）到对战平台。
+Welcome to the CombatBench robotic combat challenge! This guide will show you how to submit your control policy to the arena platform.
 
-## 1. 策略接口规范
+## 1. Policy Interface Specification
 
-您提交的策略需要封装为一个符合以下接口的 Python 类。平台将实例化您的类并调用它来获取动作。
+The policy you submit must be encapsulated as a Python class that conforms to the following interface. The platform will instantiate your class and call it to compute actions.
 
 ```python
 import numpy as np
@@ -12,76 +12,77 @@ import numpy as np
 class CombatPolicy:
     def __init__(self, observation_space, action_space):
         """
-        初始化您的策略。
+        Initialize your policy.
         
         Args:
-            observation_space: 字典，包含机器人的观测空间定义
-            action_space: dict, 机器人的动作空间定义
+            observation_space: The observation space definition
+            action_space: The action space definition
         """
         self.action_dim = action_space.shape[0]
 
     def act(self, obs, info=None):
         """
-        根据当前环境观测计算动作。
+        Calculate the action based on the current environment observation.
         
         Args:
-            obs: np.ndarray, 当前帧的观测向量 (详情见 docs/OBSERVATION.md)
-            info: dict, 可选的附加信息
+            obs: np.ndarray, the current frame observation vector (details in docs/OBSERVATION.md)
+            info: dict, optional additional info
             
         Returns:
-            action: np.ndarray, 动作向量 (期望各关节的扭矩或位置)
+            action: np.ndarray, action vector (desired joint torques or positions)
         """
-        # 示例：随机策略
+        # Example: Random policy
         return np.random.uniform(-0.1, 0.1, self.action_dim)
         
     def reset(self):
         """
-        回合结束或环境重置时调用，用于清理内部状态（如 RNN 隐藏状态）。
+        Called when an episode ends or the environment is reset.
+        Useful for cleaning up internal state (e.g., RNN hidden states).
         """
         pass
 ```
 
-## 2. 依赖限制
+## 2. Dependency Limitations
 
-为了保证比赛的公平性和系统的安全性，您的代码需要遵循以下限制：
+To ensure fairness and system security, your code must adhere to the following limitations:
 
-- **只允许使用平台预装的库**：如 `numpy`, `torch`, `scipy`。如果您的策略需要特殊的包，请在提交时附带 `requirements.txt`。
-- **文件大小限制**：模型权重文件 (.pt, .pth, .onnx) 总大小不应超过 **1GB**。
-- **推理时间限制**：您的 `act` 函数必须在 **10 毫秒** (100Hz 频率) 内返回动作，超时将被判负或强制使用零动作。
+- **Allowed Libraries:** Only pre-installed platform libraries like `numpy`, `torch`, `scipy` are allowed by default. If your policy requires special packages, include a `requirements.txt` with your submission.
+- **File Size Limit:** The total size of model weight files (.pt, .pth, .onnx) should not exceed **1GB**.
+- **Inference Time Limit:** Your `act` function must return an action within **10 milliseconds** (100Hz frequency). Timeouts will result in a penalized zero-action or automatic round forfeiture.
 
-## 3. 提交流程
+## 3. Submission Workflow
 
-1. 将您的策略类保存为 `policy.py`。
-2. 将您的模型权重（如果有）放在同一目录下，例如 `model.pt`。
-3. 如果有其他依赖辅助文件（如配置），也放在该目录下。
-4. 使用提供的提交工具将整个目录打包并提交。
+1. Save your policy class as `policy.py`.
+2. Place your model weights (if any) in the same directory, e.g., `model.pt`.
+3. If there are other auxiliary files (such as configs), place them in the directory as well.
+4. Use the provided submission tool to pack and submit the entire directory.
 
-目录结构示例：
+Directory structure example:
 ```
 my_submission/
-├── policy.py       # 必须包含 CombatPolicy 类
-├── model.pt        # 您的预训练权重
-└── config.json     # 自定义配置文件
+├── policy.py       # MUST contain the CombatPolicy class
+├── model.pt        # Your pre-trained weights
+└── config.json     # Custom configuration file
 ```
 
-## 4. 提交工具使用 (CLI)
+## 4. Using the Submission Tool (CLI)
 
-我们提供了一个命令行工具帮助您验证和打包提交：
+We provide a command-line tool to help you verify and pack your submission:
 
 ```bash
-# 验证策略接口是否符合规范
+# Verify if the policy interface conforms to the specification
 python utils/submit_tool.py verify my_submission/
 
-# 打包提交
+# Pack the submission
 python utils/submit_tool.py pack my_submission/
 ```
 
-这会生成一个 `submission.zip` 文件。
+This will generate a `submission.zip` file.
 
-## 5. 前往 Web 平台
+## 5. Proceeding to the Web Platform
 
-获得 `submission.zip` 后，请前往我们的官方对战平台：
+Once you have the `submission.zip`, head over to our official combat arena platform:
 
-**🔗 [https://arena.combatbench.com](https://arena.combatbench.com) (示例链接)**
+**🔗 [https://arena.combatbench.com](https://arena.combatbench.com) (Example link)**
 
-在平台上登录您的账号，进入 "Submit" 页面，上传生成的 ZIP 文件即可参与天梯匹配。
+Log in to your account, navigate to the "Submit" page, and upload the generated ZIP file to participate in the ladder matchmaking.

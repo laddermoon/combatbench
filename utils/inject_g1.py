@@ -4,29 +4,29 @@ import os
 
 def add_suffix_to_names(root, suffix, color_rgba):
     """
-    为所有名称和引用添加后缀，并强制修改颜色
+    Add suffix to all names and references, and force color change
     """
-    # 需要添加后缀的属性名
+    # Attribute names that need suffix
     ref_attrs = {'name', 'body', 'body1', 'body2', 'joint', 'target', 
                  'material', 'texture', 'mesh', 'class', 'childclass', 'tendon',
                  'site', 'objname', 'joint'}  # 添加site和sensor相关属性
 
     for elem in root.iter():
-        # 1. 处理属性后缀
+        # 1. Process attribute suffix
         for attr, value in list(elem.attrib.items()):
             if attr in ref_attrs:
                 elem.set(attr, f"{value}{suffix}")
-            # 特殊处理 actuator 里的 joint
+            # Special handling for joint in actuator
             if elem.tag == 'motor' and attr == 'joint':
                 elem.set(attr, f"{value}{suffix}")
             # 处理sensor中的site属性
             if elem.tag in ['force', 'framequat', 'gyro', 'accelerometer', 'framepos', 'framelinvel'] and attr == 'site':
                 elem.set(attr, f"{value}{suffix}")
 
-        # 2. 颜色覆盖逻辑
+        # 2. Color override logic
         if elem.tag in ['geom', 'material']:
             elem.set('rgba', color_rgba)
-            # 如果 geom 引用了 material，确保引用的 material 名也带后缀
+            # If geom references material, ensure referenced material name also has suffix
             if 'material' in elem.attrib:
                 mat_name = elem.get('material')
                 if not mat_name.endswith(suffix):
@@ -34,17 +34,17 @@ def add_suffix_to_names(root, suffix, color_rgba):
 
 def get_yaw(pos, target):
     """
-    计算朝向目标点的 Yaw 角度
-    由于 G1 机器人的 compiler 设定是 angle="radian"，我们必须返回弧度值，而不是角度值。
+    Calculate Yaw angle in degrees towards target point
+    由于 G1 机器人的 compiler 设定是 angle="radian"，我们必须返回弧degrees值，而不是角degrees值。
     """
     return math.atan2(target[1] - pos[1], target[0] - pos[0])
 
 def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
     """
-    主组装逻辑 - G1机器人版本
+    Main assembly logic - G1机器人版本
     robots_config: list of dicts, e.g., [{"pos": [1,0], "target": [0,0], "suffix": "_red", "color": "1 0 0 1"}]
     """
-    # 加载主场景
+    # Load main scene
     arena_tree = ET.parse(arena_xml)
     arena_root = arena_tree.getroot()
     
@@ -57,11 +57,11 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
         if robot_compiler is not None:
             arena_root.insert(0, robot_compiler)
     
-    # 确保主场景有必要的顶级容器
+    # Ensure main scene has necessary top-level containers
     def get_or_create(parent, tag):
         element = parent.find(tag)
         if element is None:
-            # 插入到 worldbody 之前比较规范
+            # Inserting before worldbody is more standard
             element = ET.Element(tag)
             parent.insert(0, element)
         return element
@@ -75,45 +75,45 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
     sensor_root = get_or_create(arena_root, 'sensor')  # G1有sensor
 
     for cfg in robots_config:
-        # 每次重新加载机器人模板
+        # Reload robot template each time
         robot_tree = ET.parse(robot_xml)
         robot_root = robot_tree.getroot()
 
-        # 1. 预处理：加后缀和变色
+        # 1. Pre-processing: add suffix and change color
         add_suffix_to_names(robot_root, cfg["suffix"], cfg["color"])
 
-        # 2. 移动 Assets (Texture, Material, Mesh)
+        # 2. Move Assets (Texture, Material, Mesh)
         rob_assets = robot_root.find('asset')
         if rob_assets is not None:
             for item in list(rob_assets):
                 asset_root.append(item)
 
-        # 3. 移动 Actuators
+        # 3. Move Actuators
         rob_actuators = robot_root.find('actuator')
         if rob_actuators is not None:
             for item in list(rob_actuators):
                 actuator_root.append(item)
 
-        # 4. 移动 Tendons
+        # 4. Move Tendons
         rob_tendons = robot_root.find('tendon')
         if rob_tendons is not None:
             for item in list(rob_tendons):
                 tendon_root.append(item)
 
-        # 5. 移动 Contact Excludes
+        # 5. Move Contact Excludes
         rob_contacts = robot_root.find('contact')
         if rob_contacts is not None:
             for item in list(rob_contacts):
                 contact_root.append(item)
 
-        # 6. 核心修正：移动 Default Classes
+        # 6. Core fix: Move Default Classes
         rob_default = robot_root.find('default')
         if rob_default is not None:
             for child in list(rob_default):
-                if child.tag == 'default': # 这是一个 class 定义
+                if child.tag == 'default': # This is a class definition
                     default_root.append(child)
                 elif child.tag in ['motor', 'joint', 'geom']:
-                    # 如果全局容器里还没有基础定义，才添加
+                    # Add only if global container doesn't have base definition yet
                     if default_root.find(child.tag) is None:
                         default_root.append(child)
 
@@ -124,14 +124,14 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
                 for item in list(rob_sensor):
                     sensor_root.append(item)
 
-        # 8. 放置机器人主体到 Worldbody
+        # 8. Place robot body into Worldbody
         rob_world = robot_root.find('worldbody')
         if rob_world is not None:
             main_body = rob_world.find('body')
             if main_body is not None:
-                # 设置坐标和朝向
+                # Set coordinates and orientation
                 yaw = get_yaw(cfg["pos"], cfg["target"])
-                # G1机器人pelvis初始位置是z=0.793，这是站立高度
+                # G1机器人pelvisInitial position是z=0.793，这是站立高degrees
                 main_body.set('pos', f"{cfg['pos'][0]} {cfg['pos'][1]} {cfg.get('z', 0.793)}")
                 # 移除原有的quat属性，使用euler设置朝向
                 if 'quat' in main_body.attrib:
@@ -139,11 +139,11 @@ def assemble_battle_scene(robot_xml, arena_xml, output_xml, robots_config):
                 main_body.set('euler', f"0 0 {yaw}")
                 worldbody.append(main_body)
 
-    # 导出
+    # Export
     arena_tree.write(output_xml, encoding='utf-8', xml_declaration=True)
-    print(f"成功生成对战场景: {output_xml}")
+    print(f"Successfully generated battle scene: {output_xml}")
 
-# --- 执行区 ---
+# --- Execution area ---
 if __name__ == "__main__":
     # 配置两个对战G1机器人
     battle_configs = [
@@ -152,7 +152,7 @@ if __name__ == "__main__":
             "color": "1 0.2 0.2 1",
             "pos": [-1.5, 0],
             "target": [0, 0],
-            "z": 0.793  # G1站立高度
+            "z": 0.793  # G1站立高degrees
         },
         {
             "suffix": "_blue",
@@ -166,6 +166,6 @@ if __name__ == "__main__":
     assemble_battle_scene(
         robot_xml="g1_29dof_no_hand.xml",   # G1机器人文件
         arena_xml="scene.xml",              # 环境文件
-        output_xml="battle_g1.xml",          # 输出结果
+        output_xml="battle_g1.xml",          # Output result
         robots_config=battle_configs
     )

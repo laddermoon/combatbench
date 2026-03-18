@@ -1,12 +1,12 @@
 """
-碰撞检测模块 - 21DOF 版本
+Collision Detection Module - 21DOF Version
 
-负责检测机器人之间的碰撞和身体部位击中判定。
+Responsible for detecting collisions between robots and body part hit judgment.
 
-V1.0 规则：
-- 攻击部位：手、前臂、肘、上臂、脚、小腿、膝、大腿
-- 受击部位：头部、躯干（只有这两个部位受击才掉血）
-- 物理条件：相对速度 > 1.0 m/s（过滤慢速接触）
+V1.0 Rules:
+- Attacking parts: hand, forearm, elbow, upper arm, foot, shin, knee, thigh
+- Target parts: head, torso (only these parts deduct HP when hit)
+- Physical condition: relative velocity > 1.0 m/s (filters slow contact)
 """
 
 import numpy as np
@@ -14,15 +14,15 @@ import mujoco
 
 class CollisionDetector:
     """
-    碰撞检测器
+    Collision Detector
     """
 
-    # 攻击部位
+    # Attacking parts
     ATTACK_PARTS = {
         'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'
     }
 
-    # 受击部位
+    # Target parts
     DAMAGE_TARGET_PARTS = {
         'head', 'torso', 'waist_upper', 'waist_lower', 'pelvis', 'butt'
     }
@@ -36,7 +36,7 @@ class CollisionDetector:
         
         name_lower = geom_name.lower()
         
-        # 移除 _red / _blue 等后缀，获取基础名称
+        # Remove suffixes like _red / _blue to get base name
         base_name = name_lower
         for suffix in ['_red', '_blue', '_a', '_b']:
             if base_name.endswith(suffix):
@@ -74,11 +74,11 @@ class CollisionDetector:
         data = physics.data
         model = physics.model
 
-        # 遍历所有接触点
+        # Iterate through all contact points
         for i in range(data.ncon):
             contact = data.contact[i]
             
-            # 获取接触的两个 geom
+            # Get the two contacted geoms
             geom1_id = contact.geom1
             geom2_id = contact.geom2
 
@@ -91,40 +91,40 @@ class CollisionDetector:
             robot_a_suffix = '_a' if robot_a.robot_id == 'robot_a' else '_red'
             robot_b_suffix = '_b' if robot_b.robot_id == 'robot_b' else '_blue'
 
-            # 判定属于哪个机器人
+            # Determine which robot it belongs to
             is_geom1_a = geom1_name.endswith(robot_a_suffix)
             is_geom1_b = geom1_name.endswith(robot_b_suffix)
             is_geom2_a = geom2_name.endswith(robot_a_suffix)
             is_geom2_b = geom2_name.endswith(robot_b_suffix)
 
-            # 只关心两个机器人之间的碰撞
+            # Only care about collisions between the two robots
             if (is_geom1_a and is_geom2_b) or (is_geom1_b and is_geom2_a):
                 cat1 = self.get_part_category(geom1_name)
                 cat2 = self.get_part_category(geom2_name)
 
-                # 获取接触点相对速度
+                # Get relative velocity at contact point
                 cvel = np.zeros(6)
                 mujoco.mj_contactVelocity(model, data, i, cvel)
-                rel_speed = np.linalg.norm(cvel[:3]) # 平移相对速度
+                rel_speed = np.linalg.norm(cvel[:3]) # Translational relative velocity
 
                 if rel_speed < self.velocity_threshold:
                     continue
 
-                # 判定谁打谁
+                # Determine who hit whom
                 if is_geom1_a and is_geom2_b:
-                    # A 碰 B
+                    # A hits B
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
                         collisions.append({'attacker': 'robot_a', 'defender': 'robot_b', 'hit_part': cat2, 'velocity': rel_speed})
                     if cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
                         collisions.append({'attacker': 'robot_b', 'defender': 'robot_a', 'hit_part': cat1, 'velocity': rel_speed})
                 elif is_geom1_b and is_geom2_a:
-                    # B 碰 A
+                    # B hits A
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
                         collisions.append({'attacker': 'robot_b', 'defender': 'robot_a', 'hit_part': cat2, 'velocity': rel_speed})
                     if cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
                         collisions.append({'attacker': 'robot_a', 'defender': 'robot_b', 'hit_part': cat1, 'velocity': rel_speed})
 
-        # 去重（同一次物理step中，同一个部位可能产生多个接触点）
+        # Deduplicate (multiple contact points may occur on the same part in one physics step)
         unique_collisions = []
         seen = set()
         for c in collisions:

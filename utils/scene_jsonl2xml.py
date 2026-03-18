@@ -45,38 +45,38 @@ def generate_mujoco_xml(jsonl_path, output_xml_path):
                     if tex_name not in assets:
                         assets[tex_name] = texture_path
                 
-                # 1. 计算几何中心
+                # 1. Calculate geometric center
                 center = [sum(x)/4 for x in zip(*corners)]
                 
-                # 2. 确定平面尺寸 (假设 corners 是矩形)
+                # 2. Determine plane dimensions (assuming corners form a rectangle)
                 edge1 = sub(corners[1], corners[0])
                 edge2 = sub(corners[3], corners[0])
                 size_x = norm(edge1) / 2.0
                 size_y = norm(edge2) / 2.0
 
-                # 3. 构造稳定的局部坐标系 (强制文字正立)
-                # 默认让 Y 轴始终向上 [0, 0, 1]，除非它是地面/天花板
-                if abs(center[0]) < 0.01 and abs(center[1]) < 0.01: # 地面或天花板
+                # 3. Construct stable local coordinate system (force text upright)
+                # Default Y axis always points up [0, 0, 1]，Unless it is floor/ceiling
+                if abs(center[0]) < 0.01 and abs(center[1]) < 0.01: # Floor or ceiling
                     X_local = [1, 0, 0]
                     Y_local = [0, 1, 0]
-                else: # 墙面
-                    # 让 Y 轴始终垂直向上
+                else: # Wall
+                    # Make Y axis always vertical up
                     Y_local = [0, 0, 1]
-                    # X 轴则是在水平面上与墙平行的向量
-                    # 通过法线与向上向量叉乘得到
+                    # X axis is the vector parallel to wall on horizontal plane
+                    # Obtained by cross product of normal and up vector
                     raw_N = normalize(cross(edge1, edge2))
                     X_local = normalize(cross(Y_local, raw_N))
                 
-                # 4. 法线方向校准 (指向场景中心)
+                # 4. Normal direction calibration (pointing to scene center)
                 N_final = cross(X_local, Y_local)
                 to_center = normalize(sub([0, 0, 0], center))
                 
-                # 如果法线背离中心，则水平翻转 X 轴（这会同时翻转法线，但文字会水平镜像）
-                # 为了保持文字不镜像且法线正确，我们翻转 X 的同时也翻转 N 的逻辑定义
+                # If normal faces away from center, horizontally flip X axis (flips normal but text mirrors horizontally)
+                # To keep text unmirrored and normal correct, we flip logical definition of N when flipping X
                 if dot(N_final, to_center) < 0:
                     X_local = mul(X_local, -1)
                 
-                # 特殊处理地面的法线必须向上
+                # Special handling for floor normal must point up
                 if abs(center[2]) < 0.01:
                     X_local = [1, 0, 0]
                     Y_local = [0, 1, 0]
@@ -105,7 +105,7 @@ def generate_mujoco_xml(jsonl_path, output_xml_path):
                     Y_cam = cross(Z_cam, X_cam)
                 cameras.append({"name": name, "pos": pos, "xyaxes": X_cam + Y_cam})
 
-    # --- XML 组装 ---
+    # --- XML assembly ---
     xml_output = [
         '<mujoco model="Laddermoon_Arena">',
         '    <visual>',

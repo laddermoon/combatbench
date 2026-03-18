@@ -1,7 +1,7 @@
 """
-物理引擎封装
+Physics Engine Wrapper
 
-提供 MuJoCo 物理仿真的基础功能。
+Provides basic functions for MuJoCo physics simulation.
 """
 
 import mujoco
@@ -10,31 +10,31 @@ import numpy as np
 
 class PhysicsEngine:
     """
-    MuJoCo 物理引擎封装
+    MuJoCo Physics Engine Wrapper
 
-    负责管理物理仿真的生命周期和配置。
+    Responsible for managing the lifecycle and configuration of physics simulation.
     """
 
     def __init__(self, gui=True, dt=0.002, arena_xml=None):
         """
-        初始化物理引擎
+        Initialize physics engine
 
         Args:
-            gui: 是否显示 GUI
-            dt: 物理步长时间 (秒)，默认 0.002 (500Hz)
-            arena_xml: 八角笼 XML 文件路径
+            gui: Whether to display GUI
+            dt: Physics step time (seconds)，default 0.002 (500Hz)
+            arena_xml: Arena XML file path
         """
         self.dt = dt
         self.gui = gui
         self.arena_loaded = False
 
-        # 从 XML 加载模型
+        # Load model from XML
         if arena_xml:
             self.model = mujoco.MjSpec.from_file(arena_xml).compile()
             self.arena_loaded = True
             print(f"PhysicsEngine: Arena loaded from {arena_xml}")
         else:
-            # 创建默认地面
+            # 创建default地面
             spec = mujoco.MjSpec()
             spec.worldbody.add('geom', type='plane', size=[20, 20, 0.1],
                                rgba=[0.8, 0.9, 0.8, 1])
@@ -45,10 +45,10 @@ class PhysicsEngine:
             self.model = spec.compile()
             print("PhysicsEngine: Using default ground plane")
 
-        # 创建数据对象
+        # Create data object
         self.data = mujoco.MjData(self.model)
 
-        # GUI 模式
+        # GUI mode
         if gui:
             self.viewer = mujoco.viewer.launch_passive(
                 self.model, self.data
@@ -61,7 +61,7 @@ class PhysicsEngine:
 
     def step(self):
         """
-        执行一步物理仿真
+        Execute one physics step
         """
         mujoco.mj_step(self.model, self.data)
         if self.viewer:
@@ -69,16 +69,16 @@ class PhysicsEngine:
 
     def reset(self):
         """
-        重置物理引擎状态
+        Reset physics engine state
 
-        注意：这不会重置已加载的物体，只是重置物理状态
+        Note: This does not reset loaded objects, only the physics state
         """
-        # MuJoCo 需要重新创建 MjData 来完全重置
+        # MuJoCo requires recreating MjData to fully reset
         self.data = mujoco.MjData(self.model)
 
     def close(self):
         """
-        关闭物理引擎
+        Close physics engine
         """
         if self.viewer:
             del self.viewer
@@ -87,36 +87,36 @@ class PhysicsEngine:
 
     def get_contact_points(self, body_a, body_b):
         """
-        获取两个 body 之间的接触点
+        Get contact points between two bodies
 
         Args:
-            body_a: 第一个 body 的索引
-            body_b: 第二个 body 的索引
+            body_a: Index of the first body
+            body_b: Index of the second body
 
         Returns:
-            contacts: 接触点列表，每个元素包含 (geom1, geom2, position, normal, force)
+            contacts: List of contact points, each element contains (geom1, geom2, position, normal, force)
         """
         contacts = []
 
-        # 遍历所有接触点
+        # Iterate through all contact points
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
             geom1 = contact.geom1
             geom2 = contact.geom2
 
-            # 获取 geom 对应的 body
+            # Get body corresponding to geom
             body1 = self.model.geom_bodyid[geom1]
             body2 = self.model.geom_bodyid[geom2]
 
-            # 检查是否是目标 body 之间的接触
+            # Check if contact is between target bodies
             if (body1 == body_a and body2 == body_b) or \
                (body1 == body_b and body2 == body_a):
-                # 获取接触位置
+                # Get contact position
                 contact_pos = self.data.contact[i].pos
                 contact_normal = self.data.contact[i].frame
 
-                # 获取接触力 (简化版本，实际需要更复杂的计算)
-                # MuJoCo 的接触力计算比较复杂，这里返回位置信息
+                # Get contact force (simplified version, actual requires complex calculation)
+                # MuJoCo contact force calculation is complex, returning position info here
                 contacts.append({
                     'geom_a': geom1,
                     'geom_b': geom2,

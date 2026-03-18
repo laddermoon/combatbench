@@ -32,7 +32,7 @@ class HumanoidRobot:
         self.color = color
         
         self.suffix = '_a' if self.robot_id == 'robot_a' else '_b'
-        self.suffix = '_red' if self.robot_id == 'robot_a' else '_blue' # battle_v1.xml使用的是 _red 和 _blue
+        self.suffix = '_red' if self.robot_id == 'robot_a' else '_blue' # battle_v1.xmluses _red and _blue
 
         self._joint_indices = self._get_joint_indices()
 
@@ -204,44 +204,44 @@ class HumanoidRobot:
     def get_observation(self, opponent_robot=None, opponent_health=None, self_health=None):
         obs_list = []
         
-        # ========== 模块一：本体感知 (42维) ==========
+        # ========== Module 1: Proprioception (42 dims) ==========
         joint_states = self.get_joint_states()
-        obs_list.append(joint_states['positions'])   # 21 维
-        obs_list.append(joint_states['velocities'])  # 21 维
+        obs_list.append(joint_states['positions'])   # 21 dims
+        obs_list.append(joint_states['velocities'])  # 21 dims
 
-        # ========== 模块二：全局状态 (13维) ==========
+        # ========== Module 2: Root State (13 dims) ==========
         torso_state = self.get_torso_state()
         position = torso_state['position']
         orientation_quat = torso_state['orientation']  # [w, x, y, z]
 
-        obs_list.append([position[2]])  # 1维: Z 轴高度
+        obs_list.append([position[2]])  # 1dims: Z axis height
 
-        # 6维: 局部朝向
+        # 6dims: Local orientation
         from scipy.spatial.transform import Rotation as R
         rotation = R.from_quat([orientation_quat[1], orientation_quat[2], orientation_quat[3], orientation_quat[0]])
         rot_matrix = rotation.as_matrix()
         local_orientation = np.concatenate([rot_matrix[:, 0], rot_matrix[:, 1]])
         obs_list.append(local_orientation)
 
-        # 6维: 运动速度
+        # 6dims: Movement velocity
         obs_list.append(torso_state['linear_velocity'])
         obs_list.append(torso_state['angular_velocity'])
 
-        # ========== 模块三：触觉力反馈 (8维) ==========
+        # ========== Module 3: Tactile & Force Feedback (8 dims) ==========
         feet_contact = self.get_feet_contact()
-        obs_list.append([float(feet_contact['left_foot']), float(feet_contact['right_foot'])]) # 2维
-        obs_list.append(self.get_external_forces())  # 6维
+        obs_list.append([float(feet_contact['left_foot']), float(feet_contact['right_foot'])]) # 2dims
+        obs_list.append(self.get_external_forces())  # 6dims
 
-        # ========== 模块四：对手观测 (64维) ==========
+        # ========== Module 4: Opponent Observation (64 dims) ==========
         if opponent_robot is not None:
             opponent_torso = opponent_robot.get_torso_state()
 
-            # 10维: 基础位姿
+            # 10dims: Base pose
             obs_list.append(opponent_torso['position'] - torso_state['position'])
             obs_list.append(opponent_torso['linear_velocity'] - torso_state['linear_velocity'])
             obs_list.append(opponent_torso['orientation'])
 
-            # 27维: 关键点位置
+            # 27dims: Keypoint positions
             opponent_keypoints = opponent_robot.get_keypoint_positions()
             keypoint_pos = []
             for key in ['head', 'right_hand', 'left_hand', 'right_elbow', 'left_elbow', 'right_knee', 'left_knee', 'right_foot', 'left_foot']:
@@ -250,7 +250,7 @@ class HumanoidRobot:
                 keypoint_pos.append(local_pos)
             obs_list.append(np.concatenate(keypoint_pos))
 
-            # 27维: 关键点速度
+            # 27dims: Keypoint velocities
             opponent_keyvels = opponent_robot.get_keypoint_velocities()
             keypoint_vel = []
             for key in ['head', 'right_hand', 'left_hand', 'right_elbow', 'left_elbow', 'right_knee', 'left_knee', 'right_foot', 'left_foot']:

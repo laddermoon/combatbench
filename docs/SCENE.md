@@ -1,46 +1,51 @@
-# 场景规范
+# Scene Specification
 
-## 坐标规范
-地面中心点的坐标为0，0，0
-Z轴正方向为向上。
-X轴正方向为向东。
-Y轴正方向为向南。
+## 1. Coordinate System
+- Ground center point: `(0, 0, 0)`
+- **Z-axis:** Positive direction is upwards.
+- **X-axis:** Positive direction is East.
+- **Y-axis:** Positive direction is South.
 
-## 墙面、地面、天花板规范
-使用PLANE。
-定义方式： 四个角的x,y,z + 贴图路径， 定义的是内表面。
-自动计算另一面的位置，要保证让内表面面更接近 （0，0，1） 
+## 2. Walls, Floor, and Ceiling
+- Constructed using MuJoCo `plane` geoms.
+- **Definition:** Defined by the `x,y,z` coordinates of four corners along with the texture path. This defines the inner surface.
+- The external surface and positioning are calculated automatically to ensure the inner surface normals point inward.
 
-## 帖图规范
-当要用某一张图片覆盖在某一个平面时，需要的做法是，只用一张图片（而不是重复拼接），覆盖完整平面，并且保持图片完整（不剪裁），可以缩放，可以比例变形。
+## 3. Texture Mapping
+- When mapping an image onto a plane, a single image is stretched to cover the entire plane. 
+- Images are not tiled or cropped; they are scaled to fit the plane entirely.
 
+## 4. Camera Specification
+- Except for top-down/bottom-up cameras, all cameras only pitch along a single horizontal axis.
+- Standard orientation is landscape, with a resolution of `640x480`.
+- Cameras are defined by two parameters:
+  1. Position `(x, y, z)`.
+  2. Target Look-At point `(x, y, z)`.
 
-## 相机规范
-除了朝上朝下的相机，其余相机只沿一个水平轴做俯仰。
-相机画面一律横屏，分辨率640*480
-相机用两个参数定义：
-1. 所在位置（x,y,z）。
-2. 看向位置(x,y,z)。
+## 5. Scene Elements JSONL Definition
+The arena is programmatically built from a `scene_elements.jsonl` file. 
 
+Example definitions:
 
-## 使用JSONL文件定义各个元素
-示例如下
-{"type": "plane", "name": "地面", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, 3.05, 0], [-3.05, 3.05, 0]], "texture": "textures/floor.png"}
-{"type": "plane", "name": "天花板", "corners": [[-3.05, -3.05, 6.10], [3.05, -3.05, 6.10], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/ceiling.png"}
-{"type": "plane", "name": "南墙", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, -3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
-{"type": "plane", "name": "北墙", "corners": [[-3.05, 3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/wall.png"}
-{"type": "plane", "name": "西墙", "corners": [[-3.05, -3.05, 0], [-3.05, 3.05, 0], [-3.05, 3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
-{"type": "plane", "name": "东墙", "corners": [[3.05, -3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
-{"type": "light", "name": "西南角灯", "position": [-3, -3, 5]}
-{"type": "light", "name": "东南角灯", "position": [3, -3, 5]}
-{"type": "light", "name": "西北角灯", "position": [-3, 3, 5]}
-{"type": "light", "name": "东北角灯", "position": [3, 3, 5]}
-{"type": "camera", "name": "西南角摄像机", "position": [-3, -3, 4], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "东南角摄像机", "position": [3, -3, 4], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "西北角摄像机", "position": [-3, 3, 4], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "东北角摄像机", "position": [3, 3, 4], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "南墙摄像机", "position": [0, -3, 3], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "北墙摄像机", "position": [0, 3, 3], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "西墙摄像机", "position": [-3, 0, 3], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "东墙摄像机", "position": [3, 0, 3], "look_at": [0, 0, 0]}
-{"type": "camera", "name": "天花板摄像机", "position": [0, 0, 6], "look_at": [0, 0, 0]}
+```jsonl
+{"type": "plane", "name": "floor", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, 3.05, 0], [-3.05, 3.05, 0]], "texture": "textures/floor.png"}
+{"type": "plane", "name": "ceiling", "corners": [[-3.05, -3.05, 6.10], [3.05, -3.05, 6.10], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/ceiling.png"}
+{"type": "plane", "name": "south_wall", "corners": [[-3.05, -3.05, 0], [3.05, -3.05, 0], [3.05, -3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "north_wall", "corners": [[-3.05, 3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [-3.05, 3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "west_wall", "corners": [[-3.05, -3.05, 0], [-3.05, 3.05, 0], [-3.05, 3.05, 6.10], [-3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+{"type": "plane", "name": "east_wall", "corners": [[3.05, -3.05, 0], [3.05, 3.05, 0], [3.05, 3.05, 6.10], [3.05, -3.05, 6.10]], "texture": "textures/wall.png"}
+
+{"type": "light", "name": "sw_light", "position": [-3, -3, 5]}
+{"type": "light", "name": "se_light", "position": [3, -3, 5]}
+{"type": "light", "name": "nw_light", "position": [-3, 3, 5]}
+{"type": "light", "name": "ne_light", "position": [3, 3, 5]}
+
+{"type": "camera", "name": "sw_camera", "position": [-3, -3, 4], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "se_camera", "position": [3, -3, 4], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "nw_camera", "position": [-3, 3, 4], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "ne_camera", "position": [3, 3, 4], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "south_camera", "position": [0, -3, 3], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "north_camera", "position": [0, 3, 3], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "west_camera", "position": [-3, 0, 3], "look_at": [0, 0, 0]}
+{"type": "camera", "name": "east_camera", "position": [3, 0, 3], "look_at": [0, 0, 0]}
+```
