@@ -48,6 +48,9 @@ class HumanoidRobot(BaseRobot):
         self.suffix = '_red' if self.robot_id == 'robot_a' else '_blue' # battle_v1.xmluses _red and _blue
 
         self._joint_indices = self._get_joint_indices()
+        self._actuator_indices = self._get_actuator_indices()
+        self._joint_position_lower_limits, self._joint_position_upper_limits = self._get_joint_position_limits()
+        self._actuator_ctrl_lower_limits, self._actuator_ctrl_upper_limits = self._get_actuator_ctrl_limits()
 
     def _get_joint_indices(self):
         indices = {}
@@ -63,17 +66,64 @@ class HumanoidRobot(BaseRobot):
                 print(f"Warning: Exception getting joint {full_name}: {e}")
         return indices
 
+    def _get_actuator_indices(self):
+        indices = {}
+        for joint in self.CONTROLLED_JOINTS:
+            full_name = f"{joint}{self.suffix}"
+            try:
+                idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, full_name)
+                if idx >= 0:
+                    indices[joint] = idx
+                else:
+                    print(f"Warning: Actuator {full_name} not found")
+            except Exception as e:
+                print(f"Warning: Exception getting actuator {full_name}: {e}")
+        return indices
+
+    def _get_joint_position_limits(self):
+        lower = np.full(self.ACTION_DIM, -np.inf, dtype=np.float32)
+        upper = np.full(self.ACTION_DIM, np.inf, dtype=np.float32)
+        for index, joint in enumerate(self.CONTROLLED_JOINTS):
+            joint_idx = self._joint_indices.get(joint)
+            if joint_idx is None:
+                continue
+            if self.model.jnt_limited[joint_idx]:
+                lower[index] = float(self.model.jnt_range[joint_idx, 0])
+                upper[index] = float(self.model.jnt_range[joint_idx, 1])
+        return lower, upper
+
+    def _get_actuator_ctrl_limits(self):
+        lower = np.full(self.ACTION_DIM, -np.inf, dtype=np.float32)
+        upper = np.full(self.ACTION_DIM, np.inf, dtype=np.float32)
+        for index, joint in enumerate(self.CONTROLLED_JOINTS):
+            actuator_idx = self._actuator_indices.get(joint)
+            if actuator_idx is None:
+                continue
+            lower[index] = float(self.model.actuator_ctrlrange[actuator_idx, 0])
+            upper[index] = float(self.model.actuator_ctrlrange[actuator_idx, 1])
+        return lower, upper
+
+    def get_joint_position_limits(self):
+        return {
+            'lower': self._joint_position_lower_limits.copy(),
+            'upper': self._joint_position_upper_limits.copy(),
+        }
+
+    def get_actuator_ctrl_limits(self):
+        return {
+            'lower': self._actuator_ctrl_lower_limits.copy(),
+            'upper': self._actuator_ctrl_upper_limits.copy(),
+        }
+
     def apply_action(self, action):
-        action = np.clip(action, -1.0, 1.0)
+        action = np.asarray(action, dtype=np.float32).reshape(self.ACTION_DIM)
         action_idx = 0
         for joint in self.CONTROLLED_JOINTS:
             if joint in self._joint_indices:
-                joint_idx = self._joint_indices[joint]
-                motor_name = f"{joint}{self.suffix}"
-                motor_idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, motor_name)
-                if motor_idx >= 0:
+                motor_idx = self._actuator_indices.get(joint)
+                if motor_idx is not None:
                     ctrl_range = self.model.actuator_ctrlrange[motor_idx]
-                    target = action[action_idx] * ctrl_range[1]
+                    target = float(np.clip(action[action_idx], ctrl_range[0], ctrl_range[1]))
                     self.data.ctrl[motor_idx] = target
             action_idx += 1
 

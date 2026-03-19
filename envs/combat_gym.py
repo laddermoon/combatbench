@@ -59,6 +59,8 @@ class CombatGymEnv(gym.Env):
         )
 
         action_dim = HumanoidRobot.ACTION_DIM
+        self._joint_names = tuple(HumanoidRobot.CONTROLLED_JOINTS)
+        self._joint_name_to_index = {joint_name: idx for idx, joint_name in enumerate(self._joint_names)}
 
         self.action_space = spaces.Dict({
             "robot_a": spaces.Box(low=-1.0, high=1.0, shape=(action_dim,), dtype=np.float32),
@@ -83,6 +85,28 @@ class CombatGymEnv(gym.Env):
         self._initial_qvel = None
         self._initial_ctrl = None
         self.actions = {"robot_a": None, "robot_b": None}
+        self._default_controller_kp = np.full(action_dim, 4.0, dtype=np.float32)
+        self._default_controller_kd = np.full(action_dim, 0.4, dtype=np.float32)
+        self._controller_kp = self._default_controller_kp.copy()
+        self._controller_kd = self._default_controller_kd.copy()
+        self._default_controller_action_scale = {
+            "robot_a": np.ones(action_dim, dtype=np.float32),
+            "robot_b": np.ones(action_dim, dtype=np.float32),
+        }
+        self._controller_reference_positions = {
+            "robot_a": np.zeros(action_dim, dtype=np.float32),
+            "robot_b": np.zeros(action_dim, dtype=np.float32),
+        }
+        self._controller_action_scale = {
+            "robot_a": np.ones(action_dim, dtype=np.float32),
+            "robot_b": np.ones(action_dim, dtype=np.float32),
+        }
+        self._controller_target_positions = {
+            "robot_a": np.zeros(action_dim, dtype=np.float32),
+            "robot_b": np.zeros(action_dim, dtype=np.float32),
+        }
+        self._controller_joint_limits = None
+        self._controller_ctrl_limits = None
         self.video_buffer = []
         self.hit_records = {'robot_a': [], 'robot_b': []}
         
@@ -168,8 +192,189 @@ class CombatGymEnv(gym.Env):
             'winner': winner if (terminated or truncated) else None,
             'end_reason': end_reason,
             'physics_step_count': self.physics_step_count,
+            'controller_state': {
+                'robot_a': {
+                    'reference_positions': self._controller_reference_positions['robot_a'].copy(),
+                    'target_positions': self._controller_target_positions['robot_a'].copy(),
+                    'action_scale': self._controller_action_scale['robot_a'].copy(),
+                },
+                'robot_b': {
+                    'reference_positions': self._controller_reference_positions['robot_b'].copy(),
+                    'target_positions': self._controller_target_positions['robot_b'].copy(),
+                    'action_scale': self._controller_action_scale['robot_b'].copy(),
+                },
+            },
             'observation_slices': self.observation_slices,
         }
+
+    def _get_robot_lookup(self):
+        return {
+            'robot_a': self.robot_a,
+            'robot_b': self.robot_b,
+        }
+
+    def _default_action_scale_from_joint_limits(self, lower_limits, upper_limits):
+        default_scale = np.full(HumanoidRobot.ACTION_DIM, 0.25, dtype=np.float32)
+        finite_mask = np.isfinite(lower_limits) & np.isfinite(upper_limits)
+        default_scale[finite_mask] = 0.25 * (upper_limits[finite_mask] - lower_limits[finite_mask])
+        return np.maximum(default_scale, 1e-3).astype(np.float32)
+
+    def _initialize_controller_state(self):
+        if self.robot_a is None or self.robot_b is None:
+            return
+
+        self._controller_joint_limits = {}
+        self._controller_ctrl_limits = {}
+        for robot_id, robot in self._get_robot_lookup().items():
+            joint_limits = robot.get_joint_position_limits()
+            ctrl_limits = robot.get_actuator_ctrl_limits()
+            default_scale = self._default_action_scale_from_joint_limits(
+                joint_limits['lower'],
+                joint_limits['upper'],
+            )
+            self._controller_joint_limits[robot_id] = joint_limits
+            self._controller_ctrl_limits[robot_id] = ctrl_limits
+            self._default_controller_action_scale[robot_id] = default_scale.copy()
+
+    def _coerce_joint_vector(self, robot_id, joint_values, base_vector):
+        vector = base_vector.copy()
+        if joint_values is None:
+            return vector
+        if isinstance(joint_values, dict):
+            for joint_name, joint_value in joint_values.items():
+                joint_index = self._joint_name_to_index.get(joint_name)
+                if joint_index is None:
+                    continue
+                vector[joint_index] = float(joint_value)
+            return vector.astype(np.float32)
+        return np.asarray(joint_values, dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM)
+
+    def reset_controller_config(self):
+        self._initialize_controller_state()
+        self._controller_kp = self._default_controller_kp.copy()
+        self._controller_kd = self._default_controller_kd.copy()
+        for robot_id in ('robot_a', 'robot_b'):
+            self._controller_reference_positions[robot_id] = np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32)
+            self._controller_action_scale[robot_id] = self._default_controller_action_scale[robot_id].copy()
+            self._controller_target_positions[robot_id] = self._controller_reference_positions[robot_id].copy()
+
+    def set_controller_reference_positions(self, joint_positions):
+        self._initialize_controller_state()
+        for robot_id, joint_values in joint_positions.items():
+            if joint_values is None:
+                continue
+            reference_positions = self._coerce_joint_vector(
+                robot_id,
+                joint_values,
+                self._controller_reference_positions[robot_id],
+            )
+            joint_limits = self._controller_joint_limits[robot_id]
+            reference_positions = np.clip(
+                reference_positions,
+                joint_limits['lower'],
+                joint_limits['upper'],
+            ).astype(np.float32)
+            self._controller_reference_positions[robot_id] = reference_positions
+            self._controller_target_positions[robot_id] = reference_positions.copy()
+
+    def set_controller_action_scale(self, action_scales):
+        self._initialize_controller_state()
+        for robot_id, scale_values in action_scales.items():
+            if scale_values is None:
+                continue
+            action_scale = self._coerce_joint_vector(
+                robot_id,
+                scale_values,
+                self._controller_action_scale[robot_id],
+            )
+            self._controller_action_scale[robot_id] = np.maximum(action_scale, 0.0).astype(np.float32)
+
+    def _compute_target_positions(self, robot_id, residual_action):
+        joint_limits = self._controller_joint_limits[robot_id]
+        target_positions = self._controller_reference_positions[robot_id] + self._controller_action_scale[robot_id] * residual_action
+        target_positions = np.clip(
+            target_positions,
+            joint_limits['lower'],
+            joint_limits['upper'],
+        ).astype(np.float32)
+        self._controller_target_positions[robot_id] = target_positions
+        return target_positions
+
+    def _compute_torque_action(self, robot_id, target_positions):
+        robot = self._get_robot_lookup()[robot_id]
+        joint_states = robot.get_joint_states()
+        current_positions = joint_states['positions']
+        current_velocities = joint_states['velocities']
+        torque_action = self._controller_kp * (target_positions - current_positions) - self._controller_kd * current_velocities
+        ctrl_limits = self._controller_ctrl_limits[robot_id]
+        return np.clip(
+            torque_action,
+            ctrl_limits['lower'],
+            ctrl_limits['upper'],
+        ).astype(np.float32)
+
+    def _update_cached_actions(self, action_dict):
+        if action_dict is None:
+            return
+
+        if 'robot_a' in action_dict and action_dict['robot_a'] is not None:
+            self.actions['robot_a'] = np.clip(
+                np.asarray(action_dict['robot_a'], dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM),
+                -1.0,
+                1.0,
+            )
+        if 'robot_b' in action_dict and action_dict['robot_b'] is not None:
+            self.actions['robot_b'] = np.clip(
+                np.asarray(action_dict['robot_b'], dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM),
+                -1.0,
+                1.0,
+            )
+
+    def _apply_cached_actions(self):
+        self._initialize_controller_state()
+        if self.actions['robot_a'] is not None:
+            target_positions = self._compute_target_positions('robot_a', self.actions['robot_a'])
+            torque_action = self._compute_torque_action('robot_a', target_positions)
+            self.robot_a.apply_action(torque_action)
+        if self.actions['robot_b'] is not None:
+            target_positions = self._compute_target_positions('robot_b', self.actions['robot_b'])
+            torque_action = self._compute_torque_action('robot_b', target_positions)
+            self.robot_b.apply_action(torque_action)
+
+    def set_robot_joint_positions(self, joint_positions, update_controller_reference=True):
+        robot_lookup = {
+            'robot_a': self.robot_a,
+            'robot_b': self.robot_b,
+        }
+
+        for robot_id, joint_targets in joint_positions.items():
+            robot = robot_lookup.get(robot_id)
+            if robot is None or joint_targets is None:
+                continue
+
+            joint_limits = robot.get_joint_position_limits()
+
+            for joint_name, joint_value in joint_targets.items():
+                joint_id = robot._joint_indices.get(joint_name)
+                if joint_id is None:
+                    continue
+                joint_index = self._joint_name_to_index.get(joint_name)
+                if joint_index is not None:
+                    joint_value = float(
+                        np.clip(
+                            joint_value,
+                            joint_limits['lower'][joint_index],
+                            joint_limits['upper'][joint_index],
+                        )
+                    )
+                qpos_idx = self.physics.model.jnt_qposadr[joint_id]
+                qvel_idx = self.physics.model.jnt_dofadr[joint_id]
+                self.physics.data.qpos[qpos_idx] = float(joint_value)
+                self.physics.data.qvel[qvel_idx] = 0.0
+
+        mujoco.mj_forward(self.physics.model, self.physics.data)
+        if update_controller_reference:
+            self.set_controller_reference_positions(joint_positions)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -203,6 +408,8 @@ class CombatGymEnv(gym.Env):
         self._apply_initial_root_poses()
         self.physics.data.qvel[:] = 0.0
         self.physics.data.ctrl[:] = 0.0
+        self._initialize_controller_state()
+        self.reset_controller_config()
 
         self.score_calculator.reset()
         self.actions = {"robot_a": None, "robot_b": None}
@@ -230,21 +437,19 @@ class CombatGymEnv(gym.Env):
 
         return observation, info
 
-    def step(self, action_dict):
+    def step(self, action_dict=None, action_callback=None):
         self.hit_records = {'robot_a': [], 'robot_b': []}
-
-        if 'robot_a' in action_dict and action_dict['robot_a'] is not None:
-            self.actions['robot_a'] = action_dict['robot_a']
-        if 'robot_b' in action_dict and action_dict['robot_b'] is not None:
-            self.actions['robot_b'] = action_dict['robot_b']
-
-        if self.actions['robot_a'] is not None:
-            self.robot_a.apply_action(self.actions['robot_a'])
-        if self.actions['robot_b'] is not None:
-            self.robot_b.apply_action(self.actions['robot_b'])
+        self._update_cached_actions(action_dict)
+        if action_callback is None:
+            self._apply_cached_actions()
 
         all_collisions = []
         for i in range(self.action_steps):
+            if action_callback is not None:
+                callback_actions = action_callback(self, i)
+                self._update_cached_actions(callback_actions)
+                self._apply_cached_actions()
+
             self.physics.step()
             self.physics_step_count += 1
 
