@@ -4,15 +4,15 @@
 
 ## 下载
 
-您也可以从 [GitHub Releases](https://github.com/laddermoon/combatbench/releases) 下载最新版本的二进制文件。
+您可以直接从 GitHub 下载二进制文件，或使用下面的链接：
 
 ## 可用的二进制文件
 
 | 平台 | 二进制文件 | 下载链接 |
 |------|-----------|----------|
-| **Linux (amd64)** | `combat-submit-linux-amd64` | [下载](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-linux-amd64) |
-| **macOS (Intel)** | `combat-submit-darwin-amd64` | [下载](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-darwin-amd64) |
-| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [下载](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-windows-amd64.exe) |
+| **Linux (amd64)** | `combat-submit-linux-amd64` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64) |
+| **macOS (Intel)** | `combat-submit-darwin-amd64` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64) |
+| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-windows-amd64.exe) |
 
 ## 快速开始
 
@@ -20,11 +20,11 @@
 
 ```bash
 # Linux
-wget https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-linux-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64
 chmod +x combat-submit-linux-amd64
 
 # macOS (Intel)
-wget https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-darwin-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64
 chmod +x combat-submit-darwin-amd64
 
 # Windows

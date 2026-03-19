@@ -4,15 +4,15 @@ This directory contains pre-compiled binaries of the CombatBench submission tool
 
 ## Download
 
-You can also download the latest binaries from [GitHub Releases](https://github.com/laddermoon/combatbench/releases).
+You can download the binaries directly from GitHub or use the links below:
 
 ## Available Binaries
 
 | Platform | Binary | Download |
 |----------|--------|----------|
-| **Linux (amd64)** | `combat-submit-linux-amd64` | [Download](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-linux-amd64) |
-| **macOS (Intel)** | `combat-submit-darwin-amd64` | [Download](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-darwin-amd64) |
-| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [Download](https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-windows-amd64.exe) |
+| **Linux (amd64)** | `combat-submit-linux-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64) |
+| **macOS (Intel)** | `combat-submit-darwin-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64) |
+| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-windows-amd64.exe) |
 
 ## Quick Start
 
@@ -20,11 +20,11 @@ You can also download the latest binaries from [GitHub Releases](https://github.
 
 ```bash
 # Linux
-wget https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-linux-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64
 chmod +x combat-submit-linux-amd64
 
 # macOS (Intel)
-wget https://github.com/laddermoon/combatbench/releases/latest/download/combat-submit-darwin-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64
 chmod +x combat-submit-darwin-amd64
 
 # Windows
