@@ -339,3 +339,19 @@ python3 -m combatbench.baseline.sb3.evaluate \
 Validation passed. The formal self-play evaluation then achieved the goal cleanly: **5/5 deterministic episodes** lasted the full `200` control steps (`10.0s`) with `winner=draw` and `reason=Time limit reached (10.0s), draw`. Average episode length was exactly `200.0`, confirming that the standing controller + current learned policy now satisfy the `10秒不倒` requirement.
 
 **Next step:** Stop the now-obsolete background training process, commit the final promoted stand defaults and experiment log, and use this configuration as the new standing baseline for any later fine-tuning or transfer to fight training.
+
+## [2026-03-20 00:25] Started exporting a standing-success video with the direct env loop
+
+**Why:** The user asked for a qualitative success video. The repository already has a proven `run_without_policy.py` pattern that uses `CombatGymEnv(render_mode="rgb_array")` and `save_video()`, so the safest path is to reuse that rendering/export path with the verified standing model.
+
+**Command:**
+```bash
+# Run a one-off script that sets MUJOCO_GL=egl before imports,
+# loads stand_env_residual_smoke_v3/best_model.zip on CPU,
+# steps the stand environment deterministically, and saves an mp4.
+```
+
+**Result:**
+The one-off direct environment rollout succeeded. Using `stand_env_residual_smoke_v3/best_model.zip`, the deterministic stand episode lasted the full `200` control steps and ended with `Time limit reached (10.0s), draw`. The video was written to `combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/stand_success_10s.mp4` with `100` recorded frames. A follow-up OpenCV probe confirmed the file is readable and valid: `1280x720`, `10 FPS`, `100` frames, and the first frame decoded successfully.
+
+**Next step:** Commit the updated export log and provide the video path to the user for inspection.
