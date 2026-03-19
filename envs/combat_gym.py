@@ -440,15 +440,14 @@ class CombatGymEnv(gym.Env):
     def step(self, action_dict=None, action_callback=None):
         self.hit_records = {'robot_a': [], 'robot_b': []}
         self._update_cached_actions(action_dict)
-        if action_callback is None:
-            self._apply_cached_actions()
 
         all_collisions = []
         for i in range(self.action_steps):
             if action_callback is not None:
                 callback_actions = action_callback(self, i)
                 self._update_cached_actions(callback_actions)
-                self._apply_cached_actions()
+
+            self._apply_cached_actions()
 
             self.physics.step()
             self.physics_step_count += 1

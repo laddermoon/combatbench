@@ -196,3 +196,79 @@ python3 -m combatbench.baseline.sb3.validate_env
 The updated stand and fight wrappers both passed `validate_env.py` without crashes. The returned `info` now includes `controller_state`, and both phases stepped normally for the initial smoke rollout. A targeted direct-environment probe confirmed the control contract: with zero residuals, the target positions stayed exactly at the reference pose and actuator controls remained at zero; with saturated `+1` and `-1` residual actions, the reported target positions stayed inside the MuJoCo joint limits and the actual control values written to the actuators stayed inside the actuator `ctrlrange` (including clipping at `-1.0/1.0` when necessary).
 
 **Next step:** Use this refactored environment as the new base interface and launch a fresh stand-training run on top of it, rather than continuing from the older wrapper-side torque-conversion formulation.
+
+## [2026-03-19 23:32] Prepared a fresh stand smoke run on the refactored environment
+
+**Why:** The environment interface has changed in a meaningful way, so the next experiment should be a clean-from-scratch standing smoke run on the new base-env residual-position controller rather than a continuation of older wrapper-side torque runs.
+
+**Command:**
+```bash
+python3 -u -m combatbench.baseline.sb3.train \
+  --phase stand \
+  --timesteps 100000 \
+  --run-name stand_env_residual_smoke \
+  --device cpu \
+  --match-duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.5 \
+  --checkpoint-freq 20000 \
+  --eval-freq 10000 > combatbench/baseline/sb3/runs/stand_env_residual_smoke/train.log 2>&1
+```
+
+**Result:**
+Planned the new smoke run command and log path. The next step is to launch it and watch the first evaluation signal to make sure the new environment/controller stack trains normally.
+
+**Next step:** Start the background run, then inspect the live log until the first `Eval num_timesteps=` block appears.
+
+## [2026-03-19 23:36] Detected a control-semantics regression in the first fresh smoke run
+
+**Why:** The first fresh run on the refactored base environment trained much worse than the earlier residual-PD baseline, so the new control path needed to be checked before trusting the result.
+
+**Command:**
+```bash
+# Inspect stand_env_residual_smoke/train.log and compare the resulting rollout / eval metrics
+# against the previous residual-PD standing baseline.
+```
+
+**Result:**
+The first evaluation at `10k` timesteps was only `mean_ep_length=9` with `mean_reward=-1.25`, and even by `30k` timesteps the run had only improved to about `15` steps. That was far below the earlier wrapper-side residual-PD baseline, which strongly suggested a control-semantics regression rather than simple PPO variance. The root cause was that the new base environment only recomputed PD torques once per control step and then held that torque fixed over the whole interval, whereas the intended impedance behavior is to recompute torques at every MuJoCo physics substep.
+
+**Next step:** Restore per-substep PD recomputation inside `CombatGymEnv.step()`, re-run environment validation, and discard / replace the already-running smoke experiment that used the wrong controller semantics.
+
+## [2026-03-19 23:37] Restored per-substep PD recomputation in the base environment
+
+**Why:** Match the old successful stand wrapper semantics inside the refactored base environment so the internal controller is a true substep-level impedance controller instead of a held open-loop torque command.
+
+**Command:**
+```bash
+# Edit combatbench/envs/combat_gym.py and re-run python3 -m combatbench.baseline.sb3.validate_env
+```
+
+**Result:**
+`CombatGymEnv.step()` now reapplies the residual-position controller at every physics substep regardless of whether an explicit callback is used. After the fix, `validate_env.py` again showed the expected strong passive standing behavior: the stand smoke test opened with rewards around `1.438-1.442` for the first five control steps, which matches the previous healthy residual-PD baseline and confirms that the controller semantics are restored.
+
+**Next step:** Stop the earlier invalid smoke run and launch a fresh clean training run on the corrected base-environment controller.
+
+## [2026-03-19 23:39] Restarted stand smoke training on the corrected base-environment controller
+
+**Why:** The previous `stand_env_residual_smoke` run used the wrong held-torque semantics and should not be trusted. A clean rerun was needed after restoring per-substep PD recomputation.
+
+**Command:**
+```bash
+# Stop the previous stand_env_residual_smoke process and start:
+python3 -u -m combatbench.baseline.sb3.train \
+  --phase stand \
+  --timesteps 100000 \
+  --run-name stand_env_residual_smoke_v2 \
+  --device cpu \
+  --match-duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.5 \
+  --checkpoint-freq 20000 \
+  --eval-freq 10000 > combatbench/baseline/sb3/runs/stand_env_residual_smoke_v2/train.log 2>&1
+```
+
+**Result:**
+The corrected run immediately returned to the expected healthy range. Early rollout stats stabilized around `ep_len_mean≈32` and `ep_rew_mean≈32`. The first evaluation at `10k` timesteps reached `mean_ep_length=33` and `mean_reward=33.78`, which is consistent with the previously healthy residual-PD baseline and confirms that the base-environment controller refactor is now functionally aligned with the older successful stand setup.
+
+**Next step:** Let this corrected smoke run continue and monitor whether later evaluations move beyond the passive `~33`-step baseline instead of regressing back toward the invalid low-step behavior.
