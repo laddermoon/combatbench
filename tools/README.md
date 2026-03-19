@@ -10,9 +10,9 @@ You can download the binaries directly from GitHub or use the links below:
 
 | Platform | Binary | Download |
 |----------|--------|----------|
-| **Linux (amd64)** | `combat-submit-linux-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64) |
-| **macOS (Intel)** | `combat-submit-darwin-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64) |
-| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-windows-amd64.exe) |
+| **Linux (amd64)** | `combat-submit-linux-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64) |
+| **macOS (Intel)** | `combat-submit-darwin-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64) |
+| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-windows-amd64.exe) |
 
 ## Quick Start
 
@@ -20,11 +20,11 @@ You can download the binaries directly from GitHub or use the links below:
 
 ```bash
 # Linux
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-linux-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64
 chmod +x combat-submit-linux-amd64
 
 # macOS (Intel)
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/combatbench/tools/binaries/combat-submit-darwin-amd64
+wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64
 chmod +x combat-submit-darwin-amd64
 
 # Windows
