@@ -289,6 +289,19 @@ class CombatGymEnv(gym.Env):
             )
             self._controller_action_scale[robot_id] = np.maximum(action_scale, 0.0).astype(np.float32)
 
+    def set_controller_gains(self, kp=None, kd=None):
+        self._initialize_controller_state()
+        if kp is not None:
+            if np.isscalar(kp):
+                self._controller_kp = np.full(HumanoidRobot.ACTION_DIM, float(kp), dtype=np.float32)
+            else:
+                self._controller_kp = np.asarray(kp, dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM)
+        if kd is not None:
+            if np.isscalar(kd):
+                self._controller_kd = np.full(HumanoidRobot.ACTION_DIM, float(kd), dtype=np.float32)
+            else:
+                self._controller_kd = np.asarray(kd, dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM)
+
     def _compute_target_positions(self, robot_id, residual_action):
         joint_limits = self._controller_joint_limits[robot_id]
         target_positions = self._controller_reference_positions[robot_id] + self._controller_action_scale[robot_id] * residual_action

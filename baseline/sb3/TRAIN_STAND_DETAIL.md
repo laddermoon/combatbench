@@ -272,3 +272,33 @@ python3 -u -m combatbench.baseline.sb3.train \
 The corrected run immediately returned to the expected healthy range. Early rollout stats stabilized around `ep_len_mean≈32` and `ep_rew_mean≈32`. The first evaluation at `10k` timesteps reached `mean_ep_length=33` and `mean_reward=33.78`, which is consistent with the previously healthy residual-PD baseline and confirms that the base-environment controller refactor is now functionally aligned with the older successful stand setup.
 
 **Next step:** Let this corrected smoke run continue and monitor whether later evaluations move beyond the passive `~33`-step baseline instead of regressing back toward the invalid low-step behavior.
+
+## [2026-03-19 23:47] Identified the next bottleneck as fixed-controller softness
+
+**Why:** The corrected rerun was improving (`33 -> 36 -> 44` eval steps by `30k`) but remained far from the `200`-step / `10s` goal, so the next question was whether the remaining bottleneck was still the passive controller rather than PPO itself.
+
+**Command:**
+```bash
+# 1) Replay the current best_model with residual scale multipliers.
+# 2) Probe zero-action passive standing under different fixed Kp/Kd settings.
+```
+
+**Result:**
+Two useful signals emerged. First, the current best model performed best at about `0.8x` of the current residual action scale, slightly better than the existing `1.0x`. Second, the stronger signal came from the passive-controller sweep: the default `Kp=4.0, Kd=0.4` baseline stood for only about `33` steps with zero action, while `Kp=8.0, Kd=0.4` raised the passive baseline to **`53` steps**. This strongly suggests the stand problem is still too "soft" at the low-level controller, and that increasing fixed stiffness is a higher-value next move than simply waiting for more PPO updates on the old controller.
+
+**Next step:** Promote fixed stand gains and the slightly smaller residual scale into the actual stand environment defaults, then launch a fresh training run on top of the improved passive stability basin.
+
+## [2026-03-19 23:49] Tuned the stand-mode fixed controller defaults for the next run
+
+**Why:** Encode the promising controller settings directly into the stand environment so that the next smoke run starts from a better passive basin instead of relying on ad hoc overrides.
+
+**Command:**
+```bash
+# Edit combatbench/envs/combat_gym.py and combatbench/baseline/sb3/selfplay_env.py,
+# then re-run validate_env.py plus a zero-action stand rollout.
+```
+
+**Result:**
+Added a public `set_controller_gains()` interface to `CombatGymEnv`, and switched the stand wrapper to fixed `Kp=8.0`, `Kd=0.4`, with a `0.8x` residual action-scale multiplier. `validate_env.py` still passed, and the direct zero-action stand rollout now lasts **`53` control steps**, up from the old `33`-step passive baseline.
+
+**Next step:** Commit these controller-tuning changes, stop the older weaker-controller training run, and start a new smoke run on the stronger stand defaults.

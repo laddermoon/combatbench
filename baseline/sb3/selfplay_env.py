@@ -23,6 +23,9 @@ STAND_REFERENCE_POSE = {
     "ankle_x_right": 0.05406650212513886,
     "ankle_x_left": 0.002856759542333928,
 }
+STAND_PD_KP = 8.0
+STAND_PD_KD = 0.4
+STAND_ACTION_SCALE_MULTIPLIER = 0.8
 STAND_POLICY_ACTION_SCALE = {
     "abdomen_z": 0.0224,
     "abdomen_y": 0.0336,
@@ -75,7 +78,7 @@ class SymmetricSelfPlayEnv(gym.Env):
         for joint_name, joint_value in STAND_REFERENCE_POSE.items():
             self._stand_reference_action[self._joint_name_to_index[joint_name]] = float(joint_value)
         for joint_name, scale in STAND_POLICY_ACTION_SCALE.items():
-            self._stand_action_scale[self._joint_name_to_index[joint_name]] = float(scale)
+            self._stand_action_scale[self._joint_name_to_index[joint_name]] = float(scale) * STAND_ACTION_SCALE_MULTIPLIER
         self._opponent_slice = HumanoidRobot.OBSERVATION_SLICES["opponent_relative_position"]
         self._stand_reset_pose = {
             "robot_a": dict(STAND_REFERENCE_POSE),
@@ -135,6 +138,7 @@ class SymmetricSelfPlayEnv(gym.Env):
         if self._stand_mode:
             self.env.set_robot_joint_positions(self._stand_reset_pose)
             self.env.set_controller_reference_positions(self._stand_reset_pose)
+            self.env.set_controller_gains(kp=STAND_PD_KP, kd=STAND_PD_KD)
             self.env.set_controller_action_scale(
                 {
                     "robot_a": self._stand_action_scale,
