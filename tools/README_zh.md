@@ -51,11 +51,7 @@ export COMBAT_API_KEY="your-api-key-here"
 
 ## 文档
 
-完整的使用说明请参阅 [用户指南](../../submisiontool/USER_GUIDE_EN.md) 或 [中文指南](../../submisiontool/USER_GUIDE_CN.md)。
-
-## 源代码
-
-提交工具的源代码位于：[github.com/laddermoon/combatbench/tree/main/submisiontool](https://github.com/laddermoon/combatbench/tree/main/submisiontool)
+完整的使用说明请参阅 [User Guide](../docs/SUBMISSION_GUIDE.md) or [中文指南](../docs/SUBMISSION_GUIDE_zh.md)
 
 ## 安全性
 

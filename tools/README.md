@@ -51,11 +51,7 @@ export COMBAT_API_KEY="your-api-key-here"
 
 ## Documentation
 
-For complete usage instructions, see the [User Guide](../../submisiontool/USER_GUIDE_EN.md) or [中文指南](../../submisiontool/USER_GUIDE_CN.md).
-
-## Source Code
-
-The source code for the submission tool is available at: [github.com/laddermoon/combatbench/tree/main/submisiontool](https://github.com/laddermoon/combatbench/tree/main/submisiontool)
+For complete usage instructions, see the [User Guide](../docs/SUBMISSION_GUIDE.md) or [中文指南](../docs/SUBMISSION_GUIDE_zh.md).
 
 ## Security
 
