@@ -302,3 +302,40 @@ Two useful signals emerged. First, the current best model performed best at abou
 Added a public `set_controller_gains()` interface to `CombatGymEnv`, and switched the stand wrapper to fixed `Kp=8.0`, `Kd=0.4`, with a `0.8x` residual action-scale multiplier. `validate_env.py` still passed, and the direct zero-action stand rollout now lasts **`53` control steps**, up from the old `33`-step passive baseline.
 
 **Next step:** Commit these controller-tuning changes, stop the older weaker-controller training run, and start a new smoke run on the stronger stand defaults.
+
+## [2026-03-19 23:58] Found a controller setting that reaches the full 10-second horizon
+
+**Why:** Even after the `v3` run improved to `57` steps at `10k` and `63` steps at `20k`, the `200`-step target was still far away. The next step was to check whether a stronger fixed controller would let the already-learned policy exploit a much larger stability basin.
+
+**Command:**
+```bash
+# 1) Sweep passive zero-action standing over stronger Kp/Kd values.
+# 2) Replay stand_env_residual_smoke_v3/best_model.zip under candidate gains and action scales.
+```
+
+**Result:**
+The passive sweep showed further headroom: `Kp=16.0, Kd=0.2` reached `64` zero-action steps, versus `53` for the then-current defaults. More importantly, replaying the current `stand_env_residual_smoke_v3` best model under stronger fixed gains produced a breakthrough: both `Kp=12.0, Kd=0.2` and `Kp=16.0, Kd=0.2` reached the full **`200` control-step horizon** over repeated deterministic episodes. To keep the controller less aggressive while preserving the success, the stand defaults were promoted to **`Kp=12.0`, `Kd=0.2`** with the existing `0.8x` residual action-scale multiplier.
+
+**Next step:** Re-run environment validation and formally evaluate the current best model under the promoted stand defaults to confirm stable `10s` standing across multiple episodes.
+
+## [2026-03-20 00:00] Verified 10-second standing with the promoted stand controller defaults
+
+**Why:** Confirm that the promoted default controller configuration is not just a one-off probe result, but actually solves the user's target task when used through the normal evaluation entrypoint.
+
+**Command:**
+```bash
+python3 -m combatbench.baseline.sb3.validate_env
+
+python3 -m combatbench.baseline.sb3.evaluate \
+  --mode selfplay \
+  --model /data1/mono/things/combatbench/combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/best_model/best_model.zip \
+  --phase stand \
+  --episodes 5 \
+  --duration 10 \
+  --control-frequency 20
+```
+
+**Result:**
+Validation passed. The formal self-play evaluation then achieved the goal cleanly: **5/5 deterministic episodes** lasted the full `200` control steps (`10.0s`) with `winner=draw` and `reason=Time limit reached (10.0s), draw`. Average episode length was exactly `200.0`, confirming that the standing controller + current learned policy now satisfy the `10秒不倒` requirement.
+
+**Next step:** Stop the now-obsolete background training process, commit the final promoted stand defaults and experiment log, and use this configuration as the new standing baseline for any later fine-tuning or transfer to fight training.
