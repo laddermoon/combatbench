@@ -320,8 +320,6 @@ class CombatGymEnv(gym.Env):
 
     def get_broadcast_view(self):
         import mujoco
-        import os
-        os.environ['MUJOCO_GL'] = 'egl'
         try:
             pos_a = self.robot_a.get_position()
             pos_b = self.robot_b.get_position()
