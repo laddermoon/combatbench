@@ -13,6 +13,22 @@ class HumanoidRobot(BaseRobot):
     """
 
     ACTION_DIM = 21
+    OBSERVATION_DIM = 127
+    OBSERVATION_SLICES = {
+        'joint_positions': slice(0, 21),
+        'joint_velocities': slice(21, 42),
+        'height': slice(42, 43),
+        'local_orientation': slice(43, 49),
+        'linear_velocity': slice(49, 52),
+        'angular_velocity': slice(52, 55),
+        'feet_contact': slice(55, 57),
+        'external_forces': slice(57, 63),
+        'opponent_relative_position': slice(63, 66),
+        'opponent_relative_velocity': slice(66, 69),
+        'opponent_orientation': slice(69, 73),
+        'opponent_keypoint_positions': slice(73, 100),
+        'opponent_keypoint_velocities': slice(100, 127),
+    }
 
     CONTROLLED_JOINTS = [
         'abdomen_z', 'abdomen_y', 'abdomen_x',
@@ -68,8 +84,19 @@ class HumanoidRobot(BaseRobot):
             return self.data.xpos[idx].copy()
         return np.zeros(3)
 
+    def _get_rotation_matrix(self, orientation_quat):
+        from scipy.spatial.transform import Rotation as R
+
+        rotation = R.from_quat([
+            orientation_quat[1],
+            orientation_quat[2],
+            orientation_quat[3],
+            orientation_quat[0],
+        ])
+        return rotation.as_matrix()
+
     def get_torso_state(self):
-        body_name = f"pelvis{self.suffix}"
+        body_name = f"torso{self.suffix}"
         idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         
         if idx >= 0:
@@ -88,6 +115,24 @@ class HumanoidRobot(BaseRobot):
             'orientation': np.array([1.0, 0.0, 0.0, 0.0]),
             'linear_velocity': np.zeros(3),
             'angular_velocity': np.zeros(3)
+        }
+
+    def get_state_summary(self):
+        torso_state = self.get_torso_state()
+        rotation_matrix = self._get_rotation_matrix(torso_state['orientation'])
+        return {
+            'position': self.get_position(),
+            'torso_position': torso_state['position'],
+            'orientation': torso_state['orientation'],
+            'rotation_matrix': rotation_matrix.astype(np.float32),
+            'forward_vector': rotation_matrix[:, 0].astype(np.float32),
+            'up_vector': rotation_matrix[:, 2].astype(np.float32),
+            'uprightness': float(rotation_matrix[2, 2]),
+            'linear_velocity': torso_state['linear_velocity'],
+            'angular_velocity': torso_state['angular_velocity'],
+            'joint_states': self.get_joint_states(),
+            'feet_contact': self.get_feet_contact(),
+            'external_forces': self.get_external_forces(),
         }
 
     def get_joint_states(self):
@@ -214,9 +259,7 @@ class HumanoidRobot(BaseRobot):
         obs_list.append([position[2]])  # 1dims: Z axis height
 
         # 6dims: Local orientation
-        from scipy.spatial.transform import Rotation as R
-        rotation = R.from_quat([orientation_quat[1], orientation_quat[2], orientation_quat[3], orientation_quat[0]])
-        rot_matrix = rotation.as_matrix()
+        rot_matrix = self._get_rotation_matrix(orientation_quat)
         local_orientation = np.concatenate([rot_matrix[:, 0], rot_matrix[:, 1]])
         obs_list.append(local_orientation)
 

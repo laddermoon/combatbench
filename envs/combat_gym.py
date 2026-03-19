@@ -1,5 +1,6 @@
 import numpy as np
 import gymnasium as gym
+import mujoco
 from gymnasium import spaces
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ class CombatGymEnv(gym.Env):
     Single round Episode (30s)
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
+    DEFAULT_ROOT_HEIGHT = 1.282
 
     def __init__(
         self,
@@ -41,8 +43,8 @@ class CombatGymEnv(gym.Env):
         self.control_frequency = control_frequency
         self.video_sample_frequency = video_sample_frequency
 
-        self.action_steps = int(self.sim_frequency / control_frequency)
-        self.video_sample_steps = int(self.sim_frequency / video_sample_frequency)
+        self.action_steps = max(1, int(round(self.sim_frequency / control_frequency)))
+        self.video_sample_steps = max(1, int(round(self.sim_frequency / video_sample_frequency)))
 
         if arena_xml is None:
             arena_xml = os.path.join(
@@ -69,12 +71,17 @@ class CombatGymEnv(gym.Env):
             "robot_a_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
             "robot_b_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
         })
+        self.observation_slices = HumanoidRobot.OBSERVATION_SLICES
 
         self.collision_detector = CollisionDetector(velocity_threshold=1.0)
         self.score_calculator = ScoreCalculator()
 
         self.robot_a = None
         self.robot_b = None
+        self._robots_created = False
+        self._initial_qpos = None
+        self._initial_qvel = None
+        self._initial_ctrl = None
         self.actions = {"robot_a": None, "robot_b": None}
         self.video_buffer = []
         self.hit_records = {'robot_a': [], 'robot_b': []}
@@ -87,10 +94,90 @@ class CombatGymEnv(gym.Env):
         self._prev_cam_pos = None
         self._prev_lookat = None
 
+    def _get_root_pose_targets(self):
+        return {
+            'robot_a': {
+                'joint_name': 'root_red',
+                'position': np.array([-self.initial_distance / 2.0, 0.0, self.DEFAULT_ROOT_HEIGHT], dtype=np.float64),
+                'orientation': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            },
+            'robot_b': {
+                'joint_name': 'root_blue',
+                'position': np.array([self.initial_distance / 2.0, 0.0, self.DEFAULT_ROOT_HEIGHT], dtype=np.float64),
+                'orientation': np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+            },
+        }
+
+    def _apply_initial_root_poses(self):
+        for root_pose in self._get_root_pose_targets().values():
+            joint_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_JOINT, root_pose['joint_name'])
+            if joint_id < 0:
+                continue
+
+            qpos_adr = self.physics.model.jnt_qposadr[joint_id]
+            qvel_adr = self.physics.model.jnt_dofadr[joint_id]
+            self.physics.data.qpos[qpos_adr:qpos_adr + 3] = root_pose['position']
+            self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = root_pose['orientation']
+            self.physics.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+
+    def _build_relative_metrics(self, robot_states):
+        relative_metrics = {}
+        for robot_id, opponent_id in [('robot_a', 'robot_b'), ('robot_b', 'robot_a')]:
+            self_state = robot_states[robot_id]
+            opponent_state = robot_states[opponent_id]
+            relative_position = opponent_state['torso_position'] - self_state['torso_position']
+            distance = float(np.linalg.norm(relative_position))
+            horizontal_distance = float(np.linalg.norm(relative_position[:2]))
+            if distance > 1e-8:
+                direction_to_opponent = relative_position / distance
+            else:
+                direction_to_opponent = np.zeros(3, dtype=np.float32)
+
+            relative_metrics[robot_id] = {
+                'distance': distance,
+                'horizontal_distance': horizontal_distance,
+                'relative_position': relative_position.astype(np.float32),
+                'direction_to_opponent': direction_to_opponent.astype(np.float32),
+                'facing_opponent': float(np.dot(self_state['forward_vector'], direction_to_opponent)),
+            }
+        return relative_metrics
+
+    def _build_info(self, collisions=None, winner=None, end_reason=None, terminated=False, truncated=False):
+        if collisions is None:
+            collisions = []
+
+        robot_states = {
+            'robot_a': self.robot_a.get_state_summary(),
+            'robot_b': self.robot_b.get_state_summary(),
+        }
+
+        return {
+            'scores': self.score_calculator.get_health(),
+            'collisions': collisions,
+            'positions': {
+                'robot_a': self.robot_a.get_position(),
+                'robot_b': self.robot_b.get_position(),
+            },
+            'torso_positions': {
+                'robot_a': robot_states['robot_a']['torso_position'],
+                'robot_b': robot_states['robot_b']['torso_position'],
+            },
+            'robot_states': robot_states,
+            'relative_metrics': self._build_relative_metrics(robot_states),
+            'hit_records': self.hit_records.copy(),
+            'winner': winner if (terminated or truncated) else None,
+            'end_reason': end_reason,
+            'physics_step_count': self.physics_step_count,
+            'observation_slices': self.observation_slices,
+        }
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        if not hasattr(self, '_robots_created'):
+        if options and 'initial_distance' in options:
+            self.initial_distance = float(options['initial_distance'])
+
+        if not self._robots_created:
             # Robot A: facing +X 
             pos_a = [-self.initial_distance / 2, 0, 1.4]
             orn_a = [1, 0, 0, 0] 
@@ -106,12 +193,16 @@ class CombatGymEnv(gym.Env):
             self.robot_b = HumanoidRobot(
                 self.physics, pos_b, orn_b, robot_id="robot_b", color=(0.2, 0.2, 0.8)
             )
-
-            self._initial_qpos = self.physics.data.qpos.copy()
             self._robots_created = True
-        else:
+
+        if self._initial_qpos is not None:
             self.physics.data.qpos[:] = self._initial_qpos
-            self.physics.data.qvel[:] = 0
+            self.physics.data.qvel[:] = self._initial_qvel
+            self.physics.data.ctrl[:] = self._initial_ctrl
+
+        self._apply_initial_root_poses()
+        self.physics.data.qvel[:] = 0.0
+        self.physics.data.ctrl[:] = 0.0
 
         self.score_calculator.reset()
         self.actions = {"robot_a": None, "robot_b": None}
@@ -121,21 +212,21 @@ class CombatGymEnv(gym.Env):
         self.hit_records = {'robot_a': [], 'robot_b': []}
         self._prev_cam_pos = None
         self._prev_lookat = None
+        self._prev_azi = None
+        self._prev_ele = None
+        self._prev_dist = None
 
         # Trigger one forward to apply position and velocity
-        import mujoco
         mujoco.mj_forward(self.physics.model, self.physics.data)
+
+        if self._initial_qpos is None:
+            self._initial_qpos = self.physics.data.qpos.copy()
+            self._initial_qvel = self.physics.data.qvel.copy()
+            self._initial_ctrl = self.physics.data.ctrl.copy()
 
         observation = self._get_obs()
 
-        info = {
-            'scores': self.score_calculator.get_health(),
-            'positions': {
-                'robot_a': self.robot_a.get_position(),
-                'robot_b': self.robot_b.get_position(),
-            },
-            'hit_records': self.hit_records.copy(),
-        }
+        info = self._build_info()
 
         return observation, info
 
@@ -203,27 +294,24 @@ class CombatGymEnv(gym.Env):
         reward = {'robot_a': 0.0, 'robot_b': 0.0}
         observation = self._get_obs()
 
-        info = {
-            'scores': self.score_calculator.get_health(),
-            'collisions': all_collisions,
-            'positions': {
-                'robot_a': self.robot_a.get_position(),
-                'robot_b': self.robot_b.get_position(),
-            },
-            'hit_records': self.hit_records.copy(),
-            'winner': winner if (terminated or truncated) else None,
-            'end_reason': end_reason,
-            'physics_step_count': self.physics_step_count,
-        }
+        info = self._build_info(
+            collisions=all_collisions,
+            winner=winner,
+            end_reason=end_reason,
+            terminated=terminated,
+            truncated=truncated,
+        )
 
         return observation, reward, terminated, truncated, info
 
     def _get_obs(self):
-        health_a = self.score_calculator.get_health('robot_a')
-        health_b = self.score_calculator.get_health('robot_b')
-
         obs_a = self.robot_a.get_observation(opponent_robot=self.robot_b)
         obs_b = self.robot_b.get_observation(opponent_robot=self.robot_a)
+
+        if obs_a.shape[0] != HumanoidRobot.OBSERVATION_DIM or obs_b.shape[0] != HumanoidRobot.OBSERVATION_DIM:
+            raise ValueError(
+                f"Observation shape mismatch: robot_a={obs_a.shape}, robot_b={obs_b.shape}, expected={(HumanoidRobot.OBSERVATION_DIM,)}"
+            )
 
         return {
             'robot_a_obs': obs_a.astype(np.float32),
