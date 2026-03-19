@@ -1,64 +1,41 @@
-# CombatBench Submission Tool
+# CombatBench Tools
 
-This directory contains pre-compiled binaries of the CombatBench submission tool.
+This directory contains utility scripts to aid in running, evaluating, and working with the CombatBench environment.
 
-## Download
+## 1. Match Runner (`run_match.py`)
 
-You can download the binaries directly from GitHub or use the links below:
+A utility tool designed to simulate a single head-to-head match (episode) between two policies. 
 
-## Available Binaries
+### Usage in Code
 
-| Platform | Binary | Download |
-|----------|--------|----------|
-| **Linux (amd64)** | `combat-submit-linux-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64) |
-| **macOS (Intel)** | `combat-submit-darwin-amd64` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64) |
-| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [Download](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-windows-amd64.exe) |
+You can import the `MatchRunner` class into your own evaluation or training loops to easily orchestrate a fight:
 
-## Quick Start
+```python
+from tools.run_match import MatchRunner
 
-### 1. Download the appropriate binary for your platform
+# Assume policy_a and policy_b are your trained policy objects
+# Policies must implement: `act(obs, info)` and `reset()`
+runner = MatchRunner(
+    policy_a=my_red_policy,
+    policy_b=my_blue_policy,
+    match_duration=30.0 # seconds
+)
 
-```bash
-# Linux
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64
-chmod +x combat-submit-linux-amd64
+# Run the match and optionally save the output video
+result = runner.run(save_video_path="match_output.mp4")
 
-# macOS (Intel)
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64
-chmod +x combat-submit-darwin-amd64
-
-# Windows
-# Download from browser and use directly
+print(f"Winner: {result['end_reason']}")
+print(f"Final HP - Red: {result['scores']['robot_a']}, Blue: {result['scores']['robot_b']}")
 ```
 
-### 2. Set your API Key
+### CLI Usage
 
-Get your API Key from the [CombatBench Web Platform](https://github.com/laddermoon/combatbench) after logging in.
-
-```bash
-export COMBAT_API_KEY="your-api-key-here"
-```
-
-### 3. Submit your policy
+You can also run it directly via the command line to test the simulation using random actions (dummy policies):
 
 ```bash
-./combat-submit-linux-amd64 submit \
-  --leaderboard-id 1 \
-  --name "MyPolicy" \
-  --dir ../my_policy \
-  --desc "My awesome combat policy"
+python tools/run_match.py --video output_video.mp4 --duration 10.0
 ```
 
-## Documentation
-
-For complete usage instructions, see the [User Guide](../docs/SUBMISSION_GUIDE.md) or [中文指南](../docs/SUBMISSION_GUIDE_zh.md).
-
-## Security
-
-- Always verify the binary checksum before running
-- Download only from official GitHub releases
-- Report security issues to the maintainers
-
-## License
-
-See [LICENSE](../../LICENSE) for details.
+**Arguments:**
+- `--video`: Path where the MP4 replay will be saved (e.g. `match.mp4`). If omitted, no video is saved.
+- `--duration`: Maximum match time limit in seconds (default is 30.0).

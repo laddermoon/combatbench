@@ -1,64 +1,41 @@
-# CombatBench 提交工具
+# CombatBench 工具集
 
-本目录包含 CombatBench 提交工具的预编译二进制文件。
+此目录包含用于辅助运行、评估和测试 CombatBench 环境的实用脚本。
 
-## 下载
+## 1. 对战运行器 (`run_match.py`)
 
-您可以直接从 GitHub 下载二进制文件，或使用下面的链接：
+一个用于模拟两个策略 (Policy) 之间单回合对战的实用工具类。
 
-## 可用的二进制文件
+### 在代码中使用
 
-| 平台 | 二进制文件 | 下载链接 |
-|------|-----------|----------|
-| **Linux (amd64)** | `combat-submit-linux-amd64` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64) |
-| **macOS (Intel)** | `combat-submit-darwin-amd64` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64) |
-| **Windows (amd64)** | `combat-submit-windows-amd64.exe` | [下载](https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-windows-amd64.exe) |
+您可以将 `MatchRunner` 类导入到您自己的评估或训练循环中，以轻松策划一场比赛：
 
-## 快速开始
+```python
+from tools.run_match import MatchRunner
 
-### 1. 下载适合您平台的二进制文件
+# 假设 policy_a 和 policy_b 是您训练好的策略对象
+# 策略必须实现：`act(obs, info)` 和 `reset()` 方法
+runner = MatchRunner(
+    policy_a=my_red_policy,
+    policy_b=my_blue_policy,
+    match_duration=30.0 # 秒
+)
 
-```bash
-# Linux
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-linux-amd64
-chmod +x combat-submit-linux-amd64
+# 运行比赛，并可选择保存输出视频
+result = runner.run(save_video_path="match_output.mp4")
 
-# macOS (Intel)
-wget https://raw.githubusercontent.com/laddermoon/combatbench/main/tools/binaries/combat-submit-darwin-amd64
-chmod +x combat-submit-darwin-amd64
-
-# Windows
-# 通过浏览器下载，直接使用
+print(f"比赛结果: {result['end_reason']}")
+print(f"最终血量 - 红方: {result['scores']['robot_a']}, 蓝方: {result['scores']['robot_b']}")
 ```
 
-### 2. 设置您的 API Key
+### 命令行使用
 
-登录 [CombatBench Web 平台](https://github.com/laddermoon/combatbench) 后获取您的 API Key。
-
-```bash
-export COMBAT_API_KEY="your-api-key-here"
-```
-
-### 3. 提交您的策略
+您也可以直接通过命令行运行它，使用随机动作（虚拟策略）来测试仿真环境：
 
 ```bash
-./combat-submit-linux-amd64 submit \
-  --leaderboard-id 1 \
-  --name "我的策略" \
-  --dir ../my_policy \
-  --desc "我的战斗策略"
+python tools/run_match.py --video output_video.mp4 --duration 10.0
 ```
 
-## 文档
-
-完整的使用说明请参阅 [User Guide](../docs/SUBMISSION_GUIDE.md) or [中文指南](../docs/SUBMISSION_GUIDE_zh.md)
-
-## 安全性
-
-- 运行前请务必验证二进制文件的校验和
-- 仅从官方 GitHub Releases 下载
-- 向维护者报告安全问题
-
-## 许可证
-
-详情请参阅 [LICENSE](../../LICENSE)。
+**参数说明:**
+- `--video`: 保存 MP4 回放视频的路径（例如 `match.mp4`）。如果省略，则不保存视频。
+- `--duration`: 比赛的最大时间限制，单位为秒（默认为 30.0）。
