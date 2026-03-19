@@ -51,6 +51,56 @@ STAND_POLICY_ACTION_SCALE = {
 }
 
 
+
+def build_stand_action_scale() -> np.ndarray:
+    action_scale = np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32)
+    joint_name_to_index = {joint_name: idx for idx, joint_name in enumerate(HumanoidRobot.CONTROLLED_JOINTS)}
+    for joint_name, scale in STAND_POLICY_ACTION_SCALE.items():
+        action_scale[joint_name_to_index[joint_name]] = float(scale) * STAND_ACTION_SCALE_MULTIPLIER
+    return action_scale
+
+
+
+def build_stand_reset_pose() -> dict[str, dict[str, float]]:
+    return {
+        "robot_a": dict(STAND_REFERENCE_POSE),
+        "robot_b": dict(STAND_REFERENCE_POSE),
+    }
+
+
+
+def configure_base_env_for_stand(env: CombatGymEnv) -> np.ndarray:
+    action_scale = build_stand_action_scale()
+    stand_reset_pose = build_stand_reset_pose()
+    env.set_robot_joint_positions(stand_reset_pose)
+    env.set_controller_reference_positions(stand_reset_pose)
+    env.set_controller_gains(kp=STAND_PD_KP, kd=STAND_PD_KD)
+    env.set_controller_action_scale(
+        {
+            "robot_a": action_scale,
+            "robot_b": np.zeros_like(action_scale),
+        }
+    )
+    return action_scale
+
+
+
+def configure_base_env_for_fight(env: CombatGymEnv) -> np.ndarray:
+    action_scale = build_stand_action_scale()
+    stand_reset_pose = build_stand_reset_pose()
+    env.set_robot_joint_positions(stand_reset_pose)
+    env.set_controller_reference_positions(stand_reset_pose)
+    env.set_controller_gains(kp=STAND_PD_KP, kd=STAND_PD_KD)
+    env.set_controller_action_scale(
+        {
+            "robot_a": action_scale,
+            "robot_b": action_scale,
+        }
+    )
+    return action_scale
+
+
+
 class SymmetricSelfPlayEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array", None]}
 
@@ -74,16 +124,11 @@ class SymmetricSelfPlayEnv(gym.Env):
         self._joint_names = tuple(HumanoidRobot.CONTROLLED_JOINTS)
         self._joint_name_to_index = {joint_name: idx for idx, joint_name in enumerate(self._joint_names)}
         self._stand_reference_action = np.zeros(self.action_space.shape, dtype=np.float32)
-        self._stand_action_scale = np.zeros(self.action_space.shape, dtype=np.float32)
+        self._stand_action_scale = build_stand_action_scale()
         for joint_name, joint_value in STAND_REFERENCE_POSE.items():
             self._stand_reference_action[self._joint_name_to_index[joint_name]] = float(joint_value)
-        for joint_name, scale in STAND_POLICY_ACTION_SCALE.items():
-            self._stand_action_scale[self._joint_name_to_index[joint_name]] = float(scale) * STAND_ACTION_SCALE_MULTIPLIER
         self._opponent_slice = HumanoidRobot.OBSERVATION_SLICES["opponent_relative_position"]
-        self._stand_reset_pose = {
-            "robot_a": dict(STAND_REFERENCE_POSE),
-            "robot_b": dict(STAND_REFERENCE_POSE),
-        }
+        self._stand_reset_pose = build_stand_reset_pose()
 
     @property
     def base_env(self) -> CombatGymEnv:
@@ -136,17 +181,9 @@ class SymmetricSelfPlayEnv(gym.Env):
     def reset(self, seed: int | None = None, options: dict | None = None):
         obs, info = self.env.reset(seed=seed, options=options)
         if self._stand_mode:
-            self.env.set_robot_joint_positions(self._stand_reset_pose)
-            self.env.set_controller_reference_positions(self._stand_reset_pose)
-            self.env.set_controller_gains(kp=STAND_PD_KP, kd=STAND_PD_KD)
-            self.env.set_controller_action_scale(
-                {
-                    "robot_a": self._stand_action_scale,
-                    "robot_b": np.zeros_like(self._stand_action_scale),
-                }
-            )
+            self._stand_action_scale = configure_base_env_for_stand(self.env)
         else:
-            self.env.reset_controller_config()
+            self._stand_action_scale = configure_base_env_for_fight(self.env)
         obs = self.env._get_obs()
         info = self.env._build_info()
         self._previous_actions = {

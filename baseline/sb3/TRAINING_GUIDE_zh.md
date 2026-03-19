@@ -238,6 +238,40 @@ python3 -m combatbench.baseline.sb3.evaluate \
 - 能输出视频
 - 更接近你最终想看的“两个机器人站立对打”效果
 
+### 7.3 稳定导出视频的独立脚本入口
+
+如果你遇到模块路径下的 headless 渲染问题，优先使用：
+
+```bash
+python3 combatbench/run_policy_video.py \
+  --mode shared_env \
+  --model combatbench/baseline/sb3/runs/stand_v1/best_model/best_model.zip \
+  --phase stand \
+  --duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.0 \
+  --video combatbench/baseline/sb3/runs/stand_v1/stand_success_10s.mp4 \
+  --device cpu
+```
+
+### 7.4 对战机制验证
+
+在真正依赖 fight 训练结果之前，建议先验证环境里的敌方观测和战损逻辑：
+
+```bash
+python3 -m combatbench.baseline.sb3.validate_fight_mechanics \
+  --duration 8 \
+  --control-frequency 20 \
+  --initial-distance 0.6 \
+  --seed 0
+```
+
+这个脚本会验证：
+
+- `opponent_*` 观测切片是否和权威状态一致
+- `hit_records` 与 HP 变化是否一致
+- 一整局里是否出现至少一方掉血
+
 ## 8. 推荐参数
 
 如果你只是先跑通：
@@ -257,6 +291,10 @@ python3 -m combatbench.baseline.sb3.train \
 - `match_duration`：
   - `stand` 可先 `10s`
   - `fight` 可先 `15s`
+
+如果你只关心站立训练本身，优先直接看：
+
+- `STAND_TRAINING_GUIDE_zh.md`
 
 ## 9. 如果训练效果不好，优先调哪几个地方
 

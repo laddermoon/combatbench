@@ -355,3 +355,35 @@ Validation passed. The formal self-play evaluation then achieved the goal cleanl
 The one-off direct environment rollout succeeded. Using `stand_env_residual_smoke_v3/best_model.zip`, the deterministic stand episode lasted the full `200` control steps and ended with `Time limit reached (10.0s), draw`. The video was written to `combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/stand_success_10s.mp4` with `100` recorded frames. A follow-up OpenCV probe confirmed the file is readable and valid: `1280x720`, `10 FPS`, `100` frames, and the first frame decoded successfully.
 
 **Next step:** Commit the updated export log and provide the video path to the user for inspection.
+
+## [2026-03-20 01:02] Verified the reusable standing video-export scripts
+
+**Why:** The original one-off export proved that the rendering path works, but the user explicitly asked to record a script that can be reused later without rebuilding the direct-loop snippet each time.
+
+**Command:**
+```bash
+python3 combatbench/run_policy_video.py \
+  --mode shared_env \
+  --model /data1/mono/things/combatbench/combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/best_model/best_model.zip \
+  --phase stand \
+  --duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.0 \
+  --video /data1/mono/things/combatbench/combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/stand_success_10s_reexport.mp4 \
+  --device cpu
+
+python3 -m combatbench.baseline.sb3.export_video \
+  --mode shared_env \
+  --model /data1/mono/things/combatbench/combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/best_model/best_model.zip \
+  --phase stand \
+  --duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.0 \
+  --video /data1/mono/things/combatbench/combatbench/baseline/sb3/runs/stand_env_residual_smoke_v3/stand_success_10s_reexport_wrapper.mp4 \
+  --device cpu
+```
+
+**Result:**
+Both reusable entrypoints now work. The standalone `combatbench/run_policy_video.py` exported a full `200`-step standing-success rollout to `stand_success_10s_reexport.mp4`, and the module entrypoint `combatbench.baseline.sb3.export_video` now works as a wrapper that delegates to the standalone script and exported `stand_success_10s_reexport_wrapper.mp4`. This supersedes the earlier one-off-only workflow and gives the user a stable reusable export command.
+
+**Next step:** Use `STAND_TRAINING_GUIDE_zh.md` as the authoritative standing workflow doc and keep the direct one-off pattern only as historical context.

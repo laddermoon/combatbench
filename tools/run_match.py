@@ -5,24 +5,32 @@ from pathlib import Path
 import numpy as np
 
 # Set headless render mode if EGL is available
-os.environ.setdefault('MUJOCO_GL', 'egl')
+os.environ['MUJOCO_GL'] = 'egl'
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 # Add parent directory to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from envs.combat_gym import CombatGymEnv
+try:
+    from combatbench.baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_stand
+    from combatbench.envs.combat_gym import CombatGymEnv
+except ImportError:
+    from baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_stand
+    from envs.combat_gym import CombatGymEnv
 
 class MatchRunner:
     """
     A utility class to run a single match between two policies.
     """
-    def __init__(self, policy_a=None, policy_b=None, render_mode="rgb_array", match_duration=30.0, control_frequency=20):
+    def __init__(self, policy_a=None, policy_b=None, render_mode="rgb_array", match_duration=30.0, control_frequency=20, initial_distance=2.0, phase=None):
         self.policy_a = policy_a
         self.policy_b = policy_b
+        self.phase = phase
         
         self.env = CombatGymEnv(
             render_mode=render_mode,
             match_duration=match_duration,
-            control_frequency=control_frequency
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
         )
 
     def run(self, save_video_path=None):
@@ -31,6 +39,14 @@ class MatchRunner:
         Returns the final result dict.
         """
         obs, info = self.env.reset()
+        if self.phase == "stand":
+            configure_base_env_for_stand(self.env)
+            obs = self.env._get_obs()
+            info = self.env._build_info()
+        elif self.phase == "fight":
+            configure_base_env_for_fight(self.env)
+            obs = self.env._get_obs()
+            info = self.env._build_info()
         print("=" * 60)
         print("CombatBench Match Started")
         print(f"Initial position: {info['positions']}")
@@ -110,6 +126,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a CombatBench match between two policies.")
     parser.add_argument('--video', type=str, default=None, help='Path to save the match video (e.g., match.mp4)')
     parser.add_argument('--duration', type=float, default=30.0, help='Match duration in seconds')
+    parser.add_argument('--initial-distance', type=float, default=2.0, help='Initial torso distance between the two robots')
+    parser.add_argument('--phase', type=str, default=None, choices=['stand', 'fight'], help='Optional controller configuration to apply after reset')
     
     args = parser.parse_args()
 
@@ -121,7 +139,9 @@ if __name__ == "__main__":
     runner = MatchRunner(
         policy_a=policy_a, 
         policy_b=policy_b,
-        match_duration=args.duration
+        match_duration=args.duration,
+        initial_distance=args.initial_distance,
+        phase=args.phase,
     )
     
     runner.run(save_video_path=args.video)

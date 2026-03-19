@@ -74,6 +74,25 @@ class CollisionDetector:
         data = physics.data
         model = physics.model
 
+        robot_a_suffixes = tuple(
+            suffix
+            for suffix in dict.fromkeys([
+                getattr(robot_a, 'suffix', None),
+                '_a' if robot_a.robot_id == 'robot_a' else '_b',
+                '_red' if robot_a.robot_id == 'robot_a' else '_blue',
+            ])
+            if suffix
+        )
+        robot_b_suffixes = tuple(
+            suffix
+            for suffix in dict.fromkeys([
+                getattr(robot_b, 'suffix', None),
+                '_a' if robot_b.robot_id == 'robot_a' else '_b',
+                '_red' if robot_b.robot_id == 'robot_a' else '_blue',
+            ])
+            if suffix
+        )
+
         # Iterate through all contact points
         for i in range(data.ncon):
             contact = data.contact[i]
@@ -88,14 +107,11 @@ class CollisionDetector:
             if not geom1_name or not geom2_name:
                 continue
 
-            robot_a_suffix = '_a' if robot_a.robot_id == 'robot_a' else '_red'
-            robot_b_suffix = '_b' if robot_b.robot_id == 'robot_b' else '_blue'
-
             # Determine which robot it belongs to
-            is_geom1_a = geom1_name.endswith(robot_a_suffix)
-            is_geom1_b = geom1_name.endswith(robot_b_suffix)
-            is_geom2_a = geom2_name.endswith(robot_a_suffix)
-            is_geom2_b = geom2_name.endswith(robot_b_suffix)
+            is_geom1_a = geom1_name.endswith(robot_a_suffixes)
+            is_geom1_b = geom1_name.endswith(robot_b_suffixes)
+            is_geom2_a = geom2_name.endswith(robot_a_suffixes)
+            is_geom2_b = geom2_name.endswith(robot_b_suffixes)
 
             # Only care about collisions between the two robots
             if (is_geom1_a and is_geom2_b) or (is_geom1_b and is_geom2_a):
@@ -103,9 +119,11 @@ class CollisionDetector:
                 cat2 = self.get_part_category(geom2_name)
 
                 # Get relative velocity at contact point
-                cvel = np.zeros(6)
-                mujoco.mj_contactVelocity(model, data, i, cvel)
-                rel_speed = np.linalg.norm(cvel[:3]) # Translational relative velocity
+                body1_id = model.geom_bodyid[geom1_id]
+                body2_id = model.geom_bodyid[geom2_id]
+                vel1 = data.cvel[body1_id, 3:6] if body1_id >= 0 else np.zeros(3)
+                vel2 = data.cvel[body2_id, 3:6] if body2_id >= 0 else np.zeros(3)
+                rel_speed = np.linalg.norm(vel1 - vel2)
 
                 if rel_speed < self.velocity_threshold:
                     continue

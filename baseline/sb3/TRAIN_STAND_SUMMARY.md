@@ -19,8 +19,8 @@
    - Expected: The trained policy survives longer and shows a meaningful standing tendency.
 
 5. **Export a qualitative video using the direct env loop if needed**
-   - Action: create `CombatGymEnv(render_mode="rgb_array")`, load `model_final.zip` on CPU, step the environment directly, and save `stand_bg_smoke_final_match.mp4`
-   - Expected: Video export succeeds under the same `MUJOCO_GL=egl` pattern used by `run_without_policy.py`, allowing visual inspection of actual standing behavior.
+   - Action: `python3 combatbench/run_policy_video.py --mode shared_env ...` (or `python3 -m combatbench.baseline.sb3.export_video ...`, which now delegates to the standalone script)
+   - Expected: Video export succeeds through the reusable EGL-safe entrypoint and writes a full standing rollout mp4 for visual inspection.
 
 ## Pitfalls & Solutions
 
@@ -38,6 +38,11 @@
 - **Symptom:** The evaluation command looked stalled during video generation and was manually terminated before producing an mp4
 - **Root cause:** That path was a poor fit for quick debugging here; the repository already had a proven direct environment loop in `run_without_policy.py`
 - **Solution:** Reuse the `run_without_policy.py` pattern: set `MUJOCO_GL=egl` before imports, instantiate `CombatGymEnv(render_mode="rgb_array")` directly, then step the trained model and save the video
+
+### Issue: The reusable module-style video export path was still fragile under headless rendering
+- **Symptom:** `python -m combatbench.baseline.sb3.export_video ...` initially aborted with GLFW / OpenGL initialization errors
+- **Root cause:** the module startup path was more sensitive to EGL initialization order in this environment
+- **Solution:** add `combatbench/run_policy_video.py` as the primary standalone export entrypoint and make `baseline/sb3/export_video.py` delegate to it in a clean subprocess
 
 ### Issue: Visual inspection showed immediate collapse despite successful video export
 - **Symptom:** In the exported video, both robots start in a standing pose but collapse within the opening segment and remain on the floor for most of the clip

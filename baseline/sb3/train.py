@@ -34,7 +34,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--match-duration", type=float, default=None)
     parser.add_argument("--control-frequency", type=int, default=20)
-    parser.add_argument("--initial-distance", type=float, default=2.0)
+    parser.add_argument("--initial-distance", type=float, default=None)
     parser.add_argument("--checkpoint-freq", type=int, default=100_000)
     parser.add_argument("--eval-freq", type=int, default=50_000)
     parser.add_argument("--seed", type=int, default=42)
@@ -54,6 +54,11 @@ def configure_runtime() -> None:
 
 def default_match_duration(phase: str) -> float:
     return 10.0 if phase == "stand" else 15.0
+
+
+
+def default_initial_distance(phase: str) -> float:
+    return 2.0 if phase == "stand" else 1.0
 
 
 
@@ -147,6 +152,8 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
     args.match_duration = args.match_duration or default_match_duration(args.phase)
+    if args.initial_distance is None:
+        args.initial_distance = default_initial_distance(args.phase)
     configure_runtime()
 
     run_dir = make_run_directory(args)

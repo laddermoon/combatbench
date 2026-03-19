@@ -20,12 +20,13 @@ def configure_runtime() -> None:
 
 
 
-def evaluate_shared_env(model_path: str, phase: str, episodes: int, match_duration: float, control_frequency: int) -> None:
+def evaluate_shared_env(model_path: str, phase: str, episodes: int, match_duration: float, control_frequency: int, initial_distance: float) -> None:
     reward_config = resolve_reward_config(phase)
     env = make_symmetric_selfplay_env(
         render_mode=None,
         match_duration=match_duration,
         control_frequency=control_frequency,
+        initial_distance=initial_distance,
         reward_config=reward_config,
     )
     model = PPO.load(model_path, env=env, device="auto")
@@ -59,15 +60,17 @@ def evaluate_shared_env(model_path: str, phase: str, episodes: int, match_durati
 
 
 
-def evaluate_match(model_a: str, model_b: str | None, video: str | None, duration: float, control_frequency: int) -> None:
+def evaluate_match(model_a: str, model_b: str | None, video: str | None, duration: float, control_frequency: int, initial_distance: float, phase: str) -> None:
     policy_a = SB3CombatPolicy(model_a)
     policy_b = SB3CombatPolicy(model_b or model_a)
     runner = MatchRunner(
         policy_a=policy_a,
         policy_b=policy_b,
-        render_mode="rgb_array",
+        render_mode="rgb_array" if video else None,
         match_duration=duration,
         control_frequency=control_frequency,
+        initial_distance=initial_distance,
+        phase=phase,
     )
     result = runner.run(save_video_path=video)
     print(result)
@@ -83,6 +86,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--control-frequency", type=int, default=20)
+    parser.add_argument("--initial-distance", type=float, default=2.0)
     parser.add_argument("--video", type=str, default=None)
     return parser
 
@@ -100,6 +104,7 @@ def main() -> None:
             episodes=args.episodes,
             match_duration=args.duration,
             control_frequency=args.control_frequency,
+            initial_distance=args.initial_distance,
         )
         return
 
@@ -109,6 +114,8 @@ def main() -> None:
         video=args.video,
         duration=args.duration,
         control_frequency=args.control_frequency,
+        initial_distance=args.initial_distance,
+        phase=args.phase,
     )
 
 

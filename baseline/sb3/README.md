@@ -28,14 +28,18 @@
 ```text
 baseline/sb3/
 ├── __init__.py
+├── FIGHT_FROM_STAND_SUMMARY.md
 ├── README.md
+├── STAND_TRAINING_GUIDE_zh.md
 ├── TRAINING_GUIDE_zh.md
+├── export_video.py
 ├── evaluate.py
 ├── normalization.py
 ├── policies.py
 ├── rewards.py
 ├── selfplay_env.py
 ├── train.py
+├── validate_fight_mechanics.py
 └── validate_env.py
 ```
 
@@ -126,6 +130,20 @@ python3 -m combatbench.baseline.sb3.evaluate \
 
 默认情况下，`--mode match` 会让红蓝双方都加载同一个模型。
 
+如果你只是想稳定导出视频，推荐优先使用独立脚本入口：
+
+```bash
+python3 combatbench/run_policy_video.py \
+  --mode shared_env \
+  --model combatbench/baseline/sb3/runs/stand_v1/best_model/best_model.zip \
+  --phase stand \
+  --duration 10 \
+  --control-frequency 20 \
+  --initial-distance 2.0 \
+  --video combatbench/baseline/sb3/runs/stand_v1/stand_success_10s.mp4 \
+  --device cpu
+```
+
 如果你想让两个不同模型对打：
 
 ```bash
@@ -156,6 +174,14 @@ python3 -m combatbench.baseline.sb3.evaluate \
 - `policies.py`
   - 把 SB3 的 `.zip` 模型适配成 `tools/run_match.py` 可调用的策略对象
 
+- `validate_fight_mechanics.py`
+  - 验证敌方观测切片和权威状态是否一致
+  - 验证 `hit_records`、HP 变化和伤害记账逻辑是否一致
+
+- `combatbench/run_policy_video.py`
+  - 复用已经验证通过的独立 EGL 初始化路径
+  - 用于稳定导出 standing / fight rollout 视频
+
 ## 已知限制
 
 - 这是 **baseline**，不是最终版比赛策略
@@ -173,4 +199,6 @@ python3 -m combatbench.baseline.sb3.evaluate \
 
 更详细的设计和训练说明见：
 
+- `STAND_TRAINING_GUIDE_zh.md`
 - `TRAINING_GUIDE_zh.md`
+- `FIGHT_FROM_STAND_SUMMARY.md`
