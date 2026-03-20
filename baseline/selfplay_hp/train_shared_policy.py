@@ -113,6 +113,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--damage-penalty-scale", type=float, default=1.0)
     parser.add_argument("--win-bonus", type=float, default=0.0)
     parser.add_argument("--lose-penalty", type=float, default=0.0)
+    parser.add_argument("--approach-reward-weight", type=float, default=0.0, help="Reward weight for approaching opponent")
+    parser.add_argument("--action-diversity-weight", type=float, default=0.0, help="Reward weight for action diversity (arm movement)")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-every-updates", type=int, default=10)
@@ -131,6 +133,8 @@ def save_run_config(args: argparse.Namespace, run_dir: Path) -> None:
         damage_penalty_scale=args.damage_penalty_scale,
         win_bonus=args.win_bonus,
         lose_penalty=args.lose_penalty,
+        approach_reward_weight=args.approach_reward_weight,
+        action_diversity_weight=args.action_diversity_weight,
     )
     ppo_config = PPOConfig(
         total_timesteps=args.total_timesteps,
@@ -181,6 +185,8 @@ def build_env(args: argparse.Namespace) -> SharedPolicySelfPlayHPEnv:
         damage_penalty_scale=args.damage_penalty_scale,
         win_bonus=args.win_bonus,
         lose_penalty=args.lose_penalty,
+        approach_reward_weight=args.approach_reward_weight,
+        action_diversity_weight=args.action_diversity_weight,
     )
     return SharedPolicySelfPlayHPEnv(
         render_mode=None,

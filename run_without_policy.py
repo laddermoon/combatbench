@@ -6,21 +6,41 @@ import sys
 import os
 os.environ['MUJOCO_GL'] = 'egl'
 
+import argparse
 from pathlib import Path
 import numpy as np
 
 from envs.combat_gym import CombatGymEnv
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run combat simulation without policy")
+    parser.add_argument("--match-duration", type=float, default=30.0, help="Match duration in seconds")
+    parser.add_argument("--control-frequency", type=int, default=20, help="Control frequency (Hz)")
+    parser.add_argument("--non-fall-mode", action="store_true", help="Enable non-fall mode (clamp root pitch/roll)")
+    parser.add_argument("--non-fall-pitch-limit-deg", type=float, default=15.0, help="Pitch limit in degrees for non-fall mode")
+    parser.add_argument("--non-fall-roll-limit-deg", type=float, default=10.0, help="Roll limit in degrees for non-fall mode")
+    parser.add_argument("--output", type=str, default=None, help="Output video path (default: no_policy_test.mp4 or no_policy_test_nonfall.mp4)")
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    
     print("=" * 60)
     print("CombatBench 21DOF Test Run (No Policy)")
+    if args.non_fall_mode:
+        print(f"Non-fall mode: ENABLED (pitch: ±{args.non_fall_pitch_limit_deg}°, roll: ±{args.non_fall_roll_limit_deg}°)")
+    else:
+        print("Non-fall mode: DISABLED")
     print("=" * 60)
 
     # 1. Create environment, enable rgb_array render mode
     env = CombatGymEnv(
         render_mode="rgb_array", 
-        match_duration=30.0,
-        control_frequency=20
+        match_duration=args.match_duration,
+        control_frequency=args.control_frequency,
+        non_fall_mode=args.non_fall_mode,
+        non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
+        non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
     )
     
     # 2. Reset environment
@@ -69,7 +89,11 @@ def main():
     
     # 3. Save video
     print("\nSaving video...")
-    video_path = Path(__file__).parent / 'no_policy_test.mp4'
+    if args.output:
+        video_path = Path(args.output)
+    else:
+        filename = 'no_policy_test_nonfall.mp4' if args.non_fall_mode else 'no_policy_test.mp4'
+        video_path = Path(__file__).parent / filename
     env.save_video(str(video_path), fps=env.video_sample_frequency)
     print(f"Video saved to: {video_path}")
     print(f"Total recorded frames: {len(env.get_video_buffer())}")

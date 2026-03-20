@@ -17,6 +17,8 @@ class SelfPlayHPRewardConfig:
     damage_penalty_scale: float = 1.0
     win_bonus: float = 0.0
     lose_penalty: float = 0.0
+    approach_reward_weight: float = 0.0
+    action_diversity_weight: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -54,6 +56,7 @@ class SharedPolicySelfPlayHPEnv:
         )
         self.action_space = self.base_env.action_space["robot_a"]
         self._previous_scores = {"robot_a": 100.0, "robot_b": 100.0}
+        self._previous_horizontal_distance = None
 
     def _normalize_obs(self, obs_dict: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         normalized = {
@@ -73,17 +76,35 @@ class SharedPolicySelfPlayHPEnv:
         current_scores: dict[str, float],
         done: bool,
         info: dict,
+        action_dict: dict[str, np.ndarray],
+        previous_horizontal_distance: float | None,
     ) -> tuple[dict[str, float], dict[str, float]]:
         reward_breakdown = {}
         rewards = {}
         winner = info.get("winner")
+        
+        current_distance = float(info["relative_metrics"]["robot_a"]["horizontal_distance"])
+        approach_progress = 0.0
+        if previous_horizontal_distance is not None:
+            approach_progress = float(previous_horizontal_distance - current_distance)
+        
         for robot_id, opponent_id in (("robot_a", "robot_b"), ("robot_b", "robot_a")):
             damage_inflicted = float(max(0.0, previous_scores[opponent_id] - current_scores[opponent_id]))
             damage_taken = float(max(0.0, previous_scores[robot_id] - current_scores[robot_id]))
-            reward = (
+            
+            hp_reward = (
                 self.reward_config.damage_reward_scale * damage_inflicted
                 - self.reward_config.damage_penalty_scale * damage_taken
             )
+            
+            approach_reward = float(self.reward_config.approach_reward_weight * approach_progress)
+            
+            action = action_dict[robot_id]
+            action_magnitude = float(np.abs(action).mean())
+            diversity_reward = float(self.reward_config.action_diversity_weight * action_magnitude)
+            
+            reward = hp_reward + approach_reward + diversity_reward
+            
             terminal_bonus = 0.0
             terminal_penalty = 0.0
             if done:
@@ -93,10 +114,13 @@ class SharedPolicySelfPlayHPEnv:
                 elif winner == opponent_id:
                     terminal_penalty = float(self.reward_config.lose_penalty)
                     reward -= terminal_penalty
+            
             rewards[robot_id] = float(reward)
             reward_breakdown[robot_id] = {
                 "damage_inflicted": damage_inflicted,
                 "damage_taken": damage_taken,
+                "approach_reward": approach_reward,
+                "diversity_reward": diversity_reward,
                 "terminal_bonus": terminal_bonus,
                 "terminal_penalty": terminal_penalty,
             }
@@ -108,6 +132,7 @@ class SharedPolicySelfPlayHPEnv:
         obs = self.base_env._get_obs()
         info = self.base_env._build_info()
         self._previous_scores = dict(info["scores"])
+        self._previous_horizontal_distance = float(info["relative_metrics"]["robot_a"]["horizontal_distance"])
         return self._normalize_obs(obs), info
 
     def step(
@@ -121,8 +146,16 @@ class SharedPolicySelfPlayHPEnv:
         }
         obs, _, terminated, truncated, info = self.base_env.step(action_dict)
         done = bool(terminated or truncated)
-        rewards, reward_breakdown = self._compute_rewards(self._previous_scores, info["scores"], done, info)
+        rewards, reward_breakdown = self._compute_rewards(
+            self._previous_scores,
+            info["scores"],
+            done,
+            info,
+            action_dict,
+            self._previous_horizontal_distance,
+        )
         self._previous_scores = dict(info["scores"])
+        self._previous_horizontal_distance = float(info["relative_metrics"]["robot_a"]["horizontal_distance"])
         updated_info = dict(info)
         updated_info["hp_rewards"] = reward_breakdown
         updated_info["applied_actions"] = {
