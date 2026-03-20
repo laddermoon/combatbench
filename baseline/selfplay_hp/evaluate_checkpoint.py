@@ -57,6 +57,7 @@ def build_env(run_config: dict, args: argparse.Namespace) -> SharedPolicySelfPla
         non_fall_mode=bool(run_config.get("non_fall_mode", False)),
         non_fall_pitch_limit_deg=float(run_config.get("non_fall_pitch_limit_deg", 15.0)),
         non_fall_roll_limit_deg=float(run_config.get("non_fall_roll_limit_deg", 10.0)),
+        damage_scale=float(run_config.get("damage_scale", 100.0)),
         reward_config=reward_config,
     )
 

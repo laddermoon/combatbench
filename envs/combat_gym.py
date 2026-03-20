@@ -35,6 +35,7 @@ class CombatGymEnv(gym.Env):
         non_fall_mode=False,
         non_fall_pitch_limit_deg=15.0,
         non_fall_roll_limit_deg=10.0,
+        damage_scale=100.0,
     ):
         super().__init__()
         
@@ -45,6 +46,7 @@ class CombatGymEnv(gym.Env):
         self.non_fall_mode = bool(non_fall_mode)
         self.non_fall_pitch_limit_deg = float(non_fall_pitch_limit_deg)
         self.non_fall_roll_limit_deg = float(non_fall_roll_limit_deg)
+        self.damage_scale = float(damage_scale)
 
         self.sim_frequency = 1.0 / dt
         self.control_frequency = control_frequency
@@ -82,8 +84,8 @@ class CombatGymEnv(gym.Env):
         })
         self.observation_slices = HumanoidRobot.OBSERVATION_SLICES
 
-        self.collision_detector = CollisionDetector(velocity_threshold=1.0)
-        self.score_calculator = ScoreCalculator()
+        self.collision_detector = CollisionDetector()
+        self.score_calculator = ScoreCalculator(damage_scale=self.damage_scale)
 
         self.robot_a = None
         self.robot_b = None
@@ -552,7 +554,11 @@ class CombatGymEnv(gym.Env):
                 defender = collision['defender']
                 hit_part = collision['hit_part']
                 damage_part = self.collision_detector.get_damage_part(hit_part)
-                damage = self.score_calculator.take_damage(defender, damage_part)
+                damage = self.score_calculator.take_damage(
+                    defender,
+                    damage_part,
+                    collision.get('impulse', 0.0),
+                )
 
                 if damage < 0:
                     self.hit_records[defender].append({
@@ -560,6 +566,9 @@ class CombatGymEnv(gym.Env):
                         'damage_part': damage_part,
                         'damage': damage,
                         'velocity': collision.get('velocity', 0),
+                        'force': collision.get('force', 0.0),
+                        'impulse': collision.get('impulse', 0.0),
+                        'contact_count': collision.get('contact_count', 0),
                     })
 
             if self.render_mode is not None and self.physics_step_count % self.video_sample_steps == 0:

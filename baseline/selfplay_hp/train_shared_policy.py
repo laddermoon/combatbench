@@ -109,6 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-mode", action="store_true")
     parser.add_argument("--non-fall-pitch-limit-deg", type=float, default=15.0)
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=10.0)
+    parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--damage-reward-scale", type=float, default=1.0)
     parser.add_argument("--damage-penalty-scale", type=float, default=1.0)
     parser.add_argument("--win-bonus", type=float, default=0.0)
@@ -159,6 +160,7 @@ def save_run_config(args: argparse.Namespace, run_dir: Path) -> None:
         "non_fall_mode": args.non_fall_mode,
         "non_fall_pitch_limit_deg": args.non_fall_pitch_limit_deg,
         "non_fall_roll_limit_deg": args.non_fall_roll_limit_deg,
+        "damage_scale": args.damage_scale,
         "reward_config": reward_config.to_dict(),
         "ppo_config": asdict(ppo_config),
     }
@@ -196,6 +198,7 @@ def build_env(args: argparse.Namespace) -> SharedPolicySelfPlayHPEnv:
         non_fall_mode=args.non_fall_mode,
         non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
         non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
+        damage_scale=args.damage_scale,
         reward_config=reward_config,
     )
 

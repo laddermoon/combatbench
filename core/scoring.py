@@ -25,13 +25,14 @@ class ScoreCalculator:
         'torso': -1,
     }
 
-    def __init__(self):
+    def __init__(self, damage_scale=100.0):
+        self.damage_scale = float(damage_scale)
         self.health = {
             'robot_a': self.INITIAL_HEALTH,
             'robot_b': self.INITIAL_HEALTH,
         }
 
-    def take_damage(self, robot, hit_part):
+    def take_damage(self, robot, hit_part, impulse):
         """
         Take damage
 
@@ -42,7 +43,11 @@ class ScoreCalculator:
         Returns:
             damage: Damage value caused (0 means no HP deduction)
         """
-        damage = self.DAMAGE_RULES.get(hit_part, 0)
+        damage_weight = -float(self.DAMAGE_RULES.get(hit_part, 0))
+        if damage_weight <= 0.0:
+            return 0.0
+
+        damage = -damage_weight * float(impulse) / self.damage_scale
 
         if damage < 0:
             self.health[robot] += damage

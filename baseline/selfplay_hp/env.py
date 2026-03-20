@@ -13,7 +13,6 @@ from ..sb3.selfplay_env import (
     STAND_PD_KD,
     STAND_PD_KP,
     build_stand_reset_pose,
-    configure_base_env_for_fight,
 )
 
 
@@ -90,6 +89,7 @@ class SharedPolicySelfPlayHPEnv:
         non_fall_mode: bool = True,
         non_fall_pitch_limit_deg: float = 15.0,
         non_fall_roll_limit_deg: float = 10.0,
+        damage_scale: float = 100.0,
         reward_config: SelfPlayHPRewardConfig | None = None,
         target_height: float = FIGHT_REWARD_CONFIG.target_height,
     ) -> None:
@@ -102,6 +102,7 @@ class SharedPolicySelfPlayHPEnv:
             non_fall_mode=non_fall_mode,
             non_fall_pitch_limit_deg=non_fall_pitch_limit_deg,
             non_fall_roll_limit_deg=non_fall_roll_limit_deg,
+            damage_scale=damage_scale,
         )
         self.normalizer = ObservationNormalizer(target_height=target_height)
         self.observation_space = spaces.Dict(

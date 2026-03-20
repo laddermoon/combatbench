@@ -27,8 +27,8 @@ class CollisionDetector:
         'head', 'torso', 'waist_upper', 'waist_lower', 'pelvis', 'butt'
     }
 
-    def __init__(self, velocity_threshold=1.0):
-        self.velocity_threshold = velocity_threshold
+    def __init__(self):
+        pass
 
     def get_part_category(self, geom_name):
         if not geom_name:
@@ -69,10 +69,16 @@ class CollisionDetector:
             return 'torso'
         return None
 
+    def get_contact_force(self, model, data, contact_index):
+        result = np.zeros(6, dtype=np.float64)
+        mujoco.mj_contactForce(model, data, contact_index, result)
+        return float(np.linalg.norm(result[:3]))
+
     def check_collisions(self, robot_a, robot_b, physics):
-        collisions = []
         data = physics.data
         model = physics.model
+        collisions = {}
+        timestep = float(model.opt.timestep)
 
         robot_a_suffixes = tuple(
             suffix
@@ -118,37 +124,79 @@ class CollisionDetector:
                 cat1 = self.get_part_category(geom1_name)
                 cat2 = self.get_part_category(geom2_name)
 
-                # Get relative velocity at contact point
                 body1_id = model.geom_bodyid[geom1_id]
                 body2_id = model.geom_bodyid[geom2_id]
                 vel1 = data.cvel[body1_id, 3:6] if body1_id >= 0 else np.zeros(3)
                 vel2 = data.cvel[body2_id, 3:6] if body2_id >= 0 else np.zeros(3)
                 rel_speed = np.linalg.norm(vel1 - vel2)
+                force = self.get_contact_force(model, data, i)
+                impulse = force * timestep
 
-                if rel_speed < self.velocity_threshold:
-                    continue
-
-                # Determine who hit whom
                 if is_geom1_a and is_geom2_b:
-                    # A hits B
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
-                        collisions.append({'attacker': 'robot_a', 'defender': 'robot_b', 'hit_part': cat2, 'velocity': rel_speed})
+                        key = ('robot_a', 'robot_b', cat2)
+                        if key not in collisions:
+                            collisions[key] = {
+                                'attacker': 'robot_a',
+                                'defender': 'robot_b',
+                                'hit_part': cat2,
+                                'velocity': 0.0,
+                                'force': 0.0,
+                                'impulse': 0.0,
+                                'contact_count': 0,
+                            }
+                        collisions[key]['velocity'] = max(collisions[key]['velocity'], float(rel_speed))
+                        collisions[key]['force'] += force
+                        collisions[key]['impulse'] += impulse
+                        collisions[key]['contact_count'] += 1
                     if cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
-                        collisions.append({'attacker': 'robot_b', 'defender': 'robot_a', 'hit_part': cat1, 'velocity': rel_speed})
+                        key = ('robot_b', 'robot_a', cat1)
+                        if key not in collisions:
+                            collisions[key] = {
+                                'attacker': 'robot_b',
+                                'defender': 'robot_a',
+                                'hit_part': cat1,
+                                'velocity': 0.0,
+                                'force': 0.0,
+                                'impulse': 0.0,
+                                'contact_count': 0,
+                            }
+                        collisions[key]['velocity'] = max(collisions[key]['velocity'], float(rel_speed))
+                        collisions[key]['force'] += force
+                        collisions[key]['impulse'] += impulse
+                        collisions[key]['contact_count'] += 1
                 elif is_geom1_b and is_geom2_a:
-                    # B hits A
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
-                        collisions.append({'attacker': 'robot_b', 'defender': 'robot_a', 'hit_part': cat2, 'velocity': rel_speed})
+                        key = ('robot_b', 'robot_a', cat2)
+                        if key not in collisions:
+                            collisions[key] = {
+                                'attacker': 'robot_b',
+                                'defender': 'robot_a',
+                                'hit_part': cat2,
+                                'velocity': 0.0,
+                                'force': 0.0,
+                                'impulse': 0.0,
+                                'contact_count': 0,
+                            }
+                        collisions[key]['velocity'] = max(collisions[key]['velocity'], float(rel_speed))
+                        collisions[key]['force'] += force
+                        collisions[key]['impulse'] += impulse
+                        collisions[key]['contact_count'] += 1
                     if cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
-                        collisions.append({'attacker': 'robot_a', 'defender': 'robot_b', 'hit_part': cat1, 'velocity': rel_speed})
+                        key = ('robot_a', 'robot_b', cat1)
+                        if key not in collisions:
+                            collisions[key] = {
+                                'attacker': 'robot_a',
+                                'defender': 'robot_b',
+                                'hit_part': cat1,
+                                'velocity': 0.0,
+                                'force': 0.0,
+                                'impulse': 0.0,
+                                'contact_count': 0,
+                            }
+                        collisions[key]['velocity'] = max(collisions[key]['velocity'], float(rel_speed))
+                        collisions[key]['force'] += force
+                        collisions[key]['impulse'] += impulse
+                        collisions[key]['contact_count'] += 1
 
-        # Deduplicate (multiple contact points may occur on the same part in one physics step)
-        unique_collisions = []
-        seen = set()
-        for c in collisions:
-            key = (c['attacker'], c['defender'], c['hit_part'])
-            if key not in seen:
-                seen.add(key)
-                unique_collisions.append(c)
-
-        return unique_collisions
+        return list(collisions.values())
