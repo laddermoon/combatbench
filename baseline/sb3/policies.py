@@ -104,11 +104,6 @@ class SB3CombatPolicy:
                     attacker_base_model,
                     deterministic=deterministic,
                     device=device,
-                    approach_base_mode=self.approach_base_mode,
-                    approach_distance_threshold=self.approach_distance_threshold,
-                    approach_abdomen_y_action=self.approach_abdomen_y_action,
-                    approach_min_height=self.approach_min_height,
-                    approach_min_uprightness=self.approach_min_uprightness,
                 )
         self.model = PPO.load(self.model_path, device=device)
 
