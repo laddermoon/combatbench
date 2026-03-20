@@ -115,6 +115,33 @@ ATTACKER_REWARD_CONFIG = RewardConfig(
 )
 
 
+ATTACKER_APPROACH_REWARD_CONFIG = RewardConfig(
+    name="fight_attacker_approach",
+    target_height=1.24,
+    height_sigma=0.16,
+    min_height=0.95,
+    min_uprightness=0.4,
+    target_distance=1.5,
+    distance_sigma=0.28,
+    survival_reward=0.05,
+    height_weight=0.2,
+    upright_weight=0.22,
+    feet_contact_weight=0.08,
+    facing_weight=0.18,
+    distance_weight=0.55,
+    damage_reward_weight=0.0,
+    damage_penalty_weight=2.0,
+    arena_penalty_weight=0.08,
+    linear_velocity_penalty_weight=0.008,
+    angular_velocity_penalty_weight=0.006,
+    action_penalty_weight=0.003,
+    action_change_penalty_weight=0.008,
+    fall_penalty=20.0,
+    win_bonus=4.0,
+    lose_penalty=10.0,
+)
+
+
 def resolve_reward_config(phase: str) -> RewardConfig:
     phase_name = phase.lower().strip()
     if phase_name == "stand":
@@ -123,6 +150,8 @@ def resolve_reward_config(phase: str) -> RewardConfig:
         return FIGHT_REWARD_CONFIG
     if phase_name == "fight_attacker":
         return ATTACKER_REWARD_CONFIG
+    if phase_name == "fight_attacker_approach":
+        return ATTACKER_APPROACH_REWARD_CONFIG
     raise ValueError(f"Unsupported phase: {phase}")
 
 

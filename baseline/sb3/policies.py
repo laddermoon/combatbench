@@ -194,6 +194,11 @@ class SB3CombatPolicy:
             base_action = self.base_policy.act(obs, info)
             if self.attacker_base_action_compensation is not None:
                 base_action = np.asarray(base_action, dtype=np.float32) * self.attacker_base_action_compensation
+
+            base_policy_mode = getattr(self.base_policy, "approach_base_mode", None)
+            if self.approach_base_mode == "lean_forward" and base_policy_mode != "lean_forward":
+                base_action = self._apply_approach_base(raw_obs, base_action, info)
+
             action_array = np.clip(base_action + self.attacker_residual_action_scale * action_array, -1.0, 1.0)
         else:
             action_array = self._apply_approach_base(raw_obs, action_array, info)
