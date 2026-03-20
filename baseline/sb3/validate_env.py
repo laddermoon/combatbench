@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from stable_baselines3.common.env_checker import check_env
 
-from .rewards import ATTACKER_REWARD_CONFIG, FIGHT_REWARD_CONFIG, STANDING_REWARD_CONFIG
+from .rewards import ATTACKER_APPROACH_REWARD_CONFIG, ATTACKER_REWARD_CONFIG, FIGHT_REWARD_CONFIG, STANDING_REWARD_CONFIG
 from .selfplay_env import make_attacker_standing_env, make_symmetric_selfplay_env
 
 
@@ -18,7 +18,7 @@ def configure_runtime() -> None:
 
 
 def smoke_test_phase(phase_name: str, reward_config) -> None:
-    if phase_name == "fight_attacker":
+    if phase_name in {"fight_attacker", "fight_attacker_approach"}:
         opponent_model_path = Path(__file__).resolve().parent / "runs" / "stand_env_residual_smoke_v3" / "best_model" / "best_model.zip"
         env = make_attacker_standing_env(
             opponent_model_path=str(opponent_model_path),
@@ -59,6 +59,7 @@ def main() -> None:
     smoke_test_phase("stand", STANDING_REWARD_CONFIG)
     smoke_test_phase("fight", FIGHT_REWARD_CONFIG)
     smoke_test_phase("fight_attacker", ATTACKER_REWARD_CONFIG)
+    smoke_test_phase("fight_attacker_approach", ATTACKER_APPROACH_REWARD_CONFIG)
     print("Environment validation completed.")
 
 

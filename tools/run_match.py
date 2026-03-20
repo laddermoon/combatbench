@@ -13,9 +13,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from combatbench.baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_fight_attacker, configure_base_env_for_stand
     from combatbench.envs.combat_gym import CombatGymEnv
+    from combatbench.baseline.sb3.policies import SB3CombatPolicy
 except ImportError:
     from baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_fight_attacker, configure_base_env_for_stand
     from envs.combat_gym import CombatGymEnv
+    try:
+        from baseline.sb3.policies import SB3CombatPolicy
+    except ImportError:
+        SB3CombatPolicy = None
 
 class MatchRunner:
     """
@@ -47,7 +52,7 @@ class MatchRunner:
             configure_base_env_for_fight(self.env)
             obs = self.env._get_obs()
             info = self.env._build_info()
-        elif self.phase == "fight_attacker":
+        elif self.phase in ["fight_attacker", "fight_attacker_approach"]:
             configure_base_env_for_fight_attacker(self.env)
             obs = self.env._get_obs()
             info = self.env._build_info()
@@ -131,18 +136,40 @@ if __name__ == "__main__":
     parser.add_argument('--video', type=str, default=None, help='Path to save the match video (e.g., match.mp4)')
     parser.add_argument('--duration', type=float, default=30.0, help='Match duration in seconds')
     parser.add_argument('--initial-distance', type=float, default=2.0, help='Initial torso distance between the two robots')
-    parser.add_argument('--phase', type=str, default=None, choices=['stand', 'fight'], help='Optional controller configuration to apply after reset')
+    parser.add_argument('--phase', type=str, default=None, choices=['stand', 'fight', 'fight_attacker', 'fight_attacker_approach'], help='Optional controller configuration to apply after reset')
+    parser.add_argument('--model', type=str, default=None, help='Path to model A (attacker)')
+    parser.add_argument('--model-b', type=str, default=None, help='Path to model B (defender)')
+    parser.add_argument('--device', type=str, default='auto', help='Device for policy inference')
     
     args = parser.parse_args()
 
-    # Create dummy policies for CLI standalone run
-    # In real usage, this class should be imported and policies injected into constructor
-    policy_a = DummyPolicy()
-    policy_b = DummyPolicy()
+    if args.model:
+        if SB3CombatPolicy is None:
+             raise ImportError("SB3CombatPolicy could not be imported. Ensure dependencies are installed.")
+        policy_a = SB3CombatPolicy(args.model, device=args.device)
+    else:
+        policy_a = DummyPolicy()
+
+    if args.model_b:
+        if SB3CombatPolicy is None:
+             raise ImportError("SB3CombatPolicy could not be imported. Ensure dependencies are installed.")
+        policy_b = SB3CombatPolicy(args.model_b, device=args.device)
+    elif args.model and args.phase in ["fight_attacker", "fight_attacker_approach"]:
+         # In attacker phases, if model_b is not provided, we might want to default to something or just use dummy/none.
+         # For now, let's just default to DummyPolicy if not provided, or maybe we can reuse model A if desired (but unlikely for asymmetric).
+         # However, SB3CombatPolicy handles base policies internally.
+         # Let's keep it simple: if model_b is not provided, use DummyPolicy or the user should provide it.
+         # But wait, run_policy_video defaults model_b to model_a for selfplay.
+         # For fight_attacker, usually model_b is a standing policy.
+         # If not provided, we will stick with DummyPolicy (random actions) for B, which might be fine for testing.
+         policy_b = DummyPolicy()
+    else:
+        policy_b = DummyPolicy()
 
     runner = MatchRunner(
         policy_a=policy_a, 
         policy_b=policy_b,
+        render_mode="rgb_array" if args.video else None,
         match_duration=args.duration,
         initial_distance=args.initial_distance,
         phase=args.phase,
