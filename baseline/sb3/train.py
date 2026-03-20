@@ -10,17 +10,19 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 
-from .rewards import FIGHT_REWARD_CONFIG, STANDING_REWARD_CONFIG, resolve_reward_config
-from .selfplay_env import make_symmetric_selfplay_env
+from .rewards import resolve_reward_config
+from .selfplay_env import build_attacker_base_action_compensation, make_attacker_standing_env, make_symmetric_selfplay_env
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the SB3 shared-policy combat baseline")
-    parser.add_argument("--phase", choices=["stand", "fight"], default="stand")
+    parser.add_argument("--phase", choices=["stand", "fight", "fight_attacker"], default="stand")
     parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--init-model", type=str, default=None)
+    parser.add_argument("--opponent-model", type=str, default=None)
+    parser.add_argument("--attacker-base-model", type=str, default=None)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--n-steps", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -53,12 +55,18 @@ def configure_runtime() -> None:
 
 
 def default_match_duration(phase: str) -> float:
-    return 10.0 if phase == "stand" else 15.0
+    if phase == "stand":
+        return 10.0
+    return 15.0
 
 
 
 def default_initial_distance(phase: str) -> float:
-    return 2.0 if phase == "stand" else 1.0
+    if phase == "stand":
+        return 2.0
+    if phase == "fight_attacker":
+        return 2.0
+    return 1.0
 
 
 
@@ -73,6 +81,14 @@ def make_run_directory(args: argparse.Namespace) -> Path:
 def save_run_config(run_dir: Path, args: argparse.Namespace, reward_config) -> None:
     config = {
         "phase": args.phase,
+        "opponent_model": args.opponent_model,
+        "attacker_base_model": args.attacker_base_model,
+        "action_interpretation": "attacker_base_residual" if args.phase == "fight_attacker" else "direct",
+        "attacker_residual_action_scale": 0.35 if args.phase == "fight_attacker" else None,
+        "attacker_base_action_compensation": build_attacker_base_action_compensation().tolist() if args.phase == "fight_attacker" else None,
+        "approach_base_mode": "lean_forward" if args.phase == "fight_attacker" else None,
+        "approach_distance_threshold": 1.0 if args.phase == "fight_attacker" else None,
+        "approach_abdomen_y_action": 0.6 if args.phase == "fight_attacker" else None,
         "timesteps": args.timesteps,
         "learning_rate": args.learning_rate,
         "n_steps": args.n_steps,
@@ -100,6 +116,21 @@ def save_run_config(run_dir: Path, args: argparse.Namespace, reward_config) -> N
 
 def build_env(args: argparse.Namespace, phase: str):
     reward_config = resolve_reward_config(phase)
+    if phase == "fight_attacker":
+        opponent_model = args.opponent_model
+        if not opponent_model:
+            raise ValueError("fight_attacker phase requires --opponent-model pointing to a standing checkpoint")
+        env = make_attacker_standing_env(
+            opponent_model_path=opponent_model,
+            attacker_base_model_path=args.attacker_base_model or opponent_model,
+            render_mode=None,
+            match_duration=args.match_duration,
+            control_frequency=args.control_frequency,
+            initial_distance=args.initial_distance,
+            reward_config=reward_config,
+            opponent_device=args.device,
+        )
+        return Monitor(env), reward_config
     env = make_symmetric_selfplay_env(
         render_mode=None,
         match_duration=args.match_duration,
@@ -120,7 +151,7 @@ def build_model(args: argparse.Namespace, env, run_dir: Path):
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if args.init_model:
+    if args.init_model and args.phase != "fight_attacker":
         model = PPO.load(args.init_model, env=env, device=device)
         model.verbose = 1
         return model, device
@@ -154,6 +185,13 @@ def main() -> None:
     args.match_duration = args.match_duration or default_match_duration(args.phase)
     if args.initial_distance is None:
         args.initial_distance = default_initial_distance(args.phase)
+    if args.phase == "fight_attacker":
+        if float(args.initial_distance) != 2.0:
+            raise ValueError("fight_attacker phase requires initial_distance=2.0")
+        if args.opponent_model is None:
+            raise ValueError("fight_attacker phase requires --opponent-model")
+        if args.attacker_base_model is None:
+            args.attacker_base_model = args.opponent_model
     configure_runtime()
 
     run_dir = make_run_directory(args)

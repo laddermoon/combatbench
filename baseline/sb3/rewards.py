@@ -39,27 +39,27 @@ class RewardConfig:
 STANDING_REWARD_CONFIG = RewardConfig(
     name="stand",
     target_height=1.282,
-    height_sigma=0.14,
+    height_sigma=0.12,
     min_height=0.98,
-    min_uprightness=0.45,
-    target_distance=1.5,
-    distance_sigma=0.55,
-    survival_reward=0.2,
-    height_weight=0.45,
-    upright_weight=0.28,
-    feet_contact_weight=0.15,
-    facing_weight=0.04,
-    distance_weight=0.03,
-    damage_reward_weight=0.1,
-    damage_penalty_weight=0.2,
-    arena_penalty_weight=0.04,
-    linear_velocity_penalty_weight=0.01,
-    angular_velocity_penalty_weight=0.01,
-    action_penalty_weight=0.004,
-    action_change_penalty_weight=0.008,
-    fall_penalty=8.0,
-    win_bonus=0.5,
-    lose_penalty=0.5,
+    min_uprightness=0.55,
+    target_distance=2.0,
+    distance_sigma=0.7,
+    survival_reward=0.35,
+    height_weight=0.5,
+    upright_weight=0.4,
+    feet_contact_weight=0.2,
+    facing_weight=0.0,
+    distance_weight=0.0,
+    damage_reward_weight=0.0,
+    damage_penalty_weight=0.0,
+    arena_penalty_weight=0.015,
+    linear_velocity_penalty_weight=0.02,
+    angular_velocity_penalty_weight=0.02,
+    action_penalty_weight=0.002,
+    action_change_penalty_weight=0.004,
+    fall_penalty=10.0,
+    win_bonus=0.0,
+    lose_penalty=0.0,
 )
 
 FIGHT_REWARD_CONFIG = RewardConfig(
@@ -88,6 +88,32 @@ FIGHT_REWARD_CONFIG = RewardConfig(
     lose_penalty=2.5,
 )
 
+ATTACKER_REWARD_CONFIG = RewardConfig(
+    name="fight_attacker",
+    target_height=1.24,
+    height_sigma=0.18,
+    min_height=0.9,
+    min_uprightness=0.3,
+    target_distance=0.75,
+    distance_sigma=0.35,
+    survival_reward=0.0,
+    height_weight=0.12,
+    upright_weight=0.12,
+    feet_contact_weight=0.04,
+    facing_weight=0.28,
+    distance_weight=0.35,
+    damage_reward_weight=2.0,
+    damage_penalty_weight=1.2,
+    arena_penalty_weight=0.08,
+    linear_velocity_penalty_weight=0.012,
+    angular_velocity_penalty_weight=0.006,
+    action_penalty_weight=0.003,
+    action_change_penalty_weight=0.008,
+    fall_penalty=18.0,
+    win_bonus=6.0,
+    lose_penalty=8.0,
+)
+
 
 def resolve_reward_config(phase: str) -> RewardConfig:
     phase_name = phase.lower().strip()
@@ -95,6 +121,8 @@ def resolve_reward_config(phase: str) -> RewardConfig:
         return STANDING_REWARD_CONFIG
     if phase_name == "fight":
         return FIGHT_REWARD_CONFIG
+    if phase_name == "fight_attacker":
+        return ATTACKER_REWARD_CONFIG
     raise ValueError(f"Unsupported phase: {phase}")
 
 

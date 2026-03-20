@@ -14,7 +14,7 @@ from stable_baselines3 import PPO
 
 from combatbench.baseline.sb3.policies import SB3CombatPolicy
 from combatbench.baseline.sb3.rewards import resolve_reward_config
-from combatbench.baseline.sb3.selfplay_env import make_symmetric_selfplay_env
+from combatbench.baseline.sb3.selfplay_env import make_attacker_standing_env, make_symmetric_selfplay_env
 from combatbench.tools.run_match import MatchRunner
 
 
@@ -27,6 +27,7 @@ def default_video_path(model_path: str, phase: str, mode: str) -> Path:
 
 def export_shared_env_video(
     model_path: str,
+    model_b: str | None,
     phase: str,
     video_path: str,
     duration: float,
@@ -35,13 +36,25 @@ def export_shared_env_video(
     device: str,
 ) -> None:
     reward_config = resolve_reward_config(phase)
-    env = make_symmetric_selfplay_env(
-        render_mode="rgb_array",
-        match_duration=duration,
-        control_frequency=control_frequency,
-        initial_distance=initial_distance,
-        reward_config=reward_config,
-    )
+    if phase == "fight_attacker":
+        opponent_model_path = model_b or model_path
+        env = make_attacker_standing_env(
+            opponent_model_path=opponent_model_path,
+            render_mode="rgb_array",
+            match_duration=duration,
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
+            reward_config=reward_config,
+            opponent_device=device,
+        )
+    else:
+        env = make_symmetric_selfplay_env(
+            render_mode="rgb_array",
+            match_duration=duration,
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
+            reward_config=reward_config,
+        )
     model = PPO.load(model_path, env=env, device=device)
 
     obs, info = env.reset()
@@ -98,7 +111,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["shared_env", "match"], default="shared_env")
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--model-b", type=str, default=None)
-    parser.add_argument("--phase", choices=["stand", "fight"], default="stand")
+    parser.add_argument("--phase", choices=["stand", "fight", "fight_attacker"], default="stand")
     parser.add_argument("--video", type=str, default=None)
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--control-frequency", type=int, default=20)
@@ -110,11 +123,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.phase == "fight_attacker" and float(args.initial_distance) != 2.0:
+        raise ValueError("fight_attacker phase requires initial_distance=2.0")
     video_path = args.video or str(default_video_path(args.model, args.phase, args.mode))
 
     if args.mode == "shared_env":
         export_shared_env_video(
             model_path=args.model,
+            model_b=args.model_b,
             phase=args.phase,
             video_path=video_path,
             duration=args.duration,

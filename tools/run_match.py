@@ -11,10 +11,10 @@ os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 # Add parent directory to path to import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
-    from combatbench.baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_stand
+    from combatbench.baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_fight_attacker, configure_base_env_for_stand
     from combatbench.envs.combat_gym import CombatGymEnv
 except ImportError:
-    from baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_stand
+    from baseline.sb3.selfplay_env import configure_base_env_for_fight, configure_base_env_for_fight_attacker, configure_base_env_for_stand
     from envs.combat_gym import CombatGymEnv
 
 class MatchRunner:
@@ -45,6 +45,10 @@ class MatchRunner:
             info = self.env._build_info()
         elif self.phase == "fight":
             configure_base_env_for_fight(self.env)
+            obs = self.env._get_obs()
+            info = self.env._build_info()
+        elif self.phase == "fight_attacker":
+            configure_base_env_for_fight_attacker(self.env)
             obs = self.env._get_obs()
             info = self.env._build_info()
         print("=" * 60)

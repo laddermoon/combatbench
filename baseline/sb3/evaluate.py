@@ -10,7 +10,7 @@ from stable_baselines3 import PPO
 from ...tools.run_match import MatchRunner
 from .policies import SB3CombatPolicy
 from .rewards import resolve_reward_config
-from .selfplay_env import make_symmetric_selfplay_env
+from .selfplay_env import make_attacker_standing_env, make_symmetric_selfplay_env
 
 
 
@@ -20,15 +20,27 @@ def configure_runtime() -> None:
 
 
 
-def evaluate_shared_env(model_path: str, phase: str, episodes: int, match_duration: float, control_frequency: int, initial_distance: float) -> None:
+def evaluate_shared_env(model_path: str, phase: str, episodes: int, match_duration: float, control_frequency: int, initial_distance: float, opponent_model: str | None = None) -> None:
     reward_config = resolve_reward_config(phase)
-    env = make_symmetric_selfplay_env(
-        render_mode=None,
-        match_duration=match_duration,
-        control_frequency=control_frequency,
-        initial_distance=initial_distance,
-        reward_config=reward_config,
-    )
+    if phase == "fight_attacker":
+        opponent_model_path = opponent_model or model_path
+        env = make_attacker_standing_env(
+            opponent_model_path=opponent_model_path,
+            render_mode=None,
+            match_duration=match_duration,
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
+            reward_config=reward_config,
+            opponent_device="auto",
+        )
+    else:
+        env = make_symmetric_selfplay_env(
+            render_mode=None,
+            match_duration=match_duration,
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
+            reward_config=reward_config,
+        )
     model = PPO.load(model_path, env=env, device="auto")
 
     rewards = []
@@ -82,7 +94,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=["selfplay", "match"], default="selfplay")
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--model-b", type=str, default=None)
-    parser.add_argument("--phase", choices=["stand", "fight"], default="fight")
+    parser.add_argument("--phase", choices=["stand", "fight", "fight_attacker"], default="fight")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--duration", type=float, default=15.0)
     parser.add_argument("--control-frequency", type=int, default=20)
@@ -96,6 +108,8 @@ def main() -> None:
     configure_runtime()
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.phase == "fight_attacker" and float(args.initial_distance) != 2.0:
+        raise ValueError("fight_attacker phase requires initial_distance=2.0")
 
     if args.mode == "selfplay":
         evaluate_shared_env(
@@ -105,6 +119,7 @@ def main() -> None:
             match_duration=args.duration,
             control_frequency=args.control_frequency,
             initial_distance=args.initial_distance,
+            opponent_model=args.model_b,
         )
         return
 
