@@ -16,7 +16,7 @@ from .selfplay_env import build_attacker_base_action_compensation, make_attacker
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the SB3 shared-policy combat baseline")
-    parser.add_argument("--phase", choices=["stand", "fight", "fight_attacker"], default="stand")
+    parser.add_argument("--phase", choices=["stand", "fight", "fight_attacker_approach", "fight_attacker"], default="stand")
     parser.add_argument("--timesteps", type=int, default=1_000_000)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
@@ -64,6 +64,8 @@ def default_match_duration(phase: str) -> float:
 def default_initial_distance(phase: str) -> float:
     if phase == "stand":
         return 2.0
+    if phase == "fight_attacker_approach":
+        return 2.0
     if phase == "fight_attacker":
         return 2.0
     return 1.0
@@ -79,16 +81,19 @@ def make_run_directory(args: argparse.Namespace) -> Path:
 
 
 def save_run_config(run_dir: Path, args: argparse.Namespace, reward_config) -> None:
+    is_attacker_phase = args.phase in {"fight_attacker_approach", "fight_attacker"}
     config = {
         "phase": args.phase,
         "opponent_model": args.opponent_model,
         "attacker_base_model": args.attacker_base_model,
-        "action_interpretation": "attacker_base_residual" if args.phase == "fight_attacker" else "direct",
-        "attacker_residual_action_scale": 0.35 if args.phase == "fight_attacker" else None,
-        "attacker_base_action_compensation": build_attacker_base_action_compensation().tolist() if args.phase == "fight_attacker" else None,
-        "approach_base_mode": "lean_forward" if args.phase == "fight_attacker" else None,
-        "approach_distance_threshold": 1.0 if args.phase == "fight_attacker" else None,
-        "approach_abdomen_y_action": 0.6 if args.phase == "fight_attacker" else None,
+        "action_interpretation": "attacker_base_residual" if is_attacker_phase else "direct",
+        "attacker_residual_action_scale": 0.35 if is_attacker_phase else None,
+        "attacker_base_action_compensation": build_attacker_base_action_compensation().tolist() if is_attacker_phase else None,
+        "approach_base_mode": "stepping_forward" if is_attacker_phase else None,
+        "approach_distance_threshold": float(reward_config.target_distance) if is_attacker_phase else None,
+        "approach_abdomen_y_action": 0.6 if is_attacker_phase else None,
+        "approach_min_height": 1.0 if is_attacker_phase else None,
+        "approach_min_uprightness": 0.55 if is_attacker_phase else None,
         "timesteps": args.timesteps,
         "learning_rate": args.learning_rate,
         "n_steps": args.n_steps,
@@ -116,10 +121,10 @@ def save_run_config(run_dir: Path, args: argparse.Namespace, reward_config) -> N
 
 def build_env(args: argparse.Namespace, phase: str):
     reward_config = resolve_reward_config(phase)
-    if phase == "fight_attacker":
+    if phase in {"fight_attacker_approach", "fight_attacker"}:
         opponent_model = args.opponent_model
         if not opponent_model:
-            raise ValueError("fight_attacker phase requires --opponent-model pointing to a standing checkpoint")
+            raise ValueError(f"{phase} phase requires --opponent-model pointing to a standing checkpoint")
         env = make_attacker_standing_env(
             opponent_model_path=opponent_model,
             attacker_base_model_path=args.attacker_base_model or opponent_model,
@@ -151,7 +156,7 @@ def build_model(args: argparse.Namespace, env, run_dir: Path):
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if args.init_model and args.phase != "fight_attacker":
+    if args.init_model:
         model = PPO.load(args.init_model, env=env, device=device)
         model.verbose = 1
         return model, device
@@ -185,11 +190,11 @@ def main() -> None:
     args.match_duration = args.match_duration or default_match_duration(args.phase)
     if args.initial_distance is None:
         args.initial_distance = default_initial_distance(args.phase)
-    if args.phase == "fight_attacker":
+    if args.phase in {"fight_attacker_approach", "fight_attacker"}:
         if float(args.initial_distance) != 2.0:
-            raise ValueError("fight_attacker phase requires initial_distance=2.0")
+            raise ValueError(f"{args.phase} phase requires initial_distance=2.0")
         if args.opponent_model is None:
-            raise ValueError("fight_attacker phase requires --opponent-model")
+            raise ValueError(f"{args.phase} phase requires --opponent-model")
         if args.attacker_base_model is None:
             args.attacker_base_model = args.opponent_model
     configure_runtime()

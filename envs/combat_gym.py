@@ -191,6 +191,7 @@ class CombatGymEnv(gym.Env):
             'hit_records': self.hit_records.copy(),
             'winner': winner if (terminated or truncated) else None,
             'end_reason': end_reason,
+            'current_step': self.current_step,
             'physics_step_count': self.physics_step_count,
             'controller_state': {
                 'robot_a': {
