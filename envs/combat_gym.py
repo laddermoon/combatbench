@@ -4,6 +4,7 @@ import mujoco
 from gymnasium import spaces
 import os
 from pathlib import Path
+from scipy.spatial.transform import Rotation as R
 import sys
 
 # Add parent directory to path to import local modules
@@ -31,6 +32,9 @@ class CombatGymEnv(gym.Env):
         control_frequency=20,
         video_sample_frequency=10,
         match_duration=30.0,   # Single roundduration 30 seconds
+        non_fall_mode=False,
+        non_fall_pitch_limit_deg=15.0,
+        non_fall_roll_limit_deg=10.0,
     ):
         super().__init__()
         
@@ -38,6 +42,9 @@ class CombatGymEnv(gym.Env):
         self.dt = dt
         self.initial_distance = initial_distance
         self.match_duration = match_duration
+        self.non_fall_mode = bool(non_fall_mode)
+        self.non_fall_pitch_limit_deg = float(non_fall_pitch_limit_deg)
+        self.non_fall_roll_limit_deg = float(non_fall_roll_limit_deg)
 
         self.sim_frequency = 1.0 / dt
         self.control_frequency = control_frequency
@@ -118,6 +125,8 @@ class CombatGymEnv(gym.Env):
         self._prev_cam_pos = None
         self._prev_lookat = None
 
+        self._root_joint_cache = None
+
     def _get_root_pose_targets(self):
         return {
             'robot_a': {
@@ -143,6 +152,68 @@ class CombatGymEnv(gym.Env):
             self.physics.data.qpos[qpos_adr:qpos_adr + 3] = root_pose['position']
             self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = root_pose['orientation']
             self.physics.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+
+    def _get_root_joint_cache(self):
+        if self._root_joint_cache is not None:
+            return self._root_joint_cache
+
+        self._root_joint_cache = {}
+        for robot_id, root_pose in self._get_root_pose_targets().items():
+            joint_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_JOINT, root_pose['joint_name'])
+            if joint_id < 0:
+                continue
+            self._root_joint_cache[robot_id] = {
+                'joint_id': joint_id,
+                'qpos_adr': int(self.physics.model.jnt_qposadr[joint_id]),
+                'qvel_adr': int(self.physics.model.jnt_dofadr[joint_id]),
+            }
+        return self._root_joint_cache
+
+    def _clamp_root_orientation(self, robot_id):
+        if not self.non_fall_mode:
+            return False
+
+        root_joint = self._get_root_joint_cache().get(robot_id)
+        if root_joint is None:
+            return False
+
+        qpos_adr = root_joint['qpos_adr']
+        orientation_wxyz = np.asarray(self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7], dtype=np.float64)
+        if np.linalg.norm(orientation_wxyz) < 1e-8:
+            return False
+
+        orientation_xyzw = np.array(
+            [orientation_wxyz[1], orientation_wxyz[2], orientation_wxyz[3], orientation_wxyz[0]],
+            dtype=np.float64,
+        )
+        rotation = R.from_quat(orientation_xyzw)
+        roll, pitch, yaw = rotation.as_euler('xyz', degrees=True)
+        clamped_roll = float(np.clip(roll, -self.non_fall_roll_limit_deg, self.non_fall_roll_limit_deg))
+        clamped_pitch = float(np.clip(pitch, -self.non_fall_pitch_limit_deg, self.non_fall_pitch_limit_deg))
+
+        if np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch):
+            return False
+
+        clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
+        clamped_xyzw = clamped_rotation.as_quat()
+        clamped_wxyz = np.array(
+            [clamped_xyzw[3], clamped_xyzw[0], clamped_xyzw[1], clamped_xyzw[2]],
+            dtype=np.float64,
+        )
+        self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = clamped_wxyz
+        qvel_adr = root_joint['qvel_adr']
+        self.physics.data.qvel[qvel_adr:qvel_adr + 2] = 0.0
+        return True
+
+    def _enforce_non_fall_mode(self):
+        if not self.non_fall_mode:
+            return
+
+        changed = False
+        for robot_id in ('robot_a', 'robot_b'):
+            changed = self._clamp_root_orientation(robot_id) or changed
+        if changed:
+            mujoco.mj_forward(self.physics.model, self.physics.data)
 
     def _build_relative_metrics(self, robot_states):
         relative_metrics = {}
@@ -204,6 +275,11 @@ class CombatGymEnv(gym.Env):
                     'target_positions': self._controller_target_positions['robot_b'].copy(),
                     'action_scale': self._controller_action_scale['robot_b'].copy(),
                 },
+            },
+            'non_fall_mode': {
+                'enabled': self.non_fall_mode,
+                'pitch_limit_deg': self.non_fall_pitch_limit_deg,
+                'roll_limit_deg': self.non_fall_roll_limit_deg,
             },
             'observation_slices': self.observation_slices,
         }
@@ -464,6 +540,7 @@ class CombatGymEnv(gym.Env):
             self._apply_cached_actions()
 
             self.physics.step()
+            self._enforce_non_fall_mode()
             self.physics_step_count += 1
 
             collisions = self.collision_detector.check_collisions(

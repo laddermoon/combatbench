@@ -1,0 +1,30 @@
+{
+  "experiment": "shared_policy_selfplay_hp",
+  "seed": 42,
+  "device": "auto",
+  "match_duration": 2.0,
+  "control_frequency": 20,
+  "initial_distance": 1.0,
+  "non_fall_mode": true,
+  "non_fall_pitch_limit_deg": 15.0,
+  "non_fall_roll_limit_deg": 10.0,
+  "reward_config": {
+    "damage_reward_scale": 1.0,
+    "damage_penalty_scale": 1.0,
+    "win_bonus": 0.0,
+    "lose_penalty": 0.0
+  },
+  "ppo_config": {
+    "total_timesteps": 512,
+    "rollout_steps": 32,
+    "learning_rate": 0.0003,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "update_epochs": 1,
+    "minibatch_size": 32,
+    "clip_coef": 0.2,
+    "ent_coef": 0.0,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5
+  }
+}
