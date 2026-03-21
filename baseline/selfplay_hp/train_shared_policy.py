@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=10.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--damage-reward-scale", type=float, default=1.0)
-    parser.add_argument("--damage-penalty-scale", type=float, default=1.0)
+    parser.add_argument("--damage-penalty-scale", type=float, default=0.0)
     parser.add_argument("--win-bonus", type=float, default=0.0)
     parser.add_argument("--lose-penalty", type=float, default=0.0)
     parser.add_argument("--approach-reward-weight", type=float, default=0.0, help="Reward weight for approaching opponent")

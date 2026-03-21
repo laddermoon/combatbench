@@ -69,7 +69,7 @@ def configure_combat_env(env: CombatGymEnv) -> None:
 @dataclass
 class SelfPlayHPRewardConfig:
     damage_reward_scale: float = 1.0
-    damage_penalty_scale: float = 1.0
+    damage_penalty_scale: float = 0.0
     win_bonus: float = 0.0
     lose_penalty: float = 0.0
     approach_reward_weight: float = 0.0
