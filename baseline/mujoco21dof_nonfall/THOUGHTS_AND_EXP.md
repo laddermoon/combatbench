@@ -14,3 +14,15 @@
 - 预期下一步：
   - 进入单智能体 wrapper 设计。
   - 明确 attacker-only reward shaping 字段。
+
+## 2026-03-23 Phase 1 wrapper scaffold
+
+- 本阶段目标：先建立一个可直接给 SB3 使用的单智能体训练入口。
+- 当前实现：
+  - 新增 `env_wrapper.py`，只对外暴露 `robot_a` 的 observation/action。
+  - wrapper 内部自动调度 `robot_b` 对手策略。
+  - 默认 reward 暂时只返回 `damage_dealt`，后续再扩展完整 shaping。
+  - 新增 `opponents.py`，支持 `standing`、`random`、`scripted_active` 三类对手。
+- 当前判断：
+  - 先把 observation/action/info 接口稳定下来，比现在就开始调 reward 更重要。
+  - 需要在下一阶段把距离、朝向、动作活跃度等 shaping 正式接进 reward。
