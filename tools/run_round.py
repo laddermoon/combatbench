@@ -309,6 +309,8 @@ def main() -> None:
         initial_distance=args.initial_distance,
         phase=args.phase,
         non_fall_mode=args.non_fall_mode,
+        non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
+        non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
         damage_scale=args.damage_scale,
         verbose=not args.quiet,
     )

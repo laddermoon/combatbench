@@ -69,6 +69,8 @@ class RoundRunner:
         initial_distance: float = 2.0,
         phase: Optional[str] = None,
         non_fall_mode: bool = False,
+        non_fall_pitch_limit_deg: float = 15.0,
+        non_fall_roll_limit_deg: float = 10.0,
         damage_scale: float = 100.0,
         verbose: bool = True,
     ):
@@ -86,6 +88,8 @@ class RoundRunner:
             initial_distance: Initial distance between robots
             phase: Training phase for controller config ('stand', 'fight', etc.)
             non_fall_mode: Enable non-fall mode (orientation clamping)
+            non_fall_pitch_limit_deg: Pitch limit in degrees for non-fall mode
+            non_fall_roll_limit_deg: Roll limit in degrees for non-fall mode
             damage_scale: Damage scaling factor
             verbose: Print round progress
         """
@@ -101,6 +105,8 @@ class RoundRunner:
             control_frequency=control_frequency,
             initial_distance=initial_distance,
             non_fall_mode=non_fall_mode,
+            non_fall_pitch_limit_deg=non_fall_pitch_limit_deg,
+            non_fall_roll_limit_deg=non_fall_roll_limit_deg,
             damage_scale=damage_scale,
         )
 
@@ -283,6 +289,9 @@ def run_round(
     control_frequency: int = 20,
     initial_distance: float = 2.0,
     phase: Optional[str] = None,
+    non_fall_mode: bool = False,
+    non_fall_pitch_limit_deg: float = 15.0,
+    non_fall_roll_limit_deg: float = 10.0,
     save_video_path: Optional[str] = None,
     verbose: bool = True,
 ) -> RoundResult:
@@ -297,6 +306,9 @@ def run_round(
         control_frequency: Control frequency in Hz
         initial_distance: Initial distance between robots
         phase: Training phase for controller config
+        non_fall_mode: Enable non-fall mode (orientation clamping)
+        non_fall_pitch_limit_deg: Pitch limit in degrees for non-fall mode
+        non_fall_roll_limit_deg: Roll limit in degrees for non-fall mode
         save_video_path: Path to save video
         verbose: Print progress
 
@@ -319,6 +331,9 @@ def run_round(
         control_frequency=control_frequency,
         initial_distance=initial_distance,
         phase=phase,
+        non_fall_mode=non_fall_mode,
+        non_fall_pitch_limit_deg=non_fall_pitch_limit_deg,
+        non_fall_roll_limit_deg=non_fall_roll_limit_deg,
         verbose=verbose,
     )
     return runner.run(save_video_path=save_video_path)
