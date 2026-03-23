@@ -22,8 +22,6 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
   - `base.py` - `BaseCombatPolicy` abstract interface
   - `random.py` - `RandomCombatPolicy` for testing
   - `standing.py` - `StandingCombatPolicy` (no movement)
-- `baseline/sb3/` - Stable-Baselines3 PPO baseline
-- `baseline/selfplay_hp/` - PyTorch PPO implementation for HP-only self-play
 - `tools/` - Utilities and round runner (`run_round.py`)
 - `docs/` - Rules, environment specs, robot details
 
