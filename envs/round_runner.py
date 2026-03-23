@@ -69,8 +69,8 @@ class RoundRunner:
         initial_distance: float = 2.0,
         phase: Optional[str] = None,
         non_fall_mode: bool = False,
-        non_fall_pitch_limit_deg: float = 15.0,
-        non_fall_roll_limit_deg: float = 10.0,
+        non_fall_pitch_limit_deg: float = 5.0,
+        non_fall_roll_limit_deg: float = 5.0,
         damage_scale: float = 100.0,
         verbose: bool = True,
     ):

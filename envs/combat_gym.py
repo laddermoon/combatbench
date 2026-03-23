@@ -33,8 +33,8 @@ class CombatGymEnv(gym.Env):
         video_sample_frequency=30,
         match_duration=30.0,   # Single roundduration 30 seconds
         non_fall_mode=False,
-        non_fall_pitch_limit_deg=15.0,
-        non_fall_roll_limit_deg=10.0,
+        non_fall_pitch_limit_deg=5.0,
+        non_fall_roll_limit_deg=5.0,
         damage_scale=100.0,
     ):
         super().__init__()

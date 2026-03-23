@@ -6,12 +6,18 @@ from typing import Dict, Optional, Tuple
 class AttackerRewardConfig:
     damage_reward_scale: float = 1.0
     damage_received_penalty_scale: float = 0.05
-    hit_reward_scale: float = 0.25
-    approach_reward_scale: float = 0.5
+    hit_reward_scale: float = 0.35
+    approach_reward_scale: float = 0.8
+    close_distance_reward_scale: float = 0.08
+    close_distance_threshold: float = 1.25
+    retreat_penalty_scale: float = 0.35
     facing_reward_scale: float = 0.05
     facing_delta_reward_scale: float = 0.05
+    upright_reward_scale: float = 0.03
+    upright_delta_reward_scale: float = 0.05
+    tilt_penalty_scale: float = 0.1
     action_magnitude_reward_scale: float = 0.02
-    action_delta_reward_scale: float = 0.03
+    action_delta_reward_scale: float = 0.05
     inactivity_penalty: float = 0.02
     inactivity_action_threshold: float = 0.03
     inactivity_delta_threshold: float = 0.02
@@ -24,8 +30,13 @@ REWARD_TERM_KEYS = (
     "damage_received_penalty",
     "hit_reward",
     "approach_reward",
+    "close_distance_reward",
+    "retreat_penalty",
     "facing_reward",
     "facing_delta_reward",
+    "upright_reward",
+    "upright_delta_reward",
+    "tilt_penalty",
     "action_magnitude_reward",
     "action_delta_reward",
     "inactivity_penalty",
@@ -44,13 +55,22 @@ def compute_attacker_reward(
 ) -> Tuple[float, Dict[str, float]]:
     cfg = AttackerRewardConfig() if config is None else config
     terms = zero_reward_terms()
+    horizontal_distance = float(metrics.get("horizontal_distance", 0.0))
+    horizontal_distance_delta = float(metrics.get("horizontal_distance_delta", 0.0))
+    uprightness = float(metrics.get("uprightness", 1.0))
+    uprightness_delta = float(metrics.get("uprightness_delta", 0.0))
 
     terms["damage_dealt"] = cfg.damage_reward_scale * float(metrics.get("damage_dealt", 0.0))
     terms["damage_received_penalty"] = -cfg.damage_received_penalty_scale * float(metrics.get("damage_received", 0.0))
     terms["hit_reward"] = cfg.hit_reward_scale * float(metrics.get("hits_dealt", 0.0))
-    terms["approach_reward"] = cfg.approach_reward_scale * max(0.0, float(metrics.get("horizontal_distance_delta", 0.0)))
+    terms["approach_reward"] = cfg.approach_reward_scale * max(0.0, horizontal_distance_delta)
+    terms["close_distance_reward"] = cfg.close_distance_reward_scale * max(0.0, cfg.close_distance_threshold - horizontal_distance)
+    terms["retreat_penalty"] = -cfg.retreat_penalty_scale * max(0.0, -horizontal_distance_delta)
     terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
     terms["facing_delta_reward"] = cfg.facing_delta_reward_scale * max(0.0, float(metrics.get("facing_delta", 0.0)))
+    terms["upright_reward"] = cfg.upright_reward_scale * max(0.0, uprightness)
+    terms["upright_delta_reward"] = cfg.upright_delta_reward_scale * max(0.0, uprightness_delta)
+    terms["tilt_penalty"] = -cfg.tilt_penalty_scale * max(0.0, 1.0 - uprightness)
     terms["action_magnitude_reward"] = cfg.action_magnitude_reward_scale * float(metrics.get("action_magnitude", 0.0))
     terms["action_delta_reward"] = cfg.action_delta_reward_scale * float(metrics.get("action_delta", 0.0))
 

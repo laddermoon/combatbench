@@ -242,13 +242,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--non-fall-pitch-limit-deg',
-        type=float, default=15.0,
-        help='Pitch limit in degrees for non-fall mode (default: 15.0)'
+        type=float, default=5.0,
+        help='Pitch limit in degrees for non-fall mode (default: 5.0)'
     )
     parser.add_argument(
         '--non-fall-roll-limit-deg',
-        type=float, default=10.0,
-        help='Roll limit in degrees for non-fall mode (default: 10.0)'
+        type=float, default=5.0,
+        help='Roll limit in degrees for non-fall mode (default: 5.0)'
     )
     parser.add_argument(
         '--damage-scale',

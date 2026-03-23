@@ -22,8 +22,8 @@ class SingleAgentAttackerEnv(gym.Env):
         control_frequency: int = 20,
         match_duration: float = 30.0,
         non_fall_mode: bool = True,
-        non_fall_pitch_limit_deg: float = 15.0,
-        non_fall_roll_limit_deg: float = 10.0,
+        non_fall_pitch_limit_deg: float = 5.0,
+        non_fall_roll_limit_deg: float = 5.0,
         damage_scale: float = 100.0,
         opponent: Any = "standing",
         opponent_seed: Optional[int] = None,
@@ -98,6 +98,8 @@ class SingleAgentAttackerEnv(gym.Env):
         current_scores = info.get("scores", {})
         prev_relative_metrics = prev_info.get("relative_metrics", {}).get("robot_a", {})
         relative_metrics = info.get("relative_metrics", {}).get("robot_a", {})
+        prev_robot_state = prev_info.get("robot_states", {}).get("robot_a", {})
+        robot_state = info.get("robot_states", {}).get("robot_a", {})
         damage_dealt = max(0.0, float(prev_scores.get("robot_b", 0.0) - current_scores.get("robot_b", 0.0)))
         damage_received = max(0.0, float(prev_scores.get("robot_a", 0.0) - current_scores.get("robot_a", 0.0)))
         hit_records = info.get("hit_records", {})
@@ -107,6 +109,8 @@ class SingleAgentAttackerEnv(gym.Env):
         prev_horizontal_distance = float(prev_relative_metrics.get("horizontal_distance", horizontal_distance))
         facing_opponent = float(relative_metrics.get("facing_opponent", 0.0))
         prev_facing_opponent = float(prev_relative_metrics.get("facing_opponent", facing_opponent))
+        uprightness = float(robot_state.get("uprightness", 1.0))
+        prev_uprightness = float(prev_robot_state.get("uprightness", uprightness))
         winner = info.get("winner")
         return {
             "damage_dealt": damage_dealt,
@@ -116,6 +120,8 @@ class SingleAgentAttackerEnv(gym.Env):
             "horizontal_distance_delta": prev_horizontal_distance - horizontal_distance,
             "facing_opponent": facing_opponent,
             "facing_delta": facing_opponent - prev_facing_opponent,
+            "uprightness": uprightness,
+            "uprightness_delta": uprightness - prev_uprightness,
             "hits_dealt": hits_dealt,
             "hits_received": hits_received,
             "action_magnitude": float(np.mean(np.abs(action))),
@@ -175,6 +181,8 @@ class SingleAgentAttackerEnv(gym.Env):
                 "horizontal_distance_delta": 0.0,
                 "facing_opponent": float(info.get("relative_metrics", {}).get("robot_a", {}).get("facing_opponent", 0.0)),
                 "facing_delta": 0.0,
+                "uprightness": float(info.get("robot_states", {}).get("robot_a", {}).get("uprightness", 1.0)),
+                "uprightness_delta": 0.0,
                 "hits_dealt": 0.0,
                 "hits_received": 0.0,
                 "action_magnitude": 0.0,
