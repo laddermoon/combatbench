@@ -108,32 +108,6 @@ class RoundRunner:
         self._total_reward = {"robot_a": 0.0, "robot_b": 0.0}
         self._damage_dealt = {"robot_a": 0.0, "robot_b": 0.0}
 
-    def _configure_phase(self) -> None:
-        """Apply phase-specific controller configuration."""
-        if self.phase is None:
-            return
-
-        # Import phase configuration functions
-        try:
-            from combatbench.baseline.sb3.selfplay_env import (
-                configure_base_env_for_fight,
-                configure_base_env_for_fight_attacker,
-                configure_base_env_for_stand,
-            )
-        except ImportError:
-            # If baseline not available, skip phase configuration
-            return
-
-        if self.phase == "stand":
-            configure_base_env_for_stand(self.env)
-        elif self.phase == "fight":
-            configure_base_env_for_fight(self.env)
-        elif self.phase in ("fight_attacker", "fight_attacker_approach"):
-            configure_base_env_for_fight_attacker(self.env)
-
-        # Re-fetch observations after configuration
-        mujoco.mj_forward(self.env.physics.model, self.env.physics.data)
-
     def _print_header(self) -> None:
         """Print round start header."""
         if not self.verbose:
@@ -206,7 +180,6 @@ class RoundRunner:
         """
         # Reset environment
         obs, info = self.env.reset()
-        self._configure_phase()
         obs = self.env._get_obs()
         info = self.env._build_info()
 
