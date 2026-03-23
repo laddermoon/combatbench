@@ -16,8 +16,13 @@ CombatBench 是一个用于人形机器人对战的开源仿真环境。它提�
 
 - `assets/`: 仿真所需的 XML 模型、贴图纹理和网格文件。
 - `core/`: 核心引擎组件（物理引擎、碰撞检测、得分计算、机器人运动学）。
-- `envs/`: Gymnasium 环境封装 (`CombatGymEnv`)。
-- `utils/`: 辅助脚本（如纹理生成、XML编译工具、策略验证打包工具）。
+- `envs/`: Gymnasium 环境封装 (`CombatGymEnv`, `RoundRunner`)。
+- `policy/`: 策略接口和参考实现。
+  - `BaseCombatPolicy`: 所有对战策略的抽象基类
+  - `RandomCombatPolicy`: 随机动作策略，用于测试
+  - `StandingCombatPolicy`: 静止策略（无动作）
+- `tools/`: 运行回合的工具 (`run_round.py`)。
+- `baseline/`: 基线训练实现 (Stable-Baselines3, 自我对弈)。
 - `docs/`: 关于规则、机器人规格以及观测空间的详细文档。
 
 ## 安装指南
@@ -43,10 +48,20 @@ pip install mujoco gymnasium numpy opencv-python imageio egl
 
 ## 快速开始
 
-你可以在没有任何控制策略的情况下运行环境以验证安装。这会生成一段执行随机动作的对战仿真，并保存为 MP4 视频。
+运行两个策略之间的对战回合并保存为视频。默认策略（无参数）是 StandingCombatPolicy，它会保持机器人原地不动。
 
 ```bash
-python run_without_policy.py
+# 无策略运行（双方都静止）
+python tools/run_round.py --duration 10 --video test.mp4
+
+# 使用随机策略运行
+python tools/run_round.py --policy-a combatbench.policy.RandomCombatPolicy --duration 5 --video test.mp4
+
+# 运行两个不同的策略
+python tools/run_round.py \
+  --policy-a combatbench.policy.RandomCombatPolicy \
+  --policy-b combatbench.policy.StandingCombatPolicy \
+  --duration 15 --video match.mp4
 ```
 
 ## 文档
@@ -55,8 +70,28 @@ python run_without_policy.py
 - [环境详情](docs/ENVIRONMENT_zh.md)
 - [机器人规格](docs/ROBOT_zh.md)
 - [观测空间](docs/OBSERVATION_zh.md)
-- [场景概述](docs/SCENE_zh.md)
-- [策略提交指南](docs/SUBMISSION_zh.md)
+- [策略提交指南](docs/SUBMISSION_GUIDE_zh.md)
+
+## 策略接口
+
+所有对战策略必须继承自 `BaseCombatPolicy` 并实现 `act()` 方法：
+
+```python
+from combatbench.policy import BaseCombatPolicy
+import numpy as np
+
+class MyPolicy(BaseCombatPolicy):
+    def __init__(self, observation_space=None, action_space=None, **kwargs):
+        super().__init__(observation_space, action_space, **kwargs)
+        # 你的初始化代码
+
+    def act(self, obs: np.ndarray, info: dict = None) -> np.ndarray:
+        """返回形状为 (21,) 的动作数组，值范围在 [-1, 1]"""
+        # 你的动作计算
+        return action
+```
+
+完整的接口定义请参见 [`policy/base.py`](policy/base.py)。
 
 ## 参与贡献
 

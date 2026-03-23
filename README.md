@@ -17,8 +17,13 @@ CombatBench is the open-source simulation environment for humanoid robot combat.
 
 - `assets/`: Simulation XML models, textures, and meshes.
 - `core/`: Core engine components (Physics, Collision Detection, Scoring, Robot Kinematics).
-- `envs/`: Gymnasium environment wrappers (`CombatGymEnv`).
-- `utils/`: Helpful scripts for generating textures, compiling XMLs, etc.
+- `envs/`: Gymnasium environment wrappers (`CombatGymEnv`, `RoundRunner`).
+- `policy/`: Policy interface and reference implementations.
+  - `BaseCombatPolicy`: Abstract base class for all combat policies
+  - `RandomCombatPolicy`: Random action policy for testing
+  - `StandingCombatPolicy`: Standing still policy (no movement)
+- `tools/`: Utilities for running rounds (`run_round.py`).
+- `baseline/`: Baseline training implementations (Stable-Baselines3, self-play).
 - `docs/`: Detailed documentation on rules, robot specs, and observation spaces.
 
 ## Installation
@@ -44,10 +49,20 @@ pip install mujoco gymnasium numpy opencv-python imageio egl
 
 ## Quick Start
 
-You can run the environment without any policy to verify your setup. This will generate a random-action combat simulation and save it as an MP4 video.
+Run a combat round between two policies and save as video. The default policy (no arguments) is StandingCombatPolicy which keeps the robot in place.
 
 ```bash
-python run_without_policy.py
+# Run with no policies (both standing)
+python tools/run_round.py --duration 10 --video test.mp4
+
+# Run with random policy
+python tools/run_round.py --policy-a combatbench.policy.RandomCombatPolicy --duration 5 --video test.mp4
+
+# Run two different policies
+python tools/run_round.py \
+  --policy-a combatbench.policy.RandomCombatPolicy \
+  --policy-b combatbench.policy.StandingCombatPolicy \
+  --duration 15 --video match.mp4
 ```
 
 ## Documentation
@@ -56,8 +71,28 @@ python run_without_policy.py
 - [Environment Details](docs/ENVIRONMENT.md) / [中文环境](docs/ENVIRONMENT_zh.md)
 - [Robot Specifications](docs/ROBOT.md) / [中文机器人](docs/ROBOT_zh.md)
 - [Observation Space](docs/OBSERVATION.md) / [中文观测](docs/OBSERVATION_zh.md)
-- [Scene Overview](docs/SCENE.md) / [中文场景](docs/SCENE_zh.md)
-- [Policy Submission Guide](docs/SUBMISSION.md) / [中文提交指南](docs/SUBMISSION_zh.md)
+- [Policy Submission Guide](docs/SUBMISSION_GUIDE.md) / [中文提交指南](docs/SUBMISSION_GUIDE_zh.md)
+
+## Policy Interface
+
+All combat policies must inherit from `BaseCombatPolicy` and implement the `act()` method:
+
+```python
+from combatbench.policy import BaseCombatPolicy
+import numpy as np
+
+class MyPolicy(BaseCombatPolicy):
+    def __init__(self, observation_space=None, action_space=None, **kwargs):
+        super().__init__(observation_space, action_space, **kwargs)
+        # Your initialization
+
+    def act(self, obs: np.ndarray, info: dict = None) -> np.ndarray:
+        """Return action array with shape (21,), values in [-1, 1]"""
+        # Your action computation
+        return action
+```
+
+See [`policy/base.py`](policy/base.py) for the complete interface definition.
 
 ## Contributing
 
