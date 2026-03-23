@@ -51,7 +51,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=5.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--distance-stage-target-distance", type=float, default=0.4)
-    parser.add_argument("--distance-stage-target-tolerance", type=float, default=0.08)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     return parser.parse_args()
@@ -69,7 +68,6 @@ def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank:
     opponent_seed = args.seed + 1000 + rank if eval_mode else args.seed + rank
     distance_stage_reward_config = DistanceStageRewardConfig(
         target_distance=args.distance_stage_target_distance,
-        target_tolerance=args.distance_stage_target_tolerance,
     )
     return {
         "render_mode": None,
