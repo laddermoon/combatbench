@@ -47,3 +47,20 @@
 - 当前判断：
   - 这版 reward 明确偏向“主动进攻”，但只给了很轻的受伤惩罚。
   - 下一步需要进入训练脚本阶段，通过真实 rollout 观察这些项是否平衡。
+
+## 2026-03-23 Phase 3 SB3 training scaffold
+
+- 本阶段目标：提供一个真正可启动训练的 PPO 入口。
+- 当前实现：
+  - 新增 `train_sb3.py`。
+  - 已接入 `SingleAgentAttackerEnv`。
+  - 已支持：
+    - run directory
+    - `run_config.json`
+    - checkpoint 保存
+    - `best_model` 保存
+    - tensorboard 输出目录
+    - resume from checkpoint/model
+- 当前判断：
+  - 现在已经具备从环境到 PPO 的最小训练闭环。
+  - 下一步需要补 checkpoint 到 `BaseCombatPolicy` 的适配，以及视频评估脚本。
