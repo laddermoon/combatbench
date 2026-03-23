@@ -256,3 +256,59 @@
     - 降低 `learning_rate`
     - 降低 `ent_coef`
     - 增加 `target_kl` 约束更新幅度
+
+## 2026-03-23 Stage-1 tuned PPO attempt (larger batch + lower lr/entropy + target_kl)
+
+- 本次动作：
+  - 保持第一阶段 reward 不变，仍然只使用两项：
+    - `distance_reward`
+    - `facing_reward`
+  - 主要改为调 PPO 稳定性，而不是继续改 reward：
+    - 增大 `batch_size`
+    - 增大 `n_steps`
+    - 降低 `learning_rate`
+    - 降低 `ent_coef`
+    - 新增 `target_kl`
+- 训练配置：
+  - `run_name=distance_stage1_linear_200k_tuned`
+  - `total_timesteps=200000`
+  - `n_steps=4096`
+  - `batch_size=4096`
+  - `learning_rate=1e-4`
+  - `ent_coef=0.001`
+  - `target_kl=0.02`
+  - `match_duration=5`
+  - `opponent=standing`
+  - `distance_stage_target_distance=0.4`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731`
+- 训练阶段观察：
+  - 训练顺利完成，`final_model.zip`、`best_model.zip`、`summary.json`、`evaluations.npz` 都已正常生成
+  - `evaluations.npz` 显示 eval reward 在大约 `50k` timesteps 达到峰值：
+    - `best_timestep=50000`
+    - `best_mean_reward≈8.73`
+  - 之后整体进入平台期，末次 eval reward 降到：
+    - `final_eval_mean_reward≈7.39`
+  - 说明更保守的 PPO 确实把训练过程稳定下来了，但没有持续把策略推到更优的接近行为
+- 训练后评估（best model）：
+  - model: `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731/best_model/best_model.zip`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731/tuned_best_eval_standing_summary.json`
+  - video: `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731/tuned_best_eval_standing.mp4`
+  - 对 `standing` 评估 `3` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=100`
+  - 控制台打印的终局距离大约为 `1.73m`
+- 训练后评估（final model）：
+  - model: `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731/final_model.zip`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_tuned_20260323_182731/tuned_final_eval_standing_summary.json`
+  - 对 `standing` 评估 `3` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=100`
+  - 控制台打印的终局距离大约为 `1.95m`
+- 当前判断：
+  - 这轮 tuned PPO 的主要收益是“训练更稳”，而不是“行为更好”。
+  - 相比上一轮在 `120k` 左右仍然出现明显的高 `clip_fraction/high KL`，这轮至少从 eval 曲线看没有继续恶化为完全失控，但最优策略仍然只把距离从 `2.0m` 拉到大约 `1.73m`，距离目标 `0.4m` 仍然很远。
+  - 并且 `final_model` 比 `best_model` 更差，说明当前设置下训练后段仍然存在一定退化，后续应该优先围绕“最佳 checkpoint 早停”而不是盲目拉长训练。
+  - 结论是：
+    - 单靠 `distance_reward + facing_reward`，即使 PPO 更稳，也不足以学出强力接近行为
+    - 下一步需要重新审视第一阶段任务本身，可能要加入更直接的前向位移/速度 shaping，或者重构初始化与课程，让目标从 `2.0m -> 0.4m` 更易学
