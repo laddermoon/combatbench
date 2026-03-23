@@ -122,3 +122,21 @@
  - 当前判断：
    - 训练/保存/评估的工程链路已经打通。
    - 下一步应该直接用 `eval_policy.py` 对这个 smoke checkpoint 导出一段视频，看动作是否已经有明显进攻意图。
+
+ ## 2026-03-23 Smoke evaluation validation
+
+ - 本次动作：对 smoke 训练产生的 `final_model.zip` 跑了 1 局评估，并导出了视频与 summary。
+ - 评估产物：
+   - `baseline/mujoco21dof_nonfall/runs/smoke_train_20260323_153807/smoke_eval.mp4`
+   - `baseline/mujoco21dof_nonfall/runs/smoke_train_20260323_153807/smoke_eval_summary.json`
+ - 评估结果摘要：
+   - `episodes=1`
+   - `mean_steps=40`
+   - `winner=draw`
+   - `robot_a damage_dealt=0.0`
+   - `robot_b damage_dealt=0.0`
+   - `video_frames=58`
+ - 当前判断：
+   - `policy_adapter.py`、`eval_policy.py`、视频保存链路都已经工作正常。
+   - 1024 steps 的 smoke 训练只验证工程链路，不足以学出有效攻击，这个结果是合理的。
+   - 下一步应该开始一次更长的训练，并对视频里的动作活跃度和接近行为做针对性观察。
