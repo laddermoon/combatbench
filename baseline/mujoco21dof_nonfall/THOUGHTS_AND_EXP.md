@@ -91,6 +91,34 @@
     - PPO 训练命令
     - checkpoint 评估命令
     - 直接通过 `run_round.py` 加载训练模型的方式
-- 当前判断：
-  - 现在从代码结构和文档结构上都已经具备可交付雏形。
-  - 真正还缺的是一次实际训练 run 和对应的视频结果验证。
+ - 当前判断：
+   - 现在从代码结构和文档结构上都已经具备可交付雏形。
+   - 真正还缺的是一次实际训练 run 和对应的视频结果验证。
+
+## 2026-03-23 Smoke training validation
+
+ - 本次动作：运行了一次小规模 PPO smoke 训练，用来验证训练产物链路。
+ - 训练命令要点：
+   - `total_timesteps=1024`
+   - `n_steps=128`
+   - `batch_size=64`
+   - `checkpoint_freq=256`
+   - `eval_freq=256`
+   - `match_duration=2`
+   - `opponent=standing`
+ - 产物目录：
+   - `baseline/mujoco21dof_nonfall/runs/smoke_train_20260323_153807`
+ - 已确认生成：
+   - `run_config.json`
+   - `summary.json`
+   - `final_model.zip`
+   - `checkpoints/ppo_attacker_{256,512,768,1024}_steps.zip`
+   - `best_model/best_model.zip`
+   - `eval/evaluations.npz`
+ - 日志观察：
+   - rollout `ep_rew_mean` 大约在 `3.3` 左右
+   - eval `mean_reward` 大约在 `2.2 ~ 2.4`
+   - 脚本端到端成功结束，没有出现训练入口或保存回调错误
+ - 当前判断：
+   - 训练/保存/评估的工程链路已经打通。
+   - 下一步应该直接用 `eval_policy.py` 对这个 smoke checkpoint 导出一段视频，看动作是否已经有明显进攻意图。
