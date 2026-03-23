@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+*.mp4
+
+todo.md
