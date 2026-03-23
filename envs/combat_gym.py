@@ -30,7 +30,7 @@ class CombatGymEnv(gym.Env):
         dt=0.002,
         initial_distance=2.0,  # Rule: Initial distance 2 meters facing each other
         control_frequency=20,
-        video_sample_frequency=10,
+        video_sample_frequency=30,
         match_duration=30.0,   # Single roundduration 30 seconds
         non_fall_mode=False,
         non_fall_pitch_limit_deg=15.0,
