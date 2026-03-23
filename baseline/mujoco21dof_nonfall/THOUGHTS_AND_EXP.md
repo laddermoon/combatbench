@@ -64,3 +64,19 @@
 - 当前判断：
   - 现在已经具备从环境到 PPO 的最小训练闭环。
   - 下一步需要补 checkpoint 到 `BaseCombatPolicy` 的适配，以及视频评估脚本。
+
+## 2026-03-23 Phase 4 evaluation scaffold
+
+- 本阶段目标：让训练产出的 PPO checkpoint 可以直接进入现有 round runner 与视频链路。
+- 当前实现：
+  - 新增 `policy_adapter.py`，提供 `SB3PPOCombatPolicy`。
+  - 新增 `eval_policy.py`，支持：
+    - 指定 checkpoint
+    - 指定对手
+    - 固定 seed
+    - 可选视频输出
+    - JSON summary 输出
+  - `RoundRunner.run()` 新增了可选 `seed` 参数。
+- 当前判断：
+  - 现在已经具备训练后评估、导出视频、汇总结果的最小闭环。
+  - 下一步主要是文档收口和一次真实的小规模训练验证。

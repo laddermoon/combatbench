@@ -172,6 +172,7 @@ class RoundRunner:
         self,
         save_video_path: Optional[str] = None,
         action_callback: Optional[Callable[[Any, int], Dict[str, np.ndarray]]] = None,
+        seed: Optional[int] = None,
     ) -> RoundResult:
         """
         Run a complete round.
@@ -185,7 +186,7 @@ class RoundRunner:
             RoundResult containing round statistics
         """
         # Reset environment
-        obs, info = self.env.reset()
+        obs, info = self.env.reset(seed=seed)
         obs = self.env._get_obs()
         info = self.env._build_info()
 
@@ -293,6 +294,7 @@ def run_round(
     non_fall_pitch_limit_deg: float = 15.0,
     non_fall_roll_limit_deg: float = 10.0,
     save_video_path: Optional[str] = None,
+    seed: Optional[int] = None,
     verbose: bool = True,
 ) -> RoundResult:
     """
@@ -336,7 +338,7 @@ def run_round(
         non_fall_roll_limit_deg=non_fall_roll_limit_deg,
         verbose=verbose,
     )
-    return runner.run(save_video_path=save_video_path)
+    return runner.run(save_video_path=save_video_path, seed=seed)
 
 
 # Import mujoco for configuration
