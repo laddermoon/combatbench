@@ -217,3 +217,42 @@
      - 明确鼓励前向拳击/上肢接触
      - 针对进入近距离后的有效动作继续加 shaping
      - 继续保持 `standing` 对手，直到先学会稳定命中
+
+## 2026-03-23 Stage-1 minimal reward attempt (distance delta + facing only)
+
+- 本次动作：
+  - 把第一阶段 reward 极简化为两项：
+    - `distance_reward`: 只根据 `distance_error_delta = prev_error - current_error` 给线性奖励/惩罚
+    - `facing_reward`: 保留朝向对手的稠密 shaping
+  - 删除第一阶段其余所有项：到达奖励、区间保持奖励、过冲惩罚、upright/tilt、动作幅度/变化惩罚等
+  - 明确要求 reward 与动作结果做因果对齐，按动作执行后的距离误差变化计算
+- 训练配置：
+  - `run_name=distance_stage1_linear_200k`
+  - `total_timesteps=200000`
+  - `n_steps=1024`
+  - `batch_size=256`
+  - `learning_rate=3e-4`
+  - `ent_coef=0.01`
+  - `match_duration=5`
+  - `opponent=standing`
+  - `distance_stage_target_distance=0.4`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/distance_stage1_linear_200k_20260323_175259`
+- 训练阶段观察：
+  - 训练在用户要求下中途停止，停止点大约为 `120k` timesteps
+  - rollout `ep_rew_mean` 从开局大约 `2.5` 上升到 `8.6~8.7`
+  - `120k` eval callback `mean_reward ≈ 7.65`
+  - 但用户观察到没有明显行为改善，因此不继续跑满 `200k`
+  - PPO 稳定性指标明显偏激进：
+    - `clip_fraction` 上升到大约 `0.51~0.55`
+    - `approx_kl` 上升到大约 `0.09~0.10`
+    - `std` 上升到大约 `1.23~1.24`
+- 当前判断：
+  - 这版极简 reward 没有带来足够清晰的行为改进，至少在当前超参下没有体现出“更快、更稳地到 0.4m”这一目标。
+  - 更大的问题不一定只在 reward，本轮 PPO 更新也偏猛，导致大量样本被 clipping，可能降低了优化有效性。
+  - 下一步应优先保持 reward 不变，先把 PPO 调到更保守稳定的区域：
+    - 显著增大 `batch_size` 降低梯度方差
+    - 同步增加 rollout 覆盖的 episode 数
+    - 降低 `learning_rate`
+    - 降低 `ent_coef`
+    - 增加 `target_kl` 约束更新幅度

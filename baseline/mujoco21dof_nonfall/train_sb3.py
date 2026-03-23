@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--target-kl", type=float, default=None)
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
@@ -115,6 +116,7 @@ def build_model(args: argparse.Namespace, train_env: DummyVecEnv, tensorboard_lo
         "gae_lambda": args.gae_lambda,
         "clip_range": args.clip_range,
         "ent_coef": args.ent_coef,
+        "target_kl": args.target_kl,
         "vf_coef": args.vf_coef,
         "seed": args.seed,
         "verbose": 1,
