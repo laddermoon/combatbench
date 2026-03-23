@@ -26,3 +26,24 @@
 - 当前判断：
   - 先把 observation/action/info 接口稳定下来，比现在就开始调 reward 更重要。
   - 需要在下一阶段把距离、朝向、动作活跃度等 shaping 正式接进 reward。
+
+## 2026-03-23 Phase 2 reward shaping v0
+
+- 本阶段目标：让单智能体 wrapper 默认就具备可训练的 attacker reward。
+- 当前实现：
+  - 新增 `reward.py`，把 reward 逻辑从 wrapper 中拆出来。
+  - 当前 reward 由以下部分组成：
+    - `damage_dealt`
+    - `damage_received_penalty`
+    - `hit_reward`
+    - `approach_reward`
+    - `facing_reward`
+    - `facing_delta_reward`
+    - `action_magnitude_reward`
+    - `action_delta_reward`
+    - `inactivity_penalty`
+    - terminal `win_bonus` / `loss_penalty`
+  - wrapper 额外输出了 `horizontal_distance_delta`、`facing_delta`、`win`、`loss` 等指标。
+- 当前判断：
+  - 这版 reward 明确偏向“主动进攻”，但只给了很轻的受伤惩罚。
+  - 下一步需要进入训练脚本阶段，通过真实 rollout 观察这些项是否平衡。

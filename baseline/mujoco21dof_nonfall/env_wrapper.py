@@ -6,6 +6,7 @@ import numpy as np
 from combatbench.envs import CombatGymEnv
 
 from .opponents import make_opponent_policy
+from .reward import AttackerRewardConfig, compute_attacker_reward, zero_reward_terms
 
 
 RewardFn = Callable[[Dict[str, Any]], Tuple[float, Dict[str, float]]]
@@ -28,6 +29,7 @@ class SingleAgentAttackerEnv(gym.Env):
         opponent_seed: Optional[int] = None,
         opponent_random_scale: float = 0.1,
         reward_fn: Optional[RewardFn] = None,
+        reward_config: Optional[AttackerRewardConfig] = None,
     ):
         super().__init__()
         self.base_env = CombatGymEnv(
@@ -43,6 +45,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self.action_space = self.base_env.action_space["robot_a"]
         self.observation_space = self.base_env.observation_space["robot_a_obs"]
         self.reward_fn = reward_fn
+        self.reward_config = AttackerRewardConfig() if reward_config is None else reward_config
         self._opponent_spec = opponent
         self._opponent_seed = opponent_seed
         self._opponent_random_scale = float(opponent_random_scale)
@@ -93,30 +96,39 @@ class SingleAgentAttackerEnv(gym.Env):
     ) -> Dict[str, float]:
         prev_scores = prev_info.get("scores", {})
         current_scores = info.get("scores", {})
+        prev_relative_metrics = prev_info.get("relative_metrics", {}).get("robot_a", {})
         relative_metrics = info.get("relative_metrics", {}).get("robot_a", {})
         damage_dealt = max(0.0, float(prev_scores.get("robot_b", 0.0) - current_scores.get("robot_b", 0.0)))
         damage_received = max(0.0, float(prev_scores.get("robot_a", 0.0) - current_scores.get("robot_a", 0.0)))
         hit_records = info.get("hit_records", {})
         hits_dealt = float(len(hit_records.get("robot_b", [])))
         hits_received = float(len(hit_records.get("robot_a", [])))
+        horizontal_distance = float(relative_metrics.get("horizontal_distance", 0.0))
+        prev_horizontal_distance = float(prev_relative_metrics.get("horizontal_distance", horizontal_distance))
+        facing_opponent = float(relative_metrics.get("facing_opponent", 0.0))
+        prev_facing_opponent = float(prev_relative_metrics.get("facing_opponent", facing_opponent))
+        winner = info.get("winner")
         return {
             "damage_dealt": damage_dealt,
             "damage_received": damage_received,
             "distance": float(relative_metrics.get("distance", 0.0)),
-            "horizontal_distance": float(relative_metrics.get("horizontal_distance", 0.0)),
-            "facing_opponent": float(relative_metrics.get("facing_opponent", 0.0)),
+            "horizontal_distance": horizontal_distance,
+            "horizontal_distance_delta": prev_horizontal_distance - horizontal_distance,
+            "facing_opponent": facing_opponent,
+            "facing_delta": facing_opponent - prev_facing_opponent,
             "hits_dealt": hits_dealt,
             "hits_received": hits_received,
             "action_magnitude": float(np.mean(np.abs(action))),
             "action_delta": float(np.mean(np.abs(action - self._last_agent_action))),
+            "win": 1.0 if winner == "robot_a" else 0.0,
+            "loss": 1.0 if winner == "robot_b" else 0.0,
         }
 
     def _compute_reward(self, metrics: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
         if self.reward_fn is not None:
             reward, reward_terms = self.reward_fn(metrics)
             return float(reward), {key: float(value) for key, value in reward_terms.items()}
-        reward = float(metrics["damage_dealt"])
-        return reward, {"damage_dealt": reward}
+        return compute_attacker_reward(metrics, self.reward_config)
 
     def _build_agent_info(
         self,
@@ -160,13 +172,17 @@ class SingleAgentAttackerEnv(gym.Env):
                 "damage_received": 0.0,
                 "distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("distance", 0.0)),
                 "horizontal_distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0)),
+                "horizontal_distance_delta": 0.0,
                 "facing_opponent": float(info.get("relative_metrics", {}).get("robot_a", {}).get("facing_opponent", 0.0)),
+                "facing_delta": 0.0,
                 "hits_dealt": 0.0,
                 "hits_received": 0.0,
                 "action_magnitude": 0.0,
                 "action_delta": 0.0,
+                "win": 0.0,
+                "loss": 0.0,
             },
-            reward_terms={"damage_dealt": 0.0},
+            reward_terms=zero_reward_terms(),
         )
         return full_obs["robot_a_obs"], reset_info
 
