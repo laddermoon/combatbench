@@ -140,3 +140,38 @@
    - `policy_adapter.py`、`eval_policy.py`、视频保存链路都已经工作正常。
    - 1024 steps 的 smoke 训练只验证工程链路，不足以学出有效攻击，这个结果是合理的。
    - 下一步应该开始一次更长的训练，并对视频里的动作活跃度和接近行为做针对性观察。
+
+ ## 2026-03-23 First formal training attempt
+
+ - 本次动作：运行了第一次比 smoke 更正式的 PPO 训练，并完成了训练后评估。
+ - 训练配置要点：
+   - `run_name=formal_try1`
+   - `total_timesteps=20000`
+   - `n_steps=256`
+   - `batch_size=128`
+   - `checkpoint_freq=5000`
+   - `eval_freq=5000`
+   - `eval_episodes=3`
+   - `match_duration=5`
+   - `opponent=standing`
+   - `non_fall_mode=true`
+ - 训练产物目录：
+   - `baseline/mujoco21dof_nonfall/runs/formal_try1_20260323_154933`
+ - 训练阶段观察：
+   - rollout `ep_rew_mean` 从大约 `6.6` 上升到 `8.3` 左右
+   - 末次 eval callback `mean_reward` 大约为 `7.55`
+   - `best_model`、`checkpoint`、`final_model` 都已正常生成
+ - 训练后评估：
+   - summary: `baseline/mujoco21dof_nonfall/runs/formal_try1_20260323_154933/formal_eval_standing_summary.json`
+   - video: `baseline/mujoco21dof_nonfall/runs/formal_try1_20260323_154933/formal_eval_standing.mp4`
+   - 对 `standing` 跑了 `3` 局，结果全部 `draw`
+   - `mean_robot_a_damage_dealt=0.0`
+   - `mean_steps=100`
+   - 日志中的双方距离大约仍在 `1.98m`
+ - 当前判断：
+   - 这次正式训练已经证明 reward 和 PPO 可以稳定优化出更高训练回报，但当前 shaping 还不足以把策略推到“真正打中对手”。
+   - 更具体地说，策略似乎学到了一些让 reward 上升的行为，但还没有学出足够的接近幅度和有效攻击动作。
+   - 下一步优先级应该是：
+     - 增强接近/出招相关奖励
+     - 延长训练时长
+     - 视情况把对手继续保持为 `standing`，先把“能打到人”这个问题解掉
