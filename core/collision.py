@@ -24,7 +24,7 @@ class CollisionDetector:
 
     # Target parts
     DAMAGE_TARGET_PARTS = {
-        'head', 'torso', 'waist_upper', 'waist_lower', 'pelvis', 'butt'
+        'head', 'torso', 'waist_upper', 'waist_lower'
     }
 
     def __init__(self):
