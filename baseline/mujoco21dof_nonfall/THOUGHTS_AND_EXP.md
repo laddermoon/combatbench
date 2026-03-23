@@ -175,3 +175,45 @@
      - 增强接近/出招相关奖励
      - 延长训练时长
      - 视情况把对手继续保持为 `standing`，先把“能打到人”这个问题解掉
+
+ ## 2026-03-23 Tight 5-degree nonfall + reward shaping attempt
+
+ - 本次动作：
+   - 把 non-fall 的 pitch/roll 默认限位统一收紧到 `±5°`
+   - reward 新增/增强了几类项：
+     - 更强的 approach reward
+     - close-distance reward
+     - retreat penalty
+     - upright reward / upright delta reward
+     - tilt penalty
+     - 更强的 hit / action-delta 激励
+ - 训练配置：
+   - `run_name=formal_try2_tight5`
+   - `total_timesteps=30000`
+   - `match_duration=5`
+   - `opponent=standing`
+   - `initial_distance=1.6`
+   - non-fall 使用新的 `5/5` 默认限位
+ - 训练产物目录：
+   - `baseline/mujoco21dof_nonfall/runs/formal_try2_tight5_20260323_164301`
+ - 训练阶段观察：
+   - rollout `ep_rew_mean` 从开局大约 `11.6` 提升到结束时大约 `12.9`
+   - 中间 eval callback 大约有：
+     - `10k -> mean_reward ≈ 10.5`
+     - `25k -> mean_reward ≈ 14.3`
+     - `30k -> mean_reward ≈ 14.1`
+   - 相比上一轮训练，训练回报提升明显
+ - 训练后评估：
+   - summary: `baseline/mujoco21dof_nonfall/runs/formal_try2_tight5_20260323_164301/formal_eval_standing_summary.json`
+   - video: `baseline/mujoco21dof_nonfall/runs/formal_try2_tight5_20260323_164301/formal_eval_standing.mp4`
+   - 对 `standing` 评估 `3` 局，结果全部 `draw`
+   - `mean_robot_a_damage_dealt=0.0`
+   - `mean_steps=100`
+   - 但日志中的最终距离大约下降到 `1.43m`
+ - 当前判断：
+   - 这次改动是有效的，但有效性目前主要体现在“更愿意接近目标”和“训练回报更高”，还没有转化成有效命中。
+   - 当前瓶颈已经从“几乎不接近”转成了“接近了，但没有形成有效攻击接触”。
+   - 下一步优先级应该是：
+     - 明确鼓励前向拳击/上肢接触
+     - 针对进入近距离后的有效动作继续加 shaping
+     - 继续保持 `standing` 对手，直到先学会稳定命中
