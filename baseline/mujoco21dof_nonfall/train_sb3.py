@@ -17,6 +17,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SingleAgentAttackerEnv
+from combatbench.baseline.mujoco21dof_nonfall.reward import DistanceStageRewardConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,12 +43,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opponent", type=str, default="standing", choices=["standing", "random", "active", "scripted", "scripted_active"])
     parser.add_argument("--eval-opponent", type=str, default=None)
     parser.add_argument("--opponent-random-scale", type=float, default=0.1)
+    parser.add_argument("--curriculum-stage", type=str, default="attack", choices=["attack", "distance_stage1"])
     parser.add_argument("--initial-distance", type=float, default=2.0)
     parser.add_argument("--control-frequency", type=int, default=20)
     parser.add_argument("--match-duration", type=float, default=10.0)
     parser.add_argument("--non-fall-pitch-limit-deg", type=float, default=5.0)
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=5.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
+    parser.add_argument("--distance-stage-target-distance", type=float, default=0.4)
+    parser.add_argument("--distance-stage-target-tolerance", type=float, default=0.08)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     return parser.parse_args()
@@ -63,8 +67,13 @@ def build_run_dir(output_dir: str, run_name: str) -> Path:
 def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank: int = 0) -> Dict[str, Any]:
     opponent = args.opponent if not eval_mode else (args.eval_opponent or args.opponent)
     opponent_seed = args.seed + 1000 + rank if eval_mode else args.seed + rank
+    distance_stage_reward_config = DistanceStageRewardConfig(
+        target_distance=args.distance_stage_target_distance,
+        target_tolerance=args.distance_stage_target_tolerance,
+    )
     return {
         "render_mode": None,
+        "curriculum_stage": args.curriculum_stage,
         "initial_distance": args.initial_distance,
         "control_frequency": args.control_frequency,
         "match_duration": args.match_duration,
@@ -75,6 +84,7 @@ def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank:
         "opponent": opponent,
         "opponent_seed": opponent_seed,
         "opponent_random_scale": args.opponent_random_scale,
+        "distance_stage_reward_config": distance_stage_reward_config,
     }
 
 
@@ -155,6 +165,7 @@ def main() -> None:
     callbacks = CallbackList([checkpoint_callback, eval_callback])
 
     print(f"Run directory: {run_dir}")
+    print(f"Curriculum stage: {args.curriculum_stage}")
     print(f"Training opponent: {args.opponent}")
     print(f"Evaluation opponent: {args.eval_opponent or args.opponent}")
     print(f"Non-fall mode: {not args.disable_non_fall_mode}")

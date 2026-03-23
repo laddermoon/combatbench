@@ -6,7 +6,13 @@ import numpy as np
 from combatbench.envs import CombatGymEnv
 
 from .opponents import make_opponent_policy
-from .reward import AttackerRewardConfig, compute_attacker_reward, zero_reward_terms
+from .reward import (
+    AttackerRewardConfig,
+    DistanceStageRewardConfig,
+    compute_attacker_reward,
+    compute_distance_stage_reward,
+    zero_reward_terms,
+)
 
 
 RewardFn = Callable[[Dict[str, Any]], Tuple[float, Dict[str, float]]]
@@ -28,8 +34,10 @@ class SingleAgentAttackerEnv(gym.Env):
         opponent: Any = "standing",
         opponent_seed: Optional[int] = None,
         opponent_random_scale: float = 0.1,
+        curriculum_stage: str = "attack",
         reward_fn: Optional[RewardFn] = None,
         reward_config: Optional[AttackerRewardConfig] = None,
+        distance_stage_reward_config: Optional[DistanceStageRewardConfig] = None,
     ):
         super().__init__()
         self.base_env = CombatGymEnv(
@@ -45,7 +53,11 @@ class SingleAgentAttackerEnv(gym.Env):
         self.action_space = self.base_env.action_space["robot_a"]
         self.observation_space = self.base_env.observation_space["robot_a_obs"]
         self.reward_fn = reward_fn
+        self.curriculum_stage = str(curriculum_stage)
         self.reward_config = AttackerRewardConfig() if reward_config is None else reward_config
+        self.distance_stage_reward_config = (
+            DistanceStageRewardConfig() if distance_stage_reward_config is None else distance_stage_reward_config
+        )
         self._opponent_spec = opponent
         self._opponent_seed = opponent_seed
         self._opponent_random_scale = float(opponent_random_scale)
@@ -62,6 +74,16 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_damage_received = 0.0
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
+        self._distance_stage_best_error = np.inf
+        self._distance_stage_target_reached = False
+
+    def _distance_target_error(self, horizontal_distance: float) -> float:
+        return abs(horizontal_distance - self.distance_stage_reward_config.target_distance)
+
+    def _distance_stage_reset_state(self, info: Dict[str, Any]) -> None:
+        horizontal_distance = float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0))
+        self._distance_stage_best_error = self._distance_target_error(horizontal_distance)
+        self._distance_stage_target_reached = False
 
     def set_opponent(self, opponent: Any, *, seed: Optional[int] = None) -> None:
         self._opponent_spec = opponent
@@ -111,13 +133,25 @@ class SingleAgentAttackerEnv(gym.Env):
         prev_facing_opponent = float(prev_relative_metrics.get("facing_opponent", facing_opponent))
         uprightness = float(robot_state.get("uprightness", 1.0))
         prev_uprightness = float(prev_robot_state.get("uprightness", uprightness))
+        distance_error = self._distance_target_error(horizontal_distance)
+        prev_distance_error = self._distance_target_error(prev_horizontal_distance)
+        best_distance_error_before_step = float(self._distance_stage_best_error)
+        best_distance_error_after_step = min(best_distance_error_before_step, distance_error)
+        within_target_band = float(distance_error <= self.distance_stage_reward_config.target_tolerance)
+        first_target_reached = float(within_target_band > 0.0 and not self._distance_stage_target_reached)
         winner = info.get("winner")
-        return {
+        metrics = {
             "damage_dealt": damage_dealt,
             "damage_received": damage_received,
             "distance": float(relative_metrics.get("distance", 0.0)),
             "horizontal_distance": horizontal_distance,
             "horizontal_distance_delta": prev_horizontal_distance - horizontal_distance,
+            "distance_error": distance_error,
+            "distance_error_delta": prev_distance_error - distance_error,
+            "best_distance_error": best_distance_error_after_step,
+            "best_distance_error_delta": best_distance_error_before_step - best_distance_error_after_step,
+            "within_target_band": within_target_band,
+            "first_target_reached": first_target_reached,
             "facing_opponent": facing_opponent,
             "facing_delta": facing_opponent - prev_facing_opponent,
             "uprightness": uprightness,
@@ -126,14 +160,21 @@ class SingleAgentAttackerEnv(gym.Env):
             "hits_received": hits_received,
             "action_magnitude": float(np.mean(np.abs(action))),
             "action_delta": float(np.mean(np.abs(action - self._last_agent_action))),
+            "current_step": float(info.get("current_step", 0.0)),
+            "max_steps": float(self.base_env.max_steps),
             "win": 1.0 if winner == "robot_a" else 0.0,
             "loss": 1.0 if winner == "robot_b" else 0.0,
         }
+        self._distance_stage_best_error = best_distance_error_after_step
+        self._distance_stage_target_reached = self._distance_stage_target_reached or bool(within_target_band > 0.0)
+        return metrics
 
     def _compute_reward(self, metrics: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
         if self.reward_fn is not None:
             reward, reward_terms = self.reward_fn(metrics)
             return float(reward), {key: float(value) for key, value in reward_terms.items()}
+        if self.curriculum_stage == "distance_stage1":
+            return compute_distance_stage_reward(metrics, self.distance_stage_reward_config)
         return compute_attacker_reward(metrics, self.reward_config)
 
     def _build_agent_info(
@@ -171,6 +212,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_damage_received = 0.0
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
+        self._distance_stage_reset_state(info)
         reset_info = self._build_agent_info(
             info,
             metrics={
@@ -179,6 +221,12 @@ class SingleAgentAttackerEnv(gym.Env):
                 "distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("distance", 0.0)),
                 "horizontal_distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0)),
                 "horizontal_distance_delta": 0.0,
+                "distance_error": self._distance_stage_best_error,
+                "distance_error_delta": 0.0,
+                "best_distance_error": self._distance_stage_best_error,
+                "best_distance_error_delta": 0.0,
+                "within_target_band": float(self._distance_stage_best_error <= self.distance_stage_reward_config.target_tolerance),
+                "first_target_reached": 0.0,
                 "facing_opponent": float(info.get("relative_metrics", {}).get("robot_a", {}).get("facing_opponent", 0.0)),
                 "facing_delta": 0.0,
                 "uprightness": float(info.get("robot_states", {}).get("robot_a", {}).get("uprightness", 1.0)),
@@ -187,6 +235,8 @@ class SingleAgentAttackerEnv(gym.Env):
                 "hits_received": 0.0,
                 "action_magnitude": 0.0,
                 "action_delta": 0.0,
+                "current_step": 0.0,
+                "max_steps": float(self.base_env.max_steps),
                 "win": 0.0,
                 "loss": 0.0,
             },

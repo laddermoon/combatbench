@@ -25,6 +25,25 @@ class AttackerRewardConfig:
     loss_penalty: float = 0.5
 
 
+@dataclass
+class DistanceStageRewardConfig:
+    target_distance: float = 0.4
+    target_tolerance: float = 0.08
+    distance_error_penalty_scale: float = 1.4
+    distance_progress_reward_scale: float = 2.5
+    distance_regress_penalty_scale: float = 0.8
+    distance_record_reward_scale: float = 0.8
+    target_band_reward_scale: float = 0.25
+    first_target_arrival_bonus_scale: float = 2.5
+    overshoot_penalty_scale: float = 1.0
+    facing_reward_scale: float = 0.03
+    upright_reward_scale: float = 0.04
+    upright_delta_reward_scale: float = 0.03
+    tilt_penalty_scale: float = 0.08
+    action_magnitude_penalty_scale: float = 0.01
+    action_delta_penalty_scale: float = 0.03
+
+
 REWARD_TERM_KEYS = (
     "damage_dealt",
     "damage_received_penalty",
@@ -42,6 +61,15 @@ REWARD_TERM_KEYS = (
     "inactivity_penalty",
     "win_bonus",
     "loss_penalty",
+    "distance_error_penalty",
+    "distance_progress_reward",
+    "distance_regress_penalty",
+    "distance_record_reward",
+    "target_band_reward",
+    "first_target_arrival_bonus",
+    "overshoot_penalty",
+    "action_magnitude_penalty",
+    "action_delta_penalty",
 )
 
 
@@ -87,6 +115,44 @@ def compute_attacker_reward(
         terms["win_bonus"] = cfg.win_bonus
     if float(metrics.get("loss", 0.0)) > 0.0:
         terms["loss_penalty"] = -cfg.loss_penalty
+
+    reward = float(sum(terms.values()))
+    return reward, terms
+
+
+def compute_distance_stage_reward(
+    metrics: Dict[str, float],
+    config: Optional[DistanceStageRewardConfig] = None,
+) -> Tuple[float, Dict[str, float]]:
+    cfg = DistanceStageRewardConfig() if config is None else config
+    terms = zero_reward_terms()
+    distance_error = float(metrics.get("distance_error", 0.0))
+    distance_error_delta = float(metrics.get("distance_error_delta", 0.0))
+    best_distance_error_delta = float(metrics.get("best_distance_error_delta", 0.0))
+    within_target_band = float(metrics.get("within_target_band", 0.0))
+    first_target_reached = float(metrics.get("first_target_reached", 0.0))
+    horizontal_distance = float(metrics.get("horizontal_distance", 0.0))
+    uprightness = float(metrics.get("uprightness", 1.0))
+    uprightness_delta = float(metrics.get("uprightness_delta", 0.0))
+    current_step = max(0.0, float(metrics.get("current_step", 0.0)))
+    max_steps = max(1.0, float(metrics.get("max_steps", 1.0)))
+    lower_target_bound = cfg.target_distance - cfg.target_tolerance
+
+    terms["distance_error_penalty"] = -cfg.distance_error_penalty_scale * distance_error
+    terms["distance_progress_reward"] = cfg.distance_progress_reward_scale * max(0.0, distance_error_delta)
+    terms["distance_regress_penalty"] = -cfg.distance_regress_penalty_scale * max(0.0, -distance_error_delta)
+    terms["distance_record_reward"] = cfg.distance_record_reward_scale * max(0.0, best_distance_error_delta)
+    terms["target_band_reward"] = cfg.target_band_reward_scale * within_target_band
+    terms["first_target_arrival_bonus"] = (
+        cfg.first_target_arrival_bonus_scale * max(0.0, 1.0 - current_step / max_steps) * first_target_reached
+    )
+    terms["overshoot_penalty"] = -cfg.overshoot_penalty_scale * max(0.0, lower_target_bound - horizontal_distance)
+    terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
+    terms["upright_reward"] = cfg.upright_reward_scale * max(0.0, uprightness)
+    terms["upright_delta_reward"] = cfg.upright_delta_reward_scale * max(0.0, uprightness_delta)
+    terms["tilt_penalty"] = -cfg.tilt_penalty_scale * max(0.0, 1.0 - uprightness)
+    terms["action_magnitude_penalty"] = -cfg.action_magnitude_penalty_scale * float(metrics.get("action_magnitude", 0.0))
+    terms["action_delta_penalty"] = -cfg.action_delta_penalty_scale * float(metrics.get("action_delta", 0.0))
 
     reward = float(sum(terms.values()))
     return reward, terms
