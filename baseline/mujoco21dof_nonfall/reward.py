@@ -30,6 +30,8 @@ class DistanceStageRewardConfig:
     target_distance: float = 0.4
     distance_reward_scale: float = 10.0
     facing_reward_scale: float = 0.05
+    reward_mode: str = "step_delta"
+    distance_reward_power: float = 1.0
 
 
 REWARD_TERM_KEYS = (
@@ -106,9 +108,14 @@ def compute_distance_stage_reward(
 ) -> Tuple[float, Dict[str, float]]:
     cfg = DistanceStageRewardConfig() if config is None else config
     terms = zero_reward_terms()
-    distance_error_delta = float(metrics.get("distance_error_delta", 0.0))
-
-    terms["distance_reward"] = cfg.distance_reward_scale * distance_error_delta
+    if cfg.reward_mode == "episode_uniform":
+        distance_error = abs(float(metrics.get("distance_error", 0.0)))
+        terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
+    elif cfg.reward_mode == "step_delta":
+        distance_error_delta = float(metrics.get("distance_error_delta", 0.0))
+        terms["distance_reward"] = cfg.distance_reward_scale * distance_error_delta
+    else:
+        raise ValueError(f"Unsupported DistanceStageRewardConfig.reward_mode: {cfg.reward_mode}")
     terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
 
     reward = float(sum(terms.values()))

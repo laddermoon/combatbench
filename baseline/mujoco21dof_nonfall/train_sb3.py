@@ -16,6 +16,7 @@ from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+from combatbench.baseline.mujoco21dof_nonfall.episode_uniform_callback import EpisodeUniformRewardCallback
 from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SingleAgentAttackerEnv
 from combatbench.baseline.mujoco21dof_nonfall.reward import DistanceStageRewardConfig
 
@@ -52,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=5.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--distance-stage-target-distance", type=float, default=0.4)
+    parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform"])
+    parser.add_argument("--distance-stage-reward-power", type=float, default=2.0)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     return parser.parse_args()
@@ -69,6 +72,8 @@ def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank:
     opponent_seed = args.seed + 1000 + rank if eval_mode else args.seed + rank
     distance_stage_reward_config = DistanceStageRewardConfig(
         target_distance=args.distance_stage_target_distance,
+        reward_mode=args.distance_stage_reward_mode,
+        distance_reward_power=args.distance_stage_reward_power,
     )
     return {
         "render_mode": None,
@@ -128,8 +133,22 @@ def build_model(args: argparse.Namespace, train_env: DummyVecEnv, tensorboard_lo
     return PPO("MlpPolicy", **common_kwargs)
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.curriculum_stage != "distance_stage1" or args.distance_stage_reward_mode != "episode_uniform":
+        return
+    episode_length = int(args.match_duration * args.control_frequency)
+    if episode_length <= 0:
+        raise ValueError("Episode length must be positive for episode_uniform reward mode")
+    if args.n_steps % episode_length != 0:
+        raise ValueError(
+            "episode_uniform reward mode requires --n-steps to be a multiple of the episode length "
+            f"({episode_length} steps for the current match_duration/control_frequency)"
+        )
+
+
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     run_dir = build_run_dir(args.output_dir, args.run_name)
     checkpoint_dir = run_dir / "checkpoints"
     best_model_dir = run_dir / "best_model"
@@ -162,10 +181,15 @@ def main() -> None:
         deterministic=True,
         render=False,
     )
-    callbacks = CallbackList([checkpoint_callback, eval_callback])
+    callback_items = []
+    if args.curriculum_stage == "distance_stage1" and args.distance_stage_reward_mode == "episode_uniform":
+        callback_items.append(EpisodeUniformRewardCallback())
+    callback_items.extend([checkpoint_callback, eval_callback])
+    callbacks = CallbackList(callback_items)
 
     print(f"Run directory: {run_dir}")
     print(f"Curriculum stage: {args.curriculum_stage}")
+    print(f"Distance-stage reward mode: {args.distance_stage_reward_mode}")
     print(f"Training opponent: {args.opponent}")
     print(f"Evaluation opponent: {args.eval_opponent or args.opponent}")
     print(f"Non-fall mode: {not args.disable_non_fall_mode}")

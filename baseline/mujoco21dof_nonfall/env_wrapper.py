@@ -233,6 +233,12 @@ class SingleAgentAttackerEnv(gym.Env):
         )
         metrics = self._extract_metrics(info, prev_info, agent_action)
         reward, reward_terms = self._compute_reward(metrics)
+        if (
+            self.curriculum_stage == "distance_stage1"
+            and self.distance_stage_reward_config.reward_mode == "episode_uniform"
+            and not (terminated or truncated)
+        ):
+            reward = 0.0
         self._episode_reward += reward
         self._episode_damage_dealt += metrics["damage_dealt"]
         self._episode_damage_received += metrics["damage_received"]
