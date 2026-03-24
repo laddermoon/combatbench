@@ -110,7 +110,8 @@ def compute_distance_stage_reward(
 ) -> Tuple[float, Dict[str, float]]:
     cfg = DistanceStageRewardConfig() if config is None else config
     terms = zero_reward_terms()
-    clamp_count = max(0.0, float(metrics.get("clamp_count", 0.0)))
+    clamp_count_key = "episode_clamp_count" if cfg.reward_mode == "episode_uniform" else "clamp_count"
+    clamp_count = max(0.0, float(metrics.get(clamp_count_key, metrics.get("episode_clamp_count", 0.0))))
     if cfg.reward_mode == "episode_uniform":
         distance_error = abs(float(metrics.get("distance_error", 0.0)))
         terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
