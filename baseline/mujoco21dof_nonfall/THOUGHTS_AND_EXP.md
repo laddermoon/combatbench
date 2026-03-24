@@ -384,3 +384,62 @@
     - 在环境里暴露 clamp 次数，并在 reward 中加入 clamp 惩罚
     - 把单个 episode 从 `5s` 延长到 `10s`
     - 同步扩大 rollout/batch，让更长时长的接近行为也能稳定进入 PPO 更新
+
+## 2026-03-24 Clamp penalty bug fix rerun (`target_distance=0.55`, `match_duration=10`)
+
+- 本次动作：
+  - 复查 `episode_uniform` 路径后发现，之前 clamp 惩罚虽然已经接进 reward，但实际只吃到了终局最后一步的 `clamp_count`
+  - 根因是 `episode_uniform` 模式下，真正应该罚的是整条 episode 的 clamp 总数，也就是 `episode_clamp_count`
+  - 修复后仅改这一点，其余训练配置保持与上一轮 `0.55m + clamp penalty + 10s + SubprocVecEnv` 实验一致，做一次 apples-to-apples 重跑
+- 代码修复：
+  - `baseline/mujoco21dof_nonfall/reward.py`
+  - `compute_distance_stage_reward()` 在 `reward_mode=episode_uniform` 时改为使用 `episode_clamp_count`
+  - 默认 `clamp_penalty_scale` 维持 `0.002`，不额外放大，避免把“修 bug”和“改超参”混在一起
+- 重跑配置：
+  - `run_name=distance_stage1_episode_uniform_target055_clamp10s_409k_nenv64_subproc_cpu_fix_episode_clamp`
+  - `total_timesteps=409600`
+  - `n_envs=64`
+  - `n_steps=200`
+  - `batch_size=12800`
+  - `learning_rate=1e-4`
+  - `ent_coef=0.0005`
+  - `target_kl=0.01`
+  - `match_duration=10`
+  - `control_frequency=20`
+  - `distance_stage_target_distance=0.55`
+  - `distance_stage_reward_mode=episode_uniform`
+  - `distance_stage_reward_power=2.0`
+  - `distance_stage_clamp_penalty_scale=0.002`
+  - `train_vec_env=subproc`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_target055_clamp10s_409k_nenv64_subproc_cpu_fix_episode_clamp_20260324_114934`
+- 训练阶段观察：
+  - 修复后首个 rollout 的 `ep_rew_mean≈-28.5`，明显低于上一轮同配置实验的 `≈-22.9`
+  - 首个 eval 也从上一轮的 `≈-17.51` 降到这轮的 `≈-24.41`
+  - 说明之前策略确实拿到了不少“未被真正记账”的 clamp 红利；bug 修复后，回报变得更真实，也更难优化
+  - 中期训练能恢复到一定水平，但整体仍明显弱于上一轮：
+    - 上一轮 best eval: `-5.81 @ 384000`
+    - 本轮 best eval: `-13.04 @ 332800`
+    - 上一轮 final eval: `-13.29`
+    - 本轮 final eval: `-20.35`
+- 训练后评估（best model, 20s）：
+  - model: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_target055_clamp10s_409k_nenv64_subproc_cpu_fix_episode_clamp_20260324_114934/best_model/best_model.zip`
+  - video: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_target055_clamp10s_409k_nenv64_subproc_cpu_fix_episode_clamp_20260324_114934/best_model_eval_video_20s.mp4`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_target055_clamp10s_409k_nenv64_subproc_cpu_fix_episode_clamp_20260324_114934/best_model_eval_summary_20s.json`
+  - 对 `standing` 评估 `3` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=400`
+  - 轨迹显示策略仍然只是缓慢接近：
+    - `5s -> 距离≈1.43m`
+    - `10s -> 距离≈1.34m`
+    - `15s -> 距离≈1.31m`
+    - `20s -> 距离≈1.27m`
+- 当前判断：
+  - 这轮实验基本确认：
+    - 之前 `0.55m + clamp penalty + 10s` 那轮结果被 clamp 罚分 bug 明显高估了
+    - 一旦真正把整局 clamp 次数计入惩罚，当前 PPO 路线没有学出替代性的自然前进行为
+  - 也就是说，PPO 之前更像是在学“部分利用 clamp 的接近策略”，而不是学会了真正稳健的 walking/推进
+  - 下一步不应继续在这条旧结果上做乐观判断，而应该：
+    - 保留现有 PPO 训练脚本不动，方便以后回退和对照
+    - 新开一条独立、干净的 `GRPO` 训练路径，去掉 value function，直接用 group-relative 的 episodic return 做策略更新
+    - 先在 `distance_stage1` 上验证：更强 clamp 惩罚下，GRPO 是否比 PPO 更能顶住高方差
