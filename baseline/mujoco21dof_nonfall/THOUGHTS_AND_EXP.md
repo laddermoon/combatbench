@@ -443,3 +443,76 @@
     - 保留现有 PPO 训练脚本不动，方便以后回退和对照
     - 新开一条独立、干净的 `GRPO` 训练路径，去掉 value function，直接用 group-relative 的 episodic return 做策略更新
     - 先在 `distance_stage1` 上验证：更强 clamp 惩罚下，GRPO 是否比 PPO 更能顶住高方差
+
+## 2026-03-24 GRPO attempt (`5s`, `target_distance=0.55`, `clamp_penalty_scale=0.01`)
+
+- 本次动作：
+  - 使用独立 `GRPO` 训练入口，在 `distance_stage1` 上做第一次正式长跑
+  - 目标是验证：在 `5s` episode + 更强 clamp 惩罚下，去掉 PPO value function 后是否更容易学出不依赖 clamp 的前进策略
+- 训练配置：
+  - `run_name=grpo_distance_stage1_target055_clamp001_5s_409k_nenv64_g8_cuda`
+  - `total_timesteps=409600`
+  - `n_envs=64`
+  - `episodes_per_update=64`
+  - `group_size=8`
+  - `minibatch_size=6400`
+  - `update_epochs=4`
+  - `learning_rate=1e-4`
+  - `target_kl=0.02`
+  - `match_duration=5`
+  - `distance_stage_target_distance=0.55`
+  - `distance_stage_reward_mode=episode_uniform`
+  - `distance_stage_reward_power=2.0`
+  - `distance_stage_clamp_penalty_scale=0.01`
+  - `non_fall_pitch_limit_deg=5`
+  - `non_fall_roll_limit_deg=5`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp001_5s_409k_nenv64_g8_cuda_20260324_123356`
+- 训练结果：
+  - 总体趋势不是持续提升，而是先升后退化
+  - best checkpoint 很早出现：
+    - `best_timestep=76800`
+    - `best_mean_reward=-1834.06`
+    - `best_mean_episode_clamp_count=898.0`
+    - `best_mean_final_distance=1.644`
+  - final checkpoint 明显变差：
+    - `final_timestep=409600`
+    - `final_mean_reward=-2403.98`
+    - `final_mean_episode_clamp_count=1872.0`
+    - `final_mean_final_distance=1.686`
+  - 说明这条 `GRPO` 路线并没有稳定把策略推向“更少 clamp”，后期反而重新掉进了更强的 clamp-heavy 局部最优
+- 训练后评估（best model, 20s）：
+  - model: `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp001_5s_409k_nenv64_g8_cuda_20260324_123356/best_model/best_model.pt`
+  - video: `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp001_5s_409k_nenv64_g8_cuda_20260324_123356/best_model_eval_video_20s.mp4`
+  - summary: `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp001_5s_409k_nenv64_g8_cuda_20260324_123356/best_model_eval_summary_20s.json`
+  - 对 `standing` 评估 `3` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=400`
+  - 轨迹仍然只是缓慢接近：
+    - `5s -> 距离≈1.72m`
+    - `10s -> 距离≈1.54m`
+    - `15s -> 距离≈1.39m`
+    - `20s -> 距离≈1.25m`
+  - 没有进入有效攻击距离，也没有任何伤害输出
+- clamp 复查：
+  - 原始 `best_model_eval_summary_20s.json` 没有保存 clamp 次数，所以对视频同配置的第 1 局（`seed=0`）做了等价复跑
+  - 复跑统计：
+    - `steps=400`
+    - `steps_with_any_clamp=391`
+    - `episode_robot_a_clamp_count=4949`
+    - `episode_robot_b_clamp_count=9680`
+    - `final_distance≈1.249m`
+  - 结论很明确：视频里看到的前进行为高度依赖 clamp，并不是自然 walking
+- 当前判断：
+  - 仅仅把 `clamp_penalty_scale` 从 `0.002` 提到 `0.01` 还远远不够
+  - 即使是 `GRPO`，当前 reward 仍然允许策略在“更近但大量 clamp”与“更远但少 clamp”之间做 trade-off
+  - 这和当前目标不一致；我们想要的是一个更像字典序的优化目标：
+    - 第一优先级：先最小化 clamp 次数
+    - 第二优先级：只有在 `clamp_count=0` 时，距离 shaping 才有意义
+- 下一步实验：
+  - 把 non-fall clamp 角度从 `5°` 放宽到 `10°`
+  - 在 `distance_stage1` reward 中加入 `prioritize_no_clamp` 逻辑：
+    - 只要发生任何 clamp，就把距离/朝向 shaping 全部置零
+    - reward 只剩下按 `clamp_count` 线性累计的强惩罚
+    - 这样 `1` 次 clamp 一定优于 `2` 次 clamp，不再允许距离收益抵消额外的 clamp
+  - 同时把训练预算直接放大到当前的 `100x`，先给“摆脱 clamp 依赖”足够长的搜索时间

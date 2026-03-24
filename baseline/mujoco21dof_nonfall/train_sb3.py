@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform"])
     parser.add_argument("--distance-stage-reward-power", type=float, default=2.0)
     parser.add_argument("--distance-stage-clamp-penalty-scale", type=float, default=0.002)
+    parser.add_argument("--distance-stage-prioritize-no-clamp", action="store_true")
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     return parser.parse_args()
@@ -78,6 +79,7 @@ def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank:
         reward_mode=args.distance_stage_reward_mode,
         distance_reward_power=args.distance_stage_reward_power,
         clamp_penalty_scale=args.distance_stage_clamp_penalty_scale,
+        prioritize_no_clamp=bool(getattr(args, "distance_stage_prioritize_no_clamp", False)),
     )
     return {
         "render_mode": None,

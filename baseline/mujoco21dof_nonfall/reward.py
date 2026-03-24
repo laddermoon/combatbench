@@ -33,6 +33,7 @@ class DistanceStageRewardConfig:
     reward_mode: str = "step_delta"
     distance_reward_power: float = 1.0
     clamp_penalty_scale: float = 0.002
+    prioritize_no_clamp: bool = False
 
 
 REWARD_TERM_KEYS = (
@@ -112,15 +113,19 @@ def compute_distance_stage_reward(
     terms = zero_reward_terms()
     clamp_count_key = "episode_clamp_count" if cfg.reward_mode == "episode_uniform" else "clamp_count"
     clamp_count = max(0.0, float(metrics.get(clamp_count_key, metrics.get("episode_clamp_count", 0.0))))
+    has_any_clamp = clamp_count > 0.0
     if cfg.reward_mode == "episode_uniform":
         distance_error = abs(float(metrics.get("distance_error", 0.0)))
-        terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
+        if not (cfg.prioritize_no_clamp and has_any_clamp):
+            terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
     elif cfg.reward_mode == "step_delta":
         distance_error_delta = float(metrics.get("distance_error_delta", 0.0))
-        terms["distance_reward"] = cfg.distance_reward_scale * distance_error_delta
+        if not (cfg.prioritize_no_clamp and has_any_clamp):
+            terms["distance_reward"] = cfg.distance_reward_scale * distance_error_delta
     else:
         raise ValueError(f"Unsupported DistanceStageRewardConfig.reward_mode: {cfg.reward_mode}")
-    terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
+    if not (cfg.prioritize_no_clamp and has_any_clamp):
+        terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
     terms["clamp_penalty"] = -cfg.clamp_penalty_scale * clamp_count
 
     reward = float(sum(terms.values()))

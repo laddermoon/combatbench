@@ -74,6 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform"])
     parser.add_argument("--distance-stage-reward-power", type=float, default=2.0)
     parser.add_argument("--distance-stage-clamp-penalty-scale", type=float, default=0.002)
+    parser.add_argument("--distance-stage-prioritize-no-clamp", action="store_true")
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     return parser.parse_args()
 
