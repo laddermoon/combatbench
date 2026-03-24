@@ -27,11 +27,12 @@ class AttackerRewardConfig:
 
 @dataclass
 class DistanceStageRewardConfig:
-    target_distance: float = 0.4
+    target_distance: float = 0.55
     distance_reward_scale: float = 10.0
     facing_reward_scale: float = 0.05
     reward_mode: str = "step_delta"
     distance_reward_power: float = 1.0
+    clamp_penalty_scale: float = 0.002
 
 
 REWARD_TERM_KEYS = (
@@ -52,6 +53,7 @@ REWARD_TERM_KEYS = (
     "win_bonus",
     "loss_penalty",
     "distance_reward",
+    "clamp_penalty",
 )
 
 
@@ -108,6 +110,7 @@ def compute_distance_stage_reward(
 ) -> Tuple[float, Dict[str, float]]:
     cfg = DistanceStageRewardConfig() if config is None else config
     terms = zero_reward_terms()
+    clamp_count = max(0.0, float(metrics.get("clamp_count", 0.0)))
     if cfg.reward_mode == "episode_uniform":
         distance_error = abs(float(metrics.get("distance_error", 0.0)))
         terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
@@ -117,6 +120,7 @@ def compute_distance_stage_reward(
     else:
         raise ValueError(f"Unsupported DistanceStageRewardConfig.reward_mode: {cfg.reward_mode}")
     terms["facing_reward"] = cfg.facing_reward_scale * max(0.0, float(metrics.get("facing_opponent", 0.0)))
+    terms["clamp_penalty"] = -cfg.clamp_penalty_scale * clamp_count
 
     reward = float(sum(terms.values()))
     return reward, terms

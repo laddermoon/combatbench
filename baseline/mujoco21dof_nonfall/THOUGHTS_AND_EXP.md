@@ -312,3 +312,75 @@
   - 结论是：
     - 单靠 `distance_reward + facing_reward`，即使 PPO 更稳，也不足以学出强力接近行为
     - 下一步需要重新审视第一阶段任务本身，可能要加入更直接的前向位移/速度 shaping，或者重构初始化与课程，让目标从 `2.0m -> 0.4m` 更易学
+
+## 2026-03-24 Stage-1 episode-uniform + SubprocVecEnv attempt (`target_distance=0.4`)
+
+- 本次动作：
+  - 把第一阶段 reward 切到 `episode_uniform` 模式：整条 episode 的距离误差奖励在 rollout 末尾均匀回填到每一步
+  - 保留 `facing_reward` 作为稠密项
+  - 训练向量环境从 `DummyVecEnv` 切到 `SubprocVecEnv`
+  - 用 `n_envs=64` 做并行采样，解决单进程环境步进瓶颈
+- 训练配置：
+  - `run_name=distance_stage1_episode_uniform_200k_nenv64_subproc_cpu`
+  - `total_timesteps=200000`
+  - `n_envs=64`
+  - `n_steps=100`
+  - `batch_size=6400`
+  - `learning_rate=1e-4`
+  - `ent_coef=0.0005`
+  - `target_kl=0.01`
+  - `match_duration=5`
+  - `control_frequency=20`
+  - `distance_stage_target_distance=0.4`
+  - `distance_stage_reward_mode=episode_uniform`
+  - `train_vec_env=subproc`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746`
+- 训练阶段观察：
+  - 并行采样是有效的，首个 rollout 吞吐大约达到 `1531 fps`
+  - 训练顺利完成，`final_model.zip`、`best_model.zip`、`summary.json`、`evaluations.npz` 都已正常生成
+  - `evaluations.npz` 显示训练前期到中期有明显提升：
+    - `first_eval_mean_reward≈-20.93`
+    - `best_eval_timestep=159744`
+    - `best_eval_mean_reward≈-3.31`
+  - 但训练后段发生退化：
+    - `final_eval_mean_reward≈-8.82`
+    - 说明 `best_model` 明显优于 `final_model`
+- 训练后评估（best model, 5s）：
+  - model: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/best_model/best_model.zip`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/best_model_eval_summary.json`
+  - video: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/best_model_eval_video.mp4`
+  - 对 `standing` 评估 `5` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=100`
+  - 控制台打印的终局距离大约为 `1.01m`
+- 训练后评估（best model, 20s）：
+  - video: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/best_model_eval_video_20s.mp4`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/best_model_eval_summary_20s.json`
+  - 轨迹显示策略会继续缓慢逼近：
+    - `5s -> 距离≈1.01m`
+    - `10s -> 距离≈0.66m`
+    - `15s -> 距离≈0.57m`
+    - `20s -> 距离≈0.58m`
+  - 说明它已经学会“持续朝对手靠近”，但仍未进入 `0.4m`，也没有形成攻击命中
+- 训练后评估（final model）：
+  - model: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/final_model.zip`
+  - summary: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/final_model_eval_summary.json`
+  - video: `baseline/mujoco21dof_nonfall/runs/distance_stage1_episode_uniform_200k_nenv64_subproc_cpu_20260324_104746/final_model_eval_video.mp4`
+  - 对 `standing` 评估 `5` 局，结果全部 `draw`
+  - `mean_robot_a_damage_dealt=0.0`
+  - `mean_steps=100`
+  - 控制台打印的终局距离大约为 `1.53m`
+- 当前判断：
+  - 这轮实验已经证明：
+    - `episode_uniform` 训练思路是有效的
+    - `SubprocVecEnv` 对提升采样吞吐非常关键
+    - 策略确实学到了稳定接近行为
+  - 当前主要问题不再是“完全学不动”，而是：
+    - `0.4m` 目标距离过小，容易把策略推向一个“靠近但不真正贴近”的局部最优
+    - 策略仍在依赖 non-fall clamp 这个 hack，而没有学出更自然的走路/推进方式
+  - 下一步明确调整方向：
+    - 把第一阶段目标距离从 `0.4m` 改到 `0.55m`
+    - 在环境里暴露 clamp 次数，并在 reward 中加入 clamp 惩罚
+    - 把单个 episode 从 `5s` 延长到 `10s`
+    - 同步扩大 rollout/batch，让更长时长的接近行为也能稳定进入 PPO 更新

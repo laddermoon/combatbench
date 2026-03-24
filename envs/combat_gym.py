@@ -128,6 +128,8 @@ class CombatGymEnv(gym.Env):
         self._prev_lookat = None
 
         self._root_joint_cache = None
+        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
+        self._episode_clamp_counts = {'robot_a': 0, 'robot_b': 0}
 
     def _get_root_pose_targets(self):
         return {
@@ -213,7 +215,11 @@ class CombatGymEnv(gym.Env):
 
         changed = False
         for robot_id in ('robot_a', 'robot_b'):
-            changed = self._clamp_root_orientation(robot_id) or changed
+            was_clamped = self._clamp_root_orientation(robot_id)
+            if was_clamped:
+                self._step_clamp_counts[robot_id] += 1
+                self._episode_clamp_counts[robot_id] += 1
+            changed = was_clamped or changed
         if changed:
             mujoco.mj_forward(self.physics.model, self.physics.data)
 
@@ -282,6 +288,10 @@ class CombatGymEnv(gym.Env):
                 'enabled': self.non_fall_mode,
                 'pitch_limit_deg': self.non_fall_pitch_limit_deg,
                 'roll_limit_deg': self.non_fall_roll_limit_deg,
+                'clamp_counts': {
+                    'current_step': self._step_clamp_counts.copy(),
+                    'episode': self._episode_clamp_counts.copy(),
+                },
             },
             'observation_slices': self.observation_slices,
         }
@@ -509,6 +519,8 @@ class CombatGymEnv(gym.Env):
         self.physics_step_count = 0
         self.video_buffer = []
         self.hit_records = {'robot_a': [], 'robot_b': []}
+        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
+        self._episode_clamp_counts = {'robot_a': 0, 'robot_b': 0}
         self._prev_cam_pos = None
         self._prev_lookat = None
         self._prev_azi = None
@@ -531,6 +543,7 @@ class CombatGymEnv(gym.Env):
 
     def step(self, action_dict=None, action_callback=None):
         self.hit_records = {'robot_a': [], 'robot_b': []}
+        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
         self._update_cached_actions(action_dict)
 
         all_collisions = []

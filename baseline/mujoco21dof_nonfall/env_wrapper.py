@@ -74,6 +74,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_damage_received = 0.0
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
+        self._episode_clamp_count = 0
 
     def _distance_target_error(self, horizontal_distance: float) -> float:
         return abs(horizontal_distance - self.distance_stage_reward_config.target_distance)
@@ -127,6 +128,9 @@ class SingleAgentAttackerEnv(gym.Env):
         uprightness = float(robot_state.get("uprightness", 1.0))
         prev_uprightness = float(prev_robot_state.get("uprightness", uprightness))
         winner = info.get("winner")
+        clamp_counts = info.get("non_fall_mode", {}).get("clamp_counts", {})
+        current_step_clamp_counts = clamp_counts.get("current_step", {})
+        episode_clamp_counts = clamp_counts.get("episode", {})
         metrics = {
             "damage_dealt": damage_dealt,
             "damage_received": damage_received,
@@ -143,6 +147,8 @@ class SingleAgentAttackerEnv(gym.Env):
             "hits_received": hits_received,
             "action_magnitude": float(np.mean(np.abs(action))),
             "action_delta": float(np.mean(np.abs(action - self._last_agent_action))),
+            "clamp_count": float(current_step_clamp_counts.get("robot_a", 0.0)),
+            "episode_clamp_count": float(episode_clamp_counts.get("robot_a", 0.0)),
             "win": 1.0 if winner == "robot_a" else 0.0,
             "loss": 1.0 if winner == "robot_b" else 0.0,
         }
@@ -171,6 +177,7 @@ class SingleAgentAttackerEnv(gym.Env):
             "damage_received": self._episode_damage_received,
             "hits_dealt": self._episode_hits_dealt,
             "hits_received": self._episode_hits_received,
+            "clamp_count": self._episode_clamp_count,
         }
         return agent_info
 
@@ -191,6 +198,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_damage_received = 0.0
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
+        self._episode_clamp_count = 0
         reset_info = self._build_agent_info(
             info,
             metrics={
@@ -211,6 +219,8 @@ class SingleAgentAttackerEnv(gym.Env):
                 "hits_received": 0.0,
                 "action_magnitude": 0.0,
                 "action_delta": 0.0,
+                "clamp_count": 0.0,
+                "episode_clamp_count": 0.0,
                 "win": 0.0,
                 "loss": 0.0,
             },
@@ -244,6 +254,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_damage_received += metrics["damage_received"]
         self._episode_hits_dealt += int(metrics["hits_dealt"])
         self._episode_hits_received += int(metrics["hits_received"])
+        self._episode_clamp_count += int(metrics["clamp_count"])
         agent_info = self._build_agent_info(info, metrics, reward_terms)
         self._last_full_obs = full_obs
         self._last_info = info
