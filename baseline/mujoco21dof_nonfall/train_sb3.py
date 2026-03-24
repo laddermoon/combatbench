@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from combatbench.baseline.mujoco21dof_nonfall.episode_uniform_callback import EpisodeUniformRewardCallback
 from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SingleAgentAttackerEnv
@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--train-vec-env", type=str, default="auto", choices=["auto", "dummy", "subproc"])
+    parser.add_argument("--subproc-start-method", type=str, default="spawn", choices=["spawn", "forkserver", "fork"])
     parser.add_argument("--checkpoint-freq", type=int, default=20000)
     parser.add_argument("--eval-freq", type=int, default=10000)
     parser.add_argument("--eval-episodes", type=int, default=3)
@@ -110,7 +112,27 @@ def save_run_config(run_dir: Path, args: argparse.Namespace) -> None:
         json.dump(config, f, indent=2, sort_keys=True)
 
 
-def build_model(args: argparse.Namespace, train_env: DummyVecEnv, tensorboard_log: str) -> PPO:
+def build_train_vec_env(args: argparse.Namespace) -> VecEnv:
+    env_fns = [make_env(args, eval_mode=False, rank=rank) for rank in range(args.n_envs)]
+    if args.train_vec_env == "dummy":
+        return DummyVecEnv(env_fns)
+    if args.train_vec_env == "subproc":
+        return SubprocVecEnv(env_fns, start_method=args.subproc_start_method)
+    if args.n_envs > 1:
+        return SubprocVecEnv(env_fns, start_method=args.subproc_start_method)
+    return DummyVecEnv(env_fns)
+
+
+def build_eval_vec_env(args: argparse.Namespace) -> VecEnv:
+    env_fns = [make_env(args, eval_mode=True, rank=0)]
+    if args.train_vec_env == "subproc":
+        return SubprocVecEnv(env_fns, start_method=args.subproc_start_method)
+    if args.train_vec_env == "auto" and args.n_envs > 1:
+        return SubprocVecEnv(env_fns, start_method=args.subproc_start_method)
+    return DummyVecEnv(env_fns)
+
+
+def build_model(args: argparse.Namespace, train_env: VecEnv, tensorboard_log: str) -> PPO:
     common_kwargs = {
         "env": train_env,
         "device": args.device,
@@ -160,8 +182,8 @@ def main() -> None:
     tensorboard_dir.mkdir(parents=True, exist_ok=True)
     save_run_config(run_dir, args)
 
-    train_env = DummyVecEnv([make_env(args, eval_mode=False, rank=rank) for rank in range(args.n_envs)])
-    eval_env = DummyVecEnv([make_env(args, eval_mode=True, rank=0)])
+    train_env = build_train_vec_env(args)
+    eval_env = build_eval_vec_env(args)
 
     model = build_model(args, train_env, str(tensorboard_dir))
 
@@ -190,6 +212,8 @@ def main() -> None:
     print(f"Run directory: {run_dir}")
     print(f"Curriculum stage: {args.curriculum_stage}")
     print(f"Distance-stage reward mode: {args.distance_stage_reward_mode}")
+    print(f"Training vec env: {args.train_vec_env}")
+    print(f"Subproc start method: {args.subproc_start_method}")
     print(f"Training opponent: {args.opponent}")
     print(f"Evaluation opponent: {args.eval_opponent or args.opponent}")
     print(f"Non-fall mode: {not args.disable_non_fall_mode}")
