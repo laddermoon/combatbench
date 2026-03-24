@@ -160,3 +160,62 @@ Smoke run directory:
 - `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_curriculum_smoke_resume_20260324_181835`
 
 **Next step:** Commit the curriculum-reward implementation and launch the full-budget resumed GRPO training with the same `40.96M` budget as the previous run.
+
+## [2026-03-24 18:20] Launch full-budget resumed curriculum GRPO training
+
+**Why:** The smoke run showed that the new three-level curriculum reward works and can resume from the previous no-clamp best model. The next step is the real `40.96M`-step training run.
+
+**Command:**
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 baseline/mujoco21dof_nonfall/train_grpo.py \
+  --run-name grpo_distance_stage1_curriculum06_attack_resume_40m_nenv64_g8_cuda \
+  --resume-from baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp10deg_noclampfirst_penalty1000_40m_nenv64_g8_cuda_20260324_131627/best_model/best_model.pt \
+  --curriculum-stage distance_stage1 \
+  --distance-stage-reward-mode episode_curriculum \
+  --distance-stage-reward-power 2.0 \
+  --distance-stage-target-distance 0.55 \
+  --distance-stage-clamp-penalty-scale 1000 \
+  --distance-stage-prioritize-no-clamp \
+  --distance-stage-close-enough-distance 0.6 \
+  --distance-stage-attack-damage-reward-scale 1000 \
+  --opponent standing \
+  --eval-opponent standing \
+  --initial-distance 2.0 \
+  --match-duration 5 \
+  --control-frequency 20 \
+  --total-timesteps 40960000 \
+  --n-envs 64 \
+  --episodes-per-update 64 \
+  --group-size 8 \
+  --minibatch-size 6400 \
+  --update-epochs 4 \
+  --learning-rate 1e-4 \
+  --ent-coef 0.0005 \
+  --target-kl 0.02 \
+  --checkpoint-freq 2560000 \
+  --eval-freq 1280000 \
+  --device cuda \
+  --train-vec-env subproc \
+  --subproc-start-method spawn \
+  --non-fall-pitch-limit-deg 10 \
+  --non-fall-roll-limit-deg 10
+```
+
+**Result:**
+Training launched successfully in the background.
+
+Run directory:
+- `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_curriculum06_attack_resume_40m_nenv64_g8_cuda_20260324_182043`
+
+Initial health check from `Update 1`:
+- `Total timesteps=6400`
+- `Mean episode return=-906.250`
+- `Mean episode clamp count=0.906`
+- `Mean episode damage dealt=0.0046`
+- `Mean episode min horizontal distance=0.494`
+- `Mean final distance=0.497`
+- `Curriculum attack enabled=False`
+
+This is a healthy start: the resumed policy is already close to the `0.6m` threshold, still occasionally clamps, and has not yet stably entered the batch-level attack-reward phase.
+
+**Next step:** Record a concise summary document and continue monitoring future eval points.
