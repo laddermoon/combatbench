@@ -55,10 +55,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=5.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--distance-stage-target-distance", type=float, default=0.55)
-    parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform"])
+    parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform", "episode_curriculum"])
     parser.add_argument("--distance-stage-reward-power", type=float, default=2.0)
     parser.add_argument("--distance-stage-clamp-penalty-scale", type=float, default=0.002)
     parser.add_argument("--distance-stage-prioritize-no-clamp", action="store_true")
+    parser.add_argument("--distance-stage-close-enough-distance", type=float, default=0.6)
+    parser.add_argument("--distance-stage-attack-damage-reward-scale", type=float, default=1000.0)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     return parser.parse_args()
@@ -71,16 +73,22 @@ def build_run_dir(output_dir: str, run_name: str) -> Path:
     return run_dir.resolve()
 
 
-def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank: int = 0) -> Dict[str, Any]:
-    opponent = args.opponent if not eval_mode else (args.eval_opponent or args.opponent)
-    opponent_seed = args.seed + 1000 + rank if eval_mode else args.seed + rank
-    distance_stage_reward_config = DistanceStageRewardConfig(
+def build_distance_stage_reward_config(args: argparse.Namespace) -> DistanceStageRewardConfig:
+    return DistanceStageRewardConfig(
         target_distance=args.distance_stage_target_distance,
         reward_mode=args.distance_stage_reward_mode,
         distance_reward_power=args.distance_stage_reward_power,
         clamp_penalty_scale=args.distance_stage_clamp_penalty_scale,
         prioritize_no_clamp=bool(getattr(args, "distance_stage_prioritize_no_clamp", False)),
+        close_enough_distance=float(getattr(args, "distance_stage_close_enough_distance", 0.6)),
+        attack_damage_reward_scale=float(getattr(args, "distance_stage_attack_damage_reward_scale", 1000.0)),
     )
+
+
+def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank: int = 0) -> Dict[str, Any]:
+    opponent = args.opponent if not eval_mode else (args.eval_opponent or args.opponent)
+    opponent_seed = args.seed + 1000 + rank if eval_mode else args.seed + rank
+    distance_stage_reward_config = build_distance_stage_reward_config(args)
     return {
         "render_mode": None,
         "curriculum_stage": args.curriculum_stage,

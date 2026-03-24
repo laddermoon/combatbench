@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -34,6 +34,9 @@ class DistanceStageRewardConfig:
     distance_reward_power: float = 1.0
     clamp_penalty_scale: float = 0.002
     prioritize_no_clamp: bool = False
+    close_enough_distance: float = 0.6
+    attack_damage_reward_scale: float = 1000.0
+    require_all_episodes_close_enough_for_attack: bool = True
 
 
 REWARD_TERM_KEYS = (
@@ -55,6 +58,7 @@ REWARD_TERM_KEYS = (
     "loss_penalty",
     "distance_reward",
     "clamp_penalty",
+    "attack_reward",
 )
 
 
@@ -105,6 +109,61 @@ def compute_attacker_reward(
     return reward, terms
 
 
+def compute_distance_stage_curriculum_returns(
+    episode_metrics_list: List[Dict[str, float]],
+    config: Optional[DistanceStageRewardConfig] = None,
+) -> Tuple[List[float], List[Dict[str, float]], bool]:
+    cfg = DistanceStageRewardConfig() if config is None else config
+    if not episode_metrics_list:
+        return [], [], False
+
+    normalized_metrics: List[Dict[str, float]] = []
+    for metrics in episode_metrics_list:
+        clamp_count = max(0.0, float(metrics.get("episode_clamp_count", metrics.get("clamp_count", 0.0))))
+        min_horizontal_distance = float(
+            metrics.get(
+                "episode_min_horizontal_distance",
+                metrics.get("horizontal_distance", 0.0),
+            )
+        )
+        normalized_metrics.append(
+            {
+                "episode_clamp_count": clamp_count,
+                "episode_min_horizontal_distance": min_horizontal_distance,
+                "episode_damage_dealt": max(0.0, float(metrics.get("episode_damage_dealt", metrics.get("damage_dealt", 0.0)))),
+            }
+        )
+
+    all_episodes_no_clamp = all(item["episode_clamp_count"] <= 0.0 for item in normalized_metrics)
+    all_episodes_close_enough = all(
+        item["episode_min_horizontal_distance"] <= cfg.close_enough_distance for item in normalized_metrics
+    )
+    attack_enabled = all_episodes_no_clamp and all_episodes_close_enough
+    if not cfg.require_all_episodes_close_enough_for_attack:
+        attack_enabled = True
+
+    rewards: List[float] = []
+    term_dicts: List[Dict[str, float]] = []
+    for item in normalized_metrics:
+        terms = zero_reward_terms()
+        clamp_count = item["episode_clamp_count"]
+        if clamp_count > 0.0:
+            terms["clamp_penalty"] = -cfg.clamp_penalty_scale * clamp_count
+            rewards.append(float(sum(terms.values())))
+            term_dicts.append(terms)
+            continue
+
+        approach_gap = max(0.0, item["episode_min_horizontal_distance"] - cfg.close_enough_distance)
+        if attack_enabled and approach_gap <= 0.0:
+            terms["attack_reward"] = cfg.attack_damage_reward_scale * item["episode_damage_dealt"]
+        else:
+            terms["distance_reward"] = -cfg.distance_reward_scale * (approach_gap ** cfg.distance_reward_power)
+        rewards.append(float(sum(terms.values())))
+        term_dicts.append(terms)
+
+    return rewards, term_dicts, attack_enabled
+
+
 def compute_distance_stage_reward(
     metrics: Dict[str, float],
     config: Optional[DistanceStageRewardConfig] = None,
@@ -118,6 +177,9 @@ def compute_distance_stage_reward(
         distance_error = abs(float(metrics.get("distance_error", 0.0)))
         if not (cfg.prioritize_no_clamp and has_any_clamp):
             terms["distance_reward"] = -cfg.distance_reward_scale * (distance_error ** cfg.distance_reward_power)
+    elif cfg.reward_mode == "episode_curriculum":
+        rewards, term_dicts, _ = compute_distance_stage_curriculum_returns([metrics], cfg)
+        return rewards[0], term_dicts[0]
     elif cfg.reward_mode == "step_delta":
         distance_error_delta = float(metrics.get("distance_error_delta", 0.0))
         if not (cfg.prioritize_no_clamp and has_any_clamp):

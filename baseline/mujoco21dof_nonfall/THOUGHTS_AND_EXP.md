@@ -516,3 +516,70 @@
     - reward 只剩下按 `clamp_count` 线性累计的强惩罚
     - 这样 `1` 次 clamp 一定优于 `2` 次 clamp，不再允许距离收益抵消额外的 clamp
   - 同时把训练预算直接放大到当前的 `100x`，先给“摆脱 clamp 依赖”足够长的搜索时间
+
+## 2026-03-24 GRPO no-clamp-first + `10°` limits (`40.96M` budget)
+
+- 本次动作：
+  - 使用独立 `GRPO` 路线，继续在 `distance_stage1` 上验证“先摆脱 clamp 依赖，再谈接近”的可行性
+  - 把 non-fall clamp 角度放宽到 `10°`
+  - 保持 `prioritize_no_clamp`：只要发生 clamp，就忽略距离/朝向 shaping，只保留超大 clamp 惩罚
+  - 训练预算继续放大到 `40960000` steps
+- 训练配置：
+  - `run_name=grpo_distance_stage1_target055_clamp10deg_noclampfirst_penalty1000_40m_nenv64_g8_cuda`
+  - `total_timesteps=40960000`
+  - `n_envs=64`
+  - `episodes_per_update=64`
+  - `group_size=8`
+  - `minibatch_size=6400`
+  - `update_epochs=4`
+  - `learning_rate=1e-4`
+  - `target_kl=0.02`
+  - `match_duration=5`
+  - `distance_stage_reward_mode=episode_uniform`
+  - `distance_stage_clamp_penalty_scale=1000`
+  - `distance_stage_prioritize_no_clamp=true`
+  - `non_fall_pitch_limit_deg=10`
+  - `non_fall_roll_limit_deg=10`
+- 训练产物目录：
+  - `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp10deg_noclampfirst_penalty1000_40m_nenv64_g8_cuda_20260324_131627`
+- 训练结果（手动停在验证通过后）：
+  - 当前进程停止时，最新 eval 已到：`eval_26880000.json`
+  - 这也是当前 best eval：
+    - `best_timestep=26880000`
+    - `best_mean_reward=-542.76`
+    - `best_mean_episode_clamp_count=0.0`
+    - `best_mean_final_distance=0.480`
+  - 更早的 `eval_25600000.json` 已经达到：
+    - `mean_episode_clamp_count=0.0`
+    - `mean_final_distance=0.515`
+  - 说明这次训练不只是“减少 clamp”，而是已经能在无 clamp 前提下，把最终距离压到目标 `0.55m` 附近，甚至更近
+- best model 视频复查（`20s`, vs `standing`）：
+  - video: `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp10deg_noclampfirst_penalty1000_40m_nenv64_g8_cuda_20260324_131627/best_model_eval_video_20s_latest.mp4`
+  - summary: `baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_target055_clamp10deg_noclampfirst_penalty1000_40m_nenv64_g8_cuda_20260324_131627/best_model_eval_summary_20s_latest.json`
+  - 关键轨迹：
+    - `Step 200 -> 距离≈0.53m`
+    - `Step 300 -> 距离≈0.70m`
+    - `Step 400 -> 距离≈1.22m`
+  - 说明策略已经能明显冲到目标距离附近，但还不能稳定停在近身区间，后段会重新漂走
+  - 同时已经出现轻微真实接触：
+    - `mean_robot_a_damage_dealt≈0.084`
+    - `mean_robot_b_damage_dealt≈0.343`
+- 当前判断：
+  - 这次实验已经证明：
+    - `10°` non-fall 限制 + 极大 clamp penalty + no-clamp-first 的思路是可行的
+    - 策略确实可以在 **不依赖 clamp** 的情况下，把距离推进到目标 `0.55m` 附近
+  - 但现阶段的 best model 仍有两个明显问题：
+    - 只能“冲进去”，还不会稳定维持在近身范围内
+    - 到达近身区后，进攻意图仍然很弱，轻微接触多、有效输出少
+  - 因此下一步不应该再继续单纯优化距离，而应该把 `distance_stage1` 明确改造成一个课程式三层目标：
+    - 第一层：先绝对禁止依赖 clamp
+    - 第二层：在无 clamp 的前提下，先学会把任意 episode 推进到 `0.6m` 内
+    - 第三层：只有当一整批 episode 都已经做到 `0.6m` 内后，才开始奖励进攻掉血
+- 下一步实验：
+  - 保持 `no clamp` 优先级不变：一旦发生 clamp，忽略其它 reward，只保留 clamp penalty
+  - 距离目标改成“`0.6m` 内即可，不惩罚更近”：
+    - 若 episode 从未进入 `0.6m` 内，则按 `max(min_distance - 0.6, 0)` 给距离损失
+  - 若一整批 episode 都已经进入 `0.6m` 内，则切换到进攻目标：
+    - 奖励 `damage_dealt`
+    - 不惩罚 `damage_received`
+  - 尽量从当前 `best_model.pt` 继续训练，而不是从零开始，让已有的“无 clamp 接近能力”直接迁移到新课程中

@@ -28,6 +28,7 @@ from combatbench.baseline.mujoco21dof_nonfall.grpo import (
     save_grpo_checkpoint,
 )
 from combatbench.baseline.mujoco21dof_nonfall.train_sb3 import (
+    build_distance_stage_reward_config,
     build_env_kwargs,
     build_run_dir,
     build_train_vec_env,
@@ -71,10 +72,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--non-fall-roll-limit-deg", type=float, default=5.0)
     parser.add_argument("--damage-scale", type=float, default=100.0)
     parser.add_argument("--distance-stage-target-distance", type=float, default=0.55)
-    parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform"])
+    parser.add_argument("--distance-stage-reward-mode", type=str, default="step_delta", choices=["step_delta", "episode_uniform", "episode_curriculum"])
     parser.add_argument("--distance-stage-reward-power", type=float, default=2.0)
     parser.add_argument("--distance-stage-clamp-penalty-scale", type=float, default=0.002)
     parser.add_argument("--distance-stage-prioritize-no-clamp", action="store_true")
+    parser.add_argument("--distance-stage-close-enough-distance", type=float, default=0.6)
+    parser.add_argument("--distance-stage-attack-damage-reward-scale", type=float, default=1000.0)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     return parser.parse_args()
 
@@ -141,7 +144,10 @@ def save_eval_history(eval_path: Path, eval_history: List[Dict[str, Any]]) -> No
         results=np.asarray([item["episode_returns"] for item in eval_history], dtype=np.float32),
         episode_lengths=np.asarray([item["episode_lengths"] for item in eval_history], dtype=np.float32),
         clamp_counts=np.asarray([item["episode_clamp_counts"] for item in eval_history], dtype=np.float32),
+        episode_damage_dealt=np.asarray([item["episode_damage_dealt"] for item in eval_history], dtype=np.float32),
+        episode_min_horizontal_distances=np.asarray([item["episode_min_horizontal_distances"] for item in eval_history], dtype=np.float32),
         final_distances=np.asarray([item["final_distances"] for item in eval_history], dtype=np.float32),
+        curriculum_attack_enabled=np.asarray([item["curriculum_attack_enabled"] for item in eval_history], dtype=np.float32),
     )
 
 
@@ -164,6 +170,7 @@ def maybe_eval_and_checkpoint(
     next_eval_at: int,
     next_checkpoint_at: int,
 ) -> tuple[float, int, int, bool]:
+    distance_stage_reward_config = build_distance_stage_reward_config(args)
     if total_timesteps >= next_checkpoint_at:
         checkpoint_path = checkpoint_dir / f"grpo_attacker_{total_timesteps}.pt"
         save_grpo_checkpoint(
@@ -187,6 +194,8 @@ def maybe_eval_and_checkpoint(
         episodes=args.eval_episodes,
         deterministic=True,
         seed=args.seed,
+        curriculum_stage=args.curriculum_stage,
+        distance_stage_reward_config=distance_stage_reward_config,
     )
     actor.train()
 
@@ -196,7 +205,10 @@ def maybe_eval_and_checkpoint(
             "episode_returns": eval_metrics["episode_returns"].tolist(),
             "episode_lengths": eval_metrics["episode_lengths"].tolist(),
             "episode_clamp_counts": eval_metrics["episode_clamp_counts"].tolist(),
+            "episode_damage_dealt": eval_metrics["episode_damage_dealt"].tolist(),
+            "episode_min_horizontal_distances": eval_metrics["episode_min_horizontal_distances"].tolist(),
             "final_distances": eval_metrics["final_distances"].tolist(),
+            "curriculum_attack_enabled": float(eval_metrics["curriculum_attack_enabled"]),
         }
     )
     save_eval_history(eval_log_dir / "evaluations.npz", eval_history)
@@ -207,11 +219,16 @@ def maybe_eval_and_checkpoint(
         "std_reward": float(eval_metrics["std_reward"]),
         "mean_episode_length": float(eval_metrics["mean_episode_length"]),
         "mean_episode_clamp_count": float(eval_metrics["mean_episode_clamp_count"]),
+        "mean_episode_damage_dealt": float(eval_metrics["mean_episode_damage_dealt"]),
+        "mean_episode_min_horizontal_distance": float(eval_metrics["mean_episode_min_horizontal_distance"]),
         "mean_final_distance": float(eval_metrics["mean_final_distance"]),
         "episode_returns": eval_metrics["episode_returns"].tolist(),
         "episode_lengths": eval_metrics["episode_lengths"].tolist(),
         "episode_clamp_counts": eval_metrics["episode_clamp_counts"].tolist(),
+        "episode_damage_dealt": eval_metrics["episode_damage_dealt"].tolist(),
+        "episode_min_horizontal_distances": eval_metrics["episode_min_horizontal_distances"].tolist(),
         "final_distances": eval_metrics["final_distances"].tolist(),
+        "curriculum_attack_enabled": float(eval_metrics["curriculum_attack_enabled"]),
     }
     with open(eval_log_dir / f"eval_{total_timesteps}.json", "w", encoding="utf-8") as f:
         json.dump(summary_payload, f, indent=2, sort_keys=True)
@@ -219,7 +236,10 @@ def maybe_eval_and_checkpoint(
     print(f"Eval num_timesteps={total_timesteps}, episode_reward={eval_metrics['mean_reward']:.2f} +/- {eval_metrics['std_reward']:.2f}")
     print(f"Episode length: {eval_metrics['mean_episode_length']:.2f}")
     print(f"Mean episode clamp count: {eval_metrics['mean_episode_clamp_count']:.2f}")
+    print(f"Mean episode damage dealt: {eval_metrics['mean_episode_damage_dealt']:.4f}")
+    print(f"Mean episode min horizontal distance: {eval_metrics['mean_episode_min_horizontal_distance']:.3f}")
     print(f"Mean final distance: {eval_metrics['mean_final_distance']:.3f}")
+    print(f"Curriculum attack enabled: {bool(eval_metrics['curriculum_attack_enabled'])}")
 
     if eval_metrics["mean_reward"] > best_eval_reward:
         best_eval_reward = float(eval_metrics["mean_reward"])
@@ -267,6 +287,7 @@ def main() -> None:
     device = resolve_device(args.device)
     train_env = build_train_vec_env(args)
     eval_env = build_eval_env(args)
+    distance_stage_reward_config = build_distance_stage_reward_config(args)
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
 
     obs_dim = int(train_env.observation_space.shape[0])
@@ -283,7 +304,11 @@ def main() -> None:
     maybe_resume_actor(args, actor, optimizer)
     actor.train()
 
-    collector = GRPORolloutCollector(train_env)
+    collector = GRPORolloutCollector(
+        train_env,
+        curriculum_stage=args.curriculum_stage,
+        distance_stage_reward_config=distance_stage_reward_config,
+    )
     total_timesteps = 0
     update_index = 0
     best_eval_reward = float("-inf")
@@ -337,7 +362,10 @@ def main() -> None:
             writer.add_scalar("rollout/std_episode_return", rollout_stats["std_episode_return"], total_timesteps)
             writer.add_scalar("rollout/mean_episode_length", rollout_stats["mean_episode_length"], total_timesteps)
             writer.add_scalar("rollout/mean_episode_clamp_count", rollout_stats["mean_episode_clamp_count"], total_timesteps)
+            writer.add_scalar("rollout/mean_episode_damage_dealt", rollout_stats["mean_episode_damage_dealt"], total_timesteps)
+            writer.add_scalar("rollout/mean_episode_min_horizontal_distance", rollout_stats["mean_episode_min_horizontal_distance"], total_timesteps)
             writer.add_scalar("rollout/mean_final_distance", rollout_stats["mean_final_distance"], total_timesteps)
+            writer.add_scalar("rollout/curriculum_attack_enabled", rollout_stats["curriculum_attack_enabled"], total_timesteps)
             writer.add_scalar("rollout/samples_collected", rollout_stats["samples_collected"], total_timesteps)
             writer.add_scalar("train/policy_loss", update_stats["policy_loss"], total_timesteps)
             writer.add_scalar("train/entropy", update_stats["entropy"], total_timesteps)
@@ -352,7 +380,10 @@ def main() -> None:
             print(f"Episodes this update: {target_episodes}")
             print(f"Mean episode return: {rollout_stats['mean_episode_return']:.3f}")
             print(f"Mean episode clamp count: {rollout_stats['mean_episode_clamp_count']:.3f}")
+            print(f"Mean episode damage dealt: {rollout_stats['mean_episode_damage_dealt']:.4f}")
+            print(f"Mean episode min horizontal distance: {rollout_stats['mean_episode_min_horizontal_distance']:.3f}")
             print(f"Mean final distance: {rollout_stats['mean_final_distance']:.3f}")
+            print(f"Curriculum attack enabled: {bool(rollout_stats['curriculum_attack_enabled'])}")
             print(f"Policy loss: {update_stats['policy_loss']:.6f}")
             print(f"Entropy: {update_stats['entropy']:.6f}")
             print(f"Approx KL: {update_stats['approx_kl']:.6f}")

@@ -8,6 +8,11 @@ from stable_baselines3.common.vec_env import VecEnv
 from torch import nn
 from torch.distributions import Normal
 
+from combatbench.baseline.mujoco21dof_nonfall.reward import (
+    DistanceStageRewardConfig,
+    compute_distance_stage_curriculum_returns,
+)
+
 
 @dataclass(frozen=True)
 class GRPOModelConfig:
@@ -62,8 +67,16 @@ class GRPOActor(nn.Module):
 
 
 class GRPORolloutCollector:
-    def __init__(self, vec_env: VecEnv):
+    def __init__(
+        self,
+        vec_env: VecEnv,
+        *,
+        curriculum_stage: str = "attack",
+        distance_stage_reward_config: Optional[DistanceStageRewardConfig] = None,
+    ):
         self.vec_env = vec_env
+        self.curriculum_stage = curriculum_stage
+        self.distance_stage_reward_config = distance_stage_reward_config
         self.current_obs: Optional[np.ndarray] = None
         self.partial_episodes: List[Dict[str, List[Any]]] = []
         self.reset()
@@ -125,6 +138,13 @@ class GRPORolloutCollector:
                         "return": float(np.sum(step_rewards)),
                         "length": int(step_rewards.shape[0]),
                         "episode_clamp_count": float(info.get("episode_stats", {}).get("clamp_count", 0.0)),
+                        "episode_damage_dealt": float(info.get("episode_stats", {}).get("damage_dealt", 0.0)),
+                        "episode_min_horizontal_distance": float(
+                            info.get("episode_stats", {}).get(
+                                "min_horizontal_distance",
+                                info.get("attacker_metrics", {}).get("horizontal_distance", 0.0),
+                            )
+                        ),
                         "final_distance": float(info.get("attacker_metrics", {}).get("horizontal_distance", 0.0)),
                     }
                 )
@@ -135,9 +155,37 @@ class GRPORolloutCollector:
             raise RuntimeError("No complete GRPO groups collected. Increase target_episodes or reduce group_size.")
         completed_episodes = completed_episodes[:usable_episode_count]
 
+        if (
+            self.curriculum_stage == "distance_stage1"
+            and self.distance_stage_reward_config is not None
+            and self.distance_stage_reward_config.reward_mode == "episode_curriculum"
+        ):
+            curriculum_metrics = [
+                {
+                    "episode_clamp_count": episode["episode_clamp_count"],
+                    "episode_damage_dealt": episode["episode_damage_dealt"],
+                    "episode_min_horizontal_distance": episode["episode_min_horizontal_distance"],
+                }
+                for episode in completed_episodes
+            ]
+            curriculum_rewards, _, attack_enabled = compute_distance_stage_curriculum_returns(
+                curriculum_metrics,
+                self.distance_stage_reward_config,
+            )
+            for episode, curriculum_reward in zip(completed_episodes, curriculum_rewards):
+                episode["return"] = float(curriculum_reward)
+            curriculum_attack_enabled = float(1.0 if attack_enabled else 0.0)
+        else:
+            curriculum_attack_enabled = 0.0
+
         episode_returns = np.asarray([episode["return"] for episode in completed_episodes], dtype=np.float32)
         episode_lengths = np.asarray([episode["length"] for episode in completed_episodes], dtype=np.float32)
         episode_clamp_counts = np.asarray([episode["episode_clamp_count"] for episode in completed_episodes], dtype=np.float32)
+        episode_damage_dealt = np.asarray([episode["episode_damage_dealt"] for episode in completed_episodes], dtype=np.float32)
+        episode_min_horizontal_distances = np.asarray(
+            [episode["episode_min_horizontal_distance"] for episode in completed_episodes],
+            dtype=np.float32,
+        )
         final_distances = np.asarray([episode["final_distance"] for episode in completed_episodes], dtype=np.float32)
         episode_advantages = compute_group_advantages(episode_returns, group_size)
 
@@ -161,6 +209,8 @@ class GRPORolloutCollector:
             "episode_returns": episode_returns,
             "episode_lengths": episode_lengths,
             "episode_clamp_counts": episode_clamp_counts,
+            "episode_damage_dealt": episode_damage_dealt,
+            "episode_min_horizontal_distances": episode_min_horizontal_distances,
             "final_distances": final_distances,
         }
         stats = {
@@ -171,9 +221,12 @@ class GRPORolloutCollector:
             "std_episode_return": float(np.std(episode_returns)),
             "mean_episode_length": float(np.mean(episode_lengths)),
             "mean_episode_clamp_count": float(np.mean(episode_clamp_counts)),
+            "mean_episode_damage_dealt": float(np.mean(episode_damage_dealt)),
+            "mean_episode_min_horizontal_distance": float(np.mean(episode_min_horizontal_distances)),
             "mean_final_distance": float(np.mean(final_distances)),
             "mean_group_advantage": float(np.mean(episode_advantages)),
             "std_group_advantage": float(np.std(episode_advantages)),
+            "curriculum_attack_enabled": curriculum_attack_enabled,
         }
         return batch, stats
 
@@ -291,10 +344,14 @@ def evaluate_grpo_actor(
     episodes: int,
     deterministic: bool = True,
     seed: int = 0,
+    curriculum_stage: str = "attack",
+    distance_stage_reward_config: Optional[DistanceStageRewardConfig] = None,
 ) -> Dict[str, float]:
     episode_returns: List[float] = []
     episode_lengths: List[float] = []
     clamp_counts: List[float] = []
+    damage_dealt_values: List[float] = []
+    min_horizontal_distances: List[float] = []
     final_distances: List[float] = []
 
     for episode_idx in range(int(episodes)):
@@ -305,6 +362,8 @@ def evaluate_grpo_actor(
         episode_length = 0
         final_distance = 0.0
         clamp_count = 0.0
+        episode_damage_dealt = 0.0
+        episode_min_horizontal_distance = 0.0
 
         while not (terminated or truncated):
             obs_tensor = torch.as_tensor(np.asarray(obs, dtype=np.float32)[None, :], dtype=torch.float32, device=device)
@@ -316,26 +375,63 @@ def evaluate_grpo_actor(
             episode_length += 1
             final_distance = float(info.get("attacker_metrics", {}).get("horizontal_distance", final_distance))
             clamp_count = float(info.get("episode_stats", {}).get("clamp_count", clamp_count))
+            episode_damage_dealt = float(info.get("episode_stats", {}).get("damage_dealt", episode_damage_dealt))
+            episode_min_horizontal_distance = float(
+                info.get("episode_stats", {}).get("min_horizontal_distance", final_distance)
+            )
 
         episode_returns.append(float(episode_return))
         episode_lengths.append(float(episode_length))
         clamp_counts.append(float(clamp_count))
+        damage_dealt_values.append(float(episode_damage_dealt))
+        min_horizontal_distances.append(float(episode_min_horizontal_distance))
         final_distances.append(float(final_distance))
+
+    if (
+        curriculum_stage == "distance_stage1"
+        and distance_stage_reward_config is not None
+        and distance_stage_reward_config.reward_mode == "episode_curriculum"
+    ):
+        curriculum_metrics = [
+            {
+                "episode_clamp_count": clamp_count,
+                "episode_damage_dealt": damage_dealt,
+                "episode_min_horizontal_distance": min_distance,
+            }
+            for clamp_count, damage_dealt, min_distance in zip(
+                clamp_counts,
+                damage_dealt_values,
+                min_horizontal_distances,
+            )
+        ]
+        episode_returns, _, attack_enabled = compute_distance_stage_curriculum_returns(
+            curriculum_metrics,
+            distance_stage_reward_config,
+        )
+    else:
+        attack_enabled = False
 
     returns_array = np.asarray(episode_returns, dtype=np.float32)
     lengths_array = np.asarray(episode_lengths, dtype=np.float32)
     clamp_array = np.asarray(clamp_counts, dtype=np.float32)
+    damage_dealt_array = np.asarray(damage_dealt_values, dtype=np.float32)
+    min_distance_array = np.asarray(min_horizontal_distances, dtype=np.float32)
     distance_array = np.asarray(final_distances, dtype=np.float32)
     return {
         "episode_returns": returns_array,
         "episode_lengths": lengths_array,
         "episode_clamp_counts": clamp_array,
+        "episode_damage_dealt": damage_dealt_array,
+        "episode_min_horizontal_distances": min_distance_array,
         "final_distances": distance_array,
         "mean_reward": float(np.mean(returns_array)),
         "std_reward": float(np.std(returns_array)),
         "mean_episode_length": float(np.mean(lengths_array)),
         "mean_episode_clamp_count": float(np.mean(clamp_array)),
+        "mean_episode_damage_dealt": float(np.mean(damage_dealt_array)),
+        "mean_episode_min_horizontal_distance": float(np.mean(min_distance_array)),
         "mean_final_distance": float(np.mean(distance_array)),
+        "curriculum_attack_enabled": float(1.0 if attack_enabled else 0.0),
     }
 
 

@@ -75,6 +75,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
         self._episode_clamp_count = 0
+        self._episode_min_horizontal_distance = 0.0
 
     def _distance_target_error(self, horizontal_distance: float) -> float:
         return abs(horizontal_distance - self.distance_stage_reward_config.target_distance)
@@ -149,6 +150,9 @@ class SingleAgentAttackerEnv(gym.Env):
             "action_delta": float(np.mean(np.abs(action - self._last_agent_action))),
             "clamp_count": float(current_step_clamp_counts.get("robot_a", 0.0)),
             "episode_clamp_count": float(episode_clamp_counts.get("robot_a", 0.0)),
+            "episode_damage_dealt": self._episode_damage_dealt + damage_dealt,
+            "episode_damage_received": self._episode_damage_received + damage_received,
+            "episode_min_horizontal_distance": min(self._episode_min_horizontal_distance, horizontal_distance),
             "win": 1.0 if winner == "robot_a" else 0.0,
             "loss": 1.0 if winner == "robot_b" else 0.0,
         }
@@ -178,6 +182,7 @@ class SingleAgentAttackerEnv(gym.Env):
             "hits_dealt": self._episode_hits_dealt,
             "hits_received": self._episode_hits_received,
             "clamp_count": self._episode_clamp_count,
+            "min_horizontal_distance": self._episode_min_horizontal_distance,
         }
         return agent_info
 
@@ -199,6 +204,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_hits_dealt = 0
         self._episode_hits_received = 0
         self._episode_clamp_count = 0
+        self._episode_min_horizontal_distance = float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0))
         reset_info = self._build_agent_info(
             info,
             metrics={
@@ -221,6 +227,9 @@ class SingleAgentAttackerEnv(gym.Env):
                 "action_delta": 0.0,
                 "clamp_count": 0.0,
                 "episode_clamp_count": 0.0,
+                "episode_damage_dealt": 0.0,
+                "episode_damage_received": 0.0,
+                "episode_min_horizontal_distance": self._episode_min_horizontal_distance,
                 "win": 0.0,
                 "loss": 0.0,
             },
@@ -245,16 +254,18 @@ class SingleAgentAttackerEnv(gym.Env):
         reward, reward_terms = self._compute_reward(metrics)
         if (
             self.curriculum_stage == "distance_stage1"
-            and self.distance_stage_reward_config.reward_mode == "episode_uniform"
+            and self.distance_stage_reward_config.reward_mode in {"episode_uniform", "episode_curriculum"}
             and not (terminated or truncated)
         ):
             reward = 0.0
+            reward_terms = zero_reward_terms()
         self._episode_reward += reward
         self._episode_damage_dealt += metrics["damage_dealt"]
         self._episode_damage_received += metrics["damage_received"]
         self._episode_hits_dealt += int(metrics["hits_dealt"])
         self._episode_hits_received += int(metrics["hits_received"])
         self._episode_clamp_count += int(metrics["clamp_count"])
+        self._episode_min_horizontal_distance = min(self._episode_min_horizontal_distance, float(metrics["horizontal_distance"]))
         agent_info = self._build_agent_info(info, metrics, reward_terms)
         self._last_full_obs = full_obs
         self._last_info = info
