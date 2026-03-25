@@ -17,7 +17,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
 
 from combatbench.baseline.mujoco21dof_nonfall.episode_uniform_callback import EpisodeUniformRewardCallback
-from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SingleAgentAttackerEnv
+from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SelfPlaySymmetricEnv, SingleAgentAttackerEnv
 from combatbench.baseline.mujoco21dof_nonfall.reward import DistanceStageRewardConfig
 
 
@@ -108,9 +108,12 @@ def build_env_kwargs(args: argparse.Namespace, *, eval_mode: bool = False, rank:
 
 def make_env(args: argparse.Namespace, *, eval_mode: bool = False, rank: int = 0):
     env_kwargs = build_env_kwargs(args, eval_mode=eval_mode, rank=rank)
+    env_cls = SingleAgentAttackerEnv
+    if not eval_mode and bool(getattr(args, "rollout_self_play", False)):
+        env_cls = SelfPlaySymmetricEnv
 
     def _factory():
-        env = SingleAgentAttackerEnv(**env_kwargs)
+        env = env_cls(**env_kwargs)
         return Monitor(env)
 
     return _factory

@@ -14,12 +14,21 @@ from combatbench.baseline.mujoco21dof_nonfall.reward import (
 )
 
 
+ROBOT_KEYS = ("robot_a", "robot_b")
+
+
 @dataclass(frozen=True)
 class GRPOModelConfig:
     obs_dim: int
     action_dim: int
     hidden_sizes: Tuple[int, ...] = (256, 256)
     log_std_init: float = -0.5
+
+
+@dataclass(frozen=True)
+class GRPOActionPenaltyConfig:
+    action_magnitude_coef: float = 1.0
+    action_delta_coef: float = 1.0
 
 
 class GRPOActor(nn.Module):
@@ -73,21 +82,30 @@ class GRPORolloutCollector:
         *,
         curriculum_stage: str = "attack",
         distance_stage_reward_config: Optional[DistanceStageRewardConfig] = None,
+        self_play_mode: bool = False,
     ):
         self.vec_env = vec_env
         self.curriculum_stage = curriculum_stage
         self.distance_stage_reward_config = distance_stage_reward_config
+        self.self_play_mode = bool(self_play_mode)
         self.current_obs: Optional[np.ndarray] = None
         self.partial_episodes: List[Dict[str, List[Any]]] = []
         self.reset()
 
     def reset(self) -> None:
         self.current_obs = np.asarray(self.vec_env.reset(), dtype=np.float32)
-        self.partial_episodes = [self._new_partial_episode() for _ in range(self.vec_env.num_envs)]
+        if self.self_play_mode:
+            self.partial_episodes = [
+                {robot_key: self._new_partial_episode() for robot_key in ROBOT_KEYS}
+                for _ in range(self.vec_env.num_envs)
+            ]
+        else:
+            self.partial_episodes = [self._new_partial_episode() for _ in range(self.vec_env.num_envs)]
 
     def _new_partial_episode(self) -> Dict[str, List[Any]]:
         return {
             "obs": [],
+            "actions": [],
             "pre_tanh_actions": [],
             "log_probs": [],
             "step_rewards": [],
@@ -106,21 +124,87 @@ class GRPORolloutCollector:
 
         while len(completed_episodes) < target_episodes:
             obs_batch = np.asarray(self.current_obs, dtype=np.float32)
-            obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=device)
-            with torch.no_grad():
-                action_tensor, pre_tanh_tensor, log_prob_tensor = actor.sample_action(obs_tensor)
-            actions = action_tensor.detach().cpu().numpy().astype(np.float32)
-            pre_tanh_actions = pre_tanh_tensor.detach().cpu().numpy().astype(np.float32)
-            log_probs = log_prob_tensor.detach().cpu().numpy().astype(np.float32)
+            if self.self_play_mode:
+                flat_obs_batch = obs_batch.reshape(self.vec_env.num_envs * len(ROBOT_KEYS), -1)
+                obs_tensor = torch.as_tensor(flat_obs_batch, dtype=torch.float32, device=device)
+                with torch.no_grad():
+                    action_tensor, pre_tanh_tensor, log_prob_tensor = actor.sample_action(obs_tensor)
+                action_dim = int(action_tensor.shape[-1])
+                actions = action_tensor.detach().cpu().numpy().astype(np.float32).reshape(
+                    self.vec_env.num_envs,
+                    len(ROBOT_KEYS),
+                    action_dim,
+                )
+                pre_tanh_actions = pre_tanh_tensor.detach().cpu().numpy().astype(np.float32).reshape(
+                    self.vec_env.num_envs,
+                    len(ROBOT_KEYS),
+                    action_dim,
+                )
+                log_probs = log_prob_tensor.detach().cpu().numpy().astype(np.float32).reshape(
+                    self.vec_env.num_envs,
+                    len(ROBOT_KEYS),
+                )
+            else:
+                obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=device)
+                with torch.no_grad():
+                    action_tensor, pre_tanh_tensor, log_prob_tensor = actor.sample_action(obs_tensor)
+                actions = action_tensor.detach().cpu().numpy().astype(np.float32)
+                pre_tanh_actions = pre_tanh_tensor.detach().cpu().numpy().astype(np.float32)
+                log_probs = log_prob_tensor.detach().cpu().numpy().astype(np.float32)
 
             next_obs, rewards, dones, infos = self.vec_env.step(actions)
             self.current_obs = np.asarray(next_obs, dtype=np.float32)
             total_env_steps += int(self.vec_env.num_envs)
 
             for env_idx in range(self.vec_env.num_envs):
-                partial_episode = self.partial_episodes[env_idx]
                 info = infos[env_idx]
+                if self.self_play_mode:
+                    view_infos = info.get("self_play_views", {})
+                    for robot_idx, robot_key in enumerate(ROBOT_KEYS):
+                        partial_episode = self.partial_episodes[env_idx][robot_key]
+                        partial_episode["obs"].append(obs_batch[env_idx, robot_idx].copy())
+                        partial_episode["actions"].append(actions[env_idx, robot_idx].copy())
+                        partial_episode["pre_tanh_actions"].append(pre_tanh_actions[env_idx, robot_idx].copy())
+                        partial_episode["log_probs"].append(float(log_probs[env_idx, robot_idx]))
+                        partial_episode["step_rewards"].append(extract_step_reward(view_infos.get(robot_key, {}), 0.0))
+
+                    if not dones[env_idx]:
+                        continue
+
+                    for robot_key in ROBOT_KEYS:
+                        partial_episode = self.partial_episodes[env_idx][robot_key]
+                        robot_info = view_infos.get(robot_key, {})
+                        step_rewards = np.asarray(partial_episode["step_rewards"], dtype=np.float32)
+                        completed_episodes.append(
+                            {
+                                "robot_key": robot_key,
+                                "obs": np.asarray(partial_episode["obs"], dtype=np.float32),
+                                "actions": np.asarray(partial_episode["actions"], dtype=np.float32),
+                                "pre_tanh_actions": np.asarray(partial_episode["pre_tanh_actions"], dtype=np.float32),
+                                "log_probs": np.asarray(partial_episode["log_probs"], dtype=np.float32),
+                                "step_rewards": step_rewards,
+                                "return": float(np.sum(step_rewards)),
+                                "length": int(step_rewards.shape[0]),
+                                "episode_clamp_count": float(robot_info.get("episode_stats", {}).get("clamp_count", 0.0)),
+                                "episode_damage_dealt": float(robot_info.get("episode_stats", {}).get("damage_dealt", 0.0)),
+                                "episode_min_horizontal_distance": float(
+                                    robot_info.get("episode_stats", {}).get(
+                                        "min_horizontal_distance",
+                                        robot_info.get("attacker_metrics", {}).get("horizontal_distance", 0.0),
+                                    )
+                                ),
+                                "final_distance": float(robot_info.get("attacker_metrics", {}).get("horizontal_distance", 0.0)),
+                            }
+                        )
+                    self.partial_episodes[env_idx] = {
+                        robot_key: self._new_partial_episode()
+                        for robot_key in ROBOT_KEYS
+                    }
+                    continue
+
+                partial_episode = self.partial_episodes[env_idx]
                 partial_episode["obs"].append(obs_batch[env_idx].copy())
+                partial_episode["actions"].append(actions[env_idx].copy())
                 partial_episode["pre_tanh_actions"].append(pre_tanh_actions[env_idx].copy())
                 partial_episode["log_probs"].append(float(log_probs[env_idx]))
                 partial_episode["step_rewards"].append(extract_step_reward(info, rewards[env_idx]))
@@ -131,7 +215,9 @@ class GRPORolloutCollector:
                 step_rewards = np.asarray(partial_episode["step_rewards"], dtype=np.float32)
                 completed_episodes.append(
                     {
+                        "robot_key": "robot_a",
                         "obs": np.asarray(partial_episode["obs"], dtype=np.float32),
+                        "actions": np.asarray(partial_episode["actions"], dtype=np.float32),
                         "pre_tanh_actions": np.asarray(partial_episode["pre_tanh_actions"], dtype=np.float32),
                         "log_probs": np.asarray(partial_episode["log_probs"], dtype=np.float32),
                         "step_rewards": step_rewards,
@@ -190,19 +276,29 @@ class GRPORolloutCollector:
         episode_advantages = compute_group_advantages(episode_returns, group_size)
 
         obs_list: List[np.ndarray] = []
+        action_list: List[np.ndarray] = []
+        prev_action_list: List[np.ndarray] = []
         pre_tanh_action_list: List[np.ndarray] = []
         old_log_prob_list: List[np.ndarray] = []
         step_advantage_list: List[np.ndarray] = []
 
         for episode, episode_advantage in zip(completed_episodes, episode_advantages):
             episode_length = int(episode["length"])
+            episode_actions = episode["actions"]
+            prev_episode_actions = np.zeros_like(episode_actions, dtype=np.float32)
+            if episode_length > 1:
+                prev_episode_actions[1:] = episode_actions[:-1]
             obs_list.append(episode["obs"])
+            action_list.append(episode_actions)
+            prev_action_list.append(prev_episode_actions)
             pre_tanh_action_list.append(episode["pre_tanh_actions"])
             old_log_prob_list.append(episode["log_probs"])
             step_advantage_list.append(np.full((episode_length,), float(episode_advantage), dtype=np.float32))
 
         batch = {
             "obs": np.concatenate(obs_list, axis=0).astype(np.float32),
+            "actions": np.concatenate(action_list, axis=0).astype(np.float32),
+            "prev_actions": np.concatenate(prev_action_list, axis=0).astype(np.float32),
             "pre_tanh_actions": np.concatenate(pre_tanh_action_list, axis=0).astype(np.float32),
             "old_log_probs": np.concatenate(old_log_prob_list, axis=0).astype(np.float32),
             "advantages": np.concatenate(step_advantage_list, axis=0).astype(np.float32),
@@ -213,6 +309,8 @@ class GRPORolloutCollector:
             "episode_min_horizontal_distances": episode_min_horizontal_distances,
             "final_distances": final_distances,
         }
+        mean_action_magnitude = float(np.mean(np.square(batch["actions"])))
+        mean_action_delta = float(np.mean(np.square(batch["actions"] - batch["prev_actions"])))
         stats = {
             "env_steps": float(total_env_steps),
             "episodes_collected": float(len(completed_episodes)),
@@ -224,6 +322,8 @@ class GRPORolloutCollector:
             "mean_episode_damage_dealt": float(np.mean(episode_damage_dealt)),
             "mean_episode_min_horizontal_distance": float(np.mean(episode_min_horizontal_distances)),
             "mean_final_distance": float(np.mean(final_distances)),
+            "mean_action_magnitude": mean_action_magnitude,
+            "mean_action_delta": mean_action_delta,
             "mean_group_advantage": float(np.mean(episode_advantages)),
             "std_group_advantage": float(np.std(episode_advantages)),
             "curriculum_attack_enabled": curriculum_attack_enabled,
@@ -267,8 +367,12 @@ def optimize_grpo(
     ent_coef: float,
     max_grad_norm: float,
     target_kl: Optional[float] = None,
+    action_penalty_config: Optional[GRPOActionPenaltyConfig] = None,
 ) -> Dict[str, float]:
+    penalty_config = GRPOActionPenaltyConfig() if action_penalty_config is None else action_penalty_config
     obs = torch.as_tensor(batch["obs"], dtype=torch.float32, device=device)
+    actions = torch.as_tensor(batch["actions"], dtype=torch.float32, device=device)
+    prev_actions = torch.as_tensor(batch["prev_actions"], dtype=torch.float32, device=device)
     pre_tanh_actions = torch.as_tensor(batch["pre_tanh_actions"], dtype=torch.float32, device=device)
     old_log_probs = torch.as_tensor(batch["old_log_probs"], dtype=torch.float32, device=device)
     advantages = torch.as_tensor(batch["advantages"], dtype=torch.float32, device=device)
@@ -281,8 +385,12 @@ def optimize_grpo(
     clip_fraction_values: List[float] = []
     entropy_values: List[float] = []
     policy_loss_values: List[float] = []
+    base_policy_loss_values: List[float] = []
     approx_kl_values: List[float] = []
     grad_norm_values: List[float] = []
+    loss_multiplier_values: List[float] = []
+    action_magnitude_values: List[float] = []
+    action_delta_values: List[float] = []
     updates = 0
     early_stop = False
 
@@ -291,6 +399,8 @@ def optimize_grpo(
         for start_idx in range(0, num_samples, effective_minibatch_size):
             batch_indices = permutation[start_idx:start_idx + effective_minibatch_size]
             obs_mb = obs[batch_indices]
+            actions_mb = actions[batch_indices]
+            prev_actions_mb = prev_actions[batch_indices]
             pre_tanh_mb = pre_tanh_actions[batch_indices]
             old_log_prob_mb = old_log_probs[batch_indices]
             advantage_mb = advantages[batch_indices]
@@ -301,9 +411,25 @@ def optimize_grpo(
             unclipped_objective = ratio * advantage_mb
             clipped_ratio = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
             clipped_objective = clipped_ratio * advantage_mb
-            policy_loss = -torch.mean(torch.minimum(unclipped_objective, clipped_objective))
+            policy_loss_per_sample = -torch.minimum(unclipped_objective, clipped_objective)
+            action_magnitude_mb = torch.mean(actions_mb.pow(2), dim=-1)
+            action_delta_mb = torch.mean((actions_mb - prev_actions_mb).pow(2), dim=-1)
+            action_magnitude_multiplier_mb = (
+                1.0
+                + max(0.0, float(penalty_config.action_magnitude_coef) - 1.0) * action_magnitude_mb
+            )
+            action_delta_multiplier_mb = (
+                1.0
+                + max(0.0, float(penalty_config.action_delta_coef) - 1.0) * action_delta_mb
+            )
+            loss_multiplier_mb = action_magnitude_multiplier_mb * action_delta_multiplier_mb
+            policy_loss = torch.mean(policy_loss_per_sample)
+            regularized_policy_loss = torch.mean(
+                policy_loss_per_sample
+                + torch.abs(policy_loss_per_sample.detach()) * (loss_multiplier_mb - 1.0)
+            )
             entropy = torch.mean(entropy_mb)
-            loss = policy_loss - ent_coef * entropy
+            loss = regularized_policy_loss - ent_coef * entropy
 
             optimizer.zero_grad()
             loss.backward()
@@ -315,9 +441,13 @@ def optimize_grpo(
 
             clip_fraction_values.append(float(clip_fraction))
             entropy_values.append(float(entropy.item()))
-            policy_loss_values.append(float(policy_loss.item()))
+            policy_loss_values.append(float(regularized_policy_loss.item()))
+            base_policy_loss_values.append(float(policy_loss.item()))
             approx_kl_values.append(float(approx_kl))
             grad_norm_values.append(float(grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm))
+            loss_multiplier_values.append(float(torch.mean(loss_multiplier_mb).item()))
+            action_magnitude_values.append(float(torch.mean(action_magnitude_mb).item()))
+            action_delta_values.append(float(torch.mean(action_delta_mb).item()))
             updates += 1
 
             if target_kl is not None and approx_kl > target_kl:
@@ -329,10 +459,14 @@ def optimize_grpo(
     return {
         "updates": float(updates),
         "policy_loss": float(np.mean(policy_loss_values)) if policy_loss_values else 0.0,
+        "base_policy_loss": float(np.mean(base_policy_loss_values)) if base_policy_loss_values else 0.0,
         "entropy": float(np.mean(entropy_values)) if entropy_values else 0.0,
         "approx_kl": float(np.mean(approx_kl_values)) if approx_kl_values else 0.0,
         "clip_fraction": float(np.mean(clip_fraction_values)) if clip_fraction_values else 0.0,
         "grad_norm": float(np.mean(grad_norm_values)) if grad_norm_values else 0.0,
+        "mean_loss_multiplier": float(np.mean(loss_multiplier_values)) if loss_multiplier_values else 1.0,
+        "mean_action_magnitude": float(np.mean(action_magnitude_values)) if action_magnitude_values else 0.0,
+        "mean_action_delta": float(np.mean(action_delta_values)) if action_delta_values else 0.0,
         "early_stop": float(1.0 if early_stop else 0.0),
     }
 

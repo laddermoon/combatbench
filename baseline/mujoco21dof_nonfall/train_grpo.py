@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from combatbench.baseline.mujoco21dof_nonfall.env_wrapper import SingleAgentAttackerEnv
 from combatbench.baseline.mujoco21dof_nonfall.grpo import (
     GRPOActor,
+    GRPOActionPenaltyConfig,
     GRPOModelConfig,
     GRPORolloutCollector,
     evaluate_grpo_actor,
@@ -78,6 +79,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distance-stage-prioritize-no-clamp", action="store_true")
     parser.add_argument("--distance-stage-close-enough-distance", type=float, default=0.6)
     parser.add_argument("--distance-stage-attack-damage-reward-scale", type=float, default=1000.0)
+    parser.add_argument("--rollout-self-play", action="store_true")
+    parser.add_argument("--action-magnitude-loss-coef", type=float, default=1.0)
+    parser.add_argument("--action-delta-loss-coef", type=float, default=1.0)
     parser.add_argument("--disable-non-fall-mode", action="store_true")
     return parser.parse_args()
 
@@ -103,6 +107,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--eval-freq must be positive")
     if args.checkpoint_freq <= 0:
         raise ValueError("--checkpoint-freq must be positive")
+    if args.action_magnitude_loss_coef < 1.0:
+        raise ValueError("--action-magnitude-loss-coef must be greater than or equal to 1.0")
+    if args.action_delta_loss_coef < 1.0:
+        raise ValueError("--action-delta-loss-coef must be greater than or equal to 1.0")
 
 
 def build_eval_env(args: argparse.Namespace) -> SingleAgentAttackerEnv:
@@ -288,10 +296,14 @@ def main() -> None:
     train_env = build_train_vec_env(args)
     eval_env = build_eval_env(args)
     distance_stage_reward_config = build_distance_stage_reward_config(args)
+    action_penalty_config = GRPOActionPenaltyConfig(
+        action_magnitude_coef=float(args.action_magnitude_loss_coef),
+        action_delta_coef=float(args.action_delta_loss_coef),
+    )
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
 
-    obs_dim = int(train_env.observation_space.shape[0])
-    action_dim = int(train_env.action_space.shape[0])
+    obs_dim = int(train_env.observation_space.shape[-1])
+    action_dim = int(train_env.action_space.shape[-1])
     actor = GRPOActor(
         GRPOModelConfig(
             obs_dim=obs_dim,
@@ -308,6 +320,7 @@ def main() -> None:
         train_env,
         curriculum_stage=args.curriculum_stage,
         distance_stage_reward_config=distance_stage_reward_config,
+        self_play_mode=bool(args.rollout_self_play),
     )
     total_timesteps = 0
     update_index = 0
@@ -323,6 +336,9 @@ def main() -> None:
     print(f"Distance-stage reward mode: {args.distance_stage_reward_mode}")
     print(f"Distance-stage target distance: {args.distance_stage_target_distance}")
     print(f"Distance-stage clamp penalty scale: {args.distance_stage_clamp_penalty_scale}")
+    print(f"Rollout self-play: {bool(args.rollout_self_play)}")
+    print(f"Action magnitude loss coef: {args.action_magnitude_loss_coef}")
+    print(f"Action delta loss coef: {args.action_delta_loss_coef}")
     print(f"Training vec env: {args.train_vec_env}")
     print(f"Subproc start method: {args.subproc_start_method}")
     print(f"Training opponent: {args.opponent}")
@@ -353,6 +369,7 @@ def main() -> None:
                 ent_coef=args.ent_coef,
                 max_grad_norm=args.max_grad_norm,
                 target_kl=args.target_kl,
+                action_penalty_config=action_penalty_config,
             )
 
             total_timesteps += int(rollout_stats["env_steps"])
@@ -365,13 +382,19 @@ def main() -> None:
             writer.add_scalar("rollout/mean_episode_damage_dealt", rollout_stats["mean_episode_damage_dealt"], total_timesteps)
             writer.add_scalar("rollout/mean_episode_min_horizontal_distance", rollout_stats["mean_episode_min_horizontal_distance"], total_timesteps)
             writer.add_scalar("rollout/mean_final_distance", rollout_stats["mean_final_distance"], total_timesteps)
+            writer.add_scalar("rollout/mean_action_magnitude", rollout_stats["mean_action_magnitude"], total_timesteps)
+            writer.add_scalar("rollout/mean_action_delta", rollout_stats["mean_action_delta"], total_timesteps)
             writer.add_scalar("rollout/curriculum_attack_enabled", rollout_stats["curriculum_attack_enabled"], total_timesteps)
             writer.add_scalar("rollout/samples_collected", rollout_stats["samples_collected"], total_timesteps)
             writer.add_scalar("train/policy_loss", update_stats["policy_loss"], total_timesteps)
+            writer.add_scalar("train/base_policy_loss", update_stats["base_policy_loss"], total_timesteps)
             writer.add_scalar("train/entropy", update_stats["entropy"], total_timesteps)
             writer.add_scalar("train/approx_kl", update_stats["approx_kl"], total_timesteps)
             writer.add_scalar("train/clip_fraction", update_stats["clip_fraction"], total_timesteps)
             writer.add_scalar("train/grad_norm", update_stats["grad_norm"], total_timesteps)
+            writer.add_scalar("train/mean_loss_multiplier", update_stats["mean_loss_multiplier"], total_timesteps)
+            writer.add_scalar("train/mean_action_magnitude", update_stats["mean_action_magnitude"], total_timesteps)
+            writer.add_scalar("train/mean_action_delta", update_stats["mean_action_delta"], total_timesteps)
             writer.add_scalar("train/updates", update_stats["updates"], total_timesteps)
 
             print("---------------------------------------------------")
@@ -383,8 +406,12 @@ def main() -> None:
             print(f"Mean episode damage dealt: {rollout_stats['mean_episode_damage_dealt']:.4f}")
             print(f"Mean episode min horizontal distance: {rollout_stats['mean_episode_min_horizontal_distance']:.3f}")
             print(f"Mean final distance: {rollout_stats['mean_final_distance']:.3f}")
+            print(f"Mean action magnitude: {rollout_stats['mean_action_magnitude']:.6f}")
+            print(f"Mean action delta: {rollout_stats['mean_action_delta']:.6f}")
             print(f"Curriculum attack enabled: {bool(rollout_stats['curriculum_attack_enabled'])}")
             print(f"Policy loss: {update_stats['policy_loss']:.6f}")
+            print(f"Base policy loss: {update_stats['base_policy_loss']:.6f}")
+            print(f"Mean loss multiplier: {update_stats['mean_loss_multiplier']:.6f}")
             print(f"Entropy: {update_stats['entropy']:.6f}")
             print(f"Approx KL: {update_stats['approx_kl']:.6f}")
             print(f"Clip fraction: {update_stats['clip_fraction']:.6f}")

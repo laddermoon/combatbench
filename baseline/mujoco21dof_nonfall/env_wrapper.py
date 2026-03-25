@@ -99,29 +99,39 @@ class SingleAgentAttackerEnv(gym.Env):
             self.action_space.high,
         ).astype(np.float32)
 
+    def _opponent_key(self, agent_key: str) -> str:
+        return "robot_b" if agent_key == "robot_a" else "robot_a"
+
     def _get_opponent_action(self) -> np.ndarray:
         if self._last_full_obs is None or self._last_info is None:
             return np.zeros(self.action_space.shape, dtype=np.float32)
         action = self.opponent_policy.act(self._last_full_obs["robot_b_obs"], self._last_info)
         return self._coerce_action(action)
 
-    def _extract_metrics(
+    def _extract_metrics_for_agent(
         self,
         info: Dict[str, Any],
         prev_info: Dict[str, Any],
         action: np.ndarray,
+        *,
+        agent_key: str,
+        last_action: np.ndarray,
+        episode_damage_dealt: float,
+        episode_damage_received: float,
+        episode_min_horizontal_distance: float,
     ) -> Dict[str, float]:
+        opponent_key = self._opponent_key(agent_key)
         prev_scores = prev_info.get("scores", {})
         current_scores = info.get("scores", {})
-        prev_relative_metrics = prev_info.get("relative_metrics", {}).get("robot_a", {})
-        relative_metrics = info.get("relative_metrics", {}).get("robot_a", {})
-        prev_robot_state = prev_info.get("robot_states", {}).get("robot_a", {})
-        robot_state = info.get("robot_states", {}).get("robot_a", {})
-        damage_dealt = max(0.0, float(prev_scores.get("robot_b", 0.0) - current_scores.get("robot_b", 0.0)))
-        damage_received = max(0.0, float(prev_scores.get("robot_a", 0.0) - current_scores.get("robot_a", 0.0)))
+        prev_relative_metrics = prev_info.get("relative_metrics", {}).get(agent_key, {})
+        relative_metrics = info.get("relative_metrics", {}).get(agent_key, {})
+        prev_robot_state = prev_info.get("robot_states", {}).get(agent_key, {})
+        robot_state = info.get("robot_states", {}).get(agent_key, {})
+        damage_dealt = max(0.0, float(prev_scores.get(opponent_key, 0.0) - current_scores.get(opponent_key, 0.0)))
+        damage_received = max(0.0, float(prev_scores.get(agent_key, 0.0) - current_scores.get(agent_key, 0.0)))
         hit_records = info.get("hit_records", {})
-        hits_dealt = float(len(hit_records.get("robot_b", [])))
-        hits_received = float(len(hit_records.get("robot_a", [])))
+        hits_dealt = float(len(hit_records.get(opponent_key, [])))
+        hits_received = float(len(hit_records.get(agent_key, [])))
         horizontal_distance = float(relative_metrics.get("horizontal_distance", 0.0))
         prev_horizontal_distance = float(prev_relative_metrics.get("horizontal_distance", horizontal_distance))
         facing_opponent = float(relative_metrics.get("facing_opponent", 0.0))
@@ -147,16 +157,69 @@ class SingleAgentAttackerEnv(gym.Env):
             "hits_dealt": hits_dealt,
             "hits_received": hits_received,
             "action_magnitude": float(np.mean(np.abs(action))),
-            "action_delta": float(np.mean(np.abs(action - self._last_agent_action))),
-            "clamp_count": float(current_step_clamp_counts.get("robot_a", 0.0)),
-            "episode_clamp_count": float(episode_clamp_counts.get("robot_a", 0.0)),
-            "episode_damage_dealt": self._episode_damage_dealt + damage_dealt,
-            "episode_damage_received": self._episode_damage_received + damage_received,
-            "episode_min_horizontal_distance": min(self._episode_min_horizontal_distance, horizontal_distance),
-            "win": 1.0 if winner == "robot_a" else 0.0,
-            "loss": 1.0 if winner == "robot_b" else 0.0,
+            "action_delta": float(np.mean(np.abs(action - last_action))),
+            "clamp_count": float(current_step_clamp_counts.get(agent_key, 0.0)),
+            "episode_clamp_count": float(episode_clamp_counts.get(agent_key, 0.0)),
+            "episode_damage_dealt": episode_damage_dealt + damage_dealt,
+            "episode_damage_received": episode_damage_received + damage_received,
+            "episode_min_horizontal_distance": min(episode_min_horizontal_distance, horizontal_distance),
+            "win": 1.0 if winner == agent_key else 0.0,
+            "loss": 1.0 if winner == opponent_key else 0.0,
         }
         return metrics
+
+    def _extract_metrics(
+        self,
+        info: Dict[str, Any],
+        prev_info: Dict[str, Any],
+        action: np.ndarray,
+    ) -> Dict[str, float]:
+        return self._extract_metrics_for_agent(
+            info,
+            prev_info,
+            action,
+            agent_key="robot_a",
+            last_action=self._last_agent_action,
+            episode_damage_dealt=self._episode_damage_dealt,
+            episode_damage_received=self._episode_damage_received,
+            episode_min_horizontal_distance=self._episode_min_horizontal_distance,
+        )
+
+    def _build_reset_metrics_for_agent(self, info: Dict[str, Any], *, agent_key: str) -> Dict[str, float]:
+        relative_metrics = info.get("relative_metrics", {}).get(agent_key, {})
+        robot_state = info.get("robot_states", {}).get(agent_key, {})
+        horizontal_distance = float(relative_metrics.get("horizontal_distance", 0.0))
+        return {
+            "damage_dealt": 0.0,
+            "damage_received": 0.0,
+            "distance": float(relative_metrics.get("distance", 0.0)),
+            "horizontal_distance": horizontal_distance,
+            "horizontal_distance_delta": 0.0,
+            "distance_error": self._distance_target_error(horizontal_distance),
+            "distance_error_delta": 0.0,
+            "facing_opponent": float(relative_metrics.get("facing_opponent", 0.0)),
+            "facing_delta": 0.0,
+            "uprightness": float(robot_state.get("uprightness", 1.0)),
+            "uprightness_delta": 0.0,
+            "hits_dealt": 0.0,
+            "hits_received": 0.0,
+            "action_magnitude": 0.0,
+            "action_delta": 0.0,
+            "clamp_count": 0.0,
+            "episode_clamp_count": 0.0,
+            "episode_damage_dealt": 0.0,
+            "episode_damage_received": 0.0,
+            "episode_min_horizontal_distance": horizontal_distance,
+            "win": 0.0,
+            "loss": 0.0,
+        }
+
+    def _build_combined_reset_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        return self._build_agent_info(
+            info,
+            metrics=self._build_reset_metrics_for_agent(info, agent_key="robot_a"),
+            reward_terms=zero_reward_terms(),
+        )
 
     def _compute_reward(self, metrics: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
         if self.reward_fn is not None:
@@ -205,36 +268,7 @@ class SingleAgentAttackerEnv(gym.Env):
         self._episode_hits_received = 0
         self._episode_clamp_count = 0
         self._episode_min_horizontal_distance = float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0))
-        reset_info = self._build_agent_info(
-            info,
-            metrics={
-                "damage_dealt": 0.0,
-                "damage_received": 0.0,
-                "distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("distance", 0.0)),
-                "horizontal_distance": float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0)),
-                "horizontal_distance_delta": 0.0,
-                "distance_error": self._distance_target_error(
-                    float(info.get("relative_metrics", {}).get("robot_a", {}).get("horizontal_distance", 0.0))
-                ),
-                "distance_error_delta": 0.0,
-                "facing_opponent": float(info.get("relative_metrics", {}).get("robot_a", {}).get("facing_opponent", 0.0)),
-                "facing_delta": 0.0,
-                "uprightness": float(info.get("robot_states", {}).get("robot_a", {}).get("uprightness", 1.0)),
-                "uprightness_delta": 0.0,
-                "hits_dealt": 0.0,
-                "hits_received": 0.0,
-                "action_magnitude": 0.0,
-                "action_delta": 0.0,
-                "clamp_count": 0.0,
-                "episode_clamp_count": 0.0,
-                "episode_damage_dealt": 0.0,
-                "episode_damage_received": 0.0,
-                "episode_min_horizontal_distance": self._episode_min_horizontal_distance,
-                "win": 0.0,
-                "loss": 0.0,
-            },
-            reward_terms=zero_reward_terms(),
-        )
+        reset_info = self._build_combined_reset_info(info)
         return full_obs["robot_a_obs"], reset_info
 
     def step(self, action: np.ndarray):
@@ -286,3 +320,153 @@ class SingleAgentAttackerEnv(gym.Env):
 
     def close(self) -> None:
         self.base_env.close()
+
+
+class SelfPlaySymmetricEnv(SingleAgentAttackerEnv):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        single_action_space = self.base_env.action_space["robot_a"]
+        single_observation_space = self.base_env.observation_space["robot_a_obs"]
+        self.action_space = gym.spaces.Box(
+            low=np.stack([single_action_space.low, single_action_space.low], axis=0),
+            high=np.stack([single_action_space.high, single_action_space.high], axis=0),
+            dtype=np.float32,
+        )
+        self.observation_space = gym.spaces.Box(
+            low=np.stack([single_observation_space.low, single_observation_space.low], axis=0),
+            high=np.stack([single_observation_space.high, single_observation_space.high], axis=0),
+            dtype=np.float32,
+        )
+        self._last_actions = {
+            "robot_a": np.zeros(single_action_space.shape, dtype=np.float32),
+            "robot_b": np.zeros(single_action_space.shape, dtype=np.float32),
+        }
+        self._episode_rewards = {"robot_a": 0.0, "robot_b": 0.0}
+        self._episode_damage_dealt_by_robot = {"robot_a": 0.0, "robot_b": 0.0}
+        self._episode_damage_received_by_robot = {"robot_a": 0.0, "robot_b": 0.0}
+        self._episode_hits_dealt_by_robot = {"robot_a": 0, "robot_b": 0}
+        self._episode_hits_received_by_robot = {"robot_a": 0, "robot_b": 0}
+        self._episode_clamp_count_by_robot = {"robot_a": 0, "robot_b": 0}
+        self._episode_min_horizontal_distance_by_robot = {"robot_a": 0.0, "robot_b": 0.0}
+
+    def _stack_full_obs(self, full_obs: Dict[str, np.ndarray]) -> np.ndarray:
+        return np.stack([full_obs["robot_a_obs"], full_obs["robot_b_obs"]], axis=0).astype(np.float32)
+
+    def _build_agent_episode_info(
+        self,
+        info: Dict[str, Any],
+        *,
+        agent_key: str,
+        metrics: Dict[str, float],
+        reward_terms: Dict[str, float],
+    ) -> Dict[str, Any]:
+        agent_info = dict(info)
+        agent_info["attacker_metrics"] = metrics
+        agent_info["reward_terms"] = reward_terms
+        agent_info["episode_stats"] = {
+            "reward": self._episode_rewards[agent_key],
+            "damage_dealt": self._episode_damage_dealt_by_robot[agent_key],
+            "damage_received": self._episode_damage_received_by_robot[agent_key],
+            "hits_dealt": self._episode_hits_dealt_by_robot[agent_key],
+            "hits_received": self._episode_hits_received_by_robot[agent_key],
+            "clamp_count": self._episode_clamp_count_by_robot[agent_key],
+            "min_horizontal_distance": self._episode_min_horizontal_distance_by_robot[agent_key],
+        }
+        return agent_info
+
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        full_obs, info = self.base_env.reset(seed=seed, options=options)
+        self._last_full_obs = full_obs
+        self._last_info = info
+        for agent_key in ("robot_a", "robot_b"):
+            self._last_actions[agent_key] = np.zeros(self.base_env.action_space[agent_key].shape, dtype=np.float32)
+            self._episode_rewards[agent_key] = 0.0
+            self._episode_damage_dealt_by_robot[agent_key] = 0.0
+            self._episode_damage_received_by_robot[agent_key] = 0.0
+            self._episode_hits_dealt_by_robot[agent_key] = 0
+            self._episode_hits_received_by_robot[agent_key] = 0
+            self._episode_clamp_count_by_robot[agent_key] = 0
+            self._episode_min_horizontal_distance_by_robot[agent_key] = float(
+                info.get("relative_metrics", {}).get(agent_key, {}).get("horizontal_distance", 0.0)
+            )
+        reset_info = {
+            "self_play_views": {
+                agent_key: self._build_agent_episode_info(
+                    info,
+                    agent_key=agent_key,
+                    metrics=self._build_reset_metrics_for_agent(info, agent_key=agent_key),
+                    reward_terms=zero_reward_terms(),
+                )
+                for agent_key in ("robot_a", "robot_b")
+            }
+        }
+        return self._stack_full_obs(full_obs), reset_info
+
+    def step(self, action: np.ndarray):
+        if self._last_full_obs is None or self._last_info is None:
+            raise RuntimeError("Environment must be reset before calling step()")
+
+        action_array = np.asarray(action, dtype=np.float32).reshape(2, *self.base_env.action_space["robot_a"].shape)
+        action_dict = {
+            "robot_a": np.clip(
+                action_array[0],
+                self.base_env.action_space["robot_a"].low,
+                self.base_env.action_space["robot_a"].high,
+            ).astype(np.float32),
+            "robot_b": np.clip(
+                action_array[1],
+                self.base_env.action_space["robot_b"].low,
+                self.base_env.action_space["robot_b"].high,
+            ).astype(np.float32),
+        }
+        prev_info = self._last_info
+        full_obs, _, terminated, truncated, info = self.base_env.step(action_dict)
+
+        view_infos: Dict[str, Any] = {}
+        for agent_key in ("robot_a", "robot_b"):
+            metrics = self._extract_metrics_for_agent(
+                info,
+                prev_info,
+                action_dict[agent_key],
+                agent_key=agent_key,
+                last_action=self._last_actions[agent_key],
+                episode_damage_dealt=self._episode_damage_dealt_by_robot[agent_key],
+                episode_damage_received=self._episode_damage_received_by_robot[agent_key],
+                episode_min_horizontal_distance=self._episode_min_horizontal_distance_by_robot[agent_key],
+            )
+            reward, reward_terms = self._compute_reward(metrics)
+            if (
+                self.curriculum_stage == "distance_stage1"
+                and self.distance_stage_reward_config.reward_mode in {"episode_uniform", "episode_curriculum"}
+                and not (terminated or truncated)
+            ):
+                reward = 0.0
+                reward_terms = zero_reward_terms()
+            self._episode_rewards[agent_key] += reward
+            self._episode_damage_dealt_by_robot[agent_key] += metrics["damage_dealt"]
+            self._episode_damage_received_by_robot[agent_key] += metrics["damage_received"]
+            self._episode_hits_dealt_by_robot[agent_key] += int(metrics["hits_dealt"])
+            self._episode_hits_received_by_robot[agent_key] += int(metrics["hits_received"])
+            self._episode_clamp_count_by_robot[agent_key] += int(metrics["clamp_count"])
+            self._episode_min_horizontal_distance_by_robot[agent_key] = min(
+                self._episode_min_horizontal_distance_by_robot[agent_key],
+                float(metrics["horizontal_distance"]),
+            )
+            view_infos[agent_key] = self._build_agent_episode_info(
+                info,
+                agent_key=agent_key,
+                metrics=metrics,
+                reward_terms=reward_terms,
+            )
+            self._last_actions[agent_key] = action_dict[agent_key]
+
+        self._last_full_obs = full_obs
+        self._last_info = info
+        combined_info = dict(info)
+        combined_info["self_play_views"] = view_infos
+        return self._stack_full_obs(full_obs), 0.0, terminated, truncated, combined_info

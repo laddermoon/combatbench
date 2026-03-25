@@ -1,9 +1,12 @@
-from .sb3 import ObservationNormalizer, RewardConfig, SB3CombatPolicy, SymmetricSelfPlayEnv, make_symmetric_selfplay_env
+try:
+    from .sb3 import ObservationNormalizer, RewardConfig, SB3CombatPolicy, SymmetricSelfPlayEnv, make_symmetric_selfplay_env
 
-__all__ = [
-    "ObservationNormalizer",
-    "RewardConfig",
-    "SB3CombatPolicy",
-    "SymmetricSelfPlayEnv",
-    "make_symmetric_selfplay_env",
-]
+    __all__ = [
+        "ObservationNormalizer",
+        "RewardConfig",
+        "SB3CombatPolicy",
+        "SymmetricSelfPlayEnv",
+        "make_symmetric_selfplay_env",
+    ]
+except ModuleNotFoundError:
+    __all__ = []
