@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import numpy as np
 
 from .combat_gym import CombatGymEnv
+from .constraints import NonFallOrientationClamp
 
 
 @dataclass
@@ -72,6 +73,7 @@ class RoundRunner:
         non_fall_pitch_limit_deg: float = 5.0,
         non_fall_roll_limit_deg: float = 5.0,
         damage_scale: float = 100.0,
+        env_kwargs: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
     ):
         """
@@ -91,12 +93,23 @@ class RoundRunner:
             non_fall_pitch_limit_deg: Pitch limit in degrees for non-fall mode
             non_fall_roll_limit_deg: Roll limit in degrees for non-fall mode
             damage_scale: Damage scaling factor
+            env_kwargs: Additional keyword arguments forwarded to CombatGymEnv
             verbose: Print round progress
         """
         self.policy_a = policy_a
         self.policy_b = policy_b
         self.phase = phase
         self.verbose = verbose
+        self.env_kwargs = {} if env_kwargs is None else dict(env_kwargs)
+        if non_fall_mode:
+            constraint_list = list(self.env_kwargs.get("constraints", []))
+            constraint_list.append(
+                NonFallOrientationClamp(
+                    pitch_limit_deg=non_fall_pitch_limit_deg,
+                    roll_limit_deg=non_fall_roll_limit_deg,
+                )
+            )
+            self.env_kwargs["constraints"] = constraint_list
 
         # Create environment
         self.env = CombatGymEnv(
@@ -104,10 +117,8 @@ class RoundRunner:
             match_duration=match_duration,
             control_frequency=control_frequency,
             initial_distance=initial_distance,
-            non_fall_mode=non_fall_mode,
-            non_fall_pitch_limit_deg=non_fall_pitch_limit_deg,
-            non_fall_roll_limit_deg=non_fall_roll_limit_deg,
             damage_scale=damage_scale,
+            **self.env_kwargs,
         )
 
         # Statistics tracking
@@ -293,6 +304,7 @@ def run_round(
     non_fall_mode: bool = False,
     non_fall_pitch_limit_deg: float = 15.0,
     non_fall_roll_limit_deg: float = 10.0,
+    env_kwargs: Optional[Dict[str, Any]] = None,
     save_video_path: Optional[str] = None,
     seed: Optional[int] = None,
     verbose: bool = True,
@@ -311,6 +323,7 @@ def run_round(
         non_fall_mode: Enable non-fall mode (orientation clamping)
         non_fall_pitch_limit_deg: Pitch limit in degrees for non-fall mode
         non_fall_roll_limit_deg: Roll limit in degrees for non-fall mode
+        env_kwargs: Additional keyword arguments forwarded to CombatGymEnv
         save_video_path: Path to save video
         verbose: Print progress
 
@@ -336,6 +349,7 @@ def run_round(
         non_fall_mode=non_fall_mode,
         non_fall_pitch_limit_deg=non_fall_pitch_limit_deg,
         non_fall_roll_limit_deg=non_fall_roll_limit_deg,
+        env_kwargs=env_kwargs,
         verbose=verbose,
     )
     return runner.run(save_video_path=save_video_path, seed=seed)

@@ -8,7 +8,12 @@ This directory contains Gymnasium-compatible environments for humanoid robot com
 |------|-------------|
 | `combat_gym.py` | Main `CombatGymEnv` - dual robot combat environment |
 | `round_runner.py` | `RoundRunner` - runs complete rounds between two policies |
-| `__init__.py` | Module exports (`CombatGymEnv`, `RoundRunner`, `RoundResult`, `run_round`) |
+| `resetters.py` | Reset plugins for initial pose sampling |
+| `constraints.py` | Constraint plugins for physical constraints (e.g., non-fall) |
+| `disturbances.py` | Disturbance plugins for external perturbations |
+| `control_modes.py` | Control mode plugins for action resolution |
+| `metrics.py` | Metric collector plugins for extensible diagnostics |
+| `__init__.py` | Module exports |
 
 ## CombatGymEnv
 
@@ -20,7 +25,19 @@ The `CombatGymEnv` is a Gymnasium-compatible environment that simulates combat b
 - **HP-based Scoring**: Initial 100 HP, head hits = -3, torso hits = -1
 - **Gymnasium Interface**: Standard `reset()` and `step()` API
 - **Video Recording**: Built-in video capture and MP4 export
-- **Non-fall Mode**: Optional root orientation clamping for training stability
+- **Plugin-based Runtime**: Modular resetters, constraints, disturbances, control modes, and metrics
+
+### Design Philosophy
+
+`CombatGymEnv` follows a **plugin-based architecture** to maximize extensibility without environment class bloat:
+
+- **Resetters**: Control initial pose sampling (symmetric stand, randomized, custom)
+- **Constraints**: Apply physical constraints (non-fall orientation clamp, safety limits)
+- **Disturbances**: Inject external perturbations (random pushes, scheduled forces)
+- **Control Modes**: Resolve robot actions (policy-driven, zero-action, fixed-action, callback)
+- **Metric Collectors**: Gather extensible diagnostic data (core metrics, constraint stats, disturbance events)
+
+The environment core remains minimal and generic, delegating specialized behaviors to composable plugins.
 
 ### Observation Space (127 dims per robot)
 
@@ -64,19 +81,26 @@ CombatGymEnv(
     control_frequency=20,       # Control frequency (Hz)
     video_sample_frequency=30,  # Video FPS (default: 30)
     match_duration=30.0,        # Match duration (seconds)
-    non_fall_mode=False,        # Enable orientation clamping
-    non_fall_pitch_limit_deg=15.0,  # Pitch limit for non-fall mode
-    non_fall_roll_limit_deg=10.0,   # Roll limit for non-fall mode
     damage_scale=100.0,         # Damage scaling factor
+    
+    # Plugin-based runtime modules
+    resetter=None,              # BaseResetter instance (default: SymmetricStandResetter)
+    constraints=None,           # Sequence of BaseConstraint instances
+    disturbances=None,          # Sequence of BaseDisturbance instances
+    control_modes=None,         # Dict[robot_id, BaseControlMode] (default: PolicyControlMode for both)
+    metric_collectors=None,     # Sequence of BaseMetricCollector instances
+    add_default_metric_collectors=True,  # Auto-add CoreMetricCollector, ConstraintMetricCollector, DisturbanceMetricCollector
 )
 ```
 
 ### Usage Example
 
+#### Basic Usage
+
 ```python
 from combatbench.envs import CombatGymEnv
 
-# Create environment
+# Create environment with default plugins
 env = CombatGymEnv(render_mode="rgb_array", match_duration=30.0)
 
 # Reset
@@ -96,6 +120,57 @@ print(f"End reason: {info['end_reason']}")
 
 # Save video
 env.save_video("match.mp4", fps=env.video_sample_frequency)
+```
+
+#### Plugin-based Customization
+
+```python
+from combatbench.envs import (
+    CombatGymEnv,
+    SymmetricStandResetter,
+    NonFallOrientationClamp,
+    RandomPushDisturbance,
+    ZeroActionControlMode,
+)
+
+# Create environment with custom plugins
+env = CombatGymEnv(
+    render_mode="rgb_array",
+    match_duration=30.0,
+    
+    # Custom initial pose with randomization
+    resetter=SymmetricStandResetter(
+        initial_distance=2.5,
+        yaw_jitter_deg=5.0,
+        lateral_jitter=0.1,
+    ),
+    
+    # Enable non-fall constraint
+    constraints=[
+        NonFallOrientationClamp(
+            pitch_limit_deg=10.0,
+            roll_limit_deg=10.0,
+        ),
+    ],
+    
+    # Add random push disturbances
+    disturbances=[
+        RandomPushDisturbance(
+            probability_per_substep=0.001,
+            force_range=(50.0, 200.0),
+        ),
+    ],
+    
+    # Make robot_b a static target
+    control_modes={
+        "robot_b": ZeroActionControlMode(),
+    },
+)
+
+obs, info = env.reset()
+print(f"Reset type: {info['reset']['type']}")
+print(f"Control modes: {info['control_modes']}")
+print(f"Metrics: {list(info['metrics'].keys())}")
 ```
 
 ### Controller Configuration
@@ -189,11 +264,40 @@ The `info` dict returned by `step()` contains:
         "robot_b": {...},
     },
 
-    # Non-fall Mode Settings
-    "non_fall_mode": {
-        "enabled": False,
-        "pitch_limit_deg": 15.0,
-        "roll_limit_deg": 10.0,
+    # Plugin Runtime Info
+    "control_modes": {
+        "robot_a": "policy",
+        "robot_b": "zero_action",
+    },
+    "reset": {
+        "type": "symmetric_stand",
+        "initial_distance": 2.0,
+        ...
+    },
+    "constraints": {
+        "non_fall_orientation_clamp": {
+            "name": "non_fall_orientation_clamp",
+            "enabled": True,
+            "pitch_limit_deg": 10.0,
+            "roll_limit_deg": 10.0,
+            "clamped": {"robot_a": False, "robot_b": False},
+            "current_step": {"robot_a": 0, "robot_b": 0},
+            "episode": {"robot_a": 5, "robot_b": 3},
+        },
+    },
+    "disturbances": [
+        {
+            "type": "random_push",
+            "robot_id": "robot_a",
+            "body_name": "torso",
+            "force": [120.0, 0.0, 0.0],
+            ...
+        },
+    ],
+    "metrics": {
+        "core": {...},
+        "constraints": {...},
+        "disturbances": {...},
     },
 
     # Observation Slices
@@ -215,19 +319,118 @@ frames = env.get_video_buffer()
 env.clear_video_buffer()
 ```
 
-### Non-Fall Mode
+### Plugin Modules
 
-When `non_fall_mode=True`, the environment clamps root orientation to prevent robots from falling:
+#### Resetters
+
+Control initial pose sampling:
 
 ```python
-env = CombatGymEnv(
-    non_fall_mode=True,
-    non_fall_pitch_limit_deg=15.0,  # Max pitch deviation
-    non_fall_roll_limit_deg=10.0,   # Max roll deviation
+from combatbench.envs import SymmetricStandResetter, RandomizedSymmetricStandResetter
+
+# Symmetric stand with optional jitter
+resetter = SymmetricStandResetter(
+    initial_distance=2.0,
+    root_height=1.282,
+    yaw_jitter_deg=5.0,
+    lateral_jitter=0.1,
+)
+
+# Fully randomized initial poses
+resetter = RandomizedSymmetricStandResetter(
+    distance_range=(1.5, 3.0),
+    height_range=(1.2, 1.4),
+    yaw_range=(-10.0, 10.0),
 )
 ```
 
-This is useful during training to maintain stability and prevent "physics explosions."
+#### Constraints
+
+Apply physical constraints during simulation:
+
+```python
+from combatbench.envs import NonFallOrientationClamp
+
+# Prevent robots from falling over
+constraint = NonFallOrientationClamp(
+    pitch_limit_deg=10.0,
+    roll_limit_deg=10.0,
+)
+```
+
+#### Disturbances
+
+Inject external perturbations:
+
+```python
+from combatbench.envs import RandomPushDisturbance, ScheduledPushDisturbance
+
+# Random pushes during episode
+disturbance = RandomPushDisturbance(
+    probability_per_substep=0.001,
+    force_range=(50.0, 200.0),
+    target_bodies=["torso", "pelvis"],
+)
+
+# Scheduled push at specific step
+disturbance = ScheduledPushDisturbance(
+    trigger_step=100,
+    robot_id="robot_a",
+    body_name="torso",
+    force=[200.0, 0.0, 0.0],
+)
+```
+
+#### Control Modes
+
+Resolve robot actions:
+
+```python
+from combatbench.envs import (
+    PolicyControlMode,      # Normal policy-driven control
+    ZeroActionControlMode,  # Robot stays in reference pose
+    FixedActionControlMode, # Robot executes fixed action
+    CallbackControlMode,    # Custom action callback
+)
+
+# Make robot_b a static target
+env = CombatGymEnv(
+    control_modes={
+        "robot_b": ZeroActionControlMode(),
+    },
+)
+
+# Custom action callback
+def my_action_callback(env, robot_id, action):
+    return np.zeros(21, dtype=np.float32)  # Custom logic
+
+env = CombatGymEnv(
+    control_modes={
+        "robot_b": CallbackControlMode(my_action_callback),
+    },
+)
+```
+
+#### Metric Collectors
+
+Gather extensible diagnostic data:
+
+```python
+from combatbench.envs import BaseMetricCollector
+
+class CustomMetricCollector(BaseMetricCollector):
+    name = "custom"
+    
+    def collect(self, env, observation, info, *, terminated, truncated):
+        return {
+            "my_metric": 42.0,
+        }
+
+env = CombatGymEnv(
+    metric_collectors=[CustomMetricCollector()],
+    add_default_metric_collectors=True,  # Keep core/constraint/disturbance metrics
+)
+```
 
 ### Combat Rules
 

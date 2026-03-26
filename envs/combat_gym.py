@@ -5,15 +5,16 @@ from gymnasium import spaces
 import os
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
-import sys
+from typing import Any, Dict, List, Optional, Sequence
 
-# Add parent directory to path to import local modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from core.physics import PhysicsEngine
-from core.humanoid_robot import HumanoidRobot
-from core.collision import CollisionDetector
-from core.scoring import ScoreCalculator
+from ..core.physics import PhysicsEngine
+from ..core.humanoid_robot import HumanoidRobot
+from ..core.collision import CollisionDetector
+from ..core.scoring import ScoreCalculator
+from .control_modes import BaseControlMode, build_default_control_modes
+from .disturbances import BaseDisturbance
+from .metrics import BaseMetricCollector, ConstraintMetricCollector, CoreMetricCollector, DisturbanceMetricCollector
+from .resetters import BaseResetter, SymmetricStandResetter
 
 class CombatGymEnv(gym.Env):
     """
@@ -32,10 +33,13 @@ class CombatGymEnv(gym.Env):
         control_frequency=20,
         video_sample_frequency=30,
         match_duration=30.0,   # Single roundduration 30 seconds
-        non_fall_mode=False,
-        non_fall_pitch_limit_deg=5.0,
-        non_fall_roll_limit_deg=5.0,
         damage_scale=100.0,
+        resetter: Optional[BaseResetter] = None,
+        constraints: Optional[Sequence[Any]] = None,
+        disturbances: Optional[Sequence[BaseDisturbance]] = None,
+        metric_collectors: Optional[Sequence[BaseMetricCollector]] = None,
+        control_modes: Optional[Dict[str, BaseControlMode]] = None,
+        add_default_metric_collectors: bool = True,
     ):
         super().__init__()
         
@@ -43,10 +47,13 @@ class CombatGymEnv(gym.Env):
         self.dt = dt
         self.initial_distance = initial_distance
         self.match_duration = match_duration
-        self.non_fall_mode = bool(non_fall_mode)
-        self.non_fall_pitch_limit_deg = float(non_fall_pitch_limit_deg)
-        self.non_fall_roll_limit_deg = float(non_fall_roll_limit_deg)
         self.damage_scale = float(damage_scale)
+        self.resetter = resetter or SymmetricStandResetter(initial_distance=initial_distance, root_height=self.DEFAULT_ROOT_HEIGHT)
+        self.constraints: List[Any] = []
+        self.disturbances: List[BaseDisturbance] = []
+        self.metric_collectors: List[BaseMetricCollector] = []
+        self.control_modes: Dict[str, BaseControlMode] = build_default_control_modes()
+        self._rng = np.random.default_rng()
 
         self.sim_frequency = 1.0 / dt
         self.control_frequency = control_frequency
@@ -128,41 +135,93 @@ class CombatGymEnv(gym.Env):
         self._prev_lookat = None
 
         self._root_joint_cache = None
-        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
-        self._episode_clamp_counts = {'robot_a': 0, 'robot_b': 0}
+        self._last_constraint_results: Dict[str, Any] = {}
+        self._last_disturbance_events: List[Dict[str, Any]] = []
+        self._last_metric_payloads: Dict[str, Any] = {}
+        self._last_reset_payload: Dict[str, Any] = {}
 
-    def _get_root_pose_targets(self):
+        self.set_constraints(constraints)
+        self.set_disturbances(disturbances)
+        self.set_metric_collectors(metric_collectors, add_defaults=add_default_metric_collectors)
+        self.set_control_modes(control_modes)
+
+    def set_resetter(self, resetter: Optional[BaseResetter]) -> None:
+        if resetter is not None:
+            self.resetter = resetter
+
+    def set_constraints(self, constraints: Optional[Sequence[Any]]) -> None:
+        self.constraints = [] if constraints is None else list(constraints)
+
+    def set_disturbances(self, disturbances: Optional[Sequence[BaseDisturbance]]) -> None:
+        self.disturbances = [] if disturbances is None else list(disturbances)
+
+    def set_metric_collectors(
+        self,
+        metric_collectors: Optional[Sequence[BaseMetricCollector]],
+        *,
+        add_defaults: bool = True,
+    ) -> None:
+        collector_list: List[BaseMetricCollector] = []
+        if add_defaults:
+            collector_list.extend([
+                CoreMetricCollector(),
+                ConstraintMetricCollector(),
+                DisturbanceMetricCollector(),
+            ])
+        if metric_collectors is not None:
+            collector_list.extend(metric_collectors)
+        self.metric_collectors = collector_list
+
+    def set_control_modes(self, control_modes: Optional[Dict[str, BaseControlMode]]) -> None:
+        self.control_modes = build_default_control_modes()
+        if control_modes is not None:
+            self.control_modes.update(control_modes)
+
+    def _yaw_deg_to_wxyz(self, yaw_deg: float) -> np.ndarray:
+        quat_xyzw = R.from_euler('z', float(yaw_deg), degrees=True).as_quat()
+        return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
+
+    def build_symmetric_root_poses(
+        self,
+        *,
+        initial_distance: Optional[float] = None,
+        root_height: Optional[float] = None,
+        lateral_offset: float = 0.0,
+        yaw_jitter_deg: float = 0.0,
+    ) -> Dict[str, Dict[str, np.ndarray]]:
+        distance = float(self.initial_distance if initial_distance is None else initial_distance)
+        height = float(self.DEFAULT_ROOT_HEIGHT if root_height is None else root_height)
+        lateral_offset = float(lateral_offset)
+        yaw_jitter_deg = float(yaw_jitter_deg)
         return {
             'robot_a': {
                 'joint_name': 'root_red',
-                'position': np.array([-self.initial_distance / 2.0, 0.0, self.DEFAULT_ROOT_HEIGHT], dtype=np.float64),
-                'orientation': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+                'position': np.array([-distance / 2.0, lateral_offset, height], dtype=np.float64),
+                'orientation': self._yaw_deg_to_wxyz(yaw_jitter_deg),
             },
             'robot_b': {
                 'joint_name': 'root_blue',
-                'position': np.array([self.initial_distance / 2.0, 0.0, self.DEFAULT_ROOT_HEIGHT], dtype=np.float64),
-                'orientation': np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+                'position': np.array([distance / 2.0, -lateral_offset, height], dtype=np.float64),
+                'orientation': self._yaw_deg_to_wxyz(180.0 + yaw_jitter_deg),
             },
         }
 
-    def _apply_initial_root_poses(self):
-        for root_pose in self._get_root_pose_targets().values():
+    def apply_root_poses(self, root_poses: Dict[str, Dict[str, np.ndarray]]) -> None:
+        for root_pose in root_poses.values():
             joint_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_JOINT, root_pose['joint_name'])
             if joint_id < 0:
                 continue
-
             qpos_adr = self.physics.model.jnt_qposadr[joint_id]
             qvel_adr = self.physics.model.jnt_dofadr[joint_id]
-            self.physics.data.qpos[qpos_adr:qpos_adr + 3] = root_pose['position']
-            self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = root_pose['orientation']
+            self.physics.data.qpos[qpos_adr:qpos_adr + 3] = np.asarray(root_pose['position'], dtype=np.float64)
+            self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = np.asarray(root_pose['orientation'], dtype=np.float64)
             self.physics.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
 
-    def _get_root_joint_cache(self):
+    def get_root_joint_cache(self):
         if self._root_joint_cache is not None:
             return self._root_joint_cache
-
         self._root_joint_cache = {}
-        for robot_id, root_pose in self._get_root_pose_targets().items():
+        for robot_id, root_pose in self.build_symmetric_root_poses().items():
             joint_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_JOINT, root_pose['joint_name'])
             if joint_id < 0:
                 continue
@@ -173,55 +232,91 @@ class CombatGymEnv(gym.Env):
             }
         return self._root_joint_cache
 
-    def _clamp_root_orientation(self, robot_id):
-        if not self.non_fall_mode:
-            return False
+    def _resolve_robot_body_name(self, robot_id: str, body_name: str) -> str:
+        robot = self._get_robot_lookup().get(robot_id)
+        suffix = '' if robot is None else robot.suffix
+        if body_name.endswith(suffix):
+            return body_name
+        return f"{body_name}{suffix}"
 
-        root_joint = self._get_root_joint_cache().get(robot_id)
-        if root_joint is None:
-            return False
-
-        qpos_adr = root_joint['qpos_adr']
-        orientation_wxyz = np.asarray(self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7], dtype=np.float64)
-        if np.linalg.norm(orientation_wxyz) < 1e-8:
-            return False
-
-        orientation_xyzw = np.array(
-            [orientation_wxyz[1], orientation_wxyz[2], orientation_wxyz[3], orientation_wxyz[0]],
-            dtype=np.float64,
+    def apply_body_wrench(
+        self,
+        robot_id: str,
+        body_name: str,
+        *,
+        force: np.ndarray,
+        torque: np.ndarray,
+        source: str,
+        step_index: int,
+        substep_index: int,
+    ) -> Optional[Dict[str, Any]]:
+        full_body_name = self._resolve_robot_body_name(robot_id, body_name)
+        body_id = mujoco.mj_name2id(self.physics.model, mujoco.mjtObj.mjOBJ_BODY, full_body_name)
+        if body_id < 0:
+            return None
+        point = np.asarray(self.physics.data.xpos[body_id], dtype=np.float64).copy()
+        mujoco.mj_applyFT(
+            self.physics.model,
+            self.physics.data,
+            np.asarray(force, dtype=np.float64).reshape(3),
+            np.asarray(torque, dtype=np.float64).reshape(3),
+            point,
+            body_id,
+            self.physics.data.qfrc_applied,
         )
-        rotation = R.from_quat(orientation_xyzw)
-        roll, pitch, yaw = rotation.as_euler('xyz', degrees=True)
-        clamped_roll = float(np.clip(roll, -self.non_fall_roll_limit_deg, self.non_fall_roll_limit_deg))
-        clamped_pitch = float(np.clip(pitch, -self.non_fall_pitch_limit_deg, self.non_fall_pitch_limit_deg))
+        event = {
+            'source': source,
+            'robot_id': robot_id,
+            'body_name': full_body_name,
+            'force': np.asarray(force, dtype=np.float64).reshape(3).astype(np.float32).tolist(),
+            'torque': np.asarray(torque, dtype=np.float64).reshape(3).astype(np.float32).tolist(),
+            'step_index': int(step_index),
+            'substep_index': int(substep_index),
+        }
+        self._last_disturbance_events.append(event)
+        return event
 
-        if np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch):
-            return False
+    def apply_constraints(self) -> Dict[str, Any]:
+        results: Dict[str, Any] = {}
+        for constraint in self.constraints:
+            if hasattr(constraint, 'apply'):
+                result = constraint.apply(self)
+                if result is not None:
+                    results[getattr(constraint, 'name', constraint.__class__.__name__)] = result
+        self._last_constraint_results = results
+        return results
 
-        clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
-        clamped_xyzw = clamped_rotation.as_quat()
-        clamped_wxyz = np.array(
-            [clamped_xyzw[3], clamped_xyzw[0], clamped_xyzw[1], clamped_xyzw[2]],
-            dtype=np.float64,
-        )
-        self.physics.data.qpos[qpos_adr + 3:qpos_adr + 7] = clamped_wxyz
-        qvel_adr = root_joint['qvel_adr']
-        self.physics.data.qvel[qvel_adr:qvel_adr + 2] = 0.0
-        return True
+    def apply_disturbances(self, step_index: int, substep_index: int) -> List[Dict[str, Any]]:
+        self.physics.data.qfrc_applied[:] = 0.0
+        disturbance_events: List[Dict[str, Any]] = []
+        for disturbance in self.disturbances:
+            event = disturbance.before_substep(self, self._rng, step_index, substep_index)
+            if event is not None:
+                disturbance_events.append(event)
+        self._last_disturbance_events.extend(disturbance_events)
+        return disturbance_events
 
-    def _enforce_non_fall_mode(self):
-        if not self.non_fall_mode:
-            return
-
-        changed = False
-        for robot_id in ('robot_a', 'robot_b'):
-            was_clamped = self._clamp_root_orientation(robot_id)
-            if was_clamped:
-                self._step_clamp_counts[robot_id] += 1
-                self._episode_clamp_counts[robot_id] += 1
-            changed = was_clamped or changed
-        if changed:
-            mujoco.mj_forward(self.physics.model, self.physics.data)
+    def collect_metric_payloads(
+        self,
+        observation: Dict[str, np.ndarray],
+        info: Dict[str, Any],
+        *,
+        terminated: bool,
+        truncated: bool,
+    ) -> Dict[str, Any]:
+        metrics: Dict[str, Any] = {}
+        for collector in self.metric_collectors:
+            payload = collector.collect(
+                self,
+                observation,
+                info,
+                terminated=terminated,
+                truncated=truncated,
+            )
+            if payload is not None:
+                metrics[getattr(collector, 'name', collector.__class__.__name__)] = payload
+        self._last_metric_payloads = metrics
+        return metrics
 
     def _build_relative_metrics(self, robot_states):
         relative_metrics = {}
@@ -245,6 +340,20 @@ class CombatGymEnv(gym.Env):
             }
         return relative_metrics
 
+    def _reset_runtime_modules(self) -> None:
+        for constraint in self.constraints:
+            if hasattr(constraint, 'reset'):
+                constraint.reset(self)
+        for disturbance in self.disturbances:
+            if hasattr(disturbance, 'reset'):
+                disturbance.reset(self, self._rng)
+        for collector in self.metric_collectors:
+            if hasattr(collector, 'reset'):
+                collector.reset(self)
+        for robot_id, control_mode in self.control_modes.items():
+            if hasattr(control_mode, 'reset'):
+                control_mode.reset(self, robot_id)
+
     def _build_info(self, collisions=None, winner=None, end_reason=None, terminated=False, truncated=False):
         if collisions is None:
             collisions = []
@@ -254,7 +363,7 @@ class CombatGymEnv(gym.Env):
             'robot_b': self.robot_b.get_state_summary(),
         }
 
-        return {
+        info = {
             'scores': self.score_calculator.get_health(),
             'collisions': collisions,
             'positions': {
@@ -284,17 +393,22 @@ class CombatGymEnv(gym.Env):
                     'action_scale': self._controller_action_scale['robot_b'].copy(),
                 },
             },
-            'non_fall_mode': {
-                'enabled': self.non_fall_mode,
-                'pitch_limit_deg': self.non_fall_pitch_limit_deg,
-                'roll_limit_deg': self.non_fall_roll_limit_deg,
-                'clamp_counts': {
-                    'current_step': self._step_clamp_counts.copy(),
-                    'episode': self._episode_clamp_counts.copy(),
-                },
+            'control_modes': {
+                robot_id: getattr(control_mode, 'name', control_mode.__class__.__name__)
+                for robot_id, control_mode in self.control_modes.items()
+            },
+            'reset': dict(self._last_reset_payload),
+            'constraints': dict(self._last_constraint_results),
+            'disturbances': list(self._last_disturbance_events),
+            'metrics': dict(self._last_metric_payloads),
+            'raw_state': {
+                'qpos': self.physics.data.qpos.copy(),
+                'qvel': self.physics.data.qvel.copy(),
+                'ctrl': self.physics.data.ctrl.copy(),
             },
             'observation_slices': self.observation_slices,
         }
+        return info
 
     def _get_robot_lookup(self):
         return {
@@ -434,12 +548,14 @@ class CombatGymEnv(gym.Env):
 
     def _apply_cached_actions(self):
         self._initialize_controller_state()
-        if self.actions['robot_a'] is not None:
-            target_positions = self._compute_target_positions('robot_a', self.actions['robot_a'])
+        resolved_action_a = self.control_modes['robot_a'].resolve_action(self, 'robot_a', self.actions['robot_a'])
+        if resolved_action_a is not None:
+            target_positions = self._compute_target_positions('robot_a', resolved_action_a)
             torque_action = self._compute_torque_action('robot_a', target_positions)
             self.robot_a.apply_action(torque_action)
-        if self.actions['robot_b'] is not None:
-            target_positions = self._compute_target_positions('robot_b', self.actions['robot_b'])
+        resolved_action_b = self.control_modes['robot_b'].resolve_action(self, 'robot_b', self.actions['robot_b'])
+        if resolved_action_b is not None:
+            target_positions = self._compute_target_positions('robot_b', resolved_action_b)
             torque_action = self._compute_torque_action('robot_b', target_positions)
             self.robot_b.apply_action(torque_action)
 
@@ -480,6 +596,8 @@ class CombatGymEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
 
         if options and 'initial_distance' in options:
             self.initial_distance = float(options['initial_distance'])
@@ -507,9 +625,13 @@ class CombatGymEnv(gym.Env):
             self.physics.data.qvel[:] = self._initial_qvel
             self.physics.data.ctrl[:] = self._initial_ctrl
 
-        self._apply_initial_root_poses()
+        self._last_constraint_results = {}
+        self._last_disturbance_events = []
+        self._last_metric_payloads = {}
+        self._last_reset_payload = self.resetter.reset(self, self._rng, options)
         self.physics.data.qvel[:] = 0.0
         self.physics.data.ctrl[:] = 0.0
+        self.physics.data.qfrc_applied[:] = 0.0
         self._initialize_controller_state()
         self.reset_controller_config()
 
@@ -519,13 +641,12 @@ class CombatGymEnv(gym.Env):
         self.physics_step_count = 0
         self.video_buffer = []
         self.hit_records = {'robot_a': [], 'robot_b': []}
-        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
-        self._episode_clamp_counts = {'robot_a': 0, 'robot_b': 0}
         self._prev_cam_pos = None
         self._prev_lookat = None
         self._prev_azi = None
         self._prev_ele = None
         self._prev_dist = None
+        self._reset_runtime_modules()
 
         # Trigger one forward to apply position and velocity
         mujoco.mj_forward(self.physics.model, self.physics.data)
@@ -538,12 +659,23 @@ class CombatGymEnv(gym.Env):
         observation = self._get_obs()
 
         info = self._build_info()
+        info['metrics'] = self.collect_metric_payloads(
+            observation,
+            info,
+            terminated=False,
+            truncated=False,
+        )
 
         return observation, info
 
     def step(self, action_dict=None, action_callback=None):
         self.hit_records = {'robot_a': [], 'robot_b': []}
-        self._step_clamp_counts = {'robot_a': 0, 'robot_b': 0}
+        self._last_constraint_results = {}
+        self._last_disturbance_events = []
+        self._last_metric_payloads = {}
+        for constraint in self.constraints:
+            if hasattr(constraint, 'begin_step'):
+                constraint.begin_step(self)
         self._update_cached_actions(action_dict)
 
         all_collisions = []
@@ -553,9 +685,10 @@ class CombatGymEnv(gym.Env):
                 self._update_cached_actions(callback_actions)
 
             self._apply_cached_actions()
+            self.apply_disturbances(self.current_step, i)
 
             self.physics.step()
-            self._enforce_non_fall_mode()
+            self.apply_constraints()
             self.physics_step_count += 1
 
             collisions = self.collision_detector.check_collisions(
@@ -615,6 +748,12 @@ class CombatGymEnv(gym.Env):
             collisions=all_collisions,
             winner=winner,
             end_reason=end_reason,
+            terminated=terminated,
+            truncated=truncated,
+        )
+        info['metrics'] = self.collect_metric_payloads(
+            observation,
+            info,
             terminated=terminated,
             truncated=truncated,
         )
