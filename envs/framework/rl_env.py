@@ -8,14 +8,15 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable
+from pathlib import Path
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from .simulator.open_simulator import OpenSimulator
+from .open_simulator import OpenSimulator
 from .simrunner import SimRunner
-from .hook.base_hook import BaseHook, InvokeType
+from .base_hook import BaseHook, InvokeType
 
 
 # ==================== 核心接口 ====================
@@ -102,6 +103,8 @@ class SimpleCombatEnv(gym.Env):
             step_data_builder=MyStepDataBuilder(),
             match_duration=30.0,  # 比赛时长（秒）
             hooks=[...],  # 可选的自定义 Hooks
+            record_video=True,  # 可选：录制视频
+            video_fps=30,  # 可选：视频帧率
         )
     """
 
@@ -114,6 +117,8 @@ class SimpleCombatEnv(gym.Env):
         match_duration: float = 30.0,
         control_frequency: float = 20.0,
         hooks: Optional[list] = None,
+        record_video: bool = False,
+        video_fps: int = 30,
     ):
         """
         初始化环境
@@ -124,6 +129,8 @@ class SimpleCombatEnv(gym.Env):
             match_duration: 比赛时长（秒）
             control_frequency: 控制频率（Hz）
             hooks: 可选的 Hook 列表
+            record_video: 是否录制视频
+            video_fps: 视频帧率
         """
         super().__init__()
 
@@ -142,8 +149,8 @@ class SimpleCombatEnv(gym.Env):
         self.runner = SimRunner(
             simulator=simulator,
             phy_steps_per_action=self.phy_steps_per_action,
-            video_fps=30,
-            enable_video=False,
+            video_fps=video_fps,
+            enable_video=record_video,
         )
 
         # 将 step_data_builder 作为 Hook 附加
@@ -229,6 +236,39 @@ class SimpleCombatEnv(gym.Env):
 
     def close(self):
         self.runner.close()
+
+    # ==================== 视频录制相关方法 ====================
+
+    def get_video_buffer(self) -> List[np.ndarray]:
+        """获取视频缓冲区"""
+        return self.runner.get_video_buffer()
+
+    def clear_video_buffer(self) -> None:
+        """清空视频缓冲区"""
+        self.runner.clear_video_buffer()
+
+    def save_video(self, filepath: str, fps: Optional[int] = None) -> bool:
+        """
+        保存视频到指定路径
+
+        Args:
+            filepath: 输出文件路径
+            fps: 视频帧率，如果为 None 则使用当前设置的 video_fps
+
+        Returns:
+            是否成功保存
+        """
+        return self.runner.save_video(filepath, fps)
+
+    @property
+    def video_enabled(self) -> bool:
+        """视频录制是否启用"""
+        return self.runner.video_enabled
+
+    @video_enabled.setter
+    def video_enabled(self, value: bool) -> None:
+        """设置视频录制开关"""
+        self.runner.video_enabled = value
 
 
 # ==================== 导出 ====================

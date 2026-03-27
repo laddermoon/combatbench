@@ -9,10 +9,10 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from ..rl_env import SimpleCombatEnv, StepDataBuilder
+from ..framework import SimpleCombatEnv, StepDataBuilder
 from .humanoid21 import Humanoid21Simulator
 from .humanoid21_base_hook import DefaultStepDataBuilder, HealthTerminationHook
-from ...core.humanoid_robot import HumanoidRobot
+from .robot import HumanoidRobot
 
 
 class Humanoid21CombatEnv(SimpleCombatEnv):

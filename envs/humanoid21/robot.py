@@ -4,7 +4,7 @@ MuJoCo Humanoid 机器人包装 (21 DOF)
 
 import numpy as np
 import mujoco
-from .base_robot import BaseRobot
+from ..core.base_robot import BaseRobot
 
 
 class HumanoidRobot(BaseRobot):
@@ -13,6 +13,22 @@ class HumanoidRobot(BaseRobot):
     """
 
     ACTION_DIM = 21
+    OBSERVATION_DIM = 127
+    OBSERVATION_SLICES = {
+        'joint_positions': slice(0, 21),
+        'joint_velocities': slice(21, 42),
+        'height': slice(42, 43),
+        'local_orientation': slice(43, 49),
+        'linear_velocity': slice(49, 52),
+        'angular_velocity': slice(52, 55),
+        'feet_contact': slice(55, 57),
+        'external_forces': slice(57, 63),
+        'opponent_relative_position': slice(63, 66),
+        'opponent_relative_velocity': slice(66, 69),
+        'opponent_orientation': slice(69, 73),
+        'opponent_keypoint_positions': slice(73, 100),
+        'opponent_keypoint_velocities': slice(100, 127),
+    }
 
     CONTROLLED_JOINTS = [
         'abdomen_z', 'abdomen_y', 'abdomen_x',
@@ -32,6 +48,9 @@ class HumanoidRobot(BaseRobot):
         self.suffix = '_red' if self.robot_id == 'robot_a' else '_blue' # battle_v1.xmluses _red and _blue
 
         self._joint_indices = self._get_joint_indices()
+        self._actuator_indices = self._get_actuator_indices()
+        self._joint_position_lower_limits, self._joint_position_upper_limits = self._get_joint_position_limits()
+        self._actuator_ctrl_lower_limits, self._actuator_ctrl_upper_limits = self._get_actuator_ctrl_limits()
 
     def _get_joint_indices(self):
         indices = {}
@@ -47,17 +66,64 @@ class HumanoidRobot(BaseRobot):
                 print(f"Warning: Exception getting joint {full_name}: {e}")
         return indices
 
-    def set_joint_targets(self, action):
-        action = np.clip(action, -1.0, 1.0)
+    def _get_actuator_indices(self):
+        indices = {}
+        for joint in self.CONTROLLED_JOINTS:
+            full_name = f"{joint}{self.suffix}"
+            try:
+                idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, full_name)
+                if idx >= 0:
+                    indices[joint] = idx
+                else:
+                    print(f"Warning: Actuator {full_name} not found")
+            except Exception as e:
+                print(f"Warning: Exception getting actuator {full_name}: {e}")
+        return indices
+
+    def _get_joint_position_limits(self):
+        lower = np.full(self.ACTION_DIM, -np.inf, dtype=np.float32)
+        upper = np.full(self.ACTION_DIM, np.inf, dtype=np.float32)
+        for index, joint in enumerate(self.CONTROLLED_JOINTS):
+            joint_idx = self._joint_indices.get(joint)
+            if joint_idx is None:
+                continue
+            if self.model.jnt_limited[joint_idx]:
+                lower[index] = float(self.model.jnt_range[joint_idx, 0])
+                upper[index] = float(self.model.jnt_range[joint_idx, 1])
+        return lower, upper
+
+    def _get_actuator_ctrl_limits(self):
+        lower = np.full(self.ACTION_DIM, -np.inf, dtype=np.float32)
+        upper = np.full(self.ACTION_DIM, np.inf, dtype=np.float32)
+        for index, joint in enumerate(self.CONTROLLED_JOINTS):
+            actuator_idx = self._actuator_indices.get(joint)
+            if actuator_idx is None:
+                continue
+            lower[index] = float(self.model.actuator_ctrlrange[actuator_idx, 0])
+            upper[index] = float(self.model.actuator_ctrlrange[actuator_idx, 1])
+        return lower, upper
+
+    def get_joint_position_limits(self):
+        return {
+            'lower': self._joint_position_lower_limits.copy(),
+            'upper': self._joint_position_upper_limits.copy(),
+        }
+
+    def get_actuator_ctrl_limits(self):
+        return {
+            'lower': self._actuator_ctrl_lower_limits.copy(),
+            'upper': self._actuator_ctrl_upper_limits.copy(),
+        }
+
+    def apply_action(self, action):
+        action = np.asarray(action, dtype=np.float32).reshape(self.ACTION_DIM)
         action_idx = 0
         for joint in self.CONTROLLED_JOINTS:
             if joint in self._joint_indices:
-                joint_idx = self._joint_indices[joint]
-                motor_name = f"{joint}{self.suffix}"
-                motor_idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, motor_name)
-                if motor_idx >= 0:
+                motor_idx = self._actuator_indices.get(joint)
+                if motor_idx is not None:
                     ctrl_range = self.model.actuator_ctrlrange[motor_idx]
-                    target = action[action_idx] * ctrl_range[1]
+                    target = float(np.clip(action[action_idx], ctrl_range[0], ctrl_range[1]))
                     self.data.ctrl[motor_idx] = target
             action_idx += 1
 
@@ -68,8 +134,19 @@ class HumanoidRobot(BaseRobot):
             return self.data.xpos[idx].copy()
         return np.zeros(3)
 
+    def _get_rotation_matrix(self, orientation_quat):
+        from scipy.spatial.transform import Rotation as R
+
+        rotation = R.from_quat([
+            orientation_quat[1],
+            orientation_quat[2],
+            orientation_quat[3],
+            orientation_quat[0],
+        ])
+        return rotation.as_matrix()
+
     def get_torso_state(self):
-        body_name = f"pelvis{self.suffix}"
+        body_name = f"torso{self.suffix}"
         idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
         
         if idx >= 0:
@@ -88,6 +165,24 @@ class HumanoidRobot(BaseRobot):
             'orientation': np.array([1.0, 0.0, 0.0, 0.0]),
             'linear_velocity': np.zeros(3),
             'angular_velocity': np.zeros(3)
+        }
+
+    def get_state_summary(self):
+        torso_state = self.get_torso_state()
+        rotation_matrix = self._get_rotation_matrix(torso_state['orientation'])
+        return {
+            'position': self.get_position(),
+            'torso_position': torso_state['position'],
+            'orientation': torso_state['orientation'],
+            'rotation_matrix': rotation_matrix.astype(np.float32),
+            'forward_vector': rotation_matrix[:, 0].astype(np.float32),
+            'up_vector': rotation_matrix[:, 2].astype(np.float32),
+            'uprightness': float(rotation_matrix[2, 2]),
+            'linear_velocity': torso_state['linear_velocity'],
+            'angular_velocity': torso_state['angular_velocity'],
+            'joint_states': self.get_joint_states(),
+            'feet_contact': self.get_feet_contact(),
+            'external_forces': self.get_external_forces(),
         }
 
     def get_joint_states(self):
@@ -214,9 +309,7 @@ class HumanoidRobot(BaseRobot):
         obs_list.append([position[2]])  # 1dims: Z axis height
 
         # 6dims: Local orientation
-        from scipy.spatial.transform import Rotation as R
-        rotation = R.from_quat([orientation_quat[1], orientation_quat[2], orientation_quat[3], orientation_quat[0]])
-        rot_matrix = rotation.as_matrix()
+        rot_matrix = self._get_rotation_matrix(orientation_quat)
         local_orientation = np.concatenate([rot_matrix[:, 0], rot_matrix[:, 1]])
         obs_list.append(local_orientation)
 
@@ -259,3 +352,18 @@ class HumanoidRobot(BaseRobot):
             obs_list.append(np.zeros(64))
 
         return np.concatenate(obs_list).astype(np.float32)
+
+    def reset(self, position, orientation):
+        """
+        Implementation of abstract method from BaseRobot
+        """
+        # Currently envs/combat_gym.py resets directly via self.data.qpos
+        # This is a stub for future internal refactoring
+        pass
+
+    def get_visual_observation(self, camera_name: str) -> np.ndarray:
+        """
+        Get the visual observation from a specific camera on the robot.
+        Future support for pure vision-based RL.
+        """
+        raise NotImplementedError("Pure visual observation is planned for future versions.")

@@ -9,9 +9,8 @@ from typing import Any, Dict, List, Optional, Callable, Tuple
 import numpy as np
 from gymnasium import spaces
 
-from ..hook.base_hook import BaseHook, InvokeType
-from ..rl_env import StepDataBuilder
-from ...core.humanoid_robot import HumanoidRobot
+from ..framework import BaseHook, InvokeType, StepDataBuilder
+from .robot import HumanoidRobot
 
 
 class GymEnvironmentAdapter:

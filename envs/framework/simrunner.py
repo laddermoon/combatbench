@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import numpy as np
 
-from .simulator.open_simulator import OpenSimulator
-from .hook.base_hook import BaseHook, HookWrapper, InvokeType
+from .open_simulator import OpenSimulator
+from .base_hook import BaseHook, HookWrapper, InvokeType
 
 
 class SimRunner:

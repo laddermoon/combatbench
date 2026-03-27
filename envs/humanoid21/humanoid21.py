@@ -20,8 +20,8 @@ import numpy as np
 import mujoco
 
 from ..core.physics import PhysicsEngine
-from ..core.humanoid_robot import HumanoidRobot
-from .open_simulator import OpenSimulator
+from .robot import HumanoidRobot
+from ..framework import OpenSimulator
 
 
 class Humanoid21Simulator(OpenSimulator):

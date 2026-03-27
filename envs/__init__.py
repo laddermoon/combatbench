@@ -5,18 +5,29 @@ CombatBench 环境模块
 """
 
 from .combat_gym import CombatGymEnv
-from .simrunner import SimRunner
-from .hook.base_hook import BaseHook, InvokeType
 
-# 通用框架
-from .rl_env import (
+# 框架模块
+from .framework import (
+    SimRunner,
+    BaseHook,
+    InvokeType,
     SimpleCombatEnv,
     StepDataBuilder,
+    OpenSimulator,
+)
+
+# 核心模块（与具体机器人无关）
+from .core import (
+    PhysicsEngine,
+    BaseRobot,
 )
 
 # Humanoid21 特定实现
 from .humanoid21 import (
     Humanoid21Simulator,
+    HumanoidRobot,
+    CollisionDetector,
+    ScoreCalculator,
     DefaultStepDataBuilder,
     HealthTerminationHook,
     Humanoid21CombatEnv,
@@ -32,19 +43,23 @@ __all__ = [
     # 原始 Gym 环境
     "CombatGymEnv",
 
-    # 仿真框架
+    # 框架模块
     "SimRunner",
-
-    # Hook 支持
     "BaseHook",
     "InvokeType",
-
-    # 通用 RL 环境框架
     "SimpleCombatEnv",
     "StepDataBuilder",
+    "OpenSimulator",
+
+    # 核心模块
+    "PhysicsEngine",
+    "BaseRobot",
 
     # Humanoid21 特定实现
     "Humanoid21Simulator",
+    "HumanoidRobot",
+    "CollisionDetector",
+    "ScoreCalculator",
     "DefaultStepDataBuilder",
     "HealthTerminationHook",
     "Humanoid21CombatEnv",
