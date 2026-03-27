@@ -28,11 +28,6 @@ from .humanoid21 import (
     ScoreCalculator,
     DefaultStepDataBuilder,
     HealthTerminationHook,
-    Humanoid21CombatEnv,
-)
-
-# 预置环境
-from .preset_envs import (
     Humanoid21NonFallEnv,
     Humanoid21FallEnv,
 )
@@ -57,7 +52,6 @@ __all__ = [
     "ScoreCalculator",
     "DefaultStepDataBuilder",
     "HealthTerminationHook",
-    "Humanoid21CombatEnv",
 
     # 预置环境
     "Humanoid21NonFallEnv",

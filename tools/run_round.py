@@ -355,6 +355,12 @@ def run_round(
         ...     save_video_path="round.mp4",
         ... )
     """
+    # Handle None policies - use default StandingCombatPolicy
+    if policy_a is None:
+        policy_a = load_policy(None)
+    if policy_b is None:
+        policy_b = load_policy(None)
+
     runner = RoundRunner(
         policy_a=policy_a,
         policy_b=policy_b,

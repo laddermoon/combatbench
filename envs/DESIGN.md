@@ -19,8 +19,7 @@ envs/
 │   ├── robot.py            # 21-DOF 人形机器人
 │   ├── collision.py        # 碰撞检测
 │   ├── scoring.py          # 血量计分
-│   ├── humanoid21_base_hook.py  # Humanoid21 特定 Hooks
-│   └── humanoid21_env.py   # Humanoid21 环境组合
+│   └── humanoid21_base_hook.py  # Humanoid21 特定 Hooks
 │
 ├── preset_envs.py     # 预置 Gym 环境 (Humanoid21NonFallEnv, Humanoid21FallEnv)
 ├── combat_gym.py      # [OBSOLETE] 旧版环境，保留用于参考

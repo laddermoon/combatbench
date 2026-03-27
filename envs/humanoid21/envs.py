@@ -24,14 +24,15 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from .humanoid21.robot import HumanoidRobot
-from .humanoid21 import Humanoid21Simulator
-from .framework import (
+from .robot import HumanoidRobot
+from . import Humanoid21Simulator
+from ..framework import (
     SimpleCombatEnv,
     StepDataBuilder,
+    BaseHook,
+    InvokeType,
 )
-from .humanoid21.scoring import ScoreCalculator
-from .framework import BaseHook, InvokeType
+from .scoring import ScoreCalculator
 
 
 # ==================== Step 数据构建器 ====================

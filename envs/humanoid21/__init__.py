@@ -9,7 +9,7 @@ from .robot import HumanoidRobot
 from .collision import CollisionDetector
 from .scoring import ScoreCalculator
 from .humanoid21_base_hook import DefaultStepDataBuilder, HealthTerminationHook
-from .humanoid21_env import Humanoid21CombatEnv
+from .envs import Humanoid21NonFallEnv, Humanoid21FallEnv
 
 __all__ = [
     'Humanoid21Simulator',
@@ -18,5 +18,6 @@ __all__ = [
     'ScoreCalculator',
     'DefaultStepDataBuilder',
     'HealthTerminationHook',
-    'Humanoid21CombatEnv',
+    'Humanoid21NonFallEnv',
+    'Humanoid21FallEnv',
 ]

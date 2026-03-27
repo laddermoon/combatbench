@@ -58,3 +58,4 @@ class Hook:
 4. Terminated
 等等。 所有这些都通过Hook实现（考虑再设计一个Rewarder 之类的ABC， 然后让一个类同时实现 Hook和Rewarder接口）
 
+帮我把env的整个设计总结成一个简洁明了的设计说明文档
