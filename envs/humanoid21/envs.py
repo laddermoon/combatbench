@@ -302,6 +302,39 @@ class SingleAgentEnvWrapper(gym.Env):
         """访问内部仿真器（用于兼容性）"""
         return self._env.simulator
 
+    # ==================== 视频录制相关方法 ====================
+
+    def get_video_buffer(self):
+        """获取视频缓冲区"""
+        return self._env.get_video_buffer()
+
+    def clear_video_buffer(self):
+        """清空视频缓冲区"""
+        return self._env.clear_video_buffer()
+
+    def save_video(self, filepath, fps=None):
+        """
+        保存视频到指定路径
+
+        Args:
+            filepath: 输出文件路径
+            fps: 视频帧率，如果为 None 则使用当前设置的 video_fps
+
+        Returns:
+            是否成功保存
+        """
+        return self._env.save_video(filepath, fps)
+
+    @property
+    def video_enabled(self):
+        """视频录制是否启用"""
+        return self._env.video_enabled
+
+    @video_enabled.setter
+    def video_enabled(self, value):
+        """设置视频录制开关"""
+        self._env.video_enabled = value
+
 
 # ==================== Hook ====================
 
