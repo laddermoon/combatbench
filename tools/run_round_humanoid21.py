@@ -121,29 +121,22 @@ class RoundRunner:
             video_fps: Video frame rate
             verbose: Print round progress
         """
-        from combatbench.envs import Humanoid21NonFallEnv, Humanoid21FallEnv
+        from combatbench.envs import Humanoid21DualAgentEnv, Humanoid21MatchEnv
 
         self.policy_a = policy_a
         self.policy_b = policy_b
         self.verbose = verbose
         self.non_fall_mode = non_fall_mode
 
-        # Create environment
-        if non_fall_mode:
-            self.env = Humanoid21NonFallEnv(
-                render_mode=render_mode,
-                match_duration=match_duration,
-                control_frequency=control_frequency,
-                initial_distance=initial_distance,
-            )
-        else:
-            self.env = Humanoid21FallEnv(
-                render_mode=render_mode,
-                match_duration=match_duration,
-                control_frequency=control_frequency,
-                initial_distance=initial_distance,
-                enable_fall_detection=enable_fall_detection,
-            )
+        # Create dual-agent environment for competition
+        self.env = Humanoid21MatchEnv(
+            render_mode=render_mode,
+            match_duration=match_duration,
+            control_frequency=control_frequency,
+            initial_distance=initial_distance,
+            enable_nonfall=non_fall_mode,
+            enable_fall_detection=enable_fall_detection,
+        )
 
         # Set video recording
         self.video_fps = video_fps
