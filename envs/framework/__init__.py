@@ -6,7 +6,7 @@ CombatBench 框架模块
 
 from .base_hook import BaseHook, InvokeType, HookWrapper
 from .open_simulator import OpenSimulator
-from .rl_env import StepDataBuilder, SimpleCombatEnv
+from .rl_env import StepDataBuilder, CombatGymEnv
 from .simrunner import SimRunner
 
 __all__ = [
@@ -20,7 +20,7 @@ __all__ = [
 
     # RL 环境框架
     "StepDataBuilder",
-    "SimpleCombatEnv",
+    "CombatGymEnv",
 
     # 仿真运行器
     "SimRunner",

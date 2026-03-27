@@ -9,7 +9,7 @@ from .framework import (
     SimRunner,
     BaseHook,
     InvokeType,
-    SimpleCombatEnv,
+    CombatGymEnv,
     StepDataBuilder,
     OpenSimulator,
 )
@@ -54,7 +54,7 @@ __all__ = [
     "SimRunner",
     "BaseHook",
     "InvokeType",
-    "SimpleCombatEnv",
+    "CombatGymEnv",
     "StepDataBuilder",
     "OpenSimulator",
 

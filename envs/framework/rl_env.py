@@ -1,9 +1,9 @@
 """
-强化学习环境构建框架 - 简洁版
+强化学习环境构建框架
 
 最简单的实现：
 - StepDataBuilder: 构建 observation、reward 和 info（作为 Hook 实现）
-- SimpleCombatEnv: 通用 Gym 环境
+- CombatGymEnv: 通用 Gym 环境（框架类，直接使用）
 - 终止通过：时间限制（环境自动） + Hook 返回 True
 """
 
@@ -87,25 +87,36 @@ class StepDataBuilder(BaseHook, ABC):
 
 # ==================== 简化的 Gym 环境 ====================
 
-class SimpleCombatEnv(gym.Env):
+class CombatGymEnv(gym.Env):
     """
-    简化的格斗环境
+    通用的格斗 Gym 环境框架类（直接使用，无需继承）
 
-    通用的 Gym 环境，适用于任何实现 OpenSimulator 接口的仿真器。
+    这是一个框架类，封装了 Gym 环境的标准功能和仿真循环控制。
+    适用于任何实现 OpenSimulator 接口的仿真器。
+
+    特点：
+    - 封装 Gym 接口（reset, step, render, close）
+    - 管理仿真循环和物理步进
+    - 支持 Hook 机制扩展功能
+    - 支持视频录制
 
     终止条件：
     - 时间到：自动终止（通过 match_duration 参数控制）
-    - 其他：Hook 返回 True
+    - Hook 返回 True
 
     使用方式：
-        env = SimpleCombatEnv(
+        env = CombatGymEnv(
             simulator=MySimulator(),
             step_data_builder=MyStepDataBuilder(),
-            match_duration=30.0,  # 比赛时长（秒）
-            hooks=[...],  # 可选的自定义 Hooks
-            record_video=True,  # 可选：录制视频
-            video_fps=30,  # 可选：视频帧率
+            match_duration=30.0,
+            control_frequency=20.0,
+            hooks=[...],
         )
+        obs, info = env.reset()
+        obs, reward, terminated, truncated, info = env.step(action)
+
+    注意：这是框架类，不是抽象基类。应该直接使用，而不是继承。
+          如需自定义环境，请通过自定义 StepDataBuilder 和 Hook 实现。
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
@@ -216,20 +227,51 @@ class SimpleCombatEnv(gym.Env):
 
     def _get_data(self):
         """直接从 simulator 获取数据（备用方法）"""
-        # 默认实现，子类可以覆盖
-        obs_a = self.simulator.robot_a.get_observation(opponent_robot=self.simulator.robot_b)
-        obs_b = self.simulator.robot_b.get_observation(opponent_robot=self.simulator.robot_a)
-        observation = {
-            'robot_a_obs': obs_a.astype(np.float32),
-            'robot_b_obs': obs_b.astype(np.float32),
-        }
-        reward = {'robot_a': 0.0, 'robot_b': 0.0}
-        info = {'step': self.current_step}
-        return observation, reward, info
+        # 尝试通过 step_data_builder 获取正确格式的数据
+        try:
+            f_get_core_state = self.simulator.get_core_state
+            f_get_derived_state = self.simulator.get_derived_state
+            f_get_sensor_data = self.simulator.get_sensor_data
+            obs, reward, info = self.step_data_builder.build_step_data(
+                f_get_core_state,
+                f_get_derived_state,
+                f_get_sensor_data,
+            )
+            self.step_data_builder._last_observation = obs
+            self.step_data_builder._last_reward = reward
+            self.step_data_builder._last_info = info
+            return obs, reward, info
+        except:
+            # 如果失败，使用默认实现
+            obs_a = self.simulator.robot_a.get_observation(opponent_robot=self.simulator.robot_b)
+            obs_b = self.simulator.robot_b.get_observation(opponent_robot=self.simulator.robot_a)
+            observation = {
+                'robot_a_obs': obs_a.astype(np.float32),
+                'robot_b_obs': obs_b.astype(np.float32),
+            }
+            reward = {'robot_a': 0.0, 'robot_b': 0.0}
+            info = {'step': self.current_step}
+            return observation, reward, info
 
     def _get_initial_data(self):
         """获取初始数据"""
-        return self._get_data()
+        # 尝试通过 step_data_builder 获取正确格式的数据
+        try:
+            f_get_core_state = self.simulator.get_core_state
+            f_get_derived_state = self.simulator.get_derived_state
+            f_get_sensor_data = self.simulator.get_sensor_data
+            obs, reward, info = self.step_data_builder.build_step_data(
+                f_get_core_state,
+                f_get_derived_state,
+                f_get_sensor_data,
+            )
+            self.step_data_builder._last_observation = obs
+            self.step_data_builder._last_reward = reward
+            self.step_data_builder._last_info = info
+            return obs, reward, info
+        except:
+            # 如果失败，使用备用方法
+            return self._get_data()
 
     def render(self):
         return self.runner.get_broadcastview_image()
@@ -278,5 +320,5 @@ __all__ = [
     'StepDataBuilder',
 
     # 环境
-    'SimpleCombatEnv',
+    'CombatGymEnv',
 ]
