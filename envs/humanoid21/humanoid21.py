@@ -91,6 +91,9 @@ class Humanoid21Simulator(OpenSimulator):
         # 初始化机器人
         self._init_robots()
 
+        # 设置初始位置和姿态
+        self._set_initial_poses()
+
         # 缓存静态数据
         self._static_data_cache = None
 
@@ -178,6 +181,46 @@ class Humanoid21Simulator(OpenSimulator):
                 'orientation': quat_b,
             },
         }
+
+    def _set_initial_poses(self) -> None:
+        """
+        设置初始位置和姿态到 MuJoCo 数据
+
+        这会设置 qpos 并调用 mj_forward() 来计算所有衍生状态（包括有效的四元数）。
+        """
+        root_poses = self._get_default_root_poses()
+
+        for robot_id, root_pose in root_poses.items():
+            cache = self._root_joint_cache.get(robot_id)
+            if cache is None:
+                continue
+
+            # 设置位置和方向到 qpos
+            qpos_adr = cache['qpos_adr']
+            self.data.qpos[qpos_adr:qpos_adr + 3] = root_pose['position']
+            self.data.qpos[qpos_adr + 3:qpos_adr + 7] = root_pose['orientation']
+
+        # 重置速度
+        for cache in self._root_joint_cache.values():
+            qvel_adr = cache['qvel_adr']
+            self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
+
+        # 调用 mj_forward 计算所有衍生状态（包括有效的四元数）
+        mujoco.mj_forward(self.model, self.data)
+
+    def reset(self) -> None:
+        """
+        重置仿真状态
+
+        将机器人重置到初始位置和姿态。
+        """
+        # 重置速度和控制器
+        self.data.qvel[:] = 0.0
+        self.data.ctrl[:] = 0.0
+        self.data.qfrc_applied[:] = 0.0
+
+        # 重新设置初始位置和姿态
+        self._set_initial_poses()
 
     # ==================== OpenSimulator 必需接口 ====================
 

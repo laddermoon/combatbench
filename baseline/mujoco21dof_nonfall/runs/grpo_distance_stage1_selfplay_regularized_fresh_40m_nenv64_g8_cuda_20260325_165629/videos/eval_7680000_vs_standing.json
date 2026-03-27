@@ -1,0 +1,40 @@
+{
+  "deterministic": true,
+  "draws": 1,
+  "episodes": 1,
+  "mean_robot_a_damage_dealt": 0.0,
+  "mean_robot_a_score": 100,
+  "mean_robot_b_damage_dealt": 0.0,
+  "mean_robot_b_score": 100,
+  "mean_steps": 100,
+  "model_path": "baseline/mujoco21dof_nonfall/runs/grpo_distance_stage1_selfplay_regularized_fresh_40m_nenv64_g8_cuda_20260325_165629/checkpoints/grpo_attacker_7680000.pt",
+  "opponent": "standing",
+  "results": [
+    {
+      "damage_dealt": {
+        "robot_a": 0.0,
+        "robot_b": 0.0
+      },
+      "end_reason": "Time limit reached (5.0s), draw",
+      "episode_index": 0,
+      "initial_scores": {
+        "robot_a": 100,
+        "robot_b": 100
+      },
+      "scores": {
+        "robot_a": 100,
+        "robot_b": 100
+      },
+      "seed": 0,
+      "steps": 100,
+      "total_reward": {
+        "robot_a": 0.0,
+        "robot_b": 0.0
+      },
+      "video_frames": 147,
+      "winner": "draw"
+    }
+  ],
+  "wins_robot_a": 0,
+  "wins_robot_b": 0
+}

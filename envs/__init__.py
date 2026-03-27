@@ -4,8 +4,6 @@ CombatBench 环境模块
 提供强化学习环境和仿真框架。
 """
 
-from .combat_gym import CombatGymEnv
-
 # 框架模块
 from .framework import (
     SimRunner,
@@ -40,9 +38,6 @@ from .preset_envs import (
 )
 
 __all__ = [
-    # 原始 Gym 环境
-    "CombatGymEnv",
-
     # 框架模块
     "SimRunner",
     "BaseHook",

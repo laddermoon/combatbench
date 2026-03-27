@@ -1,3 +1,13 @@
+"""
+================================================================================
+OBSOLETE - 此文件已过时，请使用 preset_envs.py 中的环境
+================================================================================
+
+此文件保留用于参考，新代码请使用：
+- things.combatbench.envs.preset_envs.Humanoid21NonFallEnv
+- things.combatbench.envs.preset_envs.Humanoid21FallEnv
+"""
+
 import numpy as np
 import gymnasium as gym
 import mujoco
@@ -8,9 +18,9 @@ from scipy.spatial.transform import Rotation as R
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..core.physics import PhysicsEngine
-from ..core.humanoid_robot import HumanoidRobot
-from ..core.collision import CollisionDetector
-from ..core.scoring import ScoreCalculator
+from ..humanoid21.robot import HumanoidRobot
+from ..humanoid21.collision import CollisionDetector
+from ..humanoid21.scoring import ScoreCalculator
 from .control_modes import BaseControlMode, build_default_control_modes
 from .disturbances import BaseDisturbance
 from .metrics import BaseMetricCollector, ConstraintMetricCollector, CoreMetricCollector, DisturbanceMetricCollector

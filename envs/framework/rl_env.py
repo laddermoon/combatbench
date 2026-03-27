@@ -163,7 +163,7 @@ class SimpleCombatEnv(gym.Env):
                     hook, invoke_types = hook_spec
                     self.runner.attach_hook(hook, invoke_types=invoke_types)
                 else:
-                    self.runner.attach_hook(hook)
+                    self.runner.attach_hook(hook_spec)
 
         # 空间由具体实现定义
         self.observation_space = step_data_builder.get_observation_space()

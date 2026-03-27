@@ -4,7 +4,7 @@
 提供常用的仿真环境配置，展示如何使用 SimpleCombatEnv 框架。
 
 使用示例：
-    from things.combatbench.envs import Humanoid21NonFallEnv, Humanoid21FallEnv
+    from combatbench.envs import Humanoid21NonFallEnv, Humanoid21FallEnv
 
     env = Humanoid21NonFallEnv(render_mode=None)
     obs, info = env.reset()
@@ -224,6 +224,8 @@ class UprightConstraintHook(BaseHook):
         self,
         invoke_type: InvokeType,
         f_get_core_state=None,
+        f_get_derived_state=None,
+        f_get_sensor_data=None,
         f_set_core_state=None,
         **kwargs
     ) -> bool:

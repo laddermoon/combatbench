@@ -131,8 +131,9 @@ class SimRunner:
 
         调用流程：
         1. 清空视频缓冲区
-        2. 调用 PRE_EPISODE Hook（用于重置状态）
-        3. 如果 Hook 返回终止，调用 POST_EPISODE Hook
+        2. 重置仿真器状态
+        3. 调用 PRE_EPISODE Hook（用于重置状态）
+        4. 如果 Hook 返回终止，调用 POST_EPISODE Hook
 
         无返回值，所有数据通过 Hook 处理。
         """
@@ -140,6 +141,9 @@ class SimRunner:
         self._current_action = None
         self._physics_step_count = 0
         self._video_buffer.clear()
+
+        # 重置仿真器
+        self.simulator.reset()
 
         # 获取静态数据
         self._cached_static_data = self.simulator.get_static_data()

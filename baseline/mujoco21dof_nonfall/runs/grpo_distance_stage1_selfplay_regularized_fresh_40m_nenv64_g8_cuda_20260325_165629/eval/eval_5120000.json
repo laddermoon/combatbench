@@ -1,0 +1,41 @@
+{
+  "curriculum_attack_enabled": 0.0,
+  "episode_clamp_counts": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "episode_damage_dealt": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "episode_lengths": [
+    100.0,
+    100.0,
+    100.0
+  ],
+  "episode_min_horizontal_distances": [
+    1.8255038261413574,
+    1.8255038261413574,
+    1.8255038261413574
+  ],
+  "episode_returns": [
+    -15.018595695495605,
+    -15.018595695495605,
+    -15.018595695495605
+  ],
+  "final_distances": [
+    1.8255038261413574,
+    1.8255038261413574,
+    1.8255038261413574
+  ],
+  "mean_episode_clamp_count": 0.0,
+  "mean_episode_damage_dealt": 0.0,
+  "mean_episode_length": 100.0,
+  "mean_episode_min_horizontal_distance": 1.8255038261413574,
+  "mean_final_distance": 1.8255038261413574,
+  "mean_reward": -15.018595695495605,
+  "std_reward": 0.0,
+  "timesteps": 5120000
+}

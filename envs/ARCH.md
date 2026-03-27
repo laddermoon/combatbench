@@ -51,6 +51,10 @@ class Hook:
 这只是一个工具架构。
 
 
-# GymBuilder
-创建可供强化学习训练的环境。
-计算Reward和Observation等。
+在上面的基础架构之上，进行仿真环境的构建（Gym接口的环境）, 这里有强化学习的专属概念
+1. Reward 
+2. Observation
+3. Done 
+4. Terminated
+等等。 所有这些都通过Hook实现（考虑再设计一个Rewarder 之类的ABC， 然后让一个类同时实现 Hook和Rewarder接口）
+
