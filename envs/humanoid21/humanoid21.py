@@ -56,6 +56,13 @@ class Humanoid21Simulator(OpenSimulator):
         gui: bool = False,
         initial_distance: float = DEFAULT_INITIAL_DISTANCE,
         root_height: float = DEFAULT_ROOT_HEIGHT,
+        # 新增参数
+        control_mode: str = 'torque',  # 'torque' 或 'residual_pd'
+        non_fall_mode: bool = False,
+        non_fall_pitch_limit_deg: float = 5.0,
+        non_fall_roll_limit_deg: float = 5.0,
+        default_kp: float = 4.0,
+        default_kd: float = 0.4,
     ):
         """
         初始化仿真器
@@ -66,11 +73,47 @@ class Humanoid21Simulator(OpenSimulator):
             gui: 是否启用GUI
             initial_distance: 两个机器人的初始距离 (米)
             root_height: 机器人根节点高度 (米)
+            control_mode: 控制模式 ('torque' 直接扭矩控制, 'residual_pd' 残差PD控制)
+            non_fall_mode: 是否启用防跌倒模式
+            non_fall_pitch_limit_deg: 防跌倒俯仰角限制 (度)
+            non_fall_roll_limit_deg: 防跌倒横滚角限制 (度)
+            default_kp: 默认比例增益
+            default_kd: 默认微分增益
         """
         self.dt = dt
         self.gui = gui
         self.initial_distance = initial_distance
         self.root_height = root_height
+
+        # 控制模式
+        self.control_mode = control_mode
+        self.non_fall_mode = non_fall_mode
+        self.non_fall_pitch_limit_deg = float(non_fall_pitch_limit_deg)
+        self.non_fall_roll_limit_deg = float(non_fall_roll_limit_deg)
+
+        # PD控制器参数
+        self._default_kp = float(default_kp)
+        self._default_kd = float(default_kd)
+        self._controller_kp = np.full(HumanoidRobot.ACTION_DIM, self._default_kp, dtype=np.float32)
+        self._controller_kd = np.full(HumanoidRobot.ACTION_DIM, self._default_kd, dtype=np.float32)
+
+        # 参考位置 (用于残差PD控制)
+        self._reference_positions = {
+            'robot_a': np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32),
+            'robot_b': np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32),
+        }
+
+        # 动作缩放 (用于残差PD控制)
+        self._action_scale = {
+            'robot_a': np.ones(HumanoidRobot.ACTION_DIM, dtype=np.float32) * 0.25,
+            'robot_b': np.ones(HumanoidRobot.ACTION_DIM, dtype=np.float32) * 0.25,
+        }
+
+        # 非跌倒模式统计
+        self._clamp_counts = {
+            'current_step': {'robot_a': 0, 'robot_b': 0},
+            'episode': {'robot_a': 0, 'robot_b': 0},
+        }
 
         # 加载场景XML
         if arena_xml is None:
@@ -222,6 +265,18 @@ class Humanoid21Simulator(OpenSimulator):
         # 重新设置初始位置和姿态
         self._set_initial_poses()
 
+        # 重置非跌倒模式统计
+        self._clamp_counts = {
+            'current_step': {'robot_a': 0, 'robot_b': 0},
+            'episode': {'robot_a': 0, 'robot_b': 0},
+        }
+
+        # 重置参考位置为当前关节位置 (用于残差PD控制)
+        for robot_id in ['robot_a', 'robot_b']:
+            robot = self._robots[robot_id]
+            joint_states = robot.get_joint_states()
+            self._reference_positions[robot_id] = joint_states['positions'].copy()
+
     # ==================== OpenSimulator 必需接口 ====================
 
     def get_physical_frequency(self) -> float:
@@ -247,14 +302,22 @@ class Humanoid21Simulator(OpenSimulator):
         注意：
         - 动作值应该在有效范围内 [-1, 1]
         - 动作会在下一个 physical_step 时生效
+        - 根据控制模式 (control_mode) 决定如何应用动作：
+          * 'torque': 直接扭矩控制
+          * 'residual_pd': 残差PD控制
         """
-        if 'robot_a' in action and action['robot_a'] is not None:
-            act_a = np.asarray(action['robot_a'], dtype=np.float32).reshape(21)
-            self.robot_a.apply_action(act_a)
+        for robot_id in ['robot_a', 'robot_b']:
+            if robot_id in action and action[robot_id] is not None:
+                act = np.asarray(action[robot_id], dtype=np.float32).reshape(21)
+                act = np.clip(act, -1.0, 1.0)
 
-        if 'robot_b' in action and action['robot_b'] is not None:
-            act_b = np.asarray(action['robot_b'], dtype=np.float32).reshape(21)
-            self.robot_b.apply_action(act_b)
+                if self.control_mode == 'residual_pd':
+                    # 使用残差PD控制
+                    self.apply_action_residual_pd(robot_id, act)
+                else:
+                    # 使用直接扭矩控制
+                    robot = self.robot_a if robot_id == 'robot_a' else self.robot_b
+                    robot.apply_action(act)
 
     def physical_step(self) -> None:
         """
@@ -265,8 +328,13 @@ class Humanoid21Simulator(OpenSimulator):
         2. 执行碰撞检测
         3. 数值积分更新位置和速度
         4. 更新所有内部缓存
+        5. 如果启用非跌倒模式，限制根节点朝向
         """
         self.physics.step()
+
+        # 非跌倒模式：限制根节点朝向
+        if self.non_fall_mode:
+            self.enforce_non_fall_mode()
 
     def get_sensor_data(self) -> Dict[str, Any]:
         """
@@ -911,6 +979,230 @@ class Humanoid21Simulator(OpenSimulator):
 
         qvel_idx = self.model.jnt_dofadr[joint_idx]
         self.data.qvel[qvel_idx] = float(velocity)
+
+    # ==================== 残差PD控制方法 ====================
+
+    def set_reference_positions(self, robot_id: str, positions: np.ndarray) -> None:
+        """
+        设置参考位置 (用于残差PD控制)
+
+        Args:
+            robot_id: 机器人ID ('robot_a' 或 'robot_b')
+            positions: 参考位置数组, shape: (21,)
+        """
+        if robot_id not in self._reference_positions:
+            return
+        positions = np.asarray(positions, dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM)
+        self._reference_positions[robot_id] = positions.copy()
+
+    def set_action_scale(self, robot_id: str, scale: float) -> None:
+        """
+        设置动作缩放 (用于残差PD控制)
+
+        Args:
+            robot_id: 机器人ID ('robot_a' 或 'robot_b')
+            scale: 缩放因子
+        """
+        if robot_id not in self._action_scale:
+            return
+        self._action_scale[robot_id] = np.full(HumanoidRobot.ACTION_DIM, float(scale), dtype=np.float32)
+
+    def set_pd_gains(self, kp: float = None, kd: float = None) -> None:
+        """
+        设置PD控制器增益
+
+        Args:
+            kp: 比例增益 (None表示不修改)
+            kd: 微分增益 (None表示不修改)
+        """
+        if kp is not None:
+            self._controller_kp = np.full(HumanoidRobot.ACTION_DIM, float(kp), dtype=np.float32)
+        if kd is not None:
+            self._controller_kd = np.full(HumanoidRobot.ACTION_DIM, float(kd), dtype=np.float32)
+
+    def _compute_target_positions(self, robot_id: str, residual_action: np.ndarray) -> np.ndarray:
+        """
+        从残差动作计算目标位置
+
+        Args:
+            robot_id: 机器人ID
+            residual_action: 残差动作, shape: (21,), 范围 [-1, 1]
+
+        Returns:
+            目标位置, shape: (21,)
+        """
+        robot = self._robots[robot_id]
+        joint_limits = robot.get_joint_position_limits()
+
+        # 计算目标位置: 参考位置 + 动作缩放 * 残差动作
+        target_positions = self._reference_positions[robot_id] + self._action_scale[robot_id] * residual_action
+
+        # 限制在关节位置范围内
+        target_positions = np.clip(
+            target_positions,
+            joint_limits['lower'],
+            joint_limits['upper'],
+        ).astype(np.float32)
+
+        return target_positions
+
+    def _compute_pd_torque(self, robot_id: str, target_positions: np.ndarray) -> np.ndarray:
+        """
+        从目标位置计算PD控制扭矩
+
+        Args:
+            robot_id: 机器人ID
+            target_positions: 目标位置, shape: (21,)
+
+        Returns:
+            控制扭矩, shape: (21,)
+        """
+        robot = self._robots[robot_id]
+        joint_states = robot.get_joint_states()
+
+        current_positions = joint_states['positions']
+        current_velocities = joint_states['velocities']
+
+        # PD控制律: torque = kp * (target - current) - kd * velocity
+        torque = self._controller_kp * (target_positions - current_positions) - self._controller_kd * current_velocities
+
+        # 限制在执行器扭矩范围内
+        ctrl_limits = robot.get_actuator_ctrl_limits()
+        torque = np.clip(
+            torque,
+            ctrl_limits['lower'],
+            ctrl_limits['upper'],
+        ).astype(np.float32)
+
+        return torque
+
+    def apply_action_residual_pd(self, robot_id: str, action: np.ndarray) -> None:
+        """
+        应用残差PD控制动作
+
+        Args:
+            robot_id: 机器人ID ('robot_a' 或 'robot_b')
+            action: 残差动作, shape: (21,), 范围 [-1, 1]
+        """
+        action = np.asarray(action, dtype=np.float32).reshape(HumanoidRobot.ACTION_DIM)
+        action = np.clip(action, -1.0, 1.0)
+
+        # 计算目标位置
+        target_positions = self._compute_target_positions(robot_id, action)
+
+        # 计算PD扭矩
+        torque = self._compute_pd_torque(robot_id, target_positions)
+
+        # 应用扭矩
+        robot = self._robots[robot_id]
+        robot.apply_action(torque)
+
+    # ==================== 非跌倒模式方法 ====================
+
+    def _clamp_root_orientation(self, robot_id: str) -> bool:
+        """
+        限制根节点朝向 (防止跌倒)
+
+        Args:
+            robot_id: 机器人ID
+
+        Returns:
+            是否发生了限制
+        """
+        if not self.non_fall_mode:
+            return False
+
+        if robot_id not in self._root_joint_cache:
+            return False
+
+        root_cache = self._root_joint_cache[robot_id]
+        qpos_adr = root_cache['qpos_adr']
+
+        # 获取当前朝向 (wxyz)
+        orientation_wxyz = np.asarray(
+            self.data.qpos[qpos_adr + 3:qpos_adr + 7],
+            dtype=np.float64
+        )
+
+        if np.linalg.norm(orientation_wxyz) < 1e-8:
+            return False
+
+        # 转换为 xyzw 格式 (scipy 格式)
+        orientation_xyzw = np.array([
+            orientation_wxyz[1], orientation_wxyz[2],
+            orientation_wxyz[3], orientation_wxyz[0],
+        ], dtype=np.float64)
+
+        # 转换为欧拉角
+        from scipy.spatial.transform import Rotation as R
+        try:
+            rotation = R.from_quat(orientation_xyzw)
+            roll, pitch, yaw = rotation.as_euler('xyz', degrees=True)
+        except:
+            return False
+
+        # 限制roll和pitch
+        clamped_roll = float(np.clip(roll, -self.non_fall_roll_limit_deg, self.non_fall_roll_limit_deg))
+        clamped_pitch = float(np.clip(pitch, -self.non_fall_pitch_limit_deg, self.non_fall_pitch_limit_deg))
+
+        if np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch):
+            return False
+
+        # 如果发生了限制，更新朝向
+        clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
+        clamped_xyzw = clamped_rotation.as_quat()
+        clamped_wxyz = np.array([
+            clamped_xyzw[3], clamped_xyzw[0],
+            clamped_xyzw[1], clamped_xyzw[2],
+        ], dtype=np.float64)
+
+        self.data.qpos[qpos_adr + 3:qpos_adr + 7] = clamped_wxyz
+
+        # 清零角速度
+        qvel_adr = root_cache['qvel_adr']
+        self.data.qvel[qvel_adr:qvel_adr + 3] = 0.0
+
+        # 统计限制次数
+        self._clamp_counts['current_step'][robot_id] += 1
+        self._clamp_counts['episode'][robot_id] += 1
+
+        return True
+
+    def enforce_non_fall_mode(self) -> bool:
+        """
+        强制执行非跌倒模式 (限制根节点朝向)
+
+        Returns:
+            是否发生了任何限制
+        """
+        if not self.non_fall_mode:
+            return False
+
+        changed = False
+        for robot_id in ('robot_a', 'robot_b'):
+            changed = self._clamp_root_orientation(robot_id) or changed
+
+        if changed:
+            # 更新物理引擎缓存
+            mujoco.mj_forward(self.model, self.data)
+
+        return changed
+
+    def get_clamp_counts(self) -> Dict[str, Dict[str, int]]:
+        """
+        获取限制次数统计
+
+        Returns:
+            限制次数字典: {'current_step': {'robot_a': int, 'robot_b': int}, 'episode': {...}}
+        """
+        return {
+            'current_step': self._clamp_counts['current_step'].copy(),
+            'episode': self._clamp_counts['episode'].copy(),
+        }
+
+    def reset_clamp_counts(self) -> None:
+        """重置当前步骤的限制次数"""
+        self._clamp_counts['current_step'] = {'robot_a': 0, 'robot_b': 0}
 
     def close(self) -> None:
         """关闭仿真器"""

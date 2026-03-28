@@ -178,9 +178,19 @@ class SingleAgentEnvWrapper(gym.Env):
         enable_fall_detection: bool = False,
     ):
         # 创建仿真器
+        # 根据是否启用非跌倒模式选择控制模式
+        # 非跌倒模式使用残差PD控制，否则使用直接扭矩控制
+        control_mode = 'residual_pd' if enable_nonfall else 'torque'
+
         simulator = Humanoid21Simulator(
             gui=(render_mode == "human"),
             initial_distance=initial_distance,
+            control_mode=control_mode,
+            non_fall_mode=enable_nonfall,
+            non_fall_pitch_limit_deg=5.0,
+            non_fall_roll_limit_deg=5.0,
+            default_kp=4.0,
+            default_kd=0.4,
         )
 
         # 使用单智能体数据构建器
@@ -576,9 +586,18 @@ def Humanoid21DualAgentEnv(
     Returns:
         CombatGymEnv 实例
     """
+    # 根据是否启用非跌倒模式选择控制模式
+    control_mode = 'residual_pd' if enable_nonfall else 'torque'
+
     simulator = Humanoid21Simulator(
         gui=(render_mode == "human"),
         initial_distance=initial_distance,
+        control_mode=control_mode,
+        non_fall_mode=enable_nonfall,
+        non_fall_pitch_limit_deg=5.0,
+        non_fall_roll_limit_deg=5.0,
+        default_kp=4.0,
+        default_kd=0.4,
     )
     step_data_builder = DualAgentStepDataBuilder()
 
