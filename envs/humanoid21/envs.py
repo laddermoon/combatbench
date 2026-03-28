@@ -186,9 +186,6 @@ class SingleAgentEnvWrapper(gym.Env):
             gui=(render_mode == "human"),
             initial_distance=initial_distance,
             control_mode=control_mode,
-            non_fall_mode=enable_nonfall,
-            non_fall_pitch_limit_deg=5.0,
-            non_fall_roll_limit_deg=5.0,
             default_kp=4.0,
             default_kd=0.4,
         )
@@ -213,7 +210,10 @@ class SingleAgentEnvWrapper(gym.Env):
 
         # Nonfall Hook
         if enable_nonfall:
-            hooks.append(UprightConstraintHook())
+            hooks.append(NonFallHook(
+                pitch_limit_deg=5.0,
+                roll_limit_deg=5.0,
+            ))
 
         # 跌倒检测 Hook
         if enable_fall_detection:
@@ -417,7 +417,7 @@ class FallDetectionHook(BaseHook):
 
 
 class UprightConstraintHook(BaseHook):
-    """站立约束 Hook - 防止机器人跌倒"""
+    """站立约束 Hook - 防止机器人跌倒（旧版本，仅检测高度）"""
 
     def __init__(self, height_threshold: float = 0.8):
         super().__init__()
@@ -451,6 +451,164 @@ class UprightConstraintHook(BaseHook):
                         pass
 
         return False
+
+
+class NonFallHook(BaseHook):
+    """
+    非跌倒模式 Hook
+
+    通过限制根节点朝向来防止机器人跌倒。
+    在每个物理步后执行，如果机器人的俯仰角或横滚角超过限制，则限制角度并清零角速度。
+    """
+
+    def __init__(
+        self,
+        pitch_limit_deg: float = 5.0,
+        roll_limit_deg: float = 5.0,
+        robots: list = None,  # None表示对所有机器人生效
+    ):
+        """
+        初始化非跌倒模式Hook
+
+        Args:
+            pitch_limit_deg: 俯仰角限制（度）
+            roll_limit_deg: 横滚角限制（度）
+            robots: 要应用约束的机器人列表，None表示所有机器人
+        """
+        super().__init__()
+        self.pitch_limit_deg = float(pitch_limit_deg)
+        self.roll_limit_deg = float(roll_limit_deg)
+        self.robots = robots  # None表示对所有机器人生效
+
+        # 统计信息
+        self._clamp_counts = {
+            'current_step': {'robot_a': 0, 'robot_b': 0},
+            'episode': {'robot_a': 0, 'robot_b': 0},
+        }
+
+        # 根节点缓存
+        self._root_joint_cache = None
+
+    @property
+    def name(self) -> str:
+        return "non_fall"
+
+    @property
+    def priority(self) -> int:
+        return 100  # 高优先级，在物理步后立即执行
+
+    def reset(self):
+        """重置当前步骤的限制次数"""
+        self._clamp_counts['current_step'] = {'robot_a': 0, 'robot_b': 0}
+
+    def invoke(
+        self,
+        invoke_type: InvokeType,
+        f_get_core_state=None,
+        f_get_derived_state=None,
+        f_get_sensor_data=None,
+        f_set_core_state=None,
+        **kwargs
+    ) -> bool:
+        if invoke_type == InvokeType.PRE_EPISODE and f_get_core_state:
+            # 初始化根节点缓存
+            core_state = f_get_core_state()
+            self._build_root_joint_cache(core_state)
+            self.reset()
+            return False
+
+        if invoke_type == InvokeType.POST_PHY_STEP and f_get_core_state and f_set_core_state:
+            # 执行非跌倒约束
+            return self._enforce_non_fall(f_get_core_state, f_set_core_state)
+
+        return False
+
+    def _build_root_joint_cache(self, core_state):
+        """构建根节点缓存"""
+        import mujoco
+
+        # 需要访问simulator的model，这里先简单实现
+        # 实际使用时可以从f_get_core_state获取
+        if self._root_joint_cache is not None:
+            return
+
+        # 简化：从外部获取或设置为None
+        self._root_joint_cache = {}
+
+    def _enforce_non_fall(self, f_get_core_state, f_set_core_state) -> bool:
+        """执行非跌倒约束"""
+        import mujoco
+        from scipy.spatial.transform import Rotation as R
+
+        # 获取当前状态
+        core_state = f_get_core_state()
+
+        changed = False
+        robots_to_check = self.robots if self.robots is not None else ['robot_a', 'robot_b']
+
+        for robot_id in robots_to_check:
+            if robot_id not in core_state.get('robots', {}):
+                continue
+
+            robot_state = core_state['robots'][robot_id]
+            root_orientation = robot_state['root_orientation']  # wxyz格式
+
+            if np.linalg.norm(root_orientation) < 1e-8:
+                continue
+
+            # 转换为xyzw格式 (scipy格式)
+            orientation_xyzw = np.array([
+                root_orientation[1], root_orientation[2],
+                root_orientation[3], root_orientation[0],
+            ], dtype=np.float64)
+
+            # 转换为欧拉角
+            try:
+                rotation = R.from_quat(orientation_xyzw)
+                roll, pitch, yaw = rotation.as_euler('xyz', degrees=True)
+            except:
+                continue
+
+            # 限制roll和pitch
+            clamped_roll = float(np.clip(roll, -self.roll_limit_deg, self.roll_limit_deg))
+            clamped_pitch = float(np.clip(pitch, -self.pitch_limit_deg, self.pitch_limit_deg))
+
+            if np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch):
+                continue  # 无需限制
+
+            # 发生了限制，更新朝向
+            clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
+            clamped_xyzw = clamped_rotation.as_quat()
+            clamped_wxyz = np.array([
+                clamped_xyzw[3], clamped_xyzw[0],
+                clamped_xyzw[1], clamped_xyzw[2],
+            ], dtype=np.float64)
+
+            # 设置新的朝向并清零角速度
+            def set_clamped_state():
+                return {
+                    'robots': {
+                        robot_id: {
+                            'root_orientation': clamped_wxyz.astype(np.float32),
+                            'root_angular_velocity': np.zeros(3, dtype=np.float32),
+                        }
+                    }
+                }
+            f_set_core_state(set_clamped_state())
+
+            # 统计限制次数
+            self._clamp_counts['current_step'][robot_id] += 1
+            self._clamp_counts['episode'][robot_id] += 1
+            changed = True
+
+        return changed
+
+    def get_clamp_counts(self) -> Dict[str, Dict[str, int]]:
+        """获取限制次数统计"""
+        return {
+            'current_step': self._clamp_counts['current_step'].copy(),
+            'episode': self._clamp_counts['episode'].copy(),
+        }
 
 
 class FreezeRobotHook(BaseHook):
@@ -593,9 +751,6 @@ def Humanoid21DualAgentEnv(
         gui=(render_mode == "human"),
         initial_distance=initial_distance,
         control_mode=control_mode,
-        non_fall_mode=enable_nonfall,
-        non_fall_pitch_limit_deg=5.0,
-        non_fall_roll_limit_deg=5.0,
         default_kp=4.0,
         default_kd=0.4,
     )
@@ -610,7 +765,10 @@ def Humanoid21DualAgentEnv(
 
     # Nonfall Hook
     if enable_nonfall:
-        hooks.append(UprightConstraintHook())
+        hooks.append(NonFallHook(
+            pitch_limit_deg=5.0,
+            roll_limit_deg=5.0,
+        ))
 
     # 跌倒检测 Hook
     if enable_fall_detection:
@@ -713,6 +871,7 @@ __all__ = [
     # Hooks
     'FallDetectionHook',
     'UprightConstraintHook',
+    'NonFallHook',
     'FreezeRobotHook',
     'OpponentPolicyHook',
 
