@@ -591,7 +591,8 @@ class Humanoid21Simulator(OpenSimulator):
         # 1. 运动学缓存
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
-        mujoco.mj_camLight(self.model, self.data)
+        # Camera lighting is automatic in MuJoCo 3.5+
+        # mujoco.mjv_camLight(self.model, self.data)
         mujoco.mj_tendon(self.model, self.data)
         mujoco.mj_transmission(self.model, self.data)
 

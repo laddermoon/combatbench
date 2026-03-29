@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import mujoco
+from scipy.spatial.transform import Rotation as R
 
 from .robot import HumanoidRobot
 from . import Humanoid21Simulator
@@ -368,19 +370,22 @@ class FallDetectionHook(BaseHook):
 
     def invoke(
         self,
-        invoke_type: InvokeType,
-        f_get_core_state=None,
-        f_get_derived_state=None,
-        f_get_sensor_data=None,
+        invoke_type,
+        f_get_action,
+        f_get_static_data,
+        f_get_sensor_data,
+        f_get_core_state,
+        f_get_derived_state,
         f_set_core_state=None,
-        **kwargs
+        f_set_action=None,
     ) -> bool:
         if invoke_type == InvokeType.PRE_EPISODE:
             self.reset()
             return False
 
-        if invoke_type == InvokeType.POST_ACTION_STEP and f_get_derived_state:
-            self.fallen_status = self._check_fallen(f_get_derived_state)
+        if invoke_type == InvokeType.POST_ACTION_STEP:
+            if f_get_derived_state:
+                self.fallen_status = self._check_fallen(f_get_derived_state)
 
         return False
 
@@ -433,22 +438,25 @@ class UprightConstraintHook(BaseHook):
 
     def invoke(
         self,
-        invoke_type: InvokeType,
-        f_get_core_state=None,
-        f_get_derived_state=None,
-        f_get_sensor_data=None,
+        invoke_type,
+        f_get_action,
+        f_get_static_data,
+        f_get_sensor_data,
+        f_get_core_state,
+        f_get_derived_state,
         f_set_core_state=None,
-        **kwargs
+        f_set_action=None,
     ) -> bool:
-        if invoke_type == InvokeType.POST_PHY_STEP and f_get_core_state and f_set_core_state:
-            core_state = f_get_core_state()
+        if invoke_type == InvokeType.POST_PHY_STEP:
+            if f_get_core_state and f_set_core_state:
+                core_state = f_get_core_state()
 
-            for robot_id in ['robot_a', 'robot_b']:
-                if 'robots' in core_state and robot_id in core_state['robots']:
-                    root_position = core_state['robots'][robot_id]['root_position']
-                    if root_position[2] < self.height_threshold:
-                        # 这里可以施加修正力，简化实现暂时记录
-                        pass
+                for robot_id in ['robot_a', 'robot_b']:
+                    if 'robots' in core_state and robot_id in core_state['robots']:
+                        root_position = core_state['robots'][robot_id]['root_position']
+                        if root_position[2] < self.height_threshold:
+                            # 这里可以施加修正力，简化实现暂时记录
+                            pass
 
         return False
 
@@ -503,23 +511,27 @@ class NonFallHook(BaseHook):
 
     def invoke(
         self,
-        invoke_type: InvokeType,
-        f_get_core_state=None,
-        f_get_derived_state=None,
-        f_get_sensor_data=None,
+        invoke_type,
+        f_get_action,
+        f_get_static_data,
+        f_get_sensor_data,
+        f_get_core_state,
+        f_get_derived_state,
         f_set_core_state=None,
-        **kwargs
+        f_set_action=None,
     ) -> bool:
-        if invoke_type == InvokeType.PRE_EPISODE and f_get_core_state:
+        if invoke_type == InvokeType.PRE_EPISODE:
             # 初始化根节点缓存
-            core_state = f_get_core_state()
-            self._build_root_joint_cache(core_state)
+            if f_get_core_state:
+                core_state = f_get_core_state()
+                self._build_root_joint_cache(core_state)
             self.reset()
             return False
 
-        if invoke_type == InvokeType.POST_PHY_STEP and f_get_core_state and f_set_core_state:
+        if invoke_type == InvokeType.POST_PHY_STEP:
             # 执行非跌倒约束
-            return self._enforce_non_fall(f_get_core_state, f_set_core_state)
+            if f_get_core_state and f_set_core_state:
+                return self._enforce_non_fall(f_get_core_state, f_set_core_state)
 
         return False
 
@@ -537,8 +549,6 @@ class NonFallHook(BaseHook):
 
     def _enforce_non_fall(self, f_get_core_state, f_set_core_state) -> bool:
         """执行非跌倒约束"""
-        import mujoco
-        from scipy.spatial.transform import Rotation as R
 
         # 获取当前状态
         core_state = f_get_core_state()
@@ -634,33 +644,37 @@ class FreezeRobotHook(BaseHook):
 
     def invoke(
         self,
-        invoke_type: InvokeType,
-        f_get_core_state=None,
-        f_get_derived_state=None,
-        f_get_sensor_data=None,
+        invoke_type,
+        f_get_action,
+        f_get_static_data,
+        f_get_sensor_data,
+        f_get_core_state,
+        f_get_derived_state,
         f_set_core_state=None,
-        **kwargs
+        f_set_action=None,
     ) -> bool:
-        if invoke_type == InvokeType.PRE_EPISODE and f_get_core_state:
-            # 保存初始状态
-            core_state = f_get_core_state()
-            if 'robots' in core_state and self.robot_id in core_state['robots']:
-                self._initial_joint_positions = core_state['robots'][self.robot_id]['joint_positions'].copy()
-                self._initial_joint_velocities = core_state['robots'][self.robot_id]['joint_velocities'].copy()
+        if invoke_type == InvokeType.PRE_EPISODE:
+            if f_get_core_state:
+                # 保存初始状态
+                core_state = f_get_core_state()
+                if 'robots' in core_state and self.robot_id in core_state['robots']:
+                    self._initial_joint_positions = core_state['robots'][self.robot_id]['joint_positions'].copy()
+                    self._initial_joint_velocities = core_state['robots'][self.robot_id]['joint_velocities'].copy()
 
-        elif invoke_type == InvokeType.POST_PHY_STEP and f_set_core_state:
-            # 重置到初始状态
-            if self._initial_joint_positions is not None and self._initial_joint_velocities is not None:
-                def set_state():
-                    return {
-                        'robots': {
-                            self.robot_id: {
-                                'joint_positions': self._initial_joint_positions.copy(),
-                                'joint_velocities': self._initial_joint_velocities.copy(),
+        elif invoke_type == InvokeType.POST_PHY_STEP:
+            if f_set_core_state:
+                # 重置到初始状态
+                if self._initial_joint_positions is not None and self._initial_joint_velocities is not None:
+                    def set_state():
+                        return {
+                            'robots': {
+                                self.robot_id: {
+                                    'joint_positions': self._initial_joint_positions.copy(),
+                                    'joint_velocities': self._initial_joint_velocities.copy(),
+                                }
                             }
                         }
-                    }
-                f_set_core_state(set_state())
+                    f_set_core_state(set_state())
 
         return False
 
@@ -688,19 +702,22 @@ class OpponentPolicyHook(BaseHook):
 
     def invoke(
         self,
-        invoke_type: InvokeType,
-        f_get_core_state=None,
-        f_get_derived_state=None,
-        f_get_sensor_data=None,
+        invoke_type,
+        f_get_action,
+        f_get_static_data,
+        f_get_sensor_data,
+        f_get_core_state,
+        f_get_derived_state,
         f_set_core_state=None,
-        **kwargs
+        f_set_action=None,
     ) -> bool:
-        if invoke_type == InvokeType.PRE_ACTION_STEP and f_get_derived_state:
-            derived_state = f_get_derived_state()
-            if 'robots' in derived_state and self.opponent_id in derived_state['robots']:
-                # 获取对手观测
-                obs_dict = derived_state['robots'][self.opponent_id]['observation']
-                self._last_obs = obs_dict
+        if invoke_type == InvokeType.PRE_ACTION_STEP:
+            if f_get_derived_state:
+                derived_state = f_get_derived_state()
+                if 'robots' in derived_state and self.opponent_id in derived_state['robots']:
+                    # 获取对手观测
+                    obs_dict = derived_state['robots'][self.opponent_id]['observation']
+                    self._last_obs = obs_dict
 
         return False
 
