@@ -192,10 +192,7 @@ class SimRunner:
             self._invoke_hooks(InvokeType.POST_EPISODE)
             return
 
-        # 2. 设置动作
-        self.simulator.set_action(self._current_action)
-
-        # 3. 执行多个物理步
+        # 2. 执行多个物理步（在每个物理步中设置动作，实现PD控制的连续修正）
         for _ in range(self.phy_steps_per_action):
             # PRE_PHY_STEP Hook（施加扰动）
             terminate = self._invoke_hooks(InvokeType.PRE_PHY_STEP)
@@ -203,6 +200,10 @@ class SimRunner:
                 self._is_episode_active = False
                 self._invoke_hooks(InvokeType.POST_EPISODE)
                 return
+
+            # 设置动作（在每个物理步重新计算PD扭矩）
+            # 这与参考实现一致：在每个物理步重新计算torque = kp * (target - current) - kd * velocity
+            self.simulator.set_action(self._current_action)
 
             # 物理步进
             self.simulator.physical_step()
