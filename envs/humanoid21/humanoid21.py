@@ -33,7 +33,7 @@ class Humanoid21Simulator(OpenSimulator):
 
     # 默认配置
     DEFAULT_DT = 0.002  # 物理时间步 (秒)
-    DEFAULT_ROOT_HEIGHT = 1.282  # 默认根节点高度
+    DEFAULT_ROOT_HEIGHT = 1.4  # 默认根节点高度（与旧实现一致）
     DEFAULT_INITIAL_DISTANCE = 2.0  # 默认初始距离
 
     # 关键点定义
@@ -124,6 +124,10 @@ class Humanoid21Simulator(OpenSimulator):
 
         # 缓存静态数据
         self._static_data_cache = None
+
+        # 计算动作缩放（从关节限制）
+        for robot_id, robot in self._robots.items():
+            self._action_scale[robot_id] = self._compute_action_scale_from_joint_limits(robot)
 
     def _init_robots(self):
         """初始化机器人实例"""
@@ -236,6 +240,27 @@ class Humanoid21Simulator(OpenSimulator):
         # 调用 mj_forward 计算所有衍生状态（包括有效的四元数）
         mujoco.mj_forward(self.model, self.data)
 
+    def _compute_action_scale_from_joint_limits(self, robot: HumanoidRobot) -> np.ndarray:
+        """
+        从关节限制计算动作缩放因子
+
+        对于有关节限制的关节，缩放因子为 0.25 * (upper - lower)
+        对于无关节限制的关节，使用默认值 0.25
+
+        Args:
+            robot: 机器人实例
+
+        Returns:
+            动作缩放因子数组，shape: (21,)
+        """
+        joint_limits = robot.get_joint_position_limits()
+        default_scale = np.full(HumanoidRobot.ACTION_DIM, 0.25, dtype=np.float32)
+        finite_mask = np.isfinite(joint_limits['lower']) & np.isfinite(joint_limits['upper'])
+        default_scale[finite_mask] = 0.25 * (
+            joint_limits['upper'][finite_mask] - joint_limits['lower'][finite_mask]
+        )
+        return np.maximum(default_scale, 1e-3).astype(np.float32)
+
     def reset(self) -> None:
         """
         重置仿真状态
@@ -250,11 +275,10 @@ class Humanoid21Simulator(OpenSimulator):
         # 重新设置初始位置和姿态
         self._set_initial_poses()
 
-        # 重置参考位置为当前关节位置 (用于残差PD控制)
+        # 重置参考位置为零（用于残差PD控制）
+        # 这确保了零动作对应于保持零关节位置
         for robot_id in ['robot_a', 'robot_b']:
-            robot = self._robots[robot_id]
-            joint_states = robot.get_joint_states()
-            self._reference_positions[robot_id] = joint_states['positions'].copy()
+            self._reference_positions[robot_id] = np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32)
 
     # ==================== OpenSimulator 必需接口 ====================
 
