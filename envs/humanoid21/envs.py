@@ -27,7 +27,7 @@ from ..framework import (
 from .scoring import ScoreCalculator
 
 # 导入策略基类
-from ...policy.base import BaseCombatPolicy
+from combatbench.policy.base import BaseCombatPolicy
 
 
 # ==================== 单智能体数据构建器 ====================
@@ -353,8 +353,17 @@ class SingleAgentEnvWrapper(gym.Env):
 class FallDetectionHook(BaseHook):
     """跌倒检测 Hook"""
 
-    def __init__(self):
+    def __init__(self, height_threshold: float = 0.3, tilt_threshold: float = 60.0):
+        """
+        初始化跌倒检测 Hook
+
+        Args:
+            height_threshold: 根节点高度阈值（米），低于此值视为跌倒（默认0.3米）
+            tilt_threshold: 朝向倾斜阈值（度），超过此值视为跌倒（默认60度）
+        """
         super().__init__()
+        self.height_threshold = float(height_threshold)
+        self.tilt_threshold = float(tilt_threshold)
         self.fallen_status = {'robot_a': False, 'robot_b': False}
 
     @property
@@ -384,38 +393,62 @@ class FallDetectionHook(BaseHook):
             return False
 
         if invoke_type == InvokeType.POST_ACTION_STEP:
-            if f_get_derived_state:
-                self.fallen_status = self._check_fallen(f_get_derived_state)
+            # 使用 core state 检查根节点朝向（与 NonFallHook 一致）
+            if f_get_core_state:
+                self.fallen_status = self._check_fallen(f_get_core_state)
 
         return False
 
-    def _check_fallen(self, f_get_derived_state) -> Dict[str, bool]:
+    def _check_fallen(self, f_get_core_state) -> Dict[str, bool]:
         """检测机器人是否跌倒"""
-        derived_state = f_get_derived_state()
+        core_state = f_get_core_state()
         fallen = {}
 
+        debug = self._should_debug()
+
         for robot_id in ['robot_a', 'robot_b']:
-            if 'robots' in derived_state and robot_id in derived_state['robots']:
-                robot_state = derived_state['robots'][robot_id]
-                torso_position = robot_state.get('torso_position', np.array([0, 0, 1.4]))
-                torso_orientation = robot_state.get('torso_orientation', np.array([1, 0, 0, 0]))
+            if 'robots' in core_state and robot_id in core_state['robots']:
+                robot_state = core_state['robots'][robot_id]
+                root_position = robot_state.get('root_position', np.array([0, 0, 1.4]))
+                root_orientation = robot_state.get('root_orientation', np.array([1, 0, 0, 0]))
 
-                height_fallen = torso_position[2] < 0.7
+                # 高度检测：根节点高度低于阈值视为跌倒
+                height_fallen = root_position[2] < self.height_threshold
 
-                from scipy.spatial.transform import Rotation as R
+                # 朝向检测：根节点俯仰角或横滚角超过阈值视为跌倒
+                # 注意：这里检查的是根节点朝向，与 NonFallHook 的限制一致
+                tilt_fallen = False
+                roll, pitch, yaw = 0, 0, 0
                 try:
-                    r = R.from_quat([torso_orientation[1], torso_orientation[2],
-                                      torso_orientation[3], torso_orientation[0]])
+                    # 转换 wxyz -> xyzw (scipy 格式)
+                    orientation_xyzw = np.array([
+                        root_orientation[1], root_orientation[2],
+                        root_orientation[3], root_orientation[0],
+                    ], dtype=np.float64)
+                    r = R.from_quat(orientation_xyzw)
                     euler = r.as_euler('xyz', degrees=True)
-                    tilt_fallen = abs(euler[0]) > 60 or abs(euler[1]) > 60
+                    roll, pitch, yaw = euler[0], euler[1], euler[2]
+                    # pitch (euler[1]) 或 roll (euler[0]) 超过阈值视为跌倒
+                    tilt_fallen = abs(roll) > self.tilt_threshold or abs(pitch) > self.tilt_threshold
                 except:
-                    tilt_fallen = False
+                    pass
 
                 fallen[robot_id] = height_fallen or tilt_fallen
+
+                # Debug output
+                if debug and fallen[robot_id]:
+                    print(f"DEBUG {robot_id} fallen: height={root_position[2]:.3f} (threshold={self.height_threshold}, fallen={height_fallen}), "
+                          f"roll={roll:.2f}, pitch={pitch:.2f} (threshold={self.tilt_threshold}, tilt_fallen={tilt_fallen})")
             else:
                 fallen[robot_id] = False
 
         return fallen
+
+    def _should_debug(self) -> bool:
+        """控制是否输出调试信息"""
+        # 可以通过环境变量控制
+        import os
+        return os.environ.get('DEBUG_FALL_DETECTION', '0') == '1'
 
     def get_fallen_status(self) -> Dict[str, bool]:
         return self.fallen_status.copy()
@@ -529,9 +562,9 @@ class NonFallHook(BaseHook):
             return False
 
         if invoke_type == InvokeType.POST_PHY_STEP:
-            # 执行非跌倒约束
+            # 执行非跌倒约束（不终止episode）
             if f_get_core_state and f_set_core_state:
-                return self._enforce_non_fall(f_get_core_state, f_set_core_state)
+                self._enforce_non_fall(f_get_core_state, f_set_core_state)
 
         return False
 
