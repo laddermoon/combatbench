@@ -100,6 +100,11 @@ class Humanoid21Simulator(OpenSimulator):
             'robot_b': np.ones(HumanoidRobot.ACTION_DIM, dtype=np.float32) * 0.25,
         }
 
+        # 初始姿态缓存（用于reset时恢复XML中定义的站立姿态）
+        self._initial_qpos = None
+        self._initial_qvel = None
+        self._initial_ctrl = None
+
         # 加载场景XML
         if arena_xml is None:
             arena_xml = os.path.join(
@@ -218,8 +223,21 @@ class Humanoid21Simulator(OpenSimulator):
         """
         设置初始位置和姿态到 MuJoCo 数据
 
-        这会设置 qpos 并调用 mj_forward() 来计算所有衍生状态（包括有效的四元数）。
+        首次调用时保存初始姿态，后续调用时恢复保存的姿态。
+        这确保机器人每次reset都回到XML中定义的站立姿态。
         """
+        # 首次调用：保存初始姿态（包含所有关节位置）
+        if self._initial_qpos is None:
+            self._initial_qpos = self.data.qpos.copy()
+            self._initial_qvel = self.data.qvel.copy()
+            self._initial_ctrl = self.data.ctrl.copy()
+
+        # 恢复初始姿态（包含所有关节位置）
+        self.data.qpos[:] = self._initial_qpos
+        self.data.qvel[:] = self._initial_qvel
+        self.data.ctrl[:] = self._initial_ctrl
+
+        # 然后设置根节点位置（覆盖初始姿态中的根节点位置）
         root_poses = self._get_default_root_poses()
 
         for robot_id, root_pose in root_poses.items():
@@ -232,7 +250,7 @@ class Humanoid21Simulator(OpenSimulator):
             self.data.qpos[qpos_adr:qpos_adr + 3] = root_pose['position']
             self.data.qpos[qpos_adr + 3:qpos_adr + 7] = root_pose['orientation']
 
-        # 重置速度
+        # 重置速度（确保速度为0）
         for cache in self._root_joint_cache.values():
             qvel_adr = cache['qvel_adr']
             self.data.qvel[qvel_adr:qvel_adr + 6] = 0.0
@@ -267,13 +285,13 @@ class Humanoid21Simulator(OpenSimulator):
 
         将机器人重置到初始位置和姿态。
         """
+        # 首先设置初始位置和姿态（这会保存并恢复初始姿态）
+        self._set_initial_poses()
+
         # 重置速度和控制器
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
         self.data.qfrc_applied[:] = 0.0
-
-        # 重新设置初始位置和姿态
-        self._set_initial_poses()
 
         # 重置参考位置为零（用于残差PD控制）
         # 这确保了零动作对应于保持零关节位置
