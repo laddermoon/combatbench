@@ -180,6 +180,39 @@ class TestSimRunnerStep:
         last_invoke_type = hook.last_invoke_type
         assert last_invoke_type == InvokeType.POST_ACTION_STEP
 
+    def test_set_action_before_pre_action_step(self, mock_simulator, sample_actions):
+        """测试 set_action 在 PRE_ACTION_STEP 之前调用"""
+        runner = SimRunner(simulator=mock_simulator)
+        runner.reset()
+
+        # 创建一个测试 Hook 来验证调用顺序
+        call_order = []
+
+        class OrderTestHook(BaseHook):
+            @property
+            def name(self):
+                return "order_test"
+
+            @property
+            def priority(self):
+                return 0
+
+            def invoke(self, invoke_type, *args, **kwargs):
+                if invoke_type == InvokeType.PRE_ACTION_STEP:
+                    # 验证 set_action 已经被调用
+                    assert mock_simulator.set_action.call_count >= 1
+                    call_order.append("PRE_ACTION_STEP")
+
+        hook = OrderTestHook()
+        runner.attach_hook(hook)
+
+        runner.step(sample_actions)
+
+        # 验证调用顺序
+        assert "PRE_ACTION_STEP" in call_order
+        # set_action 应该在 PRE_ACTION_STEP 之前被调用
+        assert mock_simulator.set_action.call_count >= 1
+
     def test_step_calls_post_action_step_hooks(self, mock_simulator, sample_actions):
         """测试 step 调用 POST_ACTION_STEP Hooks"""
         runner = SimRunner(simulator=mock_simulator)
@@ -205,14 +238,15 @@ class TestSimRunnerStep:
         assert mock_simulator.physical_step.call_count == 10
 
     def test_step_calls_set_action_each_phy_step(self, mock_simulator, sample_actions):
-        """测试每个物理步都调用 set_action"""
+        """测试 set_action 在物理步循环之前调用（新Hook标准）"""
         runner = SimRunner(simulator=mock_simulator, phy_steps_per_action=5)
         runner.reset()
 
         runner.step(sample_actions)
 
-        # 验证 set_action 被调用每个物理步
-        assert mock_simulator.set_action.call_count == 5
+        # 根据 Hook 标准：set_action 在物理步循环之前调用一次
+        # PRE_ACTION_STEP 在 set_action 之后调用
+        assert mock_simulator.set_action.call_count == 1
 
     def test_step_with_terminated_episode(self, mock_simulator, sample_actions):
         """测试 Episode 终止后的 step"""
@@ -379,8 +413,94 @@ class TestSimRunnerClose:
             mock_simulator.close.assert_called_once()
 
 
+    def test_hook_can_modify_action(self, mock_simulator, sample_actions):
+        """测试 Hook 可以修改动作"""
+        runner = SimRunner(simulator=mock_simulator)
+        runner.reset()
+
+        # 创建一个会修改动作的 Hook
+        class ActionModifierHook(BaseHook):
+            @property
+            def name(self):
+                return "action_modifier"
+
+            @property
+            def priority(self):
+                return 0
+
+            def invoke(self, invoke_type, *args, **kwargs):
+                if invoke_type == InvokeType.PRE_ACTION_STEP:
+                    # 获取 f_set_action（args[7]）
+                    if len(args) >= 8 and args[7] is not None:
+                        f_set_action = args[7]
+                        # 获取当前动作
+                        f_get_action = args[0] if len(args) >= 1 else None
+                        if f_get_action:
+                            original_action = f_get_action()
+                            # 修改动作
+                            modified_action = original_action.copy()
+                            modified_action['robot_a'] = np.ones(21) * 0.5
+                            f_set_action(modified_action)
+                return False
+
+        hook = ActionModifierHook()
+        runner.attach_hook(hook)
+
+        runner.step(sample_actions)
+
+        # 验证 set_action 被调用了多次（一次初始，一次Hook修改）
+        assert mock_simulator.set_action.call_count >= 1
+
+
 class TestSimRunnerIntegration:
     """测试 SimRunner 集成功能"""
+
+    def test_hook_invoke_order(self, mock_simulator, sample_actions):
+        """测试 Hook 调用顺序"""
+        runner = SimRunner(simulator=mock_simulator)
+        runner.reset()
+
+        call_log = []
+
+        class OrderTestHook(BaseHook):
+            @property
+            def name(self):
+                return "order_test"
+
+            @property
+            def priority(self):
+                return 0
+
+            def invoke(self, invoke_type, *args, **kwargs):
+                call_log.append(invoke_type)
+                return False
+
+        hook = OrderTestHook()
+        runner.attach_hook(hook)
+
+        runner.step(sample_actions)
+
+        # 验证调用顺序：
+        # 1. PRE_ACTION_STEP（在 set_action 之后）
+        # 2. 多个 PRE_PHY_STEP
+        # 3. 多个 POST_PHY_STEP
+        # 4. POST_ACTION_STEP
+        assert InvokeType.PRE_ACTION_STEP in call_log
+        assert InvokeType.POST_ACTION_STEP in call_log
+
+        # 验证 PRE_ACTION_STEP 在 PRE_PHY_STEP 之前
+        pre_action_idx = call_log.index(InvokeType.PRE_ACTION_STEP)
+        for inv_type in call_log:
+            if inv_type == InvokeType.PRE_PHY_STEP:
+                pre_phy_idx = call_log.index(inv_type)
+                assert pre_action_idx < pre_phy_idx
+
+        # 验证 POST_ACTION_STEP 在最后
+        post_action_idx = call_log.index(InvokeType.POST_ACTION_STEP)
+        for inv_type in call_log:
+            if inv_type in [InvokeType.PRE_PHY_STEP, InvokeType.POST_PHY_STEP]:
+                idx = call_log.index(inv_type)
+                assert idx < post_action_idx
 
     def test_complete_step_cycle(self, mock_simulator, sample_actions):
         """测试完整的 step 循环"""

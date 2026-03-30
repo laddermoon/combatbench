@@ -14,12 +14,13 @@ Hook 调用时序：
 Episode:
   PRE_EPISODE     → 重置 Hook
   └─ Action Loop:
-       PRE_ACTION_STEP  → 动作解析 Hook
+       simulator.set_action(action)  # 设置动作
+       PRE_ACTION_STEP  → 动作 Hook（在 set_action 之后，可访问/修改最新 Action）
        └─ Physics Loop (N 次):
             PRE_PHY_STEP    → 扰动 Hook
             physical_step()
             POST_PHY_STEP   → 约束 Hook
-       POST_ACTION_STEP → 终止判定/观测构建 Hook
+       POST_ACTION_STEP → 终止判定/观测构建 Hook（所有物理步结束后）
   POST_EPISODE    → 清理 Hook
 ```
 """
@@ -42,12 +43,12 @@ class SimRunner:
     所有数据处理（观测、奖励、终止等）都通过 Hook 实现。
 
     Hook 调用时序：
-    - PRE_EPISODE: Episode 开始前（重置状态）
-    - POST_EPISODE: Episode 结束后（清理资源）
-    - PRE_ACTION_STEP: 动作步开始前（解析动作）
-    - POST_ACTION_STEP: 动作步结束后（终止判定、观测构建）
-    - PRE_PHY_STEP: 物理步前（施加扰动）
-    - POST_PHY_STEP: 物理步后（执行约束）
+    - PRE_EPISODE: Episode 开始前
+    - POST_EPISODE: Episode 结束后
+    - PRE_ACTION_STEP: 在simulator.set_action之后（为了在Hook中能够拿到最新的Action）， 执行具体的物理步之前。
+    - POST_ACTION_STEP: 此动作步所有的物理步结束后
+    - PRE_PHY_STEP: 物理步前
+    - POST_PHY_STEP: 物理步后
     """
 
     def __init__(
@@ -164,13 +165,13 @@ class SimRunner:
         执行一个动作步
 
         调用流程：
-        1. PRE_ACTION_STEP Hook（解析动作、控制模式）
-        2. 设置动作到仿真器
+        1. 设置动作到仿真器（set_action）
+        2. PRE_ACTION_STEP Hook（在 set_action 之后，可访问/修改最新 Action）
         3. 执行 N 个物理步：
            - PRE_PHY_STEP Hook（施加扰动）
            - physical_step()
            - POST_PHY_STEP Hook（执行约束）
-        4. POST_ACTION_STEP Hook（终止判定、观测构建）
+        4. POST_ACTION_STEP Hook（所有物理步结束后，终止判定、观测构建）
 
         无返回值，所有数据处理通过 Hook 实现。
 
@@ -182,14 +183,17 @@ class SimRunner:
 
         self._current_action = action
 
-        # 1. 调用 PRE_ACTION_STEP Hook（动作解析、控制模式）
+        # 1. 设置动作到仿真器（供 PRE_ACTION_STEP Hook 访问）
+        self.simulator.set_action(self._current_action)
+
+        # 2. 调用 PRE_ACTION_STEP Hook（在 set_action 之后，可访问/修改最新 Action）
         terminate = self._invoke_hooks(InvokeType.PRE_ACTION_STEP)
         if terminate:
             self._is_episode_active = False
             self._invoke_hooks(InvokeType.POST_EPISODE)
             return
 
-        # 2. 执行多个物理步（在每个物理步中设置动作，实现PD控制的连续修正）
+        # 3. 执行多个物理步
         for _ in range(self.phy_steps_per_action):
             # PRE_PHY_STEP Hook（施加扰动）
             terminate = self._invoke_hooks(InvokeType.PRE_PHY_STEP)
@@ -198,11 +202,7 @@ class SimRunner:
                 self._invoke_hooks(InvokeType.POST_EPISODE)
                 return
 
-            # 设置动作（在每个物理步重新计算PD扭矩）
-            # 这与参考实现一致：在每个物理步重新计算torque = kp * (target - current) - kd * velocity
-            self.simulator.set_action(self._current_action)
-
-            # 物理步进
+            # 物理步进（动作已在循环前设置，PD 控制在 set_action 中计算）
             self.simulator.physical_step()
             self._physics_step_count += 1
 
@@ -218,7 +218,7 @@ class SimRunner:
                 self._invoke_hooks(InvokeType.POST_EPISODE)
                 return
 
-        # 4. 调用 POST_ACTION_STEP Hook（终止判定、观测构建）
+        # 4. 调用 POST_ACTION_STEP Hook（所有物理步结束后，终止判定、观测构建）
         terminate = self._invoke_hooks(InvokeType.POST_ACTION_STEP)
         if terminate:
             self._is_episode_active = False
@@ -303,6 +303,8 @@ class SimRunner:
     def _f_set_action(self, action: Dict[str, Any]) -> None:
         """设置动作"""
         self._current_action = action
+        # 立即应用到仿真器（Hook 修改动作后需要重新设置）
+        self.simulator.set_action(self._current_action)
 
     # ==================== 便捷访问方法 ====================
 

@@ -25,14 +25,22 @@ class InvokeType(Enum):
     Hook 调用时机类型
 
     对应仿真生命周期中的6个关键时间点：
+
+    Hook 调用时序：
+        PRE_EPISODE: Episode 开始前
+        POST_EPISODE: Episode 结束后
+        PRE_ACTION_STEP: 在 simulator.set_action 之后（为了在 Hook 中能够拿到最新的 Action），执行具体的物理步之前
+        POST_ACTION_STEP: 此动作步所有的物理步结束后
+        PRE_PHY_STEP: 物理步前
+        POST_PHY_STEP: 物理步后
     """
     # Episode 级别钩子
     PRE_EPISODE = "pre_episode"       # 每个 Episode 开始前调用
     POST_EPISODE = "post_episode"     # 每个 Episode 结束后调用
 
     # Action Step 级别钩子
-    PRE_ACTION_STEP = "pre_action_step"   # 每个动作步开始前调用（解析 Action 后）
-    POST_ACTION_STEP = "post_action_step" # 每个动作步结束后调用
+    PRE_ACTION_STEP = "pre_action_step"   # 在 set_action 之后，物理步循环之前调用（可访问/修改最新 Action）
+    POST_ACTION_STEP = "post_action_step" # 所有物理步结束后调用（终止判定、观测构建）
 
     # Physics Step 级别钩子
     PRE_PHY_STEP = "pre_phy_step"     # 每个物理仿真步前调用（施加扰动等）
