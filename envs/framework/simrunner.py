@@ -206,17 +206,17 @@ class SimRunner:
             self.simulator.physical_step()
             self._physics_step_count += 1
 
-            # 视频帧采集
-            if self._video_frame_receiver is not None and self._physics_step_count % self._video_sample_interval == 0:
-                frame = self.simulator.get_broadcastview_image()
-                self._video_frame_receiver(frame)
-
             # POST_PHY_STEP Hook（执行约束）
             terminate = self._invoke_hooks(InvokeType.POST_PHY_STEP)
             if terminate:
                 self._is_episode_active = False
                 self._invoke_hooks(InvokeType.POST_EPISODE)
                 return
+
+            # 视频帧采集（在 POST_phy_step 之后）
+            if self._video_frame_receiver is not None and self._physics_step_count % self._video_sample_interval == 0:
+                frame = self.simulator.get_broadcastview_image()
+                self._video_frame_receiver(frame)
 
         # 4. 调用 POST_ACTION_STEP Hook（所有物理步结束后，终止判定、观测构建）
         terminate = self._invoke_hooks(InvokeType.POST_ACTION_STEP)
