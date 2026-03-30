@@ -59,7 +59,7 @@ def _parse_policy_spec(policy_spec: str) -> tuple:
 
 def load_policy(policy_spec: Optional[str], device: str = 'auto') -> Any:
     if not policy_spec:
-        from policy import StandingCombatPolicy
+        from policy.standing.policy import StandingCombatPolicy
         return StandingCombatPolicy()
 
     module_path, class_name, kwargs = _parse_policy_spec(policy_spec)

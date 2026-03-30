@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from .base import BaseCombatPolicy
+from policy.base import BaseCombatPolicy
 
 
 class StandingCombatPolicy(BaseCombatPolicy):
