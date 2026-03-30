@@ -80,7 +80,6 @@ class SimRunner:
         self._video_sample_interval = 1
 
         # 状态
-        self._current_action: Optional[Dict[str, Any]] = None
         self._is_episode_active = False
 
         # 缓存数据
@@ -137,7 +136,6 @@ class SimRunner:
         无返回值，所有数据通过 Hook 处理。
         """
         self._is_episode_active = True
-        self._current_action = None
         self._physics_step_count = 0
 
         # 重置仿真器
@@ -181,10 +179,8 @@ class SimRunner:
         if not self._is_episode_active:
             return
 
-        self._current_action = action
-
         # 1. 设置动作到仿真器（供 PRE_ACTION_STEP Hook 访问）
-        self.simulator.set_action(self._current_action)
+        self.simulator.set_action(action)
 
         # 2. 调用 PRE_ACTION_STEP Hook（在 set_action 之后，可访问/修改最新 Action）
         terminate = self._invoke_hooks(InvokeType.PRE_ACTION_STEP)
@@ -273,10 +269,11 @@ class SimRunner:
     # ==================== 数据获取函数（供 Hook 使用）====================
 
     def _f_get_action(self) -> Dict[str, Any]:
-        """获取当前动作"""
-        if self._current_action is None:
-            return {"robot_a": np.zeros(21), "robot_b": np.zeros(21)}
-        return self._current_action.copy() if isinstance(self._current_action, dict) else self._current_action
+        """获取当前动作（直接从 simulator 获取）"""
+        if hasattr(self.simulator, 'get_action'):
+            return self.simulator.get_action()
+        # 兼容没有 get_action 方法的 simulator
+        return {"robot_a": np.zeros(21), "robot_b": np.zeros(21)}
 
     def _f_get_static_data(self) -> Dict[str, Any]:
         """获取静态数据"""
@@ -302,9 +299,8 @@ class SimRunner:
 
     def _f_set_action(self, action: Dict[str, Any]) -> None:
         """设置动作"""
-        self._current_action = action
         # 立即应用到仿真器（Hook 修改动作后需要重新设置）
-        self.simulator.set_action(self._current_action)
+        self.simulator.set_action(action)
 
     # ==================== 便捷访问方法 ====================
 

@@ -96,7 +96,6 @@ class TestSimRunnerReset:
         runner.reset()
 
         assert runner._is_episode_active is True
-        assert runner._current_action is None
         assert runner._physics_step_count == 0
 
     def test_reset_calls_simulator_reset(self, mock_simulator):
@@ -106,15 +105,6 @@ class TestSimRunnerReset:
         runner.reset()
 
         mock_simulator.reset.assert_called_once()
-
-    def test_reset_clears_current_action(self, mock_simulator):
-        """测试 reset 清空当前动作"""
-        runner = SimRunner(simulator=mock_simulator)
-        runner._current_action = {'robot_a': np.ones(21)}
-
-        runner.reset()
-
-        assert runner._current_action is None
 
     def test_reset_calls_pre_episode_hooks(self, mock_simulator):
         """测试 reset 调用 PRE_EPISODE Hooks"""
@@ -148,7 +138,8 @@ class TestSimRunnerStep:
 
         runner.step(sample_actions)
 
-        assert runner._current_action == sample_actions
+        # 验证 set_action 被调用
+        assert mock_simulator.set_action.call_count >= 1
 
     def test_step_updates_step_count(self, mock_simulator, sample_actions):
         """测试 step 更新步数计数"""

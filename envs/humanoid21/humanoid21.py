@@ -100,6 +100,12 @@ class Humanoid21Simulator(OpenSimulator):
             'robot_b': np.ones(HumanoidRobot.ACTION_DIM, dtype=np.float32) * 0.25,
         }
 
+        # 当前动作 (用于 Hook 访问)
+        self._current_action = {
+            'robot_a': np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32),
+            'robot_b': np.zeros(HumanoidRobot.ACTION_DIM, dtype=np.float32),
+        }
+
         # 初始姿态缓存（用于reset时恢复XML中定义的站立姿态）
         self._initial_qpos = None
         self._initial_qvel = None
@@ -332,6 +338,9 @@ class Humanoid21Simulator(OpenSimulator):
                 act = np.asarray(action[robot_id], dtype=np.float32).reshape(21)
                 act = np.clip(act, -1.0, 1.0)
 
+                # 存储当前动作（供 Hook 访问）
+                self._current_action[robot_id] = act.copy()
+
                 if self.control_mode == 'residual_pd':
                     # 使用残差PD控制
                     self.apply_action_residual_pd(robot_id, act)
@@ -339,6 +348,22 @@ class Humanoid21Simulator(OpenSimulator):
                     # 使用直接扭矩控制
                     robot = self.robot_a if robot_id == 'robot_a' else self.robot_b
                     robot.apply_action(act)
+
+    def get_action(self) -> Dict[str, Any]:
+        """
+        获取当前设置的动作
+
+        Returns:
+            当前动作字典，格式：
+                {
+                    'robot_a': np.ndarray,  # shape=(21,), 机器人A的动作
+                    'robot_b': np.ndarray,  # shape=(21,), 机器人B的动作
+                }
+        """
+        return {
+            'robot_a': self._current_action['robot_a'].copy(),
+            'robot_b': self._current_action['robot_b'].copy(),
+        }
 
     def physical_step(self) -> None:
         """
