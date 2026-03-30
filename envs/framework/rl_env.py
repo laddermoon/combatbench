@@ -159,6 +159,7 @@ class CombatGymEnv(gym.Env):
         self.step_data_builder = step_data_builder
         self.match_duration = match_duration
         self.control_frequency = control_frequency
+        self._video_fps = video_fps
 
         # 计算参数
         dt = simulator.dt
@@ -166,12 +167,15 @@ class CombatGymEnv(gym.Env):
         self.phy_steps_per_action = max(1, int(round(sim_frequency / control_frequency)))
         self.max_steps = int(match_duration * control_frequency)
 
+        # 视频缓冲区
+        self._video_buffer: List[np.ndarray] = []
+
         # 创建 SimRunner
         self.runner = SimRunner(
             simulator=simulator,
             phy_steps_per_action=self.phy_steps_per_action,
             video_fps=video_fps,
-            enable_video=record_video,
+            video_frame_receiver=None if not record_video else self._store_video_frame,
         )
 
         # 将 step_data_builder 作为 Hook 附加
@@ -196,6 +200,7 @@ class CombatGymEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 0
+        self._video_buffer.clear()
         self.runner.reset()
 
         # 调用 build_step_data() 构建初始观测
@@ -290,11 +295,11 @@ class CombatGymEnv(gym.Env):
 
     def get_video_buffer(self) -> List[np.ndarray]:
         """获取视频缓冲区"""
-        return self.runner.get_video_buffer()
+        return self._video_buffer.copy()
 
     def clear_video_buffer(self) -> None:
         """清空视频缓冲区"""
-        self.runner.clear_video_buffer()
+        self._video_buffer.clear()
 
     def save_video(self, filepath: str, fps: Optional[int] = None) -> bool:
         """
@@ -307,17 +312,52 @@ class CombatGymEnv(gym.Env):
         Returns:
             是否成功保存
         """
-        return self.runner.save_video(filepath, fps)
+        if len(self._video_buffer) == 0:
+            print(f"Warning: No video frames to save")
+            return False
+
+        output_fps = fps if fps is not None else self._video_fps
+
+        try:
+            import cv2
+            output_path = Path(filepath)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            height, width = self._video_buffer[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(str(output_path), fourcc, output_fps, (width, height))
+
+            for frame in self._video_buffer:
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                writer.write(frame_bgr)
+
+            writer.release()
+            print(f"Video saved to {filepath} ({len(self._video_buffer)} frames, {output_fps} FPS)")
+            return True
+        except ImportError:
+            print("Warning: opencv-python not installed, cannot save video")
+            return False
+        except Exception as e:
+            print(f"Error saving video: {e}")
+            return False
+
+    def _store_video_frame(self, frame: np.ndarray) -> None:
+        """存储视频帧到缓冲区"""
+        self._video_buffer.append(frame)
 
     @property
     def video_enabled(self) -> bool:
         """视频录制是否启用"""
-        return self.runner.video_enabled
+        return self.runner._video_frame_receiver is not None
 
     @video_enabled.setter
     def video_enabled(self, value: bool) -> None:
         """设置视频录制开关"""
-        self.runner.video_enabled = value
+        if value:
+            if self.runner._video_frame_receiver is None:
+                self.runner._video_frame_receiver = self._store_video_frame
+        else:
+            self.runner._video_frame_receiver = None
 
 
 # ==================== 导出 ====================

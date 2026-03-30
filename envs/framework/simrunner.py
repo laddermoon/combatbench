@@ -55,7 +55,7 @@ class SimRunner:
         simulator: OpenSimulator,
         phy_steps_per_action: int = 25,
         video_fps: int = 30,
-        enable_video: bool = False,
+        video_frame_receiver: Optional[callable] = None,
     ):
         """
         初始化仿真运行器
@@ -64,7 +64,7 @@ class SimRunner:
             simulator: OpenSimulator 实例
             phy_steps_per_action: 每个动作步执行的物理步数
             video_fps: 视频帧率
-            enable_video: 是否启用视频录制
+            video_frame_receiver: 接收视频帧的回调方法，如果为 None 则使用内部缓冲区
         """
         self.simulator = simulator
         self.phy_steps_per_action = phy_steps_per_action
@@ -74,8 +74,7 @@ class SimRunner:
 
         # 视频录制
         self._video_fps = video_fps
-        self._enable_video = enable_video
-        self._video_buffer: List[np.ndarray] = []
+        self._video_frame_receiver = video_frame_receiver
         self._physics_step_count = 0
         self._video_sample_interval = 1
 
@@ -130,17 +129,15 @@ class SimRunner:
         重置仿真
 
         调用流程：
-        1. 清空视频缓冲区
-        2. 重置仿真器状态
-        3. 调用 PRE_EPISODE Hook（用于重置状态）
-        4. 如果 Hook 返回终止，调用 POST_EPISODE Hook
+        1. 重置仿真器状态
+        2. 调用 PRE_EPISODE Hook（用于重置状态）
+        3. 如果 Hook 返回终止，调用 POST_EPISODE Hook
 
         无返回值，所有数据通过 Hook 处理。
         """
         self._is_episode_active = True
         self._current_action = None
         self._physics_step_count = 0
-        self._video_buffer.clear()
 
         # 重置仿真器
         self.simulator.reset()
@@ -210,9 +207,9 @@ class SimRunner:
             self._physics_step_count += 1
 
             # 视频帧采集
-            if self._enable_video and self._physics_step_count % self._video_sample_interval == 0:
+            if self._video_frame_receiver is not None and self._physics_step_count % self._video_sample_interval == 0:
                 frame = self.simulator.get_broadcastview_image()
-                self._video_buffer.append(frame)
+                self._video_frame_receiver(frame)
 
             # POST_PHY_STEP Hook（执行约束）
             terminate = self._invoke_hooks(InvokeType.POST_PHY_STEP)
@@ -333,56 +330,6 @@ class SimRunner:
         """获取广播视角图像"""
         return self.simulator.get_broadcastview_image()
 
-    # ==================== 视频录制 ====================
-
-    def get_video_buffer(self) -> List[np.ndarray]:
-        """获取视频缓冲区"""
-        return self._video_buffer.copy()
-
-    def clear_video_buffer(self) -> None:
-        """清空视频缓冲区"""
-        self._video_buffer.clear()
-
-    def save_video(self, filepath: str, fps: Optional[int] = None) -> bool:
-        """
-        保存视频到文件
-
-        Args:
-            filepath: 输出文件路径
-            fps: 视频帧率，如果为 None 则使用当前设置的 video_fps
-
-        Returns:
-            是否成功保存
-        """
-        if len(self._video_buffer) == 0:
-            print(f"Warning: No video frames to save")
-            return False
-
-        output_fps = fps if fps is not None else self._video_fps
-
-        try:
-            import cv2
-            output_path = Path(filepath)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            height, width = self._video_buffer[0].shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(str(output_path), fourcc, output_fps, (width, height))
-
-            for frame in self._video_buffer:
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                writer.write(frame_bgr)
-
-            writer.release()
-            print(f"Video saved to {filepath} ({len(self._video_buffer)} frames, {output_fps} FPS)")
-            return True
-        except ImportError:
-            print("Warning: opencv-python not installed, cannot save video")
-            return False
-        except Exception as e:
-            print(f"Error saving video: {e}")
-            return False
-
     # ==================== 属性 ====================
 
     @property
@@ -398,12 +345,13 @@ class SimRunner:
     @property
     def video_enabled(self) -> bool:
         """视频录制是否启用"""
-        return self._enable_video
+        return self._video_frame_receiver is not None
 
     @video_enabled.setter
     def video_enabled(self, value: bool) -> None:
-        """设置视频录制开关"""
-        self._enable_video = bool(value)
+        """设置视频录制开关（已弃用，请使用 video_frame_receiver 参数）"""
+        # 此 setter 保留用于向后兼容，但不实际修改行为
+        pass
 
     @property
     def is_episode_active(self) -> bool:
