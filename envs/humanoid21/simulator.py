@@ -32,16 +32,18 @@ class MujocoCombatSimulator(BaseSimulator):
     def _cache_indices(self):
         self.robot_info = {'robot_a': {}, 'robot_b': {}}
         for robot_id, suffix in [('robot_a', '_red'), ('robot_b', '_blue')]:
+            # Root joint for humanoid is a free joint
+            root_jnt_name = f"root{suffix}"
+            root_jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, root_jnt_name)
+            qpos_adr = self.model.jnt_qposadr[root_jnt_id]
+            qvel_adr = self.model.jnt_dofadr[root_jnt_id]
+            
             body_name = f"pelvis{suffix}"
             body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, body_name)
-            jnt_id = self.model.body_jntadr[body_id]
-            
-            qpos_adr = self.model.jnt_qposadr[jnt_id]
-            qvel_adr = self.model.jnt_dofadr[jnt_id]
             
             self.robot_info[robot_id] = {
                 'body_id': body_id,
-                'jnt_id': jnt_id,
+                'root_jnt_id': root_jnt_id,
                 'qpos_adr': qpos_adr,
                 'qvel_adr': qvel_adr,
                 'suffix': suffix

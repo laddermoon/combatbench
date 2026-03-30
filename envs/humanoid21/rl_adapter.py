@@ -44,8 +44,7 @@ class Humanoid21RLAdapter(BaseRLAdapter):
             
             # ========== Module 1: Proprioception (42 dims) ==========
             # joint positions & velocities
-            jnt_id = robot_info[self_id]['jnt_id']
-            # jnt_id is the root joint. The other 21 joints are after it.
+            # root_jnt_id is the root joint. The other 21 joints are after it.
             # However, we can use qpos_adr and qvel_adr of the joints.
             pos = np.zeros(self.ACTION_DIM)
             vel = np.zeros(self.ACTION_DIM)
