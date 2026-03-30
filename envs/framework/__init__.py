@@ -1,27 +1,20 @@
-"""
-CombatBench 框架模块
-
-通用的仿真和强化学习框架代码，与具体机器人实现无关。
-"""
-
-from .base_hook import BaseHook, InvokeType, HookWrapper
-from .open_simulator import OpenSimulator
-from .rl_env import StepDataBuilder, CombatGymEnv
-from .simrunner import SimRunner
+from .backend import BaseSimulator, IDataAccessor, IDataMutator
+from .context import SimContext, TerminationReason
+from .plugin import BasePlugin
+from .engine import SimEngine
+from .common_plugins import BaseRLAdapter, TimeoutPlugin, VideoRecorderPlugin
+from .rl_env import CombatGymEnv
 
 __all__ = [
-    # Hook 框架
-    "BaseHook",
-    "InvokeType",
-    "HookWrapper",
-
-    # 仿真器接口
-    "OpenSimulator",
-
-    # RL 环境框架
-    "StepDataBuilder",
+    "BaseSimulator",
+    "IDataAccessor",
+    "IDataMutator",
+    "SimContext",
+    "TerminationReason",
+    "BasePlugin",
+    "SimEngine",
+    "BaseRLAdapter",
+    "TimeoutPlugin",
+    "VideoRecorderPlugin",
     "CombatGymEnv",
-
-    # 仿真运行器
-    "SimRunner",
 ]
