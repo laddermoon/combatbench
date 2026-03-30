@@ -176,7 +176,9 @@ class StepDataBuilder(BaseHook):
     def get_observation_space(self) -> spaces.Space: ...
 ```
 
-**说明**：`build_step_data()` 在 Hook 的 `invoke()` 时被调用，此时 `self._core_state`、`self._derived_state`、`self._sensor_data` 已被设置，可直接使用。
+**说明**：
+- `invoke()` 在 `POST_ACTION_STEP` 时被调用，负责存储状态数据到 `self._core_state`、`self._derived_state`、`self._sensor_data`
+- `CombatGymEnv.step()` 在物理步进后调用 `build_step_data()`，此时状态数据已存储，可直接使用
 
 ---
 

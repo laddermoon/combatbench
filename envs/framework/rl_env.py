@@ -25,7 +25,7 @@ class StepDataBuilder(BaseHook, ABC):
     """
     Step 数据构建器（作为 Hook 实现）
 
-    在 POST_ACTION_STEP 时被调用，构建观测、奖励和 info。
+    在 POST_ACTION_STEP 时存储状态数据，供后续按需调用 build_step_data()。
 
     子类需要实现 build_step_data() 和 get_observation_space() 方法。
     """
@@ -35,6 +35,9 @@ class StepDataBuilder(BaseHook, ABC):
         self._core_state = None
         self._derived_state = None
         self._sensor_data = None
+        self._last_observation = None
+        self._last_reward = None
+        self._last_info = None
 
     @abstractmethod
     def build_step_data(self) -> Tuple[Any, Any, Dict[str, Any]]:
@@ -57,9 +60,9 @@ class StepDataBuilder(BaseHook, ABC):
     def get_last_data(self) -> Tuple[Optional[Any], Optional[Any], Optional[Dict[str, Any]]]:
         """获取最近构建的数据"""
         return (
-            getattr(self, '_last_observation', None),
-            getattr(self, '_last_reward', None),
-            getattr(self, '_last_info', None),
+            self._last_observation,
+            self._last_reward,
+            self._last_info,
         )
 
     # Hook 接口实现
@@ -68,21 +71,26 @@ class StepDataBuilder(BaseHook, ABC):
         return -50  # 在 POST_ACTION_STEP 时执行
 
     def invoke(self, invoke_type: InvokeType, *args, **kwargs) -> bool:
-        if invoke_type == InvokeType.POST_ACTION_STEP:
-            f_get_core_state = kwargs.get('f_get_core_state')
-            f_get_derived_state = kwargs.get('f_get_derived_state')
-            f_get_sensor_data = kwargs.get('f_get_sensor_data')
+        """
+        Hook invoke 方法
 
-            if f_get_core_state and f_get_derived_state and f_get_sensor_data:
-                # 获取并存储状态数据
-                self._core_state = f_get_core_state()
-                self._derived_state = f_get_derived_state()
-                self._sensor_data = f_get_sensor_data()
+        HookWrapper 以位置参数传递参数，顺序为：
+        invoke_type, f_get_action, f_get_static_data, f_get_sensor_data,
+        f_get_core_state, f_get_derived_state, f_set_core_state, f_set_action
+        """
+        if invoke_type in (InvokeType.PRE_EPISODE, InvokeType.POST_ACTION_STEP):
+            # args: [invoke_type, f_get_action, f_get_static_data, f_get_sensor_data,
+            #        f_get_core_state, f_get_derived_state, f_set_core_state, f_set_action]
+            if len(args) >= 5:
+                f_get_sensor_data = args[2]
+                f_get_core_state = args[3]
+                f_get_derived_state = args[4]
 
-                observation, reward, info = self.build_step_data()
-                self._last_observation = observation
-                self._last_reward = reward
-                self._last_info = info
+                if f_get_core_state and f_get_derived_state and f_get_sensor_data:
+                    # 存储状态数据，供后续 build_step_data() 使用
+                    self._core_state = f_get_core_state()
+                    self._derived_state = f_get_derived_state()
+                    self._sensor_data = f_get_sensor_data()
 
         return False  # 不终止
 
@@ -190,10 +198,12 @@ class CombatGymEnv(gym.Env):
         self.current_step = 0
         self.runner.reset()
 
-        # 手动调用一次 step_data_builder 获取初始观测
-        obs, reward, info = self.step_data_builder.get_last_data()
-        if obs is None:
-            obs, reward, info = self._get_initial_data()
+        # 调用 build_step_data() 构建初始观测
+        # （此时 Hook.invoke() 已经在 PRE_EPISODE 时存储了状态数据）
+        obs, reward, info = self.step_data_builder.build_step_data()
+        self.step_data_builder._last_observation = obs
+        self.step_data_builder._last_reward = reward
+        self.step_data_builder._last_info = info
 
         return obs, info
 
@@ -216,11 +226,12 @@ class CombatGymEnv(gym.Env):
 
         self.runner.step(action)
 
-        # 获取数据（从 Hook 缓存）
-        obs, reward, info = self.step_data_builder.get_last_data()
-
-        if obs is None:
-            obs, reward, info = self._get_data()
+        # 调用 build_step_data() 构建观测、奖励和 info
+        # （此时 Hook.invoke() 已经在 POST_ACTION_STEP 时存储了状态数据）
+        obs, reward, info = self.step_data_builder.build_step_data()
+        self.step_data_builder._last_observation = obs
+        self.step_data_builder._last_reward = reward
+        self.step_data_builder._last_info = info
 
         # 检查是否由 Hook 终止
         terminated = not self.runner.is_episode_active
