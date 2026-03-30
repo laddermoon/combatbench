@@ -103,6 +103,26 @@ class OpenSimulator(ABC):
         pass
 
     @abstractmethod
+    def get_action(self) -> Dict[str, Any]:
+        """
+        获取当前设置的动作指令
+
+        Returns:
+            动作指令字典，格式示例：
+                {
+                    'robot_a': np.ndarray,  # shape=(21,), 机器人A的动作
+                    'robot_b': np.ndarray,  # shape=(21,), 机器人B的动作
+                }
+
+        注意：
+        - 返回最后一次通过 set_action 设置的动作
+        - 返回的是动作的副本，避免外部修改
+        - 如果 Hook 修改了动作，这里返回修改后的值
+        - 用于 Hook 访问当前动作
+        """
+        pass
+
+    @abstractmethod
     def physical_step(self) -> None:
         """
         执行一次物理仿真步进
