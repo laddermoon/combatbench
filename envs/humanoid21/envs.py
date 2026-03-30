@@ -180,14 +180,12 @@ class SingleAgentEnvWrapper(gym.Env):
         enable_fall_detection: bool = False,
     ):
         # 创建仿真器
-        # 根据是否启用非跌倒模式选择控制模式
-        # 非跌倒模式使用残差PD控制，否则使用直接扭矩控制
-        control_mode = 'residual_pd' if enable_nonfall else 'torque'
-
+        # 始终使用残差PD控制模式（这是参考实现的行为）
+        # enable_nonfall 只控制是否附加 NonFallHook，不影响控制模式
         simulator = Humanoid21Simulator(
             gui=(render_mode == "human"),
             initial_distance=initial_distance,
-            control_mode=control_mode,
+            control_mode='residual_pd',  # 始终使用 PD 控制
             default_kp=4.0,
             default_kd=0.4,
         )
@@ -794,13 +792,12 @@ def Humanoid21DualAgentEnv(
     Returns:
         CombatGymEnv 实例
     """
-    # 根据是否启用非跌倒模式选择控制模式
-    control_mode = 'residual_pd' if enable_nonfall else 'torque'
-
+    # 始终使用残差PD控制模式（这是参考实现的行为）
+    # enable_nonfall 只控制是否附加 NonFallHook，不影响控制模式
     simulator = Humanoid21Simulator(
         gui=(render_mode == "human"),
         initial_distance=initial_distance,
-        control_mode=control_mode,
+        control_mode='residual_pd',  # 始终使用 PD 控制
         default_kp=4.0,
         default_kd=0.4,
     )
