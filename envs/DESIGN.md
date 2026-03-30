@@ -168,34 +168,15 @@ class OpenSimulator(ABC):
     def get_broadcastview_image() -> np.ndarray: ...
 ```
 
-### BaseRobot (机器人抽象)
-
-```python
-class BaseRobot(ABC):
-    # 动作接口
-    def apply_action(action: np.ndarray) -> None: ...
-
-    # 观测接口
-    def get_observation(opponent_robot=None) -> np.ndarray: ...
-
-    # 状态接口
-    def get_position() -> np.ndarray: ...
-    def reset(position, orientation) -> None: ...
-```
-
 ### StepDataBuilder (观测/奖励构建)
 
 ```python
 class StepDataBuilder(BaseHook):
-    def build_step_data(
-        self,
-        f_get_core_state: Callable,
-        f_get_derived_state: Callable,
-        f_get_sensor_data: Callable,
-    ) -> Tuple[observation, reward, info]: ...
-
+    def build_step_data(self) -> Tuple[observation, reward, info]: ...
     def get_observation_space(self) -> spaces.Space: ...
 ```
+
+**说明**：`build_step_data()` 在 Hook 的 `invoke()` 时被调用，此时 `self._core_state`、`self._derived_state`、`self._sensor_data` 已被设置，可直接使用。
 
 ---
 
@@ -204,15 +185,18 @@ class StepDataBuilder(BaseHook):
 ### 创建自定义环境
 
 ```python
-from combatbench.envs.framework import SimpleCombatEnv, StepDataBuilder
+from combatbench.envs.framework import CombatGymEnv, StepDataBuilder
 from combatbench.envs.humanoid21 import Humanoid21Simulator
 
 class MyStepDataBuilder(StepDataBuilder):
-    def build_step_data(self, f_get_core_state, f_get_derived_state, f_get_sensor_data):
-        # 自定义观测、奖励逻辑
-        obs = {...}
-        reward = {...}
-        info = {...}
+    def build_step_data(self):
+        # 直接通过 self._core_state, self._derived_state, self._sensor_data 访问状态
+        obs = {
+            'robot_a_obs': self._derived_state['robots']['robot_a']['observation'],
+            'robot_b_obs': self._derived_state['robots']['robot_b']['observation'],
+        }
+        reward = {'robot_a': 0.0, 'robot_b': 0.0}
+        info = {'step': self._core_state.get('step_count', 0)}
         return obs, reward, info
 
     def get_observation_space(self):
@@ -221,7 +205,7 @@ class MyStepDataBuilder(StepDataBuilder):
 # 创建环境
 simulator = Humanoid21Simulator()
 step_builder = MyStepDataBuilder()
-env = SimpleCombatEnv(
+env = CombatGymEnv(
     simulator=simulator,
     step_data_builder=step_builder,
     hooks=[...],  # 自定义 Hooks
@@ -258,7 +242,6 @@ class MyHook(BaseHook):
 | `core/` | 机器人无关的基础组件 | MuJoCo |
 | `framework/` | 仿真运行框架 | core/ |
 | `humanoid21/` | Humanoid21 具体实现 | framework/, core/ |
-| `preset_envs.py` | 预置 Gym 环境 | humanoid21/, framework/ |
 
 ---
 

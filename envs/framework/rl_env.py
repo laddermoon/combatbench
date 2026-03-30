@@ -26,22 +26,23 @@ class StepDataBuilder(BaseHook, ABC):
     Step 数据构建器（作为 Hook 实现）
 
     在 POST_ACTION_STEP 时被调用，构建观测、奖励和 info。
+
+    子类需要实现 build_step_data() 和 get_observation_space() 方法。
     """
 
+    def __init__(self):
+        super().__init__()
+        self._core_state = None
+        self._derived_state = None
+        self._sensor_data = None
+
     @abstractmethod
-    def build_step_data(
-        self,
-        f_get_core_state: Callable[[], Dict[str, Any]],
-        f_get_derived_state: Callable[[], Dict[str, Any]],
-        f_get_sensor_data: Callable[[], Dict[str, Any]],
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, float], Dict[str, Any]]:
+    def build_step_data(self) -> Tuple[Any, Any, Dict[str, Any]]:
         """
         构建观测、奖励和 info
 
-        Args:
-            f_get_core_state: 获取核心状态的函数
-            f_get_derived_state: 获取衍生状态的函数
-            f_get_sensor_data: 获取传感器数据的函数
+        通过 self._core_state, self._derived_state, self._sensor_data
+        访问已存储的仿真状态数据。
 
         Returns:
             (observation, reward, info)
@@ -53,7 +54,7 @@ class StepDataBuilder(BaseHook, ABC):
         """返回观测空间"""
         pass
 
-    def get_last_data(self) -> Tuple[Optional[Dict[str, np.ndarray]], Optional[Dict[str, float]], Optional[Dict[str, Any]]]:
+    def get_last_data(self) -> Tuple[Optional[Any], Optional[Any], Optional[Dict[str, Any]]]:
         """获取最近构建的数据"""
         return (
             getattr(self, '_last_observation', None),
@@ -73,11 +74,12 @@ class StepDataBuilder(BaseHook, ABC):
             f_get_sensor_data = kwargs.get('f_get_sensor_data')
 
             if f_get_core_state and f_get_derived_state and f_get_sensor_data:
-                observation, reward, info = self.build_step_data(
-                    f_get_core_state,
-                    f_get_derived_state,
-                    f_get_sensor_data,
-                )
+                # 获取并存储状态数据
+                self._core_state = f_get_core_state()
+                self._derived_state = f_get_derived_state()
+                self._sensor_data = f_get_sensor_data()
+
+                observation, reward, info = self.build_step_data()
                 self._last_observation = observation
                 self._last_reward = reward
                 self._last_info = info
@@ -229,14 +231,11 @@ class CombatGymEnv(gym.Env):
         """直接从 simulator 获取数据（备用方法）"""
         # 尝试通过 step_data_builder 获取正确格式的数据
         try:
-            f_get_core_state = self.simulator.get_core_state
-            f_get_derived_state = self.simulator.get_derived_state
-            f_get_sensor_data = self.simulator.get_sensor_data
-            obs, reward, info = self.step_data_builder.build_step_data(
-                f_get_core_state,
-                f_get_derived_state,
-                f_get_sensor_data,
-            )
+            # 获取并存储状态数据到 step_data_builder
+            self.step_data_builder._core_state = self.simulator.get_core_state()
+            self.step_data_builder._derived_state = self.simulator.get_derived_state()
+            self.step_data_builder._sensor_data = self.simulator.get_sensor_data()
+            obs, reward, info = self.step_data_builder.build_step_data()
             self.step_data_builder._last_observation = obs
             self.step_data_builder._last_reward = reward
             self.step_data_builder._last_info = info
@@ -257,14 +256,11 @@ class CombatGymEnv(gym.Env):
         """获取初始数据"""
         # 尝试通过 step_data_builder 获取正确格式的数据
         try:
-            f_get_core_state = self.simulator.get_core_state
-            f_get_derived_state = self.simulator.get_derived_state
-            f_get_sensor_data = self.simulator.get_sensor_data
-            obs, reward, info = self.step_data_builder.build_step_data(
-                f_get_core_state,
-                f_get_derived_state,
-                f_get_sensor_data,
-            )
+            # 获取并存储状态数据到 step_data_builder
+            self.step_data_builder._core_state = self.simulator.get_core_state()
+            self.step_data_builder._derived_state = self.simulator.get_derived_state()
+            self.step_data_builder._sensor_data = self.simulator.get_sensor_data()
+            obs, reward, info = self.step_data_builder.build_step_data()
             self.step_data_builder._last_observation = obs
             self.step_data_builder._last_reward = reward
             self.step_data_builder._last_info = info

@@ -40,33 +40,26 @@ class SingleAgentStepDataBuilder(StepDataBuilder):
     """
 
     def __init__(self, score_calculator: Optional[ScoreCalculator] = None):
+        super().__init__()
         self.obs_dim = HumanoidRobot.OBSERVATION_DIM
         self.score_calculator = score_calculator
 
-    def build_step_data(
-        self,
-        f_get_core_state: Callable[[], Dict[str, Any]],
-        f_get_derived_state: Callable[[], Dict[str, Any]],
-        f_get_sensor_data: Callable[[], Dict[str, Any]],
-    ) -> Tuple[np.ndarray, float, Dict[str, Any]]:
+    def build_step_data(self) -> Tuple[np.ndarray, float, Dict[str, Any]]:
         """构建单智能体观测、奖励和 info"""
-        derived_state = f_get_derived_state()
-        core_state = f_get_core_state()
-
         # 只返回机器人 A 的观测
-        obs_a = derived_state['robots']['robot_a']['observation']
+        obs_a = self._derived_state['robots']['robot_a']['observation']
 
         # 零奖励（可继承覆盖）
         reward = 0.0
 
         # 构建相对度量
-        relative_metrics = self._build_relative_metrics(derived_state)
+        relative_metrics = self._build_relative_metrics(self._derived_state)
 
         info = {
-            'step': core_state.get('step_count', 0),
-            'torso_position': derived_state['robots']['robot_a']['torso_position'],
-            'opponent_position': derived_state['robots']['robot_b']['torso_position'],
-            'robot_states': derived_state['robots'],
+            'step': self._core_state.get('step_count', 0),
+            'torso_position': self._derived_state['robots']['robot_a']['torso_position'],
+            'opponent_position': self._derived_state['robots']['robot_b']['torso_position'],
+            'robot_states': self._derived_state['robots'],
             'relative_metrics': relative_metrics['robot_a'],
         }
 
@@ -113,20 +106,13 @@ class DualAgentStepDataBuilder(StepDataBuilder):
     """双智能体数据构建器"""
 
     def __init__(self, score_calculator: Optional[ScoreCalculator] = None):
+        super().__init__()
         self.obs_dim = HumanoidRobot.OBSERVATION_DIM
         self.score_calculator = score_calculator
 
-    def build_step_data(
-        self,
-        f_get_core_state: Callable[[], Dict[str, Any]],
-        f_get_derived_state: Callable[[], Dict[str, Any]],
-        f_get_sensor_data: Callable[[], Dict[str, Any]],
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, float], Dict[str, Any]]:
-        derived_state = f_get_derived_state()
-        core_state = f_get_core_state()
-
-        obs_a = derived_state['robots']['robot_a']['observation']
-        obs_b = derived_state['robots']['robot_b']['observation']
+    def build_step_data(self) -> Tuple[Dict[str, np.ndarray], Dict[str, float], Dict[str, Any]]:
+        obs_a = self._derived_state['robots']['robot_a']['observation']
+        obs_b = self._derived_state['robots']['robot_b']['observation']
 
         observation = {
             'robot_a_obs': obs_a,
@@ -138,8 +124,8 @@ class DualAgentStepDataBuilder(StepDataBuilder):
         }
 
         info = {
-            'step': core_state.get('step_count', 0),
-            'robot_states': derived_state['robots'],
+            'step': self._core_state.get('step_count', 0),
+            'robot_states': self._derived_state['robots'],
         }
 
         if self.score_calculator is not None:

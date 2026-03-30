@@ -244,20 +244,13 @@ class DefaultStepDataBuilder(StepDataBuilder):
     """默认的 step 数据构建器：零奖励 + 机器人观测 + 基础 info"""
 
     def __init__(self):
+        super().__init__()
         self.obs_dim = HumanoidRobot.OBSERVATION_DIM
 
-    def build_step_data(
-        self,
-        f_get_core_state: Callable[[], Dict[str, Any]],
-        f_get_derived_state: Callable[[], Dict[str, Any]],
-        f_get_sensor_data: Callable[[], Dict[str, Any]],
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, float], Dict[str, Any]]:
-        # 从 derived_state 获取观测
-        derived_state = f_get_derived_state()
-        core_state = f_get_core_state()
-
-        obs_a = derived_state['robots']['robot_a']['observation']
-        obs_b = derived_state['robots']['robot_b']['observation']
+    def build_step_data(self) -> Tuple[Dict[str, np.ndarray], Dict[str, float], Dict[str, Any]]:
+        # 从已存储的 derived_state 获取观测
+        obs_a = self._derived_state['robots']['robot_a']['observation']
+        obs_b = self._derived_state['robots']['robot_b']['observation']
 
         observation = {
             'robot_a_obs': obs_a,
@@ -267,7 +260,7 @@ class DefaultStepDataBuilder(StepDataBuilder):
 
         # 构建 info
         info = {
-            'step': core_state.get('step_count', 0),
+            'step': self._core_state.get('step_count', 0),
         }
 
         return observation, reward, info
