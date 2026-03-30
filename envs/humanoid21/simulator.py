@@ -153,14 +153,8 @@ class MujocoCombatSimulator(BaseSimulator):
 
     def set_action(self, action: Dict[str, Any]) -> None:
         self._action = action
-        for r_id in ['robot_a', 'robot_b']:
-            if r_id in action:
-                acts = action[r_id]
-                act_ids = self.robot_info[r_id]['actuators']
-                for i, act_id in enumerate(act_ids):
-                    if act_id >= 0:
-                        ctrl_range = self.model.actuator_ctrlrange[act_id]
-                        self.data.ctrl[act_id] = np.clip(acts[i], ctrl_range[0], ctrl_range[1])
+        # 移除了直接对 data.ctrl 的覆盖写入逻辑，因为现在由 PDControllerPlugin 接管了
+        # action 将被存储在 self._action 中，供 PDControllerPlugin 在 on_pre_action_step 时读取
 
     def physical_step(self) -> None:
         mujoco.mj_step(self.model, self.data)

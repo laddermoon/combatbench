@@ -10,6 +10,7 @@ from framework import CombatGymEnv
 from .simulator import MujocoCombatSimulator
 from .rl_adapter import Humanoid21RLAdapter
 from .plugins import NonFallConstraintPlugin, CombatScoringPlugin
+from .pd_controller import PDControllerPlugin
 
 def make_env(
     arena_xml: Optional[str] = None,
@@ -42,6 +43,9 @@ def make_env(
     # 3. 挂载业务插件
     active_plugins = []
     
+    # PD 控制器插件（取代直接力量矩控制，用于稳定站立）
+    active_plugins.append(PDControllerPlugin())
+    
     # 算分插件（必选）
     active_plugins.append(CombatScoringPlugin(initial_health=initial_health, damage_scale=damage_scale))
     
@@ -72,5 +76,6 @@ __all__ = [
     "Humanoid21RLAdapter",
     "NonFallConstraintPlugin",
     "CombatScoringPlugin",
+    "PDControllerPlugin",
     "make_env"
 ]
