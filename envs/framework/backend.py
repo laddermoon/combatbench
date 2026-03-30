@@ -46,11 +46,9 @@ class IDataMutator(ABC):
         """
         pass
 
+
     @abstractmethod
     def set_action(self, action: Dict[str, Any]) -> None:
-        """
-        设置下发到物理引擎的动作。
-        """
         pass
 
 
@@ -59,6 +57,11 @@ class BaseSimulator(IDataAccessor, IDataMutator):
     底层物理仿真器的抽象契约。
     扩展了数据访问（Accessor）和操作（Mutator）能力，并提供生命周期与步进控制。
     """
+    @abstractmethod
+    def reset(self, seed: int = None, options: Dict[str, Any] = None) -> None:
+        """重置底层物理引擎状态"""
+        pass
+
     @abstractmethod
     def physical_step(self) -> None:
         """执行一个最细粒度的物理仿真步。"""

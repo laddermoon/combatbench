@@ -34,44 +34,41 @@ class Humanoid21RLAdapter(BaseRLAdapter):
 
     def build_observation(self, ctx: SimContext) -> Dict[str, np.ndarray]:
         sim = ctx.accessor # type: MujocoCombatSimulator
+        
+        # 获取静态数据和状态
+        static_data = sim.get_static_data()
+        robot_info = static_data['robot_info']
+        core_state = sim.get_core_state()
+        
+        qpos_array = core_state['qpos']
+        qvel_array = core_state['qvel']
+        
+        # 暂时直接访问底层数据用于构建详细观测
+        # TODO: 未来可以扩展 get_derived_state 接口来提供这些数据
         data = sim.data
         model = sim.model
-        robot_info = sim.robot_info
 
         obs_dict = {}
         for self_id, opponent_id in [('robot_a', 'robot_b'), ('robot_b', 'robot_a')]:
             obs_list = []
             
             # ========== Module 1: Proprioception (42 dims) ==========
-            # joint positions & velocities
-            # root_jnt_id is the root joint. The other 21 joints are after it.
-            # However, we can use qpos_adr and qvel_adr of the joints.
             pos = np.zeros(self.ACTION_DIM)
             vel = np.zeros(self.ACTION_DIM)
             
-            controlled_joints = [
-                'abdomen_z', 'abdomen_y', 'abdomen_x',
-                'hip_x_right', 'hip_z_right', 'hip_y_right', 'knee_right', 'ankle_y_right', 'ankle_x_right',
-                'hip_x_left', 'hip_z_left', 'hip_y_left', 'knee_left', 'ankle_y_left', 'ankle_x_left',
-                'shoulder1_right', 'shoulder2_right', 'elbow_right',
-                'shoulder1_left', 'shoulder2_left', 'elbow_left'
-            ]
-            
-            for i, jname in enumerate(controlled_joints):
-                full_name = f"{jname}{robot_info[self_id]['suffix']}"
-                j_idx = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, full_name)
-                if j_idx >= 0:
-                    qpos_idx = model.jnt_qposadr[j_idx]
-                    qvel_idx = model.jnt_dofadr[j_idx]
-                    pos[i] = data.qpos[qpos_idx]
-                    vel[i] = data.qvel[qvel_idx]
+            if self_id in robot_info and 'qpos_indices' in robot_info[self_id]:
+                qpos_idx_list = robot_info[self_id]['qpos_indices']
+                qvel_idx_list = robot_info[self_id]['qvel_indices']
+                for i in range(len(qpos_idx_list)):
+                    if qpos_idx_list[i] >= 0:
+                        pos[i] = qpos_array[qpos_idx_list[i]]
+                        vel[i] = qvel_array[qvel_idx_list[i]]
             
             obs_list.append(pos)
             obs_list.append(vel)
 
             # ========== Module 2: Root State (13 dims) ==========
             body_id = robot_info[self_id]['body_id']
-            # Use pelvis as torso for state extraction in old code
             pos_root = data.xpos[body_id].copy()
             quat_root = data.xquat[body_id].copy() # [w, x, y, z]
             cvel_root = data.cvel[body_id].copy()  # [rot, lin]

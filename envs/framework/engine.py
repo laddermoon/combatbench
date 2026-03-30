@@ -77,6 +77,9 @@ class SimEngine:
         self.ctx.clear_episode_state()
         self._is_episode_active = True
         
+        # 首先调用底层仿真器的 reset
+        self.simulator.reset()
+        
         # pre_episode 允许修改状态
         self.plugin_manager.invoke('on_pre_episode', self.ctx, allow_mutator=True)
 

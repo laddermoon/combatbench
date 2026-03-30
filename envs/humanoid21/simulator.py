@@ -10,18 +10,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import BaseSimulator
 
 class MujocoCombatSimulator(BaseSimulator):
-    def __init__(self, arena_xml: str, dt: float = 0.002):
+    def __init__(self, arena_xml: str, dt: float = 0.002, initial_distance: float = 2.0, 
+                 action_dim: int = 21, kp: float = 4.0, kd: float = 0.4):
         self.dt = dt
+        self.initial_distance = initial_distance
+        self.action_dim = action_dim
+        
         self.model = mujoco.MjSpec.from_file(arena_xml).compile()
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         
         self.model.opt.timestep = dt
         
-        self._action = {'robot_a': np.zeros(21), 'robot_b': np.zeros(21)}
+        self._action = {'robot_a': np.zeros(action_dim), 'robot_b': np.zeros(action_dim)}
         
         # 缓存关节点和索引
         self._cache_indices()
+        
+        # PD 控制器参数
+        self.kp = np.full(action_dim, kp, dtype=np.float32)
+        self.kd = np.full(action_dim, kd, dtype=np.float32)
+        self.target_positions = {
+            'robot_a': np.zeros(action_dim, dtype=np.float32),
+            'robot_b': np.zeros(action_dim, dtype=np.float32)
+        }
+        self._pd_initialized = False
         
         # 用于摄像机平滑
         self._prev_azi = None
@@ -60,11 +73,51 @@ class MujocoCombatSimulator(BaseSimulator):
                 'shoulder1_left', 'shoulder2_left', 'elbow_left'
             ]
             actuators = []
+            qpos_indices = []
+            qvel_indices = []
+            jnt_ranges = []
+            ctrl_ranges = []
+            qpos0_list = []
+            
             for j in controlled_joints:
+                full_name = f"{j}{suffix}"
+                j_idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, full_name)
                 act_name = f"{j}{suffix}"
                 act_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, act_name)
+                
                 actuators.append(act_id)
+                if j_idx >= 0:
+                    qpos_adr = self.model.jnt_qposadr[j_idx]
+                    qpos_indices.append(qpos_adr)
+                    qvel_indices.append(self.model.jnt_dofadr[j_idx])
+                    
+                    if self.model.jnt_limited[j_idx]:
+                        jnt_ranges.append(self.model.jnt_range[j_idx].copy())
+                    else:
+                        import numpy as np
+                        jnt_ranges.append(np.array([-np.pi, np.pi]))
+                    
+                    qpos0_list.append(self.model.qpos0[qpos_adr])
+                else:
+                    qpos_indices.append(-1)
+                    qvel_indices.append(-1)
+                    import numpy as np
+                    jnt_ranges.append(np.array([-np.pi, np.pi]))
+                    qpos0_list.append(0.0)
+                
+                if act_id >= 0:
+                    ctrl_ranges.append(self.model.actuator_ctrlrange[act_id].copy())
+                else:
+                    import numpy as np
+                    ctrl_ranges.append(np.array([-1.0, 1.0]))
+                    
             self.robot_info[robot_id]['actuators'] = actuators
+            self.robot_info[robot_id]['qpos_indices'] = qpos_indices
+            self.robot_info[robot_id]['qvel_indices'] = qvel_indices
+            self.robot_info[robot_id]['jnt_ranges'] = jnt_ranges
+            self.robot_info[robot_id]['ctrl_ranges'] = ctrl_ranges
+            self.robot_info[robot_id]['qpos0'] = qpos0_list
+
 
     def get_static_data(self) -> Dict[str, Any]:
         return {
@@ -153,11 +206,136 @@ class MujocoCombatSimulator(BaseSimulator):
 
     def set_action(self, action: Dict[str, Any]) -> None:
         self._action = action
-        # 移除了直接对 data.ctrl 的覆盖写入逻辑，因为现在由 PDControllerPlugin 接管了
-        # action 将被存储在 self._action 中，供 PDControllerPlugin 在 on_pre_action_step 时读取
+        
+        # 将 action 转换为目标关节位置
+        if not self._pd_initialized:
+            return
+            
+        for r_id in ['robot_a', 'robot_b']:
+            if r_id in action and action[r_id] is not None:
+                residual_action = np.clip(np.asarray(action[r_id], dtype=np.float32), -1.0, 1.0)
+                
+                joint_limits = self.joint_limits[r_id]
+                target_pos = self.reference_pos[r_id] + self.action_scale[r_id] * residual_action
+                target_pos = np.clip(target_pos, joint_limits['lower'], joint_limits['upper'])
+                
+                self.target_positions[r_id] = target_pos.astype(np.float32)
+
+    def _init_pd_limits(self) -> None:
+        """初始化 PD 控制器的限制和参考位置"""
+        if self._pd_initialized:
+            return
+            
+        self.joint_limits = {
+            'robot_a': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)},
+            'robot_b': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)}
+        }
+        self.ctrl_limits = {
+            'robot_a': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)},
+            'robot_b': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)}
+        }
+        self.action_scale = {
+            'robot_a': np.zeros(self.action_dim),
+            'robot_b': np.zeros(self.action_dim)
+        }
+        self.reference_pos = {
+            'robot_a': np.zeros(self.action_dim),
+            'robot_b': np.zeros(self.action_dim)
+        }
+        
+        for r_id in ['robot_a', 'robot_b']:
+            if r_id in self.robot_info:
+                info = self.robot_info[r_id]
+                
+                if 'jnt_ranges' in info:
+                    for i, r in enumerate(info['jnt_ranges']):
+                        self.joint_limits[r_id]['lower'][i] = r[0]
+                        self.joint_limits[r_id]['upper'][i] = r[1]
+                
+                if 'ctrl_ranges' in info:
+                    for i, r in enumerate(info['ctrl_ranges']):
+                        self.ctrl_limits[r_id]['lower'][i] = r[0]
+                        self.ctrl_limits[r_id]['upper'][i] = r[1]
+                        
+                if 'qpos0' in info:
+                    for i, q in enumerate(info['qpos0']):
+                        self.reference_pos[r_id][i] = q
+            
+            # 计算 action scale
+            lower = self.joint_limits[r_id]['lower']
+            upper = self.joint_limits[r_id]['upper']
+            default_scale = np.full(self.action_dim, 0.25, dtype=np.float32)
+            finite_mask = np.isfinite(lower) & np.isfinite(upper)
+            default_scale[finite_mask] = 0.25 * (upper[finite_mask] - lower[finite_mask])
+            self.action_scale[r_id] = np.maximum(default_scale, 1e-3).astype(np.float32)
+            
+            # 初始化目标位置为参考位置
+            self.target_positions[r_id] = self.reference_pos[r_id].copy()
+
+        self._pd_initialized = True
+
+    def reset(self, seed: int = None, options: Dict[str, Any] = None) -> None:
+        mujoco.mj_resetData(self.model, self.data)
+        
+        dist = self.initial_distance
+        if options and 'initial_distance' in options:
+            dist = float(options['initial_distance'])
+
+        # 获取 qpos 的索引并不是连续的 0:7 和 7:14，必须通过缓存的 qpos_adr 获取
+        qpos_adr_a = self.robot_info['robot_a']['qpos_adr']
+        self.data.qpos[qpos_adr_a:qpos_adr_a+3] = [-dist / 2.0, 0.0, 1.282]
+        self.data.qpos[qpos_adr_a+3:qpos_adr_a+7] = [1.0, 0.0, 0.0, 0.0]
+        
+        qpos_adr_b = self.robot_info['robot_b']['qpos_adr']
+        self.data.qpos[qpos_adr_b:qpos_adr_b+3] = [dist / 2.0, 0.0, 1.282]
+        self.data.qpos[qpos_adr_b+3:qpos_adr_b+7] = [0.0, 0.0, 0.0, 1.0]
+
+        # 确保重置时速度被清零，避免残留动量
+        self.data.qvel[:] = 0.0
+
+        mujoco.mj_forward(self.model, self.data)
+        
+        # 初始化 PD 控制器
+        self._init_pd_limits()
 
     def physical_step(self) -> None:
+        # 在物理步之前应用 PD 控制
+        if self._pd_initialized:
+            self._apply_pd_control()
+        
         mujoco.mj_step(self.model, self.data)
+    
+    def _apply_pd_control(self) -> None:
+        """计算并应用 PD 控制力矩"""
+        for r_id in ['robot_a', 'robot_b']:
+            target_pos = self.target_positions[r_id]
+            
+            current_pos = np.zeros(self.action_dim, dtype=np.float32)
+            current_vel = np.zeros(self.action_dim, dtype=np.float32)
+            
+            if r_id in self.robot_info and 'qpos_indices' in self.robot_info[r_id]:
+                qpos_idx_list = self.robot_info[r_id]['qpos_indices']
+                qvel_idx_list = self.robot_info[r_id]['qvel_indices']
+                
+                for i in range(len(qpos_idx_list)):
+                    if qpos_idx_list[i] >= 0:
+                        current_pos[i] = self.data.qpos[qpos_idx_list[i]]
+                        current_vel[i] = self.data.qvel[qvel_idx_list[i]]
+            
+            # 计算 PD 控制力矩
+            torque_action = self.kp * (target_pos - current_pos) - self.kd * current_vel
+            
+            # 限幅
+            c_lower = self.ctrl_limits[r_id]['lower']
+            c_upper = self.ctrl_limits[r_id]['upper']
+            torque_action = np.clip(torque_action, c_lower, c_upper)
+            
+            # 应用到执行器
+            if 'actuators' in self.robot_info[r_id]:
+                act_indices = self.robot_info[r_id]['actuators']
+                for i, act_idx in enumerate(act_indices):
+                    if act_idx >= 0:
+                        self.data.ctrl[act_idx] = torque_action[i]
 
     def get_physical_frequency(self) -> float:
         return 1.0 / self.dt

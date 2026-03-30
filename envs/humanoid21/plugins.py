@@ -57,7 +57,8 @@ class NonFallConstraintPlugin(BasePlugin):
                 ], dtype=np.float64)
 
                 state[robot_id]['root_orientation'] = clamped_wxyz
-                state[robot_id]['root_angular_velocity'][:2] = 0.0
+                # 清零水平线性速度（x, y），而不是角速度
+                state[robot_id]['root_linear_velocity'][:2] = 0.0
                 
                 # 记录拉回次数
                 ctx.metrics[f'{robot_id}_clamp_count'] = ctx.metrics.get(f'{robot_id}_clamp_count', 0) + 1
