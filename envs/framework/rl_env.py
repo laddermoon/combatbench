@@ -56,10 +56,8 @@ class CombatGymEnv(gym.Env):
         """重置环境"""
         super().reset(seed=seed)
         
-        # 重置底层引擎
-        self.engine.reset()
+        self.engine.reset(seed=seed, options=options)
         
-        # RLAdapter 已经在 pre_episode 算好了初始 obs 和 info
         return self.rl_adapter.latest_obs, self.rl_adapter.latest_info
 
     def step(self, action: Any) -> tuple[Any, Any, bool, bool, Dict[str, Any]]:

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import warnings
 
 from .backend import BaseSimulator
@@ -73,14 +73,12 @@ class SimEngine:
     def is_episode_active(self) -> bool:
         return self._is_episode_active
 
-    def reset(self) -> None:
+    def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
         self.ctx.clear_episode_state()
         self._is_episode_active = True
         
-        # 首先调用底层仿真器的 reset
-        self.simulator.reset()
+        self.simulator.reset(seed=seed, options=options)
         
-        # pre_episode 允许修改状态
         self.plugin_manager.invoke('on_pre_episode', self.ctx, allow_mutator=True)
 
         if self.ctx.is_terminated:

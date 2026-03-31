@@ -3,6 +3,7 @@ from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
 from .runtime_plugin import BaseObserver, BaseRewarder
 from .engine import SimEngine
+from .policy_runtime import PolicyRuntime
 from .common_plugins import BaseRLAdapter, TimeoutPlugin, VideoRecorderPlugin
 from .rl_env import CombatGymEnv
 from .wrappers import SingleAgentCombatWrapper
@@ -18,6 +19,7 @@ __all__ = [
     "BaseObserver",
     "BaseRewarder",
     "SimEngine",
+    "PolicyRuntime",
     "BaseRLAdapter",
     "TimeoutPlugin",
     "VideoRecorderPlugin",
