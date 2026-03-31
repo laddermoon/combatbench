@@ -151,12 +151,74 @@ def parse_args():
                         help='Damage scaling factor (default: 100.0)')
     parser.add_argument('--video-dir', type=str, default=None,
                         help='Directory to save round videos (e.g., videos/)')
+    parser.add_argument('--result-file', type=str, default=None,
+                        help='Path to save match result as JSON (e.g., result.json)')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device for policy inference (auto/cpu/cuda)')
     parser.add_argument('--quiet', '-q', action='store_true',
                         help='Suppress progress output')
 
     return parser.parse_args()
+
+
+def serialize_match_result(result) -> dict:
+    """
+    将 MatchResult 转换为 JSON 可序列化的字典
+
+    Args:
+        result: MatchResult 数据类
+
+    Returns:
+        JSON 可序列化的字典
+    """
+    import numpy as np
+    from dataclasses import asdict
+
+    def serialize_value(val):
+        """递归序列化值，处理 numpy 数组和 dataclass"""
+        if isinstance(val, np.ndarray):
+            return val.tolist()
+        elif isinstance(val, dict):
+            return {k: serialize_value(v) for k, v in val.items()}
+        elif isinstance(val, (list, tuple)):
+            return type(val)(serialize_value(v) for v in val)
+        elif hasattr(val, '__dataclass_fields__'):
+            return {k: serialize_value(getattr(val, k)) for k in val.__dataclass_fields__}
+        else:
+            return val
+
+    return serialize_value(asdict(result))
+
+
+def save_match_result(result: dict, filepath: str, policy_a_name: str, policy_b_name: str) -> None:
+    """
+    保存比赛结果到 JSON 文件
+
+    Args:
+        result: 序列化后的比赛结果字典
+        filepath: 保存路径
+        policy_a_name: 策略 A 名称
+        policy_b_name: 策略 B 名称
+    """
+    # 添加元数据
+    output = {
+        'metadata': {
+            'policy_a': policy_a_name,
+            'policy_b': policy_b_name,
+            'timestamp': __import__('time').strftime('%Y-%m-%d %H:%M:%S'),
+        },
+        'result': result
+    }
+
+    # 确保目录存在
+    output_path = Path(filepath)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 保存到文件
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+
+    print(f"Match result saved to: {filepath}")
 
 
 def main() -> None:
@@ -206,6 +268,16 @@ def main() -> None:
 
     # Run with video directory if specified
     result = runner.run(seed=None, video_dir=args.video_dir)
+
+    # Save result to JSON if specified
+    if args.result_file:
+        serialized_result = serialize_match_result(result)
+        save_match_result(
+            serialized_result,
+            args.result_file,
+            policy_a.__class__.__name__,
+            policy_b.__class__.__name__
+        )
 
     # Print final summary
     if not args.quiet:
