@@ -20,3 +20,12 @@ __all__ = [
     "CombatGymEnv",
     "SingleAgentCombatWrapper",
 ]
+from .reward import BaseRewardFunction, NullRewardFunction
+
+__all__ += [
+    "BaseRewardFunction",
+    "NullRewardFunction"
+]
+from .wrappers import DualPerspectiveVectorWrapper
+
+__all__ += ["DualPerspectiveVectorWrapper"]
