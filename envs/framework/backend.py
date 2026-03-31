@@ -46,7 +46,6 @@ class IDataMutator(ABC):
         """
         pass
 
-
     @abstractmethod
     def set_action(self, action: Dict[str, Any]) -> None:
         pass

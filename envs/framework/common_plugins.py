@@ -24,13 +24,20 @@ class TimeoutPlugin(BasePlugin):
 
 
 class VideoRecorderPlugin(BasePlugin):
+    videosave_path: str|None = None
+    
+    @classmethod
+    def set_videosave_path(cls, path: str) -> None:
+        cls.videosave_path = path
+
     """
     视频录制插件。
     在物理步按照指定的 fps 采样图像，并在 episode 结束时保存视频。
     """
     def __init__(self, fps: int = 30, output_path: str = "video.mp4"):
         self.fps = fps
-        self.output_path = Path(output_path)
+        # videosave_path 优先级高于 output_path, for external override
+        self.output_path = Path(output_path) if self.videosave_path is None else Path(self.videosave_path)
         self._interval = 1
         self._frames: List[np.ndarray] = []
 

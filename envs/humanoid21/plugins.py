@@ -81,8 +81,16 @@ class CombatScoringPlugin(BasePlugin):
         'torso': -1.0,
     }
 
-    def __init__(self, initial_health: float = 100.0, damage_scale: float = 100.0):
-        self.initial_health = initial_health
+    def __init__(
+        self,
+        initial_health: float = 100.0,
+        initial_health_a: Optional[float] = None,
+        initial_health_b: Optional[float] = None,
+        damage_scale: float = 100.0
+    ):
+        # 支持分别设置双方初始血量，如果只设置 initial_health 则双方相同
+        self.initial_health_a = initial_health_a if initial_health_a is not None else initial_health
+        self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
         self.damage_scale = damage_scale
 
     @property
@@ -90,8 +98,8 @@ class CombatScoringPlugin(BasePlugin):
         return "combat_scoring"
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        ctx.metrics['health_a'] = self.initial_health
-        ctx.metrics['health_b'] = self.initial_health
+        ctx.metrics['health_a'] = self.initial_health_a
+        ctx.metrics['health_b'] = self.initial_health_b
         ctx.metrics['damage_taken_a'] = 0.0
         ctx.metrics['damage_taken_b'] = 0.0
         # reset events list explicitly
@@ -179,3 +187,94 @@ class CombatScoringPlugin(BasePlugin):
         # Check KO
         if ctx.metrics['health_a'] <= 0 or ctx.metrics['health_b'] <= 0:
             ctx.request_termination(TerminationReason.KO)
+
+
+class FrozenRobotPlugin(BasePlugin):
+    """
+    冻结机器人插件。
+    让指定的机器人保持初始姿态完全静止，像雕塑一样。
+    在每个物理步后强制重置该机器人的位置、姿态和速度到初始状态。
+    """
+    def __init__(self, frozen_robot_id: str = 'robot_b'):
+        """
+        Args:
+            frozen_robot_id: 要冻结的机器人ID，默认为 'robot_b'
+        """
+        self.frozen_robot_id = frozen_robot_id
+        self.initial_state = None
+        
+    @property
+    def name(self) -> str:
+        return "frozen_robot"
+    
+    @property
+    def require_mutator(self) -> bool:
+        return True
+    
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        """在episode开始时记录初始状态"""
+        state = ctx.accessor.get_core_state()
+        if self.frozen_robot_id in state:
+            # 保存初始状态
+            self.initial_state = {
+                'root_position': state[self.frozen_robot_id]['root_position'].copy(),
+                'root_orientation': state[self.frozen_robot_id]['root_orientation'].copy(),
+                'root_linear_velocity': np.zeros(3, dtype=np.float64),
+                'root_angular_velocity': np.zeros(3, dtype=np.float64),
+            }
+            
+            # 同时保存关节状态（如果有的话）
+            static_data = ctx.accessor.get_static_data()
+            robot_info = static_data.get('robot_info', {})
+            if self.frozen_robot_id in robot_info:
+                info = robot_info[self.frozen_robot_id]
+                if 'qpos_indices' in info:
+                    qpos_indices = info['qpos_indices']
+                    qvel_indices = info['qvel_indices']
+                    
+                    full_state = ctx.accessor.get_core_state()
+                    qpos_array = full_state['qpos']
+                    
+                    # 保存关节位置
+                    joint_positions = np.zeros(len(qpos_indices), dtype=np.float64)
+                    for i, idx in enumerate(qpos_indices):
+                        if idx >= 0:
+                            joint_positions[i] = qpos_array[idx]
+                    
+                    self.initial_state['joint_positions'] = joint_positions
+                    self.initial_state['qpos_indices'] = qpos_indices
+                    self.initial_state['qvel_indices'] = qvel_indices
+    
+    def on_post_phy_step(self, ctx: SimContext) -> None:
+        """在每个物理步后强制重置机器人状态"""
+        if self.initial_state is None:
+            return
+        
+        state = ctx.accessor.get_core_state()
+        
+        # 重置根部状态
+        state[self.frozen_robot_id]['root_position'] = self.initial_state['root_position'].copy()
+        state[self.frozen_robot_id]['root_orientation'] = self.initial_state['root_orientation'].copy()
+        state[self.frozen_robot_id]['root_linear_velocity'] = np.zeros(3, dtype=np.float64)
+        state[self.frozen_robot_id]['root_angular_velocity'] = np.zeros(3, dtype=np.float64)
+        
+        # 重置关节状态
+        if 'joint_positions' in self.initial_state:
+            qpos_indices = self.initial_state['qpos_indices']
+            qvel_indices = self.initial_state['qvel_indices']
+            joint_positions = self.initial_state['joint_positions']
+            
+            qpos_array = state['qpos']
+            qvel_array = state['qvel']
+            
+            for i, (qpos_idx, qvel_idx) in enumerate(zip(qpos_indices, qvel_indices)):
+                if qpos_idx >= 0:
+                    qpos_array[qpos_idx] = joint_positions[i]
+                if qvel_idx >= 0:
+                    qvel_array[qvel_idx] = 0.0
+            
+            state['qpos'] = qpos_array
+            state['qvel'] = qvel_array
+        
+        # 应用状态
+        ctx.mutator.set_core_state(state)

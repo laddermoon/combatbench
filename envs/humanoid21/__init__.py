@@ -9,7 +9,7 @@ from framework import CombatGymEnv
 
 from .simulator import MujocoCombatSimulator
 from .rl_adapter import Humanoid21RLAdapter
-from .plugins import NonFallConstraintPlugin, CombatScoringPlugin
+from .plugins import NonFallConstraintPlugin, CombatScoringPlugin, FrozenRobotPlugin
 
 def make_env(
     arena_xml: Optional[str] = None,
@@ -21,6 +21,8 @@ def make_env(
     non_fall_roll_limit_deg: float = 5.0,
     damage_scale: float = 100.0,
     initial_health: float = 100.0,
+    initial_health_a: Optional[float] = None,
+    initial_health_b: Optional[float] = None,
     plugins: Optional[List[Any]] = None,
 ) -> CombatGymEnv:
     """
@@ -43,7 +45,12 @@ def make_env(
     active_plugins = []
     
     # 算分插件（必选）
-    active_plugins.append(CombatScoringPlugin(initial_health=initial_health, damage_scale=damage_scale))
+    active_plugins.append(CombatScoringPlugin(
+        initial_health=initial_health,
+        initial_health_a=initial_health_a,
+        initial_health_b=initial_health_b,
+        damage_scale=damage_scale
+    ))
     
     # 防摔倒约束插件（可选）
     if non_fall_mode:
@@ -72,5 +79,6 @@ __all__ = [
     "Humanoid21RLAdapter",
     "NonFallConstraintPlugin",
     "CombatScoringPlugin",
+    "FrozenRobotPlugin",
     "make_env"
 ]

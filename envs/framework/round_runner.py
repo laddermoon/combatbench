@@ -1,10 +1,9 @@
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Optional
 import numpy as np
-from pathlib import Path
-import sys
 
-from . import make_env
-from envs.framework import VideoRecorderPlugin
+from .common_plugins import VideoRecorderPlugin
+from .combat_gym import CombatGymEnv
+
 
 class RoundRunner:
     """
@@ -14,51 +13,25 @@ class RoundRunner:
         self,
         policy_a: Any,
         policy_b: Any,
-        match_duration: float = 30.0,
-        control_frequency: int = 20,
-        initial_distance: float = 2.0,
-        non_fall_mode: bool = False,
-        non_fall_pitch_limit_deg: float = 15.0,
-        non_fall_roll_limit_deg: float = 10.0,
-        damage_scale: float = 100.0,
+        env: CombatGymEnv,
         verbose: bool = True
     ):
         self.policy_a = policy_a
         self.policy_b = policy_b
         self.verbose = verbose
-
-        self.match_duration = match_duration
-        self.control_frequency = control_frequency
-        self.initial_distance = initial_distance
-        self.non_fall_mode = non_fall_mode
-        self.non_fall_pitch_limit_deg = non_fall_pitch_limit_deg
-        self.non_fall_roll_limit_deg = non_fall_roll_limit_deg
-        self.damage_scale = damage_scale
+        
+        self.env = env
 
     def _print_header(self):
         if not self.verbose: return
         print("=" * 60)
         print("CombatBench Round Started")
-        print(f"Duration: {self.match_duration}s")
-        print(f"Control Frequency: {self.control_frequency}Hz")
         print("=" * 60)
 
-    def run(self, save_video_path: Optional[str] = None, seed: Optional[int] = None) -> Dict[str, Any]:
-        plugins = []
-        if save_video_path:
-            plugins.append(VideoRecorderPlugin(fps=30, output_path=save_video_path))
-
-        env = make_env(
-            match_duration=self.match_duration,
-            control_frequency=self.control_frequency,
-            non_fall_mode=self.non_fall_mode,
-            non_fall_pitch_limit_deg=self.non_fall_pitch_limit_deg,
-            non_fall_roll_limit_deg=self.non_fall_roll_limit_deg,
-            damage_scale=self.damage_scale,
-            plugins=plugins
-        )
-
-        obs, info = env.reset(seed=seed)
+    def run(self, seed: Optional[int] = None, videosave_path: Optional[str] = None) -> Dict[str, Any]:
+        if videosave_path is not None :
+            VideoRecorderPlugin.set_videosave_path(videosave_path)
+        obs, info = self.env.reset(seed=seed)
         
         if hasattr(self.policy_a, "reset"): self.policy_a.reset()
         if hasattr(self.policy_b, "reset"): self.policy_b.reset()
@@ -66,7 +39,7 @@ class RoundRunner:
         self._print_header()
 
         step_count = 0
-        action_dim = env.action_space.spaces["robot_a"].shape[0]
+        action_dim = self.env.action_space.spaces["robot_a"].shape[0]
 
         while True:
             # 获取动作
@@ -87,7 +60,7 @@ class RoundRunner:
                 "robot_b": np.asarray(act_b, dtype=np.float32),
             }
 
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = self.env.step(action)
             step_count += 1
 
             # 打印事件
@@ -120,5 +93,30 @@ class RoundRunner:
             print(f"Final HP: robot_a={result['final_health'].get('robot_a', 0):.1f}, robot_b={result['final_health'].get('robot_b', 0):.1f}")
             print("-" * 60)
 
-        env.close()
+        self.env.close()
         return result
+
+
+if __name__ == "__main__":
+    # Example usage
+    from envs.humanoid21 import make_env
+    
+    # Create environment with video recorder plugin
+    env = make_env(
+        plugins=[VideoRecorderPlugin(fps=30, output_path="match.mp4")],
+        match_duration=30.0
+    )
+    
+    # Create policies (dummy for example)
+    class DummyPolicy:
+        def act(self, obs, info):
+            return [0.0] * 21  # 21DOF humanoid
+    
+    policy_a = DummyPolicy()
+    policy_b = DummyPolicy()
+    
+    # Run round
+    runner = RoundRunner(policy_a, policy_b, env)
+    result = runner.run(seed=42)
+    
+    print(f"Result: {result}")
