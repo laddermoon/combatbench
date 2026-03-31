@@ -69,34 +69,42 @@ graph TD
   - ❌ **禁忌**：不要把“某个算法喜欢什么奖励”写到这里。世界插件只能产出客观事实，不能带有实验特定的价值判断。
 
 ### 4. BaseObserver (观测插件)
-- **定位**：面向策略侧的只读观测构造器，是一种特化的插件基类。
+- **定位**：面向策略侧的只读观测构造器，是一种由 `RuntimeDriverPlugin` 托管的运行时单元。
 - **边界**：
   - ✅ **建议**：只暴露一个核心重写入口，由开发者基于 `IDataAccessor` 直接构建某个 agent 的 observation / info view。
   - ✅ **建议**：做 Ego-centric 转换、视角裁剪、特征拼接、调试信息补充。
   - ✅ **建议**：把 `IDataAccessor` 的数据格式视为首要契约，上层逻辑优先围绕这些标准接口开发。
-  - ❌ **禁忌**：不要通过 Observer 修改物理状态，不要在这里做规则裁决，不要在这里写 reward。
+  - ❌ **禁忌**：不要通过 Observer 修改物理状态，不要把它直接挂到 `SimEngine` 的世界插件队列，不要在这里写 reward。
 
 ### 5. BaseRewarder (奖励插件)
-- **定位**：面向策略侧的只读奖励构造器，是一种特化的插件基类。
+- **定位**：面向策略侧的只读奖励构造器，是一种由 `RuntimeDriverPlugin` 托管的运行时单元。
 - **边界**：
   - ✅ **建议**：只暴露一个核心重写入口，由开发者基于 `IDataAccessor`、`metrics`、`events` 等只读信息为某个 agent 计算 reward。
   - ✅ **建议**：支持稠密奖励、稀疏奖励、课程阶段奖励等实验逻辑。
   - ✅ **建议**：允许直接读取底层标准化数据，而不是被中间层提前裁剪。
   - ❌ **禁忌**：不要通过 Rewarder 修改世界状态，不要将 Rewarder 当成规则插件，不要把胜负裁决逻辑写进 Rewarder。
 
-### 6. PolicyRuntime (对外主接口)
+### 6. RuntimeDriverPlugin (统一运行时驱动插件)
+- **定位**：挂载在 `SimEngine` 上的唯一 runtime driver，负责批量驱动多个 Observer / Rewarder。
+- **边界**：
+  - ✅ **建议**：在 `on_pre_episode`、`on_post_action_step`、`on_post_episode` 统一把 `SimContext` 裁剪为 `ReadOnlySimContext`。
+  - ✅ **建议**：同一时机只做一次上下文转换，再批量调用多个 runtime unit，以减少 plugin 调度次数和上下文构造成本。
+  - ✅ **建议**：统一托管 A/B 双侧的 observer 和 rewarder，并提供集中取结果的接口。
+  - ❌ **禁忌**：不要把策略逻辑拆成多个独立 `BasePlugin` 分别挂到 `SimEngine`；这样会回到高频调度、重复上下文转换的旧问题。
+
+### 7. PolicyRuntime (对外主接口)
 - **定位**：框架对开发者提供的主要交互入口。
 - **边界**：
-  - ✅ **建议**：在 `SimEngine` 之上统一管理双边动作输入、Observer/Rewarder 调度、输出结果组装。
+  - ✅ **建议**：在 `SimEngine` 之上统一管理双边动作输入、`RuntimeDriverPlugin` 调度、输出结果组装。
   - ✅ **建议**：`step` 直接接收两个参数：一个给 `robot_a`，一个给 `robot_b`。
   - ✅ **建议**：允许为 A/B 分别注入不同的 Observer / Rewarder。
   - ❌ **禁忌**：不要在这里重新实现底层物理逻辑，不要绕过 `SimEngine` 直接控制 `Simulator`。
 
-### 7. Gym Adapter / Wrapper (可选外层适配)
-- **定位**：把 `PolicyRuntime` 包装成 Gymnasium、SB3、向量化训练等外部生态需要的接口。
+### 8. Gym Adapter (兼容层)
+- **定位**：把 `PolicyRuntime` 或等价 runtime 包装成 Gymnasium 等外部生态需要的接口。
 - **边界**：
-  - ✅ **建议**：处理单视角提取、空间声明、batch 组织、固定对手注入等生态兼容逻辑。
-  - ❌ **禁忌**：不要把本应属于 Observer / Rewarder 的核心语义再塞回 Adapter。
+  - ✅ **建议**：仅作为兼容旧训练代码或外部库的薄适配层存在。
+  - ❌ **禁忌**：不要再把 Adapter 当成框架主入口，不要把本应属于 Observer / Rewarder 的核心语义再塞回 Adapter。
 
 ---
 
@@ -106,7 +114,7 @@ graph TD
 
 ### 1. `IDataAccessor` 的合法读取入口
 
-Observer / Rewarder / 只读插件可以合法依赖以下接口：
+Observer / Rewarder / RuntimeDriverPlugin 管理的只读运行时单元可以合法依赖以下接口：
 
 ```python
 accessor.get_static_data()
@@ -205,7 +213,21 @@ result = {
 - **`info.shared`** 用于放共享的客观信息。
 - **`info.robot_a` / `info.robot_b`** 用于放各自视角的补充说明。
 
-### 5. 实现原则
+### 5. RuntimeDriverPlugin 的最小实现契约
+
+统一 driver 负责托管多个 runtime unit，并在每个关键时机只做一次 `ReadOnlySimContext` 转换。
+
+```python
+class BaseRuntimeUnit(ABC):
+    def process_data(self, ctx: ReadOnlySimContext) -> None: ...
+    def get_output(self) -> Any: ...
+```
+
+- **`BaseObserver`** 与 **`BaseRewarder`** 都继承自 `BaseRuntimeUnit`。
+- 它们自身不是 `BasePlugin`，而是被 `RuntimeDriverPlugin` 统一托管。
+- `RuntimeDriverPlugin` 才是唯一挂到 `SimEngine` 的 runtime 插件。
+
+### 6. 实现原则
 
 - **[首要原则]** 开发者优先关注 `IDataAccessor` 的格式是否标准、稳定、可复用。
 - **[Observer 原则]** 观测构建应直接建立在标准读接口之上，而不是依赖脆弱的中间映射层。

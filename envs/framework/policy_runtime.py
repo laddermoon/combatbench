@@ -7,7 +7,7 @@ from .common_plugins import TimeoutPlugin
 from .engine import SimEngine
 from .plugin import BasePlugin
 from .runtime_plugin import BaseObserver, BaseRewarder, RuntimeDriverPlugin
-from .context import TerminationReason
+from .context import ReadOnlySimContext, TerminationReason
 
 
 class PolicyRuntime:
@@ -150,7 +150,7 @@ class PolicyRuntime:
 
     def _build_shared_info(self) -> Dict[str, Any]:
         ctx = self.engine.ctx
-        return {
+        shared_info = {
             "metrics": dict(ctx.metrics),
             "events": list(ctx.events),
             "termination_reasons": list(ctx.termination_proposals),
@@ -158,6 +158,12 @@ class PolicyRuntime:
             "physics_step": ctx.physics_step,
             "is_terminated": ctx.is_terminated,
         }
+        shared_info_builder = getattr(self, "shared_info_builder", None)
+        if callable(shared_info_builder):
+            extra_shared_info = shared_info_builder(ReadOnlySimContext.from_sim_context(ctx))
+            if isinstance(extra_shared_info, dict):
+                shared_info.update(extra_shared_info)
+        return shared_info
 
     def _resolve_termination_flags(self) -> Tuple[bool, bool]:
         proposals = self.engine.ctx.termination_proposals

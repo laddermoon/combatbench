@@ -1,5 +1,4 @@
 from typing import Any, Dict, Optional, Callable
-import numpy as np
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -34,7 +33,7 @@ class MatchRunner:
     使用方式：
         from combatbench.envs.humanoid21 import make_env
 
-        def env_factory(initial_health_a=100.0, initial_health_b=100.0):
+        def runtime_factory(initial_health_a=100.0, initial_health_b=100.0):
             return make_env(
                 match_duration=30.0,
                 control_frequency=20,
@@ -45,7 +44,7 @@ class MatchRunner:
         runner = MatchRunner(
             policy_a=policy_a,
             policy_b=policy_b,
-            env_factory=env_factory,
+            env_factory=runtime_factory,
             total_rounds=6,
             verbose=True
         )
@@ -64,13 +63,13 @@ class MatchRunner:
         Args:
             policy_a: 机器人A的策略
             policy_b: 机器人B的策略
-            env_factory: 环境工厂函数，接收 (initial_health_a, initial_health_b) 参数
+            env_factory: runtime 工厂函数，接收 (initial_health_a, initial_health_b) 参数
             total_rounds: 总回合数，默认6回合
             verbose: 是否打印详细信息
         """
         self.policy_a = policy_a
         self.policy_b = policy_b
-        self.env_factory = env_factory
+        self.runtime_factory = env_factory
         self.total_rounds = total_rounds
         self.verbose = verbose
 
@@ -152,14 +151,12 @@ class MatchRunner:
                 video_path = str(Path(video_dir) / f"round_{round_num}.mp4")
             VideoRecorderPlugin.set_videosave_path(video_path)
 
-            # 创建新环境（每回合重置位置，但血量延续）
-            env = self.env_factory(initial_health_a=current_health_a, initial_health_b=current_health_b)
+            runtime = self.runtime_factory(initial_health_a=current_health_a, initial_health_b=current_health_b)
 
-            # 运行单回合
             round_runner = RoundRunner(
                 policy_a=self.policy_a,
                 policy_b=self.policy_b,
-                env=env,
+                runtime=runtime,
                 verbose=self.verbose
             )
 
@@ -218,26 +215,25 @@ class MatchRunner:
 
 
 if __name__ == "__main__":
-    # Example usage
     from combatbench.envs.humanoid21 import make_env
     from .common_plugins import VideoRecorderPlugin
 
-    def env_factory():
+    def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
         return make_env(
             plugins=[VideoRecorderPlugin(fps=30, output_path="")],
             match_duration=30.0,
-            control_frequency=20
+            control_frequency=20,
+            initial_health_a=initial_health_a,
+            initial_health_b=initial_health_b,
         )
 
-    # Create policies (dummy for example)
     class DummyPolicy:
         def act(self, obs, info):
-            return [0.0] * 21  # 21DOF humanoid
+            return [0.0] * 21
 
     policy_a = DummyPolicy()
     policy_b = DummyPolicy()
 
-    # Run match
     runner = MatchRunner(
         policy_a=policy_a,
         policy_b=policy_b,

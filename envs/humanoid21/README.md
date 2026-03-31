@@ -178,7 +178,7 @@ python -m envs.humanoid21.run_match \
 | 组件 | 文件 | 说明 |
 |------|------|------|
 | 仿真器 | `simulator.py` | MuJoCo 物理引擎封装，PD 控制 |
-| RL 适配器 | `rl_adapter.py` | 观测/动作空间定义，数据提取 |
+| Runtime 单元 | `runtime_units.py` | Observer/Rewarder、观测空间定义、共享信息构造 |
 | 战斗插件 | `plugins.py` | 伤害计算、防摔倒约束 |
 | 工厂函数 | `__init__.py` | 环境组装 |
 
@@ -224,7 +224,7 @@ make_env(
 humanoid21/
 ├── __init__.py       # 工厂函数 make_env
 ├── simulator.py      # MujoCombatSimulator
-├── rl_adapter.py     # Humanoid21RLAdapter
+├── runtime_units.py  # Humanoid21Observer / Rewarder
 ├── plugins.py        # 业务插件
 ├── run_round.py      # 单回合比赛脚本
 └── run_match.py      # 多回合比赛脚本

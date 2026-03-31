@@ -11,16 +11,16 @@ print("=" * 80)
 
 # 创建环境，添加 FrozenRobotPlugin
 frozen_plugin = FrozenRobotPlugin(frozen_robot_id='robot_b')
-env = make_env(
+runtime = make_env(
     match_duration=5.0,
     non_fall_mode=True,
     plugins=[frozen_plugin]
 )
 
-obs, info = env.reset()
+result = runtime.reset()
 
 # 获取初始位置
-sim = env.engine.simulator
+sim = runtime.engine.simulator
 robot_b_body_id = sim.robot_info['robot_b']['body_id']
 initial_pos_b = sim.data.xpos[robot_b_body_id].copy()
 initial_quat_b = sim.data.xquat[robot_b_body_id].copy()
@@ -36,13 +36,10 @@ max_pos_diff = 0.0
 max_quat_diff = 0.0
 
 for step in range(100):
-    # 机器人A随机动作，机器人B零动作（但插件会强制保持静止）
-    action = {
-        "robot_a": np.random.uniform(-0.5, 0.5, 21),
-        "robot_b": np.random.uniform(-0.5, 0.5, 21)  # 即使给B动作，它也应该保持静止
-    }
+    action_a = np.random.uniform(-0.5, 0.5, 21)
+    action_b = np.random.uniform(-0.5, 0.5, 21)
     
-    obs, reward, terminated, truncated, info = env.step(action)
+    result = runtime.step(action_a, action_b)
     
     # 检查机器人B的位置
     current_pos_b = sim.data.xpos[robot_b_body_id].copy()
@@ -74,22 +71,19 @@ print(f"\n" + "=" * 80)
 print("测试受到攻击时的表现")
 print("=" * 80)
 
-env.reset()
+runtime.reset()
 initial_pos_b = sim.data.xpos[robot_b_body_id].copy()
 
 # 让机器人A向前移动接近B
 for step in range(50):
-    # 机器人A向前移动
-    action = {
-        "robot_a": np.array([0.0, 0.0, 0.0,  # 躯干
-                             0.0, 0.0, 0.5, 0.5, 0.0, 0.0,  # 右腿向前
-                             0.0, 0.0, -0.5, -0.5, 0.0, 0.0,  # 左腿向后
-                             0.5, 0.0, 0.0,  # 右臂
-                             0.5, 0.0, 0.0]),  # 左臂
-        "robot_b": np.zeros(21)
-    }
+    action_a = np.array([0.0, 0.0, 0.0,
+                         0.0, 0.0, 0.5, 0.5, 0.0, 0.0,
+                         0.0, 0.0, -0.5, -0.5, 0.0, 0.0,
+                         0.5, 0.0, 0.0,
+                         0.5, 0.0, 0.0])
+    action_b = np.zeros(21)
     
-    obs, reward, terminated, truncated, info = env.step(action)
+    result = runtime.step(action_a, action_b)
     
     if (step + 1) % 10 == 0:
         current_pos_b = sim.data.xpos[robot_b_body_id].copy()

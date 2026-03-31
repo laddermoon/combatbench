@@ -1,5 +1,4 @@
-import abc
-from typing import Any, Dict, List, Optional
+from typing import List
 from pathlib import Path
 import numpy as np
 
@@ -83,57 +82,3 @@ class VideoRecorderPlugin(BasePlugin):
             print("Warning: opencv-python not installed, cannot save video")
         except Exception as e:
             print(f"Error saving video: {e}")
-
-
-class BaseRLAdapter(BasePlugin, abc.ABC):
-    """
-    RL 数据适配器抽象基类。
-    职责：
-    1. 提供 Gym 空间定义。
-    2. 在 pre_episode 提取初始观测。
-    3. 在 post_action_step 计算观测、奖励和信息字典。
-    结果暂存在 latest_xxx 属性中，供 CombatGymEnv 读取。
-    """
-    def __init__(self):
-        self.latest_obs: Any = None
-        self.latest_reward: Any = None
-        self.latest_info: Dict[str, Any] = {}
-
-    @property
-    def name(self) -> str:
-        return "rl_adapter"
-
-    @property
-    def priority(self) -> int:
-        # RL适配器优先级通常极低，在所有约束和指标计算完成后再提取数据
-        return -100
-
-    @abc.abstractmethod
-    def get_observation_space(self) -> Any:
-        pass
-
-    @abc.abstractmethod
-    def get_action_space(self) -> Any:
-        pass
-
-    @abc.abstractmethod
-    def build_observation(self, ctx: SimContext) -> Any:
-        pass
-
-    @abc.abstractmethod
-    def build_reward(self, ctx: SimContext) -> Any:
-        pass
-
-    @abc.abstractmethod
-    def build_info(self, ctx: SimContext) -> Dict[str, Any]:
-        pass
-
-    def on_pre_episode(self, ctx: SimContext) -> None:
-        self.latest_obs = self.build_observation(ctx)
-        self.latest_reward = 0.0  # 初始奖励一般为 0
-        self.latest_info = self.build_info(ctx)
-
-    def on_post_action_step(self, ctx: SimContext) -> None:
-        self.latest_obs = self.build_observation(ctx)
-        self.latest_reward = self.build_reward(ctx)
-        self.latest_info = self.build_info(ctx)

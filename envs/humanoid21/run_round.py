@@ -170,8 +170,7 @@ def main() -> None:
         VideoRecorderPlugin.set_videosave_path(args.video)
         plugins.append(VideoRecorderPlugin(fps=30))
 
-    # Create environment
-    env = make_env(
+    runtime = make_env(
         match_duration=args.duration,
         control_frequency=args.control_frequency,
         non_fall_mode=args.non_fall_mode,
@@ -185,7 +184,7 @@ def main() -> None:
     runner = RoundRunner(
         policy_a=policy_a,
         policy_b=policy_b,
-        env=env,
+        runtime=runtime,
         verbose=not args.quiet,
     )
 

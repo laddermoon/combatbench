@@ -238,7 +238,7 @@ def main() -> None:
     from envs.framework.match_runner import MatchRunner
     from envs.framework.common_plugins import VideoRecorderPlugin
 
-    # Create environment factory function
+    # Create runtime factory function
     def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
         plugins = []
         # Always add video plugin when video_dir is specified

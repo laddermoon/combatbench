@@ -6,8 +6,8 @@
 
 1. **底层物理去耦 (Backend Decoupling)**: 不关心你使用的是 MuJoCo、IsaacGym 还是 PyBullet。只要实现 `BaseSimulator` 的五个读写契约，任何物理后端都能无缝接入。
 2. **读写权限隔离 (Capability-Based Security)**: 告别在 RL 环境中常见的“状态被意外修改”的幽灵 Bug。引擎会在不同的生命周期精准分发 `IDataAccessor`（只读）和 `IDataMutator`（可写）权限。
-3. **万物皆插件 (Everything is a Plugin)**: 视频录制、超时判断、RL 奖励计算、约束拉回……所有业务逻辑全部被剥离为 `BasePlugin`。
-4. **轻薄的转译层**: `CombatGymEnv` 只有不到 80 行代码，它只是把引擎的时间线翻译成标准的 `gymnasium` API。
+3. **世界规则与策略视图分层**: 世界规则继续由 `BasePlugin` 驱动；策略视图由 `RuntimeDriverPlugin` 统一调度的 `BaseObserver` / `BaseRewarder` 负责。
+4. **Runtime First**: `PolicyRuntime` 是主要对外接口；Gym 适配层仅保留兼容用途，不再作为框架主入口。
 
 ---
 
@@ -25,6 +25,7 @@
     *   通过 `ctx.mutator` 提供受引擎严格控制的写入能力（未授权时为 `None`）。
     *   提供 `ctx.metrics` 和 `ctx.events` 用于存放派生指标。
     *   提供 `ctx.request_termination(reason)` 机制用于发起终止提案。
+*   **`ReadOnlySimContext`**: 面向运行时单元的只读裁剪视图，由 `RuntimeDriverPlugin` 统一构造。
 
 ### 3. 生命周期插件 (`plugin.py`)
 开发者通过继承 `BasePlugin` 并在特定的生命周期挂载逻辑：
@@ -43,9 +44,20 @@
 ### 4. 引擎枢纽 (`engine.py`)
 *   **`SimEngine`**: 负责驱动 `Simulator`，管理时间线 (`phy_steps_per_action`)，并在正确的时机分发上下文 `SimContext` 和读写权限给所有挂载的插件。
 
+### 5. 运行时驱动 (`runtime_plugin.py` / `policy_runtime.py`)
+*   **`BaseRuntimeUnit`**: 所有策略侧只读单元的统一基类，只保留两个方法：
+    *   `process_data(ctx: ReadOnlySimContext)`
+    *   `get_output()`
+*   **`BaseObserver` / `BaseRewarder`**: 观测构造器与奖励构造器。
+*   **`RuntimeDriverPlugin`**: 唯一挂到 `SimEngine` 的 runtime plugin，负责：
+    *   在关键时机把 `SimContext` 裁剪为 `ReadOnlySimContext`
+    *   批量驱动多个 observer / rewarder
+    *   减少 plugin 调用次数和 context 转换次数
+*   **`PolicyRuntime`**: 对外主接口，直接接收 `action_a, action_b` 并返回双边结果。
+
 ---
 
-## 🚀 插件开发指南
+## 🚀 插件与 RuntimeUnit 开发指南
 
 ### 示例 1: 编写一个纯只读的监控插件
 
@@ -94,29 +106,58 @@ class GroundConstraintPlugin(BasePlugin):
 
 ---
 
-## 🛠️ 将 RL 环境运行起来 (`rl_env.py`)
+## 🛠️ 编写 Observer / Rewarder 并挂到 PolicyRuntime
 
-要将这套引擎对接到标准强化学习算法（如 PPO, SAC），你需要：
+要将这套引擎对接到策略、对战或训练逻辑，你需要：
 1. 提供一个具体的 `BaseSimulator` (如 MuJoCo 版)。
-2. 实现一个继承自 `BaseRLAdapter` 的类（定义 Observation/Action 空间及 Reward 计算逻辑）。
-3. 用 `CombatGymEnv` 组装它们。
+2. 实现一个或多个 `BaseObserver` / `BaseRewarder`。
+3. 用 `PolicyRuntime` 组装它们。
 
 ```python
-import gymnasium as gym
-from framework import CombatGymEnv
+from framework import PolicyRuntime, BaseObserver, BaseRewarder, VideoRecorderPlugin
 
-# 你的具体实现
+
+class MyObserver(BaseObserver):
+    def __init__(self):
+        self._output = None
+
+    def process_data(self, ctx):
+        core_state = ctx.accessor.get_core_state()
+        self._output = core_state["robot_a"]
+
+    def get_output(self):
+        return self._output
+
+
+class MyRewarder(BaseRewarder):
+    def __init__(self):
+        self._output = 0.0
+
+    def process_data(self, ctx):
+        self._output = -float(ctx.metrics.get("robot_a_clamp_count", 0))
+
+    def get_output(self):
+        return self._output
+
 simulator = MujocoSimulator(...)
-rl_adapter = MyRLAdapter(...)
 plugins = [VideoRecorderPlugin(fps=30), HeightMonitorPlugin()]
 
-env = CombatGymEnv(
+runtime = PolicyRuntime(
     simulator=simulator,
-    rl_adapter=rl_adapter,
     plugins=plugins,
-    phy_steps_per_action=10, # 1个控制步等于10个物理步
-    max_steps=1000           # 自动挂载 Timeout 插件
+    observers={"robot_a": MyObserver()},
+    rewarders={"robot_a": MyRewarder()},
+    phy_steps_per_action=10,
+    max_steps=1000,
 )
 
-obs, info = env.reset()
+result = runtime.reset()
+obs = result["obs"]
+info = result["info"]
 ```
+
+## ♻️ 外部适配说明
+
+- `PolicyRuntime` 是当前唯一推荐的主入口。
+- 如果以后需要 Gymnasium、SB3 或自定义训练器适配，请在 framework 外围单独实现薄适配层。
+- framework 内部不再维护旧的 Gym 适配路径。
