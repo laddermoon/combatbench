@@ -29,9 +29,8 @@ class RoundRunner:
     def run(self, seed: Optional[int] = None, videosave_path: Optional[str] = None) -> Dict[str, Any]:
         if videosave_path is not None :
             VideoRecorderPlugin.set_videosave_path(videosave_path)
-        result = self.runtime.reset(seed=seed)
-        obs = result["obs"]
-        info = result["info"]
+        self.runtime.reset(seed=seed)
+        obs, info = self._collect_runtime_view()
         
         if hasattr(self.policy_a, "reset"): self.policy_a.reset()
         if hasattr(self.policy_b, "reset"): self.policy_b.reset()
@@ -60,14 +59,12 @@ class RoundRunner:
                 if self.verbose: print(f"Warning: Policy B failed: {e}")
                 act_b = np.zeros(action_dim)
 
-            result = self.runtime.step(
+            self.runtime.step(
                 np.asarray(act_a, dtype=np.float32),
                 np.asarray(act_b, dtype=np.float32),
             )
-            obs = result["obs"]
-            info = result["info"]
-            terminated = result["terminated"]
-            truncated = result["truncated"]
+            obs, info = self._collect_runtime_view()
+            terminated, truncated = self.runtime.get_termination_flags()
             step_count += 1
 
             shared_info = self._extract_shared_info(info)
@@ -118,6 +115,21 @@ class RoundRunner:
     def _extract_agent_obs(self, obs: Any, agent_id: str) -> Any:
         return obs[agent_id]
 
+    def _collect_runtime_view(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        obs = {}
+        info = {
+            "shared": self.runtime.get_shared_info(),
+            "robot_a": {},
+            "robot_b": {},
+        }
+        for agent_id in ("robot_a", "robot_b"):
+            payload, agent_info = self._normalize_observer_output(
+                self.runtime.get_observer_output(f"{agent_id}_obs")
+            )
+            obs[agent_id] = payload
+            info[agent_id].update(agent_info)
+        return obs, info
+
     def _build_policy_info(self, info: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         opponent_id = "robot_b" if agent_id == "robot_a" else "robot_a"
         shared_info = info["shared"]
@@ -155,6 +167,29 @@ class RoundRunner:
         if health_b > health_a:
             return "robot_b"
         return "draw"
+
+    @staticmethod
+    def _normalize_observer_output(output: Any) -> tuple[Any, Dict[str, Any]]:
+        if output is None:
+            return None, {}
+        if isinstance(output, tuple) and len(output) == 2:
+            payload, info = output
+            if isinstance(info, dict):
+                return payload, dict(info)
+            return payload, {"observer_output": info}
+        if isinstance(output, dict) and ("obs" in output or "observation" in output):
+            payload = output.get("obs", output.get("observation"))
+            info: Dict[str, Any] = {}
+            raw_info = output.get("info")
+            if isinstance(raw_info, dict):
+                info.update(raw_info)
+            elif raw_info is not None:
+                info["observer_info"] = raw_info
+            for key, value in output.items():
+                if key not in {"obs", "observation", "info"}:
+                    info[key] = value
+            return payload, info
+        return output, {}
 
 
 if __name__ == "__main__":

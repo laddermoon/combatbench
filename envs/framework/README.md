@@ -6,8 +6,8 @@
 
 1. **底层物理去耦 (Backend Decoupling)**: 不关心你使用的是 MuJoCo、IsaacGym 还是 PyBullet。只要实现 `BaseSimulator` 的五个读写契约，任何物理后端都能无缝接入。
 2. **读写权限隔离 (Capability-Based Security)**: 告别在 RL 环境中常见的“状态被意外修改”的幽灵 Bug。引擎会在不同的生命周期精准分发 `IDataAccessor`（只读）和 `IDataMutator`（可写）权限。
-3. **世界规则与策略视图分层**: 世界规则继续由 `BasePlugin` 驱动；策略视图由 `RuntimeDriverPlugin` 统一调度的 `BaseObserver` / `BaseRewarder` 负责。
-4. **Runtime First**: `PolicyRuntime` 是主要对外接口；Gym 适配层仅保留兼容用途，不再作为框架主入口。
+3. **世界规则与策略视图分层**: 世界规则继续由 `BasePlugin` 驱动；策略视图由内部 observer dispatcher 统一调度的 `BaseObserverPlugin` 负责。
+4. **Runtime First**: `EnvRuntime` 是主要对外接口；它只负责驱动仿真、分发插件、转发双边动作输入，不负责替上层组装策略结果。
 
 ---
 
@@ -25,7 +25,7 @@
     *   通过 `ctx.mutator` 提供受引擎严格控制的写入能力（未授权时为 `None`）。
     *   提供 `ctx.metrics` 和 `ctx.events` 用于存放派生指标。
     *   提供 `ctx.request_termination(reason)` 机制用于发起终止提案。
-*   **`ReadOnlySimContext`**: 面向运行时单元的只读裁剪视图，由 `RuntimeDriverPlugin` 统一构造。
+*   **`ReadOnlySimContext`**: 面向 observer plugin 的只读裁剪视图，由内部 dispatcher 统一构造。
 
 ### 3. 生命周期插件 (`plugin.py`)
 开发者通过继承 `BasePlugin` 并在特定的生命周期挂载逻辑：
@@ -41,19 +41,23 @@
 
 > **💡 权限双重检查**：如果一个插件希望修改状态，它必须重写 `require_mutator` 属性并返回 `True`，且必须挂载在允许修改的生命周期。
 
-### 4. 引擎枢纽 (`engine.py`)
-*   **`SimEngine`**: 负责驱动 `Simulator`，管理时间线 (`phy_steps_per_action`)，并在正确的时机分发上下文 `SimContext` 和读写权限给所有挂载的插件。
+### 4. 统一运行时 (`env_runtime.py`)
+*   **`EnvRuntime`**: 对外主接口，负责：
+    *   接收 `action_a, action_b`
+    *   驱动底层仿真时序
+    *   挂载世界插件与 observer plugin
+    *   暴露当前共享信息与 observer 输出读取接口
+*   **`_RuntimeCore`**: 仅供内部使用的时序执行核心，不作为 framework 公共 API 暴露。
 
-### 5. 运行时驱动 (`runtime_plugin.py` / `policy_runtime.py`)
+### 5. Observer 插件调度 (`runtime_plugin.py`)
 *   **`BaseRuntimeUnit`**: 所有策略侧只读单元的统一基类，只保留两个方法：
     *   `process_data(ctx: ReadOnlySimContext)`
     *   `get_output()`
-*   **`BaseObserver` / `BaseRewarder`**: 观测构造器与奖励构造器。
-*   **`RuntimeDriverPlugin`**: 唯一挂到 `SimEngine` 的 runtime plugin，负责：
+*   **`BaseObserverPlugin`**: 统一的只读 observer plugin 抽象。观测、reward、debug view 都可以实现为这种插件。
+*   **`_ObserverDispatcherPlugin`**: 唯一挂到内部 runtime core 的只读调度器，负责：
     *   在关键时机把 `SimContext` 裁剪为 `ReadOnlySimContext`
-    *   批量驱动多个 observer / rewarder
+    *   批量驱动多个 observer plugin
     *   减少 plugin 调用次数和 context 转换次数
-*   **`PolicyRuntime`**: 对外主接口，直接接收 `action_a, action_b` 并返回双边结果。
 
 ---
 
@@ -106,18 +110,18 @@ class GroundConstraintPlugin(BasePlugin):
 
 ---
 
-## 🛠️ 编写 Observer / Rewarder 并挂到 PolicyRuntime
+## 🛠️ 编写 ObserverPlugin 并挂到 EnvRuntime
 
 要将这套引擎对接到策略、对战或训练逻辑，你需要：
 1. 提供一个具体的 `BaseSimulator` (如 MuJoCo 版)。
-2. 实现一个或多个 `BaseObserver` / `BaseRewarder`。
-3. 用 `PolicyRuntime` 组装它们。
+2. 实现一个或多个 `BaseObserverPlugin`。
+3. 用 `EnvRuntime` 组装它们。
 
 ```python
-from framework import PolicyRuntime, BaseObserver, BaseRewarder, VideoRecorderPlugin
+from framework import EnvRuntime, BaseObserverPlugin, VideoRecorderPlugin
 
 
-class MyObserver(BaseObserver):
+class MyObserverPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = None
 
@@ -129,7 +133,7 @@ class MyObserver(BaseObserver):
         return self._output
 
 
-class MyRewarder(BaseRewarder):
+class MyRewardPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = 0.0
 
@@ -142,22 +146,25 @@ class MyRewarder(BaseRewarder):
 simulator = MujocoSimulator(...)
 plugins = [VideoRecorderPlugin(fps=30), HeightMonitorPlugin()]
 
-runtime = PolicyRuntime(
+runtime = EnvRuntime(
     simulator=simulator,
     plugins=plugins,
-    observers={"robot_a": MyObserver()},
-    rewarders={"robot_a": MyRewarder()},
+    observer_plugins={
+        "robot_a_obs": MyObserverPlugin(),
+        "robot_a_reward": MyRewardPlugin(),
+    },
     phy_steps_per_action=10,
     max_steps=1000,
 )
 
-result = runtime.reset()
-obs = result["obs"]
-info = result["info"]
+runtime.reset()
+obs = runtime.get_observer_output("robot_a_obs")
+reward = runtime.get_observer_output("robot_a_reward")
+info = runtime.get_shared_info()
 ```
 
 ## ♻️ 外部适配说明
 
-- `PolicyRuntime` 是当前唯一推荐的主入口。
+- `EnvRuntime` 是当前唯一推荐的主入口。
 - 如果以后需要 Gymnasium、SB3 或自定义训练器适配，请在 framework 外围单独实现薄适配层。
 - framework 内部不再维护旧的 Gym 适配路径。

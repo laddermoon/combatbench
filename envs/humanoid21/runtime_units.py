@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from framework import BaseObserver, BaseRewarder, ReadOnlySimContext, TerminationReason
+from framework import BaseObserverPlugin, ReadOnlySimContext, TerminationReason
 
 
-class Humanoid21Observer(BaseObserver):
+class Humanoid21Observer(BaseObserverPlugin):
     ACTION_DIM = 21
     OBS_DIM = 127
 
@@ -152,7 +152,7 @@ class Humanoid21Observer(BaseObserver):
         return np.concatenate([np.asarray(item).flatten() for item in obs_list]).astype(np.float32)
 
 
-class Humanoid21Rewarder(BaseRewarder):
+class Humanoid21Rewarder(BaseObserverPlugin):
     def __init__(self, agent_id: str):
         if agent_id not in {"robot_a", "robot_b"}:
             raise ValueError(f"Unsupported agent_id: {agent_id}")

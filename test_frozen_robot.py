@@ -17,10 +17,10 @@ runtime = make_env(
     plugins=[frozen_plugin]
 )
 
-result = runtime.reset()
+runtime.reset()
 
 # 获取初始位置
-sim = runtime.engine.simulator
+sim = runtime.simulator
 robot_b_body_id = sim.robot_info['robot_b']['body_id']
 initial_pos_b = sim.data.xpos[robot_b_body_id].copy()
 initial_quat_b = sim.data.xquat[robot_b_body_id].copy()
@@ -39,7 +39,7 @@ for step in range(100):
     action_a = np.random.uniform(-0.5, 0.5, 21)
     action_b = np.random.uniform(-0.5, 0.5, 21)
     
-    result = runtime.step(action_a, action_b)
+    runtime.step(action_a, action_b)
     
     # 检查机器人B的位置
     current_pos_b = sim.data.xpos[robot_b_body_id].copy()
@@ -83,7 +83,7 @@ for step in range(50):
                          0.5, 0.0, 0.0])
     action_b = np.zeros(21)
     
-    result = runtime.step(action_a, action_b)
+    runtime.step(action_a, action_b)
     
     if (step + 1) % 10 == 0:
         current_pos_b = sim.data.xpos[robot_b_body_id].copy()

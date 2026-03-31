@@ -16,12 +16,15 @@ def test_humanoid21_env():
         non_fall_mode=True
     )
     
-    result = runtime.reset()
-    obs = result["obs"]
-    info = result["info"]
+    runtime.reset()
+    obs = {
+        "robot_a": runtime.get_observer_output("robot_a_obs"),
+        "robot_b": runtime.get_observer_output("robot_b_obs"),
+    }
+    info = runtime.get_shared_info()
     print("Reset successful.")
     print(f"Observation shapes: Robot A={obs['robot_a'].shape}, Robot B={obs['robot_b'].shape}")
-    print(f"Initial Health: {info['shared']['health']}")
+    print(f"Initial Health: {info['health']}")
     
     done = False
     step_count = 0
@@ -29,18 +32,20 @@ def test_humanoid21_env():
         action_a = runtime.action_space.spaces["robot_a"].sample()
         action_b = runtime.action_space.spaces["robot_b"].sample()
         
-        result = runtime.step(action_a, action_b)
-        obs = result["obs"]
-        info = result["info"]
-        terminated = result["terminated"]
-        truncated = result["truncated"]
+        runtime.step(action_a, action_b)
+        obs = {
+            "robot_a": runtime.get_observer_output("robot_a_obs"),
+            "robot_b": runtime.get_observer_output("robot_b_obs"),
+        }
+        info = runtime.get_shared_info()
+        terminated, truncated = runtime.get_termination_flags()
         done = terminated or truncated
         step_count += 1
         
     print(f"Episode finished after {step_count} steps.")
-    print(f"Termination reasons: {info['shared'].get('termination_reasons', [])}")
-    print(f"Final Health: {info['shared']['health']}")
-    print(f"Winner: {info['shared'].get('winner')}")
+    print(f"Termination reasons: {info.get('termination_reasons', [])}")
+    print(f"Final Health: {info['health']}")
+    print(f"Winner: {info.get('winner')}")
     
     runtime.close()
     print("Test passed!")

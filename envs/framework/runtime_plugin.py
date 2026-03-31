@@ -15,23 +15,18 @@ class BaseRuntimeUnit(ABC):
         pass
 
 
-class BaseObserver(BaseRuntimeUnit, ABC):
+class BaseObserverPlugin(BaseRuntimeUnit, ABC):
     pass
 
 
-class BaseRewarder(BaseRuntimeUnit, ABC):
-    pass
-
-
-class RuntimeDriverPlugin(BasePlugin):
+class _ObserverDispatcherPlugin(BasePlugin):
     def __init__(self):
-        self.observers: Dict[str, Optional[BaseObserver]] = {}
-        self.rewarders: Dict[str, Optional[BaseRewarder]] = {}
+        self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}
         self._last_process_token: Optional[Tuple[int, int, Tuple[str, ...], bool]] = None
 
     @property
     def name(self) -> str:
-        return "runtime_driver"
+        return "observer_dispatcher"
 
     @property
     def priority(self) -> int:
@@ -41,29 +36,17 @@ class RuntimeDriverPlugin(BasePlugin):
     def require_mutator(self) -> bool:
         return False
 
-    def set_observer(self, agent_id: str, observer: Optional[BaseObserver]) -> None:
-        self.observers[agent_id] = observer
+    def set_observer_plugin(self, name: str, observer_plugin: Optional[BaseObserverPlugin]) -> None:
+        self.observer_plugins[name] = observer_plugin
         self._last_process_token = None
 
-    def remove_observer(self, agent_id: str) -> None:
-        self.observers.pop(agent_id, None)
+    def remove_observer_plugin(self, name: str) -> None:
+        self.observer_plugins.pop(name, None)
         self._last_process_token = None
 
-    def set_rewarder(self, agent_id: str, rewarder: Optional[BaseRewarder]) -> None:
-        self.rewarders[agent_id] = rewarder
-        self._last_process_token = None
-
-    def remove_rewarder(self, agent_id: str) -> None:
-        self.rewarders.pop(agent_id, None)
-        self._last_process_token = None
-
-    def get_observer_output(self, agent_id: str) -> Any:
-        observer = self.observers.get(agent_id)
-        return observer.get_output() if observer is not None else None
-
-    def get_rewarder_output(self, agent_id: str) -> Any:
-        rewarder = self.rewarders.get(agent_id)
-        return rewarder.get_output() if rewarder is not None else None
+    def get_output(self, name: str) -> Any:
+        observer_plugin = self.observer_plugins.get(name)
+        return observer_plugin.get_output() if observer_plugin is not None else None
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         self._process_ctx(ctx)
@@ -108,7 +91,7 @@ class RuntimeDriverPlugin(BasePlugin):
 
     def _iter_runtime_units(self):
         seen: Set[int] = set()
-        for runtime_unit in list(self.observers.values()) + list(self.rewarders.values()):
+        for runtime_unit in list(self.observer_plugins.values()):
             if runtime_unit is None:
                 continue
             unit_id = id(runtime_unit)

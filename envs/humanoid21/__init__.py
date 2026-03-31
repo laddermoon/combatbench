@@ -5,7 +5,7 @@ from pathlib import Path
 
 # 把框架加进路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from framework import PolicyRuntime
+from framework import EnvRuntime
 
 from .simulator import MujocoCombatSimulator
 from .plugins import NonFallConstraintPlugin, CombatScoringPlugin, FrozenRobotPlugin
@@ -24,7 +24,7 @@ def make_env(
     initial_health_a: Optional[float] = None,
     initial_health_b: Optional[float] = None,
     plugins: Optional[List[Any]] = None,
-) -> PolicyRuntime:
+) -> EnvRuntime:
     """
     工厂函数，用于创建组装好的 Humanoid21 对战环境。
     """
@@ -60,16 +60,14 @@ def make_env(
     if plugins:
         active_plugins.extend(plugins)
 
-    runtime = PolicyRuntime(
+    runtime = EnvRuntime(
         simulator=simulator,
         plugins=active_plugins,
-        observers={
-            'robot_a': Humanoid21Observer('robot_a'),
-            'robot_b': Humanoid21Observer('robot_b'),
-        },
-        rewarders={
-            'robot_a': Humanoid21Rewarder('robot_a'),
-            'robot_b': Humanoid21Rewarder('robot_b'),
+        observer_plugins={
+            'robot_a_obs': Humanoid21Observer('robot_a'),
+            'robot_b_obs': Humanoid21Observer('robot_b'),
+            'robot_a_reward': Humanoid21Rewarder('robot_a'),
+            'robot_b_reward': Humanoid21Rewarder('robot_b'),
         },
         phy_steps_per_action=phy_steps_per_action,
         max_steps=max_steps
