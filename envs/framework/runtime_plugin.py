@@ -6,9 +6,20 @@ from .plugin import BasePlugin
 
 
 class BaseRuntimeUnit(ABC):
-    @abstractmethod
     def process_data(self, ctx: ReadOnlySimContext) -> None:
-        pass
+        return None
+
+    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+        self.process_data(ctx)
+
+    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+        self.process_data(ctx)
+
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        self.process_data(ctx)
+
+    def on_manual_refresh(self, ctx: ReadOnlySimContext) -> None:
+        self.on_post_step(ctx)
 
     @abstractmethod
     def get_output(self) -> Any:
@@ -22,7 +33,7 @@ class BaseObserverPlugin(BaseRuntimeUnit, ABC):
 class _ObserverDispatcherPlugin(BasePlugin):
     def __init__(self):
         self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}
-        self._last_process_token: Optional[Tuple[int, int, Tuple[str, ...], bool]] = None
+        self._last_process_token: Optional[Tuple[str, int, int, Tuple[str, ...], bool]] = None
 
     @property
     def name(self) -> str:
@@ -49,7 +60,7 @@ class _ObserverDispatcherPlugin(BasePlugin):
         return observer_plugin.get_output() if observer_plugin is not None else None
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        self._process_ctx(ctx)
+        self._process_ctx(ctx, trigger_name="on_reset")
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         return None
@@ -61,10 +72,10 @@ class _ObserverDispatcherPlugin(BasePlugin):
         return None
 
     def on_post_action_step(self, ctx: SimContext) -> None:
-        self._process_ctx(ctx)
+        self._process_ctx(ctx, trigger_name="on_post_step")
 
     def on_post_episode(self, ctx: SimContext) -> None:
-        self._process_ctx(ctx)
+        self._process_ctx(ctx, trigger_name="on_post_episode")
 
     def on_attach(self) -> None:
         self._last_process_token = None
@@ -73,11 +84,12 @@ class _ObserverDispatcherPlugin(BasePlugin):
         self._last_process_token = None
 
     def refresh(self, ctx: SimContext, force: bool = False) -> None:
-        self._process_ctx(ctx, force=force)
+        self._process_ctx(ctx, trigger_name="on_manual_refresh", force=force)
 
-    def _process_ctx(self, ctx: SimContext, force: bool = False) -> None:
+    def _process_ctx(self, ctx: SimContext, trigger_name: str, force: bool = False) -> None:
         readonly_ctx = ReadOnlySimContext.from_sim_context(ctx)
         process_token = (
+            trigger_name,
             readonly_ctx.episode_step,
             readonly_ctx.physics_step,
             readonly_ctx.termination_proposals,
@@ -87,7 +99,7 @@ class _ObserverDispatcherPlugin(BasePlugin):
             return
         self._last_process_token = process_token
         for runtime_unit in self._iter_runtime_units():
-            runtime_unit.process_data(readonly_ctx)
+            getattr(runtime_unit, trigger_name)(readonly_ctx)
 
     def _iter_runtime_units(self):
         seen: Set[int] = set()

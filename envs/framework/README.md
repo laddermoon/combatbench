@@ -50,14 +50,18 @@
 *   **`_RuntimeCore`**: 仅供内部使用的时序执行核心，不作为 framework 公共 API 暴露。
 
 ### 5. Observer 插件调度 (`runtime_plugin.py`)
-*   **`BaseRuntimeUnit`**: 所有策略侧只读单元的统一基类，只保留两个方法：
-    *   `process_data(ctx: ReadOnlySimContext)`
-    *   `get_output()`
+*   **`BaseRuntimeUnit`**: 所有策略侧只读单元的统一基类，显式暴露以下调用时机：
+    *   `on_reset(ctx: ReadOnlySimContext)`：在 `EnvRuntime.reset()` 后触发一次
+    *   `on_post_step(ctx: ReadOnlySimContext)`：在每个 `EnvRuntime.step()` 结束后触发一次
+    *   `on_post_episode(ctx: ReadOnlySimContext)`：在 episode 确认终止后触发一次
+    *   `on_manual_refresh(ctx: ReadOnlySimContext)`：调用 `runtime.refresh_observers()` 时触发
+    *   `get_output()`：返回当前缓存输出
 *   **`BaseObserverPlugin`**: 统一的只读 observer plugin 抽象。观测、reward、debug view 都可以实现为这种插件。
 *   **`_ObserverDispatcherPlugin`**: 唯一挂到内部 runtime core 的只读调度器，负责：
     *   在关键时机把 `SimContext` 裁剪为 `ReadOnlySimContext`
     *   批量驱动多个 observer plugin
     *   减少 plugin 调用次数和 context 转换次数
+    *   兼容旧式 `process_data(ctx)` 实现，但新代码推荐直接实现显式生命周期钩子
 
 ---
 
@@ -125,7 +129,11 @@ class MyObserverPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = None
 
-    def process_data(self, ctx):
+    def on_reset(self, ctx):
+        core_state = ctx.accessor.get_core_state()
+        self._output = core_state["robot_a"]
+
+    def on_post_step(self, ctx):
         core_state = ctx.accessor.get_core_state()
         self._output = core_state["robot_a"]
 
@@ -137,7 +145,10 @@ class MyRewardPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = 0.0
 
-    def process_data(self, ctx):
+    def on_reset(self, ctx):
+        self._output = 0.0
+
+    def on_post_step(self, ctx):
         self._output = -float(ctx.metrics.get("robot_a_clamp_count", 0))
 
     def get_output(self):
