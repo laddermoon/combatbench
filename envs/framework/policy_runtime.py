@@ -6,7 +6,7 @@ from .backend import BaseSimulator
 from .common_plugins import TimeoutPlugin
 from .engine import SimEngine
 from .plugin import BasePlugin
-from .runtime_plugin import BaseObserver, BaseRewarder
+from .runtime_plugin import BaseObserver, BaseRewarder, RuntimeDriverPlugin
 from .context import TerminationReason
 
 
@@ -23,6 +23,7 @@ class PolicyRuntime:
         max_steps: Optional[int] = None,
     ):
         self.engine = SimEngine(simulator, phy_steps_per_action)
+        self.runtime_driver = RuntimeDriverPlugin()
         self.observers: Dict[str, Optional[BaseObserver]] = {
             agent_id: None for agent_id in self.AGENT_IDS
         }
@@ -30,6 +31,8 @@ class PolicyRuntime:
             agent_id: None for agent_id in self.AGENT_IDS
         }
         self.latest_result: Optional[Dict[str, Any]] = None
+
+        self.engine.attach_plugin(self.runtime_driver)
 
         if max_steps is not None:
             self.engine.attach_plugin(TimeoutPlugin(max_steps))
@@ -51,24 +54,22 @@ class PolicyRuntime:
         self.engine.attach_plugin(plugin)
 
     def detach_plugin(self, plugin: BasePlugin) -> None:
+        if plugin is self.runtime_driver:
+            raise ValueError("RuntimeDriverPlugin is managed internally by PolicyRuntime and cannot be detached.")
         self.engine.detach_plugin(plugin)
-        for agent_id, observer in self.observers.items():
-            if observer is plugin:
-                self.observers[agent_id] = None
-        for agent_id, rewarder in self.rewarders.items():
-            if rewarder is plugin:
-                self.rewarders[agent_id] = None
 
     def attach_observer(self, agent_id: str, observer: Optional[BaseObserver]) -> None:
         self._validate_agent_id(agent_id)
         current = self.observers[agent_id]
         if current is observer:
             return
-        if current is not None:
-            self.engine.detach_plugin(current)
         self.observers[agent_id] = observer
-        if observer is not None:
-            self.engine.attach_plugin(observer)
+        if observer is None:
+            self.runtime_driver.remove_observer(agent_id)
+        else:
+            self.runtime_driver.set_observer(agent_id, observer)
+        if self.engine.is_episode_active:
+            self.runtime_driver.refresh(self.engine.ctx, force=True)
 
     def detach_observer(self, agent_id: str) -> None:
         self.attach_observer(agent_id, None)
@@ -78,11 +79,13 @@ class PolicyRuntime:
         current = self.rewarders[agent_id]
         if current is rewarder:
             return
-        if current is not None:
-            self.engine.detach_plugin(current)
         self.rewarders[agent_id] = rewarder
-        if rewarder is not None:
-            self.engine.attach_plugin(rewarder)
+        if rewarder is None:
+            self.runtime_driver.remove_rewarder(agent_id)
+        else:
+            self.runtime_driver.set_rewarder(agent_id, rewarder)
+        if self.engine.is_episode_active:
+            self.runtime_driver.refresh(self.engine.ctx, force=True)
 
     def detach_rewarder(self, agent_id: str) -> None:
         self.attach_rewarder(agent_id, None)
@@ -133,8 +136,7 @@ class PolicyRuntime:
         obs: Dict[str, Any] = {}
         info: Dict[str, Dict[str, Any]] = {agent_id: {} for agent_id in self.AGENT_IDS}
         for agent_id in self.AGENT_IDS:
-            observer = self.observers[agent_id]
-            output = observer.get_output() if observer is not None else None
+            output = self.runtime_driver.get_observer_output(agent_id)
             obs[agent_id], info[agent_id] = self._normalize_observer_output(output)
         return obs, info
 
@@ -142,8 +144,7 @@ class PolicyRuntime:
         reward: Dict[str, Any] = {}
         info: Dict[str, Dict[str, Any]] = {agent_id: {} for agent_id in self.AGENT_IDS}
         for agent_id in self.AGENT_IDS:
-            rewarder = self.rewarders[agent_id]
-            output = rewarder.get_output() if rewarder is not None else None
+            output = self.runtime_driver.get_rewarder_output(agent_id)
             reward[agent_id], info[agent_id] = self._normalize_rewarder_output(output)
         return reward, info
 

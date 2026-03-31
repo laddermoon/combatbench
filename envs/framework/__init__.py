@@ -1,7 +1,7 @@
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
 from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
-from .runtime_plugin import BaseObserver, BaseRewarder
+from .runtime_plugin import BaseObserver, BaseRewarder, BaseRuntimeUnit, RuntimeDriverPlugin
 from .engine import SimEngine
 from .policy_runtime import PolicyRuntime
 from .common_plugins import BaseRLAdapter, TimeoutPlugin, VideoRecorderPlugin
@@ -16,8 +16,10 @@ __all__ = [
     "SimContext",
     "TerminationReason",
     "BasePlugin",
+    "BaseRuntimeUnit",
     "BaseObserver",
     "BaseRewarder",
+    "RuntimeDriverPlugin",
     "SimEngine",
     "PolicyRuntime",
     "BaseRLAdapter",
