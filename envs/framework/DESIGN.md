@@ -10,26 +10,34 @@
 
 ```mermaid
 graph TD
-    subgraph 强化学习算法层 (Algorithm)
-        PPO/SAC/IL -->|单/多维 Box 空间| Wrapper
+    subgraph 算法与适配层 (Algorithm / Adapter)
+        PPO[PPO / GRPO / SAC / IL] --> GymAdapter[可选 Gym Adapter / Wrapper]
+        GymAdapter --> PolicyRuntime
     end
 
-    subgraph 接口适配层 (Interface Layer)
-        Wrapper[Wrappers: 单视角/Self-Play/奖励计算]
-        RewardSystem[Reward Function: 基于指标计算 RL 奖励]
+    subgraph 策略运行时层 (Policy Runtime Layer)
+        PolicyRuntime[PolicyRuntime: 面向策略的主接口]
+        ObserverA[Observer A]
+        ObserverB[Observer B]
+        RewarderA[Rewarder A]
+        RewarderB[Rewarder B]
+
+        PolicyRuntime --> ObserverA
+        PolicyRuntime --> ObserverB
+        PolicyRuntime --> RewarderA
+        PolicyRuntime --> RewarderB
     end
 
-    subgraph 物理沙盒层 (Base Sandbox - CombatGymEnv)
-        RLAdapter[RL Adapter: 状态 Ego-centric 转换]
+    subgraph 物理沙盒层 (Base Sandbox)
         SimEngine[SimEngine: 生命周期与时序调度]
         Plugins[Plugins: 约束、裁决、事件记录]
         BaseSimulator[Simulator: 纯物理引擎后端]
-        
-        Wrapper -->|双人动作 Dict| CombatGymEnv
-        CombatGymEnv -->|客观观测与指标 Dict| Wrapper
-        
-        CombatGymEnv --> RLAdapter
-        CombatGymEnv --> SimEngine
+
+        PolicyRuntime -->|action_a, action_b| SimEngine
+        ObserverA -->|读取 IDataAccessor| SimEngine
+        ObserverB -->|读取 IDataAccessor| SimEngine
+        RewarderA -->|读取 IDataAccessor| SimEngine
+        RewarderB -->|读取 IDataAccessor| SimEngine
         SimEngine --> BaseSimulator
         SimEngine --> Plugins
     end
@@ -42,100 +50,164 @@ graph TD
 ### 1. BaseSimulator (物理引擎后端)
 - **定位**：对底层物理引擎（如 MuJoCo）的极简封装。
 - **边界**：
-  - ✅ **建议**：只处理关节位置、速度的读写，施加力矩，以及物理步进 (`step`)。
+  - ✅ **建议**：只处理关节位置、速度的读写，施加力矩，以及物理步进（`physical_step`）。
+  - ✅ **建议**：通过 `IDataAccessor` / `IDataMutator` 暴露标准化的读写接口。
   - ❌ **禁忌**：绝对不要在这里计算得分，不要处理游戏规则，不要知道什么是“一局游戏（Episode）”。
 
-### 2. Plugins (规则与裁决)
-- **定位**：世界规则的裁判和旁观者。
+### 2. SimEngine (仿真驱动引擎)
+- **定位**：将一个 `Simulator` 与一组世界插件（World Plugins）按固定时序驱动起来。
+- **边界**：
+  - ✅ **建议**：负责 episode 生命周期、action step / physics step 调度、插件调用顺序、权限授予与回收。
+  - ✅ **建议**：对上层暴露稳定的 `SimContext` / `IDataAccessor` 读取入口。
+  - ❌ **禁忌**：不要在这里做单视角裁剪、不要在这里做主观奖励、不要实现 Gym 语义。
+
+### 3. BasePlugin (世界插件)
+- **定位**：世界规则的裁判与干预器。
 - **边界**：
   - ✅ **建议**：处理生命值扣除、判定击倒（KO）、施加防摔倒约束、记录事件（Events）和统计指标（Metrics）。
-  - ❌ **禁忌**：**绝对不要在这里计算或返回 RL 奖励 (Reward)**。不同实验的奖励权重不同，Plugin 只能输出客观事实（如 `damage_taken: 10`），不能带有主观价值判断。
+  - ✅ **建议**：在允许的生命周期中通过 `ctx.mutator` 修改状态或动作，在只读阶段通过 `ctx.accessor` 读取数据。
+  - ❌ **禁忌**：不要把“某个算法喜欢什么奖励”写到这里。世界插件只能产出客观事实，不能带有实验特定的价值判断。
 
-### 3. RLAdapter (物理域 -> 感知域桥梁)
-- **定位**：机器人的“传感器”和“神经中枢”。负责定义 Action 和 Observation 空间。
+### 4. BaseObserver (观测插件)
+- **定位**：面向策略侧的只读观测构造器，是一种特化的插件基类。
 - **边界**：
-  - ✅ **建议**：必须将全局物理坐标转化为**自我中心化（Ego-centric）**的局部坐标系。对于 `robot_a` 和 `robot_b`，其观测数据的结构必须完全对称。
-  - ❌ **禁忌**：不要在这里处理视角提取或丢弃另一个机器人的数据。它必须忠实地返回双人的完整状态字典。
+  - ✅ **建议**：只暴露一个核心重写入口，由开发者基于 `IDataAccessor` 直接构建某个 agent 的 observation / info view。
+  - ✅ **建议**：做 Ego-centric 转换、视角裁剪、特征拼接、调试信息补充。
+  - ✅ **建议**：把 `IDataAccessor` 的数据格式视为首要契约，上层逻辑优先围绕这些标准接口开发。
+  - ❌ **禁忌**：不要通过 Observer 修改物理状态，不要在这里做规则裁决，不要在这里写 reward。
 
-### 4. SimEngine / CombatGymEnv (沙盒引擎)
-- **定位**：管理整个双人仿真的生命周期。它呈现的是一个**双人、对称、纯客观**的环境。
+### 5. BaseRewarder (奖励插件)
+- **定位**：面向策略侧的只读奖励构造器，是一种特化的插件基类。
 - **边界**：
-  - ✅ **建议**：接收包含双人动作的 Dict，返回包含双人观测、客观事实的 Dict。
-  - ❌ **禁忌**：不要在这里写任何关于单智能体（Single Agent）或自我对弈（Self-Play）的逻辑，不要包含任何 `if mode == "single"` 的判断。
+  - ✅ **建议**：只暴露一个核心重写入口，由开发者基于 `IDataAccessor`、`metrics`、`events` 等只读信息为某个 agent 计算 reward。
+  - ✅ **建议**：支持稠密奖励、稀疏奖励、课程阶段奖励等实验逻辑。
+  - ✅ **建议**：允许直接读取底层标准化数据，而不是被中间层提前裁剪。
+  - ❌ **禁忌**：不要通过 Rewarder 修改世界状态，不要将 Rewarder 当成规则插件，不要把胜负裁决逻辑写进 Rewarder。
 
-### 5. Wrapper (主观滤镜)
-- **定位**：将客观的双人沙盒“伪装”成各种 RL 算法需要的形状（如单人闯关、向量化环境）。
+### 6. PolicyRuntime (对外主接口)
+- **定位**：框架对开发者提供的主要交互入口。
 - **边界**：
-  - ✅ **建议**：处理字典到数组的转换、视角的截取（如提取 `robot_a`）、调用对手的固定策略。
-  - ❌ **禁忌**：不要在 Wrapper 中修改物理状态。
+  - ✅ **建议**：在 `SimEngine` 之上统一管理双边动作输入、Observer/Rewarder 调度、输出结果组装。
+  - ✅ **建议**：`step` 直接接收两个参数：一个给 `robot_a`，一个给 `robot_b`。
+  - ✅ **建议**：允许为 A/B 分别注入不同的 Observer / Rewarder。
+  - ❌ **禁忌**：不要在这里重新实现底层物理逻辑，不要绕过 `SimEngine` 直接控制 `Simulator`。
 
-### 6. RewardFunction (奖励计算系统)
-- **定位**：将底层 Plugin 输出的客观指标（Metrics/Events）转化为标量（Scalar）的 RL 奖励。
+### 7. Gym Adapter / Wrapper (可选外层适配)
+- **定位**：把 `PolicyRuntime` 包装成 Gymnasium、SB3、向量化训练等外部生态需要的接口。
 - **边界**：
-  - ✅ **建议**：作为一个独立的类，通过增量计算（`curr_info` - `prev_info`）生成致密（Dense）或稀疏（Sparse）奖励。由 Wrapper 调用。
-  - ❌ **禁忌**：不要依赖物理状态（如 `qpos`），奖励计算只能依赖 `info` 字典中暴露出来的合法指标。
+  - ✅ **建议**：处理单视角提取、空间声明、batch 组织、固定对手注入等生态兼容逻辑。
+  - ❌ **禁忌**：不要把本应属于 Observer / Rewarder 的核心语义再塞回 Adapter。
 
 ---
 
 ## 三、 数据格式约定 (The Contracts)
 
-在沙盒边界（即 `CombatGymEnv` 的输出），数据结构必须严格遵守以下格式。
+在新架构中，**`IDataAccessor` 是最主要的标准契约**。Observer 与 Rewarder 的实现，应优先围绕它提供的数据格式展开，而不是依赖某个中间层私有结构。
 
-### 1. 观测 (Observation)
-`obs` 必须是一个包含所有参与者状态的字典，且每个参与者的数组必须已经是 Ego-centric 的。
+### 1. `IDataAccessor` 的合法读取入口
+
+Observer / Rewarder / 只读插件可以合法依赖以下接口：
+
 ```python
-obs = {
-    "robot_a": np.ndarray(shape=(127,), dtype=np.float32),  # 以 A 为中心
-    "robot_b": np.ndarray(shape=(127,), dtype=np.float32)   # 以 B 为中心
-}
+accessor.get_static_data()
+accessor.get_core_state()
+accessor.get_derived_state()
+accessor.get_sensor_data()
+accessor.get_action()
+accessor.get_broadcastview_image()
 ```
 
-### 2. 动作 (Action)
-`action` 必须是一个包含所有参与者动作指令的字典。
+这些接口的职责约定如下：
+
+- **`get_static_data()`**
+  - 返回 episode 内通常不变的配置或索引信息。
+  - 例如：`robot_info`、body / geom 索引映射、关节索引、arena 常量。
+
+- **`get_core_state()`**
+  - 返回最核心、最接近物理引擎的数据。
+  - 例如：root pose、joint qpos / qvel、body 的关键状态。
+
+- **`get_derived_state()`**
+  - 返回由底层状态进一步加工出的派生信息。
+  - 例如：contacts、局部几何关系、碰撞结果、可直接复用的运动学指标。
+
+- **`get_sensor_data()`**
+  - 返回传感器层面的读数。
+  - 例如：IMU、接触传感器、外力、脚底触地状态。
+
+- **`get_action()`**
+  - 返回当前 action step 正在执行的动作。
+  - 可用于构建 action smoothness、能耗类 reward 或调试信息。
+
+- **`get_broadcastview_image()`**
+  - 返回广播视角图像。
+  - 主要用于录像、可视化和调试，不建议作为默认学习输入。
+
+### 2. 世界插件产出的共享黑板
+
+`SimContext` 中的以下字段是跨插件流转的共享客观信息：
+
 ```python
-action = {
-    "robot_a": np.ndarray(shape=(21,), dtype=np.float32),
-    "robot_b": np.ndarray(shape=(21,), dtype=np.float32)
-}
+ctx.metrics: Dict[str, Any]
+ctx.events: List[Any]
+ctx.termination_proposals: List[str]
 ```
 
-### 3. 环境信息 (Info)
-这是 Wrapper 和 RewardFunction 获取裁判信息的唯一合法途径。
+- **`metrics`**
+  - 必须保存客观的、可解释的标量或结构化统计。
+  - 例如：血量、累计伤害、clamp 次数、阶段性计数器。
+
+- **`events`**
+  - 保存当前 step 发生的瞬时事件。
+  - 例如：命中事件、越界事件、关键状态切换。
+
+- **`termination_proposals`**
+  - 保存 episode 终止建议。
+  - 例如：`timeout`、`ko`、`foul`。
+
+### 3. PolicyRuntime 的输入约定
+
+`PolicyRuntime.step(...)` 的输入是双边动作，而不是 Gym 风格的单一 action dict 包装层：
 
 ```python
-info = {
-    # Metrics：必须是累积的（Cumulative）或绝对的标量值
-    "metrics": {
-        "health_a": 100.0,
-        "health_b": 85.0,
-        "damage_taken_a": 0.0,
-        "damage_taken_b": 15.0,
-        "robot_a_clamp_count": 2,
-        # 可以添加如 distance_ab 等物理状态指标，供奖励函数使用
+action_a = np.ndarray(shape=(21,), dtype=np.float32)
+action_b = np.ndarray(shape=(21,), dtype=np.float32)
+```
+
+由 `PolicyRuntime` 负责将它们组织为底层 `SimEngine` 所需的 joint action。
+
+### 4. PolicyRuntime 的输出约定
+
+`PolicyRuntime` 对外返回的是**双边、对称、面向策略侧**的结果。一个典型结果至少应包含：
+
+```python
+result = {
+    "obs": {
+        "robot_a": np.ndarray(...),
+        "robot_b": np.ndarray(...),
     },
-    
-    # Events：当前 step 发生的瞬时事件列表
-    "events": [
-        {
-            "type": "hit",
-            "attacker": "robot_a",
-            "defender": "robot_b",
-            "part": "head",
-            "damage": 15.0
-        }
-    ],
-    
-    # Termination Reasons：记录为何结束
-    "termination_reasons": ["Timeout", "KO"]
+    "reward": {
+        "robot_a": float | None,
+        "robot_b": float | None,
+    },
+    "info": {
+        "shared": {...},
+        "robot_a": {...},
+        "robot_b": {...},
+    },
+    "terminated": bool,
+    "truncated": bool,
 }
 ```
 
-### 4. 奖励 (Reward)
-在底层的 `CombatGymEnv` 中，通常返回 0 或全 0 的字典（因为物理沙盒不负责价值观）：
-```python
-reward = {
-    "robot_a": 0.0,
-    "robot_b": 0.0
-}
-```
-**真正的 RL Reward 由外层的 Wrapper 结合 RewardFunction 动态生成，并替换为算法所需的形式（如单个 `float` 或 `(2,)` 的批次张量）。**
+- **`obs`** 由对应的 Observer 负责生成。
+- **`reward`** 由对应的 Rewarder 负责生成；如果某一侧未配置 Rewarder，可以为 `None`。
+- **`info.shared`** 用于放共享的客观信息。
+- **`info.robot_a` / `info.robot_b`** 用于放各自视角的补充说明。
+
+### 5. 实现原则
+
+- **[首要原则]** 开发者优先关注 `IDataAccessor` 的格式是否标准、稳定、可复用。
+- **[Observer 原则]** 观测构建应直接建立在标准读接口之上，而不是依赖脆弱的中间映射层。
+- **[Rewarder 原则]** 奖励构建可以读取原始标准数据，但不能反向污染世界状态。
+- **[Adapter 原则]** Gym / SB3 / 自定义训练器都只是 `PolicyRuntime` 的外层封装，而不是框架核心。
