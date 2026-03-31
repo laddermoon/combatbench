@@ -2,8 +2,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .common_plugins import VideoRecorderPlugin
-from .combat_gym import CombatGymEnv
-
+from .rl_env import CombatGymEnv
 
 class RoundRunner:
     """

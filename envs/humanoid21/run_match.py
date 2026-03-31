@@ -1,28 +1,44 @@
 #!/usr/bin/env python3
 """
-Run a combat round between two policies.
+Run a multi-round match between two policies.
 
 This script should be run from the combatbench directory:
     cd /path/to/combatbench
-    python -m envs.humanoid21.run_round [OPTIONS]
+    python -m envs.humanoid21.run_match [OPTIONS]
 
 Usage:
-    # Run with default (standing) policies
-    python -m envs.humanoid21.run_round --duration 10 --video test.mp4
+    # Run 6 rounds with default (standing) policies
+    python -m envs.humanoid21.run_match --duration 10 --video-dir videos/
 
-    # Run with random policy
-    python -m envs.humanoid21.run_round --policy-a policy.RandomCombatPolicy --duration 5 --video test.mp4
+    # Run 3 rounds with random policy
+    python -m envs.humanoid21.run_match \
+        --policy-a policy.RandomCombatPolicy \
+        --rounds 3 \
+        --video-dir videos/
 
     # Run with parameters
-    python -m envs.humanoid21.run_round \
+    python -m envs.humanoid21.run_match \
         --policy-a "policy.RandomCombatPolicy?scale=0.2&seed=42" \
-        --duration 15 --video output.mp4
+        --policy-b "policy.RandomCombatPolicy?scale=0.1&seed=43" \
+        --duration 15 \
+        --rounds 3 \
+        --video-dir videos/
 
     # Run with config file
-    python -m envs.humanoid21.run_round \
+    python -m envs.humanoid21.run_match \
         --policy-a "@configs/policy_a.json" \
         --policy-b "@configs/policy_b.json" \
-        --video match.mp4
+        --rounds 6 \
+        --video-dir videos/
+
+Match Rules:
+    1. Initial HP: 100 for each robot
+    2. KO Condition: Reduce opponent's HP to 0
+    3. Time Decision: Higher HP wins when time runs out
+    4. Tie Decision: Draw if HP is equal
+    5. Round Duration: Each round is 30 seconds (default)
+    6. Total Rounds: 6 rounds (default)
+    7. HP Continuation: HP carries over between rounds
 """
 import argparse
 import importlib
@@ -33,14 +49,9 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# Set headless render mode if EGL is available
+# Set headless render mode BEFORE any imports
 os.environ['MUJOCO_GL'] = 'egl'
 os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
-
-# Add project root to path for imports (when running script directly)
-_project_root = Path(__file__).resolve().parent.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
 
 
 def _parse_policy_spec(policy_spec: str) -> tuple:
@@ -113,7 +124,7 @@ def load_policy(policy_spec: Optional[str], device: str = 'auto') -> Any:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Run a combat round between two policies (Humanoid21).',
+        description='Run a multi-round match between two policies (Humanoid21).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -122,8 +133,10 @@ def parse_args():
                         help='Policy A specification (e.g., policy.RandomCombatPolicy)')
     parser.add_argument('--policy-b', type=str, default=None,
                         help='Policy B specification')
+    parser.add_argument('--rounds', type=int, default=6,
+                        help='Total number of rounds (default: 6)')
     parser.add_argument('--duration', type=float, default=30.0,
-                        help='Match duration in seconds (default: 30.0)')
+                        help='Match duration per round in seconds (default: 30.0)')
     parser.add_argument('--control-frequency', type=int, default=20,
                         help='Control frequency in Hz (default: 20)')
     parser.add_argument('--initial-distance', type=float, default=2.0,
@@ -136,8 +149,8 @@ def parse_args():
                         help='Roll limit for non-fall mode in degrees (default: 5.0)')
     parser.add_argument('--damage-scale', type=float, default=100.0,
                         help='Damage scaling factor (default: 100.0)')
-    parser.add_argument('--video', '--output', type=str, default=None,
-                        help='Path to save video (e.g., match.mp4)')
+    parser.add_argument('--video-dir', type=str, default=None,
+                        help='Directory to save round videos (e.g., videos/)')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device for policy inference (auto/cpu/cuda)')
     parser.add_argument('--quiet', '-q', action='store_true',
@@ -160,49 +173,54 @@ def main() -> None:
 
     # Import framework components
     from envs.humanoid21 import make_env
-    from envs.framework.round_runner import RoundRunner
+    from envs.framework.match_runner import MatchRunner
     from envs.framework.common_plugins import VideoRecorderPlugin
 
-    # Prepare plugins
-    plugins = []
-    if args.video:
-        # Set video path via class variable for plugin override
-        VideoRecorderPlugin.set_videosave_path(args.video)
-        plugins.append(VideoRecorderPlugin(fps=30))
+    # Create environment factory function
+    def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
+        plugins = []
+        # Always add video plugin when video_dir is specified
+        if args.video_dir is not None:
+            plugins.append(VideoRecorderPlugin(fps=30))
 
-    # Create environment
-    env = make_env(
-        match_duration=args.duration,
-        control_frequency=args.control_frequency,
-        non_fall_mode=args.non_fall_mode,
-        non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
-        non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
-        damage_scale=args.damage_scale,
-        plugins=plugins,
-    )
+        return make_env(
+            match_duration=args.duration,
+            control_frequency=args.control_frequency,
+            non_fall_mode=args.non_fall_mode,
+            non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
+            non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
+            damage_scale=args.damage_scale,
+            initial_health_a=initial_health_a,
+            initial_health_b=initial_health_b,
+            plugins=plugins,
+        )
 
-    # Run round
-    runner = RoundRunner(
+    # Run match
+    runner = MatchRunner(
         policy_a=policy_a,
         policy_b=policy_b,
-        env=env,
+        env_factory=env_factory,
+        total_rounds=args.rounds,
         verbose=not args.quiet,
     )
 
-    result = runner.run(seed=None)
+    # Run with video directory if specified
+    result = runner.run(seed=None, video_dir=args.video_dir)
 
-    # Print summary
+    # Print final summary
     if not args.quiet:
         print("\n" + "=" * 60)
-        print("Round Summary")
+        print("Match Final Summary")
         print("=" * 60)
         print(f"Policy A: {policy_a.__class__.__name__}")
         print(f"Policy B: {policy_b.__class__.__name__}")
-        print(f"Winner: {result['winner']}")
-        print(f"Steps: {result['steps']}")
-        print(f"Final HP: A={result['final_health'].get('robot_a', 0):.1f}, B={result['final_health'].get('robot_b', 0):.1f}")
-        if args.video:
-            print(f"Video saved to: {args.video}")
+        print(f"Total Rounds: {result.rounds_completed}/{result.total_rounds}")
+        print(f"Final Winner: {result.final_winner}")
+        if result.ko_winner:
+            print(f"KO Winner: {result.ko_winner}")
+        print(f"Total Score: A={result.total_score['robot_a']}, B={result.total_score['robot_b']}")
+        if args.video_dir:
+            print(f"Videos saved to: {args.video_dir}/")
         print("=" * 60)
 
 

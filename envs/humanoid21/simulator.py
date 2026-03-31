@@ -1,6 +1,10 @@
+import os
+# Set EGL backend BEFORE importing mujoco
+os.environ['MUJOCO_GL'] = 'egl'
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
+
 import mujoco
 import numpy as np
-import os
 from typing import Any, Dict, List
 from pathlib import Path
 

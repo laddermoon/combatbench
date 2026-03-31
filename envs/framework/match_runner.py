@@ -4,6 +4,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 from .round_runner import RoundRunner
+from .common_plugins import VideoRecorderPlugin
 
 
 @dataclass
@@ -144,13 +145,15 @@ class MatchRunner:
                 print(f"\n>>> Starting Round {round_num}/{self.total_rounds}")
                 print(f">>> Current HP: robot_a={current_health_a:.1f}, robot_b={current_health_b:.1f}")
 
-            # 创建新环境（每回合重置位置，但血量延续）
-            env = self.env_factory(initial_health_a=current_health_a, initial_health_b=current_health_b)
-
             # 设置视频路径（每回合单独保存）
+            # 必须在创建环境之前设置，否则 VideoRecorderPlugin.__init__ 会使用错误的值
             video_path = None
             if video_dir is not None:
                 video_path = str(Path(video_dir) / f"round_{round_num}.mp4")
+            VideoRecorderPlugin.set_videosave_path(video_path)
+
+            # 创建新环境（每回合重置位置，但血量延续）
+            env = self.env_factory(initial_health_a=current_health_a, initial_health_b=current_health_b)
 
             # 运行单回合
             round_runner = RoundRunner(
