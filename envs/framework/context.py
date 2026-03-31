@@ -1,4 +1,6 @@
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
 
 class TerminationReason:
@@ -59,3 +61,26 @@ class SimContext:
 
     def _revoke_mutator(self) -> None:
         self.mutator = None
+
+
+@dataclass(frozen=True)
+class ReadOnlySimContext:
+    accessor: IDataAccessor
+    episode_step: int
+    physics_step: int
+    metrics: Mapping[str, Any]
+    events: Tuple[Any, ...]
+    termination_proposals: Tuple[str, ...]
+    is_terminated: bool
+
+    @classmethod
+    def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":
+        return cls(
+            accessor=ctx.accessor,
+            episode_step=ctx.episode_step,
+            physics_step=ctx.physics_step,
+            metrics=MappingProxyType(dict(ctx.metrics)),
+            events=tuple(ctx.events),
+            termination_proposals=tuple(ctx.termination_proposals),
+            is_terminated=ctx.is_terminated,
+        )

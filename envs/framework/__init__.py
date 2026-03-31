@@ -1,6 +1,7 @@
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
-from .context import SimContext, TerminationReason
+from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
+from .runtime_plugin import BaseObserver, BaseRewarder
 from .engine import SimEngine
 from .common_plugins import BaseRLAdapter, TimeoutPlugin, VideoRecorderPlugin
 from .rl_env import CombatGymEnv
@@ -10,9 +11,12 @@ __all__ = [
     "BaseSimulator",
     "IDataAccessor",
     "IDataMutator",
+    "ReadOnlySimContext",
     "SimContext",
     "TerminationReason",
     "BasePlugin",
+    "BaseObserver",
+    "BaseRewarder",
     "SimEngine",
     "BaseRLAdapter",
     "TimeoutPlugin",
