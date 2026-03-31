@@ -4,6 +4,7 @@ from .plugin import BasePlugin
 from .engine import SimEngine
 from .common_plugins import BaseRLAdapter, TimeoutPlugin, VideoRecorderPlugin
 from .rl_env import CombatGymEnv
+from .wrappers import SingleAgentCombatWrapper
 
 __all__ = [
     "BaseSimulator",
@@ -17,4 +18,5 @@ __all__ = [
     "TimeoutPlugin",
     "VideoRecorderPlugin",
     "CombatGymEnv",
+    "SingleAgentCombatWrapper",
 ]
