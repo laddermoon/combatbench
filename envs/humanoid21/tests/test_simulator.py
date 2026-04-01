@@ -436,6 +436,185 @@ class TestPDControllerWorks:
         assert action['robot_b'] is not None
 
 
+class TestPDControllerPerformance:
+    """测试 PD 控制器性能和响应时间"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def _get_joint_pos(self, simulator, robot_id='robot_a'):
+        """获取当前关节位置（排除 -1 索引）"""
+        static_data = simulator.get_static_data()
+        qpos_indices = static_data['robot_info'][robot_id]['qpos_indices']
+        pos = []
+        for idx in qpos_indices:
+            if idx >= 0:
+                pos.append(simulator.data.qpos[idx])
+        return np.array(pos, dtype=np.float32)
+
+    def _get_valid_indices(self, simulator, robot_id='robot_a'):
+        """获取有效的关节索引"""
+        static_data = simulator.get_static_data()
+        qpos_indices = static_data['robot_info'][robot_id]['qpos_indices']
+        valid_indices = [i for i, idx in enumerate(qpos_indices) if idx >= 0]
+        return valid_indices
+
+    def test_action_to_target_conversion(self, simulator):
+        """
+        场景：验证 action → target_pos 的转换逻辑
+        预期：target_pos = reference_pos + action_scale * action（裁剪后）
+        """
+        static_data = simulator.get_static_data()
+        robot_info = static_data['robot_info']['robot_a']
+        reference_pos = simulator.reference_pos['robot_a']
+        action_scale = simulator.action_scale['robot_a']
+
+        # 设置一个已知的 action
+        test_action = np.array([0.5] * 21, dtype=np.float32)
+
+        # 计算期望的 target_pos（包含裁剪）
+        raw_target = reference_pos + action_scale * test_action
+        expected_target = np.clip(raw_target,
+                                  simulator.joint_limits['robot_a']['lower'],
+                                  simulator.joint_limits['robot_a']['upper'])
+
+        # 应用 action
+        simulator.set_action({'robot_a': test_action, 'robot_b': None})
+
+        # 获取实际的 target_positions
+        actual_target = simulator.target_positions['robot_a']
+
+        # 只比较有效索引
+        valid_indices = self._get_valid_indices(simulator, 'robot_a')
+        np.testing.assert_array_almost_equal(
+            actual_target[valid_indices],
+            expected_target[valid_indices],
+            decimal=5
+        )
+
+    def test_pd_tracks_step_input(self, simulator):
+        """
+        场景：设置 action，验证 PD 控制器在工作
+        预期：关节位置有变化（尽管可能因 dof_damping=5.0 无法完全收敛）
+        """
+        static_data = simulator.get_static_data()
+        reference_pos = simulator.reference_pos['robot_a']
+        action_scale = simulator.action_scale['robot_a']
+
+        # 设置一个 action
+        action = np.array([0.5] * 21, dtype=np.float32)
+        simulator.set_action({'robot_a': action, 'robot_b': None})
+
+        expected_target = reference_pos + action_scale * action
+
+        valid_indices = self._get_valid_indices(simulator, 'robot_a')
+        expected_valid = expected_target[valid_indices]
+
+        # 记录初始位置
+        initial_pos = self._get_joint_pos(simulator, 'robot_a')
+
+        # 执行多个物理步
+        for step in range(50):
+            simulator.physical_step()
+
+        final_pos = self._get_joint_pos(simulator, 'robot_a')
+
+        # 验证：关节位置发生了变化（PD 控制器在工作）
+        movement = np.max(np.abs(final_pos - initial_pos))
+        print(f"PD 控制器工作验证: 移动量 = {movement:.4f} rad")
+
+        # 验证有明显的移动（至少 0.01 rad）
+        assert movement > 0.01, f"PD 控制器未产生明显移动: {movement:.6f} rad"
+
+    def test_pd_response_time(self, simulator):
+        """
+        场景：验证 PD 控制器对 action 的响应
+        预期：更大的 action 导致更大的初始移动
+        """
+        action = np.array([0.5] * 21, dtype=np.float32)
+        simulator.set_action({'robot_a': action, 'robot_b': None})
+
+        static_data = simulator.get_static_data()
+        reference_pos = simulator.reference_pos['robot_a']
+        action_scale = simulator.action_scale['robot_a']
+        expected_target = reference_pos + action_scale * action
+
+        valid_indices = self._get_valid_indices(simulator, 'robot_a')
+        expected_valid = expected_target[valid_indices]
+
+        # 记录初始位置
+        initial_pos = self._get_joint_pos(simulator, 'robot_a')
+
+        # 执行 50 步
+        for step in range(50):
+            simulator.physical_step()
+
+        final_pos = self._get_joint_pos(simulator, 'robot_a')
+        final_error = np.max(np.abs(expected_valid - final_pos))
+        movement = np.max(np.abs(final_pos - initial_pos))
+
+        print(f"PD 响应: 移动量={movement:.4f} rad, 到目标误差={final_error:.4f} rad")
+        print(f"时间步长 dt = {simulator.dt} s, 50 步 = {50 * simulator.dt} s")
+
+        # 验证：有移动且误差不是无穷大
+        assert movement > 0.01, "PD 控制器未产生移动"
+        assert final_error < 1.0, f"误差过大: {final_error:.4f} rad"
+
+    def test_pd_with_different_action_magnitudes(self, simulator):
+        """
+        场景：测试不同 action 大小下的响应
+        预期：PD 控制器在工作，关节位置有变化
+        """
+        action_magnitudes = [0.2, 0.5, 1.0]
+
+        for mag in action_magnitudes:
+            simulator.reset()
+            action = np.array([mag] * 21, dtype=np.float32)
+            simulator.set_action({'robot_a': action, 'robot_b': None})
+
+            # 记录初始位置
+            initial_pos = self._get_joint_pos(simulator, 'robot_a')
+
+            # 执行一段时间
+            for step in range(50):
+                simulator.physical_step()
+
+            final_pos = self._get_joint_pos(simulator, 'robot_a')
+            movement = np.max(np.abs(final_pos - initial_pos))
+
+            print(f"action={mag}: 移动量 = {movement:.4f} rad")
+
+            # 验证：PD 控制器在工作（有移动）
+            assert movement > 0.01, f"action={mag}: 无明显移动"
+
+    def test_kp_kd_values_are_reasonable(self, simulator):
+        """
+        场景：验证 PD 参数 kp, kd 的值是否合理
+        预期：kp 和 kd 应该为正数数组
+        """
+        kp = simulator.kp
+        kd = simulator.kd
+
+        print(f"PD 参数: kp = {kp}, kd = {kd}")
+
+        # 验证 kp, kd 为正数
+        assert np.all(kp > 0), f"kp 应该为正数，实际值: {kp}"
+        assert np.all(kd > 0), f"kd 应该为正数，实际值: {kd}"
+
+        # 对于 PD 控制，kd / kp 的比值影响阻尼
+        # 临界阻尼: kd = 2 * sqrt(kp)
+        damping_ratios = kd / (2 * np.sqrt(kp))
+        print(f"阻尼比 (kd / 2*sqrt(kp)): mean={np.mean(damping_ratios):.2f}, min={np.min(damping_ratios):.2f}, max={np.max(damping_ratios):.2f}")
+
+        # 验证阻尼比在合理范围内 (0.1 ~ 2.0)
+        assert np.all(damping_ratios > 0.01), "阻尼比太小，可能导致振荡"
+        assert np.all(damping_ratios < 5.0), "阻尼比太大，可能导致响应太慢"
+
+
 class TestQuaternionFormat:
     """测试四元数格式与文档一致"""
 

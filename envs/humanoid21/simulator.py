@@ -304,33 +304,38 @@ class MujocoCombatSimulator(BaseSimulator):
         """计算并应用 PD 控制力矩"""
         for r_id in ['robot_a', 'robot_b']:
             target_pos = self.target_positions[r_id]
-            
+
             current_pos = np.zeros(self.action_dim, dtype=np.float32)
             current_vel = np.zeros(self.action_dim, dtype=np.float32)
-            
+
             if r_id in self.robot_info and 'qpos_indices' in self.robot_info[r_id]:
                 qpos_idx_list = self.robot_info[r_id]['qpos_indices']
                 qvel_idx_list = self.robot_info[r_id]['qvel_indices']
-                
+
                 for i in range(len(qpos_idx_list)):
                     if qpos_idx_list[i] >= 0:
                         current_pos[i] = self.data.qpos[qpos_idx_list[i]]
                         current_vel[i] = self.data.qvel[qvel_idx_list[i]]
-            
+
             # 计算 PD 控制力矩
             torque_action = self.kp * (target_pos - current_pos) - self.kd * current_vel
-            
-            # 限幅
-            c_lower = self.ctrl_limits[r_id]['lower']
-            c_upper = self.ctrl_limits[r_id]['upper']
-            torque_action = np.clip(torque_action, c_lower, c_upper)
-            
-            # 应用到执行器
+
+            # 应用到执行器（考虑 gear 放大因子）
             if 'actuators' in self.robot_info[r_id]:
                 act_indices = self.robot_info[r_id]['actuators']
                 for i, act_idx in enumerate(act_indices):
                     if act_idx >= 0:
-                        self.data.ctrl[act_idx] = torque_action[i]
+                        # 获取 gear 值用于限幅
+                        gear = self.model.actuator_gear[act_idx, 0] if self.model.actuator_gear[act_idx, 0] != 0 else 1.0
+
+                        # 计算 ctrl 值（ctrl * gear = desired_torque）
+                        ctrl_value = torque_action[i] / gear if gear != 0 else torque_action[i]
+
+                        # 根据 actuator 的 ctrlrange 进行限幅
+                        ctrl_range = self.model.actuator_ctrlrange[act_idx]
+                        ctrl_value = np.clip(ctrl_value, ctrl_range[0], ctrl_range[1])
+
+                        self.data.ctrl[act_idx] = ctrl_value
 
     def get_physical_frequency(self) -> float:
         return 1.0 / self.dt
