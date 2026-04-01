@@ -25,108 +25,94 @@
 
 # Humanoid21 重构设计方案 (Refactoring Design)
 
-## 1. 核心理念
-- **彻底屏蔽 MuJoCo 内部表示**：策略层只看到“具有物理意义和特定取值范围”的特征，不知道 `qpos`、`qvel`、`id` 等底层细节。
-- **全局归一化 (Normalized By Default)**：凡是有明确边界的物理量（如关节位置、控制信号），在暴露给策略或从策略接收时，一律归一化到 `[-1, 1]`。
-- **面向强化学习优化**：数据结构应当是扁平化、定长的 `numpy.ndarray` 或明确的 `Dict[str, ndarray]`，避免深层嵌套和变长列表。
+## 1. 核心理念与痛点纠正
+旧版 `get_core_state` 直接返回了完整的 `data.qpos` 和 `data.qvel`，这不仅包含了双机器人的混合数据，甚至包含了全局绝对坐标（这对大部分局部控制策略来说是无意义的）。
+- **屏蔽 MuJoCo 内部全局数组**：策略层绝不应该拿到全局的 `qpos/qvel`。所有状态必须按**单个机器人 (robot_a/robot_b)** 拆分。
+- **Core State 定义修正**：`core_state` 应该是一个**能唯一决定单体机器人当前姿态和运动学状态的最小物理集合**。
+- **局部坐标系优先**：除了必要的世界参考系（如高度、朝向基准），速度、角速度等均应转换到机器人的**根节点局部坐标系**下。
+- **全局归一化**：有明确物理限位的控制量和观测特征，默认归一化到 `[-1, 1]`。
 
 ---
 
 ## 2. 数据接口设计 (Data Interface)
 
-重构后的 `HumanoidRobot` 应该提供以下几类清晰的数据视图：
+重构后的底层接口应按照 `robot_a` 和 `robot_b` 分别提供以下视图。所有数组均为 `np.ndarray`：
 
 ### 2.1 静态属性 (`get_static_info`)
 描述机器人本身的固定参数，在整个 episode 中不会改变。
-- **返回类型**: `Dict[str, Any]`
+- **返回类型**: `Dict[str, Any]` (按 robot 返回)
 - **包含内容**:
-  - `dof_names` (List[str]): 21 个受控自由度的名称列表，保证顺序一致性。
-  - `body_names` (List[str]): 躯干部位名称列表（用于识别受击部位）。
-  - `joint_limits` (ndarray, shape=(21, 2)): 各关节真实的物理限位 `[min, max]` (rad)。
+  - `dof_names` (List[str]): 21 个受控自由度的名称列表。
+  - `body_names` (List[str]): 躯干部位名称列表。
+  - `joint_limits` (ndarray, shape=(21, 2)): 各受控关节的真实物理限位 `[min, max]` (rad)。
 
 ### 2.2 核心状态 (`get_core_state`)
-描述机器人本体当前的运动学和动力学最小完备集。全部使用**机器人局部坐标系**（除根节点绝对位置外）。
-- **返回类型**: `Dict[str, np.ndarray]`
+**定义**：能唯一决定机器人在空间中“怎么摆放、怎么运动”的最小数据集。注意，这里以 `torso`（实际物理模型中的根节点，带 freejoint）为基准。
+- **返回类型**: `Dict[str, np.ndarray]` (按 robot 返回)
 - **包含内容**:
-  - `root_pos` (3,): 骨盆(pelvis)的绝对坐标 `(x, y, z)`。
-  - `root_rot` (4,): 骨盆的绝对姿态四元数 `(w, x, y, z)` 或 `(x, y, z, w)`。
-  - `root_vel_local` (3,): 骨盆在**自身局部坐标系**下的线速度。
-  - `root_angular_vel_local` (3,): 骨盆在**自身局部坐标系**下的角速度。
+  - `root_pos` (3,): Torso 根节点的绝对世界坐标 `(x, y, z)`。
+  - `root_rot` (4,): Torso 根节点的绝对姿态四元数。
+  - `root_vel_local` (3,): Torso 在**自身局部坐标系**下的线速度（对移动策略至关重要）。
+  - `root_angular_vel_local` (3,): Torso 在**自身局部坐标系**下的角速度。
   - `joint_pos_norm` (21,): **归一化到 `[-1, 1]` 的关节位置**。
     - 计算公式: `(qpos - reference) / scale`
-  - `joint_vel` (21,): 关节真实角速度（rad/s）。（考虑后续是否需要根据 max_vel 也做归一化）
+  - `joint_vel` (21,): 关节真实角速度（rad/s）。（考虑后续是否需要根据最大物理能力做归一化）。
 
-### 2.3 派生数据 (`get_derived_data`)
-由核心状态衍生出的、对策略决策（如对打）强相关的特征。
-- **返回类型**: `Dict[str, np.ndarray]`
+### 2.3 派生数据 (`get_derived_state`)
+**定义**：面向机器学习特征工程、碰撞检测、奖励计算的丰富派生数据。
+- **返回类型**: `Dict[str, np.ndarray]` (按 robot 返回)
 - **包含内容**:
-  - `head_pos_global` (3,): 头部的绝对坐标（用于计算距离）。
-  - `com_pos_global` (3,): 质心绝对坐标。
-  - `facing_dir` (3,): 躯干当前的绝对朝向向量（例如骨盆的局部 x 轴在世界坐标系下的投影）。
-  - `uprightness` (1,): 直立度。可以通过躯干局部 z 轴与世界 z 轴的内积计算（1 表示完全直立，<0 表示倒地）。
-  - `contact_forces` (N,): 各个关键部位（如双脚、双拳）受到的接触力大小或向量。
+  - `head_pos_global` / `com_pos_global` (3,): 头部与质心绝对坐标（常用于求两体距离）。
+  - `facing_dir_local` (3,): 机器人的“面朝”向量（通常是局部 x 或 y 轴）在世界系下的投影。
+  - `uprightness` (1,): 直立度。由躯干局部 z 轴与世界 z 轴的内积计算（1 表示完全直立，<0 表示倒地）。
+  - `contact_forces` (Dict[str, ndarray]): 各个关键受击部位（如躯干、头）受到的接触力向量或标量。
+  - `feet_contact` (2,): 左、右脚是否着地（布尔值或受力大小）。
+  - `relative_opponent_pos` (3,): 对手 Torso 相对于当前机器人局部坐标系的位置（对策略感知极度重要）。
 
 ---
 
 ## 3. 控制模式设计 (Control Mode)
 
-如 `CONTROLSPEC.md` 所述，继续采用**归一化目标位置 (Normalized Position Control)** 模式，内部走 PD 控制。
+继续采用**归一化目标位置 (Normalized Position Control)**，但彻底隔离底层 `ctrl` 数组的拼接。
 
 ### 3.1 接口定义
-- `set_action(action: np.ndarray)`
+- `set_action(robot_id: str, action: np.ndarray)`
   - `action` 形状为 `(21,)`，取值范围 `[-1, 1]`。
-  - 含义：期望关节到达的归一化目标位置。
 
 ### 3.2 内部执行逻辑
 1. **反归一化**: `Target_rad = action * scale + reference`
-2. **PD 计算**: `Torque = KP * (Target_rad - qpos) - KD * qvel`
-3. **输出限制**: `Ctrl = clip(Torque / Gear, ctrl_range_min, ctrl_range_max)`
-4. **底层写入**: 写入 MuJoCo 的 `data.ctrl`。
+2. **PD 计算**: `Torque = KP * (Target_rad - current_qpos) - KD * current_qvel`
+3. **安全限幅**: `Ctrl = clip(Torque / Gear, ctrl_range_min, ctrl_range_max)`
+4. **底层写入**: 将安全扭矩写入 MuJoCo 中该 robot 对应的 `data.ctrl` 分片中。
 
-### 3.3 参数暴露
-- `KP` 和 `KD` 应当作为 `HumanoidRobot` 初始化时的可配参数（可支持 array 格式，允许不同关节有不同的刚度）。
+### 3.3 参数化
+- `KP` (默认 50) 和 `KD` (默认 5) 在初始化时必须可配，且应支持按关节数组配置（例如腿部刚度高，手臂刚度低）。
 
 ---
 
 ## 4. 性能评估指标 (Performance Metrics)
 
-为了验证控制逻辑和动力学特性的合理性，我们需要定义并在调试时收集以下指标：
-
 1. **跟踪误差 (Tracking Error)**:
-   - `mean_abs_error = mean(abs(Target_rad - qpos))`
-   - 评估底层 PD 控制器的刚度是否足够，以及在动作剧烈时是否会严重滞后。
+   - `mean(abs(Target_rad - qpos))`，评估 PD 刚度是否足以驱动当前质量的模型。
 2. **响应延迟 (Response Latency)**:
-   - 给予一个阶跃信号（如从 0 突变到 1），测量关节实际达到 0.9（90%）所需的时间（步数）。
+   - 给予阶跃信号（如 0 到 1），测量实际达到 90% 所需的仿真步数。
 3. **控制努力 (Control Effort)**:
-   - `mean_torque = mean(abs(Torque))`
-   - 评估机器人是否因为高 KP/KD 而产生高频震荡或消耗过大的不合理力矩。
+   - `mean(abs(Torque))`，评估高 KP/KD 是否产生高频震荡或无效力矩消耗。
 4. **稳定性边界 (Stability Margin)**:
-   - 在无外力干扰下，机器人维持直立（如 `uprightness > 0.8`）所能承受的最大初始关节扰动。
+   - 无外力干扰下，维持 `uprightness > 0.8` 能承受的最大单侧关节指令突变。
 
 ---
 
 ## 5. 测试验证方案 (Testing Strategy)
 
-要证明重构后的 Humanoid21 是可用的，必须通过以下层次的测试：
-
 ### 5.1 单元测试 (Unit Tests)
-- **数据结构一致性**: 断言 `get_core_state()` 返回的字典 keys 和 shape 与设计严格一致。
-- **归一化逻辑测试**: 
-  - 手动将底层的 `qpos` 设置为上限，断言 `joint_pos_norm` 全为 `1.0`。
-  - 手动将底层的 `qpos` 设置为下限，断言 `joint_pos_norm` 全为 `-1.0`。
-- **控制逻辑映射测试**:
-  - 调用 `set_action(ones)`，推演计算公式，断言写入 `data.ctrl` 的力矩值符合预期的 `KP` 和 `KD` 计算结果。
+- **状态纯净度测试**: 改变 robot_b 的状态，断言 robot_a 的 `get_core_state` 的任何字段（包括局部速度、局部方向）都不受影响。
+- **归一化满量程测试**: 手动设置底层 `qpos` 为上限，断言 `joint_pos_norm` 全为 `1.0`。
+- **控制映射测试**: 输入 `action = 0`，推算预期力矩与实际写入 `data.ctrl` 的值是否一致。
 
-### 5.2 物理级集成测试 (Physics Integration Tests)
-1. **中位悬空测试 (Zero-Action Hang Test)**:
-   - 禁用重力或将机器人固定在半空。
-   - 输入 `action = 0`。
-   - 预期结果：经过短暂几步后，所有关节收敛并静止在 `joint_pos_norm = 0`，`Tracking Error` 趋近于 0。
-2. **极限活动范围测试 (Range of Motion Test)**:
-   - 输入 `action = 1`。
-   - 预期结果：所有关节平滑移动到其物理上限，无严重超调和剧烈震荡。
+### 5.2 物理级集成测试 (Physics Tests)
+- **零动中位悬空**: 关重力，`action=0`。断言机器人数步后平稳收敛至 `joint_pos_norm = 0` 且不抖动。
+- **全量程抗压测试**: 输入 `action=1` 或交变正弦波，观测模型是否平滑到达极限，无严重超调或穿模。
 
-### 5.3 强化学习系统测试 (RL Sanity Tests)
-- **过拟合测试 (Overfit / Sanity Check)**:
-   - 挂载一个新的 EnvRuntime，使用单智能体训练一个简单的任务（如“尽可能把右手举高”或“保持直立不要倒”）。
-   - 预期结果：使用 PPO/GRPO，能在 100k steps 内明显看到奖励上升并收敛，证明状态观测无缺失、动作映射符合物理直觉。
+### 5.3 强化学习系统测试 (RL Sanity Check)
+- **单臂举高测试**: 使用 PPO 训练单边机器人“尽可能把右手举高”。若 100k 步内稳定收敛，证明：局部坐标转换正确、归一化观测有效、动作映射符合物理直觉。
