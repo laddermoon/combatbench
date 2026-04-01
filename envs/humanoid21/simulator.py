@@ -147,7 +147,7 @@ class MujocoCombatSimulator(BaseSimulator):
         注意：time 字段被忽略。MuJoCo 内部时间由仿真引擎自动管理，
         不应手动修改，否则可能导致物理仿真结果异常。
         """
-        if 'time' in state:
+        if 'time' in state and state['time'] != self.data.time:
             import warnings
             warnings.warn(
                 "Ignoring 'time' in set_core_state: simulation time is managed "
