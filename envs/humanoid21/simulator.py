@@ -220,22 +220,143 @@ class MujocoCombatSimulator(BaseSimulator):
         }
 
     def _extract_robot_data(self, robot_id: str) -> Dict[str, np.ndarray]:
-        """提取指定机器人的位置和速度数据"""
+        """
+        提取指定机器人的位置和速度数据
+
+        返回:
+            xpos: (16, 3) - body 位置
+            xvelp: (16, 3) - 线速度
+            xquat: (16, 4) - 四元数
+            opponent_pos: (3,) - 对手在自身坐标系中的位置
+            opponent_facing: (3,) - 对手朝向在自身坐标系中的前向量
+            foot_contact: dict - 两脚与地面的接触信息 {'right': bool, 'left': bool}
+            foot_force: dict - 双脚受力 {'right': float, 'left': float, 'contact_points': list}
+        """
+        import numpy as np
+        from scipy.spatial.transform import Rotation as R
+
         # 找到属于该机器人的 body 索引范围
         if robot_id == 'robot_a':
             # bodies 1-16 (torso_red to hand_left_red)
             start_body = 1
             end_body = 17
+            root_body = self.robot_info['robot_a']['body_id']
+            opponent_id = 'robot_b'
+            opponent_root = self.robot_info['robot_b']['body_id']
+            # 脚 geom: 13, 14 (right), 17, 18 (left)
+            foot_geoms = [13, 14, 17, 18]
+            right_foot_geoms = [13, 14]
+            left_foot_geoms = [17, 18]
         else:  # robot_b
             # bodies 17-32 (torso_blue to hand_left_blue)
             start_body = 17
             end_body = 33
+            root_body = self.robot_info['robot_b']['body_id']
+            opponent_id = 'robot_a'
+            opponent_root = self.robot_info['robot_a']['body_id']
+            # 脚 geom: 32, 33 (right), 36, 37 (left)
+            foot_geoms = [32, 33, 36, 37]
+            right_foot_geoms = [32, 33]
+            left_foot_geoms = [36, 37]
 
-        return {
+        # 提取 body 数据
+        data = {
             'xpos': self.data.xpos[start_body:end_body].copy(),
             'xvelp': self.data.cvel[start_body:end_body, 3:].copy(),
             'xquat': self.data.xquat[start_body:end_body].copy()
         }
+
+        # 1. 计算对手在自身坐标系中的位置和朝向
+        self_quat = self.data.xquat[root_body]  # [w, x, y, z]
+        self_rotation = R.from_quat([self_quat[1], self_quat[2], self_quat[3], self_quat[0]])  # xyzw
+
+        # 对手位置（世界坐标系）
+        opponent_pos_world = self.data.xpos[opponent_root].copy()
+        self_pos_world = self.data.xpos[root_body]
+
+        # 相对位置
+        relative_pos = opponent_pos_world - self_pos_world
+        opponent_pos_local = self_rotation.inv().apply(relative_pos)
+        data['opponent_pos'] = opponent_pos_local
+
+        # 对手朝向（前向量）
+        opponent_quat = self.data.xquat[opponent_root]  # [w, x, y, z]
+        opponent_rotation = R.from_quat([opponent_quat[1], opponent_quat[2], opponent_quat[3], opponent_quat[0]])
+        # 对手的前向量在世界坐标系中是 [1, 0, 0]
+        forward_world = opponent_rotation.apply([1, 0, 0])
+        # 转换到自身坐标系
+        opponent_facing = self_rotation.inv().apply(forward_world)
+        data['opponent_facing'] = opponent_facing
+
+        # 2. 检测脚与地面的接触和受力
+        ground_geom = 0  # 地面 geom id
+        foot_contact = {
+            'right': False,
+            'left': False
+        }
+        foot_force = {
+            'right': 0.0,
+            'left': 0.0,
+            'contact_points': []  # 接触点位置列表
+        }
+
+        # 检查碰撞中的脚与地面接触
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            g1, g2 = contact.geom1, contact.geom2
+
+            # 检查是否是脚与地面的碰撞
+            is_foot = g1 in foot_geoms or g2 in foot_geoms
+            is_ground = g1 == ground_geom or g2 == ground_geom
+
+            if is_foot and is_ground:
+                # 获取接触力
+                c_array = np.zeros(6, dtype=np.float64)
+                mujoco.mj_contactForce(self.model, self.data, i, c_array)
+                force = np.linalg.norm(c_array[:3])
+
+                # 确定是哪只脚
+                foot_geom = g1 if g1 in foot_geoms else g2
+
+                if robot_id == 'robot_a':
+                    if foot_geom in right_foot_geoms:
+                        foot_contact['right'] = True
+                        foot_force['right'] += force
+                        foot_force['contact_points'].append({
+                            'foot': 'right',
+                            'position': contact.pos.copy(),
+                            'force': force
+                        })
+                    else:  # left
+                        foot_contact['left'] = True
+                        foot_force['left'] += force
+                        foot_force['contact_points'].append({
+                            'foot': 'left',
+                            'position': contact.pos.copy(),
+                            'force': force
+                        })
+                else:  # robot_b
+                    if foot_geom in right_foot_geoms:
+                        foot_contact['right'] = True
+                        foot_force['right'] += force
+                        foot_force['contact_points'].append({
+                            'foot': 'right',
+                            'position': contact.pos.copy(),
+                            'force': force
+                        })
+                    else:  # left
+                        foot_contact['left'] = True
+                        foot_force['left'] += force
+                        foot_force['contact_points'].append({
+                            'foot': 'left',
+                            'position': contact.pos.copy(),
+                            'force': force
+                        })
+
+        data['foot_contact'] = foot_contact
+        data['foot_force'] = foot_force
+
+        return data
 
     def get_sensor_data(self) -> Dict[str, Any]:
         return {'sensordata': self.data.sensordata.copy()}
