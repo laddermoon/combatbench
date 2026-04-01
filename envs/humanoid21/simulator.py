@@ -14,33 +14,35 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import BaseSimulator
 
 class MujocoCombatSimulator(BaseSimulator):
-    def __init__(self, arena_xml: str = None, dt: float = 0.002, initial_distance: float = 2.0,
-                 action_dim: int = 21, kp: float = 50.0, kd: float = 5.0):
-        self.dt = dt
+    # 固定参数
+    DT = 0.002
+    ACTION_DIM = 21
+    KP = 50.0
+    KD = 5.0
+    ARENA_XML = str(Path(__file__).parent / 'battle_v1.xml')
+
+    def __init__(self, initial_distance: float = 2.0):
+        self.dt = self.DT
         self.initial_distance = initial_distance
-        self.action_dim = action_dim
+        self.action_dim = self.ACTION_DIM
 
-        # 固定使用 battle_v1.xml
-        if arena_xml is None:
-            arena_xml = str(Path(__file__).parent / 'battle_v1.xml')
-
-        self.model = mujoco.MjSpec.from_file(arena_xml).compile()
+        self.model = mujoco.MjSpec.from_file(self.ARENA_XML).compile()
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
-        
-        self.model.opt.timestep = dt
-        
-        self._action = {'robot_a': np.zeros(action_dim), 'robot_b': np.zeros(action_dim)}
-        
+
+        self.model.opt.timestep = self.DT
+
+        self._action = {'robot_a': np.zeros(self.ACTION_DIM), 'robot_b': np.zeros(self.ACTION_DIM)}
+
         # 缓存关节点和索引
         self._cache_indices()
-        
+
         # PD 控制器参数
-        self.kp = np.full(action_dim, kp, dtype=np.float32)
-        self.kd = np.full(action_dim, kd, dtype=np.float32)
+        self.kp = np.full(self.ACTION_DIM, self.KP, dtype=np.float32)
+        self.kd = np.full(self.ACTION_DIM, self.KD, dtype=np.float32)
         self.target_positions = {
-            'robot_a': np.zeros(action_dim, dtype=np.float32),
-            'robot_b': np.zeros(action_dim, dtype=np.float32)
+            'robot_a': np.zeros(self.ACTION_DIM, dtype=np.float32),
+            'robot_b': np.zeros(self.ACTION_DIM, dtype=np.float32)
         }
         self._pd_initialized = False
         
