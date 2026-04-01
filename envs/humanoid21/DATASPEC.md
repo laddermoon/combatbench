@@ -27,6 +27,7 @@
   - **`root_angular_vel_local`** (3,): Torso 在**自身局部坐标系**下的角速度。
   - **`joint_pos_norm`** (21,): **归一化关节位置** `[-1, 1]`。
     - 计算公式: `(qpos - reference) / scale`
+     `reference`为关节上下限的中间值，`scale`关节总行程的1/2。。
   - **`joint_vel_norm`** (21,): **归一化关节角速度**。
     - 计算公式: `qvel / scale`
     - 物理含义: 当前速度每秒能跨越的“半量程”数。它是 `joint_pos_norm` 对时间的精确导数。
@@ -49,7 +50,6 @@
 分别放置在 `robot_a` 和 `robot_b` 的键下，供策略网络感知博弈态势：
 - **`uprightness`** (1,): 直立度。由 Torso 局部 z 轴与世界 z 轴的内积计算（1=直立，<0=倒地）。
 - **`feet_forces`** (2,): 左脚、右脚与地面的接触受力大小。
-- **`facing_dir_local`** (3,): 机器人局部坐标系的“面朝”向量（通常是局部 x 轴或 y 轴）在世界系下的投影。
 - **`opponent_in_local`** (Dict[str, ndarray]): 对手 Torso 在**当前机器人局部坐标系**下的完整运动学状态：
   - `pos` (3,): 对手位置（局部相对向量）。
   - `rot` (4,): 对手相对于自身的局部姿态四元数。
