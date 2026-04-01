@@ -56,18 +56,25 @@
   - `root_angular_vel_local` (3,): Torso 在**自身局部坐标系**下的角速度。
   - `joint_pos_norm` (21,): **归一化到 `[-1, 1]` 的关节位置**。
     - 计算公式: `(qpos - reference) / scale`
-  - `joint_vel` (21,): 关节真实角速度（rad/s）。（考虑后续是否需要根据最大物理能力做归一化）。
+  - `joint_vel_norm` (21,): **归一化关节角速度**。
+    - 计算公式: `qvel / scale`
+    - 物理含义: 当前速度每秒能跨越几个“半量程”。它恰好是 `joint_pos_norm` 对时间的导数，与位置特征在数学上完美自洽。
 
 ### 2.3 派生数据 (`get_derived_state`)
 **定义**：面向机器学习特征工程、碰撞检测、奖励计算的丰富派生数据。
-- **返回类型**: `Dict[str, np.ndarray]` (按 robot 返回)
+- **返回类型**: `Dict[str, Any]` (包含全局对抗信息与各机器人的单边视角信息)
 - **包含内容**:
-  - `head_pos_global` / `com_pos_global` (3,): 头部与质心绝对坐标（常用于求两体距离）。
-  - `facing_dir_local` (3,): 机器人的“面朝”向量（通常是局部 x 或 y 轴）在世界系下的投影。
-  - `uprightness` (1,): 直立度。由躯干局部 z 轴与世界 z 轴的内积计算（1 表示完全直立，<0 表示倒地）。
-  - `contact_forces` (Dict[str, ndarray]): 各个关键受击部位（如躯干、头）受到的接触力向量或标量。
-  - `feet_contact` (2,): 左、右脚是否着地（布尔值或受力大小）。
-  - `relative_opponent_pos` (3,): 对手 Torso 相对于当前机器人局部坐标系的位置（对策略感知极度重要）。
+  - **全局对抗信息 (Shared / Global)**
+    - `torso_distance` (1,): 两个机器人根关节（Torso）之间的欧氏距离。
+    - `combat_contacts` (List[Dict]): 双方之间的接触列表及接触受力（例如 `{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}`）。**明确要求：只记录双方机器人之间的物理碰撞，排除与自身的接触。**
+  - **单边视角信息 (分别放置在 `robot_a` 和 `robot_b` 键下)**
+    - `uprightness` (1,): 直立度。由 Torso 局部 z 轴与世界 z 轴的内积计算（1 表示完全直立，<0 表示倒地）。
+    - `feet_forces` (2,): 左、右脚与地面的接触受力大小（用于判断着地和发力支撑）。
+    - `opponent_in_local` (Dict): **对手在当前机器人局部坐标系下的完整运动学状态**（对策略博弈感知极度重要）：
+      - `pos` (3,): 对手 Torso 在自己局部坐标系下的位置。
+      - `rot` (4,): 对手 Torso 相对于自己的局部姿态四元数。
+      - `vel` (3,): 对手 Torso 在自己局部坐标系下的线速度。
+      - `angular_vel` (3,): 对手 Torso 在自己局部坐标系下的角速度。
 
 ---
 
