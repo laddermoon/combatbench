@@ -61,28 +61,37 @@
 
 获取核心物理状态（位置、速度、时间）。
 
+**注意：** 核心状态只包含原始的 qpos 和 qvel 向量。机器人的位置、姿态等结构化数据可以通过 qpos/qvel 和 robot_info 中的索引计算得到。
+
 **输出格式：**
 ```python
 {
     'qpos': ndarray,                # shape=(56,), dtype=float64
     'qvel': ndarray,                # shape=(54,), dtype=float64
     'time': float,                  # 仿真时间（秒）
-    'robot_a': RobotCoreState,
-    'robot_b': RobotCoreState
 }
 ```
 
-**RobotCoreState 结构：**
+**代码依据：** `simulator.py:136-142`
+
+**如何获取机器人数据：**
+
+使用 `get_static_data()` 获取 robot_info，然后用索引访问 qpos/qvel：
+
 ```python
-{
-    'root_position': ndarray,       # shape=(3,), [x, y, z]，单位：米
-    'root_orientation': ndarray,    # shape=(4,), [w, x, y, z] 四元数
-    'root_linear_velocity': ndarray,     # shape=(3,), [vx, vy, vz]，单位：m/s
-    'root_angular_velocity': ndarray,    # shape=(3,), [ωx, ωy, ωz]，单位：rad/s
-}
-```
+static_data = simulator.get_static_data()
+state = simulator.get_core_state()
 
-**代码依据：** `simulator.py:132-149`
+robot_a_info = static_data['robot_info']['robot_a']
+qpos_adr = robot_a_info['qpos_adr']
+qvel_adr = robot_a_info['qvel_adr']
+
+# 获取 robot_a 的 root 位置和姿态
+root_position = state['qpos'][qpos_adr:qpos_adr+3]      # [x, y, z]
+root_orientation = state['qpos'][qpos_adr+3:qpos_adr+7]  # [w, x, y, z]
+root_linear_velocity = state['qvel'][qvel_adr:qvel_adr+3]     # [vx, vy, vz]
+root_angular_velocity = state['qvel'][qvel_adr+3:qvel_adr+6]   # [ωx, ωy, ωz]
+```
 
 ---
 
@@ -181,23 +190,27 @@ ndarray,  # shape=(720, 1280, 3), dtype=np.uint8（RGB 图像）
 **输入 `state` 的可选键：**
 ```python
 {
-    'time': float,                  # 仿真时间
-    'robot_a': {
-        'root_position': ndarray,       # shape=(3,)
-        'root_orientation': ndarray,    # shape=(4,)
-        'root_linear_velocity': ndarray,    # shape=(3,)
-        'root_angular_velocity': ndarray,   # shape=(3,)
-    },
-    'robot_b': { ... }             # 结构同 robot_a
+    'time': float,                  # 仿真时间（可选）
 }
 ```
 
 **行为说明：**
 1. `qpos` 和 `qvel` 必须是完整的 56/54 维数组（直接替换整个数组）
-2. 如果提供 `robot_a`/`robot_b` 的结构化数据，会同步回 `qpos`/`qvel` 的相应位置
+2. 如果需要修改特定机器人的状态，请先获取 qpos/qvel，使用 robot_info 中的索引修改相应位置，然后调用 set_core_state
 3. 最后调用 `mujoco.mj_forward()` 刷新正向运动学缓存
 
-**代码依据：** `simulator.py:151-171`
+**代码依据：** `simulator.py:155-161`
+
+**示例：**
+```python
+# 修改 robot_a 的 root 位置
+state = simulator.get_core_state()
+qpos = state['qpos'].copy()
+qpos_adr = robot_info['robot_a']['qpos_adr']
+qpos[qpos_adr:qpos_adr+3] = [1.0, 2.0, 1.282]  # 新位置 [x, y, z]
+state['qpos'] = qpos
+simulator.set_core_state(state)
+```
 
 ---
 
@@ -378,29 +391,27 @@ ndarray,  # shape=(720, 1280, 3), dtype=np.uint8（RGB 图像）
 
 ## 关键实现细节
 
-### 状态同步双向机制
+### 核心状态访问方式
 
-`set_core_state()` 支持两种修改方式：
+**核心状态只包含原始数组：** `qpos` 和 `qvel` 是完整的 MuJoCo 状态向量。要获取特定机器人的数据，需要：
 
-1. **直接修改数组**：提供完整的 `qpos`/`qvel` 数组
-2. **结构化修改**：提供 `robot_a`/`robot_b` 的结构化数据，会自动同步到数组
+1. 从 `get_static_data()` 获取 `robot_info`
+2. 使用 `qpos_adr` 和 `qvel_adr` 索引访问对应机器人的数据
 
 示例：
 ```python
-# 方式 1：直接修改
-simulator.set_core_state({
-    'qpos': new_qpos_array,    # shape=(56,)
-    'qvel': new_qvel_array     # shape=(54,)
-})
+static_data = simulator.get_static_data()
+state = simulator.get_core_state()
 
-# 方式 2：结构化修改
-simulator.set_core_state({
-    'qpos': current_qpos,       # shape=(56,)
-    'qvel': current_qvel,       # shape=(54,)
-    'robot_a': {
-        'root_position': [1.0, 0.0, 1.282]  # 只修改 root 位置
-    }
-})
+# 获取 robot_a 的 root 数据
+info_a = static_data['robot_info']['robot_a']
+qpos_adr_a = info_a['qpos_adr']
+qvel_adr_a = info_a['qvel_adr']
+
+root_pos = state['qpos'][qpos_adr_a:qpos_adr_a+3]      # [x, y, z]
+root_quat = state['qpos'][qpos_adr_a+3:qpos_adr_a+7]   # [w, x, y, z]
+root_lin_vel = state['qvel'][qvel_adr_a:qvel_adr_a+3]     # [vx, vy, vz]
+root_ang_vel = state['qvel'][qvel_adr_a+3:qvel_adr_a+6]   # [ωx, ωy, ωz]
 ```
 
 ### 四元数格式

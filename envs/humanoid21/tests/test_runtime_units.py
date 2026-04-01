@@ -25,7 +25,7 @@ class TestHumanoid21Observer:
         with pytest.raises(ValueError, match="Unsupported agent_id"):
             Humanoid21Observer('robot_c')
 
-    def test_observation_dimension_is_127(self, mock_simulator):
+    def test_observation_dimension_is_127(self, mock_simulator, mock_mj_name2id):
         """
         场景：构建观测
         预期：观测维度为 127
@@ -66,7 +66,7 @@ class TestHumanoid21Observer:
         assert action_space.spaces['robot_a'].low[0] == -1.0
         assert action_space.spaces['robot_a'].high[0] == 1.0
 
-    def test_updates_observation_on_post_step(self, mock_simulator):
+    def test_updates_observation_on_post_step(self, mock_simulator, mock_mj_name2id):
         """
         场景：执行 step 后
         预期：观测被更新
@@ -87,7 +87,7 @@ class TestHumanoid21Observer:
         # obs2[0] 应该包含关节位置的变化
         assert obs2[0] == 0.5  # 第一个关节位置
 
-    def test_observation_is_finite(self, mock_simulator):
+    def test_observation_is_finite(self, mock_simulator, mock_mj_name2id):
         """
         场景：构建观测
         预期：所有值都是有限的（无 NaN 或 Inf）
@@ -100,7 +100,7 @@ class TestHumanoid21Observer:
 
         assert np.all(np.isfinite(obs)), "Observation should not contain NaN or Inf"
 
-    def test_opponent_observer_sees_different_data(self, mock_simulator):
+    def test_opponent_observer_sees_different_data(self, mock_simulator, mock_mj_name2id):
         """
         场景：robot_a 和 robot_b 的 observer
         预期：看到不同的观测（对手位置是相对的）

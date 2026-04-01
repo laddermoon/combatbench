@@ -134,43 +134,16 @@ class MujocoCombatSimulator(BaseSimulator):
         }
 
     def get_core_state(self) -> Dict[str, Any]:
-        state = {
+        return {
             'qpos': self.data.qpos.copy(),
             'qvel': self.data.qvel.copy(),
             'time': self.data.time,
-            'robot_a': {},
-            'robot_b': {}
         }
-        for r_id in ['robot_a', 'robot_b']:
-            qpos_adr = self.robot_info[r_id]['qpos_adr']
-            qvel_adr = self.robot_info[r_id]['qvel_adr']
-            # qpos: [x,y,z, qw,qx,qy,qz]
-            state[r_id]['root_position'] = self.data.qpos[qpos_adr:qpos_adr+3].copy()
-            state[r_id]['root_orientation'] = self.data.qpos[qpos_adr+3:qpos_adr+7].copy()
-            state[r_id]['root_linear_velocity'] = self.data.qvel[qvel_adr:qvel_adr+3].copy()
-            state[r_id]['root_angular_velocity'] = self.data.qvel[qvel_adr+3:qvel_adr+6].copy()
-            
-        return state
 
     def set_core_state(self, state: Dict[str, Any]) -> None:
         self.data.qpos[:] = state['qpos']
         self.data.qvel[:] = state['qvel']
         self.data.time = state.get('time', self.data.time)
-        
-        # 如果上层修改了 structured data，这里同步回 qpos/qvel
-        for r_id in ['robot_a', 'robot_b']:
-            if r_id in state:
-                r_state = state[r_id]
-                qpos_adr = self.robot_info[r_id]['qpos_adr']
-                qvel_adr = self.robot_info[r_id]['qvel_adr']
-                if 'root_position' in r_state:
-                    self.data.qpos[qpos_adr:qpos_adr+3] = r_state['root_position']
-                if 'root_orientation' in r_state:
-                    self.data.qpos[qpos_adr+3:qpos_adr+7] = r_state['root_orientation']
-                if 'root_linear_velocity' in r_state:
-                    self.data.qvel[qvel_adr:qvel_adr+3] = r_state['root_linear_velocity']
-                if 'root_angular_velocity' in r_state:
-                    self.data.qvel[qvel_adr+3:qvel_adr+6] = r_state['root_angular_velocity']
 
         mujoco.mj_forward(self.model, self.data)
 

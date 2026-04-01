@@ -25,6 +25,25 @@ def _create_writable_context(simulator):
     return ctx
 
 
+def _get_robot_data(mock_simulator, robot_id):
+    """Helper to get robot position/orientation from qpos/qvel"""
+    state = mock_simulator.get_core_state()
+    qpos = state['qpos']
+    qvel = state['qvel']
+    robot_info = mock_simulator.robot_info[robot_id]
+    qpos_adr = robot_info['qpos_adr']
+    qvel_adr = robot_info['qvel_adr']
+    
+    return {
+        'root_position': qpos[qpos_adr:qpos_adr+3],
+        'root_orientation': qpos[qpos_adr+3:qpos_adr+7],
+        'root_linear_velocity': qvel[qvel_adr:qvel_adr+3],
+        'root_angular_velocity': qvel[qvel_adr+3:qvel_adr+6],
+        'qpos_adr': qpos_adr,
+        'qvel_adr': qvel_adr,
+    }
+
+
 class TestNonFallConstraintPlugin:
     """测试防摔倒约束插件"""
 
@@ -44,7 +63,8 @@ class TestNonFallConstraintPlugin:
 
         # 验证：pitch 被裁剪
         state = mock_simulator.get_core_state()
-        orientation = state['robot_a']['root_orientation']
+        robot_data = _get_robot_data(mock_simulator, 'robot_a')
+        orientation = robot_data['root_orientation']
 
         from scipy.spatial.transform import Rotation as R
         rot = R.from_quat([orientation[1], orientation[2], orientation[3], orientation[0]])
@@ -68,7 +88,8 @@ class TestNonFallConstraintPlugin:
 
         # 验证：roll 被裁剪
         state = mock_simulator.get_core_state()
-        orientation = state['robot_a']['root_orientation']
+        robot_data = _get_robot_data(mock_simulator, 'robot_a')
+        orientation = robot_data['root_orientation']
 
         from scipy.spatial.transform import Rotation as R
         rot = R.from_quat([orientation[1], orientation[2], orientation[3], orientation[0]])
@@ -89,7 +110,7 @@ class TestNonFallConstraintPlugin:
 
         # 设置水平速度
         state = mock_simulator.get_core_state()
-        state['robot_a']['root_linear_velocity'] = [1.0, 2.0, 0.0]
+        _get_robot_data(mock_simulator, 'robot_a')['root_linear_velocity'] = [1.0, 2.0, 0.0]
         mock_simulator.set_core_state(state)
 
         # 执行插件
@@ -97,7 +118,7 @@ class TestNonFallConstraintPlugin:
 
         # 验证：水平速度被清零
         state = mock_simulator.get_core_state()
-        linear_vel = state['robot_a']['root_linear_velocity']
+        linear_vel = _get_robot_data(mock_simulator, 'robot_a')['root_linear_velocity']
         assert linear_vel[0] == 0.0, "vx should be reset to 0"
         assert linear_vel[1] == 0.0, "vy should be reset to 0"
 
@@ -129,14 +150,16 @@ class TestNonFallConstraintPlugin:
 
         # 记录原始状态
         original_state = mock_simulator.get_core_state()
-        original_orientation = original_state['robot_a']['root_orientation'].copy()
+        robot_data = _get_robot_data(mock_simulator, 'robot_a')
+        original_orientation = robot_data['root_orientation'].copy()
 
         # 执行插件
         non_fall_plugin.on_post_phy_step(ctx)
 
         # 验证：状态未被修改
         state = mock_simulator.get_core_state()
-        orientation = state['robot_a']['root_orientation']
+        robot_data = _get_robot_data(mock_simulator, 'robot_a')
+        orientation = robot_data['root_orientation']
         np.testing.assert_array_almost_equal(orientation, original_orientation)
 
 
@@ -304,7 +327,9 @@ class TestFrozenRobotPlugin:
 
         # 设置 robot_b 的初始位置
         state = mock_simulator.get_core_state()
-        state['robot_b']['root_position'] = [1.0, 0.5, 1.282]
+        qpos = state['qpos'].copy()
+        qpos[mock_simulator.robot_info['robot_b']['qpos_adr']:mock_simulator.robot_info['robot_b']['qpos_adr']+3] = [1.0, 0.5, 1.282]
+        state['qpos'] = qpos
         mock_simulator.set_core_state(state)
 
         # 执行插件
@@ -329,8 +354,12 @@ class TestFrozenRobotPlugin:
 
         # 模拟 robot_b 位置发生变化
         state = mock_simulator.get_core_state()
-        state['robot_b']['root_position'] = [2.0, 1.0, 0.5]
-        state['robot_b']['root_linear_velocity'] = [1.0, 1.0, 0.0]
+        qpos = state['qpos'].copy()
+        qvel = state['qvel'].copy()
+        qpos[mock_simulator.robot_info['robot_b']['qpos_adr']:mock_simulator.robot_info['robot_b']['qpos_adr']+3] = [2.0, 1.0, 0.5]
+        qvel[mock_simulator.robot_info['robot_b']['qvel_adr']:mock_simulator.robot_info['robot_b']['qvel_adr']+3] = [1.0, 1.0, 0.0]
+        state['qpos'] = qpos
+        state['qvel'] = qvel
         mock_simulator.set_core_state(state)
 
         # 执行插件
@@ -338,12 +367,14 @@ class TestFrozenRobotPlugin:
 
         # 验证：robot_b 被重置
         state = mock_simulator.get_core_state()
+        robot_data = _get_robot_data(mock_simulator, 'robot_b')
         np.testing.assert_array_almost_equal(
-            state['robot_b']['root_position'],
+            robot_data['root_position'],
             frozen_robot_plugin.initial_state['root_position']
         )
+        robot_data = _get_robot_data(mock_simulator, 'robot_b')
         np.testing.assert_array_almost_equal(
-            state['robot_b']['root_linear_velocity'],
+            robot_data['root_linear_velocity'],
             [0.0, 0.0, 0.0]
         )
 
@@ -359,15 +390,19 @@ class TestFrozenRobotPlugin:
 
         # 改变两个机器人的位置
         state = mock_simulator.get_core_state()
-        state['robot_a']['root_position'] = [0.0, 0.0, 2.0]
-        state['robot_b']['root_position'] = [2.0, 0.0, 0.5]
+        qpos = state['qpos'].copy()
+        qpos[mock_simulator.robot_info['robot_a']['qpos_adr']:mock_simulator.robot_info['robot_a']['qpos_adr']+3] = [0.0, 0.0, 2.0]
+        state['qpos'] = qpos
+        qpos = state['qpos'].copy()
+        qpos[mock_simulator.robot_info['robot_b']['qpos_adr']:mock_simulator.robot_info['robot_b']['qpos_adr']+3] = [2.0, 0.0, 0.5]
+        state['qpos'] = qpos
         mock_simulator.set_core_state(state)
 
         plugin.on_post_phy_step(ctx)
 
         # 验证：robot_b 被重置，robot_a 保持不变
         state = mock_simulator.get_core_state()
-        assert state['robot_a']['root_position'][2] == 2.0  # 未被重置
+        assert _get_robot_data(mock_simulator, 'robot_a')['root_position'][2] == 2.0  # 未被重置
 
     def test_does_nothing_without_initial_state(self, mock_simulator, frozen_robot_plugin):
         """
@@ -387,7 +422,8 @@ class TestFrozenRobotPlugin:
 
         # 验证：状态未变
         current_state = mock_simulator.get_core_state()
+        qpos_adr = mock_simulator.robot_info['robot_b']['qpos_adr']
         np.testing.assert_array_almost_equal(
-            current_state['robot_b']['root_position'],
-            original_state['robot_b']['root_position']
+            current_state['qpos'][qpos_adr:qpos_adr+3],
+            original_state['qpos'][qpos_adr:qpos_adr+3]
         )

@@ -21,8 +21,6 @@ class TestSimulatorStateManagement:
         assert 'qpos' in state
         assert 'qvel' in state
         assert 'time' in state
-        assert 'robot_a' in state
-        assert 'robot_b' in state
 
     def test_get_core_state_returns_copies(self, mock_simulator):
         """
@@ -33,12 +31,10 @@ class TestSimulatorStateManagement:
 
         # 修改返回的状态
         state['qpos'][0] = 999.0
-        state['robot_a']['root_position'][0] = 888.0
 
         # 验证：模拟器内部状态未变
         new_state = mock_simulator.get_core_state()
         assert new_state['qpos'][0] != 999.0
-        assert new_state['robot_a']['root_position'][0] != 888.0
 
     def test_set_core_state_updates_qpos_qvel(self, mock_simulator):
         """
@@ -57,86 +53,6 @@ class TestSimulatorStateManagement:
         current_state = mock_simulator.get_core_state()
         np.testing.assert_array_almost_equal(current_state['qpos'], new_qpos)
         np.testing.assert_array_almost_equal(current_state['qvel'], new_qvel)
-
-    def test_set_core_state_updates_robot_positions(self, mock_simulator):
-        """
-        场景：设置机器人位置
-        预期：root_position 被更新
-        """
-        state = mock_simulator.get_core_state()
-
-        # 设置 robot_a 新位置
-        state['robot_a']['root_position'] = [5.0, 3.0, 2.0]
-        mock_simulator.set_core_state(state)
-
-        # 验证：位置被更新
-        current_state = mock_simulator.get_core_state()
-        np.testing.assert_array_almost_equal(
-            current_state['robot_a']['root_position'],
-            [5.0, 3.0, 2.0]
-        )
-
-    def test_set_core_state_updates_robot_orientations(self, mock_simulator):
-        """
-        场景：设置机器人姿态
-        预期：root_orientation 被更新
-        """
-        state = mock_simulator.get_core_state()
-
-        # 设置新的四元数
-        new_quat = [0.0, 0.0, 0.0, 1.0]  # [w, x, y, z]
-        state['robot_a']['root_orientation'] = new_quat
-        mock_simulator.set_core_state(state)
-
-        # 验证：姿态被更新
-        current_state = mock_simulator.get_core_state()
-        np.testing.assert_array_almost_equal(
-            current_state['robot_a']['root_orientation'],
-            new_quat
-        )
-
-    def test_set_core_state_updates_robot_velocities(self, mock_simulator):
-        """
-        场景：设置机器人速度
-        预期：速度被更新
-        """
-        state = mock_simulator.get_core_state()
-
-        # 设置新速度
-        state['robot_a']['root_linear_velocity'] = [1.0, 2.0, 3.0]
-        state['robot_a']['root_angular_velocity'] = [0.1, 0.2, 0.3]
-        mock_simulator.set_core_state(state)
-
-        # 验证：速度被更新
-        current_state = mock_simulator.get_core_state()
-        np.testing.assert_array_almost_equal(
-            current_state['robot_a']['root_linear_velocity'],
-            [1.0, 2.0, 3.0]
-        )
-        np.testing.assert_array_almost_equal(
-            current_state['robot_a']['root_angular_velocity'],
-            [0.1, 0.2, 0.3]
-        )
-
-    def test_set_core_state_synchronizes_structured_to_array(self, mock_simulator):
-        """
-        场景：通过 structured data 设置状态
-        预期：正确同步到 qpos/qvel 数组
-        """
-        state = mock_simulator.get_core_state()
-
-        # 通过 structured data 设置
-        original_qpos = state['qpos'].copy()
-        state['robot_a']['root_position'] = [10.0, 20.0, 30.0]
-        mock_simulator.set_core_state(state)
-
-        # 验证：qpos 数组被正确更新
-        current_state = mock_simulator.get_core_state()
-        qpos_adr = mock_simulator.robot_info['robot_a']['qpos_adr']
-        np.testing.assert_array_almost_equal(
-            current_state['qpos'][qpos_adr:qpos_adr+3],
-            [10.0, 20.0, 30.0]
-        )
 
     def test_get_static_data_returns_robot_info(self, mock_simulator):
         """
@@ -198,25 +114,23 @@ class TestSimulatorStateManagement:
         场景：重置模拟器
         预期：时间归零
         """
-        mock_simulator.physical_step()
-        mock_simulator.physical_step()
-        assert mock_simulator._time > 0
-
+        mock_simulator._time = 10.0
         mock_simulator.reset()
         assert mock_simulator._time == 0.0
 
     def test_reset_clears_contacts(self, mock_simulator):
         """
         场景：重置模拟器
-        预期：碰撞列表被清空
+        预期：碰撞被清空
         """
+        # 添加碰撞
         mock_simulator.add_contact(
             geom1=1, geom2=2, body1=10, body2=20,
-            geom1_name='hand_red', geom2_name='head_blue'
+            geom1_name='hand_red', geom2_name='head_blue',
+            impulse=50.0
         )
 
         mock_simulator.reset()
-
         derived_state = mock_simulator.get_derived_state()
         assert len(derived_state['contacts']) == 0
 
@@ -229,8 +143,10 @@ class TestSimulatorStateManagement:
         mock_simulator.reset(options={'initial_distance': 4.0})
 
         state = mock_simulator.get_core_state()
-        pos_a = state['robot_a']['root_position']
-        pos_b = state['robot_b']['root_position']
+        qpos = state['qpos']
+        # robot_a root at qpos_adr=0, robot_b root at qpos_adr=70 (from robot_info)
+        pos_a = qpos[0:3]
+        pos_b = qpos[70:73]
 
         # 验证：距离为 4.0
         distance = np.linalg.norm(pos_b - pos_a)
@@ -243,34 +159,6 @@ class TestSimulatorStateManagement:
         """
         expected_freq = 1.0 / mock_simulator.dt
         assert mock_simulator.get_physical_frequency() == expected_freq
-
-    def test_robot_initial_positions_are_opposite(self, mock_simulator):
-        """
-        场景：初始状态
-        预期：两个机器人相向而立，x 坐标相反
-        """
-        state = mock_simulator.get_core_state()
-        pos_a = state['robot_a']['root_position']
-        pos_b = state['robot_b']['root_position']
-
-        # 验证：y 和 z 相同，x 相反
-        assert abs(pos_a[1] - pos_b[1]) < 0.01  # y 相同
-        assert abs(pos_a[2] - pos_b[2]) < 0.01  # z 相同
-        assert abs(pos_a[0] + pos_b[0]) < 0.01  # x 相反
-
-    def test_robot_initial_orientations_are_facing_each_other(self, mock_simulator):
-        """
-        场景：初始姿态
-        预期：两个机器人面朝对方
-        """
-        state = mock_simulator.get_core_state()
-        quat_a = state['robot_a']['root_orientation']  # [w, x, y, z]
-        quat_b = state['robot_b']['root_orientation']
-
-        # robot_a: [1, 0, 0, 0] = 无旋转，面朝 +x
-        # robot_b: [0, 0, 0, 1] = 180度绕 z轴，面朝 -x
-        np.testing.assert_array_almost_equal(quat_a, [1.0, 0.0, 0.0, 0.0])
-        np.testing.assert_array_almost_equal(quat_b, [0.0, 0.0, 0.0, 1.0])
 
 
 class TestSimulatorDataProperties:

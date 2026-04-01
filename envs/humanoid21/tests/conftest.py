@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 import numpy as np
 import pytest
+import mujoco
 
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -107,43 +108,16 @@ class MockMuJoCoSimulator(BaseSimulator):
         }
 
     def get_core_state(self) -> Dict[str, Any]:
-        state = {
+        return {
             'qpos': self._qpos.copy(),
             'qvel': self._qvel.copy(),
             'time': self._time,
-            'robot_a': {},
-            'robot_b': {}
         }
-
-        for r_id in ['robot_a', 'robot_b']:
-            qpos_adr = self.robot_info[r_id]['qpos_adr']
-            qvel_adr = self.robot_info[r_id]['qvel_adr']
-            state[r_id]['root_position'] = self._qpos[qpos_adr:qpos_adr+3].copy()
-            state[r_id]['root_orientation'] = self._qpos[qpos_adr+3:qpos_adr+7].copy()
-            state[r_id]['root_linear_velocity'] = self._qvel[qvel_adr:qvel_adr+3].copy()
-            state[r_id]['root_angular_velocity'] = self._qvel[qvel_adr+3:qvel_adr+6].copy()
-
-        return state
 
     def set_core_state(self, state: Dict[str, Any]) -> None:
         self._qpos[:] = state['qpos']
         self._qvel[:] = state['qvel']
         self._time = state.get('time', self._time)
-
-        # 同步 structured data 回 qpos/qvel
-        for r_id in ['robot_a', 'robot_b']:
-            if r_id in state:
-                r_state = state[r_id]
-                qpos_adr = self.robot_info[r_id]['qpos_adr']
-                qvel_adr = self.robot_info[r_id]['qvel_adr']
-                if 'root_position' in r_state:
-                    self._qpos[qpos_adr:qpos_adr+3] = r_state['root_position']
-                if 'root_orientation' in r_state:
-                    self._qpos[qpos_adr+3:qpos_adr+7] = r_state['root_orientation']
-                if 'root_linear_velocity' in r_state:
-                    self._qvel[qpos_adr:qpos_adr+3] = r_state['root_linear_velocity']
-                if 'root_angular_velocity' in r_state:
-                    self._qvel[qpos_adr+3:qvel_adr+6] = r_state['root_angular_velocity']
 
     def get_derived_state(self) -> Dict[str, Any]:
         return {
@@ -227,6 +201,21 @@ class MockMuJoCoSimulator(BaseSimulator):
                 self.sim = sim
                 self.geom_type = np.zeros(100, dtype=int)
                 self.geom_bodyid = np.zeros(100, dtype=int)
+                # Body name to ID mapping for mj_name2id compatibility
+                self._name2id = {
+                    'pelvis_red': 0,
+                    'head_red': 1,
+                    'torso_red': 2,
+                    'pelvis_blue': 3,
+                    'head_blue': 4,
+                    'torso_blue': 5,
+                }
+            
+            def __getattr__(self, name):
+                # Delegate to sim for unknown attributes
+                if hasattr(self.sim, name):
+                    return getattr(self.sim, name)
+                raise AttributeError(f"'MockModel' object has no attribute '{name}'")
 
         return MockModel(self)
 
@@ -321,6 +310,18 @@ def frozen_robot_plugin():
     return FrozenRobotPlugin(frozen_robot_id='robot_b')
 
 
+
+@pytest.fixture
+def mock_mj_name2id(monkeypatch):
+    """Monkeypatch mujoco.mj_name2id to work with mock models"""
+    def mock_name2id(model, obj_type, name):
+        # If model is a MockModel, use its internal mapping
+        if hasattr(model, '_name2id'):
+            return model._name2id.get(name, -1)
+        # Otherwise use the real function
+        return mujoco.mj_name2id(model, obj_type, name)
+    
+    monkeypatch.setattr(mujoco, 'mj_name2id', mock_name2id)
 @pytest.fixture
 def humanoid_observer():
     """提供 Humanoid21Observer 实例"""
