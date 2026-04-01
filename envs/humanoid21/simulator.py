@@ -14,12 +14,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import BaseSimulator
 
 class MujocoCombatSimulator(BaseSimulator):
-    def __init__(self, arena_xml: str, dt: float = 0.002, initial_distance: float = 2.0, 
+    def __init__(self, arena_xml: str = None, dt: float = 0.002, initial_distance: float = 2.0,
                  action_dim: int = 21, kp: float = 4.0, kd: float = 0.4):
         self.dt = dt
         self.initial_distance = initial_distance
         self.action_dim = action_dim
-        
+
+        # 固定使用 battle_v1.xml
+        if arena_xml is None:
+            arena_xml = str(Path(__file__).parent / 'battle_v1.xml')
+
         self.model = mujoco.MjSpec.from_file(arena_xml).compile()
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
