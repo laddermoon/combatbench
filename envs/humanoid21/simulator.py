@@ -217,10 +217,18 @@ class MujocoCombatSimulator(BaseSimulator):
                 self.target_positions[r_id] = target_pos.astype(np.float32)
 
     def _init_pd_limits(self) -> None:
-        """初始化 PD 控制器的限制和参考位置"""
+        """
+        初始化 PD 控制器的限制和参考位置
+
+        控制方式：
+        - Reference = (Down + Up) / 2  (关节限位的中间值)
+        - Scale = (Up - Down) / 2      (关节范围的一半)
+        - Target = Reference + Action * Scale
+        - Action 范围: [-1, 1]
+        """
         if self._pd_initialized:
             return
-            
+
         self.joint_limits = {
             'robot_a': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)},
             'robot_b': {'lower': np.zeros(self.action_dim), 'upper': np.zeros(self.action_dim)}
@@ -237,33 +245,44 @@ class MujocoCombatSimulator(BaseSimulator):
             'robot_a': np.zeros(self.action_dim),
             'robot_b': np.zeros(self.action_dim)
         }
-        
+
         for r_id in ['robot_a', 'robot_b']:
             if r_id in self.robot_info:
                 info = self.robot_info[r_id]
-                
+
                 if 'jnt_ranges' in info:
                     for i, r in enumerate(info['jnt_ranges']):
                         self.joint_limits[r_id]['lower'][i] = r[0]
                         self.joint_limits[r_id]['upper'][i] = r[1]
-                
+
                 if 'ctrl_ranges' in info:
                     for i, r in enumerate(info['ctrl_ranges']):
                         self.ctrl_limits[r_id]['lower'][i] = r[0]
                         self.ctrl_limits[r_id]['upper'][i] = r[1]
-                        
-                if 'qpos0' in info:
-                    for i, q in enumerate(info['qpos0']):
-                        self.reference_pos[r_id][i] = q
-            
-            # 计算 action scale
+
+            # 计算 reference_pos 和 action_scale
+            # Reference = (Down + Up) / 2 (关节中位)
+            # Scale = (Up - Down) / 2 (关节范围的一半)
             lower = self.joint_limits[r_id]['lower']
             upper = self.joint_limits[r_id]['upper']
-            default_scale = np.full(self.action_dim, 0.25, dtype=np.float32)
-            finite_mask = np.isfinite(lower) & np.isfinite(upper)
-            default_scale[finite_mask] = 0.25 * (upper[finite_mask] - lower[finite_mask])
-            self.action_scale[r_id] = np.maximum(default_scale, 1e-3).astype(np.float32)
-            
+
+            # 计算参考位置和 scale
+            for i in range(self.action_dim):
+                lo = lower[i]
+                hi = upper[i]
+
+                if not np.isfinite(lo) or not np.isfinite(hi):
+                    # 不支持无限范围
+                    raise ValueError(
+                        f"Joint {i} of {r_id} has infinite range "
+                        f"(lower={lo}, upper={hi}). "
+                        f"All joints must have finite limits for this control method."
+                    )
+
+                # 有限范围：使用中位和范围的一半
+                self.reference_pos[r_id][i] = (lo + hi) / 2.0
+                self.action_scale[r_id][i] = (hi - lo) / 2.0
+
             # 初始化目标位置为参考位置
             self.target_positions[r_id] = self.reference_pos[r_id].copy()
 
