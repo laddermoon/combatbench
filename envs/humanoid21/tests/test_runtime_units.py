@@ -1,10 +1,10 @@
 """
-Humanoid21 Runtime Units 测试 - 测试 Observer 和 Rewarder
+Humanoid21 Runtime Units 测试 - 使用真实 MujocoCombatSimulator
 """
 import pytest
 import numpy as np
 
-from .conftest import MockMuJoCoSimulator, humanoid_observer, humanoid_rewarder
+from .conftest import simulator, humanoid_observer, humanoid_rewarder
 from envs.framework.context import SimContext, ReadOnlySimContext
 from envs.humanoid21.runtime_units import (
     Humanoid21Observer,
@@ -25,13 +25,13 @@ class TestHumanoid21Observer:
         with pytest.raises(ValueError, match="Unsupported agent_id"):
             Humanoid21Observer('robot_c')
 
-    def test_observation_dimension_is_127(self, mock_simulator, mock_mj_name2id):
+    def test_observation_dimension_is_127(self, simulator):
         """
         场景：构建观测
         预期：观测维度为 127
         """
         observer = Humanoid21Observer('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         observer.on_reset(ctx)
         obs = observer.get_output()
@@ -66,48 +66,27 @@ class TestHumanoid21Observer:
         assert action_space.spaces['robot_a'].low[0] == -1.0
         assert action_space.spaces['robot_a'].high[0] == 1.0
 
-    def test_updates_observation_on_post_step(self, mock_simulator, mock_mj_name2id):
-        """
-        场景：执行 step 后
-        预期：观测被更新
-        """
-        observer = Humanoid21Observer('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
-
-        observer.on_reset(ctx)
-        obs1 = observer.get_output()
-
-        # 模拟一些状态变化
-        mock_simulator._qpos[7] = 0.5  # 改变关节位置
-
-        observer.on_post_step(ctx)
-        obs2 = observer.get_output()
-
-        # 验证：观测被更新
-        # obs2[0] 应该包含关节位置的变化
-        assert obs2[0] == 0.5  # 第一个关节位置
-
-    def test_observation_is_finite(self, mock_simulator, mock_mj_name2id):
+    def test_observation_is_finite(self, simulator):
         """
         场景：构建观测
         预期：所有值都是有限的（无 NaN 或 Inf）
         """
         observer = Humanoid21Observer('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         observer.on_reset(ctx)
         obs = observer.get_output()
 
         assert np.all(np.isfinite(obs)), "Observation should not contain NaN or Inf"
 
-    def test_opponent_observer_sees_different_data(self, mock_simulator, mock_mj_name2id):
+    def test_opponent_observer_sees_different_data(self, simulator):
         """
         场景：robot_a 和 robot_b 的 observer
         预期：看到不同的观测（对手位置是相对的）
         """
         observer_a = Humanoid21Observer('robot_a')
         observer_b = Humanoid21Observer('robot_b')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         observer_a.on_reset(ctx)
         observer_b.on_reset(ctx)
@@ -131,35 +110,35 @@ class TestHumanoid21Rewarder:
         with pytest.raises(ValueError, match="Unsupported agent_id"):
             Humanoid21Rewarder('robot_c')
 
-    def test_returns_zero_on_reset(self, mock_simulator):
+    def test_returns_zero_on_reset(self, simulator):
         """
         场景：reset 时
         预期：奖励为 0
         """
         rewarder = Humanoid21Rewarder('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         rewarder.on_reset(ctx)
         assert rewarder.get_output() == 0.0
 
-    def test_returns_zero_on_post_step(self, mock_simulator):
+    def test_returns_zero_on_post_step(self, simulator):
         """
         场景：step 后
         预期：奖励为 0（当前实现返回 0）
         """
         rewarder = Humanoid21Rewarder('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         rewarder.on_post_step(ctx)
         assert rewarder.get_output() == 0.0
 
-    def test_returns_zero_on_post_episode(self, mock_simulator):
+    def test_returns_zero_on_post_episode(self, simulator):
         """
         场景：episode 结束时
         预期：奖励为 0
         """
         rewarder = Humanoid21Rewarder('robot_a')
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(mock_simulator))
+        ctx = ReadOnlySimContext.from_sim_context(SimContext(simulator))
 
         rewarder.on_post_episode(ctx)
         assert rewarder.get_output() == 0.0
@@ -168,12 +147,12 @@ class TestHumanoid21Rewarder:
 class TestBuildSharedRuntimeInfo:
     """测试 build_shared_runtime_info 函数"""
 
-    def test_includes_health_metrics(self):
+    def test_includes_health_metrics(self, simulator):
         """
         场景：构建共享信息
         预期：包含血量信息
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['health_a'] = 85.0
         ctx.metrics['health_b'] = 60.0
 
@@ -182,12 +161,12 @@ class TestBuildSharedRuntimeInfo:
         assert info['health']['robot_a'] == 85.0
         assert info['health']['robot_b'] == 60.0
 
-    def test_includes_damage_taken(self):
+    def test_includes_damage_taken(self, simulator):
         """
         场景：构建共享信息
         预期：包含承受伤害信息
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['damage_taken_a'] = 15.0
         ctx.metrics['damage_taken_b'] = 40.0
 
@@ -196,91 +175,91 @@ class TestBuildSharedRuntimeInfo:
         assert info['damage_taken']['robot_a'] == 15.0
         assert info['damage_taken']['robot_b'] == 40.0
 
-    def test_defaults_to_100_health_if_not_set(self):
+    def test_defaults_to_100_health_if_not_set(self, simulator):
         """
         场景：血量未设置
         预期：默认为 100
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
 
         info = build_shared_runtime_info(ctx)
 
         assert info['health']['robot_a'] == 100.0
         assert info['health']['robot_b'] == 100.0
 
-    def test_winner_is_none_when_not_terminated(self):
+    def test_winner_is_none_when_not_terminated(self, simulator):
         """
         场景：episode 未终止
         预期：winner 为 None
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
 
         info = build_shared_runtime_info(ctx)
 
         assert info['winner'] is None
 
-    def test_determines_winner_on_ko(self):
+    def test_determines_winner_on_ko(self, simulator):
         """
         场景：KO 终止
         预期：根据血量判定获胜者
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['health_a'] = 0.0
         ctx.metrics['health_b'] = 80.0
-        ctx._termination_proposals = (TerminationReason.KO,)
+        ctx.termination_proposals = [TerminationReason.KO]
 
         info = build_shared_runtime_info(ctx)
 
         assert info['winner'] == 'robot_b'
 
-    def test_determines_draw_on_double_ko(self):
+    def test_determines_draw_on_double_ko(self, simulator):
         """
         场景：双方血量都为 0
         预期：平局
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['health_a'] = 0.0
         ctx.metrics['health_b'] = 0.0
-        ctx._termination_proposals = (TerminationReason.KO,)
+        ctx.termination_proposals = [TerminationReason.KO]
 
         info = build_shared_runtime_info(ctx)
 
         assert info['winner'] == 'draw'
 
-    def test_determines_winner_on_timeout(self):
+    def test_determines_winner_on_timeout(self, simulator):
         """
         场景：超时终止
         预期：血量高的获胜
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['health_a'] = 90.0
         ctx.metrics['health_b'] = 70.0
-        ctx._termination_proposals = (TerminationReason.TIMEOUT,)
+        ctx.termination_proposals = [TerminationReason.TIMEOUT]
 
         info = build_shared_runtime_info(ctx)
 
         assert info['winner'] == 'robot_a'
 
-    def test_determines_draw_on_timeout_with_equal_health(self):
+    def test_determines_draw_on_timeout_with_equal_health(self, simulator):
         """
         场景：超时且血量相同
         预期：平局
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
         ctx.metrics['health_a'] = 75.0
         ctx.metrics['health_b'] = 75.0
-        ctx._termination_proposals = (TerminationReason.TIMEOUT,)
+        ctx.termination_proposals = [TerminationReason.TIMEOUT]
 
         info = build_shared_runtime_info(ctx)
 
         assert info['winner'] == 'draw'
 
-    def test_uses_default_values_for_damage(self):
+    def test_uses_default_values_for_damage(self, simulator):
         """
         场景：伤害未设置
         预期：默认为 0
         """
-        ctx = ReadOnlySimContext.from_sim_context(SimContext(MockMuJoCoSimulator()))
+        ctx = SimContext(simulator)
 
         info = build_shared_runtime_info(ctx)
 

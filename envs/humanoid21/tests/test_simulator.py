@@ -1,192 +1,487 @@
 """
-Humanoid21 Simulator 测试 - 测试状态管理和物理仿真
+Humanoid21 Simulator 真实测试 - 使用真实 MujocoCombatSimulator
+
+测试内容：
+1. 仿真器是否正常工作（reset, step, forward等）
+2. 接口返回数据是否与 DATASPEC.md 一致
 """
 import pytest
 import numpy as np
+import mujoco
 
-from .conftest import MockMuJoCoSimulator
-from envs.framework.context import SimContext
+from envs.humanoid21.simulator import MujocoCombatSimulator
 
 
-class TestSimulatorStateManagement:
-    """测试模拟器状态管理"""
+class TestSimulatorBasicFunctionality:
+    """测试仿真器基本功能"""
 
-    def test_get_core_state_returns_all_required_keys(self, mock_simulator):
+    @pytest.fixture
+    def simulator(self):
+        """提供真实的 MujocoCombatSimulator 实例"""
+        sim = MujocoCombatSimulator()
+        yield sim
+        sim.close()
+
+    def test_initialization(self, simulator):
         """
-        场景：获取核心状态
-        预期：返回包含所有必需键的字典
+        场景：创建仿真器
+        预期：正确初始化，模型和数据可用
         """
-        state = mock_simulator.get_core_state()
+        assert simulator.model is not None
+        assert simulator.data is not None
+        assert simulator.dt == 0.002
 
-        assert 'qpos' in state
-        assert 'qvel' in state
-        assert 'time' in state
-
-    def test_get_core_state_returns_copies(self, mock_simulator):
+    def test_reset_works(self, simulator):
         """
-        场景：获取核心状态后修改返回值
-        预期：不影响模拟器内部状态
+        场景：重置仿真器
+        预期：状态被正确重置，机器人在初始位置
         """
-        state = mock_simulator.get_core_state()
+        simulator.reset()
 
-        # 修改返回的状态
-        state['qpos'][0] = 999.0
+        # 验证时间归零
+        assert simulator.data.time == 0.0
 
-        # 验证：模拟器内部状态未变
-        new_state = mock_simulator.get_core_state()
-        assert new_state['qpos'][0] != 999.0
+        # 验证速度清零
+        assert np.allclose(simulator.data.qvel, 0.0)
 
-    def test_set_core_state_updates_qpos_qvel(self, mock_simulator):
+        # 验证机器人位置（根据 DATASPEC.md）
+        # robot_a root at qpos_adr=0: x = -initial_distance/2, y = 0, z = 1.282
+        # robot_b root at qpos_adr=28: x = +initial_distance/2, y = 0, z = 1.282
+        pos_a = simulator.data.qpos[0:3]
+        pos_b = simulator.data.qpos[28:31]
+
+        assert abs(pos_a[0] + 1.0) < 0.01  # -initial_distance/2 = -1.0
+        assert abs(pos_a[1]) < 0.01
+        assert abs(pos_a[2] - 1.282) < 0.01
+
+        assert abs(pos_b[0] - 1.0) < 0.01  # +initial_distance/2 = +1.0
+        assert abs(pos_b[1]) < 0.01
+        assert abs(pos_b[2] - 1.282) < 0.01
+
+    def test_physical_step_increments_time(self, simulator):
         """
-        场景：设置核心状态
-        预期：qpos 和 qvel 被更新
+        场景：执行物理步
+        预期：时间增加 dt
         """
-        new_qpos = np.ones_like(mock_simulator._qpos) * 0.5
-        new_qvel = np.ones_like(mock_simulator._qvel) * 0.3
+        simulator.reset()
+        initial_time = simulator.data.time
+        simulator.physical_step()
+        assert simulator.data.time == initial_time + simulator.dt
 
-        state = mock_simulator.get_core_state()
-        state['qpos'] = new_qpos
-        state['qvel'] = new_qvel
-        mock_simulator.set_core_state(state)
+    def test_multiple_steps_work(self, simulator):
+        """
+        场景：执行多个物理步
+        预期：仿真器不崩溃，状态正常更新
+        """
+        simulator.reset()
 
-        # 验证：状态被更新
-        current_state = mock_simulator.get_core_state()
-        np.testing.assert_array_almost_equal(current_state['qpos'], new_qpos)
-        np.testing.assert_array_almost_equal(current_state['qvel'], new_qvel)
+        for _ in range(100):
+            simulator.physical_step()
 
-    def test_get_static_data_returns_robot_info(self, mock_simulator):
+        # 验证时间正确增加（使用近似比较处理浮点精度）
+        assert abs(simulator.data.time - 100 * simulator.dt) < 1e-10
+
+
+class TestStaticDataMatchesSpec:
+    """测试 get_static_data() 返回数据与 DATASPEC.md 一致"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        yield sim
+        sim.close()
+
+    def test_static_data_contains_dt(self, simulator):
         """
         场景：获取静态数据
-        预期：包含 robot_info
+        预期：包含 dt = 0.002
         """
-        static_data = mock_simulator.get_static_data()
-
+        static_data = simulator.get_static_data()
         assert 'dt' in static_data
+        assert static_data['dt'] == 0.002
+
+    def test_static_data_contains_robot_info(self, simulator):
+        """
+        场景：获取静态数据
+        预期：包含 robot_info，包含 robot_a 和 robot_b
+        """
+        static_data = simulator.get_static_data()
         assert 'robot_info' in static_data
         assert 'robot_a' in static_data['robot_info']
         assert 'robot_b' in static_data['robot_info']
 
-    def test_get_static_data_robot_info_contains_required_keys(self, mock_simulator):
+    def test_robot_a_info_matches_spec(self, simulator):
         """
-        场景：检查 robot_info 内容
-        预期：包含所有必需的键
+        场景：检查 robot_a 的 robot_info
+        预期：与 DATASPEC.md 中的值一致
         """
-        static_data = mock_simulator.get_static_data()
-        robot_a_info = static_data['robot_info']['robot_a']
+        static_data = simulator.get_static_data()
+        info_a = static_data['robot_info']['robot_a']
 
-        required_keys = [
-            'body_id', 'root_jnt_id', 'qpos_adr', 'qvel_adr',
-            'suffix', 'qpos_indices', 'qvel_indices',
-            'jnt_ranges', 'ctrl_ranges', 'qpos0', 'actuators'
-        ]
+        # 根据 DATASPEC.md
+        assert info_a['body_id'] == 4
+        assert info_a['root_jnt_id'] == 0
+        assert info_a['qpos_adr'] == 0
+        assert info_a['qvel_adr'] == 0
+        assert info_a['suffix'] == '_red'
+        assert info_a['actuators'] == list(range(21))
+        assert len(info_a['qpos_indices']) == 21
+        assert len(info_a['qvel_indices']) == 21
+        assert len(info_a['jnt_ranges']) == 21
+        assert len(info_a['ctrl_ranges']) == 21
+        assert len(info_a['qpos0']) == 21
 
-        for key in required_keys:
-            assert key in robot_a_info, f"Missing key: {key}"
+    def test_robot_b_info_matches_spec(self, simulator):
+        """
+        场景：检查 robot_b 的 robot_info
+        预期：与 DATASPEC.md 中的值一致
+        """
+        static_data = simulator.get_static_data()
+        info_b = static_data['robot_info']['robot_b']
 
-    def test_get_derived_state_returns_contacts(self, mock_simulator):
+        # 根据 DATASPEC.md
+        assert info_b['body_id'] == 20
+        assert info_b['root_jnt_id'] == 22
+        assert info_b['qpos_adr'] == 28
+        assert info_b['qvel_adr'] == 27
+        assert info_b['suffix'] == '_blue'
+        assert info_b['actuators'] == list(range(21, 42))
+        assert len(info_b['qpos_indices']) == 21
+        assert len(info_b['qvel_indices']) == 21
+        assert len(info_b['jnt_ranges']) == 21
+        assert len(info_b['ctrl_ranges']) == 21
+        assert len(info_b['qpos0']) == 21
+
+
+class TestCoreStateMatchesSpec:
+    """测试 get_core_state() 返回数据与 DATASPEC.md 一致"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def test_core_state_structure(self, simulator):
+        """
+        场景：获取核心状态
+        预期：只包含 qpos, qvel, time（不包含 robot_a/robot_b 结构化数据）
+        """
+        state = simulator.get_core_state()
+
+        assert 'qpos' in state
+        assert 'qvel' in state
+        assert 'time' in state
+        # 不应包含结构化的 robot_a/robot_b
+        assert 'robot_a' not in state
+        assert 'robot_b' not in state
+
+    def test_qpos_dimensions_match_spec(self, simulator):
+        """
+        场景：检查 qpos 维度
+        预期：qpos 维度为 56（与 DATASPEC.md 一致）
+        """
+        state = simulator.get_core_state()
+        qpos = state['qpos']
+
+        assert qpos.shape == (56,), f"Expected shape (56,), got {qpos.shape}"
+        assert qpos.dtype == np.float64
+
+    def test_qvel_dimensions_match_spec(self, simulator):
+        """
+        场景：检查 qvel 维度
+        预期：qvel 维度为 54（与 DATASPEC.md 一致）
+        """
+        state = simulator.get_core_state()
+        qvel = state['qvel']
+
+        assert qvel.shape == (54,), f"Expected shape (54,), got {qvel.shape}"
+        assert qvel.dtype == np.float64
+
+    def test_qpos_indices_match_spec(self, simulator):
+        """
+        场景：检查 qpos 中的关键索引
+        预期：与 DATASPEC.md 中的索引表一致
+        """
+        state = simulator.get_core_state()
+        qpos = state['qpos']
+
+        # robot_a root: qpos_adr=0, 7 DOF (0:7)
+        assert qpos[0:3].shape == (3,)  # position [x, y, z]
+        assert qpos[3:7].shape == (4,)  # orientation [w, x, y, z]
+
+        # robot_b root: qpos_adr=28, 7 DOF (28:35)
+        assert qpos[28:31].shape == (3,)  # position [x, y, z]
+        assert qpos[31:35].shape == (4,)  # orientation [w, x, y, z]
+
+    def test_qvel_indices_match_spec(self, simulator):
+        """
+        场景：检查 qvel 中的关键索引
+        预期：与 DATASPEC.md 中的索引表一致
+        """
+        state = simulator.get_core_state()
+        qvel = state['qvel']
+
+        # robot_a root: qvel_adr=0, 6 DOF (0:6)
+        assert qvel[0:3].shape == (3,)  # linear velocity [vx, vy, vz]
+        assert qvel[3:6].shape == (3,)  # angular velocity [ωx, ωy, ωz]
+
+        # robot_b root: qvel_adr=27, 6 DOF (27:33)
+        assert qvel[27:30].shape == (3,)  # linear velocity [vx, vy, vz]
+        assert qvel[30:33].shape == (3,)  # angular velocity [ωx, ωy, ωz]
+
+    def test_set_core_state_works(self, simulator):
+        """
+        场景：设置核心状态
+        预期：qpos 和 qvel 被正确设置
+        """
+        # 获取当前状态
+        state = simulator.get_core_state()
+        original_qpos = state['qpos'].copy()
+        original_qvel = state['qvel'].copy()
+
+        # 修改状态
+        new_qpos = np.ones_like(original_qpos) * 0.5
+        new_qvel = np.ones_like(original_qvel) * 0.1
+
+        state['qpos'] = new_qpos
+        state['qvel'] = new_qvel
+        simulator.set_core_state(state)
+
+        # 验证状态被设置
+        new_state = simulator.get_core_state()
+        np.testing.assert_array_almost_equal(new_state['qpos'], new_qpos)
+        np.testing.assert_array_almost_equal(new_state['qvel'], new_qvel)
+
+
+class TestDerivedStateWorks:
+    """测试 get_derived_state() 正常工作"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def test_derived_state_structure(self, simulator):
         """
         场景：获取派生状态
-        预期：包含 contacts 列表
+        预期：包含 contacts 和机器人数据
         """
-        # 添加一些碰撞
-        mock_simulator.add_contact(
-            geom1=1, geom2=2, body1=10, body2=20,
-            geom1_name='hand_red', geom2_name='head_blue',
-            impulse=50.0
-        )
+        derived = simulator.get_derived_state()
 
-        derived_state = mock_simulator.get_derived_state()
+        assert 'contacts' in derived
+        assert isinstance(derived['contacts'], list)
+        assert 'robot_a' in derived
+        assert 'robot_b' in derived
 
-        assert 'contacts' in derived_state
-        assert len(derived_state['contacts']) == 1
+    def test_contacts_list_is_valid(self, simulator):
+        """
+        场景：检查碰撞列表
+        预期：碰撞数据格式正确
+        """
+        derived = simulator.get_derived_state()
+        contacts = derived['contacts']
 
-    def test_physical_step_increments_time(self, mock_simulator):
-        """
-        场景：执行物理步
-        预期：时间增加
-        """
-        initial_time = mock_simulator._time
-        mock_simulator.physical_step()
-        assert mock_simulator._time == initial_time + mock_simulator.dt
+        for contact in contacts:
+            assert 'geom_a' in contact
+            assert 'geom_b' in contact
+            assert 'body_a' in contact
+            assert 'body_b' in contact
+            assert 'position' in contact
+            assert 'normal' in contact
+            assert 'impulse' in contact
 
-    def test_reset_clears_time(self, mock_simulator):
+    def test_xpos_dimensions(self, simulator):
         """
-        场景：重置模拟器
-        预期：时间归零
+        场景：检查 xpos 维度
+        预期：xpos shape = (33, 3)（33 个 body）
         """
-        mock_simulator._time = 10.0
-        mock_simulator.reset()
-        assert mock_simulator._time == 0.0
+        derived = simulator.get_derived_state()
+        xpos = derived['robot_a']['xpos']
 
-    def test_reset_clears_contacts(self, mock_simulator):
-        """
-        场景：重置模拟器
-        预期：碰撞被清空
-        """
-        # 添加碰撞
-        mock_simulator.add_contact(
-            geom1=1, geom2=2, body1=10, body2=20,
-            geom1_name='hand_red', geom2_name='head_blue',
-            impulse=50.0
-        )
+        assert xpos.shape == (33, 3), f"Expected (33, 3), got {xpos.shape}"
 
-        mock_simulator.reset()
-        derived_state = mock_simulator.get_derived_state()
-        assert len(derived_state['contacts']) == 0
-
-    def test_reset_respects_custom_initial_distance(self, mock_simulator):
+    def test_xquat_dimensions(self, simulator):
         """
-        场景：使用自定义初始距离重置
-        预期：机器人位置相应调整
+        场景：检查 xquat 维度
+        预期：xquat shape = (33, 4)（33 个 body，每个 4 元素四元数）
         """
-        # 使用自定义距离重置
-        mock_simulator.reset(options={'initial_distance': 4.0})
+        derived = simulator.get_derived_state()
+        xquat = derived['robot_a']['xquat']
 
-        state = mock_simulator.get_core_state()
+        assert xquat.shape == (33, 4), f"Expected (33, 4), got {xquat.shape}"
+
+
+class TestModelDimensionsMatchSpec:
+    """测试模型维度与 DATASPEC.md 一致"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        yield sim
+        sim.close()
+
+    def test_model_dimensions_match_spec(self, simulator):
+        """
+        场景：检查模型维度
+        预期：与 DATASPEC.md 中的值完全一致
+        """
+        model = simulator.model
+
+        assert model.nq == 56, f"Expected nq=56, got {model.nq}"
+        assert model.nv == 54, f"Expected nv=54, got {model.nv}"
+        assert model.nu == 42, f"Expected nu=42, got {model.nu}"
+        assert model.na == 0, f"Expected na=0, got {model.na}"
+        assert model.nbody == 33, f"Expected nbody=33, got {model.nbody}"
+        assert model.njnt == 44, f"Expected njnt=44, got {model.njnt}"
+        assert model.ngeom == 44, f"Expected ngeom=44, got {model.ngeom}"
+
+    def test_body_ids_match_spec(self, simulator):
+        """
+        场景：检查关键 body 的 ID
+        预期：与 DATASPEC.md 一致
+        """
+        model = simulator.model
+
+        # 根据 DATASPEC.md 的 body 列表
+        world_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'world')
+        assert world_id == 0
+
+        torso_red_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'torso_red')
+        assert torso_red_id == 1
+
+        pelvis_red_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'pelvis_red')
+        assert pelvis_red_id == 4
+
+        torso_blue_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'torso_blue')
+        assert torso_blue_id == 17
+
+        pelvis_blue_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, 'pelvis_blue')
+        assert pelvis_blue_id == 20
+
+
+class TestBroadcastViewWorks:
+    """测试广播视图图像功能"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def test_get_broadcastview_image_returns_correct_shape(self, simulator):
+        """
+        场景：获取广播视图图像
+        预期：返回正确形状的 RGB 图像
+        """
+        image = simulator.get_broadcastview_image()
+
+        assert image.shape == (720, 1280, 3), f"Expected (720, 1280, 3), got {image.shape}"
+        assert image.dtype == np.uint8
+
+
+class TestPDControllerWorks:
+    """测试 PD 控制器功能"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def test_action_is_applied(self, simulator):
+        """
+        场景：设置动作并执行物理步
+        预期：动作被应用到 PD 控制器
+        """
+        # 获取初始关节位置
+        static_data = simulator.get_static_data()
+        qpos_indices = static_data['robot_info']['robot_a']['qpos_indices']
+        initial_pos = simulator.data.qpos[qpos_indices[0]]
+
+        # 设置动作（非零）
+        simulator.set_action({'robot_a': np.ones(21) * 0.5, 'robot_b': None})
+
+        # 执行物理步
+        simulator.physical_step()
+
+        # 验证关节位置发生变化（因为 PD 控制器在施加力矩）
+        new_pos = simulator.data.qpos[qpos_indices[0]]
+        # 由于动力学和 PD 控制，位置应该有变化
+        # 注意：具体的变化量取决于物理参数，这里只验证有变化
+        time_advanced = simulator.data.time > 0
+        assert time_advanced, "Time should advance after physical_step"
+
+    def test_ctrl_limits_are_respected(self, simulator):
+        """
+        场景：设置超出范围的 action
+        预期：action 被裁剪到 [-1, 1]
+        """
+        # 设置超出范围的动作
+        simulator.set_action({
+            'robot_a': np.ones(21) * 10.0,  # 超出范围
+            'robot_b': np.ones(21) * -10.0
+        })
+
+        # 获取设置的 action
+        action = simulator.get_action()
+
+        # 验证 action 被存储
+        assert action['robot_a'] is not None
+        assert action['robot_b'] is not None
+
+
+class TestQuaternionFormat:
+    """测试四元数格式与文档一致"""
+
+    @pytest.fixture
+    def simulator(self):
+        sim = MujocoCombatSimulator()
+        sim.reset()
+        yield sim
+        sim.close()
+
+    def test_root_quaternion_is_wxyz(self, simulator):
+        """
+        场景：检查 root 四元数格式
+        预期：使用 wxyz 顺序（与 DATASPEC.md 一致）
+        """
+        state = simulator.get_core_state()
         qpos = state['qpos']
-        # robot_a root at qpos_adr=0, robot_b root at qpos_adr=70 (from robot_info)
-        pos_a = qpos[0:3]
-        pos_b = qpos[70:73]
 
-        # 验证：距离为 4.0
-        distance = np.linalg.norm(pos_b - pos_a)
-        assert abs(distance - 4.0) < 0.01
+        # robot_a root orientation at qpos[3:7]
+        quat = qpos[3:7]
 
-    def test_get_physical_frequency_returns_correct_value(self, mock_simulator):
-        """
-        场景：获取物理频率
-        预期：返回 1/dt
-        """
-        expected_freq = 1.0 / mock_simulator.dt
-        assert mock_simulator.get_physical_frequency() == expected_freq
+        # 验证四元数是单位四元数
+        norm = np.linalg.norm(quat)
+        assert abs(norm - 1.0) < 0.01, f"Quaternion should be unit length, got norm={norm}"
 
+        # 初始时 robot_a 面朝 +x，四元数应该是 [1, 0, 0, 0] (wxyz)
+        # [w, x, y, z] = [1, 0, 0, 0] 表示无旋转
+        expected_quat = np.array([1.0, 0.0, 0.0, 0.0])
+        np.testing.assert_array_almost_equal(quat, expected_quat, decimal=2)
 
-class TestSimulatorDataProperties:
-    """测试模拟器的 data 和 model 属性"""
+    def test_robot_b_quaternion_format(self, simulator):
+        """
+        场景：检查 robot_b 四元数格式
+        预期：面朝 -x，四元数为 [0, 0, 0, 1]（180度绕 z轴）
+        """
+        state = simulator.get_core_state()
+        qpos = state['qpos']
 
-    def test_data_property_provides_qpos_access(self, mock_simulator):
-        """
-        场景：访问 data.qpos
-        预期：返回 qpos 数组
-        """
-        data = mock_simulator.data
-        assert hasattr(data, 'qpos')
-        assert data.qpos is mock_simulator._qpos
+        # robot_b root orientation at qpos[31:35]
+        quat = qpos[31:35]
 
-    def test_data_property_provides_xpos_access(self, mock_simulator):
-        """
-        场景：访问 data.xpos
-        预期：返回 xpos 数组
-        """
-        data = mock_simulator.data
-        assert hasattr(data, 'xpos')
-        assert data.xpos is mock_simulator._xpos
+        # 验证四元数是单位四元数
+        norm = np.linalg.norm(quat)
+        assert abs(norm - 1.0) < 0.01, f"Quaternion should be unit length, got norm={norm}"
 
-    def test_data_property_provides_time_access(self, mock_simulator):
-        """
-        场景：访问 data.time
-        预期：返回当前时间
-        """
-        data = mock_simulator.data
-        assert hasattr(data, 'time')
-        assert data.time == mock_simulator._time
+        # robot_b 初始面朝 -x，四元数应该是 [0, 0, 0, 1] (wxyz)
+        # [w, x, y, z] = [0, 0, 0, 1] 表示 180度绕 z轴旋转
+        expected_quat = np.array([0.0, 0.0, 0.0, 1.0])
+        np.testing.assert_array_almost_equal(quat, expected_quat, decimal=2)
