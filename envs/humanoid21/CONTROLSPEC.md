@@ -1,80 +1,51 @@
-# Humanoid21 控制规范
+# Humanoid21 控制规范 (Control Specification)
 
-## 控制方式
+## 1. 控制模式：归一化位置控制 (Normalized Position Control)
+策略层与底层物理引擎之间，通过**归一化关节目标位置**进行通信。所有关节的指令统一被压缩并映射到 `[-1, 1]` 的无量纲区间内。
 
-### 输入
-- **Action**: 归一化的关节控制信号，范围 `[-1, 1]`
-  - `Action = 0` → 关节保持在中位
-  - `Action = 1` → 关节移动到上限
-  - `Action = -1` → 关节移动到下限
+### 1.1 动作接口 (Action Interface)
+- **输入**: `action`，形状为 `(21,)` 的 numpy 数组。
+- **取值范围**: `[-1, 1]`
+- **物理含义**:
+  - `Action =  0.0` → 关节期望到达其中位 (Reference)。
+  - `Action =  1.0` → 关节期望到达其正向物理限位上限 (Up)。
+  - `Action = -1.0` → 关节期望到达其负向物理限位下限 (Down)。
 
-### 参数定义
+---
 
-| 参数 | 说明 | 公式 |
-|------|------|------|
-| `Down` | 关节下限 | 从 MuJoCo 模型的 `jnt_range[i][0]` 获取 |
-| `Up` | 关节上限 | 从 MuJoCo 模型的 `jnt_range[i][1]` 获取 |
-| `Reference` | 参考位置（关节中位） | `Reference = (Down + Up) / 2` |
-| `Scale` | 动作缩放因子 | `Scale = (Up - Down) / 2` |
-| `Qcurrent` | 当前关节位置 | 从 `data.qpos` 获取 |
-| `QVel` | 当前关节速度 | 从 `data.qvel` 获取 |
-| `KP` | 比例增益 | 默认值 `50.0` |
-| `KD` | 微分增益 | 默认值 `5.0` |
+## 2. 映射与计算逻辑 (Mapping & Calculation)
 
-### 目标位置计算
+### 2.1 静态参数准备
+每个受控关节在初始化时，必须从 MuJoCo 模型中提取以下参数：
+- `Down` = `jnt_range[i][0]` (下限, rad)
+- `Up` = `jnt_range[i][1]` (上限, rad)
+- `Reference` = `(Down + Up) / 2.0` (中位, rad)
+- `Scale` = `(Up - Down) / 2.0` (半量程缩放因子, rad)
 
-```
-Target = Reference + Action * Scale
-```
+### 2.2 PD 力矩计算流程
+底层环境在接收到策略层的 `action` 后，按以下步骤严格执行：
 
-**说明**：
-- `Reference` 是关节限位的中间值
-- `Scale` 是关节范围的一半
-- 当 `Action = 1` 时，`Target = Reference + Scale = Up`（上限）
-- 当 `Action = -1` 时，`Target = Reference - Scale = Down`（下限）
+1. **反归一化 (Un-normalization)**
+   ```python
+   Target_rad = action * Scale + Reference
+   ```
+2. **PD 控制律 (PD Control Law)**
+   ```python
+   Torque = KP * (Target_rad - qpos) - KD * qvel
+   ```
+3. **输出限幅 (Clamping)**
+   ```python
+   Ctrl = clip(Torque / Gear, ctrl_range_min, ctrl_range_max)
+   ```
+4. **底层写入 (Actuation)**
+   将 `Ctrl` 数组写入 MuJoCo 内部对应的 `data.ctrl` 内存片。
 
-### PD 控制力矩计算
+---
 
-```
-Torque = KP * (Target - Qcurrent) - KD * QVel
-```
+## 3. KP 与 KD：固化的内在属性 (Fixed Intrinsic Properties)
 
-**简化写法**：
-```
-Torque = (Action * Scale + Reference - Qcurrent) * KP - QVel * KD
-```
+**核心原则：`KP` (比例增益) 和 `KD` (微分增益) 是机器人底层系统的物理属性，绝不允许在环境初始化或运行时作为可配参数暴露。**
 
-### 执行流程
-
-1. **接收 Action** (`[-1, 1]`)
-2. **计算目标位置**: `Target = Reference + Action * Scale`
-3. **PD 控制输出力矩**: `Torque = KP * (Target - Qcurrent) - KD * QVel`
-4. **考虑 Actuator Gear**: `Ctrl = Torque / Gear`
-5. **应用限幅**: `Ctrl = clip(Ctrl, ctrl_range[0], ctrl_range[1])`
-6. **写入 MuJoCo**: `data.ctrl[actuator_id] = Ctrl`
-
-### 示例
-
-以 `abdomen_z` 关节为例：
-- `Down = -0.7854` rad (-45°)
-- `Up = 0.7854` rad (+45°)
-- `Reference = 0.0` rad
-- `Scale = 0.7854` rad
-
-| Action | Target 位置 | 说明 |
-|--------|-------------|------|
-| -1.0 | -0.7854 rad | 下限（-45°） |
-| -0.5 | -0.3927 rad | 下半区中点（-22.5°） |
-| 0.0 | 0.0 rad | 中位（0°） |
-| 0.5 | 0.3927 rad | 上半区中点（+22.5°） |
-| 1.0 | 0.7854 rad | 上限（+45°） |
-
-### 限制
-
-**所有关节必须具有有限的上下限**。如果某个关节的限位为无限（`-inf` 或 `+inf`），初始化将抛出异常。
-
-### 默认参数
-
-- `KP = 50.0`
-- `KD = 5.0`
-- 可在创建 `MujocaCombatSimulator` 时通过参数修改
+- **参数形态**：`KP` 和 `KD` 应为形状等于 `(21,)` 的固定数组。不同部位（如腿部承重关节与手臂轻量关节）必须拥有不同的刚度设定。
+- **获取方式**：这两套参数是在环境开发期，依据 `ACCEPTANCE_CRITERIA.md` 中的量化指标，经过严格测试和“摸索”后硬编码到系统内部的。
+- **设计初衷**：确保策略层面对的是一个物理响应固定、反馈行为一致的本体系统，从而保证强化学习过程的收敛性与稳定性。
