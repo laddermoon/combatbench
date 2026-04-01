@@ -141,9 +141,23 @@ class MujocoCombatSimulator(BaseSimulator):
         }
 
     def set_core_state(self, state: Dict[str, Any]) -> None:
+        """
+        设置核心状态（qpos, qvel）。
+
+        注意：time 字段被忽略。MuJoCo 内部时间由仿真引擎自动管理，
+        不应手动修改，否则可能导致物理仿真结果异常。
+        """
+        if 'time' in state:
+            import warnings
+            warnings.warn(
+                "Ignoring 'time' in set_core_state: simulation time is managed "
+                "internally by MuJoCo and should not be modified manually.",
+                UserWarning
+            )
+
         self.data.qpos[:] = state['qpos']
         self.data.qvel[:] = state['qvel']
-        self.data.time = state.get('time', self.data.time)
+        # time 保持不变，由仿真引擎自动管理
 
         mujoco.mj_forward(self.model, self.data)
 
