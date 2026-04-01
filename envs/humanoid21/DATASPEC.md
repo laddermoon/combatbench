@@ -121,7 +121,7 @@ root_angular_velocity = state['qvel'][qvel_adr+3:qvel_adr+6]   # [ωx, ωy, ωz]
     'body_b': int,                   # body2 id
     'position': ndarray,            # shape=(3,), 碰撞位置
     'normal': ndarray,              # shape=(3,), 碰撞法向量
-    'impulse': float                 # 冲量大小（标量）
+    'force': float                  # 接触力大小（牛顿）
 }
 ```
 

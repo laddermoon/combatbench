@@ -158,7 +158,7 @@ class CombatScoringPlugin(BasePlugin):
                 cat1 = self._get_part_category(geom1_name)
                 cat2 = self._get_part_category(geom2_name)
 
-                impulse = contact.get('impulse', 0.0)
+                force = contact.get('force', 0.0)
 
                 attacker, defender, hit_part = None, None, None
 
@@ -185,7 +185,7 @@ class CombatScoringPlugin(BasePlugin):
                     if damage_part:
                         weight = -self.DAMAGE_RULES.get(damage_part, 0.0)
                         if weight > 0:
-                            damage = (weight * impulse) / self.damage_scale
+                            damage = (weight * force) / self.damage_scale
                             # Record events and metrics
                             ctx.events.append({
                                 'type': 'hit',

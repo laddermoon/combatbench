@@ -292,7 +292,7 @@ class TestDerivedStateWorks:
             assert 'body_b' in contact
             assert 'position' in contact
             assert 'normal' in contact
-            assert 'impulse' in contact
+            assert 'force' in contact
 
     def test_xpos_dimensions(self, simulator):
         """

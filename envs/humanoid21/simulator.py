@@ -172,10 +172,10 @@ class MujocoCombatSimulator(BaseSimulator):
             body1 = self.model.geom_bodyid[geom1]
             body2 = self.model.geom_bodyid[geom2]
             
-            # Simple force calculation mapping
+            # 获取接触力（牛顿）
             c_array = np.zeros(6, dtype=np.float64)
             mujoco.mj_contactForce(self.model, self.data, i, c_array)
-            impulse = np.linalg.norm(c_array[:3]) # Approximate force/impulse
+            force = np.linalg.norm(c_array[:3])
 
             contacts.append({
                 'geom_a': geom1,
@@ -184,7 +184,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 'body_b': body2,
                 'position': contact.pos.copy(),
                 'normal': contact.frame[:3].copy(),
-                'impulse': impulse
+                'force': force
             })
             
         return {
