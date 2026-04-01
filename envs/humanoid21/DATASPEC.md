@@ -102,15 +102,23 @@ root_angular_velocity = state['qvel'][qvel_adr+3:qvel_adr+6]   # [ωx, ωy, ωz]
 **输出格式：**
 ```python
 {
-    'contacts': List[Contact],      # 碰撞列表
+    'contacts': List[Contact],      # robot_a vs robot_b 碰撞列表
     'robot_a': {
-        'xpos': ndarray,            # shape=(33, 3), 所有点的位置
-        'xvelp': ndarray,           # shape=(33, 3), 所有点的线速度
-        'xquat': ndarray,           # shape=(33, 4), 所有点的四元数
+        'xpos': ndarray,            # shape=(16, 3), robot_a 所有点的位置
+        'xvelp': ndarray,           # shape=(16, 3), robot_a 所有点的线速度
+        'xquat': ndarray,           # shape=(16, 4), robot_a 所有点的四元数
     },
-    'robot_b': {}                   # 空（当前实现未填充）
+    'robot_b': {
+        'xpos': ndarray,            # shape=(16, 3), robot_b 所有点的位置
+        'xvelp': ndarray,           # shape=(16, 3), robot_b 所有点的线速度
+        'xquat': ndarray,           # shape=(16, 4), robot_b 所有点的四元数
+    }
 }
 ```
+
+**说明：**
+- `contacts` 只包含 robot_a 和 robot_b 之间的碰撞，不包含机器人内部碰撞或与地面的碰撞
+- `robot_a` 和 `robot_b` 各包含 16 个 body 的数据（不含 world body）
 
 **Contact 结构：**
 ```python
@@ -122,6 +130,8 @@ root_angular_velocity = state['qvel'][qvel_adr+3:qvel_adr+6]   # [ωx, ωy, ωz]
     'position': ndarray,            # shape=(3,), 碰撞位置
     'normal': ndarray,              # shape=(3,), 碰撞法向量
     'force': float                  # 接触力大小（牛顿）
+    'geom1_name': str,               # geom1 名称
+    'geom2_name': str                # geom2 名称
 }
 ```
 

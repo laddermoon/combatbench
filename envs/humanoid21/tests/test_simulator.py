@@ -297,22 +297,63 @@ class TestDerivedStateWorks:
     def test_xpos_dimensions(self, simulator):
         """
         场景：检查 xpos 维度
-        预期：xpos shape = (33, 3)（33 个 body）
+        预期：xpos shape = (16, 3)（robot_a 有 16 个 body）
         """
         derived = simulator.get_derived_state()
         xpos = derived['robot_a']['xpos']
 
-        assert xpos.shape == (33, 3), f"Expected (33, 3), got {xpos.shape}"
+        assert xpos.shape == (16, 3), f"Expected (16, 3), got {xpos.shape}"
 
     def test_xquat_dimensions(self, simulator):
         """
         场景：检查 xquat 维度
-        预期：xquat shape = (33, 4)（33 个 body，每个 4 元素四元数）
+        预期：xquat shape = (16, 4)（robot_a 有 16 个 body，每个 4 元素四元数）
         """
         derived = simulator.get_derived_state()
         xquat = derived['robot_a']['xquat']
 
-        assert xquat.shape == (33, 4), f"Expected (33, 4), got {xquat.shape}"
+        assert xquat.shape == (16, 4), f"Expected (16, 4), got {xquat.shape}"
+
+    def test_robot_b_data_is_populated(self, simulator):
+        """
+        场景：检查 robot_b 数据是否被填充
+        预期：robot_b 有与 robot_a 相同的数据结构
+        """
+        derived = simulator.get_derived_state()
+
+        assert 'robot_b' in derived
+        assert 'xpos' in derived['robot_b']
+        assert 'xvelp' in derived['robot_b']
+        assert 'xquat' in derived['robot_b']
+
+        # 验证维度与 robot_a 相同
+        assert derived['robot_b']['xpos'].shape == derived['robot_a']['xpos'].shape
+        assert derived['robot_b']['xvelp'].shape == derived['robot_a']['xvelp'].shape
+        assert derived['robot_b']['xquat'].shape == derived['robot_a']['xquat'].shape
+
+    def test_contacts_filtered_to_robot_a_vs_robot_b(self, simulator):
+        """
+        场景：检查碰撞是否只包含 robot_a vs robot_b
+        预期：没有内部碰撞或地面碰撞
+        """
+        derived = simulator.get_derived_state()
+        contacts = derived['contacts']
+
+        suffix_a = simulator.robot_info['robot_a']['suffix']
+        suffix_b = simulator.robot_info['robot_b']['suffix']
+
+        for contact in contacts:
+            geom1_name = simulator.model.names[contact['geom_a']]
+            geom2_name = simulator.model.names[contact['geom_b']]
+
+            is_a1 = geom1_name.endswith(suffix_a) if geom1_name else False
+            is_b1 = geom1_name.endswith(suffix_b) if geom1_name else False
+            is_a2 = geom2_name.endswith(suffix_a) if geom2_name else False
+            is_b2 = geom2_name.endswith(suffix_b) if geom2_name else False
+
+            # 验证是一个 robot_a 的 geom 和一个 robot_b 的 geom
+            assert ((is_a1 and is_b2) or (is_b1 and is_a2)), \
+                f"Contact should be robot_a vs robot_b, got {geom1_name} vs {geom2_name}"
 
 
 class TestModelDimensionsMatchSpec:

@@ -164,6 +164,16 @@ class MujocoCombatSimulator(BaseSimulator):
         mujoco.mj_forward(self.model, self.data)
 
     def get_derived_state(self) -> Dict[str, Any]:
+        """
+        获取派生状态（碰撞、位置等）。
+
+        返回 robot_a 和 robot_b 之间的碰撞，以及两个机器人的位置数据。
+        """
+        # 获取机器人后缀用于识别归属
+        suffix_a = self.robot_info['robot_a']['suffix']  # '_red'
+        suffix_b = self.robot_info['robot_b']['suffix']  # '_blue'
+
+        # 只收集 robot_a vs robot_b 的碰撞
         contacts = []
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
@@ -171,28 +181,60 @@ class MujocoCombatSimulator(BaseSimulator):
             geom2 = contact.geom2
             geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1)
             geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2)
-            body1 = self.model.geom_bodyid[geom1]
-            body2 = self.model.geom_bodyid[geom2]
-            
-            # 获取接触力（牛顿）
-            c_array = np.zeros(6, dtype=np.float64)
-            mujoco.mj_contactForce(self.model, self.data, i, c_array)
-            force = np.linalg.norm(c_array[:3])
 
-            contacts.append({
-                'geom_a': geom1,
-                'geom_b': geom2,
-                'body_a': body1,
-                'body_b': body2,
-                'position': contact.pos.copy(),
-                'normal': contact.frame[:3].copy(),
-                'force': force
-            })
-            
+            # 判断 geom 归属
+            is_a1 = geom1_name.endswith(suffix_a) if geom1_name else False
+            is_b1 = geom1_name.endswith(suffix_b) if geom1_name else False
+            is_a2 = geom2_name.endswith(suffix_a) if geom2_name else False
+            is_b2 = geom2_name.endswith(suffix_b) if geom2_name else False
+
+            # 只保留 robot_a vs robot_b 的碰撞
+            if ((is_a1 and is_b2) or (is_b1 and is_a2)):
+                body1 = self.model.geom_bodyid[geom1]
+                body2 = self.model.geom_bodyid[geom2]
+
+                # 获取接触力（牛顿）
+                c_array = np.zeros(6, dtype=np.float64)
+                mujoco.mj_contactForce(self.model, self.data, i, c_array)
+                force = np.linalg.norm(c_array[:3])
+
+                contacts.append({
+                    'geom_a': geom1,
+                    'geom_b': geom2,
+                    'body_a': body1,
+                    'body_b': body2,
+                    'position': contact.pos.copy(),
+                    'normal': contact.frame[:3].copy(),
+                    'force': force
+                })
+
+        # 提取 robot_a 和 robot_b 的 body 数据
+        # robot_a: bodies 1-16, robot_b: bodies 17-32
+        robot_a_data = self._extract_robot_data('robot_a')
+        robot_b_data = self._extract_robot_data('robot_b')
+
         return {
             'contacts': contacts,
-            'robot_a': {'xpos': self.data.xpos.copy(), 'xvelp': self.data.cvel[:, 3:].copy(), 'xquat': self.data.xquat.copy()}, # basic derived
-            'robot_b': {}
+            'robot_a': robot_a_data,
+            'robot_b': robot_b_data
+        }
+
+    def _extract_robot_data(self, robot_id: str) -> Dict[str, np.ndarray]:
+        """提取指定机器人的位置和速度数据"""
+        # 找到属于该机器人的 body 索引范围
+        if robot_id == 'robot_a':
+            # bodies 1-16 (torso_red to hand_left_red)
+            start_body = 1
+            end_body = 17
+        else:  # robot_b
+            # bodies 17-32 (torso_blue to hand_left_blue)
+            start_body = 17
+            end_body = 33
+
+        return {
+            'xpos': self.data.xpos[start_body:end_body].copy(),
+            'xvelp': self.data.cvel[start_body:end_body, 3:].copy(),
+            'xquat': self.data.xquat[start_body:end_body].copy()
         }
 
     def get_sensor_data(self) -> Dict[str, Any]:
