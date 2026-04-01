@@ -15,7 +15,7 @@ from framework import BaseSimulator
 
 class MujocoCombatSimulator(BaseSimulator):
     def __init__(self, arena_xml: str = None, dt: float = 0.002, initial_distance: float = 2.0,
-                 action_dim: int = 21, kp: float = 4.0, kd: float = 0.4):
+                 action_dim: int = 21, kp: float = 50.0, kd: float = 5.0):
         self.dt = dt
         self.initial_distance = initial_distance
         self.action_dim = action_dim
