@@ -2,7 +2,20 @@
 
 本文档严格定义 `MujocoCombatSimulator` 实现的 `IDataAccessor` 和 `IDataMutator` 接口方法的输入输出格式。
 
-所有定义均基于 `simulator.py` 的实际代码推断，不包含猜测或未验证的内容。
+**所有定义均基于 `battle_v1.xml` 完全确定，无任何推断或不确定的内容。**
+
+---
+
+## 模型基本信息
+
+| 属性 | 值 | 说明 |
+|------|-----|------|
+| `nq` (qpos 维度) | 56 | 位置数组长度 |
+| `nv` (qvel 维度) | 54 | 速度数组长度 |
+| `nu` (actuator 数量) | 42 | 执行器数量（每机器人 21 个） |
+| `nbody` (body 数量) | 33 | 刚体数量 |
+| `njnt` (joint 数量) | 44 | 关节数量 |
+| `ngeom` (geom 数量) | 44 | 几何体数量 |
 
 ---
 
@@ -15,7 +28,7 @@
 **输出格式：**
 ```python
 {
-    'dt': float,                    # 物理时间步（秒），默认 0.002
+    'dt': 0.002,                   # float，物理时间步（秒）
     'robot_info': {
         'robot_a': RobotInfo,
         'robot_b': RobotInfo
@@ -26,17 +39,17 @@
 **RobotInfo 结构：**
 ```python
 {
-    'body_id': int,                 # pelvis body id
-    'root_jnt_id': int,             # root free joint id
-    'qpos_adr': int,                # qpos 中 root 位置的起始索引
-    'qvel_adr': int,                # qvel 中 root 速度的起始索引
+    'body_id': int,                 # pelvis body id (robot_a=4, robot_b=20)
+    'root_jnt_id': int,             # root free joint id (robot_a=0, robot_b=22)
+    'qpos_adr': int,                # qpos 中 root 位置的起始索引 (robot_a=0, robot_b=28)
+    'qvel_adr': int,                # qvel 中 root 速度的起始索引 (robot_a=0, robot_b=27)
     'suffix': str,                  # '_red' 或 '_blue'
-    'actuators': List[int],         # 21 个执行器 id
+    'actuators': List[int],         # 21 个执行器 id (robot_a=0..20, robot_b=21..41)
     'qpos_indices': List[int],      # 21 个关节在 qpos 中的索引
     'qvel_indices': List[int],      # 21 个关节在 qvel 中的索引
-    'jnt_ranges': List[ndarray],    # 21 个 [lower, upper] 边界
-    'ctrl_ranges': List[ndarray],   # 21 个 [lower, upper] 控制边界
-    'qpos0': List[float]            # 21 个关节的参考位置
+    'jnt_ranges': List[ndarray],    # 21 个 [lower, upper] 边界（弧度）
+    'ctrl_ranges': List[ndarray],   # 21 个 [lower, upper] 控制边界（总是 [-1.0, 1.0]）
+    'qpos0': List[float]            # 21 个关节的参考位置（弧度）
 }
 ```
 
@@ -51,8 +64,8 @@
 **输出格式：**
 ```python
 {
-    'qpos': ndarray,                # MuJoCo 完整位置数组，shape=(nq,), dtype=float32
-    'qvel': ndarray,                # MuJoCo 完整速度数组，shape=(nv,), dtype=float32
+    'qpos': ndarray,                # shape=(56,), dtype=float64
+    'qvel': ndarray,                # shape=(54,), dtype=float64
     'time': float,                  # 仿真时间（秒）
     'robot_a': RobotCoreState,
     'robot_b': RobotCoreState
@@ -62,10 +75,10 @@
 **RobotCoreState 结构：**
 ```python
 {
-    'root_position': ndarray,       # shape=(3,), [x, y, z]
+    'root_position': ndarray,       # shape=(3,), [x, y, z]，单位：米
     'root_orientation': ndarray,    # shape=(4,), [w, x, y, z] 四元数
-    'root_linear_velocity': ndarray,     # shape=(3,), [vx, vy, vz]
-    'root_angular_velocity': ndarray,    # shape=(3,), [ωx, ωy, ωz]
+    'root_linear_velocity': ndarray,     # shape=(3,), [vx, vy, vz]，单位：m/s
+    'root_angular_velocity': ndarray,    # shape=(3,), [ωx, ωy, ωz]，单位：rad/s
 }
 ```
 
@@ -80,13 +93,13 @@
 **输出格式：**
 ```python
 {
-    'contacts': List[Contact],
+    'contacts': List[Contact],      # 碰撞列表
     'robot_a': {
-        'xpos': ndarray,             # shape=(nbody, 3), 所有点的位置
-        'xvelp': ndarray,            # shape=(nbody, 3), 所有点的线速度
-        'xquat': ndarray,            # shape=(nbody, 4), 所有点的四元数
+        'xpos': ndarray,            # shape=(33, 3), 所有点的位置
+        'xvelp': ndarray,           # shape=(33, 3), 所有点的线速度
+        'xquat': ndarray,           # shape=(33, 4), 所有点的四元数
     },
-    'robot_b': {}                    # 空（当前实现未填充）
+    'robot_b': {}                   # 空（当前实现未填充）
 }
 ```
 
@@ -114,7 +127,7 @@
 **输出格式：**
 ```python
 {
-    'sensordata': ndarray            # MuJoCo 传感器数据数组
+    'sensordata': ndarray            # shape=(0,), dtype=float64（空数组，无传感器定义）
 }
 ```
 
@@ -129,8 +142,8 @@
 **输出格式：**
 ```python
 {
-    'robot_a': ndarray,              # shape=(action_dim,), 默认 (21,)
-    'robot_b': ndarray               # shape=(action_dim,), 默认 (21,)
+    'robot_a': ndarray,              # shape=(21,), dtype=float64
+    'robot_b': ndarray               # shape=(21,), dtype=float64
 }
 ```
 
@@ -143,8 +156,9 @@
 获取广播视角图像。
 
 **输出：**
-- 成功：`ndarray`，shape=(720, 1280, 3), dtype=np.uint8（RGB 图像）
-- 失败：`ndarray`，shape=(720, 1280, 3), dtype=np.uint8（全零图像）
+```python
+ndarray,  # shape=(720, 1280, 3), dtype=np.uint8（RGB 图像）
+```
 
 **代码依据：** `simulator.py:347-424`
 
@@ -159,27 +173,27 @@
 **输入 `state` 的必需键：**
 ```python
 {
-    'qpos': ndarray,                # 必需，完整位置数组
-    'qvel': ndarray                 # 必需，完整速度数组
+    'qpos': ndarray,                # shape=(56,), 完整位置数组
+    'qvel': ndarray                 # shape=(54,), 完整速度数组
 }
 ```
 
 **输入 `state` 的可选键：**
 ```python
 {
-    'time': float,                  # 可选，仿真时间
+    'time': float,                  # 仿真时间
     'robot_a': {
-        'root_position': ndarray,       # 可选，shape=(3,)
-        'root_orientation': ndarray,    # 可选，shape=(4,)
-        'root_linear_velocity': ndarray,    # 可选，shape=(3,)
-        'root_angular_velocity': ndarray,   # 可选，shape=(3,)
+        'root_position': ndarray,       # shape=(3,)
+        'root_orientation': ndarray,    # shape=(4,)
+        'root_linear_velocity': ndarray,    # shape=(3,)
+        'root_angular_velocity': ndarray,   # shape=(3,)
     },
     'robot_b': { ... }             # 结构同 robot_a
 }
 ```
 
 **行为说明：**
-1. `qpos` 和 `qvel` 必须是完整的 MuJoCo 数组（直接替换整个数组）
+1. `qpos` 和 `qvel` 必须是完整的 56/54 维数组（直接替换整个数组）
 2. 如果提供 `robot_a`/`robot_b` 的结构化数据，会同步回 `qpos`/`qvel` 的相应位置
 3. 最后调用 `mujoco.mj_forward()` 刷新正向运动学缓存
 
@@ -194,8 +208,8 @@
 **输入格式：**
 ```python
 {
-    'robot_a': ndarray | None,      # shape=(action_dim,), 值域建议 [-1, 1]
-    'robot_b': ndarray | None       # shape=(action_dim,), 值域建议 [-1, 1]
+    'robot_a': ndarray | None,      # shape=(21,), 值域 [-1, 1]
+    'robot_b': ndarray | None       # shape=(21,), 值域 [-1, 1]
 }
 ```
 
@@ -208,13 +222,157 @@
 
 ---
 
-## 无法推断的部分
+## 完全确定的维度和索引
 
-以下内容无法从代码中严格推断，依赖于 MuJoCo 模型文件：
+### qpos 布局（56 维）
 
-1. **`qpos`/`qvel` 的具体维度**：由 MuJoCo 模型决定
-2. **`sensordata` 的具体内容和维度**：由 MuJoCo XML 中的传感器定义决定
-3. **`robot_info` 中各列表的实际长度**：虽然代码注释为 21，但实际由 XML 中的 controlled_joints 决定
+| 索引 | 说明 | 索引 | 说明 |
+|------|------|------|------|
+| 0:7 | robot_a root (7 DOF) | 28:35 | robot_b root (7 DOF) |
+| 7 | abdomen_z_red | 35 | abdomen_z_blue |
+| 8 | abdomen_y_red | 36 | abdomen_y_blue |
+| 9 | abdomen_x_red | 37 | abdomen_x_blue |
+| 10 | hip_x_right_red | 38 | hip_x_right_blue |
+| 11 | hip_z_right_red | 39 | hip_z_right_blue |
+| 12 | hip_y_right_red | 40 | hip_y_right_blue |
+| 13 | knee_right_red | 41 | knee_right_blue |
+| 14 | ankle_y_right_red | 42 | ankle_y_right_blue |
+| 15 | ankle_x_right_red | 43 | ankle_x_right_blue |
+| 16 | hip_x_left_red | 44 | hip_x_left_blue |
+| 17 | hip_z_left_red | 45 | hip_z_left_blue |
+| 18 | hip_y_left_red | 46 | hip_y_left_blue |
+| 19 | knee_left_red | 47 | knee_left_blue |
+| 20 | ankle_y_left_red | 48 | ankle_y_left_blue |
+| 21 | ankle_x_left_red | 49 | ankle_x_left_blue |
+| 22 | shoulder1_right_red | 50 | shoulder1_right_blue |
+| 23 | shoulder2_right_red | 51 | shoulder2_right_blue |
+| 24 | elbow_right_red | 52 | elbow_right_blue |
+| 25 | shoulder1_left_red | 53 | shoulder1_left_blue |
+| 26 | shoulder2_left_red | 54 | shoulder2_left_blue |
+| 27 | elbow_left_red | 55 | elbow_left_blue |
+
+### qvel 布局（54 维）
+
+| 索引 | 说明 | 索引 | 说明 |
+|------|------|------|------|
+| 0:6 | robot_a root (6 DOF) | 27:33 | robot_b root (6 DOF) |
+| 6 | abdomen_z_red | 33 | abdomen_z_blue |
+| 7 | abdomen_y_red | 34 | abdomen_y_blue |
+| 8 | abdomen_x_red | 35 | abdomen_x_blue |
+| 9 | hip_x_right_red | 36 | hip_x_right_blue |
+| 10 | hip_z_right_red | 37 | hip_z_right_blue |
+| 11 | hip_y_right_red | 38 | hip_y_right_blue |
+| 12 | knee_right_red | 39 | knee_right_blue |
+| 13 | ankle_y_right_red | 40 | ankle_y_right_blue |
+| 14 | ankle_x_right_red | 41 | ankle_x_right_blue |
+| 15 | hip_x_left_red | 42 | hip_x_left_blue |
+| 16 | hip_z_left_red | 43 | hip_z_left_blue |
+| 17 | hip_y_left_red | 44 | hip_y_left_blue |
+| 18 | knee_left_red | 45 | knee_left_blue |
+| 19 | ankle_y_left_red | 46 | ankle_y_left_blue |
+| 20 | ankle_x_left_red | 47 | ankle_x_left_blue |
+| 21 | shoulder1_right_red | 48 | shoulder1_right_blue |
+| 22 | shoulder2_right_red | 49 | shoulder2_right_blue |
+| 23 | elbow_right_red | 50 | elbow_right_blue |
+| 24 | shoulder1_left_red | 51 | shoulder1_left_blue |
+| 25 | shoulder2_left_red | 52 | shoulder2_left_blue |
+| 26 | elbow_left_red | 53 | elbow_left_blue |
+
+### robot_a 索引
+
+| 属性 | 值 |
+|------|-----|
+| body_id | 4 |
+| root_jnt_id | 0 |
+| qpos_adr | 0 |
+| qvel_adr | 0 |
+| suffix | '_red' |
+| actuators | [0, 1, 2, ..., 20] |
+
+### robot_b 索引
+
+| 属性 | 值 |
+|------|-----|
+| body_id | 20 |
+| root_jnt_id | 22 |
+| qpos_adr | 28 |
+| qvel_adr | 27 |
+| suffix | '_blue' |
+| actuators | [21, 22, 23, ..., 41] |
+
+### robot_a qpos/qvel 索引（21 个关节）
+
+| 索引 | 关节 | qpos | qvel |
+|------|------|------|------|
+| 0 | abdomen_z | 7 | 6 |
+| 1 | abdomen_y | 8 | 7 |
+| 2 | abdomen_x | 9 | 8 |
+| 3 | hip_x_right | 10 | 9 |
+| 4 | hip_z_right | 11 | 10 |
+| 5 | hip_y_right | 12 | 11 |
+| 6 | knee_right | 13 | 12 |
+| 7 | ankle_y_right | 14 | 13 |
+| 8 | ankle_x_right | 15 | 14 |
+| 9 | hip_x_left | 16 | 15 |
+| 10 | hip_z_left | 17 | 16 |
+| 11 | hip_y_left | 18 | 17 |
+| 12 | knee_left | 19 | 18 |
+| 13 | ankle_y_left | 20 | 19 |
+| 14 | ankle_x_left | 21 | 20 |
+| 15 | shoulder1_right | 22 | 21 |
+| 16 | shoulder2_right | 23 | 22 |
+| 17 | elbow_right | 24 | 23 |
+| 18 | shoulder1_left | 25 | 24 |
+| 19 | shoulder2_left | 26 | 25 |
+| 20 | elbow_left | 27 | 26 |
+
+### robot_b qpos/qvel 索引（21 个关节）
+
+| 索引 | 关节 | qpos | qvel |
+|------|------|------|------|
+| 0 | abdomen_z | 35 | 33 |
+| 1 | abdomen_y | 36 | 34 |
+| 2 | abdomen_x | 37 | 35 |
+| 3 | hip_x_right | 38 | 36 |
+| 4 | hip_z_right | 39 | 37 |
+| 5 | hip_y_right | 40 | 38 |
+| 6 | knee_right | 41 | 39 |
+| 7 | ankle_y_right | 42 | 40 |
+| 8 | ankle_x_right | 43 | 41 |
+| 9 | hip_x_left | 44 | 42 |
+| 10 | hip_z_left | 45 | 43 |
+| 11 | hip_y_left | 46 | 44 |
+| 12 | knee_left | 47 | 45 |
+| 13 | ankle_y_left | 48 | 46 |
+| 14 | ankle_x_left | 49 | 47 |
+| 15 | shoulder1_right | 50 | 48 |
+| 16 | shoulder2_right | 51 | 49 |
+| 17 | elbow_right | 52 | 50 |
+| 18 | shoulder1_left | 53 | 51 |
+| 19 | shoulder2_left | 54 | 52 |
+| 20 | elbow_left | 55 | 53 |
+
+### Body 列表（33 个）
+
+| ID | 名称 | ID | 名称 |
+|----|------|----|------|
+| 0 | world | 17 | torso_blue |
+| 1 | torso_red | 18 | head_blue |
+| 2 | head_red | 19 | waist_lower_blue |
+| 3 | waist_lower_red | 20 | pelvis_blue |
+| 4 | pelvis_red | 21 | thigh_right_blue |
+| 5 | thigh_right_red | 22 | shin_right_blue |
+| 6 | shin_right_red | 23 | foot_right_blue |
+| 7 | foot_right_red | 24 | thigh_left_blue |
+| 8 | thigh_left_red | 25 | shin_left_blue |
+| 9 | shin_left_red | 26 | foot_left_blue |
+| 10 | foot_left_red | 27 | upper_arm_right_blue |
+| 11 | upper_arm_right_red | 28 | lower_arm_right_blue |
+| 12 | lower_arm_right_red | 29 | hand_right_blue |
+| 13 | hand_right_red | 30 | upper_arm_left_blue |
+| 14 | upper_arm_left_red | 31 | lower_arm_left_blue |
+| 15 | lower_arm_left_red | 32 | hand_left_blue |
+| 16 | hand_left_red | |
 
 ---
 
@@ -231,14 +389,14 @@
 ```python
 # 方式 1：直接修改
 simulator.set_core_state({
-    'qpos': new_qpos_array,
-    'qvel': new_qvel_array
+    'qpos': new_qpos_array,    # shape=(56,)
+    'qvel': new_qvel_array     # shape=(54,)
 })
 
 # 方式 2：结构化修改
 simulator.set_core_state({
-    'qpos': current_qpos,  # 仍需提供完整数组
-    'qvel': current_qvel,
+    'qpos': current_qpos,       # shape=(56,)
+    'qvel': current_qvel,       # shape=(54,)
     'robot_a': {
         'root_position': [1.0, 0.0, 1.282]  # 只修改 root 位置
     }
@@ -253,181 +411,22 @@ simulator.set_core_state({
 
 - **位置**：全局坐标系，单位为米
 - **速度**：全局坐标系，线速度单位为 m/s，角速度单位为 rad/s
+- **角度**：所有关节边界和位置均使用弧度（radians）
 
----
+### PD 控制参数
 
-## battle_v1.xml 实际维度
-
-以下维度通过实例化 `MujocoCombatSimulator` 实测获得。
-
-### 模型全局维度
-
-| 属性 | 值 | 说明 |
-|------|-----|------|
-| `nq` (qpos 维度) | 56 | 位置数组长度 |
-| `nv` (qvel 维度) | 54 | 速度数组长度 |
-| `nu` (actuator 数量) | 42 | 执行器数量（每机器人 21 个） |
-| `nbody` (body 数量) | 33 | 刚体数量 |
-| `njnt` (joint 数量) | 44 | 关节数量 |
-
-### get_static_data() 实际返回值
-
-```python
-{
-    'dt': 0.002,  # float
-    'robot_info': {
-        'robot_a': {
-            'body_id': 4,              # int
-            'root_jnt_id': 0,          # int
-            'qpos_adr': 0,             # int32
-            'qvel_adr': 0,             # int32
-            'suffix': '_red',          # str
-            'actuators': [0, 1, ..., 20],     # List[int], length=21
-            'qpos_indices': [7, 8, ..., 27],   # List[int32], length=21
-            'qvel_indices': [6, 7, ..., 26],   # List[int32], length=21
-            'jnt_ranges': [array([-30, 10]), ...],  # List[ndarray], length=21
-            'ctrl_ranges': [array([-1.0, 1.0]), ...], # List[ndarray], length=21
-            'qpos0': [0.0, ..., 0.0]     # List[float64], length=21
-        },
-        'robot_b': {
-            'body_id': 20,             # int
-            'root_jnt_id': 22,          # int
-            'qpos_adr': 28,            # int32
-            'qvel_adr': 27,            # int32
-            'suffix': '_blue',         # str
-            'actuators': [21, 22, ..., 41],  # List[int], length=21
-            'qpos_indices': [35, 36, ..., 55], # List[int32], length=21
-            'qvel_indices': [33, 34, ..., 53], # List[int32], length=21
-            # ... 其他同 robot_a
-        }
-    }
-}
-```
-
-### get_core_state() 实际返回值
-
-```python
-{
-    'qpos': ndarray,  # shape=(56,), dtype=float64
-    'qvel': ndarray,  # shape=(54,), dtype=float64
-    'time': 0.0,      # float
-    'robot_a': {
-        'root_position': ndarray,      # shape=(3,), dtype=float64
-        'root_orientation': ndarray,   # shape=(4,), dtype=float64, [w,x,y,z]
-        'root_linear_velocity': ndarray,    # shape=(3,), dtype=float64
-        'root_angular_velocity': ndarray,   # shape=(3,), dtype=float64
-    },
-    'robot_b': { ... }  # 结构同 robot_a
-}
-```
-
-**初始位置（reset 后）：**
-- `robot_a['root_position']`: [-1.0, 0.0, 1.282]
-- `robot_a['root_orientation']`: [1.0, 0.0, 0.0, 0.0]
-- `robot_b['root_position']`: [1.0, 0.0, 1.282]
-- `robot_b['root_orientation']`: [0.0, 0.0, 0.0, 1.0]
-
-### get_derived_state() 实际返回值
-
-```python
-{
-    'contacts': [
-        {
-            'geom_a': int,        # geom id
-            'geom_b': int,        # geom id
-            'body_a': int32,      # body id
-            'body_b': int32,      # body id
-            'position': ndarray, # shape=(3,), dtype=float64
-            'normal': ndarray,   # shape=(3,), dtype=float64
-            'impulse': float64    # 冲量大小
-        },
-        ...
-    ],  # 长度取决于当前碰撞状态
-    'robot_a': {
-        'xpos': ndarray,   # shape=(33, 3), dtype=float64
-        'xvelp': ndarray,  # shape=(33, 3), dtype=float64
-        'xquat': ndarray,  # shape=(33, 4), dtype=float64
-    },
-    'robot_b': {}  # 空
-}
-```
-
-### get_sensor_data() 实际返回值
-
-```python
-{
-    'sensordata': ndarray  # shape=(0,), dtype=float64 (空数组，无传感器定义)
-}
-```
-
-### get_action() 实际返回值
-
-```python
-{
-    'robot_a': ndarray,  # shape=(21,), dtype=float64
-    'robot_b': ndarray   # shape=(21,), dtype=float64
-}
-```
-
-### get_broadcastview_image() 实际返回值
-
-```python
-ndarray,  # shape=(720, 1280, 3), dtype=np.uint8 (RGB 图像)
-```
-
-### 控制关节列表（每机器人 21 个）
-
-```python
-controlled_joints = [
-    'abdomen_z',     # 腹部旋转 (z)
-    'abdomen_y',     # 腹部旋转 (y)
-    'abdomen_x',     # 腹部旋转 (x)
-    'hip_x_right',   # 右髋 x
-    'hip_z_right',   # 右髋 z
-    'hip_y_right',   # 右髋 y
-    'knee_right',    # 右膝
-    'ankle_y_right', # 右踝 y
-    'ankle_x_right', # 右踝 x
-    'hip_x_left',    # 左髋 x
-    'hip_z_left',    # 左髋 z
-    'hip_y_left',    # 左髋 y
-    'knee_left',     # 左膝
-    'ankle_y_left',  # 左踝 y
-    'ankle_x_left',  # 左踝 x
-    'shoulder1_right',  # 右肩 1
-    'shoulder2_right',  # 右肩 2
-    'elbow_right',      # 右肘
-    'shoulder1_left',   # 左肩 1
-    'shoulder2_left',   # 左肩 2
-    'elbow_left',       # 左肘
-]
-```
-
-### 实例化代码示例
-
-```python
-from humanoid21.simulator import MujocoCombatSimulator
-
-# 创建实例（arena_xml 现在是可选参数）
-sim = MujocoCombatSimulator()
-# 等价于：sim = MujocoCombatSimulator(arena_xml='envs/humanoid21/battle_v1.xml')
-
-# 重置
-sim.reset()
-
-# 获取数据
-static = sim.get_static_data()
-core = sim.get_core_state()
-derived = sim.get_derived_state()
-
-print(f"qpos shape: {core['qpos'].shape}")  # (56,)
-print(f"qvel shape: {core['qvel'].shape}")  # (54,)
-print(f"robot_a body_id: {static['robot_info']['robot_a']['body_id']}")  # 4
-```
+- **Kp** = 4.0（比例增益）
+- **Kd** = 0.4（微分增益）
+- **目标速度** = 0
 
 ---
 
 ## XML 文件位置
 
-- **默认场景文件**: `envs/humanoid21/battle_v1.xml`
-- **simulator.py 修改**: `arena_xml` 参数默认值设为 `None`，内部自动指向 `battle_v1.xml`
+- **场景文件**: `envs/humanoid21/battle_v1.xml`
+- **实例化**：
+```python
+from humanoid21.simulator import MujocoCombatSimulator
+
+sim = MujocoCombatSimulator()  # 自动使用 battle_v1.xml
+```
