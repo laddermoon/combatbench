@@ -35,32 +35,31 @@ class MujocoCombatSimulator(BaseSimulator):
     # 这些参数通过 ACCEPTANCE_CRITERIA.md 中的测试验证和调优
     # 调优目标: 跟踪误差 <0.05rad, 响应延迟 <0.2s, 控制努力 <30%, 系统稳定
     #
-    # 注意: 这些 PD 参数与修正后的站立参考位置配合使用
-    # 站立参考位置使用解剖学上正确的姿态，而非关节范围的中点
+    # 使用较高的 PD 增益以改善跟踪和响应，同时保持控制努力可接受
     KP = np.array([
-        # 腰部 (abdomen) - 需要较高刚度支撑躯干
-        400.0, 400.0, 400.0,
-        # 右腿 (hip, knee, ankle) - 承重关节需要高刚度
-        500.0, 500.0, 500.0, 600.0, 400.0, 400.0,
+        # 腹部 (abdomen)
+        80.0, 80.0, 80.0,
+        # 右腿 (hip, knee, ankle) - 承重关节
+        100.0, 100.0, 100.0, 120.0, 80.0, 80.0,
         # 左腿
-        500.0, 500.0, 500.0, 600.0, 400.0, 400.0,
-        # 右臂 (shoulder, elbow) - 末端关节可以较低
-        300.0, 300.0, 250.0,
+        100.0, 100.0, 100.0, 120.0, 80.0, 80.0,
+        # 右臂 (shoulder, elbow) - 末端关节
+        50.0, 50.0, 40.0,
         # 左臂
-        300.0, 300.0, 250.0
+        50.0, 50.0, 40.0
     ], dtype=np.float32)
 
     KD = np.array([
-        # 腰部 - 增加阻尼以减少过冲
-        40.0, 40.0, 40.0,
+        # 腹部 - 较高阻尼以减少过冲
+        8.0, 8.0, 8.0,
         # 右腿
-        50.0, 50.0, 50.0, 60.0, 40.0, 40.0,
+        10.0, 10.0, 10.0, 12.0, 8.0, 8.0,
         # 左腿
-        50.0, 50.0, 50.0, 60.0, 40.0, 40.0,
+        10.0, 10.0, 10.0, 12.0, 8.0, 8.0,
         # 右臂
-        30.0, 30.0, 25.0,
+        5.0, 5.0, 4.0,
         # 左臂
-        30.0, 30.0, 25.0
+        5.0, 5.0, 4.0
     ], dtype=np.float32)
     
     # 受控关节名称 (固定顺序)
@@ -71,40 +70,141 @@ class MujocoCombatSimulator(BaseSimulator):
         'shoulder1_right', 'shoulder2_right', 'elbow_right',
         'shoulder1_left', 'shoulder2_left', 'elbow_left'
     ]
+
+    # 初始姿态配置（来自 humanoid.xml 的 keyframes）
+    # 每个姿态包含 root_pos, root_quat, joint_pos, action
+    INITIAL_POSES = {
+        'standing': {
+            'root_pos': np.array([0, 0, 1.282], dtype=np.float32),
+            'root_quat': np.array([1, 0, 0, 0], dtype=np.float32),
+            'joint_pos': np.array([
+                0, 0, 0,  # abdomen
+                0, 0, 0, 0, 0, 0,  # right leg
+                0, 0, 0, 0, 0, 0,  # left leg
+                0, 0, 0,  # right arm
+                0, 0, 0  # left arm
+            ], dtype=np.float32),
+            'action': np.array([
+                -0.0000, 0.4286, -0.0000,
+                0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+                0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+                0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
+            ], dtype=np.float32)
+        },
+        'squat': {
+            'root_pos': np.array([0, 0, 0.596], dtype=np.float32),
+            'root_quat': np.array([0.988015, 0, 0.154359, 0], dtype=np.float32),
+            'joint_pos': np.array([
+                0, 0.4, 0,
+                -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
+                -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
+                0, 0, 0,
+                0, 0, 0
+            ], dtype=np.float32),
+            'action': np.array([
+                0.0000, 0.4287, 0.0000,
+                0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
+                0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
+                0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
+            ], dtype=np.float32)
+        },
+        'stand_on_left_leg': {
+            'root_pos': np.array([0, 0, 1.21948], dtype=np.float32),
+            'root_quat': np.array([0.971588, -0.179973, 0.135318, -0.0729076], dtype=np.float32),
+            'joint_pos': np.array([
+                -0.0516, -0.202, 0.23,
+                -0.24, -0.007, -0.34, -1.76, -0.466, -0.0415,
+                -0.08, -0.01, -0.37, -0.685, -0.35, -0.09,
+                0.109, -0.067, -0.7,
+                -0.05, 0.12, 0.16
+            ], dtype=np.float32),
+            'action': np.array([
+                -0.0000, 0.4285, 0.0001,
+                0.4998, 0.2632, 0.7646, 0.9749, -0.0002, -0.0000,
+                0.4999, 0.2632, 0.7646, 0.9752, -0.0001, -0.0000,
+                0.1724, 0.1724, 0.3332, 0.1724, 0.1724, 0.3334,
+            ], dtype=np.float32)
+        },
+        'prone': {
+            'root_pos': np.array([0.4, 0, 0.0757706], dtype=np.float32),
+            'root_quat': np.array([0.7325, 0, 0.680767, 0], dtype=np.float32),
+            'joint_pos': np.array([
+                0, 0.0729, 0,
+                0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
+                0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
+                0.56, -0.62, -1.752,
+                0.186, -0.73, -1.73
+            ], dtype=np.float32),
+            'action': np.array([
+                0.0000, 0.4286, 0.0000,
+                0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
+                0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
+                0.1725, 0.1723, 0.3329, 0.1725, 0.1722, 0.3329,
+            ], dtype=np.float32)
+        },
+        'supine': {
+            'root_pos': np.array([-0.4, 0, 0.08122], dtype=np.float32),
+            'root_quat': np.array([0.722788, 0, -0.69107, 0], dtype=np.float32),
+            'joint_pos': np.array([
+                0, -0.25, 0,
+                0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
+                0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
+                0.186, -0.73, -1.73,
+                0.186, -0.73, -1.73
+            ], dtype=np.float32),
+            'action': np.array([
+                0.0000, 0.4285, 0.0000,
+                0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
+                0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
+                0.1725, 0.1722, 0.3329, 0.1725, 0.1722, 0.3329,
+            ], dtype=np.float32)
+        }
+    }
     
-    def __init__(self, initial_distance: float = 2.0):
+    def __init__(self, initial_distance: float = 2.0, debug_torque: bool = False,
+                 initial_pose_a: str = 'standing', initial_pose_b: str = 'standing'):
+        """
+        初始化模拟器
+
+        Args:
+            initial_distance: 两个机器人之间的初始距离
+            debug_torque: 是否打印力矩调试信息
+            initial_pose_a: 机器人A的初始姿态 ('standing', 'squat', 'stand_on_left_leg', 'prone', 'supine')
+            initial_pose_b: 机器人B的初始姿态
+        """
         self.dt = self.DT
         self.initial_distance = initial_distance
         self.action_dim = self.ACTION_DIM
-        
+        self._debug_torque = debug_torque  # 是否打印力矩调试信息
+
+        # 验证初始姿态参数
+        valid_poses = list(self.INITIAL_POSES.keys())
+        if initial_pose_a not in valid_poses:
+            raise ValueError(f"initial_pose_a must be one of {valid_poses}, got {initial_pose_a}")
+        if initial_pose_b not in valid_poses:
+            raise ValueError(f"initial_pose_b must be one of {valid_poses}, got {initial_pose_b}")
+
+        self._initial_pose_a = initial_pose_a
+        self._initial_pose_b = initial_pose_b
+
         # 加载 MuJoCo 模型
         self.model = mujoco.MjSpec.from_file(self.ARENA_XML).compile()
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = self.DT
         mujoco.mj_forward(self.model, self.data)
-        
+
         # 缓存索引和静态参数
         self._cache_robot_indices()
         self._compute_normalization_params()
-        
-        # 初始化控制目标为站立姿态
-        # 根据 CONTROLSPEC: Action = 0 映射到关节范围中点 (Reference)
-        # 但自然站立位置是 0 弧度，需要计算对应的 action 值
-        # action = -Reference / Scale (使得 Target_rad = 0)
-        self._standing_action = np.array([
-            -0.0000, 0.4286, -0.0000,  # abdomen_z, abdomen_y, abdomen_x
-            0.5000, 0.2632, 0.7647,  # hip_x_right, hip_z_right, hip_y_right
-            0.9753, -0.0000, -0.0000,  # knee_right, ankle_y_right, ankle_x_right
-            0.5000, 0.2632, 0.7647,  # hip_x_left, hip_z_left, hip_y_left
-            0.9753, -0.0000, -0.0000,  # knee_left, ankle_y_left, ankle_x_left
-            0.1724, 0.1724, 0.3333,  # shoulder1_right, shoulder2_right, elbow_right
-            0.1724, 0.1724, 0.3333,  # shoulder1_left, shoulder2_left, elbow_left
-        ], dtype=np.float32)
 
+        # 初始化控制目标
         self._target_pos_norm = {
-            'robot_a': self._standing_action.copy(),
-            'robot_b': self._standing_action.copy()
+            'robot_a': self.INITIAL_POSES[initial_pose_a]['action'].copy(),
+            'robot_b': self.INITIAL_POSES[initial_pose_b]['action'].copy()
         }
+
+        # 调试用计数器
+        self._step_count = 0
     
     def _cache_robot_indices(self):
         """缓存机器人的关节和body索引"""
@@ -488,33 +588,73 @@ class MujocoCombatSimulator(BaseSimulator):
                 self._target_pos_norm[robot_id] = act
     
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
-        """重置环境"""
+        """
+        重置环境到指定的初始姿态
+
+        Args:
+            seed: 随机种子
+            options: 可选参数，包括:
+                - initial_distance: 初始距离
+                - initial_pose_a: 机器人A的初始姿态
+                - initial_pose_b: 机器人B的初始姿态
+        """
         mujoco.mj_resetData(self.model, self.data)
-        
+
         # 设置初始距离
         dist = self.initial_distance
         if options and 'initial_distance' in options:
             dist = float(options['initial_distance'])
-        
-        # 设置双方初始位置 (面对面站立)
-        for robot_id, x_offset, quat in [
-            ('robot_a', -dist/2.0, [1.0, 0.0, 0.0, 0.0]),  # 面向 +x
-            ('robot_b', dist/2.0, [0.0, 0.0, 0.0, 1.0])   # 面向 -x (旋转180度)
+
+        # 获取初始姿态配置
+        pose_a_name = options.get('initial_pose_a', self._initial_pose_a) if options else self._initial_pose_a
+        pose_b_name = options.get('initial_pose_b', self._initial_pose_b) if options else self._initial_pose_b
+
+        pose_a = self.INITIAL_POSES[pose_a_name]
+        pose_b = self.INITIAL_POSES[pose_b_name]
+
+        # 设置双方初始位置和姿态
+        for robot_id, pose_config, x_offset in [
+            ('robot_a', pose_a, -dist/2.0),
+            ('robot_b', pose_b, dist/2.0)
         ]:
             cache = self._robot_cache[robot_id]
+            norm_params = self._norm_params[robot_id]
             root_qpos_adr = cache['root_qpos_adr']
-            
-            # 位置: [x, y, z]
-            self.data.qpos[root_qpos_adr:root_qpos_adr+3] = [x_offset, 0.0, 1.282]
-            # 姿态: [w, x, y, z]
-            self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = quat
-        
+            qpos_indices = cache['qpos_indices']
+
+            # 设置根部位置 (加上 x_offset 以保持面对面)
+            root_pos = pose_config['root_pos'].copy()
+            root_pos[0] = x_offset  # x 方向偏移
+            self.data.qpos[root_qpos_adr:root_qpos_adr+3] = root_pos
+
+            # 设置根部姿态
+            self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = pose_config['root_quat']
+
+            # 设置关节位置
+            self.data.qpos[qpos_indices] = pose_config['joint_pos']
+
         # 速度清零
         self.data.qvel[:] = 0.0
 
-        # 重置控制目标为站立姿态
-        self._target_pos_norm['robot_a'][:] = self._standing_action
-        self._target_pos_norm['robot_b'][:] = self._standing_action
+        # 计算控制目标：基于实际设置的关节位置计算对应的 action 值
+        # action = (joint_pos - reference) / scale
+        for robot_id, pose_config, x_offset in [
+            ('robot_a', pose_a, -dist/2.0),
+            ('robot_b', pose_b, dist/2.0)
+        ]:
+            cache = self._robot_cache[robot_id]
+            norm_params = self._norm_params[robot_id]
+            qpos_indices = cache['qpos_indices']
+
+            # 获取实际设置的关节位置
+            actual_joint_pos = self.data.qpos[qpos_indices]
+
+            # 计算对应的 action 值
+            action = (actual_joint_pos - norm_params['reference']) / norm_params['scale']
+            self._target_pos_norm[robot_id] = action.astype(np.float32)
+
+        # 重置调试计数器
+        self._step_count = 0
 
         mujoco.mj_forward(self.model, self.data)
     
@@ -531,22 +671,22 @@ class MujocoCombatSimulator(BaseSimulator):
         for robot_id in ['robot_a', 'robot_b']:
             cache = self._robot_cache[robot_id]
             norm_params = self._norm_params[robot_id]
-            
+
             # 获取归一化目标位置
             target_pos_norm = self._target_pos_norm[robot_id]
-            
+
             # 反归一化: Target_rad = action * scale + reference
             target_pos_rad = target_pos_norm * norm_params['scale'] + norm_params['reference']
-            
+
             # 获取当前关节状态
             qpos_indices = cache['qpos_indices']
             qvel_indices = cache['qvel_indices']
             current_pos = self.data.qpos[qpos_indices]
             current_vel = self.data.qvel[qvel_indices]
-            
+
             # PD 控制: Torque = KP * (Target - Current) - KD * Vel
             torque = self.KP * (target_pos_rad - current_pos) - self.KD * current_vel
-            
+
             # 应用到执行器
             actuator_ids = cache['actuator_ids']
             for i, act_id in enumerate(actuator_ids):
@@ -554,15 +694,31 @@ class MujocoCombatSimulator(BaseSimulator):
                 gear = self.model.actuator_gear[act_id, 0]
                 if gear == 0:
                     gear = 1.0
-                
+
                 # Ctrl = Torque / Gear
                 ctrl_value = torque[i] / gear
-                
-                # 限幅
+
+                # 限幅前记录原始力矩（用于调试）
                 ctrl_range = self.model.actuator_ctrlrange[act_id]
-                ctrl_value = np.clip(ctrl_value, ctrl_range[0], ctrl_range[1])
-                
-                self.data.ctrl[act_id] = ctrl_value
+                max_torque = max(abs(ctrl_range[0]), abs(ctrl_range[1])) * abs(gear)
+
+                # 限幅
+                ctrl_value_clipped = np.clip(ctrl_value, ctrl_range[0], ctrl_range[1])
+                saturated = abs(ctrl_value) > abs(ctrl_value_clipped)
+
+                self.data.ctrl[act_id] = ctrl_value_clipped
+
+                # 调试打印（每100步打印一次，或者力矩饱和时打印）
+                if self._debug_torque:
+                    if saturated or (self._step_count % 100 == 0 and self._step_count < 1000):
+                        torque_pct = abs(torque[i]) / max_torque * 100 if max_torque > 0 else 0
+                        ctrl_pct = abs(ctrl_value_clipped) / max(abs(ctrl_range[0]), abs(ctrl_range[1])) * 100
+                        print(f"Step {self._step_count:5d} {robot_id} {self.CONTROLLED_JOINTS[i]:<20}: "
+                              f"torque={torque[i]:>8.2f} Nm ({torque_pct:>5.1f}%) "
+                              f"ctrl={ctrl_value_clipped:>7.4f} ({ctrl_pct:>5.1f}%) "
+                              f"{'SAT!' if saturated else ''}")
+
+        self._step_count += 1
     
     def get_physical_frequency(self) -> float:
         """获取物理仿真频率"""
