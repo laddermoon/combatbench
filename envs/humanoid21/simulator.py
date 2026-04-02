@@ -34,30 +34,33 @@ class MujocoCombatSimulator(BaseSimulator):
     # 固化的 PD 控制参数 (不可配置)
     # 这些参数通过 ACCEPTANCE_CRITERIA.md 中的测试验证和调优
     # 调优目标: 跟踪误差 <0.05rad, 响应延迟 <0.2s, 控制努力 <30%, 系统稳定
+    #
+    # 注意: 这些 PD 参数与修正后的站立参考位置配合使用
+    # 站立参考位置使用解剖学上正确的姿态，而非关节范围的中点
     KP = np.array([
         # 腰部 (abdomen) - 需要较高刚度支撑躯干
-        200.0, 200.0, 200.0,
+        400.0, 400.0, 400.0,
         # 右腿 (hip, knee, ankle) - 承重关节需要高刚度
-        250.0, 250.0, 250.0, 300.0, 200.0, 200.0,
+        500.0, 500.0, 500.0, 600.0, 400.0, 400.0,
         # 左腿
-        250.0, 250.0, 250.0, 300.0, 200.0, 200.0,
+        500.0, 500.0, 500.0, 600.0, 400.0, 400.0,
         # 右臂 (shoulder, elbow) - 末端关节可以较低
-        150.0, 150.0, 120.0,
+        300.0, 300.0, 250.0,
         # 左臂
-        150.0, 150.0, 120.0
+        300.0, 300.0, 250.0
     ], dtype=np.float32)
-    
+
     KD = np.array([
         # 腰部 - 增加阻尼以减少过冲
-        20.0, 20.0, 20.0,
+        40.0, 40.0, 40.0,
         # 右腿
-        25.0, 25.0, 25.0, 30.0, 20.0, 20.0,
+        50.0, 50.0, 50.0, 60.0, 40.0, 40.0,
         # 左腿
-        25.0, 25.0, 25.0, 30.0, 20.0, 20.0,
+        50.0, 50.0, 50.0, 60.0, 40.0, 40.0,
         # 右臂
-        15.0, 15.0, 12.0,
+        30.0, 30.0, 25.0,
         # 左臂
-        15.0, 15.0, 12.0
+        30.0, 30.0, 25.0
     ], dtype=np.float32)
     
     # 受控关节名称 (固定顺序)
@@ -84,10 +87,23 @@ class MujocoCombatSimulator(BaseSimulator):
         self._cache_robot_indices()
         self._compute_normalization_params()
         
-        # 初始化控制目标
+        # 初始化控制目标为站立姿态
+        # 根据 CONTROLSPEC: Action = 0 映射到关节范围中点 (Reference)
+        # 但自然站立位置是 0 弧度，需要计算对应的 action 值
+        # action = -Reference / Scale (使得 Target_rad = 0)
+        self._standing_action = np.array([
+            -0.0000, 0.4286, -0.0000,  # abdomen_z, abdomen_y, abdomen_x
+            0.5000, 0.2632, 0.7647,  # hip_x_right, hip_z_right, hip_y_right
+            0.9753, -0.0000, -0.0000,  # knee_right, ankle_y_right, ankle_x_right
+            0.5000, 0.2632, 0.7647,  # hip_x_left, hip_z_left, hip_y_left
+            0.9753, -0.0000, -0.0000,  # knee_left, ankle_y_left, ankle_x_left
+            0.1724, 0.1724, 0.3333,  # shoulder1_right, shoulder2_right, elbow_right
+            0.1724, 0.1724, 0.3333,  # shoulder1_left, shoulder2_left, elbow_left
+        ], dtype=np.float32)
+
         self._target_pos_norm = {
-            'robot_a': np.zeros(self.ACTION_DIM, dtype=np.float32),
-            'robot_b': np.zeros(self.ACTION_DIM, dtype=np.float32)
+            'robot_a': self._standing_action.copy(),
+            'robot_b': self._standing_action.copy()
         }
     
     def _cache_robot_indices(self):
@@ -495,11 +511,11 @@ class MujocoCombatSimulator(BaseSimulator):
         
         # 速度清零
         self.data.qvel[:] = 0.0
-        
-        # 重置控制目标为零位
-        self._target_pos_norm['robot_a'][:] = 0.0
-        self._target_pos_norm['robot_b'][:] = 0.0
-        
+
+        # 重置控制目标为站立姿态
+        self._target_pos_norm['robot_a'][:] = self._standing_action
+        self._target_pos_norm['robot_b'][:] = self._standing_action
+
         mujoco.mj_forward(self.model, self.data)
     
     def physical_step(self) -> None:
