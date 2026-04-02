@@ -628,7 +628,25 @@ class MujocoCombatSimulator(BaseSimulator):
             self.data.qpos[root_qpos_adr:root_qpos_adr+3] = root_pos
 
             # 设置根部姿态
-            self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = pose_config['root_quat']
+            # robot_b 需要旋转 180° 绕 z 轴，使其面向 robot_a
+            root_quat = pose_config['root_quat'].copy()
+            if robot_id == 'robot_b':
+                # 应用 180° 旋转绕 z 轴: q_rot = [0, 0, 0, 1]
+                # 四元数乘法: q_new = q_rot * q_original
+                q_rot = np.array([0, 0, 0, 1], dtype=np.float64)  # [w,x,y,z]
+                q_original = np.array([root_quat[1], root_quat[2], root_quat[3], root_quat[0]], dtype=np.float64)  # [x,y,z,w] for scipy
+
+                # 手动计算四元数乘法
+                # q_new = q_rot * q_original
+                # = [0,0,0,1] * [wx,wy,wz,ww]
+                w = q_rot[0] * q_original[3] - q_rot[1] * q_original[0] - q_rot[2] * q_original[1] - q_rot[3] * q_original[2]
+                x = q_rot[0] * q_original[0] + q_rot[1] * q_original[3] + q_rot[2] * q_original[1] - q_rot[3] * q_original[0]
+                y = q_rot[0] * q_original[1] - q_rot[1] * q_original[0] + q_rot[2] * q_original[3] + q_rot[3] * q_original[2]
+                z = q_rot[0] * q_original[2] - q_rot[1] * q_original[1] + q_rot[2] * q_original[0] + q_rot[3] * q_original[1]
+
+                root_quat = np.array([w, x, y, z], dtype=np.float32)
+
+            self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = root_quat
 
             # 设置关节位置
             self.data.qpos[qpos_indices] = pose_config['joint_pos']
