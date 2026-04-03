@@ -18,15 +18,12 @@ def make_env(
     """
     工厂函数，用于创建组装好的 Humanoid21 对战环境。
     """
-    arena_xml = os.path.join(os.path.dirname(__file__), '../../assets/battle_v1.xml')
-    dt = 0.002
-
-    sim_frequency = 1.0 / dt
+    sim_frequency = 1.0 / MujocoCombatSimulator.DT
     phy_steps_per_action = max(1, int(round(sim_frequency / control_frequency)))
     max_steps = int(match_duration * control_frequency)
 
     # 1. 创建底层物理仿真器
-    simulator = MujocoCombatSimulator(arena_xml=arena_xml, dt=dt)
+    simulator = MujocoCombatSimulator()
 
     # 2. 挂载插件（用户提供的插件）
     active_plugins = plugins if plugins else []
