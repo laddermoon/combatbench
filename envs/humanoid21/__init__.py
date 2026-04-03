@@ -29,12 +29,17 @@ def make_env(
     # 2. 挂载插件（用户提供的插件）
     active_plugins = plugins if plugins else []
 
-    # 3. 准备 observer plugins（使用默认或用户提供的）
+    # 3. 准备 observer plugins（用户传入为准，缺少的添加默认值）
     if observer_plugins is None:
-        observer_plugins = {
-            'robot_a_obs': Humanoid21Observer('robot_a'),
-            'robot_b_obs': Humanoid21Observer('robot_b'),
-        }
+        observer_plugins = {}
+    # 默认 observers（仅当用户未提供时添加）
+    default_observers = {
+        'robot_a_obs': Humanoid21Observer('robot_a'),
+        'robot_b_obs': Humanoid21Observer('robot_b'),
+    }
+    for key, value in default_observers.items():
+        if key not in observer_plugins:
+            observer_plugins[key] = value
 
     runtime = EnvRuntime(
         simulator=simulator,

@@ -72,9 +72,6 @@ class Humanoid21Observer(BaseObserverPlugin):
         - 模块四：对手观测 (39维) - 索引 [57:96]
         """
         accessor = ctx.accessor
-        static_data = accessor.get_static_data()
-        robot_info = static_data["robot_info"]
-        core_state = accessor.get_core_state()
         derived_state = accessor.get_derived_state()
 
         # 直接从 derived_state 获取完整观测
