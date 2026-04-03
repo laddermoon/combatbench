@@ -36,30 +36,31 @@ class MujocoCombatSimulator(BaseSimulator):
     # 调优目标: 跟踪误差 <0.05rad, 响应延迟 <0.2s, 控制努力 <30%, 系统稳定
     #
     # 使用较高的 PD 增益以改善跟踪和响应，同时保持控制努力可接受
+    # 参数参考 DeepMimic 和 MuJoCo Menagerie 主流 PD 设定的上限值
     KP = np.array([
-        # 腹部 (abdomen)
-        80.0, 80.0, 80.0,
-        # 右腿 (hip, knee, ankle) - 承重关节
-        100.0, 100.0, 100.0, 120.0, 80.0, 80.0,
+        # 腹部 (abdomen_z, abdomen_y, abdomen_x) - 战斗中需维持上半身直立
+        1000.0, 1000.0, 1000.0,
+        # 右腿 (hip_x=roll, hip_z=yaw, hip_y=pitch, knee, ankle_y, ankle_x)
+        150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
         # 左腿
-        100.0, 100.0, 100.0, 120.0, 80.0, 80.0,
-        # 右臂 (shoulder, elbow) - 末端关节
-        50.0, 50.0, 40.0,
+        150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
+        # 右臂 (shoulder1, shoulder2, elbow)
+        150.0, 150.0, 100.0,
         # 左臂
-        50.0, 50.0, 40.0
+        150.0, 150.0, 100.0
     ], dtype=np.float32)
 
     KD = np.array([
-        # 腹部 - 较高阻尼以减少过冲
-        8.0, 8.0, 8.0,
-        # 右腿
-        10.0, 10.0, 10.0, 12.0, 8.0, 8.0,
+        # 腹部 - 高阻尼以减少过冲
+        100.0, 100.0, 100.0,
+        # 右腿 - 踝部较低增益以保持柔顺性
+        15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
         # 左腿
-        10.0, 10.0, 10.0, 12.0, 8.0, 8.0,
+        15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
         # 右臂
-        5.0, 5.0, 4.0,
+        15.0, 15.0, 10.0,
         # 左臂
-        5.0, 5.0, 4.0
+        15.0, 15.0, 10.0
     ], dtype=np.float32)
     
     # 受控关节名称 (固定顺序)
@@ -631,20 +632,23 @@ class MujocoCombatSimulator(BaseSimulator):
             # robot_b 需要旋转 180° 绕 z 轴，使其面向 robot_a
             root_quat = pose_config['root_quat'].copy()
             if robot_id == 'robot_b':
-                # 应用 180° 旋转绕 z 轴: q_rot = [0, 0, 0, 1]
-                # 四元数乘法: q_new = q_rot * q_original
-                q_rot = np.array([0, 0, 0, 1], dtype=np.float64)  # [w,x,y,z]
-                q_original = np.array([root_quat[1], root_quat[2], root_quat[3], root_quat[0]], dtype=np.float64)  # [x,y,z,w] for scipy
+                # 使用 scipy.Rotation 进行四元数旋转
+                # MuJoCo 使用 [w,x,y,z] 格式，scipy 使用 [x,y,z,w] 格式
+                q_mujoco = root_quat  # [w,x,y,z]
+                q_scipy = np.array([q_mujoco[1], q_mujoco[2], q_mujoco[3], q_mujoco[0]])  # [x,y,z,w]
 
-                # 手动计算四元数乘法
-                # q_new = q_rot * q_original
-                # = [0,0,0,1] * [wx,wy,wz,ww]
-                w = q_rot[0] * q_original[3] - q_rot[1] * q_original[0] - q_rot[2] * q_original[1] - q_rot[3] * q_original[2]
-                x = q_rot[0] * q_original[0] + q_rot[1] * q_original[3] + q_rot[2] * q_original[1] - q_rot[3] * q_original[0]
-                y = q_rot[0] * q_original[1] - q_rot[1] * q_original[0] + q_rot[2] * q_original[3] + q_rot[3] * q_original[2]
-                z = q_rot[0] * q_original[2] - q_rot[1] * q_original[1] + q_rot[2] * q_original[0] + q_rot[3] * q_original[1]
+                # 创建原始旋转
+                rot_original = R.from_quat(q_scipy)
 
-                root_quat = np.array([w, x, y, z], dtype=np.float32)
+                # 创建 180° 绕 z 轴的旋转 (使用弧度: π)
+                rot_z = R.from_euler('z', np.pi, degrees=False)
+
+                # 应用旋转: q_new = rot_z * q_original
+                rot_new = rot_z * rot_original
+
+                # 转换回 MuJoCo 格式 [w,x,y,z]
+                q_new_scipy = rot_new.as_quat()  # [x,y,z,w]
+                root_quat = np.array([q_new_scipy[3], q_new_scipy[0], q_new_scipy[1], q_new_scipy[2]], dtype=np.float32)
 
             self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = root_quat
 
