@@ -8,12 +8,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import EnvRuntime
 
 from .simulator import MujocoCombatSimulator
-from .observer_plugins import Humanoid21Observer, Humanoid21Rewarder, build_shared_runtime_info
+from .observer_plugins import Humanoid21Observer, build_shared_runtime_info
 
 def make_env(
     control_frequency: int = 20,
     match_duration: float = 30.0,
     plugins: Optional[List[Any]] = None,
+    observer_plugins: Optional[Dict[str, Any]] = None,
 ) -> EnvRuntime:
     """
     工厂函数，用于创建组装好的 Humanoid21 对战环境。
@@ -28,15 +29,17 @@ def make_env(
     # 2. 挂载插件（用户提供的插件）
     active_plugins = plugins if plugins else []
 
+    # 3. 准备 observer plugins（使用默认或用户提供的）
+    if observer_plugins is None:
+        observer_plugins = {
+            'robot_a_obs': Humanoid21Observer('robot_a'),
+            'robot_b_obs': Humanoid21Observer('robot_b'),
+        }
+
     runtime = EnvRuntime(
         simulator=simulator,
         plugins=active_plugins,
-        observer_plugins={
-            'robot_a_obs': Humanoid21Observer('robot_a'),
-            'robot_b_obs': Humanoid21Observer('robot_b'),
-            'robot_a_reward': Humanoid21Rewarder('robot_a'),
-            'robot_b_reward': Humanoid21Rewarder('robot_b'),
-        },
+        observer_plugins=observer_plugins,
         phy_steps_per_action=phy_steps_per_action,
         max_steps=max_steps
     )
@@ -49,6 +52,5 @@ def make_env(
 __all__ = [
     "MujocoCombatSimulator",
     "Humanoid21Observer",
-    "Humanoid21Rewarder",
     "make_env"
 ]
