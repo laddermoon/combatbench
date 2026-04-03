@@ -62,12 +62,6 @@ def parse_args():
                         help='Match duration per round in seconds (default: 30.0)')
     parser.add_argument('--control-frequency', type=int, default=20,
                         help='Control frequency in Hz (default: 20)')
-    parser.add_argument('--non-fall-mode', action='store_true',
-                        help='Enable non-fall mode (keep robots upright)')
-    parser.add_argument('--non-fall-pitch-limit-deg', type=float, default=5.0,
-                        help='Pitch limit for non-fall mode in degrees (default: 5.0)')
-    parser.add_argument('--non-fall-roll-limit-deg', type=float, default=5.0,
-                        help='Roll limit for non-fall mode in degrees (default: 5.0)')
     parser.add_argument('--damage-scale', type=float, default=100.0,
                         help='Damage scaling factor (default: 100.0)')
     parser.add_argument('--video-dir', type=str, default=None,
@@ -162,7 +156,7 @@ def main() -> None:
     from envs.humanoid21 import make_env
     from envs.framework.match_runner import MatchRunner
     from envs.framework.common_plugins import VideoRecorderPlugin
-    from envs.humanoid21.plugins import CombatScoringPlugin, NonFallConstraintPlugin
+    from envs.humanoid21.plugins import CombatScoringPlugin
 
     # Create runtime factory function
     def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
@@ -173,11 +167,6 @@ def main() -> None:
                 damage_scale=args.damage_scale
             ),
         ]
-        if args.non_fall_mode:
-            plugins.append(NonFallConstraintPlugin(
-                pitch_limit_deg=args.non_fall_pitch_limit_deg,
-                roll_limit_deg=args.non_fall_roll_limit_deg
-            ))
         # Always add video plugin when video_dir is specified
         if args.video_dir is not None:
             plugins.append(VideoRecorderPlugin(fps=30))
