@@ -5,6 +5,7 @@ Policy 加载工具
 """
 
 import importlib
+import importlib.util
 import inspect
 import os
 import sys
@@ -57,7 +58,7 @@ def load_policy(
     module_path, class_name, params = parse_policy_spec(policy_spec)
 
     # 如果没有指定模块路径，默认为 {policy_dir}/policy.py
-    if '.' not in module_path:
+    if '.' not in module_path and '/' not in module_path:
         # 假设是目录路径，尝试导入 policy.py
         policy_dir = Path(module_path)
         if not policy_dir.is_dir():
@@ -75,9 +76,27 @@ def load_policy(
 
     # 动态导入模块
     try:
+        # 首先尝试作为普通模块导入
         policy_module = importlib.import_module(module_path)
-    except ImportError as e:
-        raise ImportError(f"Failed to import policy module '{module_path}': {e}")
+    except ImportError:
+        # 如果失败，尝试从文件路径加载
+        policy_dir = Path(module_path.replace('.policy', ''))
+        if not policy_dir.is_dir():
+            # 尝试作为绝对路径或相对路径
+            policy_dir = Path(module_path)
+
+        policy_file = policy_dir / "policy.py"
+        if not policy_file.exists():
+            raise ImportError(f"Failed to import policy module '{module_path}' and policy.py not found at {policy_file}")
+
+        # 使用 importlib.util 从文件路径加载模块
+        spec = importlib.util.spec_from_file_location(policy_dir.name, policy_file)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Failed to load module from {policy_file}")
+
+        policy_module = importlib.util.module_from_spec(spec)
+        sys.modules[policy_dir.name] = policy_module
+        spec.loader.exec_module(policy_module)
 
     # 查找 BaseCombatPolicy 实现
     policy_class = find_policy_class(policy_module, class_name)
