@@ -24,24 +24,161 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
   - `load_util.py` - Policy loading utility (`load_policy()`)
   - `random/` - RandomCombatPolicy directory (with policy.py)
   - `standing/` - StandingCombatPolicy directory (with policy.py)
-- `tools/` - Utilities (`run_round.py` for CLI usage)
 - `docs/` - Rules, environment specs, robot details
 - `baseline/` - Training implementations (Stable-Baselines3, GRPO)
+
+## Framework Architecture
+
+The `envs/framework/` directory contains the core framework that provides:
+
+- **Backend abstraction** - Physics engine agnostic interfaces (MuJoCo/PyBullet/IsaacGym)
+- **Plugin system** - World rules and observation/reward computation
+- **Runtime management** - Episode lifecycle and timing control
+- **Data contracts** - Standardized accessor/mutator pattern
+
+### Directory Structure
+
+```
+envs/framework/
+├── backend.py          # IDataAccessor, IDataMutator, BaseSimulator interfaces
+├── context.py          # SimContext, ReadOnlySimContext, TerminationReason
+├── plugin.py           # BasePlugin for world rules
+├── runtime_plugin.py   # BaseObserverPlugin for observations/rewards
+├── env_runtime.py      # EnvRuntime (main public API)
+├── common_plugins.py   # TimeoutPlugin, VideoRecorderPlugin
+├── round_runner.py     # RoundRunner for single-round evaluation
+├── match_runner.py     # MatchRunner for multi-round matches
+├── DESIGN.md           # Architecture design specification (Chinese)
+└── README.md           # Framework usage documentation
+```
+
+### Layered Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Algorithm/Adapter Layer (PPO/SAC/IL/Gym wrappers)      │
+├─────────────────────────────────────────────────────────┤
+│  Policy Runtime Layer (EnvRuntime + ObserverPlugins)    │
+├─────────────────────────────────────────────────────────┤
+│  Physical Sandbox Layer (_RuntimeCore + WorldPlugins)   │
+├─────────────────────────────────────────────────────────┤
+│  Backend Layer (BaseSimulator - MuJoCo/PyBullet/...)    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Core Interfaces
+
+#### IDataAccessor (`backend.py`)
+Read-only data access interface:
+- `get_static_data()` - Episode-invariant config (robot info, indices)
+- `get_core_state()` - Raw physics state (qpos, qvel, root pose)
+- `get_derived_state()` - Computed state (contacts, kinematics)
+- `get_sensor_data()` - Sensor readings (IMU, touch, force)
+- `get_broadcastview_image()` - Rendered image
+
+#### IDataMutator (`backend.py`)
+Write access interface (selectively granted):
+- `set_core_state(state)` - Override physics state
+- `set_action(action)` - Set control action
+- `apply_external_force(body, force, torque, robot_id)` - Apply disturbances
+
+#### BaseSimulator (`backend.py`)
+Abstract physics backend inheriting both Accessor and Mutator:
+- `reset(seed, options)` - Reset physics engine
+- `physical_step()` - Single fine-grained physics step
+- `get_physical_frequency()` - Physics frequency in Hz
+
+### SimContext (`context.py`)
+
+Blackboard pattern for cross-plugin communication:
+
+```python
+class SimContext:
+    accessor: IDataAccessor              # Always available (read-only)
+    mutator: Optional[IDataMutator]      # Conditionally granted
+    metrics: Dict[str, Any]              # Shared metrics (HP, damage, counts)
+    events: List[Any]                    # Instantaneous events (hits, fouls)
+    termination_proposals: List[str]     # Episode termination requests
+    episode_step: int                    # Action-level step counter
+    physics_step: int                    # Physics-level step counter
+
+    def request_termination(self, reason: str) -> None:
+        """Propose episode end with reason"""
+```
+
+**ReadOnlySimContext** - Frozen, read-only view for observer plugins (no mutator access).
+
+**TerminationReason** - Standard constants: `TIMEOUT`, `KO`, `FOUL`, `OUT_OF_BOUNDS`, `CUSTOM`
+
+### Plugin System
+
+#### BasePlugin (`plugin.py`)
+
+World rule plugin with lifecycle hooks:
+
+| Hook | Timing | Mutator | Use Cases |
+|------|--------|---------|-----------|
+| `on_pre_episode` | After reset | ✓ | Resetter, initialization |
+| `on_pre_action_step` | Before action | ✓ | Action mapping, clamping |
+| `on_pre_phy_step` | Before physics step | ✓ | External disturbances |
+| `on_post_phy_step` | After physics step | ✓ | State constraints |
+| `on_post_action_step` | After action step | ✗ | Metrics, rewards, termination |
+| `on_post_episode` | After episode ends | ✗ | Logging, aggregation |
+
+**Properties:**
+- `name: str` - Plugin identifier
+- `priority: int` - Execution order (higher first)
+- `require_mutator: bool` - Request write permission
+
+#### BaseObserverPlugin (`runtime_plugin.py`)
+
+Read-only observation/reward computation:
+- `on_reset(ctx)` - Called after reset
+- `on_post_step(ctx)` - Called after each step
+- `get_output()` - Return cached output
+
+### EnvRuntime (`env_runtime.py`)
+
+Main public API for policy execution:
+
+```python
+from combatbench.envs.framework import EnvRuntime
+
+runtime = EnvRuntime(simulator, world_plugins=[], observer_plugins={})
+
+# Episode management
+runtime.reset(seed=42, options={})
+runtime.step(action_a, action_b)
+
+# Data access
+obs = runtime.get_observer_output("observation")  # Get specific output
+outputs = runtime.get_observer_outputs(["obs", "reward"])  # Get multiple
+metrics = runtime.get_shared_info()  # Get metrics, events, termination
+terminated, truncated = runtime.get_termination_flags()
+
+# Plugin management
+runtime.attach_plugin(plugin)
+runtime.attach_observer_plugin("name", observer_plugin)
+```
+
+### Design Patterns
+
+1. **Accessor/Mutator Pattern** - Capability-based security (read always available, write selectively granted)
+2. **Blackboard Pattern** - SimContext for cross-plugin communication
+3. **Plugin Architecture** - World plugins modify simulation; observers only read
+4. **Dispatcher Pattern** - Centralized observer management with batch processing
+5. **Factory Pattern** - `make_env()` functions create configured instances
+
+### Common Plugins
+
+**TimeoutPlugin** - Terminates episode after max_steps
+**VideoRecorderPlugin** - Records broadcast view to MP4 at specified FPS
 
 ## Common Commands
 
 ### Installation
 ```bash
 pip install mujoco gymnasium numpy opencv-python imageio egl torch stable-baselines3 scipy
-```
-
-### Quick Start (Standing Policy)
-```bash
-# Run with no policies (both use StandingCombatPolicy - no movement)
-python3 envs/humanoid21/run_round.py --duration 10 --video test.mp4
-
-# Run with random policy
-python3 envs/humanoid21/run_round.py --policy-a random --duration 5 --video test.mp4
 ```
 
 ### Running Rounds (Evaluation & Video)
