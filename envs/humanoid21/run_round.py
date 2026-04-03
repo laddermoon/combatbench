@@ -87,9 +87,17 @@ def main() -> None:
     from envs.humanoid21 import make_env
     from envs.framework.round_runner import RoundRunner
     from envs.framework.common_plugins import VideoRecorderPlugin
+    from envs.humanoid21.plugins import CombatScoringPlugin, NonFallConstraintPlugin
 
     # Prepare plugins
-    plugins = []
+    plugins = [
+        CombatScoringPlugin(damage_scale=args.damage_scale),
+    ]
+    if args.non_fall_mode:
+        plugins.append(NonFallConstraintPlugin(
+            pitch_limit_deg=args.non_fall_pitch_limit_deg,
+            roll_limit_deg=args.non_fall_roll_limit_deg
+        ))
     if args.video:
         # Set video path via class variable for plugin override
         VideoRecorderPlugin.set_videosave_path(args.video)
@@ -98,10 +106,6 @@ def main() -> None:
     runtime = make_env(
         match_duration=args.duration,
         control_frequency=args.control_frequency,
-        non_fall_mode=args.non_fall_mode,
-        non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
-        non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
-        damage_scale=args.damage_scale,
         plugins=plugins,
     )
 

@@ -162,10 +162,22 @@ def main() -> None:
     from envs.humanoid21 import make_env
     from envs.framework.match_runner import MatchRunner
     from envs.framework.common_plugins import VideoRecorderPlugin
+    from envs.humanoid21.plugins import CombatScoringPlugin, NonFallConstraintPlugin
 
     # Create runtime factory function
     def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
-        plugins = []
+        plugins = [
+            CombatScoringPlugin(
+                initial_health_a=initial_health_a,
+                initial_health_b=initial_health_b,
+                damage_scale=args.damage_scale
+            ),
+        ]
+        if args.non_fall_mode:
+            plugins.append(NonFallConstraintPlugin(
+                pitch_limit_deg=args.non_fall_pitch_limit_deg,
+                roll_limit_deg=args.non_fall_roll_limit_deg
+            ))
         # Always add video plugin when video_dir is specified
         if args.video_dir is not None:
             plugins.append(VideoRecorderPlugin(fps=30))
@@ -173,12 +185,6 @@ def main() -> None:
         return make_env(
             match_duration=args.duration,
             control_frequency=args.control_frequency,
-            non_fall_mode=args.non_fall_mode,
-            non_fall_pitch_limit_deg=args.non_fall_pitch_limit_deg,
-            non_fall_roll_limit_deg=args.non_fall_roll_limit_deg,
-            damage_scale=args.damage_scale,
-            initial_health_a=initial_health_a,
-            initial_health_b=initial_health_b,
             plugins=plugins,
         )
 
