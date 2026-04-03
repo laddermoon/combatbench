@@ -2,16 +2,25 @@
 
 本模块定义了策略的抽象接口和参考实现。
 
-## 目录结构
+## Policy 目录结构规范
+
+### 必需文件
+
+- **`policy.py`**: 必须存在，包含一个实现了 `BaseCombatPolicy` 的类
+  - 类名可以自定义（如 `MyCombatPolicy`）
+  - 必须继承 `BaseCombatPolicy`
+  - 必须实现 `act()` 方法
+
+### 可选文件
+
+- **`requirements.txt`**: 依赖包列表（如果策略需要额外的 Python 包）
+
+### 示例 Policy 目录
 
 ```
-policy/
-├── __init__.py           # 模块导出
-├── base.py               # BaseCombatPolicy 抽象基类
-├── random/               # 随机策略
-│   └── policy.py         # RandomCombatPolicy
-└── standing/             # 静止策略
-    └── policy.py         # StandingCombatPolicy
+my_policy/
+├── policy.py            # 必须
+└── requirements.txt     # 可选（如需要 torch, tensorflow 等）
 ```
 
 ## Policy 接口
@@ -44,7 +53,7 @@ class BaseCombatPolicy(ABC):
             info: 环境信息字典 (可选)
 
         Returns:
-            action: 动作数组，值域为 [-1, 1]
+            action: 动作数组，值域为 [-1, 1]，shape=(21,)
         """
         pass
 
@@ -64,6 +73,13 @@ class BaseCombatPolicy(ABC):
 
 生成随机动作的策略，用于基线对比和测试。
 
+**目录结构**:
+```
+policy/random/
+└── policy.py
+```
+
+**使用方法**:
 ```python
 from combatbench.policy import RandomCombatPolicy
 
@@ -78,6 +94,13 @@ action = policy.act(obs)
 
 返回零动作的策略，智能体保持当前姿态。
 
+**目录结构**:
+```
+policy/standing/
+└── policy.py
+```
+
+**使用方法**:
 ```python
 from combatbench.policy import StandingCombatPolicy
 
@@ -85,98 +108,69 @@ policy = StandingCombatPolicy()
 action = policy.act(obs)  # 返回全零动作
 ```
 
-## 实现自定义策略
+## 实现自定义 Policy
 
-### 基本示例
+### 步骤 1: 创建 Policy 目录
+
+```bash
+mkdir -p my_policy
+cd my_policy
+```
+
+### 步骤 2: 创建 policy.py
 
 ```python
+# my_policy/policy.py
 import numpy as np
 from combatbench.policy import BaseCombatPolicy
 
-class MyPolicy(BaseCombatPolicy):
+class MyCombatPolicy(BaseCombatPolicy):
+    """我的自定义策略"""
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # 你的初始化代码
+        self.counter = 0
 
-    def act(self, obs, info=None):
+    def act(self, obs: np.ndarray, info: dict = None) -> np.ndarray:
+        """
+        根据观测计算动作
+
+        Args:
+            obs: 96维观测数组
+            info: 环境信息（可选）
+
+        Returns:
+            action: 21维动作数组，值域 [-1, 1]
+        """
         # 你的策略逻辑
         action = np.zeros(self.ACTION_DIM, dtype=np.float32)
         # ... 计算动作 ...
         return action
 
-    def reset(self):
-        # 重置内部状态（可选）
-        pass
+    def reset(self) -> None:
+        """重置内部状态"""
+        self.counter = 0
 ```
 
-### 带内部状态的策略
+### 步骤 3: 添加依赖（可选）
 
-```python
-import numpy as np
-from combatbench.policy import BaseCombatPolicy
+如果策略需要额外的包（如 PyTorch），创建 `requirements.txt`：
 
-class MemoryPolicy(BaseCombatPolicy):
-    def __init__(self, memory_size=10, **kwargs):
-        super().__init__(**kwargs)
-        self.memory_size = memory_size
-        self.history = []
-
-    def act(self, obs, info=None):
-        # 保存历史观测
-        self.history.append(obs.copy())
-        if len(self.history) > self.memory_size:
-            self.history.pop(0)
-
-        # 基于历史计算动作
-        action = np.zeros(self.ACTION_DIM, dtype=np.float32)
-        # ... 使用 self.history 计算动作 ...
-        return action
-
-    def reset(self):
-        # 清空历史
-        self.history.clear()
+```txt
+# my_policy/requirements.txt
+torch>=2.0.0
+numpy>=1.20.0
 ```
 
-### 加载训练好的模型
+## Policy 规范总结
 
-```python
-import numpy as np
-from combatbench.policy import BaseCombatPolicy
-
-class TrainedPolicy(BaseCombatPolicy):
-    def __init__(self, model_path, **kwargs):
-        super().__init__(**kwargs)
-        self.model = self._load_model(model_path)
-
-    def _load_model(self, path):
-        # 加载你的模型
-        import torch
-        return torch.load(path)
-
-    def act(self, obs, info=None):
-        # 将观测转换为模型输入
-        model_input = torch.tensor(obs, dtype=torch.float32)
-        with torch.no_grad():
-            action = self.model(model_input)
-        return action.cpu().numpy().astype(np.float32)
-
-    def reset(self):
-        # 如果模型有状态（如RNN），在这里重置
-        if hasattr(self.model, 'reset'):
-            self.model.reset()
-```
-
-## 策略开发建议
-
-1. **动作裁剪**：确保返回的动作在 `[-1, 1]` 范围内
-2. **类型正确**：返回 `np.float32` 类型的 numpy 数组
-3. **错误处理**：在 `act` 方法中捕获异常，避免崩溃
-4. **状态重置**：如果策略有内部状态，记得实现 `reset` 方法
-5. **性能考虑**：`act` 方法会被频繁调用，注意计算效率
-
-## 注意事项
-
-- 策略的 `act` 方法应该尽可能快，因为每个控制步都会调用
-- 环境会自动裁剪动作到 `[-1, 1]` 范围
-- `info` 字典包含额外的环境信息，可以用于更复杂的策略
-- 观测值已经是归一化的，可以直接用于神经网络输入
+| 项目 | 要求 | 说明 |
+|------|------|------|
+| **目录结构** | 必须是独立目录 | 每个策略一个目录 |
+| **policy.py** | 必需文件 | 必须包含实现 BaseCombatPolicy 的类 |
+| **requirements.txt** | 可选文件 | 额外依赖包列表 |
+| **类继承** | 必须 | 继承 BaseCombatPolicy |
+| **act() 方法** | 必须实现 | 返回 shape=(21,) 的动作数组 |
+| **reset() 方法** | 可选实现 | 重置内部状态 |
+| **动作值域** | 必须 | [-1, 1] 范围内的 float32 |
