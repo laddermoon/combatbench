@@ -1,3 +1,14 @@
+"""
+Humanoid21 战斗仿真插件
+
+包含以下功能插件：
+1. NonFallConstraintPlugin - 防摔倒约束
+2. CombatScoringPlugin - 战斗计分与KO判断（使用新的 combat_contacts 接口）
+3. FrozenRobotPlugin - 冻结机器人
+
+按照 DATASPEC.md 规范使用数据接口。
+"""
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import sys
@@ -9,7 +20,8 @@ from framework import BasePlugin, SimContext, TerminationReason
 
 class NonFallConstraintPlugin(BasePlugin):
     """
-    防摔倒约束插件。
+    防摔倒约束插件
+
     在物理步之后，如果机器人的 pitch 或 roll 超过阈值，
     会强行将其拉回阈值范围内，并重置角速度。
     """
@@ -26,32 +38,29 @@ class NonFallConstraintPlugin(BasePlugin):
         return True  # 声明写入权限
 
     def on_post_phy_step(self, ctx: SimContext) -> None:
+        core_state = ctx.accessor.get_core_state()
         static_data = ctx.accessor.get_static_data()
         robot_info = static_data.get('robot_info', {})
-        state = ctx.accessor.get_core_state()
-        qpos = state['qpos'].copy()
-        qvel = state['qvel'].copy()
+
         changed = False
 
         for robot_id in ['robot_a', 'robot_b']:
             if robot_id not in robot_info:
                 continue
-            info = robot_info[robot_id]
-            qpos_adr = info['qpos_adr']
-            qvel_adr = info['qvel_adr']
 
-            # 获取 root orientation [w, x, y, z]
-            orientation_wxyz = qpos[qpos_adr+3:qpos_adr+7]
-            if np.linalg.norm(orientation_wxyz) < 1e-8:
+            info = robot_info[robot_id]
+            root_qpos_adr = info['root_qpos_adr']
+            root_qvel_adr = info['root_qvel_adr']
+            norm_params = static_data[robot_id]['norm_params']
+
+            # 获取当前朝向 (四元数 [w,x,y,z])
+            root_rot = core_state[robot_id]['root_rot']
+            if np.linalg.norm(root_rot) < 1e-8:
                 continue
 
-            orientation_xyzw = np.array([
-                orientation_wxyz[1], orientation_wxyz[2],
-                orientation_wxyz[3], orientation_wxyz[0]
-            ])
-
+            # 转换为欧拉角
             try:
-                rot = R.from_quat(orientation_xyzw)
+                rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])
                 euler = rot.as_euler('xyz', degrees=True)
             except ValueError:
                 continue
@@ -61,32 +70,43 @@ class NonFallConstraintPlugin(BasePlugin):
             clamped_pitch = float(np.clip(pitch, -self.pitch_limit_deg, self.pitch_limit_deg))
 
             if not (np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch)):
+                # 需要拉回：构建新的状态
+                new_state = {
+                    robot_id: {
+                        'root_pos': core_state[robot_id]['root_pos'].copy(),
+                        'root_rot': None,  # 下面设置
+                        'joint_pos_norm': core_state[robot_id]['joint_pos_norm'].copy(),
+                        'joint_vel_norm': core_state[robot_id]['joint_vel_norm'].copy(),
+                        'root_vel_local': core_state[robot_id]['root_vel_local'].copy(),
+                        'root_angular_vel_local': core_state[robot_id]['root_angular_vel_local'].copy(),
+                    }
+                }
+
+                # 计算新的四元数
                 clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
                 clamped_xyzw = clamped_rotation.as_quat()
-                clamped_wxyz = np.array([
-                    clamped_xyzw[3], clamped_xyzw[0],
-                    clamped_xyzw[1], clamped_xyzw[2]
-                ], dtype=np.float64)
+                new_state[robot_id]['root_rot'] = np.array([
+                    clamped_xyzw[3], clamped_xyzw[0], clamped_xyzw[1], clamped_xyzw[2]
+                ], dtype=np.float32)
 
-                # 更新 qpos 中的 orientation
-                qpos[qpos_adr+3:qpos_adr+7] = clamped_wxyz
-                # 清零水平线性速度（x, y）
-                qvel[qvel_adr:qvel_adr+2] = 0.0
+                # 清零水平线性速度
+                new_state[robot_id]['root_vel_local'] = np.zeros(3, dtype=np.float32)
+
+                ctx.mutator.set_core_state(new_state)
 
                 # 记录拉回次数
                 ctx.metrics[f'{robot_id}_clamp_count'] = ctx.metrics.get(f'{robot_id}_clamp_count', 0) + 1
                 changed = True
 
-        if changed:
-            state['qpos'] = qpos
-            state['qvel'] = qvel
-            ctx.mutator.set_core_state(state)
-
 
 class CombatScoringPlugin(BasePlugin):
     """
-    战斗计分与KO判断插件。
-    在每个控制步结束时，通过检查物理引擎的碰撞点来计算伤害。
+    战斗计分与KO判断插件
+
+    按照 DATASPEC.md 规范使用 combat_contacts 接口：
+    - combat_contacts: List[Dict] - 双方实体之间的物理接触及受力列表
+      格式: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
+      规则: 仅记录双方机器人之间的碰撞，排除机器人与自身的接触
     """
     ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
@@ -143,31 +163,35 @@ class CombatScoringPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         derived_state = ctx.accessor.get_derived_state()
-        contacts = derived_state.get('contacts', [])
+        # 使用新的 combat_contacts 接口（按照 DATASPEC.md 规范）
+        # 格式: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
+        contacts = derived_state.get('combat_contacts', [])
 
         for contact in contacts:
-            geom1_name = contact.get('geom1_name', '')
-            geom2_name = contact.get('geom2_name', '')
+            # 新格式使用 body_a 和 body_b
+            body_a_name = contact.get('body_a', '')
+            body_b_name = contact.get('body_b', '')
 
-            is_geom1_a = geom1_name.endswith('_red')
-            is_geom1_b = geom1_name.endswith('_blue')
-            is_geom2_a = geom2_name.endswith('_red')
-            is_geom2_b = geom2_name.endswith('_blue')
+            # 判断 body 属于哪个机器人
+            is_body_a_a = body_a_name.endswith('_a') or '_red' in body_a_name
+            is_body_a_b = body_a_name.endswith('_b') or '_blue' in body_a_name
+            is_body_b_a = body_b_name.endswith('_a') or '_red' in body_b_name
+            is_body_b_b = body_b_name.endswith('_b') or '_blue' in body_b_name
 
-            if (is_geom1_a and is_geom2_b) or (is_geom1_b and is_geom2_a):
-                cat1 = self._get_part_category(geom1_name)
-                cat2 = self._get_part_category(geom2_name)
+            if (is_body_a_a and is_body_b_b) or (is_body_a_b and is_body_b_a):
+                cat1 = self._get_part_category(body_a_name)
+                cat2 = self._get_part_category(body_b_name)
 
                 force = contact.get('force', 0.0)
 
                 attacker, defender, hit_part = None, None, None
 
-                if is_geom1_a and is_geom2_b:
+                if is_body_a_a and is_body_b_b:
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
                         attacker, defender, hit_part = 'robot_a', 'robot_b', cat2
                     elif cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
                         attacker, defender, hit_part = 'robot_b', 'robot_a', cat1
-                elif is_geom1_b and is_geom2_a:
+                elif is_body_a_b and is_body_b_a:
                     if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
                         attacker, defender, hit_part = 'robot_b', 'robot_a', cat2
                     elif cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
@@ -206,7 +230,8 @@ class CombatScoringPlugin(BasePlugin):
 
 class FrozenRobotPlugin(BasePlugin):
     """
-    冻结机器人插件。
+    冻结机器人插件
+
     让指定的机器人保持初始姿态完全静止，像雕塑一样。
     在每个物理步后强制重置该机器人的位置、姿态和速度到初始状态。
     """
@@ -228,72 +253,46 @@ class FrozenRobotPlugin(BasePlugin):
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """在episode开始时记录初始状态"""
-        static_data = ctx.accessor.get_static_data()
-        robot_info = static_data.get('robot_info', {})
+        core_state = ctx.accessor.get_core_state()
 
-        if self.frozen_robot_id not in robot_info:
+        if self.frozen_robot_id not in core_state:
             return
 
-        info = robot_info[self.frozen_robot_id]
-        qpos_adr = info['qpos_adr']
-        qvel_adr = info['qvel_adr']
-
-        state = ctx.accessor.get_core_state()
-        qpos = state['qpos']
-
-        # 保存初始状态
+        # 保存初始状态（按照新格式）
         self.initial_state = {
-            'qpos_adr': qpos_adr,
-            'qvel_adr': qvel_adr,
-            'root_position': qpos[qpos_adr:qpos_adr+3].copy(),
-            'root_orientation': qpos[qpos_adr+3:qpos_adr+7].copy(),
+            'root_pos': core_state[self.frozen_robot_id]['root_pos'].copy(),
+            'root_rot': core_state[self.frozen_robot_id]['root_rot'].copy(),
+            'joint_pos_norm': core_state[self.frozen_robot_id]['joint_pos_norm'].copy(),
         }
 
-        # 同时保存关节状态（如果有的话）
-        if 'qpos_indices' in info:
-            qpos_indices = info['qpos_indices']
-            qvel_indices = info['qvel_indices']
-
-            # 保存关节位置
-            joint_positions = np.zeros(len(qpos_indices), dtype=np.float64)
-            for i, idx in enumerate(qpos_indices):
-                if idx >= 0:
-                    joint_positions[i] = qpos[idx]
-
-            self.initial_state['joint_positions'] = joint_positions
-            self.initial_state['qpos_indices'] = qpos_indices
-            self.initial_state['qvel_indices'] = qvel_indices
+        # 保存另一个机器人的ID
+        self.other_robot_id = 'robot_b' if self.frozen_robot_id == 'robot_a' else 'robot_a'
 
     def on_post_phy_step(self, ctx: SimContext) -> None:
         """在每个物理步后强制重置机器人状态"""
         if self.initial_state is None:
             return
 
-        state = ctx.accessor.get_core_state()
-        qpos = state['qpos'].copy()
-        qvel = state['qvel'].copy()
+        core_state = ctx.accessor.get_core_state()
 
-        qpos_adr = self.initial_state['qpos_adr']
-        qvel_adr = self.initial_state['qvel_adr']
+        # 构建冻结状态 - 需要包含两个机器人
+        frozen_state = {
+            self.frozen_robot_id: {
+                'root_pos': self.initial_state['root_pos'].copy(),
+                'root_rot': self.initial_state['root_rot'].copy(),
+                'joint_pos_norm': self.initial_state['joint_pos_norm'].copy(),
+                'joint_vel_norm': np.zeros(21, dtype=np.float32),
+                'root_vel_local': np.zeros(3, dtype=np.float32),
+                'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+            },
+            self.other_robot_id: {
+                'root_pos': core_state[self.other_robot_id]['root_pos'].copy(),
+                'root_rot': core_state[self.other_robot_id]['root_rot'].copy(),
+                'joint_pos_norm': core_state[self.other_robot_id]['joint_pos_norm'].copy(),
+                'joint_vel_norm': core_state[self.other_robot_id]['joint_vel_norm'].copy(),
+                'root_vel_local': core_state[self.other_robot_id]['root_vel_local'].copy(),
+                'root_angular_vel_local': core_state[self.other_robot_id]['root_angular_vel_local'].copy(),
+            }
+        }
 
-        # 重置根部状态
-        qpos[qpos_adr:qpos_adr+3] = self.initial_state['root_position']
-        qpos[qpos_adr+3:qpos_adr+7] = self.initial_state['root_orientation']
-        qvel[qvel_adr:qvel_adr+6] = 0.0  # 全部速度清零
-
-        # 重置关节状态
-        if 'joint_positions' in self.initial_state:
-            qpos_indices = self.initial_state['qpos_indices']
-            qvel_indices = self.initial_state['qvel_indices']
-            joint_positions = self.initial_state['joint_positions']
-
-            for i, (qpos_idx, qvel_idx) in enumerate(zip(qpos_indices, qvel_indices)):
-                if qpos_idx >= 0:
-                    qpos[qpos_idx] = joint_positions[i]
-                if qvel_idx >= 0:
-                    qvel[qvel_idx] = 0.0
-
-        # 应用状态
-        state['qpos'] = qpos
-        state['qvel'] = qvel
-        ctx.mutator.set_core_state(state)
+        ctx.mutator.set_core_state(frozen_state)

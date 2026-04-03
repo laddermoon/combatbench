@@ -932,16 +932,115 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def set_core_state(self, state: Dict[str, Any]) -> None:
         """
-        设置核心状态 (用于测试和状态恢复)
-        
-        注意: 这个方法暂时保留旧的全局 qpos/qvel 接口用于兼容
+        设置核心状态
+
+        按照 DATASPEC.md 规范，接受按 robot_id 分离的结构化数据：
+        {
+            'robot_a': {
+                'root_pos': (3,),      # 根节点位置
+                'root_rot': (4,),      # 根节点四元数 [w,x,y,z]
+                'root_vel_local': (3,),      # 根节点局部线速度
+                'root_angular_vel_local': (3,), # 根节点局部角速度
+                'joint_pos_norm': (21,), # 归一化关节位置
+                'joint_vel_norm': (21,), # 归一化关节速度
+            },
+            'robot_b': { ... }
+        }
         """
-        if 'qpos' in state:
-            self.data.qpos[:] = state['qpos']
-        if 'qvel' in state:
-            self.data.qvel[:] = state['qvel']
-        
+        for robot_id in ['robot_a', 'robot_b']:
+            if robot_id not in state:
+                continue
+
+            robot_state = state[robot_id]
+            cache = self._robot_cache[robot_id]
+            norm_params = self._norm_params[robot_id]
+
+            root_qpos_adr = cache['root_qpos_adr']
+            root_qvel_adr = cache['root_qvel_adr']
+            qpos_indices = cache['qpos_indices']
+            qvel_indices = cache['qvel_indices']
+
+            # 设置根节点位置和姿态
+            if 'root_pos' in robot_state:
+                self.data.qpos[root_qpos_adr:root_qpos_adr+3] = robot_state['root_pos']
+
+            if 'root_rot' in robot_state:
+                self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = robot_state['root_rot']
+
+            # 设置根节点速度（需要从局部速度转换到全局速度）
+            if 'root_vel_local' in robot_state or 'root_angular_vel_local' in robot_state:
+                # 获取当前姿态
+                quat = self.data.qpos[root_qpos_adr+3:root_qpos_adr+7]  # [w,x,y,z]
+                rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+                rot_mat = rot.as_matrix()
+
+                # 局部速度转全局速度
+                if 'root_vel_local' in robot_state:
+                    local_vel = robot_state['root_vel_local']
+                    global_vel = rot_mat @ local_vel
+                    self.data.qvel[root_qvel_adr:root_qvel_adr+3] = global_vel
+
+                if 'root_angular_vel_local' in robot_state:
+                    local_angular_vel = robot_state['root_angular_vel_local']
+                    global_angular_vel = rot_mat @ local_angular_vel
+                    self.data.qvel[root_qvel_adr+3:root_qvel_adr+6] = global_angular_vel
+
+            # 设置关节位置和速度（从归一化值转换回实际值）
+            if 'joint_pos_norm' in robot_state:
+                joint_pos_norm = robot_state['joint_pos_norm']
+                joint_pos = joint_pos_norm * norm_params['scale'] + norm_params['reference']
+                self.data.qpos[qpos_indices] = joint_pos
+
+            if 'joint_vel_norm' in robot_state:
+                joint_vel_norm = robot_state['joint_vel_norm']
+                joint_vel = joint_vel_norm * norm_params['scale']
+                self.data.qvel[qvel_indices] = joint_vel
+
+        # 刷新物理引擎状态
         mujoco.mj_forward(self.model, self.data)
+
+    def apply_external_force(
+        self,
+        body_name: str,
+        force: np.ndarray,
+        torque: Optional[np.ndarray] = None,
+        robot_id: str = "robot_a"
+    ) -> None:
+        """
+        对指定 body 施加外力和/或外力矩
+
+        Args:
+            body_name: body 名称（如 'head', 'torso', 'hand_right'）
+            force: 3D 力向量 [fx, fy, fz] (牛顿)
+            torque: 可选的 3D 力矩向量 [tx, ty, tz] (牛顿·米)
+            robot_id: 机器人 ID ('robot_a' 或 'robot_b')
+
+        实现：
+            使用 MuJoCo 的 xfrc_applied 字段施加外力
+            xfrc_applied shape: (nbody, 6) -> [fx, fy, fz, tx, ty, tz]
+            注意：施加的力会在下一个物理步生效，之后自动清零
+        """
+        if robot_id not in self._robot_cache:
+            raise ValueError(f"Unknown robot_id: {robot_id}")
+
+        cache = self._robot_cache[robot_id]
+        suffix = cache['suffix']
+        full_body_name = f"{body_name}{suffix}"
+
+        # 获取 body ID
+        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, full_body_name)
+
+        if body_id < 0:
+            raise ValueError(f"Body not found: {full_body_name}")
+
+        # 施加外力和力矩到 xfrc_applied
+        # xfrc_applied 在每个物理步后自动清零，所以这里直接累加即可
+        force = np.asarray(force, dtype=np.float64)
+        self.data.xfrc_applied[body_id, :3] += force
+
+        if torque is not None:
+            torque = np.asarray(torque, dtype=np.float64)
+            self.data.xfrc_applied[body_id, 3:6] += torque
     
     def get_broadcastview_image(self) -> np.ndarray:
         """获取广播视角图像 (保留原实现用于可视化)"""

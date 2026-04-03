@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+import numpy as np
 
 class IDataAccessor(ABC):
     """
@@ -49,6 +50,28 @@ class IDataMutator(ABC):
     @abstractmethod
     def set_action(self, action: Dict[str, Any]) -> None:
         pass
+
+    def apply_external_force(
+        self,
+        body_name: str,
+        force: np.ndarray,
+        torque: Optional[np.ndarray] = None,
+        robot_id: str = "robot_a"
+    ) -> None:
+        """
+        对指定 body 施加外力和/或外力矩
+
+        Args:
+            body_name: body 名称（如 'head', 'torso', 'hand_right'）
+            force: 3D 力向量 [fx, fy, fz] (牛顿)
+            torque: 可选的 3D 力矩向量 [tx, ty, tz] (牛顿·米)
+            robot_id: 机器人 ID ('robot_a' 或 'robot_b')
+
+        Note:
+            默认实现为空，子类可以选择性实现以支持外部扰动功能。
+            这个方法建议在 on_pre_phy_step 钩子中被调用，用于在物理步前施加外力。
+        """
+        pass  # 默认实现为空，子类可选实现
 
 
 class BaseSimulator(IDataAccessor, IDataMutator):

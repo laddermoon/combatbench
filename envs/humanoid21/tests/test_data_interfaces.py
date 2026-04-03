@@ -981,6 +981,216 @@ def test_data_synchronization(sim):
     print("\n✓ 数据同步一致性验证通过")
 
 
+# ==================== 测试 14: set_core_state 完整功能测试 ====================
+
+def test_set_core_state(sim):
+    """测试 set_core_state 的完整功能"""
+    print("\n" + "=" * 70)
+    print("测试 14: set_core_state 完整功能验证")
+    print("=" * 70)
+
+    # 测试14.1: 基本位置和朝向设置
+    print("\n--- 14.1: 基本位置和朝向设置 ---")
+    new_state = {
+        'robot_a': {
+            'root_pos': np.array([0.5, 0.3, 1.4], dtype=np.float32),
+            'root_rot': np.array([0.9239, 0.0, 0.0, 0.3827], dtype=np.float32),  # 旋转45度
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        },
+        'robot_b': {
+            'root_pos': np.array([-0.5, -0.3, 1.4], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        }
+    }
+
+    sim.set_core_state(new_state)
+    result = sim.get_core_state()
+
+    # 验证 robot_a
+    assert np.allclose(result['robot_a']['root_pos'], [0.5, 0.3, 1.4], atol=1e-5), \
+        f"位置设置失败: {result['robot_a']['root_pos']}"
+    assert np.allclose(result['robot_a']['root_rot'], [0.9239, 0.0, 0.0, 0.3827], atol=1e-5), \
+        f"朝向设置失败: {result['robot_a']['root_rot']}"
+    print("  ✓ 位置和朝向设置正确")
+
+    # 测试14.2: 速度设置（局部速度转全局速度）
+    print("\n--- 14.2: 局部速度设置 ---")
+    sim.reset()  # 先重置回正常状态
+
+    # robot_a 朝向 +x，设置局部速度为 [1, 0, 0]（向前）
+    vel_state = {
+        'robot_a': {
+            'root_pos': np.array([0.0, 0.0, 1.282], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.array([1.0, 0.0, 0.0], dtype=np.float32),  # 向前
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        },
+        'robot_b': {
+            'root_pos': np.array([0.0, 0.0, 1.282], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        }
+    }
+
+    sim.set_core_state(vel_state)
+    result = sim.get_core_state()
+
+    # 验证：朝向 +x 时，局部速度 [1,0,0] 应该等于全局速度 [1,0,0]
+    expected_vel = np.array([1.0, 0.0, 0.0])
+    actual_vel = result['robot_a']['root_vel_local']
+    assert np.allclose(actual_vel, expected_vel, atol=0.01), \
+        f"局部速度设置失败: 期望 {expected_vel}，实际 {actual_vel}"
+    print(f"  ✓ 局部速度设置正确: {actual_vel}")
+
+    # 测试14.3: 关节归一化的往返
+    print("\n--- 14.3: 关节归一化往返测试 ---")
+    sim.reset()
+
+    # 设置关节到不同的归一化值
+    joint_test_values = np.array([-1.0, -0.5, 0.0, 0.5, 1.0] + [0.0] * 16, dtype=np.float32)
+
+    joint_state = {
+        'robot_a': {
+            'root_pos': np.array([0.0, 0.0, 1.282], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': joint_test_values,
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        },
+        'robot_b': {
+            'root_pos': np.array([0.0, 0.0, 1.282], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        }
+    }
+
+    sim.set_core_state(joint_state)
+    result = sim.get_core_state()
+
+    # 验证往返：设置值应该等于读取值
+    read_joints = result['robot_a']['joint_pos_norm']
+    assert np.allclose(read_joints, joint_test_values, atol=1e-5), \
+        f"关节归一化往返失败: 期望 {joint_test_values[:5]}...，实际 {read_joints[:5]}..."
+    print(f"  ✓ 关节归一化往返正确: 设置 {joint_test_values[:3]}... → 读取 {read_joints[:3]}...")
+
+    # 测试14.4: 设置状态后运行物理步
+    print("\n--- 14.4: 设置状态后物理步进 ---")
+    sim.reset()
+
+    # 设置一个特定状态
+    step_test_state = {
+        'robot_a': {
+            'root_pos': np.array([0.0, 0.0, 1.3], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        },
+        'robot_b': {
+            'root_pos': np.array([0.0, 0.0, 1.3], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        }
+    }
+
+    sim.set_core_state(step_test_state)
+
+    # 记录设置后的状态
+    after_set = sim.get_core_state()
+    pos_after_set = after_set['robot_a']['root_pos'].copy()
+
+    # 运行一个物理步
+    sim.physical_step()
+
+    # 读取物理步后的状态
+    after_step = sim.get_core_state()
+    pos_after_step = after_step['robot_a']['root_pos']
+
+    # 物理步后位置应该改变（因为重力作用）
+    # 但不应该剧烈变化（除非机器人倒塌）
+    pos_change = np.linalg.norm(pos_after_step - pos_after_set)
+    print(f"  设置后位置: {pos_after_set}")
+    print(f"  物理步后位置: {pos_after_step}")
+    print(f"  位置变化: {pos_change:.6f} m")
+
+    # 位置应该有变化（重力作用），但变化应该合理（不能是瞬移）
+    assert pos_change > 0, "物理步后位置应该有变化"
+    assert pos_change < 0.1, f"物理步后位置变化过大: {pos_change}"
+    print(f"  ✓ 物理步进正常执行")
+
+    # 测试14.5: get_derived_state 与 set_core_state 的一致性
+    print("\n--- 14.5: core 与 derived 状态一致性 ---")
+    sim.reset()
+
+    consistency_state = {
+        'robot_a': {
+            'root_pos': np.array([0.5, 0.5, 1.4], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.ones(21, dtype=np.float32) * 0.3,
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        },
+        'robot_b': {
+            'root_pos': np.array([-0.5, -0.5, 1.4], dtype=np.float32),
+            'root_rot': np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            'joint_pos_norm': np.zeros(21, dtype=np.float32),
+            'joint_vel_norm': np.zeros(21, dtype=np.float32),
+            'root_vel_local': np.zeros(3, dtype=np.float32),
+            'root_angular_vel_local': np.zeros(3, dtype=np.float32),
+        }
+    }
+
+    sim.set_core_state(consistency_state)
+
+    # 同时获取 core 和 derived 状态
+    core = sim.get_core_state()
+    derived = sim.get_derived_state()
+
+    # 验证高度一致
+    core_height = core['robot_a']['root_pos'][2]
+    derived_height = derived['robot_a']['root_state']['height'][0]
+    assert np.abs(core_height - derived_height) < 1e-5, \
+        f"core 和 derived 高度不一致: {core_height} vs {derived_height}"
+    print(f"  ✓ 高度一致: {core_height:.3f} m")
+
+    # 验证关节位置一致
+    core_joints = core['robot_a']['joint_pos_norm']
+    derived_joints = derived['robot_a']['observation'][0:21]  # 观测的前21维
+    assert np.allclose(core_joints, derived_joints), \
+        "core 和 derived 关节位置不一致"
+    print(f"  ✓ 关节位置一致")
+
+    # 验证观测中的完整数据
+    obs = derived['robot_a']['observation']
+    assert obs.shape == (96,), f"观测维度错误: {obs.shape}"
+    print(f"  ✓ 观测维度正确: {obs.shape}")
+
+    print("\n✓ set_core_state 完整功能验证通过")
+
+    sim.reset()
+
+
 # ==================== 主测试运行器 ====================
 
 def run_all_tests():
@@ -1005,6 +1215,7 @@ def run_all_tests():
         test_local_velocity_transform(sim)
         test_observation_value_ranges(sim)
         test_data_synchronization(sim)
+        test_set_core_state(sim)
 
         print("\n" + "=" * 70)
         print("✓ 所有数据接口测试通过！")
@@ -1023,6 +1234,7 @@ def run_all_tests():
         print("  ✓ 局部速度转换验证")
         print("  ✓ 观测数值范围验证")
         print("  ✓ 数据同步一致性")
+        print("  ✓ set_core_state 读写验证")
 
         return True
 

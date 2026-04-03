@@ -9,7 +9,7 @@ from framework import EnvRuntime
 
 from .simulator import MujocoCombatSimulator
 from .plugins import NonFallConstraintPlugin, CombatScoringPlugin, FrozenRobotPlugin
-from .runtime_units import Humanoid21Observer, Humanoid21Rewarder, build_shared_runtime_info
+from .observer_plugins import Humanoid21Observer, Humanoid21Rewarder, build_shared_runtime_info
 
 def make_env(
     arena_xml: Optional[str] = None,
