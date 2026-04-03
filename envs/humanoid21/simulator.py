@@ -210,40 +210,40 @@ class MujocoCombatSimulator(BaseSimulator):
     def _cache_robot_indices(self):
         """缓存机器人的关节和body索引"""
         self._robot_cache = {}
-        
+
         for robot_id, suffix in [('robot_a', '_red'), ('robot_b', '_blue')]:
             cache = {}
-            
+
             # Root joint (freejoint)
             root_jnt_name = f"root{suffix}"
             root_jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, root_jnt_name)
             cache['root_qpos_adr'] = self.model.jnt_qposadr[root_jnt_id]
             cache['root_qvel_adr'] = self.model.jnt_dofadr[root_jnt_id]
-            
+
             # Torso body (根节点，带 freejoint)
             torso_name = f"torso{suffix}"
             cache['torso_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, torso_name)
-            
+
             # 受控关节索引
             qpos_indices = []
             qvel_indices = []
             actuator_ids = []
             jnt_ranges = []
-            
+
             for jnt_name in self.CONTROLLED_JOINTS:
                 full_name = f"{jnt_name}{suffix}"
                 jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, full_name)
                 act_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, full_name)
-                
+
                 if jnt_id < 0:
                     raise ValueError(f"Joint {full_name} not found in model")
                 if act_id < 0:
                     raise ValueError(f"Actuator {full_name} not found in model")
-                
+
                 qpos_indices.append(self.model.jnt_qposadr[jnt_id])
                 qvel_indices.append(self.model.jnt_dofadr[jnt_id])
                 actuator_ids.append(act_id)
-                
+
                 # 检查关节限位
                 if not self.model.jnt_limited[jnt_id]:
                     raise ValueError(
@@ -251,19 +251,24 @@ class MujocoCombatSimulator(BaseSimulator):
                         f"All joints must have finite limits for normalized control."
                     )
                 jnt_ranges.append(self.model.jnt_range[jnt_id].copy())
-            
+
             cache['qpos_indices'] = np.array(qpos_indices, dtype=np.int32)
             cache['qvel_indices'] = np.array(qvel_indices, dtype=np.int32)
             cache['actuator_ids'] = np.array(actuator_ids, dtype=np.int32)
             cache['jnt_ranges'] = np.array(jnt_ranges, dtype=np.float32)  # shape: (21, 2)
             cache['suffix'] = suffix
-            
-            # 脚部 geom (用于接触检测)
+
+            # 脚部 body (用于接触检测)
             foot_right_name = f"foot_right{suffix}"
             foot_left_name = f"foot_left{suffix}"
             cache['foot_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_right_name)
             cache['foot_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_left_name)
-            
+
+            # 关键点 body (用于对手观测)
+            cache['head_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"head{suffix}")
+            cache['hand_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_right{suffix}")
+            cache['hand_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_left{suffix}")
+
             self._robot_cache[robot_id] = cache
     
     def _compute_normalization_params(self):
@@ -468,34 +473,247 @@ class MujocoCombatSimulator(BaseSimulator):
         return contacts
     
     def _get_robot_view(self, robot_id: str, opponent_id: str) -> Dict[str, Any]:
-        """获取单个机器人的视角信息"""
+        """
+        获取单个机器人的视角信息
+
+        按照 OBSERVATION_zh.md 返回完整的观测空间:
+        - 模块二：全局状态 (13维) - root_state
+        - 模块三：触觉力反馈 (2维) - feet_forces
+        - 模块四：对手观测 (39维) - opponent_*
+        """
         cache = self._robot_cache[robot_id]
         opp_cache = self._robot_cache[opponent_id]
-        
+
         torso_id = cache['torso_body_id']
         opp_torso_id = opp_cache['torso_body_id']
-        
+
         # 自身 Torso 的位置和姿态
         self_pos = self.data.xpos[torso_id]
         self_quat = self.data.xquat[torso_id]  # [w,x,y,z]
         self_rot = R.from_quat([self_quat[1], self_quat[2], self_quat[3], self_quat[0]])
-        
-        # 直立度 (Torso 局部 z 轴与世界 z 轴的内积)
-        local_z = self_rot.apply([0, 0, 1])
-        uprightness = float(local_z[2])  # 世界 z 轴是 [0, 0, 1]
-        
-        # 双脚受力
+
+        # 模块二：全局状态 (13维)
+        # 1. 高度 (Z轴) - 1维
+        height = self_pos[2]
+
+        # 2. 局部朝向 (6维) - 世界坐标四元数 → 局部旋转矩阵（取前两列）
+        # 获取自身在世界坐标系中的旋转矩阵
+        world_rot_mat = self_rot.as_matrix()  # shape: (3, 3)
+        # 提取前两列（局部坐标系的 x 和 y 轴在世界坐标系中的表示）
+        # 这样模型可以知道"我的前方朝向"和"我的左侧朝向"
+        local_orientation = world_rot_mat[:, :2].T.flatten()  # (6,) - 按列展平
+
+        # 3. 运动速度 (6维)
+        root_qvel_adr = cache['root_qvel_adr']
+        linear_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()  # 全局线速度
+        angular_vel = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()  # 全局角速度
+
+        # 模块三：触觉力反馈 (2维)
         feet_forces = self._get_feet_forces(robot_id)
-        
-        # 对手在局部坐标系下的状态
-        opponent_in_local = self._get_opponent_in_local(
-            self_pos, self_rot, opp_torso_id
+
+        # 模块四：对手观测 (39维)
+        # 4.1 对手基础位姿 (9维)
+        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot, opp_torso_id)
+
+        # 4.2 对手关键点位置 (15维)
+        opponent_keypoint_pos = self._get_opponent_keypoints_pos(
+            self_pos, self_rot, opponent_id
         )
-        
+
+        # 4.3 对手关键点速度 (15维)
+        opponent_keypoint_vel = self._get_opponent_keypoints_vel(
+            self_pos, self_rot, opponent_id
+        )
+
+        # 计算模块一本体感知（需要从 get_core_state 获取）
+        # 这里先构建占位符，实际使用时需要传入 core_state
+        # 为了简化，我们在返回字典中不包含模块一，因为它是从 get_core_state 获取的
+        # 完整的平铺观测需要结合 get_core_state 和 get_derived_state
+
+        # 计算模块一本体感知 (42维)
+        cache = self._robot_cache[robot_id]
+        norm_params = self._norm_params[robot_id]
+
+        # 获取关节位置和速度
+        qpos_indices = cache['qpos_indices']
+        qvel_indices = cache['qvel_indices']
+
+        joint_pos = self.data.qpos[qpos_indices]
+        joint_vel = self.data.qvel[qvel_indices]
+
+        # 归一化
+        joint_pos_norm = (joint_pos - norm_params['reference']) / norm_params['scale']
+        joint_vel_norm = joint_vel / norm_params['scale']
+
+        # 模块一本体感知 (42维)
+        proprioception = np.concatenate([
+            joint_pos_norm,  # 21维
+            joint_vel_norm,  # 21维
+        ]).astype(np.float32)
+
         return {
-            'uprightness': np.array([uprightness], dtype=np.float32),
-            'feet_forces': feet_forces,
-            'opponent_in_local': opponent_in_local
+            # 模块二：全局状态 (13维)
+            'root_state': {
+                'height': np.array([height], dtype=np.float32),  # 1维
+                'local_orientation': local_orientation.astype(np.float32),  # 6维
+                'linear_vel': linear_vel.astype(np.float32),  # 3维
+                'angular_vel': angular_vel.astype(np.float32),  # 3维
+            },
+
+            # 模块三：触觉力反馈 (2维)
+            'feet_forces': feet_forces,  # 2维
+
+            # 模块四：对手观测
+            # 4.1 对手基础位姿 (9维)
+            'opponent_basic_pose': opponent_basic,
+
+            # 4.2 对手关键点位置 (15维)
+            'opponent_keypoint_pos': opponent_keypoint_pos,
+
+            # 4.3 对手关键点速度 (15维)
+            'opponent_keypoint_vel': opponent_keypoint_vel,
+
+            # 完整平铺观测 (96维) - 模块一+二+三+四
+            'observation': np.concatenate([
+                proprioception,        # 42维 - 模块一本体感知
+                local_orientation,       # 6维 - 局部朝向
+                [height],                  # 1维 - 高度
+                linear_vel,               # 3维 - 线速度(全局)
+                angular_vel,              # 3维 - 角速度(全局)
+                feet_forces,              # 2维 - 足底受力
+                opponent_basic['relative_pos'],     # 3维
+                opponent_basic['relative_vel'],     # 3维
+                opponent_basic['face_vector'],      # 3维
+                opponent_keypoint_pos['head'],       # 3维
+                opponent_keypoint_pos['hand_right'], # 3维
+                opponent_keypoint_pos['hand_left'],  # 3维
+                opponent_keypoint_pos['foot_right'], # 3维
+                opponent_keypoint_pos['foot_left'],  # 3维
+                opponent_keypoint_vel['head'],       # 3维
+                opponent_keypoint_vel['hand_right'], # 3维
+                opponent_keypoint_vel['hand_left'],  # 3维
+                opponent_keypoint_vel['foot_right'], # 3维
+                opponent_keypoint_vel['foot_left'],  # 3维
+            ]).astype(np.float32),  # 总共 96 维
+
+            # 兼容旧版本
+            'uprightness': np.array([local_orientation[5]], dtype=np.float32),  # 局部z轴的世界z分量
+            'opponent_in_local': {
+                'pos': opponent_basic['relative_pos'],
+                'vel': opponent_basic['relative_vel'],
+                'rot': opponent_basic['face_vector'],  # FaceVector 替代四元数
+            }
+        }
+
+    def _get_opponent_basic_pose(
+        self,
+        self_pos: np.ndarray,
+        self_rot: R,
+        opp_torso_id: int
+    ) -> Dict[str, np.ndarray]:
+        """
+        获取对手基础位姿 (9维)
+        - 相对位置 (3维)
+        - 相对速度 (3维)
+        - FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
+        """
+        # 对手 Torso 的位置和姿态
+        opp_pos = self.data.xpos[opp_torso_id]
+        opp_quat = self.data.xquat[opp_torso_id]  # [w,x,y,z]
+        opp_rot = R.from_quat([opp_quat[1], opp_quat[2], opp_quat[3], opp_quat[0]])
+
+        # 对手速度 (全局坐标系)
+        opp_vel_global = self.data.cvel[opp_torso_id, 3:6]  # 线速度
+
+        # 1. 相对位置 (3维) - 对手根关节 - 自身根关节
+        relative_pos = opp_pos - self_pos
+        relative_pos_local = self_rot.inv().apply(relative_pos)
+
+        # 2. 相对速度 (3维)
+        relative_vel_local = self_rot.inv().apply(opp_vel_global)
+
+        # 3. FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
+        # 对手的"前方"在自身坐标系中表示
+        opp_forward = opp_rot.apply([1, 0, 0])  # 对手的局部x轴（前方）
+        face_vector = self_rot.inv().apply(opp_forward)  # 转换到自身局部坐标系
+
+        return {
+            'relative_pos': relative_pos_local.astype(np.float32),  # 3维
+            'relative_vel': relative_vel_local.astype(np.float32),  # 3维
+            'face_vector': face_vector.astype(np.float32),  # 3维
+        }
+
+    def _get_opponent_keypoints_pos(
+        self,
+        self_pos: np.ndarray,
+        self_rot: R,
+        opponent_id: str
+    ) -> Dict[str, np.ndarray]:
+        """
+        获取对手关键点位置 (15维)
+        - 头部中心点 (3维)
+        - 左右手中心点 (6维)
+        - 左右脚中心点 (6维)
+        """
+        opp_cache = self._robot_cache[opponent_id]
+
+        # 获取各个关键点的位置
+        head_pos = self.data.xpos[opp_cache['head_body_id']]
+        hand_right_pos = self.data.xpos[opp_cache['hand_right_body_id']]
+        hand_left_pos = self.data.xpos[opp_cache['hand_left_body_id']]
+        foot_right_pos = self.data.xpos[opp_cache['foot_right_body_id']]
+        foot_left_pos = self.data.xpos[opp_cache['foot_left_body_id']]
+
+        # 转换到自身局部坐标系
+        head_local = self_rot.inv().apply(head_pos - self_pos)
+        hand_right_local = self_rot.inv().apply(hand_right_pos - self_pos)
+        hand_left_local = self_rot.inv().apply(hand_left_pos - self_pos)
+        foot_right_local = self_rot.inv().apply(foot_right_pos - self_pos)
+        foot_left_local = self_rot.inv().apply(foot_left_pos - self_pos)
+
+        return {
+            'head': head_local.astype(np.float32),  # 3维
+            'hand_right': hand_right_local.astype(np.float32),  # 3维
+            'hand_left': hand_left_local.astype(np.float32),  # 3维
+            'foot_right': foot_right_local.astype(np.float32),  # 3维
+            'foot_left': foot_left_local.astype(np.float32),  # 3维
+        }
+
+    def _get_opponent_keypoints_vel(
+        self,
+        self_pos: np.ndarray,
+        self_rot: R,
+        opponent_id: str
+    ) -> Dict[str, np.ndarray]:
+        """
+        获取对手关键点速度 (15维)
+        - 头部中心点速度 (3维)
+        - 左右手中心点速度 (6维)
+        - 左右脚中心点速度 (6维)
+        """
+        opp_cache = self._robot_cache[opponent_id]
+
+        # 获取各个关键点的速度
+        # cvel[frame, 0:3] 是角速度, [3:6] 是线速度
+        head_vel = self.data.cvel[opp_cache['head_body_id'], 3:6]
+        hand_right_vel = self.data.cvel[opp_cache['hand_right_body_id'], 3:6]
+        hand_left_vel = self.data.cvel[opp_cache['hand_left_body_id'], 3:6]
+        foot_right_vel = self.data.cvel[opp_cache['foot_right_body_id'], 3:6]
+        foot_left_vel = self.data.cvel[opp_cache['foot_left_body_id'], 3:6]
+
+        # 转换到自身局部坐标系
+        head_vel_local = self_rot.inv().apply(head_vel)
+        hand_right_vel_local = self_rot.inv().apply(hand_right_vel)
+        hand_left_vel_local = self_rot.inv().apply(hand_left_vel)
+        foot_right_vel_local = self_rot.inv().apply(foot_right_vel)
+        foot_left_vel_local = self_rot.inv().apply(foot_left_vel)
+
+        return {
+            'head': head_vel_local.astype(np.float32),  # 3维
+            'hand_right': hand_right_vel_local.astype(np.float32),  # 3维
+            'hand_left': hand_left_vel_local.astype(np.float32),  # 3维
+            'foot_right': foot_right_vel_local.astype(np.float32),  # 3维
+            'foot_left': foot_left_vel_local.astype(np.float32),  # 3维
         }
     
     def _get_feet_forces(self, robot_id: str) -> np.ndarray:
@@ -535,41 +753,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 left_force += force
         
         return np.array([right_force, left_force], dtype=np.float32)
-    
-    def _get_opponent_in_local(
-        self, 
-        self_pos: np.ndarray, 
-        self_rot: R, 
-        opp_torso_id: int
-    ) -> Dict[str, np.ndarray]:
-        """获取对手在当前机器人局部坐标系下的完整状态"""
-        # 对手 Torso 的位置和姿态
-        opp_pos = self.data.xpos[opp_torso_id]
-        opp_quat = self.data.xquat[opp_torso_id]  # [w,x,y,z]
-        opp_rot = R.from_quat([opp_quat[1], opp_quat[2], opp_quat[3], opp_quat[0]])
-        
-        # 对手速度 (全局坐标系)
-        opp_vel_global = self.data.cvel[opp_torso_id, 3:6]  # 线速度
-        opp_angular_vel_global = self.data.cvel[opp_torso_id, 0:3]  # 角速度
-        
-        # 转换到自身局部坐标系
-        relative_pos = opp_pos - self_pos
-        pos_local = self_rot.inv().apply(relative_pos)
-        vel_local = self_rot.inv().apply(opp_vel_global)
-        angular_vel_local = self_rot.inv().apply(opp_angular_vel_global)
-        
-        # 相对姿态 (对手相对于自身的旋转)
-        relative_rot = self_rot.inv() * opp_rot
-        rot_quat_xyzw = relative_rot.as_quat()  # [x,y,z,w]
-        rot_local = np.array([rot_quat_xyzw[3], rot_quat_xyzw[0], rot_quat_xyzw[1], rot_quat_xyzw[2]], dtype=np.float32)  # [w,x,y,z]
-        
-        return {
-            'pos': pos_local.astype(np.float32),
-            'rot': rot_local,
-            'vel': vel_local.astype(np.float32),
-            'angular_vel': angular_vel_local.astype(np.float32)
-        }
-    
+
     def set_action(self, action: Dict[str, Optional[np.ndarray]]) -> None:
         """
         设置动作 (按 CONTROLSPEC.md)

@@ -1,132 +1,133 @@
-# Humanoid21 测试文档
+# Humanoid21 Simulator 测试套件
 
-## 测试结构
+本目录包含 Humanoid21 仿真器的完整测试套件，用于验证数据接口的正确性和符合 DATASPEC.md 规范。
 
-```
-tests/
-├── conftest.py              # 共享 fixtures 和 MockMuJoCoSimulator
-├── test_plugins.py          # 插件测试
-├── test_runtime_units.py    # Observer/Rewarder 测试
-└── test_simulator.py        # 模拟器状态管理测试
-```
+## 测试文件
 
-## 测试覆盖
+### test_data_interfaces.py
+**数据接口完整测试** - 验证所有数据接口的数据格式和数据内容正确性
 
-### 1. 插件测试 (test_plugins.py)
+#### 测试覆盖范围
 
-#### NonFallConstraintPlugin
-- ✅ Pitch 限制裁剪
-- ✅ Roll 限制裁剪
-- ✅ 裁剪时清零水平速度
-- ✅ 记录 clamp_count
-- ✅ 在限制内不修改状态
+1. **静态属性测试 (get_static_data)**
+   - 验证 dof_names (21个自由度名称)
+   - 验证 body_names (15个body名称)
+   - 验证 joint_limits (21×2 关节限位矩阵)
 
-#### CombatScoringPlugin
-- ✅ 初始化血量和伤害指标
-- ✅ 支持不同的初始血量
-- ✅ 检测头部击中并计算伤害
-- ✅ 检测躯干击中
-- ✅ 血量归零时触发 KO
-- ✅ 记录击中事件
-- ✅ 忽略非攻击部位接触
+2. **核心状态测试 (get_core_state)**
+   - 验证 root_pos (3维) - Torso 绝对世界坐标
+   - 验证 root_rot (4维) - 四元数姿态
+   - 验证 root_vel_local (3维) - 局部线速度
+   - 验证 root_angular_vel_local (3维) - 局部角速度
+   - 验证 joint_pos_norm (21维) - 归一化关节位置
+   - 验证 joint_vel_norm (21维) - 归一化关节速度
 
-#### FrozenRobotPlugin
-- ✅ 捕获初始状态
-- ✅ 在物理步后重置状态
-- ✅ 只影响指定机器人
-- ✅ 无初始状态时不执行
+3. **派生状态测试 (get_derived_state)**
+   - 全局对抗信息：torso_distance, combat_contacts
+   - 模块二：全局状态 (13维) - height, local_orientation, linear_vel, angular_vel
+   - 模块三：触觉力反馈 (2维) - feet_forces
+   - 模块四：对手观测 (39维)
+     - 对手基础位姿 (9维) - relative_pos, relative_vel, face_vector
+     - 对手关键点位置 (15维) - head, hand_right, hand_left, foot_right, foot_left
+     - 对手关键点速度 (15维)
+   - 完整平铺观测 (96维)
 
-### 2. Runtime Units 测试 (test_runtime_units.py)
+4. **观测空间维度分解验证**
+   - 验证模块一本体感知 (42维): 索引 [0:42]
+   - 验证模块二全局状态 (13维): 索引 [42:55]
+   - 验证模块三触觉力反馈 (2维): 索引 [55:57]
+   - 验证模块四对手观测 (39维): 索引 [57:96]
 
-#### Humanoid21Observer
-- ✅ 无效 agent_id 抛出异常
-- ✅ 观测维度为 127
-- ✅ 观测空间定义正确
-- ✅ 动作空间定义正确
-- ✅ step 后更新观测
-- ✅ 观测值都是有限的
-- ✅ 对手观测不同
+5. **归一化正确性验证**
+   - 测试上限归一化 (应为 +1.0)
+   - 测试下限归一化 (应为 -1.0)
+   - 测试中间值归一化 (应为 0.0)
 
-#### Humanoid21Rewarder
-- ✅ 无效 agent_id 抛出异常
-- ✅ reset 返回 0
-- ✅ post_step 返回 0
-- ✅ post_episode 返回 0
+6. **坐标系转换验证**
+   - 验证相对位置计算
+   - 验证 face_vector 为单位向量
 
-#### build_shared_runtime_info
-- ✅ 包含血量信息
-- ✅ 包含伤害信息
-- ✅ 血量默认值为 100
-- ✅ 未终止时 winner 为 None
-- ✅ KO 时判定获胜者
-- ✅ 双方归零时判定平局
-- ✅ 超时时判定获胜者
-- ✅ 超时血量相同时判定平局
-- ✅ 伤害默认值为 0
+7. **动态一致性验证**
+   - 验证观测数据随时间正确更新
 
-### 3. 模拟器测试 (test_simulator.py)
+8. **边界情况验证**
+   - 验证 reset 后状态正确
+   - 验证极端动作值处理
 
-#### 状态管理
-- ✅ get_core_state 返回所有必需键
-- ✅ get_core_state 返回副本
-- ✅ set_core_state 更新 qpos/qvel
-- ✅ set_core_state 更新机器人位置
-- ✅ set_core_state 更新机器人姿态
-- ✅ set_core_state 更新机器人速度
-- ✅ structured 到 array 的同步
-- ✅ get_static_data 返回 robot_info
-- ✅ robot_info 包含所有必需键
-- ✅ get_derived_state 返回 contacts
-- ✅ physical_step 增加时间
-- ✅ reset 清零时间
-- ✅ reset 清空碰撞
-- ✅ reset 支持自定义初始距离
-- ✅ get_physical_frequency 返回正确值
-- ✅ 初始位置相向而立
-- ✅ 初始姿态面朝对方
+9. **FaceVector 场景验证** ⭐ 新增
+   - 场景1: 默认站立姿态 (相对而立) - 验证 face_vector 是否正确反映相对朝向
+   - 场景2: 同向站立 - 验证两个机器人朝向相同时的 face_vector
+   - 场景3: 旋转90度 - 验证旋转后相对位置和朝向的正确性
 
-#### Data 属性
-- ✅ data.qpos 可访问
-- ✅ data.xpos 可访问
-- ✅ data.time 可访问
+10. **关键点位置一致性验证** ⭐ 新增
+    - 验证对手关键点相对位置的合理性
+    - 验证 head、hand、foot 的相对高度关系
+    - 验证 core_state 和 derived_state 的高度一致性
+
+11. **局部速度转换验证** ⭐ 新增
+    - 场景1: 机器人静止时的速度
+    - 场景2: 朝向 +x 时的速度转换
+    - 场景3: 旋转90度后的速度转换
+
+12. **观测数值范围验证** ⭐ 新增
+    - 验证各模块观测值在合理范围内
+    - 验证无 NaN 或 Inf 值
+    - 验证归一化数据在 [-1, 1] 范围内
+
+13. **数据同步一致性验证** ⭐ 新增
+    - 验证多次调用数据的一致性
+    - 验证 core 和 derived 之间的同步
 
 ## 运行测试
 
+### 方法 1: 使用测试脚本
 ```bash
-# 运行所有测试
-pytest envs/humanoid21/tests/ -v
-
-# 运行特定文件
-pytest envs/humanoid21/tests/test_plugins.py -v
-
-# 运行特定测试
-pytest envs/humanoid21/tests/test_plugins.py::TestCombatScoringPlugin::test_detects_head_hit_and_deals_damage -v
-
-# 查看覆盖率
-pytest envs/humanoid21/tests/ --cov=envs/humanoid21 --cov-report=html
+cd /data1/mono
+./things/combatbench/envs/humanoid21/tests/run_tests.sh
 ```
 
-## 设计原则
+### 方法 2: 直接运行
+```bash
+cd /data1/mono
+PYTHONPATH=/data1/mono/things/combatbench python3 things/combatbench/envs/humanoid21/tests/test_data_interfaces.py
+```
 
-1. **轻量级模拟**：使用 MockMuJoCoSimulator 避免依赖 MuJoCo
-2. **隔离测试**：每个测试独立运行，不依赖顺序
-3. **快速执行**：所有测试应在秒级完成
-4. **清晰断言**：使用描述性断言消息
-5. **边界覆盖**：重点测试边界条件和特殊情况
+### 方法 3: 使用 pytest
+```bash
+cd /data1/mono/things/combatbench/envs/humanoid21
+pytest tests/ -v
+```
 
-## 测试策略
+## 测试标准
 
-### 单元测试
-- 测试单个方法/函数的行为
-- 使用 mock 隔离外部依赖
-- 验证输入输出关系
+所有测试基于以下文档规范：
+- `DATASPEC.md` - 数据规范
+- `CONTROLSPEC.md` - 控制规范
+- `OBSERVATION_zh.md` - 观测空间设计
 
-### 集成测试
-- 测试组件间的交互
-- 使用真实场景数据
-- 验证端到端行为
+## 测试结果
 
-### 风险聚焦
-- **P0**：状态一致性、插件逻辑、KO 判定
-- **P1**：观测维度、奖励计算
-- **P2**：性能优化、边缘情况
+所有测试应通过，输出示例：
+```
+======================================================================
+✓ 所有数据接口测试通过！
+======================================================================
+
+测试总结:
+  ✓ 静态属性 (get_static_data)
+  ✓ 核心状态 (get_core_state)
+  ✓ 派生状态 (get_derived_state)
+  ✓ 完整观测空间 (96维)
+  ✓ 归一化正确性
+  ✓ 坐标系转换
+  ✓ 动态一致性
+  ✓ 边界情况
+```
+
+## 添加新测试
+
+在添加新功能时，请在此目录添加相应的测试文件，并确保：
+1. 测试文件以 `test_` 开头
+2. 测试函数以 `test_` 开头
+3. 包含清晰的测试说明
+4. 验证数据格式和内容

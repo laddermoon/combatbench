@@ -10,13 +10,29 @@ import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple
+import imageio
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from envs.humanoid21.simulator import MujocoCombatSimulator
 
 
-def test_tracking_error(sim: MujocoCombatSimulator) -> Dict[str, bool]:
+# 视频输出目录
+VIDEO_DIR = Path(__file__).parent / 'test_videos'
+VIDEO_DIR.mkdir(exist_ok=True)
+
+
+def save_video(frames: list, filename: str, fps: int = 30):
+    """保存帧列表为视频文件"""
+    output_path = VIDEO_DIR / filename
+    # 降低分辨率以加快视频生成
+    downsampled_frames = [frame[::2, ::2] for frame in frames]  # 360x640
+    imageio.mimwrite(str(output_path), downsampled_frames, fps=fps, codec='libx264', quality=8)
+    print(f"  视频已保存: {output_path}")
+    return output_path
+
+
+def test_tracking_error(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 1: 跟踪误差与刚度
     
@@ -47,22 +63,33 @@ def test_tracking_error(sim: MujocoCombatSimulator) -> Dict[str, bool]:
         'robot_a': [],
         'robot_b': []
     }
-    
+
+    # 视频帧
+    frames = []
+    video_fps = 30  # 输出视频帧率
+    frames_to_capture = int(duration * video_fps)  # 总共要捕获的帧数
+    capture_interval = max(1, steps // frames_to_capture)  # 捕获间隔
+
     print(f"运行 {duration}s 正弦波跟踪测试...")
-    
+
     for step in range(steps):
         t = step * dt
-        
+
         # 生成正弦波指令 (幅度 1.0, 频率 1Hz)
         action_value = np.sin(2 * np.pi * freq * t)
         action = {
             'robot_a': np.full(21, action_value, dtype=np.float32),
             'robot_b': np.full(21, action_value, dtype=np.float32)
         }
-        
+
         sim.set_action(action)
         sim.physical_step()
-        
+
+        # 录制视频帧
+        if record_video and step % capture_interval == 0:
+            frame = sim.get_broadcastview_image()
+            frames.append(frame)
+
         # 每个周期采样一次
         if step % 10 == 0:
             core_state = sim.get_core_state()
@@ -115,11 +142,117 @@ def test_tracking_error(sim: MujocoCombatSimulator) -> Dict[str, bool]:
     print(f"\n{'='*70}")
     print(f"测试 1 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
     print(f"{'='*70}\n")
-    
+
+    # 保存视频
+    if record_video and frames:
+        save_video(frames, 'test1_tracking_error.mp4', fps=video_fps)
+
     return {'pass': overall_pass, 'details': results}
 
 
-def test_response_latency(sim: MujocoCombatSimulator) -> Dict[str, bool]:
+def test_jump(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+    """
+    测试机器人初始蹲姿，然后立即输入站姿。
+    这个过程中的机器人的响应速度以及跳跃高度。
+    """
+    print("=" * 70)
+    print("验收测试: 跳跃测试")
+    print("=" * 70)
+
+    # 使用蹲姿初始化
+    sim.reset(options={'initial_pose_a': 'squat', 'initial_pose_b': 'squat'})
+
+    # 获取站姿 action
+    standing_action = sim.INITIAL_POSES['standing']['action']
+
+    # 测试参数
+    duration = 3.0  # 秒
+    steps = int(duration / sim.dt)
+
+    # 记录数据
+    jump_data = {
+        'robot_a': {'heights': [], 'velocities': []},
+        'robot_b': {'heights': [], 'velocities': []}
+    }
+
+    # 视频帧
+    frames = []
+    video_fps = 30
+    capture_interval = max(1, int(steps / (duration * video_fps)))
+
+    print(f"运行跳跃测试 (蹲姿 -> 站姿, {duration}s)...")
+
+    for step in range(steps):
+        # 立即设置站姿 action
+        sim.set_action({
+            'robot_a': standing_action,
+            'robot_b': standing_action
+        })
+        sim.physical_step()
+
+        # 录制视频帧
+        if record_video and step % capture_interval == 0:
+            frame = sim.get_broadcastview_image()
+            frames.append(frame)
+
+        # 记录数据 (每10步记录一次)
+        if step % 10 == 0:
+            core_state = sim.get_core_state()
+            for robot_id in ['robot_a', 'robot_b']:
+                root_pos = core_state[robot_id]['root_pos']
+                root_vel = core_state[robot_id]['root_vel_local']
+                jump_data[robot_id]['heights'].append(root_pos[2])
+                root_vel_z = root_vel[2]  # 局部坐标系的 z 方向速度
+                jump_data[robot_id]['velocities'].append(root_vel_z)
+
+    # 分析结果
+    print("\n跳跃测试分析:")
+    results = {}
+
+    for robot_id in ['robot_a', 'robot_b']:
+        heights = np.array(jump_data[robot_id]['heights'])
+        velocities = np.array(jump_data[robot_id]['velocities'])
+
+        # 初始高度 (蹲姿)
+        initial_height = heights[0]
+
+        # 最大高度
+        max_height = heights.max()
+        max_height_idx = heights.argmax()
+
+        # 跳跃高度 (相对初始高度)
+        jump_height = max_height - initial_height
+
+        # 最大垂直速度
+        max_velocity = velocities.max()
+
+        # 起跳响应时间 (到达最大速度的时间)
+        response_time = velocities.argmax() * sim.dt * 10  # *10 因为每10步记录一次
+
+        print(f"\n{robot_id}:")
+        print(f"  初始高度 (蹲姿): {initial_height:.4f} m")
+        print(f"  最大高度: {max_height:.4f} m")
+        print(f"  跳跃高度: {jump_height:.4f} m")
+        print(f"  最大垂直速度: {max_velocity:.4f} m/s")
+        print(f"  响应时间: {response_time:.3f} s")
+
+        # 判断是否成功跳跃 (跳跃高度 > 0.01m)
+        jump_success = jump_height > 0.01
+        results[robot_id] = jump_success
+
+    overall_pass = all(results.values())
+    print(f"\n{'='*70}")
+    print(f"跳跃测试结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
+    print(f"{'='*70}\n")
+
+    # 保存视频
+    if record_video and frames:
+        save_video(frames, 'test_jump.mp4', fps=video_fps)
+
+    return {'pass': overall_pass, 'details': results}
+
+
+def test_response_latency(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 2: 响应延迟与过冲
     
@@ -158,12 +291,23 @@ def test_response_latency(sim: MujocoCombatSimulator) -> Dict[str, bool]:
         'robot_a': [],
         'robot_b': []
     }
-    
+
+    # 视频帧
+    frames = []
+    video_fps = 30
+    # 阶跃响应只记录前 2 秒 (1s = 500 steps, so 2s = 1000 steps, but we only run 500 steps)
+    # 记录所有步骤，视频会慢一点
+
     print(f"执行阶跃响应测试 (目标: 0.5)...")
-    
+
     for step in range(max_steps):
         sim.physical_step()
-        
+
+        # 录制视频帧 (每5步录制一帧)
+        if record_video and step % 5 == 0:
+            frame = sim.get_broadcastview_image()
+            frames.append(frame)
+
         core_state = sim.get_core_state()
         for robot_id in ['robot_a', 'robot_b']:
             pos_norm = core_state[robot_id]['joint_pos_norm']
@@ -217,54 +361,73 @@ def test_response_latency(sim: MujocoCombatSimulator) -> Dict[str, bool]:
     print(f"\n{'='*70}")
     print(f"测试 2 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
     print(f"{'='*70}\n")
-    
+
+    # 保存视频
+    if record_video and frames:
+        # 视频时长约 1 秒 (500 steps @ 0.002s/step)
+        save_video(frames, 'test2_response_latency.mp4', fps=30)
+
     return {'pass': overall_pass, 'details': results}
 
 
-def test_zero_oscillation(sim: MujocoCombatSimulator) -> Dict[str, bool]:
+def test_zero_oscillation(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 3: 零震荡与控制努力
-    
+
     方法:
     - 开启重力，机器人站立
-    - 持续输入零指令
+    - 持续输入站立指令
     - 分析力矩输出的震荡和幅度
     """
     print("=" * 70)
     print("验收测试 3: 零震荡与控制努力")
     print("=" * 70)
-    
+
     sim.reset()
-    
-    # 持续输入零指令
+
+    # 获取站立动作
+    standing_action = sim.INITIAL_POSES['standing']['action']
+
+    # 持续输入站立指令
     duration = 5.0  # 秒
     steps = int(duration / sim.dt)
-    
+
     torque_history = {
         'robot_a': [],
         'robot_b': []
     }
-    
+
+    # 视频帧
+    frames = []
+    video_fps = 30
+    frames_to_capture = int(duration * video_fps)
+    capture_interval = max(1, steps // frames_to_capture)
+
     print(f"运行 {duration}s 静态站立测试...")
-    
+
     for step in range(steps):
         sim.set_action({
-            'robot_a': np.zeros(21, dtype=np.float32),
-            'robot_b': np.zeros(21, dtype=np.float32)
+            'robot_a': standing_action,
+            'robot_b': standing_action
         })
         sim.physical_step()
-        
+
+        # 录制视频帧
+        if record_video and step % capture_interval == 0:
+            frame = sim.get_broadcastview_image()
+            frames.append(frame)
+
         # 记录控制力矩
         if step % 10 == 0:
             for robot_id in ['robot_a', 'robot_b']:
                 cache = sim._robot_cache[robot_id]
                 actuator_ids = cache['actuator_ids']
-                
+
                 # 获取 ctrl 值并转换为力矩
                 ctrl_values = sim.data.ctrl[actuator_ids]
                 gears = sim.model.actuator_gear[actuator_ids, 0]
                 torques = ctrl_values * gears
-                
+
                 torque_history[robot_id].append(torques.copy())
     
     # 分析结果
@@ -310,11 +473,15 @@ def test_zero_oscillation(sim: MujocoCombatSimulator) -> Dict[str, bool]:
     print(f"\n{'='*70}")
     print(f"测试 3 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
     print(f"{'='*70}\n")
-    
+
+    # 保存视频
+    if record_video and frames:
+        save_video(frames, 'test3_zero_oscillation.mp4', fps=video_fps)
+
     return {'pass': overall_pass, 'details': results}
 
 
-def test_absolute_stability(sim: MujocoCombatSimulator) -> Dict[str, bool]:
+def test_absolute_stability(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 4: 系统绝对稳定性
     
@@ -333,17 +500,30 @@ def test_absolute_stability(sim: MujocoCombatSimulator) -> Dict[str, bool]:
     control_freq = 50  # Hz
     control_interval = int((1.0 / control_freq) / sim.dt)  # 每多少步更新一次动作
     total_steps = int(duration / sim.dt)
-    
+
     print(f"运行 {duration}s 随机噪声稳定性测试...")
     print(f"控制频率: {control_freq} Hz, 总步数: {total_steps}")
-    
+
     max_qpos = -np.inf
     max_qvel = -np.inf
     max_force = -np.inf
-    
+
     crashed = False
     diverged = False
-    
+
+    # 视频帧 - 60秒测试只录制关键时间点
+    frames = []
+    video_fps = 30
+    # 只录制前3秒和每10秒的片段
+    capture_steps = set()
+    # 前3秒，每0.1秒一帧
+    capture_steps.update(range(0, int(3.0 / sim.dt), int(0.1 / sim.dt)))
+    # 之后每10秒录制0.5秒
+    for t in range(10, 61, 10):
+        start_step = int(t / sim.dt)
+        end_step = int((t + 0.5) / sim.dt)
+        capture_steps.update(range(start_step, end_step, int(0.1 / sim.dt)))
+
     try:
         for step in range(total_steps):
             # 每 control_interval 步更新一次动作
@@ -353,9 +533,14 @@ def test_absolute_stability(sim: MujocoCombatSimulator) -> Dict[str, bool]:
                     'robot_b': np.random.uniform(-1, 1, 21).astype(np.float32)
                 }
                 sim.set_action(action)
-            
+
             sim.physical_step()
-            
+
+            # 录制视频帧
+            if record_video and step in capture_steps:
+                frame = sim.get_broadcastview_image()
+                frames.append(frame)
+
             # 每 1000 步检查一次数值
             if step % 1000 == 0:
                 max_qpos = max(max_qpos, np.abs(sim.data.qpos).max())
@@ -406,7 +591,11 @@ def test_absolute_stability(sim: MujocoCombatSimulator) -> Dict[str, bool]:
     print(f"\n{'='*70}")
     print(f"测试 4 结果: {'✓ PASS' if stability_pass else '✗ FAIL'}")
     print(f"{'='*70}\n")
-    
+
+    # 保存视频
+    if record_video and frames:
+        save_video(frames, 'test4_stability.mp4', fps=30)
+
     return {'pass': stability_pass, 'crashed': crashed, 'diverged': diverged}
 
 
@@ -422,6 +611,9 @@ def run_all_acceptance_tests():
     results = {}
     
     try:
+        # 跳跃测试
+        results['jump'] = test_jump(sim)
+
         # 测试 1: 跟踪误差
         results['tracking'] = test_tracking_error(sim)
         
