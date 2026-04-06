@@ -206,6 +206,13 @@ class MujocoCombatSimulator(BaseSimulator):
 
         # 调试用计数器
         self._step_count = 0
+
+        # 广播镜头状态缓存（用于平滑运动）
+        self._prev_cam_pos = None
+        self._prev_lookat = None
+        self._prev_azi = None
+        self._prev_ele = None
+        self._prev_dist = None
     
     def _cache_robot_indices(self):
         """缓存机器人的关节和body索引"""
@@ -862,6 +869,13 @@ class MujocoCombatSimulator(BaseSimulator):
         # 重置调试计数器
         self._step_count = 0
 
+        # 重置广播镜头状态缓存
+        self._prev_cam_pos = None
+        self._prev_lookat = None
+        self._prev_azi = None
+        self._prev_ele = None
+        self._prev_dist = None
+
         mujoco.mj_forward(self.model, self.data)
     
     def physical_step(self) -> None:
@@ -1043,27 +1057,114 @@ class MujocoCombatSimulator(BaseSimulator):
             self.data.xfrc_applied[body_id, 3:6] += torque
     
     def get_broadcastview_image(self) -> np.ndarray:
-        """获取广播视角图像 (保留原实现用于可视化)"""
+        """
+        获取广播视角图像（智能动态跟踪版本）
+
+        相机特性：
+        - 方位角随机器人移动自动调整（始终从侧面观看）
+        - 距离根据机器人间距动态缩放
+        - 有防撞墙边界检测
+        - 使用EMA平滑减少镜头抖动
+        """
         try:
             torso_a_id = self._robot_cache['robot_a']['torso_body_id']
             torso_b_id = self._robot_cache['robot_b']['torso_body_id']
-            
+
             pos_a = self.data.xpos[torso_a_id]
             pos_b = self.data.xpos[torso_b_id]
             center = (pos_a + pos_b) / 2.0
-            
-            # 简化的固定视角
+
+            # 基础视角：两个机器人的中心，高度略降低（腰部高度）
+            target_lookat = center.copy()
+            target_lookat[2] = 1.0  # 固定观察高度为腰部
+
+            # 计算两个机器人之间的方向向量
+            direction = pos_b - pos_a
+            dist_ab = np.linalg.norm(direction)
+            if dist_ab > 1e-6:
+                direction = direction / dist_ab
+            else:
+                direction = np.array([1.0, 0.0, 0.0])
+
+            # 期望从侧面观看两个机器人（方位角对应direction的法向量）
+            # arctan2(y, x) 获取向量在XY平面上的角度
+            dir_angle = np.degrees(np.arctan2(direction[1], direction[0]))
+
+            # 相机在侧面，所以方位角 + 90度
+            target_azi = dir_angle + 90.0
+            target_ele = -20.0  # 俯视20度
+
+            # 相机距离：基础距离为间距 * 1.5，限制在 2.5 到 4.0 之间
+            target_dist = max(2.5, min(4.0, dist_ab * 1.5))
+
+            # --- 边界限制（防止相机移出墙外）---
+            # 房间边界约为 x,y ∈ [-3.05, 3.05]
+            # 预留 0.5 安全距离 -> 墙边界限制在 2.55
+            limit = 2.55
+
+            # 在MuJoCo中，给定azimuth、elevation和distance，相机的世界坐标系水平偏移约为：
+            # dx = -dist * cos(azi) * cos(ele)
+            # dy = -dist * sin(azi) * cos(ele)
+            azi_rad = np.radians(target_azi)
+            ele_rad = np.radians(target_ele)
+
+            dx = -target_dist * np.cos(azi_rad) * np.cos(ele_rad)
+            dy = -target_dist * np.sin(azi_rad) * np.cos(ele_rad)
+
+            cam_x = target_lookat[0] + dx
+            cam_y = target_lookat[1] + dy
+
+            # 如果期望X超出房间，缩短距离以接近墙壁
+            if abs(cam_x) > limit:
+                max_dx = limit - target_lookat[0] if cam_x > 0 else -limit - target_lookat[0]
+                factor = -np.cos(azi_rad) * np.cos(ele_rad)
+                if abs(factor) > 1e-6:
+                    target_dist = min(target_dist, abs(max_dx / factor))
+
+            # 如果期望Y超出房间
+            if abs(cam_y) > limit:
+                max_dy = limit - target_lookat[1] if cam_y > 0 else -limit - target_lookat[1]
+                factor = -np.sin(azi_rad) * np.cos(ele_rad)
+                if abs(factor) > 1e-6:
+                    target_dist = min(target_dist, abs(max_dy / factor))
+
+            # --- 平滑滤波（EMA）---
+            alpha_pos = 0.05  # 极坐标和距离的平滑系数
+            alpha_look = 0.1  # 观察焦点的平滑系数
+
+            if self._prev_azi is None:
+                # 首次渲染，直接使用目标值
+                azi = target_azi
+                ele = target_ele
+                dist = target_dist
+                lookat = target_lookat.copy()
+            else:
+                # 角度平滑需要处理360度循环跳变
+                diff = (target_azi - self._prev_azi + 180) % 360 - 180
+                azi = self._prev_azi + diff * alpha_pos
+                ele = self._prev_ele * (1.0 - alpha_pos) + target_ele * alpha_pos
+                dist = self._prev_dist * (1.0 - alpha_pos) + target_dist * alpha_pos
+                lookat = self._prev_lookat * (1.0 - alpha_look) + target_lookat * alpha_look
+
+            # 更新缓存
+            self._prev_azi = azi
+            self._prev_ele = ele
+            self._prev_dist = dist
+            self._prev_lookat = lookat.copy()
+
+            # 设置相机参数
             cam = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(cam)
-            cam.lookat[:] = [center[0], center[1], 1.0]
-            cam.distance = 4.0
-            cam.elevation = -20.0
-            cam.azimuth = 90.0
-            
+            cam.lookat[:] = lookat
+            cam.distance = dist
+            cam.elevation = ele
+            cam.azimuth = azi
+
+            # 渲染
             renderer = mujoco.Renderer(self.model, height=720, width=1280)
             renderer.update_scene(self.data, camera=cam)
             return renderer.render()
         except Exception as e:
             import warnings
-            warnings.warn(f"Failed to render: {e}")
+            warnings.warn(f"Failed to render broadcast view: {e}")
             return np.zeros((720, 1280, 3), dtype=np.uint8)
