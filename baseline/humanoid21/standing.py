@@ -26,11 +26,11 @@ MAX_STEPS = int(CONTROL_FREQUENCY * MATCH_DURATION_SECONDS)
 INITIAL_DISTANCE = 3.0
 ACTION_DIM = Humanoid21Observer.ACTION_DIM
 OBS_DIM = Humanoid21Observer.OBS_DIM
-GROUP_SIZE = 8
-EPISODES_PER_UPDATE = 256
+GROUP_SIZE = 8 # 64
+EPISODES_PER_UPDATE = 256 # 1024
 UPDATE_EPOCHS = 4
-MINIBATCH_SIZE = 4096
-MAX_UPDATES = 1000
+MINIBATCH_SIZE = 4096 # 32768
+MAX_UPDATES = 10000
 EVAL_INTERVAL = 5
 EVAL_EPISODES = 16
 LEARNING_RATE = 3e-4
@@ -40,6 +40,11 @@ GRAD_CLIP_NORM = 1.0
 HIDDEN_DIM = 256
 LOG_STD_MIN = -4.0
 LOG_STD_MAX = 1.0
+RISK_EXPLORATION_MIN_SCALE = 0.15
+RISK_EXPLORATION_MAX_SCALE = 1.0
+RISK_HEIGHT_SAFE_MARGIN = 0.20
+RISK_UPRIGHT_SAFE_MARGIN = 0.15
+TAIL_ADVANTAGE_MIN_WEIGHT = 0.25
 FALL_HEIGHT_THRESHOLD = 1.10
 FALL_UPRIGHT_THRESHOLD = 0.8
 FALL_GRACE_STEPS = 3
@@ -107,11 +112,11 @@ class StandingRewardObserver(BaseObserverPlugin):
         ctx: ReadOnlySimContext,
         is_standing: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
         if is_standing is None:
-            core_state = ctx.accessor.get_core_state()[self.agent_id]
-            derived_state = ctx.accessor.get_derived_state()[self.agent_id]
-            height = float(core_state["root_pos"][2])
-            uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
             is_standing = bool(
                 height >= self.fall_height_threshold and uprightness >= self.fall_upright_threshold
             )
@@ -119,6 +124,8 @@ class StandingRewardObserver(BaseObserverPlugin):
             "steps": int(self._step_count),
             "is_standing": bool(is_standing),
             "is_fallen": bool(self._fallen),
+            "height": height,
+            "uprightness": uprightness,
             "is_terminated": bool(ctx.is_terminated),
         }
 
@@ -140,8 +147,20 @@ class Actor(nn.Module):
         log_std = torch.clamp(self.log_std, LOG_STD_MIN, LOG_STD_MAX)
         return mean, log_std.expand_as(mean)
 
-    def sample_action(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _scaled_log_std(self, log_std: torch.Tensor, exploration_scale: Optional[Any] = None) -> torch.Tensor:
+        if exploration_scale is None:
+            return log_std
+        scale_tensor = torch.as_tensor(exploration_scale, dtype=log_std.dtype, device=log_std.device)
+        if scale_tensor.ndim == 0:
+            scale_tensor = scale_tensor.expand(log_std.shape[0])
+        while scale_tensor.ndim < log_std.ndim:
+            scale_tensor = scale_tensor.unsqueeze(-1)
+        scale_tensor = torch.clamp(scale_tensor, min=1e-3)
+        return log_std + torch.log(scale_tensor)
+
+    def sample_action(self, obs: torch.Tensor, exploration_scale: Optional[Any] = None) -> tuple[torch.Tensor, torch.Tensor]:
         mean, log_std = self.forward(obs)
+        log_std = self._scaled_log_std(log_std, exploration_scale=exploration_scale)
         std = log_std.exp()
         dist = Normal(mean, std)
         raw_action = dist.rsample()
@@ -153,24 +172,36 @@ class Actor(nn.Module):
         mean, _ = self.forward(obs)
         return torch.tanh(mean)
 
-    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        exploration_scale: Optional[Any] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
         raw_actions = torch.atanh(clipped_actions)
         mean, log_std = self.forward(obs)
+        log_std = self._scaled_log_std(log_std, exploration_scale=exploration_scale)
         std = log_std.exp()
         dist = Normal(mean, std)
         log_prob = dist.log_prob(raw_actions) - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)
         entropy = dist.entropy().sum(dim=-1)
         return log_prob.sum(dim=-1), entropy
 
-    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool) -> tuple[np.ndarray, Optional[float]]:
+    def act_numpy(
+        self,
+        obs: np.ndarray,
+        device: torch.device,
+        deterministic: bool,
+        exploration_scale: Optional[float] = None,
+    ) -> tuple[np.ndarray, Optional[float]]:
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             if deterministic:
                 action = self.deterministic_action(obs_tensor)
                 log_prob = None
             else:
-                action, log_prob = self.sample_action(obs_tensor)
+                action, log_prob = self.sample_action(obs_tensor, exploration_scale=exploration_scale)
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if log_prob is None:
             return action_np, None
@@ -190,6 +221,31 @@ def _limit_worker_threads() -> None:
 
 def _snapshot_actor_state_dict(actor: Actor) -> Dict[str, torch.Tensor]:
     return {key: value.detach().cpu() for key, value in actor.state_dict().items()}
+
+
+def compute_risk_exploration_scale(reward_info: Dict[str, Any]) -> float:
+    height = float(reward_info.get("height", FALL_HEIGHT_THRESHOLD))
+    uprightness = float(reward_info.get("uprightness", FALL_UPRIGHT_THRESHOLD))
+    height_safety = (height - FALL_HEIGHT_THRESHOLD) / max(RISK_HEIGHT_SAFE_MARGIN, 1e-6)
+    uprightness_safety = (uprightness - FALL_UPRIGHT_THRESHOLD) / max(RISK_UPRIGHT_SAFE_MARGIN, 1e-6)
+    safety = float(np.clip(min(height_safety, uprightness_safety), 0.0, 1.0))
+    risk = 1.0 - safety
+    return float(RISK_EXPLORATION_MIN_SCALE + risk * (RISK_EXPLORATION_MAX_SCALE - RISK_EXPLORATION_MIN_SCALE))
+
+
+def export_policy_artifacts(model_path: Path, policy_dir: Path) -> None:
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    payload = torch.load(model_path, map_location="cpu")
+    export_payload = dict(payload)
+    export_payload["state_dict"] = {
+        key: value.detach().cpu()
+        for key, value in payload["state_dict"].items()
+        if key != "log_std"
+    }
+    torch.save(export_payload, policy_dir / "model.pt")
+    policy_code = """import sys\nfrom pathlib import Path\nfrom typing import Any, Dict, Optional\n\nimport numpy as np\nimport torch\nfrom torch import nn\n\nfor parent in Path(__file__).resolve().parents:\n    if (parent / \"policy\" / \"base.py\").exists():\n        if str(parent) not in sys.path:\n            sys.path.insert(0, str(parent))\n        break\n    if (parent / \"combatbench\" / \"policy\" / \"base.py\").exists():\n        if str(parent) not in sys.path:\n            sys.path.insert(0, str(parent))\n        break\n\ntry:\n    from policy.base import BaseCombatPolicy\nexcept ImportError:\n    from combatbench.policy.base import BaseCombatPolicy\n\n\nclass Actor(nn.Module):\n    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int):\n        super().__init__()\n        self.net = nn.Sequential(\n            nn.Linear(obs_dim, hidden_dim),\n            nn.Tanh(),\n            nn.Linear(hidden_dim, hidden_dim),\n            nn.Tanh(),\n            nn.Linear(hidden_dim, action_dim),\n        )\n\n    def forward(self, obs: torch.Tensor) -> torch.Tensor:\n        return torch.tanh(self.net(obs))\n\n\nclass StandingCombatPolicy(BaseCombatPolicy):\n    def __init__(self, model_path: Optional[str] = None, observation_space: Any = None, action_space: Any = None, **kwargs: Any):\n        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / \"model.pt\"\n        payload = torch.load(payload_path, map_location=\"cpu\")\n        self.actor = Actor(payload[\"obs_dim\"], payload[\"action_dim\"], payload[\"hidden_dim\"])\n        model_state_dict = self.actor.state_dict()\n        filtered_state_dict = {\n            key: value\n            for key, value in payload[\"state_dict\"].items()\n            if key in model_state_dict\n        }\n        incompatible = self.actor.load_state_dict(filtered_state_dict, strict=False)\n        if incompatible.missing_keys:\n            raise RuntimeError(f\"Missing keys in standing policy checkpoint: {incompatible.missing_keys}\")\n        unexpected_keys = sorted(set(payload[\"state_dict\"].keys()) - set(filtered_state_dict.keys()))\n        if unexpected_keys and set(unexpected_keys) != {\"log_std\"}:\n            raise RuntimeError(f\"Unexpected keys in standing policy checkpoint: {unexpected_keys}\")\n        self.actor.eval()\n\n    def act(self, obs: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:\n        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)\n        with torch.no_grad():\n            action = self.actor(obs_tensor)\n        return action.squeeze(0).cpu().numpy().astype(np.float32)\n"""
+    with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
+        handle.write(policy_code)
 
 
 def _split_sequence(values: Sequence[int], parts: int) -> List[List[int]]:
@@ -335,13 +391,12 @@ class GRPOTrainer:
         obs_batch = np.concatenate([episode["observations"] for episode in episodes], axis=0)
         action_batch = np.concatenate([episode["actions"] for episode in episodes], axis=0)
         old_log_prob_batch = np.concatenate([episode["log_probs"] for episode in episodes], axis=0)
-        advantage_batch = np.concatenate([
-            np.full((episode["steps"],), advantages_per_episode[episode_index], dtype=np.float32)
-            for episode_index, episode in enumerate(episodes)
-        ])
+        exploration_scale_batch = np.concatenate([episode["exploration_scales"] for episode in episodes], axis=0)
+        advantage_batch = build_tail_weighted_advantages(episodes, advantages_per_episode)
         obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=self.device)
         action_tensor = torch.as_tensor(action_batch, dtype=torch.float32, device=self.device)
         old_log_prob_tensor = torch.as_tensor(old_log_prob_batch, dtype=torch.float32, device=self.device)
+        exploration_scale_tensor = torch.as_tensor(exploration_scale_batch, dtype=torch.float32, device=self.device)
         advantage_tensor = torch.as_tensor(advantage_batch, dtype=torch.float32, device=self.device)
         total_steps = obs_tensor.shape[0]
         losses: List[float] = []
@@ -354,8 +409,13 @@ class GRPOTrainer:
                 batch_obs = obs_tensor[batch_indices]
                 batch_actions = action_tensor[batch_indices]
                 batch_old_log_prob = old_log_prob_tensor[batch_indices]
+                batch_exploration_scale = exploration_scale_tensor[batch_indices]
                 batch_advantage = advantage_tensor[batch_indices]
-                new_log_prob, entropy = self.actor.evaluate_actions(batch_obs, batch_actions)
+                new_log_prob, entropy = self.actor.evaluate_actions(
+                    batch_obs,
+                    batch_actions,
+                    exploration_scale=batch_exploration_scale,
+                )
                 ratio = torch.exp(new_log_prob - batch_old_log_prob)
                 clipped_ratio = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS)
                 objective = torch.min(ratio * batch_advantage, clipped_ratio * batch_advantage)
@@ -395,6 +455,11 @@ class GRPOTrainer:
             "entropy_coef": ENTROPY_COEF,
             "grad_clip_norm": GRAD_CLIP_NORM,
             "hidden_dim": HIDDEN_DIM,
+            "risk_exploration_min_scale": RISK_EXPLORATION_MIN_SCALE,
+            "risk_exploration_max_scale": RISK_EXPLORATION_MAX_SCALE,
+            "risk_height_safe_margin": RISK_HEIGHT_SAFE_MARGIN,
+            "risk_upright_safe_margin": RISK_UPRIGHT_SAFE_MARGIN,
+            "tail_advantage_min_weight": TAIL_ADVANTAGE_MIN_WEIGHT,
             "rollout_workers": ROLLOUT_WORKERS,
             "eval_workers": EVAL_WORKERS,
             "seed": SEED,
@@ -412,12 +477,7 @@ class GRPOTrainer:
         torch.save(payload, path)
 
     def _export_policy(self, policy_dir: Path, model_path: Path) -> None:
-        policy_dir.mkdir(parents=True, exist_ok=True)
-        payload = torch.load(model_path, map_location="cpu")
-        torch.save(payload, policy_dir / "model.pt")
-        policy_code = """import sys\nfrom pathlib import Path\nfrom typing import Any, Dict, Optional\n\nimport numpy as np\nimport torch\nfrom torch import nn\n\nfor parent in Path(__file__).resolve().parents:\n    if (parent / \"policy\" / \"base.py\").exists():\n        if str(parent) not in sys.path:\n            sys.path.insert(0, str(parent))\n        break\n    if (parent / \"combatbench\" / \"policy\" / \"base.py\").exists():\n        if str(parent) not in sys.path:\n            sys.path.insert(0, str(parent))\n        break\n\ntry:\n    from policy.base import BaseCombatPolicy\nexcept ImportError:\n    from combatbench.policy.base import BaseCombatPolicy\n\n\nclass Actor(nn.Module):\n    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int):\n        super().__init__()\n        self.net = nn.Sequential(\n            nn.Linear(obs_dim, hidden_dim),\n            nn.Tanh(),\n            nn.Linear(hidden_dim, hidden_dim),\n            nn.Tanh(),\n            nn.Linear(hidden_dim, action_dim),\n        )\n\n    def forward(self, obs: torch.Tensor) -> torch.Tensor:\n        return torch.tanh(self.net(obs))\n\n\nclass StandingCombatPolicy(BaseCombatPolicy):\n    def __init__(self, model_path: Optional[str] = None, observation_space: Any = None, action_space: Any = None, **kwargs: Any):\n        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / \"model.pt\"\n        payload = torch.load(payload_path, map_location=\"cpu\")\n        self.actor = Actor(payload[\"obs_dim\"], payload[\"action_dim\"], payload[\"hidden_dim\"])\n        self.actor.load_state_dict(payload[\"state_dict\"])\n        self.actor.eval()\n\n    def act(self, obs: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:\n        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)\n        with torch.no_grad():\n            action = self.actor(obs_tensor)\n        return action.squeeze(0).cpu().numpy().astype(np.float32)\n"""
-        with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
-            handle.write(policy_code)
+        export_policy_artifacts(model_path=model_path, policy_dir=policy_dir)
 
     def _write_history(self) -> None:
         with (self.run_dir / "history.json").open("w", encoding="utf-8") as handle:
@@ -449,6 +509,25 @@ def normalize_group_returns(returns: np.ndarray, group_size: int) -> np.ndarray:
         advantages[start:start + group_size] = (group - group_mean) / (group_std + 1e-6)
     return advantages
 
+
+def build_tail_weighted_advantages(
+    episodes: List[Dict[str, Any]],
+    advantages_per_episode: np.ndarray,
+) -> np.ndarray:
+    weighted_advantages: List[np.ndarray] = []
+    for episode_index, episode in enumerate(episodes):
+        steps = int(episode["steps"])
+        if steps <= 0:
+            continue
+        if steps == 1:
+            weights = np.ones((1,), dtype=np.float32)
+        else:
+            weights = np.linspace(TAIL_ADVANTAGE_MIN_WEIGHT, 1.0, num=steps, dtype=np.float32)
+            weights = weights / max(float(weights.mean()), 1e-6)
+        weighted_advantages.append(weights * np.float32(advantages_per_episode[episode_index]))
+    if not weighted_advantages:
+        return np.zeros((0,), dtype=np.float32)
+    return np.concatenate(weighted_advantages, axis=0)
 
 
 def build_runtime() -> EnvRuntime:
@@ -489,13 +568,21 @@ def collect_episode(
     obs = np.asarray(runtime.get_observer_output("robot_a_obs"), dtype=np.float32)
     observations: List[np.ndarray] = []
     actions: List[np.ndarray] = []
+    exploration_scales: List[float] = []
     log_probs: List[float] = []
     reward_info = dict(runtime.get_observer_output("robot_a_reward"))
     for _ in range(MAX_STEPS):
-        action_a, log_prob = actor.act_numpy(obs, device, deterministic=deterministic)
+        exploration_scale = 1.0 if deterministic else compute_risk_exploration_scale(reward_info)
+        action_a, log_prob = actor.act_numpy(
+            obs,
+            device,
+            deterministic=deterministic,
+            exploration_scale=exploration_scale,
+        )
         runtime.step(action_a, None)
         observations.append(obs.copy())
         actions.append(action_a.copy())
+        exploration_scales.append(exploration_scale)
         if log_prob is not None:
             log_probs.append(log_prob)
         reward_info = dict(runtime.get_observer_output("robot_a_reward"))
@@ -507,6 +594,7 @@ def collect_episode(
     return {
         "observations": np.asarray(observations, dtype=np.float32),
         "actions": np.asarray(actions, dtype=np.float32),
+        "exploration_scales": np.asarray(exploration_scales, dtype=np.float32),
         "log_probs": np.asarray(log_probs, dtype=np.float32),
         "steps": len(observations),
         "episode_reward": episode_reward,
