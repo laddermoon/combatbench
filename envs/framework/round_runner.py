@@ -60,8 +60,8 @@ class RoundRunner:
                 act_b = np.zeros(action_dim)
 
             self.runtime.step(
-                np.asarray(act_a, dtype=np.float32),
-                np.asarray(act_b, dtype=np.float32),
+                self._normalize_action(act_a),
+                self._normalize_action(act_b),
             )
             obs, info = self._collect_runtime_view()
             terminated, truncated = self.runtime.get_termination_flags()
@@ -111,6 +111,11 @@ class RoundRunner:
             if hasattr(policy, "ACTION_DIM"):
                 return int(policy.ACTION_DIM)
         return 21
+
+    def _normalize_action(self, action: Any) -> Optional[np.ndarray]:
+        if action is None:
+            return None
+        return np.asarray(action, dtype=np.float32)
 
     def _extract_agent_obs(self, obs: Any, agent_id: str) -> Any:
         return obs[agent_id]
