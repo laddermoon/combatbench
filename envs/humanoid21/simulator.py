@@ -597,7 +597,7 @@ class MujocoCombatSimulator(BaseSimulator):
             ]).astype(np.float32),  # 总共 96 维
 
             # 兼容旧版本
-            'uprightness': np.array([local_orientation[5]], dtype=np.float32),  # 局部z轴的世界z分量
+            'uprightness': np.array([world_rot_mat[2, 2]], dtype=np.float32),
             'opponent_in_local': {
                 'pos': opponent_basic['relative_pos'],
                 'vel': opponent_basic['relative_vel'],
