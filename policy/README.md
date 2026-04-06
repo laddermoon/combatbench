@@ -90,24 +90,6 @@ policy = RandomCombatPolicy(
 action = policy.act(obs)
 ```
 
-### 2. StandingCombatPolicy
-
-返回零动作的策略，智能体保持当前姿态。
-
-**目录结构**:
-```
-policy/standing/
-└── policy.py
-```
-
-**使用方法**:
-```python
-from combatbench.policy import StandingCombatPolicy
-
-policy = StandingCombatPolicy()
-action = policy.act(obs)  # 返回全零动作
-```
-
 ## 实现自定义 Policy
 
 ### 步骤 1: 创建 Policy 目录

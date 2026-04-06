@@ -56,46 +56,50 @@ def load_policy(
 
     # 解析规范字符串
     module_path, class_name, params = parse_policy_spec(policy_spec)
+    policy_file: Optional[Path] = None
 
     # 如果没有指定模块路径，默认为 {policy_dir}/policy.py
-    if '.' not in module_path and '/' not in module_path:
+    if module_path.endswith('.py'):
+        policy_file = Path(module_path)
+    elif '.' not in module_path and '/' not in module_path:
         # 假设是目录路径，尝试导入 policy.py
         policy_dir = Path(module_path)
-        if not policy_dir.is_dir():
-            # 尝试作为相对路径
-            policy_dir = Path(__file__).parent / module_path
-
-        policy_file = policy_dir / "policy.py"
+        package_policy_dir = Path(__file__).parent / module_path
+        if policy_dir.is_dir():
+            policy_file = policy_dir / "policy.py"
+            module_path = f"{module_path}.policy"
+        elif package_policy_dir.is_dir():
+            policy_file = package_policy_dir / "policy.py"
+            module_path = f"{__package__}.{module_path}.policy"
+        else:
+            policy_file = package_policy_dir / "policy.py"
         if not policy_file.exists():
             raise ValueError(f"Policy directory not found: {policy_dir}")
-
-        # 构建模块路径
-        # 将目录路径转换为 Python 模块路径
-        # 例如: "my_policy" -> "my_policy.policy"
-        module_path = f"{module_path}.policy"
 
     # 动态导入模块
     try:
         # 首先尝试作为普通模块导入
+        if policy_file is not None and module_path.endswith('.py'):
+            raise ImportError()
         policy_module = importlib.import_module(module_path)
     except ImportError:
         # 如果失败，尝试从文件路径加载
-        policy_dir = Path(module_path.replace('.policy', ''))
-        if not policy_dir.is_dir():
-            # 尝试作为绝对路径或相对路径
-            policy_dir = Path(module_path)
-
-        policy_file = policy_dir / "policy.py"
+        if policy_file is None:
+            policy_dir = Path(module_path.replace('.', os.sep))
+            if policy_dir.is_file() and policy_dir.suffix == '.py':
+                policy_file = policy_dir
+            else:
+                policy_file = policy_dir / "policy.py"
         if not policy_file.exists():
             raise ImportError(f"Failed to import policy module '{module_path}' and policy.py not found at {policy_file}")
 
         # 使用 importlib.util 从文件路径加载模块
-        spec = importlib.util.spec_from_file_location(policy_dir.name, policy_file)
+        spec = importlib.util.spec_from_file_location(policy_file.stem, policy_file)
         if spec is None or spec.loader is None:
             raise ImportError(f"Failed to load module from {policy_file}")
 
         policy_module = importlib.util.module_from_spec(spec)
-        sys.modules[policy_dir.name] = policy_module
+        sys.modules[policy_file.stem] = policy_module
         spec.loader.exec_module(policy_module)
 
     # 查找 BaseCombatPolicy 实现
@@ -145,14 +149,7 @@ def parse_policy_spec(spec: str) -> tuple:
         # "path/to/file.py:ClassName" (Python 文件)
         # "module.path:ClassName" (模块路径)
         module_part, class_name = module_part.rsplit(':', 1)
-
-        # 如果是 .py 文件，需要特殊处理
-        if module_part.endswith('.py'):
-            # 从文件路径推导模块路径
-            # 这里简化处理：如果是 .py 文件，直接使用文件所在目录
-            module_path = module_part.replace('/', '.').replace('.py', '')
-        else:
-            module_path = module_part
+        module_path = module_part
     else:
         # 没有指定类名，稍后自动检测
         module_path = module_part

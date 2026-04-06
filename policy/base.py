@@ -19,6 +19,11 @@ class BaseCombatPolicy(ABC):
     A policy receives observations from the environment and returns actions.
     """
 
+    def __init__(self, observation_space: Optional[spaces.Space] = None, action_space: Optional[spaces.Space] = None, **kwargs: Any):
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.kwargs = dict(kwargs)
+
     @abstractmethod
     def act(self, obs: np.ndarray, info: Optional[Dict[str, Any]] = None) -> Optional[np.ndarray]:
         """
