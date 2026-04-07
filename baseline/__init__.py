@@ -1,12 +1,8 @@
-try:
-    from .sb3 import ObservationNormalizer, RewardConfig, SB3CombatPolicy, SymmetricSelfPlayEnv, make_symmetric_selfplay_env
+"""
+CombatBench 训练基线模块
 
-    __all__ = [
-        "ObservationNormalizer",
-        "RewardConfig",
-        "SB3CombatPolicy",
-        "SymmetricSelfPlayEnv",
-        "make_symmetric_selfplay_env",
-    ]
-except ModuleNotFoundError:
-    __all__ = []
+此目录包含各种训练脚本和参考实现。
+每个基线是独立的脚本，不作为 Python 模块导出。
+"""
+
+__all__ = []
