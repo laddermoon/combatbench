@@ -24,6 +24,7 @@ class RandomPushPlugin(BasePlugin):
         force_magnitude: float = 200.0,  # 牛顿
         min_interval: int = 50,  # 最小间隔（物理步数）
         max_interval: int = 150,  # 最大间隔（物理步数）
+        push_duration_steps: int = 1,  # 每次推力持续步数
         random_seed: Optional[int] = None,
     ):
         """
@@ -33,6 +34,7 @@ class RandomPushPlugin(BasePlugin):
             force_magnitude: 力的大小（牛顿）
             min_interval: 最小扰动间隔
             max_interval: 最大扰动间隔
+            push_duration_steps: 每次推力持续的物理步数（默认为1，即单帧推力）
             random_seed: 随机种子
         """
         self.target_robot = target_robot
@@ -40,10 +42,13 @@ class RandomPushPlugin(BasePlugin):
         self.force_magnitude = force_magnitude
         self.min_interval = min_interval
         self.max_interval = max_interval
+        self.push_duration_steps = push_duration_steps
 
         self._rng = np.random.RandomState(random_seed)
         self._step_count = 0
         self._next_disturbance = self._rng.randint(min_interval, max_interval)
+        self._current_force = None  # 当前持续施加的力
+        self._push_remaining_steps = 0  # 当前推力剩余步数
 
     @property
     def name(self) -> str:
@@ -57,12 +62,27 @@ class RandomPushPlugin(BasePlugin):
         """Episode 开始时重置"""
         self._step_count = 0
         self._next_disturbance = self._rng.randint(self.min_interval, self.max_interval)
+        self._current_force = None
+        self._push_remaining_steps = 0
         ctx.metrics[f'{self.target_robot}_push_count'] = 0
 
     def on_pre_phy_step(self, ctx: SimContext) -> None:
         """在每个物理步前检查是否需要施加扰动"""
         self._step_count += 1
 
+        # 如果正在持续推力，继续施加
+        if self._push_remaining_steps > 0:
+            if self._current_force is not None:
+                ctx.mutator.apply_external_force(
+                    body_name=self.target_body,
+                    force=self._current_force,
+                    robot_id=self.target_robot
+                )
+                ctx.metrics[f'{self.target_robot}_push_active'] = True
+            self._push_remaining_steps -= 1
+            return
+
+        # 检查是否需要开始新的推力
         if self._step_count >= self._next_disturbance:
             # 生成随机方向的力（水平面，避免直接推倒）
             angle = self._rng.uniform(0, 2 * np.pi)
@@ -71,6 +91,10 @@ class RandomPushPlugin(BasePlugin):
                 np.sin(angle) * self.force_magnitude,
                 self._rng.uniform(-0.2, 0.2) * self.force_magnitude  # 轻微垂直分量
             ])
+
+            # 保存当前力和持续步数
+            self._current_force = force
+            self._push_remaining_steps = self.push_duration_steps - 1  # 第一帧已施加
 
             # 施加力
             ctx.mutator.apply_external_force(
@@ -82,6 +106,7 @@ class RandomPushPlugin(BasePlugin):
             # 记录
             ctx.metrics[f'{self.target_robot}_push_count'] += 1
             ctx.metrics[f'{self.target_robot}_last_push_force'] = float(np.linalg.norm(force))
+            ctx.metrics[f'{self.target_robot}_push_duration_steps'] = self.push_duration_steps
 
             # 设置下一次扰动时间
             self._next_disturbance = self._step_count + self._rng.randint(
@@ -345,7 +370,17 @@ if __name__ == "__main__":
     print("       target_robot='robot_a',")
     print("       force_magnitude=200.0,")
     print("       min_interval=50,")
-    print("       max_interval=150")
+    print("       max_interval=150,")
+    print("       push_duration_steps=1  # 每次推力持续1帧（默认）")
+    print("   )")
+    print("")
+    print("   # 持续3帧的推力（更有冲击力）")
+    print("   plugin = RandomPushPlugin(")
+    print("       target_robot='robot_a',")
+    print("       force_magnitude=200.0,")
+    print("       min_interval=50,")
+    print("       max_interval=150,")
+    print("       push_duration_steps=3")
     print("   )")
 
     print("\n2. 周期性向上推力:")
