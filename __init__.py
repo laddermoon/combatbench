@@ -22,9 +22,6 @@ from .envs import (
     # Humanoid21
     MujocoCombatSimulator,
     Humanoid21Observer,
-    NonFallConstraintPlugin,
-    CombatScoringPlugin,
-    FrozenRobotPlugin,
     make_env,
 )
 
@@ -48,9 +45,5 @@ __all__ = [
     # Humanoid21
     "MujocoCombatSimulator",
     "Humanoid21Observer",
-    "Humanoid21Rewarder",
-    "NonFallConstraintPlugin",
-    "CombatScoringPlugin",
-    "FrozenRobotPlugin",
     "make_env",
 ]
