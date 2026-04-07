@@ -1,14 +1,9 @@
 """
 CombatBench Tools
 
-Command-line utilities and scripts for running combat simulations.
+命令行工具和脚本目录。
+
+注意：run_round 功能已移至 envs/humanoid21/run_round.py
 """
 
-from .run_round_humanoid21 import RoundRunner, RoundResult, run_round, load_policy
-
-__all__ = [
-    'RoundRunner',
-    'RoundResult',
-    'run_round',
-    'load_policy',
-]
+__all__ = []
