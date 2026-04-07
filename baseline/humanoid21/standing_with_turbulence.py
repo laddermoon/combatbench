@@ -543,14 +543,14 @@ def build_runtime() -> EnvRuntime:
             ContinuousWindPlugin(
                 target_robot="robot_a",
                 wind_direction=wind_direction.copy(),
-                wind_strength=45.0,
+                wind_strength=5.0,
                 gust_probability=0.03,
                 gust_multiplier=2.0,
             ),
             ContinuousWindPlugin(
                 target_robot="robot_b",
                 wind_direction=wind_direction.copy(),
-                wind_strength=45.0,
+                wind_strength=5.0,
                 gust_probability=0.03,
                 gust_multiplier=2.0,
             ),
