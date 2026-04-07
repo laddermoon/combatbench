@@ -5,7 +5,7 @@ os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 import mujoco
 import numpy as np
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 
@@ -230,6 +230,7 @@ class MujocoCombatSimulator(BaseSimulator):
             # Torso body (根节点，带 freejoint)
             torso_name = f"torso{suffix}"
             cache['torso_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, torso_name)
+            cache['body_ids'] = self._collect_subtree_body_ids(cache['torso_body_id'])
 
             # 受控关节索引
             qpos_indices = []
@@ -277,6 +278,23 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['hand_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_left{suffix}")
 
             self._robot_cache[robot_id] = cache
+    
+    def _collect_subtree_body_ids(self, root_body_id: int) -> set[int]:
+        body_ids = set()
+        stack = [root_body_id]
+
+        while stack:
+            body_id = stack.pop()
+            if body_id in body_ids:
+                continue
+            body_ids.add(body_id)
+            for child_body_id in range(self.model.nbody):
+                if child_body_id == body_id:
+                    continue
+                if int(self.model.body_parentid[child_body_id]) == body_id:
+                    stack.append(child_body_id)
+
+        return body_ids
     
     def _compute_normalization_params(self):
         """计算归一化参数 (reference 和 scale)"""
@@ -410,7 +428,7 @@ class MujocoCombatSimulator(BaseSimulator):
         获取派生数据 (按 DATASPEC.md 4)
         
         返回：
-        - 全局对抗信息 (torso_distance, combat_contacts)
+        - 全局对抗信息 (torso_distance, robot_robot_contacts, robot_environment_contacts)
         - 单边视角信息 (robot_a, robot_b)
         """
         # 全局对抗信息
@@ -422,7 +440,7 @@ class MujocoCombatSimulator(BaseSimulator):
         torso_distance = np.linalg.norm(pos_b - pos_a)
         
         # 双方接触
-        combat_contacts = self._extract_combat_contacts()
+        robot_robot_contacts, robot_environment_contacts = self._extract_contacts()
         
         # 单边视角
         robot_a_view = self._get_robot_view('robot_a', 'robot_b')
@@ -430,54 +448,65 @@ class MujocoCombatSimulator(BaseSimulator):
         
         return {
             'torso_distance': np.array([torso_distance], dtype=np.float32),
-            'combat_contacts': combat_contacts,
+            'robot_robot_contacts': robot_robot_contacts,
+            'robot_environment_contacts': robot_environment_contacts,
             'robot_a': robot_a_view,
             'robot_b': robot_b_view
         }
     
-    def _extract_combat_contacts(self) -> List[Dict]:
-        """提取双方机器人之间的接触"""
-        suffix_a = self._robot_cache['robot_a']['suffix']
-        suffix_b = self._robot_cache['robot_b']['suffix']
+    def _extract_contacts(self) -> Tuple[List[Dict], List[Dict]]:
+        """提取机器人之间以及机器人与环境之间的接触"""
+        body_ids_a = self._robot_cache['robot_a']['body_ids']
+        body_ids_b = self._robot_cache['robot_b']['body_ids']
         
-        contacts = []
+        robot_robot_contacts = []
+        robot_environment_contacts = []
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
             geom1 = contact.geom1
             geom2 = contact.geom2
             
+            body1_id = self.model.geom_bodyid[geom1]
+            body2_id = self.model.geom_bodyid[geom2]
             geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1)
             geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2)
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id) or ''
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id) or ''
             
-            if not geom1_name or not geom2_name:
-                continue
+            c_array = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, i, c_array)
+            force = float(np.linalg.norm(c_array[:3]))
             
-            # 判断归属
-            is_a1 = geom1_name.endswith(suffix_a)
-            is_b1 = geom1_name.endswith(suffix_b)
-            is_a2 = geom2_name.endswith(suffix_a)
-            is_b2 = geom2_name.endswith(suffix_b)
+            is_a1 = body1_id in body_ids_a
+            is_b1 = body1_id in body_ids_b
+            is_a2 = body2_id in body_ids_a
+            is_b2 = body2_id in body_ids_b
             
-            # 只保留双方之间的碰撞
             if (is_a1 and is_b2) or (is_b1 and is_a2):
-                # 计算接触力
-                c_array = np.zeros(6, dtype=np.float64)
-                mujoco.mj_contactForce(self.model, self.data, i, c_array)
-                force = float(np.linalg.norm(c_array[:3]))
-                
-                # 提取body名称
-                body1_id = self.model.geom_bodyid[geom1]
-                body2_id = self.model.geom_bodyid[geom2]
-                body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id)
-                body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id)
-                
-                contacts.append({
+                robot_robot_contacts.append({
                     'body_a': body1_name if is_a1 else body2_name,
                     'body_b': body2_name if is_b2 else body1_name,
                     'force': force
                 })
+            elif (is_a1 or is_b1) != (is_a2 or is_b2):
+                if is_a1 or is_b1:
+                    robot_environment_contacts.append({
+                        'robot': 'robot_a' if is_a1 else 'robot_b',
+                        'body': body1_name,
+                        'environment_geom': geom2_name or '',
+                        'environment_body': body2_name,
+                        'force': force
+                    })
+                else:
+                    robot_environment_contacts.append({
+                        'robot': 'robot_a' if is_a2 else 'robot_b',
+                        'body': body2_name,
+                        'environment_geom': geom1_name or '',
+                        'environment_body': body1_name,
+                        'force': force
+                    })
         
-        return contacts
+        return robot_robot_contacts, robot_environment_contacts
     
     def _get_robot_view(self, robot_id: str, opponent_id: str) -> Dict[str, Any]:
         """

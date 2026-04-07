@@ -163,9 +163,9 @@ class CombatScoringPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         derived_state = ctx.accessor.get_derived_state()
-        # 使用新的 combat_contacts 接口（按照 DATASPEC.md 规范）
+        # 使用新的 robot_robot_contacts 接口（按照 DATASPEC.md 规范）
         # 格式: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
-        contacts = derived_state.get('combat_contacts', [])
+        contacts = derived_state.get('robot_robot_contacts', [])
 
         for contact in contacts:
             # 新格式使用 body_a 和 body_b
