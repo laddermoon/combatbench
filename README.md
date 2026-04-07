@@ -102,7 +102,7 @@ You do not need to adopt the baseline as-is. The point is that the framework and
 
 ```bash
 # Clone the repository
-# git clone https://github.com/your-org/combatbench.git
+# git clone https://github.com/laddermoon/combatbench.git
 # cd combatbench
 
 # Install dependencies (ensure you have mujoco installed)
@@ -141,7 +141,6 @@ Additional project documents:
 
 - [Combat Rules](docs/RULE.md) / [中文规则](docs/RULE_zh.md)
 - [Environment Details](docs/ENVIRONMENT.md) / [中文环境](docs/ENVIRONMENT_zh.md)
-- [Robot Specifications](docs/ROBOT.md) / [中文机器人](docs/ROBOT_zh.md)
 - [Policy Submission Guide](docs/SUBMISSION_GUIDE.md) / [中文提交指南](docs/SUBMISSION_GUIDE_zh.md)
 
 ## Policy Interface

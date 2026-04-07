@@ -102,7 +102,7 @@ CombatBench 最有价值的资产是 `envs/` 系统。
 
 ```bash
 # 克隆仓库
-# git clone https://github.com/your-org/combatbench.git
+# git clone https://github.com/laddermoon/combatbench.git
 # cd combatbench
 
 # 安装依赖（确保已安装 mujoco）
@@ -141,7 +141,6 @@ python envs/humanoid21/run_round.py \
 
 - [对战规则](docs/RULE.md) / [中文规则](docs/RULE_zh.md)
 - [环境详情](docs/ENVIRONMENT.md) / [中文环境](docs/ENVIRONMENT_zh.md)
-- [机器人规格](docs/ROBOT.md) / [中文机器人](docs/ROBOT_zh.md)
 - [策略提交指南](docs/SUBMISSION_GUIDE.md) / [中文提交指南](docs/SUBMISSION_GUIDE_zh.md)
 
 ## 策略接口
