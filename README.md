@@ -2,29 +2,91 @@
 
 ![CombatBench Hero](assets/images/hero.png)
 
-CombatBench is the open-source simulation environment for humanoid robot combat. It provides a standardized MuJoCo-based environment where two 21-DOF humanoid robots can fight against each other.
+CombatBench is an open-source humanoid combat simulation stack built on MuJoCo. It is not just a single benchmark scene or a thin Gym wrapper: it is a reusable **environment runtime framework** for building robot-vs-robot tasks, and `humanoid21` is the first complete implementation living on top of it.
 
-## Features
+If you want a sandbox where you can iterate on control, observation design, world rules, training adapters, and evaluation protocols without rewriting the whole environment every time, CombatBench is designed for that.
 
-- **21-DOF Humanoid Robots**: High-fidelity robots with ankle joints for realistic combat movements.
-- **Official Combat Arena**: Standardized 6.1m x 6.1m closed room with proper lighting and camera setups.
-- **Gymnasium Interface**: Standard RL environment interface (`reset`, `step`, etc.).
-- **Headless Rendering**: EGL-based fast rendering for generating combat replay videos.
-- **Extensibility**: Designed to support future robots (like Unitree G1) and pure vision-based RL observation spaces.
+## Why CombatBench
 
+- **Framework first**: the `envs/framework` layer separates physics backend, world rules, runtime scheduling, and observer outputs.
+- **Robot-ready contracts**: state, action, observation, and derived signals are explicit interfaces rather than ad-hoc arrays.
+- **Built for experimentation**: the same runtime can support RL training, scripted baselines, ablations, evaluation matches, and future new robots.
+- **Humanoid combat as a stress test**: balance, contact, disturbance, asymmetric tactics, and self-play all show up in one environment.
+- **Practical media loop**: headless EGL rendering makes it straightforward to generate replay videos and debugging views.
+
+## The `envs/` System: What Makes It Interesting
+
+CombatBench’s most valuable asset is the `envs/` system.
+
+It is designed around a simple idea: **keep the physics sandbox pure, and make everything else composable**.
+
+### `framework`: the reusable core
+
+The `envs/framework` layer is the main reason CombatBench is more than a one-off benchmark.
+
+- **`BaseSimulator`** keeps the backend focused on physics stepping, state read/write, and action application.
+- **World plugins** handle objective world logic such as constraints, adjudication, events, and metrics.
+- **Observer plugins** build task-facing outputs such as observation, reward, debug views, or analysis features.
+- **`EnvRuntime`** acts as the stable public runtime entrance, orchestrating both-sided actions and the full episode lifecycle.
+
+For you as a user, this opens up a lot of room:
+
+- **Train different algorithms on the same runtime** without rewriting the environment core.
+- **Swap observation definitions** while keeping the same combat world and simulator.
+- **Add new rule plugins** for non-fall, hit-point systems, disturbances, or curriculum phases.
+- **Build evaluators and visualization tools** directly on top of the standard data access interfaces.
+- **Port to future robots or backends** while preserving most of the surrounding runtime logic.
+
+This means CombatBench can be used as:
+
+- **an RL benchmark**
+- **a robotics control sandbox**
+- **a self-play experimentation platform**
+- **a match evaluation and replay system**
+
+## `humanoid21`: the first complete environment implementation
+
+`envs/humanoid21` is the current flagship implementation.
+
+It packages a 21-DOF humanoid combat environment around the new framework contracts, with a design that is intentionally friendly to both learning systems and environment engineering.
+
+- **Normalized position control** keeps the action interface stable and bounded.
+- **Structured data contracts** separate static data, core physical state, and derived learning-facing signals.
+- **Ego-centric state design** makes the observation space more reusable across tactics and spawn layouts.
+- **Plugin-oriented runtime** keeps combat logic, observation logic, and simulator mechanics decoupled.
+- **Dual-agent setting from day one** makes it natural to support self-play and evaluator-vs-policy workflows.
+
+In practical terms, `humanoid21` gives you a place to imagine and build:
+
+- **standing / recovery / anti-fall controllers**
+- **contact-aware locomotion and striking policies**
+- **self-play curricula from survival to aggressive combat**
+- **centralized critic or decentralized actor setups**
+- **future vision-only or partial-observation variants**
+
+## Baseline: a starting point, not a ceiling
+
+The `baseline/` directory is where CombatBench becomes immediately usable.
+
+The current `baseline/humanoid21` track provides a concrete GRPO-based starting path for training humanoid policies, beginning from the most fundamental capability: **standing**, then moving toward **disturbance-robust standing**.
+
+This is useful both as:
+
+- **a sanity check** for the environment stack
+- **a reference implementation** for training integration
+- **a launchpad** for stronger combat-oriented policies
+
+You do not need to adopt the baseline as-is. The point is that the framework and the baseline already meet in a way that makes your next experiment cheaper to start.
 
 ## Project Structure
 
-- `assets/`: Simulation XML models, textures, and meshes.
-- `core/`: Core engine components (Physics, Collision Detection, Scoring, Robot Kinematics).
-- `envs/`: Gymnasium environment wrappers (`CombatGymEnv`, `RoundRunner`).
-- `policy/`: Policy interface and reference implementations.
-  - `BaseCombatPolicy`: Abstract base class for all combat policies
-  - `RandomCombatPolicy`: Random action policy for testing
-  - `StandingCombatPolicy`: Standing still policy (no movement)
-- `tools/`: Utilities for running rounds (`run_round.py`).
-- `baseline/`: Baseline training implementations (Stable-Baselines3, self-play).
-- `docs/`: Detailed documentation on rules, robot specs, and observation spaces.
+- `assets/`: MuJoCo XML models, textures, meshes, and media assets.
+- `envs/`: Environment runtime framework and concrete environments.
+  - `framework/`: backend contracts, runtime orchestration, plugin system.
+  - `humanoid21/`: current 21-DOF humanoid implementation.
+- `policy/`: policy interface and reference policies.
+- `baseline/`: training baselines and reproducible starting points.
+- `docs/`: benchmark rules and supporting design documents.
 
 ## Installation
 
@@ -49,28 +111,37 @@ pip install mujoco gymnasium numpy opencv-python imageio egl
 
 ## Quick Start
 
-Run a combat round between two policies and save as video. The default policy (no arguments) is StandingCombatPolicy which keeps the robot in place.
+Run a round in the current `humanoid21` environment and save a video:
 
 ```bash
-# Run with no policies (both standing)
-python tools/run_round.py --duration 10 --video test.mp4
+# Run with no explicit policies (default standing behavior)
+python envs/humanoid21/run_round.py --duration 10 --video test.mp4
 
-# Run with random policy
-python tools/run_round.py --policy-a combatbench.policy.RandomCombatPolicy --duration 5 --video test.mp4
+# Run with a random policy
+python envs/humanoid21/run_round.py --policy-a random --duration 5 --video test.mp4
 
 # Run two different policies
-python tools/run_round.py \
-  --policy-a combatbench.policy.RandomCombatPolicy \
-  --policy-b combatbench.policy.StandingCombatPolicy \
+python envs/humanoid21/run_round.py \
+  --policy-a random \
+  --policy-b standing \
   --duration 15 --video match.mp4
 ```
 
-## Documentation
+## Key Documentation
+
+If you want the design contracts instead of a README summary, go straight to these documents:
+
+- **Framework architecture**: [`envs/framework/DESIGN.md`](envs/framework/DESIGN.md)
+- **Humanoid21 observation design**: [`envs/humanoid21/OBSERVATION_zh.md`](envs/humanoid21/OBSERVATION_zh.md)
+- **Humanoid21 data contract**: [`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md)
+- **Humanoid21 control contract**: [`envs/humanoid21/CONTROLSPEC.md`](envs/humanoid21/CONTROLSPEC.md)
+- **Humanoid21 baseline guide**: [`baseline/humanoid21/README.md`](baseline/humanoid21/README.md)
+
+Additional project documents:
 
 - [Combat Rules](docs/RULE.md) / [中文规则](docs/RULE_zh.md)
 - [Environment Details](docs/ENVIRONMENT.md) / [中文环境](docs/ENVIRONMENT_zh.md)
 - [Robot Specifications](docs/ROBOT.md) / [中文机器人](docs/ROBOT_zh.md)
-- [Observation Space](docs/OBSERVATION.md) / [中文观测](docs/OBSERVATION_zh.md)
 - [Policy Submission Guide](docs/SUBMISSION_GUIDE.md) / [中文提交指南](docs/SUBMISSION_GUIDE_zh.md)
 
 ## Policy Interface
