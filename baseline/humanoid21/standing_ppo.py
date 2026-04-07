@@ -329,7 +329,7 @@ def _compute_dense_reward(
     height = float(reward_info["height"])
     uprightness = float(reward_info["uprightness"])
     current_feet_positions = _get_feet_world_positions(runtime, controlled_agent)
-    feet_displacement = current_feet_positions[:, :2] - reference_feet_positions[:, :2]
+    feet_displacement = current_feet_positions - reference_feet_positions
     foot_position_penalty = float(np.mean(np.sum(feet_displacement ** 2, axis=-1)))
     action_energy = float(np.mean(np.square(action)))
     joint_velocity_energy = float(np.mean(np.square(core_state["joint_vel_norm"])))
@@ -343,7 +343,18 @@ def _compute_dense_reward(
     }
     total_reward = float(sum(reward_terms.values()))
     reward_terms["total_reward"] = total_reward
+    reward_terms["foot_position_penalty"] = foot_position_penalty
+    reward_terms["action_energy"] = action_energy
+    reward_terms["joint_velocity_energy"] = joint_velocity_energy
     return total_reward, reward_terms
+
+
+def _mean_reward_terms(episodes: List[Dict[str, Any]]) -> Dict[str, float]:
+    all_keys = sorted({key for episode in episodes for key in episode.get("mean_reward_terms", {}).keys()})
+    return {
+        key: float(np.mean([float(episode.get("mean_reward_terms", {}).get(key, 0.0)) for episode in episodes]))
+        for key in all_keys
+    }
 
 
 def _act_with_value(
@@ -455,6 +466,7 @@ class PPOTrainer:
                 seeds = [SEED + update_index * EPISODES_PER_UPDATE + episode_index for episode_index in range(EPISODES_PER_UPDATE)]
                 episodes = self._collect_episodes(seeds=seeds, deterministic=False, worker_limit=ROLLOUT_WORKERS)
                 update_stats = self._update_policy(episodes)
+                mean_reward_terms = _mean_reward_terms(episodes)
                 mean_episode_reward = float(np.mean([episode["episode_reward"] for episode in episodes]))
                 mean_episode_length = float(np.mean([episode["steps"] for episode in episodes]))
                 fall_rate = float(np.mean([1.0 if episode["reward_info"]["is_fallen"] else 0.0 for episode in episodes]))
@@ -467,6 +479,7 @@ class PPOTrainer:
                     "train_fall_rate": fall_rate,
                     "train_mean_height": mean_height,
                     "train_mean_uprightness": mean_uprightness,
+                    **{f"train_{key}": value for key, value in mean_reward_terms.items()},
                     **update_stats,
                 }
                 if update_index % EVAL_INTERVAL == 0:
@@ -532,12 +545,14 @@ class PPOTrainer:
     def evaluate_actor(self) -> Dict[str, float]:
         seeds = [SEED + 100000 + episode_index for episode_index in range(EVAL_EPISODES)]
         episodes = self._collect_episodes(seeds=seeds, deterministic=True, worker_limit=EVAL_WORKERS)
+        reward_terms = _mean_reward_terms(episodes)
         return {
             "mean_reward": float(np.mean([episode["episode_reward"] for episode in episodes])),
             "mean_length": float(np.mean([episode["steps"] for episode in episodes])),
             "fall_rate": float(np.mean([1.0 if episode["reward_info"]["is_fallen"] else 0.0 for episode in episodes])),
             "mean_height": float(np.mean([episode["mean_height"] for episode in episodes])),
             "mean_uprightness": float(np.mean([episode["mean_uprightness"] for episode in episodes])),
+            **reward_terms,
         }
 
     def _update_policy(self, episodes: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -671,6 +686,10 @@ class PPOTrainer:
             "train_fall_rate",
             "train_mean_height",
             "train_mean_uprightness",
+            "train_height_reward",
+            "train_uprightness_reward",
+            "train_foot_stability_reward",
+            "train_energy_reward",
             "policy_loss",
             "value_loss",
             "entropy",
@@ -678,7 +697,17 @@ class PPOTrainer:
             "approx_kl",
         ]
         if "eval_mean_reward" in record:
-            keys.extend(["eval_mean_reward", "eval_mean_length", "eval_fall_rate", "eval_mean_height", "eval_mean_uprightness"])
+            keys.extend([
+                "eval_mean_reward",
+                "eval_mean_length",
+                "eval_fall_rate",
+                "eval_mean_height",
+                "eval_mean_uprightness",
+                "eval_height_reward",
+                "eval_uprightness_reward",
+                "eval_foot_stability_reward",
+                "eval_energy_reward",
+            ])
         message = " | ".join(f"{key}={record[key]:.4f}" if isinstance(record[key], float) else f"{key}={record[key]}" for key in keys)
         print(message, flush=True)
 
@@ -790,6 +819,13 @@ def collect_episode(
     if not observations:
         _, _, bootstrap_value = _act_with_value(actor, critic, obs, device, deterministic=True)
     episode_reward = float(np.sum(rewards, dtype=np.float32))
+    mean_reward_terms: Dict[str, float] = {}
+    if reward_terms_history:
+        reward_term_keys = sorted({key for reward_terms in reward_terms_history for key in reward_terms.keys()})
+        mean_reward_terms = {
+            key: float(np.mean([float(reward_terms.get(key, 0.0)) for reward_terms in reward_terms_history]))
+            for key in reward_term_keys
+        }
     observations_array = np.asarray(observations, dtype=np.float32).reshape(len(observations), OBS_DIM)
     actions_array = np.asarray(actions, dtype=np.float32).reshape(len(actions), ACTION_DIM)
     log_probs_array = np.asarray(log_probs, dtype=np.float32).reshape(len(log_probs),)
@@ -806,6 +842,7 @@ def collect_episode(
         "episode_reward": episode_reward,
         "mean_height": float(np.mean(heights)) if heights else float(reward_info["height"]),
         "mean_uprightness": float(np.mean(uprightnesses)) if uprightnesses else float(reward_info["uprightness"]),
+        "mean_reward_terms": mean_reward_terms,
         "reward_terms_last": reward_terms_history[-1] if reward_terms_history else {},
         "reward_info": reward_info,
         "controlled_agent": controlled_agent,
