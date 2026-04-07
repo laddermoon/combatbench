@@ -86,12 +86,16 @@ class StandingRewardObserver(BaseObserverPlugin):
         self._step_count = 0
         self._fall_streak = 0
         self._fallen = False
+        self._reference_feet_positions: Optional[np.ndarray] = None
+        self._last_reward_terms: Dict[str, float] = self._zero_reward_terms()
 
     def on_reset(self, ctx: ReadOnlySimContext) -> None:
         self._step_count = 0
         self._fall_streak = 0
         self._fallen = False
-        self._output = self._build_output(ctx, is_standing=True)
+        self._reference_feet_positions = self._get_feet_world_positions(ctx)
+        self._last_reward_terms = self._zero_reward_terms()
+        self._output = self._build_output(ctx, is_standing=True, reward_terms=self._last_reward_terms)
 
     def on_post_step(self, ctx: ReadOnlySimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
@@ -108,18 +112,69 @@ class StandingRewardObserver(BaseObserverPlugin):
             self._fall_streak += 1
         if self._fall_streak >= self.fall_grace_steps:
             self._fallen = True
-        self._output = self._build_output(ctx, is_standing=is_standing)
+        reward_terms = self._compute_reward_terms(ctx, height=height, uprightness=uprightness)
+        self._last_reward_terms = reward_terms
+        self._output = self._build_output(ctx, is_standing=is_standing, reward_terms=reward_terms)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
-        self._output = self._build_output(ctx)
+        self._output = self._build_output(ctx, reward_terms=self._last_reward_terms)
 
     def get_output(self) -> Any:
         return self._output
+
+    def _zero_reward_terms(self) -> Dict[str, float]:
+        return {
+            "height_reward": 0.0,
+            "uprightness_reward": 0.0,
+            "foot_stability_reward": 0.0,
+            "energy_reward": 0.0,
+            "fall_penalty": 0.0,
+            "total_reward": 0.0,
+            "foot_position_penalty": 0.0,
+            "action_energy": 0.0,
+            "joint_velocity_energy": 0.0,
+        }
+
+    def _get_feet_world_positions(self, ctx: ReadOnlySimContext) -> np.ndarray:
+        accessor = ctx.accessor
+        cache = accessor._robot_cache[self.agent_id]
+        foot_right_pos = accessor.data.xpos[cache["foot_right_body_id"]].copy()
+        foot_left_pos = accessor.data.xpos[cache["foot_left_body_id"]].copy()
+        return np.stack([foot_right_pos, foot_left_pos], axis=0).astype(np.float32)
+
+    def _compute_reward_terms(
+        self,
+        ctx: ReadOnlySimContext,
+        height: float,
+        uprightness: float,
+    ) -> Dict[str, float]:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        action = np.asarray(ctx.accessor.get_action()[self.agent_id], dtype=np.float32)
+        current_feet_positions = self._get_feet_world_positions(ctx)
+        reference_feet_positions = current_feet_positions if self._reference_feet_positions is None else self._reference_feet_positions
+        feet_displacement = current_feet_positions - reference_feet_positions
+        foot_position_penalty = float(np.mean(np.sum(feet_displacement ** 2, axis=-1)))
+        action_energy = float(np.mean(np.square(action)))
+        joint_velocity_energy = float(np.mean(np.square(core_state["joint_vel_norm"])))
+        reward_terms = {
+            "height_reward": -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2),
+            "uprightness_reward": UPRIGHTNESS_REWARD_WEIGHT * uprightness,
+            "foot_stability_reward": -FOOT_STABILITY_WEIGHT * foot_position_penalty,
+            "energy_reward": -ACTION_ENERGY_WEIGHT * action_energy - JOINT_VEL_ENERGY_WEIGHT * joint_velocity_energy,
+            "fall_penalty": -FALL_PENALTY if bool(self._fallen) else 0.0,
+        }
+        total_reward = float(sum(reward_terms.values()))
+        reward_terms["total_reward"] = total_reward
+        reward_terms["foot_position_penalty"] = foot_position_penalty
+        reward_terms["action_energy"] = action_energy
+        reward_terms["joint_velocity_energy"] = joint_velocity_energy
+        return reward_terms
 
     def _build_output(
         self,
         ctx: ReadOnlySimContext,
         is_standing: Optional[bool] = None,
+        reward_terms: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
         derived_state = ctx.accessor.get_derived_state()[self.agent_id]
@@ -129,6 +184,8 @@ class StandingRewardObserver(BaseObserverPlugin):
             is_standing = bool(
                 height >= self.fall_height_threshold and uprightness >= self.fall_upright_threshold
             )
+        if reward_terms is None:
+            reward_terms = self._zero_reward_terms()
         return {
             "steps": int(self._step_count),
             "height": height,
@@ -136,6 +193,7 @@ class StandingRewardObserver(BaseObserverPlugin):
             "is_standing": bool(is_standing),
             "is_fallen": bool(self._fallen),
             "is_terminated": bool(ctx.is_terminated),
+            **reward_terms,
         }
 
 
@@ -774,7 +832,6 @@ def collect_episode(
     initial_distance = float(rollout_setup["initial_distance"])
     runtime.reset(seed=seed, options={"initial_distance": initial_distance})
     obs = np.asarray(runtime.get_observer_output(f"{controlled_agent}_obs"), dtype=np.float32)
-    reference_feet_positions = _get_feet_world_positions(runtime, controlled_agent)
     observations: List[np.ndarray] = []
     actions: List[np.ndarray] = []
     log_probs: List[float] = []
@@ -794,13 +851,21 @@ def collect_episode(
         else:
             runtime.step(opponent_action, controlled_action)
         reward_info = dict(runtime.get_observer_output(f"{controlled_agent}_reward"))
-        step_reward, reward_terms = _compute_dense_reward(
-            runtime=runtime,
-            controlled_agent=controlled_agent,
-            action=controlled_action,
-            reference_feet_positions=reference_feet_positions,
-            reward_info=reward_info,
-        )
+        step_reward = float(reward_info["total_reward"])
+        reward_terms = {
+            key: float(reward_info[key])
+            for key in [
+                "height_reward",
+                "uprightness_reward",
+                "foot_stability_reward",
+                "energy_reward",
+                "fall_penalty",
+                "total_reward",
+                "foot_position_penalty",
+                "action_energy",
+                "joint_velocity_energy",
+            ]
+        }
         observations.append(obs.copy())
         actions.append(controlled_action.copy())
         values.append(value)
