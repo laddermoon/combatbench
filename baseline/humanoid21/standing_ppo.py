@@ -201,6 +201,13 @@ def _get_actor_hidden_dim() -> int:
     return ACTOR_HIDDEN_DIM
 
 
+def _split_sequence(values: Sequence[int], parts: int) -> List[List[int]]:
+    if not values:
+        return []
+    bounded_parts = max(1, min(parts, len(values)))
+    return [list(chunk) for chunk in np.array_split(np.asarray(values, dtype=np.int64), bounded_parts) if len(chunk) > 0]
+
+
 def _sample_rollout_setup(seed: int) -> Dict[str, Any]:
     rng = np.random.default_rng(seed)
     controlled_agent = "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
