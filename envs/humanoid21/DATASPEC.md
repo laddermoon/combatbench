@@ -49,9 +49,12 @@
 ### 4.1 全局对抗信息 (Shared / Global)
 放置在字典的最外层，供环境或中心化评论家(Critic)使用：
 - **`torso_distance`** (1,): 双方 Torso 之间的欧氏距离。
-- **`combat_contacts`** (List[Dict]): 双方实体之间的物理接触及受力列表。
-  - 格式示例: `{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}`
-  - **规则**: 仅记录双方机器人之间的碰撞，必须排除机器人与自身的接触。
+- **`robot_robot_contacts`** (List[Dict]): 两个机器人之间的物理接触及受力列表。
+  - 格式示例: `{'body_a': 'head_red', 'body_b': 'torso_blue', 'force': 150.0}`
+  - **规则**: 仅记录 `robot_a` 与 `robot_b` 之间的碰撞，必须排除机器人与自身的接触以及机器人与环境的接触。
+- **`robot_environment_contacts`** (List[Dict]): 机器人与环境之间的物理接触及受力列表。
+  - 格式示例: `{'robot': 'robot_a', 'body': 'torso_red', 'environment_geom': '地面', 'environment_body': 'world', 'force': 320.0}`
+  - **规则**: 仅记录机器人与地面、墙面等环境对象的接触，不包含机器人之间的接触。
 
 ### 4.2 单边视角信息 (Per-Robot Views)
 分别放置在 `robot_a` 和 `robot_b` 的键下，供策略网络感知博弈态势。

@@ -22,7 +22,6 @@ from .envs import (
     # Humanoid21
     MujocoCombatSimulator,
     Humanoid21Observer,
-    Humanoid21Rewarder,
     NonFallConstraintPlugin,
     CombatScoringPlugin,
     FrozenRobotPlugin,
