@@ -49,6 +49,7 @@ SEED = 42
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 ROLLOUT_WORKERS = max(1, int(os.environ.get("STANDING_ROLLOUT_WORKERS", str(min(64, max(1, (os.cpu_count() or 1) // 2))))))
 EVAL_WORKERS = max(1, int(os.environ.get("STANDING_EVAL_WORKERS", str(min(ROLLOUT_WORKERS, EVAL_EPISODES)))))
+INIT_MODEL_PATH = os.environ.get("STANDING_TURBULENCE_INIT_MODEL", os.environ.get("STANDING_INIT_MODEL", "")).strip() or None
 
 
 def set_seed(seed: int) -> None:
@@ -194,6 +195,35 @@ def _snapshot_actor_state_dict(actor: Actor) -> Dict[str, torch.Tensor]:
     return {key: value.detach().cpu() for key, value in actor.state_dict().items()}
 
 
+def _load_initial_actor_weights(actor: Actor, model_path: Optional[str]) -> Optional[str]:
+    if model_path is None:
+        return None
+    resolved_model_path = Path(model_path).expanduser()
+    if resolved_model_path.is_dir():
+        resolved_model_path = resolved_model_path / "model.pt"
+    payload = torch.load(resolved_model_path, map_location="cpu")
+    if not isinstance(payload, dict) or "state_dict" not in payload:
+        raise RuntimeError(f"Invalid standing init checkpoint: {resolved_model_path}")
+    checkpoint_state_dict = payload["state_dict"]
+    actor_state_dict = actor.state_dict()
+    filtered_state_dict = {
+        key: value
+        for key, value in checkpoint_state_dict.items()
+        if key in actor_state_dict
+    }
+    incompatible = actor.load_state_dict(filtered_state_dict, strict=False)
+    allowed_missing_keys = {"log_std"}
+    disallowed_missing_keys = [key for key in incompatible.missing_keys if key not in allowed_missing_keys]
+    if disallowed_missing_keys:
+        raise RuntimeError(f"Missing keys in standing init checkpoint: {disallowed_missing_keys}")
+    unexpected_keys = sorted(set(checkpoint_state_dict.keys()) - set(filtered_state_dict.keys()))
+    allowed_unexpected_keys = {"log_std"}
+    disallowed_unexpected_keys = [key for key in unexpected_keys if key not in allowed_unexpected_keys]
+    if disallowed_unexpected_keys:
+        raise RuntimeError(f"Unexpected keys in standing init checkpoint: {disallowed_unexpected_keys}")
+    return str(resolved_model_path)
+
+
 def _sample_rollout_setup(seed: int) -> Dict[str, Any]:
     rng = np.random.default_rng(seed)
     controlled_agent = "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
@@ -259,6 +289,7 @@ class GRPOTrainer:
     def __init__(self, device: torch.device):
         self.device = device
         self.actor = Actor(OBS_DIM, ACTION_DIM, HIDDEN_DIM).to(device)
+        self.init_model_path = _load_initial_actor_weights(self.actor, INIT_MODEL_PATH)
         self.optimizer = torch.optim.Adam(self.actor.parameters(), lr=LEARNING_RATE)
         self.best_eval_reward = -float("inf")
         self.history: List[Dict[str, Any]] = []
@@ -274,6 +305,8 @@ class GRPOTrainer:
         self.checkpoint_dir = self.run_dir / "checkpoints"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._save_config()
+        if self.init_model_path is not None:
+            print(f"initialized_from={self.init_model_path}", flush=True)
 
     def train(self) -> None:
         try:
@@ -430,6 +463,7 @@ class GRPOTrainer:
             "rollout_workers": ROLLOUT_WORKERS,
             "eval_workers": EVAL_WORKERS,
             "seed": SEED,
+            "init_model_path": self.init_model_path,
         }
         with (self.run_dir / "config.json").open("w", encoding="utf-8") as handle:
             json.dump(config, handle, ensure_ascii=False, indent=2)
