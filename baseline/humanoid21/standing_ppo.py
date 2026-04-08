@@ -51,8 +51,10 @@ TARGET_HEIGHT = 1.28
 HEIGHT_REWARD_WEIGHT = 8.0
 UPRIGHTNESS_REWARD_WEIGHT = 2.0
 FOOT_STABILITY_WEIGHT = 1.5
+ROOT_XY_STABILITY_WEIGHT = 0.15
+JOINT_POSE_STABILITY_WEIGHT = 0.015
 ACTION_ENERGY_WEIGHT = 0.03
-JOINT_VEL_ENERGY_WEIGHT = 0.02
+JOINT_VEL_ENERGY_WEIGHT = 0.0015
 FALL_PENALTY = 5.0
 FALL_HEIGHT_THRESHOLD = 1.10
 FALL_UPRIGHT_THRESHOLD = 0.8
@@ -86,14 +88,22 @@ class StandingRewardObserver(BaseObserverPlugin):
         self._step_count = 0
         self._fall_streak = 0
         self._fallen = False
-        self._reference_feet_positions: Optional[np.ndarray] = None
+        self._reference_root_xy: Optional[np.ndarray] = None
+        self._reference_joint_pos: Optional[np.ndarray] = None
+        self._previous_posture_terms: Dict[str, float] = {}
         self._last_reward_terms: Dict[str, float] = self._zero_reward_terms()
 
     def on_reset(self, ctx: ReadOnlySimContext) -> None:
         self._step_count = 0
         self._fall_streak = 0
         self._fallen = False
-        self._reference_feet_positions = self._get_feet_world_positions(ctx)
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
+        self._reference_root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32).copy()
+        self._reference_joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32).copy()
+        self._previous_posture_terms = self._compute_posture_terms(ctx, height=height, uprightness=uprightness)
         self._last_reward_terms = self._zero_reward_terms()
         self._output = self._build_output(ctx, is_standing=True, reward_terms=self._last_reward_terms)
 
@@ -127,20 +137,49 @@ class StandingRewardObserver(BaseObserverPlugin):
             "height_reward": 0.0,
             "uprightness_reward": 0.0,
             "foot_stability_reward": 0.0,
+            "pose_reward": 0.0,
             "energy_reward": 0.0,
             "fall_penalty": 0.0,
             "total_reward": 0.0,
             "foot_position_penalty": 0.0,
             "action_energy": 0.0,
             "joint_velocity_energy": 0.0,
+            "posture_score": 0.0,
+            "root_xy_penalty": 0.0,
+            "joint_pose_penalty": 0.0,
         }
 
-    def _get_feet_world_positions(self, ctx: ReadOnlySimContext) -> np.ndarray:
-        accessor = ctx.accessor
-        cache = accessor._robot_cache[self.agent_id]
-        foot_right_pos = accessor.data.xpos[cache["foot_right_body_id"]].copy()
-        foot_left_pos = accessor.data.xpos[cache["foot_left_body_id"]].copy()
-        return np.stack([foot_right_pos, foot_left_pos], axis=0).astype(np.float32)
+    def _compute_posture_terms(
+        self,
+        ctx: ReadOnlySimContext,
+        height: float,
+        uprightness: float,
+    ) -> Dict[str, float]:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32)
+        joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32)
+        reference_root_xy = root_xy if self._reference_root_xy is None else self._reference_root_xy
+        reference_joint_pos = joint_pos if self._reference_joint_pos is None else self._reference_joint_pos
+        root_xy_penalty = float(np.mean(np.square(root_xy - reference_root_xy)))
+        joint_pose_penalty = float(np.mean(np.square(joint_pos - reference_joint_pos)))
+        joint_velocity_penalty = float(np.mean(np.square(core_state["joint_vel_norm"])))
+        height_score = -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2)
+        uprightness_score = UPRIGHTNESS_REWARD_WEIGHT * uprightness
+        root_xy_score = -ROOT_XY_STABILITY_WEIGHT * root_xy_penalty
+        joint_pose_score = -JOINT_POSE_STABILITY_WEIGHT * joint_pose_penalty
+        joint_velocity_score = -JOINT_VEL_ENERGY_WEIGHT * joint_velocity_penalty
+        total_score = float(height_score + uprightness_score + root_xy_score + joint_pose_score + joint_velocity_score)
+        return {
+            "height_score": float(height_score),
+            "uprightness_score": float(uprightness_score),
+            "root_xy_score": float(root_xy_score),
+            "joint_pose_score": float(joint_pose_score),
+            "joint_velocity_score": float(joint_velocity_score),
+            "total_score": total_score,
+            "root_xy_penalty": root_xy_penalty,
+            "joint_pose_penalty": joint_pose_penalty,
+            "joint_velocity_penalty": joint_velocity_penalty,
+        }
 
     def _compute_reward_terms(
         self,
@@ -148,26 +187,25 @@ class StandingRewardObserver(BaseObserverPlugin):
         height: float,
         uprightness: float,
     ) -> Dict[str, float]:
-        core_state = ctx.accessor.get_core_state()[self.agent_id]
-        action = np.asarray(ctx.accessor.get_action()[self.agent_id], dtype=np.float32)
-        current_feet_positions = self._get_feet_world_positions(ctx)
-        reference_feet_positions = current_feet_positions if self._reference_feet_positions is None else self._reference_feet_positions
-        feet_displacement = current_feet_positions - reference_feet_positions
-        foot_position_penalty = float(np.mean(np.sum(feet_displacement ** 2, axis=-1)))
-        action_energy = float(np.mean(np.square(action)))
-        joint_velocity_energy = float(np.mean(np.square(core_state["joint_vel_norm"])))
+        posture_terms = self._compute_posture_terms(ctx, height=height, uprightness=uprightness)
+        previous_posture_terms = posture_terms if not self._previous_posture_terms else self._previous_posture_terms
         reward_terms = {
-            "height_reward": -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2),
-            "uprightness_reward": UPRIGHTNESS_REWARD_WEIGHT * uprightness,
-            "foot_stability_reward": -FOOT_STABILITY_WEIGHT * foot_position_penalty,
-            "energy_reward": -ACTION_ENERGY_WEIGHT * action_energy - JOINT_VEL_ENERGY_WEIGHT * joint_velocity_energy,
-            "fall_penalty": -FALL_PENALTY if bool(self._fallen) else 0.0,
+            "height_reward": float(posture_terms["height_score"] - previous_posture_terms["height_score"]),
+            "uprightness_reward": float(posture_terms["uprightness_score"] - previous_posture_terms["uprightness_score"]),
+            "foot_stability_reward": float(posture_terms["root_xy_score"] - previous_posture_terms["root_xy_score"]),
+            "pose_reward": float(posture_terms["joint_pose_score"] - previous_posture_terms["joint_pose_score"]),
+            "energy_reward": float(posture_terms["joint_velocity_score"] - previous_posture_terms["joint_velocity_score"]),
+            "fall_penalty": 0.0,
         }
         total_reward = float(sum(reward_terms.values()))
         reward_terms["total_reward"] = total_reward
-        reward_terms["foot_position_penalty"] = foot_position_penalty
-        reward_terms["action_energy"] = action_energy
-        reward_terms["joint_velocity_energy"] = joint_velocity_energy
+        reward_terms["foot_position_penalty"] = float(posture_terms["root_xy_penalty"])
+        reward_terms["action_energy"] = 0.0
+        reward_terms["joint_velocity_energy"] = float(posture_terms["joint_velocity_penalty"])
+        reward_terms["posture_score"] = float(posture_terms["total_score"])
+        reward_terms["root_xy_penalty"] = float(posture_terms["root_xy_penalty"])
+        reward_terms["joint_pose_penalty"] = float(posture_terms["joint_pose_penalty"])
+        self._previous_posture_terms = posture_terms
         return reward_terms
 
     def _build_output(
@@ -359,53 +397,6 @@ class StandingCombatPolicy(BaseCombatPolicy):
 """
     with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
         handle.write(policy_code)
-
-
-def _get_controlled_agent_state(runtime: EnvRuntime, controlled_agent: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    simulator = runtime.simulator
-    core_state = simulator.get_core_state()[controlled_agent]
-    derived_state = simulator.get_derived_state()[controlled_agent]
-    return core_state, derived_state
-
-
-def _get_feet_world_positions(runtime: EnvRuntime, controlled_agent: str) -> np.ndarray:
-    simulator = runtime.simulator
-    cache = simulator._robot_cache[controlled_agent]
-    foot_right_pos = simulator.data.xpos[cache['foot_right_body_id']].copy()
-    foot_left_pos = simulator.data.xpos[cache['foot_left_body_id']].copy()
-    return np.stack([foot_right_pos, foot_left_pos], axis=0).astype(np.float32)
-
-
-def _compute_dense_reward(
-    runtime: EnvRuntime,
-    controlled_agent: str,
-    action: np.ndarray,
-    reference_feet_positions: np.ndarray,
-    reward_info: Dict[str, Any],
-) -> tuple[float, Dict[str, float]]:
-    core_state, _ = _get_controlled_agent_state(runtime, controlled_agent)
-    height = float(reward_info["height"])
-    uprightness = float(reward_info["uprightness"])
-    current_feet_positions = _get_feet_world_positions(runtime, controlled_agent)
-    feet_displacement = current_feet_positions - reference_feet_positions
-    foot_position_penalty = float(np.mean(np.sum(feet_displacement ** 2, axis=-1)))
-    action_energy = float(np.mean(np.square(action)))
-    joint_velocity_energy = float(np.mean(np.square(core_state["joint_vel_norm"])))
-
-    reward_terms = {
-        "height_reward": -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2),
-        "uprightness_reward": UPRIGHTNESS_REWARD_WEIGHT * uprightness,
-        "foot_stability_reward": -FOOT_STABILITY_WEIGHT * foot_position_penalty,
-        "energy_reward": -ACTION_ENERGY_WEIGHT * action_energy - JOINT_VEL_ENERGY_WEIGHT * joint_velocity_energy,
-        "fall_penalty": -FALL_PENALTY if bool(reward_info["is_fallen"]) else 0.0,
-    }
-    total_reward = float(sum(reward_terms.values()))
-    reward_terms["total_reward"] = total_reward
-    reward_terms["foot_position_penalty"] = foot_position_penalty
-    reward_terms["action_energy"] = action_energy
-    reward_terms["joint_velocity_energy"] = joint_velocity_energy
-    return total_reward, reward_terms
-
 
 def _mean_reward_terms(episodes: List[Dict[str, Any]]) -> Dict[str, float]:
     all_keys = sorted({key for episode in episodes for key in episode.get("mean_reward_terms", {}).keys()})
