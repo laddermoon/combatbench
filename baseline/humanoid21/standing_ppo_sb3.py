@@ -311,11 +311,14 @@ def _summarize_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, float]:
 class StandingSelfPlayEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, env_rank: int = 0):
+    def __init__(self, env_rank: int = 0, deterministic_opponent: bool = False):
         super().__init__()
         self.runtime = build_runtime()
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32)
+        self.deterministic_opponent = deterministic_opponent
+        self.policy_model: Optional[PPO] = None
+        self.opponent_model: Optional[PPO] = None
         self._seed_offset = env_rank * 1000000
         self._rng = np.random.default_rng(SEED + self._seed_offset)
         self._controlled_agent = "robot_a"
@@ -326,6 +329,12 @@ class StandingSelfPlayEnv(gym.Env):
         self._heights: List[float] = []
         self._uprightnesses: List[float] = []
         self._reward_terms_history: List[Dict[str, float]] = []
+
+    def set_policy_model(self, model: PPO) -> None:
+        self.policy_model = model
+
+    def load_opponent_model(self, model_path: str) -> None:
+        self.opponent_model = PPO.load(model_path, device="cpu")
 
     def reset(
         self,
@@ -350,7 +359,8 @@ class StandingSelfPlayEnv(gym.Env):
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         controlled_action = np.asarray(action, dtype=np.float32).reshape(ACTION_DIM)
-        opponent_action = np.zeros(ACTION_DIM, dtype=np.float32)
+        opponent_obs = np.asarray(self.runtime.get_observer_output(f"{self._opponent_agent}_obs"), dtype=np.float32)
+        opponent_action = self._predict_action(opponent_obs)
         if self._controlled_agent == "robot_a":
             self.runtime.step(controlled_action, opponent_action)
         else:
@@ -373,6 +383,13 @@ class StandingSelfPlayEnv(gym.Env):
     def close(self) -> None:
         self.runtime.close()
 
+    def _predict_action(self, obs: np.ndarray) -> np.ndarray:
+        model = self.policy_model if self.policy_model is not None else self.opponent_model
+        if model is None:
+            raise RuntimeError("Opponent policy is not initialized")
+        action, _ = model.predict(obs, deterministic=self.deterministic_opponent)
+        return np.asarray(action, dtype=np.float32).reshape(ACTION_DIM)
+
     def _build_episode(self, reward_info: Dict[str, Any]) -> Dict[str, Any]:
         mean_reward_terms = {
             key: float(np.mean([float(reward_terms.get(key, 0.0)) for reward_terms in self._reward_terms_history]))
@@ -390,7 +407,7 @@ class StandingSelfPlayEnv(gym.Env):
 
 def make_env(env_rank: int) -> Any:
     def _factory() -> StandingSelfPlayEnv:
-        return StandingSelfPlayEnv(env_rank=env_rank)
+        return StandingSelfPlayEnv(env_rank=env_rank, deterministic_opponent=False)
     return _factory
 
 
@@ -436,7 +453,7 @@ class StandingSB3Trainer:
         self.rollout_steps_per_env = max(1, self.rollout_steps // self.num_envs)
         self.rollout_steps = self.rollout_steps_per_env * self.num_envs
         self.train_env = SubprocVecEnv([make_env(env_rank) for env_rank in range(self.num_envs)], start_method=VEC_ENV_START_METHOD)
-        self.eval_env = StandingSelfPlayEnv()
+        self.eval_env = StandingSelfPlayEnv(deterministic_opponent=True)
         self.model = PPO(
             policy="MlpPolicy",
             env=self.train_env,
@@ -458,6 +475,9 @@ class StandingSB3Trainer:
             seed=SEED,
             device=str(device),
         )
+        self.opponent_model_path = self.run_dir / "latest_opponent.zip"
+        self.eval_env.set_policy_model(self.model)
+        self._sync_opponent_policy()
         self._save_config()
 
     def train(self) -> None:
@@ -465,6 +485,7 @@ class StandingSB3Trainer:
             for update_index in range(1, MAX_UPDATES + 1):
                 callback = EpisodeStatsCallback()
                 self.model.learn(total_timesteps=self.rollout_steps, reset_num_timesteps=False, progress_bar=False, callback=callback)
+                self._sync_opponent_policy()
                 train_stats = _summarize_episodes(callback.episodes)
                 logger_values = dict(getattr(self.model.logger, "name_to_value", {}))
                 record = {
@@ -552,6 +573,10 @@ class StandingSB3Trainer:
     def _write_history(self) -> None:
         with (self.run_dir / "history.json").open("w", encoding="utf-8") as handle:
             json.dump(self.history, handle, ensure_ascii=False, indent=2)
+
+    def _sync_opponent_policy(self) -> None:
+        self.model.save(self.opponent_model_path)
+        self.train_env.env_method("load_opponent_model", str(self.opponent_model_path))
 
     def _print_record(self, record: Dict[str, Any]) -> None:
         keys = [
