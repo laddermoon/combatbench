@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any, Dict, List, Optional
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
 import torch
 from torch import nn
 
@@ -34,6 +37,8 @@ MINIBATCH_SIZE = 4096
 MAX_UPDATES = 10000
 EVAL_INTERVAL = 5
 EVAL_EPISODES = 16
+NUM_ENVS = max(1, int(os.environ.get("STANDING_SB3_ENVS", str(min(8, max(1, (os.cpu_count() or 1) // 2))))))
+VEC_ENV_START_METHOD = "fork" if sys.platform.startswith("linux") else "spawn"
 LEARNING_RATE = 3e-4
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
@@ -47,9 +52,7 @@ TARGET_HEIGHT = 1.28
 HEIGHT_REWARD_WEIGHT = 8.0
 UPRIGHTNESS_REWARD_WEIGHT = 2.0
 FOOT_STABILITY_WEIGHT = 1.5
-ACTION_ENERGY_WEIGHT = 0.03
 JOINT_VEL_ENERGY_WEIGHT = 0.02
-FALL_PENALTY = 5.0
 FALL_HEIGHT_THRESHOLD = 1.10
 FALL_UPRIGHT_THRESHOLD = 0.8
 FALL_GRACE_STEPS = 3
@@ -122,10 +125,8 @@ class StandingRewardObserver(BaseObserverPlugin):
             "uprightness_reward": 0.0,
             "foot_stability_reward": 0.0,
             "energy_reward": 0.0,
-            "fall_penalty": 0.0,
             "total_reward": 0.0,
             "foot_position_penalty": 0.0,
-            "action_energy": 0.0,
             "joint_velocity_energy": 0.0,
         }
 
@@ -148,19 +149,16 @@ class StandingRewardObserver(BaseObserverPlugin):
         reference_feet_positions = current_feet_positions if self._reference_feet_positions is None else self._reference_feet_positions
         feet_displacement = current_feet_positions - reference_feet_positions
         foot_position_penalty = float(np.mean(np.sum(feet_displacement ** 2, axis=-1)))
-        action_energy = float(np.mean(np.square(action)))
         joint_velocity_energy = float(np.mean(np.square(core_state["joint_vel_norm"])))
         reward_terms = {
             "height_reward": -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2),
             "uprightness_reward": UPRIGHTNESS_REWARD_WEIGHT * uprightness,
             "foot_stability_reward": -FOOT_STABILITY_WEIGHT * foot_position_penalty,
-            "energy_reward": -ACTION_ENERGY_WEIGHT * action_energy - JOINT_VEL_ENERGY_WEIGHT * joint_velocity_energy,
-            "fall_penalty": -FALL_PENALTY if bool(self._fallen) else 0.0,
+            "energy_reward": - JOINT_VEL_ENERGY_WEIGHT * joint_velocity_energy,
         }
         total_reward = float(sum(reward_terms.values()))
         reward_terms["total_reward"] = total_reward
         reward_terms["foot_position_penalty"] = foot_position_penalty
-        reward_terms["action_energy"] = action_energy
         reward_terms["joint_velocity_energy"] = joint_velocity_energy
         return reward_terms
 
@@ -271,10 +269,8 @@ _REWARD_TERM_KEYS = [
     "uprightness_reward",
     "foot_stability_reward",
     "energy_reward",
-    "fall_penalty",
     "total_reward",
     "foot_position_penalty",
-    "action_energy",
     "joint_velocity_energy",
 ]
 
@@ -315,15 +311,13 @@ def _summarize_episodes(episodes: List[Dict[str, Any]]) -> Dict[str, float]:
 class StandingSelfPlayEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, deterministic_opponent: bool):
+    def __init__(self, env_rank: int = 0):
         super().__init__()
         self.runtime = build_runtime()
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32)
-        self.deterministic_opponent = deterministic_opponent
-        self.policy_model: Optional[PPO] = None
-        self.completed_episodes: List[Dict[str, Any]] = []
-        self._rng = np.random.default_rng(SEED)
+        self._seed_offset = env_rank * 1000000
+        self._rng = np.random.default_rng(SEED + self._seed_offset)
         self._controlled_agent = "robot_a"
         self._opponent_agent = "robot_b"
         self._initial_distance = INITIAL_DISTANCE
@@ -333,14 +327,6 @@ class StandingSelfPlayEnv(gym.Env):
         self._uprightnesses: List[float] = []
         self._reward_terms_history: List[Dict[str, float]] = []
 
-    def set_policy_model(self, model: PPO) -> None:
-        self.policy_model = model
-
-    def consume_completed_episodes(self) -> List[Dict[str, Any]]:
-        episodes = list(self.completed_episodes)
-        self.completed_episodes.clear()
-        return episodes
-
     def reset(
         self,
         *,
@@ -349,7 +335,7 @@ class StandingSelfPlayEnv(gym.Env):
     ) -> tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
         if seed is not None:
-            self._rng = np.random.default_rng(seed)
+            self._rng = np.random.default_rng(seed + self._seed_offset)
         self._controlled_agent = "robot_a" if int(self._rng.integers(0, 2)) == 0 else "robot_b"
         self._opponent_agent = "robot_b" if self._controlled_agent == "robot_a" else "robot_a"
         self._initial_distance = float(self._rng.uniform(ROLLOUT_INITIAL_DISTANCE_MIN, ROLLOUT_INITIAL_DISTANCE_MAX))
@@ -364,8 +350,7 @@ class StandingSelfPlayEnv(gym.Env):
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         controlled_action = np.asarray(action, dtype=np.float32).reshape(ACTION_DIM)
-        opponent_obs = np.asarray(self.runtime.get_observer_output(f"{self._opponent_agent}_obs"), dtype=np.float32)
-        opponent_action = self._predict_action(opponent_obs)
+        opponent_action = np.zeros(ACTION_DIM, dtype=np.float32)
         if self._controlled_agent == "robot_a":
             self.runtime.step(controlled_action, opponent_action)
         else:
@@ -382,19 +367,11 @@ class StandingSelfPlayEnv(gym.Env):
         self._reward_terms_history.append(_extract_reward_terms(reward_info))
         info: Dict[str, Any] = {}
         if terminated or truncated:
-            episode = self._build_episode(reward_info)
-            self.completed_episodes.append(episode)
-            info["episode_metrics"] = episode
+            info["episode_metrics"] = self._build_episode(reward_info)
         return next_obs, reward, terminated, bool(truncated), info
 
     def close(self) -> None:
         self.runtime.close()
-
-    def _predict_action(self, obs: np.ndarray) -> np.ndarray:
-        if self.policy_model is None:
-            return np.zeros(ACTION_DIM, dtype=np.float32)
-        action, _ = self.policy_model.predict(obs, deterministic=self.deterministic_opponent)
-        return np.asarray(action, dtype=np.float32).reshape(ACTION_DIM)
 
     def _build_episode(self, reward_info: Dict[str, Any]) -> Dict[str, Any]:
         mean_reward_terms = {
@@ -411,8 +388,26 @@ class StandingSelfPlayEnv(gym.Env):
         }
 
 
+def make_env(env_rank: int) -> Any:
+    def _factory() -> StandingSelfPlayEnv:
+        return StandingSelfPlayEnv(env_rank=env_rank)
+    return _factory
+
+
+class EpisodeStatsCallback(BaseCallback):
+    def __init__(self):
+        super().__init__(verbose=0)
+        self.episodes: List[Dict[str, Any]] = []
+
+    def _on_step(self) -> bool:
+        for info in self.locals.get("infos", []):
+            episode_metrics = info.get("episode_metrics")
+            if episode_metrics is not None:
+                self.episodes.append(dict(episode_metrics))
+        return True
+
+
 def evaluate_actor(env: StandingSelfPlayEnv, model: PPO) -> Dict[str, float]:
-    env.set_policy_model(model)
     episodes: List[Dict[str, Any]] = []
     for episode_index in range(EVAL_EPISODES):
         obs, _ = env.reset(seed=SEED + 100000 + episode_index)
@@ -436,14 +431,17 @@ class StandingSB3Trainer:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.history: List[Dict[str, Any]] = []
         self.best_eval_reward = -float("inf")
+        self.num_envs = NUM_ENVS
         self.rollout_steps = EPISODES_PER_UPDATE * MAX_STEPS
-        self.train_env = StandingSelfPlayEnv(deterministic_opponent=False)
-        self.eval_env = StandingSelfPlayEnv(deterministic_opponent=True)
+        self.rollout_steps_per_env = max(1, self.rollout_steps // self.num_envs)
+        self.rollout_steps = self.rollout_steps_per_env * self.num_envs
+        self.train_env = SubprocVecEnv([make_env(env_rank) for env_rank in range(self.num_envs)], start_method=VEC_ENV_START_METHOD)
+        self.eval_env = StandingSelfPlayEnv()
         self.model = PPO(
             policy="MlpPolicy",
             env=self.train_env,
             learning_rate=LEARNING_RATE,
-            n_steps=self.rollout_steps,
+            n_steps=self.rollout_steps_per_env,
             batch_size=min(MINIBATCH_SIZE, self.rollout_steps),
             n_epochs=UPDATE_EPOCHS,
             gamma=GAMMA,
@@ -460,15 +458,14 @@ class StandingSB3Trainer:
             seed=SEED,
             device=str(device),
         )
-        self.train_env.set_policy_model(self.model)
-        self.eval_env.set_policy_model(self.model)
         self._save_config()
 
     def train(self) -> None:
         try:
             for update_index in range(1, MAX_UPDATES + 1):
-                self.model.learn(total_timesteps=self.rollout_steps, reset_num_timesteps=False, progress_bar=False)
-                train_stats = _summarize_episodes(self.train_env.consume_completed_episodes())
+                callback = EpisodeStatsCallback()
+                self.model.learn(total_timesteps=self.rollout_steps, reset_num_timesteps=False, progress_bar=False, callback=callback)
+                train_stats = _summarize_episodes(callback.episodes)
                 logger_values = dict(getattr(self.model.logger, "name_to_value", {}))
                 record = {
                     "update": update_index,
@@ -519,8 +516,12 @@ class StandingSB3Trainer:
             "algorithm": "stable_baselines3.PPO",
             "control_frequency": CONTROL_FREQUENCY,
             "match_duration_seconds": MATCH_DURATION_SECONDS,
+            "num_envs": self.num_envs,
+            "vec_env_start_method": VEC_ENV_START_METHOD,
             "max_steps": MAX_STEPS,
             "episodes_per_update": EPISODES_PER_UPDATE,
+            "rollout_steps_per_env": self.rollout_steps_per_env,
+            "rollout_steps": self.rollout_steps,
             "update_epochs": UPDATE_EPOCHS,
             "minibatch_size": MINIBATCH_SIZE,
             "max_updates": MAX_UPDATES,
@@ -539,9 +540,7 @@ class StandingSB3Trainer:
             "height_reward_weight": HEIGHT_REWARD_WEIGHT,
             "uprightness_reward_weight": UPRIGHTNESS_REWARD_WEIGHT,
             "foot_stability_weight": FOOT_STABILITY_WEIGHT,
-            "action_energy_weight": ACTION_ENERGY_WEIGHT,
             "joint_vel_energy_weight": JOINT_VEL_ENERGY_WEIGHT,
-            "fall_penalty": FALL_PENALTY,
             "seed": SEED,
         }
         with (self.run_dir / "config.json").open("w", encoding="utf-8") as handle:
