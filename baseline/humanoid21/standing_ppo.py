@@ -213,26 +213,10 @@ class StandingRewardObserver(BaseObserverPlugin):
         ctx: ReadOnlySimContext,
         is_standing: Optional[bool] = None,
         reward_terms: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Any]:
-        core_state = ctx.accessor.get_core_state()[self.agent_id]
-        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
-        height = float(core_state["root_pos"][2])
-        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
-        if is_standing is None:
-            is_standing = bool(
-                height >= self.fall_height_threshold and uprightness >= self.fall_upright_threshold
-            )
+    ) -> float:
         if reward_terms is None:
             reward_terms = self._zero_reward_terms()
-        return {
-            "steps": int(self._step_count),
-            "height": height,
-            "uprightness": uprightness,
-            "is_standing": bool(is_standing),
-            "is_fallen": bool(self._fallen),
-            "is_terminated": bool(ctx.is_terminated),
-            **reward_terms,
-        }
+        return float(reward_terms["total_reward"])
 
 
 class Actor(nn.Module):
