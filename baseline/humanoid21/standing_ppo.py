@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import multiprocessing as mp
 import os
@@ -19,7 +20,7 @@ COMBATBENCH_DIR = Path(__file__).resolve().parents[2]
 if str(COMBATBENCH_DIR) not in sys.path:
     sys.path.insert(0, str(COMBATBENCH_DIR))
 
-from envs.framework import BaseObserverPlugin, EnvRuntime, ReadOnlySimContext
+from envs.framework import BaseObserverPlugin, BasePlugin, EnvRuntime, ReadOnlySimContext, SimContext, TerminationReason
 from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
 
 CONTROL_FREQUENCY = 20
@@ -43,22 +44,25 @@ CLIP_EPS = 0.2
 VALUE_LOSS_COEF = 0.5
 ENTROPY_COEF = 1e-3
 GRAD_CLIP_NORM = 1.0
+TARGET_KL = float(os.environ.get("STANDING_TARGET_KL", "0.05"))
 ACTOR_HIDDEN_DIM = 256
 CRITIC_HIDDEN_DIM = 256
 LOG_STD_MIN = -4.0
 LOG_STD_MAX = 1.0
+STANDING_SCORE_MAX = 1.0
 TARGET_HEIGHT = 1.28
-HEIGHT_REWARD_WEIGHT = 8.0
-UPRIGHTNESS_REWARD_WEIGHT = 2.0
-FOOT_STABILITY_WEIGHT = 1.5
-ROOT_XY_STABILITY_WEIGHT = 0.15
-JOINT_POSE_STABILITY_WEIGHT = 0.015
-ACTION_ENERGY_WEIGHT = 0.03
-JOINT_VEL_ENERGY_WEIGHT = 0.0015
-FALL_PENALTY = 5.0
+HEIGHT_FULL_PENALTY_DELTA = 0.20
+UPRIGHT_TILT_FULL_PENALTY_DEGREES = 30.0
+UPRIGHT_FULL_PENALTY_COSINE = float(np.cos(np.deg2rad(UPRIGHT_TILT_FULL_PENALTY_DEGREES)))
+ROOT_XY_FULL_PENALTY_DISTANCE = 1.5
+JOINT_POSE_FULL_PENALTY_MEAN_ABS = 2 # 0.2
+JOINT_VEL_FULL_PENALTY_MEAN_ABS = 10 # 0.1
 FALL_HEIGHT_THRESHOLD = 1.10
 FALL_UPRIGHT_THRESHOLD = 0.8
 FALL_GRACE_STEPS = 3
+POSTURE_SCORE_VERBOSE = os.environ.get("STANDING_SCORE_VERBOSE", "0") == "1"
+POSTURE_SCORE_VERBOSE_STRIDE = max(1, int(os.environ.get("STANDING_SCORE_VERBOSE_STRIDE", "10")))
+POSTURE_SCORE_VERBOSE_AGENT = os.environ.get("STANDING_SCORE_VERBOSE_AGENT", "robot_a")
 SEED = 42
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 ROLLOUT_WORKERS = max(1, int(os.environ.get("STANDING_ROLLOUT_WORKERS", str(min(64, max(1, (os.cpu_count() or 1) // 2))))))
@@ -76,6 +80,133 @@ class StandingRewardObserver(BaseObserverPlugin):
     def __init__(
         self,
         agent_id: str,
+        verbose: bool = False,
+        verbose_stride: int = 1,
+    ):
+        self.agent_id = agent_id
+        self.verbose = bool(verbose)
+        self.verbose_stride = max(1, int(verbose_stride))
+        self._output = 0.0
+        self._reference_root_xy: Optional[np.ndarray] = None
+        self._reference_joint_pos: Optional[np.ndarray] = None
+        self._last_reward: float = 0.0
+
+    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
+        self._reference_root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32).copy()
+        self._reference_joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32).copy()
+        self._last_reward = self._compute_reward_terms(ctx, height=height, uprightness=uprightness)
+        self._output = self._build_output(self._last_reward)
+
+    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
+        reward = self._compute_reward_terms(ctx, height=height, uprightness=uprightness)
+        self._last_reward = reward
+        self._output = self._build_output(reward)
+
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._output = self._build_output(self._last_reward)
+
+    def get_output(self) -> float:
+        return self._output
+
+    def _compute_posture_terms(
+        self,
+        ctx: ReadOnlySimContext,
+        height: float,
+        uprightness: float,
+        verbose: bool = False,
+    ) -> Dict[str, float]:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32)
+        joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32)
+        reference_root_xy = root_xy if self._reference_root_xy is None else self._reference_root_xy
+        reference_joint_pos = joint_pos if self._reference_joint_pos is None else self._reference_joint_pos
+        root_xy_distance = float(np.linalg.norm(root_xy - reference_root_xy))
+        joint_pose_mean_abs = float(np.mean(np.abs(joint_pos - reference_joint_pos)))
+        joint_velocity_mean_abs = float(np.mean(np.abs(np.asarray(core_state["joint_vel_norm"], dtype=np.float32))))
+        height_deficit = max(0.0, TARGET_HEIGHT - height)
+        tilt_angle_radians = float(np.arccos(np.clip(uprightness, -1.0, 1.0)))
+        tilt_angle_degrees = float(np.degrees(tilt_angle_radians))
+        height_penalty = float((height_deficit / HEIGHT_FULL_PENALTY_DELTA) ** 2)
+        uprightness_penalty = float((tilt_angle_degrees / UPRIGHT_TILT_FULL_PENALTY_DEGREES) ** 2)
+        root_xy_penalty = float((root_xy_distance / ROOT_XY_FULL_PENALTY_DISTANCE) ** 2)
+        joint_pose_penalty = float((joint_pose_mean_abs / JOINT_POSE_FULL_PENALTY_MEAN_ABS) ** 2)
+        joint_velocity_penalty = float((joint_velocity_mean_abs / JOINT_VEL_FULL_PENALTY_MEAN_ABS) ** 2)
+        total_penalty = float(
+            height_penalty
+            + uprightness_penalty
+            + root_xy_penalty
+            + joint_pose_penalty
+            + joint_velocity_penalty
+        )
+        total_score = float(STANDING_SCORE_MAX - total_penalty)
+        if verbose:
+            contribution_values = {
+                "height": abs(float(height_penalty)),
+                "uprightness": abs(float(uprightness_penalty)),
+                "root_xy": abs(float(root_xy_penalty)),
+                "joint_pose": abs(float(joint_pose_penalty)),
+                "joint_velocity": abs(float(joint_velocity_penalty)),
+            }
+            contribution_total = max(float(sum(contribution_values.values())), 1e-8)
+            contribution_ratios = {
+                key: float(value / contribution_total)
+                for key, value in contribution_values.items()
+            }
+            print(
+                f"posture_contrib[{self.agent_id}] step={ctx.episode_step} "
+                f"height={contribution_ratios['height']:.4f} "
+                f"uprightness={contribution_ratios['uprightness']:.4f} "
+                f"root_xy={contribution_ratios['root_xy']:.4f} "
+                f"joint_pose={contribution_ratios['joint_pose']:.4f} "
+                f"joint_velocity={contribution_ratios['joint_velocity']:.4f} "
+                f"penalty=({float(height_penalty):.4f}, {float(uprightness_penalty):.4f}, {float(root_xy_penalty):.4f}, {float(joint_pose_penalty):.4f}, {float(joint_velocity_penalty):.4f}) "
+                f"standing_score={total_score:.4f}",
+                flush=True,
+            )
+        return {
+            "height_penalty": float(height_penalty),
+            "uprightness_penalty": float(uprightness_penalty),
+            "root_xy_penalty": float(root_xy_penalty),
+            "joint_pose_penalty": float(joint_pose_penalty),
+            "joint_velocity_penalty": float(joint_velocity_penalty),
+            "total_score": total_score,
+            "height_deficit": float(height_deficit),
+            "tilt_angle_degrees": float(tilt_angle_degrees),
+            "root_xy_distance": float(root_xy_distance),
+            "joint_pose_mean_abs": float(joint_pose_mean_abs),
+            "joint_velocity_mean_abs": float(joint_velocity_mean_abs),
+        }
+
+    def _compute_reward_terms(
+        self,
+        ctx: ReadOnlySimContext,
+        height: float,
+        uprightness: float,
+    ) -> float:
+        posture_terms = self._compute_posture_terms(
+            ctx,
+            height=height,
+            uprightness=uprightness,
+            verbose=self.verbose and (ctx.episode_step % self.verbose_stride == 0),
+        )
+        return float(posture_terms["total_score"])
+
+    def _build_output(self, reward: float) -> float:
+        return float(reward)
+
+
+class StandingTerminationPlugin(BasePlugin):
+    def __init__(
+        self,
+        agent_id: str,
         fall_height_threshold: float,
         fall_upright_threshold: float,
         fall_grace_steps: int,
@@ -84,30 +215,16 @@ class StandingRewardObserver(BaseObserverPlugin):
         self.fall_height_threshold = fall_height_threshold
         self.fall_upright_threshold = fall_upright_threshold
         self.fall_grace_steps = fall_grace_steps
-        self._output: Dict[str, Any] = {}
-        self._step_count = 0
         self._fall_streak = 0
-        self._fallen = False
-        self._reference_root_xy: Optional[np.ndarray] = None
-        self._reference_joint_pos: Optional[np.ndarray] = None
-        self._previous_posture_terms: Dict[str, float] = {}
-        self._last_reward_terms: Dict[str, float] = self._zero_reward_terms()
 
-    def on_reset(self, ctx: ReadOnlySimContext) -> None:
-        self._step_count = 0
+    @property
+    def name(self) -> str:
+        return f"{self.agent_id}_standing_termination"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
         self._fall_streak = 0
-        self._fallen = False
-        core_state = ctx.accessor.get_core_state()[self.agent_id]
-        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
-        height = float(core_state["root_pos"][2])
-        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0])
-        self._reference_root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32).copy()
-        self._reference_joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32).copy()
-        self._previous_posture_terms = self._compute_posture_terms(ctx, height=height, uprightness=uprightness)
-        self._last_reward_terms = self._zero_reward_terms()
-        self._output = self._build_output(ctx, is_standing=True, reward_terms=self._last_reward_terms)
 
-    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+    def on_post_action_step(self, ctx: SimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
         derived_state = ctx.accessor.get_derived_state()[self.agent_id]
         height = float(core_state["root_pos"][2])
@@ -115,108 +232,9 @@ class StandingRewardObserver(BaseObserverPlugin):
         is_standing = bool(
             height >= self.fall_height_threshold and uprightness >= self.fall_upright_threshold
         )
-        self._step_count += 1
-        if is_standing:
-            self._fall_streak = 0
-        else:
-            self._fall_streak += 1
+        self._fall_streak = 0 if is_standing else self._fall_streak + 1
         if self._fall_streak >= self.fall_grace_steps:
-            self._fallen = True
-        reward_terms = self._compute_reward_terms(ctx, height=height, uprightness=uprightness)
-        self._last_reward_terms = reward_terms
-        self._output = self._build_output(ctx, is_standing=is_standing, reward_terms=reward_terms)
-
-    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
-        self._output = self._build_output(ctx, reward_terms=self._last_reward_terms)
-
-    def get_output(self) -> Any:
-        return self._output
-
-    def _zero_reward_terms(self) -> Dict[str, float]:
-        return {
-            "height_reward": 0.0,
-            "uprightness_reward": 0.0,
-            "foot_stability_reward": 0.0,
-            "pose_reward": 0.0,
-            "energy_reward": 0.0,
-            "fall_penalty": 0.0,
-            "total_reward": 0.0,
-            "foot_position_penalty": 0.0,
-            "action_energy": 0.0,
-            "joint_velocity_energy": 0.0,
-            "posture_score": 0.0,
-            "root_xy_penalty": 0.0,
-            "joint_pose_penalty": 0.0,
-        }
-
-    def _compute_posture_terms(
-        self,
-        ctx: ReadOnlySimContext,
-        height: float,
-        uprightness: float,
-    ) -> Dict[str, float]:
-        core_state = ctx.accessor.get_core_state()[self.agent_id]
-        root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32)
-        joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32)
-        reference_root_xy = root_xy if self._reference_root_xy is None else self._reference_root_xy
-        reference_joint_pos = joint_pos if self._reference_joint_pos is None else self._reference_joint_pos
-        root_xy_penalty = float(np.mean(np.square(root_xy - reference_root_xy)))
-        joint_pose_penalty = float(np.mean(np.square(joint_pos - reference_joint_pos)))
-        joint_velocity_penalty = float(np.mean(np.square(core_state["joint_vel_norm"])))
-        height_score = -HEIGHT_REWARD_WEIGHT * float((height - TARGET_HEIGHT) ** 2)
-        uprightness_score = UPRIGHTNESS_REWARD_WEIGHT * uprightness
-        root_xy_score = -ROOT_XY_STABILITY_WEIGHT * root_xy_penalty
-        joint_pose_score = -JOINT_POSE_STABILITY_WEIGHT * joint_pose_penalty
-        joint_velocity_score = -JOINT_VEL_ENERGY_WEIGHT * joint_velocity_penalty
-        total_score = float(height_score + uprightness_score + root_xy_score + joint_pose_score + joint_velocity_score)
-        return {
-            "height_score": float(height_score),
-            "uprightness_score": float(uprightness_score),
-            "root_xy_score": float(root_xy_score),
-            "joint_pose_score": float(joint_pose_score),
-            "joint_velocity_score": float(joint_velocity_score),
-            "total_score": total_score,
-            "root_xy_penalty": root_xy_penalty,
-            "joint_pose_penalty": joint_pose_penalty,
-            "joint_velocity_penalty": joint_velocity_penalty,
-        }
-
-    def _compute_reward_terms(
-        self,
-        ctx: ReadOnlySimContext,
-        height: float,
-        uprightness: float,
-    ) -> Dict[str, float]:
-        posture_terms = self._compute_posture_terms(ctx, height=height, uprightness=uprightness)
-        previous_posture_terms = posture_terms if not self._previous_posture_terms else self._previous_posture_terms
-        reward_terms = {
-            "height_reward": float(posture_terms["height_score"] - previous_posture_terms["height_score"]),
-            "uprightness_reward": float(posture_terms["uprightness_score"] - previous_posture_terms["uprightness_score"]),
-            "foot_stability_reward": float(posture_terms["root_xy_score"] - previous_posture_terms["root_xy_score"]),
-            "pose_reward": float(posture_terms["joint_pose_score"] - previous_posture_terms["joint_pose_score"]),
-            "energy_reward": float(posture_terms["joint_velocity_score"] - previous_posture_terms["joint_velocity_score"]),
-            "fall_penalty": 0.0,
-        }
-        total_reward = float(sum(reward_terms.values()))
-        reward_terms["total_reward"] = total_reward
-        reward_terms["foot_position_penalty"] = float(posture_terms["root_xy_penalty"])
-        reward_terms["action_energy"] = 0.0
-        reward_terms["joint_velocity_energy"] = float(posture_terms["joint_velocity_penalty"])
-        reward_terms["posture_score"] = float(posture_terms["total_score"])
-        reward_terms["root_xy_penalty"] = float(posture_terms["root_xy_penalty"])
-        reward_terms["joint_pose_penalty"] = float(posture_terms["joint_pose_penalty"])
-        self._previous_posture_terms = posture_terms
-        return reward_terms
-
-    def _build_output(
-        self,
-        ctx: ReadOnlySimContext,
-        is_standing: Optional[bool] = None,
-        reward_terms: Optional[Dict[str, float]] = None,
-    ) -> float:
-        if reward_terms is None:
-            reward_terms = self._zero_reward_terms()
-        return float(reward_terms["total_reward"])
+            ctx.request_termination(TerminationReason.CUSTOM)
 
 
 class Actor(nn.Module):
@@ -382,13 +400,6 @@ class StandingCombatPolicy(BaseCombatPolicy):
     with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
         handle.write(policy_code)
 
-def _mean_reward_terms(episodes: List[Dict[str, Any]]) -> Dict[str, float]:
-    all_keys = sorted({key for episode in episodes for key in episode.get("mean_reward_terms", {}).keys()})
-    return {
-        key: float(np.mean([float(episode.get("mean_reward_terms", {}).get(key, 0.0)) for episode in episodes]))
-        for key in all_keys
-    }
-
 
 def _act_with_value(
     actor: Actor,
@@ -470,7 +481,7 @@ def _collect_episode_chunk(task: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 class PPOTrainer:
-    def __init__(self, device: torch.device):
+    def __init__(self, device: torch.device, resume_from: Optional[Path] = None):
         self.device = device
         self.actor = Actor(OBS_DIM, ACTION_DIM, ACTOR_HIDDEN_DIM).to(device)
         self.critic = Critic(OBS_DIM, CRITIC_HIDDEN_DIM).to(device)
@@ -491,6 +502,9 @@ class PPOTrainer:
         self.policy_dir = self.run_dir / "policy"
         self.checkpoint_dir = self.run_dir / "checkpoints"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.resume_from = resume_from.resolve() if resume_from is not None else None
+        if self.resume_from is not None:
+            self._load_checkpoint(self.resume_from)
         self._save_config()
 
     def train(self) -> None:
@@ -499,20 +513,12 @@ class PPOTrainer:
                 seeds = [SEED + update_index * EPISODES_PER_UPDATE + episode_index for episode_index in range(EPISODES_PER_UPDATE)]
                 episodes = self._collect_episodes(seeds=seeds, deterministic=False, worker_limit=ROLLOUT_WORKERS)
                 update_stats = self._update_policy(episodes)
-                mean_reward_terms = _mean_reward_terms(episodes)
                 mean_episode_reward = float(np.mean([episode["episode_reward"] for episode in episodes]))
                 mean_episode_length = float(np.mean([episode["steps"] for episode in episodes]))
-                fall_rate = float(np.mean([1.0 if episode["reward_info"]["is_fallen"] else 0.0 for episode in episodes]))
-                mean_height = float(np.mean([episode["mean_height"] for episode in episodes]))
-                mean_uprightness = float(np.mean([episode["mean_uprightness"] for episode in episodes]))
                 record = {
                     "update": update_index,
                     "train_mean_reward": mean_episode_reward,
                     "train_mean_length": mean_episode_length,
-                    "train_fall_rate": fall_rate,
-                    "train_mean_height": mean_height,
-                    "train_mean_uprightness": mean_uprightness,
-                    **{f"train_{key}": value for key, value in mean_reward_terms.items()},
                     **update_stats,
                 }
                 if update_index % EVAL_INTERVAL == 0:
@@ -578,14 +584,9 @@ class PPOTrainer:
     def evaluate_actor(self) -> Dict[str, float]:
         seeds = [SEED + 100000 + episode_index for episode_index in range(EVAL_EPISODES)]
         episodes = self._collect_episodes(seeds=seeds, deterministic=True, worker_limit=EVAL_WORKERS)
-        reward_terms = _mean_reward_terms(episodes)
         return {
             "mean_reward": float(np.mean([episode["episode_reward"] for episode in episodes])),
             "mean_length": float(np.mean([episode["steps"] for episode in episodes])),
-            "fall_rate": float(np.mean([1.0 if episode["reward_info"]["is_fallen"] else 0.0 for episode in episodes])),
-            "mean_height": float(np.mean([episode["mean_height"] for episode in episodes])),
-            "mean_uprightness": float(np.mean([episode["mean_uprightness"] for episode in episodes])),
-            **reward_terms,
         }
 
     def _update_policy(self, episodes: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -616,6 +617,9 @@ class PPOTrainer:
         entropies: List[float] = []
         ratios: List[float] = []
         approx_kls: List[float] = []
+        optimizer_steps = 0
+        early_stop = False
+        early_stop_kl = 0.0
         for _ in range(UPDATE_EPOCHS):
             permutation = torch.randperm(total_steps, device=self.device)
             for start in range(0, total_steps, MINIBATCH_SIZE):
@@ -632,22 +636,33 @@ class PPOTrainer:
                 objective = torch.min(ratio * batch_advantage, clipped_ratio * batch_advantage)
                 policy_loss = -objective.mean()
                 value_loss = torch.nn.functional.mse_loss(value_pred, batch_returns)
+                approx_kl = float((batch_old_log_prob - new_log_prob).mean().item())
+                approx_kls.append(approx_kl)
+                if TARGET_KL > 0.0 and approx_kl > TARGET_KL:
+                    early_stop = True
+                    early_stop_kl = approx_kl
+                    break
                 loss = policy_loss + VALUE_LOSS_COEF * value_loss - ENTROPY_COEF * entropy.mean()
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.critic.parameters()), GRAD_CLIP_NORM)
                 self.optimizer.step()
+                optimizer_steps += 1
                 policy_losses.append(float(policy_loss.item()))
                 value_losses.append(float(value_loss.item()))
                 entropies.append(float(entropy.mean().item()))
                 ratios.append(float(ratio.mean().item()))
-                approx_kls.append(float((batch_old_log_prob - new_log_prob).mean().item()))
+            if early_stop:
+                break
         return {
             "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
             "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
             "entropy": float(np.mean(entropies)) if entropies else 0.0,
             "ratio": float(np.mean(ratios)) if ratios else 0.0,
             "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
+            "optimizer_steps": optimizer_steps,
+            "early_stop": int(early_stop),
+            "early_stop_kl": float(early_stop_kl),
         }
 
     def _build_run_dir(self) -> Path:
@@ -676,18 +691,21 @@ class PPOTrainer:
             "value_loss_coef": VALUE_LOSS_COEF,
             "entropy_coef": ENTROPY_COEF,
             "grad_clip_norm": GRAD_CLIP_NORM,
+            "target_kl": TARGET_KL,
             "actor_hidden_dim": ACTOR_HIDDEN_DIM,
             "critic_hidden_dim": CRITIC_HIDDEN_DIM,
+            "standing_score_max": STANDING_SCORE_MAX,
             "target_height": TARGET_HEIGHT,
-            "height_reward_weight": HEIGHT_REWARD_WEIGHT,
-            "uprightness_reward_weight": UPRIGHTNESS_REWARD_WEIGHT,
-            "foot_stability_weight": FOOT_STABILITY_WEIGHT,
-            "action_energy_weight": ACTION_ENERGY_WEIGHT,
-            "joint_vel_energy_weight": JOINT_VEL_ENERGY_WEIGHT,
-            "fall_penalty": FALL_PENALTY,
+            "height_full_penalty_delta": HEIGHT_FULL_PENALTY_DELTA,
+            "upright_tilt_full_penalty_degrees": UPRIGHT_TILT_FULL_PENALTY_DEGREES,
+            "upright_full_penalty_cosine": UPRIGHT_FULL_PENALTY_COSINE,
+            "root_xy_full_penalty_distance": ROOT_XY_FULL_PENALTY_DISTANCE,
+            "joint_pose_full_penalty_mean_abs": JOINT_POSE_FULL_PENALTY_MEAN_ABS,
+            "joint_vel_full_penalty_mean_abs": JOINT_VEL_FULL_PENALTY_MEAN_ABS,
             "rollout_workers": ROLLOUT_WORKERS,
             "eval_workers": EVAL_WORKERS,
             "seed": SEED,
+            "resume_from": str(self.resume_from) if self.resume_from is not None else None,
         }
         with (self.run_dir / "config.json").open("w", encoding="utf-8") as handle:
             json.dump(config, handle, ensure_ascii=False, indent=2)
@@ -701,8 +719,30 @@ class PPOTrainer:
             "critic_hidden_dim": CRITIC_HIDDEN_DIM,
             "state_dict": self.actor.state_dict(),
             "critic_state_dict": self.critic.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
         }
         torch.save(payload, path)
+
+    def _load_checkpoint(self, path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {path}")
+        payload = torch.load(path, map_location=self.device)
+        if int(payload.get("obs_dim", OBS_DIM)) != OBS_DIM:
+            raise ValueError(f"Checkpoint obs_dim mismatch: expected {OBS_DIM}, got {payload.get('obs_dim')}")
+        if int(payload.get("action_dim", ACTION_DIM)) != ACTION_DIM:
+            raise ValueError(f"Checkpoint action_dim mismatch: expected {ACTION_DIM}, got {payload.get('action_dim')}")
+        self.actor.load_state_dict(payload["state_dict"])
+        critic_state_dict = payload.get("critic_state_dict")
+        if critic_state_dict is None:
+            raise ValueError(f"Checkpoint missing critic_state_dict: {path}")
+        self.critic.load_state_dict(critic_state_dict)
+        optimizer_state_dict = payload.get("optimizer_state_dict")
+        if optimizer_state_dict is not None:
+            self.optimizer.load_state_dict(optimizer_state_dict)
+            for state in self.optimizer.state.values():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor):
+                        state[key] = value.to(self.device)
 
     def _export_policy(self, policy_dir: Path, model_path: Path) -> None:
         export_policy_artifacts(model_path, policy_dir)
@@ -716,30 +756,23 @@ class PPOTrainer:
             "update",
             "train_mean_reward",
             "train_mean_length",
-            "train_fall_rate",
-            "train_mean_height",
-            "train_mean_uprightness",
-            "train_height_reward",
-            "train_uprightness_reward",
-            "train_foot_stability_reward",
-            "train_energy_reward",
             "policy_loss",
             "value_loss",
             "entropy",
             "ratio",
             "approx_kl",
         ]
+        if "optimizer_steps" in record:
+            keys.append("optimizer_steps")
+        if record.get("early_stop", 0):
+            keys.extend([
+                "early_stop",
+                "early_stop_kl",
+            ])
         if "eval_mean_reward" in record:
             keys.extend([
                 "eval_mean_reward",
                 "eval_mean_length",
-                "eval_fall_rate",
-                "eval_mean_height",
-                "eval_mean_uprightness",
-                "eval_height_reward",
-                "eval_uprightness_reward",
-                "eval_foot_stability_reward",
-                "eval_energy_reward",
             ])
         message = " | ".join(f"{key}={record[key]:.4f}" if isinstance(record[key], float) else f"{key}={record[key]}" for key in keys)
         print(message, flush=True)
@@ -769,21 +802,32 @@ def build_runtime() -> EnvRuntime:
         "robot_b_obs": Humanoid21Observer("robot_b"),
         "robot_a_reward": StandingRewardObserver(
             agent_id="robot_a",
-            fall_height_threshold=FALL_HEIGHT_THRESHOLD,
-            fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
-            fall_grace_steps=FALL_GRACE_STEPS,
+            verbose=POSTURE_SCORE_VERBOSE and POSTURE_SCORE_VERBOSE_AGENT in {"robot_a", "all"},
+            verbose_stride=POSTURE_SCORE_VERBOSE_STRIDE,
         ),
         "robot_b_reward": StandingRewardObserver(
             agent_id="robot_b",
-            fall_height_threshold=FALL_HEIGHT_THRESHOLD,
-            fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
-            fall_grace_steps=FALL_GRACE_STEPS,
+            verbose=POSTURE_SCORE_VERBOSE and POSTURE_SCORE_VERBOSE_AGENT in {"robot_b", "all"},
+            verbose_stride=POSTURE_SCORE_VERBOSE_STRIDE,
         ),
     }
     runtime = EnvRuntime(
         simulator=simulator,
         observer_plugins=observer_plugins,
-        plugins=[],
+        plugins=[
+            StandingTerminationPlugin(
+                agent_id="robot_a",
+                fall_height_threshold=FALL_HEIGHT_THRESHOLD,
+                fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
+                fall_grace_steps=FALL_GRACE_STEPS,
+            ),
+            StandingTerminationPlugin(
+                agent_id="robot_b",
+                fall_height_threshold=FALL_HEIGHT_THRESHOLD,
+                fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
+                fall_grace_steps=FALL_GRACE_STEPS,
+            ),
+        ],
         phy_steps_per_action=phy_steps_per_action,
         max_steps=MAX_STEPS,
     )
@@ -812,10 +856,6 @@ def collect_episode(
     log_probs: List[float] = []
     values: List[float] = []
     rewards: List[float] = []
-    heights: List[float] = []
-    uprightnesses: List[float] = []
-    reward_terms_history: List[Dict[str, float]] = []
-    reward_info = dict(runtime.get_observer_output(f"{controlled_agent}_reward"))
     bootstrap_value = 0.0
     for _ in range(MAX_STEPS):
         opponent_obs = np.asarray(runtime.get_observer_output(f"{opponent_agent}_obs"), dtype=np.float32)
@@ -825,47 +865,22 @@ def collect_episode(
             runtime.step(controlled_action, opponent_action)
         else:
             runtime.step(opponent_action, controlled_action)
-        reward_info = dict(runtime.get_observer_output(f"{controlled_agent}_reward"))
-        step_reward = float(reward_info["total_reward"])
-        reward_terms = {
-            key: float(reward_info[key])
-            for key in [
-                "height_reward",
-                "uprightness_reward",
-                "foot_stability_reward",
-                "energy_reward",
-                "fall_penalty",
-                "total_reward",
-                "foot_position_penalty",
-                "action_energy",
-                "joint_velocity_energy",
-            ]
-        }
+        step_reward = float(runtime.get_observer_output(f"{controlled_agent}_reward"))
         observations.append(obs.copy())
         actions.append(controlled_action.copy())
         values.append(value)
         rewards.append(step_reward)
-        heights.append(float(reward_info["height"]))
-        uprightnesses.append(float(reward_info["uprightness"]))
-        reward_terms_history.append(reward_terms)
         if log_prob is not None:
             log_probs.append(log_prob)
         obs = np.asarray(runtime.get_observer_output(f"{controlled_agent}_obs"), dtype=np.float32)
         terminated, truncated = runtime.get_termination_flags()
-        if terminated or truncated or reward_info["is_fallen"]:
+        if terminated or truncated:
             bootstrap_value = 0.0
             break
         _, _, bootstrap_value = _act_with_value(actor, critic, obs, device, deterministic=True)
     if not observations:
         _, _, bootstrap_value = _act_with_value(actor, critic, obs, device, deterministic=True)
     episode_reward = float(np.sum(rewards, dtype=np.float32))
-    mean_reward_terms: Dict[str, float] = {}
-    if reward_terms_history:
-        reward_term_keys = sorted({key for reward_terms in reward_terms_history for key in reward_terms.keys()})
-        mean_reward_terms = {
-            key: float(np.mean([float(reward_terms.get(key, 0.0)) for reward_terms in reward_terms_history]))
-            for key in reward_term_keys
-        }
     observations_array = np.asarray(observations, dtype=np.float32).reshape(len(observations), OBS_DIM)
     actions_array = np.asarray(actions, dtype=np.float32).reshape(len(actions), ACTION_DIM)
     log_probs_array = np.asarray(log_probs, dtype=np.float32).reshape(len(log_probs),)
@@ -880,20 +895,22 @@ def collect_episode(
         "bootstrap_value": float(bootstrap_value),
         "steps": len(observations),
         "episode_reward": episode_reward,
-        "mean_height": float(np.mean(heights)) if heights else float(reward_info["height"]),
-        "mean_uprightness": float(np.mean(uprightnesses)) if uprightnesses else float(reward_info["uprightness"]),
-        "mean_reward_terms": mean_reward_terms,
-        "reward_terms_last": reward_terms_history[-1] if reward_terms_history else {},
-        "reward_info": reward_info,
         "controlled_agent": controlled_agent,
         "initial_distance": initial_distance,
     }
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume-from", type=Path, default=None)
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    trainer = PPOTrainer(device=device)
+    trainer = PPOTrainer(device=device, resume_from=args.resume_from)
     trainer.train()
     print(f"run_dir={trainer.run_dir}", flush=True)
     print(f"policy_dir={trainer.policy_dir}", flush=True)
