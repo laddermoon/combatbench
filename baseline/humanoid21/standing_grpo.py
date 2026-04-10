@@ -31,6 +31,7 @@ ROLLOUT_INITIAL_DISTANCE_MIN = 1.5
 ROLLOUT_INITIAL_DISTANCE_MAX = 3.5
 ACTION_DIM = Humanoid21Observer.ACTION_DIM
 OBS_DIM = Humanoid21Observer.OBS_DIM
+GROUP_SIZE = max(1, int(os.environ.get("STANDING_GROUP_SIZE", "8")))
 EPISODES_PER_UPDATE = 256 # 1024
 UPDATE_EPOCHS = 4
 MINIBATCH_SIZE = 4096 # 32768
@@ -38,15 +39,11 @@ MAX_UPDATES = 10000
 EVAL_INTERVAL = 5
 EVAL_EPISODES = 16
 LEARNING_RATE = 3e-5
-GAMMA = 0.99
-GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
-VALUE_LOSS_COEF = 0.5
 ENTROPY_COEF = 1e-3
 GRAD_CLIP_NORM = 1.0
 TARGET_KL = float(os.environ.get("STANDING_TARGET_KL", "0.05"))
 ACTOR_HIDDEN_DIM = 256
-CRITIC_HIDDEN_DIM = 256
 LOG_STD_MIN = -4.0
 LOG_STD_MAX = 1.0
 STANDING_SCORE_MAX = 1.0
@@ -401,16 +398,14 @@ class StandingCombatPolicy(BaseCombatPolicy):
         handle.write(policy_code)
 
 
-def _act_with_value(
+def _act(
     actor: Actor,
-    critic: Critic,
     obs: np.ndarray,
     device: torch.device,
     deterministic: bool,
-) -> tuple[np.ndarray, Optional[float], float]:
+) -> tuple[np.ndarray, Optional[float]]:
     obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
     with torch.no_grad():
-        value = critic(obs_tensor).item()
         if deterministic:
             action = actor.deterministic_action(obs_tensor)
             log_prob = None
@@ -418,28 +413,12 @@ def _act_with_value(
             action, log_prob = actor.sample_action(obs_tensor)
     action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
     if log_prob is None:
-        return action_np, None, float(value)
-    return action_np, float(log_prob.item()), float(value)
-
-
-class Critic(nn.Module):
-    def __init__(self, obs_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.net(obs).squeeze(-1)
+        return action_np, None
+    return action_np, float(log_prob.item())
 
 
 _ROLLOUT_RUNTIME: Optional[EnvRuntime] = None
 _ROLLOUT_ACTOR: Optional[Actor] = None
-_ROLLOUT_CRITIC: Optional[Critic] = None
 _CPU_DEVICE = torch.device("cpu")
 
 
@@ -450,28 +429,23 @@ def _limit_worker_threads() -> None:
 
 
 def _init_rollout_worker() -> None:
-    global _ROLLOUT_RUNTIME, _ROLLOUT_ACTOR, _ROLLOUT_CRITIC
+    global _ROLLOUT_RUNTIME, _ROLLOUT_ACTOR
     _limit_worker_threads()
     _ROLLOUT_RUNTIME = build_runtime()
     _ROLLOUT_ACTOR = Actor(OBS_DIM, ACTION_DIM, ACTOR_HIDDEN_DIM).to(_CPU_DEVICE)
     _ROLLOUT_ACTOR.eval()
-    _ROLLOUT_CRITIC = Critic(OBS_DIM, CRITIC_HIDDEN_DIM).to(_CPU_DEVICE)
-    _ROLLOUT_CRITIC.eval()
 
 
 def _collect_episode_chunk(task: Dict[str, Any]) -> List[Dict[str, Any]]:
-    global _ROLLOUT_RUNTIME, _ROLLOUT_ACTOR, _ROLLOUT_CRITIC
-    if _ROLLOUT_RUNTIME is None or _ROLLOUT_ACTOR is None or _ROLLOUT_CRITIC is None:
+    global _ROLLOUT_RUNTIME, _ROLLOUT_ACTOR
+    if _ROLLOUT_RUNTIME is None or _ROLLOUT_ACTOR is None:
         _init_rollout_worker()
     _ROLLOUT_ACTOR.load_state_dict(task["actor_state_dict"])
     _ROLLOUT_ACTOR.eval()
-    _ROLLOUT_CRITIC.load_state_dict(task["critic_state_dict"])
-    _ROLLOUT_CRITIC.eval()
     return [
         collect_episode(
             _ROLLOUT_RUNTIME,
             _ROLLOUT_ACTOR,
-            _ROLLOUT_CRITIC,
             _CPU_DEVICE,
             deterministic=bool(task["deterministic"]),
             seed=int(seed),
@@ -480,15 +454,11 @@ def _collect_episode_chunk(task: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-class PPOTrainer:
+class GRPOTrainer:
     def __init__(self, device: torch.device, resume_from: Optional[Path] = None):
         self.device = device
         self.actor = Actor(OBS_DIM, ACTION_DIM, ACTOR_HIDDEN_DIM).to(device)
-        self.critic = Critic(OBS_DIM, CRITIC_HIDDEN_DIM).to(device)
-        self.optimizer = torch.optim.Adam(
-            list(self.actor.parameters()) + list(self.critic.parameters()),
-            lr=LEARNING_RATE,
-        )
+        self.optimizer = torch.optim.Adam(self.actor.parameters(), lr=LEARNING_RATE)
         self.best_eval_reward = -float("inf")
         self.history: List[Dict[str, Any]] = []
         self.train_runtime = build_runtime() if ROLLOUT_WORKERS == 1 else None
@@ -512,7 +482,7 @@ class PPOTrainer:
             for update_index in range(1, MAX_UPDATES + 1):
                 seeds = [SEED + update_index * EPISODES_PER_UPDATE + episode_index for episode_index in range(EPISODES_PER_UPDATE)]
                 episodes = self._collect_episodes(seeds=seeds, deterministic=False, worker_limit=ROLLOUT_WORKERS)
-                update_stats = self._update_policy(episodes)
+                update_stats = self._update_actor(episodes)
                 mean_episode_reward = float(np.mean([episode["episode_reward"] for episode in episodes]))
                 mean_episode_length = float(np.mean([episode["steps"] for episode in episodes]))
                 record = {
@@ -560,16 +530,14 @@ class PPOTrainer:
             if self.train_runtime is None:
                 self.train_runtime = build_runtime()
             return [
-                collect_episode(self.train_runtime, self.actor, self.critic, self.device, deterministic=deterministic, seed=int(seed))
+                collect_episode(self.train_runtime, self.actor, self.device, deterministic=deterministic, seed=int(seed))
                 for seed in seeds
             ]
         actor_state_dict = _snapshot_module_state_dict(self.actor)
-        critic_state_dict = _snapshot_module_state_dict(self.critic)
         seed_chunks = _split_sequence(list(seeds), max(1, min(worker_limit, ROLLOUT_WORKERS)))
         tasks = [
             {
                 "actor_state_dict": actor_state_dict,
-                "critic_state_dict": critic_state_dict,
                 "deterministic": deterministic,
                 "seeds": seed_chunk,
             }
@@ -589,31 +557,22 @@ class PPOTrainer:
             "mean_length": float(np.mean([episode["steps"] for episode in episodes])),
         }
 
-    def _update_policy(self, episodes: List[Dict[str, Any]]) -> Dict[str, float]:
-        advantage_batches: List[np.ndarray] = []
-        return_batches: List[np.ndarray] = []
-        for episode in episodes:
-            advantages, returns = _compute_gae(
-                rewards=np.asarray(episode["rewards"], dtype=np.float32),
-                values=np.asarray(episode["values"], dtype=np.float32),
-                bootstrap_value=float(episode["bootstrap_value"]),
-            )
-            advantage_batches.append(advantages)
-            return_batches.append(returns)
+    def _update_actor(self, episodes: List[Dict[str, Any]]) -> Dict[str, float]:
+        episode_rewards = np.asarray([episode["episode_reward"] for episode in episodes], dtype=np.float32)
+        advantages_per_episode = normalize_group_returns(episode_rewards, GROUP_SIZE)
         obs_batch = np.concatenate([episode["observations"] for episode in episodes], axis=0)
         action_batch = np.concatenate([episode["actions"] for episode in episodes], axis=0)
         old_log_prob_batch = np.concatenate([episode["log_probs"] for episode in episodes], axis=0)
-        advantage_batch = np.concatenate(advantage_batches, axis=0)
-        return_batch = np.concatenate(return_batches, axis=0)
-        advantage_batch = (advantage_batch - advantage_batch.mean()) / (advantage_batch.std() + 1e-6)
+        advantage_batch = np.concatenate([
+            np.full((episode["steps"],), advantages_per_episode[episode_index], dtype=np.float32)
+            for episode_index, episode in enumerate(episodes)
+        ])
         obs_tensor = torch.as_tensor(obs_batch, dtype=torch.float32, device=self.device)
         action_tensor = torch.as_tensor(action_batch, dtype=torch.float32, device=self.device)
         old_log_prob_tensor = torch.as_tensor(old_log_prob_batch, dtype=torch.float32, device=self.device)
         advantage_tensor = torch.as_tensor(advantage_batch, dtype=torch.float32, device=self.device)
-        return_tensor = torch.as_tensor(return_batch, dtype=torch.float32, device=self.device)
         total_steps = obs_tensor.shape[0]
         policy_losses: List[float] = []
-        value_losses: List[float] = []
         entropies: List[float] = []
         ratios: List[float] = []
         approx_kls: List[float] = []
@@ -628,35 +587,30 @@ class PPOTrainer:
                 batch_actions = action_tensor[batch_indices]
                 batch_old_log_prob = old_log_prob_tensor[batch_indices]
                 batch_advantage = advantage_tensor[batch_indices]
-                batch_returns = return_tensor[batch_indices]
                 new_log_prob, entropy = self.actor.evaluate_actions(batch_obs, batch_actions)
-                value_pred = self.critic(batch_obs)
                 ratio = torch.exp(new_log_prob - batch_old_log_prob)
                 clipped_ratio = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS)
                 objective = torch.min(ratio * batch_advantage, clipped_ratio * batch_advantage)
                 policy_loss = -objective.mean()
-                value_loss = torch.nn.functional.mse_loss(value_pred, batch_returns)
                 approx_kl = float((batch_old_log_prob - new_log_prob).mean().item())
                 approx_kls.append(approx_kl)
                 if TARGET_KL > 0.0 and approx_kl > TARGET_KL:
                     early_stop = True
                     early_stop_kl = approx_kl
                     break
-                loss = policy_loss + VALUE_LOSS_COEF * value_loss - ENTROPY_COEF * entropy.mean()
+                loss = policy_loss - ENTROPY_COEF * entropy.mean()
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(list(self.actor.parameters()) + list(self.critic.parameters()), GRAD_CLIP_NORM)
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), GRAD_CLIP_NORM)
                 self.optimizer.step()
                 optimizer_steps += 1
                 policy_losses.append(float(policy_loss.item()))
-                value_losses.append(float(value_loss.item()))
                 entropies.append(float(entropy.mean().item()))
                 ratios.append(float(ratio.mean().item()))
             if early_stop:
                 break
         return {
             "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
-            "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
             "entropy": float(np.mean(entropies)) if entropies else 0.0,
             "ratio": float(np.mean(ratios)) if ratios else 0.0,
             "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
@@ -667,7 +621,7 @@ class PPOTrainer:
 
     def _build_run_dir(self) -> Path:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        return RUNS_DIR / f"standing_ppo_{timestamp}"
+        return RUNS_DIR / f"standing_grpo_{timestamp}"
 
     def _save_config(self) -> None:
         config = {
@@ -678,6 +632,8 @@ class PPOTrainer:
             "rollout_initial_distance_min": ROLLOUT_INITIAL_DISTANCE_MIN,
             "rollout_initial_distance_max": ROLLOUT_INITIAL_DISTANCE_MAX,
             "symmetric_self_play_rollout": True,
+            "algorithm": "grpo",
+            "group_size": GROUP_SIZE,
             "episodes_per_update": EPISODES_PER_UPDATE,
             "update_epochs": UPDATE_EPOCHS,
             "minibatch_size": MINIBATCH_SIZE,
@@ -685,15 +641,11 @@ class PPOTrainer:
             "eval_interval": EVAL_INTERVAL,
             "eval_episodes": EVAL_EPISODES,
             "learning_rate": LEARNING_RATE,
-            "gamma": GAMMA,
-            "gae_lambda": GAE_LAMBDA,
             "clip_eps": CLIP_EPS,
-            "value_loss_coef": VALUE_LOSS_COEF,
             "entropy_coef": ENTROPY_COEF,
             "grad_clip_norm": GRAD_CLIP_NORM,
             "target_kl": TARGET_KL,
             "actor_hidden_dim": ACTOR_HIDDEN_DIM,
-            "critic_hidden_dim": CRITIC_HIDDEN_DIM,
             "standing_score_max": STANDING_SCORE_MAX,
             "target_height": TARGET_HEIGHT,
             "height_full_penalty_delta": HEIGHT_FULL_PENALTY_DELTA,
@@ -712,13 +664,12 @@ class PPOTrainer:
 
     def _save_checkpoint(self, path: Path) -> None:
         payload = {
+            "algorithm": "grpo",
             "obs_dim": OBS_DIM,
             "action_dim": ACTION_DIM,
             "hidden_dim": ACTOR_HIDDEN_DIM,
             "actor_hidden_dim": ACTOR_HIDDEN_DIM,
-            "critic_hidden_dim": CRITIC_HIDDEN_DIM,
             "state_dict": self.actor.state_dict(),
-            "critic_state_dict": self.critic.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
         torch.save(payload, path)
@@ -732,17 +683,14 @@ class PPOTrainer:
         if int(payload.get("action_dim", ACTION_DIM)) != ACTION_DIM:
             raise ValueError(f"Checkpoint action_dim mismatch: expected {ACTION_DIM}, got {payload.get('action_dim')}")
         self.actor.load_state_dict(payload["state_dict"])
-        critic_state_dict = payload.get("critic_state_dict")
-        if critic_state_dict is None:
-            raise ValueError(f"Checkpoint missing critic_state_dict: {path}")
-        self.critic.load_state_dict(critic_state_dict)
         optimizer_state_dict = payload.get("optimizer_state_dict")
         if optimizer_state_dict is not None:
-            self.optimizer.load_state_dict(optimizer_state_dict)
-            for state in self.optimizer.state.values():
-                for key, value in state.items():
-                    if isinstance(value, torch.Tensor):
-                        state[key] = value.to(self.device)
+            with suppress(ValueError):
+                self.optimizer.load_state_dict(optimizer_state_dict)
+                for state in self.optimizer.state.values():
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor):
+                            state[key] = value.to(self.device)
 
     def _export_policy(self, policy_dir: Path, model_path: Path) -> None:
         export_policy_artifacts(model_path, policy_dir)
@@ -757,7 +705,6 @@ class PPOTrainer:
             "train_mean_reward",
             "train_mean_length",
             "policy_loss",
-            "value_loss",
             "entropy",
             "ratio",
             "approx_kl",
@@ -779,17 +726,14 @@ class PPOTrainer:
 
 
 
-def _compute_gae(rewards: np.ndarray, values: np.ndarray, bootstrap_value: float) -> tuple[np.ndarray, np.ndarray]:
-    advantages = np.zeros_like(rewards, dtype=np.float32)
-    gae = 0.0
-    next_value = float(bootstrap_value)
-    for step_index in range(len(rewards) - 1, -1, -1):
-        delta = rewards[step_index] + GAMMA * next_value - values[step_index]
-        gae = delta + GAMMA * GAE_LAMBDA * gae
-        advantages[step_index] = gae
-        next_value = float(values[step_index])
-    returns = advantages + values
-    return advantages.astype(np.float32), returns.astype(np.float32)
+def normalize_group_returns(returns: np.ndarray, group_size: int) -> np.ndarray:
+    advantages = np.zeros_like(returns, dtype=np.float32)
+    for start in range(0, len(returns), group_size):
+        group = returns[start:start + group_size]
+        group_mean = float(group.mean())
+        group_std = float(group.std())
+        advantages[start:start + group_size] = (group - group_mean) / (group_std + 1e-6)
+    return advantages
 
 
 
@@ -840,7 +784,6 @@ def build_runtime() -> EnvRuntime:
 def collect_episode(
     runtime: EnvRuntime,
     actor: Actor,
-    critic: Critic,
     device: torch.device,
     deterministic: bool,
     seed: int,
@@ -854,13 +797,11 @@ def collect_episode(
     observations: List[np.ndarray] = []
     actions: List[np.ndarray] = []
     log_probs: List[float] = []
-    values: List[float] = []
     rewards: List[float] = []
-    bootstrap_value = 0.0
     for _ in range(MAX_STEPS):
         opponent_obs = np.asarray(runtime.get_observer_output(f"{opponent_agent}_obs"), dtype=np.float32)
-        controlled_action, log_prob, value = _act_with_value(actor, critic, obs, device, deterministic=deterministic)
-        opponent_action, _, _ = _act_with_value(actor, critic, opponent_obs, device, deterministic=deterministic)
+        controlled_action, log_prob = _act(actor, obs, device, deterministic=deterministic)
+        opponent_action, _ = _act(actor, opponent_obs, device, deterministic=deterministic)
         if controlled_agent == "robot_a":
             runtime.step(controlled_action, opponent_action)
         else:
@@ -868,31 +809,23 @@ def collect_episode(
         step_reward = float(runtime.get_observer_output(f"{controlled_agent}_reward"))
         observations.append(obs.copy())
         actions.append(controlled_action.copy())
-        values.append(value)
         rewards.append(step_reward)
         if log_prob is not None:
             log_probs.append(log_prob)
         obs = np.asarray(runtime.get_observer_output(f"{controlled_agent}_obs"), dtype=np.float32)
         terminated, truncated = runtime.get_termination_flags()
         if terminated or truncated:
-            bootstrap_value = 0.0
             break
-        _, _, bootstrap_value = _act_with_value(actor, critic, obs, device, deterministic=True)
-    if not observations:
-        _, _, bootstrap_value = _act_with_value(actor, critic, obs, device, deterministic=True)
     episode_reward = float(np.sum(rewards, dtype=np.float32))
     observations_array = np.asarray(observations, dtype=np.float32).reshape(len(observations), OBS_DIM)
     actions_array = np.asarray(actions, dtype=np.float32).reshape(len(actions), ACTION_DIM)
     log_probs_array = np.asarray(log_probs, dtype=np.float32).reshape(len(log_probs),)
-    values_array = np.asarray(values, dtype=np.float32).reshape(len(values),)
     rewards_array = np.asarray(rewards, dtype=np.float32).reshape(len(rewards),)
     return {
         "observations": observations_array,
         "actions": actions_array,
         "log_probs": log_probs_array,
-        "values": values_array,
         "rewards": rewards_array,
-        "bootstrap_value": float(bootstrap_value),
         "steps": len(observations),
         "episode_reward": episode_reward,
         "controlled_agent": controlled_agent,
@@ -910,7 +843,7 @@ def main() -> None:
     args = parse_args()
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    trainer = PPOTrainer(device=device, resume_from=args.resume_from)
+    trainer = GRPOTrainer(device=device, resume_from=args.resume_from)
     trainer.train()
     print(f"run_dir={trainer.run_dir}", flush=True)
     print(f"policy_dir={trainer.policy_dir}", flush=True)
