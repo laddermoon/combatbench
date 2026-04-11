@@ -4,17 +4,23 @@ Humanoid21 外部扰动插件
 提供多种外部扰动模式，用于测试机器人的鲁棒性和平衡能力。
 """
 
+import os
+
 import numpy as np
 from typing import Optional
 
 from framework import BasePlugin, SimContext
 
 
+_TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
+_TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
+
+
 class RandomPushPlugin(BasePlugin):
     """
     随机推力插件
 
-    在随机时间间隔对指定机器人施加随机方向的推力。
+    在随机动作步间隔后，对指定机器人施加持续若干动作步的随机方向推力。
     """
 
     def __init__(
@@ -22,9 +28,9 @@ class RandomPushPlugin(BasePlugin):
         target_robot: str = "robot_a",
         target_body: str = "torso",
         force_magnitude: float = 200.0,  # 牛顿
-        min_interval: int = 50,  # 最小间隔（物理步数）
-        max_interval: int = 150,  # 最大间隔（物理步数）
-        push_duration_steps: int = 1,  # 每次推力持续步数
+        min_interval: int = 50,  # 最小间隔（动作步数）
+        max_interval: int = 150,  # 最大间隔（动作步数）
+        push_duration_steps: int = 1,  # 每次推力持续动作步数
         random_seed: Optional[int] = None,
     ):
         """
@@ -32,11 +38,18 @@ class RandomPushPlugin(BasePlugin):
             target_robot: 目标机器人 ID
             target_body: 目标 body 名称
             force_magnitude: 力的大小（牛顿）
-            min_interval: 最小扰动间隔
-            max_interval: 最大扰动间隔
-            push_duration_steps: 每次推力持续的物理步数（默认为1，即单帧推力）
+            min_interval: 两次推力之间的最小等待动作步数
+            max_interval: 两次推力之间的最大等待动作步数
+            push_duration_steps: 每次推力持续的动作步数
             random_seed: 随机种子
         """
+        if min_interval < 0:
+            raise ValueError(f"min_interval must be >= 0, got {min_interval}")
+        if max_interval < min_interval:
+            raise ValueError(f"max_interval must be >= min_interval, got min={min_interval}, max={max_interval}")
+        if push_duration_steps <= 0:
+            raise ValueError(f"push_duration_steps must be > 0, got {push_duration_steps}")
+
         self.target_robot = target_robot
         self.target_body = target_body
         self.force_magnitude = force_magnitude
@@ -45,10 +58,47 @@ class RandomPushPlugin(BasePlugin):
         self.push_duration_steps = push_duration_steps
 
         self._rng = np.random.RandomState(random_seed)
-        self._step_count = 0
-        self._next_disturbance = self._rng.randint(min_interval, max_interval)
+        self._action_step_count = 0
+        self._wait_remaining_action_steps = 0
         self._current_force = None  # 当前持续施加的力
-        self._push_remaining_steps = 0  # 当前推力剩余步数
+        self._push_remaining_action_steps = 0  # 当前推力剩余动作步数
+        self._push_active_this_action = False
+
+    def _sample_interval_action_steps(self) -> int:
+        if self.min_interval == self.max_interval:
+            return self.min_interval
+        return int(self._rng.randint(self.min_interval, self.max_interval + 1))
+
+    def _sample_force(self) -> np.ndarray:
+        angle = self._rng.uniform(0, 2 * np.pi)
+        return np.array([
+            np.cos(angle) * self.force_magnitude,
+            np.sin(angle) * self.force_magnitude,
+            self._rng.uniform(-0.2, 0.2) * self.force_magnitude
+        ])
+
+    def _debug_log(self, ctx: SimContext, stage: str, force: Optional[np.ndarray]) -> None:
+        if not _TURB_DEBUG:
+            return
+        if _TURB_DEBUG_MAX_PHYS_STEPS > 0 and ctx.physics_step > _TURB_DEBUG_MAX_PHYS_STEPS:
+            return
+        core_state = ctx.accessor.get_core_state()[self.target_robot]
+        derived_state = ctx.accessor.get_derived_state()[self.target_robot]
+        root_pos = np.asarray(core_state["root_pos"], dtype=np.float64)
+        root_vel_local = np.asarray(core_state["root_vel_local"], dtype=np.float64)
+        linear_vel = np.asarray(derived_state["root_state"]["linear_vel"], dtype=np.float64)
+        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float64).reshape(-1)[0])
+        force_array = np.zeros(3, dtype=np.float64) if force is None else np.asarray(force, dtype=np.float64)
+        print(
+            f"turb_debug[{self.target_robot}] stage={stage} phy={ctx.physics_step} epi={ctx.episode_step} "
+            f"action={self._action_step_count} wait_remaining={self._wait_remaining_action_steps} "
+            f"push_remaining={self._push_remaining_action_steps} active={self._push_active_this_action} "
+            f"force=({force_array[0]:.6f},{force_array[1]:.6f},{force_array[2]:.6f}) |F|={float(np.linalg.norm(force_array)):.6f} "
+            f"root_pos=({root_pos[0]:.6f},{root_pos[1]:.6f},{root_pos[2]:.6f}) "
+            f"root_vel_local=({root_vel_local[0]:.6f},{root_vel_local[1]:.6f},{root_vel_local[2]:.6f}) "
+            f"linear_vel=({linear_vel[0]:.6f},{linear_vel[1]:.6f},{linear_vel[2]:.6f}) upright={uprightness:.6f}",
+            flush=True,
+        )
 
     @property
     def name(self) -> str:
@@ -60,65 +110,75 @@ class RandomPushPlugin(BasePlugin):
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """Episode 开始时重置"""
-        self._step_count = 0
-        self._next_disturbance = self._rng.randint(self.min_interval, self.max_interval)
+        self._action_step_count = 0
+        self._wait_remaining_action_steps = self._sample_interval_action_steps()
         self._current_force = None
-        self._push_remaining_steps = 0
+        self._push_remaining_action_steps = 0
+        self._push_active_this_action = False
         ctx.metrics[f'{self.target_robot}_push_count'] = 0
+        ctx.metrics[f'{self.target_robot}_push_active'] = False
+        ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
 
-    def on_pre_phy_step(self, ctx: SimContext) -> None:
-        """在每个物理步前检查是否需要施加扰动"""
-        self._step_count += 1
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        """在动作步边界上调度扰动状态机"""
+        self._action_step_count += 1
+        self._push_active_this_action = False
 
-        # 如果正在持续推力，继续施加
-        if self._push_remaining_steps > 0:
-            if self._current_force is not None:
-                ctx.mutator.apply_external_force(
-                    body_name=self.target_body,
-                    force=self._current_force,
-                    robot_id=self.target_robot
-                )
-                ctx.metrics[f'{self.target_robot}_push_active'] = True
-            self._push_remaining_steps -= 1
+        if self._push_remaining_action_steps > 0 and self._current_force is not None:
+            self._push_active_this_action = True
+            ctx.metrics[f'{self.target_robot}_push_active'] = True
+            ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = 0
+            self._debug_log(ctx, "action_continue", self._current_force)
             return
 
-        # 检查是否需要开始新的推力
-        if self._step_count >= self._next_disturbance:
-            # 生成随机方向的力（水平面，避免直接推倒）
-            angle = self._rng.uniform(0, 2 * np.pi)
-            force = np.array([
-                np.cos(angle) * self.force_magnitude,
-                np.sin(angle) * self.force_magnitude,
-                self._rng.uniform(-0.2, 0.2) * self.force_magnitude  # 轻微垂直分量
-            ])
+        if self._wait_remaining_action_steps > 0:
+            self._wait_remaining_action_steps -= 1
+            ctx.metrics[f'{self.target_robot}_push_active'] = False
+            ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
+            self._debug_log(ctx, "action_wait", None)
+            return
 
-            # 保存当前力和持续步数
-            self._current_force = force
-            self._push_remaining_steps = self.push_duration_steps - 1  # 第一帧已施加
+        self._current_force = self._sample_force()
+        self._push_remaining_action_steps = self.push_duration_steps
+        self._push_active_this_action = True
 
-            # 施加力
-            ctx.mutator.apply_external_force(
-                body_name=self.target_body,
-                force=force,
-                robot_id=self.target_robot
-            )
+        ctx.metrics[f'{self.target_robot}_push_count'] += 1
+        ctx.metrics[f'{self.target_robot}_last_push_force'] = float(np.linalg.norm(self._current_force))
+        ctx.metrics[f'{self.target_robot}_push_duration_action_steps'] = self.push_duration_steps
+        ctx.metrics[f'{self.target_robot}_push_active'] = True
+        ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = 0
+        self._debug_log(ctx, "action_start", self._current_force)
 
-            # 记录
-            ctx.metrics[f'{self.target_robot}_push_count'] += 1
-            ctx.metrics[f'{self.target_robot}_last_push_force'] = float(np.linalg.norm(force))
-            ctx.metrics[f'{self.target_robot}_push_duration_steps'] = self.push_duration_steps
+    def on_pre_phy_step(self, ctx: SimContext) -> None:
+        """在推力激活的动作步内，对每个物理步持续施力"""
+        if not self._push_active_this_action or self._current_force is None:
+            return
 
-            # 设置下一次扰动时间
-            self._next_disturbance = self._step_count + self._rng.randint(
-                self.min_interval, self.max_interval
-            )
+        self._debug_log(ctx, "phy_before_apply", self._current_force)
+        ctx.mutator.apply_external_force(
+            body_name=self.target_body,
+            force=self._current_force,
+            robot_id=self.target_robot
+        )
+        self._debug_log(ctx, "phy_after_apply", self._current_force)
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        """在动作步结束后推进等待/持续计数器"""
+        if self._push_active_this_action and self._push_remaining_action_steps > 0:
+            self._push_remaining_action_steps -= 1
+            if self._push_remaining_action_steps == 0:
+                self._current_force = None
+                self._wait_remaining_action_steps = self._sample_interval_action_steps()
+        ctx.metrics[f'{self.target_robot}_push_active'] = self._push_active_this_action
+        ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
+        self._debug_log(ctx, "action_end", self._current_force)
 
 
 class PeriodicUpwardForcePlugin(BasePlugin):
     """
     周期性向上推力插件
 
-    按固定间隔施加向上的力，可用于测试机器人的抗干扰能力。
+    按固定动作步间隔施加向上的力，可用于测试机器人的抗干扰能力。
     """
 
     def __init__(
@@ -126,20 +186,24 @@ class PeriodicUpwardForcePlugin(BasePlugin):
         target_robot: str = "robot_a",
         target_body: str = "torso",
         force_magnitude: float = 300.0,  # 牛顿
-        interval: int = 100,  # 间隔（物理步数）
+        interval: int = 100,  # 间隔（动作步数）
     ):
         """
         Args:
             target_robot: 目标机器人 ID
             target_body: 目标 body 名称
             force_magnitude: 力的大小（牛顿）
-            interval: 扰动间隔（物理步数）
+            interval: 扰动间隔（动作步数）
         """
+        if interval <= 0:
+            raise ValueError(f"interval must be > 0, got {interval}")
+
         self.target_robot = target_robot
         self.target_body = target_body
         self.force_magnitude = force_magnitude
         self.interval = interval
-        self._step_count = 0
+        self._action_step_count = 0
+        self._apply_this_action = False
 
     @property
     def name(self) -> str:
@@ -151,15 +215,18 @@ class PeriodicUpwardForcePlugin(BasePlugin):
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """Episode 开始时重置"""
-        self._step_count = 0
+        self._action_step_count = 0
+        self._apply_this_action = False
         ctx.metrics[f'{self.target_robot}_upward_force_count'] = 0
 
-    def on_pre_phy_step(self, ctx: SimContext) -> None:
-        """在每个物理步前检查是否需要施加扰动"""
-        self._step_count += 1
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        """在动作步边界上调度周期性向上推力"""
+        self._action_step_count += 1
+        self._apply_this_action = (self._action_step_count % self.interval == 0)
 
-        if self._step_count % self.interval == 0:
-            # 施加向上的力
+    def on_pre_phy_step(self, ctx: SimContext) -> None:
+        """在激活的动作步内，对每个物理步施加向上的力"""
+        if self._apply_this_action:
             force = np.array([0, 0, self.force_magnitude])
 
             ctx.mutator.apply_external_force(
@@ -168,6 +235,9 @@ class PeriodicUpwardForcePlugin(BasePlugin):
                 robot_id=self.target_robot
             )
 
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        """在动作步结束后记录本步是否施加了向上推力"""
+        if self._apply_this_action:
             ctx.metrics[f'{self.target_robot}_upward_force_count'] += 1
 
 
@@ -371,10 +441,10 @@ if __name__ == "__main__":
     print("       force_magnitude=200.0,")
     print("       min_interval=50,")
     print("       max_interval=150,")
-    print("       push_duration_steps=1  # 每次推力持续1帧（默认）")
+    print("       push_duration_steps=1  # 每次推力持续1个动作步（默认）")
     print("   )")
     print("")
-    print("   # 持续3帧的推力（更有冲击力）")
+    print("   # 持续3个动作步的推力（更有冲击力）")
     print("   plugin = RandomPushPlugin(")
     print("       target_robot='robot_a',")
     print("       force_magnitude=200.0,")
@@ -387,7 +457,7 @@ if __name__ == "__main__":
     print("   plugin = PeriodicUpwardForcePlugin(")
     print("       target_robot='robot_b',")
     print("       force_magnitude=300.0,")
-    print("       interval=100")
+    print("       interval=100  # 每100个动作步施加一次")
     print("   )")
 
     print("\n3. 高度限制插件:")

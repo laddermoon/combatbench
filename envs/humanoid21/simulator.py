@@ -15,6 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import BaseSimulator
 
 
+_TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
+_TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
+
+
 class MujocoCombatSimulator(BaseSimulator):
     """
     Humanoid21 双机器人对抗仿真器
@@ -877,6 +881,8 @@ class MujocoCombatSimulator(BaseSimulator):
 
         # 速度清零
         self.data.qvel[:] = 0.0
+        self.data.xfrc_applied[:] = 0.0
+        self.data.qfrc_applied[:] = 0.0
 
         # 计算控制目标：基于实际设置的关节位置计算对应的 action 值
         # action = (joint_pos - reference) / scale
@@ -909,12 +915,44 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def physical_step(self) -> None:
         """执行一步物理仿真"""
+        if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
+            torso_rows = []
+            for robot_id in ['robot_a', 'robot_b']:
+                torso_body_id = self._robot_cache[robot_id]['torso_body_id']
+                applied_force = self.data.xfrc_applied[torso_body_id, :3].copy()
+                applied_torque = self.data.xfrc_applied[torso_body_id, 3:6].copy()
+                root_qvel_adr = self._robot_cache[robot_id]['root_qvel_adr']
+                root_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
+                torso_pos = self.data.xpos[torso_body_id].copy()
+                torso_rows.append(
+                    f"{robot_id}:F=({applied_force[0]:.6f},{applied_force[1]:.6f},{applied_force[2]:.6f}) "
+                    f"T=({applied_torque[0]:.6f},{applied_torque[1]:.6f},{applied_torque[2]:.6f}) "
+                    f"pos=({torso_pos[0]:.6f},{torso_pos[1]:.6f},{torso_pos[2]:.6f}) "
+                    f"vel=({root_vel[0]:.6f},{root_vel[1]:.6f},{root_vel[2]:.6f})"
+                )
+            print(f"turb_phys_pre step={self._step_count} | " + " | ".join(torso_rows), flush=True)
         # 应用 PD 控制
         self._apply_pd_control()
         
         # 执行物理步
         mujoco.mj_step(self.model, self.data)
-    
+        if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
+            torso_rows = []
+            for robot_id in ['robot_a', 'robot_b']:
+                torso_body_id = self._robot_cache[robot_id]['torso_body_id']
+                applied_force = self.data.xfrc_applied[torso_body_id, :3].copy()
+                root_qvel_adr = self._robot_cache[robot_id]['root_qvel_adr']
+                root_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
+                torso_pos = self.data.xpos[torso_body_id].copy()
+                torso_rows.append(
+                    f"{robot_id}:F_after=({applied_force[0]:.6f},{applied_force[1]:.6f},{applied_force[2]:.6f}) "
+                    f"pos=({torso_pos[0]:.6f},{torso_pos[1]:.6f},{torso_pos[2]:.6f}) "
+                    f"vel=({root_vel[0]:.6f},{root_vel[1]:.6f},{root_vel[2]:.6f})"
+                )
+            print(f"turb_phys_post step={self._step_count} | " + " | ".join(torso_rows), flush=True)
+        self.data.xfrc_applied[:] = 0.0
+        self.data.qfrc_applied[:] = 0.0
+
     def _apply_pd_control(self) -> None:
         """应用 PD 控制力矩 (按 CONTROLSPEC.md)"""
         for robot_id in ['robot_a', 'robot_b']:
@@ -1080,6 +1118,16 @@ class MujocoCombatSimulator(BaseSimulator):
         # xfrc_applied 在每个物理步后自动清零，所以这里直接累加即可
         force = np.asarray(force, dtype=np.float64)
         self.data.xfrc_applied[body_id, :3] += force
+        if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
+            current_force = self.data.xfrc_applied[body_id, :3].copy()
+            current_torque = self.data.xfrc_applied[body_id, 3:6].copy()
+            print(
+                f"turb_apply robot={robot_id} body={full_body_name} sim_step={self._step_count} "
+                f"input_force=({force[0]:.6f},{force[1]:.6f},{force[2]:.6f}) "
+                f"stored_force=({current_force[0]:.6f},{current_force[1]:.6f},{current_force[2]:.6f}) "
+                f"stored_torque=({current_torque[0]:.6f},{current_torque[1]:.6f},{current_torque[2]:.6f})",
+                flush=True,
+            )
 
         if torque is not None:
             torque = np.asarray(torque, dtype=np.float64)
