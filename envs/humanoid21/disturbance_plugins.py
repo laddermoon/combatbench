@@ -7,7 +7,8 @@ Humanoid21 外部扰动插件
 import os
 
 import numpy as np
-from typing import Optional
+from scipy.spatial.transform import Rotation as R
+from typing import Optional, Sequence
 
 from framework import BasePlugin, SimContext
 
@@ -56,6 +57,8 @@ class RandomPushPlugin(BasePlugin):
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.push_duration_steps = push_duration_steps
+        self._base_random_seed = random_seed
+        self._episode_random_seed: Optional[int] = None
 
         self._rng = np.random.RandomState(random_seed)
         self._action_step_count = 0
@@ -63,6 +66,9 @@ class RandomPushPlugin(BasePlugin):
         self._current_force = None  # 当前持续施加的力
         self._push_remaining_action_steps = 0  # 当前推力剩余动作步数
         self._push_active_this_action = False
+
+    def set_episode_seed(self, seed: Optional[int]) -> None:
+        self._episode_random_seed = None if seed is None else int(seed)
 
     def _sample_interval_action_steps(self) -> int:
         if self.min_interval == self.max_interval:
@@ -110,6 +116,8 @@ class RandomPushPlugin(BasePlugin):
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """Episode 开始时重置"""
+        if self._episode_random_seed is not None:
+            self._rng = np.random.RandomState(self._episode_random_seed)
         self._action_step_count = 0
         self._wait_remaining_action_steps = self._sample_interval_action_steps()
         self._current_force = None
@@ -118,6 +126,10 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_push_count'] = 0
         ctx.metrics[f'{self.target_robot}_push_active'] = False
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
+        if self._episode_random_seed is not None:
+            ctx.metrics[f'{self.target_robot}_push_seed'] = self._episode_random_seed
+        elif self._base_random_seed is not None:
+            ctx.metrics[f'{self.target_robot}_push_seed'] = self._base_random_seed
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         """在动作步边界上调度扰动状态机"""
@@ -172,6 +184,161 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_push_active'] = self._push_active_this_action
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
         self._debug_log(ctx, "action_end", self._current_force)
+
+
+class InitialStatePerturbationPlugin(BasePlugin):
+    def __init__(
+        self,
+        target_robot: str = "robot_a",
+        joint_pos_delta_max: float = 0.1,
+        joint_vel_delta_max: float = 0.1,
+        root_xy_offset_max: float = 0.0,
+        root_tilt_deg_max: float | Sequence[float] = 0.0,
+        root_linear_velocity_delta_max: float | Sequence[float] = 0.0,
+        root_angular_velocity_delta_max: float | Sequence[float] = 0.0,
+        random_seed: Optional[int] = None,
+    ):
+        self.target_robot = target_robot
+        self.joint_pos_delta_max = float(joint_pos_delta_max)
+        self.joint_vel_delta_max = float(joint_vel_delta_max)
+        self.root_xy_offset_max = float(root_xy_offset_max)
+        self.root_tilt_deg_max = self._as_max_vector(root_tilt_deg_max, 2, "root_tilt_deg_max")
+        self.root_linear_velocity_delta_max = self._as_max_vector(
+            root_linear_velocity_delta_max,
+            3,
+            "root_linear_velocity_delta_max",
+        )
+        self.root_angular_velocity_delta_max = self._as_max_vector(
+            root_angular_velocity_delta_max,
+            3,
+            "root_angular_velocity_delta_max",
+        )
+        self._base_random_seed = random_seed
+        self._episode_random_seed: Optional[int] = None
+        self._rng = np.random.RandomState(random_seed)
+
+        if self.joint_pos_delta_max < 0.0:
+            raise ValueError(f"joint_pos_delta_max must be >= 0, got {joint_pos_delta_max}")
+        if self.joint_vel_delta_max < 0.0:
+            raise ValueError(f"joint_vel_delta_max must be >= 0, got {joint_vel_delta_max}")
+        if self.root_xy_offset_max < 0.0:
+            raise ValueError(f"root_xy_offset_max must be >= 0, got {root_xy_offset_max}")
+
+    @staticmethod
+    def _as_max_vector(value: float | Sequence[float], length: int, name: str) -> np.ndarray:
+        if np.isscalar(value):
+            scalar_value = float(value)
+            if scalar_value < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+            return np.full((length,), scalar_value, dtype=np.float32)
+        array_value = np.asarray(value, dtype=np.float32).reshape(-1)
+        if array_value.shape[0] != length:
+            raise ValueError(f"{name} must have length {length}, got shape {array_value.shape}")
+        if np.any(array_value < 0.0):
+            raise ValueError(f"{name} entries must be >= 0, got {value}")
+        return array_value
+
+    def _sample_signed(self, max_value: float, shape: tuple[int, ...]) -> np.ndarray:
+        if max_value <= 0.0:
+            return np.zeros(shape, dtype=np.float32)
+        return self._rng.uniform(-max_value, max_value, size=shape).astype(np.float32)
+
+    def _sample_signed_vector(self, max_values: np.ndarray) -> np.ndarray:
+        if np.all(max_values <= 0.0):
+            return np.zeros_like(max_values, dtype=np.float32)
+        return self._rng.uniform(-max_values, max_values).astype(np.float32)
+
+    def set_episode_seed(self, seed: Optional[int]) -> None:
+        self._episode_random_seed = None if seed is None else int(seed)
+
+    @property
+    def name(self) -> str:
+        return f"initial_state_perturbation_{self.target_robot}"
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        if self._episode_random_seed is not None:
+            self._rng = np.random.RandomState(self._episode_random_seed)
+
+        core_state = ctx.accessor.get_core_state()
+        if self.target_robot not in core_state:
+            raise ValueError(f"Unknown target_robot: {self.target_robot}")
+
+        target_state = core_state[self.target_robot]
+        new_state = {
+            self.target_robot: {
+                'root_pos': np.asarray(target_state['root_pos'], dtype=np.float32).copy(),
+                'root_rot': np.asarray(target_state['root_rot'], dtype=np.float32).copy(),
+                'root_vel_local': np.asarray(target_state['root_vel_local'], dtype=np.float32).copy(),
+                'root_angular_vel_local': np.asarray(target_state['root_angular_vel_local'], dtype=np.float32).copy(),
+                'joint_pos_norm': np.asarray(target_state['joint_pos_norm'], dtype=np.float32).copy(),
+                'joint_vel_norm': np.asarray(target_state['joint_vel_norm'], dtype=np.float32).copy(),
+            }
+        }
+
+        joint_pos_delta = self._sample_signed(
+            self.joint_pos_delta_max,
+            new_state[self.target_robot]['joint_pos_norm'].shape,
+        )
+        joint_vel_delta = self._sample_signed(
+            self.joint_vel_delta_max,
+            new_state[self.target_robot]['joint_vel_norm'].shape,
+        )
+        root_xy_delta = self._sample_signed(self.root_xy_offset_max, (2,))
+        root_linear_velocity_delta = self._sample_signed_vector(self.root_linear_velocity_delta_max)
+        root_angular_velocity_delta = self._sample_signed_vector(self.root_angular_velocity_delta_max)
+        root_tilt_delta_deg = self._sample_signed_vector(self.root_tilt_deg_max)
+
+        new_state[self.target_robot]['joint_pos_norm'] = np.clip(
+            new_state[self.target_robot]['joint_pos_norm'] + joint_pos_delta,
+            -1.0,
+            1.0,
+        )
+        new_state[self.target_robot]['joint_vel_norm'] = (
+            new_state[self.target_robot]['joint_vel_norm'] + joint_vel_delta
+        ).astype(np.float32)
+        new_state[self.target_robot]['root_pos'][:2] = (
+            new_state[self.target_robot]['root_pos'][:2] + root_xy_delta
+        ).astype(np.float32)
+        new_state[self.target_robot]['root_vel_local'] = (
+            new_state[self.target_robot]['root_vel_local'] + root_linear_velocity_delta
+        ).astype(np.float32)
+        new_state[self.target_robot]['root_angular_vel_local'] = (
+            new_state[self.target_robot]['root_angular_vel_local'] + root_angular_velocity_delta
+        ).astype(np.float32)
+
+        current_root_rot = new_state[self.target_robot]['root_rot']
+        current_rotation = R.from_quat([
+            float(current_root_rot[1]),
+            float(current_root_rot[2]),
+            float(current_root_rot[3]),
+            float(current_root_rot[0]),
+        ])
+        tilt_rotation = R.from_euler('xy', root_tilt_delta_deg.astype(np.float64), degrees=True)
+        perturbed_rotation = current_rotation * tilt_rotation
+        perturbed_quat_xyzw = perturbed_rotation.as_quat().astype(np.float32)
+        new_state[self.target_robot]['root_rot'] = np.array([
+            perturbed_quat_xyzw[3],
+            perturbed_quat_xyzw[0],
+            perturbed_quat_xyzw[1],
+            perturbed_quat_xyzw[2],
+        ], dtype=np.float32)
+
+        ctx.mutator.set_core_state(new_state)
+
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_joint_pos_linf'] = float(np.max(np.abs(joint_pos_delta)))
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_joint_vel_linf'] = float(np.max(np.abs(joint_vel_delta)))
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_root_xy_offset'] = float(np.linalg.norm(root_xy_delta))
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_root_linear_velocity'] = float(np.linalg.norm(root_linear_velocity_delta))
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_root_angular_velocity'] = float(np.linalg.norm(root_angular_velocity_delta))
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_root_tilt_deg'] = float(np.linalg.norm(root_tilt_delta_deg))
+        if self._episode_random_seed is not None:
+            ctx.metrics[f'{self.target_robot}_initial_perturbation_seed'] = self._episode_random_seed
+        elif self._base_random_seed is not None:
+            ctx.metrics[f'{self.target_robot}_initial_perturbation_seed'] = self._base_random_seed
 
 
 class PeriodicUpwardForcePlugin(BasePlugin):
