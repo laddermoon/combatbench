@@ -8,7 +8,7 @@ Humanoid21 观测插件
 - 模块四：对手观测 (39维) - basic_pose, keypoint_pos, keypoint_vel
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import mujoco
 import numpy as np
@@ -101,12 +101,14 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
     WORLD_UP = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     PLANE_DISTANCE_TOLERANCE = 1e-4
     SUPPORT_SPAN_TOLERANCE = 1e-8
+    ARENA_HALF_EXTENT = 3.05
 
     def __init__(self, agent_id: str):
         if agent_id not in {"robot_a", "robot_b"}:
             raise ValueError(f"Unsupported agent_id: {agent_id}")
         self.agent_id = agent_id
         self._output: Any = None
+        self._last_accessor: Optional[Any] = None
 
     def on_reset(self, ctx: ReadOnlySimContext) -> None:
         self._output = self._build_analysis(ctx)
@@ -120,8 +122,157 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
     def get_output(self) -> Any:
         return self._output
 
+    def get_visualization_image(self) -> np.ndarray:
+        if self._last_accessor is None:
+            raise RuntimeError("Humanoid21BalanceAnalysisObserver has no cached accessor yet. Call runtime.reset() or runtime.step() first.")
+        if not isinstance(self._output, dict):
+            raise RuntimeError("Humanoid21BalanceAnalysisObserver has no analysis output yet.")
+        broadcast_image = self._ensure_uint8_rgb_image(self._last_accessor.get_broadcastview_image())
+        plan_image = self._render_balance_plan_view(self._output, width=int(broadcast_image.shape[1]), height=int(broadcast_image.shape[0]))
+        return np.concatenate([broadcast_image, plan_image], axis=0)
+
+    def _ensure_uint8_rgb_image(self, image: np.ndarray) -> np.ndarray:
+        image_array = np.asarray(image)
+        if image_array.ndim == 2:
+            image_array = np.repeat(image_array[..., None], 3, axis=2)
+        elif image_array.ndim == 3 and image_array.shape[2] == 1:
+            image_array = np.repeat(image_array, 3, axis=2)
+        elif image_array.ndim == 3 and image_array.shape[2] >= 3:
+            image_array = image_array[..., :3]
+        else:
+            raise ValueError(f"Unsupported image shape for visualization: {image_array.shape}")
+        if image_array.dtype != np.uint8:
+            if np.issubdtype(image_array.dtype, np.floating):
+                image_array = np.clip(image_array, 0.0, 255.0)
+            else:
+                image_array = np.clip(image_array.astype(np.float64), 0.0, 255.0)
+            image_array = image_array.astype(np.uint8)
+        return np.ascontiguousarray(image_array)
+
+    def _render_balance_plan_view(self, balance_output: Dict[str, Any], width: int, height: int) -> np.ndarray:
+        image = np.full((height, width, 3), 245, dtype=np.uint8)
+        panel_size = int(min(width, height) * 0.82)
+        left = int((width - panel_size) // 2)
+        top = int((height - panel_size) // 2)
+        right = int(left + panel_size - 1)
+        bottom = int(top + panel_size - 1)
+        image[top:bottom + 1, left:right + 1] = np.array([232, 236, 242], dtype=np.uint8)
+        self._draw_line(image, (left, top), (right, top), (80, 80, 80), thickness=3)
+        self._draw_line(image, (right, top), (right, bottom), (80, 80, 80), thickness=3)
+        self._draw_line(image, (right, bottom), (left, bottom), (80, 80, 80), thickness=3)
+        self._draw_line(image, (left, bottom), (left, top), (80, 80, 80), thickness=3)
+        center_x = int(round((left + right) * 0.5))
+        center_y = int(round((top + bottom) * 0.5))
+        self._draw_line(image, (center_x, top), (center_x, bottom), (210, 210, 210), thickness=1)
+        self._draw_line(image, (left, center_y), (right, center_y), (210, 210, 210), thickness=1)
+
+        def world_to_pixel(point_xy: np.ndarray) -> tuple[int, int]:
+            point = np.asarray(point_xy, dtype=np.float64)
+            norm_x = (point[0] + self.ARENA_HALF_EXTENT) / (2.0 * self.ARENA_HALF_EXTENT)
+            norm_y = 1.0 - (point[1] + self.ARENA_HALF_EXTENT) / (2.0 * self.ARENA_HALF_EXTENT)
+            pixel_x = int(round(left + np.clip(norm_x, 0.0, 1.0) * (panel_size - 1)))
+            pixel_y = int(round(top + np.clip(norm_y, 0.0, 1.0) * (panel_size - 1)))
+            return pixel_x, pixel_y
+
+        left_ankle = np.asarray(balance_output["left_ankle_support_ground_projection"], dtype=np.float64)
+        right_ankle = np.asarray(balance_output["right_ankle_support_ground_projection"], dtype=np.float64)
+        center_of_mass = np.asarray(balance_output["center_of_mass_ground_projection"], dtype=np.float64)
+        center_of_mass_velocity = np.asarray(balance_output["center_of_mass_velocity_ground_projection"], dtype=np.float64)
+        support_projection_point = np.asarray(balance_output["support_axis_projection_point"], dtype=np.float64)
+        support_midpoint = 0.5 * (left_ankle + right_ankle)
+
+        left_ankle_px = world_to_pixel(left_ankle)
+        right_ankle_px = world_to_pixel(right_ankle)
+        center_of_mass_px = world_to_pixel(center_of_mass)
+        support_midpoint_px = world_to_pixel(support_midpoint)
+        self._draw_line(image, left_ankle_px, right_ankle_px, (60, 110, 255), thickness=3)
+        self._draw_circle(image, support_midpoint_px, radius=5, color=(30, 30, 30))
+
+        if np.all(np.isfinite(support_projection_point)):
+            support_projection_px = world_to_pixel(support_projection_point)
+            self._draw_line(image, center_of_mass_px, support_projection_px, (120, 120, 120), thickness=2)
+            self._draw_circle(image, support_projection_px, radius=6, color=(255, 170, 0))
+
+        velocity_xy = np.asarray(center_of_mass_velocity, dtype=np.float64)
+        velocity_norm = float(np.linalg.norm(velocity_xy))
+        if velocity_norm > 1e-8:
+            clipped_velocity = velocity_xy * min(1.0, 2.0 / velocity_norm)
+            velocity_endpoint = center_of_mass + 0.45 * clipped_velocity
+            velocity_endpoint_px = world_to_pixel(velocity_endpoint)
+            self._draw_arrow(image, center_of_mass_px, velocity_endpoint_px, (30, 170, 30), thickness=3)
+
+        self._draw_circle(image, left_ankle_px, radius=10, color=(235, 64, 52))
+        self._draw_circle(image, right_ankle_px, radius=10, color=(52, 110, 235))
+        self._draw_circle(image, center_of_mass_px, radius=10, color=(30, 170, 30))
+        return image
+
+    def _draw_line(
+        self,
+        image: np.ndarray,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        color: tuple[int, int, int],
+        thickness: int = 1,
+    ) -> None:
+        x0, y0 = start
+        x1, y1 = end
+        steps = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+        xs = np.linspace(x0, x1, num=steps)
+        ys = np.linspace(y0, y1, num=steps)
+        radius = max(0, int(thickness) // 2)
+        for x_value, y_value in zip(xs, ys):
+            cx = int(round(float(x_value)))
+            cy = int(round(float(y_value)))
+            x_min = max(0, cx - radius)
+            x_max = min(image.shape[1], cx + radius + 1)
+            y_min = max(0, cy - radius)
+            y_max = min(image.shape[0], cy + radius + 1)
+            image[y_min:y_max, x_min:x_max] = np.asarray(color, dtype=np.uint8)
+
+    def _draw_circle(
+        self,
+        image: np.ndarray,
+        center: tuple[int, int],
+        radius: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        cx, cy = center
+        radius = int(max(1, radius))
+        x_min = max(0, cx - radius)
+        x_max = min(image.shape[1], cx + radius + 1)
+        y_min = max(0, cy - radius)
+        y_max = min(image.shape[0], cy + radius + 1)
+        if x_min >= x_max or y_min >= y_max:
+            return
+        yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+        mask = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= radius * radius
+        image[y_min:y_max, x_min:x_max][mask] = np.asarray(color, dtype=np.uint8)
+
+    def _draw_arrow(
+        self,
+        image: np.ndarray,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        color: tuple[int, int, int],
+        thickness: int = 1,
+    ) -> None:
+        self._draw_line(image, start, end, color, thickness=thickness)
+        direction = np.asarray([end[0] - start[0], end[1] - start[1]], dtype=np.float64)
+        length = float(np.linalg.norm(direction))
+        if length <= 1e-8:
+            return
+        unit = direction / length
+        head_length = min(24.0, max(10.0, length * 0.25))
+        rotation_left = np.array([[0.8660254, -0.5], [0.5, 0.8660254]], dtype=np.float64)
+        rotation_right = np.array([[0.8660254, 0.5], [-0.5, 0.8660254]], dtype=np.float64)
+        left_head = np.asarray(end, dtype=np.float64) - head_length * (rotation_left @ unit)
+        right_head = np.asarray(end, dtype=np.float64) - head_length * (rotation_right @ unit)
+        self._draw_line(image, end, (int(round(left_head[0])), int(round(left_head[1]))), color, thickness=thickness)
+        self._draw_line(image, end, (int(round(right_head[0])), int(round(right_head[1]))), color, thickness=thickness)
+
     def _build_analysis(self, ctx: ReadOnlySimContext) -> Dict[str, Any]:
         accessor = ctx.accessor
+        self._last_accessor = accessor
         model = getattr(accessor, "model", None)
         data = getattr(accessor, "data", None)
         robot_cache = getattr(accessor, "_robot_cache", None)
