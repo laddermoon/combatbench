@@ -7,6 +7,7 @@ from .backend import BaseSimulator
 from .common_plugins import TimeoutPlugin
 from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
+from .recorder import PostActionRecorder
 from .runtime_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
 
 
@@ -118,12 +119,14 @@ class EnvRuntime:
         simulator: BaseSimulator,
         observer_plugins: Optional[Dict[str, BaseObserverPlugin]] = None,
         plugins: Optional[List[BasePlugin]] = None,
+        recorders: Optional[List[PostActionRecorder]] = None,
         phy_steps_per_action: int = 1,
         max_steps: Optional[int] = None,
     ):
         self._core = _RuntimeCore(simulator, phy_steps_per_action)
         self._observer_dispatcher = _ObserverDispatcherPlugin()
         self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}
+        self._recorders: List[PostActionRecorder] = []
         self.shared_info_builder = None
 
         self._core.attach_plugin(self._observer_dispatcher)
@@ -136,6 +139,9 @@ class EnvRuntime:
 
         for name, observer_plugin in (observer_plugins or {}).items():
             self.attach_observer_plugin(name, observer_plugin)
+
+        for recorder in recorders or []:
+            self.attach_recorder(recorder)
 
     @property
     def simulator(self) -> BaseSimulator:
@@ -172,13 +178,52 @@ class EnvRuntime:
     def detach_observer_plugin(self, name: str) -> None:
         self.attach_observer_plugin(name, None)
 
+    # ------------------------------------------------------------------
+    # Post-action recorders
+    # ------------------------------------------------------------------
+    def attach_recorder(self, recorder: PostActionRecorder) -> None:
+        if recorder in self._recorders:
+            return
+        self._recorders.append(recorder)
+        recorder.on_attach()
+
+    def detach_recorder(self, recorder: PostActionRecorder) -> None:
+        if recorder in self._recorders:
+            self._recorders.remove(recorder)
+            recorder.on_detach()
+
+    @property
+    def recorders(self) -> Tuple[PostActionRecorder, ...]:
+        return tuple(self._recorders)
+
+    def _invoke_recorders(self, hook_name: str) -> None:
+        if not self._recorders:
+            return
+        readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
+        observer_outputs = self.get_observer_outputs()
+        for recorder in self._recorders:
+            method = getattr(recorder, hook_name, None)
+            if method is None:
+                continue
+            try:
+                method(readonly_ctx, observer_outputs)
+            except Exception as exc:
+                warnings.warn(f"Recorder '{type(recorder).__name__}' failed at {hook_name}: {exc}")
+
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
         self._core.reset(seed=seed, options=options)
+        self._invoke_recorders("on_pre_episode")
+        if not self._core.is_episode_active:
+            # Reset triggered an immediate termination (e.g. invalid init state).
+            self._invoke_recorders("on_post_episode")
 
     def step(self, action_a: Any, action_b: Any) -> None:
         if not self._core.is_episode_active:
             raise RuntimeError("EnvRuntime.step() called before reset() or after episode termination.")
         self._core.step({"robot_a": action_a, "robot_b": action_b})
+        self._invoke_recorders("on_post_action_step")
+        if not self._core.is_episode_active:
+            self._invoke_recorders("on_post_episode")
 
     def get_observer_output(self, name: str) -> Any:
         return self._observer_dispatcher.get_output(name)
@@ -221,4 +266,6 @@ class EnvRuntime:
         return self._core.simulator.get_broadcastview_image()
 
     def close(self) -> None:
+        for recorder in list(self._recorders):
+            self.detach_recorder(recorder)
         self._core.close()

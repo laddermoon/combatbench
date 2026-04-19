@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Recorder Viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-alt: #1f232c;
+    --text: #e6e6e6;
+    --muted: #8a93a6;
+    --accent: #4fa3ff;
+    --accent-dim: #2a4a6a;
+    --border: #252a36;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #root { display: grid; grid-template-columns: 220px 1fr 480px; grid-template-rows: 48px 1fr auto; height: 100vh; gap: 0; }
+  header { grid-column: 1 / 4; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 16px; font-size: 13px; }
+  header .title { font-weight: 600; }
+  header .status { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header .spacer { flex: 1; }
+  header .help { color: var(--muted); font-size: 12px; }
+  #episode-list { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
+  #episode-list .episode { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+  #episode-list .episode:hover { background: var(--panel-alt); }
+  #episode-list .episode.active { background: var(--accent-dim); color: #fff; }
+  #episode-list .episode .num { color: var(--muted); font-size: 11px; }
+  #image-panel { background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #image-panel img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
+  #image-panel .placeholder { color: var(--muted); font-size: 13px; }
+  #data-panel { background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 14px 16px; }
+  #data-panel h2 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  #data-panel pre { margin: 0 0 18px 0; padding: 10px 12px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  #data-panel .k { color: #9cdcfe; }
+  #data-panel .s { color: #ce9178; }
+  #data-panel .n { color: #b5cea8; }
+  #data-panel .b { color: #569cd6; }
+  #data-panel .null { color: #808080; }
+  #controls { grid-column: 1 / 4; background: var(--panel); border-top: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+  #controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; font-size: 13px; cursor: pointer; }
+  #controls button:hover { border-color: var(--accent); }
+  #controls button.primary { background: var(--accent); color: #000; border-color: var(--accent); }
+  #controls input[type="range"] { flex: 1; }
+  #controls .step-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--muted); min-width: 120px; text-align: right; }
+  #controls label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  #controls input[type="number"] { width: 56px; background: var(--panel-alt); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; font-size: 12px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root">
+  <header>
+    <div class="title">Recorder Viewer</div>
+    <div class="status" id="status">loading index.json...</div>
+    <div class="spacer"></div>
+    <div class="help">← / → navigate steps · Space play/pause · ↑ / ↓ switch episode</div>
+  </header>
+  <div id="episode-list"></div>
+  <div id="image-panel"><div class="placeholder">select an episode</div></div>
+  <div id="data-panel"><div class="placeholder" style="color: var(--muted); font-size: 13px;">per-step JSON will appear here</div></div>
+  <div id="controls">
+    <button id="btn-first">⏮</button>
+    <button id="btn-prev">◀</button>
+    <button id="btn-play" class="primary">▶</button>
+    <button id="btn-next">▶</button>
+    <button id="btn-last">⏭</button>
+    <input id="step-slider" type="range" min="0" max="0" value="0" />
+    <label>fps <input id="fps" type="number" min="1" max="60" value="10" /></label>
+    <div class="step-label" id="step-label">- / -</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const state = {
+    root: '.',
+    episodes: [],
+    currentEpisode: null,
+    currentManifest: null,
+    currentIndex: 0,
+    playing: false,
+    playTimer: null,
+  };
+
+  const $status = document.getElementById('status');
+  const $episodeList = document.getElementById('episode-list');
+  const $imagePanel = document.getElementById('image-panel');
+  const $dataPanel = document.getElementById('data-panel');
+  const $slider = document.getElementById('step-slider');
+  const $stepLabel = document.getElementById('step-label');
+  const $btnPlay = document.getElementById('btn-play');
+  const $btnFirst = document.getElementById('btn-first');
+  const $btnPrev = document.getElementById('btn-prev');
+  const $btnNext = document.getElementById('btn-next');
+  const $btnLast = document.getElementById('btn-last');
+  const $fps = document.getElementById('fps');
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  }
+
+  function syntaxHighlight(obj) {
+    const json = JSON.stringify(obj, null, 2);
+    return escapeHtml(json).replace(
+      /(&quot;(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\&])*?&quot;)(?:\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (m, str, bool, num) => {
+        if (str) {
+          return str.endsWith(':') || /&quot;$/.test(str) && false ? `<span class="k">${str}</span>` : `<span class="s">${str}</span>`;
+        }
+        if (bool) return `<span class="${bool === 'null' ? 'null' : 'b'}">${bool}</span>`;
+        if (num) return `<span class="n">${num}</span>`;
+        return m;
+      }
+    ).replace(/(<span class="s">&quot;[^<]+&quot;<\/span>)(\s*:)/g, '<span class="k">$1</span>$2'.replace('<span class="s">', '').replace('</span>', ''));
+  }
+
+  // Simpler & robust pretty print: just colorize keys vs values using a walker.
+  function renderJson(obj, depth = 0) {
+    const pad = '  '.repeat(depth);
+    if (obj === null) return '<span class="null">null</span>';
+    if (typeof obj === 'boolean') return `<span class="b">${obj}</span>`;
+    if (typeof obj === 'number') return `<span class="n">${obj}</span>`;
+    if (typeof obj === 'string') return `<span class="s">${escapeHtml(JSON.stringify(obj))}</span>`;
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) return '[]';
+      // inline short numeric/scalar arrays
+      if (obj.length <= 16 && obj.every(v => v === null || typeof v !== 'object')) {
+        return '[' + obj.map(v => renderJson(v, depth + 1)).join(', ') + ']';
+      }
+      return '[\n' + obj.map(v => pad + '  ' + renderJson(v, depth + 1)).join(',\n') + '\n' + pad + ']';
+    }
+    if (typeof obj === 'object') {
+      const keys = Object.keys(obj);
+      if (keys.length === 0) return '{}';
+      return '{\n' + keys.map(k => {
+        return pad + '  <span class="k">' + escapeHtml(JSON.stringify(k)) + '</span>: ' + renderJson(obj[k], depth + 1);
+      }).join(',\n') + '\n' + pad + '}';
+    }
+    return escapeHtml(String(obj));
+  }
+
+  async function fetchJson(path) {
+    const response = await fetch(path, {cache: 'no-store'});
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText} for ${path}`);
+    return response.json();
+  }
+
+  async function loadIndex() {
+    try {
+      const data = await fetchJson(state.root + '/index.json');
+      state.episodes = data.episodes || [];
+      renderEpisodeList();
+      $status.textContent = `${state.episodes.length} episode(s)`;
+      if (state.episodes.length > 0) {
+        await selectEpisode(state.episodes[0]);
+      }
+    } catch (error) {
+      $status.textContent = 'failed to load index.json: ' + error.message;
+      $episodeList.innerHTML = `<div class="episode"><em>no index.json found</em></div>`;
+    }
+  }
+
+  function renderEpisodeList() {
+    $episodeList.innerHTML = '';
+    state.episodes.forEach(ep => {
+      const div = document.createElement('div');
+      div.className = 'episode';
+      if (state.currentEpisode && state.currentEpisode.dir === ep.dir) div.classList.add('active');
+      div.innerHTML = `<div>${escapeHtml(ep.dir)}</div><div class="num">${ep.num_steps} step(s)</div>`;
+      div.addEventListener('click', () => selectEpisode(ep));
+      $episodeList.appendChild(div);
+    });
+  }
+
+  async function selectEpisode(episode) {
+    stopPlayback();
+    state.currentEpisode = episode;
+    renderEpisodeList();
+    try {
+      const manifest = await fetchJson(`${state.root}/${episode.dir}/manifest.json`);
+      state.currentManifest = manifest;
+      state.currentIndex = 0;
+      $slider.min = 0;
+      $slider.max = Math.max(0, manifest.steps.length - 1);
+      $slider.value = 0;
+      await renderStep();
+    } catch (error) {
+      $imagePanel.innerHTML = `<div class="placeholder">failed to load manifest: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  async function renderStep() {
+    if (!state.currentManifest) return;
+    const entry = state.currentManifest.steps[state.currentIndex];
+    if (!entry) return;
+    const epDir = state.currentEpisode.dir;
+    $stepLabel.textContent = `${state.currentIndex + 1} / ${state.currentManifest.steps.length} · step=${entry.step}`;
+    if (entry.image) {
+      $imagePanel.innerHTML = `<img src="${state.root}/${epDir}/${entry.image}?cb=${entry.step}" alt="step ${entry.step}"/>`;
+    } else {
+      $imagePanel.innerHTML = `<div class="placeholder">no image for this step</div>`;
+    }
+    if (entry.data) {
+      try {
+        const payload = await fetchJson(`${state.root}/${epDir}/${entry.data}`);
+        let html = '';
+        const meta = {episode_step: payload.episode_step, physics_step: payload.physics_step};
+        html += '<h2>Meta</h2><pre>' + renderJson(meta) + '</pre>';
+        if (payload.observer_outputs) {
+          html += '<h2>Observer outputs</h2><pre>' + renderJson(payload.observer_outputs) + '</pre>';
+        }
+        if (payload.core_state) {
+          html += '<h2>Core state</h2><pre>' + renderJson(payload.core_state) + '</pre>';
+        }
+        $dataPanel.innerHTML = html;
+      } catch (error) {
+        $dataPanel.innerHTML = `<div class="placeholder">failed to load data: ${escapeHtml(error.message)}</div>`;
+      }
+    } else {
+      $dataPanel.innerHTML = `<div class="placeholder">no data for this step</div>`;
+    }
+  }
+
+  function goTo(index) {
+    if (!state.currentManifest) return;
+    const clamped = Math.max(0, Math.min(state.currentManifest.steps.length - 1, index));
+    state.currentIndex = clamped;
+    $slider.value = clamped;
+    renderStep();
+  }
+
+  function startPlayback() {
+    stopPlayback();
+    const fps = Math.max(1, Math.min(60, parseInt($fps.value, 10) || 10));
+    state.playing = true;
+    $btnPlay.textContent = '⏸';
+    state.playTimer = setInterval(() => {
+      if (!state.currentManifest) return;
+      if (state.currentIndex >= state.currentManifest.steps.length - 1) {
+        stopPlayback();
+        return;
+      }
+      goTo(state.currentIndex + 1);
+    }, Math.round(1000 / fps));
+  }
+
+  function stopPlayback() {
+    if (state.playTimer) clearInterval(state.playTimer);
+    state.playTimer = null;
+    state.playing = false;
+    $btnPlay.textContent = '▶';
+  }
+
+  $slider.addEventListener('input', event => {
+    goTo(parseInt(event.target.value, 10));
+  });
+  $btnFirst.addEventListener('click', () => goTo(0));
+  $btnPrev.addEventListener('click', () => goTo(state.currentIndex - 1));
+  $btnNext.addEventListener('click', () => goTo(state.currentIndex + 1));
+  $btnLast.addEventListener('click', () => state.currentManifest && goTo(state.currentManifest.steps.length - 1));
+  $btnPlay.addEventListener('click', () => state.playing ? stopPlayback() : startPlayback());
+
+  document.addEventListener('keydown', event => {
+    if (event.target.tagName === 'INPUT' && event.target.type === 'number') return;
+    if (event.key === 'ArrowRight') { goTo(state.currentIndex + 1); event.preventDefault(); }
+    else if (event.key === 'ArrowLeft') { goTo(state.currentIndex - 1); event.preventDefault(); }
+    else if (event.key === ' ') { state.playing ? stopPlayback() : startPlayback(); event.preventDefault(); }
+    else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const currentIdx = state.episodes.findIndex(ep => state.currentEpisode && ep.dir === state.currentEpisode.dir);
+      const nextIdx = Math.max(0, Math.min(state.episodes.length - 1, currentIdx + step));
+      if (state.episodes[nextIdx]) selectEpisode(state.episodes[nextIdx]);
+      event.preventDefault();
+    }
+  });
+
+  loadIndex();
+})();
+</script>
+</body>
+</html>

@@ -2,6 +2,7 @@ from .backend import BaseSimulator, IDataAccessor, IDataMutator
 from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
 from .runtime_plugin import BaseObserverPlugin, BaseRuntimeUnit
+from .recorder import BaseFrameRecorder, PostActionRecorder
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .round_runner import RoundRunner
@@ -17,6 +18,8 @@ __all__ = [
     "BasePlugin",
     "BaseRuntimeUnit",
     "BaseObserverPlugin",
+    "BaseFrameRecorder",
+    "PostActionRecorder",
     "EnvRuntime",
     "TimeoutPlugin",
     "VideoRecorderPlugin",

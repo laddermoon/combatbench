@@ -1,90 +1,8 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Set, Tuple
-
-import imageio.v2 as imageio
-import numpy as np
+from typing import Any, Dict, Optional, Set, Tuple
 
 from .context import ReadOnlySimContext, SimContext
 from .plugin import BasePlugin
-
-
-def _ensure_uint8_rgb_image(image: np.ndarray) -> np.ndarray:
-    image_array = np.asarray(image)
-    if image_array.ndim == 2:
-        image_array = np.repeat(image_array[..., None], 3, axis=2)
-    elif image_array.ndim == 3 and image_array.shape[2] == 1:
-        image_array = np.repeat(image_array, 3, axis=2)
-    elif image_array.ndim == 3 and image_array.shape[2] >= 3:
-        image_array = image_array[..., :3]
-    else:
-        raise ValueError(f"Unsupported broadcast image shape: {image_array.shape}")
-    if image_array.dtype != np.uint8:
-        if np.issubdtype(image_array.dtype, np.floating):
-            image_array = np.clip(image_array, 0.0, 255.0)
-        else:
-            image_array = np.clip(image_array.astype(np.float64), 0.0, 255.0)
-        image_array = image_array.astype(np.uint8)
-    return np.ascontiguousarray(image_array)
-
-
-def _format_debug_value(value: Any) -> str:
-    if isinstance(value, np.ndarray):
-        return np.array2string(np.asarray(value), precision=4, suppress_small=True, max_line_width=120)
-    if isinstance(value, (list, tuple)):
-        return np.array2string(np.asarray(value), precision=4, suppress_small=True, max_line_width=120)
-    if isinstance(value, float):
-        return f"{value:.6f}"
-    return str(value)
-
-
-def _normalize_debug_text_lines(text_payload: Any) -> list[str]:
-    if text_payload is None:
-        return []
-    if isinstance(text_payload, str):
-        return [text_payload]
-    if isinstance(text_payload, dict):
-        return [f"{key}: {_format_debug_value(value)}" for key, value in text_payload.items()]
-    if isinstance(text_payload, Sequence):
-        return [str(line) for line in text_payload]
-    return [str(text_payload)]
-
-
-def _render_debug_text_panel(
-    image: np.ndarray,
-    lines: Sequence[str],
-    background_color: Sequence[int] = (18, 18, 18),
-    text_color: Sequence[int] = (240, 240, 240),
-) -> np.ndarray:
-    image_array = _ensure_uint8_rgb_image(image)
-    rendered_lines = [str(line) for line in lines if str(line)]
-    if not rendered_lines:
-        return image_array
-    try:
-        import cv2
-    except ImportError:
-        return image_array
-    font_scale = float(np.clip(image_array.shape[1] / 1400.0, 0.45, 0.8))
-    thickness = 1 if image_array.shape[1] < 1200 else 2
-    baseline_line_height = int(round(24 * font_scale)) + 10
-    panel_height = max(40, 10 + baseline_line_height * len(rendered_lines))
-    canvas = np.empty((image_array.shape[0] + panel_height, image_array.shape[1], 3), dtype=np.uint8)
-    canvas[:panel_height] = np.asarray(background_color, dtype=np.uint8)
-    canvas[panel_height:] = image_array
-    origin_y = 8 + int(round(18 * font_scale))
-    for line_index, line in enumerate(rendered_lines):
-        y = origin_y + line_index * baseline_line_height
-        cv2.putText(
-            canvas,
-            line,
-            (12, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            tuple(int(component) for component in text_color),
-            thickness,
-            cv2.LINE_AA,
-        )
-    return canvas
 
 
 class BaseRuntimeUnit(ABC):
@@ -109,23 +27,14 @@ class BaseRuntimeUnit(ABC):
 
 
 class BaseObserverPlugin(BaseRuntimeUnit, ABC):
-    def save_debug_image(
-        self,
-        ctx: ReadOnlySimContext,
-        output_dir: Path | str,
-        step_index: int,
-        quiet: bool = True,
-    ) -> Path:
-        image = _ensure_uint8_rgb_image(ctx.accessor.get_broadcastview_image())
-        text_lines = _normalize_debug_text_lines(self.get_output())
-        rendered_image = _render_debug_text_panel(image, text_lines)
-        resolved_output_dir = Path(output_dir).expanduser().resolve()
-        resolved_output_dir.mkdir(parents=True, exist_ok=True)
-        image_path = resolved_output_dir / f"step_{int(step_index):05d}.png"
-        imageio.imwrite(str(image_path), rendered_image)
-        if not quiet:
-            print(f"Saved observer debug image: {image_path}", flush=True)
-        return image_path
+    """Observer plugins are runtime units specialised for producing a
+    per-step output (reward, observation, metric, ...).
+
+    Image/debug dumping used to live here via ``save_debug_image``; this has
+    been replaced by :class:`envs.framework.recorder.PostActionRecorder`
+    instances attached to ``EnvRuntime``.
+    """
+    pass
 
 
 class _ObserverDispatcherPlugin(BasePlugin):
