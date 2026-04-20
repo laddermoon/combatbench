@@ -46,10 +46,11 @@ The data persisted here is designed to be sufficient to **replay every
     get_action()                        | <episode>/step_<N>.json["action"]
     get_broadcastview_image()           | <episode>/step_<N>.png
 
-A future ``ReplaySimulator`` (not part of this module) can wrap these
-files and serve them through the accessor interface so observer /
-recorder / training code can replay episodes without a live physics
-backend. This recorder's job is only to make the data **complete**.
+To actually replay these files through the accessor interface, use
+:class:`envs.framework.replay.ReplaySimulator`. It implements
+``BaseSimulator`` on top of this on-disk layout, so observer / plugin /
+training code can run unmodified against recordings. This recorder's
+job is only to make the data **complete**; consumption is separate.
 
 Per-step JSON schema (``step_*.json``, manifest_version=2)::
 

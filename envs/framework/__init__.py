@@ -3,6 +3,12 @@ from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
 from .runtime_plugin import BaseObserverPlugin, BaseRuntimeUnit
 from .recorder import BaseFrameRecorder, PostActionRecorder
+from .replay import (
+    ReplayError,
+    ReplayExhaustedError,
+    ReplayReadOnlyError,
+    ReplaySimulator,
+)
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .round_runner import RoundRunner
@@ -20,6 +26,10 @@ __all__ = [
     "BaseObserverPlugin",
     "BaseFrameRecorder",
     "PostActionRecorder",
+    "ReplaySimulator",
+    "ReplayError",
+    "ReplayExhaustedError",
+    "ReplayReadOnlyError",
     "EnvRuntime",
     "TimeoutPlugin",
     "VideoRecorderPlugin",
