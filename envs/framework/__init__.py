@@ -23,6 +23,7 @@ from .episode_runner import (
     default_bindings,
     default_reward_extractor,
 )
+from .parallel_runner import ParallelRunner, RunnerFactory
 from .round_runner import CombatRoundRunner, RoundRunner
 from .match_runner import MatchResult, MatchRunner
 
@@ -46,6 +47,8 @@ __all__ = [
     "TimeoutPlugin",
     "VideoRecorderPlugin",
     "EpisodeRunner",
+    "ParallelRunner",
+    "RunnerFactory",
     "CombatRoundRunner",
     "RoundRunner",
     "Policy",

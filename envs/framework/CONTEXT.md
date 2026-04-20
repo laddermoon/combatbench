@@ -43,6 +43,12 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   `on_step` / `on_episode_end` hooks. `RoundRunner` / `CombatRoundRunner` are now
   thin subclasses that only add combat-specific printing and the legacy result
   dict — generic loop logic lives in `EpisodeRunner`.
+- **`ParallelRunner`** (`parallel_runner.py`) — process-level fan-out over
+  `EpisodeRunner`. Takes a **factory** `(worker_id) -> EpisodeRunner` (picklable,
+  top-level); spawns N persistent worker processes; distributes episodes by
+  seed. Reuses `SeedSequence` derivation identical to `EpisodeRunner.run_n_episodes`
+  so sequential and parallel runs produce the same seeds. `num_workers <= 1`
+  short-circuits to in-process, skipping mp entirely — useful for debugging.
 
 ## Entry Points
 
@@ -58,6 +64,8 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   `RolloutConfig`, `AgentTrajectory`, `EpisodeResult`, `StepContext`.
 - `round_runner.py` — `RoundRunner` / `CombatRoundRunner` (thin subclass of
   `EpisodeRunner` + legacy result-dict surface + `videosave_path` plumbing).
+- `parallel_runner.py` — `ParallelRunner` / `RunnerFactory` type alias. Process
+  pool on top of `EpisodeRunner`.
 - `recorder.py` / `replay.py` — record-and-replay pair. See their module docstrings.
 - `DESIGN.md` / `README.md` — human-facing architecture doc; this file intentionally
   does not duplicate them.
@@ -104,6 +112,19 @@ runner = EpisodeRunner(
     rollout=RolloutConfig(capture_a=True, capture_b=False),  # one-sided rollout
 )
 results = runner.run_n_episodes(n=100, base_seed=42)
+```
+
+Fan out over processes (factory MUST be top-level importable — no lambdas):
+
+```python
+from envs.framework import ParallelRunner
+
+def make_runner(worker_id: int) -> EpisodeRunner:
+    # Build a FRESH runtime + policies inside each worker.
+    return EpisodeRunner(runtime=build_runtime(), policies={...})
+
+with ParallelRunner(make_runner, num_workers=8) as pr:
+    results = pr.run(n=1000, base_seed=42)   # same seeds as sequential
 ```
 
 Replay a recording:
@@ -163,6 +184,12 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
 - **`RoundRunner.run()` closes the runtime** at the end (legacy contract used
   by `MatchRunner` to recycle runtimes per round). `EpisodeRunner.run_episode`
   does NOT close the runtime — caller owns lifecycle.
+- **`ParallelRunner` factories must be top-level picklable**. No lambdas, no
+  closures over un-picklable state (GPU tensors, open files, mp.Lock, etc.).
+  Default start method is `"spawn"` for safety with MuJoCo / CUDA / torch; each
+  worker re-imports the module and builds its own runner from scratch. If you
+  need strict=False best-effort mode, failed episodes come back as `None` in
+  the result list — iterate with `if r is not None` before unpacking.
 
 ## Open Questions / Notes for AI
 
