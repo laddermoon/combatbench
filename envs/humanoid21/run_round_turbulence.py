@@ -83,9 +83,78 @@ def main() -> None:
     from envs.framework.common_plugins import VideoRecorderPlugin
     from envs.humanoid21.plugins import CombatScoringPlugin
 
+
+    from envs.humanoid21.disturbance_plugins import RandomPushPlugin, InitialStatePerturbationPlugin
+    '''
+    RandomPushPlugin(
+    target_robot="robot_a",
+    target_body="torso",
+    force_magnitude=12.0,
+    min_interval=20,
+    max_interval=50,
+    push_duration_steps=2,
+)
+RandomPushPlugin(
+    target_robot="robot_a",
+    target_body="torso",
+    force_magnitude=30.0,
+    min_interval=15,
+    max_interval=40,
+    push_duration_steps=2,
+)
+RandomPushPlugin(
+    target_robot="robot_a",
+    target_body="torso",
+    force_magnitude=60.0,
+    min_interval=10,
+    max_interval=30,
+    push_duration_steps=2,
+)
+
+
+RandomPushPlugin(
+            target_robot="robot_a",
+            target_body="torso",
+            force_magnitude=2.0,
+            min_interval=10,
+            max_interval=40,
+            push_duration_steps=10,
+        )
+
+
+        RandomPushPlugin(
+            target_robot="robot_a",
+            target_body="torso",
+            force_magnitude=30.0,
+            min_interval=20,
+            max_interval=50,
+            push_duration_steps=10,
+            random_seed=42,
+        ),
+        RandomPushPlugin(
+            target_robot="robot_b",
+            target_body="torso",
+            force_magnitude=2.0,
+            min_interval=10,
+            max_interval=40,
+            push_duration_steps=10,
+            random_seed=42,
+        ),
+    '''
+
     # Prepare plugins
     plugins = [
         CombatScoringPlugin(damage_scale=args.damage_scale),
+        InitialStatePerturbationPlugin(
+            target_robot="robot_a",
+            joint_pos_delta_max=0.05,
+            joint_vel_delta_max=0.05,
+            root_xy_offset_max=0.05,
+            root_tilt_deg_max=10.0,
+            root_linear_velocity_delta_max=[0.5, 0.5, 0.0],
+            root_angular_velocity_delta_max=[0.5, 0.5, 0.2],
+            random_seed=42,
+        ),
     ]
     if args.video:
         plugins.append(VideoRecorderPlugin(fps=30, output_path=args.video))

@@ -273,33 +273,41 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
     def _build_analysis(self, ctx: ReadOnlySimContext) -> Dict[str, Any]:
         accessor = ctx.accessor
         self._last_accessor = accessor
-        model = getattr(accessor, "model", None)
-        data = getattr(accessor, "data", None)
-        robot_cache = getattr(accessor, "_robot_cache", None)
-        if model is None or data is None or not isinstance(robot_cache, dict) or self.agent_id not in robot_cache:
-            raise TypeError(
-                "Humanoid21BalanceAnalysisObserver requires the Humanoid21 MuJoCo simulator accessor with model/data/_robot_cache"
+
+        static_all = accessor.get_static_data()
+        derived_all = accessor.get_derived_state()
+        if self.agent_id not in static_all or self.agent_id not in derived_all:
+            raise KeyError(
+                f"Humanoid21BalanceAnalysisObserver: accessor does not provide "
+                f"static/derived data for agent {self.agent_id!r}"
             )
+        static_agent = static_all[self.agent_id]
+        derived_agent = derived_all[self.agent_id]
+        ground_geom_name = static_all.get('ground_geom_name', 'ground')
 
-        cache = robot_cache[self.agent_id]
-        center_of_mass = self._compute_center_of_mass_excluding_feet(model, data, cache)
-        center_of_mass_velocity = self._compute_center_of_mass_velocity(model, data, cache)
-        robot_forward_ground = self._compute_robot_forward_ground_direction(data, cache)
+        center_of_mass = self._compute_center_of_mass_excluding_feet(static_agent, derived_agent)
+        center_of_mass_velocity = self._compute_center_of_mass_velocity(static_agent, derived_agent)
+        robot_forward_ground = self._compute_robot_forward_ground_direction(static_agent, derived_agent)
 
-        left_ankle_support_point, left_ankle_anchors = self._compute_ankle_support_point(model, data, cache, side="left")
-        right_ankle_support_point, right_ankle_anchors = self._compute_ankle_support_point(model, data, cache, side="right")
+        left_ankle_support_point, left_ankle_anchors = self._compute_ankle_support_point(
+            static_agent, derived_agent, side="left"
+        )
+        right_ankle_support_point, right_ankle_anchors = self._compute_ankle_support_point(
+            static_agent, derived_agent, side="right"
+        )
 
+        foot_left_body_name = static_agent['keypoint_body_names']['foot_left']
+        foot_right_body_name = static_agent['keypoint_body_names']['foot_right']
+        contacts = derived_all.get('contacts', [])
         left_ankle_support_force = self._compute_ankle_support_force(
-            model,
-            data,
-            ground_geom_id=int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "地面")),
-            foot_body_id=int(cache["foot_left_body_id"]),
+            contacts=contacts,
+            ground_geom_name=ground_geom_name,
+            foot_body_name=foot_left_body_name,
         )
         right_ankle_support_force = self._compute_ankle_support_force(
-            model,
-            data,
-            ground_geom_id=int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "地面")),
-            foot_body_id=int(cache["foot_right_body_id"]),
+            contacts=contacts,
+            ground_geom_name=ground_geom_name,
+            foot_body_name=foot_right_body_name,
         )
 
         support_geometry = self._analyze_support_geometry(
@@ -325,33 +333,35 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
             **support_geometry,
         }
 
-    def _compute_center_of_mass_excluding_feet(self, model: mujoco.MjModel, data: mujoco.MjData, cache: Dict[str, Any]) -> np.ndarray:
+    def _compute_center_of_mass_excluding_feet(
+        self,
+        static_agent: Dict[str, Any],
+        derived_agent: Dict[str, Any],
+    ) -> np.ndarray:
         """
-        计算“去脚质心”。
+        计算"去脚质心"。
 
-        算法：
-        - 机器人总 body 集合使用 `cache['body_ids']`，这是 torso 子树上的全部 body。
-        - 明确剔除左右脚 body：`foot_left_body_id`、`foot_right_body_id`。
-        - 对剩余 body 做质量加权平均。
+        使用公开接口：
+        - ``static_agent['body_names']`` 子树内所有 body
+        - ``static_agent['keypoint_body_names']['foot_left' / 'foot_right']``
+          用于剔除双脚
+        - ``static_agent['body_masses_by_name'][name]`` 质量 (kg)
+        - ``derived_agent['body_xipos'][name]`` 惯性中心世界坐标 (m)
 
-        公式：
-            p_com = (Σ_i m_i * p_i) / (Σ_i m_i)
-
-        其中：
-        - `m_i = model.body_mass[body_id]`
-        - `p_i = data.xipos[body_id]`
-        - `data.xipos` 是 MuJoCo 当前世界坐标系下 body 惯性中心位置
+        公式： p_com = (Σ_i m_i * p_i) / (Σ_i m_i)
         """
-        excluded_body_ids = {
-            int(cache["foot_left_body_id"]),
-            int(cache["foot_right_body_id"]),
-        }
-        included_body_ids = [int(body_id) for body_id in cache["body_ids"] if int(body_id) not in excluded_body_ids]
-        if not included_body_ids:
+        foot_left = static_agent['keypoint_body_names']['foot_left']
+        foot_right = static_agent['keypoint_body_names']['foot_right']
+        included = [n for n in static_agent['body_names'] if n not in (foot_left, foot_right)]
+        if not included:
             raise ValueError(f"No body remains after excluding feet for {self.agent_id}")
 
-        masses = np.asarray(model.body_mass[included_body_ids], dtype=np.float64)
-        positions = np.asarray(data.xipos[included_body_ids], dtype=np.float64)
+        masses = np.asarray(
+            [static_agent['body_masses_by_name'][n] for n in included], dtype=np.float64
+        )
+        positions = np.asarray(
+            [derived_agent['body_xipos'][n] for n in included], dtype=np.float64
+        )
         total_mass = float(np.sum(masses))
         if total_mass <= 0.0:
             raise ValueError(f"Invalid total mass for {self.agent_id}: {total_mass}")
@@ -359,67 +369,51 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
 
     def _compute_center_of_mass_velocity(
         self,
-        model: mujoco.MjModel,
-        data: mujoco.MjData,
-        cache: Dict[str, Any],
+        static_agent: Dict[str, Any],
+        derived_agent: Dict[str, Any],
     ) -> np.ndarray:
         """
         计算去脚质心速度向量。
 
-        算法：直接使用“去脚后所有 body 的瞬时线速度”做质量加权平均。
+        使用公开接口：
+        - ``derived_agent['body_linvel_world'][name]`` 为各 body 世界系线速度
 
-        这样不依赖相邻两帧差分，因此在 reset 后第一帧如果随机初始化插件
-        已经给机器人设置了根部速度、角速度或关节速度，质心速度也能立刻正确反映出来。
+        公式： v_com = (Σ_i m_i * v_i) / (Σ_i m_i)
 
-        公式：
-            v_com = (Σ_i m_i * v_i) / (Σ_i m_i)
-
-        其中：
-        - `m_i = model.body_mass[body_id]`
-        - `v_i = data.cvel[body_id, 3:6]`
-
-        实现约定：
-        - 与去脚质心位置保持一致，显式排除 `foot_left_body_id` 和 `foot_right_body_id`
-        - 本项目在其他观测实现中也使用 `data.cvel[body_id, 3:6]` 作为 body 世界系线速度
-        - 若极端情况下质量求和无效，则退化为根关节线速度近似值
-        
-        这样得到的是“当前时刻所有刚体运动综合后的瞬时整体质心速度”。
+        若总质量为 0（理论不可能，保留为守门条件）则退化使用躯干线速度，
+        避免整个观测崩溃——这一路径在正常仿真下不会被触发。
         """
-        excluded_body_ids = {
-            int(cache["foot_left_body_id"]),
-            int(cache["foot_right_body_id"]),
-        }
-        included_body_ids = [int(body_id) for body_id in cache["body_ids"] if int(body_id) not in excluded_body_ids]
-        if not included_body_ids:
-            root_qvel_adr = int(cache["root_qvel_adr"])
-            return np.asarray(data.qvel[root_qvel_adr:root_qvel_adr + 3], dtype=np.float64).copy()
+        foot_left = static_agent['keypoint_body_names']['foot_left']
+        foot_right = static_agent['keypoint_body_names']['foot_right']
+        included = [n for n in static_agent['body_names'] if n not in (foot_left, foot_right)]
+        torso_name = static_agent['keypoint_body_names']['torso']
 
-        masses = np.asarray(model.body_mass[included_body_ids], dtype=np.float64)
-        linear_velocities = np.asarray(data.cvel[included_body_ids, 3:6], dtype=np.float64)
+        if not included:
+            return np.asarray(derived_agent['body_linvel_world'][torso_name], dtype=np.float64).copy()
+
+        masses = np.asarray(
+            [static_agent['body_masses_by_name'][n] for n in included], dtype=np.float64
+        )
+        linvels = np.asarray(
+            [derived_agent['body_linvel_world'][n] for n in included], dtype=np.float64
+        )
         total_mass = float(np.sum(masses))
         if total_mass <= 0.0:
-            root_qvel_adr = int(cache["root_qvel_adr"])
-            return np.asarray(data.qvel[root_qvel_adr:root_qvel_adr + 3], dtype=np.float64).copy()
+            return np.asarray(derived_agent['body_linvel_world'][torso_name], dtype=np.float64).copy()
+        return np.sum(linvels * masses[:, None], axis=0) / total_mass
 
-        return np.sum(linear_velocities * masses[:, None], axis=0) / total_mass
-
-    def _compute_robot_forward_ground_direction(self, data: mujoco.MjData, cache: Dict[str, Any]) -> np.ndarray:
+    def _compute_robot_forward_ground_direction(
+        self,
+        static_agent: Dict[str, Any],
+        derived_agent: Dict[str, Any],
+    ) -> np.ndarray:
         """
-        计算机器人前向在地面平面上的单位方向。
+        机器人前向在地面平面上的单位方向。
 
-        算法：
-        - 取 torso 世界姿态下的局部 x 轴，作为机器人“前方”
-        - 将该向量投影到地面二维平面（XY 平面）
-        - 对投影结果做单位化
-
-        公式：
-            f_world = R_torso * [1, 0, 0]
-            f_ground = proj_xy(f_world) / ||proj_xy(f_world)||
-
-        若投影退化为零向量，则返回零向量，表示当前帧无法可靠定义前后符号。
+        使用 ``derived_agent['body_xquat'][torso]`` 旋转局部 x 轴再投影到 XY。
         """
-        torso_body_id = int(cache["torso_body_id"])
-        torso_quat = np.asarray(data.xquat[torso_body_id], dtype=np.float64)
+        torso_name = static_agent['keypoint_body_names']['torso']
+        torso_quat = np.asarray(derived_agent['body_xquat'][torso_name], dtype=np.float64)
         torso_rot = R.from_quat([torso_quat[1], torso_quat[2], torso_quat[3], torso_quat[0]])
         forward_world = torso_rot.apply([1.0, 0.0, 0.0])
         forward_ground = np.asarray(forward_world[:2], dtype=np.float64)
@@ -430,33 +424,35 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
 
     def _compute_ankle_support_point(
         self,
-        model: mujoco.MjModel,
-        data: mujoco.MjData,
-        cache: Dict[str, Any],
+        static_agent: Dict[str, Any],
+        derived_agent: Dict[str, Any],
         side: str,
     ) -> tuple[np.ndarray, Dict[str, np.ndarray]]:
         """
-        计算单侧“踝关节支撑点”。
+        单侧"踝关节支撑点" = 双踝关节锚点 (ankle_x_*, ankle_y_*) 的算术平均。
 
-        Humanoid21 的单脚踝是 2 自由度结构，包含：
-        - `ankle_y_*`
-        - `ankle_x_*`
-
-        单个脚不存在唯一一个铰链点，因此本插件将“双踝自由度锚点的几何中心”定义为脚踝支撑点。
-
-        公式：
-            p_ankle = 0.5 * (p_ankle_y + p_ankle_x)
-
-        其中 `p_ankle_y` 和 `p_ankle_x` 使用 MuJoCo 的 `data.xanchor[joint_id]` 读取世界坐标。
+        使用公开接口：
+        - ``static_agent['keypoint_joint_names']['ankle_x_{side}' / 'ankle_y_{side}']``
+        - ``derived_agent['joint_world_anchor'][joint_full_name]``
         """
-        suffix = str(cache["suffix"])
-        ankle_y_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"ankle_y_{side}{suffix}")
-        ankle_x_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"ankle_x_{side}{suffix}")
-        if ankle_y_joint_id < 0 or ankle_x_joint_id < 0:
-            raise ValueError(f"Failed to resolve ankle joints for {self.agent_id} side={side}")
+        keypoint_joints = static_agent['keypoint_joint_names']
+        joint_anchor = derived_agent['joint_world_anchor']
+        try:
+            ankle_y_name = keypoint_joints[f'ankle_y_{side}']
+            ankle_x_name = keypoint_joints[f'ankle_x_{side}']
+        except KeyError as exc:
+            raise KeyError(
+                f"Keypoint joint name for ankle side={side!r} missing in "
+                f"static_data['keypoint_joint_names'] for {self.agent_id}"
+            ) from exc
+        if ankle_y_name not in joint_anchor or ankle_x_name not in joint_anchor:
+            raise KeyError(
+                f"Joint anchor missing for {ankle_y_name!r} or {ankle_x_name!r} "
+                f"in derived_state['joint_world_anchor']"
+            )
 
-        ankle_y_anchor = np.asarray(data.xanchor[ankle_y_joint_id], dtype=np.float64).copy()
-        ankle_x_anchor = np.asarray(data.xanchor[ankle_x_joint_id], dtype=np.float64).copy()
+        ankle_y_anchor = np.asarray(joint_anchor[ankle_y_name], dtype=np.float64).copy()
+        ankle_x_anchor = np.asarray(joint_anchor[ankle_x_name], dtype=np.float64).copy()
         support_point = 0.5 * (ankle_y_anchor + ankle_x_anchor)
         return support_point, {
             "ankle_y": ankle_y_anchor,
@@ -465,59 +461,39 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
 
     def _compute_ankle_support_force(
         self,
-        model: mujoco.MjModel,
-        data: mujoco.MjData,
-        ground_geom_id: int,
-        foot_body_id: int,
+        contacts: list,
+        ground_geom_name: str,
+        foot_body_name: str,
     ) -> np.ndarray:
         """
-        计算单脚通过接触传递到踝部的支撑反力代理（世界坐标 3 维向量）。
+        单脚通过接触传递到踝部的支撑反力代理（世界坐标 3D 向量）。
 
-        算法：
-        - 遍历全部接触 `data.contact[i]`
-        - 仅保留“足部 geom 与地面 geom(名称=`地面`)”之间的接触
-        - 使用 `mujoco.mj_contactForce(model, data, i, wrench)` 读取接触坐标系下的 6D 力/矩
-        - 取前三维线力 `f_c`
-        - 用 `contact.frame` 将接触坐标系线力旋转到世界坐标系
-        - 将所有接触对该足部的力向量求和
+        使用公开接口 ``derived_state['contacts']`` —— 其中每条接触记录
+        已经把 ``force_on_body_b_world`` 事先旋转到了世界系。由此本方法
+        不再需要直接访问 ``data.contact`` 或 ``mj_contactForce``。
 
-        公式：
-            f_world = R_contact_to_world * f_contact
-
-        其中：
-        - `f_contact = wrench[:3]`
-        - `R_contact_to_world = contact.frame.reshape(3, 3).T`
-        - MuJoCo 的 `contact.frame` 顺序为 `[n, t1, t2]` 三个世界坐标轴向量，因此需要转置后右乘局部坐标
-
-        符号约定：
-        - `mj_contactForce` 返回的是“作用在 geom2 上，由 geom1 施加”的接触力
-        - 所以当足部是 `geom2` 时直接累加
-        - 当足部是 `geom1` 时，对足部受力需要取负号
+        约定：遍历所有接触，筛选同时涉及 ``foot_body_name`` 和
+        ``ground_geom_name`` 的条目；按 MuJoCo 的 "force on body B by A"
+        约定，若 foot 是 body_b 则直接累加、若是 body_a 则取反后累加
+        （Newton 第三定律）。
         """
         support_force = np.zeros(3, dtype=np.float64)
 
-        for contact_index in range(int(data.ncon)):
-            contact = data.contact[contact_index]
-            geom1 = int(contact.geom1)
-            geom2 = int(contact.geom2)
-            body1 = int(model.geom_bodyid[geom1])
-            body2 = int(model.geom_bodyid[geom2])
+        for contact in contacts:
+            body_a = contact.get('body_a_name', '')
+            body_b = contact.get('body_b_name', '')
+            geom_a = contact.get('geom_a_name', '')
+            geom_b = contact.get('geom_b_name', '')
+            force_on_b = np.asarray(
+                contact.get('force_on_body_b_world', np.zeros(3)), dtype=np.float64
+            )
 
-            foot_is_geom1 = body1 == foot_body_id and geom2 == ground_geom_id
-            foot_is_geom2 = body2 == foot_body_id and geom1 == ground_geom_id
-            if not foot_is_geom1 and not foot_is_geom2:
-                continue
-
-            contact_wrench = np.zeros(6, dtype=np.float64)
-            mujoco.mj_contactForce(model, data, contact_index, contact_wrench)
-
-            contact_frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)
-            contact_force_world_on_geom2 = contact_frame.T @ np.asarray(contact_wrench[:3], dtype=np.float64)
-
-            if foot_is_geom2:
-                support_force += contact_force_world_on_geom2
-            else:
-                support_force -= contact_force_world_on_geom2
+            foot_is_b = (body_b == foot_body_name and geom_a == ground_geom_name)
+            foot_is_a = (body_a == foot_body_name and geom_b == ground_geom_name)
+            if foot_is_b:
+                support_force += force_on_b
+            elif foot_is_a:
+                support_force -= force_on_b
 
         return support_force
 

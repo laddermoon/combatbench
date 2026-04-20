@@ -4,16 +4,45 @@
 - **按主体隔离**: 策略层绝不能获得包含双机器人的混合数据（如全局 `qpos`）。所有方法必须返回 `Dict[str, np.ndarray]`，并在外层按 `robot_a` 和 `robot_b` 区分。
 - **局部坐标系优先**: 除非必要（如朝向、高度），否则机器人的速度、角速度及对手的相对位置，一律转换到以自身 `Torso` 为原点的局部坐标系下。
 - **全局归一化**: 具有物理限位的观测特征（位置、速度等）默认映射到 `[-1, 1]` 的无量纲区间。
+- **Sandbox 闭包**: 插件/观察者只能通过 `ctx.accessor`（读）与 `ctx.mutator`（写，仅在允许钩子）访问数据。这两个代理严格白名单暴露 `IDataAccessor` / `IDataMutator` 的方法；backend 特有字段（如 MuJoCo 的 `model` / `data` / `_robot_cache`）**不可达**。若观察者需要某项物理量，请先在本规范中登记，再在 `MujocoCombatSimulator.get_static_data()` / `get_derived_state()` 中填入数据。这样新增 backend 时替换实现即可，观察者无需改动。
 
 ---
 
 ## 2. 静态属性 (Static Properties)
 **接口**: `get_static_data()`
-- **定义**: 描述单个机器人的固定参数集。
+- **定义**: 描述仿真器与各机器人的固定参数集。不会在 episode 内变化，应当在 `on_pre_episode` / 构造时一次性读取。
 - **结构**:
-  - `dof_names` (List[str], len=21): 受控自由度名称。
-  - `body_names` (List[str]): 躯干与肢体部位名称。
-  - `joint_limits` (ndarray, shape=(21, 2)): 受控关节真实的物理限位 `[min, max]` (rad)。
+
+### 2.1 按机器人分离的字段 (`result['robot_a']` / `result['robot_b']`)
+
+| 键 | 类型 | 说明 |
+|---|---|---|
+| `dof_names` | `List[str]`，长度 21 | 受控自由度短名（不带 `_red`/`_blue` 后缀） |
+| `body_names` | `List[str]` | 机器人躯干子树下**全部** body 的全名（含后缀），按 body id 稳定排序。观察者若要遍历 body，必须以此顺序为准。 |
+| `body_masses_by_name` | `Dict[str, float]` | `body_names` 每个名字对应的 body 质量 (kg)。可直接用于 CoM 加权。 |
+| `joint_names` | `List[str]` | 机器人子树下**全部** joint 的全名（含根部 freejoint、受控 21 dof、踝关节 2-DoF 等）。顺序与 body 列表一致的稳定性。 |
+| `controlled_joint_names` | `List[str]` | 21 个受控 joint 的全名（带后缀）；`dof_names` 的带后缀版本。 |
+| `root_joint_name` | `str` | 根 freejoint 的全名，例如 `root_red`。 |
+| `keypoint_body_names` | `Dict[str, str]` | 语义角色 → body 全名。键集合目前为 `torso`/`head`/`pelvis`/`foot_left`/`foot_right`/`hand_left`/`hand_right`。观察者应用语义键而不是字符串拼接。 |
+| `keypoint_joint_names` | `Dict[str, str]` | 语义角色 → joint 全名。当前仅覆盖踝关节 4 项：`ankle_x_left`/`ankle_x_right`/`ankle_y_left`/`ankle_y_right`。 |
+| `joint_limits` | `ndarray`，`shape=(21, 2)` | 受控关节物理限位 `[min, max]` (rad)。与 `dof_names` / `controlled_joint_names` 对齐。 |
+
+### 2.2 全局字段 (`result['dt']` / `result['ground_geom_name']`)
+
+| 键 | 类型 | 说明 |
+|---|---|---|
+| `dt` | `float` | 单个物理子步仿真时长 (s)。等价于 `MujocoCombatSimulator.DT`。 |
+| `ground_geom_name` | `str` | 地面 geom 名（`"ground"`）。用于在 `derived_state['contacts']` 中筛选机器人–地面接触，避免硬编码字符串。 |
+
+### 2.3 设计理由
+
+前身 schema 仅提供 `dof_names` / `body_names` / `joint_limits` 三项，不足以支撑 body 级计算（质心、支撑力、关节锚点）。当观察者需要这类量时只能穿透到 `simulator.model`/`_robot_cache` —— 这违反 `IDataAccessor` 封装。本规范的扩展使观察者完全不需要 backend 句柄：任何 body 或 joint 都可以"按名字检索"。
+
+新加入字段 invariant：
+
+- **名字长度守恒**：`len(body_names) == len(body_masses_by_name)`；`len(joint_names) == len(derived_state[agent]['joint_world_anchor'])`。
+- **名字对齐**：`body_names` 中的字符串必须同时是 `derived_state[agent]['body_xpos']` 等 per-body 字典的键。
+- **不可变**：全部字段在一个 simulator 实例的生命周期内不变。
 
 ---
 
@@ -43,18 +72,54 @@
 
 ## 4. 派生数据 (Derived State)
 **接口**: `get_derived_state()`
-- **定义**: 面向机器学习特征工程、碰撞检测和奖励计算的丰富感知数据。
-- **结构**: 包含全局对抗信息与单边视角信息。
+- **定义**: 面向机器学习特征工程、碰撞检测和奖励计算的丰富感知数据。**每个物理子步之后都会被刷新**，因此可以反映当前瞬时状态。
+- **结构**: 包含全局对抗信息、全局结构化接触列表、per-agent 高层视角、per-agent 低层物理量。
 
 ### 4.1 全局对抗信息 (Shared / Global)
 放置在字典的最外层，供环境或中心化评论家(Critic)使用：
-- **`torso_distance`** (1,): 双方 Torso 之间的欧氏距离。
-- **`robot_robot_contacts`** (List[Dict]): 两个机器人之间的物理接触及受力列表。
+- **`torso_distance`** (ndarray shape=(1,)): 双方 Torso 之间的欧氏距离。
+- **`robot_robot_contacts`** (List[Dict], legacy): 两个机器人之间的物理接触及受力列表。
   - 格式示例: `{'body_a': 'head_red', 'body_b': 'torso_blue', 'force': 150.0}`
   - **规则**: 仅记录 `robot_a` 与 `robot_b` 之间的碰撞，必须排除机器人与自身的接触以及机器人与环境的接触。
-- **`robot_environment_contacts`** (List[Dict]): 机器人与环境之间的物理接触及受力列表。
-  - 格式示例: `{'robot': 'robot_a', 'body': 'torso_red', 'environment_geom': '地面', 'environment_body': 'world', 'force': 320.0}`
+  - **Note**: 仅保留标量合力大小；需要方向时请改用 §4.1.1 `contacts`。
+- **`robot_environment_contacts`** (List[Dict], legacy): 机器人与环境之间的物理接触及受力列表。
+  - 格式示例: `{'robot': 'robot_a', 'body': 'torso_red', 'environment_geom': 'ground', 'environment_body': 'world', 'force': 320.0}`
   - **规则**: 仅记录机器人与地面、墙面等环境对象的接触，不包含机器人之间的接触。
+  - **Note**: 同上，仅标量；结构化接触见 `contacts`。
+
+#### 4.1.1 结构化接触列表 `contacts` (新)
+
+- **键**: `derived_state['contacts']`，类型 `List[Dict[str, Any]]`
+- **粒度**: 每条对应 MuJoCo `data.contact[i]` 一条记录（机器人–机器人、机器人–环境、机器人–自身都会出现）。
+- **字段**:
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `geom_a_name` / `geom_b_name` | `str` | MuJoCo 两个接触 geom 的名字。`b` 对应接触力作用的对象（见 `force_on_body_b_world`）。 |
+| `body_a_name` / `body_b_name` | `str` | 两个接触 geom 所属 body 的名字。 |
+| `position_world` | `ndarray(3,) float32` | 接触点世界坐标。 |
+| `normal_world` | `ndarray(3,) float32` | 接触法向量（单位），指向 `geom_b`。 |
+| `frame_world` | `ndarray(3,3) float32` | 接触坐标系三个正交轴（行存储）`[n; t1; t2]`，皆为世界坐标系单位向量。 |
+| `force_on_body_b_world` | `ndarray(3,) float32` | 世界坐标系下 `geom_a` 对 `geom_b` 施加的线性接触力。已做帧变换，直接累加即可。 |
+| `force_magnitude` | `float` | `force_on_body_b_world` 的模。 |
+
+**符号约定**：
+- 遵循 MuJoCo `mj_contactForce` 约定：返回的是"`geom_a` 对 `geom_b` 施加的力"。对 `geom_a`（等价地 `body_a`）的反作用力为上述向量取反。
+- 观察者若只关心某 body 受到的合力，需遍历所有接触并选择 `body == body_b` ↦ 加 / `body == body_a` ↦ 减。
+- 过滤机器人–地面接触时推荐用 `static_data['ground_geom_name']` 做比较，而不是硬编码 `"ground"`。
+
+**示例**（脚与地面接触合力）:
+
+```python
+foot_body = static_data['robot_a']['keypoint_body_names']['foot_left']
+ground = static_data['ground_geom_name']
+support = np.zeros(3)
+for c in derived_state['contacts']:
+    if c['body_b_name'] == foot_body and c['geom_a_name'] == ground:
+        support += c['force_on_body_b_world']
+    elif c['body_a_name'] == foot_body and c['geom_b_name'] == ground:
+        support -= c['force_on_body_b_world']
+```
 
 ### 4.2 单边视角信息 (Per-Robot Views)
 分别放置在 `robot_a` 和 `robot_b` 的键下，供策略网络感知博弈态势。
@@ -110,6 +175,39 @@
 | `hand_left` | 3 |
 | `foot_right` | 3 |
 | `foot_left` | 3 |
+
+### 4.3 单边低层物理量 (Per-Agent Low-Level Physics Arrays)
+
+面向需要每个 body / 每个 joint 物理量的观察者（质心、支撑力、踝锚点、接触分析等）。**键均以 body / joint 全名为索引**，并与 §2 的 `body_names` / `joint_names` 完全对齐。值均为 `float32` ndarray 且是 simulator 内部缓冲区的**拷贝**，观察者可安全保留引用。
+
+接口: `get_derived_state()[robot_id][<字段>]`
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `body_xpos` | `Dict[str, ndarray(3,)]` | body 坐标系原点的世界位置 (m) |
+| `body_xipos` | `Dict[str, ndarray(3,)]` | body 惯性中心的世界位置 (m)；**用于质心计算** |
+| `body_xquat` | `Dict[str, ndarray(4,)]` | body 姿态四元数 `[w, x, y, z]` |
+| `body_linvel_world` | `Dict[str, ndarray(3,)]` | body 在世界系下的瞬时线速度 (m/s)，等价于 MuJoCo `data.cvel[body, 3:6]` |
+| `body_angvel_world` | `Dict[str, ndarray(3,)]` | body 在世界系下的瞬时角速度 (rad/s)，等价于 `data.cvel[body, 0:3]` |
+| `joint_world_anchor` | `Dict[str, ndarray(3,)]` | 每个关节铰链锚点的世界坐标 (m)。对 `freejoint` 没有几何意义（但仍提供）。 |
+
+**设计理由**:
+- 在此层直接拷贝 MuJoCo `data.xpos` / `xipos` / `xquat` / `cvel` / `xanchor`，而不是仅通过高层观测维度压缩，是为了让 backend 无关的观察者能做任意线性代数计算而无需回到 `simulator.data`。
+- 使用 **名字**而非 id 做键，避免将 MuJoCo 的 body/joint id 语义泄漏到上层。
+- 观察者若要遍历所有 body，请使用 `static_data[robot_id]['body_names']` 的顺序以获得稳定排序（按 body id 排序）。
+
+**示例（去脚加权质心）**:
+
+```python
+static = accessor.get_static_data()[agent]
+derived = accessor.get_derived_state()[agent]
+foot_l = static['keypoint_body_names']['foot_left']
+foot_r = static['keypoint_body_names']['foot_right']
+bodies = [n for n in static['body_names'] if n not in (foot_l, foot_r)]
+m = np.array([static['body_masses_by_name'][n] for n in bodies])
+p = np.array([derived['body_xipos'][n] for n in bodies])
+com = (p * m[:, None]).sum(0) / m.sum()
+```
 
 ---
 

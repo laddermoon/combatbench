@@ -281,6 +281,59 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['hand_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_right{suffix}")
             cache['hand_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_left{suffix}")
 
+            # --- Extended metadata for public IDataAccessor (DATASPEC §2 / §4) ---
+            # Deterministic ordering of this robot's body subtree (sorted by body id).
+            body_ids_sorted: List[int] = sorted(int(b) for b in cache['body_ids'])
+            body_names_subtree: List[str] = []
+            body_masses_subtree: List[float] = []
+            for bid in body_ids_sorted:
+                bname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, bid)
+                if not bname:
+                    raise ValueError(f"Body id {bid} in {robot_id} subtree has no name")
+                body_names_subtree.append(bname)
+                body_masses_subtree.append(float(self.model.body_mass[bid]))
+            cache['body_ids_sorted'] = np.asarray(body_ids_sorted, dtype=np.int32)
+            cache['body_names_subtree'] = body_names_subtree
+            cache['body_masses_subtree'] = np.asarray(body_masses_subtree, dtype=np.float32)
+
+            # All joints attached to bodies in this subtree (includes root + controlled
+            # + 2-DoF ankle joints etc.). Keyed by name for public access.
+            joint_names_subtree: List[str] = []
+            joint_ids_by_name: Dict[str, int] = {}
+            for bid in body_ids_sorted:
+                nj = int(self.model.body_jntnum[bid])
+                j_start = int(self.model.body_jntadr[bid])
+                for jid in range(j_start, j_start + nj):
+                    jname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+                    if jname and jname not in joint_ids_by_name:
+                        joint_names_subtree.append(jname)
+                        joint_ids_by_name[jname] = int(jid)
+            cache['joint_names_subtree'] = joint_names_subtree
+            cache['joint_ids_by_name'] = joint_ids_by_name
+
+            # Keypoint body-name map. Observers can look up semantic roles
+            # ("torso", "foot_left", ...) without knowing the "_red"/"_blue" suffix.
+            cache['keypoint_body_names'] = {
+                'torso': f'torso{suffix}',
+                'head': f'head{suffix}',
+                'pelvis': f'pelvis{suffix}',
+                'foot_left': f'foot_left{suffix}',
+                'foot_right': f'foot_right{suffix}',
+                'hand_left': f'hand_left{suffix}',
+                'hand_right': f'hand_right{suffix}',
+            }
+            # Keypoint joint-name map. Currently exposes the 2-DoF ankle joints
+            # (needed by balance observers); expand here when new semantic
+            # joint roles are introduced.
+            cache['keypoint_joint_names'] = {
+                f'ankle_{axis}_{side}': f'ankle_{axis}_{side}{suffix}'
+                for axis in ('x', 'y') for side in ('left', 'right')
+            }
+            cache['root_joint_name'] = root_jnt_name
+            cache['controlled_joint_names'] = [
+                f"{jn}{suffix}" for jn in self.CONTROLLED_JOINTS
+            ]
+
             self._robot_cache[robot_id] = cache
     
     def _collect_subtree_body_ids(self, root_body_id: int) -> set[int]:
@@ -325,19 +378,53 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def get_static_data(self) -> Dict[str, Any]:
         """
-        获取静态属性 (按 DATASPEC.md 2.1)
-        
-        返回按 robot_a 和 robot_b 分离的字典
+        获取静态属性 (按 DATASPEC.md §2)
+
+        返回按 robot_a 和 robot_b 分离的字典 + 若干全局键。
+
+        Per-agent fields
+        ----------------
+        - ``dof_names`` (List[str], len=21): 受控自由度短名（不含后缀）
+        - ``body_names`` (List[str]): 该机器人子树内**所有** body 的全名（带后缀，按 body id 稳定排序）
+        - ``body_masses_by_name`` (Dict[str, float]): 与 ``body_names`` 对齐的每 body 质量 (kg)
+        - ``joint_names`` (List[str]): 子树内全部 joint 的全名
+        - ``controlled_joint_names`` (List[str]): 21 个受控 joint 的全名（带后缀）
+        - ``root_joint_name`` (str): freejoint 的全名
+        - ``keypoint_body_names`` (Dict[str, str]): 语义 → 全名映射
+          (``torso``/``head``/``pelvis``/``foot_left``/``foot_right``/``hand_left``/``hand_right``)
+        - ``keypoint_joint_names`` (Dict[str, str]): 语义 → 全名映射
+          (``ankle_x_left``/``ankle_x_right``/``ankle_y_left``/``ankle_y_right``)
+        - ``joint_limits`` (ndarray, shape=(21, 2)): 受控关节物理限位 [min, max] (rad)
+
+        Global fields
+        -------------
+        - ``dt`` (float): 单个物理子步的仿真时长 (s)
+        - ``ground_geom_name`` (str): 地面 geom 名称（用于接触过滤）
         """
-        result = {}
-        
+        result: Dict[str, Any] = {}
+
         for robot_id in ['robot_a', 'robot_b']:
+            cache = self._robot_cache[robot_id]
+            body_names = list(cache['body_names_subtree'])
+            body_masses = np.asarray(cache['body_masses_subtree'], dtype=np.float32)
             result[robot_id] = {
                 'dof_names': self.CONTROLLED_JOINTS.copy(),
-                'body_names': self._get_body_names(robot_id),
-                'joint_limits': self._robot_cache[robot_id]['jnt_ranges'].copy()
+                'body_names': body_names,
+                'body_masses_by_name': {
+                    name: float(mass) for name, mass in zip(body_names, body_masses)
+                },
+                'joint_names': list(cache['joint_names_subtree']),
+                'controlled_joint_names': list(cache['controlled_joint_names']),
+                'root_joint_name': cache['root_joint_name'],
+                'keypoint_body_names': dict(cache['keypoint_body_names']),
+                'keypoint_joint_names': dict(cache['keypoint_joint_names']),
+                'joint_limits': cache['jnt_ranges'].copy(),
             }
-        
+
+        # Global
+        result['dt'] = float(self.DT)
+        result['ground_geom_name'] = 'ground'
+
         return result
     
     def get_sensor_data(self) -> Dict[str, Any]:
@@ -429,88 +516,188 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def get_derived_state(self) -> Dict[str, Any]:
         """
-        获取派生数据 (按 DATASPEC.md 4)
-        
-        返回：
-        - 全局对抗信息 (torso_distance, robot_robot_contacts, robot_environment_contacts)
-        - 单边视角信息 (robot_a, robot_b)
+        获取派生数据 (按 DATASPEC.md §4)
+
+        全局 (shared)
+        -------------
+        - ``torso_distance`` (ndarray shape=(1,))
+        - ``robot_robot_contacts`` (List[Dict]): 旧 schema，保留以兼容现有消费者
+        - ``robot_environment_contacts`` (List[Dict]): 旧 schema
+        - ``contacts`` (List[Dict]): **新** 结构化接触列表，每条含：
+            * ``geom_a_name`` / ``geom_b_name`` / ``body_a_name`` / ``body_b_name`` (str)
+            * ``position_world`` (ndarray(3,)): 接触点世界坐标
+            * ``normal_world`` (ndarray(3,)): 接触法向量 (单位向量, 指向 geom_b)
+            * ``frame_world`` (ndarray(3,3)): 接触坐标系 [n; t1; t2] (行存储)
+            * ``force_on_body_b_world`` (ndarray(3,)): 世界坐标系下 geom_a 对 geom_b 施加的 3D 力
+            * ``force_magnitude`` (float): 上面向量的模
+
+        单边视角 (per-agent, in ``robot_a`` / ``robot_b`` keys)
+        -----------------------------------------------------
+        保留原有: ``root_state`` / ``feet_forces`` / ``opponent_basic_pose`` /
+        ``opponent_keypoint_pos`` / ``opponent_keypoint_vel`` / ``observation`` /
+        ``uprightness`` / ``opponent_in_local``.
+
+        **新增** per-body 字段（均 keyed by body 全名，与
+        ``get_static_data()[robot_id]['body_names']`` 对齐）:
+        - ``body_xpos`` (Dict[str, ndarray(3,)]):  body 坐标系原点世界位置
+        - ``body_xipos`` (Dict[str, ndarray(3,)]): body **惯性中心** 世界位置
+        - ``body_xquat`` (Dict[str, ndarray(4,)]): body 姿态四元数 [w,x,y,z]
+        - ``body_linvel_world`` (Dict[str, ndarray(3,)]): body 线速度 (世界系)
+        - ``body_angvel_world`` (Dict[str, ndarray(3,)]): body 角速度 (世界系)
+
+        **新增** per-joint 字段:
+        - ``joint_world_anchor`` (Dict[str, ndarray(3,)]): 每个关节铰链锚点的世界坐标。
+          对 freejoint 无几何意义，值取 ``data.xanchor[jid]``。
         """
         # 全局对抗信息
         torso_a_id = self._robot_cache['robot_a']['torso_body_id']
         torso_b_id = self._robot_cache['robot_b']['torso_body_id']
-        
+
         pos_a = self.data.xpos[torso_a_id]
         pos_b = self.data.xpos[torso_b_id]
         torso_distance = np.linalg.norm(pos_b - pos_a)
-        
-        # 双方接触
-        robot_robot_contacts, robot_environment_contacts = self._extract_contacts()
-        
-        # 单边视角
+
+        # Structured + legacy contacts produced in a single pass
+        robot_robot_contacts, robot_environment_contacts, contacts = self._extract_contacts()
+
+        # 单边视角（高层观测）+ per-body/joint 详细物理量
         robot_a_view = self._get_robot_view('robot_a', 'robot_b')
         robot_b_view = self._get_robot_view('robot_b', 'robot_a')
-        
+        robot_a_view.update(self._collect_body_joint_arrays('robot_a'))
+        robot_b_view.update(self._collect_body_joint_arrays('robot_b'))
+
         return {
             'torso_distance': np.array([torso_distance], dtype=np.float32),
             'robot_robot_contacts': robot_robot_contacts,
             'robot_environment_contacts': robot_environment_contacts,
+            'contacts': contacts,
             'robot_a': robot_a_view,
             'robot_b': robot_b_view
         }
+
+    def _collect_body_joint_arrays(self, robot_id: str) -> Dict[str, Any]:
+        """Extract per-body and per-joint world-frame quantities for a robot.
+
+        Returns a dict of five body-keyed sub-dicts + one joint-keyed dict.
+        Arrays are copied so callers cannot mutate the MuJoCo buffers. All
+        arrays are ``float32`` per DATASPEC.
+        """
+        cache = self._robot_cache[robot_id]
+        body_ids: np.ndarray = cache['body_ids_sorted']
+        body_names: List[str] = cache['body_names_subtree']
+
+        xpos = np.asarray(self.data.xpos[body_ids], dtype=np.float32)
+        xipos = np.asarray(self.data.xipos[body_ids], dtype=np.float32)
+        xquat = np.asarray(self.data.xquat[body_ids], dtype=np.float32)
+        cvel = np.asarray(self.data.cvel[body_ids], dtype=np.float32)
+        angvel = cvel[:, 0:3]
+        linvel = cvel[:, 3:6]
+
+        body_xpos = {name: xpos[i].copy() for i, name in enumerate(body_names)}
+        body_xipos = {name: xipos[i].copy() for i, name in enumerate(body_names)}
+        body_xquat = {name: xquat[i].copy() for i, name in enumerate(body_names)}
+        body_linvel_world = {name: linvel[i].copy() for i, name in enumerate(body_names)}
+        body_angvel_world = {name: angvel[i].copy() for i, name in enumerate(body_names)}
+
+        joint_ids_by_name: Dict[str, int] = cache['joint_ids_by_name']
+        joint_world_anchor: Dict[str, np.ndarray] = {
+            name: np.asarray(self.data.xanchor[jid], dtype=np.float32).copy()
+            for name, jid in joint_ids_by_name.items()
+        }
+
+        return {
+            'body_xpos': body_xpos,
+            'body_xipos': body_xipos,
+            'body_xquat': body_xquat,
+            'body_linvel_world': body_linvel_world,
+            'body_angvel_world': body_angvel_world,
+            'joint_world_anchor': joint_world_anchor,
+        }
     
-    def _extract_contacts(self) -> Tuple[List[Dict], List[Dict]]:
-        """提取机器人之间以及机器人与环境之间的接触"""
+    def _extract_contacts(self) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """提取所有接触信息，同时生成三种视图：
+
+        1. ``robot_robot_contacts`` (legacy): 仅 {body_a, body_b, force 标量}
+        2. ``robot_environment_contacts`` (legacy): 机器人 ↔ 环境接触，仅模
+        3. ``contacts`` (new, DATASPEC §4.1): 全部接触 + 方向/位置/力向量/帧矩阵
+
+        新增的 ``contacts`` 用于替代观察者直接读取 ``data.contact`` 的需求。
+        """
         body_ids_a = self._robot_cache['robot_a']['body_ids']
         body_ids_b = self._robot_cache['robot_b']['body_ids']
-        
-        robot_robot_contacts = []
-        robot_environment_contacts = []
+
+        robot_robot_contacts: List[Dict[str, Any]] = []
+        robot_environment_contacts: List[Dict[str, Any]] = []
+        contacts: List[Dict[str, Any]] = []
+
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-            
-            body1_id = self.model.geom_bodyid[geom1]
-            body2_id = self.model.geom_bodyid[geom2]
-            geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1)
-            geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2)
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+
+            body1_id = int(self.model.geom_bodyid[geom1])
+            body2_id = int(self.model.geom_bodyid[geom2])
+            geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1) or ''
+            geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2) or ''
             body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id) or ''
             body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id) or ''
-            
-            c_array = np.zeros(6, dtype=np.float64)
-            mujoco.mj_contactForce(self.model, self.data, i, c_array)
-            force = float(np.linalg.norm(c_array[:3]))
-            
+
+            c_wrench = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, i, c_wrench)
+            force_contact_on_geom2 = c_wrench[:3]
+
+            # contact.frame is row-major [n; t1; t2] in world coords → 3x3
+            frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)
+            # Rotate contact-frame linear force into world frame. MuJoCo's
+            # convention: mj_contactForce returns force *on geom2 by geom1* in
+            # the contact frame.
+            force_world_on_b = frame.T @ force_contact_on_geom2
+            force_magnitude = float(np.linalg.norm(force_contact_on_geom2))
+            normal_world = frame[0]  # first row is the contact normal in world
+            position_world = np.asarray(contact.pos, dtype=np.float64)
+
+            contacts.append({
+                'geom_a_name': geom1_name,
+                'geom_b_name': geom2_name,
+                'body_a_name': body1_name,
+                'body_b_name': body2_name,
+                'position_world': position_world.astype(np.float32),
+                'normal_world': normal_world.astype(np.float32),
+                'frame_world': frame.astype(np.float32),
+                'force_on_body_b_world': force_world_on_b.astype(np.float32),
+                'force_magnitude': force_magnitude,
+            })
+
             is_a1 = body1_id in body_ids_a
             is_b1 = body1_id in body_ids_b
             is_a2 = body2_id in body_ids_a
             is_b2 = body2_id in body_ids_b
-            
+
             if (is_a1 and is_b2) or (is_b1 and is_a2):
                 robot_robot_contacts.append({
                     'body_a': body1_name if is_a1 else body2_name,
                     'body_b': body2_name if is_b2 else body1_name,
-                    'force': force
+                    'force': force_magnitude,
                 })
             elif (is_a1 or is_b1) != (is_a2 or is_b2):
                 if is_a1 or is_b1:
                     robot_environment_contacts.append({
                         'robot': 'robot_a' if is_a1 else 'robot_b',
                         'body': body1_name,
-                        'environment_geom': geom2_name or '',
+                        'environment_geom': geom2_name,
                         'environment_body': body2_name,
-                        'force': force
+                        'force': force_magnitude,
                     })
                 else:
                     robot_environment_contacts.append({
                         'robot': 'robot_a' if is_a2 else 'robot_b',
                         'body': body2_name,
-                        'environment_geom': geom1_name or '',
+                        'environment_geom': geom1_name,
                         'environment_body': body1_name,
-                        'force': force
+                        'force': force_magnitude,
                     })
-        
-        return robot_robot_contacts, robot_environment_contacts
+
+        return robot_robot_contacts, robot_environment_contacts, contacts
     
     def _get_robot_view(self, robot_id: str, opponent_id: str) -> Dict[str, Any]:
         """
