@@ -22,7 +22,7 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
 - **`BasePlugin`** (`plugin.py`) — world-rule unit. Writes physics only at writable
   hooks AND only if it declares `require_mutator=True`. Both conditions checked
   per-call in `_PluginManager.invoke`.
-- **`BaseObserverPlugin`** (`runtime_plugin.py`) — read-only policy-side unit
+- **`BaseObserverPlugin`** (`observer_plugin.py`) — read-only policy-side unit
   (observations / rewards / debug views). Managed by the single
   `_ObserverDispatcherPlugin`, which owns the highest priority (`+1_000_000`) so
   its snapshots are always **fresh** for downstream plugins on the same hook.
@@ -36,15 +36,28 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   recorder's layout. Lets observers/plugins/training code run against recordings
   unchanged. Mutators raise `ReplayReadOnlyError` except `set_action` (silent no-op
   for EnvRuntime compatibility; actions come from the recording).
+- **`EpisodeRunner`** (`episode_runner.py`) — the layer **above** `EnvRuntime`.
+  Owns the `policy.act → runtime.step → pull obs/reward` loop for the two fixed
+  agents (`robot_a` / `robot_b`), deterministic seed splitting via
+  `numpy.random.SeedSequence`, configurable rollout capture per side, and
+  `on_step` / `on_episode_end` hooks. `RoundRunner` / `CombatRoundRunner` are now
+  thin subclasses that only add combat-specific printing and the legacy result
+  dict — generic loop logic lives in `EpisodeRunner`.
 
 ## Entry Points
 
 - `backend.py` — `IDataAccessor`, `IDataMutator`, `BaseSimulator` contracts.
 - `context.py` — `SimContext`, `ReadOnlySimContext`, termination API.
 - `plugin.py` — `BasePlugin` + `require_mutator` permission flag.
-- `runtime_plugin.py` — `BaseRuntimeUnit`, `BaseObserverPlugin`,
+- `observer_plugin.py` — `BaseRuntimeUnit`, `BaseObserverPlugin`,
   `_ObserverDispatcherPlugin` (priority `+1_000_000`).
+  `runtime_plugin.py` is a backward-compat shim; new code imports from
+  `observer_plugin`.
 - `env_runtime.py` — `EnvRuntime` + internal `_RuntimeCore` + `_PluginManager`.
+- `episode_runner.py` — `EpisodeRunner`, `Policy` protocol, `ObserverBinding`,
+  `RolloutConfig`, `AgentTrajectory`, `EpisodeResult`, `StepContext`.
+- `round_runner.py` — `RoundRunner` / `CombatRoundRunner` (thin subclass of
+  `EpisodeRunner` + legacy result-dict surface + `videosave_path` plumbing).
 - `recorder.py` / `replay.py` — record-and-replay pair. See their module docstrings.
 - `DESIGN.md` / `README.md` — human-facing architecture doc; this file intentionally
   does not duplicate them.
@@ -72,6 +85,25 @@ runtime.reset()
 while runtime.is_episode_active:
     runtime.step(action_a, action_b)
     obs = runtime.get_observer_output("obs_a")
+```
+
+Higher-level rollout (recommended — handles seeds / obs / reward / capture):
+
+```python
+from envs.framework import EnvRuntime, EpisodeRunner, RolloutConfig
+runtime = EnvRuntime(
+    simulator=MySimulator(),
+    observer_plugins={
+        "robot_a_obs": ObsPlugin("robot_a"), "robot_a_reward": RewPlugin("robot_a"),
+        "robot_b_obs": ObsPlugin("robot_b"), "robot_b_reward": RewPlugin("robot_b"),
+    },
+)
+runner = EpisodeRunner(
+    runtime=runtime,
+    policies={"robot_a": policy_a, "robot_b": policy_b},
+    rollout=RolloutConfig(capture_a=True, capture_b=False),  # one-sided rollout
+)
+results = runner.run_n_episodes(n=100, base_seed=42)
 ```
 
 Replay a recording:
@@ -115,6 +147,22 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
   authoritative. JSON round-trip loses dtype → arrays come back as `float32`.
 - **Chinese comments / docstrings** are standard in this tree. Keep language
   consistent with surrounding code when editing.
+- **`EpisodeRunner` hardcodes `robot_a` / `robot_b`**. This is intentional —
+  the project is 1v1 combat, not generic MARL. Do not generalize to arbitrary
+  agent counts without explicit discussion; downstream consumers key by these
+  exact strings.
+- **Observer output shape contract** (see `observer_plugin.py` docstring):
+  observation plugins return a policy-ready value directly (no `(obs, info)`
+  tuples); reward plugins return a scalar **or** a dict with a `reward` /
+  `total_reward` / `r` key. `EpisodeRunner` relies on this — older plugins with
+  envelope shapes need a custom `ObserverBinding.reward_extractor`.
+- **Seed propagation in `EpisodeRunner`**: a user seed is split by
+  `SeedSequence` into distinct child seeds for runtime / `robot_a` policy /
+  `robot_b` policy so policies cannot accidentally correlate. `run_n_episodes`
+  derives N child seeds from `base_seed` — same `base_seed` ⇒ same batch.
+- **`RoundRunner.run()` closes the runtime** at the end (legacy contract used
+  by `MatchRunner` to recycle runtimes per round). `EpisodeRunner.run_episode`
+  does NOT close the runtime — caller owns lifecycle.
 
 ## Open Questions / Notes for AI
 
