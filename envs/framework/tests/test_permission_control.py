@@ -118,7 +118,7 @@ class TestPermissionControl:
         # on_post_phy_step: 2次
         assert len(plugin.successful_writes) == 5
 
-    def test_context_mutator_is_none_after_hook(self, sim_context):
+    def test_context_mutator_is_none_after_hook(self, mock_simulator):
         """
         场景：在钩子执行完后，SimContext.mutator 应该被重置为 None
         预期：插件执行完后，访问 ctx.mutator 得到 None
@@ -143,16 +143,16 @@ class TestPermissionControl:
         plugin = CheckPlugin()
         from envs.framework.env_runtime import _RuntimeCore
 
-        # 从 sim_context 获取 simulator
-        simulator = sim_context.accessor
-        core = _RuntimeCore(simulator, phy_steps_per_action=1)
+        # ctx.accessor 现在是 _AccessorView 代理，无法反推出 simulator；
+        # 直接注入 mock_simulator。
+        core = _RuntimeCore(mock_simulator, phy_steps_per_action=1)
         core.attach_plugin(plugin)
 
         core.reset()
         core.step({"robot_a": np.zeros(21), "robot_b": np.zeros(21)})
 
         # 验证：钩子执行完后，再访问 ctx.mutator 应该是 None
-        assert sim_context.mutator is None
+        assert core.ctx.mutator is None
 
 
 class TestReadOnlyContextImmutability:

@@ -102,12 +102,17 @@ class TestPluginPriorityOrdering:
 
 
 class TestPluginExceptionIsolation:
-    """测试插件异常隔离机制"""
+    """测试 ``strict=False`` 模式下的插件异常隔离机制。
 
-    def test_exception_in_one_plugin_doesnt_stop_others(self, mock_simulator):
+    A2 改动后 ``EnvRuntime`` 默认 ``strict=True``，plugin 异常会原样抛出。
+    这里的测试显式使用 ``strict=False`` 来验证 best-effort 模式仍然可用——
+    异常被 logging 记录但不中断其它 plugin 和物理步。
+    """
+
+    def test_exception_in_one_plugin_doesnt_stop_others(self, mock_simulator, caplog):
         """
         场景：priority=100 的插件抛异常
-        预期：priority=50 的插件仍然被执行
+        预期：priority=50 的插件仍然被执行（strict=False 模式）
         """
         class NormalPlugin(BasePlugin):
             def __init__(self):
@@ -127,25 +132,23 @@ class TestPluginExceptionIsolation:
             simulator=mock_simulator,
             plugins=[normal, explosive],
             phy_steps_per_action=1,
+            strict=False,
         )
 
-        # 捕获 warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level("ERROR", logger="combatbench.envs.framework"):
             runtime.reset()
             runtime.step(np.zeros(21), np.zeros(21))
 
-            # 验证：有 warning 被记录
-            assert len(w) > 0
-            assert "Exploded" in str(w[0].message)
-
+        # 验证：异常被 logging 记录（带 traceback）
+        assert any("Exploded" in record.message or "Exploded" in (record.exc_text or "")
+                   for record in caplog.records)
         # 验证：正常插件仍然被调用
         assert normal.called
 
-    def test_exception_in_pre_phy_step_stops_physical_step(self, mock_simulator):
+    def test_exception_in_pre_phy_step_stops_physical_step(self, mock_simulator, caplog):
         """
-        场景：在 on_pre_phy_step 抛异常
-        预期：异常被隔离，其他插件继续执行，physical_step() 正常执行
+        场景：在 on_pre_phy_step 抛异常 (strict=False)
+        预期：异常被隔离，其它插件继续执行，physical_step() 正常执行
         """
         class StepCounterPlugin(BasePlugin):
             def __init__(self):
@@ -165,25 +168,23 @@ class TestPluginExceptionIsolation:
             simulator=mock_simulator,
             plugins=[explosive, counter],
             phy_steps_per_action=2,
+            strict=False,
         )
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level("ERROR", logger="combatbench.envs.framework"):
             runtime.reset()
             runtime.step(np.zeros(21), np.zeros(21))
 
-            # 验证：有 warning 被记录
-            assert len(w) > 0
-
+        assert len(caplog.records) > 0
         # 框架的异常隔离机制：即使 explosive 抛异常，counter 仍然执行
         # physical_step() 也正常执行
-        assert counter.pre_phy_count == 2  # 2个物理步
-        assert counter.post_phy_count == 2  # physical_step() 正常执行了
+        assert counter.pre_phy_count == 2
+        assert counter.post_phy_count == 2
 
-    def test_multiple_plugins_exception_isolated(self, mock_simulator):
+    def test_multiple_plugins_exception_isolated(self, mock_simulator, caplog):
         """
-        场景：多个插件都抛异常
-        预期：所有插件都被尝试调用，异常被独立捕获
+        场景：多个插件都抛异常 (strict=False)
+        预期：所有插件都被尝试调用，异常被独立捕获并记录
         """
         class MultiExplosivePlugin(BasePlugin):
             def __init__(self, explode_at_hooks):
@@ -213,16 +214,16 @@ class TestPluginExceptionIsolation:
             simulator=mock_simulator,
             plugins=[plugin],
             phy_steps_per_action=1,
+            strict=False,
         )
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with caplog.at_level("ERROR", logger="combatbench.envs.framework"):
             runtime.reset()
             runtime.step(np.zeros(21), np.zeros(21))
 
-            # 应该有 2 个 warning（两个钩子都抛异常）
-            assert len(w) == 2
-
+        # 两个钩子各抛一次异常，应当各有一条 error log
+        assert sum(1 for rec in caplog.records
+                   if "Boom at" in (rec.exc_text or "") or "Boom at" in rec.message) >= 2
         # 验证：两个钩子都被执行了
         assert "on_pre_phy_step" in plugin.executed_hooks
         assert "on_post_phy_step" in plugin.executed_hooks
@@ -431,15 +432,15 @@ class TestDispatcherPriority:
 
     def test_observer_dispatcher_has_highest_priority(self, mock_simulator):
         """
-        场景：ObserverDispatcher 的 priority 是 -1000000
-        预期：它总是最先执行
+        场景：_PluginManager 按 priority 降序排序 (reverse=True)，所以 priority
+        越大越先执行。ObserverDispatcher 必须在同一钩子的其它 plugin 之前刷新，
+        这样下游的终止/奖励 plugin 才能读到当前步的 observer 输出。
+        预期：priority = +1_000_000，严格大于任何默认 BasePlugin。
         """
         from envs.framework.runtime_plugin import _ObserverDispatcherPlugin
 
         dispatcher = _ObserverDispatcherPlugin()
-        assert dispatcher.priority == -1_000_000
+        assert dispatcher.priority == 1_000_000
 
-        # 即使其他插件有很高的 priority，dispatcher 也应该更低
-        high_priority_plugin = BasePlugin()
-        # BasePlugin 默认 priority 是 0
-        assert dispatcher.priority < high_priority_plugin.priority
+        default_plugin = BasePlugin()  # default priority == 0
+        assert dispatcher.priority > default_plugin.priority

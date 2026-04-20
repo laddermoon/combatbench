@@ -1,5 +1,5 @@
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-import warnings
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, TypeVar
+import logging
 
 import numpy as np
 
@@ -11,9 +11,50 @@ from .recorder import PostActionRecorder
 from .runtime_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
 
 
+# TODO(framework/B2): introduce a VectorizedSimulator interface and a
+# batched variant of EnvRuntime. Current design is single-env only; trainers
+# rely on worker processes (RolloutCollector) which pay per-env reset cost
+# and cannot exploit GPU-resident simulators. A future migration path:
+# - add BaseVectorizedSimulator(batch_size, batched_step, batched_reset)
+# - add EnvRuntimeBatched mirroring EnvRuntime with batched ctx views
+# - keep EnvRuntime as the B=1 specialization.
+
+
+_logger = logging.getLogger("combatbench.envs.framework")
+
+_PluginT = TypeVar("_PluginT", bound=BasePlugin)
+
+
+def _safe_call(
+    target: Any,
+    hook_name: str,
+    strict: bool,
+    label: str,
+    *args: Any,
+) -> None:
+    """Invoke ``target.<hook_name>(*args)`` with uniform error handling.
+
+    On exception:
+      * ``strict=True`` (default) re-raises, preserving the original traceback.
+      * ``strict=False`` logs the full traceback via ``logging.exception`` so
+        it is visible in logs (unlike ``warnings.warn`` which is rate-limited).
+    ``label`` is included in the log message to identify the failing unit.
+    """
+    method = getattr(target, hook_name, None)
+    if method is None:
+        return
+    try:
+        method(*args)
+    except Exception:
+        if strict:
+            raise
+        _logger.exception("%s '%s' failed at %s", label, hook_name, label)
+
+
 class _PluginManager:
-    def __init__(self):
+    def __init__(self, strict: bool = True):
         self._plugins: List[BasePlugin] = []
+        self._strict = bool(strict)
 
     def attach(self, plugin: BasePlugin) -> None:
         if plugin in self._plugins:
@@ -31,28 +72,31 @@ class _PluginManager:
         for plugin in list(self._plugins):
             self.detach(plugin)
 
+    def iter_plugins(self) -> Tuple[BasePlugin, ...]:
+        return tuple(self._plugins)
+
     def invoke(self, hook_name: str, ctx: SimContext, allow_mutator: bool = False) -> None:
         for plugin in self._plugins:
-            try:
-                method = getattr(plugin, hook_name, None)
-                if method is None:
-                    continue
-                if allow_mutator and plugin.require_mutator:
-                    ctx._grant_mutator()
-                else:
-                    ctx._revoke_mutator()
-                method(ctx)
-            except Exception as exc:
-                warnings.warn(f"Plugin '{plugin.name}' failed at {hook_name}: {exc}")
+            if getattr(plugin, hook_name, None) is None:
+                continue
+            if allow_mutator and plugin.require_mutator:
+                ctx._grant_mutator()
+            else:
+                ctx._revoke_mutator()
+            _safe_call(
+                plugin, hook_name, self._strict,
+                f"Plugin '{plugin.name}'",
+                ctx,
+            )
         ctx._revoke_mutator()
 
 
 class _RuntimeCore:
-    def __init__(self, simulator: BaseSimulator, phy_steps_per_action: int = 1):
+    def __init__(self, simulator: BaseSimulator, phy_steps_per_action: int = 1, strict: bool = True):
         self.simulator = simulator
         self.phy_steps_per_action = phy_steps_per_action
         self.ctx = SimContext(simulator)
-        self.plugin_manager = _PluginManager()
+        self.plugin_manager = _PluginManager(strict=strict)
         self._is_episode_active = False
 
     @property
@@ -122,8 +166,15 @@ class EnvRuntime:
         recorders: Optional[List[PostActionRecorder]] = None,
         phy_steps_per_action: int = 1,
         max_steps: Optional[int] = None,
+        strict: bool = True,
     ):
-        self._core = _RuntimeCore(simulator, phy_steps_per_action)
+        """``strict``: if True (default) any exception raised by a plugin,
+        observer or recorder hook propagates and stops the runtime. Set to
+        False only for smoke-test / best-effort scripts where you want the
+        error logged (with traceback) but the episode to continue.
+        """
+        self._strict = bool(strict)
+        self._core = _RuntimeCore(simulator, phy_steps_per_action, strict=self._strict)
         self._observer_dispatcher = _ObserverDispatcherPlugin()
         self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}
         self._recorders: List[PostActionRecorder] = []
@@ -162,6 +213,18 @@ class EnvRuntime:
         if plugin is self._observer_dispatcher:
             raise ValueError("Observer dispatcher is managed internally by EnvRuntime and cannot be detached.")
         self._core.detach_plugin(plugin)
+
+    @property
+    def plugins(self) -> Tuple[BasePlugin, ...]:
+        """Read-only snapshot of attached plugins (including the internal
+        observer dispatcher). Useful for introspection / bulk config; do not
+        mutate directly - use attach_plugin / detach_plugin instead.
+        """
+        return self._core.plugin_manager.iter_plugins()
+
+    def find_plugins(self, plugin_type: Type[_PluginT]) -> Tuple[_PluginT, ...]:
+        """Return all attached plugins matching ``plugin_type`` (``isinstance``)."""
+        return tuple(plugin for plugin in self.plugins if isinstance(plugin, plugin_type))
 
     def attach_observer_plugin(self, name: str, observer_plugin: Optional[BaseObserverPlugin]) -> None:
         current = self.observer_plugins.get(name)
@@ -202,13 +265,11 @@ class EnvRuntime:
         readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
         observer_outputs = self.get_observer_outputs()
         for recorder in self._recorders:
-            method = getattr(recorder, hook_name, None)
-            if method is None:
-                continue
-            try:
-                method(readonly_ctx, observer_outputs)
-            except Exception as exc:
-                warnings.warn(f"Recorder '{type(recorder).__name__}' failed at {hook_name}: {exc}")
+            _safe_call(
+                recorder, hook_name, self._strict,
+                f"Recorder '{type(recorder).__name__}'",
+                readonly_ctx, observer_outputs,
+            )
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
         self._core.reset(seed=seed, options=options)
@@ -252,15 +313,18 @@ class EnvRuntime:
         return shared_info
 
     def get_termination_flags(self) -> Tuple[bool, bool]:
+        """Return ``(terminated, truncated)`` following Gymnasium semantics.
+
+        Both flags can be True simultaneously when the same step hits a
+        non-timeout reason (e.g. KO) AND a timeout. Only ``TIMEOUT`` maps to
+        ``truncated``; all other reasons map to ``terminated``.
+        """
         proposals = self._core.ctx.termination_proposals
         if not proposals:
             return False, False
-        if TerminationReason.TIMEOUT in proposals:
-            has_non_timeout_reason = any(reason != TerminationReason.TIMEOUT for reason in proposals)
-            if has_non_timeout_reason:
-                return True, False
-            return False, True
-        return True, False
+        truncated = TerminationReason.TIMEOUT in proposals
+        terminated = any(reason != TerminationReason.TIMEOUT for reason in proposals)
+        return terminated, truncated
 
     def render(self) -> Optional[np.ndarray]:
         return self._core.simulator.get_broadcastview_image()

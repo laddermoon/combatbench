@@ -126,17 +126,18 @@ class TestTerminationFlags:
         assert terminated is True
         assert truncated is False
 
-    def test_timeout_with_ko_returns_terminated_true(self, mock_simulator):
+    def test_timeout_with_ko_returns_both_flags_true(self, mock_simulator):
         """
         场景：TIMEOUT 和 KO 同时存在
-        预期：terminated=True, truncated=False（KO 优先）
+        预期：terminated=True AND truncated=True（Gymnasium 语义，两者可共存）
+
+        Note: 以前的实现在同步出现 KO+TIMEOUT 时会丢失 truncated 信号，导致
+        按时限截断的统计不准。C3 修复后两个 flag 独立。
         """
         from envs.framework.plugin import BasePlugin
-        from envs.framework.common_plugins import TimeoutPlugin
 
         class KOWithTimeoutPlugin(BasePlugin):
             def on_post_action_step(self, ctx):
-                # 同时请求两种终止
                 ctx.request_termination(TerminationReason.TIMEOUT)
                 ctx.request_termination(TerminationReason.KO)
 
@@ -149,9 +150,8 @@ class TestTerminationFlags:
         runtime.step(np.zeros(21), np.zeros(21))
 
         terminated, truncated = runtime.get_termination_flags()
-        # KO 存在时，返回 terminated=True
         assert terminated is True
-        assert truncated is False
+        assert truncated is True
 
 
 class TestSharedInfo:

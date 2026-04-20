@@ -23,22 +23,27 @@ class TimeoutPlugin(BasePlugin):
 
 
 class VideoRecorderPlugin(BasePlugin):
-    videosave_path: str|None = None
-    
-    @classmethod
-    def set_videosave_path(cls, path: str) -> None:
-        cls.videosave_path = path
-
     """
-    视频录制插件。
-    在物理步按照指定的 fps 采样图像，并在 episode 结束时保存视频。
+    视频录制插件。在物理步按照指定的 fps 采样图像，并在 episode 结束时保存视频。
+
+    Note
+    ----
+    之前的实现提供 ``VideoRecorderPlugin.set_videosave_path(path)`` 作为全局
+    override 入口，依赖一个类级变量，在多 runtime / 并发场景下会互相串扰。
+    现在移除了这个机制——请在构造时直接传入 ``output_path``，或用实例方法
+    ``set_output_path(path)`` 在 attach 之后修改。
     """
     def __init__(self, fps: int = 30, output_path: str = "video.mp4"):
         self.fps = fps
-        # videosave_path 优先级高于 output_path, for external override
-        self.output_path = Path(output_path) if self.videosave_path is None else Path(self.videosave_path)
+        self.output_path = Path(output_path)
         self._interval = 1
         self._frames: List[np.ndarray] = []
+
+    def set_output_path(self, path: str | Path | None) -> None:
+        """Update the destination path at runtime (instance-scoped, thread-safe)."""
+        if path is None:
+            return
+        self.output_path = Path(path)
 
     @property
     def name(self) -> str:

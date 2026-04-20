@@ -27,8 +27,15 @@ class RoundRunner:
         print("=" * 60)
 
     def run(self, seed: Optional[int] = None, videosave_path: Optional[str] = None) -> Dict[str, Any]:
-        if videosave_path is not None :
-            VideoRecorderPlugin.set_videosave_path(videosave_path)
+        if videosave_path is not None:
+            # Update any already-attached VideoRecorderPlugin in the runtime
+            # (instance-scoped; replaces the previous class-var override).
+            find_plugins = getattr(self.runtime, "find_plugins", None)
+            plugins_iter = (
+                find_plugins(VideoRecorderPlugin) if callable(find_plugins) else ()
+            )
+            for plugin in plugins_iter:
+                plugin.set_output_path(videosave_path)
         self.runtime.reset(seed=seed)
         obs, info = self._collect_runtime_view()
         
@@ -175,6 +182,13 @@ class RoundRunner:
 
     @staticmethod
     def _normalize_observer_output(output: Any) -> tuple[Any, Dict[str, Any]]:
+        # TODO(framework/B4): replace this shape-guessing normalizer with a
+        # typed protocol. Observer outputs today can be any of:
+        # ``ndarray`` / ``(payload, info_dict)`` / ``{"obs": ..., "info": {...}}``,
+        # forcing RoundRunner to probe for keys. A cleaner design is to split
+        # BaseObserverPlugin into ObservationPlugin / RewardPlugin /
+        # MetricPlugin each with a stable ``get_output()`` return shape, and
+        # let consumers pick by type.
         if output is None:
             return None, {}
         if isinstance(output, tuple) and len(output) == 2:

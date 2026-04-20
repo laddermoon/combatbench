@@ -6,6 +6,14 @@ from .plugin import BasePlugin
 
 
 class BaseRuntimeUnit(ABC):
+    """Observer-side unit invoked by ``_ObserverDispatcherPlugin``.
+
+    Subclasses produce a per-step output (observation vector, reward scalar,
+    metric dict, ...) via ``get_output()``. Image/debug dumping used to live
+    here via ``save_debug_image``; it now belongs to
+    :class:`envs.framework.recorder.PostActionRecorder`.
+    """
+
     def process_data(self, ctx: ReadOnlySimContext) -> None:
         return None
 
@@ -26,15 +34,11 @@ class BaseRuntimeUnit(ABC):
         pass
 
 
-class BaseObserverPlugin(BaseRuntimeUnit, ABC):
-    """Observer plugins are runtime units specialised for producing a
-    per-step output (reward, observation, metric, ...).
-
-    Image/debug dumping used to live here via ``save_debug_image``; this has
-    been replaced by :class:`envs.framework.recorder.PostActionRecorder`
-    instances attached to ``EnvRuntime``.
-    """
-    pass
+# ``BaseObserverPlugin`` used to carry observer-specific behaviour
+# (save_debug_image). After recorder extraction it became an empty subclass.
+# Kept as an alias for backward compatibility with user code that imports the
+# name; new code should subclass ``BaseRuntimeUnit`` directly.
+BaseObserverPlugin = BaseRuntimeUnit
 
 
 class _ObserverDispatcherPlugin(BasePlugin):
@@ -48,10 +52,17 @@ class _ObserverDispatcherPlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        return -1_000_000
+        # 观察者刷新必须在同一钩子的其它 plugin **之前**执行，这样下游的
+        # 终止判定 / 奖励 / 指标插件读到的 observer 输出总是对应当前步的状态。
+        # 在 ``on_pre_episode`` 这种可写钩子里，观察者自己靠
+        # ``require_mutator=False`` 保证不会获得 ``ctx.mutator``——无论优先级
+        # 高低它都只能读。因此安全地把优先级抬到最前。
+        return 1_000_000
 
     @property
     def require_mutator(self) -> bool:
+        # 观察者**永远**是只读的。即便运行在可写钩子上也不会拿到
+        # ``ctx.mutator``。这是 Observer 语义的硬约束。
         return False
 
     def set_observer_plugin(self, name: str, observer_plugin: Optional[BaseObserverPlugin]) -> None:
@@ -95,6 +106,12 @@ class _ObserverDispatcherPlugin(BasePlugin):
 
     def _process_ctx(self, ctx: SimContext, trigger_name: str, force: bool = False) -> None:
         readonly_ctx = ReadOnlySimContext.from_sim_context(ctx)
+        # Note(framework/C2): this token intentionally skips ``metrics`` /
+        # ``events`` because they are not hashable in general. That means if a
+        # plugin mutates metrics without advancing episode_step / physics_step
+        # and then requests a refresh WITHOUT ``force=True``, the dispatcher
+        # will skip re-processing. All known call sites either advance the
+        # step counter or pass ``force=True``; treat this as a contract.
         process_token = (
             trigger_name,
             readonly_ctx.episode_step,
