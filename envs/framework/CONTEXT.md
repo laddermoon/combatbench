@@ -60,8 +60,12 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   `runtime_plugin.py` is a backward-compat shim; new code imports from
   `observer_plugin`.
 - `env_runtime.py` — `EnvRuntime` + internal `_RuntimeCore` + `_PluginManager`.
-- `episode_runner.py` — `EpisodeRunner`, `Policy` protocol, `ObserverBinding`,
-  `RolloutConfig`, `AgentTrajectory`, `EpisodeResult`, `StepContext`.
+- `policy.py` — canonical `Policy` Protocol + `coerce_action` / `call_policy`
+  helpers. The single source of truth for the policy contract; the sibling
+  `combatbench.policy.BaseCombatPolicy` ABC is a concrete implementation.
+- `episode_runner.py` — `EpisodeRunner`, `ObserverBinding`, `RolloutConfig`,
+  `AgentTrajectory`, `EpisodeResult`, `StepContext` (re-exports `Policy` for
+  back-compat with pre-split callers).
 - `round_runner.py` — `RoundRunner` / `CombatRoundRunner` (thin subclass of
   `EpisodeRunner` + legacy result-dict surface + `videosave_path` plumbing).
 - `parallel_runner.py` — `ParallelRunner` / `RunnerFactory` type alias. Process

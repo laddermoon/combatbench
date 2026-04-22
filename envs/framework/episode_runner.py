@@ -66,13 +66,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import (
-    Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence,
-    Tuple, runtime_checkable,
+    Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple,
 )
 
 import numpy as np
 
 from .env_runtime import EnvRuntime
+from .policy import Policy, call_policy, coerce_action
 from .recorder import PostActionRecorder
 
 
@@ -80,65 +80,10 @@ from .recorder import PostActionRecorder
 # breaking downstream consumers that key by these exact strings.
 AGENT_IDS: Tuple[str, str] = ("robot_a", "robot_b")
 
-
-# ---------------------------------------------------------------------------
-# Policy protocol
-# ---------------------------------------------------------------------------
-@runtime_checkable
-class Policy(Protocol):
-    """Minimal duck-typed policy interface.
-
-    Required:
-        ``act(observation) -> action`` — synchronous, returns something that
-        can be cast to ``np.ndarray(dtype=float32)``.
-
-    Optional (runner detects via ``hasattr``):
-        ``reset(seed: Optional[int]) -> None`` — called once per episode
-            before the first ``act`` call.
-        ``act_with_extras(observation) -> (action, extras: dict)`` — used
-            when :attr:`RolloutConfig.store_extras` is ``True`` so on-policy
-            RL can persist log-probs / value estimates per step.
-        ``close() -> None`` — release resources. Runner never calls this;
-            the caller owns policy lifecycle.
-    """
-
-    def act(self, observation: Any) -> Any: ...
-
-
-def _call_policy(
-    policy: Policy, observation: Any, *, want_extras: bool,
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Invoke policy and coerce its return to ``(ndarray, extras_dict)``.
-
-    When ``want_extras`` is True, prefers ``act_with_extras`` if the policy
-    implements it; falls back to plain ``act`` with an empty extras dict.
-    Returning extras the caller did not ask for is allowed but ignored.
-    """
-    action: Any
-    extras: Dict[str, Any] = {}
-    if want_extras and hasattr(policy, "act_with_extras"):
-        result = policy.act_with_extras(observation)
-        if not (isinstance(result, tuple) and len(result) == 2):
-            raise TypeError(
-                f"Policy.act_with_extras must return (action, extras_dict); "
-                f"got {type(result).__name__}"
-            )
-        action, extras = result
-        if not isinstance(extras, dict):
-            raise TypeError(
-                f"Policy.act_with_extras extras must be a dict; "
-                f"got {type(extras).__name__}"
-            )
-    else:
-        action = policy.act(observation)
-    return _coerce_action(action), extras
-
-
-def _coerce_action(action: Any) -> np.ndarray:
-    """Normalize a policy's action to ``float32`` ndarray."""
-    if isinstance(action, np.ndarray):
-        return action.astype(np.float32, copy=False)
-    return np.asarray(action, dtype=np.float32)
+# Back-compat aliases: pre-split code imported these from episode_runner.
+# The canonical location is :mod:`envs.framework.policy`.
+_call_policy = call_policy
+_coerce_action = coerce_action
 
 
 # ---------------------------------------------------------------------------

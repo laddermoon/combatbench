@@ -11,13 +11,13 @@ from .replay import (
 )
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
+from .policy import Policy, call_policy, coerce_action
 from .episode_runner import (
     AGENT_IDS,
     AgentTrajectory,
     EpisodeResult,
     EpisodeRunner,
     ObserverBinding,
-    Policy,
     RolloutConfig,
     StepContext,
     default_bindings,
@@ -52,6 +52,8 @@ __all__ = [
     "CombatRoundRunner",
     "RoundRunner",
     "Policy",
+    "call_policy",
+    "coerce_action",
     "ObserverBinding",
     "RolloutConfig",
     "AgentTrajectory",

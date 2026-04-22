@@ -56,12 +56,13 @@ class StandingCombatPolicy(BaseCombatPolicy):
             raise RuntimeError(f"Unexpected keys in exported standing policy: {incompatible.unexpected_keys}")
         self.actor.eval()
 
-    def act(self, obs: np.ndarray, info: Optional[dict] = None) -> np.ndarray:
-        obs_array = np.asarray(obs, dtype=np.float32)
+    def act(self, observation: Any) -> np.ndarray:
+        obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action = self.actor(obs_tensor)
         return action.squeeze(0).cpu().numpy().astype(np.float32)
 
-    def reset(self) -> None:
+    def reset(self, seed: Optional[int] = None) -> None:
+        # Stateless deterministic policy; ignore the seed.
         return None

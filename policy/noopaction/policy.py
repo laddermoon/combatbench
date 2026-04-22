@@ -1,11 +1,15 @@
-"""
-No-Op Action Combat Policy
+"""No-op combat policy.
 
-A policy that always returns None to hold the previous action unchanged.
-Useful for testing and as a minimal baseline.
-"""
+Emits a zero action every step. Useful as a minimal baseline, for
+debugging environment wiring, and as a default "do nothing" opponent.
 
-from typing import Any, Dict, Optional
+Conforms to the canonical :class:`envs.framework.policy.Policy` contract:
+``act`` returns an explicit ``np.ndarray`` (the framework forbids
+``None`` at this layer — there is no "hold previous action" sentinel).
+"""
+from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 
@@ -13,24 +17,10 @@ from policy.base import BaseCombatPolicy
 
 
 class NoOpActionPolicy(BaseCombatPolicy):
-    """
-    No-op action policy for CombatBench.
+    """Always returns a zero action of shape ``(ACTION_DIM,)``."""
 
-    Always returns None to hold the previous action unchanged.
-    """
-
-    def act(self, obs: np.ndarray, info: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Return None to hold previous action unchanged.
-
-        Args:
-            obs: Current observation (unused)
-            info: Environment info dict (unused)
-
-        Returns:
-            None, indicating the previous action should be held
-        """
-        return None
+    def act(self, observation: Any) -> np.ndarray:
+        return np.zeros(self.ACTION_DIM, dtype=np.float32)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
