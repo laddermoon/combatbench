@@ -142,23 +142,6 @@ class TestBaseCombatPolicyConformance:
         p.reset()
         p.reset(seed=42)
 
-    def test_noopaction_policy_conforms(self):
-        import sys
-        from pathlib import Path
-
-        combatbench_root = Path(__file__).resolve().parents[3]
-        if str(combatbench_root) not in sys.path:
-            sys.path.insert(0, str(combatbench_root))
-        from policy.noopaction.policy import NoOpActionPolicy
-
-        p = NoOpActionPolicy()
-        assert isinstance(p, Policy)
-        action = p.act(None)
-        assert isinstance(action, np.ndarray)
-        assert action.dtype == np.float32
-        # NoOp must be an explicit zero action — no None sentinel.
-        np.testing.assert_array_equal(action, np.zeros(21, dtype=np.float32))
-
     def test_random_policy_conforms_and_reset_reseeds(self):
         import sys
         from pathlib import Path

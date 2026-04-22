@@ -66,8 +66,8 @@ def main() -> None:
     from policy import load_policy
 
     # Load policies
-    policy_a_spec = args.policy_a or 'noopaction'
-    policy_b_spec = args.policy_b or 'noopaction'
+    policy_a_spec = args.policy_a or 'random'
+    policy_b_spec = args.policy_b or 'random'
 
     print(f"Loading policy A: {policy_a_spec}")
     policy_a = load_policy(policy_a_spec)
