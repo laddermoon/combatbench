@@ -63,6 +63,8 @@ Example
 """
 from __future__ import annotations
 
+import logging
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import (
@@ -72,8 +74,11 @@ from typing import (
 import numpy as np
 
 from .env_runtime import EnvRuntime
+from .plugin import BasePlugin
 from .policy import Policy, call_policy, coerce_action
 from .recorder import PostActionRecorder
+
+_logger = logging.getLogger(__name__)
 
 
 # Agent naming is project-scoped (1v1 combat); do NOT generalize without
@@ -84,6 +89,35 @@ AGENT_IDS: Tuple[str, str] = ("robot_a", "robot_b")
 # The canonical location is :mod:`envs.framework.policy`.
 _call_policy = call_policy
 _coerce_action = coerce_action
+
+
+# ---------------------------------------------------------------------------
+# Seed helpers (see envs/framework/SEED.md)
+# ---------------------------------------------------------------------------
+def _resolve_seed(seed: Optional[int]) -> int:
+    """Resolve ``None`` to a concrete ``uint32`` seed.
+
+    Per the framework's seeding contract, ``None`` never propagates past
+    the runner boundary — every episode has a concrete, loggable,
+    reproducible base seed. When the caller passes ``None`` we draw one
+    from :func:`secrets.randbits(32)` so it is independent of any
+    per-process ``np.random`` state.
+    """
+    if seed is None:
+        return int(secrets.randbits(32))
+    return int(seed)
+
+
+def _derive_batch_seeds(base_seed: int, n: int) -> np.ndarray:
+    """Return ``n`` per-episode ``uint32`` seeds from a resolved ``base_seed``.
+
+    Kept byte-for-byte equivalent across :class:`EpisodeRunner` and
+    :class:`ParallelRunner` so switching execution mode does not change
+    which seeds are run. The top-level split is ``SeedSequence(base_seed)``
+    and each episode slot is drawn via ``generate_state`` — each episode
+    thereafter spawns its own per-consumer tree inside the runner.
+    """
+    return np.random.SeedSequence(int(base_seed)).generate_state(n, dtype=np.uint32)
 
 
 # ---------------------------------------------------------------------------
@@ -224,10 +258,32 @@ class AgentTrajectory:
     truncated: bool = False
 
 
+@dataclass(frozen=True)
+class EpisodeSeeds:
+    """Concrete per-consumer seeds for a single episode.
+
+    See ``envs/framework/SEED.md`` for the derivation rules. This structure
+    is *internal* to the runner — it is not persisted. Only ``base`` is
+    recorded on :class:`EpisodeResult` / in :class:`Recorder` manifests;
+    the rest are recomputed deterministically from ``base`` + the current
+    plugin/policy configuration.
+    """
+    base: int
+    runtime: int
+    policies: Dict[str, int]           # agent_id -> int
+    plugins: Dict[int, int]            # id(plugin) -> int
+
+
 @dataclass
 class EpisodeResult:
-    """Structured output of :meth:`EpisodeRunner.run_episode`."""
-    seed: Optional[int]
+    """Structured output of :meth:`EpisodeRunner.run_episode`.
+
+    ``seed`` is the *resolved* base seed used for this episode — always an
+    ``int`` (never ``None``). ``None`` inputs are resolved at the runner
+    entry via :func:`secrets.randbits(32)`. Re-running with this seed plus
+    the same code reproduces the episode byte-for-byte.
+    """
+    seed: int
     num_steps: int
     wall_time_sec: float
     terminated: bool
@@ -298,10 +354,10 @@ class EpisodeRunner:
                 f"missing={sorted(missing)} extra={sorted(extra)}"
             )
         for agent, policy in policies.items():
-            if not hasattr(policy, "act"):
+            if not isinstance(policy, Policy):
                 raise TypeError(
-                    f"Policy for {agent!r} lacks required 'act' method "
-                    f"(got {type(policy).__name__})"
+                    f"Policy for {agent!r} must subclass "
+                    f"envs.framework.policy.Policy; got {type(policy).__name__}"
                 )
 
     def _validate_bindings(self) -> None:
@@ -332,9 +388,16 @@ class EpisodeRunner:
     # Public API
     # ------------------------------------------------------------------
     def run_episode(self, seed: Optional[int] = None) -> EpisodeResult:
-        """Run a single episode. Returns a populated :class:`EpisodeResult`."""
-        runtime_seed, policy_seeds = self._derive_seeds(seed)
-        self._reset_all(runtime_seed, policy_seeds)
+        """Run a single episode. Returns a populated :class:`EpisodeResult`.
+
+        ``seed=None`` is resolved to a concrete ``uint32`` via
+        :func:`secrets.randbits(32)` at entry and written back to the
+        returned :attr:`EpisodeResult.seed` — the episode is always
+        reproducible from that value (see ``framework/SEED.md``).
+        """
+        base_seed = _resolve_seed(seed)
+        episode_seeds = self._derive_seeds(base_seed)
+        self._reset_all(episode_seeds)
 
         trajectories = self._init_trajectories()
         start = time.monotonic()
@@ -406,7 +469,7 @@ class EpisodeRunner:
 
         shared_info_final = self.runtime.get_shared_info()
         result = EpisodeResult(
-            seed=seed,
+            seed=base_seed,
             num_steps=step_idx,
             wall_time_sec=time.monotonic() - start,
             terminated=terminated,
@@ -427,14 +490,20 @@ class EpisodeRunner:
     ) -> List[EpisodeResult]:
         """Run ``n`` episodes, deriving a child seed per episode via
         :class:`numpy.random.SeedSequence` so the batch is reproducible from
-        ``base_seed`` alone. ``base_seed=None`` produces a fresh random batch.
+        ``base_seed`` alone.
+
+        ``base_seed=None`` is resolved at entry (see
+        :func:`_resolve_seed`) and logged; the resolved value is what each
+        :attr:`EpisodeResult.seed` records for its own derivation, making
+        the batch reproducible even when the caller didn't supply a seed.
         """
         if n < 0:
             raise ValueError(f"n must be non-negative; got {n}")
         if n == 0:
             return []
-        seed_source = np.random.SeedSequence(base_seed)
-        episode_seeds = seed_source.generate_state(n, dtype=np.uint32)
+        batch_seed = _resolve_seed(base_seed)
+        _logger.info("run_n_episodes: base_seed=%d, n=%d", batch_seed, n)
+        episode_seeds = _derive_batch_seeds(batch_seed, n)
         return [self.run_episode(int(s)) for s in episode_seeds]
 
     def close(self) -> None:
@@ -449,36 +518,72 @@ class EpisodeRunner:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _derive_seeds(
-        self, seed: Optional[int],
-    ) -> Tuple[Optional[int], Dict[str, int]]:
-        """Split a user seed into (runtime_seed, {agent: policy_seed}).
+    def _seedable_plugins(self) -> Tuple[BasePlugin, ...]:
+        """Return plugins that override :meth:`BasePlugin.set_episode_seed`.
 
-        Using SeedSequence children prevents accidental correlation between
-        runtime RNG and policy RNGs (and between the two policies), which
-        would otherwise be easy to introduce by sharing the raw seed.
+        Ordering follows :meth:`EnvRuntime.plugins` (priority-sorted, stable),
+        which is what we use to allocate seeds — so as long as the plugin
+        set and their priorities don't change, each plugin gets a stable
+        slot in the derivation tree.
         """
-        if seed is None:
-            # Explicitly propagate None to runtime/policies so they can
-            # pick their own nondeterministic seeds.
-            return None, {agent: None for agent in self.AGENT_IDS}  # type: ignore[return-value]
-        ss = np.random.SeedSequence(int(seed))
-        runtime_seed, *policy_seed_vals = (
-            int(x) for x in ss.generate_state(1 + len(self.AGENT_IDS), dtype=np.uint32)
+        return tuple(
+            p for p in self.runtime.plugins
+            if type(p).set_episode_seed is not BasePlugin.set_episode_seed
         )
-        policy_seeds = dict(zip(self.AGENT_IDS, policy_seed_vals))
-        return runtime_seed, policy_seeds
 
-    def _reset_all(
-        self,
-        runtime_seed: Optional[int],
-        policy_seeds: Mapping[str, Optional[int]],
-    ) -> None:
-        self.runtime.reset(seed=runtime_seed)
+    def _derive_seeds(self, base_seed: int) -> EpisodeSeeds:
+        """Derive a concrete :class:`EpisodeSeeds` bundle from ``base_seed``.
+
+        Uses :meth:`numpy.random.SeedSequence.spawn` end-to-end so any
+        sub-consumer that wants to keep spawning its own children (e.g. a
+        plugin with multiple RNGs) can do so off a clean child sequence.
+        Leaf ``int`` values for the final consumers are extracted via
+        ``generate_state(1, dtype=uint32)[0]``.
+
+        See ``envs/framework/SEED.md``.
+        """
+        seedable_plugins = self._seedable_plugins()
+        n_consumers = 1 + len(self.AGENT_IDS) + len(seedable_plugins)
+        children = np.random.SeedSequence(int(base_seed)).spawn(n_consumers)
+        runtime_ss, *rest = children
+        policy_sss = rest[: len(self.AGENT_IDS)]
+        plugin_sss = rest[len(self.AGENT_IDS):]
+
+        def _leaf(ss: np.random.SeedSequence) -> int:
+            return int(ss.generate_state(1, dtype=np.uint32)[0])
+
+        return EpisodeSeeds(
+            base=int(base_seed),
+            runtime=_leaf(runtime_ss),
+            policies={agent: _leaf(ss) for agent, ss in zip(self.AGENT_IDS, policy_sss)},
+            plugins={id(plugin): _leaf(ss) for plugin, ss in zip(seedable_plugins, plugin_sss)},
+        )
+
+    def _reset_all(self, seeds: EpisodeSeeds) -> None:
+        """Apply ``seeds`` to every consumer.
+
+        Order matters:
+          1. ``plugin.set_episode_seed`` rebuilds each plugin's RNG
+             immediately — **before** ``runtime.reset`` because reset
+             triggers ``on_pre_episode`` where seeded plugins consume
+             their RNG to sample initial-state deltas, push intervals, etc.
+          2. ``runtime.reset`` drives the simulator (with ``seeds.runtime``)
+             and fires the plugin lifecycle hooks.
+          3. ``policy.reset`` reseeds each policy's RNG.
+        """
+        for plugin in self._seedable_plugins():
+            plugin.set_episode_seed(seeds.plugins[id(plugin)])
+        # Publish the resolved base seed on the runtime ctx so any
+        # on_pre_episode / on_post_episode recorder can persist it (see
+        # envs/framework/SEED.md). Must be set BEFORE runtime.reset so the
+        # value survives clear_episode_state and is already visible when
+        # recorder on_pre_episode fires via _invoke_recorders.
+        self.runtime.ctx.base_seed = seeds.base
+        self.runtime.reset(seed=seeds.runtime)
         for agent_id, policy in self.policies.items():
             reset_fn = getattr(policy, "reset", None)
             if callable(reset_fn):
-                reset_fn(policy_seeds.get(agent_id))
+                reset_fn(seeds.policies[agent_id])
 
     def _init_trajectories(self) -> Dict[str, Optional[AgentTrajectory]]:
         return {

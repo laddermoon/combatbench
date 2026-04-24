@@ -1,31 +1,30 @@
-"""
-CombatBench Policy Module
+"""CombatBench policy package.
 
-Available Policies:
-    - BaseCombatPolicy: Abstract base class defining the interface
+The canonical policy contract is :class:`envs.framework.policy.Policy` —
+this package provides a dynamic loader (:func:`load_policy`) plus a few
+reference implementations under sibling sub-packages (``random/``,
+``standing/``, ...).
 
-Policy Loading:
-    Use load_policy() to load policies from directory:
+Loading::
 
-    ```python
     from combatbench.policy import load_policy
 
-    # Load from directory (auto-detect first BaseCombatPolicy)
+    # Load from directory (auto-detect first Policy subclass)
     policy = load_policy("my_policy")
 
-    # Load with specific class
-    policy = load_policy("my_policy.policy.MyCombatPolicy")
+    # Load a specific class
+    policy = load_policy("my_policy.policy:MyPolicy")
 
-    # Load with parameters
-    policy = load_policy("my_policy.policy.MyCombatPolicy?lr=0.01&epochs=100")
-    ```
+    # Load with query-string kwargs
+    policy = load_policy("my_policy.policy:MyPolicy?lr=0.01&epochs=100")
 """
 
-from .base import BaseCombatPolicy
+from envs.framework.policy import Policy
+
 from .load_util import load_policy, load_policy_from_dir
 
 __all__ = [
-    "BaseCombatPolicy",
+    "Policy",
     "load_policy",
     "load_policy_from_dir",
 ]

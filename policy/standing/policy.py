@@ -6,20 +6,23 @@ import numpy as np
 import torch
 from torch import nn
 
+# Ensure the combatbench repo root (containing ``envs/`` and ``policy/``)
+# is importable, regardless of whether this module is loaded as a package
+# member or via load_policy's file-based import.
 for parent in Path(__file__).resolve().parents:
-    if (parent / "policy" / "base.py").exists():
+    if (parent / "envs" / "framework" / "policy.py").exists():
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
         break
-    if (parent / "combatbench" / "policy" / "base.py").exists():
+    if (parent / "combatbench" / "envs" / "framework" / "policy.py").exists():
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
         break
 
 try:
-    from policy.base import BaseCombatPolicy
+    from envs.framework.policy import Policy
 except ImportError:
-    from combatbench.policy.base import BaseCombatPolicy
+    from combatbench.envs.framework.policy import Policy  # type: ignore[no-redef]
 
 
 class Actor(nn.Module):
@@ -37,8 +40,11 @@ class Actor(nn.Module):
         return torch.tanh(self.net(obs))
 
 
-class StandingCombatPolicy(BaseCombatPolicy):
-    def __init__(self, model_path: Optional[str] = None, observation_space: Any = None, action_space: Any = None, **kwargs: Any):
+class StandingCombatPolicy(Policy):
+    def __init__(self, model_path: Optional[str] = None, **_ignored: Any):
+        # Silently drop unknown kwargs (e.g. observation_space / action_space
+        # if a caller passes them) so load_policy's query-string plumbing is
+        # forgiving.
         payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
         payload = torch.load(payload_path, map_location="cpu")
         hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))

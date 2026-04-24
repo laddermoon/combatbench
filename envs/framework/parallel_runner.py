@@ -69,7 +69,12 @@ from typing import Callable, Iterator, List, Optional
 
 import numpy as np
 
-from .episode_runner import EpisodeResult, EpisodeRunner
+from .episode_runner import (
+    EpisodeResult,
+    EpisodeRunner,
+    _derive_batch_seeds,
+    _resolve_seed,
+)
 
 
 _logger = logging.getLogger("combatbench.envs.framework.parallel_runner")
@@ -355,10 +360,17 @@ class ParallelRunner(AbstractContextManager):
 
 
 # ---------------------------------------------------------------------------
-# Seed derivation (keep identical to EpisodeRunner.run_n_episodes)
+# Seed derivation (shared with EpisodeRunner.run_n_episodes via
+# envs.framework.episode_runner._derive_batch_seeds)
 # ---------------------------------------------------------------------------
 def _derive_seeds(base_seed: Optional[int], n: int) -> np.ndarray:
-    """Mirror of :meth:`EpisodeRunner.run_n_episodes`'s seed derivation so
-    batch reproducibility is preserved across the parallel / sequential
-    boundary."""
-    return np.random.SeedSequence(base_seed).generate_state(n, dtype=np.uint32)
+    """Return ``n`` per-episode ``uint32`` seeds.
+
+    ``base_seed=None`` is resolved at entry to a concrete ``uint32`` (see
+    :func:`envs.framework.episode_runner._resolve_seed`) and logged, so
+    the batch is reproducible even when the caller didn't supply a seed.
+    Derivation is bit-equal to :meth:`EpisodeRunner.run_n_episodes`.
+    """
+    resolved = _resolve_seed(base_seed)
+    _logger.info("ParallelRunner: base_seed=%d, n=%d", resolved, n)
+    return _derive_batch_seeds(resolved, n)

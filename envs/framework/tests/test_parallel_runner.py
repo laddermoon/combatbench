@@ -24,6 +24,7 @@ from envs.framework.episode_runner import (
     RolloutConfig,
 )
 from envs.framework.parallel_runner import ParallelRunner, _derive_seeds
+from envs.framework.policy import Policy
 from envs.framework.runtime_plugin import BaseObserverPlugin
 
 # Reuse the module-level observer + policy + deterministic sim from the
@@ -77,7 +78,7 @@ def short_episode_factory(worker_id: int) -> EpisodeRunner:
 
 # Factory whose runner always raises on the first step — used to test error
 # handling paths. Defined at top level so ``spawn`` can import it.
-class _ExplodingPolicy:
+class _ExplodingPolicy(Policy):
     def act(self, observation: Any) -> np.ndarray:
         raise RuntimeError("boom")
 

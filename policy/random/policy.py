@@ -1,9 +1,8 @@
 """Random combat policy.
 
-Generates uniform random actions in ``[-scale, scale]``. Conforms to the
-canonical :class:`envs.framework.policy.Policy` contract; ``reset(seed)``
-reseeds the internal RNG so rollouts are reproducible from the runner's
-``base_seed``.
+Uniform random actions in ``[-scale, scale]``. Conforms to the canonical
+:class:`envs.framework.policy.Policy` ABC; ``reset(seed)`` reseeds the
+internal RNG so rollouts are reproducible from the runner's ``base_seed``.
 """
 from __future__ import annotations
 
@@ -11,27 +10,28 @@ from typing import Any, Optional
 
 import numpy as np
 
-from policy.base import BaseCombatPolicy
+from envs.framework.policy import Policy
 
 
-class RandomCombatPolicy(BaseCombatPolicy):
+class RandomCombatPolicy(Policy):
     """Uniform random action policy, actions in ``[-scale, scale]``."""
 
     def __init__(
         self,
-        observation_space: Optional[Any] = None,
-        action_space: Optional[Any] = None,
         scale: float = 0.1,
         seed: Optional[int] = None,
-        **kwargs: Any,
+        action_dim: int = 21,
+        **_ignored: Any,
     ) -> None:
-        super().__init__(observation_space, action_space, **kwargs)
+        # Accept and silently drop unknown kwargs so load_policy query-string
+        # parameters that don't apply (e.g. ``model_path``) don't crash.
         self.scale = float(scale)
+        self.action_dim = int(action_dim)
         self._init_seed = seed
         self.rng = np.random.default_rng(seed)
 
     def act(self, observation: Any) -> np.ndarray:
-        return self.rng.uniform(-self.scale, self.scale, self.ACTION_DIM).astype(np.float32)
+        return self.rng.uniform(-self.scale, self.scale, self.action_dim).astype(np.float32)
 
     def reset(self, seed: Optional[int] = None) -> None:
         """Reseed the internal RNG.
@@ -43,4 +43,4 @@ class RandomCombatPolicy(BaseCombatPolicy):
         self.rng = np.random.default_rng(seed if seed is not None else self._init_seed)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(scale={self.scale})"
+        return f"{self.__class__.__name__}(scale={self.scale}, action_dim={self.action_dim})"

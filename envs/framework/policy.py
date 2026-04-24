@@ -1,16 +1,21 @@
-"""Canonical Policy contract for the combatbench framework.
+"""Canonical Policy ABC for the combatbench framework.
 
 This module is the **single source of truth** for what counts as a
-"policy" in this project. Anything that plugs into :class:`EpisodeRunner`,
-:class:`CombatRoundRunner`, or :class:`ParallelRunner` is expected to
-satisfy the :class:`Policy` Protocol defined here.
+"policy" in this project. Anything plugged into :class:`EpisodeRunner`,
+:class:`CombatRoundRunner`, or :class:`ParallelRunner` must subclass
+:class:`Policy` defined here.
 
-The ABC base class :class:`combatbench.policy.BaseCombatPolicy` in the
-sibling ``policy/`` package is a concrete implementation of this protocol
-with extra ergonomics (observation/action spaces, default ``__repr__``,
-kwargs passthrough); loaded policies are expected to inherit from it.
-New callers that do NOT need the ABC ergonomics can implement the
-Protocol directly — duck typing is supported.
+Design note
+-----------
+An earlier iteration split the contract across a :mod:`typing.Protocol`
+(structural duck-typed interface) *and* a separate combat-specific ABC
+(:class:`BaseCombatPolicy`) living under ``policy/``. That split added
+maintenance cost (two docstrings to keep in sync, subtle drift bugs) for
+a flexibility the codebase did not actually exercise — every real policy
+inherited the ABC anyway. The current design collapses both into this
+single nominal ABC: simpler to reason about, easier to ``issubclass``
+against in :func:`combatbench.policy.load_policy`, and a narrower
+contract surface.
 
 Contract
 --------
@@ -19,35 +24,35 @@ Required:
         Synchronous. ``observation`` is whatever the bound observer
         plugin's ``get_output()`` returned; ``action`` must be coercible
         to ``np.ndarray(dtype=float32)``. Returning ``None`` is NOT
-        allowed — the framework has no "hold previous action" semantic
-        at this layer (write one explicitly if you need it, e.g. cache
-        the last action in the policy instance).
+        allowed — return an explicit action.
 
-Optional (duck-typed via ``hasattr``):
-    ``reset(seed: Optional[int]) -> None``
+Optional (runners detect via ``hasattr``):
+    ``reset(seed: Optional[int] = None) -> None``
         Called once per episode before the first ``act``. ``seed`` is a
         deterministic per-policy child seed derived from the runner's
         ``base_seed`` via :class:`numpy.random.SeedSequence` so policies
-        with their own RNGs can stay reproducible.
+        with their own RNGs can stay reproducible. Default: no-op.
     ``act_with_extras(observation) -> (action, extras: dict)``
         Used when :attr:`RolloutConfig.store_extras` is True — lets
         on-policy RL persist log-probs / value estimates per step.
     ``close() -> None``
         Release resources. Runners never call this automatically; caller
-        owns policy lifecycle. :meth:`EpisodeRunner.close` does call it
-        as a convenience.
+        owns policy lifecycle. :meth:`EpisodeRunner.close` invokes it as
+        a convenience.
 
-Why a Protocol + a separate ABC, instead of one class?
-------------------------------------------------------
-The Protocol lets downstream research code (trivial lambdas, torch
-modules, policies loaded from external packages) plug in without
-inheriting anything. The ABC in ``policy/base.py`` is where we pile up
-the shared boilerplate (space wiring, kwargs, repr, load_util
-discovery). Both point at the same contract.
+No ``__init__`` contract
+------------------------
+This ABC intentionally does **not** define ``__init__``. Subclasses are
+free to design their constructors however they want (load checkpoints,
+take hyperparameters, wire spaces — whatever). The :func:`load_policy`
+loader just calls ``cls(**kwargs)`` with parsed query-string arguments;
+subclasses that want to participate should accept ``**kwargs`` so
+unknown parameters don't crash construction.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Protocol, Tuple, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -55,17 +60,39 @@ import numpy as np
 __all__ = ["Policy", "coerce_action", "call_policy"]
 
 
-@runtime_checkable
-class Policy(Protocol):
-    """Minimal duck-typed policy interface.
+class Policy(ABC):
+    """Abstract base class for all combatbench policies. See module docstring."""
 
-    See module docstring for the full contract. Structural typing via
-    :func:`typing.runtime_checkable` means ``isinstance(obj, Policy)``
-    succeeds iff ``obj`` has an ``act`` method — the optional hooks are
-    detected by the runners via ``hasattr`` at call time.
-    """
+    @abstractmethod
+    def act(self, observation: Any) -> np.ndarray:
+        """Compute an action for the given observation.
 
-    def act(self, observation: Any) -> Any: ...
+        Parameters
+        ----------
+        observation:
+            Whatever the bound observer plugin's ``get_output()`` returned.
+            Usually a 1D float32 feature vector; policies needing richer
+            inputs should declare a custom observer plugin and bind it via
+            :class:`ObserverBinding`.
+
+        Returns
+        -------
+        action:
+            Array-like coercible to ``np.ndarray(dtype=float32)`` matching
+            the environment's expected action dimension. Returning ``None``
+            is NOT allowed.
+        """
+        raise NotImplementedError
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Per-episode reset hook. Default: no-op.
+
+        Override when the policy holds RNG or recurrent state. ``seed`` is
+        a deterministic per-policy child seed; use it to reseed stochastic
+        components so rollouts are reproducible from the runner's
+        ``base_seed``.
+        """
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -83,16 +110,14 @@ def coerce_action(action: Any) -> np.ndarray:
     Raises
     ------
     TypeError
-        If ``action`` is ``None`` — ``None`` is explicitly disallowed at
-        this contract layer to avoid the "hold previous action" ambiguity
-        that plagued the historical RoundRunner. Policies that want to
-        no-op should return an explicit zero action.
+        If ``action`` is ``None`` — disallowed at the contract layer to
+        avoid the "hold previous action" ambiguity. Policies that want a
+        stand-still / passthrough behaviour must implement it explicitly.
     """
     if action is None:
         raise TypeError(
-            "Policy.act returned None. The framework does not support a "
-            "'hold previous action' sentinel; return an explicit action "
-            "(e.g. np.zeros(action_dim, dtype=np.float32))."
+            "Policy.act returned None. Returning None is not part of the "
+            "Policy contract; return an explicit np.ndarray action."
         )
     if isinstance(action, np.ndarray):
         return action.astype(np.float32, copy=False)
@@ -116,9 +141,8 @@ def call_policy(
     ------
     TypeError
         If ``act_with_extras`` returns something that isn't a
-        ``(action, dict)`` 2-tuple. This is a programmer error in the
-        policy implementation and is surfaced loudly rather than papered
-        over.
+        ``(action, dict)`` 2-tuple. Programmer error in the policy
+        implementation — surfaced loudly rather than papered over.
     """
     action: Any
     extras: Dict[str, Any] = {}

@@ -1,7 +1,7 @@
-"""
-Policy 加载工具
+"""Policy 加载工具。
 
-支持从目录加载 Policy，自动检测 policy.py 中的 BaseCombatPolicy 实现。
+支持从目录加载 Policy，自动检测 policy.py 中实现了 canonical
+:class:`envs.framework.policy.Policy` ABC 的类。
 """
 
 import importlib
@@ -12,14 +12,13 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Type, Union
 
-from .base import BaseCombatPolicy
+from envs.framework.policy import Policy
 
 
 def load_policy(
     policy_spec: Union[str, Path],
-    observation_space: Any = None,
-    action_space: Any = None
-) -> BaseCombatPolicy:
+    **extra_kwargs: Any,
+) -> Policy:
     """
     加载 Policy
 
@@ -28,26 +27,26 @@ def load_policy(
             - 目录路径：如 "my_policy" 或 "/path/to/my_policy"
             - 模块路径：如 "my_policy.policy.MyPolicy"
             - 模块路径 + 参数：如 "my_policy.policy.MyPolicy?lr=0.01&epochs=100"
-        observation_space: 观测空间（可选，传递给 Policy）
-        action_space: 动作空间（可选，传递给 Policy）
+        **extra_kwargs: 额外 kwargs，会 merge 到 query-string 参数之上传给
+            Policy 子类的构造器（覆盖同名 query-string 值）。
 
     Returns:
-        BaseCombatPolicy 实例
+        Policy 实例（envs.framework.policy.Policy 子类）
 
     Raises:
         ValueError: Policy 规范无效
         ImportError: 无法导入 Policy 模块
-        RuntimeError: Policy 中没有找到 BaseCombatPolicy 实现
+        RuntimeError: Policy 中没有找到 Policy 实现
 
     Examples:
-        >>> # 方式 1: 只指定目录（自动检测第一个 BaseCombatPolicy）
+        >>> # 方式 1: 只指定目录（自动检测第一个 Policy 子类）
         >>> policy = load_policy("my_policy")
 
-        >>> # 方式 2: 指定模块路径
-        >>> policy = load_policy("my_policy.policy.MyCombatPolicy")
+        >>> # 方式 2: 指定模块路径 + 类名
+        >>> policy = load_policy("my_policy.policy:MyPolicy")
 
-        >>> # 方式 3: 指定模块路径 + 参数
-        >>> policy = load_policy("my_policy.policy.MyCombatPolicy?lr=0.01&epochs=100")
+        >>> # 方式 3: 指定模块路径 + query-string 参数
+        >>> policy = load_policy("my_policy.policy:MyPolicy?lr=0.01&epochs=100")
 
         >>> # 方式 4: 使用绝对路径
         >>> policy = load_policy("/path/to/my_policy")
@@ -102,19 +101,15 @@ def load_policy(
         sys.modules[policy_file.stem] = policy_module
         spec.loader.exec_module(policy_module)
 
-    # 查找 BaseCombatPolicy 实现
+    # 查找 Policy 子类
     policy_class = find_policy_class(policy_module, class_name)
 
-    # 解析参数
+    # 解析参数 (query string) + 调用方传入的额外 kwargs
     kwargs = parse_params(params) if params else {}
+    kwargs.update(extra_kwargs)
 
-    # 添加观测/动作空间
-    if observation_space is not None:
-        kwargs['observation_space'] = observation_space
-    if action_space is not None:
-        kwargs['action_space'] = action_space
-
-    # 实例化 Policy
+    # 实例化 Policy。Policy ABC 故意不定义 __init__，由子类自行决定
+    # 构造签名——建议子类接受 **kwargs 以快速忽略未知参数。
     try:
         policy_instance = policy_class(**kwargs)
     except Exception as e:
@@ -160,20 +155,19 @@ def parse_policy_spec(spec: str) -> tuple:
 
 def find_policy_class(
     module,
-    class_name: Optional[str] = None
-) -> Type[BaseCombatPolicy]:
-    """
-    在模块中查找 BaseCombatPolicy 实现类
+    class_name: Optional[str] = None,
+) -> Type[Policy]:
+    """在模块中查找 envs.framework.policy.Policy 的子类。
 
     Args:
         module: Python 模块
         class_name: 指定的类名（可选）
 
     Returns:
-        BaseCombatPolicy 类
+        Policy 类
 
     Raises:
-        RuntimeError: 找不到 BaseCombatPolicy 实现
+        RuntimeError: 找不到 Policy 实现
     """
     # 如果指定了类名，直接使用
     if class_name:
@@ -184,14 +178,15 @@ def find_policy_class(
 
         policy_class = getattr(module, class_name)
 
-        if not issubclass(policy_class, BaseCombatPolicy):
+        if not (inspect.isclass(policy_class) and issubclass(policy_class, Policy)):
             raise RuntimeError(
-                f"Class '{class_name}' does not inherit from BaseCombatPolicy"
+                f"Class '{class_name}' does not inherit from "
+                f"envs.framework.policy.Policy"
             )
 
         return policy_class
 
-    # 自动查找第一个 BaseCombatPolicy 子类
+    # 自动查找第一个 Policy 子类
     policy_classes = []
 
     for name in dir(module):
@@ -200,20 +195,20 @@ def find_policy_class(
 
         obj = getattr(module, name)
 
-        # 检查是否是类且是 BaseCombatPolicy 的子类
         if (inspect.isclass(obj) and
-            issubclass(obj, BaseCombatPolicy) and
-            obj is not BaseCombatPolicy):
+            issubclass(obj, Policy) and
+            obj is not Policy):
             policy_classes.append((name, obj))
 
     if not policy_classes:
         raise RuntimeError(
-            f"No BaseCombatPolicy implementation found in module {module.__name__}. "
-            f"Make sure policy.py contains a class that inherits BaseCombatPolicy."
+            f"No Policy implementation found in module {module.__name__}. "
+            f"Make sure policy.py contains a class that inherits from "
+            f"envs.framework.policy.Policy."
         )
 
     # 返回第一个找到的类
-    class_name, policy_class = policy_classes[0]
+    _name, policy_class = policy_classes[0]
     return policy_class
 
 
@@ -272,24 +267,16 @@ def parse_params(params_str: str) -> Dict[str, Any]:
 
 def load_policy_from_dir(
     policy_dir: Union[str, Path],
-    observation_space: Any = None,
-    action_space: Any = None
-) -> BaseCombatPolicy:
-    """
-    从目录加载 Policy（便捷函数）
-
-    这是 load_policy() 的简化版本，专门用于从目录加载。
+    **extra_kwargs: Any,
+) -> Policy:
+    """从目录加载 Policy（load_policy 的别名）。
 
     Args:
         policy_dir: Policy 目录路径
-        observation_space: 观测空间（可选）
-        action_space: 动作空间（可选）
+        **extra_kwargs: 额外 kwargs，会 merge 到 query-string 参数之上传给
+            构造器。
 
     Returns:
-        BaseCombatPolicy 实例
-
-    Examples:
-        >>> policy = load_policy_from_dir("my_policy")
-        >>> policy = load_policy_from_dir("/path/to/my_policy")
+        Policy 实例
     """
-    return load_policy(policy_dir, observation_space, action_space)
+    return load_policy(policy_dir, **extra_kwargs)

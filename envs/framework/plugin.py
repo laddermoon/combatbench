@@ -29,6 +29,21 @@ class BasePlugin:
         return False
 
     # ==========================================
+    # 随机性钩子 (Randomness Hook)
+    # ==========================================
+
+    def set_episode_seed(self, seed: int) -> None:
+        """[时机]: Episode 开始前、on_pre_episode 之前，由 EpisodeRunner 调用。
+        [职责]: 持有 RNG 的 plugin 在此立即重建自己的 RNG。
+
+        默认 no-op：不消费随机性的 plugin 无须重写。实现方请在此方法内
+        直接 ``self._rng = np.random.RandomState(int(seed))`` （或等价写法），
+        不要推迟到 on_pre_episode，以保证 set_episode_seed 是唯一的 RNG
+        重建入口。详见 ``SEED.md``。
+        """
+        pass
+
+    # ==========================================
     # 生命周期钩子 (Lifecycle Hooks)
     # ==========================================
 

@@ -57,9 +57,8 @@ class RandomPushPlugin(BasePlugin):
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.push_duration_steps = push_duration_steps
-        self._base_random_seed = random_seed
-        self._episode_random_seed: Optional[int] = None
-
+        # RNG is rebuilt on every set_episode_seed() call; the ctor value is
+        # only used until the first runner-issued seed arrives.
         self._rng = np.random.RandomState(random_seed)
         self._action_step_count = 0
         self._wait_remaining_action_steps = 0
@@ -67,8 +66,9 @@ class RandomPushPlugin(BasePlugin):
         self._push_remaining_action_steps = 0  # 当前推力剩余动作步数
         self._push_active_this_action = False
 
-    def set_episode_seed(self, seed: Optional[int]) -> None:
-        self._episode_random_seed = None if seed is None else int(seed)
+    def set_episode_seed(self, seed: int) -> None:
+        """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
+        self._rng = np.random.RandomState(int(seed))
 
     def _sample_interval_action_steps(self) -> int:
         if self.min_interval == self.max_interval:
@@ -115,9 +115,7 @@ class RandomPushPlugin(BasePlugin):
         return True
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        """Episode 开始时重置"""
-        if self._episode_random_seed is not None:
-            self._rng = np.random.RandomState(self._episode_random_seed)
+        """Episode 开始时重置（RNG 已由 set_episode_seed 重建）"""
         self._action_step_count = 0
         self._wait_remaining_action_steps = self._sample_interval_action_steps()
         self._current_force = None
@@ -126,10 +124,6 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_push_count'] = 0
         ctx.metrics[f'{self.target_robot}_push_active'] = False
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
-        if self._episode_random_seed is not None:
-            ctx.metrics[f'{self.target_robot}_push_seed'] = self._episode_random_seed
-        elif self._base_random_seed is not None:
-            ctx.metrics[f'{self.target_robot}_push_seed'] = self._base_random_seed
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         """在动作步边界上调度扰动状态机"""
@@ -213,8 +207,8 @@ class InitialStatePerturbationPlugin(BasePlugin):
             3,
             "root_angular_velocity_delta_max",
         )
-        self._base_random_seed = random_seed
-        self._episode_random_seed: Optional[int] = None
+        # RNG is rebuilt on every set_episode_seed() call; the ctor value is
+        # only used until the first runner-issued seed arrives.
         self._rng = np.random.RandomState(random_seed)
 
         if self.joint_pos_delta_max < 0.0:
@@ -248,8 +242,9 @@ class InitialStatePerturbationPlugin(BasePlugin):
             return np.zeros_like(max_values, dtype=np.float32)
         return self._rng.uniform(-max_values, max_values).astype(np.float32)
 
-    def set_episode_seed(self, seed: Optional[int]) -> None:
-        self._episode_random_seed = None if seed is None else int(seed)
+    def set_episode_seed(self, seed: int) -> None:
+        """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
+        self._rng = np.random.RandomState(int(seed))
 
     @property
     def name(self) -> str:
@@ -260,9 +255,7 @@ class InitialStatePerturbationPlugin(BasePlugin):
         return True
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        if self._episode_random_seed is not None:
-            self._rng = np.random.RandomState(self._episode_random_seed)
-
+        # RNG 已由 set_episode_seed 重建；on_pre_episode 只负责业务逻辑。
         core_state = ctx.accessor.get_core_state()
         if self.target_robot not in core_state:
             raise ValueError(f"Unknown target_robot: {self.target_robot}")
@@ -335,10 +328,6 @@ class InitialStatePerturbationPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_initial_perturbation_root_linear_velocity'] = float(np.linalg.norm(root_linear_velocity_delta))
         ctx.metrics[f'{self.target_robot}_initial_perturbation_root_angular_velocity'] = float(np.linalg.norm(root_angular_velocity_delta))
         ctx.metrics[f'{self.target_robot}_initial_perturbation_root_tilt_deg'] = float(np.linalg.norm(root_tilt_delta_deg))
-        if self._episode_random_seed is not None:
-            ctx.metrics[f'{self.target_robot}_initial_perturbation_seed'] = self._episode_random_seed
-        elif self._base_random_seed is not None:
-            ctx.metrics[f'{self.target_robot}_initial_perturbation_seed'] = self._base_random_seed
 
 
 class PeriodicUpwardForcePlugin(BasePlugin):
@@ -475,6 +464,7 @@ class ContinuousWindPlugin(BasePlugin):
         wind_strength: float = 50.0,  # 风力（牛顿）
         gust_probability: float = 0.01,  # 阵风概率
         gust_multiplier: float = 3.0,  # 阵风倍数
+        random_seed: Optional[int] = None,
     ):
         """
         Args:
@@ -483,6 +473,7 @@ class ContinuousWindPlugin(BasePlugin):
             wind_strength: 基础风力（牛顿）
             gust_probability: 每步出现阵风的概率
             gust_multiplier: 阵风强度倍数
+            random_seed: 随机种子（阵风采样用）
         """
         self.target_robot = target_robot
         self.wind_direction = wind_direction if wind_direction is not None else np.array([1.0, 0.0, 0.0])
@@ -490,7 +481,12 @@ class ContinuousWindPlugin(BasePlugin):
         self.gust_probability = gust_probability
         self.gust_multiplier = gust_multiplier
 
-        self._rng = np.random.RandomState()
+        # RNG is rebuilt on every set_episode_seed() call.
+        self._rng = np.random.RandomState(random_seed)
+
+    def set_episode_seed(self, seed: int) -> None:
+        """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
+        self._rng = np.random.RandomState(int(seed))
 
     @property
     def name(self) -> str:
@@ -531,6 +527,7 @@ class HeadStrikePlugin(BasePlugin):
         strike_force: float = 400.0,  # 打击力（牛顿）
         strike_interval: int = 200,  # 打击间隔（物理步数）
         random_direction: bool = True,
+        random_seed: Optional[int] = None,
     ):
         """
         Args:
@@ -538,6 +535,7 @@ class HeadStrikePlugin(BasePlugin):
             strike_force: 打击力大小（牛顿）
             strike_interval: 打击间隔
             random_direction: 是否使用随机方向
+            random_seed: 随机种子（随机方向采样用）
         """
         self.target_robot = target_robot
         self.strike_force = strike_force
@@ -545,7 +543,12 @@ class HeadStrikePlugin(BasePlugin):
         self.random_direction = random_direction
 
         self._step_count = 0
-        self._rng = np.random.RandomState()
+        # RNG is rebuilt on every set_episode_seed() call.
+        self._rng = np.random.RandomState(random_seed)
+
+    def set_episode_seed(self, seed: int) -> None:
+        """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
+        self._rng = np.random.RandomState(int(seed))
 
     @property
     def name(self) -> str:

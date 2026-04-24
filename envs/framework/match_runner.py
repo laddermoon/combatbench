@@ -2,6 +2,8 @@ from typing import Any, Dict, Optional, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from .round_runner import RoundRunner
 from .common_plugins import VideoRecorderPlugin
 
@@ -139,6 +141,17 @@ class MatchRunner:
         current_health_a = 100.0
         current_health_b = 100.0
 
+        # 按每回合预派生一批子种子（统一从一个 SeedSequence 上 spawn 出来，
+        # 而不是 seed + round_num 这种算术推导——算术会引入隐性相关，见
+        # envs/framework/SEED.md）。base_seed=None 由 EpisodeRunner 内部
+        # 入口再做 None→uint32 的解析，这里保持 None 向下传递给 round_runner。
+        if seed is not None:
+            round_seeds = np.random.SeedSequence(int(seed)).generate_state(
+                self.total_rounds, dtype=np.uint32
+            )
+        else:
+            round_seeds = [None] * self.total_rounds
+
         for round_num in range(1, self.total_rounds + 1):
             if self.verbose:
                 print(f"\n>>> Starting Round {round_num}/{self.total_rounds}")
@@ -159,8 +172,10 @@ class MatchRunner:
                 verbose=self.verbose
             )
 
-            # 使用递增的随机种子（如果提供了基础种子）
-            round_seed = seed + round_num if seed is not None else None
+            # 从预派生的 round_seeds 中取这一回合的种子（None 则一路透传，
+            # 由 EpisodeRunner 入口再做 None→uint32 的解析）。
+            raw_rs = round_seeds[round_num - 1]
+            round_seed = None if raw_rs is None else int(raw_rs)
             result = round_runner.run(seed=round_seed, videosave_path=video_path)
             round_results.append(result)
 

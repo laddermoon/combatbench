@@ -262,6 +262,10 @@ class BaseFrameRecorder(PostActionRecorder):
         self._saved_image_paths = []
         self._saved_data_paths = []
         self._static_file_name: Optional[str] = None
+        # Capture the resolved base_seed for this episode so the manifest
+        # can persist it; replay re-derives every sub-seed from this value.
+        # See envs/framework/SEED.md.
+        self._current_base_seed: Optional[int] = ctx.base_seed
         # Capture episode-invariant accessor data once, BEFORE the first
         # per-step snapshot, so ``static.json`` is always present if any
         # per-step data is also present.
@@ -400,6 +404,15 @@ class BaseFrameRecorder(PostActionRecorder):
         manifest = {
             "manifest_version": self.MANIFEST_VERSION,
             "episode_index": int(self._episode_index),
+            # Resolved base seed for deterministic replay; re-derive every
+            # sub-seed via envs/framework/SEED.md rules. ``None`` when the
+            # episode was driven outside an EpisodeRunner (raw EnvRuntime
+            # test harness, ad-hoc script).
+            "base_seed": (
+                int(self._current_base_seed)
+                if self._current_base_seed is not None
+                else None
+            ),
             "num_steps": len(self._current_manifest_steps),
             "steps": list(self._current_manifest_steps),
             "static": self._static_file_name,

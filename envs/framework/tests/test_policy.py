@@ -1,4 +1,4 @@
-"""Tests for the canonical Policy contract in envs.framework.policy."""
+"""Tests for the canonical Policy ABC in :mod:`envs.framework.policy`."""
 from __future__ import annotations
 
 import numpy as np
@@ -7,14 +7,14 @@ import pytest
 from envs.framework.policy import Policy, call_policy, coerce_action
 
 
-class _MinimalPolicy:
-    """Minimal duck-typed Policy: just an ``act`` method."""
+class _MinimalPolicy(Policy):
+    """Minimal Policy subclass: just overrides ``act``."""
 
     def act(self, observation):
         return np.ones(3, dtype=np.float32)
 
 
-class _RichPolicy:
+class _RichPolicy(Policy):
     """Policy with all optional hooks implemented."""
 
     def __init__(self):
@@ -34,20 +34,53 @@ class _RichPolicy:
         self.closed = True
 
 
-class TestPolicyProtocol:
-    def test_minimal_policy_is_protocol_instance(self):
-        """Anything with an ``act`` method satisfies the Protocol."""
+class TestPolicyABC:
+    def test_cannot_instantiate_without_overriding_act(self):
+        """Policy is an ABC with ``act`` marked abstract; instantiating a
+        subclass that does not override ``act`` must fail."""
+
+        class Incomplete(Policy):
+            pass
+
+        with pytest.raises(TypeError, match="abstract"):
+            Incomplete()
+
+    def test_subclass_with_act_is_instance(self):
         assert isinstance(_MinimalPolicy(), Policy)
 
-    def test_rich_policy_is_protocol_instance(self):
-        assert isinstance(_RichPolicy(), Policy)
+    def test_non_subclass_is_not_instance(self):
+        """Ducks no longer quack — scheme B is nominal, not structural."""
 
-    def test_no_act_method_fails_isinstance(self):
-        class NotAPolicy:
-            def step(self, obs):  # wrong name
-                return np.zeros(3)
+        class LooksLikePolicy:
+            def act(self, obs):
+                return np.zeros(3, dtype=np.float32)
 
-        assert not isinstance(NotAPolicy(), Policy)
+        assert not isinstance(LooksLikePolicy(), Policy)
+
+    def test_default_reset_accepts_seed_and_returns_none(self):
+        """The ABC provides a default no-op ``reset(seed=None)``; subclasses
+        that don't hold state can rely on it."""
+        p = _MinimalPolicy()
+        assert p.reset() is None
+        assert p.reset(123) is None
+        assert p.reset(seed=42) is None
+
+    def test_no_init_contract(self):
+        """The ABC intentionally does not define ``__init__``. Subclasses
+        can take whatever constructor args they want."""
+
+        class CustomInit(Policy):
+            def __init__(self, scale, *, seed):
+                self.scale = scale
+                self.seed = seed
+
+            def act(self, observation):
+                return np.full(2, self.scale, dtype=np.float32)
+
+        p = CustomInit(1.5, seed=7)
+        assert p.scale == 1.5
+        assert p.seed == 7
+        np.testing.assert_array_equal(p.act(None), [1.5, 1.5])
 
 
 class TestCoerceAction:
@@ -73,14 +106,18 @@ class TestCoerceAction:
 
 
 class TestCallPolicy:
+    """``call_policy`` is intentionally duck-typed — it only cares that the
+    object has ``act`` / ``act_with_extras``. The runner boundary
+    (``EpisodeRunner._validate_policies``) enforces the nominal Policy ABC."""
+
     def test_minimal_policy_no_extras(self):
         action, extras = call_policy(_MinimalPolicy(), None, want_extras=False)
         assert action.dtype == np.float32
         assert extras == {}
 
     def test_minimal_policy_asked_for_extras_falls_back(self):
-        """want_extras=True on a policy without act_with_extras just uses
-        plain act and returns an empty extras dict — not an error."""
+        """``want_extras=True`` on a policy without ``act_with_extras`` just
+        uses plain ``act`` and returns an empty extras dict — not an error."""
         action, extras = call_policy(_MinimalPolicy(), None, want_extras=True)
         assert action.dtype == np.float32
         assert extras == {}
@@ -95,7 +132,7 @@ class TestCallPolicy:
         assert extras == {}
 
     def test_act_with_extras_bad_return_type_rejected(self):
-        class Bad:
+        class Bad(Policy):
             def act(self, obs):
                 return np.zeros(3)
 
@@ -106,7 +143,7 @@ class TestCallPolicy:
             call_policy(Bad(), None, want_extras=True)
 
     def test_act_with_extras_bad_extras_type_rejected(self):
-        class Bad:
+        class Bad(Policy):
             def act(self, obs):
                 return np.zeros(3)
 
@@ -117,30 +154,8 @@ class TestCallPolicy:
             call_policy(Bad(), None, want_extras=True)
 
 
-class TestBaseCombatPolicyConformance:
-    """The ABC in :mod:`combatbench.policy` must satisfy the canonical
-    Protocol. Regression guard against the two classes drifting apart."""
-
-    def test_basecombatpolicy_subclass_satisfies_protocol(self):
-        import sys
-        from pathlib import Path
-
-        # Ensure ``policy`` package resolves (repo-root import style).
-        combatbench_root = Path(__file__).resolve().parents[3]
-        if str(combatbench_root) not in sys.path:
-            sys.path.insert(0, str(combatbench_root))
-        from policy.base import BaseCombatPolicy
-
-        class _Concrete(BaseCombatPolicy):
-            def act(self, observation):
-                return np.zeros(self.ACTION_DIM, dtype=np.float32)
-
-        p = _Concrete()
-        assert isinstance(p, Policy)
-        # reset takes a seed kwarg — framework calls reset(seed).
-        p.reset(123)
-        p.reset()
-        p.reset(seed=42)
+class TestBuiltinPolicies:
+    """Sanity checks that the shipped reference policies obey the ABC."""
 
     def test_random_policy_conforms_and_reset_reseeds(self):
         import sys
@@ -153,7 +168,11 @@ class TestBaseCombatPolicyConformance:
 
         p = RandomCombatPolicy(seed=1)
         assert isinstance(p, Policy)
+
         a0 = p.act(None)
+        assert a0.dtype == np.float32
+        assert a0.shape == (21,)
+
         # Reset with a fresh seed produces a different action sequence.
         p.reset(seed=2)
         a1 = p.act(None)
@@ -162,3 +181,18 @@ class TestBaseCombatPolicyConformance:
         a2 = p.act(None)
         np.testing.assert_array_equal(a1, a2)
         assert not np.array_equal(a0, a1)
+
+    def test_random_policy_accepts_unknown_kwargs(self):
+        """Subclasses that accept ``**kwargs`` stay forgiving against
+        load_policy's query-string parameters that don't apply."""
+        import sys
+        from pathlib import Path
+
+        combatbench_root = Path(__file__).resolve().parents[3]
+        if str(combatbench_root) not in sys.path:
+            sys.path.insert(0, str(combatbench_root))
+        from policy.random.policy import RandomCombatPolicy
+
+        # Extra junk kwargs must not crash construction.
+        p = RandomCombatPolicy(scale=0.5, seed=1, model_path="/tmp/irrelevant")
+        assert p.scale == 0.5

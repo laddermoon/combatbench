@@ -81,12 +81,13 @@ class _DictRewardObserver(BaseObserverPlugin):
         return {"reward": float(self._step), "step_count": self._step}
 
 
-@dataclass
-class _SeededPolicy:
+class _SeededPolicy(Policy):
     """Deterministic policy: action depends only on (seed, obs)."""
-    tag: str
-    _rng: Optional[np.random.Generator] = None
-    reset_calls: List[Optional[int]] = field(default_factory=list)
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+        self._rng: Optional[np.random.Generator] = None
+        self.reset_calls: List[Optional[int]] = []
 
     def reset(self, seed: Optional[int] = None) -> None:
         self.reset_calls.append(seed)
@@ -102,7 +103,7 @@ class _SeededPolicy:
         return a + noise
 
 
-class _ExtrasPolicy:
+class _ExtrasPolicy(Policy):
     """Policy that implements act_with_extras so we can assert extras flow."""
 
     def __init__(self) -> None:
@@ -192,9 +193,9 @@ class TestConstruction:
                 "robot_c": _SeededPolicy("c"),
             })
 
-    def test_policy_missing_act_rejected(self, mock_simulator):
+    def test_non_policy_subclass_rejected(self, mock_simulator):
         runtime = _build_runtime(mock_simulator)
-        with pytest.raises(TypeError, match="'act'"):
+        with pytest.raises(TypeError, match="Policy"):
             EpisodeRunner(runtime=runtime, policies={
                 "robot_a": object(),
                 "robot_b": _SeededPolicy("b"),

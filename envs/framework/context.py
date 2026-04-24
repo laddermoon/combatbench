@@ -175,6 +175,12 @@ class SimContext:
         self.episode_step: int = 0
         self.physics_step: int = 0
 
+        # 本 episode 的 base seed（int）。由 EpisodeRunner 在 runtime.reset 前写入，
+        # 供 Recorder 的 on_pre_episode/on_post_episode 读取并落到 manifest。
+        # 没有显式设置时（比如裸用 EnvRuntime 跑测试）保持 None。
+        # 详见 envs/framework/SEED.md。
+        self.base_seed: Optional[int] = None
+
         # 派生黑板
         self.metrics: Dict[str, Any] = {}
         self.events: List[Any] = []
@@ -221,6 +227,7 @@ class ReadOnlySimContext:
     events: Tuple[Any, ...]
     termination_proposals: Tuple[str, ...]
     is_terminated: bool
+    base_seed: Optional[int] = None
 
     @classmethod
     def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":
@@ -232,4 +239,5 @@ class ReadOnlySimContext:
             events=tuple(ctx.events),
             termination_proposals=tuple(ctx.termination_proposals),
             is_terminated=ctx.is_terminated,
+            base_seed=ctx.base_seed,
         )
