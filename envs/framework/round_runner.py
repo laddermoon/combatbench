@@ -31,6 +31,7 @@ from .episode_runner import (
     AGENT_IDS,
     EpisodeResult,
     EpisodeRunner,
+    ObserverBinding,
     RolloutConfig,
     StepContext,
 )
@@ -58,10 +59,20 @@ class RoundRunner(EpisodeRunner):
         # No rollout capture — match the old RoundRunner which only returned a
         # summary dict. Callers that want trajectories should use
         # ``EpisodeRunner`` directly.
+        # Combat rounds judge winner/HP via ``shared_info_final`` (published
+        # by humanoid21's ``CombatScoringPlugin``), NOT via per-step reward
+        # observers, so we bind ``reward_name=None`` explicitly. This also
+        # removes RoundRunner's implicit requirement that callers register
+        # ``robot_{a,b}_reward`` observers — historically that coupling was
+        # unstated and broke ``make_env`` users who only needed obs observers.
         super().__init__(
             runtime=runtime,
             policies={"robot_a": policy_a, "robot_b": policy_b},
             rollout=RolloutConfig(capture_a=False, capture_b=False),
+            observer_bindings={
+                agent: ObserverBinding(obs_name=f"{agent}_obs", reward_name=None)
+                for agent in AGENT_IDS
+            },
             on_step=self._verbose_on_step if self.verbose else None,
             on_episode_end=self._verbose_on_episode_end if self.verbose else None,
         )
