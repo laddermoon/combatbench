@@ -70,7 +70,16 @@ from baseline.common.policies import (
 )
 from baseline.common.rollout import RolloutBatch, RolloutCollector
 
-# Reuse the env-side wiring unchanged from v1.
+from envs.framework import (
+    BaseObserverPlugin,
+    EnvRuntime,
+    ReadOnlySimContext,
+)
+from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
+
+# Reuse hyperparameters + the (correct) termination plugin from v1.
+# We INTENTIONALLY skip ``build_runtime`` and ``StandingRewardObserver``
+# from v1 — see the bug-fix block below.
 from baseline.humanoid21.standing_grpo_rtg_tune import (  # noqa: E402
     ACTION_DIM,
     ACTOR_HIDDEN_DIM,
@@ -111,9 +120,174 @@ from baseline.humanoid21.standing_grpo_rtg_tune import (  # noqa: E402
     UPDATE_EPOCHS,
     UPRIGHT_FULL_PENALTY_COSINE,
     UPRIGHT_TILT_FULL_PENALTY_DEGREES,
-    build_runtime,
+    StandingTerminationPlugin,
     set_seed,
 )
+
+
+# ---------------------------------------------------------------------------
+# BUG FIX (critical!): StandingRewardObserver vs framework hook names
+# ---------------------------------------------------------------------------
+# ``baseline/humanoid21/standing_*.StandingRewardObserver`` overrides
+# ``on_reset`` and ``on_post_step`` to populate its output. These are NOT
+# framework hook names — ``_ObserverDispatcherPlugin`` only dispatches
+# ``on_pre_episode`` / ``on_post_action_step`` / ``on_post_episode``
+# (see ``envs/framework/observer_plugin.py``). So the v1 reward observer
+# silently returns its initial ``self._output = 0.0`` *for every step of
+# every episode*. Rewards ≡ 0 → RTGs ≡ 0 → group-normalized advantages
+# are 0/0 → ``ppo_loss`` returns exactly zero policy_loss → only the
+# entropy bonus moves any weights. This matches the pathology observed
+# at update=34: policy_loss=0, ratio=1, approx_kl=0, entropy growing.
+#
+# Per the "leave ``standing_*.py`` alone" rule (DESIGN.md §4 + user
+# directive), we do NOT patch v1. v2 ships its own observer below.
+# ---------------------------------------------------------------------------
+class StandingRewardObserverV2(BaseObserverPlugin):
+    """Per-step standing reward = delta of a posture-score function.
+
+    Bit-identical math to v1's ``StandingRewardObserver._compute_reward_terms``
+    but wired to the framework's actual dispatch hooks
+    (``on_pre_episode`` / ``on_post_action_step``).
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        verbose: bool = False,
+        verbose_stride: int = 1,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.verbose = bool(verbose)
+        self.verbose_stride = max(1, int(verbose_stride))
+        self._output: float = 0.0
+        self._reference_root_xy: Optional[np.ndarray] = None
+        self._reference_joint_pos: Optional[np.ndarray] = None
+        self._previous_total_score: float = 0.0
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(
+            np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
+        )
+        self._reference_root_xy = np.asarray(
+            core_state["root_pos"][:2], dtype=np.float32
+        ).copy()
+        self._reference_joint_pos = np.asarray(
+            core_state["joint_pos_norm"], dtype=np.float32
+        ).copy()
+        self._previous_total_score = self._compute_posture_score(
+            ctx, height=height, uprightness=uprightness,
+        )
+        # First step has no prior delta — reward at t=0 is 0 (canonical).
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        height = float(core_state["root_pos"][2])
+        uprightness = float(
+            np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
+        )
+        total_score = self._compute_posture_score(
+            ctx, height=height, uprightness=uprightness,
+        )
+        reward = total_score - self._previous_total_score
+        self._previous_total_score = total_score
+        self._output = float(reward)
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+    def _compute_posture_score(
+        self,
+        ctx: ReadOnlySimContext,
+        *,
+        height: float,
+        uprightness: float,
+    ) -> float:
+        """Bit-identical to v1's ``_compute_posture_terms['total_score']``."""
+        core_state = ctx.accessor.get_core_state()[self.agent_id]
+        root_xy = np.asarray(core_state["root_pos"][:2], dtype=np.float32)
+        joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32)
+        ref_root_xy = (
+            root_xy if self._reference_root_xy is None else self._reference_root_xy
+        )
+        ref_joint_pos = (
+            joint_pos if self._reference_joint_pos is None else self._reference_joint_pos
+        )
+        root_xy_distance = float(np.linalg.norm(root_xy - ref_root_xy))
+        joint_pose_mean_abs = float(np.mean(np.abs(joint_pos - ref_joint_pos)))
+        joint_velocity_mean_abs = float(
+            np.mean(np.abs(np.asarray(core_state["joint_vel_norm"], dtype=np.float32)))
+        )
+        height_deficit = max(0.0, TARGET_HEIGHT - height)
+        tilt_angle_degrees = float(
+            np.degrees(float(np.arccos(np.clip(uprightness, -1.0, 1.0))))
+        )
+        height_penalty = (height_deficit / HEIGHT_FULL_PENALTY_DELTA) ** 2
+        uprightness_penalty = (
+            tilt_angle_degrees / UPRIGHT_TILT_FULL_PENALTY_DEGREES
+        ) ** 2
+        root_xy_penalty = (root_xy_distance / ROOT_XY_FULL_PENALTY_DISTANCE) ** 2
+        joint_pose_penalty = (
+            joint_pose_mean_abs / JOINT_POSE_FULL_PENALTY_MEAN_ABS
+        ) ** 2
+        joint_velocity_penalty = (
+            joint_velocity_mean_abs / JOINT_VEL_FULL_PENALTY_MEAN_ABS
+        ) ** 2
+        total_penalty = (
+            height_penalty + uprightness_penalty + root_xy_penalty
+            + joint_pose_penalty + joint_velocity_penalty
+        )
+        return float(STANDING_SCORE_MAX - total_penalty)
+
+
+def build_runtime_v2() -> EnvRuntime:
+    """Same humanoid21 runtime as v1's ``build_runtime`` but with the
+    corrected :class:`StandingRewardObserverV2` wired into the reward
+    slots. Everything else is identical."""
+    simulator = MujocoCombatSimulator(initial_distance=INITIAL_DISTANCE)
+    sim_frequency = 1.0 / MujocoCombatSimulator.DT
+    phy_steps_per_action = max(1, int(round(sim_frequency / CONTROL_FREQUENCY)))
+    observer_plugins = {
+        "robot_a_obs": Humanoid21Observer("robot_a"),
+        "robot_b_obs": Humanoid21Observer("robot_b"),
+        "robot_a_reward": StandingRewardObserverV2(
+            agent_id="robot_a",
+            verbose=POSTURE_SCORE_VERBOSE and POSTURE_SCORE_VERBOSE_AGENT in {"robot_a", "all"},
+            verbose_stride=POSTURE_SCORE_VERBOSE_STRIDE,
+        ),
+        "robot_b_reward": StandingRewardObserverV2(
+            agent_id="robot_b",
+            verbose=POSTURE_SCORE_VERBOSE and POSTURE_SCORE_VERBOSE_AGENT in {"robot_b", "all"},
+            verbose_stride=POSTURE_SCORE_VERBOSE_STRIDE,
+        ),
+    }
+    runtime = EnvRuntime(
+        simulator=simulator,
+        observer_plugins=observer_plugins,
+        plugins=[
+            StandingTerminationPlugin(
+                agent_id="robot_a",
+                fall_height_threshold=FALL_HEIGHT_THRESHOLD,
+                fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
+                fall_grace_steps=FALL_GRACE_STEPS,
+            ),
+            StandingTerminationPlugin(
+                agent_id="robot_b",
+                fall_height_threshold=FALL_HEIGHT_THRESHOLD,
+                fall_upright_threshold=FALL_UPRIGHT_THRESHOLD,
+                fall_grace_steps=FALL_GRACE_STEPS,
+            ),
+        ],
+        phy_steps_per_action=phy_steps_per_action,
+        max_steps=MAX_STEPS,
+    )
+    runtime.observation_space = Humanoid21Observer.get_observation_space()
+    runtime.action_space = Humanoid21Observer.get_action_space()
+    return runtime
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 ROLLOUT_WORKERS = max(1, int(os.environ.get(
@@ -129,8 +303,10 @@ EVAL_WORKERS = max(1, int(os.environ.get(
 # Picklable top-level factories (for RolloutCollector workers).
 # ---------------------------------------------------------------------------
 def _make_runtime():
-    """Top-level runtime factory — reuses v1's ``build_runtime``."""
-    return build_runtime()
+    """Top-level runtime factory — uses ``build_runtime_v2`` with the
+    corrected reward observer (see class-level note on
+    :class:`StandingRewardObserverV2`)."""
+    return build_runtime_v2()
 
 
 def _make_adapter() -> TorchPolicyAdapter:
