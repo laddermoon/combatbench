@@ -268,6 +268,97 @@ class TestExplicitSeeds:
         assert seeds_seen == [1, 2, 3]
 
 
+class TestParallelRollout:
+    """Parallel rollout (``max_workers > 1``) — persistent pool + state_dict
+    broadcast across workers. Fixtures live in ``_parallel_probe`` so they
+    are importable by spawned worker processes.
+    """
+
+    def test_multi_worker_shape_and_count(self):
+        from baseline.common.rollout import _parallel_probe as P
+
+        with RolloutCollector(
+            runtime_factory=P.make_runtime,
+            policy_factories={"robot_a": P.make_adapter, "robot_b": P.make_adapter},
+            max_workers=2,
+        ) as collector:
+            out = collector.collect(n=4, base_seed=0)
+
+        assert set(out.keys()) == {"robot_a", "robot_b"}
+        assert len(out["robot_a"]) == 4
+        for batch in out["robot_a"]:
+            batch.validate()
+            assert batch.obs.shape == (P.MAX_STEPS + 1, P.OBS_DIM)
+            assert batch.actions.shape == (P.MAX_STEPS, P.ACTION_DIM)
+
+    def test_state_dict_broadcast_changes_actions(self):
+        """Hot-reloaded weights in workers must produce different actions
+        at the same seed — i.e. the state_dict actually crosses the
+        process boundary and gets applied before the episode runs."""
+        from baseline.common.rollout import _parallel_probe as P
+
+        with RolloutCollector(
+            runtime_factory=P.make_runtime,
+            policy_factories={"robot_a": P.make_adapter, "robot_b": P.make_adapter},
+            max_workers=2,
+        ) as collector:
+            out_before = collector.collect(n=2, base_seed=2026)
+            out_after = collector.collect(
+                n=2, base_seed=2026,
+                state_dicts={"robot_a": P.build_forged_state_dict(seed=999)},
+            )
+
+        a_before = out_before["robot_a"][0].actions
+        a_after = out_after["robot_a"][0].actions
+        assert not np.allclose(a_before, a_after), (
+            "state_dict broadcast to workers had no observable effect on actions"
+        )
+
+    def test_parallel_seed_derivation_matches_sequential(self):
+        """Contract: seed derivation is bit-identical between
+        ``max_workers=1`` and ``max_workers>1`` (both go through
+        ``_derive_batch_seeds(_resolve_seed(base_seed), n)``) and the
+        parallel path preserves submission order across chunks.
+
+        Action bit-equality across main-vs-worker processes would
+        additionally require the simulator to depend only on its
+        per-episode seed, which MockSimulator does NOT (it also reads
+        the legacy global ``np.random``). That's a simulator quirk,
+        not a collector contract — we only assert the collector-level
+        guarantee here.
+        """
+        from baseline.common.rollout import _parallel_probe as P
+
+        def _collect(max_workers: int):
+            with RolloutCollector(
+                runtime_factory=P.make_runtime,
+                policy_factories={"robot_a": P.make_adapter, "robot_b": P.make_adapter},
+                max_workers=max_workers,
+            ) as c:
+                return c.collect(n=4, base_seed=7)
+
+        seq = _collect(1)
+        par = _collect(2)
+        seq_seeds = [b.info["seed"] for b in seq["robot_a"]]
+        par_seeds = [b.info["seed"] for b in par["robot_a"]]
+        assert seq_seeds == par_seeds
+
+    def test_state_dict_unknown_agent_raises_before_submit(self):
+        from baseline.common.rollout import _parallel_probe as P
+
+        with RolloutCollector(
+            runtime_factory=P.make_runtime,
+            policy_factories={"robot_a": P.make_adapter, "robot_b": P.make_adapter},
+            max_workers=2,
+        ) as collector:
+            # Force pool build so we exercise the parallel path's validation.
+            collector.collect(n=1, base_seed=0)
+            with pytest.raises(KeyError, match="robot_x"):
+                collector.collect(
+                    n=1, base_seed=0, state_dicts={"robot_x": {}},
+                )
+
+
 class TestOptionsFn:
     def test_options_fn_threaded_through(self):
         captured: list = []
