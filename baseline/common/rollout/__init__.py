@@ -4,5 +4,6 @@ See ``baseline/DESIGN.md`` §3.3 for the scope of this package.
 """
 
 from .batch import RolloutBatch
+from .collector import RolloutCollector
 
-__all__ = ["RolloutBatch"]
+__all__ = ["RolloutBatch", "RolloutCollector"]
