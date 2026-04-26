@@ -1,0 +1,179 @@
+"""Training-side <-> deployment-side policy IO.
+
+Single source of truth for:
+  * ``build_actor_export_payload(actor, extra_payload=...)``:
+    Produces the ``model.pt`` payload written into a ``policy/`` directory.
+  * ``build_export_policy_code()``:
+    Returns the ``policy.py`` source embedded into an exported
+    ``policy/`` directory; this is the code that ``load_policy(...)``
+    imports and instantiates at deployment time.
+  * ``export_actor_policy_artifacts(actor, policy_dir, extra_payload=...)``:
+    Writes both ``model.pt`` and ``policy.py`` under ``policy_dir``.
+  * ``export_policy_artifacts_from_checkpoint(model_path, policy_dir, ...)``:
+    Same end result but sourced from an on-disk training checkpoint
+    instead of a live ``nn.Module``.
+
+These used to live at the tail of ``tanh_gaussian_mlp.py``. They are
+moved here (PR1 / B5) so every baseline / algorithm can share a single
+checkpoint contract without dragging the backbone definition as a
+dependency. The backbone file re-exports the same names for backward
+compatibility.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import torch
+from torch import nn
+
+DEFAULT_EXPORT_ACTOR_HIDDEN_DIM = 256
+
+
+def build_export_policy_code() -> str:
+    """Return the source of the ``policy.py`` embedded in ``policy/`` dirs.
+
+    The produced module defines ``ExportedMLPPolicy`` implementing the
+    framework :class:`envs.framework.policy.Policy` protocol. It is
+    intentionally self-contained (single file, plain torch) so that a
+    consumer can ``pip install torch && python -c "..."`` without this
+    repo on ``sys.path``.
+    """
+    return """import sys
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+import torch
+from torch import nn
+
+for parent in Path(__file__).resolve().parents:
+    if (parent / "envs" / "framework" / "policy.py").exists():
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        break
+    if (parent / "combatbench" / "envs" / "framework" / "policy.py").exists():
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        break
+
+try:
+    from envs.framework.policy import Policy
+except ImportError:
+    from combatbench.envs.framework.policy import Policy  # type: ignore[no-redef]
+
+
+class Actor(nn.Module):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return torch.tanh(self.net(obs))
+
+
+class ExportedMLPPolicy(Policy):
+    def __init__(self, model_path: Optional[str] = None, **_ignored: Any):
+        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
+        payload = torch.load(payload_path, map_location="cpu")
+        hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
+        self.actor = Actor(payload["obs_dim"], payload["action_dim"], hidden_dim)
+        model_state_dict = self.actor.state_dict()
+        filtered_state_dict = {
+            key: value
+            for key, value in payload["state_dict"].items()
+            if key in model_state_dict
+        }
+        incompatible = self.actor.load_state_dict(filtered_state_dict, strict=False)
+        if incompatible.missing_keys:
+            raise RuntimeError(f"Missing keys in exported policy: {incompatible.missing_keys}")
+        if incompatible.unexpected_keys:
+            raise RuntimeError(f"Unexpected keys in exported policy: {incompatible.unexpected_keys}")
+        self.actor.eval()
+
+    def act(self, observation: Any) -> np.ndarray:
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            action = self.actor(obs_tensor)
+        return action.squeeze(0).cpu().numpy().astype(np.float32)
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        return None
+"""
+
+
+def build_actor_export_payload(
+    actor: nn.Module,
+    extra_payload: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the ``model.pt`` payload for a trained actor.
+
+    Infers ``obs_dim`` / ``action_dim`` / ``hidden_dim`` from standard
+    attributes when present, falling back to inspecting the first / last
+    Linear layers of ``actor.net`` (the convention used by
+    :class:`TanhGaussianMLPPolicy`). ``log_std`` is deliberately stripped
+    — deployment only needs the deterministic (mean-tanh) path.
+    """
+    export_payload: Dict[str, Any] = dict(extra_payload or {})
+    export_payload["obs_dim"] = int(getattr(actor, "obs_dim", actor.net[0].in_features))
+    export_payload["action_dim"] = int(getattr(actor, "action_dim", actor.net[-1].out_features))
+    export_payload["hidden_dim"] = int(getattr(actor, "hidden_dim", actor.net[0].out_features))
+    export_payload["actor_hidden_dim"] = int(export_payload["hidden_dim"])
+    export_payload["state_dict"] = {
+        key: value.detach().cpu()
+        for key, value in actor.state_dict().items()
+        if key != "log_std"
+    }
+    return export_payload
+
+
+def export_actor_policy_artifacts(
+    actor: nn.Module,
+    policy_dir: Path,
+    extra_payload: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Write ``model.pt`` + ``policy.py`` into ``policy_dir``.
+
+    End result is a directory compatible with :func:`policy.load_util.load_policy`.
+    """
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    export_payload = build_actor_export_payload(actor=actor, extra_payload=extra_payload)
+    torch.save(export_payload, policy_dir / "model.pt")
+    policy_code = build_export_policy_code()
+    with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
+        handle.write(policy_code)
+
+
+def export_policy_artifacts_from_checkpoint(
+    model_path: Path,
+    policy_dir: Path,
+    default_hidden_dim: int = DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
+) -> None:
+    """Like :func:`export_actor_policy_artifacts` but source = on-disk checkpoint.
+
+    Used by trainers that keep a rolling ``model.pt`` on disk and want
+    to publish a deployable policy directory without rebuilding the
+    actor in memory.
+    """
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    payload = torch.load(model_path, map_location="cpu")
+    export_payload = dict(payload)
+    export_payload["state_dict"] = {
+        key: value.detach().cpu()
+        for key, value in payload["state_dict"].items()
+        if key != "log_std"
+    }
+    export_payload["hidden_dim"] = int(payload.get("actor_hidden_dim", payload.get("hidden_dim", default_hidden_dim)))
+    export_payload["actor_hidden_dim"] = int(export_payload["hidden_dim"])
+    torch.save(export_payload, policy_dir / "model.pt")
+    policy_code = build_export_policy_code()
+    with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
+        handle.write(policy_code)
