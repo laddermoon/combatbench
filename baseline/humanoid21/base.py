@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+import copy
 import multiprocessing as mp
 import sys
 from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
 from torch import nn
-from torch.distributions import Normal
+from baseline.common.policies import (
+    CriticMLP,
+    DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
+    DEFAULT_LOG_STD_MAX,
+    DEFAULT_LOG_STD_MIN,
+    TanhGaussianMLPPolicy,
+    build_actor_export_payload,
+    build_export_policy_code,
+    export_actor_policy_artifacts as export_actor_policy_artifacts_common,
+    export_policy_artifacts_from_checkpoint as export_policy_artifacts_from_checkpoint_common,
+)
 
 COMBATBENCH_DIR = Path(__file__).resolve().parents[2]
 if str(COMBATBENCH_DIR) not in sys.path:
@@ -21,11 +32,9 @@ if str(COMBATBENCH_DIR) not in sys.path:
 from envs.framework import BasePlugin, EnvRuntime, SimContext, TerminationReason
 
 
-DEFAULT_LOG_STD_MIN = -4.0
-DEFAULT_LOG_STD_MAX = 1.0
+class Actor(TanhGaussianMLPPolicy):
+    """Backward-compatible alias for humanoid21 scripts."""
 
-
-class Actor(nn.Module):
     def __init__(
         self,
         obs_dim: int,
@@ -34,73 +43,71 @@ class Actor(nn.Module):
         log_std_min: float = DEFAULT_LOG_STD_MIN,
         log_std_max: float = DEFAULT_LOG_STD_MAX,
     ):
-        super().__init__()
-        self.log_std_min = float(log_std_min)
-        self.log_std_max = float(log_std_max)
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim),
-        )
-        self.log_std = nn.Parameter(torch.full((action_dim,), -1.0, dtype=torch.float32))
-
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean = self.net(obs)
-        log_std = torch.clamp(self.log_std, self.log_std_min, self.log_std_max)
-        return mean, log_std.expand_as(mean)
-
-    def sample_action(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = self.forward(obs)
-        std = log_std.exp()
-        dist = Normal(mean, std)
-        raw_action = dist.rsample()
-        action = torch.tanh(raw_action)
-        log_prob = dist.log_prob(raw_action) - torch.log(1.0 - action.pow(2) + 1e-6)
-        return action, log_prob.sum(dim=-1)
-
-    def deterministic_action(self, obs: torch.Tensor) -> torch.Tensor:
-        mean, _ = self.forward(obs)
-        return torch.tanh(mean)
-
-    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
-        raw_actions = torch.atanh(clipped_actions)
-        mean, log_std = self.forward(obs)
-        std = log_std.exp()
-        dist = Normal(mean, std)
-        log_prob = dist.log_prob(raw_actions) - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)
-        entropy = dist.entropy().sum(dim=-1)
-        return log_prob.sum(dim=-1), entropy
-
-    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool) -> tuple[np.ndarray, Optional[float]]:
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        with torch.no_grad():
-            if deterministic:
-                action = self.deterministic_action(obs_tensor)
-                log_prob = None
-            else:
-                action, log_prob = self.sample_action(obs_tensor)
-        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
-        if log_prob is None:
-            return action_np, None
-        return action_np, float(log_prob.item())
-
-
-class Critic(nn.Module):
-    def __init__(self, obs_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
+        super().__init__(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
         )
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.net(obs).squeeze(-1)
+    @classmethod
+    def build_export_policy_code(cls) -> str:
+        return build_export_policy_code()
+
+    @classmethod
+    def build_export_payload_from_actor(
+        cls,
+        actor: "Actor",
+        extra_payload: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return build_actor_export_payload(actor=actor, extra_payload=extra_payload)
+
+    def export_policy_artifacts(
+        self,
+        policy_dir: Path,
+        extra_payload: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        type(self).export_actor_policy_artifacts(
+            actor=self,
+            policy_dir=policy_dir,
+            extra_payload=extra_payload,
+        )
+
+    @classmethod
+    def export_actor_policy_artifacts(
+        cls,
+        actor: "Actor",
+        policy_dir: Path,
+        extra_payload: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        export_actor_policy_artifacts_common(
+            actor=actor,
+            policy_dir=policy_dir,
+            extra_payload=extra_payload,
+        )
+
+    @classmethod
+    def export_policy_artifacts_from_checkpoint(cls, model_path: Path, policy_dir: Path) -> None:
+        export_policy_artifacts_from_checkpoint_common(
+            model_path=model_path,
+            policy_dir=policy_dir,
+            default_hidden_dim=DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
+        )
+
+
+def export_policy_artifacts(model_path: Path, policy_dir: Path) -> None:
+    Actor.export_policy_artifacts_from_checkpoint(model_path=model_path, policy_dir=policy_dir)
+
+
+class Critic(CriticMLP):
+    """Backward-compatible alias for humanoid21 scripts.
+
+    The implementation now lives in
+    :class:`baseline.common.policies.CriticMLP`. New code should import
+    ``CriticMLP`` directly; this subclass exists only so existing
+    ``baseline/humanoid21/standing_*.py`` scripts keep working unchanged.
+    """
 
 
 class StandingTerminationPlugin(BasePlugin):
@@ -198,93 +205,162 @@ def limit_worker_threads() -> None:
 
 @dataclass
 class RolloutWorkerSpec:
-    runtime_builder: Callable[[], Any]
-    module_builders: Dict[str, Callable[[], nn.Module]]
-    collect_episode_fn: Callable[..., Dict[str, Any]]
+    runtime_builder: Callable[[int], EnvRuntime]
+    actor: nn.Module
     device: str = "cpu"
 
 
 @dataclass
 class RolloutTask:
     seeds: List[int]
-    module_state_dicts: Dict[str, Dict[str, torch.Tensor]]
-    deterministic: bool
-    extra_kwargs: Dict[str, Any] = field(default_factory=dict)
+    actor_state_dict: Dict[str, torch.Tensor]
+    deterministic: bool = False
 
 
-_ROLLOUT_RUNTIME: Optional[Any] = None
-_ROLLOUT_MODULES: Dict[str, nn.Module] = {}
-_ROLLOUT_COLLECT_EPISODE_FN: Optional[Callable[..., Dict[str, Any]]] = None
+_ROLLOUT_RUNTIME_BUILDER: Optional[Callable[[int], EnvRuntime]] = None
+_ROLLOUT_ACTOR: Optional[nn.Module] = None
 _ROLLOUT_DEVICE = torch.device("cpu")
 
 
-def _build_worker_modules(
-    module_builders: Mapping[str, Callable[[], nn.Module]],
-    device: torch.device,
-) -> Dict[str, nn.Module]:
-    modules: Dict[str, nn.Module] = {}
-    for name, builder in module_builders.items():
-        module = builder()
-        module = module.to(device)
-        module.eval()
-        modules[str(name)] = module
-    return modules
-
-
 def _init_rollout_worker(spec: RolloutWorkerSpec) -> None:
-    global _ROLLOUT_RUNTIME, _ROLLOUT_MODULES, _ROLLOUT_COLLECT_EPISODE_FN, _ROLLOUT_DEVICE
+    global _ROLLOUT_RUNTIME_BUILDER, _ROLLOUT_ACTOR, _ROLLOUT_DEVICE
     limit_worker_threads()
     _ROLLOUT_DEVICE = torch.device(spec.device)
-    _ROLLOUT_RUNTIME = spec.runtime_builder()
-    _ROLLOUT_MODULES = _build_worker_modules(spec.module_builders, _ROLLOUT_DEVICE)
-    _ROLLOUT_COLLECT_EPISODE_FN = spec.collect_episode_fn
+    _ROLLOUT_RUNTIME_BUILDER = copy.deepcopy(spec.runtime_builder)
+    _ROLLOUT_ACTOR = copy.deepcopy(spec.actor).to(_ROLLOUT_DEVICE)
+    _ROLLOUT_ACTOR.eval()
+
+
+def _extract_rollout_reward(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, Mapping):
+        for key in ("reward", "value", "score"):
+            if key in value:
+                return float(value[key])
+        return 0.0
+    return float(value)
+
+
+def _collect_actor_episode(
+    runtime: EnvRuntime,
+    actor: nn.Module,
+    device: torch.device,
+    seed: int,
+    deterministic: bool = False,
+) -> Dict[str, Any]:
+    set_episode_seed_on_plugins(runtime, int(seed))
+    runtime.reset(seed=int(seed))
+    obs_a_value = runtime.get_observer_output("robot_a_obs")
+    obs_b_value = runtime.get_observer_output("robot_b_obs")
+    if obs_a_value is None:
+        raise RuntimeError("rollout runtime missing observer output: robot_a_obs")
+    if obs_b_value is None:
+        controlled_agent = "robot_a"
+        opponent_agent = None
+    else:
+        controlled_agent = "robot_a" if int(np.random.default_rng(int(seed)).integers(0, 2)) == 0 else "robot_b"
+        opponent_agent = "robot_b" if controlled_agent == "robot_a" else "robot_a"
+    obs = np.asarray(runtime.get_observer_output(f"{controlled_agent}_obs"), dtype=np.float32)
+    observations: List[np.ndarray] = []
+    actions: List[np.ndarray] = []
+    log_probs: List[float] = []
+    rewards: List[float] = []
+    final_obs: Optional[np.ndarray] = None
+    truncated_flag = False
+    terminated_flag = False
+    while runtime.is_episode_active:
+        controlled_action, log_prob = actor.act_numpy(obs, device=device, deterministic=deterministic)
+        if opponent_agent is None:
+            action_a = controlled_action
+            action_b = None
+        else:
+            opponent_obs = np.asarray(runtime.get_observer_output(f"{opponent_agent}_obs"), dtype=np.float32)
+            opponent_action, _ = actor.act_numpy(opponent_obs, device=device, deterministic=deterministic)
+            if controlled_agent == "robot_a":
+                action_a = controlled_action
+                action_b = opponent_action
+            else:
+                action_a = opponent_action
+                action_b = controlled_action
+        observations.append(obs.copy())
+        actions.append(controlled_action.copy())
+        if log_prob is not None:
+            log_probs.append(log_prob)
+        runtime.step(action_a, action_b)
+        rewards.append(_extract_rollout_reward(runtime.get_observer_output(f"{controlled_agent}_reward")))
+        terminated_flag, truncated_flag = runtime.get_termination_flags()
+        if terminated_flag or truncated_flag or not runtime.is_episode_active:
+            next_obs_value = runtime.get_observer_output(f"{controlled_agent}_obs")
+            if next_obs_value is not None:
+                final_obs = np.asarray(next_obs_value, dtype=np.float32)
+            break
+        next_obs_value = runtime.get_observer_output(f"{controlled_agent}_obs")
+        if next_obs_value is None:
+            break
+        obs = np.asarray(next_obs_value, dtype=np.float32)
+    observations_array = np.asarray(observations, dtype=np.float32)
+    actions_array = np.asarray(actions, dtype=np.float32)
+    log_probs_array = np.asarray(log_probs, dtype=np.float32)
+    rewards_array = np.asarray(rewards, dtype=np.float32)
+    return {
+        "seed": int(seed),
+        "controlled_agent": controlled_agent,
+        "observations": observations_array,
+        "actions": actions_array,
+        "log_probs": log_probs_array,
+        "rewards": rewards_array,
+        "steps": int(len(observations)),
+        "episode_reward": float(np.sum(rewards_array, dtype=np.float32)) if len(rewards_array) > 0 else 0.0,
+        "final_obs": final_obs,
+        "terminated": bool(terminated_flag),
+        "truncated": bool(truncated_flag),
+    }
 
 
 def _collect_episode_chunk(task: RolloutTask) -> List[Dict[str, Any]]:
-    if _ROLLOUT_RUNTIME is None or _ROLLOUT_COLLECT_EPISODE_FN is None:
+    if _ROLLOUT_RUNTIME_BUILDER is None or _ROLLOUT_ACTOR is None:
         raise RuntimeError("Rollout worker is not initialized")
-    for module_name, state_dict in task.module_state_dicts.items():
-        if module_name not in _ROLLOUT_MODULES:
-            raise KeyError(f"Unknown rollout module in worker: {module_name}")
-        module = _ROLLOUT_MODULES[module_name]
-        module.load_state_dict(state_dict)
-        module.eval()
-    return [
-        _ROLLOUT_COLLECT_EPISODE_FN(
-            _ROLLOUT_RUNTIME,
-            _ROLLOUT_MODULES,
-            _ROLLOUT_DEVICE,
-            deterministic=bool(task.deterministic),
-            seed=int(seed),
-            **task.extra_kwargs,
-        )
-        for seed in task.seeds
-    ]
+    _ROLLOUT_ACTOR.load_state_dict(task.actor_state_dict)
+    _ROLLOUT_ACTOR.eval()
+    episodes: List[Dict[str, Any]] = []
+    for seed in task.seeds:
+        runtime = _ROLLOUT_RUNTIME_BUILDER(int(seed))
+        try:
+            episodes.append(
+                _collect_actor_episode(
+                    runtime,
+                    _ROLLOUT_ACTOR,
+                    _ROLLOUT_DEVICE,
+                    int(seed),
+                    deterministic=bool(task.deterministic),
+                )
+            )
+        finally:
+            if hasattr(runtime, "close"):
+                runtime.close()
+    return episodes
 
 
 class RolloutCollector:
     def __init__(
         self,
-        runtime_builder: Callable[[], Any],
-        collect_episode_fn: Callable[..., Dict[str, Any]],
-        module_builders: Optional[Dict[str, Callable[[], nn.Module]]] = None,
+        runtime_builder: Callable[[int], EnvRuntime],
+        actor: nn.Module,
         max_workers: int = 1,
         worker_device: str = "cpu",
         mp_start_method: str = "spawn",
     ):
         self.runtime_builder = runtime_builder
-        self.collect_episode_fn = collect_episode_fn
-        self.module_builders = dict(module_builders or {})
+        self.actor = actor
         self.max_workers = max(1, int(max_workers))
         self.worker_device = str(worker_device)
         self.mp_start_method = str(mp_start_method)
-        self.train_runtime = runtime_builder() if self.max_workers == 1 else None
         self.rollout_executor = None
         if self.max_workers > 1:
             spec = RolloutWorkerSpec(
                 runtime_builder=self.runtime_builder,
-                module_builders=self.module_builders,
-                collect_episode_fn=self.collect_episode_fn,
+                actor=copy.deepcopy(self.actor).cpu(),
                 device=self.worker_device,
             )
             self.rollout_executor = ProcessPoolExecutor(
@@ -295,9 +371,6 @@ class RolloutCollector:
             )
 
     def close(self) -> None:
-        if self.train_runtime is not None and hasattr(self.train_runtime, "close"):
-            self.train_runtime.close()
-            self.train_runtime = None
         if self.rollout_executor is not None:
             self.rollout_executor.shutdown(wait=True, cancel_futures=False)
             self.rollout_executor = None
@@ -311,39 +384,41 @@ class RolloutCollector:
     def collect_episodes(
         self,
         seeds: Sequence[int],
-        modules: Mapping[str, nn.Module],
-        device: torch.device,
-        deterministic: bool,
         worker_limit: Optional[int] = None,
-        extra_kwargs: Optional[Dict[str, Any]] = None,
+        deterministic: bool = False,
     ) -> List[Dict[str, Any]]:
         seeds_list = [int(seed) for seed in seeds]
         if not seeds_list:
             return []
-        rollout_kwargs = dict(extra_kwargs or {})
+        actor_state_dict = snapshot_module_state_dict(self.actor)
         if self.rollout_executor is None:
-            if self.train_runtime is None:
-                self.train_runtime = self.runtime_builder()
-            return [
-                self.collect_episode_fn(
-                    self.train_runtime,
-                    modules,
-                    device,
-                    deterministic=bool(deterministic),
-                    seed=int(seed),
-                    **rollout_kwargs,
-                )
-                for seed in seeds_list
-            ]
+            episodes: List[Dict[str, Any]] = []
+            local_actor = copy.deepcopy(self.actor).cpu()
+            local_actor.load_state_dict(actor_state_dict)
+            local_actor.eval()
+            for seed in seeds_list:
+                runtime = self.runtime_builder(int(seed))
+                try:
+                    episodes.append(
+                        _collect_actor_episode(
+                            runtime,
+                            local_actor,
+                            torch.device("cpu"),
+                            int(seed),
+                            deterministic=bool(deterministic),
+                        )
+                    )
+                finally:
+                    if hasattr(runtime, "close"):
+                        runtime.close()
+            return episodes
         effective_workers = max(1, min(int(worker_limit or self.max_workers), self.max_workers))
         seed_chunks = split_sequence(seeds_list, effective_workers)
-        module_state_dicts = snapshot_module_dict(modules)
         tasks = [
             RolloutTask(
                 seeds=seed_chunk,
-                module_state_dicts=module_state_dicts,
+                actor_state_dict=actor_state_dict,
                 deterministic=bool(deterministic),
-                extra_kwargs=rollout_kwargs,
             )
             for seed_chunk in seed_chunks
             if seed_chunk
@@ -356,10 +431,8 @@ class RolloutCollector:
     def collect_episode_groups(
         self,
         seed_groups: Sequence[Sequence[int]],
-        modules: Mapping[str, nn.Module],
-        device: torch.device,
-        deterministic: bool,
-        extra_kwargs: Optional[Dict[str, Any]] = None,
+        worker_limit: Optional[int] = None,
+        deterministic: bool = False,
     ) -> List[List[Dict[str, Any]]]:
         normalized_groups = [
             [int(seed) for seed in seed_group]
@@ -368,49 +441,64 @@ class RolloutCollector:
         ]
         if not normalized_groups:
             return []
-        rollout_kwargs = dict(extra_kwargs or {})
+        actor_state_dict = snapshot_module_state_dict(self.actor)
         if self.rollout_executor is None:
-            return [
-                [
-                    self.collect_episode_fn(
-                        self.train_runtime if self.train_runtime is not None else self.runtime_builder(),
-                        modules,
-                        device,
-                        deterministic=bool(deterministic),
-                        seed=int(seed),
-                        **rollout_kwargs,
-                    )
-                    for seed in seed_group
-                ]
-                for seed_group in normalized_groups
-            ]
-        module_state_dicts = snapshot_module_dict(modules)
+            grouped_results: List[List[Dict[str, Any]]] = []
+            local_actor = copy.deepcopy(self.actor).cpu()
+            local_actor.load_state_dict(actor_state_dict)
+            local_actor.eval()
+            for seed_group in normalized_groups:
+                group_episodes: List[Dict[str, Any]] = []
+                for seed in seed_group:
+                    runtime = self.runtime_builder(int(seed))
+                    try:
+                        group_episodes.append(
+                            _collect_actor_episode(
+                                runtime,
+                                local_actor,
+                                torch.device("cpu"),
+                                int(seed),
+                                deterministic=bool(deterministic),
+                            )
+                        )
+                    finally:
+                        if hasattr(runtime, "close"):
+                            runtime.close()
+                grouped_results.append(group_episodes)
+            return grouped_results
+        effective_workers = max(1, min(int(worker_limit or self.max_workers), self.max_workers))
+        grouped_seed_indices = split_sequence(list(range(len(normalized_groups))), effective_workers)
         tasks = [
             RolloutTask(
-                seeds=list(seed_group),
-                module_state_dicts=module_state_dicts,
+                seeds=flatten_groups([normalized_groups[index] for index in seed_group]),
+                actor_state_dict=actor_state_dict,
                 deterministic=bool(deterministic),
-                extra_kwargs=rollout_kwargs,
             )
-            for seed_group in normalized_groups
+            for seed_group in grouped_seed_indices
+            if seed_group
         ]
-        return list(self.rollout_executor.map(_collect_episode_chunk, tasks))
+        grouped_episodes = list(self.rollout_executor.map(_collect_episode_chunk, tasks))
+        episodes = flatten_groups(grouped_episodes)
+        grouped_results: List[List[Dict[str, Any]]] = []
+        cursor = 0
+        for normalized_group in normalized_groups:
+            group_length = len(normalized_group)
+            grouped_results.append(episodes[cursor:cursor + group_length])
+            cursor += group_length
+        return grouped_results
 
     def collect_grouped_episodes(
         self,
         seeds: Sequence[int],
         group_size: int,
-        modules: Mapping[str, nn.Module],
-        device: torch.device,
-        deterministic: bool,
         drop_last: bool = False,
-        extra_kwargs: Optional[Dict[str, Any]] = None,
+        worker_limit: Optional[int] = None,
+        deterministic: bool = False,
     ) -> List[List[Dict[str, Any]]]:
         seed_groups = build_sequential_groups(seeds, group_size=group_size, drop_last=drop_last)
         return self.collect_episode_groups(
             seed_groups=seed_groups,
-            modules=modules,
-            device=device,
+            worker_limit=worker_limit,
             deterministic=deterministic,
-            extra_kwargs=extra_kwargs,
         )
+
