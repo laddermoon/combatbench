@@ -109,8 +109,36 @@ class _RuntimeCore:
     def detach_plugin(self, plugin: BasePlugin) -> None:
         self.plugin_manager.detach(plugin)
 
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+        base_seed: Optional[int] = None,
+    ) -> None:
+        """Begin a new episode. See ``envs/framework/RESET.md`` for the
+        full reset chain & invariants.
+
+        ``seed``: simulator-level RNG seed (one of the children derived from
+        ``base_seed`` by :class:`EpisodeRunner`).
+        ``options``: per-episode parameter dict; forwarded to
+        ``simulator.reset(options=...)`` AND published on
+        ``ctx.episode_options`` for plugins / observers / recorders.
+        ``base_seed``: the user-facing batch seed; published on
+        ``ctx.base_seed`` so recorders can persist it to manifest. ``None``
+        is allowed for direct EnvRuntime usage outside of EpisodeRunner.
+
+        If a previous episode is still active when ``reset`` is called,
+        it is gracefully terminated first (``on_post_episode`` fires with
+        reason ``"abandoned"``) — see RESET.md §7-G4.
+        """
+        if self._is_episode_active:
+            # Abandon the in-flight episode cleanly so recorder manifests
+            # and observer state are flushed before we wipe the context.
+            self.ctx.request_termination("abandoned")
+            self._handle_termination()
         self.ctx.clear_episode_state()
+        self.ctx.base_seed = base_seed
+        self.ctx.episode_options = dict(options or {})
         self._is_episode_active = True
         self.simulator.reset(seed=seed, options=options)
         self.plugin_manager.invoke("on_pre_episode", self.ctx, allow_mutator=True)
@@ -271,8 +299,15 @@ class EnvRuntime:
                 readonly_ctx, observer_outputs,
             )
 
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
-        self._core.reset(seed=seed, options=options)
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+        base_seed: Optional[int] = None,
+    ) -> None:
+        """See :meth:`_RuntimeCore.reset` for the parameter semantics and
+        ``envs/framework/RESET.md`` for the full reset chain."""
+        self._core.reset(seed=seed, options=options, base_seed=base_seed)
         self._invoke_recorders("on_pre_episode")
         if not self._core.is_episode_active:
             # Reset triggered an immediate termination (e.g. invalid init state).

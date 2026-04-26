@@ -51,8 +51,8 @@
 
 ### 5. Observer 插件调度 (`runtime_plugin.py`)
 *   **`BaseRuntimeUnit`**: 所有策略侧只读单元的统一基类，显式暴露以下调用时机：
-    *   `on_reset(ctx: ReadOnlySimContext)`：在 `EnvRuntime.reset()` 后触发一次
-    *   `on_post_step(ctx: ReadOnlySimContext)`：在每个 `EnvRuntime.step()` 结束后触发一次
+    *   `on_pre_episode(ctx: ReadOnlySimContext)`：在 `EnvRuntime.reset()` 后触发一次
+    *   `on_post_action_step(ctx: ReadOnlySimContext)`：在每个 `EnvRuntime.step()` 结束后触发一次
     *   `on_post_episode(ctx: ReadOnlySimContext)`：在 episode 确认终止后触发一次
     *   `on_manual_refresh(ctx: ReadOnlySimContext)`：调用 `runtime.refresh_observers()` 时触发
     *   `get_output()`：返回当前缓存输出
@@ -129,11 +129,11 @@ class MyObserverPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = None
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         core_state = ctx.accessor.get_core_state()
         self._output = core_state["robot_a"]
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         core_state = ctx.accessor.get_core_state()
         self._output = core_state["robot_a"]
 
@@ -145,10 +145,10 @@ class MyRewardPlugin(BaseObserverPlugin):
     def __init__(self):
         self._output = 0.0
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         self._output = 0.0
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         self._output = -float(ctx.metrics.get("robot_a_clamp_count", 0))
 
     def get_output(self):

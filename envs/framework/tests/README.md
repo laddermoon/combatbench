@@ -72,7 +72,7 @@ def test_termination_in_pre_phy_step_stops_physical_step():
 ```python
 def test_same_observer_instance_deduplicated():
     # 同一 observer 挂载到两个名称
-    # 预期：on_post_step 只调用一次
+    # 预期：on_post_action_step 只调用一次
 ```
 
 ## 设计理念

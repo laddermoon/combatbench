@@ -175,11 +175,17 @@ class SimContext:
         self.episode_step: int = 0
         self.physics_step: int = 0
 
-        # 本 episode 的 base seed（int）。由 EpisodeRunner 在 runtime.reset 前写入，
-        # 供 Recorder 的 on_pre_episode/on_post_episode 读取并落到 manifest。
-        # 没有显式设置时（比如裸用 EnvRuntime 跑测试）保持 None。
-        # 详见 envs/framework/SEED.md。
+        # 本 episode 的 base seed（int）。由 ``EnvRuntime.reset`` 在调用
+        # ``clear_episode_state`` 之后、``simulator.reset`` 之前写入，
+        # 供 plugin / observer / recorder 的 on_pre_episode 读取并落到 manifest。
+        # 详见 envs/framework/SEED.md 与 envs/framework/RESET.md。
         self.base_seed: Optional[int] = None
+
+        # 本 episode 的 options（per-episode 可变参数：HP 延续、课程化扰动
+        # 强度、对手快照 ID、初始姿态等）。由 ``EnvRuntime.reset`` 在
+        # ``clear_episode_state`` 之后写入，对所有 plugin / observer / recorder
+        # 的 on_pre_episode 与所有 on_post_* 钩子可见。详见 RESET.md §4。
+        self.episode_options: Dict[str, Any] = {}
 
         # 派生黑板
         self.metrics: Dict[str, Any] = {}
@@ -203,12 +209,19 @@ class SimContext:
         return len(self.termination_proposals) > 0
 
     def clear_episode_state(self) -> None:
-        """在 Episode 开始前清理历史状态"""
+        """在 Episode 开始前清理历史状态。
+
+        所有权约定：``base_seed`` 与 ``episode_options`` 的写入由
+        ``EnvRuntime.reset`` 的 caller 负责；本方法把它们清回 None / 空 dict
+        以避免上一个 episode 的值意外泄漏。详见 RESET.md §3 / §7-G5。
+        """
         self.episode_step = 0
         self.physics_step = 0
         self.metrics.clear()
         self.events.clear()
         self.termination_proposals.clear()
+        self.episode_options.clear()
+        self.base_seed = None
 
     # --- 引擎控制权限的辅助方法 ---
     def _grant_mutator(self) -> None:
@@ -228,6 +241,7 @@ class ReadOnlySimContext:
     termination_proposals: Tuple[str, ...]
     is_terminated: bool
     base_seed: Optional[int] = None
+    episode_options: Mapping[str, Any] = MappingProxyType({})
 
     @classmethod
     def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":
@@ -240,4 +254,5 @@ class ReadOnlySimContext:
             termination_proposals=tuple(ctx.termination_proposals),
             is_terminated=ctx.is_terminated,
             base_seed=ctx.base_seed,
+            episode_options=MappingProxyType(dict(ctx.episode_options)),
         )

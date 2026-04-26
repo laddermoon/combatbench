@@ -73,7 +73,7 @@ CombatBench 的定位是**一个格斗 benchmark 平台**：我们提供 Env + F
    - 演示 `ctx.termination_proposals` 机制，以及 early termination 如何进入 `EpisodeResult`。
 
 3. **自定义 reward term `ClosingDistanceRewardObserver(BaseObserverPlugin)`**
-   - 从 `ctx.accessor` 读两个机器人的距离，用 `on_post_step` 聚合，`get_output()` 返回可直接喂给训练 loop 的 reward。
+   - 从 `ctx.accessor` 读两个机器人的距离，用 `on_post_action_step` 聚合，`get_output()` 返回可直接喂给训练 loop 的 reward。
    - 演示 **plugin（写/算）→ metrics（共享）→ observer（策略侧只读暴露）** 这条标准数据流。
 
 最后，一个串联 demo：把三个插件一起挂上跑 3 局，打印每局的扰动幅度、是否早停、累计 reward 分解。

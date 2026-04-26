@@ -65,7 +65,7 @@ import logging
 import multiprocessing as mp
 import traceback
 from contextlib import AbstractContextManager
-from typing import Callable, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -106,19 +106,26 @@ def _worker_init(factory: RunnerFactory, worker_id_counter) -> None:  # pragma: 
     _WORKER_RUNNER = factory(worker_id)
 
 
-def _run_one(seed: int) -> EpisodeResult:  # pragma: no cover - runs in child
-    """Task function: run one episode on this worker's cached runner."""
+def _run_one(task: Tuple[int, Optional[Dict[str, Any]]]) -> EpisodeResult:  # pragma: no cover - runs in child
+    """Task function: run one episode on this worker's cached runner.
+
+    ``task`` is a ``(seed, options)`` pair; ``options`` may be ``None``.
+    Packing both into a single argument keeps the multiprocessing imap
+    interface unchanged.
+    """
     assert _WORKER_RUNNER is not None, (
         "ParallelRunner worker was not initialized; did _worker_init run?"
     )
-    return _WORKER_RUNNER.run_episode(seed=int(seed))
+    seed, options = task
+    return _WORKER_RUNNER.run_episode(seed=int(seed), options=options)
 
 
-def _run_one_best_effort(seed: int):  # pragma: no cover - runs in child
+def _run_one_best_effort(task: Tuple[int, Optional[Dict[str, Any]]]):  # pragma: no cover - runs in child
     """Best-effort variant used when ``strict=False``: returns ``(seed, result, error_str)``
     where at most one of ``result`` / ``error_str`` is non-None."""
+    seed, _options = task
     try:
-        return int(seed), _run_one(seed), None
+        return int(seed), _run_one(task), None
     except BaseException:  # noqa: BLE001 - we rethrow/log at the boundary
         return int(seed), None, traceback.format_exc()
 
@@ -223,6 +230,7 @@ class ParallelRunner(AbstractContextManager):
         n: int,
         *,
         base_seed: Optional[int] = None,
+        options_fn: Optional[Callable[[int], Optional[Dict[str, Any]]]] = None,
     ) -> List[Optional[EpisodeResult]]:
         """Run ``n`` episodes; returns results in **seed-submission order**.
 
@@ -232,23 +240,33 @@ class ParallelRunner(AbstractContextManager):
         ``EpisodeRunner(...).run_n_episodes(n, base_seed=X)`` produce the
         same trajectories (modulo whatever non-determinism lives inside
         the simulator or policies themselves).
+
+        ``options_fn(episode_index) -> options_dict`` is called **on the
+        main process** for each of the ``n`` episodes; the resulting dict
+        is shipped to workers alongside the seed and used as
+        ``runtime.reset(options=...)`` for that episode. See
+        ``framework/RESET.md`` §4 for what belongs in ``options``.
         """
         if n < 0:
             raise ValueError(f"n must be non-negative; got {n}")
         if n == 0:
             return []
         seeds = _derive_seeds(base_seed, n)
+        tasks = self._build_tasks(seeds, options_fn)
         self._ensure_started()
 
         if self._pool is None:
             # Single-process fast path.
             assert self._inproc_runner is not None
             if self._strict:
-                return [self._inproc_runner.run_episode(seed=int(s)) for s in seeds]
+                return [
+                    self._inproc_runner.run_episode(seed=int(s), options=opts)
+                    for s, opts in tasks
+                ]
             results: List[Optional[EpisodeResult]] = []
-            for s in seeds:
+            for s, opts in tasks:
                 try:
-                    results.append(self._inproc_runner.run_episode(seed=int(s)))
+                    results.append(self._inproc_runner.run_episode(seed=int(s), options=opts))
                 except BaseException:  # noqa: BLE001
                     _logger.exception("Episode with seed=%s failed", s)
                     results.append(None)
@@ -258,7 +276,7 @@ class ParallelRunner(AbstractContextManager):
         if self._strict:
             # imap preserves order; exceptions re-raise on the main side.
             try:
-                return list(self._pool.imap(_run_one, (int(s) for s in seeds)))
+                return list(self._pool.imap(_run_one, iter(tasks)))
             except BaseException:
                 # Re-raise after draining: the pool is poisoned — shut it down
                 # so the caller doesn't hang on __exit__.
@@ -268,7 +286,7 @@ class ParallelRunner(AbstractContextManager):
         out: List[Optional[EpisodeResult]] = [None] * len(seeds)
         seed_to_idx = {int(s): i for i, s in enumerate(seeds)}
         for seed, result, err in self._pool.imap_unordered(
-            _run_one_best_effort, (int(s) for s in seeds)
+            _run_one_best_effort, iter(tasks)
         ):
             if err is not None:
                 _logger.error("Episode with seed=%s failed:\n%s", seed, err)
@@ -281,6 +299,7 @@ class ParallelRunner(AbstractContextManager):
         *,
         base_seed: Optional[int] = None,
         ordered: bool = True,
+        options_fn: Optional[Callable[[int], Optional[Dict[str, Any]]]] = None,
     ) -> Iterator[Optional[EpisodeResult]]:
         """Generator variant of :meth:`run`.
 
@@ -289,28 +308,31 @@ class ParallelRunner(AbstractContextManager):
         for lower wall-time when the consumer doesn't care about order
         (e.g. on-policy RL collectors that feed directly into a replay
         buffer).
+
+        ``options_fn`` semantics match :meth:`run`.
         """
         if n < 0:
             raise ValueError(f"n must be non-negative; got {n}")
         if n == 0:
             return
         seeds = _derive_seeds(base_seed, n)
+        tasks = self._build_tasks(seeds, options_fn)
         self._ensure_started()
 
         if self._pool is None:
             assert self._inproc_runner is not None
-            for s in seeds:
+            for s, opts in tasks:
                 if self._strict:
-                    yield self._inproc_runner.run_episode(seed=int(s))
+                    yield self._inproc_runner.run_episode(seed=int(s), options=opts)
                 else:
                     try:
-                        yield self._inproc_runner.run_episode(seed=int(s))
+                        yield self._inproc_runner.run_episode(seed=int(s), options=opts)
                     except BaseException:
                         _logger.exception("Episode with seed=%s failed", s)
                         yield None
             return
 
-        iterable = (int(s) for s in seeds)
+        iterable = iter(tasks)
         if self._strict:
             imap_fn = self._pool.imap if ordered else self._pool.imap_unordered
             try:
@@ -348,6 +370,17 @@ class ParallelRunner(AbstractContextManager):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    @staticmethod
+    def _build_tasks(
+        seeds,
+        options_fn: Optional[Callable[[int], Optional[Dict[str, Any]]]],
+    ) -> List[Tuple[int, Optional[Dict[str, Any]]]]:
+        """Pair each seed with its per-episode options (computed on the main
+        process so workers don't need to import ``options_fn``)."""
+        if options_fn is None:
+            return [(int(s), None) for s in seeds]
+        return [(int(s), options_fn(i)) for i, s in enumerate(seeds)]
+
     def _hard_kill(self) -> None:
         """Tear down the pool hard — used on strict-mode exceptions so the
         context manager's ``__exit__`` does not hang on drained workers."""

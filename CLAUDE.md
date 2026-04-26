@@ -133,8 +133,8 @@ World rule plugin with lifecycle hooks:
 #### BaseObserverPlugin (`runtime_plugin.py`)
 
 Read-only observation/reward computation:
-- `on_reset(ctx)` - Called after reset
-- `on_post_step(ctx)` - Called after each step
+- `on_pre_episode(ctx)` - Called after reset (same name as BasePlugin)
+- `on_post_action_step(ctx)` - Called after each action step (same name as BasePlugin)
 - `get_output()` - Return cached output
 
 ### EnvRuntime (`env_runtime.py`)

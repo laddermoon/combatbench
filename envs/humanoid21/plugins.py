@@ -133,8 +133,17 @@ class CombatScoringPlugin(BasePlugin):
         return "combat_scoring"
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        ctx.metrics['health_a'] = self.initial_health_a
-        ctx.metrics['health_b'] = self.initial_health_b
+        # Per-episode HP carry-over flows through ``ctx.episode_options``
+        # (see envs/framework/RESET.md §4). Constructor values are used as
+        # defaults whenever the option is missing — this matches the
+        # standalone "single round at full HP" use case.
+        opts = ctx.episode_options
+        ctx.metrics['health_a'] = float(
+            opts.get('initial_health_a', self.initial_health_a)
+        )
+        ctx.metrics['health_b'] = float(
+            opts.get('initial_health_b', self.initial_health_b)
+        )
         ctx.metrics['damage_taken_a'] = 0.0
         ctx.metrics['damage_taken_b'] = 0.0
         # reset events list explicitly

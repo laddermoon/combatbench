@@ -38,10 +38,10 @@ class _QposObserver(BaseObserverPlugin):
     def __init__(self) -> None:
         self._output: np.ndarray = np.zeros(5, dtype=np.float32)
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         self._output = ctx.accessor.get_core_state()["qpos"][:5].astype(np.float32)
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         self._output = ctx.accessor.get_core_state()["qpos"][:5].astype(np.float32)
 
     def get_output(self) -> np.ndarray:
@@ -54,10 +54,10 @@ class _ScalarRewardObserver(BaseObserverPlugin):
     def __init__(self) -> None:
         self._step = 0
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         self._step = 0
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         self._step += 1
 
     def get_output(self) -> float:
@@ -71,10 +71,10 @@ class _DictRewardObserver(BaseObserverPlugin):
     def __init__(self) -> None:
         self._step = 0
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         self._step = 0
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         self._step += 1
 
     def get_output(self) -> Dict[str, Any]:

@@ -350,10 +350,10 @@ class CountingObserver(BaseObserverPlugin):
         self.refresh_count = 0
         self._output = 0
 
-    def on_reset(self, ctx):
+    def on_pre_episode(self, ctx):
         self.reset_count += 1
 
-    def on_post_step(self, ctx):
+    def on_post_action_step(self, ctx):
         self.step_count += 1
 
     def on_post_episode(self, ctx):

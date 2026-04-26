@@ -387,17 +387,26 @@ class EpisodeRunner:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def run_episode(self, seed: Optional[int] = None) -> EpisodeResult:
+    def run_episode(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> EpisodeResult:
         """Run a single episode. Returns a populated :class:`EpisodeResult`.
 
         ``seed=None`` is resolved to a concrete ``uint32`` via
         :func:`secrets.randbits(32)` at entry and written back to the
         returned :attr:`EpisodeResult.seed` — the episode is always
         reproducible from that value (see ``framework/SEED.md``).
+
+        ``options`` is forwarded to :meth:`EnvRuntime.reset` and published
+        on ``ctx.episode_options`` for plugins / observers / recorders to
+        read per-episode parameters (HP carry-over, curriculum knobs,
+        opponent snapshot id, …). See ``framework/RESET.md`` §4.
         """
         base_seed = _resolve_seed(seed)
         episode_seeds = self._derive_seeds(base_seed)
-        self._reset_all(episode_seeds)
+        self._reset_all(episode_seeds, options=options)
 
         trajectories = self._init_trajectories()
         start = time.monotonic()
@@ -487,6 +496,7 @@ class EpisodeRunner:
         n: int,
         *,
         base_seed: Optional[int] = None,
+        options_fn: Optional[Callable[[int], Optional[Dict[str, Any]]]] = None,
     ) -> List[EpisodeResult]:
         """Run ``n`` episodes, deriving a child seed per episode via
         :class:`numpy.random.SeedSequence` so the batch is reproducible from
@@ -496,6 +506,11 @@ class EpisodeRunner:
         :func:`_resolve_seed`) and logged; the resolved value is what each
         :attr:`EpisodeResult.seed` records for its own derivation, making
         the batch reproducible even when the caller didn't supply a seed.
+
+        ``options_fn(episode_index) -> options_dict`` is the canonical
+        per-episode-params channel for curriculum / opponent-pool / HP
+        carry-over (see ``framework/RESET.md`` §4). It is called once per
+        episode with the 0-based index; return ``None`` for "no options".
         """
         if n < 0:
             raise ValueError(f"n must be non-negative; got {n}")
@@ -504,7 +519,11 @@ class EpisodeRunner:
         batch_seed = _resolve_seed(base_seed)
         _logger.info("run_n_episodes: base_seed=%d, n=%d", batch_seed, n)
         episode_seeds = _derive_batch_seeds(batch_seed, n)
-        return [self.run_episode(int(s)) for s in episode_seeds]
+        results: List[EpisodeResult] = []
+        for episode_index, episode_seed in enumerate(episode_seeds):
+            options = options_fn(episode_index) if options_fn is not None else None
+            results.append(self.run_episode(int(episode_seed), options=options))
+        return results
 
     def close(self) -> None:
         """Close attached policies that support it. Runtime lifecycle is
@@ -559,27 +578,32 @@ class EpisodeRunner:
             plugins={id(plugin): _leaf(ss) for plugin, ss in zip(seedable_plugins, plugin_sss)},
         )
 
-    def _reset_all(self, seeds: EpisodeSeeds) -> None:
-        """Apply ``seeds`` to every consumer.
+    def _reset_all(
+        self,
+        seeds: EpisodeSeeds,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Apply ``seeds`` and ``options`` to every consumer.
 
         Order matters:
           1. ``plugin.set_episode_seed`` rebuilds each plugin's RNG
              immediately — **before** ``runtime.reset`` because reset
              triggers ``on_pre_episode`` where seeded plugins consume
              their RNG to sample initial-state deltas, push intervals, etc.
-          2. ``runtime.reset`` drives the simulator (with ``seeds.runtime``)
-             and fires the plugin lifecycle hooks.
+          2. ``runtime.reset(seed, options, base_seed)`` clears ctx,
+             publishes ``ctx.base_seed`` and ``ctx.episode_options``,
+             drives the simulator (with ``seeds.runtime`` and ``options``),
+             then fires the plugin lifecycle hooks. See
+             ``envs/framework/RESET.md`` §3 for the full chain.
           3. ``policy.reset`` reseeds each policy's RNG.
         """
         for plugin in self._seedable_plugins():
             plugin.set_episode_seed(seeds.plugins[id(plugin)])
-        # Publish the resolved base seed on the runtime ctx so any
-        # on_pre_episode / on_post_episode recorder can persist it (see
-        # envs/framework/SEED.md). Must be set BEFORE runtime.reset so the
-        # value survives clear_episode_state and is already visible when
-        # recorder on_pre_episode fires via _invoke_recorders.
-        self.runtime.ctx.base_seed = seeds.base
-        self.runtime.reset(seed=seeds.runtime)
+        self.runtime.reset(
+            seed=seeds.runtime,
+            options=options,
+            base_seed=seeds.base,
+        )
         for agent_id, policy in self.policies.items():
             reset_fn = getattr(policy, "reset", None)
             if callable(reset_fn):

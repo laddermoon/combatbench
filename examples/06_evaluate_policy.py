@@ -14,8 +14,9 @@
 当 baseline。把自己的策略塞进去替换 ``policy_a`` 即可。
 
 学到 (Takeaway) :
-  - :class:`MatchRunner` 的 ``env_factory(initial_health_a, initial_health_b)``
-    契约——血量延续怎么实现。
+  - :class:`MatchRunner` 的 ``env_factory()`` 契约（无参数）——HP 延续走
+    ``ctx.episode_options``，由 :class:`CombatScoringPlugin` 在
+    ``on_pre_episode`` 读取，无需重建 runtime。
   - 回合级 seed 从 match base_seed 用 ``SeedSequence.spawn`` 派生。
   - 一份**按规则书走的 markdown 战报**模板。
 
@@ -41,24 +42,23 @@ from policy.standing.policy import StandingCombatPolicy
 
 
 # ---------------------------------------------------------------------------
-# env_factory — called once per round by MatchRunner, with the current HP
-# as args so HP carries over across rounds (rule §2.4).
+# env_factory — called ONCE by MatchRunner; the same runtime is recycled
+# across all rounds via ``runtime.reset(options={...})``. HP carry-over
+# flows through ``ctx.episode_options`` (see envs/framework/RESET.md §4).
 # ---------------------------------------------------------------------------
-def _make_env_factory(video_dir: Path):
-    """Return an ``env_factory(initial_health_a, initial_health_b)`` closure.
+def _make_env_factory():
+    """Return an ``env_factory()`` closure (no arguments).
 
-    Each call builds a fresh humanoid21 runtime with:
-      - :class:`CombatScoringPlugin` carrying over HP from the previous round;
-      - :class:`VideoRecorderPlugin` writing the round's MP4 under
-        ``video_dir/round_N.mp4`` (MatchRunner passes that path per round).
+    Builds the humanoid21 runtime exactly once with:
+      - :class:`CombatScoringPlugin` reading per-round HP from
+        ``ctx.episode_options``;
+      - :class:`VideoRecorderPlugin` whose output path is retargeted per
+        round by :class:`MatchRunner` via ``RoundRunner.run(videosave_path=...)``.
     """
-    def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
+    def env_factory():
         plugins: list[Any] = [
-            CombatScoringPlugin(
-                initial_health_a=initial_health_a,
-                initial_health_b=initial_health_b,
-            ),
-            VideoRecorderPlugin(fps=30),   # output_path is supplied per-round
+            CombatScoringPlugin(),         # HP read from ctx.episode_options
+            VideoRecorderPlugin(fps=30),   # output_path is retargeted per-round
         ]
         # RULE §5: 物理 500Hz，决策 20Hz，单回合 30s。
         return make_env(
@@ -135,7 +135,7 @@ def main() -> None:
     runner = MatchRunner(
         policy_a=policy_a,
         policy_b=policy_b,
-        env_factory=_make_env_factory(video_dir),
+        env_factory=_make_env_factory(),
         total_rounds=6,           # RULE §2.3
         verbose=False,             # 自己打印更干净的 summary
     )

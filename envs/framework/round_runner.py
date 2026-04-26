@@ -7,12 +7,19 @@ a thin adapter over :class:`envs.framework.episode_runner.EpisodeRunner`
 so the generic loop (seed handling, observation/reward pulling, rollout
 capture, hooks) lives in one place.
 
-Public surface is preserved for existing callers:
+Public surface:
 
 * ``RoundRunner(policy_a, policy_b, runtime, verbose=True)``
-* ``runner.run(seed=None, videosave_path=None) -> dict`` where the dict has
-  the historical keys: ``steps`` / ``winner`` / ``final_health`` /
-  ``damage_taken`` / ``termination_reasons``.
+* ``runner.run(seed=None, options=None, videosave_path=None) -> dict`` where
+  the dict has the historical keys: ``steps`` / ``winner`` / ``final_health``
+  / ``damage_taken`` / ``termination_reasons``.
+
+Lifecycle: ``RoundRunner.run`` does NOT close the runtime. Callers own
+the runtime and are expected to call ``runtime.close()`` themselves once
+they are done with it. This is consistent with
+:meth:`EpisodeRunner.close`'s docstring ("Runtime lifecycle is owned by
+the caller") and lets :class:`MatchRunner` re-use a single runtime across
+multiple rounds via ``runtime.reset(options=...)`` instead of rebuilding.
 
 New code should prefer :class:`EpisodeRunner` directly plus a post-hoc
 reducer over :attr:`EpisodeResult.shared_info_final` — combat-specific
@@ -44,8 +51,10 @@ class RoundRunner(EpisodeRunner):
     - legacy positional ``(policy_a, policy_b, runtime, verbose)`` signature,
     - combat-specific ``on_step`` / ``on_episode_end`` hooks that print hit
       events and a round summary when ``verbose=True``,
-    - a ``.run()`` method that returns the historical result dict and then
-      closes the runtime (matching the old contract).
+    - a ``.run()`` method that returns the historical result dict.
+      The runtime is **not** closed here — callers (e.g. :class:`MatchRunner`)
+      own the runtime lifecycle and recycle it across rounds via
+      ``runtime.reset(options=...)``.
     """
 
     def __init__(
@@ -85,22 +94,27 @@ class RoundRunner(EpisodeRunner):
     def run(
         self,
         seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
         videosave_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run one round. Returns the legacy result dict; closes the runtime.
+        """Run one round. Returns the legacy result dict.
+
+        ``options`` is forwarded to :meth:`EnvRuntime.reset` and visible to
+        plugins / observers via ``ctx.episode_options`` — this is how
+        :class:`MatchRunner` injects per-round HP carry-over
+        (``initial_health_a`` / ``initial_health_b``). See RESET.md §4.
 
         ``videosave_path`` retargets any :class:`VideoRecorderPlugin`
         instances already attached to the runtime — historical behavior
         preserved for ``MatchRunner``.
+
+        The runtime is intentionally NOT closed here; the caller owns its
+        lifecycle (see module docstring & RESET.md §7-G3).
         """
         if videosave_path is not None:
             self._retarget_video_plugins(videosave_path)
-        result = self.run_episode(seed=seed)
-        legacy = self._build_legacy_result(result)
-        # Historical contract: RoundRunner closes the runtime on the way out.
-        # MatchRunner relies on this to recycle runtimes between rounds.
-        self.runtime.close()
-        return legacy
+        result = self.run_episode(seed=seed, options=options)
+        return self._build_legacy_result(result)
 
     # ------------------------------------------------------------------
     # Internals

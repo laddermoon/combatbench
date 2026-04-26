@@ -37,17 +37,17 @@ class BaseRuntimeUnit(ABC):
     def process_data(self, ctx: ReadOnlySimContext) -> None:
         return None
 
-    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self.process_data(ctx)
 
-    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         self.process_data(ctx)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         self.process_data(ctx)
 
     def on_manual_refresh(self, ctx: ReadOnlySimContext) -> None:
-        self.on_post_step(ctx)
+        self.on_post_action_step(ctx)
 
     @abstractmethod
     def get_output(self) -> Any:
@@ -98,7 +98,7 @@ class _ObserverDispatcherPlugin(BasePlugin):
         return observer_plugin.get_output() if observer_plugin is not None else None
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        self._process_ctx(ctx, trigger_name="on_reset")
+        self._process_ctx(ctx, trigger_name="on_pre_episode")
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         return None
@@ -110,7 +110,7 @@ class _ObserverDispatcherPlugin(BasePlugin):
         return None
 
     def on_post_action_step(self, ctx: SimContext) -> None:
-        self._process_ctx(ctx, trigger_name="on_post_step")
+        self._process_ctx(ctx, trigger_name="on_post_action_step")
 
     def on_post_episode(self, ctx: SimContext) -> None:
         self._process_ctx(ctx, trigger_name="on_post_episode")

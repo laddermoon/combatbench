@@ -32,15 +32,18 @@ class MatchRunner:
     3. 比赛时长：每个回合时长 30 秒，进行 6 个回合
     4. 重置状态：每个回合开始时，都会从初始位置开始（但血量延续上一回合）
 
-    使用方式：
-        from combatbench.envs.humanoid21 import make_env
+    使用方式 (env_factory 无参数，HP 延续走 ``ctx.episode_options``；
+    详见 envs/framework/RESET.md §3 / §4)：
 
-        def runtime_factory(initial_health_a=100.0, initial_health_b=100.0):
+        from combatbench.envs.humanoid21 import make_env
+        from envs.humanoid21.plugins import CombatScoringPlugin
+        from envs.framework.common_plugins import VideoRecorderPlugin
+
+        def runtime_factory():
             return make_env(
                 match_duration=30.0,
                 control_frequency=20,
-                initial_health_a=initial_health_a,
-                initial_health_b=initial_health_b
+                plugins=[CombatScoringPlugin(), VideoRecorderPlugin(fps=30)],
             )
 
         runner = MatchRunner(
@@ -48,25 +51,29 @@ class MatchRunner:
             policy_b=policy_b,
             env_factory=runtime_factory,
             total_rounds=6,
-            verbose=True
+            verbose=True,
         )
-        result = runner.run(video_dir="videos")
+        result = runner.run(seed=42, video_dir="videos")
     """
 
     def __init__(
         self,
         policy_a: Any,
         policy_b: Any,
-        env_factory: Callable[[float, float], Any],
+        env_factory: Callable[[], Any],
         total_rounds: int = 6,
-        verbose: bool = True
+        verbose: bool = True,
     ):
         """
         Args:
             policy_a: 机器人A的策略
             policy_b: 机器人B的策略
-            env_factory: runtime 工厂函数，接收 (initial_health_a, initial_health_b) 参数
-            total_rounds: 总回合数，默认6回合
+            env_factory: runtime 工厂函数，无参数。MatchRunner 只调用一次
+                构建一个长周期 runtime，后续每回合通过
+                ``runtime.reset(options={"initial_health_a": ..., "initial_health_b": ...})``
+                复用；HP 由 ``CombatScoringPlugin`` 从 ``ctx.episode_options``
+                读取。然后会在所有回合进行完后调用 ``runtime.close()``。
+            total_rounds: 总回合数，默认 6 回合
             verbose: 是否打印详细信息
         """
         self.policy_a = policy_a
@@ -152,57 +159,76 @@ class MatchRunner:
         else:
             round_seeds = [None] * self.total_rounds
 
-        for round_num in range(1, self.total_rounds + 1):
-            if self.verbose:
-                print(f"\n>>> Starting Round {round_num}/{self.total_rounds}")
-                print(f">>> Current HP: robot_a={current_health_a:.1f}, robot_b={current_health_b:.1f}")
-
-            # 每回合单独的视频路径；通过 RoundRunner.run(videosave_path=...)
-            # 传给 runtime 中已 attach 的 VideoRecorderPlugin 实例。
-            video_path = None
-            if video_dir is not None:
-                video_path = str(Path(video_dir) / f"round_{round_num}.mp4")
-
-            runtime = self.runtime_factory(initial_health_a=current_health_a, initial_health_b=current_health_b)
-
+        # 构建一个长周期 runtime + RoundRunner，所有回合复用。HP 延续通过
+        # ``runtime.reset(options={...})`` 注入。详见 RESET.md §3 / §7-G3。
+        runtime = self.runtime_factory()
+        try:
             round_runner = RoundRunner(
                 policy_a=self.policy_a,
                 policy_b=self.policy_b,
                 runtime=runtime,
-                verbose=self.verbose
+                verbose=self.verbose,
             )
 
-            # 从预派生的 round_seeds 中取这一回合的种子（None 则一路透传，
-            # 由 EpisodeRunner 入口再做 None→uint32 的解析）。
-            raw_rs = round_seeds[round_num - 1]
-            round_seed = None if raw_rs is None else int(raw_rs)
-            result = round_runner.run(seed=round_seed, videosave_path=video_path)
-            round_results.append(result)
-
-            # 统计得分
-            winner = result['winner']
-            if winner == 'robot_a':
-                total_score['robot_a'] += 1
-            elif winner == 'robot_b':
-                total_score['robot_b'] += 1
-
-            # 更新当前血量（用于下一回合）
-            current_health_a = result['final_health'].get('robot_a', 100)
-            current_health_b = result['final_health'].get('robot_b', 100)
-
-            self._print_round_summary(round_num, result)
-
-            # 检查KO获胜条件：某方血量降至0
-            if current_health_a <= 0:
-                ko_winner = 'robot_b'
+            for round_num in range(1, self.total_rounds + 1):
                 if self.verbose:
-                    print(f"\n!!! Robot B wins by KO !!!")
-                break
-            elif current_health_b <= 0:
-                ko_winner = 'robot_a'
-                if self.verbose:
-                    print(f"\n!!! Robot A wins by KO !!!")
-                break
+                    print(f"\n>>> Starting Round {round_num}/{self.total_rounds}")
+                    print(
+                        f">>> Current HP: robot_a={current_health_a:.1f}, "
+                        f"robot_b={current_health_b:.1f}"
+                    )
+
+                # 每回合单独的视频路径；通过 RoundRunner.run(videosave_path=...)
+                # 传给 runtime 中已 attach 的 VideoRecorderPlugin 实例。
+                video_path = None
+                if video_dir is not None:
+                    video_path = str(Path(video_dir) / f"round_{round_num}.mp4")
+
+                # 从预派生的 round_seeds 中取这一回合的种子（None 则一路透传，
+                # 由 EpisodeRunner 入口再做 None→uint32 的解析）。
+                raw_rs = round_seeds[round_num - 1]
+                round_seed = None if raw_rs is None else int(raw_rs)
+                round_options = {
+                    "initial_health_a": float(current_health_a),
+                    "initial_health_b": float(current_health_b),
+                }
+                result = round_runner.run(
+                    seed=round_seed,
+                    options=round_options,
+                    videosave_path=video_path,
+                )
+                round_results.append(result)
+
+                # 统计得分
+                winner = result['winner']
+                if winner == 'robot_a':
+                    total_score['robot_a'] += 1
+                elif winner == 'robot_b':
+                    total_score['robot_b'] += 1
+
+                # 更新当前血量（用于下一回合）
+                current_health_a = result['final_health'].get('robot_a', 100)
+                current_health_b = result['final_health'].get('robot_b', 100)
+
+                self._print_round_summary(round_num, result)
+
+                # 检查KO获胜条件：某方血量降至0
+                if current_health_a <= 0:
+                    ko_winner = 'robot_b'
+                    if self.verbose:
+                        print("\n!!! Robot B wins by KO !!!")
+                    break
+                elif current_health_b <= 0:
+                    ko_winner = 'robot_a'
+                    if self.verbose:
+                        print("\n!!! Robot A wins by KO !!!")
+                    break
+        finally:
+            # MatchRunner now owns the runtime lifecycle (RoundRunner.run no
+            # longer closes it — see RESET.md §7-G3).
+            close_fn = getattr(runtime, "close", None)
+            if callable(close_fn):
+                close_fn()
 
         # 计算最终获胜者
         if ko_winner:
@@ -232,13 +258,11 @@ if __name__ == "__main__":
     from combatbench.envs.humanoid21 import make_env
     from .common_plugins import VideoRecorderPlugin
 
-    def env_factory(initial_health_a: float = 100.0, initial_health_b: float = 100.0):
+    def env_factory():
         return make_env(
             plugins=[VideoRecorderPlugin(fps=30, output_path="")],
             match_duration=30.0,
             control_frequency=20,
-            initial_health_a=initial_health_a,
-            initial_health_b=initial_health_b,
         )
 
     class DummyPolicy:

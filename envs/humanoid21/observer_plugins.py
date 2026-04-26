@@ -34,10 +34,10 @@ class Humanoid21Observer(BaseObserverPlugin):
         self.agent_id = agent_id
         self._output: Any = None
 
-    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._output = self._build_observation(ctx, self.agent_id)
 
-    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         self._output = self._build_observation(ctx, self.agent_id)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -110,10 +110,10 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
         self._output: Any = None
         self._last_accessor: Optional[Any] = None
 
-    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._output = self._build_analysis(ctx)
 
-    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         self._output = self._build_analysis(ctx)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -609,10 +609,10 @@ class Humanoid21Rewarder(BaseObserverPlugin):
         self.agent_id = agent_id
         self._output = 0.0
 
-    def on_reset(self, ctx: ReadOnlySimContext) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._output = 0.0
 
-    def on_post_step(self, ctx: ReadOnlySimContext) -> None:
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         self._output = 0.0
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:

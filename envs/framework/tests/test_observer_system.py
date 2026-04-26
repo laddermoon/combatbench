@@ -17,10 +17,10 @@ from .conftest import (
 class TestObserverDispatchTiming:
     """测试 Observer 在正确时机被调用"""
 
-    def test_observer_on_reset_called_after_runtime_reset(self, mock_simulator):
+    def test_observer_on_pre_episode_called_after_runtime_reset(self, mock_simulator):
         """
         场景：调用 runtime.reset()
-        预期：observer.on_reset() 被调用一次
+        预期：observer.on_pre_episode() 被调用一次
         """
         observer = CountingObserver()
         runtime = EnvRuntime(
@@ -34,10 +34,10 @@ class TestObserverDispatchTiming:
         assert observer.step_count == 0
         assert observer.episode_count == 0
 
-    def test_observer_on_post_step_called_after_step(self, mock_simulator):
+    def test_observer_on_post_action_step_called_after_step(self, mock_simulator):
         """
         场景：调用 runtime.step()
-        预期：observer.on_post_step() 被调用一次
+        预期：observer.on_post_action_step() 被调用一次
         """
         observer = CountingObserver()
         runtime = EnvRuntime(
@@ -92,7 +92,7 @@ class TestObserverDeduplication:
     def test_same_observer_instance_deduplicated(self, mock_simulator):
         """
         场景：同一个 observer 实例挂载到多个名称
-        预期：on_post_step 只被调用一次
+        预期：on_post_action_step 只被调用一次
         """
         observer = CountingObserver()
         runtime = EnvRuntime(
@@ -197,7 +197,7 @@ class TestObserverReadOnlyContext:
                 self.context_type = None
                 self.had_mutator = None
 
-            def on_post_step(self, ctx):
+            def on_post_action_step(self, ctx):
                 self.context_type = type(ctx).__name__
                 self.had_mutator = hasattr(ctx, 'mutator') and ctx.mutator is not None
 
@@ -227,7 +227,7 @@ class TestObserverReadOnlyContext:
             def __init__(self):
                 self.had_mutator = False
 
-            def on_post_step(self, ctx):
+            def on_post_action_step(self, ctx):
                 self.had_mutator = hasattr(ctx, 'mutator') and ctx.mutator is not None
                 if hasattr(ctx, 'mutator') and ctx.mutator is not None:
                     # 尝试修改（不应该执行到这里）
@@ -254,17 +254,17 @@ class TestObserverOutput:
 
     def test_get_observer_output_returns_latest(self, mock_simulator):
         """
-        场景：observer 在 on_post_step 中更新输出
+        场景：observer 在 on_post_action_step 中更新输出
         预期：get_observer_output() 返回最新值
         """
         class ValueObserver(BaseObserverPlugin):
             def __init__(self):
                 self._value = 0
 
-            def on_reset(self, ctx):
+            def on_pre_episode(self, ctx):
                 self._value = 10
 
-            def on_post_step(self, ctx):
+            def on_post_action_step(self, ctx):
                 self._value += 1
 
             def get_output(self):
@@ -387,7 +387,7 @@ class TestObserverRefreshOptimization:
         # step 会改变状态
         runtime.step(np.zeros(21), np.zeros(21))
 
-        # 验证：on_post_step 被调用
+        # 验证：on_post_action_step 被调用
         assert observer.step_count == 1
 
 
@@ -418,7 +418,7 @@ class TestObserverWithProcessData:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
 
-        # on_reset 和 on_post_step 都调用 process_data
+        # on_pre_episode 和 on_post_action_step 都调用 process_data
         assert observer.get_output() >= 2
 
     def test_explicit_hooks_override_process_data(self, mock_simulator):
@@ -445,7 +445,7 @@ class TestObserverWithProcessData:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
 
-        # on_reset (通过 process_data) + on_post_step (通过 process_data)
+        # on_pre_episode (通过 process_data) + on_post_action_step (通过 process_data)
         # = 2 次调用
         assert observer.get_output() == 2
 
@@ -462,10 +462,10 @@ class TestObserverInEpisode:
             def __init__(self):
                 self.steps = []
 
-            def on_reset(self, ctx):
+            def on_pre_episode(self, ctx):
                 self.steps = []
 
-            def on_post_step(self, ctx):
+            def on_post_action_step(self, ctx):
                 self.steps.append(ctx.episode_step)
 
             def get_output(self):
@@ -493,7 +493,7 @@ class TestObserverInEpisode:
     def test_observer_reset_between_episodes(self, mock_simulator):
         """
         场景：多个 episode
-        预期：observer 在每个 episode 开始时调用 on_reset
+        预期：observer 在每个 episode 开始时调用 on_pre_episode
         """
         observer = CountingObserver()
         runtime = EnvRuntime(
