@@ -94,6 +94,44 @@ def exploding_factory(worker_id: int) -> EpisodeRunner:
 
 
 # ---------------------------------------------------------------------------
+# Top-level chunk_fns for map_chunks tests (must be picklable for spawn).
+# ---------------------------------------------------------------------------
+def chunk_fn_run_seeds(runner: EpisodeRunner, task: dict) -> list:
+    """Run each (seed, options) item in the task; return seed list.
+
+    Returning only seeds (not full EpisodeResults) keeps the pickle
+    payload small and decouples the test from the deeply-nested
+    EpisodeResult structure.
+    """
+    out = []
+    for seed, options in task["items"]:
+        result = runner.run_episode(seed=int(seed), options=options)
+        out.append(result.seed)
+    return out
+
+
+def chunk_fn_count(runner: EpisodeRunner, task: dict) -> int:
+    """Just count steps across episodes; ignores per-task options."""
+    total = 0
+    for seed, options in task["items"]:
+        result = runner.run_episode(seed=int(seed), options=options)
+        total += result.num_steps
+    return total
+
+
+def chunk_fn_explode(runner: EpisodeRunner, task: dict) -> int:
+    raise RuntimeError("chunk_fn boom")
+
+
+def chunk_fn_explode_first_only(runner: EpisodeRunner, task: dict) -> list:
+    """Best-effort smoke fixture: tasks tagged with ``"explode": True``
+    raise; all others run normally and return their seed list."""
+    if task.get("explode"):
+        raise RuntimeError("chunk_fn boom")
+    return chunk_fn_run_seeds(runner, task)
+
+
+# ---------------------------------------------------------------------------
 # _derive_seeds parity with EpisodeRunner.run_n_episodes
 # ---------------------------------------------------------------------------
 def test_derive_seeds_matches_episode_runner_batch(mock_simulator):
@@ -245,3 +283,71 @@ def test_multiprocess_strict_false_tolerates_worker_failures():
         results = pr.run(n=3, base_seed=0)
     assert len(results) == 3
     assert all(r is None for r in results)
+
+
+# ---------------------------------------------------------------------------
+# map_chunks: generic chunk dispatch (RolloutCollector etc. ride on this)
+# ---------------------------------------------------------------------------
+class TestMapChunksSingleProcess:
+    def test_in_process_yields_chunk_fn_results_in_order(self):
+        tasks = [
+            {"items": [(1, None), (2, None)]},
+            {"items": [(3, None)]},
+            {"items": [(4, None), (5, None), (6, None)]},
+        ]
+        with ParallelRunner(make_test_runner, num_workers=1) as pr:
+            out = list(pr.map_chunks(tasks, chunk_fn_run_seeds))
+        assert out == [[1, 2], [3], [4, 5, 6]]
+
+    def test_empty_tasks_yields_nothing(self):
+        with ParallelRunner(make_test_runner, num_workers=1) as pr:
+            assert list(pr.map_chunks([], chunk_fn_run_seeds)) == []
+
+    def test_non_callable_chunk_fn_rejected(self):
+        with ParallelRunner(make_test_runner, num_workers=1) as pr:
+            with pytest.raises(TypeError, match="callable"):
+                list(pr.map_chunks([{"items": []}], object()))  # type: ignore[arg-type]
+
+    def test_strict_in_process_reraises_chunk_fn_error(self):
+        with ParallelRunner(make_test_runner, num_workers=1, strict=True) as pr:
+            with pytest.raises(RuntimeError, match="chunk_fn boom"):
+                list(pr.map_chunks([{"items": [(0, None)]}], chunk_fn_explode))
+
+    def test_non_strict_in_process_swallows_chunk_fn_error(self):
+        with ParallelRunner(
+            make_test_runner, num_workers=1, strict=False,
+        ) as pr:
+            # Failure on first task is logged and skipped; other tasks proceed.
+            out = list(pr.map_chunks(
+                [
+                    {"items": [(1, None)], "explode": True},
+                    {"items": [(2, None)]},
+                ],
+                chunk_fn_explode_first_only,
+            ))
+        # Only the second task's result comes back.
+        assert out == [[2]]
+
+
+def test_multiprocess_map_chunks_seed_order_preserved():
+    """Multi-worker map_chunks: ordered=True yields task results in the
+    same order as submission, even though workers complete out of order."""
+    tasks = [{"items": [(seed, None)]} for seed in (10, 20, 30, 40)]
+    with ParallelRunner(
+        short_episode_factory, num_workers=2, mp_start_method="spawn",
+    ) as pr:
+        out = list(pr.map_chunks(tasks, chunk_fn_run_seeds))
+    assert out == [[10], [20], [30], [40]]
+
+
+def test_multiprocess_map_chunks_strict_reraises():
+    """Worker exception in strict mode poisons the pool and re-raises so
+    the context manager's __exit__ doesn't hang."""
+    with ParallelRunner(
+        make_test_runner, num_workers=2, mp_start_method="spawn", strict=True,
+    ) as pr:
+        with pytest.raises(RuntimeError, match="chunk_fn boom"):
+            list(pr.map_chunks(
+                [{"items": [(1, None)]}, {"items": [(2, None)]}],
+                chunk_fn_explode,
+            ))
