@@ -65,6 +65,7 @@ from envs.framework import (
     TerminationReason,
 )
 from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
+from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
 
 
@@ -116,6 +117,26 @@ BALANCE_SCORE_CLIP_MAX = float(os.environ.get("STANDING_BALANCE_SCORE_CLIP_MAX",
 BALANCE_TERMINATION_SCORE_THRESHOLD = float(os.environ.get("STANDING_BALANCE_TERMINATION_SCORE_THRESHOLD", "0.3"))
 BALANCE_TERMINATION_GRACE_STEPS = int(os.environ.get("STANDING_BALANCE_TERMINATION_GRACE_STEPS", "3"))
 
+# Initial-state perturbation defaults — verbatim from
+# ``standing_turbulence_dense_reward_ppo.py`` and ``standing_balance_ppo.py``.
+# These are the perturbation ranges applied once at episode start to the
+# robot(s) tagged with :class:`InitialStatePerturbationPlugin`. Keep them
+# small enough that a stable standing policy survives the perturbation
+# on most seeds, big enough that the learned policy has to actively
+# stabilize instead of coasting on a perfectly symmetric reset.
+PERTURBATION_JOINT_POS_DELTA_MAX = 0.05
+PERTURBATION_JOINT_VEL_DELTA_MAX = 0.05
+PERTURBATION_ROOT_XY_OFFSET_MAX = 0.05
+PERTURBATION_ROOT_TILT_DEG_MAX = 10.0
+PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX = (0.5, 0.5, 0.0)
+PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX = (0.5, 0.5, 0.2)
+
+# ``MATCH_DURATION_SECONDS`` above is the standing-task default (10 s).
+# Perturbed-balance training historically used a shorter horizon because
+# episodes that survive 3 s of perturbation already prove robustness.
+PERTURBED_MATCH_DURATION_SECONDS = 3.0
+PERTURBED_MAX_STEPS = int(CONTROL_FREQUENCY * PERTURBED_MATCH_DURATION_SECONDS)
+
 
 # ---------------------------------------------------------------------------
 # Hyperparameter bundle
@@ -151,6 +172,58 @@ class StandingConfig:
 
     # Rollout schedule.
     episodes_per_update: int = 256
+    max_updates: int = 10000
+
+    # Eval schedule.
+    eval_interval: int = 5
+    eval_episodes: int = 16
+
+    # Parallelism.
+    rollout_workers: int = field(default_factory=lambda: max(
+        1, min(64, max(1, (os.cpu_count() or 1) // 2))
+    ))
+    eval_workers: int = field(default_factory=lambda: max(
+        1, min(16, max(1, (os.cpu_count() or 1) // 4))
+    ))
+
+    seed: int = 42
+
+
+@dataclass
+class PerturbedBalanceConfig:
+    """Hyperparameters for the perturbed-balance PPO trainer.
+
+    Defaults mirror ``standing_balance_ppo.py`` so this dataclass is a
+    drop-in replacement for its module-level constants. Kept separate
+    from :class:`StandingConfig` because the algorithm is genuinely
+    different (PPO with critic + GAE vs. GRPO-RTG) and the env horizon
+    is shorter.
+    """
+
+    # Network shape.
+    obs_dim: int = Humanoid21Observer.OBS_DIM
+    action_dim: int = Humanoid21Observer.ACTION_DIM
+    actor_hidden_dim: int = 256
+    critic_hidden_dim: int = 256
+    log_std_min: float = DEFAULT_LOG_STD_MIN
+    log_std_max: float = DEFAULT_LOG_STD_MAX
+
+    # PPO knobs.
+    learning_rate: float = 3e-4
+    clip_eps: float = 0.2
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 1e-3
+    grad_clip_norm: float = 1.0
+    target_kl: float = 0.05
+    update_epochs: int = 4
+    minibatch_size: int = 4096 * 32
+
+    # GAE.
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+
+    # Rollout schedule.
+    episodes_per_update: int = 256 * 32
     max_updates: int = 10000
 
     # Eval schedule.
@@ -570,6 +643,72 @@ def make_standing_runtime() -> EnvRuntime:
     return runtime
 
 
+def make_perturbed_balance_runtime() -> EnvRuntime:
+    """Build a fresh :class:`EnvRuntime` for the perturbed-balance task.
+
+    Differs from :func:`make_standing_runtime` in three ways:
+
+      * **Reward** — :class:`BalanceValueRewarder` (support-polygon
+        balance score, bounded in ``[-4, 1]``) instead of the posture
+        delta. This is the absolute score; PPO post-processes it
+        downstream (critic values, GAE, bootstrap on truncation).
+      * **Termination** — :class:`BalanceScoreTerminationPlugin`
+        (persistently-low balance score) instead of height/uprightness
+        fall detection. A slightly lower stance can still be balanced,
+        and the height-based rule would fight the balance objective.
+      * **Initial-state perturbation** — an
+        :class:`InitialStatePerturbationPlugin` is attached per agent
+        so every reset nudges joints / root pose / velocities within
+        the :data:`PERTURBATION_*` ranges. Worker RNG drives the
+        perturbation (``random_seed=None``), so episode seeds from
+        ``RolloutCollector`` still produce deterministic trajectories
+        downstream of whatever the simulator does with them.
+
+    Uses the shorter :data:`PERTURBED_MAX_STEPS` horizon (3 s @ 20 Hz)
+    — surviving perturbation for 3 s is a strong robustness signal
+    already, and the shorter horizon keeps rollout cost sane.
+
+    Top-level (no closures) so the collector can pickle & ship it to
+    spawn-mode worker processes unchanged.
+    """
+    simulator = MujocoCombatSimulator(initial_distance=INITIAL_DISTANCE)
+    sim_frequency = 1.0 / MujocoCombatSimulator.DT
+    phy_steps_per_action = max(1, int(round(sim_frequency / CONTROL_FREQUENCY)))
+    perturbations = {
+        agent: InitialStatePerturbationPlugin(
+            target_robot=agent,
+            joint_pos_delta_max=PERTURBATION_JOINT_POS_DELTA_MAX,
+            joint_vel_delta_max=PERTURBATION_JOINT_VEL_DELTA_MAX,
+            root_xy_offset_max=PERTURBATION_ROOT_XY_OFFSET_MAX,
+            root_tilt_deg_max=PERTURBATION_ROOT_TILT_DEG_MAX,
+            root_linear_velocity_delta_max=list(PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX),
+            root_angular_velocity_delta_max=list(PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX),
+            random_seed=None,
+        )
+        for agent in ("robot_a", "robot_b")
+    }
+    runtime = EnvRuntime(
+        simulator=simulator,
+        observer_plugins={
+            "robot_a_obs": Humanoid21Observer("robot_a"),
+            "robot_b_obs": Humanoid21Observer("robot_b"),
+            "robot_a_reward": BalanceValueRewarder("robot_a"),
+            "robot_b_reward": BalanceValueRewarder("robot_b"),
+        },
+        plugins=[
+            BalanceScoreTerminationPlugin("robot_a"),
+            BalanceScoreTerminationPlugin("robot_b"),
+            perturbations["robot_a"],
+            perturbations["robot_b"],
+        ],
+        phy_steps_per_action=phy_steps_per_action,
+        max_steps=PERTURBED_MAX_STEPS,
+    )
+    runtime.observation_space = Humanoid21Observer.get_observation_space()
+    runtime.action_space = Humanoid21Observer.get_action_space()
+    return runtime
+
+
 def make_standing_adapter() -> TorchPolicyAdapter:
     """Picklable factory for the *worker-side* shared-architecture adapter.
 
@@ -623,10 +762,13 @@ def make_standing_options_fn(
 __all__ = [
     # Hyperparameters
     "StandingConfig",
+    "PerturbedBalanceConfig",
     # Constants (commonly imported)
     "CONTROL_FREQUENCY",
     "MATCH_DURATION_SECONDS",
     "MAX_STEPS",
+    "PERTURBED_MATCH_DURATION_SECONDS",
+    "PERTURBED_MAX_STEPS",
     "INITIAL_DISTANCE",
     "ROLLOUT_INITIAL_DISTANCE_MIN",
     "ROLLOUT_INITIAL_DISTANCE_MAX",
@@ -638,6 +780,12 @@ __all__ = [
     "BALANCE_SAFE_BACK_MARGIN",
     "BALANCE_TERMINATION_SCORE_THRESHOLD",
     "BALANCE_TERMINATION_GRACE_STEPS",
+    "PERTURBATION_JOINT_POS_DELTA_MAX",
+    "PERTURBATION_JOINT_VEL_DELTA_MAX",
+    "PERTURBATION_ROOT_XY_OFFSET_MAX",
+    "PERTURBATION_ROOT_TILT_DEG_MAX",
+    "PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX",
+    "PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",
@@ -648,6 +796,7 @@ __all__ = [
     "BalanceScoreTerminationPlugin",
     # Factories / helpers
     "make_standing_runtime",
+    "make_perturbed_balance_runtime",
     "make_standing_adapter",
     "make_standing_options_fn",
     "set_seed",
