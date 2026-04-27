@@ -24,7 +24,9 @@ import torch
 # Make project root importable (mirrors envs/framework/tests/conftest.py).
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from envs.framework.context import TerminationReason
 from envs.framework.env_runtime import EnvRuntime
+from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
 from envs.framework.runtime_plugin import BaseObserverPlugin
 
@@ -406,3 +408,57 @@ class TestOptionsFn:
             collector.close()
 
         assert captured == [{"k": 0}, {"k": 10}]
+
+
+class TestTerminatedTruncatedCoercion:
+    """``EnvRuntime.get_termination_flags`` intentionally allows both
+    ``terminated`` and ``truncated`` to fire on the same step (e.g. a
+    KO landing on the exact timeout step — see the runtime's docstring).
+    ``RolloutBatch`` requires mutual exclusivity for downstream
+    consumers (value-bootstrap branches off ``terminated`` alone).
+    The collector must coerce both-true to ``terminated=True,
+    truncated=False`` per Gymnasium convention.
+
+    Regression guard for the crash observed at update=909 during eval
+    on the humanoid21 standing trainer:
+        ValueError: terminated and truncated cannot both be True
+    """
+
+    def test_simultaneous_ko_and_timeout_collapses_to_terminated(self):
+        class _KOAtStep1(BasePlugin):
+            def on_post_action_step(self, ctx) -> None:
+                ctx.request_termination(TerminationReason.KO)
+
+        def _runtime_factory() -> EnvRuntime:
+            return EnvRuntime(
+                simulator=MockSimulator(),
+                observer_plugins={
+                    "robot_a_obs": _QposObserver(),
+                    "robot_a_reward": _StepRewardObserver(),
+                    "robot_b_obs": _QposObserver(),
+                    "robot_b_reward": _StepRewardObserver(),
+                },
+                plugins=[_KOAtStep1()],
+                max_steps=1,  # TIMEOUT fires on the same step as KO.
+                phy_steps_per_action=1,
+            )
+
+        collector = RolloutCollector(
+            runtime_factory=_runtime_factory,
+            policy_factories={
+                "robot_a": _make_adapter,
+                "robot_b": _make_adapter,
+            },
+        )
+        try:
+            out = collector.collect(n=1, base_seed=0)
+        finally:
+            collector.close()
+
+        batch = out["robot_a"][0]
+        assert batch.terminated is True
+        assert batch.truncated is False
+        # Raw reasons must still surface both for diagnostics.
+        reasons = batch.info["termination_reasons"]
+        assert TerminationReason.KO in reasons
+        assert TerminationReason.TIMEOUT in reasons

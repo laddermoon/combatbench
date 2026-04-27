@@ -505,6 +505,18 @@ def _trajectory_to_batch(
     log_probs_array = _stack_extras(traj.extras, "log_prob")
     values_array = _stack_extras(traj.extras, "value")
 
+    # Gymnasium convention: exactly one of (terminated, truncated) is
+    # true for a terminated episode. The EnvRuntime intentionally allows
+    # both to fire simultaneously when an MDP-terminal condition (e.g.
+    # KO / fall) and the timeout plugin both trigger on the same step
+    # (see ``EnvRuntime.get_termination_flags`` docstring). RolloutBatch
+    # -space requires mutual exclusivity: collapse to ``terminated=True``
+    # (the MDP-terminal condition would have ended the episode regardless
+    # of the timeout). The raw flags + reasons remain available in
+    # ``info['termination_reasons']`` for users who need the full story.
+    terminated = bool(traj.terminated)
+    truncated = bool(traj.truncated) and not terminated
+
     info: Dict[str, Any] = {
         "seed": episode_result.seed,
         "num_steps": episode_result.num_steps,
@@ -516,8 +528,8 @@ def _trajectory_to_batch(
         obs=obs_array,
         actions=actions_array,
         rewards=rewards_array,
-        terminated=bool(traj.terminated),
-        truncated=bool(traj.truncated),
+        terminated=terminated,
+        truncated=truncated,
         log_probs=log_probs_array,
         values=values_array,
         info=info,
