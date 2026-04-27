@@ -537,3 +537,111 @@ def test_default_bindings_follow_convention():
     assert bindings["robot_a"].reward_name == "robot_a_reward"
     assert bindings["robot_b"].obs_name == "robot_b_obs"
     assert bindings["robot_b"].reward_name == "robot_b_reward"
+
+
+# ---------------------------------------------------------------------------
+# AgentTrajectory.as_rollout_batch / to_gymnasium_style
+# ---------------------------------------------------------------------------
+def _make_traj(
+    *,
+    n_steps: int = 3,
+    obs_dim: int = 4,
+    action_dim: int = 2,
+    terminated: bool = True,
+    truncated: bool = False,
+    with_extras: bool = True,
+) -> AgentTrajectory:
+    rng = np.random.default_rng(0)
+    traj = AgentTrajectory(agent_id="robot_a")
+    # T+1 observations, T actions, T rewards.
+    for t in range(n_steps + 1):
+        traj.observations.append(rng.normal(size=obs_dim).astype(np.float32))
+    for t in range(n_steps):
+        traj.actions.append(rng.normal(size=action_dim).astype(np.float32))
+        traj.rewards.append(float(t + 1))
+        if with_extras:
+            traj.extras.append(
+                {"log_prob": float(-t), "value": float(t * 0.5)}
+            )
+    traj.terminated = terminated
+    traj.truncated = truncated
+    return traj
+
+
+class TestAgentTrajectoryGymnasiumStyle:
+    def test_terminated_only_is_passthrough(self):
+        traj = _make_traj(terminated=True, truncated=False)
+        assert traj.to_gymnasium_style() == (True, False)
+
+    def test_truncated_only_is_passthrough(self):
+        traj = _make_traj(terminated=False, truncated=True)
+        assert traj.to_gymnasium_style() == (False, True)
+
+    def test_both_true_collapses_to_terminated(self):
+        # Framework allows both; the Gymnasium view must pick exactly one.
+        traj = _make_traj(terminated=True, truncated=True)
+        assert traj.to_gymnasium_style() == (True, False)
+
+
+class TestAgentTrajectoryAsRolloutBatch:
+    def test_shapes_and_extras_alignment(self):
+        traj = _make_traj(n_steps=4, obs_dim=5, action_dim=3)
+        batch = traj.as_rollout_batch()
+        assert batch.agent_id == "robot_a"
+        assert batch.obs.shape == (5, 5)
+        assert batch.actions.shape == (4, 3)
+        assert batch.rewards.shape == (4,)
+        assert batch.log_probs is not None and batch.log_probs.shape == (4,)
+        assert batch.values is not None and batch.values.shape == (4,)
+        # final_obs property aliases obs[-1].
+        np.testing.assert_array_equal(batch.final_obs, batch.obs[-1])
+
+    def test_missing_extras_returns_none(self):
+        traj = _make_traj(with_extras=False)
+        batch = traj.as_rollout_batch()
+        assert batch.log_probs is None
+        assert batch.values is None
+
+    def test_episode_result_metadata_lands_in_info(self):
+        traj = _make_traj()
+        result = EpisodeResult(
+            seed=42,
+            num_steps=3,
+            wall_time_sec=0.1,
+            terminated=True,
+            truncated=False,
+            termination_reasons=["ko"],
+            shared_info_final={},
+            trajectories={"robot_a": traj, "robot_b": None},
+        )
+        batch = traj.as_rollout_batch(result)
+        assert batch.info["seed"] == 42
+        assert batch.info["num_steps"] == 3
+        assert batch.info["termination_reasons"] == ["ko"]
+
+    def test_caller_info_overrides_episode_result_keys(self):
+        traj = _make_traj()
+        result = EpisodeResult(
+            seed=1, num_steps=3, wall_time_sec=0.0,
+            terminated=True, truncated=False,
+            termination_reasons=["ko"], shared_info_final={},
+            trajectories={"robot_a": traj, "robot_b": None},
+        )
+        batch = traj.as_rollout_batch(result, info={"seed": 999, "tag": "x"})
+        assert batch.info["seed"] == 999     # caller wins
+        assert batch.info["tag"] == "x"       # extra fields pass through
+
+    def test_zero_steps_raises(self):
+        empty = AgentTrajectory(agent_id="robot_a")
+        empty.observations.append(np.zeros(3, dtype=np.float32))
+        with pytest.raises(ValueError, match="zero steps"):
+            empty.as_rollout_batch()
+
+    def test_terminated_truncated_coerced_in_batch(self):
+        # Both flags true on the trajectory → batch sees terminated=True only.
+        traj = _make_traj(terminated=True, truncated=True)
+        batch = traj.as_rollout_batch()
+        assert batch.terminated is True
+        assert batch.truncated is False
+        # validate() would otherwise crash on simultaneous flags.
+        batch.validate()

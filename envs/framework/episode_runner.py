@@ -77,6 +77,7 @@ from .env_runtime import EnvRuntime
 from .plugin import BasePlugin
 from .policy import Policy, call_policy, coerce_action
 from .recorder import PostActionRecorder
+from .rollout_batch import RolloutBatch
 
 _logger = logging.getLogger(__name__)
 
@@ -256,6 +257,144 @@ class AgentTrajectory:
     extras: List[Dict[str, Any]] = field(default_factory=list)
     terminated: bool = False
     truncated: bool = False
+
+    # ------------------------------------------------------------------
+    # RL-style views
+    # ------------------------------------------------------------------
+    def to_gymnasium_style(self) -> Tuple[bool, bool]:
+        """Coerce framework flags to Gymnasium ``(terminated, truncated)``.
+
+        :class:`EnvRuntime` intentionally allows both flags to fire on the
+        same step (e.g. a KO and a timeout landing on the exact same
+        action), because both are objectively true and downstream
+        consumers may want to know. Standard RL pipelines (PPO/GAE,
+        Gymnasium) on the other hand require **mutual exclusivity**:
+        ``terminated=True`` means "MDP-terminal — bootstrap with 0",
+        ``truncated=True`` means "time-limit — bootstrap with V(s')".
+
+        Coercion rule: ``terminated`` wins. Rationale: the MDP-terminal
+        condition would have ended the episode regardless of the
+        timeout, so for value-bootstrap purposes it is the correct
+        signal. The raw flags remain available on ``self``; the
+        per-episode :attr:`EpisodeResult.termination_reasons` carries
+        the full story.
+        """
+        terminated = bool(self.terminated)
+        truncated = bool(self.truncated) and not terminated
+        return terminated, truncated
+
+    def as_rollout_batch(
+        self,
+        episode_result: Optional["EpisodeResult"] = None,
+        *,
+        extras_keys: Tuple[str, str] = ("log_prob", "value"),
+        info: Optional[Dict[str, Any]] = None,
+        validate: bool = True,
+    ) -> RolloutBatch:
+        """Freeze this trajectory into a :class:`RolloutBatch`.
+
+        This is the canonical bridge between the live, mutable rollout
+        buffer used by :class:`EpisodeRunner` and the numpy-only,
+        algorithm-friendly contract consumed by RL algorithms / eval
+        pipelines. Algorithm packages (PPO, GRPO, …) should never need
+        to write their own translation; they call this method.
+
+        Parameters
+        ----------
+        episode_result:
+            Optional :class:`EpisodeResult` carrying per-episode metadata
+            (``seed``, ``num_steps``, ``termination_reasons``). When
+            supplied, those fields land in :attr:`RolloutBatch.info`.
+            Provide ``None`` if you only have the trajectory itself
+            (e.g. a unit test) — ``info`` will then be empty unless
+            an explicit dict is passed.
+        extras_keys:
+            ``(log_prob_key, value_key)``. The two extras keys that get
+            stacked into :attr:`RolloutBatch.log_probs` /
+            :attr:`RolloutBatch.values`. Either can be ``""`` to skip.
+            Default matches what :class:`Policy.act_with_extras` returns
+            for PPO-style actors.
+        info:
+            Extra ``info`` entries merged on top of the
+            ``episode_result``-derived defaults (caller wins on key
+            collision). Useful for stamping curriculum / opponent ids.
+        validate:
+            Run :meth:`RolloutBatch.validate` before returning. Default
+            on; turn off in hot training loops once the contract is
+            known-good.
+
+        Raises
+        ------
+        ValueError
+            If the trajectory has zero steps (``len(actions) == 0``):
+            we cannot synthesize a meaningful RL batch from a pre-step
+            termination. Filter such episodes upstream.
+        """
+        if not self.actions:
+            raise ValueError(
+                f"AgentTrajectory for {self.agent_id!r} has zero steps; "
+                "cannot convert to RolloutBatch (the episode produced no "
+                "actions). If this is a pre-episode termination case, "
+                "filter it upstream."
+            )
+
+        obs_array = np.asarray(self.observations, dtype=np.float32)
+        actions_array = np.asarray(self.actions, dtype=np.float32)
+        rewards_array = np.asarray(self.rewards, dtype=np.float32)
+
+        log_key, value_key = extras_keys
+        log_probs_array = (
+            _stack_extras(self.extras, log_key) if log_key else None
+        )
+        values_array = (
+            _stack_extras(self.extras, value_key) if value_key else None
+        )
+
+        terminated, truncated = self.to_gymnasium_style()
+
+        merged_info: Dict[str, Any] = {}
+        if episode_result is not None:
+            merged_info["seed"] = episode_result.seed
+            merged_info["num_steps"] = episode_result.num_steps
+            merged_info["termination_reasons"] = list(
+                episode_result.termination_reasons
+            )
+        if info:
+            merged_info.update(info)
+
+        batch = RolloutBatch(
+            agent_id=self.agent_id,
+            obs=obs_array,
+            actions=actions_array,
+            rewards=rewards_array,
+            terminated=terminated,
+            truncated=truncated,
+            log_probs=log_probs_array,
+            values=values_array,
+            info=merged_info,
+        )
+        if validate:
+            batch.validate()
+        return batch
+
+
+def _stack_extras(
+    extras: Sequence[Dict[str, Any]],
+    key: str,
+) -> Optional[np.ndarray]:
+    """Stack one extras key into a ``(T,)`` float32 array, or return ``None``.
+
+    Returns ``None`` when ``extras`` is empty or when any step is
+    missing the key — the latter signals that the policy did not
+    produce that quantity (e.g. eval-only policy with no log_prob),
+    in which case the algorithm side is expected to leave the
+    corresponding ``RolloutBatch`` slot empty.
+    """
+    if not extras:
+        return None
+    if not all(key in e for e in extras):
+        return None
+    return np.asarray([float(e[key]) for e in extras], dtype=np.float32)
 
 
 @dataclass(frozen=True)

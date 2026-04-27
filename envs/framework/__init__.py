@@ -24,6 +24,7 @@ from .episode_runner import (
     default_reward_extractor,
 )
 from .parallel_runner import ParallelRunner, RunnerFactory
+from .rollout_batch import RolloutBatch
 from .round_runner import CombatRoundRunner, RoundRunner
 from .match_runner import MatchResult, MatchRunner
 
@@ -58,6 +59,7 @@ __all__ = [
     "RolloutConfig",
     "AgentTrajectory",
     "EpisodeResult",
+    "RolloutBatch",
     "StepContext",
     "AGENT_IDS",
     "default_bindings",

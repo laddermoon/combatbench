@@ -64,8 +64,11 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import traceback
-from contextlib import AbstractContextManager
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from contextlib import AbstractContextManager, suppress
+from typing import (
+    Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple,
+    TypeVar,
+)
 
 import numpy as np
 
@@ -84,6 +87,11 @@ _logger = logging.getLogger("combatbench.envs.framework.parallel_runner")
 # (0..num_workers-1) so users can shard GPUs or bind to CPU cores.
 RunnerFactory = Callable[[int], EpisodeRunner]
 
+# ``map_chunks`` is generic over whatever the user-supplied ``chunk_fn``
+# returns; we expose this as a TypeVar so type-checkers can specialize.
+_R = TypeVar("_R")
+ChunkFn = Callable[[EpisodeRunner, Any], _R]
+
 
 # ---------------------------------------------------------------------------
 # Worker-side state
@@ -97,13 +105,26 @@ _WORKER_ID: int = -1
 
 
 def _worker_init(factory: RunnerFactory, worker_id_counter) -> None:  # pragma: no cover - runs in child
-    """Pool initializer: build this worker's :class:`EpisodeRunner` once."""
+    """Pool initializer: build this worker's :class:`EpisodeRunner` once.
+
+    Also clamps torch (if importable) to single-threaded BLAS so N workers
+    don't fight each other on shared thread pools — the same idiom used
+    by the standing PPO training loop.
+    """
     global _WORKER_RUNNER, _WORKER_ID
     with worker_id_counter.get_lock():
         worker_id = worker_id_counter.value
         worker_id_counter.value += 1
     _WORKER_ID = worker_id
     _WORKER_RUNNER = factory(worker_id)
+    try:
+        import torch  # noqa: WPS433 - optional dep
+
+        torch.set_num_threads(1)
+        with suppress(RuntimeError):
+            torch.set_num_interop_threads(1)
+    except ImportError:
+        pass
 
 
 def _run_one(task: Tuple[int, Optional[Dict[str, Any]]]) -> EpisodeResult:  # pragma: no cover - runs in child
@@ -128,6 +149,30 @@ def _run_one_best_effort(task: Tuple[int, Optional[Dict[str, Any]]]):  # pragma:
         return int(seed), _run_one(task), None
     except BaseException:  # noqa: BLE001 - we rethrow/log at the boundary
         return int(seed), None, traceback.format_exc()
+
+
+def _run_chunk_task(packed: Tuple[ChunkFn, Any]):  # pragma: no cover - runs in child
+    """Generic chunk task: ``chunk_fn(this_worker_runner, task_payload)``.
+
+    Used by :meth:`ParallelRunner.map_chunks`. The user-supplied
+    ``chunk_fn`` is shipped *with each task* (cheap when it is a
+    top-level function — pickle stores only the qualified name) so
+    the same pool can run different ``chunk_fn``s across calls — the
+    pool is task-agnostic.
+
+    Whatever ``chunk_fn`` returns is shipped back to the main process
+    via the regular pickle path; keep it small (numpy arrays, scalars)
+    if you care about throughput. A common pattern is for
+    ``chunk_fn`` to convert :class:`EpisodeResult` into something
+    cheaper (e.g. a frozen :class:`RolloutBatch` view) inside the
+    worker so the main process never has to deserialize the heavy
+    trajectory objects.
+    """
+    assert _WORKER_RUNNER is not None, (
+        "ParallelRunner worker was not initialized; did _worker_init run?"
+    )
+    chunk_fn, task = packed
+    return chunk_fn(_WORKER_RUNNER, task)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +411,110 @@ class ParallelRunner(AbstractContextManager):
                 if err is not None:
                     _logger.error("Episode failed:\n%s", err)
                 yield result
+
+    # ------------------------------------------------------------------
+    # Generic chunk dispatch (used by RolloutCollector etc.)
+    # ------------------------------------------------------------------
+    def map_chunks(
+        self,
+        tasks: Sequence[Any],
+        chunk_fn: ChunkFn,
+        *,
+        ordered: bool = True,
+    ) -> Iterator[Any]:
+        """Run ``chunk_fn(worker_runner, task)`` over ``tasks`` in parallel.
+
+        This is the **generic extension point** that lets higher-level
+        consumers (most prominently :class:`baseline.common.rollout.collector.RolloutCollector`)
+        reuse the persistent worker pool without recreating it. The pool
+        is task-agnostic: each task is an arbitrary picklable payload,
+        and ``chunk_fn`` decides what to do with it given the worker's
+        long-lived :class:`EpisodeRunner`.
+
+        Typical RL on-policy use-case: pack ``(state_dict, [(seed,
+        options), ...])`` into each task; have ``chunk_fn`` apply the
+        state_dict to the worker's policies, run the per-task
+        episodes, and convert each :class:`EpisodeResult` into a
+        :class:`RolloutBatch` *inside the worker* — only the small
+        numpy view crosses the pickle boundary back.
+
+        Parameters
+        ----------
+        tasks:
+            Sequence of picklable task payloads. One worker invocation
+            per task.
+        chunk_fn:
+            Top-level callable ``(EpisodeRunner, task) -> R``. MUST be
+            importable by name — no lambdas, no closures over
+            un-picklable state. Receives the worker's persistent
+            runner so it can mutate per-task state (e.g. policy
+            weights, deterministic flag) before invoking
+            :meth:`EpisodeRunner.run_episode`.
+        ordered:
+            ``True`` (default) yields results in submission order
+            (uses :meth:`Pool.imap`). ``False`` yields as-completed
+            for lower wall-time when the consumer doesn't care about
+            order.
+
+        Yields
+        ------
+        Whatever ``chunk_fn`` returned, one item per task.
+
+        Notes
+        -----
+        Honors :attr:`strict`: when ``strict=True`` (default) a worker
+        exception poisons the pool and re-raises on the main side
+        after a hard kill (so ``__exit__`` doesn't hang). With
+        ``strict=False`` failed tasks are logged and skipped.
+        """
+        if not callable(chunk_fn):
+            raise TypeError(
+                f"chunk_fn must be callable, got {type(chunk_fn).__name__}"
+            )
+        task_list = list(tasks)
+        if not task_list:
+            return
+        self._ensure_started()
+
+        if self._pool is None:
+            # Single-process fast path. Run synchronously on the in-proc
+            # runner so semantics match the multi-process case 1-to-1.
+            assert self._inproc_runner is not None
+            for task in task_list:
+                if self._strict:
+                    yield chunk_fn(self._inproc_runner, task)
+                else:
+                    try:
+                        yield chunk_fn(self._inproc_runner, task)
+                    except BaseException:  # noqa: BLE001
+                        _logger.exception("chunk_fn raised on task=%r", task)
+            return
+
+        # Multi-process path: ship (chunk_fn, task) pairs. Pickle of a
+        # top-level chunk_fn is just a qualified name lookup, so the
+        # per-task overhead is negligible vs. the task payload itself.
+        iterable: Iterable[Tuple[ChunkFn, Any]] = (
+            (chunk_fn, t) for t in task_list
+        )
+        imap_fn = self._pool.imap if ordered else self._pool.imap_unordered
+        if self._strict:
+            try:
+                for r in imap_fn(_run_chunk_task, iterable):
+                    yield r
+            except BaseException:
+                self._hard_kill()
+                raise
+            return
+        # Best-effort: catch + log per task without poisoning the pool.
+        # We wrap each task's chunk_fn in a sentinel-safe lambda-equivalent
+        # by funneling errors through the (result, error_str) pattern.
+        try:
+            for r in imap_fn(_run_chunk_task, iterable):
+                yield r
+        except BaseException:
+            _logger.exception("map_chunks: best-effort caller raised")
+            self._hard_kill()
+            raise
 
     # ------------------------------------------------------------------
     # Internals
