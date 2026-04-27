@@ -258,7 +258,13 @@ class PolicyEvaluator:
         reward_extractor: Optional[Callable[[Any], float]] = None,
         default_reward: float = 0.0,
         deterministic: bool = True,
+        max_workers: int = 1,
+        mp_start_method: str = "spawn",
     ) -> None:
+        # ``max_workers`` / ``mp_start_method`` forward straight to the
+        # underlying :class:`RolloutCollector`; eval runs N episodes in
+        # parallel just like training rollouts. Default 1 keeps the path
+        # in-process for unit tests / quick checks.
         self._collector = RolloutCollector(
             runtime_factory=runtime_factory,
             policy_factories=policy_factories,
@@ -268,6 +274,8 @@ class PolicyEvaluator:
             reward_extractor=reward_extractor,
             default_reward=default_reward,
             store_extras=False,  # eval doesn't need log_probs / values
+            max_workers=max_workers,
+            mp_start_method=mp_start_method,
         )
         self._deterministic = bool(deterministic)
 
