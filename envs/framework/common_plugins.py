@@ -26,24 +26,28 @@ class VideoRecorderPlugin(BasePlugin):
     """
     视频录制插件。在物理步按照指定的 fps 采样图像，并在 episode 结束时保存视频。
 
-    Note
-    ----
-    之前的实现提供 ``VideoRecorderPlugin.set_videosave_path(path)`` 作为全局
-    override 入口，依赖一个类级变量，在多 runtime / 并发场景下会互相串扰。
-    现在移除了这个机制——请在构造时直接传入 ``output_path``，或用实例方法
-    ``set_output_path(path)`` 在 attach 之后修改。
+    输出路径
+    --------
+    路径有两条来源，按优先级：
+
+    1. **per-episode**：``EnvRuntime.reset(options={"video_output_path": ...})``
+       传入的路径。写入 ``ctx.episode_options`` 后，本插件在 ``on_pre_episode``
+       中读取并覆盖本次 episode 的保存位置。这是推荐的运行时改路径范式——
+       与 ``base_seed`` / ``episode_options`` 走同一条飞线，天然满足
+       多 runtime / 并发隔离。
+    2. **构造时**：``VideoRecorderPlugin(output_path=...)`` 给出的默认路径，
+       当本次 episode 的 options 里没指定时使用。
     """
+
+    #: Key used in ``ctx.episode_options`` to override ``output_path`` for
+    #: one episode. Picked up in :meth:`on_pre_episode`.
+    OPTIONS_OUTPUT_PATH_KEY = "video_output_path"
+
     def __init__(self, fps: int = 30, output_path: str = "video.mp4"):
         self.fps = fps
         self.output_path = Path(output_path)
         self._interval = 1
         self._frames: List[np.ndarray] = []
-
-    def set_output_path(self, path: str | Path | None) -> None:
-        """Update the destination path at runtime (instance-scoped, thread-safe)."""
-        if path is None:
-            return
-        self.output_path = Path(path)
 
     @property
     def name(self) -> str:
@@ -53,7 +57,13 @@ class VideoRecorderPlugin(BasePlugin):
         self._frames.clear()
         freq = ctx.accessor.get_physical_frequency()
         self._interval = max(1, int(round(freq / self.fps)))
-        
+
+        # Per-episode override via reset(options=...) — takes precedence
+        # over the ctor default. See class docstring.
+        override = ctx.episode_options.get(self.OPTIONS_OUTPUT_PATH_KEY)
+        if override is not None:
+            self.output_path = Path(override)
+
         # 录制初始帧
         frame = ctx.accessor.get_broadcastview_image()
         if frame is not None:

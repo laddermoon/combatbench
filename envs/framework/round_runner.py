@@ -106,25 +106,34 @@ class RoundRunner(EpisodeRunner):
 
         ``videosave_path`` retargets any :class:`VideoRecorderPlugin`
         instances already attached to the runtime — historical behavior
-        preserved for ``MatchRunner``.
+        preserved for ``MatchRunner``. Implemented by merging
+        ``{VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY: videosave_path}``
+        into ``options``; the plugin picks it up from
+        ``ctx.episode_options`` in its ``on_pre_episode``. options-level
+        keys provided by the caller win over ``videosave_path``.
 
         The runtime is intentionally NOT closed here; the caller owns its
         lifecycle (see module docstring & RESET.md §7-G3).
         """
-        if videosave_path is not None:
-            self._retarget_video_plugins(videosave_path)
-        result = self.run_episode(seed=seed, options=options)
+        merged_options = self._merge_video_path_into_options(options, videosave_path)
+        result = self.run_episode(seed=seed, options=merged_options)
         return self._build_legacy_result(result)
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _retarget_video_plugins(self, videosave_path: str) -> None:
-        find_plugins = getattr(self.runtime, "find_plugins", None)
-        if not callable(find_plugins):
-            return
-        for plugin in find_plugins(VideoRecorderPlugin):
-            plugin.set_output_path(videosave_path)
+    @staticmethod
+    def _merge_video_path_into_options(
+        options: Optional[Dict[str, Any]],
+        videosave_path: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        if videosave_path is None:
+            return options
+        merged: Dict[str, Any] = dict(options or {})
+        merged.setdefault(
+            VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY, videosave_path
+        )
+        return merged
 
     def _build_legacy_result(self, result: EpisodeResult) -> Dict[str, Any]:
         shared = result.shared_info_final
