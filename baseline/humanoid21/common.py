@@ -137,6 +137,45 @@ PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX = (0.5, 0.5, 0.2)
 PERTURBED_MATCH_DURATION_SECONDS = 3.0
 PERTURBED_MAX_STEPS = int(CONTROL_FREQUENCY * PERTURBED_MATCH_DURATION_SECONDS)
 
+# Cross-support balance (交替支撑平衡) 训练参数
+# 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
+# 有接触即视为着地（无力阈值）。
+#
+# 以下默认步数按本模块 ``CONTROL_FREQUENCY``（当前 20 Hz，约 50 ms/步）设计；
+# 若改控制频率，建议按比例缩放各 *_STEPS 环境变量。
+#
+# CROSS_SUPPORT_INITIAL_GRACE_STEPS（默认 30）
+#   复位后允许「尚未出现第一次单脚支撑」的等待步数上限（可双脚着地/双脚离地），
+#   再长则按 initial 惩罚。约 1.5 s：给接触与姿态稳定留余量。
+# CROSS_SUPPORT_INITIAL_PENALTY_COEF（默认 0.25）
+#   第一次单脚支撑前等待过长时的惩罚系数；按超时比例线性增加，封顶 1 倍系数。
+# CROSS_SUPPORT_FOOT_LIFT_MIN_STEPS（默认 4）
+#   每次单脚支撑中，支撑脚着地时长最小值（约 0.2 s）。
+# CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF（默认 0.45）
+#   支撑脚着地时长过短时的惩罚强度。
+# CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS（默认 18）
+#   换支撑脚间隔（A->B）的最大步数（约 0.9 s）。
+# CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF（默认 0.25）
+#   换支撑脚间隔不在区间内时的惩罚强度。
+CROSS_SUPPORT_INITIAL_GRACE_STEPS = int(os.environ.get(
+    "CROSS_SUPPORT_INITIAL_GRACE_STEPS", "30"
+))
+CROSS_SUPPORT_INITIAL_PENALTY_COEF = float(os.environ.get(
+    "CROSS_SUPPORT_INITIAL_PENALTY_COEF", "0.25"
+))
+CROSS_SUPPORT_FOOT_LIFT_MIN_STEPS = int(os.environ.get(
+    "CROSS_SUPPORT_FOOT_LIFT_MIN_STEPS", "4"
+))
+CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF = float(os.environ.get(
+    "CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF", "0.45"
+))
+CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS = int(os.environ.get(
+    "CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS", "18"
+))
+CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF = float(os.environ.get(
+    "CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF", "0.25"
+))
+
 
 # ---------------------------------------------------------------------------
 # Hyperparameter bundle
@@ -515,6 +554,191 @@ class BalanceValueDeltaRewarder(BaseObserverPlugin):
         return float(self._output)
 
 
+class CrossSupportBalanceRewarder(BaseObserverPlugin):
+    """交叉支撑平衡奖励插件（语义归约版）。
+
+    保留初始逻辑：开局到第一次单脚支撑前，超过 ``initial_grace_steps`` 开始惩罚。
+
+    进入单脚支撑后，仅关注两项原子指标：
+      1) 单脚支撑时长（单次段落）：只惩罚过短，不惩罚过长
+      2) 换支撑脚间隔（A -> B）：超过 ``switch_interval_max_steps`` 则惩罚
+
+    其中 A -> B 间隔从 A 脚本轮第一次单脚支撑开始计时，中间允许出现 A 脚再次单脚支撑，
+    直到第一次出现 B 脚单脚支撑。
+    """
+
+    STATE_WAIT_FIRST_SINGLE_SUPPORT = "wait_first_single_support"
+    STATE_TRACKING = "tracking"
+
+    def __init__(
+        self,
+        agent_id: str,
+        initial_grace_steps: int = CROSS_SUPPORT_INITIAL_GRACE_STEPS,
+        initial_penalty_coef: float = CROSS_SUPPORT_INITIAL_PENALTY_COEF,
+        foot_lift_min_steps: int = CROSS_SUPPORT_FOOT_LIFT_MIN_STEPS,
+        foot_lift_penalty_coef: float = CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF,
+        switch_interval_max_steps: int = CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS,
+        switch_interval_penalty_coef: float = CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.initial_grace_steps = int(initial_grace_steps)
+        self.initial_penalty_coef = float(initial_penalty_coef)
+        self.foot_lift_min_steps = int(foot_lift_min_steps)
+        self.foot_lift_penalty_coef = float(foot_lift_penalty_coef)
+        self.switch_interval_max_steps = max(0, int(switch_interval_max_steps))
+        self.switch_interval_penalty_coef = float(switch_interval_penalty_coef)
+
+        # 状态变量
+        self._state: str = self.STATE_WAIT_FIRST_SINGLE_SUPPORT
+        self._state_timer: int = 0
+        self._current_support_foot: Optional[str] = None  # 'left' or 'right'
+        self._current_support_steps: int = 0
+        self._switch_anchor_foot: Optional[str] = None  # 'left' or 'right'
+        self._switch_interval_steps: int = 0
+        self._output: float = 0.0
+        self._ground_geom_name: Optional[str] = None
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        """重置状态"""
+        self._state = self.STATE_WAIT_FIRST_SINGLE_SUPPORT
+        self._state_timer = 0
+        self._current_support_foot = None
+        self._current_support_steps = 0
+        self._switch_anchor_foot = None
+        self._switch_interval_steps = 0
+        self._output = 0.0
+        # 获取地面 geom 名称
+        static_data = ctx.accessor.get_static_data()
+        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        """计算每步奖励"""
+        reward = 0.0
+
+        # 检测双脚接触状态
+        left_foot_contact, right_foot_contact = self._get_foot_contact_state(ctx)
+
+        if self._state == self.STATE_WAIT_FIRST_SINGLE_SUPPORT:
+            reward = self._handle_wait_first_single_support(left_foot_contact, right_foot_contact)
+        elif self._state == self.STATE_TRACKING:
+            reward = self._handle_tracking(left_foot_contact, right_foot_contact)
+
+        self._output = reward
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+    def _get_foot_contact_state(self, ctx: ReadOnlySimContext) -> tuple[bool, bool]:
+        """检测双脚是否与地面接触（无力阈值：有接触条目即算）。
+
+        仅使用 ``derived_state['robot_environment_contacts']``，与
+        ``get_static_data()['ground_geom_name']`` 中的地面 geom 名匹配。
+
+        Returns:
+            (left_foot_contact, right_foot_contact)
+        """
+        derived_state = ctx.accessor.get_derived_state()
+        env_contacts = derived_state.get("robot_environment_contacts", [])
+
+        robot_suffix = '_red' if self.agent_id == 'robot_a' else '_blue'
+        left_foot_body = f"foot_left{robot_suffix}"
+        right_foot_body = f"foot_right{robot_suffix}"
+        ground_geom = self._ground_geom_name or "ground"
+
+        left_foot_contact = False
+        right_foot_contact = False
+
+        for contact in env_contacts:
+            if contact.get("robot") != self.agent_id:
+                continue
+            env_geom = contact.get("environment_geom", "") or ""
+            if env_geom != ground_geom:
+                continue
+            body = contact.get("body", "") or ""
+            if body == left_foot_body:
+                left_foot_contact = True
+            elif body == right_foot_body:
+                right_foot_contact = True
+
+        return left_foot_contact, right_foot_contact
+
+    def _single_support_foot(self, left_foot_contact: bool, right_foot_contact: bool) -> Optional[str]:
+        """返回当前是否为单脚支撑：'left' / 'right' / None。"""
+        if left_foot_contact and not right_foot_contact:
+            return "left"
+        if right_foot_contact and not left_foot_contact:
+            return "right"
+        return None
+
+    def _begin_tracking(self, support_foot: str) -> None:
+        """第一次进入单脚支撑后，初始化追踪器。"""
+        self._state = self.STATE_TRACKING
+        self._current_support_foot = support_foot
+        self._current_support_steps = 1
+        self._switch_anchor_foot = support_foot
+        self._switch_interval_steps = 0
+
+    def _handle_wait_first_single_support(
+        self, left_foot_contact: bool, right_foot_contact: bool
+    ) -> float:
+        """从任意初始接触状态，等待第一次单脚支撑。"""
+        reward = 0.0
+        support_foot = self._single_support_foot(left_foot_contact, right_foot_contact)
+        if support_foot is not None:
+            self._begin_tracking(support_foot)
+            return reward
+
+        self._state_timer += 1
+        if self._state_timer > self.initial_grace_steps:
+            excess = self._state_timer - self.initial_grace_steps
+            denom = max(1, self.initial_grace_steps)
+            reward -= self.initial_penalty_coef * min(excess / denom, 1.0)
+        return reward
+
+    def _handle_tracking(
+        self, left_foot_contact: bool, right_foot_contact: bool
+    ) -> float:
+        """追踪单脚支撑短时惩罚与换脚间隔区间惩罚。"""
+        reward = 0.0
+        current_single_support = self._single_support_foot(left_foot_contact, right_foot_contact)
+
+        # A -> B 换脚间隔从 A 脚本轮首次单脚开始计时，期间允许 A 再次单脚。
+        self._switch_interval_steps += 1
+
+        # 1) 单脚支撑时长：仅惩罚过短（段落结束时结算）
+        if self._current_support_foot is None:
+            if current_single_support is not None:
+                self._current_support_foot = current_single_support
+                self._current_support_steps = 1
+        elif current_single_support == self._current_support_foot:
+            self._current_support_steps += 1
+        else:
+            if self._current_support_steps < self.foot_lift_min_steps:
+                deficit = self.foot_lift_min_steps - self._current_support_steps
+                reward -= self.foot_lift_penalty_coef * (deficit / max(1, self.foot_lift_min_steps))
+            if current_single_support is None:
+                self._current_support_foot = None
+                self._current_support_steps = 0
+            else:
+                self._current_support_foot = current_single_support
+                self._current_support_steps = 1
+
+        # 2) 换支撑脚间隔：当首次出现 opposite single support 时结算并重置锚点
+        if (
+            current_single_support is not None
+            and self._switch_anchor_foot is not None
+            and current_single_support != self._switch_anchor_foot
+        ):
+            if self._switch_interval_steps > self.switch_interval_max_steps:
+                excess = self._switch_interval_steps - self.switch_interval_max_steps
+                denom = max(1, self.switch_interval_max_steps)
+                reward -= self.switch_interval_penalty_coef * min(excess / denom, 1.0)
+            self._switch_anchor_foot = current_single_support
+            self._switch_interval_steps = 0
+
+        return reward
+
+
 # ---------------------------------------------------------------------------
 # Termination plugins
 # ---------------------------------------------------------------------------
@@ -599,6 +823,89 @@ class BalanceScoreTerminationPlugin(BasePlugin):
             if isinstance(out, dict) else float(BALANCE_INVALID_SCORE)
         )
         self._streak = self._streak + 1 if score < self.score_threshold else 0
+        if self._streak >= self.grace_steps:
+            ctx.request_termination(TerminationReason.CUSTOM)
+
+
+class ImbalanceTerminationPlugin(BasePlugin):
+    """检测机器人是否失衡的终止插件
+
+    失衡判定规则：当机器人除了双脚之外的第三点与地面接触时，判定为失衡。
+    这是课程学习第一阶段的终止条件。
+
+    参数：
+        agent_id: 监控的机器人ID ('robot_a' 或 'robot_b')
+        force_threshold: 接触力阈值（牛顿），低于此值的接触不计数，避免误判
+        grace_steps: 宽容步数，连续 N 步失衡才触发终止
+    """
+
+    # 双脚身体名称后缀
+    FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
+
+    def __init__(
+        self,
+        agent_id: str,
+        force_threshold: float = 5.0,
+        grace_steps: int = 2,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.force_threshold = float(force_threshold)
+        self.grace_steps = max(1, int(grace_steps))
+        self._streak = 0
+        self._ground_geom_name: Optional[str] = None
+
+    @property
+    def name(self) -> str:
+        return f"{self.agent_id}_imbalance_termination"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        self._streak = 0
+        # 获取地面 geom 名称
+        static_data = ctx.accessor.get_static_data()
+        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        derived_state = ctx.accessor.get_derived_state()
+        contacts = derived_state.get('contacts', [])
+
+        # 统计该机器人与地面的接触
+        ground_contact_bodies = set()
+        for contact in contacts:
+            geom_a = contact.get('geom_a_name', '')
+            geom_b = contact.get('geom_b_name', '')
+            force = contact.get('force_magnitude', 0.0)
+
+            # 跳过力太小的接触
+            if force < self.force_threshold:
+                continue
+
+            # 检查是否是与地面的接触
+            if self._ground_geom_name not in (geom_a, geom_b):
+                continue
+
+            # 获取接触的身体名称
+            body_a = contact.get('body_a_name', '')
+            body_b = contact.get('body_b_name', '')
+
+            # 判断哪个身体属于该机器人
+            robot_suffix = '_red' if self.agent_id == 'robot_a' else '_blue'
+            for body_name in (body_a, body_b):
+                if body_name and body_name.endswith(robot_suffix):
+                    # 提取基础名称（去掉后缀）
+                    base_name = body_name[:-len(robot_suffix)] if robot_suffix else body_name
+                    ground_contact_bodies.add(base_name)
+
+        # 统计非脚部的接触点数量
+        non_foot_contacts = 0
+        for body_name in ground_contact_bodies:
+            # 检查是否是脚部
+            if not any(foot_name in body_name for foot_name in self.FOOT_BODY_NAMES):
+                non_foot_contacts += 1
+
+        # 如果有第三个点接触地面，判定为失衡
+        is_imbalanced = non_foot_contacts > 0
+        self._streak = 0 if not is_imbalanced else self._streak + 1
+
         if self._streak >= self.grace_steps:
             ctx.request_termination(TerminationReason.CUSTOM)
 
@@ -786,14 +1093,23 @@ __all__ = [
     "PERTURBATION_ROOT_TILT_DEG_MAX",
     "PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX",
     "PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX",
+    # Cross-support balance constants
+    "CROSS_SUPPORT_INITIAL_GRACE_STEPS",
+    "CROSS_SUPPORT_INITIAL_PENALTY_COEF",
+    "CROSS_SUPPORT_FOOT_LIFT_MIN_STEPS",
+    "CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF",
+    "CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS",
+    "CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",
     "BalanceValueRewarder",
     "BalanceValueDeltaRewarder",
+    "CrossSupportBalanceRewarder",
     # Termination plugins
     "StandingTerminationPlugin",
     "BalanceScoreTerminationPlugin",
+    "ImbalanceTerminationPlugin",
     # Factories / helpers
     "make_standing_runtime",
     "make_perturbed_balance_runtime",
