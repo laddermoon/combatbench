@@ -150,13 +150,26 @@ CURRICULUM_MAX_STEPS = MAX_STEPS
 # to r1/r2 once a small reward weight is applied.
 CURRICULUM_DAMAGE_SCALE = 100.0
 # Per-component reward scales (applied INSIDE :class:`MultiSignalRewardObserver`
-# before the curriculum stage weights). They normalize the three signals to a
-# comparable per-step magnitude (~ 1e-2) so the gate's stage weights are
-# interpretable as "how much each curriculum component matters relative to
-# the others", not as a band-aid against scale mismatch.
-CURRICULUM_R1_SCALE = float(os.environ.get("CURRICULUM_R1_SCALE", "1.0"))
+# before the curriculum stage weights).
+#
+# r1 (cross-support balance) is intentionally TINY (0.02) — same value as
+# ``stage1.py``'s ``cross_support_reward_scale``. The dominant stage-1
+# signal is the terminal fall penalty (CURRICULUM_TERMINAL_FALL_PENALTY),
+# applied post-rollout by :func:`_inject_terminal_fall_penalty` in
+# ``curriculum.py``. This combination is what stage1.py used to reach
+# ``best_eval_length=200``; making r1 large makes the agent satisfied
+# with brief perfect stance + fast termination (zero gradient on
+# length).
+CURRICULUM_R1_SCALE = float(os.environ.get("CURRICULUM_R1_SCALE", "0.02"))
 CURRICULUM_R2_SCALE = float(os.environ.get("CURRICULUM_R2_SCALE", "0.05"))
 CURRICULUM_R3_SCALE = float(os.environ.get("CURRICULUM_R3_SCALE", "10.0"))
+# Terminal fall penalty — subtracted from the LAST step reward of every
+# imbalance-terminated trajectory, in EVERY stage (falling is bad
+# regardless of which stage we're in). Mirrors stage1.py's
+# ``terminal_fall_penalty=1.0`` default.
+CURRICULUM_TERMINAL_FALL_PENALTY = float(
+    os.environ.get("CURRICULUM_TERMINAL_FALL_PENALTY", "1.0")
+)
 # CombatScoring HP — set very high so KO never terminates curriculum
 # episodes. The damage stream is what we want, not the KO event.
 CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9"))
@@ -374,6 +387,9 @@ class CurriculumConfig:
     r1_scale: float = CURRICULUM_R1_SCALE
     r2_scale: float = CURRICULUM_R2_SCALE
     r3_scale: float = CURRICULUM_R3_SCALE
+    # Terminal fall penalty (subtracted from last step of terminated
+    # trajectories, in every stage). 0.0 disables.
+    terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
 
     # Stage-gate thresholds (hysteresis pairs).
     stage1_pass_term_rate: float = CURRICULUM_STAGE1_PASS_TERM_RATE
@@ -1710,6 +1726,7 @@ __all__ = [
     "CURRICULUM_R1_SCALE",
     "CURRICULUM_R2_SCALE",
     "CURRICULUM_R3_SCALE",
+    "CURRICULUM_TERMINAL_FALL_PENALTY",
     "CURRICULUM_NO_KO_HEALTH",
     "CURRICULUM_STAGE1_PASS_TERM_RATE",
     "CURRICULUM_STAGE1_FAIL_TERM_RATE",

@@ -53,6 +53,7 @@ _UPDATE_RE = re.compile(
     r"r1=(?P<r1>[-+0-9.eE]+)\s+"
     r"r2=(?P<r2>[-+0-9.eE]+)\s+"
     r"r3=(?P<r3>[-+0-9.eE]+)\s+"
+    r"(?:term_pen=(?P<term_pen>[-+0-9.eE]+)\s+)?"
     r"policy_loss=(?P<policy_loss>[-+0-9.eE]+)\s+"
     r"value_loss=(?P<value_loss>[-+0-9.eE]+)\s+"
     r"kl=(?P<kl>[-+0-9.eE]+)\s+"

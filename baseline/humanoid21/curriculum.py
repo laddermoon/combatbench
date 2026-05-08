@@ -94,6 +94,44 @@ def _critic_values_and_bootstraps(
     return per_traj_values, bootstraps
 
 
+def _inject_terminal_fall_penalty(
+    trajectories: Sequence[RolloutBatch],
+    *,
+    terminal_fall_penalty: float,
+) -> tuple[int, float]:
+    """Apply sparse terminal fall penalty (literally copied from stage1.py).
+
+    Subtracts ``terminal_fall_penalty`` from the LAST step reward of every
+    trajectory whose ``terminated`` flag is True (i.e. died via
+    :class:`ImbalanceTerminationPlugin`). Truncated-only trajectories
+    are untouched.
+
+    This mirrors stage1.py's recipe exactly. Together with
+    ``r1_scale=0.02`` (matching stage1's ``cross_support_reward_scale``)
+    the per-step reward in stage 1 is identical to stage1.py:
+
+        per-step:  0.02 * r1_cross_support
+        terminal:  -1.0 if terminated else 0.0
+
+    Higher curriculum stages also receive the penalty — falling over is
+    bad regardless of stage. The shaping rewards r2 / r3 add positively
+    on top.
+
+    Returns ``(n_terminated, total_penalty)`` for logging.
+    """
+    penalty = float(terminal_fall_penalty)
+    if penalty <= 0.0:
+        return 0, 0.0
+    terminated_count = 0
+    total_penalty = 0.0
+    for t in trajectories:
+        if t.terminated and t.rewards.size > 0:
+            t.rewards[-1] = float(t.rewards[-1] - penalty)
+            terminated_count += 1
+            total_penalty += penalty
+    return terminated_count, total_penalty
+
+
 def _ppo_update(
     actor: TanhGaussianMLPPolicy,
     critic: CriticMLP,
@@ -349,6 +387,7 @@ def train(
     print(
         f"curriculum: max_steps={cfg.max_steps} "
         f"r1_scale={cfg.r1_scale} r2_scale={cfg.r2_scale} r3_scale={cfg.r3_scale} "
+        f"terminal_fall_penalty={cfg.terminal_fall_penalty} "
         f"window={cfg.gate_window} dwell={cfg.gate_min_dwell}",
         flush=True,
     )
@@ -382,10 +421,19 @@ def train(
 
             batch_summary = _summarize_batch(trajectories, max_steps=cfg.max_steps)
             comp_summary = _component_summary(trajectories)
+            # Mirror stage1.py exactly: post-rollout, BEFORE PPO update,
+            # subtract a sparse terminal penalty from the last step of
+            # every imbalance-terminated trajectory. This is what gives
+            # PPO a non-zero gradient on episode length once r1 has
+            # converged.
+            term_count, total_term_penalty = _inject_terminal_fall_penalty(
+                trajectories, terminal_fall_penalty=cfg.terminal_fall_penalty,
+            )
             stats = _ppo_update(actor, critic, optimizer, trajectories, cfg, device)
             gate_info = gate.update(batch_summary)
 
             mean_reward = float(np.mean([float(t.rewards.sum()) for t in trajectories]))
+            mean_term_penalty = float(total_term_penalty / max(1, len(trajectories)))
             line = (
                 f"update={u:4d} stage={gate_info['stage']} "
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
@@ -396,6 +444,7 @@ def train(
                 f"r1={comp_summary['r1_mean']:+.3f} "
                 f"r2={comp_summary['r2_mean']:+.3f} "
                 f"r3={comp_summary['r3_mean']:+.3f} "
+                f"term_pen={mean_term_penalty:+.3f} "
                 f"policy_loss={stats['policy_loss']:+.5f} "
                 f"value_loss={stats['value_loss']:+.5f} "
                 f"kl={stats['approx_kl']:.4f} "
