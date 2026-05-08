@@ -259,7 +259,41 @@ def _component_summary(trajectories: Sequence[RolloutBatch]) -> Dict[str, float]
 # ---------------------------------------------------------------------------
 # Train
 # ---------------------------------------------------------------------------
-def train(cfg: CurriculumConfig, *, run_dir: Path) -> None:
+def _load_actor_checkpoint(actor: torch.nn.Module, ckpt_path: Path) -> Dict[str, object]:
+    """Load actor weights from a stage1 / curriculum checkpoint.
+
+    Accepts both the wrapper dict produced by
+    ``export_actor_policy_artifacts`` (``{"state_dict": <sd>, ...}``)
+    and a bare state_dict. Returns the loaded payload (or empty dict)
+    so the caller can log the originating ``algorithm`` / ``update``.
+
+    Critic is NOT loaded — different reward = different value
+    function, so we re-learn it from scratch. This is the safest
+    option (loading a stale critic is the #1 cause of "resume looks
+    fine for 5 updates and then collapses" in PPO).
+    """
+    payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    if isinstance(payload, dict) and "state_dict" in payload and isinstance(payload["state_dict"], dict):
+        sd = payload["state_dict"]
+        meta = {k: v for k, v in payload.items() if k != "state_dict"}
+    else:
+        sd = payload
+        meta = {}
+    missing, unexpected = actor.load_state_dict(sd, strict=False)
+    if missing or unexpected:
+        print(
+            f"[resume] partial load: missing={list(missing)} unexpected={list(unexpected)}",
+            flush=True,
+        )
+    return meta
+
+
+def train(
+    cfg: CurriculumConfig,
+    *,
+    run_dir: Path,
+    resume_from: Path | None = None,
+) -> None:
     set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     actor = TanhGaussianMLPPolicy(
@@ -274,6 +308,16 @@ def train(cfg: CurriculumConfig, *, run_dir: Path) -> None:
         list(actor.parameters()) + list(critic.parameters()),
         lr=cfg.learning_rate,
     )
+
+    if resume_from is not None:
+        meta = _load_actor_checkpoint(actor, Path(resume_from))
+        print(
+            f"[resume] loaded actor from {resume_from} "
+            f"(algorithm={meta.get('algorithm')!r} "
+            f"update={meta.get('update')} "
+            f"best_eval_length={meta.get('best_eval_length')})",
+            flush=True,
+        )
 
     gate = CurriculumStageGate(
         max_steps=cfg.max_steps,
@@ -410,6 +454,15 @@ def parse_args() -> argparse.Namespace:
         "--smoke", action="store_true",
         help="Short smoke run (max_updates=2, episodes_per_update=8, eval_episodes=4).",
     )
+    parser.add_argument(
+        "--resume-from", type=str, default=None,
+        help="Path to a stage1 (or earlier curriculum) checkpoint .pt "
+             "file. Loads actor only; critic is re-initialized.",
+    )
+    parser.add_argument(
+        "--run-name", type=str, default=None,
+        help="Override the auto-generated run directory name.",
+    )
     return parser.parse_args()
 
 
@@ -432,11 +485,10 @@ def main() -> None:
     if args.rollout_workers is not None:
         cfg.rollout_workers = int(args.rollout_workers)
 
-    run_dir = (
-        Path(__file__).resolve().parent / "runs"
-        / f"curriculum_{time.strftime('%Y%m%d_%H%M%S')}"
-    )
-    train(cfg, run_dir=run_dir)
+    name = args.run_name or f"curriculum_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_dir = Path(__file__).resolve().parent / "runs" / name
+    resume = Path(args.resume_from) if args.resume_from else None
+    train(cfg, run_dir=run_dir, resume_from=resume)
 
 
 if __name__ == "__main__":
