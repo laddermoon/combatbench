@@ -176,6 +176,18 @@ CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF = float(os.environ.get(
     "CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF", "0.25"
 ))
 
+# Opponent-relation reward (课程二：接近并朝向对手)
+# 两个损失项都采用“容忍区间内无损失，超出后线性增长”：
+# 1) 距离损失：距离在 [min, max] 内为 0，超出则线性惩罚
+# 2) 朝向损失：朝向误差角 <= max_angle 时为 0，超出则线性惩罚
+OPP_REL_DIST_MIN = float(os.environ.get("OPP_REL_DIST_MIN", "1.0"))
+OPP_REL_DIST_MAX = float(os.environ.get("OPP_REL_DIST_MAX", "2.2"))
+OPP_REL_DIST_LINEAR_RANGE = float(os.environ.get("OPP_REL_DIST_LINEAR_RANGE", "1.0"))
+OPP_REL_HEADING_MAX_ANGLE_DEG = float(os.environ.get("OPP_REL_HEADING_MAX_ANGLE_DEG", "25.0"))
+OPP_REL_HEADING_LINEAR_RANGE_DEG = float(os.environ.get("OPP_REL_HEADING_LINEAR_RANGE_DEG", "45.0"))
+OPP_REL_DIST_PENALTY_COEF = float(os.environ.get("OPP_REL_DIST_PENALTY_COEF", "1.0"))
+OPP_REL_HEADING_PENALTY_COEF = float(os.environ.get("OPP_REL_HEADING_PENALTY_COEF", "1.0"))
+
 
 # ---------------------------------------------------------------------------
 # Hyperparameter bundle
@@ -739,6 +751,101 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         return reward
 
 
+class OpponentRelationRewarder(BaseObserverPlugin):
+    """与对手相对关系奖励（距离 + 朝向）。
+
+    设计目标：课程二中鼓励“接近并朝向对手”，同时保持一个容忍范围：
+    - 距离在 [dist_min, dist_max] 内：无距离惩罚
+    - 朝向误差角 <= heading_max_angle_deg：无朝向惩罚
+    - 超出后按线性范围增长惩罚，并按系数加权
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        dist_min: float = OPP_REL_DIST_MIN,
+        dist_max: float = OPP_REL_DIST_MAX,
+        dist_linear_range: float = OPP_REL_DIST_LINEAR_RANGE,
+        heading_max_angle_deg: float = OPP_REL_HEADING_MAX_ANGLE_DEG,
+        heading_linear_range_deg: float = OPP_REL_HEADING_LINEAR_RANGE_DEG,
+        dist_penalty_coef: float = OPP_REL_DIST_PENALTY_COEF,
+        heading_penalty_coef: float = OPP_REL_HEADING_PENALTY_COEF,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.opponent_id = "robot_b" if self.agent_id == "robot_a" else "robot_a"
+        self.dist_min = float(dist_min)
+        self.dist_max = float(dist_max)
+        self.dist_linear_range = max(1e-6, float(dist_linear_range))
+        self.heading_max_angle_deg = float(heading_max_angle_deg)
+        self.heading_linear_range_deg = max(1e-6, float(heading_linear_range_deg))
+        self.dist_penalty_coef = float(dist_penalty_coef)
+        self.heading_penalty_coef = float(heading_penalty_coef)
+        self._output: float = 0.0
+
+    @staticmethod
+    def _robot_forward_xy_from_root_rot(root_rot_wxyz: np.ndarray) -> np.ndarray:
+        """从四元数 [w, x, y, z] 计算机体前向在地平面的单位向量。"""
+        q = np.asarray(root_rot_wxyz, dtype=np.float64).reshape(-1)
+        if q.shape[0] != 4:
+            return np.asarray([1.0, 0.0], dtype=np.float64)
+        norm = float(np.linalg.norm(q))
+        if norm < 1e-8:
+            return np.asarray([1.0, 0.0], dtype=np.float64)
+        w, x, y, z = (q / norm).tolist()
+        # 旋转矩阵第一列（本地 x 轴在世界系中的方向）
+        fx = 1.0 - 2.0 * (y * y + z * z)
+        fy = 2.0 * (x * y + w * z)
+        fxy = np.asarray([fx, fy], dtype=np.float64)
+        f_norm = float(np.linalg.norm(fxy))
+        if f_norm < 1e-8:
+            return np.asarray([1.0, 0.0], dtype=np.float64)
+        return fxy / f_norm
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()
+        self_state = core_state[self.agent_id]
+        opp_state = core_state[self.opponent_id]
+
+        self_xy = np.asarray(self_state["root_pos"][:2], dtype=np.float64)
+        opp_xy = np.asarray(opp_state["root_pos"][:2], dtype=np.float64)
+        delta_xy = opp_xy - self_xy
+        distance = float(np.linalg.norm(delta_xy))
+
+        # 1) 距离区间惩罚
+        if distance < self.dist_min:
+            dist_excess = self.dist_min - distance
+        elif distance > self.dist_max:
+            dist_excess = distance - self.dist_max
+        else:
+            dist_excess = 0.0
+        dist_penalty = min(dist_excess / self.dist_linear_range, 1.0)
+
+        # 2) 朝向惩罚（面向对手角度）
+        if distance < 1e-6:
+            heading_penalty = 0.0
+        else:
+            to_opp_unit = delta_xy / distance
+            forward_unit = self._robot_forward_xy_from_root_rot(
+                np.asarray(self_state["root_rot"], dtype=np.float64)
+            )
+            cosang = float(np.clip(np.dot(forward_unit, to_opp_unit), -1.0, 1.0))
+            angle_deg = float(np.degrees(np.arccos(cosang)))
+            angle_excess = max(0.0, angle_deg - self.heading_max_angle_deg)
+            heading_penalty = min(angle_excess / self.heading_linear_range_deg, 1.0)
+
+        total_penalty = (
+            self.dist_penalty_coef * dist_penalty
+            + self.heading_penalty_coef * heading_penalty
+        )
+        self._output = -float(total_penalty)
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+
 # ---------------------------------------------------------------------------
 # Termination plugins
 # ---------------------------------------------------------------------------
@@ -1100,12 +1207,21 @@ __all__ = [
     "CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF",
     "CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS",
     "CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF",
+    # Opponent-relation constants
+    "OPP_REL_DIST_MIN",
+    "OPP_REL_DIST_MAX",
+    "OPP_REL_DIST_LINEAR_RANGE",
+    "OPP_REL_HEADING_MAX_ANGLE_DEG",
+    "OPP_REL_HEADING_LINEAR_RANGE_DEG",
+    "OPP_REL_DIST_PENALTY_COEF",
+    "OPP_REL_HEADING_PENALTY_COEF",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",
     "BalanceValueRewarder",
     "BalanceValueDeltaRewarder",
     "CrossSupportBalanceRewarder",
+    "OpponentRelationRewarder",
     # Termination plugins
     "StandingTerminationPlugin",
     "BalanceScoreTerminationPlugin",

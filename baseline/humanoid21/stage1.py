@@ -5,14 +5,14 @@ framework primitives), while algorithm semantics follow
 ``obsolete/standing_turbulence_ppo.py``:
 
   * actor + critic PPO with GAE;
-  * sparse reward: per-step default reward is 0, and an episode that
-    ends by termination gets a terminal negative reward;
+  * per-step cross-support reward (scaled) + terminal fall penalty;
   * fall detection / termination comes from
     :class:`baseline.humanoid21.common.ImbalanceTerminationPlugin`.
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
 import time
 from dataclasses import dataclass
@@ -26,7 +26,7 @@ if str(COMBATBENCH_DIR) not in sys.path:
 import numpy as np
 import torch
 
-from envs.framework import EnvRuntime
+from envs.framework import BaseObserverPlugin, EnvRuntime, ReadOnlySimContext
 
 from baseline.common.algos import compute_gae, ppo_loss
 from baseline.common.policies import (
@@ -37,15 +37,18 @@ from baseline.common.policies import (
 from baseline.common.rollout import RolloutBatch, RolloutCollector
 from baseline.humanoid21.common import (
     CONTROL_FREQUENCY,
+    CrossSupportBalanceRewarder,
     Humanoid21Observer,
     ImbalanceTerminationPlugin,
     INITIAL_DISTANCE,
     MujocoCombatSimulator,
-    PERTURBED_MAX_STEPS,
     make_standing_adapter,
     make_standing_options_fn,
     set_seed,
 )
+
+STAGE1_MATCH_DURATION_SECONDS = 10.0
+STAGE1_MAX_STEPS = int(CONTROL_FREQUENCY * STAGE1_MATCH_DURATION_SECONDS)
 
 
 @dataclass
@@ -74,6 +77,8 @@ class Stage1Config:
 
     # Sparse terminal penalty.
     terminal_fall_penalty: float = 1.0
+    # 第一版刻意把交叉支撑奖励权重设小，让失衡终止信号主导早期学习。
+    cross_support_reward_scale: float = 0.02
 
     # Rollout / eval schedule.
     episodes_per_update: int = 256 * 8
@@ -82,7 +87,7 @@ class Stage1Config:
     eval_episodes: int = 16
 
     # Runtime horizon.
-    max_steps: int = PERTURBED_MAX_STEPS
+    max_steps: int = STAGE1_MAX_STEPS
 
     # Parallelism.
     rollout_workers: int = max(1, min(64, max(1, (torch.get_num_threads() or 1) // 2)))
@@ -104,8 +109,33 @@ def _select_target_trajectories(
     return [t for t in trajectories if t.agent_id == target_agent]
 
 
-def make_stage1_runtime_for(agent_id: str) -> EnvRuntime:
-    """Runtime with sparse rewards + only one agent's fall termination."""
+class ScaledCrossSupportRewarder(BaseObserverPlugin):
+    """给 CrossSupport 奖励加缩放系数。"""
+
+    def __init__(self, agent_id: str, scale: float) -> None:
+        self._inner = CrossSupportBalanceRewarder(agent_id)
+        self._scale = float(scale)
+        self._output = 0.0
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._inner.on_pre_episode(ctx)
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        self._inner.on_post_action_step(ctx)
+        self._output = self._scale * float(self._inner.get_output())
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+
+def make_stage1_runtime_for(
+    agent_id: str,
+    *,
+    cross_support_reward_scale: float,
+    max_steps: int,
+) -> EnvRuntime:
+    """Runtime with cross-support reward + one-sided fall termination."""
     target = str(agent_id)
     if target not in ("robot_a", "robot_b"):
         raise ValueError(f"Unsupported agent_id: {agent_id!r}")
@@ -118,24 +148,22 @@ def make_stage1_runtime_for(agent_id: str) -> EnvRuntime:
         observer_plugins={
             "robot_a_obs": Humanoid21Observer("robot_a"),
             "robot_b_obs": Humanoid21Observer("robot_b"),
+            "robot_a_reward": ScaledCrossSupportRewarder(
+                "robot_a", scale=cross_support_reward_scale
+            ),
+            "robot_b_reward": ScaledCrossSupportRewarder(
+                "robot_b", scale=cross_support_reward_scale
+            ),
         },
         plugins=[
             ImbalanceTerminationPlugin(target),
         ],
         phy_steps_per_action=phy_steps_per_action,
-        max_steps=PERTURBED_MAX_STEPS,
+        max_steps=int(max_steps),
     )
     runtime.observation_space = Humanoid21Observer.get_observation_space()
     runtime.action_space = Humanoid21Observer.get_action_space()
     return runtime
-
-
-def make_stage1_runtime_robot_a() -> EnvRuntime:
-    return make_stage1_runtime_for("robot_a")
-
-
-def make_stage1_runtime_robot_b() -> EnvRuntime:
-    return make_stage1_runtime_for("robot_b")
 
 
 def _critic_values_and_bootstraps(
@@ -175,14 +203,19 @@ def _inject_terminal_fall_penalty(
     trajectories: Sequence[RolloutBatch],
     *,
     terminal_fall_penalty: float,
-) -> None:
+) -> tuple[int, float]:
     """Apply sparse terminal reward: only terminated episodes get a final penalty."""
     penalty = float(terminal_fall_penalty)
     if penalty <= 0.0:
-        return
+        return 0, 0.0
+    terminated_count = 0
+    total_penalty = 0.0
     for t in trajectories:
         if t.terminated and t.rewards.size > 0:
             t.rewards[-1] = float(t.rewards[-1] - penalty)
+            terminated_count += 1
+            total_penalty += penalty
+    return terminated_count, total_penalty
 
 
 def _ppo_update(
@@ -326,6 +359,13 @@ def train(cfg: Stage1Config, *, run_dir: Path) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     policy_dir = run_dir / "policy"
     print(f"run_dir={run_dir}", flush=True)
+    print(
+        "reward_setup: "
+        f"cross_support_reward_scale={cfg.cross_support_reward_scale:.4f}, "
+        f"terminal_fall_penalty={cfg.terminal_fall_penalty:.4f}, "
+        f"match_duration={cfg.max_steps / CONTROL_FREQUENCY:.1f}s",
+        flush=True,
+    )
 
     base_factory_kwargs = dict(
         policy_factories={
@@ -333,15 +373,23 @@ def train(cfg: Stage1Config, *, run_dir: Path) -> None:
             "robot_b": make_standing_adapter,
         },
         capture_agents=("robot_a", "robot_b"),
-        reward_observer_template=None,
-        default_reward=0.0,
     )
     with RolloutCollector(
-        runtime_factory=make_stage1_runtime_robot_a,
+        runtime_factory=functools.partial(
+            make_stage1_runtime_for,
+            "robot_a",
+            cross_support_reward_scale=cfg.cross_support_reward_scale,
+            max_steps=cfg.max_steps,
+        ),
         max_workers=cfg.rollout_workers,
         **base_factory_kwargs,
     ) as collector_a, RolloutCollector(
-        runtime_factory=make_stage1_runtime_robot_b,
+        runtime_factory=functools.partial(
+            make_stage1_runtime_for,
+            "robot_b",
+            cross_support_reward_scale=cfg.cross_support_reward_scale,
+            max_steps=cfg.max_steps,
+        ),
         max_workers=cfg.rollout_workers,
         **base_factory_kwargs,
     ) as collector_b:
@@ -365,17 +413,29 @@ def train(cfg: Stage1Config, *, run_dir: Path) -> None:
             if not trajectories:
                 print(f"update={u} | no valid trajectories", flush=True)
                 continue
-            _inject_terminal_fall_penalty(
+            cross_support_returns = np.asarray(
+                [float(t.rewards.sum()) for t in trajectories], dtype=np.float32
+            )
+            term_count, total_term_penalty = _inject_terminal_fall_penalty(
                 trajectories, terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
 
             stats = _ppo_update(actor, critic, optimizer, trajectories, cfg, device)
             mean_reward = float(np.mean([float(t.rewards.sum()) for t in trajectories]))
+            mean_cross_support_reward = float(cross_support_returns.mean())
             mean_length = float(np.mean([int(t.num_steps) for t in trajectories]))
             term_rate = float(np.mean([1.0 if t.terminated else 0.0 for t in trajectories]))
+            mean_terminal_penalty = float(total_term_penalty / max(1, len(trajectories)))
+            term_vs_cross_ratio = float(
+                mean_terminal_penalty / (abs(mean_cross_support_reward) + 1e-6)
+            )
             line = (
                 f"update={u:4d} target={target_agent} mean_reward={mean_reward:+.4f} "
                 f"mean_length={mean_length:6.2f} term_rate={term_rate:.3f} "
+                f"cross_r={mean_cross_support_reward:+.4f} "
+                f"term_pen={mean_terminal_penalty:+.4f} "
+                f"pen/cross={term_vs_cross_ratio:.2f} "
+                f"term_cnt={term_count:d} "
                 f"policy_loss={stats['policy_loss']:+.5f} "
                 f"value_loss={stats['value_loss']:+.5f} "
                 f"ratio={stats['ratio']:.4f} kl={stats['approx_kl']:.4f}"
@@ -433,6 +493,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout-workers", type=int, default=None)
     parser.add_argument("--eval-workers", type=int, default=None)
     parser.add_argument("--terminal-fall-penalty", type=float, default=None)
+    parser.add_argument("--cross-support-reward-scale", type=float, default=None)
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -462,6 +523,8 @@ def main() -> None:
         cfg.eval_workers = int(args.eval_workers)
     if args.terminal_fall_penalty is not None:
         cfg.terminal_fall_penalty = float(args.terminal_fall_penalty)
+    if args.cross_support_reward_scale is not None:
+        cfg.cross_support_reward_scale = float(args.cross_support_reward_scale)
 
     run_dir = (
         Path(__file__).resolve().parent / "runs"
