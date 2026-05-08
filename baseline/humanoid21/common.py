@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -67,6 +67,7 @@ from envs.framework import (
 from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
 from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
+from envs.humanoid21.plugins import CombatScoringPlugin
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +137,39 @@ PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX = (0.5, 0.5, 0.2)
 # episodes that survive 3 s of perturbation already prove robustness.
 PERTURBED_MATCH_DURATION_SECONDS = 3.0
 PERTURBED_MAX_STEPS = int(CONTROL_FREQUENCY * PERTURBED_MATCH_DURATION_SECONDS)
+
+# ---------------------------------------------------------------------------
+# Curriculum (multi-stage combat) constants
+# ---------------------------------------------------------------------------
+# Curriculum match horizon — long enough that approach + a few exchanges are
+# observable; ``MATCH_DURATION_SECONDS`` (10 s) is the existing canonical value.
+CURRICULUM_MATCH_DURATION_SECONDS = MATCH_DURATION_SECONDS
+CURRICULUM_MAX_STEPS = MAX_STEPS
+# Damage scaling — keep the env's default (100.0). Per-step net damage values
+# stay roughly in [-0.5, +0.5] under typical hits, so the scale is comparable
+# to r1/r2 once a small reward weight is applied.
+CURRICULUM_DAMAGE_SCALE = 100.0
+# Per-component reward scales (applied INSIDE :class:`MultiSignalRewardObserver`
+# before the curriculum stage weights). They normalize the three signals to a
+# comparable per-step magnitude (~ 1e-2) so the gate's stage weights are
+# interpretable as "how much each curriculum component matters relative to
+# the others", not as a band-aid against scale mismatch.
+CURRICULUM_R1_SCALE = float(os.environ.get("CURRICULUM_R1_SCALE", "1.0"))
+CURRICULUM_R2_SCALE = float(os.environ.get("CURRICULUM_R2_SCALE", "0.05"))
+CURRICULUM_R3_SCALE = float(os.environ.get("CURRICULUM_R3_SCALE", "10.0"))
+# CombatScoring HP — set very high so KO never terminates curriculum
+# episodes. The damage stream is what we want, not the KO event.
+CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9"))
+
+# Curriculum gate defaults — tunable via env vars / CLI overrides.
+CURRICULUM_STAGE1_PASS_TERM_RATE = 0.05      # imbalance termination rate
+CURRICULUM_STAGE1_FAIL_TERM_RATE = 0.15      # hysteresis upper bound
+CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.95      # mean episode length / max steps
+CURRICULUM_STAGE1_FAIL_LEN_RATIO = 0.85
+CURRICULUM_STAGE2_PASS_IN_RANGE = 0.80       # mean fraction of steps in range
+CURRICULUM_STAGE2_FAIL_IN_RANGE = 0.60
+CURRICULUM_GATE_WINDOW = 3                   # rolling-window updates for gate
+CURRICULUM_GATE_MIN_DWELL = 5                # min updates to stay in a stage
 
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
@@ -280,6 +314,79 @@ class PerturbedBalanceConfig:
     # Eval schedule.
     eval_interval: int = 5
     eval_episodes: int = 16
+
+    # Parallelism.
+    rollout_workers: int = field(default_factory=lambda: max(
+        1, min(64, max(1, (os.cpu_count() or 1) // 2))
+    ))
+    eval_workers: int = field(default_factory=lambda: max(
+        1, min(16, max(1, (os.cpu_count() or 1) // 4))
+    ))
+
+    seed: int = 42
+
+
+@dataclass
+class CurriculumConfig:
+    """Hyperparameters for the unified curriculum-learning PPO trainer.
+
+    Mirrors :class:`Stage1Config` (the single-stage cross-support PPO
+    trainer in ``stage1.py``) for the algorithm-side knobs and adds
+    the curriculum-specific knobs that drive the data-driven stage
+    gate (see :class:`CurriculumStageGate`).
+
+    Defaults intentionally match ``stage1.py`` where they overlap so a
+    user can swap the trainers without retuning PPO.
+    """
+
+    # Network shape.
+    obs_dim: int = Humanoid21Observer.OBS_DIM
+    action_dim: int = Humanoid21Observer.ACTION_DIM
+    actor_hidden_dim: int = 256
+    critic_hidden_dim: int = 256
+    log_std_min: float = DEFAULT_LOG_STD_MIN
+    log_std_max: float = DEFAULT_LOG_STD_MAX
+
+    # PPO knobs.
+    learning_rate: float = 3e-4
+    clip_eps: float = 0.2
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 1e-3
+    grad_clip_norm: float = 1.0
+    target_kl: float = 0.05
+    update_epochs: int = 4
+    minibatch_size: int = 4096 * 8
+
+    # GAE.
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+
+    # Rollout schedule.
+    episodes_per_update: int = 256 * 8
+    max_updates: int = 10000
+    eval_interval: int = 5
+    eval_episodes: int = 16
+
+    # Runtime horizon.
+    max_steps: int = CURRICULUM_MAX_STEPS
+
+    # Curriculum component scales (applied inside the multi-signal observer).
+    r1_scale: float = CURRICULUM_R1_SCALE
+    r2_scale: float = CURRICULUM_R2_SCALE
+    r3_scale: float = CURRICULUM_R3_SCALE
+
+    # Stage-gate thresholds (hysteresis pairs).
+    stage1_pass_term_rate: float = CURRICULUM_STAGE1_PASS_TERM_RATE
+    stage1_fail_term_rate: float = CURRICULUM_STAGE1_FAIL_TERM_RATE
+    stage1_pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO
+    stage1_fail_len_ratio: float = CURRICULUM_STAGE1_FAIL_LEN_RATIO
+    stage2_pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE
+    stage2_fail_in_range: float = CURRICULUM_STAGE2_FAIL_IN_RANGE
+    gate_window: int = CURRICULUM_GATE_WINDOW
+    gate_min_dwell: int = CURRICULUM_GATE_MIN_DWELL
+
+    # Initial-state perturbation toggle (always on for curriculum stage 1).
+    enable_perturbation: bool = True
 
     # Parallelism.
     rollout_workers: int = field(default_factory=lambda: max(
@@ -846,6 +953,315 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         return float(self._output)
 
 
+class NetDamageRewarder(BaseObserverPlugin):
+    """Per-step net damage reward for curriculum stage 3.
+
+    Requires :class:`CombatScoringPlugin` attached to the runtime so that
+    ``ctx.metrics["damage_taken_a"]`` / ``["damage_taken_b"]`` accumulate
+    across phy steps. On each action step we read the current totals,
+    diff against the previous-step snapshot, and emit::
+
+        net = (opponent damage delta) - (self damage delta)
+
+    Positive when the agent connects, negative when taking the hit.
+    """
+
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = str(agent_id)
+        self.opponent_id = "robot_b" if self.agent_id == "robot_a" else "robot_a"
+        self._self_key = f"damage_taken_{'a' if self.agent_id == 'robot_a' else 'b'}"
+        self._opp_key = f"damage_taken_{'a' if self.opponent_id == 'robot_a' else 'b'}"
+        self._prev_self: float = 0.0
+        self._prev_opp: float = 0.0
+        self._output: float = 0.0
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._prev_self = 0.0
+        self._prev_opp = 0.0
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        cur_self = float(ctx.metrics.get(self._self_key, 0.0))
+        cur_opp = float(ctx.metrics.get(self._opp_key, 0.0))
+        delta_self = max(0.0, cur_self - self._prev_self)
+        delta_opp = max(0.0, cur_opp - self._prev_opp)
+        self._prev_self = cur_self
+        self._prev_opp = cur_opp
+        self._output = delta_opp - delta_self
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+
+class MultiSignalRewardObserver(BaseObserverPlugin):
+    """Composite reward observer: weighted sum of three curriculum signals.
+
+    Each step emits ``w1*r1 + w2*r2 + w3*r3`` where the per-component
+    scales are pre-applied (``rk_scale * rk``) and the stage weights
+    ``(w1, w2, w3)`` come from ``ctx.episode_options['reward_weights']``
+    (resolved on the main process by :class:`CurriculumStageGate`).
+
+    The observer also tracks per-episode diagnostic sums and exposes
+    them via :meth:`episode_summary`. The rollout collector picks that
+    dict up and stamps it into :attr:`RolloutBatch.info` so the trainer
+    can drive the stage gate without ever touching observer instances
+    directly across the multiprocessing boundary.
+    """
+
+    OPTIONS_WEIGHTS_KEY = "reward_weights"
+
+    def __init__(
+        self,
+        agent_id: str,
+        *,
+        r1_scale: float = CURRICULUM_R1_SCALE,
+        r2_scale: float = CURRICULUM_R2_SCALE,
+        r3_scale: float = CURRICULUM_R3_SCALE,
+        default_weights: tuple = (1.0, 0.0, 0.0),
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.r1_scale = float(r1_scale)
+        self.r2_scale = float(r2_scale)
+        self.r3_scale = float(r3_scale)
+        self.default_weights = tuple(float(w) for w in default_weights)
+
+        self._r1 = CrossSupportBalanceRewarder(agent_id)
+        self._r2 = OpponentRelationRewarder(agent_id)
+        self._r3 = NetDamageRewarder(agent_id)
+
+        self._weights: tuple = self.default_weights
+        self._r1_sum: float = 0.0
+        self._r2_sum: float = 0.0
+        self._r3_sum: float = 0.0
+        self._in_range_steps: int = 0
+        self._num_steps: int = 0
+        self._output: float = 0.0
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._r1.on_pre_episode(ctx)
+        self._r2.on_pre_episode(ctx)
+        self._r3.on_pre_episode(ctx)
+        weights_opt = ctx.episode_options.get(self.OPTIONS_WEIGHTS_KEY)
+        self._weights = self._coerce_weights(weights_opt, fallback=self.default_weights)
+        self._r1_sum = 0.0
+        self._r2_sum = 0.0
+        self._r3_sum = 0.0
+        self._in_range_steps = 0
+        self._num_steps = 0
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        self._r1.on_post_action_step(ctx)
+        self._r2.on_post_action_step(ctx)
+        self._r3.on_post_action_step(ctx)
+        r1 = float(self._r1.get_output())
+        r2 = float(self._r2.get_output())
+        r3 = float(self._r3.get_output())
+        self._r1_sum += r1
+        self._r2_sum += r2
+        self._r3_sum += r3
+        self._num_steps += 1
+        # OpponentRelationRewarder is non-positive and equal to 0 exactly
+        # when the agent is inside both the distance and heading windows;
+        # that is the stage-2 "in range" criterion by construction.
+        if r2 >= 0.0:
+            self._in_range_steps += 1
+        w1, w2, w3 = self._weights
+        self._output = (
+            w1 * (self.r1_scale * r1)
+            + w2 * (self.r2_scale * r2)
+            + w3 * (self.r3_scale * r3)
+        )
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+    def episode_summary(self) -> Dict[str, Any]:
+        return {
+            "r1_sum": float(self._r1_sum),
+            "r2_sum": float(self._r2_sum),
+            "r3_sum": float(self._r3_sum),
+            "in_range_steps": int(self._in_range_steps),
+            "obs_num_steps": int(self._num_steps),
+            "weights": tuple(float(w) for w in self._weights),
+        }
+
+    @staticmethod
+    def _coerce_weights(value: Any, *, fallback: tuple) -> tuple:
+        if value is None:
+            return tuple(float(w) for w in fallback)
+        if isinstance(value, dict):
+            return (
+                float(value.get("w1", fallback[0])),
+                float(value.get("w2", fallback[1])),
+                float(value.get("w3", fallback[2])),
+            )
+        try:
+            seq = list(value)
+        except TypeError:
+            return tuple(float(w) for w in fallback)
+        if len(seq) != 3:
+            return tuple(float(w) for w in fallback)
+        return tuple(float(w) for w in seq)
+
+
+# ---------------------------------------------------------------------------
+# Curriculum stage gate
+# ---------------------------------------------------------------------------
+class CurriculumStageGate:
+    """Data-driven curriculum gate with hysteresis + minimum dwell.
+
+    The trainer feeds the gate a summary of the most recent rollout
+    batch (mean episode length, imbalance termination rate, in-range
+    fraction, etc.). The gate maintains a 3-stage state machine and
+    decides which stage we are in for the *next* rollout. Lower-stage
+    rewards stay active once a higher stage opens — that is the
+    catastrophic-forgetting safeguard.
+
+    Stage transitions::
+
+        stage 1 -> stage 2  : term_rate < pass_term_rate AND
+                              len_ratio > pass_len_ratio
+        stage 2 -> stage 1  : term_rate > fail_term_rate OR
+                              len_ratio < fail_len_ratio
+        stage 2 -> stage 3  : (above stage-1 conds still hold) AND
+                              in_range_ratio > pass_in_range
+        stage 3 -> stage 2  : (above stage-1 conds still hold) AND
+                              in_range_ratio < fail_in_range
+        stage 3 -> stage 1  : stage-1 condition violated
+
+    A transition only fires when both
+      * the rolling mean over ``window`` recent updates satisfies the
+        threshold, and
+      * the current stage has been in effect for at least ``min_dwell``
+        updates (to dampen oscillation early in training).
+
+    Weight schedule::
+
+        stage 1 -> (1, 0, 0)
+        stage 2 -> (1, 1, 0)
+        stage 3 -> (1, 1, 1)
+
+    Pure Python, no numpy / torch deps — picklable, testable, and safe
+    to construct on the main process only.
+    """
+
+    STAGE_WEIGHTS: Dict[int, tuple] = {
+        1: (1.0, 0.0, 0.0),
+        2: (1.0, 1.0, 0.0),
+        3: (1.0, 1.0, 1.0),
+    }
+
+    def __init__(
+        self,
+        *,
+        max_steps: int,
+        pass_term_rate: float = CURRICULUM_STAGE1_PASS_TERM_RATE,
+        fail_term_rate: float = CURRICULUM_STAGE1_FAIL_TERM_RATE,
+        pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO,
+        fail_len_ratio: float = CURRICULUM_STAGE1_FAIL_LEN_RATIO,
+        pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE,
+        fail_in_range: float = CURRICULUM_STAGE2_FAIL_IN_RANGE,
+        window: int = CURRICULUM_GATE_WINDOW,
+        min_dwell: int = CURRICULUM_GATE_MIN_DWELL,
+        initial_stage: int = 1,
+    ) -> None:
+        if initial_stage not in self.STAGE_WEIGHTS:
+            raise ValueError(f"initial_stage must be 1/2/3; got {initial_stage}")
+        if max_steps <= 0:
+            raise ValueError(f"max_steps must be > 0; got {max_steps}")
+        self.max_steps = int(max_steps)
+        self.pass_term_rate = float(pass_term_rate)
+        self.fail_term_rate = float(fail_term_rate)
+        self.pass_len_ratio = float(pass_len_ratio)
+        self.fail_len_ratio = float(fail_len_ratio)
+        self.pass_in_range = float(pass_in_range)
+        self.fail_in_range = float(fail_in_range)
+        self.window = max(1, int(window))
+        self.min_dwell = max(1, int(min_dwell))
+        self.stage = int(initial_stage)
+        self._dwell = 0
+        self._history: List[Dict[str, float]] = []
+
+    @property
+    def weights(self) -> tuple:
+        return self.STAGE_WEIGHTS[self.stage]
+
+    def update(self, summary: Dict[str, float]) -> Dict[str, Any]:
+        """Push one update's metrics, advance the state machine.
+
+        ``summary`` is expected to carry at least:
+          * ``term_rate`` — fraction of episodes that ended via
+            ImbalanceTerminationPlugin (== ``terminated`` flag) in the
+            last update's batch.
+          * ``mean_length`` — mean episode length (steps).
+          * ``in_range_ratio`` — mean fraction of steps with r2 >= 0.
+
+        Extra keys are ignored. Missing keys default to 0.
+        """
+        record = {
+            "term_rate": float(summary.get("term_rate", 0.0)),
+            "mean_length": float(summary.get("mean_length", 0.0)),
+            "in_range_ratio": float(summary.get("in_range_ratio", 0.0)),
+        }
+        self._history.append(record)
+        if len(self._history) > self.window:
+            self._history = self._history[-self.window:]
+        self._dwell += 1
+
+        # Use rolling mean over the window (or all available if shorter).
+        n = len(self._history)
+        avg_term = sum(r["term_rate"] for r in self._history) / n
+        avg_len = sum(r["mean_length"] for r in self._history) / n
+        avg_in_range = sum(r["in_range_ratio"] for r in self._history) / n
+        avg_len_ratio = avg_len / float(self.max_steps)
+
+        prev_stage = self.stage
+        decision_reason = "no-op"
+
+        stage1_ok = (
+            avg_term <= self.pass_term_rate and avg_len_ratio >= self.pass_len_ratio
+        )
+        stage1_violated = (
+            avg_term >= self.fail_term_rate or avg_len_ratio <= self.fail_len_ratio
+        )
+
+        if self._dwell < self.min_dwell:
+            decision_reason = f"dwell<{self.min_dwell}"
+        else:
+            if self.stage == 1 and stage1_ok:
+                self.stage = 2
+                decision_reason = "stage1->2 (balance learned)"
+            elif self.stage == 2:
+                if stage1_violated:
+                    self.stage = 1
+                    decision_reason = "stage2->1 (balance regressed)"
+                elif avg_in_range >= self.pass_in_range and stage1_ok:
+                    self.stage = 3
+                    decision_reason = "stage2->3 (approach learned)"
+            elif self.stage == 3:
+                if stage1_violated:
+                    self.stage = 1
+                    decision_reason = "stage3->1 (balance regressed)"
+                elif avg_in_range <= self.fail_in_range:
+                    self.stage = 2
+                    decision_reason = "stage3->2 (approach regressed)"
+
+        if self.stage != prev_stage:
+            self._dwell = 0
+
+        return {
+            "stage": self.stage,
+            "weights": self.weights,
+            "prev_stage": prev_stage,
+            "avg_term_rate": avg_term,
+            "avg_len_ratio": avg_len_ratio,
+            "avg_in_range_ratio": avg_in_range,
+            "dwell": self._dwell,
+            "reason": decision_reason,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Termination plugins
 # ---------------------------------------------------------------------------
@@ -1123,6 +1539,77 @@ def make_perturbed_balance_runtime() -> EnvRuntime:
     return runtime
 
 
+def make_curriculum_runtime() -> EnvRuntime:
+    """Build a fresh :class:`EnvRuntime` for unified-curriculum combat training.
+
+    Wires a *single composite* reward observer per agent
+    (:class:`MultiSignalRewardObserver`) so ``RolloutBatch.rewards`` is
+    always the weighted curriculum reward (the worker doesn't need to
+    know anything about stages — the trainer pushes per-episode
+    weights via ``options_fn``). Other plugins:
+
+      * :class:`CombatScoringPlugin` with very high HP (default
+        :data:`CURRICULUM_NO_KO_HEALTH`) to expose the damage stream
+        on ``ctx.metrics`` *without* triggering KO termination — that
+        would conflict with stage-1 / stage-2 mastery measurement.
+      * :class:`ImbalanceTerminationPlugin` per agent — the only legal
+        termination cause, so the trainer can interpret
+        ``RolloutBatch.terminated`` as "imbalance terminated this agent".
+      * :class:`InitialStatePerturbationPlugin` per agent — every reset
+        nudges the start state, matching the curriculum-1 design
+        ("balance under perturbations").
+
+    Top-level (no closures) so :class:`RolloutCollector` can pickle and
+    ship it to spawn-mode worker processes unchanged. Per-component
+    scales / weights / KO-disable HP come from
+    :data:`CURRICULUM_*` module constants — override via env vars or
+    rebuild a custom factory if needed.
+    """
+    simulator = MujocoCombatSimulator(initial_distance=INITIAL_DISTANCE)
+    sim_frequency = 1.0 / MujocoCombatSimulator.DT
+    phy_steps_per_action = max(1, int(round(sim_frequency / CONTROL_FREQUENCY)))
+
+    perturbations = {
+        agent: InitialStatePerturbationPlugin(
+            target_robot=agent,
+            joint_pos_delta_max=PERTURBATION_JOINT_POS_DELTA_MAX,
+            joint_vel_delta_max=PERTURBATION_JOINT_VEL_DELTA_MAX,
+            root_xy_offset_max=PERTURBATION_ROOT_XY_OFFSET_MAX,
+            root_tilt_deg_max=PERTURBATION_ROOT_TILT_DEG_MAX,
+            root_linear_velocity_delta_max=list(PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX),
+            root_angular_velocity_delta_max=list(PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX),
+            random_seed=None,
+        )
+        for agent in ("robot_a", "robot_b")
+    }
+
+    runtime = EnvRuntime(
+        simulator=simulator,
+        observer_plugins={
+            "robot_a_obs": Humanoid21Observer("robot_a"),
+            "robot_b_obs": Humanoid21Observer("robot_b"),
+            "robot_a_reward": MultiSignalRewardObserver("robot_a"),
+            "robot_b_reward": MultiSignalRewardObserver("robot_b"),
+        },
+        plugins=[
+            CombatScoringPlugin(
+                initial_health_a=CURRICULUM_NO_KO_HEALTH,
+                initial_health_b=CURRICULUM_NO_KO_HEALTH,
+                damage_scale=CURRICULUM_DAMAGE_SCALE,
+            ),
+            ImbalanceTerminationPlugin("robot_a"),
+            ImbalanceTerminationPlugin("robot_b"),
+            perturbations["robot_a"],
+            perturbations["robot_b"],
+        ],
+        phy_steps_per_action=phy_steps_per_action,
+        max_steps=CURRICULUM_MAX_STEPS,
+    )
+    runtime.observation_space = Humanoid21Observer.get_observation_space()
+    runtime.action_space = Humanoid21Observer.get_action_space()
+    return runtime
+
+
 def make_standing_adapter() -> TorchPolicyAdapter:
     """Picklable factory for the *worker-side* shared-architecture adapter.
 
@@ -1177,6 +1664,7 @@ __all__ = [
     # Hyperparameters
     "StandingConfig",
     "PerturbedBalanceConfig",
+    "CurriculumConfig",
     # Constants (commonly imported)
     "CONTROL_FREQUENCY",
     "MATCH_DURATION_SECONDS",
@@ -1215,6 +1703,22 @@ __all__ = [
     "OPP_REL_HEADING_LINEAR_RANGE_DEG",
     "OPP_REL_DIST_PENALTY_COEF",
     "OPP_REL_HEADING_PENALTY_COEF",
+    # Curriculum constants
+    "CURRICULUM_MATCH_DURATION_SECONDS",
+    "CURRICULUM_MAX_STEPS",
+    "CURRICULUM_DAMAGE_SCALE",
+    "CURRICULUM_R1_SCALE",
+    "CURRICULUM_R2_SCALE",
+    "CURRICULUM_R3_SCALE",
+    "CURRICULUM_NO_KO_HEALTH",
+    "CURRICULUM_STAGE1_PASS_TERM_RATE",
+    "CURRICULUM_STAGE1_FAIL_TERM_RATE",
+    "CURRICULUM_STAGE1_PASS_LEN_RATIO",
+    "CURRICULUM_STAGE1_FAIL_LEN_RATIO",
+    "CURRICULUM_STAGE2_PASS_IN_RANGE",
+    "CURRICULUM_STAGE2_FAIL_IN_RANGE",
+    "CURRICULUM_GATE_WINDOW",
+    "CURRICULUM_GATE_MIN_DWELL",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",
@@ -1222,6 +1726,10 @@ __all__ = [
     "BalanceValueDeltaRewarder",
     "CrossSupportBalanceRewarder",
     "OpponentRelationRewarder",
+    "NetDamageRewarder",
+    "MultiSignalRewardObserver",
+    # Curriculum gate
+    "CurriculumStageGate",
     # Termination plugins
     "StandingTerminationPlugin",
     "BalanceScoreTerminationPlugin",
@@ -1229,6 +1737,7 @@ __all__ = [
     # Factories / helpers
     "make_standing_runtime",
     "make_perturbed_balance_runtime",
+    "make_curriculum_runtime",
     "make_standing_adapter",
     "make_standing_options_fn",
     "set_seed",

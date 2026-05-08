@@ -478,5 +478,22 @@ def _rollout_chunk_fn(
                 continue
             if capture_agents is not None and agent not in capture_agents:
                 continue
-            out.setdefault(agent, []).append(traj.as_rollout_batch(result))
+            # Per-agent reward observers may expose ``episode_summary()``
+            # to publish derived per-episode scalars (e.g. weighted-reward
+            # component breakdowns for curriculum gating). When present,
+            # the dict is merged into ``RolloutBatch.info``.
+            info: Dict[str, Any] = {}
+            reward_obs_name = f"{agent}_reward"
+            reward_obs = runner.runtime.observer_plugins.get(reward_obs_name)
+            summary_fn = getattr(reward_obs, "episode_summary", None) if reward_obs is not None else None
+            if callable(summary_fn):
+                try:
+                    summary = summary_fn()
+                except Exception:
+                    summary = None
+                if isinstance(summary, dict):
+                    info.update(summary)
+            out.setdefault(agent, []).append(
+                traj.as_rollout_batch(result, info=info if info else None)
+            )
     return out
