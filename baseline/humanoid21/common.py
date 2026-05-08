@@ -875,12 +875,35 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
 
 
 class OpponentRelationRewarder(BaseObserverPlugin):
-    """与对手相对关系奖励（距离 + 朝向）。
+    """对手相对关系奖励 —— **归因安全版（2026-05-08 重写）**。
 
-    设计目标：课程二中鼓励“接近并朝向对手”，同时保持一个容忍范围：
-    - 距离在 [dist_min, dist_max] 内：无距离惩罚
-    - 朝向误差角 <= heading_max_angle_deg：无朝向惩罚
-    - 超出后按线性范围增长惩罚，并按系数加权
+    设计目标：课程二里鼓励"主动接近并朝向对手"，同时在已经进入
+    合适距离后保持在该区间。
+
+    **旧版的归因漏洞**：旧实现直接读 ``distance = ||opp - self||``，
+    当对手朝我走过来时 ``distance`` 也会减小，即使我站着不动也"白得"
+    奖励。在两 agent 共享同一 policy 的自博弈训练里，这会产生"互等
+    对方"的退化均衡。
+
+    **新版本**：距离信号只依赖智能体自身的速度在"对手方向"上的投影
+    （closing velocity）：
+
+      - ``distance > dist_max`` （太远）:
+          ``dist_signal = clip(closing_vel / typical_closing_speed, -1, 1)``
+          主动接近得正奖励，被动远离（被对手拉开）不扣分，主动远离扣分。
+      - ``distance ∈ [dist_min, dist_max]`` （在区间内）:
+          ``dist_signal = +1``  恒定正奖励，鼓励"留在格斗区"。
+      - ``distance < dist_min`` （太近）:
+          ``dist_signal = clip(-closing_vel / typical_closing_speed, -1, 1)``
+          主动拉开得正奖励。
+
+    速度项天然奖励"尽快进入格斗区"：出界时间越长，错过的 +1 越多。
+
+    朝向惩罚保持原样 —— 朝向永远由智能体自身控制，没有归因问题。
+
+    每步输出范围粗略为 ``[-dist_coef - heading_coef, +dist_coef]``。
+    暴露 ``.in_range`` 布尔属性给上游观察者读取（用于课程门控的
+    ``in_range_steps`` 统计）。
     """
 
     def __init__(
@@ -893,16 +916,24 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         heading_linear_range_deg: float = OPP_REL_HEADING_LINEAR_RANGE_DEG,
         dist_penalty_coef: float = OPP_REL_DIST_PENALTY_COEF,
         heading_penalty_coef: float = OPP_REL_HEADING_PENALTY_COEF,
+        typical_closing_speed: float = 1.0,
     ) -> None:
         self.agent_id = str(agent_id)
         self.opponent_id = "robot_b" if self.agent_id == "robot_a" else "robot_a"
         self.dist_min = float(dist_min)
         self.dist_max = float(dist_max)
+        # ``dist_linear_range`` is no longer used for the (deprecated)
+        # distance-excess penalty but kept as a constructor arg for
+        # backward compatibility with callers that pass it positionally.
         self.dist_linear_range = max(1e-6, float(dist_linear_range))
         self.heading_max_angle_deg = float(heading_max_angle_deg)
         self.heading_linear_range_deg = max(1e-6, float(heading_linear_range_deg))
         self.dist_penalty_coef = float(dist_penalty_coef)
         self.heading_penalty_coef = float(heading_penalty_coef)
+        self.typical_closing_speed = max(1e-3, float(typical_closing_speed))
+        self._dt = 1.0 / CONTROL_FREQUENCY
+        self._prev_self_xy: Optional[np.ndarray] = None
+        self.in_range: bool = False
         self._output: float = 0.0
 
     @staticmethod
@@ -925,6 +956,8 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         return fxy / f_norm
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._prev_self_xy = None
+        self.in_range = False
         self._output = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -936,17 +969,41 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         opp_xy = np.asarray(opp_state["root_pos"][:2], dtype=np.float64)
         delta_xy = opp_xy - self_xy
         distance = float(np.linalg.norm(delta_xy))
+        self.in_range = self.dist_min <= distance <= self.dist_max
 
-        # 1) 距离区间惩罚
-        if distance < self.dist_min:
-            dist_excess = self.dist_min - distance
-        elif distance > self.dist_max:
-            dist_excess = distance - self.dist_max
+        # ---- 1) Attribution-safe distance signal ---------------------
+        # Self-velocity (finite-difference on own root position only —
+        # opponent motion does NOT enter this term).
+        if self._prev_self_xy is None:
+            v_self = np.zeros(2, dtype=np.float64)
         else:
-            dist_excess = 0.0
-        dist_penalty = min(dist_excess / self.dist_linear_range, 1.0)
+            v_self = (self_xy - self._prev_self_xy) / self._dt
+        self._prev_self_xy = self_xy.copy()
 
-        # 2) 朝向惩罚（面向对手角度）
+        if distance < 1e-6:
+            closing_vel = 0.0
+        else:
+            to_opp_unit = delta_xy / distance
+            closing_vel = float(np.dot(v_self, to_opp_unit))
+
+        if self.in_range:
+            # Reward being in the fight zone. Constant +1 means "each
+            # in-range step collects the full bonus"; this is what makes
+            # "arrive fast" optimal (every step wasted out-of-range is
+            # one step of +1 left on the table).
+            dist_signal = 1.0
+        elif distance > self.dist_max:
+            # Too far: reward positive closing velocity; penalize retreat.
+            dist_signal = float(np.clip(
+                closing_vel / self.typical_closing_speed, -1.0, 1.0,
+            ))
+        else:  # distance < dist_min
+            # Too close: reward retreat (negative closing vel).
+            dist_signal = float(np.clip(
+                -closing_vel / self.typical_closing_speed, -1.0, 1.0,
+            ))
+
+        # ---- 2) Heading penalty (unchanged; always self-attributed) --
         if distance < 1e-6:
             heading_penalty = 0.0
         else:
@@ -959,11 +1016,10 @@ class OpponentRelationRewarder(BaseObserverPlugin):
             angle_excess = max(0.0, angle_deg - self.heading_max_angle_deg)
             heading_penalty = min(angle_excess / self.heading_linear_range_deg, 1.0)
 
-        total_penalty = (
-            self.dist_penalty_coef * dist_penalty
-            + self.heading_penalty_coef * heading_penalty
+        self._output = float(
+            self.dist_penalty_coef * dist_signal
+            - self.heading_penalty_coef * heading_penalty
         )
-        self._output = -float(total_penalty)
 
     def get_output(self) -> float:
         return float(self._output)
@@ -1077,10 +1133,13 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._r2_sum += r2
         self._r3_sum += r3
         self._num_steps += 1
-        # OpponentRelationRewarder is non-positive and equal to 0 exactly
-        # when the agent is inside both the distance and heading windows;
-        # that is the stage-2 "in range" criterion by construction.
-        if r2 >= 0.0:
+        # OpponentRelationRewarder exposes an explicit .in_range flag
+        # (purely geometric: ``dist_min <= ||opp-self|| <= dist_max``).
+        # We use that directly — we do NOT infer "in range" from the
+        # sign of r2, because under the attribution-safe rewarder r2
+        # can be positive (out of range + closing fast) or negative
+        # (in range but facing wrong way, so heading penalty dominates).
+        if bool(self._r2.in_range):
             self._in_range_steps += 1
         w1, w2, w3 = self._weights
         self._output = (
@@ -1571,9 +1630,12 @@ def make_curriculum_runtime() -> EnvRuntime:
       * :class:`ImbalanceTerminationPlugin` per agent — the only legal
         termination cause, so the trainer can interpret
         ``RolloutBatch.terminated`` as "imbalance terminated this agent".
-      * :class:`InitialStatePerturbationPlugin` per agent — every reset
-        nudges the start state, matching the curriculum-1 design
-        ("balance under perturbations").
+
+    NOTE (2026-05-08): Initial-state perturbation was REMOVED from this
+    factory. The user's priority is "learn combat fast", and perturbation
+    was making stage 1 strictly harder than it needs to be. If future
+    runs need robustness training, re-introduce a
+    ``make_curriculum_runtime_perturbed`` variant.
 
     Top-level (no closures) so :class:`RolloutCollector` can pickle and
     ship it to spawn-mode worker processes unchanged. Per-component
@@ -1584,20 +1646,6 @@ def make_curriculum_runtime() -> EnvRuntime:
     simulator = MujocoCombatSimulator(initial_distance=INITIAL_DISTANCE)
     sim_frequency = 1.0 / MujocoCombatSimulator.DT
     phy_steps_per_action = max(1, int(round(sim_frequency / CONTROL_FREQUENCY)))
-
-    perturbations = {
-        agent: InitialStatePerturbationPlugin(
-            target_robot=agent,
-            joint_pos_delta_max=PERTURBATION_JOINT_POS_DELTA_MAX,
-            joint_vel_delta_max=PERTURBATION_JOINT_VEL_DELTA_MAX,
-            root_xy_offset_max=PERTURBATION_ROOT_XY_OFFSET_MAX,
-            root_tilt_deg_max=PERTURBATION_ROOT_TILT_DEG_MAX,
-            root_linear_velocity_delta_max=list(PERTURBATION_ROOT_LINEAR_VELOCITY_DELTA_MAX),
-            root_angular_velocity_delta_max=list(PERTURBATION_ROOT_ANGULAR_VELOCITY_DELTA_MAX),
-            random_seed=None,
-        )
-        for agent in ("robot_a", "robot_b")
-    }
 
     runtime = EnvRuntime(
         simulator=simulator,
@@ -1615,8 +1663,6 @@ def make_curriculum_runtime() -> EnvRuntime:
             ),
             ImbalanceTerminationPlugin("robot_a"),
             ImbalanceTerminationPlugin("robot_b"),
-            perturbations["robot_a"],
-            perturbations["robot_b"],
         ],
         phy_steps_per_action=phy_steps_per_action,
         max_steps=CURRICULUM_MAX_STEPS,
