@@ -174,15 +174,12 @@ CURRICULUM_TERMINAL_FALL_PENALTY = float(
 # episodes. The damage stream is what we want, not the KO event.
 CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9"))
 
-# Curriculum gate defaults — tunable via env vars / CLI overrides.
-CURRICULUM_STAGE1_PASS_TERM_RATE = 0.05      # imbalance termination rate
-CURRICULUM_STAGE1_FAIL_TERM_RATE = 0.15      # hysteresis upper bound
-CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.95      # mean episode length / max steps
-CURRICULUM_STAGE1_FAIL_LEN_RATIO = 0.85
-CURRICULUM_STAGE2_PASS_IN_RANGE = 0.80       # mean fraction of steps in range
-CURRICULUM_STAGE2_FAIL_IN_RANGE = 0.60
-CURRICULUM_GATE_WINDOW = 3                   # rolling-window updates for gate
-CURRICULUM_GATE_MIN_DWELL = 5                # min updates to stay in a stage
+# Curriculum gate thresholds (eval-driven classifier; see
+# :class:`CurriculumStageGate`). The gate has no hysteresis / dwell —
+# every eval cycle re-classifies the next stage purely from these two
+# pass thresholds.
+CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.95      # eval mean_length / max_steps
+CURRICULUM_STAGE2_PASS_IN_RANGE = 0.80       # eval in_range_ratio
 
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
@@ -358,7 +355,15 @@ class CurriculumConfig:
     actor_hidden_dim: int = 256
     critic_hidden_dim: int = 256
     log_std_min: float = DEFAULT_LOG_STD_MIN
-    log_std_max: float = DEFAULT_LOG_STD_MAX
+    # Curriculum-specific override: cap policy std at e^0 = 1.0 instead
+    # of the global default e^1 ≈ 2.72. Empirically the broader cap
+    # leaves stochastic-rollout actions saturated at tanh(±)=±1 (= near
+    # random) for a long time after the underlying mean policy has
+    # converged, which causes a large train/eval gap and strands the
+    # eval-driven gate at stage 1 forever waiting for stochastic
+    # mastery. Tighter cap shrinks that gap and lets the gate actually
+    # see deterministic progress in the train batch too.
+    log_std_max: float = 0.0
 
     # PPO knobs.
     learning_rate: float = 3e-4
@@ -391,15 +396,10 @@ class CurriculumConfig:
     # trajectories, in every stage). 0.0 disables.
     terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
 
-    # Stage-gate thresholds (hysteresis pairs).
-    stage1_pass_term_rate: float = CURRICULUM_STAGE1_PASS_TERM_RATE
-    stage1_fail_term_rate: float = CURRICULUM_STAGE1_FAIL_TERM_RATE
+    # Stage-gate pass thresholds (eval-driven classifier; see
+    # :class:`CurriculumStageGate`).
     stage1_pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO
-    stage1_fail_len_ratio: float = CURRICULUM_STAGE1_FAIL_LEN_RATIO
     stage2_pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE
-    stage2_fail_in_range: float = CURRICULUM_STAGE2_FAIL_IN_RANGE
-    gate_window: int = CURRICULUM_GATE_WINDOW
-    gate_min_dwell: int = CURRICULUM_GATE_MIN_DWELL
 
     # Initial-state perturbation toggle (always on for curriculum stage 1).
     enable_perturbation: bool = True
@@ -1184,41 +1184,53 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
 # Curriculum stage gate
 # ---------------------------------------------------------------------------
 class CurriculumStageGate:
-    """Data-driven curriculum gate with hysteresis + minimum dwell.
+    """Eval-driven curriculum stage classifier (rewritten 2026-05-09).
 
-    The trainer feeds the gate a summary of the most recent rollout
-    batch (mean episode length, imbalance termination rate, in-range
-    fraction, etc.). The gate maintains a 3-stage state machine and
-    decides which stage we are in for the *next* rollout. Lower-stage
-    rewards stay active once a higher stage opens — that is the
-    catastrophic-forgetting safeguard.
+    **Design philosophy** (per user request):
 
-    Stage transitions::
+      The gate is a *stateless classifier* over the latest evaluation
+      result. On every eval cycle it picks which stage the next batch
+      of training should be in — purely from the eval summary, no
+      hysteresis, no dwell, no rolling window, no ordered transition
+      graph.
 
-        stage 1 -> stage 2  : term_rate < pass_term_rate AND
-                              len_ratio > pass_len_ratio
-        stage 2 -> stage 1  : term_rate > fail_term_rate OR
-                              len_ratio < fail_len_ratio
-        stage 2 -> stage 3  : (above stage-1 conds still hold) AND
-                              in_range_ratio > pass_in_range
-        stage 3 -> stage 2  : (above stage-1 conds still hold) AND
-                              in_range_ratio < fail_in_range
-        stage 3 -> stage 1  : stage-1 condition violated
+      A single eval can move stage from 1 directly to 3 (or 3 back to
+      1) — whatever the deterministic policy's current capability says
+      it deserves.
 
-    A transition only fires when both
-      * the rolling mean over ``window`` recent updates satisfies the
-        threshold, and
-      * the current stage has been in effect for at least ``min_dwell``
-        updates (to dampen oscillation early in training).
+      Why eval and not train rollouts? Train rollouts use stochastic
+      ``tanh(N(mu, sigma))`` actions; until ``log_std`` shrinks, the
+      sampled policy is much weaker than the underlying mean policy.
+      Gating on train metrics indefinitely strands the curriculum at
+      stage 1 even after the deterministic policy can clear stage 1
+      perfectly. Eval rollouts (deterministic, mean action) are the
+      faithful capability measurement.
 
-    Weight schedule::
+    **Decision rule** (single-pass classification on eval summary)::
 
-        stage 1 -> (1, 0, 0)
-        stage 2 -> (1, 1, 0)
-        stage 3 -> (1, 1, 1)
+        len_ratio = eval_mean_length / max_steps
+        in_range  = eval_in_range_ratio
 
-    Pure Python, no numpy / torch deps — picklable, testable, and safe
-    to construct on the main process only.
+        if len_ratio < pass_len_ratio:
+            stage = 1   # haven't mastered balance yet
+        elif in_range < pass_in_range:
+            stage = 2   # balance OK, work on approach
+        else:
+            stage = 3   # balance + approach both OK, do combat
+
+    **Weights**::
+
+        stage 1 -> (1, 0, 0)   r1 only
+        stage 2 -> (1, 1, 0)   r1 + r2
+        stage 3 -> (1, 1, 1)   r1 + r2 + r3
+
+    Lower-stage rewards stay active in higher stages — that's the
+    catastrophic-forgetting safeguard. Re-classification happens
+    every eval; if the policy regresses (e.g. forgets balance after
+    chasing damage), the next eval pulls us back to stage 1
+    immediately.
+
+    Pure Python, picklable, no numpy/torch deps.
     """
 
     STAGE_WEIGHTS: Dict[int, tuple] = {
@@ -1231,14 +1243,8 @@ class CurriculumStageGate:
         self,
         *,
         max_steps: int,
-        pass_term_rate: float = CURRICULUM_STAGE1_PASS_TERM_RATE,
-        fail_term_rate: float = CURRICULUM_STAGE1_FAIL_TERM_RATE,
         pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO,
-        fail_len_ratio: float = CURRICULUM_STAGE1_FAIL_LEN_RATIO,
         pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE,
-        fail_in_range: float = CURRICULUM_STAGE2_FAIL_IN_RANGE,
-        window: int = CURRICULUM_GATE_WINDOW,
-        min_dwell: int = CURRICULUM_GATE_MIN_DWELL,
         initial_stage: int = 1,
     ) -> None:
         if initial_stage not in self.STAGE_WEIGHTS:
@@ -1246,94 +1252,79 @@ class CurriculumStageGate:
         if max_steps <= 0:
             raise ValueError(f"max_steps must be > 0; got {max_steps}")
         self.max_steps = int(max_steps)
-        self.pass_term_rate = float(pass_term_rate)
-        self.fail_term_rate = float(fail_term_rate)
         self.pass_len_ratio = float(pass_len_ratio)
-        self.fail_len_ratio = float(fail_len_ratio)
         self.pass_in_range = float(pass_in_range)
-        self.fail_in_range = float(fail_in_range)
-        self.window = max(1, int(window))
-        self.min_dwell = max(1, int(min_dwell))
         self.stage = int(initial_stage)
-        self._dwell = 0
-        self._history: List[Dict[str, float]] = []
+        # Last eval-summary metrics (or None if no eval yet). Kept only
+        # for logging; not consulted by the next decision.
+        self._last_eval_len_ratio: Optional[float] = None
+        self._last_eval_in_range: Optional[float] = None
+        self._last_decision_reason: str = "init"
 
     @property
     def weights(self) -> tuple:
         return self.STAGE_WEIGHTS[self.stage]
 
-    def update(self, summary: Dict[str, float]) -> Dict[str, Any]:
-        """Push one update's metrics, advance the state machine.
+    def assign_from_eval(self, eval_summary: Dict[str, float]) -> Dict[str, Any]:
+        """Pick the next training stage from a single eval summary.
 
-        ``summary`` is expected to carry at least:
-          * ``term_rate`` — fraction of episodes that ended via
-            ImbalanceTerminationPlugin (== ``terminated`` flag) in the
-            last update's batch.
-          * ``mean_length`` — mean episode length (steps).
-          * ``in_range_ratio`` — mean fraction of steps with r2 >= 0.
+        ``eval_summary`` must carry:
+          * ``mean_length`` — mean episode length over the eval batch
+            (deterministic policy).
+          * ``in_range_ratio`` — mean fraction of steps with the agent
+            inside the OpponentRelationRewarder distance band.
 
-        Extra keys are ignored. Missing keys default to 0.
+        Returns a dict with the new stage, weights, previous stage,
+        the two derived ratios, and a human-readable reason string.
         """
-        record = {
-            "term_rate": float(summary.get("term_rate", 0.0)),
-            "mean_length": float(summary.get("mean_length", 0.0)),
-            "in_range_ratio": float(summary.get("in_range_ratio", 0.0)),
-        }
-        self._history.append(record)
-        if len(self._history) > self.window:
-            self._history = self._history[-self.window:]
-        self._dwell += 1
-
-        # Use rolling mean over the window (or all available if shorter).
-        n = len(self._history)
-        avg_term = sum(r["term_rate"] for r in self._history) / n
-        avg_len = sum(r["mean_length"] for r in self._history) / n
-        avg_in_range = sum(r["in_range_ratio"] for r in self._history) / n
-        avg_len_ratio = avg_len / float(self.max_steps)
+        len_ratio = float(eval_summary.get("mean_length", 0.0)) / float(self.max_steps)
+        in_range = float(eval_summary.get("in_range_ratio", 0.0))
 
         prev_stage = self.stage
-        decision_reason = "no-op"
-
-        stage1_ok = (
-            avg_term <= self.pass_term_rate and avg_len_ratio >= self.pass_len_ratio
-        )
-        stage1_violated = (
-            avg_term >= self.fail_term_rate or avg_len_ratio <= self.fail_len_ratio
-        )
-
-        if self._dwell < self.min_dwell:
-            decision_reason = f"dwell<{self.min_dwell}"
+        if len_ratio < self.pass_len_ratio:
+            new_stage = 1
+            reason = (
+                f"eval len_ratio={len_ratio:.3f}<{self.pass_len_ratio:.2f}"
+                " -> stage 1 (balance)"
+            )
+        elif in_range < self.pass_in_range:
+            new_stage = 2
+            reason = (
+                f"eval len_ratio={len_ratio:.3f}>=pass,"
+                f" in_range={in_range:.3f}<{self.pass_in_range:.2f}"
+                " -> stage 2 (approach)"
+            )
         else:
-            if self.stage == 1 and stage1_ok:
-                self.stage = 2
-                decision_reason = "stage1->2 (balance learned)"
-            elif self.stage == 2:
-                if stage1_violated:
-                    self.stage = 1
-                    decision_reason = "stage2->1 (balance regressed)"
-                elif avg_in_range >= self.pass_in_range and stage1_ok:
-                    self.stage = 3
-                    decision_reason = "stage2->3 (approach learned)"
-            elif self.stage == 3:
-                if stage1_violated:
-                    self.stage = 1
-                    decision_reason = "stage3->1 (balance regressed)"
-                elif avg_in_range <= self.fail_in_range:
-                    self.stage = 2
-                    decision_reason = "stage3->2 (approach regressed)"
+            new_stage = 3
+            reason = (
+                f"eval len_ratio={len_ratio:.3f}>=pass,"
+                f" in_range={in_range:.3f}>=pass"
+                " -> stage 3 (combat)"
+            )
 
-        if self.stage != prev_stage:
-            self._dwell = 0
+        self.stage = new_stage
+        self._last_eval_len_ratio = len_ratio
+        self._last_eval_in_range = in_range
+        self._last_decision_reason = reason
 
         return {
             "stage": self.stage,
             "weights": self.weights,
             "prev_stage": prev_stage,
-            "avg_term_rate": avg_term,
-            "avg_len_ratio": avg_len_ratio,
-            "avg_in_range_ratio": avg_in_range,
-            "dwell": self._dwell,
-            "reason": decision_reason,
+            "eval_len_ratio": len_ratio,
+            "eval_in_range_ratio": in_range,
+            "reason": reason,
+        }
+
+    def current_state(self) -> Dict[str, Any]:
+        """Read-only snapshot for logging on non-eval updates."""
+        return {
+            "stage": self.stage,
+            "weights": self.weights,
+            "prev_stage": self.stage,
+            "eval_len_ratio": self._last_eval_len_ratio,
+            "eval_in_range_ratio": self._last_eval_in_range,
+            "reason": self._last_decision_reason,
         }
 
 
@@ -1774,14 +1765,8 @@ __all__ = [
     "CURRICULUM_R3_SCALE",
     "CURRICULUM_TERMINAL_FALL_PENALTY",
     "CURRICULUM_NO_KO_HEALTH",
-    "CURRICULUM_STAGE1_PASS_TERM_RATE",
-    "CURRICULUM_STAGE1_FAIL_TERM_RATE",
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
-    "CURRICULUM_STAGE1_FAIL_LEN_RATIO",
     "CURRICULUM_STAGE2_PASS_IN_RANGE",
-    "CURRICULUM_STAGE2_FAIL_IN_RANGE",
-    "CURRICULUM_GATE_WINDOW",
-    "CURRICULUM_GATE_MIN_DWELL",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",

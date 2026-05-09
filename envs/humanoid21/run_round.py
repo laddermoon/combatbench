@@ -17,12 +17,19 @@ Usage:
     python -m envs.humanoid21.run_round \
         --policy-a "random?scale=0.2&seed=42" \
         --duration 15 --video output.mp4
+
+    # Inject additional runtime plugins (repeatable)
+    python -m envs.humanoid21.run_round \
+        --plugin "baseline.humanoid21.common:ImbalanceTerminationPlugin?agent_id=robot_a&grace_steps=2"
 """
 import argparse
+import importlib
+import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
+from urllib.parse import parse_qsl
 
 # Set headless render mode if EGL is available
 os.environ['MUJOCO_GL'] = 'egl'
@@ -46,7 +53,7 @@ def parse_args():
     parser.add_argument('--policy-b', type=str, default=None,
                         help='Policy B specification')
     parser.add_argument('--duration', type=float, default=30.0,
-                        help='Match duration in seconds (default: 30.0)')
+                        help='Round duration in seconds (default: 30.0)')
     parser.add_argument('--control-frequency', type=int, default=20,
                         help='Control frequency in Hz (default: 20)')
     parser.add_argument('--damage-scale', type=float, default=100.0,
@@ -55,8 +62,72 @@ def parse_args():
                         help='Path to save video (e.g., match.mp4)')
     parser.add_argument('--quiet', '-q', action='store_true',
                         help='Suppress progress output')
+    parser.add_argument(
+        '--plugin',
+        action='append',
+        default=[],
+        metavar='SPEC',
+        help=(
+            "Inject runtime plugin, repeatable. "
+            "Format: module.path:ClassName?key=value&key2=value2"
+        ),
+    )
 
     return parser.parse_args()
+
+
+def _coerce_cli_value(raw: str) -> Any:
+    text = str(raw)
+    lowered = text.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("none", "null"):
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _parse_plugin_spec(spec: str) -> tuple[str, str, Dict[str, Any]]:
+    module_and_class, sep, query = str(spec).partition("?")
+    if ":" not in module_and_class:
+        raise ValueError(
+            f"Invalid --plugin spec: {spec!r}. "
+            "Expected format module.path:ClassName?key=value"
+        )
+    module_path, class_name = module_and_class.split(":", 1)
+    module_path = module_path.strip()
+    class_name = class_name.strip()
+    if not module_path or not class_name:
+        raise ValueError(
+            f"Invalid --plugin spec: {spec!r}. "
+            "module.path and ClassName must be non-empty."
+        )
+
+    kwargs: Dict[str, Any] = {}
+    if sep and query:
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            k = key.strip()
+            if not k:
+                continue
+            kwargs[k] = _coerce_cli_value(value)
+    return module_path, class_name, kwargs
+
+
+def _load_plugin_from_spec(spec: str) -> Any:
+    module_path, class_name, kwargs = _parse_plugin_spec(spec)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        raise AttributeError(
+            f"Plugin class {class_name!r} not found in module {module_path!r}"
+        )
+    if not callable(cls):
+        raise TypeError(
+            f"Plugin target {module_path}:{class_name} is not callable"
+        )
+    return cls(**kwargs)
 
 
 def main() -> None:
@@ -89,6 +160,11 @@ def main() -> None:
     ]
     if args.video:
         plugins.append(VideoRecorderPlugin(fps=30, output_path=args.video))
+    for plugin_spec in args.plugin:
+        plugin_obj = _load_plugin_from_spec(plugin_spec)
+        plugins.append(plugin_obj)
+        if not args.quiet:
+            print(f"Injected plugin: {plugin_obj.__class__.__name__} ({plugin_spec})")
 
     runtime = make_env(
         match_duration=args.duration,

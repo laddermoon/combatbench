@@ -17,14 +17,23 @@ reward = w1 * r1_balance + w2 * r2_approach + w3 * r3_net_damage
 The active weights `(w1, w2, w3)` come from `CurriculumStageGate`,
 which advances stages based on rollout statistics:
 
-| Stage | Weights         | Promotion criterion                                                                        |
-|-------|-----------------|--------------------------------------------------------------------------------------------|
-| 1     | (1, 0, 0)       | balance only                                                                              |
-| 2     | (1, 1, 0)       | term_rate ≤ 5% AND mean_len/max ≥ 95% (rolling window, with ≥ min_dwell updates in stage) |
-| 3     | (1, 1, 1)       | stage 1 still passing AND in_range_ratio ≥ 80%                                            |
+Gate (rewritten 2026-05-09) is **eval-driven, single-shot, no
+hysteresis, no dwell, no fixed progression**: every `eval_interval`
+updates we run a deterministic eval batch and re-classify the next
+stage purely from that single eval. Any stage can transition to any
+other stage in one step.
 
-Demotions use a hysteresis FAIL band (term_rate ≥ 15% OR len_ratio ≤ 85%
-forces stage → 1) — this is the catastrophic-forgetting safeguard.
+| Stage | Weights         | Decision rule (on every eval)                                       |
+|-------|-----------------|---------------------------------------------------------------------|
+| 1     | (1, 0, 0)       | `eval_len_ratio < pass_len_ratio` (default 0.95)                    |
+| 2     | (1, 1, 0)       | `eval_len_ratio ≥ pass_len_ratio` AND `eval_in_range < pass_in_range` (0.80) |
+| 3     | (1, 1, 1)       | `eval_len_ratio ≥ pass_len_ratio` AND `eval_in_range ≥ pass_in_range`        |
+
+Why eval and not train rollouts? Train uses stochastic
+`tanh(N(μ, σ))` actions; until `log_std` shrinks the sampled
+policy is much weaker than the underlying mean policy, so train
+metrics chronically underestimate true capability and strand the
+gate at stage 1. Eval is deterministic (mean action), faithful.
 
 Lower-stage rewards never get fully turned off once a higher stage opens.
 
@@ -70,7 +79,8 @@ Defaults from `CurriculumConfig`:
 * `rollout_workers = max(1, min(64, ncpu // 2))` — on the 192-core box ⇒ 64
 * `eval_interval = 5`, `eval_episodes = 16`
 * `learning_rate = 3e-4`, `gamma = 0.99`, `gae_lambda = 0.95`
-* `gate_window = 3`, `gate_min_dwell = 5`
+* `log_std_max = 0.0` (σ ≤ 1.0; tightened from default 1.0 to shrink train/eval gap)
+* gate: eval-driven, `pass_len_ratio = 0.95`, `pass_in_range = 0.80`
 
 ## 4. What "normal" looks like
 
@@ -93,9 +103,10 @@ Health expectations (all rolling means over the last 20 updates):
 | stage 2 in-range learn | 200–800      | stays ≥ 190        | ≤ 0.05             | climbs to ≥ 0.80  | <  0.05           |
 | stage 2 → 3 promotion  | 800–???      | stays ≥ 190        | ≤ 0.05             | ≥ 0.80            | <  0.05           |
 
-The exact update numbers are **estimates** — the gate is data-driven, so
-slow learners just sit at lower stages longer. Hysteresis can cause
-brief regressions; that is by design.
+The exact update numbers are **estimates** — the gate re-classifies
+on every eval, so the policy can flap freely between stages while
+learning. Brief stage 2 → 1 → 2 oscillations during the early stage-2
+shock are normal.
 
 ### Definitely-bad signals (kill and investigate)
 
@@ -104,7 +115,7 @@ brief regressions; that is by design.
 | `kl > 0.5` for 3+ updates                      | clip_eps too lax / lr too high / value head reload bug | reduce `learning_rate` to 1e-4, restart                 |
 | `value_loss` climbing monotonically            | value-target/reward scale mismatch           | check `r{1,2,3}_scale` / weight scaling                 |
 | `mean_length` decreasing for 30+ updates       | reward gaming / reward bug                   | inspect `r1`/`r2`/`r3` traces, suspect scale            |
-| `stage` flapping 1↔2↔1↔2 within 10 updates     | hysteresis band too tight                    | widen `fail_term_rate` / `fail_len_ratio`               |
+| `stage` flapping persists for 100+ updates and never settles  | reward design / log_std blowup    | tighten `log_std_max`, lower `r2_scale`, restart        |
 | Frozen `update=N` line ≥ 5 min                 | rollout worker hung / process dead           | check `nvidia-smi`, `ps`, restart                       |
 
 ### Borderline signals (watch closely)

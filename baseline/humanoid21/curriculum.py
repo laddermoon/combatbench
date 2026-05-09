@@ -18,8 +18,12 @@ catastrophic-forgetting safeguard the user explicitly asked for.
 Implementation style mirrors ``stage1.py``: actor + critic PPO with
 GAE, single train(cfg, run_dir) function, RolloutCollector for
 parallel rollout, no Trainer class. The only new piece relative to
-``stage1.py`` is the per-update gate.update() + per-episode
-options_fn closure that publishes the latest weights.
+``stage1.py`` is the eval-driven CurriculumStageGate: every
+``cfg.eval_interval`` updates we run a deterministic eval batch and
+feed its summary to ``gate.assign_from_eval()``, which classifies
+the NEXT stage purely from that single eval (no hysteresis, no
+dwell, no fixed transition graph). Between evals the gate state is
+static and read via ``gate.current_state()``.
 """
 from __future__ import annotations
 
@@ -359,14 +363,8 @@ def train(
 
     gate = CurriculumStageGate(
         max_steps=cfg.max_steps,
-        pass_term_rate=cfg.stage1_pass_term_rate,
-        fail_term_rate=cfg.stage1_fail_term_rate,
         pass_len_ratio=cfg.stage1_pass_len_ratio,
-        fail_len_ratio=cfg.stage1_fail_len_ratio,
         pass_in_range=cfg.stage2_pass_in_range,
-        fail_in_range=cfg.stage2_fail_in_range,
-        window=cfg.gate_window,
-        min_dwell=cfg.gate_min_dwell,
     )
 
     distance_options_fn = make_standing_options_fn()
@@ -388,7 +386,9 @@ def train(
         f"curriculum: max_steps={cfg.max_steps} "
         f"r1_scale={cfg.r1_scale} r2_scale={cfg.r2_scale} r3_scale={cfg.r3_scale} "
         f"terminal_fall_penalty={cfg.terminal_fall_penalty} "
-        f"window={cfg.gate_window} dwell={cfg.gate_min_dwell}",
+        f"log_std_max={cfg.log_std_max} "
+        f"gate=eval-driven(pass_len={cfg.stage1_pass_len_ratio:.2f},"
+        f"pass_in_range={cfg.stage2_pass_in_range:.2f},eval_every={cfg.eval_interval})",
         flush=True,
     )
 
@@ -430,7 +430,9 @@ def train(
                 trajectories, terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
             stats = _ppo_update(actor, critic, optimizer, trajectories, cfg, device)
-            gate_info = gate.update(batch_summary)
+            # Gate state is fixed between evals; we only read it here so
+            # the per-update log line carries the current stage/weights.
+            gate_info = gate.current_state()
 
             mean_reward = float(np.mean([float(t.rewards.sum()) for t in trajectories]))
             mean_term_penalty = float(total_term_penalty / max(1, len(trajectories)))
@@ -464,13 +466,27 @@ def train(
                     eval_batches.get("robot_a", []) + eval_batches.get("robot_b", [])
                 )
                 if eval_trajectories:
+                    eval_summary = _summarize_batch(
+                        eval_trajectories, max_steps=cfg.max_steps,
+                    )
                     eval_reward = float(
                         np.mean([float(t.rewards.sum()) for t in eval_trajectories])
                     )
-                    eval_length = float(
-                        np.mean([int(t.num_steps) for t in eval_trajectories])
+                    eval_length = eval_summary["mean_length"]
+                    eval_in_range = eval_summary["in_range_ratio"]
+                    line += (
+                        f" | eval_reward={eval_reward:+.4f}"
+                        f" eval_length={eval_length:6.2f}"
+                        f" eval_in_range={eval_in_range:.3f}"
                     )
-                    line += f" | eval_reward={eval_reward:+.4f} eval_length={eval_length:6.2f}"
+                    # ----- eval-driven stage classification --------------
+                    prev_stage = gate.stage
+                    gate_info = gate.assign_from_eval(eval_summary)
+                    if gate_info["stage"] != prev_stage:
+                        line += (
+                            f"  [stage {prev_stage}->{gate_info['stage']}"
+                            f" {gate_info['reason']}]"
+                        )
                     score = eval_length  # primary criterion: survival under curriculum
                     if score > best_eval:
                         best_eval = score
@@ -525,8 +541,6 @@ def main() -> None:
         cfg.eval_interval = 1
         cfg.rollout_workers = 2
         cfg.minibatch_size = 256
-        cfg.gate_min_dwell = 1
-        cfg.gate_window = 1
     if args.max_updates is not None:
         cfg.max_updates = int(args.max_updates)
     if args.episodes_per_update is not None:
