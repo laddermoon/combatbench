@@ -1,210 +1,174 @@
-# Curriculum Training Plan
+# Curriculum Training Plan (humanoid21)
 
-A practical plan for running and watching `curriculum.py` — the unified
-three-stage trainer for humanoid21 combat. Pair this document with
-`curriculum_monitor.py` for the actual monitoring commands.
+This document describes how to train, monitor, and validate the unified
+three-stage curriculum policy via `baseline/humanoid21/curriculum.py`.
 
-## 1. What the trainer does (recap)
+## Design summary
 
-`curriculum.py` runs ONE PPO training loop with ONE policy network.
-The reward is a weighted sum of three signals computed by
-`MultiSignalRewardObserver`:
+- **Single trainer, three stages, one model.** Reward is the weighted sum
+  of three signals collected every step:
+  - `r1` — `CrossSupportBalanceRewarder` (cross-support balance)
+  - `r2` — `OpponentRelationRewarder` (attribution-safe approach + heading)
+  - `r3` — `NetDamageRewarder` (per-step net damage delta)
+- **Per-step reward** = `w1 * r1_scale * r1 + w2 * r2_scale * r2 + w3 * r3_scale * r3`,
+  with a sparse `-1.0` terminal fall penalty injected post-rollout on
+  every imbalance-terminated trajectory (matches `stage1.py` exactly).
+- **Stage weights** (`CurriculumStageGate.STAGE_WEIGHTS`):
+  - Stage 1 → `(1, 0, 0)` — r1 only
+  - Stage 2 → `(1, 1, 0)` — r1 + r2
+  - Stage 3 → `(1, 1, 1)` — r1 + r2 + r3
+  - Lower-stage rewards stay active in higher stages — anti-forgetting
+    safeguard.
+- **Magnitude balance** (per-episode contributions, all roughly O(1)):
+  - r1: `0.02 * cross_support_sum` ∈ [-0.1, 0]; plus `-1` terminal penalty
+  - r2: `0.02 * r2_sum` ∈ [0, +4] once approach is partially learned
+  - r3: `0.05 * net_damage_sum` ∈ [-2, +5] for active fights
+
+## Stage 1 alignment with `stage1.py`
+
+The training signal in Stage 1 is **bit-identical** to `stage1.py`:
+
+- Runtime: `make_curriculum_runtime_for(target)` — only the **target
+  agent** has an `ImbalanceTerminationPlugin`, so the episode terminates
+  iff THAT agent falls (matches `make_stage1_runtime_for`).
+- Per-step reward (Stage 1 weights `(1,0,0)`):
+  `r1_scale * r1` = `0.02 * cross_support_reward` =
+  `cross_support_reward_scale * cross_support_reward` from `stage1.py`.
+- Terminal penalty: `_inject_terminal_fall_penalty` (literally copied
+  from `stage1.py`).
+- Trainer alternates `target_agent` per rollout via the same
+  `_agent_from_rollout_seed` function and discards non-target
+  trajectories before PPO update.
+
+## Eval-driven stage gate
+
+Single-shot, stateless classifier — no hysteresis, no dwell, no fixed
+transition graph. After every `eval_interval` updates we run a
+deterministic eval batch, summarize it, and call
+`gate.assign_from_eval(eval_summary)`:
 
 ```
-reward = w1 * r1_balance + w2 * r2_approach + w3 * r3_net_damage
+len_ratio       = eval mean_length / max_steps
+final_in_zone   = fraction of eval episodes whose LAST step is BOTH
+                  in the [dist_min, dist_max] band AND has heading
+                  angle within heading_max_angle_deg of the opponent
+
+if len_ratio < 1.0:                        stage = 1   # balance not mastered (<200 steps)
+elif final_in_zone < 0.5:                  stage = 2   # balance OK, but most episodes don't end inside the zone
+else:                                      stage = 3   # both criteria met → combat
 ```
 
-The active weights `(w1, w2, w3)` come from `CurriculumStageGate`,
-which advances stages based on rollout statistics:
+Any single eval can move the stage from 1 → 3 (or 3 → 1) — the gate
+follows whatever the deterministic policy currently deserves.
 
-Gate (rewritten 2026-05-09) is **eval-driven, single-shot, no
-hysteresis, no dwell, no fixed progression**: every `eval_interval`
-updates we run a deterministic eval batch and re-classify the next
-stage purely from that single eval. Any stage can transition to any
-other stage in one step.
-
-| Stage | Weights         | Decision rule (on every eval)                                       |
-|-------|-----------------|---------------------------------------------------------------------|
-| 1     | (1, 0, 0)       | `eval_len_ratio < pass_len_ratio` (default 0.95)                    |
-| 2     | (1, 1, 0)       | `eval_len_ratio ≥ pass_len_ratio` AND `eval_in_range < pass_in_range` (0.80) |
-| 3     | (1, 1, 1)       | `eval_len_ratio ≥ pass_len_ratio` AND `eval_in_range ≥ pass_in_range`        |
-
-Why eval and not train rollouts? Train uses stochastic
-`tanh(N(μ, σ))` actions; until `log_std` shrinks the sampled
-policy is much weaker than the underlying mean policy, so train
-metrics chronically underestimate true capability and strand the
-gate at stage 1. Eval is deterministic (mean action), faithful.
-
-Lower-stage rewards never get fully turned off once a higher stage opens.
-
-## 2. Resume strategy
-
-We start from the best stage1 cross-support balance checkpoint:
-
-```
-baseline/humanoid21/runs/stage1_20260430_093352/policy/model.pt
-  algorithm = ppo_stage1_terminal_fall_penalty
-  update    = 960
-  best_eval_length = 200.0   (perfect survival, max_steps=200)
-```
-
-`--resume-from` loads **actor weights only**; the critic is fresh (the
-reward is different, so a stale value head would actively hurt PPO).
-`log_std` is also fresh because the previous variant didn't have a
-trainable log_std parameter — that's expected.
-
-Trade-off: the first ~5–10 updates show a transient as PPO re-fits the
-critic. Watch for `value_loss` to come down within ~10 updates; if it
-keeps climbing, that's the leading indicator of policy collapse.
-
-## 3. Run command
-
-Single run name so resuming / monitoring is unambiguous:
+## Launch (from scratch)
 
 ```bash
-RUN_NAME="curriculum_resumed_$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="baseline/humanoid21/logs"
-mkdir -p "$LOG_DIR"
-
-nohup python3 baseline/humanoid21/curriculum.py \
-    --resume-from baseline/humanoid21/runs/stage1_20260430_093352/policy/model.pt \
-    --run-name "$RUN_NAME" \
-    > "$LOG_DIR/${RUN_NAME}.log" 2>&1 &
-
-echo "$!" > "$LOG_DIR/${RUN_NAME}.pid"
+cd /data1/mono/things/combatbench
+bash baseline/humanoid21/launch_curriculum.sh
 ```
 
-Defaults from `CurriculumConfig`:
-* `episodes_per_update = 2048`, `max_updates = 10000`
-* `rollout_workers = max(1, min(64, ncpu // 2))` — on the 192-core box ⇒ 64
-* `eval_interval = 5`, `eval_episodes = 16`
-* `learning_rate = 3e-4`, `gamma = 0.99`, `gae_lambda = 0.95`
-* `log_std_max = 0.0` (σ ≤ 1.0; tightened from default 1.0 to shrink train/eval gap)
-* gate: eval-driven, `pass_len_ratio = 0.95`, `pass_in_range = 0.80`
+This:
 
-## 4. What "normal" looks like
+- Trains from a freshly-initialized actor + critic (no resume).
+- Uses `CUDA_VISIBLE_DEVICES=1` (override via `CUDA=N`).
+- Writes log + pid + LATEST_RUN under `baseline/humanoid21/logs/`.
+- Saves the best-eval checkpoint to
+  `baseline/humanoid21/runs/<RUN_NAME>/policy/`.
 
-For each update the trainer prints one line:
-
-```
-update=  17 stage=1 weights=(1.0, 0.0, 0.0) reward=-0.7234 len= 88.50
-        term=0.625 in_range=0.412 r1=-0.7 r2=-12.5 r3=+0.0
-        policy_loss=+0.012 value_loss=+0.04 kl=0.083 gate_reason='no-op'
-        | eval_reward=-0.6 eval_length=110.0  [new_best]
-```
-
-Health expectations (all rolling means over the last 20 updates):
-
-| Phase                  | Update range | mean_length        | term_rate          | in_range          | KL                |
-|------------------------|--------------|--------------------|--------------------|-------------------|-------------------|
-| transient (new critic) | 0–10         | drops then recovers| may spike          | ~ 0               | up to ~0.3 OK     |
-| stage 1 settling       | 10–60        | climbs > 150       | trending < 0.20    | ~ 0               | <  0.1            |
-| stage 1 → 2 promotion  | 60–200       | mean_length ≥ 190  | ≤ 0.05             | starts to grow    | <  0.05           |
-| stage 2 in-range learn | 200–800      | stays ≥ 190        | ≤ 0.05             | climbs to ≥ 0.80  | <  0.05           |
-| stage 2 → 3 promotion  | 800–???      | stays ≥ 190        | ≤ 0.05             | ≥ 0.80            | <  0.05           |
-
-The exact update numbers are **estimates** — the gate re-classifies
-on every eval, so the policy can flap freely between stages while
-learning. Brief stage 2 → 1 → 2 oscillations during the early stage-2
-shock are normal.
-
-### Definitely-bad signals (kill and investigate)
-
-| Symptom                                        | Likely cause                                 | Action                                                  |
-|------------------------------------------------|----------------------------------------------|---------------------------------------------------------|
-| `kl > 0.5` for 3+ updates                      | clip_eps too lax / lr too high / value head reload bug | reduce `learning_rate` to 1e-4, restart                 |
-| `value_loss` climbing monotonically            | value-target/reward scale mismatch           | check `r{1,2,3}_scale` / weight scaling                 |
-| `mean_length` decreasing for 30+ updates       | reward gaming / reward bug                   | inspect `r1`/`r2`/`r3` traces, suspect scale            |
-| `stage` flapping persists for 100+ updates and never settles  | reward design / log_std blowup    | tighten `log_std_max`, lower `r2_scale`, restart        |
-| Frozen `update=N` line ≥ 5 min                 | rollout worker hung / process dead           | check `nvidia-smi`, `ps`, restart                       |
-
-### Borderline signals (watch closely)
-
-* `r3_mean ≈ 0` after stage 3 opens → both robots are passive (no hits land).
-  The fix is self-play with frozen-past-self opponents (out of scope for this
-  iteration — both agents currently train mirror-symmetric, so they tend to
-  converge to similar passive policies).
-* `in_range` plateauing below 0.6 in stage 2 → opponent-relation reward isn't
-  strong enough; consider raising `r2_scale` (env var `CURRICULUM_R2_SCALE`).
-
-## 5. Monitoring commands
-
-The monitor parses the log file (no PID/no live IPC needed) and prints
-a one-shot status report. Run it any time:
+Foreground runs and CLI overrides:
 
 ```bash
-# Auto-pick newest log under baseline/humanoid21/logs/
-python3 baseline/humanoid21/curriculum_monitor.py
-
-# Specific log + larger rolling window
-python3 baseline/humanoid21/curriculum_monitor.py \
-    baseline/humanoid21/logs/curriculum_resumed_20260508_191600.log -w 50
+python3 -u baseline/humanoid21/curriculum.py \
+    --run-name my_run \
+    --max-updates 5000 \
+    --episodes-per-update 2048 \
+    --rollout-workers 32
 ```
 
-The report has four sections:
+## Monitoring
 
-1. **Last update** — most recent single line (sanity check).
-2. **Rolling means** — over the last `--window` updates (default 20).
-3. **Trends** — last-quartile minus first-quartile of the rolling
-   window. Lets you read the slope at a glance.
-4. **Health verdicts** — `[PASS]` / `[WARN]` / `[FAIL]` / `[INIT]`
-   for `alive`, `balance_progress`, `ppo_stable`, `stage_advance`.
-
-For continuous watching (e.g. on a separate tmux pane):
+Use `curriculum_monitor.py` to summarize the latest log:
 
 ```bash
-watch -n 30 'python3 baseline/humanoid21/curriculum_monitor.py'
+python3 baseline/humanoid21/curriculum_monitor.py             # auto-pick newest log
+python3 baseline/humanoid21/curriculum_monitor.py -w 50       # 50-update window
+python3 baseline/humanoid21/curriculum_monitor.py path/to.log
 ```
 
-For raw tail:
+The monitor reports:
 
-```bash
-tail -f baseline/humanoid21/logs/<run>.log
-```
+- **Last update**: stage, weights, reward, length, term rate, in_range,
+  KL, gate reason.
+- **Rolling means** (over the last `-w` updates): `mean_length`,
+  `term_rate`, `in_range`, `final_in_zone`, per-component rewards, KL.
+- **Trends**: last-quartile minus first-quartile of the rolling window
+  for length/term/in_range/r1/r2/r3.
+- **Stage history**: chronological list of stage transitions.
+- **Best eval so far**: update, stage, eval_length, eval_reward.
+- **Health verdicts**: alive / balance_progress / ppo_stable /
+  stage_advance.
 
-For the actual list of new-best checkpoints saved:
+## What "normal" training looks like
 
-```bash
-grep '\[new_best\]' baseline/humanoid21/logs/<run>.log | tail -20
-```
+Numbers below assume the default config (`episodes_per_update=2048`,
+`max_steps=200`, `eval_interval=5`).
 
-Best policy artifacts (single rolling slot — overwritten on each new
-best) live at:
+Stage 1 (early, updates 1–~30):
+- `len` rising from ~20 to >100; `term_rate` falling from ~1.0 to <0.8.
+- `r1` rising from very negative (e.g. -0.8) toward 0.
+- `term_pen` per-episode mean falling toward 0 as terminations drop.
+- `eval_length` rising; gate stays at stage 1.
+- KL ≤ 0.1; `policy_loss` near zero or slightly negative.
 
-```
-baseline/humanoid21/runs/<run-name>/policy/model.pt   # state_dict + meta
-baseline/humanoid21/runs/<run-name>/policy/policy.py  # loader stub
-```
+Stage 1 → 2 transition:
+- A single eval reaches `eval_length=200` (full horizon) → gate flips
+  to stage 2 in the next update; weights become `(1, 1, 0)`.
 
-## 6. Decision points
+Stage 2 (updates ~30–~150):
+- `r2` becomes positive and trending up; `in_range` and `final_in_zone`
+  trending up.
+- `r1` should NOT regress significantly. If `term_rate` jumps back to
+  near 1.0 (i.e. forgot how to balance), the next eval will demote the
+  gate back to stage 1 automatically.
 
-Roughly every couple of hours, run the monitor and ask:
+Stage 2 → 3 transition:
+- Eval shows `eval_length=200` AND `eval_final_in_zone ≥ 0.5` → gate
+  flips to stage 3; weights become `(1, 1, 1)`.
 
-1. **Is the trainer alive?** — `[PASS] alive` verdict.
-2. **Is balance regressing?** — if `term_rate` is climbing or
-   `mean_length` is dropping for ≥ 30 updates, the new reward is
-   actively harming the resumed policy. Stop, reduce `r2_scale` /
-   `r3_scale`, restart.
-3. **Has the gate advanced yet?** — first stage 1 → 2 transition
-   should appear within ~200 updates if the resumed actor was good.
-   If not, the gate thresholds may be too strict for the actual
-   policy quality — raise `pass_term_rate` to 0.10.
-4. **Is stage 2 making approach progress?** — `in_range` should grow
-   beyond ~0.3 within 100 updates of stage 2 opening.
-5. **Has stage 3 ever opened?** — if yes, watch `r3_mean`; persistent
-   ~0 there means the opponent never gets hit (passive draw), which
-   is the known weakness without self-play opponents.
+Stage 3:
+- `r3` non-zero and trending up (more damage dealt than taken).
+- `r1`/`r2` stay healthy; if not, gate demotes to a lower stage.
 
-## 7. Stop and resume
+## Definitely-bad signals
+
+- **KL > 0.5 sustained** — PPO step too aggressive. Investigate the
+  rollout/optimizer config (target_kl, learning_rate).
+- **`len` plateau at <200 with `r1` saturated** — terminal penalty
+  signal isn't dominant; check `term_pen` per-episode mean.
+- **`term_rate` swings wildly between 0 and 1** between consecutive
+  evals — something destabilized the policy (cold critic? bad batch?).
+- **Stage flip-flop every eval** — the eval batch is too small or the
+  policy is genuinely on the boundary; tighten `pass_len_ratio` /
+  `pass_final_in_zone`, or make `eval_episodes` bigger.
+- **`r3` stays at exactly 0 in stage 3 for many updates** — agents
+  aren't connecting, opponent may be standing still or out of range.
+  Check that the in_range and approach signals are still positive.
+
+## Stop / resume
 
 Stop:
 ```bash
-kill "$(cat baseline/humanoid21/logs/<run-name>.pid)"
+kill $(cat baseline/humanoid21/logs/<RUN_NAME>.pid)
 ```
 
-Resume from this run's best policy:
+Resume from a saved best-eval actor checkpoint (critic still
+re-initialized — different reward = different value function):
 ```bash
-python3 baseline/humanoid21/curriculum.py \
-    --resume-from baseline/humanoid21/runs/<run-name>/policy/model.pt \
-    --run-name "<new-name>"
+python3 -u baseline/humanoid21/curriculum.py \
+    --resume-from baseline/humanoid21/runs/<RUN_NAME>/policy/model.pt \
+    --run-name resume_$(date +%s)
 ```
+
+Note: resume reloads the actor only; expect a brief value-loss spike
+in the first few updates while the critic catches up.

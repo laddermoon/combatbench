@@ -28,6 +28,7 @@ static and read via ``gate.current_state()``.
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
 import time
 from pathlib import Path
@@ -52,11 +53,31 @@ from baseline.humanoid21.common import (
     CurriculumConfig,
     CurriculumStageGate,
     Humanoid21Observer,
-    make_curriculum_runtime,
+    make_curriculum_runtime_for,
     make_standing_adapter,
     make_standing_options_fn,
     set_seed,
 )
+
+
+def _agent_from_rollout_seed(seed: int) -> str:
+    """Pick a training-target agent deterministically from the rollout seed.
+
+    Identical to ``stage1.py``'s function — alternates roughly 50/50
+    between robot_a and robot_b based on the seed, so over the run
+    each agent gets equal training-target time.
+    """
+    rng = np.random.default_rng(int(seed) + 937)
+    return "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
+
+
+def _select_target_trajectories(
+    trajectories: Sequence[RolloutBatch],
+    *,
+    target_agent: str,
+) -> List[RolloutBatch]:
+    """Discard non-target trajectories — same pattern as ``stage1.py``."""
+    return [t for t in trajectories if t.agent_id == target_agent]
 
 
 # ---------------------------------------------------------------------------
@@ -259,26 +280,37 @@ def _summarize_batch(
 
     ``term_rate``: fraction of episodes terminated by the imbalance
     plugin (== ``RolloutBatch.terminated`` since that's the only
-    termination cause in ``make_curriculum_runtime``).
+    termination cause in ``make_curriculum_runtime_for``).
     ``mean_length``: average ``num_steps``.
-    ``in_range_ratio``: average per-episode ``in_range_steps / num_steps``,
-    pulled from :attr:`RolloutBatch.info`.
+    ``in_range_ratio``: average per-episode ``in_range_steps / num_steps``
+    (still useful for diagnostics).
+    ``final_in_zone_ratio``: fraction of episodes whose LAST step has
+    both ``in_range`` and heading-in-tolerance — the curriculum gate's
+    Stage 3 admission criterion.
     """
     if not trajectories:
-        return {"term_rate": 0.0, "mean_length": 0.0, "in_range_ratio": 0.0}
+        return {
+            "term_rate": 0.0, "mean_length": 0.0,
+            "in_range_ratio": 0.0, "final_in_zone_ratio": 0.0,
+            "max_steps": float(max_steps), "len_ratio": 0.0,
+        }
     n = len(trajectories)
     term_rate = float(sum(1 for t in trajectories if t.terminated) / n)
     mean_len = float(np.mean([int(t.num_steps) for t in trajectories]))
     in_range_ratio_values: List[float] = []
+    final_in_zone_flags: List[float] = []
     for t in trajectories:
         steps = max(1, int(t.num_steps))
-        in_range = int((t.info or {}).get("in_range_steps", 0))
-        in_range_ratio_values.append(in_range / steps)
+        info = t.info or {}
+        in_range_ratio_values.append(int(info.get("in_range_steps", 0)) / steps)
+        final_in_zone_flags.append(float(int(info.get("final_in_non_penalty_zone", 0))))
     in_range_ratio = float(np.mean(in_range_ratio_values))
+    final_in_zone_ratio = float(np.mean(final_in_zone_flags))
     return {
         "term_rate": term_rate,
         "mean_length": mean_len,
         "in_range_ratio": in_range_ratio,
+        "final_in_zone_ratio": final_in_zone_ratio,
         "max_steps": float(max_steps),
         "len_ratio": mean_len / float(max_steps),
     }
@@ -364,7 +396,7 @@ def train(
     gate = CurriculumStageGate(
         max_steps=cfg.max_steps,
         pass_len_ratio=cfg.stage1_pass_len_ratio,
-        pass_in_range=cfg.stage2_pass_in_range,
+        pass_final_in_zone=cfg.stage2_pass_final_in_zone,
     )
 
     distance_options_fn = make_standing_options_fn()
@@ -388,12 +420,12 @@ def train(
         f"terminal_fall_penalty={cfg.terminal_fall_penalty} "
         f"log_std_max={cfg.log_std_max} "
         f"gate=eval-driven(pass_len={cfg.stage1_pass_len_ratio:.2f},"
-        f"pass_in_range={cfg.stage2_pass_in_range:.2f},eval_every={cfg.eval_interval})",
+        f"pass_final_in_zone={cfg.stage2_pass_final_in_zone:.2f},"
+        f"eval_every={cfg.eval_interval})",
         flush=True,
     )
 
     base_factory_kwargs = dict(
-        runtime_factory=make_curriculum_runtime,
         policy_factories={
             "robot_a": make_standing_adapter,
             "robot_b": make_standing_adapter,
@@ -401,22 +433,36 @@ def train(
         capture_agents=("robot_a", "robot_b"),
     )
 
+    # Two collectors — one per target. Mirror stage1.py: the runtime
+    # only terminates on the TARGET agent's imbalance, so the target's
+    # ``terminated`` flag is the honest "this agent fell" signal that
+    # ``_inject_terminal_fall_penalty`` requires for stage-1 alignment.
     with RolloutCollector(
+        runtime_factory=functools.partial(make_curriculum_runtime_for, "robot_a"),
         max_workers=cfg.rollout_workers, **base_factory_kwargs,
-    ) as collector:
+    ) as collector_a, RolloutCollector(
+        runtime_factory=functools.partial(make_curriculum_runtime_for, "robot_b"),
+        max_workers=cfg.rollout_workers, **base_factory_kwargs,
+    ) as collector_b:
         best_eval = -float("inf")
         for u in range(1, cfg.max_updates + 1):
             actor_sd = _snapshot(actor)
+            rollout_seed = cfg.seed + u * cfg.episodes_per_update
+            target_agent = _agent_from_rollout_seed(rollout_seed)
+            collector = collector_a if target_agent == "robot_a" else collector_b
             batches = collector.collect(
                 n=cfg.episodes_per_update,
-                base_seed=cfg.seed + u * cfg.episodes_per_update,
+                base_seed=rollout_seed,
                 options_fn=options_fn,
                 deterministic=False,
                 state_dicts={"robot_a": actor_sd, "robot_b": actor_sd},
             )
-            trajectories = batches.get("robot_a", []) + batches.get("robot_b", [])
+            all_trajectories = batches.get("robot_a", []) + batches.get("robot_b", [])
+            trajectories = _select_target_trajectories(
+                all_trajectories, target_agent=target_agent,
+            )
             if not trajectories:
-                print(f"update={u} | no trajectories", flush=True)
+                print(f"update={u} | no target trajectories (target={target_agent})", flush=True)
                 continue
 
             batch_summary = _summarize_batch(trajectories, max_steps=cfg.max_steps)
@@ -437,12 +483,13 @@ def train(
             mean_reward = float(np.mean([float(t.rewards.sum()) for t in trajectories]))
             mean_term_penalty = float(total_term_penalty / max(1, len(trajectories)))
             line = (
-                f"update={u:4d} stage={gate_info['stage']} "
+                f"update={u:4d} target={target_agent} stage={gate_info['stage']} "
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
                 f"reward={mean_reward:+.4f} "
                 f"len={batch_summary['mean_length']:6.2f} "
                 f"term={batch_summary['term_rate']:.3f} "
                 f"in_range={batch_summary['in_range_ratio']:.3f} "
+                f"final_in_zone={batch_summary['final_in_zone_ratio']:.3f} "
                 f"r1={comp_summary['r1_mean']:+.3f} "
                 f"r2={comp_summary['r2_mean']:+.3f} "
                 f"r3={comp_summary['r3_mean']:+.3f} "
@@ -454,16 +501,25 @@ def train(
             )
 
             if u % cfg.eval_interval == 0:
+                # Eval mirrors training: pick a target, use its collector,
+                # filter to target trajectories, summarize — so the gate
+                # decision is grounded in the same one-sided-termination
+                # signal the trainer optimizes against.
                 eval_seed = cfg.seed + 100_000 + u * 97
-                eval_batches = collector.collect(
+                eval_target = _agent_from_rollout_seed(eval_seed)
+                eval_collector = (
+                    collector_a if eval_target == "robot_a" else collector_b
+                )
+                eval_batches = eval_collector.collect(
                     n=cfg.eval_episodes,
                     base_seed=eval_seed,
                     options_fn=options_fn,
                     deterministic=True,
                     state_dicts={"robot_a": actor_sd, "robot_b": actor_sd},
                 )
-                eval_trajectories = (
-                    eval_batches.get("robot_a", []) + eval_batches.get("robot_b", [])
+                eval_trajectories = _select_target_trajectories(
+                    eval_batches.get("robot_a", []) + eval_batches.get("robot_b", []),
+                    target_agent=eval_target,
                 )
                 if eval_trajectories:
                     eval_summary = _summarize_batch(
@@ -474,10 +530,13 @@ def train(
                     )
                     eval_length = eval_summary["mean_length"]
                     eval_in_range = eval_summary["in_range_ratio"]
+                    eval_final_in_zone = eval_summary["final_in_zone_ratio"]
                     line += (
-                        f" | eval_reward={eval_reward:+.4f}"
+                        f" | eval_target={eval_target}"
+                        f" eval_reward={eval_reward:+.4f}"
                         f" eval_length={eval_length:6.2f}"
                         f" eval_in_range={eval_in_range:.3f}"
+                        f" eval_final_in_zone={eval_final_in_zone:.3f}"
                     )
                     # ----- eval-driven stage classification --------------
                     prev_stage = gate.stage
@@ -487,7 +546,7 @@ def train(
                             f"  [stage {prev_stage}->{gate_info['stage']}"
                             f" {gate_info['reason']}]"
                         )
-                    score = eval_length  # primary criterion: survival under curriculum
+                    score = eval_length  # primary criterion: survival
                     if score > best_eval:
                         best_eval = score
                         export_actor_policy_artifacts(
@@ -500,6 +559,7 @@ def train(
                                 "weights": list(gate_info["weights"]),
                                 "best_eval_length": eval_length,
                                 "best_eval_reward": eval_reward,
+                                "best_eval_final_in_zone": eval_final_in_zone,
                             },
                         )
                         line += "  [new_best]"

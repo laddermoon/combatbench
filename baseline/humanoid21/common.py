@@ -150,19 +150,32 @@ CURRICULUM_MAX_STEPS = MAX_STEPS
 # to r1/r2 once a small reward weight is applied.
 CURRICULUM_DAMAGE_SCALE = 100.0
 # Per-component reward scales (applied INSIDE :class:`MultiSignalRewardObserver`
-# before the curriculum stage weights).
+# before the curriculum stage weights). The scales are chosen so all three
+# components contribute the SAME order of magnitude per episode once the
+# corresponding stage is active:
 #
-# r1 (cross-support balance) is intentionally TINY (0.02) — same value as
-# ``stage1.py``'s ``cross_support_reward_scale``. The dominant stage-1
-# signal is the terminal fall penalty (CURRICULUM_TERMINAL_FALL_PENALTY),
-# applied post-rollout by :func:`_inject_terminal_fall_penalty` in
-# ``curriculum.py``. This combination is what stage1.py used to reach
-# ``best_eval_length=200``; making r1 large makes the agent satisfied
-# with brief perfect stance + fast termination (zero gradient on
-# length).
+#   * r1 (cross-support balance) — exactly matches ``stage1.py``'s
+#     ``cross_support_reward_scale=0.02``. Per-step raw r1 is in roughly
+#     [-1, 0]; per-200-step episode sum lands in [-5, 0]; scaled = [-0.1, 0].
+#     Combined with the sparse -1 terminal fall penalty (applied at
+#     ``_inject_terminal_fall_penalty`` time), the stage-1 episodic
+#     reward is in [-1.1, 0] — bit-identical to stage1.py's recipe.
+#
+#   * r2 (opponent relation) — per-step raw r2 in [-2, +1]; once the
+#     policy starts approaching, sums of +30 to +200 are typical. Scale
+#     0.02 keeps the per-episode contribution in [0, +4], same order
+#     of magnitude as r1 + terminal penalty.
+#
+#   * r3 (net damage) — per-step raw r3 is the per-step delta of
+#     ``damage_taken_*`` (already pre-multiplied by the env's
+#     ``damage_scale=100``). Typical episode net-damage sums are tens
+#     of points. Scale 0.05 keeps the per-episode contribution comparable
+#     to r1 + r2.
+#
+# All three constants can be overridden via env var for ablations.
 CURRICULUM_R1_SCALE = float(os.environ.get("CURRICULUM_R1_SCALE", "0.02"))
-CURRICULUM_R2_SCALE = float(os.environ.get("CURRICULUM_R2_SCALE", "0.05"))
-CURRICULUM_R3_SCALE = float(os.environ.get("CURRICULUM_R3_SCALE", "10.0"))
+CURRICULUM_R2_SCALE = float(os.environ.get("CURRICULUM_R2_SCALE", "0.02"))
+CURRICULUM_R3_SCALE = float(os.environ.get("CURRICULUM_R3_SCALE", "0.05"))
 # Terminal fall penalty — subtracted from the LAST step reward of every
 # imbalance-terminated trajectory, in EVERY stage (falling is bad
 # regardless of which stage we're in). Mirrors stage1.py's
@@ -175,11 +188,19 @@ CURRICULUM_TERMINAL_FALL_PENALTY = float(
 CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9"))
 
 # Curriculum gate thresholds (eval-driven classifier; see
-# :class:`CurriculumStageGate`). The gate has no hysteresis / dwell —
-# every eval cycle re-classifies the next stage purely from these two
-# pass thresholds.
-CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.95      # eval mean_length / max_steps
-CURRICULUM_STAGE2_PASS_IN_RANGE = 0.80       # eval in_range_ratio
+# :class:`CurriculumStageGate`). Decision rule (single-shot, no
+# hysteresis):
+#   * eval mean_length < pass_len_ratio * max_steps  -> stage 1
+#   * else if final_in_zone_ratio < pass_final_in_zone -> stage 2
+#   * else                                           -> stage 3
+# ``pass_len_ratio = 1.0`` mirrors the user's spec exactly: stage 1 is
+# only "passed" when the deterministic eval policy survives the full
+# horizon (200 steps @ 20 Hz = 10 s) on average. Stage 2 "passes"
+# when, in addition, at least half of the eval episodes ALSO end with
+# the agent inside the OpponentRelationRewarder non-penalty zone
+# (distance band AND heading within max angle).
+CURRICULUM_STAGE1_PASS_LEN_RATIO = 1.0       # eval mean_length / max_steps
+CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5   # eval final_in_zone_ratio
 
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
@@ -399,7 +420,7 @@ class CurriculumConfig:
     # Stage-gate pass thresholds (eval-driven classifier; see
     # :class:`CurriculumStageGate`).
     stage1_pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO
-    stage2_pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE
+    stage2_pass_final_in_zone: float = CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE
 
     # Initial-state perturbation toggle (always on for curriculum stage 1).
     enable_perturbation: bool = True
@@ -933,7 +954,13 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         self.typical_closing_speed = max(1e-3, float(typical_closing_speed))
         self._dt = 1.0 / CONTROL_FREQUENCY
         self._prev_self_xy: Optional[np.ndarray] = None
+        # ``in_range`` -> distance ∈ [dist_min, dist_max] (geometric only).
+        # ``in_non_penalty_zone`` -> in_range AND heading angle within
+        #   ``heading_max_angle_deg`` of the opponent direction.
+        # The latter is what the curriculum gate uses to decide whether
+        # "final stance" qualifies for stage 3.
         self.in_range: bool = False
+        self.in_non_penalty_zone: bool = False
         self._output: float = 0.0
 
     @staticmethod
@@ -958,6 +985,7 @@ class OpponentRelationRewarder(BaseObserverPlugin):
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._prev_self_xy = None
         self.in_range = False
+        self.in_non_penalty_zone = False
         self._output = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -1006,6 +1034,7 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         # ---- 2) Heading penalty (unchanged; always self-attributed) --
         if distance < 1e-6:
             heading_penalty = 0.0
+            heading_in_zone = True
         else:
             to_opp_unit = delta_xy / distance
             forward_unit = self._robot_forward_xy_from_root_rot(
@@ -1015,6 +1044,12 @@ class OpponentRelationRewarder(BaseObserverPlugin):
             angle_deg = float(np.degrees(np.arccos(cosang)))
             angle_excess = max(0.0, angle_deg - self.heading_max_angle_deg)
             heading_penalty = min(angle_excess / self.heading_linear_range_deg, 1.0)
+            heading_in_zone = angle_deg <= self.heading_max_angle_deg
+
+        # "non-penalty zone" = both distance AND heading are in the
+        # tolerance band (i.e. r2 has zero penalty contribution from
+        # both terms; the dist_signal is still +1 because in_range).
+        self.in_non_penalty_zone = bool(self.in_range and heading_in_zone)
 
         self._output = float(
             self.dist_penalty_coef * dist_signal
@@ -1107,6 +1142,13 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._r3_sum: float = 0.0
         self._in_range_steps: int = 0
         self._num_steps: int = 0
+        # Last step's geometric / non-penalty zone flag from r2. We use
+        # the LAST observed value (terminated or full-horizon) as the
+        # "final stance" signal for the curriculum gate. ``int`` (0/1)
+        # so it round-trips through the ``RolloutBatch.info`` dict
+        # without surprising downstream consumers.
+        self._final_in_range: int = 0
+        self._final_in_non_penalty_zone: int = 0
         self._output: float = 0.0
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -1120,6 +1162,8 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._r3_sum = 0.0
         self._in_range_steps = 0
         self._num_steps = 0
+        self._final_in_range = 0
+        self._final_in_non_penalty_zone = 0
         self._output = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -1141,6 +1185,10 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         # (in range but facing wrong way, so heading penalty dominates).
         if bool(self._r2.in_range):
             self._in_range_steps += 1
+        # Track the LAST step's flags so episode_summary can publish
+        # "did this episode END inside the non-penalty zone?".
+        self._final_in_range = int(bool(self._r2.in_range))
+        self._final_in_non_penalty_zone = int(bool(self._r2.in_non_penalty_zone))
         w1, w2, w3 = self._weights
         self._output = (
             w1 * (self.r1_scale * r1)
@@ -1157,6 +1205,8 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
             "r2_sum": float(self._r2_sum),
             "r3_sum": float(self._r3_sum),
             "in_range_steps": int(self._in_range_steps),
+            "final_in_range": int(self._final_in_range),
+            "final_in_non_penalty_zone": int(self._final_in_non_penalty_zone),
             "obs_num_steps": int(self._num_steps),
             "weights": tuple(float(w) for w in self._weights),
         }
@@ -1208,15 +1258,21 @@ class CurriculumStageGate:
 
     **Decision rule** (single-pass classification on eval summary)::
 
-        len_ratio = eval_mean_length / max_steps
-        in_range  = eval_in_range_ratio
+        len_ratio          = eval_mean_length / max_steps
+        final_in_zone_rate = eval_final_in_zone_ratio
 
         if len_ratio < pass_len_ratio:
-            stage = 1   # haven't mastered balance yet
-        elif in_range < pass_in_range:
-            stage = 2   # balance OK, work on approach
+            stage = 1   # haven't mastered balance yet ("不满200步")
+        elif final_in_zone_rate < pass_final_in_zone:
+            stage = 2   # balance OK, work on getting INTO the zone
         else:
-            stage = 3   # balance + approach both OK, do combat
+            stage = 3   # balance + final zone both OK, do combat
+
+    "final_in_zone" means: at the LAST step of the eval episode the
+    agent is BOTH within the OpponentRelationRewarder distance band
+    AND its heading angle to the opponent is within ``heading_max_angle``.
+    This is the user's explicit Stage 3 admission criterion: "保持
+    平衡满200步并且最终的距离和朝向进入非惩罚区"
 
     **Weights**::
 
@@ -1244,7 +1300,7 @@ class CurriculumStageGate:
         *,
         max_steps: int,
         pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO,
-        pass_in_range: float = CURRICULUM_STAGE2_PASS_IN_RANGE,
+        pass_final_in_zone: float = CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE,
         initial_stage: int = 1,
     ) -> None:
         if initial_stage not in self.STAGE_WEIGHTS:
@@ -1253,12 +1309,12 @@ class CurriculumStageGate:
             raise ValueError(f"max_steps must be > 0; got {max_steps}")
         self.max_steps = int(max_steps)
         self.pass_len_ratio = float(pass_len_ratio)
-        self.pass_in_range = float(pass_in_range)
+        self.pass_final_in_zone = float(pass_final_in_zone)
         self.stage = int(initial_stage)
         # Last eval-summary metrics (or None if no eval yet). Kept only
         # for logging; not consulted by the next decision.
         self._last_eval_len_ratio: Optional[float] = None
-        self._last_eval_in_range: Optional[float] = None
+        self._last_eval_final_in_zone: Optional[float] = None
         self._last_decision_reason: str = "init"
 
     @property
@@ -1271,14 +1327,15 @@ class CurriculumStageGate:
         ``eval_summary`` must carry:
           * ``mean_length`` — mean episode length over the eval batch
             (deterministic policy).
-          * ``in_range_ratio`` — mean fraction of steps with the agent
-            inside the OpponentRelationRewarder distance band.
+          * ``final_in_zone_ratio`` — fraction of eval episodes whose
+            LAST step has both ``in_range`` and heading-in-tolerance
+            (the OpponentRelationRewarder ``in_non_penalty_zone`` flag).
 
         Returns a dict with the new stage, weights, previous stage,
         the two derived ratios, and a human-readable reason string.
         """
         len_ratio = float(eval_summary.get("mean_length", 0.0)) / float(self.max_steps)
-        in_range = float(eval_summary.get("in_range_ratio", 0.0))
+        final_in_zone = float(eval_summary.get("final_in_zone_ratio", 0.0))
 
         prev_stage = self.stage
         if len_ratio < self.pass_len_ratio:
@@ -1287,24 +1344,24 @@ class CurriculumStageGate:
                 f"eval len_ratio={len_ratio:.3f}<{self.pass_len_ratio:.2f}"
                 " -> stage 1 (balance)"
             )
-        elif in_range < self.pass_in_range:
+        elif final_in_zone < self.pass_final_in_zone:
             new_stage = 2
             reason = (
                 f"eval len_ratio={len_ratio:.3f}>=pass,"
-                f" in_range={in_range:.3f}<{self.pass_in_range:.2f}"
+                f" final_in_zone={final_in_zone:.3f}<{self.pass_final_in_zone:.2f}"
                 " -> stage 2 (approach)"
             )
         else:
             new_stage = 3
             reason = (
                 f"eval len_ratio={len_ratio:.3f}>=pass,"
-                f" in_range={in_range:.3f}>=pass"
+                f" final_in_zone={final_in_zone:.3f}>=pass"
                 " -> stage 3 (combat)"
             )
 
         self.stage = new_stage
         self._last_eval_len_ratio = len_ratio
-        self._last_eval_in_range = in_range
+        self._last_eval_final_in_zone = final_in_zone
         self._last_decision_reason = reason
 
         return {
@@ -1312,7 +1369,7 @@ class CurriculumStageGate:
             "weights": self.weights,
             "prev_stage": prev_stage,
             "eval_len_ratio": len_ratio,
-            "eval_in_range_ratio": in_range,
+            "eval_final_in_zone_ratio": final_in_zone,
             "reason": reason,
         }
 
@@ -1323,7 +1380,7 @@ class CurriculumStageGate:
             "weights": self.weights,
             "prev_stage": self.stage,
             "eval_len_ratio": self._last_eval_len_ratio,
-            "eval_in_range_ratio": self._last_eval_in_range,
+            "eval_final_in_zone_ratio": self._last_eval_final_in_zone,
             "reason": self._last_decision_reason,
         }
 
@@ -1605,35 +1662,37 @@ def make_perturbed_balance_runtime() -> EnvRuntime:
     return runtime
 
 
-def make_curriculum_runtime() -> EnvRuntime:
-    """Build a fresh :class:`EnvRuntime` for unified-curriculum combat training.
+def make_curriculum_runtime_for(target_agent: str) -> EnvRuntime:
+    """Build a fresh :class:`EnvRuntime` for curriculum training, target-aware.
 
-    Wires a *single composite* reward observer per agent
-    (:class:`MultiSignalRewardObserver`) so ``RolloutBatch.rewards`` is
-    always the weighted curriculum reward (the worker doesn't need to
-    know anything about stages — the trainer pushes per-episode
-    weights via ``options_fn``). Other plugins:
+    Mirrors ``stage1.py``'s :func:`make_stage1_runtime_for` pattern: only
+    the **target agent** has an :class:`ImbalanceTerminationPlugin`, so
+    the episode terminates iff THAT agent falls. The non-target agent
+    continues to act (its trajectories are discarded by the trainer)
+    — this gives the target an honest opponent without contaminating
+    the target's terminal-fall signal with the opponent's falls.
 
+    The reward observer is :class:`MultiSignalRewardObserver` for both
+    agents so the trainer can swap weights via ``options_fn`` without
+    ever rebuilding the runtime. With weights ``(1, 0, 0)``, the
+    per-step reward is exactly ``r1_scale * r1_cross_support`` =
+    stage1.py's ``cross_support_reward_scale * cross_support_reward``,
+    so stage-1 training signal is bit-identical to stage1.py.
+
+    Other wiring:
       * :class:`CombatScoringPlugin` with very high HP (default
         :data:`CURRICULUM_NO_KO_HEALTH`) to expose the damage stream
-        on ``ctx.metrics`` *without* triggering KO termination — that
-        would conflict with stage-1 / stage-2 mastery measurement.
-      * :class:`ImbalanceTerminationPlugin` per agent — the only legal
-        termination cause, so the trainer can interpret
-        ``RolloutBatch.terminated`` as "imbalance terminated this agent".
+        on ``ctx.metrics`` *without* triggering KO termination.
+      * No initial-state perturbation — the user prefers "learn combat
+        fast" over "robustness training" for this run.
 
-    NOTE (2026-05-08): Initial-state perturbation was REMOVED from this
-    factory. The user's priority is "learn combat fast", and perturbation
-    was making stage 1 strictly harder than it needs to be. If future
-    runs need robustness training, re-introduce a
-    ``make_curriculum_runtime_perturbed`` variant.
-
-    Top-level (no closures) so :class:`RolloutCollector` can pickle and
-    ship it to spawn-mode worker processes unchanged. Per-component
-    scales / weights / KO-disable HP come from
-    :data:`CURRICULUM_*` module constants — override via env vars or
-    rebuild a custom factory if needed.
+    Top-level (no closures) so :class:`RolloutCollector` can pickle
+    ``functools.partial(make_curriculum_runtime_for, "robot_a")`` and
+    ship it to spawn-mode worker processes unchanged.
     """
+    target = str(target_agent)
+    if target not in ("robot_a", "robot_b"):
+        raise ValueError(f"Unsupported agent_id: {target_agent!r}")
     simulator = MujocoCombatSimulator(initial_distance=INITIAL_DISTANCE)
     sim_frequency = 1.0 / MujocoCombatSimulator.DT
     phy_steps_per_action = max(1, int(round(sim_frequency / CONTROL_FREQUENCY)))
@@ -1652,8 +1711,7 @@ def make_curriculum_runtime() -> EnvRuntime:
                 initial_health_b=CURRICULUM_NO_KO_HEALTH,
                 damage_scale=CURRICULUM_DAMAGE_SCALE,
             ),
-            ImbalanceTerminationPlugin("robot_a"),
-            ImbalanceTerminationPlugin("robot_b"),
+            ImbalanceTerminationPlugin(target),
         ],
         phy_steps_per_action=phy_steps_per_action,
         max_steps=CURRICULUM_MAX_STEPS,
@@ -1766,7 +1824,7 @@ __all__ = [
     "CURRICULUM_TERMINAL_FALL_PENALTY",
     "CURRICULUM_NO_KO_HEALTH",
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
-    "CURRICULUM_STAGE2_PASS_IN_RANGE",
+    "CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",
@@ -1785,7 +1843,7 @@ __all__ = [
     # Factories / helpers
     "make_standing_runtime",
     "make_perturbed_balance_runtime",
-    "make_curriculum_runtime",
+    "make_curriculum_runtime_for",
     "make_standing_adapter",
     "make_standing_options_fn",
     "set_seed",

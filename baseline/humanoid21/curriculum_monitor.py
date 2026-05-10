@@ -42,14 +42,17 @@ DEFAULT_LOG_DIR = HUMANOID_DIR / "logs"
 
 
 # Capture update lines like:
-# update=  17 stage=1 weights=(1.0, 0.0, 0.0) reward=-0.7234 len= 88.50 term=0.625 in_range=0.412 r1=-0.7 r2=-12.5 r3=+0.0 policy_loss=+0.012 value_loss=+0.04 kl=0.083 gate_reason='no-op' | eval_reward=-0.6 eval_length=110.0  [new_best]
+# update=  17 target=robot_a stage=1 weights=(1.0, 0.0, 0.0) reward=-0.7 len= 88.50 term=0.625 in_range=0.412 final_in_zone=0.000 r1=-0.7 r2=-12.5 r3=+0.0 term_pen=-0.6 policy_loss=+0.012 value_loss=+0.04 kl=0.083 gate_reason='...' | eval_target=robot_a eval_reward=-0.6 eval_length=110.0 eval_in_range=0.0 eval_final_in_zone=0.0  [new_best]
 _UPDATE_RE = re.compile(
-    r"update=\s*(?P<update>\d+)\s+stage=(?P<stage>\d+)\s+"
+    r"update=\s*(?P<update>\d+)\s+"
+    r"(?:target=(?P<target>\w+)\s+)?"
+    r"stage=(?P<stage>\d+)\s+"
     r"weights=\((?P<w1>[-+0-9.]+),\s*(?P<w2>[-+0-9.]+),\s*(?P<w3>[-+0-9.]+)\)\s+"
     r"reward=(?P<reward>[-+0-9.eE]+)\s+"
     r"len=\s*(?P<length>[-+0-9.eE]+)\s+"
     r"term=(?P<term>[-+0-9.eE]+)\s+"
     r"in_range=(?P<in_range>[-+0-9.eE]+)\s+"
+    r"(?:final_in_zone=(?P<final_in_zone>[-+0-9.eE]+)\s+)?"
     r"r1=(?P<r1>[-+0-9.eE]+)\s+"
     r"r2=(?P<r2>[-+0-9.eE]+)\s+"
     r"r3=(?P<r3>[-+0-9.eE]+)\s+"
@@ -59,6 +62,7 @@ _UPDATE_RE = re.compile(
     r"kl=(?P<kl>[-+0-9.eE]+)\s+"
     r"gate_reason=(?P<gate_reason>'[^']*'|\"[^\"]*\")"
     r"(?:.*?eval_reward=(?P<eval_reward>[-+0-9.eE]+)\s+eval_length=\s*(?P<eval_length>[-+0-9.eE]+))?"
+    r"(?:.*?eval_final_in_zone=(?P<eval_final_in_zone>[-+0-9.eE]+))?"
     r"(?P<new_best>\s*\[new_best\])?"
 )
 
@@ -72,6 +76,7 @@ class UpdateRecord:
     length: float
     term: float
     in_range: float
+    final_in_zone: float
     r1: float
     r2: float
     r3: float
@@ -79,8 +84,10 @@ class UpdateRecord:
     value_loss: float
     kl: float
     gate_reason: str
+    target: Optional[str] = None
     eval_reward: Optional[float] = None
     eval_length: Optional[float] = None
+    eval_final_in_zone: Optional[float] = None
     new_best: bool = False
 
 
@@ -118,13 +125,18 @@ def parse_log(log_path: Path, *, tail_lines: int = 5) -> RunSummary:
                 length=float(d["length"]),
                 term=float(d["term"]),
                 in_range=float(d["in_range"]),
+                final_in_zone=float(d["final_in_zone"]) if d.get("final_in_zone") else 0.0,
                 r1=float(d["r1"]), r2=float(d["r2"]), r3=float(d["r3"]),
                 policy_loss=float(d["policy_loss"]),
                 value_loss=float(d["value_loss"]),
                 kl=float(d["kl"]),
                 gate_reason=d["gate_reason"].strip("\"'"),
+                target=d.get("target"),
                 eval_reward=float(d["eval_reward"]) if d.get("eval_reward") else None,
                 eval_length=float(d["eval_length"]) if d.get("eval_length") else None,
+                eval_final_in_zone=(
+                    float(d["eval_final_in_zone"]) if d.get("eval_final_in_zone") else None
+                ),
                 new_best=bool(d.get("new_best")),
             ))
     summary.n_records = len(summary.records)
@@ -186,10 +198,12 @@ def render_report(summary: RunSummary, *, window: int) -> str:
 
     out.append("")
     out.append(f"## Rolling means over last {len(recent)} updates")
+    rec_final_in_zone = [r.final_in_zone for r in recent]
     out.append(
         f"  mean_length={_mean(rec_lengths):.2f}  "
         f"term_rate={_mean(rec_terms):.3f}  "
-        f"in_range={_mean(rec_in_range):.3f}"
+        f"in_range={_mean(rec_in_range):.3f}  "
+        f"final_in_zone={_mean(rec_final_in_zone):.3f}"
     )
     out.append(
         f"  r1={_mean(rec_r1):+.3f}  r2={_mean(rec_r2):+.3f}  "
