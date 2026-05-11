@@ -36,9 +36,12 @@ from baseline.humanoid21.common import CurriculumStageGate
 
 
 def _make_gate(**overrides):
+    # Tests pin the *gate logic*, not the package-level pass thresholds
+    # (which may drift to absorb empirical findings). Use values that
+    # make the assertions in this file unambiguous.
     defaults = dict(
         max_steps=200,
-        pass_len_ratio=1.0,
+        pass_len_ratio=0.98,
         pass_final_in_zone=0.5,
     )
     defaults.update(overrides)
@@ -82,14 +85,14 @@ class TestSingleShotClassification:
 
     def test_balance_ok_but_low_final_in_zone_picks_stage2(self):
         gate = _make_gate()
-        info = gate.assign_from_eval(_eval(length=200, final_in_zone=0.30))
+        info = gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.30))
         assert info["stage"] == 2
         assert info["weights"] == (1.0, 1.0, 0.0)
         assert "stage 2" in info["reason"]
 
     def test_balance_and_final_in_zone_both_ok_picks_stage3(self):
         gate = _make_gate()
-        info = gate.assign_from_eval(_eval(length=200, final_in_zone=0.85))
+        info = gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.85))
         assert info["stage"] == 3
         assert info["weights"] == (1.0, 1.0, 1.0)
         assert "stage 3" in info["reason"]
@@ -101,7 +104,7 @@ class TestSingleShotClassification:
 class TestArbitraryJumps:
     def test_stage1_to_stage3_in_one_eval(self):
         gate = _make_gate()
-        info = gate.assign_from_eval(_eval(length=200, final_in_zone=0.90))
+        info = gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.90))
         assert info["prev_stage"] == 1
         assert info["stage"] == 3
 
@@ -142,11 +145,11 @@ class TestCurrentState:
 
     def test_current_state_after_eval_carries_last_decision(self):
         gate = _make_gate()
-        gate.assign_from_eval(_eval(length=200, final_in_zone=0.85))
+        gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.85))
         snap = gate.current_state()
         assert snap["stage"] == 3
         assert snap["weights"] == (1.0, 1.0, 1.0)
-        assert snap["eval_len_ratio"] == pytest.approx(1.0)
+        assert snap["eval_len_ratio"] == pytest.approx(0.99)
         assert snap["eval_final_in_zone_ratio"] == pytest.approx(0.85)
         assert "stage 3" in snap["reason"]
 

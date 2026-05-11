@@ -193,13 +193,20 @@ CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9
 #   * eval mean_length < pass_len_ratio * max_steps  -> stage 1
 #   * else if final_in_zone_ratio < pass_final_in_zone -> stage 2
 #   * else                                           -> stage 3
-# ``pass_len_ratio = 1.0`` mirrors the user's spec exactly: stage 1 is
-# only "passed" when the deterministic eval policy survives the full
-# horizon (200 steps @ 20 Hz = 10 s) on average. Stage 2 "passes"
-# when, in addition, at least half of the eval episodes ALSO end with
-# the agent inside the OpponentRelationRewarder non-penalty zone
-# (distance band AND heading within max angle).
-CURRICULUM_STAGE1_PASS_LEN_RATIO = 1.0       # eval mean_length / max_steps
+# ``pass_len_ratio = 0.98`` accepts mean eval length >= 196 / 200 as
+# "Stage 1 mastered". The user's spec is "保持平衡满200步"; with
+# ``eval_episodes=16`` and per-episode opponent-position randomness,
+# strictly requiring 200/200 means a single unlucky episode (mean = 199.x)
+# trivially demotes the gate one update after promotion — observed in
+# run ``curriculum_20260510_225402``: 4 separate Stage 1->2 promotions
+# all bounced back within 5 updates because eval came in at 199.3 / 184 / etc.
+# 0.98 leaves a one-episode tolerance for stochastic opponent variance
+# while still demanding effective full-horizon survival.
+#
+# Stage 2 "passes" when, in addition, at least half of the eval episodes
+# end with the agent inside the OpponentRelationRewarder non-penalty
+# zone (distance band AND heading within max angle).
+CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.98      # eval mean_length / max_steps
 CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5   # eval final_in_zone_ratio
 
 # Cross-support balance (交替支撑平衡) 训练参数
