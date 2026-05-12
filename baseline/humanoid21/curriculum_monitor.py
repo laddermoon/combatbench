@@ -230,18 +230,46 @@ def render_report(summary: RunSummary, *, window: int) -> str:
     out.append("")
     out.append(f"## Stage history: {' -> '.join(f'@{u}:s{s}' for u, s in stage_changes)}")
 
-    # Best eval
+    # Best eval — must match the trainer's stage-ranked save criterion
+    # (curriculum.py: score = (stage, eval_length, eval_reward) compared
+    # lexicographically). Sorting by eval_length alone is misleading
+    # because Stage 1 routinely hits the full horizon (200 steps) at
+    # eval_reward ~ 0, while Stage 3 saves at 200 steps come with much
+    # higher eval_reward (~+3.5).
     eval_records = [r for r in summary.records if r.eval_length is not None]
     if eval_records:
-        best_by_len = max(eval_records, key=lambda r: r.eval_length)
+        best = max(
+            eval_records,
+            key=lambda r: (r.stage, r.eval_length, r.eval_reward or 0.0),
+        )
         out.append("")
         out.append(
-            f"## Best eval so far: update={best_by_len.update} "
-            f"stage={best_by_len.stage} eval_length={best_by_len.eval_length:.1f} "
-            f"eval_reward={best_by_len.eval_reward:+.4f}"
+            f"## Best eval so far: update={best.update} "
+            f"stage={best.stage} eval_length={best.eval_length:.1f} "
+            f"eval_reward={best.eval_reward:+.4f}"
+            + (
+                f" final_in_zone={best.eval_final_in_zone:.3f}"
+                if best.eval_final_in_zone is not None
+                else ""
+            )
         )
         n_best = sum(1 for r in summary.records if r.new_best)
         out.append(f"  total [new_best] saves: {n_best}")
+        # Most recent [new_best] is what the on-disk model.pt actually is.
+        last_save = next(
+            (r for r in reversed(summary.records) if r.new_best), None
+        )
+        if last_save is not None:
+            out.append(
+                f"  on-disk model.pt @ update={last_save.update} "
+                f"stage={last_save.stage} eval_length={last_save.eval_length:.1f} "
+                f"eval_reward={last_save.eval_reward:+.4f}"
+                + (
+                    f" final_in_zone={last_save.eval_final_in_zone:.3f}"
+                    if last_save.eval_final_in_zone is not None
+                    else ""
+                )
+            )
 
     # Health verdicts
     out.append("")

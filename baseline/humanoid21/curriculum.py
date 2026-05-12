@@ -557,22 +557,51 @@ def train(
                             f"  [stage {prev_stage}->{gate_info['stage']}"
                             f" {gate_info['reason']}]"
                         )
-                    # Stage-ranked score (see comment above on ``best_eval``).
+                    # Per-eval snapshot — ALWAYS save, regardless of
+                    # "best" status. The (stage, eval_length, eval_reward)
+                    # ranking is a one-dimensional projection of a multi-
+                    # objective fitness, and what looks suboptimal on the
+                    # ranking may still be the actor a downstream user
+                    # wants to inspect (e.g. the brief Stage 3 visits
+                    # before a sticky-stage demotion happen). Disk cost
+                    # is ~390 kB per snapshot * (max_updates / eval_interval)
+                    # = ~780 MB worst case, which is acceptable.
+                    snapshot_dir = (
+                        policy_dir.parent
+                        / "eval_snapshots"
+                        / (
+                            f"u{u:05d}_s{gate_info['stage']}"
+                            f"_l{eval_length:03.0f}"
+                            f"_r{eval_reward:+.2f}"
+                            f"_fiz{eval_final_in_zone:.2f}"
+                        )
+                    )
+                    snapshot_payload = {
+                        "algorithm": "ppo_curriculum",
+                        "update": u,
+                        "stage": gate_info["stage"],
+                        "weights": list(gate_info["weights"]),
+                        "best_eval_length": eval_length,
+                        "best_eval_reward": eval_reward,
+                        "best_eval_final_in_zone": eval_final_in_zone,
+                    }
+                    export_actor_policy_artifacts(
+                        actor=actor,
+                        policy_dir=snapshot_dir,
+                        extra_payload=snapshot_payload,
+                    )
+
+                    # Stage-ranked best-of-run also mirrored into the
+                    # canonical ``policy/`` dir so downstream tools can
+                    # keep pointing at a single path. See comment above
+                    # on ``best_eval`` for the ranking rationale.
                     score = (gate_info["stage"], eval_length, eval_reward)
                     if score > best_eval:
                         best_eval = score
                         export_actor_policy_artifacts(
                             actor=actor,
                             policy_dir=policy_dir,
-                            extra_payload={
-                                "algorithm": "ppo_curriculum",
-                                "update": u,
-                                "stage": gate_info["stage"],
-                                "weights": list(gate_info["weights"]),
-                                "best_eval_length": eval_length,
-                                "best_eval_reward": eval_reward,
-                                "best_eval_final_in_zone": eval_final_in_zone,
-                            },
+                            extra_payload=snapshot_payload,
                         )
                         line += "  [new_best]"
 
