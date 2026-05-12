@@ -209,6 +209,18 @@ CURRICULUM_NO_KO_HEALTH = float(os.environ.get("CURRICULUM_NO_KO_HEALTH", "1.0e9
 CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.98      # eval mean_length / max_steps
 CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5   # eval final_in_zone_ratio
 
+# Stage-3 stickiness floor for ``len_ratio``. In Stage 3, the opponent
+# is actively attacking, so episodes that end short of the full horizon
+# may reflect SUCCESSFUL combat (opponent knocked the target over), not
+# regressed balance. Demotion from Stage 3 therefore requires EITHER
+# catastrophic length collapse (len_ratio < this floor) OR a drop in
+# ``final_in_zone_ratio`` below ``pass_final_in_zone`` (combat skill
+# regression). Without this floor, run ``curriculum_20260511_143835``
+# repeatedly bounced Stage 3 -> Stage 1 on evals with length=190.6 and
+# final_in_zone=1.0 (perfect combat) — wasting updates on (1,0,0)
+# weights and slowly degrading the live actor.
+CURRICULUM_STAGE3_STICKY_LEN_RATIO = 0.70    # < 140 / 200 steps == catastrophic
+
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
 # 有接触即视为着地（无力阈值）。
@@ -1308,15 +1320,22 @@ class CurriculumStageGate:
         max_steps: int,
         pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO,
         pass_final_in_zone: float = CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE,
+        stage3_sticky_len_ratio: float = CURRICULUM_STAGE3_STICKY_LEN_RATIO,
         initial_stage: int = 1,
     ) -> None:
         if initial_stage not in self.STAGE_WEIGHTS:
             raise ValueError(f"initial_stage must be 1/2/3; got {initial_stage}")
         if max_steps <= 0:
             raise ValueError(f"max_steps must be > 0; got {max_steps}")
+        if not 0.0 <= stage3_sticky_len_ratio <= pass_len_ratio:
+            raise ValueError(
+                f"stage3_sticky_len_ratio must be in [0, pass_len_ratio]; "
+                f"got {stage3_sticky_len_ratio} (pass_len_ratio={pass_len_ratio})"
+            )
         self.max_steps = int(max_steps)
         self.pass_len_ratio = float(pass_len_ratio)
         self.pass_final_in_zone = float(pass_final_in_zone)
+        self.stage3_sticky_len_ratio = float(stage3_sticky_len_ratio)
         self.stage = int(initial_stage)
         # Last eval-summary metrics (or None if no eval yet). Kept only
         # for logging; not consulted by the next decision.
@@ -1345,7 +1364,26 @@ class CurriculumStageGate:
         final_in_zone = float(eval_summary.get("final_in_zone_ratio", 0.0))
 
         prev_stage = self.stage
-        if len_ratio < self.pass_len_ratio:
+        # Stage-3 stickiness: when we're already in combat training and
+        # the actor is still demonstrating combat skill (final_in_zone
+        # high), accept shorter eval episodes as "opponent landed hits"
+        # rather than "balance regression". This stops the spurious
+        # Stage 3 -> Stage 1 demotions observed when the opponent
+        # successfully attacks (e.g. eval_length=190 with
+        # final_in_zone=1.0 — clearly still combat-capable).
+        sticky_stage3 = (
+            prev_stage == 3
+            and len_ratio >= self.stage3_sticky_len_ratio
+            and final_in_zone >= self.pass_final_in_zone
+        )
+        if sticky_stage3:
+            new_stage = 3
+            reason = (
+                f"eval len_ratio={len_ratio:.3f}>={self.stage3_sticky_len_ratio:.2f}"
+                f" (stage-3 sticky), final_in_zone={final_in_zone:.3f}>=pass"
+                " -> stage 3 (combat)"
+            )
+        elif len_ratio < self.pass_len_ratio:
             new_stage = 1
             reason = (
                 f"eval len_ratio={len_ratio:.3f}<{self.pass_len_ratio:.2f}"
@@ -1832,6 +1870,7 @@ __all__ = [
     "CURRICULUM_NO_KO_HEALTH",
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
     "CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE",
+    "CURRICULUM_STAGE3_STICKY_LEN_RATIO",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",

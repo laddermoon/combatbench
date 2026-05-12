@@ -43,6 +43,7 @@ def _make_gate(**overrides):
         max_steps=200,
         pass_len_ratio=0.98,
         pass_final_in_zone=0.5,
+        stage3_sticky_len_ratio=0.70,
     )
     defaults.update(overrides)
     return CurriculumStageGate(**defaults)
@@ -116,9 +117,12 @@ class TestArbitraryJumps:
 
     def test_eval_can_oscillate_freely(self):
         gate = _make_gate()
+        # Sequences chosen so each step's decision is unambiguous even
+        # under stage-3 stickiness: 100 < sticky_len_ratio*200=140, so
+        # the second step is below the sticky floor and demotes.
         seq = [
             (200, 0.30, 2),
-            (100, 0.99, 1),
+            (100, 0.99, 1),  # below stage-3 sticky floor regardless of prev
             (200, 0.99, 3),
             (50, 0.50, 1),
         ]
@@ -128,6 +132,52 @@ class TestArbitraryJumps:
                 f"length={length} final_in_zone={fiz} "
                 f"expected stage {expected}, got {info['stage']}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Stage-3 stickiness — the demotion semantics that distinguish "opponent
+# landed hits" from "balance regressed".
+# ---------------------------------------------------------------------------
+class TestStage3Stickiness:
+    def test_stage3_stays_when_combat_still_strong(self):
+        """Empirical case from curriculum_20260511_143835 u910:
+        eval_length=190.62 final_in_zone=1.000 — clearly combat-capable;
+        old logic demoted to Stage 1 (length<196). New sticky logic stays.
+        """
+        gate = _make_gate(initial_stage=3)
+        info = gate.assign_from_eval(_eval(length=190.62, final_in_zone=1.0))
+        assert info["stage"] == 3
+        assert "sticky" in info["reason"]
+
+    def test_stage3_stays_at_sticky_floor(self):
+        gate = _make_gate(initial_stage=3)
+        # 0.70 * 200 = 140 — exactly at the floor
+        info = gate.assign_from_eval(_eval(length=140, final_in_zone=0.95))
+        assert info["stage"] == 3
+
+    def test_stage3_demotes_when_length_collapses(self):
+        """Below sticky floor — catastrophic, demote regardless of final_in_zone."""
+        gate = _make_gate(initial_stage=3)
+        info = gate.assign_from_eval(_eval(length=120, final_in_zone=1.0))
+        assert info["stage"] == 1
+        assert "stage 1" in info["reason"]
+
+    def test_stage3_demotes_when_combat_skill_regresses(self):
+        """Length OK but final_in_zone collapsed — stage 2, not sticky stage 3."""
+        gate = _make_gate(initial_stage=3)
+        info = gate.assign_from_eval(_eval(length=200, final_in_zone=0.20))
+        assert info["stage"] == 2
+
+    def test_stickiness_does_not_apply_to_stage1_or_stage2(self):
+        # From stage 1 with length=180 < pass_len, still stage 1.
+        gate = _make_gate(initial_stage=1)
+        info = gate.assign_from_eval(_eval(length=180, final_in_zone=1.0))
+        assert info["stage"] == 1, "stickiness must NOT apply from stage 1"
+
+        # From stage 2 with length=180 < pass_len, still stage 1.
+        gate = _make_gate(initial_stage=2)
+        info = gate.assign_from_eval(_eval(length=180, final_in_zone=1.0))
+        assert info["stage"] == 1, "stickiness must NOT apply from stage 2"
 
 
 # ---------------------------------------------------------------------------

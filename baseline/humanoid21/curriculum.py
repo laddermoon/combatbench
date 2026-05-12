@@ -444,7 +444,18 @@ def train(
         runtime_factory=functools.partial(make_curriculum_runtime_for, "robot_b"),
         max_workers=cfg.rollout_workers, **base_factory_kwargs,
     ) as collector_b:
-        best_eval = -float("inf")
+        # Best-eval score is a tuple (stage, eval_length, eval_reward)
+        # compared lexicographically:
+        #   * Stage 3 saves beat all Stage 2 saves beat all Stage 1 saves.
+        #     This is essential: with the early-resume run, Stage 1 hit
+        #     eval_length=200 very quickly. Without stage-ranked scoring,
+        #     every later Stage 3 success (eval_length=200, eval_reward
+        #     jumping from ~0 to +3.7) ties on length and never triggers
+        #     a save, so the exported policy stays balance-only.
+        #   * Within a stage, longer surviving evals win.
+        #   * Ties broken by higher eval_reward — so Stage 3 saves
+        #     prefer the highest-combat-score actor.
+        best_eval: tuple = (-1, -float("inf"), -float("inf"))
         for u in range(1, cfg.max_updates + 1):
             actor_sd = _snapshot(actor)
             rollout_seed = cfg.seed + u * cfg.episodes_per_update
@@ -546,7 +557,8 @@ def train(
                             f"  [stage {prev_stage}->{gate_info['stage']}"
                             f" {gate_info['reason']}]"
                         )
-                    score = eval_length  # primary criterion: survival
+                    # Stage-ranked score (see comment above on ``best_eval``).
+                    score = (gate_info["stage"], eval_length, eval_reward)
                     if score > best_eval:
                         best_eval = score
                         export_actor_policy_artifacts(
