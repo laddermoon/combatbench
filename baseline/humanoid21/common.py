@@ -221,29 +221,6 @@ CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5   # eval final_in_zone_ratio
 # weights and slowly degrading the live actor.
 CURRICULUM_STAGE3_STICKY_LEN_RATIO = 0.70    # < 140 / 200 steps == catastrophic
 
-# Discount factor for the per-step net-damage shaping. See
-# ``baseline/humanoid21/curriculum.py::_apply_discounted_damage_shaping``.
-#
-# Raw r3 (delta_opp_damage - delta_self_damage) is sparse: non-zero
-# only on hit frames. To densify the credit assignment we replace each
-# step's r3 contribution with the discounted future sum
-#
-#     shaped[t] = sum_{k>=0}  gamma^k * raw[t+k]
-#
-# so a hit at step t+K back-propagates to step t with weight gamma^K.
-# This is done post-rollout (the in-stream reward still emits raw r3
-# per step; the trainer adds ``(shaped - raw)`` to ``RolloutBatch.rewards``).
-#
-# Default 0.95 -> half-life ~ 14 steps ~ 0.7 s at 20 Hz. Steps right
-# before a hit get nearly the full damage value; steps ~1 s before get
-# half-credit; steps >3 s before get <5 %. Distinct from PPO's gamma
-# (default 0.99) so credit locality is tunable independently of the
-# discount used for the value bootstrap. Set to 0.0 to disable shaping
-# and recover the original sparse signal.
-CURRICULUM_DAMAGE_SHAPING_GAMMA = float(
-    os.environ.get("CURRICULUM_DAMAGE_SHAPING_GAMMA", "0.95")
-)
-
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
 # 有接触即视为着地（无力阈值）。
@@ -455,10 +432,6 @@ class CurriculumConfig:
     r1_scale: float = CURRICULUM_R1_SCALE
     r2_scale: float = CURRICULUM_R2_SCALE
     r3_scale: float = CURRICULUM_R3_SCALE
-    # Discount for per-step net-damage shaping (see comment on
-    # ``CURRICULUM_DAMAGE_SHAPING_GAMMA``). 0.0 disables shaping and
-    # preserves the original sparse-r3 signal.
-    damage_shaping_gamma: float = CURRICULUM_DAMAGE_SHAPING_GAMMA
     # Terminal fall penalty (subtracted from last step of terminated
     # trajectories, in every stage). 0.0 disables.
     terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
@@ -1222,11 +1195,19 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         # without surprising downstream consumers.
         self._final_in_range: int = 0
         self._final_in_non_penalty_zone: int = 0
-        # Per-step raw r3 (net damage) buffer. Published in
-        # ``episode_summary`` as a numpy float32 array of length
-        # ``num_steps`` so the trainer can recompute discounted-future
-        # damage credit post-rollout (see ``CURRICULUM_DAMAGE_SHAPING_GAMMA``).
-        self._r3_per_step: List[float] = []
+        # Stage-3 signal-strength diagnostics. r3 = net damage per step
+        # is structurally sparse (mostly zero, non-zero only on hit
+        # frames), so its raw episode SUM (already published as
+        # ``r3_sum``) tells us the *net* outcome but hides the
+        # per-component magnitude. We additionally publish:
+        #   r3_dealt_sum   = sum_t max(0, r3[t])  (damage dealt to opp)
+        #   r3_taken_sum   = sum_t max(0, -r3[t]) (damage received, >= 0)
+        #   r3_hit_steps   = count_t  ( r3[t] != 0 )
+        # so the trainer log shows whether silence comes from
+        # "never striking" vs "striking and being struck back equally".
+        self._r3_dealt_sum: float = 0.0
+        self._r3_taken_sum: float = 0.0
+        self._r3_hit_steps: int = 0
         self._output: float = 0.0
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -1242,7 +1223,9 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._num_steps = 0
         self._final_in_range = 0
         self._final_in_non_penalty_zone = 0
-        self._r3_per_step = []
+        self._r3_dealt_sum = 0.0
+        self._r3_taken_sum = 0.0
+        self._r3_hit_steps = 0
         self._output = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -1255,7 +1238,12 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._r1_sum += r1
         self._r2_sum += r2
         self._r3_sum += r3
-        self._r3_per_step.append(r3)
+        if r3 > 0.0:
+            self._r3_dealt_sum += r3
+            self._r3_hit_steps += 1
+        elif r3 < 0.0:
+            self._r3_taken_sum += -r3
+            self._r3_hit_steps += 1
         self._num_steps += 1
         # OpponentRelationRewarder exposes an explicit .in_range flag
         # (purely geometric: ``dist_min <= ||opp-self|| <= dist_max``).
@@ -1284,15 +1272,17 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
             "r1_sum": float(self._r1_sum),
             "r2_sum": float(self._r2_sum),
             "r3_sum": float(self._r3_sum),
+            # Decomposed Stage-3 signal — see comment at the
+            # ``_r3_dealt_sum`` field declaration. Not used by the
+            # gate; surfaced only for trainer-log visibility.
+            "r3_dealt_sum": float(self._r3_dealt_sum),
+            "r3_taken_sum": float(self._r3_taken_sum),
+            "r3_hit_steps": int(self._r3_hit_steps),
             "in_range_steps": int(self._in_range_steps),
             "final_in_range": int(self._final_in_range),
             "final_in_non_penalty_zone": int(self._final_in_non_penalty_zone),
             "obs_num_steps": int(self._num_steps),
             "weights": tuple(float(w) for w in self._weights),
-            # Per-step raw net-damage signal (length == num_steps).
-            # Used by ``_apply_discounted_damage_shaping`` in the
-            # trainer to densify the sparse r3 credit.
-            "r3_per_step": np.asarray(self._r3_per_step, dtype=np.float32),
         }
 
     @staticmethod
@@ -1936,7 +1926,6 @@ __all__ = [
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
     "CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE",
     "CURRICULUM_STAGE3_STICKY_LEN_RATIO",
-    "CURRICULUM_DAMAGE_SHAPING_GAMMA",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",

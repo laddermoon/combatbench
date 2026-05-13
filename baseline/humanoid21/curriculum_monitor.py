@@ -56,6 +56,12 @@ _UPDATE_RE = re.compile(
     r"r1=(?P<r1>[-+0-9.eE]+)\s+"
     r"r2=(?P<r2>[-+0-9.eE]+)\s+"
     r"r3=(?P<r3>[-+0-9.eE]+)\s+"
+    # Optional Stage-3 signal-decomposition fields (added 2026-05-13).
+    # Captured non-greedily so old logs (without these tokens) still
+    # parse and the trend / health rendering keeps working.
+    r"(?:r3_dealt=\s*(?P<r3_dealt>[-+0-9.eE]+)\s+)?"
+    r"(?:r3_taken=\s*(?P<r3_taken>[-+0-9.eE]+)\s+)?"
+    r"(?:r3_hits=\s*(?P<r3_hits>[-+0-9.eE]+)\s+)?"
     r"(?:term_pen=(?P<term_pen>[-+0-9.eE]+)\s+)?"
     r"policy_loss=(?P<policy_loss>[-+0-9.eE]+)\s+"
     r"value_loss=(?P<value_loss>[-+0-9.eE]+)\s+"
@@ -89,6 +95,12 @@ class UpdateRecord:
     eval_length: Optional[float] = None
     eval_final_in_zone: Optional[float] = None
     new_best: bool = False
+    # Stage-3 signal-decomposition fields. Optional because old logs
+    # (pre 2026-05-13) don't contain them. Placed at the end of the
+    # dataclass so they don't disturb the existing positional ordering.
+    r3_dealt: Optional[float] = None
+    r3_taken: Optional[float] = None
+    r3_hits: Optional[float] = None
 
 
 @dataclass
@@ -127,6 +139,9 @@ def parse_log(log_path: Path, *, tail_lines: int = 5) -> RunSummary:
                 in_range=float(d["in_range"]),
                 final_in_zone=float(d["final_in_zone"]) if d.get("final_in_zone") else 0.0,
                 r1=float(d["r1"]), r2=float(d["r2"]), r3=float(d["r3"]),
+                r3_dealt=float(d["r3_dealt"]) if d.get("r3_dealt") else None,
+                r3_taken=float(d["r3_taken"]) if d.get("r3_taken") else None,
+                r3_hits=float(d["r3_hits"]) if d.get("r3_hits") else None,
                 policy_loss=float(d["policy_loss"]),
                 value_loss=float(d["value_loss"]),
                 kl=float(d["kl"]),
@@ -209,6 +224,17 @@ def render_report(summary: RunSummary, *, window: int) -> str:
         f"  r1={_mean(rec_r1):+.3f}  r2={_mean(rec_r2):+.3f}  "
         f"r3={_mean(rec_r3):+.3f}  kl={_mean(rec_kls):.4f}"
     )
+    # Stage-3 signal decomposition (only render if at least one record
+    # in the window has the new fields — tolerates legacy logs).
+    rec_dealt = [r.r3_dealt for r in recent if r.r3_dealt is not None]
+    rec_taken = [r.r3_taken for r in recent if r.r3_taken is not None]
+    rec_hits = [r.r3_hits for r in recent if r.r3_hits is not None]
+    if rec_dealt or rec_taken or rec_hits:
+        out.append(
+            f"  r3_dealt={_mean(rec_dealt):+.3f}  "
+            f"r3_taken={_mean(rec_taken):+.3f}  "
+            f"r3_hits/ep={_mean(rec_hits):.2f}"
+        )
 
     out.append("")
     out.append("## Trends (last quartile - first quartile of recent window)")
