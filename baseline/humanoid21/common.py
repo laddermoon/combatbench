@@ -425,6 +425,17 @@ class CurriculumConfig:
     eval_interval: int = 5
     eval_episodes: int = 16
 
+    # Critic-warmup phase (after ``--resume-from``). For the FIRST
+    # ``critic_warmup_updates`` rollouts, only the critic receives a
+    # gradient — the actor is held fixed. This gives the freshly-init
+    # critic a chance to fit the value function of the loaded policy
+    # before PPO uses (initially garbage) advantages to move the
+    # actor and collapse it. Set to 0 to disable (default for
+    # train-from-scratch runs); the CLI auto-bumps this to 20 when
+    # ``--resume-from`` is provided. See ``_ppo_update`` and
+    # ``_load_actor_checkpoint`` docstrings for context.
+    critic_warmup_updates: int = 0
+
     # Runtime horizon.
     max_steps: int = CURRICULUM_MAX_STEPS
 

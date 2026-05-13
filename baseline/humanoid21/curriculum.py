@@ -164,8 +164,29 @@ def _ppo_update(
     trajectories: Sequence[RolloutBatch],
     cfg: CurriculumConfig,
     device: torch.device,
+    *,
+    critic_only: bool = False,
 ) -> Dict[str, float]:
-    """One PPO epoch over the on-policy batch. Mirrors ``stage1.py``."""
+    """One PPO epoch over the on-policy batch. Mirrors ``stage1.py``.
+
+    When ``critic_only`` is True, the actor is held FIXED:
+
+      * advantages are still computed (for diagnostics) but do NOT
+        flow into a policy gradient,
+      * we minimize ONLY ``MSE(V_new, returns)`` per minibatch,
+      * the KL early-stop is skipped (no policy update happens, so
+        KL would be ~ 0 by construction — checking it is wasted work).
+
+    This is used as a critic-warmup phase right after ``--resume-from``
+    so the freshly-initialized critic catches up to the reward
+    distribution of the loaded actor BEFORE we let PPO use its
+    (initially garbage) advantages to move the policy. Without this
+    warmup, the very first 1-2 updates back-propagate noise through
+    the actor and collapse a strong loaded policy into something
+    much weaker (observed live on
+    ``curriculum_20260513_175645``: u405 actor with eval_length=200
+    collapsed to len=63 by u5).
+    """
     valid: List[RolloutBatch] = []
     for t in trajectories:
         if t.log_probs is None:
@@ -224,6 +245,19 @@ def _ppo_update(
         early_stop = False
         for s in range(0, n, cfg.minibatch_size):
             idx = perm[s: s + cfg.minibatch_size]
+            if critic_only:
+                # Pure value-fit step. Only critic params get a gradient.
+                # We still record an "approx_kl" of 0 for log-line uniformity.
+                new_val = critic(obs_t[idx])
+                v_loss = ((new_val - ret_t[idx]) ** 2).mean()
+                optimizer.zero_grad()
+                v_loss.backward()
+                torch.nn.utils.clip_grad_norm_(critic.parameters(), cfg.grad_clip_norm)
+                optimizer.step()
+                kls.append(0.0)
+                pol_losses.append(0.0)
+                val_losses.append(float(v_loss.item()))
+                continue
             new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
             new_val = critic(obs_t[idx])
             with torch.no_grad():
@@ -440,6 +474,7 @@ def train(
         f"curriculum: max_steps={cfg.max_steps} "
         f"r1_scale={cfg.r1_scale} r2_scale={cfg.r2_scale} r3_scale={cfg.r3_scale} "
         f"terminal_fall_penalty={cfg.terminal_fall_penalty} "
+        f"critic_warmup_updates={cfg.critic_warmup_updates} "
         f"log_std_max={cfg.log_std_max} "
         f"gate=eval-driven(pass_len={cfg.stage1_pass_len_ratio:.2f},"
         f"pass_final_in_zone={cfg.stage2_pass_final_in_zone:.2f},"
@@ -508,7 +543,11 @@ def train(
             term_count, total_term_penalty = _inject_terminal_fall_penalty(
                 trajectories, terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
-            stats = _ppo_update(actor, critic, optimizer, trajectories, cfg, device)
+            in_warmup = u <= cfg.critic_warmup_updates
+            stats = _ppo_update(
+                actor, critic, optimizer, trajectories, cfg, device,
+                critic_only=in_warmup,
+            )
             # Gate state is fixed between evals; we only read it here so
             # the per-update log line carries the current stage/weights.
             gate_info = gate.current_state()
@@ -543,6 +582,16 @@ def train(
                 f"kl={stats['approx_kl']:.4f} "
                 f"gate_reason={gate_info['reason']!r}"
             )
+            if in_warmup:
+                # Make warmup phase visually obvious and skip the eval
+                # block entirely — running an eval before the critic
+                # is fit (a) wastes ~16 episodes of rollout and (b)
+                # would seed ``best_eval`` and overwrite the canonical
+                # ``policy/model.pt`` with a warmup-phase actor that
+                # is identical to the one we just resumed FROM.
+                line += "  [critic_warmup]"
+                print(line, flush=True)
+                continue
 
             if u % cfg.eval_interval == 0:
                 # Eval mirrors training: pick a target, use its collector,
@@ -659,6 +708,13 @@ def parse_args() -> argparse.Namespace:
              "file. Loads actor only; critic is re-initialized.",
     )
     parser.add_argument(
+        "--critic-warmup-updates", type=int, default=None,
+        help="Number of leading updates that train ONLY the critic "
+             "(actor frozen). Defaults to 20 when --resume-from is "
+             "provided, else 0. Prevents cold-critic-on-resume from "
+             "destroying the loaded actor in the first 1-2 PPO steps.",
+    )
+    parser.add_argument(
         "--run-name", type=str, default=None,
         help="Override the auto-generated run directory name.",
     )
@@ -685,6 +741,12 @@ def main() -> None:
     name = args.run_name or f"curriculum_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(__file__).resolve().parent / "runs" / name
     resume = Path(args.resume_from) if args.resume_from else None
+    # Critic warmup: explicit CLI override beats the resume-aware
+    # default. Default = 20 updates when resuming, 0 otherwise.
+    if args.critic_warmup_updates is not None:
+        cfg.critic_warmup_updates = int(args.critic_warmup_updates)
+    elif resume is not None:
+        cfg.critic_warmup_updates = 20
     train(cfg, run_dir=run_dir, resume_from=resume)
 
 
