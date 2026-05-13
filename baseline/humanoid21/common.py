@@ -221,6 +221,29 @@ CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5   # eval final_in_zone_ratio
 # weights and slowly degrading the live actor.
 CURRICULUM_STAGE3_STICKY_LEN_RATIO = 0.70    # < 140 / 200 steps == catastrophic
 
+# Discount factor for the per-step net-damage shaping. See
+# ``baseline/humanoid21/curriculum.py::_apply_discounted_damage_shaping``.
+#
+# Raw r3 (delta_opp_damage - delta_self_damage) is sparse: non-zero
+# only on hit frames. To densify the credit assignment we replace each
+# step's r3 contribution with the discounted future sum
+#
+#     shaped[t] = sum_{k>=0}  gamma^k * raw[t+k]
+#
+# so a hit at step t+K back-propagates to step t with weight gamma^K.
+# This is done post-rollout (the in-stream reward still emits raw r3
+# per step; the trainer adds ``(shaped - raw)`` to ``RolloutBatch.rewards``).
+#
+# Default 0.95 -> half-life ~ 14 steps ~ 0.7 s at 20 Hz. Steps right
+# before a hit get nearly the full damage value; steps ~1 s before get
+# half-credit; steps >3 s before get <5 %. Distinct from PPO's gamma
+# (default 0.99) so credit locality is tunable independently of the
+# discount used for the value bootstrap. Set to 0.0 to disable shaping
+# and recover the original sparse signal.
+CURRICULUM_DAMAGE_SHAPING_GAMMA = float(
+    os.environ.get("CURRICULUM_DAMAGE_SHAPING_GAMMA", "0.95")
+)
+
 # Cross-support balance (交替支撑平衡) 训练参数
 # 足底接触：从 derived_state["robot_environment_contacts"] 读取，与 ground geom
 # 有接触即视为着地（无力阈值）。
@@ -432,6 +455,10 @@ class CurriculumConfig:
     r1_scale: float = CURRICULUM_R1_SCALE
     r2_scale: float = CURRICULUM_R2_SCALE
     r3_scale: float = CURRICULUM_R3_SCALE
+    # Discount for per-step net-damage shaping (see comment on
+    # ``CURRICULUM_DAMAGE_SHAPING_GAMMA``). 0.0 disables shaping and
+    # preserves the original sparse-r3 signal.
+    damage_shaping_gamma: float = CURRICULUM_DAMAGE_SHAPING_GAMMA
     # Terminal fall penalty (subtracted from last step of terminated
     # trajectories, in every stage). 0.0 disables.
     terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
@@ -1011,6 +1038,18 @@ class OpponentRelationRewarder(BaseObserverPlugin):
         core_state = ctx.accessor.get_core_state()
         self_state = core_state[self.agent_id]
         opp_state = core_state[self.opponent_id]
+        # Forward direction comes from the *torso* body via the balance
+        # plugin's derived state. The pelvis/root-body quaternion (which
+        # an earlier version of this code used directly) does NOT share
+        # axes with the torso on the humanoid21 model — its local +X is
+        # roughly sideways, which caused the policy to converge on a
+        # "stand sideways to the opponent" optimum that satisfied the
+        # 25° heading band on the wrong axis. We now read the same
+        # ``robot_forward_ground_direction`` (length-2, ground-plane,
+        # unit norm) that ``BalanceAnalysisPlugin`` exposes.
+        derived_state = ctx.accessor.get_derived_state()
+        self_derived = derived_state.get(self.agent_id, {})
+        forward_xy_derived = self_derived.get("robot_forward_ground_direction")
 
         self_xy = np.asarray(self_state["root_pos"][:2], dtype=np.float64)
         opp_xy = np.asarray(opp_state["root_pos"][:2], dtype=np.float64)
@@ -1056,9 +1095,24 @@ class OpponentRelationRewarder(BaseObserverPlugin):
             heading_in_zone = True
         else:
             to_opp_unit = delta_xy / distance
-            forward_unit = self._robot_forward_xy_from_root_rot(
-                np.asarray(self_state["root_rot"], dtype=np.float64)
-            )
+            if forward_xy_derived is not None:
+                # Preferred: torso-derived ground-plane forward (same as
+                # the rest of the codebase). Already unit-normalized,
+                # but we re-normalize defensively in case of nan/inf.
+                fxy = np.asarray(forward_xy_derived, dtype=np.float64).reshape(-1)[:2]
+                f_norm = float(np.linalg.norm(fxy))
+                if f_norm > 1e-8:
+                    forward_unit = fxy / f_norm
+                else:
+                    forward_unit = self._robot_forward_xy_from_root_rot(
+                        np.asarray(self_state["root_rot"], dtype=np.float64)
+                    )
+            else:
+                # Fallback for envs without BalanceAnalysisPlugin in the
+                # derived-state pipeline (e.g. minimal unit-test stubs).
+                forward_unit = self._robot_forward_xy_from_root_rot(
+                    np.asarray(self_state["root_rot"], dtype=np.float64)
+                )
             cosang = float(np.clip(np.dot(forward_unit, to_opp_unit), -1.0, 1.0))
             angle_deg = float(np.degrees(np.arccos(cosang)))
             angle_excess = max(0.0, angle_deg - self.heading_max_angle_deg)
@@ -1168,6 +1222,11 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         # without surprising downstream consumers.
         self._final_in_range: int = 0
         self._final_in_non_penalty_zone: int = 0
+        # Per-step raw r3 (net damage) buffer. Published in
+        # ``episode_summary`` as a numpy float32 array of length
+        # ``num_steps`` so the trainer can recompute discounted-future
+        # damage credit post-rollout (see ``CURRICULUM_DAMAGE_SHAPING_GAMMA``).
+        self._r3_per_step: List[float] = []
         self._output: float = 0.0
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -1183,6 +1242,7 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._num_steps = 0
         self._final_in_range = 0
         self._final_in_non_penalty_zone = 0
+        self._r3_per_step = []
         self._output = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -1195,6 +1255,7 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
         self._r1_sum += r1
         self._r2_sum += r2
         self._r3_sum += r3
+        self._r3_per_step.append(r3)
         self._num_steps += 1
         # OpponentRelationRewarder exposes an explicit .in_range flag
         # (purely geometric: ``dist_min <= ||opp-self|| <= dist_max``).
@@ -1228,6 +1289,10 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
             "final_in_non_penalty_zone": int(self._final_in_non_penalty_zone),
             "obs_num_steps": int(self._num_steps),
             "weights": tuple(float(w) for w in self._weights),
+            # Per-step raw net-damage signal (length == num_steps).
+            # Used by ``_apply_discounted_damage_shaping`` in the
+            # trainer to densify the sparse r3 credit.
+            "r3_per_step": np.asarray(self._r3_per_step, dtype=np.float32),
         }
 
     @staticmethod
@@ -1871,6 +1936,7 @@ __all__ = [
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
     "CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE",
     "CURRICULUM_STAGE3_STICKY_LEN_RATIO",
+    "CURRICULUM_DAMAGE_SHAPING_GAMMA",
     # Observers
     "StandingPostureRewarder",
     "StandingPostureDeltaRewarder",

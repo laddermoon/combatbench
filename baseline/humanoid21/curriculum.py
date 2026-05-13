@@ -119,6 +119,88 @@ def _critic_values_and_bootstraps(
     return per_traj_values, bootstraps
 
 
+def _apply_discounted_damage_shaping(
+    trajectories: Sequence[RolloutBatch],
+    *,
+    gamma: float,
+    r3_scale: float,
+    r3_weight: float,
+) -> Dict[str, float]:
+    """Densify the sparse r3 (net damage) signal via discounted-future shaping.
+
+    For each trajectory with per-step raw net damage ``d[t]`` (length
+    ``T``) we compute
+
+        shaped[t] = sum_{k>=0}  gamma^k * d[t+k]
+                  = d[t] + gamma * shaped[t+1]      (right-to-left scan)
+
+    and adjust the in-stream rewards in place::
+
+        rewards[t] += r3_weight * r3_scale * (shaped[t] - d[t])
+
+    The observer already emitted ``r3_weight * r3_scale * d[t]`` per step
+    during rollout (see :class:`MultiSignalRewardObserver`), so adding
+    ``(shaped - d)`` makes the final per-step r3 contribution equal to
+    ``r3_weight * r3_scale * shaped[t]``. The reward at a hit frame is
+    unchanged; what changes is that every step in the ``~ -log(eps) /
+    log(1/gamma)`` window BEFORE the hit now receives a back-propagated
+    fraction of that hit's credit.
+
+    No-op when:
+      * ``gamma <= 0`` (shaping disabled),
+      * ``r3_weight == 0`` (Stage 1 / 2 — r3 not active),
+      * ``r3_scale == 0``,
+      * a trajectory is missing the ``r3_per_step`` info key (defensive).
+
+    Returns aggregate diagnostics for logging:
+      * ``raw_r3_mean``    mean of sum of raw d[t] across trajectories
+      * ``shaped_r3_mean`` mean of sum of shaped[t] across trajectories
+      * ``delta_sum_mean`` mean of (shaped - raw) sum * weight * scale
+                           (i.e. the total per-trajectory reward shift)
+    """
+    if gamma <= 0.0 or r3_weight == 0.0 or r3_scale == 0.0:
+        return {"raw_r3_mean": 0.0, "shaped_r3_mean": 0.0, "delta_sum_mean": 0.0}
+    if not trajectories:
+        return {"raw_r3_mean": 0.0, "shaped_r3_mean": 0.0, "delta_sum_mean": 0.0}
+
+    coef = float(r3_weight) * float(r3_scale)
+    g = float(gamma)
+    raw_sums: List[float] = []
+    shaped_sums: List[float] = []
+    delta_sums: List[float] = []
+    for traj in trajectories:
+        info = traj.info or {}
+        raw = info.get("r3_per_step")
+        if raw is None:
+            continue
+        raw = np.asarray(raw, dtype=np.float64).reshape(-1)
+        T = int(traj.num_steps)
+        if raw.shape[0] != T:
+            # Length mismatch — be defensive, skip rather than corrupt.
+            continue
+        if T == 0:
+            continue
+        # Right-to-left discounted future sum.
+        shaped = np.empty(T, dtype=np.float64)
+        running = 0.0
+        for t in range(T - 1, -1, -1):
+            running = raw[t] + g * running
+            shaped[t] = running
+        delta = (shaped - raw) * coef
+        traj.rewards = (traj.rewards.astype(np.float64) + delta).astype(np.float32)
+        raw_sums.append(float(raw.sum()))
+        shaped_sums.append(float(shaped.sum()))
+        delta_sums.append(float(delta.sum()))
+
+    if not raw_sums:
+        return {"raw_r3_mean": 0.0, "shaped_r3_mean": 0.0, "delta_sum_mean": 0.0}
+    return {
+        "raw_r3_mean": float(np.mean(raw_sums)),
+        "shaped_r3_mean": float(np.mean(shaped_sums)),
+        "delta_sum_mean": float(np.mean(delta_sums)),
+    }
+
+
 def _inject_terminal_fall_penalty(
     trajectories: Sequence[RolloutBatch],
     *,
@@ -417,6 +499,7 @@ def train(
     print(
         f"curriculum: max_steps={cfg.max_steps} "
         f"r1_scale={cfg.r1_scale} r2_scale={cfg.r2_scale} r3_scale={cfg.r3_scale} "
+        f"damage_shaping_gamma={cfg.damage_shaping_gamma} "
         f"terminal_fall_penalty={cfg.terminal_fall_penalty} "
         f"log_std_max={cfg.log_std_max} "
         f"gate=eval-driven(pass_len={cfg.stage1_pass_len_ratio:.2f},"
@@ -486,6 +569,19 @@ def train(
             term_count, total_term_penalty = _inject_terminal_fall_penalty(
                 trajectories, terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
+            # Densify the sparse r3 (net damage) signal: each step now
+            # gets credit for future damage events, decayed by
+            # ``damage_shaping_gamma`` per step. Pure no-op outside
+            # Stage 3 (where ``gate.weights[2] == 0``) or when the
+            # shaping discount is set to 0. The reward at hit frames
+            # is unchanged; the prior 1-3 s window gains positive
+            # gradient where it previously had ~zero.
+            shaping_stats = _apply_discounted_damage_shaping(
+                trajectories,
+                gamma=cfg.damage_shaping_gamma,
+                r3_scale=cfg.r3_scale,
+                r3_weight=float(gate.weights[2]),
+            )
             stats = _ppo_update(actor, critic, optimizer, trajectories, cfg, device)
             # Gate state is fixed between evals; we only read it here so
             # the per-update log line carries the current stage/weights.
@@ -504,6 +600,7 @@ def train(
                 f"r1={comp_summary['r1_mean']:+.3f} "
                 f"r2={comp_summary['r2_mean']:+.3f} "
                 f"r3={comp_summary['r3_mean']:+.3f} "
+                f"shaped_r3={shaping_stats['shaped_r3_mean']:+.3f} "
                 f"term_pen={mean_term_penalty:+.3f} "
                 f"policy_loss={stats['policy_loss']:+.5f} "
                 f"value_loss={stats['value_loss']:+.5f} "
