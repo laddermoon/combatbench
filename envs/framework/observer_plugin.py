@@ -87,6 +87,109 @@ class BaseRuntimeUnit(ABC):
 BaseObserverPlugin = BaseRuntimeUnit
 
 
+class CompositeObserver(BaseRuntimeUnit):
+    """Bundle multiple :class:`BaseRuntimeUnit` observers behind a single slot.
+
+    Each child observer is registered under a string name. Lifecycle hooks
+    (``on_pre_episode`` / ``on_post_action_step`` / ``on_post_episode`` /
+    ``on_manual_refresh``) fan out to every child in registration order, and
+    :meth:`get_output` returns a ``{name: child.get_output()}`` dict — i.e.
+    this composite **does not** combine / weight / reduce the child outputs;
+    it just presents them side-by-side.
+
+    Why a composite?
+    ----------------
+    The runtime's ``observer_plugins`` dict is keyed by name and each entry
+    holds exactly one observer. When you want to attach several small
+    diagnostic observers (per-agent posture probes, per-component reward
+    breakdowns, per-step debug snapshots, ...) without polluting the
+    top-level dict, group them under one composite key. Downstream consumers
+    that only care about a sub-output index into the dict by name.
+
+    Composes with itself: nested ``CompositeObserver`` instances produce
+    nested dicts, so hierarchical observation layouts are fine.
+
+    Notes
+    -----
+    * Children are stored in an ``OrderedDict``; iteration order matches the
+      construction / :meth:`add` order. Hooks are invoked in this order.
+    * If a hook on one child raises, **the exception propagates** and the
+      remaining children for that hook are skipped. This mirrors the runtime's
+      ``strict=True`` default — error isolation belongs at the runtime layer
+      (``_safe_call``), not here. Wrap individual children in try/except if
+      you need best-effort fan-out.
+    * Each child keeps its own state. The composite holds no state of its
+      own beyond the registry, so re-attaching the same composite across
+      episodes is safe (the children's ``on_pre_episode`` will reset them).
+    """
+
+    def __init__(
+        self,
+        sub_observers: Optional[Dict[str, "BaseRuntimeUnit"]] = None,
+    ) -> None:
+        # ``OrderedDict`` is explicit even though ``dict`` is insertion-ordered
+        # since 3.7 — readers should not have to remember that detail to be
+        # confident the fan-out order is stable.
+        from collections import OrderedDict
+
+        self._subs: "OrderedDict[str, BaseRuntimeUnit]" = OrderedDict()
+        if sub_observers:
+            for name, observer in sub_observers.items():
+                self.add(str(name), observer)
+
+    # ------------------------------------------------------------------
+    # Registry
+    # ------------------------------------------------------------------
+    def add(self, name: str, sub_observer: "BaseRuntimeUnit") -> None:
+        """Register ``sub_observer`` under ``name``. Raises if name is taken."""
+        key = str(name)
+        if key in self._subs:
+            raise ValueError(
+                f"CompositeObserver: sub-observer name {key!r} already registered"
+            )
+        if not isinstance(sub_observer, BaseRuntimeUnit):
+            raise TypeError(
+                f"CompositeObserver: sub-observer {key!r} must be a "
+                f"BaseRuntimeUnit instance, got {type(sub_observer).__name__}"
+            )
+        self._subs[key] = sub_observer
+
+    def remove(self, name: str) -> None:
+        self._subs.pop(str(name), None)
+
+    @property
+    def names(self) -> Tuple[str, ...]:
+        return tuple(self._subs.keys())
+
+    def get(self, name: str) -> "BaseRuntimeUnit":
+        return self._subs[str(name)]
+
+    # ------------------------------------------------------------------
+    # Lifecycle fan-out
+    # ------------------------------------------------------------------
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        for sub in self._subs.values():
+            sub.on_pre_episode(ctx)
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        for sub in self._subs.values():
+            sub.on_post_action_step(ctx)
+
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        for sub in self._subs.values():
+            sub.on_post_episode(ctx)
+
+    def on_manual_refresh(self, ctx: ReadOnlySimContext) -> None:
+        for sub in self._subs.values():
+            sub.on_manual_refresh(ctx)
+
+    # ------------------------------------------------------------------
+    # Output aggregation (NOT a reduction — just side-by-side dict)
+    # ------------------------------------------------------------------
+    def get_output(self) -> Dict[str, Any]:
+        return {name: sub.get_output() for name, sub in self._subs.items()}
+
+
 class _ObserverDispatcherPlugin(BasePlugin):
     def __init__(self):
         self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}

@@ -5,6 +5,7 @@ from .observer_plugin import (
     OBSERVER_DISPATCHER_PRIORITY,
     BaseObserverPlugin,
     BaseRuntimeUnit,
+    CompositeObserver,
 )
 from .recorder import BaseFrameRecorder, PostActionRecorder
 from .replay import (
@@ -43,6 +44,7 @@ __all__ = [
     "OBSERVER_DISPATCHER_PRIORITY",
     "BaseRuntimeUnit",
     "BaseObserverPlugin",
+    "CompositeObserver",
     "BaseFrameRecorder",
     "PostActionRecorder",
     "ReplaySimulator",
