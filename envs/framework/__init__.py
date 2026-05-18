@@ -17,21 +17,14 @@ from .replay import (
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .policy import Policy, call_policy, coerce_action
-from .episode_runner import (
-    AGENT_IDS,
-    AgentTrajectory,
-    EpisodeResult,
-    EpisodeRunner,
-    ObserverBinding,
-    RolloutConfig,
-    StepContext,
-    default_bindings,
-    default_reward_extractor,
-)
-from .parallel_runner import ParallelRunner, RunnerFactory
+from .episode_runner import AGENT_IDS, EpisodeRunner
 from .rollout_batch import RolloutBatch
-from .round_runner import CombatRoundRunner, RoundRunner
-from .match_runner import MatchResult, MatchRunner
+# TODO: parallel_runner / round_runner / match_runner still reference
+# legacy symbols (EpisodeResult, RolloutConfig, AgentTrajectory, StepContext,
+# default_bindings, default_reward_extractor, _derive_batch_seeds) that were
+# removed in the EpisodeRunner refactor. They are not re-exported here so
+# that ``import combatbench.envs.framework`` keeps working; they will be
+# brought back to life when those modules are migrated.
 
 __all__ = [
     "BaseSimulator",
@@ -55,22 +48,9 @@ __all__ = [
     "TimeoutPlugin",
     "VideoRecorderPlugin",
     "EpisodeRunner",
-    "ParallelRunner",
-    "RunnerFactory",
-    "CombatRoundRunner",
-    "RoundRunner",
     "Policy",
     "call_policy",
     "coerce_action",
-    "ObserverBinding",
-    "RolloutConfig",
-    "AgentTrajectory",
-    "EpisodeResult",
     "RolloutBatch",
-    "StepContext",
     "AGENT_IDS",
-    "default_bindings",
-    "default_reward_extractor",
-    "MatchResult",
-    "MatchRunner",
 ]

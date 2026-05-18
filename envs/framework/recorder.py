@@ -61,8 +61,16 @@ Per-step JSON schema (``step_*.json``, manifest_version=2)::
       "core_state":       { ... },                                          # optional
       "derived_state":    { ... },                                          # optional
       "sensor_data":      { ... },                                          # optional
-      "action":           { <agent_id>: <array>, ... }                      # optional
+      "action":           { <agent_id>: <array>, ... },                     # optional
+      "action_extras":    { <agent_id>: { ... } | null, ... }               # optional
     }
+
+``action_extras`` is the side-channel payload the policy emits alongside
+the action (e.g. ``log_prob`` / ``value`` / sampling info). Recorded as
+``None`` per-agent when the caller did not supply extras for that agent.
+Not part of any accessor read — it is policy-side state and is only
+meaningful for training-time recordings; ignored by
+:class:`envs.framework.replay.ReplaySimulator`.
 
 Per-episode JSON schema (``static.json``)::
 
@@ -151,7 +159,24 @@ class PostActionRecorder(ABC):
     def on_pre_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
         pass
 
-    def on_post_action_step(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def on_post_action_step(
+        self,
+        ctx: ReadOnlySimContext,
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+    ) -> None:
+        """Hook fired after every action step.
+
+        ``action_extras`` is a per-agent bundle
+        ``{"robot_a": <extras_a or None>, "robot_b": <extras_b or None>}``
+        forwarded by :meth:`EnvRuntime.step` (see its docstring). It carries
+        the side-channel payload produced by the policy alongside the action
+        — typically ``log_prob`` / ``value`` / sample info for RL trainers,
+        or ``None`` for scripted / inference-only callers that didn't pass
+        extras. ``None`` (the parameter default) means "no extras at all
+        this step", which is also what you get when an older caller invokes
+        :meth:`EnvRuntime.step` without the new extra args.
+        """
         pass
 
     def on_post_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
@@ -182,6 +207,11 @@ class BaseFrameRecorder(PostActionRecorder):
     save_derived_state: include ``derived_state`` in per-step JSON (default True).
     save_sensor_data: include ``sensor_data`` in per-step JSON (default True).
     save_action: include ``action`` in per-step JSON (default True).
+    save_action_extras: include per-agent policy extras (``log_prob`` /
+        ``value`` / etc., forwarded by :meth:`EnvRuntime.step`) in
+        per-step JSON (default True). Emitted only on ``on_post_action_step``
+        steps; on the ``on_pre_episode`` snapshot the field is absent
+        because no action has been taken yet.
     save_static_data: write ``static.json`` once per episode (default True).
     save_accessor_state: convenience override. When not ``None`` this value is
         applied to ``save_core_state`` / ``save_derived_state`` /
@@ -206,6 +236,7 @@ class BaseFrameRecorder(PostActionRecorder):
         save_derived_state: bool = True,
         save_sensor_data: bool = True,
         save_action: bool = True,
+        save_action_extras: bool = True,
         save_static_data: bool = True,
         save_accessor_state: Optional[bool] = None,
         image_extension: str = "png",
@@ -225,10 +256,15 @@ class BaseFrameRecorder(PostActionRecorder):
             save_sensor_data = bulk
             save_action = bulk
             save_static_data = bulk
+            # ``action_extras`` is policy-side, not accessor-side, but
+            # logically belongs to "full training-grade recording" — flip
+            # it together with the accessor bulk.
+            save_action_extras = bulk
         self.save_core_state = bool(save_core_state)
         self.save_derived_state = bool(save_derived_state)
         self.save_sensor_data = bool(save_sensor_data)
         self.save_action = bool(save_action)
+        self.save_action_extras = bool(save_action_extras)
         self.save_static_data = bool(save_static_data)
         self.image_extension = image_extension.lstrip(".")
         self.quiet = bool(quiet)
@@ -275,8 +311,13 @@ class BaseFrameRecorder(PostActionRecorder):
             self._static_file_name = "static.json"
         self._record_step(ctx, observer_outputs)
 
-    def on_post_action_step(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
-        self._record_step(ctx, observer_outputs)
+    def on_post_action_step(
+        self,
+        ctx: ReadOnlySimContext,
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+    ) -> None:
+        self._record_step(ctx, observer_outputs, action_extras=action_extras)
 
     def on_post_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
         if self._current_episode_dir is None:
@@ -295,6 +336,7 @@ class BaseFrameRecorder(PostActionRecorder):
             or self.save_derived_state
             or self.save_sensor_data
             or self.save_action
+            or self.save_action_extras
         )
 
     def _any_step_json_enabled(self) -> bool:
@@ -304,9 +346,15 @@ class BaseFrameRecorder(PostActionRecorder):
             or self.save_derived_state
             or self.save_sensor_data
             or self.save_action
+            or self.save_action_extras
         )
 
-    def _record_step(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def _record_step(
+        self,
+        ctx: ReadOnlySimContext,
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+    ) -> None:
         if not self._any_payload_enabled():
             return
         step_index = int(ctx.episode_step)
@@ -330,7 +378,7 @@ class BaseFrameRecorder(PostActionRecorder):
         if self._any_step_json_enabled():
             data_name = f"step_{step_index:05d}.json"
             data_path = self._current_episode_dir / data_name
-            self._write_step_data(ctx, observer_outputs, data_path)
+            self._write_step_data(ctx, observer_outputs, data_path, action_extras=action_extras)
             self._saved_data_paths.append(data_path)
             manifest_entry["data"] = data_name
 
@@ -348,6 +396,7 @@ class BaseFrameRecorder(PostActionRecorder):
         ctx: ReadOnlySimContext,
         observer_outputs: Mapping[str, Any],
         data_path: Path,
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
     ) -> None:
         payload: dict[str, Any] = {
             "episode_step": int(ctx.episode_step),
@@ -355,6 +404,13 @@ class BaseFrameRecorder(PostActionRecorder):
         }
         if self.save_observer_outputs:
             payload["observer_outputs"] = _json_sanitize(dict(observer_outputs))
+        # action_extras is None on the on_pre_episode snapshot (no action
+        # has happened yet) and on steps from callers that don't supply
+        # extras; in both cases we simply omit the key.
+        if self.save_action_extras and action_extras is not None:
+            payload["action_extras"] = _json_sanitize(
+                {agent_id: extras for agent_id, extras in action_extras.items()}
+            )
         # Each accessor read is guarded + defensive: a bug in one read must
         # not take down the whole recording. We embed ``__error__`` so the
         # replay tooling can surface the problem.

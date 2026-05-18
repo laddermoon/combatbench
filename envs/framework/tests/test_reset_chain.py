@@ -362,7 +362,7 @@ class _OrderRecorder(PostActionRecorder):
     def on_pre_episode(self, ctx, observer_outputs) -> None:
         self._log.append("recorder:pre_episode")
 
-    def on_post_action_step(self, ctx, observer_outputs) -> None:  # noqa: D401
+    def on_post_action_step(self, ctx, observer_outputs, action_extras=None) -> None:  # noqa: D401
         pass
 
     def on_post_episode(self, ctx, observer_outputs) -> None:

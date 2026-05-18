@@ -242,18 +242,30 @@ class EpisodeRunner:
 
         while self.runtime.is_episode_active:
             actions: Dict[str, np.ndarray] = {}
+            extras: Dict[str, Optional[Dict[str, Any]]] = {}
             for agent_id in self.AGENT_IDS:
-                # ``call_policy(..., want_extras=False)`` returns
-                # ``(action, {})`` — extras (log_prob/value) are collected
-                # by callers/recorders that need them, not by the runner.
-                action, _ = call_policy(
+                # ``want_extras=True`` asks the policy for its side-channel
+                # payload (log_prob / value / sampling info / …). The runner
+                # itself never inspects ``policy_extras`` — it only forwards
+                # the per-agent bundle to ``runtime.step`` so that attached
+                # recorders can persist it alongside the action snapshot.
+                # Policies that emit no extras return ``{}``; we forward
+                # ``None`` in that case to keep recorder schemas tidy
+                # (empty-dict vs missing is a meaningless distinction here).
+                action, policy_extras = call_policy(
                     self.policies[agent_id],
                     last_obs[agent_id],
-                    want_extras=False,
+                    want_extras=True,
                 )
                 actions[agent_id] = action
+                extras[agent_id] = policy_extras if policy_extras else None
 
-            self.runtime.step(actions["robot_a"], actions["robot_b"])
+            self.runtime.step(
+                actions["robot_a"],
+                actions["robot_b"],
+                action_a_extra=extras["robot_a"],
+                action_b_extra=extras["robot_b"],
+            )
 
             # Termination check uses runtime flags; recorders' post-step
             # hooks have already fired inside ``runtime.step`` so they see

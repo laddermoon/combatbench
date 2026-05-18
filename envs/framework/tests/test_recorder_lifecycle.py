@@ -35,7 +35,7 @@ class _TracingRecorder(PostActionRecorder):
     def on_pre_episode(self, ctx, observer_outputs):
         self._record("on_pre_episode", ctx, observer_outputs)
 
-    def on_post_action_step(self, ctx, observer_outputs):
+    def on_post_action_step(self, ctx, observer_outputs, action_extras=None):
         self._record("on_post_action_step", ctx, observer_outputs)
 
     def on_post_episode(self, ctx, observer_outputs):

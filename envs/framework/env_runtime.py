@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Type, TypeVar
 import logging
 
 import numpy as np
@@ -287,7 +287,17 @@ class EnvRuntime:
     def recorders(self) -> Tuple[PostActionRecorder, ...]:
         return tuple(self._recorders)
 
-    def _invoke_recorders(self, hook_name: str) -> None:
+    def _invoke_recorders(self, hook_name: str, *extra_args: Any) -> None:
+        """Fan out a lifecycle hook to all attached recorders.
+
+        ``extra_args`` is appended **after** ``(readonly_ctx, observer_outputs)``
+        and is hook-specific. Currently only ``on_post_action_step`` uses it,
+        to pass through per-agent ``action_extras`` produced by the policy
+        (log_prob / value / sample_info / etc.); the other hooks pass nothing
+        extra. Keeping the dispatch hook-agnostic and using positional pass-
+        through means new per-hook payloads can be added without churning
+        every recorder subclass.
+        """
         if not self._recorders:
             return
         readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
@@ -296,7 +306,7 @@ class EnvRuntime:
             _safe_call(
                 recorder, hook_name, self._strict,
                 f"Recorder '{type(recorder).__name__}'",
-                readonly_ctx, observer_outputs,
+                readonly_ctx, observer_outputs, *extra_args,
             )
 
     def reset(
@@ -313,11 +323,38 @@ class EnvRuntime:
             # Reset triggered an immediate termination (e.g. invalid init state).
             self._invoke_recorders("on_post_episode")
 
-    def step(self, action_a: Any, action_b: Any) -> None:
+    def step(
+        self,
+        action_a: Any,
+        action_b: Any,
+        action_a_extra: Optional[Mapping[str, Any]] = None,
+        action_b_extra: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Advance one action step.
+
+        ``action_a_extra`` / ``action_b_extra`` are *optional* per-agent
+        side-channel payloads produced by the policy alongside the action
+        (e.g. ``log_prob``, ``value``, sampling noise, exploration tags).
+        They are NOT consumed by the simulator — they are passed through to
+        recorders' ``on_post_action_step`` hook as a single bundle
+        ``{"robot_a": action_a_extra, "robot_b": action_b_extra}``. Each
+        entry is ``None`` when the caller did not provide extras for that
+        agent (e.g. scripted opponent), so recorders should treat ``None``
+        as "no extras this step for this agent".
+
+        This is the canonical way for an RL trainer recorder to capture
+        per-step log_prob / value alongside the observation snapshot
+        without bolting policy-internals onto :class:`EpisodeRunner` or
+        :class:`EnvRuntime`.
+        """
         if not self._core.is_episode_active:
             raise RuntimeError("EnvRuntime.step() called before reset() or after episode termination.")
         self._core.step({"robot_a": action_a, "robot_b": action_b})
-        self._invoke_recorders("on_post_action_step")
+        action_extras: Dict[str, Optional[Mapping[str, Any]]] = {
+            "robot_a": action_a_extra,
+            "robot_b": action_b_extra,
+        }
+        self._invoke_recorders("on_post_action_step", action_extras)
         if not self._core.is_episode_active:
             self._invoke_recorders("on_post_episode")
 
