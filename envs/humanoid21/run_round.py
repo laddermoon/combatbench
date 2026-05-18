@@ -21,6 +21,18 @@ Usage:
     # Inject additional runtime plugins (repeatable)
     python -m envs.humanoid21.run_round \
         --plugin "baseline.humanoid21.common:ImbalanceTerminationPlugin?agent_id=robot_a&grace_steps=2"
+
+    # Inject observer plugins (repeatable). Each spec must carry a name= prefix
+    # because observer_plugins is a dict keyed by name. The runtime exposes the
+    # observer's get_output() under that name (see EnvRuntime.get_observer_output).
+    python -m envs.humanoid21.run_round \
+        --observer "my_reward=baseline.humanoid21.common:NetDamageRewarder?agent_id=robot_a"
+
+    # Inject post-action recorders (repeatable). Recorders receive readonly ctx
+    # AND the dict of all observer outputs, so they're the natural place to
+    # dump per-step observation/reward/metric data for offline analysis.
+    python -m envs.humanoid21.run_round \
+        --recorder "my_pkg.my_module:JsonlDumpRecorder?path=trace.jsonl"
 """
 import argparse
 import importlib
@@ -70,6 +82,30 @@ def parse_args():
         help=(
             "Inject runtime plugin, repeatable. "
             "Format: module.path:ClassName?key=value&key2=value2"
+        ),
+    )
+    parser.add_argument(
+        '--observer',
+        action='append',
+        default=[],
+        metavar='SPEC',
+        help=(
+            "Inject observer plugin, repeatable. "
+            "Format: name=module.path:ClassName?key=value&key2=value2. "
+            "The leading 'name=' is mandatory — it is the key in the runtime's "
+            "observer_plugins dict and the handle for get_observer_output(name)."
+        ),
+    )
+    parser.add_argument(
+        '--recorder',
+        action='append',
+        default=[],
+        metavar='SPEC',
+        help=(
+            "Inject post-action recorder (PostActionRecorder subclass), repeatable. "
+            "Format: module.path:ClassName?key=value&key2=value2. "
+            "Recorders receive readonly ctx + all observer outputs each step — "
+            "use them to dump per-step data for offline accuracy analysis."
         ),
     )
 
@@ -130,6 +166,23 @@ def _load_plugin_from_spec(spec: str) -> Any:
     return cls(**kwargs)
 
 
+def _load_observer_from_spec(spec: str) -> tuple[str, Any]:
+    """Parse 'name=module.path:ClassName?key=value' → (name, observer_instance).
+
+    The 'name=' prefix is required because observer_plugins is a dict keyed
+    by name; the runtime exposes the observer's output under that key via
+    :meth:`EnvRuntime.get_observer_output`.
+    """
+    name, sep, rest = str(spec).partition("=")
+    name = name.strip()
+    if not sep or not name:
+        raise ValueError(
+            f"Invalid --observer spec: {spec!r}. "
+            "Expected format name=module.path:ClassName?key=value"
+        )
+    return name, _load_plugin_from_spec(rest)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -166,11 +219,34 @@ def main() -> None:
         if not args.quiet:
             print(f"Injected plugin: {plugin_obj.__class__.__name__} ({plugin_spec})")
 
+    # Prepare CLI-injected observers. ``make_env`` adds its own defaults
+    # (robot_a_obs / robot_b_obs) and only fills missing keys, so these
+    # extras are merged in side-by-side without clobbering the defaults.
+    observer_plugins: Dict[str, Any] = {}
+    for observer_spec in args.observer:
+        name, observer_obj = _load_observer_from_spec(observer_spec)
+        if name in observer_plugins:
+            raise ValueError(
+                f"Duplicate --observer name {name!r}; observer_plugins keys must be unique."
+            )
+        observer_plugins[name] = observer_obj
+        if not args.quiet:
+            print(f"Injected observer: {name} -> {observer_obj.__class__.__name__} ({observer_spec})")
+
     runtime = make_env(
         match_duration=args.duration,
         control_frequency=args.control_frequency,
         plugins=plugins,
+        observer_plugins=observer_plugins or None,
     )
+
+    # Attach CLI-injected recorders. Recorders are not part of make_env's
+    # signature; attach them directly on the runtime after construction.
+    for recorder_spec in args.recorder:
+        recorder_obj = _load_plugin_from_spec(recorder_spec)
+        runtime.attach_recorder(recorder_obj)
+        if not args.quiet:
+            print(f"Injected recorder: {recorder_obj.__class__.__name__} ({recorder_spec})")
 
     # Run round
     runner = RoundRunner(
