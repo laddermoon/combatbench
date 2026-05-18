@@ -17,6 +17,15 @@ class BasePlugin:
         
     @property
     def priority(self) -> int:
+        """Plugin 调度优先级——值越大越先执行（``_PluginManager`` 按降序排序）。
+
+        约定：
+        * 默认值 ``0``。绝大多数 plugin（奖励 / 终止 / 数据采集）保留默认即可，
+          它们会在 observer dispatcher 之后执行，自然读到当前步的 observer 输出。
+        * 想在 observer 之前执行（例如计分 / 伤害判定要让 observer 在同一步看到
+          击打事件），把 ``priority`` 设为严格大于
+          :data:`envs.framework.observer_plugin.OBSERVER_DISPATCHER_PRIORITY`。
+        """
         return 0
 
     @property

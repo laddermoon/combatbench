@@ -17,6 +17,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import BasePlugin, SimContext, TerminationReason
+from framework import OBSERVER_DISPATCHER_PRIORITY
 
 class NonFallConstraintPlugin(BasePlugin):
     """
@@ -131,6 +132,17 @@ class CombatScoringPlugin(BasePlugin):
     @property
     def name(self) -> str:
         return "combat_scoring"
+
+    @property
+    def priority(self) -> int:
+        # 必须在 observer dispatcher 之前执行：本 plugin 把本步的击打写入
+        # ``ctx.metrics["damage_taken_*"]`` / ``ctx.metrics["health_*"]`` /
+        # ``ctx.events``，下游 observer (例如 NetDamageRewarder) 读取这些
+        # 字段的差分作为本步奖励。如果在 observer 之后执行，observer 会
+        # 滞后一步才看到伤害，影响奖励信号的时效性。
+        # 详见 ``envs/framework/observer_plugin.py`` 中
+        # ``OBSERVER_DISPATCHER_PRIORITY`` 的注释。
+        return OBSERVER_DISPATCHER_PRIORITY + 1
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         # Per-episode HP carry-over flows through ``ctx.episode_options``

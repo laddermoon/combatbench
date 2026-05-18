@@ -5,6 +5,32 @@ from .context import ReadOnlySimContext, SimContext
 from .plugin import BasePlugin
 
 
+# ---------------------------------------------------------------------------
+# Observer dispatcher priority constant
+# ---------------------------------------------------------------------------
+# ``_PluginManager`` 按 ``priority`` 降序执行 plugin（``reverse=True``，详见
+# ``env_runtime.py``）。Observer dispatcher 默认抢占所有用户 plugin 之前刷新，
+# 这样下游的奖励 / 终止 / 指标 plugin 在同一钩子里读到的 observer 输出总是
+# 对应当前步的状态。该默认值通过下面这个常量集中暴露。
+#
+# 使用约定
+# --------
+# * **默认 plugin (priority == 0)** —— 在 observer 刷新之后执行。这是 99% 的
+#   场景，比如奖励器 / 终止判定 / 数据采集。它们读 observer 输出和 ``ctx``
+#   都拿到的是当前步的最新值。
+# * **需要在 observer 之前执行的 plugin** —— 把自己的 ``priority`` 设置成
+#   **严格大于** ``OBSERVER_DISPATCHER_PRIORITY``（例如
+#   ``OBSERVER_DISPATCHER_PRIORITY + 1``）。典型用例：
+#     - 计分 / 伤害判定（写入 ``ctx.metrics`` / ``ctx.events``），让
+#       observer 在同一步就能读到本步的击打结果，而不是滞后一步。
+#     - 任何会修改 ``ctx`` 黑板字段、且这些字段会被 observer 读取的 plugin。
+#
+# 把它做成常量而不是埋在 ``_ObserverDispatcherPlugin.priority`` 里，是为了
+# 让上游 plugin 写者不用反向工程框架内部值。需要"插队到 observer 前"的
+# plugin 应当显式 import 这个常量并基于它命名自己的优先级。
+OBSERVER_DISPATCHER_PRIORITY: int = 1_000_000
+
+
 class BaseRuntimeUnit(ABC):
     """Observer-side unit invoked by ``_ObserverDispatcherPlugin``.
 
@@ -72,12 +98,14 @@ class _ObserverDispatcherPlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        # 观察者刷新必须在同一钩子的其它 plugin **之前**执行，这样下游的
+        # 观察者刷新默认在同一钩子的其它 plugin **之前**执行，这样下游的
         # 终止判定 / 奖励 / 指标插件读到的 observer 输出总是对应当前步的状态。
         # 在 ``on_pre_episode`` 这种可写钩子里，观察者自己靠
         # ``require_mutator=False`` 保证不会获得 ``ctx.mutator``——无论优先级
-        # 高低它都只能读。因此安全地把优先级抬到最前。
-        return 1_000_000
+        # 高低它都只能读。
+        # 数值由 :data:`OBSERVER_DISPATCHER_PRIORITY` 集中暴露；需要在 observer
+        # 之前执行的 plugin 应当把 ``priority`` 设为严格大于该常量。
+        return OBSERVER_DISPATCHER_PRIORITY
 
     @property
     def require_mutator(self) -> bool:

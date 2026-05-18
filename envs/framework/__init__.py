@@ -1,7 +1,11 @@
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
 from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
-from .observer_plugin import BaseObserverPlugin, BaseRuntimeUnit
+from .observer_plugin import (
+    OBSERVER_DISPATCHER_PRIORITY,
+    BaseObserverPlugin,
+    BaseRuntimeUnit,
+)
 from .recorder import BaseFrameRecorder, PostActionRecorder
 from .replay import (
     ReplayError,
@@ -36,6 +40,7 @@ __all__ = [
     "SimContext",
     "TerminationReason",
     "BasePlugin",
+    "OBSERVER_DISPATCHER_PRIORITY",
     "BaseRuntimeUnit",
     "BaseObserverPlugin",
     "BaseFrameRecorder",

@@ -8,12 +8,14 @@ module re-exports the same names until those imports are migrated.
 Do not add new symbols here — put them in ``observer_plugin`` instead.
 """
 from .observer_plugin import (  # noqa: F401
+    OBSERVER_DISPATCHER_PRIORITY,
     BaseObserverPlugin,
     BaseRuntimeUnit,
     _ObserverDispatcherPlugin,
 )
 
 __all__ = [
+    "OBSERVER_DISPATCHER_PRIORITY",
     "BaseObserverPlugin",
     "BaseRuntimeUnit",
     "_ObserverDispatcherPlugin",
