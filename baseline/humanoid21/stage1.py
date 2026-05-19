@@ -128,6 +128,13 @@ class ScaledCrossSupportRewarder(BaseObserverPlugin):
     def get_output(self) -> float:
         return float(self._output)
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self._inner.agent_id, "scale": self._scale}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ScaledCrossSupportRewarder":
+        return cls(**config)
+
 
 def make_stage1_runtime_for(
     agent_id: str,

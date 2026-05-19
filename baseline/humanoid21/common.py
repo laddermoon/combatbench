@@ -574,6 +574,13 @@ class StandingPostureRewarder(BaseObserverPlugin):
     def get_output(self) -> float:
         return float(self._output)
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingPostureRewarder":
+        return cls(**config)
+
 
 class StandingPostureDeltaRewarder(BaseObserverPlugin):
     """Per-step posture-score *delta* — the GRPO-RTG / PPO reward signal.
@@ -613,6 +620,13 @@ class StandingPostureDeltaRewarder(BaseObserverPlugin):
 
     def get_output(self) -> float:
         return float(self._output)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingPostureDeltaRewarder":
+        return cls(**config)
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +729,13 @@ class BalanceValueRewarder(BaseObserverPlugin):
             return float(BALANCE_INVALID_SCORE)
         return float(_compute_balance_value_terms(out)["absolute_score"])
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "BalanceValueRewarder":
+        return cls(**config)
+
 
 class BalanceValueDeltaRewarder(BaseObserverPlugin):
     """Per-step balance-score *delta*, mirror of :class:`StandingPostureDeltaRewarder`."""
@@ -738,6 +759,13 @@ class BalanceValueDeltaRewarder(BaseObserverPlugin):
 
     def get_output(self) -> float:
         return float(self._output)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "BalanceValueDeltaRewarder":
+        return cls(**config)
 
 
 class CrossSupportBalanceRewarder(BaseObserverPlugin):
@@ -814,6 +842,21 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
     def get_output(self) -> float:
         return float(self._output)
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "initial_grace_steps": self.initial_grace_steps,
+            "initial_penalty_coef": self.initial_penalty_coef,
+            "foot_lift_min_steps": self.foot_lift_min_steps,
+            "foot_lift_penalty_coef": self.foot_lift_penalty_coef,
+            "switch_interval_max_steps": self.switch_interval_max_steps,
+            "switch_interval_penalty_coef": self.switch_interval_penalty_coef,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "CrossSupportBalanceRewarder":
+        return cls(**config)
+
     def _get_foot_contact_state(self, ctx: ReadOnlySimContext) -> tuple[bool, bool]:
         """检测双脚是否与地面接触（无力阈值：有接触条目即算）。
 
@@ -888,7 +931,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         reward = 0.0
         current_single_support = self._single_support_foot(left_foot_contact, right_foot_contact)
 
-        # A -> B 换脚间隔从 A 脚本轮首次单脚开始计时，期间允许 A 再次单脚。
+        # A -> B 换脚间隔从 A 脚本轮第一次单脚开始计时，期间允许 A 再次单脚。
         self._switch_interval_steps += 1
 
         # 1) 单脚支撑时长：仅惩罚过短（段落结束时结算）
@@ -1116,6 +1159,13 @@ class OpponentRelationRewarder(BaseObserverPlugin):
     def get_output(self) -> float:
         return float(self._output)
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "OpponentRelationRewarder":
+        return cls(**config)
+
 
 class NetDamageRewarder(BaseObserverPlugin):
     """Per-step net damage reward for curriculum stage 3.
@@ -1155,6 +1205,13 @@ class NetDamageRewarder(BaseObserverPlugin):
 
     def get_output(self) -> float:
         return float(self._output)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "NetDamageRewarder":
+        return cls(**config)
 
 
 class MultiSignalRewardObserver(BaseObserverPlugin):
@@ -1277,6 +1334,23 @@ class MultiSignalRewardObserver(BaseObserverPlugin):
 
     def get_output(self) -> float:
         return float(self._output)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "r1_scale": self.r1_scale,
+            "r2_scale": self.r2_scale,
+            "r3_scale": self.r3_scale,
+            "default_weights": list(self.default_weights),
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "MultiSignalRewardObserver":
+        cfg = dict(config)
+        dw = cfg.get("default_weights")
+        if isinstance(dw, list):
+            cfg["default_weights"] = tuple(dw)
+        return cls(**cfg)
 
     def episode_summary(self) -> Dict[str, Any]:
         return {
@@ -1524,6 +1598,18 @@ class StandingTerminationPlugin(BasePlugin):
     def name(self) -> str:
         return f"{self.agent_id}_standing_termination"
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "fall_height_threshold": self.fall_height_threshold,
+            "fall_upright_threshold": self.fall_upright_threshold,
+            "fall_grace_steps": self.fall_grace_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingTerminationPlugin":
+        return cls(**config)
+
     def on_pre_episode(self, ctx: SimContext) -> None:
         self._streak = 0
 
@@ -1563,6 +1649,17 @@ class BalanceScoreTerminationPlugin(BasePlugin):
         self.grace_steps = max(1, int(grace_steps))
         self._inner = Humanoid21BalanceAnalysisObserver(agent_id)
         self._streak = 0
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "score_threshold": self.score_threshold,
+            "grace_steps": self.grace_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "BalanceScoreTerminationPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:
@@ -1610,6 +1707,17 @@ class ImbalanceTerminationPlugin(BasePlugin):
         self.grace_steps = max(1, int(grace_steps))
         self._streak = 0
         self._ground_geom_name: Optional[str] = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "force_threshold": self.force_threshold,
+            "grace_steps": self.grace_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ImbalanceTerminationPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:

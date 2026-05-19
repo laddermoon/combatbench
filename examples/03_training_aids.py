@@ -116,6 +116,13 @@ class FallenEarlyTerminationPlugin(BasePlugin):
         self.min_height = float(min_height)
         self.grace_steps = int(grace_steps)
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"min_height": self.min_height, "grace_steps": self.grace_steps}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "FallenEarlyTerminationPlugin":
+        return cls(**config)
+
     @property
     def name(self) -> str:
         return "fallen_early_termination"
@@ -147,6 +154,13 @@ class ClosingDistanceRewardObserver(BaseObserverPlugin):
         self.agent_id = agent_id
         self._last_distance: Optional[float] = None
         self._reward = 0.0
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ClosingDistanceRewardObserver":
+        return cls(**config)
 
     def _distance(self, ctx) -> float:
         core = ctx.accessor.get_core_state()

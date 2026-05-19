@@ -16,13 +16,11 @@ from .envs import (
     EnvRuntime,
     TimeoutPlugin,
     VideoRecorderPlugin,
-    RoundRunner,
-    MatchResult,
-    MatchRunner,
+    # TODO: RoundRunner / MatchResult / MatchRunner are pending migration to
+    # the refactored EpisodeRunner (legacy EpisodeResult / RolloutConfig
+    # removed). Re-add once the migration lands.
     # Humanoid21
     MujocoCombatSimulator,
-    Humanoid21Observer,
-    make_env,
 )
 
 __all__ = [
@@ -39,11 +37,6 @@ __all__ = [
     "EnvRuntime",
     "TimeoutPlugin",
     "VideoRecorderPlugin",
-    "RoundRunner",
-    "MatchResult",
-    "MatchRunner",
     # Humanoid21
     "MujocoCombatSimulator",
-    "Humanoid21Observer",
-    "make_env",
 ]

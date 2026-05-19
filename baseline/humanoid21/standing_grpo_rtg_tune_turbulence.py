@@ -123,6 +123,17 @@ class StandingRewardObserver(BaseObserverPlugin):
     def get_output(self) -> float:
         return self._output
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "verbose": self.verbose,
+            "verbose_stride": self.verbose_stride,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingRewardObserver":
+        return cls(**config)
+
     def _compute_posture_terms(
         self,
         ctx: ReadOnlySimContext,
@@ -227,6 +238,18 @@ class StandingTerminationPlugin(BasePlugin):
     @property
     def name(self) -> str:
         return f"{self.agent_id}_standing_termination"
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "fall_height_threshold": self.fall_height_threshold,
+            "fall_upright_threshold": self.fall_upright_threshold,
+            "fall_grace_steps": self.fall_grace_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingTerminationPlugin":
+        return cls(**config)
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         self._fall_streak = 0

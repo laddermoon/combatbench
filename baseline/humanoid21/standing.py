@@ -104,6 +104,18 @@ class StandingRewardObserver(BaseObserverPlugin):
     def get_output(self) -> Any:
         return self._output
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "fall_height_threshold": self.fall_height_threshold,
+            "fall_upright_threshold": self.fall_upright_threshold,
+            "fall_grace_steps": self.fall_grace_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StandingRewardObserver":
+        return cls(**config)
+
     def _build_output(
         self,
         ctx: ReadOnlySimContext,

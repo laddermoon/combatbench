@@ -262,3 +262,6 @@ python3 -m envs.humanoid21.run_round \
   在这个时间之间不惩罚，不在这个时间之内落地， 都进行惩罚，偏离越大，惩罚越重                                     
   3。 这只脚落地后会有一个双脚同时着地的最短和最长时间，不在这个时间段进行惩罚，时间差的越多，惩罚越重。          
   4。 记录上次抬起的是哪一只脚， 如果下次抬起的脚不对，进行惩罚。 
+
+
+cd /data1/mono/things/combatbench && BEST=baseline/humanoid21/runs/curriculum_20260513_181212/policy && OUT=baseline/humanoid21/runs/curriculum_20260513_181212/best_u375.mp4 && CUDA_VISIBLE_DEVICES= timeout 120 python3 envs/humanoid21/run_round.py --policy-a "$BEST" --policy-b "$BEST" --duration 10 --video "$OUT" 2>&1 | grep -v -E "pynvml|FutureWarning|deprecated" | tail -10 && echo "---" && ls -la "$OUT" 2>&1
