@@ -3,12 +3,12 @@ from .context import SimContext
 
 class BasePlugin:
     """
-    仿真扩展插件（Simulation Plugin）。
-    
-    职责：
-    1. 在仿真引擎的特定生命周期节点注入自定义逻辑。
-    2. 通过 ctx.accessor 读取数据。
-    3. 通过 ctx.mutator 修改数据（如果当前生命周期被允许，否则为 None）。
+    Simulation extension plugin.
+
+    Responsibilities:
+    1. Inject custom logic at specific lifecycle points of the simulation engine.
+    2. Read data via ctx.accessor.
+    3. Modify data via ctx.mutator (if the current lifecycle permits; otherwise None).
     """
     
     @property
@@ -17,151 +17,154 @@ class BasePlugin:
         
     @property
     def priority(self) -> int:
-        """Plugin 调度优先级——值越大越先执行（``_PluginManager`` 按降序排序）。
+        """Plugin dispatch priority — larger values run first (``_PluginManager`` sorts descending).
 
-        约定：
-        * 默认值 ``0``。绝大多数 plugin（奖励 / 终止 / 数据采集）保留默认即可，
-          它们会在 observer dispatcher 之后执行，自然读到当前步的 observer 输出。
-        * 想在 observer 之前执行（例如计分 / 伤害判定要让 observer 在同一步看到
-          击打事件），把 ``priority`` 设为严格大于
-          :data:`envs.framework.observer_plugin.OBSERVER_DISPATCHER_PRIORITY`。
+        Conventions:
+        * Default ``0``. Most plugins (reward / termination / data collection) can keep the default;
+          they run after the observer dispatcher and naturally see the current step's observer output.
+        * To run before observers (e.g. scoring / damage resolution so the observer sees the hit event
+          within the same step), set ``priority`` strictly greater than
+          :data:`envs.framework.observer_plugin.OBSERVER_DISPATCHER_PRIORITY`.
         """
         return 0
 
     @property
     def require_mutator(self) -> bool:
         """
-        是否申请数据操作权限。
-        如果为 False，即使处于允许修改的生命周期（如 on_pre_phy_step），
-        传给此插件的 ctx.mutator 依然会是 None。遵循最小权限原则。
+        Whether to request data-mutation permission.
+        If False, ctx.mutator passed to this plugin will be None even during
+        mutator-allowed lifecycles (e.g. on_pre_phy_step). Follows the principle of least privilege.
         """
         return False
 
     # ==========================================
-    # 随机性钩子 (Randomness Hook)
+    # Randomness Hook
     # ==========================================
 
     def set_episode_seed(self, seed: int) -> None:
-        """[时机]: Episode 开始前、on_pre_episode 之前，由 EpisodeRunner 调用。
-        [职责]: 持有 RNG 的 plugin 在此立即重建自己的 RNG。
+        """[Timing]: Called by EpisodeRunner before the episode starts and before on_pre_episode.
+        [Responsibility]: Plugins that own an RNG should rebuild it immediately here.
 
-        默认 no-op：不消费随机性的 plugin 无须重写。实现方请在此方法内
-        直接 ``self._rng = np.random.RandomState(int(seed))`` （或等价写法），
-        不要推迟到 on_pre_episode，以保证 set_episode_seed 是唯一的 RNG
-        重建入口。详见 ``SEED.md``。
+        Default no-op: plugins that do not consume randomness need not override.
+        Implementers should directly ``self._rng = np.random.RandomState(int(seed))``
+        (or equivalent) inside this method; do not defer to on_pre_episode so that
+        set_episode_seed remains the single entry point for RNG reconstruction.
+        See ``SEED.md`` for details.
         """
         pass
 
     # ==========================================
-    # 生命周期钩子 (Lifecycle Hooks)
+    # Lifecycle Hooks
     # ==========================================
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """
-        [时机]: 在一个新的 Episode 开始前，环境刚刚被重置时。
-        [职责]: 初始化状态（Resetter）、清空历史统计。
-        [权限]: 读写（ctx.mutator 可用）。
+        [Timing]: Before a new episode begins, right after the environment is reset.
+        [Responsibility]: Initialize state (resetters), clear historical statistics.
+        [Permission]: Read-write (ctx.mutator available).
         """
         pass
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         """
-        [时机]: 接收到外部动作（Action），但还未拆分并下发给物理引擎之前。
-        [职责]: 控制模式映射（Control Modes）、动作空间映射、动作限幅。
-        [权限]: 读写（ctx.mutator 可用，可修改动作）。
+        [Timing]: After receiving an external action but before it is split and sent to the physics engine.
+        [Responsibility]: Control mode mapping, action space mapping, action clipping.
+        [Permission]: Read-write (ctx.mutator available; action may be modified).
         """
         pass
 
     def on_pre_phy_step(self, ctx: SimContext) -> None:
         """
-        [时机]: 在每一次极细粒度的物理仿真步（Physical Step）执行之前。
-        [职责]: 注入外部扰动（Disturbances）。
-        [权限]: 读写（ctx.mutator 可用，可修改外部力）。
+        [Timing]: Before each fine-grained physics simulation step.
+        [Responsibility]: Inject external disturbances.
+        [Permission]: Read-write (ctx.mutator available; external forces may be modified).
         """
         pass
 
     def on_post_phy_step(self, ctx: SimContext) -> None:
         """
-        [时机]: 在每一次极细粒度的物理仿真步执行之后，且状态已更新。
-        [职责]: 刚性状态约束（Constraints），高频数据收集。
-        [权限]: 读写（ctx.mutator 可用，可强行覆盖状态实现投影）。
+        [Timing]: After each fine-grained physics step, once state has been updated.
+        [Responsibility]: Hard state constraints, high-frequency data collection.
+        [Permission]: Read-write (ctx.mutator available; state may be overridden for projection).
         """
         pass
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         """
-        [时机]: 一个 Action Step 对应的所有物理步都执行完毕之后。
-        [职责]: 指标聚合（Metrics）、犯规判定（Terminations）、计算奖励。
-        [权限]: 只读（ctx.mutator 为 None）。
+        [Timing]: After all physics steps corresponding to one action step have finished.
+        [Responsibility]: Metric aggregation, termination proposals, reward computation.
+        [Permission]: Read-only (ctx.mutator is None).
         """
         pass
 
     def on_post_episode(self, ctx: SimContext) -> None:
         """
-        [时机]: Episode 确定终止之后。
-        [职责]: 整局维度的日志汇总、数据上报。
-        [权限]: 只读（ctx.mutator 为 None）。
+        [Timing]: After the episode has definitively terminated.
+        [Responsibility]: Episode-level log aggregation and data reporting.
+        [Permission]: Read-only (ctx.mutator is None).
         """
         pass
 
     # ==========================================
-    # 管理钩子 (Management Hooks)
+    # Management Hooks
     # ==========================================
     #
-    # 设计意图
-    # --------
-    # ``on_pre_episode`` / ``on_post_episode`` 绑定的是 **episode** 生命
-    # 周期（每局都触发）。``on_attach`` / ``on_detach`` 绑定的是 **runtime
-    # 挂载** 生命周期（跨所有 episode 只触发一次），用来管理"跟随 plugin
-    # 实例而非 episode"的一次性资源与缓存。
+    # Design rationale
+    # ----------------
+    # ``on_pre_episode`` / ``on_post_episode`` are bound to the **episode**
+    # lifecycle (fired every episode). ``on_attach`` / ``on_detach`` are bound
+    # to the **runtime attachment** lifecycle (fired once across all episodes),
+    # managing one-off resources and caches tied to the plugin instance rather
+    # than to an episode.
     #
-    # 为什么不能用 ``__init__`` / ``__del__`` 替代：
-    #   * ``__init__`` 在用户代码里执行，那时 plugin 还没挂到 runtime 上，
-    #     无法感知 runtime 的生命周期（没有办法在 ``runtime.close()`` 时
-    #     得到通知）；
-    #   * ``__del__`` 在 Python 里时机不确定（可能永远不触发），不适合
-    #     释放文件句柄 / socket / GPU context 这类有副作用的资源。
+    # Why ``__init__`` / ``__del__`` cannot replace them:
+    #   * ``__init__`` runs in user code before the plugin is attached to a runtime,
+    #     so it cannot observe the runtime lifecycle (no way to be notified on
+    #     ``runtime.close()``).
+    #   * ``__del__`` timing in Python is non-deterministic (may never fire); it is
+    #     unsuitable for releasing side-effectful resources such as file handles,
+    #     sockets, or GPU contexts.
     #
-    # 框架调度点（不要依赖其它调用时机）：
+    # Framework dispatch points (do not rely on other call sites):
     #   * ``EnvRuntime.attach_plugin(plugin)`` / ``attach_recorder``
     #     → ``plugin.on_attach()``
     #   * ``EnvRuntime.detach_plugin(plugin)`` / ``detach_recorder``
     #     → ``plugin.on_detach()``
-    #   * ``EnvRuntime.close()`` 内部 ``clear()`` 逐个 detach →
-    #     所有在册 plugin 的 ``on_detach`` 都会被保证调用一次（优雅关闭
-    #     契约，见 tests/test_edge_cases.py::test_close_clears_plugins）。
+    #   * ``EnvRuntime.close()`` internally ``clear()`` detaches one by one →
+    #     every registered plugin's ``on_detach`` is guaranteed to fire once
+    #     (graceful-shutdown contract; see tests/test_edge_cases.py::test_close_clears_plugins).
 
     def on_attach(self) -> None:
         """
-        [时机]: plugin 被挂到 runtime 时（``EnvRuntime.attach_plugin``），
-                同一个 plugin 实例在一个 runtime 上只触发一次；若被 detach
-                后再 attach，会再次触发。
-        [职责]: 一次性资源的申请与缓存初始化——
-                * 打开日志 / 视频写入文件句柄；
-                * 建立 socket、连接远程服务；
-                * 分配 GPU context、预编译 kernel；
-                * 清空/初始化跨 episode 复用的缓存（例如
-                  ``_ObserverDispatcherPlugin`` 在此清除去重 token）。
-        [权限]: 此时还没有 ctx，不要访问仿真状态；需要读取初始状态请放到
-                ``on_pre_episode``。
-        [默认实现]: no-op。没有一次性资源需求的 plugin 无须重写。
+        [Timing]: When the plugin is attached to a runtime (``EnvRuntime.attach_plugin``).
+                A given plugin instance fires once per runtime; if detached and re-attached,
+                it will fire again.
+        [Responsibility]: Allocate one-off resources and initialize caches —
+                * open log / video file handles;
+                * establish sockets, connect to remote services;
+                * allocate GPU contexts, pre-compile kernels;
+                * clear / initialize caches reused across episodes (e.g.
+                  ``_ObserverDispatcherPlugin`` clears deduplication tokens here).
+        [Permission]: No ctx exists yet; do not access simulation state.
+                Read initial state in ``on_pre_episode`` instead.
+        [Default]: no-op. Plugins without one-off resource needs need not override.
         """
         pass
 
     def on_detach(self) -> None:
         """
-        [时机]: plugin 从 runtime 脱离时（``EnvRuntime.detach_plugin``），
-                或 ``runtime.close()`` 统一清理时（此时所有 plugin 的
-                ``on_detach`` 都会被保证调用，契约见
-                ``test_edge_cases.py::test_close_clears_plugins``）。
-                与 ``on_attach`` 一一对应；在一个 runtime 上不会出现没
-                attach 过就 detach 的情况。
-        [职责]: 释放 ``on_attach`` 申请的资源——
-                * flush 并关闭视频 / 日志文件；
-                * 关闭 socket、断开远程连接；
-                * 释放 GPU 显存、清空持久缓存。
-        [权限]: 此时 ctx 已不可用，且 episode 可能已经终止或从未开始；
-                不要访问仿真状态。
-        [默认实现]: no-op。
+        [Timing]: When the plugin is detached from a runtime (``EnvRuntime.detach_plugin``),
+                or during ``runtime.close()`` cleanup (every registered plugin's
+                ``on_detach`` is guaranteed to fire; see
+                ``test_edge_cases.py::test_close_clears_plugins``).
+                Corresponds one-to-one with ``on_attach``; detaching without a prior
+                attach will never happen on a given runtime.
+        [Responsibility]: Release resources acquired in ``on_attach`` —
+                * flush and close video / log files;
+                * close sockets, disconnect remote services;
+                * free GPU memory, clear persistent caches.
+        [Permission]: ctx is no longer available and the episode may have ended
+                or never started; do not access simulation state.
+        [Default]: no-op.
         """
         pass

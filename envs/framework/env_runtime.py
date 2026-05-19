@@ -8,7 +8,7 @@ from .common_plugins import TimeoutPlugin
 from .context import ReadOnlySimContext, SimContext, TerminationReason
 from .plugin import BasePlugin
 from .recorder import PostActionRecorder
-from .runtime_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
+from .observer_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
 
 
 # TODO(framework/B2): introduce a VectorizedSimulator interface and a

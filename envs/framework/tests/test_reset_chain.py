@@ -20,7 +20,7 @@ from envs.framework.episode_runner import (
 from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
 from envs.framework.recorder import PostActionRecorder
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 
 # ---------------------------------------------------------------------------

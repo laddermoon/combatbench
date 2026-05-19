@@ -138,7 +138,7 @@ def mock_simulator_fresh():
 # 导入框架模块（用于测试）
 from envs.framework.context import SimContext, ReadOnlySimContext, TerminationReason
 from envs.framework.plugin import BasePlugin
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 from envs.framework.env_runtime import EnvRuntime
 
 

@@ -30,7 +30,7 @@ from _common import build_humanoid21_runtime
 from envs.framework import EpisodeRunner
 from envs.framework.episode_runner import AGENT_IDS, ObserverBinding
 from envs.framework.plugin import BasePlugin
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 from policy.random.policy import RandomCombatPolicy
 
 

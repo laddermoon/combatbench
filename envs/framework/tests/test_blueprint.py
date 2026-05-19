@@ -22,7 +22,7 @@ from envs.framework.common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from envs.framework.env_runtime import EnvRuntime
 from envs.framework.plugin import BasePlugin
 from envs.framework.recorder import EpisodeBufferRecorder
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 # Re-import MockSimulator from conftest indirectly via fixture.
 

@@ -537,3 +537,64 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
             "is_projected_between_support_points": bool(projected_between_supports),
         }
 
+
+class CombatScoringObserver(BaseObserverPlugin):
+    """
+    Combat status observer that tracks both robots simultaneously.
+
+    Consumes data produced by :class:`CombatScoringPlugin` (stored in
+    ``ctx.metrics``) and surfaces health, damage, and hit events for
+    ``robot_a`` and ``robot_b`` in a single output dict.
+
+    Output keys (dict):
+        * ``robot_a`` — dict with ``health``, ``cumulative_damage_taken``,
+          ``step_damage_taken``, ``step_hit_events``, ``is_ko``.
+        * ``robot_b`` — same structure for the opponent.
+        * ``events`` — raw hit events list from the current step.
+    """
+
+    def __init__(self):
+        self._output: Any = None
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._output = self._build_output(ctx)
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        self._output = self._build_output(ctx)
+
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        return None
+
+    def get_output(self) -> Any:
+        return self._output
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "CombatScoringObserver":
+        return cls(**config)
+
+    def _build_output(self, ctx: ReadOnlySimContext) -> Dict[str, Any]:
+        metrics = ctx.metrics
+        events = list(metrics.get("events", []))
+
+        def _robot_status(robot_id: str) -> Dict[str, Any]:
+            health_key = f"health_{robot_id[-1]}"  # health_a / health_b
+            damage_key = f"damage_taken_{robot_id[-1]}"
+            robot_events = [e for e in events if e.get("defender") == robot_id]
+            step_damage = sum(float(e.get("damage", 0.0)) for e in robot_events)
+            health = float(metrics.get(health_key, 0.0))
+            return {
+                "health": health,
+                "cumulative_damage_taken": float(metrics.get(damage_key, 0.0)),
+                "step_damage_taken": float(step_damage),
+                "step_hit_events": robot_events,
+                "is_ko": health <= 0.0,
+            }
+
+        return {
+            "robot_a": _robot_status("robot_a"),
+            "robot_b": _robot_status("robot_b"),
+            "events": events,
+        }

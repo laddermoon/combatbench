@@ -26,7 +26,7 @@ from envs.framework.episode_runner import (
     default_reward_extractor,
 )
 from envs.framework.recorder import BaseFrameRecorder
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 
 # ---------------------------------------------------------------------------

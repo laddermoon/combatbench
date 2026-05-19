@@ -53,7 +53,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Type
 from .backend import BaseSimulator
 from .plugin import BasePlugin
 from .recorder import PostActionRecorder
-from .runtime_plugin import BaseObserverPlugin
+from .observer_plugin import BaseObserverPlugin
 
 BLUEPRINT_VERSION = 1
 

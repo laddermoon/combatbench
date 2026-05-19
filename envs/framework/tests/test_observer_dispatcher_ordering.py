@@ -20,7 +20,7 @@ import numpy as np
 
 from envs.framework.env_runtime import EnvRuntime
 from envs.framework.plugin import BasePlugin
-from envs.framework.runtime_plugin import (
+from envs.framework.observer_plugin import (
     BaseObserverPlugin,
     _ObserverDispatcherPlugin,
 )

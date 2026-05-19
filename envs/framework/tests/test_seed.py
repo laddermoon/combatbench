@@ -36,7 +36,7 @@ from envs.framework.parallel_runner import _derive_seeds as _parallel_derive_see
 from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
 from envs.framework.recorder import BaseFrameRecorder
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 
 # ---------------------------------------------------------------------------

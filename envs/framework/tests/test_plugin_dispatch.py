@@ -437,7 +437,7 @@ class TestDispatcherPriority:
         这样下游的终止/奖励 plugin 才能读到当前步的 observer 输出。
         预期：priority = +1_000_000，严格大于任何默认 BasePlugin。
         """
-        from envs.framework.runtime_plugin import _ObserverDispatcherPlugin
+        from envs.framework.observer_plugin import _ObserverDispatcherPlugin
 
         dispatcher = _ObserverDispatcherPlugin()
         assert dispatcher.priority == 1_000_000

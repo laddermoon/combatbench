@@ -25,7 +25,7 @@ from envs.framework.episode_runner import (
 )
 from envs.framework.parallel_runner import ParallelRunner, _derive_seeds
 from envs.framework.policy import Policy
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 # Reuse the module-level observer + policy + deterministic sim from the
 # episode-runner tests. Those classes are top-level → picklable under spawn.

@@ -28,7 +28,7 @@ if str(_FRAMEWORK_TESTS) not in sys.path:
     sys.path.insert(0, str(_FRAMEWORK_TESTS))
 
 from envs.framework.env_runtime import EnvRuntime
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 from conftest import MockSimulator  # type: ignore[import-not-found]
 
 from baseline.common.policies import TanhGaussianMLPPolicy, TorchPolicyAdapter

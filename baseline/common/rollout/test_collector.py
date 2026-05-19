@@ -28,7 +28,7 @@ from envs.framework.context import TerminationReason
 from envs.framework.env_runtime import EnvRuntime
 from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 from baseline.common.policies import (
     CriticMLP,

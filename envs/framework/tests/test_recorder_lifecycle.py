@@ -14,7 +14,7 @@ import pytest
 from envs.framework.context import ReadOnlySimContext
 from envs.framework.env_runtime import EnvRuntime
 from envs.framework.recorder import BaseFrameRecorder, PostActionRecorder
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 
 
 class _TracingRecorder(PostActionRecorder):

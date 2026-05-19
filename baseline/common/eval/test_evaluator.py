@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "envs" / "framework" / "tests"))
 
 from envs.framework.env_runtime import EnvRuntime
-from envs.framework.runtime_plugin import BaseObserverPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin
 from conftest import MockSimulator  # type: ignore[import-not-found]
 
 from baseline.common.eval import (

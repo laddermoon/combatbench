@@ -4,7 +4,7 @@ Observer 系统测试 - 验证 Observer 插件调度和去重机制
 import pytest
 import numpy as np
 
-from envs.framework.runtime_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
+from envs.framework.observer_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
 from envs.framework.context import ReadOnlySimContext
 from envs.framework.env_runtime import EnvRuntime
 
