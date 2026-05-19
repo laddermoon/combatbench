@@ -22,10 +22,9 @@ the caller") and lets :class:`MatchRunner` re-use a single runtime across
 multiple rounds via ``runtime.reset(options=...)`` instead of rebuilding.
 
 New code should prefer :class:`EpisodeRunner` directly plus a post-hoc
-reducer over :attr:`EpisodeResult.shared_info_final` — combat-specific
-fields there (``health`` / ``damage_taken`` / ``winner``) are published by
-the humanoid21 ``CombatScoringPlugin`` via the runtime's
-``shared_info_builder`` hook, not by this runner.
+reducer over recorder data — combat-specific fields (``health`` /
+``damage_taken`` / ``winner``) are published by the humanoid21
+``CombatScoringPlugin``, not by this runner.
 """
 from __future__ import annotations
 

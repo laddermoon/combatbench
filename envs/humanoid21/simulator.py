@@ -832,6 +832,18 @@ class MujocoCombatSimulator(BaseSimulator):
             }
         }
 
+    def get_observation(self) -> Dict[str, Any]:
+        """Return per-agent flat observation vectors (96-dim).
+
+        Mirrors :class:`Humanoid21Observer` — extracts the ``observation``
+        field that ``get_derived_state`` already computes for each robot.
+        """
+        derived = self.get_derived_state()
+        return {
+            "robot_a": derived["robot_a"]["observation"],
+            "robot_b": derived["robot_b"]["observation"],
+        }
+
     def _get_opponent_basic_pose(
         self,
         self_pos: np.ndarray,

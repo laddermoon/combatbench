@@ -51,7 +51,6 @@ def make_env(
 
     runtime.action_space = T800Observer.get_action_space()
     runtime.observation_space = T800Observer.get_observation_space()
-    # T800 暂不提供 shared_info_builder（后续可按需添加）
     return runtime
 
 

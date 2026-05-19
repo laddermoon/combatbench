@@ -206,7 +206,6 @@ class EnvRuntime:
         self._observer_dispatcher = _ObserverDispatcherPlugin()
         self.observer_plugins: Dict[str, Optional[BaseObserverPlugin]] = {}
         self._recorders: List[PostActionRecorder] = []
-        self.shared_info_builder = None
 
         self._core.attach_plugin(self._observer_dispatcher)
 
@@ -384,22 +383,6 @@ class EnvRuntime:
         """
         obs = self._core.simulator.get_observation()
         return obs["robot_a"], obs["robot_b"]
-
-    def get_shared_info(self) -> Dict[str, Any]:
-        ctx = self._core.ctx
-        shared_info = {
-            "metrics": dict(ctx.metrics),
-            "events": list(ctx.events),
-            "termination_reasons": list(ctx.termination_proposals),
-            "episode_step": ctx.episode_step,
-            "physics_step": ctx.physics_step,
-            "is_terminated": ctx.is_terminated,
-        }
-        if callable(self.shared_info_builder):
-            extra_shared_info = self.shared_info_builder(ReadOnlySimContext.from_sim_context(ctx))
-            if isinstance(extra_shared_info, dict):
-                shared_info.update(extra_shared_info)
-        return shared_info
 
     def get_termination_flags(self) -> Tuple[bool, bool]:
         """Return ``(terminated, truncated)`` following Gymnasium semantics.

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from framework import EnvRuntime
 
 from .simulator import MujocoCombatSimulator
-from .observer_plugins import Humanoid21Observer, build_shared_runtime_info
+from .observer_plugins import Humanoid21Observer
 
 def make_env(
     control_frequency: int = 20,
@@ -51,7 +51,6 @@ def make_env(
 
     runtime.action_space = Humanoid21Observer.get_action_space()
     runtime.observation_space = Humanoid21Observer.get_observation_space()
-    runtime.shared_info_builder = build_shared_runtime_info
     return runtime
 
 __all__ = [

@@ -37,11 +37,10 @@ Non-responsibilities
   output per step, or read ``runtime.get_observer_output(...)`` themselves
   via their own callback / wrapper.
 - **Result aggregation.** :meth:`run_episode` returns ``None``. Anything you
-  want to know about the episode lives in (a) the attached recorders, and
-  (b) ``runtime.get_shared_info()`` after the episode ends.
+  want to know about the episode lives in the attached recorders.
 - **Combat semantics (winner / HP / damage).** Those belong to a subclass
   (e.g. :class:`envs.framework.round_runner.CombatRoundRunner`) or to a
-  post-hoc reducer over ``runtime.get_shared_info()``.
+  post-hoc reducer over recorder data.
 - **Process-level parallelism.** This runner is constructed inside each
   worker; cross-process orchestration is handled by ``parallel_runner``.
 - **Batch / multi-episode driving.** ``run_n_episodes`` is intentionally
@@ -82,7 +81,7 @@ Example
         policies={"robot_a": policy_a, "robot_b": policy_b},
     )
     runner.run_episode(seed=42)
-    # Inspect runtime.get_shared_info() and recorder state for results.
+    # Inspect recorder state for results.
 """
 from __future__ import annotations
 
@@ -189,8 +188,7 @@ class EpisodeRunner:
         """Run a single episode end-to-end. Returns ``None``.
 
         Anything the caller wants to know about the episode is read from
-        the attached recorders' state or from
-        ``self.runtime.get_shared_info()`` after this call returns. The
+        the attached recorders' state after this call returns. The
         runner intentionally does not aggregate per-step or per-episode
         data — see the module docstring's Non-responsibilities section.
 

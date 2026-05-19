@@ -94,7 +94,6 @@ def _normalize_observer_output(output: Any) -> tuple[Any, Dict[str, Any]]:
 def _collect_runtime_view(runtime: Any) -> tuple[Dict[str, Any], Dict[str, Any]]:
     obs: Dict[str, Any] = {}
     info: Dict[str, Any] = {
-        "shared": runtime.get_shared_info(),
         "robot_a": {},
         "robot_b": {},
     }
