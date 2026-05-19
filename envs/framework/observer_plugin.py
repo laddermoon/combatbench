@@ -34,45 +34,65 @@ OBSERVER_DISPATCHER_PRIORITY: int = 1_000_000
 class BaseRuntimeUnit(ABC):
     """Observer-side unit invoked by ``_ObserverDispatcherPlugin``.
 
-    Subclasses produce a per-step output (observation vector, reward scalar,
-    metric dict, ...) via ``get_output()``. Image/debug dumping used to live
-    here via ``save_debug_image``; it now belongs to
-    :class:`envs.framework.recorder.PostActionRecorder`.
+    Design intent
+    -------------
+    An Observer computes some per-step derived quantity (typically a
+    reward, but also debug / diagnostic signals) and exposes it through
+    :meth:`get_output`. The canonical lifecycle is:
+
+    * :meth:`on_pre_episode` — **preparation** at the start of an episode
+      (reset internal accumulators, cache static data, allocate buffers,
+      ...). It is *not* required to compute the same thing as
+      ``on_post_action_step``; in particular the typical Rewarder leaves
+      ``get_output()`` returning an initial / zero value here.
+    * :meth:`on_post_action_step` — refresh the unit's internal state from
+      the current ``ctx``. The standard call pattern downstream is
+      "step the env → call ``on_post_action_step`` (done by the
+      dispatcher) → read :meth:`get_output`".
+    * :meth:`on_post_episode` — optional end-of-episode finalisation
+      (final metrics, summary statistics, ...).
+
+    Nothing in the framework enforces this split — subclasses are free to
+    override any hook however they like.
+
+    Primary use cases
+    -----------------
+    * **Rewarders.** Encapsulate a reward term (or a composite of terms);
+      the trainer / recorder reads ``get_output()`` each step.
+    * **Debug / dev probes paired with a Recorder.** Compute something
+      expensive once per step and let a
+      :class:`envs.framework.recorder.PostActionRecorder` snapshot it,
+      keeping the inner physics / plugin code clean.
 
     ``get_output()`` return-shape guidance
     ---------------------------------------
-    These conventions let :class:`envs.framework.episode_runner.EpisodeRunner`
-    and other consumers read observer outputs **without shape-guessing**.
-    Existing plugins that deviate still work (nothing is enforced at runtime),
-    but new plugins should follow them.
+    No shape is enforced at runtime, but consumers are easier to write
+    when units follow these conventions:
 
-    * **Observation plugins** — return a value that is directly consumable
-      by the policy. Typically ``np.ndarray(dtype=float32)`` for flat obs,
-      or ``Dict[str, np.ndarray]`` for structured obs (policy handles the
-      structure). **Do NOT wrap** in ``(payload, info)`` tuples or
-      ``{"obs": ..., "info": ...}`` envelopes — keep ``get_output`` pure.
-    * **Reward plugins** — return either (a) a Python / numpy scalar, or
-      (b) a ``dict`` with a ``"reward"`` / ``"total_reward"`` / ``"r"`` key
-      holding the scalar. Any other keys in the dict are ignored by the
-      default reward extractor but are fine to carry (e.g. per-term
-      breakdowns for logging). Consumers that want full breakdowns can
-      override ``ObserverBinding.reward_extractor``.
-    * **Metric plugins** — return any JSON-safe value. No fixed contract.
+    * **Reward units** — return either (a) a Python / numpy scalar, or
+      (b) a ``dict`` carrying a ``"reward"`` / ``"total_reward"`` / ``"r"``
+      key with the scalar (extra keys are fine for per-term breakdowns).
+    * **Debug / metric units** — return any JSON-safe value.
+
+    Image / debug dumping used to live here via ``save_debug_image``; it
+    now belongs to :class:`envs.framework.recorder.PostActionRecorder`.
     """
 
-    def process_data(self, ctx: ReadOnlySimContext) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        """Episode-start preparation. Default: no-op."""
         return None
 
-    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
-        self.process_data(ctx)
-
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
-        self.process_data(ctx)
+        """Per-step refresh. Default: no-op — subclasses override."""
+        return None
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
-        self.process_data(ctx)
+        """Episode-end finalisation. Default: no-op."""
+        return None
 
     def on_manual_refresh(self, ctx: ReadOnlySimContext) -> None:
+        """Out-of-band refresh (e.g. after a reset chain). Default:
+        delegate to :meth:`on_post_action_step`."""
         self.on_post_action_step(ctx)
 
     @abstractmethod

@@ -391,65 +391,6 @@ class TestObserverRefreshOptimization:
         assert observer.step_count == 1
 
 
-class TestObserverWithProcessData:
-    """测试旧式 process_data() 方法的兼容性"""
-
-    def test_process_data_called_for_backward_compatibility(self, mock_simulator):
-        """
-        场景：observer 只实现了 process_data() 方法
-        预期：所有钩子都调用 process_data()
-        """
-        class LegacyObserver(BaseObserverPlugin):
-            def __init__(self):
-                self.process_count = 0
-
-            def process_data(self, ctx):
-                self.process_count += 1
-
-            def get_output(self):
-                return self.process_count
-
-        observer = LegacyObserver()
-        runtime = EnvRuntime(
-            simulator=mock_simulator,
-            observer_plugins={"test": observer},
-        )
-
-        runtime.reset()
-        runtime.step(np.zeros(21), np.zeros(21))
-
-        # on_pre_episode 和 on_post_action_step 都调用 process_data
-        assert observer.get_output() >= 2
-
-    def test_explicit_hooks_override_process_data(self, mock_simulator):
-        """
-        场景：observer 只实现了 process_data()
-        预期：所有钩子都调用 process_data()
-        """
-        class ProcessDataObserver(BaseObserverPlugin):
-            def __init__(self):
-                self.call_count = 0
-
-            def process_data(self, ctx):
-                self.call_count += 1
-
-            def get_output(self):
-                return self.call_count
-
-        observer = ProcessDataObserver()
-        runtime = EnvRuntime(
-            simulator=mock_simulator,
-            observer_plugins={"test": observer},
-        )
-
-        runtime.reset()
-        runtime.step(np.zeros(21), np.zeros(21))
-
-        # on_pre_episode (通过 process_data) + on_post_action_step (通过 process_data)
-        # = 2 次调用
-        assert observer.get_output() == 2
-
-
 class TestObserverInEpisode:
     """测试 Observer 在 episode 中的行为"""
 

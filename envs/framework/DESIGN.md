@@ -205,7 +205,6 @@ class BaseRuntimeUnit(ABC):
 - 它自身不是 `BasePlugin`，而是被内部 dispatcher 统一托管。
 - dispatcher 才是唯一挂到内部 runtime core 的只读插件。
 - dispatcher 的时机映射是固定的：观察者的 `on_pre_episode` / `on_post_action_step` / `on_post_episode` 分别对应内部 runtime core 的 `on_pre_episode` / `on_post_action_step` / `on_post_episode` 钩子；手动刷新走 `on_manual_refresh`。
-- 为兼容旧代码，`process_data(ctx)` 仍可作为后备入口存在，但新实现不应再依赖这个模糊命名。
 
 ### 6. 实现原则
 

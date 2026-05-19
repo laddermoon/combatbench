@@ -68,7 +68,10 @@ class _StepStampObserver(BaseObserverPlugin):
     def __init__(self) -> None:
         self._last_step: int = -1
 
-    def process_data(self, ctx) -> None:
+    def on_pre_episode(self, ctx) -> None:
+        self._last_step = ctx.episode_step
+
+    def on_post_action_step(self, ctx) -> None:
         self._last_step = ctx.episode_step
 
     def get_output(self) -> int:

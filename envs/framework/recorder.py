@@ -201,7 +201,7 @@ def _snapshot(value: Any) -> Any:
     would be aliased — observers in this codebase return either ndarrays
     or plain containers so that's fine in practice). The goal is just to
     decouple the recorder's stored frame from any in-place mutation an
-    observer might do on its next ``process_data``.
+    observer might do on its next ``on_post_action_step``.
     """
     if isinstance(value, np.ndarray):
         return np.array(value, copy=True)
@@ -258,7 +258,7 @@ class EpisodeBufferRecorder(PostActionRecorder):
     ----------
     snapshot_arrays : bool
         If True (default), copy ndarrays in observer outputs / actions
-        / extras so subsequent observer ``process_data`` calls cannot
+        / extras so subsequent observer ``on_post_action_step`` calls cannot
         mutate already-buffered frames. Set False to save the copy cost
         when the consumer is read-only and the episode is short-lived.
     """

@@ -37,7 +37,7 @@ class _ExplodingPlugin(BasePlugin):
 
 
 class _ExplodingObserver(BaseObserverPlugin):
-    def process_data(self, ctx):
+    def on_post_action_step(self, ctx):
         raise RuntimeError("boom@observer")
 
     def get_output(self):

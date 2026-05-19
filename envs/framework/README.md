@@ -61,7 +61,6 @@
     *   在关键时机把 `SimContext` 裁剪为 `ReadOnlySimContext`
     *   批量驱动多个 observer plugin
     *   减少 plugin 调用次数和 context 转换次数
-    *   兼容旧式 `process_data(ctx)` 实现，但新代码推荐直接实现显式生命周期钩子
 
 ---
 

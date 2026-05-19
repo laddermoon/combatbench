@@ -47,8 +47,17 @@ class _StepValueObserver(BaseObserverPlugin):
     def __init__(self):
         self._value = -1
 
-    def process_data(self, ctx):
+    def _refresh(self, ctx):
         self._value = int(ctx.episode_step)
+
+    def on_pre_episode(self, ctx):
+        self._refresh(ctx)
+
+    def on_post_action_step(self, ctx):
+        self._refresh(ctx)
+
+    def on_post_episode(self, ctx):
+        self._refresh(ctx)
 
     def get_output(self):
         return self._value
