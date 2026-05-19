@@ -1,0 +1,23 @@
+version: 1
+runtime:
+  phy_steps_per_action: 5
+  max_steps: 600
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+  config:
+    initial_distance: 2.0
+    debug_torque: false
+    initial_pose_a: null
+    initial_pose_b: null
+plugins:
+  - cls: "envs.humanoid21.plugins:CombatScoringPlugin"
+    config:
+      initial_health: 100.0
+      initial_health_a: 100.0
+      initial_health_b: 100.0
+      damage_scale: 100.0
+observer_plugins:
+  combat_scoring:
+    cls: "envs.humanoid21.observer_plugins:CombatScoringObserver"
+    config: {}
