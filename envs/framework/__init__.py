@@ -19,7 +19,6 @@ from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .blueprint import BLUEPRINT_VERSION, ClassSpec, EnvBlueprint
 from .policy import Policy, call_policy, coerce_action
 from .episode_runner import AGENT_IDS, EpisodeRunner
-from .rollout_batch import RolloutBatch
 # TODO: parallel_runner / round_runner / match_runner still reference
 # legacy symbols (EpisodeResult, RolloutConfig, AgentTrajectory, StepContext,
 # default_bindings, default_reward_extractor, _derive_batch_seeds) that were
@@ -56,6 +55,5 @@ __all__ = [
     "Policy",
     "call_policy",
     "coerce_action",
-    "RolloutBatch",
     "AGENT_IDS",
 ]

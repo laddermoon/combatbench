@@ -1,233 +1,211 @@
-"""Combat-specific round runner — thin subclass of :class:`EpisodeRunner`.
+"""Round runner backed by :class:`EnvBlueprint`.
 
-Historically this file held a standalone ``RoundRunner`` that re-implemented
-the policy-step-collect loop and hard-coded combat interpretation (HP /
-winner / damage tallies / hit-event printing). It has been refactored into
-a thin adapter over :class:`envs.framework.episode_runner.EpisodeRunner`
-so the generic loop (seed handling, observation/reward pulling, rollout
-capture, hooks) lives in one place.
+Builds an :class:`EnvRuntime` from a blueprint, attaches optional video and
+recorders, and drives a single episode with two policies.
 
 Public surface:
 
-* ``RoundRunner(policy_a, policy_b, runtime, verbose=True)``
-* ``runner.run(seed=None, options=None, videosave_path=None) -> dict`` where
-  the dict has the historical keys: ``steps`` / ``winner`` / ``final_health``
-  / ``damage_taken`` / ``termination_reasons``.
+* ``RoundRunner(blueprint, policy_a, policy_b, video_plugin=None, recorders=())``
+* ``runner.run(seed=None, options=None) -> dict`` with keys ``steps`` /
+  ``termination_reasons`` / ``seed``.
 
-Lifecycle: ``RoundRunner.run`` does NOT close the runtime. Callers own
-the runtime and are expected to call ``runtime.close()`` themselves once
-they are done with it. This is consistent with
-:meth:`EpisodeRunner.close`'s docstring ("Runtime lifecycle is owned by
-the caller") and lets :class:`MatchRunner` re-use a single runtime across
-multiple rounds via ``runtime.reset(options=...)`` instead of rebuilding.
-
-New code should prefer :class:`EpisodeRunner` directly plus a post-hoc
-reducer over recorder data — combat-specific fields (``health`` /
-``damage_taken`` / ``winner``) are published by the humanoid21
-``CombatScoringPlugin``, not by this runner.
+The runner owns the runtime lifecycle — ``runtime.close()`` is called
+automatically when the runner is garbage-collected or explicitly closed.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
+from .blueprint import EnvBlueprint
 from .common_plugins import VideoRecorderPlugin
-from .episode_runner import (
-    AGENT_IDS,
-    EpisodeResult,
-    EpisodeRunner,
-    ObserverBinding,
-    RolloutConfig,
-    StepContext,
-)
+from .episode_runner import EpisodeRunner
+from .recorder import PostActionRecorder
 
 
-class RoundRunner(EpisodeRunner):
-    """Run a single combat round and surface the legacy result dict.
+class RoundRunner:
+    """Run a single combat round from an :class:`EnvBlueprint`.
 
-    Subclasses :class:`EpisodeRunner` with:
-    - legacy positional ``(policy_a, policy_b, runtime, verbose)`` signature,
-    - combat-specific ``on_step`` / ``on_episode_end`` hooks that print hit
-      events and a round summary when ``verbose=True``,
-    - a ``.run()`` method that returns the historical result dict.
-      The runtime is **not** closed here — callers (e.g. :class:`MatchRunner`)
-      own the runtime lifecycle and recycle it across rounds via
-      ``runtime.reset(options=...)``.
+    Parameters
+    ----------
+    blueprint:
+        Serializable environment specification.
+    policy_a, policy_b:
+        Policy instances for each robot.
+    video_plugin:
+        Optional :class:`VideoRecorderPlugin` attached as a debug plugin.
+    recorders:
+        Optional :class:`PostActionRecorder` instances attached to the runtime.
     """
 
     def __init__(
         self,
+        blueprint: EnvBlueprint,
         policy_a: Any,
         policy_b: Any,
-        runtime: Any,
-        verbose: bool = True,
+        video_plugin: Optional[VideoRecorderPlugin] = None,
+        recorders: Sequence[PostActionRecorder] = (),
     ) -> None:
-        self.verbose = bool(verbose)
-        # No rollout capture — match the old RoundRunner which only returned a
-        # summary dict. Callers that want trajectories should use
-        # ``EpisodeRunner`` directly.
-        # Combat rounds judge winner/HP via ``shared_info_final`` (published
-        # by humanoid21's ``CombatScoringPlugin``), NOT via per-step reward
-        # observers, so we bind ``reward_name=None`` explicitly. This also
-        # removes RoundRunner's implicit requirement that callers register
-        # ``robot_{a,b}_reward`` observers — historically that coupling was
-        # unstated and broke ``make_env`` users who only needed obs observers.
-        super().__init__(
-            runtime=runtime,
-            policies={"robot_a": policy_a, "robot_b": policy_b},
-            rollout=RolloutConfig(capture_a=False, capture_b=False),
-            observer_bindings={
-                agent: ObserverBinding(obs_name=f"{agent}_obs", reward_name=None)
-                for agent in AGENT_IDS
-            },
-            on_step=self._verbose_on_step if self.verbose else None,
-            on_episode_end=self._verbose_on_episode_end if self.verbose else None,
+        self._blueprint = blueprint
+        debug_plugins = [video_plugin] if video_plugin is not None else []
+        self._runtime = blueprint.build(
+            recorders=list(recorders),
+            debug_plugins=debug_plugins,
         )
-        if self.verbose:
-            self._print_header()
+        self._runner = EpisodeRunner(
+            runtime=self._runtime,
+            policies={"robot_a": policy_a, "robot_b": policy_b},
+        )
 
-    # ------------------------------------------------------------------
-    # Public: legacy ``run`` surface
-    # ------------------------------------------------------------------
+    @property
+    def runtime(self):
+        """The live :class:`EnvRuntime` built from the blueprint."""
+        return self._runtime
+
     def run(
         self,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
-        videosave_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run one round. Returns the legacy result dict.
+        """Run one round and return a minimal result dict.
 
         ``options`` is forwarded to :meth:`EnvRuntime.reset` and visible to
-        plugins / observers via ``ctx.episode_options`` — this is how
-        :class:`MatchRunner` injects per-round HP carry-over
-        (``initial_health_a`` / ``initial_health_b``). See RESET.md §4.
-
-        ``videosave_path`` retargets any :class:`VideoRecorderPlugin`
-        instances already attached to the runtime — historical behavior
-        preserved for ``MatchRunner``. Implemented by merging
-        ``{VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY: videosave_path}``
-        into ``options``; the plugin picks it up from
-        ``ctx.episode_options`` in its ``on_pre_episode``. options-level
-        keys provided by the caller win over ``videosave_path``.
-
-        The runtime is intentionally NOT closed here; the caller owns its
-        lifecycle (see module docstring & RESET.md §7-G3).
+        plugins / observers via ``ctx.episode_options``.
         """
-        merged_options = self._merge_video_path_into_options(options, videosave_path)
-        result = self.run_episode(seed=seed, options=merged_options)
-        return self._build_legacy_result(result)
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _merge_video_path_into_options(
-        options: Optional[Dict[str, Any]],
-        videosave_path: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
-        if videosave_path is None:
-            return options
-        merged: Dict[str, Any] = dict(options or {})
-        merged.setdefault(
-            VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY, videosave_path
-        )
-        return merged
-
-    def _build_legacy_result(self, result: EpisodeResult) -> Dict[str, Any]:
-        shared = result.shared_info_final
-        final_health = self._extract_dict(shared, "health")
-        damage_taken = self._extract_dict(shared, "damage_taken")
+        self._runner.run_episode(seed=seed, options=options)
+        ctx = self._runtime.ctx
         return {
-            "steps": result.num_steps,
-            "winner": self._resolve_winner(shared, final_health),
-            "final_health": final_health,
-            "damage_taken": damage_taken,
-            "termination_reasons": list(result.termination_reasons),
+            "steps": int(ctx.episode_step),
+            "termination_reasons": list(ctx.termination_proposals),
+            "seed": int(ctx.base_seed) if ctx.base_seed is not None else None,
         }
 
-    @staticmethod
-    def _extract_dict(shared: Dict[str, Any], key: str) -> Dict[str, float]:
-        raw = shared.get(key) or shared.get("metrics", {}).get(key) or {}
-        return {agent: float(raw.get(agent, 100.0)) for agent in AGENT_IDS}
+    def close(self) -> None:
+        """Close the underlying runtime. Idempotent."""
+        if self._runtime is not None:
+            self._runtime.close()
+            self._runtime = None  # type: ignore[assignment]
 
-    @staticmethod
-    def _resolve_winner(
-        shared: Dict[str, Any],
-        final_health: Dict[str, float],
-    ) -> str:
-        declared = shared.get("winner")
-        if isinstance(declared, str):
-            return declared
-        ha = final_health.get("robot_a", 0.0)
-        hb = final_health.get("robot_b", 0.0)
-        if ha <= 0.0 and hb <= 0.0:
-            return "draw"
-        if ha <= 0.0:
-            return "robot_b"
-        if hb <= 0.0:
-            return "robot_a"
-        if ha > hb:
-            return "robot_a"
-        if hb > ha:
-            return "robot_b"
-        return "draw"
+    def __enter__(self):
+        return self
 
-    # ------------------------------------------------------------------
-    # Verbose hooks (combat-specific printing lives here, not in the core)
-    # ------------------------------------------------------------------
-    def _print_header(self) -> None:
-        print("=" * 60)
-        print("CombatBench Round Started")
-        print("=" * 60)
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
-    def _verbose_on_step(self, ctx: StepContext) -> None:
-        # Print hit events (combat-specific metric published by humanoid21
-        # CombatScoringPlugin into shared_info["events"]).
-        for event in ctx.shared_info.get("events", []) or []:
-            if isinstance(event, dict) and event.get("type") == "hit":
-                print(
-                    f"[Step {ctx.step_index}] {event.get('attacker')} hit "
-                    f"{event.get('defender')} at {event.get('part')} for "
-                    f"{float(event.get('damage', 0.0)):.2f} damage!"
-                )
-        if ctx.step_index % 100 == 0:
-            health = self._extract_dict(ctx.shared_info, "health")
-            print(
-                f"Step {ctx.step_index:03d} - HP: "
-                f"robot_a={health['robot_a']:.1f}, robot_b={health['robot_b']:.1f}"
-            )
 
-    def _verbose_on_episode_end(self, result: EpisodeResult) -> None:
-        legacy = self._build_legacy_result(result)
-        print("-" * 60)
-        print(f"Round ended. Total steps: {legacy['steps']}")
-        print(f"Reason: {legacy['termination_reasons']}")
-        print(f"Winner: {legacy['winner']}")
-        print(
-            f"Final HP: robot_a={legacy['final_health']['robot_a']:.1f}, "
-            f"robot_b={legacy['final_health']['robot_b']:.1f}"
+def _coerce_cli_value(raw: str) -> Any:
+    text = str(raw)
+    lowered = text.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("none", "null"):
+        return None
+    try:
+        import json
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _parse_spec(spec: str) -> tuple[str, str, Dict[str, Any]]:
+    module_and_class, sep, query = str(spec).partition("?")
+    if ":" not in module_and_class:
+        raise ValueError(
+            f"Invalid spec: {spec!r}. Expected format module.path:ClassName?key=value"
         )
-        print("-" * 60)
+    module_path, class_name = module_and_class.split(":", 1)
+    module_path = module_path.strip()
+    class_name = class_name.strip()
+    if not module_path or not class_name:
+        raise ValueError(
+            f"Invalid spec: {spec!r}. module.path and ClassName must be non-empty."
+        )
+    kwargs: Dict[str, Any] = {}
+    if sep and query:
+        from urllib.parse import parse_qsl
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            k = key.strip()
+            if not k:
+                continue
+            kwargs[k] = _coerce_cli_value(value)
+    return module_path, class_name, kwargs
 
 
-# Preferred new name for clarity — use in new code; ``RoundRunner`` kept as
-# the canonical class for backward compatibility with MatchRunner and the
-# humanoid21 run scripts.
-CombatRoundRunner = RoundRunner
+def _load_from_spec(spec: str) -> Any:
+    import importlib
+    module_path, class_name, kwargs = _parse_spec(spec)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        raise AttributeError(
+            f"Class {class_name!r} not found in module {module_path!r}"
+        )
+    if not callable(cls):
+        raise TypeError(f"Target {module_path}:{class_name} is not callable")
+    return cls(**kwargs)
+
+
+def _main() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Run a combat round from an EnvBlueprint.",
+    )
+    parser.add_argument(
+        "--blueprint", type=str, required=True,
+        help="Path to the blueprint JSON or YAML file.",
+    )
+    parser.add_argument(
+        "--policy-a", type=str, required=True,
+        help="Policy A spec: module.path:ClassName?key=value",
+    )
+    parser.add_argument(
+        "--policy-b", type=str, required=True,
+        help="Policy B spec: module.path:ClassName?key=value",
+    )
+    parser.add_argument(
+        "--video", type=str, default=None,
+        help="Path to save video (e.g., match.mp4).",
+    )
+    parser.add_argument(
+        "--recorder", action="append", default=[],
+        metavar="SPEC",
+        help=(
+            "Inject post-action recorder (PostActionRecorder subclass), repeatable. "
+            "Format: module.path:ClassName?key=value"
+        ),
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Episode seed (default: random).",
+    )
+    args = parser.parse_args()
+
+    blueprint = EnvBlueprint.load(args.blueprint)
+
+    policy_a = _load_from_spec(args.policy_a)
+    policy_b = _load_from_spec(args.policy_b)
+
+    video_plugin = None
+    if args.video:
+        video_plugin = VideoRecorderPlugin(fps=30, output_path=args.video)
+
+    recorders = [_load_from_spec(spec) for spec in args.recorder]
+
+    with RoundRunner(
+        blueprint=blueprint,
+        policy_a=policy_a,
+        policy_b=policy_b,
+        video_plugin=video_plugin,
+        recorders=recorders,
+    ) as runner:
+        result = runner.run(seed=args.seed)
+
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
-    from envs.humanoid21 import make_env
-
-    runtime = make_env(
-        plugins=[VideoRecorderPlugin(fps=30, output_path="match.mp4")],
-        match_duration=30.0,
-    )
-
-    class DummyPolicy:
-        def act(self, obs):
-            return np.zeros(21, dtype=np.float32)
-
-    result = RoundRunner(DummyPolicy(), DummyPolicy(), runtime).run(seed=42)
-    print(f"Result: {result}")
+    _main()

@@ -174,7 +174,7 @@ class EnvBlueprint:
         """
         # Local imports to avoid a hard cycle with env_runtime.py.
         from .common_plugins import TimeoutPlugin
-        from .runtime_plugin import _ObserverDispatcherPlugin
+        from .observer_plugin import _ObserverDispatcherPlugin
 
         simulator = runtime.simulator
         sim_spec = ClassSpec(
