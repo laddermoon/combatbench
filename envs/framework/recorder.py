@@ -151,9 +151,26 @@ def _json_sanitize(value: Any) -> Any:
 class PostActionRecorder(ABC):
     """Runs at episode boundaries and after every action step.
 
-    Override any subset of ``on_pre_episode`` / ``on_post_action_step`` /
-    ``on_post_episode``. ``observer_outputs`` is a snapshot of the EnvRuntime
-    observer-plugin outputs at the time the hook fires.
+    Temporal semantics of ``on_post_action_step``
+    ----------------------------------------------
+    The hook fires *after* the physics step has completed. Every parameter
+    reflects a snapshot taken at that exact moment, with one deliberate
+    exception:
+
+    * ``observation`` — the observation that **produced** the action
+      (i.e. the pre-action observation ``obs_t``).  It is captured
+      *before* :meth:`EnvRuntime.step` advances the simulator, because
+      it is the state the policy saw when it selected ``action``.
+    * ``action`` — the action that was just applied (``action_t``).
+    * ``observer_outputs`` — observer-plugin outputs refreshed **after**
+      the step. They reflect the new post-action state.
+    * ``ctx`` — the read-only context also reflects the post-action state
+      (``episode_step`` / ``physics_step`` have been incremented,
+      ``termination_proposals`` / ``is_terminated`` are up-to-date).
+
+    In RL-transition terms each call represents one ``(s_t, a_t, s'_{t+1})``
+    tuple where ``s_t`` lives in ``observation`` and the post-action world
+    lives in ``observer_outputs`` / ``ctx``.
     """
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
@@ -168,6 +185,10 @@ class PostActionRecorder(ABC):
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
     ) -> None:
         """Hook fired after every action step.
+
+        ``observation`` is the **pre-action** observation — the state that
+        produced ``action``.  ``observer_outputs`` and ``ctx`` are the
+        **post-action** state.
 
         ``action_extras`` is a per-agent bundle
         ``{"robot_a": <extras_a or None>, "robot_b": <extras_b or None>}``
@@ -222,11 +243,12 @@ class EpisodeBufferRecorder(PostActionRecorder):
     * ``episode_step`` / ``physics_step``
     * full ``observer_outputs`` snapshot (every observer registered on
       the runtime, exactly as the runtime publishes it)
-    * ``action`` (read from ``ctx.accessor.get_action()``; ``None`` on
-      the pre-episode snapshot because no action has been applied yet)
+    * ``action`` (the action passed through from the runtime; present
+      on every frame because all frames originate from
+      ``on_post_action_step``)
     * ``action_extras`` (the per-agent policy side-channel forwarded by
-      :meth:`EnvRuntime.step`; ``None`` on the pre-episode snapshot or
-      when the caller did not supply extras)
+      :meth:`EnvRuntime.step`; ``None`` when the caller did not supply
+      extras)
     * ``termination_proposals`` (tuple) and ``is_terminated`` (bool) —
       lifted directly from the read-only ctx; the reading discipline
       mirrors what attached plugins see at the same hook
@@ -246,13 +268,11 @@ class EpisodeBufferRecorder(PostActionRecorder):
     recent episode is retained). Use :meth:`get_episode_data` to read
     it.
 
-    Frame at index 0 is the **pre-episode snapshot** taken inside
-    :meth:`on_pre_episode` — it has the initial observation but
-    ``action is None`` and ``action_extras is None``. Subsequent frames
-    are post-action-step snapshots, one per ``EnvRuntime.step`` call.
-    The terminal step's frame carries the populated
-    ``termination_proposals`` so consumers can detect episode end
-    without reading the runtime back.
+    Every frame originates from ``on_post_action_step``. Each frame
+    stores the **pre-action** observation (``obs_t``) alongside the
+    action that was taken. The terminal step's frame carries the
+    populated ``termination_proposals`` so consumers can detect episode
+    end without reading the runtime back.
 
     Parameters
     ----------
@@ -320,13 +340,10 @@ class EpisodeBufferRecorder(PostActionRecorder):
     # Hooks
     # ------------------------------------------------------------------
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        """Reset internal state for a new episode — no frame is recorded."""
         self._frames = []
         self._episode_index += 1
         self._base_seed = ctx.base_seed
-        self._frames.append(
-            self._build_frame(ctx, observation=None, action=None,
-                              observer_outputs={}, action_extras=None)
-        )
 
     def on_post_action_step(
         self,
@@ -391,6 +408,10 @@ class BaseFrameRecorder(PostActionRecorder):
         per-step JSON (default True). Emitted only on ``on_post_action_step``
         steps; on the ``on_pre_episode`` snapshot the field is absent
         because no action has been taken yet.
+    save_observation: include the per-agent observation dict in per-step
+        JSON (default True). The stored observation is the **pre-action**
+        observation — the state that produced the action in the same
+        frame — matching the ``PostActionRecorder`` temporal semantics.
     save_static_data: write ``static.json`` once per episode (default True).
     save_accessor_state: convenience override. When not ``None`` this value is
         applied to ``save_core_state`` / ``save_derived_state`` /
@@ -416,6 +437,7 @@ class BaseFrameRecorder(PostActionRecorder):
         save_sensor_data: bool = True,
         save_action: bool = True,
         save_action_extras: bool = True,
+        save_observation: bool = True,
         save_static_data: bool = True,
         save_accessor_state: Optional[bool] = None,
         image_extension: str = "png",
@@ -435,15 +457,17 @@ class BaseFrameRecorder(PostActionRecorder):
             save_sensor_data = bulk
             save_action = bulk
             save_static_data = bulk
-            # ``action_extras`` is policy-side, not accessor-side, but
-            # logically belongs to "full training-grade recording" — flip
-            # it together with the accessor bulk.
+            # ``action_extras`` and ``observation`` are logically part of
+            # "full training-grade recording" — flip them together with
+            # the accessor bulk.
             save_action_extras = bulk
+            save_observation = bulk
         self.save_core_state = bool(save_core_state)
         self.save_derived_state = bool(save_derived_state)
         self.save_sensor_data = bool(save_sensor_data)
         self.save_action = bool(save_action)
         self.save_action_extras = bool(save_action_extras)
+        self.save_observation = bool(save_observation)
         self.save_static_data = bool(save_static_data)
         self.image_extension = image_extension.lstrip(".")
         self.quiet = bool(quiet)
@@ -498,7 +522,7 @@ class BaseFrameRecorder(PostActionRecorder):
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
     ) -> None:
-        self._record_step(ctx, observer_outputs, action_extras=action_extras)
+        self._record_step(ctx, observer_outputs, action_extras=action_extras, observation=observation)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         if self._current_episode_dir is None:
@@ -528,6 +552,7 @@ class BaseFrameRecorder(PostActionRecorder):
             or self.save_sensor_data
             or self.save_action
             or self.save_action_extras
+            or self.save_observation
         )
 
     def _record_step(
@@ -535,6 +560,7 @@ class BaseFrameRecorder(PostActionRecorder):
         ctx: ReadOnlySimContext,
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        observation: Optional[Mapping[str, Any]] = None,
     ) -> None:
         if not self._any_payload_enabled():
             return
@@ -559,7 +585,7 @@ class BaseFrameRecorder(PostActionRecorder):
         if self._any_step_json_enabled():
             data_name = f"step_{step_index:05d}.json"
             data_path = self._current_episode_dir / data_name
-            self._write_step_data(ctx, observer_outputs, data_path, action_extras=action_extras)
+            self._write_step_data(ctx, observer_outputs, data_path, action_extras=action_extras, observation=observation)
             self._saved_data_paths.append(data_path)
             manifest_entry["data"] = data_name
 
@@ -578,6 +604,7 @@ class BaseFrameRecorder(PostActionRecorder):
         observer_outputs: Mapping[str, Any],
         data_path: Path,
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        observation: Optional[Mapping[str, Any]] = None,
     ) -> None:
         payload: dict[str, Any] = {
             "episode_step": int(ctx.episode_step),
@@ -585,6 +612,16 @@ class BaseFrameRecorder(PostActionRecorder):
         }
         if self.save_observer_outputs:
             payload["observer_outputs"] = _json_sanitize(dict(observer_outputs))
+        # ``observation`` is the pre-action observation passed by the runtime.
+        # On the ``on_pre_episode`` snapshot ``observation`` is ``None`` and
+        # we fall back to reading the accessor directly (the initial state).
+        if self.save_observation:
+            if observation is not None:
+                payload["observation"] = _json_sanitize(dict(observation))
+            else:
+                payload["observation"] = self._safe_accessor_call(
+                    ctx.accessor.get_observation
+                )
         # action_extras is None on the on_pre_episode snapshot (no action
         # has happened yet) and on steps from callers that don't supply
         # extras; in both cases we simply omit the key.

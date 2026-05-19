@@ -291,16 +291,21 @@ class EnvRuntime:
 
         Dispatches hook-specific positional args:
           - ``on_pre_episode`` / ``on_post_episode``: ``(ctx,)``
-          - ``on_post_action_step``: ``(ctx, observation, action, observer_outputs, *extra_args)``
+          - ``on_post_action_step``: ``(ctx, observation, action, observer_outputs, action_extras)``
+
+        ``observation`` is the *pre-action* observation (captured before
+        ``core.step()``) so recorders store ``obs_t`` alongside ``action_t``.
         """
         if not self._recorders:
             return
         readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
         if hook_name == "on_post_action_step":
-            observation = self._core.simulator.get_observation()
+            # extra_args = (pre_action_observation, action_extras)
+            observation = extra_args[0]
             action = self._core.simulator.get_action()
             observer_outputs = self.get_observer_outputs()
-            args = (readonly_ctx, observation, action, observer_outputs, *extra_args)
+            action_extras = extra_args[1] if len(extra_args) > 1 else None
+            args = (readonly_ctx, observation, action, observer_outputs, action_extras)
         else:
             args = (readonly_ctx,)
         for recorder in self._recorders:
@@ -350,12 +355,17 @@ class EnvRuntime:
         """
         if not self._core.is_episode_active:
             raise RuntimeError("EnvRuntime.step() called before reset() or after episode termination.")
+        # Capture the observation *before* the action is applied.  This is
+        # ``obs_t`` — the state the policy saw when it selected the action.
+        # Recorders receive it as the ``observation`` parameter so each frame
+        # stores the pre-action state (the one that produced the action).
+        observation = self._core.simulator.get_observation()
         self._core.step({"robot_a": action_a, "robot_b": action_b})
         action_extras: Dict[str, Optional[Mapping[str, Any]]] = {
             "robot_a": action_a_extra,
             "robot_b": action_b_extra,
         }
-        self._invoke_recorders("on_post_action_step", action_extras)
+        self._invoke_recorders("on_post_action_step", observation, action_extras)
         if not self._core.is_episode_active:
             self._invoke_recorders("on_post_episode")
 
