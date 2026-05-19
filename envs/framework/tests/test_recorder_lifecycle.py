@@ -160,9 +160,13 @@ class TestBaseFrameRecorderOutput:
             payload = json.load(payload_file)
         for key in (
             "observer_outputs", "core_state", "derived_state",
-            "sensor_data", "action",
+            "sensor_data", "action", "observation",
         ):
             assert key in payload, f"step payload missing {key!r}"
+        # First file is the pre-episode snapshot (observer_outputs empty).
+        # Post-action steps carry the actual observer data.
+        with open(json_files[1]) as payload_file:
+            payload = json.load(payload_file)
         assert "step" in payload["observer_outputs"]
 
     def test_static_json_written_and_covers_accessor(
@@ -252,6 +256,7 @@ class TestBaseFrameRecorderOutput:
             payload = json.load(payload_file)
         assert set(payload.keys()) == {
             "episode_step", "physics_step", "core_state", "sensor_data",
+            "observation",
         }
 
     def test_save_image_false_skips_png(self, mock_simulator, tmp_path: Path):

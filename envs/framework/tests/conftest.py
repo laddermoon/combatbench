@@ -10,8 +10,10 @@ import pytest
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
+from envs.framework.backend import BaseSimulator
 
-class MockSimulator:
+
+class MockSimulator(BaseSimulator):
     """
     轻量级模拟物理引擎，用于测试
 

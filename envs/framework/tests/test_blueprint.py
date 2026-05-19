@@ -85,10 +85,9 @@ class TestRoundTrip:
         assert blueprint.observer_plugins == {}
 
         # Build a fresh runtime and verify scalar fields match.
-        from envs.framework.tests.conftest import MockSimulator  # noqa: WPS433
         new_runtime = blueprint.build()
         assert new_runtime._core.phy_steps_per_action == 4
-        assert isinstance(new_runtime.simulator, MockSimulator)
+        assert type(new_runtime.simulator).__name__ == "MockSimulator"
 
     def test_round_trip_preserves_plugin_config(self, mock_simulator):
         runtime = EnvRuntime(

@@ -229,6 +229,17 @@ class ReplaySimulator(BaseSimulator):
         self._image_cache: Dict[int, np.ndarray] = {}
         self._is_closed = False
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "source": str(self._source_path),
+            "rehydrate_arrays": self._rehydrate_arrays,
+            "strict_manifest_version": self._strict_manifest_version,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ReplaySimulator":
+        return cls(**config)
+
     # ------------------------------------------------------------------
     # Introspection helpers (not part of BaseSimulator)
     # ------------------------------------------------------------------
