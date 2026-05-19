@@ -30,6 +30,16 @@ class NonFallConstraintPlugin(BasePlugin):
         self.pitch_limit_deg = pitch_limit_deg
         self.roll_limit_deg = roll_limit_deg
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "pitch_limit_deg": self.pitch_limit_deg,
+            "roll_limit_deg": self.roll_limit_deg,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "NonFallConstraintPlugin":
+        return cls(**config)
+
     @property
     def name(self) -> str:
         return "non_fall_constraint"
@@ -128,6 +138,18 @@ class CombatScoringPlugin(BasePlugin):
         self.initial_health_a = initial_health_a if initial_health_a is not None else initial_health
         self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
         self.damage_scale = damage_scale
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "initial_health": self.initial_health_a,
+            "initial_health_a": self.initial_health_a,
+            "initial_health_b": self.initial_health_b,
+            "damage_scale": self.damage_scale,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "CombatScoringPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:
@@ -263,6 +285,13 @@ class FrozenRobotPlugin(BasePlugin):
         """
         self.frozen_robot_id = frozen_robot_id
         self.initial_state = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"frozen_robot_id": self.frozen_robot_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "FrozenRobotPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:

@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, Dict, List
 from pathlib import Path
 import numpy as np
 
@@ -16,6 +16,13 @@ class TimeoutPlugin(BasePlugin):
     @property
     def name(self) -> str:
         return "timeout"
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"max_steps": self.max_steps}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "TimeoutPlugin":
+        return cls(**config)
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if ctx.episode_step >= self.max_steps:

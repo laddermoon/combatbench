@@ -53,6 +53,13 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
     def get_output(self) -> Any:
         return self._output
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "Humanoid21BalanceAnalysisObserver":
+        return cls(**config)
+
     def get_visualization_image(self) -> np.ndarray:
         if self._last_accessor is None:
             raise RuntimeError("Humanoid21BalanceAnalysisObserver has no cached accessor yet. Call runtime.reset() or runtime.step() first.")

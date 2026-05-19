@@ -44,6 +44,18 @@ class T800CombatScoringPlugin(BasePlugin):
         self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
         self.damage_scale = damage_scale
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "initial_health": self.initial_health_a,
+            "initial_health_a": self.initial_health_a,
+            "initial_health_b": self.initial_health_b,
+            "damage_scale": self.damage_scale,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "T800CombatScoringPlugin":
+        return cls(**config)
+
     @property
     def name(self) -> str:
         return "t800_combat_scoring"
@@ -167,6 +179,13 @@ class FrozenRobotPlugin(BasePlugin):
         self.frozen_robot_id = frozen_robot_id
         self.other_robot_id = "robot_a" if frozen_robot_id == "robot_b" else "robot_b"
         self.initial_state = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"frozen_robot_id": self.frozen_robot_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "FrozenRobotPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:

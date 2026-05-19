@@ -217,7 +217,19 @@ class MujocoCombatSimulator(BaseSimulator):
         self._prev_azi = None
         self._prev_ele = None
         self._prev_dist = None
-    
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "initial_distance": self.initial_distance,
+            "debug_torque": self._debug_torque,
+            "initial_pose_a": self._initial_pose_a,
+            "initial_pose_b": self._initial_pose_b,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "MujocoCombatSimulator":
+        return cls(**config)
+
     def _cache_robot_indices(self):
         """缓存机器人的关节和body索引"""
         self._robot_cache = {}

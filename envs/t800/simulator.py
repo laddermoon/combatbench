@@ -170,6 +170,17 @@ class T800Simulator(BaseSimulator):
         self._prev_dist: Optional[float] = None
         self._prev_lookat: Optional[np.ndarray] = None
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "initial_distance": self.initial_distance,
+            "initial_pose_a": self._initial_pose_a,
+            "initial_pose_b": self._initial_pose_b,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "T800Simulator":
+        return cls(**config)
+
     def _collect_subtree_body_ids(self, root_body_id: int) -> List[int]:
         body_ids: List[int] = []
         stack = [root_body_id]

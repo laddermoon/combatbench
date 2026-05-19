@@ -40,6 +40,13 @@ class T800Observer(BaseObserverPlugin):
     def get_output(self) -> Any:
         return self._output
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "T800Observer":
+        return cls(**config)
+
     @classmethod
     def get_observation_space(cls) -> spaces.Dict:
         return spaces.Dict({

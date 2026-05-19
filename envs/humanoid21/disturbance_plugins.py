@@ -5,10 +5,10 @@ Humanoid21 外部扰动插件
 """
 
 import os
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from typing import Optional, Sequence
 
 from framework import BasePlugin, SimContext
 
@@ -113,6 +113,20 @@ class RandomPushPlugin(BasePlugin):
     @property
     def require_mutator(self) -> bool:
         return True
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "target_body": self.target_body,
+            "force_magnitude": self.force_magnitude,
+            "min_interval": self.min_interval,
+            "max_interval": self.max_interval,
+            "push_duration_steps": self.push_duration_steps,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "RandomPushPlugin":
+        return cls(**config)
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         """Episode 开始时重置（RNG 已由 set_episode_seed 重建）"""
@@ -254,6 +268,21 @@ class InitialStatePerturbationPlugin(BasePlugin):
     def require_mutator(self) -> bool:
         return True
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "joint_pos_delta_max": self.joint_pos_delta_max,
+            "joint_vel_delta_max": self.joint_vel_delta_max,
+            "root_xy_offset_max": self.root_xy_offset_max,
+            "root_tilt_deg_max": self.root_tilt_deg_max.tolist(),
+            "root_linear_velocity_delta_max": self.root_linear_velocity_delta_max.tolist(),
+            "root_angular_velocity_delta_max": self.root_angular_velocity_delta_max.tolist(),
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "InitialStatePerturbationPlugin":
+        return cls(**config)
+
     def on_pre_episode(self, ctx: SimContext) -> None:
         # RNG 已由 set_episode_seed 重建；on_pre_episode 只负责业务逻辑。
         core_state = ctx.accessor.get_core_state()
@@ -361,6 +390,18 @@ class PeriodicUpwardForcePlugin(BasePlugin):
         self._action_step_count = 0
         self._apply_this_action = False
 
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "target_body": self.target_body,
+            "force_magnitude": self.force_magnitude,
+            "interval": self.interval,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "PeriodicUpwardForcePlugin":
+        return cls(**config)
+
     @property
     def name(self) -> str:
         return "periodic_upward_force"
@@ -419,6 +460,17 @@ class ConditionalHeightLimitPlugin(BasePlugin):
         self.target_robot = target_robot
         self.max_height = max_height
         self.force_magnitude = force_magnitude
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "max_height": self.max_height,
+            "force_magnitude": self.force_magnitude,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ConditionalHeightLimitPlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:
@@ -483,6 +535,24 @@ class ContinuousWindPlugin(BasePlugin):
 
         # RNG is rebuilt on every set_episode_seed() call.
         self._rng = np.random.RandomState(random_seed)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        wd = self.wind_direction
+        return {
+            "target_robot": self.target_robot,
+            "wind_direction": wd.tolist() if isinstance(wd, np.ndarray) else wd,
+            "wind_strength": self.wind_strength,
+            "gust_probability": self.gust_probability,
+            "gust_multiplier": self.gust_multiplier,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ContinuousWindPlugin":
+        cfg = dict(config)
+        wd = cfg.get("wind_direction")
+        if isinstance(wd, list):
+            cfg["wind_direction"] = np.array(wd, dtype=np.float64)
+        return cls(**cfg)
 
     def set_episode_seed(self, seed: int) -> None:
         """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
@@ -549,6 +619,18 @@ class HeadStrikePlugin(BasePlugin):
     def set_episode_seed(self, seed: int) -> None:
         """Rebuild the per-plugin RNG immediately (see framework/SEED.md)."""
         self._rng = np.random.RandomState(int(seed))
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "strike_force": self.strike_force,
+            "strike_interval": self.strike_interval,
+            "random_direction": self.random_direction,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "HeadStrikePlugin":
+        return cls(**config)
 
     @property
     def name(self) -> str:
