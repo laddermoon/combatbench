@@ -43,6 +43,11 @@ class VideoRecorderPlugin(BasePlugin):
     #: one episode. Picked up in :meth:`on_pre_episode`.
     OPTIONS_OUTPUT_PATH_KEY = "video_output_path"
 
+    #: Marks this plugin as **debug / IO only** so ``EnvBlueprint`` (see
+    #: :mod:`envs.framework.blueprint`) skips it during snapshotting.
+    #: Video recording is not part of the environment's identity.
+    BLUEPRINT_EXCLUDE = True
+
     def __init__(self, fps: int = 30, output_path: str = "video.mp4"):
         self.fps = fps
         self.output_path = Path(output_path)

@@ -411,6 +411,19 @@ class EnvRuntime:
     def render(self) -> Optional[np.ndarray]:
         return self._core.simulator.get_broadcastview_image()
 
+    def to_blueprint(self) -> "EnvBlueprint":  # noqa: F821
+        """Snapshot this runtime as an :class:`EnvBlueprint`.
+
+        Recorders, the internal observer dispatcher, the auto-attached
+        :class:`TimeoutPlugin`, and any plugin / observer with
+        ``BLUEPRINT_EXCLUDE = True`` are deliberately omitted. See
+        :mod:`envs.framework.blueprint` for the protocol.
+        """
+        # Local import to avoid an import cycle at module load.
+        from .blueprint import EnvBlueprint
+
+        return EnvBlueprint.from_runtime(self)
+
     def close(self) -> None:
         for recorder in list(self._recorders):
             self.detach_recorder(recorder)

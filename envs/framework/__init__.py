@@ -16,6 +16,7 @@ from .replay import (
 )
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
+from .blueprint import BLUEPRINT_VERSION, ClassSpec, EnvBlueprint
 from .policy import Policy, call_policy, coerce_action
 from .episode_runner import AGENT_IDS, EpisodeRunner
 from .rollout_batch import RolloutBatch
@@ -48,6 +49,9 @@ __all__ = [
     "EnvRuntime",
     "TimeoutPlugin",
     "VideoRecorderPlugin",
+    "BLUEPRINT_VERSION",
+    "ClassSpec",
+    "EnvBlueprint",
     "EpisodeRunner",
     "Policy",
     "call_policy",
