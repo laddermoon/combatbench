@@ -290,23 +290,25 @@ class EnvRuntime:
     def _invoke_recorders(self, hook_name: str, *extra_args: Any) -> None:
         """Fan out a lifecycle hook to all attached recorders.
 
-        ``extra_args`` is appended **after** ``(readonly_ctx, observer_outputs)``
-        and is hook-specific. Currently only ``on_post_action_step`` uses it,
-        to pass through per-agent ``action_extras`` produced by the policy
-        (log_prob / value / sample_info / etc.); the other hooks pass nothing
-        extra. Keeping the dispatch hook-agnostic and using positional pass-
-        through means new per-hook payloads can be added without churning
-        every recorder subclass.
+        Dispatches hook-specific positional args:
+          - ``on_pre_episode`` / ``on_post_episode``: ``(ctx,)``
+          - ``on_post_action_step``: ``(ctx, observation, action, observer_outputs, *extra_args)``
         """
         if not self._recorders:
             return
         readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
-        observer_outputs = self.get_observer_outputs()
+        if hook_name == "on_post_action_step":
+            observation = self._core.simulator.get_observation()
+            action = self._core.simulator.get_action()
+            observer_outputs = self.get_observer_outputs()
+            args = (readonly_ctx, observation, action, observer_outputs, *extra_args)
+        else:
+            args = (readonly_ctx,)
         for recorder in self._recorders:
             _safe_call(
                 recorder, hook_name, self._strict,
                 f"Recorder '{type(recorder).__name__}'",
-                readonly_ctx, observer_outputs, *extra_args,
+                *args,
             )
 
     def reset(
@@ -367,6 +369,21 @@ class EnvRuntime:
 
     def refresh_observers(self, force: bool = False) -> None:
         self._observer_dispatcher.refresh(self._core.ctx, force=force)
+
+    def get_observation(self) -> Tuple[Any, Any]:
+        """Return the current per-agent observations as a tuple.
+
+        Delegates to ``simulator.get_observation()`` which is now part of
+        the :class:`IDataAccessor` contract. The result is unpacked from
+        the dict ``{"robot_a": obs_a, "robot_b": obs_b}`` into a plain
+        ``(obs_a, obs_b)`` tuple so callers (e.g. :class:`EpisodeRunner`)
+        can avoid dict indirection in the hot loop.
+
+        Raises ``KeyError`` if the simulator response is missing one of
+        the expected keys.
+        """
+        obs = self._core.simulator.get_observation()
+        return obs["robot_a"], obs["robot_b"]
 
     def get_shared_info(self) -> Dict[str, Any]:
         ctx = self._core.ctx

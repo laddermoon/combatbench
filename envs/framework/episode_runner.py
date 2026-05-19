@@ -104,14 +104,6 @@ _logger = logging.getLogger(__name__)
 # breaking downstream consumers that key by these exact strings.
 AGENT_IDS: Tuple[str, str] = ("robot_a", "robot_b")
 
-# Framework-default observer-plugin names per agent. The runner reads each
-# agent's per-step observation from ``runtime.observer_plugins[<agent>_obs]``.
-# Registering observers under a different name is fine for diagnostics, but
-# the policy-driving slot is fixed by this convention to keep the runner's
-# wiring trivially predictable.
-OBS_NAME_TEMPLATE: str = "{agent}_obs"
-
-
 # ---------------------------------------------------------------------------
 # Seed helpers (see envs/framework/SEED.md)
 # ---------------------------------------------------------------------------
@@ -186,23 +178,6 @@ class EpisodeRunner:
                     f"envs.framework.policy.Policy; got {type(policy).__name__}"
                 )
 
-    def _validate_observers(self) -> None:
-        """Fail loudly if either ``<agent>_obs`` observer is missing.
-
-        Lazy at episode entry rather than eager at construction so that
-        callers can wire policies before observers (e.g. inside a runtime
-        factory). Catching it here still saves hours of "why is the policy
-        seeing zeros" debugging.
-        """
-        registered = set(self.runtime.observer_plugins.keys())
-        for agent in self.AGENT_IDS:
-            name = OBS_NAME_TEMPLATE.format(agent=agent)
-            if name not in registered:
-                raise KeyError(
-                    f"Observer plugin {name!r} (for obs of {agent!r}) is not "
-                    f"registered on the runtime. Registered: {sorted(registered)}"
-                )
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -229,7 +204,6 @@ class EpisodeRunner:
         read per-episode parameters (HP carry-over, curriculum knobs,
         opponent snapshot id, …). See ``framework/RESET.md`` §4.
         """
-        self._validate_observers()
         base_seed = _resolve_seed(seed)
         episode_seeds = self._derive_seeds(base_seed)
         self._reset_all(episode_seeds, options=options)
@@ -238,7 +212,8 @@ class EpisodeRunner:
         # sees ``ctx`` AS-OF reset (matches standard RL conventions). We do
         # NOT store it — the runner has no trajectory buffer; recorders
         # snapshot whatever they need on their own ``on_pre_episode`` hook.
-        last_obs = self._pull_all_observations()
+        obs_a, obs_b = self.runtime.get_observation()
+        last_obs = {"robot_a": obs_a, "robot_b": obs_b}
 
         while self.runtime.is_episode_active:
             actions: Dict[str, np.ndarray] = {}
@@ -274,7 +249,8 @@ class EpisodeRunner:
             if terminated or truncated:
                 break
 
-            last_obs = self._pull_all_observations()
+            obs_a, obs_b = self.runtime.get_observation()
+            last_obs = {"robot_a": obs_a, "robot_b": obs_b}
 
     def close(self) -> None:
         """Close attached policies that support it.
@@ -363,10 +339,3 @@ class EpisodeRunner:
             if callable(reset_fn):
                 reset_fn(seeds.policies[agent_id])
 
-    def _pull_all_observations(self) -> Dict[str, Any]:
-        return {
-            agent: self.runtime.get_observer_output(
-                OBS_NAME_TEMPLATE.format(agent=agent)
-            )
-            for agent in self.AGENT_IDS
-        }

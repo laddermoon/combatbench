@@ -46,6 +46,7 @@ _ACCESSOR_ALLOWED: frozenset[str] = frozenset({
     "get_action",
     "get_broadcastview_image",
     "get_physical_frequency",
+    "get_observation",
 })
 
 # Names forwarded by _MutatorView (allowlist).
@@ -113,6 +114,9 @@ class _AccessorView(IDataAccessor):
 
     def get_physical_frequency(self) -> float:
         return self.__sim.get_physical_frequency()
+
+    def get_observation(self) -> Dict[str, Any]:
+        return self.__sim.get_observation()
 
 
 class _MutatorView(IDataMutator):

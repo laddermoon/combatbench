@@ -156,12 +156,14 @@ class PostActionRecorder(ABC):
     observer-plugin outputs at the time the hook fires.
     """
 
-    def on_pre_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         pass
 
     def on_post_action_step(
         self,
         ctx: ReadOnlySimContext,
+        observation: Mapping[str, Any],
+        action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
     ) -> None:
@@ -179,7 +181,7 @@ class PostActionRecorder(ABC):
         """
         pass
 
-    def on_post_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         pass
 
     def on_attach(self) -> None:
@@ -187,6 +189,183 @@ class PostActionRecorder(ABC):
 
     def on_detach(self) -> None:
         pass
+
+
+def _snapshot(value: Any) -> Any:
+    """Cheap deep-ish copy that preserves ndarrays as ndarrays.
+
+    Unlike :func:`copy.deepcopy` this is allocation-light: ndarrays are
+    copied once via ``np.array(..., copy=True)``, plain dicts/lists/tuples
+    are recursed into, everything else is kept by reference (immutables
+    like ``int``/``float``/``str``/``None`` are safe; mutable user objects
+    would be aliased — observers in this codebase return either ndarrays
+    or plain containers so that's fine in practice). The goal is just to
+    decouple the recorder's stored frame from any in-place mutation an
+    observer might do on its next ``process_data``.
+    """
+    if isinstance(value, np.ndarray):
+        return np.array(value, copy=True)
+    if isinstance(value, dict):
+        return {key: _snapshot(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_snapshot(element) for element in value]
+    if isinstance(value, tuple):
+        return tuple(_snapshot(element) for element in value)
+    return value
+
+
+class EpisodeBufferRecorder(PostActionRecorder):
+    """In-memory recorder that buffers raw per-step data for one episode.
+
+    Captures, for every step the runtime emits a recorder hook on:
+
+    * ``episode_step`` / ``physics_step``
+    * full ``observer_outputs`` snapshot (every observer registered on
+      the runtime, exactly as the runtime publishes it)
+    * ``action`` (read from ``ctx.accessor.get_action()``; ``None`` on
+      the pre-episode snapshot because no action has been applied yet)
+    * ``action_extras`` (the per-agent policy side-channel forwarded by
+      :meth:`EnvRuntime.step`; ``None`` on the pre-episode snapshot or
+      when the caller did not supply extras)
+    * ``termination_proposals`` (tuple) and ``is_terminated`` (bool) —
+      lifted directly from the read-only ctx; the reading discipline
+      mirrors what attached plugins see at the same hook
+
+    Scope
+    -----
+    This recorder produces **raw, semantics-free** data. It is intended
+    as the substrate from which RL trainers, debuggers, or visualizers
+    build whatever they need — but it does **not** itself apply any
+    rollout convention (no reward alignment, no advantage / GAE, no
+    obs_t vs obs_t+1 staggering, no done-masking, no reset-boundary
+    handling beyond "frames are grouped per episode"). Consumers that
+    want rollout-shaped tensors must do that mapping themselves.
+
+    No on-disk side effects. Episode data lives on the recorder until
+    cleared by the next :meth:`on_pre_episode` (i.e. only the most
+    recent episode is retained). Use :meth:`get_episode_data` to read
+    it.
+
+    Frame at index 0 is the **pre-episode snapshot** taken inside
+    :meth:`on_pre_episode` — it has the initial observation but
+    ``action is None`` and ``action_extras is None``. Subsequent frames
+    are post-action-step snapshots, one per ``EnvRuntime.step`` call.
+    The terminal step's frame carries the populated
+    ``termination_proposals`` so consumers can detect episode end
+    without reading the runtime back.
+
+    Parameters
+    ----------
+    snapshot_arrays : bool
+        If True (default), copy ndarrays in observer outputs / actions
+        / extras so subsequent observer ``process_data`` calls cannot
+        mutate already-buffered frames. Set False to save the copy cost
+        when the consumer is read-only and the episode is short-lived.
+    """
+
+    def __init__(self, snapshot_arrays: bool = True) -> None:
+        self._snapshot_arrays = bool(snapshot_arrays)
+        self._frames: list[dict[str, Any]] = []
+        self._episode_index: int = -1
+        self._base_seed: Optional[int] = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def get_episode_data(self) -> dict[str, Any]:
+        """Return the most recent (or in-progress) episode's data.
+
+        Shape::
+
+            {
+                "episode_index": int,         # -1 before the first episode
+                "base_seed":     int | None,  # ctx.base_seed at episode start
+                "num_frames":    int,
+                "frames": [
+                    {
+                        "episode_step":          int,
+                        "physics_step":          int,
+                        "observer_outputs":      {<name>: <value>, ...},
+                        "action":                {<agent_id>: <ndarray>} | None,
+                        "action_extras":         {<agent_id>: <dict | None>} | None,
+                        "termination_proposals": tuple[str, ...],
+                        "is_terminated":         bool,
+                    },
+                    ...
+                ],
+            }
+
+        The returned structure shares (or copies, depending on
+        ``snapshot_arrays``) buffers with the recorder; the recorder
+        itself will overwrite them on the next ``on_pre_episode``. If
+        you need to keep data past the next episode boundary, copy it
+        out yourself or build a list of snapshots across episodes.
+        """
+        return {
+            "episode_index": self._episode_index,
+            "base_seed": self._base_seed,
+            "num_frames": len(self._frames),
+            "frames": list(self._frames),
+        }
+
+    def get_frames(self) -> list[dict[str, Any]]:
+        """Convenience: just the frame list (a shallow-copied list)."""
+        return list(self._frames)
+
+    def clear(self) -> None:
+        """Drop the buffered episode without waiting for the next reset."""
+        self._frames = []
+
+    # ------------------------------------------------------------------
+    # Hooks
+    # ------------------------------------------------------------------
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._frames = []
+        self._episode_index += 1
+        self._base_seed = ctx.base_seed
+        self._frames.append(
+            self._build_frame(ctx, observation=None, action=None,
+                              observer_outputs={}, action_extras=None)
+        )
+
+    def on_post_action_step(
+        self,
+        ctx: ReadOnlySimContext,
+        observation: Mapping[str, Any],
+        action: Mapping[str, Any],
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+    ) -> None:
+        self._frames.append(
+            self._build_frame(ctx, observation=observation, action=action,
+                              observer_outputs=observer_outputs, action_extras=action_extras)
+        )
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+    def _build_frame(
+        self,
+        ctx: ReadOnlySimContext,
+        observation: Optional[Mapping[str, Any]],
+        action: Optional[Mapping[str, Any]],
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]],
+    ) -> dict[str, Any]:
+        snapshot = _snapshot if self._snapshot_arrays else (lambda value: value)
+        return {
+            "episode_step": int(ctx.episode_step),
+            "physics_step": int(ctx.physics_step),
+            "observation": snapshot(dict(observation)) if observation is not None else None,
+            "action": snapshot(dict(action)) if action is not None else None,
+            "observer_outputs": snapshot(dict(observer_outputs)),
+            "action_extras": (
+                snapshot({agent_id: extras for agent_id, extras in action_extras.items()})
+                if action_extras is not None else None
+            ),
+            "termination_proposals": tuple(ctx.termination_proposals),
+            "is_terminated": bool(ctx.is_terminated),
+        }
 
 
 class BaseFrameRecorder(PostActionRecorder):
@@ -291,7 +470,7 @@ class BaseFrameRecorder(PostActionRecorder):
     # ------------------------------------------------------------------
     # Hooks
     # ------------------------------------------------------------------
-    def on_pre_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._episode_index += 1
         self._current_episode_dir = self.output_dir / f"episode_{self._episode_index:05d}"
         self._current_manifest_steps = []
@@ -309,17 +488,19 @@ class BaseFrameRecorder(PostActionRecorder):
             self._current_episode_dir.mkdir(parents=True, exist_ok=True)
             self._write_static_data(ctx, self._current_episode_dir / "static.json")
             self._static_file_name = "static.json"
-        self._record_step(ctx, observer_outputs)
+        self._record_step(ctx, {})
 
     def on_post_action_step(
         self,
         ctx: ReadOnlySimContext,
+        observation: Mapping[str, Any],
+        action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
     ) -> None:
         self._record_step(ctx, observer_outputs, action_extras=action_extras)
 
-    def on_post_episode(self, ctx: ReadOnlySimContext, observer_outputs: Mapping[str, Any]) -> None:
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         if self._current_episode_dir is None:
             return
         self._write_episode_manifest()

@@ -7,7 +7,7 @@ from .observer_plugin import (
     BaseRuntimeUnit,
     CompositeObserver,
 )
-from .recorder import BaseFrameRecorder, PostActionRecorder
+from .recorder import BaseFrameRecorder, EpisodeBufferRecorder, PostActionRecorder
 from .replay import (
     ReplayError,
     ReplayExhaustedError,
@@ -39,6 +39,7 @@ __all__ = [
     "BaseObserverPlugin",
     "CompositeObserver",
     "BaseFrameRecorder",
+    "EpisodeBufferRecorder",
     "PostActionRecorder",
     "ReplaySimulator",
     "ReplayError",

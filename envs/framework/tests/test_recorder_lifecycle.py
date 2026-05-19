@@ -32,14 +32,14 @@ class _TracingRecorder(PostActionRecorder):
     def _record(self, hook, ctx, observer_outputs):
         self.events.append((hook, int(ctx.episode_step), dict(observer_outputs)))
 
-    def on_pre_episode(self, ctx, observer_outputs):
-        self._record("on_pre_episode", ctx, observer_outputs)
+    def on_pre_episode(self, ctx):
+        self._record("on_pre_episode", ctx, {})
 
-    def on_post_action_step(self, ctx, observer_outputs, action_extras=None):
+    def on_post_action_step(self, ctx, observation, action, observer_outputs, action_extras=None):
         self._record("on_post_action_step", ctx, observer_outputs)
 
-    def on_post_episode(self, ctx, observer_outputs):
-        self._record("on_post_episode", ctx, observer_outputs)
+    def on_post_episode(self, ctx):
+        self._record("on_post_episode", ctx, {})
 
 
 class _StepValueObserver(BaseObserverPlugin):

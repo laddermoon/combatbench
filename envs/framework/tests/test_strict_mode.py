@@ -45,7 +45,7 @@ class _ExplodingObserver(BaseObserverPlugin):
 
 
 class _ExplodingRecorder(PostActionRecorder):
-    def on_post_action_step(self, ctx: ReadOnlySimContext, observer_outputs, action_extras=None):
+    def on_post_action_step(self, ctx: ReadOnlySimContext, observation, action, observer_outputs, action_extras=None):
         raise RuntimeError("boom@recorder")
 
 

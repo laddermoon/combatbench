@@ -68,6 +68,10 @@ class MockSimulator:
     def get_broadcastview_image(self) -> Any:
         return self._image.copy()
 
+    def get_observation(self) -> Dict[str, Any]:
+        return {"robot_a": np.zeros(96, dtype=np.float32),
+                "robot_b": np.zeros(96, dtype=np.float32)}
+
     # IDataMutator 接口
     def set_core_state(self, state: Dict[str, Any]) -> None:
         if self._is_closed:

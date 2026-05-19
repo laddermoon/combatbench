@@ -33,6 +33,16 @@ class IDataAccessor(ABC):
         """获取广播视角图像（渲染输出）"""
         pass
 
+    @abstractmethod
+    def get_observation(self) -> Dict[str, Any]:
+        """获取当前两个机器人的观测向量。
+
+        Returns:
+            {"robot_a": <obs_a>, "robot_b": <obs_b>}
+            每个 value 是 policy 可直接消费的 ndarray 或容器。
+        """
+        pass
+
 
 class IDataMutator(ABC):
     """

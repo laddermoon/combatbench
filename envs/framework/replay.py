@@ -331,6 +331,9 @@ class ReplaySimulator(BaseSimulator):
     def get_action(self) -> Dict[str, Any]:
         return self._current_frame.get("action", {})
 
+    def get_observation(self) -> Dict[str, Any]:
+        return self._current_frame.get("observation", {})
+
     def get_broadcastview_image(self) -> np.ndarray:
         """Decode and cache the PNG associated with the current frame.
 
