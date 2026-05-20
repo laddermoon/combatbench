@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -290,14 +289,12 @@ class Episode:
             num_frames=int(len(frames)),
             termination_proposals=tuple(str(reason) for reason in termination_proposals),
             is_terminated=bool(is_terminated),
-            episode_options=MappingProxyType(dict(episode_options or {})),
-            observations=MappingProxyType(observations),
-            actions=MappingProxyType(actions),
-            action_extras=MappingProxyType(
-                {agent: MappingProxyType(d) for agent, d in extras.items()}
-            ),
+            episode_options=dict(episode_options or {}),
+            observations=observations,
+            actions=actions,
+            action_extras=extras,
             observer_outputs=observer_outputs,
-            final_observation=MappingProxyType(final_obs_dict),
+            final_observation=final_obs_dict,
         )
 
     # ------------------------------------------------------------------
@@ -426,14 +423,12 @@ class Episode:
             num_frames=int(meta["num_frames"]),
             termination_proposals=tuple(meta["termination_proposals"]),
             is_terminated=bool(meta["is_terminated"]),
-            episode_options=MappingProxyType(dict(meta.get("episode_options") or {})),
-            observations=MappingProxyType(observations),
-            actions=MappingProxyType(actions),
-            action_extras=MappingProxyType(
-                {agent: MappingProxyType(d) for agent, d in action_extras.items()}
-            ),
+            episode_options=dict(meta.get("episode_options") or {}),
+            observations=observations,
+            actions=actions,
+            action_extras=action_extras,
             observer_outputs=observer_outputs,
-            final_observation=MappingProxyType(final_observation),
+            final_observation=final_observation,
         )
 
 

@@ -1,10 +1,17 @@
 """Rollout-side building blocks for on-policy baselines.
 
-See ``baseline/DESIGN.md`` §3.3 for the scope of this package.
+See ``baseline/common/rollout/DESIGN.md`` for the full design.
 """
 
-from .batch import RolloutBatch
-from .collector import RolloutCollector
-from .sampler import RolloutSampler
+from .episode import Episode, blueprint_hash
+from .episode_collection import EpisodeCollection
+from .episode_recorder import EpisodeRecorder
+from .parallel_rollouter import ParallelRollouter
 
-__all__ = ["RolloutBatch", "RolloutCollector", "RolloutSampler"]
+__all__ = [
+    "Episode",
+    "EpisodeCollection",
+    "EpisodeRecorder",
+    "ParallelRollouter",
+    "blueprint_hash",
+]
