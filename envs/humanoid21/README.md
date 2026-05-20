@@ -12,227 +12,129 @@
 
 ## 快速开始
 
-### 基本使用
+### 命令行运行（推荐）
 
-```python
-from combatbench.envs.humanoid21 import make_env
-from combatbench.policy import RandomCombatPolicy, StandingCombatPolicy
-from combatbench.envs.framework import RoundRunner
+使用 `rule_blueprint.yaml` + `round_runner.py` CLI 运行标准比赛规则：
 
-# 创建环境
-env = make_env(
-    match_duration=30.0,    # 单回合时长（秒）
-    control_frequency=20,   # 控制频率（Hz）
-    non_fall_mode=True,     # 启用防摔倒约束
-)
+```bash
+# 基本用法：两个随机策略对战
+python3 -m envs.framework.round_runner \
+    --blueprint envs/humanoid21/rule_blueprint.yaml \
+    --policy-a policy.random.policy:RandomCombatPolicy?scale=0.5 \
+    --policy-b policy.random.policy:RandomCombatPolicy?scale=0.3 \
+    --seed 42
 
-# 创建策略
-policy_a = RandomCombatPolicy(scale=0.1)
-policy_b = StandingCombatPolicy()
+# 录制视频
+python3 -m envs.framework.round_runner \
+    --blueprint envs/humanoid21/rule_blueprint.yaml \
+    --policy-a policy.random.policy:RandomCombatPolicy \
+    --policy-b policy.random.policy:RandomCombatPolicy \
+    --video match.mp4
 
-# 运行比赛
-runner = RoundRunner(policy_a, policy_b, env)
-result = runner.run(seed=42)
-
-print(f"Winner: {result['winner']}")
+# 附加 Recorder（可重复）
+python3 -m envs.framework.round_runner \
+    --blueprint envs/humanoid21/rule_blueprint.yaml \
+    --policy-a policy.random.policy:RandomCombatPolicy \
+    --policy-b policy.random.policy:RandomCombatPolicy \
+    --recorder some.module:MyRecorder?path=trace.jsonl
 ```
 
-### 多回合比赛
+**参数说明：**
+| 参数 | 说明 |
+|------|------|
+| `--blueprint` | 蓝图文件路径（JSON 或 YAML） |
+| `--policy-a` | 机器人 A 的策略：`module:ClassName?key=value` |
+| `--policy-b` | 机器人 B 的策略：`module:ClassName?key=value` |
+| `--video` | 视频保存路径（可选） |
+| `--recorder` | 附加 Recorder（可重复） |
+| `--seed` | 回合种子（可选） |
+
+**策略指定格式：**
+- `policy.random.policy:RandomCombatPolicy`
+- `policy.random.policy:RandomCombatPolicy?scale=0.2&seed=42`
+
+### 通过蓝图编程使用
 
 ```python
-from combatbench.envs.humanoid21 import make_env
-from combatbench.envs.framework import MatchRunner
+from envs.framework import EnvBlueprint, RoundRunner
+from policy.random.policy import RandomCombatPolicy
 
-def env_factory():
-    return make_env(
-        match_duration=30.0,
-        non_fall_mode=True
-    )
+blueprint = EnvBlueprint.load("envs/humanoid21/rule_blueprint.yaml")
 
-runner = MatchRunner(
-    policy_a=policy_a,
-    policy_b=policy_b,
-    env_factory=env_factory,
-    total_rounds=6
-)
-result = runner.run(seed=42, video_dir="videos")
+with RoundRunner(
+    blueprint=blueprint,
+    policy_a=RandomCombatPolicy(scale=0.5),
+    policy_b=RandomCombatPolicy(scale=0.3),
+) as runner:
+    result = runner.run(seed=42)
+
+print(result)
+# {'steps': 600, 'termination_reasons': ['timeout'], 'seed': 42}
 ```
 
 ### 录制视频
 
 ```python
-from combatbench.envs.framework.common_plugins import VideoRecorderPlugin
+from envs.framework import EnvBlueprint, RoundRunner
+from envs.framework.common_plugins import VideoRecorderPlugin
+from policy.random.policy import RandomCombatPolicy
 
-env = make_env(
-    plugins=[VideoRecorderPlugin(fps=30, output_path="match.mp4")],
-    match_duration=30.0
-)
+blueprint = EnvBlueprint.load("envs/humanoid21/rule_blueprint.yaml")
+
+with RoundRunner(
+    blueprint=blueprint,
+    policy_a=RandomCombatPolicy(),
+    policy_b=RandomCombatPolicy(),
+    video_plugin=VideoRecorderPlugin(fps=30, output_path="match.mp4"),
+) as runner:
+    result = runner.run(seed=42)
 ```
 
-## 命令行工具
+## 规则蓝图
 
-### run_round.py - 单回合比赛脚本
+`rule_blueprint.yaml` 声明了标准比赛规则的 `EnvBlueprint`，包含：
 
-运行单回合对战，支持策略加载和视频录制。
+- **Simulator**：`MujocoCombatSimulator`（默认 2m 初始距离）
+- **Plugins**：仅 `CombatScoringPlugin`（100 HP，damage scale 100）
+- **Observer Plugins**：仅 `CombatScoringObserver`（同时追踪双方状态）
 
-```bash
-# 基本用法（站立策略）
-python -m envs.humanoid21.run_round --duration 10
+可以通过 Python 代码基于该蓝图构造运行时再附加观测、Recorder 或视频插件。
 
-# 录制视频
-python -m envs.humanoid21.run_round --duration 10 --video match.mp4
-
-# 使用随机策略
-python -m envs.humanoid21.run_round \
-    --policy-a policy.RandomCombatPolicy?scale=0.2 \
-    --duration 10
-
-# 启用防摔倒模式
-python -m envs.humanoid21.run_round \
-    --non-fall-mode \
-    --duration 10
-
-# 静默模式
-python -m envs.humanoid21.run_round --duration 10 --quiet
-```
-
-**参数说明：**
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--policy-a` | `None` | 机器人 A 的策略（默认：StandingCombatPolicy） |
-| `--policy-b` | `None` | 机器人 B 的策略（默认：StandingCombatPolicy） |
-| `--duration` | `30.0` | 回合时长（秒） |
-| `--control-frequency` | `20` | 控制频率（Hz） |
-| `--non-fall-mode` | `False` | 启用防摔倒约束 |
-| `--non-fall-pitch-limit-deg` | `5.0` | Pitch 限制（度） |
-| `--non-fall-roll-limit-deg` | `5.0` | Roll 限制（度） |
-| `--damage-scale` | `100.0` | 伤害缩放系数 |
-| `--video` | `None` | 视频保存路径 |
-| `--quiet` | `False` | 静默模式 |
-
-### run_match.py - 多回合比赛脚本
-
-运行多回合比赛，支持血量延续和 KO 判定。
-
-```bash
-# 基本用法（6回合比赛）
-python -m envs.humanoid21.run_match --duration 10
-
-# 录制视频（每回合单独保存）
-python -m envs.humanoid21.run_match \
-    --duration 10 \
-    --video-dir videos/
-
-# 自定义回合数
-python -m envs.humanoid21.run_match \
-    --rounds 3 \
-    --duration 15 \
-    --video-dir videos/
-
-# 使用随机策略
-python -m envs.humanoid21.run_match \
-    --policy-a "policy.RandomCombatPolicy?scale=0.2&seed=42" \
-    --policy-b "policy.RandomCombatPolicy?scale=0.1&seed=43" \
-    --duration 10 \
-    --video-dir videos/
-
-# 启用防摔倒模式
-python -m envs.humanoid21.run_match \
-    --non-fall-mode \
-    --duration 10 \
-    --video-dir videos/
-```
-
-**比赛规则：**
-1. **初始血量**：双方各 100 点
-2. **KO 条件**：将对方血量降至 0，立即结束比赛
-3. **时间判决**：时间结束时血量高者获胜
-4. **平局判定**：血量相同则为平局
-5. **血量延续**：每回合血量延续上一回合
-6. **视频保存**：每回合单独保存为 `round_1.mp4`, `round_2.mp4`, ...
-
-**参数说明：**
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--policy-a` | `None` | 机器人 A 的策略（默认：StandingCombatPolicy） |
-| `--policy-b` | `None` | 机器人 B 的策略（默认：StandingCombatPolicy） |
-| `--rounds` | `6` | 总回合数 |
-| `--duration` | `30.0` | 每回合时长（秒） |
-| `--control-frequency` | `20` | 控制频率（Hz） |
-| `--non-fall-mode` | `False` | 启用防摔倒约束 |
-| `--non-fall-pitch-limit-deg` | `5.0` | Pitch 限制（度） |
-| `--non-fall-roll-limit-deg` | `5.0` | Roll 限制（度） |
-| `--damage-scale` | `100.0` | 伤害缩放系数 |
-| `--video-dir` | `None` | 视频保存目录 |
-| `--quiet` | `False` | 静默模式 |
-
-**策略指定格式：**
-- 模块路径：`policy.RandomCombatPolicy`
-- 带参数：`policy.RandomCombatPolicy?scale=0.2&seed=42`
-- 配置文件：`@configs/policy_a.json`
-
-## 功能实现
-
-### 核心组件
+## 核心组件
 
 | 组件 | 文件 | 说明 |
 |------|------|------|
 | 仿真器 | `simulator.py` | MuJoCo 物理引擎封装，PD 控制 |
-| Runtime 单元 | `runtime_units.py` | Observer/Rewarder、观测空间定义、共享信息构造 |
-| 战斗插件 | `plugins.py` | 伤害计算、防摔倒约束 |
-| 工厂函数 | `__init__.py` | 环境组装 |
+| 战斗插件 | `plugins.py` | 伤害计算、KO 判定（`CombatScoringPlugin`） |
+| 观测插件 | `observer_plugins.py` | 战斗状态观测（`CombatScoringObserver`） |
+| 规则蓝图 | `rule_blueprint.yaml` | 标准比赛规则蓝图 |
 
 ### 插件系统
 
-**CombatScoringPlugin** - 战斗计分
+**CombatScoringPlugin** — 战斗计分
 - 检测有效碰撞
-- 计算伤害（头部 -3，躯干 -1）
+- 计算伤害
 - 判定 KO（血量 ≤ 0）
+- 发布 `metrics`：health_a / health_b / damage_taken_a / damage_taken_b
 
-**NonFallConstraintPlugin** - 防摔倒约束
-- 限制 pitch/roll 角度
-- 保持机器人直立
-
-**FrozenRobotPlugin** - 冻结机器人
-- 冻结指定机器人位置
-- 用于训练和调试
-
-## 配置参数
-
-### make_env 参数
-
-```python
-make_env(
-    arena_xml=None,           # 场景 XML 文件路径
-    dt=0.002,                 # 物理时间步（秒）
-    control_frequency=20,     # 控制频率（Hz）
-    match_duration=30.0,      # 回合时长（秒）
-    non_fall_mode=False,      # 是否启用防摔倒
-    non_fall_pitch_limit_deg=5.0,   # pitch 限制（度）
-    non_fall_roll_limit_deg=5.0,    # roll 限制（度）
-    damage_scale=100.0,       # 伤害缩放系数
-    initial_health=100.0,     # 初始血量
-    initial_health_a=None,    # 机器人 A 初始血量
-    initial_health_b=None,    # 机器人 B 初始血量
-    plugins=None,             # 额外插件列表
-)
-```
+**CombatScoringObserver** — 战斗状态观测
+- 消费 `CombatScoringPlugin` 数据
+- 输出双方血量、累计伤害、本步伤害、命中事件、KO 状态
+- 同时观测 robot_a 和 robot_b
 
 ## 目录结构
 
 ```
 humanoid21/
-├── __init__.py       # 工厂函数 make_env
-├── simulator.py      # MujoCombatSimulator
-├── runtime_units.py  # Humanoid21Observer / Rewarder
-├── plugins.py        # 业务插件
-├── run_round.py      # 单回合比赛脚本
-└── run_match.py      # 多回合比赛脚本
+├── __init__.py           # 导出 MujocoCombatSimulator
+├── simulator.py          # MuJoCo 仿真器
+├── plugins.py            # 战斗插件（CombatScoringPlugin 等）
+├── observer_plugins.py   # 观测插件（CombatScoringObserver 等）
+├── rule_blueprint.yaml   # 标准比赛规则蓝图
+└── tests/                # 测试
 ```
 
 ## 相关文档
 
-- [SPEC.md](SPEC.md) - 观测空间、动作空间、控制模式详细说明
-- [Policy 文档](../../policy/README.md) - 策略接口定义
-- [run_round.py](run_round.py) - 单回合比赛脚本
-- [run_match.py](run_match.py) - 多回合比赛脚本
+- [SPEC.md](SPEC.md) — 观测空间、动作空间、控制模式详细说明
+- [Policy 文档](../../policy/README.md) — 策略接口定义

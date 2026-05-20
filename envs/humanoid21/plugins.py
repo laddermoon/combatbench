@@ -9,15 +9,12 @@ Humanoid21 战斗仿真插件
 按照 DATASPEC.md 规范使用数据接口。
 """
 
+from typing import Any, Dict, Optional
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-import sys
-from pathlib import Path
-from typing import Optional
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from framework import BasePlugin, SimContext, TerminationReason
-from framework import OBSERVER_DISPATCHER_PRIORITY
+from envs.framework import BasePlugin, OBSERVER_DISPATCHER_PRIORITY
+from envs.framework.context import SimContext, TerminationReason
 
 class NonFallConstraintPlugin(BasePlugin):
     """

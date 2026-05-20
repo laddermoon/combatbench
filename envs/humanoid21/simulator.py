@@ -8,12 +8,7 @@ import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
-
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from framework import BaseSimulator
-
+from envs.framework.backend import BaseSimulator
 
 _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
 _TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))

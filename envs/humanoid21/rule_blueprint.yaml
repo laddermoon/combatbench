@@ -1,6 +1,6 @@
 version: 1
 runtime:
-  phy_steps_per_action: 5
+  phy_steps_per_action: 25
   max_steps: 600
   strict: true
 simulator:
@@ -8,8 +8,8 @@ simulator:
   config:
     initial_distance: 2.0
     debug_torque: false
-    initial_pose_a: null
-    initial_pose_b: null
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
 plugins:
   - cls: "envs.humanoid21.plugins:CombatScoringPlugin"
     config:

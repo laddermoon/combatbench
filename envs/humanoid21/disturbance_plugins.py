@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional, Sequence
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from framework import BasePlugin, SimContext
+from envs.framework import BasePlugin
+from envs.framework.context import SimContext
 
 
 _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"

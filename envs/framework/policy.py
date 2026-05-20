@@ -2,7 +2,7 @@
 
 This module is the **single source of truth** for what counts as a
 "policy" in this project. Anything plugged into :class:`EpisodeRunner`,
-:class:`CombatRoundRunner`, or :class:`ParallelRunner` must subclass
+:class:`RoundRunner`, or :class:`ParallelRunner` must subclass
 :class:`Policy` defined here.
 
 Design note
