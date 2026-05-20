@@ -213,6 +213,9 @@ class MujocoCombatSimulator(BaseSimulator):
         self._prev_ele = None
         self._prev_dist = None
 
+        # 数据输出缓存（在 physical_step / reset / set_action 后自动失效）
+        self._data_cache: Dict[str, Any] = {}
+
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_distance": self.initial_distance,
@@ -408,6 +411,9 @@ class MujocoCombatSimulator(BaseSimulator):
         - ``dt`` (float): 单个物理子步的仿真时长 (s)
         - ``ground_geom_name`` (str): 地面 geom 名称（用于接触过滤）
         """
+        if '_static_data' in self._data_cache:
+            return self._data_cache['_static_data']
+
         result: Dict[str, Any] = {}
 
         for robot_id in ['robot_a', 'robot_b']:
@@ -432,6 +438,7 @@ class MujocoCombatSimulator(BaseSimulator):
         result['dt'] = float(self.DT)
         result['ground_geom_name'] = 'ground'
 
+        self._data_cache['_static_data'] = result
         return result
     
     def get_sensor_data(self) -> Dict[str, Any]:
@@ -440,10 +447,14 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def get_action(self) -> Dict[str, Any]:
         """获取当前动作目标"""
-        return {
+        if '_action' in self._data_cache:
+            return self._data_cache['_action']
+        result = {
             'robot_a': self._target_pos_norm['robot_a'].copy(),
             'robot_b': self._target_pos_norm['robot_b'].copy()
         }
+        self._data_cache['_action'] = result
+        return result
     
     def _get_body_names(self, robot_id: str) -> List[str]:
         """获取机器人的body名称列表"""
@@ -470,7 +481,7 @@ class MujocoCombatSimulator(BaseSimulator):
     def get_core_state(self) -> Dict[str, Any]:
         """
         获取核心状态 (按 DATASPEC.md 3)
-        
+
         返回按 robot_a 和 robot_b 分离的字典，每个包含：
         - root_pos (3,): Torso 绝对位置
         - root_rot (4,): Torso 绝对姿态四元数 [w,x,y,z]
@@ -479,37 +490,40 @@ class MujocoCombatSimulator(BaseSimulator):
         - joint_pos_norm (21,): 归一化关节位置 [-1, 1]
         - joint_vel_norm (21,): 归一化关节速度
         """
+        if '_core_state' in self._data_cache:
+            return self._data_cache['_core_state']
+
         result = {}
-        
+
         for robot_id in ['robot_a', 'robot_b']:
             cache = self._robot_cache[robot_id]
             norm_params = self._norm_params[robot_id]
-            
+
             # Root 位置和姿态
             root_qpos_adr = cache['root_qpos_adr']
             root_pos = self.data.qpos[root_qpos_adr:root_qpos_adr+3].copy()
             root_rot = self.data.qpos[root_qpos_adr+3:root_qpos_adr+7].copy()  # [w,x,y,z]
-            
+
             # Root 速度 (全局坐标系)
             root_qvel_adr = cache['root_qvel_adr']
             root_vel_global = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
             root_angular_vel_global = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()
-            
+
             # 转换到局部坐标系
             rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])  # scipy 用 xyzw
             root_vel_local = rot.inv().apply(root_vel_global)
             root_angular_vel_local = rot.inv().apply(root_angular_vel_global)
-            
+
             # 关节位置和速度 (原始值)
             qpos_indices = cache['qpos_indices']
             qvel_indices = cache['qvel_indices']
             joint_pos = self.data.qpos[qpos_indices].copy()
             joint_vel = self.data.qvel[qvel_indices].copy()
-            
+
             # 归一化
             joint_pos_norm = (joint_pos - norm_params['reference']) / norm_params['scale']
             joint_vel_norm = joint_vel / norm_params['scale']
-            
+
             result[robot_id] = {
                 'root_pos': root_pos.astype(np.float32),
                 'root_rot': root_rot.astype(np.float32),
@@ -518,7 +532,8 @@ class MujocoCombatSimulator(BaseSimulator):
                 'joint_pos_norm': joint_pos_norm.astype(np.float32),
                 'joint_vel_norm': joint_vel_norm.astype(np.float32)
             }
-        
+
+        self._data_cache['_core_state'] = result
         return result
     
     def get_derived_state(self) -> Dict[str, Any]:
@@ -554,8 +569,11 @@ class MujocoCombatSimulator(BaseSimulator):
 
         **新增** per-joint 字段:
         - ``joint_world_anchor`` (Dict[str, ndarray(3,)]): 每个关节铰链锚点的世界坐标。
-          对 freejoint 无几何意义，值取 ``data.xanchor[jid]``。
+          对 freejoint 无几何意义，值取 ``data.xanchor[jid]`` 。
         """
+        if '_derived_state' in self._data_cache:
+            return self._data_cache['_derived_state']
+
         # 全局对抗信息
         torso_a_id = self._robot_cache['robot_a']['torso_body_id']
         torso_b_id = self._robot_cache['robot_b']['torso_body_id']
@@ -573,7 +591,7 @@ class MujocoCombatSimulator(BaseSimulator):
         robot_a_view.update(self._collect_body_joint_arrays('robot_a'))
         robot_b_view.update(self._collect_body_joint_arrays('robot_b'))
 
-        return {
+        result = {
             'torso_distance': np.array([torso_distance], dtype=np.float32),
             'robot_robot_contacts': robot_robot_contacts,
             'robot_environment_contacts': robot_environment_contacts,
@@ -581,6 +599,8 @@ class MujocoCombatSimulator(BaseSimulator):
             'robot_a': robot_a_view,
             'robot_b': robot_b_view
         }
+        self._data_cache['_derived_state'] = result
+        return result
 
     def _collect_body_joint_arrays(self, robot_id: str) -> Dict[str, Any]:
         """Extract per-body and per-joint world-frame quantities for a robot.
@@ -845,11 +865,15 @@ class MujocoCombatSimulator(BaseSimulator):
         Mirrors :class:`Humanoid21Observer` — extracts the ``observation``
         field that ``get_derived_state`` already computes for each robot.
         """
+        if '_observation' in self._data_cache:
+            return self._data_cache['_observation']
         derived = self.get_derived_state()
-        return {
+        result = {
             "robot_a": derived["robot_a"]["observation"],
             "robot_b": derived["robot_b"]["observation"],
         }
+        self._data_cache['_observation'] = result
+        return result
 
     def _get_opponent_basic_pose(
         self,
@@ -1003,11 +1027,12 @@ class MujocoCombatSimulator(BaseSimulator):
     def set_action(self, action: Dict[str, Optional[np.ndarray]]) -> None:
         """
         设置动作 (按 CONTROLSPEC.md)
-        
+
         输入:
             action: {'robot_a': ndarray(21,), 'robot_b': ndarray(21,)}
             每个 action 的值域为 [-1, 1]
         """
+        self._data_cache.pop('_action', None)
         for robot_id in ['robot_a', 'robot_b']:
             if robot_id in action and action[robot_id] is not None:
                 act = np.asarray(action[robot_id], dtype=np.float32)
@@ -1029,6 +1054,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 - initial_pose_a: 机器人A的初始姿态
                 - initial_pose_b: 机器人B的初始姿态
         """
+        self._data_cache.clear()
         mujoco.mj_resetData(self.model, self.data)
 
         # 设置初始距离
@@ -1121,6 +1147,7 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def physical_step(self) -> None:
         """执行一步物理仿真"""
+        self._data_cache.clear()
         if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
             torso_rows = []
             for robot_id in ['robot_a', 'robot_b']:
@@ -1234,6 +1261,7 @@ class MujocoCombatSimulator(BaseSimulator):
             'robot_b': { ... }
         }
         """
+        self._data_cache.clear()
         for robot_id in ['robot_a', 'robot_b']:
             if robot_id not in state:
                 continue
