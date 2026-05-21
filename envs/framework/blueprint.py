@@ -354,6 +354,15 @@ class EnvBlueprint:
 
     @classmethod
     def from_yaml(cls, text: str) -> "EnvBlueprint":
+        """Load a blueprint from YAML/JSON text.
+
+        Auto-detects parameterized documents: if the top-level document
+        contains a ``parameters`` section (i.e. it was produced by
+        :class:`ParameterizedEnvBlueprint`), it is materialized using
+        each parameter's **default value**. Any parameter without a
+        default raises :class:`ValueError` — supply overrides via
+        :meth:`ParameterizedEnvBlueprint.materialize` instead.
+        """
         try:
             import yaml  # type: ignore
 
@@ -362,6 +371,12 @@ class EnvBlueprint:
             data = json.loads(text)
         if not isinstance(data, Mapping):
             raise ValueError("Blueprint document must be a mapping at top level")
+        if data.get("parameters"):
+            # Local import to avoid a circular dependency with
+            # parameterized_blueprint.py (which imports EnvBlueprint).
+            from .parameterized_blueprint import ParameterizedEnvBlueprint
+
+            return ParameterizedEnvBlueprint.from_dict(data).materialize()
         return cls.from_dict(data)
 
     def save(self, path: str | Path) -> None:
@@ -369,6 +384,10 @@ class EnvBlueprint:
 
     @classmethod
     def load(cls, path: str | Path) -> "EnvBlueprint":
+        """Load a blueprint from disk (YAML or JSON).
+
+        See :meth:`from_yaml` for the parameterized-document handling.
+        """
         return cls.from_yaml(Path(path).read_text(encoding="utf-8"))
 
 
