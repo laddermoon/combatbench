@@ -1,12 +1,19 @@
 version: 1
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
 runtime:
   phy_steps_per_action: 25
-  max_steps: 600
+  max_steps: ${max_steps}
   strict: true
 simulator:
   cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
   config:
-    initial_distance: 2.0
+    initial_distance: ${initial_distance}
     debug_torque: false
     initial_pose_a: "standing"
     initial_pose_b: "standing"

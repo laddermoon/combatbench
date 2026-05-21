@@ -14,6 +14,7 @@ os.environ['MUJOCO_GL'] = 'egl'
 os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 import numpy as np
+import pytest
 import sys
 from pathlib import Path
 
@@ -21,6 +22,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from envs.humanoid21.simulator import MujocoCombatSimulator
+
+
+@pytest.fixture
+def sim():
+    """Shared MujocoCombatSimulator instance for data interface tests."""
+    simulator = MujocoCombatSimulator()
+    simulator.reset()
+    return simulator
 
 
 # ==================== 测试辅助函数 ====================
@@ -396,6 +405,7 @@ def test_normalization(sim):
 
         import mujoco
         mujoco.mj_forward(sim.model, sim.data)
+        sim._data_cache.clear()
 
         core = sim.get_core_state()
         joint_pos_norm = core[robot_id]['joint_pos_norm']
@@ -410,6 +420,7 @@ def test_normalization(sim):
             sim.data.qpos[idx] = joint_limits[i, 0]  # 下限
 
         mujoco.mj_forward(sim.model, sim.data)
+        sim._data_cache.clear()
 
         core = sim.get_core_state()
         joint_pos_norm = core[robot_id]['joint_pos_norm']
@@ -425,6 +436,7 @@ def test_normalization(sim):
             sim.data.qpos[idx] = mid
 
         mujoco.mj_forward(sim.model, sim.data)
+        sim._data_cache.clear()
 
         core = sim.get_core_state()
         joint_pos_norm = core[robot_id]['joint_pos_norm']
@@ -640,6 +652,7 @@ def test_facevector_scenarios(sim):
 
     import mujoco
     mujoco.mj_forward(sim.model, sim.data)
+    sim._data_cache.clear()
 
     derived = sim.get_derived_state()
 
@@ -802,6 +815,7 @@ def test_local_velocity_transform(sim):
 
     import mujoco
     mujoco.mj_forward(sim.model, sim.data)
+    sim._data_cache.clear()
 
     core = sim.get_core_state()
     root_vel_local = core['robot_a']['root_vel_local']
@@ -814,24 +828,25 @@ def test_local_velocity_transform(sim):
         f"朝向 +x 时局部速度应该等于全局速度"
     print(f"  ✓ 朝向 +x 时局部速度转换正确")
 
-    # 场景3: 旋转后设置速度
+    # 场景3: 旋转90度后设置速度
     print("\n--- 场景3: 旋转90度后设置速度 ---")
     sim.reset()
 
-    # 重新获取 cache（因为 reset 重置了状态）
     cache_a = sim._robot_cache['robot_a']
     root_qpos_adr_a = cache_a['root_qpos_adr']
-    root_qvel_adr_a = cache_a['root_qvel_adr']
 
-    # robot_a 旋转90度朝向 +y
-    angle = np.pi / 2
-    quat_z = np.array([np.cos(angle/2), 0, 0, np.sin(angle/2)], dtype=np.float32)
-    sim.data.qpos[root_qpos_adr_a+3:root_qpos_adr_a+7] = quat_z
+    # 将 robot_a 旋转90度（绕 z 轴），朝向 +y
+    # 四元数: cos(45°), 0, 0, sin(45°) = [0.7071, 0, 0, 0.7071]
+    sim.data.qpos[root_qpos_adr_a+3:root_qpos_adr_a+7] = [0.7071, 0, 0, 0.7071]
+    sim._data_cache.clear()  # Clear simulator data cache
 
     # 设置全局线速度为沿 x 轴 1 m/s
+    root_qvel_adr_a = cache_a['root_qvel_adr']
     sim.data.qvel[root_qvel_adr_a:root_qvel_adr_a+3] = [1.0, 0.0, 0.0]
+    sim._data_cache.clear()  # Clear simulator data cache
 
     mujoco.mj_forward(sim.model, sim.data)
+    sim._data_cache.clear()
 
     core = sim.get_core_state()
     root_vel_local = core['robot_a']['root_vel_local']

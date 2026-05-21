@@ -17,6 +17,7 @@ from .replay import (
 from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .blueprint import BLUEPRINT_VERSION, ClassSpec, EnvBlueprint
+from .parameterized_blueprint import Parameter, ParameterizedEnvBlueprint
 from .policy import Policy, call_policy, coerce_action
 from .episode_runner import AGENT_IDS, EpisodeRunner
 # TODO: parallel_runner / round_runner / match_runner still reference
@@ -51,6 +52,8 @@ __all__ = [
     "BLUEPRINT_VERSION",
     "ClassSpec",
     "EnvBlueprint",
+    "Parameter",
+    "ParameterizedEnvBlueprint",
     "EpisodeRunner",
     "Policy",
     "call_policy",
