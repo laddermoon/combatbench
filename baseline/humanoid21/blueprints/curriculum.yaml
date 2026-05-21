@@ -5,7 +5,9 @@ parameters:
   max_steps:
     default: 600
     description: "Max action steps."
-  agent_id: {}
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
 runtime:
   phy_steps_per_action: 25
   max_steps: ${max_steps}
