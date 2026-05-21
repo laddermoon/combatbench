@@ -40,7 +40,6 @@ def main() -> None:
     match_duration = 1.0
     runtime = build_humanoid21_runtime(
         match_duration=match_duration,
-        control_frequency=control_frequency,
     )
 
     # 1) Static sizing info — helpful for designing any actor network.
@@ -58,30 +57,30 @@ def main() -> None:
     print(f"  action_space        : {runtime.action_space}")
     print(f"  observation_space   : {runtime.observation_space}")
 
-    # 2) Reset and peek at observer outputs. The whole framework's convention
-    #    is: ``runtime.get_observer_output(name)`` returns whatever that
-    #    observer's ``get_output()`` decided to produce. For humanoid21 the
-    #    default ``robot_{a,b}_obs`` observers return a flat 96-D np.ndarray.
+    # 2) Reset and peek at observations. Use ``runtime.get_observation()``
+    #    which directly accesses the simulator's observation without going
+    #    through the observer plugin system.
     runtime.reset(seed=0)
-    obs_a = runtime.get_observer_output("robot_a_obs")
-    obs_b = runtime.get_observer_output("robot_b_obs")
+    obs_a, obs_b = runtime.get_observation()
 
     print("\n[After reset — observer outputs]")
     print(f"  robot_a_obs : ndarray{obs_a.shape} dtype={obs_a.dtype}")
     print(f"  robot_b_obs : ndarray{obs_b.shape} dtype={obs_b.dtype}")
 
-    # 3) Step once with zero action to see the runtime's shared info.
+    # 3) Step once with zero action to see the runtime's context.
     zero_action = np.zeros(21, dtype=np.float32)
     runtime.step(zero_action, zero_action)
-    info = runtime.get_shared_info()
 
-    print("\n[After one zero-action step — shared_info]")
-    # humanoid21's shared_info_builder publishes combat-relevant fields.
-    for key in ("health", "damage_taken", "winner", "termination_reasons"):
-        if key in info:
-            print(f"  {key:<22}: {info[key]}")
+    print("\n[After one zero-action step — context]")
+    # Access combat-relevant info through the context
+    ctx = runtime.ctx
+    print(f"  {'metrics':<22}: {list(ctx.metrics.keys()) if ctx.metrics else []}")
+    print(f"  {'termination_proposals':<22}: {ctx.termination_proposals}")
+    if "health_a" in ctx.metrics:
+        print(f"  {'health_a':<22}: {ctx.metrics['health_a']}")
+        print(f"  {'health_b':<22}: {ctx.metrics['health_b']}")
 
-    # 4) Dump a minimal, JSON-safe sample of observation + info so the user
+    # 4) Dump a minimal, JSON-safe sample of observation + context so the user
     #    can eyeball the structure without launching Python.
     sample = {
         "sizing": {
@@ -96,8 +95,9 @@ def main() -> None:
             "robot_a_obs": _summarize("robot_a_obs", obs_a),
             "robot_b_obs": _summarize("robot_b_obs", obs_b),
         },
-        "shared_info_after_one_step": {
-            k: info[k] for k in ("health", "damage_taken") if k in info
+        "context_after_one_step": {
+            "metrics_keys": list(runtime.ctx.metrics.keys()) if runtime.ctx.metrics else [],
+            "termination_proposals": runtime.ctx.termination_proposals,
         },
     }
 

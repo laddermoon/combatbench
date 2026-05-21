@@ -13,15 +13,52 @@
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 import numpy as np
 
 from _common import build_humanoid21_runtime
-from envs.framework import EpisodeRunner
-from envs.framework.episode_runner import AGENT_IDS, ObserverBinding
+from envs.framework import EpisodeRunner, PostActionRecorder
 from envs.framework.policy import Policy
 from policy.random.policy import RandomCombatPolicy
+
+
+@dataclass
+class EpisodeResult:
+    """Simple episode result container."""
+    trajectories: Dict[str, Any] = field(default_factory=dict)
+    shared_info_final: Dict[str, Any] = field(default_factory=dict)
+    num_steps: int = 0
+
+
+class SimpleRecorder(PostActionRecorder):
+    """Simple recorder to capture trajectory data."""
+    def __init__(self):
+        self.trajectories = {
+            "robot_a": {"actions": [], "rewards": []},
+            "robot_b": {"actions": [], "rewards": []},
+        }
+        self.num_steps = 0
+
+    def on_attach(self):
+        pass
+
+    def on_detach(self):
+        pass
+
+    def on_pre_episode(self, ctx):
+        self.trajectories = {
+            "robot_a": {"actions": [], "rewards": []},
+            "robot_b": {"actions": [], "rewards": []},
+        }
+        self.num_steps = 0
+
+    def on_post_action_step(self, ctx, observation, action, observer_outputs, action_extras):
+        for agent_id in ("robot_a", "robot_b"):
+            self.trajectories[agent_id]["actions"].append(action[agent_id])
+            self.trajectories[agent_id]["rewards"].append(0.0)  # No reward extraction for now
+        self.num_steps += 1
 
 
 class SinusoidPolicy(Policy):
@@ -61,24 +98,26 @@ class SinusoidPolicy(Policy):
         return action.astype(np.float32)
 
 
-def _run(seed: int):
+def _run(seed: int) -> EpisodeResult:
     """Run one episode with Sinusoid (A) vs Random (B), return the result."""
     runtime = build_humanoid21_runtime(match_duration=2.0)
-    # 这里不关心 reward extraction（场景是"动作是否确定"），所以
-    # 把 reward_name 置 None，runner 就会填 default_reward=0。
-    bindings = {
-        agent: ObserverBinding(obs_name=f"{agent}_obs", reward_name=None)
-        for agent in AGENT_IDS
-    }
+    recorder = SimpleRecorder()
+    runtime.attach_recorder(recorder)
+
     runner = EpisodeRunner(
         runtime=runtime,
         policies={
             "robot_a": SinusoidPolicy(frequency_hz=1.5, amplitude=0.5),
             "robot_b": RandomCombatPolicy(scale=0.2),
         },
-        observer_bindings=bindings,
     )
-    return runner.run_episode(seed=seed)
+    runner.run_episode(seed=seed)
+
+    return EpisodeResult(
+        trajectories=recorder.trajectories,
+        shared_info_final=dict(runtime.ctx.metrics),
+        num_steps=recorder.num_steps,
+    )
 
 
 def main() -> None:
@@ -90,8 +129,8 @@ def main() -> None:
     r1 = _run(seed=42)
     r2 = _run(seed=42)
 
-    actions_a_1 = np.stack(r1.trajectories["robot_a"].actions)
-    actions_a_2 = np.stack(r2.trajectories["robot_a"].actions)
+    actions_a_1 = np.stack(r1.trajectories["robot_a"]["actions"])
+    actions_a_2 = np.stack(r2.trajectories["robot_a"]["actions"])
     max_diff = float(np.abs(actions_a_1 - actions_a_2).max())
     print(f"\n[Determinism check] seed=42 run twice → max |action_a_1 - action_a_2| = {max_diff:.2e}")
     assert max_diff == 0.0, "Sinusoid policy is not deterministic under the same seed!"
@@ -99,21 +138,21 @@ def main() -> None:
 
     # --- (2) 一局对战摘要：累计 reward + 最终 HP ---
     result = _run(seed=7)
-    ep_reward_a = float(np.sum(result.trajectories["robot_a"].rewards))
-    ep_reward_b = float(np.sum(result.trajectories["robot_b"].rewards))
-    hp = result.shared_info_final.get("health", {})
-    winner = result.shared_info_final.get("winner", "N/A")
+    ep_reward_a = float(np.sum(result.trajectories["robot_a"]["rewards"]))
+    ep_reward_b = float(np.sum(result.trajectories["robot_b"]["rewards"]))
+    hp = {
+        "robot_a": result.shared_info_final.get("health_a", 0.0),
+        "robot_b": result.shared_info_final.get("health_b", 0.0),
+    }
 
     print("\n[Match summary] seed=7")
     print(f"  steps              : {result.num_steps}")
     print(f"  cumulative reward  : robot_a={ep_reward_a:+.4f}  robot_b={ep_reward_b:+.4f}")
     print(f"  final HP           : {hp}")
-    print(f"  winner             : {winner}")
-    print(f"  termination_reasons: {result.termination_reasons}")
 
     # --- (3) 简单的动作范数曲线，看两个策略的"激烈程度" ---
-    norms_a = np.linalg.norm(np.stack(result.trajectories["robot_a"].actions), axis=1)
-    norms_b = np.linalg.norm(np.stack(result.trajectories["robot_b"].actions), axis=1)
+    norms_a = np.linalg.norm(np.stack(result.trajectories["robot_a"]["actions"]), axis=1)
+    norms_b = np.linalg.norm(np.stack(result.trajectories["robot_b"]["actions"]), axis=1)
     print("\n[Action-norm trajectory] (每个策略每一步 action 的 L2 范数)")
     print(f"  robot_a sinusoid : mean={norms_a.mean():.3f}  max={norms_a.max():.3f}  std={norms_a.std():.3f}")
     print(f"  robot_b random   : mean={norms_b.mean():.3f}  max={norms_b.max():.3f}  std={norms_b.std():.3f}")

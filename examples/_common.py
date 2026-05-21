@@ -12,7 +12,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
+
+import numpy as np
+from gymnasium import spaces
 
 # Render MuJoCo off-screen so examples run on headless boxes (GPU server,
 # CI). Set BEFORE importing anything that pulls in MuJoCo.
@@ -25,11 +28,14 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from envs.framework import EnvRuntime  # noqa: E402
-from envs.humanoid21 import make_env  # noqa: E402
-from envs.humanoid21.plugins import CombatScoringPlugin  # noqa: E402
+from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint  # noqa: E402
 
 
 OUT_ROOT = Path(__file__).resolve().parent / "out"
+
+# Humanoid21 constants
+ACTION_DIM = 21
+OBS_DIM = 96
 
 
 def example_out_dir(name: str) -> Path:
@@ -42,48 +48,53 @@ def example_out_dir(name: str) -> Path:
 def build_humanoid21_runtime(
     *,
     match_duration: float = 5.0,
-    control_frequency: int = 20,
-    initial_health_a: float = 100.0,
-    initial_health_b: float = 100.0,
+    initial_distance: float = 2.0,
     extra_plugins: Optional[List[Any]] = None,
-    observer_plugins: Optional[Dict[str, Any]] = None,
 ) -> EnvRuntime:
-    """Build a combat-ready humanoid21 runtime.
+    """Build a combat-ready humanoid21 runtime using ParameterizedEnvBlueprint.
 
     Defaults to a **short 5-second match** so examples finish quickly; the
     evaluation example (06) overrides this to the full 30-second rule.
 
+    Note: control frequency is fixed at 20Hz (phy_steps_per_action=25) per
+    the combat rules. Do not change this value.
+
     Parameters
     ----------
     match_duration:
-        Episode duration in seconds. ``max_steps`` is derived via
-        ``match_duration * control_frequency``.
-    control_frequency:
-        Policy decision rate in Hz (rule: 20Hz).
-    initial_health_a, initial_health_b:
-        Starting HP. Required by :class:`CombatScoringPlugin` to compute
-        damage / winner / termination in the standard combat ruleset.
+        Episode duration in seconds. ``max_steps`` is derived as
+        ``match_duration * 20`` (20 = control frequency in Hz).
+    initial_distance:
+        Initial distance between the two robots in meters.
     extra_plugins:
-        Additional :class:`BasePlugin` instances to mount *after*
-        :class:`CombatScoringPlugin`. Use this to layer curriculum /
-        early-termination / observer plugins on top.
-    observer_plugins:
-        Extra observer plugins. Humanoid21's default ``robot_a_obs`` /
-        ``robot_b_obs`` are always included; anything you pass here is
-        merged on top.
-    """
-    plugins: List[Any] = [
-        CombatScoringPlugin(
-            initial_health_a=initial_health_a,
-            initial_health_b=initial_health_b,
-        ),
-    ]
-    if extra_plugins:
-        plugins.extend(extra_plugins)
+        Additional :class:`BasePlugin` instances to mount.
 
-    return make_env(
-        match_duration=match_duration,
-        control_frequency=control_frequency,
-        plugins=plugins,
-        observer_plugins=observer_plugins,
+    Returns
+    -------
+    EnvRuntime
+        A configured runtime ready for reset/step calls.
+    """
+    # Load the parameterized blueprint
+    blueprint_path = Path(__file__).parent.parent / "envs" / "humanoid21" / "blueprint.yaml"
+    pb = ParameterizedEnvBlueprint.load(blueprint_path)
+
+    # Calculate max_steps from match_duration (control frequency is fixed at 20Hz)
+    control_frequency = 20  # Fixed per combat rules
+    max_steps = int(match_duration * control_frequency)
+
+    # Build runtime with parameter overrides
+    runtime = pb.build(
+        max_steps=max_steps,
+        initial_distance=initial_distance,
+        debug_plugins=list(extra_plugins) if extra_plugins else [],
     )
+
+    # Attach action_space and observation_space for compatibility
+    runtime.action_space = spaces.Box(
+        low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32
+    )
+    runtime.observation_space = spaces.Box(
+        low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
+    )
+
+    return runtime
