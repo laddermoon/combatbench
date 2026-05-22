@@ -1024,21 +1024,38 @@ class MujocoCombatSimulator(BaseSimulator):
         
         return np.array([right_force, left_force], dtype=np.float32)
 
-    def set_action(self, action: Dict[str, Optional[np.ndarray]]) -> None:
+    def set_action(self, action: Dict[str, Optional[Any]]) -> None:
         """
         设置动作 (按 CONTROLSPEC.md)
 
         输入:
-            action: {'robot_a': ndarray(21,), 'robot_b': ndarray(21,)}
-            每个 action 的值域为 [-1, 1]
+            action: {'robot_a': <action>, 'robot_b': <action>}
+            <action> 支持以下类型:
+              - np.ndarray  (shape=(21,), dtype=float32)
+              - torch.Tensor (CPU / GPU 均可; 含 .detach().cpu().numpy())
+              - Python list / tuple (长度 21)
+              - None (跳过该机器人)
+            每个 action 的值域最终会被裁剪到 [-1, 1]
         """
         self._data_cache.pop('_action', None)
+
+        def _to_numpy(raw: Any) -> np.ndarray:
+            """将支持的多类型输入统一转为 np.ndarray(float32, shape=(ACTION_DIM,))."""
+            # 1) torch.Tensor: detach -> cpu -> numpy
+            if hasattr(raw, 'detach'):
+                raw = raw.detach().cpu().numpy()
+            # 2) 其他可迭代 / 数组: np.asarray
+            arr = np.asarray(raw, dtype=np.float32)
+            return arr
+
         for robot_id in ['robot_a', 'robot_b']:
             if robot_id in action and action[robot_id] is not None:
-                act = np.asarray(action[robot_id], dtype=np.float32)
+                act = _to_numpy(action[robot_id])
                 if act.shape != (self.ACTION_DIM,):
-                    raise ValueError(f"Action for {robot_id} must have shape ({self.ACTION_DIM},), got {act.shape}")
-                
+                    raise ValueError(
+                        f"Action for {robot_id} must have shape ({self.ACTION_DIM},), "
+                        f"got {act.shape}"
+                    )
                 # 裁剪到 [-1, 1]
                 act = np.clip(act, -1.0, 1.0)
                 self._target_pos_norm[robot_id] = act
