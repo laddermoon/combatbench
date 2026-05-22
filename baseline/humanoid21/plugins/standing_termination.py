@@ -63,7 +63,7 @@ from envs.framework import (
     SimContext,
     TerminationReason,
 )
-from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
+from envs.humanoid21 import MujocoCombatSimulator
 from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
 from envs.humanoid21.plugins import CombatScoringPlugin

@@ -25,10 +25,64 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 from torch import nn
 
+from envs.framework.policy import Policy
+
 DEFAULT_EXPORT_ACTOR_HIDDEN_DIM = 256
+
+
+class ExportedMLPPolicy(Policy):
+    """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
+
+    This is the *real* importable class used by
+    :class:`PolicyBlueprint` at rollout time.  A self-contained source
+    template with the same class name is produced by
+    :func:`build_export_policy_code` for deployment outside the repo.
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        stochastic: bool = False,
+        **_ignored: Any,
+    ):
+        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
+        payload = torch.load(payload_path, map_location="cpu")
+        hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
+
+        # Delayed import avoids a circular dependency with tanh_gaussian_mlp.py
+        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+
+        self._policy = TanhGaussianMLPPolicy(
+            obs_dim=int(payload["obs_dim"]),
+            action_dim=int(payload["action_dim"]),
+            hidden_dim=hidden_dim,
+            log_std_min=float(payload.get("log_std_min", -4.0)),
+            log_std_max=float(payload.get("log_std_max", 0.0)),
+        )
+        self._policy.load_state_dict(payload["state_dict"], strict=False)
+        self._policy.eval()
+        self.stochastic = bool(stochastic)
+
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            if self.stochastic:
+                action, _ = self._policy.sample_action(obs_tensor)
+            else:
+                action = self._policy.deterministic_action(obs_tensor)
+        return action.squeeze(0).cpu().numpy().astype(np.float32), None
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        return None
 
 
 def build_export_policy_code() -> str:

@@ -25,7 +25,7 @@ Layout (kept deliberately flat):
   * **Top-level factories** (picklable for ``RolloutCollector`` / the
     parallel rollout pool under ``spawn``):
       - :func:`make_standing_runtime`
-      - :func:`make_standing_adapter`
+      - :func:`make_standing_policy`
       - :func:`make_standing_options_fn`
       - :func:`set_seed`
 
@@ -54,7 +54,6 @@ from baseline.common.policies import (
     DEFAULT_LOG_STD_MAX,
     DEFAULT_LOG_STD_MIN,
     TanhGaussianMLPPolicy,
-    TorchPolicyAdapter,
 )
 from envs.framework import (
     BaseObserverPlugin,
@@ -64,7 +63,7 @@ from envs.framework import (
     SimContext,
     TerminationReason,
 )
-from envs.humanoid21 import Humanoid21Observer, MujocoCombatSimulator
+from envs.humanoid21 import MujocoCombatSimulator
 from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
 from envs.humanoid21.plugins import CombatScoringPlugin
@@ -286,8 +285,8 @@ class StandingConfig:
     """
 
     # Network shape — keep aligned with ``Humanoid21Observer``.
-    obs_dim: int = Humanoid21Observer.OBS_DIM
-    action_dim: int = Humanoid21Observer.ACTION_DIM
+    obs_dim: int = 96
+    action_dim: int = 21
     actor_hidden_dim: int = 256
     log_std_min: float = DEFAULT_LOG_STD_MIN
     log_std_max: float = DEFAULT_LOG_STD_MAX
@@ -336,8 +335,8 @@ class PerturbedBalanceConfig:
     """
 
     # Network shape.
-    obs_dim: int = Humanoid21Observer.OBS_DIM
-    action_dim: int = Humanoid21Observer.ACTION_DIM
+    obs_dim: int = 96
+    action_dim: int = 21
     actor_hidden_dim: int = 256
     critic_hidden_dim: int = 256
     log_std_min: float = DEFAULT_LOG_STD_MIN
@@ -390,8 +389,8 @@ class CurriculumConfig:
     """
 
     # Network shape.
-    obs_dim: int = Humanoid21Observer.OBS_DIM
-    action_dim: int = Humanoid21Observer.ACTION_DIM
+    obs_dim: int = 96
+    action_dim: int = 21
     actor_hidden_dim: int = 256
     critic_hidden_dim: int = 256
     log_std_min: float = DEFAULT_LOG_STD_MIN
@@ -680,8 +679,6 @@ def make_standing_runtime() -> EnvRuntime:
     runtime = EnvRuntime(
         simulator=simulator,
         observer_plugins={
-            "robot_a_obs": Humanoid21Observer("robot_a"),
-            "robot_b_obs": Humanoid21Observer("robot_b"),
             "robot_a_reward": StandingPostureDeltaRewarder("robot_a"),
             "robot_b_reward": StandingPostureDeltaRewarder("robot_b"),
         },
@@ -692,8 +689,6 @@ def make_standing_runtime() -> EnvRuntime:
         phy_steps_per_action=phy_steps_per_action,
         max_steps=MAX_STEPS,
     )
-    runtime.observation_space = Humanoid21Observer.get_observation_space()
-    runtime.action_space = Humanoid21Observer.get_action_space()
     return runtime
 
 
@@ -744,8 +739,6 @@ def make_perturbed_balance_runtime() -> EnvRuntime:
     runtime = EnvRuntime(
         simulator=simulator,
         observer_plugins={
-            "robot_a_obs": Humanoid21Observer("robot_a"),
-            "robot_b_obs": Humanoid21Observer("robot_b"),
             "robot_a_reward": BalanceValueRewarder("robot_a"),
             "robot_b_reward": BalanceValueRewarder("robot_b"),
         },
@@ -758,8 +751,6 @@ def make_perturbed_balance_runtime() -> EnvRuntime:
         phy_steps_per_action=phy_steps_per_action,
         max_steps=PERTURBED_MAX_STEPS,
     )
-    runtime.observation_space = Humanoid21Observer.get_observation_space()
-    runtime.action_space = Humanoid21Observer.get_action_space()
     return runtime
 
 
@@ -801,8 +792,6 @@ def make_curriculum_runtime_for(target_agent: str) -> EnvRuntime:
     runtime = EnvRuntime(
         simulator=simulator,
         observer_plugins={
-            "robot_a_obs": Humanoid21Observer("robot_a"),
-            "robot_b_obs": Humanoid21Observer("robot_b"),
             "robot_a_reward": MultiSignalRewardObserver("robot_a"),
             "robot_b_reward": MultiSignalRewardObserver("robot_b"),
         },
@@ -817,13 +806,11 @@ def make_curriculum_runtime_for(target_agent: str) -> EnvRuntime:
         phy_steps_per_action=phy_steps_per_action,
         max_steps=CURRICULUM_MAX_STEPS,
     )
-    runtime.observation_space = Humanoid21Observer.get_observation_space()
-    runtime.action_space = Humanoid21Observer.get_action_space()
     return runtime
 
 
-def make_standing_adapter() -> TorchPolicyAdapter:
-    """Picklable factory for the *worker-side* shared-architecture adapter.
+def make_standing_policy() -> TanhGaussianMLPPolicy:
+    """Picklable factory for the *worker-side* shared-architecture policy.
 
     Each worker gets its own :class:`TanhGaussianMLPPolicy` with the
     standing-task default shape; the trainer's main-process actor is
@@ -834,14 +821,15 @@ def make_standing_adapter() -> TorchPolicyAdapter:
     actions; eval flips it on via ``deterministic=True`` on the
     collector / evaluator side.
     """
-    actor = TanhGaussianMLPPolicy(
-        obs_dim=Humanoid21Observer.OBS_DIM,
-        action_dim=Humanoid21Observer.ACTION_DIM,
+    return TanhGaussianMLPPolicy(
+        obs_dim=96,
+        action_dim=21,
         hidden_dim=256,
         log_std_min=DEFAULT_LOG_STD_MIN,
         log_std_max=DEFAULT_LOG_STD_MAX,
+        device="cpu",
+        deterministic=False,
     )
-    return TorchPolicyAdapter(actor=actor, device="cpu", deterministic=False)
 
 
 def make_standing_options_fn(
@@ -946,7 +934,7 @@ __all__ = [
     "make_standing_runtime",
     "make_perturbed_balance_runtime",
     "make_curriculum_runtime_for",
-    "make_standing_adapter",
+    "make_standing_policy",
     "make_standing_options_fn",
     "set_seed",
 ]

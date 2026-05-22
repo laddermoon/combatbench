@@ -176,7 +176,7 @@ class ParallelRollouter:
                 int(seed),
                 dict(options) if options is not None else None,
             )
-            for policy_a_bp, policy_b_bp, env_bp, seed, *rest in jobs
+            for policy_a_bp, policy_b_bp, env_bp, seed, options in jobs
         ]
 
         if self._num_workers <= 1:
