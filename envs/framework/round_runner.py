@@ -55,7 +55,8 @@ class RoundRunner:
         )
         self._runner = EpisodeRunner(
             runtime=self._runtime,
-            policies={"robot_a": policy_a, "robot_b": policy_b},
+            policy_a=policy_a,
+            policy_b=policy_b,
         )
 
     @property
@@ -67,13 +68,18 @@ class RoundRunner:
         self,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
+        want_extras: bool = False,
     ) -> Dict[str, Any]:
         """Run one round and return a minimal result dict.
 
         ``options`` is forwarded to :meth:`EnvRuntime.reset` and visible to
         plugins / observers via ``ctx.episode_options``.
+
+        ``want_extras`` controls whether each ``policy.act`` is called
+        with ``want_extra=True``. Default is ``False``; set to ``True``
+        when you need the policy's side-channel payload.
         """
-        self._runner.run_episode(seed=seed, options=options)
+        self._runner.run_episode(seed=seed, options=options, want_extras=want_extras)
         ctx = self._runtime.ctx
         return {
             "steps": int(ctx.episode_step),
@@ -182,6 +188,10 @@ def _main() -> None:
         "--seed", type=int, default=None,
         help="Episode seed (default: random).",
     )
+    parser.add_argument(
+        "--want-extras", action="store_true",
+        help="Request side-channel payloads from policies (log-prob / value estimates, etc.).",
+    )
     args = parser.parse_args()
 
     blueprint = EnvBlueprint.load(args.blueprint)
@@ -202,7 +212,7 @@ def _main() -> None:
         video_plugin=video_plugin,
         recorders=recorders,
     ) as runner:
-        result = runner.run(seed=args.seed)
+        result = runner.run(seed=args.seed, want_extras=args.want_extras)
 
     print(json.dumps(result, indent=2))
 
