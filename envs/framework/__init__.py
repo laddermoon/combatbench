@@ -18,14 +18,8 @@ from .env_runtime import EnvRuntime
 from .common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from .blueprint import BLUEPRINT_VERSION, ClassSpec, EnvBlueprint
 from .parameterized_blueprint import Parameter, ParameterizedEnvBlueprint
-from .policy import Policy, call_policy, coerce_action
+from .policy import Policy, PolicyBlueprint, ParameterizedPolicyBlueprint
 from .episode_runner import AGENT_IDS, EpisodeRunner
-# TODO: parallel_runner / round_runner / match_runner still reference
-# legacy symbols (EpisodeResult, RolloutConfig, AgentTrajectory, StepContext,
-# default_bindings, default_reward_extractor, _derive_batch_seeds) that were
-# removed in the EpisodeRunner refactor. They are not re-exported here so
-# that ``import combatbench.envs.framework`` keeps working; they will be
-# brought back to life when those modules are migrated.
 
 __all__ = [
     "BaseSimulator",
@@ -56,7 +50,7 @@ __all__ = [
     "ParameterizedEnvBlueprint",
     "EpisodeRunner",
     "Policy",
-    "call_policy",
-    "coerce_action",
+    "PolicyBlueprint",
+    "ParameterizedPolicyBlueprint",
     "AGENT_IDS",
 ]
