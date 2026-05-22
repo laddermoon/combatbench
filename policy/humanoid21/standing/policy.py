@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import torch
@@ -62,12 +62,16 @@ class StandingCombatPolicy(Policy):
             raise RuntimeError(f"Unexpected keys in exported standing policy: {incompatible.unexpected_keys}")
         self.actor.eval()
 
-    def act(self, observation: Any) -> np.ndarray:
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action = self.actor(obs_tensor)
-        return action.squeeze(0).cpu().numpy().astype(np.float32)
+        return action.squeeze(0).cpu().numpy().astype(np.float32), None
 
     def reset(self, seed: Optional[int] = None) -> None:
         # Stateless deterministic policy; ignore the seed.

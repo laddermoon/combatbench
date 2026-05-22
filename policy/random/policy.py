@@ -6,7 +6,7 @@ internal RNG so rollouts are reproducible from the runner's ``base_seed``.
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -30,8 +30,13 @@ class RandomCombatPolicy(Policy):
         self._init_seed = seed
         self.rng = np.random.default_rng(seed)
 
-    def act(self, observation: Any) -> np.ndarray:
-        return self.rng.uniform(-self.scale, self.scale, self.action_dim).astype(np.float32)
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
+        action = self.rng.uniform(-self.scale, self.scale, self.action_dim).astype(np.float32)
+        return action, None
 
     def reset(self, seed: Optional[int] = None) -> None:
         """Reseed the internal RNG.
