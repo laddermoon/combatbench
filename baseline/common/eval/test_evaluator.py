@@ -26,7 +26,7 @@ from baseline.common.eval import (
     bootstrap_ci,
     head_to_head_winrate,
 )
-from baseline.common.policies import TanhGaussianMLPPolicy, TorchPolicyAdapter
+from baseline.common.policies import TanhGaussianMLPPolicy
 from baseline.common.rollout import RolloutBatch
 
 
@@ -142,10 +142,11 @@ def _make_runtime(max_steps: int = 4) -> EnvRuntime:
     )
 
 
-def _make_adapter() -> TorchPolicyAdapter:
+def _make_policy() -> TanhGaussianMLPPolicy:
     torch.manual_seed(0)
-    actor = TanhGaussianMLPPolicy(obs_dim=OBS_DIM, action_dim=ACTION_DIM, hidden_dim=8)
-    return TorchPolicyAdapter(actor=actor, deterministic=True)
+    return TanhGaussianMLPPolicy(
+        obs_dim=OBS_DIM, action_dim=ACTION_DIM, hidden_dim=8, device="cpu", deterministic=True
+    )
 
 
 class TestEvaluator:
@@ -154,8 +155,8 @@ class TestEvaluator:
         evaluator = PolicyEvaluator(
             runtime_factory=lambda: _make_runtime(max_steps=4),
             policy_factories={
-                "robot_a": _make_adapter,
-                "robot_b": _make_adapter,
+                "robot_a": _make_policy,
+                "robot_b": _make_policy,
             },
         )
         try:
@@ -175,8 +176,8 @@ class TestEvaluator:
         evaluator = PolicyEvaluator(
             runtime_factory=lambda: _make_runtime(max_steps=3),
             policy_factories={
-                "robot_a": _make_adapter,
-                "robot_b": _make_adapter,
+                "robot_a": _make_policy,
+                "robot_b": _make_policy,
             },
         )
         try:
@@ -203,8 +204,8 @@ class TestEvaluator:
         evaluator = PolicyEvaluator(
             runtime_factory=lambda: _make_runtime(max_steps=2),
             policy_factories={
-                "robot_a": _make_adapter,
-                "robot_b": _make_adapter,
+                "robot_a": _make_policy,
+                "robot_b": _make_policy,
             },
         )
         try:
@@ -222,8 +223,8 @@ class TestEvaluator:
         evaluator = PolicyEvaluator(
             runtime_factory=lambda: _make_runtime(max_steps=2),
             policy_factories={
-                "robot_a": _make_adapter,
-                "robot_b": _make_adapter,
+                "robot_a": _make_policy,
+                "robot_b": _make_policy,
             },
             capture_agents=("robot_a",),
         )
