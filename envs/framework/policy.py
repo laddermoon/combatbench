@@ -139,6 +139,37 @@ class Policy(ABC):
         """
         return None
 
+    def to_blueprint(self, dest_path: Optional[str] = None) -> "PolicyBlueprint":
+        """Export this policy instance to a deployable :class:`PolicyBlueprint`.
+
+        Optional hook. Policies that support self-export (e.g. those with
+        bundled weights) should override this to write their source /
+        checkpoint assets into ``dest_path`` and return a
+        :class:`PolicyBlueprint` that can rebuild a functionally equivalent
+        policy via :meth:`PolicyBlueprint.build`.
+
+        Parameters
+        ----------
+        dest_path:
+            Directory to save source code and model weights into. When
+            ``None`` a temporary directory is created automatically.
+
+        Returns
+        -------
+        PolicyBlueprint
+            A blueprint that points to the exported assets and carries the
+            correct constructor kwargs.
+
+        Raises
+        ------
+        NotImplementedError
+            Default implementation — the policy does not support
+            blueprint export.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement to_blueprint()."
+        )
+
 
 # ---------------------------------------------------------------------------
 # PolicyBlueprint
