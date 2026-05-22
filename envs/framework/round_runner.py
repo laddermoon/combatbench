@@ -21,6 +21,7 @@ import numpy as np
 from .blueprint import EnvBlueprint
 from .common_plugins import VideoRecorderPlugin
 from .episode_runner import EpisodeRunner
+from .policy import PolicyBlueprint
 from .recorder import PostActionRecorder
 
 
@@ -161,16 +162,19 @@ def _main() -> None:
         description="Run a combat round from an EnvBlueprint.",
     )
     parser.add_argument(
-        "--blueprint", type=str, required=True,
-        help="Path to the blueprint JSON or YAML file.",
+        "--env-blueprint", type=str, required=True,
+        dest="blueprint",
+        help="Path to the environment blueprint JSON or YAML file.",
     )
     parser.add_argument(
-        "--policy-a", type=str, required=True,
-        help="Policy A spec: module.path:ClassName?key=value",
+        "--policy-a-blueprint", type=str, required=True,
+        dest="policy_a",
+        help="Path to the policy A blueprint JSON or YAML file.",
     )
     parser.add_argument(
-        "--policy-b", type=str, required=True,
-        help="Policy B spec: module.path:ClassName?key=value",
+        "--policy-b-blueprint", type=str, required=True,
+        dest="policy_b",
+        help="Path to the policy B blueprint JSON or YAML file.",
     )
     parser.add_argument(
         "--video", type=str, default=None,
@@ -196,8 +200,8 @@ def _main() -> None:
 
     blueprint = EnvBlueprint.load(args.blueprint)
 
-    policy_a = _load_from_spec(args.policy_a)
-    policy_b = _load_from_spec(args.policy_b)
+    policy_a = PolicyBlueprint.load(args.policy_a).build()
+    policy_b = PolicyBlueprint.load(args.policy_b).build()
 
     video_plugin = None
     if args.video:
