@@ -130,7 +130,7 @@ humanoid21/
 ├── simulator.py          # MuJoCo 仿真器
 ├── plugins.py            # 战斗插件（CombatScoringPlugin 等）
 ├── observer_plugins.py   # 观测插件（CombatScoringObserver 等）
-├── rule_blueprint.yaml   # 标准比赛规则蓝图
+├── blueprint.yaml        # 标准比赛规则蓝图
 └── tests/                # 测试
 ```
 

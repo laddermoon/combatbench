@@ -5,49 +5,71 @@ This module is the **single source of truth** for what counts as a
 :class:`RoundRunner`, or :class:`ParallelRunner` must subclass
 :class:`Policy` defined here.
 
-Design note
------------
-An earlier iteration split the contract across a :mod:`typing.Protocol`
-(structural duck-typed interface) *and* a separate combat-specific ABC
-(:class:`BaseCombatPolicy`) living under ``policy/``. That split added
-maintenance cost (two docstrings to keep in sync, subtle drift bugs) for
-a flexibility the codebase did not actually exercise — every real policy
-inherited the ABC anyway. The current design collapses both into this
-single nominal ABC: simpler to reason about, easier to ``issubclass``
-against in :func:`combatbench.policy.load_policy`, and a narrower
-contract surface.
-
 Contract
 --------
 Required:
-    ``act(observation) -> action``
-        Synchronous. ``observation`` is whatever the bound observer
-        plugin's ``get_output()`` returned; ``action`` must be coercible
-        to ``np.ndarray(dtype=float32)``. Returning ``None`` is NOT
-        allowed — return an explicit action.
+    ``act(observation, want_extra: bool = False) -> (action, extra)``
+        Synchronous. Always returns a 2-tuple ``(action, extra)``. When
+        ``want_extra`` is False the policy may return ``extra=None`` and
+        skip any work needed only for that payload. Returning ``None``
+        for ``action`` is NOT allowed — return an explicit action.
 
 Optional (runners detect via ``hasattr``):
     ``reset(seed: Optional[int] = None) -> None``
         Called once per episode before the first ``act``. ``seed`` is a
         deterministic per-policy child seed derived from the runner's
-        ``base_seed`` via :class:`numpy.random.SeedSequence` so policies
-        with their own RNGs can stay reproducible. Default: no-op.
-    ``act_with_extras(observation) -> (action, extras: dict)``
-        Used when :attr:`RolloutConfig.store_extras` is True — lets
-        on-policy RL persist log-probs / value estimates per step.
+        ``base_seed`` via :class:`numpy.random.SeedSequence`. Policies
+        that hold their own RNGs SHOULD use it for reproducibility, but
+        the framework does not enforce this — see "Determinism" below.
+        Default: no-op.
     ``close() -> None``
         Release resources. Runners never call this automatically; caller
         owns policy lifecycle. :meth:`EpisodeRunner.close` invokes it as
         a convenience.
 
+Observation / action / extra types
+----------------------------------
+The framework places **no constraints** on the Python types flowing in
+and out of :meth:`Policy.act`:
+
+* ``observation`` is whatever the bound observer plugin's
+  ``get_output()`` returned — a dict, a numpy array, a custom
+  dataclass, anything. The policy and the observer agree on the schema;
+  the runner is just a pipe.
+* ``action`` is whatever the simulator's ``BaseSimulator.step`` accepts
+  for that agent. Some sims want ``np.ndarray(float32)`` joint torques,
+  others want dicts of high-level commands. Match the sim; the
+  framework does not coerce.
+* ``extra`` is fully policy-defined. Typical contents include log-prob
+  / value estimates for on-policy RL, attention maps for debugging, or
+  raw policy-network outputs. May be ``None`` when ``want_extra`` is
+  False or when the policy has nothing to report.
+
+Determinism vs. stochasticity
+-----------------------------
+Whether a policy is deterministic or stochastic — and, if stochastic,
+how it is seeded — is **the policy's own responsibility**, managed
+inside ``__init__`` (and optionally re-seeded inside :meth:`reset`).
+The framework does not introspect or alter this. Concretely:
+
+* A deterministic policy ignores ``reset(seed=...)`` (or accepts it and
+  no-ops). Same observation in -> same action out.
+* A stochastic policy owns its RNG (``np.random.Generator``, a torch
+  ``Generator``, etc.), constructs it in ``__init__``, and re-seeds in
+  :meth:`reset` when the runner-provided ``seed`` is not ``None``.
+* Hybrid policies (e.g. exploration noise toggled by an ``eval`` flag)
+  expose that toggle via constructor args — there is no framework-level
+  ``eval()`` switch.
+
 No ``__init__`` contract
 ------------------------
 This ABC intentionally does **not** define ``__init__``. Subclasses are
 free to design their constructors however they want (load checkpoints,
-take hyperparameters, wire spaces — whatever). The :func:`load_policy`
-loader just calls ``cls(**kwargs)`` with parsed query-string arguments;
-subclasses that want to participate should accept ``**kwargs`` so
-unknown parameters don't crash construction.
+take hyperparameters, wire RNGs, decide deterministic-vs-stochastic
+behaviour — whatever). The :func:`load_policy` loader just calls
+``cls(**kwargs)`` with parsed query-string arguments; subclasses that
+want to participate should accept ``**kwargs`` so unknown parameters
+don't crash construction.
 """
 from __future__ import annotations
 
@@ -57,108 +79,52 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 
-__all__ = ["Policy", "coerce_action", "call_policy"]
+__all__ = ["Policy"]
 
 
 class Policy(ABC):
     """Abstract base class for all combatbench policies. See module docstring."""
 
     @abstractmethod
-    def act(self, observation: Any) -> np.ndarray:
+    def act(self, observation: Any, want_extra: bool = False) -> Tuple[Any, Any | None]:
         """Compute an action for the given observation.
 
         Parameters
         ----------
         observation:
-            Whatever the bound observer plugin's ``get_output()`` returned.
-            Usually a 1D float32 feature vector; policies needing richer
-            inputs should declare a custom observer plugin and bind it via
-            :class:`ObserverBinding`.
+            Whatever the simulator's ``get_observation()``
+            returned. The framework imposes no type constraint; the
+            policy and the observer agree on the schema.
+        want_extra:
+            If True the runner wants the optional ``extra`` payload
+            (e.g. log-prob / value estimates for on-policy RL). When
+            False the policy may return ``extra=None`` and skip any
+            work needed only for that payload.
 
         Returns
         -------
         action:
-            Array-like coercible to ``np.ndarray(dtype=float32)`` matching
-            the environment's expected action dimension. Returning ``None``
-            is NOT allowed.
+            Whatever the simulator's ``step`` accepts for this agent.
+            Type/shape are simulator-defined; the framework does not
+            coerce. Must not be ``None``.
+        extra:
+            Policy-defined auxiliary payload, or ``None``. Common
+            choices: a dict of log-prob / value / entropy tensors for
+            on-policy RL trainers.
+
+        Stochasticity is the policy's responsibility — see the module
+        docstring's "Determinism vs. stochasticity" section.
         """
         raise NotImplementedError
 
     def reset(self, seed: Optional[int] = None) -> None:
         """Per-episode reset hook. Default: no-op.
 
-        Override when the policy holds RNG or recurrent state. ``seed`` is
-        a deterministic per-policy child seed; use it to reseed stochastic
-        components so rollouts are reproducible from the runner's
-        ``base_seed``.
+        Override when the policy holds RNG or recurrent state. ``seed``
+        is a deterministic per-policy child seed derived from the
+        runner's ``base_seed``; stochastic policies SHOULD reseed their
+        internal RNG with it so rollouts stay reproducible. Determini-
+        stic policies can ignore it. The framework neither inspects nor
+        enforces what the policy does with this value.
         """
         return None
-
-
-# ---------------------------------------------------------------------------
-# Helpers used by runners to invoke policies according to the contract.
-# ---------------------------------------------------------------------------
-def coerce_action(action: Any) -> np.ndarray:
-    """Normalize a policy's action to a ``float32`` ndarray.
-
-    Accepted inputs:
-      * :class:`numpy.ndarray` — returned as ``float32`` without copy
-        when it's already ``float32``.
-      * Anything ``np.asarray`` can convert (Python lists, tuples, torch
-        tensors via ``__array__``, etc.).
-
-    Raises
-    ------
-    TypeError
-        If ``action`` is ``None`` — disallowed at the contract layer to
-        avoid the "hold previous action" ambiguity. Policies that want a
-        stand-still / passthrough behaviour must implement it explicitly.
-    """
-    if action is None:
-        raise TypeError(
-            "Policy.act returned None. Returning None is not part of the "
-            "Policy contract; return an explicit np.ndarray action."
-        )
-    if isinstance(action, np.ndarray):
-        return action.astype(np.float32, copy=False)
-    return np.asarray(action, dtype=np.float32)
-
-
-def call_policy(
-    policy: Policy,
-    observation: Any,
-    *,
-    want_extras: bool,
-) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Invoke ``policy`` and return ``(action_ndarray, extras_dict)``.
-
-    When ``want_extras`` is ``True`` and the policy implements
-    :meth:`Policy.act_with_extras`, that method is used so on-policy RL
-    can persist log-probs / values per step. Otherwise the plain ``act``
-    path is taken and ``extras`` is an empty dict.
-
-    Raises
-    ------
-    TypeError
-        If ``act_with_extras`` returns something that isn't a
-        ``(action, dict)`` 2-tuple. Programmer error in the policy
-        implementation — surfaced loudly rather than papered over.
-    """
-    action: Any
-    extras: Dict[str, Any] = {}
-    if want_extras and hasattr(policy, "act_with_extras"):
-        result = policy.act_with_extras(observation)  # type: ignore[attr-defined]
-        if not (isinstance(result, tuple) and len(result) == 2):
-            raise TypeError(
-                f"Policy.act_with_extras must return (action, extras_dict); "
-                f"got {type(result).__name__}"
-            )
-        action, extras = result
-        if not isinstance(extras, dict):
-            raise TypeError(
-                f"Policy.act_with_extras extras must be a dict; "
-                f"got {type(extras).__name__}"
-            )
-    else:
-        action = policy.act(observation)
-    return coerce_action(action), extras
