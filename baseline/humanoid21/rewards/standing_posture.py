@@ -31,7 +31,6 @@ from baseline.common.policies import (
     DEFAULT_LOG_STD_MAX,
     DEFAULT_LOG_STD_MIN,
     TanhGaussianMLPPolicy,
-    TorchPolicyAdapter,
 )
 from envs.framework import (
     BaseObserverPlugin,

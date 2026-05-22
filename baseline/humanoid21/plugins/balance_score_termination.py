@@ -25,7 +25,7 @@ Layout (kept deliberately flat):
   * **Top-level factories** (picklable for ``RolloutCollector`` / the
     parallel rollout pool under ``spawn``):
       - :func:`make_standing_runtime`
-      - :func:`make_standing_adapter`
+      - :func:`make_standing_policy`
       - :func:`make_standing_options_fn`
       - :func:`set_seed`
 
@@ -54,7 +54,6 @@ from baseline.common.policies import (
     DEFAULT_LOG_STD_MAX,
     DEFAULT_LOG_STD_MIN,
     TanhGaussianMLPPolicy,
-    TorchPolicyAdapter,
 )
 from envs.framework import (
     BaseObserverPlugin,
