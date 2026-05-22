@@ -7,12 +7,15 @@ that imported it from here (pre-PR1). New code should import directly from
 """
 from __future__ import annotations
 
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 from torch import nn
 from torch.distributions import Normal
+
+from envs.framework.policy import Policy, PolicyBlueprint
 
 from .checkpoint import (
     DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
@@ -37,8 +40,15 @@ __all__ = [
 ]
 
 
-class TanhGaussianMLPPolicy(nn.Module):
-    """Generic continuous-control policy backbone for Box-like actions."""
+class TanhGaussianMLPPolicy(nn.Module, Policy):
+    """Generic continuous-control policy backbone for Box-like actions.
+
+    Implements the framework :class:`envs.framework.policy.Policy` ABC
+    directly so no adapter is required. The ``device`` and ``deterministic``
+    flags control inference behaviour; ``to_blueprint`` exports a
+    deployable :class:`PolicyBlueprint` pointing to
+    :class:`ExportedMLPPolicy`.
+    """
 
     def __init__(
         self,
@@ -47,6 +57,8 @@ class TanhGaussianMLPPolicy(nn.Module):
         hidden_dim: int,
         log_std_min: float = DEFAULT_LOG_STD_MIN,
         log_std_max: float = DEFAULT_LOG_STD_MAX,
+        device: torch.device | str = "cpu",
+        deterministic: bool = False,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -54,6 +66,8 @@ class TanhGaussianMLPPolicy(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.log_std_min = float(log_std_min)
         self.log_std_max = float(log_std_max)
+        self.device = torch.device(device)
+        self._deterministic = bool(deterministic)
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.Tanh(),
@@ -91,6 +105,58 @@ class TanhGaussianMLPPolicy(nn.Module):
         entropy = dist.entropy().sum(dim=-1)
         return log_prob.sum(dim=-1), entropy
 
+    # ------------------------------------------------------------------
+    # Policy contract
+    # ------------------------------------------------------------------
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
+        """Single-step inference.
+
+        Returns ``(action, None)`` when ``want_extra=False``.
+        When ``want_extra=True`` and the policy is stochastic, the
+        returned dict contains ``log_prob``.
+        """
+        action_np, log_prob = self.act_numpy(
+            observation, device=self.device, deterministic=self._deterministic
+        )
+        if not want_extra or log_prob is None:
+            return action_np, None
+        return action_np, {"log_prob": float(log_prob)}
+
+    def set_deterministic(self, deterministic: bool) -> None:
+        """Toggle stochastic vs deterministic action sampling."""
+        self._deterministic = bool(deterministic)
+
+    def to_blueprint(self, dest_path: Optional[str] = None) -> "PolicyBlueprint":
+        """Export this policy to a deployable :class:`PolicyBlueprint`.
+
+        Writes ``model.pt`` (mean-network weights + metadata) into
+        ``dest_path`` and returns a blueprint that rebuilds the policy
+        via :class:`baseline.common.policies.checkpoint.ExportedMLPPolicy`.
+        When ``dest_path`` is ``None`` a temporary directory is used.
+        """
+        import tempfile
+
+        if dest_path is None:
+            dest_path = tempfile.mkdtemp(prefix="policy_export_")
+        policy_dir = Path(dest_path)
+        policy_dir.mkdir(parents=True, exist_ok=True)
+
+        payload = build_actor_export_payload(actor=self)
+        model_path = policy_dir / "model.pt"
+        torch.save(payload, model_path)
+
+        return PolicyBlueprint(
+            cls="baseline.common.policies.checkpoint:ExportedMLPPolicy",
+            config={"model_path": str(model_path.resolve())},
+        )
+
+    # ------------------------------------------------------------------
+    # Numpy-flavoured inference (kept for backward compat with trainers)
+    # ------------------------------------------------------------------
     def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool) -> tuple[np.ndarray, Optional[float]]:
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
