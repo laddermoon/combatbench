@@ -14,10 +14,11 @@ multi-agent framework.
 
 Responsibilities
 ----------------
-1. Hold a live :class:`EnvRuntime` plus two :class:`Policy`-protocol objects.
-2. On each step: pull each agent's observation from a fixed-name observer
-   plugin (``robot_a_obs`` / ``robot_b_obs``), call ``policy.act(obs)``,
-   forward both actions to ``runtime.step``.
+1. Hold a live :class:`EnvRuntime` plus two :class:`Policy` instances.
+2. On each step: pull each agent's observation via
+   ``runtime.get_observation()`` (which delegates to the simulator),
+   call ``policy.act(obs, want_extra=True)``, and forward both
+   actions to ``runtime.step``.
 3. Manage seeds deterministically via :class:`numpy.random.SeedSequence`:
    one ``base_seed`` → one reproducible episode (``None`` is resolved at
    entry to a concrete ``uint32`` so every episode is loggable / replayable;
@@ -47,16 +48,18 @@ Non-responsibilities
   not provided here — outer loops (training updates, eval sweeps, dataset
   collection) own batch semantics and can call :meth:`run_episode` in a loop.
 
-Observer name convention
-------------------------
-Each agent's observation is read from a runtime observer plugin whose name
-follows the framework convention ``"<agent_id>_obs"`` —
-``runtime.observer_plugins["robot_a_obs"]`` and
-``runtime.observer_plugins["robot_b_obs"]``. Both must be registered before
-:meth:`run_episode` is called (the runner validates this lazily on first
-use). This is the only contract between :class:`EpisodeRunner` and the
-observer system; everything else (rewards, metrics, debug probes) is the
-recorder's / consumer's business.
+Observation contract
+--------------------
+The runner reads per-agent observations via ``runtime.get_observation()``,
+which delegates to the simulator's ``get_observation()`` method. The exact
+Python type of each observation is simulator-defined; the runner does not
+inspect or coerce it. This is the only contract between
+:class:`EpisodeRunner` and the observation system.
+
+Observer plugins (rewarders, recorders, debug probes) are still registered
+on the runtime, but the runner itself never reads them — it only forwards
+the policy's action and optional ``extra`` payload to ``runtime.step`` so
+that attached recorders can snapshot whatever they need.
 
 Example
 -------
@@ -78,7 +81,8 @@ Example
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policies={"robot_a": policy_a, "robot_b": policy_b},
+        policy_a=policy_a,
+        policy_b=policy_b,
     )
     runner.run_episode(seed=42)
     # Inspect recorder state for results.
@@ -88,13 +92,13 @@ from __future__ import annotations
 import logging
 import secrets
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 from .env_runtime import EnvRuntime
 from .plugin import BasePlugin
-from .policy import Policy, call_policy
+from .policy import Policy
 
 _logger = logging.getLogger(__name__)
 
@@ -153,29 +157,22 @@ class EpisodeRunner:
     def __init__(
         self,
         runtime: EnvRuntime,
-        policies: Mapping[str, Policy],
+        policy_a: Policy,
+        policy_b: Policy,
     ) -> None:
         self.runtime = runtime
-        self._validate_policies(policies)
-        self.policies: Dict[str, Policy] = dict(policies)
-
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-    def _validate_policies(self, policies: Mapping[str, Policy]) -> None:
-        missing = set(self.AGENT_IDS) - set(policies)
-        extra = set(policies) - set(self.AGENT_IDS)
-        if missing or extra:
-            raise ValueError(
-                f"EpisodeRunner.policies must have exactly keys {self.AGENT_IDS}; "
-                f"missing={sorted(missing)} extra={sorted(extra)}"
+        if not isinstance(policy_a, Policy):
+            raise TypeError(
+                f"policy_a must subclass envs.framework.policy.Policy; "
+                f"got {type(policy_a).__name__}"
             )
-        for agent, policy in policies.items():
-            if not isinstance(policy, Policy):
-                raise TypeError(
-                    f"Policy for {agent!r} must subclass "
-                    f"envs.framework.policy.Policy; got {type(policy).__name__}"
-                )
+        if not isinstance(policy_b, Policy):
+            raise TypeError(
+                f"policy_b must subclass envs.framework.policy.Policy; "
+                f"got {type(policy_b).__name__}"
+            )
+        self.policy_a = policy_a
+        self.policy_b = policy_b
 
     # ------------------------------------------------------------------
     # Public API
@@ -184,6 +181,7 @@ class EpisodeRunner:
         self,
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
+        want_extras: bool = False,
     ) -> None:
         """Run a single episode end-to-end. Returns ``None``.
 
@@ -201,6 +199,11 @@ class EpisodeRunner:
         on ``ctx.episode_options`` for plugins / observers / recorders to
         read per-episode parameters (HP carry-over, curriculum knobs,
         opponent snapshot id, …). See ``framework/RESET.md`` §4.
+
+        ``want_extras`` controls whether each ``policy.act`` is called
+        with ``want_extra=True``. Default is ``False``; set to ``True``
+        when you need the policy's side-channel payload (log-prob /
+        value estimates for on-policy RL, etc.).
         """
         base_seed = _resolve_seed(seed)
         episode_seeds = self._derive_seeds(base_seed)
@@ -211,33 +214,30 @@ class EpisodeRunner:
         # NOT store it — the runner has no trajectory buffer; recorders
         # snapshot whatever they need on their own ``on_pre_episode`` hook.
         obs_a, obs_b = self.runtime.get_observation()
-        last_obs = {"robot_a": obs_a, "robot_b": obs_b}
 
         while self.runtime.is_episode_active:
-            actions: Dict[str, np.ndarray] = {}
-            extras: Dict[str, Optional[Dict[str, Any]]] = {}
-            for agent_id in self.AGENT_IDS:
-                # ``want_extras=True`` asks the policy for its side-channel
-                # payload (log_prob / value / sampling info / …). The runner
-                # itself never inspects ``policy_extras`` — it only forwards
-                # the per-agent bundle to ``runtime.step`` so that attached
-                # recorders can persist it alongside the action snapshot.
-                # Policies that emit no extras return ``{}``; we forward
-                # ``None`` in that case to keep recorder schemas tidy
-                # (empty-dict vs missing is a meaningless distinction here).
-                action, policy_extras = call_policy(
-                    self.policies[agent_id],
-                    last_obs[agent_id],
-                    want_extras=True,
-                )
-                actions[agent_id] = action
-                extras[agent_id] = policy_extras if policy_extras else None
+            # ``want_extra=True`` asks the policy for its side-channel
+            # payload (log_prob / value / sampling info / …). The runner
+            # itself never inspects ``policy_extras`` — it only forwards
+            # the per-agent bundle to ``runtime.step`` so that attached
+            # recorders can persist it alongside the action snapshot.
+            # Policies that have nothing to report return ``extra=None``;
+            # we forward ``None`` in that case to keep recorder schemas
+            # tidy (empty-dict vs missing is a meaningless distinction).
+            action_a, extra_a = self.policy_a.act(
+                obs_a,
+                want_extra=want_extras,
+            )
+            action_b, extra_b = self.policy_b.act(
+                obs_b,
+                want_extra=want_extras,
+            )
 
             self.runtime.step(
-                actions["robot_a"],
-                actions["robot_b"],
-                action_a_extra=extras["robot_a"],
-                action_b_extra=extras["robot_b"],
+                action_a,
+                action_b,
+                action_a_extra=extra_a if extra_a else None,
+                action_b_extra=extra_b if extra_b else None,
             )
 
             # Termination check uses runtime flags; recorders' post-step
@@ -248,7 +248,6 @@ class EpisodeRunner:
                 break
 
             obs_a, obs_b = self.runtime.get_observation()
-            last_obs = {"robot_a": obs_a, "robot_b": obs_b}
 
     def close(self) -> None:
         """Close attached policies that support it.
@@ -257,7 +256,7 @@ class EpisodeRunner:
         NOT close the runtime here to keep the runner a thin composition
         layer.
         """
-        for policy in self.policies.values():
+        for policy in (self.policy_a, self.policy_b):
             close_fn = getattr(policy, "close", None)
             if callable(close_fn):
                 close_fn()
@@ -332,7 +331,7 @@ class EpisodeRunner:
             options=options,
             base_seed=seeds.base,
         )
-        for agent_id, policy in self.policies.items():
+        for agent_id, policy in (("robot_a", self.policy_a), ("robot_b", self.policy_b)):
             reset_fn = getattr(policy, "reset", None)
             if callable(reset_fn):
                 reset_fn(seeds.policies[agent_id])
