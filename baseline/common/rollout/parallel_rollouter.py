@@ -85,6 +85,7 @@ def _run_job(
     policy_b_bp_dict: Dict[str, Any],
     env_bp_dict: Dict[str, Any],
     seed: int,
+    options: Optional[Dict[str, Any]] = None,
 ) -> Episode:
     """Run one episode and return its :class:`Episode`."""
     runtime, recorder = _build_env(env_bp_dict)
@@ -95,7 +96,7 @@ def _run_job(
         policy_a=policy_a,
         policy_b=policy_b,
     )
-    runner.run_episode(seed=seed, want_extras=False)
+    runner.run_episode(seed=seed, options=options, want_extras=True)
     return recorder.get_last_episode()
 
 
@@ -135,7 +136,15 @@ class ParallelRollouter:
     # ------------------------------------------------------------------
     def collect(
         self,
-        jobs: Sequence[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int]],
+        jobs: Sequence[
+            Tuple[
+                PolicyBlueprint,
+                PolicyBlueprint,
+                EnvBlueprint,
+                int,
+                Optional[Dict[str, Any]],
+            ]
+        ],
     ) -> List[Episode]:
         """Run all jobs and return a list of :class:`Episode`.
 
@@ -146,8 +155,9 @@ class ParallelRollouter:
         Parameters
         ----------
         jobs:
-            ``(policy_a_blueprint, policy_b_blueprint, env_blueprint, seed)``
-            per episode.
+            ``(policy_a_blueprint, policy_b_blueprint, env_blueprint, seed,
+            options)`` per episode. ``options`` is optional and forwarded
+            to :meth:`EpisodeRunner.run_episode`.
 
         Returns
         -------
@@ -164,18 +174,24 @@ class ParallelRollouter:
                 policy_b_bp.to_dict(),
                 env_bp.to_dict(),
                 int(seed),
+                dict(options) if options is not None else None,
             )
-            for policy_a_bp, policy_b_bp, env_bp, seed in jobs
+            for policy_a_bp, policy_b_bp, env_bp, seed, *rest in jobs
         ]
 
         if self._num_workers <= 1:
             episodes = [_run_job(*task) for task in tasks]
         else:
             assert self._executor is not None
-            policy_a_dicts, policy_b_dicts, env_dicts, seeds = zip(*tasks)
+            policy_a_dicts, policy_b_dicts, env_dicts, seeds, options_list = zip(*tasks)
             episodes = list(
                 self._executor.map(
-                    _run_job, policy_a_dicts, policy_b_dicts, env_dicts, seeds
+                    _run_job,
+                    policy_a_dicts,
+                    policy_b_dicts,
+                    env_dicts,
+                    seeds,
+                    options_list,
                 )
             )
 

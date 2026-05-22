@@ -80,23 +80,29 @@ class Actor(nn.Module):
 
 
 class ExportedMLPPolicy(Policy):
-    def __init__(self, model_path: Optional[str] = None, **_ignored: Any):
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        stochastic: bool = False,
+        **_ignored: Any,
+    ):
         payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
         payload = torch.load(payload_path, map_location="cpu")
         hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
-        self.actor = Actor(payload["obs_dim"], payload["action_dim"], hidden_dim)
-        model_state_dict = self.actor.state_dict()
-        filtered_state_dict = {
-            key: value
-            for key, value in payload["state_dict"].items()
-            if key in model_state_dict
-        }
-        incompatible = self.actor.load_state_dict(filtered_state_dict, strict=False)
-        if incompatible.missing_keys:
-            raise RuntimeError(f"Missing keys in exported policy: {incompatible.missing_keys}")
-        if incompatible.unexpected_keys:
-            raise RuntimeError(f"Unexpected keys in exported policy: {incompatible.unexpected_keys}")
-        self.actor.eval()
+
+        # Delayed import avoids a circular dependency with tanh_gaussian_mlp.py
+        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+
+        self._policy = TanhGaussianMLPPolicy(
+            obs_dim=int(payload["obs_dim"]),
+            action_dim=int(payload["action_dim"]),
+            hidden_dim=hidden_dim,
+            log_std_min=float(payload.get("log_std_min", -4.0)),
+            log_std_max=float(payload.get("log_std_max", 0.0)),
+        )
+        self._policy.load_state_dict(payload["state_dict"], strict=False)
+        self._policy.eval()
+        self.stochastic = bool(stochastic)
 
     def act(
         self,
@@ -106,7 +112,10 @@ class ExportedMLPPolicy(Policy):
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            action = self.actor(obs_tensor)
+            if self.stochastic:
+                action, _ = self._policy.sample_action(obs_tensor)
+            else:
+                action = self._policy.deterministic_action(obs_tensor)
         return action.squeeze(0).cpu().numpy().astype(np.float32), None
 
     def reset(self, seed: Optional[int] = None) -> None:
@@ -134,7 +143,6 @@ def build_actor_export_payload(
     export_payload["state_dict"] = {
         key: value.detach().cpu()
         for key, value in actor.state_dict().items()
-        if key != "log_std"
     }
     return export_payload
 
@@ -173,7 +181,6 @@ def export_policy_artifacts_from_checkpoint(
     export_payload["state_dict"] = {
         key: value.detach().cpu()
         for key, value in payload["state_dict"].items()
-        if key != "log_std"
     }
     export_payload["hidden_dim"] = int(payload.get("actor_hidden_dim", payload.get("hidden_dim", default_hidden_dim)))
     export_payload["actor_hidden_dim"] = int(export_payload["hidden_dim"])

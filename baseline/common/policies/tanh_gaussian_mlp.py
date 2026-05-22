@@ -59,6 +59,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         log_std_max: float = DEFAULT_LOG_STD_MAX,
         device: torch.device | str = "cpu",
         deterministic: bool = False,
+        model_path: Optional[str] = None,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -76,6 +77,15 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
             nn.Linear(hidden_dim, action_dim),
         )
         self.log_std = nn.Parameter(torch.full((action_dim,), -1.0, dtype=torch.float32))
+        if model_path is not None:
+            payload = torch.load(model_path, map_location="cpu")
+            state_dict = payload.get("state_dict", payload)
+            missing, unexpected = self.load_state_dict(state_dict, strict=False)
+            if missing:
+                raise RuntimeError(f"Missing keys loading TanhGaussianMLPPolicy: {missing}")
+            if unexpected:
+                print(f"[TanhGaussianMLPPolicy] unexpected keys on load: {unexpected}", flush=True)
+            self.to(self.device)
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mean = self.net(obs)
