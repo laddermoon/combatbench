@@ -1,0 +1,3 @@
+version: 1
+cls: "policy.humanoid21.standing.policy:StandingCombatPolicy"
+config: {}

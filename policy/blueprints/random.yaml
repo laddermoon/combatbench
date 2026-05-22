@@ -1,0 +1,5 @@
+version: 1
+cls: "policy.random.policy:RandomCombatPolicy"
+config:
+  scale: 0.1
+  action_dim: 21
