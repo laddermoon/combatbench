@@ -7,3 +7,7 @@ __pycache__/
 todo.md
 compareversion/
 runs/
+
+# Large assets (kept on disk, not in git)
+1.1 T800 模型资源/
+1.2 题目拳击数据/
