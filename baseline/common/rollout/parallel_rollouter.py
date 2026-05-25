@@ -2,33 +2,18 @@
 
 Each job is fully specified by a tuple::
 
-    (policy_a_blueprint, policy_b_blueprint, env_blueprint, seed)
+    (policy_a_blueprint, policy_b_blueprint, env_blueprint, seed, options)
 
 ``robot_a`` and ``robot_b`` may use different policies.
 The collector returns a flat ``List[Episode]`` in the same order as
 ``jobs``.
 
-No training-specific features (state-dict hot-reload, deterministic
-switch, debug plugins, episode options, etc.) — this is intentionally
-a thin batch executor.
-
-Efficiency notes
---------------
-* Worker processes cache built :class:`EnvRuntime` and :class:`Policy`
-  instances keyed by blueprint hash, so identical blueprints across
-  multiple seeds are reused without rebuild cost.
-* ``num_workers <= 1`` short-circuits to in-process sequential execution.
-* ``num_workers > 1`` uses :class:`concurrent.futures.ProcessPoolExecutor`
-  with persistent worker processes (lives until :meth:`close`).
-* Python 3.14 free-threading (PEP 703) would theoretically allow a
-  :class:`concurrent.futures.ThreadPoolExecutor` alternative with lower
-  IPC overhead, but each thread still needs its own ``EnvRuntime`` +
-  ``Policy`` instances because neither MuJoCo nor PyTorch ``nn.Module``
-  is thread-safe for concurrent use on a single instance.
+Each worker creates a fresh EnvRuntime + Policy per job — no shared
+state, no caching, no memory accumulation.  Short-lived MuJoCo
+instances are cheap to create and are GC'd when the function returns.
 """
 from __future__ import annotations
 
-import json
 import logging
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
@@ -44,41 +29,6 @@ from .episode_recorder import EpisodeRecorder
 
 _logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Worker-side caches (module-level → persists across tasks in one worker)
-# ---------------------------------------------------------------------------
-# (env_blueprint_hash -> (EnvBlueprint, EnvRuntime, EpisodeRecorder))
-_worker_env_cache: Dict[str, Tuple[Any, Any, EpisodeRecorder]] = {}
-
-# (policy_blueprint_hash -> (PolicyBlueprint, Policy))
-_worker_policy_cache: Dict[str, Tuple[Any, Any]] = {}
-
-
-def _build_env(env_bp_dict: Dict[str, Any]) -> Tuple[Any, EpisodeRecorder]:
-    """Build or retrieve a cached EnvRuntime + EpisodeRecorder."""
-    env_bp = EnvBlueprint.from_dict(env_bp_dict)
-    env_hash = blueprint_hash(env_bp)
-    if env_hash not in _worker_env_cache:
-        recorder = EpisodeRecorder(blueprint_hash=env_hash)
-        runtime = env_bp.build(recorders=[recorder])
-        _worker_env_cache[env_hash] = (env_bp, runtime, recorder)
-    else:
-        _, runtime, recorder = _worker_env_cache[env_hash]
-    return runtime, recorder
-
-
-def _build_policy(policy_bp_dict: Dict[str, Any]) -> Any:
-    """Build or retrieve a cached Policy."""
-    policy_bp = PolicyBlueprint.from_dict(policy_bp_dict)
-    # Stable hash over the full blueprint payload
-    policy_hash = json.dumps(policy_bp.to_dict(), sort_keys=True)
-    if policy_hash not in _worker_policy_cache:
-        policy = policy_bp.build()
-        _worker_policy_cache[policy_hash] = (policy_bp, policy)
-    else:
-        _, policy = _worker_policy_cache[policy_hash]
-    return policy
-
 
 def _run_job(
     policy_a_bp_dict: Dict[str, Any],
@@ -87,16 +37,35 @@ def _run_job(
     seed: int,
     options: Optional[Dict[str, Any]] = None,
 ) -> Episode:
-    """Run one episode and return its :class:`Episode`."""
-    runtime, recorder = _build_env(env_bp_dict)
-    policy_a = _build_policy(policy_a_bp_dict)
-    policy_b = _build_policy(policy_b_bp_dict)
+    """Run one episode: create env + policies from scratch, collect, return."""
+    import time as _time
+    _t0 = _time.perf_counter()
+
+    env_bp = EnvBlueprint.from_dict(env_bp_dict)
+    env_hash = blueprint_hash(env_bp)
+
+    recorder = EpisodeRecorder(blueprint_hash=env_hash)
+    _t1 = _time.perf_counter()
+    runtime = env_bp.build(recorders=[recorder])
+    _t2 = _time.perf_counter()
+    policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+    policy_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+    _t3 = _time.perf_counter()
+
     runner = EpisodeRunner(
         runtime=runtime,
         policy_a=policy_a,
         policy_b=policy_b,
     )
     runner.run_episode(seed=seed, options=options, want_extras=True)
+    _t4 = _time.perf_counter()
+
+    print(
+        f"[worker] seed={seed} init={_t3 - _t0:.3f}s"
+        f"(env={_t2 - _t1:.3f}s policy={_t3 - _t2:.3f}s)"
+        f" episode={_t4 - _t3:.3f}s",
+        flush=True,
+    )
     return recorder.get_last_episode()
 
 
