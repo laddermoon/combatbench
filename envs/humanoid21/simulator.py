@@ -1385,14 +1385,15 @@ class MujocoCombatSimulator(BaseSimulator):
             self.data.xfrc_applied[body_id, 3:6] += torque
     
     def get_broadcastview_image(self) -> np.ndarray:
-        """
-        获取广播视角图像（智能动态跟踪版本）
+        """Broadcast-view camera that always keeps both robots fully in frame.
 
-        相机特性：
-        - 方位角随机器人移动自动调整（始终从侧面观看）
-        - 距离根据机器人间距动态缩放
-        - 有防撞墙边界检测
-        - 使用EMA平滑减少镜头抖动
+        Camera design:
+        - lookat = bounding-box center of both robots (including fallen height)
+        - distance = derived from bounding-box diagonal so both robots fit
+        - azimuth = perpendicular to robot-robot axis, auto-flips to whichever
+          side keeps the camera inside the arena boundary
+        - elevation = -20 deg (fixed downward tilt)
+        - EMA smoothing on all parameters to reduce jitter
         """
         try:
             torso_a_id = self._robot_cache['robot_a']['torso_body_id']
@@ -1400,87 +1401,113 @@ class MujocoCombatSimulator(BaseSimulator):
 
             pos_a = self.data.xpos[torso_a_id]
             pos_b = self.data.xpos[torso_b_id]
-            center = (pos_a + pos_b) / 2.0
 
-            # 基础视角：两个机器人的中心，高度略降低（腰部高度）
-            target_lookat = center.copy()
-            target_lookat[2] = 1.0  # 固定观察高度为腰部
+            # --- lookat: bounding-box center of both robots (XYZ) ---
+            # Use actual heights so fallen robots are included vertically.
+            bbox_min = np.minimum(pos_a, pos_b)
+            bbox_max = np.maximum(pos_a, pos_b)
+            target_lookat = (bbox_min + bbox_max) / 2.0
+            # Clamp lookat height to [0.2, 1.2] to avoid camera going underground
+            # or overshooting upward when both robots are still standing.
+            target_lookat[2] = np.clip(target_lookat[2], 0.2, 0.9)
 
-            # 计算两个机器人之间的方向向量
+            # --- azimuth: perpendicular to the robot-robot axis ---
             direction = pos_b - pos_a
-            dist_ab = np.linalg.norm(direction)
+            dist_ab = np.linalg.norm(direction[:2])  # horizontal only
             if dist_ab > 1e-6:
-                direction = direction / dist_ab
+                dir_angle = np.degrees(np.arctan2(direction[1], direction[0]))
             else:
-                direction = np.array([1.0, 0.0, 0.0])
+                dir_angle = 0.0
 
-            # 期望从侧面观看两个机器人（方位角对应direction的法向量）
-            # arctan2(y, x) 获取向量在XY平面上的角度
-            dir_angle = np.degrees(np.arctan2(direction[1], direction[0]))
+            # --- distance: based on robot separation (same as original) ---
+            dist_ab = np.linalg.norm(direction[:2])
+            want_dist = float(np.clip(dist_ab * 1.5, 2.5, 4.0))
 
-            # 相机在侧面，所以方位角 + 90度
-            target_azi = dir_angle + 90.0
-            target_ele = -20.0  # 俯视20度
+            # --- side selection & arena clamping ---
+            # Arena walls at ±3.05 m; keep camera inside ±3.0 m.
+            # At ele=-20°, cam horizontal offset = dist * cos(20°) ≈ 0.94*dist.
+            # Max safe dist from center = 3.0 / cos(20°) ≈ 3.19 m, so dist<=4.0
+            # can push the camera out when lookat is not at center.
+            arena_limit = 3.0
 
-            # 相机距离：基础距离为间距 * 1.5，限制在 2.5 到 4.0 之间
-            target_dist = max(2.5, min(4.0, dist_ab * 1.5))
+            def _max_dist_for_side(azi_deg: float, ele_deg: float,
+                                   lookat: np.ndarray) -> float:
+                """Max dist along azi_deg that keeps camera inside arena."""
+                a = np.radians(azi_deg)
+                c = np.cos(np.radians(ele_deg))
+                cx = -np.cos(a) * c
+                cy = -np.sin(a) * c
+                limits = []
+                if abs(cx) > 1e-6:
+                    limits.append((arena_limit - abs(lookat[0])) / abs(cx))
+                if abs(cy) > 1e-6:
+                    limits.append((arena_limit - abs(lookat[1])) / abs(cy))
+                return float(min(limits)) if limits else 99.0
 
-            # --- 边界限制（防止相机移出墙外）---
-            # 房间边界约为 x,y ∈ [-3.05, 3.05]
-            # 预留 0.5 安全距离 -> 墙边界限制在 2.55
-            limit = 2.55
+            azi_option_a = dir_angle + 90.0
+            azi_option_b = dir_angle - 90.0
 
-            # 在MuJoCo中，给定azimuth、elevation和distance，相机的世界坐标系水平偏移约为：
-            # dx = -dist * cos(azi) * cos(ele)
-            # dy = -dist * sin(azi) * cos(ele)
-            azi_rad = np.radians(target_azi)
-            ele_rad = np.radians(target_ele)
+            # Hysteresis side selection: stay on current side unless it can no longer
+            # accommodate want_dist; then try the other side.
+            prev_side = getattr(self, '_prev_azi_side', None)
+            if prev_side is None:
+                md_a = _max_dist_for_side(azi_option_a, -20.0, target_lookat)
+                md_b = _max_dist_for_side(azi_option_b, -20.0, target_lookat)
+                chosen_side = 1 if md_a >= md_b else -1
+            else:
+                cur_md = _max_dist_for_side(
+                    azi_option_a if prev_side == 1 else azi_option_b,
+                    -20.0, target_lookat)
+                alt_md = _max_dist_for_side(
+                    azi_option_b if prev_side == 1 else azi_option_a,
+                    -20.0, target_lookat)
+                if cur_md >= want_dist:
+                    chosen_side = prev_side       # current side fits – stay
+                elif alt_md >= want_dist:
+                    chosen_side = -prev_side      # flip to other side
+                else:
+                    chosen_side = prev_side       # both tight – stay
 
-            dx = -target_dist * np.cos(azi_rad) * np.cos(ele_rad)
-            dy = -target_dist * np.sin(azi_rad) * np.cos(ele_rad)
+            self._prev_azi_side = chosen_side
+            target_azi = azi_option_a if chosen_side == 1 else azi_option_b
 
-            cam_x = target_lookat[0] + dx
-            cam_y = target_lookat[1] + dy
+            # Resolve elevation: -20° normally; steepen only if want_dist doesn't
+            # fit inside the arena at the current elevation.
+            target_ele = -20.0
+            target_dist = want_dist
+            for ele_candidate in np.arange(-20.0, -41.0, -5.0):
+                max_d = _max_dist_for_side(target_azi, ele_candidate, target_lookat)
+                if want_dist <= max_d or ele_candidate <= -40.0:
+                    target_ele = ele_candidate
+                    target_dist = float(np.clip(want_dist, 2.0, max_d))
+                    break
 
-            # 如果期望X超出房间，缩短距离以接近墙壁
-            if abs(cam_x) > limit:
-                max_dx = limit - target_lookat[0] if cam_x > 0 else -limit - target_lookat[0]
-                factor = -np.cos(azi_rad) * np.cos(ele_rad)
-                if abs(factor) > 1e-6:
-                    target_dist = min(target_dist, abs(max_dx / factor))
-
-            # 如果期望Y超出房间
-            if abs(cam_y) > limit:
-                max_dy = limit - target_lookat[1] if cam_y > 0 else -limit - target_lookat[1]
-                factor = -np.sin(azi_rad) * np.cos(ele_rad)
-                if abs(factor) > 1e-6:
-                    target_dist = min(target_dist, abs(max_dy / factor))
-
-            # --- 平滑滤波（EMA）---
-            alpha_pos = 0.05  # 极坐标和距离的平滑系数
-            alpha_look = 0.1  # 观察焦点的平滑系数
+            # --- EMA smoothing ---
+            alpha_pos = 0.15   # faster tracking for dist/azi/ele
+            alpha_look = 0.25  # faster lookat tracking
 
             if self._prev_azi is None:
-                # 首次渲染，直接使用目标值
                 azi = target_azi
                 ele = target_ele
                 dist = target_dist
                 lookat = target_lookat.copy()
             else:
-                # 角度平滑需要处理360度循环跳变
                 diff = (target_azi - self._prev_azi + 180) % 360 - 180
                 azi = self._prev_azi + diff * alpha_pos
                 ele = self._prev_ele * (1.0 - alpha_pos) + target_ele * alpha_pos
                 dist = self._prev_dist * (1.0 - alpha_pos) + target_dist * alpha_pos
                 lookat = self._prev_lookat * (1.0 - alpha_look) + target_lookat * alpha_look
 
-            # 更新缓存
             self._prev_azi = azi
             self._prev_ele = ele
             self._prev_dist = dist
             self._prev_lookat = lookat.copy()
 
-            # 设置相机参数
+            # Hard clamp: after EMA smoothing the dist may transiently exceed the
+            # arena limit. Always enforce that the camera stays inside the arena.
+            hard_max = _max_dist_for_side(azi, ele, lookat)
+            dist = float(np.clip(dist, 0.5, max(0.5, hard_max)))
+
             cam = mujoco.MjvCamera()
             mujoco.mjv_defaultCamera(cam)
             cam.lookat[:] = lookat
@@ -1488,7 +1515,6 @@ class MujocoCombatSimulator(BaseSimulator):
             cam.elevation = ele
             cam.azimuth = azi
 
-            # 渲染
             renderer = mujoco.Renderer(self.model, height=720, width=1280)
             renderer.update_scene(self.data, camera=cam)
             return renderer.render()
