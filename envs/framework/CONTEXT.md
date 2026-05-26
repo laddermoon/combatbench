@@ -40,7 +40,7 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   Owns the `policy.act → runtime.step → pull obs/reward` loop for the two fixed
   agents (`robot_a` / `robot_b`), deterministic seed splitting via
   `numpy.random.SeedSequence`, configurable rollout capture per side, and
-  `on_step` / `on_episode_end` hooks. `RoundRunner` / `CombatRoundRunner` are now
+  `on_step` / `on_episode_end` hooks. `RoundRunner` / `RoundRunner` are now
   thin subclasses that only add combat-specific printing and the legacy result
   dict — generic loop logic lives in `EpisodeRunner`.
 - **`ParallelRunner`** (`parallel_runner.py`) — process-level fan-out over
@@ -66,7 +66,7 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
 - `episode_runner.py` — `EpisodeRunner`, `ObserverBinding`, `RolloutConfig`,
   `AgentTrajectory`, `EpisodeResult`, `StepContext` (re-exports `Policy` for
   back-compat with pre-split callers).
-- `round_runner.py` — `RoundRunner` / `CombatRoundRunner` (thin subclass of
+- `round_runner.py` — `RoundRunner` / `RoundRunner` (thin subclass of
   `EpisodeRunner` + legacy result-dict surface + `videosave_path` plumbing).
 - `parallel_runner.py` — `ParallelRunner` / `RunnerFactory` type alias. Process
   pool on top of `EpisodeRunner`.
