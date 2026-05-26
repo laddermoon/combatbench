@@ -11,3 +11,11 @@ runs/
 # Large assets (kept on disk, not in git)
 1.1 T800 模型资源/
 1.2 题目拳击数据/
+
+# Temporary/export directories (e.g., _bench_export)
+_*/
+
+logs*/
+
+nohup.out
+*.log

@@ -26,6 +26,7 @@ plugins:
       initial_health_a: 100.0
       initial_health_b: 100.0
       damage_scale: 100.0
+      request_termination_on_ko: False
   - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
     config:
       agent_id: ${agent_id}

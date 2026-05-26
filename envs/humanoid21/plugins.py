@@ -109,12 +109,16 @@ class NonFallConstraintPlugin(BasePlugin):
 
 class CombatScoringPlugin(BasePlugin):
     """
-    战斗计分与KO判断插件
+    Combat scoring and KO determination plugin.
 
-    按照 DATASPEC.md 规范使用 combat_contacts 接口：
-    - combat_contacts: List[Dict] - 双方实体之间的物理接触及受力列表
-      格式: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
-      规则: 仅记录双方机器人之间的碰撞，排除机器人与自身的接触
+    Uses the robot_robot_contacts interface per DATASPEC.md:
+    - robot_robot_contacts: List[Dict] - Physical contacts between two robots
+      Format: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
+      Rule: Only inter-robot collisions are recorded, self-collisions are excluded.
+
+    Options consumed from ``ctx.episode_options``:
+      - ``initial_health_a`` (float): Starting HP for robot_a. Defaults to constructor value.
+      - ``initial_health_b`` (float): Starting HP for robot_b. Defaults to constructor value.
     """
     ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
@@ -129,12 +133,14 @@ class CombatScoringPlugin(BasePlugin):
         initial_health: float = 100.0,
         initial_health_a: Optional[float] = None,
         initial_health_b: Optional[float] = None,
-        damage_scale: float = 100.0
+        damage_scale: float = 100.0,
+        request_termination_on_ko: bool = True,
     ):
-        # 支持分别设置双方初始血量，如果只设置 initial_health 则双方相同
+        # Support separate HP settings for each robot; if only initial_health is set, both use it.
         self.initial_health_a = initial_health_a if initial_health_a is not None else initial_health
         self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
         self.damage_scale = damage_scale
+        self.request_termination_on_ko = bool(request_termination_on_ko)
 
     def to_blueprint(self) -> Dict[str, Any]:
         return {
@@ -142,6 +148,7 @@ class CombatScoringPlugin(BasePlugin):
             "initial_health_a": self.initial_health_a,
             "initial_health_b": self.initial_health_b,
             "damage_scale": self.damage_scale,
+            "request_termination_on_ko": self.request_termination_on_ko,
         }
 
     @classmethod
@@ -154,13 +161,12 @@ class CombatScoringPlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        # 必须在 observer dispatcher 之前执行：本 plugin 把本步的击打写入
+        # Must run before the observer dispatcher: this plugin writes hit data into
         # ``ctx.metrics["damage_taken_*"]`` / ``ctx.metrics["health_*"]`` /
-        # ``ctx.events``，下游 observer (例如 NetDamageRewarder) 读取这些
-        # 字段的差分作为本步奖励。如果在 observer 之后执行，observer 会
-        # 滞后一步才看到伤害，影响奖励信号的时效性。
-        # 详见 ``envs/framework/observer_plugin.py`` 中
-        # ``OBSERVER_DISPATCHER_PRIORITY`` 的注释。
+        # ``ctx.events``; downstream observers (e.g., NetDamageRewarder) read
+        # the deltas as the per-step reward signal. If this ran after observers,
+        # they would see damage with a one-step lag, hurting reward timeliness.
+        # See ``OBSERVER_DISPATCHER_PRIORITY`` notes in ``envs/framework/observer_plugin.py``.
         return OBSERVER_DISPATCHER_PRIORITY + 1
 
     def on_pre_episode(self, ctx: SimContext) -> None:
@@ -177,7 +183,7 @@ class CombatScoringPlugin(BasePlugin):
         )
         ctx.metrics['damage_taken_a'] = 0.0
         ctx.metrics['damage_taken_b'] = 0.0
-        # reset events list explicitly
+        # Reset events list explicitly to clear carry-over from previous episodes.
         while len(ctx.events) > 0:
             ctx.events.pop()
 
@@ -203,16 +209,16 @@ class CombatScoringPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         derived_state = ctx.accessor.get_derived_state()
-        # 使用新的 robot_robot_contacts 接口（按照 DATASPEC.md 规范）
-        # 格式: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
+        # Use the robot_robot_contacts interface per DATASPEC.md
+        # Format: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
         contacts = derived_state.get('robot_robot_contacts', [])
 
         for contact in contacts:
-            # 新格式使用 body_a 和 body_b
+            # New format uses body_a and body_b fields
             body_a_name = contact.get('body_a', '')
             body_b_name = contact.get('body_b', '')
 
-            # 判断 body 属于哪个机器人
+            # Determine which robot each body belongs to
             is_body_a_a = body_a_name.endswith('_a') or '_red' in body_a_name
             is_body_a_b = body_a_name.endswith('_b') or '_blue' in body_a_name
             is_body_b_a = body_b_name.endswith('_a') or '_red' in body_b_name
@@ -263,9 +269,12 @@ class CombatScoringPlugin(BasePlugin):
                             ctx.metrics[health_key] = max(0.0, ctx.metrics[health_key] - damage)
                             ctx.metrics[damage_key] += damage
 
-        # Check KO
-        if ctx.metrics['health_a'] <= 0 or ctx.metrics['health_b'] <= 0:
-            ctx.request_termination(TerminationReason.KO)
+        # Check KO and request termination if enabled.
+        # When ``request_termination_on_ko`` is False, HP continues to decrease
+        # (capped at 0) without triggering episode termination.
+        if self.request_termination_on_ko:
+            if ctx.metrics['health_a'] <= 0 or ctx.metrics['health_b'] <= 0:
+                ctx.request_termination(TerminationReason.KO)
 
 
 class FrozenRobotPlugin(BasePlugin):
