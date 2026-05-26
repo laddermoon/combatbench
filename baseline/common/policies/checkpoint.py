@@ -29,111 +29,40 @@ import numpy as np
 import torch
 from torch import nn
 
-from envs.framework.policy import Policy
+from envs.framework.policy import PolicyBlueprint
 
 DEFAULT_EXPORT_ACTOR_HIDDEN_DIM = 256
-
-
-class ExportedMLPPolicy(Policy):
-    """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
-
-    This is the *real* importable class used by
-    :class:`PolicyBlueprint` at rollout time.  A self-contained source
-    template with the same class name is produced by
-    :func:`build_export_policy_code` for deployment outside the repo.
-    """
-
-    def __init__(
-        self,
-        model_path: Optional[str] = None,
-        stochastic: bool = False,
-        **_ignored: Any,
-    ):
-        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
-        payload = torch.load(payload_path, map_location="cpu")
-        hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
-
-        # Delayed import avoids a circular dependency with tanh_gaussian_mlp.py
-        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-
-        self._policy = TanhGaussianMLPPolicy(
-            obs_dim=int(payload["obs_dim"]),
-            action_dim=int(payload["action_dim"]),
-            hidden_dim=hidden_dim,
-            log_std_min=float(payload.get("log_std_min", -4.0)),
-            log_std_max=float(payload.get("log_std_max", 0.0)),
-        )
-        self._policy.load_state_dict(payload["state_dict"], strict=False)
-        self._policy.eval()
-        self.stochastic = bool(stochastic)
-
-    def act(
-        self,
-        observation: Any,
-        want_extra: bool = False,
-    ) -> Tuple[np.ndarray, None]:
-        obs_array = np.asarray(observation, dtype=np.float32)
-        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            if self.stochastic:
-                action, _ = self._policy.sample_action(obs_tensor)
-            else:
-                action = self._policy.deterministic_action(obs_tensor)
-        return action.squeeze(0).cpu().numpy().astype(np.float32), None
-
-    def reset(self, seed: Optional[int] = None) -> None:
-        return None
 
 
 def build_export_policy_code() -> str:
     """Return the source of the ``policy.py`` embedded in ``policy/`` dirs.
 
-    The produced module defines ``ExportedMLPPolicy`` implementing the
-    framework :class:`envs.framework.policy.Policy` protocol. It is
-    intentionally self-contained (single file, plain torch) so that a
-    consumer can ``pip install torch && python -c "..."`` without this
-    repo on ``sys.path``.
+    The produced module defines ``ExportedMLPPolicy`` that reuses
+    :class:`baseline.common.policies.tanh_gaussian_mlp.TanhGaussianMLPPolicy`
+    from the repo. Requires the repo to be on ``sys.path`` (e.g., via
+    PYTHONPATH=. when running).
+
+    This eliminates code duplication by importing the training-time class
+    directly rather than re-implementing the architecture.
     """
-    return """import sys
+    return '''"""Policy module - imports from repo to reuse TanhGaussianMLPPolicy."""
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import nn
 
-for parent in Path(__file__).resolve().parents:
-    if (parent / "envs" / "framework" / "policy.py").exists():
-        if str(parent) not in sys.path:
-            sys.path.insert(0, str(parent))
-        break
-    if (parent / "combatbench" / "envs" / "framework" / "policy.py").exists():
-        if str(parent) not in sys.path:
-            sys.path.insert(0, str(parent))
-        break
-
-try:
-    from envs.framework.policy import Policy
-except ImportError:
-    from combatbench.envs.framework.policy import Policy  # type: ignore[no-redef]
+# Import from repo - requires baseline/ to be on sys.path
+from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 
 
-class Actor(nn.Module):
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim),
-        )
+class ExportedMLPPolicy:
+    """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(self.net(obs))
+    Uses :class:`TanhGaussianMLPPolicy` from the training repo for
+    consistent architecture and behavior.
+    """
 
-
-class ExportedMLPPolicy(Policy):
     def __init__(
         self,
         model_path: Optional[str] = None,
@@ -142,11 +71,10 @@ class ExportedMLPPolicy(Policy):
     ):
         payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
         payload = torch.load(payload_path, map_location="cpu")
+
         hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
 
-        # Delayed import avoids a circular dependency with tanh_gaussian_mlp.py
-        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-
+        # Reuse training-time policy class (no code duplication).
         self._policy = TanhGaussianMLPPolicy(
             obs_dim=int(payload["obs_dim"]),
             action_dim=int(payload["action_dim"]),
@@ -163,6 +91,7 @@ class ExportedMLPPolicy(Policy):
         observation: Any,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, None]:
+        """Return action for given observation."""
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
@@ -173,8 +102,15 @@ class ExportedMLPPolicy(Policy):
         return action.squeeze(0).cpu().numpy().astype(np.float32), None
 
     def reset(self, seed: Optional[int] = None) -> None:
+        """Optional: reseed RNG for reproducible rollouts."""
+        if seed is not None:
+            torch.manual_seed(seed)
         return None
-"""
+
+
+# Backward compatibility alias
+Policy = ExportedMLPPolicy
+'''
 
 
 def build_actor_export_payload(
@@ -205,10 +141,12 @@ def export_actor_policy_artifacts(
     actor: nn.Module,
     policy_dir: Path,
     extra_payload: Optional[Mapping[str, Any]] = None,
+    stochastic: bool = False,
 ) -> None:
-    """Write ``model.pt`` + ``policy.py`` into ``policy_dir``.
+    """Write ``model.pt`` + ``policy.py`` + ``policy_blueprint.yaml`` into ``policy_dir``.
 
-    End result is a directory compatible with :func:`policy.load_util.load_policy`.
+    End result is a directory compatible with :func:`policy.load_util.load_policy`
+    and :class:`envs.framework.policy.PolicyBlueprint`.
     """
     policy_dir.mkdir(parents=True, exist_ok=True)
     export_payload = build_actor_export_payload(actor=actor, extra_payload=extra_payload)
@@ -216,6 +154,17 @@ def export_actor_policy_artifacts(
     policy_code = build_export_policy_code()
     with (policy_dir / "policy.py").open("w", encoding="utf-8") as handle:
         handle.write(policy_code)
+
+    # Export PolicyBlueprint YAML pointing to the standalone policy.py.
+    # Uses "file:" prefix so it works without repo on sys.path.
+    policy_py_path = policy_dir / "policy.py"
+    blueprint = PolicyBlueprint(
+        cls=f"file:{policy_py_path}:ExportedMLPPolicy",
+        config={
+            "stochastic": stochastic,
+        },
+    )
+    blueprint.save(policy_dir / "policy_blueprint.yaml")
 
 
 def export_policy_artifacts_from_checkpoint(

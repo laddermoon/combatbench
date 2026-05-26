@@ -143,10 +143,10 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     def to_blueprint(self, dest_path: Optional[str] = None) -> "PolicyBlueprint":
         """Export this policy to a deployable :class:`PolicyBlueprint`.
 
-        Writes ``model.pt`` (mean-network weights + metadata) into
-        ``dest_path`` and returns a blueprint that rebuilds the policy
-        via :class:`baseline.common.policies.checkpoint.ExportedMLPPolicy`.
-        When ``dest_path`` is ``None`` a temporary directory is used.
+        Writes ``model.pt`` + ``policy.py`` (standalone, no repo deps) into
+        ``dest_path`` and returns a blueprint that rebuilds the policy via
+        the generated ``ExportedMLPPolicy`` class. When ``dest_path`` is
+        ``None`` a temporary directory is used.
         """
         import tempfile
 
@@ -155,13 +155,20 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         policy_dir = Path(dest_path)
         policy_dir.mkdir(parents=True, exist_ok=True)
 
-        payload = build_actor_export_payload(actor=self)
-        model_path = policy_dir / "model.pt"
-        torch.save(payload, model_path)
+        # Export full artifacts: model.pt + standalone policy.py + blueprint.yaml
+        from .checkpoint import export_actor_policy_artifacts
 
+        export_actor_policy_artifacts(
+            actor=self,
+            policy_dir=policy_dir,
+            stochastic=False,  # deterministic for deployment
+        )
+
+        # Return blueprint pointing to the generated standalone policy.py
+        policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
-            cls="baseline.common.policies.checkpoint:ExportedMLPPolicy",
-            config={"model_path": str(model_path.resolve())},
+            cls=f"file:{policy_py_path}:ExportedMLPPolicy",
+            config={"stochastic": False},
         )
 
     # ------------------------------------------------------------------

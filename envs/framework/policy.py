@@ -74,8 +74,10 @@ don't crash construction.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import re
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -193,13 +195,35 @@ _POLICY_INLINE_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def _resolve_policy_class(entry: str) -> type:
-    """Resolve a ``"package.module:QualName"`` string to a class object."""
+    """Resolve a class from a string descriptor.
+
+    Supports two formats:
+      1. ``"package.module:QualName"`` - standard Python import path.
+      2. ``"file:/path/to/file.py:QualName"`` - load from a standalone Python file.
+    """
     if ":" not in entry:
         raise ValueError(
-            f"PolicyBlueprint.cls must be 'package.module:QualName', got {entry!r}"
+            f"PolicyBlueprint.cls must be 'package.module:QualName' or "
+            f"'file:/path/to/file.py:QualName', got {entry!r}"
         )
-    module_path, qualname = entry.split(":", 1)
-    module = importlib.import_module(module_path.strip())
+
+    # Handle file: prefix for standalone policy files (no repo deps).
+    if entry.startswith("file:"):
+        file_path, qualname = entry[5:].split(":", 1)
+        file_path = Path(file_path.strip()).resolve()
+        if not file_path.exists():
+            raise FileNotFoundError(f"Policy file not found: {file_path}")
+        module_name = f"_policy_{file_path.stem}_{file_path.parent.as_posix().replace('/', '_')}"
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Failed to load spec from {file_path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    else:
+        module_path, qualname = entry.split(":", 1)
+        module = importlib.import_module(module_path.strip())
+
     obj: Any = module
     for part in qualname.strip().split("."):
         obj = getattr(obj, part)
