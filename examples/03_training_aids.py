@@ -28,7 +28,6 @@ import numpy as np
 
 from _common import build_humanoid21_runtime
 from envs.framework import EpisodeRunner
-from envs.framework.episode_runner import AGENT_IDS, ObserverBinding
 from envs.framework.plugin import BasePlugin
 from envs.framework.observer_plugin import BaseObserverPlugin
 from policy.random.policy import RandomCombatPolicy
@@ -213,12 +212,11 @@ def main() -> None:
     runtime = build_humanoid21_runtime(
         match_duration=3.0,
         extra_plugins=[curriculum, early_stop],
-        observer_plugins={
-            "robot_a_reward": ClosingDistanceRewardObserver("robot_a"),
-            "robot_b_reward": ClosingDistanceRewardObserver("robot_b"),
-        },
     )
-    # 这里用 default_bindings 就行（robot_{a,b}_reward 已注册）。
+    # Attach observer plugins
+    runtime.attach_observer_plugin("robot_a_reward", ClosingDistanceRewardObserver("robot_a"))
+    runtime.attach_observer_plugin("robot_b_reward", ClosingDistanceRewardObserver("robot_b"))
+
     runner = EpisodeRunner(
         runtime=runtime,
         policies={
@@ -231,21 +229,27 @@ def main() -> None:
     print(f"{'ep':>3} | {'seed':>12} | {'push_N':>8} | {'steps':>5} | "
           f"{'reward_a':>9} | {'reward_b':>9} | {'term_reasons'}")
     print("-" * 80)
-    # run_n_episodes(options_fn=...) is the canonical curriculum entry — see
-    # RESET.md §4 "options 通道语义".
-    results = runner.run_n_episodes(
-        4, base_seed=100, options_fn=push_schedule,
-    )
-    for ep, result in enumerate(results):
-        ra = float(np.sum(result.trajectories["robot_a"].rewards))
-        rb = float(np.sum(result.trajectories["robot_b"].rewards))
-        push_mag = float(result.shared_info_final.get("metrics", {}).get(
-            "curriculum_push_magnitude", 0.0
-        ))
+
+    # Manually run multiple episodes with options_fn
+    base_seed = 100
+    num_episodes = 4
+
+    for ep in range(num_episodes):
+        seed = base_seed + ep  # Simple seed derivation
+        options = push_schedule(ep)
+        runner.run_episode(seed=seed, options=options)
+
+        # Collect results from runtime context
+        ra = float(runtime.get_observer_output("robot_a_reward") or 0.0)
+        rb = float(runtime.get_observer_output("robot_b_reward") or 0.0)
+        push_mag = float(runtime.ctx.metrics.get("curriculum_push_magnitude", 0.0))
+        steps = int(runtime.ctx.episode_step)
+        term_reasons = list(runtime.ctx.termination_proposals)
+
         print(
-            f"{ep:>3} | {result.seed:>12} | {push_mag:>8.1f} | "
-            f"{result.num_steps:>5} | {ra:>+9.3f} | {rb:>+9.3f} | "
-            f"{result.termination_reasons}"
+            f"{ep:>3} | {seed:>12} | {push_mag:>8.1f} | "
+            f"{steps:>5} | {ra:>+9.3f} | {rb:>+9.3f} | "
+            f"{term_reasons}"
         )
 
     print("\n观察要点：")
@@ -281,16 +285,12 @@ def main() -> None:
     runtime2 = build_humanoid21_runtime(
         match_duration=0.5, extra_plugins=[IllegalWritePlugin()]
     )
-    bindings = {
-        a: ObserverBinding(obs_name=f"{a}_obs", reward_name=None) for a in AGENT_IDS
-    }
     EpisodeRunner(
         runtime=runtime2,
         policies={
             "robot_a": RandomCombatPolicy(scale=0.1),
             "robot_b": RandomCombatPolicy(scale=0.1),
         },
-        observer_bindings=bindings,
     ).run_episode(seed=0)
 
     print("\nDone. 下一步：examples/04_collect_rollouts.py 看怎么并行、可复现地灌数据。")

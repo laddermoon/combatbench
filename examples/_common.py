@@ -86,8 +86,12 @@ def build_humanoid21_runtime(
     runtime = pb.build(
         max_steps=max_steps,
         initial_distance=initial_distance,
-        debug_plugins=list(extra_plugins) if extra_plugins else [],
     )
+
+    # Attach extra plugins after build
+    if extra_plugins:
+        for plugin in extra_plugins:
+            runtime.attach_plugin(plugin)
 
     # Attach action_space and observation_space for compatibility
     runtime.action_space = spaces.Box(
