@@ -54,9 +54,10 @@ import torch
 
 # Import from repo - requires baseline/ to be on sys.path
 from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from envs.framework.policy import Policy
 
 
-class ExportedMLPPolicy:
+class ExportedMLPPolicy(Policy):
     """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
 
     Uses :class:`TanhGaussianMLPPolicy` from the training repo for
