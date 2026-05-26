@@ -42,7 +42,7 @@ from baseline.humanoid21.common import (
     ImbalanceTerminationPlugin,
     INITIAL_DISTANCE,
     MujocoCombatSimulator,
-    make_standing_adapter,
+    make_standing_policy,
     make_standing_options_fn,
     set_seed,
 )
@@ -376,8 +376,8 @@ def train(cfg: Stage1Config, *, run_dir: Path) -> None:
 
     base_factory_kwargs = dict(
         policy_factories={
-            "robot_a": make_standing_adapter,
-            "robot_b": make_standing_adapter,
+            "robot_a": make_standing_policy,
+            "robot_b": make_standing_policy,
         },
         capture_agents=("robot_a", "robot_b"),
     )

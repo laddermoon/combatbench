@@ -22,9 +22,9 @@ main process → GAE → PPO update → eval.
 
 Critic lives only on the main process
 -------------------------------------
-Workers run an actor-only :class:`TorchPolicyAdapter`. We deliberately
-do NOT broadcast critic weights — :meth:`TorchPolicyAdapter.load_state_dict`
-called by the collector only updates the actor (one positional arg),
+Workers run an actor-only :class:`TanhGaussianMLPPolicy`. We deliberately
+do NOT broadcast critic weights — ``TanhGaussianMLPPolicy`` (an
+``nn.Module``) receives the full ``state_dict`` via ``load_state_dict``,
 so a critic on workers would be stale from iteration 2 onwards. Instead
 we compute per-step values with **one batched forward pass** on the
 main process after rollout, plus a second batched pass on the
@@ -69,7 +69,7 @@ from baseline.common.rollout import RolloutBatch, RolloutCollector
 from baseline.humanoid21.common import (
     PerturbedBalanceConfig,
     make_perturbed_balance_runtime,
-    make_standing_adapter,
+    make_standing_policy,
     make_standing_options_fn,
     set_seed,
 )
@@ -259,8 +259,8 @@ def train(cfg: PerturbedBalanceConfig, *, run_dir: Path) -> None:
     factory_kwargs = dict(
         runtime_factory=make_perturbed_balance_runtime,
         policy_factories={
-            "robot_a": make_standing_adapter,
-            "robot_b": make_standing_adapter,
+            "robot_a": make_standing_policy,
+            "robot_b": make_standing_policy,
         },
         capture_agents=("robot_a", "robot_b"),
     )

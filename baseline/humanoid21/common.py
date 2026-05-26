@@ -438,6 +438,7 @@ class CurriculumConfig:
     # Runtime horizon.
     max_steps: int = CURRICULUM_MAX_STEPS
 
+
     # Curriculum component scales (applied inside the multi-signal observer).
     r1_scale: float = CURRICULUM_R1_SCALE
     r2_scale: float = CURRICULUM_R2_SCALE
@@ -456,10 +457,10 @@ class CurriculumConfig:
 
     # Parallelism.
     rollout_workers: int = field(default_factory=lambda: max(
-        1, min(64, max(1, (os.cpu_count() or 1) // 2))
+        1, (os.cpu_count() or 1) // 2
     ))
     eval_workers: int = field(default_factory=lambda: max(
-        1, min(16, max(1, (os.cpu_count() or 1) // 4))
+        1, (os.cpu_count() or 1) // 4
     ))
 
     seed: int = 42

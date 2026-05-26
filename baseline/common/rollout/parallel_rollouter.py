@@ -51,19 +51,19 @@ def _run_job(
     options: Optional[Dict[str, Any]] = None,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
-    import time as _time
-    _t0 = _time.perf_counter()
+    #import time as _time
+    #_t0 = _time.perf_counter()
 
     env_bp = EnvBlueprint.from_dict(env_bp_dict)
     env_hash = blueprint_hash(env_bp)
 
     recorder = EpisodeRecorder(blueprint_hash=env_hash)
-    _t1 = _time.perf_counter()
+    #_t1 = _time.perf_counter()
     runtime = env_bp.build(recorders=[recorder])
-    _t2 = _time.perf_counter()
+    #_t2 = _time.perf_counter()
     policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
     policy_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-    _t3 = _time.perf_counter()
+    #_t3 = _time.perf_counter()
 
     runner = EpisodeRunner(
         runtime=runtime,
@@ -71,14 +71,14 @@ def _run_job(
         policy_b=policy_b,
     )
     runner.run_episode(seed=seed, options=options, want_extras=True)
-    _t4 = _time.perf_counter()
+    #_t4 = _time.perf_counter()
 
-    print(
-        f"[worker] seed={seed} init={_t3 - _t0:.3f}s"
-        f"(env={_t2 - _t1:.3f}s policy={_t3 - _t2:.3f}s)"
-        f" episode={_t4 - _t3:.3f}s",
-        flush=True,
-    )
+    #print(
+    #    f"[worker] seed={seed} init={_t3 - _t0:.3f}s"
+    #    f"(env={_t2 - _t1:.3f}s policy={_t3 - _t2:.3f}s)"
+    #    f" episode={_t4 - _t3:.3f}s",
+    #    flush=True,
+    #)
     return recorder.get_last_episode()
 
 

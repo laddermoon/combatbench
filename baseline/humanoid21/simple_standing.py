@@ -7,7 +7,7 @@ critic), same env (humanoid21 self-play, posture-delta reward, fall
 termination), but the script itself is just glue:
 
   * Env wiring lives in :mod:`baseline.humanoid21.common` —
-    :func:`make_standing_runtime` / :func:`make_standing_adapter` are
+    :func:`make_standing_runtime` / :func:`make_standing_policy` are
     top-level picklable factories that ``RolloutCollector`` ships to
     its worker pool unchanged.
   * Training-loop primitives come from :mod:`baseline.common` —
@@ -61,7 +61,7 @@ from baseline.common.rollout import RolloutBatch, RolloutCollector
 
 from baseline.humanoid21.common import (
     StandingConfig,
-    make_standing_adapter,
+    make_standing_policy,
     make_standing_options_fn,
     make_standing_runtime,
     set_seed,
@@ -214,8 +214,8 @@ def train(cfg: StandingConfig, *, run_dir: Path) -> None:
     collect_kwargs = dict(
         runtime_factory=make_standing_runtime,
         policy_factories={
-            "robot_a": make_standing_adapter,
-            "robot_b": make_standing_adapter,
+            "robot_a": make_standing_policy,
+            "robot_b": make_standing_policy,
         },
         capture_agents=("robot_a", "robot_b"),
     )
@@ -227,8 +227,8 @@ def train(cfg: StandingConfig, *, run_dir: Path) -> None:
         capture_agents=("robot_a",),
         runtime_factory=make_standing_runtime,
         policy_factories={
-            "robot_a": make_standing_adapter,
-            "robot_b": make_standing_adapter,
+            "robot_a": make_standing_policy,
+            "robot_b": make_standing_policy,
         },
     ) as evaluator:
         best_eval = -float("inf")

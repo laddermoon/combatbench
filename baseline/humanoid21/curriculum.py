@@ -54,7 +54,7 @@ from baseline.humanoid21.common import (
     CurriculumStageGate,
     Humanoid21Observer,
     make_curriculum_runtime_for,
-    make_standing_adapter,
+    make_standing_policy,
     make_standing_options_fn,
     set_seed,
 )
@@ -484,8 +484,8 @@ def train(
 
     base_factory_kwargs = dict(
         policy_factories={
-            "robot_a": make_standing_adapter,
-            "robot_b": make_standing_adapter,
+            "robot_a": make_standing_policy,
+            "robot_b": make_standing_policy,
         },
         capture_agents=("robot_a", "robot_b"),
     )

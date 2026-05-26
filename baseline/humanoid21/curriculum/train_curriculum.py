@@ -14,6 +14,8 @@ There is no RolloutBatch; PPO buffers are built directly from Episode fields.
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -75,7 +77,11 @@ def _agent_from_rollout_seed(seed: int) -> str:
 # ---------------------------------------------------------------------------
 
 class _PPOBuffer:
-    """Per-agent PPO buffer built from a list of :class:`Episode` objects."""
+    """PPO buffer built from a list of :class:`Episode` objects.
+
+    Processes ALL episodes regardless of agent_id — each episode's data
+    is extracted using its own target agent (from ``episode_options``).
+    """
 
     __slots__ = (
         "obs", "actions", "log_probs", "rewards",
@@ -86,7 +92,6 @@ class _PPOBuffer:
     def __init__(
         self,
         episodes: Sequence[Episode],
-        agent_id: str,
         stage_weights: Tuple[float, float, float],
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
@@ -108,13 +113,11 @@ class _PPOBuffer:
         r3s: List[float] = []
 
         for ep in episodes:
-            # Only process episodes where the agent we care about is the target.
+            # Use each episode's own target agent (supports mixed robot_a/robot_b rollout).
             ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
-            if ep_target != agent_id:
-                continue
-            obs = ep.observations.get(agent_id)
-            acts = ep.actions.get(agent_id)
-            fin = ep.final_observation.get(agent_id)
+            obs = ep.observations.get(ep_target)
+            acts = ep.actions.get(ep_target)
+            fin = ep.final_observation.get(ep_target)
             if obs is None or acts is None or fin is None:
                 continue
             T = int(acts.shape[0])
@@ -284,8 +287,21 @@ def _build_rollout_jobs(
     n_episodes: int,
     max_steps: int,
 ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-    """Prepare ``n`` jobs – each with a randomly chosen target agent and initial distance."""
+    """Prepare ``n`` jobs – each with a randomly chosen target agent and initial distance.
+
+    ``initial_distance`` is passed via ``options`` (not baked into the env
+    blueprint) so that all episodes sharing the same ``agent_id`` reuse the
+    same cached ``EnvRuntime`` inside each worker.  The simulator's
+    ``reset(options={"initial_distance": ...})`` already supports this.
+    """
     rng = np.random.default_rng(base_seed)
+
+    # Pre-materialize 2 env blueprints (one per agent_id) — cache-friendly.
+    env_bps: Dict[str, EnvBlueprint] = {
+        aid: env_pb.materialize(max_steps=max_steps, agent_id=aid)
+        for aid in ("robot_a", "robot_b")
+    }
+
     jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
     for i in range(n_episodes):
         seed = int(base_seed + i)
@@ -293,12 +309,11 @@ def _build_rollout_jobs(
         initial_distance = float(
             rng.uniform(ROLLOUT_INITIAL_DISTANCE_MIN, ROLLOUT_INITIAL_DISTANCE_MAX)
         )
-        env_bp = env_pb.materialize(
-            initial_distance=initial_distance,
-            max_steps=max_steps,
-            agent_id=agent_id,
-        )
-        jobs.append((policy_bp, policy_bp, env_bp, seed, {"agent_id": agent_id}))
+        jobs.append((
+            policy_bp, policy_bp,
+            env_bps[agent_id], seed,
+            {"agent_id": agent_id, "initial_distance": initial_distance},
+        ))
     return jobs
 
 
@@ -387,6 +402,13 @@ def train(
     run_dir: Path,
     resume_from: Optional[Path] = None,
 ) -> None:
+    # Kill entire process group on SIGTERM/SIGINT so spawn workers don't
+    # become orphans when the main process is killed.
+    def _shutdown_handler(signum, frame):
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+
     set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -427,31 +449,40 @@ def train(
     print(f"run_dir={run_dir}", flush=True)
 
     # 4. Training loop
+    print(f"[DEBUG] rollout_workers={cfg.rollout_workers}  episodes_per_update={cfg.episodes_per_update}  max_steps={cfg.max_steps}  update_epochs={cfg.update_epochs}  minibatch_size={cfg.minibatch_size}", flush=True)
     with ParallelRollouter(num_workers=cfg.rollout_workers) as rollouter:
         for u in range(start_update, cfg.max_updates + 1):
+            t_update_start = time.perf_counter()
+
             # 4.1 Export policy blueprint (stochastic for training rollouts)
+            t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"u{u:05d}"
             policy_bp = actor.to_blueprint(dest_path=str(export_dir))
             policy_bp.config["stochastic"] = True
+            t_export = time.perf_counter() - t0
 
             # 4.2 Prepare rollout jobs
+            t0 = time.perf_counter()
             rollout_seed = cfg.seed + u * cfg.episodes_per_update
             jobs = _build_rollout_jobs(
                 env_pb, policy_bp, rollout_seed,
                 cfg.episodes_per_update, max_steps=cfg.max_steps,
             )
+            t_jobs = time.perf_counter() - t0
 
             # 4.3 Rollout
+            t0 = time.perf_counter()
             episodes: List[Episode] = rollouter.collect(jobs)
+            t_rollout = time.perf_counter() - t0
 
             # 4.4 Build per-agent PPO buffers directly from Episodes
+            t0 = time.perf_counter()
             gate_info = gate.current_state()
             stage_weights: Tuple[float, float, float] = gate_info["weights"]
             target_agent = _agent_from_rollout_seed(rollout_seed)
 
             buf = _PPOBuffer(
                 episodes=episodes,
-                agent_id=target_agent,
                 stage_weights=stage_weights,
                 actor=actor,
                 device=device,
@@ -460,12 +491,15 @@ def train(
                 r3_scale=cfg.r3_scale,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
+            t_buffer = time.perf_counter() - t0
             if buf.is_empty():
                 print(f"update={u} | no episodes for target={target_agent}", flush=True)
                 continue
 
             # 4.5 PPO update
+            t0 = time.perf_counter()
             stats = _ppo_update(actor, critic, optimizer, buf, cfg, device)
+            t_ppo = time.perf_counter() - t0
 
             # 4.6 Logging
             bsum = _batch_summary(buf, cfg.max_steps)
@@ -482,7 +516,9 @@ def train(
             )
 
             # 4.7 Eval (deterministic)
+            t_eval = 0.0
             if u % cfg.eval_interval == 0:
+                t0 = time.perf_counter()
                 eval_seed = cfg.seed + 100_000 + u * 97
                 eval_target = _agent_from_rollout_seed(eval_seed)
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
@@ -493,7 +529,6 @@ def train(
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
                 eval_buf = _PPOBuffer(
                     episodes=eval_episodes,
-                    agent_id=eval_target,
                     stage_weights=stage_weights,
                     actor=actor,
                     device=device,
@@ -533,7 +568,18 @@ def train(
                             },
                         )
                         line += "  [new_best]"
+                t_eval = time.perf_counter() - t0
 
+            t_total = time.perf_counter() - t_update_start
+            line += (
+                f" | time: total={t_total:.1f}s"
+                f" export={t_export:.2f}s"
+                f" jobs={t_jobs:.2f}s"
+                f" rollout={t_rollout:.1f}s"
+                f" buffer={t_buffer:.2f}s"
+                f" ppo={t_ppo:.2f}s"
+                f" eval={t_eval:.1f}s"
+            )
             print(line, flush=True)
 
             # 4.8 Periodic checkpoint
