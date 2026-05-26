@@ -27,9 +27,9 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 # 无损失时输出0， 有损失时输出小于零的损失值
 # 1) 距离损失：距离在 max_dist 内为 0，超出则线性惩罚, 有一个惩罚系数参数
 # 2) 朝向损失：朝向误差角 <= max_angle（角度计） 时为 0，超出则线性惩罚，有一个惩罚系数参数
-OPP_REL_DIST_MAX = 2.2
+OPP_REL_DIST_MAX = 0.7
 OPP_REL_HEADING_MAX_ANGLE_DEG = 25.0
-OPP_REL_DIST_PENALTY_COEF = 1.0
+OPP_REL_DIST_PENALTY_COEF = 0.33 # 距离3.7米时为1
 OPP_REL_HEADING_PENALTY_COEF = 0.02  # deg * coef: max ~155deg * 0.02 ≈ 3, same scale as dist penalty
 
 
