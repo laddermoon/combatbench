@@ -30,6 +30,19 @@ from .episode_recorder import EpisodeRecorder
 _logger = logging.getLogger(__name__)
 
 
+def _worker_init() -> None:  # pragma: no cover - runs in child
+    """Pool initializer: clamp torch to single-threaded BLAS so N workers
+    don't fight each other on shared thread pools."""
+    try:
+        import torch  # noqa: WPS433 - optional dep
+
+        torch.set_num_threads(1)
+        with __import__('contextlib').suppress(RuntimeError):
+            torch.set_num_interop_threads(1)
+    except ImportError:
+        pass
+
+
 def _run_job(
     policy_a_bp_dict: Dict[str, Any],
     policy_b_bp_dict: Dict[str, Any],
@@ -98,6 +111,7 @@ class ParallelRollouter:
             self._executor = ProcessPoolExecutor(
                 max_workers=self._num_workers,
                 mp_context=ctx,
+                initializer=_worker_init,
             )
 
     # ------------------------------------------------------------------

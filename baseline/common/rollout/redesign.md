@@ -16,3 +16,6 @@ ParallelRollouter: 一个并行收集大量Episode的工具。 输入EnvBlueprin
 
 
 
+PYTHONPATH=. python3 baseline/common/rollout/bench_rollout.py baseline/humanoid21/blueprints/curriculum_env.yaml --episodes 1024 --workers 96
+
+
