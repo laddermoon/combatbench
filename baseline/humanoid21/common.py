@@ -146,35 +146,35 @@ CURRICULUM_MATCH_DURATION_SECONDS = MATCH_DURATION_SECONDS
 CURRICULUM_MAX_STEPS = MAX_STEPS
 # Damage scaling — keep the env's default (100.0). Per-step net damage values
 # stay roughly in [-0.5, +0.5] under typical hits, so the scale is comparable
-# to r1/r2 once a small reward weight is applied.
+# to r_cross/r_relation once a small reward weight is applied.
 CURRICULUM_DAMAGE_SCALE = 100.0
 # Per-component reward scales (applied INSIDE :class:`MultiSignalRewardObserver`
 # before the curriculum stage weights). The scales are chosen so all three
 # components contribute the SAME order of magnitude per episode once the
 # corresponding stage is active:
 #
-#   * r1 (cross-support balance) — exactly matches ``stage1.py``'s
-#     ``cross_support_reward_scale=0.02``. Per-step raw r1 is in roughly
+#   * r_cross (cross-support balance) — exactly matches ``stage1.py``'s
+#     ``cross_support_reward_scale=0.02``. Per-step raw r_cross is in roughly
 #     [-1, 0]; per-200-step episode sum lands in [-5, 0]; scaled = [-0.1, 0].
 #     Combined with the sparse -1 terminal fall penalty (applied at
 #     ``_inject_terminal_fall_penalty`` time), the stage-1 episodic
 #     reward is in [-1.1, 0] — bit-identical to stage1.py's recipe.
 #
-#   * r2 (opponent relation) — per-step raw r2 in [-2, +1]; once the
+#   * r_relation (opponent relation) — per-step raw r_relation in [-2, +1]; once the
 #     policy starts approaching, sums of +30 to +200 are typical. Scale
 #     0.02 keeps the per-episode contribution in [0, +4], same order
-#     of magnitude as r1 + terminal penalty.
+#     of magnitude as r_cross + terminal penalty.
 #
-#   * r3 (net damage) — per-step raw r3 is the per-step delta of
+#   * r_damage (net damage) — per-step raw r_damage is the per-step delta of
 #     ``damage_taken_*`` (already pre-multiplied by the env's
 #     ``damage_scale=100``). Typical episode net-damage sums are tens
 #     of points. Scale 0.05 keeps the per-episode contribution comparable
-#     to r1 + r2.
+#     to r_cross + r_relation.
 #
 # All three constants can be overridden via env var for ablations.
-CURRICULUM_R1_SCALE = float(os.environ.get("CURRICULUM_R1_SCALE", "0.02"))
-CURRICULUM_R2_SCALE = float(os.environ.get("CURRICULUM_R2_SCALE", "0.02"))
-CURRICULUM_R3_SCALE = float(os.environ.get("CURRICULUM_R3_SCALE", "0.05"))
+CURRICULUM_R_CROSS_SCALE = float(os.environ.get("CURRICULUM_R_CROSS_SCALE", "0.02"))
+CURRICULUM_R_RELATION_SCALE = float(os.environ.get("CURRICULUM_R_RELATION_SCALE", "0.02"))
+CURRICULUM_R_DAMAGE_SCALE = float(os.environ.get("CURRICULUM_R_DAMAGE_SCALE", "0.05"))
 # Terminal fall penalty — subtracted from the LAST step reward of every
 # imbalance-terminated trajectory, in EVERY stage (falling is bad
 # regardless of which stage we're in). Mirrors stage1.py's
@@ -440,9 +440,9 @@ class CurriculumConfig:
 
 
     # Curriculum component scales (applied inside the multi-signal observer).
-    r1_scale: float = CURRICULUM_R1_SCALE
-    r2_scale: float = CURRICULUM_R2_SCALE
-    r3_scale: float = CURRICULUM_R3_SCALE
+    r_cross_scale: float = CURRICULUM_R_CROSS_SCALE
+    r_relation_scale: float = CURRICULUM_R_RELATION_SCALE
+    r_damage_scale: float = CURRICULUM_R_DAMAGE_SCALE
     # Terminal fall penalty (subtracted from last step of terminated
     # trajectories, in every stage). 0.0 disables.
     terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
@@ -510,15 +510,15 @@ class CurriculumStageGate:
     **Reward components** (4 separate rewards, each with its own critic)::
 
         r_fall  - terminal fall penalty (sparse, terminal-only)
-        r1      - cross_support balance
-        r2      - opponent_relation (distance + heading)
-        r3      - damage
+        r_cross      - cross_support balance
+        r_relation      - opponent_relation (distance + heading)
+        r_damage      - damage
 
     **Stage weights** (active-set, normalized to sum to 1)::
 
-        stage 1 -> (0.5,  0.5,  0.0,  0.0)        r_fall + r1
-        stage 2 -> (1/3,  1/3,  1/3,  0.0)        + r2
-        stage 3 -> (0.25, 0.25, 0.25, 0.25)       + r3
+        stage 1 -> (0.5,  0.5,  0.0,  0.0)        r_fall + r_cross
+        stage 2 -> (1/3,  1/3,  1/3,  0.0)        + r_relation
+        stage 3 -> (0.25, 0.25, 0.25, 0.25)       + r_damage
 
     Each higher stage simply turns on one additional reward; the
     weights are an even split across the active components. Lower-stage
@@ -529,7 +529,7 @@ class CurriculumStageGate:
     """
 
     # Active flags per stage; the ``weights`` property normalizes
-    # the active components to sum to 1. Order: (r_fall, r1, r2, r3).
+    # the active components to sum to 1. Order: (r_fall, r_cross, r_relation, r_damage).
     STAGE_WEIGHTS: Dict[int, tuple] = {
         1: (1.0, 1.0, 0.0, 0.0),
         2: (1.0, 1.0, 1.0, 0.0),
@@ -768,7 +768,7 @@ def make_curriculum_runtime_for(target_agent: str) -> EnvRuntime:
     The reward observer is :class:`MultiSignalRewardObserver` for both
     agents so the trainer can swap weights via ``options_fn`` without
     ever rebuilding the runtime. With weights ``(1, 0, 0)``, the
-    per-step reward is exactly ``r1_scale * r1_cross_support`` =
+    per-step reward is exactly ``r_cross_scale * r_cross_cross_support`` =
     stage1.py's ``cross_support_reward_scale * cross_support_reward``,
     so stage-1 training signal is bit-identical to stage1.py.
 
@@ -908,9 +908,9 @@ __all__ = [
     "CURRICULUM_MATCH_DURATION_SECONDS",
     "CURRICULUM_MAX_STEPS",
     "CURRICULUM_DAMAGE_SCALE",
-    "CURRICULUM_R1_SCALE",
-    "CURRICULUM_R2_SCALE",
-    "CURRICULUM_R3_SCALE",
+    "CURRICULUM_R_CROSS_SCALE",
+    "CURRICULUM_R_RELATION_SCALE",
+    "CURRICULUM_R_DAMAGE_SCALE",
     "CURRICULUM_TERMINAL_FALL_PENALTY",
     "CURRICULUM_NO_KO_HEALTH",
     "CURRICULUM_STAGE1_PASS_LEN_RATIO",
