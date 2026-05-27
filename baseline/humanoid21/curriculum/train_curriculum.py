@@ -84,7 +84,8 @@ class _PPOBuffer:
     """
 
     __slots__ = (
-        "obs", "actions", "log_probs", "rewards",
+        "obs", "actions", "log_probs", 
+        "r1_rewards", "r2_rewards", "r3_rewards",
         "final_obs", "is_terminated", "ep_lengths",
         "r1_sums", "r2_sums", "r3_sums",
     )
@@ -95,22 +96,18 @@ class _PPOBuffer:
         stage_weights: Tuple[float, float, float],
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
-        r1_scale: float,
-        r2_scale: float,
-        r3_scale: float,
         terminal_fall_penalty: float,
     ):
         w1, w2, w3 = stage_weights
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
-        rew_list: List[np.ndarray] = []
+        r1_per_step: List[np.ndarray] = []
+        r2_per_step: List[np.ndarray] = []
+        r3_per_step: List[np.ndarray] = []
         fin_list: List[np.ndarray] = []
         terms: List[bool] = []
         ep_lens: List[int] = []
-        r1s: List[float] = []
-        r2s: List[float] = []
-        r3s: List[float] = []
 
         for ep in episodes:
             # Use each episode's own target agent (supports mixed robot_a/robot_b rollout).
@@ -119,6 +116,7 @@ class _PPOBuffer:
             acts = ep.actions.get(ep_target)
             fin = ep.final_observation.get(ep_target)
             if obs is None or acts is None or fin is None:
+                print(f"[DEBUG] Skipping episode {len(obs_list)+1}: obs={obs is not None} acts={acts is not None} fin={fin is not None}", flush=True)
                 continue
             T = int(acts.shape[0])
             if T == 0:
@@ -128,12 +126,6 @@ class _PPOBuffer:
             r1 = _extract_per_step_scalar(oo, "cross_support", T)
             r2 = _extract_per_step_scalar(oo, "opponent_relation", T)
             r3 = _extract_per_step_scalar(oo, "damage", T)
-            rew = (w1 * r1_scale * r1 + w2 * r2_scale * r2 + w3 * r3_scale * r3).astype(np.float32)
-
-            # Terminal fall penalty on last step of terminated episodes.
-            if ep.is_terminated and terminal_fall_penalty > 0.0:
-                rew = rew.copy()
-                rew[-1] -= terminal_fall_penalty
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
             act_t = torch.as_tensor(acts, dtype=torch.float32, device=device)
@@ -144,24 +136,65 @@ class _PPOBuffer:
             obs_list.append(obs)
             act_list.append(acts)
             lp_list.append(lp_np)
-            rew_list.append(rew)
+            r1_per_step.append(r1)
+            r2_per_step.append(r2)
+            r3_per_step.append(r3)
             fin_list.append(np.asarray(fin, dtype=np.float32))
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
-            r1s.append(float(r1.sum()))
-            r2s.append(float(r2.sum()))
-            r3s.append(float(r3.sum()))
 
-        self.obs = np.concatenate(obs_list, axis=0) if obs_list else np.zeros((0,), np.float32)
-        self.actions = np.concatenate(act_list, axis=0) if act_list else np.zeros((0,), np.float32)
-        self.log_probs = np.concatenate(lp_list, axis=0) if lp_list else np.zeros((0,), np.float32)
-        self.rewards = rew_list
+        if not ep_lens:
+            print(f"[DEBUG] _PPOBuffer: no valid episodes from {len(episodes)} input episodes", flush=True)
+            self.obs = np.zeros((0,), np.float32)
+            self.actions = np.zeros((0,), np.float32)
+            self.log_probs = np.zeros((0,), np.float32)
+            self.r1_rewards = []
+            self.r2_rewards = []
+            self.r3_rewards = []
+            self.final_obs = []
+            self.is_terminated = []
+            self.ep_lengths = []
+            self.r1_sums = []
+            self.r2_sums = []
+            self.r3_sums = []
+            return
+
+        # Store raw reward components separately for multi-critic training
+        r1_rew_list: List[np.ndarray] = []
+        r2_rew_list: List[np.ndarray] = []
+        r3_rew_list: List[np.ndarray] = []
+        r1_sums: List[float] = []
+        r2_sums: List[float] = []
+        r3_sums: List[float] = []
+
+        for i, T in enumerate(ep_lens):
+            r1_seg = r1_per_step[i].copy()
+            r2_seg = r2_per_step[i].copy()
+            r3_seg = r3_per_step[i].copy()
+            
+            # Apply terminal fall penalty only to r1 (cross_support) component
+            if terms[i] and terminal_fall_penalty > 0.0:
+                r1_seg[-1] -= terminal_fall_penalty
+            
+            r1_rew_list.append(r1_seg)
+            r2_rew_list.append(r2_seg)
+            r3_rew_list.append(r3_seg)
+            r1_sums.append(float(r1_seg.sum()))
+            r2_sums.append(float(r2_seg.sum()))
+            r3_sums.append(float(r3_seg.sum()))
+
+        self.obs = np.concatenate(obs_list, axis=0)
+        self.actions = np.concatenate(act_list, axis=0)
+        self.log_probs = np.concatenate(lp_list, axis=0)
+        self.r1_rewards = r1_rew_list
+        self.r2_rewards = r2_rew_list
+        self.r3_rewards = r3_rew_list
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
-        self.r1_sums = r1s
-        self.r2_sums = r2s
-        self.r3_sums = r3s
+        self.r1_sums = r1_sums
+        self.r2_sums = r2_sums
+        self.r3_sums = r3_sums
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -176,65 +209,106 @@ class _PPOBuffer:
 
 def _ppo_update(
     actor: TanhGaussianMLPPolicy,
-    critic: CriticMLP,
+    critics: Dict[str, CriticMLP],
     optimizer: torch.optim.Optimizer,
     buf: _PPOBuffer,
     cfg: CurriculumConfig,
     device: torch.device,
+    stage_weights: Tuple[float, float, float],
 ) -> Dict[str, float]:
-    # GAE per episode
+    # Multi-critic GAE: compute separate advantages for each reward component
     obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
-    with torch.no_grad():
-        values_all = critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
-
-    advs_list: List[np.ndarray] = []
-    rets_list: List[np.ndarray] = []
-    val_list: List[np.ndarray] = []
-    offset = 0
-    for i, T in enumerate(buf.ep_lengths):
-        values = values_all[offset : offset + T]
-        offset += T
-        last_value = 0.0
-        if not buf.is_terminated[i] and buf.final_obs[i] is not None:
-            fin_t = torch.as_tensor(
-                buf.final_obs[i][None], dtype=torch.float32, device=device,
+    
+    # Compute values for each critic
+    values_all = {}
+    for key, critic in critics.items():
+        with torch.no_grad():
+            values_all[key] = critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
+    
+    # Compute GAE for each reward component
+    advs_all = {}
+    rets_all = {}
+    val_all = {}
+    
+    for key in ['r1', 'r2', 'r3']:
+        advs_list = []
+        rets_list = []
+        val_list = []
+        offset = 0
+        
+        for i, T in enumerate(buf.ep_lengths):
+            values = values_all[key][offset : offset + T]
+            offset += T
+            last_value = 0.0
+            if not buf.is_terminated[i] and buf.final_obs[i] is not None:
+                fin_t = torch.as_tensor(
+                    buf.final_obs[i][None], dtype=torch.float32, device=device,
+                )
+                with torch.no_grad():
+                    last_value = float(critics[key](fin_t).squeeze(-1).item())
+            
+            rewards = getattr(buf, f"{key}_rewards")[i]
+            adv, ret = compute_gae(
+                rewards=rewards,
+                values=values,
+                last_value=last_value,
+                gamma=cfg.gamma,
+                lam=cfg.gae_lambda,
             )
-            with torch.no_grad():
-                last_value = float(critic(fin_t).squeeze(-1).item())
-        adv, ret = compute_gae(
-            rewards=buf.rewards[i],
-            values=values,
-            last_value=last_value,
-            gamma=cfg.gamma,
-            lam=cfg.gae_lambda,
-        )
-        advs_list.append(adv)
-        rets_list.append(ret)
-        val_list.append(values)
-
-    advs = np.concatenate(advs_list)
-    rets = np.concatenate(rets_list)
-    vals = np.concatenate(val_list)
-
+            advs_list.append(adv)
+            rets_list.append(ret)
+            val_list.append(values)
+        
+        advs_all[key] = np.concatenate(advs_list)
+        rets_all[key] = np.concatenate(rets_list)
+        val_all[key] = np.concatenate(val_list)
+    
+    # Prepare tensors
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
     old_lp_t = torch.as_tensor(buf.log_probs, dtype=torch.float32, device=device)
-    adv_t = torch.as_tensor(advs, dtype=torch.float32, device=device)
-    ret_t = torch.as_tensor(rets, dtype=torch.float32, device=device)
-    val_t = torch.as_tensor(vals, dtype=torch.float32, device=device)
-
+    
+    # Normalize advantages per component and combine with stage weights
+    def _normalize_adv(adv: np.ndarray) -> np.ndarray:
+        mean = float(adv.mean())
+        std = float(adv.std())
+        if std < 1e-8:
+            return np.zeros_like(adv, dtype=np.float32)
+        return ((adv - mean) / std).astype(np.float32)
+    
+    w1, w2, w3 = stage_weights
+    combined_adv = (
+        w1 * _normalize_adv(advs_all['r1']) +
+        w2 * _normalize_adv(advs_all['r2']) +
+        w3 * _normalize_adv(advs_all['r3'])
+    )
+    adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
+    
     n = obs_t.shape[0]
     pol_losses: List[float] = []
     val_losses: List[float] = []
     kls: List[float] = []
     early_stop_kl = 0.0
+    
     for _ in range(cfg.update_epochs):
         perm = torch.randperm(n, device=device)
         early_stop = False
+        
         for s in range(0, n, cfg.minibatch_size):
             idx = perm[s : s + cfg.minibatch_size]
             new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
-            new_val = critic(obs_t[idx]).squeeze(-1)
+            
+            # Compute value losses for all critics
+            total_val_loss = 0.0
+            for key in ['r1', 'r2', 'r3']:
+                new_val = critics[key](obs_t[idx]).squeeze(-1)
+                idx_cpu = idx.cpu().numpy()
+                ret_val = torch.as_tensor(rets_all[key][idx_cpu], dtype=torch.float32, device=device)
+                
+                # MSE loss for value function
+                val_loss = ((new_val - ret_val) ** 2).mean()
+                total_val_loss += val_loss
+            
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
             kls.append(approx_kl)
@@ -242,32 +316,29 @@ def _ppo_update(
                 early_stop_kl = approx_kl
                 early_stop = True
                 break
-            out = ppo_loss(
-                log_probs_old=old_lp_t[idx],
-                log_probs_new=new_lp,
-                advantages=adv_t[idx],
-                values_old=val_t[idx],
-                values_new=new_val,
-                returns=ret_t[idx],
-                entropy=entropy,
-                clip_range=cfg.clip_eps,
-                value_coef=cfg.value_loss_coef,
-                entropy_coef=cfg.entropy_coef,
-                value_clip=None,
-                normalize_advantages=False,
-            )
+            
+            # Policy loss with combined normalized advantages
+            ratio = torch.exp(new_lp - old_lp_t[idx])
+            surr1 = ratio * adv_t[idx]
+            surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv_t[idx]
+            policy_loss = -torch.min(surr1, surr2).mean()
+            
+            # Total loss
+            loss = policy_loss + cfg.value_loss_coef * total_val_loss - cfg.entropy_coef * entropy.mean()
+            
             optimizer.zero_grad()
-            out.loss.backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(
-                list(actor.parameters()) + list(critic.parameters()),
+                list(actor.parameters()) + [p for c in critics.values() for p in c.parameters()],
                 cfg.grad_clip_norm,
             )
             optimizer.step()
-            pol_losses.append(float(out.policy_loss))
-            val_losses.append(float(out.value_loss))
+            pol_losses.append(float(policy_loss))
+            val_losses.append(float(total_val_loss))
+        
         if early_stop:
             break
-
+    
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean(val_losses)) if val_losses else 0.0,
@@ -338,11 +409,18 @@ def _batch_summary(buf: _PPOBuffer, max_steps: int) -> Dict[str, float]:
 def _reward_summary(buf: _PPOBuffer) -> Dict[str, float]:
     if not buf.ep_lengths:
         return {"r1_mean": 0.0, "r2_mean": 0.0, "r3_mean": 0.0, "ep_reward_mean": 0.0}
+    
+    # Calculate total episode rewards from components
+    ep_rewards = []
+    for i in range(len(buf.r1_rewards)):
+        total_reward = buf.r1_rewards[i].sum() + buf.r2_rewards[i].sum() + buf.r3_rewards[i].sum()
+        ep_rewards.append(total_reward)
+    
     return {
         "r1_mean": float(np.mean(buf.r1_sums)),
         "r2_mean": float(np.mean(buf.r2_sums)),
         "r3_mean": float(np.mean(buf.r3_sums)),
-        "ep_reward_mean": float(np.mean([r.sum() for r in buf.rewards])),
+        "ep_reward_mean": float(np.mean(ep_rewards)),
     }
 
 
@@ -354,7 +432,7 @@ def _save_checkpoint(
     ckpt_path: Path,
     *,
     actor: torch.nn.Module,
-    critic: torch.nn.Module,
+    critics: Dict[str, torch.nn.Module],
     optimizer: torch.optim.Optimizer,
     gate: CurriculumStageGate,
     update: int,
@@ -365,9 +443,10 @@ def _save_checkpoint(
     torch.save(
         {
             "actor_state_dict": actor.state_dict(),
-            "critic_state_dict": critic.state_dict(),
+            "critics_state_dict": {k: v.state_dict() for k, v in critics.items()},
             "optimizer_state_dict": optimizer.state_dict(),
             "gate_stage": gate.stage,
+            "gate_stage_training_counts": gate.stage_training_counts,
             "update": update,
             "best_eval": best_eval,
             "cfg": cfg.__dict__,
@@ -380,15 +459,56 @@ def _load_checkpoint(
     ckpt_path: Path,
     *,
     actor: torch.nn.Module,
-    critic: torch.nn.Module,
+    critics: Dict[str, torch.nn.Module],
     optimizer: torch.optim.Optimizer,
     gate: CurriculumStageGate,
+    cfg: CurriculumConfig,
 ) -> int:
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     actor.load_state_dict(payload["actor_state_dict"])
-    critic.load_state_dict(payload["critic_state_dict"])
-    optimizer.load_state_dict(payload["optimizer_state_dict"])
+    
+    # Handle both old single-critic and new multi-critic checkpoints
+    is_legacy_checkpoint = False
+    if "critics_state_dict" in payload:
+        # New multi-critic format
+        for k, v in critics.items():
+            if k in payload["critics_state_dict"]:
+                v.load_state_dict(payload["critics_state_dict"][k])
+            else:
+                print(f"[WARNING] Critic {k} not found in checkpoint, using random initialization", flush=True)
+    elif "critic_state_dict" in payload:
+        # Old single-critic format: load into r1 critic (stage 1)
+        critics["r1"].load_state_dict(payload["critic_state_dict"])
+        print(f"[INFO] Loaded legacy single-critic weights into r1 critic for stage 1", flush=True)
+        is_legacy_checkpoint = True
+    else:
+        print(f"[WARNING] No critic weights found in checkpoint, using random initialization", flush=True)
+    
+    # For legacy checkpoints, recreate optimizer due to parameter count mismatch
+    if is_legacy_checkpoint:
+        print(f"[INFO] Recreating optimizer for multi-critic architecture", flush=True)
+        critic_params = []
+        for c in critics.values():
+            critic_params.extend(list(c.parameters()))
+        new_optimizer = torch.optim.Adam(
+            list(actor.parameters()) + critic_params,
+            lr=cfg.learning_rate,
+        )
+        # Copy learning rate and other states from old optimizer if possible
+        if "optimizer_state_dict" in payload:
+            old_opt_state = payload["optimizer_state_dict"]
+            if "param_groups" in old_opt_state and len(old_opt_state["param_groups"]) > 0:
+                new_optimizer.param_groups[0]["lr"] = old_opt_state["param_groups"][0].get("lr", cfg.learning_rate)
+        # Update the reference in the calling function
+        optimizer.load_state_dict(new_optimizer.state_dict())
+    else:
+        optimizer.load_state_dict(payload["optimizer_state_dict"])
+    
     gate.stage = int(payload.get("gate_stage", 1))
+    # Restore stage training counts if available (new format)
+    if "gate_stage_training_counts" in payload:
+        gate.stage_training_counts = payload["gate_stage_training_counts"]
+        print(f"[INFO] Restored stage training counts: {gate.stage_training_counts}", flush=True)
     return int(payload.get("update", 0))
 
 
@@ -420,9 +540,20 @@ def train(
     # 2. Build models
     actor: TanhGaussianMLPPolicy = init_policy_bp.build()
     actor = actor.to(device)
-    critic = CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device)
+    
+    # Multi-critic architecture: one critic per reward component
+    critics = {
+        'r1': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
+        'r2': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
+        'r3': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
+    }
+    
+    # Optimizer includes all parameters
+    critic_params = []
+    for c in critics.values():
+        critic_params.extend(list(c.parameters()))
     optimizer = torch.optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()),
+        list(actor.parameters()) + critic_params,
         lr=cfg.learning_rate,
     )
 
@@ -438,8 +569,8 @@ def train(
     # 3. Resume
     if resume_from is not None:
         start_update = _load_checkpoint(
-            Path(resume_from), actor=actor, critic=critic,
-            optimizer=optimizer, gate=gate,
+            Path(resume_from), actor=actor, critics=critics,
+            optimizer=optimizer, gate=gate, cfg=cfg,
         )
         print(f"[resume] loaded from {resume_from}, starting at update={start_update}", flush=True)
 
@@ -486,9 +617,6 @@ def train(
                 stage_weights=stage_weights,
                 actor=actor,
                 device=device,
-                r1_scale=cfg.r1_scale,
-                r2_scale=cfg.r2_scale,
-                r3_scale=cfg.r3_scale,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
             )
             t_buffer = time.perf_counter() - t0
@@ -498,7 +626,9 @@ def train(
 
             # 4.5 PPO update
             t0 = time.perf_counter()
-            stats = _ppo_update(actor, critic, optimizer, buf, cfg, device)
+            stats = _ppo_update(actor, critics, optimizer, buf, cfg, device, stage_weights)
+            # Increment training count for progressive weight scaling
+            gate.increment_training_count()
             t_ppo = time.perf_counter() - t0
 
             # 4.6 Logging
@@ -532,9 +662,6 @@ def train(
                     stage_weights=stage_weights,
                     actor=actor,
                     device=device,
-                    r1_scale=cfg.r1_scale,
-                    r2_scale=cfg.r2_scale,
-                    r3_scale=cfg.r3_scale,
                     terminal_fall_penalty=0.0,
                 )
                 if not eval_buf.is_empty():
@@ -586,7 +713,7 @@ def train(
             if u % cfg.eval_interval == 0 or u == 1:
                 _save_checkpoint(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",
-                    actor=actor, critic=critic, optimizer=optimizer,
+                    actor=actor, critics=critics, optimizer=optimizer,
                     gate=gate, update=u, best_eval=best_eval, cfg=cfg,
                 )
 

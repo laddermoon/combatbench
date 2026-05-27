@@ -481,7 +481,7 @@ def set_seed(seed: int) -> None:
 # Curriculum stage gate
 # ---------------------------------------------------------------------------
 class CurriculumStageGate:
-    """Eval-driven curriculum stage classifier (rewritten 2026-05-09).
+    """Eval-driven curriculum stage classifier with progressive weight scaling.
 
     **Design philosophy** (per user request):
 
@@ -521,11 +521,15 @@ class CurriculumStageGate:
     This is the user's explicit Stage 3 admission criterion: "保持
     平衡满200步并且最终的距离和朝向进入非惩罚区"
 
-    **Weights**::
+    **Progressive weights**::
 
-        stage 1 -> (1, 0, 0)   r1 only
-        stage 2 -> (1, 1, 0)   r1 + r2
-        stage 3 -> (1, 1, 1)   r1 + r2 + r3
+        stage 1 -> (1.0, 0.0, 0.0)   r1 only
+        stage 2 -> (r1_weight, r2_weight, 0.0)   r1 + r2, normalized to sum=1
+        stage 3 -> (r1_weight, r2_weight, r3_weight)   r1 + r2 + r3, normalized to sum=1
+
+        Weights start at (1.0, 0.0, 0.0) for new critics and gradually 
+        increase based on training updates in that stage. This prevents
+        untrained critics from destabilizing the actor when entering a new stage.
 
     Lower-stage rewards stay active in higher stages — that's the
     catastrophic-forgetting safeguard. Re-classification happens
@@ -536,11 +540,15 @@ class CurriculumStageGate:
     Pure Python, picklable, no numpy/torch deps.
     """
 
-    STAGE_WEIGHTS: Dict[int, tuple] = {
+    # Base weights when all critics are fully trained
+    BASE_STAGE_WEIGHTS: Dict[int, tuple] = {
         1: (1.0, 0.0, 0.0),
         2: (1.0, 1.0, 0.0),
         3: (1.0, 1.0, 1.0),
     }
+    
+    # Warmup updates for each critic to reach full weight
+    CRITIC_WARMUP_UPDATES = 50
 
     def __init__(
         self,
@@ -551,7 +559,7 @@ class CurriculumStageGate:
         stage3_sticky_len_ratio: float = CURRICULUM_STAGE3_STICKY_LEN_RATIO,
         initial_stage: int = 1,
     ) -> None:
-        if initial_stage not in self.STAGE_WEIGHTS:
+        if initial_stage not in self.BASE_STAGE_WEIGHTS:
             raise ValueError(f"initial_stage must be 1/2/3; got {initial_stage}")
         if max_steps <= 0:
             raise ValueError(f"max_steps must be > 0; got {max_steps}")
@@ -565,6 +573,8 @@ class CurriculumStageGate:
         self.pass_final_in_zone = float(pass_final_in_zone)
         self.stage3_sticky_len_ratio = float(stage3_sticky_len_ratio)
         self.stage = int(initial_stage)
+        # Track training updates per stage for progressive weight scaling
+        self.stage_training_counts = {1: 0, 2: 0, 3: 0}
         # Last eval-summary metrics (or None if no eval yet). Kept only
         # for logging; not consulted by the next decision.
         self._last_eval_len_ratio: Optional[float] = None
@@ -573,7 +583,35 @@ class CurriculumStageGate:
 
     @property
     def weights(self) -> tuple:
-        return self.STAGE_WEIGHTS[self.stage]
+        """Compute progressive weights based on training counts and normalize to sum=1."""
+        base_weights = self.BASE_STAGE_WEIGHTS[self.stage]
+        
+        # Calculate progressive weights based on training counts
+        progressive_weights = []
+        for i, base_weight in enumerate(base_weights):
+            if base_weight == 0.0:
+                # This component is not active in current stage
+                progressive_weights.append(0.0)
+            else:
+                # Calculate warmup factor: 0 to 1 based on training count
+                stage_for_component = i + 1  # r1->stage1, r2->stage2, r3->stage3
+                training_count = self.stage_training_counts[stage_for_component]
+                warmup_factor = min(training_count / self.CRITIC_WARMUP_UPDATES, 1.0)
+                progressive_weights.append(base_weight * warmup_factor)
+        
+        # Normalize weights to sum to 1.0
+        total_weight = sum(progressive_weights)
+        if total_weight > 0.0:
+            normalized_weights = tuple(w / total_weight for w in progressive_weights)
+        else:
+            # Fallback: only r1 active
+            normalized_weights = (1.0, 0.0, 0.0)
+        
+        return normalized_weights
+
+    def increment_training_count(self) -> None:
+        """Increment training count for current stage. Call this after each PPO update."""
+        self.stage_training_counts[self.stage] += 1
 
     def assign_from_eval(self, eval_summary: Dict[str, float]) -> Dict[str, Any]:
         """Pick the next training stage from a single eval summary.
@@ -655,6 +693,7 @@ class CurriculumStageGate:
             "eval_len_ratio": self._last_eval_len_ratio,
             "eval_final_in_zone_ratio": self._last_eval_final_in_zone,
             "reason": self._last_decision_reason,
+            "stage_training_counts": self.stage_training_counts.copy(),
         }
 
 # ---------------------------------------------------------------------------
