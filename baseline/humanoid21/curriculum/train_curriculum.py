@@ -97,6 +97,9 @@ class _PPOBuffer:
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
         terminal_fall_penalty: float,
+        r1_scale: float = 1.0,
+        r2_scale: float = 1.0,
+        r3_scale: float = 1.0,
     ):
         w1, w2, w3 = stage_weights
         obs_list: List[np.ndarray] = []
@@ -168,9 +171,15 @@ class _PPOBuffer:
         r3_sums: List[float] = []
 
         for i, T in enumerate(ep_lens):
-            r1_seg = r1_per_step[i].copy()
-            r2_seg = r2_per_step[i].copy()
-            r3_seg = r3_per_step[i].copy()
+            # Apply per-component reward scales BEFORE storing so that
+            # GAE/critic targets and the per-component value losses
+            # operate on the same magnitude as the policy advantage path.
+            # Without this, raw r2/r3 sums (~25-100/ep) drive critic
+            # gradients orders of magnitude larger than the actor's,
+            # and the global grad-norm clip starves actor learning.
+            r1_seg = (r1_per_step[i] * r1_scale).astype(np.float32)
+            r2_seg = (r2_per_step[i] * r2_scale).astype(np.float32)
+            r3_seg = (r3_per_step[i] * r3_scale).astype(np.float32)
             
             # Apply terminal fall penalty only to r1 (cross_support) component
             if terms[i] and terminal_fall_penalty > 0.0:
@@ -328,8 +337,16 @@ def _ppo_update(
             
             optimizer.zero_grad()
             loss.backward()
+            # Clip actor and critics SEPARATELY. A single global clip over
+            # (actor + N critics) lets a critic gradient explosion (e.g.,
+            # an under-trained critic chasing a large-magnitude return)
+            # rescale the actor gradient down by the same factor, which
+            # silently freezes policy learning.
             torch.nn.utils.clip_grad_norm_(
-                list(actor.parameters()) + [p for c in critics.values() for p in c.parameters()],
+                list(actor.parameters()), cfg.grad_clip_norm,
+            )
+            torch.nn.utils.clip_grad_norm_(
+                [p for c in critics.values() for p in c.parameters()],
                 cfg.grad_clip_norm,
             )
             optimizer.step()
@@ -618,6 +635,9 @@ def train(
                 actor=actor,
                 device=device,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
+                r1_scale=cfg.r1_scale,
+                r2_scale=cfg.r2_scale,
+                r3_scale=cfg.r3_scale,
             )
             t_buffer = time.perf_counter() - t0
             if buf.is_empty():
@@ -663,6 +683,9 @@ def train(
                     actor=actor,
                     device=device,
                     terminal_fall_penalty=0.0,
+                    r1_scale=cfg.r1_scale,
+                    r2_scale=cfg.r2_scale,
+                    r3_scale=cfg.r3_scale,
                 )
                 if not eval_buf.is_empty():
                     esum = _batch_summary(eval_buf, cfg.max_steps)
