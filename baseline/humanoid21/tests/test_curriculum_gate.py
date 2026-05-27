@@ -64,12 +64,21 @@ class TestWeightSchedule:
     def test_initial_stage1_weights(self):
         gate = _make_gate()
         assert gate.stage == 1
-        assert gate.weights == (1.0, 0.0, 0.0)
+        # 4 components (r_fall, r1, r2, r3); stage 1 splits across the
+        # two active components (r_fall, r1) summing to 1.
+        assert gate.weights == pytest.approx((0.5, 0.5, 0.0, 0.0))
 
     def test_stage_weights_table(self):
-        assert CurriculumStageGate.STAGE_WEIGHTS[1] == (1.0, 0.0, 0.0)
-        assert CurriculumStageGate.STAGE_WEIGHTS[2] == (1.0, 1.0, 0.0)
-        assert CurriculumStageGate.STAGE_WEIGHTS[3] == (1.0, 1.0, 1.0)
+        # Active flags before normalization. The ``weights`` property
+        # then renormalizes the active components to sum to 1.
+        assert CurriculumStageGate.STAGE_WEIGHTS[1] == (1.0, 1.0, 0.0, 0.0)
+        assert CurriculumStageGate.STAGE_WEIGHTS[2] == (1.0, 1.0, 1.0, 0.0)
+        assert CurriculumStageGate.STAGE_WEIGHTS[3] == (1.0, 1.0, 1.0, 1.0)
+
+    def test_normalized_weights_sum_to_one(self):
+        for stage in (1, 2, 3):
+            gate = _make_gate(initial_stage=stage)
+            assert sum(gate.weights) == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +89,7 @@ class TestSingleShotClassification:
         gate = _make_gate(initial_stage=3)
         info = gate.assign_from_eval(_eval(length=0.5 * 200, final_in_zone=0.99))
         assert info["stage"] == 1
-        assert info["weights"] == (1.0, 0.0, 0.0)
+        assert info["weights"] == pytest.approx((0.5, 0.5, 0.0, 0.0))
         assert info["prev_stage"] == 3
         assert "stage 1" in info["reason"]
 
@@ -88,14 +97,15 @@ class TestSingleShotClassification:
         gate = _make_gate()
         info = gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.30))
         assert info["stage"] == 2
-        assert info["weights"] == (1.0, 1.0, 0.0)
+        third = 1.0 / 3.0
+        assert info["weights"] == pytest.approx((third, third, third, 0.0))
         assert "stage 2" in info["reason"]
 
     def test_balance_and_final_in_zone_both_ok_picks_stage3(self):
         gate = _make_gate()
         info = gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.85))
         assert info["stage"] == 3
-        assert info["weights"] == (1.0, 1.0, 1.0)
+        assert info["weights"] == pytest.approx((0.25, 0.25, 0.25, 0.25))
         assert "stage 3" in info["reason"]
 
 
@@ -188,7 +198,7 @@ class TestCurrentState:
         gate = _make_gate()
         snap = gate.current_state()
         assert snap["stage"] == 1
-        assert snap["weights"] == (1.0, 0.0, 0.0)
+        assert snap["weights"] == pytest.approx((0.5, 0.5, 0.0, 0.0))
         assert snap["eval_len_ratio"] is None
         assert snap["eval_final_in_zone_ratio"] is None
         assert snap["reason"] == "init"
@@ -198,7 +208,7 @@ class TestCurrentState:
         gate.assign_from_eval(_eval(length=0.99 * 200, final_in_zone=0.85))
         snap = gate.current_state()
         assert snap["stage"] == 3
-        assert snap["weights"] == (1.0, 1.0, 1.0)
+        assert snap["weights"] == pytest.approx((0.25, 0.25, 0.25, 0.25))
         assert snap["eval_len_ratio"] == pytest.approx(0.99)
         assert snap["eval_final_in_zone_ratio"] == pytest.approx(0.85)
         assert "stage 3" in snap["reason"]

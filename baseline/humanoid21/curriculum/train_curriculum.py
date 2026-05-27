@@ -84,30 +84,32 @@ class _PPOBuffer:
     """
 
     __slots__ = (
-        "obs", "actions", "log_probs", 
-        "r1_rewards", "r2_rewards", "r3_rewards",
+        "obs", "actions", "log_probs",
+        "r_fall_rewards", "r_cross_rewards", "r_relation_rewards", "r_damage_rewards",
         "final_obs", "is_terminated", "ep_lengths",
-        "r1_sums", "r2_sums", "r3_sums",
+        "r_fall_sums", "r_cross_sums", "r_relation_sums", "r_damage_sums",
     )
 
     def __init__(
         self,
         episodes: Sequence[Episode],
-        stage_weights: Tuple[float, float, float],
+        stage_weights: Tuple[float, float, float, float],
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
         terminal_fall_penalty: float,
-        r1_scale: float = 1.0,
-        r2_scale: float = 1.0,
-        r3_scale: float = 1.0,
+        r_cross_scale: float = 1.0,
+        r_relation_scale: float = 1.0,
+        r_damage_scale: float = 1.0,
     ):
-        w1, w2, w3 = stage_weights
+        # ``stage_weights`` is consumed by the PPO update (per-component
+        # advantage combination); the buffer just stores raw per-step
+        # signals for each component independently.
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
-        r1_per_step: List[np.ndarray] = []
-        r2_per_step: List[np.ndarray] = []
-        r3_per_step: List[np.ndarray] = []
+        cross_per_step: List[np.ndarray] = []
+        relation_per_step: List[np.ndarray] = []
+        damage_per_step: List[np.ndarray] = []
         fin_list: List[np.ndarray] = []
         terms: List[bool] = []
         ep_lens: List[int] = []
@@ -126,9 +128,14 @@ class _PPOBuffer:
                 continue
 
             oo = ep.observer_outputs
-            r1 = _extract_per_step_scalar(oo, "cross_support", T)
-            r2 = _extract_per_step_scalar(oo, "opponent_relation", T)
-            r3 = _extract_per_step_scalar(oo, "damage", T)
+            # Per-step dense signals from environment observers.
+            # Naming follows the 4-component reward scheme:
+            #   r_cross     -> cross_support (balance)
+            #   r_relation  -> opponent_relation (distance + heading)
+            #   r_damage    -> damage reward
+            r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+            r_relation = _extract_per_step_scalar(oo, "opponent_relation", T)
+            r_damage = _extract_per_step_scalar(oo, "damage", T)
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
             act_t = torch.as_tensor(acts, dtype=torch.float32, device=device)
@@ -139,9 +146,9 @@ class _PPOBuffer:
             obs_list.append(obs)
             act_list.append(acts)
             lp_list.append(lp_np)
-            r1_per_step.append(r1)
-            r2_per_step.append(r2)
-            r3_per_step.append(r3)
+            r_cross_per_step.append(r_cross)
+            r_relation_per_step.append(r_relation)
+            r_damage_per_step.append(r_damage)
             fin_list.append(np.asarray(fin, dtype=np.float32))
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
@@ -151,59 +158,73 @@ class _PPOBuffer:
             self.obs = np.zeros((0,), np.float32)
             self.actions = np.zeros((0,), np.float32)
             self.log_probs = np.zeros((0,), np.float32)
-            self.r1_rewards = []
-            self.r2_rewards = []
-            self.r3_rewards = []
+            self.r_fall_rewards = []
+            self.r_cross_rewards = []
+            self.r_relation_rewards = []
+            self.r_damage_rewards = []
             self.final_obs = []
             self.is_terminated = []
             self.ep_lengths = []
-            self.r1_sums = []
-            self.r2_sums = []
-            self.r3_sums = []
+            self.r_fall_sums = []
+            self.r_cross_sums = []
+            self.r_relation_sums = []
+            self.r_damage_sums = []
             return
 
-        # Store raw reward components separately for multi-critic training
-        r1_rew_list: List[np.ndarray] = []
-        r2_rew_list: List[np.ndarray] = []
-        r3_rew_list: List[np.ndarray] = []
-        r1_sums: List[float] = []
-        r2_sums: List[float] = []
-        r3_sums: List[float] = []
+        # Store raw reward components separately for multi-critic training.
+        # ``r_fall`` is its own sparse component (zeros except at the
+        # terminal step of fallen episodes); it is NOT folded into r_cross.
+        r_fall_rew_list: List[np.ndarray] = []
+        r_cross_rew_list: List[np.ndarray] = []
+        r_relation_rew_list: List[np.ndarray] = []
+        r_damage_rew_list: List[np.ndarray] = []
+        r_fall_sums: List[float] = []
+        r_cross_sums: List[float] = []
+        r_relation_sums: List[float] = []
+        r_damage_sums: List[float] = []
 
         for i, T in enumerate(ep_lens):
             # Apply per-component reward scales BEFORE storing so that
             # GAE/critic targets and the per-component value losses
             # operate on the same magnitude as the policy advantage path.
-            # Without this, raw r2/r3 sums (~25-100/ep) drive critic
+            # Without this, raw r_relation/r_damage sums (~25-100/ep) drive critic
             # gradients orders of magnitude larger than the actor's,
             # and the global grad-norm clip starves actor learning.
-            r1_seg = (r1_per_step[i] * r1_scale).astype(np.float32)
-            r2_seg = (r2_per_step[i] * r2_scale).astype(np.float32)
-            r3_seg = (r3_per_step[i] * r3_scale).astype(np.float32)
-            
-            # Apply terminal fall penalty only to r1 (cross_support) component
+            r_cross_seg = (r_cross_per_step[i] * r_cross_scale).astype(np.float32)
+            r_relation_seg = (r_relation_per_step[i] * r_relation_scale).astype(np.float32)
+            r_damage_seg = (r_damage_per_step[i] * r_damage_scale).astype(np.float32)
+
+            # r_fall: dedicated sparse signal — single negative spike on
+            # the terminal step iff the episode ended in a fall. Has its
+            # own critic (in _ppo_update) so the value head for "did I
+            # fall at the end?" is decoupled from cross_support balance.
+            r_fall_seg = np.zeros(T, dtype=np.float32)
             if terms[i] and terminal_fall_penalty > 0.0:
-                r1_seg[-1] -= terminal_fall_penalty
-            
-            r1_rew_list.append(r1_seg)
-            r2_rew_list.append(r2_seg)
-            r3_rew_list.append(r3_seg)
-            r1_sums.append(float(r1_seg.sum()))
-            r2_sums.append(float(r2_seg.sum()))
-            r3_sums.append(float(r3_seg.sum()))
+                r_fall_seg[-1] = -float(terminal_fall_penalty)
+
+            r_fall_rew_list.append(r_fall_seg)
+            r_cross_rew_list.append(r_cross_seg)
+            r_relation_rew_list.append(r_relation_seg)
+            r_damage_rew_list.append(r_damage_seg)
+            r_fall_sums.append(float(r_fall_seg.sum()))
+            r_cross_sums.append(float(r_cross_seg.sum()))
+            r_relation_sums.append(float(r_relation_seg.sum()))
+            r_damage_sums.append(float(r_damage_seg.sum()))
 
         self.obs = np.concatenate(obs_list, axis=0)
         self.actions = np.concatenate(act_list, axis=0)
         self.log_probs = np.concatenate(lp_list, axis=0)
-        self.r1_rewards = r1_rew_list
-        self.r2_rewards = r2_rew_list
-        self.r3_rewards = r3_rew_list
+        self.r_fall_rewards = r_fall_rew_list
+        self.r_cross_rewards = r_cross_rew_list
+        self.r_relation_rewards = r_relation_rew_list
+        self.r_damage_rewards = r_damage_rew_list
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
-        self.r1_sums = r1_sums
-        self.r2_sums = r2_sums
-        self.r3_sums = r3_sums
+        self.r_fall_sums = r_fall_sums
+        self.r_cross_sums = r_cross_sums
+        self.r_relation_sums = r_relation_sums
+        self.r_damage_sums = r_damage_sums
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -216,6 +237,9 @@ class _PPOBuffer:
 # PPO update
 # ---------------------------------------------------------------------------
 
+REWARD_KEYS: Tuple[str, ...] = ("r_fall", "r_cross", "r_relation", "r_damage")
+
+
 def _ppo_update(
     actor: TanhGaussianMLPPolicy,
     critics: Dict[str, CriticMLP],
@@ -223,28 +247,32 @@ def _ppo_update(
     buf: _PPOBuffer,
     cfg: CurriculumConfig,
     device: torch.device,
-    stage_weights: Tuple[float, float, float],
+    stage_weights: Tuple[float, float, float, float],
 ) -> Dict[str, float]:
-    # Multi-critic GAE: compute separate advantages for each reward component
+    # Multi-critic GAE: compute separate advantages for each reward
+    # component. ALL critics (r_fall/r_cross/r_relation/r_damage) are updated every step,
+    # regardless of stage_weights — only the policy advantage signal is
+    # gated by stage_weights so the actor focuses on currently-active
+    # rewards.
     obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
-    
+
     # Compute values for each critic
-    values_all = {}
+    values_all: Dict[str, np.ndarray] = {}
     for key, critic in critics.items():
         with torch.no_grad():
             values_all[key] = critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
-    
+
     # Compute GAE for each reward component
-    advs_all = {}
-    rets_all = {}
-    val_all = {}
-    
-    for key in ['r1', 'r2', 'r3']:
+    advs_all: Dict[str, np.ndarray] = {}
+    rets_all: Dict[str, np.ndarray] = {}
+    val_all: Dict[str, np.ndarray] = {}
+
+    for key in REWARD_KEYS:
         advs_list = []
         rets_list = []
         val_list = []
         offset = 0
-        
+
         for i, T in enumerate(buf.ep_lengths):
             values = values_all[key][offset : offset + T]
             offset += T
@@ -255,7 +283,7 @@ def _ppo_update(
                 )
                 with torch.no_grad():
                     last_value = float(critics[key](fin_t).squeeze(-1).item())
-            
+
             rewards = getattr(buf, f"{key}_rewards")[i]
             adv, ret = compute_gae(
                 rewards=rewards,
@@ -267,16 +295,16 @@ def _ppo_update(
             advs_list.append(adv)
             rets_list.append(ret)
             val_list.append(values)
-        
+
         advs_all[key] = np.concatenate(advs_list)
         rets_all[key] = np.concatenate(rets_list)
         val_all[key] = np.concatenate(val_list)
-    
+
     # Prepare tensors
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
     old_lp_t = torch.as_tensor(buf.log_probs, dtype=torch.float32, device=device)
-    
+
     # Normalize advantages per component and combine with stage weights
     def _normalize_adv(adv: np.ndarray) -> np.ndarray:
         mean = float(adv.mean())
@@ -284,13 +312,17 @@ def _ppo_update(
         if std < 1e-8:
             return np.zeros_like(adv, dtype=np.float32)
         return ((adv - mean) / std).astype(np.float32)
-    
-    w1, w2, w3 = stage_weights
-    combined_adv = (
-        w1 * _normalize_adv(advs_all['r1']) +
-        w2 * _normalize_adv(advs_all['r2']) +
-        w3 * _normalize_adv(advs_all['r3'])
-    )
+
+    if len(stage_weights) != len(REWARD_KEYS):
+        raise ValueError(
+            f"stage_weights must have {len(REWARD_KEYS)} entries (one per "
+            f"reward in {REWARD_KEYS}); got {stage_weights!r}"
+        )
+    combined_adv = np.zeros_like(advs_all[REWARD_KEYS[0]], dtype=np.float32)
+    for w, key in zip(stage_weights, REWARD_KEYS):
+        if w == 0.0:
+            continue
+        combined_adv = combined_adv + float(w) * _normalize_adv(advs_all[key])
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     
     n = obs_t.shape[0]
@@ -307,16 +339,19 @@ def _ppo_update(
             idx = perm[s : s + cfg.minibatch_size]
             new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
             
-            # Compute value losses for all critics
+            # Compute value losses for all critics. Every critic
+            # (r_fall/r_cross/r_relation/r_damage) is updated every minibatch, regardless
+            # of the current stage_weights — only the actor's policy
+            # advantage is gated by stage.
             total_val_loss = 0.0
-            for key in ['r1', 'r2', 'r3']:
+            idx_cpu = idx.cpu().numpy()
+            for key in REWARD_KEYS:
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
-                idx_cpu = idx.cpu().numpy()
-                ret_val = torch.as_tensor(rets_all[key][idx_cpu], dtype=torch.float32, device=device)
-                
-                # MSE loss for value function
+                ret_val = torch.as_tensor(
+                    rets_all[key][idx_cpu], dtype=torch.float32, device=device,
+                )
                 val_loss = ((new_val - ret_val) ** 2).mean()
-                total_val_loss += val_loss
+                total_val_loss = total_val_loss + val_loss
             
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
@@ -425,18 +460,28 @@ def _batch_summary(buf: _PPOBuffer, max_steps: int) -> Dict[str, float]:
 
 def _reward_summary(buf: _PPOBuffer) -> Dict[str, float]:
     if not buf.ep_lengths:
-        return {"r1_mean": 0.0, "r2_mean": 0.0, "r3_mean": 0.0, "ep_reward_mean": 0.0}
-    
-    # Calculate total episode rewards from components
+        return {
+            "r_fall_mean": 0.0,
+            "r_cross_mean": 0.0, "r_relation_mean": 0.0, "r_damage_mean": 0.0,
+            "ep_reward_mean": 0.0,
+        }
+
+    # Total per-episode reward = sum of all 4 components (raw, unweighted).
     ep_rewards = []
-    for i in range(len(buf.r1_rewards)):
-        total_reward = buf.r1_rewards[i].sum() + buf.r2_rewards[i].sum() + buf.r3_rewards[i].sum()
+    for i in range(len(buf.r_cross_rewards)):
+        total_reward = (
+            buf.r_fall_rewards[i].sum()
+            + buf.r_cross_rewards[i].sum()
+            + buf.r_relation_rewards[i].sum()
+            + buf.r_damage_rewards[i].sum()
+        )
         ep_rewards.append(total_reward)
-    
+
     return {
-        "r1_mean": float(np.mean(buf.r1_sums)),
-        "r2_mean": float(np.mean(buf.r2_sums)),
-        "r3_mean": float(np.mean(buf.r3_sums)),
+        "r_fall_mean": float(np.mean(buf.r_fall_sums)),
+        "r_cross_mean": float(np.mean(buf.r_cross_sums)),
+        "r_relation_mean": float(np.mean(buf.r_relation_sums)),
+        "r_damage_mean": float(np.mean(buf.r_damage_sums)),
         "ep_reward_mean": float(np.mean(ep_rewards)),
     }
 
@@ -463,7 +508,6 @@ def _save_checkpoint(
             "critics_state_dict": {k: v.state_dict() for k, v in critics.items()},
             "optimizer_state_dict": optimizer.state_dict(),
             "gate_stage": gate.stage,
-            "gate_stage_training_counts": gate.stage_training_counts,
             "update": update,
             "best_eval": best_eval,
             "cfg": cfg.__dict__,
@@ -483,49 +527,71 @@ def _load_checkpoint(
 ) -> int:
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     actor.load_state_dict(payload["actor_state_dict"])
-    
-    # Handle both old single-critic and new multi-critic checkpoints
-    is_legacy_checkpoint = False
+
+    # Critic loading. Three formats are supported for backwards compat:
+    #   * new (4-critic): payload["critics_state_dict"] keyed by REWARD_KEYS
+    #   * old (3-critic): payload["critics_state_dict"] without ``r_fall``
+    #   * very old (single-critic): payload["critic_state_dict"]
+    # Any missing critic is left at fresh init; the optimizer is rebuilt
+    # whenever the critic param-count differs from the saved optimizer.
+    rebuild_optimizer = False
     if "critics_state_dict" in payload:
-        # New multi-critic format
+        saved = payload["critics_state_dict"]
+        loaded_keys = []
         for k, v in critics.items():
-            if k in payload["critics_state_dict"]:
-                v.load_state_dict(payload["critics_state_dict"][k])
+            if k in saved:
+                v.load_state_dict(saved[k])
+                loaded_keys.append(k)
             else:
-                print(f"[WARNING] Critic {k} not found in checkpoint, using random initialization", flush=True)
+                print(
+                    f"[INFO] Critic {k!r} not in checkpoint -> fresh init",
+                    flush=True,
+                )
+                rebuild_optimizer = True
+        # Saved keys that no longer exist also imply param-count drift.
+        if any(k not in critics for k in saved):
+            rebuild_optimizer = True
+        print(
+            f"[INFO] Loaded multi-critic weights for {loaded_keys}",
+            flush=True,
+        )
     elif "critic_state_dict" in payload:
-        # Old single-critic format: load into r1 critic (stage 1)
-        critics["r1"].load_state_dict(payload["critic_state_dict"])
-        print(f"[INFO] Loaded legacy single-critic weights into r1 critic for stage 1", flush=True)
-        is_legacy_checkpoint = True
+        critics["r_cross"].load_state_dict(payload["critic_state_dict"])
+        print(
+            "[INFO] Loaded legacy single-critic weights into r_cross critic",
+            flush=True,
+        )
+        rebuild_optimizer = True
     else:
-        print(f"[WARNING] No critic weights found in checkpoint, using random initialization", flush=True)
-    
-    # For legacy checkpoints, recreate optimizer due to parameter count mismatch
-    if is_legacy_checkpoint:
-        print(f"[INFO] Recreating optimizer for multi-critic architecture", flush=True)
+        print(
+            "[WARNING] No critic weights found in checkpoint, using random init",
+            flush=True,
+        )
+        rebuild_optimizer = True
+
+    if rebuild_optimizer:
+        print(
+            "[INFO] Rebuilding optimizer for current multi-critic layout",
+            flush=True,
+        )
         critic_params = []
         for c in critics.values():
             critic_params.extend(list(c.parameters()))
-        new_optimizer = torch.optim.Adam(
+        fresh_optimizer = torch.optim.Adam(
             list(actor.parameters()) + critic_params,
             lr=cfg.learning_rate,
         )
-        # Copy learning rate and other states from old optimizer if possible
         if "optimizer_state_dict" in payload:
-            old_opt_state = payload["optimizer_state_dict"]
-            if "param_groups" in old_opt_state and len(old_opt_state["param_groups"]) > 0:
-                new_optimizer.param_groups[0]["lr"] = old_opt_state["param_groups"][0].get("lr", cfg.learning_rate)
-        # Update the reference in the calling function
-        optimizer.load_state_dict(new_optimizer.state_dict())
+            old_state = payload["optimizer_state_dict"]
+            if old_state.get("param_groups"):
+                fresh_optimizer.param_groups[0]["lr"] = old_state[
+                    "param_groups"
+                ][0].get("lr", cfg.learning_rate)
+        optimizer.load_state_dict(fresh_optimizer.state_dict())
     else:
         optimizer.load_state_dict(payload["optimizer_state_dict"])
-    
+
     gate.stage = int(payload.get("gate_stage", 1))
-    # Restore stage training counts if available (new format)
-    if "gate_stage_training_counts" in payload:
-        gate.stage_training_counts = payload["gate_stage_training_counts"]
-        print(f"[INFO] Restored stage training counts: {gate.stage_training_counts}", flush=True)
     return int(payload.get("update", 0))
 
 
@@ -558,11 +624,12 @@ def train(
     actor: TanhGaussianMLPPolicy = init_policy_bp.build()
     actor = actor.to(device)
     
-    # Multi-critic architecture: one critic per reward component
+    # Multi-critic architecture: one critic per reward component.
+    # ``r_fall`` is its own component (terminal-only sparse penalty) so
+    # the cross_support critic doesn't have to memorize the fall spike.
     critics = {
-        'r1': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
-        'r2': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
-        'r3': CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device),
+        key: CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device)
+        for key in REWARD_KEYS
     }
     
     # Optimizer includes all parameters
@@ -626,7 +693,7 @@ def train(
             # 4.4 Build per-agent PPO buffers directly from Episodes
             t0 = time.perf_counter()
             gate_info = gate.current_state()
-            stage_weights: Tuple[float, float, float] = gate_info["weights"]
+            stage_weights: Tuple[float, float, float, float] = gate_info["weights"]
             target_agent = _agent_from_rollout_seed(rollout_seed)
 
             buf = _PPOBuffer(
@@ -635,9 +702,9 @@ def train(
                 actor=actor,
                 device=device,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
-                r1_scale=cfg.r1_scale,
-                r2_scale=cfg.r2_scale,
-                r3_scale=cfg.r3_scale,
+                r_cross_scale=cfg.r_cross_scale,
+                r_relation_scale=cfg.r_relation_scale,
+                r_damage_scale=cfg.r_damage_scale,
             )
             t_buffer = time.perf_counter() - t0
             if buf.is_empty():
@@ -647,8 +714,6 @@ def train(
             # 4.5 PPO update
             t0 = time.perf_counter()
             stats = _ppo_update(actor, critics, optimizer, buf, cfg, device, stage_weights)
-            # Increment training count for progressive weight scaling
-            gate.increment_training_count()
             t_ppo = time.perf_counter() - t0
 
             # 4.6 Logging
@@ -659,7 +724,8 @@ def train(
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
                 f"ep_reward={rsum['ep_reward_mean']:+.4f} "
                 f"len={bsum['mean_length']:6.2f} term={bsum['term_rate']:.3f} "
-                f"r1={rsum['r1_mean']:+.3f} r2={rsum['r2_mean']:+.3f} r3={rsum['r3_mean']:+.3f} "
+                f"r_fall={rsum['r_fall_mean']:+.3f} "
+                f"r_cross={rsum['r_cross_mean']:+.3f} r_relation={rsum['r_relation_mean']:+.3f} r_damage={rsum['r_damage_mean']:+.3f} "
                 f"policy_loss={stats['policy_loss']:+.5f} "
                 f"value_loss={stats['value_loss']:+.5f} "
                 f"kl={stats['approx_kl']:.4f}"
@@ -683,9 +749,9 @@ def train(
                     actor=actor,
                     device=device,
                     terminal_fall_penalty=0.0,
-                    r1_scale=cfg.r1_scale,
-                    r2_scale=cfg.r2_scale,
-                    r3_scale=cfg.r3_scale,
+                    r_cross_scale=cfg.r_cross_scale,
+                    r_relation_scale=cfg.r_relation_scale,
+                    r_damage_scale=cfg.r_damage_scale,
                 )
                 if not eval_buf.is_empty():
                     esum = _batch_summary(eval_buf, cfg.max_steps)
