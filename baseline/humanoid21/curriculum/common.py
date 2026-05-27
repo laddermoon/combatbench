@@ -144,6 +144,7 @@ class CurriculumConfig:
 
     # PPO knobs.
     learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4  # Separate LR for critics (can be different from actor)
     clip_eps: float = 0.2
     value_loss_coef: float = 0.5
     entropy_coef: float = 1e-3

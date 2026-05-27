@@ -5,7 +5,8 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_curriculum.py
 Resume:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py \
-    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260526_165233/checkpoints/checkpoint_u01110.pt &> train.log & 
+    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260527_152105/checkpoints/checkpoint_u00600.pt &> train.log & 
+
 
 Gen Video:
 cd /data1/mono/things/combatbench

@@ -370,14 +370,21 @@ def _ppo_update(
         if early_stop:
             break
     
-    # Aggregate value losses
+    # Aggregate value losses per critic
     total_val_losses = [np.mean(val_losses[key]) if val_losses[key] else 0.0 for key in REWARD_KEYS]
+    
+    # Per-critic detailed losses for structured logging
+    per_critic_losses: Dict[str, float] = {
+        f"vloss_{key}": float(np.mean(val_losses[key])) if val_losses[key] else 0.0
+        for key in REWARD_KEYS
+    }
     
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean(total_val_losses)),
         "approx_kl": float(np.mean(kls)) if kls else 0.0,
         "early_stop_kl": early_stop_kl,
+        **per_critic_losses,
     }
 
 
@@ -440,31 +447,34 @@ def _batch_summary(buf: _PPOBuffer, max_steps: int) -> Dict[str, float]:
     }
 
 
-def _reward_summary(buf: _PPOBuffer) -> Dict[str, float]:
+def _reward_summary(buf: _PPOBuffer) -> Dict[str, Any]:
+    """Return per-reward statistics including mean and std for diagnostics."""
+    empty_return: Dict[str, Any] = {
+        "r_fall_mean": 0.0, "r_fall_std": 0.0,
+        "r_cross_mean": 0.0, "r_cross_std": 0.0,
+        "r_relation_mean": 0.0, "r_relation_std": 0.0,
+        "r_damage_mean": 0.0, "r_damage_std": 0.0,
+    }
     if not buf.ep_lengths:
-        return {
-            "r_fall_mean": 0.0,
-            "r_cross_mean": 0.0, "r_relation_mean": 0.0, "r_damage_mean": 0.0,
-            "ep_reward_mean": 0.0,
-        }
+        return empty_return
 
-    # Total per-episode reward = sum of all 4 components (raw, unweighted).
-    ep_rewards = []
-    for i in range(len(buf.r_cross_rewards)):
-        total_reward = (
-            buf.r_fall_rewards[i].sum()
-            + buf.r_cross_rewards[i].sum()
-            + buf.r_relation_rewards[i].sum()
-            + buf.r_damage_rewards[i].sum()
-        )
-        ep_rewards.append(total_reward)
+    def _mean_std(arr: List[float]) -> Tuple[float, float]:
+        if not arr:
+            return 0.0, 0.0
+        mean = float(np.mean(arr))
+        std = float(np.std(arr))  # population std
+        return mean, std
+
+    r_fall_mean, r_fall_std = _mean_std(buf.r_fall_sums)
+    r_cross_mean, r_cross_std = _mean_std(buf.r_cross_sums)
+    r_relation_mean, r_relation_std = _mean_std(buf.r_relation_sums)
+    r_damage_mean, r_damage_std = _mean_std(buf.r_damage_sums)
 
     return {
-        "r_fall_mean": float(np.mean(buf.r_fall_sums)),
-        "r_cross_mean": float(np.mean(buf.r_cross_sums)),
-        "r_relation_mean": float(np.mean(buf.r_relation_sums)),
-        "r_damage_mean": float(np.mean(buf.r_damage_sums)),
-        "ep_reward_mean": float(np.mean(ep_rewards)),
+        "r_fall_mean": r_fall_mean, "r_fall_std": r_fall_std,
+        "r_cross_mean": r_cross_mean, "r_cross_std": r_cross_std,
+        "r_relation_mean": r_relation_mean, "r_relation_std": r_relation_std,
+        "r_damage_mean": r_damage_mean, "r_damage_std": r_damage_std,
     }
 
 
@@ -605,10 +615,10 @@ def train(
         for key in REWARD_KEYS
     }
     
-    # Separate optimizers for actor and each critic
+    # Separate optimizers for actor and each critic (can have different learning rates)
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cfg.learning_rate)
     critic_optimizers = {
-        key: torch.optim.Adam(critics[key].parameters(), lr=cfg.learning_rate)
+        key: torch.optim.Adam(critics[key].parameters(), lr=cfg.critic_learning_rate)
         for key in REWARD_KEYS
     }
 
@@ -619,7 +629,7 @@ def train(
     )
 
     start_update = 1
-    best_eval: tuple = (-1, -float("inf"), -float("inf"))
+    best_eval: tuple = (-1, -float("inf"))
 
     # 3. Resume
     if resume_from is not None:
@@ -685,18 +695,22 @@ def train(
             )
             t_ppo = time.perf_counter() - t0
 
-            # 4.6 Logging
+            # 4.6 Logging (structured with reward std and per-critic losses)
             bsum = _batch_summary(buf, cfg.max_steps)
             rsum = _reward_summary(buf)
             line = (
                 f"update={u:4d} stage={gate_info['stage']} "
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
-                f"ep_reward={rsum['ep_reward_mean']:+.4f} "
                 f"len={bsum['mean_length']:6.2f} term={bsum['term_rate']:.3f} "
-                f"r_fall={rsum['r_fall_mean']:+.3f} "
-                f"r_cross={rsum['r_cross_mean']:+.3f} r_relation={rsum['r_relation_mean']:+.3f} r_damage={rsum['r_damage_mean']:+.3f} "
+                f"r_fall={rsum['r_fall_mean']:+.3f}±{rsum['r_fall_std']:.3f} "
+                f"r_cross={rsum['r_cross_mean']:+.3f}±{rsum['r_cross_std']:.3f} "
+                f"r_relation={rsum['r_relation_mean']:+.3f}±{rsum['r_relation_std']:.3f} "
+                f"r_damage={rsum['r_damage_mean']:+.3f}±{rsum['r_damage_std']:.3f} "
                 f"policy_loss={stats['policy_loss']:+.5f} "
-                f"value_loss={stats['value_loss']:+.5f} "
+                f"vloss_r_fall={stats.get('vloss_r_fall', 0.0):.4f} "
+                f"vloss_r_cross={stats.get('vloss_r_cross', 0.0):.4f} "
+                f"vloss_r_relation={stats.get('vloss_r_relation', 0.0):.4f} "
+                f"vloss_r_damage={stats.get('vloss_r_damage', 0.0):.4f} "
                 f"kl={stats['approx_kl']:.4f}"
             )
 
@@ -720,10 +734,8 @@ def train(
                 )
                 if not eval_buf.is_empty():
                     esum = _batch_summary(eval_buf, cfg.max_steps)
-                    ersum = _reward_summary(eval_buf)
                     line += (
-                        f"| ep_reward={ersum['ep_reward_mean']:+.4f}"
-                        f" len={esum['mean_length']:6.2f}"
+                        f"| len={esum['mean_length']:6.2f}"
                         f" term={esum['term_rate']:.3f}"
                     )
                     # Stage gate decision
@@ -732,7 +744,7 @@ def train(
                     if gate_info["stage"] != prev_stage:
                         line += f"  [stage {prev_stage}->{gate_info['stage']} {gate_info['reason']}]"
                     # Best-of-run snapshot
-                    score = (gate_info["stage"], esum["mean_length"], ersum["ep_reward_mean"])
+                    score = (gate_info["stage"], esum["mean_length"])
                     if score > best_eval:
                         best_eval = score
                         export_actor_policy_artifacts(
@@ -744,7 +756,6 @@ def train(
                                 "stage": gate_info["stage"],
                                 "weights": list(gate_info["weights"]),
                                 "best_eval_length": esum["mean_length"],
-                                "best_eval_reward": ersum["ep_reward_mean"],
                             },
                         )
                         line += "  [new_best]"
