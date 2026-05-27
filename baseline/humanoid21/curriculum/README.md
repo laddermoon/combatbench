@@ -26,3 +26,11 @@ python3 -m envs.framework.round_runner \
 
 python3 -m envs.framework.recorder_viewer --no-browser _debug/run01
 
+
+
+总体的处理流程：
+Rollout得到原始数据。
+
+进行奖励计算。 计算4种奖励。 使用原始奖励。
+
+

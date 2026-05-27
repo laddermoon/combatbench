@@ -97,13 +97,9 @@ class _PPOBuffer:
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
         terminal_fall_penalty: float,
-        r_cross_scale: float = 1.0,
-        r_relation_scale: float = 1.0,
-        r_damage_scale: float = 1.0,
     ):
-        # ``stage_weights`` is consumed by the PPO update (per-component
-        # advantage combination); the buffer just stores raw per-step
-        # signals for each component independently.
+        # Buffer only stores raw per-step rewards for each component.
+        # No scaling applied here - scaling happens during optimization.
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
@@ -184,20 +180,14 @@ class _PPOBuffer:
         r_damage_sums: List[float] = []
 
         for i, T in enumerate(ep_lens):
-            # Apply per-component reward scales BEFORE storing so that
-            # GAE/critic targets and the per-component value losses
-            # operate on the same magnitude as the policy advantage path.
-            # Without this, raw r_relation/r_damage sums (~25-100/ep) drive critic
-            # gradients orders of magnitude larger than the actor's,
-            # and the global grad-norm clip starves actor learning.
-            r_cross_seg = (r_cross_per_step[i] * r_cross_scale).astype(np.float32)
-            r_relation_seg = (r_relation_per_step[i] * r_relation_scale).astype(np.float32)
-            r_damage_seg = (r_damage_per_step[i] * r_damage_scale).astype(np.float32)
+            # Store raw rewards without any scaling.
+            # Scaling will be applied during optimization.
+            r_cross_seg = r_cross_per_step[i].astype(np.float32)
+            r_relation_seg = r_relation_per_step[i].astype(np.float32)
+            r_damage_seg = r_damage_per_step[i].astype(np.float32)
 
             # r_fall: dedicated sparse signal — single negative spike on
-            # the terminal step iff the episode ended in a fall. Has its
-            # own critic (in _ppo_update) so the value head for "did I
-            # fall at the end?" is decoupled from cross_support balance.
+            # the terminal step iff the episode ended in a fall.
             r_fall_seg = np.zeros(T, dtype=np.float32)
             if terms[i] and terminal_fall_penalty > 0.0:
                 r_fall_seg[-1] = -float(terminal_fall_penalty)
@@ -243,17 +233,16 @@ REWARD_KEYS: Tuple[str, ...] = ("r_fall", "r_cross", "r_relation", "r_damage")
 def _ppo_update(
     actor: TanhGaussianMLPPolicy,
     critics: Dict[str, CriticMLP],
-    optimizer: torch.optim.Optimizer,
+    actor_optimizer: torch.optim.Optimizer,
+    critic_optimizers: Dict[str, torch.optim.Optimizer],
     buf: _PPOBuffer,
     cfg: CurriculumConfig,
     device: torch.device,
     stage_weights: Tuple[float, float, float, float],
 ) -> Dict[str, float]:
-    # Multi-critic GAE: compute separate advantages for each reward
-    # component. ALL critics (r_fall/r_cross/r_relation/r_damage) are updated every step,
-    # regardless of stage_weights — only the policy advantage signal is
-    # gated by stage_weights so the actor focuses on currently-active
-    # rewards.
+    # Multi-critic GAE: compute separate advantages for each reward component.
+    # Each critic is optimized independently with its own optimizer.
+    # Actor is optimized separately with its own optimizer.
     obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
 
     # Compute values for each critic
@@ -265,12 +254,10 @@ def _ppo_update(
     # Compute GAE for each reward component
     advs_all: Dict[str, np.ndarray] = {}
     rets_all: Dict[str, np.ndarray] = {}
-    val_all: Dict[str, np.ndarray] = {}
 
     for key in REWARD_KEYS:
         advs_list = []
         rets_list = []
-        val_list = []
         offset = 0
 
         for i, T in enumerate(buf.ep_lengths):
@@ -294,11 +281,9 @@ def _ppo_update(
             )
             advs_list.append(adv)
             rets_list.append(ret)
-            val_list.append(values)
 
         advs_all[key] = np.concatenate(advs_list)
         rets_all[key] = np.concatenate(rets_list)
-        val_all[key] = np.concatenate(val_list)
 
     # Prepare tensors
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
@@ -327,7 +312,7 @@ def _ppo_update(
     
     n = obs_t.shape[0]
     pol_losses: List[float] = []
-    val_losses: List[float] = []
+    val_losses: Dict[str, List[float]] = {key: [] for key in REWARD_KEYS}
     kls: List[float] = []
     early_stop_kl = 0.0
     
@@ -337,21 +322,25 @@ def _ppo_update(
         
         for s in range(0, n, cfg.minibatch_size):
             idx = perm[s : s + cfg.minibatch_size]
-            new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
-            
-            # Compute value losses for all critics. Every critic
-            # (r_fall/r_cross/r_relation/r_damage) is updated every minibatch, regardless
-            # of the current stage_weights — only the actor's policy
-            # advantage is gated by stage.
-            total_val_loss = 0.0
             idx_cpu = idx.cpu().numpy()
+            
+            # Step 1: Update each critic independently
             for key in REWARD_KEYS:
+                critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
                 ret_val = torch.as_tensor(
                     rets_all[key][idx_cpu], dtype=torch.float32, device=device,
                 )
                 val_loss = ((new_val - ret_val) ** 2).mean()
-                total_val_loss = total_val_loss + val_loss
+                val_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    critics[key].parameters(), cfg.grad_clip_norm,
+                )
+                critic_optimizers[key].step()
+                val_losses[key].append(float(val_loss))
+            
+            # Step 2: Update actor (after all critics are updated)
+            new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
             
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
@@ -367,33 +356,26 @@ def _ppo_update(
             surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv_t[idx]
             policy_loss = -torch.min(surr1, surr2).mean()
             
-            # Total loss
-            loss = policy_loss + cfg.value_loss_coef * total_val_loss - cfg.entropy_coef * entropy.mean()
+            # Actor loss (no value loss here - critics are updated separately)
+            loss = policy_loss - cfg.entropy_coef * entropy.mean()
             
-            optimizer.zero_grad()
+            actor_optimizer.zero_grad()
             loss.backward()
-            # Clip actor and critics SEPARATELY. A single global clip over
-            # (actor + N critics) lets a critic gradient explosion (e.g.,
-            # an under-trained critic chasing a large-magnitude return)
-            # rescale the actor gradient down by the same factor, which
-            # silently freezes policy learning.
             torch.nn.utils.clip_grad_norm_(
-                list(actor.parameters()), cfg.grad_clip_norm,
+                actor.parameters(), cfg.grad_clip_norm,
             )
-            torch.nn.utils.clip_grad_norm_(
-                [p for c in critics.values() for p in c.parameters()],
-                cfg.grad_clip_norm,
-            )
-            optimizer.step()
+            actor_optimizer.step()
             pol_losses.append(float(policy_loss))
-            val_losses.append(float(total_val_loss))
         
         if early_stop:
             break
     
+    # Aggregate value losses
+    total_val_losses = [np.mean(val_losses[key]) if val_losses[key] else 0.0 for key in REWARD_KEYS]
+    
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
-        "value_loss": float(np.mean(val_losses)) if val_losses else 0.0,
+        "value_loss": float(np.mean(total_val_losses)),
         "approx_kl": float(np.mean(kls)) if kls else 0.0,
         "early_stop_kl": early_stop_kl,
     }
@@ -495,7 +477,8 @@ def _save_checkpoint(
     *,
     actor: torch.nn.Module,
     critics: Dict[str, torch.nn.Module],
-    optimizer: torch.optim.Optimizer,
+    actor_optimizer: torch.optim.Optimizer,
+    critic_optimizers: Dict[str, torch.optim.Optimizer],
     gate: CurriculumStageGate,
     update: int,
     best_eval: tuple,
@@ -506,7 +489,8 @@ def _save_checkpoint(
         {
             "actor_state_dict": actor.state_dict(),
             "critics_state_dict": {k: v.state_dict() for k, v in critics.items()},
-            "optimizer_state_dict": optimizer.state_dict(),
+            "actor_optimizer_state_dict": actor_optimizer.state_dict(),
+            "critic_optimizers_state_dict": {k: v.state_dict() for k, v in critic_optimizers.items()},
             "gate_stage": gate.stage,
             "update": update,
             "best_eval": best_eval,
@@ -521,7 +505,8 @@ def _load_checkpoint(
     *,
     actor: torch.nn.Module,
     critics: Dict[str, torch.nn.Module],
-    optimizer: torch.optim.Optimizer,
+    actor_optimizer: torch.optim.Optimizer,
+    critic_optimizers: Dict[str, torch.optim.Optimizer],
     gate: CurriculumStageGate,
     cfg: CurriculumConfig,
 ) -> int:
@@ -532,9 +517,6 @@ def _load_checkpoint(
     #   * new (4-critic): payload["critics_state_dict"] keyed by REWARD_KEYS
     #   * old (3-critic): payload["critics_state_dict"] without ``r_fall``
     #   * very old (single-critic): payload["critic_state_dict"]
-    # Any missing critic is left at fresh init; the optimizer is rebuilt
-    # whenever the critic param-count differs from the saved optimizer.
-    rebuild_optimizer = False
     if "critics_state_dict" in payload:
         saved = payload["critics_state_dict"]
         loaded_keys = []
@@ -547,10 +529,6 @@ def _load_checkpoint(
                     f"[INFO] Critic {k!r} not in checkpoint -> fresh init",
                     flush=True,
                 )
-                rebuild_optimizer = True
-        # Saved keys that no longer exist also imply param-count drift.
-        if any(k not in critics for k in saved):
-            rebuild_optimizer = True
         print(
             f"[INFO] Loaded multi-critic weights for {loaded_keys}",
             flush=True,
@@ -561,35 +539,30 @@ def _load_checkpoint(
             "[INFO] Loaded legacy single-critic weights into r_cross critic",
             flush=True,
         )
-        rebuild_optimizer = True
     else:
         print(
             "[WARNING] No critic weights found in checkpoint, using random init",
             flush=True,
         )
-        rebuild_optimizer = True
 
-    if rebuild_optimizer:
-        print(
-            "[INFO] Rebuilding optimizer for current multi-critic layout",
-            flush=True,
-        )
-        critic_params = []
-        for c in critics.values():
-            critic_params.extend(list(c.parameters()))
-        fresh_optimizer = torch.optim.Adam(
-            list(actor.parameters()) + critic_params,
-            lr=cfg.learning_rate,
-        )
-        if "optimizer_state_dict" in payload:
-            old_state = payload["optimizer_state_dict"]
-            if old_state.get("param_groups"):
-                fresh_optimizer.param_groups[0]["lr"] = old_state[
-                    "param_groups"
-                ][0].get("lr", cfg.learning_rate)
-        optimizer.load_state_dict(fresh_optimizer.state_dict())
-    else:
-        optimizer.load_state_dict(payload["optimizer_state_dict"])
+    # Load optimizer states if available (new format with separate optimizers)
+    if "actor_optimizer_state_dict" in payload:
+        try:
+            actor_optimizer.load_state_dict(payload["actor_optimizer_state_dict"])
+        except RuntimeError as e:
+            print(f"[WARNING] Actor optimizer state mismatch: {e}", flush=True)
+    elif "optimizer_state_dict" in payload:
+        # Legacy format - ignore, start fresh optimizers
+        print("[INFO] Legacy combined optimizer found, using fresh optimizer states", flush=True)
+    
+    if "critic_optimizers_state_dict" in payload:
+        saved_crit_opt = payload["critic_optimizers_state_dict"]
+        for k, opt in critic_optimizers.items():
+            if k in saved_crit_opt:
+                try:
+                    opt.load_state_dict(saved_crit_opt[k])
+                except RuntimeError as e:
+                    print(f"[WARNING] Critic {k} optimizer state mismatch: {e}", flush=True)
 
     gate.stage = int(payload.get("gate_stage", 1))
     return int(payload.get("update", 0))
@@ -632,14 +605,12 @@ def train(
         for key in REWARD_KEYS
     }
     
-    # Optimizer includes all parameters
-    critic_params = []
-    for c in critics.values():
-        critic_params.extend(list(c.parameters()))
-    optimizer = torch.optim.Adam(
-        list(actor.parameters()) + critic_params,
-        lr=cfg.learning_rate,
-    )
+    # Separate optimizers for actor and each critic
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cfg.learning_rate)
+    critic_optimizers = {
+        key: torch.optim.Adam(critics[key].parameters(), lr=cfg.learning_rate)
+        for key in REWARD_KEYS
+    }
 
     gate = CurriculumStageGate(
         max_steps=cfg.max_steps,
@@ -654,7 +625,8 @@ def train(
     if resume_from is not None:
         start_update = _load_checkpoint(
             Path(resume_from), actor=actor, critics=critics,
-            optimizer=optimizer, gate=gate, cfg=cfg,
+            actor_optimizer=actor_optimizer, critic_optimizers=critic_optimizers,
+            gate=gate, cfg=cfg,
         )
         print(f"[resume] loaded from {resume_from}, starting at update={start_update}", flush=True)
 
@@ -694,7 +666,6 @@ def train(
             t0 = time.perf_counter()
             gate_info = gate.current_state()
             stage_weights: Tuple[float, float, float, float] = gate_info["weights"]
-            target_agent = _agent_from_rollout_seed(rollout_seed)
 
             buf = _PPOBuffer(
                 episodes=episodes,
@@ -702,25 +673,23 @@ def train(
                 actor=actor,
                 device=device,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
-                r_cross_scale=cfg.r_cross_scale,
-                r_relation_scale=cfg.r_relation_scale,
-                r_damage_scale=cfg.r_damage_scale,
             )
             t_buffer = time.perf_counter() - t0
-            if buf.is_empty():
-                print(f"update={u} | no episodes for target={target_agent}", flush=True)
-                continue
+            
 
             # 4.5 PPO update
             t0 = time.perf_counter()
-            stats = _ppo_update(actor, critics, optimizer, buf, cfg, device, stage_weights)
+            stats = _ppo_update(
+                actor, critics, actor_optimizer, critic_optimizers,
+                buf, cfg, device, stage_weights,
+            )
             t_ppo = time.perf_counter() - t0
 
             # 4.6 Logging
             bsum = _batch_summary(buf, cfg.max_steps)
             rsum = _reward_summary(buf)
             line = (
-                f"update={u:4d} target={target_agent} stage={gate_info['stage']} "
+                f"update={u:4d} stage={gate_info['stage']} "
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
                 f"ep_reward={rsum['ep_reward_mean']:+.4f} "
                 f"len={bsum['mean_length']:6.2f} term={bsum['term_rate']:.3f} "
@@ -736,7 +705,6 @@ def train(
             if u % cfg.eval_interval == 0:
                 t0 = time.perf_counter()
                 eval_seed = cfg.seed + 100_000 + u * 97
-                eval_target = _agent_from_rollout_seed(eval_seed)
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
                 eval_jobs = _build_rollout_jobs(
                     env_pb, det_bp, eval_seed,
@@ -749,16 +717,12 @@ def train(
                     actor=actor,
                     device=device,
                     terminal_fall_penalty=0.0,
-                    r_cross_scale=cfg.r_cross_scale,
-                    r_relation_scale=cfg.r_relation_scale,
-                    r_damage_scale=cfg.r_damage_scale,
                 )
                 if not eval_buf.is_empty():
                     esum = _batch_summary(eval_buf, cfg.max_steps)
                     ersum = _reward_summary(eval_buf)
                     line += (
-                        f" | eval target={eval_target}"
-                        f" ep_reward={ersum['ep_reward_mean']:+.4f}"
+                        f"| ep_reward={ersum['ep_reward_mean']:+.4f}"
                         f" len={esum['mean_length']:6.2f}"
                         f" term={esum['term_rate']:.3f}"
                     )
@@ -802,7 +766,8 @@ def train(
             if u % cfg.eval_interval == 0 or u == 1:
                 _save_checkpoint(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",
-                    actor=actor, critics=critics, optimizer=optimizer,
+                    actor=actor, critics=critics,
+                    actor_optimizer=actor_optimizer, critic_optimizers=critic_optimizers,
                     gate=gate, update=u, best_eval=best_eval, cfg=cfg,
                 )
 
