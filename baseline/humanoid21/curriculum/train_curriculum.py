@@ -161,10 +161,6 @@ class _PPOBuffer:
             self.final_obs = []
             self.is_terminated = []
             self.ep_lengths = []
-            self.r_fall_sums = []
-            self.r_cross_sums = []
-            self.r_relation_sums = []
-            self.r_damage_sums = []
             return
 
         # Store raw reward components separately for multi-critic training.
@@ -174,10 +170,6 @@ class _PPOBuffer:
         r_cross_rew_list: List[np.ndarray] = []
         r_relation_rew_list: List[np.ndarray] = []
         r_damage_rew_list: List[np.ndarray] = []
-        r_fall_sums: List[float] = []
-        r_cross_sums: List[float] = []
-        r_relation_sums: List[float] = []
-        r_damage_sums: List[float] = []
 
         for i, T in enumerate(ep_lens):
             # Store raw rewards without any scaling.
@@ -196,10 +188,6 @@ class _PPOBuffer:
             r_cross_rew_list.append(r_cross_seg)
             r_relation_rew_list.append(r_relation_seg)
             r_damage_rew_list.append(r_damage_seg)
-            r_fall_sums.append(float(r_fall_seg.sum()))
-            r_cross_sums.append(float(r_cross_seg.sum()))
-            r_relation_sums.append(float(r_relation_seg.sum()))
-            r_damage_sums.append(float(r_damage_seg.sum()))
 
         self.obs = np.concatenate(obs_list, axis=0)
         self.actions = np.concatenate(act_list, axis=0)
@@ -211,10 +199,6 @@ class _PPOBuffer:
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
-        self.r_fall_sums = r_fall_sums
-        self.r_cross_sums = r_cross_sums
-        self.r_relation_sums = r_relation_sums
-        self.r_damage_sums = r_damage_sums
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -251,6 +235,12 @@ def _ppo_update(
         with torch.no_grad():
             values_all[key] = critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
 
+    # Diagnostic: print Critic prediction range vs Return range
+    print("[DEBUG] Critic predictions vs Returns:", flush=True)
+    for key in REWARD_KEYS:
+        v = values_all[key]
+        print(f"  {key}: value_pred=[{v.min():+.3f}, {v.max():+.3f}] mean={v.mean():+.3f} std={v.std():.3f}", flush=True)
+
     # Compute GAE for each reward component
     advs_all: Dict[str, np.ndarray] = {}
     rets_all: Dict[str, np.ndarray] = {}
@@ -284,6 +274,8 @@ def _ppo_update(
 
         advs_all[key] = np.concatenate(advs_list)
         rets_all[key] = np.concatenate(rets_list)
+        r = rets_all[key]
+        print(f"  {key}: return=[{r.min():+.3f}, {r.max():+.3f}] mean={r.mean():+.3f} std={r.std():.3f}", flush=True)
 
     # Prepare tensors
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
@@ -448,7 +440,11 @@ def _batch_summary(buf: _PPOBuffer, max_steps: int) -> Dict[str, float]:
 
 
 def _reward_summary(buf: _PPOBuffer) -> Dict[str, Any]:
-    """Return per-reward statistics including mean and std for diagnostics."""
+    """Return per-step reward statistics (mean/std) for diagnostics.
+    
+    Note: Critic learns per-step value, so we report per-step reward distribution,
+    not per-episode sums.
+    """
     empty_return: Dict[str, Any] = {
         "r_fall_mean": 0.0, "r_fall_std": 0.0,
         "r_cross_mean": 0.0, "r_cross_std": 0.0,
@@ -458,17 +454,19 @@ def _reward_summary(buf: _PPOBuffer) -> Dict[str, Any]:
     if not buf.ep_lengths:
         return empty_return
 
-    def _mean_std(arr: List[float]) -> Tuple[float, float]:
-        if not arr:
+    def _concat_mean_std(reward_list: List[np.ndarray]) -> Tuple[float, float]:
+        """Concat all step rewards and compute mean/std."""
+        if not reward_list:
             return 0.0, 0.0
-        mean = float(np.mean(arr))
-        std = float(np.std(arr))  # population std
-        return mean, std
+        concat = np.concatenate(reward_list)
+        if concat.size == 0:
+            return 0.0, 0.0
+        return float(concat.mean()), float(concat.std())
 
-    r_fall_mean, r_fall_std = _mean_std(buf.r_fall_sums)
-    r_cross_mean, r_cross_std = _mean_std(buf.r_cross_sums)
-    r_relation_mean, r_relation_std = _mean_std(buf.r_relation_sums)
-    r_damage_mean, r_damage_std = _mean_std(buf.r_damage_sums)
+    r_fall_mean, r_fall_std = _concat_mean_std(buf.r_fall_rewards)
+    r_cross_mean, r_cross_std = _concat_mean_std(buf.r_cross_rewards)
+    r_relation_mean, r_relation_std = _concat_mean_std(buf.r_relation_rewards)
+    r_damage_mean, r_damage_std = _concat_mean_std(buf.r_damage_rewards)
 
     return {
         "r_fall_mean": r_fall_mean, "r_fall_std": r_fall_std,
