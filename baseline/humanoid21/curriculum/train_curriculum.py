@@ -30,7 +30,7 @@ from baseline.common.policies import (
     export_actor_policy_artifacts,
 )
 from baseline.common.rollout import Episode, ParallelRollouter
-from baseline.humanoid21.common import (
+from baseline.humanoid21.curriculum.common import (
     CONTROL_FREQUENCY,
     CurriculumConfig,
     CurriculumStageGate,
