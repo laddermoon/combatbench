@@ -5,16 +5,16 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_curriculum.py
 Resume:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py \
-    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260527_175448/checkpoints/checkpoint_u00835.pt &> train.log & 
+    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260527_182902/checkpoints/checkpoint_u01710.pt &> train.log & 
 
 
 Gen Video:
 cd /data1/mono/things/combatbench
 python3 -m envs.framework.round_runner \
   --env-blueprint envs/humanoid21/blueprint.yaml \
-  --policy-a-blueprint baseline/humanoid21/runs/curriculum_20260527_012459/policy/policy_blueprint.yaml \
-  --policy-b-blueprint baseline/humanoid21/runs/curriculum_20260526_115427/policy/policy_blueprint.yaml \
-  --video out.mp4
+  --policy-a-blueprint baseline/humanoid21/runs/curriculum_20260528_000040/policy_exports/u02900/policy_blueprint.yaml \
+  --policy-b-blueprint baseline/humanoid21/runs/curriculum_20260528_000040/policy_exports/u02800/policy_blueprint.yaml \
+  --video out3.mp4
 
 
 DEBUG:

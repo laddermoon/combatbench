@@ -266,7 +266,7 @@ def _ppo_update(
                 rewards=rewards,
                 values=values,
                 last_value=last_value,
-                gamma=cfg.gamma,
+                gamma=cfg.gammas[key],
                 lam=cfg.gae_lambda,
             )
             advs_list.append(adv)

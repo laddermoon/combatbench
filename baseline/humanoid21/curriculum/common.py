@@ -63,10 +63,6 @@ CURRICULUM_DAMAGE_SCALE = 100.0
 #     of points. Scale 0.05 keeps the per-episode contribution comparable
 #     to r_cross + r_relation.
 #
-# All three constants can be overridden via env var for ablations.
-CURRICULUM_R_CROSS_SCALE = float(os.environ.get("CURRICULUM_R_CROSS_SCALE", "0.02"))
-CURRICULUM_R_RELATION_SCALE = float(os.environ.get("CURRICULUM_R_RELATION_SCALE", "0.02"))
-CURRICULUM_R_DAMAGE_SCALE = float(os.environ.get("CURRICULUM_R_DAMAGE_SCALE", "0.05"))
 # Terminal fall penalty — subtracted from the LAST step reward of every
 # imbalance-terminated trajectory, in EVERY stage (falling is bad
 # regardless of which stage we're in). Mirrors stage1.py's
@@ -154,7 +150,25 @@ class CurriculumConfig:
     minibatch_size: int = 4096 * 8
 
     # GAE.
-    gamma: float = 0.99
+    # ---- Per-reward γ (discount = credit-assignment horizon) ----
+    # Env runs at 20 Hz, so effective horizon in steps ≈ 1/(1-γ),
+    # in seconds ≈ horizon_steps / 20. Choose γ from the *physical
+    # causal time-scale* of each reward, not from agent speed:
+    #   r_fall     : fall is foreshadowed ~1-2s ahead → γ≈0.97 (~30 steps, ~1.5s)
+    #   r_cross    : balance/support drifts ~1-2s     → γ≈0.97
+    #   r_relation : a single body turn can flip the
+    #                relative-position signal → shorter
+    #                horizon, ~0.7s             → γ≈0.93 (~14 steps)
+    #   r_damage   : impact is near-instantaneous,
+    #                only the last few frames cause it → γ≈0.80 (~5 steps)
+    # λ is the Critic-trust knob (bias-variance), not a physical
+    # time-scale, so we keep ONE shared λ across all critics.
+    gammas: Dict[str, float] = field(default_factory=lambda: {
+        "r_fall": 0.99,
+        "r_cross": 0.99,
+        "r_relation": 0.85,
+        "r_damage": 0.80,
+    })
     gae_lambda: float = 0.95
 
     # Rollout schedule.
@@ -163,25 +177,9 @@ class CurriculumConfig:
     eval_interval: int = 5
     eval_episodes: int = 16
 
-    # Critic-warmup phase (after ``--resume-from``). For the FIRST
-    # ``critic_warmup_updates`` rollouts, only the critic receives a
-    # gradient — the actor is held fixed. This gives the freshly-init
-    # critic a chance to fit the value function of the loaded policy
-    # before PPO uses (initially garbage) advantages to move the
-    # actor and collapse it. Set to 0 to disable (default for
-    # train-from-scratch runs); the CLI auto-bumps this to 20 when
-    # ``--resume-from`` is provided. See ``_ppo_update`` and
-    # ``_load_actor_checkpoint`` docstrings for context.
-    critic_warmup_updates: int = 0
-
     # Runtime horizon.
     max_steps: int = CURRICULUM_MAX_STEPS
 
-
-    # Curriculum component scales (applied inside the multi-signal observer).
-    r_cross_scale: float = CURRICULUM_R_CROSS_SCALE
-    r_relation_scale: float = CURRICULUM_R_RELATION_SCALE
-    r_damage_scale: float = CURRICULUM_R_DAMAGE_SCALE
     # Terminal fall penalty (subtracted from last step of terminated
     # trajectories, in every stage). 0.0 disables.
     terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
@@ -271,8 +269,8 @@ class CurriculumStageGate:
     # the active components to sum to 1. Order: (r_fall, r_cross, r_relation, r_damage).
     STAGE_WEIGHTS: Dict[int, tuple] = {
         1: (1.0, 1.0, 0.0, 0.0),
-        2: (1.0, 1.0, 2.0, 0.0),
-        3: (1.0, 1.0, 2.0, 4.0),
+        2: (1.0, 1.0, 1.0, 0.0),
+        3: (1.0, 1.0, 1.0, 1.0),
     }
 
     def __init__(

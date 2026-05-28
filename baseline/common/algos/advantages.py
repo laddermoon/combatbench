@@ -93,15 +93,44 @@ def compute_gae(
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must lie in [0, 1]; got {lam}")
 
+    # ------------------------------------------------------------------
+    # GAE math reminder
+    # ------------------------------------------------------------------
+    # TD-error (1-step):
+    #     δ_t = r_t + γ · V(s_{t+1}) - V(s_t)
+    #
+    # GAE advantage (infinite-horizon series):
+    #     A_t = Σ_{k=0}^{∞} (γλ)^k · δ_{t+k}
+    #
+    # Recursive form (used here, computed backward in time):
+    #     A_t = δ_t + γλ · A_{t+1}
+    #
+    # Return target for the critic:
+    #     R_t = A_t + V(s_t)
+    # When λ=1 the (γλ)^k δ series telescopes to Σ γ^k r_{t+k} - V(s_t),
+    # so R_t collapses to the Monte-Carlo discounted return Σ γ^k r_{t+k}.
+    # When λ<1, R_t is a λ-weighted blend of n-step bootstrapped returns —
+    # this is the bias / variance knob (λ→0: low-variance, biased TD(0);
+    # λ→1: unbiased MC with high variance).
+    # ------------------------------------------------------------------
     t = rewards_arr.shape[0]
     advantages = np.zeros(t, dtype=np.float32)
+    # Walking backward, `next_value` holds V(s_{i+1}) and
+    # `next_advantage` holds A_{i+1} from the previous iteration.
+    # For the last step, V(s_T) is the user-supplied `last_value`
+    # (0 for terminal episodes, critic(final_obs) for truncated ones),
+    # and A_T is defined as 0 (nothing beyond the rollout to advantage over).
     next_value = float(last_value)
     next_advantage = 0.0
     for i in range(t - 1, -1, -1):
+        # δ_i = r_i + γ · V(s_{i+1}) - V(s_i)
         delta = rewards_arr[i] + gamma * next_value - values_arr[i]
+        # A_i = δ_i + γλ · A_{i+1}
         next_advantage = delta + gamma * lam * next_advantage
         advantages[i] = next_advantage
+        # Shift: for the next (earlier) timestep, V(s_{i}) becomes V(s_{next+1}).
         next_value = float(values_arr[i])
+    # R_t = A_t + V(s_t); this is what the critic regresses to.
     returns = advantages + values_arr
     return advantages, returns
 
