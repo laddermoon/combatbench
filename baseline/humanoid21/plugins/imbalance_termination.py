@@ -136,32 +136,29 @@ class ImbalanceTerminationPlugin(BasePlugin):
             ctx.request_termination(TerminationReason.CUSTOM)
 
     def _is_non_foot_grounded(self, ctx: SimContext) -> bool:
-        """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。"""
-        derived_state = ctx.accessor.get_derived_state()
-        contacts = derived_state.get('contacts', [])
+        """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。
 
-        robot_suffix = '_red' if self.agent_id == 'robot_a' else '_blue'
+        使用 ``robot_environment_contacts``，其中每条记录已预过滤为
+        "机器人身体 ↔ 环境几何体" 的接触，字段为：
+          robot              : 'robot_a' / 'robot_b'
+          body               : 机器人侧 body 名，如 'torso_red'
+          environment_geom   : 环境侧 geom 名，如 'ground'
+          force              : 接触力标量（牛顿）
+        """
+        derived_state = ctx.accessor.get_derived_state()
+        env_contacts = derived_state.get('robot_environment_contacts', [])
         ground_geom = self._ground_geom_name or 'ground'
 
-        for contact in contacts:
-            force = contact.get('force_magnitude', 0.0)
-            if force < self.force_threshold:
+        for contact in env_contacts:
+            if contact.get('robot') != self.agent_id:
                 continue
-
-            geom_a = contact.get('geom_a_name', '')
-            geom_b = contact.get('geom_b_name', '')
-            if ground_geom not in (geom_a, geom_b):
+            if contact.get('environment_geom') != ground_geom:
                 continue
-
-            body_a = contact.get('body_a_name', '')
-            body_b = contact.get('body_b_name', '')
-            for body_name in (body_a, body_b):
-                if not body_name or not body_name.endswith(robot_suffix):
-                    continue
-                base_name = body_name[:-len(robot_suffix)]
-                # 命中条件：该 body 不是双脚之一。
-                if not any(foot in base_name for foot in self.FOOT_BODY_NAMES):
-                    return True
+            if contact.get('force', 0.0) < self.force_threshold:
+                continue
+            body_name = contact.get('body', '')
+            if not any(foot in body_name for foot in self.FOOT_BODY_NAMES):
+                return True
 
         return False
 
