@@ -5,10 +5,10 @@ PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train_curriculum.py &>
 Resume:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py \
-    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_003732/checkpoints/checkpoint_u01820.pt &> train_resume3.log & 
+    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_104721/checkpoints/checkpoint_u01880.pt &> train_resume4.log & 
 
 Watch Video:
-python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_003732/videos
+python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_104721/videos
 
 
 Gen Video:

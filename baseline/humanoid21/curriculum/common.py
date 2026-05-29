@@ -288,28 +288,17 @@ class CurriculumStageGate:
         max_steps: int,
         pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO,
         pass_final_in_zone: float = CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE,
-        stage3_sticky_len_ratio: float = CURRICULUM_STAGE3_STICKY_LEN_RATIO,
         initial_stage: int = 1,
     ) -> None:
         if initial_stage not in self.STAGE_WEIGHTS:
             raise ValueError(f"initial_stage must be 1/2/3; got {initial_stage}")
         if max_steps <= 0:
             raise ValueError(f"max_steps must be > 0; got {max_steps}")
-        if not 0.0 <= stage3_sticky_len_ratio <= pass_len_ratio:
-            raise ValueError(
-                f"stage3_sticky_len_ratio must be in [0, pass_len_ratio]; "
-                f"got {stage3_sticky_len_ratio} (pass_len_ratio={pass_len_ratio})"
-            )
+
         self.max_steps = int(max_steps)
         self.pass_len_ratio = float(pass_len_ratio)
         self.pass_final_in_zone = float(pass_final_in_zone)
-        self.stage3_sticky_len_ratio = float(stage3_sticky_len_ratio)
         self.stage = int(initial_stage)
-        # Last eval-summary metrics (or None if no eval yet). Kept only
-        # for logging; not consulted by the next decision.
-        self._last_eval_len_ratio: Optional[float] = None
-        self._last_eval_final_in_zone: Optional[float] = None
-        self._last_decision_reason: str = "init"
 
     @property
     def weights(self) -> tuple:
@@ -336,28 +325,9 @@ class CurriculumStageGate:
         """
         len_ratio = float(eval_summary.get("mean_length", 0.0)) / float(self.max_steps)
         final_in_zone = float(eval_summary.get("final_in_zone_ratio", 0.0))
-
         prev_stage = self.stage
-        # Stage-3 stickiness: when we're already in combat training and
-        # the actor is still demonstrating combat skill (final_in_zone
-        # high), accept shorter eval episodes as "opponent landed hits"
-        # rather than "balance regression". This stops the spurious
-        # Stage 3 -> Stage 1 demotions observed when the opponent
-        # successfully attacks (e.g. eval_length=190 with
-        # final_in_zone=1.0 — clearly still combat-capable).
-        sticky_stage3 = (
-            prev_stage == 3
-            and len_ratio >= self.stage3_sticky_len_ratio
-            and final_in_zone >= self.pass_final_in_zone
-        )
-        if sticky_stage3:
-            new_stage = 3
-            reason = (
-                f"eval len_ratio={len_ratio:.3f}>={self.stage3_sticky_len_ratio:.2f}"
-                f" (stage-3 sticky), final_in_zone={final_in_zone:.3f}>=pass"
-                " -> stage 3 (combat)"
-            )
-        elif len_ratio < self.pass_len_ratio:
+
+        if len_ratio < self.pass_len_ratio:
             new_stage = 1
             reason = (
                 f"eval len_ratio={len_ratio:.3f}<{self.pass_len_ratio:.2f}"
@@ -379,9 +349,6 @@ class CurriculumStageGate:
             )
 
         self.stage = new_stage
-        self._last_eval_len_ratio = len_ratio
-        self._last_eval_final_in_zone = final_in_zone
-        self._last_decision_reason = reason
 
         return {
             "stage": self.stage,

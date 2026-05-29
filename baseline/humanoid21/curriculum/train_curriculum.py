@@ -88,7 +88,7 @@ class _PPOBuffer:
     __slots__ = (
         "obs", "actions", "log_probs",
         "r_fall_rewards", "r_cross_rewards", "r_relation_rewards", "r_damage_rewards",
-        "final_obs", "is_terminated", "ep_lengths",
+        "final_obs", "is_terminated", "ep_lengths", "final_in_zone",
         "r_fall_sums", "r_cross_sums", "r_relation_sums", "r_damage_sums",
     )
 
@@ -111,6 +111,7 @@ class _PPOBuffer:
         fin_list: List[np.ndarray] = []
         terms: List[bool] = []
         ep_lens: List[int] = []
+        final_in_zone_list: List[bool] = []
 
         for ep in episodes:
             # Use each episode's own target agent (supports mixed robot_a/robot_b rollout).
@@ -150,6 +151,9 @@ class _PPOBuffer:
             fin_list.append(np.asarray(fin, dtype=np.float32))
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
+            # r_relation is a penalty (<=0); ~0 means in_non_penalty_zone.
+            # Use a small epsilon to guard against floating-point rounding.
+            final_in_zone_list.append(bool(r_relation[-1] >= -1e-6))
 
         if not ep_lens:
             print(f"[DEBUG] _PPOBuffer: no valid episodes from {len(episodes)} input episodes", flush=True)
@@ -163,6 +167,7 @@ class _PPOBuffer:
             self.final_obs = []
             self.is_terminated = []
             self.ep_lengths = []
+            self.final_in_zone = []
             return
 
         # Store raw reward components separately for multi-critic training.
@@ -201,6 +206,7 @@ class _PPOBuffer:
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
+        self.final_in_zone = final_in_zone_list
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -437,7 +443,7 @@ def _batch_summary(buf: _PPOBuffer, max_steps: int) -> Dict[str, float]:
         "term_rate": float(sum(buf.is_terminated) / n),
         "mean_length": mean_len,
         "len_ratio": mean_len / float(max_steps),
-        "final_in_zone_ratio": 0.0,
+        "final_in_zone_ratio": float(sum(buf.final_in_zone) / n),
     }
 
 
@@ -754,7 +760,7 @@ def train(
             line = (
                 f"update={u:4d} stage={gate_info['stage']} "
                 f"weights={tuple(round(w, 2) for w in gate_info['weights'])} "
-                f"len={bsum['mean_length']:6.2f} term={bsum['term_rate']:.3f} "
+                f"len={bsum['mean_length']:6.2f} term={bsum['term_rate']:.3f} final_in_zone={bsum['final_in_zone_ratio']:.3f}"
                 f"r_fall={rsum['r_fall_mean']:+.3f}±{rsum['r_fall_std']:.3f} "
                 f"r_cross={rsum['r_cross_mean']:+.3f}±{rsum['r_cross_std']:.3f} "
                 f"r_relation={rsum['r_relation_mean']:+.3f}±{rsum['r_relation_std']:.3f} "
