@@ -177,6 +177,15 @@ class CurriculumConfig:
     eval_interval: int = 5
     eval_episodes: int = 16
 
+    # Video recording: every ``video_eval_interval`` evals, render a single
+    # match using ``round_runner`` and the latest exported policy. Set to 0
+    # to disable. Output goes to ``<run_dir>/videos/u{update:05d}.mp4``.
+    video_eval_interval: int = 5
+    # Env blueprint used for video rendering. If None, defaults to
+    # ``envs/humanoid21/blueprint.yaml`` (resolved relative to the cwd
+    # where the trainer was launched, typically the combatbench repo root).
+    video_env_blueprint: Optional[str] = None
+
     # Runtime horizon.
     max_steps: int = CURRICULUM_MAX_STEPS
 
@@ -269,8 +278,8 @@ class CurriculumStageGate:
     # the active components to sum to 1. Order: (r_fall, r_cross, r_relation, r_damage).
     STAGE_WEIGHTS: Dict[int, tuple] = {
         1: (3.0, 1.0, 0.0, 0.0), # 不倒地是第一优化级
-        2: (1.0, 1.0, 1.0, 0.0), 
-        3: (1.0, 1.0, 1.0, 1.0),
+        2: (3.0, 1.0, 1.0, 0.0), 
+        3: (3.0, 1.0, 1.0, 1.0),
     }
 
     def __init__(

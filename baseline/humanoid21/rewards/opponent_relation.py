@@ -27,11 +27,76 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 # 无损失时输出0， 有损失时输出小于零的损失值
 # 1) 距离损失：距离在 max_dist 内为 0，超出则线性惩罚, 有一个惩罚系数参数
 # 2) 朝向损失：朝向误差角 <= max_angle（角度计） 时为 0，超出则线性惩罚，有一个惩罚系数参数
-OPP_REL_DIST_MAX = 0.7
-OPP_REL_HEADING_MAX_ANGLE_DEG = 25.0
+OPP_REL_DIST_MAX = 0.9
+OPP_REL_HEADING_MAX_ANGLE_DEG = 45.0
 OPP_REL_DIST_PENALTY_COEF = 0.33 # 距离3.7米时为1
 OPP_REL_HEADING_PENALTY_COEF = 0.02  # deg * coef: max ~155deg * 0.02 ≈ 3, same scale as dist penalty
 
+'''
+class OpponentRelationRewarder(BaseObserverPlugin):
+    """对手关系惩罚奖励。
+
+    两个惩罚项，无违规时均输出 0，违规时输出负值：
+
+    1. **距离惩罚**：距离（root 到 root 的三维距离）> ``dist_max`` 时线性惩罚，
+       超出量 * ``dist_penalty_coef``，无上限。
+    2. **朝向惩罚**：torso 局部 x 轴在世界坐标系的三维方向，与自身 root 指向对手 root
+       的三维向量之间的夹角（0-180°）> ``heading_max_angle_deg`` 时线性惩罚，
+       超出量 * ``heading_penalty_coef``，无上限。
+
+    每步输出 <= 0，无上限。
+
+    暴露 ``.in_non_penalty_zone`` 布尔属性（距离与朝向均无惩罚），
+    供课程门控读取。
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        dist_max: float = OPP_REL_DIST_MAX,
+        heading_max_angle_deg: float = OPP_REL_HEADING_MAX_ANGLE_DEG,
+        dist_penalty_coef: float = OPP_REL_DIST_PENALTY_COEF,
+        heading_penalty_coef: float = OPP_REL_HEADING_PENALTY_COEF,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.opponent_id = "robot_b" if self.agent_id == "robot_a" else "robot_a"
+        self.dist_max = float(dist_max)
+        self.dist_penalty_coef = float(dist_penalty_coef)
+        self.in_non_penalty_zone: bool = False
+        self._output: float = 0.0
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self.in_non_penalty_zone = False
+        self._output = 0.0
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()
+        self_state = core_state[self.agent_id]
+        opp_state = core_state[self.opponent_id]
+
+        self_pos = np.asarray(self_state["root_pos"], dtype=np.float64)
+        opp_pos = np.asarray(opp_state["root_pos"], dtype=np.float64)
+        delta = opp_pos - self_pos
+        distance = float(np.linalg.norm(delta))
+
+        # ---- 1) Distance penalty (3-D root-to-root distance) --------
+        dist_excess = max(0.0, distance - self.dist_max)
+        dist_penalty = dist_excess * self.dist_penalty_coef
+        dist_in_zone = dist_excess == 0.0
+
+        self.in_non_penalty_zone = bool(dist_in_zone)
+        self._output = float(-(dist_penalty))
+
+    def get_output(self) -> float:
+        return float(self._output)
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "OpponentRelationRewarder":
+        return cls(**config)
+'''
 
 class OpponentRelationRewarder(BaseObserverPlugin):
     """对手关系惩罚奖励。
@@ -145,4 +210,3 @@ class OpponentRelationRewarder(BaseObserverPlugin):
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "OpponentRelationRewarder":
         return cls(**config)
-

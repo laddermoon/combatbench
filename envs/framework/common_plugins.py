@@ -90,22 +90,49 @@ class VideoRecorderPlugin(BasePlugin):
     def on_post_episode(self, ctx: SimContext) -> None:
         if len(self._frames) == 0:
             return
-            
+
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        height, width = self._frames[0].shape[:2]
+
+        # Use ffmpeg with -movflags faststart so the moov atom is placed at
+        # the beginning of the file, enabling in-browser streaming without
+        # downloading the entire file first. cv2.VideoWriter / mp4v always
+        # writes moov at the end, which breaks browser <video> playback.
         try:
-            import cv2
-            self.output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            height, width = self._frames[0].shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps, (width, height))
-            
+            import subprocess as _sp
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "rawvideo",
+                "-vcodec", "rawvideo",
+                "-s", f"{width}x{height}",
+                "-pix_fmt", "rgb24",
+                "-r", str(self.fps),
+                "-i", "pipe:0",
+                "-vcodec", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "faststart",
+                str(self.output_path),
+            ]
+            proc = _sp.Popen(cmd, stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
             for frame in self._frames:
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                writer.write(frame_bgr)
-                
-            writer.release()
-            print(f"Video saved to {self.output_path} ({len(self._frames)} frames, {self.fps} FPS)")
-        except ImportError:
-            print("Warning: opencv-python not installed, cannot save video")
+                proc.stdin.write(frame.astype("uint8").tobytes())
+            proc.stdin.close()
+            proc.wait()
+            if proc.returncode == 0:
+                print(f"Video saved to {self.output_path} ({len(self._frames)} frames, {self.fps} FPS)")
+            else:
+                raise RuntimeError(f"ffmpeg exited with code {proc.returncode}")
+        except FileNotFoundError:
+            # ffmpeg not available, fall back to cv2
+            try:
+                import cv2
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps, (width, height))
+                for frame in self._frames:
+                    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                writer.release()
+                print(f"Video saved to {self.output_path} (cv2 fallback, moov may be at end)")
+            except ImportError:
+                print("Warning: neither ffmpeg nor opencv-python available, cannot save video")
         except Exception as e:
             print(f"Error saving video: {e}")

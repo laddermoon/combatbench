@@ -69,7 +69,7 @@ from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
 from envs.humanoid21.plugins import CombatScoringPlugin
 
 
-
+'''
 class ImbalanceTerminationPlugin(BasePlugin):
     """检测机器人是否失衡的终止插件（物理步粒度计数）。
 
@@ -133,6 +133,70 @@ class ImbalanceTerminationPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if self._phy_hits_in_action >= self.phy_hits_threshold:
+            ctx.request_termination(TerminationReason.CUSTOM)
+
+    def _is_non_foot_grounded(self, ctx: SimContext) -> bool:
+        """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。
+
+        使用 ``robot_environment_contacts``，其中每条记录已预过滤为
+        "机器人身体 ↔ 环境几何体" 的接触，字段为：
+          robot              : 'robot_a' / 'robot_b'
+          body               : 机器人侧 body 名，如 'torso_red'
+          environment_geom   : 环境侧 geom 名，如 'ground'
+          force              : 接触力标量（牛顿）
+        """
+        derived_state = ctx.accessor.get_derived_state()
+        env_contacts = derived_state.get('robot_environment_contacts', [])
+        ground_geom = self._ground_geom_name or 'ground'
+
+        for contact in env_contacts:
+            if contact.get('robot') != self.agent_id:
+                continue
+            if contact.get('environment_geom') != ground_geom:
+                continue
+            if contact.get('force', 0.0) < self.force_threshold:
+                continue
+            body_name = contact.get('body', '')
+            if not any(foot in body_name for foot in self.FOOT_BODY_NAMES):
+                return True
+
+        return False
+'''
+
+class ImbalanceTerminationPlugin(BasePlugin):
+
+    # 双脚身体名称后缀
+    FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
+
+    def __init__(
+        self,
+        agent_id: str,
+        force_threshold: float = 1.0,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.force_threshold = float(force_threshold)
+        self._ground_geom_name: Optional[str] = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "force_threshold": self.force_threshold,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ImbalanceTerminationPlugin":
+        return cls(**config)
+
+    @property
+    def name(self) -> str:
+        return f"{self.agent_id}_imbalance_termination"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        static_data = ctx.accessor.get_static_data()
+        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        if self._is_non_foot_grounded(ctx):
             ctx.request_termination(TerminationReason.CUSTOM)
 
     def _is_non_foot_grounded(self, ctx: SimContext) -> bool:

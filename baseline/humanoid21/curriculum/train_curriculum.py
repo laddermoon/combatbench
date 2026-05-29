@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -577,6 +579,49 @@ def _load_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Video recording helper
+# ---------------------------------------------------------------------------
+
+def _spawn_video_render(
+    *,
+    env_blueprint: str,
+    policy_blueprint: Path,
+    video_path: Path,
+    seed: int,
+    log_path: Path,
+) -> Optional[subprocess.Popen]:
+    """Spawn a non-blocking ``round_runner`` subprocess to render one match.
+
+    Returns the Popen handle (or None on failure). The subprocess runs
+    self-play (policy A == policy B) using the just-exported deterministic
+    policy. Stdout/stderr are redirected to ``log_path`` so trainer logs
+    stay clean.
+    """
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable, "-m", "envs.framework.round_runner",
+        "--env-blueprint", str(env_blueprint),
+        "--policy-a-blueprint", str(policy_blueprint),
+        "--policy-b-blueprint", str(policy_blueprint),
+        "--video", str(video_path),
+        "--seed", str(seed),
+    ]
+    try:
+        log_f = open(log_path, "w")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        return proc
+    except Exception as e:  # pragma: no cover
+        print(f"[WARN] Failed to spawn video render: {e}", flush=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Train
 # ---------------------------------------------------------------------------
 
@@ -641,7 +686,17 @@ def train(
     run_dir.mkdir(parents=True, exist_ok=True)
     policy_dir = run_dir / "policy"
     ckpt_dir = run_dir / "checkpoints"
+    video_dir = run_dir / "videos"
     print(f"run_dir={run_dir}", flush=True)
+
+    # Video recording state.
+    n_evals_done = 0
+    last_video_proc: Optional[subprocess.Popen] = None
+    video_env_bp = (
+        cfg.video_env_blueprint
+        if cfg.video_env_blueprint is not None
+        else "envs/humanoid21/blueprint.yaml"
+    )
 
     # 4. Training loop
     print(f"[DEBUG] rollout_workers={cfg.rollout_workers}  episodes_per_update={cfg.episodes_per_update}  max_steps={cfg.max_steps}  update_epochs={cfg.update_epochs}  minibatch_size={cfg.minibatch_size}", flush=True)
@@ -758,6 +813,29 @@ def train(
                         )
                         line += "  [new_best]"
                 t_eval = time.perf_counter() - t0
+
+                # 4.7.1 Video render (every Nth eval, non-blocking)
+                n_evals_done += 1
+                if (
+                    cfg.video_eval_interval > 0
+                    and n_evals_done % cfg.video_eval_interval == 0
+                ):
+                    # Reap previous video proc if still running (don't pile up).
+                    if last_video_proc is not None and last_video_proc.poll() is None:
+                        line += "  [video_skip:prev_running]"
+                    else:
+                        policy_bp_path = export_dir / "policy_blueprint.yaml"
+                        video_path = video_dir / f"u{u:05d}.mp4"
+                        log_path = video_dir / f"u{u:05d}.log"
+                        last_video_proc = _spawn_video_render(
+                            env_blueprint=video_env_bp,
+                            policy_blueprint=policy_bp_path,
+                            video_path=video_path,
+                            seed=eval_seed,
+                            log_path=log_path,
+                        )
+                        if last_video_proc is not None:
+                            line += f"  [video:{video_path.name}]"
 
             t_total = time.perf_counter() - t_update_start
             line += (
