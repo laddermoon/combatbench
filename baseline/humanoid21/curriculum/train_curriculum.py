@@ -152,8 +152,10 @@ class _PPOBuffer:
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
             # r_relation is a penalty (<=0); ~0 means in_non_penalty_zone.
-            # Use a small epsilon to guard against floating-point rounding.
-            final_in_zone_list.append(bool(r_relation[-1] >= -1e-6))
+            # Use any-step: the last step may be a fall/termination frame
+            # where position is unreliable, so we check if the robot was
+            # ever in the penalty-free zone during the episode.
+            final_in_zone_list.append(bool(np.any(r_relation >= -1e-6)))
 
         if not ep_lens:
             print(f"[DEBUG] _PPOBuffer: no valid episodes from {len(episodes)} input episodes", flush=True)

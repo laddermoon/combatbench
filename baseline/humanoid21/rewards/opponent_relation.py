@@ -32,7 +32,6 @@ OPP_REL_HEADING_MAX_ANGLE_DEG = 45.0
 OPP_REL_DIST_PENALTY_COEF = 0.33 # 距离3.7米时为1
 OPP_REL_HEADING_PENALTY_COEF = 0.02  # deg * coef: max ~155deg * 0.02 ≈ 3, same scale as dist penalty
 
-'''
 class OpponentRelationRewarder(BaseObserverPlugin):
     """对手关系惩罚奖励。
 
@@ -210,3 +209,4 @@ class OpponentRelationRewarder(BaseObserverPlugin):
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "OpponentRelationRewarder":
         return cls(**config)
+'''
