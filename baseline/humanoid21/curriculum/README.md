@@ -27,9 +27,9 @@ DEBUG:
 cd /data1/mono/things/combatbench
 python3 -m envs.framework.round_runner \
   --env-blueprint baseline/humanoid21/blueprints/curriculum_env.yaml \
-  --policy-a-blueprint baseline/humanoid21/runs/curriculum_20260528_120759/policy_exports/u01710/policy_blueprint.yaml \
-  --policy-b-blueprint baseline/humanoid21/runs/curriculum_20260528_120759/policy_exports/u02081/policy_blueprint.yaml \
-  --recorder envs.framework.recorder:BaseFrameRecorder?output_dir=_debug/run02
+  --policy-a-blueprint baseline/humanoid21/runs/curriculum_20260529_112738/policy_exports/u01925/policy_blueprint.yaml \
+  --policy-b-blueprint baseline/humanoid21/runs/curriculum_20260529_112738/policy_exports/u01925/policy_blueprint.yaml \
+  --recorder envs.framework.recorder:BaseFrameRecorder?output_dir=_debug/run03
 
 python3 -m envs.framework.recorder_viewer --no-browser _debug/run02
 

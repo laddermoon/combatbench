@@ -365,7 +365,7 @@ class CurriculumStageGate:
             "stage": self.stage,
             "weights": self.weights,
             "prev_stage": self.stage,
-            "eval_len_ratio": self._last_eval_len_ratio,
-            "eval_final_in_zone_ratio": self._last_eval_final_in_zone,
-            "reason": self._last_decision_reason,
+            #"eval_len_ratio": None,
+            #"eval_final_in_zone_ratio": None,
+            #"reason": "no eval yet",
         }
