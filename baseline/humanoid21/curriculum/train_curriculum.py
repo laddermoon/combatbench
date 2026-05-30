@@ -48,16 +48,8 @@ from envs.framework.policy import PolicyBlueprint
 # Data helpers – work directly on Episode numpy arrays
 # ---------------------------------------------------------------------------
 
-def _extract_per_step_scalar(
-    observer_outputs: Any,
-    observer_name: str,
-    expected_len: int,
-) -> np.ndarray:
-    """Pull a (T,) float32 reward signal from stacked observer outputs."""
-    node = observer_outputs.get(observer_name)
-    if node is None:
-        return np.zeros(expected_len, dtype=np.float32)
-    values = next(iter(node.values())) if isinstance(node, dict) else node
+def _coerce_per_step(values: Any, expected_len: int) -> np.ndarray:
+    """Coerce a raw observer leaf into a (T,) float32 array of length ``expected_len``."""
     if values is None:
         return np.zeros(expected_len, dtype=np.float32)
     arr = np.asarray(values, dtype=np.float32).reshape(-1)
@@ -67,6 +59,41 @@ def _extract_per_step_scalar(
         idx = np.linspace(0, len(arr) - 1, expected_len)
         arr = np.interp(idx, np.arange(len(arr)), arr).astype(np.float32)
     return arr
+
+
+def _extract_per_step_scalar(
+    observer_outputs: Any,
+    observer_name: str,
+    expected_len: int,
+) -> np.ndarray:
+    """Pull a (T,) float32 reward signal from stacked observer outputs.
+
+    If the observer emits a dict (e.g. ``{"reward": ..., "in_zone": ...}``),
+    the first value is used. Use :func:`_extract_per_step_field` to read a
+    specific named field.
+    """
+    node = observer_outputs.get(observer_name)
+    if node is None:
+        return np.zeros(expected_len, dtype=np.float32)
+    values = next(iter(node.values())) if isinstance(node, dict) else node
+    return _coerce_per_step(values, expected_len)
+
+
+def _extract_per_step_field(
+    observer_outputs: Any,
+    observer_name: str,
+    field: str,
+    expected_len: int,
+) -> Optional[np.ndarray]:
+    """Pull a specific named field from a dict-valued observer output.
+
+    Returns ``None`` if the observer is absent or not a dict (e.g. an older
+    rollout where the observer still emitted a bare scalar).
+    """
+    node = observer_outputs.get(observer_name)
+    if not isinstance(node, dict) or field not in node:
+        return None
+    return _coerce_per_step(node[field], expected_len)
 
 
 def _agent_from_rollout_seed(seed: int) -> str:
@@ -133,7 +160,13 @@ class _PPOBuffer:
             #   r_relation  -> opponent_relation (distance + heading)
             #   r_damage    -> damage reward
             r_cross = _extract_per_step_scalar(oo, "cross_support", T)
-            r_relation = _extract_per_step_scalar(oo, "opponent_relation", T)
+            # opponent_relation now emits a dict {"reward": potential-diff,
+            # "in_zone": 1/0}. Read the reward explicitly; fall back to the
+            # bare-scalar form for backward compat with older rollouts.
+            r_relation = _extract_per_step_field(oo, "opponent_relation", "reward", T)
+            if r_relation is None:
+                r_relation = _extract_per_step_scalar(oo, "opponent_relation", T)
+            rel_in_zone = _extract_per_step_field(oo, "opponent_relation", "in_zone", T)
             r_damage = _extract_per_step_scalar(oo, "damage", T)
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
@@ -151,11 +184,16 @@ class _PPOBuffer:
             fin_list.append(np.asarray(fin, dtype=np.float32))
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
-            # r_relation is a penalty (<=0); ~0 means in_non_penalty_zone.
-            # Use any-step: the last step may be a fall/termination frame
-            # where position is unreliable, so we check if the robot was
-            # ever in the penalty-free zone during the episode.
-            final_in_zone_list.append(bool(np.any(r_relation >= -1e-6)))
+            # Zone membership must come from the rewarder's absolute
+            # ``in_zone`` flag, NOT from r_relation: r_relation is now a
+            # potential *difference* (delta), so its sign/magnitude no longer
+            # indicates whether the robot is inside the no-penalty zone.
+            # Use any-step (robot ever reached the zone), which is robust to
+            # the last frame being an unreliable fall/termination snapshot.
+            if rel_in_zone is not None:
+                final_in_zone_list.append(bool(np.any(rel_in_zone > 0.5)))
+            else:
+                final_in_zone_list.append(False)
 
         if not ep_lens:
             print(f"[DEBUG] _PPOBuffer: no valid episodes from {len(episodes)} input episodes", flush=True)
