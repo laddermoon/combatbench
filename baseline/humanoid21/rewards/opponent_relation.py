@@ -33,7 +33,7 @@ OPP_REL_DIST_PENALTY_COEF = 0.33 # 距离3.7米时为1
 OPP_REL_HEADING_PENALTY_COEF = 0.02  # deg * coef: max ~155deg * 0.02 ≈ 3, same scale as dist penalty
 # 势差 shaping 的折扣因子。1.0 = 纯几何势差 Φ(s_t)-Φ(s_{t-1})（最直观的“进步量”）。
 # 若要严格符合 PBRS 定理，应设为与该奖励 critic 的 γ 一致。
-OPP_REL_SHAPING_GAMMA = 1.0
+OPP_REL_SHAPING_GAMMA = 0.98
 # 持续水平项系数 α：在势差之上叠加 α·Φ(s_t)。势差会 telescoping（总回报只看
 # 首尾，不奖励“停在好位置”），加一个小的水平项给“在区内/靠近”提供**持续**反馈，
 # 让策略有理由进区并停留。0.0 = 退回纯势差。

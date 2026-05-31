@@ -5,10 +5,10 @@ PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train_curriculum.py &>
 Resume:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py \
-    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_104721/checkpoints/checkpoint_u01880.pt &> train_resume4.log & 
+    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260530_011441/checkpoints/checkpoint_u03845.pt &> train_resume9.log & 
 
 Watch Video:
-python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260529_104721/videos
+python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260531_172059/videos
 
 
 Gen Video:
@@ -31,7 +31,7 @@ python3 -m envs.framework.round_runner \
   --policy-b-blueprint baseline/humanoid21/runs/curriculum_20260529_112738/policy_exports/u01925/policy_blueprint.yaml \
   --recorder envs.framework.recorder:BaseFrameRecorder?output_dir=_debug/run03
 
-python3 -m envs.framework.recorder_viewer --no-browser _debug/run02
+python3 -m envs.framework.recorder_viewer --no-browser _debug/run03
 
 
 things/combatbench/baseline/humanoid21/runs/curriculum_20260527_175448/policy_exports/u00837/policy_blueprint.yaml
@@ -41,3 +41,5 @@ Rollout得到原始数据。
 进行奖励计算。 计算4种奖励。 使用原始奖励。
 
 
+
+1. 

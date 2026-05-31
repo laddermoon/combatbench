@@ -166,7 +166,7 @@ class CurriculumConfig:
     gammas: Dict[str, float] = field(default_factory=lambda: {
         "r_fall": 0.99,
         "r_cross": 0.99,
-        "r_relation": 0.85,
+        "r_relation": 0.98,
         "r_damage": 0.80,
     })
     gae_lambda: float = 0.95

@@ -284,10 +284,10 @@ def _ppo_update(
             values_all[key] = critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
 
     # Diagnostic: print Critic prediction range vs Return range
-    print("[DEBUG] Critic predictions vs Returns:", flush=True)
-    for key in REWARD_KEYS:
-        v = values_all[key]
-        print(f"  {key}: value_pred=[{v.min():+.3f}, {v.max():+.3f}] mean={v.mean():+.3f} std={v.std():.3f}", flush=True)
+    #print("[DEBUG] Critic predictions vs Returns:", flush=True)
+    #for key in REWARD_KEYS:
+    #    v = values_all[key]
+    #    print(f"  {key}: value_pred=[{v.min():+.3f}, {v.max():+.3f}] mean={v.mean():+.3f} std={v.std():.3f}", flush=True)
 
     # Compute GAE for each reward component
     advs_all: Dict[str, np.ndarray] = {}
@@ -836,10 +836,24 @@ def train(
                     line += (
                         f"| len={esum['mean_length']:6.2f}"
                         f" term={esum['term_rate']:.3f}"
+                        f" final_in_zone={esum['final_in_zone_ratio']:.3f}"
                     )
                     # Stage gate decision
                     prev_stage = gate.stage
                     gate_info = gate.assign_from_eval(esum)
+                    # Always dump the eval data the gate actually used, so the
+                    # stage decision is fully transparent (the training-batch
+                    # final_in_zone printed above is stochastic and NOT what the
+                    # gate sees; the gate uses these deterministic-eval numbers).
+                    print(
+                        f"[GATE] update={u} prev_stage={prev_stage} -> stage={gate_info['stage']}"
+                        f" | eval_len_ratio={gate_info['eval_len_ratio']:.3f}"
+                        f" (pass>={gate.pass_len_ratio:.2f})"
+                        f" eval_final_in_zone={esum['final_in_zone_ratio']:.3f}"
+                        f" (pass>={gate.pass_final_in_zone:.2f})"
+                        f" | {gate_info['reason']}",
+                        flush=True,
+                    )
                     if gate_info["stage"] != prev_stage:
                         line += f"  [stage {prev_stage}->{gate_info['stage']} {gate_info['reason']}]"
                     # Best-of-run snapshot
