@@ -390,8 +390,12 @@ def _ppo_update(
                 early_stop = True
                 break
             
-            # Policy loss with combined normalized advantages
-            ratio = torch.exp(new_lp - old_lp_t[idx])
+            # Policy loss with combined normalized advantages.
+            # Clamp the log-ratio before exp() so a collapsed std / large
+            # policy step cannot blow ratio up to inf -> NaN gradients ->
+            # poisoned actor params. exp(±20) is finite (~4.85e8 / 2e-9).
+            log_ratio = torch.clamp(new_lp - old_lp_t[idx], -20.0, 20.0)
+            ratio = torch.exp(log_ratio)
             surr1 = ratio * adv_t[idx]
             surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv_t[idx]
             policy_loss = -torch.min(surr1, surr2).mean()

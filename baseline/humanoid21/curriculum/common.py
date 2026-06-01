@@ -277,9 +277,9 @@ class CurriculumStageGate:
     # Active flags per stage; the ``weights`` property normalizes
     # the active components to sum to 1. Order: (r_fall, r_cross, r_relation, r_damage).
     STAGE_WEIGHTS: Dict[int, tuple] = {
-        1: (3.0, 1.0, 0.0, 0.0), # 不倒地是第一优化级
-        2: (3.0, 1.0, 1.0, 0.0), 
-        3: (3.0, 1.0, 1.0, 1.0),
+        1: (3.0, 1.0, 0.3, 0.0), # 不倒地是第一优化级
+        2: (2.0, 1.0, 1.0, 0.0), 
+        3: (2.0, 1.0, 1.0, 1.0),
     }
 
     def __init__(
