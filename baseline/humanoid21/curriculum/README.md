@@ -8,7 +8,7 @@ PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py
     --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260531_172059/checkpoints/checkpoint_u03895.pt &> train_resume10.log & 
 
 Watch Video:
-python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260531_172059/videos
+python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260602_012824/videos
 
 
 Gen Video:
@@ -41,5 +41,3 @@ Rollout得到原始数据。
 进行奖励计算。 计算4种奖励。 使用原始奖励。
 
 
-
-1. 
