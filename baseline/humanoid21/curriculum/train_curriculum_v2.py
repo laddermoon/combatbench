@@ -32,6 +32,7 @@ from baseline.common.policies import (
     export_actor_policy_artifacts,
 )
 from baseline.common.rollout import Episode, ParallelRollouter
+from baseline.humanoid21.rewards.follow_opponent import compute_approach_rewards
 from baseline.humanoid21.curriculum.common_v2 import (
     CONTROL_FREQUENCY,
     CurriculumConfig,
@@ -165,23 +166,30 @@ class _PPOBuffer:
             #   r_hold/r_radial/r_tangential -> follow_opponent (approach)
             r_cross = _extract_per_step_scalar(oo, "cross_support", T)
             r_damage = _extract_per_step_scalar(oo, "damage", T)
-            # Follow-opponent triple (follow_opponent.py) — replaces r_relation.
-            # Each falls back to zeros when the observer is absent.
-            #   r_hold       <- in_zone_hold "reward" (sparse +1 in-zone)
-            #   r_radial     <- approach_velocity "radial" (ego approach, signed)
-            #   r_tangential <- approach_velocity "tangential_penalty" (<=0, circling)
+            # Follow-opponent rewards (follow_opponent.py) — replaces r_relation.
+            #   r_hold <- in_zone_hold "reward" (sparse +1 in-zone)
             r_hold = _extract_per_step_field(oo, "in_zone_hold", "reward", T)
             if r_hold is None:
                 r_hold = np.zeros(T, dtype=np.float32)
             hold_in_zone = _extract_per_step_field(oo, "in_zone_hold", "in_zone", T)
-            r_radial = _extract_per_step_field(oo, "approach_velocity", "radial", T)
-            if r_radial is None:
+            # r_radial / r_tangential: the approach_velocity observer now only
+            # RECORDS raw positions (self_x/y, opp_x/y). The actual approach
+            # reward is computed here from the FULL trajectory — smoothing it
+            # (removes gait sway) then projecting the smoothed per-step
+            # displacement onto the direction to the opponent. This acausal
+            # smoothing is impossible inside the observer (per-step snapshot),
+            # hence the trainer-side post-process. See compute_approach_rewards.
+            self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
+            self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
+            opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+            opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+            if self_x is None or self_y is None or opp_x is None or opp_y is None:
                 r_radial = np.zeros(T, dtype=np.float32)
-            r_tangential = _extract_per_step_field(
-                oo, "approach_velocity", "tangential_penalty", T,
-            )
-            if r_tangential is None:
                 r_tangential = np.zeros(T, dtype=np.float32)
+            else:
+                self_xy = np.stack([self_x, self_y], axis=1)
+                opp_xy = np.stack([opp_x, opp_y], axis=1)
+                r_radial, r_tangential = compute_approach_rewards(self_xy, opp_xy)
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
             act_t = torch.as_tensor(acts, dtype=torch.float32, device=device)

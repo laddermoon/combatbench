@@ -2,10 +2,19 @@ Train:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train_curriculum.py &> train.log & 
 
+
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260602_012824/checkpoints/checkpoint_u02155.pt
+
+
 Resume:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum.py \
     --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260531_172059/checkpoints/checkpoint_u03895.pt &> train_resume10.log & 
+
+
+PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum_v2.py \
+    --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260602_012824/checkpoints/checkpoint_u02155.pt &> train_v2_resume1.log & 
+
 
 Watch Video:
 python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260602_012824/videos
