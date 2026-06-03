@@ -15,11 +15,18 @@
 '''
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
+
+# Debug visualization imports (lazy-loaded when debug=True)
+try:
+    import matplotlib.pyplot as plt
+    _HAS_MPL = True
+except Exception:
+    _HAS_MPL = False
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +208,9 @@ def compute_approach_rewards(
     tangential_coef: float = APPROACH_TANGENTIAL_COEF,
     disp_clip: float = APPROACH_DISP_CLIP,
     progress_eps: float = APPROACH_RADIAL_PROGRESS_EPS,
+    debug: bool = False,
+    debug_title: Optional[str] = None,
+    debug_save_path: Optional[str] = None,
 ):
     """两阶段计算逐步接近奖励：先平滑去摆动，再求位移投影。
 
@@ -208,21 +218,40 @@ def compute_approach_rewards(
     阶段 2（求位移/速度）：居中差分 ``disp_t = (p̃_{t+1} - p̃_{t-1}) / 2`` 作为
       该步的净位移向量（与速度仅差常数 ``dt``，``dt`` 折进 ``radial_coef``）。
 
-    投影：``u`` = 指向对手的单位向量（用**原始**位置算，远距时对手摆动可忽略）::
+    方向系数（几何构造，统一表达"有效接近度"）：
+      设平滑位置 ``P=sm``、对手 ``O``、距离 ``d=|O-P|``、速度单位向量 ``v̂``。
+      沿速度方向走距离 ``d`` 得端点 ``E = P + d·v̂``，记 ``c = |O - E|``::
 
-        radial      = radial_coef * (disp · u)              带符号，朝对手为正
-        tangential  = -tangential_coef * ||disp - (disp·u)u||   恒 <= 0
+          coef = (d - c) / d        # 等价于 1 - 2·sin(θ/2)，θ=∠(v̂, O-P)
+          radial = radial_coef * |disp| * coef
+
+      其中 ``θ`` 为速度方向与"指向对手"方向的夹角::
+
+          θ = 0°   → coef = +1   正对冲刺（最强接近）
+          θ < 60°  → coef > 0    有效接近
+          θ = 60°  → coef = 0    临界
+          θ > 60°  → coef < 0    无效（净远离）
+          θ = 180° → coef = -1   背向逃离（最强惩罚）
 
     门控：
       * 仅在**区外**（``distance > dist_max``）给信号；区内交给
         :class:`InZoneHoldRewarder` 的保持奖励。
-      * 切向惩罚仅在 ``|radial 位移| < progress_eps``（原地打转）时才施加：
-        正在接近时不罚（避免重蹈“惩罚正常摆动”的覆辙），背向对手时也不罚
-        （已由 radial 负分处理，避免双重惩罚）。``tangential_coef`` 默认
-        ``0.0`` → 切向项整体关闭（门控开关）。
+      * 静止（``|disp|≈0``）或贴脸（``d≈0``）时 coef=0，奖励为 0。
 
     返回 ``(radial, tangential)``，均为 ``(T,)`` float32。
+    **tangential 恒为 0**（仅为兼容旧二元接口而保留；该分量已废弃，
+    其 stage 权重应一并置 0）。``tangential_coef``/``progress_eps`` 参数保留
+    但不再生效。
+
+    Args:
+        debug: 若为 True，则绘制原始/平滑轨迹、对手轨迹及奖励曲线（默认 False）。
+        debug_title: 调试图的标题前缀（可选）。
+        debug_save_path: 图片保存路径。若为目录则自动生成带时间戳的文件名；
+                         若为完整路径（含扩展名如 .png/.jpg）则直接使用。默认 None（不保存）。
     """
+    if debug and not _HAS_MPL:
+        raise RuntimeError("matplotlib is required for debug visualization")
+
     self_xy = np.asarray(self_xy, dtype=np.float64)
     opp_xy = np.asarray(opp_xy, dtype=np.float64)
     T = self_xy.shape[0]
@@ -244,22 +273,117 @@ def compute_approach_rewards(
     if np.any(big):
         disp[big] *= (disp_clip / np.maximum(mag[big], 1e-9))[:, None]
 
-    # 指向对手的方向（原始位置）。
-    to_opp = opp_xy - self_xy
+    # 平滑后净位移的模长（速度大小，dt 折进 radial_coef）与单位方向。
+    speed = np.linalg.norm(disp, axis=1)
+    moving = speed > 1e-9
+    v_hat = np.zeros_like(disp)
+    v_hat[moving] = disp[moving] / speed[moving, None]
+
+    # 指向对手的方向：用**平滑后**位置 sm 计算（与速度同源，几何一致）。
+    to_opp = opp_xy - sm
     dist = np.linalg.norm(to_opp, axis=1)
-    nz = dist > 1e-6
-    u = np.zeros_like(to_opp)
-    u[nz] = to_opp[nz] / dist[nz, None]
 
-    v_r = np.einsum("ij,ij->i", disp, u)          # 带符号径向位移
+    # ---- 几何方向系数构造 ----
+    # 从 sm 沿速度方向走距离 d=dist 得端点 E = sm + d * v_hat；
+    # c = |O - E| 为该端点到对手的距离。
+    #   coef = (d - c) / d            （等价于 1 - 2*sin(θ/2)）
+    #   θ < 60° → coef > 0（有效接近）；θ = 60° → 0；θ > 60° → 负（越走越远）。
+    valid = (dist > 1e-6) & moving
+    E = sm + dist[:, None] * v_hat
+    c = np.linalg.norm(opp_xy - E, axis=1)
+    coef = np.zeros(T, dtype=np.float64)
+    coef[valid] = (dist[valid] - c[valid]) / dist[valid]
+
+    # 最终奖励 = 速度模长 * 方向系数（朝对手为正，背离为负）。
     out_zone = dist > max(float(dist_max), 1e-6)
-    radial[out_zone] = (radial_coef * v_r[out_zone]).astype(np.float32)
+    mask = out_zone & valid
+    radial[mask] = (radial_coef * speed[mask] * coef[mask]).astype(np.float32)
 
-    if tangential_coef != 0.0:
-        tang_vec = disp - v_r[:, None] * u
-        tang_mag = np.linalg.norm(tang_vec, axis=1)
-        loiter = np.abs(v_r) < progress_eps        # 仅原地打转才罚
-        mask = out_zone & loiter
-        tangential[mask] = (-tangential_coef * tang_mag[mask]).astype(np.float32)
+    # tangential 始终为 0：保留二元返回仅为兼容旧接口；该项已废弃，
+    # 其 stage 权重应一并置 0（见 common_v2.STAGE_WEIGHTS）。
+
+    # ---------------------------------------------------------
+    # Debug visualization (raw/smooth trajectories + rewards)
+    # ---------------------------------------------------------
+    if debug:
+        title_prefix = debug_title if debug_title else "ApproachReward"
+        t = np.arange(T)
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        fig.suptitle(f"{title_prefix} | T={T}, win={smooth_window}", fontsize=12)
+
+        # Axis 0: Raw vs Smoothed Self Trajectory (2D XY)
+        ax = axes[0, 0]
+        ax.plot(self_xy[:, 0], self_xy[:, 1], "b.-", alpha=0.4, label="raw self", markersize=3)
+        ax.plot(sm[:, 0], sm[:, 1], "b-", linewidth=2, label="smoothed self")
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.set_title("Self Trajectory (World XY)")
+        ax.legend(loc="upper left", fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+        # Axis 1: Opponent Trajectory (2D XY)
+        ax = axes[0, 1]
+        ax.plot(opp_xy[:, 0], opp_xy[:, 1], "r.-", alpha=0.5, label="opponent", markersize=3)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.set_title("Opponent Trajectory (World XY)")
+        ax.legend(loc="upper left", fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+        # Axis 2: Trajectory overlay (both self and opp)
+        ax = axes[1, 0]
+        ax.plot(self_xy[:, 0], self_xy[:, 1], "b.-", alpha=0.3, label="self raw", markersize=2)
+        ax.plot(sm[:, 0], sm[:, 1], "b-", linewidth=2, label="self smooth")
+        ax.plot(opp_xy[:, 0], opp_xy[:, 1], "r.-", alpha=0.5, label="opponent", markersize=2)
+        # Mark start/end
+        ax.scatter([self_xy[0, 0]], [self_xy[0, 1]], c="blue", marker="o", s=50, zorder=5)
+        ax.scatter([self_xy[-1, 0]], [self_xy[-1, 1]], c="blue", marker="x", s=50, zorder=5)
+        ax.scatter([opp_xy[0, 0]], [opp_xy[0, 1]], c="red", marker="o", s=50, zorder=5)
+        ax.scatter([opp_xy[-1, 0]], [opp_xy[-1, 1]], c="red", marker="x", s=50, zorder=5)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.set_title("Overlay (o=start, x=end)")
+        ax.legend(loc="upper left", fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+        # Axis 3: Rewards over time
+        ax = axes[1, 1]
+        ax.step(t, radial, where="mid", label="radial", alpha=0.8)
+        ax.step(t, tangential, where="mid", label="tangential", alpha=0.6, linestyle="--")
+        ax.axhline(0, color="k", linewidth=0.5)
+        ax.set_xlabel("time step")
+        ax.set_ylabel("reward")
+        ax.set_title(f"Rewards (radial_coef={radial_coef}, tangential_coef={tangential_coef})")
+        ax.legend(loc="best", fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+        # Save to file if path provided, otherwise show interactively
+        if debug_save_path:
+            from pathlib import Path
+            import time
+
+            save_path = Path(debug_save_path)
+            # If it's a directory, auto-generate filename with timestamp
+            if save_path.is_dir() or debug_save_path.endswith(('/', '\\')):
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                fname = f"{title_prefix.replace(' ', '_')}_{ts}.png"
+                save_path = save_path / fname
+            else:
+                # Ensure .png extension if none provided
+                if not save_path.suffix:
+                    save_path = save_path.with_suffix('.png')
+
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+            print(f"[DEBUG] Saved approach reward plot to: {save_path}")
+            plt.close(fig)
+        else:
+            plt.show()
 
     return radial, tangential

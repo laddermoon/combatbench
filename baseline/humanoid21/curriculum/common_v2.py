@@ -218,6 +218,11 @@ class CurriculumConfig:
 
     seed: int = 42
 
+    # Debug: approach reward visualization (follow_opponent.py).
+    # Enable to save trajectory/reward plots for each episode during buffer build.
+    debug_approach_reward: bool = False
+    debug_save_dir: str = "./debug_approach"
+
 
 # ---------------------------------------------------------------------------
 # Seeding
@@ -277,8 +282,11 @@ class CurriculumStageGate:
 
         order: (r_fall, r_cross, r_damage, r_hold, r_radial, r_tangential)
         stage 1 -> (3.0, 1.0, 0.0, 0.0, 0.0, 0.0)   balance-first
-        stage 2 -> (2.0, 1.0, 0.0, 1.0, 1.0, 0.5)   approach (hold+radial+tangential)
-        stage 3 -> (2.0, 1.0, 1.0, 1.0, 1.0, 0.5)   combat + approach triple
+        stage 2 -> (2.0, 1.0, 0.0, 0.5, 0.5, 0.0)   approach (hold + radial)
+        stage 3 -> (2.0, 1.0, 1.0, 0.5, 0.5, 0.0)   combat + approach (hold + radial)
+
+    ``r_tangential`` is deprecated (always 0); weight kept at 0.0 for
+    backward-compatible 6-tuple shape.
 
     Pure Python, picklable, no numpy/torch deps.
     """
@@ -288,8 +296,8 @@ class CurriculumStageGate:
     # Order: (r_fall, r_cross, r_damage, r_hold, r_radial, r_tangential).
     STAGE_WEIGHTS: Dict[int, tuple] = {
         1: (3.0, 1.0, 0.0, 0.0, 0.0, 0.0),  # 不倒地是第一优化级
-        2: (2.0, 1.0, 0.0, 1.0, 1.0, 0.5),  # 接近三件套: hold + radial + tangential
-        3: (2.0, 1.0, 1.0, 1.0, 1.0, 0.5),  # combat + 接近三件套
+        2: (2.0, 1.0, 0.0, 0.5, 0.5, 0.0),  # 接近: hold + radial（tangential 已废弃→0）
+        3: (2.0, 1.0, 1.0, 0.5, 0.5, 0.0),  # combat + 接近（tangential 已废弃→0）
     }
 
     def __init__(

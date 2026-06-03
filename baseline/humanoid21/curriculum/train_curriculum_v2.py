@@ -120,6 +120,7 @@ class _PPOBuffer:
         "final_obs", "is_terminated", "ep_lengths", "final_in_zone",
         "r_fall_sums", "r_cross_sums", "r_damage_sums",
         "r_hold_sums", "r_radial_sums", "r_tangential_sums",
+        "_debug_approach", "_debug_save_dir",
     )
 
     def __init__(
@@ -129,9 +130,13 @@ class _PPOBuffer:
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
         terminal_fall_penalty: float,
+        debug_approach_reward: bool = False,
+        debug_save_dir: Optional[str] = None,
     ):
         # Buffer only stores raw per-step rewards for each component.
         # No scaling applied here - scaling happens during optimization.
+        self._debug_approach = debug_approach_reward
+        self._debug_save_dir = debug_save_dir
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
@@ -189,7 +194,18 @@ class _PPOBuffer:
             else:
                 self_xy = np.stack([self_x, self_y], axis=1)
                 opp_xy = np.stack([opp_x, opp_y], axis=1)
-                r_radial, r_tangential = compute_approach_rewards(self_xy, opp_xy)
+                # Build debug save path if enabled (unique per episode)
+                debug_save_path = None
+                if self._debug_approach and self._debug_save_dir:
+                    import time
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    debug_save_path = f"{self._debug_save_dir}/approach_ep{len(obs_list)}_{ts}.png"
+                r_radial, r_tangential = compute_approach_rewards(
+                    self_xy, opp_xy,
+                    debug=self._debug_approach,
+                    debug_title=f"Episode_{len(obs_list)}",
+                    debug_save_path=debug_save_path,
+                )
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
             act_t = torch.as_tensor(acts, dtype=torch.float32, device=device)
@@ -829,6 +845,8 @@ def train(
                 actor=actor,
                 device=device,
                 terminal_fall_penalty=cfg.terminal_fall_penalty,
+                debug_approach_reward=cfg.debug_approach_reward,
+                debug_save_dir=cfg.debug_save_dir if cfg.debug_approach_reward else None,
             )
             t_buffer = time.perf_counter() - t0
             
@@ -881,6 +899,8 @@ def train(
                     actor=actor,
                     device=device,
                     terminal_fall_penalty=0.0,
+                    debug_approach_reward=cfg.debug_approach_reward,
+                    debug_save_dir=cfg.debug_save_dir if cfg.debug_approach_reward else None,
                 )
                 if not eval_buf.is_empty():
                     esum = _batch_summary(eval_buf, cfg.max_steps)
