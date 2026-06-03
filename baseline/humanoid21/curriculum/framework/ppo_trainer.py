@@ -13,17 +13,8 @@ import torch
 from baseline.common.algos import compute_gae
 from baseline.common.policies import CriticMLP, TanhGaussianMLPPolicy
 from baseline.common.rollout import Episode
-from envs.framework.blueprint import EnvBlueprint
-from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from envs.framework.policy import PolicyBlueprint
 
 from .config import ExperimentConfig
-
-# ---------------------------------------------------------------------------
-# Rollout constants (shared across all experiments)
-# ---------------------------------------------------------------------------
-ROLLOUT_INITIAL_DISTANCE_MIN = 1.5
-ROLLOUT_INITIAL_DISTANCE_MAX = 3.5
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -74,11 +65,6 @@ def _extract_per_step_field(
     if not isinstance(node, dict) or field not in node:
         return None
     return _coerce_per_step(node[field], expected_len)
-
-
-def _agent_from_rollout_seed(seed: int) -> str:
-    rng = np.random.default_rng(int(seed) + 937)
-    return "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
 
 
 # ---------------------------------------------------------------------------
@@ -384,40 +370,6 @@ def ppo_update(
         "early_stop_kl": early_stop_kl,
         **per_critic_losses,
     }
-
-
-# ---------------------------------------------------------------------------
-# Rollout jobs
-# ---------------------------------------------------------------------------
-
-def build_rollout_jobs(
-    env_pb: ParameterizedEnvBlueprint,
-    policy_bp: PolicyBlueprint,
-    base_seed: int,
-    n_episodes: int,
-    max_steps: int,
-) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-    """Prepare ``n`` jobs – each with a randomly chosen target agent and initial distance."""
-    rng = np.random.default_rng(base_seed)
-
-    env_bps: Dict[str, EnvBlueprint] = {
-        aid: env_pb.materialize(max_steps=max_steps, agent_id=aid)
-        for aid in ("robot_a", "robot_b")
-    }
-
-    jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
-    for i in range(n_episodes):
-        seed = int(base_seed + i)
-        agent_id = _agent_from_rollout_seed(seed)
-        initial_distance = float(
-            rng.uniform(ROLLOUT_INITIAL_DISTANCE_MIN, ROLLOUT_INITIAL_DISTANCE_MAX)
-        )
-        jobs.append((
-            policy_bp, policy_bp,
-            env_bps[agent_id], seed,
-            {"agent_id": agent_id, "initial_distance": initial_distance},
-        ))
-    return jobs
 
 
 # ---------------------------------------------------------------------------

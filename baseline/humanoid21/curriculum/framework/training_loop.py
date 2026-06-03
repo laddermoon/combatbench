@@ -30,7 +30,6 @@ from .config import ExperimentConfig
 from .ppo_trainer import (
     PPOBuffer,
     batch_summary,
-    build_rollout_jobs,
     ppo_update,
     reward_summary,
     set_seed,
@@ -404,7 +403,7 @@ def train(
             # 5.2 Prepare rollout jobs
             t0 = time.perf_counter()
             rollout_seed = cfg.seed + u * cfg.episodes_per_update
-            jobs = build_rollout_jobs(
+            jobs = experiment.build_rollout_jobs(
                 env_pb, policy_bp, rollout_seed,
                 cfg.episodes_per_update, max_steps=cfg.max_steps,
             )
@@ -500,7 +499,7 @@ def train(
                 t0 = time.perf_counter()
                 eval_seed = cfg.seed + 100_000 + u * 97
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
-                eval_jobs = build_rollout_jobs(
+                eval_jobs = experiment.build_rollout_jobs(
                     env_pb, det_bp, eval_seed,
                     cfg.eval_episodes, max_steps=cfg.max_steps,
                 )

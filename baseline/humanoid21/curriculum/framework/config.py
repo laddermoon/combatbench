@@ -35,9 +35,13 @@ V1 用 4 个 reward（r_relation 做接近信号），V2 用 6 个 reward
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
+
+from envs.framework.blueprint import EnvBlueprint
+from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
+from envs.framework.policy import PolicyBlueprint
 
 
 class ExperimentConfig(ABC):
@@ -52,6 +56,10 @@ class ExperimentConfig(ABC):
     gammas: Dict[str, float] = {}
     env_blueprint: str = ""  # filename relative to blueprints/
     ppo_overrides: Dict[str, Any] = {}  # optional overrides for TrainConfig
+
+    # Rollout distance range (can be overridden per experiment)
+    rollout_distance_min: float = 1.5
+    rollout_distance_max: float = 3.5
 
     # --- Abstract methods ---
 
@@ -116,6 +124,67 @@ class ExperimentConfig(ABC):
         """Return extra info dict for logging (phase, consecutive_pass, etc.)."""
         ...
 
+    # --- Rollout job construction ---
+
+    @staticmethod
+    def _agent_from_rollout_seed(seed: int) -> str:
+        rng = np.random.default_rng(int(seed) + 937)
+        return "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
+
+    def build_rollout_jobs(
+        self,
+        env_pb: ParameterizedEnvBlueprint,
+        policy_bp: PolicyBlueprint,
+        base_seed: int,
+        n_episodes: int,
+        max_steps: int,
+        *,
+        policy_bp_b: PolicyBlueprint | None = None,
+    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        """Build rollout job list.
+
+        Default implementation: self-play with random agent_id assignment
+        and random initial distance. Override for asymmetric policies,
+        fixed opponent, or other rollout strategies.
+
+        Parameters
+        ----------
+        env_pb : ParameterizedEnvBlueprint
+            Parameterized env blueprint (materialized per agent_id).
+        policy_bp : PolicyBlueprint
+            Policy blueprint for agent A (and agent B if ``policy_bp_b`` is None).
+        base_seed : int
+            Base RNG seed for this batch.
+        n_episodes : int
+            Number of episodes to prepare.
+        max_steps : int
+            Episode horizon.
+        policy_bp_b : PolicyBlueprint or None
+            Policy for agent B. If None, uses ``policy_bp`` (self-play).
+        """
+        rng = np.random.default_rng(base_seed)
+
+        env_bps: Dict[str, EnvBlueprint] = {
+            aid: env_pb.materialize(max_steps=max_steps, agent_id=aid)
+            for aid in ("robot_a", "robot_b")
+        }
+
+        bp_b = policy_bp_b if policy_bp_b is not None else policy_bp
+
+        jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
+        for i in range(n_episodes):
+            seed = int(base_seed + i)
+            agent_id = self._agent_from_rollout_seed(seed)
+            initial_distance = float(
+                rng.uniform(self.rollout_distance_min, self.rollout_distance_max)
+            )
+            jobs.append((
+                policy_bp, bp_b,
+                env_bps[agent_id], seed,
+                {"agent_id": agent_id, "initial_distance": initial_distance},
+            ))
+        return jobs
+
     # --- Serialization ---
 
     def to_dict(self) -> Dict[str, Any]:
@@ -131,6 +200,8 @@ class ExperimentConfig(ABC):
             "env_blueprint": self.env_blueprint,
             "ppo_overrides": self.ppo_overrides,
             "initial_weights": list(self.initial_weights()),
+            "rollout_distance_min": self.rollout_distance_min,
+            "rollout_distance_max": self.rollout_distance_max,
         }
 
     # --- Optional state persistence ---
