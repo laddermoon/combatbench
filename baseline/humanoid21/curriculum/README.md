@@ -311,3 +311,9 @@ r_total =
 这份是可直接交付工程落地的完整全流程指令，上下文零缺失、逻辑闭环、所有坑提前封堵。
  
 需要我接着给你写 配套的P1训练完整Agent指令（完全对接这套系统） 吗？
+
+
+
+With New API Train V1:
+cd /data1/mono/things/combatbench
+PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment  --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260528_175538/checkpoints/checkpoint_u00610.pt &> newframe.log & 

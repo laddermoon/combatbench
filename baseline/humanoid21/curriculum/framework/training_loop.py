@@ -23,7 +23,6 @@ from baseline.common.policies import (
     export_actor_policy_artifacts,
 )
 from baseline.common.rollout import Episode, ParallelRollouter
-from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 from .config import ExperimentConfig
@@ -315,9 +314,11 @@ def train(
     set_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Load blueprints
+    # 1. Load init policy blueprint.
+    # The env blueprint lifecycle is owned by the experiment (see
+    # ExperimentConfig.build_rollout_jobs / current_env_blueprint), so the
+    # train loop never loads or holds an env blueprint itself.
     blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
-    env_pb = ParameterizedEnvBlueprint.load(blueprint_dir / experiment.env_blueprint)
     init_policy_bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
 
     # 2. Build models
@@ -404,7 +405,7 @@ def train(
             t0 = time.perf_counter()
             rollout_seed = cfg.seed + u * cfg.episodes_per_update
             jobs = experiment.build_rollout_jobs(
-                env_pb, policy_bp, rollout_seed,
+                policy_bp, rollout_seed,
                 cfg.episodes_per_update, max_steps=cfg.max_steps,
             )
             t_jobs = time.perf_counter() - t0
@@ -500,7 +501,7 @@ def train(
                 eval_seed = cfg.seed + 100_000 + u * 97
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
                 eval_jobs = experiment.build_rollout_jobs(
-                    env_pb, det_bp, eval_seed,
+                    det_bp, eval_seed,
                     cfg.eval_episodes, max_steps=cfg.max_steps,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)

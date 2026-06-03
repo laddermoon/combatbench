@@ -35,6 +35,7 @@ V1 用 4 个 reward（r_relation 做接近信号），V2 用 6 个 reward
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -124,6 +125,40 @@ class ExperimentConfig(ABC):
         """Return extra info dict for logging (phase, consecutive_pass, etc.)."""
         ...
 
+    # --- Blueprint ownership ---
+    #
+    # The experiment OWNS the env blueprint lifecycle: which file to use,
+    # loading, caching, and switching across curriculum stages. The training
+    # loop never touches blueprints — it only calls ``build_rollout_jobs``.
+
+    @staticmethod
+    def blueprint_dir() -> Path:
+        """Directory containing env blueprint YAML files."""
+        return Path(__file__).resolve().parent.parent.parent / "blueprints"
+
+    def current_env_blueprint(self) -> str:
+        """Return the active env blueprint filename for the current stage.
+
+        Default returns the static ``env_blueprint``. Stateful experiments
+        (e.g. multi-stage curricula) override this to return a different
+        blueprint depending on their internal scheduler state.
+        """
+        return self.env_blueprint
+
+    def _get_env_pb(self) -> ParameterizedEnvBlueprint:
+        """Load (and cache) the ParameterizedEnvBlueprint for the active stage.
+
+        Cached per blueprint filename, so switching back and forth between
+        stages does not re-read from disk.
+        """
+        name = self.current_env_blueprint()
+        cache: Dict[str, ParameterizedEnvBlueprint] = self.__dict__.setdefault(
+            "_env_pb_cache", {}
+        )
+        if name not in cache:
+            cache[name] = ParameterizedEnvBlueprint.load(self.blueprint_dir() / name)
+        return cache[name]
+
     # --- Rollout job construction ---
 
     @staticmethod
@@ -133,7 +168,6 @@ class ExperimentConfig(ABC):
 
     def build_rollout_jobs(
         self,
-        env_pb: ParameterizedEnvBlueprint,
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
@@ -147,10 +181,11 @@ class ExperimentConfig(ABC):
         and random initial distance. Override for asymmetric policies,
         fixed opponent, or other rollout strategies.
 
+        The env blueprint is resolved internally via ``_get_env_pb()`` so the
+        correct (possibly stage-dependent) blueprint is used each call.
+
         Parameters
         ----------
-        env_pb : ParameterizedEnvBlueprint
-            Parameterized env blueprint (materialized per agent_id).
         policy_bp : PolicyBlueprint
             Policy blueprint for agent A (and agent B if ``policy_bp_b`` is None).
         base_seed : int
@@ -162,6 +197,7 @@ class ExperimentConfig(ABC):
         policy_bp_b : PolicyBlueprint or None
             Policy for agent B. If None, uses ``policy_bp`` (self-play).
         """
+        env_pb = self._get_env_pb()
         rng = np.random.default_rng(base_seed)
 
         env_bps: Dict[str, EnvBlueprint] = {
