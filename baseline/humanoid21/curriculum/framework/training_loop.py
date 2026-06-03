@@ -316,7 +316,7 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. Load blueprints
-    blueprint_dir = Path(__file__).resolve().parent.parent / "blueprints"
+    blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
     env_pb = ParameterizedEnvBlueprint.load(blueprint_dir / experiment.env_blueprint)
     init_policy_bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
 
