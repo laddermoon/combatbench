@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from .config import ExperimentConfig
-from .training_loop import CurriculumConfig, train
+from .training_loop import TrainConfig, train
 from .ppo_trainer import set_seed
 
 __all__ = [
     "ExperimentConfig",
-    "CurriculumConfig",
+    "TrainConfig",
     "train",
     "set_seed",
 ]

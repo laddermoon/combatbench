@@ -51,7 +51,7 @@ class ExperimentConfig(ABC):
     reward_keys: Tuple[str, ...] = ()
     gammas: Dict[str, float] = {}
     env_blueprint: str = ""  # filename relative to blueprints/
-    ppo_overrides: Dict[str, Any] = {}  # optional overrides for CurriculumConfig
+    ppo_overrides: Dict[str, Any] = {}  # optional overrides for TrainConfig
 
     # --- Abstract methods ---
 
@@ -115,6 +115,23 @@ class ExperimentConfig(ABC):
     def scheduler_info(self) -> Dict[str, Any]:
         """Return extra info dict for logging (phase, consecutive_pass, etc.)."""
         ...
+
+    # --- Serialization ---
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize experiment config to a JSON-friendly dict.
+
+        Subclasses with extra config fields should override this and
+        call ``super().to_dict()`` then add their own keys.
+        """
+        return {
+            "name": self.name,
+            "reward_keys": list(self.reward_keys),
+            "gammas": self.gammas,
+            "env_blueprint": self.env_blueprint,
+            "ppo_overrides": self.ppo_overrides,
+            "initial_weights": list(self.initial_weights()),
+        }
 
     # --- Optional state persistence ---
 

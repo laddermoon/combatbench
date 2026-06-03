@@ -425,23 +425,26 @@ def build_rollout_jobs(
 # ---------------------------------------------------------------------------
 
 def batch_summary(buf: PPOBuffer, max_steps: int) -> Dict[str, float]:
+    """Compute batch-level summary from a PPOBuffer.
+
+    Returns generic training metrics (``mean_length``, ``len_ratio``) plus
+    the mean of every key in ``episode_metrics`` (computed by the experiment's
+    ``compute_episode_metrics``).  No experiment-specific keys are hardcoded.
+    """
     n = len(buf.ep_lengths)
     if n == 0:
-        return {
-            "term_rate": 0.0, "mean_length": 0.0,
-            "len_ratio": 0.0, "final_in_zone_ratio": 0.0,
-        }
+        return {"mean_length": 0.0, "len_ratio": 0.0}
     mean_len = float(np.mean(buf.ep_lengths))
-    # Compute final_in_zone from episode_metrics
-    in_zone_count = sum(
-        1 for m in buf.episode_metrics if m.get("in_zone", 0.0) > 0.5
-    )
-    return {
-        "term_rate": float(sum(buf.is_terminated) / n),
+    result: Dict[str, float] = {
         "mean_length": mean_len,
         "len_ratio": mean_len / float(max_steps),
-        "final_in_zone_ratio": float(in_zone_count / n),
     }
+    # Aggregate all episode-level metrics (from experiment.compute_episode_metrics)
+    if buf.episode_metrics:
+        keys = buf.episode_metrics[0].keys()
+        for k in keys:
+            result[k] = float(np.mean([m.get(k, 0.0) for m in buf.episode_metrics]))
+    return result
 
 
 def reward_summary(buf: PPOBuffer) -> Dict[str, Any]:

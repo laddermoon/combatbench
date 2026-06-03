@@ -9,14 +9,35 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import json
 import time
 from pathlib import Path
 
 from baseline.humanoid21.curriculum.experiments import get_experiment, list_experiments
 from baseline.humanoid21.curriculum.framework.training_loop import (
-    CurriculumConfig,
+    TrainConfig,
     train,
 )
+
+
+def _save_run_config(
+    run_dir: Path,
+    cfg: TrainConfig,
+    experiment,
+    smoke: bool,
+) -> None:
+    """Save the full run configuration to run_dir/config.json."""
+    payload = {
+        "config": dataclasses.asdict(cfg),
+        "experiment": experiment.to_dict(),
+        "smoke": smoke,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(payload, f, indent=2, default=str)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -60,7 +81,7 @@ def main() -> None:
 
     experiment = get_experiment(args.experiment)
 
-    cfg = CurriculumConfig()
+    cfg = TrainConfig()
 
     # Apply experiment-specific PPO overrides
     for k, v in experiment.ppo_overrides.items():
@@ -87,6 +108,11 @@ def main() -> None:
     run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
 
     resume_from = Path(args.resume_from) if args.resume_from else None
+
+    # Save config snapshot before training starts
+    _save_run_config(run_dir, cfg, experiment, smoke=args.smoke)
+    print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
+
     train(cfg, experiment, run_dir=run_dir, resume_from=resume_from)
 
 

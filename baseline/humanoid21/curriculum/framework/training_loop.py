@@ -1,6 +1,6 @@
 """Unified curriculum training loop.
 
-Contains ``CurriculumConfig``, ``train()``, checkpoint save/load, and
+Contains ``TrainConfig``, ``train()``, checkpoint save/load, and
 video rendering — generic over ``ExperimentConfig``.
 """
 from __future__ import annotations
@@ -51,11 +51,13 @@ CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5
 
 
 @dataclass
-class CurriculumConfig:
-    """Hyperparameters for the unified curriculum-learning PPO trainer.
+class TrainConfig:
+    """Training hyperparameters (PPO, rollout schedule, runtime).
 
-    Reward-specific fields (gammas) come from ``ExperimentConfig`` rather
-    than here.
+    Reward-specific fields (gammas, reward_keys, weight scheduling) come from
+    ``ExperimentConfig`` rather than here.  This config covers everything else
+    that controls *how* training runs: network shape, optimizer settings,
+    rollout parallelism, eval frequency, checkpointing, etc.
     """
 
     # Network shape.
@@ -129,7 +131,7 @@ def save_checkpoint(
     current_weights: Tuple[float, ...],
     update: int,
     best_eval: tuple,
-    cfg: CurriculumConfig,
+    cfg: TrainConfig,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -160,7 +162,7 @@ def load_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
-    cfg: CurriculumConfig,
+    cfg: TrainConfig,
 ) -> Tuple[int, Tuple[float, ...]]:
     """Load checkpoint with cross-experiment compatibility.
 
@@ -299,7 +301,7 @@ def spawn_video_render(
 # ---------------------------------------------------------------------------
 
 def train(
-    cfg: CurriculumConfig,
+    cfg: TrainConfig,
     experiment: ExperimentConfig,
     *,
     run_dir: Path,
@@ -460,11 +462,25 @@ def train(
             if sinfo:
                 info_parts = [f"{k}={v}" for k, v in sinfo.items()]
                 line += " ".join(info_parts) + " "
+            line = (
+                f"update={u:4d} "
+                f"weights={tuple(round(w, 2) for w in norm_weights)} "
+            )
+            if sinfo:
+                info_parts = [f"{k}={v}" for k, v in sinfo.items()]
+                line += " ".join(info_parts) + " "
+
+            # Generic training stats
+            n_eps = len(buf.ep_lengths)
+            term_rate = float(sum(buf.is_terminated) / n_eps) if n_eps > 0 else 0.0
             line += (
                 f"\n  len={bsum['mean_length']:6.2f} "
-                f"term={bsum['term_rate']:.3f} "
-                f"in_zone={bsum['final_in_zone_ratio']:.3f}"
+                f"term={term_rate:.3f}"
             )
+            # Episode metrics from experiment (aggregated by batch_summary)
+            for mk, mv in bsum.items():
+                if mk not in ("mean_length", "len_ratio"):
+                    line += f" {mk}={mv:.3f}"
             # Reward summary
             for key in experiment.reward_keys:
                 mk, sk = f"{key}_mean", f"{key}_std"
@@ -499,11 +515,18 @@ def train(
                 )
                 if not eval_buf.is_empty():
                     esum = batch_summary(eval_buf, cfg.max_steps)
+                    n_eval_eps = len(eval_buf.ep_lengths)
+                    eval_term_rate = (
+                        float(sum(eval_buf.is_terminated) / n_eval_eps)
+                        if n_eval_eps > 0 else 0.0
+                    )
                     line += (
                         f"\n  [eval] len={esum['mean_length']:6.2f}"
-                        f" term={esum['term_rate']:.3f}"
-                        f" in_zone={esum['final_in_zone_ratio']:.3f}"
+                        f" term={eval_term_rate:.3f}"
                     )
+                    for mk, mv in esum.items():
+                        if mk not in ("mean_length", "len_ratio"):
+                            line += f" {mk}={mv:.3f}"
 
                     # Update weights from experiment scheduler
                     prev_weights = weights
@@ -516,7 +539,7 @@ def train(
                         )
 
                     # Best-of-run snapshot
-                    score = (esum["mean_length"], esum["final_in_zone_ratio"])
+                    score = (esum["mean_length"], esum.get("in_zone", 0.0))
                     if score > best_eval:
                         best_eval = score
                         export_actor_policy_artifacts(

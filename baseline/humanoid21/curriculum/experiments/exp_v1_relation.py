@@ -41,7 +41,7 @@ class V1RelationConfig(ExperimentConfig):
         len_ratio = eval_metrics.get("mean_length", 0.0) / 200.0
         if len_ratio < 0.98:
             return (3.0, 1.0, 0.3, 0.0)
-        elif eval_metrics.get("final_in_zone_ratio", 0.0) < 0.5:
+        elif eval_metrics.get("in_zone", 0.0) < 0.5:
             return (2.0, 1.0, 1.0, 0.0)
         else:
             return (2.0, 1.0, 1.0, 1.0)

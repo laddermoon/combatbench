@@ -55,7 +55,7 @@ class V2FollowConfig(ExperimentConfig):
             self._phase = "balance"
             self._consecutive_pass = 0
             return (3.0, 1.0, 0.0, 0.0, 0.0, 0.0)
-        elif eval_metrics.get("final_in_zone_ratio", 0.0) < 0.5:
+        elif eval_metrics.get("in_zone", 0.0) < 0.5:
             self._phase = "approach"
             self._consecutive_pass += 1
             return (2.0, 1.0, 0.0, 0.5, 0.5, 0.0)
