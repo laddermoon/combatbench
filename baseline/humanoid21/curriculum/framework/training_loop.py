@@ -99,10 +99,8 @@ def save_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
-    current_weights: Tuple[float, ...],
     update: int,
     best_eval: tuple,
-    cfg: TrainConfig,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -113,13 +111,11 @@ def save_checkpoint(
             "critic_optimizers_state_dict": {
                 k: v.state_dict() for k, v in critic_optimizers.items()
             },
-            "current_weights": current_weights,
             "experiment_name": experiment.name,
             "reward_keys": experiment.reward_keys,
             "scheduler_state": experiment.scheduler_state(),
             "update": update,
             "best_eval": best_eval,
-            "cfg": cfg.__dict__,
         },
         ckpt_path,
     )
@@ -133,11 +129,21 @@ def load_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
-    cfg: TrainConfig,
-) -> Tuple[int, Tuple[float, ...]]:
-    """Load checkpoint with cross-experiment compatibility.
+    load_experiment_state: bool = True,
+) -> int:
+    """Load model weights and optimizer states from checkpoint.
 
-    Returns (start_update, current_weights).
+    Parameters
+    ----------
+    load_experiment_state : bool
+        If True, restore the experiment scheduler state (stage, phase, etc.)
+        so the curriculum resumes from where it left off.  If False, the
+        experiment keeps its default initial state.
+
+    Returns
+    -------
+    start_update : int
+        The update number to resume from.
     """
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
@@ -193,41 +199,20 @@ def load_checkpoint(
                 except RuntimeError as e:
                     print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
-    # Weights — only restore if compatible
-    saved_weights = payload.get("current_weights")
-    saved_keys = payload.get("reward_keys")
-    if (
-        saved_weights is not None
-        and saved_keys is not None
-        and tuple(saved_keys) == experiment.reward_keys
-    ):
-        weights = tuple(saved_weights)
-    else:
-        weights = experiment.initial_weights()
-        print(
-            f"[checkpoint] reward keys differ (saved={saved_keys}, "
-            f"current={experiment.reward_keys}), using initial weights",
-            flush=True,
-        )
+    # Experiment scheduler state
+    if load_experiment_state:
+        saved_exp = payload.get("experiment_name", "")
+        if saved_exp == experiment.name:
+            experiment.load_scheduler_state(payload.get("scheduler_state", {}))
+            print(f"[checkpoint] Restored experiment state for {experiment.name}", flush=True)
+        else:
+            print(
+                f"[checkpoint] experiment changed ({saved_exp} -> {experiment.name}), "
+                f"resetting scheduler",
+                flush=True,
+            )
 
-    # Scheduler state — only restore if experiment matches
-    saved_exp = payload.get("experiment_name", "")
-    if saved_exp == experiment.name:
-        experiment.load_scheduler_state(payload.get("scheduler_state", {}))
-    else:
-        print(
-            f"[checkpoint] experiment changed ({saved_exp} -> {experiment.name}), "
-            f"resetting scheduler",
-            flush=True,
-        )
-
-    # Handle legacy gate_stage format (no current_weights)
-    if saved_weights is None and "gate_stage" in payload:
-        gate_stage = int(payload.get("gate_stage", 1))
-        print(f"[checkpoint] Legacy gate_stage={gate_stage} (no weights saved)", flush=True)
-
-    start_update = int(payload.get("update", 0))
-    return start_update, weights
+    return int(payload.get("update", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -317,14 +302,13 @@ def train(
 
     # 4. Resume
     if resume_from is not None:
-        start_update, weights = load_checkpoint(
+        start_update = load_checkpoint(
             Path(resume_from),
             actor=actor,
             critics=critics,
             actor_optimizer=actor_optimizer,
             critic_optimizers=critic_optimizers,
             experiment=experiment,
-            cfg=cfg,
         )
         print(
             f"[resume] loaded from {resume_from}, starting at update={start_update}",
@@ -556,8 +540,6 @@ def train(
                     actor_optimizer=actor_optimizer,
                     critic_optimizers=critic_optimizers,
                     experiment=experiment,
-                    current_weights=weights,
                     update=u,
                     best_eval=best_eval,
-                    cfg=cfg,
                 )
