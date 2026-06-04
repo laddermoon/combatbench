@@ -30,6 +30,9 @@ class P0StandingConfig(ExperimentConfig):
     env_blueprint = STAGE1_BLUEPRINT
     ppo_overrides: Dict[str, Any] = {}
 
+    # Terminal fall penalty (set by training loop before buffer construction).
+    terminal_fall_penalty: float = 1.0
+
     # Stateful scheduler
     _stage: int = 1
     _survival_rate: float = 0.0
@@ -69,23 +72,29 @@ class P0StandingConfig(ExperimentConfig):
         self,
         observer_outputs: dict,
         T: int,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
-        """P0 uses only r_fall, which the framework injects automatically.
-
-        Returning an empty dict lets PPOBuffer fill r_fall with the terminal
-        fall penalty (-terminal_fall_penalty on the last step of terminated
-        episodes). No per-step reward signal is used.
-        """
-        return {}
+        """P0 uses only r_fall: terminal penalty on the last step of fallen episodes."""
+        fell = "imbalance" in termination_proposals
+        r_fall = np.zeros(T, dtype=np.float32)
+        if fell and self.terminal_fall_penalty > 0.0:
+            r_fall[-1] = -float(self.terminal_fall_penalty)
+        return {"r_fall": r_fall}
 
     def compute_episode_metrics(
         self,
         observer_outputs: dict,
         T: int,
-        terminated: bool,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, float]:
-        """Per-episode metrics. ``survived`` averages to the survival rate."""
-        return {"survived": 0.0 if terminated else 1.0}
+        """Per-episode metrics. ``survived`` = 0 only if the robot fell.
+
+        ``"imbalance"`` in termination_proposals means ImbalanceTerminationPlugin
+        triggered (robot fell). ``"timeout"`` means the robot stood the full
+        horizon — that counts as survived.
+        """
+        fell = "imbalance" in termination_proposals
+        return {"survived": 0.0 if fell else 1.0}
 
     def scheduler_info(self) -> Dict[str, Any]:
         """Return current scheduler state for logging."""

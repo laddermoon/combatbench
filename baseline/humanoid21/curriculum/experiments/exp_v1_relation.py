@@ -30,6 +30,9 @@ class V1RelationConfig(ExperimentConfig):
     env_blueprint = "curriculum_env.yaml"
     ppo_overrides: Dict[str, Any] = {}
 
+    # Terminal fall penalty (set by training loop before buffer construction).
+    terminal_fall_penalty: float = 1.0
+
     def initial_weights(self) -> Tuple[float, ...]:
         return (3.0, 1.0, 0.3, 0.0)
 
@@ -50,7 +53,13 @@ class V1RelationConfig(ExperimentConfig):
         self,
         observer_outputs: dict,
         T: int,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
+        fell = "imbalance" in termination_proposals
+        r_fall = np.zeros(T, dtype=np.float32)
+        if fell and self.terminal_fall_penalty > 0.0:
+            r_fall[-1] = -float(self.terminal_fall_penalty)
+
         r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
         # opponent_relation emits a dict {"reward": ..., "in_zone": ...}
         r_relation = _extract_per_step_field(
@@ -62,6 +71,7 @@ class V1RelationConfig(ExperimentConfig):
             )
         r_damage = _extract_per_step_scalar(observer_outputs, "damage", T)
         return {
+            "r_fall": r_fall,
             "r_cross": r_cross,
             "r_relation": r_relation,
             "r_damage": r_damage,
@@ -71,7 +81,7 @@ class V1RelationConfig(ExperimentConfig):
         self,
         observer_outputs: dict,
         T: int,
-        terminated: bool,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, float]:
         rel_in_zone = _extract_per_step_field(
             observer_outputs, "opponent_relation", "in_zone", T

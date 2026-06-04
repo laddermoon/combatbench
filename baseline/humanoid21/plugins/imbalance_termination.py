@@ -61,7 +61,6 @@ from envs.framework import (
     EnvRuntime,
     ReadOnlySimContext,
     SimContext,
-    TerminationReason,
 )
 from envs.humanoid21 import MujocoCombatSimulator
 from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
@@ -133,7 +132,7 @@ class ImbalanceTerminationPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if self._phy_hits_in_action >= self.phy_hits_threshold:
-            ctx.request_termination(TerminationReason.CUSTOM)
+            ctx.request_termination("imbalance")
 
     def _is_non_foot_grounded(self, ctx: SimContext) -> bool:
         """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。
@@ -197,7 +196,7 @@ class ImbalanceTerminationPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if self._is_non_foot_grounded(ctx):
-            ctx.request_termination(TerminationReason.CUSTOM)
+            ctx.request_termination("imbalance")
 
     def _is_non_foot_grounded(self, ctx: SimContext) -> bool:
         """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。

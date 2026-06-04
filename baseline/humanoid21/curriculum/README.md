@@ -17,7 +17,7 @@ PYTHONPATH=. nohup python3 -u baseline/humanoid21/curriculum/train_curriculum_v2
 
 
 Watch Video:
-python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260603_011956/videos
+python3 -m http.server 8999 --bind 0.0.0.0   --directory /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_p0_standing_20260604_010537/videos
 
 
 Gen Video:
@@ -317,3 +317,6 @@ r_total =
 With New API Train V1:
 cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment  --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260528_175538/checkpoints/checkpoint_u00610.pt &> newframe.log & 
+
+
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment p0_standing &> p0.log & 

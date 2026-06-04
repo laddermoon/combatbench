@@ -418,12 +418,12 @@ def train(
             # 5.4 Build PPO buffer
             t0 = time.perf_counter()
             norm_weights = _norm_weights(weights)
+            experiment.terminal_fall_penalty = cfg.terminal_fall_penalty
             buf = PPOBuffer(
                 episodes=episodes,
                 stage_weights=norm_weights,
                 actor=actor,
                 device=device,
-                terminal_fall_penalty=cfg.terminal_fall_penalty,
                 experiment=experiment,
             )
             t_buffer = time.perf_counter() - t0
@@ -505,12 +505,12 @@ def train(
                     cfg.eval_episodes, max_steps=cfg.max_steps,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
+                experiment.terminal_fall_penalty = 0.0  # no penalty in eval
                 eval_buf = PPOBuffer(
                     episodes=eval_episodes,
                     stage_weights=norm_weights,
                     actor=actor,
                     device=device,
-                    terminal_fall_penalty=0.0,
                     experiment=experiment,
                 )
                 if not eval_buf.is_empty():

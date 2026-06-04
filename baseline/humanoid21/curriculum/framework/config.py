@@ -93,6 +93,7 @@ class ExperimentConfig(ABC):
         self,
         observer_outputs: dict,
         T: int,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
         """Extract per-step reward arrays from observer outputs.
 
@@ -102,11 +103,14 @@ class ExperimentConfig(ABC):
             The ``Episode.observer_outputs`` dict.
         T : int
             Episode length (number of steps).
+        termination_proposals : tuple of str
+            Termination reasons (e.g. ``"custom"`` = fell, ``"timeout"``).
+            Use this to distinguish fall from timeout when computing
+            terminal penalties.
 
         Returns
         -------
         dict mapping reward key (str) -> np.ndarray of shape (T,).
-        Do NOT include ``r_fall`` — the framework injects it automatically.
         """
         ...
 
@@ -115,9 +119,22 @@ class ExperimentConfig(ABC):
         self,
         observer_outputs: dict,
         T: int,
-        terminated: bool,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, float]:
-        """Compute aggregate metrics for one episode (used for eval & logging)."""
+        """Compute aggregate metrics for one episode (used for eval & logging).
+
+        Parameters
+        ----------
+        observer_outputs : dict
+            The ``Episode.observer_outputs`` dict.
+        T : int
+            Episode length (number of steps).
+        termination_proposals : tuple of str
+            Termination reasons from the episode.  Use this to distinguish
+            why the episode ended (e.g. ``"timeout"`` vs ``"custom"`` for a
+            fall).  Empty tuple means the episode was truncated externally
+            without a specific reason.
+        """
         ...
 
     @abstractmethod

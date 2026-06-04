@@ -86,8 +86,8 @@ def set_seed(seed: int) -> None:
 class PPOBuffer:
     """PPO buffer built from a list of :class:`Episode` objects.
 
-    Generic over reward keys — uses ``experiment.extract_rewards()`` and
-    injects ``r_fall`` automatically.
+    Generic over reward keys — delegates reward extraction and episode
+    metrics entirely to ``experiment``.
     """
 
     def __init__(
@@ -96,7 +96,6 @@ class PPOBuffer:
         stage_weights: Tuple[float, ...],
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
-        terminal_fall_penalty: float,
         experiment: ExperimentConfig,
     ):
         self.reward_data: Dict[str, List[np.ndarray]] = {
@@ -130,14 +129,9 @@ class PPOBuffer:
             oo = ep.observer_outputs
 
             # Extract rewards from experiment
-            rewards = experiment.extract_rewards(oo, T)
-
-            # Framework injects r_fall (terminal penalty)
-            if "r_fall" not in rewards:
-                r_fall = np.zeros(T, dtype=np.float32)
-                if ep.is_terminated and terminal_fall_penalty > 0.0:
-                    r_fall[-1] = -float(terminal_fall_penalty)
-                rewards["r_fall"] = r_fall
+            rewards = experiment.extract_rewards(
+                oo, T, ep.termination_proposals
+            )
 
             # Store reward arrays
             for key in experiment.reward_keys:
@@ -147,7 +141,9 @@ class PPOBuffer:
 
             # Episode metrics
             self.episode_metrics.append(
-                experiment.compute_episode_metrics(oo, T, bool(ep.is_terminated))
+                experiment.compute_episode_metrics(
+                    oo, T, ep.termination_proposals
+                )
             )
 
             # Compute log probs

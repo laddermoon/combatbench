@@ -38,6 +38,9 @@ class V2FollowConfig(ExperimentConfig):
     env_blueprint = "curriculum_env_v2.yaml"
     ppo_overrides: Dict[str, Any] = {}
 
+    # Terminal fall penalty (set by training loop before buffer construction).
+    terminal_fall_penalty: float = 1.0
+
     # Stateful scheduler
     _phase: str = "balance"
     _consecutive_pass: int = 0
@@ -68,7 +71,13 @@ class V2FollowConfig(ExperimentConfig):
         self,
         observer_outputs: dict,
         T: int,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
+        fell = "imbalance" in termination_proposals
+        r_fall = np.zeros(T, dtype=np.float32)
+        if fell and self.terminal_fall_penalty > 0.0:
+            r_fall[-1] = -float(self.terminal_fall_penalty)
+
         r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
         r_damage = _extract_per_step_scalar(observer_outputs, "damage", T)
 
@@ -98,6 +107,7 @@ class V2FollowConfig(ExperimentConfig):
             )
 
         return {
+            "r_fall": r_fall,
             "r_cross": r_cross,
             "r_damage": r_damage,
             "r_hold": r_hold,
@@ -109,7 +119,7 @@ class V2FollowConfig(ExperimentConfig):
         self,
         observer_outputs: dict,
         T: int,
-        terminated: bool,
+        termination_proposals: Tuple[str, ...],
     ) -> Dict[str, float]:
         hold_in_zone = _extract_per_step_field(
             observer_outputs, "in_zone_hold", "in_zone", T
