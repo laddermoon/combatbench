@@ -455,13 +455,7 @@ def train(
             rsum = reward_summary(buf)
             sinfo = experiment.scheduler_info()
 
-            line = (
-                f"update={u:4d} "
-                f"weights={tuple(round(w, 2) for w in norm_weights)} "
-            )
-            if sinfo:
-                info_parts = [f"{k}={v}" for k, v in sinfo.items()]
-                line += " ".join(info_parts) + " "
+            # --- Train log ---
             line = (
                 f"update={u:4d} "
                 f"weights={tuple(round(w, 2) for w in norm_weights)} "
@@ -470,31 +464,23 @@ def train(
                 info_parts = [f"{k}={v}" for k, v in sinfo.items()]
                 line += " ".join(info_parts) + " "
 
-            # Generic training stats
-            n_eps = len(buf.ep_lengths)
-            term_rate = float(sum(buf.is_terminated) / n_eps) if n_eps > 0 else 0.0
-            line += (
-                f"\n  len={bsum['mean_length']:6.2f} "
-                f"term={term_rate:.3f}"
-            )
-            # Episode metrics from experiment (aggregated by batch_summary)
+            line += f"len={bsum['mean_length']:6.2f} "
             for mk, mv in bsum.items():
                 if mk not in ("mean_length", "len_ratio"):
-                    line += f" {mk}={mv:.3f}"
-            # Reward summary
+                    line += f"{mk}={mv:.3f} "
             for key in experiment.reward_keys:
                 mk, sk = f"{key}_mean", f"{key}_std"
-                line += f" {key}={rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}"
-
+                line += f"{key}={rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f} "
             line += (
-                f"\n  policy_loss={stats['policy_loss']:+.5f}"
+                f"policy_loss={stats['policy_loss']:+.5f} "
             )
             for key in experiment.reward_keys:
                 vk = f"vloss_{key}"
-                line += f" {vk}={stats.get(vk, 0.0):.4f}"
-            line += f" kl={stats['approx_kl']:.4f}"
+                line += f"{vk}={stats.get(vk, 0.0):.4f} "
+            line += f"kl={stats['approx_kl']:.4f}"
+            print(line, flush=True)
 
-            # 5.7 Eval (deterministic)
+            # --- Eval ---
             t_eval = 0.0
             if u % cfg.eval_interval == 0:
                 t0 = time.perf_counter()
@@ -515,25 +501,21 @@ def train(
                 )
                 if not eval_buf.is_empty():
                     esum = batch_summary(eval_buf, cfg.max_steps)
-                    n_eval_eps = len(eval_buf.ep_lengths)
-                    eval_term_rate = (
-                        float(sum(eval_buf.is_terminated) / n_eval_eps)
-                        if n_eval_eps > 0 else 0.0
-                    )
-                    line += (
-                        f"\n  [eval] len={esum['mean_length']:6.2f}"
-                        f" term={eval_term_rate:.3f}"
+
+                    eval_line = (
+                        f"  [eval] update={u:4d}"
+                        f" len={esum['mean_length']:6.2f}"
                     )
                     for mk, mv in esum.items():
                         if mk not in ("mean_length", "len_ratio"):
-                            line += f" {mk}={mv:.3f}"
+                            eval_line += f" {mk}={mv:.3f}"
 
                     # Update weights from experiment scheduler
                     prev_weights = weights
                     weights = experiment.next_weights(esum, weights)
                     norm_weights = _norm_weights(weights)
                     if weights != prev_weights:
-                        line += (
+                        eval_line += (
                             f"  [weights {tuple(round(w, 2) for w in _norm_weights(prev_weights))}"
                             f" -> {tuple(round(w, 2) for w in norm_weights)}]"
                         )
@@ -553,7 +535,9 @@ def train(
                                 "best_eval_length": esum["mean_length"],
                             },
                         )
-                        line += "  [new_best]"
+                        eval_line += "  [new_best]"
+
+                    print(eval_line, flush=True)
                 t_eval = time.perf_counter() - t0
 
                 # 5.7.1 Video render
@@ -563,7 +547,7 @@ def train(
                     and n_evals_done % cfg.video_eval_interval == 0
                 ):
                     if last_video_proc is not None and last_video_proc.poll() is None:
-                        line += "  [video_skip:prev_running]"
+                        print(f"  [video_skip:prev_running]", flush=True)
                     else:
                         policy_bp_path = export_dir / "policy_blueprint.yaml"
                         video_path = video_dir / f"u{u:05d}.mp4"
@@ -576,19 +560,20 @@ def train(
                             log_path=log_path,
                         )
                         if last_video_proc is not None:
-                            line += f"  [video:{video_path.name}]"
+                            print(f"  [video:{video_path.name}]", flush=True)
 
+            # --- Timing ---
             t_total = time.perf_counter() - t_update_start
-            line += (
-                f"\n  | time: total={t_total:.1f}s"
+            print(
+                f"  | time: total={t_total:.1f}s"
                 f" export={t_export:.2f}s"
                 f" jobs={t_jobs:.2f}s"
                 f" rollout={t_rollout:.1f}s"
                 f" buffer={t_buffer:.2f}s"
                 f" ppo={t_ppo:.2f}s"
-                f" eval={t_eval:.1f}s"
+                f" eval={t_eval:.1f}s",
+                flush=True,
             )
-            print(line, flush=True)
 
             # 5.8 Periodic checkpoint
             if u % cfg.eval_interval == 0 or u == 1:
