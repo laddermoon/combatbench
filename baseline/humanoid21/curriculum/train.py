@@ -83,11 +83,6 @@ def main() -> None:
 
     cfg = TrainConfig()
 
-    # Apply experiment-specific PPO overrides
-    for k, v in experiment.ppo_overrides.items():
-        if hasattr(cfg, k):
-            setattr(cfg, k, v)
-
     if args.smoke:
         cfg.max_updates = 2
         cfg.episodes_per_update = 8
@@ -102,7 +97,7 @@ def main() -> None:
     if args.rollout_workers is not None:
         cfg.rollout_workers = int(args.rollout_workers)
     if args.terminal_fall_penalty is not None:
-        cfg.terminal_fall_penalty = float(args.terminal_fall_penalty)
+        experiment.terminal_fall_penalty = float(args.terminal_fall_penalty)
 
     run_name = args.run_name or f"curriculum_{experiment.name}_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name

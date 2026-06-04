@@ -56,11 +56,27 @@ class ExperimentConfig(ABC):
     reward_keys: Tuple[str, ...] = ()
     gammas: Dict[str, float] = {}
     env_blueprint: str = ""  # filename relative to blueprints/
-    ppo_overrides: Dict[str, Any] = {}  # optional overrides for TrainConfig
 
     # Rollout distance range (can be overridden per experiment)
     rollout_distance_min: float = 1.5
     rollout_distance_max: float = 3.5
+
+    # --- Network shape ---
+    obs_dim: int = 96
+    action_dim: int = 21
+    actor_hidden_dim: int = 256
+    critic_hidden_dim: int = 256
+    log_std_min: float = -4.0
+    log_std_max: float = 0.0
+
+    # --- GAE ---
+    gae_lambda: float = 0.95
+
+    # --- Runtime horizon ---
+    max_steps: int = 200  # 20 Hz × 10 s
+
+    # --- Terminal fall penalty ---
+    terminal_fall_penalty: float = 1.0
 
     # --- Abstract methods ---
 
@@ -251,10 +267,18 @@ class ExperimentConfig(ABC):
             "reward_keys": list(self.reward_keys),
             "gammas": self.gammas,
             "env_blueprint": self.env_blueprint,
-            "ppo_overrides": self.ppo_overrides,
             "initial_weights": list(self.initial_weights()),
             "rollout_distance_min": self.rollout_distance_min,
             "rollout_distance_max": self.rollout_distance_max,
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "actor_hidden_dim": self.actor_hidden_dim,
+            "critic_hidden_dim": self.critic_hidden_dim,
+            "log_std_min": self.log_std_min,
+            "log_std_max": self.log_std_max,
+            "gae_lambda": self.gae_lambda,
+            "max_steps": self.max_steps,
+            "terminal_fall_penalty": self.terminal_fall_penalty,
         }
 
     # --- Optional state persistence ---

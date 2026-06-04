@@ -28,7 +28,6 @@ class P0StandingConfig(ExperimentConfig):
     # Default static blueprint (used by tooling that reads env_blueprint).
     # The ACTIVE blueprint per stage is resolved by current_env_blueprint().
     env_blueprint = STAGE1_BLUEPRINT
-    ppo_overrides: Dict[str, Any] = {}
 
     # Terminal fall penalty (set by training loop before buffer construction).
     terminal_fall_penalty: float = 1.0

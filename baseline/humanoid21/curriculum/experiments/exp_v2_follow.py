@@ -36,7 +36,6 @@ class V2FollowConfig(ExperimentConfig):
         "r_tangential": 0.95,
     }
     env_blueprint = "curriculum_env_v2.yaml"
-    ppo_overrides: Dict[str, Any] = {}
 
     # Terminal fall penalty (set by training loop before buffer construction).
     terminal_fall_penalty: float = 1.0

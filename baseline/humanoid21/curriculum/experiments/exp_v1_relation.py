@@ -28,7 +28,6 @@ class V1RelationConfig(ExperimentConfig):
         "r_damage": 0.80,
     }
     env_blueprint = "curriculum_env.yaml"
-    ppo_overrides: Dict[str, Any] = {}
 
     # Terminal fall penalty (set by training loop before buffer construction).
     terminal_fall_penalty: float = 1.0

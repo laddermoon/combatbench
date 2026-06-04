@@ -39,13 +39,10 @@ from .ppo_trainer import (
 # ---------------------------------------------------------------------------
 CONTROL_FREQUENCY = 20
 MATCH_DURATION_SECONDS = 10.0
-MAX_STEPS = int(CONTROL_FREQUENCY * MATCH_DURATION_SECONDS)
 
 CURRICULUM_TERMINAL_FALL_PENALTY = float(
     os.environ.get("CURRICULUM_TERMINAL_FALL_PENALTY", "1.0")
 )
-CURRICULUM_STAGE1_PASS_LEN_RATIO = 0.98
-CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE = 0.5
 
 
 @dataclass
@@ -54,17 +51,9 @@ class TrainConfig:
 
     Reward-specific fields (gammas, reward_keys, weight scheduling) come from
     ``ExperimentConfig`` rather than here.  This config covers everything else
-    that controls *how* training runs: network shape, optimizer settings,
+    that controls *how* training runs: optimizer settings,
     rollout parallelism, eval frequency, checkpointing, etc.
     """
-
-    # Network shape.
-    obs_dim: int = 96
-    action_dim: int = 21
-    actor_hidden_dim: int = 256
-    critic_hidden_dim: int = 256
-    log_std_min: float = -4.0
-    log_std_max: float = 0.0
 
     # PPO knobs.
     learning_rate: float = 3e-4
@@ -77,9 +66,6 @@ class TrainConfig:
     update_epochs: int = 4
     minibatch_size: int = 4096 * 8
 
-    # GAE.
-    gae_lambda: float = 0.95
-
     # Rollout schedule.
     episodes_per_update: int = 256 * 8
     max_updates: int = 10000
@@ -89,19 +75,6 @@ class TrainConfig:
     # Video recording.
     video_eval_interval: int = 5
     video_env_blueprint: Optional[str] = None
-
-    # Runtime horizon.
-    max_steps: int = MAX_STEPS
-
-    # Terminal fall penalty.
-    terminal_fall_penalty: float = CURRICULUM_TERMINAL_FALL_PENALTY
-
-    # Stage-gate pass thresholds.
-    stage1_pass_len_ratio: float = CURRICULUM_STAGE1_PASS_LEN_RATIO
-    stage2_pass_final_in_zone: float = CURRICULUM_STAGE2_PASS_FINAL_IN_ZONE
-
-    # Initial-state perturbation toggle.
-    enable_perturbation: bool = True
 
     # Parallelism.
     rollout_workers: int = field(default_factory=lambda: max(
@@ -326,7 +299,7 @@ def train(
     actor = actor.to(device)
 
     critics = {
-        key: CriticMLP(obs_dim=cfg.obs_dim, hidden_dim=cfg.critic_hidden_dim).to(device)
+        key: CriticMLP(obs_dim=experiment.obs_dim, hidden_dim=experiment.critic_hidden_dim).to(device)
         for key in experiment.reward_keys
     }
 
@@ -384,7 +357,7 @@ def train(
     print(
         f"[DEBUG] rollout_workers={cfg.rollout_workers} "
         f"episodes_per_update={cfg.episodes_per_update} "
-        f"max_steps={cfg.max_steps} "
+        f"max_steps={experiment.max_steps} "
         f"update_epochs={cfg.update_epochs} "
         f"minibatch_size={cfg.minibatch_size} "
         f"reward_keys={experiment.reward_keys}",
@@ -406,7 +379,7 @@ def train(
             rollout_seed = cfg.seed + u * cfg.episodes_per_update
             jobs = experiment.build_rollout_jobs(
                 policy_bp, rollout_seed,
-                cfg.episodes_per_update, max_steps=cfg.max_steps,
+                cfg.episodes_per_update, max_steps=experiment.max_steps,
             )
             t_jobs = time.perf_counter() - t0
 
@@ -418,7 +391,6 @@ def train(
             # 5.4 Build PPO buffer
             t0 = time.perf_counter()
             norm_weights = _norm_weights(weights)
-            experiment.terminal_fall_penalty = cfg.terminal_fall_penalty
             buf = PPOBuffer(
                 episodes=episodes,
                 stage_weights=norm_weights,
@@ -438,7 +410,7 @@ def train(
                 buf=buf,
                 reward_keys=experiment.reward_keys,
                 gammas=experiment.gammas,
-                gae_lambda=cfg.gae_lambda,
+                gae_lambda=experiment.gae_lambda,
                 clip_eps=cfg.clip_eps,
                 entropy_coef=cfg.entropy_coef,
                 grad_clip_norm=cfg.grad_clip_norm,
@@ -451,7 +423,7 @@ def train(
             t_ppo = time.perf_counter() - t0
 
             # 5.6 Logging
-            bsum = batch_summary(buf, cfg.max_steps)
+            bsum = batch_summary(buf, experiment.max_steps)
             rsum = reward_summary(buf)
             sinfo = experiment.scheduler_info()
 
@@ -488,7 +460,7 @@ def train(
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
                 eval_jobs = experiment.build_rollout_jobs(
                     det_bp, eval_seed,
-                    cfg.eval_episodes, max_steps=cfg.max_steps,
+                    cfg.eval_episodes, max_steps=experiment.max_steps,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
                 experiment.terminal_fall_penalty = 0.0  # no penalty in eval
@@ -500,7 +472,7 @@ def train(
                     experiment=experiment,
                 )
                 if not eval_buf.is_empty():
-                    esum = batch_summary(eval_buf, cfg.max_steps)
+                    esum = batch_summary(eval_buf, experiment.max_steps)
 
                     eval_line = (
                         f"  [eval] update={u:4d}"
