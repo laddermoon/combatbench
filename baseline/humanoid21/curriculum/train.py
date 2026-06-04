@@ -51,7 +51,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-updates", type=int, default=None)
     parser.add_argument("--episodes-per-update", type=int, default=None)
     parser.add_argument("--rollout-workers", type=int, default=None)
-    parser.add_argument("--terminal-fall-penalty", type=float, default=None)
     parser.add_argument(
         "--smoke", action="store_true",
         help="Short smoke run (max_updates=2, episodes_per_update=8, eval_episodes=4).",
@@ -96,8 +95,6 @@ def main() -> None:
         cfg.episodes_per_update = int(args.episodes_per_update)
     if args.rollout_workers is not None:
         cfg.rollout_workers = int(args.rollout_workers)
-    if args.terminal_fall_penalty is not None:
-        experiment.terminal_fall_penalty = float(args.terminal_fall_penalty)
 
     run_name = args.run_name or f"curriculum_{experiment.name}_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
