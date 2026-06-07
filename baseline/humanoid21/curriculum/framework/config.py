@@ -34,9 +34,12 @@ V1 用 4 个 reward（r_relation 做接近信号），V2 用 6 个 reward
 """
 from __future__ import annotations
 
+import json
+import os
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -51,15 +54,10 @@ class ExperimentConfig(ABC):
     Subclass this for each reward scheme / curriculum strategy.
     """
 
-    # --- Class-level attributes (set by subclass) ---
+    # --- Identity ---
     name: str = ""
     reward_keys: Tuple[str, ...] = ()
     gammas: Dict[str, float] = {}
-    env_blueprint: str = ""  # filename relative to blueprints/
-
-    # Rollout distance range (can be overridden per experiment)
-    rollout_distance_min: float = 1.5
-    rollout_distance_max: float = 3.5
 
     # --- Network shape ---
     obs_dim: int = 96
@@ -72,36 +70,52 @@ class ExperimentConfig(ABC):
     # --- GAE ---
     gae_lambda: float = 0.95
 
-    # --- Runtime horizon ---
-    max_steps: int = 200  # 20 Hz × 10 s
+    # --- PPO knobs ---
+    learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4
+    clip_eps: float = 0.2
+    value_loss_coef: float = 0.5
+    entropy_coef: float = 1e-3
+    grad_clip_norm: float = 1.0
+    target_kl: float = 0.05
+    update_epochs: int = 4
+    minibatch_size: int = 4096 * 8
 
-    # --- Terminal fall penalty ---
-    terminal_fall_penalty: float = 1.0
+    # --- Rollout schedule ---
+    episodes_per_update: int = 256 * 8
+    max_updates: int = 10000
+    eval_interval: int = 5
+    eval_episodes: int = 16
 
-    # --- Per-experiment TrainConfig overrides ---
-    # Maps a ``TrainConfig`` field name -> value. The CLI applies these on top
-    # of the shared ``TrainConfig`` defaults (before --smoke / explicit CLI
-    # flags, so those still win). This lets each experiment tune PPO / rollout
-    # knobs (learning_rate, target_kl, update_epochs, ...) in one place without
-    # editing the shared default config or the launch command.
-    train_overrides: Dict[str, Any] = {}
+    # --- Video recording ---
+    video_eval_interval: int = 5
 
-    def apply_train_overrides(self, cfg: Any) -> None:
-        """Apply :pyattr:`train_overrides` onto a ``TrainConfig`` instance.
+    # --- Parallelism ---
+    rollout_workers: int = max(1, (os.cpu_count() or 1) // 2)
+    eval_workers: int = max(1, (os.cpu_count() or 1) // 4)
 
-        Validates every key against the dataclass fields so a typo fails
-        loudly instead of being silently ignored.
-        """
-        import dataclasses
+    seed: int = 42
 
-        valid = {f.name for f in dataclasses.fields(cfg)}
-        for key, value in self.train_overrides.items():
-            if key not in valid:
-                raise ValueError(
-                    f"{self.name!r}.train_overrides has unknown TrainConfig "
-                    f"field {key!r}; valid fields: {sorted(valid)}"
-                )
-            setattr(cfg, key, value)
+    # --- Free-form experiment-specific parameters ---
+    #
+    # Knobs that vary per-experiment (not framework-level) live here as a plain
+    # key-value dict.  No fixed schema — each experiment declares only what it
+    # needs.  The defaults below cover the parameters used by the built-in
+    # ``build_rollout_jobs`` implementation.  Subclasses override specific
+    # entries by merging::
+    #
+    #     custom_config = {**ExperimentConfig.DEFAULT_CUSTOM_CONFIG, "max_steps": 400}
+    DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
+        # Rollout initial-distance sampling range
+        "rollout_distance_min": 1.5,
+        "rollout_distance_max": 3.5,
+        # Runtime horizon (20 Hz × 10 s)
+        "max_steps": 200,
+        # Terminal fall penalty
+        "terminal_fall_penalty": 1.0,
+    }
+
+    custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
     # --- Abstract methods ---
 
@@ -185,37 +199,13 @@ class ExperimentConfig(ABC):
 
     # --- Blueprint ownership ---
     #
-    # The experiment OWNS the env blueprint lifecycle: which file to use,
-    # loading, caching, and switching across curriculum stages. The training
-    # loop never touches blueprints — it only calls ``build_rollout_jobs``.
+    # The experiment OWNS the env blueprint lifecycle. The training loop never
+    # touches blueprints — it only calls ``build_rollout_jobs``.
 
-    @staticmethod
-    def blueprint_dir() -> Path:
-        """Directory containing env blueprint YAML files."""
-        return Path(__file__).resolve().parent.parent.parent / "blueprints"
-
-    def current_env_blueprint(self) -> str:
-        """Return the active env blueprint filename for the current stage.
-
-        Default returns the static ``env_blueprint``. Stateful experiments
-        (e.g. multi-stage curricula) override this to return a different
-        blueprint depending on their internal scheduler state.
-        """
-        return self.env_blueprint
-
-    def _get_env_pb(self) -> ParameterizedEnvBlueprint:
-        """Load (and cache) the ParameterizedEnvBlueprint for the active stage.
-
-        Cached per blueprint filename, so switching back and forth between
-        stages does not re-read from disk.
-        """
-        name = self.current_env_blueprint()
-        cache: Dict[str, ParameterizedEnvBlueprint] = self.__dict__.setdefault(
-            "_env_pb_cache", {}
-        )
-        if name not in cache:
-            cache[name] = ParameterizedEnvBlueprint.load(self.blueprint_dir() / name)
-        return cache[name]
+    @abstractmethod
+    def video_env_blueprint(self) -> EnvBlueprint:
+        """Return the env blueprint to use for video rendering."""
+        ...
 
     # --- Rollout job construction ---
 
@@ -224,38 +214,19 @@ class ExperimentConfig(ABC):
         rng = np.random.default_rng(int(seed) + 937)
         return "robot_a" if int(rng.integers(0, 2)) == 0 else "robot_b"
 
-    def build_rollout_jobs(
+    def _build_selfplay_jobs(
         self,
+        env_pb: ParameterizedEnvBlueprint,
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-        max_steps: int,
-        *,
-        policy_bp_b: PolicyBlueprint | None = None,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        """Build rollout job list.
+        """Self-play helper: random agent_id + random initial distance.
 
-        Default implementation: self-play with random agent_id assignment
-        and random initial distance. Override for asymmetric policies,
-        fixed opponent, or other rollout strategies.
-
-        The env blueprint is resolved internally via ``_get_env_pb()`` so the
-        correct (possibly stage-dependent) blueprint is used each call.
-
-        Parameters
-        ----------
-        policy_bp : PolicyBlueprint
-            Policy blueprint for agent A (and agent B if ``policy_bp_b`` is None).
-        base_seed : int
-            Base RNG seed for this batch.
-        n_episodes : int
-            Number of episodes to prepare.
-        max_steps : int
-            Episode horizon.
-        policy_bp_b : PolicyBlueprint or None
-            Policy for agent B. If None, uses ``policy_bp`` (self-play).
+        Subclasses that want standard self-play behaviour call this from their
+        ``build_rollout_jobs`` implementation, passing the loaded blueprint.
         """
-        env_pb = self._get_env_pb()
+        max_steps = self.custom_config["max_steps"]
         rng = np.random.default_rng(base_seed)
 
         env_bps: Dict[str, EnvBlueprint] = {
@@ -263,21 +234,32 @@ class ExperimentConfig(ABC):
             for aid in ("robot_a", "robot_b")
         }
 
-        bp_b = policy_bp_b if policy_bp_b is not None else policy_bp
-
         jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
             initial_distance = float(
-                rng.uniform(self.rollout_distance_min, self.rollout_distance_max)
+                rng.uniform(
+                    self.custom_config["rollout_distance_min"],
+                    self.custom_config["rollout_distance_max"],
+                )
             )
             jobs.append((
-                policy_bp, bp_b,
+                policy_bp, policy_bp,
                 env_bps[agent_id], seed,
                 {"agent_id": agent_id, "initial_distance": initial_distance},
             ))
         return jobs
+
+    @abstractmethod
+    def build_rollout_jobs(
+        self,
+        policy_bp: PolicyBlueprint,
+        base_seed: int,
+        n_episodes: int,
+    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        """Build the list of rollout jobs for one training update."""
+        ...
 
     # --- Serialization ---
 
@@ -291,10 +273,7 @@ class ExperimentConfig(ABC):
             "name": self.name,
             "reward_keys": list(self.reward_keys),
             "gammas": self.gammas,
-            "env_blueprint": self.env_blueprint,
             "initial_weights": list(self.initial_weights()),
-            "rollout_distance_min": self.rollout_distance_min,
-            "rollout_distance_max": self.rollout_distance_max,
             "obs_dim": self.obs_dim,
             "action_dim": self.action_dim,
             "actor_hidden_dim": self.actor_hidden_dim,
@@ -302,10 +281,37 @@ class ExperimentConfig(ABC):
             "log_std_min": self.log_std_min,
             "log_std_max": self.log_std_max,
             "gae_lambda": self.gae_lambda,
-            "max_steps": self.max_steps,
-            "terminal_fall_penalty": self.terminal_fall_penalty,
-            "train_overrides": dict(self.train_overrides),
+            "custom_config": dict(self.custom_config),
+            "learning_rate": self.learning_rate,
+            "critic_learning_rate": self.critic_learning_rate,
+            "clip_eps": self.clip_eps,
+            "value_loss_coef": self.value_loss_coef,
+            "entropy_coef": self.entropy_coef,
+            "grad_clip_norm": self.grad_clip_norm,
+            "target_kl": self.target_kl,
+            "update_epochs": self.update_epochs,
+            "minibatch_size": self.minibatch_size,
+            "episodes_per_update": self.episodes_per_update,
+            "max_updates": self.max_updates,
+            "eval_interval": self.eval_interval,
+            "eval_episodes": self.eval_episodes,
+            "video_eval_interval": self.video_eval_interval,
+            "video_env_blueprint": self.video_env_blueprint(),
+            "rollout_workers": self.rollout_workers,
+            "eval_workers": self.eval_workers,
+            "seed": self.seed,
         }
+
+    def save_run_config(self, run_dir: Path, *, smoke: bool = False) -> None:
+        """Save a full config snapshot to ``run_dir/config.json``."""
+        payload = {
+            "experiment": self.to_dict(),
+            "smoke": smoke,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "config.json", "w") as f:
+            json.dump(payload, f, indent=2, default=str)
 
     # --- Optional state persistence ---
 
