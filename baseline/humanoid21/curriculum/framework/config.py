@@ -256,9 +256,17 @@ class ExperimentConfig(ABC):
         self,
         policy_bp: PolicyBlueprint,
         base_seed: int,
-        n_episodes: int,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        """Build the list of rollout jobs for one training update."""
+        """Build rollout jobs for one training update (uses self.episodes_per_update)."""
+        ...
+
+    @abstractmethod
+    def build_eval_jobs(
+        self,
+        policy_bp: PolicyBlueprint,
+        base_seed: int,
+    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        """Build rollout jobs for evaluation (uses self.eval_episodes)."""
         ...
 
     # --- Serialization ---

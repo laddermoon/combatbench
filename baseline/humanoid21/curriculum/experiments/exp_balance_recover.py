@@ -1,12 +1,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import numpy as np
 
 from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
 from envs.framework.blueprint import EnvBlueprint
+from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
@@ -31,7 +33,11 @@ class BalanceRecoverConfig(ExperimentConfig):
     reward_keys = ("r_fall",)  # Single reward: per-step survival + terminal
     gammas = {"r_fall": 0.99}
 
-    env_blueprint = "balance_recover_env.yaml"
+    BLUEPRINT = "balance_recover_env.yaml"
+
+    def video_env_blueprint(self):
+        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
+        return EnvBlueprint.load(_bp_dir / self.BLUEPRINT)
 
     # --- PPO tuning (see training analysis) ---
     # Raise the log_std floor so the policy can't collapse to saturated,
@@ -39,17 +45,12 @@ class BalanceRecoverConfig(ExperimentConfig):
     # exploding policy_loss observed in the first run.
     log_std_min: float = -2.0
 
-    # Per-experiment TrainConfig overrides: smaller actor LR + tighter KL/grad
+    # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
     # clipping + fewer epochs to keep each PPO update from diverging.
-    train_overrides: Dict[str, Any] = {
-        "learning_rate": 1e-4,      # was 3e-4: slow the actor down
-        "target_kl": 0.02,          # was 0.05: early-stop sooner
-        "grad_clip_norm": 0.5,      # was 1.0: tighter gradient clipping
-        "update_epochs": 3,         # was 4: less policy drift per batch
-    }
-
-    # Terminal fall penalty (also used as the terminal survival reward).
-    terminal_fall_penalty: float = 1.0
+    learning_rate: float = 1e-4      # was 3e-4: slow the actor down
+    target_kl: float = 0.02          # was 0.05: early-stop sooner
+    grad_clip_norm: float = 0.5      # was 1.0: tighter gradient clipping
+    update_epochs: int = 3           # was 4: less policy drift per batch
 
     # Small per-step survival bonus (each alive step is worth this much).
     per_step_survival_reward: float = 0.01
@@ -86,18 +87,15 @@ class BalanceRecoverConfig(ExperimentConfig):
         return {k: float(v) * scale for k, v in self.PERTURB_FULL.items()}
 
     # --- Rollout job construction: inject scaled perturbation params ---
-    def build_rollout_jobs(
+    def _build_perturbed_jobs(
         self,
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-        max_steps: int,
-        *,
-        policy_bp_b: PolicyBlueprint | None = None,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        """Same self-play scheme as the base, but materialize the env with the
-        current curriculum level's perturbation magnitudes."""
-        env_pb = self._get_env_pb()
+        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
+        max_steps = self.custom_config["max_steps"]
+        env_pb = ParameterizedEnvBlueprint.load(_bp_dir / self.BLUEPRINT)
         perturb = self._current_perturb_params()
         rng = np.random.default_rng(base_seed)
 
@@ -106,21 +104,28 @@ class BalanceRecoverConfig(ExperimentConfig):
             for aid in ("robot_a", "robot_b")
         }
 
-        bp_b = policy_bp_b if policy_bp_b is not None else policy_bp
-
         jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
             initial_distance = float(
-                rng.uniform(self.rollout_distance_min, self.rollout_distance_max)
+                rng.uniform(
+                    self.custom_config["rollout_distance_min"],
+                    self.custom_config["rollout_distance_max"],
+                )
             )
             jobs.append((
-                policy_bp, bp_b,
+                policy_bp, policy_bp,
                 env_bps[agent_id], seed,
                 {"agent_id": agent_id, "initial_distance": initial_distance},
             ))
         return jobs
+
+    def build_rollout_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
+        return self._build_perturbed_jobs(policy_bp, base_seed, self.episodes_per_update)
+
+    def build_eval_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
+        return self._build_perturbed_jobs(policy_bp, base_seed, self.eval_episodes)
 
     def initial_weights(self) -> Tuple[float, ...]:
         return (1.0,)
@@ -159,10 +164,11 @@ class BalanceRecoverConfig(ExperimentConfig):
         """r_fall: small positive reward every alive step + terminal signal."""
         fell = "imbalance" in termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
+        penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
-            r_fall[-1] = -float(self.terminal_fall_penalty)
+            r_fall[-1] = -penalty
         else:
-            r_fall[-1] = float(self.terminal_fall_penalty)
+            r_fall[-1] = penalty
         return {"r_fall": r_fall}
 
     def compute_episode_metrics(

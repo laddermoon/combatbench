@@ -5,6 +5,7 @@ Translates the reward extraction and weight scheduling from
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -14,6 +15,8 @@ from baseline.humanoid21.curriculum.framework.ppo_trainer import (
     _extract_per_step_field,
     _extract_per_step_scalar,
 )
+from envs.framework.blueprint import EnvBlueprint
+from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
 class V1RelationConfig(ExperimentConfig):
@@ -27,10 +30,22 @@ class V1RelationConfig(ExperimentConfig):
         "r_relation": 0.98,
         "r_damage": 0.80,
     }
-    env_blueprint = "curriculum_env.yaml"
+    BLUEPRINT = "curriculum_env.yaml"
 
-    # Terminal fall penalty (set by training loop before buffer construction).
-    terminal_fall_penalty: float = 1.0
+    def video_env_blueprint(self):
+        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
+        return EnvBlueprint.load(_bp_dir / self.BLUEPRINT)
+
+    def _env_pb(self):
+        return ParameterizedEnvBlueprint.load(
+            Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
+        )
+
+    def build_rollout_jobs(self, policy_bp, base_seed):
+        return self._build_selfplay_jobs(self._env_pb(), policy_bp, base_seed, self.episodes_per_update)
+
+    def build_eval_jobs(self, policy_bp, base_seed):
+        return self._build_selfplay_jobs(self._env_pb(), policy_bp, base_seed, self.eval_episodes)
 
     def initial_weights(self) -> Tuple[float, ...]:
         return (3.0, 1.0, 0.3, 0.0)
@@ -56,8 +71,9 @@ class V1RelationConfig(ExperimentConfig):
     ) -> Dict[str, np.ndarray]:
         fell = "imbalance" in termination_proposals
         r_fall = np.zeros(T, dtype=np.float32)
-        if fell and self.terminal_fall_penalty > 0.0:
-            r_fall[-1] = -float(self.terminal_fall_penalty)
+        penalty = float(self.custom_config["terminal_fall_penalty"])
+        if fell and penalty > 0.0:
+            r_fall[-1] = -penalty
 
         r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
         # opponent_relation emits a dict {"reward": ..., "in_zone": ...}

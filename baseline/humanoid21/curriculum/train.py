@@ -9,35 +9,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import dataclasses
-import json
 import time
 from pathlib import Path
 
 from baseline.humanoid21.curriculum.experiments import get_experiment, list_experiments
-from baseline.humanoid21.curriculum.framework.training_loop import (
-    TrainConfig,
-    train,
-)
-
-
-def _save_run_config(
-    run_dir: Path,
-    cfg: TrainConfig,
-    experiment,
-    smoke: bool,
-) -> None:
-    """Save the full run configuration to run_dir/config.json."""
-    payload = {
-        "config": dataclasses.asdict(cfg),
-        "experiment": experiment.to_dict(),
-        "smoke": smoke,
-        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-    run_dir.mkdir(parents=True, exist_ok=True)
-    with open(run_dir / "config.json", "w") as f:
-        json.dump(payload, f, indent=2, default=str)
+from baseline.humanoid21.curriculum.framework.training_loop import train
 
 
 def _parse_args() -> argparse.Namespace:
@@ -48,9 +24,6 @@ def _parse_args() -> argparse.Namespace:
         "--experiment", type=str, default=None,
         help="Experiment name (e.g. v1_relation, v2_follow).",
     )
-    parser.add_argument("--max-updates", type=int, default=None)
-    parser.add_argument("--episodes-per-update", type=int, default=None)
-    parser.add_argument("--rollout-workers", type=int, default=None)
     parser.add_argument(
         "--smoke", action="store_true",
         help="Short smoke run (max_updates=2, episodes_per_update=8, eval_episodes=4).",
@@ -71,7 +44,7 @@ def main() -> None:
         print("Available experiments:")
         for name in list_experiments():
             exp = get_experiment(name)
-            print(f"  {name}: reward_keys={exp.reward_keys} blueprint={exp.env_blueprint}")
+            print(f"  {name}: reward_keys={exp.reward_keys}")
         return
 
     if args.experiment is None:
@@ -80,38 +53,23 @@ def main() -> None:
 
     experiment = get_experiment(args.experiment)
 
-    cfg = TrainConfig()
-
-    # Per-experiment TrainConfig overrides (defaults < experiment < smoke < CLI).
-    experiment.apply_train_overrides(cfg)
-    if experiment.train_overrides:
-        print(f"[config] applied {experiment.name}.train_overrides: "
-              f"{experiment.train_overrides}", flush=True)
-
     if args.smoke:
-        cfg.max_updates = 2
-        cfg.episodes_per_update = 8
-        cfg.eval_episodes = 4
-        cfg.eval_interval = 1
-        cfg.rollout_workers = 2
-        cfg.minibatch_size = 64
-    if args.max_updates is not None:
-        cfg.max_updates = int(args.max_updates)
-    if args.episodes_per_update is not None:
-        cfg.episodes_per_update = int(args.episodes_per_update)
-    if args.rollout_workers is not None:
-        cfg.rollout_workers = int(args.rollout_workers)
-
+        experiment.max_updates = 2
+        experiment.episodes_per_update = 8
+        experiment.eval_episodes = 4
+        experiment.eval_interval = 1
+        experiment.rollout_workers = 2
+        experiment.minibatch_size = 64
     run_name = args.run_name or f"curriculum_{experiment.name}_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
 
     resume_from = Path(args.resume_from) if args.resume_from else None
 
     # Save config snapshot before training starts
-    _save_run_config(run_dir, cfg, experiment, smoke=args.smoke)
+    experiment.save_run_config(run_dir, smoke=args.smoke)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
 
-    train(cfg, experiment, run_dir=run_dir, resume_from=resume_from)
+    train(experiment, run_dir=run_dir, resume_from=resume_from)
 
 
 if __name__ == "__main__":

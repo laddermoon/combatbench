@@ -1,12 +1,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
 
 from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
 from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
+from envs.framework.blueprint import EnvBlueprint
+from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
 class BasicBalanceConfig(ExperimentConfig):
@@ -18,19 +21,23 @@ class BasicBalanceConfig(ExperimentConfig):
     # Stage blueprints
     BLUEPRINT = "basic_balance_env.yaml"  # Basic: fall detection only
 
-    # Default static blueprint (used by tooling that reads env_blueprint).
-    # The ACTIVE blueprint per stage is resolved by current_env_blueprint().
-    env_blueprint = BLUEPRINT
-
-    # Terminal fall penalty (set by training loop before buffer construction).
-    terminal_fall_penalty: float = 1.0
-
     # Stateful scheduler
     _survival_rate: float = 0.0
 
-    # --- Blueprint ownership: pick blueprint by current stage ---
-    def current_env_blueprint(self) -> str:
-        return self.BLUEPRINT
+    def video_env_blueprint(self):
+        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
+        return EnvBlueprint.load(_bp_dir / self.BLUEPRINT)
+
+    def _env_pb(self):
+        return ParameterizedEnvBlueprint.load(
+            Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
+        )
+
+    def build_rollout_jobs(self, policy_bp, base_seed):
+        return self._build_selfplay_jobs(self._env_pb(), policy_bp, base_seed, self.episodes_per_update)
+
+    def build_eval_jobs(self, policy_bp, base_seed):
+        return self._build_selfplay_jobs(self._env_pb(), policy_bp, base_seed, self.eval_episodes)
 
     def initial_weights(self) -> Tuple[float, ...]:
         return (3.0, 1.0)
@@ -69,10 +76,11 @@ class BasicBalanceConfig(ExperimentConfig):
         """
         fell = "imbalance" in termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
+        penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
-            r_fall[-1] = -float(self.terminal_fall_penalty)
+            r_fall[-1] = -penalty
         else:
-            r_fall[-1] = float(self.terminal_fall_penalty)
+            r_fall[-1] = penalty
 
         r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
 

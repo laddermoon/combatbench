@@ -9,3 +9,9 @@
 
 
 /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260605_010617
+
+
+嗯，做一个补充，关于第一阶段的这个基础，基础平衡模型不能是站桩式的平衡，而是要做一个能够交替迈步的一个模型。这样才具备这种呃抗扰动平衡的潜力，因为发生扰动时它可以靠脉搏来恢复。ps
+
+
+
