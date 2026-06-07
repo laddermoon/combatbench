@@ -82,6 +82,12 @@ def main() -> None:
 
     cfg = TrainConfig()
 
+    # Per-experiment TrainConfig overrides (defaults < experiment < smoke < CLI).
+    experiment.apply_train_overrides(cfg)
+    if experiment.train_overrides:
+        print(f"[config] applied {experiment.name}.train_overrides: "
+              f"{experiment.train_overrides}", flush=True)
+
     if args.smoke:
         cfg.max_updates = 2
         cfg.episodes_per_update = 8

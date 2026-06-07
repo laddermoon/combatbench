@@ -1,0 +1,55 @@
+# P0 Stage 2: Standing with random initial state perturbation.
+# Same as Stage 1 but adds random initialization of tilt, angular velocity, and joint offsets.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  # --- Initial-state perturbation magnitudes (scaled per curriculum level) ---
+  joint_pos_delta_max:
+    default: 0.15
+    description: "Max |Δ| of normalized joint positions at reset."
+  joint_vel_delta_max:
+    default: 0.15
+    description: "Max |Δ| of normalized joint velocities at reset."
+  root_tilt_deg_max:
+    default: 20.0
+    description: "Max |Δ| of root tilt (degrees) at reset."
+  root_linear_velocity_delta_max:
+    default: 0.4
+    description: "Max |Δ| of root linear velocity (m/s) at reset."
+  root_angular_velocity_delta_max:
+    default: 1.5
+    description: "Max |Δ| of root angular velocity (rad/s) at reset."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+
+  # Random initial state perturbation (applied at episode start).
+  # Reuses the existing disturbance plugin; note it uses target_robot.
+  - cls: "envs.humanoid21.disturbance_plugins:InitialStatePerturbationPlugin"
+    config:
+      target_robot: ${agent_id}
+      joint_pos_delta_max: ${joint_pos_delta_max}
+      joint_vel_delta_max: ${joint_vel_delta_max}
+      root_tilt_deg_max: ${root_tilt_deg_max}
+      root_linear_velocity_delta_max: ${root_linear_velocity_delta_max}
+      root_angular_velocity_delta_max: ${root_angular_velocity_delta_max}

@@ -129,7 +129,7 @@ def load_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
-    load_experiment_state: bool = True,
+    load_experiment_state: bool = False,
 ) -> int:
     """Load model weights and optimizer states from checkpoint.
 

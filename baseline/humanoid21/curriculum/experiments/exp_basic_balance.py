@@ -6,13 +6,14 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
 
 
 class BasicBalanceConfig(ExperimentConfig):
 
     name = "basic_balance"
-    reward_keys = ("r_fall",)  # Single reward: terminal fall penalty only
-    gammas = {"r_fall": 0.99}   # Per-step reward is effectively 0, gamma for terminal
+    reward_keys = ("r_fall", "r_cross")
+    gammas = {"r_fall": 0.99, "r_cross": 0.99}
 
     # Stage blueprints
     BLUEPRINT = "basic_balance_env.yaml"  # Basic: fall detection only
@@ -32,8 +33,7 @@ class BasicBalanceConfig(ExperimentConfig):
         return self.BLUEPRINT
 
     def initial_weights(self) -> Tuple[float, ...]:
-        """Single reward weight."""
-        return (1.0,)
+        return (3.0, 1.0)
 
     def next_weights(
         self,
@@ -52,8 +52,8 @@ class BasicBalanceConfig(ExperimentConfig):
         survival_rate = float(eval_metrics.get("survived", 0.0))
         self._survival_rate = survival_rate
 
-        # Weights always (1.0,) regardless of stage.
-        return (1.0,)
+        # Weights always (1.0, 1.0) regardless of stage.
+        return (3.0, 1.0)
 
     # Small per-step survival bonus (each alive step is worth this much).
     per_step_survival_reward: float = 0.01
@@ -64,16 +64,19 @@ class BasicBalanceConfig(ExperimentConfig):
         T: int,
         termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
-        """r_fall: small positive reward every step + terminal signal."""
+        """r_fall: per-step survival bonus + terminal signal.
+        r_cross: cross-support balance reward from CrossSupportBalanceRewarder.
+        """
         fell = "imbalance" in termination_proposals
-        # Every step starts with a small positive reward for still being alive.
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
-        # Terminal override on the last step.
         if fell:
             r_fall[-1] = -float(self.terminal_fall_penalty)
         else:
             r_fall[-1] = float(self.terminal_fall_penalty)
-        return {"r_fall": r_fall}
+
+        r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
+
+        return {"r_fall": r_fall, "r_cross": r_cross}
 
     def compute_episode_metrics(
         self,

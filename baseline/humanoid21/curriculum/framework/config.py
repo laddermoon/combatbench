@@ -78,6 +78,31 @@ class ExperimentConfig(ABC):
     # --- Terminal fall penalty ---
     terminal_fall_penalty: float = 1.0
 
+    # --- Per-experiment TrainConfig overrides ---
+    # Maps a ``TrainConfig`` field name -> value. The CLI applies these on top
+    # of the shared ``TrainConfig`` defaults (before --smoke / explicit CLI
+    # flags, so those still win). This lets each experiment tune PPO / rollout
+    # knobs (learning_rate, target_kl, update_epochs, ...) in one place without
+    # editing the shared default config or the launch command.
+    train_overrides: Dict[str, Any] = {}
+
+    def apply_train_overrides(self, cfg: Any) -> None:
+        """Apply :pyattr:`train_overrides` onto a ``TrainConfig`` instance.
+
+        Validates every key against the dataclass fields so a typo fails
+        loudly instead of being silently ignored.
+        """
+        import dataclasses
+
+        valid = {f.name for f in dataclasses.fields(cfg)}
+        for key, value in self.train_overrides.items():
+            if key not in valid:
+                raise ValueError(
+                    f"{self.name!r}.train_overrides has unknown TrainConfig "
+                    f"field {key!r}; valid fields: {sorted(valid)}"
+                )
+            setattr(cfg, key, value)
+
     # --- Abstract methods ---
 
     @abstractmethod
@@ -279,6 +304,7 @@ class ExperimentConfig(ABC):
             "gae_lambda": self.gae_lambda,
             "max_steps": self.max_steps,
             "terminal_fall_penalty": self.terminal_fall_penalty,
+            "train_overrides": dict(self.train_overrides),
         }
 
     # --- Optional state persistence ---

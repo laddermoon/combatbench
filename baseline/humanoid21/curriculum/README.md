@@ -319,4 +319,6 @@ cd /data1/mono/things/combatbench
 PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment  --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_20260528_175538/checkpoints/checkpoint_u00610.pt &> newframe.log & 
 
 
-PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment p0_standing &> p0-2.log & 
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment v1_relation &> v1_relation.log & 
+
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260605_010617/checkpoints/checkpoint_u03165.pt &> balance_recover1.log & 
