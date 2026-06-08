@@ -13,19 +13,19 @@ parameters:
     description: "The robot we care about."
   # --- Initial-state perturbation magnitudes (scaled per curriculum level) ---
   joint_pos_delta_max:
-    default: 0.15
+    default: 0.40
     description: "Max |Δ| of normalized joint positions at reset."
   joint_vel_delta_max:
-    default: 0.15
+    default: 2.0
     description: "Max |Δ| of normalized joint velocities at reset."
   root_tilt_deg_max:
     default: 20.0
     description: "Max |Δ| of root tilt (degrees) at reset."
   root_linear_velocity_delta_max:
-    default: 0.4
+    default: 2.0
     description: "Max |Δ| of root linear velocity (m/s) at reset."
   root_angular_velocity_delta_max:
-    default: 1.5
+    default: 3.0
     description: "Max |Δ| of root angular velocity (rad/s) at reset."
 runtime:
   phy_steps_per_action: 25

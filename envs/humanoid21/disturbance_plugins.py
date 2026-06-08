@@ -199,11 +199,18 @@ class InitialStatePerturbationPlugin(BasePlugin):
     def __init__(
         self,
         target_robot: str = "robot_a",
+        # 单位说明（参见 DATASPEC.md §3 核心状态）：
+        # 作用于 joint_pos_norm（归一化关节角度 [-1, 1]），无量纲，1.0 = 整段关节行程的半量程。
         joint_pos_delta_max: float = 0.1,
+        # 作用于 joint_vel_norm（归一化关节角速度），无量纲，单位为“半量程/秒”。
         joint_vel_delta_max: float = 0.1,
+        # 作用于 root_pos[:2]（Torso 世界 xy 坐标），单位：米 (m)。
         root_xy_offset_max: float = 0.0,
+        # 绕自身 x、y 轴的倾斜扰动（欧拉角，'xy' 顺序），单位：度 (deg)。
         root_tilt_deg_max: float | Sequence[float] = 0.0,
+        # 作用于 root_vel_local（Torso 局部线速度 (x, y, z)），单位：米/秒 (m/s)。
         root_linear_velocity_delta_max: float | Sequence[float] = 0.0,
+        # 作用于 root_angular_vel_local（Torso 局部角速度 (x, y, z)），单位：弧度/秒 (rad/s)。
         root_angular_velocity_delta_max: float | Sequence[float] = 0.0,
         random_seed: Optional[int] = None,
     ):

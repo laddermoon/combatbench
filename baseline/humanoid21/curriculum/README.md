@@ -322,3 +322,12 @@ PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment 
 PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment v1_relation &> v1_relation.log & 
 
 PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260605_010617/checkpoints/checkpoint_u03165.pt &> balance_recover1.log & 
+
+
+
+生成最大扰动的视频
+python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/blueprints/balance_recover_env.yaml \
+  --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/policy_exports/u01385/policy_blueprint.yaml \
+  --policy-b-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/policy_exports/u01385/policy_blueprint.yaml \
+  --video video1.mp4
