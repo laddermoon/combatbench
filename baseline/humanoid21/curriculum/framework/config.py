@@ -202,9 +202,26 @@ class ExperimentConfig(ABC):
     # The experiment OWNS the env blueprint lifecycle. The training loop never
     # touches blueprints — it only calls ``build_rollout_jobs``.
 
+    def _make_video_blueprint(self, env_pb: ParameterizedEnvBlueprint) -> EnvBlueprint:
+        """Materialize *env_pb* with video-appropriate defaults.
+
+        Uses the experiment's ``max_steps`` from ``custom_config`` and fixes
+        ``agent_id`` to ``"robot_a"``.  Subclasses may call this from their
+        ``video_env_blueprint()`` implementation.
+        """
+        return env_pb.materialize(
+            max_steps=self.custom_config["max_steps"],
+            agent_id="robot_a",
+        )
+
     @abstractmethod
     def video_env_blueprint(self) -> EnvBlueprint:
-        """Return the env blueprint to use for video rendering."""
+        """Return the env blueprint to use for video rendering.
+
+        Implementations should load a :class:`ParameterizedEnvBlueprint` and
+        call ``self._make_video_blueprint(env_pb)`` to obtain a concrete,
+        serialisable :class:`EnvBlueprint`.
+        """
         ...
 
     # --- Rollout job construction ---
