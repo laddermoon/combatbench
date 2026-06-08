@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -30,14 +31,23 @@ class BalanceRecoverConfig(ExperimentConfig):
     """
 
     name = "balance_recover"
-    reward_keys = ("r_fall",)  # Single reward: per-step survival + terminal
-    gammas = {"r_fall": 0.99}
+    reward_keys = ("r_fall", "r_cross")
+    gammas = {"r_fall": 0.99, "r_cross": 0.99}
 
     BLUEPRINT = "balance_recover_env.yaml"
 
+    def _env_pb(self):
+        return ParameterizedEnvBlueprint.load(
+            Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
+        )
+
     def video_env_blueprint(self):
-        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
-        return EnvBlueprint.load(_bp_dir / self.BLUEPRINT)
+        perturb = self._current_perturb_params()
+        return self._env_pb().materialize(
+            max_steps=self.custom_config["max_steps"],
+            agent_id="robot_a",
+            **perturb,
+        )
 
     # --- PPO tuning (see training analysis) ---
     # Raise the log_std floor so the policy can't collapse to saturated,
@@ -93,9 +103,8 @@ class BalanceRecoverConfig(ExperimentConfig):
         base_seed: int,
         n_episodes: int,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
         max_steps = self.custom_config["max_steps"]
-        env_pb = ParameterizedEnvBlueprint.load(_bp_dir / self.BLUEPRINT)
+        env_pb = self._env_pb()
         perturb = self._current_perturb_params()
         rng = np.random.default_rng(base_seed)
 
@@ -127,9 +136,6 @@ class BalanceRecoverConfig(ExperimentConfig):
     def build_eval_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
         return self._build_perturbed_jobs(policy_bp, base_seed, self.eval_episodes)
 
-    def initial_weights(self) -> Tuple[float, ...]:
-        return (1.0,)
-
     def next_weights(
         self,
         eval_metrics: Dict[str, float],
@@ -153,7 +159,11 @@ class BalanceRecoverConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (1.0,)
+        return (3.0, 1.0)
+
+    
+    def initial_weights(self) -> Tuple[float, ...]:
+        return (3.0, 1.0)
 
     def extract_rewards(
         self,
@@ -161,7 +171,9 @@ class BalanceRecoverConfig(ExperimentConfig):
         T: int,
         termination_proposals: Tuple[str, ...],
     ) -> Dict[str, np.ndarray]:
-        """r_fall: small positive reward every alive step + terminal signal."""
+        """r_fall: per-step survival bonus + terminal signal.
+        r_cross: cross-support balance reward from CrossSupportBalanceRewarder.
+        """
         fell = "imbalance" in termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
@@ -169,7 +181,11 @@ class BalanceRecoverConfig(ExperimentConfig):
             r_fall[-1] = -penalty
         else:
             r_fall[-1] = penalty
-        return {"r_fall": r_fall}
+
+        r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
+
+        return {"r_fall": r_fall, "r_cross": r_cross}
+
 
     def compute_episode_metrics(
         self,

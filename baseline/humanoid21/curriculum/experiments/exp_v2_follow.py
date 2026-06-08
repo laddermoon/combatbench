@@ -18,7 +18,6 @@ from baseline.humanoid21.curriculum.framework.ppo_trainer import (
     _extract_per_step_field,
     _extract_per_step_scalar,
 )
-from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
@@ -45,8 +44,7 @@ class V2FollowConfig(ExperimentConfig):
     BLUEPRINT = "curriculum_env_v2.yaml"
 
     def video_env_blueprint(self):
-        _bp_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
-        return EnvBlueprint.load(_bp_dir / self.BLUEPRINT)
+        return self._make_video_blueprint(self._env_pb())
 
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
