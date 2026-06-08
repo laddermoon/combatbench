@@ -179,12 +179,53 @@ class PPOBuffer:
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
+        self.experiment = experiment
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
 
     def is_empty(self) -> bool:
         return len(self.ep_lengths) == 0
+
+    def batch_summary(self) -> Dict[str, float]:
+        """Compute batch-level summary.
+
+        Aggregates episode lengths and all keys from ``episode_metrics``
+        (computed by the experiment's ``compute_episode_metrics``).
+        No experiment-specific keys are hardcoded.
+        """
+        n = len(self.ep_lengths)
+        if n == 0:
+            return {"mean_length": 0.0}
+        result: Dict[str, float] = {"mean_length": float(np.mean(self.ep_lengths))}
+        if self.episode_metrics:
+            for k in self.episode_metrics[0].keys():
+                result[k] = float(np.mean([m.get(k, 0.0) for m in self.episode_metrics]))
+        return result
+
+    def reward_summary(self) -> Dict[str, Any]:
+        """Return per-step reward statistics (mean/std) for diagnostics."""
+        result: Dict[str, Any] = {}
+        if not self.ep_lengths:
+            for key in self.reward_data:
+                result[f"{key}_mean"] = 0.0
+                result[f"{key}_std"] = 0.0
+            return result
+
+        def _concat_mean_std(reward_list: List[np.ndarray]) -> Tuple[float, float]:
+            if not reward_list:
+                return 0.0, 0.0
+            concat = np.concatenate(reward_list)
+            if concat.size == 0:
+                return 0.0, 0.0
+            return float(concat.mean()), float(concat.std())
+
+        for key, reward_list in self.reward_data.items():
+            mean_val, std_val = _concat_mean_std(reward_list)
+            result[f"{key}_mean"] = mean_val
+            result[f"{key}_std"] = std_val
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -368,53 +409,4 @@ def ppo_update(
     }
 
 
-# ---------------------------------------------------------------------------
-# Summary helpers
-# ---------------------------------------------------------------------------
 
-def batch_summary(buf: PPOBuffer, max_steps: int) -> Dict[str, float]:
-    """Compute batch-level summary from a PPOBuffer.
-
-    Returns generic training metrics (``mean_length``, ``len_ratio``) plus
-    the mean of every key in ``episode_metrics`` (computed by the experiment's
-    ``compute_episode_metrics``).  No experiment-specific keys are hardcoded.
-    """
-    n = len(buf.ep_lengths)
-    if n == 0:
-        return {"mean_length": 0.0, "len_ratio": 0.0}
-    mean_len = float(np.mean(buf.ep_lengths))
-    result: Dict[str, float] = {
-        "mean_length": mean_len,
-        "len_ratio": mean_len / float(max_steps),
-    }
-    # Aggregate all episode-level metrics (from experiment.compute_episode_metrics)
-    if buf.episode_metrics:
-        keys = buf.episode_metrics[0].keys()
-        for k in keys:
-            result[k] = float(np.mean([m.get(k, 0.0) for m in buf.episode_metrics]))
-    return result
-
-
-def reward_summary(buf: PPOBuffer) -> Dict[str, Any]:
-    """Return per-step reward statistics (mean/std) for diagnostics."""
-    result: Dict[str, Any] = {}
-    if not buf.ep_lengths:
-        for key in buf.reward_data:
-            result[f"{key}_mean"] = 0.0
-            result[f"{key}_std"] = 0.0
-        return result
-
-    def _concat_mean_std(reward_list: List[np.ndarray]) -> Tuple[float, float]:
-        if not reward_list:
-            return 0.0, 0.0
-        concat = np.concatenate(reward_list)
-        if concat.size == 0:
-            return 0.0, 0.0
-        return float(concat.mean()), float(concat.std())
-
-    for key, reward_list in buf.reward_data.items():
-        mean_val, std_val = _concat_mean_std(reward_list)
-        result[f"{key}_mean"] = mean_val
-        result[f"{key}_std"] = std_val
-
-    return result

@@ -27,9 +27,7 @@ from envs.framework.policy import PolicyBlueprint
 from .config import ExperimentConfig
 from .ppo_trainer import (
     PPOBuffer,
-    batch_summary,
     ppo_update,
-    reward_summary,
     set_seed,
 )
 
@@ -250,7 +248,6 @@ def train(
     last_video_proc: Optional[subprocess.Popen] = None
     video_dir.mkdir(parents=True, exist_ok=True)
     video_env_bp_path = video_dir / "video_env_blueprint.yaml"
-    experiment.video_env_blueprint().save(video_env_bp_path)
 
     # Normalize weights for display
     def _norm_weights(w: Tuple[float, ...]) -> Tuple[float, ...]:
@@ -326,34 +323,41 @@ def train(
             t_ppo = time.perf_counter() - t0
 
             # 5.6 Logging
-            bsum = batch_summary(buf, experiment.custom_config["max_steps"])
-            rsum = reward_summary(buf)
+            bsum = buf.batch_summary()
+            rsum = buf.reward_summary()
             sinfo = experiment.scheduler_info()
 
             # --- Train log ---
-            line = (
-                f"update={u:4d} "
-                f"weights={tuple(round(w, 2) for w in norm_weights)} "
-            )
-            if sinfo:
-                info_parts = [f"{k}={v}" for k, v in sinfo.items()]
-                line += " ".join(info_parts) + " "
+            parts = [f"[update {u:4d}]"]
 
-            line += f"len={bsum['mean_length']:6.2f} "
-            for mk, mv in bsum.items():
-                if mk not in ("mean_length", "len_ratio"):
-                    line += f"{mk}={mv:.3f} "
+            # Schedule info
+            sched_parts = [f"weights={tuple(round(w, 2) for w in norm_weights)}"]
+            if sinfo:
+                sched_parts += [f"{k}={v}" for k, v in sinfo.items()]
+            parts.append("[" + " ".join(sched_parts) + "]")
+
+            # Episode metrics (from batch_summary)
+            if bsum:
+                ep_parts = [f"{k}={v:.3f}" for k, v in bsum.items()]
+                parts.append("[ep " + " ".join(ep_parts) + "]")
+
+            # Reward stats
+            r_parts = []
             for key in experiment.reward_keys:
                 mk, sk = f"{key}_mean", f"{key}_std"
-                line += f"{key}={rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f} "
-            line += (
-                f"policy_loss={stats['policy_loss']:+.5f} "
-            )
+                r_parts.append(f"{key}={rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}")
+            if r_parts:
+                parts.append("[reward " + " ".join(r_parts) + "]")
+
+            # Training stats
+            train_parts = [f"policy_loss={stats['policy_loss']:+.5f}"]
             for key in experiment.reward_keys:
                 vk = f"vloss_{key}"
-                line += f"{vk}={stats.get(vk, 0.0):.4f} "
-            line += f"kl={stats['approx_kl']:.4f}"
-            print(line, flush=True)
+                train_parts.append(f"{vk}={stats.get(vk, 0.0):.4f}")
+            train_parts.append(f"kl={stats['approx_kl']:.4f}")
+            parts.append("[train " + " ".join(train_parts) + "]")
+
+            print(" ".join(parts), flush=True)
 
             # --- Eval ---
             t_eval = 0.0
@@ -363,8 +367,7 @@ def train(
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
                 eval_jobs = experiment.build_eval_jobs(det_bp, eval_seed)
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
-                _saved_penalty = experiment.custom_config["terminal_fall_penalty"]
-                experiment.custom_config["terminal_fall_penalty"] = 0.0  # no penalty in eval
+                
                 eval_buf = PPOBuffer(
                     episodes=eval_episodes,
                     stage_weights=norm_weights,
@@ -372,17 +375,11 @@ def train(
                     device=device,
                     experiment=experiment,
                 )
-                experiment.custom_config["terminal_fall_penalty"] = _saved_penalty
                 if not eval_buf.is_empty():
-                    esum = batch_summary(eval_buf, experiment.custom_config["max_steps"])
+                    esum = eval_buf.batch_summary()
 
-                    eval_line = (
-                        f"  [eval] update={u:4d}"
-                        f" len={esum['mean_length']:6.2f}"
-                    )
-                    for mk, mv in esum.items():
-                        if mk not in ("mean_length", "len_ratio"):
-                            eval_line += f" {mk}={mv:.3f}"
+                    ep_parts = [f"{k}={v:.3f}" for k, v in esum.items()]
+                    eval_line = f"[eval {u:4d}] [ep " + " ".join(ep_parts) + "]"
 
                     # Update weights from experiment scheduler
                     prev_weights = weights
@@ -426,6 +423,7 @@ def train(
                         policy_bp_path = export_dir / "policy_blueprint.yaml"
                         video_path = video_dir / f"u{u:05d}.mp4"
                         log_path = video_dir / f"u{u:05d}.log"
+                        experiment.video_env_blueprint().save(video_env_bp_path)
                         last_video_proc = spawn_video_render(
                             env_blueprint=video_env_bp_path,
                             policy_blueprint=policy_bp_path,
