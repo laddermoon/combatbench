@@ -400,12 +400,23 @@ def ppo_update(
         for key in reward_keys
     }
 
+    # Per-reward advantage stats
+    per_adv_stats: Dict[str, float] = {}
+    for key in reward_keys:
+        a = advs_all[key]
+        per_adv_stats[f"adv_mean_{key}"] = float(a.mean())
+        per_adv_stats[f"adv_std_{key}"] = float(a.std())
+
+    total_steps = sum(buf.ep_lengths)
+
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean(total_val_losses)),
         "approx_kl": float(np.mean(kls)) if kls else 0.0,
         "early_stop_kl": early_stop_kl,
+        "total_steps": total_steps,
         **per_critic_losses,
+        **per_adv_stats,
     }
 
 

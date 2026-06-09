@@ -220,7 +220,7 @@ def train(
     weights = experiment.initial_weights()
 
     start_update = 1
-    best_eval: tuple = (-1, -float("inf"))
+    best_esum: Dict[str, float] = {}
 
     # 4. Resume
     if resume_from is not None:
@@ -349,13 +349,9 @@ def train(
             if r_parts:
                 parts.append("[reward " + " ".join(r_parts) + "]")
 
-            # Training stats
-            train_parts = [f"policy_loss={stats['policy_loss']:+.5f}"]
-            for key in experiment.reward_keys:
-                vk = f"vloss_{key}"
-                train_parts.append(f"{vk}={stats.get(vk, 0.0):.4f}")
-            train_parts.append(f"kl={stats['approx_kl']:.4f}")
-            parts.append("[train " + " ".join(train_parts) + "]")
+            # Training stats (print all)
+            stats_parts = [f"{k}={v:.5f}" if isinstance(v, float) else f"{k}={v}" for k, v in stats.items() if v is not None]
+            parts.append("[stats " + " ".join(stats_parts) + "]")
 
             print(" ".join(parts), flush=True)
 
@@ -392,9 +388,8 @@ def train(
                         )
 
                     # Best-of-run snapshot
-                    score = (esum["mean_length"], esum.get("in_zone", 0.0))
-                    if score > best_eval:
-                        best_eval = score
+                    if experiment.compare_eval(esum, best_esum):
+                        best_esum = esum
                         export_actor_policy_artifacts(
                             actor=actor,
                             policy_dir=policy_dir,
@@ -403,7 +398,7 @@ def train(
                                 "experiment": experiment.name,
                                 "update": u,
                                 "weights": list(norm_weights),
-                                "best_eval_length": esum["mean_length"],
+                                "best_eval_esum": best_esum,
                             },
                         )
                         eval_line += "  [new_best]"
@@ -457,5 +452,5 @@ def train(
                     critic_optimizers=critic_optimizers,
                     experiment=experiment,
                     update=u,
-                    best_eval=best_eval,
+                    best_eval=best_esum,
                 )

@@ -197,6 +197,18 @@ class ExperimentConfig(ABC):
         """Return extra info dict for logging (phase, consecutive_pass, etc.)."""
         ...
 
+    @abstractmethod
+    def compare_eval(self, esum: Dict[str, float], best_esum: Dict[str, float]) -> bool:
+        """Return True if esum is better than best_esum.
+
+        Parameters
+        ----------
+        esum, best_esum:
+            Batch summary dicts returned by ``compute_episode_metrics()``.
+            Typical keys: ``mean_length``, ``in_zone``, ``survival_rate``, etc.
+        """
+        ...
+
     # --- Blueprint ownership ---
     #
     # The experiment OWNS the env blueprint lifecycle. The training loop never
