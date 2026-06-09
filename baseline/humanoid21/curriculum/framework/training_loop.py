@@ -134,8 +134,7 @@ def load_checkpoint(
             for pg in actor_optimizer.param_groups:
                 pg["lr"] = experiment.learning_rate
             print(
-                f"[checkpoint] restored adaptive LR={experiment.learning_rate:.2e}, "
-                f"mb={experiment.minibatch_size}",
+                f"[checkpoint] restored LR={experiment.learning_rate:.2e}",
                 flush=True,
             )
         else:
@@ -326,24 +325,20 @@ def train(
                 grad_clip_norm=experiment.grad_clip_norm,
                 target_kl=experiment.target_kl,
                 update_epochs=experiment.update_epochs,
-                minibatch_size=experiment.minibatch_size,
                 device=device,
                 stage_weights=norm_weights,
             )
             t_ppo = time.perf_counter() - t0
 
-            # 5.5b Apply adaptive hyperparameters back to experiment for next update
-            if "final_lr" in stats and "final_mb" in stats:
+            # 5.5b Apply adaptive LR back to experiment for next update
+            if "final_lr" in stats:
                 final_lr = stats["final_lr"]
-                final_mb = stats["final_mb"]
-                if final_lr != experiment.learning_rate or final_mb != experiment.minibatch_size:
+                if abs(final_lr - experiment.learning_rate) / max(experiment.learning_rate, 1e-8) > 0.01:
                     print(
-                        f"[adapt] update={u} LR {experiment.learning_rate:.2e} -> {final_lr:.2e}, "
-                        f"mb {experiment.minibatch_size} -> {final_mb}",
+                        f"[adapt] update={u} LR {experiment.learning_rate:.2e} -> {final_lr:.2e}",
                         flush=True,
                     )
                     experiment.learning_rate = final_lr
-                    experiment.minibatch_size = final_mb
 
             # 5.6 Logging
             bsum = buf.batch_summary()

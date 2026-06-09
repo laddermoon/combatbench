@@ -83,7 +83,7 @@ class BalanceRecoverConfig(ExperimentConfig):
     LEVEL_SCALES: Tuple[float, ...] = (0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 1.0)
     # Promote once survival >= threshold for N consecutive evaluations.
     PROMOTE_SURVIVAL: float = 0.9
-    PROMOTE_PATIENCE: int = 2
+    PROMOTE_PATIENCE: int = 1
 
     # --- Stateful scheduler ---
     _level: int = 0
@@ -141,8 +141,15 @@ class BalanceRecoverConfig(ExperimentConfig):
         return self._build_perturbed_jobs(policy_bp, base_seed, self.eval_episodes)
 
     def compare_eval(self, esum, best_esum):
+        """Compare eval metrics: prioritize higher level, then higher survival rate."""
         if not best_esum:
             return True
+        # First: compare level (higher is better)
+        level = esum.get("level", 0.0)
+        best_level = best_esum.get("level", 0.0)
+        if level != best_level:
+            return level > best_level
+        # Same level: compare survival rate
         return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
 
     def next_weights(
@@ -202,9 +209,15 @@ class BalanceRecoverConfig(ExperimentConfig):
         T: int,
         termination_proposals: Tuple[str, ...],
     ) -> Dict[str, float]:
-        """``survived`` = 0 only if the robot fell (imbalance termination)."""
+        """``survived`` = 0 only if the robot fell (imbalance termination).
+
+        Returns level/stage for eval comparison (higher level = better).
+        """
         fell = "imbalance" in termination_proposals
-        return {"survived": 0.0 if fell else 1.0}
+        return {
+            "survived": 0.0 if fell else 1.0,
+            "level": float(self._level),  # higher level = harder perturbation = better
+        }
 
     def scheduler_info(self) -> Dict[str, Any]:
         return {

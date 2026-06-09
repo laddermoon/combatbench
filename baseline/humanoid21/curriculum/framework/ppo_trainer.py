@@ -228,6 +228,12 @@ class PPOBuffer:
         return result
 
 
+'''
+1. Rollback 是保命逻辑，一定要有
+2. 基于数据等分，每个Batch占总数据量的1/8
+3. 如果有需要调学习率
+'''
+
 # ---------------------------------------------------------------------------
 # PPO update
 # ---------------------------------------------------------------------------
@@ -246,11 +252,14 @@ def ppo_update(
     grad_clip_norm: float,
     target_kl: float,
     update_epochs: int,
-    minibatch_size: int,
     device: torch.device,
     stage_weights: Tuple[float, ...],
 ) -> Dict[str, float]:
-    """Multi-critic PPO update, parameterized by reward_keys and gammas."""
+    """Multi-critic PPO update, parameterized by reward_keys and gammas.
+
+    Data is divided into 8 equal batches per epoch (fixed ratio).
+    Only learning rate is adaptively adjusted based on KL trends.
+    """
     obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
 
     # Compute values for each critic
@@ -334,9 +343,13 @@ def ppo_update(
     rolled_back = False
     rollback_epoch = -1
 
-    # Adaptive parameters (can be modified during training)
+    # Fixed: number of batches per epoch (data is divided equally)
+    # This replaces the old minibatch_size parameter
+    n_batches = 8  # Each batch = n / 8 samples (e.g., 33000/8 ≈ 4125)
+    current_mb = n // n_batches  # Actual minibatch size for this update
+
+    # Adaptive: only learning rate is adjusted based on KL trend
     current_lr = actor_optimizer.param_groups[0]["lr"]
-    current_mb = minibatch_size
     prev_mean_kl = 0.0  # Track previous epoch KL for delta calculation
 
     for epoch in range(update_epochs):
@@ -352,11 +365,12 @@ def ppo_update(
         epoch_pol_losses: List[float] = []
         epoch_early_stop = False
 
-        for s in range(0, n, current_mb):
-            idx = perm[s : s + current_mb]
-            # Drop tail batch if too small (avoid high-variance gradient from partial batch)
-            if len(idx) < current_mb * 0.25:
-                continue
+        # Equal division: n // n_batches samples per batch, remainder dropped
+        actual_mb = n // n_batches
+        for b in range(n_batches):
+            start = b * actual_mb
+            end = start + actual_mb
+            idx = perm[start:end]
             idx_cpu = idx.cpu().numpy()
 
             # Step 1: Update each critic independently
@@ -404,6 +418,18 @@ def ppo_update(
         # Epoch-level KL statistics
         mean_epoch_kl = float(np.mean(epoch_kls)) if epoch_kls else 0.0
         max_epoch_kl = float(np.max(epoch_kls)) if epoch_kls else 0.0
+        std_epoch_kl = float(np.std(epoch_kls)) if epoch_kls else 0.0
+
+        # Log KL variance across batches (diagnostic for n_batches setting)
+        # CV > 0.5:  n_batches 8 → 4  (batch size 翻倍，降低方差)
+        # CV < 0.1:  n_batches 8 → 16 (batch size 减半，增加更新频率)
+        if epoch_kls:
+            kl_cv = std_epoch_kl / (mean_epoch_kl + 1e-8)  # Coefficient of variation
+            print(
+                f"  [kl_stats] epoch={epoch} mean={mean_epoch_kl:.4f} std={std_epoch_kl:.4f} "
+                f"cv={kl_cv:.2f} n_batches={len(epoch_kls)}",
+                flush=True,
+            )
 
         # Warning: suspiciously small KL (policy barely changing)
         if mean_epoch_kl < 0.001:
@@ -437,6 +463,7 @@ def ppo_update(
             "epoch": epoch,
             "mean_kl": mean_epoch_kl,
             "max_kl": max_epoch_kl,
+            "std_kl": std_epoch_kl,
             "n_minibatches": len(epoch_kls),
         })
 
@@ -450,9 +477,8 @@ def ppo_update(
             actor.load_state_dict(actor_state)
             actor_optimizer.load_state_dict(optim_state)
 
-            # Reduce LR and increase minibatch size for stability
-            current_lr *= 0.5
-            current_mb = min(int(current_mb * 2), n)
+            # Rollback: reduce LR for stability (MB stays fixed at data ratio)
+            current_lr = max(current_lr * 0.5, 1e-6)  # clamp min
             for pg in actor_optimizer.param_groups:
                 pg["lr"] = current_lr
 
@@ -476,32 +502,32 @@ def ppo_update(
                 flush=True,
             )
 
+        # Dynamic thresholds: upper bound halves each epoch
+        # Epoch 0: upper = target_kl/2, lower = target_kl/4
+        # Epoch 1: upper = target_kl/4, lower = target_kl/8
+        upper_threshold = target_kl * 0.5 # / (2 ** (epoch + 1))
+        lower_threshold = target_kl * 0.05 #upper_threshold / 2
+
         if target_kl > 0.0 and mean_epoch_kl < target_kl:
-            if kl_delta > target_kl * 0.3:
-                # KL growing too fast: slow down
-                current_lr *= 0.75
-                current_mb = min(int(current_mb * 1.5), n)
+            if kl_delta > upper_threshold:
+                # KL growing too fast: reduce LR only
+                current_lr = max(current_lr * 0.75, 1e-6)  # clamp min
                 print(
-                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} too fast, "
-                    f"lr={current_lr:.2e}, mb={current_mb}",
+                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} > upper={upper_threshold:.4f}, "
+                    f"lr={current_lr:.2e}",
                     flush=True,
                 )
-            elif kl_delta < target_kl * 0.05 and mean_epoch_kl > 0.001:
-                # KL growing too slow: speed up
-                current_lr *= 1.5
-                current_mb = max(int(current_mb * 0.75), 2048)
+            elif kl_delta < lower_threshold and mean_epoch_kl > 0.001:
+                # KL growing too slow: increase LR only
+                current_lr = min(current_lr * 1.25, 1e-2)  # clamp max
                 print(
-                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} too slow, "
-                    f"lr={current_lr:.2e}, mb={current_mb}",
+                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} < lower={lower_threshold:.4f}, "
+                    f"lr={current_lr:.2e}",
                     flush=True,
                 )
 
         # Update previous KL for next iteration
         prev_mean_kl = mean_epoch_kl
-
-        # Apply LR change for next epoch
-        for pg in actor_optimizer.param_groups:
-            pg["lr"] = current_lr
 
         # Normal early stop: if mean KL exceeds target
         if target_kl > 0.0 and mean_epoch_kl > target_kl:
@@ -509,8 +535,17 @@ def ppo_update(
                 f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
                 flush=True,
             )
+            # 一个Epoch就早停
+            if epoch == 0:
+                current_lr = max(current_lr * 0.5, 1e-6)  # clamp min
             early_stop_kl = mean_epoch_kl
             break
+
+
+        # Apply LR change for next epoch
+        for pg in actor_optimizer.param_groups:
+            pg["lr"] = current_lr
+
 
     # Aggregate value losses per critic
     total_val_losses = [
@@ -547,7 +582,7 @@ def ppo_update(
         "epochs_done": len(epoch_kl_stats),
         "epoch_kl_stats": epoch_kl_stats,
         "final_lr": current_lr,
-        "final_mb": current_mb,
+        "n_batches": n_batches,  # Fixed ratio, not adaptive anymore
         "total_steps": total_steps,
         **per_critic_losses,
         **per_adv_stats,
