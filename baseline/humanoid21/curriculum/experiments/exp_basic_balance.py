@@ -37,6 +37,11 @@ class BasicBalanceConfig(ExperimentConfig):
     def build_eval_jobs(self, policy_bp, base_seed):
         return self._build_selfplay_jobs(self._env_pb(), policy_bp, base_seed, self.eval_episodes)
 
+    def compare_eval(self, esum, best_esum):
+        if not best_esum:
+            return True
+        return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
+
     def initial_weights(self) -> Tuple[float, ...]:
         return (3.0, 1.0)
 

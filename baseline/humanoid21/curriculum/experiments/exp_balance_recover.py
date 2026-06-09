@@ -140,6 +140,11 @@ class BalanceRecoverConfig(ExperimentConfig):
     def build_eval_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
         return self._build_perturbed_jobs(policy_bp, base_seed, self.eval_episodes)
 
+    def compare_eval(self, esum, best_esum):
+        if not best_esum:
+            return True
+        return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
+
     def next_weights(
         self,
         eval_metrics: Dict[str, float],
