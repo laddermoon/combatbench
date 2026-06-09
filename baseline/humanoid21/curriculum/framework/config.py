@@ -359,3 +359,21 @@ class ExperimentConfig(ABC):
     def load_scheduler_state(self, state: dict) -> None:
         """Restore scheduler state from a checkpoint."""
         pass
+
+    def training_state(self) -> dict:
+        """Serialize adaptive training hyperparameters for checkpointing.
+
+        These values are updated during training by the adaptive PPO logic
+        and should be restored on resume to maintain continuity.
+        """
+        return {
+            "learning_rate": self.learning_rate,
+            "minibatch_size": self.minibatch_size,
+        }
+
+    def load_training_state(self, state: dict) -> None:
+        """Restore adaptive training hyperparameters from a checkpoint."""
+        if "learning_rate" in state:
+            self.learning_rate = float(state["learning_rate"])
+        if "minibatch_size" in state:
+            self.minibatch_size = int(state["minibatch_size"])

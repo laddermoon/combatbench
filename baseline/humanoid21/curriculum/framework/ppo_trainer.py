@@ -329,15 +329,34 @@ def ppo_update(
     n = obs_t.shape[0]
     pol_losses: List[float] = []
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
-    kls: List[float] = []
+    epoch_kl_stats: List[Dict[str, float]] = []  # Per-epoch KL statistics
     early_stop_kl = 0.0
+    rolled_back = False
+    rollback_epoch = -1
 
-    for _ in range(update_epochs):
+    # Adaptive parameters (can be modified during training)
+    current_lr = actor_optimizer.param_groups[0]["lr"]
+    current_mb = minibatch_size
+    prev_mean_kl = 0.0  # Track previous epoch KL for delta calculation
+
+    for epoch in range(update_epochs):
+        # Save state at epoch start for potential rollback
+        actor_state = {k: v.clone().cpu() for k, v in actor.state_dict().items()}
+        optim_state = {
+            k: v.clone().cpu() if torch.is_tensor(v) else v
+            for k, v in actor_optimizer.state_dict().items()
+        }
+
         perm = torch.randperm(n, device=device)
-        early_stop = False
+        epoch_kls: List[float] = []
+        epoch_pol_losses: List[float] = []
+        epoch_early_stop = False
 
-        for s in range(0, n, minibatch_size):
-            idx = perm[s : s + minibatch_size]
+        for s in range(0, n, current_mb):
+            idx = perm[s : s + current_mb]
+            # Drop tail batch if too small (avoid high-variance gradient from partial batch)
+            if len(idx) < current_mb * 0.25:
+                continue
             idx_cpu = idx.cpu().numpy()
 
             # Step 1: Update each critic independently
@@ -360,11 +379,7 @@ def ppo_update(
 
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
-            kls.append(approx_kl)
-            if target_kl > 0.0 and approx_kl > target_kl:
-                early_stop_kl = approx_kl
-                early_stop = True
-                break
+            epoch_kls.append(approx_kl)
 
             # Policy loss with combined normalized advantages
             log_ratio = torch.clamp(new_lp - old_lp_t[idx], -20.0, 20.0)
@@ -384,9 +399,117 @@ def ppo_update(
                 actor.parameters(), grad_clip_norm,
             )
             actor_optimizer.step()
-            pol_losses.append(float(policy_loss))
+            epoch_pol_losses.append(float(policy_loss))
 
-        if early_stop:
+        # Epoch-level KL statistics
+        mean_epoch_kl = float(np.mean(epoch_kls)) if epoch_kls else 0.0
+        max_epoch_kl = float(np.max(epoch_kls)) if epoch_kls else 0.0
+
+        # Warning: suspiciously small KL (policy barely changing)
+        if mean_epoch_kl < 0.001:
+            print(
+                f"  [warn] epoch={epoch} mean_kl={mean_epoch_kl:.6f} too small, "
+                f"policy may be stuck or LR too low",
+                flush=True,
+            )
+
+        # Warning: analyze intra-epoch KL trend
+        if len(epoch_kls) >= 3:
+            # Check for monotonic increase (potential runaway)
+            kls = np.array(epoch_kls)
+            if np.all(np.diff(kls) > 0):
+                print(
+                    f"  [warn] epoch={epoch} KL monotonically increasing "
+                    f"({kls[0]:.4f} -> {kls[-1]:.4f}), risk of overshoot",
+                    flush=True,
+                )
+            # Check for sudden jump (>2x from prev step)
+            for i in range(1, len(kls)):
+                if kls[i] > kls[i-1] * 2 and kls[i] > 0.01:
+                    print(
+                        f"  [warn] epoch={epoch} KL jump at step {i}: "
+                        f"{kls[i-1]:.4f} -> {kls[i]:.4f}",
+                        flush=True,
+                    )
+                    break
+
+        epoch_kl_stats.append({
+            "epoch": epoch,
+            "mean_kl": mean_epoch_kl,
+            "max_kl": max_epoch_kl,
+            "n_minibatches": len(epoch_kls),
+        })
+
+        # Rollback logic: if KL explodes, revert to epoch start state
+        if max_epoch_kl > target_kl * 3.0 and target_kl > 0.0:
+            print(
+                f"  [rollback] epoch={epoch} max_kl={max_epoch_kl:.4f} > 3x target, "
+                f"reverting to epoch start state",
+                flush=True,
+            )
+            actor.load_state_dict(actor_state)
+            actor_optimizer.load_state_dict(optim_state)
+
+            # Reduce LR and increase minibatch size for stability
+            current_lr *= 0.5
+            current_mb = min(int(current_mb * 2), n)
+            for pg in actor_optimizer.param_groups:
+                pg["lr"] = current_lr
+
+            rolled_back = True
+            rollback_epoch = epoch
+            break
+
+        # Accumulate losses from this epoch
+        pol_losses.extend(epoch_pol_losses)
+
+        # Adaptive adjustment based on KL delta (growth rate), not absolute value
+        # Calculate how much KL grew from previous epoch
+        # For epoch 0, assume prev KL is 0 (starting fresh from previous update)
+        kl_delta = mean_epoch_kl - prev_mean_kl
+
+        # Warning: negative KL delta (policy moved back toward old policy)
+        if kl_delta < -0.001:
+            print(
+                f"  [warn] epoch={epoch} KL delta={kl_delta:.4f} < 0, "
+                f"policy retracted toward old policy",
+                flush=True,
+            )
+
+        if target_kl > 0.0 and mean_epoch_kl < target_kl:
+            if kl_delta > target_kl * 0.3:
+                # KL growing too fast: slow down
+                current_lr *= 0.75
+                current_mb = min(int(current_mb * 1.5), n)
+                print(
+                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} too fast, "
+                    f"lr={current_lr:.2e}, mb={current_mb}",
+                    flush=True,
+                )
+            elif kl_delta < target_kl * 0.05 and mean_epoch_kl > 0.001:
+                # KL growing too slow: speed up
+                current_lr *= 1.5
+                current_mb = max(int(current_mb * 0.75), 2048)
+                print(
+                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} too slow, "
+                    f"lr={current_lr:.2e}, mb={current_mb}",
+                    flush=True,
+                )
+
+        # Update previous KL for next iteration
+        prev_mean_kl = mean_epoch_kl
+
+        # Apply LR change for next epoch
+        for pg in actor_optimizer.param_groups:
+            pg["lr"] = current_lr
+
+        # Normal early stop: if mean KL exceeds target
+        if target_kl > 0.0 and mean_epoch_kl > target_kl:
+            print(
+                f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
+                flush=True,
+            )
+            early_stop_kl = mean_epoch_kl
             break
 
     # Aggregate value losses per critic
@@ -409,11 +532,22 @@ def ppo_update(
 
     total_steps = sum(buf.ep_lengths)
 
+    # Final KL summary
+    final_kl = epoch_kl_stats[-1]["mean_kl"] if epoch_kl_stats else 0.0
+    max_kl_overall = max((s["max_kl"] for s in epoch_kl_stats), default=0.0)
+
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean(total_val_losses)),
-        "approx_kl": float(np.mean(kls)) if kls else 0.0,
+        "approx_kl": final_kl,
+        "max_kl": max_kl_overall,
         "early_stop_kl": early_stop_kl,
+        "rolled_back": rolled_back,
+        "rollback_epoch": rollback_epoch,
+        "epochs_done": len(epoch_kl_stats),
+        "epoch_kl_stats": epoch_kl_stats,
+        "final_lr": current_lr,
+        "final_mb": current_mb,
         "total_steps": total_steps,
         **per_critic_losses,
         **per_adv_stats,

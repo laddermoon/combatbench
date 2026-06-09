@@ -321,7 +321,7 @@ PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment 
 
 PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment v1_relation &> v1_relation.log & 
 
-PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260605_010617/checkpoints/checkpoint_u03165.pt &> balance_recover1.log & 
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260608_093557/checkpoints/checkpoint_u02875.pt &> balance_recover2.log & 
 
 
 
@@ -331,3 +331,6 @@ python3 -m envs.framework.round_runner \
   --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/policy_exports/u01385/policy_blueprint.yaml \
   --policy-b-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/policy_exports/u01385/policy_blueprint.yaml \
   --video video1.mp4
+
+
+接下来要做的一个事情是。打印训练的细节训练里面的细节的东西，比如说做了多少个update。嗯方便对于训练的细节进行深入的掌控。然后另外的话就是max mini batch size，这个如何去设置这个问题，可能也需要嗯去考虑。嗯就是训练参数的自动化自动优化，这个问题，如何去。就是如何是最优化，如何不是盲目的去调参，如何能够更好的去有理论支撑的去调参。然后目标是让在有限时间内能够让这个模型训练的更快啊，然后现在是有点太盲目了。

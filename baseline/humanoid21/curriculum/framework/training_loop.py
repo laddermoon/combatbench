@@ -69,6 +69,7 @@ def save_checkpoint(
             "experiment_name": experiment.name,
             "reward_keys": experiment.reward_keys,
             "scheduler_state": experiment.scheduler_state(),
+            "training_state": experiment.training_state(),
             "update": update,
             "best_eval": best_eval,
         },
@@ -128,10 +129,19 @@ def load_checkpoint(
         saved_exp = payload.get("experiment_name", "")
         if saved_exp == experiment.name:
             experiment.load_scheduler_state(payload.get("scheduler_state", {}))
+            experiment.load_training_state(payload.get("training_state", {}))
+            # Restore optimizer LR from experiment
+            for pg in actor_optimizer.param_groups:
+                pg["lr"] = experiment.learning_rate
+            print(
+                f"[checkpoint] restored adaptive LR={experiment.learning_rate:.2e}, "
+                f"mb={experiment.minibatch_size}",
+                flush=True,
+            )
         else:
             print(
                 f"[checkpoint] experiment changed ({saved_exp} -> {experiment.name}), "
-                f"resetting scheduler",
+                f"resetting scheduler and training state",
                 flush=True,
             )
 
@@ -321,6 +331,19 @@ def train(
                 stage_weights=norm_weights,
             )
             t_ppo = time.perf_counter() - t0
+
+            # 5.5b Apply adaptive hyperparameters back to experiment for next update
+            if "final_lr" in stats and "final_mb" in stats:
+                final_lr = stats["final_lr"]
+                final_mb = stats["final_mb"]
+                if final_lr != experiment.learning_rate or final_mb != experiment.minibatch_size:
+                    print(
+                        f"[adapt] update={u} LR {experiment.learning_rate:.2e} -> {final_lr:.2e}, "
+                        f"mb {experiment.minibatch_size} -> {final_mb}",
+                        flush=True,
+                    )
+                    experiment.learning_rate = final_lr
+                    experiment.minibatch_size = final_mb
 
             # 5.6 Logging
             bsum = buf.batch_summary()
