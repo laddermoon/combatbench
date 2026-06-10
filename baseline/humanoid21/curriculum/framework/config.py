@@ -71,7 +71,7 @@ class ExperimentConfig(ABC):
     gae_lambda: float = 0.95
 
     # --- PPO knobs ---
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     critic_learning_rate: float = 3e-4
     clip_eps: float = 0.2
     value_loss_coef: float = 0.5
@@ -370,6 +370,7 @@ class ExperimentConfig(ABC):
         }
 
     def load_training_state(self, state: dict) -> None:
-        """Restore adaptive training hyperparameters from a checkpoint."""
-        if "learning_rate" in state:
-            self.learning_rate = float(state["learning_rate"])
+        """Restore adaptive training hyperparameters from a checkpoint.
+        Disabled loading learning_rate to ensure configuration-specified LR takes precedence.
+        """
+        pass

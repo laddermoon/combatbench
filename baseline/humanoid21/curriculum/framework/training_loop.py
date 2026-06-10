@@ -125,6 +125,11 @@ def load_checkpoint(
             except RuntimeError as e:
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
+    # Force align optimizer learning rate to currently configured experiment learning rate
+    for pg in actor_optimizer.param_groups:
+        pg["lr"] = experiment.learning_rate
+    print(f"[checkpoint] Force aligned actor optimizer LR to experiment config: {experiment.learning_rate:.2e}", flush=True)
+
     if load_experiment_state:
         saved_exp = payload.get("experiment_name", "")
         if saved_exp == experiment.name:
@@ -345,33 +350,52 @@ def train(
             rsum = buf.reward_summary()
             sinfo = experiment.scheduler_info()
 
-            # --- Train log ---
-            parts = [f"[update {u:4d}]"]
+            # --- High Observability Logging ---
+            # 1. Header & Scheduler Info
+            sched_str = " ".join([f"weights={tuple(round(w, 2) for w in norm_weights)}"] + ([f"{k}={v}" for k, v in sinfo.items()] if sinfo else []))
+            print(f"[update {u:4d}] [{sched_str}]", flush=True)
 
-            # Schedule info
-            sched_parts = [f"weights={tuple(round(w, 2) for w in norm_weights)}"]
-            if sinfo:
-                sched_parts += [f"{k}={v}" for k, v in sinfo.items()]
-            parts.append("[" + " ".join(sched_parts) + "]")
+            # 2. Rollout / Episode metrics
+            ep_len_str = f"len={stats.get('ep_len_mean', 0.0):.1f} (min={stats.get('ep_len_min', 0.0):.1f}, max={stats.get('ep_len_max', 0.0):.1f})"
+            ep_metrics_str = " ".join([f"{k}={v:.3f}" for k, v in bsum.items()]) if bsum else ""
+            print(f"  [Rollout] {ep_len_str} | {ep_metrics_str}", flush=True)
 
-            # Episode metrics (from batch_summary)
-            if bsum:
-                ep_parts = [f"{k}={v:.3f}" for k, v in bsum.items()]
-                parts.append("[ep " + " ".join(ep_parts) + "]")
+            # 3. Policy & Optimization stats
+            policy_loss = stats.get('policy_loss', 0.0)
+            entropy = stats.get('entropy', 0.0)
+            std_mean = stats.get('std_mean', 0.0)
+            std_min = stats.get('std_min', 0.0)
+            std_max = stats.get('std_max', 0.0)
+            epochs_done = stats.get('epochs_done', 0)
+            approx_kl = stats.get('approx_kl', 0.0)
+            max_kl = stats.get('max_kl', 0.0)
+            early_stop_kl = stats.get('early_stop_kl', 0.0)
+            
+            print(f"  [Policy ] loss={policy_loss:.4f} entropy={entropy:.2f} std={std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f})", flush=True)
+            print(f"  [PPO Opt] epochs={epochs_done}/{experiment.update_epochs} kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} (stop_kl={early_stop_kl:.4f})", flush=True)
 
-            # Reward stats
-            r_parts = []
+            # 4. Critics details
+            value_loss = stats.get('value_loss', 0.0)
+            print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
             for key in experiment.reward_keys:
                 mk, sk = f"{key}_mean", f"{key}_std"
-                r_parts.append(f"{key}={rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}")
-            if r_parts:
-                parts.append("[reward " + " ".join(r_parts) + "]")
+                rew_flow = f"{rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}"
+                vloss_key = f"vloss_{key}"
+                ev_key = f"ev_{key}"
+                adv_std_key = f"adv_std_{key}"
+                print(f"    - {key:<12} | reward={rew_flow} | val_loss={stats.get(vloss_key, 0.0):.4f} | explained_var={stats.get(ev_key, 0.0):+.3f} | adv_std={stats.get(adv_std_key, 0.0):.2f}", flush=True)
 
-            # Training stats (print all)
-            stats_parts = [f"{k}={v:.5f}" if isinstance(v, float) else f"{k}={v}" for k, v in stats.items() if v is not None]
-            parts.append("[stats " + " ".join(stats_parts) + "]")
-
-            print(" ".join(parts), flush=True)
+            # 5.6b Machine-readable raw logging for monitoring script
+            import json
+            raw_log_dict = {
+                "update": u,
+                "weights": list(norm_weights) if norm_weights else [],
+                "sinfo": sinfo,
+                "bsum": bsum,
+                "rsum": rsum,
+                "stats": stats
+            }
+            print(f"__RAW_STATS__ {json.dumps(raw_log_dict)}", flush=True)
 
             # --- Eval ---
             t_eval = 0.0

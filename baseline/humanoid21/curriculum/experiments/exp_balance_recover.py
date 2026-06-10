@@ -57,14 +57,14 @@ class BalanceRecoverConfig(ExperimentConfig):
 
     # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
     # clipping + fewer epochs to keep each PPO update from diverging.
-    learning_rate: float = 1e-4      # was 3e-4: slow the actor down
+    learning_rate: float = 3e-5      # was 1e-4: slow the actor down further to allow more epochs
     target_kl: float = 0.05          # was 0.05: early-stop sooner
     grad_clip_norm: float = 1.0      # was 1.0: tighter gradient clipping
-    update_epochs: int = 64           # was 4: less policy drift per batch
+    update_epochs: int = 4           # was 4: less policy drift per batch
     minibatch_size: int = 4096 * 4
 
     # --- Rollout schedule ---
-    episodes_per_update: int = 256 * 8
+    episodes_per_update: int = 1024
 
     # Small per-step survival bonus (each alive step is worth this much).
     per_step_survival_reward: float = 0.01

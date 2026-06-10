@@ -310,6 +310,24 @@ def ppo_update(
             flush=True,
         )
 
+    # Compute explained variance for each critic before updates
+    explained_variances: Dict[str, float] = {}
+    for key in reward_keys:
+        y_true = rets_all[key]
+        y_pred = values_all[key]
+        var_y = np.var(y_true)
+        if var_y < 1e-8:
+            ev = 0.0
+        else:
+            ev = float(1.0 - np.var(y_true - y_pred) / var_y)
+        explained_variances[f"ev_{key}"] = ev
+
+    # Compute episode length diagnostics from buffer
+    ep_lengths = buf.ep_lengths
+    ep_len_mean = float(np.mean(ep_lengths)) if ep_lengths else 0.0
+    ep_len_min = float(np.min(ep_lengths)) if ep_lengths else 0.0
+    ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
+
     # Prepare tensors
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
@@ -340,26 +358,20 @@ def ppo_update(
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []  # Per-epoch KL statistics
     early_stop_kl = 0.0
-    rolled_back = False
-    rollback_epoch = -1
+    all_entropies: List[float] = []
+
+    # Get baseline action standard deviation
+    with torch.no_grad():
+        clamped_log_std = torch.clamp(actor.log_std, actor.log_std_min, actor.log_std_max)
+        clamped_std = clamped_log_std.exp()
+        std_mean = float(clamped_std.mean().item())
+        std_min = float(clamped_std.min().item())
+        std_max = float(clamped_std.max().item())
 
     # Fixed: number of batches per epoch (data is divided equally)
-    # This replaces the old minibatch_size parameter
-    n_batches = 8  # Each batch = n / 8 samples (e.g., 33000/8 ≈ 4125)
-    current_mb = n // n_batches  # Actual minibatch size for this update
-
-    # Adaptive: only learning rate is adjusted based on KL trend
-    current_lr = actor_optimizer.param_groups[0]["lr"]
-    prev_mean_kl = 0.0  # Track previous epoch KL for delta calculation
+    n_batches = 24  # Each batch = n / 8 samples (e.g., 33000/8 ≈ 4125)
 
     for epoch in range(update_epochs):
-        # Save state at epoch start for potential rollback
-        actor_state = {k: v.clone().cpu() for k, v in actor.state_dict().items()}
-        optim_state = {
-            k: v.clone().cpu() if torch.is_tensor(v) else v
-            for k, v in actor_optimizer.state_dict().items()
-        }
-
         perm = torch.randperm(n, device=device)
         epoch_kls: List[float] = []
         epoch_pol_losses: List[float] = []
@@ -406,6 +418,7 @@ def ppo_update(
 
             # Actor loss (no value loss here - critics are updated separately)
             loss = policy_loss - entropy_coef * entropy.mean()
+            all_entropies.append(float(entropy.mean().item()))
 
             actor_optimizer.zero_grad()
             loss.backward()
@@ -467,84 +480,18 @@ def ppo_update(
             "n_minibatches": len(epoch_kls),
         })
 
-        # Rollback logic: if KL explodes, revert to epoch start state
-        if max_epoch_kl > target_kl * 3.0 and target_kl > 0.0:
-            print(
-                f"  [rollback] epoch={epoch} max_kl={max_epoch_kl:.4f} > 3x target, "
-                f"reverting to epoch start state",
-                flush=True,
-            )
-            actor.load_state_dict(actor_state)
-            actor_optimizer.load_state_dict(optim_state)
-
-            # Rollback: reduce LR for stability (MB stays fixed at data ratio)
-            current_lr = max(current_lr * 0.5, 1e-6)  # clamp min
-            for pg in actor_optimizer.param_groups:
-                pg["lr"] = current_lr
-
-            rolled_back = True
-            rollback_epoch = epoch
-            break
-
-        # Accumulate losses from this epoch
-        pol_losses.extend(epoch_pol_losses)
-
-        # Adaptive adjustment based on KL delta (growth rate), not absolute value
-        # Calculate how much KL grew from previous epoch
-        # For epoch 0, assume prev KL is 0 (starting fresh from previous update)
-        kl_delta = mean_epoch_kl - prev_mean_kl
-
-        # Warning: negative KL delta (policy moved back toward old policy)
-        if kl_delta < -0.001:
-            print(
-                f"  [warn] epoch={epoch} KL delta={kl_delta:.4f} < 0, "
-                f"policy retracted toward old policy",
-                flush=True,
-            )
-
-        # Dynamic thresholds: upper bound halves each epoch
-        # Epoch 0: upper = target_kl/2, lower = target_kl/4
-        # Epoch 1: upper = target_kl/4, lower = target_kl/8
-        upper_threshold = target_kl * 0.5 # / (2 ** (epoch + 1))
-        lower_threshold = target_kl * 0.05 #upper_threshold / 2
-
-        if target_kl > 0.0 and mean_epoch_kl < target_kl:
-            if kl_delta > upper_threshold:
-                # KL growing too fast: reduce LR only
-                current_lr = max(current_lr * 0.75, 1e-6)  # clamp min
-                print(
-                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} > upper={upper_threshold:.4f}, "
-                    f"lr={current_lr:.2e}",
-                    flush=True,
-                )
-            elif kl_delta < lower_threshold and mean_epoch_kl > 0.001:
-                # KL growing too slow: increase LR only
-                current_lr = min(current_lr * 1.25, 1e-2)  # clamp max
-                print(
-                    f"  [adapt] epoch={epoch} KL delta={kl_delta:.4f} < lower={lower_threshold:.4f}, "
-                    f"lr={current_lr:.2e}",
-                    flush=True,
-                )
-
-        # Update previous KL for next iteration
-        prev_mean_kl = mean_epoch_kl
-
         # Normal early stop: if mean KL exceeds target
         if target_kl > 0.0 and mean_epoch_kl > target_kl:
             print(
                 f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
                 flush=True,
             )
-            # 一个Epoch就早停
-            if epoch == 0:
-                current_lr = max(current_lr * 0.5, 1e-6)  # clamp min
             early_stop_kl = mean_epoch_kl
             break
 
+        # Accumulate losses from this epoch
+        pol_losses.extend(epoch_pol_losses)
 
-        # Apply LR change for next epoch
-        for pg in actor_optimizer.param_groups:
-            pg["lr"] = current_lr
 
 
     # Aggregate value losses per critic
@@ -577,15 +524,21 @@ def ppo_update(
         "approx_kl": final_kl,
         "max_kl": max_kl_overall,
         "early_stop_kl": early_stop_kl,
-        "rolled_back": rolled_back,
-        "rollback_epoch": rollback_epoch,
         "epochs_done": len(epoch_kl_stats),
+        "entropy": float(np.mean(all_entropies)) if all_entropies else 0.0,
+        "std_mean": std_mean,
+        "std_min": std_min,
+        "std_max": std_max,
+        "ep_len_mean": ep_len_mean,
+        "ep_len_min": ep_len_min,
+        "ep_len_max": ep_len_max,
         "epoch_kl_stats": epoch_kl_stats,
-        "final_lr": current_lr,
+        "final_lr": float(actor_optimizer.param_groups[0]["lr"]),
         "n_batches": n_batches,  # Fixed ratio, not adaptive anymore
         "total_steps": total_steps,
         **per_critic_losses,
         **per_adv_stats,
+        **explained_variances,
     }
 
 
