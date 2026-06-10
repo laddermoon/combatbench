@@ -144,6 +144,56 @@ class LogAnalyzer:
 
         return conclusions
 
+    def analyze_progress_trend(self) -> str:
+        """Analyze the progress trend in the current history window."""
+        if len(self.history) < 5:
+            return "\033[94m    [趋势] 正在收集数据以确立训练趋势 (至少需要 5 代更新)...\033[0m"
+
+        # Calculate average of the first 2-3 updates vs last 2-3 updates in window
+        half = min(3, len(self.history) // 2)
+        first_group = list(self.history)[:half]
+        last_group = list(self.history)[-half:]
+
+        first_ep_mean = sum(d["stats"].get("ep_len_mean", 0.0) for d in first_group) / len(first_group)
+        last_ep_mean = sum(d["stats"].get("ep_len_mean", 0.0) for d in last_group) / len(last_group)
+        delta_ep = last_ep_mean - first_ep_mean
+
+        first_surv = sum(d["sinfo"].get("survival_rate", 0.0) for d in first_group) / len(first_group)
+        last_surv = sum(d["sinfo"].get("survival_rate", 0.0) for d in last_group) / len(last_group)
+        # Fallback to eval survival in bsum if sinfo survival_rate is 0 (or fallback to survived)
+        if first_surv == 0.0:
+            first_surv = sum(d["bsum"].get("survived", 0.0) for d in first_group) / len(first_group)
+        if last_surv == 0.0:
+            last_surv = sum(d["bsum"].get("survived", 0.0) for d in last_group) / len(last_group)
+        delta_surv = last_surv - first_surv
+
+        current_level = self.history[-1]["sinfo"].get("level", 0)
+        first_level = self.history[0]["sinfo"].get("level", 0)
+
+        # Build output message
+        status_lines = []
+        if current_level > first_level:
+            status_lines.append(f"    \033[92m🎉 史诗级进展：成功晋级！课程难度从 Level {first_level} 晋升到 Level {current_level}！\033[0m")
+        
+        # Decide progress state
+        if delta_ep >= 8.0:
+            status_lines.append(f"    \033[92m📈 训练正在大幅稳步前进！平均存活时间较 {len(self.history)} 代前提升了 +{delta_ep:.1f} 步！(存活率变动: {delta_surv:+.1%})\033[0m")
+        elif delta_ep >= 3.0:
+            status_lines.append(f"    \033[92m📈 训练正在微幅上升中。平均存活时间较 {len(self.history)} 代前提升了 +{delta_ep:.1f} 步。\033[0m")
+        elif delta_ep <= -8.0:
+            status_lines.append(f"    \033[91m📉 警告：检测到策略发生明显退化！存活步数下滑了 {delta_ep:.1f} 步，机器人基本站立基础可能在发生灾难性遗忘！\033[0m")
+        elif delta_ep <= -3.0:
+            status_lines.append(f"    \033[93m📉 提示：存活步数出现轻微波动下滑 ({delta_ep:.1f} 步)。\033[0m")
+        else:
+            # Flat (Stalled)
+            # Check if survival is already perfect
+            if last_ep_mean >= 195.0 or last_surv >= 0.98:
+                status_lines.append(f"    \033[92m✨ 策略已臻化境：机器人在当前难度下已接近完美收敛 (平均存活 {last_ep_mean:.1f} 步，存活率 {last_surv:.1%})，等待晋级。\033[0m")
+            else:
+                status_lines.append(f"    \033[93m⚠️ 警告：训练进展陷入停滞瓶颈！过去 {len(self.history)} 代中存活步数原地踏步 (仅波动 {delta_ep:+.1f} 步，均值 {last_ep_mean:.1f})。机器人正困在当前阶段苦苦挣扎！\033[0m")
+
+        return "\n".join(status_lines)
+
 
 def tail_file(file_path):
     """Yield new lines from a file as they are written."""
@@ -183,6 +233,41 @@ def format_report(conclusions: List[Dict[str, Any]]):
         print(f"------------------------------------------------------------")
 
 
+def print_update_progress(data: Dict[str, Any], trend_msg: str):
+    """Print a highly-readable big summary of the current update progress."""
+    u = data["update"]
+    sinfo = data.get("sinfo", {})
+    stats = data.get("stats", {})
+    bsum = data.get("bsum", {})
+
+    level = sinfo.get("level", 0)
+    scale = sinfo.get("perturb_scale", 0.0)
+    consecutive = sinfo.get("consecutive_pass", 0)
+    surv_rate = sinfo.get("survival_rate", 0.0)
+    # Fallback to eval bsum
+    if surv_rate == 0.0 and "survived" in bsum:
+        surv_rate = bsum.get("survived", 0.0)
+
+    ep_mean = stats.get("ep_len_mean", 0.0)
+    ep_min = stats.get("ep_len_min", 0.0)
+    ep_max = stats.get("ep_len_max", 0.0)
+
+    std_mean = stats.get("std_mean", 0.0)
+    std_min = stats.get("std_min", 0.0)
+    std_max = stats.get("std_max", 0.0)
+    entropy = stats.get("entropy", 0.0)
+    epochs = stats.get("epochs_done", 0)
+
+    print(f"\n\033[94m============================================================\033[0m")
+    print(f"\033[1;94m>>> [Update {u:4d} 实时训练进度快报] <<<\033[0m")
+    print(f"\033[94m============================================================\033[0m")
+    print(f"  \033[1m【课程进度】\033[0m 难度级别: \033[1;92mLevel {level}\033[0m | 扰动系数: \033[92m{scale:.3f}\033[0m | 连过次数: {consecutive} | 评估存活率: \033[1;92m{surv_rate:.1%}\033[0m")
+    print(f"  \033[1m【存活时长】\033[0m 平均站立: \033[1;92m{ep_mean:.1f} 步\033[0m (最惨: {ep_min:.1f} 步 | 最佳撑过: \033[92m{ep_max:.1f} 步\033[0m)")
+    print(f"  \033[1m【探索状态】\033[0m 策略熵: {entropy:.2f} | 关节标准差: {std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f}) | 更新Epochs: {epochs}")
+    print(f"  \033[1m【核心趋势检测】\033[0m\n{trend_msg}")
+    print(f"\033[94m============================================================\033[0m")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Humanoid 21 RL Training Log Diagnostics.")
     parser.add_argument("log_file", type=str, help="Path to the training log file.")
@@ -213,7 +298,9 @@ def main():
     # Run historical analysis
     conclusions = analyzer.run_diagnostics()
     if parsed_count > 0:
-        print(f"Latest update analyzed: Update {analyzer.history[-1]['update'] if analyzer.history else 'N/A'}")
+        last_data = analyzer.history[-1]
+        trend_msg = analyzer.analyze_progress_trend()
+        print_update_progress(last_data, trend_msg)
         format_report(conclusions)
     else:
         print("\033[93m[WARN] 未在历史日志中发现包含 '__RAW_STATS__' 标签的机器可读数据。机器可读日志刚刚才被启用，如果是旧日志，需要等待新一轮训练产出该数据。\033[0m")
@@ -224,13 +311,15 @@ def main():
             for line in tail_file(args.log_file):
                 data = analyzer.feed_line(line)
                 if data:
+                    trend_msg = analyzer.analyze_progress_trend()
+                    print_update_progress(data, trend_msg)
                     # Every time we get a new update, re-run diagnostics
                     conclusions = analyzer.run_diagnostics()
-                    print(f"\r[Real-time] Received Update {data['update']}. Checking metrics...", end="", flush=True)
                     if conclusions:
-                        print("\n")
                         format_report(conclusions)
-                        print(f"\n\033[94m[WATCH] 正在实时监控日志中...\033[0m")
+                    else:
+                        print("\n\033[92m[HEALTHY] 诊断结果：该滑动窗口内未发现结构性异常，训练正在稳步进行中。\033[0m")
+                    print(f"\n\033[94m[WATCH] 正在实时监控日志中...\033[0m")
         except KeyboardInterrupt:
             print("\nExiting watch mode.")
 
