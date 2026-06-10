@@ -321,7 +321,7 @@ PYTHONPATH=. nohup python3 baseline/humanoid21/curriculum/train.py --experiment 
 
 PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment v1_relation &> v1_relation.log & 
 
-PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/checkpoints/checkpoint_u01380.pt &> balance_recover2.log & 
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_basic_balance_20260608_010630/checkpoints/checkpoint_u01380.pt &> balance_recover8.log & 
 
 
 
