@@ -9,8 +9,9 @@ from envs.framework.policy import Policy
 # Standalone weakened policy wrapper that can be loaded in parallel worker processes.
 # It wraps the exported u03275 policy and adds tunable Gaussian noise to the actions.
 
-BASE_POLICY_DIR = Path("/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/policy_exports/u03275")
-
+#BASE_POLICY_DIR = Path("/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/policy_exports/u03275")
+#plus
+BASE_POLICY_DIR = Path("/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u03439")
 # Ensure the exported policy directory is in sys.path so we can import 'policy'
 if str(BASE_POLICY_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_POLICY_DIR))

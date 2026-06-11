@@ -338,3 +338,109 @@ python3 -m envs.framework.round_runner \
 
 
 python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py balance_recover9.log  --watch
+
+#最终的策略用这个
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/policy_exports/u03275
+
+
+继续训练加强的扰动恢复：
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/checkpoints/checkpoint_u03275.pt &> balance_recover_plus.log & 
+
+python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py balance_recover_plus.log  --watch
+
+
+# 很快就训练好了
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u03439
+
+
+# 使用弱化版的扰动恢复策略生产数据，用来训练状态是否可恢复的判别模型。
+
+@IDEA.md#L1-8 接下来我要进行第三步了， #最终的策略用这个
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/policy_exports/u03275  
+现在有两个问题要处理：1， 如何轻微弱化这个策略
+2. 如何生成数据
+关于2我的想法是复用训练过程中的Rollout的配置， 使用随机初始状态，不需要Level，直接用一个比较大的范围（应该要比最大的Disturb等级还要大的），然后成功不成功的数据都记录下来。 成功的是正样本，不成功的是负样本 
+关于1，请给我一些输入， 对于整体流程也给我一些思路
+
+
+# 推荐收集 2000 个 Episodes，使用 12 个并行进程加速
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
+  --num-episodes 10000 \
+  --noise-std 0.08 \
+  --workers 12 \
+  --output-dir baseline/humanoid21/curriculum/gating_data
+
+--noise-std (默认 0.08)：如果您想让安全裕度（Safety Buffer）更保守（让门控网络更早、更敏感地在刚倾斜时就触发介入），可以增大此噪声值（例如 0.10 ~ 0.12）；如果您想让门控网络尽可能“极限压榨接近策略，直到千钧一发时才切恢复”，可以减小此噪声（例如 0.05）。
+成功/失败样本均衡度：运行完后，请看输出的 Safe (Label 1) 与 Unsafe (Label 0) 的帧数比例。接近 5:5 或 4:6 是最利于二分类器收敛的黄金比例。
+
+
+#生成零扰动的数据对比差异
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
+  --num-episodes 2000 \
+  --noise-std 0.0 \
+  --workers 12 \
+  --output-dir baseline/humanoid21/curriculum/gating_data_without_noise
+
+
+#生成Plus数据
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
+  --num-episodes 10000 \
+  --noise-std 0.08 \
+  --workers 12 \
+  --output-dir baseline/humanoid21/curriculum/gating_data_plus
+
+
+
+💾 Formatting and saving collected dataset... Done!
+======================================================================
+🎉 Dataset Collection Successfully Completed!
+   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data/gating_data.npz
+   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data/summary.json
+   - Total Frames:     476,676
+     - Safe (Label 1):  346,800 (72.8%)
+     - Unsafe (Label 0): 129,876 (27.2%)
+   - Episode stats:
+     - Total:          10000
+     - Safe Stands:    1734 (17.3% survival rate)
+     - Fallen Runs:    8266 (82.7% fall rate)
+     - Average Length: 47.7 ± 71.0 steps
+   - Total Execution Time: 566.0 seconds (9.4 minutes)
+======================================================================
+
+en: 49.1 steps
+
+💾 Formatting and saving collected dataset... Done!
+======================================================================
+🎉 Dataset Collection Successfully Completed!
+   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data_plus/gating_data.npz
+   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data_plus/summary.json
+   - Total Frames:     483,683
+     - Safe (Label 1):  356,600 (73.7%)
+     - Unsafe (Label 0): 127,083 (26.3%)
+   - Episode stats:
+     - Total:          10000
+     - Safe Stands:    1783 (17.8% survival rate)
+     - Fallen Runs:    8217 (82.2% fall rate)
+     - Average Length: 48.4 ± 71.7 steps
+   - Total Execution Time: 578.3 seconds (9.6 minutes)
+======================================================================
+
+两者的对比，Plus还是更好的
+
+
+# 增大 batch-size 拟合 10k 大数据，配置 [512, 256, 128] 的超深网络
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_gating_network.py \
+  --epochs 80 \
+  --batch-size 4096 \
+  --hidden-dims 512 256 128 \
+  --lr 5e-4 \
+  --data-dir /data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_data
+
+
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_gating_network.py \
+  --epochs 500 \
+  --batch-size 4096 \
+  --hidden-dims 512 256 128 \
+  --lr 5e-4 \
+  --data-dir /data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_data_plus \
+  --output-dir /data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_model_plus
