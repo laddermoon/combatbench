@@ -1,5 +1,5 @@
-# P0 Stage 1: Basic standing balance environment.
-# Minimal setup: fall detection only, no random initialization.
+# P0 Stage 2: Standing with random initial state perturbation.
+# Same as Stage 1 but adds random initialization of tilt, angular velocity, and joint offsets.
 
 parameters:
   initial_distance:
@@ -24,5 +24,18 @@ simulator:
     initial_pose_b: "standing"
 plugins:
   - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+observer_plugins:
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  approach_velocity:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: ${agent_id}
+  in_zone_hold:
+    cls: "baseline.humanoid21.rewards.follow_opponent:InZoneHoldRewarder"
     config:
       agent_id: ${agent_id}
