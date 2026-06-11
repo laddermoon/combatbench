@@ -144,24 +144,15 @@ class ExperimentConfig(ABC):
         ...
 
     @abstractmethod
-    def extract_rewards(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, np.ndarray]:
-        """Extract per-step reward arrays from observer outputs.
+    def extract_rewards(self, episode: "Episode") -> Dict[str, np.ndarray]:
+        """Extract per-step reward arrays from an episode.
 
         Parameters
         ----------
-        observer_outputs : dict
-            The ``Episode.observer_outputs`` dict.
-        T : int
-            Episode length (number of steps).
-        termination_proposals : tuple of str
-            Termination reasons (e.g. ``"custom"`` = fell, ``"timeout"``).
-            Use this to distinguish fall from timeout when computing
-            terminal penalties.
+        episode : Episode
+            The completed episode object.  Use
+            ``episode.observer_outputs``, ``episode.num_frames`` (T),
+            and ``episode.termination_proposals`` as needed.
 
         Returns
         -------
@@ -170,25 +161,17 @@ class ExperimentConfig(ABC):
         ...
 
     @abstractmethod
-    def compute_episode_metrics(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, float]:
+    def compute_episode_metrics(self, episode: "Episode") -> Dict[str, float]:
         """Compute aggregate metrics for one episode (used for eval & logging).
 
         Parameters
         ----------
-        observer_outputs : dict
-            The ``Episode.observer_outputs`` dict.
-        T : int
-            Episode length (number of steps).
-        termination_proposals : tuple of str
-            Termination reasons from the episode.  Use this to distinguish
-            why the episode ended (e.g. ``"timeout"`` vs ``"custom"`` for a
-            fall).  Empty tuple means the episode was truncated externally
-            without a specific reason.
+        episode : Episode
+            The completed episode object.  Use
+            ``episode.termination_proposals`` to distinguish why the episode
+            ended (e.g. ``"imbalance"`` for a fall vs ``"timeout"``).
+            Empty tuple means the episode was truncated externally without a
+            specific reason.
         """
         ...
 

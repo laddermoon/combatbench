@@ -127,12 +127,8 @@ class PPOBuffer:
             if T == 0:
                 continue
 
-            oo = ep.observer_outputs
-
             # Extract rewards from experiment
-            rewards = experiment.extract_rewards(
-                oo, T, ep.termination_proposals
-            )
+            rewards = experiment.extract_rewards(ep)
 
             # Store reward arrays
             for key in experiment.reward_keys:
@@ -142,9 +138,7 @@ class PPOBuffer:
 
             # Episode metrics
             self.episode_metrics.append(
-                experiment.compute_episode_metrics(
-                    oo, T, ep.termination_proposals
-                )
+                experiment.compute_episode_metrics(ep)
             )
 
             # Compute log probs

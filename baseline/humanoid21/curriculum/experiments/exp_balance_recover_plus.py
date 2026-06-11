@@ -184,16 +184,12 @@ class BalanceRecoverConfig(ExperimentConfig):
     def initial_weights(self) -> Tuple[float, ...]:
         return (6.0, 1.0)
 
-    def extract_rewards(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, np.ndarray]:
+    def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """r_fall: per-step survival bonus + terminal signal.
         r_cross: cross-support balance reward from CrossSupportBalanceRewarder.
         """
-        fell = "imbalance" in termination_proposals
+        T = episode.num_frames
+        fell = "imbalance" in episode.termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -201,22 +197,17 @@ class BalanceRecoverConfig(ExperimentConfig):
         else:
             r_fall[-1] = penalty
 
-        r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
+        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
 
         return {"r_fall": r_fall, "r_cross": r_cross}
 
 
-    def compute_episode_metrics(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, float]:
+    def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """``survived`` = 0 only if the robot fell (imbalance termination).
 
         Returns level/stage for eval comparison (higher level = better).
         """
-        fell = "imbalance" in termination_proposals
+        fell = "imbalance" in episode.termination_proposals
         return {
             "survived": 0.0 if fell else 1.0,
             "level": float(self._level),  # higher level = harder perturbation = better
