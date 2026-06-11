@@ -11,6 +11,12 @@ parameters:
   agent_id:
     default: "robot_a"
     description: "The robot we care about."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The robot random move , mustnt the same as agent_id."
+  random_move_speed:
+    default: 0.0
+    description: "The robot random move , mustnt the same as agent_id."
 runtime:
   phy_steps_per_action: 25
   max_steps: ${max_steps}
@@ -26,6 +32,10 @@ plugins:
   - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
     config:
       agent_id: ${agent_id}
+  - cls: "baseline.humanoid21.plugins.random_move:RandomMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed: ${random_move_speed}
 observer_plugins:
   cross_support:
     cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"

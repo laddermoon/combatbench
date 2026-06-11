@@ -467,8 +467,7 @@ TODO： 要实现一个控制目标机器人随机移动的插件。  Done 待�
 在 /data1/mono/things/combatbench/baseline/humanoid21/plugins/random_move.py
 参照 /data1/mono/things/combatbench/envs/humanoid21/disturbance_plugins.py 
 
-TODO： 实现一个Gateobserver，用来返回当前是用的哪个模型  Done 待查
-/data1/mono/things/combatbench/baseline/humanoid21/rewards/gateobserver.py
+
 TODO： 实现MixedPolicy，用来实现策略的组合，并且集成GateObserserver的核心逻辑（保证判断结果一致）
 在/data1/mono/things/combatbench/baseline/humanoid21/curriculum/mixed_policy.py
 核心逻辑就是当Gate判断要倒时，切到正式的恢复模型， 恢复之后再切回来。 这个要能接受一个PolicyBlueprint作为创建时的输入。  Done 待查

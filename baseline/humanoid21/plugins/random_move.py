@@ -17,27 +17,36 @@ from envs.framework import BasePlugin, SimContext
 class RandomMovePlugin(BasePlugin):
     """Controls the target robot to roam randomly within the arena, facing the trained robot."""
 
+    _ROBOT_IDS = ("robot_a", "robot_b")
+
+    # Static priors — arena geometry and control frequency are fixed.
+    ARENA_RADIUS: float = 3.0
+    ACTION_DT: float = 0.05  # s (control frequency 20Hz -> 0.05s)
+
     def __init__(
         self,
         target_robot: str = "robot_b",
-        trained_robot: str = "robot_a",
-        arena_radius: float = 4.0,
         speed: float = 0.6,               # m/s
-        min_avoid_distance: float = 1.2,   # m (minimum distance to keep from robot_a)
-        action_dt: float = 0.05,          # s (control frequency 20Hz -> 0.05s)
+        min_avoid_distance: float = 1.2,   # m (minimum distance to keep from trained robot)
         random_seed: Optional[int] = None,
     ) -> None:
         self.target_robot = str(target_robot)
-        self.trained_robot = str(trained_robot)
-        self.arena_radius = float(arena_radius)
+        self.trained_robot = self._other_robot(target_robot)
         self.speed = float(speed)
         self.min_avoid_distance = float(min_avoid_distance)
-        self.action_dt = float(action_dt)
         
         self._rng = np.random.RandomState(random_seed)
         self._waypoint: Optional[np.ndarray] = None  # 2D waypoint [x, y]
         self._steps_on_current_waypoint = 0
         self._max_steps_per_waypoint = 100            # Force change waypoint if stuck
+
+    @staticmethod
+    def _other_robot(robot_id: str) -> str:
+        if robot_id == "robot_a":
+            return "robot_b"
+        if robot_id == "robot_b":
+            return "robot_a"
+        raise ValueError(f"Unknown robot_id {robot_id!r}; expected 'robot_a' or 'robot_b'")
 
     def set_episode_seed(self, seed: int) -> None:
         """Rebuild the RNG immediately for reproducibility."""
@@ -54,11 +63,8 @@ class RandomMovePlugin(BasePlugin):
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "target_robot": self.target_robot,
-            "trained_robot": self.trained_robot,
-            "arena_radius": self.arena_radius,
             "speed": self.speed,
             "min_avoid_distance": self.min_avoid_distance,
-            "action_dt": self.action_dt,
         }
 
     @classmethod
@@ -69,7 +75,7 @@ class RandomMovePlugin(BasePlugin):
         """Sample a new random waypoint inside the arena radius, biased away from the trained robot."""
         for _ in range(20):  # Try up to 20 times to find a good waypoint
             angle = self._rng.uniform(0, 2 * np.pi)
-            r = self._rng.uniform(0.5, self.arena_radius * 0.9)
+            r = self._rng.uniform(0.5, self.ARENA_RADIUS * 0.9)
             wp = np.array([r * np.cos(angle), r * np.sin(angle)])
             
             # Avoid picking a waypoint that is directly on top of or too close to robot_a
@@ -121,7 +127,7 @@ class RandomMovePlugin(BasePlugin):
             move_dir = np.zeros(2, dtype=np.float32)
 
         # 5. Proposed next position
-        step_dist = self.speed * self.action_dt
+        step_dist = self.speed * self.ACTION_DT
         proposed_pos = opp_pos + step_dist * move_dir
 
         # 6. Apply collision avoidance (repel from trained robot)
@@ -141,8 +147,8 @@ class RandomMovePlugin(BasePlugin):
             self._pick_new_waypoint(trained_pos)
 
         # 7. Apply arena boundaries (circle of arena_radius)
-        if np.linalg.norm(proposed_pos) > self.arena_radius:
-            proposed_pos = (proposed_pos / np.linalg.norm(proposed_pos)) * self.arena_radius
+        if np.linalg.norm(proposed_pos) > self.ARENA_RADIUS:
+            proposed_pos = (proposed_pos / np.linalg.norm(proposed_pos)) * self.ARENA_RADIUS
             self._pick_new_waypoint(trained_pos)
 
         # 8. Calculate heading rotation (always face the trained robot)
