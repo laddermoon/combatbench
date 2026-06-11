@@ -107,6 +107,7 @@ class PPOBuffer:
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
         fin_list: List[np.ndarray] = []
+        weight_list: List[np.ndarray] = []
         terms: List[bool] = []
         ep_lens: List[int] = []
 
@@ -153,10 +154,16 @@ class PPOBuffer:
                 lp, _ = actor.evaluate_actions(obs_t, act_t)
             lp_np = lp.cpu().numpy().astype(np.float32)
 
+            # Weight inversely to episode length (clamped to max 10x)
+            # Short (failed) episodes get a massive weight multiplier
+            ep_weight = min(200.0 / T, 10.0)
+            weight_arr = np.full(T, ep_weight, dtype=np.float32)
+
             obs_list.append(obs)
             act_list.append(acts)
             lp_list.append(lp_np)
             fin_list.append(np.asarray(fin, dtype=np.float32))
+            weight_list.append(weight_arr)
             terms.append(bool(ep.is_terminated))
             ep_lens.append(T)
 
@@ -168,6 +175,7 @@ class PPOBuffer:
             self.obs = np.zeros((0,), np.float32)
             self.actions = np.zeros((0,), np.float32)
             self.log_probs = np.zeros((0,), np.float32)
+            self.sample_weights = np.zeros((0,), np.float32)
             self.final_obs: List[np.ndarray] = []
             self.is_terminated: List[bool] = []
             self.ep_lengths: List[int] = []
@@ -176,6 +184,7 @@ class PPOBuffer:
         self.obs = np.concatenate(obs_list, axis=0)
         self.actions = np.concatenate(act_list, axis=0)
         self.log_probs = np.concatenate(lp_list, axis=0)
+        self.sample_weights = np.concatenate(weight_list, axis=0)
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
@@ -352,6 +361,7 @@ def ppo_update(
             continue
         combined_adv = combined_adv + float(w) * _normalize_adv(advs_all[key])
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
+    w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
     n = obs_t.shape[0]
     pol_losses: List[float] = []
@@ -369,7 +379,7 @@ def ppo_update(
         std_max = float(clamped_std.max().item())
 
     # Fixed: number of batches per epoch (data is divided equally)
-    n_batches = 24  # Each batch = n / 8 samples (e.g., 33000/8 ≈ 4125)
+    n_batches = 16  # Each batch = n / 16 samples (e.g., 154000/16 ≈ 9625)
 
     for epoch in range(update_epochs):
         perm = torch.randperm(n, device=device)
@@ -385,6 +395,10 @@ def ppo_update(
             idx = perm[start:end]
             idx_cpu = idx.cpu().numpy()
 
+            # Compute normalized difficulty weights for this minibatch
+            batch_weights = w_t[idx]
+            batch_weights = batch_weights / (batch_weights.mean() + 1e-8)
+
             # Step 1: Update each critic independently
             for key in reward_keys:
                 critic_optimizers[key].zero_grad()
@@ -392,7 +406,7 @@ def ppo_update(
                 ret_val = torch.as_tensor(
                     rets_all[key][idx_cpu], dtype=torch.float32, device=device,
                 )
-                val_loss = ((new_val - ret_val) ** 2).mean()
+                val_loss = (((new_val - ret_val) ** 2) * batch_weights).mean()
                 val_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     critics[key].parameters(), grad_clip_norm,
@@ -414,7 +428,7 @@ def ppo_update(
             surr2 = (
                 torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
             )
-            policy_loss = -torch.min(surr1, surr2).mean()
+            policy_loss = -(torch.min(surr1, surr2) * batch_weights).mean()
 
             # Actor loss (no value loss here - critics are updated separately)
             loss = policy_loss - entropy_coef * entropy.mean()

@@ -53,7 +53,7 @@ class BalanceRecoverConfig(ExperimentConfig):
     # Raise the log_std floor so the policy can't collapse to saturated,
     # near-deterministic actions — the main driver of the KL explosions /
     # exploding policy_loss observed in the first run.
-    log_std_min: float = -2.0
+    log_std_min: float = -1.8
 
     # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
     # clipping + fewer epochs to keep each PPO update from diverging.
@@ -62,6 +62,7 @@ class BalanceRecoverConfig(ExperimentConfig):
     grad_clip_norm: float = 1.0      # was 1.0: tighter gradient clipping
     update_epochs: int = 4           # was 4: less policy drift per batch
     minibatch_size: int = 4096 * 4
+    entropy_coef: float = 1.5e-3     # encourage exploration to prevent joint freeze
 
     # --- Rollout schedule ---
     episodes_per_update: int = 1024
@@ -175,11 +176,11 @@ class BalanceRecoverConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (3.0, 1.0)
+        return (6.0, 1.0)
 
     
     def initial_weights(self) -> Tuple[float, ...]:
-        return (3.0, 1.0)
+        return (6.0, 1.0)
 
     def extract_rewards(
         self,

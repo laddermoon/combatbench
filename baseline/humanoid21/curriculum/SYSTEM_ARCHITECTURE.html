@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Humanoid 21 扰动平衡站立 ｜ 强化学习架构全景图</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0f19;
+            color: #f3f4f6;
+        }
+        .code-font {
+            font-family: 'Fira Code', monospace;
+        }
+        /* Flowing dash animation for SVG paths */
+        @keyframes dash {
+            to {
+                stroke-dashoffset: -40;
+            }
+        }
+        .flow-path {
+            stroke-dasharray: 8, 4;
+            animation: dash 1.5s linear infinite;
+        }
+        /* Pulse animations */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.05); opacity: 0.4; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+        .pulse-active {
+            animation: pulse-ring 2s infinite ease-in-out;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+        .step-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .step-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.2);
+            border-color: #3b82f6;
+        }
+        .node-highlight {
+            filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.5));
+        }
+    </style>
+</head>
+<body class="overflow-x-hidden">
+
+    <!-- Top Navigation Bar -->
+    <header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+            <div class="bg-blue-600 p-2 rounded-lg text-white">
+                <i data-lucide="cpu" class="w-6 h-6"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-white">Humanoid-21 Balance Recovery</h1>
+                <p class="text-xs text-slate-400">课程强化学习控制系统架构图</p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-4">
+            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                训练状态: 极速收敛中
+            </span>
+            <span class="text-xs text-slate-400 code-font">v2.0_std1.8_force</span>
+        </div>
+    </header>
+
+    <!-- Main Grid Container -->
+    <main class="max-w-7xl mx-auto px-6 py-8">
+        
+        <!-- Dashboard Intro Summary -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl flex items-start space-x-4">
+                <div class="bg-blue-500/10 p-3 rounded-xl text-blue-400">
+                    <i data-lucide="shield-alert" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-300">核心控制问题</h3>
+                    <p class="text-xs text-slate-400 mt-1 leading-relaxed">让 21 自由度双足人形机器人在外部强随机大扰动下，快速跨步调节质心，抵御倾翻并恢复站立平衡。</p>
+                </div>
+            </div>
+            <div class="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl flex items-start space-x-4">
+                <div class="bg-indigo-500/10 p-3 rounded-xl text-indigo-400">
+                    <i data-lucide="sliders" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-300">关键优化技术</h3>
+                    <p class="text-xs text-slate-400 mt-1 leading-relaxed">多 Critic 优势独立归一化融合 + 强力探索截断托底限制 + 精简大 Batch 抑制策略更新方差。</p>
+                </div>
+            </div>
+            <div class="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl flex items-start space-x-4">
+                <div class="bg-violet-500/10 p-3 rounded-xl text-violet-400">
+                    <i data-lucide="trending-up" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-300">本轮调参突围成效</h3>
+                    <p class="text-xs text-slate-400 mt-1 leading-relaxed">生存/交叉步权重拉升至 6:1 释放大跨步，n_batches 缩减至 16，生存率 15 分钟内自 56% 爆冲至 87.5%！</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dynamic Visualization Dashboard -->
+        <section class="bg-slate-950 border border-slate-800 rounded-3xl p-6 mb-8 relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-96 h-96 bg-blue-600/5 rounded-full blur-3xl -z-10"></div>
+            <div class="absolute bottom-0 left-0 w-96 h-96 bg-indigo-600/5 rounded-full blur-3xl -z-10"></div>
+
+            <div class="flex flex-col md:flex-row md:items-center justify-between mb-6 border-b border-slate-800/80 pb-4">
+                <div>
+                    <h2 class="text-xl font-bold text-white flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 bg-blue-500 rounded-full animate-ping"></span>
+                        迭代闭环系统结构动态交互图
+                    </h2>
+                    <p class="text-xs text-slate-400 mt-1">鼠标悬停于各环节模块，可查看高亮链路、控制核心逻辑及代码关联</p>
+                </div>
+                <div class="flex items-center gap-3 mt-4 md:mt-0">
+                    <button onclick="startSimulation()" id="simBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition-all">
+                        <i data-lucide="play" class="w-4 h-4"></i> 模拟运行一个 PPO 更新环
+                    </button>
+                    <button onclick="resetSimulation()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs rounded-xl transition-all">
+                        重置
+                    </button>
+                </div>
+            </div>
+
+            <!-- Interative SVG Block -->
+            <div class="w-full overflow-x-auto py-4 flex justify-center">
+                <div class="relative w-[1000px] h-[520px]">
+                    
+                    <!-- SVG Flow Links -->
+                    <svg class="absolute inset-0 w-full h-full" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Definitions for arrowheads -->
+                        <defs>
+                            <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#1e293b" />
+                            </marker>
+                            <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#3b82f6" />
+                            </marker>
+                            <marker id="arrow-indigo" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#6366f1" />
+                            </marker>
+                        </defs>
+
+                        <!-- Static Links (Behind) -->
+                        <g stroke="#1e293b" stroke-width="2" fill="none" marker-end="url(#arrow)">
+                            <!-- Loop Links -->
+                            <path d="M 175 140 L 175 220" />
+                            <path d="M 175 320 C 175 420, 310 420, 410 420" />
+                            <path d="M 590 420 L 730 420" stroke-width="1.5" />
+                            <path d="M 850 420 C 940 420, 940 180, 840 100" />
+                            <path d="M 720 100 L 610 100" />
+                            <path d="M 390 100 L 285 100" />
+                        </g>
+
+                        <!-- Active Flowing Lines (Animated dynamically) -->
+                        <g stroke-width="2.5" fill="none">
+                            <!-- Step 1 to 2 Flow -->
+                            <path id="flow_1_2" d="M 175 140 L 175 220" stroke="#3b82f6" class="flow-path opacity-0" marker-end="url(#arrow-blue)" />
+                            <!-- Step 2 to 3 Flow -->
+                            <path id="flow_2_3" d="M 175 320 C 175 420, 310 420, 410 420" stroke="#3b82f6" class="flow-path opacity-0" marker-end="url(#arrow-blue)" />
+                            <!-- Step 3 to 4 Flow -->
+                            <path id="flow_3_4" d="M 590 420 L 730 420" stroke="#6366f1" class="flow-path opacity-0" marker-end="url(#arrow-indigo)" />
+                            <!-- Step 4 to 5 Flow -->
+                            <path id="flow_4_5" d="M 850 420 C 940 420, 940 180, 840 100" stroke="#a855f7" class="flow-path opacity-0" />
+                            <!-- Step 5 to 6 Flow -->
+                            <path id="flow_5_6" d="M 720 100 L 610 100" stroke="#10b981" class="flow-path opacity-0" />
+                            <!-- Step 6 to 1 Flow -->
+                            <path id="flow_6_1" d="M 390 100 L 285 100" stroke="#f59e0b" class="flow-path opacity-0" />
+                        </g>
+                    </svg>
+
+                    <!-- Interactive Step Nodes -->
+                    <!-- NODE 1: Curriculum scale & Perturbation -->
+                    <div id="node_1" onmouseover="highlightNode(1)" class="absolute top-[30px] left-[60px] w-[220px] bg-slate-900 border border-amber-500/30 hover:border-amber-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-amber-500/10 text-amber-400 rounded-md border border-amber-500/20">环节 1</span>
+                            <i data-lucide="shield-alert" class="w-4 h-4 text-amber-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">课程难度自适应扰动</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">基于当前 Level，动态计算物理扰动标量 $s \in [0, 1]$，并在 episode 初始化时向关节、躯干施加随机剪切力。</p>
+                        <div class="mt-2 text-[10px] text-amber-400/80 code-font border-t border-slate-800/80 pt-1.5 flex justify-between">
+                            <span>LEVEL_SCALES[0..6]</span>
+                            <span>Scale: 0.35 (L2)</span>
+                        </div>
+                    </div>
+
+                    <!-- NODE 2: Rollout workers -->
+                    <div id="node_2" onmouseover="highlightNode(2)" class="absolute top-[200px] left-[60px] w-[220px] bg-slate-900 border border-blue-500/30 hover:border-blue-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-blue-500/10 text-blue-400 rounded-md border border-blue-500/20">环节 2</span>
+                            <i data-lucide="layers" class="w-4 h-4 text-blue-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">96 个并行 Mujoco 进程收集</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">利用 96 路 Rollout 并行环境，让 Tanh-Gaussian 策略输出 PD 目标角度，并在运动中提取生存与受力状态数据。</p>
+                        <div class="mt-2 text-[10px] text-blue-400/80 code-font border-t border-slate-800/80 pt-1.5 flex justify-between">
+                            <span>episodes: 1024</span>
+                            <span>max_steps: 200</span>
+                        </div>
+                    </div>
+
+                    <!-- NODE 3: Multi-Critic Normalization & Fusion -->
+                    <div id="node_3" onmouseover="highlightNode(3)" class="absolute top-[340px] left-[390px] w-[240px] bg-slate-900 border border-indigo-500/30 hover:border-indigo-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-indigo-500/10 text-indigo-400 rounded-md border border-indigo-500/20">环节 3</span>
+                            <i data-lucide="git-merge" class="w-4 h-4 text-indigo-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">多 Critic 独立归一化融合</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">计算两路 Critic GAE 优势：生存信号 $A_{fall}$ 与交叉步惩罚 $A_{cross}$。通过归一化消除物理尺度差异，再加权混合。</p>
+                        <div class="mt-2 text-[10px] text-indigo-400/80 code-font border-t border-slate-800/80 pt-1.5 leading-relaxed">
+                            <div class="text-center font-semibold text-[10px] text-indigo-300 py-1 bg-indigo-500/5 rounded border border-indigo-500/10 mb-1">
+                                $A_{comb} = 6.0 A_{fall}^{norm} + 1.0 A_{cross}^{norm}$
+                            </div>
+                            <div class="flex justify-between text-[9px] text-slate-500">
+                                <span>1. GAE Gamm=0.99</span>
+                                <span>2. Component Normalization</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- NODE 4: PPO Minibatch epochs -->
+                    <div id="node_4" onmouseover="highlightNode(4)" class="absolute top-[340px] left-[700px] w-[220px] bg-slate-900 border border-violet-500/30 hover:border-violet-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-violet-500/10 text-violet-400 rounded-md border border-violet-500/20">环节 4</span>
+                            <i data-lucide="repeat-1" class="w-4 h-4 text-violet-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">PPO 分批梯度更新</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">将收集的大规模样本均分为 16 份 (Minibatch size ≈ 9.6k)。运行 4 轮 Epochs 更新，让梯度更新极其充盈稳健。</p>
+                        <div class="mt-2 text-[10px] text-violet-400/80 code-font border-t border-slate-800/80 pt-1.5 flex justify-between">
+                            <span>n_batches = 16 (new!)</span>
+                            <span>epochs = 4</span>
+                        </div>
+                    </div>
+
+                    <!-- NODE 5: Exploration Collpase Guard -->
+                    <div id="node_5" onmouseover="highlightNode(5)" class="absolute top-[30px] left-[700px] w-[220px] bg-slate-900 border border-emerald-500/30 hover:border-emerald-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 rounded-md border border-emerald-500/20">环节 5</span>
+                            <i data-lucide="shield-check" class="w-4 h-4 text-emerald-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">探索能力防坍塌护盾</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">无条件强制对齐策略网络内的关节标准差下限。强制要求 $std_{min} \ge 0.165$，彻底粉碎硬关节锁死导致的遗忘崩溃。</p>
+                        <div class="mt-2 text-[10px] text-emerald-400/80 code-font border-t border-slate-800/80 pt-1.5 flex justify-between">
+                            <span>log_std_min = -1.8 (new!)</span>
+                            <span>entropy_coef = 1.5e-3</span>
+                        </div>
+                    </div>
+
+                    <!-- NODE 6: Curriculum Promotion Controller -->
+                    <div id="node_6" onmouseover="highlightNode(6)" class="absolute top-[30px] left-[390px] w-[240px] bg-slate-900 border border-violet-500/30 hover:border-violet-400 p-4 rounded-2xl cursor-pointer step-card text-left">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-violet-500/10 text-violet-400 rounded-md border border-violet-500/20">环节 6</span>
+                            <i data-lucide="trending-up" class="w-4 h-4 text-violet-400"></i>
+                        </div>
+                        <h4 class="text-xs font-bold text-white">评估与自动课程晋级</h4>
+                        <p class="text-[10px] text-slate-400 mt-1 leading-relaxed">在独立环境内对最新 Policy 进行全方位无梯度评测。当且仅当评估存活率达标（$\ge 90\%$）时，自适应解锁下一阶段高规模扰动。</p>
+                        <div class="mt-2 text-[10px] text-violet-400/80 code-font border-t border-slate-800/80 pt-1.5 flex justify-between">
+                            <span>PROMOTE_SURVIVAL = 0.90</span>
+                            <span>Patience: 1 Eval</span>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Focus Step Detail Inspector Panel -->
+            <div id="inspector" class="mt-4 bg-slate-900/40 border border-slate-800/80 rounded-2xl p-5 text-left">
+                <div class="flex items-start justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div id="inspector_icon_bg" class="bg-amber-500/10 p-2.5 rounded-xl text-amber-400">
+                            <i id="inspector_icon" data-lucide="shield-alert" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                            <h3 id="inspector_title" class="text-sm font-bold text-white">环节 1: 课程难度自适应扰动</h3>
+                            <p id="inspector_subtitle" class="text-xs text-slate-400 mt-0.5">模块: experiments/exp_balance_recover.py</p>
+                        </div>
+                    </div>
+                    <span id="inspector_code" class="text-[10px] code-font px-2.5 py-1 bg-slate-800 rounded-md text-slate-300">exp_balance_recover.py:170-179</span>
+                </div>
+                <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-800/60 pt-4">
+                    <div>
+                        <h4 class="text-xs font-semibold text-slate-300 mb-1.5">核心物理机制</h4>
+                        <p id="inspector_mechanism" class="text-xs text-slate-400 leading-relaxed">通过滑块 scale 自下而上控制系统各物理量。包括：关节最大偏置（±0.3弧度）、局部线速度推力（±1.5m/s）、角速度扰动（±2.5rad/s）以及躯干初始滚转/俯仰角。使机器人在平缓起步中首先掌握基本姿态，随即在高干扰下强化重心快速调整。</p>
+                    </div>
+                    <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800/60 flex flex-col justify-between">
+                        <div>
+                            <h4 class="text-xs font-semibold text-slate-300 mb-1.5">专家调参理论保障</h4>
+                            <p id="inspector_theory" class="text-xs text-slate-400 leading-relaxed">在低扰动 Level 下策略很容易达到 100% 存活，但切不可贪多求快直接向高难度推进，否则易导致策略因高强度姿态扭转产生灾难性遗忘。平滑的 Level 梯度是强化学习策略参数健康爬升的物理缓冲线。</p>
+                        </div>
+                        <div class="mt-3 flex items-center space-x-2 text-[10px] text-blue-400 code-font">
+                            <i data-lucide="code" class="w-3.5 h-3.5"></i>
+                            <span id="inspector_rel_code">exp_balance_recover.py | LEVEL_SCALES = (0.1, 0.2, 0.35, 0.5, ...)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Deep Theoretical Design & Tuning Secrets -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-8 text-left">
+            
+            <!-- Column 1: Multi-Critic Normalization Design -->
+            <div class="bg-slate-950 border border-slate-800 rounded-3xl p-6">
+                <div class="flex items-center space-x-3 mb-4">
+                    <div class="bg-indigo-500/10 p-2.5 rounded-xl text-indigo-400">
+                        <i data-lucide="binary" class="w-5 h-5"></i>
+                    </div>
+                    <h3 class="text-md font-bold text-white">多 Critic 独立归一化优势混合机理</h3>
+                </div>
+                <div class="space-y-4">
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        在扰动平衡任务中，机器人必须同时面临“<strong>摔倒求生奖励</strong>（生存即时奖励 + 终极倒地惩罚）”和“<strong>动作优雅柔顺性惩罚</strong>（双脚受力交叉平衡约束）”。这两路奖励的原始数值量级存在天壤之别，如果在更新前不做隔离，量级庞大的摔倒惩罚会完全淹没受力细节惩罚的梯度，导致机器人尽管能站着，但双脚关节疯狂抽搐、并以极快速度损坏，造成控制崩溃。
+                    </p>
+                    <div class="p-4 bg-slate-900 rounded-2xl border border-indigo-500/10">
+                        <h4 class="text-xs font-bold text-indigo-400 mb-2">💡 专家数学解决方案：独立归一化融合</h4>
+                        <div class="text-[11px] text-slate-300 leading-relaxed space-y-1.5 code-font">
+                            1. 计算 $A_{fall}$ 与 $A_{cross}$ 的各自原始 GAE<br>
+                            2. 独立归一化：$A_{fall}^{norm} = \frac{A_{fall} - \mu_{fall}}{\sigma_{fall}}$<br>
+                            3. 独立归一化：$A_{cross}^{norm} = \frac{A_{cross} - \mu_{cross}}{\sigma_{cross}}$<br>
+                            4. 线性加权：$A_{comb} = 6.0 \cdot A_{fall}^{norm} + 1.0 \cdot A_{cross}^{norm}$
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        这种方法**物理尺度绝对解耦**！无论这两路奖励数值是多少，其产生的更新优势都在相同的标准化正态区间 $\mathcal{N}(0, 1)$ 内。而 6.0 的高生存权重则确保了当发生临界倒地倾斜时，<strong>机器人的恢复步自救动作将以 6 倍于姿态优雅度的梯度强制执行</strong>，顺利帮它渡过物理门槛！
+                    </p>
+                </div>
+            </div>
+
+            <!-- Column 2: Exploration Collapse Prevention -->
+            <div class="bg-slate-950 border border-slate-800 rounded-3xl p-6">
+                <div class="flex items-center space-x-3 mb-4">
+                    <div class="bg-emerald-500/10 p-2.5 rounded-xl text-emerald-400">
+                        <i data-lucide="shield-check" class="w-5 h-5"></i>
+                    </div>
+                    <h3 class="text-md font-bold text-white">关节探索塌缩（Exploration Collapse）诊断与对齐</h3>
+                </div>
+                <div class="space-y-4">
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        在极高维控制空间下，策略网络（Policy Network）往往为了在高随机大扰动中尽快拟合出稳定的支撑面，会倾向于把某些关键关节（如骨盆倾斜、膝关节阻尼）的动作变动范围收缩到极窄，从而使策略输出趋于百分百的确定性肌肉硬记忆。这在强化学习中被称为**探索能力枯竭塌缩**。
+                    </p>
+                    <div class="p-4 bg-slate-900 rounded-2xl border border-emerald-500/10 flex flex-col justify-between">
+                        <h4 class="text-xs font-bold text-emerald-400 mb-2">🛠️ 物理与机制级双层防线</h4>
+                        <ul class="text-[11px] text-slate-400 space-y-2 leading-relaxed">
+                            <li class="flex items-start gap-1.5">
+                                <span class="text-emerald-400 font-bold">•</span>
+                                <span><strong>强制覆盖 log_std_min = -1.8</strong>：通过在 <code>training_loop.py</code> 中强制对齐策略内部约束，哪怕从老 checkpoint 加载了已经收紧到 -2.0 的参数，也会被瞬间拉升到 -1.8（单关节标准差托底 $std_{min} \ge 0.165$），彻底解冻。</span>
+                            </li>
+                            <li class="flex items-start gap-1.5">
+                                <span class="text-emerald-400 font-bold">•</span>
+                                <span><strong>适度增加 entropy_coef = 1.5e-3</strong>：在 PPO 的 Actor 更新损失函数中，向策略输出分布的联合信息熵施加 1.5e-3 的激励系数，使其在外力大扰动时依然保持充沛的“折腾试错动力”。</span>
+                            </li>
+                        </ul>
+                    </div>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        这套双层保护伞在**完全不增加物理抽搐**的前提下，为最底层处于拟合死角中的个别自由度强力挽回了生命力，确保其在遭遇跨代（如 Level 3、Level 4）大尺度的剪切力或外部推击时，能有余地调节其关节摆动角度，具有无上精妙的工业自适应防摔倒泛化性。
+                    </p>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Footer Code Citation and Links -->
+        <footer class="mt-12 pt-6 border-t border-slate-800 text-center text-xs text-slate-500">
+            <p>基于 Multi-Critic PPO 强化学习框架的双腿平衡站立训练系统</p>
+            <p class="mt-1.5 code-font text-slate-600">Things/Combatbench · baseline/humanoid21/curriculum</p>
+        </footer>
+
+    </main>
+
+    <!-- JS Logic for Interactive Visualization -->
+    <script>
+        // Initialize Lucide Icons
+        lucide.createIcons();
+
+        // Node descriptions for interactive visualization
+        const nodeData = {
+            1: {
+                title: "环节 1: 课程难度自适应扰动",
+                subtitle: "文件: experiments/exp_balance_recover.py",
+                code: "exp_balance_recover.py:72-75",
+                mechanism: "通过滑块 scale 自下而上控制系统各物理量。包括：关节最大偏置（±0.3弧度）、局部线速度推力（±1.5m/s）、角速度扰动（±2.5rad/s）以及躯干初始轴向翻转。使机器人在平缓起步中首先掌握基本姿态，随即在高干扰下强化重心快速调整。",
+                theory: "在低扰动 Level 下策略很容易达到 100% 存活，但切不可贪多求快直接向高难度推进，否则易导致策略因高强度姿态扭转产生灾难性遗忘。平滑的 Level 梯度是强化学习策略参数健康爬升的物理缓冲线。",
+                rel_code: "exp_balance_recover.py | LEVEL_SCALES = (0.1, 0.2, 0.35, 0.5, ...)",
+                icon: "shield-alert",
+                color_class: "text-amber-400",
+                bg_class: "bg-amber-500/10"
+            },
+            2: {
+                title: "环节 2: 96个并行 Mujoco 线程数据收集",
+                subtitle: "文件: framework/training_loop.py",
+                code: "training_loop.py:270-305",
+                mechanism: "利用 MPI 多进程启动 96 路 Rollout 并行环境，每个 Worker 各自负责运行 Mujoco 精密动力学解算。Tanh-Gaussian 策略在运动中不断输出 PD 目标角度，并在运动中提取生存长度和交叉支持力平衡状态数据，存入大内存 Transition Buffer。",
+                theory: "96路并行保证了每代训练（PPO Update）所需的数据量和分布极其饱满、具有极佳的统计意义。1024 个 Episode 能涵盖千奇百怪的初始推翻角，让策略能学到大范围的盆骨自愈反馈动力学。",
+                rel_code: "training_loop.py | experiment.build_rollout_jobs()",
+                icon: "layers",
+                color_class: "text-blue-400",
+                bg_class: "bg-blue-500/10"
+            },
+            3: {
+                title: "环节 3: 多 Critic 独立归一化融合",
+                subtitle: "文件: framework/ppo_trainer.py",
+                code: "ppo_trainer.py:336-354",
+                mechanism: "生存信号 r_fall 与姿态惩罚 r_cross 分别由两路独立的 MLP Critic 评测，计算各自 GAE 优势值。在融合前对两路优势值进行独立正态标准化（归一化），再以 (6.0, 1.0) 的生存优先比例融合，作为 Actor PPO 更新的最终联合 Advantage 信号。",
+                theory: "解除物理尺度的过度牵制！6:1 的高权重使拯救倒地的优先级远远凌驾于脚部优雅姿态之上，策略遇到重推倒风险时会毫不犹豫地选择“大跨步自救”，从而在物理机制上彻底碾碎由于顾忌姿态而保守摔倒的力学卡死。",
+                rel_code: "ppo_trainer.py | combined_adv = combined_adv + float(w) * _normalize_adv(advs_all[key])",
+                icon: "git-merge",
+                color_class: "text-indigo-400",
+                bg_class: "bg-indigo-500/10"
+            },
+            4: {
+                title: "环节 4: PPO 分批梯度更新",
+                subtitle: "文件: framework/ppo_trainer.py",
+                code: "ppo_trainer.py:371-395",
+                mechanism: "在一代（Update）大样本中，使用 randperm 将总 transition 序列平均打散并切分为 16 份（Minibatch 大小拉粗到 ~9,600 步）。通过 4 个 PPO Epoch 对 Actor 策略网络、Critic 网络参数进行反向传播和梯度更新。",
+                theory: "更粗的 Batch Size 是抑制梯度均值估计方差的最高效手段。实验证实，n_batches 从 24 下调到 16，极大地降低了高维大跨步状态下的梯度噪声，使 approx_kl 平均值完美锁死在 0.008 黄金温和中轴线，绝不散发！",
+                rel_code: "ppo_trainer.py | n_batches = 16 | actual_mb = n // n_batches",
+                icon: "repeat-1",
+                color_class: "text-violet-400",
+                bg_class: "bg-violet-500/10"
+            },
+            5: {
+                title: "环节 5: 探索能力防坍塌护盾 (Exploration Shield)",
+                subtitle: "文件: framework/training_loop.py & ppo_trainer.py",
+                code: "training_loop.py:128-132",
+                mechanism: "在策略建模、加载 checkpoint 和 PPO 更新时，强制硬对齐 policy 内 log_std_min 属性为 -1.8（对应 $std_{min} = 0.165$）。将关节标准差从底线 -2.0 强制拉升到安全水平，彻底杜绝对个别关节硬锁和拟合失灵带来的死板肌肉记忆。",
+                theory: "这是策略能长期抵抗更强级别大扰动的核心保证。若个别自由度动作塌缩为确定性曲线，一旦遭遇未曾见过的风力或地表偏差推击，机器人就会因为“肌肉发僵”直接翻车。log_std_min 是机器人泛化站立的安全网。",
+                rel_code: "training_loop.py | actor.log_std_min = float(experiment.log_std_min)",
+                icon: "shield-check",
+                color_class: "text-emerald-400",
+                bg_class: "bg-emerald-500/10"
+            },
+            6: {
+                title: "环节 6: 自动评估与难度晋级控制器",
+                subtitle: "文件: experiments/exp_balance_recover.py",
+                code: "exp_balance_recover.py:156-179",
+                mechanism: "每次 PPO 更新完成后，在完全无梯度的独立干净环境中对 Policy 开展高密集平衡生存测试（Eval）。当且仅当该代存活率 $\ge 90\%$ (PROMOTE_SURVIVAL = 0.9) 并且连续耐心通关达标，系统将自动向上滚动扰动滑块 Scale 至下一 Level。",
+                theory: "自适应课程控制器能最大化拟合推进速度，只有当老难度的状态分布完全掌握后，才开放新难度的物理量。配合生存优先混合机制，机器人实现了一步一个台阶、自发碾过 Level 2 直接空降 Level 3 的良性突围大闭环！",
+                rel_code: "exp_balance_recover.py | if survival_rate >= self.PROMOTE_SURVIVAL: self._level += 1",
+                icon: "trending-up",
+                color_class: "text-violet-400",
+                bg_class: "bg-violet-500/10"
+            }
+        };
+
+        // Highlight a step node and show detailed information in inspector panel
+        function highlightNode(stepId) {
+            // Remove previous active node borders and shadows
+            for (let i = 1; i <= 6; i++) {
+                const node = document.getElementById(`node_${i}`);
+                if (node) {
+                    node.classList.remove('ring-2', 'ring-blue-500', 'ring-offset-2', 'ring-offset-slate-950', 'node-highlight');
+                }
+            }
+
+            // Highlight current active node
+            const activeNode = document.getElementById(`node_${stepId}`);
+            if (activeNode) {
+                activeNode.classList.add('ring-2', 'ring-blue-500', 'ring-offset-2', 'ring-offset-slate-950', 'node-highlight');
+            }
+
+            // Update inspector panel content
+            const data = nodeData[stepId];
+            if (data) {
+                document.getElementById('inspector_title').innerText = data.title;
+                document.getElementById('inspector_subtitle').innerText = data.subtitle;
+                document.getElementById('inspector_code').innerText = data.code;
+                document.getElementById('inspector_mechanism').innerText = data.mechanism;
+                document.getElementById('inspector_theory').innerText = data.theory;
+                document.getElementById('inspector_rel_code').innerText = data.rel_code;
+
+                // Update icon and colors
+                const iconBg = document.getElementById('inspector_icon_bg');
+                const icon = document.getElementById('inspector_icon');
+                
+                // Clear class list
+                iconBg.className = `p-2.5 rounded-xl ${data.bg_class} ${data.color_class}`;
+                icon.setAttribute('data-lucide', data.icon);
+                
+                // Re-render lucide icons
+                lucide.createIcons();
+            }
+        }
+
+        // Simulating the training loop pipeline
+        let simInterval = null;
+        let activeStep = 1;
+
+        function startSimulation() {
+            if (simInterval) {
+                clearInterval(simInterval);
+            }
+            
+            const simBtn = document.getElementById('simBtn');
+            simBtn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> 正在迭代模拟更新中...`;
+            simBtn.className = "px-4 py-2 bg-indigo-600 text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-not-allowed";
+            lucide.createIcons();
+
+            resetFlowOpacity();
+            activeStep = 1;
+            highlightNode(activeStep);
+
+            simInterval = setInterval(() => {
+                if (activeStep >= 6) {
+                    // Loop completed
+                    clearInterval(simInterval);
+                    simInterval = null;
+                    resetFlowOpacity();
+                    
+                    const btn = document.getElementById('simBtn');
+                    btn.innerHTML = `<i data-lucide="play" class="w-4 h-4"></i> 模拟运行一个 PPO 更新环`;
+                    btn.className = "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition-all";
+                    lucide.createIcons();
+
+                    // Alert on complete
+                    highlightNode(6);
+                    return;
+                }
+
+                // Activate flow between current and next step
+                const flowPath = document.getElementById(`flow_${activeStep}_${activeStep + 1}`);
+                if (flowPath) {
+                    flowPath.classList.remove('opacity-0');
+                    flowPath.classList.add('opacity-100');
+                }
+
+                activeStep++;
+                highlightNode(activeStep);
+            }, 2000); // 2 seconds per transition
+        }
+
+        function resetSimulation() {
+            if (simInterval) {
+                clearInterval(simInterval);
+                simInterval = null;
+            }
+            resetFlowOpacity();
+            highlightNode(1);
+
+            const btn = document.getElementById('simBtn');
+            btn.innerHTML = `<i data-lucide="play" class="w-4 h-4"></i> 模拟运行一个 PPO 更新环`;
+            btn.className = "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-xl flex items-center gap-1.5 transition-all";
+            lucide.createIcons();
+        }
+
+        function resetFlowOpacity() {
+            for (let i = 1; i <= 6; i++) {
+                const next = i === 6 ? 1 : i + 1;
+                const path = document.getElementById(`flow_${i}_${next}`);
+                if (path) {
+                    path.classList.remove('opacity-100');
+                    path.classList.add('opacity-0');
+                }
+            }
+        }
+
+        // Highlight first node on load
+        window.onload = () => {
+            highlightNode(1);
+        };
+    </script>
+</body>
+</html>

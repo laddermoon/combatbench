@@ -125,10 +125,11 @@ def load_checkpoint(
             except RuntimeError as e:
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
-    # Force align optimizer learning rate to currently configured experiment learning rate
+    # Force align optimizer learning rate and policy standard deviation boundaries to currently configured experiment config
     for pg in actor_optimizer.param_groups:
         pg["lr"] = experiment.learning_rate
-    print(f"[checkpoint] Force aligned actor optimizer LR to experiment config: {experiment.learning_rate:.2e}", flush=True)
+    actor.log_std_min = float(experiment.log_std_min)
+    print(f"[checkpoint] Force aligned actor optimizer LR to {experiment.learning_rate:.2e} and log_std_min to {experiment.log_std_min}", flush=True)
 
     if load_experiment_state:
         saved_exp = payload.get("experiment_name", "")
@@ -218,6 +219,7 @@ def train(
     # 2. Build models
     actor: TanhGaussianMLPPolicy = init_policy_bp.build()
     actor = actor.to(device)
+    actor.log_std_min = float(experiment.log_std_min)
 
     critics = {
         key: CriticMLP(obs_dim=experiment.obs_dim, hidden_dim=experiment.critic_hidden_dim).to(device)
