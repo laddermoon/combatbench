@@ -23,6 +23,15 @@ class RandomMovePlugin(BasePlugin):
     ARENA_RADIUS: float = 3.0
     ACTION_DT: float = 0.05  # s (control frequency 20Hz -> 0.05s)
 
+    # Standing joint targets (joint_pos_norm space, from INITIAL_POSES['standing']['action']).
+    # joint_pos_norm=0 is the joint-range midpoint (squat), not standing.
+    STANDING_JOINT_POS: np.ndarray = np.array([
+        -0.0000, 0.4286, -0.0000,
+        0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+        0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+        0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
+    ], dtype=np.float32)
+
     def __init__(
         self,
         target_robot: str = "robot_b",
@@ -170,7 +179,7 @@ class RandomMovePlugin(BasePlugin):
                 "root_rot": root_rot,
                 "root_vel_local": np.zeros(3, dtype=np.float32),
                 "root_angular_vel_local": np.zeros(3, dtype=np.float32),
-                "joint_pos_norm": np.zeros(21, dtype=np.float32),  # Rigid standing pose
+                "joint_pos_norm": self.STANDING_JOINT_POS.copy(),
                 "joint_vel_norm": np.zeros(21, dtype=np.float32),  # Rigid stillness
             }
         }

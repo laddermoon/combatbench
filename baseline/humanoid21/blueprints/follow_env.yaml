@@ -15,7 +15,7 @@ parameters:
     default: "robot_b"
     description: "The robot random move , mustnt the same as agent_id."
   random_move_speed:
-    default: 0.0
+    default: 0.5
     description: "The robot random move , mustnt the same as agent_id."
 runtime:
   phy_steps_per_action: 25

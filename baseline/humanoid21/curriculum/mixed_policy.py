@@ -58,7 +58,7 @@ class MixedPolicy(Policy):
             input_dim=config["input_dim"],
             hidden_dims=config["hidden_dims"]
         )
-        checkpoint = torch.load(model_path, map_location="cpu")
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
         self.gating_network.load_state_dict(checkpoint["state_dict"])
         self.gating_network.eval()
 

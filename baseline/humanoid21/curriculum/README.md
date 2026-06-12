@@ -439,42 +439,6 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
 ======================================================================
 
 
-💾 Formatting and saving collected dataset... Done!
-======================================================================
-🎉 Dataset Collection Successfully Completed!
-   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data/gating_data.npz
-   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data/summary.json
-   - Total Frames:     476,676
-     - Safe (Label 1):  346,800 (72.8%)
-     - Unsafe (Label 0): 129,876 (27.2%)
-   - Episode stats:
-     - Total:          10000
-     - Safe Stands:    1734 (17.3% survival rate)
-     - Fallen Runs:    8266 (82.7% fall rate)
-     - Average Length: 47.7 ± 71.0 steps
-   - Total Execution Time: 566.0 seconds (9.4 minutes)
-======================================================================
-
-en: 49.1 steps
-
-💾 Formatting and saving collected dataset... Done!
-======================================================================
-🎉 Dataset Collection Successfully Completed!
-   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data_plus/gating_data.npz
-   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data_plus/summary.json
-   - Total Frames:     483,683
-     - Safe (Label 1):  356,600 (73.7%)
-     - Unsafe (Label 0): 127,083 (26.3%)
-   - Episode stats:
-     - Total:          10000
-     - Safe Stands:    1783 (17.8% survival rate)
-     - Fallen Runs:    8217 (82.2% fall rate)
-     - Average Length: 48.4 ± 71.7 steps
-   - Total Execution Time: 578.3 seconds (9.6 minutes)
-======================================================================
-
-两者的对比，Plus还是更好的
-
 
 # 增大 batch-size 拟合 10k 大数据，配置 [512, 256, 128] 的超深网络
 PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_gating_network.py \
@@ -507,13 +471,22 @@ Follow训练时的对手策略可以是这样的， 一个Scripted的策略，�
 两个机器人都是以站立姿态来开始（不加初始随机扰动了）。
 Reward就看机器人跟随对手移动的能力。
 
-Env已经改好: /data1/mono/things/combatbench/baseline/humanoid21/blueprints/follow_env.yaml
+Env: /data1/mono/things/combatbench/baseline/humanoid21/blueprints/follow_env.yaml
+
+环境验证：
+python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/blueprints/follow_env.yaml \
+  --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06870/policy_blueprint.yaml \
+  --policy-b-blueprint /data1/mono/things/combatbench/policy/blueprints/random.yaml \
+  --video video2.mp4
+
 ExpConfig：/data1/mono/things/combatbench/baseline/humanoid21/curriculum/experiments/exp_follow.py 
 
 
 
 在 /data1/mono/things/combatbench/baseline/humanoid21/plugins/random_move.py
 参照 /data1/mono/things/combatbench/envs/humanoid21/disturbance_plugins.py 
+# TODO: 机器人是坐姿，为什么
 
 
 已经实现MixedPolicy，用来实现策略的组合，并且通过extra 也输出Gate信息
@@ -522,9 +495,6 @@ ExpConfig：/data1/mono/things/combatbench/baseline/humanoid21/curriculum/experi
 
 
 
-[eval 6865] [ep mean_length=200.000 survived=1.000 level=6.000]
-  | time: total=23.3s export=0.00s jobs=0.02s rollout=20.6s buffer=0.51s ppo=0.48s eval=1.7s
-  | time: total=21.9s export=0.00s jobs=0.02s rollout=20.9s buffer=0.51s ppo=0.48s eval=0.0s
-  | time: total=21.7s export=0.00s jobs=0.02s rollout=20.7s buffer=0.52s ppo=0.48s eval=0.0s
-  | time: total=21.9s export=0.00s jobs=0.02s rollout=20.9s buffer=0.50s ppo=0.49s eval=0.0s
-  | time: total=21.7s export=0.00s jobs=0.02s rollout=20.7s buffer=0.51s ppo=0.48s eval=0.0s
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/checkpoints/checkpoint_u06870.pt &> follow.log & 
+
+python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py follow.log  --watch
