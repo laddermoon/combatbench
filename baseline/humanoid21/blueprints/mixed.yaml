@@ -1,0 +1,43 @@
+# ParameterizedPolicyBlueprint for MixedPolicy.
+#
+# Wraps a primary (learning) policy with a standing fallback, guarded by a
+# Gating MLP that predicts balance stability and switches control when needed.
+#
+# Usage (code):
+#   from envs.framework.policy import ParameterizedPolicyBlueprint
+#   pb = ParameterizedPolicyBlueprint.load("baseline/humanoid21/blueprints/mixed.yaml")
+#   policy = pb.build(primary_policy_bp="path/to/primary.yaml")
+#
+# primary_policy_bp / fallback_policy_bp accept either:
+#   - A string path to a blueprint YAML file
+#   - A PolicyBlueprint dict (version/cls/config)
+
+version: 1
+parameters:
+  primary_policy_bp:
+    default: "/data1/mono/things/combatbench/policy/blueprints/random.yaml"
+    description: "Path (str) or dict for the primary policy blueprint."
+  fallback_policy_bp:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06870/policy_blueprint.yaml"
+    description: "Path (str) or dict for the fallback recovery policy blueprint."
+  gating_model_dir:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_model_plus"
+    description: "Path to the gating model directory (gating_config.json + gating_model.pt)."
+  threshold:
+    default: 0.5
+    description: "Fall-prediction threshold — switch to fallback when p_safe < threshold."
+  release_threshold:
+    default: 0.8
+    description: "Recovery threshold — p_safe must exceed this to start counting toward release."
+  release_patience:
+    default: 5
+    description: "Consecutive steps above release_threshold required before switching back to primary."
+
+cls: "baseline.humanoid21.curriculum.mixed_policy:MixedPolicy"
+config:
+  primary_policy_bp: "${primary_policy_bp}"
+  fallback_policy_bp: "${fallback_policy_bp}"
+  gating_model_dir: "${gating_model_dir}"
+  threshold: "${threshold}"
+  release_threshold: "${release_threshold}"
+  release_patience: "${release_patience}"

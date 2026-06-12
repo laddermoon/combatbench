@@ -480,6 +480,15 @@ python3 -m envs.framework.round_runner \
   --policy-b-blueprint /data1/mono/things/combatbench/policy/blueprints/random.yaml \
   --video video2.mp4
 
+#验证 mix policy
+/data1/mono/things/combatbench/baseline/humanoid21/blueprints/mixed.yaml
+MIXED_POLICY_DEBUG=1 python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/blueprints/follow_env.yaml \
+  --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/blueprints/mixed.yaml \
+  --policy-b-blueprint /data1/mono/things/combatbench/policy/blueprints/random.yaml \
+  --video video6.mp4
+
+
 ExpConfig：/data1/mono/things/combatbench/baseline/humanoid21/curriculum/experiments/exp_follow.py 
 
 
