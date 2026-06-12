@@ -340,17 +340,15 @@ python3 -m envs.framework.round_runner \
 python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py balance_recover9.log  --watch
 
 #最终的策略用这个
-/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/policy_exports/u03275
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06865
 
 
 继续训练加强的扰动恢复：
-PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_004703/checkpoints/checkpoint_u03275.pt &> balance_recover_plus.log & 
+PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train --experiment balance_recover_plus --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/checkpoints/checkpoint_u06870.pt &> balance_recover_plus1.log & 
 
-python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py balance_recover_plus.log  --watch
+python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py balance_recover_plus1.log  --watch
 
 
-# 很快就训练好了
-/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u03439
 
 
 # 使用弱化版的扰动恢复策略生产数据，用来训练状态是否可恢复的判别模型。
@@ -389,6 +387,56 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
   --workers 12 \
   --output-dir baseline/humanoid21/curriculum/gating_data_plus
 
+
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
+  --num-episodes 10000 \
+  --noise-std 0.08 \
+  --workers 48 \
+  --output-dir baseline/humanoid21/curriculum/gating_data_plus_u06865 \
+  --policy-path /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06865
+
+训练时Eval成功率100% ， 怎么掉怎么这么厉害？
+
+💾 Formatting and saving collected dataset... Done!
+======================================================================
+🎉 Dataset Collection Successfully Completed!
+   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data_plus_u06865/gating_data.npz
+   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data_plus_u06865/summary.json
+   - Total Frames:     639,993
+     - Safe (Label 1):  531,400 (83.0%)
+     - Unsafe (Label 0): 108,593 (17.0%)
+   - Episode stats:
+     - Total:          10000
+     - Safe Stands:    2657 (26.6% survival rate)
+     - Fallen Runs:    7343 (73.4% fall rate)
+     - Average Length: 64.0 ± 82.4 steps
+   - Total Execution Time: 200.1 seconds (3.3 minutes)
+
+
+
+PYTHONPATH=. python3 baseline/humanoid21/curriculum/collect_gating_data.py \
+  --num-episodes 10000 \
+  --noise-std 0.0 \
+  --workers 48 \
+  --output-dir baseline/humanoid21/curriculum/gating_data_plus_u06865_nonoise \
+  --policy-path /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06865
+
+
+
+======================================================================
+🎉 Dataset Collection Successfully Completed!
+   - Saved .npz Path:  baseline/humanoid21/curriculum/gating_data_plus_u06865_nonoise/gating_data.npz
+   - Saved JSON Path: baseline/humanoid21/curriculum/gating_data_plus_u06865_nonoise/summary.json
+   - Total Frames:     671,067
+     - Safe (Label 1):  566,600 (84.4%)
+     - Unsafe (Label 0): 104,467 (15.6%)
+   - Episode stats:
+     - Total:          10000
+     - Safe Stands:    2833 (28.3% survival rate)
+     - Fallen Runs:    7167 (71.7% fall rate)
+     - Average Length: 67.1 ± 84.1 steps
+   - Total Execution Time: 199.9 seconds (3.3 minutes)
+======================================================================
 
 
 💾 Formatting and saving collected dataset... Done!
@@ -463,68 +511,20 @@ Env已经改好: /data1/mono/things/combatbench/baseline/humanoid21/blueprints/f
 ExpConfig：/data1/mono/things/combatbench/baseline/humanoid21/curriculum/experiments/exp_follow.py 
 
 
-TODO： 要实现一个控制目标机器人随机移动的插件。  Done 待查
+
 在 /data1/mono/things/combatbench/baseline/humanoid21/plugins/random_move.py
 参照 /data1/mono/things/combatbench/envs/humanoid21/disturbance_plugins.py 
 
 
-TODO： 实现MixedPolicy，用来实现策略的组合，并且集成GateObserserver的核心逻辑（保证判断结果一致）
+已经实现MixedPolicy，用来实现策略的组合，并且通过extra 也输出Gate信息
 在/data1/mono/things/combatbench/baseline/humanoid21/curriculum/mixed_policy.py
-核心逻辑就是当Gate判断要倒时，切到正式的恢复模型， 恢复之后再切回来。 这个要能接受一个PolicyBlueprint作为创建时的输入。  Done 待查
+核心逻辑就是当Gate判断要倒时，切到正式的恢复模型， 恢复之后再切回来。 这个要能接受一个PolicyBlueprint作为创建时的输入。 
 
 
 
-
-============================================================
->>> [Update 4280 实时训练进度快报] <<<
-============================================================
-  【课程进度】 难度级别: Level 6 | 扰动系数: 1.000 | 连过次数: 0 | 评估存活率: 93.8%
-  【存活时长】 平均站立: 185.6 步 (最惨: 7.0 步 | 最佳撑过: 200.0 步)
-  【探索状态】 策略熵: 7.85 | 关节标准差: 0.369 (min=0.165, max=0.544) | 更新Epochs: 4
-  【核心趋势检测】
-    ⚠️ 警告：训练进展陷入停滞瓶颈！过去 10 代中存活步数原地踏步 (仅波动 +0.9 步，均值 183.0)。机器人正困在当前阶段苦苦挣扎！
-============================================================
-
-[HEALTHY] 诊断结果：该滑动窗口内未发现结构性异常，训练正在稳步进行中。
-
-[WATCH] 正在实时监控日志中...
-
-============================================================
->>> [Update 4281 实时训练进度快报] <<<
-============================================================
-  【课程进度】 难度级别: Level 6 | 扰动系数: 1.000 | 连过次数: 0 | 评估存活率: 100.0%
-  【存活时长】 平均站立: 181.3 步 (最惨: 9.0 步 | 最佳撑过: 200.0 步)
-  【探索状态】 策略熵: 7.85 | 关节标准差: 0.369 (min=0.165, max=0.543) | 更新Epochs: 4
-  【核心趋势检测】
-    ⚠️ 警告：训练进展陷入停滞瓶颈！过去 10 代中存活步数原地踏步 (仅波动 +1.3 步，均值 182.4)。机器人正困在当前阶段苦苦挣扎！
-============================================================
-
-[HEALTHY] 诊断结果：该滑动窗口内未发现结构性异常，训练正在稳步进行中。
-
-[WATCH] 正在实时监控日志中...
-
-============================================================
->>> [Update 4282 实时训练进度快报] <<<
-============================================================
-  【课程进度】 难度级别: Level 6 | 扰动系数: 1.000 | 连过次数: 0 | 评估存活率: 100.0%
-  【存活时长】 平均站立: 180.0 步 (最惨: 9.0 步 | 最佳撑过: 200.0 步)
-  【探索状态】 策略熵: 7.85 | 关节标准差: 0.369 (min=0.165, max=0.543) | 更新Epochs: 4
-  【核心趋势检测】
-    ⚠️ 警告：训练进展陷入停滞瓶颈！过去 10 代中存活步数原地踏步 (仅波动 +2.1 步，均值 182.3)。机器人正困在当前阶段苦苦挣扎！
-============================================================
-
-[HEALTHY] 诊断结果：该滑动窗口内未发现结构性异常，训练正在稳步进行中。
-
-[WATCH] 正在实时监控日志中...
-
-============================================================
->>> [Update 4283 实时训练进度快报] <<<
-============================================================
-  【课程进度】 难度级别: Level 6 | 扰动系数: 1.000 | 连过次数: 0 | 评估存活率: 100.0%
-  【存活时长】 平均站立: 183.9 步 (最惨: 9.0 步 | 最佳撑过: 200.0 步)
-  【探索状态】 策略熵: 7.86 | 关节标准差: 0.369 (min=0.165, max=0.543) | 更新Epochs: 4
-  【核心趋势检测】
-    ✨ 策略已臻化境：机器人在当前难度下已接近完美收敛 (平均存活 181.8 步，存活率 100.0%)，等待晋级。
-============================================================
-
-[HEALTHY] 诊断结果：该滑动窗口内未发现结构性异常，训练正在稳步进行中。
+[eval 6865] [ep mean_length=200.000 survived=1.000 level=6.000]
+  | time: total=23.3s export=0.00s jobs=0.02s rollout=20.6s buffer=0.51s ppo=0.48s eval=1.7s
+  | time: total=21.9s export=0.00s jobs=0.02s rollout=20.9s buffer=0.51s ppo=0.48s eval=0.0s
+  | time: total=21.7s export=0.00s jobs=0.02s rollout=20.7s buffer=0.52s ppo=0.48s eval=0.0s
+  | time: total=21.9s export=0.00s jobs=0.02s rollout=20.9s buffer=0.50s ppo=0.49s eval=0.0s
+  | time: total=21.7s export=0.00s jobs=0.02s rollout=20.7s buffer=0.51s ppo=0.48s eval=0.0s

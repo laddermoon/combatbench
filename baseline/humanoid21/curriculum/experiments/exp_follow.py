@@ -2,79 +2,78 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
-from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
+from baseline.humanoid21.curriculum.framework.ppo_trainer import (
+    _extract_per_step_field,
+    _extract_per_step_scalar,
+)
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
-class BalanceRecoverConfig(ExperimentConfig):
-    """P0 balance-recovery policy (IDEA.md step 2).
+# Paths resolved relative to the project root.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+_RANDOM_POLICY_BP = PolicyBlueprint.load(
+    _PROJECT_ROOT / "policy" / "blueprints" / "random.yaml"
+)
+_STANDING_POLICY_BP = PolicyBlueprint.load(
+    _PROJECT_ROOT / "policy" / "blueprints" / "humanoid21" / "standing.yaml"
+)
+_GATING_MODEL_DIR = str(
+    Path(__file__).resolve().parent.parent / "gating_model_plus"
+)
 
-    Trained on top of the basic-standing policy. At every episode reset the
-    robot's state is randomly perturbed (joint positions/velocities, root
-    tilt, root linear/angular velocity); the robot must learn to recover
-    balance from any such starting condition — this is the fallback policy.
 
-    The curriculum is **progressive**: perturbations start small and grow
-    stronger level by level. A single scalar ``scale`` in ``[0, 1]`` scales
-    every full-strength magnitude in :pyattr:`PERTURB_FULL`. When the eval
-    survival rate stays at/above :pyattr:`PROMOTE_SURVIVAL` for
-    :pyattr:`PROMOTE_PATIENCE` consecutive evaluations, the next (harder)
-    level is unlocked. The env blueprint file never changes across levels;
-    only the perturbation parameters passed to ``materialize`` do.
+class FollowConfig(ExperimentConfig):
+    """Follow-opponent curriculum experiment.
+
+    The trained robot (robot_a) must learn to follow a randomly-moving
+    opponent (robot_b) while maintaining balance.  The opponent's movement
+    is driven by :class:`RandomMovePlugin` inside the env; the opponent
+    policy itself is a no-op random policy.
+
+    Curriculum knob: the opponent's movement speed
+    (``random_move_speed`` env parameter), scaled by ``LEVEL_SCALES``.
     """
 
-    name = "balance_recover_plus"
-    reward_keys = ("r_fall", "r_cross")
-    gammas = {"r_fall": 0.99, "r_cross": 0.99}
+    name = "follow"
+    reward_keys = ("r_fall", "r_cross", "r_hold", "r_radial", "r_gate")
+    gammas = {
+        "r_fall": 0.99,
+        "r_cross": 0.99,
+        "r_hold": 0.99,
+        "r_radial": 0.99,
+        "r_gate": 0.99,
+    }
 
-    BLUEPRINT = "balance_recover_env.yaml"
+    BLUEPRINT = "follow_env.yaml"
 
-    def _env_pb(self):
-        return ParameterizedEnvBlueprint.load(
-            Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
-        )
-
-    def video_env_blueprint(self):
-        perturb = self._current_perturb_params()
-        return self._env_pb().materialize(
-            max_steps=self.custom_config["max_steps"],
-            agent_id="robot_a",
-            **perturb,
-        )
-
-    # --- PPO tuning (see training analysis) ---
-    # Raise the log_std floor so the policy can't collapse to saturated,
-    # near-deterministic actions — the main driver of the KL explosions /
-    # exploding policy_loss observed in the first run.
+    # --- PPO tuning ---
     log_std_min: float = -1.8
-
-    # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
-    # clipping + fewer epochs to keep each PPO update from diverging.
-    learning_rate: float = 3e-5      # was 1e-4: slow the actor down further to allow more epochs
-    target_kl: float = 0.05          # was 0.05: early-stop sooner
-    grad_clip_norm: float = 1.0      # was 1.0: tighter gradient clipping
-    update_epochs: int = 4           # was 4: less policy drift per batch
+    learning_rate: float = 3e-5
+    target_kl: float = 0.05
+    grad_clip_norm: float = 1.0
+    update_epochs: int = 4
     minibatch_size: int = 4096 * 4
-    entropy_coef: float = 1.5e-3     # encourage exploration to prevent joint freeze
+    entropy_coef: float = 1.5e-3
 
     # --- Rollout schedule ---
     episodes_per_update: int = 1024
     eval_episodes: int = 128
 
-    # Small per-step survival bonus (each alive step is worth this much).
+    # Small per-step survival bonus.
     per_step_survival_reward: float = 0.01
+    # Penalty per step where MixedPolicy switches to fallback.
+    gate_switch_penalty: float = -0.5
 
-
-    # TODO： 这里改成控制目标机器人移动的速度
-    LEVEL_SCALES: Tuple[float, ...] = (0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 1.0)
-    # Promote once survival >= threshold for N consecutive evaluations.
+    # --- Curriculum: opponent movement speed levels ---
+    SPEED_FULL: float = 0.8  # max opponent speed at level cap
+    LEVEL_SCALES: Tuple[float, ...] = (0.0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
     PROMOTE_SURVIVAL: float = 0.9
     PROMOTE_PATIENCE: int = 1
 
@@ -83,47 +82,109 @@ class BalanceRecoverConfig(ExperimentConfig):
     _consecutive_pass: int = 0
     _survival_rate: float = 0.0
 
-    # --- Perturbation scale helpers ---
+    # ---- Blueprint helpers ------------------------------------------------
+
+    def _env_pb(self):
+        return ParameterizedEnvBlueprint.load(
+            Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
+        )
+
     @property
-    def current_scale(self) -> float:
+    def current_speed(self) -> float:
+        """Current opponent movement speed (m/s), derived from level."""
         idx = max(0, min(self._level, len(self.LEVEL_SCALES) - 1))
-        return float(self.LEVEL_SCALES[idx])
+        return float(self.SPEED_FULL * self.LEVEL_SCALES[idx])
 
-    def _current_perturb_params(self) -> Dict[str, float]:
-        scale = self.current_scale
-        return {k: float(v) * scale for k, v in self.PERTURB_FULL.items()}
+    def _materialize_env(
+        self, agent_id: str, random_move_speed: float,
+    ) -> EnvBlueprint:
+        return self._env_pb().materialize(
+            max_steps=self.custom_config["max_steps"],
+            agent_id=agent_id,
+            oppo_agent_id="robot_b" if agent_id == "robot_a" else "robot_a",
+            random_move_speed=random_move_speed,
+        )
 
-    # TODO： build job要改成 一个使用训练的混合策略PB， 一个使用随机策略（因为不会产生作用）
-    # 随机策略使用 /data1/mono/things/combatbench/policy/blueprints/random.yaml
+    def video_env_blueprint(self):
+        return self._materialize_env("robot_a", self.current_speed)
+
+    # ---- Policy blueprint helpers -----------------------------------------
+
+    @staticmethod
+    def _make_mixed_bp(primary_bp: PolicyBlueprint) -> PolicyBlueprint:
+        """Wrap *primary_bp* in :class:`MixedPolicy` with a standing fallback."""
+        return PolicyBlueprint(
+            cls="baseline.humanoid21.curriculum.mixed_policy:MixedPolicy",
+            config={
+                "primary_policy_bp": primary_bp.to_dict(),
+                "fallback_policy_bp": _STANDING_POLICY_BP.to_dict(),
+                "gating_model_dir": _GATING_MODEL_DIR,
+            },
+        )
+
+    # ---- Job construction -------------------------------------------------
+
+    def _build_jobs(
+        self,
+        policy_bp: PolicyBlueprint,
+        base_seed: int,
+        n_episodes: int,
+    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        mixed_bp = self._make_mixed_bp(policy_bp)
+        speed = self.current_speed
+        rng = np.random.default_rng(base_seed)
+
+        env_bps: Dict[str, EnvBlueprint] = {
+            aid: self._materialize_env(aid, speed)
+            for aid in ("robot_a", "robot_b")
+        }
+
+        jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
+        for i in range(n_episodes):
+            seed = int(base_seed + i)
+            agent_id = self._agent_from_rollout_seed(seed)
+            initial_distance = float(
+                rng.uniform(
+                    self.custom_config["rollout_distance_min"],
+                    self.custom_config["rollout_distance_max"],
+                )
+            )
+            jobs.append((
+                mixed_bp, _RANDOM_POLICY_BP,
+                env_bps[agent_id], seed,
+                {"agent_id": agent_id, "initial_distance": initial_distance},
+            ))
+        return jobs
+
     def build_rollout_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
-        
-    # TODO： 同上
+        return self._build_jobs(policy_bp, base_seed, self.episodes_per_update)
+
     def build_eval_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
-        
+        return self._build_jobs(policy_bp, base_seed, self.eval_episodes)
+
+    # ---- Eval comparison --------------------------------------------------
 
     def compare_eval(self, esum, best_esum):
-        """Compare eval metrics: prioritize higher level, then higher survival rate."""
+        """Compare eval metrics: prioritize higher level, then higher survival."""
         if not best_esum:
             return True
-        # First: compare level (higher is better)
         level = esum.get("level", 0.0)
         best_level = best_esum.get("level", 0.0)
         if level != best_level:
             return level > best_level
-        # Same level: compare survival rate
         return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
+
+    # ---- Scheduler --------------------------------------------------------
+
+    def initial_weights(self) -> Tuple[float, ...]:
+        return (6.0, 1.0, 1.0, 1.0, 1.0)
 
     def next_weights(
         self,
         eval_metrics: Dict[str, float],
         current_weights: Tuple[float, ...],
     ) -> Tuple[float, ...]:
-        """Advance the perturbation level when the policy reliably recovers.
-
-        Weights stay ``(1.0,)`` throughout; the curriculum knob is the
-        perturbation scale, advanced once survival holds at/above
-        ``PROMOTE_SURVIVAL`` for ``PROMOTE_PATIENCE`` consecutive evals.
-        """
+        """Advance the opponent speed level when the policy reliably follows."""
         survival_rate = float(eval_metrics.get("survived", 0.0))
         self._survival_rate = survival_rate
 
@@ -136,22 +197,16 @@ class BalanceRecoverConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0)
+        return (6.0, 1.0, 1.0, 1.0, 1.0)
 
-    
-    def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0)
+    # ---- Reward extraction ------------------------------------------------
 
-    def extract_rewards(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, np.ndarray]:
-        """r_fall: per-step survival bonus + terminal signal.
-        r_cross: cross-support balance reward from CrossSupportBalanceRewarder.
-        """
-        fell = "imbalance" in termination_proposals
+    def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
+        T = episode.num_frames
+        oo = episode.observer_outputs
+
+        # r_fall: per-step survival bonus + terminal signal
+        fell = "imbalance" in episode.termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -159,51 +214,43 @@ class BalanceRecoverConfig(ExperimentConfig):
         else:
             r_fall[-1] = penalty
 
-        r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
+        # r_cross: cross-support balance reward
+        r_cross = _extract_per_step_scalar(oo, "cross_support", T)
 
-        return {"r_fall": r_fall, "r_cross": r_cross}
-
-    # TODO： 这里要做切分， 返回一个列表， 触发Imbalance或者触发切换到恢复模型都要惩罚
-    # 需要解决的一个问题是如何获取到每一步是用哪个模型， ！ 对, 应该通过一个Observer来获取，这个Observer集成了GateModel， 每次把GateModel跑一遍
-    # 这样虽然GateModel重复推理，但是问题也不大
-    def extract_rewards(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, np.ndarray]:
-        fell = "imbalance" in termination_proposals
-        r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
-        penalty = float(self.custom_config["terminal_fall_penalty"])
-        if fell:
-            r_fall[-1] = -penalty
-        else:
-            r_fall[-1] = penalty
-
-        r_cross = _extract_per_step_scalar(observer_outputs, "cross_support", T)
-        # r_hold from in_zone_hold observer
-        r_hold = _extract_per_step_field(observer_outputs, "in_zone_hold", "reward", T)
+        # r_hold: in-zone hold reward
+        r_hold = _extract_per_step_field(oo, "in_zone_hold", "reward", T)
         if r_hold is None:
             r_hold = np.zeros(T, dtype=np.float32)
 
-        # r_radial / r_tangential: trainer-side post-processing
-        # from approach_velocity observer's recorded positions
+        # r_radial: approach reward (trainer-side post-processing)
         from baseline.humanoid21.rewards.follow_opponent import compute_approach_rewards
 
-        self_x = _extract_per_step_field(observer_outputs, "approach_velocity", "self_x", T)
-        self_y = _extract_per_step_field(observer_outputs, "approach_velocity", "self_y", T)
-        opp_x = _extract_per_step_field(observer_outputs, "approach_velocity", "opp_x", T)
-        opp_y = _extract_per_step_field(observer_outputs, "approach_velocity", "opp_y", T)
+        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T, dtype=np.float32)
-            r_tangential = np.zeros(T, dtype=np.float32)
         else:
             self_xy = np.stack([self_x, self_y], axis=1)
             opp_xy = np.stack([opp_x, opp_y], axis=1)
-            r_radial, r_tangential = compute_approach_rewards(
-                self_xy, opp_xy,
-                debug=False,
+            r_radial, _ = compute_approach_rewards(self_xy, opp_xy)
+
+        # r_gate: penalty when MixedPolicy switches to fallback mode
+        r_gate = np.zeros(T, dtype=np.float32)
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        extras = episode.action_extras.get(ep_target)
+        if extras is not None and "gating_mode" in extras:
+            gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
+            # gating_mode=1 means primary, 0 means fallback.
+            # Penalise every step in fallback mode.
+            fallback_steps = gating_mode < 0.5
+            length = min(len(fallback_steps), T)
+            r_gate[:length] = np.where(
+                fallback_steps[:length],
+                self.gate_switch_penalty,
+                0.0,
             )
 
         return {
@@ -211,30 +258,47 @@ class BalanceRecoverConfig(ExperimentConfig):
             "r_cross": r_cross,
             "r_hold": r_hold,
             "r_radial": r_radial,
-            "r_tangential": r_tangential,
+            "r_gate": r_gate,
         }
 
-    # TODO： 这里的计算逻辑应该改一下，主要去
-    def compute_episode_metrics(
-        self,
-        observer_outputs: dict,
-        T: int,
-        termination_proposals: Tuple[str, ...],
-    ) -> Dict[str, float]:
-        """``survived`` = 0 only if the robot fell (imbalance termination).
+    # ---- Episode metrics --------------------------------------------------
 
-        Returns level/stage for eval comparison (higher level = better).
-        """
-        fell = "imbalance" in termination_proposals
+    def compute_episode_metrics(self, episode) -> Dict[str, float]:
+        """Per-episode metrics for eval comparison and logging."""
+        T = episode.num_frames
+        fell = "imbalance" in episode.termination_proposals
+
+        # Fraction of steps spent in opponent's zone (from in_zone_hold observer).
+        in_zone = _extract_per_step_field(
+            episode.observer_outputs, "in_zone_hold", "in_zone", T,
+        )
+        if in_zone is not None:
+            hold_ratio = float(np.mean(in_zone > 0.5))
+        else:
+            hold_ratio = 0.0
+
+        # Fraction of steps where MixedPolicy was in fallback mode.
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        extras = episode.action_extras.get(ep_target)
+        if extras is not None and "gating_mode" in extras:
+            gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
+            gate_fallback_ratio = float(np.mean(gating_mode < 0.5))
+        else:
+            gate_fallback_ratio = 0.0
+
         return {
             "survived": 0.0 if fell else 1.0,
-            "level": float(self._level),  # higher level = harder perturbation = better
+            "level": float(self._level),
+            "hold_ratio": hold_ratio,
+            "gate_fallback_ratio": gate_fallback_ratio,
         }
+
+    # ---- Scheduler state --------------------------------------------------
 
     def scheduler_info(self) -> Dict[str, Any]:
         return {
             "level": self._level,
-            "perturb_scale": round(self.current_scale, 3),
+            "opp_speed": round(self.current_speed, 3),
             "consecutive_pass": self._consecutive_pass,
             "survival_rate": round(self._survival_rate, 3),
         }
@@ -253,4 +317,4 @@ class BalanceRecoverConfig(ExperimentConfig):
 
 
 # Singleton instance for the registry
-EXPERIMENT = BalanceRecoverConfig()
+EXPERIMENT = FollowConfig()
