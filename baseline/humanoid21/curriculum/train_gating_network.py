@@ -111,12 +111,12 @@ def set_seed(seed: int) -> None:
 
 
 def evaluate_model(
-    model: nn.Module, 
-    dataloader: DataLoader, 
-    criterion: nn.Module, 
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
     device: torch.device
-) -> Tuple[float, float, float, float]:
-    """Evaluate loss, accuracy, precision, and recall on the unsafe (0) class."""
+) -> Tuple[float, float, float, float, float]:
+    """Evaluate loss, accuracy, precision, recall, and F1 on the unsafe (0) class."""
     model.eval()
     total_loss = 0.0
     correct = 0
@@ -158,8 +158,9 @@ def evaluate_model(
     
     precision_unsafe = tp_unsafe / (tp_unsafe + fp_unsafe + 1e-8)
     recall_unsafe = tp_unsafe / (tp_unsafe + fn_unsafe + 1e-8)
-    
-    return avg_loss, accuracy, precision_unsafe, recall_unsafe
+    f1_unsafe = 2 * precision_unsafe * recall_unsafe / (precision_unsafe + recall_unsafe + 1e-8)
+
+    return avg_loss, accuracy, precision_unsafe, recall_unsafe, f1_unsafe
 
 
 def main() -> None:
@@ -220,22 +221,25 @@ def main() -> None:
     # 3. Define Model, Optimizer, and Loss
     model = GatingMLP(input_dim=obs_dim, hidden_dims=args.hidden_dims).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    
-    # Calculate pos_weight for loss balance:
-    # Since class 1 (Safe) has more samples, we set pos_weight = num_neg / num_pos.
-    # This reduces the loss scale for positive samples to match the negative ones.
-    pos_weight_val = num_neg / num_pos
+
+    # Calculate pos_weight from the TRAINING split only, so the validation set
+    # does not influence the loss weighting. pos_weight < 1 here because the
+    # safe class (label=1) is the majority; it down-weights safe samples so the
+    # total loss contribution of each class is roughly balanced.
+    num_pos_train = int(np.sum(Y_raw[train_idx] == 1.0))
+    num_neg_train = int(np.sum(Y_raw[train_idx] == 0.0))
+    pos_weight_val = num_neg_train / num_pos_train
     pos_weight = torch.tensor([pos_weight_val], dtype=torch.float32, device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    
+
     print(f"🚀 Initializing Gating MLP architecture: {obs_dim} -> {args.hidden_dims} -> 1")
-    print(f"   - Class Balancing Weight (pos_weight): {pos_weight_val:.4f}")
+    print(f"   - Class Balancing Weight (pos_weight): {pos_weight_val:.4f}  (train: {num_neg_train} unsafe / {num_pos_train} safe)")
     print(f"   - Dropout: 10% | Weight Decay: 1e-5")
     print(f"   - Training parameters: epochs={args.epochs}, lr={args.lr}, batch_size={args.batch_size}")
     print("-" * 70, flush=True)
-    
+
     # 4. Training Loop
-    best_val_loss = float("inf")
+    best_val_f1 = 0.0
     best_metrics = {}
     
     t_start = time.perf_counter()
@@ -263,29 +267,32 @@ def main() -> None:
         train_acc = train_correct / train_total
         
         # Evaluate on validation set
-        val_loss, val_acc, val_precision_unsafe, val_recall_unsafe = evaluate_model(
+        val_loss, val_acc, val_precision_unsafe, val_recall_unsafe, val_f1_unsafe = evaluate_model(
             model, val_loader, criterion, device
         )
-        
+
         # Log progress every epoch
         if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
             print(
                 f"Epoch [{epoch:3d}/{args.epochs:3d}] | "
-                f"Train Loss: {avg_train_loss:.4f} Acc: {train_acc*100.1:.1f}% | "
-                f"Val Loss: {val_loss:.4f} Acc: {val_acc*100.1:.1f}% | "
-                f"Unsafe-Precision: {val_precision_unsafe*100.1:.1f}% Unsafe-Recall: {val_recall_unsafe*100.1:.1f}%",
+                f"Train Loss: {avg_train_loss:.4f} Acc: {train_acc*100.0:.1f}% | "
+                f"Val Loss: {val_loss:.4f} Acc: {val_acc*100.0:.1f}% | "
+                f"Unsafe P: {val_precision_unsafe*100.0:.1f}% R: {val_recall_unsafe*100.0:.1f}% F1: {val_f1_unsafe*100.0:.1f}%",
                 flush=True
             )
-            
-        # Save the best model checkpoint based on validation loss
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+
+        # Save the best model checkpoint based on validation F1 (unsafe class).
+        # F1 balances precision and recall, which aligns better with the safety
+        # gating objective than the raw validation loss.
+        if val_f1_unsafe > best_val_f1:
+            best_val_f1 = val_f1_unsafe
             best_metrics = {
                 "epoch": epoch,
                 "val_loss": val_loss,
                 "val_acc": val_acc,
                 "unsafe_precision": val_precision_unsafe,
                 "unsafe_recall": val_recall_unsafe,
+                "unsafe_f1": val_f1_unsafe,
                 "train_loss": avg_train_loss,
                 "train_acc": train_acc
             }
@@ -303,12 +310,13 @@ def main() -> None:
     print("=" * 70)
     print("🎉 Gating MLP Model Training Completed Successfully!")
     print(f"   - Saved Model Path: {output_dir / 'gating_model.pt'}")
-    print(f"   - Best epoch:      {best_metrics['epoch']} (lowest validation loss)")
+    print(f"   - Best epoch:      {best_metrics['epoch']} (highest unsafe F1)")
     print(f"   - Train Accuracy:  {best_metrics['train_acc']*100.0:.2f}% (Loss: {best_metrics['train_loss']:.4f})")
     print(f"   - Val Accuracy:    {best_metrics['val_acc']*100.0:.2f}% (Loss: {best_metrics['val_loss']:.4f})")
     print(f"   - Critical Gating Metrics (Unsafe/Falling Class):")
-    print(f"     - Precision:     {best_metrics['unsafe_precision']*100.0:.2f}% (95%+ indicates minimal false-positives)")
+    print(f"     - Precision:     {best_metrics['unsafe_precision']*100.0:.2f}%")
     print(f"     - Recall:        {best_metrics['unsafe_recall']*100.0:.2f}% (98%+ is highly ideal for safety guarantee)")
+    print(f"     - F1:            {best_metrics['unsafe_f1']*100.0:.2f}%")
     print(f"   - Total Training Time: {t_train:.1f} seconds")
     
     # Save a JSON file with model metadata and best metrics
