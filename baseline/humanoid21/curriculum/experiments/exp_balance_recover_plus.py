@@ -55,6 +55,8 @@ class BalanceRecoverConfig(ExperimentConfig):
     # exploding policy_loss observed in the first run.
     log_std_min: float = -1.8
 
+
+    max_updates: int = 20000
     # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
     # clipping + fewer epochs to keep each PPO update from diverging.
     learning_rate: float = 3e-5      # was 1e-4: slow the actor down further to allow more epochs

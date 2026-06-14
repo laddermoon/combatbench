@@ -18,7 +18,7 @@ parameters:
     default: "/data1/mono/things/combatbench/policy/blueprints/random.yaml"
     description: "Path (str) or dict for the primary policy blueprint."
   fallback_policy_bp:
-    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_20260611_104207/policy_exports/u06870/policy_blueprint.yaml"
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/policy_exports/u10000/policy_blueprint.yaml"
     description: "Path (str) or dict for the fallback recovery policy blueprint."
   gating_model_dir:
     default: "/data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_model_plus"
