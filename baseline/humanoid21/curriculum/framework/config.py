@@ -175,6 +175,22 @@ class ExperimentConfig(ABC):
         """
         ...
 
+    def segment_episode(self, episode: "Episode") -> List[Tuple[int, int]]:
+        """Return ``(start, end)`` index pairs delimiting training segments.
+
+        The PPO buffer splits each episode into sub-episodes along these
+        boundaries and computes GAE independently per segment.  This is
+        essential when a mixed policy is used: steps where the fallback
+        policy was active must be excluded so the actor is not trained to
+        imitate fallback actions.
+
+        Default: return the full episode as a single segment ``[(0, T)]``.
+        Override to exclude fallback steps (e.g. via ``action_extras``).
+        Return an empty list to skip the episode entirely.
+        """
+        return [(0, episode.num_frames)]
+
+
     @abstractmethod
     def scheduler_info(self) -> Dict[str, Any]:
         """Return extra info dict for logging (phase, consecutive_pass, etc.)."""

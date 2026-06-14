@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 from baseline.humanoid21.curriculum.experiments import get_experiment, list_experiments
-from baseline.humanoid21.curriculum.framework.training_loop import train
 
 
 def _parse_args() -> argparse.Namespace:
@@ -35,6 +34,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--list-experiments", action="store_true",
         help="List available experiments and exit.",
+    )
+    parser.add_argument(
+        "--v2", action="store_true",
+        help="Use v2 training loop (sub-episode segmentation, excludes fallback steps).",
     )
     return parser.parse_args()
 
@@ -72,6 +75,12 @@ def main() -> None:
     # Save config snapshot before training starts
     experiment.save_run_config(run_dir, smoke=args.smoke)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
+
+    if args.v2:
+        from baseline.humanoid21.curriculum.framework.training_loop_v2 import train
+        print("[train] using v2 training loop (sub-episode segmentation)", flush=True)
+    else:
+        from baseline.humanoid21.curriculum.framework.training_loop import train
 
     train(experiment, run_dir=run_dir, resume_from=resume_from)
 

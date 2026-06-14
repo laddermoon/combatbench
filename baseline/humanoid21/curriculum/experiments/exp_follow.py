@@ -27,9 +27,8 @@ _FALLBACK_POLICY_BP = PolicyBlueprint.load(
     "policy_exports/u10000/policy_blueprint.yaml"
 )
 _GATING_MODEL_DIR = str(
-    Path(__file__).resolve().parent.parent / "gating_model_plus"
+    Path(__file__).resolve().parent.parent / "gating_model_plus_mix_level"
 )
-
 
 class FollowConfig(ExperimentConfig):
     """Follow-opponent curriculum experiment.
@@ -222,9 +221,9 @@ class FollowConfig(ExperimentConfig):
         r_cross = _extract_per_step_scalar(oo, "cross_support", T)
 
         # r_hold: in-zone hold reward
-        r_hold = _extract_per_step_field(oo, "in_zone_hold", "reward", T)
-        if r_hold is None:
-            r_hold = np.zeros(T, dtype=np.float32)
+        #r_hold = _extract_per_step_field(oo, "in_zone_hold", "reward", T)
+        #if r_hold is None:
+        #    r_hold = np.zeros(T, dtype=np.float32)
 
         # r_radial / r_tangential: velocity decomposition (trainer-side post-processing)
         from baseline.humanoid21.rewards.follow_opponent import compute_radial_tangential_rewards
@@ -261,13 +260,45 @@ class FollowConfig(ExperimentConfig):
         return {
             "r_fall": r_fall,
             "r_cross": r_cross,
-            "r_hold": r_hold,
+            #"r_hold": r_hold,
             "r_radial": r_radial,
             "r_tangential": r_tangential,
             "r_gate": r_gate,
         }
 
     # ---- Episode metrics --------------------------------------------------
+
+    def segment_episode(self, episode) -> List[Tuple[int, int]]:
+        """Split episode at fallback boundaries, keeping only primary steps.
+
+        Steps where the gating model switched to the fallback (balance
+        recovery) policy are excluded from training so the actor is never
+        trained on actions it did not produce.
+        """
+        T = episode.num_frames
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        extras = episode.action_extras.get(ep_target)
+        if extras is None or "gating_mode" not in extras:
+            return [(0, T)]
+
+        gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
+        L = min(T, len(gating_mode))
+        is_primary = gating_mode[:L] >= 0.5
+
+        segments: List[Tuple[int, int]] = []
+        start = None
+        for t in range(L):
+            if is_primary[t]:
+                if start is None:
+                    start = t
+            else:
+                if start is not None:
+                    segments.append((start, t))
+                    start = None
+        if start is not None:
+            segments.append((start, L))
+
+        return segments
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Per-episode metrics for eval comparison and logging."""
