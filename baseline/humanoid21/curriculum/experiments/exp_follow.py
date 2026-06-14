@@ -71,6 +71,9 @@ class FollowConfig(ExperimentConfig):
     # Penalty per step where MixedPolicy switches to fallback.
     gate_switch_penalty: float = -0.5
 
+    # Fixed spawn distance (no randomization) for consistent curriculum metric.
+    INITIAL_DISTANCE: float = 2.0
+
     # --- Curriculum: opponent movement speed levels ---
     SPEED_FULL: float = 0.8  # max opponent speed at level cap
     LEVEL_SCALES: Tuple[float, ...] = (0.0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
@@ -132,23 +135,18 @@ class FollowConfig(ExperimentConfig):
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         mixed_bp = self._make_mixed_bp(policy_bp)
         speed = self.current_speed
-        rng = np.random.default_rng(base_seed)
 
         env_bps: Dict[str, EnvBlueprint] = {
             aid: self._materialize_env(aid, speed)
             for aid in ("robot_a", "robot_b")
         }
 
+        initial_distance = self.INITIAL_DISTANCE
+
         jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
-            initial_distance = float(
-                rng.uniform(
-                    self.custom_config["rollout_distance_min"],
-                    self.custom_config["rollout_distance_max"],
-                )
-            )
             jobs.append((
                 mixed_bp, _RANDOM_POLICY_BP,
                 env_bps[agent_id], seed,
