@@ -40,7 +40,7 @@ class FollowConfig(ExperimentConfig):
     policy itself is a no-op random policy.
 
     Curriculum knob: the opponent's movement speed
-    (``random_move_speed`` env parameter), scaled by ``LEVEL_SCALES``.
+    (``random_move_speed`` env parameter), indexed by ``LEVEL_SPEEDS``.
     """
 
     name = "follow"
@@ -76,9 +76,8 @@ class FollowConfig(ExperimentConfig):
     # Fixed spawn distance (no randomization) for consistent curriculum metric.
     INITIAL_DISTANCE: float = 2.0
 
-    # --- Curriculum: opponent movement speed levels ---
-    SPEED_FULL: float = 0.8  # max opponent speed at level cap
-    LEVEL_SCALES: Tuple[float, ...] = (0.0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
+    # --- Curriculum: opponent movement speed per level (m/s) ---
+    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.12, 0.24, 0.36, 0.48, 0.64, 0.8)
     PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
@@ -99,8 +98,8 @@ class FollowConfig(ExperimentConfig):
     @property
     def current_speed(self) -> float:
         """Current opponent movement speed (m/s), derived from level."""
-        idx = max(0, min(self._level, len(self.LEVEL_SCALES) - 1))
-        return float(self.SPEED_FULL * self.LEVEL_SCALES[idx])
+        idx = max(0, min(self._level, len(self.LEVEL_SPEEDS) - 1))
+        return float(self.LEVEL_SPEEDS[idx])
 
     def _materialize_env(
         self, agent_id: str, random_move_speed: float,
@@ -193,7 +192,7 @@ class FollowConfig(ExperimentConfig):
         self._survival_rate = float(eval_metrics.get("survived", 0.0))
         self._primary_ratio = float(eval_metrics.get("primary_ratio", 0.0))
 
-        if self._level < len(self.LEVEL_SCALES) - 1:
+        if self._level < len(self.LEVEL_SPEEDS) - 1:
             if hold_ratio >= self.PROMOTE_HOLD_RATIO:
                 self._consecutive_pass += 1
                 if self._consecutive_pass >= self.PROMOTE_PATIENCE:
