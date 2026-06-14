@@ -42,11 +42,12 @@ class FollowConfig(ExperimentConfig):
     """
 
     name = "follow"
-    reward_keys = ("r_fall", "r_cross", "r_radial", "r_gate")
+    reward_keys = ("r_fall", "r_cross", "r_radial", "r_tangential", "r_gate")
     gammas = {
         "r_fall": 0.99,
         "r_cross": 0.99,
         "r_radial": 0.99,
+        "r_tangential": 0.99,
         "r_gate": 0.99,
     }
 
@@ -176,7 +177,7 @@ class FollowConfig(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 1.0, 1.0, 1.0)
 
     def next_weights(
         self,
@@ -196,7 +197,7 @@ class FollowConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 1.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
@@ -221,8 +222,8 @@ class FollowConfig(ExperimentConfig):
         if r_hold is None:
             r_hold = np.zeros(T, dtype=np.float32)
 
-        # r_radial: approach reward (trainer-side post-processing)
-        from baseline.humanoid21.rewards.follow_opponent import compute_approach_rewards
+        # r_radial / r_tangential: velocity decomposition (trainer-side post-processing)
+        from baseline.humanoid21.rewards.follow_opponent import compute_radial_tangential_rewards
 
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
         self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
@@ -231,10 +232,11 @@ class FollowConfig(ExperimentConfig):
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T, dtype=np.float32)
+            r_tangential = np.zeros(T, dtype=np.float32)
         else:
             self_xy = np.stack([self_x, self_y], axis=1)
             opp_xy = np.stack([opp_x, opp_y], axis=1)
-            r_radial, _ = compute_approach_rewards(self_xy, opp_xy)
+            r_radial, r_tangential = compute_radial_tangential_rewards(self_xy, opp_xy)
 
         # r_gate: penalty when MixedPolicy switches to fallback mode
         r_gate = np.zeros(T, dtype=np.float32)
@@ -257,6 +259,7 @@ class FollowConfig(ExperimentConfig):
             "r_cross": r_cross,
             "r_hold": r_hold,
             "r_radial": r_radial,
+            "r_tangential": r_tangential,
             "r_gate": r_gate,
         }
 
@@ -267,12 +270,16 @@ class FollowConfig(ExperimentConfig):
         T = episode.num_frames
         fell = "imbalance" in episode.termination_proposals
 
-        # Fraction of steps spent in opponent's zone (from in_zone_hold observer).
-        in_zone = _extract_per_step_field(
-            episode.observer_outputs, "in_zone_hold", "in_zone", T,
-        )
-        if in_zone is not None:
-            hold_ratio = float(np.mean(in_zone > 0.5))
+        # hold_ratio: fraction of steps within 1.0m of opponent, computed from
+        # RAW (unsmoothed) positions recorded by the approach_velocity observer.
+        oo = episode.observer_outputs
+        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
+            raw_dist = np.sqrt((self_x - opp_x) ** 2 + (self_y - opp_y) ** 2)
+            hold_ratio = float(np.mean(raw_dist <= 1.0))
         else:
             hold_ratio = 0.0
 

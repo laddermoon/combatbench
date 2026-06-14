@@ -387,3 +387,88 @@ def compute_approach_rewards(
             plt.show()
 
     return radial, tangential
+
+
+# ---------------------------------------------------------------------------
+# Velocity-decomposition approach (replaces compute_approach_rewards in new code)
+# ---------------------------------------------------------------------------
+def compute_radial_tangential_rewards(
+    self_xy: np.ndarray,
+    opp_xy: np.ndarray,
+    *,
+    dist_max: float = FOLLOW_DIST_MAX,
+    smooth_window: int = APPROACH_SMOOTH_WINDOW,
+    radial_coef: float = 1.0,
+    tangential_coef: float = 1.0,
+    disp_clip: float = APPROACH_DISP_CLIP,
+):
+    """平滑轨迹 → 速度 → 分解为径向（朝对手）与切向（横向）两个独立奖励。
+
+    流程::
+
+        1. 对自身轨迹做居中移动平均（去步态摆动）→ sm
+        2. 居中差分得每步净位移向量 disp（速度代理）
+        3. 计算"指向对手"单位向量 d_hat = (opp - sm) / |opp - sm|
+        4. 分解位移:
+             径向标量  v_rad = disp · d_hat        （正值=接近，负值=远离）
+             切向量    v_tan = disp - v_rad * d_hat
+             切向模长  |v_tan|                       （恒 ≥ 0）
+
+    奖励::
+        radial     =  radial_coef * v_rad            （接近时为正奖励，远离时为负惩罚）
+        tangential = -tangential_coef * |v_tan|      （恒为惩罚，横向移动越快惩罚越大）
+
+    门控: 仅在区外（distance > dist_max）时给信号。
+
+    返回 ``(radial, tangential)``，均为 ``(T,)`` float32。
+    """
+    self_xy = np.asarray(self_xy, dtype=np.float64)
+    opp_xy = np.asarray(opp_xy, dtype=np.float64)
+    T = self_xy.shape[0]
+    radial = np.zeros(T, dtype=np.float32)
+    tangential = np.zeros(T, dtype=np.float32)
+    if T < 2:
+        return radial, tangential
+
+    # 阶段 1：平滑自身轨迹（去步态摆动）。
+    sm = _centered_moving_average(self_xy, smooth_window)
+
+    # 阶段 2：居中差分求每步净位移（速度代理）。
+    disp = np.empty_like(sm)
+    disp[1:-1] = (sm[2:] - sm[:-2]) * 0.5
+    disp[0] = sm[1] - sm[0]
+    disp[-1] = sm[-1] - sm[-2]
+
+    # clip 位移模长，防数值异常的瞬时大跳。
+    mag = np.linalg.norm(disp, axis=1)
+    big = mag > disp_clip
+    if np.any(big):
+        disp[big] *= (disp_clip / np.maximum(mag[big], 1e-9))[:, None]
+
+    speed = np.linalg.norm(disp, axis=1)
+    moving = speed > 1e-9
+
+    # 指向对手的方向（用平滑后位置计算，与速度同源）。
+    to_opp = opp_xy - sm
+    dist = np.linalg.norm(to_opp, axis=1)
+
+    valid = (dist > 1e-6) & moving
+
+    # 分解位移为径向 + 切向。
+    to_opp_hat = np.zeros((T, 2), dtype=np.float64)
+    to_opp_hat[valid] = to_opp[valid] / dist[valid, None]
+
+    v_radial_scalar = np.zeros(T, dtype=np.float64)
+    v_radial_scalar[valid] = np.sum(disp[valid] * to_opp_hat[valid], axis=1)
+
+    v_tangential_vec = disp - v_radial_scalar[:, None] * to_opp_hat
+    v_tangential_mag = np.linalg.norm(v_tangential_vec, axis=1)
+
+    # 门控：仅在区外给信号。
+    out_zone = dist > max(float(dist_max), 1e-6)
+    mask = out_zone & valid
+
+    radial[mask] = (radial_coef * v_radial_scalar[mask]).astype(np.float32)
+    tangential[mask] = (-tangential_coef * v_tangential_mag[mask]).astype(np.float32)
+
+    return radial, tangential
