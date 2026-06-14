@@ -43,7 +43,11 @@ class RandomMovePlugin(BasePlugin):
         self.trained_robot = self._other_robot(target_robot)
         self.speed = float(speed)
         self.min_avoid_distance = float(min_avoid_distance)
-        
+
+        # Precompute per-step displacement (m/s -> m/step) so the step logic
+        # doesn't need to multiply by ACTION_DT every call.
+        self._step_distance: float = self.speed * self.ACTION_DT
+
         self._rng = np.random.RandomState(random_seed)
         self._waypoint: Optional[np.ndarray] = None  # 2D waypoint [x, y]
         self._steps_on_current_waypoint = 0
@@ -136,7 +140,7 @@ class RandomMovePlugin(BasePlugin):
             move_dir = np.zeros(2, dtype=np.float32)
 
         # 5. Proposed next position
-        step_dist = self.speed * self.ACTION_DT
+        step_dist = self._step_distance
         proposed_pos = opp_pos + step_dist * move_dir
 
         # 6. Apply collision avoidance (repel from trained robot)
