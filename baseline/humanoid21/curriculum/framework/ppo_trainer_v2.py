@@ -516,6 +516,10 @@ def ppo_update(
             "n_minibatches": len(epoch_kls),
         })
 
+        # Accumulate losses from this epoch (before early-stop break,
+        # otherwise pol_losses is empty and policy_loss reports 0.0).
+        pol_losses.extend(epoch_pol_losses)
+
         # Normal early stop: if mean KL exceeds target
         if target_kl > 0.0 and mean_epoch_kl > target_kl:
             print(
@@ -524,9 +528,6 @@ def ppo_update(
             )
             early_stop_kl = mean_epoch_kl
             break
-
-        # Accumulate losses from this epoch
-        pol_losses.extend(epoch_pol_losses)
 
 
 
