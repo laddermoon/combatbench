@@ -42,11 +42,10 @@ class FollowConfig(ExperimentConfig):
     """
 
     name = "follow"
-    reward_keys = ("r_fall", "r_cross", "r_hold", "r_radial", "r_gate")
+    reward_keys = ("r_fall", "r_cross", "r_radial", "r_gate")
     gammas = {
         "r_fall": 0.99,
         "r_cross": 0.99,
-        "r_hold": 0.99,
         "r_radial": 0.99,
         "r_gate": 0.99,
     }
@@ -177,7 +176,7 @@ class FollowConfig(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 1.0, 1.0)
 
     def next_weights(
         self,
@@ -197,7 +196,7 @@ class FollowConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
