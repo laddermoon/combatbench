@@ -21,8 +21,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _RANDOM_POLICY_BP = PolicyBlueprint.load(
     _PROJECT_ROOT / "policy" / "blueprints" / "random.yaml"
 )
-_STANDING_POLICY_BP = PolicyBlueprint.load(
-    _PROJECT_ROOT / "policy" / "blueprints" / "humanoid21" / "standing.yaml"
+_FALLBACK_POLICY_BP = PolicyBlueprint.load(
+    "/data1/mono/things/combatbench/baseline/humanoid21/runs/"
+    "curriculum_balance_recover_plus_20260612_103559/"
+    "policy_exports/u10000/policy_blueprint.yaml"
 )
 _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_plus"
@@ -122,7 +124,7 @@ class FollowConfig(ExperimentConfig):
             cls="baseline.humanoid21.curriculum.mixed_policy:MixedPolicy",
             config={
                 "primary_policy_bp": primary_bp.to_dict(),
-                "fallback_policy_bp": _STANDING_POLICY_BP.to_dict(),
+                "fallback_policy_bp": _FALLBACK_POLICY_BP.to_dict(),
                 "gating_model_dir": _GATING_MODEL_DIR,
             },
         )
