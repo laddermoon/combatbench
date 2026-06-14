@@ -53,3 +53,38 @@
 - **hold_ratio 趋势非常好，不需要干预**
 - early-stop 每次 epoch 0 是因为从 balance recovery checkpoint 微调，初始 KL 天然很大
 - 继续观察，等待 hold_ratio 达到 0.5 (PROMOTE_HOLD_RATIO) 以触发晋级
+
+---
+
+## [2026-06-15 03:15] 第二次快报 (u10035) — 健康运行
+
+### 核心指标
+- **Update**: 10037 (跑了 37 代)
+- **Level**: 0 (对手静止, speed=0.0 m/s)
+- **hold_ratio**: 0.147 (eval), sinfo=0.166
+  - 趋势: [0.007 → 0.111 → 0.147]，持续上升
+- **survived**: ~0.48 (稳定，略有波动)
+- **primary_ratio**: 1.000 (gating 仍从未切换)
+- **mean episode length**: ~107 步
+
+### Critic 质量大幅改善
+| Component | EV (u10000) | EV (u10037) |
+|-----------|-------------|-------------|
+| r_fall    | +0.84       | +0.995      |
+| r_cross   | +0.44       | +0.700      |
+| r_radial  | -0.59       | **+0.906**  |
+| r_tangential | -0.34    | **+0.717**  |
+
+### PPO 健康
+- epochs_done: 1/4 → 3/4 (KL 更稳定，early-stop 推迟到 epoch 2-3)
+- policy_loss: 0.04 (稳定非零)
+- approx_kl: ~0.05 (在正常范围)
+
+### 诊断结果
+**[HEALTHY]** 无结构性异常。训练正在稳步进行中。
+
+### 决策
+- 不做任何干预
+- 下次检查: 10 分钟后
+- 关注: hold_ratio 是否继续上升，survived 是否保持稳定
+
