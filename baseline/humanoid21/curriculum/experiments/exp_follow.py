@@ -77,13 +77,15 @@ class FollowConfig(ExperimentConfig):
     # --- Curriculum: opponent movement speed levels ---
     SPEED_FULL: float = 0.8  # max opponent speed at level cap
     LEVEL_SCALES: Tuple[float, ...] = (0.0, 0.15, 0.3, 0.45, 0.6, 0.8, 1.0)
-    PROMOTE_SURVIVAL: float = 0.9
+    PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
     # --- Stateful scheduler ---
     _level: int = 0
     _consecutive_pass: int = 0
+    _hold_ratio: float = 0.0
     _survival_rate: float = 0.0
+    _primary_ratio: float = 0.0
 
     # ---- Blueprint helpers ------------------------------------------------
 
@@ -163,14 +165,15 @@ class FollowConfig(ExperimentConfig):
     # ---- Eval comparison --------------------------------------------------
 
     def compare_eval(self, esum, best_esum):
-        """Compare eval metrics: prioritize higher level, then higher survival."""
+        """Compare eval metrics: survival → primary_ratio → hold_ratio."""
         if not best_esum:
             return True
-        level = esum.get("level", 0.0)
-        best_level = best_esum.get("level", 0.0)
-        if level != best_level:
-            return level > best_level
-        return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
+        for key in ("survived", "primary_ratio", "hold_ratio"):
+            cur = esum.get(key, 0.0)
+            best = best_esum.get(key, 0.0)
+            if cur != best:
+                return cur > best
+        return False
 
     # ---- Scheduler --------------------------------------------------------
 
@@ -182,12 +185,14 @@ class FollowConfig(ExperimentConfig):
         eval_metrics: Dict[str, float],
         current_weights: Tuple[float, ...],
     ) -> Tuple[float, ...]:
-        """Advance the opponent speed level when the policy reliably follows."""
-        survival_rate = float(eval_metrics.get("survived", 0.0))
-        self._survival_rate = survival_rate
+        """Advance the opponent speed level when hold_ratio is high enough."""
+        hold_ratio = float(eval_metrics.get("hold_ratio", 0.0))
+        self._hold_ratio = hold_ratio
+        self._survival_rate = float(eval_metrics.get("survived", 0.0))
+        self._primary_ratio = float(eval_metrics.get("primary_ratio", 0.0))
 
         if self._level < len(self.LEVEL_SCALES) - 1:
-            if survival_rate >= self.PROMOTE_SURVIVAL:
+            if hold_ratio >= self.PROMOTE_HOLD_RATIO:
                 self._consecutive_pass += 1
                 if self._consecutive_pass >= self.PROMOTE_PATIENCE:
                     self._level += 1
@@ -281,20 +286,21 @@ class FollowConfig(ExperimentConfig):
         else:
             hold_ratio = 0.0
 
-        # Fraction of steps where MixedPolicy was in fallback mode.
+        # primary_ratio: fraction of steps where the approach (primary) policy
+        # was active rather than the fallback standing policy.
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is not None and "gating_mode" in extras:
             gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
-            gate_fallback_ratio = float(np.mean(gating_mode < 0.5))
+            primary_ratio = float(np.mean(gating_mode >= 0.5))
         else:
-            gate_fallback_ratio = 0.0
+            primary_ratio = 1.0
 
         return {
             "survived": 0.0 if fell else 1.0,
             "level": float(self._level),
             "hold_ratio": hold_ratio,
-            "gate_fallback_ratio": gate_fallback_ratio,
+            "primary_ratio": primary_ratio,
         }
 
     # ---- Scheduler state --------------------------------------------------
@@ -304,20 +310,26 @@ class FollowConfig(ExperimentConfig):
             "level": self._level,
             "opp_speed": round(self.current_speed, 3),
             "consecutive_pass": self._consecutive_pass,
+            "hold_ratio": round(self._hold_ratio, 3),
             "survival_rate": round(self._survival_rate, 3),
+            "primary_ratio": round(self._primary_ratio, 3),
         }
 
     def scheduler_state(self) -> dict:
         return {
             "level": self._level,
             "consecutive_pass": self._consecutive_pass,
+            "hold_ratio": self._hold_ratio,
             "survival_rate": self._survival_rate,
+            "primary_ratio": self._primary_ratio,
         }
 
     def load_scheduler_state(self, state: dict) -> None:
         self._level = int(state.get("level", 0))
         self._consecutive_pass = int(state.get("consecutive_pass", 0))
+        self._hold_ratio = float(state.get("hold_ratio", 0.0))
         self._survival_rate = float(state.get("survival_rate", 0.0))
+        self._primary_ratio = float(state.get("primary_ratio", 0.0))
 
 
 # Singleton instance for the registry
