@@ -316,7 +316,7 @@ class FollowConfig(ExperimentConfig):
         T = episode.num_frames
         fell = "imbalance" in episode.termination_proposals
 
-        # hold_ratio: fraction of steps within 1.0m of opponent, computed from
+        # hold_ratio: fraction of steps within 1.1m of opponent, computed from
         # RAW (unsmoothed) positions recorded by the approach_velocity observer.
         oo = episode.observer_outputs
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
@@ -333,7 +333,7 @@ class FollowConfig(ExperimentConfig):
             if len(raw_dist) > 0:
                 mean_dist = float(np.mean(raw_dist))
                 min_dist = float(np.min(raw_dist))
-                hold_ratio = float(np.mean(raw_dist <= 1.0))
+                hold_ratio = float(np.mean(raw_dist <= 1.1))
 
         # primary_ratio: fraction of steps where the approach (primary) policy
         # was active rather than the fallback standing policy.

@@ -734,3 +734,16 @@ PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experi
 
 
 python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
+
+
+
+把Hold阈值改成1.1M
+
+
+
+
+python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/blueprints/follow_env.yaml \
+  --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/policy_blueprint.yaml \
+  --policy-b-blueprint /data1/mono/things/combatbench/policy/blueprints/random.yaml \
+  --video verify_camera.mp4

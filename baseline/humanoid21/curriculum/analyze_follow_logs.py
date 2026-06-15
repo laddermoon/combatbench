@@ -152,7 +152,7 @@ class FollowLogAnalyzer:
                 "severity": "CRITICAL",
                 "title": "Approach Failure — hold_ratio near zero",
                 "conclusion": (
-                    "The robot spends almost no time within 1m of the opponent. "
+                    "The robot spends almost no time within 1.1m of the opponent. "
                     "The approach policy is not learning to move toward the target."
                 ),
                 "evidence": (
