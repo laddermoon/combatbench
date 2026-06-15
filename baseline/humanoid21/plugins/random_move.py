@@ -153,7 +153,7 @@ class RandomMovePlugin(BasePlugin):
                 repulse_dir = repulse_dir / repulse_dist
             else:
                 repulse_dir = np.array([1.0, 0.0], dtype=np.float32)
-                
+
             # Override movement to push away and pick a new waypoint
             move_dir = repulse_dir
             proposed_pos = opp_pos + step_dist * move_dir
@@ -176,7 +176,7 @@ class RandomMovePlugin(BasePlugin):
         # 9. Formulate new state with standard standing posture
         standing_z = opp_pos_3d[2]  # Keep current Z position to adapt to ground shape
         
-        # Override target robot core state
+        # Override target robot core state (position, rotation, velocities, joints).
         new_state = {
             self.target_robot: {
                 "root_pos": np.array([proposed_pos[0], proposed_pos[1], standing_z], dtype=np.float32),
@@ -188,3 +188,8 @@ class RandomMovePlugin(BasePlugin):
             }
         }
         ctx.mutator.set_core_state(new_state)
+
+        # Override PD targets so the external policy's action is completely
+        # ignored during physics sub-steps.  Without this, the random policy's
+        # joint targets would fight the standing pose and cause drift.
+        ctx.mutator.set_action({self.target_robot: self.STANDING_JOINT_POS.copy()})
