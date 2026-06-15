@@ -72,7 +72,7 @@ class FollowConfig(ExperimentConfig):
     # Small per-step survival bonus.
     per_step_survival_reward: float = 0.01
     # Penalty per step where MixedPolicy switches to fallback.
-    gate_switch_penalty: float = -0.5
+    gate_switch_penalty: float = -1.0
 
     # Fixed spawn distance (no randomization) for consistent curriculum metric.
     INITIAL_DISTANCE: float = 2.0
@@ -253,20 +253,20 @@ class FollowConfig(ExperimentConfig):
             r_radial, r_tangential = compute_radial_tangential_rewards(self_xy, opp_xy)
 
         # r_gate: penalty when MixedPolicy switches to fallback mode
-        r_gate = np.zeros(T, dtype=np.float32)
+        r_gate = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is not None and "gating_mode" in extras:
             gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
-            # gating_mode=1 means primary, 0 means fallback.
-            # Penalise every step in fallback mode.
-            fallback_steps = gating_mode < 0.5
-            length = min(len(fallback_steps), T)
-            r_gate[:length] = np.where(
-                fallback_steps[:length],
-                self.gate_switch_penalty,
-                0.0,
-            )
+            length = min(len(gating_mode), T)
+            is_primary = gating_mode[:length] >= 0.5
+            for t in range(length - 1):
+                if is_primary[t] and not is_primary[t+1]:
+                    r_gate[t] = self.gate_switch_penalty
+                elif not is_primary[t]:
+                    r_gate[t] = 0.0
+            if length > 0 and not is_primary[length - 1]:
+                r_gate[length - 1] = 0.0
 
         return {
             "r_fall": r_fall,
