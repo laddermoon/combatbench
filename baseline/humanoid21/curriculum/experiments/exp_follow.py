@@ -68,6 +68,10 @@ class FollowConfig(ExperimentConfig):
     # --- Rollout schedule ---
     episodes_per_update: int = 1024
     eval_episodes: int = 128
+    eval_interval: int = 2
+
+    # --- Video recording ---
+    video_eval_interval: int = 2
 
     # Small per-step survival bonus.
     per_step_survival_reward: float = 0.01
@@ -78,7 +82,7 @@ class FollowConfig(ExperimentConfig):
     INITIAL_DISTANCE: float = 2.0
 
     # --- Curriculum: opponent movement speed per level (m/s) ---
-    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.12, 0.24, 0.36, 0.48, 0.64, 0.8)
+    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3)
     PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
@@ -189,7 +193,7 @@ class FollowConfig(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 3.0, 1.0, 6.0)
+        return (6.0, 1.0, 3.0, 1.0, 1.0)
 
     def next_weights(
         self,
@@ -211,7 +215,7 @@ class FollowConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 3.0, 1.0, 6.0)
+        return (6.0, 1.0, 3.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
