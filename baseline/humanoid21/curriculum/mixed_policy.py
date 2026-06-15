@@ -35,12 +35,12 @@ class MixedPolicy(Policy):
     ) -> None:
         # 1. Rebuild primary policy blueprint and live instance
         self.primary_policy_bp = self._resolve_bp(primary_policy_bp)
-        print(f"[MixedPolicy] primary_policy_bp: cls={self.primary_policy_bp.cls}", flush=True)
+        #print(f"[MixedPolicy] primary_policy_bp: cls={self.primary_policy_bp.cls}", flush=True)
         self.primary_policy = self.primary_policy_bp.build()
 
         # 2. Rebuild fallback/recovery policy blueprint and live instance
         self.fallback_policy_bp = self._resolve_bp(fallback_policy_bp)
-        print(f"[MixedPolicy] fallback_policy_bp: cls={self.fallback_policy_bp.cls}", flush=True)
+        #print(f"[MixedPolicy] fallback_policy_bp: cls={self.fallback_policy_bp.cls}", flush=True)
         self.fallback_policy = self.fallback_policy_bp.build()
 
         self.threshold = float(threshold)
@@ -52,10 +52,10 @@ class MixedPolicy(Policy):
         config_path = self.gating_model_dir / "gating_config.json"
         model_path = self.gating_model_dir / "gating_model.pt"
 
-        print(f"[MixedPolicy] loading gating model from {self.gating_model_dir}", flush=True)
+        #print(f"[MixedPolicy] loading gating model from {self.gating_model_dir}", flush=True)
         with open(config_path, "r") as f:
             config = json.load(f)
-        print(f"[MixedPolicy] gating config: input_dim={config['input_dim']}, hidden_dims={config['hidden_dims']}", flush=True)
+        #print(f"[MixedPolicy] gating config: input_dim={config['input_dim']}, hidden_dims={config['hidden_dims']}", flush=True)
 
         self.gating_network = GatingMLP(
             input_dim=config["input_dim"],
@@ -64,7 +64,7 @@ class MixedPolicy(Policy):
         checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
         self.gating_network.load_state_dict(checkpoint["state_dict"])
         self.gating_network.eval()
-        print(f"[MixedPolicy] gating model loaded, threshold={self.threshold}, release_threshold={self.release_threshold}", flush=True)
+        #print(f"[MixedPolicy] gating model loaded, threshold={self.threshold}, release_threshold={self.release_threshold}", flush=True)
 
         self._step_count = 0
         self._recovery_count = 0
@@ -122,12 +122,18 @@ class MixedPolicy(Policy):
         # 3. Dispatch action & extras
         if self.active_mode == "primary":
             action, extra = self.primary_policy.act(observation, want_extra)
-            if want_extra and isinstance(extra, dict):
+            if want_extra:
+                if not isinstance(extra, dict):
+                    extra = {}
+                extra.setdefault("log_prob", 0.0)
                 extra["gating_mode"] = 1.0
                 extra["p_safe"] = p_safe
         else:
             action, extra = self.fallback_policy.act(observation, want_extra)
-            if want_extra and isinstance(extra, dict):
+            if want_extra:
+                if not isinstance(extra, dict):
+                    extra = {}
+                extra.setdefault("log_prob", 0.0)
                 extra["gating_mode"] = 0.0
                 extra["p_safe"] = p_safe
 

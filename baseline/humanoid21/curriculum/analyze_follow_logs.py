@@ -236,6 +236,62 @@ class FollowLogAnalyzer:
                     ),
                 })
 
+        # ---- Check F: Gating Network Oscillation ----
+        gating_switches = self._series(self.history, "bsum.gating_switches")
+        if gating_switches:
+            avg_switches = sum(gating_switches) / len(gating_switches)
+            if avg_switches > 8.0:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": "Gating Network Oscillation — too many mode switches",
+                    "conclusion": (
+                        f"The robot switches between primary and fallback policies excessively "
+                        f"({avg_switches:.1f} times per episode). This indicates control instability "
+                        f"and rapid jittering near the gating threshold, which degrades performance."
+                    ),
+                    "evidence": (
+                        f"  avg switches per episode = {avg_switches:.1f}\n"
+                        f"  series: {[round(x, 1) for x in gating_switches]}"
+                    ),
+                    "remedy": (
+                        "1. Increase release_patience in MixedPolicy (e.g. from 10 to 20 or 30) "
+                        "to require a longer stable standing period before switching back to Chaser.\n"
+                        "2. Increase the gap between threshold and release_threshold (e.g. set "
+                        "threshold=0.6, release_threshold=0.92) to add more hysteresis.\n"
+                        "3. Inspect the gating model's prediction stability."
+                    ),
+                })
+
+        # ---- Check G: Chaser Speed Deficiency / Evasion Catch-up Check ----
+        min_dists = self._series(self.history, "bsum.min_dist")
+        if min_dists:
+            avg_min_dist = sum(min_dists) / len(min_dists)
+            opp_speed = self.history[-1].get("sinfo", {}).get("opp_speed", 0.0)
+            if avg_min_dist > 1.1 and opp_speed > 0.0:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": "Locomotion Speed Deficiency — unable to outrun opponent evasion",
+                    "conclusion": (
+                        f"The average minimum distance achieved is {avg_min_dist:.2f}m. "
+                        f"Since the opponent actively flees to maintain a 1.2m distance at {opp_speed:.1f} m/s, "
+                        f"this indicates the chaser policy has not yet learned to sprint fast enough to "
+                        f"break through the 1.2m barrier and enter the target 0.9m zone."
+                    ),
+                    "evidence": (
+                        f"  avg min_distance = {avg_min_dist:.2f}m\n"
+                        f"  opponent speed   = {opp_speed:.2f} m/s\n"
+                        f"  target hold zone = 0.90m\n"
+                        f"  series: {[round(x, 2) for x in min_dists]}"
+                    ),
+                    "remedy": (
+                        "1. Ensure r_radial (approach velocity reward) is strong enough to encourage sprinting.\n"
+                        "2. Inspect the chaser's gait style to verify if it falls when running fast, or if it "
+                        "moves too hesitantly.\n"
+                        "3. Once the chaser's speed surpasses the opponent's speed, it will break through the 1.2m "
+                        "barrier and score hold_ratio successfully."
+                    ),
+                })
+
         return conclusions
 
     # ------------------------------------------------------------------
@@ -262,11 +318,49 @@ class FollowLogAnalyzer:
         kl = stats.get("approx_kl", 0.0)
         ploss = stats.get("policy_loss", 0.0)
 
+        # Find the latest evaluation results in history
+        latest_eval = None
+        eval_update = None
+        for entry in reversed(self.history):
+            if "esum" in entry:
+                latest_eval = entry["esum"]
+                eval_update = entry["update"]
+                break
+
         lines = []
         lines.append(f"  {BOLD}Curriculum{RESET}  level={GREEN}{level}{RESET}  "
                       f"opp_speed={GREEN}{opp_speed:.2f}{RESET} m/s")
         lines.append(f"  {BOLD}Metrics   {RESET}  hold_ratio={hold:.3f}  "
                       f"survived={surv:.3f}  primary_ratio={prim:.3f}")
+        
+        if latest_eval is not None:
+            e_hold = latest_eval.get("hold_ratio", 0.0)
+            e_surv = latest_eval.get("survived", 0.0)
+            e_prim = latest_eval.get("primary_ratio", 1.0)
+            lines.append(f"  {BOLD}Metrics(E){RESET}  hold_ratio={e_hold:.3f}  "
+                          f"survived={e_surv:.3f}  primary_ratio={e_prim:.3f} {BLUE}[u{eval_update}]{RESET}")
+        
+        # Display professional geometric and gating metrics if present
+        if "mean_dist" in bsum or "min_dist" in bsum:
+            mean_dist = bsum.get("mean_dist", 99.0)
+            min_dist = bsum.get("min_dist", 99.0)
+            geom_str = f"  {BOLD}Geometry  {RESET}  mean_dist={mean_dist:.2f}m  min_dist={min_dist:.2f}m"
+            if latest_eval is not None and "mean_dist" in latest_eval:
+                e_mean_dist = latest_eval.get("mean_dist", 99.0)
+                e_min_dist = latest_eval.get("min_dist", 99.0)
+                geom_str += f" | {BLUE}[Eval]{RESET} mean={e_mean_dist:.2f}m  min={e_min_dist:.2f}m"
+            lines.append(geom_str)
+
+        if "gating_switches" in bsum or "mean_p_safe" in bsum:
+            switches = bsum.get("gating_switches", 0.0)
+            p_safe = bsum.get("mean_p_safe", 1.0)
+            gate_str = f"  {BOLD}Gating    {RESET}  switches={switches:.1f}  mean_p_safe={p_safe:.3f}"
+            if latest_eval is not None and "gating_switches" in latest_eval:
+                e_switches = latest_eval.get("gating_switches", 0.0)
+                e_p_safe = latest_eval.get("mean_p_safe", 1.0)
+                gate_str += f" | {BLUE}[Eval]{RESET} switches={e_switches:.1f}  p_safe={e_p_safe:.3f}"
+            lines.append(gate_str)
+
         lines.append(f"  {BOLD}Episode   {RESET}  mean_len={ep_len:.0f} steps")
         lines.append(f"  {BOLD}PPO       {RESET}  loss={ploss:+.4f}  "
                       f"epochs={epochs}/4  kl={kl:.4f}")

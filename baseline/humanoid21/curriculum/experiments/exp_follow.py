@@ -54,6 +54,8 @@ class FollowConfig(ExperimentConfig):
 
     BLUEPRINT = "follow_env.yaml"
 
+    max_updates: int = 20000
+
     # --- PPO tuning ---
     log_std_min: float = -1.8
     learning_rate: float = 3e-5
@@ -178,7 +180,7 @@ class FollowConfig(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 3.0, 1.0, 6.0)
 
     def next_weights(
         self,
@@ -200,7 +202,7 @@ class FollowConfig(ExperimentConfig):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 1.0, 1.0, 1.0)
+        return (6.0, 1.0, 3.0, 1.0, 6.0)
 
     # ---- Reward extraction ------------------------------------------------
 
@@ -312,27 +314,47 @@ class FollowConfig(ExperimentConfig):
         self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
         opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
         opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        
+        mean_dist = 99.0
+        min_dist = 99.0
+        hold_ratio = 0.0
+        
         if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
             raw_dist = np.sqrt((self_x - opp_x) ** 2 + (self_y - opp_y) ** 2)
-            hold_ratio = float(np.mean(raw_dist <= 1.0))
-        else:
-            hold_ratio = 0.0
+            if len(raw_dist) > 0:
+                mean_dist = float(np.mean(raw_dist))
+                min_dist = float(np.min(raw_dist))
+                hold_ratio = float(np.mean(raw_dist <= 1.0))
 
         # primary_ratio: fraction of steps where the approach (primary) policy
         # was active rather than the fallback standing policy.
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
-        if extras is not None and "gating_mode" in extras:
-            gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
-            primary_ratio = float(np.mean(gating_mode >= 0.5))
-        else:
-            primary_ratio = 1.0
+        
+        primary_ratio = 1.0
+        gating_switches = 0.0
+        mean_p_safe = 1.0
+        
+        if extras is not None:
+            if "gating_mode" in extras:
+                gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
+                if len(gating_mode) > 0:
+                    primary_ratio = float(np.mean(gating_mode >= 0.5))
+                    gating_switches = float(np.sum(np.abs(np.diff(gating_mode)) > 0.5))
+            if "p_safe" in extras:
+                p_safe = np.asarray(extras["p_safe"], dtype=np.float32).reshape(-1)
+                if len(p_safe) > 0:
+                    mean_p_safe = float(np.mean(p_safe))
 
         return {
             "survived": 0.0 if fell else 1.0,
             "level": float(self._level),
             "hold_ratio": hold_ratio,
             "primary_ratio": primary_ratio,
+            "mean_dist": mean_dist,
+            "min_dist": min_dist,
+            "gating_switches": gating_switches,
+            "mean_p_safe": mean_p_safe,
         }
 
     # ---- Scheduler state --------------------------------------------------

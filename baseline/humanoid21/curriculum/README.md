@@ -693,3 +693,42 @@ python3 /data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_lo
 
 
 机器人移动就是上一次一直没有过去的一个点，就是一直不知道让他怎么移动，因为上次训练的时候是这个呃对称策略，对，训练的是对称策略，然后那个可能是有一个天然的问题，然后现在可能用的是这个对手是随机策略的，我觉得这个这现在这一关有可能是能够过去的，那我就是控制机器人的移动的方向，然后让它去嗯靠近这个对手。呃我觉得有一定成功的可能性。现在能想到想到的问题就是这么多，明天早上再看吧。
+
+
+
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/checkpoints/checkpoint_u10000.pt &> follow.log & 
+
+
+
+
+
+
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/checkpoints/checkpoint_u10000.pt &> follow.log & 
+我现在用上面这个命令开始了模型训练, 请帮我检查一下这个模型训练有没有问题，就是训练代码有没有问题。因为也是刚刚写完的训练代码有没有问题。然后训练的逻辑有没有什么问题？对，帮我大概先check一下
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/analyze_logs.py
+对，然后另外我要做的一个事情是，参照上面的这个，之前训练这种扰动恢复模型时候用到的这个日志分析的这个工具。然后但是现在这个，那现在这个新的这个这个这个现在这个是目标跟随的这个训练，这个要分析的内容和监测的指标都不太都很不一样。然后这个呢，需要重新可能这方面需要重新实现，然后请参照上面这个脚本，然后可能要实现一个新的这种日志分析，就是监控的脚本，然后这个脚本用来追踪训练的过程。然后如果在代码实现中本身这个日志加的不够的话，日志加的有问题的话，就那就可以先把这个日志给加好，对，先把这个日志给加好，然后，我的最终的目标是通过这个监控，然后去发现问题，然后解决问题。通过这种方式来推动这个训练的进展，就是通过相当于是TDD的模式，先那个发现问题，然后解决问题，就不去检查所有的代码，先去刻意一定要把所有代码都发觉得是正确的。然后只是通过一些指标去监测问题，然后如果指标有问题的时候，再去找问题，对通过这种方式
+
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/OBSERVABILITY.md
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/SYSTEM_MODEL.md
+然后，上面这两个文档也是比较重要的，可以去参照的。就这个文档是那个这两个文档说明了当前的系统模型。当然，这个是参照以前的那个，现在这个在系统上加了这个萨episode segmentation的功能，然后之前是没有的，这个稍微有一点不一样，但大总体上应该是差不多的
+
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/PPOTrainDirection.md
+
+然后，上面这个文档是我整理的一个PP的训练PPO训练的一个指南，或者说说指导手册。然后，就是这个是可以作为一个参照
+
+
+# 1. 启动健康的 PPO 追逐策略训练
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
+  --v2 \
+  --experiment follow \
+  --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_094945/checkpoints/checkpoint_u10220.pt \
+  &> follow.log &
+
+# 2. 使用我们为您全面专业化升级的工具进行实时追踪与诊断：
+python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
+
+
+
+
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/checkpoints/checkpoint_u10000.pt &> follow.log & 
+
