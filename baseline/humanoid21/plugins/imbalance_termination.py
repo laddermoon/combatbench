@@ -195,11 +195,15 @@ class ImbalanceTerminationPlugin(BasePlugin):
         self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
 
     def on_post_action_step(self, ctx: SimContext) -> None:
-        if self._is_non_foot_grounded(ctx):
-            ctx.request_termination("imbalance")
+        if self.agent_id == "both":
+            if self._is_non_foot_grounded(ctx, "robot_a") or self._is_non_foot_grounded(ctx, "robot_b"):
+                ctx.request_termination("imbalance")
+        else:
+            if self._is_non_foot_grounded(ctx, self.agent_id):
+                ctx.request_termination("imbalance")
 
-    def _is_non_foot_grounded(self, ctx: SimContext) -> bool:
-        """检查当前物理步快照下，机器人是否有非脚部部位与地面接触。
+    def _is_non_foot_grounded(self, ctx: SimContext, robot_id: str) -> bool:
+        """检查当前物理步快照下，指定机器人是否有非脚部部位与地面接触。
 
         使用 ``robot_environment_contacts``，其中每条记录已预过滤为
         "机器人身体 ↔ 环境几何体" 的接触，字段为：
@@ -213,7 +217,7 @@ class ImbalanceTerminationPlugin(BasePlugin):
         ground_geom = self._ground_geom_name or 'ground'
 
         for contact in env_contacts:
-            if contact.get('robot') != self.agent_id:
+            if contact.get('robot') != robot_id:
                 continue
             if contact.get('environment_geom') != ground_geom:
                 continue
