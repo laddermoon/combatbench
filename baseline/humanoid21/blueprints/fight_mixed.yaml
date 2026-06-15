@@ -1,0 +1,51 @@
+# ParameterizedPolicyBlueprint for FightMixedPolicy.
+#
+# Wraps a primary (learning) Fight policy with a frozen Follow policy and a frozen Recover policy,
+# utilizing both a Gating MLP shield and distance-based hysteresis.
+#
+# Usage (code):
+#   from envs.framework.policy import ParameterizedPolicyBlueprint
+#   pb = ParameterizedPolicyBlueprint.load("baseline/humanoid21/blueprints/fight_mixed.yaml")
+#   policy = pb.build(primary_policy_bp="path/to/primary.yaml")
+
+version: 1
+parameters:
+  primary_policy_bp:
+    default: "/data1/mono/things/combatbench/policy/blueprints/random.yaml"
+    description: "Path (str) or dict for the primary learning Fight policy blueprint."
+  follow_policy_bp:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/policy_blueprint.yaml"
+    description: "Path (str) or dict for the frozen fallback Follow policy blueprint."
+  fallback_policy_bp:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/policy_exports/u10000/policy_blueprint.yaml"
+    description: "Path (str) or dict for the frozen fallback Recover policy blueprint."
+  gating_model_dir:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_model_plus_mix_level"
+    description: "Path to the gating model directory (gating_config.json + gating_model.pt)."
+  threshold:
+    default: 0.65
+    description: "Fall-prediction threshold — switch to fallback when p_safe < threshold."
+  release_threshold:
+    default: 0.90
+    description: "Recovery threshold — p_safe must exceed this to start counting toward release."
+  release_patience:
+    default: 10
+    description: "Consecutive steps above release_threshold required before switching back."
+  distance_fallback_threshold:
+    default: 1.3
+    description: "Distance threshold (m) above which policy switches from Fight to Follow."
+  distance_recover_threshold:
+    default: 1.0
+    description: "Distance threshold (m) below which policy switches back from Follow to Fight."
+
+cls: "baseline.humanoid21.curriculum.fight_mixed_policy:FightMixedPolicy"
+config:
+  primary_policy_bp: "${primary_policy_bp}"
+  follow_policy_bp: "${follow_policy_bp}"
+  fallback_policy_bp: "${fallback_policy_bp}"
+  gating_model_dir: "${gating_model_dir}"
+  threshold: "${threshold}"
+  release_threshold: "${release_threshold}"
+  release_patience: "${release_patience}"
+  distance_fallback_threshold: "${distance_fallback_threshold}"
+  distance_recover_threshold: "${distance_recover_threshold}"
