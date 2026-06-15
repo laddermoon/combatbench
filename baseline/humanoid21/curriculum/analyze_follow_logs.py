@@ -42,7 +42,45 @@ class FollowLogAnalyzer:
 
     def __init__(self, window_size: int = 10):
         self.window_size = window_size
-        self.history: deque = deque(maxlen=window_size)
+        self.history: deque = deque(maxlen=100)
+
+    def _recent_history(self) -> deque:
+        """Returns a deque of the most recent self.window_size entries."""
+        return deque(list(self.history)[-self.window_size:], maxlen=self.window_size)
+
+    def _calculate_trend(self, path: str, length: int = 50) -> Optional[Dict[str, Any]]:
+        """Calculate long-term trend (slope, overall change) over history."""
+        series = self._series(self.history, path)
+        if len(series) < 5:
+            return None
+        
+        series = series[-length:]
+        n = len(series)
+        if n < 5:
+            return None
+        
+        # Simple linear regression
+        x = list(range(n))
+        y = series
+        mean_x = sum(x) / n
+        mean_y = sum(y) / n
+        num = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+        den = sum((x[i] - mean_x) ** 2 for i in range(n))
+        
+        slope = num / den if den != 0 else 0.0
+        
+        half = max(1, n // 5)
+        first_avg = sum(series[:half]) / half
+        last_avg = sum(series[-half:]) / half
+        overall_diff = last_avg - first_avg
+        
+        return {
+            "slope": slope,
+            "overall_diff": overall_diff,
+            "first_avg": first_avg,
+            "last_avg": last_avg,
+            "n": n
+        }
 
     def feed_line(self, line: str) -> Optional[Dict[str, Any]]:
         if "__RAW_STATS__" in line:
@@ -102,11 +140,12 @@ class FollowLogAnalyzer:
             return []
 
         conclusions: List[Dict[str, Any]] = []
-        u_start = self.history[0]["update"]
-        u_end   = self.history[-1]["update"]
+        recent = self._recent_history()
+        u_start = recent[0]["update"]
+        u_end   = recent[-1]["update"]
 
         # ---- Check A: Hold ratio stagnation (approach failure) ----
-        hold_ratios = self._series(self.history, "bsum.hold_ratio")
+        hold_ratios = self._series(recent, "bsum.hold_ratio")
         avg_hold = sum(hold_ratios) / len(hold_ratios)
         if avg_hold < 0.05:
             conclusions.append({
@@ -117,7 +156,7 @@ class FollowLogAnalyzer:
                     "The approach policy is not learning to move toward the target."
                 ),
                 "evidence": (
-                    f"  Window u{u_start}–u{u_end} ({len(self.history)} updates)\n"
+                    f"  Window u{u_start}–u{u_end} ({len(recent)} updates)\n"
                     f"  avg hold_ratio = {avg_hold:.4f}\n"
                     f"  series: {[round(x, 4) for x in hold_ratios]}"
                 ),
@@ -132,10 +171,10 @@ class FollowLogAnalyzer:
             })
 
         # ---- Check B: PPO early-stop every epoch ----
-        epochs_dones = self._series(self.history, "stats.epochs_done")
+        epochs_dones = self._series(recent, "stats.epochs_done")
         avg_epochs = sum(epochs_dones) / len(epochs_dones) if epochs_dones else 0
         if avg_epochs <= 1.2:
-            kls = self._series(self.history, "stats.approx_kl")
+            kls = self._series(recent, "stats.approx_kl")
             conclusions.append({
                 "severity": "WARNING",
                 "title": "PPO Early Stop — KL exceeds target every update",
@@ -159,7 +198,7 @@ class FollowLogAnalyzer:
             })
 
         # ---- Check C: Exploration collapse ----
-        std_mins = self._series(self.history, "stats.std_min")
+        std_mins = self._series(recent, "stats.std_min")
         avg_std_min = sum(std_mins) / len(std_mins) if std_mins else 1.0
         if avg_std_min <= 0.145:
             conclusions.append({
@@ -180,13 +219,13 @@ class FollowLogAnalyzer:
             })
 
         # ---- Check D: Critic explained variance ----
-        last = self.history[-1]
+        last = recent[-1]
         stats = last.get("stats", {})
         for key in ("r_fall", "r_cross", "r_radial", "r_tangential"):
             ev_key = f"ev_{key}"
             if ev_key not in stats:
                 continue
-            evs = self._series(self.history, f"stats.{ev_key}")
+            evs = self._series(recent, f"stats.{ev_key}")
             avg_ev = sum(evs) / len(evs) if evs else 0.0
             if avg_ev <= 0.0:
                 conclusions.append({
@@ -209,7 +248,7 @@ class FollowLogAnalyzer:
                 })
 
         # ---- Check E: Survival decline ----
-        surv = self._series(self.history, "bsum.survived")
+        surv = self._series(recent, "bsum.survived")
         if len(surv) >= 5:
             half = len(surv) // 2
             first_avg = sum(surv[:half]) / half
@@ -237,7 +276,7 @@ class FollowLogAnalyzer:
                 })
 
         # ---- Check F: Gating Network Oscillation ----
-        gating_switches = self._series(self.history, "bsum.gating_switches")
+        gating_switches = self._series(recent, "bsum.gating_switches")
         if gating_switches:
             avg_switches = sum(gating_switches) / len(gating_switches)
             if avg_switches > 8.0:
@@ -263,10 +302,10 @@ class FollowLogAnalyzer:
                 })
 
         # ---- Check G: Chaser Speed Deficiency / Evasion Catch-up Check ----
-        min_dists = self._series(self.history, "bsum.min_dist")
+        min_dists = self._series(recent, "bsum.min_dist")
         if min_dists:
             avg_min_dist = sum(min_dists) / len(min_dists)
-            opp_speed = self.history[-1].get("sinfo", {}).get("opp_speed", 0.0)
+            opp_speed = recent[-1].get("sinfo", {}).get("opp_speed", 0.0)
             if avg_min_dist > 1.1 and opp_speed > 0.0:
                 conclusions.append({
                     "severity": "WARNING",
@@ -291,6 +330,42 @@ class FollowLogAnalyzer:
                         "barrier and score hold_ratio successfully."
                     ),
                 })
+
+        # ---- Check H: Learning Stagnation Detection (Long-term trend analysis) ----
+        if len(self.history) >= 20:
+            min_dist_trend = self._calculate_trend("bsum.min_dist", length=50)
+            hold_ratio_trend = self._calculate_trend("bsum.hold_ratio", length=50)
+            
+            if min_dist_trend and hold_ratio_trend:
+                overall_d_min = min_dist_trend["overall_diff"]
+                overall_d_hold = hold_ratio_trend["overall_diff"]
+                avg_min = min_dist_trend["last_avg"]
+                n_updates = min_dist_trend["n"]
+                
+                if overall_d_min >= -0.02 and overall_d_hold <= 0.005 and avg_min > 1.2:
+                    conclusions.append({
+                        "severity": "CRITICAL",
+                        "title": "Learning Stagnation — policy is not learning to approach target",
+                        "conclusion": (
+                            f"Over the last {n_updates} updates, the policy has shown zero progress "
+                            f"in learning to approach the opponent. The minimum achieved distance is "
+                            f"stagnating at {avg_min:.2f}m (overall change = {overall_d_min:+.2f}m), "
+                            f"and hold_ratio is flat (overall change = {overall_d_hold:+.3f})."
+                        ),
+                        "evidence": (
+                            f"  Trend Window     = {n_updates} updates\n"
+                            f"  Current min_dist = {avg_min:.2f}m (target: <0.9m)\n"
+                            f"  min_dist overall change   = {overall_d_min:+.2f}m\n"
+                            f"  hold_ratio overall change = {overall_d_hold:+.3f}"
+                        ),
+                        "remedy": (
+                            "1. Increase r_radial (radial approach reward) weight in follow_opponent.yaml or in initial_weights "
+                            "to make the chaser's directional walking gradients stronger.\n"
+                            "2. Lower tangential penalty (r_tangential) or other effort penalties during early walk-discovery.\n"
+                            "3. Verify if exploration has collapsed: check the 'std' values under 'Policy'. If std is near the minimum floor (0.15), "
+                            "the robot is too deterministic to explore. Raise log_std_min or increase entropy_coef."
+                        ),
+                    })
 
         return conclusions
 
@@ -361,6 +436,22 @@ class FollowLogAnalyzer:
                 gate_str += f" | {BLUE}[Eval]{RESET} switches={e_switches:.1f}  p_safe={e_p_safe:.3f}"
             lines.append(gate_str)
 
+        # Gating Shield details (fallback attempts, recoveries, and failure partitioning)
+        if "fallback_attempts" in bsum:
+            attempts = bsum.get("fallback_attempts", 0.0)
+            recoveries = bsum.get("fallback_recoveries", 0.0)
+            f_chaser = bsum.get("fall_on_chaser", 0.0)
+            f_fallback = bsum.get("fall_on_fallback", 0.0)
+            
+            shield_str = f"  {BOLD}Shield    {RESET}  attempts={attempts:.1f}  recoveries={recoveries:.1f}  falls[chaser={f_chaser:.2f}, fallback={f_fallback:.2f}]"
+            if latest_eval is not None and "fallback_attempts" in latest_eval:
+                e_attempts = latest_eval.get("fallback_attempts", 0.0)
+                e_recoveries = latest_eval.get("fallback_recoveries", 0.0)
+                e_chaser = latest_eval.get("fall_on_chaser", 0.0)
+                e_fallback = latest_eval.get("fall_on_fallback", 0.0)
+                shield_str += f" | {BLUE}[Eval]{RESET} att={e_attempts:.1f} rec={e_recoveries:.1f} falls[ch={e_chaser:.2f}, fb={e_fallback:.2f}]"
+            lines.append(shield_str)
+
         lines.append(f"  {BOLD}Episode   {RESET}  mean_len={ep_len:.0f} steps")
         lines.append(f"  {BOLD}PPO       {RESET}  loss={ploss:+.4f}  "
                       f"epochs={epochs}/4  kl={kl:.4f}")
@@ -378,9 +469,34 @@ class FollowLogAnalyzer:
                 if delta < -thresh: return f"{RED}↓{RESET}"
                 return f"{YELLOW}→{RESET}"
 
-            lines.append(f"  {BOLD}Trend     {RESET}  "
+            lines.append(f"  {BOLD}Trend(Short){RESET} "
                           f"hold {d_hold:+.4f} {_arrow(d_hold)}  "
                           f"surv {d_surv:+.4f} {_arrow(d_surv)}")
+
+        # Long-term trends (e.g. over last 50 updates) to diagnose learning progress
+        if len(self.history) >= 10:
+            min_dist_trend = self._calculate_trend("bsum.min_dist", length=50)
+            hold_ratio_trend = self._calculate_trend("bsum.hold_ratio", length=50)
+            
+            if min_dist_trend and hold_ratio_trend:
+                d_min = min_dist_trend["overall_diff"]
+                d_hold = hold_ratio_trend["overall_diff"]
+                n_updates = min_dist_trend["n"]
+                
+                # Format descriptors
+                def _geom_desc(diff):
+                    if diff < -0.05: return f"{GREEN}APPROACHING 🔥 (Distance shrinking){RESET}"
+                    if diff > 0.05: return f"{RED}DRIFTING FARTHER ⚠️{RESET}"
+                    return f"{YELLOW}STAGNANT 🛑 (No movement){RESET}"
+                
+                def _hold_desc(diff):
+                    if diff > 0.01: return f"{GREEN}IMPROVING 🔥 (Learning){RESET}"
+                    if diff < -0.01: return f"{RED}DEGRADED ⚠️{RESET}"
+                    return f"{YELLOW}STAGNANT 🛑 (No learning){RESET}"
+                
+                lines.append(f"  {BOLD}Trend(Long) {RESET} {BOLD}Learning Dynamics (Last {n_updates} Updates):{RESET}")
+                lines.append(f"    - min_dist    : {d_min:+.2f}m ({_geom_desc(d_min)})")
+                lines.append(f"    - hold_ratio  : {d_hold:+.3f} ({_hold_desc(d_hold)})")
 
         return "\n".join(lines)
 

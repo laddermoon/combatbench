@@ -732,3 +732,5 @@ python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
 
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/checkpoints/checkpoint_u10000.pt &> follow.log & 
 
+
+python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch

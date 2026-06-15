@@ -151,8 +151,17 @@ class FollowConfig(ExperimentConfig):
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
+            
+            # Map mixed_bp to the learning agent, and _RANDOM_POLICY_BP to the opponent
+            if agent_id == "robot_a":
+                p_a = mixed_bp
+                p_b = _RANDOM_POLICY_BP
+            else:
+                p_a = _RANDOM_POLICY_BP
+                p_b = mixed_bp
+                
             jobs.append((
-                mixed_bp, _RANDOM_POLICY_BP,
+                p_a, p_b,
                 env_bps[agent_id], seed,
                 {"agent_id": agent_id, "initial_distance": initial_distance},
             ))
@@ -334,6 +343,10 @@ class FollowConfig(ExperimentConfig):
         primary_ratio = 1.0
         gating_switches = 0.0
         mean_p_safe = 1.0
+        fallback_attempts = 0.0
+        fallback_recoveries = 0.0
+        fall_on_chaser = 0.0
+        fall_on_fallback = 0.0
         
         if extras is not None:
             if "gating_mode" in extras:
@@ -341,6 +354,25 @@ class FollowConfig(ExperimentConfig):
                 if len(gating_mode) > 0:
                     primary_ratio = float(np.mean(gating_mode >= 0.5))
                     gating_switches = float(np.sum(np.abs(np.diff(gating_mode)) > 0.5))
+                    
+                    is_fallback = gating_mode < 0.5
+                    # transitions from primary (False) to fallback (True)
+                    enters = int(np.sum(~is_fallback[:-1] & is_fallback[1:]))
+                    if is_fallback[0]:
+                        enters += 1
+                    # transitions from fallback (True) to primary (False)
+                    exits = int(np.sum(is_fallback[:-1] & ~is_fallback[1:]))
+                    
+                    fallback_attempts = float(enters)
+                    fallback_recoveries = float(exits)
+                    
+                    if fell:
+                        if len(gating_mode) > 0:
+                            print(f"[DEBUG_FALL] T={T} len(gating_mode)={len(gating_mode)} last={gating_mode[-1]} fell={fell}", flush=True)
+                            if gating_mode[-1] >= 0.5:
+                                fall_on_chaser = 1.0
+                            else:
+                                fall_on_fallback = 1.0
             if "p_safe" in extras:
                 p_safe = np.asarray(extras["p_safe"], dtype=np.float32).reshape(-1)
                 if len(p_safe) > 0:
@@ -355,6 +387,10 @@ class FollowConfig(ExperimentConfig):
             "min_dist": min_dist,
             "gating_switches": gating_switches,
             "mean_p_safe": mean_p_safe,
+            "fallback_attempts": fallback_attempts,
+            "fallback_recoveries": fallback_recoveries,
+            "fall_on_chaser": fall_on_chaser,
+            "fall_on_fallback": fall_on_fallback,
         }
 
     # ---- Scheduler state --------------------------------------------------

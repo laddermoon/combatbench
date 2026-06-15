@@ -408,11 +408,11 @@ def train(
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
                     else:
-                        video_path = video_dir / f"video_u{u:05d}.mp4"
-                        log_path = video_dir / f"video_u{u:05d}_render.log"
-                        policy_bp_path = policy_dir / "actor_policy.yaml"
-                        
-                        last_video_proc = start_async_video_render(
+                        policy_bp_path = export_dir / "policy_blueprint.yaml"
+                        video_path = video_dir / f"u{u:05d}.mp4"
+                        log_path = video_dir / f"u{u:05d}.log"
+                        experiment.video_env_blueprint().save(video_env_bp_path)
+                        last_video_proc = spawn_video_render(
                             env_blueprint=video_env_bp_path,
                             policy_blueprint=policy_bp_path,
                             video_path=video_path,
@@ -420,7 +420,7 @@ def train(
                             log_path=log_path,
                         )
                         if last_video_proc is not None:
-                            print(f"  [video_start_render] pid={last_video_proc.pid} target={video_path}", flush=True)
+                            print(f"  [video:{video_path.name}]", flush=True)
 
             # 5.6 Logging
             bsum = buf.batch_summary()
