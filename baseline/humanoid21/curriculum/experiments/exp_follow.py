@@ -82,7 +82,7 @@ class FollowConfig(ExperimentConfig):
     INITIAL_DISTANCE: float = 2.0
 
     # --- Curriculum: opponent movement speed per level (m/s) ---
-    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3)
+    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
     PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
