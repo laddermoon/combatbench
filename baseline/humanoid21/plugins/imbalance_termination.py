@@ -196,8 +196,14 @@ class ImbalanceTerminationPlugin(BasePlugin):
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if self.agent_id == "both":
-            if self._is_non_foot_grounded(ctx, "robot_a") or self._is_non_foot_grounded(ctx, "robot_b"):
-                ctx.request_termination("imbalance")
+            a_fell = self._is_non_foot_grounded(ctx, "robot_a")
+            b_fell = self._is_non_foot_grounded(ctx, "robot_b")
+            if a_fell and b_fell:
+                ctx.request_termination("imbalance_both")
+            elif a_fell:
+                ctx.request_termination("imbalance_robot_a")
+            elif b_fell:
+                ctx.request_termination("imbalance_robot_b")
         else:
             if self._is_non_foot_grounded(ctx, self.agent_id):
                 ctx.request_termination("imbalance")
