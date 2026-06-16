@@ -27,3 +27,18 @@ Rollout策略：
 训练起点：
 从跟随策略开始训练。
 
+
+
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/experiments/exp_fight.py
+上面这个是exp_follow.py的副本, 请在上面进行训练实现Fight训练的逻辑。
+
+
+/data1/mono/things/combatbench/baseline/humanoid21/curriculum/mixed_policy.py
+/data1/mono/things/combatbench/baseline/humanoid21/blueprints/mixed.yaml
+参照这两个文件，为Fight写一套。
+
+
+
+Follow Policy用下面这个：
+/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_211441/policy_exports/u10295/policy_blueprint.yaml
+

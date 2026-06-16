@@ -730,14 +730,31 @@ python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
 
 
 
+# 最抖动策略开始训练
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/checkpoints/checkpoint_u10000.pt &> follow.log & 
+
 
 
 python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
 
 
 
-把Hold阈值改成1.1M
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment follow --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_211441/checkpoints/checkpoint_u10294.pt &> follow_resume.log & 
+
+python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow_resume.log --watch
+
+
+# ---------------------------------------------------------------------------
+# Fight Curriculum (Stage 3 Combat Training)
+# ---------------------------------------------------------------------------
+
+# Start Stage 3 Fight Training (resuming from follow checkpoint)
+PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment fight --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_211441/checkpoints/checkpoint_u10294.pt &> fight.log &
+
+# Watch and diagnose Fight training metrics in real-time
+python3 baseline/humanoid21/curriculum/analyze_fight_logs.py fight.log --watch
+
+
 
 
 
@@ -747,3 +764,12 @@ python3 -m envs.framework.round_runner \
   --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/policy_blueprint.yaml \
   --policy-b-blueprint /data1/mono/things/combatbench/policy/blueprints/random.yaml \
   --video verify_camera.mp4
+
+
+
+
+python3 -m envs.framework.round_runner \
+  --env-blueprint /data1/mono/things/combatbench/envs/humanoid21/blueprint.yaml \
+  --policy-a-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/policy_blueprint.yaml \
+  --policy-b-blueprint /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/policy_blueprint.yaml \
+  --video verify_camera2.mp4
