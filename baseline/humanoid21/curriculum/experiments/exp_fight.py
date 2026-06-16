@@ -63,6 +63,11 @@ class FightConfig(ExperimentConfig):
     BLUEPRINT = "fight_env.yaml"
 
     max_updates: int = 20000
+    
+    eval_interval: int = 2
+
+    # --- Video recording ---
+    video_eval_interval: int = 2
 
     # --- PPO tuning ---
     log_std_min: float = -1.8
