@@ -25,8 +25,8 @@ _FALLBACK_POLICY_BP = PolicyBlueprint.load(
 )
 _FOLLOW_POLICY_BP = PolicyBlueprint.load(
     "/data1/mono/things/combatbench/baseline/humanoid21/runs/"
-    "curriculum_follow_20260615_131515/"
-    "policy_exports/u10294/policy_blueprint.yaml"
+    "curriculum_follow_20260615_211441/"
+    "policy_exports/u10295/policy_blueprint.yaml"
 )
 _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_plus_mix_level"
@@ -197,7 +197,7 @@ class FightConfig(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 3.0, 1.0, 5.0, 6.0, 3.0)
+        return (6.0, 1.0, 1.0, 1.0, 3.0, 1.0, 1.0)
 
     def next_weights(
         self,
@@ -208,7 +208,7 @@ class FightConfig(ExperimentConfig):
         self._hold_ratio = float(eval_metrics.get("hold_ratio", 0.0))
         self._survival_rate = float(eval_metrics.get("survived", 0.0))
         self._primary_ratio = float(eval_metrics.get("fight_ratio", 0.0))
-        return (6.0, 1.0, 3.0, 1.0, 5.0, 6.0, 3.0)
+        return (6.0, 1.0, 1.0, 1.0, 3.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
