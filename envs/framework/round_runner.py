@@ -70,22 +70,44 @@ class RoundRunner:
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
         want_extras: bool = False,
+        initial_health_a: Optional[float] = None,
+        initial_health_b: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Run one round and return a minimal result dict.
+        """Run one round and return a result dict.
 
-        ``options`` is forwarded to :meth:`EnvRuntime.reset` and visible to
-        plugins / observers via ``ctx.episode_options``.
+        Parameters
+        ----------
+        seed:
+            Episode seed ( forwarded to MuJoCo reset).
+        options:
+            Forwarded to :meth:`EnvRuntime.reset` and visible to plugins /
+            observers via ``ctx.episode_options``.
+        want_extras:
+            Whether each ``policy.act`` is called with ``want_extra=True``.
+        initial_health_a, initial_health_b:
+            Starting HP for each robot.  When provided they are merged into
+            ``options`` so that :class:`CombatScoringPlugin` picks them up
+            via ``ctx.episode_options``.  ``None`` means the plugin default
+            (typically 100) is used.
 
-        ``want_extras`` controls whether each ``policy.act`` is called
-        with ``want_extra=True``. Default is ``False``; set to ``True``
-        when you need the policy's side-channel payload.
+        Returns a dict with ``steps``, ``termination_reasons``, ``seed``,
+        ``health_a``, ``health_b``.
         """
+        if initial_health_a is not None or initial_health_b is not None:
+            options = dict(options) if options else {}
+            if initial_health_a is not None:
+                options["initial_health_a"] = float(initial_health_a)
+            if initial_health_b is not None:
+                options["initial_health_b"] = float(initial_health_b)
+
         self._runner.run_episode(seed=seed, options=options, want_extras=want_extras)
         ctx = self._runtime.ctx
         return {
             "steps": int(ctx.episode_step),
             "termination_reasons": list(ctx.termination_proposals),
             "seed": int(ctx.base_seed) if ctx.base_seed is not None else None,
+            "health_a": float(ctx.metrics.get("health_a", 0.0)),
+            "health_b": float(ctx.metrics.get("health_b", 0.0)),
         }
 
     def close(self) -> None:
@@ -193,6 +215,14 @@ def _main() -> None:
         help="Episode seed (default: random).",
     )
     parser.add_argument(
+        "--health-a", type=float, default=None,
+        help="Initial HP for robot A (default: plugin default, usually 100).",
+    )
+    parser.add_argument(
+        "--health-b", type=float, default=None,
+        help="Initial HP for robot B (default: plugin default, usually 100).",
+    )
+    parser.add_argument(
         "--want-extras", action="store_true",
         help="Request side-channel payloads from policies (log-prob / value estimates, etc.).",
     )
@@ -216,7 +246,12 @@ def _main() -> None:
         video_plugin=video_plugin,
         recorders=recorders,
     ) as runner:
-        result = runner.run(seed=args.seed, want_extras=args.want_extras)
+        result = runner.run(
+            seed=args.seed,
+            want_extras=args.want_extras,
+            initial_health_a=args.health_a,
+            initial_health_b=args.health_b,
+        )
 
     print(json.dumps(result, indent=2))
 

@@ -20,6 +20,8 @@ from .blueprint import BLUEPRINT_VERSION, ClassSpec, EnvBlueprint
 from .parameterized_blueprint import Parameter, ParameterizedEnvBlueprint
 from .policy import Policy, PolicyBlueprint, ParameterizedPolicyBlueprint
 from .episode_runner import AGENT_IDS, EpisodeRunner
+from .round_runner import RoundRunner
+from .match_runner import MatchResult, MatchRunner
 
 __all__ = [
     "BaseSimulator",
@@ -49,6 +51,9 @@ __all__ = [
     "Parameter",
     "ParameterizedEnvBlueprint",
     "EpisodeRunner",
+    "RoundRunner",
+    "MatchResult",
+    "MatchRunner",
     "Policy",
     "PolicyBlueprint",
     "ParameterizedPolicyBlueprint",
