@@ -26,45 +26,48 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 class PostureRewarder(BaseObserverPlugin):
     """Per-step posture diagnostics (joint deviation, velocity, tilt, foot height)."""
 
+    # Static standard standing joint targets (joint_pos_norm space, from INITIAL_POSES['standing']['action']).
+    STANDING_JOINT_POS: np.ndarray = np.array([
+        -0.0000, 0.4286, -0.0000,
+        0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+        0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
+        0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
+    ], dtype=np.float32)
+
     def __init__(self, agent_id: str = "robot_a"):
         self.agent_id = agent_id
-        self._ref_joint_pos: Optional[np.ndarray] = None
-        self._joint_deviation: List[float] = []
-        self._joint_vel: List[float] = []
-        self._torso_tilt: List[float] = []
-        self._foot_height: List[float] = []
+        self._joint_deviation: float = 0.0
+        self._joint_vel: float = 0.0
+        self._torso_tilt: float = 0.0
+        self._foot_height: float = 0.0
 
     # -- lifecycle hooks --------------------------------------------------
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
-        core_state = ctx.accessor.get_core_state()[self.agent_id]
-        self._ref_joint_pos = np.asarray(
-            core_state["joint_pos_norm"], dtype=np.float32
-        ).copy()
-        self._joint_deviation.clear()
-        self._joint_vel.clear()
-        self._torso_tilt.clear()
-        self._foot_height.clear()
+        self._joint_deviation = 0.0
+        self._joint_vel = 0.0
+        self._torso_tilt = 0.0
+        self._foot_height = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
         derived_state = ctx.accessor.get_derived_state()[self.agent_id]
         static_data = ctx.accessor.get_static_data()[self.agent_id]
 
-        # 1. Joint position deviation from reference standing pose
+        # 1. Joint position deviation from absolute standing pose (mean absolute)
         joint_pos = np.asarray(core_state["joint_pos_norm"], dtype=np.float32)
-        joint_dev = float(np.mean(np.abs(joint_pos - self._ref_joint_pos)))
+        self._joint_deviation = float(np.mean(np.abs(joint_pos - self.STANDING_JOINT_POS)))
 
         # 2. Joint angular velocity (mean absolute)
         joint_vel = np.asarray(core_state["joint_vel_norm"], dtype=np.float32)
-        joint_vel_mag = float(np.mean(np.abs(joint_vel)))
+        self._joint_vel = float(np.mean(np.abs(joint_vel)))
 
         # 3. Torso tilt angle from vertical
         #    uprightness = cos(tilt), so tilt = arccos(uprightness)
         uprightness = float(
             np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
         )
-        torso_tilt = float(np.arccos(np.clip(uprightness, -1.0, 1.0)))
+        self._torso_tilt = float(np.arccos(np.clip(uprightness, -1.0, 1.0)))
 
         # 4. Foot height above ground (max of both feet)
         body_xpos = derived_state["body_xpos"]
@@ -73,21 +76,16 @@ class PostureRewarder(BaseObserverPlugin):
         right_name = keypoint_names["foot_right"]
         left_h = float(body_xpos[left_name][2])
         right_h = float(body_xpos[right_name][2])
-        foot_height = max(left_h, right_h)
-
-        self._joint_deviation.append(joint_dev)
-        self._joint_vel.append(joint_vel_mag)
-        self._torso_tilt.append(torso_tilt)
-        self._foot_height.append(foot_height)
+        self._foot_height = max(left_h, right_h)
 
     # -- output -----------------------------------------------------------
 
-    def get_output(self) -> Dict[str, np.ndarray]:
+    def get_output(self) -> Dict[str, float]:
         return {
-            "joint_deviation": np.asarray(self._joint_deviation, dtype=np.float32),
-            "joint_vel": np.asarray(self._joint_vel, dtype=np.float32),
-            "torso_tilt": np.asarray(self._torso_tilt, dtype=np.float32),
-            "foot_height": np.asarray(self._foot_height, dtype=np.float32),
+            "joint_deviation": self._joint_deviation,
+            "joint_vel": self._joint_vel,
+            "torso_tilt": self._torso_tilt,
+            "foot_height": self._foot_height,
         }
 
     # -- blueprint serialization -----------------------------------------
