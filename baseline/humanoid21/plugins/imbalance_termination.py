@@ -171,15 +171,18 @@ class ImbalanceTerminationPlugin(BasePlugin):
         self,
         agent_id: str,
         force_threshold: float = 1.0,
+        tolerance: int = 1,
     ) -> None:
         self.agent_id = str(agent_id)
         self.force_threshold = float(force_threshold)
+        self.tolerance = int(tolerance)
         self._ground_geom_name: Optional[str] = None
 
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "agent_id": self.agent_id,
             "force_threshold": self.force_threshold,
+            "tolerance": self.tolerance,
         }
 
     @classmethod
@@ -193,19 +196,33 @@ class ImbalanceTerminationPlugin(BasePlugin):
     def on_pre_episode(self, ctx: SimContext) -> None:
         static_data = ctx.accessor.get_static_data()
         self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+        self._imbalance_counter = {"robot_a": 0, "robot_b": 0}
 
     def on_post_action_step(self, ctx: SimContext) -> None:
+        a_fell = self._is_non_foot_grounded(ctx, "robot_a")
+        b_fell = self._is_non_foot_grounded(ctx, "robot_b")
+
+        if a_fell:
+            self._imbalance_counter["robot_a"] += 1
+        else:
+            self._imbalance_counter["robot_a"] = max(0, self._imbalance_counter["robot_a"] - 1)
+
+        if b_fell:
+            self._imbalance_counter["robot_b"] += 1
+        else:
+            self._imbalance_counter["robot_b"] = max(0, self._imbalance_counter["robot_b"] - 1)
+
         if self.agent_id == "both":
-            a_fell = self._is_non_foot_grounded(ctx, "robot_a")
-            b_fell = self._is_non_foot_grounded(ctx, "robot_b")
-            if a_fell and b_fell:
+            a_term = self._imbalance_counter["robot_a"] >= self.tolerance
+            b_term = self._imbalance_counter["robot_b"] >= self.tolerance
+            if a_term and b_term:
                 ctx.request_termination("imbalance_both")
-            elif a_fell:
+            elif a_term:
                 ctx.request_termination("imbalance_robot_a")
-            elif b_fell:
+            elif b_term:
                 ctx.request_termination("imbalance_robot_b")
         else:
-            if self._is_non_foot_grounded(ctx, self.agent_id):
+            if self._imbalance_counter[self.agent_id] >= self.tolerance:
                 ctx.request_termination("imbalance")
 
     def _is_non_foot_grounded(self, ctx: SimContext, robot_id: str) -> bool:
