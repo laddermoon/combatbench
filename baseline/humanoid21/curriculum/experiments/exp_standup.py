@@ -263,19 +263,37 @@ class StandupConfig(ExperimentConfig):
         T = episode.num_frames
         oo = episode.observer_outputs
 
+        # Filter out initial standing/falling phases to prevent metric pollution!
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        extras = episode.action_extras.get(ep_target)
+        
+        is_primary = None
+        if extras is not None and "gating_mode" in extras:
+            gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
+            L = min(T, len(gating_mode))
+            is_primary = gating_mode[:L] >= 0.5
+            
         stages = _extract_per_step_field(oo, "standup", "stage", T)
-        if stages is not None:
-            max_stage = float(np.max(stages))
-            # Reaching Stage 4 means a successful stand-up!
-            success = 1.0 if max_stage >= 4.0 else 0.0
-            avg_stage = float(np.mean(stages))
+        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+
+        if is_primary is not None and np.any(is_primary):
+            valid_stages = stages[:len(is_primary)][is_primary] if stages is not None else None
+            valid_pots = potentials[:len(is_primary)][is_primary] if potentials is not None else None
+        else:
+            valid_stages = stages
+            valid_pots = potentials
+
+        if valid_stages is not None and len(valid_stages) > 0:
+            max_stage = float(np.max(valid_stages))
+            # Reaching Stage 5 (Perfect Standing) represents full success!
+            success = 1.0 if max_stage >= 5.0 else 0.0
+            avg_stage = float(np.mean(valid_stages))
         else:
             max_stage = 0.0
             success = 0.0
             avg_stage = 0.0
 
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        max_potential = float(np.max(potentials)) if potentials is not None else 0.0
+        max_potential = float(np.max(valid_pots)) if valid_pots is not None and len(valid_pots) > 0 else 0.0
 
         return {
             "success": success,

@@ -227,22 +227,21 @@ class StandupLogAnalyzer:
                     "severity": "CRITICAL",
                     "title": "Stage Bottleneck — stuck in lying / rollover phases",
                     "conclusion": (
-                        f"The robot is consistently failing to transition past Stage 1 (Double Kneeling). "
+                        f"The robot is consistently failing to transition past Stage 1 (Hands Support). "
                         f"It is trapped rolling over on the floor (avg max stage: {avg_max_stage:.2f}), "
                         "unable to figure out how to push up onto its knees or feet."
                     ),
                     "evidence": (
-                        f"  avg max_stage achieved = {avg_max_stage:.2f} (target: Stage 4)\n"
+                        f"  avg max_stage achieved = {avg_max_stage:.2f} (target: Stage 5)\n"
                         f"  series: {[round(x, 1) for x in max_stages]}"
                     ),
                     "remedy": (
-                        "1. Increase the potential reward scale or design a small shaping bonus for knee contacts.\n"
-                        "2. Double check that knee (shin) contacts are registering properly in simulation (forces > 1N).\n"
-                        "3. Verify if torque limits are too weak to support the robot's weight when pushing up."
+                        "1. Increase the potential reward scale or verify hand contacts are registering.\n"
+                        "2. Double check if torque limits are too weak to support the robot's weight when pushing up."
                     ),
                 })
 
-        # ---- Check E: High potential but no perfect stand (Stage 3 hand support trap) ----
+        # ---- Check E: High potential but no perfect stand (Stage 3/4 support trap) ----
         max_pots = self._series(recent, "bsum.max_potential")
         successes = self._series(recent, "bsum.success")
         if max_pots and successes:
@@ -251,10 +250,10 @@ class StandupLogAnalyzer:
             if avg_max_pot >= 0.65 and avg_succ < 0.05:
                 conclusions.append({
                     "severity": "WARNING",
-                    "title": "Standing Balance Deficiency — stuck in hands support phase",
+                    "title": "Standing Balance Deficiency — stuck in support / low stand phase",
                     "conclusion": (
                         f"The robot achieves high potential (avg max: {avg_max_pot:.3f}), meaning it gets "
-                        f"to Stage 3 (Feet & Hands Support), but fails to lift hands to reach Stage 4 (Perfect Stand)."
+                        f"to Stage 3 (Single Foot Stand) or Stage 4 (Double Feet Low Stand), but fails to balance and reach Stage 5 (Perfect Stand)."
                     ),
                     "evidence": (
                         f"  avg max_potential = {avg_max_pot:.3f}\n"
@@ -262,10 +261,8 @@ class StandupLogAnalyzer:
                         f"  max_stages achieved: {[round(x, 1) for x in max_stages]}"
                     ),
                     "remedy": (
-                        "1. Enhance the potential transition gradient between Stage 3 (max potential 0.75) and "
-                        "Stage 4 (starts at 0.75) by scaling the height/stability metrics.\n"
-                        "2. Increase the weight of r_cross to help the robot build a firmer stance with feet, "
-                        "allowing it to confidently let go of hand support."
+                        "1. Enhance the potential transition gradient between Stage 4 and Stage 5 by scaling the height/stability metrics.\n"
+                        "2. Increase the weight of r_cross to help the robot build a firmer stance with feet, allowing it to let go of hand support."
                     ),
                 })
 

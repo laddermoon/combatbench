@@ -112,51 +112,73 @@ class StandupPotentialRewarder(BaseObserverPlugin):
         hand_r = contacts["hand_right"]
         other = contacts["has_other_contact"]
 
-        # Stage 4: 双脚着地，手、膝、其他部位完全腾空 (Perfect Stand)
-        # 判定：任意一只脚或双脚着地，且没有任何非脚部接触
-        if (foot_l or foot_r) and not (hand_l or hand_r) and not (knee_l or knee_r) and not other:
-            stage = 4
+        has_hand = hand_l or hand_r
+        has_foot = foot_l or foot_r
+
+        # =====================================================================
+        # 严格的5阶段判定流 (Prioritized Stage Routing)
+        # =====================================================================
+        stage = 0
+        potential = 0.0
+
+        # Stage 5: 双脚着地站直 (Perfect Stand)
+        # 判定：双脚着地，手部腾空，且直立度高、重心高，无其他部位接触
+        if foot_l and foot_r and not has_hand and u_torso > 0.85 and h_pelvis > 0.75 and not other:
+            stage = 5
             # 势能区间 [0.75, 1.00]
-            # h_score: 骨盆高度在 0.6m - 0.9m 之间平滑过渡
-            h_score = float(np.clip((h_pelvis - 0.6) / 0.3, 0.0, 1.0))
-            # u_score: 直立度在 0.5 - 1.0 之间平滑过渡
-            u_score = float(np.clip((u_torso - 0.5) / 0.5, 0.0, 1.0))
+            # h_score: 骨盆高度在 0.75m - 0.9m 之间平滑过渡
+            h_score = float(np.clip((h_pelvis - 0.75) / 0.15, 0.0, 1.0))
+            # u_score: 直立度在 0.85 - 1.0 之间平滑过渡
+            u_score = float(np.clip((u_torso - 0.85) / 0.15, 0.0, 1.0))
             # v_score: 关节晃动抑制，角速度越小越稳
             v_score = float(np.exp(-mean_abs_joint_vel))
             potential = 0.75 + 0.25 * h_score * u_score * v_score
 
-        # Stage 3: 双脚同时着地，手部辅助撑地，膝盖及其他部位腾空 (Feet & Hands Support)
-        # 判定：双脚着地，手（单手或双手）触地，膝盖及其他部分未接触
-        elif foot_l and foot_r and (hand_l or hand_r) and not (knee_l or knee_r) and not other:
-            stage = 3
+        # Stage 4: 双脚着地蹲下/低站 (Double Feet Low Stand / Squat)
+        # 判定：双脚着地，手部腾空，无其他部位接触
+        elif foot_l and foot_r and not has_hand and not other:
+            stage = 4
             # 势能区间 [0.60, 0.75]
-            # h_score: 骨盆高度在 0.4m - 0.8m 之间平滑过渡
-            h_score = float(np.clip((h_pelvis - 0.4) / 0.4, 0.0, 1.0))
-            potential = 0.60 + 0.15 * h_score
+            # h_score: 骨盆高度在 0.40m - 0.75m 之间平滑过渡
+            h_score = float(np.clip((h_pelvis - 0.40) / 0.35, 0.0, 1.0))
+            # u_score: 直立度在 0.30 - 0.85 之间平滑过渡
+            u_score = float(np.clip((u_torso - 0.30) / 0.55, 0.0, 1.0))
+            potential = 0.60 + 0.15 * h_score * u_score
 
-        # Stage 2: 单脚单膝半跪姿态，手部辅助允许（必须只能是手，不准手肘），其他部位腾空 (Half-Kneeling Transition)
-        # 判定：（左脚 + 右膝）或（右脚 + 左膝），手接触状态不限，但绝对不准手肘等其他部位触地
-        elif ((foot_l and knee_r) or (foot_r and knee_l)) and not other:
+        # Stage 3: 双脚起离地过渡 / 单脚支撑站直 (Single Foot Stand Upright, Hands Off)
+        # 判定：单脚着地，手部腾空，无其他部位接触
+        elif has_foot and not has_hand and not other:
+            stage = 3
+            # 势能区间 [0.45, 0.60]
+            # h_score: 骨盆高度在 0.40m - 0.75m 之间平滑过渡
+            h_score = float(np.clip((h_pelvis - 0.40) / 0.35, 0.0, 1.0))
+            # u_score: 直立度在 0.30 - 0.85 之间平滑过渡
+            u_score = float(np.clip((u_torso - 0.30) / 0.55, 0.0, 1.0))
+            potential = 0.45 + 0.15 * h_score * u_score
+
+        # Stage 2: 手部撑地 + 脚部着地 (Hands Support + Foot Contact)
+        # 判定：手部撑地，且有至少一只脚着地 (由于是起身上升初期，不限制 knee/other 接触)
+        elif has_hand and has_foot:
             stage = 2
-            # 势能区间 [0.40, 0.60]
-            # h_score: 骨盆高度在 0.35m - 0.70m 之间平滑
-            h_score = float(np.clip((h_pelvis - 0.35) / 0.35, 0.0, 1.0))
+            # 势能区间 [0.30, 0.45]
+            # h_score: 骨盆高度在 0.20m - 0.60m 之间平滑
+            h_score = float(np.clip((h_pelvis - 0.20) / 0.40, 0.0, 1.0))
             # u_score: 直立度在 0.0 - 0.80 之间平滑
-            u_score = float(np.clip((u_torso - 0.0) / 0.8, 0.0, 1.0))
-            potential = 0.40 + 0.20 * h_score * u_score
+            u_score = float(np.clip((u_torso - 0.0) / 0.80, 0.0, 1.0))
+            potential = 0.30 + 0.15 * h_score * u_score
 
-        # Stage 1: 双膝跪地，手部辅助允许（必须只能是手，不准手肘），膝盖以上部位不准触地 (Double Kneeling)
-        # 判定：双膝着地，大腿/躯干/手肘等腾空，双脚着地状态不限
-        elif knee_l and knee_r and not other:
+        # Stage 1: 手部/双手撑地 (Hands Support Only / Push Up)
+        # 判定：手部有接触即可 (同样不限制 knee/other 接触)
+        elif has_hand:
             stage = 1
-            # 势能区间 [0.20, 0.40]
-            # h_score: 骨盆高度在 0.25m - 0.50m 之间平滑
-            h_score = float(np.clip((h_pelvis - 0.25) / 0.25, 0.0, 1.0))
+            # 势能区间 [0.20, 0.30]
+            # h_score: 骨盆高度在 0.15m - 0.45m 之间平滑
+            h_score = float(np.clip((h_pelvis - 0.15) / 0.30, 0.0, 1.0))
             # u_score: 直立度在 0.0 - 0.80 之间平滑
-            u_score = float(np.clip((u_torso - 0.0) / 0.8, 0.0, 1.0))
-            potential = 0.20 + 0.20 * h_score * u_score
+            u_score = float(np.clip((u_torso - 0.0) / 0.80, 0.0, 1.0))
+            potential = 0.20 + 0.10 * h_score * u_score
 
-        # Stage 0: 翻身趴地引导 / 任意平躺/挣扎姿势 (Rollover & Belly-down)
+        # Stage 0: 卧卧翻身 (Rollover & Belly-down)
         # 判定：不满足以上更高阶段时，根据躯干脸朝下的对齐程度引导翻身
         else:
             stage = 0
@@ -201,6 +223,8 @@ class StandupPotentialRewarder(BaseObserverPlugin):
             
         shin_left_body = f"shin_left{suffix}"
         shin_right_body = f"shin_right{suffix}"
+        lower_arm_left_body = f"lower_arm_left{suffix}"
+        lower_arm_right_body = f"lower_arm_right{suffix}"
         
         for c in env_contacts:
             if c.get('robot') != self.agent_id:
@@ -215,16 +239,16 @@ class StandupPotentialRewarder(BaseObserverPlugin):
                 contacts["foot_left"] = True
             elif body == foot_right_body:
                 contacts["foot_right"] = True
-            elif body == hand_left_body:
+            elif body in (hand_left_body, lower_arm_left_body):
                 contacts["hand_left"] = True
-            elif body == hand_right_body:
+            elif body in (hand_right_body, lower_arm_right_body):
                 contacts["hand_right"] = True
             elif body == shin_left_body:
                 contacts["shin_left"] = True
             elif body == shin_right_body:
                 contacts["shin_right"] = True
             else:
-                # 凡是膝盖、脚、手之外的机器人部位触地，全标定为 other_contact
+                # 凡是膝盖、脚、手、前臂之外的机器人部位触地，全标定为 other_contact
                 contacts["has_other_contact"] = True
                 
         return contacts

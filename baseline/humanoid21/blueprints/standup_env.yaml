@@ -6,7 +6,7 @@ parameters:
     default: 2.0
     description: "Spawn distance between robots (m)."
   max_steps:
-    default: 600
+    default: 200
     description: "Max action steps."
   agent_id:
     default: "robot_a"
