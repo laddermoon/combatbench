@@ -108,24 +108,42 @@ class NonFallConstraintPlugin(BasePlugin):
 
 
 class CombatScoringPlugin(BasePlugin):
-    """
-    Combat scoring and KO determination plugin.
+    """Combat scoring and KO determination plugin.
 
-    Uses the robot_robot_contacts interface per DATASPEC.md:
-    - robot_robot_contacts: List[Dict] - Physical contacts between two robots
-      Format: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
-      Rule: Only inter-robot collisions are recorded, self-collisions are excluded.
+    Damage is computed **per physics substep** (on_post_phy_step), not per
+    action step, so transient contacts that appear and disappear within the
+    50 ms action window are never missed.
+
+    Damage formula (per substep)::
+
+        damage = part_weight × (force / force_scale)² × dt
+
+    where ``dt`` is the physics timestep in seconds (default 0.002 s).
+
+    The ``(force / force_scale)²`` term creates a quadratic threshold:
+    forces below ``force_scale`` are suppressed, forces above it are amplified.
+    For example, with ``force_scale = 100 N``:
+
+        50 N  → (0.5)² = 0.25   (suppressed)
+        100 N → (1.0)² = 1.0    (threshold)
+        200 N → (2.0)² = 4.0    (amplified)
+        400 N → (4.0)² = 16.0   (heavily amplified)
 
     Options consumed from ``ctx.episode_options``:
-      - ``initial_health_a`` (float): Starting HP for robot_a. Defaults to constructor value.
-      - ``initial_health_b`` (float): Starting HP for robot_b. Defaults to constructor value.
+      - ``initial_health_a`` (float): Starting HP for robot_a.
+      - ``initial_health_b`` (float): Starting HP for robot_b.
     """
     ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
 
+    # Part weight × (force / force_scale)² × dt.
+    # Head is 3× more vulnerable than torso.  The quadratic threshold means
+    # forces near/below force_scale are suppressed, forces well above it are
+    # amplified.  With force_scale=100, dt=0.002, a 1000 N hit sustained for
+    # one action step (25 substeps, 50 ms) deals 15 HP to head, 5 HP to torso.
     DAMAGE_RULES = {
-        'head': -3.0,
-        'torso': -1.0,
+        'head': 3.0,
+        'torso': 1.0,
     }
 
     def __init__(
@@ -133,21 +151,25 @@ class CombatScoringPlugin(BasePlugin):
         initial_health: float = 100.0,
         initial_health_a: Optional[float] = None,
         initial_health_b: Optional[float] = None,
-        damage_scale: float = 100.0,
+        force_scale: float = 100.0,
+        phy_step_dt: float = 0.002,
         request_termination_on_ko: bool = True,
     ):
-        # Support separate HP settings for each robot; if only initial_health is set, both use it.
         self.initial_health_a = initial_health_a if initial_health_a is not None else initial_health
         self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
-        self.damage_scale = damage_scale
+        self.force_scale = force_scale
+        self.phy_step_dt = phy_step_dt
         self.request_termination_on_ko = bool(request_termination_on_ko)
+        self._action_damage_a = 0.0
+        self._action_damage_b = 0.0
 
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_health": self.initial_health_a,
             "initial_health_a": self.initial_health_a,
             "initial_health_b": self.initial_health_b,
-            "damage_scale": self.damage_scale,
+            "force_scale": self.force_scale,
+            "phy_step_dt": self.phy_step_dt,
             "request_termination_on_ko": self.request_termination_on_ko,
         }
 
@@ -161,19 +183,9 @@ class CombatScoringPlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        # Must run before the observer dispatcher: this plugin writes hit data into
-        # ``ctx.metrics["damage_taken_*"]`` / ``ctx.metrics["health_*"]`` /
-        # ``ctx.events``; downstream observers (e.g., NetDamageRewarder) read
-        # the deltas as the per-step reward signal. If this ran after observers,
-        # they would see damage with a one-step lag, hurting reward timeliness.
-        # See ``OBSERVER_DISPATCHER_PRIORITY`` notes in ``envs/framework/observer_plugin.py``.
         return OBSERVER_DISPATCHER_PRIORITY + 1
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        # Per-episode HP carry-over flows through ``ctx.episode_options``
-        # (see envs/framework/RESET.md §4). Constructor values are used as
-        # defaults whenever the option is missing — this matches the
-        # standalone "single round at full HP" use case.
         opts = ctx.episode_options
         ctx.metrics['health_a'] = float(
             opts.get('initial_health_a', self.initial_health_a)
@@ -183,9 +195,12 @@ class CombatScoringPlugin(BasePlugin):
         )
         ctx.metrics['damage_taken_a'] = 0.0
         ctx.metrics['damage_taken_b'] = 0.0
-        # Reset events list explicitly to clear carry-over from previous episodes.
         while len(ctx.events) > 0:
             ctx.events.pop()
+
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        self._action_damage_a = 0.0
+        self._action_damage_b = 0.0
 
     def _get_part_category(self, geom_name: str) -> str:
         if not geom_name: return None
@@ -207,71 +222,107 @@ class CombatScoringPlugin(BasePlugin):
         if 'foot' in base_name: return 'foot'
         return None
 
-    def on_post_action_step(self, ctx: SimContext) -> None:
-        derived_state = ctx.accessor.get_derived_state()
-        # Use the robot_robot_contacts interface per DATASPEC.md
-        # Format: [{'body_a': 'head', 'body_b': 'torso', 'force': 150.0}, ...]
-        contacts = derived_state.get('robot_robot_contacts', [])
+    def _resolve_hit(self, body_a_name, body_b_name):
+        """Classify a contact into (damage_part, defender) or None.
+
+        Returns the damage rule key ('head' / 'torso') and which robot is
+        the defender, based on which body is the attack part vs target part
+        and the team suffix of the target body.
+        """
+        # Must be cross-team (robot_a vs robot_b)
+        a_is_a = body_a_name.endswith('_a') or '_red' in body_a_name
+        a_is_b = body_a_name.endswith('_b') or '_blue' in body_a_name
+        b_is_a = body_b_name.endswith('_a') or '_red' in body_b_name
+        b_is_b = body_b_name.endswith('_b') or '_blue' in body_b_name
+        if not ((a_is_a and b_is_b) or (a_is_b and b_is_a)):
+            return None
+
+        cat_a = self._get_part_category(body_a_name)
+        cat_b = self._get_part_category(body_b_name)
+
+        a_attacks = cat_a in self.ATTACK_PARTS
+        b_attacks = cat_b in self.ATTACK_PARTS
+        a_target = cat_a in self.DAMAGE_TARGET_PARTS
+        b_target = cat_b in self.DAMAGE_TARGET_PARTS
+
+        # Identify which body is the target (defender's part being hit)
+        if a_attacks and b_target:
+            target_name = body_b_name
+            hit_cat = cat_b
+        elif b_attacks and a_target:
+            target_name = body_a_name
+            hit_cat = cat_a
+        else:
+            return None
+
+        # Map hit category to damage rule key
+        if hit_cat == 'head':
+            damage_part = 'head'
+        elif hit_cat in ('torso', 'waist_upper', 'waist_lower'):
+            damage_part = 'torso'
+        else:
+            return None
+
+        # Defender robot from the target body's team suffix
+        if target_name.endswith('_a') or '_red' in target_name:
+            defender = 'robot_a'
+        elif target_name.endswith('_b') or '_blue' in target_name:
+            defender = 'robot_b'
+        else:
+            return None
+
+        return damage_part, defender
+
+    def on_post_phy_step(self, ctx: SimContext) -> None:
+        """Per-substep damage: (force / force_scale)² × dt × part_weight."""
+        contacts = ctx.accessor.get_derived_state().get('robot_robot_contacts', [])
 
         for contact in contacts:
-            # New format uses body_a and body_b fields
-            body_a_name = contact.get('body_a', '')
-            body_b_name = contact.get('body_b', '')
+            force = contact.get('force', 0.0)
+            if force <= 0:
+                continue
 
-            # Determine which robot each body belongs to
-            is_body_a_a = body_a_name.endswith('_a') or '_red' in body_a_name
-            is_body_a_b = body_a_name.endswith('_b') or '_blue' in body_a_name
-            is_body_b_a = body_b_name.endswith('_a') or '_red' in body_b_name
-            is_body_b_b = body_b_name.endswith('_b') or '_blue' in body_b_name
+            result = self._resolve_hit(
+                contact.get('body_a', ''), contact.get('body_b', ''),
+            )
+            if result is None:
+                continue
 
-            if (is_body_a_a and is_body_b_b) or (is_body_a_b and is_body_b_a):
-                cat1 = self._get_part_category(body_a_name)
-                cat2 = self._get_part_category(body_b_name)
+            damage_part, defender = result
+            part_weight = self.DAMAGE_RULES.get(damage_part, 0.0)
+            if part_weight <= 0:
+                continue
 
-                force = contact.get('force', 0.0)
+            damage = part_weight * (force / self.force_scale) ** 2 * self.phy_step_dt
+            if damage <= 0:
+                continue
 
-                attacker, defender, hit_part = None, None, None
+            health_key = 'health_a' if defender == 'robot_a' else 'health_b'
+            damage_key = 'damage_taken_a' if defender == 'robot_a' else 'damage_taken_b'
 
-                if is_body_a_a and is_body_b_b:
-                    if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
-                        attacker, defender, hit_part = 'robot_a', 'robot_b', cat2
-                    elif cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
-                        attacker, defender, hit_part = 'robot_b', 'robot_a', cat1
-                elif is_body_a_b and is_body_b_a:
-                    if cat1 in self.ATTACK_PARTS and cat2 in self.DAMAGE_TARGET_PARTS:
-                        attacker, defender, hit_part = 'robot_b', 'robot_a', cat2
-                    elif cat2 in self.ATTACK_PARTS and cat1 in self.DAMAGE_TARGET_PARTS:
-                        attacker, defender, hit_part = 'robot_a', 'robot_b', cat1
+            ctx.metrics[health_key] = max(0.0, ctx.metrics[health_key] - damage)
+            ctx.metrics[damage_key] += damage
 
-                if attacker and defender and hit_part:
-                    # Target part mapping
-                    if hit_part in ['waist_upper', 'waist_lower', 'torso']:
-                        damage_part = 'torso'
-                    elif hit_part == 'head':
-                        damage_part = 'head'
-                    else:
-                        damage_part = None
+            if defender == 'robot_a':
+                self._action_damage_a += damage
+            else:
+                self._action_damage_b += damage
 
-                    if damage_part:
-                        weight = -self.DAMAGE_RULES.get(damage_part, 0.0)
-                        if weight > 0:
-                            damage = (weight * force) / self.damage_scale
-                            # Record events and metrics
-                            ctx.events.append({
-                                'type': 'hit',
-                                'attacker': attacker,
-                                'defender': defender,
-                                'part': damage_part,
-                                'damage': damage
-                            })
-                            health_key = 'health_a' if defender == 'robot_a' else 'health_b'
-                            damage_key = 'damage_taken_a' if defender == 'robot_a' else 'damage_taken_b'
-                            ctx.metrics[health_key] = max(0.0, ctx.metrics[health_key] - damage)
-                            ctx.metrics[damage_key] += damage
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        """Record hit events and check KO (once per action step)."""
+        if self._action_damage_a > 0.001:
+            ctx.events.append({
+                'type': 'hit',
+                'defender': 'robot_a',
+                'damage': round(self._action_damage_a, 2),
+            })
+        if self._action_damage_b > 0.001:
+            ctx.events.append({
+                'type': 'hit',
+                'defender': 'robot_b',
+                'damage': round(self._action_damage_b, 2),
+            })
 
-        # Check KO and request termination if enabled.
-        # When ``request_termination_on_ko`` is False, HP continues to decrease
-        # (capped at 0) without triggering episode termination.
         if self.request_termination_on_ko:
             if ctx.metrics['health_a'] <= 0 or ctx.metrics['health_b'] <= 0:
                 ctx.request_termination(TerminationReason.KO)
