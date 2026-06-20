@@ -14,6 +14,9 @@ parameters:
   oppo_agent_id:
     default: "robot_b"
     description: "The oppo robot, mustnt the same as agent_id."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
 runtime:
   phy_steps_per_action: 25
   max_steps: ${max_steps}
@@ -29,6 +32,7 @@ plugins:
   - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
     config:
       agent_id: "both"
+      tolerance: ${tolerance}
   - cls: "envs.humanoid21.plugins:CombatScoringPlugin"
     config:
       initial_health: 100.0
@@ -47,5 +51,9 @@ observer_plugins:
       agent_id: ${agent_id}
   damage:
     cls: "baseline.humanoid21.rewards.damage:NetDamageRewarder"
+    config:
+      agent_id: ${agent_id}
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
     config:
       agent_id: ${agent_id}
