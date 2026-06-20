@@ -9,6 +9,9 @@ Humanoid21 战斗仿真插件
 按照 DATASPEC.md 规范使用数据接口。
 """
 
+import json
+import os
+import time
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -163,6 +166,36 @@ class CombatScoringPlugin(BasePlugin):
         self._action_damage_a = 0.0
         self._action_damage_b = 0.0
 
+        # --- debug logging (enabled via COMBAT_SCORE_DEBUG_FILE env var) ---
+        self._debug_file: Optional[str] = os.environ.get('COMBAT_SCORE_DEBUG_FILE')
+        if self._debug_file:
+            parent = os.path.dirname(self._debug_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            # Create the file if it doesn't exist; append mode preserves content.
+            with open(self._debug_file, 'a'):
+                pass
+            self._debug_episode = 0
+            self._debug_log('plugin_init',
+                            force_scale=self.force_scale,
+                            phy_step_dt=self.phy_step_dt,
+                            damage_rules=self.DAMAGE_RULES)
+
+    def _debug_log(self, event: str, **data) -> None:
+        """Append a JSON line to the debug file.  No-op if debug is off."""
+        if not self._debug_file:
+            return
+        record = {
+            'ts': time.time(),
+            'event': event,
+            **data,
+        }
+        try:
+            with open(self._debug_file, 'a') as f:
+                f.write(json.dumps(record, default=str) + '\n')
+        except OSError:
+            pass
+
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_health": self.initial_health_a,
@@ -198,9 +231,21 @@ class CombatScoringPlugin(BasePlugin):
         while len(ctx.events) > 0:
             ctx.events.pop()
 
+        if self._debug_file:
+            self._debug_episode += 1
+            self._debug_log('pre_episode',
+                            episode=self._debug_episode,
+                            health_a=ctx.metrics['health_a'],
+                            health_b=ctx.metrics['health_b'],
+                            episode_options=dict(opts))
+
     def on_pre_action_step(self, ctx: SimContext) -> None:
         self._action_damage_a = 0.0
         self._action_damage_b = 0.0
+        self._debug_log('pre_action_step',
+                        episode_step=ctx.episode_step,
+                        health_a=ctx.metrics.get('health_a', 0),
+                        health_b=ctx.metrics.get('health_b', 0))
 
     def _get_part_category(self, geom_name: str) -> str:
         if not geom_name: return None
@@ -276,16 +321,23 @@ class CombatScoringPlugin(BasePlugin):
     def on_post_phy_step(self, ctx: SimContext) -> None:
         """Per-substep damage: (force / force_scale)² × dt × part_weight."""
         contacts = ctx.accessor.get_derived_state().get('robot_robot_contacts', [])
+        debug_contacts = [] if self._debug_file else None
 
         for contact in contacts:
             force = contact.get('force', 0.0)
             if force <= 0:
                 continue
 
-            result = self._resolve_hit(
-                contact.get('body_a', ''), contact.get('body_b', ''),
-            )
+            body_a = contact.get('body_a', '')
+            body_b = contact.get('body_b', '')
+            result = self._resolve_hit(body_a, body_b)
+
             if result is None:
+                if debug_contacts is not None:
+                    debug_contacts.append({
+                        'body_a': body_a, 'body_b': body_b,
+                        'force': force, 'resolved': False,
+                    })
                 continue
 
             damage_part, defender = result
@@ -308,6 +360,27 @@ class CombatScoringPlugin(BasePlugin):
             else:
                 self._action_damage_b += damage
 
+            if debug_contacts is not None:
+                debug_contacts.append({
+                    'body_a': body_a, 'body_b': body_b,
+                    'force': force, 'resolved': True,
+                    'damage_part': damage_part, 'defender': defender,
+                    'damage': damage,
+                    'health_a': ctx.metrics['health_a'],
+                    'health_b': ctx.metrics['health_b'],
+                })
+
+        if debug_contacts is not None:
+            self._debug_log('post_phy_step',
+                            episode_step=ctx.episode_step,
+                            physics_step=ctx.physics_step,
+                            num_contacts=len(contacts),
+                            contacts=debug_contacts,
+                            health_a=ctx.metrics.get('health_a', 0),
+                            health_b=ctx.metrics.get('health_b', 0),
+                            action_damage_a=self._action_damage_a,
+                            action_damage_b=self._action_damage_b)
+
     def on_post_action_step(self, ctx: SimContext) -> None:
         """Record hit events and check KO (once per action step)."""
         if self._action_damage_a > 0.001:
@@ -323,9 +396,22 @@ class CombatScoringPlugin(BasePlugin):
                 'damage': round(self._action_damage_b, 2),
             })
 
+        ko = False
         if self.request_termination_on_ko:
             if ctx.metrics['health_a'] <= 0 or ctx.metrics['health_b'] <= 0:
+                ko = True
                 ctx.request_termination(TerminationReason.KO)
+
+        self._debug_log('post_action_step',
+                        episode_step=ctx.episode_step,
+                        action_damage_a=self._action_damage_a,
+                        action_damage_b=self._action_damage_b,
+                        health_a=ctx.metrics.get('health_a', 0),
+                        health_b=ctx.metrics.get('health_b', 0),
+                        damage_taken_a=ctx.metrics.get('damage_taken_a', 0),
+                        damage_taken_b=ctx.metrics.get('damage_taken_b', 0),
+                        events=list(ctx.events),
+                        ko=ko)
 
 
 class FrozenRobotPlugin(BasePlugin):
