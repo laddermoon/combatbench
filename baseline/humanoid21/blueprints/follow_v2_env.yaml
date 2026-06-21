@@ -1,0 +1,59 @@
+# P0 Stage 2: Standing with random initial state perturbation.
+# Same as Stage 1 but adds random initialization of tilt, angular velocity, and joint offsets.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The robot random move , mustnt the same as agent_id."
+  random_move_speed:
+    default: 0.5
+    description: "The robot random move , mustnt the same as agent_id."
+  oppo_min_avoid_distance:
+    default: 1.2
+    description: "The minimum distance the opponent tries to keep from the training robot."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      tolerance: ${tolerance}
+  - cls: "baseline.humanoid21.plugins.random_move:RandomMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed: ${random_move_speed}
+      min_avoid_distance: ${oppo_min_avoid_distance}
+observer_plugins:
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  approach_velocity:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: ${agent_id}
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: ${agent_id}
