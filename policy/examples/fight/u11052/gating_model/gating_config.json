@@ -1,0 +1,20 @@
+{
+    "input_dim": 96,
+    "hidden_dims": [
+        512,
+        256,
+        128
+    ],
+    "best_metrics": {
+        "epoch": 417,
+        "val_loss": 0.0028651058838231676,
+        "val_acc": 0.9804640147714044,
+        "unsafe_precision": 0.49430964139951217,
+        "unsafe_recall": 0.9670237345075257,
+        "unsafe_f1": 0.6542095869965164,
+        "train_loss": 0.0025640181667178625,
+        "train_acc": 0.9709903679011261
+    },
+    "device": "cuda",
+    "export_time": "2026-06-14 11:48:51"
+}

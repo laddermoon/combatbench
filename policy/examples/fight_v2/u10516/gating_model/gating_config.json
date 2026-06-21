@@ -1,0 +1,20 @@
+{
+    "input_dim": 96,
+    "hidden_dims": [
+        512,
+        256,
+        128
+    ],
+    "best_metrics": {
+        "epoch": 298,
+        "val_loss": 0.023559564804871553,
+        "val_acc": 0.9665441330241334,
+        "unsafe_precision": 0.7844999271384377,
+        "unsafe_recall": 0.9437424218075946,
+        "unsafe_f1": 0.8567847643741616,
+        "train_loss": 0.02161285639686317,
+        "train_acc": 0.9560511147347832
+    },
+    "device": "cpu",
+    "export_time": "2026-06-20 13:19:21 (reconstructed from .pt)"
+}

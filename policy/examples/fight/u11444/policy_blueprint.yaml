@@ -1,0 +1,30 @@
+# Self-contained FightMixedPolicy entry point.
+#
+# Three-way switching composite:
+#   fight (primary) → follow (distance-based) → recover (balance safety shield)
+#
+# All paths use ${DIR} (resolved to this file's directory at load time), so
+# the entire directory can be zipped and submitted without modification.
+#
+# Submission system loads this file (policy_blueprint.yaml) as the entry point.
+# Thresholds use FightMixedPolicy Python defaults (matching training-time eval).
+
+version: 1
+cls: "baseline.humanoid21.curriculum.fight_mixed_policy:FightMixedPolicy"
+config:
+  # Primary fight policy: inline blueprint referencing the local policy.py.
+  # ExportedMLPPolicy auto-discovers model.pt from its own directory.
+  primary_policy_bp:
+    version: 1
+    cls: "file:${DIR}/policy.py:ExportedMLPPolicy"
+    config:
+      stochastic: false
+
+  # Follow policy: distance-based locomotion fallback (approach opponent).
+  follow_policy_bp: "${DIR}/follow/policy_blueprint.yaml"
+
+  # Recover policy: balance safety shield (used when fall predicted).
+  fallback_policy_bp: "${DIR}/fallback/policy_blueprint.yaml"
+
+  # Gating model directory (contains gating_config.json + gating_model.pt).
+  gating_model_dir: "${DIR}/gating_model"
