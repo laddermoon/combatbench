@@ -18,30 +18,33 @@ from envs.framework.policy import PolicyBlueprint
 
 # Paths resolved relative to the project root.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+_RANDOM_POLICY_BP = PolicyBlueprint.load(
+    _PROJECT_ROOT / "policy" / "blueprints" / "random.yaml"
+)
 _FALLBACK_POLICY_BP = PolicyBlueprint.load(
     "/data1/mono/things/combatbench/baseline/humanoid21/"
     "runs/curriculum_balance_recover_plus_v2_20260618_225956/policy_exports/"
     "u08845/policy_blueprint.yaml"
 )
-_FOLLOW_POLICY_BP = PolicyBlueprint.load(
-    "/data1/mono/things/combatbench/baseline/humanoid21/runs/"
-    "curriculum_follow_v2_20260620_132447/"
-    "policy_exports/u09236/policy_blueprint.yaml"
-)
 _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_v2_u08845_10w"
 )
 
-class FightV2Config(ExperimentConfig):
-    """Fight curriculum experiment.
+class FollowV2Config(ExperimentConfig):
+    """FollowV2-opponent curriculum experiment.
 
-    The trained robot (robot_a) must learn to attack and fight the opponent
-    (robot_b) while maintaining balance and utilizing distance-based fallback follow.
-    The opponent policy is the frozen pre-trained follow policy.
+    The trained robot (robot_a) must learn to follow_v2 a randomly-moving
+    opponent (robot_b) while maintaining balance.  The opponent's movement
+    is driven by :class:`RandomMovePlugin` inside the env; the opponent
+    policy itself is a no-op random policy.
+
+    Curriculum knob: the opponent's movement speed
+    (``random_move_speed`` env parameter), indexed by ``LEVEL_SPEEDS``.
     """
 
-    name = "fight_v2"
-    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_radial", "r_tangential", "r_gate", "r_follow_gate", "r_damage")
+    name = "follow_v2"
+
+    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_radial", "r_tangential", "r_gate")
     gammas = {
         "r_fall": 0.99,
         "r_cross": 0.99,
@@ -52,18 +55,11 @@ class FightV2Config(ExperimentConfig):
         "r_radial": 0.99,
         "r_tangential": 0.99,
         "r_gate": 0.99,
-        "r_follow_gate": 0.99,
-        "r_damage": 0.99,
     }
 
-    BLUEPRINT = "fight_v2_env.yaml"
+    BLUEPRINT = "follow_v2_env.yaml"
 
     max_updates: int = 20000
-    
-    eval_interval: int = 2
-
-    # --- Video recording ---
-    video_eval_interval: int = 2
 
     # --- PPO tuning ---
     log_std_min: float = -1.8
@@ -77,18 +73,21 @@ class FightV2Config(ExperimentConfig):
     # --- Rollout schedule ---
     episodes_per_update: int = 1024
     eval_episodes: int = 128
+    eval_interval: int = 2
+
+    # --- Video recording ---
+    video_eval_interval: int = 2
 
     # Small per-step survival bonus.
     per_step_survival_reward: float = 0.01
     # Penalty per step where MixedPolicy switches to fallback.
     gate_switch_penalty: float = -1.0
-    follow_switch_penalty: float = -1.0
 
     # Fixed spawn distance (no randomization) for consistent curriculum metric.
     INITIAL_DISTANCE: float = 2.0
 
     # --- Curriculum: opponent movement speed per level (m/s) ---
-    LEVEL_SPEEDS: Tuple[float, ...] = (0.0,)
+    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
     PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
@@ -112,26 +111,28 @@ class FightV2Config(ExperimentConfig):
         idx = max(0, min(self._level, len(self.LEVEL_SPEEDS) - 1))
         return float(self.LEVEL_SPEEDS[idx])
 
-    def _materialize_env(self, agent_id: str) -> EnvBlueprint:
+    def _materialize_env(
+        self, agent_id: str, random_move_speed: float,
+    ) -> EnvBlueprint:
         return self._env_pb().materialize(
             max_steps=self.custom_config["max_steps"],
             agent_id=agent_id,
             oppo_agent_id="robot_b" if agent_id == "robot_a" else "robot_a",
+            random_move_speed=random_move_speed,
         )
 
     def video_env_blueprint(self):
-        return self._materialize_env("robot_a")
+        return self._materialize_env("robot_a", self.current_speed)
 
     # ---- Policy blueprint helpers -----------------------------------------
 
     @staticmethod
     def _make_mixed_bp(primary_bp: PolicyBlueprint) -> PolicyBlueprint:
-        """Wrap *primary_bp* in :class:`FightMixedPolicy` with standing and follow fallbacks."""
+        """Wrap *primary_bp* in :class:`MixedPolicy` with a standing fallback."""
         return PolicyBlueprint(
-            cls="baseline.humanoid21.curriculum.fight_mixed_policy:FightMixedPolicy",
+            cls="baseline.humanoid21.curriculum.mixed_policy:MixedPolicy",
             config={
                 "primary_policy_bp": primary_bp.to_dict(),
-                "follow_policy_bp": _FOLLOW_POLICY_BP.to_dict(),
                 "fallback_policy_bp": _FALLBACK_POLICY_BP.to_dict(),
                 "gating_model_dir": _GATING_MODEL_DIR,
             },
@@ -146,9 +147,10 @@ class FightV2Config(ExperimentConfig):
         n_episodes: int,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         mixed_bp = self._make_mixed_bp(policy_bp)
+        speed = self.current_speed
 
         env_bps: Dict[str, EnvBlueprint] = {
-            aid: self._materialize_env(aid)
+            aid: self._materialize_env(aid, speed)
             for aid in ("robot_a", "robot_b")
         }
 
@@ -158,20 +160,18 @@ class FightV2Config(ExperimentConfig):
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
-
-            # Map mixed_bp to the learning agent, and the pre-trained Follow policy to the opponent
+            
+            # Map mixed_bp to the learning agent, and _RANDOM_POLICY_BP to the opponent
             if agent_id == "robot_a":
                 p_a = mixed_bp
-                p_b = _FOLLOW_POLICY_BP
+                p_b = _RANDOM_POLICY_BP
             else:
-                p_a = _FOLLOW_POLICY_BP
+                p_a = _RANDOM_POLICY_BP
                 p_b = mixed_bp
-
+                
             jobs.append((
-                p_a,
-                p_b,
-                env_bps[agent_id],
-                seed,
+                p_a, p_b,
+                env_bps[agent_id], seed,
                 {"agent_id": agent_id, "initial_distance": initial_distance},
             ))
         return jobs
@@ -185,10 +185,10 @@ class FightV2Config(ExperimentConfig):
     # ---- Eval comparison --------------------------------------------------
 
     def compare_eval(self, esum, best_esum):
-        """Compare eval metrics: survival → fight_ratio → damage_dealt."""
+        """Compare eval metrics: survival → primary_ratio → hold_ratio."""
         if not best_esum:
             return True
-        for key in ("survived", "fight_ratio", "damage_dealt"):
+        for key in ("survived", "primary_ratio", "hold_ratio"):
             cur = esum.get(key, 0.0)
             best = best_esum.get(key, 0.0)
             if cur != best:
@@ -198,18 +198,29 @@ class FightV2Config(ExperimentConfig):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 3.0, 1.0, 1.0, 1.0, 3.0)
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 3.0, 1.0, 1.0)
 
     def next_weights(
         self,
         eval_metrics: Dict[str, float],
         current_weights: Tuple[float, ...],
     ) -> Tuple[float, ...]:
-        """Stateful scheduler weights update (keeps constant for fight single-stage)."""
-        self._hold_ratio = float(eval_metrics.get("hold_ratio", 0.0))
+        """Advance the opponent speed level when hold_ratio is high enough."""
+        hold_ratio = float(eval_metrics.get("hold_ratio", 0.0))
+        self._hold_ratio = hold_ratio
         self._survival_rate = float(eval_metrics.get("survived", 0.0))
-        self._primary_ratio = float(eval_metrics.get("fight_ratio", 0.0))
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 3.0, 1.0, 1.0, 1.0, 3.0)
+        self._primary_ratio = float(eval_metrics.get("primary_ratio", 0.0))
+
+        if self._level < len(self.LEVEL_SPEEDS) - 1:
+            if hold_ratio >= self.PROMOTE_HOLD_RATIO:
+                self._consecutive_pass += 1
+                if self._consecutive_pass >= self.PROMOTE_PATIENCE:
+                    self._level += 1
+                    self._consecutive_pass = 0
+            else:
+                self._consecutive_pass = 0
+
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 3.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
@@ -218,7 +229,7 @@ class FightV2Config(ExperimentConfig):
         oo = episode.observer_outputs
 
         # r_fall: per-step survival bonus + terminal signal
-        fell = any(p.startswith("imbalance") for p in episode.termination_proposals)
+        fell = "imbalance" in episode.termination_proposals
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -228,6 +239,7 @@ class FightV2Config(ExperimentConfig):
 
         # r_cross: cross-support balance reward
         r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+
 
         # Extract fields from the 'posture' observer
         joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
@@ -262,7 +274,7 @@ class FightV2Config(ExperimentConfig):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        # r_radial / r_tangential: velocity decomposition
+        # r_radial / r_tangential: velocity decomposition (trainer-side post-processing)
         from baseline.humanoid21.rewards.follow_opponent import compute_radial_tangential_rewards
 
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
@@ -278,39 +290,21 @@ class FightV2Config(ExperimentConfig):
             opp_xy = np.stack([opp_x, opp_y], axis=1)
             r_radial, r_tangential = compute_radial_tangential_rewards(self_xy, opp_xy)
 
-        # r_damage: net damage (attack) reward
-        r_damage = _extract_per_step_scalar(oo, "damage", T)
-        if r_damage is None:
-            r_damage = np.zeros(T, dtype=np.float32)
-
-        # r_gate / r_follow_gate: boundary transition penalties
+        # r_gate: penalty when MixedPolicy switches to fallback mode
         r_gate = np.full(T, self.per_step_survival_reward, dtype=np.float32)
-        r_follow_gate = np.full(T, self.per_step_survival_reward, dtype=np.float32)
-
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is not None and "gating_mode" in extras:
             gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
             length = min(len(gating_mode), T)
-
+            is_primary = gating_mode[:length] >= 0.5
             for t in range(length - 1):
-                # Currently in primary "fight" mode
-                if gating_mode[t] > 0.5:
-                    if gating_mode[t+1] == 0.0:
-                        # Switch to Recover
-                        r_gate[t] = self.gate_switch_penalty
-                    elif gating_mode[t+1] == -1.0:
-                        # Switch to Follow
-                        r_follow_gate[t] = self.follow_switch_penalty
-
-                # Zero out fallback steps
-                if gating_mode[t] < 0.5:
+                if is_primary[t] and not is_primary[t+1]:
+                    r_gate[t] = self.gate_switch_penalty
+                elif not is_primary[t]:
                     r_gate[t] = 0.0
-                    r_follow_gate[t] = 0.0
-
-            if length > 0 and gating_mode[length - 1] < 0.5:
+            if length > 0 and not is_primary[length - 1]:
                 r_gate[length - 1] = 0.0
-                r_follow_gate[length - 1] = 0.0
 
         return {
             "r_fall": r_fall,
@@ -322,14 +316,17 @@ class FightV2Config(ExperimentConfig):
             "r_radial": r_radial,
             "r_tangential": r_tangential,
             "r_gate": r_gate,
-            "r_damage": r_damage,
-            "r_follow_gate": r_follow_gate,
         }
 
     # ---- Episode metrics --------------------------------------------------
 
     def segment_episode(self, episode) -> List[Tuple[int, int]]:
-        """Split episode at fallback boundaries, keeping only primary (Fight) steps."""
+        """Split episode at fallback boundaries, keeping only primary steps.
+
+        Steps where the gating model switched to the fallback (balance
+        recovery) policy are excluded from training so the actor is never
+        trained on actions it did not produce.
+        """
         T = episode.num_frames
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
@@ -356,20 +353,22 @@ class FightV2Config(ExperimentConfig):
         return segments
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
-        """Per-episode metrics for fight evaluation and logging."""
+        """Per-episode metrics for eval comparison and logging."""
         T = episode.num_frames
-        fell = any(p.startswith("imbalance") for p in episode.termination_proposals)
+        fell = "imbalance" in episode.termination_proposals
 
+        # hold_ratio: fraction of steps within 1.1m of opponent, computed from
+        # RAW (unsmoothed) positions recorded by the approach_velocity observer.
         oo = episode.observer_outputs
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
         self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
         opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
         opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
-
+        
         mean_dist = 99.0
         min_dist = 99.0
         hold_ratio = 0.0
-
+        
         if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
             raw_dist = np.sqrt((self_x - opp_x) ** 2 + (self_y - opp_y) ** 2)
             if len(raw_dist) > 0:
@@ -377,40 +376,44 @@ class FightV2Config(ExperimentConfig):
                 min_dist = float(np.min(raw_dist))
                 hold_ratio = float(np.mean(raw_dist <= 1.1))
 
-        # Net damage from r_damage
-        r_damage = _extract_per_step_scalar(oo, "damage", T)
-        damage_dealt = float(np.sum(r_damage)) if r_damage is not None else 0.0
-
+        # primary_ratio: fraction of steps where the approach (primary) policy
+        # was active rather than the fallback standing policy.
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
-
-        fight_ratio = 1.0
-        follow_ratio = 0.0
-        recover_ratio = 0.0
+        
+        primary_ratio = 1.0
         gating_switches = 0.0
         mean_p_safe = 1.0
-
-        fall_on_fight = 0.0
-        fall_on_follow = 0.0
-        fall_on_recover = 0.0
-
+        fallback_attempts = 0.0
+        fallback_recoveries = 0.0
+        fall_on_chaser = 0.0
+        fall_on_fallback = 0.0
+        
         if extras is not None:
             if "gating_mode" in extras:
                 gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
                 if len(gating_mode) > 0:
-                    fight_ratio = float(np.mean(gating_mode == 1.0))
-                    follow_ratio = float(np.mean(gating_mode == -1.0))
-                    recover_ratio = float(np.mean(gating_mode == 0.0))
-                    gating_switches = float(np.sum(np.diff(gating_mode) != 0))
-
+                    primary_ratio = float(np.mean(gating_mode >= 0.5))
+                    gating_switches = float(np.sum(np.abs(np.diff(gating_mode)) > 0.5))
+                    
+                    is_fallback = gating_mode < 0.5
+                    # transitions from primary (False) to fallback (True)
+                    enters = int(np.sum(~is_fallback[:-1] & is_fallback[1:]))
+                    if is_fallback[0]:
+                        enters += 1
+                    # transitions from fallback (True) to primary (False)
+                    exits = int(np.sum(is_fallback[:-1] & ~is_fallback[1:]))
+                    
+                    fallback_attempts = float(enters)
+                    fallback_recoveries = float(exits)
+                    
                     if fell:
-                        if gating_mode[-1] == 1.0:
-                            fall_on_fight = 1.0
-                        elif gating_mode[-1] == -1.0:
-                            fall_on_follow = 1.0
-                        elif gating_mode[-1] == 0.0:
-                            fall_on_recover = 1.0
-
+                        if len(gating_mode) > 0:
+                            print(f"[DEBUG_FALL] T={T} len(gating_mode)={len(gating_mode)} last={gating_mode[-1]} fell={fell}", flush=True)
+                            if gating_mode[-1] >= 0.5:
+                                fall_on_chaser = 1.0
+                            else:
+                                fall_on_fallback = 1.0
             if "p_safe" in extras:
                 p_safe = np.asarray(extras["p_safe"], dtype=np.float32).reshape(-1)
                 if len(p_safe) > 0:
@@ -420,17 +423,15 @@ class FightV2Config(ExperimentConfig):
             "survived": 0.0 if fell else 1.0,
             "level": float(self._level),
             "hold_ratio": hold_ratio,
-            "fight_ratio": fight_ratio,
-            "follow_ratio": follow_ratio,
-            "recover_ratio": recover_ratio,
+            "primary_ratio": primary_ratio,
             "mean_dist": mean_dist,
             "min_dist": min_dist,
             "gating_switches": gating_switches,
             "mean_p_safe": mean_p_safe,
-            "damage_dealt": damage_dealt,
-            "fall_on_fight": fall_on_fight,
-            "fall_on_follow": fall_on_follow,
-            "fall_on_recover": fall_on_recover,
+            "fallback_attempts": fallback_attempts,
+            "fallback_recoveries": fallback_recoveries,
+            "fall_on_chaser": fall_on_chaser,
+            "fall_on_fallback": fall_on_fallback,
         }
 
     # ---- Scheduler state --------------------------------------------------
@@ -442,7 +443,7 @@ class FightV2Config(ExperimentConfig):
             "consecutive_pass": self._consecutive_pass,
             "hold_ratio": round(self._hold_ratio, 3),
             "survival_rate": round(self._survival_rate, 3),
-            "fight_ratio": round(self._primary_ratio, 3),
+            "primary_ratio": round(self._primary_ratio, 3),
         }
 
     def scheduler_state(self) -> dict:
@@ -451,7 +452,7 @@ class FightV2Config(ExperimentConfig):
             "consecutive_pass": self._consecutive_pass,
             "hold_ratio": self._hold_ratio,
             "survival_rate": self._survival_rate,
-            "fight_ratio": self._primary_ratio,
+            "primary_ratio": self._primary_ratio,
         }
 
     def load_scheduler_state(self, state: dict) -> None:
@@ -459,8 +460,8 @@ class FightV2Config(ExperimentConfig):
         self._consecutive_pass = int(state.get("consecutive_pass", 0))
         self._hold_ratio = float(state.get("hold_ratio", 0.0))
         self._survival_rate = float(state.get("survival_rate", 0.0))
-        self._primary_ratio = float(state.get("fight_ratio", 0.0))
+        self._primary_ratio = float(state.get("primary_ratio", 0.0))
 
 
 # Singleton instance for the registry
-EXPERIMENT = FightV2Config()
+EXPERIMENT = FollowV2Config()

@@ -32,7 +32,7 @@ _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_v2_u08845_10w"
 )
 
-class FightV2Config(ExperimentConfig):
+class FightV2OppoPoolConfig(ExperimentConfig):
     """Fight curriculum experiment.
 
     The trained robot (robot_a) must learn to attack and fight the opponent
@@ -40,7 +40,7 @@ class FightV2Config(ExperimentConfig):
     The opponent policy is the frozen pre-trained follow policy.
     """
 
-    name = "fight_v2"
+    name = "fight_v2_oppopool"
     reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_radial", "r_tangential", "r_gate", "r_follow_gate", "r_damage")
     gammas = {
         "r_fall": 0.99,
@@ -86,6 +86,10 @@ class FightV2Config(ExperimentConfig):
 
     # Fixed spawn distance (no randomization) for consistent curriculum metric.
     INITIAL_DISTANCE: float = 2.0
+
+    # Probability of training against the original pre-trained Follow baseline opponent (to maintain basic competency)
+    # vs sampling from the historical checkpoint opponent pool.
+    opponent_pool_baseline_prob: float = 0.2
 
     # --- Curriculum: opponent movement speed per level (m/s) ---
     LEVEL_SPEEDS: Tuple[float, ...] = (0.0,)
@@ -137,6 +141,32 @@ class FightV2Config(ExperimentConfig):
             },
         )
 
+    def _get_opponent_pool_blueprints(self) -> List[PolicyBlueprint]:
+        """Dynamically scan saved blueprints in run_dir/policy_exports to build opponent pool."""
+        run_dir = getattr(self, "run_dir", None)
+        if not run_dir:
+            return []
+        
+        exports_dir = Path(run_dir) / "policy_exports"
+        if not exports_dir.exists():
+            return []
+            
+        blueprints = []
+        # Sort subdirectories to ensure predictable chronological scanning
+        for p in sorted(exports_dir.glob("u*/policy_blueprint.yaml")):
+            try:
+                bp = PolicyBlueprint.load(str(p))
+                # Opponent runs with stochastic=True for diverse behavior
+                bp.config["stochastic"] = True
+                blueprints.append(bp)
+            except Exception as e:
+                print(f"[OpponentPool] Failed to load blueprint {p}: {e}", flush=True)
+                pass
+        
+        if blueprints:
+            print(f"[OpponentPool] Discovered {len(blueprints)} historical opponent policies in pool.", flush=True)
+        return blueprints
+
     # ---- Job construction -------------------------------------------------
 
     def _build_jobs(
@@ -144,6 +174,7 @@ class FightV2Config(ExperimentConfig):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        use_opponent_pool: bool = False,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         mixed_bp = self._make_mixed_bp(policy_bp)
 
@@ -154,17 +185,31 @@ class FightV2Config(ExperimentConfig):
 
         initial_distance = self.INITIAL_DISTANCE
 
+        opponent_pool: List[PolicyBlueprint] = []
+        if use_opponent_pool:
+            opponent_pool = self._get_opponent_pool_blueprints()
+
+        rng = np.random.default_rng(base_seed)
+
         jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
 
-            # Map mixed_bp to the learning agent, and the pre-trained Follow policy to the opponent
+            # Select opponent blueprint: either baseline or historical checkpoint from the pool
+            if use_opponent_pool and opponent_pool and rng.random() > self.opponent_pool_baseline_prob:
+                hist_bp = rng.choice(opponent_pool)
+                # Wrap in mixed policy so opponent stands up, follows, and fights stochastically!
+                p_opp = self._make_mixed_bp(hist_bp)
+            else:
+                p_opp = _FOLLOW_POLICY_BP
+
+            # Map mixed_bp to the learning agent, and the opponent policy to the opponent
             if agent_id == "robot_a":
                 p_a = mixed_bp
-                p_b = _FOLLOW_POLICY_BP
+                p_b = p_opp
             else:
-                p_a = _FOLLOW_POLICY_BP
+                p_a = p_opp
                 p_b = mixed_bp
 
             jobs.append((
@@ -177,10 +222,11 @@ class FightV2Config(ExperimentConfig):
         return jobs
 
     def build_rollout_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
-        return self._build_jobs(policy_bp, base_seed, self.episodes_per_update)
+        return self._build_jobs(policy_bp, base_seed, self.episodes_per_update, use_opponent_pool=True)
 
     def build_eval_jobs(self, policy_bp: PolicyBlueprint, base_seed: int):
-        return self._build_jobs(policy_bp, base_seed, self.eval_episodes)
+        # Evaluation always runs against the fixed baseline opponent to maintain stable/comparable metrics over epochs
+        return self._build_jobs(policy_bp, base_seed, self.eval_episodes, use_opponent_pool=False)
 
     # ---- Eval comparison --------------------------------------------------
 
@@ -463,4 +509,4 @@ class FightV2Config(ExperimentConfig):
 
 
 # Singleton instance for the registry
-EXPERIMENT = FightV2Config()
+EXPERIMENT = FightV2OppoPoolConfig()

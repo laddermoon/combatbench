@@ -199,10 +199,10 @@ def train(
     *,
     run_dir: Path,
     resume_from: Optional[Path] = None,
-) -> None:
+) -> None:    
     # Attach run_dir to the experiment so it can discover saved models for opponent pool.
     experiment.run_dir = run_dir
-
+    
     # Kill entire process group on SIGTERM/SIGINT
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)
