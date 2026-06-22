@@ -17,34 +17,57 @@ There are no knock-down rules, no counts, no fouls, and no posture interventions
 
 ### 1. Allowed Attacking Parts (Attacker)
 Only strikes initiated by the following parts can cause damage:
-- Hands
-- Forearms
-- Elbows
-- Upper arms
-- Feet
-- Shins
-- Knees
-- Thighs
+- Hand
+- Lower arm
+- Upper arm
+- Foot
+- Shin
+- Thigh
 
 **Note:** The torso and head cannot be used as valid attacking parts. Striking the opponent with the torso or head will not deduct the opponent's HP.
 
 ### 2. Valid Target Parts (Defender)
 HP is deducted only when the following parts are struck:
 - Head
-- Torso (including chest, abdomen, waist, and back)
+- Torso (including chest, abdomen, upper waist, and lower waist)
 
 Strikes to any other parts will not cause HP deduction.
 
-### 3. Physical Conditions (True Strike Judgment)
-Both of the following must be met simultaneously:
-- **High-speed instant collision:** The relative collision velocity must be greater than the set threshold (excluding slow touches or pushing).
-- **Non-continuous contact:** A single collision event resolves damage only once. Continuous contact/clinching will not trigger repeated HP deductions.
+### 3. Physical Conditions (Force Threshold Judgment)
+
+Damage is computed in real-time per physics substep (500Hz, dt=0.002s). The damage formula is:
+
+```
+damage = part_weight × (force / force_scale)² × dt
+```
+
+Where:
+- `force`: normal contact force at the physics substep (N)
+- `force_scale`: force threshold parameter, default 100N
+- `dt`: physics timestep, 0.002s
+- `part_weight`: body part weight — head 3.0, torso 1.0
+
+The `(force / force_scale)²` term creates a quadratic threshold:
+- Forces below 100N are suppressed (e.g., 50N → 0.25×, negligible damage)
+- Force equal to 100N is the threshold point (1.0×)
+- Forces well above 100N are amplified (e.g., 200N → 4.0×, 400N → 16.0×)
+
+This means light touches, slow pushes, and sustained contact produce negligible damage, while high-speed heavy strikes cause significant damage.
 
 ### 4. Damage Values
-- **Head Hit:** -3 HP
-- **Torso Hit:** -1 HP
 
-*Damage is directly triggered by valid collisions, with no distinction between light and heavy strikes in this simplified V1.0 rule set.*
+Damage is not a fixed value but is continuously calculated by the formula above. Reference magnitudes (force_scale=100N, dt=0.002s):
+
+| Contact Force | Head Damage/Substep | Torso Damage/Substep |
+|---------------|---------------------|----------------------|
+| 50N           | 0.00075             | 0.00025              |
+| 100N          | 0.006               | 0.002                |
+| 500N          | 0.15                | 0.05                 |
+| 1000N         | 0.6                 | 0.2                  |
+
+A 1000N strike sustained for 50ms (25 substeps) deals approximately 15 HP to the head, 5 HP to the torso.
+
+*The head weight is 3× the torso weight, so head damage is always 3× torso damage for the same force.*
 
 ## IV. Posture & Behavior Rules (No Restrictions)
 The following behaviors will **not** result in a loss, point deduction, penalty, or reset:
