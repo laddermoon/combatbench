@@ -135,6 +135,13 @@ class CombatScoringPlugin(BasePlugin):
     Options consumed from ``ctx.episode_options``:
       - ``initial_health_a`` (float): Starting HP for robot_a.
       - ``initial_health_b`` (float): Starting HP for robot_b.
+
+    Constructor-only option:
+      - ``score_log_file`` (str | None): If set, append one concise line per
+        physics substep to this file for audit/review. ``None`` (default)
+        disables logging. Deliberately a constructor parameter rather than
+        an environment variable so concurrent processes (e.g. parallel
+        matches) can log to separate files without collision.
     """
     ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
@@ -157,6 +164,7 @@ class CombatScoringPlugin(BasePlugin):
         force_scale: float = 100.0,
         phy_step_dt: float = 0.002,
         request_termination_on_ko: bool = True,
+        score_log_file: Optional[str] = None,
     ):
         self.initial_health_a = initial_health_a if initial_health_a is not None else initial_health
         self.initial_health_b = initial_health_b if initial_health_b is not None else initial_health
@@ -165,6 +173,33 @@ class CombatScoringPlugin(BasePlugin):
         self.request_termination_on_ko = bool(request_termination_on_ko)
         self._action_damage_a = 0.0
         self._action_damage_b = 0.0
+
+        # --- concise per-substep score audit log (constructor-driven) ---
+        # One append line per physics substep.  Default None = no logging.
+        # Passed via constructor (not env var) so parallel processes in the
+        # same environment can log to distinct files.
+        self.score_log_file = score_log_file
+        self._score_log_handle = None
+        self._score_log_total_step = 0
+        # per-substep damage broken down by defender × part (head/torso)
+        self._step_dmg_a_head = 0.0
+        self._step_dmg_a_torso = 0.0
+        self._step_dmg_b_head = 0.0
+        self._step_dmg_b_torso = 0.0
+        if self.score_log_file:
+            parent = os.path.dirname(self.score_log_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            # line-buffered: each '\n' triggers a flush so the audit trail
+            # survives even without explicit close.
+            self._score_log_handle = open(
+                self.score_log_file, 'a', buffering=1, encoding='utf-8',
+            )
+            self._score_log_handle.write(
+                '# combat_score_log columns: '
+                'step episode_step physics_step health_a health_b '
+                'dmg_a_head dmg_a_torso dmg_b_head dmg_b_torso\n'
+            )
 
         # --- debug logging (enabled via COMBAT_SCORE_DEBUG_FILE env var) ---
         self._debug_file: Optional[str] = os.environ.get('COMBAT_SCORE_DEBUG_FILE')
@@ -196,6 +231,17 @@ class CombatScoringPlugin(BasePlugin):
         except OSError:
             pass
 
+    def __del__(self):
+        # Best-effort close of the score-log handle.  Line-buffered mode
+        # already flushes per line, so this is mainly about releasing the
+        # descriptor promptly in long-running daemons.
+        h = getattr(self, '_score_log_handle', None)
+        if h is not None:
+            try:
+                h.close()
+            except Exception:
+                pass
+
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_health": self.initial_health_a,
@@ -204,6 +250,7 @@ class CombatScoringPlugin(BasePlugin):
             "force_scale": self.force_scale,
             "phy_step_dt": self.phy_step_dt,
             "request_termination_on_ko": self.request_termination_on_ko,
+            "score_log_file": self.score_log_file,
         }
 
     @classmethod
@@ -230,6 +277,7 @@ class CombatScoringPlugin(BasePlugin):
         ctx.metrics['damage_taken_b'] = 0.0
         while len(ctx.events) > 0:
             ctx.events.pop()
+        self._score_log_total_step = 0
 
         if self._debug_file:
             self._debug_episode += 1
@@ -320,6 +368,10 @@ class CombatScoringPlugin(BasePlugin):
 
     def on_post_phy_step(self, ctx: SimContext) -> None:
         """Per-substep damage: (force / force_scale)² × dt × part_weight."""
+        self._step_dmg_a_head = 0.0
+        self._step_dmg_a_torso = 0.0
+        self._step_dmg_b_head = 0.0
+        self._step_dmg_b_torso = 0.0
         contacts = ctx.accessor.get_derived_state().get('robot_robot_contacts', [])
         debug_contacts = [] if self._debug_file else None
 
@@ -357,8 +409,16 @@ class CombatScoringPlugin(BasePlugin):
 
             if defender == 'robot_a':
                 self._action_damage_a += damage
+                if damage_part == 'head':
+                    self._step_dmg_a_head += damage
+                else:
+                    self._step_dmg_a_torso += damage
             else:
                 self._action_damage_b += damage
+                if damage_part == 'head':
+                    self._step_dmg_b_head += damage
+                else:
+                    self._step_dmg_b_torso += damage
 
             if debug_contacts is not None:
                 debug_contacts.append({
@@ -380,6 +440,18 @@ class CombatScoringPlugin(BasePlugin):
                             health_b=ctx.metrics.get('health_b', 0),
                             action_damage_a=self._action_damage_a,
                             action_damage_b=self._action_damage_b)
+
+        # Concise per-substep audit log: one line, space-separated.
+        if self._score_log_handle is not None:
+            self._score_log_total_step += 1
+            self._score_log_handle.write(
+                f'{self._score_log_total_step} {ctx.episode_step} '
+                f'{ctx.physics_step} '
+                f'{ctx.metrics.get("health_a", 0):.4g} '
+                f'{ctx.metrics.get("health_b", 0):.4g} '
+                f'{self._step_dmg_a_head:.4g} {self._step_dmg_a_torso:.4g} '
+                f'{self._step_dmg_b_head:.4g} {self._step_dmg_b_torso:.4g}\n'
+            )
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         """Record hit events and check KO (once per action step)."""
