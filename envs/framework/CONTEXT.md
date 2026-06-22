@@ -96,7 +96,7 @@ runtime = EnvRuntime(
 runtime.reset()
 while runtime.is_episode_active:
     runtime.step(action_a, action_b)
-    obs = runtime.get_observer_output("obs_a")
+    obs_a, obs_b = runtime.get_observation()
 ```
 
 Higher-level rollout (recommended — handles seeds / obs / reward / capture):
@@ -154,9 +154,9 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
   `on_pre_episode` / `on_pre_action_step` / `on_pre_phy_step` / `on_post_phy_step`
   are writable; `on_post_action_step` / `on_post_episode` are read-only. `set_*`
   calls on a read-only hook go through `ctx.mutator`, which is `None` → raises.
-- **`EnvRuntime.step` / `reset` return nothing**. Pull observer outputs via
-  `get_observer_output(name)`, shared info via `get_shared_info()`, termination
-  via `get_termination_flags()`.
+- **`EnvRuntime.step` / `reset` return nothing**. Pull observations via
+  `get_observation()`, observer plugin outputs (rewards etc.) via
+  `get_observer_output(name)`, termination via `get_termination_flags()`.
 - **`_RuntimeCore` / `_PluginManager` / `_ObserverDispatcherPlugin` are private**.
   They are not re-exported from `__init__.py`; do not build against them.
 - **Recorder schema is versioned**. `MANIFEST_VERSION=2` includes `derived_state`

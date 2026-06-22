@@ -175,17 +175,17 @@ action_b = np.ndarray(shape=(21,), dtype=np.float32)
 
 ### 4. EnvRuntime 的输出约定
 
-`EnvRuntime.reset(...)` 与 `EnvRuntime.step(...)` 都不返回值。上层通过 observer plugin 和共享信息接口自行组装视图：
+`EnvRuntime.reset(...)` 与 `EnvRuntime.step(...)` 都不返回值。上层通过 `get_observation()` 取观测，observer plugin 取奖励等输出，`get_termination_flags()` 取终止状态：
 
 ```python
 runtime.reset(seed=seed)
-obs_a = runtime.get_observer_output("robot_a_obs")
-shared_info = runtime.get_shared_info()
+obs_a, obs_b = runtime.get_observation()
+reward_a = runtime.get_observer_output("robot_a_reward")
 terminated, truncated = runtime.get_termination_flags()
 ```
 
-- **observer output** 由对应的 observer plugin 负责生成。
-- **shared info** 用于放共享的客观信息。
+- **observation** 由 `BaseSimulator.get_observation()` 提供。
+- **observer output** 由对应的 observer plugin 负责生成（奖励、调试信号等）。
 - **termination flags** 由 runtime 根据终止原因统一解析。
 
 ### 5. ObserverPlugin 的最小实现契约

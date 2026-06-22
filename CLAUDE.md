@@ -154,9 +154,8 @@ runtime.reset(seed=42, options={})
 runtime.step(action_a, action_b)
 
 # Data access
-obs = runtime.get_observer_output("observation")  # Get specific output
-outputs = runtime.get_observer_outputs(["obs", "reward"])  # Get multiple
-metrics = runtime.get_shared_info()  # Get metrics, events, termination
+obs_a, obs_b = runtime.get_observation()  # Get per-agent observations
+reward = runtime.get_observer_output("robot_a_reward")  # Get observer plugin output
 terminated, truncated = runtime.get_termination_flags()
 
 # Plugin management

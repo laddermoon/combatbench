@@ -168,9 +168,9 @@ runtime = EnvRuntime(
 )
 
 runtime.reset()
-obs = runtime.get_observer_output("robot_a_obs")
+obs_a, obs_b = runtime.get_observation()
 reward = runtime.get_observer_output("robot_a_reward")
-info = runtime.get_shared_info()
+terminated, truncated = runtime.get_termination_flags()
 ```
 
 ## ♻️ 外部适配说明
