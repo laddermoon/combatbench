@@ -99,9 +99,13 @@ Done
 
 然后还有一个是起身站立的这个模型.
 
+转播视角还有一些问题。
 
+视频是黑屏的
 
 
 在上面的基础上添加对手池
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train --v2 --experiment fight_v2_oppopool --resume-from /data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_fight_v2_20260621_014809/checkpoints/checkpoint_u10516.pt &> fight_v2_oppopool.log & 
 
+
+python3 baseline/humanoid21/curriculum/analyze_fight_logs.py fight_v2_oppopool.log --watch
