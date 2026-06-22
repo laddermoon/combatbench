@@ -1,0 +1,8 @@
+mujoco>=3.0
+gymnasium>=0.29
+numpy>=1.24
+scipy>=1.10
+torch>=2.0
+imageio>=2.31
+opencv-python>=4.8
+matplotlib>=3.7

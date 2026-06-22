@@ -2,7 +2,6 @@
 CombatBench - 多智能体格斗仿真环境
 """
 
-# 新框架模块
 from .envs import (
     BaseSimulator,
     IDataAccessor,
@@ -16,9 +15,16 @@ from .envs import (
     EnvRuntime,
     TimeoutPlugin,
     VideoRecorderPlugin,
-    # TODO: RoundRunner / MatchResult / MatchRunner are pending migration to
-    # the refactored EpisodeRunner (legacy EpisodeResult / RolloutConfig
-    # removed). Re-add once the migration lands.
+    EpisodeRunner,
+    RoundRunner,
+    MatchResult,
+    MatchRunner,
+    Policy,
+    PolicyBlueprint,
+    EnvBlueprint,
+    ParameterizedEnvBlueprint,
+    ParameterizedPolicyBlueprint,
+    ReplaySimulator,
     # Humanoid21
     MujocoCombatSimulator,
 )
@@ -37,6 +43,16 @@ __all__ = [
     "EnvRuntime",
     "TimeoutPlugin",
     "VideoRecorderPlugin",
+    "EpisodeRunner",
+    "RoundRunner",
+    "MatchResult",
+    "MatchRunner",
+    "Policy",
+    "PolicyBlueprint",
+    "EnvBlueprint",
+    "ParameterizedEnvBlueprint",
+    "ParameterizedPolicyBlueprint",
+    "ReplaySimulator",
     # Humanoid21
     "MujocoCombatSimulator",
 ]

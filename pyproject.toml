@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "combatbench"
+version = "0.1.0"
+description = "MuJoCo-based humanoid robot combat simulation benchmark"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.0",
+    "gymnasium>=0.29",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "torch>=2.0",
+    "imageio>=2.31",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "matplotlib>=3.7",
+]
+baseline = [
+    "stable-baselines3>=2.0",
+]
+
+[tool.setuptools]
+package-dir = {"combatbench" = "."}
+
+[tool.setuptools.packages]
+explicit = [
+    "combatbench",
+    "combatbench.envs",
+    "combatbench.envs.framework",
+    "combatbench.envs.framework.tests",
+    "combatbench.envs.humanoid21",
+    "combatbench.envs.humanoid21.tests",
+    "combatbench.envs.t800",
+    "combatbench.policy",
+    "combatbench.policy.random",
+    "combatbench.policy.humanoid21",
+    "combatbench.policy.humanoid21.standing",
+    "combatbench.baseline",
+    "combatbench.baseline.common",
+    "combatbench.baseline.common.algos",
+    "combatbench.baseline.common.eval",
+    "combatbench.baseline.common.normalize",
+    "combatbench.baseline.common.policies",
+    "combatbench.baseline.common.rollout",
+    "combatbench.baseline.humanoid21",
+    "combatbench.baseline.humanoid21.curriculum",
+    "combatbench.baseline.humanoid21.curriculum.experiments",
+    "combatbench.baseline.humanoid21.curriculum.framework",
+    "combatbench.baseline.humanoid21.tests",
+    "combatbench.tools",
+]
+
+[tool.setuptools.package-data]
+"combatbench.envs.humanoid21" = ["blueprint.yaml", "battle_v1.xml", "textures/*.png", "pose_images/*.png"]
+"combatbench.envs.t800" = ["**/*.xml", "**/*.urdf", "**/*.dae", "**/*.obj", "**/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["envs/framework/tests", "envs/humanoid21/tests", "baseline/common", "baseline/humanoid21/tests"]

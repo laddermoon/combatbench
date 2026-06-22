@@ -16,14 +16,17 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
     - `plugins.py` - Combat plugins (scoring, non-fall constraint, frozen robot)
     - `observer_plugins.py` - Gymnasium observation plugin
     - `disturbance_plugins.py` - External disturbance plugins
-    - `run_round.py` - `RoundRunner` class for running complete rounds
     - `DATASPEC.md` - Data interface specification
     - `OBSERVATION_zh.md` - Observation space documentation (96-dim)
-- `policy/` - Policy interface and reference implementations
-  - `base.py` - `BaseCombatPolicy` abstract interface
-  - `load_util.py` - Policy loading utility (`load_policy()`)
+  - `t800/` - T800 robot environment (larger DOF robot)
+  - `framework/round_runner.py` - `RoundRunner` class and CLI for running complete rounds
+  - `framework/match_runner.py` - `MatchRunner` for multi-round matches
+- `policy/` - Policy reference implementations
   - `random/` - RandomCombatPolicy directory (with policy.py)
-  - `standing/` - StandingCombatPolicy directory (with policy.py)
+  - `humanoid21/standing/` - StandingCombatPolicy directory (with policy.py, model.pt)
+  - `blueprints/` - Policy blueprint YAML files
+  - `examples/` - User-submitted competition policies
+- `envs/framework/policy.py` - `Policy` ABC, `PolicyBlueprint`, `ParameterizedPolicyBlueprint`
 - `docs/` - Rules, environment specs, robot details
 - `baseline/` - Training implementations (Stable-Baselines3, GRPO)
 
@@ -178,115 +181,106 @@ runtime.attach_observer_plugin("name", observer_plugin)
 
 ### Installation
 ```bash
-pip install mujoco gymnasium numpy opencv-python imageio egl torch stable-baselines3 scipy
+pip install -e .
+```
+Or install dependencies manually:
+```bash
+pip install -r requirements.txt
 ```
 
 ### Running Rounds (Evaluation & Video)
 
-**Using the unified round runner CLI:**
+**Using the round runner CLI:**
 ```bash
-# Run with no policies (both standing)
-python envs/humanoid21/run_round.py --duration 10 --video test.mp4
-
-# Run with policy directories
-python envs/humanoid21/run_round.py \
-  --policy-a random \
-  --policy-b standing \
+# Run a round with blueprint files
+python -m envs.framework.round_runner \
+  --env-blueprint envs/humanoid21/blueprint.yaml \
+  --policy-a-blueprint policy/blueprints/random.yaml \
+  --policy-b-blueprint policy/blueprints/humanoid21/standing.yaml \
   --video match.mp4
-
-# Run with parameters
-python envs/humanoid21/run_round.py \
-  --policy-a "random?scale=0.2&seed=42" \
-  --duration 15 --video output.mp4
 ```
 
 **Using RoundRunner in Python code:**
 ```python
-from combatbench.envs.humanoid21 import Humanoid21Simulator, RoundRunner
-from combatbench.policy import load_policy
+from combatbench.envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner, VideoRecorderPlugin
 
-policy_a = load_policy("random?scale=0.1&seed=42")
-policy_b = load_policy("standing")
+blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
+policy_a = PolicyBlueprint.load("policy/blueprints/random.yaml").build()
+policy_b = PolicyBlueprint.load("policy/blueprints/humanoid21/standing.yaml").build()
 
-runner = RoundRunner(
-    simulator=Humanoid21Simulator(),
+video = VideoRecorderPlugin(fps=30, output_path="output.mp4")
+with RoundRunner(
+    blueprint=blueprint,
     policy_a=policy_a,
     policy_b=policy_b,
-    match_duration=30.0,
-    render_mode="rgb_array",
-)
-result = runner.run(save_video_path="output.mp4")
-print(f"Winner: {result.winner}, Steps: {result.steps}")
+    video_plugin=video,
+) as runner:
+    result = runner.run(seed=42)
+print(f"Steps: {result['steps']}, Termination: {result['termination_reasons']}")
 ```
 
-## Policy Loading
+## Policy System
 
-All policies use a directory-based structure with `policy.py` containing a `BaseCombatPolicy` implementation.
+All policies use a directory-based structure with `policy.py` containing a `Policy` implementation.
 
 ### Directory Structure
 
 Each policy is a directory with:
-- **`policy.py`** (required) - Contains a class inheriting `BaseCombatPolicy`
-- **`requirements.txt`** (optional) - Additional dependencies
+- **`policy.py`** (required) - Contains a class inheriting `Policy` from `envs.framework.policy`
+- **`policy_blueprint.yaml`** (optional) - Blueprint for loading the policy
+- **`model.pt`** (optional) - Trained model weights
 
 Example:
 ```
 my_policy/
-├── policy.py            # Must contain BaseCombatPolicy implementation
-└── requirements.txt     # Optional dependencies
+├── policy.py            # Must contain Policy implementation
+├── policy_blueprint.yaml # Blueprint with cls and config
+└── model.pt             # Optional trained weights
 ```
 
-### Loading Formats
+### Loading via PolicyBlueprint
 
-1. **Directory path** (auto-detects first BaseCombatPolicy):
-   ```python
-   policy = load_policy("my_policy")
-   ```
+Policies are loaded via `PolicyBlueprint` (YAML/JSON):
 
-2. **Module path with class**:
-   ```python
-   policy = load_policy("my_policy.policy.MyCombatPolicy")
-   ```
+```python
+from combatbench.envs.framework import PolicyBlueprint
 
-3. **With parameters** (query string):
-   ```python
-   policy = load_policy("my_policy?scale=0.2&seed=42")
-   ```
+# Load from YAML file
+policy = PolicyBlueprint.load("my_policy/policy_blueprint.yaml").build()
 
-### Parameter Type Support
-
-- Numbers: `?scale=0.5`, `?count=10`
-- Booleans: `?enabled=true`
-- Strings: `?model_path=model.zip`
-- JSON values: `?list=[1,2,3]`, `?config={"key":"value"}`
+# Load with parameter overrides
+policy = PolicyBlueprint.load("my_policy/policy_blueprint.yaml").build(scale=0.2)
+```
 
 ### Policy Interface
 
-All policies must inherit from `BaseCombatPolicy` and implement:
+All policies must inherit from `Policy` (defined in `envs/framework/policy.py`) and implement:
 
 ```python
-from combatbench.policy import BaseCombatPolicy
+from envs.framework.policy import Policy
 import numpy as np
 
-class MyCombatPolicy(BaseCombatPolicy):
-    ACTION_DIM = 21  # Action space dimension
-
+class MyCombatPolicy(Policy):
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__()
         # Your initialization
 
-    def act(self, obs: np.ndarray, info: dict = None) -> np.ndarray:
+    def act(self, obs: np.ndarray, want_extra: bool = False) -> tuple:
         """
-        Return action array with shape (21,), values in [-1, 1]
+        Return (action, extra) tuple.
 
         Args:
-            obs: 96-dimensional observation array
-            info: Optional environment info dict
-        """
-        # Your action computation
-        return action
+            obs: observation from the observer plugin
+            want_extra: if True, return auxiliary payload (log_prob, value, etc.)
 
-    def reset(self) -> None:
+        Returns:
+            action: np.ndarray with shape (21,), values in [-1, 1]
+            extra: dict or None
+        """
+        action = np.zeros(21)
+        return action, None
+
+    def reset(self, seed=None) -> None:
         """Reset internal state (optional)"""
         pass
 ```
@@ -324,9 +318,7 @@ static_data = sim.accessor.get_static_data()
 
 ## Documentation
 
-- [`docs/ROBOT.md`](docs/ROBOT.md) - 21-DOF robot design rationale
 - [`docs/RULE.md`](docs/RULE.md) - Combat rules and HP system
-- [`docs/OBSERVATION.md`](docs/OBSERVATION.md) - Observation space design
 - [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) - Arena and simulation environment
 - [`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md) - Data interface specification
 - [`envs/humanoid21/OBSERVATION_zh.md`](envs/humanoid21/OBSERVATION_zh.md) - 96-dim observation details
