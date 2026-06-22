@@ -1,147 +1,147 @@
-# Standing Policy Training
+# Humanoid21 Baseline
 
-训练一个让 21-DOF 人形机器人保持站立的策略，使用 GRPO (Group Relative Policy Optimization) 算法。
+Humanoid21 环境的基线训练实现，包含课程学习（Curriculum Learning）训练框架、奖励插件、环境蓝图和实验配置。
 
-本目录包含两个训练脚本，按顺序使用：
+## 目录结构
+
+```
+baseline/humanoid21/
+├── blueprints/        # 环境蓝图（YAML）
+├── curriculum/        # 课程学习训练框架
+├── plugins/           # 训练用环境插件
+├── rewards/           # 奖励插件
+├── tests/             # 单元测试
+└── runs/              # 训练产物（gitignored）
+```
+
+### `blueprints/`
+
+环境蓝图 YAML 文件，定义训练环境配置（插件组合、参数、初始策略等）。
+
+| 文件 | 说明 |
+|------|------|
+| `basic_balance_env.yaml` | 基础平衡训练环境 |
+| `basic_balance_v2_env.yaml` | V2 基础平衡环境 |
+| `balance_recover_env.yaml` | 平衡恢复训练环境 |
+| `balance_recover_v2_env.yaml` | V2 平衡恢复环境 |
+| `balance_recover_plus_v2_env.yaml` | 增强版平衡恢复环境 |
+| `standup_env.yaml` | 起身训练环境 |
+| `follow_env.yaml` | 跟踪对手训练环境 |
+| `follow_v2_env.yaml` | V2 跟踪对手环境 |
+| `fight_env.yaml` | 对抗训练环境 |
+| `fight_v2_env.yaml` | V2 对抗环境 |
+| `fight_mixed.yaml` | 混合策略对抗环境（参数化蓝图） |
+| `mixed.yaml` | 混合策略环境（参数化蓝图） |
+| `init_policy.yaml` | 初始策略蓝图 |
+
+### `curriculum/`
+
+课程学习训练框架，支持多阶段训练（平衡 → 跟踪 → 对抗）。
+
+**训练脚本**：
+
+| 文件 | 说明 |
+|------|------|
+| `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验配置 |
+| `train_curriculum.py` | V1 课程 PPO 训练器（ParallelRollouter + blueprints） |
+| `train_curriculum_v2.py` | V2 课程 PPO 训练器 |
+| `train_twin_selfplay.py` | 孪生对抗自博弈 PPO 训练器 |
+| `train_gating_network.py` | Gating MLP 分类器训练脚本 |
+
+**策略实现**：
+
+| 文件 | 说明 |
+|------|------|
+| `fight_mixed_policy.py` | 混合策略：主学习 Fight 策略 + 冻结 Follow 策略 + 恢复策略，通过 Gating MLP 切换 |
+| `mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
+| `weakened_policy.py` | 弱化策略包装器，对导出策略的动作添加可调高斯噪声 |
+
+**共享模块**：
+
+| 文件 | 说明 |
+|------|------|
+| `common.py` | V1 课程训练常量和配置类 |
+| `common_v2.py` | V2 课程训练常量和配置类 |
+
+**数据收集与分析**：
+
+| 文件 | 说明 |
+|------|------|
+| `collect_gating_data.py` | 使用弱化策略收集 Gating 分类器训练数据 |
+| `collect_gating_data_refine.py` | 多级扰动覆盖的 Gating 数据收集 |
+| `analyze_logs.py` | 通用训练日志监控工具 |
+| `analyze_fight_logs.py` | Fight 实验日志分析工具 |
+| `analyze_follow_logs.py` | Follow 实验日志分析工具 |
+| `analyze_standup_logs.py` | Standup 实验日志分析工具 |
+
+**`curriculum/experiments/`**
+
+实验配置注册表，自动发现 `exp_*.py` 文件。每个文件导出 `EXPERIMENT: ExperimentConfig`。
+
+| 文件 | 说明 |
+|------|------|
+| `exp_basic_balance.py` | 基础平衡实验 |
+| `exp_basic_balance_v2.py` | V2 基础平衡实验 |
+| `exp_balance_recover.py` | 平衡恢复实验 |
+| `exp_balance_recover_v2.py` | V2 平衡恢复实验 |
+| `exp_balance_recover_plus.py` | 增强版平衡恢复实验 |
+| `exp_balance_recover_plus_refine.py` | 多级扰动课程（防遗忘） |
+| `exp_balance_recover_plus_v2.py` | V2 增强版平衡恢复实验 |
+| `exp_standup.py` | 起身训练实验 |
+| `exp_follow.py` | 跟踪对手实验 |
+| `exp_follow_v2.py` | V2 跟踪对手实验 |
+| `exp_v2_follow.py` | V2 6 奖励课程实验 |
+| `exp_fight.py` | 对抗实验 |
+| `exp_fight_v2.py` | V2 对抗实验 |
+| `exp_fight_v2_oppopool.py` | V2 对手池对抗实验 |
+| `exp_v1_relation.py` | V1 4 奖励课程实验 |
+
+### `plugins/`
+
+训练用环境插件，用于控制对手行为和自定义终止条件。
+
+| 文件 | 说明 |
+|------|------|
+| `standing_termination.py` | 站立/平衡实验的终止条件插件 |
+| `balance_score_termination.py` | 平衡评分终止插件 |
+| `imbalance_termination.py` | 失衡终止插件 |
+| `random_move.py` | 对手随机移动插件（用于跟踪训练） |
+
+### `rewards/`
+
+奖励插件，实现各训练阶段的奖励函数。
+
+| 文件 | 说明 |
+|------|------|
+| `balance.py` | 平衡分析奖励（基于支撑面投影） |
+| `cross_support.py` | 交叉支撑平衡奖励 |
+| `standing_posture.py` | 站立姿态评分 |
+| `posture_reward.py` | 姿态诊断观测器（记录 4 项姿态指标） |
+| `action_limit.py` | 动作限制（关节姿态）奖励 |
+| `follow_opponent.py` | 跟踪对手奖励（距离控制） |
+| `opponent_relation.py` | 对手关系奖励（相对位置/朝向） |
+| `damage.py` | 净伤害奖励（造成伤害 - 受到伤害） |
+| `standup.py` | 起身势能奖励（分段势能函数） |
+
+### `tests/`
+
+| 文件 | 说明 |
+|------|------|
+| `test_curriculum_gate.py` | 课程门控测试 |
+| `test_fight_mixed_policy.py` | 混合对抗策略测试 |
 
 ## 训练流程
 
-### 1. 静态站立训练 (`standing.py`)
+课程学习按阶段递进：
 
-**训练目标**: 学习让机器人在无外部干扰下保持直立站立
-
-**功能特性**:
-- **训练算法**: GRPO (Group Relative Policy Optimization)
-- **对称自博弈**: 双机器人同时使用同一策略训练
-- **并行采集**: 支持多进程并行进行 episode rollout
-- **自动评估**: 定期评估并保存最佳模型
-- **策略导出**: 自动生成可加载的 combatbench policy
-
-### 2. 扰动站立训练 (`standing_with_turbulence.py`)
-
-**训练目标**: 学习机器人在持续风扰动下保持直立站立
-
-**功能特性**:
-- **外部扰动**: 使用 `ContinuousWindPlugin` 模拟持续风力，包含随机阵风
-- **Warm Start**: 支持从静态站立模型初始化，加速收敛
-- **鲁棒性训练**: 提升策略在真实环境中的抗干扰能力
-- **继承特性**: 继承 `standing.py` 的所有训练特性（并行采集、自动评估等）
-
-**承接关系**: 扰动站立训练**必须**从静态站立模型 warm start，否则难以收敛。
-
-## 快速开始
-
-### 第一阶段：训练静态站立模型
+1. **平衡（Balance）** — 学会站立不倒
+2. **跟踪（Follow）** — 接近对手到有效距离
+3. **对抗（Fight）** — 在保持平衡的前提下打击对手
 
 ```bash
-# 直接运行（使用默认配置）
-python standing.py
+# 列出可用实验
+python3 baseline/humanoid21/curriculum/train.py --list
 
-# 或指定并行工作进程数（默认为 CPU 核心数的一半）
-STANDING_ROLLOUT_WORKERS=8 python standing.py
+# 运行指定实验
+python3 baseline/humanoid21/curriculum/train.py --experiment v2_follow
 ```
-
-等待训练完成，记录下生成的运行目录，例如：`runs/standing_20240101_120000/`
-
-### 第二阶段：训练扰动站立模型
-
-```bash
-# 使用静态站立模型作为初始化
-STANDING_TURBULENCE_INIT_MODEL=runs/standing_20240101_120000/best_model.pt \
-  python standing_with_turbulence.py
-
-# 或同时指定并行工作进程数
-STANDING_TURBULENCE_INIT_MODEL=runs/standing_20240101_120000/best_model.pt \
-  STANDING_ROLLOUT_WORKERS=8 \
-  python standing_with_turbulence.py
-```
-
-## 训练输出
-
-### 第一阶段输出 (`standing.py`)
-
-训练完成后，在 `runs/standing_<timestamp>/` 目录下生成：
-
-```
-runs/standing_20240101_120000/
-├── best_model.pt         # 最佳模型检查点
-├── final_model.pt        # 最终模型
-├── policy/               # 导出的策略目录（可直接被 combatbench 加载）
-│   ├── policy.py         # 策略实现
-│   └── model.pt          # 模型权重
-├── checkpoints/          # 定期保存的检查点
-├── history.json          # 训练历史记录
-└── config.json           # 训练配置
-```
-
-### 第二阶段输出 (`standing_with_turbulence.py`)
-
-训练完成后，在 `runs/standing_<timestamp>/` 目录下生成相同结构的内容，但模型具备抗风扰动能力。
-
-**注意**: 第二阶段的 `policy/` 目录包含的是扰动鲁棒性策略，推荐用于实际对抗环境。
-
-## 环境变量
-
-### 通用环境变量（两个脚本均支持）
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `STANDING_ROLLOUT_WORKERS` | `min(64, cpu_count/2)` | 数据采集并行进程数 |
-| `STANDING_EVAL_WORKERS` | `min(rollout_workers, 16)` | 评估并行进程数 |
-
-### 扰动站立专用环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `STANDING_TURBULENCE_INIT_MODEL` | 空 | 初始化模型路径（推荐使用静态模型的 best_model.pt） |
-| `STANDING_INIT_MODEL` | 空 | 备用初始化模型路径（当 `STANDING_TURBULENCE_INIT_MODEL` 未设置时使用） |
-
-## 使用训练好的策略
-
-### 静态站立策略（无扰动环境）
-
-```bash
-# 在 run_round.py 中使用静态站立策略
-python envs/humanoid21/run_round.py \
-  --policy-a baseline/humanoid21/runs/standing_<timestamp>/policy \
-  --policy-b random \
-  --video match.mp4
-```
-
-### 扰动鲁棒策略（推荐用于实际对抗）
-
-```bash
-# 使用扰动站立策略（具备更强的环境适应能力）
-python envs/humanoid21/run_round.py \
-  --policy-a baseline/humanoid21/runs/standing_<timestamp>/policy \
-  --policy-b random \
-  --video match.mp4
-```
-
-**策略选择建议**:
-- **静态站立策略**: 适用于无扰动环境，作为评估基准
-- **扰动鲁棒策略**: 适用于实际对抗环境，能更好地应对对手的推搡和碰撞
-
-## 关键配置
-
-### 通用配置（两个脚本相同）
-
-- **Episode 时长**: 5 秒 (100 steps @ 20Hz)
-- **初始距离**: 1.5 ~ 3.5 米（随机）
-- **Group size**: 8
-- **Episodes per update**: 256
-- **最大更新数**: 10000
-
-### 扰动站立专用配置 (`standing_with_turbulence.py`)
-
-- **扰动类型**: 持续风力 (`ContinuousWindPlugin`)
-- **风向**: [1.0, 0.35, 0.0] 归一化方向
-- **基础风力**: 5.0 N
-- **阵风概率**: 3% (每步)
-- **阵风倍数**: 2.0x
-
-## 奖励机制
-
-- 每步奖励: +1（保持站立）
-- 终止条件: 倒下（高度 < 1.10m 或直立度 < 0.8，持续 3 步）
-- 目标: 最大化站立时长
