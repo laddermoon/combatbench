@@ -36,43 +36,25 @@ baseline/humanoid21/
 
 ### `curriculum/`
 
-课程学习训练框架，支持多阶段训练（平衡 → 跟踪 → 对抗）。
+课程学习训练框架，支持四阶段训练（平衡 → 门控网络 → 跟踪 → 对抗）。详见 [`curriculum/README.md`](curriculum/README.md)。
 
-**训练脚本**：
+**主要文件**：
 
 | 文件 | 说明 |
 |------|------|
 | `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验配置 |
-| `train_curriculum.py` | V1 课程 PPO 训练器（ParallelRollouter + blueprints） |
-| `train_curriculum_v2.py` | V2 课程 PPO 训练器 |
-| `train_twin_selfplay.py` | 孪生对抗自博弈 PPO 训练器 |
 | `train_gating_network.py` | Gating MLP 分类器训练脚本 |
-
-**策略实现**：
-
-| 文件 | 说明 |
-|------|------|
 | `fight_mixed_policy.py` | 混合策略：主学习 Fight 策略 + 冻结 Follow 策略 + 恢复策略，通过 Gating MLP 切换 |
 | `mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
 | `weakened_policy.py` | 弱化策略包装器，对导出策略的动作添加可调高斯噪声 |
-
-**共享模块**：
-
-| 文件 | 说明 |
-|------|------|
-| `common.py` | V1 课程训练常量和配置类 |
-| `common_v2.py` | V2 课程训练常量和配置类 |
-
-**数据收集与分析**：
-
-| 文件 | 说明 |
-|------|------|
 | `collect_gating_data.py` | 使用弱化策略收集 Gating 分类器训练数据 |
 | `collect_gating_data_refine.py` | 多级扰动覆盖的 Gating 数据收集 |
 | `analyze_logs.py` | 通用训练日志监控工具 |
 | `analyze_fight_logs.py` | Fight 实验日志分析工具 |
 | `analyze_follow_logs.py` | Follow 实验日志分析工具 |
 | `analyze_standup_logs.py` | Standup 实验日志分析工具 |
+
+**`curriculum/framework/`** — 通用训练框架，详见 [`curriculum/README.md`](curriculum/README.md)。
 
 **`curriculum/experiments/`**
 
@@ -81,20 +63,18 @@ baseline/humanoid21/
 | 文件 | 说明 |
 |------|------|
 | `exp_basic_balance.py` | 基础平衡实验 |
-| `exp_basic_balance_v2.py` | V2 基础平衡实验 |
+| `exp_basic_balance_v2.py` | Baseline V2 基础平衡实验 |
 | `exp_balance_recover.py` | 平衡恢复实验 |
-| `exp_balance_recover_v2.py` | V2 平衡恢复实验 |
+| `exp_balance_recover_v2.py` | Baseline V2 平衡恢复实验 |
 | `exp_balance_recover_plus.py` | 增强版平衡恢复实验 |
 | `exp_balance_recover_plus_refine.py` | 多级扰动课程（防遗忘） |
-| `exp_balance_recover_plus_v2.py` | V2 增强版平衡恢复实验 |
+| `exp_balance_recover_plus_v2.py` | Baseline V2 增强版平衡恢复实验 |
 | `exp_standup.py` | 起身训练实验 |
 | `exp_follow.py` | 跟踪对手实验 |
-| `exp_follow_v2.py` | V2 跟踪对手实验 |
-| `exp_v2_follow.py` | V2 6 奖励课程实验 |
+| `exp_follow_v2.py` | Baseline V2 跟踪对手实验 |
 | `exp_fight.py` | 对抗实验 |
-| `exp_fight_v2.py` | V2 对抗实验 |
-| `exp_fight_v2_oppopool.py` | V2 对手池对抗实验 |
-| `exp_v1_relation.py` | V1 4 奖励课程实验 |
+| `exp_fight_v2.py` | Baseline V2 对抗实验 |
+| `exp_fight_v2_oppopool.py` | Baseline V2 对手池对抗实验 |
 
 ### `plugins/`
 
@@ -132,16 +112,21 @@ baseline/humanoid21/
 
 ## 训练流程
 
-课程学习按阶段递进：
+课程学习按四阶段递进：
 
 1. **平衡（Balance）** — 学会站立不倒
-2. **跟踪（Follow）** — 接近对手到有效距离
-3. **对抗（Fight）** — 在保持平衡的前提下打击对手
+2. **门控网络（Gating）** — 训练状态危险判别器
+3. **跟踪（Follow）** — 接近对手到有效距离
+4. **对抗（Fight）** — 在保持平衡的前提下打击对手
+
+详细训练说明请参考：
+- [Baseline V1 训练指南](curriculum/TRAINING_V1.md)
+- [Baseline V2 训练指南](curriculum/TRAINING_V2.md)
 
 ```bash
 # 列出可用实验
-python3 baseline/humanoid21/curriculum/train.py --list
+python3 baseline/humanoid21/curriculum/train.py --list-experiments
 
 # 运行指定实验
-python3 baseline/humanoid21/curriculum/train.py --experiment v2_follow
+python3 baseline/humanoid21/curriculum/train.py --experiment basic_balance
 ```
