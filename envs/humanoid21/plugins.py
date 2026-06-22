@@ -136,12 +136,12 @@ class CombatScoringPlugin(BasePlugin):
       - ``initial_health_a`` (float): Starting HP for robot_a.
       - ``initial_health_b`` (float): Starting HP for robot_b.
 
-    Constructor-only option:
-      - ``score_log_file`` (str | None): If set, append one concise line per
-        physics substep to this file for audit/review. ``None`` (default)
-        disables logging. Deliberately a constructor parameter rather than
-        an environment variable so concurrent processes (e.g. parallel
-        matches) can log to separate files without collision.
+    Options consumed from ``ctx.episode_options``:
+      - ``score_log_file`` (str | None): If set, append one concise line
+        per physics substep to this file for audit/review.  ``None`` (the
+        default) disables logging.  Follows the same resolution pattern as
+        ``initial_health_*``: episode_options overrides the constructor
+        default, so each episode (round) can log to a distinct file.
     """
     ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
@@ -174,32 +174,20 @@ class CombatScoringPlugin(BasePlugin):
         self._action_damage_a = 0.0
         self._action_damage_b = 0.0
 
-        # --- concise per-substep score audit log (constructor-driven) ---
-        # One append line per physics substep.  Default None = no logging.
-        # Passed via constructor (not env var) so parallel processes in the
-        # same environment can log to distinct files.
+        # --- concise per-substep score audit log ---
+        # score_log_file is the constructor default; episode_options can
+        # override it per-episode (same pattern as initial_health_*).
+        # The file is opened lazily in on_pre_episode so the episode_options
+        # value is honoured.
         self.score_log_file = score_log_file
         self._score_log_handle = None
+        self._score_log_path = None  # path of the currently-open handle
         self._score_log_total_step = 0
         # per-substep damage broken down by defender × part (head/torso)
         self._step_dmg_a_head = 0.0
         self._step_dmg_a_torso = 0.0
         self._step_dmg_b_head = 0.0
         self._step_dmg_b_torso = 0.0
-        if self.score_log_file:
-            parent = os.path.dirname(self.score_log_file)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            # line-buffered: each '\n' triggers a flush so the audit trail
-            # survives even without explicit close.
-            self._score_log_handle = open(
-                self.score_log_file, 'a', buffering=1, encoding='utf-8',
-            )
-            self._score_log_handle.write(
-                '# combat_score_log columns: '
-                'step episode_step physics_step health_a health_b '
-                'dmg_a_head dmg_a_torso dmg_b_head dmg_b_torso\n'
-            )
 
         # --- debug logging (enabled via COMBAT_SCORE_DEBUG_FILE env var) ---
         self._debug_file: Optional[str] = os.environ.get('COMBAT_SCORE_DEBUG_FILE')
@@ -278,6 +266,30 @@ class CombatScoringPlugin(BasePlugin):
         while len(ctx.events) > 0:
             ctx.events.pop()
         self._score_log_total_step = 0
+
+        # Resolve the score-log file the same way as initial_health_*:
+        # episode_options overrides the constructor default.  Reopen the
+        # handle only when the effective path actually changes, so a
+        # multi-round match logging to the same file appends continuously.
+        effective_log = opts.get('score_log_file', self.score_log_file) or None
+        if effective_log != self._score_log_path:
+            if self._score_log_handle is not None:
+                self._score_log_handle.close()
+                self._score_log_handle = None
+            self._score_log_path = effective_log
+            if effective_log:
+                parent = os.path.dirname(effective_log)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                # line-buffered: each '\n' flushes, durable without close.
+                self._score_log_handle = open(
+                    effective_log, 'a', buffering=1, encoding='utf-8',
+                )
+                self._score_log_handle.write(
+                    '# combat_score_log columns: '
+                    'step episode_step physics_step health_a health_b '
+                    'dmg_a_head dmg_a_torso dmg_b_head dmg_b_torso\n'
+                )
 
         if self._debug_file:
             self._debug_episode += 1

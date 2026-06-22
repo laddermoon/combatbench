@@ -72,6 +72,7 @@ class RoundRunner:
         want_extras: bool = False,
         initial_health_a: Optional[float] = None,
         initial_health_b: Optional[float] = None,
+        score_log_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run one round and return a result dict.
 
@@ -89,6 +90,10 @@ class RoundRunner:
             ``options`` so that :class:`CombatScoringPlugin` picks them up
             via ``ctx.episode_options``.  ``None`` means the plugin default
             (typically 100) is used.
+        score_log_file:
+            Path to append a per-substep combat score audit log.  Merged
+            into ``options`` under ``"score_log_file"`` so the plugin picks
+            it up via ``ctx.episode_options``.  ``None`` disables logging.
 
         Returns a dict with ``steps``, ``termination_reasons``, ``seed``,
         ``health_a``, ``health_b``.
@@ -99,6 +104,10 @@ class RoundRunner:
                 options["initial_health_a"] = float(initial_health_a)
             if initial_health_b is not None:
                 options["initial_health_b"] = float(initial_health_b)
+
+        if score_log_file is not None:
+            options = dict(options) if options else {}
+            options["score_log_file"] = score_log_file
 
         self._runner.run_episode(seed=seed, options=options, want_extras=want_extras)
         ctx = self._runtime.ctx
@@ -226,6 +235,10 @@ def _main() -> None:
         "--want-extras", action="store_true",
         help="Request side-channel payloads from policies (log-prob / value estimates, etc.).",
     )
+    parser.add_argument(
+        "--score-log-file", type=str, default=None,
+        help="Append a per-substep combat score audit log to this file.",
+    )
     args = parser.parse_args()
 
     blueprint = EnvBlueprint.load(args.blueprint)
@@ -251,6 +264,7 @@ def _main() -> None:
             want_extras=args.want_extras,
             initial_health_a=args.health_a,
             initial_health_b=args.health_b,
+            score_log_file=args.score_log_file,
         )
 
     print(json.dumps(result, indent=2))

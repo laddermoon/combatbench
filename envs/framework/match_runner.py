@@ -93,6 +93,7 @@ class MatchRunner:
         policy_b_bp: PolicyBlueprint,
         total_rounds: int = 6,
         initial_health: float = 100.0,
+        score_log_dir: Optional[str] = None,
         verbose: bool = True,
     ) -> None:
         self.env_blueprint = env_blueprint
@@ -100,6 +101,7 @@ class MatchRunner:
         self.policy_b_bp = policy_b_bp
         self.total_rounds = total_rounds
         self.initial_health = initial_health
+        self.score_log_dir = score_log_dir
         self.verbose = verbose
 
     def run(
@@ -162,10 +164,18 @@ class MatchRunner:
                 policy_b=policy_b,
                 video_plugin=video_plugin,
             ) as runner:
+                # Per-round score log: {score_log_dir}/round_{n}.log
+                round_score_log = None
+                if self.score_log_dir:
+                    Path(self.score_log_dir).mkdir(parents=True, exist_ok=True)
+                    round_score_log = str(
+                        Path(self.score_log_dir) / f"round_{round_num}.log"
+                    )
                 result = runner.run(
                     seed=round_seeds[round_num - 1],
                     initial_health_a=hp_a,
                     initial_health_b=hp_b,
+                    score_log_file=round_score_log,
                 )
 
             hp_a = result["health_a"]
@@ -306,6 +316,10 @@ def _main() -> None:
         help="Starting HP for both robots (default: 100).",
     )
     parser.add_argument(
+        "--score-log-dir", type=str, default=None,
+        help="Directory to save per-round combat score audit logs.",
+    )
+    parser.add_argument(
         "--seed", type=int, default=None,
         help="Base seed (default: random).",
     )
@@ -329,6 +343,7 @@ def _main() -> None:
         policy_b_bp=policy_b_bp,
         total_rounds=args.total_rounds,
         initial_health=args.initial_health,
+        score_log_dir=args.score_log_dir,
         verbose=True,
     )
     result = runner.run(seed=args.seed, video_dir=args.video_dir)
