@@ -62,6 +62,12 @@ World plugins and observer plugins are **orthogonal extension axes**: to change 
 
 ### 3. Baseline: Four-Stage Curriculum + Safety Gate
 
+> **About the baseline**: CombatBench's baseline policies are **trained entirely with reinforcement learning** — pure PPO end to end, with **no imitation learning data, no motion capture data, and no human demonstrations** (zero IL, zero demos, zero trajectory imitation). This is intentional: we want to see how far a pure-RL approach can go on adversarial tasks.
+>
+> The current baseline capability is still limited: the robot can stand stably, track opponents, and land valid strikes, but it is still far from "beautiful combat with diverse strategies." The baseline is here as **a starting point to spark ideas** — a comparable reference for the community, not a ceiling. We expect participants to push beyond it with better training methods, stronger network architectures, or by injecting prior knowledge.
+>
+> Importantly, **the framework the baseline relies on is extensible**: each stage of the four-stage curriculum is an independent training task that can be added, removed, or replaced; the 8 reward modules can be freely composed; the safety gate, curriculum scheduler, and network architecture are all swappable. Whether you want to tweak one reward term or adopt an entirely different paradigm (SAC, GRPO, imitation learning, hierarchical RL...), the framework can carry it.
+
 Training end-to-end on the full combat task fails (the robot cannot survive the first few seconds — exploration black hole). Our baseline decomposes the problem with a **four-stage curriculum**:
 
 | Stage | Task | Difficulty |
