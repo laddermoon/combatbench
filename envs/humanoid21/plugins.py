@@ -311,11 +311,7 @@ class CombatScoringPlugin(BasePlugin):
         if not geom_name: return None
         name_lower = geom_name.lower()
 
-        base_name = name_lower
-        for suffix in ['_red', '_blue', '_a', '_b']:
-            if base_name.endswith(suffix):
-                base_name = base_name[:-len(suffix)]
-                break
+        base_name = name_lower[:-2] if name_lower.endswith(('_a', '_b')) else name_lower
 
         if 'head' in base_name: return 'head'
         if any(p in base_name for p in ['torso', 'waist', 'pelvis', 'butt']): return 'torso'
@@ -334,11 +330,11 @@ class CombatScoringPlugin(BasePlugin):
         the defender, based on which body is the attack part vs target part
         and the team suffix of the target body.
         """
-        # Must be cross-team (robot_a vs robot_b)
-        a_is_a = body_a_name.endswith('_a') or '_red' in body_a_name
-        a_is_b = body_a_name.endswith('_b') or '_blue' in body_a_name
-        b_is_a = body_b_name.endswith('_a') or '_red' in body_b_name
-        b_is_b = body_b_name.endswith('_b') or '_blue' in body_b_name
+        # Must be cross-team (robot_a vs robot_b, ending strictly with _a and _b)
+        a_is_a = body_a_name.endswith('_a')
+        a_is_b = body_a_name.endswith('_b')
+        b_is_a = body_b_name.endswith('_a')
+        b_is_b = body_b_name.endswith('_b')
         if not ((a_is_a and b_is_b) or (a_is_b and b_is_a)):
             return None
 
@@ -369,9 +365,9 @@ class CombatScoringPlugin(BasePlugin):
             return None
 
         # Defender robot from the target body's team suffix
-        if target_name.endswith('_a') or '_red' in target_name:
+        if target_name.endswith('_a'):
             defender = 'robot_a'
-        elif target_name.endswith('_b') or '_blue' in target_name:
+        elif target_name.endswith('_b'):
             defender = 'robot_b'
         else:
             return None

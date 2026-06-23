@@ -55,7 +55,7 @@ class TestStaticSchema:
 
     def test_keypoint_maps(self, sim):
         static = sim.get_static_data()
-        for agent, suffix in (("robot_a", "_red"), ("robot_b", "_blue")):
+        for agent, suffix in (("robot_a", "_a"), ("robot_b", "_b")):
             kb = static[agent]["keypoint_body_names"]
             kj = static[agent]["keypoint_joint_names"]
             # Body role → full name

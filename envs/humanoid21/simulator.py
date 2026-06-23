@@ -232,7 +232,7 @@ class MujocoCombatSimulator(BaseSimulator):
         """缓存机器人的关节和body索引"""
         self._robot_cache = {}
 
-        for robot_id, suffix in [('robot_a', '_red'), ('robot_b', '_blue')]:
+        for robot_id, suffix in [('robot_a', '_a'), ('robot_b', '_b')]:
             cache = {}
 
             # Root joint (freejoint)
@@ -322,7 +322,7 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['joint_ids_by_name'] = joint_ids_by_name
 
             # Keypoint body-name map. Observers can look up semantic roles
-            # ("torso", "foot_left", ...) without knowing the "_red"/"_blue" suffix.
+            # ("torso", "foot_left", ...) without knowing the "_a"/"_b" suffix.
             cache['keypoint_body_names'] = {
                 'torso': f'torso{suffix}',
                 'head': f'head{suffix}',

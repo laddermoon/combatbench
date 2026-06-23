@@ -216,10 +216,10 @@ class StandupPotentialRewarder(BaseObserverPlugin):
         hand_right_body = keypoint_names["hand_right"]
         
         suffix = ""
-        if foot_left_body.endswith("_red"):
-            suffix = "_red"
-        elif foot_left_body.endswith("_blue"):
-            suffix = "_blue"
+        if foot_left_body.endswith("_a"):
+            suffix = "_a"
+        elif foot_left_body.endswith("_b"):
+            suffix = "_b"
             
         shin_left_body = f"shin_left{suffix}"
         shin_right_body = f"shin_right{suffix}"

@@ -145,7 +145,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         derived_state = ctx.accessor.get_derived_state()
         env_contacts = derived_state.get("robot_environment_contacts", [])
 
-        robot_suffix = '_red' if self.agent_id == 'robot_a' else '_blue'
+        robot_suffix = '_a' if self.agent_id == 'robot_a' else '_b'
         left_foot_body = f"foot_left{robot_suffix}"
         right_foot_body = f"foot_right{robot_suffix}"
         ground_geom = self._ground_geom_name or "ground"
