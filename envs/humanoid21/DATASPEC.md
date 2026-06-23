@@ -32,7 +32,7 @@
 | 键 | 类型 | 说明 |
 |---|---|---|
 | `dt` | `float` | 单个物理子步仿真时长 (s)。等价于 `MujocoCombatSimulator.DT`。 |
-| `ground_geom_name` | `str` | 地面 geom 名（`"ground"`）。用于在 `derived_state['contacts']` 中筛选机器人–地面接触，避免硬编码字符串。 |
+| `ground_geom_name` | `str` | 地面 geom 名（`"ground"`）。用于在 `derived_state['contacts_vec']` 中筛选机器人–地面接触（CAT_ENV_GROUND），避免硬编码字符串。 |
 
 ### 2.3 设计理由
 
@@ -73,52 +73,80 @@
 ## 4. 派生数据 (Derived State)
 **接口**: `get_derived_state()`
 - **定义**: 面向机器学习特征工程、碰撞检测和奖励计算的丰富感知数据。**每个物理子步之后都会被刷新**，因此可以反映当前瞬时状态。
-- **结构**: 包含全局对抗信息、全局结构化接触列表、per-agent 高层视角、per-agent 低层物理量。
+- **结构**: 包含全局对抗信息、全局向量化接触数据 (contacts_vec)、per-agent 高层视角、per-agent 低层物理量。
 
 ### 4.1 全局对抗信息 (Shared / Global)
 放置在字典的最外层，供环境或中心化评论家(Critic)使用：
 - **`torso_distance`** (ndarray shape=(1,)): 双方 Torso 之间的欧氏距离。
-- **`robot_robot_contacts`** (List[Dict], legacy): 两个机器人之间的物理接触及受力列表。
-  - 格式示例: `{'body_a': 'head_red', 'body_b': 'torso_blue', 'force': 150.0}`
-  - **规则**: 仅记录 `robot_a` 与 `robot_b` 之间的碰撞，必须排除机器人与自身的接触以及机器人与环境的接触。
-  - **Note**: 仅保留标量合力大小；需要方向时请改用 §4.1.1 `contacts`。
-- **`robot_environment_contacts`** (List[Dict], legacy): 机器人与环境之间的物理接触及受力列表。
-  - 格式示例: `{'robot': 'robot_a', 'body': 'torso_red', 'environment_geom': 'ground', 'environment_body': 'world', 'force': 320.0}`
-  - **规则**: 仅记录机器人与地面、墙面等环境对象的接触，不包含机器人之间的接触。
-  - **Note**: 同上，仅标量；结构化接触见 `contacts`。
+- **`contacts_vec`** (Dict): 向量化 SoA (Struct of Arrays) 接触数据，基于三维分类模型 (AFF/CAT/GEOM)。
 
-#### 4.1.1 结构化接触列表 `contacts` (新)
+#### 4.1.1 三维接触分类模型 (AFF / CAT / GEOM)
 
-- **键**: `derived_state['contacts']`，类型 `List[Dict[str, Any]]`
-- **粒度**: 每条对应 MuJoCo `data.contact[i]` 一条记录（机器人–机器人、机器人–环境、机器人–自身都会出现）。
-- **字段**:
+对外接触数据严格遵循三级分类，不暴露 MuJoCo 内部的 body 概念：
+
+| 层级 | 名称 | 取值 | 说明 |
+|------|------|------|------|
+| AFF | Affiliation | 0=Env, 1=robot_a, 2=robot_b | 共 3 类，标识 geom 所属阵营 |
+| CAT | Category | 0~18 | 共 19 类 (3 环境 + 16 机器人身体部位) |
+| GEOM | Entity | 0~24 (自定义实体 ID) | 共 25 个 (6 环境 + 19 机器人)，通过 GEOM_ID_TO_NAME 查名称 |
+
+**CAT 类别明细**:
+
+| ID | 名称 | 说明 |
+|----|------|------|
+| 0 | CAT_ENV_GROUND | 地面 |
+| 1 | CAT_ENV_WALL | 墙壁 |
+| 2 | CAT_ENV_CEILING | 天花板 |
+| 3 | CAT_HEAD | 头部 |
+| 4 | CAT_TORSO | 躯干 |
+| 5 | CAT_PELVIS | 骨盆 |
+| 6~7 | CAT_HAND_LEFT / CAT_HAND_RIGHT | 左/右手 |
+| 8~9 | CAT_UPPER_ARM_LEFT / CAT_UPPER_ARM_RIGHT | 左/右上臂 |
+| 10~11 | CAT_LOWER_ARM_LEFT / CAT_LOWER_ARM_RIGHT | 左/右前臂 |
+| 12~13 | CAT_THIGH_LEFT / CAT_THIGH_RIGHT | 左/右大腿 |
+| 14~15 | CAT_SHIN_LEFT / CAT_SHIN_RIGHT | 左/右小腿 |
+| 16~17 | CAT_FOOT_LEFT / CAT_FOOT_RIGHT | 左/右脚 |
+
+#### 4.1.2 `contacts_vec` 字段
 
 | 字段 | 类型 | 含义 |
-|---|---|---|
-| `geom_a_name` / `geom_b_name` | `str` | MuJoCo 两个接触 geom 的名字。`b` 对应接触力作用的对象（见 `force_on_body_b_world`）。 |
-| `body_a_name` / `body_b_name` | `str` | 两个接触 geom 所属 body 的名字。 |
-| `position_world` | `ndarray(3,) float32` | 接触点世界坐标。 |
-| `normal_world` | `ndarray(3,) float32` | 接触法向量（单位），指向 `geom_b`。 |
-| `frame_world` | `ndarray(3,3) float32` | 接触坐标系三个正交轴（行存储）`[n; t1; t2]`，皆为世界坐标系单位向量。 |
-| `force_on_body_b_world` | `ndarray(3,) float32` | 世界坐标系下 `geom_a` 对 `geom_b` 施加的线性接触力。已做帧变换，直接累加即可。 |
-| `force_magnitude` | `float` | `force_on_body_b_world` 的模。 |
+|------|------|------|
+| `ncon` | `int` | 接触数量 |
+| `geom1` / `geom2` | `ndarray(ncon,) int8` | GEOM 层 — 实体 ID (0~24, 通过 GEOM_ID_TO_NAME 查名称) |
+| `aff1` / `aff2` | `ndarray(ncon,) int8` | AFF 归属 (0/1/2) |
+| `cat1` / `cat2` | `ndarray(ncon,) int8` | CAT 类别 (0~18) |
+| `force_mag` | `ndarray(ncon,) float32` | 接触力标量 (N) |
+| `force_world` | `ndarray(ncon, 3) float32` | 世界坐标系 3D 力 (作用在 geom2 上) |
+| `position` | `ndarray(ncon, 3) float32` | 接触点世界坐标 |
+| `normal` | `ndarray(ncon, 3) float32` | 接触法向量 (指向 geom2) |
+| `frame` | `ndarray(ncon, 3, 3) float32` | 接触坐标系 [n; t1; t2] (行存储) |
 
-**符号约定**：
-- 遵循 MuJoCo `mj_contactForce` 约定：返回的是"`geom_a` 对 `geom_b` 施加的力"。对 `geom_a`（等价地 `body_a`）的反作用力为上述向量取反。
-- 观察者若只关心某 body 受到的合力，需遍历所有接触并选择 `body == body_b` ↦ 加 / `body == body_a` ↦ 减。
-- 过滤机器人–地面接触时推荐用 `static_data['ground_geom_name']` 做比较，而不是硬编码 `"ground"`。
+**符号约定**：`force_world` 遵循 MuJoCo 约定——`geom1` 对 `geom2` 施加的力。对 `geom1` 的反作用力为取反。
 
-**示例**（脚与地面接触合力）:
+**示例**（脚与地面接触合力，使用 contacts_vec）：
 
 ```python
-foot_body = static_data['robot_a']['keypoint_body_names']['foot_left']
-ground = static_data['ground_geom_name']
+import numpy as np
+
+cv = derived_state['contacts_vec']
+AFF_ENV, AFF_A = 0, 1
+CAT_FOOT_LEFT = 17
+
 support = np.zeros(3)
-for c in derived_state['contacts']:
-    if c['body_b_name'] == foot_body and c['geom_a_name'] == ground:
-        support += c['force_on_body_b_world']
-    elif c['body_a_name'] == foot_body and c['geom_b_name'] == ground:
-        support -= c['force_on_body_b_world']
+if cv['ncon'] > 0:
+    aff1, aff2 = cv['aff1'], cv['aff2']
+    cat1, cat2 = cv['cat1'], cv['cat2']
+    fw = cv['force_world']
+
+    # foot is geom2, env is geom1: force on foot
+    m1 = (aff1 == AFF_ENV) & (aff2 == AFF_A) & (cat2 == CAT_FOOT_LEFT)
+    # foot is geom1, env is geom2: force on env, negate
+    m2 = (aff1 == AFF_A) & (aff2 == AFF_ENV) & (cat1 == CAT_FOOT_LEFT)
+
+    if m1.any():
+        support += fw[m1].sum(axis=0)
+    if m2.any():
+        support -= fw[m2].sum(axis=0)
 ```
 
 ### 4.2 单边视角信息 (Per-Robot Views)
@@ -260,7 +288,7 @@ opponent_keypoint_vel = derived_state['robot_a']['opponent_keypoint_vel']  # 15�
 ```
 get_derived_state()
 ├── torso_distance (全局)
-├── combat_contacts (全局)
+├── contacts_vec (全局, AFF/CAT/GEOM 三级分类)
 └── robot_a / robot_b
     ├── root_state (模块二: 13维)
     │   ├── height
