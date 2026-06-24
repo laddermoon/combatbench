@@ -2,13 +2,65 @@
 Humanoid21 仿真环境元数据定义与管理
 
 概念体系 (bootstrip.md):
-  AFF: 归属 — environment(0), robot_a(1), robot_b(2)
-  GEOM_CAT: 几何体类别 — 25类 (6环境 + 19机器人), 每个AFF下每个geom有唯一CAT
-  DETAIL_SEMANTIC_CAT: 细化语义分类 — 15类, 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
-  SEMANTIC_CAT: 语义大类 — 8类, 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
+
+  AFF (3类): 归属
+    0=environment  1=robot_a  2=robot_b
+
+  GEOM_CAT (25类): 每个AFF下每个geom有唯一CAT, 不做语义合并
+    环境(6):     0=ground  1=ceiling  2=southwall  3=northwall  4=westwall  5=eastwall
+    机器人(19):  6=head  7=torso  8=waist_upper  9=waist_lower  10=butt
+                 11=thigh_right  12=shin_right  13=foot1_right  14=foot2_right
+                 15=thigh_left  16=shin_left  17=foot1_left  18=foot2_left
+                 19=upper_arm_right  20=lower_arm_right  21=hand_right
+                 22=upper_arm_left  23=lower_arm_left  24=hand_left
+
+  DETAIL_SEMANTIC_CAT (15类): 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
+    0=ground       ← CAT: ground
+    1=ceiling      ← CAT: ceiling
+    2=wall         ← CAT: southwall, northwall, westwall, eastwall
+    3=head         ← CAT: head
+    4=torso        ← CAT: torso
+    5=waist        ← CAT: waist_upper, waist_lower
+    6=pelvis       ← CAT: butt
+    7=right_leg    ← CAT: thigh_right, shin_right
+    8=right_foot   ← CAT: foot1_right, foot2_right
+    9=left_leg     ← CAT: thigh_left, shin_left
+    10=left_foot   ← CAT: foot1_left, foot2_left
+    11=right_arm   ← CAT: upper_arm_right, lower_arm_right
+    12=right_hand  ← CAT: hand_right
+    13=left_arm    ← CAT: upper_arm_left, lower_arm_left
+    14=left_hand   ← CAT: hand_left
+
+  SEMANTIC_CAT (8类): 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
+    0=ground  ← DETAIL: ground
+    1=wall    ← DETAIL: ceiling, wall
+    2=head    ← DETAIL: head
+    3=torso   ← DETAIL: torso, waist, pelvis
+    4=arm     ← DETAIL: right_arm, left_arm
+    5=hand    ← DETAIL: right_hand, left_hand
+    6=leg     ← DETAIL: right_leg, left_leg
+    7=foot    ← DETAIL: right_foot, left_foot
+
   GEOM: 与 MuJoCo geom 一一对应, 拥有 GEOM_CAT/AFF/ISKEYPOINT 属性
-  JOINT_CAT: 关节类别 — 22类/机器人
+    共44个: 6环境 + 19(robot_a) + 19(robot_b)
+    robot geom 命名: <base>_a / <base>_b, 共享同一 GEOM_CAT
+
+  JOINT_CAT (22类/机器人): 每个AFF下每个joint有唯一JOINT_CAT
+    0=root
+    1=abdomen_z  2=abdomen_y  3=abdomen_x
+    4=hip_x_right  5=hip_z_right  6=hip_y_right  7=knee_right  8=ankle_y_right  9=ankle_x_right
+    10=hip_x_left  11=hip_z_left  12=hip_y_left  13=knee_left  14=ankle_y_left  15=ankle_x_left
+    16=shoulder1_right  17=shoulder2_right  18=elbow_right
+    19=shoulder1_left  20=shoulder2_left  21=elbow_left
+
   JOINT: 与 MuJoCo joint 一一对应, 拥有 JOINT_CAT/AFF 属性
+    共44个: 22(robot_a) + 22(robot_b)
+    joint 命名: <base>_a / <base>_b, 共享同一 JOINT_CAT
+
+  层级关系链:
+    GEOM → GEOM_CAT → DETAIL_SEMANTIC_CAT → SEMANTIC_CAT
+    JOINT → JOINT_CAT → JOINT_SEMANTIC
+    GEOM/JOINT → AFF
 """
 
 from typing import Dict, List, Set, Tuple, Optional
