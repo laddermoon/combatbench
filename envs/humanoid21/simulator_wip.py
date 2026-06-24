@@ -756,23 +756,23 @@ class MujocoCombatSimulator(BaseSimulator):
         right_force = 0.0
         left_force = 0.0
         
-        # 使用 Meta 查找地面 geom id
-        geom_aff = self._meta['geom_aff']
-        AFF_ENV = Humanoid21Meta.AFF_ENV
-        
+        # 使用 Meta 查找地面 geom (CAT_GROUND, 与原版 ground_geom_id=0 等价)
+        geom_cat = self._meta['geom_cat']
+        CAT_GROUND = Humanoid21Meta.CAT_GROUND
+
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
             geom1 = int(contact.geom1)
             geom2 = int(contact.geom2)
-            
-            # 检查是否涉及环境 geom
-            g1_env = int(geom_aff[geom1]) == AFF_ENV
-            g2_env = int(geom_aff[geom2]) == AFF_ENV
-            if not g1_env and not g2_env:
+
+            # 只检查与地面的接触 (不包括墙壁/天花板)
+            g1_ground = int(geom_cat[geom1]) == CAT_GROUND
+            g2_ground = int(geom_cat[geom2]) == CAT_GROUND
+            if not g1_ground and not g2_ground:
                 continue
-            
-            # 获取非环境 geom 对应的 body
-            other_geom = geom2 if g1_env else geom1
+
+            # 获取非地面 geom 对应的 body
+            other_geom = geom2 if g1_ground else geom1
             body_id = int(self.model.geom_bodyid[other_geom])
             
             # 计算接触力
