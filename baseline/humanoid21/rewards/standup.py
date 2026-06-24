@@ -69,7 +69,7 @@ class StandupPotentialRewarder(BaseObserverPlugin):
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
-        derived_state = ctx.accessor.get_derived_state()[self.agent_id]
+        derived_state = ctx.accessor.get_derived_state([self.agent_id])[self.agent_id]
         
         # 1. 骨盆（重心）世界高度
         h_pelvis = float(core_state["root_pos"][2])
@@ -191,15 +191,15 @@ class StandupPotentialRewarder(BaseObserverPlugin):
         self._potential = potential
 
     def _get_detailed_contacts(self, ctx: ReadOnlySimContext) -> Dict[str, bool]:
-        """精细化解析地面接触数据，区分双脚、双手、双膝（Shin）以及其他部位"""
-        derived_state = ctx.accessor.get_derived_state()
-        env_contacts = derived_state.get('robot_environment_contacts', [])
-        
+        """精细化解析地面接触数据，区分双脚、双手、双膝（Shin）以及其他部位 — 向量化版本"""
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get('contacts')
+
         static_data = ctx.accessor.get_static_data()[self.agent_id]
         keypoint_names = static_data["keypoint_body_names"]
-        
+
         ground_geom = 'ground'
-        
+
         contacts = {
             "foot_left": False,
             "foot_right": False,
@@ -209,48 +209,70 @@ class StandupPotentialRewarder(BaseObserverPlugin):
             "shin_right": False,
             "has_other_contact": False,
         }
-        
+
+        if cv is None or cv['ncon'] == 0:
+            return contacts
+
         foot_left_body = keypoint_names["foot_left"]
         foot_right_body = keypoint_names["foot_right"]
         hand_left_body = keypoint_names["hand_left"]
         hand_right_body = keypoint_names["hand_right"]
-        
+
         suffix = ""
         if foot_left_body.endswith("_a"):
             suffix = "_a"
         elif foot_left_body.endswith("_b"):
             suffix = "_b"
-            
+
         shin_left_body = f"shin_left{suffix}"
         shin_right_body = f"shin_right{suffix}"
         lower_arm_left_body = f"lower_arm_left{suffix}"
         lower_arm_right_body = f"lower_arm_right{suffix}"
-        
-        for c in env_contacts:
-            if c.get('robot') != self.agent_id:
+
+        static_all = ctx.accessor.get_static_data()
+        body_id_to_name = static_all.get('body_id_to_name', {})
+        geom_id_to_name = static_all.get('geom_id_to_name', {})
+
+        robot_aff = 1 if self.agent_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
                 continue
-            if c.get('environment_geom') != ground_geom:
+
+            if geom_env != ground_geom:
                 continue
-            if c.get('force', 0.0) < 1.0:  # 1.0 牛顿以上才认定为触地
+            if float(force_mag[i]) < 1.0:
                 continue
-            
-            body = c.get('body', '')
-            if body == foot_left_body:
+
+            if body_robot == foot_left_body:
                 contacts["foot_left"] = True
-            elif body == foot_right_body:
+            elif body_robot == foot_right_body:
                 contacts["foot_right"] = True
-            elif body in (hand_left_body, lower_arm_left_body):
+            elif body_robot in (hand_left_body, lower_arm_left_body):
                 contacts["hand_left"] = True
-            elif body in (hand_right_body, lower_arm_right_body):
+            elif body_robot in (hand_right_body, lower_arm_right_body):
                 contacts["hand_right"] = True
-            elif body == shin_left_body:
+            elif body_robot == shin_left_body:
                 contacts["shin_left"] = True
-            elif body == shin_right_body:
+            elif body_robot == shin_right_body:
                 contacts["shin_right"] = True
             else:
-                # 凡是膝盖、脚、手、前臂之外的机器人部位触地，全标定为 other_contact
                 contacts["has_other_contact"] = True
-                
+
         return contacts
 
     def get_output(self) -> Dict[str, float]:

@@ -58,7 +58,7 @@ class MockSimulator(BaseSimulator):
                 result[key] = value
         return result
 
-    def get_derived_state(self) -> Dict[str, Any]:
+    def get_derived_state(self, fields=None) -> Dict[str, Any]:
         return self._derived_state.copy()
 
     def get_sensor_data(self) -> Dict[str, Any]:

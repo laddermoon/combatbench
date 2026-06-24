@@ -134,16 +134,16 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         return cls(**config)
 
     def _get_foot_contact_state(self, ctx: ReadOnlySimContext) -> tuple[bool, bool]:
-        """检测双脚是否与地面接触（无力阈值：有接触条目即算）。
+        """检测双脚是否与地面接触（无力阈值：有接触条目即算）— 向量化版本。
 
-        仅使用 ``derived_state['robot_environment_contacts']``，与
-        ``get_static_data()['ground_geom_name']`` 中的地面 geom 名匹配。
+        使用 ``contacts_vec``，通过 aff 筛选机器人↔环境接触，
+        通过 geom_id_to_name 确认地面 geom，通过 body_id_to_name 获取 body 名。
 
         Returns:
             (left_foot_contact, right_foot_contact)
         """
-        derived_state = ctx.accessor.get_derived_state()
-        env_contacts = derived_state.get("robot_environment_contacts", [])
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get("contacts")
 
         robot_suffix = '_a' if self.agent_id == 'robot_a' else '_b'
         left_foot_body = f"foot_left{robot_suffix}"
@@ -153,16 +153,37 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         left_foot_contact = False
         right_foot_contact = False
 
-        for contact in env_contacts:
-            if contact.get("robot") != self.agent_id:
+        if cv is None or cv['ncon'] == 0:
+            return left_foot_contact, right_foot_contact
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+        geom_id_to_name = static_data.get('geom_id_to_name', {})
+
+        robot_aff = 1 if self.agent_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+
+        for i in range(cv['ncon']):
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
                 continue
-            env_geom = contact.get("environment_geom", "") or ""
-            if env_geom != ground_geom:
+
+            if geom_env != ground_geom:
                 continue
-            body = contact.get("body", "") or ""
-            if body == left_foot_body:
+            if body_robot == left_foot_body:
                 left_foot_contact = True
-            elif body == right_foot_body:
+            elif body_robot == right_foot_body:
                 right_foot_contact = True
 
         return left_foot_contact, right_foot_contact

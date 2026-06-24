@@ -184,15 +184,12 @@ def test_derived_state(sim):
     assert torso_distance[0] > 0, "torso_distance 应为正数"
     print(f"✓ torso_distance: {torso_distance[0]:.3f} m")
 
-    # 验证 robot_robot_contacts / robot_environment_contacts
-    assert 'robot_robot_contacts' in derived, "缺少 robot_robot_contacts"
-    robot_robot_contacts = derived['robot_robot_contacts']
-    assert isinstance(robot_robot_contacts, list), "robot_robot_contacts 应为列表"
-    print(f"✓ robot_robot_contacts: {len(robot_robot_contacts)} 个接触")
-    assert 'robot_environment_contacts' in derived, "缺少 robot_environment_contacts"
-    robot_environment_contacts = derived['robot_environment_contacts']
-    assert isinstance(robot_environment_contacts, list), "robot_environment_contacts 应为列表"
-    print(f"✓ robot_environment_contacts: {len(robot_environment_contacts)} 个接触")
+    # 验证 contacts (SoA 向量化格式)
+    assert 'contacts' in derived, "缺少 contacts"
+    cv = derived['contacts']
+    assert isinstance(cv, dict), "contacts 应为 SoA dict"
+    assert cv['ncon'] >= 0, "ncon 应为非负整数"
+    print(f"✓ contacts (SoA): ncon={cv['ncon']}")
 
     # ===== 3.2 单边视角信息 =====
     for robot_id in ['robot_a', 'robot_b']:

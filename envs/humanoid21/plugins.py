@@ -380,16 +380,56 @@ class CombatScoringPlugin(BasePlugin):
         self._step_dmg_a_torso = 0.0
         self._step_dmg_b_head = 0.0
         self._step_dmg_b_torso = 0.0
-        contacts = ctx.accessor.get_derived_state().get('robot_robot_contacts', [])
+
+        derived = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived.get('contacts')
         debug_contacts = [] if self._debug_file else None
 
-        for contact in contacts:
-            force = contact.get('force', 0.0)
+        if cv is None or cv['ncon'] == 0:
+            if debug_contacts is not None:
+                self._debug_log('post_phy_step',
+                                episode_step=ctx.episode_step,
+                                physics_step=ctx.physics_step,
+                                num_contacts=0, contacts=[],
+                                health_a=ctx.metrics.get('health_a', 0),
+                                health_b=ctx.metrics.get('health_b', 0),
+                                action_damage_a=self._action_damage_a,
+                                action_damage_b=self._action_damage_b)
+            if self._score_log_handle is not None:
+                self._score_log_total_step += 1
+                self._score_log_handle.write(
+                    f'{self._score_log_total_step} {ctx.episode_step} '
+                    f'{ctx.physics_step} '
+                    f'{ctx.metrics.get("health_a", 0):.4g} '
+                    f'{ctx.metrics.get("health_b", 0):.4g} '
+                    f'0 0 0 0\n'
+                )
+            return
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        # Robot-robot contacts: both affs non-zero and different
+        rr_mask = (aff1 != 0) & (aff2 != 0) & (aff1 != aff2)
+        rr_indices = np.where(rr_mask)[0]
+
+        for idx in rr_indices:
+            force = float(force_mag[idx])
             if force <= 0:
                 continue
 
-            body_a = contact.get('body_a', '')
-            body_b = contact.get('body_b', '')
+            b1 = int(body1[idx])
+            b2 = int(body2[idx])
+            a1_is_a = (aff1[idx] == 1)  # aff=1 → robot_a
+
+            body_a = body_id_to_name.get(b1 if a1_is_a else b2, '')
+            body_b = body_id_to_name.get(b2 if a1_is_a else b1, '')
             result = self._resolve_hit(body_a, body_b)
 
             if result is None:
@@ -405,14 +445,6 @@ class CombatScoringPlugin(BasePlugin):
             if part_weight <= 0:
                 continue
 
-            # --- 限制大额瞬时碰撞力造成的非预期高伤害（如穿模或非物理挤压） ---
-            # 引入 1200 N 的有效力上限限制。
-            # 作用：防止重度穿模或物理刚体穿插时产生几千牛顿的瞬时巨力导致倒地后满血秒杀（KO）。
-            # 1200 N 上限对应的最大单步伤害：
-            # 头部 (3.0): 3.0 * (1200 / 100)^2 * 0.002 = 0.864 HP / step (持续 1 个动作步 50ms 极限伤害为 21.6 HP)
-            # 躯干 (1.0): 1.0 * (1200 / 100)^2 * 0.002 = 0.288 HP / step (持续 1 个动作步 50ms 极限伤害为 7.2 HP)
-            # 这既保留了超重打击（迎门重手/高速鞭腿）能够带走 1/5 血量的极高进攻爽快感，
-            # 又完美保护了倒地后、严重卡死穿插情况下，防守方至少有 250ms (5 步) 的调整逃逸缓冲区。
             effective_force = min(force, 1200.0)
             damage = part_weight * (effective_force / self.force_scale) ** 2 * self.phy_step_dt
             if damage <= 0:
@@ -451,7 +483,7 @@ class CombatScoringPlugin(BasePlugin):
             self._debug_log('post_phy_step',
                             episode_step=ctx.episode_step,
                             physics_step=ctx.physics_step,
-                            num_contacts=len(contacts),
+                            num_contacts=len(rr_indices),
                             contacts=debug_contacts,
                             health_a=ctx.metrics.get('health_a', 0),
                             health_b=ctx.metrics.get('health_b', 0),

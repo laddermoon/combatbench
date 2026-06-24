@@ -210,7 +210,7 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
         self._last_accessor = accessor
 
         static_all = accessor.get_static_data()
-        derived_all = accessor.get_derived_state()
+        derived_all = accessor.get_derived_state(['contacts', self.agent_id])
         if self.agent_id not in static_all or self.agent_id not in derived_all:
             raise KeyError(
                 f"Humanoid21BalanceAnalysisObserver: accessor does not provide "
@@ -233,15 +233,15 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
 
         foot_left_body_name = static_agent['keypoint_body_names']['foot_left']
         foot_right_body_name = static_agent['keypoint_body_names']['foot_right']
-        contacts = derived_all.get('contacts', [])
+        contacts_vec = derived_all.get('contacts')
         left_ankle_support_force = self._compute_ankle_support_force(
-            contacts=contacts,
-            ground_geom_name=ground_geom_name,
+            contacts_vec=contacts_vec,
+            static_all=static_all,
             foot_body_name=foot_left_body_name,
         )
         right_ankle_support_force = self._compute_ankle_support_force(
-            contacts=contacts,
-            ground_geom_name=ground_geom_name,
+            contacts_vec=contacts_vec,
+            static_all=static_all,
             foot_body_name=foot_right_body_name,
         )
 
@@ -396,39 +396,44 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
 
     def _compute_ankle_support_force(
         self,
-        contacts: list,
-        ground_geom_name: str,
+        contacts_vec: Dict[str, Any],
+        static_all: Dict[str, Any],
         foot_body_name: str,
     ) -> np.ndarray:
-        """
-        单脚通过接触传递到踝部的支撑反力代理（世界坐标 3D 向量）。
+        """单脚支撑反力 — 向量化版本，使用 contacts_vec。
 
-        使用公开接口 ``derived_state['contacts']`` —— 其中每条接触记录
-        已经把 ``force_on_body_b_world`` 事先旋转到了世界系。由此本方法
-        不再需要直接访问 ``data.contact`` 或 ``mj_contactForce``。
-
-        约定：遍历所有接触，筛选同时涉及 ``foot_body_name`` 和
-        ``ground_geom_name`` 的条目；按 MuJoCo 的 "force on body B by A"
-        约定，若 foot 是 body_b 则直接累加、若是 body_a 则取反后累加
-        （Newton 第三定律）。
+        筛选 foot body ↔ ground geom 的接触，按 Newton 第三定律累加
+        force_world 向量。
         """
         support_force = np.zeros(3, dtype=np.float64)
+        if contacts_vec is None or contacts_vec['ncon'] == 0:
+            return support_force
 
-        for contact in contacts:
-            body_a = contact.get('body_a_name', '')
-            body_b = contact.get('body_b_name', '')
-            geom_a = contact.get('geom_a_name', '')
-            geom_b = contact.get('geom_b_name', '')
-            force_on_b = np.asarray(
-                contact.get('force_on_body_b_world', np.zeros(3)), dtype=np.float64
-            )
+        ground_geom_id = static_all.get('ground_geom_id', -1)
+        body_id_to_name = static_all.get('body_id_to_name', {})
+        geom_id_to_name = static_all.get('geom_id_to_name', {})
+        ground_geom_name = static_all.get('ground_geom_name', 'ground')
 
-            foot_is_b = (body_b == foot_body_name and geom_a == ground_geom_name)
-            foot_is_a = (body_a == foot_body_name and geom_b == ground_geom_name)
+        geom1 = contacts_vec['geom1']
+        geom2 = contacts_vec['geom2']
+        body1 = contacts_vec['body1']
+        body2 = contacts_vec['body2']
+        force_world = contacts_vec['force_world']
+
+        for i in range(contacts_vec['ncon']):
+            g1 = int(geom1[i])
+            g2 = int(geom2[i])
+            b1_name = body_id_to_name.get(int(body1[i]), '')
+            b2_name = body_id_to_name.get(int(body2[i]), '')
+            g1_name = geom_id_to_name.get(g1, '')
+            g2_name = geom_id_to_name.get(g2, '')
+
+            foot_is_b = (b2_name == foot_body_name and g1_name == ground_geom_name)
+            foot_is_a = (b1_name == foot_body_name and g2_name == ground_geom_name)
             if foot_is_b:
-                support_force += force_on_b
+                support_force += force_world[i]
             elif foot_is_a:
-                support_force -= force_on_b
+                support_force -= force_world[i]
 
         return support_force
 

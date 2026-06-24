@@ -21,3 +21,4 @@ nohup.out
 *.log
 *.bak
 debug_approach/
+bootstrip.md

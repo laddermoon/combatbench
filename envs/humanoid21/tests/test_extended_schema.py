@@ -80,7 +80,7 @@ class TestStaticSchema:
 class TestDerivedPerAgent:
     def test_body_arrays_cover_body_names(self, sim):
         static = sim.get_static_data()
-        derived = sim.get_derived_state()
+        derived = sim.get_derived_state(['robot_a', 'robot_b'])
         for agent in ("robot_a", "robot_b"):
             names = set(static[agent]["body_names"])
             for field, expected_shape in (
@@ -99,7 +99,7 @@ class TestDerivedPerAgent:
 
     def test_joint_anchors_cover_joint_names(self, sim):
         static = sim.get_static_data()
-        derived = sim.get_derived_state()
+        derived = sim.get_derived_state(['robot_a', 'robot_b'])
         for agent in ("robot_a", "robot_b"):
             assert set(derived[agent]["joint_world_anchor"].keys()) == set(
                 static[agent]["joint_names"]
@@ -107,52 +107,46 @@ class TestDerivedPerAgent:
 
     def test_copy_semantics_body_xipos(self, sim):
         """Mutating the returned ndarray must NOT leak back into the simulator."""
-        derived1 = sim.get_derived_state()
+        derived1 = sim.get_derived_state(['robot_a', 'robot_b'])
         torso_name = sim.get_static_data()["robot_a"]["keypoint_body_names"]["torso"]
         derived1["robot_a"]["body_xipos"][torso_name][:] = 999.0
 
-        derived2 = sim.get_derived_state()
+        sim._data_cache.clear()
+        derived2 = sim.get_derived_state(['robot_a', 'robot_b'])
         assert not np.allclose(derived2["robot_a"]["body_xipos"][torso_name], 999.0)
 
 
 class TestStructuredContacts:
     def test_contacts_shape_and_fields(self, sim):
-        derived = sim.get_derived_state()
-        contacts = derived["contacts"]
-        assert isinstance(contacts, list)
-        # Standing reset produces several foot-ground contacts
-        assert len(contacts) > 0
-        required = {
-            "geom_a_name",
-            "geom_b_name",
-            "body_a_name",
-            "body_b_name",
-            "position_world",
-            "normal_world",
-            "frame_world",
-            "force_on_body_b_world",
-            "force_magnitude",
-        }
-        for contact in contacts:
-            assert required.issubset(contact.keys())
-            assert contact["position_world"].shape == (3,)
-            assert contact["normal_world"].shape == (3,)
-            assert contact["frame_world"].shape == (3, 3)
-            assert contact["force_on_body_b_world"].shape == (3,)
-            assert isinstance(contact["force_magnitude"], float)
+        derived = sim.get_derived_state(['contacts'])
+        cv = derived["contacts"]
+        assert isinstance(cv, dict)
+        assert cv['ncon'] > 0
+        ncon = cv['ncon']
+        # Check SoA arrays have correct length
+        for key in ('geom1', 'geom2', 'body1', 'body2', 'aff1', 'aff2', 'force_mag'):
+            assert cv[key].shape == (ncon,), f"{key} shape mismatch: {cv[key].shape}"
+        for key in ('force_world', 'position', 'normal'):
+            assert cv[key].shape == (ncon, 3), f"{key} shape mismatch: {cv[key].shape}"
+        assert cv['frame'].shape == (ncon, 3, 3)
 
     def test_foot_ground_contact_has_upward_force(self, sim):
         """Standing pose: the foot–ground contact must push the foot upward."""
         static = sim.get_static_data()
-        derived = sim.get_derived_state()
-        ground = static["ground_geom_name"]
+        derived = sim.get_derived_state(['contacts'])
+        cv = derived["contacts"]
+        ground_geom_id = static.get('ground_geom_id')
+        body_id_to_name = static.get('body_id_to_name', {})
         foot = static["robot_a"]["keypoint_body_names"]["foot_left"]
 
         total = np.zeros(3, dtype=np.float64)
-        for c in derived["contacts"]:
-            if c["body_b_name"] == foot and c["geom_a_name"] == ground:
-                total += c["force_on_body_b_world"]
-            elif c["body_a_name"] == foot and c["geom_b_name"] == ground:
-                total -= c["force_on_body_b_world"]
+        for i in range(cv['ncon']):
+            g1, g2 = cv['geom1'][i], cv['geom2'][i]
+            b1, b2 = cv['body1'][i], cv['body2'][i]
+            fw = cv['force_world'][i]
+            if g1 == ground_geom_id and body_id_to_name.get(int(b2), '') == foot:
+                total += fw
+            elif g2 == ground_geom_id and body_id_to_name.get(int(b1), '') == foot:
+                total -= fw
         # Standing: Z component should be positive (support force)
         assert total[2] > 0.0, f"expected upward support force, got {total}"

@@ -226,28 +226,48 @@ class ImbalanceTerminationPlugin(BasePlugin):
                 ctx.request_termination("imbalance")
 
     def _is_non_foot_grounded(self, ctx: SimContext, robot_id: str) -> bool:
-        """检查当前物理步快照下，指定机器人是否有非脚部部位与地面接触。
+        """检查当前物理步快照下，指定机器人是否有非脚部部位与地面接触 — 向量化版本。
 
-        使用 ``robot_environment_contacts``，其中每条记录已预过滤为
-        "机器人身体 ↔ 环境几何体" 的接触，字段为：
-          robot              : 'robot_a' / 'robot_b'
-          body               : 机器人侧 body 名，如 'torso_red'
-          environment_geom   : 环境侧 geom 名，如 'ground'
-          force              : 接触力标量（牛顿）
+        使用 ``contacts_vec``，通过 aff 筛选机器人↔环境接触，
+        通过 geom_id_to_name 确认地面 geom，通过 body_id_to_name 获取 body 名。
         """
-        derived_state = ctx.accessor.get_derived_state()
-        env_contacts = derived_state.get('robot_environment_contacts', [])
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get('contacts')
+        if cv is None or cv['ncon'] == 0:
+            return False
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+        geom_id_to_name = static_data.get('geom_id_to_name', {})
         ground_geom = self._ground_geom_name or 'ground'
 
-        for contact in env_contacts:
-            if contact.get('robot') != robot_id:
+        # robot_id → aff code
+        robot_aff = 1 if robot_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            # One side is env (aff=0), other side is the target robot
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
                 continue
-            if contact.get('environment_geom') != ground_geom:
+
+            if geom_env != ground_geom:
                 continue
-            if contact.get('force', 0.0) < self.force_threshold:
+            if float(force_mag[i]) < self.force_threshold:
                 continue
-            body_name = contact.get('body', '')
-            if not any(foot in body_name for foot in self.FOOT_BODY_NAMES):
+            if not any(foot in body_robot for foot in self.FOOT_BODY_NAMES):
                 return True
 
         return False
