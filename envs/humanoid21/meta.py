@@ -346,6 +346,14 @@ class Humanoid21Meta:
         8, 9, 14, 15,  # ankle_y_right, ankle_x_right, ankle_y_left, ankle_x_left
     }
 
+    # PART_NAME → 下游期望的 keypoint 语义 key
+    # PART_ID_TO_NAME 用 'right_foot'/'left_hand', 下游用 'foot_right'/'hand_left'
+    PART_NAME_TO_KEYPOINT_KEY: Dict[str, str] = {
+        'torso': 'torso', 'head': 'head', 'pelvis': 'pelvis',
+        'right_foot': 'foot_right', 'left_foot': 'foot_left',
+        'right_hand': 'hand_right', 'left_hand': 'hand_left',
+    }
+
     # === ACTUATOR — 执行器 (概念约定) ===
     # 本环境中 actuator 与 joint 同名, 即 actuator_name = joint_name.
     # build_runtime_tables 据此构建 joint_cat → actuator_id 映射.
@@ -738,8 +746,10 @@ class Humanoid21Meta:
             }
 
             # Keypoint body-name map (语义 → 全名, 向后兼容)
+            # 使用 PART_NAME_TO_KEYPOINT_KEY 将 PART 名转换为下游期望的 key
             r['keypoint_body_names'] = {
-                part_name: mujoco.mj_id2name(
+                cls.PART_NAME_TO_KEYPOINT_KEY.get(part_name, part_name):
+                mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_BODY, bid
                 ) or ''
                 for part_name, bid in keypoint_body_ids.items()
