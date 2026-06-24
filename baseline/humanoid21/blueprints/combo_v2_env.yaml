@@ -1,0 +1,63 @@
+# Combo v2: Fight experiment with alternating punch motion shaping.
+# Same as fight_v2_env but adds PunchMotionRewarder observer.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The oppo robot, mustnt the same as agent_id."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: "both"
+      tolerance: ${tolerance}
+  - cls: "envs.humanoid21.plugins:CombatScoringPlugin"
+    config:
+      initial_health: 100.0
+      initial_health_a: 100.0
+      initial_health_b: 100.0
+      force_scale: 100.0
+      request_termination_on_ko: False
+observer_plugins:
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  approach_velocity:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: ${agent_id}
+  damage:
+    cls: "baseline.humanoid21.rewards.damage:NetDamageRewarder"
+    config:
+      agent_id: ${agent_id}
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: ${agent_id}
+  punch_motion:
+    cls: "baseline.humanoid21.rewards.punch_motion:PunchMotionRewarder"
+    config:
+      agent_id: ${agent_id}
