@@ -1,69 +1,30 @@
 """
 Humanoid21 仿真环境元数据定义与管理
 
-概念体系 (bootstrip.md):
+设计理念:
+  以 MuJoCo 原生概念模型为基准, 在代码中显式定义环境的结构.
+  用户读这份代码就能理解: 有哪些 body, 每个 body 上挂着什么 geom/joint,
+  body 之间的父子关系是什么. 不需要学习自定义的编号体系.
 
-  AFF (3类): 归属
-    0=environment  1=robot_a  2=robot_b
+  在 MuJoCo 概念之上, 按需添加战斗语义层 (ATTACK_PARTS, HITTABLE_PARTS, KEYPOINT_BODIES).
 
-  GEOM_CAT (25类): 每个AFF下每个geom有唯一CAT, 不做语义合并
-    环境(6):     0=ground  1=ceiling  2=southwall  3=northwall  4=westwall  5=eastwall
-    机器人(19):  6=head  7=torso  8=waist_upper  9=waist_lower  10=butt
-                 11=thigh_right  12=shin_right  13=foot1_right  14=foot2_right
-                 15=thigh_left  16=shin_left  17=foot1_left  18=foot2_left
-                 19=upper_arm_right  20=lower_arm_right  21=hand_right
-                 22=upper_arm_left  23=lower_arm_left  24=hand_left
+两层结构:
+  Layer 1 — MuJoCo 概念 (与 battle_v1.xml 一一对应)
+    ENV_GEOMS:        环境 geom 名称列表
+    ROBOT_BODY_TREE:  机器人 body 树 (body → geoms, joints, children)
+    CONTROLLED_JOINTS: policy 直接控制的 21 个关节 (顺序 = action vector 维度)
+    ROBOT_SUFFIXES:   机器人实例化后缀
 
-  CONTACT_PART (15类): 每个GEOM_CAT对应唯一CONTACT_PART
-    0=ground       ← CAT: ground
-    1=ceiling      ← CAT: ceiling
-    2=wall         ← CAT: southwall, northwall, westwall, eastwall
-    3=head         ← CAT: head
-    4=torso        ← CAT: torso
-    5=waist        ← CAT: waist_upper, waist_lower
-    6=pelvis       ← CAT: butt
-    7=right_leg    ← CAT: thigh_right, shin_right
-    8=right_foot   ← CAT: foot1_right, foot2_right
-    9=left_leg     ← CAT: thigh_left, shin_left
-    10=left_foot   ← CAT: foot1_left, foot2_left
-    11=right_arm   ← CAT: upper_arm_right, lower_arm_right
-    12=right_hand  ← CAT: hand_right
-    13=left_arm    ← CAT: upper_arm_left, lower_arm_left
-    14=left_hand   ← CAT: hand_left
+  Layer 2 — 战斗语义 (建立在 MuJoCo body 之上)
+    ATTACK_PARTS:     可以攻击别人的 body name 列表
+    HITTABLE_PARTS:   可以被攻击的 body name 列表
+    KEYPOINT_BODIES:  需要观测的 body name 列表
+    KEYPOINT_JOINTS:  需要观测的关节 name 列表
 
-  CONTACT_GROUP (8类): 每个CONTACT_PART对应一个CONTACT_GROUP
-    0=ground  ← PART: ground          [不可攻击, 不可受击]
-    1=wall    ← PART: ceiling, wall   [不可攻击, 不可受击]
-    2=head    ← PART: head            [不可攻击, 可受击]
-    3=torso   ← PART: torso, waist, pelvis  [不可攻击, 可受击]
-    4=arm     ← PART: right_arm, left_arm   [不可攻击, 不可受击]
-    5=hand    ← PART: right_hand, left_hand [可攻击,   不可受击]
-    6=leg     ← PART: right_leg, left_leg   [不可攻击, 不可受击]
-    7=foot    ← PART: right_foot, left_foot [可攻击,   不可受击]
-
-  GEOM: 与 MuJoCo geom 一一对应, 拥有 GEOM_CAT/AFF/ISKEYPOINT 属性
-    共44个: 6环境 + 19(robot_a) + 19(robot_b)
-    robot geom 命名: <base>_a / <base>_b, 共享同一 GEOM_CAT
-
-  JOINT_CAT (22类/机器人): 每个AFF下每个joint有唯一JOINT_CAT
-    0=root
-    1=abdomen_z  2=abdomen_y  3=abdomen_x
-    4=hip_x_right  5=hip_z_right  6=hip_y_right  7=knee_right  8=ankle_y_right  9=ankle_x_right
-    10=hip_x_left  11=hip_z_left  12=hip_y_left  13=knee_left  14=ankle_y_left  15=ankle_x_left
-    16=shoulder1_right  17=shoulder2_right  18=elbow_right
-    19=shoulder1_left  20=shoulder2_left  21=elbow_left
-
-  JOINT: 与 MuJoCo joint 一一对应, 拥有 JOINT_CAT/AFF 属性
-    共44个: 22(robot_a) + 22(robot_b)
-    joint 命名: <base>_a / <base>_b, 共享同一 JOINT_CAT
-
-  层级关系链:
-    GEOM → GEOM_CAT → CONTACT_PART → CONTACT_GROUP
-    JOINT → JOINT_CAT → JOINT_SEMANTIC
-    GEOM/JOINT → AFF
+  校验: validate() 检查代码定义与加载的 MuJoCo model 是否一致
+  运行时: build_runtime_tables() 从代码定义 + model 构建查找表
 """
-
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Set, Tuple, Optional, Any
 
 import numpy as np
 
@@ -71,360 +32,218 @@ import numpy as np
 class Humanoid21Meta:
     """Humanoid21 对抗仿真环境的静态元数据定义、校验与运行时关联。"""
 
-    # === AFF — 归属 (3类) ===
-    AFF_ENV = 0
-    AFF_ROBOT_A = 1
-    AFF_ROBOT_B = 2
+    # ============================================================
+    # Layer 1: MuJoCo 概念模型 — 与 battle_v1.xml 一一对应
+    # ============================================================
 
-    AFF_ID_TO_NAME: Dict[int, str] = {0: 'environment', 1: 'robot_a', 2: 'robot_b'}
-    AFF_NAME_TO_ID: Dict[str, int] = {v: k for k, v in AFF_ID_TO_NAME.items()}
-    NUM_AFFS = 3
-
-    # === GEOM_CAT — 几何体类别 (25类, 0~24) ===
-    # 每个AFF下每个geom有唯一的CAT, 不做语义合并
-    # 环境 (6)
-    CAT_GROUND = 0
-    CAT_CEILING = 1
-    CAT_SOUTHWALL = 2
-    CAT_NORTHWALL = 3
-    CAT_WESTWALL = 4
-    CAT_EASTWALL = 5
-    # 机器人 (19, _a/_b共享同一CAT)
-    CAT_HEAD = 6
-    CAT_TORSO = 7
-    CAT_WAIST_UPPER = 8
-    CAT_WAIST_LOWER = 9
-    CAT_BUTT = 10
-    CAT_THIGH_RIGHT = 11
-    CAT_SHIN_RIGHT = 12
-    CAT_FOOT1_RIGHT = 13
-    CAT_FOOT2_RIGHT = 14
-    CAT_THIGH_LEFT = 15
-    CAT_SHIN_LEFT = 16
-    CAT_FOOT1_LEFT = 17
-    CAT_FOOT2_LEFT = 18
-    CAT_UPPER_ARM_RIGHT = 19
-    CAT_LOWER_ARM_RIGHT = 20
-    CAT_HAND_RIGHT = 21
-    CAT_UPPER_ARM_LEFT = 22
-    CAT_LOWER_ARM_LEFT = 23
-    CAT_HAND_LEFT = 24
-
-    CAT_ID_TO_NAME: Dict[int, str] = {
-        0: 'ground', 1: 'ceiling', 2: 'southwall',
-        3: 'northwall', 4: 'westwall', 5: 'eastwall',
-        6: 'head', 7: 'torso', 8: 'waist_upper', 9: 'waist_lower',
-        10: 'butt', 11: 'thigh_right', 12: 'shin_right',
-        13: 'foot1_right', 14: 'foot2_right',
-        15: 'thigh_left', 16: 'shin_left',
-        17: 'foot1_left', 18: 'foot2_left',
-        19: 'upper_arm_right', 20: 'lower_arm_right', 21: 'hand_right',
-        22: 'upper_arm_left', 23: 'lower_arm_left', 24: 'hand_left',
-    }
-    CAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in CAT_ID_TO_NAME.items()}
-    NUM_CATS = 25
-
-    # === CONTACT_PART — 碰撞部位分类 (15类, 0~14) ===
-    # 每个GEOM_CAT对应唯一CONTACT_PART
-    PART_GROUND = 0
-    PART_CEILING = 1
-    PART_WALL = 2
-    PART_HEAD = 3
-    PART_TORSO = 4
-    PART_WAIST = 5
-    PART_PELVIS = 6
-    PART_RIGHT_LEG = 7
-    PART_RIGHT_FOOT = 8
-    PART_LEFT_LEG = 9
-    PART_LEFT_FOOT = 10
-    PART_RIGHT_ARM = 11
-    PART_RIGHT_HAND = 12
-    PART_LEFT_ARM = 13
-    PART_LEFT_HAND = 14
-
-    PART_ID_TO_NAME: Dict[int, str] = {
-        0: 'ground', 1: 'ceiling', 2: 'wall',
-        3: 'head', 4: 'torso', 5: 'waist', 6: 'pelvis',
-        7: 'right_leg', 8: 'right_foot',
-        9: 'left_leg', 10: 'left_foot',
-        11: 'right_arm', 12: 'right_hand',
-        13: 'left_arm', 14: 'left_hand',
-    }
-    PART_NAME_TO_ID: Dict[str, int] = {v: k for k, v in PART_ID_TO_NAME.items()}
-    NUM_PARTS = 15
-
-    # GEOM_CAT → CONTACT_PART (25 → 15, 多对一)
-    CAT_TO_PART: Dict[int, int] = {
-        0: PART_GROUND, 1: PART_CEILING,
-        2: PART_WALL, 3: PART_WALL, 4: PART_WALL, 5: PART_WALL,
-        6: PART_HEAD,
-        7: PART_TORSO, 8: PART_WAIST, 9: PART_WAIST,
-        10: PART_PELVIS,
-        11: PART_RIGHT_LEG, 12: PART_RIGHT_LEG,
-        13: PART_RIGHT_FOOT, 14: PART_RIGHT_FOOT,
-        15: PART_LEFT_LEG, 16: PART_LEFT_LEG,
-        17: PART_LEFT_FOOT, 18: PART_LEFT_FOOT,
-        19: PART_RIGHT_ARM, 20: PART_RIGHT_ARM, 21: PART_RIGHT_HAND,
-        22: PART_LEFT_ARM, 23: PART_LEFT_ARM, 24: PART_LEFT_HAND,
-    }
-
-    # CONTACT_PART → [GEOM_CAT] (15 → 25, 反向映射)
-    PART_TO_GEOM_CATS: Dict[int, List[int]] = {
-        PART_GROUND: [0],
-        PART_CEILING: [1],
-        PART_WALL: [2, 3, 4, 5],
-        PART_HEAD: [6],
-        PART_TORSO: [7],
-        PART_WAIST: [8, 9],
-        PART_PELVIS: [10],
-        PART_RIGHT_LEG: [11, 12],
-        PART_RIGHT_FOOT: [13, 14],
-        PART_LEFT_LEG: [15, 16],
-        PART_LEFT_FOOT: [17, 18],
-        PART_RIGHT_ARM: [19, 20],
-        PART_RIGHT_HAND: [21],
-        PART_LEFT_ARM: [22, 23],
-        PART_LEFT_HAND: [24],
-    }
-
-    # === CONTACT_GROUP — 碰撞大组分类 (8类, 0~7) ===
-    # 每个CONTACT_PART对应一个CONTACT_GROUP
-    GROUP_GROUND = 0
-    GROUP_WALL = 1
-    GROUP_HEAD = 2
-    GROUP_TORSO = 3
-    GROUP_ARM = 4
-    GROUP_HAND = 5
-    GROUP_LEG = 6
-    GROUP_FOOT = 7
-
-    GROUP_ID_TO_NAME: Dict[int, str] = {
-        0: 'ground', 1: 'wall', 2: 'head', 3: 'torso',
-        4: 'arm', 5: 'hand', 6: 'leg', 7: 'foot',
-    }
-    GROUP_NAME_TO_ID: Dict[str, int] = {v: k for k, v in GROUP_ID_TO_NAME.items()}
-    NUM_GROUPS = 8
-
-    # CONTACT_GROUP 战斗属性: 可攻击 / 可受击
-    # 规则: 仅 hand, foot 可作为有效攻击部位; 仅 head, torso 可作为有效受击部位
-    GROUP_CAN_ATTACK: Dict[int, bool] = {
-        GROUP_GROUND: False, GROUP_WALL: False,
-        GROUP_HEAD: False, GROUP_TORSO: False,
-        GROUP_ARM: False, GROUP_HAND: True,
-        GROUP_LEG: False, GROUP_FOOT: True,
-    }
-    GROUP_CAN_BE_HIT: Dict[int, bool] = {
-        GROUP_GROUND: False, GROUP_WALL: False,
-        GROUP_HEAD: True, GROUP_TORSO: True,
-        GROUP_ARM: False, GROUP_HAND: False,
-        GROUP_LEG: False, GROUP_FOOT: False,
-    }
-
-    # CONTACT_PART → CONTACT_GROUP (15 → 8, 多对一)
-    PART_TO_GROUP: Dict[int, int] = {
-        0: GROUP_GROUND, 1: GROUP_WALL, 2: GROUP_WALL,
-        3: GROUP_HEAD,
-        4: GROUP_TORSO, 5: GROUP_TORSO, 6: GROUP_TORSO,
-        7: GROUP_LEG, 8: GROUP_FOOT,
-        9: GROUP_LEG, 10: GROUP_FOOT,
-        11: GROUP_ARM, 12: GROUP_HAND,
-        13: GROUP_ARM, 14: GROUP_HAND,
-    }
-
-    # GEOM_CAT → CONTACT_GROUP (组合映射, 等价于 CAT→PART→GROUP)
-    CAT_TO_GROUP: Dict[int, int] = {
-        0: GROUP_GROUND,
-        1: GROUP_WALL, 2: GROUP_WALL, 3: GROUP_WALL, 4: GROUP_WALL, 5: GROUP_WALL,
-        6: GROUP_HEAD,
-        7: GROUP_TORSO, 8: GROUP_TORSO, 9: GROUP_TORSO, 10: GROUP_TORSO,
-        11: GROUP_LEG, 12: GROUP_LEG, 13: GROUP_FOOT, 14: GROUP_FOOT,
-        15: GROUP_LEG, 16: GROUP_LEG, 17: GROUP_FOOT, 18: GROUP_FOOT,
-        19: GROUP_ARM, 20: GROUP_ARM, 21: GROUP_HAND,
-        22: GROUP_ARM, 23: GROUP_ARM, 24: GROUP_HAND,
-    }
-
-    # === GEOM — MuJoCo geom → 元数据 ===
-
-    ENV_GEOM_NAMES: Set[str] = {
+    # --- 环境 Geoms (不属于任何机器人) ---
+    ENV_GEOMS: List[str] = [
         'ground', 'ceiling', 'southwall', 'northwall', 'westwall', 'eastwall',
+    ]
+
+    # --- 机器人 Body Tree ---
+    # 每个 body 声明: 它包含哪些 geom、哪些 joint、它的子 body 是谁
+    # 实际模型中每个 body/geom/joint name 会加上 _a 或 _b 后缀
+    # root joint (freejoint) 名称为 f"root{suffix}", 挂在 torso body 上
+    ROBOT_BODY_TREE: Dict[str, Dict[str, Any]] = {
+        'torso': {
+            'geoms': ['torso', 'waist_upper'],
+            'joints': [],
+            'children': ['head', 'waist_lower', 'upper_arm_right', 'upper_arm_left'],
+        },
+        'head': {
+            'geoms': ['head'],
+            'joints': [],
+            'children': [],
+        },
+        'waist_lower': {
+            'geoms': ['waist_lower'],
+            'joints': ['abdomen_z', 'abdomen_y'],
+            'children': ['pelvis'],
+        },
+        'pelvis': {
+            'geoms': ['butt'],
+            'joints': ['abdomen_x'],
+            'children': ['thigh_right', 'thigh_left'],
+        },
+        'thigh_right': {
+            'geoms': ['thigh_right'],
+            'joints': ['hip_x_right', 'hip_z_right', 'hip_y_right'],
+            'children': ['shin_right'],
+        },
+        'shin_right': {
+            'geoms': ['shin_right'],
+            'joints': ['knee_right'],
+            'children': ['foot_right'],
+        },
+        'foot_right': {
+            'geoms': ['foot1_right', 'foot2_right'],
+            'joints': ['ankle_y_right', 'ankle_x_right'],
+            'children': [],
+        },
+        'thigh_left': {
+            'geoms': ['thigh_left'],
+            'joints': ['hip_x_left', 'hip_z_left', 'hip_y_left'],
+            'children': ['shin_left'],
+        },
+        'shin_left': {
+            'geoms': ['shin_left'],
+            'joints': ['knee_left'],
+            'children': ['foot_left'],
+        },
+        'foot_left': {
+            'geoms': ['foot1_left', 'foot2_left'],
+            'joints': ['ankle_y_left', 'ankle_x_left'],
+            'children': [],
+        },
+        'upper_arm_right': {
+            'geoms': ['upper_arm_right'],
+            'joints': ['shoulder1_right', 'shoulder2_right'],
+            'children': ['lower_arm_right'],
+        },
+        'lower_arm_right': {
+            'geoms': ['lower_arm_right'],
+            'joints': ['elbow_right'],
+            'children': ['hand_right'],
+        },
+        'hand_right': {
+            'geoms': ['hand_right'],
+            'joints': [],
+            'children': [],
+        },
+        'upper_arm_left': {
+            'geoms': ['upper_arm_left'],
+            'joints': ['shoulder1_left', 'shoulder2_left'],
+            'children': ['lower_arm_left'],
+        },
+        'lower_arm_left': {
+            'geoms': ['lower_arm_left'],
+            'joints': ['elbow_left'],
+            'children': ['hand_left'],
+        },
+        'hand_left': {
+            'geoms': ['hand_left'],
+            'joints': [],
+            'children': [],
+        },
     }
 
-    ENV_GEOM_TO_CAT: Dict[str, int] = {
-        'ground': CAT_GROUND, 'ceiling': CAT_CEILING,
-        'southwall': CAT_SOUTHWALL, 'northwall': CAT_NORTHWALL,
-        'westwall': CAT_WESTWALL, 'eastwall': CAT_EASTWALL,
+    # --- 受控关节 (policy 直接控制的 21 个 DOF) ---
+    # 顺序即 action vector 的维度顺序
+    # actuator 与 joint 同名, 即 actuator_name = f"{joint_name}_{suffix}"
+    CONTROLLED_JOINTS: List[str] = [
+        'abdomen_z', 'abdomen_y', 'abdomen_x',
+        'hip_x_right', 'hip_z_right', 'hip_y_right',
+        'knee_right', 'ankle_y_right', 'ankle_x_right',
+        'hip_x_left', 'hip_z_left', 'hip_y_left',
+        'knee_left', 'ankle_y_left', 'ankle_x_left',
+        'shoulder1_right', 'shoulder2_right', 'elbow_right',
+        'shoulder1_left', 'shoulder2_left', 'elbow_left',
+    ]
+
+    # --- 机器人实例化 ---
+    ROBOT_SUFFIXES: Dict[str, str] = {
+        'robot_a': '_a',
+        'robot_b': '_b',
     }
 
-    ROBOT_GEOM_BASE_TO_CAT: Dict[str, int] = {
-        'head': CAT_HEAD, 'torso': CAT_TORSO,
-        'waist_upper': CAT_WAIST_UPPER, 'waist_lower': CAT_WAIST_LOWER,
-        'butt': CAT_BUTT,
-        'thigh_right': CAT_THIGH_RIGHT, 'shin_right': CAT_SHIN_RIGHT,
-        'foot1_right': CAT_FOOT1_RIGHT, 'foot2_right': CAT_FOOT2_RIGHT,
-        'thigh_left': CAT_THIGH_LEFT, 'shin_left': CAT_SHIN_LEFT,
-        'foot1_left': CAT_FOOT1_LEFT, 'foot2_left': CAT_FOOT2_LEFT,
-        'upper_arm_right': CAT_UPPER_ARM_RIGHT,
-        'lower_arm_right': CAT_LOWER_ARM_RIGHT, 'hand_right': CAT_HAND_RIGHT,
-        'upper_arm_left': CAT_UPPER_ARM_LEFT,
-        'lower_arm_left': CAT_LOWER_ARM_LEFT, 'hand_left': CAT_HAND_LEFT,
-    }
-    ROBOT_GEOM_BASES: Set[str] = set(ROBOT_GEOM_BASE_TO_CAT.keys())
+    # --- 派生: 所有机器人 body name (不含后缀) ---
+    ROBOT_BODY_NAMES: List[str] = list(ROBOT_BODY_TREE.keys())
 
-    KEYPOINT_GEOM_BASES: Set[str] = {
-        'head', 'torso', 'butt',
-        'hand_left', 'hand_right',
-        'foot1_left', 'foot2_left', 'foot1_right', 'foot2_right',
-    }
+    # --- 派生: 所有机器人 geom name (不含后缀) ---
+    ROBOT_GEOM_NAMES: List[str] = []
+    for _spec in ROBOT_BODY_TREE.values():
+        ROBOT_GEOM_NAMES.extend(_spec['geoms'])
+    del _spec
 
-    # === GEOM Entity — 自定义实体 ID (25, 0~24) ===
-    GEOM_ENTITY_ID_TO_NAME: Dict[int, str] = {
-        0: 'ground', 1: 'ceiling', 2: 'southwall',
-        3: 'northwall', 4: 'westwall', 5: 'eastwall',
-        6: 'head', 7: 'torso', 8: 'waist_upper', 9: 'waist_lower',
-        10: 'butt', 11: 'thigh_right', 12: 'shin_right',
-        13: 'foot1_right', 14: 'foot2_right',
-        15: 'thigh_left', 16: 'shin_left',
-        17: 'foot1_left', 18: 'foot2_left',
-        19: 'upper_arm_right', 20: 'lower_arm_right', 21: 'hand_right',
-        22: 'upper_arm_left', 23: 'lower_arm_left', 24: 'hand_left',
-    }
-    GEOM_ENTITY_NAME_TO_ID: Dict[str, int] = {v: k for k, v in GEOM_ENTITY_ID_TO_NAME.items()}
-    NUM_GEOM_ENTITIES = 25
+    # --- 派生: 所有机器人 joint name (不含后缀, 含 root) ---
+    ROBOT_JOINT_NAMES: List[str] = ['root']
+    for _spec in ROBOT_BODY_TREE.values():
+        ROBOT_JOINT_NAMES.extend(_spec['joints'])
+    del _spec
 
-    # GEOM Entity ID == CAT ID (both 0~24, 1:1 映射)
-    GEOM_ENTITY_ID_TO_CAT_ID: Dict[int, int] = {i: i for i in range(25)}
+    # ============================================================
+    # Layer 2: 战斗语义 — 建立在 MuJoCo body 之上
+    # ============================================================
 
-    # MuJoCo geom name → GEOM Entity ID
-    MUJOCO_GEOM_NAME_TO_ENTITY_ID: Dict[str, int] = {}
-    for _en, _eid in GEOM_ENTITY_NAME_TO_ID.items():
-        MUJOCO_GEOM_NAME_TO_ENTITY_ID[_en] = _eid
-        if _en not in ENV_GEOM_NAMES:
-            MUJOCO_GEOM_NAME_TO_ENTITY_ID[f'{_en}_a'] = _eid
-            MUJOCO_GEOM_NAME_TO_ENTITY_ID[f'{_en}_b'] = _eid
-    del _en, _eid
+    # --- 战斗语义: body name 列表 (不含 _a/_b 后缀) ---
+    # 可以攻击别人的部位
+    ATTACK_PARTS: List[str] = [
+        'hand_right', 'hand_left',
+        'foot_right', 'foot_left',
+    ]
 
-    # === JOINT_CAT — 关节类别 (22类/机器人, 0~21) ===
-    JOINT_CAT_ID_TO_NAME: Dict[int, str] = {
-        0: 'root',
-        1: 'abdomen_z', 2: 'abdomen_y', 3: 'abdomen_x',
-        4: 'hip_x_right', 5: 'hip_z_right', 6: 'hip_y_right',
-        7: 'knee_right', 8: 'ankle_y_right', 9: 'ankle_x_right',
-        10: 'hip_x_left', 11: 'hip_z_left', 12: 'hip_y_left',
-        13: 'knee_left', 14: 'ankle_y_left', 15: 'ankle_x_left',
-        16: 'shoulder1_right', 17: 'shoulder2_right', 18: 'elbow_right',
-        19: 'shoulder1_left', 20: 'shoulder2_left', 21: 'elbow_left',
-    }
-    JOINT_CAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in JOINT_CAT_ID_TO_NAME.items()}
-    NUM_JOINT_CATS = 22
+    # 可以被攻击 (受击) 的部位
+    HITTABLE_PARTS: List[str] = [
+        'head',
+        'torso', 'waist_lower', 'pelvis',
+    ]
 
-    JOINT_SEMANTIC_ID_TO_NAME: Dict[int, str] = {
-        0: 'root', 1: 'abdomen', 2: 'hip', 3: 'knee',
-        4: 'ankle', 5: 'shoulder', 6: 'elbow',
-    }
+    # --- 观测关键点 ---
+    # 需要被观测 (位置/速度) 的 body
+    KEYPOINT_BODIES: List[str] = [
+        'torso', 'head', 'pelvis',
+        'foot_right', 'foot_left',
+        'hand_right', 'hand_left',
+    ]
 
-    JOINT_CAT_TO_SEMANTIC: Dict[int, int] = {
-        0: 0, 1: 1, 2: 1, 3: 1,
-        4: 2, 5: 2, 6: 2, 10: 2, 11: 2, 12: 2,
-        7: 3, 13: 3,
-        8: 4, 9: 4, 14: 4, 15: 4,
-        16: 5, 17: 5, 19: 5, 20: 5,
-        18: 6, 21: 6,
-    }
+    # --- 观测关键关节 ---
+    # 标记哪些 joint 需要被观测 (平衡分析用)
+    KEYPOINT_JOINTS: List[str] = [
+        'ankle_y_right', 'ankle_x_right', 'ankle_y_left', 'ankle_x_left',
+    ]
 
-    # === KEYPOINT — 观测关键点 (定义在概念层之上) ===
-    # KEYPOINT_PARTS: CONTACT_PART 的子集, 标记哪些部位需要被观测/定位
-    #   映射链: PART → PART_TO_GEOM_CATS → geom(s) → geom_bodyid → body
-    KEYPOINT_PARTS: Set[int] = {
-        PART_TORSO, PART_HEAD, PART_PELVIS,
-        PART_LEFT_FOOT, PART_RIGHT_FOOT,
-        PART_LEFT_HAND, PART_RIGHT_HAND,
-    }
+    # ============================================================
+    # 仿真参数
+    # ============================================================
 
-    # KEYPOINT_JOINTS: JOINT_CAT 的子集, 标记哪些关节需要被观测
-    #   映射链: JOINT_CAT → JOINT_CAT_ID_TO_NAME + suffix → joint name
-    KEYPOINT_JOINTS: Set[int] = {
-        8, 9, 14, 15,  # ankle_y_right, ankle_x_right, ankle_y_left, ankle_x_left
-    }
-
-    # PART_NAME → 下游期望的 keypoint 语义 key
-    # PART_ID_TO_NAME 用 'right_foot'/'left_hand', 下游用 'foot_right'/'hand_left'
-    PART_NAME_TO_KEYPOINT_KEY: Dict[str, str] = {
-        'torso': 'torso', 'head': 'head', 'pelvis': 'pelvis',
-        'right_foot': 'foot_right', 'left_foot': 'foot_left',
-        'right_hand': 'hand_right', 'left_hand': 'hand_left',
-    }
-
-    # === ACTUATOR — 执行器 (概念约定) ===
-    # 本环境中 actuator 与 joint 同名, 即 actuator_name = joint_name.
-    # build_runtime_tables 据此构建 joint_cat → actuator_id 映射.
-    ACTUATOR_NAME_SAME_AS_JOINT: bool = True
-
-    # === 静态期望值 ===
-    EXPECTED_NUM_GEOMS = 44
-    EXPECTED_NUM_BODIES = 33
-    EXPECTED_NUM_JOINTS = 44
-    EXPECTED_ENV_GEOMS = 6
-    EXPECTED_ROBOT_GEOMS_PER_AFF = 19
-    EXPECTED_ROBOT_JOINTS_PER_AFF = 22
-
-    # === 仿真参数 ===
     DT = 0.002
     ACTION_DIM = 21
-    
+
     KP = np.array([
-        # 腹部 (abdomen_z, abdomen_y, abdomen_x) - 战斗中需维持上半身直立
+        # 腹部 (abdomen_z, abdomen_y, abdomen_x)
         1000.0, 1000.0, 1000.0,
-        # 右腿 (hip_x=roll, hip_z=yaw, hip_y=pitch, knee, ankle_y, ankle_x)
+        # 右腿 (hip_x, hip_z, hip_y, knee, ankle_y, ankle_x)
         150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
         # 左腿
         150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
         # 右臂 (shoulder1, shoulder2, elbow)
         150.0, 150.0, 100.0,
         # 左臂
-        150.0, 150.0, 100.0
+        150.0, 150.0, 100.0,
     ], dtype=np.float32)
 
     KD = np.array([
-        # 腹部 - 高阻尼以减少过冲
+        # 腹部
         100.0, 100.0, 100.0,
-        # 右腿 - 踝部较低增益以保持柔顺性
+        # 右腿
         15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
         # 左腿
         15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
         # 右臂
         15.0, 15.0, 10.0,
         # 左臂
-        15.0, 15.0, 10.0
+        15.0, 15.0, 10.0,
     ], dtype=np.float32)
-    
-    # 受控关节名称 (固定顺序)
-    CONTROLLED_JOINTS = [
-        'abdomen_z', 'abdomen_y', 'abdomen_x',
-        'hip_x_right', 'hip_z_right', 'hip_y_right', 'knee_right', 'ankle_y_right', 'ankle_x_right',
-        'hip_x_left', 'hip_z_left', 'hip_y_left', 'knee_left', 'ankle_y_left', 'ankle_x_left',
-        'shoulder1_right', 'shoulder2_right', 'elbow_right',
-        'shoulder1_left', 'shoulder2_left', 'elbow_left'
-    ]
 
-    # 初始姿态配置（来自 humanoid.xml 的 keyframes）
-    # 每个姿态包含 root_pos, root_quat, joint_pos, action
-    INITIAL_POSES = {
+    # --- 初始姿态配置 (来自 humanoid.xml 的 keyframes) ---
+    INITIAL_POSES: Dict[str, Dict[str, np.ndarray]] = {
         'standing': {
             'root_pos': np.array([0, 0, 1.282], dtype=np.float32),
             'root_quat': np.array([1, 0, 0, 0], dtype=np.float32),
             'joint_pos': np.array([
-                0, 0, 0,  # abdomen
-                0, 0, 0, 0, 0, 0,  # right leg
-                0, 0, 0, 0, 0, 0,  # left leg
-                0, 0, 0,  # right arm
-                0, 0, 0  # left arm
+                0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                0, 0, 0,
+                0, 0, 0,
             ], dtype=np.float32),
             'action': np.array([
                 -0.0000, 0.4286, -0.0000,
                 0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
                 0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
                 0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32)
+            ], dtype=np.float32),
         },
         'squat': {
             'root_pos': np.array([0, 0, 0.596], dtype=np.float32),
@@ -434,14 +253,14 @@ class Humanoid21Meta:
                 -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
                 -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
                 0, 0, 0,
-                0, 0, 0
+                0, 0, 0,
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4287, 0.0000,
                 0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
                 0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
                 0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32)
+            ], dtype=np.float32),
         },
         'stand_on_left_leg': {
             'root_pos': np.array([0, 0, 1.21948], dtype=np.float32),
@@ -451,14 +270,14 @@ class Humanoid21Meta:
                 -0.24, -0.007, -0.34, -1.76, -0.466, -0.0415,
                 -0.08, -0.01, -0.37, -0.685, -0.35, -0.09,
                 0.109, -0.067, -0.7,
-                -0.05, 0.12, 0.16
+                -0.05, 0.12, 0.16,
             ], dtype=np.float32),
             'action': np.array([
                 -0.0000, 0.4285, 0.0001,
                 0.4998, 0.2632, 0.7646, 0.9749, -0.0002, -0.0000,
                 0.4999, 0.2632, 0.7646, 0.9752, -0.0001, -0.0000,
                 0.1724, 0.1724, 0.3332, 0.1724, 0.1724, 0.3334,
-            ], dtype=np.float32)
+            ], dtype=np.float32),
         },
         'prone': {
             'root_pos': np.array([0.4, 0, 0.0757706], dtype=np.float32),
@@ -468,14 +287,14 @@ class Humanoid21Meta:
                 0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
                 0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
                 0.56, -0.62, -1.752,
-                0.186, -0.73, -1.73
+                0.186, -0.73, -1.73,
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4286, 0.0000,
                 0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
                 0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
                 0.1725, 0.1723, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32)
+            ], dtype=np.float32),
         },
         'supine': {
             'root_pos': np.array([-0.4, 0, 0.08122], dtype=np.float32),
@@ -485,242 +304,183 @@ class Humanoid21Meta:
                 0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
                 0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
                 0.186, -0.73, -1.73,
-                0.186, -0.73, -1.73
+                0.186, -0.73, -1.73,
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4285, 0.0000,
                 0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
                 0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
                 0.1725, 0.1722, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32)
-        }
+            ], dtype=np.float32),
+        },
     }
-    # === 内部分类工具 ===
 
-    @classmethod
-    def _classify_geom(cls, name: str) -> Tuple[Optional[int], Optional[int]]:
-        """返回 (cat_id, aff_id) 或 (None, None)"""
-        if name in cls.ENV_GEOM_NAMES:
-            return cls.ENV_GEOM_TO_CAT.get(name), cls.AFF_ENV
-        if name.endswith('_a'):
-            base = name[:-2]
-            aff = cls.AFF_ROBOT_A
-        elif name.endswith('_b'):
-            base = name[:-2]
-            aff = cls.AFF_ROBOT_B
-        else:
-            return None, None
-        return cls.ROBOT_GEOM_BASE_TO_CAT.get(base), aff
-
-    @classmethod
-    def _classify_joint(cls, name: str) -> Tuple[Optional[int], Optional[int]]:
-        """返回 (joint_cat_id, aff_id) 或 (None, None)"""
-        if name == 'root_a':
-            return 0, cls.AFF_ROBOT_A
-        if name == 'root_b':
-            return 0, cls.AFF_ROBOT_B
-        if name.endswith('_a'):
-            base = name[:-2]
-            aff = cls.AFF_ROBOT_A
-        elif name.endswith('_b'):
-            base = name[:-2]
-            aff = cls.AFF_ROBOT_B
-        else:
-            return None, None
-        return cls.JOINT_CAT_NAME_TO_ID.get(base), aff
-
-    @classmethod
-    def _is_keypoint_geom(cls, name: str) -> bool:
-        if name in cls.ENV_GEOM_NAMES:
-            return False
-        base = name[:-2] if name.endswith('_a') or name.endswith('_b') else name
-        return base in cls.KEYPOINT_GEOM_BASES
-
-    # === 校验 ===
+    # ============================================================
+    # 校验
+    # ============================================================
 
     @classmethod
     def validate(cls, model) -> List[str]:
-        """校验 MuJoCo model 与静态元数据是否匹配。返回错误列表，空=通过。"""
+        """校验 MuJoCo model 与代码定义是否一致, 返回错误列表 (空=通过)."""
         import mujoco
         errors: List[str] = []
 
-        if model.ngeom != cls.EXPECTED_NUM_GEOMS:
-            errors.append(f"Geom count: expected {cls.EXPECTED_NUM_GEOMS}, got {model.ngeom}")
-        if model.nbody != cls.EXPECTED_NUM_BODIES:
-            errors.append(f"Body count: expected {cls.EXPECTED_NUM_BODIES}, got {model.nbody}")
-        if model.njnt != cls.EXPECTED_NUM_JOINTS:
-            errors.append(f"Joint count: expected {cls.EXPECTED_NUM_JOINTS}, got {model.njnt}")
+        # 1. 校验环境 geom
+        for name in cls.ENV_GEOMS:
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            if gid < 0:
+                errors.append(f"Missing env geom: {name}")
 
-        aff_geom_counts = {0: 0, 1: 0, 2: 0}
-        cats_found: Set[int] = set()
-        for gid in range(model.ngeom):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ''
-            if not name:
-                errors.append(f"Geom id={gid} has no name")
-                continue
-            cat, aff = cls._classify_geom(name)
-            if cat is None:
-                errors.append(f"Geom '{name}' cannot be classified to CAT")
-            else:
-                cats_found.add(cat)
-            if aff is None:
-                errors.append(f"Geom '{name}' has unknown AFF")
-            else:
-                aff_geom_counts[aff] += 1
+        # 2. 校验每个机器人的 body / geom / joint
+        for robot_id, suffix in cls.ROBOT_SUFFIXES.items():
+            for body_name, spec in cls.ROBOT_BODY_TREE.items():
+                full_body = f"{body_name}{suffix}"
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full_body)
+                if bid < 0:
+                    errors.append(f"[{robot_id}] Missing body: {full_body}")
 
-        aff_joint_counts = {1: 0, 2: 0}
-        for jid in range(model.njnt):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ''
-            if not name:
-                errors.append(f"Joint id={jid} has no name")
-                continue
-            jcat, aff = cls._classify_joint(name)
-            if jcat is None:
-                errors.append(f"Joint '{name}' cannot be classified to JOINT_CAT")
-            if aff is not None and aff in aff_joint_counts:
-                aff_joint_counts[aff] += 1
+                for geom_name in spec['geoms']:
+                    full_geom = f"{geom_name}{suffix}"
+                    gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, full_geom)
+                    if gid < 0:
+                        errors.append(f"[{robot_id}] Missing geom: {full_geom}")
 
-        for aff_id, expected, label in [
-            (0, cls.EXPECTED_ENV_GEOMS, 'Env'),
-            (1, cls.EXPECTED_ROBOT_GEOMS_PER_AFF, 'Robot_a'),
-            (2, cls.EXPECTED_ROBOT_GEOMS_PER_AFF, 'Robot_b'),
-        ]:
-            if aff_geom_counts[aff_id] != expected:
-                errors.append(f"{label} geom count: expected {expected}, got {aff_geom_counts[aff_id]}")
+                for jnt_name in spec['joints']:
+                    full_jnt = f"{jnt_name}{suffix}"
+                    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, full_jnt)
+                    if jid < 0:
+                        errors.append(f"[{robot_id}] Missing joint: {full_jnt}")
 
-        for aff_id, expected, label in [
-            (1, cls.EXPECTED_ROBOT_JOINTS_PER_AFF, 'Robot_a'),
-            (2, cls.EXPECTED_ROBOT_JOINTS_PER_AFF, 'Robot_b'),
-        ]:
-            if aff_joint_counts[aff_id] != expected:
-                errors.append(f"{label} joint count: expected {expected}, got {aff_joint_counts[aff_id]}")
+            # 校验 root joint (freejoint)
+            root_name = f"root{suffix}"
+            root_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, root_name)
+            if root_jid < 0:
+                errors.append(f"[{robot_id}] Missing root joint: {root_name}")
 
-        missing = set(range(cls.NUM_CATS)) - cats_found
-        if missing:
-            errors.append(f"Missing CATs: {[cls.CAT_ID_TO_NAME[c] for c in sorted(missing)]}")
+        # 3. 校验 controlled joints + actuators
+        for robot_id, suffix in cls.ROBOT_SUFFIXES.items():
+            for jnt_name in cls.CONTROLLED_JOINTS:
+                full_jnt = f"{jnt_name}{suffix}"
+                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, full_jnt)
+                aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, full_jnt)
+                if jid < 0:
+                    errors.append(f"[{robot_id}] Missing controlled joint: {full_jnt}")
+                if aid < 0:
+                    errors.append(f"[{robot_id}] Missing actuator: {full_jnt}")
+
+        # 4. 校验 keypoint bodies
+        for robot_id, suffix in cls.ROBOT_SUFFIXES.items():
+            for body_name in cls.KEYPOINT_BODIES:
+                full_body = f"{body_name}{suffix}"
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full_body)
+                if bid < 0:
+                    errors.append(f"[{robot_id}] Missing keypoint body: {full_body}")
 
         return errors
 
-    # === 运行时关联 ===
+    # ============================================================
+    # 运行时构建
+    # ============================================================
 
     @classmethod
-    def build_runtime_tables(cls, model) -> Dict:
-        """构建 MuJoCo ID → 元数据的运行时查找表 (SoA 预映射) + per-AFF 结构化数据。
+    def build_runtime_tables(cls, model) -> Dict[str, Any]:
+        """从代码定义 + MuJoCo model 构建运行时查找表.
 
         返回:
-            SoA 数组: geom_cat, geom_aff, geom_part, geom_group, geom_is_keypoint,
-                      geom_entity_id, geom_names, joint_cat, joint_aff,
-                      joint_semantic, joint_names
-            robots: {aff_id: {root_joint_id, root_body_id, body_ids, body_names,
-                              body_masses, qpos_indices, qvel_indices, actuator_ids,
-                              jnt_ranges, keypoint_body_ids, keypoint_joint_names, ...}}
+            robots: {robot_id: {suffix, root_body_id, root_joint_id, ...}}
+            env_geom_ids: set[int]  — 环境 geom 的 MuJoCo ID
+            ground_geom_id: int     — 地面 geom 的 MuJoCo ID
+            body_to_robot: Dict[int, str] — body_id → robot_id (None if env)
         """
         import mujoco
-        ngeom, njnt = model.ngeom, model.njnt
 
-        geom_cat = np.full(ngeom, -1, dtype=np.int8)
-        geom_aff = np.full(ngeom, 0, dtype=np.int8)
-        geom_is_keypoint = np.zeros(ngeom, dtype=bool)
-        geom_part = np.full(ngeom, -1, dtype=np.int8)
-        geom_group = np.full(ngeom, -1, dtype=np.int8)
-        geom_entity_id = np.full(ngeom, -1, dtype=np.int8)
-        geom_names: List[str] = []
+        # --- 环境 geom IDs ---
+        env_geom_ids: Set[int] = set()
+        ground_geom_id = -1
+        for name in cls.ENV_GEOMS:
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            if gid >= 0:
+                env_geom_ids.add(gid)
+                if name == 'ground':
+                    ground_geom_id = gid
 
-        for gid in range(ngeom):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ''
-            geom_names.append(name)
-            cat, aff = cls._classify_geom(name)
-            if cat is not None:
-                geom_cat[gid] = cat
-                part = cls.CAT_TO_PART[cat]
-                geom_part[gid] = part
-                geom_group[gid] = cls.PART_TO_GROUP[part]
-            if aff is not None:
-                geom_aff[gid] = aff
-            geom_is_keypoint[gid] = cls._is_keypoint_geom(name)
-            geom_entity_id[gid] = cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID.get(name, -1)
+        # --- body_id → robot_id 映射 ---
+        body_to_robot: Dict[int, str] = {}
 
-        joint_cat = np.full(njnt, -1, dtype=np.int8)
-        joint_aff = np.full(njnt, 0, dtype=np.int8)
-        joint_semantic = np.full(njnt, -1, dtype=np.int8)
-        joint_names: List[str] = []
+        # --- per-robot 结构化数据 ---
+        robots: Dict[str, Dict[str, Any]] = {}
 
-        for jid in range(njnt):
-            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ''
-            joint_names.append(name)
-            jcat, aff = cls._classify_joint(name)
-            if jcat is not None:
-                joint_cat[jid] = jcat
-                joint_semantic[jid] = cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1)
-            if aff is not None:
-                joint_aff[jid] = aff
+        for robot_id, suffix in cls.ROBOT_SUFFIXES.items():
+            r: Dict[str, Any] = {'suffix': suffix}
 
-        # ---- per-AFF 结构化数据 (概念 → MuJoCo ID 完整映射) ----
-        robots: Dict[int, Dict] = {}
-        for aff_id, suffix in [(cls.AFF_ROBOT_A, '_a'), (cls.AFF_ROBOT_B, '_b')]:
-            r: Dict[str, Any] = {
-                'aff_id': aff_id,
-                'suffix': suffix,
-            }
-
-            # Root joint (JOINT_CAT=0)
-            root_name = f"{cls.JOINT_CAT_ID_TO_NAME[0]}{suffix}"
-            root_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, root_name)
+            # Root joint (freejoint)
+            root_jnt_name = f"root{suffix}"
+            root_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, root_jnt_name)
+            r['root_joint_name'] = root_jnt_name
             r['root_joint_id'] = root_jid
-            r['root_joint_name'] = root_name
             r['root_qpos_adr'] = int(model.jnt_qposadr[root_jid])
             r['root_qvel_adr'] = int(model.jnt_dofadr[root_jid])
-            r['root_body_id'] = int(model.jnt_bodyid[root_jid])
 
-            # Body 子树: AFF → geom_aff 筛选 → geom_bodyid 去重排序
-            aff_geom_mask = geom_aff == aff_id
-            aff_body_ids = sorted(set(
-                int(model.geom_bodyid[g]) for g in np.where(aff_geom_mask)[0]
-            ))
-            r['body_ids'] = set(aff_body_ids)
-            r['body_ids_sorted'] = np.asarray(aff_body_ids, dtype=np.int32)
-            r['body_names'] = [
-                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or ''
-                for bid in aff_body_ids
-            ]
+            # Root body (torso, 带 freejoint)
+            root_body_name = f"torso{suffix}"
+            root_bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_body_name)
+            r['root_body_name'] = root_body_name
+            r['root_body_id'] = root_bid
+
+            # Body 子树: 从 ROBOT_BODY_TREE 展开所有 body, 查 MuJoCo ID
+            body_ids: List[int] = []
+            body_names: List[str] = []
+            for bname in cls.ROBOT_BODY_NAMES:
+                full = f"{bname}{suffix}"
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full)
+                body_ids.append(bid)
+                body_names.append(full)
+                body_to_robot[bid] = robot_id
+
+            r['body_ids'] = set(body_ids)
+            r['body_ids_sorted'] = np.asarray(sorted(body_ids), dtype=np.int32)
+            r['body_names'] = body_names
             r['body_masses'] = np.asarray(
-                [float(model.body_mass[bid]) for bid in aff_body_ids], dtype=np.float32
+                [float(model.body_mass[bid]) for bid in sorted(body_ids)],
+                dtype=np.float32,
             )
 
-            # 全部 joint: AFF → joint_aff 筛选
-            aff_joint_mask = joint_aff == aff_id
-            aff_joint_ids = sorted(int(j) for j in np.where(aff_joint_mask)[0])
-            r['joint_ids'] = aff_joint_ids
-            r['joint_names'] = [
-                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ''
-                for jid in aff_joint_ids
-            ]
-            r['joint_ids_by_name'] = dict(zip(r['joint_names'], aff_joint_ids))
+            # 全部 joint: 从 ROBOT_BODY_TREE 展开 + root
+            joint_names: List[str] = []
+            joint_ids_by_name: Dict[str, int] = {}
+            for jname in cls.ROBOT_JOINT_NAMES:
+                full = f"{jname}{suffix}"
+                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, full)
+                if jid >= 0:
+                    joint_names.append(full)
+                    joint_ids_by_name[full] = jid
+            r['joint_names'] = joint_names
+            r['joint_ids_by_name'] = joint_ids_by_name
 
-            # 受控关节 (JOINT_CAT 1~21 + AFF)
+            # 受控关节: CONTROLLED_JOINTS + suffix
             ctrl_qpos, ctrl_qvel, ctrl_act, ctrl_ranges = [], [], [], []
-            ctrl_joint_names = []
-            for jcat in range(1, cls.NUM_JOINT_CATS):
-                jname = f"{cls.JOINT_CAT_ID_TO_NAME[jcat]}{suffix}"
-                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
+            ctrl_joint_names: List[str] = []
+            for jname in cls.CONTROLLED_JOINTS:
+                full = f"{jname}{suffix}"
+                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, full)
                 if jid < 0:
-                    raise ValueError(f"Joint {jname} not found in model")
+                    raise ValueError(f"Joint {full} not found in model")
                 ctrl_qpos.append(int(model.jnt_qposadr[jid]))
                 ctrl_qvel.append(int(model.jnt_dofadr[jid]))
-                ctrl_joint_names.append(jname)
+                ctrl_joint_names.append(full)
 
                 if not model.jnt_limited[jid]:
                     raise ValueError(
-                        f"Joint {jname} has no limits. "
+                        f"Joint {full} has no limits. "
                         f"All joints must have finite limits for normalized control."
                     )
                 ctrl_ranges.append(model.jnt_range[jid].copy())
 
-                if cls.ACTUATOR_NAME_SAME_AS_JOINT:
-                    act_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, jname)
-                    if act_id < 0:
-                        raise ValueError(f"Actuator {jname} not found in model")
-                    ctrl_act.append(act_id)
+                # actuator 与 joint 同名
+                aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, full)
+                if aid < 0:
+                    raise ValueError(f"Actuator {full} not found in model")
+                ctrl_act.append(aid)
 
             r['qpos_indices'] = np.array(ctrl_qpos, dtype=np.int32)
             r['qvel_indices'] = np.array(ctrl_qvel, dtype=np.int32)
@@ -728,187 +488,29 @@ class Humanoid21Meta:
             r['jnt_ranges'] = np.array(ctrl_ranges, dtype=np.float32)
             r['controlled_joint_names'] = ctrl_joint_names
 
-            # Keypoint bodies: KEYPOINT_PARTS → PART_TO_GEOM_CATS → geom → body
+            # Keypoint bodies: body name → MuJoCo body ID
             keypoint_body_ids: Dict[str, int] = {}
-            for part_id in cls.KEYPOINT_PARTS:
-                part_name = cls.PART_ID_TO_NAME[part_id]
-                cats = cls.PART_TO_GEOM_CATS[part_id]
-                for gid in np.where(aff_geom_mask)[0]:
-                    if int(geom_cat[gid]) in cats:
-                        keypoint_body_ids[part_name] = int(model.geom_bodyid[gid])
-                        break
+            keypoint_body_names: Dict[str, str] = {}
+            for body_name in cls.KEYPOINT_BODIES:
+                full = f"{body_name}{suffix}"
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full)
+                keypoint_body_ids[body_name] = bid
+                keypoint_body_names[body_name] = full
             r['keypoint_body_ids'] = keypoint_body_ids
+            r['keypoint_body_names'] = keypoint_body_names
 
-            # Keypoint joints: KEYPOINT_JOINTS → JOINT_CAT name + suffix
-            r['keypoint_joint_names'] = {
-                cls.JOINT_CAT_ID_TO_NAME[jcat]: f"{cls.JOINT_CAT_ID_TO_NAME[jcat]}{suffix}"
-                for jcat in cls.KEYPOINT_JOINTS
-            }
+            # Keypoint joints: 语义名 → MuJoCo joint full name
+            keypoint_joint_names: Dict[str, str] = {}
+            for jname in cls.KEYPOINT_JOINTS:
+                full = f"{jname}{suffix}"
+                keypoint_joint_names[jname] = full
+            r['keypoint_joint_names'] = keypoint_joint_names
 
-            # Keypoint body-name map (语义 → 全名, 向后兼容)
-            # 使用 PART_NAME_TO_KEYPOINT_KEY 将 PART 名转换为下游期望的 key
-            r['keypoint_body_names'] = {
-                cls.PART_NAME_TO_KEYPOINT_KEY.get(part_name, part_name):
-                mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_BODY, bid
-                ) or ''
-                for part_name, bid in keypoint_body_ids.items()
-            }
-
-            robots[aff_id] = r
+            robots[robot_id] = r
 
         return {
-            'geom_cat': geom_cat,
-            'geom_aff': geom_aff,
-            'geom_is_keypoint': geom_is_keypoint,
-            'geom_part': geom_part,
-            'geom_group': geom_group,
-            'geom_entity_id': geom_entity_id,
-            'geom_names': geom_names,
-            'joint_cat': joint_cat,
-            'joint_aff': joint_aff,
-            'joint_semantic': joint_semantic,
-            'joint_names': joint_names,
             'robots': robots,
+            'env_geom_ids': env_geom_ids,
+            'ground_geom_id': ground_geom_id,
+            'body_to_robot': body_to_robot,
         }
-
-    # === 易用查询接口 ===
-
-    @classmethod
-    def aff_id_to_name(cls, aff_id: int) -> str:
-        return cls.AFF_ID_TO_NAME[aff_id]
-
-    @classmethod
-    def aff_name_to_id(cls, name: str) -> int:
-        return cls.AFF_NAME_TO_ID[name]
-
-    @classmethod
-    def cat_id_to_name(cls, cat_id: int) -> str:
-        return cls.CAT_ID_TO_NAME[cat_id]
-
-    @classmethod
-    def cat_name_to_id(cls, name: str) -> int:
-        return cls.CAT_NAME_TO_ID[name]
-
-    @classmethod
-    def geom_entity_id_to_name(cls, eid: int) -> str:
-        return cls.GEOM_ENTITY_ID_TO_NAME[eid]
-
-    @classmethod
-    def geom_entity_name_to_id(cls, name: str) -> int:
-        return cls.GEOM_ENTITY_NAME_TO_ID[name]
-
-    @classmethod
-    def joint_cat_id_to_name(cls, jcat_id: int) -> str:
-        return cls.JOINT_CAT_ID_TO_NAME[jcat_id]
-
-    @classmethod
-    def joint_cat_name_to_id(cls, name: str) -> int:
-        return cls.JOINT_CAT_NAME_TO_ID[name]
-
-    @classmethod
-    def part_id_to_name(cls, part_id: int) -> str:
-        return cls.PART_ID_TO_NAME[part_id]
-
-    @classmethod
-    def part_name_to_id(cls, name: str) -> int:
-        return cls.PART_NAME_TO_ID[name]
-
-    @classmethod
-    def cat_to_part(cls, cat_id: int) -> int:
-        return cls.CAT_TO_PART[cat_id]
-
-    @classmethod
-    def part_to_group(cls, part_id: int) -> int:
-        return cls.PART_TO_GROUP[part_id]
-
-    @classmethod
-    def group_id_to_name(cls, group_id: int) -> str:
-        return cls.GROUP_ID_TO_NAME[group_id]
-
-    @classmethod
-    def group_name_to_id(cls, name: str) -> int:
-        return cls.GROUP_NAME_TO_ID[name]
-
-    @classmethod
-    def cat_to_group(cls, cat_id: int) -> int:
-        return cls.CAT_TO_GROUP[cat_id]
-
-    @classmethod
-    def geom_info(cls, mujoco_geom_name: str) -> Optional[Dict]:
-        """查询单个 MuJoCo geom 的完整元数据。"""
-        cat, aff = cls._classify_geom(mujoco_geom_name)
-        if cat is None:
-            return None
-        eid = cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID.get(mujoco_geom_name, -1)
-        part = cls.CAT_TO_PART[cat]
-        group = cls.PART_TO_GROUP[part]
-        return {
-            'mujoco_name': mujoco_geom_name,
-            'cat_id': cat,
-            'cat_name': cls.CAT_ID_TO_NAME[cat],
-            'aff_id': aff,
-            'aff_name': cls.AFF_ID_TO_NAME.get(aff, 'unknown'),
-            'entity_id': eid,
-            'entity_name': cls.GEOM_ENTITY_ID_TO_NAME.get(eid, 'unknown'),
-            'is_keypoint': cls._is_keypoint_geom(mujoco_geom_name),
-            'part_id': part,
-            'part_name': cls.PART_ID_TO_NAME[part],
-            'group_id': group,
-            'group_name': cls.GROUP_ID_TO_NAME[group],
-            'can_attack': cls.GROUP_CAN_ATTACK[group],
-            'can_be_hit': cls.GROUP_CAN_BE_HIT[group],
-        }
-
-    @classmethod
-    def joint_info(cls, mujoco_joint_name: str) -> Optional[Dict]:
-        """查询单个 MuJoCo joint 的完整元数据。"""
-        jcat, aff = cls._classify_joint(mujoco_joint_name)
-        if jcat is None:
-            return None
-        return {
-            'mujoco_name': mujoco_joint_name,
-            'joint_cat_id': jcat,
-            'joint_cat_name': cls.JOINT_CAT_ID_TO_NAME[jcat],
-            'aff_id': aff,
-            'aff_name': cls.AFF_ID_TO_NAME.get(aff, 'unknown'),
-            'semantic_id': cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1),
-            'semantic_name': cls.JOINT_SEMANTIC_ID_TO_NAME.get(
-                cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1), 'unknown'),
-        }
-
-    @classmethod
-    def geoms_by_cat(cls, cat_id: int) -> List[str]:
-        """返回属于指定 CAT 的所有 MuJoCo geom 名称。"""
-        result = []
-        for name in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID:
-            cat, _ = cls._classify_geom(name)
-            if cat == cat_id:
-                result.append(name)
-        return sorted(result)
-
-    @classmethod
-    def geoms_by_aff(cls, aff_id: int) -> List[str]:
-        """返回属于指定 AFF 的所有 MuJoCo geom 名称。"""
-        result = []
-        for name in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID:
-            _, aff = cls._classify_geom(name)
-            if aff == aff_id:
-                result.append(name)
-        return sorted(result)
-
-    @classmethod
-    def keypoint_geoms(cls) -> List[str]:
-        """返回所有 keypoint geom 名称。"""
-        return sorted(n for n in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID
-                      if cls._is_keypoint_geom(n))
-
-    @classmethod
-    def geoms_by_group(cls, group_id: int) -> List[str]:
-        """返回属于指定 CONTACT_GROUP 的所有 MuJoCo geom 名称。"""
-        result = []
-        for name in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID:
-            cat, _ = cls._classify_geom(name)
-            if cat is not None and cls.CAT_TO_GROUP[cat] == group_id:
-                result.append(name)
-        return sorted(result)
