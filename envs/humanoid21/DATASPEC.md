@@ -78,45 +78,37 @@
 ### 4.1 全局对抗信息 (Shared / Global)
 放置在字典的最外层，供环境或中心化评论家(Critic)使用：
 - **`torso_distance`** (ndarray shape=(1,)): 双方 Torso 之间的欧氏距离。
-- **`contacts_vec`** (Dict): 向量化 SoA (Struct of Arrays) 接触数据，基于三维分类模型 (AFF/CAT/GEOM)。
+- **`contacts_vec`** (Dict): 向量化 SoA (Struct of Arrays) 接触数据，基于 MuJoCo 原生 ID + AFF 阵营分类。
 
-#### 4.1.1 三维接触分类模型 (AFF / CAT / GEOM)
+#### 4.1.1 接触分类模型 (MuJoCo 原生 ID + AFF)
 
-对外接触数据严格遵循三级分类，不暴露 MuJoCo 内部的 body 概念：
+接触数据使用 MuJoCo 原生 geom/body ID 作为实体标识，辅以 AFF 阵营码进行分类：
 
 | 层级 | 名称 | 取值 | 说明 |
 |------|------|------|------|
-| AFF | Affiliation | 0=Env, 1=robot_a, 2=robot_b | 共 3 类，标识 geom 所属阵营 |
-| CAT | Category | 0~18 | 共 19 类 (3 环境 + 16 机器人身体部位) |
-| GEOM | Entity | 0~24 (自定义实体 ID) | 共 25 个 (6 环境 + 19 机器人)，通过 GEOM_ID_TO_NAME 查名称 |
+| AFF | Affiliation | 0=Env, 1=robot_a, 2=robot_b | 共 3 类，标识 geom/body 所属阵营 |
+| geom ID | MuJoCo Geom ID | 原生 int | 通过 `mujoco.mj_id2name(model, mjOBJ_GEOM, id)` 查名称 |
+| body ID | MuJoCo Body ID | 原生 int | 通过 `mujoco.mj_id2name(model, mjOBJ_BODY, id)` 查名称 |
 
-**CAT 类别明细**:
+**静态查找表**（由 `Humanoid21Meta.build_runtime_tables()` 构建，在 `get_static_data()` 中暴露）：
 
-| ID | 名称 | 说明 |
-|----|------|------|
-| 0 | CAT_ENV_GROUND | 地面 |
-| 1 | CAT_ENV_WALL | 墙壁 |
-| 2 | CAT_ENV_CEILING | 天花板 |
-| 3 | CAT_HEAD | 头部 |
-| 4 | CAT_TORSO | 躯干 |
-| 5 | CAT_PELVIS | 骨盆 |
-| 6~7 | CAT_HAND_LEFT / CAT_HAND_RIGHT | 左/右手 |
-| 8~9 | CAT_UPPER_ARM_LEFT / CAT_UPPER_ARM_RIGHT | 左/右上臂 |
-| 10~11 | CAT_LOWER_ARM_LEFT / CAT_LOWER_ARM_RIGHT | 左/右前臂 |
-| 12~13 | CAT_THIGH_LEFT / CAT_THIGH_RIGHT | 左/右大腿 |
-| 14~15 | CAT_SHIN_LEFT / CAT_SHIN_RIGHT | 左/右小腿 |
-| 16~17 | CAT_FOOT_LEFT / CAT_FOOT_RIGHT | 左/右脚 |
+| 表 | 类型 | 说明 |
+|---|---|---|
+| `geom_id_to_name` | `Dict[int, str]` | MuJoCo geom ID → geom 名称 |
+| `body_id_to_name` | `Dict[int, str]` | MuJoCo body ID → body 名称 |
+| `body_id_to_aff` | `Dict[int, int]` | body ID → 0(env)/1(robot_a)/2(robot_b) |
+| `geom_id_to_aff` | `Dict[int, int]` | geom ID → 0(env)/1(robot_a)/2(robot_b) |
 
 #### 4.1.2 `contacts_vec` 字段
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
 | `ncon` | `int` | 接触数量 |
-| `geom1` / `geom2` | `ndarray(ncon,) int8` | GEOM 层 — 实体 ID (0~24, 通过 GEOM_ID_TO_NAME 查名称) |
-| `aff1` / `aff2` | `ndarray(ncon,) int8` | AFF 归属 (0/1/2) |
-| `cat1` / `cat2` | `ndarray(ncon,) int8` | CAT 类别 (0~18) |
+| `geom1` / `geom2` | `ndarray(ncon,) int32` | MuJoCo 原生 geom ID |
+| `body1` / `body2` | `ndarray(ncon,) int32` | MuJoCo 原生 body ID (= `model.geom_bodyid[geom]`) |
+| `aff1` / `aff2` | `ndarray(ncon,) int8` | AFF 阵营 (0=env, 1=robot_a, 2=robot_b) |
 | `force_mag` | `ndarray(ncon,) float32` | 接触力标量 (N) |
-| `force_world` | `ndarray(ncon, 3) float32` | 世界坐标系 3D 力 (作用在 geom2 上) |
+| `force_world` | `ndarray(ncon, 3) float32` | 世界坐标系 3D 力 (geom1 对 geom2 施加的力) |
 | `position` | `ndarray(ncon, 3) float32` | 接触点世界坐标 |
 | `normal` | `ndarray(ncon, 3) float32` | 接触法向量 (指向 geom2) |
 | `frame` | `ndarray(ncon, 3, 3) float32` | 接触坐标系 [n; t1; t2] (行存储) |
@@ -129,24 +121,24 @@
 import numpy as np
 
 cv = derived_state['contacts_vec']
-AFF_ENV, AFF_A = 0, 1
-CAT_FOOT_LEFT = 17
+AFF_ENV = 0
 
-support = np.zeros(3)
+# ground_geom_id 和 foot_body_id 从 static_data 获取
+ground = static_data['ground_geom_id']
+foot_l = static_data[agent]['keypoint_body_ids']['foot_left']
+foot_r = static_data[agent]['keypoint_body_ids']['foot_right']
+
 if cv['ncon'] > 0:
-    aff1, aff2 = cv['aff1'], cv['aff2']
-    cat1, cat2 = cv['cat1'], cv['cat2']
-    fw = cv['force_world']
-
     # foot is geom2, env is geom1: force on foot
-    m1 = (aff1 == AFF_ENV) & (aff2 == AFF_A) & (cat2 == CAT_FOOT_LEFT)
+    m1 = (cv['geom1'] == ground) & (cv['body2'] == foot_l)
     # foot is geom1, env is geom2: force on env, negate
-    m2 = (aff1 == AFF_A) & (aff2 == AFF_ENV) & (cat1 == CAT_FOOT_LEFT)
+    m2 = (cv['geom2'] == ground) & (cv['body1'] == foot_l)
 
+    support = np.zeros(3)
     if m1.any():
-        support += fw[m1].sum(axis=0)
+        support += cv['force_world'][m1].sum(axis=0)
     if m2.any():
-        support -= fw[m2].sum(axis=0)
+        support -= cv['force_world'][m2].sum(axis=0)
 ```
 
 ### 4.2 单边视角信息 (Per-Robot Views)
@@ -288,7 +280,7 @@ opponent_keypoint_vel = derived_state['robot_a']['opponent_keypoint_vel']  # 15�
 ```
 get_derived_state()
 ├── torso_distance (全局)
-├── contacts_vec (全局, AFF/CAT/GEOM 三级分类)
+├── contacts_vec (全局, MuJoCo 原生 ID + AFF 阵营分类, SoA 向量化)
 └── robot_a / robot_b
     ├── root_state (模块二: 13维)
     │   ├── height

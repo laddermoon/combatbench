@@ -391,6 +391,10 @@ class Humanoid21Meta:
             env_geom_ids: set[int]  — 环境 geom 的 MuJoCo ID
             ground_geom_id: int     — 地面 geom 的 MuJoCo ID
             body_to_robot: Dict[int, str] — body_id → robot_id (None if env)
+            geom_id_to_name: Dict[int, str]  — geom ID → name
+            body_id_to_name: Dict[int, str]  — body ID → name
+            body_id_to_aff:  Dict[int, int]  — body ID → 0(env)/1(robot_a)/2(robot_b)
+            geom_id_to_aff:  Dict[int, int]  — geom ID → 0(env)/1(robot_a)/2(robot_b)
         """
         import mujoco
 
@@ -406,6 +410,20 @@ class Humanoid21Meta:
 
         # --- body_id → robot_id 映射 ---
         body_to_robot: Dict[int, str] = {}
+
+        # --- 静态查找表: ID → name, ID → aff ---
+        geom_id_to_name: Dict[int, str] = {}
+        body_id_to_name: Dict[int, str] = {}
+        body_id_to_aff:  Dict[int, int] = {}
+        geom_id_to_aff:  Dict[int, int] = {}
+
+        # 环境 geom: aff = 0
+        for gid in env_geom_ids:
+            gname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ''
+            geom_id_to_name[gid] = gname
+            geom_id_to_aff[gid] = 0
+            bid = int(model.geom_bodyid[gid])
+            body_id_to_aff[bid] = 0
 
         # --- per-robot 结构化数据 ---
         robots: Dict[str, Dict[str, Any]] = {}
@@ -444,6 +462,19 @@ class Humanoid21Meta:
                 [float(model.body_mass[bid]) for bid in sorted(body_ids)],
                 dtype=np.float32,
             )
+
+            # 填充静态查找表: robot body/geom → name, aff
+            aff_code = 1 if robot_id == 'robot_a' else 2
+            for bid, bname in zip(body_ids, body_names):
+                body_id_to_name[bid] = bname
+                body_id_to_aff[bid] = aff_code
+            for spec in cls.ROBOT_BODY_TREE.values():
+                for gname_base in spec['geoms']:
+                    full_geom = f"{gname_base}{suffix}"
+                    gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, full_geom)
+                    if gid >= 0:
+                        geom_id_to_name[gid] = full_geom
+                        geom_id_to_aff[gid] = aff_code
 
             # 全部 joint: 从 ROBOT_BODY_TREE 展开 + root
             joint_names: List[str] = []
@@ -513,4 +544,8 @@ class Humanoid21Meta:
             'env_geom_ids': env_geom_ids,
             'ground_geom_id': ground_geom_id,
             'body_to_robot': body_to_robot,
+            'geom_id_to_name': geom_id_to_name,
+            'body_id_to_name': body_id_to_name,
+            'body_id_to_aff': body_id_to_aff,
+            'geom_id_to_aff': geom_id_to_aff,
         }

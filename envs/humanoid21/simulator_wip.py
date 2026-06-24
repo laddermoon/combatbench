@@ -81,6 +81,10 @@ class MujocoCombatSimulator(BaseSimulator):
         self._env_geom_ids = self._meta['env_geom_ids']
         self._ground_geom_id = self._meta['ground_geom_id']
         self._body_to_robot = self._meta['body_to_robot']
+        self._geom_id_to_name = self._meta['geom_id_to_name']
+        self._body_id_to_name = self._meta['body_id_to_name']
+        self._body_id_to_aff = self._meta['body_id_to_aff']
+        self._geom_id_to_aff = self._meta['geom_id_to_aff']
 
         self._compute_normalization_params()
 
@@ -317,7 +321,7 @@ class MujocoCombatSimulator(BaseSimulator):
         torso_distance = np.linalg.norm(pos_b - pos_a)
 
         # Structured + legacy contacts produced in a single pass
-        robot_robot_contacts, robot_environment_contacts, contacts = self._extract_contacts()
+        contacts_vec, robot_robot_contacts, robot_environment_contacts, contacts = self._extract_contacts()
 
         # 单边视角（高层观测）+ per-body/joint 详细物理量
         robot_a_view = self._get_robot_view('robot_a', 'robot_b')
@@ -327,6 +331,7 @@ class MujocoCombatSimulator(BaseSimulator):
 
         result = {
             'torso_distance': np.array([torso_distance], dtype=np.float32),
+            'contacts_vec': contacts_vec,
             'robot_robot_contacts': robot_robot_contacts,
             'robot_environment_contacts': robot_environment_contacts,
             'contacts': contacts,
@@ -375,50 +380,81 @@ class MujocoCombatSimulator(BaseSimulator):
             'joint_world_anchor': joint_world_anchor,
         }
     
-    def _extract_contacts(self) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """提取所有接触信息，同时生成三种视图：
+    def _extract_contacts(self) -> Tuple[Dict[str, Any], List[Dict], List[Dict], List[Dict]]:
+        """提取所有接触信息，生成向量化 contacts_vec + 兼容旧 dict 列表。
 
-        1. ``robot_robot_contacts`` (legacy): 仅 {body_a, body_b, force 标量}
-        2. ``robot_environment_contacts`` (legacy): 机器人 ↔ 环境接触，仅模
-        3. ``contacts`` (new, DATASPEC §4.1): 全部接触 + 方向/位置/力向量/帧矩阵
-
-        使用 body_to_robot + env_geom_ids 进行分类。
+        返回:
+            contacts_vec: Dict[str, Any] — SoA 向量化接触数据 (见 DATASPEC §4.1)
+            robot_robot_contacts: List[Dict] — legacy, {body_a, body_b, force}
+            robot_environment_contacts: List[Dict] — legacy, {robot, body, environment_geom, force}
+            contacts: List[Dict] — legacy, 完整接触记录 (含方向/位置/力向量)
         """
+        ncon = int(self.data.ncon)
         env_geom_ids = self._env_geom_ids
         body_to_robot = self._body_to_robot
+        geom_id_to_name = self._geom_id_to_name
+        body_id_to_name = self._body_id_to_name
+        body_id_to_aff = self._body_id_to_aff
+        geom_id_to_aff = self._geom_id_to_aff
+
+        # --- 预分配 SoA arrays ---
+        geom1_arr = np.empty(ncon, dtype=np.int32)
+        geom2_arr = np.empty(ncon, dtype=np.int32)
+        body1_arr = np.empty(ncon, dtype=np.int32)
+        body2_arr = np.empty(ncon, dtype=np.int32)
+        aff1_arr = np.empty(ncon, dtype=np.int8)
+        aff2_arr = np.empty(ncon, dtype=np.int8)
+        force_mag_arr = np.empty(ncon, dtype=np.float32)
+        force_world_arr = np.empty((ncon, 3), dtype=np.float32)
+        position_arr = np.empty((ncon, 3), dtype=np.float32)
+        normal_arr = np.empty((ncon, 3), dtype=np.float32)
+        frame_arr = np.empty((ncon, 3, 3), dtype=np.float32)
 
         robot_robot_contacts: List[Dict[str, Any]] = []
         robot_environment_contacts: List[Dict[str, Any]] = []
         contacts: List[Dict[str, Any]] = []
 
-        for i in range(self.data.ncon):
+        for i in range(ncon):
             contact = self.data.contact[i]
-            geom1 = int(contact.geom1)
-            geom2 = int(contact.geom2)
+            g1 = int(contact.geom1)
+            g2 = int(contact.geom2)
 
-            body1_id = int(self.model.geom_bodyid[geom1])
-            body2_id = int(self.model.geom_bodyid[geom2])
-            geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1) or ''
-            geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2) or ''
-            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id) or ''
-            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id) or ''
+            b1 = int(self.model.geom_bodyid[g1])
+            b2 = int(self.model.geom_bodyid[g2])
+            g1_name = geom_id_to_name.get(g1, '')
+            g2_name = geom_id_to_name.get(g2, '')
+            b1_name = body_id_to_name.get(b1, '')
+            b2_name = body_id_to_name.get(b2, '')
 
             c_wrench = np.zeros(6, dtype=np.float64)
             mujoco.mj_contactForce(self.model, self.data, i, c_wrench)
             force_contact_on_geom2 = c_wrench[:3]
 
-            # contact.frame is row-major [n; t1; t2] in world coords → 3x3
             frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)
             force_world_on_b = frame.T @ force_contact_on_geom2
             force_magnitude = float(np.linalg.norm(force_contact_on_geom2))
             normal_world = frame[0]
             position_world = np.asarray(contact.pos, dtype=np.float64)
 
+            # --- 填充 SoA arrays ---
+            geom1_arr[i] = g1
+            geom2_arr[i] = g2
+            body1_arr[i] = b1
+            body2_arr[i] = b2
+            aff1_arr[i] = geom_id_to_aff.get(g1, 0)
+            aff2_arr[i] = geom_id_to_aff.get(g2, 0)
+            force_mag_arr[i] = force_magnitude
+            force_world_arr[i] = force_world_on_b
+            position_arr[i] = position_world
+            normal_arr[i] = normal_world
+            frame_arr[i] = frame
+
+            # --- legacy dict ---
             contacts.append({
-                'geom_a_name': geom1_name,
-                'geom_b_name': geom2_name,
-                'body_a_name': body1_name,
-                'body_b_name': body2_name,
+                'geom_a_name': g1_name,
+                'geom_b_name': g2_name,
+                'body_a_name': b1_name,
+                'body_b_name': b2_name,
                 'position_world': position_world.astype(np.float32),
                 'normal_world': normal_world.astype(np.float32),
                 'frame_world': frame.astype(np.float32),
@@ -426,40 +462,53 @@ class MujocoCombatSimulator(BaseSimulator):
                 'force_magnitude': force_magnitude,
             })
 
-            # 分类: env / robot_a / robot_b
-            g1_env = geom1 in env_geom_ids
-            g2_env = geom2 in env_geom_ids
-            r1 = None if g1_env else body_to_robot.get(body1_id)
-            r2 = None if g2_env else body_to_robot.get(body2_id)
+            # --- legacy 分类 ---
+            g1_env = g1 in env_geom_ids
+            g2_env = g2 in env_geom_ids
+            r1 = None if g1_env else body_to_robot.get(b1)
+            r2 = None if g2_env else body_to_robot.get(b2)
 
             if r1 is not None and r2 is not None and r1 != r2:
-                # robot-robot contact
                 is_a1 = (r1 == 'robot_a')
                 robot_robot_contacts.append({
-                    'body_a': body1_name if is_a1 else body2_name,
-                    'body_b': body1_name if not is_a1 else body2_name,
+                    'body_a': b1_name if is_a1 else b2_name,
+                    'body_b': b1_name if not is_a1 else b2_name,
                     'force': force_magnitude,
                 })
             elif (g1_env and r2 is not None) or (g2_env and r1 is not None):
-                # robot-environment contact
                 if g1_env:
                     robot_environment_contacts.append({
                         'robot': r2,
-                        'body': body2_name,
-                        'environment_geom': geom1_name,
-                        'environment_body': body1_name,
+                        'body': b2_name,
+                        'environment_geom': g1_name,
+                        'environment_body': b1_name,
                         'force': force_magnitude,
                     })
                 else:
                     robot_environment_contacts.append({
                         'robot': r1,
-                        'body': body1_name,
-                        'environment_geom': geom2_name,
-                        'environment_body': body2_name,
+                        'body': b1_name,
+                        'environment_geom': g2_name,
+                        'environment_body': b2_name,
                         'force': force_magnitude,
                     })
 
-        return robot_robot_contacts, robot_environment_contacts, contacts
+        contacts_vec = {
+            'ncon': ncon,
+            'geom1': geom1_arr,
+            'geom2': geom2_arr,
+            'body1': body1_arr,
+            'body2': body2_arr,
+            'aff1': aff1_arr,
+            'aff2': aff2_arr,
+            'force_mag': force_mag_arr,
+            'force_world': force_world_arr,
+            'position': position_arr,
+            'normal': normal_arr,
+            'frame': frame_arr,
+        }
+
+        return contacts_vec, robot_robot_contacts, robot_environment_contacts, contacts
     
     def _get_robot_view(self, robot_id: str, opponent_id: str) -> Dict[str, Any]:
         """
