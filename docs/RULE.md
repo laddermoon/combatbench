@@ -18,11 +18,7 @@ There are no knock-down rules, no counts, no fouls, and no posture interventions
 ### 1. Allowed Attacking Parts (Attacker)
 Only strikes initiated by the following parts can cause damage:
 - Hand
-- Lower arm
-- Upper arm
 - Foot
-- Shin
-- Thigh
 
 **Note:** The torso and head cannot be used as valid attacking parts. Striking the opponent with the torso or head will not deduct the opponent's HP.
 

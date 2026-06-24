@@ -143,7 +143,7 @@ class CombatScoringPlugin(BasePlugin):
         ``initial_health_*``: episode_options overrides the constructor
         default, so each episode (round) can log to a distinct file.
     """
-    ATTACK_PARTS = {'hand', 'larm', 'uarm', 'thigh', 'shin', 'foot'}
+    ATTACK_PARTS = {'hand', 'foot'}
     DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
 
     # Part weight × (force / force_scale)² × dt.
