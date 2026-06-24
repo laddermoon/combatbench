@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 from envs.framework.backend import BaseSimulator
-from envs.humanoid21.meta import Humanoid21Meta
+from envs.humanoid21.meta_new import Humanoid21Meta
 
 _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
 _TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
@@ -75,14 +75,12 @@ class MujocoCombatSimulator(BaseSimulator):
         if meta_errors:
             raise ValueError(f"Model validation failed:\n" + "\n".join(meta_errors))
 
-        # 构建 geom/joint 运行时查找表 + per-AFF 结构化数据
+        # 构建运行时查找表 + per-robot 结构化数据
         self._meta = Humanoid21Meta.build_runtime_tables(self.model)
-        self._robots = self._meta['robots']  # {aff_id: {...}}
-        self._robot_aff = {  # robot_id string → aff_id
-            'robot_a': Humanoid21Meta.AFF_ROBOT_A,
-            'robot_b': Humanoid21Meta.AFF_ROBOT_B,
-        }
-        self._aff_to_robot_id = {v: k for k, v in self._robot_aff.items()}
+        self._robots = self._meta['robots']  # {'robot_a': {...}, 'robot_b': {...}}
+        self._env_geom_ids = self._meta['env_geom_ids']
+        self._ground_geom_id = self._meta['ground_geom_id']
+        self._body_to_robot = self._meta['body_to_robot']
 
         self._compute_normalization_params()
 
@@ -118,8 +116,8 @@ class MujocoCombatSimulator(BaseSimulator):
         return cls(**config)
 
     def _robot(self, robot_id: str) -> Dict[str, Any]:
-        """从 Meta 运行时表获取 per-AFF 结构化数据"""
-        return self._robots[self._robot_aff[robot_id]]
+        """获取 per-robot 结构化数据"""
+        return self._robots[robot_id]
 
     def _compute_normalization_params(self):
         """计算归一化参数 (reference 和 scale)"""
@@ -406,12 +404,10 @@ class MujocoCombatSimulator(BaseSimulator):
         2. ``robot_environment_contacts`` (legacy): 机器人 ↔ 环境接触，仅模
         3. ``contacts`` (new, DATASPEC §4.1): 全部接触 + 方向/位置/力向量/帧矩阵
 
-        使用 Humanoid21Meta 运行时表进行 AFF 分类。
+        使用 body_to_robot + env_geom_ids 进行分类。
         """
-        geom_aff = self._meta['geom_aff']
-        AFF_ENV = Humanoid21Meta.AFF_ENV
-        AFF_ROBOT_A = Humanoid21Meta.AFF_ROBOT_A
-        AFF_ROBOT_B = Humanoid21Meta.AFF_ROBOT_B
+        env_geom_ids = self._env_geom_ids
+        body_to_robot = self._body_to_robot
 
         robot_robot_contacts: List[Dict[str, Any]] = []
         robot_environment_contacts: List[Dict[str, Any]] = []
@@ -452,22 +448,25 @@ class MujocoCombatSimulator(BaseSimulator):
                 'force_magnitude': force_magnitude,
             })
 
-            # 使用 Meta 运行时表进行 AFF 分类
-            aff1 = int(geom_aff[geom1])
-            aff2 = int(geom_aff[geom2])
+            # 分类: env / robot_a / robot_b
+            g1_env = geom1 in env_geom_ids
+            g2_env = geom2 in env_geom_ids
+            r1 = None if g1_env else body_to_robot.get(body1_id)
+            r2 = None if g2_env else body_to_robot.get(body2_id)
 
-            if (aff1 == AFF_ROBOT_A and aff2 == AFF_ROBOT_B) or (aff1 == AFF_ROBOT_B and aff2 == AFF_ROBOT_A):
-                is_a1 = (aff1 == AFF_ROBOT_A)
+            if r1 is not None and r2 is not None and r1 != r2:
+                # robot-robot contact
+                is_a1 = (r1 == 'robot_a')
                 robot_robot_contacts.append({
                     'body_a': body1_name if is_a1 else body2_name,
                     'body_b': body1_name if not is_a1 else body2_name,
                     'force': force_magnitude,
                 })
-            elif (aff1 != aff2) and (aff1 != AFF_ENV or aff2 != AFF_ENV):
-                # 机器人 ↔ 环境接触
-                if aff1 == AFF_ENV:
+            elif (g1_env and r2 is not None) or (g2_env and r1 is not None):
+                # robot-environment contact
+                if g1_env:
                     robot_environment_contacts.append({
-                        'robot': 'robot_a' if aff2 == AFF_ROBOT_A else 'robot_b',
+                        'robot': r2,
                         'body': body2_name,
                         'environment_geom': geom1_name,
                         'environment_body': body1_name,
@@ -475,7 +474,7 @@ class MujocoCombatSimulator(BaseSimulator):
                     })
                 else:
                     robot_environment_contacts.append({
-                        'robot': 'robot_a' if aff1 == AFF_ROBOT_A else 'robot_b',
+                        'robot': r1,
                         'body': body1_name,
                         'environment_geom': geom2_name,
                         'environment_body': body2_name,
@@ -688,10 +687,10 @@ class MujocoCombatSimulator(BaseSimulator):
         # 获取各个关键点的位置
         kp = opp_cache['keypoint_body_ids']
         head_pos = self.data.xpos[kp['head']]
-        hand_right_pos = self.data.xpos[kp['right_hand']]
-        hand_left_pos = self.data.xpos[kp['left_hand']]
-        foot_right_pos = self.data.xpos[kp['right_foot']]
-        foot_left_pos = self.data.xpos[kp['left_foot']]
+        hand_right_pos = self.data.xpos[kp['hand_right']]
+        hand_left_pos = self.data.xpos[kp['hand_left']]
+        foot_right_pos = self.data.xpos[kp['foot_right']]
+        foot_left_pos = self.data.xpos[kp['foot_left']]
 
         # 转换到自身局部坐标系
         head_local = self_rot.inv().apply(head_pos - self_pos)
@@ -726,10 +725,10 @@ class MujocoCombatSimulator(BaseSimulator):
         # cvel[frame, 0:3] 是角速度, [3:6] 是线速度
         kp = opp_cache['keypoint_body_ids']
         head_vel = self.data.cvel[kp['head'], 3:6]
-        hand_right_vel = self.data.cvel[kp['right_hand'], 3:6]
-        hand_left_vel = self.data.cvel[kp['left_hand'], 3:6]
-        foot_right_vel = self.data.cvel[kp['right_foot'], 3:6]
-        foot_left_vel = self.data.cvel[kp['left_foot'], 3:6]
+        hand_right_vel = self.data.cvel[kp['hand_right'], 3:6]
+        hand_left_vel = self.data.cvel[kp['hand_left'], 3:6]
+        foot_right_vel = self.data.cvel[kp['foot_right'], 3:6]
+        foot_left_vel = self.data.cvel[kp['foot_left'], 3:6]
 
         # 转换到自身局部坐标系
         head_vel_local = self_rot.inv().apply(head_vel)
@@ -750,15 +749,13 @@ class MujocoCombatSimulator(BaseSimulator):
         """获取双脚与地面的接触受力"""
         cache = self._robot(robot_id)
         kp = cache['keypoint_body_ids']
-        foot_right_id = kp['right_foot']
-        foot_left_id = kp['left_foot']
+        foot_right_id = kp['foot_right']
+        foot_left_id = kp['foot_left']
         
         right_force = 0.0
         left_force = 0.0
         
-        # 使用 Meta 查找地面 geom (CAT_GROUND, 与原版 ground_geom_id=0 等价)
-        geom_cat = self._meta['geom_cat']
-        CAT_GROUND = Humanoid21Meta.CAT_GROUND
+        ground_geom_id = self._ground_geom_id
 
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
@@ -766,8 +763,8 @@ class MujocoCombatSimulator(BaseSimulator):
             geom2 = int(contact.geom2)
 
             # 只检查与地面的接触 (不包括墙壁/天花板)
-            g1_ground = int(geom_cat[geom1]) == CAT_GROUND
-            g2_ground = int(geom_cat[geom2]) == CAT_GROUND
+            g1_ground = geom1 == ground_geom_id
+            g2_ground = geom2 == ground_geom_id
             if not g1_ground and not g2_ground:
                 continue
 
@@ -1116,7 +1113,7 @@ class MujocoCombatSimulator(BaseSimulator):
             xfrc_applied shape: (nbody, 6) -> [fx, fy, fz, tx, ty, tz]
             注意：施加的力会在下一个物理步生效，之后自动清零
         """
-        if robot_id not in self._robot_aff:
+        if robot_id not in self._robots:
             raise ValueError(f"Unknown robot_id: {robot_id}")
 
         cache = self._robot(robot_id)
