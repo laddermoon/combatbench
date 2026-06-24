@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 from envs.framework.backend import BaseSimulator
+from envs.humanoid21.meta import Humanoid21Meta
 
 _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
 _TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
@@ -23,211 +24,19 @@ class MujocoCombatSimulator(BaseSimulator):
     - 固化的 KP/KD 参数
     - 局部坐标系优先
     - 按机器人隔离的数据接口
+
+    静态元数据 (DT, KP, KD, CONTROLLED_JOINTS, INITIAL_POSES, geom 分类等)
+    全部由 Humanoid21Meta 统一管理。
     """
-    
-    # 固定参数
-    DT = 0.002
-    ACTION_DIM = 21
+
+    # 静态参数 — 从 Humanoid21Meta 引用，保持单一数据源
+    DT = Humanoid21Meta.DT
+    ACTION_DIM = Humanoid21Meta.ACTION_DIM
     ARENA_XML = str(Path(__file__).parent / 'battle_v1.xml')
-    
-    # ─── 第一层：归属 (Affiliation) ───
-    AFF_ID_TO_NAME = {0: 'environment', 1: 'robot_a', 2: 'robot_b'}
-    AFF_NAME_TO_ID = {v: k for k, v in AFF_ID_TO_NAME.items()}
-
-    # ─── 第二层：类别 (Category) ───
-    CAT_ID_TO_NAME = {
-        0: 'ground', 1: 'wall', 2: 'ceiling',
-        3: 'head', 4: 'torso', 5: 'waist_lower', 6: 'pelvis',
-        7: 'hand_left', 8: 'hand_right',
-        9: 'lower_arm_left', 10: 'lower_arm_right',
-        11: 'upper_arm_left', 12: 'upper_arm_right',
-        13: 'thigh_left', 14: 'thigh_right',
-        15: 'shin_left', 16: 'shin_right',
-        17: 'foot_left', 18: 'foot_right',
-    }
-    CAT_NAME_TO_ID = {v: k for k, v in CAT_ID_TO_NAME.items()}
-
-    # ─── 第三层：实体 (Entity/GEOM) ───
-    GEOM_ID_TO_NAME = {
-        0: 'ground', 1: 'ceiling',
-        2: 'southwall', 3: 'northwall', 4: 'westwall', 5: 'eastwall',
-        6: 'torso', 7: 'waist_upper', 8: 'head', 9: 'waist_lower', 10: 'butt',
-        11: 'hand_left', 12: 'hand_right',
-        13: 'lower_arm_left', 14: 'lower_arm_right',
-        15: 'upper_arm_left', 16: 'upper_arm_right',
-        17: 'thigh_left', 18: 'thigh_right',
-        19: 'shin_left', 20: 'shin_right',
-        21: 'foot1_left', 22: 'foot2_left', 23: 'foot1_right', 24: 'foot2_right',
-    }
-    GEOM_NAME_TO_ID = {v: k for k, v in GEOM_ID_TO_NAME.items()}
-
-    # ─── 层间映射: GEOM → CAT (多对一) ───
-    GEOM_ID_TO_CAT_ID = {
-        0: 0, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1,
-        6: 4, 7: 4, 8: 3, 9: 5, 10: 6,
-        11: 7, 12: 8, 13: 9, 14: 10, 15: 11, 16: 12,
-        17: 13, 18: 14, 19: 15, 20: 16,
-        21: 17, 22: 17, 23: 18, 24: 18,
-    }
-
-    RECOGNIZED_GEOM_NAMES = set(GEOM_NAME_TO_ID.keys())
-    RECOGNIZED_ENV_GEOMS = {n for i, n in GEOM_ID_TO_NAME.items() if i < 6}
-
-    # ─── 对外静态方法: 三层 ID ↔ Name ───
-    @classmethod
-    def aff_id_to_name(cls, aff_id: int) -> str:
-        return cls.AFF_ID_TO_NAME[aff_id]
-
-    @classmethod
-    def aff_name_to_id(cls, name: str) -> int:
-        return cls.AFF_NAME_TO_ID[name]
-
-    @classmethod
-    def cat_id_to_name(cls, cat_id: int) -> str:
-        return cls.CAT_ID_TO_NAME[cat_id]
-
-    @classmethod
-    def cat_name_to_id(cls, name: str) -> int:
-        return cls.CAT_NAME_TO_ID[name]
-
-    @classmethod
-    def geom_id_to_name(cls, geom_id: int) -> str:
-        return cls.GEOM_ID_TO_NAME[geom_id]
-
-    @classmethod
-    def geom_name_to_id(cls, name: str) -> int:
-        return cls.GEOM_NAME_TO_ID[name]
-    
-    # 固化的 PD 控制参数 (不可配置)
-    # 这些参数通过 ACCEPTANCE_CRITERIA.md 中的测试验证和调优
-    # 调优目标: 跟踪误差 <0.05rad, 响应延迟 <0.2s, 控制努力 <30%, 系统稳定
-    #
-    # 使用较高的 PD 增益以改善跟踪和响应，同时保持控制努力可接受
-    # 参数参考 DeepMimic 和 MuJoCo Menagerie 主流 PD 设定的上限值
-    KP = np.array([
-        # 腹部 (abdomen_z, abdomen_y, abdomen_x) - 战斗中需维持上半身直立
-        1000.0, 1000.0, 1000.0,
-        # 右腿 (hip_x=roll, hip_z=yaw, hip_y=pitch, knee, ankle_y, ankle_x)
-        150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
-        # 左腿
-        150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
-        # 右臂 (shoulder1, shoulder2, elbow)
-        150.0, 150.0, 100.0,
-        # 左臂
-        150.0, 150.0, 100.0
-    ], dtype=np.float32)
-
-    KD = np.array([
-        # 腹部 - 高阻尼以减少过冲
-        100.0, 100.0, 100.0,
-        # 右腿 - 踝部较低增益以保持柔顺性
-        15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
-        # 左腿
-        15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
-        # 右臂
-        15.0, 15.0, 10.0,
-        # 左臂
-        15.0, 15.0, 10.0
-    ], dtype=np.float32)
-    
-    # 受控关节名称 (固定顺序)
-    CONTROLLED_JOINTS = [
-        'abdomen_z', 'abdomen_y', 'abdomen_x',
-        'hip_x_right', 'hip_z_right', 'hip_y_right', 'knee_right', 'ankle_y_right', 'ankle_x_right',
-        'hip_x_left', 'hip_z_left', 'hip_y_left', 'knee_left', 'ankle_y_left', 'ankle_x_left',
-        'shoulder1_right', 'shoulder2_right', 'elbow_right',
-        'shoulder1_left', 'shoulder2_left', 'elbow_left'
-    ]
-
-    # 初始姿态配置（来自 humanoid.xml 的 keyframes）
-    # 每个姿态包含 root_pos, root_quat, joint_pos, action
-    INITIAL_POSES = {
-        'standing': {
-            'root_pos': np.array([0, 0, 1.282], dtype=np.float32),
-            'root_quat': np.array([1, 0, 0, 0], dtype=np.float32),
-            'joint_pos': np.array([
-                0, 0, 0,  # abdomen
-                0, 0, 0, 0, 0, 0,  # right leg
-                0, 0, 0, 0, 0, 0,  # left leg
-                0, 0, 0,  # right arm
-                0, 0, 0  # left arm
-            ], dtype=np.float32),
-            'action': np.array([
-                -0.0000, 0.4286, -0.0000,
-                0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
-                0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
-                0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32)
-        },
-        'squat': {
-            'root_pos': np.array([0, 0, 0.596], dtype=np.float32),
-            'root_quat': np.array([0.988015, 0, 0.154359, 0], dtype=np.float32),
-            'joint_pos': np.array([
-                0, 0.4, 0,
-                -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
-                -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
-                0, 0, 0,
-                0, 0, 0
-            ], dtype=np.float32),
-            'action': np.array([
-                0.0000, 0.4287, 0.0000,
-                0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
-                0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
-                0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32)
-        },
-        'stand_on_left_leg': {
-            'root_pos': np.array([0, 0, 1.21948], dtype=np.float32),
-            'root_quat': np.array([0.971588, -0.179973, 0.135318, -0.0729076], dtype=np.float32),
-            'joint_pos': np.array([
-                -0.0516, -0.202, 0.23,
-                -0.24, -0.007, -0.34, -1.76, -0.466, -0.0415,
-                -0.08, -0.01, -0.37, -0.685, -0.35, -0.09,
-                0.109, -0.067, -0.7,
-                -0.05, 0.12, 0.16
-            ], dtype=np.float32),
-            'action': np.array([
-                -0.0000, 0.4285, 0.0001,
-                0.4998, 0.2632, 0.7646, 0.9749, -0.0002, -0.0000,
-                0.4999, 0.2632, 0.7646, 0.9752, -0.0001, -0.0000,
-                0.1724, 0.1724, 0.3332, 0.1724, 0.1724, 0.3334,
-            ], dtype=np.float32)
-        },
-        'prone': {
-            'root_pos': np.array([0.4, 0, 0.0757706], dtype=np.float32),
-            'root_quat': np.array([0.7325, 0, 0.680767, 0], dtype=np.float32),
-            'joint_pos': np.array([
-                0, 0.0729, 0,
-                0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
-                0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
-                0.56, -0.62, -1.752,
-                0.186, -0.73, -1.73
-            ], dtype=np.float32),
-            'action': np.array([
-                0.0000, 0.4286, 0.0000,
-                0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
-                0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
-                0.1725, 0.1723, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32)
-        },
-        'supine': {
-            'root_pos': np.array([-0.4, 0, 0.08122], dtype=np.float32),
-            'root_quat': np.array([0.722788, 0, -0.69107, 0], dtype=np.float32),
-            'joint_pos': np.array([
-                0, -0.25, 0,
-                0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
-                0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
-                0.186, -0.73, -1.73,
-                0.186, -0.73, -1.73
-            ], dtype=np.float32),
-            'action': np.array([
-                0.0000, 0.4285, 0.0000,
-                0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
-                0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
-                0.1725, 0.1722, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32)
-        }
-    }
+    KP = Humanoid21Meta.KP
+    KD = Humanoid21Meta.KD
+    CONTROLLED_JOINTS = Humanoid21Meta.CONTROLLED_JOINTS
+    INITIAL_POSES = Humanoid21Meta.INITIAL_POSES
     
     def __init__(self, initial_distance: float = 2.0, debug_torque: bool = False,
                  initial_pose_a: str = 'standing', initial_pose_b: str = 'standing'):
@@ -260,6 +69,19 @@ class MujocoCombatSimulator(BaseSimulator):
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = self.DT
         mujoco.mj_forward(self.model, self.data)
+
+        # 校验模型与 Humanoid21Meta 静态元数据一致
+        meta_errors = Humanoid21Meta.validate(self.model)
+        if meta_errors:
+            raise ValueError(f"Model validation failed:\n" + "\n".join(meta_errors))
+
+        # 构建 geom/joint 运行时查找表 (SoA 预映射)
+        self._meta_tables = Humanoid21Meta.build_runtime_tables(self.model)
+        self._geom_names: List[str] = self._meta_tables['geom_names']
+        self._body_names = [
+            mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i) or ''
+            for i in range(self.model.nbody)
+        ]
 
         # 缓存索引和静态参数
         self._cache_robot_indices()
@@ -297,12 +119,7 @@ class MujocoCombatSimulator(BaseSimulator):
         return cls(**config)
 
     def _cache_robot_indices(self):
-        """初始化缓存: (1) 关节映射 (2) MuJoCo ID → 三分类映射 (3) 完整性校验"""
-        self._cache_joint_mappings()
-        self._cache_geom_classification()
-
-    def _cache_joint_mappings(self):
-        """关节映射: 缓存每个机器人的关节、actuator、keypoint 等索引"""
+        """缓存机器人的关节和body索引"""
         self._robot_cache = {}
 
         for robot_id, suffix in [('robot_a', '_a'), ('robot_b', '_b')]:
@@ -339,6 +156,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 qvel_indices.append(self.model.jnt_dofadr[jnt_id])
                 actuator_ids.append(act_id)
 
+                # 检查关节限位
                 if not self.model.jnt_limited[jnt_id]:
                     raise ValueError(
                         f"Joint {full_name} has no limits. "
@@ -349,12 +167,14 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['qpos_indices'] = np.array(qpos_indices, dtype=np.int32)
             cache['qvel_indices'] = np.array(qvel_indices, dtype=np.int32)
             cache['actuator_ids'] = np.array(actuator_ids, dtype=np.int32)
-            cache['jnt_ranges'] = np.array(jnt_ranges, dtype=np.float32)
+            cache['jnt_ranges'] = np.array(jnt_ranges, dtype=np.float32)  # shape: (21, 2)
             cache['suffix'] = suffix
 
             # 脚部 body (用于接触检测)
-            cache['foot_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"foot_right{suffix}")
-            cache['foot_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"foot_left{suffix}")
+            foot_right_name = f"foot_right{suffix}"
+            foot_left_name = f"foot_left{suffix}"
+            cache['foot_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_right_name)
+            cache['foot_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_left_name)
 
             # 关键点 body (用于对手观测)
             cache['head_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"head{suffix}")
@@ -362,6 +182,7 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['hand_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_left{suffix}")
 
             # --- Extended metadata for public IDataAccessor (DATASPEC §2 / §4) ---
+            # Deterministic ordering of this robot's body subtree (sorted by body id).
             body_ids_sorted: List[int] = sorted(int(b) for b in cache['body_ids'])
             body_names_subtree: List[str] = []
             body_masses_subtree: List[float] = []
@@ -375,7 +196,8 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['body_names_subtree'] = body_names_subtree
             cache['body_masses_subtree'] = np.asarray(body_masses_subtree, dtype=np.float32)
 
-            # All joints attached to bodies in this subtree
+            # All joints attached to bodies in this subtree (includes root + controlled
+            # + 2-DoF ankle joints etc.). Keyed by name for public access.
             joint_names_subtree: List[str] = []
             joint_ids_by_name: Dict[str, int] = {}
             for bid in body_ids_sorted:
@@ -389,7 +211,8 @@ class MujocoCombatSimulator(BaseSimulator):
             cache['joint_names_subtree'] = joint_names_subtree
             cache['joint_ids_by_name'] = joint_ids_by_name
 
-            # Keypoint body-name map
+            # Keypoint body-name map. Observers can look up semantic roles
+            # ("torso", "foot_left", ...) without knowing the "_a"/"_b" suffix.
             cache['keypoint_body_names'] = {
                 'torso': f'torso{suffix}',
                 'head': f'head{suffix}',
@@ -399,6 +222,9 @@ class MujocoCombatSimulator(BaseSimulator):
                 'hand_left': f'hand_left{suffix}',
                 'hand_right': f'hand_right{suffix}',
             }
+            # Keypoint joint-name map. Currently exposes the 2-DoF ankle joints
+            # (needed by balance observers); expand here when new semantic
+            # joint roles are introduced.
             cache['keypoint_joint_names'] = {
                 f'ankle_{axis}_{side}': f'ankle_{axis}_{side}{suffix}'
                 for axis in ('x', 'y') for side in ('left', 'right')
@@ -409,77 +235,6 @@ class MujocoCombatSimulator(BaseSimulator):
             ]
 
             self._robot_cache[robot_id] = cache
-
-    def _cache_geom_classification(self):
-        """MuJoCo geom ID → 三分类 (AFF/CAT/GEOM) 映射 + 完整性校验"""
-        self._geom_names = [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, i) or "" for i in range(self.model.ngeom)]
-        self._body_names = [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i) or "" for i in range(self.model.nbody)]
-
-        # ─── 1. 验证 Geom 命名一致性 ───
-        for geom_id in range(self.model.ngeom):
-            geom_name = self._geom_names[geom_id]
-            if not geom_name:
-                raise ValueError(f"Geom ID {geom_id} has no name defined in XML.")
-            if geom_name in self.RECOGNIZED_ENV_GEOMS:
-                continue
-            if geom_name.endswith('_a'):
-                base = geom_name[:-2]
-            elif geom_name.endswith('_b'):
-                base = geom_name[:-2]
-            else:
-                raise ValueError(f"Geom name {repr(geom_name)} lacks required agent suffix '_a' or '_b' and is not an env geom.")
-            if base not in self.RECOGNIZED_GEOM_NAMES:
-                raise ValueError(f"Geom base name {repr(base)} is unrecognized (not in RECOGNIZED_GEOM_NAMES).")
-
-        # ─── 2. 构建 MuJoCo geom ID → AFF/CAT/GEOM 查找表 ───
-        self._geom_category = np.full(self.model.ngeom, -1, dtype=np.int8)
-        self._geom_robot_id = np.full(self.model.ngeom, 0, dtype=np.int8)
-        self._geom_entity_id = np.full(self.model.ngeom, -1, dtype=np.int8)
-
-        for geom_id in range(self.model.ngeom):
-            geom_name = self._geom_names[geom_id]
-            if geom_name in self.GEOM_NAME_TO_ID:
-                geom_eid = self.GEOM_NAME_TO_ID[geom_name]
-                self._geom_entity_id[geom_id] = geom_eid
-                self._geom_category[geom_id] = self.GEOM_ID_TO_CAT_ID[geom_eid]
-                self._geom_robot_id[geom_id] = 0 if geom_eid < 6 else (
-                    1 if geom_name.endswith('_a') else 2
-                )
-                continue
-
-            if geom_name.endswith('_a'):
-                self._geom_robot_id[geom_id] = 1
-                base = geom_name[:-2]
-            elif geom_name.endswith('_b'):
-                self._geom_robot_id[geom_id] = 2
-                base = geom_name[:-2]
-            else:
-                raise ValueError(f"Geom name {repr(geom_name)} lacks required agent suffix '_a' or '_b' and is not an env geom.")
-
-            if base in self.GEOM_NAME_TO_ID:
-                geom_eid = self.GEOM_NAME_TO_ID[base]
-                self._geom_entity_id[geom_id] = geom_eid
-                self._geom_category[geom_id] = self.GEOM_ID_TO_CAT_ID[geom_eid]
-            else:
-                raise ValueError(f"Unknown robot geom type: {geom_name}")
-
-        # ─── 3. 完整性校验: 全部分配 + 19 类全覆盖 ───
-        unassigned_geoms = np.where(self._geom_category == -1)[0]
-        if unassigned_geoms.size > 0:
-            unassigned_geom_names = [self._geom_names[gid] for gid in unassigned_geoms]
-            raise ValueError(f"The following geoms were not categorized: {unassigned_geom_names}")
-
-        unique_geom_cats = np.unique(self._geom_category)
-        expected_geom_cats = np.arange(19, dtype=np.int8)
-        if not np.array_equal(unique_geom_cats, expected_geom_cats):
-            missing_cats = np.setdiff1d(expected_geom_cats, unique_geom_cats)
-            extra_cats = np.setdiff1d(unique_geom_cats, expected_geom_cats)
-            raise ValueError(
-                f"Geom category mapping verification failed. Unique categories found do not match the expected 19 classes.\n"
-                f"Found unique categories: {unique_geom_cats}\n"
-                f"Missing categories: {missing_cats}\n"
-                f"Unexpected categories: {extra_cats}"
-            )
     
     def _collect_subtree_body_ids(self, root_body_id: int) -> set[int]:
         body_ids = set()
@@ -593,7 +348,25 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def _get_body_names(self, robot_id: str) -> List[str]:
         """获取机器人的body名称列表"""
-        return list(self._robot_cache[robot_id]['body_names_subtree'])
+        suffix = self._robot_cache[robot_id]['suffix']
+        # 简化版本，只返回主要部位
+        return [
+            f'torso{suffix}',
+            f'head{suffix}',
+            f'pelvis{suffix}',
+            f'thigh_right{suffix}',
+            f'shin_right{suffix}',
+            f'foot_right{suffix}',
+            f'thigh_left{suffix}',
+            f'shin_left{suffix}',
+            f'foot_left{suffix}',
+            f'upper_arm_right{suffix}',
+            f'lower_arm_right{suffix}',
+            f'hand_right{suffix}',
+            f'upper_arm_left{suffix}',
+            f'lower_arm_left{suffix}',
+            f'hand_left{suffix}'
+        ]
     
     def get_core_state(self) -> Dict[str, Any]:
         """
@@ -657,17 +430,18 @@ class MujocoCombatSimulator(BaseSimulator):
         """
         获取派生数据 (按 DATASPEC.md §4)
 
-        对外接触概念模型 (AFF / CAT / GEOM 三级分类):
-        - AFF (Affiliation): 0=Env, 1=robot_a, 2=robot_b — 共 3 类
-        - CAT (Category): 0~18 — 共 19 类 (3 环境 + 16 机器人)
-        - GEOM (Entity): geom 名称 — 共 25 个 (19 机器人 + 6 环境)
-
         全局 (shared)
         -------------
         - ``torso_distance`` (ndarray shape=(1,))
-        - ``contacts_vec`` (Dict): 向量化 SoA 接触数据，键包含
-            ncon / geom1 / geom2 / aff1 / aff2 / cat1 / cat2 /
-            force_mag / force_world / position / normal / frame
+        - ``robot_robot_contacts`` (List[Dict]): 旧 schema，保留以兼容现有消费者
+        - ``robot_environment_contacts`` (List[Dict]): 旧 schema
+        - ``contacts`` (List[Dict]): **新** 结构化接触列表，每条含：
+            * ``geom_a_name`` / ``geom_b_name`` / ``body_a_name`` / ``body_b_name`` (str)
+            * ``position_world`` (ndarray(3,)): 接触点世界坐标
+            * ``normal_world`` (ndarray(3,)): 接触法向量 (单位向量, 指向 geom_b)
+            * ``frame_world`` (ndarray(3,3)): 接触坐标系 [n; t1; t2] (行存储)
+            * ``force_on_body_b_world`` (ndarray(3,)): 世界坐标系下 geom_a 对 geom_b 施加的 3D 力
+            * ``force_magnitude`` (float): 上面向量的模
 
         单边视角 (per-agent, in ``robot_a`` / ``robot_b`` keys)
         -----------------------------------------------------
@@ -698,7 +472,8 @@ class MujocoCombatSimulator(BaseSimulator):
         pos_b = self.data.xpos[torso_b_id]
         torso_distance = np.linalg.norm(pos_b - pos_a)
 
-        contacts_vec = self._extract_contacts()
+        # Structured + legacy contacts produced in a single pass
+        robot_robot_contacts, robot_environment_contacts, contacts = self._extract_contacts()
 
         # 单边视角（高层观测）+ per-body/joint 详细物理量
         robot_a_view = self._get_robot_view('robot_a', 'robot_b')
@@ -708,7 +483,9 @@ class MujocoCombatSimulator(BaseSimulator):
 
         result = {
             'torso_distance': np.array([torso_distance], dtype=np.float32),
-            'contacts_vec': contacts_vec,
+            'robot_robot_contacts': robot_robot_contacts,
+            'robot_environment_contacts': robot_environment_contacts,
+            'contacts': contacts,
             'robot_a': robot_a_view,
             'robot_b': robot_b_view
         }
@@ -754,78 +531,90 @@ class MujocoCombatSimulator(BaseSimulator):
             'joint_world_anchor': joint_world_anchor,
         }
     
-    def _extract_contacts(self) -> Dict[str, Any]:
-        """提取所有接触信息，生成向量化的 SoA (Struct of Arrays) 表示。
+    def _extract_contacts(self) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """提取所有接触信息，同时生成三种视图：
 
-        对外仅暴露三维概念模型 (AFF / CAT / GEOM)：
-        - AFF (Affiliation): 0=Env, 1=robot_a, 2=robot_b — 共 3 类
-        - CAT (Category): 0~18 — 共 19 类 (3 环境 + 16 机器人)
-        - GEOM (Entity): geom 名称 — 共 25 个 (19 机器人 + 6 环境)
+        1. ``robot_robot_contacts`` (legacy): 仅 {body_a, body_b, force 标量}
+        2. ``robot_environment_contacts`` (legacy): 机器人 ↔ 环境接触，仅模
+        3. ``contacts`` (new, DATASPEC §4.1): 全部接触 + 方向/位置/力向量/帧矩阵
+
+        使用 Humanoid21Meta 运行时表进行 AFF 分类。
         """
-        ncon = self.data.ncon
+        geom_aff = self._meta_tables['geom_aff']
+        AFF_ENV = Humanoid21Meta.AFF_ENV
+        AFF_ROBOT_A = Humanoid21Meta.AFF_ROBOT_A
+        AFF_ROBOT_B = Humanoid21Meta.AFF_ROBOT_B
 
-        # 1. 快速构建 vectorized 表示
-        if ncon == 0:
-            contacts_vec = {
-                'ncon': 0,
-                'geom1': np.empty((0,), dtype=np.int8),
-                'geom2': np.empty((0,), dtype=np.int8),
-                'aff1': np.empty((0,), dtype=np.int8),
-                'aff2': np.empty((0,), dtype=np.int8),
-                'cat1': np.empty((0,), dtype=np.int8),
-                'cat2': np.empty((0,), dtype=np.int8),
-                'force_mag': np.empty((0,), dtype=np.float32),
-                'force_world': np.empty((0, 3), dtype=np.float32),
-                'position': np.empty((0, 3), dtype=np.float32),
-                'normal': np.empty((0, 3), dtype=np.float32),
-                'frame': np.empty((0, 3, 3), dtype=np.float32),
-            }
-            return contacts_vec
+        robot_robot_contacts: List[Dict[str, Any]] = []
+        robot_environment_contacts: List[Dict[str, Any]] = []
+        contacts: List[Dict[str, Any]] = []
 
-        # 查表映射: MuJoCo geom ID → GEOM 实体 ID / AFF / CAT
-        geom1_mj = np.asarray(self.data.contact.geom1, dtype=np.int32)
-        geom2_mj = np.asarray(self.data.contact.geom2, dtype=np.int32)
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
 
-        geom1 = self._geom_entity_id[geom1_mj].astype(np.int8)
-        geom2 = self._geom_entity_id[geom2_mj].astype(np.int8)
-        aff1 = self._geom_robot_id[geom1_mj]
-        aff2 = self._geom_robot_id[geom2_mj]
-        cat1 = self._geom_category[geom1_mj]
-        cat2 = self._geom_category[geom2_mj]
+            body1_id = int(self.model.geom_bodyid[geom1])
+            body2_id = int(self.model.geom_bodyid[geom2])
+            geom1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom1) or ''
+            geom2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom2) or ''
+            body1_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body1_id) or ''
+            body2_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body2_id) or ''
 
-        # 提取力
-        forces_local = np.empty((ncon, 3), dtype=np.float64)
-        wrench = np.zeros(6, dtype=np.float64)
-        for i in range(ncon):
-            mujoco.mj_contactForce(self.model, self.data, i, wrench)
-            forces_local[i] = wrench[:3]
+            c_wrench = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, i, c_wrench)
+            force_contact_on_geom2 = c_wrench[:3]
 
-        # 帧重塑 [ncon, 3, 3]
-        frames = np.asarray(self.data.contact.frame, dtype=np.float64).reshape(ncon, 3, 3)
+            # contact.frame is row-major [n; t1; t2] in world coords → 3x3
+            frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)
+            force_world_on_b = frame.T @ force_contact_on_geom2
+            force_magnitude = float(np.linalg.norm(force_contact_on_geom2))
+            normal_world = frame[0]
+            position_world = np.asarray(contact.pos, dtype=np.float64)
 
-        # 投影力到世界坐标系
-        force_world = np.matmul(frames.transpose(0, 2, 1), forces_local[:, :, None]).squeeze(-1)
-        force_mag = np.linalg.norm(forces_local, axis=1)
+            contacts.append({
+                'geom_a_name': geom1_name,
+                'geom_b_name': geom2_name,
+                'body_a_name': body1_name,
+                'body_b_name': body2_name,
+                'position_world': position_world.astype(np.float32),
+                'normal_world': normal_world.astype(np.float32),
+                'frame_world': frame.astype(np.float32),
+                'force_on_body_b_world': force_world_on_b.astype(np.float32),
+                'force_magnitude': force_magnitude,
+            })
 
-        positions = np.asarray(self.data.contact.pos, dtype=np.float64)
-        normals = frames[:, 0, :]  # 第一行是接触法向量
+            # 使用 Meta 运行时表进行 AFF 分类
+            aff1 = int(geom_aff[geom1])
+            aff2 = int(geom_aff[geom2])
 
-        contacts_vec = {
-            'ncon': ncon,
-            'geom1': geom1,
-            'geom2': geom2,
-            'aff1': aff1,
-            'aff2': aff2,
-            'cat1': cat1,
-            'cat2': cat2,
-            'force_mag': force_mag.astype(np.float32),
-            'force_world': force_world.astype(np.float32),
-            'position': positions.astype(np.float32),
-            'normal': normals.astype(np.float32),
-            'frame': frames.astype(np.float32),
-        }
+            if (aff1 == AFF_ROBOT_A and aff2 == AFF_ROBOT_B) or (aff1 == AFF_ROBOT_B and aff2 == AFF_ROBOT_A):
+                is_a1 = (aff1 == AFF_ROBOT_A)
+                robot_robot_contacts.append({
+                    'body_a': body1_name if is_a1 else body2_name,
+                    'body_b': body2_name if not is_a1 else body1_name,
+                    'force': force_magnitude,
+                })
+            elif (aff1 != aff2) and (aff1 != AFF_ENV or aff2 != AFF_ENV):
+                # 机器人 ↔ 环境接触
+                if aff1 == AFF_ENV:
+                    robot_environment_contacts.append({
+                        'robot': 'robot_a' if aff2 == AFF_ROBOT_A else 'robot_b',
+                        'body': body2_name,
+                        'environment_geom': geom1_name,
+                        'environment_body': body1_name,
+                        'force': force_magnitude,
+                    })
+                else:
+                    robot_environment_contacts.append({
+                        'robot': 'robot_a' if aff1 == AFF_ROBOT_A else 'robot_b',
+                        'body': body1_name,
+                        'environment_geom': geom2_name,
+                        'environment_body': body2_name,
+                        'force': force_magnitude,
+                    })
 
-        return contacts_vec
+        return robot_robot_contacts, robot_environment_contacts, contacts
     
     def _get_robot_view(self, robot_id: str, opponent_id: str) -> Dict[str, Any]:
         """
@@ -1096,21 +885,24 @@ class MujocoCombatSimulator(BaseSimulator):
         right_force = 0.0
         left_force = 0.0
         
-        # 地面 geom id (通常是 0)
-        ground_geom_id = 0
+        # 使用 Meta 查找地面 geom id
+        geom_aff = self._meta_tables['geom_aff']
+        AFF_ENV = Humanoid21Meta.AFF_ENV
         
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
             
-            # 检查是否涉及地面
-            if geom1 != ground_geom_id and geom2 != ground_geom_id:
+            # 检查是否涉及环境 geom
+            g1_env = int(geom_aff[geom1]) == AFF_ENV
+            g2_env = int(geom_aff[geom2]) == AFF_ENV
+            if not g1_env and not g2_env:
                 continue
             
-            # 获取非地面的 geom 对应的 body
-            other_geom = geom2 if geom1 == ground_geom_id else geom1
-            body_id = self.model.geom_bodyid[other_geom]
+            # 获取非环境 geom 对应的 body
+            other_geom = geom2 if g1_env else geom1
+            body_id = int(self.model.geom_bodyid[other_geom])
             
             # 计算接触力
             c_array = np.zeros(6, dtype=np.float64)
