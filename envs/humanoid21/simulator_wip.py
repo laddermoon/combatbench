@@ -212,28 +212,6 @@ class MujocoCombatSimulator(BaseSimulator):
         self._data_cache['_action'] = result
         return result
     
-    def _get_body_names(self, robot_id: str) -> List[str]:
-        """获取机器人的body名称列表"""
-        suffix = self._robot(robot_id)['suffix']
-        # 简化版本，只返回主要部位
-        return [
-            f'torso{suffix}',
-            f'head{suffix}',
-            f'pelvis{suffix}',
-            f'thigh_right{suffix}',
-            f'shin_right{suffix}',
-            f'foot_right{suffix}',
-            f'thigh_left{suffix}',
-            f'shin_left{suffix}',
-            f'foot_left{suffix}',
-            f'upper_arm_right{suffix}',
-            f'lower_arm_right{suffix}',
-            f'hand_right{suffix}',
-            f'upper_arm_left{suffix}',
-            f'lower_arm_left{suffix}',
-            f'hand_left{suffix}'
-        ]
-    
     def get_core_state(self) -> Dict[str, Any]:
         """
         获取核心状态 (按 DATASPEC.md 3)
