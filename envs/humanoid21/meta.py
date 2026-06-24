@@ -4,11 +4,11 @@ Humanoid21 仿真环境元数据定义与管理
 概念体系 (bootstrip.md):
   AFF: 归属 — environment(0), robot_a(1), robot_b(2)
   GEOM_CAT: 几何体类别 — 25类 (6环境 + 19机器人), 每个AFF下每个geom有唯一CAT
-  DetailSemanticCAT: 细化语义分类 — 15类, 每个GEOM_CAT对应唯一DetailSemanticCAT
-  SemanticCat: 语义大类 — 8类, 每个DetailSemanticCAT对应一个SemanticCat
-  GEOM: 与 MuJoCo geom 一一对应, 拥有 CAT/AFF/ISKEYPOINT 属性
-  JOINTCAT: 关节类别 — 22类/机器人
-  JOINT: 与 MuJoCo joint 一一对应, 拥有 JOINTCAT/AFF 属性
+  DETAIL_SEMANTIC_CAT: 细化语义分类 — 15类, 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
+  SEMANTIC_CAT: 语义大类 — 8类, 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
+  GEOM: 与 MuJoCo geom 一一对应, 拥有 GEOM_CAT/AFF/ISKEYPOINT 属性
+  JOINT_CAT: 关节类别 — 22类/机器人
+  JOINT: 与 MuJoCo joint 一一对应, 拥有 JOINT_CAT/AFF 属性
 """
 
 from typing import Dict, List, Set, Tuple, Optional
@@ -72,8 +72,8 @@ class Humanoid21Meta:
     CAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in CAT_ID_TO_NAME.items()}
     NUM_CATS = 25
 
-    # === DetailSemanticCAT — 细化语义分类 (15类, 0~14) ===
-    # 每个GEOM_CAT对应唯一DetailSemanticCAT
+    # === DETAIL_SEMANTIC_CAT — 细化语义分类 (15类, 0~14) ===
+    # 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
     DETAIL_GROUND = 0
     DETAIL_CEILING = 1
     DETAIL_WALL = 2
@@ -101,7 +101,7 @@ class Humanoid21Meta:
     DETAIL_NAME_TO_ID: Dict[str, int] = {v: k for k, v in DETAIL_ID_TO_NAME.items()}
     NUM_DETAILS = 15
 
-    # GEOM_CAT → DetailSemanticCAT (25 → 15, 多对一)
+    # GEOM_CAT → DETAIL_SEMANTIC_CAT (25 → 15, 多对一)
     CAT_TO_DETAIL: Dict[int, int] = {
         0: DETAIL_GROUND, 1: DETAIL_CEILING,
         2: DETAIL_WALL, 3: DETAIL_WALL, 4: DETAIL_WALL, 5: DETAIL_WALL,
@@ -116,8 +116,8 @@ class Humanoid21Meta:
         22: DETAIL_LEFT_ARM, 23: DETAIL_LEFT_ARM, 24: DETAIL_LEFT_HAND,
     }
 
-    # === Semantic Cat — 语义大类 (8类, 0~7) ===
-    # 每个DetailSemanticCAT对应一个SemanticCat
+    # === SEMANTIC_CAT — 语义大类 (8类, 0~7) ===
+    # 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
     SEMANTIC_GROUND = 0
     SEMANTIC_WALL = 1
     SEMANTIC_HEAD = 2
@@ -134,7 +134,7 @@ class Humanoid21Meta:
     SEMANTIC_NAME_TO_ID: Dict[str, int] = {v: k for k, v in SEMANTIC_ID_TO_NAME.items()}
     NUM_SEMANTICS = 8
 
-    # DetailSemanticCAT → SemanticCat (15 → 8, 多对一)
+    # DETAIL_SEMANTIC_CAT → SEMANTIC_CAT (15 → 8, 多对一)
     DETAIL_TO_SEMANTIC: Dict[int, int] = {
         0: SEMANTIC_GROUND, 1: SEMANTIC_WALL, 2: SEMANTIC_WALL,
         3: SEMANTIC_HEAD,
@@ -217,8 +217,8 @@ class Humanoid21Meta:
             MUJOCO_GEOM_NAME_TO_ENTITY_ID[f'{_en}_b'] = _eid
     del _en, _eid
 
-    # === JOINTCAT — 关节类别 (22类/机器人, 0~21) ===
-    JOINTCAT_ID_TO_NAME: Dict[int, str] = {
+    # === JOINT_CAT — 关节类别 (22类/机器人, 0~21) ===
+    JOINT_CAT_ID_TO_NAME: Dict[int, str] = {
         0: 'root',
         1: 'abdomen_z', 2: 'abdomen_y', 3: 'abdomen_x',
         4: 'hip_x_right', 5: 'hip_z_right', 6: 'hip_y_right',
@@ -228,15 +228,15 @@ class Humanoid21Meta:
         16: 'shoulder1_right', 17: 'shoulder2_right', 18: 'elbow_right',
         19: 'shoulder1_left', 20: 'shoulder2_left', 21: 'elbow_left',
     }
-    JOINTCAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in JOINTCAT_ID_TO_NAME.items()}
-    NUM_JOINTCATS = 22
+    JOINT_CAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in JOINT_CAT_ID_TO_NAME.items()}
+    NUM_JOINT_CATS = 22
 
     JOINT_SEMANTIC_ID_TO_NAME: Dict[int, str] = {
         0: 'root', 1: 'abdomen', 2: 'hip', 3: 'knee',
         4: 'ankle', 5: 'shoulder', 6: 'elbow',
     }
 
-    JOINTCAT_TO_SEMANTIC: Dict[int, int] = {
+    JOINT_CAT_TO_SEMANTIC: Dict[int, int] = {
         0: 0, 1: 1, 2: 1, 3: 1,
         4: 2, 5: 2, 6: 2, 10: 2, 11: 2, 12: 2,
         7: 3, 13: 3,
@@ -272,7 +272,7 @@ class Humanoid21Meta:
 
     @classmethod
     def _classify_joint(cls, name: str) -> Tuple[Optional[int], Optional[int]]:
-        """返回 (jointcat_id, aff_id) 或 (None, None)"""
+        """返回 (joint_cat_id, aff_id) 或 (None, None)"""
         if name == 'root_a':
             return 0, cls.AFF_ROBOT_A
         if name == 'root_b':
@@ -285,7 +285,7 @@ class Humanoid21Meta:
             aff = cls.AFF_ROBOT_B
         else:
             return None, None
-        return cls.JOINTCAT_NAME_TO_ID.get(base), aff
+        return cls.JOINT_CAT_NAME_TO_ID.get(base), aff
 
     @classmethod
     def _is_keypoint_geom(cls, name: str) -> bool:
@@ -334,7 +334,7 @@ class Humanoid21Meta:
                 continue
             jcat, aff = cls._classify_joint(name)
             if jcat is None:
-                errors.append(f"Joint '{name}' cannot be classified to JOINTCAT")
+                errors.append(f"Joint '{name}' cannot be classified to JOINT_CAT")
             if aff is not None and aff in aff_joint_counts:
                 aff_joint_counts[aff] += 1
 
@@ -400,7 +400,7 @@ class Humanoid21Meta:
             jcat, aff = cls._classify_joint(name)
             if jcat is not None:
                 joint_cat[jid] = jcat
-                joint_semantic[jid] = cls.JOINTCAT_TO_SEMANTIC.get(jcat, -1)
+                joint_semantic[jid] = cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1)
             if aff is not None:
                 joint_aff[jid] = aff
 
@@ -445,12 +445,12 @@ class Humanoid21Meta:
         return cls.GEOM_ENTITY_NAME_TO_ID[name]
 
     @classmethod
-    def jointcat_id_to_name(cls, jcat_id: int) -> str:
-        return cls.JOINTCAT_ID_TO_NAME[jcat_id]
+    def joint_cat_id_to_name(cls, jcat_id: int) -> str:
+        return cls.JOINT_CAT_ID_TO_NAME[jcat_id]
 
     @classmethod
-    def jointcat_name_to_id(cls, name: str) -> int:
-        return cls.JOINTCAT_NAME_TO_ID[name]
+    def joint_cat_name_to_id(cls, name: str) -> int:
+        return cls.JOINT_CAT_NAME_TO_ID[name]
 
     @classmethod
     def detail_id_to_name(cls, detail_id: int) -> str:
@@ -512,13 +512,13 @@ class Humanoid21Meta:
             return None
         return {
             'mujoco_name': mujoco_joint_name,
-            'jointcat_id': jcat,
-            'jointcat_name': cls.JOINTCAT_ID_TO_NAME[jcat],
+            'joint_cat_id': jcat,
+            'joint_cat_name': cls.JOINT_CAT_ID_TO_NAME[jcat],
             'aff_id': aff,
             'aff_name': cls.AFF_ID_TO_NAME.get(aff, 'unknown'),
-            'semantic_id': cls.JOINTCAT_TO_SEMANTIC.get(jcat, -1),
+            'semantic_id': cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1),
             'semantic_name': cls.JOINT_SEMANTIC_ID_TO_NAME.get(
-                cls.JOINTCAT_TO_SEMANTIC.get(jcat, -1), 'unknown'),
+                cls.JOINT_CAT_TO_SEMANTIC.get(jcat, -1), 'unknown'),
         }
 
     @classmethod
@@ -549,7 +549,7 @@ class Humanoid21Meta:
 
     @classmethod
     def geoms_by_semantic(cls, semantic_id: int) -> List[str]:
-        """返回属于指定 Semantic Cat 的所有 MuJoCo geom 名称。"""
+        """返回属于指定 SEMANTIC_CAT 的所有 MuJoCo geom 名称。"""
         result = []
         for name in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID:
             cat, _ = cls._classify_geom(name)
