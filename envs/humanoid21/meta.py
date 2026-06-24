@@ -32,14 +32,14 @@ Humanoid21 仿真环境元数据定义与管理
     14=left_hand   ← CAT: hand_left
 
   CONTACT_GROUP (8类): 每个CONTACT_PART对应一个CONTACT_GROUP
-    0=ground  ← PART: ground
-    1=wall    ← PART: ceiling, wall
-    2=head    ← PART: head
-    3=torso   ← PART: torso, waist, pelvis
-    4=arm     ← PART: right_arm, left_arm
-    5=hand    ← PART: right_hand, left_hand
-    6=leg     ← PART: right_leg, left_leg
-    7=foot    ← PART: right_foot, left_foot
+    0=ground  ← PART: ground          [不可攻击, 不可受击]
+    1=wall    ← PART: ceiling, wall   [不可攻击, 不可受击]
+    2=head    ← PART: head            [不可攻击, 可受击]
+    3=torso   ← PART: torso, waist, pelvis  [不可攻击, 可受击]
+    4=arm     ← PART: right_arm, left_arm   [不可攻击, 不可受击]
+    5=hand    ← PART: right_hand, left_hand [可攻击,   不可受击]
+    6=leg     ← PART: right_leg, left_leg   [不可攻击, 不可受击]
+    7=foot    ← PART: right_foot, left_foot [可攻击,   不可受击]
 
   GEOM: 与 MuJoCo geom 一一对应, 拥有 GEOM_CAT/AFF/ISKEYPOINT 属性
     共44个: 6环境 + 19(robot_a) + 19(robot_b)
@@ -185,6 +185,21 @@ class Humanoid21Meta:
     }
     GROUP_NAME_TO_ID: Dict[str, int] = {v: k for k, v in GROUP_ID_TO_NAME.items()}
     NUM_GROUPS = 8
+
+    # CONTACT_GROUP 战斗属性: 可攻击 / 可受击
+    # 规则: 仅 hand, foot 可作为有效攻击部位; 仅 head, torso 可作为有效受击部位
+    GROUP_CAN_ATTACK: Dict[int, bool] = {
+        GROUP_GROUND: False, GROUP_WALL: False,
+        GROUP_HEAD: False, GROUP_TORSO: False,
+        GROUP_ARM: False, GROUP_HAND: True,
+        GROUP_LEG: False, GROUP_FOOT: True,
+    }
+    GROUP_CAN_BE_HIT: Dict[int, bool] = {
+        GROUP_GROUND: False, GROUP_WALL: False,
+        GROUP_HEAD: True, GROUP_TORSO: True,
+        GROUP_ARM: False, GROUP_HAND: False,
+        GROUP_LEG: False, GROUP_FOOT: False,
+    }
 
     # CONTACT_PART → CONTACT_GROUP (15 → 8, 多对一)
     PART_TO_GROUP: Dict[int, int] = {
@@ -682,6 +697,8 @@ class Humanoid21Meta:
             'part_name': cls.PART_ID_TO_NAME[part],
             'group_id': group,
             'group_name': cls.GROUP_ID_TO_NAME[group],
+            'can_attack': cls.GROUP_CAN_ATTACK[group],
+            'can_be_hit': cls.GROUP_CAN_BE_HIT[group],
         }
 
     @classmethod
