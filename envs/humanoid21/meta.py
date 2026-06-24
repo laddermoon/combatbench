@@ -306,57 +306,63 @@ class Humanoid21Meta:
     EXPECTED_ROBOT_JOINTS_PER_AFF = 22
 
     # === 仿真参数 ===
-    from pathlib import Path as _Path
     DT = 0.002
     ACTION_DIM = 21
-    ARENA_XML = str(_Path(__file__).parent / 'battle_v1.xml')
-    del _Path
-
-    # 固化的 PD 控制参数 (不可配置)
+    
     KP = np.array([
+        # 腹部 (abdomen_z, abdomen_y, abdomen_x) - 战斗中需维持上半身直立
         1000.0, 1000.0, 1000.0,
+        # 右腿 (hip_x=roll, hip_z=yaw, hip_y=pitch, knee, ankle_y, ankle_x)
         150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
+        # 左腿
         150.0, 200.0, 200.0, 200.0, 100.0, 100.0,
+        # 右臂 (shoulder1, shoulder2, elbow)
         150.0, 150.0, 100.0,
-        150.0, 150.0, 100.0,
+        # 左臂
+        150.0, 150.0, 100.0
     ], dtype=np.float32)
 
     KD = np.array([
+        # 腹部 - 高阻尼以减少过冲
         100.0, 100.0, 100.0,
+        # 右腿 - 踝部较低增益以保持柔顺性
         15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
+        # 左腿
         15.0, 20.0, 20.0, 20.0, 10.0, 10.0,
+        # 右臂
         15.0, 15.0, 10.0,
-        15.0, 15.0, 10.0,
+        # 左臂
+        15.0, 15.0, 10.0
     ], dtype=np.float32)
-
-    # 受控关节名称 (固定顺序, 对应 JOINT_CAT 1~21)
+    
+    # 受控关节名称 (固定顺序)
     CONTROLLED_JOINTS = [
         'abdomen_z', 'abdomen_y', 'abdomen_x',
         'hip_x_right', 'hip_z_right', 'hip_y_right', 'knee_right', 'ankle_y_right', 'ankle_x_right',
         'hip_x_left', 'hip_z_left', 'hip_y_left', 'knee_left', 'ankle_y_left', 'ankle_x_left',
         'shoulder1_right', 'shoulder2_right', 'elbow_right',
-        'shoulder1_left', 'shoulder2_left', 'elbow_left',
+        'shoulder1_left', 'shoulder2_left', 'elbow_left'
     ]
 
-    # 初始姿态配置 (来自 humanoid.xml 的 keyframes)
+    # 初始姿态配置（来自 humanoid.xml 的 keyframes）
     # 每个姿态包含 root_pos, root_quat, joint_pos, action
     INITIAL_POSES = {
         'standing': {
             'root_pos': np.array([0, 0, 1.282], dtype=np.float32),
             'root_quat': np.array([1, 0, 0, 0], dtype=np.float32),
             'joint_pos': np.array([
-                0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0,
-                0, 0, 0,
+                0, 0, 0,  # abdomen
+                0, 0, 0, 0, 0, 0,  # right leg
+                0, 0, 0, 0, 0, 0,  # left leg
+                0, 0, 0,  # right arm
+                0, 0, 0  # left arm
             ], dtype=np.float32),
             'action': np.array([
                 -0.0000, 0.4286, -0.0000,
                 0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
                 0.5000, 0.2632, 0.7647, 0.9753, -0.0000, -0.0000,
                 0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32),
+            ], dtype=np.float32)
         },
         'squat': {
             'root_pos': np.array([0, 0, 0.596], dtype=np.float32),
@@ -366,14 +372,14 @@ class Humanoid21Meta:
                 -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
                 -0.25, -0.5, -2.5, -2.65, -0.8, 0.56,
                 0, 0, 0,
-                0, 0, 0,
+                0, 0, 0
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4287, 0.0000,
                 0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
                 0.4998, 0.2630, 0.7642, 0.9747, -0.0003, 0.0002,
                 0.1724, 0.1724, 0.3333, 0.1724, 0.1724, 0.3333,
-            ], dtype=np.float32),
+            ], dtype=np.float32)
         },
         'stand_on_left_leg': {
             'root_pos': np.array([0, 0, 1.21948], dtype=np.float32),
@@ -383,14 +389,14 @@ class Humanoid21Meta:
                 -0.24, -0.007, -0.34, -1.76, -0.466, -0.0415,
                 -0.08, -0.01, -0.37, -0.685, -0.35, -0.09,
                 0.109, -0.067, -0.7,
-                -0.05, 0.12, 0.16,
+                -0.05, 0.12, 0.16
             ], dtype=np.float32),
             'action': np.array([
                 -0.0000, 0.4285, 0.0001,
                 0.4998, 0.2632, 0.7646, 0.9749, -0.0002, -0.0000,
                 0.4999, 0.2632, 0.7646, 0.9752, -0.0001, -0.0000,
                 0.1724, 0.1724, 0.3332, 0.1724, 0.1724, 0.3334,
-            ], dtype=np.float32),
+            ], dtype=np.float32)
         },
         'prone': {
             'root_pos': np.array([0.4, 0, 0.0757706], dtype=np.float32),
@@ -400,14 +406,14 @@ class Humanoid21Meta:
                 0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
                 0.0077, 0.0019, -0.026, -0.351, -0.27, 0,
                 0.56, -0.62, -1.752,
-                0.186, -0.73, -1.73,
+                0.186, -0.73, -1.73
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4286, 0.0000,
                 0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
                 0.5000, 0.2632, 0.7647, 0.9752, -0.0001, 0.0000,
                 0.1725, 0.1723, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32),
+            ], dtype=np.float32)
         },
         'supine': {
             'root_pos': np.array([-0.4, 0, 0.08122], dtype=np.float32),
@@ -417,17 +423,16 @@ class Humanoid21Meta:
                 0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
                 0.0182, 0.0142, 0.3, 0.042, -0.44, -0.02,
                 0.186, -0.73, -1.73,
-                0.186, -0.73, -1.73,
+                0.186, -0.73, -1.73
             ], dtype=np.float32),
             'action': np.array([
                 0.0000, 0.4285, 0.0000,
                 0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
                 0.5000, 0.2632, 0.7648, 0.9753, -0.0002, -0.0000,
                 0.1725, 0.1722, 0.3329, 0.1725, 0.1722, 0.3329,
-            ], dtype=np.float32),
-        },
+            ], dtype=np.float32)
+        }
     }
-
     # === 内部分类工具 ===
 
     @classmethod
