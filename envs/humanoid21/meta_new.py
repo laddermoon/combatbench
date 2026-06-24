@@ -6,7 +6,7 @@ Humanoid21 仿真环境元数据定义与管理
   用户读这份代码就能理解: 有哪些 body, 每个 body 上挂着什么 geom/joint,
   body 之间的父子关系是什么. 不需要学习自定义的编号体系.
 
-  在 MuJoCo 概念之上, 按需添加战斗语义层 (COMBAT_GROUPS, KEYPOINT_BODIES).
+  在 MuJoCo 概念之上, 按需添加战斗语义层 (ATTACK_PARTS, HITTABLE_PARTS, KEYPOINT_BODIES).
 
 两层结构:
   Layer 1 — MuJoCo 概念 (与 battle_v1.xml 一一对应)
@@ -16,9 +16,10 @@ Humanoid21 仿真环境元数据定义与管理
     ROBOT_SUFFIXES:   机器人实例化后缀
 
   Layer 2 — 战斗语义 (建立在 MuJoCo body 之上)
-    COMBAT_GROUPS:    body → 战斗角色分组 (可攻击/可受击)
-    KEYPOINT_BODIES:  需要观测的 body (语义名 → body name)
-    KEYPOINT_JOINTS:  需要观测的关节
+    ATTACK_PARTS:     可以攻击别人的 body name 列表
+    HITTABLE_PARTS:   可以被攻击的 body name 列表
+    KEYPOINT_BODIES:  需要观测的 body name 列表
+    KEYPOINT_JOINTS:  需要观测的关节 name 列表
 
   校验: validate() 检查代码定义与加载的 MuJoCo model 是否一致
   运行时: build_runtime_tables() 从代码定义 + model 构建查找表
@@ -165,39 +166,26 @@ class Humanoid21Meta:
     # Layer 2: 战斗语义 — 建立在 MuJoCo body 之上
     # ============================================================
 
-    # --- 战斗部位分组 ---
-    # 把 body 按战斗角色分组, 标注可攻击 / 可受击
-    # key 是组名, bodies 是该组包含的 body name 列表 (不含 _a/_b 后缀)
-    COMBAT_GROUPS: Dict[str, Dict[str, Any]] = {
-        'head':  {'bodies': ['head'],                                    'can_attack': False, 'can_be_hit': True},
-        'torso': {'bodies': ['torso', 'waist_lower', 'pelvis'],          'can_attack': False, 'can_be_hit': True},
-        'arm':   {'bodies': ['upper_arm_right', 'lower_arm_right',
-                             'upper_arm_left', 'lower_arm_left'],         'can_attack': False, 'can_be_hit': False},
-        'hand':  {'bodies': ['hand_right', 'hand_left'],                 'can_attack': True,  'can_be_hit': False},
-        'leg':   {'bodies': ['thigh_right', 'shin_right',
-                             'thigh_left', 'shin_left'],                  'can_attack': False, 'can_be_hit': False},
-        'foot':  {'bodies': ['foot_right', 'foot_left'],                 'can_attack': True,  'can_be_hit': False},
-    }
+    # --- 战斗语义: body name 列表 (不含 _a/_b 后缀) ---
+    # 可以攻击别人的部位
+    ATTACK_PARTS: List[str] = [
+        'hand_right', 'hand_left',
+        'foot_right', 'foot_left',
+    ]
 
-    # --- 派生: body name → combat group name ---
-    BODY_TO_COMBAT_GROUP: Dict[str, str] = {}
-    for _gname, _gspec in COMBAT_GROUPS.items():
-        for _bname in _gspec['bodies']:
-            BODY_TO_COMBAT_GROUP[_bname] = _gname
-    del _gname, _gspec, _bname
+    # 可以被攻击 (受击) 的部位
+    HITTABLE_PARTS: List[str] = [
+        'head',
+        'torso', 'waist_lower', 'pelvis',
+    ]
 
     # --- 观测关键点 ---
-    # 标记哪些 body 需要被观测 (位置/速度)
-    # key 是下游观测中使用的语义名, value 是 body name (不含后缀)
-    KEYPOINT_BODIES: Dict[str, str] = {
-        'torso':      'torso',
-        'head':       'head',
-        'pelvis':     'pelvis',
-        'foot_right': 'foot_right',
-        'foot_left':  'foot_left',
-        'hand_right': 'hand_right',
-        'hand_left':  'hand_left',
-    }
+    # 需要被观测 (位置/速度) 的 body
+    KEYPOINT_BODIES: List[str] = [
+        'torso', 'head', 'pelvis',
+        'foot_right', 'foot_left',
+        'hand_right', 'hand_left',
+    ]
 
     # --- 观测关键关节 ---
     # 标记哪些 joint 需要被观测 (平衡分析用)
@@ -382,11 +370,11 @@ class Humanoid21Meta:
 
         # 4. 校验 keypoint bodies
         for robot_id, suffix in cls.ROBOT_SUFFIXES.items():
-            for semantic_name, body_name in cls.KEYPOINT_BODIES.items():
+            for body_name in cls.KEYPOINT_BODIES:
                 full_body = f"{body_name}{suffix}"
                 bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full_body)
                 if bid < 0:
-                    errors.append(f"[{robot_id}] Missing keypoint body: {full_body} (semantic: {semantic_name})")
+                    errors.append(f"[{robot_id}] Missing keypoint body: {full_body}")
 
         return errors
 
@@ -500,14 +488,14 @@ class Humanoid21Meta:
             r['jnt_ranges'] = np.array(ctrl_ranges, dtype=np.float32)
             r['controlled_joint_names'] = ctrl_joint_names
 
-            # Keypoint bodies: 语义名 → MuJoCo body ID
+            # Keypoint bodies: body name → MuJoCo body ID
             keypoint_body_ids: Dict[str, int] = {}
             keypoint_body_names: Dict[str, str] = {}
-            for semantic_name, body_name in cls.KEYPOINT_BODIES.items():
+            for body_name in cls.KEYPOINT_BODIES:
                 full = f"{body_name}{suffix}"
                 bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, full)
-                keypoint_body_ids[semantic_name] = bid
-                keypoint_body_names[semantic_name] = full
+                keypoint_body_ids[body_name] = bid
+                keypoint_body_names[body_name] = full
             r['keypoint_body_ids'] = keypoint_body_ids
             r['keypoint_body_names'] = keypoint_body_names
 
