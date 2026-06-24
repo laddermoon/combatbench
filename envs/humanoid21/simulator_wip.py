@@ -75,16 +75,15 @@ class MujocoCombatSimulator(BaseSimulator):
         if meta_errors:
             raise ValueError(f"Model validation failed:\n" + "\n".join(meta_errors))
 
-        # 构建 geom/joint 运行时查找表 (SoA 预映射)
-        self._meta_tables = Humanoid21Meta.build_runtime_tables(self.model)
-        self._geom_names: List[str] = self._meta_tables['geom_names']
-        self._body_names = [
-            mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, i) or ''
-            for i in range(self.model.nbody)
-        ]
+        # 构建 geom/joint 运行时查找表 + per-AFF 结构化数据
+        self._meta = Humanoid21Meta.build_runtime_tables(self.model)
+        self._robots = self._meta['robots']  # {aff_id: {...}}
+        self._robot_aff = {  # robot_id string → aff_id
+            'robot_a': Humanoid21Meta.AFF_ROBOT_A,
+            'robot_b': Humanoid21Meta.AFF_ROBOT_B,
+        }
+        self._aff_to_robot_id = {v: k for k, v in self._robot_aff.items()}
 
-        # 缓存索引和静态参数
-        self._cache_robot_indices()
         self._compute_normalization_params()
 
         # 初始化控制目标
@@ -118,147 +117,16 @@ class MujocoCombatSimulator(BaseSimulator):
     def from_blueprint(cls, config: Dict[str, Any]) -> "MujocoCombatSimulator":
         return cls(**config)
 
-    def _cache_robot_indices(self):
-        """缓存机器人的关节和body索引"""
-        self._robot_cache = {}
+    def _robot(self, robot_id: str) -> Dict[str, Any]:
+        """从 Meta 运行时表获取 per-AFF 结构化数据"""
+        return self._robots[self._robot_aff[robot_id]]
 
-        for robot_id, suffix in [('robot_a', '_a'), ('robot_b', '_b')]:
-            cache = {}
-
-            # Root joint (freejoint)
-            root_jnt_name = f"root{suffix}"
-            root_jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, root_jnt_name)
-            cache['root_qpos_adr'] = self.model.jnt_qposadr[root_jnt_id]
-            cache['root_qvel_adr'] = self.model.jnt_dofadr[root_jnt_id]
-
-            # Torso body (根节点，带 freejoint)
-            torso_name = f"torso{suffix}"
-            cache['torso_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, torso_name)
-            cache['body_ids'] = self._collect_subtree_body_ids(cache['torso_body_id'])
-
-            # 受控关节索引
-            qpos_indices = []
-            qvel_indices = []
-            actuator_ids = []
-            jnt_ranges = []
-
-            for jnt_name in self.CONTROLLED_JOINTS:
-                full_name = f"{jnt_name}{suffix}"
-                jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, full_name)
-                act_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, full_name)
-
-                if jnt_id < 0:
-                    raise ValueError(f"Joint {full_name} not found in model")
-                if act_id < 0:
-                    raise ValueError(f"Actuator {full_name} not found in model")
-
-                qpos_indices.append(self.model.jnt_qposadr[jnt_id])
-                qvel_indices.append(self.model.jnt_dofadr[jnt_id])
-                actuator_ids.append(act_id)
-
-                # 检查关节限位
-                if not self.model.jnt_limited[jnt_id]:
-                    raise ValueError(
-                        f"Joint {full_name} has no limits. "
-                        f"All joints must have finite limits for normalized control."
-                    )
-                jnt_ranges.append(self.model.jnt_range[jnt_id].copy())
-
-            cache['qpos_indices'] = np.array(qpos_indices, dtype=np.int32)
-            cache['qvel_indices'] = np.array(qvel_indices, dtype=np.int32)
-            cache['actuator_ids'] = np.array(actuator_ids, dtype=np.int32)
-            cache['jnt_ranges'] = np.array(jnt_ranges, dtype=np.float32)  # shape: (21, 2)
-            cache['suffix'] = suffix
-
-            # 脚部 body (用于接触检测)
-            foot_right_name = f"foot_right{suffix}"
-            foot_left_name = f"foot_left{suffix}"
-            cache['foot_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_right_name)
-            cache['foot_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, foot_left_name)
-
-            # 关键点 body (用于对手观测)
-            cache['head_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"head{suffix}")
-            cache['hand_right_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_right{suffix}")
-            cache['hand_left_body_id'] = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"hand_left{suffix}")
-
-            # --- Extended metadata for public IDataAccessor (DATASPEC §2 / §4) ---
-            # Deterministic ordering of this robot's body subtree (sorted by body id).
-            body_ids_sorted: List[int] = sorted(int(b) for b in cache['body_ids'])
-            body_names_subtree: List[str] = []
-            body_masses_subtree: List[float] = []
-            for bid in body_ids_sorted:
-                bname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, bid)
-                if not bname:
-                    raise ValueError(f"Body id {bid} in {robot_id} subtree has no name")
-                body_names_subtree.append(bname)
-                body_masses_subtree.append(float(self.model.body_mass[bid]))
-            cache['body_ids_sorted'] = np.asarray(body_ids_sorted, dtype=np.int32)
-            cache['body_names_subtree'] = body_names_subtree
-            cache['body_masses_subtree'] = np.asarray(body_masses_subtree, dtype=np.float32)
-
-            # All joints attached to bodies in this subtree (includes root + controlled
-            # + 2-DoF ankle joints etc.). Keyed by name for public access.
-            joint_names_subtree: List[str] = []
-            joint_ids_by_name: Dict[str, int] = {}
-            for bid in body_ids_sorted:
-                nj = int(self.model.body_jntnum[bid])
-                j_start = int(self.model.body_jntadr[bid])
-                for jid in range(j_start, j_start + nj):
-                    jname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, jid)
-                    if jname and jname not in joint_ids_by_name:
-                        joint_names_subtree.append(jname)
-                        joint_ids_by_name[jname] = int(jid)
-            cache['joint_names_subtree'] = joint_names_subtree
-            cache['joint_ids_by_name'] = joint_ids_by_name
-
-            # Keypoint body-name map. Observers can look up semantic roles
-            # ("torso", "foot_left", ...) without knowing the "_a"/"_b" suffix.
-            cache['keypoint_body_names'] = {
-                'torso': f'torso{suffix}',
-                'head': f'head{suffix}',
-                'pelvis': f'pelvis{suffix}',
-                'foot_left': f'foot_left{suffix}',
-                'foot_right': f'foot_right{suffix}',
-                'hand_left': f'hand_left{suffix}',
-                'hand_right': f'hand_right{suffix}',
-            }
-            # Keypoint joint-name map. Currently exposes the 2-DoF ankle joints
-            # (needed by balance observers); expand here when new semantic
-            # joint roles are introduced.
-            cache['keypoint_joint_names'] = {
-                f'ankle_{axis}_{side}': f'ankle_{axis}_{side}{suffix}'
-                for axis in ('x', 'y') for side in ('left', 'right')
-            }
-            cache['root_joint_name'] = root_jnt_name
-            cache['controlled_joint_names'] = [
-                f"{jn}{suffix}" for jn in self.CONTROLLED_JOINTS
-            ]
-
-            self._robot_cache[robot_id] = cache
-    
-    def _collect_subtree_body_ids(self, root_body_id: int) -> set[int]:
-        body_ids = set()
-        stack = [root_body_id]
-
-        while stack:
-            body_id = stack.pop()
-            if body_id in body_ids:
-                continue
-            body_ids.add(body_id)
-            for child_body_id in range(self.model.nbody):
-                if child_body_id == body_id:
-                    continue
-                if int(self.model.body_parentid[child_body_id]) == body_id:
-                    stack.append(child_body_id)
-
-        return body_ids
-    
     def _compute_normalization_params(self):
         """计算归一化参数 (reference 和 scale)"""
         self._norm_params = {}
         
         for robot_id in ['robot_a', 'robot_b']:
-            jnt_ranges = self._robot_cache[robot_id]['jnt_ranges']  # (21, 2)
+            jnt_ranges = self._robot(robot_id)['jnt_ranges']  # (21, 2)
             
             lower = jnt_ranges[:, 0]
             upper = jnt_ranges[:, 1]
@@ -307,16 +175,16 @@ class MujocoCombatSimulator(BaseSimulator):
         result: Dict[str, Any] = {}
 
         for robot_id in ['robot_a', 'robot_b']:
-            cache = self._robot_cache[robot_id]
-            body_names = list(cache['body_names_subtree'])
-            body_masses = np.asarray(cache['body_masses_subtree'], dtype=np.float32)
+            cache = self._robot(robot_id)
+            body_names = list(cache['body_names'])
+            body_masses = np.asarray(cache['body_masses'], dtype=np.float32)
             result[robot_id] = {
                 'dof_names': self.CONTROLLED_JOINTS.copy(),
                 'body_names': body_names,
                 'body_masses_by_name': {
                     name: float(mass) for name, mass in zip(body_names, body_masses)
                 },
-                'joint_names': list(cache['joint_names_subtree']),
+                'joint_names': list(cache['joint_names']),
                 'controlled_joint_names': list(cache['controlled_joint_names']),
                 'root_joint_name': cache['root_joint_name'],
                 'keypoint_body_names': dict(cache['keypoint_body_names']),
@@ -348,7 +216,7 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def _get_body_names(self, robot_id: str) -> List[str]:
         """获取机器人的body名称列表"""
-        suffix = self._robot_cache[robot_id]['suffix']
+        suffix = self._robot(robot_id)['suffix']
         # 简化版本，只返回主要部位
         return [
             f'torso{suffix}',
@@ -386,7 +254,7 @@ class MujocoCombatSimulator(BaseSimulator):
         result = {}
 
         for robot_id in ['robot_a', 'robot_b']:
-            cache = self._robot_cache[robot_id]
+            cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
 
             # Root 位置和姿态
@@ -465,8 +333,8 @@ class MujocoCombatSimulator(BaseSimulator):
             return self._data_cache['_derived_state']
 
         # 全局对抗信息
-        torso_a_id = self._robot_cache['robot_a']['torso_body_id']
-        torso_b_id = self._robot_cache['robot_b']['torso_body_id']
+        torso_a_id = self._robot('robot_a')['root_body_id']
+        torso_b_id = self._robot('robot_b')['root_body_id']
 
         pos_a = self.data.xpos[torso_a_id]
         pos_b = self.data.xpos[torso_b_id]
@@ -499,9 +367,9 @@ class MujocoCombatSimulator(BaseSimulator):
         Arrays are copied so callers cannot mutate the MuJoCo buffers. All
         arrays are ``float32`` per DATASPEC.
         """
-        cache = self._robot_cache[robot_id]
+        cache = self._robot(robot_id)
         body_ids: np.ndarray = cache['body_ids_sorted']
-        body_names: List[str] = cache['body_names_subtree']
+        body_names: List[str] = cache['body_names']
 
         xpos = np.asarray(self.data.xpos[body_ids], dtype=np.float32)
         xipos = np.asarray(self.data.xipos[body_ids], dtype=np.float32)
@@ -540,7 +408,7 @@ class MujocoCombatSimulator(BaseSimulator):
 
         使用 Humanoid21Meta 运行时表进行 AFF 分类。
         """
-        geom_aff = self._meta_tables['geom_aff']
+        geom_aff = self._meta['geom_aff']
         AFF_ENV = Humanoid21Meta.AFF_ENV
         AFF_ROBOT_A = Humanoid21Meta.AFF_ROBOT_A
         AFF_ROBOT_B = Humanoid21Meta.AFF_ROBOT_B
@@ -625,11 +493,11 @@ class MujocoCombatSimulator(BaseSimulator):
         - 模块三：触觉力反馈 (2维) - feet_forces
         - 模块四：对手观测 (39维) - opponent_*
         """
-        cache = self._robot_cache[robot_id]
-        opp_cache = self._robot_cache[opponent_id]
+        cache = self._robot(robot_id)
+        opp_cache = self._robot(opponent_id)
 
-        torso_id = cache['torso_body_id']
-        opp_torso_id = opp_cache['torso_body_id']
+        torso_id = cache['root_body_id']
+        opp_torso_id = opp_cache['root_body_id']
 
         # 自身 Torso 的位置和姿态
         self_pos = self.data.xpos[torso_id]
@@ -675,7 +543,7 @@ class MujocoCombatSimulator(BaseSimulator):
         # 完整的平铺观测需要结合 get_core_state 和 get_derived_state
 
         # 计算模块一本体感知 (42维)
-        cache = self._robot_cache[robot_id]
+        cache = self._robot(robot_id)
         norm_params = self._norm_params[robot_id]
 
         # 获取关节位置和速度
@@ -815,14 +683,15 @@ class MujocoCombatSimulator(BaseSimulator):
         - 左右手中心点 (6维)
         - 左右脚中心点 (6维)
         """
-        opp_cache = self._robot_cache[opponent_id]
+        opp_cache = self._robot(opponent_id)
 
         # 获取各个关键点的位置
-        head_pos = self.data.xpos[opp_cache['head_body_id']]
-        hand_right_pos = self.data.xpos[opp_cache['hand_right_body_id']]
-        hand_left_pos = self.data.xpos[opp_cache['hand_left_body_id']]
-        foot_right_pos = self.data.xpos[opp_cache['foot_right_body_id']]
-        foot_left_pos = self.data.xpos[opp_cache['foot_left_body_id']]
+        kp = opp_cache['keypoint_body_ids']
+        head_pos = self.data.xpos[kp['head']]
+        hand_right_pos = self.data.xpos[kp['right_hand']]
+        hand_left_pos = self.data.xpos[kp['left_hand']]
+        foot_right_pos = self.data.xpos[kp['right_foot']]
+        foot_left_pos = self.data.xpos[kp['left_foot']]
 
         # 转换到自身局部坐标系
         head_local = self_rot.inv().apply(head_pos - self_pos)
@@ -851,15 +720,16 @@ class MujocoCombatSimulator(BaseSimulator):
         - 左右手中心点速度 (6维)
         - 左右脚中心点速度 (6维)
         """
-        opp_cache = self._robot_cache[opponent_id]
+        opp_cache = self._robot(opponent_id)
 
         # 获取各个关键点的速度
         # cvel[frame, 0:3] 是角速度, [3:6] 是线速度
-        head_vel = self.data.cvel[opp_cache['head_body_id'], 3:6]
-        hand_right_vel = self.data.cvel[opp_cache['hand_right_body_id'], 3:6]
-        hand_left_vel = self.data.cvel[opp_cache['hand_left_body_id'], 3:6]
-        foot_right_vel = self.data.cvel[opp_cache['foot_right_body_id'], 3:6]
-        foot_left_vel = self.data.cvel[opp_cache['foot_left_body_id'], 3:6]
+        kp = opp_cache['keypoint_body_ids']
+        head_vel = self.data.cvel[kp['head'], 3:6]
+        hand_right_vel = self.data.cvel[kp['right_hand'], 3:6]
+        hand_left_vel = self.data.cvel[kp['left_hand'], 3:6]
+        foot_right_vel = self.data.cvel[kp['right_foot'], 3:6]
+        foot_left_vel = self.data.cvel[kp['left_foot'], 3:6]
 
         # 转换到自身局部坐标系
         head_vel_local = self_rot.inv().apply(head_vel)
@@ -878,15 +748,16 @@ class MujocoCombatSimulator(BaseSimulator):
     
     def _get_feet_forces(self, robot_id: str) -> np.ndarray:
         """获取双脚与地面的接触受力"""
-        cache = self._robot_cache[robot_id]
-        foot_right_id = cache['foot_right_body_id']
-        foot_left_id = cache['foot_left_body_id']
+        cache = self._robot(robot_id)
+        kp = cache['keypoint_body_ids']
+        foot_right_id = kp['right_foot']
+        foot_left_id = kp['left_foot']
         
         right_force = 0.0
         left_force = 0.0
         
         # 使用 Meta 查找地面 geom id
-        geom_aff = self._meta_tables['geom_aff']
+        geom_aff = self._meta['geom_aff']
         AFF_ENV = Humanoid21Meta.AFF_ENV
         
         for i in range(self.data.ncon):
@@ -984,7 +855,7 @@ class MujocoCombatSimulator(BaseSimulator):
             ('robot_a', pose_a, -dist/2.0),
             ('robot_b', pose_b, dist/2.0)
         ]:
-            cache = self._robot_cache[robot_id]
+            cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
             root_qpos_adr = cache['root_qpos_adr']
             qpos_indices = cache['qpos_indices']
@@ -1032,7 +903,7 @@ class MujocoCombatSimulator(BaseSimulator):
             ('robot_a', pose_a, -dist/2.0),
             ('robot_b', pose_b, dist/2.0)
         ]:
-            cache = self._robot_cache[robot_id]
+            cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
             qpos_indices = cache['qpos_indices']
 
@@ -1061,10 +932,10 @@ class MujocoCombatSimulator(BaseSimulator):
         if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
             torso_rows = []
             for robot_id in ['robot_a', 'robot_b']:
-                torso_body_id = self._robot_cache[robot_id]['torso_body_id']
+                torso_body_id = self._robot(robot_id)['root_body_id']
                 applied_force = self.data.xfrc_applied[torso_body_id, :3].copy()
                 applied_torque = self.data.xfrc_applied[torso_body_id, 3:6].copy()
-                root_qvel_adr = self._robot_cache[robot_id]['root_qvel_adr']
+                root_qvel_adr = self._robot(robot_id)['root_qvel_adr']
                 root_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
                 torso_pos = self.data.xpos[torso_body_id].copy()
                 torso_rows.append(
@@ -1082,9 +953,9 @@ class MujocoCombatSimulator(BaseSimulator):
         if _TURB_DEBUG and (_TURB_DEBUG_MAX_PHYS_STEPS <= 0 or self._step_count <= _TURB_DEBUG_MAX_PHYS_STEPS):
             torso_rows = []
             for robot_id in ['robot_a', 'robot_b']:
-                torso_body_id = self._robot_cache[robot_id]['torso_body_id']
+                torso_body_id = self._robot(robot_id)['root_body_id']
                 applied_force = self.data.xfrc_applied[torso_body_id, :3].copy()
-                root_qvel_adr = self._robot_cache[robot_id]['root_qvel_adr']
+                root_qvel_adr = self._robot(robot_id)['root_qvel_adr']
                 root_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
                 torso_pos = self.data.xpos[torso_body_id].copy()
                 torso_rows.append(
@@ -1099,7 +970,7 @@ class MujocoCombatSimulator(BaseSimulator):
     def _apply_pd_control(self) -> None:
         """应用 PD 控制力矩 (按 CONTROLSPEC.md)"""
         for robot_id in ['robot_a', 'robot_b']:
-            cache = self._robot_cache[robot_id]
+            cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
 
             # 获取归一化目标位置
@@ -1177,7 +1048,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 continue
 
             robot_state = state[robot_id]
-            cache = self._robot_cache[robot_id]
+            cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
 
             root_qpos_adr = cache['root_qpos_adr']
@@ -1245,10 +1116,10 @@ class MujocoCombatSimulator(BaseSimulator):
             xfrc_applied shape: (nbody, 6) -> [fx, fy, fz, tx, ty, tz]
             注意：施加的力会在下一个物理步生效，之后自动清零
         """
-        if robot_id not in self._robot_cache:
+        if robot_id not in self._robot_aff:
             raise ValueError(f"Unknown robot_id: {robot_id}")
 
-        cache = self._robot_cache[robot_id]
+        cache = self._robot(robot_id)
         suffix = cache['suffix']
         full_body_name = f"{body_name}{suffix}"
 
@@ -1289,8 +1160,8 @@ class MujocoCombatSimulator(BaseSimulator):
         - EMA smoothing on all parameters to reduce jitter
         """
         try:
-            torso_a_id = self._robot_cache['robot_a']['torso_body_id']
-            torso_b_id = self._robot_cache['robot_b']['torso_body_id']
+            torso_a_id = self._robot('robot_a')['root_body_id']
+            torso_b_id = self._robot('robot_b')['root_body_id']
 
             pos_a = self.data.xpos[torso_a_id]
             pos_b = self.data.xpos[torso_b_id]

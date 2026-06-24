@@ -168,6 +168,25 @@ class Humanoid21Meta:
         22: PART_LEFT_ARM, 23: PART_LEFT_ARM, 24: PART_LEFT_HAND,
     }
 
+    # CONTACT_PART → [GEOM_CAT] (15 → 25, 反向映射)
+    PART_TO_GEOM_CATS: Dict[int, List[int]] = {
+        PART_GROUND: [0],
+        PART_CEILING: [1],
+        PART_WALL: [2, 3, 4, 5],
+        PART_HEAD: [6],
+        PART_TORSO: [7],
+        PART_WAIST: [8, 9],
+        PART_PELVIS: [10],
+        PART_RIGHT_LEG: [11, 12],
+        PART_RIGHT_FOOT: [13, 14],
+        PART_LEFT_LEG: [15, 16],
+        PART_LEFT_FOOT: [17, 18],
+        PART_RIGHT_ARM: [19, 20],
+        PART_RIGHT_HAND: [21],
+        PART_LEFT_ARM: [22, 23],
+        PART_LEFT_HAND: [24],
+    }
+
     # === CONTACT_GROUP — 碰撞大组分类 (8类, 0~7) ===
     # 每个CONTACT_PART对应一个CONTACT_GROUP
     GROUP_GROUND = 0
@@ -311,6 +330,26 @@ class Humanoid21Meta:
         16: 5, 17: 5, 19: 5, 20: 5,
         18: 6, 21: 6,
     }
+
+    # === KEYPOINT — 观测关键点 (定义在概念层之上) ===
+    # KEYPOINT_PARTS: CONTACT_PART 的子集, 标记哪些部位需要被观测/定位
+    #   映射链: PART → PART_TO_GEOM_CATS → geom(s) → geom_bodyid → body
+    KEYPOINT_PARTS: Set[int] = {
+        PART_TORSO, PART_HEAD, PART_PELVIS,
+        PART_LEFT_FOOT, PART_RIGHT_FOOT,
+        PART_LEFT_HAND, PART_RIGHT_HAND,
+    }
+
+    # KEYPOINT_JOINTS: JOINT_CAT 的子集, 标记哪些关节需要被观测
+    #   映射链: JOINT_CAT → JOINT_CAT_ID_TO_NAME + suffix → joint name
+    KEYPOINT_JOINTS: Set[int] = {
+        8, 9, 14, 15,  # ankle_y_right, ankle_x_right, ankle_y_left, ankle_x_left
+    }
+
+    # === ACTUATOR — 执行器 (概念约定) ===
+    # 本环境中 actuator 与 joint 同名, 即 actuator_name = joint_name.
+    # build_runtime_tables 据此构建 joint_cat → actuator_id 映射.
+    ACTUATOR_NAME_SAME_AS_JOINT: bool = True
 
     # === 静态期望值 ===
     EXPECTED_NUM_GEOMS = 44
@@ -558,7 +597,16 @@ class Humanoid21Meta:
 
     @classmethod
     def build_runtime_tables(cls, model) -> Dict:
-        """构建 MuJoCo ID → 元数据的运行时查找表 (SoA 预映射)。"""
+        """构建 MuJoCo ID → 元数据的运行时查找表 (SoA 预映射) + per-AFF 结构化数据。
+
+        返回:
+            SoA 数组: geom_cat, geom_aff, geom_part, geom_group, geom_is_keypoint,
+                      geom_entity_id, geom_names, joint_cat, joint_aff,
+                      joint_semantic, joint_names
+            robots: {aff_id: {root_joint_id, root_body_id, body_ids, body_names,
+                              body_masses, qpos_indices, qvel_indices, actuator_ids,
+                              jnt_ranges, keypoint_body_ids, keypoint_joint_names, ...}}
+        """
         import mujoco
         ngeom, njnt = model.ngeom, model.njnt
 
@@ -599,6 +647,106 @@ class Humanoid21Meta:
             if aff is not None:
                 joint_aff[jid] = aff
 
+        # ---- per-AFF 结构化数据 (概念 → MuJoCo ID 完整映射) ----
+        robots: Dict[int, Dict] = {}
+        for aff_id, suffix in [(cls.AFF_ROBOT_A, '_a'), (cls.AFF_ROBOT_B, '_b')]:
+            r: Dict[str, Any] = {
+                'aff_id': aff_id,
+                'suffix': suffix,
+            }
+
+            # Root joint (JOINT_CAT=0)
+            root_name = f"{cls.JOINT_CAT_ID_TO_NAME[0]}{suffix}"
+            root_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, root_name)
+            r['root_joint_id'] = root_jid
+            r['root_joint_name'] = root_name
+            r['root_qpos_adr'] = int(model.jnt_qposadr[root_jid])
+            r['root_qvel_adr'] = int(model.jnt_dofadr[root_jid])
+            r['root_body_id'] = int(model.jnt_bodyid[root_jid])
+
+            # Body 子树: AFF → geom_aff 筛选 → geom_bodyid 去重排序
+            aff_geom_mask = geom_aff == aff_id
+            aff_body_ids = sorted(set(
+                int(model.geom_bodyid[g]) for g in np.where(aff_geom_mask)[0]
+            ))
+            r['body_ids'] = set(aff_body_ids)
+            r['body_ids_sorted'] = np.asarray(aff_body_ids, dtype=np.int32)
+            r['body_names'] = [
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or ''
+                for bid in aff_body_ids
+            ]
+            r['body_masses'] = np.asarray(
+                [float(model.body_mass[bid]) for bid in aff_body_ids], dtype=np.float32
+            )
+
+            # 全部 joint: AFF → joint_aff 筛选
+            aff_joint_mask = joint_aff == aff_id
+            aff_joint_ids = sorted(int(j) for j in np.where(aff_joint_mask)[0])
+            r['joint_ids'] = aff_joint_ids
+            r['joint_names'] = [
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ''
+                for jid in aff_joint_ids
+            ]
+            r['joint_ids_by_name'] = dict(zip(r['joint_names'], aff_joint_ids))
+
+            # 受控关节 (JOINT_CAT 1~21 + AFF)
+            ctrl_qpos, ctrl_qvel, ctrl_act, ctrl_ranges = [], [], [], []
+            ctrl_joint_names = []
+            for jcat in range(1, cls.NUM_JOINT_CATS):
+                jname = f"{cls.JOINT_CAT_ID_TO_NAME[jcat]}{suffix}"
+                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
+                if jid < 0:
+                    raise ValueError(f"Joint {jname} not found in model")
+                ctrl_qpos.append(int(model.jnt_qposadr[jid]))
+                ctrl_qvel.append(int(model.jnt_dofadr[jid]))
+                ctrl_joint_names.append(jname)
+
+                if not model.jnt_limited[jid]:
+                    raise ValueError(
+                        f"Joint {jname} has no limits. "
+                        f"All joints must have finite limits for normalized control."
+                    )
+                ctrl_ranges.append(model.jnt_range[jid].copy())
+
+                if cls.ACTUATOR_NAME_SAME_AS_JOINT:
+                    act_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, jname)
+                    if act_id < 0:
+                        raise ValueError(f"Actuator {jname} not found in model")
+                    ctrl_act.append(act_id)
+
+            r['qpos_indices'] = np.array(ctrl_qpos, dtype=np.int32)
+            r['qvel_indices'] = np.array(ctrl_qvel, dtype=np.int32)
+            r['actuator_ids'] = np.array(ctrl_act, dtype=np.int32)
+            r['jnt_ranges'] = np.array(ctrl_ranges, dtype=np.float32)
+            r['controlled_joint_names'] = ctrl_joint_names
+
+            # Keypoint bodies: KEYPOINT_PARTS → PART_TO_GEOM_CATS → geom → body
+            keypoint_body_ids: Dict[str, int] = {}
+            for part_id in cls.KEYPOINT_PARTS:
+                part_name = cls.PART_ID_TO_NAME[part_id]
+                cats = cls.PART_TO_GEOM_CATS[part_id]
+                for gid in np.where(aff_geom_mask)[0]:
+                    if int(geom_cat[gid]) in cats:
+                        keypoint_body_ids[part_name] = int(model.geom_bodyid[gid])
+                        break
+            r['keypoint_body_ids'] = keypoint_body_ids
+
+            # Keypoint joints: KEYPOINT_JOINTS → JOINT_CAT name + suffix
+            r['keypoint_joint_names'] = {
+                cls.JOINT_CAT_ID_TO_NAME[jcat]: f"{cls.JOINT_CAT_ID_TO_NAME[jcat]}{suffix}"
+                for jcat in cls.KEYPOINT_JOINTS
+            }
+
+            # Keypoint body-name map (语义 → 全名, 向后兼容)
+            r['keypoint_body_names'] = {
+                part_name: mujoco.mj_id2name(
+                    model, mujoco.mjtObj.mjOBJ_BODY, bid
+                ) or ''
+                for part_name, bid in keypoint_body_ids.items()
+            }
+
+            robots[aff_id] = r
+
         return {
             'geom_cat': geom_cat,
             'geom_aff': geom_aff,
@@ -611,6 +759,7 @@ class Humanoid21Meta:
             'joint_aff': joint_aff,
             'joint_semantic': joint_semantic,
             'joint_names': joint_names,
+            'robots': robots,
         }
 
     # === 易用查询接口 ===
