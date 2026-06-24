@@ -460,7 +460,7 @@ class MujocoCombatSimulator(BaseSimulator):
                 is_a1 = (aff1 == AFF_ROBOT_A)
                 robot_robot_contacts.append({
                     'body_a': body1_name if is_a1 else body2_name,
-                    'body_b': body2_name if not is_a1 else body1_name,
+                    'body_b': body1_name if not is_a1 else body2_name,
                     'force': force_magnitude,
                 })
             elif (aff1 != aff2) and (aff1 != AFF_ENV or aff2 != AFF_ENV):
