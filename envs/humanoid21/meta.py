@@ -14,7 +14,7 @@ Humanoid21 仿真环境元数据定义与管理
                  19=upper_arm_right  20=lower_arm_right  21=hand_right
                  22=upper_arm_left  23=lower_arm_left  24=hand_left
 
-  DETAIL_SEMANTIC_CAT (15类): 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
+  CONTACT_PART (15类): 每个GEOM_CAT对应唯一CONTACT_PART
     0=ground       ← CAT: ground
     1=ceiling      ← CAT: ceiling
     2=wall         ← CAT: southwall, northwall, westwall, eastwall
@@ -31,15 +31,15 @@ Humanoid21 仿真环境元数据定义与管理
     13=left_arm    ← CAT: upper_arm_left, lower_arm_left
     14=left_hand   ← CAT: hand_left
 
-  SEMANTIC_CAT (8类): 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
-    0=ground  ← DETAIL: ground
-    1=wall    ← DETAIL: ceiling, wall
-    2=head    ← DETAIL: head
-    3=torso   ← DETAIL: torso, waist, pelvis
-    4=arm     ← DETAIL: right_arm, left_arm
-    5=hand    ← DETAIL: right_hand, left_hand
-    6=leg     ← DETAIL: right_leg, left_leg
-    7=foot    ← DETAIL: right_foot, left_foot
+  CONTACT_GROUP (8类): 每个CONTACT_PART对应一个CONTACT_GROUP
+    0=ground  ← PART: ground
+    1=wall    ← PART: ceiling, wall
+    2=head    ← PART: head
+    3=torso   ← PART: torso, waist, pelvis
+    4=arm     ← PART: right_arm, left_arm
+    5=hand    ← PART: right_hand, left_hand
+    6=leg     ← PART: right_leg, left_leg
+    7=foot    ← PART: right_foot, left_foot
 
   GEOM: 与 MuJoCo geom 一一对应, 拥有 GEOM_CAT/AFF/ISKEYPOINT 属性
     共44个: 6环境 + 19(robot_a) + 19(robot_b)
@@ -58,7 +58,7 @@ Humanoid21 仿真环境元数据定义与管理
     joint 命名: <base>_a / <base>_b, 共享同一 JOINT_CAT
 
   层级关系链:
-    GEOM → GEOM_CAT → DETAIL_SEMANTIC_CAT → SEMANTIC_CAT
+    GEOM → GEOM_CAT → CONTACT_PART → CONTACT_GROUP
     JOINT → JOINT_CAT → JOINT_SEMANTIC
     GEOM/JOINT → AFF
 """
@@ -124,25 +124,25 @@ class Humanoid21Meta:
     CAT_NAME_TO_ID: Dict[str, int] = {v: k for k, v in CAT_ID_TO_NAME.items()}
     NUM_CATS = 25
 
-    # === DETAIL_SEMANTIC_CAT — 细化语义分类 (15类, 0~14) ===
-    # 每个GEOM_CAT对应唯一DETAIL_SEMANTIC_CAT
-    DETAIL_GROUND = 0
-    DETAIL_CEILING = 1
-    DETAIL_WALL = 2
-    DETAIL_HEAD = 3
-    DETAIL_TORSO = 4
-    DETAIL_WAIST = 5
-    DETAIL_PELVIS = 6
-    DETAIL_RIGHT_LEG = 7
-    DETAIL_RIGHT_FOOT = 8
-    DETAIL_LEFT_LEG = 9
-    DETAIL_LEFT_FOOT = 10
-    DETAIL_RIGHT_ARM = 11
-    DETAIL_RIGHT_HAND = 12
-    DETAIL_LEFT_ARM = 13
-    DETAIL_LEFT_HAND = 14
+    # === CONTACT_PART — 碰撞部位分类 (15类, 0~14) ===
+    # 每个GEOM_CAT对应唯一CONTACT_PART
+    PART_GROUND = 0
+    PART_CEILING = 1
+    PART_WALL = 2
+    PART_HEAD = 3
+    PART_TORSO = 4
+    PART_WAIST = 5
+    PART_PELVIS = 6
+    PART_RIGHT_LEG = 7
+    PART_RIGHT_FOOT = 8
+    PART_LEFT_LEG = 9
+    PART_LEFT_FOOT = 10
+    PART_RIGHT_ARM = 11
+    PART_RIGHT_HAND = 12
+    PART_LEFT_ARM = 13
+    PART_LEFT_HAND = 14
 
-    DETAIL_ID_TO_NAME: Dict[int, str] = {
+    PART_ID_TO_NAME: Dict[int, str] = {
         0: 'ground', 1: 'ceiling', 2: 'wall',
         3: 'head', 4: 'torso', 5: 'waist', 6: 'pelvis',
         7: 'right_leg', 8: 'right_foot',
@@ -150,63 +150,63 @@ class Humanoid21Meta:
         11: 'right_arm', 12: 'right_hand',
         13: 'left_arm', 14: 'left_hand',
     }
-    DETAIL_NAME_TO_ID: Dict[str, int] = {v: k for k, v in DETAIL_ID_TO_NAME.items()}
-    NUM_DETAILS = 15
+    PART_NAME_TO_ID: Dict[str, int] = {v: k for k, v in PART_ID_TO_NAME.items()}
+    NUM_PARTS = 15
 
-    # GEOM_CAT → DETAIL_SEMANTIC_CAT (25 → 15, 多对一)
-    CAT_TO_DETAIL: Dict[int, int] = {
-        0: DETAIL_GROUND, 1: DETAIL_CEILING,
-        2: DETAIL_WALL, 3: DETAIL_WALL, 4: DETAIL_WALL, 5: DETAIL_WALL,
-        6: DETAIL_HEAD,
-        7: DETAIL_TORSO, 8: DETAIL_WAIST, 9: DETAIL_WAIST,
-        10: DETAIL_PELVIS,
-        11: DETAIL_RIGHT_LEG, 12: DETAIL_RIGHT_LEG,
-        13: DETAIL_RIGHT_FOOT, 14: DETAIL_RIGHT_FOOT,
-        15: DETAIL_LEFT_LEG, 16: DETAIL_LEFT_LEG,
-        17: DETAIL_LEFT_FOOT, 18: DETAIL_LEFT_FOOT,
-        19: DETAIL_RIGHT_ARM, 20: DETAIL_RIGHT_ARM, 21: DETAIL_RIGHT_HAND,
-        22: DETAIL_LEFT_ARM, 23: DETAIL_LEFT_ARM, 24: DETAIL_LEFT_HAND,
+    # GEOM_CAT → CONTACT_PART (25 → 15, 多对一)
+    CAT_TO_PART: Dict[int, int] = {
+        0: PART_GROUND, 1: PART_CEILING,
+        2: PART_WALL, 3: PART_WALL, 4: PART_WALL, 5: PART_WALL,
+        6: PART_HEAD,
+        7: PART_TORSO, 8: PART_WAIST, 9: PART_WAIST,
+        10: PART_PELVIS,
+        11: PART_RIGHT_LEG, 12: PART_RIGHT_LEG,
+        13: PART_RIGHT_FOOT, 14: PART_RIGHT_FOOT,
+        15: PART_LEFT_LEG, 16: PART_LEFT_LEG,
+        17: PART_LEFT_FOOT, 18: PART_LEFT_FOOT,
+        19: PART_RIGHT_ARM, 20: PART_RIGHT_ARM, 21: PART_RIGHT_HAND,
+        22: PART_LEFT_ARM, 23: PART_LEFT_ARM, 24: PART_LEFT_HAND,
     }
 
-    # === SEMANTIC_CAT — 语义大类 (8类, 0~7) ===
-    # 每个DETAIL_SEMANTIC_CAT对应一个SEMANTIC_CAT
-    SEMANTIC_GROUND = 0
-    SEMANTIC_WALL = 1
-    SEMANTIC_HEAD = 2
-    SEMANTIC_TORSO = 3
-    SEMANTIC_ARM = 4
-    SEMANTIC_HAND = 5
-    SEMANTIC_LEG = 6
-    SEMANTIC_FOOT = 7
+    # === CONTACT_GROUP — 碰撞大组分类 (8类, 0~7) ===
+    # 每个CONTACT_PART对应一个CONTACT_GROUP
+    GROUP_GROUND = 0
+    GROUP_WALL = 1
+    GROUP_HEAD = 2
+    GROUP_TORSO = 3
+    GROUP_ARM = 4
+    GROUP_HAND = 5
+    GROUP_LEG = 6
+    GROUP_FOOT = 7
 
-    SEMANTIC_ID_TO_NAME: Dict[int, str] = {
+    GROUP_ID_TO_NAME: Dict[int, str] = {
         0: 'ground', 1: 'wall', 2: 'head', 3: 'torso',
         4: 'arm', 5: 'hand', 6: 'leg', 7: 'foot',
     }
-    SEMANTIC_NAME_TO_ID: Dict[str, int] = {v: k for k, v in SEMANTIC_ID_TO_NAME.items()}
-    NUM_SEMANTICS = 8
+    GROUP_NAME_TO_ID: Dict[str, int] = {v: k for k, v in GROUP_ID_TO_NAME.items()}
+    NUM_GROUPS = 8
 
-    # DETAIL_SEMANTIC_CAT → SEMANTIC_CAT (15 → 8, 多对一)
-    DETAIL_TO_SEMANTIC: Dict[int, int] = {
-        0: SEMANTIC_GROUND, 1: SEMANTIC_WALL, 2: SEMANTIC_WALL,
-        3: SEMANTIC_HEAD,
-        4: SEMANTIC_TORSO, 5: SEMANTIC_TORSO, 6: SEMANTIC_TORSO,
-        7: SEMANTIC_LEG, 8: SEMANTIC_FOOT,
-        9: SEMANTIC_LEG, 10: SEMANTIC_FOOT,
-        11: SEMANTIC_ARM, 12: SEMANTIC_HAND,
-        13: SEMANTIC_ARM, 14: SEMANTIC_HAND,
+    # CONTACT_PART → CONTACT_GROUP (15 → 8, 多对一)
+    PART_TO_GROUP: Dict[int, int] = {
+        0: GROUP_GROUND, 1: GROUP_WALL, 2: GROUP_WALL,
+        3: GROUP_HEAD,
+        4: GROUP_TORSO, 5: GROUP_TORSO, 6: GROUP_TORSO,
+        7: GROUP_LEG, 8: GROUP_FOOT,
+        9: GROUP_LEG, 10: GROUP_FOOT,
+        11: GROUP_ARM, 12: GROUP_HAND,
+        13: GROUP_ARM, 14: GROUP_HAND,
     }
 
-    # GEOM_CAT → SemanticCat (组合映射, 等价于 CAT→DETAIL→SEMANTIC)
-    CAT_TO_SEMANTIC: Dict[int, int] = {
-        0: SEMANTIC_GROUND,
-        1: SEMANTIC_WALL, 2: SEMANTIC_WALL, 3: SEMANTIC_WALL, 4: SEMANTIC_WALL, 5: SEMANTIC_WALL,
-        6: SEMANTIC_HEAD,
-        7: SEMANTIC_TORSO, 8: SEMANTIC_TORSO, 9: SEMANTIC_TORSO, 10: SEMANTIC_TORSO,
-        11: SEMANTIC_LEG, 12: SEMANTIC_LEG, 13: SEMANTIC_FOOT, 14: SEMANTIC_FOOT,
-        15: SEMANTIC_LEG, 16: SEMANTIC_LEG, 17: SEMANTIC_FOOT, 18: SEMANTIC_FOOT,
-        19: SEMANTIC_ARM, 20: SEMANTIC_ARM, 21: SEMANTIC_HAND,
-        22: SEMANTIC_ARM, 23: SEMANTIC_ARM, 24: SEMANTIC_HAND,
+    # GEOM_CAT → CONTACT_GROUP (组合映射, 等价于 CAT→PART→GROUP)
+    CAT_TO_GROUP: Dict[int, int] = {
+        0: GROUP_GROUND,
+        1: GROUP_WALL, 2: GROUP_WALL, 3: GROUP_WALL, 4: GROUP_WALL, 5: GROUP_WALL,
+        6: GROUP_HEAD,
+        7: GROUP_TORSO, 8: GROUP_TORSO, 9: GROUP_TORSO, 10: GROUP_TORSO,
+        11: GROUP_LEG, 12: GROUP_LEG, 13: GROUP_FOOT, 14: GROUP_FOOT,
+        15: GROUP_LEG, 16: GROUP_LEG, 17: GROUP_FOOT, 18: GROUP_FOOT,
+        19: GROUP_ARM, 20: GROUP_ARM, 21: GROUP_HAND,
+        22: GROUP_ARM, 23: GROUP_ARM, 24: GROUP_HAND,
     }
 
     # === GEOM — MuJoCo geom → 元数据 ===
@@ -550,8 +550,8 @@ class Humanoid21Meta:
         geom_cat = np.full(ngeom, -1, dtype=np.int8)
         geom_aff = np.full(ngeom, 0, dtype=np.int8)
         geom_is_keypoint = np.zeros(ngeom, dtype=bool)
-        geom_detail = np.full(ngeom, -1, dtype=np.int8)
-        geom_semantic = np.full(ngeom, -1, dtype=np.int8)
+        geom_part = np.full(ngeom, -1, dtype=np.int8)
+        geom_group = np.full(ngeom, -1, dtype=np.int8)
         geom_entity_id = np.full(ngeom, -1, dtype=np.int8)
         geom_names: List[str] = []
 
@@ -561,9 +561,9 @@ class Humanoid21Meta:
             cat, aff = cls._classify_geom(name)
             if cat is not None:
                 geom_cat[gid] = cat
-                detail = cls.CAT_TO_DETAIL[cat]
-                geom_detail[gid] = detail
-                geom_semantic[gid] = cls.DETAIL_TO_SEMANTIC[detail]
+                part = cls.CAT_TO_PART[cat]
+                geom_part[gid] = part
+                geom_group[gid] = cls.PART_TO_GROUP[part]
             if aff is not None:
                 geom_aff[gid] = aff
             geom_is_keypoint[gid] = cls._is_keypoint_geom(name)
@@ -588,8 +588,8 @@ class Humanoid21Meta:
             'geom_cat': geom_cat,
             'geom_aff': geom_aff,
             'geom_is_keypoint': geom_is_keypoint,
-            'geom_detail': geom_detail,
-            'geom_semantic': geom_semantic,
+            'geom_part': geom_part,
+            'geom_group': geom_group,
             'geom_entity_id': geom_entity_id,
             'geom_names': geom_names,
             'joint_cat': joint_cat,
@@ -633,32 +633,32 @@ class Humanoid21Meta:
         return cls.JOINT_CAT_NAME_TO_ID[name]
 
     @classmethod
-    def detail_id_to_name(cls, detail_id: int) -> str:
-        return cls.DETAIL_ID_TO_NAME[detail_id]
+    def part_id_to_name(cls, part_id: int) -> str:
+        return cls.PART_ID_TO_NAME[part_id]
 
     @classmethod
-    def detail_name_to_id(cls, name: str) -> int:
-        return cls.DETAIL_NAME_TO_ID[name]
+    def part_name_to_id(cls, name: str) -> int:
+        return cls.PART_NAME_TO_ID[name]
 
     @classmethod
-    def cat_to_detail(cls, cat_id: int) -> int:
-        return cls.CAT_TO_DETAIL[cat_id]
+    def cat_to_part(cls, cat_id: int) -> int:
+        return cls.CAT_TO_PART[cat_id]
 
     @classmethod
-    def detail_to_semantic(cls, detail_id: int) -> int:
-        return cls.DETAIL_TO_SEMANTIC[detail_id]
+    def part_to_group(cls, part_id: int) -> int:
+        return cls.PART_TO_GROUP[part_id]
 
     @classmethod
-    def semantic_id_to_name(cls, sem_id: int) -> str:
-        return cls.SEMANTIC_ID_TO_NAME[sem_id]
+    def group_id_to_name(cls, group_id: int) -> str:
+        return cls.GROUP_ID_TO_NAME[group_id]
 
     @classmethod
-    def semantic_name_to_id(cls, name: str) -> int:
-        return cls.SEMANTIC_NAME_TO_ID[name]
+    def group_name_to_id(cls, name: str) -> int:
+        return cls.GROUP_NAME_TO_ID[name]
 
     @classmethod
-    def cat_to_semantic(cls, cat_id: int) -> int:
-        return cls.CAT_TO_SEMANTIC[cat_id]
+    def cat_to_group(cls, cat_id: int) -> int:
+        return cls.CAT_TO_GROUP[cat_id]
 
     @classmethod
     def geom_info(cls, mujoco_geom_name: str) -> Optional[Dict]:
@@ -667,8 +667,8 @@ class Humanoid21Meta:
         if cat is None:
             return None
         eid = cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID.get(mujoco_geom_name, -1)
-        detail = cls.CAT_TO_DETAIL[cat]
-        semantic = cls.DETAIL_TO_SEMANTIC[detail]
+        part = cls.CAT_TO_PART[cat]
+        group = cls.PART_TO_GROUP[part]
         return {
             'mujoco_name': mujoco_geom_name,
             'cat_id': cat,
@@ -678,10 +678,10 @@ class Humanoid21Meta:
             'entity_id': eid,
             'entity_name': cls.GEOM_ENTITY_ID_TO_NAME.get(eid, 'unknown'),
             'is_keypoint': cls._is_keypoint_geom(mujoco_geom_name),
-            'detail_id': detail,
-            'detail_name': cls.DETAIL_ID_TO_NAME[detail],
-            'semantic_id': semantic,
-            'semantic_name': cls.SEMANTIC_ID_TO_NAME[semantic],
+            'part_id': part,
+            'part_name': cls.PART_ID_TO_NAME[part],
+            'group_id': group,
+            'group_name': cls.GROUP_ID_TO_NAME[group],
         }
 
     @classmethod
@@ -728,11 +728,11 @@ class Humanoid21Meta:
                       if cls._is_keypoint_geom(n))
 
     @classmethod
-    def geoms_by_semantic(cls, semantic_id: int) -> List[str]:
-        """返回属于指定 SEMANTIC_CAT 的所有 MuJoCo geom 名称。"""
+    def geoms_by_group(cls, group_id: int) -> List[str]:
+        """返回属于指定 CONTACT_GROUP 的所有 MuJoCo geom 名称。"""
         result = []
         for name in cls.MUJOCO_GEOM_NAME_TO_ENTITY_ID:
             cat, _ = cls._classify_geom(name)
-            if cat is not None and cls.CAT_TO_SEMANTIC[cat] == semantic_id:
+            if cat is not None and cls.CAT_TO_GROUP[cat] == group_id:
                 result.append(name)
         return sorted(result)
