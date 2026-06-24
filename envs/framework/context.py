@@ -100,8 +100,8 @@ class _AccessorView(IDataAccessor):
     def get_core_state(self) -> Dict[str, Any]:
         return self.__sim.get_core_state()
 
-    def get_derived_state(self) -> Dict[str, Any]:
-        return self.__sim.get_derived_state()
+    def get_derived_state(self, fields=None) -> Dict[str, Any]:
+        return self.__sim.get_derived_state(fields)
 
     def get_sensor_data(self) -> Dict[str, Any]:
         return self.__sim.get_sensor_data()

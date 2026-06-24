@@ -270,7 +270,7 @@ class MujocoCombatSimulator(BaseSimulator):
         self._data_cache['_core_state'] = result
         return result
     
-    def get_derived_state(self) -> Dict[str, Any]:
+    def get_derived_state(self, fields=None) -> Dict[str, Any]:
         """
         获取派生数据 (按 DATASPEC.md §4)
 

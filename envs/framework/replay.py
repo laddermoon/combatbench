@@ -333,7 +333,7 @@ class ReplaySimulator(BaseSimulator):
     def get_core_state(self) -> Dict[str, Any]:
         return self._current_frame.get("core_state", {})
 
-    def get_derived_state(self) -> Dict[str, Any]:
+    def get_derived_state(self, fields=None) -> Dict[str, Any]:
         return self._current_frame.get("derived_state", {})
 
     def get_sensor_data(self) -> Dict[str, Any]:

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 import numpy as np
 
 class IDataAccessor(ABC):
@@ -16,7 +16,14 @@ class IDataAccessor(ABC):
         pass
 
     @abstractmethod
-    def get_derived_state(self) -> Dict[str, Any]:
+    def get_derived_state(self, fields: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """获取派生状态。
+
+        Args:
+            fields: 需要的数据字段列表。None 表示返回全部。
+                调用方应只请求实际需要的字段以避免不必要的计算。
+                返回 dict 的 key 与 fields 一一对应。
+        """
         pass
 
     @abstractmethod
