@@ -87,6 +87,7 @@ class Humanoid21Simulator(BaseSimulator):
         self._geom_id_to_aff = self._meta['geom_id_to_aff']
 
         self._compute_normalization_params()
+        self._build_pd_tables()
 
         # 初始化控制目标
         self._target_pos_norm = {
@@ -144,6 +145,29 @@ class Humanoid21Simulator(BaseSimulator):
                 'scale': scale.astype(np.float32),
                 'lower': lower.astype(np.float32),
                 'upper': upper.astype(np.float32)
+            }
+
+    def _build_pd_tables(self):
+        """预计算 PD 控制所需的静态执行器参数 (gear / ctrlrange)。
+
+        这些参数在模型编译后固定不变，提前向量化缓存可避免每个物理步在
+        Python 循环里逐执行器读取 ``self.model``。数值与逐执行器路径完全一致：
+        ``gear`` 取 ``actuator_gear[:,0]`` 且把 0 替换为 1.0，``ctrl_lo/hi``
+        取 ``actuator_ctrlrange`` 的两列，全部以 float64 存放（与 MuJoCo 模型
+        缓冲一致），保证逐元素运算与原标量循环按位相同。
+        """
+        self._pd_tables = {}
+        for robot_id in ['robot_a', 'robot_b']:
+            actuator_ids = np.asarray(self._robot(robot_id)['actuator_ids'])
+            gear = np.array(self.model.actuator_gear[actuator_ids, 0], dtype=np.float64)
+            gear[gear == 0] = 1.0
+            ctrl_lo = np.array(self.model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
+            ctrl_hi = np.array(self.model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
+            self._pd_tables[robot_id] = {
+                'actuator_ids': actuator_ids,
+                'gear': gear,
+                'ctrl_lo': ctrl_lo,
+                'ctrl_hi': ctrl_hi,
             }
     
     def get_static_data(self) -> Dict[str, Any]:
@@ -918,7 +942,13 @@ class Humanoid21Simulator(BaseSimulator):
         self.data.qfrc_applied[:] = 0.0
 
     def _apply_pd_control(self) -> None:
-        """应用 PD 控制力矩 (按 CONTROLSPEC.md)"""
+        """应用 PD 控制力矩 (按 CONTROLSPEC.md) — 向量化实现。
+
+        与逐执行器标量循环按位等价：``gear`` / ``ctrl_lo`` / ``ctrl_hi`` 预计算为
+        float64 数组（见 ``_build_pd_tables``），``ctrl = clip(torque / gear)`` 全部
+        以逐元素 numpy 运算完成，IEEE 结果与原标量路径完全一致，仅消除了每物理步
+        42 次 Python 迭代及对 ``self.model`` 的重复索引开销。
+        """
         for robot_id in ['robot_a', 'robot_b']:
             cache = self._robot(robot_id)
             norm_params = self._norm_params[robot_id]
@@ -938,35 +968,26 @@ class Humanoid21Simulator(BaseSimulator):
             # PD 控制: Torque = KP * (Target - Current) - KD * Vel
             torque = self.KP * (target_pos_rad - current_pos) - self.KD * current_vel
 
-            # 应用到执行器
-            actuator_ids = cache['actuator_ids']
-            for i, act_id in enumerate(actuator_ids):
-                # 获取 gear 和 ctrlrange
-                gear = self.model.actuator_gear[act_id, 0]
-                if gear == 0:
-                    gear = 1.0
+            # 向量化映射到执行器: Ctrl = clip(Torque / Gear, lo, hi)
+            pd = self._pd_tables[robot_id]
+            ctrl_value = torque / pd['gear']
+            ctrl_value_clipped = np.clip(ctrl_value, pd['ctrl_lo'], pd['ctrl_hi'])
+            self.data.ctrl[pd['actuator_ids']] = ctrl_value_clipped
 
-                # Ctrl = Torque / Gear
-                ctrl_value = torque[i] / gear
-
-                # 限幅前记录原始力矩（用于调试）
-                ctrl_range = self.model.actuator_ctrlrange[act_id]
-                max_torque = max(abs(ctrl_range[0]), abs(ctrl_range[1])) * abs(gear)
-
-                # 限幅
-                ctrl_value_clipped = np.clip(ctrl_value, ctrl_range[0], ctrl_range[1])
-                saturated = abs(ctrl_value) > abs(ctrl_value_clipped)
-
-                self.data.ctrl[act_id] = ctrl_value_clipped
-
-                # 调试打印（每100步打印一次，或者力矩饱和时打印）
-                if self._debug_torque:
+            # 调试打印（每100步打印一次，或者力矩饱和时打印）
+            if self._debug_torque:
+                gear = pd['gear']
+                ctrl_lo = pd['ctrl_lo']
+                ctrl_hi = pd['ctrl_hi']
+                for i in range(len(torque)):
+                    saturated = abs(ctrl_value[i]) > abs(ctrl_value_clipped[i])
                     if saturated or (self._step_count % 100 == 0 and self._step_count < 1000):
+                        max_torque = max(abs(ctrl_lo[i]), abs(ctrl_hi[i])) * abs(gear[i])
                         torque_pct = abs(torque[i]) / max_torque * 100 if max_torque > 0 else 0
-                        ctrl_pct = abs(ctrl_value_clipped) / max(abs(ctrl_range[0]), abs(ctrl_range[1])) * 100
+                        ctrl_pct = abs(ctrl_value_clipped[i]) / max(abs(ctrl_lo[i]), abs(ctrl_hi[i])) * 100
                         print(f"Step {self._step_count:5d} {robot_id} {self.CONTROLLED_JOINTS[i]:<20}: "
                               f"torque={torque[i]:>8.2f} Nm ({torque_pct:>5.1f}%) "
-                              f"ctrl={ctrl_value_clipped:>7.4f} ({ctrl_pct:>5.1f}%) "
+                              f"ctrl={ctrl_value_clipped[i]:>7.4f} ({ctrl_pct:>5.1f}%) "
                               f"{'SAT!' if saturated else ''}")
 
         self._step_count += 1
