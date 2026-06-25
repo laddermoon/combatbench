@@ -18,6 +18,7 @@ import mujoco
 import mujoco.mjx as mjx
 
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jp
 from jax import tree_util
 
@@ -64,6 +65,9 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         initial_pose_b: str = "standing",
         device: Optional[jax.Device] = None,
     ):
+        # float64 is required for MJX/MuJoCo consistency (see validation test).
+        # With float32, contact solver diverges within ~10 steps.
+        # With float64, per-step match is ~1e-14 (machine precision).
         self._batch_size = batch_size
         self._initial_distance = initial_distance
         self._initial_pose_a = initial_pose_a
@@ -145,11 +149,11 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
                 "actuator_ids": jp.array(r["actuator_ids"], dtype=jp.int32),
                 "norm_ref": jp.array(norm["reference"], dtype=jp.float32),
                 "norm_scale": jp.array(norm["scale"], dtype=jp.float32),
-                "gear": jp.array(pd["gear"], dtype=jp.float32),
-                "ctrl_lo": jp.array(pd["ctrl_lo"], dtype=jp.float32),
-                "ctrl_hi": jp.array(pd["ctrl_hi"], dtype=jp.float32),
-                "kp": jp.array(self.KP, dtype=jp.float32),
-                "kd": jp.array(self.KD, dtype=jp.float32),
+                "gear": jp.array(pd["gear"], dtype=jp.float64),
+                "ctrl_lo": jp.array(pd["ctrl_lo"], dtype=jp.float64),
+                "ctrl_hi": jp.array(pd["ctrl_hi"], dtype=jp.float64),
+                "kp": jp.array(self.KP, dtype=jp.float64),
+                "kd": jp.array(self.KD, dtype=jp.float64),
                 "root_qpos_adr": r["root_qpos_adr"],
                 "root_qvel_adr": r["root_qvel_adr"],
             }
@@ -236,9 +240,23 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
             lambda x: jp.broadcast_to(x, (self._batch_size,) + x.shape), single
         )
 
-        # Initialize action to initial pose actions
-        action_a = self.INITIAL_POSES[pose_a_name]["action"].astype(np.float32)
-        action_b = self.INITIAL_POSES[pose_b_name]["action"].astype(np.float32)
+        # Initialize action: compute from actual joint positions (same as original simulator)
+        # rather than using pre-defined INITIAL_POSES['action'] which is a rounded approximation
+        action_a = np.zeros(21, dtype=np.float32)
+        action_b = np.zeros(21, dtype=np.float32)
+        for robot_id, pose_config, _ in [
+            ("robot_a", pose_a, -dist / 2.0),
+            ("robot_b", pose_b, dist / 2.0),
+        ]:
+            cache = self._robots[robot_id]
+            norm = self._norm_params[robot_id]
+            qpos_indices = cache["qpos_indices"]
+            actual_joint_pos = data.qpos[qpos_indices]
+            action = ((actual_joint_pos - norm["reference"]) / norm["scale"]).astype(np.float32)
+            if robot_id == "robot_a":
+                action_a = action
+            else:
+                action_b = action
         self._action_jax = {
             "robot_a": jp.tile(action_a, (self._batch_size, 1)),
             "robot_b": jp.tile(action_b, (self._batch_size, 1)),
@@ -246,7 +264,7 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
 
         # Initialize persistent external force to zeros
         self._ext_force_jax = jp.zeros(
-            (self._batch_size, self._model.nbody, 6), dtype=jp.float32
+            (self._batch_size, self._model.nbody, 6), dtype=jp.float64
         )
 
         # Clear history
@@ -267,7 +285,7 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
             data = data.replace(xfrc_applied=ext_force)
 
             # PD control for each robot
-            ctrl = jp.zeros(data.ctrl.shape, dtype=jp.float32)
+            ctrl = jp.zeros(data.ctrl.shape, dtype=jp.float64)
             for robot_id, action in [("robot_a", action_a), ("robot_b", action_b)]:
                 s = statics[robot_id]
                 target_rad = action * s["norm_scale"] + s["norm_ref"]
@@ -288,6 +306,15 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
 
         def _scan_step(data, _, action_a, action_b, ext_force):
             d = _apply_pd_and_step(data, action_a, action_b, ext_force)
+            # mjx.step may promote some int32 fields to int64; cast back to
+            # match carry input types required by jax.lax.scan.
+            d = jax.tree.map(
+                lambda out, inp: out.astype(inp.dtype)
+                if hasattr(out, "dtype") and hasattr(inp, "dtype")
+                and out.dtype != inp.dtype
+                else out,
+                d, data,
+            )
             return d, d
 
         # Cache of JIT-compiled scan functions, keyed by n_steps.
@@ -476,26 +503,34 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
     def _extract_contacts_batch(self, data: mjx.Data) -> Dict[str, Any]:
         """Extract contacts from batched MJX data.
 
-        MJX uses fixed-size contact arrays. Active contacts have dist <= 0.
-        We return padded arrays with a count field.
+        Uses efc_force to compute proper contact forces matching
+        mujoco.mj_contactForce. For pyramidal cone with condim=3:
+          normal = sum(efc[0:4])
+          friction1 = efc[0] - efc[1]
+          friction2 = efc[2] - efc[3]
+        For condim=1 (frictionless): normal = efc[0].
+
+        force_world = frame.T @ [normal, friction1, friction2]
         """
         contact = data._impl.contact
-        geom = np.asarray(contact.geom)  # (B, max_contacts, 2) or (max_contacts, 2)
-        dist = np.asarray(contact.dist)  # (B, max_contacts) or (max_contacts,)
+        geom = np.asarray(contact.geom)
+        dist = np.asarray(contact.dist)
         pos = np.asarray(contact.pos)
         frame = np.asarray(contact.frame)
+        efc_address = np.asarray(contact.efc_address)
+        contact_dim = np.asarray(contact.dim)
+        efc_force = np.asarray(data._impl.efc_force)
 
         # Determine if batched
         if geom.ndim == 2:
-            # Single env — add batch dim
             geom = geom[np.newaxis]
             dist = dist[np.newaxis]
             pos = pos[np.newaxis]
             frame = frame[np.newaxis]
+            efc_force = efc_force[np.newaxis]
 
+        # efc_address and contact_dim are NOT batched (shared model metadata)
         B, max_contacts = dist.shape
-
-        # Active mask
         active = dist <= 0  # (B, max_contacts)
 
         # Body IDs from geom IDs
@@ -511,24 +546,58 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         aff1 = aff_table[geom[..., 0].astype(np.int64)]
         aff2 = aff_table[geom[..., 1].astype(np.int64)]
 
-        # Count active contacts per env
         contact_count = np.sum(active, axis=-1).astype(np.int32)
 
-        # Force magnitude: use |dist| as proxy (MJX doesn't expose contact force directly)
-        # For a proper implementation, would need to compute from constraint forces
-        force_mag = np.where(active, np.abs(dist), 0.0).astype(np.float32)
+        # Compute contact forces from efc_force.
+        # For pyramidal cone with dim=3: 4 constraint rows per contact.
+        # For dim=1: 1 constraint row.
+        # n_rows = max(1, 2*(dim-1)) for pyramidal cone.
+        n_rows = np.maximum(1, 2 * (contact_dim - 1))  # (max_contacts,)
+
+        # Gather efc_force for each contact
+        # efc_address: (max_contacts,) — NOT batched (shared model)
+        # efc_force: (B, max_efc) — batched
+        force_mag = np.zeros((B, max_contacts), dtype=np.float64)
+        force_world = np.zeros((B, max_contacts, 3), dtype=np.float64)
+
+        for b in range(B):
+            for c in range(max_contacts):
+                if not active[b, c]:
+                    continue
+                addr = int(efc_address[c])
+                nr = int(n_rows[c])
+                ef = efc_force[b, addr:addr + nr]
+
+                if nr == 1:
+                    normal = ef[0]
+                    f1, f2 = 0.0, 0.0
+                elif nr == 4:
+                    normal = ef[0] + ef[1] + ef[2] + ef[3]
+                    f1 = ef[0] - ef[1]
+                    f2 = ef[2] - ef[3]
+                else:
+                    normal = ef.sum()
+                    f1 = ef[0] - ef[1] if nr >= 2 else 0.0
+                    f2 = ef[2] - ef[3] if nr >= 4 else 0.0
+
+                force_local = np.array([normal, f1, f2])
+                force_mag[b, c] = np.linalg.norm(force_local)
+                # frame[b,c] is (3,3) with rows [normal, tangent1, tangent2]
+                # force_world = frame.T @ force_local (matches original simulator)
+                force_world[b, c] = frame[b, c].T @ force_local
 
         return {
             "ncon": int(max_contacts),
-            "contact_count": contact_count,  # (B,) actual active contacts
-            "active_mask": active,  # (B, max_contacts) bool
+            "contact_count": contact_count,
+            "active_mask": active,
             "geom1": geom[..., 0].astype(np.int32),
             "geom2": geom[..., 1].astype(np.int32),
             "body1": body1.astype(np.int32),
             "body2": body2.astype(np.int32),
             "aff1": aff1,
             "aff2": aff2,
-            "force_mag": force_mag,
+            "force_mag": force_mag.astype(np.float32),
+            "force_world": force_world.astype(np.float32),
             "position": pos.astype(np.float32),
             "normal": frame[..., 0, :].astype(np.float32),
             "frame": frame.astype(np.float32),
@@ -684,34 +753,32 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         }
 
     def _get_feet_forces_batch(self, data: mjx.Data, robot_id: str) -> np.ndarray:
-        """Get feet contact forces (simplified for batch)."""
+        """Get feet contact forces using actual contact force magnitudes.
+
+        Uses the same force_mag computed in _extract_contacts_batch (from efc_force),
+        matching the original simulator's _get_feet_forces which uses mj_contactForce output.
+        """
         cache = self._robots[robot_id]
         kp = cache["keypoint_body_ids"]
         foot_right_id = kp["foot_right"]
         foot_left_id = kp["foot_left"]
         ground_gid = self._ground_geom_id
 
-        contact = data._impl.contact
-        geom = np.asarray(contact.geom)
-        dist = np.asarray(contact.dist)
+        # Extract contacts to get force_mag (same as _extract_contacts_batch)
+        contacts = self._extract_contacts_batch(data)
 
-        if geom.ndim == 2:
-            geom = geom[np.newaxis]
-            dist = dist[np.newaxis]
-
-        active = dist <= 0
-        geom1 = geom[..., 0].astype(np.int64)
-        geom2 = geom[..., 1].astype(np.int64)
-        geom_bodyid = np.asarray(self._model.geom_bodyid)
-        body1 = geom_bodyid[geom1]
-        body2 = geom_bodyid[geom2]
+        geom1 = contacts["geom1"]  # (B, max_contacts)
+        geom2 = contacts["geom2"]  # (B, max_contacts)
+        body1 = contacts["body1"]  # (B, max_contacts)
+        body2 = contacts["body2"]  # (B, max_contacts)
+        force_mag = contacts["force_mag"]  # (B, max_contacts)
+        active_mask = contacts["active_mask"]  # (B, max_contacts)
 
         g1_ground = geom1 == ground_gid
         g2_ground = geom2 == ground_gid
-        ground_mask = (g1_ground | g2_ground) & active
+        ground_mask = (g1_ground | g2_ground) & active_mask
 
         other_body = np.where(g1_ground, body2, body1)
-        force_mag = np.where(active, np.abs(dist), 0.0)
 
         right_force = np.sum(
             np.where(ground_mask & (other_body == foot_right_id), force_mag, 0.0),
