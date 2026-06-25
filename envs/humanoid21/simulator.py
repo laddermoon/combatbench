@@ -108,6 +108,11 @@ class Humanoid21Simulator(BaseSimulator):
         # 数据输出缓存（在 physical_step / reset / set_action 后自动失效）
         self._data_cache: Dict[str, Any] = {}
 
+        # 广播渲染器缓存：首次调用 get_broadcastview_image 时惰性创建，
+        # 之后每帧复用，避免重复分配 EGL 上下文 / framebuffer（每次创建
+        # 耗时数十毫秒，而 render() 本身仅几毫秒）。
+        self._renderer = None
+
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_distance": self.initial_distance,
@@ -1290,7 +1295,11 @@ class Humanoid21Simulator(BaseSimulator):
             cam.elevation = ele
             cam.azimuth = azi
 
-            renderer = mujoco.Renderer(self.model, height=720, width=1280)
+            # 复用缓存的 Renderer（仅首次调用时创建），避免每帧重建
+            # EGL 上下文 / framebuffer 的开销。
+            if self._renderer is None:
+                self._renderer = mujoco.Renderer(self.model, height=720, width=1280)
+            renderer = self._renderer
             renderer.update_scene(self.data, camera=cam)
             return renderer.render()
         except Exception as e:
