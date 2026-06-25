@@ -113,6 +113,16 @@ class Humanoid21Simulator(BaseSimulator):
         # 耗时数十毫秒，而 render() 本身仅几毫秒）。
         self._renderer = None
 
+    def close(self) -> None:
+        """释放资源，特别是缓存的 Renderer 持有的 EGL 上下文 / GPU framebuffer。
+
+        ``mujoco.Renderer`` 不被显式释放时会依赖 Python GC 触发 ``__del__``，
+        在批量运行（如连续跑数百场比赛）的场景下 GC 不及时会导致 EGL 上下文
+        和 GPU 显存累积泄漏。此处显式置 None 加速释放。
+        """
+        if self._renderer is not None:
+            self._renderer = None
+
     def to_blueprint(self) -> Dict[str, Any]:
         return {
             "initial_distance": self.initial_distance,
