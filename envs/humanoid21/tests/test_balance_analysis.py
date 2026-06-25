@@ -14,11 +14,11 @@ if str(project_root) not in sys.path:
 
 from envs.framework.env_runtime import EnvRuntime
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 def _make_runtime_with_balance_observer():
-    simulator = MujocoCombatSimulator()
+    simulator = Humanoid21Simulator()
     observer = Humanoid21BalanceAnalysisObserver("robot_a")
     runtime = EnvRuntime(simulator=simulator, observer_plugins={"balance": observer})
     return simulator, runtime, observer
@@ -31,7 +31,7 @@ def _close_runtime(runtime: EnvRuntime) -> None:
         pass
 
 
-def _robot_total_mass(simulator: MujocoCombatSimulator, robot_id: str) -> float:
+def _robot_total_mass(simulator: Humanoid21Simulator, robot_id: str) -> float:
     cache = simulator._robot_cache[robot_id]
     body_ids = [int(body_id) for body_id in cache["body_ids"]]
     return float(np.sum(simulator.model.body_mass[body_ids]))

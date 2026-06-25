@@ -62,7 +62,7 @@ from envs.framework import (
     ReadOnlySimContext,
     SimContext,
 )
-from envs.humanoid21 import MujocoCombatSimulator
+from envs.humanoid21 import Humanoid21Simulator
 from envs.humanoid21.disturbance_plugins import InitialStatePerturbationPlugin
 from envs.humanoid21.observer_plugins import Humanoid21BalanceAnalysisObserver
 from envs.humanoid21.plugins import CombatScoringPlugin

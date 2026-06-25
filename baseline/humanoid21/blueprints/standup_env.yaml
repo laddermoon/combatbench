@@ -16,7 +16,7 @@ runtime:
   max_steps: ${max_steps}
   strict: true
 simulator:
-  cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
   config:
     initial_distance: ${initial_distance}
     debug_torque: false

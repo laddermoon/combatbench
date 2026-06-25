@@ -53,7 +53,7 @@ class FightV2Config(ExperimentConfig):
         "r_tangential": 0.99,
         "r_gate": 0.99,
         "r_follow_gate": 0.99,
-        "r_damage": 0.99,
+        "r_damage": 0.9,
     }
 
     BLUEPRINT = "fight_v2_env.yaml"

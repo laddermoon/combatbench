@@ -94,7 +94,7 @@ with RoundRunner(
 
 `rule_blueprint.yaml` 声明了标准比赛规则的 `EnvBlueprint`，包含：
 
-- **Simulator**：`MujocoCombatSimulator`（默认 2m 初始距离）
+- **Simulator**：`Humanoid21Simulator`（默认 2m 初始距离）
 - **Plugins**：仅 `CombatScoringPlugin`（100 HP，damage scale 100）
 - **Observer Plugins**：仅 `CombatScoringObserver`（同时追踪双方状态）
 
@@ -126,7 +126,7 @@ with RoundRunner(
 
 ```
 humanoid21/
-├── __init__.py           # 导出 MujocoCombatSimulator
+├── __init__.py           # 导出 Humanoid21Simulator
 ├── simulator.py          # MuJoCo 仿真器
 ├── plugins.py            # 战斗插件（CombatScoringPlugin 等）
 ├── observer_plugins.py   # 观测插件（CombatScoringObserver 等）

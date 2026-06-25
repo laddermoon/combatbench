@@ -14,7 +14,7 @@ import imageio
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 # 视频输出目录
@@ -32,7 +32,7 @@ def save_video(frames: list, filename: str, fps: int = 30):
     return output_path
 
 
-def test_tracking_error(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+def test_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 1: 跟踪误差与刚度
     
@@ -150,7 +150,7 @@ def test_tracking_error(sim: MujocoCombatSimulator, record_video: bool = True) -
     return {'pass': overall_pass, 'details': results}
 
 
-def test_jump(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+def test_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试机器人初始蹲姿，然后立即输入站姿。
     这个过程中的机器人的响应速度以及跳跃高度。
@@ -252,7 +252,7 @@ def test_jump(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str
     return {'pass': overall_pass, 'details': results}
 
 
-def test_response_latency(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+def test_response_latency(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 2: 响应延迟与过冲
     
@@ -370,7 +370,7 @@ def test_response_latency(sim: MujocoCombatSimulator, record_video: bool = True)
     return {'pass': overall_pass, 'details': results}
 
 
-def test_zero_oscillation(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+def test_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 3: 零震荡与控制努力
 
@@ -481,7 +481,7 @@ def test_zero_oscillation(sim: MujocoCombatSimulator, record_video: bool = True)
     return {'pass': overall_pass, 'details': results}
 
 
-def test_absolute_stability(sim: MujocoCombatSimulator, record_video: bool = True) -> Dict[str, bool]:
+def test_absolute_stability(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 4: 系统绝对稳定性
     
@@ -606,7 +606,7 @@ def run_all_acceptance_tests():
     print("按照 ACCEPTANCE_CRITERIA.md 验证 KP/KD 参数")
     print("=" * 70 + "\n")
     
-    sim = MujocoCombatSimulator()
+    sim = Humanoid21Simulator()
     
     results = {}
     

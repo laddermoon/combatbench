@@ -10,7 +10,7 @@ import imageio
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 def generate_pose_images():
@@ -28,7 +28,7 @@ def generate_pose_images():
         print("-" * 60)
 
         # 创建模拟器
-        sim = MujocoCombatSimulator(initial_pose_a=pose_name, initial_pose_b=pose_name)
+        sim = Humanoid21Simulator(initial_pose_a=pose_name, initial_pose_b=pose_name)
 
         # 重置
         sim.reset()

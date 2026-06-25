@@ -23,7 +23,7 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 def test_observation_symmetry():
@@ -34,7 +34,7 @@ def test_observation_symmetry():
     print("=" * 80)
 
     # 创建仿真器
-    sim = MujocoCombatSimulator()
+    sim = Humanoid21Simulator()
 
     # 重置仿真（两个机器人都是站立姿态）
     sim.reset(seed=42)

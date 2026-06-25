@@ -38,7 +38,7 @@ CombatBench 是一个基于 MuJoCo 的开源人形机器人对战仿真平台：
 框架围绕一组显式抽象接口构建。以下是核心接口、用途和已有实例：
 
 **`BaseSimulator`** — 物理引擎的薄封装。只管步进（`physical_step`）、状态读写、力施加。不知道"比赛""得分"等概念。它通过 `IDataAccessor` / `IDataMutator` 接口向插件暴露能力。
-- 实例：`MujocoCombatSimulator`（humanoid21）、T800 simulator（集成中）
+- 实例：`Humanoid21Simulator`（humanoid21）、T800 simulator（集成中）
 
 **`IDataAccessor` / `IDataMutator`** — `BaseSimulator` 能力分离的读写契约。Accessor 永远可用（只读：核心状态、派生状态、传感器数据）；Mutator 按需授予（写：设置状态、设置动作、施加外力）。世界插件声明 `require_mutator=True` 即可从 Mutator 写物理，观测插件只拿到 Accessor，不会误改物理。
 

@@ -1,5 +1,5 @@
-from .simulator import MujocoCombatSimulator
+from .simulator import Humanoid21Simulator
 
 __all__ = [
-    "MujocoCombatSimulator",
+    "Humanoid21Simulator",
 ]

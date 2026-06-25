@@ -26,7 +26,7 @@ from .envs import (
     ParameterizedPolicyBlueprint,
     ReplaySimulator,
     # Humanoid21
-    MujocoCombatSimulator,
+    Humanoid21Simulator,
 )
 
 __all__ = [
@@ -54,5 +54,5 @@ __all__ = [
     "ParameterizedPolicyBlueprint",
     "ReplaySimulator",
     # Humanoid21
-    "MujocoCombatSimulator",
+    "Humanoid21Simulator",
 ]

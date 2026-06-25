@@ -120,7 +120,7 @@ L2 读取。
 
 | Key | 消费者 | 含义 |
 |---|---|---|
-| `initial_distance` | `humanoid21.MujocoCombatSimulator` | 两机器人初始水平距离 (m) |
+| `initial_distance` | `humanoid21.Humanoid21Simulator` | 两机器人初始水平距离 (m) |
 | `initial_pose_a` / `initial_pose_b` | 同上 | `"standing"` / `"squat"` / `"prone"` / ... |
 | `episode` | `ReplaySimulator` | 跳到第 N 个录像 episode |
 | *（新增）* `initial_health_a` / `initial_health_b` | `CombatScoringPlugin` | HP 延续 ❗ 当前靠重建 runtime 实现 |

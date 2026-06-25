@@ -21,13 +21,13 @@ from pathlib import Path
 # 添加路径 - 从 tests/ 目录返回到 humanoid21/，再到 combatbench/
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 @pytest.fixture
 def sim():
-    """Shared MujocoCombatSimulator instance for data interface tests."""
-    simulator = MujocoCombatSimulator()
+    """Shared Humanoid21Simulator instance for data interface tests."""
+    simulator = Humanoid21Simulator()
     simulator.reset()
     return simulator
 
@@ -60,7 +60,7 @@ def test_static_data():
     print("测试 1: get_static_data() - 静态属性")
     print("=" * 70)
 
-    sim = MujocoCombatSimulator()
+    sim = Humanoid21Simulator()
     sim.reset()
 
     static = sim.get_static_data()

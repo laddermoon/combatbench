@@ -4,7 +4,7 @@
 - **按主体隔离**: 策略层绝不能获得包含双机器人的混合数据（如全局 `qpos`）。所有方法必须返回 `Dict[str, np.ndarray]`，并在外层按 `robot_a` 和 `robot_b` 区分。
 - **局部坐标系优先**: 除非必要（如朝向、高度），否则机器人的速度、角速度及对手的相对位置，一律转换到以自身 `Torso` 为原点的局部坐标系下。
 - **全局归一化**: 具有物理限位的观测特征（位置、速度等）默认映射到 `[-1, 1]` 的无量纲区间。
-- **Sandbox 闭包**: 插件/观察者只能通过 `ctx.accessor`（读）与 `ctx.mutator`（写，仅在允许钩子）访问数据。这两个代理严格白名单暴露 `IDataAccessor` / `IDataMutator` 的方法；backend 特有字段（如 MuJoCo 的 `model` / `data` / `_robot_cache`）**不可达**。若观察者需要某项物理量，请先在本规范中登记，再在 `MujocoCombatSimulator.get_static_data()` / `get_derived_state()` 中填入数据。这样新增 backend 时替换实现即可，观察者无需改动。
+- **Sandbox 闭包**: 插件/观察者只能通过 `ctx.accessor`（读）与 `ctx.mutator`（写，仅在允许钩子）访问数据。这两个代理严格白名单暴露 `IDataAccessor` / `IDataMutator` 的方法；backend 特有字段（如 MuJoCo 的 `model` / `data` / `_robot_cache`）**不可达**。若观察者需要某项物理量，请先在本规范中登记，再在 `Humanoid21Simulator.get_static_data()` / `get_derived_state()` 中填入数据。这样新增 backend 时替换实现即可，观察者无需改动。
 
 ---
 
@@ -31,7 +31,7 @@
 
 | 键 | 类型 | 说明 |
 |---|---|---|
-| `dt` | `float` | 单个物理子步仿真时长 (s)。等价于 `MujocoCombatSimulator.DT`。 |
+| `dt` | `float` | 单个物理子步仿真时长 (s)。等价于 `Humanoid21Simulator.DT`。 |
 | `ground_geom_name` | `str` | 地面 geom 名（`"ground"`）。用于在 `derived_state['contacts_vec']` 中筛选机器人–地面接触（CAT_ENV_GROUND），避免硬编码字符串。 |
 
 ### 2.3 设计理由

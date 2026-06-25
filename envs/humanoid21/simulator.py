@@ -15,7 +15,7 @@ _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
 _TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
 
 
-class MujocoCombatSimulator(BaseSimulator):
+class Humanoid21Simulator(BaseSimulator):
     """
     Humanoid21 双机器人对抗仿真器
     
@@ -116,7 +116,7 @@ class MujocoCombatSimulator(BaseSimulator):
         }
 
     @classmethod
-    def from_blueprint(cls, config: Dict[str, Any]) -> "MujocoCombatSimulator":
+    def from_blueprint(cls, config: Dict[str, Any]) -> "Humanoid21Simulator":
         return cls(**config)
 
     def _robot(self, robot_id: str) -> Dict[str, Any]:

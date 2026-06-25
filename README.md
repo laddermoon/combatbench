@@ -38,7 +38,7 @@ Two 21-DOF humanoid robots fight in a 6.1m × 6.1m enclosed boxing ring.
 The framework is built around a set of explicit abstract interfaces. Core interfaces, their roles, and existing implementations:
 
 **`BaseSimulator`** — thin wrapper over the physics engine. Only handles stepping (`physical_step`), state read/write, force application. Knows nothing about "matches" or "scoring." It exposes capabilities to plugins via `IDataAccessor` / `IDataMutator` interfaces.
-- Instances: `MujocoCombatSimulator` (humanoid21), T800 simulator (in integration)
+- Instances: `Humanoid21Simulator` (humanoid21), T800 simulator (in integration)
 
 **`IDataAccessor` / `IDataMutator`** — `BaseSimulator`'s capability-separated read/write contract. Accessor is always available (read-only: core state, derived state, sensor data); Mutator is granted on demand (write: set state, set action, apply force). World plugins declare `require_mutator=True` to write physics via Mutator; observer plugins only get Accessor and cannot accidentally modify physics.
 

@@ -12,12 +12,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from envs.humanoid21.simulator import MujocoCombatSimulator
+from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 @pytest.fixture(scope="module")
 def sim():
-    simulator = MujocoCombatSimulator()
+    simulator = Humanoid21Simulator()
     simulator.reset()
     return simulator
 

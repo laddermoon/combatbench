@@ -29,7 +29,7 @@ inside config dict / list / scalar values::
       phy_steps_per_action: 25
       max_steps: "${max_steps}"
     simulator:
-      cls: "envs.humanoid21.simulator:MujocoCombatSimulator"
+      cls: "envs.humanoid21.simulator:Humanoid21Simulator"
       config:
         initial_distance: "${initial_distance}"
 
