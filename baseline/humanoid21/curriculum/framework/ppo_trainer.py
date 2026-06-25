@@ -111,6 +111,8 @@ class PPOBuffer:
         terms: List[bool] = []
         ep_lens: List[int] = []
 
+        # Phase 1: Collect valid episodes without any GPU calls.
+        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, Dict[str, np.ndarray], Episode]] = []
         for ep in episodes:
             ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
             obs = ep.observations.get(ep_target)
@@ -141,15 +143,26 @@ class PPOBuffer:
                 experiment.compute_episode_metrics(ep)
             )
 
-            # Compute log probs
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            act_t = torch.as_tensor(acts, dtype=torch.float32, device=device)
-            with torch.no_grad():
-                lp, _ = actor.evaluate_actions(obs_t, act_t)
-            lp_np = lp.cpu().numpy().astype(np.float32)
+            valid_eps.append((obs, acts, fin, T, rewards, ep))
 
-            # Weight inversely to episode length (clamped to max 10x)
-            # Short (failed) episodes get a massive weight multiplier
+        # Phase 2: Batched evaluate_actions — one GPU call for all episodes.
+        if valid_eps:
+            all_obs = np.concatenate([e[0] for e in valid_eps], axis=0).astype(np.float32)
+            all_acts = np.concatenate([e[1] for e in valid_eps], axis=0).astype(np.float32)
+            all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
+            all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
+            with torch.no_grad():
+                all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t)
+            all_lp_np = all_lp.cpu().numpy().astype(np.float32)
+        else:
+            all_lp_np = np.zeros(0, dtype=np.float32)
+
+        # Phase 3: Slice log probs and build segment lists.
+        offset = 0
+        for obs, acts, fin, T, rewards, ep in valid_eps:
+            lp_np = all_lp_np[offset:offset + T]
+            offset += T
+
             ep_weight = min(200.0 / T, 10.0)
             weight_arr = np.full(T, ep_weight, dtype=np.float32)
 

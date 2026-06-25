@@ -249,6 +249,28 @@ class EpisodeRunner:
 
             obs_a, obs_b = self.runtime.get_observation()
 
+    def set_policy_a(self, policy: Policy) -> None:
+        """Replace policy_a in-place (no env rebuild)."""
+        if not isinstance(policy, Policy):
+            raise TypeError(
+                f"policy must subclass envs.framework.policy.Policy; "
+                f"got {type(policy).__name__}"
+            )
+        self.policy_a = policy
+
+    def set_policy_b(self, policy: Policy) -> None:
+        """Replace policy_b in-place (no env rebuild)."""
+        if not isinstance(policy, Policy):
+            raise TypeError(
+                f"policy must subclass envs.framework.policy.Policy; "
+                f"got {type(policy).__name__}"
+            )
+        self.policy_b = policy
+
+    def set_runtime(self, runtime: EnvRuntime) -> None:
+        """Replace the EnvRuntime in-place (policies are kept)."""
+        self.runtime = runtime
+
     def close(self) -> None:
         """Close attached policies that support it.
 
@@ -256,7 +278,11 @@ class EpisodeRunner:
         NOT close the runtime here to keep the runner a thin composition
         layer.
         """
+        seen = set()
         for policy in (self.policy_a, self.policy_b):
+            if id(policy) in seen:
+                continue
+            seen.add(id(policy))
             close_fn = getattr(policy, "close", None)
             if callable(close_fn):
                 close_fn()

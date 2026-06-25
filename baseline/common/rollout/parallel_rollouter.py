@@ -8,13 +8,16 @@ Each job is fully specified by a tuple::
 The collector returns a flat ``List[Episode]`` in the same order as
 ``jobs``.
 
-Each worker creates a fresh EnvRuntime + Policy per job — no shared
-state, no caching, no memory accumulation.  Short-lived MuJoCo
-instances are cheap to create and are GC'd when the function returns.
+Workers reuse EnvRuntime + Policy instances across episodes that share
+the same blueprint, avoiding repeated MuJoCo model loading and policy
+deserialization.  When blueprints change (e.g. different agent_id),
+the old env is torn down and a new one is created.
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -51,19 +54,13 @@ def _run_job(
     options: Optional[Dict[str, Any]] = None,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
-    #import time as _time
-    #_t0 = _time.perf_counter()
-
     env_bp = EnvBlueprint.from_dict(env_bp_dict)
     env_hash = blueprint_hash(env_bp)
 
     recorder = EpisodeRecorder(blueprint_hash=env_hash)
-    #_t1 = _time.perf_counter()
     runtime = env_bp.build(recorders=[recorder])
-    #_t2 = _time.perf_counter()
     policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
     policy_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-    #_t3 = _time.perf_counter()
 
     runner = EpisodeRunner(
         runtime=runtime,
@@ -71,15 +68,85 @@ def _run_job(
         policy_b=policy_b,
     )
     runner.run_episode(seed=seed, options=options, want_extras=True)
-    #_t4 = _time.perf_counter()
-
-    #print(
-    #    f"[worker] seed={seed} init={_t3 - _t0:.3f}s"
-    #    f"(env={_t2 - _t1:.3f}s policy={_t3 - _t2:.3f}s)"
-    #    f" episode={_t4 - _t3:.3f}s",
-    #    flush=True,
-    #)
     return recorder.get_last_episode()
+
+
+def _run_job_batch(
+    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]]]],
+) -> List[Episode]:
+    """Run a batch of jobs, reusing EnvRuntime + Policy when blueprints match.
+
+    Fine-grained reuse: if only the policy changed (common case — same env,
+    new policy weights), only the policy is rebuilt via ``set_policy_*``.
+    If only the env changed, only the runtime is rebuilt via ``set_runtime``.
+    When policy_a == policy_b, a single Policy instance is built and shared.
+    """
+    episodes: List[Episode] = []
+    runner: Optional[EpisodeRunner] = None
+    recorder: Optional[EpisodeRecorder] = None
+    current_env_key: Optional[str] = None
+    current_pa_key: Optional[str] = None
+    current_pb_key: Optional[str] = None
+
+    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options in tasks:
+        env_key = json.dumps(env_bp_dict, sort_keys=True, ensure_ascii=False)
+        pa_key = json.dumps(policy_a_bp_dict, sort_keys=True, ensure_ascii=False)
+        pb_key = json.dumps(policy_b_bp_dict, sort_keys=True, ensure_ascii=False)
+        same_policy = pa_key == pb_key
+
+        env_changed = env_key != current_env_key
+        pa_changed = pa_key != current_pa_key
+        pb_changed = pb_key != current_pb_key
+
+        if runner is None or env_changed:
+            # Full (re)build — env is the expensive part.
+            if runner is not None:
+                runner.close()
+                runner.runtime.close()
+
+            env_bp = EnvBlueprint.from_dict(env_bp_dict)
+            env_hash = blueprint_hash(env_bp)
+            recorder = EpisodeRecorder(blueprint_hash=env_hash)
+            runtime = env_bp.build(recorders=[recorder])
+            policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+            policy_b = policy_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+            runner = EpisodeRunner(
+                runtime=runtime,
+                policy_a=policy_a,
+                policy_b=policy_b,
+            )
+            current_env_key = env_key
+            current_pa_key = pa_key
+            current_pb_key = pb_key
+        else:
+            # Env unchanged — only update policies that changed.
+            if pa_changed:
+                new_pa = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+                runner.set_policy_a(new_pa)
+                if same_policy:
+                    runner.set_policy_b(new_pa)
+                current_pa_key = pa_key
+            if pb_changed and not same_policy:
+                new_pb = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+                runner.set_policy_b(new_pb)
+                current_pb_key = pb_key
+
+        runner.run_episode(seed=seed, options=options, want_extras=True)
+        episodes.append(recorder.get_last_episode())
+
+    if runner is not None:
+        runner.close()
+        runner.runtime.close()
+
+    return episodes
+
+
+def _run_chunk(
+    indexed_tasks: List[Tuple[int, Tuple]],
+) -> List[Episode]:
+    """Worker entry point: extract tasks from indexed pairs and run as a batch."""
+    tasks = [t for _, t in indexed_tasks]
+    return _run_job_batch(tasks)
 
 
 # ---------------------------------------------------------------------------
@@ -163,20 +230,33 @@ class ParallelRollouter:
         ]
 
         if self._num_workers <= 1:
-            episodes = [_run_job(*task) for task in tasks]
+            episodes = _run_job_batch(tasks)
         else:
             assert self._executor is not None
-            policy_a_dicts, policy_b_dicts, env_dicts, seeds, options_list = zip(*tasks)
-            episodes = list(
-                self._executor.map(
-                    _run_job,
-                    policy_a_dicts,
-                    policy_b_dicts,
-                    env_dicts,
-                    seeds,
-                    options_list,
+            # Group tasks by blueprint identity so that each group can
+            # reuse a single EnvRuntime + Policy across all its episodes.
+            groups: Dict[str, List[Tuple[int, Tuple]]] = {}
+            for i, task in enumerate(tasks):
+                key = json.dumps(
+                    {"pa": task[0], "pb": task[1], "env": task[2]},
+                    sort_keys=True, ensure_ascii=False,
                 )
-            )
+                groups.setdefault(key, []).append((i, task))
+
+            # Split each group into chunks sized for the worker pool.
+            all_chunks: List[List[Tuple[int, Tuple]]] = []
+            for indexed_tasks in groups.values():
+                chunk_size = max(1, math.ceil(len(indexed_tasks) / self._num_workers))
+                for j in range(0, len(indexed_tasks), chunk_size):
+                    all_chunks.append(indexed_tasks[j:j + chunk_size])
+
+            chunk_results = list(self._executor.map(_run_chunk, all_chunks))
+
+            # Reassemble episodes in original order.
+            episodes: List[Optional[Episode]] = [None] * len(tasks)
+            for chunk, chunk_eps in zip(all_chunks, chunk_results):
+                for (orig_idx, _), ep in zip(chunk, chunk_eps):
+                    episodes[orig_idx] = ep
 
         return episodes
 

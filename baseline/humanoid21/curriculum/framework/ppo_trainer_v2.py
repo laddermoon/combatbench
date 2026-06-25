@@ -112,6 +112,9 @@ class PPOBuffer:
         terms: List[bool] = []
         ep_lens: List[int] = []
 
+        # Phase 1: Collect valid episodes and pre-compute per-episode data
+        # (segments, rewards) without any GPU calls.
+        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, list, Dict[str, np.ndarray], Episode]] = []
         for ep in episodes:
             ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
             obs = ep.observations.get(ep_target)
@@ -135,9 +138,6 @@ class PPOBuffer:
             self.episode_lengths.append(T_full)
 
             # Split into training segments (sub-episodes).
-            # Default: the full episode.  Mixed-policy experiments override
-            # segment_episode to exclude fallback-policy steps so the actor
-            # is never trained on actions it did not produce.
             segments = experiment.segment_episode(ep)
             if not segments:
                 continue  # entire episode excluded from training
@@ -145,13 +145,26 @@ class PPOBuffer:
             # Extract rewards once for the full episode, then slice per segment.
             rewards_full = experiment.extract_rewards(ep)
 
-            # Compute log probs once for the full episode (slicing is cheaper
-            # than re-evaluating the actor on each small segment).
-            obs_full_t = torch.as_tensor(obs, dtype=torch.float32, device=device)
-            act_full_t = torch.as_tensor(acts, dtype=torch.float32, device=device)
+            valid_eps.append((obs, acts, fin, T_full, segments, rewards_full, ep))
+
+        # Phase 2: Batched evaluate_actions — one GPU call for all episodes
+        # instead of 2048 per-episode calls.
+        if valid_eps:
+            all_obs = np.concatenate([e[0] for e in valid_eps], axis=0).astype(np.float32)
+            all_acts = np.concatenate([e[1] for e in valid_eps], axis=0).astype(np.float32)
+            all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
+            all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
             with torch.no_grad():
-                lp_full, _ = actor.evaluate_actions(obs_full_t, act_full_t)
-            lp_full_np = lp_full.cpu().numpy().astype(np.float32)
+                all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t)
+            all_lp_np = all_lp.cpu().numpy().astype(np.float32)
+        else:
+            all_lp_np = np.zeros(0, dtype=np.float32)
+
+        # Phase 3: Slice into segments using pre-computed log probs.
+        offset = 0
+        for obs, acts, fin, T_full, segments, rewards_full, ep in valid_eps:
+            lp_full_np = all_lp_np[offset:offset + T_full]
+            offset += T_full
 
             for (start, end) in segments:
                 T_seg = end - start
