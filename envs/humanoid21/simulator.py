@@ -330,32 +330,48 @@ class Humanoid21Simulator(BaseSimulator):
             if unknown:
                 raise KeyError(f"get_derived_state: unknown fields {unknown}")
 
-        cache_key = ('_derived_state', tuple(fields))
-        if cache_key in self._data_cache:
-            return self._data_cache[cache_key]
-
+        # Per-field 缓存：每个 field 独立计算并缓存，避免不同 fields 组合
+        # 重复计算同一个 robot view。例如 observer 调
+        # ``get_derived_state(['contacts','robot_a'])`` 而 ``get_observation``
+        # 调 ``get_derived_state(['robot_a','robot_b'])`` 时，原实现因 cache
+        # key 含整个 tuple 会导致 ``robot_a`` 的 view 被算两遍。per-field 缓存
+        # 后同一物理步内每个 field 只算一次。缓存随 ``self._data_cache`` 在
+        # ``physical_step`` / ``reset`` / ``set_action`` 时统一失效。
         result: Dict[str, Any] = {}
 
         if 'torso_distance' in fields:
-            torso_a_id = self._robot('robot_a')['root_body_id']
-            torso_b_id = self._robot('robot_b')['root_body_id']
-            pos_a = self.data.xpos[torso_a_id]
-            pos_b = self.data.xpos[torso_b_id]
-            result['torso_distance'] = np.array([np.linalg.norm(pos_b - pos_a)], dtype=np.float32)
+            ck = '_derived_torso_distance'
+            cached = self._data_cache.get(ck)
+            if cached is None:
+                torso_a_id = self._robot('robot_a')['root_body_id']
+                torso_b_id = self._robot('robot_b')['root_body_id']
+                pos_a = self.data.xpos[torso_a_id]
+                pos_b = self.data.xpos[torso_b_id]
+                cached = np.array([np.linalg.norm(pos_b - pos_a)], dtype=np.float32)
+                self._data_cache[ck] = cached
+            result['torso_distance'] = cached
 
         if 'contacts' in fields:
-            contacts_vec = self._extract_contacts()
-            self._cached_contacts_vec = contacts_vec
-            result['contacts'] = contacts_vec
+            ck = '_derived_contacts'
+            cached = self._data_cache.get(ck)
+            if cached is None:
+                cached = self._extract_contacts()
+                self._cached_contacts_vec = cached
+                self._data_cache[ck] = cached
+            result['contacts'] = cached
 
         for rid in ('robot_a', 'robot_b'):
             if rid in fields:
-                opp_id = 'robot_b' if rid == 'robot_a' else 'robot_a'
-                view = self._get_robot_view(rid, opp_id)
-                view.update(self._collect_body_joint_arrays(rid))
-                result[rid] = view
+                ck = f'_derived_{rid}'
+                cached = self._data_cache.get(ck)
+                if cached is None:
+                    opp_id = 'robot_b' if rid == 'robot_a' else 'robot_a'
+                    view = self._get_robot_view(rid, opp_id)
+                    view.update(self._collect_body_joint_arrays(rid))
+                    cached = view
+                    self._data_cache[ck] = cached
+                result[rid] = cached
 
-        self._data_cache[cache_key] = result
         return result
 
     def _collect_body_joint_arrays(self, robot_id: str) -> Dict[str, Any]:
@@ -483,6 +499,10 @@ class Humanoid21Simulator(BaseSimulator):
         self_pos = self.data.xpos[torso_id]
         self_quat = self.data.xquat[torso_id]  # [w,x,y,z]
         self_rot = R.from_quat([self_quat[1], self_quat[2], self_quat[3], self_quat[0]])
+        # 仅构造一次逆旋转并在所有局部坐标变换中复用：等价于原先每处重复
+        # 调用 self_rot.inv()（确定性运算，结果按位相同），消除 13 次 Rotation
+        # 对象构造开销。
+        self_rot_inv = self_rot.inv()
 
         # 模块二：全局状态 (13维)
         # 1. 高度 (Z轴) - 1维
@@ -505,16 +525,16 @@ class Humanoid21Simulator(BaseSimulator):
 
         # 模块四：对手观测 (39维)
         # 4.1 对手基础位姿 (9维)
-        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot, opp_torso_id)
+        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, opp_torso_id)
 
         # 4.2 对手关键点位置 (15维)
         opponent_keypoint_pos = self._get_opponent_keypoints_pos(
-            self_pos, self_rot, opponent_id
+            self_pos, self_rot_inv, opponent_id
         )
 
         # 4.3 对手关键点速度 (15维)
         opponent_keypoint_vel = self._get_opponent_keypoints_vel(
-            self_pos, self_rot, opponent_id
+            self_pos, self_rot_inv, opponent_id
         )
 
         # 计算模块一本体感知（需要从 get_core_state 获取）
@@ -600,22 +620,27 @@ class Humanoid21Simulator(BaseSimulator):
     def get_observation(self) -> Dict[str, Any]:
         """Return per-agent flat observation vectors (96-dim).
 
-        通过 get_derived_state(fields=['robot_a', 'robot_b']) 获取 observation。
+        直接调用 ``_get_robot_view`` 计算每个机器人的视角并取出 96 维 ``observation``，
+        **不再**走 ``get_derived_state(['robot_a','robot_b'])`` —— 后者会额外为每个
+        机器人构建 per-body / per-joint 世界系数组 (``_collect_body_joint_arrays``)，
+        而平铺观测完全不需要这些数据。``observation`` 的数值与原路径按位相同
+        （来自同一个 ``_get_robot_view``），仅省去了观测热路径上无用的 body/joint 计算。
+        需要这些数组的消费者（如平衡分析 observer）仍可显式调用
+        ``get_derived_state(['robot_a'])`` 获取。
         """
         if '_observation' in self._data_cache:
             return self._data_cache['_observation']
-        derived = self.get_derived_state(['robot_a', 'robot_b'])
-        result = {
-            "robot_a": derived["robot_a"]["observation"],
-            "robot_b": derived["robot_b"]["observation"],
-        }
+        result = {}
+        for rid in ('robot_a', 'robot_b'):
+            opp_id = 'robot_b' if rid == 'robot_a' else 'robot_a'
+            result[rid] = self._get_robot_view(rid, opp_id)['observation']
         self._data_cache['_observation'] = result
         return result
 
     def _get_opponent_basic_pose(
         self,
         self_pos: np.ndarray,
-        self_rot: R,
+        self_rot_inv: R,
         opp_torso_id: int
     ) -> Dict[str, np.ndarray]:
         """
@@ -623,6 +648,8 @@ class Humanoid21Simulator(BaseSimulator):
         - 相对位置 (3维)
         - 相对速度 (3维)
         - FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
+
+        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转 (self_rot.inv())。
         """
         # 对手 Torso 的位置和姿态
         opp_pos = self.data.xpos[opp_torso_id]
@@ -634,15 +661,15 @@ class Humanoid21Simulator(BaseSimulator):
 
         # 1. 相对位置 (3维) - 对手根关节 - 自身根关节
         relative_pos = opp_pos - self_pos
-        relative_pos_local = self_rot.inv().apply(relative_pos)
+        relative_pos_local = self_rot_inv.apply(relative_pos)
 
         # 2. 相对速度 (3维)
-        relative_vel_local = self_rot.inv().apply(opp_vel_global)
+        relative_vel_local = self_rot_inv.apply(opp_vel_global)
 
         # 3. FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
         # 对手的"前方"在自身坐标系中表示
         opp_forward = opp_rot.apply([1, 0, 0])  # 对手的局部x轴（前方）
-        face_vector = self_rot.inv().apply(opp_forward)  # 转换到自身局部坐标系
+        face_vector = self_rot_inv.apply(opp_forward)  # 转换到自身局部坐标系
 
         return {
             'relative_pos': relative_pos_local.astype(np.float32),  # 3维
@@ -653,7 +680,7 @@ class Humanoid21Simulator(BaseSimulator):
     def _get_opponent_keypoints_pos(
         self,
         self_pos: np.ndarray,
-        self_rot: R,
+        self_rot_inv: R,
         opponent_id: str
     ) -> Dict[str, np.ndarray]:
         """
@@ -661,6 +688,10 @@ class Humanoid21Simulator(BaseSimulator):
         - 头部中心点 (3维)
         - 左右手中心点 (6维)
         - 左右脚中心点 (6维)
+
+        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转。5 个关键点的相对位移
+        堆叠成 (5,3) 后用一次 ``apply`` 批量旋转：同一旋转矩阵逐行作用，结果与
+        逐点调用按位相同，但把 5 次 scipy 调用合并为 1 次。
         """
         opp_cache = self._robot(opponent_id)
 
@@ -672,25 +703,28 @@ class Humanoid21Simulator(BaseSimulator):
         foot_right_pos = self.data.xpos[kp['foot_right']]
         foot_left_pos = self.data.xpos[kp['foot_left']]
 
-        # 转换到自身局部坐标系
-        head_local = self_rot.inv().apply(head_pos - self_pos)
-        hand_right_local = self_rot.inv().apply(hand_right_pos - self_pos)
-        hand_left_local = self_rot.inv().apply(hand_left_pos - self_pos)
-        foot_right_local = self_rot.inv().apply(foot_right_pos - self_pos)
-        foot_left_local = self_rot.inv().apply(foot_left_pos - self_pos)
+        # 转换到自身局部坐标系（批量）
+        deltas = np.stack([
+            head_pos - self_pos,
+            hand_right_pos - self_pos,
+            hand_left_pos - self_pos,
+            foot_right_pos - self_pos,
+            foot_left_pos - self_pos,
+        ])
+        local = self_rot_inv.apply(deltas)
 
         return {
-            'head': head_local.astype(np.float32),  # 3维
-            'hand_right': hand_right_local.astype(np.float32),  # 3维
-            'hand_left': hand_left_local.astype(np.float32),  # 3维
-            'foot_right': foot_right_local.astype(np.float32),  # 3维
-            'foot_left': foot_left_local.astype(np.float32),  # 3维
+            'head': local[0].astype(np.float32),  # 3维
+            'hand_right': local[1].astype(np.float32),  # 3维
+            'hand_left': local[2].astype(np.float32),  # 3维
+            'foot_right': local[3].astype(np.float32),  # 3维
+            'foot_left': local[4].astype(np.float32),  # 3维
         }
 
     def _get_opponent_keypoints_vel(
         self,
         self_pos: np.ndarray,
-        self_rot: R,
+        self_rot_inv: R,
         opponent_id: str
     ) -> Dict[str, np.ndarray]:
         """
@@ -698,6 +732,9 @@ class Humanoid21Simulator(BaseSimulator):
         - 头部中心点速度 (3维)
         - 左右手中心点速度 (6维)
         - 左右脚中心点速度 (6维)
+
+        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转。5 个关键点速度堆叠成
+        (5,3) 后批量旋转，结果与逐点调用按位相同。
         """
         opp_cache = self._robot(opponent_id)
 
@@ -710,19 +747,22 @@ class Humanoid21Simulator(BaseSimulator):
         foot_right_vel = self.data.cvel[kp['foot_right'], 3:6]
         foot_left_vel = self.data.cvel[kp['foot_left'], 3:6]
 
-        # 转换到自身局部坐标系
-        head_vel_local = self_rot.inv().apply(head_vel)
-        hand_right_vel_local = self_rot.inv().apply(hand_right_vel)
-        hand_left_vel_local = self_rot.inv().apply(hand_left_vel)
-        foot_right_vel_local = self_rot.inv().apply(foot_right_vel)
-        foot_left_vel_local = self_rot.inv().apply(foot_left_vel)
+        # 转换到自身局部坐标系（批量）
+        vels = np.stack([
+            head_vel,
+            hand_right_vel,
+            hand_left_vel,
+            foot_right_vel,
+            foot_left_vel,
+        ])
+        local = self_rot_inv.apply(vels)
 
         return {
-            'head': head_vel_local.astype(np.float32),  # 3维
-            'hand_right': hand_right_vel_local.astype(np.float32),  # 3维
-            'hand_left': hand_left_vel_local.astype(np.float32),  # 3维
-            'foot_right': foot_right_vel_local.astype(np.float32),  # 3维
-            'foot_left': foot_left_vel_local.astype(np.float32),  # 3维
+            'head': local[0].astype(np.float32),  # 3维
+            'hand_right': local[1].astype(np.float32),  # 3维
+            'hand_left': local[2].astype(np.float32),  # 3维
+            'foot_right': local[3].astype(np.float32),  # 3维
+            'foot_left': local[4].astype(np.float32),  # 3维
         }
     
     def _get_feet_forces(self, robot_id: str) -> np.ndarray:
