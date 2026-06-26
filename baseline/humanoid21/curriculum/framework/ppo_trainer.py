@@ -313,14 +313,14 @@ def ppo_update(
     Data is split into minibatches of ``minibatch_size`` samples per epoch.
     The last minibatch may be smaller if ``n`` is not evenly divisible.
     """
-    obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
+    obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
 
     # Compute values for each critic
     values_all: Dict[str, np.ndarray] = {}
     for key, critic in critics.items():
         with torch.no_grad():
             values_all[key] = (
-                critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
+                critic(obs_t).squeeze(-1).cpu().numpy().astype(np.float32)
             )
 
     # Batched bootstrap values: collect all final_obs that need bootstrapping
@@ -404,7 +404,6 @@ def ppo_update(
     ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
 
     # Prepare tensors (upload once, index on GPU throughout)
-    obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
     old_lp_t = torch.as_tensor(buf.log_probs, dtype=torch.float32, device=device)
     rets_t: Dict[str, torch.Tensor] = {
