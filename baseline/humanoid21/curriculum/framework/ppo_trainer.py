@@ -21,15 +21,23 @@ from .config import ExperimentConfig
 # ---------------------------------------------------------------------------
 
 def _coerce_per_step(values: Any, expected_len: int) -> np.ndarray:
-    """Coerce a raw observer leaf into a (T,) float32 array of length ``expected_len``."""
+    """Coerce a raw observer leaf into a (T,) float32 array of length ``expected_len``.
+
+    Raises ValueError if the observer output length does not match the
+    expected episode length — a length mismatch indicates a bug in the
+    observer (e.g. wrong stacking cadence) and must not be silently
+    papered over with interpolation.
+    """
     if values is None:
         return np.zeros(expected_len, dtype=np.float32)
     arr = np.asarray(values, dtype=np.float32).reshape(-1)
     if arr.shape[0] != expected_len:
-        if expected_len == 0:
-            return np.zeros(0, dtype=np.float32)
-        idx = np.linspace(0, len(arr) - 1, expected_len)
-        arr = np.interp(idx, np.arange(len(arr)), arr).astype(np.float32)
+        raise ValueError(
+            f"Observer output length {arr.shape[0]} != expected episode "
+            f"length {expected_len}. This indicates a timestep misalignment "
+            f"bug in the observer; reward interpolation is intentionally "
+            f"disabled to surface the problem."
+        )
     return arr
 
 
