@@ -403,10 +403,14 @@ def ppo_update(
     ep_len_min = float(np.min(ep_lengths)) if ep_lengths else 0.0
     ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
 
-    # Prepare tensors
+    # Prepare tensors (upload once, index on GPU throughout)
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
     old_lp_t = torch.as_tensor(buf.log_probs, dtype=torch.float32, device=device)
+    rets_t: Dict[str, torch.Tensor] = {
+        key: torch.as_tensor(rets_all[key], dtype=torch.float32, device=device)
+        for key in reward_keys
+    }
 
     # Normalize advantages per component and combine with stage weights
     def _normalize_adv(adv: np.ndarray) -> np.ndarray:
@@ -457,7 +461,6 @@ def ppo_update(
         for start in range(0, n, minibatch_size):
             end = min(start + minibatch_size, n)
             idx = perm[start:end]
-            idx_cpu = idx.cpu().numpy()
 
             # Compute normalized difficulty weights for this minibatch
             batch_weights = w_t[idx]
@@ -467,9 +470,7 @@ def ppo_update(
             for key in reward_keys:
                 critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
-                ret_val = torch.as_tensor(
-                    rets_all[key][idx_cpu], dtype=torch.float32, device=device,
-                )
+                ret_val = rets_t[key][idx]
                 val_loss = (((new_val - ret_val) ** 2) * batch_weights).mean()
                 val_loss.backward()
                 torch.nn.utils.clip_grad_norm_(
