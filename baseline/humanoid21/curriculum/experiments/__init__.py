@@ -8,7 +8,9 @@ import importlib
 from pathlib import Path
 from typing import Dict, List
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.framework.config import ExperimentConfig as _ExperimentConfig
+
+ExperimentConfig = _ExperimentConfig  # backward-compatible alias
 
 _REGISTRY: Dict[str, ExperimentConfig] = {}
 

@@ -6,14 +6,14 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
-class BalanceRecoverConfig(ExperimentConfig):
+class BalanceRecoverConfig(CombatExperimentBase):
     """P0 balance-recovery policy (IDEA.md step 2).
 
     Trained on top of the basic-standing policy. At every episode reset the

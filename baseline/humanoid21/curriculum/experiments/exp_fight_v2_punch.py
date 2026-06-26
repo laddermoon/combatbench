@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.humanoid21.curriculum.framework.ppo_trainer import (
     _extract_per_step_field,
     _extract_per_step_scalar,
@@ -32,7 +32,7 @@ _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_v2_u08845_10w"
 )
 
-class FightV2PunchConfig(ExperimentConfig):
+class FightV2PunchConfig(CombatExperimentBase):
     """Punch (heavy-striking) experiment.
 
     A variant of fight_v2 that rewards only damage dealt (ignoring taken),

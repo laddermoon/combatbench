@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.humanoid21.curriculum.framework.ppo_trainer import (
     _extract_per_step_field,
     _extract_per_step_scalar,
@@ -81,7 +81,7 @@ class StandupMixedPolicy(Policy):
         return action, extra
 
 
-class StandupConfig(ExperimentConfig):
+class StandupConfig(CombatExperimentBase):
     """Standup curriculum experiment with potential-difference rewards."""
 
     name = "standup"

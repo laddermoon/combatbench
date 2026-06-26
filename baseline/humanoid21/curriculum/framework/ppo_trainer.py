@@ -14,7 +14,7 @@ from baseline.common.algos import compute_gae
 from baseline.common.policies import CriticMLP, TanhGaussianMLPPolicy
 from baseline.common.rollout import Episode
 
-from .config import ExperimentConfig
+from .config import ExperimentConfig, FrameworkParams
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -105,9 +105,10 @@ class PPOBuffer:
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
         experiment: ExperimentConfig,
+        params: FrameworkParams,
     ):
         self.reward_data: Dict[str, List[np.ndarray]] = {
-            k: [] for k in experiment.reward_keys
+            k: [] for k in params.reward_keys
         }
         self.episode_metrics: List[Dict[str, float]] = []
         self.episode_lengths: List[int] = []  # original episode lengths (for logging)
@@ -194,7 +195,7 @@ class PPOBuffer:
                     fin_seg = np.asarray(fin, dtype=np.float32)
                     term_seg = bool(ep.is_terminated)
 
-                for key in experiment.reward_keys:
+                for key in params.reward_keys:
                     r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
                     self.reward_data[key].append(
                         np.asarray(r_full[start:end], dtype=np.float32)
@@ -230,6 +231,7 @@ class PPOBuffer:
         self.is_terminated = terms
         self.ep_lengths = ep_lens
         self.experiment = experiment
+        self.params = params
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -304,6 +306,7 @@ def ppo_update(
     device: torch.device,
     stage_weights: Tuple[float, ...],
     minibatch_size: int = 4096,
+    experiment: Optional[ExperimentConfig] = None,
 ) -> Dict[str, float]:
     """Multi-critic PPO update, parameterized by reward_keys and gammas.
 
@@ -410,6 +413,10 @@ def ppo_update(
 
     # Normalize advantages per component and combine with stage weights
     def _normalize_adv(adv: np.ndarray) -> np.ndarray:
+        if experiment is not None:
+            result = experiment.normalize_advantages(adv)
+            if result is not None:
+                return result
         mean = float(adv.mean())
         std = float(adv.std())
         if std < 1e-8:
@@ -421,11 +428,15 @@ def ppo_update(
             f"stage_weights must have {len(reward_keys)} entries (one per "
             f"reward in {reward_keys}); got {stage_weights!r}"
         )
-    combined_adv = np.zeros_like(advs_all[reward_keys[0]], dtype=np.float32)
-    for w, key in zip(stage_weights, reward_keys):
-        if w == 0.0:
-            continue
-        combined_adv = combined_adv + float(w) * _normalize_adv(advs_all[key])
+    combined_adv: Optional[np.ndarray] = None
+    if experiment is not None:
+        combined_adv = experiment.combine_advantages(advs_all, stage_weights)
+    if combined_adv is None:
+        combined_adv = np.zeros_like(advs_all[reward_keys[0]], dtype=np.float32)
+        for w, key in zip(stage_weights, reward_keys):
+            if w == 0.0:
+                continue
+            combined_adv = combined_adv + float(w) * _normalize_adv(advs_all[key])
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
@@ -467,7 +478,11 @@ def ppo_update(
 
             # Compute normalized difficulty weights for this minibatch
             batch_weights = w_t[idx]
-            batch_weights = batch_weights / (batch_weights.mean() + 1e-8)
+            normed = experiment.normalize_sample_weights(batch_weights.cpu().numpy()) if experiment is not None else None
+            if normed is not None:
+                batch_weights = torch.as_tensor(normed, dtype=torch.float32, device=device)
+            else:
+                batch_weights = batch_weights / (batch_weights.mean() + 1e-8)
 
             # Step 1: Update each critic independently
             for key in reward_keys:

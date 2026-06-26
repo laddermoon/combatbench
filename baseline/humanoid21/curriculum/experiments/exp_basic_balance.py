@@ -6,12 +6,12 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig
+from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
-class BasicBalanceConfig(ExperimentConfig):
+class BasicBalanceConfig(CombatExperimentBase):
 
     name = "basic_balance"
     reward_keys = ("r_fall", "r_cross")

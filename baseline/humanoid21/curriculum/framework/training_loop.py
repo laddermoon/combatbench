@@ -24,7 +24,7 @@ from baseline.common.policies import (
 from baseline.common.rollout import Episode, ParallelRollouter
 from envs.framework.policy import PolicyBlueprint
 
-from .config import ExperimentConfig
+from .config import ExperimentConfig, FrameworkParams
 from .ppo_trainer import (
     PPOBuffer,
     ppo_update,
@@ -43,6 +43,7 @@ def save_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
+    params: FrameworkParams,
     update: int,
     best_eval: tuple,
 ) -> None:
@@ -55,8 +56,8 @@ def save_checkpoint(
             "critic_optimizers_state_dict": {
                 k: v.state_dict() for k, v in critic_optimizers.items()
             },
-            "experiment_name": experiment.name,
-            "reward_keys": experiment.reward_keys,
+            "experiment_name": params.name,
+            "reward_keys": params.reward_keys,
             "scheduler_state": experiment.scheduler_state(),
             "training_state": experiment.training_state(),
             "update": update,
@@ -74,6 +75,7 @@ def load_checkpoint(
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentConfig,
+    params: FrameworkParams,
     load_experiment_state: bool = False,
 ) -> int:
     """Load model weights and optimizer states from checkpoint.
@@ -116,25 +118,25 @@ def load_checkpoint(
 
     # Force align optimizer learning rate and policy standard deviation boundaries to currently configured experiment config
     for pg in actor_optimizer.param_groups:
-        pg["lr"] = experiment.learning_rate
-    actor.log_std_min = float(experiment.log_std_min)
-    print(f"[checkpoint] Force aligned actor optimizer LR to {experiment.learning_rate:.2e} and log_std_min to {experiment.log_std_min}", flush=True)
+        pg["lr"] = params.learning_rate
+    actor.log_std_min = float(params.log_std_min)
+    print(f"[checkpoint] Force aligned actor optimizer LR to {params.learning_rate:.2e} and log_std_min to {params.log_std_min}", flush=True)
 
     if load_experiment_state:
         saved_exp = payload.get("experiment_name", "")
-        if saved_exp == experiment.name:
+        if saved_exp == params.name:
             experiment.load_scheduler_state(payload.get("scheduler_state", {}))
             experiment.load_training_state(payload.get("training_state", {}))
             # Restore optimizer LR from experiment
             for pg in actor_optimizer.param_groups:
-                pg["lr"] = experiment.learning_rate
+                pg["lr"] = params.learning_rate
             print(
-                f"[checkpoint] restored LR={experiment.learning_rate:.2e}",
+                f"[checkpoint] restored LR={params.learning_rate:.2e}",
                 flush=True,
             )
         else:
             print(
-                f"[checkpoint] experiment changed ({saved_exp} -> {experiment.name}), "
+                f"[checkpoint] experiment changed ({saved_exp} -> {params.name}), "
                 f"resetting scheduler and training state",
                 flush=True,
             )
@@ -191,14 +193,15 @@ def train(
 ) -> None:    
     # Attach run_dir to the experiment so it can discover saved models for opponent pool.
     experiment.run_dir = run_dir
-    
+    params = experiment.framework_params()
+
     # Kill entire process group on SIGTERM/SIGINT
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
 
-    set_seed(experiment.seed)
+    set_seed(params.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. Load init policy blueprint.
@@ -211,17 +214,17 @@ def train(
     # 2. Build models
     actor: TanhGaussianMLPPolicy = init_policy_bp.build()
     actor = actor.to(device)
-    actor.log_std_min = float(experiment.log_std_min)
+    actor.log_std_min = float(params.log_std_min)
 
     critics = {
-        key: CriticMLP(obs_dim=experiment.obs_dim, hidden_dim=experiment.critic_hidden_dim).to(device)
-        for key in experiment.reward_keys
+        key: CriticMLP(obs_dim=params.obs_dim, hidden_dim=params.critic_hidden_dim).to(device)
+        for key in params.reward_keys
     }
 
-    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=experiment.learning_rate)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=params.learning_rate)
     critic_optimizers = {
-        key: torch.optim.Adam(critics[key].parameters(), lr=experiment.critic_learning_rate)
-        for key in experiment.reward_keys
+        key: torch.optim.Adam(critics[key].parameters(), lr=params.critic_learning_rate)
+        for key in params.reward_keys
     }
 
     # 3. Initialize weights from experiment
@@ -239,6 +242,7 @@ def train(
             actor_optimizer=actor_optimizer,
             critic_optimizers=critic_optimizers,
             experiment=experiment,
+            params=params,
         )
         print(
             f"[resume] loaded from {resume_from}, starting at update={start_update}",
@@ -249,7 +253,7 @@ def train(
     policy_dir = run_dir / "policy"
     ckpt_dir = run_dir / "checkpoints"
     video_dir = run_dir / "videos"
-    print(f"run_dir={run_dir} experiment={experiment.name}", flush=True)
+    print(f"run_dir={run_dir} experiment={params.name}", flush=True)
 
     # Video recording state
     n_evals_done = 0
@@ -266,16 +270,15 @@ def train(
 
     # 5. Training loop
     print(
-        f"[DEBUG] rollout_workers={experiment.rollout_workers} "
-        f"episodes_per_update={experiment.episodes_per_update} "
-        f"max_steps={experiment.custom_config['max_steps']} "
-        f"update_epochs={experiment.update_epochs} "
-        f"minibatch_size={experiment.minibatch_size} "
-        f"reward_keys={experiment.reward_keys}",
+        f"[DEBUG] rollout_workers={params.rollout_workers} "
+        f"episodes_per_update={params.episodes_per_update} "
+        f"update_epochs={params.update_epochs} "
+        f"minibatch_size={params.minibatch_size} "
+        f"reward_keys={params.reward_keys}",
         flush=True,
     )
-    with ParallelRollouter(num_workers=experiment.rollout_workers) as rollouter:
-        for u in range(start_update, experiment.max_updates + 1):
+    with ParallelRollouter(num_workers=params.rollout_workers) as rollouter:
+        for u in range(start_update, params.max_updates + 1):
             t_update_start = time.perf_counter()
 
             # 5.1 Export policy blueprint (stochastic for training rollouts)
@@ -287,7 +290,7 @@ def train(
 
             # 5.2 Prepare rollout jobs
             t0 = time.perf_counter()
-            rollout_seed = experiment.seed + u * experiment.episodes_per_update
+            rollout_seed = params.seed + u * params.episodes_per_update
             jobs = experiment.build_rollout_jobs(policy_bp, rollout_seed)
             t_jobs = time.perf_counter() - t0
 
@@ -305,6 +308,7 @@ def train(
                 actor=actor,
                 device=device,
                 experiment=experiment,
+                params=params,
             )
             t_buffer = time.perf_counter() - t0
 
@@ -316,26 +320,27 @@ def train(
                 actor_optimizer=actor_optimizer,
                 critic_optimizers=critic_optimizers,
                 buf=buf,
-                reward_keys=experiment.reward_keys,
-                gammas=experiment.gammas,
-                gae_lambda=experiment.gae_lambda,
-                clip_eps=experiment.clip_eps,
-                entropy_coef=experiment.entropy_coef,
-                grad_clip_norm=experiment.grad_clip_norm,
-                target_kl=experiment.target_kl,
-                update_epochs=experiment.update_epochs,
+                reward_keys=params.reward_keys,
+                gammas=params.gammas,
+                gae_lambda=params.gae_lambda,
+                clip_eps=params.clip_eps,
+                entropy_coef=params.entropy_coef,
+                grad_clip_norm=params.grad_clip_norm,
+                target_kl=params.target_kl,
+                update_epochs=params.update_epochs,
                 device=device,
                 stage_weights=norm_weights,
-                minibatch_size=experiment.minibatch_size,
+                minibatch_size=params.minibatch_size,
+                experiment=experiment,
             )
             t_ppo = time.perf_counter() - t0
 
             # --- Eval (Run BEFORE logging to synchronize weights & raw stats) ---
             esum = None
             t_eval = 0.0
-            if u % experiment.eval_interval == 0:
+            if u % params.eval_interval == 0:
                 t0 = time.perf_counter()
-                eval_seed = experiment.seed + 100_000 + u * 97
+                eval_seed = params.seed + 100_000 + u * 97
                 det_bp = actor.to_blueprint(dest_path=str(export_dir))
                 eval_jobs = experiment.build_eval_jobs(det_bp, eval_seed)
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
@@ -346,6 +351,7 @@ def train(
                     actor=actor,
                     device=device,
                     experiment=experiment,
+                    params=params,
                 )
                 if not eval_buf.is_empty():
                     esum = eval_buf.batch_summary()
@@ -371,7 +377,7 @@ def train(
                             policy_dir=policy_dir,
                             extra_payload={
                                 "algorithm": "ppo_curriculum",
-                                "experiment": experiment.name,
+                                "experiment": params.name,
                                 "update": u,
                                 "weights": list(norm_weights),
                                 "best_eval_esum": best_esum,
@@ -385,8 +391,8 @@ def train(
                 # 5.7.1 Video render
                 n_evals_done += 1
                 if (
-                    experiment.video_eval_interval > 0
-                    and n_evals_done % experiment.video_eval_interval == 0
+                    params.video_eval_interval > 0
+                    and n_evals_done % params.video_eval_interval == 0
                 ):
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
@@ -432,12 +438,12 @@ def train(
             early_stop_kl = stats.get('early_stop_kl', 0.0)
             
             print(f"  [Policy ] loss={policy_loss:.4f} entropy={entropy:.2f} std={std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f})", flush=True)
-            print(f"  [PPO Opt] epochs={epochs_done}/{experiment.update_epochs} kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} (stop_kl={early_stop_kl:.4f})", flush=True)
+            print(f"  [PPO Opt] epochs={epochs_done}/{params.update_epochs} kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} (stop_kl={early_stop_kl:.4f})", flush=True)
 
             # 4. Critics details
             value_loss = stats.get('value_loss', 0.0)
             print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
-            for key in experiment.reward_keys:
+            for key in params.reward_keys:
                 mk, sk = f"{key}_mean", f"{key}_std"
                 rew_flow = f"{rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}"
                 vloss_key = f"vloss_{key}"
@@ -482,7 +488,7 @@ def train(
             )
 
             # 5.8 Periodic checkpoint
-            if u % experiment.eval_interval == 0 or u == 1:
+            if u % params.eval_interval == 0 or u == 1:
                 save_checkpoint(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",
                     actor=actor,
@@ -490,6 +496,7 @@ def train(
                     actor_optimizer=actor_optimizer,
                     critic_optimizers=critic_optimizers,
                     experiment=experiment,
+                    params=params,
                     update=u,
                     best_eval=best_esum,
                 )
