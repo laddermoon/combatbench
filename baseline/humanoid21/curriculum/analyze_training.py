@@ -355,6 +355,130 @@ class TrainingLogAnalyzer:
                         ),
                     })
 
+        # ---- Check 6: PPO Clip Fraction too high ----
+        clip_fracs = _series(win, "stats.clip_frac")
+        if clip_fracs:
+            avg_clip = sum(clip_fracs) / len(clip_fracs)
+            if avg_clip >= 0.5:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": f"High Clip Fraction — {avg_clip:.1%} of samples clipped",
+                    "conclusion": (
+                        "More than half the samples are hitting the PPO clip boundary. "
+                        "The policy is trying to make larger updates than clip_eps allows, "
+                        "stifling learning. The clipped surrogate is capping most gradients."
+                    ),
+                    "evidence": (
+                        f"  avg clip_frac = {avg_clip:.3f}\n"
+                        f"  series: {[round(x, 3) for x in clip_fracs]}"
+                    ),
+                    "remedy": (
+                        "1. Increase clip_eps (e.g. from 0.2 to 0.3) to allow larger updates.\n"
+                        "2. Lower the actor learning rate so the policy doesn't try to move "
+                        "so far each step.\n"
+                        "3. This can also happen early in fine-tuning — may self-resolve."
+                    ),
+                })
+
+        # ---- Check 7: Gradient Explosion / Vanishing ----
+        grad_norms = _series(win, "stats.grad_norm_actor")
+        if grad_norms:
+            avg_grad = sum(grad_norms) / len(grad_norms)
+            if avg_grad >= 100.0:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": f"Large Actor Gradient — avg grad_norm={avg_grad:.1f}",
+                    "conclusion": (
+                        "The actor gradient norm is very large. Even though grad_clip_norm "
+                        "is clipping it, the raw gradients are explosive, which can cause "
+                        "unstable updates and poor convergence."
+                    ),
+                    "evidence": (
+                        f"  avg grad_norm_actor = {avg_grad:.2f}\n"
+                        f"  series: {[round(x, 2) for x in grad_norms]}"
+                    ),
+                    "remedy": (
+                        "1. Lower the actor learning rate.\n"
+                        "2. Check if reward scales are too large (causing large advantages).\n"
+                        "3. Reduce grad_clip_norm if currently very permissive."
+                    ),
+                })
+            elif avg_grad < 1e-4:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": f"Vanishing Actor Gradient — avg grad_norm={avg_grad:.6f}",
+                    "conclusion": (
+                        "The actor gradient norm is near zero. The policy is barely updating. "
+                        "This could mean the advantage signal is too weak or the learning "
+                        "rate is too low."
+                    ),
+                    "evidence": (
+                        f"  avg grad_norm_actor = {avg_grad:.6f}\n"
+                        f"  series: {[round(x, 6) for x in grad_norms]}"
+                    ),
+                    "remedy": (
+                        "1. Increase the actor learning rate.\n"
+                        "2. Check if advantages are being normalized correctly.\n"
+                        "3. Verify that entropy_coef isn't dominating the loss."
+                    ),
+                })
+
+        # ---- Check 8: Policy Ratio Divergence ----
+        ratio_maxs = _series(win, "stats.ratio_max")
+        if ratio_maxs:
+            avg_ratio_max = sum(ratio_maxs) / len(ratio_maxs)
+            if avg_ratio_max >= 3.0:
+                conclusions.append({
+                    "severity": "WARNING",
+                    "title": f"Policy Ratio Divergence — max ratio={avg_ratio_max:.2f}",
+                    "conclusion": (
+                        "The maximum policy ratio (new_prob/old_prob) is very high. "
+                        "Some samples have the new policy diverging 3x+ from the old "
+                        "policy. PPO clip is limiting the damage, but this indicates "
+                        "the policy is changing too aggressively."
+                    ),
+                    "evidence": (
+                        f"  avg ratio_max = {avg_ratio_max:.3f}\n"
+                        f"  series: {[round(x, 3) for x in ratio_maxs]}"
+                    ),
+                    "remedy": (
+                        "1. Lower the actor learning rate.\n"
+                        "2. Reduce update_epochs or minibatch_size.\n"
+                        "3. Check if the advantage scale is too large."
+                    ),
+                })
+
+        # ---- Check 9: Rollout Bottleneck (timing) ----
+        totals = _series(win, "timing.total")
+        rollouts = _series(win, "timing.rollout")
+        if totals and rollouts:
+            avg_total = sum(totals) / len(totals)
+            avg_rollout = sum(rollouts) / len(rollouts)
+            rollout_pct = avg_rollout / avg_total if avg_total > 0 else 0
+            if rollout_pct >= 0.85:
+                ppos = _series(win, "timing.ppo")
+                avg_ppo = sum(ppos) / len(ppos) if ppos else 0
+                conclusions.append({
+                    "severity": "INFO",
+                    "title": f"Rollout Bottleneck — {rollout_pct:.0%} of wall time",
+                    "conclusion": (
+                        f"Rollout collection consumes {rollout_pct:.0%} of each update cycle "
+                        f"({avg_rollout:.1f}s out of {avg_total:.1f}s). PPO update only "
+                        f"takes {avg_ppo:.1f}s. The GPU is idle during most of the cycle."
+                    ),
+                    "evidence": (
+                        f"  avg rollout = {avg_rollout:.1f}s\n"
+                        f"  avg ppo = {avg_ppo:.1f}s\n"
+                        f"  avg total = {avg_total:.1f}s\n"
+                        f"  rollout% = {rollout_pct:.1%}"
+                    ),
+                    "remedy": (
+                        "1. Increase rollout_workers (more parallel environments).\n"
+                        "2. Reduce episodes_per_update if rollout quality allows.\n"
+                        "3. Consider async rollout/learning to overlap GPU and CPU."
+                    ),
+                })
+
         return conclusions
 
     # -- trend reporting ---------------------------------------------------
@@ -407,7 +531,8 @@ class TrainingLogAnalyzer:
             k for k in (
                 "policy_loss", "value_loss", "approx_kl", "max_kl",
                 "epochs_done", "entropy", "std_mean", "std_min",
-                "ep_len_mean", "n_batches", "total_steps",
+                "ep_len_mean", "n_episodes", "n_batches", "total_steps",
+                "clip_frac", "ratio_mean", "ratio_max", "grad_norm_actor",
             ) if k in stats
         ]
         if ppo_keys:
@@ -417,6 +542,24 @@ class TrainingLogAnalyzer:
         ev_keys = sorted(k for k in stats if k.startswith("ev_"))
         if ev_keys:
             groups["ev"] = ev_keys
+
+        # per-critic gradient norms — auto-discovered
+        grad_keys = sorted(k for k in stats if k.startswith("grad_norm_") and k != "grad_norm_actor")
+        if grad_keys:
+            groups["grad"] = grad_keys
+
+        # per-critic return (GAE target) stats — auto-discovered
+        ret_keys = sorted(
+            k[len("ret_mean_"):] for k in stats
+            if k.startswith("ret_mean_")
+        )
+        if ret_keys:
+            groups["ret"] = ret_keys
+
+        # timing — throughput breakdown
+        timing = last.get("timing") or {}
+        if timing:
+            groups["timing"] = sorted(timing.keys())
 
         return groups
 
@@ -434,14 +577,17 @@ class TrainingLogAnalyzer:
         lines: List[str] = []
 
         group_labels = {
-            "sinfo": "Scheduler",
-            "bsum":  "Rollout",
-            "esum":  "Eval",
-            "rsum":  "Reward/step",
-            "ppo":   "PPO",
-            "ev":    "Critic EV",
+            "sinfo":  "Scheduler",
+            "bsum":   "Rollout",
+            "esum":   "Eval",
+            "rsum":   "Reward/step",
+            "ppo":    "PPO",
+            "ev":     "Critic EV",
+            "grad":   "Grad Norm",
+            "ret":    "Critic Target (returns)",
+            "timing": "Timing",
         }
-        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev"]
+        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
 
         for group in group_order:
             if group not in groups:
@@ -483,7 +629,41 @@ class TrainingLogAnalyzer:
                         f"    {comp:<16} {color}cur={cur:+.3f}{RESET}  "
                         f"win={win_avg:+.3f}  {arrow}"
                     )
+                elif group == "ret":
+                    # ret shows mean ± std like rsum
+                    path_mean = f"stats.ret_mean_{key}"
+                    path_std  = f"stats.ret_std_{key}"
+                    win_vals = _series(win, path_mean)
+                    full_vals = _series(full, path_mean)
+                    if not win_vals:
+                        continue
+                    cur = win_vals[-1]
+                    win_avg = sum(win_vals) / len(win_vals)
+                    slope = _trend_slope(full_vals) if len(full_vals) >= 5 else 0.0
+                    std_val = _avg(win, path_std, 0.0)
+                    arrow = _fmt_trend_arrow(slope)
+                    lines.append(
+                        f"    {key:<16} cur={_fmt_float(cur):>10}  "
+                        f"win={_fmt_float(win_avg):>10}  "
+                        f"±{_fmt_float(std_val):>8}  {arrow}"
+                    )
+                elif group == "timing":
+                    # timing values are seconds; show with 's' suffix
+                    path = f"timing.{key}"
+                    win_vals = _series(win, path)
+                    full_vals = _series(full, path)
+                    if not win_vals:
+                        continue
+                    cur = win_vals[-1]
+                    win_avg = sum(win_vals) / len(win_vals)
+                    slope = _trend_slope(full_vals) if len(full_vals) >= 5 else 0.0
+                    arrow = _fmt_trend_arrow(slope)
+                    lines.append(
+                        f"    {key:<16} cur={cur:>8.1f}s  "
+                        f"win={win_avg:>8.1f}s  {arrow}"
+                    )
                 else:
+                    # sinfo, bsum, esum use group prefix; ppo, grad use stats prefix
                     prefix = f"{group}." if group in ("sinfo", "bsum", "esum") else "stats."
                     path = f"{prefix}{key}"
                     win_vals = _series(win, path)
@@ -529,14 +709,17 @@ class TrainingLogAnalyzer:
         )
 
         group_labels = {
-            "sinfo": "Scheduler",
-            "bsum":  "Rollout",
-            "esum":  "Eval",
-            "rsum":  "Reward/step",
-            "ppo":   "PPO",
-            "ev":    "Critic EV",
+            "sinfo":  "Scheduler",
+            "bsum":   "Rollout",
+            "esum":   "Eval",
+            "rsum":   "Reward/step",
+            "ppo":    "PPO",
+            "ev":     "Critic EV",
+            "grad":   "Grad Norm",
+            "ret":    "Critic Target (returns)",
+            "timing": "Timing",
         }
-        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev"]
+        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
 
         filt = metric_filter.lower() if metric_filter else None
 
@@ -554,6 +737,10 @@ class TrainingLogAnalyzer:
                     path = f"rsum.{key}_mean"
                 elif group == "ev":
                     path = f"stats.{key}"
+                elif group == "ret":
+                    path = f"stats.ret_mean_{key}"
+                elif group == "timing":
+                    path = f"timing.{key}"
                 elif group in ("sinfo", "bsum", "esum"):
                     path = f"{group}.{key}"
                 else:
@@ -614,16 +801,25 @@ class TrainingLogAnalyzer:
         last = self.history[-1]
         u = last.get("update", 0)
         stats = last.get("stats", {})
+        timing = last.get("timing", {})
         ep_len = stats.get("ep_len_mean", 0.0)
         kl = stats.get("approx_kl", 0.0)
         epochs = stats.get("epochs_done", 0)
         entropy = stats.get("entropy", 0.0)
-        return (
-            f"  {BOLD}Update {u}{RESET}  "
-            f"ep_len={_fmt_float(ep_len, 1)}  "
-            f"kl={kl:.4f}  epochs={epochs}  "
-            f"entropy={entropy:.2f}"
-        )
+        n_ep = stats.get("n_episodes", 0)
+        clip_frac = stats.get("clip_frac", 0.0)
+        t_total = timing.get("total", 0.0)
+        parts = [
+            f"  {BOLD}Update {u}{RESET}  ",
+            f"ep_len={_fmt_float(ep_len, 1)}  ",
+            f"n_ep={n_ep}  ",
+            f"kl={kl:.4f}  epochs={epochs}  ",
+            f"entropy={entropy:.2f}  ",
+            f"clip={clip_frac:.1%}",
+        ]
+        if t_total:
+            parts.append(f"  {DIM}time={t_total:.1f}s{RESET}")
+        return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -800,14 +996,17 @@ def render_metric_list(analyzer: TrainingLogAnalyzer) -> str:
         return f"{YELLOW}No metrics discovered.{RESET}\n"
 
     group_labels = {
-        "sinfo": "Scheduler",
-        "bsum":  "Rollout",
-        "esum":  "Eval",
-        "rsum":  "Reward/step",
-        "ppo":   "PPO",
-        "ev":    "Critic EV",
+        "sinfo":  "Scheduler",
+        "bsum":   "Rollout",
+        "esum":   "Eval",
+        "rsum":   "Reward/step",
+        "ppo":    "PPO",
+        "ev":     "Critic EV",
+        "grad":   "Grad Norm",
+        "ret":    "Critic Target (returns)",
+        "timing": "Timing",
     }
-    group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev"]
+    group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
 
     lines: List[str] = [f"\n{BOLD}Discovered Metrics{RESET}\n"]
     for group in group_order:
@@ -821,6 +1020,10 @@ def render_metric_list(analyzer: TrainingLogAnalyzer) -> str:
                 path = f"rsum.{key}_mean"
             elif group == "ev":
                 path = f"stats.{key}"
+            elif group == "ret":
+                path = f"stats.ret_mean_{key}"
+            elif group == "timing":
+                path = f"timing.{key}"
             elif group in ("sinfo", "bsum", "esum"):
                 path = f"{group}.{key}"
             else:

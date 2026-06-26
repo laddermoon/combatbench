@@ -447,20 +447,29 @@ def train(
 
             # 5.6b Machine-readable raw logging for monitoring script
             import json
+            t_total = time.perf_counter() - t_update_start
             raw_log_dict = {
                 "update": u,
                 "weights": list(norm_weights) if norm_weights else [],
                 "sinfo": sinfo,
                 "bsum": bsum,
                 "rsum": rsum,
-                "stats": stats
+                "stats": stats,
+                "timing": {
+                    "total": round(t_total, 2),
+                    "export": round(t_export, 2),
+                    "jobs": round(t_jobs, 2),
+                    "rollout": round(t_rollout, 2),
+                    "buffer": round(t_buffer, 2),
+                    "ppo": round(t_ppo, 2),
+                    "eval": round(t_eval, 2),
+                },
             }
             if esum is not None:
                 raw_log_dict["esum"] = esum
             print(f"__RAW_STATS__ {json.dumps(raw_log_dict)}", flush=True)
 
-            # --- Timing ---
-            t_total = time.perf_counter() - t_update_start
+            # --- Timing (human-readable) ---
             print(
                 f"  | time: total={t_total:.1f}s"
                 f" export={t_export:.2f}s"

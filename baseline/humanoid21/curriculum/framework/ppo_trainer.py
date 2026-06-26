@@ -433,11 +433,18 @@ def ppo_update(
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
     n = obs_t.shape[0]
+    n_episodes = len(buf.ep_lengths)
     pol_losses: List[float] = []
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []  # Per-epoch KL statistics
     early_stop_kl = 0.0
     all_entropies: List[float] = []
+    # Accumulators for PPO health diagnostics across all minibatches/epochs
+    all_clip_fracs: List[float] = []
+    all_ratio_means: List[float] = []
+    all_ratio_maxs: List[float] = []
+    all_grad_norms_actor: List[float] = []
+    all_grad_norms_critic: Dict[str, List[float]] = {key: [] for key in reward_keys}
 
     # Get baseline action standard deviation
     with torch.no_grad():
@@ -472,9 +479,10 @@ def ppo_update(
                 ret_val = rets_t[key][idx]
                 val_loss = (((new_val - ret_val) ** 2) * batch_weights).mean()
                 val_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm_c = torch.nn.utils.clip_grad_norm_(
                     critics[key].parameters(), grad_clip_norm,
                 )
+                all_grad_norms_critic[key].append(float(grad_norm_c))
                 critic_optimizers[key].step()
                 val_losses[key].append(float(val_loss))
 
@@ -494,15 +502,25 @@ def ppo_update(
             )
             policy_loss = -(torch.min(surr1, surr2) * batch_weights).mean()
 
+            # PPO clip diagnostics: fraction of samples hitting the clip boundary
+            with torch.no_grad():
+                clip_frac = float(
+                    ((ratio - 1.0).abs() > clip_eps).float().mean().item()
+                )
+                all_clip_fracs.append(clip_frac)
+                all_ratio_means.append(float(ratio.mean().item()))
+                all_ratio_maxs.append(float(ratio.max().item()))
+
             # Actor loss (no value loss here - critics are updated separately)
             loss = policy_loss - entropy_coef * entropy.mean()
             all_entropies.append(float(entropy.mean().item()))
 
             actor_optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm_a = torch.nn.utils.clip_grad_norm_(
                 actor.parameters(), grad_clip_norm,
             )
+            all_grad_norms_actor.append(float(grad_norm_a))
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
 
@@ -595,6 +613,24 @@ def ppo_update(
     final_kl = epoch_kl_stats[-1]["mean_kl"] if epoch_kl_stats else 0.0
     max_kl_overall = max((s["max_kl"] for s in epoch_kl_stats), default=0.0)
 
+    # Per-reward return (GAE target) statistics — critic target distribution
+    per_ret_stats: Dict[str, float] = {}
+    for key in reward_keys:
+        r = rets_all[key]
+        per_ret_stats[f"ret_mean_{key}"] = float(r.mean())
+        per_ret_stats[f"ret_std_{key}"] = float(r.std())
+
+    # PPO clip / ratio / gradient diagnostics
+    clip_frac_mean = float(np.mean(all_clip_fracs)) if all_clip_fracs else 0.0
+    ratio_mean = float(np.mean(all_ratio_means)) if all_ratio_means else 1.0
+    ratio_max = float(max(all_ratio_maxs)) if all_ratio_maxs else 1.0
+    grad_norm_actor = float(np.mean(all_grad_norms_actor)) if all_grad_norms_actor else 0.0
+    per_critic_grad_norms: Dict[str, float] = {
+        f"grad_norm_{key}": float(np.mean(all_grad_norms_critic[key]))
+        if all_grad_norms_critic[key] else 0.0
+        for key in reward_keys
+    }
+
     return {
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean(total_val_losses)),
@@ -611,7 +647,17 @@ def ppo_update(
         "ep_len_max": ep_len_max,
         "epoch_kl_stats": epoch_kl_stats,
         "n_batches": n_batches,  # derived from minibatch_size
+        "n_episodes": n_episodes,
         "total_steps": total_steps,
+        # PPO clip diagnostics
+        "clip_frac": clip_frac_mean,
+        "ratio_mean": ratio_mean,
+        "ratio_max": ratio_max,
+        # Gradient health
+        "grad_norm_actor": grad_norm_actor,
+        **per_critic_grad_norms,
+        # Critic target distribution
+        **per_ret_stats,
         **per_critic_losses,
         **per_adv_stats,
         **explained_variances,
