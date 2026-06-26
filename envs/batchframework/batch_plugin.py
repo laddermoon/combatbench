@@ -1,30 +1,8 @@
 """Batch plugin system — vectorized lifecycle hooks for batch simulation.
 
-与旧 framework 的 plugin.py 对应，但面向批量（MJX）仿真。
-
-核心区别：
-    旧: 6 个生命周期 hook + 2 个管理 hook
-    新: 6 个生命周期 hook + 2 个管理 hook（但 hook 语义不同）
-
-    旧: on_pre_phy_step / on_post_phy_step 在每个物理步前后触发
-    新: on_pre_batch_step / on_post_batch_step 在整个 n_steps 物理推进前后触发一次
-        （因为 physical_step(n_steps) 在 GPU 上连续执行，中间不回 Python）
-
-    旧: set_episode_seed(seed: int)
-    新: set_episode_seeds(seeds: np.ndarray)  # (B,) int array
-
-    旧: ctx.request_termination(reason) → 整个 episode 停止
-    新: ctx.request_termination(env_id, reason) → 单个 env 终止
-
-    旧: ctx.mutator 操作标量数据
-    新: ctx.mutator 操作 (B, ...) 批量数据
-
-设计原则（来自 discuss.md 的两层架构）：
-1. Plugin 运行在 **Python 编排层**，不在 JIT 编译的物理步内部。
-2. 物理推进（n_steps）在 GPU 上连续执行，plugin 只在 action step 边界触发。
-3. 终止是 per-env 的：plugin 标记某些 env 终止，runtime 负责重置。
-4. 权限模型与旧 framework 一致：require_mutator + grant/revoke。
-5. Priority 排序与旧 framework 一致：大的先执行。
+Plugin 运行在 Python 编排层：物理推进 ``physical_step(n_steps)`` 在 GPU
+上连续执行，plugin 只在 action step 边界触发。终止是 per-env 的：plugin
+标记某些 env 终止，runtime 负责重置。
 
 Hook 时序与权限：
 | Hook                   | 时机                              | 权限       | 典型用途                     |
@@ -41,7 +19,7 @@ Hook 时序与权限：
 from __future__ import annotations
 
 import traceback
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -53,12 +31,12 @@ from .batch_context import (
 
 
 # ---------------------------------------------------------------------------
-# Observer dispatcher priority (shared constant)
+# Observer dispatcher priority
 # ---------------------------------------------------------------------------
-# 与旧 framework 的 OBSERVER_DISPATCHER_PRIORITY 保持一致。
-# Observer dispatcher 默认抢占所有用户 plugin 之前刷新，
+# Observer dispatcher 抢占所有用户 plugin 之前刷新，
 # 这样下游的奖励 / 终止 / 指标 plugin 在同一钩子里读到的 observer 输出
 # 总是对应当前步的状态。
+# 需要在 observer 之前执行的 plugin，设置 priority 严格大于此值。
 OBSERVER_DISPATCHER_PRIORITY: int = 1_000_000
 
 
@@ -67,12 +45,6 @@ OBSERVER_DISPATCHER_PRIORITY: int = 1_000_000
 # ---------------------------------------------------------------------------
 class BaseBatchPlugin:
     """批量仿真扩展插件基类。
-
-    与旧 ``BasePlugin`` 的对应关系：
-        name / priority / require_mutator  → 完全一致
-        set_episode_seed(seed: int)        → set_episode_seeds(seeds: (B,) int)
-        on_pre_phy_step / on_post_phy_step → on_pre_batch_step / on_post_batch_step
-        其余 hook                           → 签名一致，ctx 类型变为 BatchSimContext
 
     职责：
     1. 在批量仿真的特定生命周期点注入自定义逻辑。
@@ -89,7 +61,6 @@ class BaseBatchPlugin:
     def priority(self) -> int:
         """Plugin dispatch priority — larger values run first.
 
-        约定与旧 framework 一致：
         * 默认 0。大多数 plugin（reward / termination / data collection）保持默认。
         * 需要在 observer 之前执行的 plugin，设置 priority 严格大于
           :data:`OBSERVER_DISPATCHER_PRIORITY`。
@@ -104,10 +75,6 @@ class BaseBatchPlugin:
         遵循最小权限原则。
         """
         return False
-
-    # ==========================================
-    # Randomness Hook
-    # ==========================================
 
     def set_episode_seeds(self, seeds: np.ndarray) -> None:
         """[Timing]: BatchRuntime.reset 前、on_pre_episode 之前。
@@ -129,7 +96,7 @@ class BaseBatchPlugin:
         [Responsibility]: 初始化状态（resetters）、清零历史统计。
         [Permission]: Read-write（ctx.mutator 可用）。
 
-        注意：在批量模式下，reset 可以是部分的（仅重置某些 env）。
+        在批量模式下，reset 可以是部分的（仅重置某些 env）。
         通过 ctx.reset_env_ids 查看本次重置了哪些 env。
         如果 ctx.reset_env_ids 为空，表示全量重置（所有 env）。
         """
@@ -140,7 +107,7 @@ class BaseBatchPlugin:
         [Responsibility]: 控制模式映射、动作空间映射、动作裁剪。
         [Permission]: Read-write（ctx.mutator 可用；action 可被修改）。
 
-        与旧 framework 的区别：action 是 (B, action_dim) 批量数组。
+        action 是 (B, action_dim) 批量数组。
         """
         pass
 
@@ -149,10 +116,8 @@ class BaseBatchPlugin:
         [Responsibility]: 注入持续外力扰动。
         [Permission]: Read-write（ctx.mutator 可用；外力可被修改）。
 
-        与旧 on_pre_phy_step 的区别：
-        - 旧：每个物理步触发一次（N 次）
-        - 新：整个 n_steps 块触发一次（1 次）
-        - 因此外力是"持续"的——设置后在 n_steps 内持续作用，无需每步重设。
+        整个 n_steps 块触发一次（不是每个物理步触发）。
+        外力是"持续"的——设置后在 n_steps 内持续作用，无需每步重设。
         """
         pass
 
@@ -161,10 +126,8 @@ class BaseBatchPlugin:
         [Responsibility]: 硬状态约束投影、高频数据收集。
         [Permission]: Read-write（ctx.mutator 可用；状态可被覆盖投影）。
 
-        与旧 on_post_phy_step 的区别：
-        - 旧：每个物理步后触发（N 次），可以看到中间状态
-        - 新：n_steps 完成后触发一次，只能看到最终状态
-        - 需要中间状态的 plugin 应使用 keep_history=True 读取历史
+        n_steps 完成后触发一次，只能看到最终状态。
+        需要中间状态的 plugin 应使用 keep_history=True 读取历史。
         """
         pass
 
@@ -182,21 +145,27 @@ class BaseBatchPlugin:
         [Responsibility]: Episode 级日志聚合和数据上报。
         [Permission]: Read-only（ctx.mutator 为 None）。
 
-        与旧 framework 的区别：
-        - 旧：整个 episode 终止时触发一次
-        - 新：每个终止的 env 触发一次，通过 ctx.terminated_env_ids 查看哪些 env 终止
-        - 批量模式下可能只有部分 env 终止，其余继续运行
+        通过 ctx.terminated_env_ids 查看哪些 env 终止。
+        批量模式下可能只有部分 env 终止，其余继续运行。
         """
         pass
 
     # ==========================================
     # Management Hooks
     # ==========================================
+    #
+    # on_pre_episode / on_post_episode 绑定 episode 生命周期（每 episode 触发）。
+    # on_attach / on_detach 绑定 runtime 附加生命周期（跨所有 episode 只触发一次），
+    # 管理与 plugin 实例绑定的一次性资源和缓存。
+    #
+    # __init__ / __del__ 不能替代它们：
+    #   * __init__ 在 plugin 附加到 runtime 之前运行，无法感知 runtime 生命周期。
+    #   * __del__ 时机不确定（可能永不触发），不适合释放文件句柄等资源。
 
     def on_attach(self) -> None:
         """[Timing]: 插件附加到 runtime 时（一次性）。
         [Responsibility]: 分配一次性资源——打开文件、建立连接、预编译 kernel。
-        [Permission]: 无 ctx，不要访问仿真状态。
+        [Permission]: 无 ctx，不要访问仿真状态。在 on_pre_episode 中读取初始状态。
         [Default]: no-op.
         """
         pass
@@ -216,13 +185,10 @@ class BaseBatchPlugin:
 class _BatchPluginManager:
     """批量插件管理器——按 priority 降序调度 plugin hooks。
 
-    与旧 ``_PluginManager`` 的设计一致：
     - attach / detach 管理 plugin 列表
     - invoke 按 priority 降序调用 hook
     - require_mutator 控制 mutator 授予
     - strict 模式控制异常传播
-
-    区别：ctx 类型为 BatchSimContext，hook 签名适配批量语义。
     """
 
     def __init__(self, strict: bool = True):
@@ -285,7 +251,6 @@ def _safe_call(
 ) -> None:
     """调用 obj.method_name(*args)，根据 strict 模式处理异常。
 
-    与旧 framework 的 _safe_call 行为一致：
     - strict=True: 异常直接传播
     - strict=False: 打印 traceback 并吞掉异常
     """
@@ -305,7 +270,6 @@ def _safe_call(
 class _BatchObserverDispatcherPlugin(BaseBatchPlugin):
     """Observer dispatcher for batch mode.
 
-    与旧 ``_ObserverDispatcherPlugin`` 对应：
     - priority = OBSERVER_DISPATCHER_PRIORITY（抢占用户 plugin 之前）
     - require_mutator = False（observer 永远只读）
     - 在 on_pre_episode / on_post_action_step / on_post_episode 刷新 observer
@@ -402,8 +366,6 @@ class _BatchObserverDispatcherPlugin(BaseBatchPlugin):
 class BaseBatchRuntimeUnit:
     """Observer-side unit invoked by ``_BatchObserverDispatcherPlugin``.
 
-    与旧 ``BaseRuntimeUnit`` 对应，但 ctx 类型为 ReadOnlyBatchSimContext。
-
     生命周期：
     * on_pre_episode — episode 开始时初始化
     * on_post_action_step — 每步刷新内部状态
@@ -440,7 +402,6 @@ class BaseBatchRuntimeUnit:
 class BatchTimeoutPlugin(BaseBatchPlugin):
     """Per-env timeout termination plugin.
 
-    与旧 ``TimeoutPlugin`` 对应，但终止是 per-env 的：
     每个 env 独立计数，达到 max_steps 时仅终止该 env。
     """
 

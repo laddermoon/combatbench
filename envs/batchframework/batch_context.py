@@ -1,25 +1,10 @@
 """Batch simulation context — blackboard for vectorized plugin dispatch.
 
-与旧 framework 的 context.py 对应，但面向批量（MJX）仿真：
-
-核心区别：
-    旧: SimContext 持有标量 episode_step / physics_step，标量 base_seed
-    新: BatchSimContext 持有 (B,) env_episode_steps，(B,) base_seeds
-
-    旧: ctx.request_termination(reason) → 整个 episode 停止
-    新: ctx.request_termination(env_id, reason) → 单个 env 终止，其余继续
-
-    旧: ctx.mutator grant/revoke 基于 hook 时机
-    新: 同样的 grant/revoke，但 mutator 操作的是 (B, ...) 批量数据
-
-    旧: accessor 始终可用，暴露 IDataAccessor 方法（标量返回）
-    新: accessor 始终可用，暴露 IBatchDataAccessor 方法（(B, ...) 返回）
-
 设计原则：
 1. 所有数组第一维是 batch dim (B,)。
 2. JAX 内部细节完全封装，插件写者只面对 numpy。
-3. 终止是 per-env 的，不影响其他 env。
-4. 权限模型与旧 framework 一致：mutator 在可写 hook 中授予，否则为 None。
+3. 终止是 per-env 的：request_termination(env_id, reason) 只停一个 env，其余继续。
+4. 权限模型：mutator 在可写 hook 中授予，否则为 None（最小权限原则）。
 """
 from __future__ import annotations
 
@@ -35,7 +20,7 @@ from .backend import BaseBatchSimulator, IBatchDataAccessor, IBatchDataMutator
 # Termination reasons (shared with single-env framework)
 # ---------------------------------------------------------------------------
 class TerminationReason:
-    """常见的终止原因（与旧 framework 的 TerminationReason 保持一致）。"""
+    """常见的终止原因。"""
     TIMEOUT = "timeout"
     KO = "ko"
     FOUL = "foul"
@@ -46,7 +31,7 @@ class TerminationReason:
 # ---------------------------------------------------------------------------
 # Accessor / Mutator strict sandbox (batched)
 # ---------------------------------------------------------------------------
-# 与旧 framework 的 _AccessorView / _MutatorView 设计一致：
+# Sandbox 代理设计：
 # - 只暴露契约中声明的方法，其余属性不可达。
 # - 不可变代理（__setattr__ 被阻止）。
 # - 名字混淆存储底层 simulator，防止 ctx.accessor._simulator 等直达。
@@ -73,7 +58,8 @@ _BATCH_MUTATOR_ALLOWED: frozenset[str] = frozenset({
 class _BatchAccessorView(IBatchDataAccessor):
     """Read-only sandbox proxy over a ``BaseBatchSimulator``.
 
-    与旧 ``_AccessorView`` 的区别：转发的方法返回 (B, ...) 批量数组。
+    只暴露 ``_BATCH_ACCESSOR_ALLOWED`` 中声明的方法。所有返回的数组
+    第一维是 batch dim (B,)。
     """
 
     __slots__ = ("__sim",)
@@ -133,7 +119,8 @@ class _BatchAccessorView(IBatchDataAccessor):
 class _BatchMutatorView(IBatchDataMutator):
     """Write-only sandbox proxy over a ``BaseBatchSimulator``.
 
-    与旧 ``_MutatorView`` 的区别：转发的方法接受 (B, ...) 批量数组。
+    只暴露 ``_BATCH_MUTATOR_ALLOWED`` 中声明的方法。所有输入数组
+    第一维是 batch dim (B,)。
     """
 
     __slots__ = ("__sim",)
@@ -182,21 +169,25 @@ class _BatchMutatorView(IBatchDataMutator):
 class BatchSimContext:
     """批量仿真引擎的统一上下文（黑板模式）。
 
-    与旧 ``SimContext`` 的对应关系：
-        SimContext.episode_step (int)       → BatchSimContext.env_episode_steps ((B,) int)
-        SimContext.physics_step (int)       → BatchSimContext.action_step (int, 全局)
-        SimContext.base_seed (int)          → BatchSimContext.base_seeds ((B,) int)
-        SimContext.request_termination(r)   → BatchSimContext.request_termination(env_id, r)
-        SimContext.is_terminated (bool)     → BatchSimContext.is_any_terminated (bool)
-        SimContext.metrics (Dict)           → BatchSimContext.metrics (Dict, 值可为 (B,) 数组)
-        SimContext.events (List)            → BatchSimContext.events (List[(env_id, type, data)])
+    职责：
+    1. 通过受控代理对外暴露批量数据访问器 (``accessor``) 与批量数据操作器 (``mutator``)。
+       - ``accessor`` 始终可用，只暴露 ``IBatchDataAccessor`` 契约中的读方法。
+         所有返回数组第一维是 batch dim (B,)。
+       - ``mutator`` 默认为 ``None``。运行时在可写钩子中通过 ``_grant_mutator``
+         授予，钩子退出后 ``_revoke_mutator``。
+    2. 承载跨插件流转的派生指标 (metrics)、事件 (events) 和 per-env 终止控制。
 
-    新增字段：
-        batch_size: int — batch 维度大小
+    字段说明：
+        action_step: int — 全局 action step 计数器（所有 env 共享）
+        env_episode_steps: (B,) int — per-env episode 步数
         active_mask: (B,) bool — 哪些 env 仍在运行
         terminated_env_ids: List[int] — 本步终止的 env 索引
         termination_reasons: Dict[int, str] — per-env 终止原因
         reset_env_ids: List[int] — 本步重置的 env 索引
+        base_seeds: (B,) int — per-env 随机种子
+        episode_options: Dict[str, Any] — per-episode 参数
+        metrics: Dict[str, Any] — 派生指标（值可为标量或 (B,) 数组）
+        events: List[(env_id, event_type, data)] — per-env 事件列表
     """
 
     def __init__(self, simulator: BaseBatchSimulator):
@@ -241,9 +232,8 @@ class BatchSimContext:
     def request_termination(
         self, env_id: int, reason: str = TerminationReason.CUSTOM
     ) -> None:
-        """请求终止指定 env。
+        """请求终止指定 env。不影响其他 env。
 
-        与旧 framework 的区别：终止是 per-env 的，不影响其他 env。
         多次对同一 env_id 调用不会重复添加。
         """
         if env_id not in self.terminated_env_ids:
@@ -272,8 +262,7 @@ class BatchSimContext:
     ) -> None:
         """记录一个 per-env 事件。
 
-        与旧 framework 的 ctx.events.append(event) 对应，
-        但批量版需要标明 env_id。
+        事件格式为 ``(env_id, event_type, data)`` 三元组。
         """
         self.events.append((env_id, event_type, data))
 
@@ -318,8 +307,8 @@ class BatchSimContext:
 class ReadOnlyBatchSimContext:
     """``BatchSimContext`` 的不可变快照，传给 observer / recorder。
 
-    与旧 ``ReadOnlySimContext`` 对应，但字段适配批量语义。
-    使用 dataclass(frozen=True) 保证不可变。
+    所有可变字段（数组、列表、字典）在构造时 copy，保证快照后
+    对原 ctx 的修改不影响已发出的只读视图。
     """
     __slots__ = (
         "accessor", "batch_size", "action_step", "env_episode_steps",
