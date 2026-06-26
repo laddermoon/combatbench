@@ -129,17 +129,10 @@ python3 baseline/humanoid21/curriculum/train.py \
 
 ## 监控训练
 
-每个阶段有对应的日志分析工具：
+使用通用日志分析工具：
 
 ```bash
-# 平衡阶段
-python3 baseline/humanoid21/curriculum/analyze_logs.py balance.log --watch
-
-# 跟踪阶段
-python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow.log --watch
-
-# 对抗阶段
-python3 baseline/humanoid21/curriculum/analyze_fight_logs.py fight.log --watch
+python3 baseline/humanoid21/curriculum/analyze_training.py balance.log --watch
 ```
 
 `--watch` 参数会持续刷新显示。

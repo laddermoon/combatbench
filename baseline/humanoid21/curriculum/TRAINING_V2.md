@@ -125,14 +125,7 @@ PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
 ## 监控训练
 
 ```bash
-# 平衡阶段
-python3 baseline/humanoid21/curriculum/analyze_logs.py basic_balance_v2.log --watch
-
-# 跟踪阶段
-python3 baseline/humanoid21/curriculum/analyze_follow_logs.py follow_v2.log --watch
-
-# 对抗阶段
-python3 baseline/humanoid21/curriculum/analyze_fight_logs.py fight_v2.log --watch
+python3 baseline/humanoid21/curriculum/analyze_training.py basic_balance_v2.log --watch
 ```
 
 ## 生成验证视频

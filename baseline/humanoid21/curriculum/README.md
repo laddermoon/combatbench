@@ -31,10 +31,7 @@
 | `collect_gating_data.py` | 门控数据收集脚本 |
 | `collect_gating_data_refine.py` | 多级扰动门控数据收集脚本 |
 | `train_gating_network.py` | 门控网络训练脚本 |
-| `analyze_logs.py` | 通用训练日志分析工具 |
-| `analyze_follow_logs.py` | 跟踪实验日志分析工具 |
-| `analyze_fight_logs.py` | 对抗实验日志分析工具 |
-| `analyze_standup_logs.py` | 起身实验日志分析工具 |
+| `analyze_training.py` | 通用训练日志分析工具（支持所有实验） |
 
 ### Sub-episode 分段
 
