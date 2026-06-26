@@ -298,11 +298,12 @@ def ppo_update(
     update_epochs: int,
     device: torch.device,
     stage_weights: Tuple[float, ...],
+    minibatch_size: int = 4096,
 ) -> Dict[str, float]:
     """Multi-critic PPO update, parameterized by reward_keys and gammas.
 
-    Data is divided into 8 equal batches per epoch (fixed ratio).
-    Only learning rate is adaptively adjusted based on KL trends.
+    Data is split into minibatches of ``minibatch_size`` samples per epoch.
+    The last minibatch may be smaller if ``n`` is not evenly divisible.
     """
     obs_all_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
 
@@ -413,8 +414,8 @@ def ppo_update(
         std_min = float(clamped_std.min().item())
         std_max = float(clamped_std.max().item())
 
-    # Fixed: number of batches per epoch (data is divided equally)
-    n_batches = 16  # Each batch = n / 16 samples (e.g., 154000/16 ≈ 9625)
+    # Number of minibatches derived from minibatch_size (standard PPO).
+    n_batches = max(1, n // minibatch_size)
 
     for epoch in range(update_epochs):
         perm = torch.randperm(n, device=device)
@@ -422,11 +423,9 @@ def ppo_update(
         epoch_pol_losses: List[float] = []
         epoch_early_stop = False
 
-        # Equal division: n // n_batches samples per batch, remainder dropped
-        actual_mb = n // n_batches
-        for b in range(n_batches):
-            start = b * actual_mb
-            end = start + actual_mb
+        # Iterate over minibatches of size minibatch_size; last batch may be smaller.
+        for start in range(0, n, minibatch_size):
+            end = min(start + minibatch_size, n)
             idx = perm[start:end]
             idx_cpu = idx.cpu().numpy()
 
@@ -482,9 +481,7 @@ def ppo_update(
         max_epoch_kl = float(np.max(epoch_kls)) if epoch_kls else 0.0
         std_epoch_kl = float(np.std(epoch_kls)) if epoch_kls else 0.0
 
-        # Log KL variance across batches (diagnostic for n_batches setting)
-        # CV > 0.5:  n_batches 8 → 4  (batch size 翻倍，降低方差)
-        # CV < 0.1:  n_batches 8 → 16 (batch size 减半，增加更新频率)
+        # Log KL variance across minibatches (diagnostic)
         if epoch_kls:
             kl_cv = std_epoch_kl / (mean_epoch_kl + 1e-8)  # Coefficient of variation
             print(
@@ -584,7 +581,7 @@ def ppo_update(
         "ep_len_max": ep_len_max,
         "epoch_kl_stats": epoch_kl_stats,
         "final_lr": float(actor_optimizer.param_groups[0]["lr"]),
-        "n_batches": n_batches,  # Fixed ratio, not adaptive anymore
+        "n_batches": n_batches,  # derived from minibatch_size
         "total_steps": total_steps,
         **per_critic_losses,
         **per_adv_stats,

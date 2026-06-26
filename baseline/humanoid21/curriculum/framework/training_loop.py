@@ -337,6 +337,7 @@ def train(
                 update_epochs=experiment.update_epochs,
                 device=device,
                 stage_weights=norm_weights,
+                minibatch_size=experiment.minibatch_size,
             )
             t_ppo = time.perf_counter() - t0
 
