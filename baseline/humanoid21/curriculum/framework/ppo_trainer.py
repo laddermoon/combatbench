@@ -11,10 +11,9 @@ import numpy as np
 import torch
 
 from baseline.common.algos import compute_gae
-from baseline.common.policies import CriticMLP, TanhGaussianMLPPolicy
 from baseline.common.rollout import Episode
 
-from .experiment import Experiment, FrameworkParams
+from .experiment import Experiment, FrameworkParams, TrainablePolicy
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -102,7 +101,7 @@ class PPOBuffer:
         self,
         episodes: Sequence[Episode],
         stage_weights: Tuple[float, ...],
-        actor: TanhGaussianMLPPolicy,
+        actor: TrainablePolicy,
         device: torch.device,
         experiment: Experiment,
         params: FrameworkParams,
@@ -290,8 +289,8 @@ class PPOBuffer:
 # ---------------------------------------------------------------------------
 
 def ppo_update(
-    actor: TanhGaussianMLPPolicy,
-    critics: Dict[str, CriticMLP],
+    actor: TrainablePolicy,
+    critics: Dict[str, torch.nn.Module],
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     buf: PPOBuffer,

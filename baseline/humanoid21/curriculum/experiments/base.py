@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
+import torch
+import torch.nn as nn
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -23,7 +25,9 @@ from envs.framework.policy import PolicyBlueprint
 from baseline.humanoid21.curriculum.framework.experiment import (
     Experiment,
     FrameworkParams,
+    TrainablePolicy,
 )
+from baseline.common.policies import CriticMLP
 
 
 class CombatExperimentBase(Experiment):
@@ -91,10 +95,6 @@ class CombatExperimentBase(Experiment):
             name=self.name,
             reward_keys=self.reward_keys,
             gammas=self.gammas,
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
-            actor_hidden_dim=self.actor_hidden_dim,
-            critic_hidden_dim=self.critic_hidden_dim,
             log_std_min=self.log_std_min,
             log_std_max=self.log_std_max,
             gae_lambda=self.gae_lambda,
@@ -115,6 +115,20 @@ class CombatExperimentBase(Experiment):
             eval_workers=self.eval_workers,
             seed=self.seed,
         )
+
+    # --- Model construction ---
+
+    def build_actor(self, device: torch.device) -> TrainablePolicy:
+        blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
+        bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
+        actor = bp.build().to(device)
+        actor.log_std_min = float(self.log_std_min)
+        return actor
+
+    def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        return CriticMLP(
+            obs_dim=self.obs_dim, hidden_dim=self.critic_hidden_dim,
+        ).to(device)
 
     # --- Shared helpers ---
 

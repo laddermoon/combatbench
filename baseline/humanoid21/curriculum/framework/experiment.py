@@ -8,12 +8,29 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
+import torch
+import torch.nn as nn
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
+
+
+@runtime_checkable
+class TrainablePolicy(Protocol):
+    """Interface that the framework's PPO trainer requires from an actor."""
+
+    def evaluate_actions(
+        self, obs: torch.Tensor, actions: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return (log_prob, entropy) for given obs/actions."""
+        ...
+
+    def to_blueprint(self, dest_path: str) -> PolicyBlueprint:
+        """Export a rollout-ready policy blueprint."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -22,10 +39,6 @@ class FrameworkParams:
     name: str
     reward_keys: Tuple[str, ...]
     gammas: Dict[str, float]
-    obs_dim: int
-    action_dim: int
-    actor_hidden_dim: int
-    critic_hidden_dim: int
     log_std_min: float
     log_std_max: float
     gae_lambda: float
@@ -61,6 +74,18 @@ class Experiment(ABC):
     @abstractmethod
     def framework_params(self) -> FrameworkParams:
         """Return all parameters the framework needs."""
+        ...
+
+    # --- Model construction ---
+
+    @abstractmethod
+    def build_actor(self, device: torch.device) -> TrainablePolicy:
+        """Build and return the actor policy on the given device."""
+        ...
+
+    @abstractmethod
+    def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """Build and return a value function for the given reward key."""
         ...
 
     # --- Abstract methods ---

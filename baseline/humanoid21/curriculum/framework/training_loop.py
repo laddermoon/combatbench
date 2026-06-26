@@ -16,13 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from baseline.common.policies import (
-    CriticMLP,
-    TanhGaussianMLPPolicy,
-    export_actor_policy_artifacts,
-)
+from baseline.common.policies import export_actor_policy_artifacts
 from baseline.common.rollout import Episode, ParallelRollouter
-from envs.framework.policy import PolicyBlueprint
 
 from .experiment import Experiment, FrameworkParams
 from .ppo_trainer import (
@@ -204,20 +199,10 @@ def train(
     set_seed(params.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Load init policy blueprint.
-    # The env blueprint lifecycle is owned by the experiment (see
-    # Experiment.build_rollout_jobs / current_env_blueprint), so the
-    # train loop never loads or holds an env blueprint itself.
-    blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
-    init_policy_bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
-
-    # 2. Build models
-    actor: TanhGaussianMLPPolicy = init_policy_bp.build()
-    actor = actor.to(device)
-    actor.log_std_min = float(params.log_std_min)
-
+    # 2. Build models (delegated to experiment)
+    actor = experiment.build_actor(device)
     critics = {
-        key: CriticMLP(obs_dim=params.obs_dim, hidden_dim=params.critic_hidden_dim).to(device)
+        key: experiment.build_critic(key, device)
         for key in params.reward_keys
     }
 
