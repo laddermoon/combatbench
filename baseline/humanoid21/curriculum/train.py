@@ -9,8 +9,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import signal
-import sys
 import time
 from pathlib import Path
 
@@ -39,8 +37,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
-
     args = _parse_args()
 
     if args.list_experiments:
