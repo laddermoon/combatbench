@@ -323,6 +323,31 @@ def ppo_update(
                 critic(obs_all_t).squeeze(-1).cpu().numpy().astype(np.float32)
             )
 
+    # Batched bootstrap values: collect all final_obs that need bootstrapping
+    # (non-terminated episodes), run each critic once on the whole batch, then
+    # map results back per-episode. This replaces the old per-episode-per-key
+    # GPU call (thousands of tiny .item() syncs) with one call per critic.
+    bootstrap_indices: List[int] = []
+    bootstrap_obs: List[np.ndarray] = []
+    for i, T in enumerate(buf.ep_lengths):
+        if not buf.is_terminated[i] and buf.final_obs[i] is not None:
+            bootstrap_indices.append(i)
+            bootstrap_obs.append(np.asarray(buf.final_obs[i], dtype=np.float32))
+
+    bootstrap_values: Dict[str, np.ndarray] = {}
+    bootstrap_pos: Dict[int, int] = {}
+    if bootstrap_obs:
+        boot_t = torch.as_tensor(
+            np.stack(bootstrap_obs), dtype=torch.float32, device=device,
+        )
+        for key, critic in critics.items():
+            with torch.no_grad():
+                bootstrap_values[key] = (
+                    critic(boot_t).squeeze(-1).cpu().numpy().astype(np.float32)
+                )
+        # Map episode index -> position in bootstrap batch for O(1) lookup.
+        bootstrap_pos = {ep_idx: pos for pos, ep_idx in enumerate(bootstrap_indices)}
+
     # Compute GAE for each reward component
     advs_all: Dict[str, np.ndarray] = {}
     rets_all: Dict[str, np.ndarray] = {}
@@ -337,11 +362,8 @@ def ppo_update(
             offset += T
             last_value = 0.0
             if not buf.is_terminated[i] and buf.final_obs[i] is not None:
-                fin_t = torch.as_tensor(
-                    buf.final_obs[i][None], dtype=torch.float32, device=device,
-                )
-                with torch.no_grad():
-                    last_value = float(critics[key](fin_t).squeeze(-1).item())
+                # Look up pre-computed bootstrap value for this episode.
+                last_value = float(bootstrap_values[key][bootstrap_pos[i]])
 
             rewards = buf.reward_data[key][i]
             adv, ret = compute_gae(
