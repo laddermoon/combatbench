@@ -30,6 +30,16 @@ Usage::
 
     # Show only diagnostics (no trend table)
     python3 analyze_training.py fight.log --diagnostics-only
+
+    # Full-history sparkline charts for all metrics
+    python3 analyze_training.py fight.log --history
+
+    # Filter history to specific metrics (substring match)
+    python3 analyze_training.py fight.log --history survived
+    python3 analyze_training.py fight.log --history ev
+
+    # List all discovered metric names
+    python3 analyze_training.py fight.log --list-metrics
 """
 
 from __future__ import annotations
@@ -113,6 +123,65 @@ def _fmt_float(v: float, precision: int = 3) -> str:
     if abs(v) >= 1000:
         return f"{v:,.0f}"
     return f"{v:.{precision}f}"
+
+
+# ---------------------------------------------------------------------------
+# ASCII sparkline (unicode block elements)
+# ---------------------------------------------------------------------------
+
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: List[float], width: int = 60) -> str:
+    """Render a compact unicode sparkline for a value series.
+
+    Downsamples to ``width`` points and maps each to a block character.
+    """
+    if not values:
+        return ""
+    n = len(values)
+    if n <= width:
+        # Pad with leading spaces to align right
+        sampled = values
+        pad = width - n
+    else:
+        # Downsample by averaging buckets
+        bucket = n / width
+        sampled = []
+        for i in range(width):
+            lo = int(i * bucket)
+            hi = max(lo + 1, int((i + 1) * bucket))
+            chunk = values[lo:hi]
+            sampled.append(sum(chunk) / len(chunk) if chunk else values[lo])
+        pad = 0
+
+    vmin = min(sampled)
+    vmax = max(sampled)
+    vrange = vmax - vmin
+    if vrange < 1e-12:
+        # All values identical — render a flat line
+        return "─" * len(sampled)
+
+    chars = []
+    for v in sampled:
+        idx = int((v - vmin) / vrange * (len(_SPARK_CHARS) - 1))
+        idx = max(0, min(len(_SPARK_CHARS) - 1, idx))
+        chars.append(_SPARK_CHARS[idx])
+
+    return " " * pad + "".join(chars)
+
+
+def _downsample_updates(updates: List[int], width: int) -> List[int]:
+    """Downsample update numbers to match sparkline width."""
+    n = len(updates)
+    if n <= width:
+        return updates
+    bucket = n / width
+    result = []
+    for i in range(width):
+        lo = int(i * bucket)
+        result.append(updates[lo])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +502,101 @@ class TrainingLogAnalyzer:
 
         return "\n".join(lines)
 
+    def render_history(self, metric_filter: Optional[str] = None, width: int = 60) -> str:
+        """Render full-history sparkline charts for all auto-discovered metrics.
+
+        Args:
+            metric_filter: If given, only show metrics whose name contains this
+                           substring (case-insensitive). None = show all.
+            width: Sparkline width in characters.
+        """
+        if len(self.history) < 3:
+            return f"  {DIM}(need at least 3 updates for history){RESET}"
+
+        groups = self.discover_metric_groups()
+        if not groups:
+            return f"  {DIM}(no metrics discovered){RESET}"
+
+        updates = [d["update"] for d in self.history]
+        u_first = updates[0]
+        u_last = updates[-1]
+        n = len(updates)
+
+        lines: List[str] = []
+        lines.append(
+            f"  {DIM}{n} updates (u{u_first} → u{u_last}), "
+            f"sparkline width={width}{RESET}\n"
+        )
+
+        group_labels = {
+            "sinfo": "Scheduler",
+            "bsum":  "Rollout",
+            "esum":  "Eval",
+            "rsum":  "Reward/step",
+            "ppo":   "PPO",
+            "ev":    "Critic EV",
+        }
+        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev"]
+
+        filt = metric_filter.lower() if metric_filter else None
+
+        for group in group_order:
+            if group not in groups:
+                continue
+            label = group_labels.get(group, group)
+            group_lines: List[str] = []
+
+            for key in groups[group]:
+                if filt and filt not in key.lower():
+                    continue
+
+                if group == "rsum":
+                    path = f"rsum.{key}_mean"
+                elif group == "ev":
+                    path = f"stats.{key}"
+                elif group in ("sinfo", "bsum", "esum"):
+                    path = f"{group}.{key}"
+                else:
+                    path = f"stats.{key}"
+
+                vals = _series(self.history, path)
+                if len(vals) < 3:
+                    continue
+
+                spark = _sparkline(vals, width=width)
+                vmin = min(vals)
+                vmax = max(vals)
+                cur = vals[-1]
+                first = vals[0]
+
+                # For EV, color the current value
+                if group == "ev":
+                    color = GREEN if cur > 0 else RED if cur <= 0 else YELLOW
+                    cur_str = f"{color}{cur:+.3f}{RESET}"
+                else:
+                    cur_str = _fmt_float(cur)
+
+                # Show range on the right
+                lines.append(
+                    f"    {key:<16} {spark}  "
+                    f"{DIM}[{_fmt_float(vmin)} ~ {_fmt_float(vmax)}]{RESET}  "
+                    f"cur={cur_str}  "
+                    f"{DIM}Δ={_fmt_float(cur - first, 3)}{RESET}"
+                )
+                group_lines.append(key)
+
+            if group_lines:
+                lines.insert(
+                    len(lines) - len(group_lines),
+                    f"  {BOLD}{CYAN}── {label} ──{RESET}"
+                )
+                lines.append("")
+
+        if not any(c for c in lines if c.strip()):
+            return f"  {DIM}No metrics matching '{metric_filter}'.{RESET}"
+
+        return "\n".join(lines)
+
     def render_weights(self) -> str:
         """Render the current reward weights."""
         if not self.history:
@@ -549,6 +713,16 @@ def _parse_args() -> argparse.Namespace:
         help="Show only PPO health diagnostics, skip the trend table.",
     )
     parser.add_argument(
+        "--history", type=str, nargs="?", const="all", default=None,
+        metavar="FILTER",
+        help="Show full-history sparkline charts. Optionally filter by metric "
+             "name substring (e.g. --history survived, --history ev).",
+    )
+    parser.add_argument(
+        "--list-metrics", action="store_true",
+        help="List all discovered metric names and exit.",
+    )
+    parser.add_argument(
         "--interval", type=float, default=2.0,
         help="Refresh interval in seconds for --watch mode (default: 2.0).",
     )
@@ -597,12 +771,81 @@ def _watch_loop(logfile: str, analyzer: TrainingLogAnalyzer,
         f.close()
 
 
+def render_history_report(analyzer: TrainingLogAnalyzer, metric_filter: Optional[str]) -> str:
+    """Render the full-history sparkline report."""
+    if not analyzer.history:
+        return f"{YELLOW}No __RAW_STATS__ entries found in log.{RESET}\n"
+
+    sections: List[str] = []
+    sections.append(f"\n{BOLD}{'═' * 70}{RESET}")
+    sections.append(f"{BOLD}  Training History — Sparkline Charts{RESET}")
+    sections.append(f"{BOLD}{'═' * 70}{RESET}\n")
+
+    filt = metric_filter if metric_filter and metric_filter != "all" else None
+    if filt:
+        sections.append(f"  {DIM}Filter: '{filt}'{RESET}\n")
+    sections.append(analyzer.render_history(metric_filter=filt))
+
+    sections.append(f"{BOLD}{'═' * 70}{RESET}\n")
+    return "\n".join(sections)
+
+
+def render_metric_list(analyzer: TrainingLogAnalyzer) -> str:
+    """List all discovered metric names."""
+    if not analyzer.history:
+        return f"{YELLOW}No __RAW_STATS__ entries found in log.{RESET}\n"
+
+    groups = analyzer.discover_metric_groups()
+    if not groups:
+        return f"{YELLOW}No metrics discovered.{RESET}\n"
+
+    group_labels = {
+        "sinfo": "Scheduler",
+        "bsum":  "Rollout",
+        "esum":  "Eval",
+        "rsum":  "Reward/step",
+        "ppo":   "PPO",
+        "ev":    "Critic EV",
+    }
+    group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev"]
+
+    lines: List[str] = [f"\n{BOLD}Discovered Metrics{RESET}\n"]
+    for group in group_order:
+        if group not in groups:
+            continue
+        label = group_labels.get(group, group)
+        lines.append(f"  {BOLD}{label}:{RESET}")
+        for key in groups[group]:
+            # Show the dotted path for use with --history
+            if group == "rsum":
+                path = f"rsum.{key}_mean"
+            elif group == "ev":
+                path = f"stats.{key}"
+            elif group in ("sinfo", "bsum", "esum"):
+                path = f"{group}.{key}"
+            else:
+                path = f"stats.{key}"
+            lines.append(f"    {key:<20} {DIM}({path}){RESET}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def main() -> None:
     args = _parse_args()
     analyzer = TrainingLogAnalyzer(window_size=args.window)
 
     # Read existing content
     _read_existing(args.logfile, analyzer)
+
+    if args.list_metrics:
+        print(render_metric_list(analyzer))
+        return
+
+    if args.history is not None:
+        filt = args.history if args.history != "all" else None
+        print(render_history_report(analyzer, filt))
+        return
 
     if args.watch:
         # Print initial report, then watch
