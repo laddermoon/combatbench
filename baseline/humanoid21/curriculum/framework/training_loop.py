@@ -199,7 +199,10 @@ def train(
     *,
     run_dir: Path,
     resume_from: Optional[Path] = None,
-) -> None:
+) -> None:    
+    # Attach run_dir to the experiment so it can discover saved models for opponent pool.
+    experiment.run_dir = run_dir
+    
     # Kill entire process group on SIGTERM/SIGINT
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)
@@ -347,59 +350,8 @@ def train(
                     )
                     experiment.learning_rate = final_lr
 
-            # 5.6 Logging
-            bsum = buf.batch_summary()
-            rsum = buf.reward_summary()
-            sinfo = experiment.scheduler_info()
-
-            # --- High Observability Logging ---
-            # 1. Header & Scheduler Info
-            sched_str = " ".join([f"weights={tuple(round(w, 2) for w in norm_weights)}"] + ([f"{k}={v}" for k, v in sinfo.items()] if sinfo else []))
-            print(f"[update {u:4d}] [{sched_str}]", flush=True)
-
-            # 2. Rollout / Episode metrics
-            ep_len_str = f"len={stats.get('ep_len_mean', 0.0):.1f} (min={stats.get('ep_len_min', 0.0):.1f}, max={stats.get('ep_len_max', 0.0):.1f})"
-            ep_metrics_str = " ".join([f"{k}={v:.3f}" for k, v in bsum.items()]) if bsum else ""
-            print(f"  [Rollout] {ep_len_str} | {ep_metrics_str}", flush=True)
-
-            # 3. Policy & Optimization stats
-            policy_loss = stats.get('policy_loss', 0.0)
-            entropy = stats.get('entropy', 0.0)
-            std_mean = stats.get('std_mean', 0.0)
-            std_min = stats.get('std_min', 0.0)
-            std_max = stats.get('std_max', 0.0)
-            epochs_done = stats.get('epochs_done', 0)
-            approx_kl = stats.get('approx_kl', 0.0)
-            max_kl = stats.get('max_kl', 0.0)
-            early_stop_kl = stats.get('early_stop_kl', 0.0)
-            
-            print(f"  [Policy ] loss={policy_loss:.4f} entropy={entropy:.2f} std={std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f})", flush=True)
-            print(f"  [PPO Opt] epochs={epochs_done}/{experiment.update_epochs} kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} (stop_kl={early_stop_kl:.4f})", flush=True)
-
-            # 4. Critics details
-            value_loss = stats.get('value_loss', 0.0)
-            print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
-            for key in experiment.reward_keys:
-                mk, sk = f"{key}_mean", f"{key}_std"
-                rew_flow = f"{rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}"
-                vloss_key = f"vloss_{key}"
-                ev_key = f"ev_{key}"
-                adv_std_key = f"adv_std_{key}"
-                print(f"    - {key:<12} | reward={rew_flow} | val_loss={stats.get(vloss_key, 0.0):.4f} | explained_var={stats.get(ev_key, 0.0):+.3f} | adv_std={stats.get(adv_std_key, 0.0):.2f}", flush=True)
-
-            # 5.6b Machine-readable raw logging for monitoring script
-            import json
-            raw_log_dict = {
-                "update": u,
-                "weights": list(norm_weights) if norm_weights else [],
-                "sinfo": sinfo,
-                "bsum": bsum,
-                "rsum": rsum,
-                "stats": stats
-            }
-            print(f"__RAW_STATS__ {json.dumps(raw_log_dict)}", flush=True)
-
-            # --- Eval ---
+            # --- Eval (Run BEFORE logging to synchronize weights & raw stats) ---
+            esum = None
             t_eval = 0.0
             if u % experiment.eval_interval == 0:
                 t0 = time.perf_counter()
@@ -472,6 +424,60 @@ def train(
                         )
                         if last_video_proc is not None:
                             print(f"  [video:{video_path.name}]", flush=True)
+
+            # 5.6 Logging
+            bsum = buf.batch_summary()
+            rsum = buf.reward_summary()
+            sinfo = experiment.scheduler_info()
+
+            # --- High Observability Logging ---
+            # 1. Header & Scheduler Info
+            sched_str = " ".join([f"weights={tuple(round(w, 2) for w in norm_weights)}"] + ([f"{k}={v}" for k, v in sinfo.items()] if sinfo else []))
+            print(f"[update {u:4d}] [{sched_str}]", flush=True)
+
+            # 2. Rollout / Episode metrics
+            ep_len_str = f"len={stats.get('ep_len_mean', 0.0):.1f} (min={stats.get('ep_len_min', 0.0):.1f}, max={stats.get('ep_len_max', 0.0):.1f})"
+            ep_metrics_str = " ".join([f"{k}={v:.3f}" for k, v in bsum.items()]) if bsum else ""
+            print(f"  [Rollout] {ep_len_str} | {ep_metrics_str}", flush=True)
+
+            # 3. Policy & Optimization stats
+            policy_loss = stats.get('policy_loss', 0.0)
+            entropy = stats.get('entropy', 0.0)
+            std_mean = stats.get('std_mean', 0.0)
+            std_min = stats.get('std_min', 0.0)
+            std_max = stats.get('std_max', 0.0)
+            epochs_done = stats.get('epochs_done', 0)
+            approx_kl = stats.get('approx_kl', 0.0)
+            max_kl = stats.get('max_kl', 0.0)
+            early_stop_kl = stats.get('early_stop_kl', 0.0)
+            
+            print(f"  [Policy ] loss={policy_loss:.4f} entropy={entropy:.2f} std={std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f})", flush=True)
+            print(f"  [PPO Opt] epochs={epochs_done}/{experiment.update_epochs} kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} (stop_kl={early_stop_kl:.4f})", flush=True)
+
+            # 4. Critics details
+            value_loss = stats.get('value_loss', 0.0)
+            print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
+            for key in experiment.reward_keys:
+                mk, sk = f"{key}_mean", f"{key}_std"
+                rew_flow = f"{rsum.get(mk, 0.0):+.3f}±{rsum.get(sk, 0.0):.3f}"
+                vloss_key = f"vloss_{key}"
+                ev_key = f"ev_{key}"
+                adv_std_key = f"adv_std_{key}"
+                print(f"    - {key:<12} | reward={rew_flow} | val_loss={stats.get(vloss_key, 0.0):.4f} | explained_var={stats.get(ev_key, 0.0):+.3f} | adv_std={stats.get(adv_std_key, 0.0):.2f}", flush=True)
+
+            # 5.6b Machine-readable raw logging for monitoring script
+            import json
+            raw_log_dict = {
+                "update": u,
+                "weights": list(norm_weights) if norm_weights else [],
+                "sinfo": sinfo,
+                "bsum": bsum,
+                "rsum": rsum,
+                "stats": stats
+            }
+            if esum is not None:
+                raw_log_dict["esum"] = esum
+            print(f"__RAW_STATS__ {json.dumps(raw_log_dict)}", flush=True)
 
             # --- Timing ---
             t_total = time.perf_counter() - t_update_start

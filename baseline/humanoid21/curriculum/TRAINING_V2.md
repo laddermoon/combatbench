@@ -93,11 +93,10 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_gating_network.py \
 
 ### 阶段 3：跟踪对手
 
-从平衡恢复的 checkpoint 继续训练，使用 `--v2` 启用 sub-episode 分段：
+从平衡恢复的 checkpoint 继续训练：
 
 ```bash
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
-  --v2 \
   --experiment follow_v2 \
   --resume-from baseline/humanoid21/runs/curriculum_balance_recover_plus_v2_<timestamp>/checkpoints/checkpoint_uXXXX.pt \
   &> follow_v2.log &
@@ -109,7 +108,6 @@ PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
 
 ```bash
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
-  --v2 \
   --experiment fight_v2 \
   --resume-from baseline/humanoid21/runs/curriculum_follow_v2_<timestamp>/checkpoints/checkpoint_uXXXX.pt \
   &> fight_v2.log &
@@ -119,7 +117,6 @@ PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
 
 ```bash
 PYTHONPATH=. nohup python3 -m baseline.humanoid21.curriculum.train \
-  --v2 \
   --experiment fight_v2_oppopool \
   --resume-from baseline/humanoid21/runs/curriculum_fight_v2_<timestamp>/checkpoints/checkpoint_uXXXX.pt \
   &> fight_v2_oppopool.log &
@@ -161,7 +158,6 @@ PYTHONPATH=. python3 -m baseline.humanoid21.curriculum.train \
 | 参数 | 说明 |
 |------|------|
 | `--experiment` | 实验名称（必填） |
-| `--v2` | 使用 V2 训练循环（follow/fight 阶段必须） |
 | `--resume-from` | 从指定 checkpoint 恢复训练 |
 | `--smoke` | 快速测试模式 |
 | `--run-name` | 自定义运行名称 |

@@ -102,6 +102,7 @@ class PPOBuffer:
             k: [] for k in experiment.reward_keys
         }
         self.episode_metrics: List[Dict[str, float]] = []
+        self.episode_lengths: List[int] = []  # original episode lengths (for logging)
 
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
@@ -111,8 +112,9 @@ class PPOBuffer:
         terms: List[bool] = []
         ep_lens: List[int] = []
 
-        # Phase 1: Collect valid episodes without any GPU calls.
-        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, Dict[str, np.ndarray], Episode]] = []
+        # Phase 1: Collect valid episodes and pre-compute per-episode data
+        # (segments, rewards) without any GPU calls.
+        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, list, Dict[str, np.ndarray], Episode]] = []
         for ep in episodes:
             ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
             obs = ep.observations.get(ep_target)
@@ -125,27 +127,28 @@ class PPOBuffer:
                     flush=True,
                 )
                 continue
-            T = int(acts.shape[0])
-            if T == 0:
+            T_full = int(acts.shape[0])
+            if T_full == 0:
                 continue
 
-            # Extract rewards from experiment
-            rewards = experiment.extract_rewards(ep)
-
-            # Store reward arrays
-            for key in experiment.reward_keys:
-                self.reward_data[key].append(
-                    rewards.get(key, np.zeros(T, dtype=np.float32))
-                )
-
-            # Episode metrics
+            # Episode-level data: metrics and original length (per-episode).
             self.episode_metrics.append(
                 experiment.compute_episode_metrics(ep)
             )
+            self.episode_lengths.append(T_full)
 
-            valid_eps.append((obs, acts, fin, T, rewards, ep))
+            # Split into training segments (sub-episodes).
+            segments = experiment.segment_episode(ep)
+            if not segments:
+                continue  # entire episode excluded from training
 
-        # Phase 2: Batched evaluate_actions — one GPU call for all episodes.
+            # Extract rewards once for the full episode, then slice per segment.
+            rewards_full = experiment.extract_rewards(ep)
+
+            valid_eps.append((obs, acts, fin, T_full, segments, rewards_full, ep))
+
+        # Phase 2: Batched evaluate_actions — one GPU call for all episodes
+        # instead of 2048 per-episode calls.
         if valid_eps:
             all_obs = np.concatenate([e[0] for e in valid_eps], axis=0).astype(np.float32)
             all_acts = np.concatenate([e[1] for e in valid_eps], axis=0).astype(np.float32)
@@ -157,22 +160,48 @@ class PPOBuffer:
         else:
             all_lp_np = np.zeros(0, dtype=np.float32)
 
-        # Phase 3: Slice log probs and build segment lists.
+        # Phase 3: Slice into segments using pre-computed log probs.
         offset = 0
-        for obs, acts, fin, T, rewards, ep in valid_eps:
-            lp_np = all_lp_np[offset:offset + T]
-            offset += T
+        for obs, acts, fin, T_full, segments, rewards_full, ep in valid_eps:
+            lp_full_np = all_lp_np[offset:offset + T_full]
+            offset += T_full
 
-            ep_weight = min(200.0 / T, 10.0)
-            weight_arr = np.full(T, ep_weight, dtype=np.float32)
+            for (start, end) in segments:
+                T_seg = end - start
+                if T_seg == 0:
+                    continue
 
-            obs_list.append(obs)
-            act_list.append(acts)
-            lp_list.append(lp_np)
-            fin_list.append(np.asarray(fin, dtype=np.float32))
-            weight_list.append(weight_arr)
-            terms.append(bool(ep.is_terminated))
-            ep_lens.append(T)
+                obs_seg = np.asarray(obs[start:end], dtype=np.float32)
+                acts_seg = np.asarray(acts[start:end], dtype=np.float32)
+                lp_seg = lp_full_np[start:end]
+
+                # Bootstrap observation: the obs right after the segment end.
+                # If the segment ends mid-episode (e.g. fallback boundary),
+                # bootstrap from the next step's observation and mark as
+                # truncated (not terminated) so GAE bootstraps correctly.
+                if end < T_full:
+                    fin_seg = np.asarray(obs[end], dtype=np.float32)
+                    term_seg = False
+                else:
+                    fin_seg = np.asarray(fin, dtype=np.float32)
+                    term_seg = bool(ep.is_terminated)
+
+                ep_weight = min(200.0 / T_seg, 10.0)
+                weight_arr = np.full(T_seg, ep_weight, dtype=np.float32)
+
+                for key in experiment.reward_keys:
+                    r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
+                    self.reward_data[key].append(
+                        np.asarray(r_full[start:end], dtype=np.float32)
+                    )
+
+                obs_list.append(obs_seg)
+                act_list.append(acts_seg)
+                lp_list.append(lp_seg)
+                fin_list.append(fin_seg)
+                weight_list.append(weight_arr)
+                terms.append(term_seg)
+                ep_lens.append(T_seg)
 
         if not ep_lens:
             print(
@@ -210,10 +239,9 @@ class PPOBuffer:
         (computed by the experiment's ``compute_episode_metrics``).
         No experiment-specific keys are hardcoded.
         """
-        n = len(self.ep_lengths)
-        if n == 0:
+        if not self.episode_lengths:
             return {"mean_length": 0.0}
-        result: Dict[str, float] = {"mean_length": float(np.mean(self.ep_lengths))}
+        result: Dict[str, float] = {"mean_length": float(np.mean(self.episode_lengths))}
         if self.episode_metrics:
             for k in self.episode_metrics[0].keys():
                 result[k] = float(np.mean([m.get(k, 0.0) for m in self.episode_metrics]))
@@ -501,6 +529,10 @@ def ppo_update(
             "n_minibatches": len(epoch_kls),
         })
 
+        # Accumulate losses from this epoch (before early-stop break,
+        # otherwise pol_losses is empty and policy_loss reports 0.0).
+        pol_losses.extend(epoch_pol_losses)
+
         # Normal early stop: if mean KL exceeds target
         if target_kl > 0.0 and mean_epoch_kl > target_kl:
             print(
@@ -509,9 +541,6 @@ def ppo_update(
             )
             early_stop_kl = mean_epoch_kl
             break
-
-        # Accumulate losses from this epoch
-        pol_losses.extend(epoch_pol_losses)
 
 
 

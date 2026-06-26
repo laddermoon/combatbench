@@ -109,7 +109,6 @@ PYTHONPATH=. python3 baseline/humanoid21/curriculum/train_gating_network.py \
 
 ```bash
 python3 baseline/humanoid21/curriculum/train.py \
-  --v2 \
   --experiment follow \
   --resume-from baseline/humanoid21/runs/curriculum_balance_recover_plus_<timestamp>/checkpoints/checkpoint_uXXXX.pt \
   &> follow.log &
@@ -123,7 +122,6 @@ python3 baseline/humanoid21/curriculum/train.py \
 
 ```bash
 python3 baseline/humanoid21/curriculum/train.py \
-  --v2 \
   --experiment fight \
   --resume-from baseline/humanoid21/runs/curriculum_follow_<timestamp>/checkpoints/checkpoint_uXXXX.pt \
   &> fight.log &
@@ -191,4 +189,3 @@ baseline/humanoid21/runs/curriculum_<name>_<timestamp>/
 | `--resume-from` | 从指定 checkpoint 恢复训练 |
 | `--smoke` | 快速测试模式 |
 | `--run-name` | 自定义运行名称 |
-| `--v2` | 使用 V2 训练循环（含 sub-episode 分段，V1 不使用此选项） |

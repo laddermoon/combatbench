@@ -13,10 +13,8 @@
 | 文件 | 说明 |
 |------|------|
 | `config.py` | `ExperimentConfig` 抽象基类，定义实验接口：reward keys、权重调度、reward 提取、评估指标、episode 分段 |
-| `ppo_trainer.py` | V1 PPO 训练器：buffer、update、rollout helpers，处理完整 episode |
-| `ppo_trainer_v2.py` | V2 PPO 训练器：在 V1 基础上增加 sub-episode 分段，排除 fallback 策略介入的帧 |
-| `training_loop.py` | V1 训练循环：checkpoint 管理、视频渲染、评估调度 |
-| `training_loop_v2.py` | V2 训练循环：与 V1 结构相同，调用 `ppo_trainer_v2` |
+| `ppo_trainer.py` | PPO 训练器：buffer、update、rollout helpers，支持 sub-episode 分段（排除 fallback 策略介入的帧） |
+| `training_loop.py` | 训练循环：checkpoint 管理、视频渲染、评估调度 |
 
 ### `experiments/` — 实验配置
 
@@ -26,7 +24,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验，`--v2` 切换训练循环 |
+| `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验 |
 | `fight_mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
 | `mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
 | `weakened_policy.py` | 弱化策略包装器，对导出策略的动作添加高斯噪声 |
@@ -38,17 +36,13 @@
 | `analyze_fight_logs.py` | 对抗实验日志分析工具 |
 | `analyze_standup_logs.py` | 起身实验日志分析工具 |
 
-### Framework V1 与 V2
+### Sub-episode 分段
 
-Framework V1（`training_loop.py` + `ppo_trainer.py`）：
-- 处理完整 episode，所有帧都进入 PPO buffer
-- 不做轨迹分段
-
-Framework V2（`training_loop_v2.py` + `ppo_trainer_v2.py`）：
-- 引入 **sub-episode 分段**：当门控网络判断需要平衡恢复介入时，自动截断轨迹
+训练框架支持 **sub-episode 分段**：
+- 当门控网络判断需要平衡恢复介入时，自动截断轨迹
 - 平衡恢复策略介入的帧被排除，不参与 PPO 梯度更新
 - 每个分段独立计算 GAE，避免状态不连续导致的梯度错误
-- 通过 `ExperimentConfig.segment_episode()` 实现分段逻辑
+- 通过 `ExperimentConfig.segment_episode()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
 
 ### 实验配置
 
@@ -56,9 +50,8 @@ Baseline V1 实验（不带 `_v2` 后缀）使用 4 个 reward（`r_fall`, `r_cr
 
 ### CLI 使用
 
-- Baseline V1 平衡阶段：不需要 `--v2`
-- Baseline V1 跟踪/对抗阶段：需要 `--v2`（使用 Framework V2 的 sub-episode 分段）
-- Baseline V2 所有阶段：使用 `_v2` 后缀的实验名，跟踪/对抗阶段需要 `--v2`
+- 所有实验统一通过 `--experiment` 选择，无需额外 flag
+- 需要分段的实验（如跟踪/对抗阶段）通过覆盖 `segment_episode()` 自动启用 sub-episode 分段
 
 ## 训练指导文档
 
