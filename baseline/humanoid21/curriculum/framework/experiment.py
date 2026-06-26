@@ -1,4 +1,4 @@
-"""ExperimentConfig — pure ABC for curriculum learning experiments.
+"""Experiment — pure ABC for curriculum learning experiments.
 
 Defines the interface contract between the training framework and experiment
 implementations.  No default values, no concrete helpers — those live in
@@ -47,7 +47,7 @@ class FrameworkParams:
     seed: int
 
 
-class ExperimentConfig(ABC):
+class Experiment(ABC):
     """Abstract per-experiment configuration.
 
     The framework calls ``framework_params()`` once to obtain all parameters,

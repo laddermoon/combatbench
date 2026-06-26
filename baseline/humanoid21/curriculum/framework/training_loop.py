@@ -1,7 +1,7 @@
 """Unified curriculum training loop.
 
 Contains ``TrainConfig``, ``train()``, checkpoint save/load, and
-video rendering — generic over ``ExperimentConfig``.
+video rendering — generic over ``Experiment``.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from baseline.common.policies import (
 from baseline.common.rollout import Episode, ParallelRollouter
 from envs.framework.policy import PolicyBlueprint
 
-from .config import ExperimentConfig, FrameworkParams
+from .experiment import Experiment, FrameworkParams
 from .ppo_trainer import (
     PPOBuffer,
     ppo_update,
@@ -42,7 +42,7 @@ def save_checkpoint(
     critics: Dict[str, torch.nn.Module],
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
-    experiment: ExperimentConfig,
+    experiment: Experiment,
     params: FrameworkParams,
     update: int,
     best_eval: tuple,
@@ -74,7 +74,7 @@ def load_checkpoint(
     critics: Dict[str, torch.nn.Module],
     actor_optimizer: torch.optim.Optimizer,
     critic_optimizers: Dict[str, torch.optim.Optimizer],
-    experiment: ExperimentConfig,
+    experiment: Experiment,
     params: FrameworkParams,
     load_experiment_state: bool = False,
 ) -> int:
@@ -186,7 +186,7 @@ def spawn_video_render(
 # ---------------------------------------------------------------------------
 
 def train(
-    experiment: ExperimentConfig,
+    experiment: Experiment,
     *,
     run_dir: Path,
     resume_from: Optional[Path] = None,
@@ -206,7 +206,7 @@ def train(
 
     # 1. Load init policy blueprint.
     # The env blueprint lifecycle is owned by the experiment (see
-    # ExperimentConfig.build_rollout_jobs / current_env_blueprint), so the
+    # Experiment.build_rollout_jobs / current_env_blueprint), so the
     # train loop never loads or holds an env blueprint itself.
     blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
     init_policy_bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")

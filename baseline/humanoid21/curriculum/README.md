@@ -12,13 +12,13 @@
 
 | 文件 | 说明 |
 |------|------|
-| `config.py` | `ExperimentConfig` 抽象基类，定义实验接口：reward keys、权重调度、reward 提取、评估指标、episode 分段 |
+| `config.py` | `Experiment` 抽象基类，定义实验接口：reward keys、权重调度、reward 提取、评估指标、episode 分段 |
 | `ppo_trainer.py` | PPO 训练器：buffer、update、rollout helpers，支持 sub-episode 分段（排除 fallback 策略介入的帧） |
 | `training_loop.py` | 训练循环：checkpoint 管理、视频渲染、评估调度 |
 
 ### `experiments/` — 实验配置
 
-每个 `exp_*.py` 文件导出 `EXPERIMENT: ExperimentConfig`，定义该实验的奖励方案、课程调度和环境配置。通过 `__init__.py` 自动注册。
+每个 `exp_*.py` 文件导出 `EXPERIMENT: Experiment`，定义该实验的奖励方案、课程调度和环境配置。通过 `__init__.py` 自动注册。
 
 ### 其他文件
 
@@ -39,7 +39,7 @@
 - 当门控网络判断需要平衡恢复介入时，自动截断轨迹
 - 平衡恢复策略介入的帧被排除，不参与 PPO 梯度更新
 - 每个分段独立计算 GAE，避免状态不连续导致的梯度错误
-- 通过 `ExperimentConfig.prepare_training_segments()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
+- 通过 `Experiment.prepare_training_segments()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
 
 ### 实验配置
 

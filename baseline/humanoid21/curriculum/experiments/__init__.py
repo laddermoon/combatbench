@@ -1,6 +1,6 @@
 """Experiment registry — auto-discovers ``exp_*.py`` files in this directory.
 
-Each experiment file should export ``EXPERIMENT: ExperimentConfig``.
+Each experiment file should export ``EXPERIMENT: Experiment``.
 """
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import importlib
 from pathlib import Path
 from typing import Dict, List
 
-from baseline.humanoid21.curriculum.framework.config import ExperimentConfig as _ExperimentConfig
+from baseline.humanoid21.curriculum.framework.experiment import Experiment as _Experiment
 
-ExperimentConfig = _ExperimentConfig  # backward-compatible alias
+Experiment = _Experiment  # backward-compatible alias
 
-_REGISTRY: Dict[str, ExperimentConfig] = {}
+_REGISTRY: Dict[str, Experiment] = {}
 
 
 def _discover() -> None:
@@ -24,7 +24,7 @@ def _discover() -> None:
             _REGISTRY[exp.name] = exp
 
 
-def get_experiment(name: str) -> ExperimentConfig:
+def get_experiment(name: str) -> Experiment:
     """Retrieve an experiment config by name."""
     if not _REGISTRY:
         _discover()

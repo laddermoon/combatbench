@@ -20,13 +20,13 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.humanoid21.curriculum.framework.config import (
-    ExperimentConfig,
+from baseline.humanoid21.curriculum.framework.experiment import (
+    Experiment,
     FrameworkParams,
 )
 
 
-class CombatExperimentBase(ExperimentConfig):
+class CombatExperimentBase(Experiment):
     """Class-attribute style base for humanoid21 combat curriculum experiments.
 
     Subclass and override class attributes + abstract methods.

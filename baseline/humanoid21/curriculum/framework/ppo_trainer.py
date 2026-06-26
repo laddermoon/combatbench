@@ -1,7 +1,7 @@
 """Generic PPO buffer, update, and rollout helpers.
 
 Moves from V2's ``train_curriculum_v2.py``, parameterized by
-``ExperimentConfig`` so that reward keys / extraction are not hardcoded.
+``Experiment`` so that reward keys / extraction are not hardcoded.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from baseline.common.algos import compute_gae
 from baseline.common.policies import CriticMLP, TanhGaussianMLPPolicy
 from baseline.common.rollout import Episode
 
-from .config import ExperimentConfig, FrameworkParams
+from .experiment import Experiment, FrameworkParams
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -104,7 +104,7 @@ class PPOBuffer:
         stage_weights: Tuple[float, ...],
         actor: TanhGaussianMLPPolicy,
         device: torch.device,
-        experiment: ExperimentConfig,
+        experiment: Experiment,
         params: FrameworkParams,
     ):
         self.reward_data: Dict[str, List[np.ndarray]] = {
@@ -306,7 +306,7 @@ def ppo_update(
     device: torch.device,
     stage_weights: Tuple[float, ...],
     minibatch_size: int = 4096,
-    experiment: Optional[ExperimentConfig] = None,
+    experiment: Optional[Experiment] = None,
 ) -> Dict[str, float]:
     """Multi-critic PPO update, parameterized by reward_keys and gammas.
 
