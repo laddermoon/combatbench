@@ -580,7 +580,6 @@ def ppo_update(
         "ep_len_min": ep_len_min,
         "ep_len_max": ep_len_max,
         "epoch_kl_stats": epoch_kl_stats,
-        "final_lr": float(actor_optimizer.param_groups[0]["lr"]),
         "n_batches": n_batches,  # derived from minibatch_size
         "total_steps": total_steps,
         **per_critic_losses,

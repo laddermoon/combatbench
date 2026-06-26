@@ -360,16 +360,13 @@ class ExperimentConfig(ABC):
         pass
 
     def training_state(self) -> dict:
-        """Serialize adaptive training hyperparameters for checkpointing.
-
-        Only learning_rate is adaptive; minibatch_size is fixed (n_batches ratio).
-        """
+        """Serialize training hyperparameters for checkpointing."""
         return {
             "learning_rate": self.learning_rate,
         }
 
     def load_training_state(self, state: dict) -> None:
-        """Restore adaptive training hyperparameters from a checkpoint.
+        """Restore training hyperparameters from a checkpoint.
         Disabled loading learning_rate to ensure configuration-specified LR takes precedence.
         """
         pass

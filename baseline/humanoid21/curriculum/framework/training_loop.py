@@ -341,16 +341,6 @@ def train(
             )
             t_ppo = time.perf_counter() - t0
 
-            # 5.5b Apply adaptive LR back to experiment for next update
-            if "final_lr" in stats:
-                final_lr = stats["final_lr"]
-                if abs(final_lr - experiment.learning_rate) / max(experiment.learning_rate, 1e-8) > 0.01:
-                    print(
-                        f"[adapt] update={u} LR {experiment.learning_rate:.2e} -> {final_lr:.2e}",
-                        flush=True,
-                    )
-                    experiment.learning_rate = final_lr
-
             # --- Eval (Run BEFORE logging to synchronize weights & raw stats) ---
             esum = None
             t_eval = 0.0
