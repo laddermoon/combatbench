@@ -41,6 +41,8 @@ class FightV2ComboConfig(ExperimentConfig):
     """
 
     name = "fight_v2_combo"
+    weight_target_total: float = 200.0
+    weight_cap: float = 10.0
     reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_radial", "r_tangential", "r_gate", "r_follow_gate", "r_damage", "r_combo")
     gammas = {
         "r_fall": 0.99,
@@ -335,13 +337,16 @@ class FightV2ComboConfig(ExperimentConfig):
 
     # ---- Episode metrics --------------------------------------------------
 
-    def segment_episode(self, episode) -> List[Tuple[int, int]]:
+    def prepare_training_segments(
+        self, episode,
+    ) -> List[Tuple[int, int, float]]:
         """Split episode at fallback boundaries, keeping only primary (Fight) steps."""
         T = episode.num_frames
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is None or "gating_mode" not in extras:
-            return [(0, T)]
+            w = min(self.weight_target_total / T, self.weight_cap)
+            return [(0, T, w)]
 
         gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
         L = min(T, len(gating_mode))
@@ -360,7 +365,10 @@ class FightV2ComboConfig(ExperimentConfig):
         if start is not None:
             segments.append((start, L))
 
-        return segments
+        return [
+            (s, e, min(self.weight_target_total / (e - s), self.weight_cap))
+            for s, e in segments
+        ]
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Per-episode metrics for fight evaluation and logging."""

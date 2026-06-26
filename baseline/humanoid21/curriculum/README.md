@@ -42,7 +42,7 @@
 - 当门控网络判断需要平衡恢复介入时，自动截断轨迹
 - 平衡恢复策略介入的帧被排除，不参与 PPO 梯度更新
 - 每个分段独立计算 GAE，避免状态不连续导致的梯度错误
-- 通过 `ExperimentConfig.segment_episode()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
+- 通过 `ExperimentConfig.prepare_training_segments()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
 
 ### 实验配置
 
@@ -51,7 +51,7 @@ Baseline V1 实验（不带 `_v2` 后缀）使用 4 个 reward（`r_fall`, `r_cr
 ### CLI 使用
 
 - 所有实验统一通过 `--experiment` 选择，无需额外 flag
-- 需要分段的实验（如跟踪/对抗阶段）通过覆盖 `segment_episode()` 自动启用 sub-episode 分段
+- 需要分段的实验（如跟踪/对抗阶段）通过覆盖 `prepare_training_segments()` 自动启用 sub-episode 分段
 
 ## 训练指导文档
 

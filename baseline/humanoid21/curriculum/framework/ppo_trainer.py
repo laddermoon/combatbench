@@ -145,15 +145,15 @@ class PPOBuffer:
             )
             self.episode_lengths.append(T_full)
 
-            # Split into training segments (sub-episodes).
-            segments = experiment.segment_episode(ep)
-            if not segments:
+            # Split into training segments (sub-episodes) with per-segment weights.
+            seg_weights = experiment.prepare_training_segments(ep)
+            if not seg_weights:
                 continue  # entire episode excluded from training
 
             # Extract rewards once for the full episode, then slice per segment.
             rewards_full = experiment.extract_rewards(ep)
 
-            valid_eps.append((obs, acts, fin, T_full, segments, rewards_full, ep))
+            valid_eps.append((obs, acts, fin, T_full, seg_weights, rewards_full, ep))
 
         # Phase 2: Batched evaluate_actions — one GPU call for all episodes
         # instead of 2048 per-episode calls.
@@ -170,11 +170,11 @@ class PPOBuffer:
 
         # Phase 3: Slice into segments using pre-computed log probs.
         offset = 0
-        for obs, acts, fin, T_full, segments, rewards_full, ep in valid_eps:
+        for obs, acts, fin, T_full, seg_weights, rewards_full, ep in valid_eps:
             lp_full_np = all_lp_np[offset:offset + T_full]
             offset += T_full
 
-            for (start, end) in segments:
+            for start, end, weight in seg_weights:
                 T_seg = end - start
                 if T_seg == 0:
                     continue
@@ -194,9 +194,6 @@ class PPOBuffer:
                     fin_seg = np.asarray(fin, dtype=np.float32)
                     term_seg = bool(ep.is_terminated)
 
-                ep_weight = min(200.0 / T_seg, 10.0)
-                weight_arr = np.full(T_seg, ep_weight, dtype=np.float32)
-
                 for key in experiment.reward_keys:
                     r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
                     self.reward_data[key].append(
@@ -207,7 +204,7 @@ class PPOBuffer:
                 act_list.append(acts_seg)
                 lp_list.append(lp_seg)
                 fin_list.append(fin_seg)
-                weight_list.append(weight_arr)
+                weight_list.append(np.full(T_seg, weight, dtype=np.float32))
                 terms.append(term_seg)
                 ep_lens.append(T_seg)
 

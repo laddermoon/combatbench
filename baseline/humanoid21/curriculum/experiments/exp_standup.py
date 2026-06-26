@@ -3,7 +3,7 @@
 This experiment uses a composite policy (StandupMixedPolicy) to first run a
 random policy to make the robot fall down. Once the pelvis height drops below
 a threshold (default 0.35m), it switches to the primary stand-up policy to train.
-The random policy steps are excluded from training via segment_episode.
+The random policy steps are excluded from training via prepare_training_segments.
 """
 from __future__ import annotations
 
@@ -85,6 +85,8 @@ class StandupConfig(ExperimentConfig):
     """Standup curriculum experiment with potential-difference rewards."""
 
     name = "standup"
+    weight_target_total: float = 200.0
+    weight_cap: float = 10.0
     reward_keys = ("r_potential", "r_cross")
     gammas = {
         "r_potential": 0.99,
@@ -227,7 +229,9 @@ class StandupConfig(ExperimentConfig):
 
     # ---- Episode metrics --------------------------------------------------
 
-    def segment_episode(self, episode) -> List[Tuple[int, int]]:
+    def prepare_training_segments(
+        self, episode,
+    ) -> List[Tuple[int, int, float]]:
         """Split episode at fall boundary, keeping only primary (stand-up) steps.
 
         This ensures the robot is never trained on actions produced by the
@@ -237,7 +241,8 @@ class StandupConfig(ExperimentConfig):
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is None or "gating_mode" not in extras:
-            return [(0, T)]
+            w = min(self.weight_target_total / T, self.weight_cap)
+            return [(0, T, w)]
 
         gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
         L = min(T, len(gating_mode))
@@ -256,7 +261,10 @@ class StandupConfig(ExperimentConfig):
         if start is not None:
             segments.append((start, L))
 
-        return segments
+        return [
+            (s, e, min(self.weight_target_total / (e - s), self.weight_cap))
+            for s, e in segments
+        ]
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Compute metrics for success monitoring and curriculum progression."""

@@ -79,7 +79,7 @@ class ExperimentConfig(ABC):
     grad_clip_norm: float = 1.0
     target_kl: float = 0.05
     update_epochs: int = 4
-    minibatch_size: int = 4096 * 8
+    minibatch_size: int = 8192
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -175,20 +175,23 @@ class ExperimentConfig(ABC):
         """
         ...
 
-    def segment_episode(self, episode: "Episode") -> List[Tuple[int, int]]:
-        """Return ``(start, end)`` index pairs delimiting training segments.
+    def prepare_training_segments(
+        self, episode: "Episode",
+    ) -> List[Tuple[int, int, float]]:
+        """Return ``(start, end, weight)`` triples for training.
 
-        The PPO buffer splits each episode into sub-episodes along these
-        boundaries and computes GAE independently per segment.  This is
-        essential when a mixed policy is used: steps where the fallback
-        policy was active must be excluded so the actor is not trained to
-        imitate fallback actions.
+        Splits an episode into sub-episodes and assigns a per-step sample
+        weight to each segment.  The PPO buffer computes GAE independently
+        per segment and uses the weight to balance gradient contributions
+        across segments of different lengths.
 
-        Default: return the full episode as a single segment ``[(0, T)]``.
-        Override to exclude fallback steps (e.g. via ``action_extras``).
+        Default: return the full episode as one segment with weight 1.0
+        (uniform).  Override to exclude fallback steps (e.g. via
+        ``action_extras``) or use a different weighting strategy.
         Return an empty list to skip the episode entirely.
         """
-        return [(0, episode.num_frames)]
+        T = episode.num_frames
+        return [(0, T, 1.0)]
 
 
     @abstractmethod

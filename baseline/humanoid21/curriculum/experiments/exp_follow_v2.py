@@ -43,6 +43,8 @@ class FollowV2Config(ExperimentConfig):
     """
 
     name = "follow_v2"
+    weight_target_total: float = 200.0
+    weight_cap: float = 10.0
 
     reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_radial", "r_tangential", "r_gate")
     gammas = {
@@ -320,7 +322,9 @@ class FollowV2Config(ExperimentConfig):
 
     # ---- Episode metrics --------------------------------------------------
 
-    def segment_episode(self, episode) -> List[Tuple[int, int]]:
+    def prepare_training_segments(
+        self, episode,
+    ) -> List[Tuple[int, int, float]]:
         """Split episode at fallback boundaries, keeping only primary steps.
 
         Steps where the gating model switched to the fallback (balance
@@ -331,7 +335,8 @@ class FollowV2Config(ExperimentConfig):
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
         if extras is None or "gating_mode" not in extras:
-            return [(0, T)]
+            w = min(self.weight_target_total / T, self.weight_cap)
+            return [(0, T, w)]
 
         gating_mode = np.asarray(extras["gating_mode"], dtype=np.float32).reshape(-1)
         L = min(T, len(gating_mode))
@@ -350,7 +355,10 @@ class FollowV2Config(ExperimentConfig):
         if start is not None:
             segments.append((start, L))
 
-        return segments
+        return [
+            (s, e, min(self.weight_target_total / (e - s), self.weight_cap))
+            for s, e in segments
+        ]
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Per-episode metrics for eval comparison and logging."""
