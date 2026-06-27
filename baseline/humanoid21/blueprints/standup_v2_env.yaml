@@ -48,3 +48,7 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.standup:StandupPotentialRewarder"
     config:
       agent_id: ${agent_id}
+  height:
+    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
+    config:
+      agent_id: ${agent_id}

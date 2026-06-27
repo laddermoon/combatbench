@@ -27,9 +27,9 @@ class StandupV2Config(CombatExperimentBase):
     """Standup from random fall — v2 with simplified reward and curriculum."""
 
     name = "standup_v2"
-    reward_keys = ("r_potential",)
+    reward_keys = ("r_standup",)
     gammas = {
-        "r_potential": 0.99,
+        "r_standup": 0.99,
     }
 
     BLUEPRINT = "standup_v2_env.yaml"
@@ -41,14 +41,14 @@ class StandupV2Config(CombatExperimentBase):
     eval_interval: int = 5
 
     # --- PPO tuning ---
-    log_std_min: float = -2.5
+    log_std_min: float = -4.0
     learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     target_kl: float = 0.05
     grad_clip_norm: float = 1.0
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 1e-3
+    entropy_coef: float = 5e-4
 
     # --- Video ---
     video_eval_interval: int = 5
@@ -56,7 +56,9 @@ class StandupV2Config(CombatExperimentBase):
     # --- Experiment-specific ---
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 400,
-        "potential_reward_scale": 1.0,
+        "potential_reward_scale": 5.0,
+        "height_reward_scale": 2.0,
+        "terminal_success_bonus": 10.0,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
@@ -162,15 +164,29 @@ class StandupV2Config(CombatExperimentBase):
         oo = episode.observer_outputs
 
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        r_potential = np.zeros(T, dtype=np.float32)
+        heights = _extract_per_step_field(oo, "height", "height", T)
+        pot_scale = float(self.custom_config.get("potential_reward_scale", 5.0))
+        h_scale = float(self.custom_config.get("height_reward_scale", 2.0))
+        terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 10.0))
+
+        r = np.zeros(T, dtype=np.float32)
+
+        # 1. Potential-based shaping (guides through correct postures)
         if potentials is not None:
-            r_potential[1:] = potentials[1:] - potentials[:-1]
-            r_potential[0] = potentials[0] - 0.0
-            scale = float(self.custom_config.get("potential_reward_scale", 1.0))
-            r_potential *= scale
+            r[1:] += pot_scale * (potentials[1:] - potentials[:-1])
+            r[0] += pot_scale * (potentials[0] - 0.0)
+
+        # 2. Height-based reward (continuous upward gradient)
+        if heights is not None:
+            r[1:] += h_scale * (heights[1:] - heights[:-1])
+
+        # 3. Terminal success bonus
+        term_reasons = getattr(episode, "termination_proposals", [])
+        if any("success" in str(r_) for r_ in term_reasons):
+            r[-1] += terminal_bonus
 
         return {
-            "r_potential": r_potential,
+            "r_standup": r,
         }
 
     # ---- Episode metrics --------------------------------------------------
