@@ -45,7 +45,7 @@ plugins:
 
 observer_plugins:
   standup:
-    cls: "baseline.humanoid21.rewards.standup:StandupPotentialRewarder"
+    cls: "baseline.humanoid21.rewards.standup_v2:StandupPotentialRewarderV2"
     config:
       agent_id: ${agent_id}
   height:
