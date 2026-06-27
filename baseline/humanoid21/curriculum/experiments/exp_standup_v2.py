@@ -57,8 +57,9 @@ class StandupV2Config(CombatExperimentBase):
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 400,
         "potential_reward_scale": 5.0,
-        "height_reward_scale": 5.0,
+        "height_reward_scale": 0.0,
         "terminal_success_bonus": 50.0,
+        "time_penalty": -0.01,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
@@ -166,8 +167,9 @@ class StandupV2Config(CombatExperimentBase):
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
         heights = _extract_per_step_field(oo, "height", "height", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 5.0))
-        h_scale = float(self.custom_config.get("height_reward_scale", 2.0))
-        terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 10.0))
+        h_scale = float(self.custom_config.get("height_reward_scale", 0.0))
+        terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 50.0))
+        time_penalty = float(self.custom_config.get("time_penalty", -0.01))
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -176,11 +178,15 @@ class StandupV2Config(CombatExperimentBase):
             r[1:] += pot_scale * (potentials[1:] - potentials[:-1])
             r[0] += pot_scale * (potentials[0] - 0.0)
 
-        # 2. Height-based reward (continuous upward gradient)
-        if heights is not None:
+        # 2. Height-based reward (disabled by default — fights potential
+        #    during squat-down transitions)
+        if heights is not None and h_scale > 0:
             r[1:] += h_scale * (heights[1:] - heights[:-1])
 
-        # 3. Terminal success bonus
+        # 3. Time penalty — urgency to reach goal quickly
+        r[:] += time_penalty
+
+        # 4. Terminal success bonus
         term_reasons = getattr(episode, "termination_proposals", [])
         if any("success" in str(r_) for r_ in term_reasons):
             r[-1] += terminal_bonus
