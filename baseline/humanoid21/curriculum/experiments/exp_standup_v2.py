@@ -48,7 +48,7 @@ class StandupV2Config(CombatExperimentBase):
     grad_clip_norm: float = 1.0
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 5e-4
+    entropy_coef: float = 0.0
 
     # --- Video ---
     video_eval_interval: int = 5
