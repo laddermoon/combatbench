@@ -42,8 +42,8 @@ class StandupV2Config(CombatExperimentBase):
 
     # --- PPO tuning ---
     log_std_min: float = -4.0
-    learning_rate: float = 3e-4
-    critic_learning_rate: float = 3e-4
+    learning_rate: float = 5e-4
+    critic_learning_rate: float = 5e-4
     target_kl: float = 0.05
     grad_clip_norm: float = 1.0
     update_epochs: int = 4
@@ -57,8 +57,8 @@ class StandupV2Config(CombatExperimentBase):
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 400,
         "potential_reward_scale": 5.0,
-        "height_reward_scale": 2.0,
-        "terminal_success_bonus": 10.0,
+        "height_reward_scale": 5.0,
+        "terminal_success_bonus": 50.0,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
