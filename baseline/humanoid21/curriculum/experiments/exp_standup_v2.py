@@ -56,10 +56,10 @@ class StandupV2Config(CombatExperimentBase):
     # --- Experiment-specific ---
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 400,
-        "potential_reward_scale": 5.0,
+        "potential_reward_scale": 10.0,
         "height_reward_scale": 0.0,
         "terminal_success_bonus": 50.0,
-        "time_penalty": -0.01,
+        "time_penalty": -0.005,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
