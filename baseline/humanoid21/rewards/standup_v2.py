@@ -69,58 +69,80 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
         has_hand = hand_l or hand_r
         has_foot = foot_l or foot_r
         has_knee = knee_l or knee_r
+        has_wall = contacts["has_wall_contact"]
+        wall_hand = contacts["wall_hand_contact"]
 
-        # Stage 5: Stable stand — both feet, upright, tall, AND low velocity
-        # Require mean_abs_joint_vel < 2.0 to enter — prevents "jumping up" exploit
+        # Stage 5: Free stable stand — both feet, upright, tall, low velocity, NO wall
+        # This is the only stage that counts as true success
         if (foot_l and foot_r and not has_hand and u_torso > 0.70
-                and h_pelvis > 0.60 and not other and mean_abs_joint_vel < 2.0):
+                and h_pelvis > 0.60 and not other and not has_wall
+                and mean_abs_joint_vel < 2.0):
             stage = 5
             h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
-            # v_score weighted 3x more — stability is the key differentiator
             potential = 0.90 + 0.10 * h_score * u_score * (v_score ** 3)
 
-        # Stage 4.5: Both feet + upright + tall but HIGH velocity (transition)
-        # Robot reached standing pose but is moving fast — not yet stable
+        # Stage 4.5: Wall-assisted standing — pose looks good but leaning on wall
+        # Lower potential than free standing — robot must let go of wall to reach Stage 5
         elif (foot_l and foot_r and not has_hand and u_torso > 0.70
-                and h_pelvis > 0.60 and not other and mean_abs_joint_vel >= 2.0):
-            stage = 4  # Still Stage 4 — must slow down to enter Stage 5
+                and h_pelvis > 0.60 and not other and has_wall
+                and mean_abs_joint_vel < 2.0):
+            stage = 4  # Still Stage 4 — wall contact blocks Stage 5
+            h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
+            u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
+            v_score = float(np.exp(-mean_abs_joint_vel))
+            # Cap at 0.78 — clear gap below free standing Stage 4 (0.65-0.85)
+            # and well below Stage 5 (0.90)
+            potential = 0.70 + 0.08 * h_score * u_score * v_score
+
+        # Stage 4.5b: High-velocity standing pose (transition, no wall)
+        elif (foot_l and foot_r and not has_hand and u_torso > 0.70
+                and h_pelvis > 0.60 and not other and not has_wall
+                and mean_abs_joint_vel >= 2.0):
+            stage = 4
             h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
             potential = 0.80 + 0.05 * h_score * u_score * v_score
 
-        # Stage 4: Double feet standing (squat or low stand)
-        # Relaxed: allow brief knee/shin contact during transition
-        elif foot_l and foot_r and not has_hand and not other:
+        # Stage 4: Double feet standing (squat or low stand, no wall)
+        elif foot_l and foot_r and not has_hand and not other and not has_wall:
             stage = 4
             h_score = float(np.clip((h_pelvis - 0.35) / 0.40, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.20) / 0.65, 0.0, 1.0))
             potential = 0.65 + 0.20 * h_score * u_score
 
-        # Stage 3.5: Double feet + brief knee contact (transition helper)
-        elif foot_l and foot_r and has_knee and not has_hand and not other:
+        # Stage 3.5: Double feet + wall support (wall-assisted squat)
+        # Allowed during transition but capped low
+        elif foot_l and foot_r and not has_hand and not other and has_wall:
+            stage = 3  # Wall-assisted = max Stage 3
+            h_score = float(np.clip((h_pelvis - 0.25) / 0.50, 0.0, 1.0))
+            u_score = float(np.clip((u_torso - 0.10) / 0.75, 0.0, 1.0))
+            potential = 0.45 + 0.10 * h_score * u_score
+
+        # Stage 3.5b: Double feet + brief knee contact (transition helper, no wall)
+        elif foot_l and foot_r and has_knee and not has_hand and not other and not has_wall:
             stage = 4  # Count as stage 4 but lower potential
             h_score = float(np.clip((h_pelvis - 0.25) / 0.50, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.10) / 0.75, 0.0, 1.0))
             potential = 0.55 + 0.10 * h_score * u_score
 
-        # Stage 3: Single foot stand, hands off
-        elif has_foot and not has_hand and not other:
+        # Stage 3: Single foot stand, hands off, no wall
+        elif has_foot and not has_hand and not other and not has_wall:
             stage = 3
             h_score = float(np.clip((h_pelvis - 0.35) / 0.40, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.20) / 0.65, 0.0, 1.0))
             potential = 0.40 + 0.15 * h_score * u_score
 
-        # Stage 2: Hands + feet support
+        # Stage 2: Hands + feet support (can use wall)
         elif has_hand and has_foot:
             stage = 2
             h_score = float(np.clip((h_pelvis - 0.20) / 0.40, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.0) / 0.80, 0.0, 1.0))
             potential = 0.25 + 0.15 * h_score * u_score
 
-        # Stage 1: Hands only (push-up)
+        # Stage 1: Hands only (push-up, can use wall)
         elif has_hand:
             stage = 1
             h_score = float(np.clip((h_pelvis - 0.15) / 0.30, 0.0, 1.0))
@@ -153,6 +175,8 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
             "shin_left": False,
             "shin_right": False,
             "has_other_contact": False,
+            "has_wall_contact": False,
+            "wall_hand_contact": False,
         }
 
         if cv is None or cv['ncon'] == 0:
@@ -198,25 +222,31 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
             else:
                 continue
 
-            if geom_env != ground_geom:
-                continue
             if float(force_mag[i]) < 1.0:
                 continue
 
-            if body_robot == foot_left_body:
-                contacts["foot_left"] = True
-            elif body_robot == foot_right_body:
-                contacts["foot_right"] = True
-            elif body_robot in (hand_left_body, lower_arm_left_body):
-                contacts["hand_left"] = True
-            elif body_robot in (hand_right_body, lower_arm_right_body):
-                contacts["hand_right"] = True
-            elif body_robot == shin_left_body:
-                contacts["shin_left"] = True
-            elif body_robot == shin_right_body:
-                contacts["shin_right"] = True
+            if geom_env == ground_geom:
+                # Ground contact
+                if body_robot == foot_left_body:
+                    contacts["foot_left"] = True
+                elif body_robot == foot_right_body:
+                    contacts["foot_right"] = True
+                elif body_robot in (hand_left_body, lower_arm_left_body):
+                    contacts["hand_left"] = True
+                elif body_robot in (hand_right_body, lower_arm_right_body):
+                    contacts["hand_right"] = True
+                elif body_robot == shin_left_body:
+                    contacts["shin_left"] = True
+                elif body_robot == shin_right_body:
+                    contacts["shin_right"] = True
+                else:
+                    contacts["has_other_contact"] = True
             else:
-                contacts["has_other_contact"] = True
+                # Non-ground contact (wall, post, etc.)
+                contacts["has_wall_contact"] = True
+                if body_robot in (hand_left_body, lower_arm_left_body,
+                                  hand_right_body, lower_arm_right_body):
+                    contacts["wall_hand_contact"] = True
 
         return contacts
 

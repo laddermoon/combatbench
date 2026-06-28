@@ -1,7 +1,8 @@
 """Termination plugin for standup training.
 
 Terminates episode early when:
-- **Success**: robot height and uprightness exceed thresholds for ``success_hold_steps``.
+- **Success**: robot height and uprightness exceed thresholds for ``success_hold_steps``
+  AND robot is NOT touching any wall (must maintain free balance).
 - **Give-up**: robot stays low for ``stagnation_steps`` consecutive steps
   (avoids wasting rollout budget on hopeless states).
 
@@ -59,6 +60,37 @@ class StandupTerminationPlugin(BasePlugin):
         self._success_streak = 0
         self._stagnation_streak = 0
 
+    def _check_wall_contact(self, ctx: SimContext) -> bool:
+        """Check if robot is touching any non-ground environment geometry (wall, post, etc.)."""
+        derived_contacts = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_contacts.get('contacts')
+        if cv is None or cv['ncon'] == 0:
+            return False
+
+        static_all = ctx.accessor.get_static_data()
+        geom_id_to_name = static_all.get('geom_id_to_name', {})
+
+        robot_aff = 1 if self.agent_id == 'robot_a' else 2
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+            else:
+                continue
+
+            if float(force_mag[i]) < 1.0:
+                continue
+            if geom_env != 'ground':
+                return True
+        return False
+
     def on_post_action_step(self, ctx: SimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
         derived_state = ctx.accessor.get_derived_state([self.agent_id])[self.agent_id]
@@ -67,8 +99,12 @@ class StandupTerminationPlugin(BasePlugin):
             np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
         )
 
-        # Success: standing tall and upright
-        if height >= self.success_height and uprightness >= self.success_uprightness:
+        wall_contact = self._check_wall_contact(ctx)
+
+        # Success: standing tall and upright AND not touching wall
+        if (height >= self.success_height
+                and uprightness >= self.success_uprightness
+                and not wall_contact):
             self._success_streak += 1
             self._stagnation_streak = 0
             if self._success_streak >= self.success_hold_steps:
