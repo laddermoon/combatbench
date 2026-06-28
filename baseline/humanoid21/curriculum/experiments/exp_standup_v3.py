@@ -238,17 +238,30 @@ class StandupV3Config(CombatExperimentBase):
         if foot_height_arr is None:
             foot_height_arr = np.zeros(T, dtype=np.float32)
 
+        # Gate posture rewards by height — only apply when robot is standing
+        # (height > 0.45m). During get-up from fallen state, posture values
+        # (tilt, vel, joint deviation) are naturally huge and would dominate
+        # the advantage signal, drowning out PBRS and survival rewards.
+        if heights is not None:
+            standing_mask = (heights > 0.45).astype(np.float32)
+        else:
+            standing_mask = np.ones(T, dtype=np.float32)
+
         excess_joint = np.maximum(0.0, joint_dev_arr - 0.1)
-        r_joint = np.where(excess_joint == 0.0, 0.01, 0.01 - 5.0 * excess_joint).astype(np.float32)
+        r_joint = np.where(excess_joint == 0.0, 0.01, 0.01 - 5.0 * excess_joint)
+        r_joint = (r_joint * standing_mask).astype(np.float32)
 
         excess_vel = np.maximum(0.0, joint_vel_arr - 0.1)
-        r_vel = np.where(excess_vel == 0.0, 0.01, 0.01 - 1.0 * excess_vel).astype(np.float32)
+        r_vel = np.where(excess_vel == 0.0, 0.01, 0.01 - 1.0 * excess_vel)
+        r_vel = (r_vel * standing_mask).astype(np.float32)
 
         excess_tilt = np.maximum(0.0, torso_tilt_arr - 0.26)
-        r_tilt = np.where(excess_tilt == 0.0, 0.01, 0.01 - 3.0 * excess_tilt).astype(np.float32)
+        r_tilt = np.where(excess_tilt == 0.0, 0.01, 0.01 - 3.0 * excess_tilt)
+        r_tilt = (r_tilt * standing_mask).astype(np.float32)
 
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
-        r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot).astype(np.float32)
+        r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
+        r_foot = (r_foot * standing_mask).astype(np.float32)
 
         return {
             "r_potential": r_potential,
