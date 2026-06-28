@@ -172,10 +172,12 @@ class ImbalanceTerminationPlugin(BasePlugin):
         agent_id: str,
         force_threshold: float = 1.0,
         tolerance: int = 1,
+        min_height: float = 0.0,
     ) -> None:
         self.agent_id = str(agent_id)
         self.force_threshold = float(force_threshold)
         self.tolerance = int(tolerance)
+        self.min_height = float(min_height)
         self._ground_geom_name: Optional[str] = None
 
     def to_blueprint(self) -> Dict[str, Any]:
@@ -183,6 +185,7 @@ class ImbalanceTerminationPlugin(BasePlugin):
             "agent_id": self.agent_id,
             "force_threshold": self.force_threshold,
             "tolerance": self.tolerance,
+            "min_height": self.min_height,
         }
 
     @classmethod
@@ -199,6 +202,21 @@ class ImbalanceTerminationPlugin(BasePlugin):
         self._imbalance_counter = {"robot_a": 0, "robot_b": 0}
 
     def on_post_action_step(self, ctx: SimContext) -> None:
+        # Height gate: skip imbalance check when robot is below min_height
+        # (e.g. during fallen state / get-up phase)
+        if self.min_height > 0.0:
+            core_state = ctx.accessor.get_core_state()
+            checked_robots = ["robot_a", "robot_b"] if self.agent_id == "both" else [self.agent_id]
+            all_below = True
+            for rid in checked_robots:
+                if rid in core_state:
+                    h = float(core_state[rid]["root_pos"][2])
+                    if h >= self.min_height:
+                        all_below = False
+                        break
+            if all_below:
+                return
+
         a_fell = self._is_non_foot_grounded(ctx, "robot_a")
         b_fell = self._is_non_foot_grounded(ctx, "robot_b")
 
