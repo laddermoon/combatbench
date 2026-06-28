@@ -22,9 +22,9 @@ class StandupTerminationPlugin(BasePlugin):
     def __init__(
         self,
         agent_id: str = "robot_a",
-        success_height: float = 0.75,
-        success_uprightness: float = 0.85,
-        success_hold_steps: int = 10,
+        success_height: float = 0.60,
+        success_uprightness: float = 0.70,
+        success_hold_steps: int = 5,
         stagnation_height: float = 0.25,
         stagnation_steps: int = 150,
     ) -> None:

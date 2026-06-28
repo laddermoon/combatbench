@@ -71,12 +71,12 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
         has_knee = knee_l or knee_r
 
         # Stage 5: Perfect stand — both feet, upright, tall
-        if foot_l and foot_r and not has_hand and u_torso > 0.85 and h_pelvis > 0.75 and not other:
+        if foot_l and foot_r and not has_hand and u_torso > 0.70 and h_pelvis > 0.60 and not other:
             stage = 5
-            h_score = float(np.clip((h_pelvis - 0.75) / 0.15, 0.0, 1.0))
-            u_score = float(np.clip((u_torso - 0.85) / 0.15, 0.0, 1.0))
+            h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
+            u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
-            potential = 0.85 + 0.15 * h_score * u_score * v_score
+            potential = 0.90 + 0.10 * h_score * u_score * v_score
 
         # Stage 4: Double feet standing (squat or low stand)
         # Relaxed: allow brief knee/shin contact during transition
