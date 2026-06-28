@@ -70,13 +70,26 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
         has_foot = foot_l or foot_r
         has_knee = knee_l or knee_r
 
-        # Stage 5: Perfect stand — both feet, upright, tall
-        if foot_l and foot_r and not has_hand and u_torso > 0.70 and h_pelvis > 0.60 and not other:
+        # Stage 5: Stable stand — both feet, upright, tall, AND low velocity
+        # Require mean_abs_joint_vel < 2.0 to enter — prevents "jumping up" exploit
+        if (foot_l and foot_r and not has_hand and u_torso > 0.70
+                and h_pelvis > 0.60 and not other and mean_abs_joint_vel < 2.0):
             stage = 5
             h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
-            potential = 0.90 + 0.10 * h_score * u_score * v_score
+            # v_score weighted 3x more — stability is the key differentiator
+            potential = 0.90 + 0.10 * h_score * u_score * (v_score ** 3)
+
+        # Stage 4.5: Both feet + upright + tall but HIGH velocity (transition)
+        # Robot reached standing pose but is moving fast — not yet stable
+        elif (foot_l and foot_r and not has_hand and u_torso > 0.70
+                and h_pelvis > 0.60 and not other and mean_abs_joint_vel >= 2.0):
+            stage = 4  # Still Stage 4 — must slow down to enter Stage 5
+            h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
+            u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
+            v_score = float(np.exp(-mean_abs_joint_vel))
+            potential = 0.80 + 0.05 * h_score * u_score * v_score
 
         # Stage 4: Double feet standing (squat or low stand)
         # Relaxed: allow brief knee/shin contact during transition

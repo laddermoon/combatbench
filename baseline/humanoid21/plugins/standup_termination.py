@@ -24,7 +24,7 @@ class StandupTerminationPlugin(BasePlugin):
         agent_id: str = "robot_a",
         success_height: float = 0.60,
         success_uprightness: float = 0.70,
-        success_hold_steps: int = 5,
+        success_hold_steps: int = 50,
         stagnation_height: float = 0.25,
         stagnation_steps: int = 150,
     ) -> None:

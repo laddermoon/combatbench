@@ -39,7 +39,7 @@ plugins:
       agent_id: ${agent_id}
       success_height: 0.60
       success_uprightness: 0.70
-      success_hold_steps: 5
+      success_hold_steps: 50
       stagnation_height: 0.25
       stagnation_steps: 150
 
