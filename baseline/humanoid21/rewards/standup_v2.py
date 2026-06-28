@@ -24,10 +24,12 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
         self.agent_id = agent_id
         self._stage: int = 0
         self._potential: float = 0.0
+        self._has_wall: bool = False
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._stage = 0
         self._potential = 0.0
+        self._has_wall = False
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         core_state = ctx.accessor.get_core_state()[self.agent_id]
@@ -84,17 +86,16 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
             potential = 0.90 + 0.10 * h_score * u_score * (v_score ** 3)
 
         # Stage 4.5: Wall-assisted standing — pose looks good but leaning on wall
-        # Lower potential than free standing — robot must let go of wall to reach Stage 5
+        # Capped LOW — robot must let go of wall to reach Stage 4/5
         elif (foot_l and foot_r and not has_hand and u_torso > 0.70
                 and h_pelvis > 0.60 and not other and has_wall
                 and mean_abs_joint_vel < 2.0):
-            stage = 4  # Still Stage 4 — wall contact blocks Stage 5
+            stage = 3  # Wall-assisted = max Stage 3
             h_score = float(np.clip((h_pelvis - 0.60) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.70) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
-            # Cap at 0.78 — clear gap below free standing Stage 4 (0.65-0.85)
-            # and well below Stage 5 (0.90)
-            potential = 0.70 + 0.08 * h_score * u_score * v_score
+            # Cap at 0.48 — below free Stage 3 (0.40-0.55) to incentivize letting go
+            potential = 0.40 + 0.08 * h_score * u_score * v_score
 
         # Stage 4.5b: High-velocity standing pose (transition, no wall)
         elif (foot_l and foot_r and not has_hand and u_torso > 0.70
@@ -114,12 +115,12 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
             potential = 0.65 + 0.20 * h_score * u_score
 
         # Stage 3.5: Double feet + wall support (wall-assisted squat)
-        # Allowed during transition but capped low
+        # Capped very low — wall is a crutch, not a goal
         elif foot_l and foot_r and not has_hand and not other and has_wall:
-            stage = 3  # Wall-assisted = max Stage 3
+            stage = 2  # Wall-assisted squat = max Stage 2
             h_score = float(np.clip((h_pelvis - 0.25) / 0.50, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.10) / 0.75, 0.0, 1.0))
-            potential = 0.45 + 0.10 * h_score * u_score
+            potential = 0.30 + 0.08 * h_score * u_score
 
         # Stage 3.5b: Double feet + brief knee contact (transition helper, no wall)
         elif foot_l and foot_r and has_knee and not has_hand and not other and not has_wall:
@@ -157,6 +158,7 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
 
         self._stage = stage
         self._potential = potential
+        self._has_wall = has_wall
 
     def _get_detailed_contacts(self, ctx: ReadOnlySimContext) -> Dict[str, bool]:
         derived_state = ctx.accessor.get_derived_state(['contacts'])
@@ -254,6 +256,7 @@ class StandupPotentialRewarderV2(BaseObserverPlugin):
         return {
             "stage": float(self._stage),
             "potential": self._potential,
+            "has_wall_contact": 1.0 if self._has_wall else 0.0,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:

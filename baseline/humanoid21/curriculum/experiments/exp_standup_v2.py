@@ -60,6 +60,7 @@ class StandupV2Config(CombatExperimentBase):
         "height_reward_scale": 0.0,
         "terminal_success_bonus": 100.0,
         "time_penalty": 0.0,
+        "wall_penalty": -0.05,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
@@ -170,6 +171,9 @@ class StandupV2Config(CombatExperimentBase):
         h_scale = float(self.custom_config.get("height_reward_scale", 0.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 50.0))
         time_penalty = float(self.custom_config.get("time_penalty", -0.01))
+        wall_penalty = float(self.custom_config.get("wall_penalty", 0.0))
+
+        wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -185,6 +189,10 @@ class StandupV2Config(CombatExperimentBase):
 
         # 3. Time penalty — urgency to reach goal quickly
         r[:] += time_penalty
+
+        # 3.5. Wall penalty — discourage leaning on walls
+        if wall_contacts is not None and wall_penalty != 0.0:
+            r[:] += wall_penalty * wall_contacts
 
         # 4. Terminal success bonus
         term_reasons = getattr(episode, "termination_proposals", [])
