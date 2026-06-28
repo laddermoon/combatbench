@@ -78,8 +78,8 @@ class StandupV3Config(CombatExperimentBase):
         "potential_reward_scale": 10.0,
         "wall_penalty": -0.05,
         "stage5_per_step_bonus": 0.1,
-        "per_step_survival_reward": 0.01,
-        "terminal_fall_penalty": 1.0,
+        "per_step_survival_reward": 0.02,
+        "terminal_fall_penalty": 3.0,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         "curriculum_phase": 0,
         "height_thresholds": [0.5, 0.3, 0.15],
@@ -148,7 +148,7 @@ class StandupV3Config(CombatExperimentBase):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (10.0, 3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (3.0, 6.0, 2.0, 0.2, 0.2, 0.2, 0.2)
 
     def next_weights(
         self,
@@ -176,7 +176,7 @@ class StandupV3Config(CombatExperimentBase):
                 flush=True,
             )
 
-        return (10.0, 3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (3.0, 6.0, 2.0, 0.2, 0.2, 0.2, 0.2)
 
     # ---- Reward extraction ------------------------------------------------
 
