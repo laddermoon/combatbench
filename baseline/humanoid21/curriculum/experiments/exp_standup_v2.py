@@ -61,6 +61,7 @@ class StandupV2Config(CombatExperimentBase):
         "terminal_success_bonus": 100.0,
         "time_penalty": 0.0,
         "wall_penalty": -0.05,
+        "stage5_per_step_bonus": 0.1,
         # Curriculum: height_threshold for RandomFallenStatePlugin
         # Phase 0: fall from half-squat (0.5m) — easy
         # Phase 1: fall from lower (0.3m) — medium
@@ -172,8 +173,10 @@ class StandupV2Config(CombatExperimentBase):
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 50.0))
         time_penalty = float(self.custom_config.get("time_penalty", -0.01))
         wall_penalty = float(self.custom_config.get("wall_penalty", 0.0))
+        stage5_bonus = float(self.custom_config.get("stage5_per_step_bonus", 0.0))
 
         wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
+        stages = _extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -195,6 +198,11 @@ class StandupV2Config(CombatExperimentBase):
         if wall_contacts is not None and wall_penalty != 0.0 and heights is not None:
             standing_mask = (heights > 0.45).astype(np.float32)
             r[:] += wall_penalty * wall_contacts * standing_mask
+
+        # 3.6. Per-step Stage 5 bonus — dense reward for maintaining free standing
+        # PBRS only rewards transitions; this rewards each step of sustained balance
+        if stages is not None and stage5_bonus > 0:
+            r[:] += stage5_bonus * (stages >= 5.0).astype(np.float32)
 
         # 4. Terminal success bonus
         term_reasons = getattr(episode, "termination_proposals", [])
