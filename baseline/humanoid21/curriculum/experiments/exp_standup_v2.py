@@ -190,9 +190,11 @@ class StandupV2Config(CombatExperimentBase):
         # 3. Time penalty — urgency to reach goal quickly
         r[:] += time_penalty
 
-        # 3.5. Wall penalty — discourage leaning on walls
-        if wall_contacts is not None and wall_penalty != 0.0:
-            r[:] += wall_penalty * wall_contacts
+        # 3.5. Wall penalty — only penalize wall contact when robot is at standing height
+        # This allows wall use during get-up transition but penalizes leaning at standing pose
+        if wall_contacts is not None and wall_penalty != 0.0 and heights is not None:
+            standing_mask = (heights > 0.45).astype(np.float32)
+            r[:] += wall_penalty * wall_contacts * standing_mask
 
         # 4. Terminal success bonus
         term_reasons = getattr(episode, "termination_proposals", [])
