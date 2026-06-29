@@ -300,10 +300,10 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         r_balance_survival = np.zeros(T, dtype=np.float32)
         r_balance_survival[balance_mask] = survival
 
-        # Fall penalty: balance→standup transition points
+        # Fall penalty: at the LAST balance step before balance→standup transition
         r_balance_fall = np.zeros(T, dtype=np.float32)
         if T > 1:
-            fall_transitions = np.where(balance_mask[:-1] & ~balance_mask[1:])[0] + 1
+            fall_transitions = np.where(balance_mask[:-1] & ~balance_mask[1:])[0]
             r_balance_fall[fall_transitions] = -float(self.custom_config["terminal_fall_penalty"])
 
         # Survival bonus: still in balance at episode end
