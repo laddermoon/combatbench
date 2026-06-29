@@ -66,13 +66,14 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     switch_uprightness: float = 0.97   # ~15°: standup -> balance
     fall_uprightness: float = 0.30     # ~72°: balance -> standup (fallen)
 
-    # PPO knobs — conservative for fine-tuning pretrained models
-    learning_rate: float = 3e-5
-    critic_learning_rate: float = 1e-4
+    # PPO knobs — very conservative for fine-tuning pretrained models
+    learning_rate: float = 3e-6
+    critic_learning_rate: float = 1e-5
     log_std_min: float = -1.8
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
-    entropy_coef: float = 1.5e-3
+    entropy_coef: float = 2e-3
+    grad_clip_norm: float = 0.5
 
     # Rollout schedule
     episodes_per_update: int = 512
@@ -87,10 +88,14 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         "terminal_fall_penalty": 1.0,
         "per_step_survival_reward": 0.01,
         "potential_reward_scale": 5.0,
+        "balance_reward_scale": 0.1,
         "standup_ckpt": _STANDUP_CKPT,
         "balance_model": _BALANCE_MODEL,
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
+
+    # Accumulated mode masks across episodes in a single buffer build
+    _balance_masks: List[np.ndarray] = []
 
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
@@ -188,7 +193,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
           - Per-step survival bonus
 
         r_balance: active during balance mode (uprightness >= switch_threshold)
-          - Cross-support balance reward
+          - Cross-support balance reward (scaled down)
           - Torso tilt penalty
           - Height reward (linear penalty/bonus around 0.55m)
         """
@@ -218,6 +223,9 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
             balance_mask[t] = (mode == "balance")
         standup_mask = ~balance_mask
 
+        # Accumulate mask for combine_advantages
+        self._balance_masks.append(balance_mask)
+
         # --- r_standup: PBRS + survival (standup phase only) ---
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 5.0))
@@ -229,13 +237,14 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
             r_standup[0] += pot_scale * (potentials[0] - 0.0)
         r_standup += survival  # per-step survival for all steps
         # Zero out during balance phase (only standup phase rewards)
-        r_standup[balance_mask] = survival  # keep minimal survival, remove PBRS
+        r_standup[balance_mask] = 0.0
 
         # Terminal penalty: if episode ends with robot fallen
         if T > 0 and upright[-1] < self.fall_uprightness:
             r_standup[-1] -= float(self.custom_config["terminal_fall_penalty"])
 
         # --- r_balance: cross-support + tilt + height (balance phase only) ---
+        bal_scale = float(self.custom_config.get("balance_reward_scale", 0.1))
         r_cross = _extract_per_step_scalar(oo, "cross_support", T)
 
         # Tilt from posture observer
@@ -255,7 +264,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         # Height reward: linear penalty below 0.55m, bonus above
         r_height = (heights - 0.55) * 0.1
 
-        r_balance = r_cross + r_tilt + r_height
+        r_balance = bal_scale * (r_cross + r_tilt + r_height)
         # Zero out during standup phase
         r_balance[standup_mask] = 0.0
 
@@ -271,30 +280,58 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         advs: Dict[str, np.ndarray],
         stage_weights: Tuple[float, ...],
     ) -> Optional[np.ndarray]:
-        """Combine advantages using mode mask: standup steps use r_standup,
-        balance steps use r_balance. This ensures each sub-network only
-        receives gradients from its own phase.
+        """Mode-aware advantage combination.
+
+        Standup steps get ONLY r_standup advantage (zeroed for balance steps).
+        Balance steps get ONLY r_balance advantage (zeroed for standup steps).
+        This prevents cross-phase gradient contamination.
         """
         adv_standup = advs["r_standup"]
         adv_balance = advs["r_balance"]
 
-        # Normalize each advantage independently
-        def _norm(a):
-            std = float(a.std())
-            if std < 1e-8:
+        # Concatenate accumulated balance masks
+        if self._balance_masks:
+            all_masks = np.concatenate(self._balance_masks)
+            # Clear for next buffer build
+            self._balance_masks = []
+            # Truncate or pad to match advantage array size
+            # (eval buffer may have added extra masks)
+            n = len(adv_standup)
+            if len(all_masks) > n:
+                all_masks = all_masks[-n:]
+            elif len(all_masks) < n:
+                # Pad with False (standup) at the beginning
+                all_masks = np.concatenate([
+                    np.zeros(n - len(all_masks), dtype=bool),
+                    all_masks,
+                ])
+            balance_mask = all_masks
+        else:
+            # Fallback: compute from advantages (r_balance=0 during standup)
+            balance_mask = np.abs(adv_balance) > 1e-10
+
+        standup_mask = ~balance_mask
+
+        # Normalize each advantage ONLY over its active steps
+        def _norm_masked(a, mask):
+            active = a[mask]
+            if len(active) == 0 or float(active.std()) < 1e-8:
                 return np.zeros_like(a, dtype=np.float32)
-            return ((a - float(a.mean())) / std).astype(np.float32)
+            mean = float(active.mean())
+            std = float(active.std())
+            result = np.zeros_like(a, dtype=np.float32)
+            result[mask] = ((a[mask] - mean) / std).astype(np.float32)
+            return result
 
-        normed_s = _norm(adv_standup)
-        normed_b = _norm(adv_balance)
+        normed_s = _norm_masked(adv_standup, standup_mask)
+        normed_b = _norm_masked(adv_balance, balance_mask)
 
-        # Use the advantage from whichever phase is active
-        # The mode is implicitly encoded: r_standup is 0 during balance,
-        # r_balance is 0 during standup, so their advantages naturally
-        # only contribute to their respective phases.
+        # Combine: standup steps get standup advantage, balance steps get balance advantage
         w_s, w_b = stage_weights
-        combined = w_s * normed_s + w_b * normed_b
-        return combined.astype(np.float32)
+        combined = np.zeros_like(adv_standup, dtype=np.float32)
+        combined[standup_mask] = w_s * normed_s[standup_mask]
+        combined[balance_mask] = w_b * normed_b[balance_mask]
+        return combined
 
     # --- Episode metrics ---
 
