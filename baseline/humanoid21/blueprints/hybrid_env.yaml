@@ -1,0 +1,68 @@
+# Hybrid standup + balance environment.
+# Robot starts in a random fallen state (RandomFallenStatePlugin).
+# No termination plugins — episode runs full max_steps so the robot can
+# repeatedly fall and stand up within a single episode.
+#
+# Observer plugins provide rewards for both phases:
+#   - standup: StandupPotentialRewarderV2 (PBRS for get-up phase)
+#   - cross_support: CrossSupportBalanceRewarder (stepping balance)
+#   - posture: PostureRewarder (torso tilt)
+#   - height: HeightObserver (height tracking)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps (30s @ 20Hz)."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  height_threshold:
+    default: 0.3
+    description: "RandomFallenStatePlugin height threshold."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: ${height_threshold}
+      reset_interval: 5
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_v2:StandupPotentialRewarderV2"
+    config:
+      agent_id: ${agent_id}
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+      initial_grace_steps: 20
+      initial_penalty_coef: 0.5
+      double_support_max_steps: 15
+      double_support_penalty_coef: 1.0
+      single_support_bonus: 0.05
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: ${agent_id}
+  height:
+    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
+    config:
+      agent_id: ${agent_id}
