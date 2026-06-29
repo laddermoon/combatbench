@@ -185,6 +185,44 @@ class HybridActor(nn.Module):
 
         return blueprint
 
+    def export_policy_artifacts(
+        self,
+        policy_dir: str | Path,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write model.pt + policy.py + policy_blueprint.yaml for deployment.
+
+        Compatible with the training loop's best-of-run snapshot logic.
+        """
+        policy_dir = Path(policy_dir)
+        policy_dir.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "hidden_dim": self.hidden_dim,
+            "switch_uprightness": self.switch_uprightness,
+            "standup_state_dict": {
+                k: v.detach().cpu() for k, v in self.standup_net.state_dict().items()
+            },
+            "balance_state_dict": {
+                k: v.detach().cpu() for k, v in self.balance_net.state_dict().items()
+            },
+        }
+        if extra_payload:
+            payload.update(extra_payload)
+        torch.save(payload, policy_dir / "model.pt")
+
+        policy_code = _build_hybrid_export_policy_code()
+        with (policy_dir / "policy.py").open("w", encoding="utf-8") as f:
+            f.write(policy_code)
+
+        blueprint = PolicyBlueprint(
+            cls=f"file:{policy_dir / 'policy.py'}:ExportedHybridPolicy",
+            config={"stochastic": False},
+        )
+        blueprint.save(policy_dir / "policy_blueprint.yaml")
+
 
 def _build_hybrid_export_policy_code() -> str:
     """Return the source code for the exported hybrid policy.py."""

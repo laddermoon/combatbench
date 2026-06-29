@@ -357,17 +357,31 @@ def train(
                     # Best-of-run snapshot
                     if experiment.compare_eval(esum, best_esum):
                         best_esum = esum
-                        export_actor_policy_artifacts(
-                            actor=actor,
-                            policy_dir=policy_dir,
-                            extra_payload={
-                                "algorithm": "ppo_curriculum",
-                                "experiment": params.name,
-                                "update": u,
-                                "weights": list(norm_weights),
-                                "best_eval_esum": best_esum,
-                            },
-                        )
+                        # Use actor.to_blueprint() if it handles custom export
+                        # (e.g. HybridActor), otherwise use standard export.
+                        if hasattr(actor, "export_policy_artifacts"):
+                            actor.export_policy_artifacts(
+                                policy_dir=policy_dir,
+                                extra_payload={
+                                    "algorithm": "ppo_curriculum",
+                                    "experiment": params.name,
+                                    "update": u,
+                                    "weights": list(norm_weights),
+                                    "best_eval_esum": best_esum,
+                                },
+                            )
+                        else:
+                            export_actor_policy_artifacts(
+                                actor=actor,
+                                policy_dir=policy_dir,
+                                extra_payload={
+                                    "algorithm": "ppo_curriculum",
+                                    "experiment": params.name,
+                                    "update": u,
+                                    "weights": list(norm_weights),
+                                    "best_eval_esum": best_esum,
+                                },
+                            )
                         eval_line += "  [new_best]"
 
                     print(eval_line, flush=True)

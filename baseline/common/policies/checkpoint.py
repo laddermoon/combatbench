@@ -127,9 +127,9 @@ def build_actor_export_payload(
     — deployment only needs the deterministic (mean-tanh) path.
     """
     export_payload: Dict[str, Any] = dict(extra_payload or {})
-    export_payload["obs_dim"] = int(getattr(actor, "obs_dim", actor.net[0].in_features))
-    export_payload["action_dim"] = int(getattr(actor, "action_dim", actor.net[-1].out_features))
-    export_payload["hidden_dim"] = int(getattr(actor, "hidden_dim", actor.net[0].out_features))
+    export_payload["obs_dim"] = int(getattr(actor, "obs_dim", None) or actor.net[0].in_features)
+    export_payload["action_dim"] = int(getattr(actor, "action_dim", None) or actor.net[-1].out_features)
+    export_payload["hidden_dim"] = int(getattr(actor, "hidden_dim", None) or actor.net[0].out_features)
     export_payload["actor_hidden_dim"] = int(export_payload["hidden_dim"])
     export_payload["state_dict"] = {
         key: value.detach().cpu()
