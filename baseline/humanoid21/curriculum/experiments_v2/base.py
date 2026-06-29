@@ -67,12 +67,13 @@ class CombatExperimentBase(Experiment):
 
     # --- SAC knobs ---
     sac_tau: float = 0.005
-    sac_init_alpha: float = 0.2
-    sac_auto_alpha: bool = True
+    sac_init_alpha: float = 0.1
+    sac_auto_alpha: bool = False
     sac_replay_buffer_size: int = 1_000_000
     sac_batch_size: int = 256
     sac_warmup_steps: int = 10_000
     sac_updates_per_step: int = 1
+    sac_reward_scale: float = 0.1
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -156,11 +157,12 @@ class CombatExperimentBase(Experiment):
             tau=self.sac_tau,
             init_alpha=self.sac_init_alpha,
             auto_alpha=self.sac_auto_alpha,
-            target_entropy=-float(self.action_dim),
+            target_entropy=-0.5 * float(self.action_dim),
             replay_buffer_size=self.sac_replay_buffer_size,
             batch_size=self.sac_batch_size,
             warmup_steps=self.sac_warmup_steps,
             updates_per_step=self.sac_updates_per_step,
+            reward_scale=self.sac_reward_scale,
         )
 
     def build_q_critic(self, reward_key: str, device: torch.device) -> nn.Module:

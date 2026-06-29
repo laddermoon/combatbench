@@ -192,14 +192,19 @@ def sac_update(
     gamma: float,
     tau: float,
     grad_clip_norm: float,
+    reward_scale: float = 1.0,
 ) -> Dict[str, float]:
     """Single SAC gradient step on a minibatch.
+
+    Args:
+        reward_scale: Factor to multiply rewards by before computing Q-targets.
+            Use < 1.0 to stabilize training when reward magnitudes are large.
 
     Returns a dict of scalar diagnostics.
     """
     obs = batch["obs"]
     actions = batch["actions"]
-    rewards = batch["rewards"]
+    rewards = batch["rewards"] * reward_scale
     next_obs = batch["next_obs"]
     dones = batch["dones"]
 
@@ -255,6 +260,9 @@ def sac_update(
         alpha_optimizer.zero_grad()
         alpha_loss.backward()
         alpha_optimizer.step()
+        # Clamp log_alpha to prevent collapse / explosion
+        with torch.no_grad():
+            log_alpha.clamp_(-5.0, 2.0)
         alpha_loss_val = float(alpha_loss.item())
 
     # ------------------------------------------------------------------

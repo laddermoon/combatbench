@@ -407,8 +407,14 @@ def train_sac(
             n_updates = 0
 
             if replay_buffer.size >= sp.warmup_steps:
-                # Do updates_per_step * transitions_added gradient steps
-                n_gradient_steps = max(1, sp.updates_per_step * transitions_added)
+                # Standard SAC: do a fixed number of gradient steps per
+                # training iteration, not one per transition.  We cap at
+                # episodes_per_update * updates_per_step to keep runtime
+                # reasonable while still doing enough updates.
+                n_gradient_steps = min(
+                    max(1, sp.updates_per_step * cp.episodes_per_update),
+                    10000,
+                )
                 for _ in range(n_gradient_steps):
                     batch = replay_buffer.sample(sp.batch_size, device)
                     step_stats = sac_update(
@@ -425,6 +431,7 @@ def train_sac(
                         gamma=gamma,
                         tau=sp.tau,
                         grad_clip_norm=cp.grad_clip_norm,
+                        reward_scale=sp.reward_scale,
                     )
                     for k, v in step_stats.items():
                         sac_stats_accum.setdefault(k, []).append(v)

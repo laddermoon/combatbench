@@ -100,6 +100,7 @@ class SACParams:
     batch_size: int              # minibatch size for SAC updates
     warmup_steps: int            # collect this many transitions before updating
     updates_per_step: int        # gradient steps per collected transition batch
+    reward_scale: float = 1.0   # scale rewards to stabilize Q-function
 
 
 # ---------------------------------------------------------------------------
