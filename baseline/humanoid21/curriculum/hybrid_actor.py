@@ -121,12 +121,21 @@ class HybridActor(nn.Module):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
+        *, frame_modes: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Evaluate log_prob and entropy for given obs/actions pairs.
 
-        Routes each sample to the appropriate sub-network based on uprightness.
+        Routes each sample to the appropriate sub-network.  If
+        ``frame_modes`` is provided, use it directly (0.0=balance,
+        1.0=standup) instead of computing uprightness from the
+        observation.  This ensures routing consistency with the
+        rollout policy's hysteresis mode.
         """
-        balance_mask = self._route_mask(obs)  # (N,)
+        if frame_modes is not None:
+            # mode=1.0 → standup, mode=0.0 → balance
+            balance_mask = frame_modes < 0.5
+        else:
+            balance_mask = self._route_mask(obs)  # (N,)
         standup_mask = ~balance_mask
 
         log_probs = torch.zeros(obs.shape[0], dtype=torch.float32, device=obs.device)

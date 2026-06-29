@@ -94,8 +94,6 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
-    # Accumulated mode masks across episodes in a single buffer build
-    _balance_masks: List[np.ndarray] = []
 
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
@@ -183,48 +181,77 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     ) -> Tuple[float, ...]:
         return current_weights
 
+    # --- Sub-episode segmentation ---
+
+    def prepare_training_segments(self, episode):
+        """Split episode at mode transitions recorded in action_extras.
+
+        Returns 4-tuples ``(start, end, weight, mode)`` where mode is a
+        float from the rollout policy's extra (1.0=standup, 0.0=balance).
+        Falls back to a single 3-tuple if mode info is unavailable.
+        """
+        T = episode.num_frames
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        mode_arr = episode.action_extras.get(ep_target, {}).get("mode")
+        if mode_arr is None:
+            return [(0, T, 1.0)]
+
+        mode_arr = np.asarray(mode_arr, dtype=np.float32).ravel()
+        segments = []
+        seg_start = 0
+        for t in range(1, T):
+            if mode_arr[t] != mode_arr[seg_start]:
+                segments.append((seg_start, t, 1.0, float(mode_arr[seg_start])))
+                seg_start = t
+        segments.append((seg_start, T, 1.0, float(mode_arr[seg_start])))
+        return segments
+
     # --- Reward extraction ---
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """Extract per-step rewards for both phases.
 
-        r_standup: active during standup mode (uprightness < switch_threshold)
+        r_standup: active during standup mode
           - PBRS potential difference
           - Per-step survival bonus
 
-        r_balance: active during balance mode (uprightness >= switch_threshold)
-          - Cross-support balance reward (scaled down)
+        r_balance: active during balance mode
+          - Per-step survival bonus (maintain standing)
+          - Fall penalty at balance→standup transition
+          - Survival bonus if still in balance at episode end
+          - Cross-support balance reward (scaled)
           - Torso tilt penalty
-          - Height reward (linear penalty/bonus around 0.55m)
+          - Height reward
         """
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        # Get per-step observations to compute uprightness and mode mask
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
-        obs = episode.observations.get(ep_target)
-        if obs is None:
-            obs = np.zeros((T, self.obs_dim), dtype=np.float32)
 
-        obs_arr = np.asarray(obs, dtype=np.float32)
-        if obs_arr.ndim == 1:
-            obs_arr = obs_arr.reshape(1, -1)
-        upright = obs_arr[:, _OBS_R00] * obs_arr[:, _OBS_R11] - obs_arr[:, _OBS_R10] * obs_arr[:, _OBS_R01]
+        # Mode mask from action_extras (ground truth from rollout policy)
+        mode_arr = episode.action_extras.get(ep_target, {}).get("mode")
+        if mode_arr is not None:
+            mode_arr = np.asarray(mode_arr, dtype=np.float32).ravel()
+            balance_mask = mode_arr < 0.5  # 0.0=balance, 1.0=standup
+        else:
+            # Fallback: compute from uprightness with hysteresis
+            obs = episode.observations.get(ep_target)
+            if obs is None:
+                obs = np.zeros((T, self.obs_dim), dtype=np.float32)
+            obs_arr = np.asarray(obs, dtype=np.float32)
+            if obs_arr.ndim == 1:
+                obs_arr = obs_arr.reshape(1, -1)
+            upright = obs_arr[:, _OBS_R00] * obs_arr[:, _OBS_R11] - obs_arr[:, _OBS_R10] * obs_arr[:, _OBS_R01]
+            mode = "standup"
+            balance_mask = np.zeros(T, dtype=bool)
+            for t in range(T):
+                if mode == "standup" and upright[t] >= self.switch_uprightness:
+                    mode = "balance"
+                elif mode == "balance" and upright[t] < self.fall_uprightness:
+                    mode = "standup"
+                balance_mask[t] = (mode == "balance")
 
-        # Mode mask: True = balance, False = standup
-        # Use the same hysteresis logic as the rollout policy
-        mode = "standup"
-        balance_mask = np.zeros(T, dtype=bool)
-        for t in range(T):
-            if mode == "standup" and upright[t] >= self.switch_uprightness:
-                mode = "balance"
-            elif mode == "balance" and upright[t] < self.fall_uprightness:
-                mode = "standup"
-            balance_mask[t] = (mode == "balance")
         standup_mask = ~balance_mask
-
-        # Accumulate mask for combine_advantages
-        self._balance_masks.append(balance_mask)
 
         # --- r_standup: PBRS + survival (standup phase only) ---
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
@@ -236,14 +263,19 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
             r_standup[1:] += pot_scale * (potentials[1:] - potentials[:-1])
             r_standup[0] += pot_scale * (potentials[0] - 0.0)
         r_standup += survival  # per-step survival for all steps
-        # Zero out during balance phase (only standup phase rewards)
+        # Zero out during balance phase
         r_standup[balance_mask] = 0.0
 
         # Terminal penalty: if episode ends with robot fallen
-        if T > 0 and upright[-1] < self.fall_uprightness:
-            r_standup[-1] -= float(self.custom_config["terminal_fall_penalty"])
+        obs = episode.observations.get(ep_target)
+        if obs is not None and T > 0:
+            obs_arr = np.asarray(obs, dtype=np.float32)
+            if obs_arr.ndim == 2:
+                final_upright = obs_arr[-1, _OBS_R00] * obs_arr[-1, _OBS_R11] - obs_arr[-1, _OBS_R10] * obs_arr[-1, _OBS_R01]
+                if final_upright < self.fall_uprightness:
+                    r_standup[-1] -= float(self.custom_config["terminal_fall_penalty"])
 
-        # --- r_balance: cross-support + tilt + height (balance phase only) ---
+        # --- r_balance: survival + fall penalty + cross-support + tilt + height ---
         bal_scale = float(self.custom_config.get("balance_reward_scale", 0.1))
         r_cross = _extract_per_step_scalar(oo, "cross_support", T)
 
@@ -264,7 +296,25 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         # Height reward: linear penalty below 0.55m, bonus above
         r_height = (heights - 0.55) * 0.1
 
-        r_balance = bal_scale * (r_cross + r_tilt + r_height)
+        # Per-step survival bonus during balance (maintain standing)
+        r_balance_survival = np.zeros(T, dtype=np.float32)
+        r_balance_survival[balance_mask] = survival
+
+        # Fall penalty: balance→standup transition points
+        r_balance_fall = np.zeros(T, dtype=np.float32)
+        if T > 1:
+            fall_transitions = np.where(balance_mask[:-1] & ~balance_mask[1:])[0] + 1
+            r_balance_fall[fall_transitions] = -float(self.custom_config["terminal_fall_penalty"])
+
+        # Survival bonus: still in balance at episode end
+        if T > 0 and balance_mask[-1]:
+            r_balance_fall[-1] = float(self.custom_config["terminal_fall_penalty"])
+
+        r_balance = (
+            bal_scale * (r_cross + r_tilt + r_height)
+            + r_balance_survival
+            + r_balance_fall
+        )
         # Zero out during standup phase
         r_balance[standup_mask] = 0.0
 
@@ -284,32 +334,15 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
 
         Standup steps get ONLY r_standup advantage (zeroed for balance steps).
         Balance steps get ONLY r_balance advantage (zeroed for standup steps).
-        This prevents cross-phase gradient contamination.
+        Mode is inferred from which advantage is non-zero (rewards are
+        zeroed in the inactive phase during extract_rewards).
         """
         adv_standup = advs["r_standup"]
         adv_balance = advs["r_balance"]
 
-        # Concatenate accumulated balance masks
-        if self._balance_masks:
-            all_masks = np.concatenate(self._balance_masks)
-            # Clear for next buffer build
-            self._balance_masks = []
-            # Truncate or pad to match advantage array size
-            # (eval buffer may have added extra masks)
-            n = len(adv_standup)
-            if len(all_masks) > n:
-                all_masks = all_masks[-n:]
-            elif len(all_masks) < n:
-                # Pad with False (standup) at the beginning
-                all_masks = np.concatenate([
-                    np.zeros(n - len(all_masks), dtype=bool),
-                    all_masks,
-                ])
-            balance_mask = all_masks
-        else:
-            # Fallback: compute from advantages (r_balance=0 during standup)
-            balance_mask = np.abs(adv_balance) > 1e-10
-
+        # Infer mode mask from advantage magnitudes (rewards are zeroed
+        # in inactive phases, so advantages should be ~0 there)
+        balance_mask = np.abs(adv_balance) > 1e-10
         standup_mask = ~balance_mask
 
         # Normalize each advantage ONLY over its active steps
