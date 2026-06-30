@@ -28,7 +28,7 @@ from .experiment import CommonParams, Experiment, SACParams
 from .ppo_trainer import set_seed
 from .sac_trainer import (
     QCriticMLP,
-    QRunningStats,
+    RewardRunningStats,
     ReplayBuffer,
     sac_update,
     soft_copy,
@@ -291,8 +291,8 @@ def train_sac(
     # Replay buffer (multi-critic: stores per-component rewards)
     replay_buffer = ReplayBuffer(sp.replay_buffer_size, cp.obs_dim, cp.action_dim, cp.reward_keys)
 
-    # Running Q statistics for stable per-component normalization
-    q_running_stats = QRunningStats(cp.reward_keys, ema_decay=0.99)
+    # Running reward statistics for source-level normalization (Route B)
+    reward_running_stats = RewardRunningStats(cp.reward_keys, ema_decay=0.99)
 
     # Per-component gammas
     gammas = cp.gammas
@@ -430,6 +430,19 @@ def train_sac(
             n_updates = 0
 
             if replay_buffer.size >= sp.warmup_steps:
+                # Initialize reward stats from full buffer on first update
+                if reward_running_stats is not None and not reward_running_stats.initialized:
+                    reward_running_stats.initialize_from_buffer(replay_buffer)
+                    print(
+                        f"  [reward_norm] initialized from buffer "
+                        f"({replay_buffer.size} transitions): "
+                        + ", ".join(
+                            f"{k}={reward_running_stats.scale(k):.4f}"
+                            for k in cp.reward_keys
+                        ),
+                        flush=True,
+                    )
+
                 # Standard SAC: do a fixed number of gradient steps per
                 # training iteration, not one per transition.  We cap at
                 # episodes_per_update * updates_per_step to keep runtime
@@ -458,7 +471,7 @@ def train_sac(
                         grad_clip_norm=cp.grad_clip_norm,
                         reward_scale=sp.reward_scale,
                         experiment=experiment,
-                        q_running_stats=q_running_stats,
+                        reward_running_stats=reward_running_stats,
                     )
                     for k, v in step_stats.items():
                         sac_stats_accum.setdefault(k, []).append(v)
