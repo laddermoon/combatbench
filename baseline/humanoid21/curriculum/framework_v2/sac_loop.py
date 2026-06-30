@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from baseline.common.policies import export_actor_policy_artifacts
 from baseline.common.rollout import Episode, ParallelRollouter
@@ -27,6 +28,7 @@ from .experiment import CommonParams, Experiment, SACParams
 from .ppo_trainer import set_seed
 from .sac_trainer import (
     QCriticMLP,
+    QRunningStats,
     ReplayBuffer,
     sac_update,
     soft_copy,
@@ -41,13 +43,13 @@ def save_checkpoint(
     ckpt_path: Path,
     *,
     actor: torch.nn.Module,
-    q1: torch.nn.Module,
-    q2: torch.nn.Module,
-    q1_target: torch.nn.Module,
-    q2_target: torch.nn.Module,
+    q1s: Dict[str, torch.nn.Module],
+    q2s: Dict[str, torch.nn.Module],
+    q1_targets: Dict[str, torch.nn.Module],
+    q2_targets: Dict[str, torch.nn.Module],
     actor_optimizer: torch.optim.Optimizer,
-    q1_optimizer: torch.optim.Optimizer,
-    q2_optimizer: torch.optim.Optimizer,
+    q1_optimizers: Dict[str, torch.optim.Optimizer],
+    q2_optimizers: Dict[str, torch.optim.Optimizer],
     log_alpha: torch.Tensor,
     alpha_optimizer: Optional[torch.optim.Optimizer],
     experiment: Experiment,
@@ -60,13 +62,13 @@ def save_checkpoint(
     payload = {
         "algorithm": "sac",
         "actor_state_dict": actor.state_dict(),
-        "q1_state_dict": q1.state_dict(),
-        "q2_state_dict": q2.state_dict(),
-        "q1_target_state_dict": q1_target.state_dict(),
-        "q2_target_state_dict": q2_target.state_dict(),
+        "q1_state_dicts": {k: v.state_dict() for k, v in q1s.items()},
+        "q2_state_dicts": {k: v.state_dict() for k, v in q2s.items()},
+        "q1_target_state_dicts": {k: v.state_dict() for k, v in q1_targets.items()},
+        "q2_target_state_dicts": {k: v.state_dict() for k, v in q2_targets.items()},
         "actor_optimizer_state_dict": actor_optimizer.state_dict(),
-        "q1_optimizer_state_dict": q1_optimizer.state_dict(),
-        "q2_optimizer_state_dict": q2_optimizer.state_dict(),
+        "q1_optimizer_state_dicts": {k: v.state_dict() for k, v in q1_optimizers.items()},
+        "q2_optimizer_state_dicts": {k: v.state_dict() for k, v in q2_optimizers.items()},
         "log_alpha": log_alpha.detach().cpu(),
         "experiment_name": cp.name,
         "reward_keys": cp.reward_keys,
@@ -85,13 +87,13 @@ def load_checkpoint(
     ckpt_path: Path,
     *,
     actor: torch.nn.Module,
-    q1: torch.nn.Module,
-    q2: torch.nn.Module,
-    q1_target: torch.nn.Module,
-    q2_target: torch.nn.Module,
+    q1s: Dict[str, torch.nn.Module],
+    q2s: Dict[str, torch.nn.Module],
+    q1_targets: Dict[str, torch.nn.Module],
+    q2_targets: Dict[str, torch.nn.Module],
     actor_optimizer: torch.optim.Optimizer,
-    q1_optimizer: torch.optim.Optimizer,
-    q2_optimizer: torch.optim.Optimizer,
+    q1_optimizers: Dict[str, torch.optim.Optimizer],
+    q2_optimizers: Dict[str, torch.optim.Optimizer],
     log_alpha: torch.Tensor,
     alpha_optimizer: Optional[torch.optim.Optimizer],
     experiment: Experiment,
@@ -102,23 +104,37 @@ def load_checkpoint(
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
     actor.load_state_dict(payload["actor_state_dict"])
-    q1.load_state_dict(payload["q1_state_dict"])
-    q2.load_state_dict(payload["q2_state_dict"])
-    q1_target.load_state_dict(payload["q1_target_state_dict"])
-    q2_target.load_state_dict(payload["q2_target_state_dict"])
+
+    # Multi-critic: load per-key state dicts
+    q1_state_dicts = payload.get("q1_state_dicts", {})
+    q2_state_dicts = payload.get("q2_state_dicts", {})
+    q1_target_state_dicts = payload.get("q1_target_state_dicts", {})
+    q2_target_state_dicts = payload.get("q2_target_state_dicts", {})
+    for key in q1s:
+        if key in q1_state_dicts:
+            q1s[key].load_state_dict(q1_state_dicts[key])
+            q2s[key].load_state_dict(q2_state_dicts[key])
+            q1_targets[key].load_state_dict(q1_target_state_dicts[key])
+            q2_targets[key].load_state_dict(q2_target_state_dicts[key])
 
     try:
         actor_optimizer.load_state_dict(payload["actor_optimizer_state_dict"])
     except RuntimeError as e:
         print(f"[checkpoint] Actor optimizer mismatch: {e}", flush=True)
-    try:
-        q1_optimizer.load_state_dict(payload["q1_optimizer_state_dict"])
-    except RuntimeError as e:
-        print(f"[checkpoint] Q1 optimizer mismatch: {e}", flush=True)
-    try:
-        q2_optimizer.load_state_dict(payload["q2_optimizer_state_dict"])
-    except RuntimeError as e:
-        print(f"[checkpoint] Q2 optimizer mismatch: {e}", flush=True)
+
+    q1_opt_state_dicts = payload.get("q1_optimizer_state_dicts", {})
+    q2_opt_state_dicts = payload.get("q2_optimizer_state_dicts", {})
+    for key in q1_optimizers:
+        if key in q1_opt_state_dicts:
+            try:
+                q1_optimizers[key].load_state_dict(q1_opt_state_dicts[key])
+            except RuntimeError as e:
+                print(f"[checkpoint] Q1 optimizer mismatch for {key}: {e}", flush=True)
+        if key in q2_opt_state_dicts:
+            try:
+                q2_optimizers[key].load_state_dict(q2_opt_state_dicts[key])
+            except RuntimeError as e:
+                print(f"[checkpoint] Q2 optimizer mismatch for {key}: {e}", flush=True)
 
     saved_log_alpha = payload.get("log_alpha")
     if saved_log_alpha is not None:
@@ -239,26 +255,30 @@ def train_sac(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ------------------------------------------------------------------
-    # Build models
+    # Build models — multi-critic: one Q pair per reward component
     # ------------------------------------------------------------------
     actor = experiment.build_actor(device)
 
-    # SAC uses a single combined Q for all reward components
-    # (rewards are combined via stage weights in the replay buffer)
-    q1 = experiment.build_q_critic("combined", device)
-    q2 = experiment.build_q_critic("combined", device)
-    q1_target = copy.deepcopy(q1)
-    q2_target = copy.deepcopy(q2)
+    q1s: Dict[str, nn.Module] = {}
+    q2s: Dict[str, nn.Module] = {}
+    q1_targets: Dict[str, nn.Module] = {}
+    q2_targets: Dict[str, nn.Module] = {}
+    q1_optimizers: Dict[str, torch.optim.Optimizer] = {}
+    q2_optimizers: Dict[str, torch.optim.Optimizer] = {}
 
-    # Freeze target networks
-    for p in q1_target.parameters():
-        p.requires_grad = False
-    for p in q2_target.parameters():
-        p.requires_grad = False
+    for key in cp.reward_keys:
+        q1s[key] = experiment.build_q_critic(key, device)
+        q2s[key] = experiment.build_q_critic(key, device)
+        q1_targets[key] = copy.deepcopy(q1s[key])
+        q2_targets[key] = copy.deepcopy(q2s[key])
+        for p in q1_targets[key].parameters():
+            p.requires_grad = False
+        for p in q2_targets[key].parameters():
+            p.requires_grad = False
+        q1_optimizers[key] = torch.optim.Adam(q1s[key].parameters(), lr=cp.critic_learning_rate)
+        q2_optimizers[key] = torch.optim.Adam(q2s[key].parameters(), lr=cp.critic_learning_rate)
 
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cp.learning_rate)
-    q1_optimizer = torch.optim.Adam(q1.parameters(), lr=cp.critic_learning_rate)
-    q2_optimizer = torch.optim.Adam(q2.parameters(), lr=cp.critic_learning_rate)
 
     # Entropy temperature
     log_alpha = torch.tensor(
@@ -268,11 +288,14 @@ def train_sac(
     if sp.auto_alpha:
         alpha_optimizer = torch.optim.Adam([log_alpha], lr=cp.learning_rate)
 
-    # Replay buffer
-    replay_buffer = ReplayBuffer(sp.replay_buffer_size, cp.obs_dim, cp.action_dim)
+    # Replay buffer (multi-critic: stores per-component rewards)
+    replay_buffer = ReplayBuffer(sp.replay_buffer_size, cp.obs_dim, cp.action_dim, cp.reward_keys)
 
-    # Combined gamma (use mean of per-component gammas for the single Q)
-    gamma = float(np.mean(list(cp.gammas.values())))
+    # Running Q statistics for stable per-component normalization
+    q_running_stats = QRunningStats(cp.reward_keys, ema_decay=0.99)
+
+    # Per-component gammas
+    gammas = cp.gammas
 
     # Curriculum weights
     weights = experiment.initial_weights()
@@ -286,11 +309,11 @@ def train_sac(
         start_update, total_transitions = load_checkpoint(
             Path(resume_from),
             actor=actor,
-            q1=q1, q2=q2,
-            q1_target=q1_target, q2_target=q2_target,
+            q1s=q1s, q2s=q2s,
+            q1_targets=q1_targets, q2_targets=q2_targets,
             actor_optimizer=actor_optimizer,
-            q1_optimizer=q1_optimizer,
-            q2_optimizer=q2_optimizer,
+            q1_optimizers=q1_optimizers,
+            q2_optimizers=q2_optimizers,
             log_alpha=log_alpha,
             alpha_optimizer=alpha_optimizer,
             experiment=experiment,
@@ -328,8 +351,8 @@ def train_sac(
         f"batch_size={sp.batch_size} "
         f"warmup_steps={sp.warmup_steps} "
         f"updates_per_step={sp.updates_per_step} "
-        f"tau={sp.tau} gamma={gamma:.4f} "
-        f"reward_keys={cp.reward_keys}",
+        f"tau={sp.tau} reward_scale={sp.reward_scale} "
+        f"reward_keys={cp.reward_keys} n_critics={len(cp.reward_keys)}",
         flush=True,
     )
 
@@ -419,19 +442,23 @@ def train_sac(
                     batch = replay_buffer.sample(sp.batch_size, device)
                     step_stats = sac_update(
                         actor=actor,
-                        q1=q1, q2=q2,
-                        q1_target=q1_target, q2_target=q2_target,
+                        q1s=q1s, q2s=q2s,
+                        q1_targets=q1_targets, q2_targets=q2_targets,
                         log_alpha=log_alpha,
                         target_entropy=sp.target_entropy,
                         actor_optimizer=actor_optimizer,
-                        q1_optimizer=q1_optimizer,
-                        q2_optimizer=q2_optimizer,
+                        q1_optimizers=q1_optimizers,
+                        q2_optimizers=q2_optimizers,
                         alpha_optimizer=alpha_optimizer,
                         batch=batch,
-                        gamma=gamma,
+                        gammas=gammas,
+                        reward_keys=cp.reward_keys,
+                        stage_weights=norm_weights,
                         tau=sp.tau,
                         grad_clip_norm=cp.grad_clip_norm,
                         reward_scale=sp.reward_scale,
+                        experiment=experiment,
+                        q_running_stats=q_running_stats,
                     )
                     for k, v in step_stats.items():
                         sac_stats_accum.setdefault(k, []).append(v)
@@ -569,6 +596,12 @@ def train_sac(
                 f"q_target={q_target_mean:.3f} log_prob={log_prob_mean:.2f}",
                 flush=True,
             )
+            # Per-critic Q losses
+            for key in cp.reward_keys:
+                q1lk = stats.get(f"q1_loss_{key}", 0.0)
+                q2lk = stats.get(f"q2_loss_{key}", 0.0)
+                q1mk = stats.get(f"q1_mean_{key}", 0.0)
+                print(f"    - {key:<12} q1_loss={q1lk:.4f} q2_loss={q2lk:.4f} q1_mean={q1mk:.3f}", flush=True)
             print(
                 f"  [Buffer ] size={replay_buffer.size} added={transitions_added} "
                 f"updates={n_updates}",
@@ -620,11 +653,11 @@ def train_sac(
                 save_checkpoint(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",
                     actor=actor,
-                    q1=q1, q2=q2,
-                    q1_target=q1_target, q2_target=q2_target,
+                    q1s=q1s, q2s=q2s,
+                    q1_targets=q1_targets, q2_targets=q2_targets,
                     actor_optimizer=actor_optimizer,
-                    q1_optimizer=q1_optimizer,
-                    q2_optimizer=q2_optimizer,
+                    q1_optimizers=q1_optimizers,
+                    q2_optimizers=q2_optimizers,
                     log_alpha=log_alpha,
                     alpha_optimizer=alpha_optimizer,
                     experiment=experiment,
