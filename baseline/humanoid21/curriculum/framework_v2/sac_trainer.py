@@ -198,23 +198,43 @@ class ReplayBuffer:
 # ---------------------------------------------------------------------------
 
 class QRunningStats:
-    """Exponential moving average of per-component Q-value statistics.
+    """Per-component running statistics of the Bellman Q-TARGETS.
 
-    Used to normalize Q-values in the actor loss without creating a
-    feedback loop (batch-wise normalization would be non-stationary
-    and cause Q divergence).
+    This is the stable normalizer for PPO-aligned multi-objective SAC.  We
+    track an EMA of the mean and second moment of each component's Q-target
+    distribution (Q-targets are far more stable than the online Q since they
+    do not back-propagate and are smoothed by the target networks).
+
+    The actor loss divides each component's Q by ``std(key)`` so that every
+    reward component contributes an action-gradient of comparable scale --
+    the direct analog of PPO's per-component advantage normalization
+    ``(A - mean) / std``.  Unlike the earlier (buggy) version, the std is
+    floored at a *small* epsilon (not 1.0): flooring at 1.0 silently
+    disabled the scaling for small-variance components and let the entropy
+    term dominate the actor loss, collapsing the policy.
+
+    A short warmup is enforced so we do not amplify noise before the stats
+    have seen enough batches.
     """
 
-    def __init__(self, reward_keys: Tuple[str, ...], ema_decay: float = 0.99):
+    def __init__(
+        self,
+        reward_keys: Tuple[str, ...],
+        ema_decay: float = 0.99,
+        eps: float = 1e-2,
+        warmup_updates: int = 200,
+    ):
         self.reward_keys = reward_keys
         self.ema_decay = ema_decay
+        self.eps = eps
+        self.warmup_updates = warmup_updates
         self.mean: Dict[str, float] = {k: 0.0 for k in reward_keys}
         self.sq_mean: Dict[str, float] = {k: 0.0 for k in reward_keys}  # EMA of Q^2
         self.initialized = False
         self.n_updates = 0
 
     def update(self, q_values: Dict[str, torch.Tensor]) -> None:
-        """Update running stats from a batch of Q-values (detached)."""
+        """Update running stats from a batch of Q-targets (detached)."""
         decay = self.ema_decay
         for key in self.reward_keys:
             q = q_values[key].detach()
@@ -229,10 +249,15 @@ class QRunningStats:
         self.initialized = True
         self.n_updates += 1
 
+    @property
+    def ready(self) -> bool:
+        """True once stats are warm enough to normalize with."""
+        return self.initialized and self.n_updates >= self.warmup_updates
+
     def std(self, key: str) -> float:
-        """Running std = sqrt(E[Q^2] - E[Q]^2)."""
+        """Running std = sqrt(E[Q^2] - E[Q]^2), floored at eps."""
         var = self.sq_mean[key] - self.mean[key] ** 2
-        return max(var, 1e-6) ** 0.5
+        return max(var, 0.0) ** 0.5 + self.eps
 
 
 # ---------------------------------------------------------------------------
@@ -266,18 +291,29 @@ def sac_update(
     Each reward component has its own pair of twin Q-networks.  Q-targets
     are computed per component with per-component gamma.
 
-    **PPO-aligned actor loss**: Q-values from each component are normalized
-    using running EMA statistics (mean subtracted, divided by std) before
-    weighted combination, matching PPO's advantage normalization.  Running
-    stats prevent the feedback loop that batch-wise normalization would
-    cause.  Sample weights from ``prepare_training_segments`` are applied
-    to both Q-losses and actor loss, matching PPO's sample-weight handling.
+    **PPO-aligned actor loss**: each component's Q is normalized by the
+    running std of its Q-TARGETS, then combined with ``stage_weights``.  This
+    is the direct analog of PPO's per-component advantage normalization
+    ``(A - mean) / std``: it puts every component's action-gradient on a
+    comparable scale so ``stage_weights`` control relative importance and a
+    strong component (e.g. r_fall) no longer drowns out a weak one
+    (e.g. r_cross).
+
+    Because SAC's actor loss balances Q against the entropy term
+    ``alpha * logpi``, normalizing Q shrinks its scale relative to a *fixed*
+    alpha and would let entropy dominate.  This is why **auto-alpha must be
+    enabled**: the temperature self-adjusts to hold the policy entropy at
+    ``target_entropy`` regardless of the normalized Q scale, decoupling the
+    exploration/exploitation balance from the Q magnitude.
+
+    Sample weights from ``prepare_training_segments`` are applied to both
+    Q-losses and actor loss, matching PPO's sample-weight handling.
 
     Args:
         reward_scale: Factor to multiply rewards by before computing Q-targets.
         stage_weights: Normalized weights for combining Q-values in actor loss.
         experiment: Optional experiment for normalize_advantages hook.
-        q_running_stats: Running EMA stats for stable Q normalization.
+        q_running_stats: Running Q-target stats for stable normalization.
 
     Returns a dict of scalar diagnostics.
     """
@@ -316,6 +352,10 @@ def sac_update(
             q_next = torch.min(q1_next, q2_next) - alpha * next_log_probs
             q_targets[key] = rewards_k + (1.0 - dones) * gamma_k * q_next
 
+    # Update running Q-target statistics (stable normalizer for actor loss)
+    if q_running_stats is not None:
+        q_running_stats.update(q_targets)
+
     # ------------------------------------------------------------------
     # 2. Update Q-critics (per component, with sample weights)
     # ------------------------------------------------------------------
@@ -347,23 +387,36 @@ def sac_update(
         q_means[f"q2_mean_{key}"] = float(q2_pred.mean().item())
 
     # ------------------------------------------------------------------
-    # 3. Update actor (weighted Q from all components)
+    # 3. Update actor (PPO-aligned: per-component Q normalization, then combine)
     # ------------------------------------------------------------------
     new_actions, new_log_probs = actor.sample_action(obs)
+
+    # Per-component normalization, analogous to PPO's (A - mean) / std.
+    # We divide each component's Q by the running std of its Q-targets so
+    # that every component contributes an action-gradient of comparable
+    # scale; stage_weights then control the relative importance.  The mean
+    # subtraction is a no-op for the gradient (constant) but keeps
+    # combined_q centered for interpretability.  Before warmup we fall back
+    # to raw Q (std=1, mean=0) to avoid amplifying untrained-critic noise.
+    use_norm = q_running_stats is not None and q_running_stats.ready
     combined_q = torch.zeros_like(new_log_probs)
-    q_new_vals: Dict[str, torch.Tensor] = {}
+    norm_q_std: Dict[str, float] = {}
     for w, key in zip(norm_w, reward_keys):
+        if w == 0.0:
+            continue
         q1_new = q1s[key](obs, new_actions)
         q2_new = q2s[key](obs, new_actions)
         q_min = torch.min(q1_new, q2_new)
-        q_new_vals[key] = q_min
-        if w == 0.0:
-            continue
-        combined_q = combined_q + w * q_min
 
-    # Update running Q stats for diagnostics
-    if q_running_stats is not None:
-        q_running_stats.update(q_new_vals)
+        if use_norm:
+            r_mean = q_running_stats.mean[key]
+            r_std = q_running_stats.std(key)
+            q_norm = (q_min - r_mean) / r_std
+        else:
+            q_norm = q_min
+
+        norm_q_std[f"norm_q_std_{key}"] = float(q_norm.std().item())
+        combined_q = combined_q + w * q_norm
 
     actor_loss = ((alpha * new_log_probs - combined_q) * batch_weights).mean()
 
@@ -406,6 +459,11 @@ def sac_update(
     result.update(q_losses)
     result.update(q_grads)
     result.update(q_means)
+    result.update(norm_q_std)
+    result["q_norm_enabled"] = 1.0 if use_norm else 0.0
+    if q_running_stats is not None:
+        for key in reward_keys:
+            result[f"qtgt_std_{key}"] = float(q_running_stats.std(key))
     # Summary stats (averaged across components)
     result["q1_loss"] = float(np.mean([q_losses[f"q1_loss_{k}"] for k in reward_keys]))
     result["q2_loss"] = float(np.mean([q_losses[f"q2_loss_{k}"] for k in reward_keys]))
