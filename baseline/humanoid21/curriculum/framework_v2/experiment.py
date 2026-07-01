@@ -34,8 +34,14 @@ class TrainablePolicy(Protocol):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
+        *, frame_modes: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (log_prob, entropy) for given obs/actions."""
+        """Return (log_prob, entropy) for given obs/actions.
+
+        If ``frame_modes`` is provided, the actor should use it to route
+        samples to the appropriate sub-network instead of computing mode
+        from the observation.  Values are experiment-defined floats.
+        """
         ...
 
     def sample_action(
@@ -208,8 +214,13 @@ class Experiment(ABC):
 
     def prepare_training_segments(
         self, episode: "Episode",
-    ) -> List[Tuple[int, int, float]]:
-        """Return ``(start, end, weight)`` triples for PPO training.
+    ) -> List[Tuple[int, int, float]] | List[Tuple[int, int, float, float]]:
+        """Return ``(start, end, weight)`` or ``(start, end, weight, mode)`` tuples.
+
+        3-tuple: segment with no explicit mode (actor computes from obs).
+        4-tuple: 4th element is a float mode value (experiment-defined).
+        The framework passes it through to ``evaluate_actions`` as
+        ``frame_modes`` without interpreting its meaning.
 
         Default: full episode as one segment with weight 1.0.
         Return an empty list to skip the episode entirely.
