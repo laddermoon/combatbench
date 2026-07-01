@@ -1,7 +1,8 @@
-"""Generic PPO buffer, update, and rollout helpers.
+"""Generic PPO buffer, update, and rollout helpers (v2).
 
-Moves from V2's ``train_curriculum_v2.py``, parameterized by
-``Experiment`` so that reward keys / extraction are not hardcoded.
+Adapted from framework/ppo_trainer.py for the unified v2 experiment
+interface.  Uses CommonParams instead of FrameworkParams; algorithm-agnostic
+methods only.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import torch
 from baseline.common.algos import compute_gae
 from baseline.common.rollout import Episode
 
-from .experiment import Experiment, FrameworkParams, TrainablePolicy
+from .experiment import CommonParams, Experiment, TrainablePolicy
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -104,10 +105,11 @@ class PPOBuffer:
         actor: TrainablePolicy,
         device: torch.device,
         experiment: Experiment,
-        params: FrameworkParams,
+        common_params: CommonParams,
     ):
+        reward_keys = common_params.reward_keys
         self.reward_data: Dict[str, List[np.ndarray]] = {
-            k: [] for k in params.reward_keys
+            k: [] for k in reward_keys
         }
         self.episode_metrics: List[Dict[str, float]] = []
         self.episode_lengths: List[int] = []  # original episode lengths (for logging)
@@ -123,7 +125,7 @@ class PPOBuffer:
 
         # Phase 1: Collect valid episodes and pre-compute per-episode data
         # (segments, rewards) without any GPU calls.
-        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, list, Dict[str, np.ndarray], Episode]] = []
+        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, list, Dict[str, np.ndarray], Episode, np.ndarray, bool]] = []
         for ep in episodes:
             ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
             obs = ep.observations.get(ep_target)
@@ -155,34 +157,36 @@ class PPOBuffer:
             rewards_full = experiment.extract_rewards(ep)
 
             # Build per-frame mode array from 4-tuple segments.
-            # Default 1.0 (standup); 4-tuple overrides for its range.
+            # Default 1.0 (no mode); 4-tuple overrides for its range.
+            ep_has_mode = any(len(seg) == 4 for seg in seg_weights)
             ep_modes = np.ones(T_full, dtype=np.float32)
             for seg in seg_weights:
                 if len(seg) == 4:
                     s_start, s_end, _w, s_mode = seg
                     ep_modes[s_start:s_end] = float(s_mode)
-            valid_eps.append((obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes))
+            valid_eps.append((obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes, ep_has_mode))
 
         # Phase 2: Batched evaluate_actions — one GPU call for all episodes
         # instead of 2048 per-episode calls.
         if valid_eps:
             all_obs = np.concatenate([e[0] for e in valid_eps], axis=0).astype(np.float32)
             all_acts = np.concatenate([e[1] for e in valid_eps], axis=0).astype(np.float32)
-            all_modes = np.concatenate([e[7] for e in valid_eps], axis=0).astype(np.float32)
             all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
             all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
-            all_modes_t = torch.as_tensor(all_modes, dtype=torch.float32, device=device)
+            any_has_mode = any(e[8] for e in valid_eps)
+            kwargs = {}
+            if any_has_mode:
+                all_modes = np.concatenate([e[7] for e in valid_eps], axis=0).astype(np.float32)
+                kwargs['frame_modes'] = torch.as_tensor(all_modes, dtype=torch.float32, device=device)
             with torch.no_grad():
-                all_lp, _ = actor.evaluate_actions(
-                    all_obs_t, all_acts_t, frame_modes=all_modes_t,
-                )
+                all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t, **kwargs)
             all_lp_np = all_lp.cpu().numpy().astype(np.float32)
         else:
             all_lp_np = np.zeros(0, dtype=np.float32)
 
         # Phase 3: Slice into segments using pre-computed log probs.
         offset = 0
-        for obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes in valid_eps:
+        for obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes, ep_has_mode in valid_eps:
             lp_full_np = all_lp_np[offset:offset + T_full]
             offset += T_full
 
@@ -208,7 +212,7 @@ class PPOBuffer:
                     fin_seg = np.asarray(fin, dtype=np.float32)
                     term_seg = bool(ep.is_terminated)
 
-                for key in params.reward_keys:
+                for key in reward_keys:
                     r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
                     self.reward_data[key].append(
                         np.asarray(r_full[start:end], dtype=np.float32)
@@ -242,12 +246,10 @@ class PPOBuffer:
         self.actions = np.concatenate(act_list, axis=0)
         self.log_probs = np.concatenate(lp_list, axis=0)
         self.sample_weights = np.concatenate(weight_list, axis=0)
-        self.frame_modes = np.concatenate(modes_list, axis=0) if modes_list else None
+        self.frame_modes = np.concatenate(modes_list, axis=0) if modes_list and any(e[8] for e in valid_eps) else None
         self.final_obs = fin_list
         self.is_terminated = terms
         self.ep_lengths = ep_lens
-        self.experiment = experiment
-        self.params = params
 
     def __len__(self) -> int:
         return sum(self.ep_lengths)
@@ -294,12 +296,6 @@ class PPOBuffer:
 
         return result
 
-
-'''
-1. Rollback 是保命逻辑，一定要有
-2. 基于数据等分，每个Batch占总数据量的1/8
-3. 如果有需要调学习率
-'''
 
 # ---------------------------------------------------------------------------
 # PPO update
@@ -702,6 +698,3 @@ def ppo_update(
         **per_adv_stats,
         **explained_variances,
     }
-
-
-

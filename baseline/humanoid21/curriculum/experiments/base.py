@@ -1,10 +1,9 @@
-"""CombatExperimentBase — class-attribute style base for combat curriculum experiments.
+"""CombatExperimentBase v2 — unified PPO/SAC base for combat curriculum experiments.
 
 Provides default values for all framework parameters, shared helpers
 (self-play job construction, video blueprint), and serialization.
-Experiment-specific parameters (custom_config, weight_target_total, etc.)
-are defined here as plain class attributes — the framework does not read them
-directly.
+Supports both PPO and SAC via default implementations of all
+algorithm-specific methods.
 """
 from __future__ import annotations
 
@@ -23,8 +22,10 @@ from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 from baseline.humanoid21.curriculum.framework.experiment import (
+    CommonParams,
     Experiment,
-    FrameworkParams,
+    PPOParams,
+    SACParams,
     TrainablePolicy,
 )
 from baseline.common.policies import CriticMLP
@@ -34,6 +35,7 @@ class CombatExperimentBase(Experiment):
     """Class-attribute style base for humanoid21 combat curriculum experiments.
 
     Subclass and override class attributes + abstract methods.
+    Provides default implementations for both PPO and SAC specific methods.
     """
 
     # --- Identity ---
@@ -49,19 +51,29 @@ class CombatExperimentBase(Experiment):
     log_std_min: float = -4.0
     log_std_max: float = 0.0
 
-    # --- GAE ---
-    gae_lambda: float = 0.95
-
-    # --- PPO knobs ---
+    # --- Shared training ---
     learning_rate: float = 1e-4
     critic_learning_rate: float = 3e-4
+    grad_clip_norm: float = 1.0
+
+    # --- PPO knobs ---
+    gae_lambda: float = 0.95
     clip_eps: float = 0.2
     value_loss_coef: float = 0.5
     entropy_coef: float = 1e-3
-    grad_clip_norm: float = 1.0
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 8192
+
+    # --- SAC knobs ---
+    sac_tau: float = 0.005
+    sac_init_alpha: float = 0.1
+    sac_auto_alpha: bool = False
+    sac_replay_buffer_size: int = 1_000_000
+    sac_batch_size: int = 256
+    sac_warmup_steps: int = 10_000
+    sac_updates_per_step: int = 1
+    sac_reward_scale: float = 0.1
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -88,24 +100,20 @@ class CombatExperimentBase(Experiment):
 
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
-    # --- Framework parameter access ---
+    # ------------------------------------------------------------------
+    # Algorithm-agnostic parameter access
+    # ------------------------------------------------------------------
 
-    def framework_params(self) -> FrameworkParams:
-        return FrameworkParams(
+    def common_params(self) -> CommonParams:
+        return CommonParams(
             name=self.name,
             reward_keys=self.reward_keys,
             gammas=self.gammas,
-            log_std_min=self.log_std_min,
-            log_std_max=self.log_std_max,
-            gae_lambda=self.gae_lambda,
+            obs_dim=self.obs_dim,
+            action_dim=self.action_dim,
             learning_rate=self.learning_rate,
             critic_learning_rate=self.critic_learning_rate,
-            clip_eps=self.clip_eps,
-            entropy_coef=self.entropy_coef,
             grad_clip_norm=self.grad_clip_norm,
-            target_kl=self.target_kl,
-            update_epochs=self.update_epochs,
-            minibatch_size=self.minibatch_size,
             episodes_per_update=self.episodes_per_update,
             max_updates=self.max_updates,
             eval_interval=self.eval_interval,
@@ -116,7 +124,63 @@ class CombatExperimentBase(Experiment):
             seed=self.seed,
         )
 
-    # --- Model construction ---
+    # ------------------------------------------------------------------
+    # PPO-specific defaults
+    # ------------------------------------------------------------------
+
+    def ppo_params(self) -> PPOParams:
+        return PPOParams(
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+            gae_lambda=self.gae_lambda,
+            clip_eps=self.clip_eps,
+            entropy_coef=self.entropy_coef,
+            target_kl=self.target_kl,
+            update_epochs=self.update_epochs,
+            minibatch_size=self.minibatch_size,
+        )
+
+    def build_v_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """V(s) critic for PPO. Delegates to build_critic for backward compat."""
+        return self.build_critic(reward_key, device)
+
+    def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """V(s) critic (legacy name, still supported)."""
+        return CriticMLP(
+            obs_dim=self.obs_dim, hidden_dim=self.critic_hidden_dim,
+        ).to(device)
+
+    # ------------------------------------------------------------------
+    # SAC-specific defaults
+    # ------------------------------------------------------------------
+
+    def sac_params(self) -> SACParams:
+        return SACParams(
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+            tau=self.sac_tau,
+            init_alpha=self.sac_init_alpha,
+            auto_alpha=self.sac_auto_alpha,
+            target_entropy=-0.5 * float(self.action_dim),
+            replay_buffer_size=self.sac_replay_buffer_size,
+            batch_size=self.sac_batch_size,
+            warmup_steps=self.sac_warmup_steps,
+            updates_per_step=self.sac_updates_per_step,
+            reward_scale=self.sac_reward_scale,
+        )
+
+    def build_q_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """Q(s,a) critic for SAC."""
+        from baseline.humanoid21.curriculum.framework.sac_trainer import QCriticMLP
+        return QCriticMLP(
+            obs_dim=self.obs_dim,
+            action_dim=self.action_dim,
+            hidden_dim=self.critic_hidden_dim,
+        ).to(device)
+
+    # ------------------------------------------------------------------
+    # Model construction (shared)
+    # ------------------------------------------------------------------
 
     def build_actor(self, device: torch.device) -> TrainablePolicy:
         blueprint_dir = Path(__file__).resolve().parent.parent.parent / "blueprints"
@@ -124,11 +188,6 @@ class CombatExperimentBase(Experiment):
         actor = bp.build().to(device)
         actor.log_std_min = float(self.log_std_min)
         return actor
-
-    def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
-        return CriticMLP(
-            obs_dim=self.obs_dim, hidden_dim=self.critic_hidden_dim,
-        ).to(device)
 
     # --- Shared helpers ---
 
@@ -189,17 +248,27 @@ class CombatExperimentBase(Experiment):
             "critic_hidden_dim": self.critic_hidden_dim,
             "log_std_min": self.log_std_min,
             "log_std_max": self.log_std_max,
-            "gae_lambda": self.gae_lambda,
             "custom_config": dict(self.custom_config),
             "learning_rate": self.learning_rate,
             "critic_learning_rate": self.critic_learning_rate,
+            "grad_clip_norm": self.grad_clip_norm,
+            # PPO
+            "gae_lambda": self.gae_lambda,
             "clip_eps": self.clip_eps,
             "value_loss_coef": self.value_loss_coef,
             "entropy_coef": self.entropy_coef,
-            "grad_clip_norm": self.grad_clip_norm,
             "target_kl": self.target_kl,
             "update_epochs": self.update_epochs,
             "minibatch_size": self.minibatch_size,
+            # SAC
+            "sac_tau": self.sac_tau,
+            "sac_init_alpha": self.sac_init_alpha,
+            "sac_auto_alpha": self.sac_auto_alpha,
+            "sac_replay_buffer_size": self.sac_replay_buffer_size,
+            "sac_batch_size": self.sac_batch_size,
+            "sac_warmup_steps": self.sac_warmup_steps,
+            "sac_updates_per_step": self.sac_updates_per_step,
+            # Shared
             "episodes_per_update": self.episodes_per_update,
             "max_updates": self.max_updates,
             "eval_interval": self.eval_interval,
@@ -211,9 +280,10 @@ class CombatExperimentBase(Experiment):
             "seed": self.seed,
         }
 
-    def save_run_config(self, run_dir: Path, *, smoke: bool = False) -> None:
+    def save_run_config(self, run_dir: Path, *, smoke: bool = False, algo: str = "ppo") -> None:
         payload = {
             "experiment": self.to_dict(),
+            "algorithm": algo,
             "smoke": smoke,
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }

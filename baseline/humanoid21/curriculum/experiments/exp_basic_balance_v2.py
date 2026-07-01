@@ -27,6 +27,13 @@ class BasicBalanceV2Config(CombatExperimentBase):
     # Stage blueprints
     BLUEPRINT = "basic_balance_v2_env.yaml"  # Basic: fall detection only
 
+    # SAC: auto-alpha is REQUIRED for the PPO-aligned per-component Q
+    # normalization.  Normalizing Q changes its scale relative to the
+    # entropy term (alpha * logpi); a fixed alpha would let entropy dominate
+    # and collapse the policy.  Auto-alpha holds the policy entropy at
+    # target_entropy regardless of the (normalized) Q scale.
+    sac_auto_alpha = True
+
     # Stateful scheduler
     _survival_rate: float = 0.0
 

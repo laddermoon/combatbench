@@ -1,8 +1,9 @@
-"""Experiment — pure ABC for curriculum learning experiments.
+"""Experiment — unified ABC for curriculum learning experiments (v2).
 
-Defines the interface contract between the training framework and experiment
-implementations.  No default values, no concrete helpers — those live in
-``experiments/base.py`` (CombatExperimentBase).
+Supports both PPO and SAC from a single experiment definition.
+Algorithm-agnostic methods are abstract; algorithm-specific methods have
+defaults that raise NotImplementedError (override in CombatExperimentBase
+or your own base class).
 """
 from __future__ import annotations
 
@@ -18,9 +19,18 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
+# ---------------------------------------------------------------------------
+# Actor protocol — shared by PPO and SAC
+# ---------------------------------------------------------------------------
+
 @runtime_checkable
 class TrainablePolicy(Protocol):
-    """Interface that the framework's PPO trainer requires from an actor."""
+    """Interface that both PPO and SAC trainers require from an actor.
+
+    For PPO:  evaluate_actions is used for importance-ratio computation.
+    For SAC:  sample_action (reparameterized) is used for actor gradient;
+              evaluate_actions is used for log-prob recomputation.
+    """
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
@@ -34,28 +44,32 @@ class TrainablePolicy(Protocol):
         """
         ...
 
+    def sample_action(
+        self, obs: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Reparameterized sample: return (action, log_prob)."""
+        ...
+
     def to_blueprint(self, dest_path: str) -> PolicyBlueprint:
         """Export a rollout-ready policy blueprint."""
         ...
 
 
+# ---------------------------------------------------------------------------
+# Parameter dataclasses
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
-class FrameworkParams:
-    """All parameters the framework needs from the experiment."""
+class CommonParams:
+    """Parameters shared by all algorithms."""
     name: str
     reward_keys: Tuple[str, ...]
     gammas: Dict[str, float]
-    log_std_min: float
-    log_std_max: float
-    gae_lambda: float
+    obs_dim: int
+    action_dim: int
     learning_rate: float
     critic_learning_rate: float
-    clip_eps: float
-    entropy_coef: float
     grad_clip_norm: float
-    target_kl: float
-    update_epochs: int
-    minibatch_size: int
     episodes_per_update: int
     max_updates: int
     eval_interval: int
@@ -66,35 +80,61 @@ class FrameworkParams:
     seed: int
 
 
-class Experiment(ABC):
-    """Abstract per-experiment configuration.
+@dataclass(frozen=True)
+class PPOParams:
+    """PPO-specific hyperparameters."""
+    log_std_min: float
+    log_std_max: float
+    gae_lambda: float
+    clip_eps: float
+    entropy_coef: float
+    target_kl: float
+    update_epochs: int
+    minibatch_size: int
 
-    The framework calls ``framework_params()`` once to obtain all parameters,
-    then calls the abstract methods during training.  Optional hooks allow
-    experiments to customise PPO internals; returning ``None`` from a hook
-    means "use the framework default".
+
+@dataclass(frozen=True)
+class SACParams:
+    """SAC-specific hyperparameters."""
+    log_std_min: float
+    log_std_max: float
+    tau: float                   # soft target update coefficient
+    init_alpha: float            # initial entropy temperature
+    auto_alpha: bool             # auto-tune alpha via dual gradient descent
+    target_entropy: float        # target entropy for auto-tuning (-action_dim)
+    replay_buffer_size: int      # max transitions in replay buffer
+    batch_size: int              # minibatch size for SAC updates
+    warmup_steps: int            # collect this many transitions before updating
+    updates_per_step: int        # gradient steps per collected transition batch
+    reward_scale: float = 1.0   # scale rewards to stabilize Q-function
+
+
+# ---------------------------------------------------------------------------
+# Experiment ABC
+# ---------------------------------------------------------------------------
+
+class Experiment(ABC):
+    """Unified per-experiment configuration for PPO and SAC.
+
+    Algorithm-agnostic methods are abstract.  PPO- and SAC-specific methods
+    have default implementations that raise ``NotImplementedError``; the
+    concrete base class ``CombatExperimentBase`` provides sensible defaults
+    for all of them.
     """
 
-    # --- Framework parameter access ---
+    # ------------------------------------------------------------------
+    # Algorithm-agnostic — MUST implement
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    def framework_params(self) -> FrameworkParams:
-        """Return all parameters the framework needs."""
+    def common_params(self) -> CommonParams:
+        """Return algorithm-agnostic parameters."""
         ...
-
-    # --- Model construction ---
 
     @abstractmethod
     def build_actor(self, device: torch.device) -> TrainablePolicy:
         """Build and return the actor policy on the given device."""
         ...
-
-    @abstractmethod
-    def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
-        """Build and return a value function for the given reward key."""
-        ...
-
-    # --- Abstract methods ---
 
     @abstractmethod
     def initial_weights(self) -> Tuple[float, ...]:
@@ -153,7 +193,24 @@ class Experiment(ABC):
         """Return the env blueprint to use for video rendering."""
         ...
 
-    # --- Optional hooks (return None to use framework default) ---
+    # ------------------------------------------------------------------
+    # PPO-specific — defaults raise NotImplementedError
+    # Override in CombatExperimentBase or your own base class.
+    # ------------------------------------------------------------------
+
+    def ppo_params(self) -> PPOParams:
+        """Return PPO-specific hyperparameters."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement ppo_params(). "
+            "Inherit from CombatExperimentBase or implement manually."
+        )
+
+    def build_v_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """Build a V(s) value function for PPO."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement build_v_critic(). "
+            "Inherit from CombatExperimentBase or implement manually."
+        )
 
     def prepare_training_segments(
         self, episode: "Episode",
@@ -187,7 +244,28 @@ class Experiment(ABC):
         """Sample weight normalization.  Return None for framework default."""
         return None
 
-    # --- Optional state persistence ---
+    # ------------------------------------------------------------------
+    # SAC-specific — defaults raise NotImplementedError
+    # Override in CombatExperimentBase or your own base class.
+    # ------------------------------------------------------------------
+
+    def sac_params(self) -> SACParams:
+        """Return SAC-specific hyperparameters."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement sac_params(). "
+            "Inherit from CombatExperimentBase or implement manually."
+        )
+
+    def build_q_critic(self, reward_key: str, device: torch.device) -> nn.Module:
+        """Build a Q(s,a) critic for SAC."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement build_q_critic(). "
+            "Inherit from CombatExperimentBase or implement manually."
+        )
+
+    # ------------------------------------------------------------------
+    # Optional state persistence — shared by all algorithms
+    # ------------------------------------------------------------------
 
     def scheduler_state(self) -> dict:
         """Serialize mutable scheduler state for checkpointing."""

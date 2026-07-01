@@ -1,14 +1,18 @@
-"""Curriculum learning framework — generic over reward schemes."""
+"""Curriculum learning framework v2 — unified PPO/SAC support."""
 from __future__ import annotations
 
-from .experiment import Experiment, FrameworkParams, TrainablePolicy
-from .training_loop import train
-from .ppo_trainer import set_seed
+from .experiment import (
+    CommonParams,
+    Experiment,
+    PPOParams,
+    SACParams,
+    TrainablePolicy,
+)
 
 __all__ = [
+    "CommonParams",
     "Experiment",
-    "FrameworkParams",
+    "PPOParams",
+    "SACParams",
     "TrainablePolicy",
-    "train",
-    "set_seed",
 ]

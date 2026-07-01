@@ -4,9 +4,18 @@ Trains a HybridActor with two sub-networks:
   - standup_net: initialized from standup_v2_r14 checkpoint, learns to stand up fast
   - balance_net: initialized from follow_v2 fallback checkpoint, learns stepping balance
 
-Reward structure (two reward keys, each only active during its phase):
-  - r_standup: PBRS potential + per-step survival (standup phase only)
-  - r_balance: cross-support + tilt + height (balance phase only)
+Reward structure (7 reward keys, each only active during its phase):
+  - r_standup: PBRS potential + per-step survival (standup phase)
+  - r_success: success bonus at standup→balance transition (standup phase)
+  - r_fall: per-step survival + fall/survival terminal (balance phase)
+  - r_cross: cross-support balance reward (balance phase)
+  - r_joint: joint deviation penalty (balance phase)
+  - r_vel: joint velocity penalty (balance phase)
+  - r_tilt: torso tilt penalty (balance phase)
+  - r_foot: foot height penalty (balance phase)
+
+Balance reward keys match balance_recover_v2 exactly; fall signal comes from
+mode transition (balance→standup) instead of ImbalanceTermination.
 
 Routing is based on uprightness (cos of torso tilt), computed from obs:
   uprightness = obs[42]*obs[46] - obs[43]*obs[45]
@@ -54,10 +63,16 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     """Hybrid standup + balance experiment with dual-network training."""
 
     name = "hybrid_standup_balance"
-    reward_keys = ("r_standup", "r_balance")
+    reward_keys = ("r_standup", "r_success", "r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
     gammas = {
         "r_standup": 0.99,
-        "r_balance": 0.99,
+        "r_success": 0.99,
+        "r_fall": 0.99,
+        "r_cross": 0.99,
+        "r_joint": 0.99,
+        "r_vel": 0.99,
+        "r_tilt": 0.99,
+        "r_foot": 0.99,
     }
 
     BLUEPRINT = "hybrid_env.yaml"
@@ -84,11 +99,10 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "rollout_distance_min": 1.5,
         "rollout_distance_max": 3.5,
-        "max_steps": 600,
+        "max_steps": 200,
         "terminal_fall_penalty": 1.0,
         "per_step_survival_reward": 0.01,
         "potential_reward_scale": 5.0,
-        "balance_reward_scale": 0.1,
         "standup_ckpt": _STANDUP_CKPT,
         "balance_model": _BALANCE_MODEL,
     }
@@ -172,7 +186,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     # --- Weights ---
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (1.0, 1.0)
+        return (1.0, 6.0, 6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     def next_weights(
         self,
@@ -211,17 +225,15 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """Extract per-step rewards for both phases.
 
-        r_standup: active during standup mode
+        Standup phase (r_standup):
           - PBRS potential difference
           - Per-step survival bonus
+          - Success bonus (+penalty) at standup→balance transition
+          - Terminal fall penalty if episode ends fallen
 
-        r_balance: active during balance mode
-          - Per-step survival bonus (maintain standing)
-          - Fall penalty at balance→standup transition
-          - Survival bonus if still in balance at episode end
-          - Cross-support balance reward (scaled)
-          - Torso tilt penalty
-          - Height reward
+        Balance phase (r_fall, r_cross, r_joint, r_vel, r_tilt, r_foot):
+          Matches balance_recover_v2 exactly.  Fall signal comes from
+          balance→standup mode transition instead of ImbalanceTermination.
         """
         T = episode.num_frames
         oo = episode.observer_outputs
@@ -252,11 +264,12 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
                 balance_mask[t] = (mode == "balance")
 
         standup_mask = ~balance_mask
+        penalty = float(self.custom_config["terminal_fall_penalty"])
+        survival = float(self.custom_config.get("per_step_survival_reward", 0.01))
 
-        # --- r_standup: PBRS + survival (standup phase only) ---
+        # --- r_standup: PBRS + survival + success bonus (standup phase only) ---
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 5.0))
-        survival = float(self.custom_config.get("per_step_survival_reward", 0.01))
 
         r_standup = np.zeros(T, dtype=np.float32)
         if potentials is not None:
@@ -266,61 +279,76 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         # Zero out during balance phase
         r_standup[balance_mask] = 0.0
 
-        # Terminal penalty: if episode ends with robot fallen
-        obs = episode.observations.get(ep_target)
-        if obs is not None and T > 0:
-            obs_arr = np.asarray(obs, dtype=np.float32)
-            if obs_arr.ndim == 2:
-                final_upright = obs_arr[-1, _OBS_R00] * obs_arr[-1, _OBS_R11] - obs_arr[-1, _OBS_R10] * obs_arr[-1, _OBS_R01]
-                if final_upright < self.fall_uprightness:
-                    r_standup[-1] -= float(self.custom_config["terminal_fall_penalty"])
+        # --- r_success: success bonus (standup phase only) ---
+        r_success = np.zeros(T, dtype=np.float32)
+        # Success bonus: at the LAST standup step before standup→balance transition
+        if T > 1:
+            success_transitions = np.where(standup_mask[:-1] & balance_mask[1:])[0]
+            r_success[success_transitions] += penalty
+        r_success[balance_mask] = 0.0
 
-        # --- r_balance: survival + fall penalty + cross-support + tilt + height ---
-        bal_scale = float(self.custom_config.get("balance_reward_scale", 0.1))
+        # --- r_fall: per-step survival + fall/survival terminal (balance phase) ---
+        r_fall = np.full(T, survival, dtype=np.float32)
+        # Fall: at the LAST balance step before balance→standup transition
+        if T > 1:
+            fall_transitions = np.where(balance_mask[:-1] & ~balance_mask[1:])[0]
+            r_fall[fall_transitions] = -penalty
+        # Survival bonus: still in balance at episode end
+        if T > 0 and balance_mask[-1]:
+            r_fall[-1] = penalty
+        # Zero out during standup phase
+        r_fall[standup_mask] = 0.0
+
+        # --- r_cross: cross-support balance reward (balance phase) ---
         r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+        if r_cross is None:
+            r_cross = np.zeros(T, dtype=np.float32)
+        r_cross = r_cross.copy()
+        r_cross[standup_mask] = 0.0
 
-        # Tilt from posture observer
+        # --- r_joint, r_vel, r_tilt, r_foot: from posture observer (balance phase) ---
+        joint_dev_arr = _extract_per_step_field(oo, "posture", "joint_deviation", T)
+        joint_vel_arr = _extract_per_step_field(oo, "posture", "joint_vel", T)
         torso_tilt_arr = _extract_per_step_field(oo, "posture", "torso_tilt", T)
+        foot_height_arr = _extract_per_step_field(oo, "posture", "foot_height", T)
+
+        if joint_dev_arr is None:
+            joint_dev_arr = np.zeros(T, dtype=np.float32)
+        if joint_vel_arr is None:
+            joint_vel_arr = np.zeros(T, dtype=np.float32)
         if torso_tilt_arr is None:
             torso_tilt_arr = np.zeros(T, dtype=np.float32)
+        if foot_height_arr is None:
+            foot_height_arr = np.zeros(T, dtype=np.float32)
 
-        # Height from height observer
-        heights = _extract_per_step_field(oo, "height", "height", T)
-        if heights is None:
-            heights = np.zeros(T, dtype=np.float32)
+        # Same formulas as balance_recover_v2
+        excess_joint = np.maximum(0.0, joint_dev_arr - 0.1)
+        r_joint = np.where(excess_joint == 0.0, 0.01, 0.01 - 5.0 * excess_joint)
 
-        # Tilt penalty: penalize when tilt > 0.26 rad (~15°)
+        excess_vel = np.maximum(0.0, joint_vel_arr - 0.1)
+        r_vel = np.where(excess_vel == 0.0, 0.01, 0.01 - 1.0 * excess_vel)
+
         excess_tilt = np.maximum(0.0, torso_tilt_arr - 0.26)
         r_tilt = np.where(excess_tilt == 0.0, 0.01, 0.01 - 3.0 * excess_tilt)
 
-        # Height reward: linear penalty below 0.55m, bonus above
-        r_height = (heights - 0.55) * 0.1
+        excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
+        r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        # Per-step survival bonus during balance (maintain standing)
-        r_balance_survival = np.zeros(T, dtype=np.float32)
-        r_balance_survival[balance_mask] = survival
-
-        # Fall penalty: at the LAST balance step before balance→standup transition
-        r_balance_fall = np.zeros(T, dtype=np.float32)
-        if T > 1:
-            fall_transitions = np.where(balance_mask[:-1] & ~balance_mask[1:])[0]
-            r_balance_fall[fall_transitions] = -float(self.custom_config["terminal_fall_penalty"])
-
-        # Survival bonus: still in balance at episode end
-        if T > 0 and balance_mask[-1]:
-            r_balance_fall[-1] = float(self.custom_config["terminal_fall_penalty"])
-
-        r_balance = (
-            bal_scale * (r_cross + r_tilt + r_height)
-            + r_balance_survival
-            + r_balance_fall
-        )
         # Zero out during standup phase
-        r_balance[standup_mask] = 0.0
+        r_joint[standup_mask] = 0.0
+        r_vel[standup_mask] = 0.0
+        r_tilt[standup_mask] = 0.0
+        r_foot[standup_mask] = 0.0
 
         return {
             "r_standup": r_standup,
-            "r_balance": r_balance,
+            "r_success": r_success,
+            "r_fall": r_fall,
+            "r_cross": r_cross,
+            "r_joint": r_joint,
+            "r_vel": r_vel,
+            "r_tilt": r_tilt,
+            "r_foot": r_foot,
         }
 
     # --- Advantage combination ---
@@ -332,20 +360,18 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     ) -> Optional[np.ndarray]:
         """Mode-aware advantage combination.
 
-        Standup steps get ONLY r_standup advantage (zeroed for balance steps).
-        Balance steps get ONLY r_balance advantage (zeroed for standup steps).
-        Mode is inferred from which advantage is non-zero (rewards are
-        zeroed in the inactive phase during extract_rewards).
+        Standup steps get ONLY r_standup advantage (normalized over standup steps).
+        Balance steps get weighted sum of 6 balance advantages (normalized over
+        balance steps), matching balance_recover_v2's weight structure.
         """
         adv_standup = advs["r_standup"]
-        adv_balance = advs["r_balance"]
+        adv_success = advs["r_success"]
+        balance_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
 
-        # Infer mode mask from advantage magnitudes (rewards are zeroed
-        # in inactive phases, so advantages should be ~0 there)
-        balance_mask = np.abs(adv_balance) > 1e-10
+        # Infer mode mask: balance steps have non-zero r_fall advantage
+        balance_mask = np.abs(advs["r_fall"]) > 1e-10
         standup_mask = ~balance_mask
 
-        # Normalize each advantage ONLY over its active steps
         def _norm_masked(a, mask):
             active = a[mask]
             if len(active) == 0 or float(active.std()) < 1e-8:
@@ -356,53 +382,102 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
             result[mask] = ((a[mask] - mean) / std).astype(np.float32)
             return result
 
-        normed_s = _norm_masked(adv_standup, standup_mask)
-        normed_b = _norm_masked(adv_balance, balance_mask)
-
-        # Combine: standup steps get standup advantage, balance steps get balance advantage
-        w_s, w_b = stage_weights
         combined = np.zeros_like(adv_standup, dtype=np.float32)
-        combined[standup_mask] = w_s * normed_s[standup_mask]
-        combined[balance_mask] = w_b * normed_b[balance_mask]
+
+        # Standup steps: r_standup + r_success advantage
+        w_s = stage_weights[0]
+        w_succ = stage_weights[1]
+        normed_s = _norm_masked(adv_standup, standup_mask)
+        normed_succ = _norm_masked(adv_success, standup_mask)
+        combined[standup_mask] = w_s * normed_s[standup_mask] + w_succ * normed_succ[standup_mask]
+
+        # Balance steps: weighted sum of 6 balance advantages
+        for i, key in enumerate(balance_keys):
+            w_b = stage_weights[2 + i]
+            normed_b = _norm_masked(advs[key], balance_mask)
+            combined[balance_mask] += w_b * normed_b[balance_mask]
+
         return combined
 
     # --- Episode metrics ---
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
-        """Compute metrics for eval and logging."""
+        """Compute metrics for eval and logging.
+
+        Returns per-episode metrics that the framework aggregates as batch
+        means in ``bsum``.  The expanded set tracks both sub-networks
+        independently so degradation can be localized early.
+        """
         T = episode.num_frames
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         obs = episode.observations.get(ep_target)
         if obs is None:
-            return {"survived": 0.0, "balance_ratio": 0.0, "standup_count": 0.0}
+            return {
+                "survived": 0.0, "balance_ratio": 0.0, "standup_count": 0.0,
+                "final_uprightness": 0.0, "max_uprightness": 0.0,
+                "time_to_first_balance": float(T),
+                "mean_balance_duration": 0.0, "mean_standup_duration": float(T),
+                "no_balance": 1.0,
+                "uprightness_at_switch": 0.0, "uprightness_at_fall": 0.0,
+            }
 
         obs_arr = np.asarray(obs, dtype=np.float32)
         if obs_arr.ndim == 1:
             obs_arr = obs_arr.reshape(1, -1)
         upright = obs_arr[:, _OBS_R00] * obs_arr[:, _OBS_R11] - obs_arr[:, _OBS_R10] * obs_arr[:, _OBS_R01]
 
-        # Count balance vs standup steps
+        # Walk through mode transitions with hysteresis
         mode = "standup"
         balance_steps = 0
         standup_transitions = 0
+        time_to_first_balance = float(T)  # default: never reached
+        balance_durations: List[float] = []
+        standup_durations: List[float] = []
+        seg_start = 0
+        switch_uprightnesss: List[float] = []
+        fall_uprightnesss: List[float] = []
+
         for t in range(T):
             if mode == "standup" and upright[t] >= self.switch_uprightness:
                 mode = "balance"
+                standup_durations.append(float(t - seg_start))
+                seg_start = t
+                if time_to_first_balance == float(T):
+                    time_to_first_balance = float(t)
+                switch_uprightnesss.append(float(upright[t]))
             elif mode == "balance" and upright[t] < self.fall_uprightness:
                 mode = "standup"
                 standup_transitions += 1
+                balance_durations.append(float(t - seg_start))
+                seg_start = t
+                fall_uprightnesss.append(float(upright[t]))
             if mode == "balance":
                 balance_steps += 1
 
-        # Final uprightness
+        # Close last segment
+        if mode == "balance":
+            balance_durations.append(float(T - seg_start))
+        else:
+            standup_durations.append(float(T - seg_start))
+
         final_upright = float(upright[-1]) if T > 0 else 0.0
+        no_balance = 1.0 if balance_steps == 0 else 0.0
 
         return {
+            # Existing
             "survived": 1.0 if final_upright >= self.fall_uprightness else 0.0,
             "balance_ratio": float(balance_steps / max(1, T)),
             "standup_count": float(standup_transitions),
             "final_uprightness": final_upright,
             "max_uprightness": float(np.max(upright)) if T > 0 else 0.0,
+            # New: standup_net diagnostics
+            "time_to_first_balance": time_to_first_balance,
+            "mean_standup_duration": float(np.mean(standup_durations)) if standup_durations else float(T),
+            "no_balance": no_balance,
+            "uprightness_at_switch": float(np.mean(switch_uprightnesss)) if switch_uprightnesss else 0.0,
+            # New: balance_net diagnostics
+            "mean_balance_duration": float(np.mean(balance_durations)) if balance_durations else 0.0,
+            "uprightness_at_fall": float(np.mean(fall_uprightnesss)) if fall_uprightnesss else 0.0,
         }
 
     def compare_eval(self, esum: Dict[str, float], best_esum: Dict[str, float]) -> bool:

@@ -6,11 +6,12 @@ balance rewards (cross-support, posture, survival) for the standing phase.
 Reward structure:
   - r_potential: PBRS potential difference (guides robot through get-up stages)
   - r_fall: per-step survival bonus + terminal fall penalty
-  - r_cross: cross-support balance (alternating foot support = stepping)
-  - r_joint: joint deviation penalty (posture quality)
-  - r_vel: joint velocity penalty (smooth motion)
+  - r_cross: cross-support balance (alternating foot support + double-support penalty)
   - r_tilt: torso tilt penalty (upright posture)
-  - r_foot: foot height penalty (encourages stepping)
+  - r_height: per-step height bonus (encourages standing tall while stepping)
+
+r_joint, r_vel, r_foot removed: they penalize all movement, suppressing
+stepping. r_tilt kept to maintain upright posture.
 
 PBRS naturally fades when the robot stops transitioning between stages (ΔV→0).
 Balance rewards are per-step and become dominant once standing, teaching
@@ -40,15 +41,13 @@ class StandupV3Config(CombatExperimentBase):
     """Standup from random fall + dynamic balance — single policy."""
 
     name = "standup_v3"
-    reward_keys = ("r_potential", "r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
+    reward_keys = ("r_potential", "r_fall", "r_cross", "r_tilt", "r_height")
     gammas = {
         "r_potential": 0.99,
         "r_fall": 0.99,
         "r_cross": 0.99,
-        "r_joint": 0.99,
-        "r_vel": 0.99,
         "r_tilt": 0.99,
-        "r_foot": 0.99,
+        "r_height": 0.99,
     }
 
     BLUEPRINT = "standup_v3_env.yaml"
@@ -148,7 +147,7 @@ class StandupV3Config(CombatExperimentBase):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (3.0, 6.0, 2.0, 0.2, 0.2, 0.2, 0.2)
+        return (1.0, 4.0, 4.0, 0.5, 10.0)
 
     def next_weights(
         self,
@@ -176,7 +175,7 @@ class StandupV3Config(CombatExperimentBase):
                 flush=True,
             )
 
-        return (3.0, 6.0, 2.0, 0.2, 0.2, 0.2, 0.2)
+        return (1.0, 4.0, 4.0, 0.5, 10.0)
 
     # ---- Reward extraction ------------------------------------------------
 
@@ -223,54 +222,41 @@ class StandupV3Config(CombatExperimentBase):
         if r_cross is None:
             r_cross = np.zeros(T, dtype=np.float32)
 
-        # --- Posture rewards ---
-        joint_dev_arr = _extract_per_step_field(oo, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(oo, "posture", "joint_vel", T)
+        # --- Posture reward: torso tilt only ---
+        # r_joint, r_vel, r_foot removed: they penalize all movement,
+        # suppressing stepping. r_tilt kept to maintain upright posture.
         torso_tilt_arr = _extract_per_step_field(oo, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(oo, "posture", "foot_height", T)
-
-        if joint_dev_arr is None:
-            joint_dev_arr = np.zeros(T, dtype=np.float32)
-        if joint_vel_arr is None:
-            joint_vel_arr = np.zeros(T, dtype=np.float32)
         if torso_tilt_arr is None:
             torso_tilt_arr = np.zeros(T, dtype=np.float32)
-        if foot_height_arr is None:
-            foot_height_arr = np.zeros(T, dtype=np.float32)
 
-        # Gate posture rewards by height — only apply when robot is standing
-        # (height > 0.45m). During get-up from fallen state, posture values
-        # (tilt, vel, joint deviation) are naturally huge and would dominate
-        # the advantage signal, drowning out PBRS and survival rewards.
+        # Gate tilt reward by height — only apply when robot is standing
         if heights is not None:
             standing_mask = (heights > 0.45).astype(np.float32)
         else:
             standing_mask = np.ones(T, dtype=np.float32)
 
-        excess_joint = np.maximum(0.0, joint_dev_arr - 0.1)
-        r_joint = np.where(excess_joint == 0.0, 0.01, 0.01 - 5.0 * excess_joint)
-        r_joint = (r_joint * standing_mask).astype(np.float32)
-
-        excess_vel = np.maximum(0.0, joint_vel_arr - 0.1)
-        r_vel = np.where(excess_vel == 0.0, 0.01, 0.01 - 1.0 * excess_vel)
-        r_vel = (r_vel * standing_mask).astype(np.float32)
-
         excess_tilt = np.maximum(0.0, torso_tilt_arr - 0.26)
         r_tilt = np.where(excess_tilt == 0.0, 0.01, 0.01 - 3.0 * excess_tilt)
         r_tilt = (r_tilt * standing_mask).astype(np.float32)
 
-        excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
-        r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
-        r_foot = (r_foot * standing_mask).astype(np.float32)
+        # --- Height reward (penalty below 0.55m, bonus above) ---
+        # Linear gradient at ALL heights: r_height = (height - 0.55) * 0.1
+        # At 0.40m (all fours): -0.015/step → return -3.6, contrib -1.85
+        # At 0.55m: 0
+        # At 0.70m (standing): +0.015/step → return +3.6, contrib +1.85
+        # With weight 10.0 (10/19.5=0.51), height dominates the reward,
+        # forcing the robot to stand tall while stepping.
+        if heights is not None:
+            r_height = ((heights - 0.55) * 0.1).astype(np.float32)
+        else:
+            r_height = np.zeros(T, dtype=np.float32)
 
         return {
             "r_potential": r_potential,
             "r_fall": r_fall,
             "r_cross": r_cross,
-            "r_joint": r_joint,
-            "r_vel": r_vel,
             "r_tilt": r_tilt,
-            "r_foot": r_foot,
+            "r_height": r_height,
         }
 
     # ---- Episode metrics --------------------------------------------------
