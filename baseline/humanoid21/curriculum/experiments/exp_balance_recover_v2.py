@@ -41,7 +41,9 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         "r_foot": 0.99,
     }
 
-    BLUEPRINT = "balance_recover_v2_env.yaml"
+    max_steps = 100
+
+    BLUEPRINT = "balance_recover_plus_v2_env.yaml"
 
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
@@ -51,8 +53,9 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     def video_env_blueprint(self):
         perturb = self._current_perturb_params()
         return self._env_pb().materialize(
-            max_steps=self.custom_config["max_steps"],
+            max_steps=self.max_steps,
             agent_id="robot_a",
+            tolerance=6,
             **perturb,
         )
 
@@ -62,17 +65,18 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     # exploding policy_loss observed in the first run.
     log_std_min: float = -1.8
 
+    max_updates: int = 20000
     # Per-experiment PPO overrides: smaller actor LR + tighter KL/grad
     # clipping + fewer epochs to keep each PPO update from diverging.
     learning_rate: float = 3e-5      # was 1e-4: slow the actor down further to allow more epochs
     target_kl: float = 0.05          # was 0.05: early-stop sooner
     grad_clip_norm: float = 1.0      # was 1.0: tighter gradient clipping
     update_epochs: int = 4           # was 4: less policy drift per batch
-    minibatch_size: int = 4096 * 4
     entropy_coef: float = 1.5e-3     # encourage exploration to prevent joint freeze
 
     # --- Rollout schedule ---
     episodes_per_update: int = 1024
+    eval_episodes: int = 128
 
     # Small per-step survival bonus (each alive step is worth this much).
     per_step_survival_reward: float = 0.01
@@ -81,17 +85,21 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     # Full-strength perturbation magnitudes, reached at scale == 1.0. These
     # mirror the blueprint defaults; the per-level scale multiplies them.
     PERTURB_FULL: Dict[str, float] = {
-        "joint_pos_delta_max": 0.15,
-        "joint_vel_delta_max": 0.15,
+        "joint_pos_delta_max": 0.5,
+        "joint_vel_delta_max": 2.0,
         "root_tilt_deg_max": 20.0,
-        "root_linear_velocity_delta_max": 0.4,
-        "root_angular_velocity_delta_max": 1.5,
+        "root_linear_velocity_delta_max": 2.0,
+        "root_angular_velocity_delta_max": 1.0,
     }
     # Per-level scale factors (level 0 = mild, last level = full strength).
-    LEVEL_SCALES: Tuple[float, ...] = (0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 1.0)
+    # 14 levels: fine-grained progression with smaller steps at higher perturbation.
+    LEVEL_SCALES: Tuple[float, ...] = (
+        0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50,
+        0.60, 0.70, 0.78, 0.85, 0.90, 0.95, 1.0,
+    )
     # Promote once survival >= threshold for N consecutive evaluations.
     PROMOTE_SURVIVAL: float = 0.9
-    PROMOTE_PATIENCE: int = 1
+    PROMOTE_PATIENCE: int = 3
 
     # --- Stateful scheduler ---
     _level: int = 0
@@ -115,13 +123,13 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         base_seed: int,
         n_episodes: int,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        max_steps = self.custom_config["max_steps"]
+        max_steps = self.max_steps
         env_pb = self._env_pb()
         perturb = self._current_perturb_params()
         rng = np.random.default_rng(base_seed)
 
         env_bps: Dict[str, EnvBlueprint] = {
-            aid: env_pb.materialize(max_steps=max_steps, agent_id=aid, **perturb)
+            aid: env_pb.materialize(max_steps=max_steps, agent_id=aid, tolerance=6, **perturb)
             for aid in ("robot_a", "robot_b")
         }
 
