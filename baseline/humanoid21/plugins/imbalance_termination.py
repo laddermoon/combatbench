@@ -290,3 +290,128 @@ class ImbalanceTerminationPlugin(BasePlugin):
 
         return False
 
+
+class ImbalanceTerminationPlugin2(BasePlugin):
+
+    # 双脚身体名称后缀
+    FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
+
+    def __init__(
+        self,
+        agent_id: str,
+        force_threshold: float = 1.0,
+        tolerance: int = 1,
+        min_height: float = 0.0,
+    ) -> None:
+        self.agent_id = str(agent_id)
+        self.force_threshold = float(force_threshold)
+        self.tolerance = int(tolerance)
+        self.min_height = float(min_height)
+        self._ground_geom_name: Optional[str] = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "force_threshold": self.force_threshold,
+            "tolerance": self.tolerance,
+            "min_height": self.min_height,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ImbalanceTerminationPlugin":
+        return cls(**config)
+
+    @property
+    def name(self) -> str:
+        return f"{self.agent_id}_imbalance_termination"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        static_data = ctx.accessor.get_static_data()
+        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+        self._imbalance_counter = {"robot_a": 0, "robot_b": 0}
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        # Height gate: skip imbalance check when robot is below min_height
+        # (e.g. during fallen state / get-up phase)
+        if self.min_height > 0.0:
+            core_state = ctx.accessor.get_core_state()
+            checked_robots = ["robot_a", "robot_b"] if self.agent_id == "both" else [self.agent_id]
+            all_below = True
+            for rid in checked_robots:
+                if rid in core_state:
+                    h = float(core_state[rid]["root_pos"][2])
+                    if h >= self.min_height:
+                        all_below = False
+                        break
+            if all_below:
+                return
+
+        a_fell = self._is_non_foot_grounded(ctx, "robot_a")
+        b_fell = self._is_non_foot_grounded(ctx, "robot_b")
+
+        if a_fell:
+            self._imbalance_counter["robot_a"] += 1
+   
+        if b_fell:
+            self._imbalance_counter["robot_b"] += 1
+   
+        if self.agent_id == "both":
+            a_term = self._imbalance_counter["robot_a"] >= self.tolerance
+            b_term = self._imbalance_counter["robot_b"] >= self.tolerance
+            if a_term and b_term:
+                ctx.request_termination("imbalance_both")
+            elif a_term:
+                ctx.request_termination("imbalance_robot_a")
+            elif b_term:
+                ctx.request_termination("imbalance_robot_b")
+        else:
+            if self._imbalance_counter[self.agent_id] >= self.tolerance:
+                ctx.request_termination("imbalance")
+
+    def _is_non_foot_grounded(self, ctx: SimContext, robot_id: str) -> bool:
+        """检查当前物理步快照下，指定机器人是否有非脚部部位与地面接触 — 向量化版本。
+
+        使用 ``contacts_vec``，通过 aff 筛选机器人↔环境接触，
+        通过 geom_id_to_name 确认地面 geom，通过 body_id_to_name 获取 body 名。
+        """
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get('contacts')
+        if cv is None or cv['ncon'] == 0:
+            return False
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+        geom_id_to_name = static_data.get('geom_id_to_name', {})
+        ground_geom = self._ground_geom_name or 'ground'
+
+        # robot_id → aff code
+        robot_aff = 1 if robot_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            # One side is env (aff=0), other side is the target robot
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
+                continue
+
+            if geom_env != ground_geom:
+                continue
+            if float(force_mag[i]) < self.force_threshold:
+                continue
+            if not any(foot in body_robot for foot in self.FOOT_BODY_NAMES):
+                return True
+
+        return False
+

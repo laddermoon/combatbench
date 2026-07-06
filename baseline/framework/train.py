@@ -1,11 +1,11 @@
-"""Unified curriculum training CLI — supports PPO and SAC.
+"""Unified training CLI — supports PPO and SAC.
 
 Usage::
 
-    python3 baseline/humanoid21/curriculum/train.py --experiment basic_balance --algo ppo
-    python3 baseline/humanoid21/curriculum/train.py --experiment basic_balance --algo sac
-    python3 baseline/humanoid21/curriculum/train.py --experiment basic_balance --algo ppo --smoke
-    python3 baseline/humanoid21/curriculum/train.py --list-experiments
+    python3 baseline/framework/train.py --experiment basic_balance --algo ppo
+    python3 baseline/framework/train.py --experiment basic_balance --algo sac
+    python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
+    python3 baseline/framework/train.py --list-experiments
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from baseline.humanoid21.curriculum.experiments import get_experiment, list_expe
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Unified curriculum trainer — PPO or SAC."
+        description="Unified trainer — PPO or SAC."
     )
     parser.add_argument(
         "--experiment", type=str, default=None,
@@ -70,12 +70,11 @@ def main() -> None:
         experiment.minibatch_size = 64
 
     algo = args.algo
-    run_name = args.run_name or f"curriculum_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = args.run_name or f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
 
     resume_from = Path(args.resume_from) if args.resume_from else None
 
-    # Save config snapshot before training starts
     experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
@@ -84,10 +83,10 @@ def main() -> None:
     print(f"[confidence] {'on' if use_confidence else 'off'}", flush=True)
 
     if algo == "ppo":
-        from baseline.humanoid21.curriculum.framework.ppo_loop import train_ppo
+        from baseline.framework.ppo_loop import train_ppo
         train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
     elif algo == "sac":
-        from baseline.humanoid21.curriculum.framework.sac_loop import train_sac
+        from baseline.framework.sac_loop import train_sac
         train_sac(experiment, run_dir=run_dir, resume_from=resume_from)
     else:
         raise ValueError(f"Unknown algorithm: {algo}")

@@ -44,6 +44,15 @@ CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS = 18
 CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF = 0.25
 
 
+# Double-support penalty defaults (0 = disabled, backward compatible)
+CROSS_SUPPORT_DOUBLE_SUPPORT_MAX_STEPS = 0
+CROSS_SUPPORT_DOUBLE_SUPPORT_PENALTY_COEF = 0.0
+
+# Single-support bonus default (0 = disabled, backward compatible)
+CROSS_SUPPORT_SINGLE_SUPPORT_BONUS = 0.0
+CROSS_SUPPORT_MIN_HEIGHT = 0.0
+
+
 class CrossSupportBalanceRewarder(BaseObserverPlugin):
     """交叉支撑平衡奖励插件（语义归约版）。
 
@@ -69,6 +78,10 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         foot_lift_penalty_coef: float = CROSS_SUPPORT_FOOT_LIFT_PENALTY_COEF,
         switch_interval_max_steps: int = CROSS_SUPPORT_SWITCH_INTERVAL_MAX_STEPS,
         switch_interval_penalty_coef: float = CROSS_SUPPORT_SWITCH_INTERVAL_PENALTY_COEF,
+        double_support_max_steps: int = CROSS_SUPPORT_DOUBLE_SUPPORT_MAX_STEPS,
+        double_support_penalty_coef: float = CROSS_SUPPORT_DOUBLE_SUPPORT_PENALTY_COEF,
+        single_support_bonus: float = CROSS_SUPPORT_SINGLE_SUPPORT_BONUS,
+        min_height: float = CROSS_SUPPORT_MIN_HEIGHT,
     ) -> None:
         self.agent_id = str(agent_id)
         self.initial_grace_steps = int(initial_grace_steps)
@@ -77,6 +90,10 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         self.foot_lift_penalty_coef = float(foot_lift_penalty_coef)
         self.switch_interval_max_steps = max(0, int(switch_interval_max_steps))
         self.switch_interval_penalty_coef = float(switch_interval_penalty_coef)
+        self.double_support_max_steps = max(0, int(double_support_max_steps))
+        self.double_support_penalty_coef = float(double_support_penalty_coef)
+        self.single_support_bonus = float(single_support_bonus)
+        self.min_height = float(min_height)
 
         # 状态变量
         self._state: str = self.STATE_WAIT_FIRST_SINGLE_SUPPORT
@@ -85,6 +102,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         self._current_support_steps: int = 0
         self._switch_anchor_foot: Optional[str] = None  # 'left' or 'right'
         self._switch_interval_steps: int = 0
+        self._double_support_steps: int = 0
         self._output: float = 0.0
         self._ground_geom_name: Optional[str] = None
 
@@ -96,6 +114,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         self._current_support_steps = 0
         self._switch_anchor_foot = None
         self._switch_interval_steps = 0
+        self._double_support_steps = 0
         self._output = 0.0
         # 获取地面 geom 名称
         static_data = ctx.accessor.get_static_data()
@@ -108,10 +127,31 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         # 检测双脚接触状态
         left_foot_contact, right_foot_contact = self._get_foot_contact_state(ctx)
 
+        # Get robot height for gating single-support bonus
+        if self.min_height > 0.0:
+            core_state = ctx.accessor.get_core_state()
+            cs = core_state.get(self.agent_id, core_state.get('robot_a', {}))
+            root_height = float(cs['root_pos'][2])
+        else:
+            root_height = 1.0  # no gate
+
+        # Double-support penalty: penalize prolonged static double-support
+        # to force the robot to step alternately.
+        # Gated by min_height: don't penalize during get-up phase.
+        if self.double_support_max_steps > 0 and root_height >= self.min_height:
+            if left_foot_contact and right_foot_contact:
+                self._double_support_steps += 1
+                if self._double_support_steps > self.double_support_max_steps:
+                    excess = self._double_support_steps - self.double_support_max_steps
+                    denom = max(1, self.double_support_max_steps)
+                    reward -= self.double_support_penalty_coef * min(excess / denom, 1.0)
+            else:
+                self._double_support_steps = 0
+
         if self._state == self.STATE_WAIT_FIRST_SINGLE_SUPPORT:
-            reward = self._handle_wait_first_single_support(left_foot_contact, right_foot_contact)
+            reward += self._handle_wait_first_single_support(left_foot_contact, right_foot_contact)
         elif self._state == self.STATE_TRACKING:
-            reward = self._handle_tracking(left_foot_contact, right_foot_contact)
+            reward += self._handle_tracking(left_foot_contact, right_foot_contact, root_height)
 
         self._output = reward
 
@@ -127,6 +167,10 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
             "foot_lift_penalty_coef": self.foot_lift_penalty_coef,
             "switch_interval_max_steps": self.switch_interval_max_steps,
             "switch_interval_penalty_coef": self.switch_interval_penalty_coef,
+            "double_support_max_steps": self.double_support_max_steps,
+            "double_support_penalty_coef": self.double_support_penalty_coef,
+            "single_support_bonus": self.single_support_bonus,
+            "min_height": self.min_height,
         }
 
     @classmethod
@@ -222,11 +266,22 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         return reward
 
     def _handle_tracking(
-        self, left_foot_contact: bool, right_foot_contact: bool
+        self, left_foot_contact: bool, right_foot_contact: bool, root_height: float = 1.0
     ) -> float:
         """追踪单脚支撑短时惩罚与换脚间隔区间惩罚。"""
         reward = 0.0
         current_single_support = self._single_support_foot(left_foot_contact, right_foot_contact)
+
+        # Positive bonus for being in single support — creates gradient
+        # toward stepping vs static double support.
+        # Gated by min_height: only reward stepping when robot is tall enough
+        # to prevent squatting + foot-shuffling hack.
+        if (
+            current_single_support is not None
+            and self.single_support_bonus > 0.0
+            and root_height >= self.min_height
+        ):
+            reward += self.single_support_bonus
 
         # A -> B 换脚间隔从 A 脚本轮第一次单脚开始计时，期间允许 A 再次单脚。
         self._switch_interval_steps += 1

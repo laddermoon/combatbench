@@ -818,6 +818,8 @@ class RandomFallenStatePlugin(BasePlugin):
 
         # 5. 循环物理步
         _debug_milestones = {1, 5, 10, 25, 50, 100, 200, 300, 500, 1000, 1500, 2000, 2500}
+        step = -1
+        min_height = float("inf")
         for step in range(self.max_phy_steps):
             sim.physical_step()
 

@@ -1,0 +1,63 @@
+# Standup v4 — phased training with dual potential rewarder.
+#
+# Uses StandupPotentialRewarderV3 which computes both smooth (gapless)
+# and gapped potentials in one pass. The experiment chooses which to use.
+#
+# Features:
+#   - RandomFallenStatePlugin (fallen state init, parameterized height_threshold)
+#   - StandupTerminationPlugin (success + stagnation termination)
+#   - StandupPotentialRewarderV3 (dual potential: smooth + gapped)
+#   - HeightObserver (height tracking for wall penalty gating)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps (20s @ 20Hz)."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  height_threshold:
+    default: 0.3
+    description: "RandomFallenStatePlugin height threshold."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: ${height_threshold}
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      success_height: 0.60
+      success_uprightness: 0.70
+      success_hold_steps: 50
+      stagnation_height: 0.25
+      stagnation_steps: 150
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_v3:StandupPotentialRewarderV3"
+    config:
+      agent_id: ${agent_id}
+  height:
+    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
+    config:
+      agent_id: ${agent_id}

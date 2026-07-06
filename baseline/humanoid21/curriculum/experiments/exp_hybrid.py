@@ -81,9 +81,9 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     switch_uprightness: float = 0.97   # ~15°: standup -> balance
     fall_uprightness: float = 0.30     # ~72°: balance -> standup (fallen)
 
-    # PPO knobs — very conservative for fine-tuning pretrained models
-    learning_rate: float = 3e-6
-    critic_learning_rate: float = 1e-5
+    # PPO knobs — moderate lr for fine-tuning pretrained models
+    learning_rate: float = 3e-5
+    critic_learning_rate: float = 1e-4
     log_std_min: float = -1.8
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
@@ -186,7 +186,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     # --- Weights ---
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (1.0, 6.0, 6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (1.0, 3.0, 3.0, 1.0, 0.05, 0.2, 0.2, 0.2)
 
     def next_weights(
         self,
@@ -225,11 +225,9 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """Extract per-step rewards for both phases.
 
-        Standup phase (r_standup):
-          - PBRS potential difference
-          - Per-step survival bonus
-          - Success bonus (+penalty) at standup→balance transition
-          - Terminal fall penalty if episode ends fallen
+        Standup phase:
+          - r_standup: PBRS potential difference + per-step survival
+          - r_success: success bonus at standup→balance transition
 
         Balance phase (r_fall, r_cross, r_joint, r_vel, r_tilt, r_foot):
           Matches balance_recover_v2 exactly.  Fall signal comes from

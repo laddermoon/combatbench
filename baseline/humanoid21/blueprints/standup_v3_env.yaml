@@ -4,11 +4,14 @@
 #   - ImbalanceTerminationPlugin (fall detection, gated by min_height)
 #   - StandupPotentialRewarderV2 (PBRS for get-up phase)
 #   - CrossSupportBalanceRewarder (alternating foot support = stepping)
-#   - PostureRewarder (joint deviation, velocity, tilt, foot height)
+#   - PostureRewarder (torso tilt only — joint/vel/foot removed to allow movement)
 #   - HeightObserver (height tracking)
 #
 # No StandupTerminationPlugin — success is surviving the full episode,
 # not reaching a static standing pose.
+#
+# CrossSupportBalanceRewarder uses double_support_penalty to penalize
+# prolonged static double-support standing, forcing the robot to step.
 
 parameters:
   initial_distance:
@@ -60,6 +63,11 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
     config:
       agent_id: ${agent_id}
+      initial_grace_steps: 20
+      initial_penalty_coef: 0.5
+      double_support_max_steps: 15
+      double_support_penalty_coef: 1.0
+      single_support_bonus: 0.05
   posture:
     cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
     config:
