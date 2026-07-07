@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.humanoid21.curriculum.framework.ppo_trainer import (
+from baseline.framework.ppo_trainer import (
     _extract_per_step_scalar,
     _extract_per_step_field,
 )

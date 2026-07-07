@@ -7,7 +7,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.humanoid21.curriculum.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 

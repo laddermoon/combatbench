@@ -8,7 +8,7 @@ import importlib
 from pathlib import Path
 from typing import Dict, List
 
-from baseline.humanoid21.curriculum.framework.experiment import Experiment as _Experiment
+from baseline.framework.experiment import Experiment as _Experiment
 
 Experiment = _Experiment  # backward-compatible alias
 

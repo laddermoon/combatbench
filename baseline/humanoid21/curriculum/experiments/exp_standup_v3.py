@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.humanoid21.curriculum.framework.ppo_trainer import (
+from baseline.framework.ppo_trainer import (
     _extract_per_step_field,
     _extract_per_step_scalar,
 )

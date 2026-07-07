@@ -21,7 +21,7 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.humanoid21.curriculum.framework.experiment import (
+from baseline.framework.experiment import (
     CommonParams,
     Experiment,
     PPOParams,
@@ -171,7 +171,7 @@ class CombatExperimentBase(Experiment):
 
     def build_q_critic(self, reward_key: str, device: torch.device) -> nn.Module:
         """Q(s,a) critic for SAC."""
-        from baseline.humanoid21.curriculum.framework.sac_trainer import QCriticMLP
+        from baseline.framework.sac_trainer import QCriticMLP
         return QCriticMLP(
             obs_dim=self.obs_dim,
             action_dim=self.action_dim,

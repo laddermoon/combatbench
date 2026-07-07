@@ -84,10 +84,10 @@ def main() -> None:
     print(f"[confidence] {'on' if use_confidence else 'off'}", flush=True)
 
     if algo == "ppo":
-        from baseline.humanoid21.curriculum.framework.ppo_loop import train_ppo
+        from baseline.framework.ppo_loop import train_ppo
         train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
     elif algo == "sac":
-        from baseline.humanoid21.curriculum.framework.sac_loop import train_sac
+        from baseline.framework.sac_loop import train_sac
         train_sac(experiment, run_dir=run_dir, resume_from=resume_from)
     else:
         raise ValueError(f"Unknown algorithm: {algo}")
