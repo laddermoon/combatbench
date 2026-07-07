@@ -23,6 +23,7 @@ import fcntl
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -76,25 +77,7 @@ def create_code_snapshot(
     repo_root = Path(_git(search_from, "rev-parse", "--show-toplevel"))
     head_commit = _git(repo_root, "rev-parse", "HEAD")
     head_branch = _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
-    branch_name = f"exp/{run_name}"
-
-    # Check for branch name collision
-    if _git_ok(repo_root, "rev-parse", "--verify", f"refs/heads/{branch_name}"):
-        existing_commit = _git(repo_root, "rev-parse", branch_name)
-        print(f"[snapshot] branch {branch_name} already exists (commit {existing_commit[:8]}), skipping snapshot", flush=True)
-        info = {
-            "branch": branch_name,
-            "commit": existing_commit,
-            "base_branch": head_branch if head_branch != "HEAD" else "(detached)",
-            "base_commit": head_commit,
-            "repo_root": str(repo_root),
-            "run_name": run_name,
-            "reused": True,
-        }
-        run_dir.mkdir(parents=True, exist_ok=True)
-        with open(run_dir / "code_snapshot.json", "w") as f:
-            json.dump(info, f, indent=2)
-        return info
+    branch_name = f"exp/{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"
 
     # Acquire a file lock on .git/snapshot.lock to serialize concurrent snapshots
     lock_path = repo_root / ".git" / "snapshot.lock"
