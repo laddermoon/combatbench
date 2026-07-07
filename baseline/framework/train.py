@@ -5,11 +5,14 @@ Usage::
     python3 baseline/framework/train.py --experiment basic_balance --algo ppo
     python3 baseline/framework/train.py --experiment basic_balance --algo sac
     python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
+    python3 baseline/framework/train.py --experiment basic_balance --algo ppo --background
     python3 baseline/framework/train.py --list-experiments
 """
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -50,7 +53,68 @@ def _parse_args() -> argparse.Namespace:
         "--run-dir", type=str, default=None,
         help="Explicit run output directory (default: baseline/runs/<run_name>).",
     )
+    parser.add_argument(
+        "--background", action="store_true",
+        help="Run in background (like nohup). Logs go to run_dir/train.log, PID to run_dir/pid.",
+    )
     return parser.parse_args()
+
+
+def _setup_logging(run_dir: Path, background: bool) -> Path:
+    """Set up file logging to run_dir/train.log.
+
+    In foreground mode, output goes to both console and file.
+    In background mode, output goes to file only.
+    """
+    import logging
+
+    log_path = run_dir / "train.log"
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    file_handler.setFormatter(file_fmt)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+
+    if not background:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+        root_logger.addHandler(console_handler)
+
+    # Redirect stdout/stderr to the log file as well (for print() and C-level output)
+    sys.stdout = open(log_path, "a", buffering=1, encoding="utf-8")
+    sys.stderr = open(log_path, "a", buffering=1, encoding="utf-8")
+
+    if not background:
+        # In foreground mode, also tee stdout to console via a custom stream
+        sys.stdout = _TeeStream(open(log_path, "a", buffering=1, encoding="utf-8"), sys.__stdout__)
+        sys.stderr = _TeeStream(open(log_path, "a", buffering=1, encoding="utf-8"), sys.__stderr__)
+
+    return log_path
+
+
+class _TeeStream:
+    """Write to both a file and a console stream."""
+
+    def __init__(self, file_stream, console_stream):
+        self._file = file_stream
+        self._console = console_stream
+
+    def write(self, data):
+        self._file.write(data)
+        self._file.flush()
+        self._console.write(data)
+        self._console.flush()
+
+    def flush(self):
+        self._file.flush()
+        self._console.flush()
+
+    def close(self):
+        self._file.close()
 
 
 def main() -> None:
@@ -88,11 +152,42 @@ def main() -> None:
     if run_dir.exists():
         raise SystemExit(f"Error: run_dir already exists: {run_dir}")
 
+    # --- Background fork ---
+    if args.background:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = run_dir / "train.log"
+        pid = os.fork()
+        if pid > 0:
+            # Parent: print info and exit
+            with open(run_dir / "pid", "w") as f:
+                f.write(str(pid) + "\n")
+            print(f"[run] started in background")
+            print(f"[run] dir: {run_dir}")
+            print(f"[run] log: {log_path}")
+            print(f"[run] pid: {pid}")
+            print(f"[run] monitor: tail -f {log_path}")
+            print(f"[run] stop: kill {pid}")
+            return
+        # Child: detach from terminal
+        os.setsid()
+        # Redirect stdin/stdout/stderr to log file
+        log_fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.dup2(log_fd, 0)
+        os.dup2(log_fd, 1)
+        os.dup2(log_fd, 2)
+        os.close(log_fd)
+    else:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Logging setup ---
+    log_path = _setup_logging(run_dir, background=args.background)
+
     resume_from = Path(args.resume_from).resolve() if args.resume_from else None
 
     experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
+    print(f"[log] {log_path}", flush=True)
 
     # --- Code snapshot for reproducibility ---
     if not args.no_snapshot:
