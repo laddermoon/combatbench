@@ -42,6 +42,10 @@ def _parse_args() -> argparse.Namespace:
         "--no-confidence", action="store_true",
         help="Disable EV-based confidence weighting in advantage combination.",
     )
+    parser.add_argument(
+        "--no-snapshot", action="store_true",
+        help="Skip git code snapshot (default: snapshot enabled).",
+    )
     return parser.parse_args()
 
 
@@ -78,6 +82,19 @@ def main() -> None:
     experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
+
+    # --- Code snapshot for reproducibility ---
+    if not args.no_snapshot:
+        from baseline.framework.code_snapshot import create_code_snapshot, format_repro_command
+        snapshot_info = create_code_snapshot(run_name=run_name, run_dir=run_dir)
+        if snapshot_info is not None:
+            print(f"[snapshot] branch {snapshot_info['branch']} created (commit {snapshot_info['commit'][:8]})", flush=True)
+            repro = format_repro_command(snapshot_info, args=args)
+            repro_path = run_dir / "REPRODUCE.md"
+            with open(repro_path, "w") as f:
+                f.write(repro + "\n")
+            print(f"[snapshot] reproduction guide saved to {repro_path}", flush=True)
+            print(repro, flush=True)
 
     use_confidence = not args.no_confidence
     print(f"[confidence] {'on' if use_confidence else 'off'}", flush=True)
