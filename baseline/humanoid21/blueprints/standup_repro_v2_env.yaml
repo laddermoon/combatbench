@@ -1,0 +1,90 @@
+# Standup reproduction — V2 (gapped) potential environment.
+# Used for stages S5-S9. Parameterized for curriculum, termination, and
+# rewarder feature flags (vel_gate, wall_aware, stage5 thresholds).
+
+parameters:
+  initial_distance:
+    default: 2.0
+  max_steps:
+    default: 400
+  agent_id:
+    default: "robot_a"
+  height_threshold:
+    default: 0.3
+  success_height:
+    default: 0.60
+  success_uprightness:
+    default: 0.70
+  success_hold_steps:
+    default: 50
+  stagnation_height:
+    default: 0.25
+  stagnation_steps:
+    default: 150
+  vel_gate:
+    default: false
+  wall_aware:
+    default: false
+  s5_h_thr:
+    default: 0.75
+  s5_u_thr:
+    default: 0.85
+  s5_base:
+    default: 0.85
+  s5_range:
+    default: 0.15
+  s5_h_range:
+    default: 0.15
+  s5_u_range:
+    default: 0.15
+  s5_v_power:
+    default: 1
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: ${height_threshold}
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      success_height: ${success_height}
+      success_uprightness: ${success_uprightness}
+      success_hold_steps: ${success_hold_steps}
+      stagnation_height: ${stagnation_height}
+      stagnation_steps: ${stagnation_steps}
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_repro_v2:StandupReproRewarder"
+    config:
+      agent_id: ${agent_id}
+      mode: "v2"
+      vel_gate: ${vel_gate}
+      wall_aware: ${wall_aware}
+      s5_h_thr: ${s5_h_thr}
+      s5_u_thr: ${s5_u_thr}
+      s5_base: ${s5_base}
+      s5_range: ${s5_range}
+      s5_h_range: ${s5_h_range}
+      s5_u_range: ${s5_u_range}
+      s5_v_power: ${s5_v_power}
+  height:
+    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
+    config:
+      agent_id: ${agent_id}
