@@ -159,22 +159,18 @@ def format_repro_command(
     if args.no_confidence:
         parts.append("--no-confidence")
 
+    repro_run_name = f"repro_{info['run_name']}"
+
     if args.resume_from:
         resume_path = Path(args.resume_from)
         if not resume_path.is_absolute():
             resume_path = (original_repo_root / resume_path).resolve()
         if resume_path.exists():
             parts.append(f"--resume-from {resume_path}")
-            resume_run_name = f"resume_{info['run_name']}"
-        else:
-            resume_run_name = None
-    else:
-        resume_run_name = None
 
-    if resume_run_name:
-        parts.append(f"--run-name {resume_run_name}")
-        repro_run_dir = original_repo_root / "baseline" / "runs" / resume_run_name
-        parts.append(f"--run-dir {repro_run_dir}")
+    parts.append(f"--run-name {repro_run_name}")
+    repro_run_dir = original_repo_root / "baseline" / "runs" / repro_run_name
+    parts.append(f"--run-dir {repro_run_dir}")
 
     # Always skip snapshot on repro to avoid creating another branch
     parts.append("--no-snapshot")
