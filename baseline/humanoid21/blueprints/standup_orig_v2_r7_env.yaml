@@ -1,0 +1,62 @@
+# Standup reproduction — V2 r7 (gapped potential, no wall detection).
+# Uses StandupPotentialRewarderV2 from f598dfa commit.
+# height_threshold=0.3, same termination as V1.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+  success_height:
+    default: 0.75
+  success_uprightness:
+    default: 0.85
+  success_hold_steps:
+    default: 10
+  stagnation_height:
+    default: 0.25
+  stagnation_steps:
+    default: 150
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      success_height: ${success_height}
+      success_uprightness: ${success_uprightness}
+      success_hold_steps: ${success_hold_steps}
+      stagnation_height: ${stagnation_height}
+      stagnation_steps: ${stagnation_steps}
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_v2_r7:StandupPotentialRewarderV2"
+    config:
+      agent_id: ${agent_id}
+  height:
+    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
+    config:
+      agent_id: ${agent_id}
