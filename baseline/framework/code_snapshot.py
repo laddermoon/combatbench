@@ -19,6 +19,7 @@ Reproduce::
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import shutil
 import subprocess
@@ -75,22 +76,56 @@ def create_code_snapshot(
     repo_root = Path(_git(search_from, "rev-parse", "--show-toplevel"))
     head_commit = _git(repo_root, "rev-parse", "HEAD")
     head_branch = _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+    branch_name = f"exp/{run_name}"
 
-    # Temporarily stage everything (including untracked files)
-    _git(repo_root, "add", "-A")
+    # Check for branch name collision
+    if _git_ok(repo_root, "rev-parse", "--verify", f"refs/heads/{branch_name}"):
+        existing_commit = _git(repo_root, "rev-parse", branch_name)
+        print(f"[snapshot] branch {branch_name} already exists (commit {existing_commit[:8]}), skipping snapshot", flush=True)
+        info = {
+            "branch": branch_name,
+            "commit": existing_commit,
+            "base_branch": head_branch if head_branch != "HEAD" else "(detached)",
+            "base_commit": head_commit,
+            "repo_root": str(repo_root),
+            "run_name": run_name,
+            "reused": True,
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "code_snapshot.json", "w") as f:
+            json.dump(info, f, indent=2)
+        return info
+
+    # Acquire a file lock on .git/snapshot.lock to serialize concurrent snapshots
+    lock_path = repo_root / ".git" / "snapshot.lock"
+    lock_fd = None
+    try:
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    except (OSError, IOError):
+        print("[snapshot] could not acquire lock, skipping code snapshot", flush=True)
+        if lock_fd:
+            lock_fd.close()
+        return None
+
+    # Save original index state so we can restore it exactly
+    orig_index_tree = _git(repo_root, "write-tree")
 
     try:
+        # Stage everything (including untracked files)
+        _git(repo_root, "add", "-A")
         tree_hash = _git(repo_root, "write-tree")
         commit_msg = f"snapshot: {run_name}"
         commit_hash = _git(
             repo_root, "commit-tree", tree_hash,
             "-m", commit_msg, "-p", head_commit,
         )
-        branch_name = f"exp/{run_name}"
-        _git(repo_root, "branch", "-f", branch_name, commit_hash)
+        _git(repo_root, "branch", branch_name, commit_hash)
     finally:
-        # Restore staging area to HEAD (working tree is untouched)
-        _git(repo_root, "reset", "--quiet")
+        # Restore staging area to its original state (preserves user's staged changes)
+        _git(repo_root, "read-tree", orig_index_tree)
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        lock_fd.close()
 
     dirty = head_branch == "HEAD"  # detached HEAD
     info = {
