@@ -41,7 +41,7 @@ class BalanceRecoverUltra2Config(CombatExperimentBase):
         "r_foot": 0.99,
     }
 
-    max_steps = 200
+    max_steps = 100
 
     BLUEPRINT = "balance_recover_ultra2_env.yaml"
 
@@ -73,7 +73,7 @@ class BalanceRecoverUltra2Config(CombatExperimentBase):
     entropy_coef: float = 1.5e-3     # encourage exploration to prevent joint freeze
 
     # --- Rollout schedule ---
-    episodes_per_update: int = 2048
+    episodes_per_update: int = 1024
     eval_episodes: int = 128
     eval_interval: int = 3
     # --- Video recording ---
