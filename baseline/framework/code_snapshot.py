@@ -128,12 +128,18 @@ def create_code_snapshot(
     return info
 
 
-def format_repro_command(info: dict, *, args) -> str:
+def format_repro_command(
+    info: dict, *, args,
+    original_run_dir: Path,
+    original_repo_root: Path,
+) -> str:
     """Format a human-friendly reproduction command string.
 
     Args:
         info: Snapshot info dict from create_code_snapshot.
         args: argparse.Namespace with all original CLI arguments.
+        original_run_dir: Absolute path of the original run directory.
+        original_repo_root: Absolute path of the original git repo root.
     """
     branch = info["branch"]
     repro_dir = f"/tmp/repro_{info['run_name']}"
@@ -152,12 +158,24 @@ def format_repro_command(info: dict, *, args) -> str:
         parts.append("--smoke")
     if args.no_confidence:
         parts.append("--no-confidence")
+
     if args.resume_from:
         resume_path = Path(args.resume_from)
+        if not resume_path.is_absolute():
+            resume_path = (original_repo_root / resume_path).resolve()
         if resume_path.exists():
-            parts.append(f"--resume-from {args.resume_from}")
-    if args.run_name:
-        parts.append(f"--run-name {args.run_name}")
+            parts.append(f"--resume-from {resume_path}")
+            resume_run_name = f"resume_{info['run_name']}"
+        else:
+            resume_run_name = None
+    else:
+        resume_run_name = None
+
+    if resume_run_name:
+        parts.append(f"--run-name {resume_run_name}")
+        repro_run_dir = original_repo_root / "baseline" / "runs" / resume_run_name
+        parts.append(f"--run-dir {repro_run_dir}")
+
     # Always skip snapshot on repro to avoid creating another branch
     parts.append("--no-snapshot")
 

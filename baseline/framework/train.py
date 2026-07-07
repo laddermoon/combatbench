@@ -46,6 +46,10 @@ def _parse_args() -> argparse.Namespace:
         "--no-snapshot", action="store_true",
         help="Skip git code snapshot (default: snapshot enabled).",
     )
+    parser.add_argument(
+        "--run-dir", type=str, default=None,
+        help="Explicit run output directory (default: baseline/runs/<run_name>).",
+    )
     return parser.parse_args()
 
 
@@ -75,9 +79,16 @@ def main() -> None:
 
     algo = args.algo
     run_name = args.run_name or f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
-    run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
 
-    resume_from = Path(args.resume_from) if args.resume_from else None
+    if args.run_dir:
+        run_dir = Path(args.run_dir).resolve()
+    else:
+        run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
+
+    if run_dir.exists():
+        raise SystemExit(f"Error: run_dir already exists: {run_dir}")
+
+    resume_from = Path(args.resume_from).resolve() if args.resume_from else None
 
     experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
@@ -89,7 +100,11 @@ def main() -> None:
         snapshot_info = create_code_snapshot(run_name=run_name, run_dir=run_dir)
         if snapshot_info is not None:
             print(f"[snapshot] branch {snapshot_info['branch']} created (commit {snapshot_info['commit'][:8]})", flush=True)
-            repro = format_repro_command(snapshot_info, args=args)
+            repro = format_repro_command(
+                snapshot_info, args=args,
+                original_run_dir=run_dir,
+                original_repo_root=Path(snapshot_info["repo_root"]),
+            )
             repro_path = run_dir / "REPRODUCE.md"
             with open(repro_path, "w") as f:
                 f.write(repro + "\n")
