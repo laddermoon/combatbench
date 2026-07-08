@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It provides a Gymnasium-compatible RL environment where two 21-DOF humanoid robots fight each other. The project includes a physics engine, collision detection, scoring system, and baseline training implementations using Stable-Baselines3.
+CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It provides a Gymnasium-compatible RL environment where two 21-DOF humanoid robots fight each other. The project includes a physics engine, collision detection, scoring system, and a custom multi-critic PPO/SAC training framework with curriculum learning support.
 
 ## Project Structure
 
@@ -28,7 +28,26 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
   - `examples/` - User-submitted competition policies
 - `envs/framework/policy.py` - `Policy` ABC, `PolicyBlueprint`, `ParameterizedPolicyBlueprint`
 - `docs/` - Rules, environment specs, robot details
-- `baseline/` - Training implementations (Stable-Baselines3, GRPO)
+- `baseline/` - Training implementations
+  - `framework/` - **Unified training framework** (PPO/SAC, code snapshot, experiment base)
+    - `train.py` - Main training CLI (supports `--background`, `--smoke`, `--resume-from`, `--no-snapshot`, `--run-dir`)
+    - `experiment.py` - `Experiment` ABC + `CommonParams`, `PPOParams`, `SACParams` dataclasses
+    - `ppo_loop.py` / `ppo_trainer.py` - PPO training loop + update logic (multi-critic, confidence weighting, plateau detection)
+    - `sac_loop.py` / `sac_trainer.py` - SAC training loop + update logic (multi-critic Q, auto-alpha)
+    - `code_snapshot.py` - Git-based code snapshot for experiment reproducibility
+    - `analyze_training.py` - Training log analysis & visualization
+  - `humanoid21/` - Humanoid21-specific training code
+    - `standing.py` - Standing baseline (PPO with risk-aware exploration)
+    - `rewards/` - Reward observer implementations (standup, balance, etc.)
+    - `plugins/` - Custom termination/disturbance plugins
+    - `blueprints/` - Environment blueprint YAML files
+    - `curriculum/` - Curriculum learning experiments
+      - `experiments/` - Auto-discovered experiment registry (`exp_*.py` files)
+        - `base.py` - `CombatExperimentBase` (default impls for PPO + SAC)
+        - `__init__.py` - Registry: `get_experiment()`, `list_experiments()`
+      - `framework/` → renamed to `legacy_framework/` (to be deleted)
+  - `common/` - Shared utilities (policies, rollout, replay buffer)
+  - `runs/` - Training run outputs (gitignored, can be very large)
 
 ## Framework Architecture
 
@@ -175,6 +194,105 @@ runtime.attach_observer_plugin("name", observer_plugin)
 
 **TimeoutPlugin** - Terminates episode after max_steps
 **VideoRecorderPlugin** - Records broadcast view to MP4 at specified FPS
+
+## Training Framework
+
+### Architecture
+
+The training framework in `baseline/framework/` is a custom multi-critic PPO/SAC implementation with curriculum learning support. It does **not** use Stable-Baselines3.
+
+Key design decisions:
+- **Multi-critic**: One value/Q critic per reward component (e.g. `r_fall`, `r_cross`, `r_joint`, ...)
+- **Curriculum scheduling**: Each experiment defines `initial_weights()` and `next_weights()` to control reward component weighting across training
+- **Experiment registry**: Auto-discovers `exp_*.py` files in `baseline/humanoid21/curriculum/experiments/`
+- **Parallel rollout**: Multi-process episode collection via `ParallelRollouter`
+
+### Training CLI
+
+```bash
+# List available experiments
+python3 baseline/framework/train.py --list-experiments
+
+# Smoke test (2 updates, 8 episodes, fast sanity check)
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
+
+# Full training (foreground, logs to console + run_dir/train.log)
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo
+
+# Background training (like nohup, logs to run_dir/train.log only)
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo --background
+
+# Resume from checkpoint
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo \
+  --resume-from baseline/runs/train_basic_balance_ppo_20260101_120000/checkpoints/checkpoint_u01000.pt
+
+# Custom run name
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo --run-name my_exp_v1
+
+# Disable git code snapshot
+python3 baseline/framework/train.py --experiment basic_balance --algo ppo --no-snapshot
+```
+
+### CLI Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--experiment` | (required) | Experiment name from registry |
+| `--algo` | `ppo` | Algorithm: `ppo` or `sac` |
+| `--smoke` | off | Short run (2 updates, 8 episodes) for sanity check |
+| `--resume-from` | None | Checkpoint path to resume from |
+| `--run-name` | auto-generated | `train_<exp>_<algo>_<timestamp>` |
+| `--run-dir` | auto | Explicit run output directory |
+| `--background` | off | Run in background (fork + setsid) |
+| `--no-snapshot` | off | Skip git code snapshot |
+| `--no-confidence` | off | Disable EV-based confidence weighting (PPO) |
+| `--list-experiments` | off | List experiments and exit |
+
+### Run Directory Structure
+
+```
+baseline/runs/<run_name>/
+├── config.json              # Experiment config snapshot
+├── train.log                # Full training log (stdout + stderr)
+├── pid                      # PID file (background mode only)
+├── code_snapshot.json       # Git branch + commit info
+├── REPRODUCE.md             # Reproduction commands
+├── checkpoints/             # Periodic checkpoints (checkpoint_uNNNNN.pt)
+├── policy/                  # Best-of-run exported policy
+├── policy_exports/          # Per-update policy blueprints
+└── videos/                  # Evaluation videos (uNNNNN.mp4)
+```
+
+### Code Snapshot & Reproducibility
+
+Every training run (unless `--no-snapshot`) creates a git branch `exp/<run_name>_<timestamp>` capturing the exact code state, without disturbing the working tree. The run directory contains:
+- `code_snapshot.json` — branch name, commit hash, base commit
+- `REPRODUCE.md` — copy-paste commands to reproduce via `git worktree`
+
+### Adding a New Experiment
+
+1. Create `baseline/humanoid21/curriculum/experiments/exp_<name>.py`
+2. Define a class inheriting `CombatExperimentBase`
+3. Set `name`, `reward_keys`, `gammas`, `BLUEPRINT`
+4. Implement: `extract_rewards()`, `compute_episode_metrics()`, `initial_weights()`, `next_weights()`, `build_rollout_jobs()`, `build_eval_jobs()`, `compare_eval()`, `scheduler_info()`
+5. Export singleton: `EXPERIMENT = MyExperimentConfig()`
+6. The registry auto-discovers it on next `--list-experiments`
+
+### Background Mode
+
+`--background` forks the process, detaches from terminal (`setsid`), and redirects all output to `run_dir/train.log`. Prints run info to console before exiting:
+```
+[run] started in background
+[run] dir: /data1/mono/things/combatbench/baseline/runs/train_xxx_ppo_...
+[run] log: .../train.log
+[run] pid: 12345
+[run] monitor: tail -f .../train.log
+[run] stop: kill 12345
+```
+
+### Logging
+
+All output (Python `print()`, C-level stdout/stderr) is tee'd to `run_dir/train.log`. In foreground mode, output also goes to the console. The log includes human-readable training progress and machine-readable `__RAW_STATS__` JSON lines for monitoring scripts.
 
 ## Common Commands
 
@@ -329,3 +447,8 @@ static_data = sim.accessor.get_static_data()
 - **Policy structure**: Directory-based with `policy.py` (not single-file policies)
 - **Data format**: Structured by `robot_id` (robot_a/robot_b), not flat arrays
 - **Plugin system**: Uses `SimContext` with accessor/mutator pattern
+- **Training framework**: Custom PPO/SAC in `baseline/framework/`, not Stable-Baselines3
+- **Experiment registry**: Auto-discovers `exp_*.py` in `baseline/humanoid21/curriculum/experiments/`
+- **Run directories**: `baseline/runs/` is gitignored, can be very large (checkpoints + videos)
+- **Legacy code**: `baseline/humanoid21/curriculum/legacy_framework/` is deprecated, all imports now point to `baseline/framework/`
+- **Code snapshot**: Training runs create git branches `exp/*` for reproducibility; clean up with `git branch -D exp/...` when no longer needed
