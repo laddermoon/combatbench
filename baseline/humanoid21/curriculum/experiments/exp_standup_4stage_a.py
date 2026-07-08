@@ -30,10 +30,6 @@ class Standup4StageA(Standup4StageBase):
     custom_config = DEFAULT_CUSTOM_CONFIG
 
     TERMINATION_PARAMS = {
-        "success_height": 0.60,
-        "success_uprightness": 0.70,
-        "success_foot_distance": 0.25,
-        "success_hold_steps": 50,
         "stagnation_height": 0.25,
         "stagnation_steps": 150,
     }

@@ -11,14 +11,6 @@ parameters:
     description: "Max action steps."
   agent_id:
     default: "robot_a"
-  success_height:
-    default: 0.60
-  success_uprightness:
-    default: 0.70
-  success_foot_distance:
-    default: 0.25
-  success_hold_steps:
-    default: 50
   stagnation_height:
     default: 0.25
   stagnation_steps:
@@ -47,10 +39,6 @@ plugins:
   - cls: "baseline.humanoid21.plugins.standup_4stage_termination:Standup4StageTerminationPlugin"
     config:
       agent_id: ${agent_id}
-      success_height: ${success_height}
-      success_uprightness: ${success_uprightness}
-      success_foot_distance: ${success_foot_distance}
-      success_hold_steps: ${success_hold_steps}
       stagnation_height: ${stagnation_height}
       stagnation_steps: ${stagnation_steps}
 

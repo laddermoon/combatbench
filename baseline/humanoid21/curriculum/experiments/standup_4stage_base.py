@@ -58,12 +58,8 @@ class Standup4StageBase(CombatExperimentBase):
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
-    # Termination params (from S8/S9)
+    # Termination params (stagnation only; success does not terminate)
     TERMINATION_PARAMS: Dict[str, Any] = {
-        "success_height": 0.60,
-        "success_uprightness": 0.70,
-        "success_foot_distance": 0.25,
-        "success_hold_steps": 50,
         "stagnation_height": 0.25,
         "stagnation_steps": 150,
     }
@@ -158,9 +154,9 @@ class Standup4StageBase(CombatExperimentBase):
         if stages is not None and stage4_bonus > 0:
             r[:] += stage4_bonus * (stages >= 4.0).astype(np.float32)
 
-        term_reasons = getattr(episode, "termination_proposals", [])
-        if any("success" in str(r_) for r_ in term_reasons):
-            r[-1] += terminal_bonus
+        if stages is not None and terminal_bonus > 0:
+            if float(np.max(stages)) >= 4.0:
+                r[-1] += terminal_bonus
 
         return {"r_standup": r}
 
