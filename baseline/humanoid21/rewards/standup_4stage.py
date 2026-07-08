@@ -153,7 +153,7 @@ class Standup4StageRewarder(BaseObserverPlugin):
         self._foot_distance = d_feet
 
     def _get_detailed_contacts(self, ctx: ReadOnlySimContext) -> Dict[str, bool]:
-        """Parse ground contacts for feet, hands, shins, other."""
+        """Parse ground contacts for feet, hands, and other."""
         derived_state = ctx.accessor.get_derived_state(['contacts'])
         cv = derived_state.get('contacts')
 
@@ -165,8 +165,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
             "foot_right": False,
             "hand_left": False,
             "hand_right": False,
-            "shin_left": False,
-            "shin_right": False,
             "has_other_contact": False,
         }
 
@@ -184,8 +182,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
         elif foot_left_body.endswith("_b"):
             suffix = "_b"
 
-        shin_left_body = f"shin_left{suffix}"
-        shin_right_body = f"shin_right{suffix}"
         lower_arm_left_body = f"lower_arm_left{suffix}"
         lower_arm_right_body = f"lower_arm_right{suffix}"
 
@@ -225,10 +221,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
                     contacts["hand_left"] = True
                 elif body_robot in (hand_right_body, lower_arm_right_body):
                     contacts["hand_right"] = True
-                elif body_robot == shin_left_body:
-                    contacts["shin_left"] = True
-                elif body_robot == shin_right_body:
-                    contacts["shin_right"] = True
                 else:
                     contacts["has_other_contact"] = True
 
