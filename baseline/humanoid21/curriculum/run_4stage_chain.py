@@ -34,10 +34,8 @@ def find_latest_checkpoint(run_dir: Path) -> Path | None:
     return ckpts[-1]
 
 
-def find_best_checkpoint(run_dir: Path) -> Path | None:
-    best = run_dir / "checkpoints" / "best.pt"
-    if best.exists():
-        return best
+def find_last_checkpoint(run_dir: Path) -> Path | None:
+    """Use the latest checkpoint (not best) so Phase B resumes from final state."""
     return find_latest_checkpoint(run_dir)
 
 
@@ -103,7 +101,7 @@ def main() -> None:
         runs_dir = Path(__file__).resolve().parent.parent / "runs"
         prev_runs = sorted(runs_dir.glob(f"4stage_{prev_name}_*"))
         if prev_runs:
-            ckpt = find_best_checkpoint(prev_runs[-1])
+            ckpt = find_last_checkpoint(prev_runs[-1])
             if ckpt:
                 args.resume_from = str(ckpt)
                 print(f"[chain] Auto-found checkpoint from previous phase: {ckpt}", flush=True)
@@ -120,7 +118,7 @@ def main() -> None:
         exp_name, target = STAGES[i]
         run_dir = run_stage(i, exp_name, target, resume_from, smoke=args.smoke)
 
-        ckpt = find_best_checkpoint(run_dir)
+        ckpt = find_last_checkpoint(run_dir)
         if ckpt is None:
             print(f"[chain] ERROR: No checkpoint found in {run_dir}, stopping.", flush=True)
             break

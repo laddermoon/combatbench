@@ -4,12 +4,13 @@ Design based on the natural human standup process:
   Stage 0: Roll over to prone (face-down)  — guided by f_down
   Stage 1: Prone, exploring hand/foot support — flat potential, exploration
   Stage 2: Hands+feet support (or feet only, height not enough) — guided by height+uprightness
-  Stage 3: Both feet standing, feet still spread — guided by foot narrowing
+  Stage 3: Both feet standing — guided by height+uprightness
   Stage 4: Feet narrowed stable stand — guided by stability + narrowness
 
-Potential ranges (PBRS, globally monotone, one allowed jump at Stage 1→2):
+Potential ranges (continuous at all stage boundaries):
   Stage 0: [0.00, 0.15]   Stage 1: 0.15 (flat)
-  Stage 2: [0.25, 0.45]   Stage 3: [0.45, 0.75]   Stage 4: [0.75, 1.00]
+  Stage 2: [0.15, 0.40]   Stage 3: [0.40, 0.70]
+  Stage 4: Stage 3 base + [0.00, 0.30] narrow/stable bonus → [0.40, 1.00]
 
 Thresholds follow the final working config of the original 9-stage experiment
 (S8/S9): success_height=0.60, success_uprightness=0.70.
@@ -26,8 +27,7 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 F_PRONE = 0.5       # f_down threshold: "significantly face-down"
 H_STAND = 0.60      # pelvis height to count as "standing"
 U_STAND = 0.70      # uprightness to count as "standing"
-D_NARROW = 0.25     # foot distance for "narrow stand" (Stage 4)
-D_SPREAD = 0.45     # foot distance target for "spread" (encouraged in Stage 2)
+D_NARROW = 0.25     # foot distance for "narrow stand" (Stage 4 only)
 V_STABLE = 2.0      # joint velocity threshold for "stable"
 
 
@@ -38,13 +38,11 @@ class Standup4StageRewarder(BaseObserverPlugin):
         self.agent_id = agent_id
         self._stage: int = 0
         self._potential: float = 0.0
-        self._has_wall: bool = False
         self._foot_distance: float = 0.0
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
         self._stage = 0
         self._potential = 0.0
-        self._has_wall = False
         self._foot_distance = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -87,7 +85,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
         hand_l = contacts["hand_left"]
         hand_r = contacts["hand_right"]
         other = contacts["has_other_contact"]
-        has_wall = contacts["has_wall_contact"]
 
         has_hand = hand_l or hand_r
         has_foot = foot_l or foot_r
@@ -99,36 +96,31 @@ class Standup4StageRewarder(BaseObserverPlugin):
         stage = 0
         potential = 0.0
 
-        # ---- Stage 4: Narrow stable stand [0.75, 1.00] ----
+        # ---- Stage 4: Narrow stable stand [0.40+bonus, 1.00] ----
         # Both feet, no hands, no other contact, standing height+uprightness,
-        # feet narrowed, low velocity, no wall.
+        # feet narrowed, low velocity.
+        # Potential = Stage 3 base + narrow/stable bonus (continuous with Stage 3).
         if (foot_l and foot_r and not has_hand and not other
                 and h_pelvis >= H_STAND and u_torso >= U_STAND
-                and d_feet < D_NARROW and mean_abs_joint_vel < V_STABLE
-                and not has_wall):
+                and d_feet < D_NARROW and mean_abs_joint_vel < V_STABLE):
             stage = 4
             h_score = float(np.clip((h_pelvis - H_STAND) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
             narrow_score = float(np.clip((D_NARROW - d_feet) / D_NARROW, 0.0, 1.0))
-            potential = 0.75 + 0.25 * h_score * u_score * v_score * narrow_score
+            base = 0.40 + 0.30 * h_score * u_score
+            potential = base + 0.30 * h_score * u_score * v_score * narrow_score
 
-        # ---- Stage 3: Both feet standing, feet still spread [0.45, 0.75] ----
+        # ---- Stage 3: Both feet standing [0.40, 0.70] ----
         # Both feet, no hands, no other, standing height+uprightness.
-        # Feet may still be spread; guide narrowing.
         elif (foot_l and foot_r and not has_hand and not other
-                and h_pelvis >= H_STAND and u_torso >= U_STAND
-                and not has_wall):
+                and h_pelvis >= H_STAND and u_torso >= U_STAND):
             stage = 3
             h_score = float(np.clip((h_pelvis - H_STAND) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
-            # Guide foot narrowing: d_feet from D_SPREAD → D_NARROW
-            narrow_guide = float(
-                np.clip((D_SPREAD - d_feet) / (D_SPREAD - D_NARROW), 0.0, 1.0)
-            )
-            potential = 0.45 + 0.30 * h_score * u_score * (0.5 + 0.5 * narrow_guide)
+            potential = 0.40 + 0.30 * h_score * u_score
 
-        # ---- Stage 2: Hands+feet support OR feet-only below stand threshold [0.25, 0.45] ----
+        # ---- Stage 2: Hands+feet support OR feet-only below stand threshold [0.15, 0.40] ----
         # Case A: hands and feet both on ground (push-up position)
         # Case B: feet on ground, no hands, no other, but height/uprightness below Stage 3
         #         (height not enough → still Stage 2, per user requirement)
@@ -140,9 +132,7 @@ class Standup4StageRewarder(BaseObserverPlugin):
             stage = 2
             h_score = float(np.clip((h_pelvis - 0.20) / 0.40, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.0) / 0.70, 0.0, 1.0))
-            # Mildly encourage foot spread (preparation for push-up)
-            spread_score = float(np.clip(d_feet / D_SPREAD, 0.0, 1.0))
-            potential = 0.25 + 0.20 * h_score * u_score * (0.7 + 0.3 * spread_score)
+            potential = 0.15 + 0.25 * h_score * u_score
 
         # ---- Stage 1: Prone (rolled over), no support yet — flat 0.15 ----
         # f_down above threshold but no hand+foot support.
@@ -160,11 +150,10 @@ class Standup4StageRewarder(BaseObserverPlugin):
 
         self._stage = stage
         self._potential = potential
-        self._has_wall = has_wall
         self._foot_distance = d_feet
 
     def _get_detailed_contacts(self, ctx: ReadOnlySimContext) -> Dict[str, bool]:
-        """Parse ground contacts for feet, hands, shins, other + wall contact."""
+        """Parse ground contacts for feet, hands, shins, other."""
         derived_state = ctx.accessor.get_derived_state(['contacts'])
         cv = derived_state.get('contacts')
 
@@ -179,7 +168,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
             "shin_left": False,
             "shin_right": False,
             "has_other_contact": False,
-            "has_wall_contact": False,
         }
 
         if cv is None or cv['ncon'] == 0:
@@ -243,8 +231,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
                     contacts["shin_right"] = True
                 else:
                     contacts["has_other_contact"] = True
-            else:
-                contacts["has_wall_contact"] = True
 
         return contacts
 
@@ -252,7 +238,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
         return {
             "stage": float(self._stage),
             "potential": self._potential,
-            "has_wall_contact": 1.0 if self._has_wall else 0.0,
             "foot_distance": self._foot_distance,
         }
 

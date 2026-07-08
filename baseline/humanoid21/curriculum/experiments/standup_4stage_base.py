@@ -46,15 +46,14 @@ class Standup4StageBase(CombatExperimentBase):
     minibatch_size: int = 4096
     entropy_coef: float = 1e-3
 
-    # Reward config (from original S9 final working config, pot=1.0 since z-score normalized)
+    # Reward config (Phase A matches S1: pure potential, no extras)
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 400,
         "potential_reward_scale": 1.0,
         "height_reward_scale": 0.0,
-        "terminal_success_bonus": 100.0,
-        "time_penalty": -0.01,
-        "wall_penalty": -0.05,
-        "stage4_per_step_bonus": 0.1,
+        "terminal_success_bonus": 0.0,
+        "time_penalty": 0.0,
+        "stage4_per_step_bonus": 0.0,
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
@@ -130,10 +129,8 @@ class Standup4StageBase(CombatExperimentBase):
         h_scale = float(self.custom_config.get("height_reward_scale", 0.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
         time_penalty = float(self.custom_config.get("time_penalty", 0.0))
-        wall_penalty = float(self.custom_config.get("wall_penalty", 0.0))
         stage4_bonus = float(self.custom_config.get("stage4_per_step_bonus", 0.0))
 
-        wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
         stages = _extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
@@ -146,10 +143,6 @@ class Standup4StageBase(CombatExperimentBase):
             r[1:] += h_scale * (heights[1:] - heights[:-1])
 
         r[:] += time_penalty
-
-        if wall_contacts is not None and wall_penalty != 0.0 and heights is not None:
-            standing_mask = (heights > 0.45).astype(np.float32)
-            r[:] += wall_penalty * wall_contacts * standing_mask
 
         if stages is not None and stage4_bonus > 0:
             r[:] += stage4_bonus * (stages >= 4.0).astype(np.float32)

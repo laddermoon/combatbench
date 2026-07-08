@@ -22,10 +22,10 @@ class Standup4StageA(Standup4StageBase):
         "max_steps": 400,
         "potential_reward_scale": 1.0,
         "height_reward_scale": 0.0,
-        "terminal_success_bonus": 100.0,
-        "time_penalty": -0.01,
-        "wall_penalty": -0.05,
-        "stage4_per_step_bonus": 0.1,
+        "terminal_success_bonus": 0.0,
+        "time_penalty": 0.0,
+        "wall_penalty": 0.0,
+        "stage4_per_step_bonus": 0.0,
     }
     custom_config = DEFAULT_CUSTOM_CONFIG
 
