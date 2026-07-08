@@ -1,11 +1,13 @@
 """4-stage standup potential-based rewarder.
 
-Design based on the natural human standup process:
-  Stage 0: Roll over to prone (face-down)  — guided by f_down
-  Stage 1: Prone, exploring hand/foot support — flat potential, exploration
-  Stage 2: Hands+feet support (or feet only, height not enough) — guided by height+uprightness
-  Stage 3: Both feet standing — guided by height+uprightness
-  Stage 4: Feet narrowed stable stand — guided by stability + narrowness
+Design based on the natural human standup process (single/double foot treated
+as equivalent in Stages 2/3/4 — only foot contact matters, not count):
+  Stage 0: Arbitrary state (not rolled over) — guided by f_down
+  Stage 1: Rolled over (any contact) — flat potential, exploration
+  Stage 2: Foot on ground, hands optional, no other contact, below stand
+           threshold — guided by height+uprightness
+  Stage 3: Foot on ground, hands off, no other, height+uprightness met
+  Stage 4: Stage 3 + feet narrowed — guided by stability + narrowness
 
 Potential ranges (continuous at all stage boundaries):
   Stage 0: [0.00, 0.15]   Stage 1: 0.15 (flat)
@@ -97,10 +99,10 @@ class Standup4StageRewarder(BaseObserverPlugin):
         potential = 0.0
 
         # ---- Stage 4: Narrow stable stand [0.40+bonus, 1.00] ----
-        # Both feet, no hands, no other contact, standing height+uprightness,
-        # feet narrowed, low velocity.
+        # Foot on ground (single/double equivalent), no hands, no other contact,
+        # standing height+uprightness, feet narrowed, low velocity.
         # Potential = Stage 3 base + narrow/stable bonus (continuous with Stage 3).
-        if (foot_l and foot_r and not has_hand and not other
+        if (has_foot and not has_hand and not other
                 and h_pelvis >= H_STAND and u_torso >= U_STAND
                 and d_feet < D_NARROW and mean_abs_joint_vel < V_STABLE):
             stage = 4
@@ -111,38 +113,36 @@ class Standup4StageRewarder(BaseObserverPlugin):
             base = 0.40 + 0.30 * h_score * u_score
             potential = base + 0.30 * h_score * u_score * v_score * narrow_score
 
-        # ---- Stage 3: Both feet standing [0.40, 0.70] ----
-        # Both feet, no hands, no other, standing height+uprightness.
-        elif (foot_l and foot_r and not has_hand and not other
+        # ---- Stage 3: Standing [0.40, 0.70] ----
+        # Foot on ground (single/double equivalent), no hands, no other,
+        # standing height+uprightness met.
+        elif (has_foot and not has_hand and not other
                 and h_pelvis >= H_STAND and u_torso >= U_STAND):
             stage = 3
             h_score = float(np.clip((h_pelvis - H_STAND) / 0.20, 0.0, 1.0))
             u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
             potential = 0.40 + 0.30 * h_score * u_score
 
-        # ---- Stage 2: Hands+feet support OR feet-only below stand threshold [0.15, 0.40] ----
-        # Case A: hands and feet both on ground (push-up position)
-        # Case B: feet on ground, no hands, no other, but height/uprightness below Stage 3
-        #         (height not enough → still Stage 2, per user requirement)
-        # Lenient on knee/other contact for Case A (matching original V1 Stage 2).
-        elif (has_hand and has_foot) or (
-            has_foot and not has_hand and not other
-            and (h_pelvis < H_STAND or u_torso < U_STAND)
-        ):
+        # ---- Stage 2: Foot support below stand threshold [0.15, 0.40] ----
+        # Foot on ground (single/double equivalent), no other contact.
+        # Hands are optional (push-up position allowed). Reaching here means
+        # Stage 3 failed — either hands still down or height/uprightness below
+        # threshold (handled automatically by top-down priority).
+        elif has_foot and not other:
             stage = 2
             h_score = float(np.clip((h_pelvis - 0.20) / 0.40, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.0) / 0.70, 0.0, 1.0))
             potential = 0.15 + 0.25 * h_score * u_score
 
-        # ---- Stage 1: Prone (rolled over), no support yet — flat 0.15 ----
-        # f_down above threshold but no hand+foot support.
-        # Exploration: no gradient, robot finds its own way to push up.
+        # ---- Stage 1: Rolled over (any contact) — flat 0.15 ----
+        # f_down above threshold. Exploration: no gradient, robot finds its
+        # own way to get feet under it and push up.
         elif f_down >= F_PRONE:
             stage = 1
             potential = 0.15
 
-        # ---- Stage 0: Not rolled over [0.00, 0.15] ----
-        # Guide rolling to prone via f_down.
+        # ---- Stage 0: Arbitrary state (not rolled over) [0.00, 0.15] ----
+        # Guide rolling over via f_down.
         else:
             stage = 0
             f_score = float(np.clip((f_down + 1.0) / 2.0, 0.0, 1.0))
