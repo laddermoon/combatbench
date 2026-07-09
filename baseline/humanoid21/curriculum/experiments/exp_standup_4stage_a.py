@@ -19,19 +19,13 @@ class Standup4StageA(Standup4StageBase):
     minibatch_size: int = 4096
 
     DEFAULT_CUSTOM_CONFIG = {
-        "max_steps": 400,
+        "max_steps": 200,
         "potential_reward_scale": 1.0,
-        "height_reward_scale": 0.0,
         "terminal_success_bonus": 0.0,
         "time_penalty": 0.0,
         "stage4_per_step_bonus": 0.0,
     }
     custom_config = DEFAULT_CUSTOM_CONFIG
-
-    TERMINATION_PARAMS = {
-        "stagnation_height": 0.25,
-        "stagnation_steps": 150,
-    }
 
 
 EXPERIMENT = Standup4StageA()

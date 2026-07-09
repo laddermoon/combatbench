@@ -27,7 +27,7 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 # Thresholds (from original S8/S9 final working config)
 F_PRONE = 0.5       # f_down threshold: "significantly face-down"
-H_STAND = 0.60      # pelvis height to count as "standing"
+H_STAND = 1.0       # torso height to count as "standing"
 U_STAND = 0.70      # uprightness to count as "standing"
 D_NARROW = 0.25     # foot distance for "narrow stand" (Stage 4 only)
 V_STABLE = 2.0      # joint velocity threshold for "stable"
@@ -51,7 +51,7 @@ class Standup4StageRewarder(BaseObserverPlugin):
         core_state = ctx.accessor.get_core_state()[self.agent_id]
         derived_state = ctx.accessor.get_derived_state([self.agent_id])[self.agent_id]
 
-        h_pelvis = float(core_state["root_pos"][2])
+        h_torso = float(core_state["root_pos"][2])  # root body = torso in MuJoCo
 
         u_torso = float(
             np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
@@ -103,10 +103,10 @@ class Standup4StageRewarder(BaseObserverPlugin):
         # standing height+uprightness, feet narrowed, low velocity.
         # Potential = Stage 3 base + narrow/stable bonus (continuous with Stage 3).
         if (has_foot and not has_hand and not other
-                and h_pelvis >= H_STAND and u_torso >= U_STAND
+                and h_torso >= H_STAND and u_torso >= U_STAND
                 and d_feet < D_NARROW and mean_abs_joint_vel < V_STABLE):
             stage = 4
-            h_score = float(np.clip((h_pelvis - H_STAND) / 0.20, 0.0, 1.0))
+            h_score = float(np.clip((h_torso - H_STAND) / 0.25, 0.0, 1.0))
             u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
             v_score = float(np.exp(-mean_abs_joint_vel))
             narrow_score = float(np.clip((D_NARROW - d_feet) / D_NARROW, 0.0, 1.0))
@@ -117,9 +117,9 @@ class Standup4StageRewarder(BaseObserverPlugin):
         # Foot on ground (single/double equivalent), no hands, no other,
         # standing height+uprightness met.
         elif (has_foot and not has_hand and not other
-                and h_pelvis >= H_STAND and u_torso >= U_STAND):
+                and h_torso >= H_STAND and u_torso >= U_STAND):
             stage = 3
-            h_score = float(np.clip((h_pelvis - H_STAND) / 0.20, 0.0, 1.0))
+            h_score = float(np.clip((h_torso - H_STAND) / 0.25, 0.0, 1.0))
             u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
             potential = 0.40 + 0.30 * h_score * u_score
 
@@ -130,7 +130,7 @@ class Standup4StageRewarder(BaseObserverPlugin):
         # threshold (handled automatically by top-down priority).
         elif has_foot and not other:
             stage = 2
-            h_score = float(np.clip((h_pelvis - 0.20) / 0.40, 0.0, 1.0))
+            h_score = float(np.clip((h_torso - 0.15) / 0.85, 0.0, 1.0))
             u_score = float(np.clip((u_torso - 0.0) / 0.70, 0.0, 1.0))
             potential = 0.15 + 0.25 * h_score * u_score
 

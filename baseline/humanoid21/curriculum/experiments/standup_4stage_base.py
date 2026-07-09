@@ -48,20 +48,13 @@ class Standup4StageBase(CombatExperimentBase):
 
     # Reward config (Phase A matches S1: pure potential, no extras)
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
-        "max_steps": 400,
+        "max_steps": 200,
         "potential_reward_scale": 1.0,
-        "height_reward_scale": 0.0,
         "terminal_success_bonus": 0.0,
         "time_penalty": 0.0,
         "stage4_per_step_bonus": 0.0,
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
-
-    # Termination params (stagnation only; success does not terminate)
-    TERMINATION_PARAMS: Dict[str, Any] = {
-        "stagnation_height": 0.25,
-        "stagnation_steps": 150,
-    }
 
     _success_rate: float = 0.0
 
@@ -73,12 +66,10 @@ class Standup4StageBase(CombatExperimentBase):
         )
 
     def _materialize_env(self, agent_id: str) -> EnvBlueprint:
-        params = dict(
+        return self._env_pb().materialize(
             agent_id=agent_id,
             max_steps=self.custom_config["max_steps"],
         )
-        params.update(self.TERMINATION_PARAMS)
-        return self._env_pb().materialize(**params)
 
     def video_env_blueprint(self):
         return self._materialize_env("robot_a")
@@ -124,9 +115,7 @@ class Standup4StageBase(CombatExperimentBase):
         oo = episode.observer_outputs
 
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        heights = _extract_per_step_field(oo, "height", "height", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
-        h_scale = float(self.custom_config.get("height_reward_scale", 0.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
         time_penalty = float(self.custom_config.get("time_penalty", 0.0))
         stage4_bonus = float(self.custom_config.get("stage4_per_step_bonus", 0.0))
@@ -141,9 +130,6 @@ class Standup4StageBase(CombatExperimentBase):
             delta_pot[neg_mask] *= 1.2
             r[1:] += delta_pot
             r[0] += pot_scale * (potentials[0] - 0.0)
-
-        if heights is not None and h_scale > 0:
-            r[1:] += h_scale * (heights[1:] - heights[:-1])
 
         r[:] += time_penalty
 

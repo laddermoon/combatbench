@@ -7,14 +7,10 @@ parameters:
     default: 2.0
     description: "Spawn distance between robots (m)."
   max_steps:
-    default: 400
+    default: 200
     description: "Max action steps."
   agent_id:
     default: "robot_a"
-  stagnation_height:
-    default: 0.25
-  stagnation_steps:
-    default: 150
 
 runtime:
   phy_steps_per_action: 25
@@ -36,18 +32,9 @@ plugins:
       max_phy_steps: 1000
       height_threshold: 0.3
       reset_interval: 5
-  - cls: "baseline.humanoid21.plugins.standup_4stage_termination:Standup4StageTerminationPlugin"
-    config:
-      agent_id: ${agent_id}
-      stagnation_height: ${stagnation_height}
-      stagnation_steps: ${stagnation_steps}
 
 observer_plugins:
   standup:
     cls: "baseline.humanoid21.rewards.standup_4stage:Standup4StageRewarder"
-    config:
-      agent_id: ${agent_id}
-  height:
-    cls: "baseline.humanoid21.plugins.height_observer:HeightObserver"
     config:
       agent_id: ${agent_id}
