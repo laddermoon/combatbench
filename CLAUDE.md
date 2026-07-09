@@ -348,6 +348,21 @@ Output structure:
         └── ...
 ```
 
+**Using recorder_viewer to inspect recordings interactively:**
+
+```bash
+# Start the web viewer (serves recording dir + opens browser)
+PYTHONPATH=. python3 -m envs.framework.recorder_viewer /data1/dev/replay/rec
+
+# Custom port, no auto-browser
+PYTHONPATH=. python3 -m envs.framework.recorder_viewer /data1/dev/replay/rec --port 9000 --no-browser
+```
+
+The viewer serves at `http://localhost:8765/viewer.html` (default port 8765).
+It fetches `index.json` for the episode list, then per-step PNG images and JSON
+data as you navigate. Observer outputs (stage, potential, reward) are visible
+in the per-step JSON panel.
+
 **Using RoundRunner in Python code:**
 ```python
 from combatbench.envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner, VideoRecorderPlugin
