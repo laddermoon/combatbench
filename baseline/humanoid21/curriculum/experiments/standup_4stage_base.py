@@ -126,8 +126,6 @@ class Standup4StageBase(CombatExperimentBase):
 
         if potentials is not None:
             delta_pot = pot_scale * (potentials[1:] - potentials[:-1])
-            neg_mask = delta_pot < 0
-            delta_pot[neg_mask] *= 1.2
             r[1:] += delta_pot
             r[0] += pot_scale * (potentials[0] - 0.0)
 
