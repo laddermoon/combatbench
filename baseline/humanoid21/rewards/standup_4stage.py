@@ -1,21 +1,26 @@
 """4-stage standup potential-based rewarder.
 
-Design based on the natural human standup process (single/double foot treated
-as equivalent in Stages 2/3/4 — only foot contact matters, not count):
-  Stage 0: Arbitrary state (not rolled over) — guided by f_down
-  Stage 1: Rolled over (any contact) — flat potential, exploration
-  Stage 2: Foot on ground, hands optional, no other contact, below stand
-           threshold — guided by height+uprightness
-  Stage 3: Foot on ground, hands off, no other, height+uprightness met
-  Stage 4: Stage 3 + feet narrowed — guided by stability + narrowness
+Design based on the natural human standup process:
+  Stage 0: Not rolled over — guided by f_down orientation
+  Stage 1: Rolled over (prone) — guided by torso height [0.12, 0.40] +
+           pelvis height [0.12, 0.50], product shapes both-lift gradient
+  Stage 2: Both feet on ground, hands optional, no other contact —
+           guided by torso height + uprightness
+  Stage 3: Foot on ground, no hands, no other, torso height >= 0.85m
+           and uprightness >= cos(30°) ≈ 0.866
+  Stage 4: No hands, no other, torso height >= H_STAND (1.1m) — fixed
 
-Potential ranges (continuous at all stage boundaries):
-  Stage 0: [0.00, 0.15]   Stage 1: 0.15 (flat)
-  Stage 2: [0.15, 0.40]   Stage 3: [0.40, 0.70]
-  Stage 4: Stage 3 base + [0.00, 0.30] narrow/stable bonus → [0.40, 1.00]
+Height metric: h_torso = root_pos[2] (MuJoCo root body = torso).
+Pelvis height from body_xpos for Stage 1 hip-lift guidance.
 
-Thresholds follow the final working config of the original 9-stage experiment
-(S8/S9): success_height=0.60, success_uprightness=0.70.
+Potential ranges (all stage boundaries continuous):
+  Stage 0: [0.00, 0.15]   Stage 1: [0.15, 0.40]
+  Stage 2: [0.40, 0.70]   Stage 3: [0.70, 1.00]   Stage 4: 1.00
+
+Reference heights (from simulation):
+  standing: torso=1.282, pelvis=0.857
+  squat:    torso=0.596, pelvis=0.239
+  prone:    torso=0.076, pelvis=0.071
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 # Thresholds (from original S8/S9 final working config)
 F_PRONE = 0.5       # f_down threshold: "significantly face-down"
-H_STAND = 1.0       # torso height to count as "standing"
+H_STAND = 1.1       # torso height to count as "standing"
 U_STAND = 0.70      # uprightness to count as "standing"
 D_NARROW = 0.25     # foot distance for "narrow stand" (Stage 4 only)
 V_STABLE = 2.0      # joint velocity threshold for "stable"
@@ -53,12 +58,17 @@ class Standup4StageRewarder(BaseObserverPlugin):
 
         h_torso = float(core_state["root_pos"][2])  # root body = torso in MuJoCo
 
+        # Pelvis height from body_xpos
+        static_data = ctx.accessor.get_static_data()[self.agent_id]
+        body_xpos = derived_state.get("body_xpos", {})
+        pelvis_body_name = static_data["keypoint_body_names"]["pelvis"]
+        h_pelvis = float(body_xpos.get(pelvis_body_name, np.zeros(3, dtype=np.float32))[2])
+
         u_torso = float(
             np.asarray(derived_state["uprightness"], dtype=np.float32).reshape(-1)[0]
         )
 
         # Torso orientation: f_down = 1.0 means perfect prone (face down)
-        static_data = ctx.accessor.get_static_data()[self.agent_id]
         torso_body_name = static_data["keypoint_body_names"]["torso"]
         body_xquat_dict = derived_state.get("body_xquat", {})
         q_torso = body_xquat_dict.get(
@@ -73,7 +83,6 @@ class Standup4StageRewarder(BaseObserverPlugin):
         mean_abs_joint_vel = float(np.mean(np.abs(joint_vel)))
 
         # Foot distance (horizontal plane)
-        body_xpos = derived_state.get("body_xpos", {})
         foot_l_name = static_data["keypoint_body_names"]["foot_left"]
         foot_r_name = static_data["keypoint_body_names"]["foot_right"]
         foot_l_pos = body_xpos.get(foot_l_name, np.zeros(3, dtype=np.float32))
@@ -98,48 +107,56 @@ class Standup4StageRewarder(BaseObserverPlugin):
         stage = 0
         potential = 0.0
 
-        # ---- Stage 4: Narrow stable stand [0.40+bonus, 1.00] ----
-        # Foot on ground (single/double equivalent), no hands, no other contact,
-        # standing height+uprightness, feet narrowed, low velocity.
-        # Potential = Stage 3 base + narrow/stable bonus (continuous with Stage 3).
-        if (has_foot and not has_hand and not other
-                and h_torso >= H_STAND and u_torso >= U_STAND
-                and d_feet < D_NARROW and mean_abs_joint_vel < V_STABLE):
+        # ---- Stage 4: Standing [1.00] ----
+        # No hands, no other contact, torso height met. Fixed potential.
+        if (not has_hand and not other
+                and h_torso >= H_STAND):
             stage = 4
-            h_score = float(np.clip((h_torso - H_STAND) / 0.25, 0.0, 1.0))
-            u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
-            v_score = float(np.exp(-mean_abs_joint_vel))
-            narrow_score = float(np.clip((D_NARROW - d_feet) / D_NARROW, 0.0, 1.0))
-            base = 0.40 + 0.30 * h_score * u_score
-            potential = base + 0.30 * h_score * u_score * v_score * narrow_score
+            potential = 1.0
 
-        # ---- Stage 3: Standing [0.40, 0.70] ----
-        # Foot on ground (single/double equivalent), no hands, no other,
-        # standing height+uprightness met.
+        # ---- Stage 3: Standing, filtering to Stage 4 [0.70, 1.00] ----
+        # Foot on ground, no hands, no other, torso height >= 0.85m and
+        # uprightness >= cos(30°) ≈ 0.866 (gate conditions).
+        # h_score: torso [0.85, H_STAND=1.10] → 0..1
+        # potential = 0.70 + 0.30 * h_score
+        # Transition from Stage 2: at h_torso=0.85, u_torso=0.866, Stage 2
+        # potential = 0.70 = Stage 3 floor (continuous).
+        # Transition to Stage 4: when h_torso >= H_STAND, h_score = 1.0,
+        # potential = 1.00 = Stage 4 (continuous).
         elif (has_foot and not has_hand and not other
-                and h_torso >= H_STAND and u_torso >= U_STAND):
+                and h_torso >= 0.85 and u_torso >= 0.866):
             stage = 3
-            h_score = float(np.clip((h_torso - H_STAND) / 0.25, 0.0, 1.0))
-            u_score = float(np.clip((u_torso - U_STAND) / 0.20, 0.0, 1.0))
+            h_score = float(np.clip((h_torso - 0.85) / (H_STAND - 0.85), 0.0, 1.0))
+            potential = 0.70 + 0.30 * h_score
+
+        # ---- Stage 2: Both feet on ground, below stand threshold [0.40, 0.70] ----
+        # Both feet on ground, no other contact. Hands optional (push-up allowed).
+        # h_score: torso [0.15, 0.85] → 0..1 (saturates at Stage 3 height threshold)
+        # u_score: uprightness [0.0, 0.866] → 0..1 (saturates at Stage 3 uprightness threshold)
+        # potential = 0.40 + 0.30 * h_score * u_score
+        # Transition to Stage 3: when h_torso >= 0.85 AND u_torso >= 0.866,
+        # both scores = 1.0, potential = 0.70 = Stage 3 floor (continuous).
+        elif foot_l and foot_r and not other:
+            stage = 2
+            h_score = float(np.clip((h_torso - 0.15) / 0.70, 0.0, 1.0))
+            u_score = float(np.clip((u_torso - 0.0) / 0.866, 0.0, 1.0))
             potential = 0.40 + 0.30 * h_score * u_score
 
-        # ---- Stage 2: Foot support below stand threshold [0.15, 0.40] ----
-        # Foot on ground (single/double equivalent), no other contact.
-        # Hands are optional (push-up position allowed). Reaching here means
-        # Stage 3 failed — either hands still down or height/uprightness below
-        # threshold (handled automatically by top-down priority).
-        elif has_foot and not other:
-            stage = 2
-            h_score = float(np.clip((h_torso - 0.15) / 0.85, 0.0, 1.0))
-            u_score = float(np.clip((u_torso - 0.0) / 0.70, 0.0, 1.0))
-            potential = 0.15 + 0.25 * h_score * u_score
-
-        # ---- Stage 1: Rolled over (any contact) — flat 0.15 ----
-        # f_down above threshold. Exploration: no gradient, robot finds its
-        # own way to get feet under it and push up.
+        # ---- Stage 1: Rolled over — guided by torso + pelvis height [0.15, 0.40] ----
+        # f_down above threshold but no both-feet support yet.
+        # h_torso_score: torso [0.12, 0.40] → 0..1 (upper body lift)
+        # h_pelvis_score: pelvis [0.12, 0.50] → 0..1 (hip lift)
+        # potential = 0.15 + 0.25 * h_torso_score * h_pelvis_score
+        # Product ensures both upper body and hips must rise for reward.
+        # Transition to Stage 2: when both feet touch ground (top-down priority),
+        # switches to Stage 2 with floor 0.40 (discontinuous jump from Stage 1
+        # max 0.40 — rewards acquiring foot support).
+        # Mutually exclusive: both-feet → Stage 2, else → Stage 1.
         elif f_down >= F_PRONE:
             stage = 1
-            potential = 0.15
+            h_torso_score = float(np.clip((h_torso - 0.12) / 0.28, 0.0, 1.0))
+            h_pelvis_score = float(np.clip((h_pelvis - 0.12) / 0.38, 0.0, 1.0))
+            potential = 0.15 + 0.25 * h_torso_score * h_pelvis_score
 
         # ---- Stage 0: Arbitrary state (not rolled over) [0.00, 0.15] ----
         # Guide rolling over via f_down.
