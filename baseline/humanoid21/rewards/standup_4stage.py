@@ -31,7 +31,7 @@ import numpy as np
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 # Thresholds (from original S8/S9 final working config)
-F_PRONE = 0.5       # f_down threshold: "significantly face-down"
+F_PRONE = 0.5    # f_down threshold: 45° from downward = "significantly face-down"
 H_STAND = 1.1       # torso height to count as "standing"
 U_STAND = 0.70      # uprightness to count as "standing"
 D_NARROW = 0.25     # foot distance for "narrow stand" (Stage 4 only)
@@ -142,21 +142,18 @@ class Standup4StageRewarder(BaseObserverPlugin):
             u_score = float(np.clip((u_torso - 0.0) / 0.866, 0.0, 1.0))
             potential = 0.40 + 0.30 * h_score * u_score
 
-        # ---- Stage 1: Rolled over — guided by torso + pelvis height [0.15, 0.40] ----
+        # ---- Stage 1: Rolled over — contact penalty [0.15, 0.40] ----
         # f_down above threshold but no both-feet support yet.
-        # h_torso_score: torso [0.12, 0.40] → 0..1 (upper body lift)
-        # h_pelvis_score: pelvis [0.12, 0.50] → 0..1 (hip lift)
-        # potential = 0.15 + 0.25 * h_torso_score * h_pelvis_score
-        # Product ensures both upper body and hips must rise for reward.
+        # Start at 0.40, deduct 0.05 per non-hand/foot body part touching ground.
+        # Floor at 0.15 (5 extra contacts → 0.15).
+        # Rewards minimizing body contact with ground (clean posture).
         # Transition to Stage 2: when both feet touch ground (top-down priority),
-        # switches to Stage 2 with floor 0.40 (discontinuous jump from Stage 1
-        # max 0.40 — rewards acquiring foot support).
+        # switches to Stage 2 with floor 0.40.
         # Mutually exclusive: both-feet → Stage 2, else → Stage 1.
         elif f_down >= F_PRONE:
             stage = 1
-            h_torso_score = float(np.clip((h_torso - 0.12) / 0.28, 0.0, 1.0))
-            h_pelvis_score = float(np.clip((h_pelvis - 0.12) / 0.38, 0.0, 1.0))
-            potential = 0.15 + 0.25 * h_torso_score * h_pelvis_score
+            extra_count = contacts["extra_contact_count"]
+            potential = max(0.15, 0.40 - 0.05 * extra_count)
 
         # ---- Stage 0: Arbitrary state (not rolled over) [0.00, 0.15] ----
         # Guide rolling over via f_down.
@@ -183,6 +180,8 @@ class Standup4StageRewarder(BaseObserverPlugin):
             "hand_left": False,
             "hand_right": False,
             "has_other_contact": False,
+            "extra_contact_count": 0,
+            "extra_contact_bodies": set(),
         }
 
         if cv is None or cv['ncon'] == 0:
@@ -240,6 +239,9 @@ class Standup4StageRewarder(BaseObserverPlugin):
                     contacts["hand_right"] = True
                 else:
                     contacts["has_other_contact"] = True
+                    contacts["extra_contact_bodies"].add(body_robot)
+
+        contacts["extra_contact_count"] = len(contacts["extra_contact_bodies"])
 
         return contacts
 
