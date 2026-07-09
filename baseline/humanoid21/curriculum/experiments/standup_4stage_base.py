@@ -136,7 +136,10 @@ class Standup4StageBase(CombatExperimentBase):
         r = np.zeros(T, dtype=np.float32)
 
         if potentials is not None:
-            r[1:] += pot_scale * (potentials[1:] - potentials[:-1])
+            delta_pot = pot_scale * (potentials[1:] - potentials[:-1])
+            neg_mask = delta_pot < 0
+            delta_pot[neg_mask] *= 1.2
+            r[1:] += delta_pot
             r[0] += pot_scale * (potentials[0] - 0.0)
 
         if heights is not None and h_scale > 0:
