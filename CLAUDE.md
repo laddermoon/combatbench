@@ -317,6 +317,37 @@ python -m envs.framework.round_runner \
   --video match.mp4
 ```
 
+**Using RoundRunner with BaseFrameRecorder (video + per-step data):**
+
+The `--recorder` flag injects a `PostActionRecorder` via spec string `module.path:ClassName?key=value`.
+`BaseFrameRecorder` saves per-step images (PNG) and JSON (observer outputs, core/derived state, actions)
+for replay and debugging.
+
+```bash
+# Run a round with video + recorder, same policy for both robots
+PYTHONPATH=. python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/blueprints/standup_4stage_env.yaml \
+  --policy-a-blueprint <policy_dir>/policy_blueprint.yaml \
+  --policy-b-blueprint <policy_dir>/policy_blueprint.yaml \
+  --video /data1/dev/replay/round.mp4 \
+  --recorder "envs.framework.recorder:BaseFrameRecorder?output_dir=/data1/dev/replay/rec" \
+  --seed 1000
+```
+
+Output structure:
+```
+/data1/dev/replay/
+├── round.mp4                      # Video file
+└── rec/
+    ├── index.json                 # Episode index
+    └── episode_00000/
+        ├── manifest.json          # Step list + base_seed
+        ├── static.json            # Episode-invariant data
+        ├── step_00000.png         # Broadcast view image
+        ├── step_00000.json        # observer_outputs + core_state + derived_state
+        └── ...
+```
+
 **Using RoundRunner in Python code:**
 ```python
 from combatbench.envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner, VideoRecorderPlugin
