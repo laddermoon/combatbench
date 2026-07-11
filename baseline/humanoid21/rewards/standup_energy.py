@@ -78,6 +78,8 @@ class StandupEnergyRewarder(BaseObserverPlugin):
         foot_h_max: float = 0.40,      # foot height where credit reaches zero
         foot_ema_alpha: float = 0.5,   # EMA weight for foot axis smoothing (new sample)
         support_ramp_width: float = 0.15, # CoM projection ramp: 0 at foot, 1 at this fraction inward
+        lever_min: float = 0.30,       # CoM-to-axis distance below this -> lever_factor=0
+        lever_max: float = 0.60,       # CoM-to-axis distance above this -> lever_factor=1
         balance_theta_deg: float = 20.0,  # CoM-above-axis tolerance for is_balanced
         balance_speed: float = 0.3,       # CoM speed tolerance (m/s) for is_balanced
     ) -> None:
@@ -89,6 +91,8 @@ class StandupEnergyRewarder(BaseObserverPlugin):
         self.foot_h_max = float(foot_h_max)
         self.foot_ema_alpha = float(foot_ema_alpha)
         self.support_ramp_width = float(support_ramp_width)
+        self.lever_min = float(lever_min)
+        self.lever_max = float(lever_max)
         self.balance_theta_deg = float(balance_theta_deg)
         self.balance_speed = float(balance_speed)
 
@@ -110,6 +114,7 @@ class StandupEnergyRewarder(BaseObserverPlugin):
         self._is_balanced = 0.0
         self._both_feet = 0.0
         self._support_factor = 0.0
+        self._lever_factor = 0.0
         self._foot_l_ema: np.ndarray | None = None
         self._foot_r_ema: np.ndarray | None = None
 
@@ -211,7 +216,19 @@ class StandupEnergyRewarder(BaseObserverPlugin):
         else:
             support_factor = 1.0
 
-        potential = foot_factor * e_score * support_factor
+        # ---- Lever factor: CoM-to-axis distance must be large enough ----
+        # lever = perpendicular distance from CoM to foot-to-foot line in 3D
+        # Too small -> robot is collapsed/hacking, not standing
+        l_lo = self.lever_min
+        l_hi = self.lever_max
+        if lever < l_lo:
+            lever_factor = 0.0
+        elif lever >= l_hi:
+            lever_factor = 1.0
+        else:
+            lever_factor = (lever - l_lo) / (l_hi - l_lo)
+
+        potential = foot_factor * e_score * support_factor * lever_factor
 
         # ---- Balance diagnostic (for success detection in a later step) ----
         contacts = self._get_ground_contacts(ctx)
@@ -243,6 +260,7 @@ class StandupEnergyRewarder(BaseObserverPlugin):
         self._is_balanced = 1.0 if is_balanced else 0.0
         self._both_feet = 1.0 if both_feet else 0.0
         self._support_factor = support_factor
+        self._lever_factor = lever_factor
 
     # ---- Ground contact parsing (feet / hands / other) --------------------
 
@@ -337,6 +355,7 @@ class StandupEnergyRewarder(BaseObserverPlugin):
             "is_balanced": self._is_balanced,
             "both_feet": self._both_feet,
             "support_factor": self._support_factor,
+            "lever_factor": self._lever_factor,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:
@@ -349,6 +368,8 @@ class StandupEnergyRewarder(BaseObserverPlugin):
             "foot_h_max": self.foot_h_max,
             "foot_ema_alpha": self.foot_ema_alpha,
             "support_ramp_width": self.support_ramp_width,
+            "lever_min": self.lever_min,
+            "lever_max": self.lever_max,
             "balance_theta_deg": self.balance_theta_deg,
             "balance_speed": self.balance_speed,
         }
