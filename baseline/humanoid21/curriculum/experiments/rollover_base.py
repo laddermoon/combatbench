@@ -51,6 +51,9 @@ class RolloverBase(CombatExperimentBase):
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 200,
         "potential_reward_scale": 1.0,
+        "success_threshold": 0.97,
+        "success_bonus": 1.0,
+        "maintain_reward": 0.01,
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
@@ -127,6 +130,61 @@ class RolloverBase(CombatExperimentBase):
                 # r_t = γ·φ(t) - φ(t-1)
                 r[1:] = pot_scale * (gamma * potentials[1:] - potentials[:-1])
                 r[0] = pot_scale * (gamma * potentials[0] - 0.0)
+            elif self.reward_mode == "dense_potential":
+                # r_t = (1-γ)·φ(t)  — direct dense potential reward.
+                # Discounted return = (1-γ)·Σγ^t·φ(t), identical (up to the
+                # constant factor already applied here) to Delta's Abel-summed
+                # return.  Used to test whether Delta is merely dense potential
+                # reward in disguise (§7.1 of the ablation report).
+                r[:] = pot_scale * (1.0 - gamma) * potentials[:]
+            elif self.reward_mode == "delta_plus_dense":
+                # r_t = [φ(t) - φ(t-1)] + c·φ(t)
+                # Delta (high-SNR progress signal) + continuous dense base
+                # proportional to φ.  The continuous term provides a constant
+                # marginal pull toward higher φ even at the top (unlike
+                # threshold-gated base reward), targeting Delta's weakness of
+                # "satisficing at φ≈0.96".  Coefficient c is configurable via
+                # custom_config["dense_base_coef"] (default 0.01).
+                c = float(self.custom_config.get("dense_base_coef", 0.01))
+                r[1:] = pot_scale * (potentials[1:] - potentials[:-1])
+                r[0] = pot_scale * (potentials[0] - 0.0)
+                r[:] += c * pot_scale * potentials[:]
+            elif self.reward_mode == "pbrs_base_flag":
+                # PBRS + base reward (方案A: one-time success bonus via flag)
+                # PBRS shaping
+                r[1:] = pot_scale * (gamma * potentials[1:] - potentials[:-1])
+                r[0] = pot_scale * (gamma * potentials[0] - 0.0)
+                # Base reward: +1.0 on first crossing threshold (once per episode),
+                #              +maintain_reward per step while above threshold
+                thr = float(self.custom_config.get("success_threshold", 0.97))
+                bonus = float(self.custom_config.get("success_bonus", 1.0))
+                maint = float(self.custom_config.get("maintain_reward", 0.01))
+                awarded = False
+                for t in range(T):
+                    if potentials[t] >= thr:
+                        if not awarded and (t == 0 or potentials[t - 1] < thr):
+                            r[t] += bonus
+                            awarded = True
+                        r[t] += maint
+            elif self.reward_mode == "pbrs_base_symmetric":
+                # PBRS + base reward (方案B: symmetric ±1.0 on cross/leave)
+                # PBRS shaping
+                r[1:] = pot_scale * (gamma * potentials[1:] - potentials[:-1])
+                r[0] = pot_scale * (gamma * potentials[0] - 0.0)
+                # Base reward: +1.0 each time crossing up, -1.0 each time crossing down,
+                #              +maintain_reward per step while above threshold
+                thr = float(self.custom_config.get("success_threshold", 0.97))
+                bonus = float(self.custom_config.get("success_bonus", 1.0))
+                maint = float(self.custom_config.get("maintain_reward", 0.01))
+                for t in range(T):
+                    prev_below = (t == 0) or (potentials[t - 1] < thr)
+                    curr_above = potentials[t] >= thr
+                    if curr_above and prev_below:
+                        r[t] += bonus
+                    elif not curr_above and not prev_below:
+                        r[t] -= bonus
+                    if curr_above:
+                        r[t] += maint
             else:
                 raise ValueError(f"Unknown reward_mode: {self.reward_mode}")
 
