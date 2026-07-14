@@ -149,6 +149,14 @@ class RolloverBase(CombatExperimentBase):
                 r[1:] = pot_scale * (potentials[1:] - potentials[:-1])
                 r[0] = pot_scale * (potentials[0] - 0.0)
                 r[:] += c * pot_scale * potentials[:]
+            elif self.reward_mode == "generalized_shaping":
+                # r_t = γ_s·φ(t) - φ(t-1)
+                # Unified single-parameter shaping: γ_s=1 → Delta,
+                # γ_s=γ → PBRS, γ_s>1 → Delta+Dense, γ_s<γ → anti-learning.
+                # Coefficient γ_s via custom_config["shaping_gamma"] (default 1.0).
+                gs = float(self.custom_config.get("shaping_gamma", 1.0))
+                r[1:] = pot_scale * (gs * potentials[1:] - potentials[:-1])
+                r[0] = pot_scale * (gs * potentials[0] - 0.0)
             elif self.reward_mode == "pbrs_base_flag":
                 # PBRS + base reward (方案A: one-time success bonus via flag)
                 # PBRS shaping
