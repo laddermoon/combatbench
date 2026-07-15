@@ -75,7 +75,6 @@ class EpisodeRecorder(PostActionRecorder):
         self._base_seed: Optional[int] = None
         self._episode_options: Dict[str, Any] = {}
         self._termination_proposals: tuple = ()
-        self._is_terminated: bool = False
         self._final_observation: Dict[str, np.ndarray] = {}
         self._last_episode: Optional[Episode] = None
 
@@ -106,7 +105,6 @@ class EpisodeRecorder(PostActionRecorder):
         self._base_seed = ctx.base_seed
         self._episode_options = dict(ctx.episode_options)
         self._termination_proposals = ()
-        self._is_terminated = False
         self._final_observation = {}
 
     def on_post_action_step(
@@ -136,10 +134,9 @@ class EpisodeRecorder(PostActionRecorder):
                 ),
             }
         )
-        # Track the latest termination state so we record the values
+        # Track the latest termination proposals so we record the values
         # that matched the final frame.
         self._termination_proposals = tuple(ctx.termination_proposals)
-        self._is_terminated = bool(ctx.is_terminated)
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         # Capture obs_{T+1} for RL bootstrap. Defensive: if the accessor

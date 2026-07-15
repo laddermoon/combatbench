@@ -381,6 +381,9 @@ class EpisodeBufferRecorder(PostActionRecorder):
                 if action_extras is not None else None
             ),
             "termination_proposals": tuple(ctx.termination_proposals),
+            # NOTE: ctx.is_terminated includes TIMEOUT; for RL semantics use
+            # termination_proposals directly.  This field is kept for
+            # backward-compatible log consumers only.
             "is_terminated": bool(ctx.is_terminated),
         }
 

@@ -209,7 +209,19 @@ class SimContext:
 
     @property
     def is_terminated(self) -> bool:
-        """判断是否已经收到终止请求"""
+        """判断是否已经收到终止请求（控制流语义，非 MDP 终止语义）。
+
+        ⚠️  WARNING: This returns True for ANY termination proposal,
+        including ``TIMEOUT`` (truncation).  This is correct for
+        *control-flow* ("should the episode loop stop?"), but NOT
+        for *RL semantics* ("is this a true MDP terminal state?").
+
+        For RL training decisions (bootstrap, done flags, etc.) use
+        ``EnvRuntime.get_termination_flags()`` or filter manually:
+            terminated = any(r != TerminationReason.TIMEOUT
+                             for r in ctx.termination_proposals)
+        See ``EpisodeRecorder.on_post_episode`` for the correct pattern.
+        """
         return len(self.termination_proposals) > 0
 
     def clear_episode_state(self) -> None:
