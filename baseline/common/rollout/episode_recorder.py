@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
-from envs.framework.context import ReadOnlySimContext
+from envs.framework.context import ReadOnlySimContext, TerminationReason
 from envs.framework.recorder import PostActionRecorder
 
 from .episode import Episode
@@ -157,7 +157,13 @@ class EpisodeRecorder(PostActionRecorder):
         # Fall back to ctx termination state if no step recorded one
         # (zero-step episodes — unusual but possible).
         termination = self._termination_proposals or tuple(ctx.termination_proposals)
-        is_terminated = self._is_terminated or bool(ctx.is_terminated)
+        # Truncation (TIMEOUT) is NOT a true MDP termination: the episode was
+        # cut off by the horizon but would otherwise continue, so RL trainers
+        # must bootstrap V(s_last). Only non-TIMEOUT reasons (fall/KO/foul/...)
+        # count as terminal. This matches EnvRuntime.get_termination_flags()'s
+        # Gymnasium semantics; using ctx.is_terminated here (len(proposals)>0)
+        # would wrongly flag timeouts as terminal and suppress bootstrapping.
+        is_terminated = any(r != TerminationReason.TIMEOUT for r in termination)
 
         if self._base_seed is None:
             raise RuntimeError(
