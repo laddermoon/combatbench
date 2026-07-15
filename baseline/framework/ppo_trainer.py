@@ -333,7 +333,7 @@ def ppo_update(
     for key, critic in critics.items():
         with torch.no_grad():
             values_all[key] = (
-                critic(obs_t).squeeze(-1).cpu().numpy().astype(np.float32)
+                critic(obs_t).reshape(-1).cpu().numpy().astype(np.float32)
             )
 
     # Batched bootstrap values: collect all final_obs that need bootstrapping
@@ -356,7 +356,7 @@ def ppo_update(
         for key, critic in critics.items():
             with torch.no_grad():
                 bootstrap_values[key] = (
-                    critic(boot_t).squeeze(-1).cpu().numpy().astype(np.float32)
+                    critic(boot_t).reshape(-1).cpu().numpy().astype(np.float32)
                 )
         # Map episode index -> position in bootstrap batch for O(1) lookup.
         bootstrap_pos = {ep_idx: pos for pos, ep_idx in enumerate(bootstrap_indices)}
