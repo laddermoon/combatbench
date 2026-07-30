@@ -31,7 +31,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     """
 
     name = "balance_recover_v2"
-    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_wall")
+    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
     gammas = {
         "r_fall": 0.99,
         "r_cross": 0.99,
@@ -39,7 +39,6 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         "r_vel": 0.99,
         "r_tilt": 0.99,
         "r_foot": 0.99,
-        "r_wall": 0.99,
     }
 
     max_steps = 200
@@ -192,11 +191,11 @@ class BalanceRecoverV2Config(CombatExperimentBase):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 1.0)
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 1.0)
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """r_fall: per-step survival bonus + terminal signal.
@@ -249,7 +248,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         r_wall_contact = _extract_per_step_scalar(episode.observer_outputs, "wall_contact", T)
         if r_wall_contact is None:
             r_wall_contact = np.zeros(T, dtype=np.float32)
-        r_wall = np.where(r_wall_contact > 0.0, -0.1, 0.0).astype(np.float32)
+        r_fall = r_fall + np.where(r_wall_contact > 0.0, -0.1, 0.0).astype(np.float32)
 
         return {
             "r_fall": r_fall,
@@ -258,7 +257,6 @@ class BalanceRecoverV2Config(CombatExperimentBase):
             "r_vel": r_vel,
             "r_tilt": r_tilt,
             "r_foot": r_foot,
-            "r_wall": r_wall,
         }
 
 
