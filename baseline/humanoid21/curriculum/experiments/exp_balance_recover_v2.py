@@ -31,7 +31,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     """
 
     name = "balance_recover_v2"
-    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
+    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot", "r_wall")
     gammas = {
         "r_fall": 0.99,
         "r_cross": 0.99,
@@ -39,9 +39,10 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         "r_vel": 0.99,
         "r_tilt": 0.99,
         "r_foot": 0.99,
+        "r_wall": 0.99,
     }
 
-    max_steps = 100
+    max_steps = 200
 
     BLUEPRINT = "balance_recover_plus_v2_env.yaml"
 
@@ -98,8 +99,8 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         0.60, 0.70, 0.78, 0.85, 0.90, 0.95, 1.0,
     )
     # Promote once survival >= threshold for N consecutive evaluations.
-    PROMOTE_SURVIVAL: float = 0.9
-    PROMOTE_PATIENCE: int = 3
+    PROMOTE_SURVIVAL: float = 0.92
+    PROMOTE_PATIENCE: int = 1
 
     # --- Stateful scheduler ---
     _level: int = 0
@@ -191,11 +192,11 @@ class BalanceRecoverV2Config(CombatExperimentBase):
             else:
                 self._consecutive_pass = 0
 
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 1.0)
 
     
     def initial_weights(self) -> Tuple[float, ...]:
-        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (6.0, 1.0, 0.2, 0.2, 0.2, 0.2, 1.0)
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """r_fall: per-step survival bonus + terminal signal.
@@ -245,6 +246,11 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
+        r_wall_contact = _extract_per_step_scalar(episode.observer_outputs, "wall_contact", T)
+        if r_wall_contact is None:
+            r_wall_contact = np.zeros(T, dtype=np.float32)
+        r_wall = np.where(r_wall_contact > 0.0, -0.1, 0.0).astype(np.float32)
+
         return {
             "r_fall": r_fall,
             "r_cross": r_cross,
@@ -252,6 +258,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
             "r_vel": r_vel,
             "r_tilt": r_tilt,
             "r_foot": r_foot,
+            "r_wall": r_wall,
         }
 
 

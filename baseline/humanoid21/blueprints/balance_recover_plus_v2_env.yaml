@@ -66,3 +66,7 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
     config:
       agent_id: ${agent_id}
+  wall_contact:
+    cls: "baseline.humanoid21.rewards.wall_contact:WallContactObserver"
+    config:
+      agent_id: ${agent_id}
