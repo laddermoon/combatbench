@@ -82,9 +82,9 @@ Known Risk Points (待观察):
   5. 摆臂被惩罚：起身时张开手臂平衡会推大 XY 距离，若跌破 D_GATE 会被
      踢出 Stage 4（potential 掉 ~0.1+）。D_GATE 已放宽到 0.6（允许 XY
      距离达 0.52 m）留出余量，但极端摆臂仍可能触发。
-  6. H_CROUCH 未标定：Stage 4 入场时的实际 torso 高度尚未实测。若实际
-     入场高度低于 H_CROUCH，h_score 会在底部被 clip 到 0，形成新的死区。
-     首轮训练需检查 max_h_torso / min h_torso 来标定。
+  6. H_CROUCH 已标定：首轮训练 min_h_torso_s4 = 0.19, max_h_torso = 0.35。
+     原 H_CROUCH = 0.35 导致整个工作区间 h_score = 0，无梯度。已下调到 0.15
+     确保梯度覆盖全部工作区间。
 """
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ D_GATE = 0.6       # d_score needed to enter Stage 4 from Stage 3
 
 # --- Stage 4 constants ---
 # Torso height is used (not COM): the 1.28 m standing value is validated.
-H_CROUCH = 0.35    # torso height (m) at which h_score saturates to 0 (deep crouch)
+H_CROUCH = 0.15    # torso height (m) at which h_score saturates to 0 (below min observed s4 height)
 H_STAND = 1.28     # torso height (m) at which h_score saturates to 1.0 (standing)
 F_LOAD_MIN = 10.0  # minimum total contact force (N) to avoid w_foot division by zero
 
