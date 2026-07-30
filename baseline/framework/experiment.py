@@ -224,6 +224,15 @@ class Experiment(ABC):
 
         Default: full episode as one segment with weight 1.0.
         Return an empty list to skip the episode entirely.
+
+        Note: When a segment ends before the episode's last frame (i.e.
+        ``end < T``), the PPO buffer treats it as a **terminated** sub-episode,
+        not a truncated one.  This means GAE will use ``last_value=0.0`` and
+        will NOT bootstrap from the post-boundary observation.  This is the
+        correct behaviour when the boundary marks a loss of control (e.g.
+        a gating policy switching to a fallback): the post-boundary state is
+        out-of-distribution for the active policy's critic, so bootstrapping
+        would produce an incorrect value estimate.
         """
         T = episode.num_frames
         return [(0, T, 1.0)]
