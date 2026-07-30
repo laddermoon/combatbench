@@ -201,13 +201,19 @@ class PPOBuffer:
                 lp_seg = lp_full_np[start:end]
                 mode_seg = ep_modes[start:end]
 
-                # Bootstrap observation: the obs right after the segment end.
-                # If the segment ends mid-episode (e.g. fallback boundary),
-                # bootstrap from the next step's observation and mark as
-                # truncated (not terminated) so GAE bootstraps correctly.
+                # Sub-episode boundary: the segment ends mid-episode because
+                # the gating policy switched control to a fallback (recover/
+                # follow).  The fight policy's MDP effectively terminates here
+                # — subsequent observations belong to a *different* policy and
+                # are out-of-distribution for the fight critic.  Treating this
+                # as truncated (term_seg=False) would bootstrap V(s_gate) from
+                # an OOD state, producing an optimistic value estimate that
+                # incorrectly signals "losing control is fine".  Instead, mark
+                # as terminated (term_seg=True) so GAE uses last_value=0.0,
+                # correctly charging the fight policy for the loss of control.
                 if end < T_full:
                     fin_seg = np.asarray(obs[end], dtype=np.float32)
-                    term_seg = False
+                    term_seg = True
                 else:
                     fin_seg = np.asarray(fin, dtype=np.float32)
                     term_seg = bool(ep.is_terminated)
@@ -337,9 +343,9 @@ def ppo_update(
             )
 
     # Batched bootstrap values: collect all final_obs that need bootstrapping
-    # (non-terminated episodes), run each critic once on the whole batch, then
-    # map results back per-episode. This replaces the old per-episode-per-key
-    # GPU call (thousands of tiny .item() syncs) with one call per critic.
+    # (truncated segments only — e.g. episode cut by max_steps).  Sub-episode
+    # boundaries are now marked terminated, so they are excluded here and GAE
+    # uses last_value=0.0 for them.
     bootstrap_indices: List[int] = []
     bootstrap_obs: List[np.ndarray] = []
     for i, T in enumerate(buf.ep_lengths):

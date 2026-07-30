@@ -65,8 +65,12 @@ def compute_gae(
              observations *that produced an action* (i.e. ``obs[:-1]``
              from a :class:`RolloutBatch`).
     last_value: bootstrap V-value for the post-final-step state.
-                Set to ``0.0`` when the episode terminated; set to
-                ``critic(final_obs)`` when truncated.
+                Set to ``0.0`` when the episode terminated (including
+                sub-episode boundaries where a gating policy switched
+                control to a fallback — the post-boundary state is
+                out-of-distribution for the active policy's critic).
+                Set to ``critic(final_obs)`` when truncated (e.g.
+                episode cut off by max_steps).
     gamma: discount factor in [0, 1].
     lam:   GAE λ in [0, 1]. ``λ=1`` recovers Monte-Carlo returns,
            ``λ=0`` recovers the TD(0) advantage.
