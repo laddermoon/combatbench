@@ -55,15 +55,14 @@ Stage 4 (stand up on two feet):
 
 Potential Bands
 ---------------
-  Stage 1 [0.00, 0.20):  potential = 0.20 * f_score
-  Stage 2 [0.20, 0.40):  potential = 0.20 + 0.20 * contact_score
-  Stage 3 [0.40, 0.60):  potential = 0.40 + 0.20 * d_score
-  Stage 4 [0.60, 1.00]:  potential = 0.60 + 0.40 * p4
+  Stage 1 [0.00, 0.10):  potential = 0.10 * f_score
+  Stage 2 [0.10, 0.20):  potential = 0.10 + 0.10 * contact_score
+  Stage 3 [0.20, 0.30):  potential = 0.20 + 0.10 * d_score
+  Stage 4 [0.30, 1.00]:  potential = 0.30 + 0.70 * p4
 
-Stage 4 gets the widest band (0.40) because it is the hardest stage —
-it is a reach-and-hold goal (standing balance), not reach-and-stable.
-The extra resolution helps the critic distinguish small improvements
-in weight transfer and height.
+Stage 4 gets the widest band (0.70) because standing is the hardest
+and most important stage.  The large band ensures sufficient gradient
+density per cm of height to overcome the risk of falling.
 
 Stage is determined top-down each step: check Stage 4 first, then 3, 2, 1.
 No hysteresis — Stage 3/4 do not depend on f_score, and the load-based
@@ -240,15 +239,15 @@ class StandingBalance4StageRewarder(BaseObserverPlugin):
         # Each stage owns a [lo, hi] band and optimizes only its own target
         # signal.  Earlier stages are locked at their band ceiling, giving a
         # clean focused gradient with no interference between stages.
-        # Stage 4 gets the widest band (0.40) for maximum resolution.
+        # Stage 4 gets the widest band (0.70) for maximum gradient density.
         if stage == 1:
-            potential = 0.20 * f_score
+            potential = 0.10 * f_score
         elif stage == 2:
-            potential = 0.20 + 0.20 * contact_score
+            potential = 0.10 + 0.10 * contact_score
         elif stage == 3:
-            potential = 0.40 + 0.20 * d_score
+            potential = 0.20 + 0.10 * d_score
         else:
-            potential = 0.60 + 0.40 * p4
+            potential = 0.30 + 0.70 * p4
 
         self._stage = stage
         self._potential = float(potential)
