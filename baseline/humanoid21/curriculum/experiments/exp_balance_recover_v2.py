@@ -41,7 +41,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         "r_foot": 0.99,
     }
 
-    max_steps = 200
+    max_steps = 100
 
     BLUEPRINT = "balance_recover_plus_v2_env.yaml"
 
@@ -75,7 +75,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
     entropy_coef: float = 1.5e-3     # encourage exploration to prevent joint freeze
 
     # --- Rollout schedule ---
-    episodes_per_update: int = 1024
+    episodes_per_update: int = 2048
     eval_episodes: int = 128
 
     # Small per-step survival bonus (each alive step is worth this much).
@@ -248,7 +248,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         r_wall_contact = _extract_per_step_scalar(episode.observer_outputs, "wall_contact", T)
         if r_wall_contact is None:
             r_wall_contact = np.zeros(T, dtype=np.float32)
-        r_fall = r_fall + np.where(r_wall_contact > 0.0, -0.1, 0.0).astype(np.float32)
+        r_fall = r_fall + np.where(r_wall_contact > 0.0, -0.5, 0.0).astype(np.float32)
 
         return {
             "r_fall": r_fall,
