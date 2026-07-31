@@ -107,7 +107,7 @@ class FightZeroConfig(CombatExperimentBase):
 
     # --- Distance potential parameters ---
     d_strike: float = 0.7
-    pbrs_k: float = 3.0
+    d_max: float = 8.0
 
     # --- Damage reward scaling ---
     damage_dealt_scale: float = 1.0
@@ -242,7 +242,7 @@ class FightZeroConfig(CombatExperimentBase):
             r_distance = compute_dense_distance_reward(
                 self_xy, opp_xy,
                 d_strike=self.d_strike,
-                k=self.pbrs_k,
+                d_max=self.d_max,
                 gamma=self.gammas["r_distance"],
             )
         else:

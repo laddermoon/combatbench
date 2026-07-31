@@ -1,15 +1,14 @@
 """Distance potential reward for fight curriculum.
 
-Potential function Φ(d) is a smooth bump centred at the striking distance
-``d_strike``::
+Linear potential function Φ(d)::
 
-    Φ(d) = exp(-k * (d - d_strike)²)
+    Φ(d) = clamp((d_max - d) / (d_max - d_strike), 0, 1)
 
 where ``d`` is the 2D horizontal distance between the agent and the opponent
 (root xy positions from the ``approach_velocity`` observer).
 
-Φ = 1 when ``d = d_strike`` (at striking range) and decays smoothly as the
-agent moves away from or overshoots the striking distance.
+Φ = 1 when ``d <= d_strike`` (at striking range) and decreases linearly
+to 0 at ``d = d_max``.
 
 Trajectory smoothing (reference: ``follow_opponent.py``):
     Both self and opponent xy trajectories are smoothed with a centered
@@ -56,20 +55,20 @@ def compute_dense_distance_reward(
     opp_xy: np.ndarray,
     *,
     d_strike: float = 0.7,
-    k: float = 3.0,
+    d_max: float = 8.0,
     gamma: float = 0.99,
     smooth_window: int = DIST_SMOOTH_WINDOW,
 ) -> np.ndarray:
     """Compute Dense distance reward from per-step xy positions.
 
     Smooths both trajectories with centered moving average to remove gait
-    oscillation, then computes 2D distance and applies the potential bump.
+    oscillation, then computes 2D distance and applies a linear potential.
 
     Args:
         self_xy: ``(T, 2)`` array of agent root xy positions.
         opp_xy:  ``(T, 2)`` array of opponent root xy positions.
         d_strike: striking distance (m) where Φ = 1.
-        k: sharpness of the bump.  Higher = more focused on d_strike.
+        d_max: distance (m) where Φ = 0.
         gamma: discount factor for Dense scaling.
         smooth_window: centered moving average window width (action steps).
 
@@ -90,8 +89,8 @@ def compute_dense_distance_reward(
     # 2D horizontal distance from smoothed positions
     dist = np.linalg.norm(sm_opp - sm_self, axis=1)
 
-    # Potential Φ(d) = exp(-k * (d - d_strike)²)
-    phi = np.exp(-k * (dist - d_strike) ** 2)
+    # Linear potential: Φ(d) = clamp((d_max - d) / (d_max - d_strike), 0, 1)
+    phi = np.clip((d_max - dist) / (d_max - d_strike), 0.0, 1.0)
 
     # Dense: r[t] = (1 - γ) · Φ(d_t)
     r = ((1.0 - gamma) * phi).astype(np.float32)
