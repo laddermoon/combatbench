@@ -36,9 +36,9 @@ class StandupFallbackPolicy(Policy):
     def __init__(
         self,
         primary_policy_bp: str | Dict[str, Any] | PolicyBlueprint = "/data1/mono/things/combatbench/policy/blueprints/random.yaml",
-        standup_policy_bp: str | Dict[str, Any] | PolicyBlueprint = "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u05000/policy_blueprint.yaml",
+        standup_policy_bp: str | Dict[str, Any] | PolicyBlueprint = "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u04935/policy_blueprint.yaml",
         fall_height: float = 0.5,
-        stand_height: float = 0.8,
+        stand_height: float = 1.25,
         **kwargs: Any,
     ) -> None:
         self.primary_policy_bp = self._resolve_bp(primary_policy_bp)
@@ -107,7 +107,7 @@ class StandupFallbackPolicy(Policy):
                 if not isinstance(extra, dict):
                     extra = {}
                 extra.setdefault("log_prob", 0.0)
-                extra["gating_mode"] = -2.0
+                extra["gating_mode"] = -1.0
 
         return action, extra
 

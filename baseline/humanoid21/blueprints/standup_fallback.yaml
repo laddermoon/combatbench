@@ -19,13 +19,13 @@ parameters:
     default: "/data1/mono/things/combatbench/policy/blueprints/random.yaml"
     description: "Path (str) or dict for the primary policy blueprint."
   standup_policy_bp:
-    default: "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u05000/policy_blueprint.yaml"
+    default: "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u04935/policy_blueprint.yaml"
     description: "Path (str) or dict for the frozen standup policy blueprint."
   fall_height:
     default: 0.5
     description: "Robot height below which standup policy takes over (m)."
   stand_height:
-    default: 0.8
+    default: 1.25
     description: "Robot height above which control returns to primary (m)."
 
 cls: "baseline.humanoid21.curriculum.standup_fallback_policy:StandupFallbackPolicy"
