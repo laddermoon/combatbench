@@ -86,7 +86,7 @@ class StandupFallbackPolicy(Policy):
             self.active_mode = new_mode
 
         self._step_count += 1
-        if self.active_mode != prev_mode or self._step_count % 20 == 0:
+        if _DEBUG and self.active_mode != prev_mode:
             print(
                 f"[StandupFallbackPolicy] step={self._step_count} "
                 f"h={height:.3f}m fall_h={self.fall_height} stand_h={self.stand_height} "
