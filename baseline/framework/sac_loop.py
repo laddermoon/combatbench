@@ -169,7 +169,8 @@ def load_checkpoint(
 def spawn_video_render(
     *,
     env_blueprint: str,
-    policy_blueprint: Path,
+    policy_a_blueprint: Path,
+    policy_b_blueprint: Path,
     video_path: Path,
     seed: int,
     log_path: Path,
@@ -180,8 +181,8 @@ def spawn_video_render(
     cmd = [
         sys.executable, "-m", "envs.framework.round_runner",
         "--env-blueprint", str(env_blueprint),
-        "--policy-a-blueprint", str(policy_blueprint),
-        "--policy-b-blueprint", str(policy_blueprint),
+        "--policy-a-blueprint", str(policy_a_blueprint),
+        "--policy-b-blueprint", str(policy_b_blueprint),
         "--video", str(video_path),
         "--seed", str(seed),
     ]
@@ -554,7 +555,7 @@ def train_sac(
                     print(eval_line, flush=True)
                 t_eval = time.perf_counter() - t0
 
-                # Video render
+                # Video render (use first eval job's config for realistic match)
                 n_evals_done += 1
                 if (
                     cp.video_eval_interval > 0
@@ -562,16 +563,22 @@ def train_sac(
                 ):
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
-                    else:
-                        policy_bp_path = export_dir / "policy_blueprint.yaml"
+                    elif eval_jobs:
+                        v_p_a, v_p_b, v_env, v_seed, _ = eval_jobs[0]
                         video_path = video_dir / f"u{u:05d}.mp4"
                         log_path = video_dir / f"u{u:05d}.log"
-                        experiment.video_env_blueprint().save(video_env_bp_path)
+                        v_env_path = video_dir / "video_env_blueprint.yaml"
+                        v_p_a_path = video_dir / "video_policy_a.yaml"
+                        v_p_b_path = video_dir / "video_policy_b.yaml"
+                        v_env.save(v_env_path)
+                        v_p_a.save(v_p_a_path)
+                        v_p_b.save(v_p_b_path)
                         last_video_proc = spawn_video_render(
-                            env_blueprint=video_env_bp_path,
-                            policy_blueprint=policy_bp_path,
+                            env_blueprint=v_env_path,
+                            policy_a_blueprint=v_p_a_path,
+                            policy_b_blueprint=v_p_b_path,
                             video_path=video_path,
-                            seed=eval_seed,
+                            seed=v_seed,
                             log_path=log_path,
                         )
                         if last_video_proc is not None:
