@@ -197,17 +197,19 @@ class Experiment(ABC):
     #   - Caller passes stochastic or deterministic policy_bp as needed.
     #   - Remove video_env_blueprint; video render uses eval_jobs[0].
     #
-    # Additional motion — dual-use rollout for data efficiency:
-    #   Currently rollout (stochastic) and eval (deterministic) episodes are
-    #   collected separately.  If we run rollout with the *same* policy and
-    #   split the collected episodes into two buckets (e.g. by seed parity),
-    #   we can use one bucket for PPO training and the other for evaluation —
-    #   effectively doubling the usable data per update without extra rollout
+    # Additional motion — dual-perspective self-play for data efficiency:
+    #   Currently rollout uses a mixed policy (trainable + frozen fallback)
+    #   vs a frozen opponent.  If both robots use the *same* trainable policy
+    #   (true self-play), each episode yields two usable training samples —
+    #   one from robot_a's perspective, one from robot_b's perspective —
+    #   effectively doubling the data per simulation without extra rollout
     #   cost.  This requires:
-    #     a. Eval metrics to be computed on stochastic episodes (acceptable
-    #        for relative comparison / best-model selection).
-    #     b. A split mechanism in the buffer or caller to partition episodes.
-    #   This is a larger change and should be prototyped before committing.
+    #     a. Both sides use the same stochastic trainable policy (no frozen
+    #        opponent).
+    #     b. The buffer splits each episode into two trajectories by agent
+    #        perspective, with correct observation/action alignment.
+    #     c. Eval can still use a separate deterministic pass or reuse one
+    #        perspective's metrics.
     # ------------------------------------------------------------------
 
     @abstractmethod
