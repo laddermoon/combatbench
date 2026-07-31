@@ -27,7 +27,7 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 _DEBUG = os.environ.get("STANDUP_FALLBACK_POLICY_DEBUG", "0") == "1"
 
-_OBS_HEIGHT = 42  # root Z height in humanoid21 96-dim observation
+_OBS_HEIGHT = 48  # root Z height in humanoid21 96-dim observation (after 42 proprio + 6 orientation)
 
 
 class StandupFallbackPolicy(Policy):
@@ -35,10 +35,10 @@ class StandupFallbackPolicy(Policy):
 
     def __init__(
         self,
-        primary_policy_bp: str | Dict[str, Any] | PolicyBlueprint,
-        standup_policy_bp: str | Dict[str, Any] | PolicyBlueprint,
+        primary_policy_bp: str | Dict[str, Any] | PolicyBlueprint = "/data1/mono/things/combatbench/policy/blueprints/random.yaml",
+        standup_policy_bp: str | Dict[str, Any] | PolicyBlueprint = "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u05000/policy_blueprint.yaml",
         fall_height: float = 0.5,
-        stand_height: float = 1.0,
+        stand_height: float = 0.8,
         **kwargs: Any,
     ) -> None:
         self.primary_policy_bp = self._resolve_bp(primary_policy_bp)
@@ -85,14 +85,14 @@ class StandupFallbackPolicy(Policy):
                     self.primary_policy.reset()
             self.active_mode = new_mode
 
-        if _DEBUG:
-            self._step_count += 1
-            if self.active_mode != prev_mode or self._step_count % 10 == 0:
-                print(
-                    f"[StandupFallbackPolicy] step={self._step_count} "
-                    f"h={height:.3f}m mode={prev_mode}->{self.active_mode}",
-                    flush=True,
-                )
+        self._step_count += 1
+        if self.active_mode != prev_mode or self._step_count % 20 == 0:
+            print(
+                f"[StandupFallbackPolicy] step={self._step_count} "
+                f"h={height:.3f}m fall_h={self.fall_height} stand_h={self.stand_height} "
+                f"mode={prev_mode}->{self.active_mode}",
+                flush=True,
+            )
 
         if self.active_mode == "primary":
             action, extra = self.primary_policy.act(observation, want_extra)

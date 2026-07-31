@@ -25,7 +25,7 @@ parameters:
     default: 0.5
     description: "Robot height below which standup policy takes over (m)."
   stand_height:
-    default: 1.0
+    default: 0.8
     description: "Robot height above which control returns to primary (m)."
 
 cls: "baseline.humanoid21.curriculum.standup_fallback_policy:StandupFallbackPolicy"
