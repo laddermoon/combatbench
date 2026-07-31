@@ -45,9 +45,9 @@ _STANDUP_POLICY_BP = PolicyBlueprint.load(
     "policy_exports/u05000/policy_blueprint.yaml"
 )
 _FOLLOW_POLICY_BP = PolicyBlueprint.load(
-    "/data1/mono/things/combatbench/baseline/humanoid21/runs/"
-    "curriculum_follow_v2_20260620_132447/"
-    "policy_exports/u09236/policy_blueprint.yaml"
+    "/data1/mono/things/combatbench/baseline/humanoid21/"
+    "runs/curriculum_balance_recover_plus_v2_20260618_225956/policy_exports/"
+    "u08845/policy_blueprint.yaml"
 )
 _GATING_MODEL_DIR = str(
     Path(__file__).resolve().parent.parent / "gating_model_v2_u08845_10w"
