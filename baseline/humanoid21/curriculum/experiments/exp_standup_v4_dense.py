@@ -30,7 +30,7 @@ class StandupV4DenseConfig(CombatExperimentBase):
     reward_keys = ("r_potential",)
     gammas = {"r_potential": 0.99}
 
-    BLUEPRINT = "standup_v4_env.yaml"
+    BLUEPRINT = "standup_v4_dense_env.yaml"
 
     # --- Training schedule ---
     max_updates: int = 5000
@@ -38,24 +38,23 @@ class StandupV4DenseConfig(CombatExperimentBase):
     eval_episodes: int = 64
     eval_interval: int = 5
 
-    # --- PPO tuning (aligned with V4) ---
-    log_std_min: float = -4.0
-    learning_rate: float = 5e-4
-    critic_learning_rate: float = 5e-4
+    # --- PPO tuning (aligned with standing_balance_4stage_base) ---
+    log_std_min: float = -2.5
+    learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4
     target_kl: float = 0.05
     grad_clip_norm: float = 1.0
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 0.0
+    entropy_coef: float = 1e-3
 
     # --- Video ---
     video_eval_interval: int = 5
 
     # --- Experiment-specific ---
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
-        "max_steps": 400,
+        "max_steps": 200,
         "potential_reward_scale": 1.0,
-        "height_threshold": 0.5,
     }
 
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
@@ -74,7 +73,6 @@ class StandupV4DenseConfig(CombatExperimentBase):
         return self._env_pb().materialize(
             agent_id=agent_id,
             max_steps=self.custom_config["max_steps"],
-            height_threshold=self.custom_config["height_threshold"],
         )
 
     def video_env_blueprint(self):
@@ -183,7 +181,6 @@ class StandupV4DenseConfig(CombatExperimentBase):
     def scheduler_info(self) -> Dict[str, Any]:
         return {
             "avg_stage": round(self._last_avg_stage, 3),
-            "height_threshold": self.custom_config["height_threshold"],
         }
 
     def scheduler_state(self) -> dict:

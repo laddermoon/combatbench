@@ -1,0 +1,49 @@
+# Standup v4 Dense — aligned with standing_balance_4stage_env.yaml for fair comparison.
+#
+# Only difference vs standing_balance_4stage_env.yaml: uses
+# StandupPotentialRewarderV3 (V4 smooth potential) instead of
+# StandingBalance4StageRewarder.
+#
+# Aligned control variables:
+#   - max_steps: 200 (not 400)
+#   - height_threshold: 0.3 (not 0.5)
+#   - No StandupTerminationPlugin (run full 200 steps)
+#   - No HeightObserver (not needed for pure Dense)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 200
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_v3:StandupPotentialRewarderV3"
+    config:
+      agent_id: ${agent_id}
