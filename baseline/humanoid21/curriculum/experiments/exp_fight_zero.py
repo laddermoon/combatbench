@@ -23,9 +23,8 @@ import numpy as np
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.framework.ppo_trainer import (
     _extract_per_step_field,
-    _extract_per_step_scalar,
 )
-from baseline.humanoid21.rewards.distance_potential import compute_pbrs_distance_reward
+from baseline.humanoid21.rewards.distance_potential import compute_dense_distance_reward
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -106,10 +105,9 @@ class FightZeroConfig(CombatExperimentBase):
     # --- Reward shaping parameters ---
     gate_switch_penalty: float = -1.0
 
-    # --- PBRS distance parameters ---
+    # --- Distance potential parameters ---
     d_strike: float = 0.7
     pbrs_k: float = 3.0
-    pbrs_gamma: float = 0.99
 
     # --- Damage reward scaling ---
     damage_dealt_scale: float = 1.0
@@ -232,7 +230,7 @@ class FightZeroConfig(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        # r_distance: PBRS distance potential from approach_velocity observer
+        # r_distance: Dense distance potential from approach_velocity observer
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
         self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
         opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
@@ -241,11 +239,11 @@ class FightZeroConfig(CombatExperimentBase):
         if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
             self_xy = np.stack([self_x, self_y], axis=1)
             opp_xy = np.stack([opp_x, opp_y], axis=1)
-            r_distance = compute_pbrs_distance_reward(
+            r_distance = compute_dense_distance_reward(
                 self_xy, opp_xy,
                 d_strike=self.d_strike,
                 k=self.pbrs_k,
-                gamma=self.pbrs_gamma,
+                gamma=self.gammas["r_distance"],
             )
         else:
             r_distance = np.zeros(T, dtype=np.float32)
