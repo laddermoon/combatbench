@@ -69,14 +69,12 @@ class FightZeroConfig(CombatExperimentBase):
     weight_cap: float = 10.0
 
     reward_keys = (
-        "r_fall",
         "r_distance",
         "r_damage_dealt",
         "r_damage_taken",
         "r_gate",
     )
     gammas = {
-        "r_fall": 0.99,
         "r_distance": 0.99,
         "r_damage_dealt": 0.90,
         "r_damage_taken": 0.99,
@@ -106,8 +104,6 @@ class FightZeroConfig(CombatExperimentBase):
     eval_episodes: int = 128
 
     # --- Reward shaping parameters ---
-    per_step_survival_reward: float = 0.01
-    terminal_fall_penalty: float = 3.0
     gate_switch_penalty: float = -1.0
 
     # --- PBRS distance parameters ---
@@ -218,7 +214,7 @@ class FightZeroConfig(CombatExperimentBase):
     # ---- Scheduler --------------------------------------------------------
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (1.0, 0.01, 1.0, 1.0, 1.0)
+        return (0.01, 1.0, 1.0, 1.0)
 
     def next_weights(
         self,
@@ -228,21 +224,13 @@ class FightZeroConfig(CombatExperimentBase):
         """Constant weights for single-stage fight_zero."""
         self._fight_ratio = float(eval_metrics.get("fight_ratio", 0.0))
         self._survival_rate = float(eval_metrics.get("survived", 0.0))
-        return (1.0, 0.01, 1.0, 1.0, 1.0)
+        return (0.01, 1.0, 1.0, 1.0)
 
     # ---- Reward extraction ------------------------------------------------
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         T = episode.num_frames
         oo = episode.observer_outputs
-
-        # r_fall: per-step survival bonus + terminal signal
-        fell = any(p.startswith("imbalance") for p in episode.termination_proposals)
-        r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
-        if fell:
-            r_fall[-1] = -self.terminal_fall_penalty
-        else:
-            r_fall[-1] = self.terminal_fall_penalty
 
         # r_distance: PBRS distance potential from approach_velocity observer
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
@@ -296,7 +284,6 @@ class FightZeroConfig(CombatExperimentBase):
                 r_gate[length - 1] = 0.0
 
         return {
-            "r_fall": r_fall,
             "r_distance": r_distance,
             "r_damage_dealt": r_damage_dealt,
             "r_damage_taken": r_damage_taken,
