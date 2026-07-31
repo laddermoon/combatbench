@@ -1,0 +1,59 @@
+# ParameterizedPolicyBlueprint for FightMixedPolicyV2.
+#
+# Wraps a primary (learning) Fight policy with a frozen Recover policy and
+# a frozen Standup policy.  Uses a Gating MLP shield for fall prediction
+# and root height for fallen-state detection.
+#
+# State machine:
+#   any      + height < fall_height       -> standup
+#   standup  + height > stand_height      -> fight (if p_safe) or recover
+#   recover  + p_safe > release_threshold -> fight
+#   recover  + timeout                    -> standup (stuck fallback)
+#   fight    + p_safe < threshold         -> recover
+#
+# Usage (code):
+#   from envs.framework.policy import ParameterizedPolicyBlueprint
+#   pb = ParameterizedPolicyBlueprint.load("baseline/humanoid21/blueprints/fight_mixed_v2.yaml")
+#   policy = pb.build(primary_policy_bp="path/to/primary.yaml")
+
+version: 1
+parameters:
+  primary_policy_bp:
+    default: "/data1/mono/things/combatbench/policy/blueprints/random.yaml"
+    description: "Path (str) or dict for the primary learning Fight policy blueprint."
+  fallback_policy_bp:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/runs/curriculum_balance_recover_plus_20260612_103559/policy_exports/u10000/policy_blueprint.yaml"
+    description: "Path (str) or dict for the frozen Recover (balance recovery) policy blueprint."
+  standup_policy_bp:
+    default: "/data1/mono/things/combatbench/baseline/runs/train_standing_balance_4stage_dense_ppo_resume5k_20260730_211100/policy_exports/u05000/policy_blueprint.yaml"
+    description: "Path (str) or dict for the frozen Standup policy blueprint."
+  gating_model_dir:
+    default: "/data1/mono/things/combatbench/baseline/humanoid21/curriculum/gating_model_plus_mix_level"
+    description: "Path to the gating model directory (gating_config.json + gating_model.pt)."
+  threshold:
+    default: 0.65
+    description: "Fall-prediction threshold — switch to recover when p_safe < threshold."
+  release_threshold:
+    default: 0.90
+    description: "Recovery release threshold — p_safe must exceed this to return to fight."
+  fall_height:
+    default: 0.5
+    description: "Root height (m) below which the robot is considered fallen and standup takes over."
+  stand_height:
+    default: 1.27
+    description: "Root height (m) above which standup is considered complete."
+  recover_timeout:
+    default: 50
+    description: "Max steps in recover mode before forcing standup (prevents getting stuck)."
+
+cls: "baseline.humanoid21.curriculum.fight_mixed_policy_v2:FightMixedPolicyV2"
+config:
+  primary_policy_bp: "${primary_policy_bp}"
+  fallback_policy_bp: "${fallback_policy_bp}"
+  standup_policy_bp: "${standup_policy_bp}"
+  gating_model_dir: "${gating_model_dir}"
+  threshold: "${threshold}"
+  release_threshold: "${release_threshold}"
+  fall_height: "${fall_height}"
+  stand_height: "${stand_height}"
+  recover_timeout: "${recover_timeout}"
