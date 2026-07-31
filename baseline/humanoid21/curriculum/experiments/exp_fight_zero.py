@@ -259,8 +259,10 @@ class FightZeroConfig(CombatExperimentBase):
         r_damage_dealt = self.damage_dealt_scale * r_dealt
         r_damage_taken = -self.damage_taken_scale * r_taken  # negative = penalty
 
-        # r_gate: boundary transition penalty
-        r_gate = np.full(T, self.per_step_survival_reward, dtype=np.float32)
+        # r_gate: boundary transition penalty (0 on normal fight steps,
+        #         gate_switch_penalty on fight→fallback transitions,
+        #         0 on all non-fight steps)
+        r_gate = np.zeros(T, dtype=np.float32)
 
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
         extras = episode.action_extras.get(ep_target)
@@ -269,17 +271,9 @@ class FightZeroConfig(CombatExperimentBase):
             length = min(len(gating_mode), T)
 
             for t in range(length - 1):
-                # Currently in fight mode
-                if gating_mode[t] > 0.5:
-                    if gating_mode[t + 1] < 0.5:
-                        # Switch away from fight → penalty
-                        r_gate[t] = self.gate_switch_penalty
-                # Zero out non-fight steps
-                if gating_mode[t] < 0.5:
-                    r_gate[t] = 0.0
-
-            if length > 0 and gating_mode[length - 1] < 0.5:
-                r_gate[length - 1] = 0.0
+                # Fight → fallback transition: penalize
+                if gating_mode[t] > 0.5 and gating_mode[t + 1] < 0.5:
+                    r_gate[t] = self.gate_switch_penalty
 
         return {
             "r_distance": r_distance,

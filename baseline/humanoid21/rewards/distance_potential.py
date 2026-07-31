@@ -83,12 +83,12 @@ def compute_dense_distance_reward(
     if T == 0:
         return np.zeros(0, dtype=np.float32)
 
-    # Smooth self trajectory only (consistent with FightV2's
-    # compute_radial_tangential_rewards: opponent uses raw positions).
+    # Smooth both trajectories to filter gait oscillation
     sm_self = _centered_moving_average(self_xy, smooth_window)
+    sm_opp = _centered_moving_average(opp_xy, smooth_window)
 
-    # 2D horizontal distance: smoothed self vs raw opponent
-    dist = np.linalg.norm(opp_xy - sm_self, axis=1)
+    # 2D horizontal distance from smoothed positions
+    dist = np.linalg.norm(sm_opp - sm_self, axis=1)
 
     # Potential Φ(d) = exp(-k * (d - d_strike)²)
     phi = np.exp(-k * (dist - d_strike) ** 2)
