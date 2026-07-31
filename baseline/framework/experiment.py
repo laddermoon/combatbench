@@ -170,6 +170,46 @@ class Experiment(ABC):
         """Return True if esum is better than best_esum."""
         ...
 
+    # ------------------------------------------------------------------
+    # REFACTORING NOTES — Job Construction API
+    #
+    # Motion: merge build_rollout_jobs / build_eval_jobs / video_env_blueprint
+    # into a single ``build_jobs(policy_bp, base_seed, n_episodes)`` method.
+    #
+    # Current constraints (why they are separate for now):
+    #   1. Rollout passes ``stochastic=True`` policy_bp (exploration sampling);
+    #      Eval passes a deterministic blueprint (mean action).  The caller
+    #      in ppo_loop.py / sac_loop.py sets this *before* calling build_*,
+    #      so the job builder itself does not need to differ — only the
+    #      input blueprint differs.
+    #   2. All 20+ experiment files implement both methods as thin wrappers
+    #      that call the same private ``_build_jobs`` with different
+    #      ``n_episodes``.  No experiment currently uses different opponents,
+    #      envs, or configs between rollout and eval.
+    #   3. ``video_env_blueprint`` is no longer called after the video render
+    #      fix (2026-07-31): video now reuses the first eval job's env +
+    #      policy_a + policy_b.  The method can be removed once all
+    #      experiments are confirmed not to reference it.
+    #
+    # Future refactor plan:
+    #   - Replace build_rollout_jobs + build_eval_jobs with:
+    #       def build_jobs(self, policy_bp, base_seed, n_episodes) -> List[Job]
+    #   - Caller passes stochastic or deterministic policy_bp as needed.
+    #   - Remove video_env_blueprint; video render uses eval_jobs[0].
+    #
+    # Additional motion — dual-use rollout for data efficiency:
+    #   Currently rollout (stochastic) and eval (deterministic) episodes are
+    #   collected separately.  If we run rollout with the *same* policy and
+    #   split the collected episodes into two buckets (e.g. by seed parity),
+    #   we can use one bucket for PPO training and the other for evaluation —
+    #   effectively doubling the usable data per update without extra rollout
+    #   cost.  This requires:
+    #     a. Eval metrics to be computed on stochastic episodes (acceptable
+    #        for relative comparison / best-model selection).
+    #     b. A split mechanism in the buffer or caller to partition episodes.
+    #   This is a larger change and should be prototyped before committing.
+    # ------------------------------------------------------------------
+
     @abstractmethod
     def build_rollout_jobs(
         self,
@@ -190,7 +230,12 @@ class Experiment(ABC):
 
     @abstractmethod
     def video_env_blueprint(self) -> EnvBlueprint:
-        """Return the env blueprint to use for video rendering."""
+        """Return the env blueprint to use for video rendering.
+
+        DEPRECATED: video render now uses eval_jobs[0] config.  This method
+        is kept for backward compatibility but is no longer called by
+        ppo_loop / sac_loop.
+        """
         ...
 
     # ------------------------------------------------------------------
