@@ -27,7 +27,7 @@ class BalanceRecoverV2PureConfig(CombatExperimentBase):
     reward_keys = ("r_fall",)
     gammas = {"r_fall": 0.99}
 
-    max_steps = 100
+    max_steps = 200
 
     BLUEPRINT = "balance_recover_v2_pure_env.yaml"
 

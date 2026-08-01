@@ -42,7 +42,7 @@ simulator:
     initial_pose_a: "standing"
     initial_pose_b: "standing"
 plugins:
-  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin2"
     config:
       agent_id: ${agent_id}
       tolerance: ${tolerance}
