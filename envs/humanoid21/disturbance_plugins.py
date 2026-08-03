@@ -907,6 +907,219 @@ class RandomFallenStatePlugin(BasePlugin):
                 ctx.metrics[f"{rid}_fallen_init_height_threshold"] = min_height < self.height_threshold
 
 
+class ImpulsePerturbationPlugin(BasePlugin):
+    """冲量扰动插件 — 用内部仿真器 + 策略生成物理一致的扰动后状态。
+
+    工作流程（参照 ``RandomFallenStatePlugin`` 的内部 sim 模式）：
+    1. ``on_pre_episode`` 时读取真实环境的 core state，写入内部 sim。
+    2. 在内部 sim 中，每物理步：策略出 action → ``set_action`` →
+       ``apply_external_force`` → ``physical_step``。
+    3. 持续 ``duration_action_steps × phy_steps_per_action`` 个物理步后，
+       取 core state 写回真实环境。
+
+    两种参数来源（优先级从高到低）：
+    - **固定模式**：``ctx.episode_options["impulse_params"]`` 指定确切参数。
+    - **随机模式**：用构造器传入的范围由 RNG 采样。
+
+    策略通过 ``PolicyBlueprint`` 文件路径惰性加载。
+    """
+
+    def __init__(
+        self,
+        target_robot: str = "robot_a",
+        policy_blueprint_path: Optional[str] = None,
+        impulse_body: str = "torso",
+        force_magnitude: float | Sequence[float] = (100, 500),
+        duration_action_steps: int | Sequence[int] = (1, 8),
+        direction_mode: str = "random_horizontal",
+        fixed_direction: Optional[Sequence[float]] = None,
+        phy_steps_per_action: int = 25,
+        random_seed: Optional[int] = None,
+    ):
+        """
+        Args:
+            target_robot: 目标机器人 ID。
+            policy_blueprint_path: 策略 blueprint YAML 文件路径。
+                用于在内部 sim 中控制机器人。如果为 None，则用零 action
+                （PD 控制器拉回默认站姿）。
+            impulse_body: 冲量作用的 body 名称（如 'torso', 'head'）。
+            force_magnitude: 力的大小 (N)。标量=固定值，(min, max)=随机采样范围。
+            duration_action_steps: 持续时间 (动作步)。标量=固定值，(min, max)=随机采样范围。
+            direction_mode: 'random_horizontal'（水平面随机方向）或
+                'fixed'（使用 fixed_direction）。
+            fixed_direction: direction_mode='fixed' 时使用的方向向量 [x, y, z]。
+            phy_steps_per_action: 每动作步的物理步数（与蓝图 runtime 配置一致）。
+            random_seed: 随机种子。
+        """
+        self.target_robot = target_robot
+        self.policy_blueprint_path = policy_blueprint_path
+        self.impulse_body = impulse_body
+        if isinstance(force_magnitude, (int, float)):
+            self.force_magnitude_range = (float(force_magnitude), float(force_magnitude))
+        else:
+            self.force_magnitude_range = (float(force_magnitude[0]),
+                                           float(force_magnitude[1]))
+        if isinstance(duration_action_steps, int):
+            self.duration_action_steps_range = (duration_action_steps, duration_action_steps)
+        else:
+            self.duration_action_steps_range = (int(duration_action_steps[0]),
+                                                 int(duration_action_steps[1]))
+        self.direction_mode = direction_mode
+        self.fixed_direction = (np.asarray(fixed_direction, dtype=np.float64)
+                                if fixed_direction is not None else None)
+        self.phy_steps_per_action = int(phy_steps_per_action)
+        self._rng = np.random.RandomState(random_seed)
+        self._internal_sim: Optional[Any] = None
+        self._policy: Optional[Any] = None
+
+    def set_episode_seed(self, seed: int) -> None:
+        self._rng = np.random.RandomState(int(seed))
+
+    @property
+    def name(self) -> str:
+        return "impulse_perturbation"
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "policy_blueprint_path": self.policy_blueprint_path,
+            "impulse_body": self.impulse_body,
+            "force_magnitude": list(self.force_magnitude_range),
+            "duration_action_steps": list(self.duration_action_steps_range),
+            "direction_mode": self.direction_mode,
+            "fixed_direction": (self.fixed_direction.tolist()
+                                if self.fixed_direction is not None else None),
+            "phy_steps_per_action": self.phy_steps_per_action,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ImpulsePerturbationPlugin":
+        return cls(**config)
+
+    def _ensure_internal_sim(self) -> Any:
+        if self._internal_sim is None:
+            from envs.humanoid21.simulator import Humanoid21Simulator
+            self._internal_sim = Humanoid21Simulator()
+        return self._internal_sim
+
+    def _ensure_policy(self) -> Any:
+        if self._policy is None and self.policy_blueprint_path is not None:
+            from envs.framework.policy import PolicyBlueprint
+            bp = PolicyBlueprint.load(Path(self.policy_blueprint_path))
+            self._policy = bp.build()
+        return self._policy
+
+    def _sample_direction(self) -> np.ndarray:
+        if self.direction_mode == "fixed" and self.fixed_direction is not None:
+            d = self.fixed_direction.copy()
+        else:
+            angle = self._rng.uniform(0, 2 * np.pi)
+            d = np.array([np.cos(angle), np.sin(angle), 0.0], dtype=np.float64)
+        norm = np.linalg.norm(d)
+        if norm > 0:
+            d = d / norm
+        return d
+
+    def _resolve_params(self, ctx: SimContext) -> Dict[str, Any]:
+        params = ctx.episode_options.get("impulse_params", None)
+        if params is not None:
+            return {
+                "body": params["impulse_body"],
+                "direction": np.asarray(params["impulse_direction"], dtype=np.float64),
+                "force": float(params["impulse_force"]),
+                "duration_action_steps": int(params["impulse_duration_steps"]),
+            }
+        return {
+            "body": self.impulse_body,
+            "direction": self._sample_direction(),
+            "force": float(self._rng.uniform(*self.force_magnitude_range)),
+            "duration_action_steps": int(self._rng.randint(
+                self.duration_action_steps_range[0],
+                self.duration_action_steps_range[1] + 1,
+            )),
+        }
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        sim = self._ensure_internal_sim()
+        policy = self._ensure_policy()
+
+        other_robot = "robot_b" if self.target_robot == "robot_a" else "robot_a"
+
+        params = self._resolve_params(ctx)
+        body = params["body"]
+        direction = params["direction"]
+        force = params["force"]
+        duration_action_steps = params["duration_action_steps"]
+        duration_phy_steps = duration_action_steps * self.phy_steps_per_action
+
+        # 1. 读取真实环境当前 core state，初始化内部 sim
+        real_state = ctx.accessor.get_core_state()
+        sim.reset()
+        sim.set_core_state(real_state)
+
+        # 2. 策略 reset
+        if policy is not None:
+            policy.reset(seed=int(self._rng.randint(0, 2**31 - 1)))
+
+        # 保存非目标机器人的初始状态（定期重置，防止干扰）
+        non_target_state = {
+            rid: {k: v.copy() for k, v in state.items()}
+            for rid, state in real_state.items()
+            if rid != self.target_robot
+        }
+
+        # 3. 施力 + 策略控制 + 物理步
+        for i in range(duration_phy_steps):
+            # 策略出 action
+            if policy is not None:
+                obs = sim.get_observation()
+                action, _ = policy.act(obs.get(self.target_robot))
+                sim.set_action({
+                    self.target_robot: action,
+                    other_robot: real_state[other_robot].get(
+                        "joint_pos_norm",
+                        np.zeros(21, dtype=np.float32),
+                    ),
+                })
+            else:
+                sim.set_action({
+                    rid: real_state[rid].get(
+                        "joint_pos_norm",
+                        np.zeros(21, dtype=np.float32),
+                    )
+                    for rid in ("robot_a", "robot_b")
+                })
+
+            # 施加外力（每步重新施加，因为 physical_step 会清零 xfrc_applied）
+            sim.apply_external_force(
+                body_name=body,
+                force=direction * force,
+                robot_id=self.target_robot,
+            )
+            sim.physical_step()
+
+            # 定期重置非目标机器人
+            if non_target_state and (i + 1) % self.phy_steps_per_action == 0:
+                sim.set_core_state(non_target_state)
+
+        # 4. 取扰动后的 core state 写回真实环境
+        perturbed_state = sim.get_core_state()
+        ctx.mutator.set_core_state({
+            self.target_robot: perturbed_state[self.target_robot],
+        })
+
+        # 5. 记录元数据到 metrics
+        ctx.metrics[f"{self.target_robot}_impulse_body"] = body
+        ctx.metrics[f"{self.target_robot}_impulse_force"] = force
+        ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = duration_action_steps
+        ctx.metrics[f"{self.target_robot}_impulse_duration_phy_steps"] = duration_phy_steps
+        ctx.metrics[f"{self.target_robot}_impulse_direction"] = direction.tolist()
+
+
 # ============================================================
 # 使用示例
 # ============================================================
