@@ -40,36 +40,6 @@ def _parse_float_list(s: str) -> List[float]:
     return [float(x) for x in s.split(",")]
 
 
-def _build_jobs(
-    env_pb: ParameterizedEnvBlueprint,
-    policy_bp: PolicyBlueprint,
-    force: float,
-    duration: int,
-    episodes: int,
-    base_seed: int,
-    agent_id: str,
-) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-    """Build N jobs for one grid cell, each with random direction."""
-    env_bp = env_pb.materialize(
-        max_steps=env_pb.parameters_dict.get("max_steps", {}).get("default", 600)
-        if hasattr(env_pb, "parameters_dict") else 600,
-        agent_id=agent_id,
-        tolerance=6,
-        force_magnitude=force,
-        duration_action_steps=duration,
-        direction_mode="random_horizontal",
-    )
-    jobs = []
-    for i in range(episodes):
-        seed = base_seed + i
-        jobs.append((
-            policy_bp, policy_bp,
-            env_bp, seed,
-            {"agent_id": agent_id, "initial_distance": 2.0},
-        ))
-    return jobs
-
-
 def main() -> None:
     p = argparse.ArgumentParser(description="Impulse boundary mapping")
     p.add_argument("--policy-export", required=True,
@@ -85,6 +55,8 @@ def main() -> None:
                    help="Episodes per grid cell.")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--max-steps", type=int, default=600,
+                   help="Max action steps per episode.")
     p.add_argument("--output", type=str, default=None,
                    help="Output CSV path. If omitted, only prints to stdout.")
     p.add_argument("--agent-id", type=str, default="robot_a")
@@ -100,18 +72,7 @@ def main() -> None:
     # Load env blueprint
     env_pb = ParameterizedEnvBlueprint.load(args.blueprint)
 
-    # Determine max_steps from blueprint defaults
-    # We need to read the default from the blueprint template
-    template = env_pb.template
-    runtime_section = template.get("runtime", {})
-    max_steps_val = runtime_section.get("max_steps", 600)
-    if isinstance(max_steps_val, str):
-        # It's a ${...} reference; find the parameter default
-        for param in env_pb.parameters:
-            if param.name == "max_steps":
-                max_steps_val = param.default
-                break
-    max_steps_val = int(max_steps_val)
+    max_steps_val = args.max_steps
 
     print(f"=== Impulse Boundary Mapping ===")
     print(f"policy: {policy_path_abs}")

@@ -1080,17 +1080,11 @@ class ImpulsePerturbationPlugin(BasePlugin):
                 action, _ = policy.act(obs.get(self.target_robot))
                 sim.set_action({
                     self.target_robot: action,
-                    other_robot: real_state[other_robot].get(
-                        "joint_pos_norm",
-                        np.zeros(21, dtype=np.float32),
-                    ),
+                    other_robot: np.zeros(21, dtype=np.float32),
                 })
             else:
                 sim.set_action({
-                    rid: real_state[rid].get(
-                        "joint_pos_norm",
-                        np.zeros(21, dtype=np.float32),
-                    )
+                    rid: np.zeros(21, dtype=np.float32)
                     for rid in ("robot_a", "robot_b")
                 })
 
