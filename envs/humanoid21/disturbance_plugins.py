@@ -213,9 +213,23 @@ class InitialStatePerturbationPlugin(BasePlugin):
         root_linear_velocity_delta_max: float | Sequence[float] = 0.0,
         # 作用于 root_angular_vel_local（Torso 局部角速度 (x, y, z)），单位：弧度/秒 (rad/s)。
         root_angular_velocity_delta_max: float | Sequence[float] = 0.0,
+        # 扰动姿态后是否把机器人重新"放回地面"。
+        #
+        # 关节扰动与躯干倾斜都会改变足底相对 Torso 的高度，而本插件不修改
+        # ``root_pos[2]``。由于标准站姿近乎直腿，任意随机关节偏移只会"缩短"
+        # 有效腿长，因此扰动总是让双脚离地（单边偏置，永远不会压入地面）。
+        # 结果是 ``joint_pos_delta_max`` 隐式变成了一个"跌落高度"参数：在
+        # scale=0.9 下约 46% 的 episode 开局时双脚离地 >5cm，最高 29cm。
+        #
+        # 打开本选项后，姿态扰动完成后会平移 ``root_pos[2]``，使最低的脚
+        # 回到扰动前的标称高度，从而把"跌落"与"姿态扰动"解耦。
+        #
+        # 默认 False 以保持既有实验的行为不变。
+        reground: bool = False,
         random_seed: Optional[int] = None,
     ):
         self.target_robot = target_robot
+        self.reground = bool(reground)
         self.joint_pos_delta_max = float(joint_pos_delta_max)
         self.joint_vel_delta_max = float(joint_vel_delta_max)
         self.root_xy_offset_max = float(root_xy_offset_max)
@@ -286,14 +300,33 @@ class InitialStatePerturbationPlugin(BasePlugin):
             "root_tilt_deg_max": self.root_tilt_deg_max.tolist(),
             "root_linear_velocity_delta_max": self.root_linear_velocity_delta_max.tolist(),
             "root_angular_velocity_delta_max": self.root_angular_velocity_delta_max.tolist(),
+            "reground": self.reground,
         }
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "InitialStatePerturbationPlugin":
         return cls(**config)
 
+    def _lowest_foot_z(self, ctx: SimContext) -> Optional[float]:
+        """当前状态下该机器人两只脚 body 原点的最低世界系 z (m)。"""
+        static = ctx.accessor.get_static_data()
+        keypoints = static.get(self.target_robot, {}).get("keypoint_body_names", {})
+        body_xpos = ctx.accessor.get_derived_state([self.target_robot]).get(
+            self.target_robot, {}
+        ).get("body_xpos", {})
+
+        zs = [
+            float(body_xpos[keypoints[name]][2])
+            for name in ("foot_left", "foot_right")
+            if name in keypoints and keypoints[name] in body_xpos
+        ]
+        return min(zs) if zs else None
+
     def on_pre_episode(self, ctx: SimContext) -> None:
         # RNG 已由 set_episode_seed 重建；on_pre_episode 只负责业务逻辑。
+        # 标称足底高度必须在任何 mutate 之前采样。
+        nominal_foot_z = self._lowest_foot_z(ctx) if self.reground else None
+
         core_state = ctx.accessor.get_core_state()
         if self.target_robot not in core_state:
             raise ValueError(f"Unknown target_robot: {self.target_robot}")
@@ -359,6 +392,19 @@ class InitialStatePerturbationPlugin(BasePlugin):
         ], dtype=np.float32)
 
         ctx.mutator.set_core_state(new_state)
+
+        # 姿态扰动会抬高足底（见 ``reground`` 说明）。平移 root 高度把最低的
+        # 脚放回标称高度，使扰动只改变"姿态"而不附带一次自由落体。
+        reground_dz = 0.0
+        if self.reground and nominal_foot_z is not None:
+            perturbed_foot_z = self._lowest_foot_z(ctx)
+            if perturbed_foot_z is not None:
+                reground_dz = float(nominal_foot_z - perturbed_foot_z)
+                new_state[self.target_robot]['root_pos'][2] = np.float32(
+                    new_state[self.target_robot]['root_pos'][2] + reground_dz
+                )
+                ctx.mutator.set_core_state(new_state)
+        ctx.metrics[f'{self.target_robot}_initial_perturbation_reground_dz'] = reground_dz
 
         ctx.metrics[f'{self.target_robot}_initial_perturbation_joint_pos_linf'] = float(np.max(np.abs(joint_pos_delta)))
         ctx.metrics[f'{self.target_robot}_initial_perturbation_joint_vel_linf'] = float(np.max(np.abs(joint_vel_delta)))
