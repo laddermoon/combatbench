@@ -1,11 +1,10 @@
 """basic_balance_v2_stage_seg: staged reward with segment-based phase control.
 
 Based on basic_balance_v2, adds two-phase reward scheme:
-  - **Struggle phase**: goal is to recover balance. Reward = per-step penalty
-    (-0.01) + terminal: +1 if recovers to stability, -1 if falls.
+  - **Struggle phase**: r_struggle (terminal-only: +1 recover, -1 fall) +
+    r_height (per-step dense shaping: height * 0.01).
   - **Stability phase**: same as basic_balance_v2 (r_cross, r_joint, r_vel,
-    r_tilt, r_foot) but r_fall is replaced by r_struggle which penalizes
-    transition from stability to struggle.
+    r_tilt, r_foot) + r_struggle (terminal: -1 if degrades to struggle).
 
 Uses PhaseObserver (uprightness + height with hysteresis) to determine phase.
 Uses prepare_segments (v2 API) to split episodes into per-phase segments with
@@ -29,9 +28,10 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
     name = "basic_balance_v2_stage_seg"
     # r_struggle replaces r_fall: struggle-phase survival + phase transition rewards
     # Stability-phase keys remain the same as basic_balance_v2
-    reward_keys = ("r_struggle", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
+    reward_keys = ("r_struggle", "r_height", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
     gammas = {
         "r_struggle": 0.99,
+        "r_height": 0.99,
         "r_cross": 0.99,
         "r_joint": 0.99,
         "r_vel": 0.99,
@@ -90,7 +90,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         return esum.get("survived", 0.0) > best_esum.get("survived", 0.0)
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (3.0, 0.3, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     def next_weights(
         self,
@@ -99,7 +99,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
     ) -> Tuple[float, ...]:
         survival_rate = float(eval_metrics.get("survived", 0.0))
         self._survival_rate = survival_rate
-        return (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+        return (3.0, 0.3, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     def _extract_phase_info(self, episode) -> Tuple[np.ndarray, np.ndarray]:
         """Extract per-step phase and transition arrays from PhaseObserver output.
@@ -223,6 +223,20 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
                 r_struggle[end - 1] += self.struggle_fall_penalty
             # else: final run ended by timeout -> no terminal, bootstrapped.
 
+        # --- r_height: per-step height reward, active only during struggle ---
+        # Dense shaping signal: higher torso = closer to recovery.
+        # Value = height * 0.01, so at standing height (~1.28m) each step
+        # gives ~0.0128, and near-ground (~0.3m) gives ~0.003.
+        phase_node = episode.observer_outputs.get("phase")
+        height_arr = np.zeros(T, dtype=np.float32)
+        if phase_node is not None and isinstance(phase_node, dict):
+            h_raw = phase_node.get("height")
+            if h_raw is not None:
+                height_arr = np.asarray(h_raw, dtype=np.float32).reshape(-1)
+                if height_arr.shape[0] != T:
+                    height_arr = np.zeros(T, dtype=np.float32)
+        r_height = (height_arr * 0.01).astype(np.float32)
+
         # --- Stability-phase rewards (same as basic_balance_v2) ---
         r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
 
@@ -254,6 +268,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
 
         return {
             "r_struggle": r_struggle,
+            "r_height": r_height,
             "r_cross": r_cross,
             "r_joint": r_joint,
             "r_vel": r_vel,
@@ -266,8 +281,10 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         decomposition that ``extract_rewards`` uses.
 
         Active critics:
-          - Struggle run:  only ``r_struggle``.
-          - Stability run: all keys.
+          - Struggle run:  ``r_struggle`` + ``r_height``.
+          - Stability run: all keys except ``r_height`` (which is a
+            struggle-only shaping signal and would be pure noise during
+            stability since height is nearly constant).
 
         Termination:
           - Ends at a phase boundary -> ``"terminated"``.  ``extract_rewards``
@@ -294,7 +311,9 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
                 start=start,
                 end=end,
                 weight=1.0,
-                key_weights={"r_struggle": 1.0} if is_struggle else None,
+                key_weights={"r_struggle": 1.0, "r_height": 1.0} if is_struggle
+                else {"r_struggle": 1.0, "r_cross": 1.0, "r_joint": 1.0,
+                      "r_vel": 1.0, "r_tilt": 1.0, "r_foot": 1.0},
                 termination=termination,
             ))
 
