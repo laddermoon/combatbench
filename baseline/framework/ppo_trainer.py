@@ -437,6 +437,7 @@ def ppo_update(
         _off += T
 
     # Build per-key frame-level active mask (length n, True where key has data).
+    n = sum(buf.ep_lengths)
     key_frame_mask: Dict[str, np.ndarray] = {}
     for key in reward_keys:
         mask = np.zeros(n, dtype=bool)
