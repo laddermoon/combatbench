@@ -1,13 +1,14 @@
 """Iterative balance recovery training loop.
 
-Automates the generate → train → re-generate cycle, tracking the recovery
-boundary across iterations. Each iteration:
+Automates the generate → sample → train → re-generate cycle, tracking the
+recovery boundary across iterations. Each iteration:
 
 1. Generate state bank using current policy (ImpulsePerturbationPlugin)
-2. Analyze per-cell survival rates, find boundary region (20%-80% survival)
-3. Filter to boundary states only → boundary_state_bank.npz
-4. Train PPO with boundary states (warm-start from current policy)
-5. Evaluate: measure boundary_force (50% survival point), check improvement
+   — over-generate: large grid × many episodes per cell
+2. Analyze per-cell survival rates, compute boundary_force (50% survival point)
+3. Sample N training states from full bank → train_state_bank.npz
+4. Train PPO with sampled states (warm-start from current policy)
+5. Evaluate: measure boundary_force, check if it shifted rightward
 
 The boundary_force metric tracks progress: if the policy improves, it can
 survive stronger perturbations, so the 50% survival point shifts rightward.
@@ -18,7 +19,9 @@ Usage::
         --base-policy baseline/runs/train_basic_balance_v2_standup_ppo_20260801_003425/policy \\
         --output-dir baseline/runs/recovery_iter \\
         --max-iters 5 \\
-        --train-updates 5000
+        --train-updates 5000 \\
+        --episodes-per-cell 100 \\
+        --train-states 5000
 
     # Smoke test (1 iter, 2 train updates, small grid)
     python3 baseline/framework/recovery_iter_loop.py \\
@@ -137,30 +140,30 @@ def analyze_state_bank(npz_path: str) -> Dict[str, Any]:
     }
 
 
-def filter_boundary_states(
+def sample_training_states(
     npz_path: str,
     output_path: str,
-    lo_rate: float = 0.2,
-    hi_rate: float = 0.8,
+    n_target: int,
+    seed: int = 42,
 ) -> int:
-    """Filter state bank to only boundary cells (survival rate in [lo, hi]).
+    """Sample n_target states from full state bank for training.
 
-    Saves filtered .npz and returns number of states kept.
+    If total states <= n_target, keeps all.
+    Otherwise randomly samples n_target states (seeded for reproducibility).
+    Saves sampled .npz and returns number of states kept.
     """
-    analysis = analyze_state_bank(npz_path)
-    boundary_indices: List[int] = []
-    for cell in analysis["cells"]:
-        if lo_rate <= cell["rate"] <= hi_rate:
-            boundary_indices.extend(cell["indices"])
-
-    if not boundary_indices:
-        # No boundary cells — fall back to all states
-        print(f"  [warn] no boundary cells found (lo={lo_rate}, hi={hi_rate}), "
-              f"keeping all states")
-        return -1
-
     data = np.load(npz_path, allow_pickle=True)
-    idx = np.array(boundary_indices, dtype=int)
+    n_total = len(data["labels"])
+
+    if n_total <= n_target:
+        # Keep all states — not enough to sample
+        idx = np.arange(n_total)
+        print(f"  [sample] Total {n_total} <= target {n_target}, keeping all")
+    else:
+        rng = np.random.RandomState(seed)
+        idx = rng.choice(n_total, size=n_target, replace=False)
+        idx.sort()
+        print(f"  [sample] Sampled {n_target}/{n_total} states (seed={seed})")
 
     np.savez_compressed(
         output_path,
@@ -262,17 +265,24 @@ def run_generate_state_bank(
 
 
 def run_train(
-    state_bank_path: str,
     base_policy_path: str,
+    policy_blueprint_path: str,
+    force_min: float,
+    force_max: float,
+    dur_min: int,
+    dur_max: int,
     run_dir: str,
     rollout_workers: int,
     train_updates: int,
     smoke: bool = False,
 ) -> str:
-    """Run train.py via subprocess. Returns path to exported policy."""
+    """Run train.py with balance_recover_v4 (online impulse perturbation).
+
+    Returns path to exported policy.
+    """
     cmd = [
         sys.executable, str(TRAIN_PY),
-        "--experiment", "balance_recover_v3",
+        "--experiment", "balance_recover_v4",
         "--algo", "ppo",
         "--run-dir", run_dir,
         "--no-snapshot",
@@ -282,13 +292,19 @@ def run_train(
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(CB_ROOT)
-    env["STATE_BANK_PATH"] = str(Path(state_bank_path).resolve())
     if base_policy_path:
         env["BASE_POLICY_PATH"] = str(Path(base_policy_path).resolve())
+    env["POLICY_BLUEPRINT_PATH"] = str(Path(policy_blueprint_path).resolve())
+    env["IMPULSE_FORCE_MIN"] = str(force_min)
+    env["IMPULSE_FORCE_MAX"] = str(force_max)
+    env["IMPULSE_DURATION_MIN"] = str(dur_min)
+    env["IMPULSE_DURATION_MAX"] = str(dur_max)
     env["ROLLOUT_WORKERS"] = str(rollout_workers)
     env["TRAIN_UPDATES"] = str(train_updates)
 
-    print(f"  [train] STATE_BANK_PATH={env['STATE_BANK_PATH']}")
+    print(f"  [train] IMPULSE_FORCE=[{force_min}, {force_max}] "
+          f"DURATION=[{dur_min}, {dur_max}]")
+    print(f"  [train] POLICY_BLUEPRINT_PATH={env['POLICY_BLUEPRINT_PATH']}")
     print(f"  [train] BASE_POLICY_PATH={env.get('BASE_POLICY_PATH', '(none)')}")
     print(f"  [train] ROLLOUT_WORKERS={env['ROLLOUT_WORKERS']} TRAIN_UPDATES={env['TRAIN_UPDATES']}")
 
@@ -331,17 +347,15 @@ def main() -> None:
                    help="Duration grid (action steps)")
     p.add_argument("--episodes-per-cell", type=int, default=20,
                    help="Episodes per grid cell for state bank generation")
-    p.add_argument("--gen-workers", type=int, default=8,
+    p.add_argument("--gen-workers", type=int, default=96,
                    help="Parallel workers for state bank generation")
-    p.add_argument("--rollout-workers", type=int, default=8,
+    p.add_argument("--rollout-workers", type=int, default=96,
                    help="Parallel workers for PPO training rollouts")
     p.add_argument("--max-steps", type=int, default=600,
                    help="Max action steps per episode")
     p.add_argument("--tolerance", type=int, default=6,
                    help="Imbalance tolerance steps")
     p.add_argument("--agent-id", default="robot_a")
-    p.add_argument("--boundary-range", default="0.2,0.8",
-                   help="Survival rate range for boundary filtering (lo,hi)")
     p.add_argument("--no-improve-patience", type=int, default=2,
                    help="Stop after N consecutive iterations without boundary improvement")
     p.add_argument("--target-boundary-force", type=float, default=300.0,
@@ -358,7 +372,6 @@ def main() -> None:
 
     force_grid = [float(x) for x in args.force_grid.split(",")]
     duration_grid = [int(x) for x in args.duration_grid.split(",")]
-    lo_rate, hi_rate = [float(x) for x in args.boundary_range.split(",")]
 
     iter_log: List[Dict[str, Any]] = []
     log_path = output_dir / "iter_log.json"
@@ -427,26 +440,32 @@ def main() -> None:
                 f.write(f"{cell['force']:.0f},{cell['duration']},{cell['n']},"
                         f"{cell['survived']},{cell['rate']:.4f},{cell['mean_ep_len']:.1f}\n")
 
-        # --- Step 3: Filter to boundary states ---
-        print(f"\n  [Step 3] Filtering boundary states (rate in [{lo_rate}, {hi_rate}])...")
-        boundary_bank = str(iter_dir / "boundary_state_bank.npz")
-        n_boundary = filter_boundary_states(full_bank, boundary_bank, lo_rate, hi_rate)
+        # --- Step 3: Compute impulse range for training ---
+        boundary_force = analysis["boundary_force"]
+        # Train with forces from 0.5x to 1.5x boundary force
+        train_force_min = max(5.0, boundary_force * 0.5)
+        train_force_max = boundary_force * 1.5
+        # Duration range: use full grid range
+        train_dur_min = min(duration_grid)
+        train_dur_max = max(duration_grid)
 
-        if n_boundary == -1:
-            # No boundary cells, use full bank
-            boundary_bank = full_bank
-            n_boundary = analysis["n"]
-            print(f"  [filter] No boundary cells found, using full bank ({n_boundary} states)")
-        else:
-            print(f"  [filter] Kept {n_boundary}/{analysis['n']} boundary states")
+        print(f"\n  [Step 3] Setting impulse range for training:")
+        print(f"  [impulse] force: [{train_force_min:.0f}, {train_force_max:.0f}] N "
+              f"(boundary_force={boundary_force:.1f}N)")
+        print(f"  [impulse] duration: [{train_dur_min}, {train_dur_max}] steps")
 
-        # --- Step 4: Train PPO ---
-        print(f"\n  [Step 4] Training PPO...")
+        # --- Step 4: Train PPO with online impulse perturbation ---
+        print(f"\n  [Step 4] Training PPO (online impulse perturbation)...")
         train_dir = str(iter_dir / "train")
+        policy_bp_path = str(Path(current_policy) / "policy_blueprint.yaml")
         t0 = time.perf_counter()
         new_policy = run_train(
-            state_bank_path=boundary_bank,
             base_policy_path=current_policy,
+            policy_blueprint_path=policy_bp_path,
+            force_min=train_force_min,
+            force_max=train_force_max,
+            dur_min=train_dur_min,
+            dur_max=train_dur_max,
             run_dir=train_dir,
             rollout_workers=args.rollout_workers,
             train_updates=args.train_updates,
@@ -457,7 +476,6 @@ def main() -> None:
         print(f"  [train] New policy: {new_policy}")
 
         # --- Step 5: Evaluate improvement ---
-        boundary_force = analysis["boundary_force"]
         improved = boundary_force > best_boundary_force + 1.0  # 1N threshold
         if improved:
             best_boundary_force = boundary_force
@@ -471,14 +489,14 @@ def main() -> None:
             "policy_path": current_policy,
             "new_policy_path": new_policy,
             "state_bank_path": full_bank,
-            "boundary_bank_path": boundary_bank,
             "n_states": analysis["n"],
-            "n_boundary_states": n_boundary,
             "overall_survival_rate": analysis["overall_survival_rate"],
             "boundary_force": boundary_force,
             "best_boundary_force": best_boundary_force,
             "improved": improved,
             "force_grid": force_grid,
+            "train_force_range": [train_force_min, train_force_max],
+            "train_duration_range": [train_dur_min, train_dur_max],
             "gen_time_s": gen_time,
             "train_time_s": train_time,
         }
@@ -524,10 +542,11 @@ def main() -> None:
 
     for entry in iter_log:
         status = "✓" if entry["improved"] else " "
+        fr = entry.get("train_force_range", [0, 0])
         print(f"  {status} iter={entry['iter']} "
               f"bf={entry['boundary_force']:>6.1f}N "
               f"surv={entry['overall_survival_rate']:.3f} "
-              f"n_boundary={entry['n_boundary_states']}")
+              f"train_force=[{fr[0]:.0f},{fr[1]:.0f}]")
 
 
 if __name__ == "__main__":
