@@ -19,9 +19,9 @@
 - [Step 5: 训练实验](#step-5-训练实验)
   - [balance_recover_v3_env.yaml — 环境蓝图](#balance_recover_v3_envyaml--环境蓝图)
   - [exp_balance_recover_v3.py — PPO 实验](#exp_balance_recover_v3py--ppo-实验)
-- [蓝图文件](#蓝图文件)
 - [Step 6: 迭代训练循环](#step-6-迭代训练循环)
   - [recovery_iter_loop.py — 自动化迭代](#recovery_iter_looppy--自动化迭代)
+- [蓝图文件](#蓝图文件)
 - [完整工作流示例](#完整工作流示例)
 
 ---
@@ -561,6 +561,161 @@ baseline/runs/recover_v3_gen0/
 
 ---
 
+## Step 6: 迭代训练循环
+
+### recovery_iter_loop.py — 自动化迭代
+
+**文件**: `baseline/framework/recovery_iter_loop.py`
+
+自动化「生成状态池 → 分析边界 → 过滤边界状态 → 训练策略」的迭代闭环，逐步逼近恢复边界。
+
+**核心机制**:
+
+1. **生成状态池** — 用当前策略调用 `generate_state_bank.py`，在全网格采样扰动状态
+2. **分析边界** — 计算 per-cell 存活率，找到 50% 存活率对应的力值（`boundary_force`）
+3. **过滤边界状态** — 只保留存活率在 [20%, 80%] 区间的 cell 的状态（最有训练价值的样本）
+4. **训练 PPO** — 用边界状态池训练，warm-start 从当前策略
+5. **评估前移** — 量化 `boundary_force` 是否右移（策略变强 → 能扛更大的力）
+6. **自适应 grid** — 下一轮根据边界位置调整 force grid，聚焦在边界附近
+
+**迭代流程**:
+
+```
+gen0: base_policy → generate → analyze → filter → train → gen0_policy
+gen1: gen0_policy → generate (adaptive grid) → ... → gen1_policy
+gen2: gen1_policy → ...
+
+停止条件:
+  - boundary_force >= target (默认 300N)
+  - 连续 N 轮无改善 (默认 2 轮)
+  - 达到最大迭代轮数 (默认 5 轮)
+```
+
+**用法**:
+
+```bash
+# 完整迭代
+export PYTHONPATH=/data1/mono/things/combatbench
+
+python3 baseline/framework/recovery_iter_loop.py \
+    --base-policy baseline/runs/train_basic_balance_v2_standup_ppo_20260801_003425/policy \
+    --output-dir baseline/runs/recovery_iter \
+    --max-iters 5 \
+    --train-updates 5000 \
+    --force-grid 10,20,30,50,70,100,150,200 \
+    --duration-grid 1,2,3,4,6,8 \
+    --episodes-per-cell 20 \
+    --gen-workers 8 \
+    --rollout-workers 8
+
+# Smoke test (1 轮, 2 updates, 小网格)
+python3 baseline/framework/recovery_iter_loop.py \
+    --base-policy baseline/runs/.../policy \
+    --output-dir /tmp/recovery_iter_smoke \
+    --max-iters 1 --train-updates 2 \
+    --force-grid 50,100,150 --duration-grid 2,4 \
+    --episodes-per-cell 4 --gen-workers 4 --rollout-workers 2 \
+    --smoke --no-adapt-grid
+
+# 禁用 grid 自适应（每轮用相同 grid）
+python3 baseline/framework/recovery_iter_loop.py \
+    --base-policy ... --no-adapt-grid ...
+
+# 自定义停止条件
+python3 baseline/framework/recovery_iter_loop.py \
+    --base-policy ... \
+    --target-boundary-force 500 \
+    --no-improve-patience 3 \
+    --max-iters 10
+```
+
+**参数**:
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--base-policy` | str | (必填) | 初始策略目录 |
+| `--output-dir` | str | `baseline/runs/recovery_iter` | 输出根目录 |
+| `--max-iters` | int | `5` | 最大迭代轮数 |
+| `--train-updates` | int | `5000` | 每轮 PPO 训练 update 数 |
+| `--force-grid` | str | `10,20,30,50,70,100,150,200` | 初始力值网格 (N) |
+| `--duration-grid` | str | `1,2,3,4,6,8` | 持续时间网格 |
+| `--episodes-per-cell` | int | `20` | 每格 episode 数 |
+| `--gen-workers` | int | `8` | 状态池生成并行数 |
+| `--rollout-workers` | int | `8` | 训练 rollout 并行数 |
+| `--max-steps` | int | `600` | 每 episode 最大步数 |
+| `--tolerance` | int | `6` | 失衡容忍步数 |
+| `--boundary-range` | str | `0.2,0.8` | 边界 cell 的存活率范围 |
+| `--no-improve-patience` | int | `2` | 连续无改善轮数停止 |
+| `--target-boundary-force` | float | `300` | 目标 boundary force 停止 |
+| `--seed` | int | `42` | 基础随机种子 |
+| `--smoke` | flag | off | Smoke test 模式 |
+| `--no-adapt-grid` | flag | off | 禁用 grid 自适应 |
+
+**输出目录结构**:
+
+```
+baseline/runs/recovery_iter/
+├── iter_log.json                    # 每轮摘要 (JSON)
+├── gen0/
+│   ├── full_state_bank.npz          # 全量状态池
+│   ├── boundary_state_bank.npz      # 过滤后边界状态池
+│   ├── boundary_analysis.csv        # per-cell 存活率分析
+│   └── train/                       # PPO 训练输出
+│       ├── policy/                  # 策略导出
+│       ├── checkpoints/             # 训练 checkpoint
+│       ├── policy_exports/          # 历史策略导出
+│       └── train.log                # 训练日志
+├── gen1/
+│   └── ...
+└── gen2/
+    └── ...
+```
+
+**iter_log.json 示例**:
+
+```json
+[
+  {
+    "iter": 0,
+    "policy_path": "baseline/runs/.../policy",
+    "new_policy_path": "baseline/runs/recovery_iter/gen0/train/policy",
+    "n_states": 420,
+    "n_boundary_states": 120,
+    "overall_survival_rate": 0.35,
+    "boundary_force": 80.0,
+    "best_boundary_force": 80.0,
+    "improved": true,
+    "force_grid": [10, 20, 30, 50, 70, 100, 150, 200],
+    "gen_time_s": 45.2,
+    "train_time_s": 1200.5
+  }
+]
+```
+
+**核心指标**:
+
+- **`boundary_force`**: 50% 存活率对应的力值 (N)，衡量策略抗扰动能力的核心指标
+- **`n_boundary_states`**: 边界状态数，反映有效训练样本量
+- **`improved`**: 本轮 boundary_force 是否超过历史最佳
+
+**自适应 grid 策略**:
+
+- 全部存活 → 扩大 force 上限 (1.5x)
+- 全部摔倒 → 缩小 force 下限 (0.5x)
+- 有边界 → 聚焦在 `0.5×boundary` 到 `2×boundary` 范围
+
+**环境变量传递** (通过 subprocess):
+
+| 环境变量 | 传递给 | 说明 |
+|----------|--------|------|
+| `STATE_BANK_PATH` | `exp_balance_recover_v3.py` | 状态池路径 |
+| `BASE_POLICY_PATH` | `exp_balance_recover_v3.py` | Warm-start 策略路径 |
+| `ROLLOUT_WORKERS` | `exp_balance_recover_v3.py` | 训练并行 worker 数 |
+| `TRAIN_UPDATES` | `exp_balance_recover_v3.py` | 训练 update 数 |
+| `PYTHONPATH` | subprocess | 仓库根目录 |
+
+---
+
 ## 蓝图文件
 
 ### impulse_boundary_env.yaml
@@ -714,158 +869,3 @@ baseline/runs/recover_v3_gen0/     # 手动单轮训练输出（Step 5）
 ### 后续步骤
 
 - 完成。使用 `recovery_iter_loop.py`（Step 6）自动化全流程。
-
----
-
-## Step 6: 迭代训练循环
-
-### recovery_iter_loop.py — 自动化迭代
-
-**文件**: `baseline/framework/recovery_iter_loop.py`
-
-自动化「生成状态池 → 分析边界 → 过滤边界状态 → 训练策略」的迭代闭环，逐步逼近恢复边界。
-
-**核心机制**:
-
-1. **生成状态池** — 用当前策略调用 `generate_state_bank.py`，在全网格采样扰动状态
-2. **分析边界** — 计算 per-cell 存活率，找到 50% 存活率对应的力值（`boundary_force`）
-3. **过滤边界状态** — 只保留存活率在 [20%, 80%] 区间的 cell 的状态（最有训练价值的样本）
-4. **训练 PPO** — 用边界状态池训练，warm-start 从当前策略
-5. **评估前移** — 量化 `boundary_force` 是否右移（策略变强 → 能扛更大的力）
-6. **自适应 grid** — 下一轮根据边界位置调整 force grid，聚焦在边界附近
-
-**迭代流程**:
-
-```
-gen0: base_policy → generate → analyze → filter → train → gen0_policy
-gen1: gen0_policy → generate (adaptive grid) → ... → gen1_policy
-gen2: gen1_policy → ...
-
-停止条件:
-  - boundary_force >= target (默认 300N)
-  - 连续 N 轮无改善 (默认 2 轮)
-  - 达到最大迭代轮数 (默认 5 轮)
-```
-
-**用法**:
-
-```bash
-# 完整迭代
-export PYTHONPATH=/data1/mono/things/combatbench
-
-python3 baseline/framework/recovery_iter_loop.py \
-    --base-policy baseline/runs/train_basic_balance_v2_standup_ppo_20260801_003425/policy \
-    --output-dir baseline/runs/recovery_iter \
-    --max-iters 5 \
-    --train-updates 5000 \
-    --force-grid 10,20,30,50,70,100,150,200 \
-    --duration-grid 1,2,3,4,6,8 \
-    --episodes-per-cell 20 \
-    --gen-workers 8 \
-    --rollout-workers 8
-
-# Smoke test (1 轮, 2 updates, 小网格)
-python3 baseline/framework/recovery_iter_loop.py \
-    --base-policy baseline/runs/.../policy \
-    --output-dir /tmp/recovery_iter_smoke \
-    --max-iters 1 --train-updates 2 \
-    --force-grid 50,100,150 --duration-grid 2,4 \
-    --episodes-per-cell 4 --gen-workers 4 --rollout-workers 2 \
-    --smoke --no-adapt-grid
-
-# 禁用 grid 自适应（每轮用相同 grid）
-python3 baseline/framework/recovery_iter_loop.py \
-    --base-policy ... --no-adapt-grid ...
-
-# 自定义停止条件
-python3 baseline/framework/recovery_iter_loop.py \
-    --base-policy ... \
-    --target-boundary-force 500 \
-    --no-improve-patience 3 \
-    --max-iters 10
-```
-
-**参数**:
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--base-policy` | str | (必填) | 初始策略目录 |
-| `--output-dir` | str | `baseline/runs/recovery_iter` | 输出根目录 |
-| `--max-iters` | int | `5` | 最大迭代轮数 |
-| `--train-updates` | int | `5000` | 每轮 PPO 训练 update 数 |
-| `--force-grid` | str | `10,20,30,50,70,100,150,200` | 初始力值网格 (N) |
-| `--duration-grid` | str | `1,2,3,4,6,8` | 持续时间网格 |
-| `--episodes-per-cell` | int | `20` | 每格 episode 数 |
-| `--gen-workers` | int | `8` | 状态池生成并行数 |
-| `--rollout-workers` | int | `8` | 训练 rollout 并行数 |
-| `--max-steps` | int | `600` | 每 episode 最大步数 |
-| `--tolerance` | int | `6` | 失衡容忍步数 |
-| `--boundary-range` | str | `0.2,0.8` | 边界 cell 的存活率范围 |
-| `--no-improve-patience` | int | `2` | 连续无改善轮数停止 |
-| `--target-boundary-force` | float | `300` | 目标 boundary force 停止 |
-| `--seed` | int | `42` | 基础随机种子 |
-| `--smoke` | flag | off | Smoke test 模式 |
-| `--no-adapt-grid` | flag | off | 禁用 grid 自适应 |
-
-**输出目录结构**:
-
-```
-baseline/runs/recovery_iter/
-├── iter_log.json                    # 每轮摘要 (JSON)
-├── gen0/
-│   ├── full_state_bank.npz          # 全量状态池
-│   ├── boundary_state_bank.npz      # 过滤后边界状态池
-│   ├── boundary_analysis.csv        # per-cell 存活率分析
-│   └── train/                       # PPO 训练输出
-│       ├── policy/                  # 策略导出
-│       ├── checkpoints/             # 训练 checkpoint
-│       ├── policy_exports/          # 历史策略导出
-│       └── train.log                # 训练日志
-├── gen1/
-│   └── ...
-└── gen2/
-    └── ...
-```
-
-**iter_log.json 示例**:
-
-```json
-[
-  {
-    "iter": 0,
-    "policy_path": "baseline/runs/.../policy",
-    "new_policy_path": "baseline/runs/recovery_iter/gen0/train/policy",
-    "n_states": 420,
-    "n_boundary_states": 120,
-    "overall_survival_rate": 0.35,
-    "boundary_force": 80.0,
-    "best_boundary_force": 80.0,
-    "improved": true,
-    "force_grid": [10, 20, 30, 50, 70, 100, 150, 200],
-    "gen_time_s": 45.2,
-    "train_time_s": 1200.5
-  }
-]
-```
-
-**核心指标**:
-
-- **`boundary_force`**: 50% 存活率对应的力值 (N)，衡量策略抗扰动能力的核心指标
-- **`n_boundary_states`**: 边界状态数，反映有效训练样本量
-- **`improved`**: 本轮 boundary_force 是否超过历史最佳
-
-**自适应 grid 策略**:
-
-- 全部存活 → 扩大 force 上限 (1.5x)
-- 全部摔倒 → 缩小 force 下限 (0.5x)
-- 有边界 → 聚焦在 `0.5×boundary` 到 `2×boundary` 范围
-
-**环境变量传递** (通过 subprocess):
-
-| 环境变量 | 传递给 | 说明 |
-|----------|--------|------|
-| `STATE_BANK_PATH` | `exp_balance_recover_v3.py` | 状态池路径 |
-| `BASE_POLICY_PATH` | `exp_balance_recover_v3.py` | Warm-start 策略路径 |
-| `ROLLOUT_WORKERS` | `exp_balance_recover_v3.py` | 训练并行 worker 数 |
-| `TRAIN_UPDATES` | `exp_balance_recover_v3.py` | 训练 update 数 |
-| `PYTHONPATH` | subprocess | 仓库根目录 |
