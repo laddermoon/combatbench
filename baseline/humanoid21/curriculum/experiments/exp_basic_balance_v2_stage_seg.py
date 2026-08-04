@@ -50,7 +50,6 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
     struggle_recover_bonus: float = 1.0
     struggle_fall_penalty: float = -1.0
     stability_to_struggle_penalty: float = -1.0
-    per_step_stability_bonus: float = 0.01
 
     def video_env_blueprint(self):
         return self._make_video_blueprint(self._env_pb())
@@ -126,39 +125,77 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
 
         return is_struggle, transitions
 
+    def _phase_runs(self, episode) -> List[Tuple[int, int, bool]]:
+        """Decompose the episode into contiguous same-phase runs.
+
+        Returns a list of ``(start, end, is_struggle)`` with ``end`` exclusive,
+        covering ``[0, T)`` with no gaps.
+
+        This is the single source of truth for phase segmentation: both
+        ``extract_rewards`` and ``prepare_segments`` derive from it, so the
+        boundary rewards and the segment boundaries can never disagree.
+        """
+        T = episode.num_frames
+        if T == 0:
+            return []
+
+        is_struggle, _ = self._extract_phase_info(episode)
+
+        runs: List[Tuple[int, int, bool]] = []
+        seg_start = 0
+        current = bool(is_struggle[0])
+        for t in range(1, T):
+            if bool(is_struggle[t]) != current:
+                runs.append((seg_start, t, current))
+                seg_start = t
+                current = bool(is_struggle[t])
+        runs.append((seg_start, T, current))
+        return runs
+
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """Phase-dependent reward extraction.
 
-        Struggle phase:
-          - r_struggle: per-step -0.01, +1 on recover transition, -1 on fall
-          - r_cross, r_joint, r_vel, r_tilt, r_foot: all zeros (not relevant)
+        Each phase run is a self-contained sub-episode with an explicit
+        terminal reward at its **last frame** (``end - 1``):
 
-        Stability phase:
-          - r_struggle: only -1 on stability_to_struggle transition (no per-step bonus)
-          - r_cross, r_joint, r_vel, r_tilt, r_foot: same as basic_balance_v2
+        Struggle run:
+          - per-step -0.01
+          - ends by recovering to stability -> +1.0 terminal
+          - ends by falling                 -> -1.0 terminal
+          - ends by timeout                 -> no terminal (bootstrapped)
+
+        Stability run:
+          - per-step 0.0 (no survival bonus)
+          - ends by degrading to struggle -> -1.0 terminal
+          - ends by falling               -> -1.0 terminal
+          - ends by timeout               -> no terminal (bootstrapped)
+
+        r_cross, r_joint, r_vel, r_tilt, r_foot are identical to
+        basic_balance_v2; the framework masks them out on struggle runs via
+        ``Segment.key_weights``.
         """
         T = episode.num_frames
         fell = "imbalance" in episode.termination_proposals
 
-        is_struggle, transitions = self._extract_phase_info(episode)
-
         # --- r_struggle ---
         r_struggle = np.zeros(T, dtype=np.float32)
 
-        for t in range(T):
-            if is_struggle[t]:
-                r_struggle[t] = self.struggle_per_step_penalty
-                # Check for recovery transition at this step
-                if transitions[t] == "struggle_to_stability":
-                    r_struggle[t] += self.struggle_recover_bonus
-            else:
-                # Stability phase: only penalize transition back to struggle
-                if transitions[t] == "stability_to_struggle":
-                    r_struggle[t] = self.stability_to_struggle_penalty
+        for start, end, is_struggle in self._phase_runs(episode):
+            if is_struggle:
+                r_struggle[start:end] = self.struggle_per_step_penalty
 
-        # Terminal: if fell during struggle phase
-        if fell:
-            r_struggle[-1] += self.struggle_fall_penalty
+            if end < T:
+                # Phase boundary: the run ends because the phase flipped.
+                # Terminal reward belongs to the run's LAST frame (end - 1),
+                # not the frame where the new phase was first observed.
+                if is_struggle:
+                    r_struggle[end - 1] += self.struggle_recover_bonus
+                else:
+                    r_struggle[end - 1] += self.stability_to_struggle_penalty
+            elif fell:
+                # Final run ended by falling.
+                r_struggle[end - 1] += self.struggle_fall_penalty
+            # else: final run ended by timeout -> no terminal, bootstrapped.
 
         # --- Stability-phase rewards (same as basic_balance_v2) ---
         r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
@@ -199,73 +236,41 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         }
 
     def prepare_segments(self, episode) -> Optional[List[Segment]]:
-        """Split episode into struggle and stability segments.
+        """One segment per phase run, derived from the same ``_phase_runs``
+        decomposition that ``extract_rewards`` uses.
 
-        Each contiguous run of same-phase steps becomes a segment.
-        Struggle segments only train r_struggle critic.
-        Stability segments train all stability-phase critics (r_struggle + 5 others).
+        Active critics:
+          - Struggle run:  only ``r_struggle``.
+          - Stability run: all keys.
 
-        Termination at phase boundaries:
-          - Struggle → Stability: "truncated" (bootstrap — the robot is still
-            alive, V(s_next) is meaningful for r_struggle)
-          - Stability → Struggle: "terminated" for stability keys (the MDP
-            for posture maintenance ends), "truncated" for r_struggle (it
-            continues into the struggle segment)
+        Termination:
+          - Ends at a phase boundary -> ``"terminated"``.  ``extract_rewards``
+            already placed an explicit terminal reward (+1 recovered / -1
+            degraded) on the run's last frame, so bootstrapping would
+            double-count the boundary value.
+          - Final run ended by falling -> ``"terminated"`` (explicit -1).
+          - Final run ended by timeout -> ``"truncated"``, bootstrap V(s_end).
         """
         T = episode.num_frames
-        is_struggle, _ = self._extract_phase_info(episode)
-
         if T == 0:
             return []
 
-        # Find contiguous phase runs
+        fell = "imbalance" in episode.termination_proposals
+
         segments: List[Segment] = []
-        seg_start = 0
-        current_is_struggle = bool(is_struggle[0])
-
-        for t in range(1, T):
-            if bool(is_struggle[t]) != current_is_struggle:
-                # Phase boundary at t
-                if current_is_struggle:
-                    # Struggle segment: only r_struggle active
-                    segments.append(Segment(
-                        start=seg_start,
-                        end=t,
-                        weight=1.0,
-                        key_weights={"r_struggle": 1.0},
-                        termination="truncated",
-                    ))
-                else:
-                    # Stability segment: all keys active
-                    segments.append(Segment(
-                        start=seg_start,
-                        end=t,
-                        weight=1.0,
-                        key_weights=None,  # all keys
-                        termination="terminated",
-                    ))
-                seg_start = t
-                current_is_struggle = bool(is_struggle[t])
-
-        # Last segment
-        if seg_start < T:
-            fell = "imbalance" in episode.termination_proposals
-            if current_is_struggle:
-                segments.append(Segment(
-                    start=seg_start,
-                    end=T,
-                    weight=1.0,
-                    key_weights={"r_struggle": 1.0},
-                    termination="terminated" if fell else "truncated",
-                ))
+        for start, end, is_struggle in self._phase_runs(episode):
+            if end < T:
+                termination = "terminated"
             else:
-                segments.append(Segment(
-                    start=seg_start,
-                    end=T,
-                    weight=1.0,
-                    key_weights=None,
-                    termination="terminated" if fell else "truncated",
-                ))
+                termination = "terminated" if fell else "truncated"
+
+            segments.append(Segment(
+                start=start,
+                end=end,
+                weight=1.0,
+                key_weights={"r_struggle": 1.0} if is_struggle else None,
+                termination=termination,
+            ))
 
         return segments
 
@@ -274,10 +279,20 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         is_struggle, _ = self._extract_phase_info(episode)
         struggle_steps = int(np.sum(is_struggle))
         total_steps = episode.num_frames
+        runs = self._phase_runs(episode)
+        recoveries = sum(
+            1 for start, end, is_str in runs if is_str and end < total_steps
+        )
+        longest_stable = max(
+            (end - start for start, end, is_str in runs if not is_str),
+            default=0,
+        )
         return {
             "survived": 0.0 if fell else 1.0,
             "struggle_ratio": float(struggle_steps / max(total_steps, 1)),
             "struggle_steps": struggle_steps,
+            "recoveries": float(recoveries),
+            "longest_stable": float(longest_stable),
         }
 
     def scheduler_info(self) -> Dict[str, Any]:

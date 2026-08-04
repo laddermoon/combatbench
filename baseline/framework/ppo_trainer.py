@@ -625,10 +625,17 @@ def ppo_update(
                 critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
                 ret_val = rets_t[key][idx]
-                mask = ret_masks_t[key][idx]
-                if mask.sum() == 0:
+                mask = ret_masks_t[key][idx].to(new_val.dtype)
+                n_active = mask.sum()
+                if n_active == 0:
                     continue  # no active data for this key in this minibatch
-                val_loss = (((new_val - ret_val) ** 2) * mask * batch_weights).mean()
+                # Normalize by the ACTIVE frame count, not the minibatch size.
+                # Using .mean() here would scale the gradient down by the
+                # key's active fraction, so keys that are only active on a
+                # subset of segments would learn proportionally slower.
+                val_loss = (
+                    ((new_val - ret_val) ** 2) * mask * batch_weights
+                ).sum() / n_active
                 val_loss.backward()
                 grad_norm_c = torch.nn.utils.clip_grad_norm_(
                     critics[key].parameters(), grad_clip_norm,
