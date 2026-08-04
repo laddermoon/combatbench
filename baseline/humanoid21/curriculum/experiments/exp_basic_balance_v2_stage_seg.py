@@ -45,8 +45,27 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
 
     _survival_rate: float = 0.0
 
-    # Phase reward constants
-    struggle_per_step_penalty: float = -0.01
+    # Phase reward constants.
+    #
+    # All r_struggle signal is terminal; there is deliberately NO per-step
+    # term in either phase.  With terminal-only rewards the discount factor
+    # alone orders every outcome correctly (see extract_rewards).
+    #
+    # A per-step struggle penalty must NOT be reintroduced.  With a -0.01
+    # per-step penalty and a -1.0 fall terminal, the return for falling
+    # after k struggle steps collapses to a constant:
+    #
+    #   G(k) = -0.01 * (1 - g^k)/(1 - g)  -  g^(k-1)
+    #        = -(1 - g^k) - g^(k-1)                  [0.01/(1-0.99) = 1]
+    #        = -1 - 0.01 * g^(k-1)
+    #
+    # i.e. the per-step penalty's infinite-horizon discounted sum
+    # (-0.01/(1-g) = -1.0) exactly equals the terminal penalty, so the two
+    # are interchangeable and all dependence on k cancels.  The return
+    # spans only 0.01 across every k, versus 1.0 for the terminal-only
+    # scheme -- a 100x loss of learning signal.  This was observed live as
+    # r_struggle return std = 0.005 and explained_variance ~ 0, which zeroed
+    # the key's contribution to the policy gradient.
     struggle_recover_bonus: float = 1.0
     struggle_fall_penalty: float = -1.0
     stability_to_struggle_penalty: float = -1.0
@@ -155,20 +174,30 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         """Phase-dependent reward extraction.
 
-        Each phase run is a self-contained sub-episode with an explicit
-        terminal reward at its **last frame** (``end - 1``):
+        Each phase run is a self-contained sub-episode whose entire
+        ``r_struggle`` signal is a single terminal reward on its **last
+        frame** (``end - 1``).  There is no per-step term in either phase.
 
-        Struggle run:
-          - per-step -0.01
-          - ends by recovering to stability -> +1.0 terminal
-          - ends by falling                 -> -1.0 terminal
-          - ends by timeout                 -> no terminal (bootstrapped)
+        Struggle run ends by:
+          - recovering to stability -> +1.0
+          - falling                 -> -1.0
+          - timeout                 -> nothing (bootstrapped)
 
-        Stability run:
-          - per-step 0.0 (no survival bonus)
-          - ends by degrading to struggle -> -1.0 terminal
-          - ends by falling               -> -1.0 terminal
-          - ends by timeout               -> no terminal (bootstrapped)
+        Stability run ends by:
+          - degrading to struggle -> -1.0
+          - falling               -> -1.0
+          - timeout               -> nothing (bootstrapped)
+
+        Discounting alone then orders every outcome correctly.  For a run of
+        length k, the return at its first frame is:
+
+          stability -> struggle : -gamma^(k-1)  -> maximized by large k
+                                                   (stay stable as long as possible)
+          struggle  -> recovery : +gamma^(k-1)  -> maximized by small k
+                                                   (recover as fast as possible)
+          struggle  -> fall     : -gamma^(k-1)  -> maximized by large k
+                                                   (delay falling)
+          any       -> timeout  :  0 + V(s_end) -> best possible outcome
 
         r_cross, r_joint, r_vel, r_tilt, r_foot are identical to
         basic_balance_v2; the framework masks them out on struggle runs via
@@ -181,9 +210,6 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         r_struggle = np.zeros(T, dtype=np.float32)
 
         for start, end, is_struggle in self._phase_runs(episode):
-            if is_struggle:
-                r_struggle[start:end] = self.struggle_per_step_penalty
-
             if end < T:
                 # Phase boundary: the run ends because the phase flipped.
                 # Terminal reward belongs to the run's LAST frame (end - 1),

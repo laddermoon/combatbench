@@ -77,11 +77,10 @@ def test_recovery_bonus_lands_on_last_struggle_frame(exp):
     ep = FakeEpisode("XXXSSS", fell=False)
     r = exp.extract_rewards(ep)["r_struggle"]
 
-    assert r[0] == pytest.approx(-0.01)
-    assert r[1] == pytest.approx(-0.01)
-    # -0.01 per-step plus the +1.0 recovery terminal
-    assert r[2] == pytest.approx(-0.01 + 1.0)
-    # stability frames: no per-step bonus, final run is a timeout -> no terminal
+    assert r[0] == pytest.approx(0.0)
+    assert r[1] == pytest.approx(0.0)
+    assert r[2] == pytest.approx(1.0)
+    # final stability run ends by timeout -> no terminal, bootstrapped
     assert r[3:] == pytest.approx(0.0)
 
 
@@ -93,7 +92,18 @@ def test_degradation_penalty_lands_on_last_stability_frame(exp):
     assert r[0] == pytest.approx(0.0)
     assert r[1] == pytest.approx(0.0)
     assert r[2] == pytest.approx(-1.0)
-    assert r[3:] == pytest.approx(-0.01)
+    assert r[3:] == pytest.approx(0.0)
+
+
+def test_reward_is_terminal_only(exp):
+    """No per-step term in either phase -- only run-boundary frames are nonzero."""
+    ep = FakeEpisode("SSSSXXXXSSSS", fell=False)
+    r = exp.extract_rewards(ep)["r_struggle"]
+
+    nonzero = set(np.flatnonzero(r).tolist())
+    # runs end at 4 and 8 -> terminal frames 3 and 7; the final run ends by
+    # timeout so it contributes nothing.
+    assert nonzero == {3, 7}
 
 
 def test_transition_rewards_are_actually_reachable(exp):
@@ -111,8 +121,8 @@ def test_fall_penalty_on_final_frame(exp):
     r = exp.extract_rewards(ep)["r_struggle"]
     # stability run [0,2) degrades -> -1.0 on frame 1
     assert r[1] == pytest.approx(-1.0)
-    # final struggle run ends by falling -> -0.01 - 1.0 on last frame
-    assert r[3] == pytest.approx(-0.01 - 1.0)
+    # final struggle run ends by falling -> -1.0 on last frame
+    assert r[3] == pytest.approx(-1.0)
 
 
 def test_timeout_gives_no_terminal_reward(exp):
@@ -122,13 +132,98 @@ def test_timeout_gives_no_terminal_reward(exp):
     assert r == pytest.approx(0.0)
 
 
-def test_oscillation_is_never_profitable(exp):
-    """A struggle/stability cycle must cost at least the per-step penalty.
+# ---------------------------------------------------------------------------
+# Return shape -- incentives must point the right way AND carry enough signal.
+#
+# These guard against reintroducing a per-step term.  A -0.01 per-step
+# struggle penalty has an infinite-horizon discounted sum of
+# -0.01/(1-0.99) = -1.0, exactly equal to the -1.0 fall terminal, so
+#
+#   G(k) = -0.01*(1-g^k)/(1-g) - g^(k-1) = -1 - 0.01*g^(k-1)
+#
+# which still increases in k but spans only 0.01 instead of 1.0 -- a 100x
+# loss of signal that zeroed r_struggle's policy-gradient contribution.
+# Monotonicity alone does NOT catch this; the spread test does.
+# ---------------------------------------------------------------------------
 
-    Otherwise the agent could farm recovery bonuses by flickering.
+GAMMA = 0.99
+
+
+def _discounted_return(rewards: np.ndarray, gamma: float = GAMMA) -> float:
+    g = 0.0
+    for r in reversed(rewards):
+        g = float(r) + gamma * g
+    return g
+
+
+def _struggle_return(exp, phases: str, fell: bool) -> float:
+    r = exp.extract_rewards(FakeEpisode(phases, fell=fell))["r_struggle"]
+    return _discounted_return(r)
+
+
+@pytest.mark.parametrize("horizon", [5, 10, 20, 50])
+def test_delaying_a_fall_is_rewarded(exp, horizon):
+    """Falling later must be strictly better than falling earlier."""
+    early = _struggle_return(exp, "XX", fell=True)
+    late = _struggle_return(exp, "X" * horizon, fell=True)
+    assert late > early
+
+
+def test_fall_return_is_monotonically_increasing_in_duration(exp):
+    returns = [_struggle_return(exp, "X" * k, fell=True) for k in range(1, 60)]
+    assert all(b > a for a, b in zip(returns, returns[1:]))
+
+
+def test_fall_return_spread_is_large_enough_to_learn_from(exp):
+    """The duration signal must not be cancelled by a per-step term.
+
+    Over the reachable horizon the return must vary by O(1), not O(0.01).
+    A -0.01 per-step struggle penalty flattens this to 0.01.
     """
-    stable = exp.extract_rewards(FakeEpisode("S" * 12, fell=False))["r_struggle"].sum()
-    oscil = exp.extract_rewards(FakeEpisode("SSXXSSXXSSXX", fell=False))["r_struggle"].sum()
+    returns = [_struggle_return(exp, "X" * k, fell=True) for k in range(1, 31)]
+    spread = max(returns) - min(returns)
+    assert spread > 0.2, (
+        f"r_struggle return spread over k=1..30 is only {spread:.4f}; "
+        "a per-step term is cancelling the terminal penalty"
+    )
+
+
+def test_stability_return_spread_is_large_enough_to_learn_from(exp):
+    returns = [
+        _struggle_return(exp, "S" * k + "X" * 3, fell=True) for k in range(1, 31)
+    ]
+    spread = max(returns) - min(returns)
+    assert spread > 0.2
+
+
+def test_recovering_sooner_is_rewarded(exp):
+    fast = _struggle_return(exp, "XX" + "S" * 20, fell=False)
+    slow = _struggle_return(exp, "X" * 15 + "S" * 20, fell=False)
+    assert fast > slow
+
+
+def test_longer_stability_is_rewarded(exp):
+    short = _struggle_return(exp, "SS" + "X" * 5, fell=True)
+    long_ = _struggle_return(exp, "S" * 20 + "X" * 5, fell=True)
+    assert long_ > short
+
+
+def test_surviving_beats_falling(exp):
+    survive = _struggle_return(exp, "S" * 20, fell=False)
+    fall = _struggle_return(exp, "S" * 10 + "X" * 10, fell=True)
+    assert survive > fall
+
+
+def test_recovering_beats_falling(exp):
+    recover = _struggle_return(exp, "X" * 5 + "S" * 10, fell=False)
+    fall = _struggle_return(exp, "X" * 5, fell=True)
+    assert recover > fall
+
+
+def test_oscillation_is_never_profitable(exp):
+    """Flickering must not farm recovery bonuses."""
+    stable = _struggle_return(exp, "S" * 12, fell=False)
+    oscil = _struggle_return(exp, "SSXXSSXXSSXX", fell=False)
     assert oscil < stable
 
 
