@@ -6,9 +6,17 @@ two physical metrics:
   1. **Uprightness** — cos(torso tilt angle).  1.0 = perfectly upright.
   2. **Height** — torso root z-position above ground.
 
-Phase transitions use hysteresis: a configurable number of consecutive
-steps must satisfy the target phase condition before the phase actually
-switches.  This prevents rapid flickering at boundary states.
+Phase transitions use two independent hysteresis mechanisms:
+
+  1. **Threshold hysteresis** (Schmitt trigger).  Entering struggle and
+     returning to stability use *different* thresholds, leaving a deadband
+     in which the current phase is simply held.  This is what kills the
+     dominant noise source: a robot drifting slowly across a single
+     threshold would otherwise emit a stream of 1-3 step phase runs, each
+     carrying a spurious +/-1.0 terminal reward.
+  2. **Step hysteresis**.  A configurable number of consecutive steps must
+     satisfy the target phase condition before the phase actually switches.
+     This filters single-frame spikes.
 
 Output (per-step dict):
   - ``phase``: "struggle" or "stability"
@@ -27,11 +35,14 @@ import numpy as np
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 
-# Default thresholds — 18° tilt or torso height below 1.2m triggers struggle.
-# Standing torso height is ~1.28m, so 1.2m gives ~0.08m margin.
-# Struggle is immediate (1 step); stability requires 5 consecutive steps.
-DEFAULT_UPRIGHTNESS_THRESHOLD = 0.951  # cos(18°) ≈ 0.951
-DEFAULT_HEIGHT_THRESHOLD = 1.2         # torso z < 1.2m → struggle (standing ~1.28m)
+# Struggle entry (falling out of stability) — 25° tilt or torso z < 1.15m.
+# Standing torso height is ~1.28m, so 1.15m gives ~0.13m margin.
+DEFAULT_UPRIGHTNESS_THRESHOLD = 0.906  # cos(25°) ≈ 0.906
+DEFAULT_HEIGHT_THRESHOLD = 1.15        # torso z < 1.15m → struggle (standing ~1.28m)
+# Stability recovery (climbing back out of struggle) — stricter, creating a
+# deadband of 15°..25° tilt and 1.15..1.20m height where the phase is held.
+DEFAULT_STABILITY_UPRIGHTNESS_THRESHOLD = 0.966  # cos(15°) ≈ 0.966
+DEFAULT_STABILITY_HEIGHT_THRESHOLD = 1.2
 # Hysteresis: need this many consecutive steps to confirm a transition
 DEFAULT_STABLE_CONFIRM_STEPS = 5       # 5 consecutive stable steps → stability
 DEFAULT_STRUGGLE_CONFIRM_STEPS = 1     # immediate: any single struggle step → struggle
@@ -40,14 +51,19 @@ DEFAULT_STRUGGLE_CONFIRM_STEPS = 1     # immediate: any single struggle step →
 class PhaseObserver(BaseObserverPlugin):
     """Per-step phase determination based on uprightness and height.
 
-    Phase logic:
-      - **Struggle** if uprightness < threshold OR height < threshold.
-      - **Stability** if both uprightness >= threshold AND height >= threshold.
-      - Hysteresis: must sustain the new condition for ``confirm_steps``
-        consecutive steps before the phase actually transitions.
+    Phase logic (Schmitt trigger + step hysteresis):
+      - While in **stability**, drop to struggle if
+        ``uprightness < uprightness_threshold`` OR ``height < height_threshold``.
+      - While in **struggle**, return to stability only if
+        ``uprightness >= stability_uprightness_threshold`` AND
+        ``height >= stability_height_threshold``.
+      - In between the two threshold sets the current phase is held, so
+        boundary dwelling produces no transitions at all.
+      - On top of that, the candidate phase must be sustained for
+        ``confirm_steps`` consecutive steps before the phase transitions.
 
-    The thresholds should be lenient enough that normal walking stays in
-    stability phase.
+    The struggle-entry thresholds should be lenient enough that normal
+    walking stays in stability phase.
     """
 
     PHASE_STRUGGLE = "struggle"
@@ -58,12 +74,20 @@ class PhaseObserver(BaseObserverPlugin):
         agent_id: str = "robot_a",
         uprightness_threshold: float = DEFAULT_UPRIGHTNESS_THRESHOLD,
         height_threshold: float = DEFAULT_HEIGHT_THRESHOLD,
+        stability_uprightness_threshold: float = DEFAULT_STABILITY_UPRIGHTNESS_THRESHOLD,
+        stability_height_threshold: float = DEFAULT_STABILITY_HEIGHT_THRESHOLD,
         stable_confirm_steps: int = DEFAULT_STABLE_CONFIRM_STEPS,
         struggle_confirm_steps: int = DEFAULT_STRUGGLE_CONFIRM_STEPS,
     ) -> None:
         self.agent_id = agent_id
         self.uprightness_threshold = float(uprightness_threshold)
         self.height_threshold = float(height_threshold)
+        self.stability_uprightness_threshold = max(
+            float(stability_uprightness_threshold), float(uprightness_threshold)
+        )
+        self.stability_height_threshold = max(
+            float(stability_height_threshold), float(height_threshold)
+        )
         self.stable_confirm_steps = int(stable_confirm_steps)
         self.struggle_confirm_steps = int(struggle_confirm_steps)
 
@@ -97,12 +121,20 @@ class PhaseObserver(BaseObserverPlugin):
         root_pos = cs.get("root_pos", [0.0, 0.0, 1.0])
         self._height = float(root_pos[2])
 
-        # Determine raw condition
-        is_struggle_raw = (
-            upr < self.uprightness_threshold
-            or self._height < self.height_threshold
-        )
-        raw_phase = self.PHASE_STRUGGLE if is_struggle_raw else self.PHASE_STABILITY
+        # Determine raw condition using the threshold set for the *opposite*
+        # phase, so values inside the deadband hold the current phase.
+        if self._phase == self.PHASE_STABILITY:
+            leaving = (
+                upr < self.uprightness_threshold
+                or self._height < self.height_threshold
+            )
+            raw_phase = self.PHASE_STRUGGLE if leaving else self.PHASE_STABILITY
+        else:
+            recovered = (
+                upr >= self.stability_uprightness_threshold
+                and self._height >= self.stability_height_threshold
+            )
+            raw_phase = self.PHASE_STABILITY if recovered else self.PHASE_STRUGGLE
 
         # Hysteresis: count consecutive steps in the candidate phase
         if raw_phase == self._phase:
@@ -149,6 +181,8 @@ class PhaseObserver(BaseObserverPlugin):
             "agent_id": self.agent_id,
             "uprightness_threshold": self.uprightness_threshold,
             "height_threshold": self.height_threshold,
+            "stability_uprightness_threshold": self.stability_uprightness_threshold,
+            "stability_height_threshold": self.stability_height_threshold,
             "stable_confirm_steps": self.stable_confirm_steps,
             "struggle_confirm_steps": self.struggle_confirm_steps,
         }
