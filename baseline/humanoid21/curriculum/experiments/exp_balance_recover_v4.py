@@ -35,24 +35,32 @@ import numpy as np
 import torch
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
+from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
 class BalanceRecoverV4Config(CombatExperimentBase):
-    """Balance-recovery v4: online impulse perturbation with pure survival reward.
+    """Balance-recovery v4: online impulse perturbation with full reward.
 
     Each episode: ImpulsePerturbationPlugin applies a random impulse
     (force/duration/direction from configured ranges) via internal sim,
     producing a physically realistic perturbed initial state.
-    Reward = per-step survival bonus + terminal fall/survive signal.
-    No reward observers — maximizes rollout speed.
+    Reward scheme identical to basic_balance_v2:
+      r_fall (survival), r_cross, r_joint, r_vel, r_tilt, r_foot
     """
 
     name = "balance_recover_v4"
-    reward_keys = ("r_fall",)
-    gammas = {"r_fall": 0.99}
+    reward_keys = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
+    gammas = {
+        "r_fall": 0.99,
+        "r_cross": 0.99,
+        "r_joint": 0.99,
+        "r_vel": 0.99,
+        "r_tilt": 0.99,
+        "r_foot": 0.99,
+    }
 
     max_steps = 600
 
@@ -210,12 +218,12 @@ class BalanceRecoverV4Config(CombatExperimentBase):
         eval_metrics: Dict[str, float],
         current_weights: Tuple[float, ...],
     ) -> Tuple[float, ...]:
-        return (1.0,)
+        return (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
     def initial_weights(self) -> Tuple[float, ...]:
-        return (1.0,)
+        return (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
-    # --- Reward extraction ---
+    # --- Reward extraction (same as basic_balance_v2) ---
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         T = episode.num_frames
         fell = "imbalance" in episode.termination_proposals
@@ -226,7 +234,42 @@ class BalanceRecoverV4Config(CombatExperimentBase):
         else:
             r_fall[-1] = penalty
 
-        return {"r_fall": r_fall}
+        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
+
+        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
+        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
+        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
+        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+
+        if joint_dev_arr is None:
+            joint_dev_arr = np.zeros(T, dtype=np.float32)
+        if joint_vel_arr is None:
+            joint_vel_arr = np.zeros(T, dtype=np.float32)
+        if torso_tilt_arr is None:
+            torso_tilt_arr = np.zeros(T, dtype=np.float32)
+        if foot_height_arr is None:
+            foot_height_arr = np.zeros(T, dtype=np.float32)
+
+        excess_joint = np.maximum(0.0, joint_dev_arr - 0.1)
+        r_joint = np.where(excess_joint == 0.0, 0.01, 0.01 - 5.0 * excess_joint)
+
+        excess_vel = np.maximum(0.0, joint_vel_arr - 0.1)
+        r_vel = np.where(excess_vel == 0.0, 0.01, 0.01 - 1.0 * excess_vel)
+
+        excess_tilt = np.maximum(0.0, torso_tilt_arr - 0.26)
+        r_tilt = np.where(excess_tilt == 0.0, 0.01, 0.01 - 3.0 * excess_tilt)
+
+        excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
+        r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
+
+        return {
+            "r_fall": r_fall,
+            "r_cross": r_cross,
+            "r_joint": r_joint,
+            "r_vel": r_vel,
+            "r_tilt": r_tilt,
+            "r_foot": r_foot,
+        }
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         fell = "imbalance" in episode.termination_proposals
