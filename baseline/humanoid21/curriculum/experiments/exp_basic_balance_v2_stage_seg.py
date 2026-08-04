@@ -190,13 +190,6 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        # Zero out stability-phase rewards during struggle phase
-        r_cross = np.where(is_struggle, 0.0, r_cross)
-        r_joint = np.where(is_struggle, 0.0, r_joint)
-        r_vel = np.where(is_struggle, 0.0, r_vel)
-        r_tilt = np.where(is_struggle, 0.0, r_tilt)
-        r_foot = np.where(is_struggle, 0.0, r_foot)
-
         return {
             "r_struggle": r_struggle,
             "r_cross": r_cross,
