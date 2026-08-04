@@ -27,10 +27,10 @@ import numpy as np
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 
-# Default thresholds — 15° tilt or torso height below 1.15m triggers struggle.
+# Default thresholds — 30° tilt or torso height below 1.15m triggers struggle.
 # Standing torso height is ~1.28m, so 1.15m gives ~0.13m margin.
 # Struggle is immediate (1 step); stability requires 5 consecutive steps.
-DEFAULT_UPRIGHTNESS_THRESHOLD = 0.966  # cos(15°) ≈ 0.966
+DEFAULT_UPRIGHTNESS_THRESHOLD = 0.866  # cos(30°) ≈ 0.866
 DEFAULT_HEIGHT_THRESHOLD = 1.15        # torso z < 1.15m → struggle (standing ~1.28m)
 # Hysteresis: need this many consecutive steps to confirm a transition
 DEFAULT_STABLE_CONFIRM_STEPS = 5       # 5 consecutive stable steps → stability
