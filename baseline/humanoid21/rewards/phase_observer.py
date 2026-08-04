@@ -37,11 +37,11 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 # Struggle entry (falling out of stability) — 25° tilt or torso z < 1.15m.
 # Standing torso height is ~1.28m, so 1.15m gives ~0.13m margin.
-DEFAULT_UPRIGHTNESS_THRESHOLD = 0.906  # cos(25°) ≈ 0.906
-DEFAULT_HEIGHT_THRESHOLD = 1.15        # torso z < 1.15m → struggle (standing ~1.28m)
+DEFAULT_UPRIGHTNESS_THRESHOLD = 0.7  # cos(25°) ≈ 0.906
+DEFAULT_HEIGHT_THRESHOLD = 1.1        # torso z < 1.15m → struggle (standing ~1.28m)
 # Stability recovery (climbing back out of struggle) — stricter, creating a
 # deadband of 15°..25° tilt and 1.15..1.20m height where the phase is held.
-DEFAULT_STABILITY_UPRIGHTNESS_THRESHOLD = 0.966  # cos(15°) ≈ 0.966
+DEFAULT_STABILITY_UPRIGHTNESS_THRESHOLD = 0.8  # cos(15°) ≈ 0.966
 DEFAULT_STABILITY_HEIGHT_THRESHOLD = 1.2
 # Hysteresis: need this many consecutive steps to confirm a transition
 DEFAULT_STABLE_CONFIRM_STEPS = 5       # 5 consecutive stable steps → stability
