@@ -12,7 +12,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from envs.framework import BasePlugin
-from envs.framework.context import SimContext
+from envs.framework.context import ReadOnlySimContext, SimContext
+from envs.framework.observer_plugin import BaseRuntimeUnit
 
 
 _TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
@@ -1112,6 +1113,95 @@ class ImpulsePerturbationPlugin(BasePlugin):
         ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = duration_action_steps
         ctx.metrics[f"{self.target_robot}_impulse_duration_phy_steps"] = duration_phy_steps
         ctx.metrics[f"{self.target_robot}_impulse_direction"] = direction.tolist()
+
+
+# ============================================================
+# 状态捕获插件 + 观察器（用于状态池生成）
+# ============================================================
+
+
+class StateCapturePlugin(BasePlugin):
+    """在第一个 action step 的 on_pre_action_step 中捕获扰动后的
+    core_state + observation，写入 ctx.metrics。
+
+    此时 ImpulsePerturbationPlugin 已经在 on_pre_episode 中完成扰动，
+    物理步尚未执行，状态即为扰动后初始状态。
+
+    需要配合 StateCaptureObserver 使用：observer 在 on_post_action_step
+    中从 ctx.metrics 读取数据并通过 get_output() 暴露给 EpisodeRecorder。
+    """
+
+    def __init__(self, target_robot: str = "robot_a") -> None:
+        self.target_robot = target_robot
+        self._captured = False
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {"target_robot": self.target_robot}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StateCapturePlugin":
+        return cls(**config)
+
+    @property
+    def name(self) -> str:
+        return f"{self.target_robot}_state_capture"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        self._captured = False
+
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        if self._captured:
+            return
+        self._captured = True
+
+        core_state = ctx.accessor.get_core_state()
+        robot_cs = core_state[self.target_robot]
+        ctx.metrics[f"{self.target_robot}_captured_core_state"] = {
+            k: v.copy() for k, v in robot_cs.items()
+        }
+
+        obs = ctx.accessor.get_observation()
+        robot_obs = obs.get(self.target_robot)
+        if robot_obs is not None:
+            ctx.metrics[f"{self.target_robot}_captured_observation"] = np.asarray(
+                robot_obs, dtype=np.float32
+            ).copy()
+
+
+class StateCaptureObserver(BaseRuntimeUnit):
+    """将 StateCapturePlugin 写入 ctx.metrics 的捕获数据通过 observer_outputs
+    暴露出来，使其出现在 Episode.observer_outputs["state_capture"] 中。
+
+    on_post_action_step 从 ctx.metrics 读取一次，缓存并在 get_output() 返回。
+    """
+
+    def __init__(self, target_robot: str = "robot_a") -> None:
+        self.target_robot = target_robot
+        self._output: Dict[str, Any] = {}
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._output = {}
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        if self._output:
+            return
+        metrics = ctx.metrics
+        prefix = f"{self.target_robot}_captured_"
+        cs = metrics.get(f"{prefix}core_state")
+        obs = metrics.get(f"{prefix}observation")
+        if cs is not None:
+            self._output = {
+                "core_state": {k: np.asarray(v).copy() for k, v in cs.items()},
+                "observation": np.asarray(obs).copy() if obs is not None else None,
+                "impulse_force": metrics.get(f"{self.target_robot}_impulse_force"),
+                "impulse_duration": metrics.get(
+                    f"{self.target_robot}_impulse_duration_action_steps"
+                ),
+                "impulse_direction": metrics.get(f"{self.target_robot}_impulse_direction"),
+            }
+
+    def get_output(self) -> Any:
+        return self._output if self._output else {}
 
 
 # ============================================================
