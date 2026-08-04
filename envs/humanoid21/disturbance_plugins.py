@@ -1204,6 +1204,106 @@ class StateCaptureObserver(BaseRuntimeUnit):
         return self._output if self._output else {}
 
 
+class StateBankInitPlugin(BasePlugin):
+    """从 .npz 状态池加载扰动状态，在 on_pre_episode 中注入到 sim。
+
+    用于训练阶段：替代 ImpulsePerturbationPlugin，直接从预生成的
+   状态池中采样一个状态设为初始状态，避免每次都跑内部仿真。
+
+    工作流：
+    1. 加载 .npz 文件（states, labels, forces, durations, directions）
+    2. on_pre_episode 时，从状态池采样一个状态（按 episode_options
+       中的 state_bank_index 指定，或随机采样）
+    3. 用 ctx.mutator.set_core_state 注入到 sim
+
+    需要在蓝图中放在其他 on_pre_episode 插件之后（priority=0 默认）。
+    """
+
+    CORE_STATE_FIELDS = [
+        "root_pos", "root_rot", "root_vel_local",
+        "root_angular_vel_local", "joint_pos_norm", "joint_vel_norm",
+    ]
+    CORE_STATE_DIMS = [3, 4, 3, 3, 21, 21]
+
+    def __init__(
+        self,
+        state_bank_path: str,
+        target_robot: str = "robot_a",
+        seed: int = 42,
+    ) -> None:
+        self.state_bank_path = str(state_bank_path)
+        self.target_robot = target_robot
+        self._seed = seed
+        self._rng = np.random.RandomState(seed)
+        self._bank: Optional[Dict[str, np.ndarray]] = None
+        self._current_index: int = -1
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "state_bank_path": self.state_bank_path,
+            "target_robot": self.target_robot,
+            "seed": self._seed,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "StateBankInitPlugin":
+        return cls(**config)
+
+    @property
+    def name(self) -> str:
+        return f"{self.target_robot}_state_bank_init"
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def _load_bank(self) -> None:
+        if self._bank is not None:
+            return
+        data = np.load(self.state_bank_path, allow_pickle=True)
+        self._bank = {
+            "states": data["states"].astype(np.float32),
+            "labels": data["labels"].astype(np.float32),
+            "forces": data["forces"].astype(np.float32),
+            "durations": data["durations"].astype(np.int32),
+            "directions": data["directions"].astype(np.float32),
+            "ep_lengths": data["ep_lengths"].astype(np.int32),
+        }
+
+    def _unflatten_state(self, vec: np.ndarray) -> Dict[str, np.ndarray]:
+        out = {}
+        offset = 0
+        for name, dim in zip(self.CORE_STATE_FIELDS, self.CORE_STATE_DIMS):
+            out[name] = vec[offset:offset + dim].astype(np.float32)
+            offset += dim
+        return out
+
+    def set_episode_seed(self, seed: int) -> None:
+        self._rng = np.random.RandomState(int(seed))
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        self._load_bank()
+
+        idx = ctx.episode_options.get("state_bank_index")
+        if idx is not None:
+            idx = int(idx)
+        else:
+            idx = int(self._rng.randint(0, len(self._bank["states"])))
+        self._current_index = idx
+
+        state_vec = self._bank["states"][idx]
+        robot_state = self._unflatten_state(state_vec)
+
+        full_state = {self.target_robot: robot_state}
+        ctx.mutator.set_core_state(full_state)
+
+        ctx.metrics[f"{self.target_robot}_state_bank_index"] = idx
+        ctx.metrics[f"{self.target_robot}_state_bank_label"] = float(self._bank["labels"][idx])
+        ctx.metrics[f"{self.target_robot}_impulse_force"] = float(self._bank["forces"][idx])
+        ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = int(self._bank["durations"][idx])
+        ctx.metrics[f"{self.target_robot}_impulse_direction"] = self._bank["directions"][idx].tolist()
+
+
 # ============================================================
 # 使用示例
 # ============================================================
