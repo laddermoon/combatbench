@@ -14,7 +14,38 @@ import torch
 from baseline.common.algos import compute_gae
 from baseline.common.rollout import Episode
 
-from .experiment import CommonParams, Experiment, TrainablePolicy
+from .experiment import CommonParams, Experiment, Segment, TrainablePolicy
+
+
+# ---------------------------------------------------------------------------
+# Segment resolution — v2 API (prepare_segments) with v1 fallback
+# ---------------------------------------------------------------------------
+
+def _tuples_to_segments(
+    raw: List,
+) -> List[Segment]:
+    """Convert old-style tuples to Segment objects."""
+    result = []
+    for seg in raw:
+        if isinstance(seg, Segment):
+            result.append(seg)
+        elif len(seg) == 3:
+            result.append(Segment(start=seg[0], end=seg[1], weight=seg[2]))
+        elif len(seg) == 4:
+            result.append(Segment(start=seg[0], end=seg[1], weight=seg[2], mode=seg[3]))
+        else:
+            raise ValueError(f"Invalid segment tuple: {seg}")
+    return result
+
+
+def _resolve_segments(
+    experiment: Experiment, episode: Episode,
+) -> List[Segment]:
+    """Try v2 prepare_segments; fall back to v1 prepare_training_segments."""
+    segs = experiment.prepare_segments(episode)
+    if segs is not None:
+        return segs
+    return _tuples_to_segments(experiment.prepare_training_segments(episode))
 
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
@@ -111,6 +142,12 @@ class PPOBuffer:
         self.reward_data: Dict[str, List[np.ndarray]] = {
             k: [] for k in reward_keys
         }
+        # Per-key per-segment active mask: True if the key has real data
+        # for that segment, False if the segment is inactive for that key
+        # (used to skip GAE / critic training / advantage normalization).
+        self.key_seg_active: Dict[str, List[bool]] = {
+            k: [] for k in reward_keys
+        }
         self.episode_metrics: List[Dict[str, float]] = []
         self.episode_lengths: List[int] = []  # original episode lengths (for logging)
 
@@ -148,23 +185,22 @@ class PPOBuffer:
             )
             self.episode_lengths.append(T_full)
 
-            # Split into training segments (sub-episodes) with per-segment weights.
-            seg_weights = experiment.prepare_training_segments(ep)
-            if not seg_weights:
+            # Resolve segments: try v2 API (prepare_segments) first,
+            # fall back to v1 (prepare_training_segments) + convert to Segment.
+            segs = _resolve_segments(experiment, ep)
+            if not segs:
                 continue  # entire episode excluded from training
 
             # Extract rewards once for the full episode, then slice per segment.
             rewards_full = experiment.extract_rewards(ep)
 
-            # Build per-frame mode array from 4-tuple segments.
-            # Default 1.0 (no mode); 4-tuple overrides for its range.
-            ep_has_mode = any(len(seg) == 4 for seg in seg_weights)
+            # Build per-frame mode array from Segment.mode.
+            ep_has_mode = any(seg.mode is not None for seg in segs)
             ep_modes = np.ones(T_full, dtype=np.float32)
-            for seg in seg_weights:
-                if len(seg) == 4:
-                    s_start, s_end, _w, s_mode = seg
-                    ep_modes[s_start:s_end] = float(s_mode)
-            valid_eps.append((obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes, ep_has_mode))
+            for seg in segs:
+                if seg.mode is not None:
+                    ep_modes[seg.start:seg.end] = float(seg.mode)
+            valid_eps.append((obs, acts, fin, T_full, segs, rewards_full, ep, ep_modes, ep_has_mode))
 
         # Phase 2: Batched evaluate_actions — one GPU call for all episodes
         # instead of 2048 per-episode calls.
@@ -186,12 +222,13 @@ class PPOBuffer:
 
         # Phase 3: Slice into segments using pre-computed log probs.
         offset = 0
-        for obs, acts, fin, T_full, seg_weights, rewards_full, ep, ep_modes, ep_has_mode in valid_eps:
+        for obs, acts, fin, T_full, segs, rewards_full, ep, ep_modes, ep_has_mode in valid_eps:
             lp_full_np = all_lp_np[offset:offset + T_full]
             offset += T_full
 
-            for seg in seg_weights:
-                start, end, weight = seg[0], seg[1], seg[2]
+            for seg in segs:
+                start, end = seg.start, seg.end
+                weight = seg.weight
                 T_seg = end - start
                 if T_seg == 0:
                     continue
@@ -201,28 +238,53 @@ class PPOBuffer:
                 lp_seg = lp_full_np[start:end]
                 mode_seg = ep_modes[start:end]
 
-                # Sub-episode boundary: the segment ends mid-episode because
-                # the gating policy switched control to a fallback (recover/
-                # follow).  The fight policy's MDP effectively terminates here
-                # — subsequent observations belong to a *different* policy and
-                # are out-of-distribution for the fight critic.  Treating this
-                # as truncated (term_seg=False) would bootstrap V(s_gate) from
-                # an OOD state, producing an optimistic value estimate that
-                # incorrectly signals "losing control is fine".  Instead, mark
-                # as terminated (term_seg=True) so GAE uses last_value=0.0,
-                # correctly charging the fight policy for the loss of control.
-                if end < T_full:
-                    fin_seg = np.asarray(obs[end], dtype=np.float32)
+                # Termination handling for segment boundary.
+                # seg.termination overrides default behavior:
+                #   None / "auto": terminated if mid-episode, else episode's term
+                #   "terminated": always last_value=0, no bootstrap
+                #   "truncated": bootstrap from V(s_end)
+                term_mode = seg.termination
+                if term_mode == "truncated":
+                    if end < T_full:
+                        fin_seg = np.asarray(obs[end], dtype=np.float32)
+                    else:
+                        fin_seg = np.asarray(fin, dtype=np.float32)
+                    term_seg = False
+                elif term_mode == "terminated":
+                    if end < T_full:
+                        fin_seg = np.asarray(obs[end], dtype=np.float32)
+                    else:
+                        fin_seg = np.asarray(fin, dtype=np.float32)
                     term_seg = True
+                else:  # None / "auto" — original behavior
+                    if end < T_full:
+                        fin_seg = np.asarray(obs[end], dtype=np.float32)
+                        term_seg = True
+                    else:
+                        fin_seg = np.asarray(fin, dtype=np.float32)
+                        term_seg = bool(ep.is_terminated)
+
+                # Per-key critic control: determine which keys are active.
+                if seg.key_weights is not None:
+                    active_keys = set(
+                        k for k, w in seg.key_weights.items() if w > 0.0
+                    )
                 else:
-                    fin_seg = np.asarray(fin, dtype=np.float32)
-                    term_seg = bool(ep.is_terminated)
+                    active_keys = set(reward_keys)
 
                 for key in reward_keys:
-                    r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
-                    self.reward_data[key].append(
-                        np.asarray(r_full[start:end], dtype=np.float32)
-                    )
+                    is_active = key in active_keys
+                    self.key_seg_active[key].append(is_active)
+                    if is_active:
+                        r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
+                        self.reward_data[key].append(
+                            np.asarray(r_full[start:end], dtype=np.float32)
+                        )
+                    else:
+                        # Placeholder: zeros, will be masked in GAE/training.
+                        self.reward_data[key].append(
+                            np.zeros(T_seg, dtype=np.float32)
+                        )
 
                 obs_list.append(obs_seg)
                 act_list.append(acts_seg)
@@ -367,21 +429,45 @@ def ppo_update(
         # Map episode index -> position in bootstrap batch for O(1) lookup.
         bootstrap_pos = {ep_idx: pos for pos, ep_idx in enumerate(bootstrap_indices)}
 
-    # Compute GAE for each reward component
+    # Pre-compute segment offsets in the concatenated buffer.
+    seg_offsets: List[int] = []
+    _off = 0
+    for T in buf.ep_lengths:
+        seg_offsets.append(_off)
+        _off += T
+
+    # Build per-key frame-level active mask (length n, True where key has data).
+    key_frame_mask: Dict[str, np.ndarray] = {}
+    for key in reward_keys:
+        mask = np.zeros(n, dtype=bool)
+        for i, is_active in enumerate(buf.key_seg_active[key]):
+            if is_active:
+                s = seg_offsets[i]
+                e = s + buf.ep_lengths[i]
+                mask[s:e] = True
+        key_frame_mask[key] = mask
+
+    # Compute GAE for each reward component.
+    # Inactive segments produce zero adv/ret (masked out).
     advs_all: Dict[str, np.ndarray] = {}
     rets_all: Dict[str, np.ndarray] = {}
 
     for key in reward_keys:
         advs_list = []
         rets_list = []
-        offset = 0
 
         for i, T in enumerate(buf.ep_lengths):
-            values = values_all[key][offset : offset + T]
-            offset += T
+            s = seg_offsets[i]
+            values = values_all[key][s : s + T]
+
+            if not buf.key_seg_active[key][i]:
+                # Inactive segment: zero adv/ret, no GAE computation.
+                advs_list.append(np.zeros(T, dtype=np.float32))
+                rets_list.append(np.zeros(T, dtype=np.float32))
+                continue
+
             last_value = 0.0
             if not buf.is_terminated[i] and buf.final_obs[i] is not None:
-                # Look up pre-computed bootstrap value for this episode.
                 last_value = float(bootstrap_values[key][bootstrap_pos[i]])
 
             rewards = buf.reward_data[key][i]
@@ -397,19 +483,23 @@ def ppo_update(
 
         advs_all[key] = np.concatenate(advs_list)
         rets_all[key] = np.concatenate(rets_list)
-        r = rets_all[key]
-        print(
-            f"  {key}: return=[{r.min():+.3f}, {r.max():+.3f}] "
-            f"mean={r.mean():+.3f} std={r.std():.3f}",
-            flush=True,
-        )
+        mask = key_frame_mask[key]
+        r_active = rets_all[key][mask]
+        if r_active.size > 0:
+            print(
+                f"  {key}: return=[{r_active.min():+.3f}, {r_active.max():+.3f}] "
+                f"mean={r_active.mean():+.3f} std={r_active.std():.3f} "
+                f"(active={mask.sum()}/{len(mask)})",
+                flush=True,
+            )
 
-    # Compute explained variance for each critic before updates
+    # Compute explained variance for each critic — only on active frames.
     explained_variances: Dict[str, float] = {}
     for key in reward_keys:
-        y_true = rets_all[key]
-        y_pred = values_all[key]
-        var_y = np.var(y_true)
+        mask = key_frame_mask[key]
+        y_true = rets_all[key][mask]
+        y_pred = values_all[key][mask]
+        var_y = np.var(y_true) if y_true.size > 0 else 0.0
         if var_y < 1e-8:
             ev = 0.0
         else:
@@ -425,22 +515,29 @@ def ppo_update(
     # Prepare tensors (upload once, index on GPU throughout)
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
     old_lp_t = torch.as_tensor(buf.log_probs, dtype=torch.float32, device=device)
-    rets_t: Dict[str, torch.Tensor] = {
-        key: torch.as_tensor(rets_all[key], dtype=torch.float32, device=device)
-        for key in reward_keys
-    }
+    # Build per-key return tensors and active masks (for critic loss masking).
+    rets_t: Dict[str, torch.Tensor] = {}
+    ret_masks_t: Dict[str, torch.Tensor] = {}
+    for key in reward_keys:
+        rets_t[key] = torch.as_tensor(rets_all[key], dtype=torch.float32, device=device)
+        ret_masks_t[key] = torch.as_tensor(key_frame_mask[key], device=device)
 
-    # Normalize advantages per component and combine with stage weights
-    def _normalize_adv(adv: np.ndarray) -> np.ndarray:
+    # Normalize advantages per component — only on active frames.
+    def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if experiment is not None:
             result = experiment.normalize_advantages(adv)
             if result is not None:
                 return result
-        mean = float(adv.mean())
-        std = float(adv.std())
+        active = adv[mask]
+        if active.size == 0:
+            return np.zeros_like(adv, dtype=np.float32)
+        mean = float(active.mean())
+        std = float(active.std())
         if std < 1e-8:
             return np.zeros_like(adv, dtype=np.float32)
-        return ((adv - mean) / std).astype(np.float32)
+        result = np.zeros_like(adv, dtype=np.float32)
+        result[mask] = ((active - mean) / std).astype(np.float32)
+        return result
 
     if len(stage_weights) != len(reward_keys):
         raise ValueError(
@@ -465,7 +562,9 @@ def ppo_update(
             if w == 0.0:
                 continue
             conf = confidences[key]
-            combined_adv = combined_adv + float(w) * conf * _normalize_adv(advs_all[key])
+            combined_adv = combined_adv + float(w) * conf * _normalize_adv(
+                advs_all[key], key_frame_mask[key],
+            )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
@@ -525,7 +624,10 @@ def ppo_update(
                 critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
                 ret_val = rets_t[key][idx]
-                val_loss = (((new_val - ret_val) ** 2) * batch_weights).mean()
+                mask = ret_masks_t[key][idx]
+                if mask.sum() == 0:
+                    continue  # no active data for this key in this minibatch
+                val_loss = (((new_val - ret_val) ** 2) * mask * batch_weights).mean()
                 val_loss.backward()
                 grad_norm_c = torch.nn.utils.clip_grad_norm_(
                     critics[key].parameters(), grad_clip_norm,

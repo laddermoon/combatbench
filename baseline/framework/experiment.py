@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple, runtime_checkable
 
 import numpy as np
 import torch
@@ -107,6 +107,47 @@ class SACParams:
     warmup_steps: int            # collect this many transitions before updating
     updates_per_step: int        # gradient steps per collected transition batch
     reward_scale: float = 1.0   # scale rewards to stabilize Q-function
+
+
+# ---------------------------------------------------------------------------
+# Segment — per-segment training control (v2 API)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Segment:
+    """A training sub-episode segment with per-key critic control.
+
+    Replaces the old ``(start, end, weight)`` / ``(start, end, weight, mode)``
+    tuples returned by ``prepare_training_segments``.  Old tuples are
+    auto-converted by the framework for backward compatibility.
+
+    Attributes:
+        start: Frame index (inclusive) where the segment begins.
+        end: Frame index (exclusive) where the segment ends.
+        weight: Sample importance — scales loss contribution for all
+            critics on this segment.  Default 1.0.
+        mode: Actor mode — passed to ``evaluate_actions`` as
+            ``frame_modes``.  None = no mode (actor computes from obs).
+        key_weights: Per-key critic control.
+            None = all keys active, use experiment's stage_weights
+            (backward compatible).
+            Dict[str, float] = only listed keys are trained on this segment.
+              - weight > 0: train critic, override stage_weight for this segment
+              - weight = 0: skip critic entirely (no data collected, no training)
+              - keys not listed: skip (same as weight=0)
+        termination: Boundary handling for GAE bootstrap at segment end.
+            None = auto: terminated if mid-episode (end < T), else
+            episode's termination (current behavior).
+            "terminated": always last_value=0, no bootstrap.
+            "truncated": bootstrap from V(s_end) — for natural transitions.
+    """
+
+    start: int
+    end: int
+    weight: float = 1.0
+    mode: Optional[float] = None
+    key_weights: Optional[Dict[str, float]] = None
+    termination: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +324,34 @@ class Experiment(ABC):
         """
         T = episode.num_frames
         return [(0, T, 1.0)]
+
+    # ------------------------------------------------------------------
+    # Segment v2 API — prepare_segments
+    #
+    # Experiments can override prepare_segments to return List[Segment]
+    # with per-key critic control (key_weights), termination mode, etc.
+    #
+    # Framework resolution order:
+    #   1. If experiment overrides prepare_segments → use it
+    #   2. Else → call prepare_training_segments, convert tuples to Segment
+    #
+    # This keeps full backward compatibility: existing experiments that only
+    # implement prepare_training_segments work unchanged.
+    # ------------------------------------------------------------------
+
+    def prepare_segments(
+        self, episode: "Episode",
+    ) -> Optional[List[Segment]]:
+        """Return Segment list for per-key critic control, or None to fall
+        back to ``prepare_training_segments``.
+
+        Override this method to use the v2 Segment API with ``key_weights``,
+        ``termination`` mode, etc.  Returning None (default) tells the
+        framework to use the old ``prepare_training_segments`` path.
+
+        Return an empty list to skip the episode entirely.
+        """
+        return None
 
     def combine_advantages(
         self,

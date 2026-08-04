@@ -18,7 +18,28 @@ import torch.nn.functional as F
 
 from baseline.common.rollout import Episode
 
-from .experiment import CommonParams, Experiment, SACParams, TrainablePolicy
+from .experiment import CommonParams, Experiment, SACParams, Segment, TrainablePolicy
+
+
+# ---------------------------------------------------------------------------
+# Segment resolution — v2 API (prepare_segments) with v1 fallback
+# ---------------------------------------------------------------------------
+
+def _tuples_to_segments(
+    raw: List,
+) -> List[Segment]:
+    """Convert old-style tuples to Segment objects."""
+    result = []
+    for seg in raw:
+        if isinstance(seg, Segment):
+            result.append(seg)
+        elif len(seg) == 3:
+            result.append(Segment(start=seg[0], end=seg[1], weight=seg[2]))
+        elif len(seg) == 4:
+            result.append(Segment(start=seg[0], end=seg[1], weight=seg[2], mode=seg[3]))
+        else:
+            raise ValueError(f"Invalid segment tuple: {seg}")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +115,20 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         done: bool,
         sample_weight: float = 1.0,
+        key_active: Optional[Dict[str, bool]] = None,
     ) -> None:
-        """Add a single transition with per-component rewards and sample weight."""
+        """Add a single transition with per-component rewards and sample weight.
+
+        Args:
+            key_active: Per-key active flags for this transition.  If a key
+                is inactive (False), its reward is stored as 0 and a mask
+                entry is recorded.  None = all keys active (backward compat).
+        """
         self.obs[self.ptr] = obs
         self.actions[self.ptr] = action
         for k in self.reward_keys:
-            self.rewards[k][self.ptr] = rewards.get(k, 0.0)
+            is_active = True if key_active is None else key_active.get(k, True)
+            self.rewards[k][self.ptr] = rewards.get(k, 0.0) if is_active else 0.0
         self.next_obs[self.ptr] = next_obs
         self.dones[self.ptr] = float(done)
         self.sample_weights[self.ptr] = sample_weight
@@ -135,17 +164,31 @@ class ReplayBuffer:
         # Extract per-component rewards for the full episode
         reward_dict = experiment.extract_rewards(episode)
 
-        # Use prepare_training_segments to get weighted sub-segments
-        seg_weights = experiment.prepare_training_segments(episode)
-        if not seg_weights:
+        # Resolve segments: try v2 API first, fall back to v1.
+        segs = experiment.prepare_segments(episode)
+        if segs is None:
+            raw = experiment.prepare_training_segments(episode)
+            segs = _tuples_to_segments(raw)
+        if not segs:
             return 0
 
         is_terminated = bool(episode.is_terminated)
         n_added = 0
-        for start, end, weight in seg_weights:
+        for seg in segs:
+            start, end, weight = seg.start, seg.end, seg.weight
             T_seg = end - start
             if T_seg == 0:
                 continue
+
+            # Per-key active flags for this segment.
+            if seg.key_weights is not None:
+                seg_key_active = {
+                    k: seg.key_weights.get(k, 0.0) > 0.0
+                    for k in self.reward_keys
+                }
+            else:
+                seg_key_active = None
+
             for t in range(start, end):
                 if t < T_full - 1:
                     next_o = obs[t + 1]
@@ -165,6 +208,7 @@ class ReplayBuffer:
                     next_obs=next_o.astype(np.float32),
                     done=done,
                     sample_weight=weight,
+                    key_active=seg_key_active,
                 )
                 n_added += 1
 
