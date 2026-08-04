@@ -1,0 +1,41 @@
+# basic_balance_v2_stage_seg: same as basic_balance_v2 but with PhaseObserver
+# for struggle/stability phase segmentation.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+observer_plugins:
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: ${agent_id}
+  phase:
+    cls: "baseline.humanoid21.rewards.phase_observer:PhaseObserver"
+    config:
+      agent_id: ${agent_id}
