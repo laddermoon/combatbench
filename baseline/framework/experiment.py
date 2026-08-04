@@ -140,6 +140,15 @@ class Segment:
             episode's termination (current behavior).
             "terminated": always last_value=0, no bootstrap.
             "truncated": bootstrap from V(s_end) — for natural transitions.
+        key_termination: Per-key override of ``termination``.
+            None = all keys use ``termination`` (default, backward compatible).
+            Dict[str, str] = maps specific keys to their own termination
+            mode ("terminated" or "truncated"), overriding the segment-level
+            ``termination`` for those keys.  Keys not in the dict fall back
+            to ``termination``.  Use this when different reward components
+            on the same segment need different bootstrap behavior — e.g.
+            a terminal reward key needs ``"terminated"`` while a dense
+            shaping key on the same segment needs ``"truncated"``.
     """
 
     start: int
@@ -148,6 +157,7 @@ class Segment:
     mode: Optional[float] = None
     key_weights: Optional[Dict[str, float]] = None
     termination: Optional[str] = None
+    key_termination: Optional[Dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------

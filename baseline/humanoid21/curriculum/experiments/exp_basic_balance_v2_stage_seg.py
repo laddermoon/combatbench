@@ -307,14 +307,30 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
             else:
                 termination = "terminated" if fell else "truncated"
 
+            if is_struggle:
+                seg_key_weights = {"r_struggle": 1.0, "r_height": 1.0}
+                # r_struggle has an explicit terminal reward → terminated (V=0).
+                # r_height is dense shaping with no terminal → must bootstrap
+                # (truncated), otherwise V=0 at recovery makes the critic
+                # perversely value staying low over standing up.
+                # Exception: if the episode ended by falling, r_height is
+                # also terminated (no future height rewards after fall).
+                if end >= T and fell:
+                    seg_key_termination = {"r_struggle": "terminated", "r_height": "terminated"}
+                else:
+                    seg_key_termination = {"r_struggle": "terminated", "r_height": "truncated"}
+            else:
+                seg_key_weights = {"r_struggle": 1.0, "r_cross": 1.0, "r_joint": 1.0,
+                                   "r_vel": 1.0, "r_tilt": 1.0, "r_foot": 1.0}
+                seg_key_termination = None
+
             segments.append(Segment(
                 start=start,
                 end=end,
                 weight=1.0,
-                key_weights={"r_struggle": 1.0, "r_height": 1.0} if is_struggle
-                else {"r_struggle": 1.0, "r_cross": 1.0, "r_joint": 1.0,
-                      "r_vel": 1.0, "r_tilt": 1.0, "r_foot": 1.0},
+                key_weights=seg_key_weights,
                 termination=termination,
+                key_termination=seg_key_termination,
             ))
 
         return segments

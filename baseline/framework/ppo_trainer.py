@@ -148,6 +148,13 @@ class PPOBuffer:
         self.key_seg_active: Dict[str, List[bool]] = {
             k: [] for k in reward_keys
         }
+        # Per-key per-segment terminated flag: True if the key's segment
+        # ends with termination (last_value=0), False if truncated (bootstrap).
+        # When Segment.key_termination is None, all keys share the segment's
+        # termination flag (backward compatible).
+        self.key_seg_terminated: Dict[str, List[bool]] = {
+            k: [] for k in reward_keys
+        }
         self.episode_metrics: List[Dict[str, float]] = []
         self.episode_lengths: List[int] = []  # original episode lengths (for logging)
 
@@ -275,6 +282,15 @@ class PPOBuffer:
                 for key in reward_keys:
                     is_active = key in active_keys
                     self.key_seg_active[key].append(is_active)
+                    # Per-key termination: override segment-level if key_termination is set
+                    key_term = term_seg
+                    if seg.key_termination and key in seg.key_termination:
+                        kt = seg.key_termination[key]
+                        if kt == "truncated":
+                            key_term = False
+                        elif kt == "terminated":
+                            key_term = True
+                    self.key_seg_terminated[key].append(key_term)
                     if is_active:
                         r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
                         self.reward_data[key].append(
@@ -468,7 +484,8 @@ def ppo_update(
                 continue
 
             last_value = 0.0
-            if not buf.is_terminated[i] and buf.final_obs[i] is not None:
+            key_terminated = buf.key_seg_terminated[key][i]
+            if not key_terminated and buf.final_obs[i] is not None:
                 last_value = float(bootstrap_values[key][bootstrap_pos[i]])
 
             rewards = buf.reward_data[key][i]
