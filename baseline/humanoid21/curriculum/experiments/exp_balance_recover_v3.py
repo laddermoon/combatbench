@@ -82,6 +82,15 @@ class BalanceRecoverV3Config(CombatExperimentBase):
         "base_policy_path": None,
     }
 
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        rw = os.environ.get("ROLLOUT_WORKERS")
+        if rw:
+            self.rollout_workers = int(rw)
+        tu = os.environ.get("TRAIN_UPDATES")
+        if tu:
+            self.max_updates = int(tu)
+
     def _env_pb(self) -> ParameterizedEnvBlueprint:
         return ParameterizedEnvBlueprint.load(
             Path(__file__).resolve().parent.parent.parent / "blueprints" / self.BLUEPRINT
