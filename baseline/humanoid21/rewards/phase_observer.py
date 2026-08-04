@@ -27,14 +27,14 @@ import numpy as np
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 
-# Default thresholds — tuned so that normal walking does NOT trigger struggle.
-# Uprightness: below this → struggle (cos(0.4 rad) ≈ 0.92, ~23° tilt)
-# Height: below this → struggle (normal standing ~0.9m, walking dips to ~0.8m)
-DEFAULT_UPRIGHTNESS_THRESHOLD = 0.85
-DEFAULT_HEIGHT_THRESHOLD = 0.65
+# Default thresholds — 15° tilt or torso height below 1.15m triggers struggle.
+# Standing torso height is ~1.28m, so 1.15m gives ~0.13m margin.
+# Struggle is immediate (1 step); stability requires 5 consecutive steps.
+DEFAULT_UPRIGHTNESS_THRESHOLD = 0.966  # cos(15°) ≈ 0.966
+DEFAULT_HEIGHT_THRESHOLD = 1.15        # torso z < 1.15m → struggle (standing ~1.28m)
 # Hysteresis: need this many consecutive steps to confirm a transition
-DEFAULT_STABLE_CONFIRM_STEPS = 10
-DEFAULT_STRUGGLE_CONFIRM_STEPS = 3
+DEFAULT_STABLE_CONFIRM_STEPS = 5       # 5 consecutive stable steps → stability
+DEFAULT_STRUGGLE_CONFIRM_STEPS = 1     # immediate: any single struggle step → struggle
 
 
 class PhaseObserver(BaseObserverPlugin):
