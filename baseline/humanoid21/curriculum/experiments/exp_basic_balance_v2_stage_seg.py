@@ -134,7 +134,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
           - r_cross, r_joint, r_vel, r_tilt, r_foot: all zeros (not relevant)
 
         Stability phase:
-          - r_struggle: per-step +0.01 bonus, -1 on stability_to_struggle transition
+          - r_struggle: only -1 on stability_to_struggle transition (no per-step bonus)
           - r_cross, r_joint, r_vel, r_tilt, r_foot: same as basic_balance_v2
         """
         T = episode.num_frames
@@ -152,10 +152,9 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
                 if transitions[t] == "struggle_to_stability":
                     r_struggle[t] += self.struggle_recover_bonus
             else:
-                r_struggle[t] = self.per_step_stability_bonus
-                # Check for falling back to struggle
+                # Stability phase: only penalize transition back to struggle
                 if transitions[t] == "stability_to_struggle":
-                    r_struggle[t] += self.stability_to_struggle_penalty
+                    r_struggle[t] = self.stability_to_struggle_penalty
 
         # Terminal: if fell during struggle phase
         if fell:
