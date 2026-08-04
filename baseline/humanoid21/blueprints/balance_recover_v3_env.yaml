@@ -1,0 +1,49 @@
+# Balance recovery v3: StateBankInitPlugin loads perturbed states from a
+# pre-generated .npz state bank, replacing on-the-fly impulse simulation.
+#
+# Used by exp_balance_recover_v3.py for iterative balance recovery training.
+# Each episode samples a state from the bank and injects it as the initial state.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
+  state_bank_path:
+    default: null
+    description: "Path to .npz state bank file."
+  state_bank_seed:
+    default: 42
+    description: "Base seed for state bank sampling."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      tolerance: ${tolerance}
+
+  - cls: "envs.humanoid21.disturbance_plugins:StateBankInitPlugin"
+    config:
+      state_bank_path: ${state_bank_path}
+      target_robot: ${agent_id}
+      seed: ${state_bank_seed}
+
+observer_plugins: {}
