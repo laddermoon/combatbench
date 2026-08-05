@@ -427,7 +427,15 @@ def ppo_update(
     bootstrap_indices: List[int] = []
     bootstrap_obs: List[np.ndarray] = []
     for i, T in enumerate(buf.ep_lengths):
-        if not buf.is_terminated[i] and buf.final_obs[i] is not None:
+        # A segment needs bootstrap if any active key has per-key
+        # termination = truncated (not terminated).  This handles the case
+        # where the segment-level termination is "terminated" but a specific
+        # key overrides it to "truncated" (e.g. r_height on struggle→recovery).
+        needs_boot = any(
+            buf.key_seg_active[key][i] and not buf.key_seg_terminated[key][i]
+            for key in reward_keys
+        )
+        if needs_boot and buf.final_obs[i] is not None:
             bootstrap_indices.append(i)
             bootstrap_obs.append(np.asarray(buf.final_obs[i], dtype=np.float32))
 
@@ -485,7 +493,7 @@ def ppo_update(
 
             last_value = 0.0
             key_terminated = buf.key_seg_terminated[key][i]
-            if not key_terminated and buf.final_obs[i] is not None:
+            if not key_terminated and buf.final_obs[i] is not None and i in bootstrap_pos:
                 last_value = float(bootstrap_values[key][bootstrap_pos[i]])
 
             rewards = buf.reward_data[key][i]
