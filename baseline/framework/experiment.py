@@ -417,3 +417,104 @@ class Experiment(ABC):
     def load_training_state(self, state: dict) -> None:
         """Restore training hyperparameters from a checkpoint."""
         pass
+
+
+# ---------------------------------------------------------------------------
+# ExperimentV2 — trajectory-based API (PPO only)
+# ---------------------------------------------------------------------------
+
+class ExperimentV2(Experiment):
+    """Trajectory-based experiment API for PPO.
+
+    Subclass this (in addition to ``CombatExperimentBase``) to use the v2
+    ``Trajectory`` pipeline.  The framework's ``resolve_trajectories``
+    funnel detects ``build_trajectories`` and routes to it directly,
+    bypassing the v1 ``extract_rewards`` / ``prepare_segments`` path.
+
+    V2 experiments must implement:
+
+    - ``build_trajectories(episode) -> List[Trajectory]``:
+        The single source of truth for how an episode becomes training
+        data.  Replaces ``extract_rewards`` + ``prepare_segments``.
+        The experiment decides per-channel ``is_terminated``,
+        ``actor_weight``, and which channels are active on each trajectory.
+
+    - ``reward_channels() -> Tuple[RewardChannel, ...]``:
+        Declares per-channel gamma and gae_lambda.  Replaces the flat
+        ``gammas`` dict and global ``gae_lambda``.
+
+    V2 experiments do NOT need:
+    - ``extract_rewards`` — folded into ``build_trajectories``
+    - ``prepare_segments`` / ``prepare_training_segments`` — folded into
+      ``build_trajectories``
+    - ``combine_advantages`` — advantage combination uses
+      ``ChannelData.actor_weight`` directly
+    - ``initial_weights`` / ``next_weights`` for advantage computation —
+      weights are baked into ``ChannelData.actor_weight`` by the experiment.
+      (These methods are still called by ``ppo_loop`` for curriculum
+      scheduling and logging, but no longer feed into the GAE/adv path.)
+
+    SAC is not yet supported for v2 experiments.
+    """
+
+    # ------------------------------------------------------------------
+    # V2 abstract methods
+    # ------------------------------------------------------------------
+
+    def build_trajectories(self, episode: "Episode") -> List["Trajectory"]:
+        """Convert an episode into training trajectories.
+
+        This is the single source of truth for:
+        - How the episode is sliced into trajectories.
+        - Per-channel rewards, termination, and actor weights.
+        - Which channels are active on each trajectory.
+
+        Returns an empty list to skip the episode entirely.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement build_trajectories(). "
+            "This is required for ExperimentV2."
+        )
+
+    def reward_channels(self) -> Tuple["RewardChannel", ...]:
+        """Declare per-channel configuration (gamma, gae_lambda).
+
+        The order must match ``common_params().reward_keys``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement reward_channels(). "
+            "This is required for ExperimentV2."
+        )
+
+    # ------------------------------------------------------------------
+    # V1 methods — explicitly disabled to catch accidental use
+    # ------------------------------------------------------------------
+
+    def extract_rewards(self, episode: "Episode") -> Dict[str, np.ndarray]:
+        """Deprecated in v2.  Use ``build_trajectories`` instead."""
+        raise NotImplementedError(
+            f"{type(self).__name__} is an ExperimentV2 — "
+            "extract_rewards is not used.  Implement build_trajectories."
+        )
+
+    def prepare_segments(self, episode: "Episode") -> Optional[List[Segment]]:
+        """Deprecated in v2.  Use ``build_trajectories`` instead."""
+        raise NotImplementedError(
+            f"{type(self).__name__} is an ExperimentV2 — "
+            "prepare_segments is not used.  Implement build_trajectories."
+        )
+
+    def prepare_training_segments(self, episode: "Episode"):
+        """Deprecated in v2.  Use ``build_trajectories`` instead."""
+        raise NotImplementedError(
+            f"{type(self).__name__} is an ExperimentV2 — "
+            "prepare_training_segments is not used.  Implement build_trajectories."
+        )
+
+    def combine_advantages(
+        self,
+        advs: Dict[str, np.ndarray],
+        stage_weights: Tuple[float, ...],
+    ) -> Optional[np.ndarray]:
+        """Deprecated in v2.  Advantage combination uses actor_weight."""
+        return None
