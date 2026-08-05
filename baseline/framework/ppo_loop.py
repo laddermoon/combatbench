@@ -319,6 +319,15 @@ def train_ppo(
 
             # 5.5 PPO update
             t0 = time.perf_counter()
+            # Build per-channel gae_lambdas: v2 uses reward_channels(), v1 uses pp.gae_lambda
+            if hasattr(experiment, 'reward_channels') and callable(experiment.reward_channels):
+                try:
+                    channels = experiment.reward_channels()
+                    gae_lambdas = {ch.name: ch.gae_lambda for ch in channels}
+                except NotImplementedError:
+                    gae_lambdas = {k: pp.gae_lambda for k in cp.reward_keys}
+            else:
+                gae_lambdas = {k: pp.gae_lambda for k in cp.reward_keys}
             stats = ppo_update(
                 actor=actor,
                 critics=critics,
@@ -327,7 +336,7 @@ def train_ppo(
                 buf=buf,
                 reward_keys=cp.reward_keys,
                 gammas=cp.gammas,
-                gae_lambda=pp.gae_lambda,
+                gae_lambdas=gae_lambdas,
                 clip_eps=pp.clip_eps,
                 entropy_coef=pp.entropy_coef,
                 grad_clip_norm=cp.grad_clip_norm,

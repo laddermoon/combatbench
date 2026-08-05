@@ -54,6 +54,18 @@
       false,
       true
     ],
+    "key_seg_actor_weight__r_a": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "key_seg_actor_weight__r_b": [
+      0.5,
+      0.5,
+      0.0,
+      0.5
+    ],
     "key_seg_terminated__r_a": [
       true,
       false,

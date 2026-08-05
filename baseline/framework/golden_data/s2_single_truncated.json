@@ -25,6 +25,12 @@
     "key_seg_active__r_b": [
       true
     ],
+    "key_seg_actor_weight__r_a": [
+      1.0
+    ],
+    "key_seg_actor_weight__r_b": [
+      1.0
+    ],
     "key_seg_terminated__r_a": [
       false
     ],

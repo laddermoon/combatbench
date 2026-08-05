@@ -44,6 +44,7 @@ from baseline.framework.test_ppo_buffer_golden import (
     REWARD_KEYS,
     GAMMAS,
     GAE_LAMBDA,
+    GAE_LAMBDAS,
     OBS_DIM,
     ACTION_DIM,
     make_episode,
@@ -69,6 +70,7 @@ def trajectories_to_buffer_state(
     # Per-key per-segment active and terminated
     key_seg_active: Dict[str, List[bool]] = {k: [] for k in reward_keys}
     key_seg_terminated: Dict[str, List[bool]] = {k: [] for k in reward_keys}
+    key_seg_actor_weight: Dict[str, List[float]] = {k: [] for k in reward_keys}
     reward_data: Dict[str, List[np.ndarray]] = {k: [] for k in reward_keys}
     is_terminated: List[bool] = []
     final_obs: List[Optional[np.ndarray]] = []
@@ -127,10 +129,12 @@ def trajectories_to_buffer_state(
                 cd = traj.channels[key]
                 key_seg_active[key].append(True)
                 key_seg_terminated[key].append(cd.is_terminated)
+                key_seg_actor_weight[key].append(cd.actor_weight)
                 reward_data[key].append(cd.reward)
             else:
                 key_seg_active[key].append(False)
                 key_seg_terminated[key].append(True)  # inactive → terminated
+                key_seg_actor_weight[key].append(0.0)
                 reward_data[key].append(np.zeros(T_seg, dtype=np.float32))
 
     # Build obs/actions for shape reporting
@@ -158,6 +162,7 @@ def trajectories_to_buffer_state(
     for key in reward_keys:
         state[f"key_seg_active__{key}"] = key_seg_active[key]
         state[f"key_seg_terminated__{key}"] = key_seg_terminated[key]
+        state[f"key_seg_actor_weight__{key}"] = key_seg_actor_weight[key]
         state[f"reward_data__{key}"] = [arr.tolist() for arr in reward_data[key]]
 
     return state
@@ -167,7 +172,7 @@ def trajectories_to_gae_state(
     trajs: List[Trajectory],
     reward_keys: Tuple[str, ...],
     gammas: Dict[str, float],
-    gae_lambda: float,
+    gae_lambdas: Dict[str, float],
     critics: Dict[str, torch.nn.Module],
     device: torch.device,
     stage_weights: Tuple[float, ...],
@@ -192,6 +197,7 @@ def trajectories_to_gae_state(
     # Per-key per-segment state from trajectories
     key_seg_active: Dict[str, List[bool]] = {k: [] for k in reward_keys}
     key_seg_terminated: Dict[str, List[bool]] = {k: [] for k in reward_keys}
+    key_seg_actor_weight: Dict[str, List[float]] = {k: [] for k in reward_keys}
     reward_data: Dict[str, List[np.ndarray]] = {k: [] for k in reward_keys}
     final_obs_list: List[np.ndarray] = []
 
@@ -202,10 +208,12 @@ def trajectories_to_gae_state(
                 cd = traj.channels[key]
                 key_seg_active[key].append(True)
                 key_seg_terminated[key].append(cd.is_terminated)
+                key_seg_actor_weight[key].append(cd.actor_weight)
                 reward_data[key].append(cd.reward)
             else:
                 key_seg_active[key].append(False)
                 key_seg_terminated[key].append(True)
+                key_seg_actor_weight[key].append(0.0)
                 reward_data[key].append(np.zeros(len(traj.obs), dtype=np.float32))
 
     # Bootstrap collection
@@ -275,7 +283,7 @@ def trajectories_to_gae_state(
             rewards = reward_data[key][i]
             adv, ret = compute_gae(
                 rewards=rewards, values=values, last_value=last_value,
-                gamma=gammas[key], lam=gae_lambda,
+                gamma=gammas[key], lam=gae_lambdas[key],
             )
             advs_list.append(adv)
             rets_list.append(ret)
@@ -316,12 +324,24 @@ def trajectories_to_gae_state(
         result[mask] = ((active - mean) / std).astype(np.float32)
         return result
 
-    combined_adv = np.zeros_like(advs_all[reward_keys[0]], dtype=np.float32)
-    for w, key in zip(stage_weights, reward_keys):
-        if w == 0.0:
+    # Build per-key per-frame actor_weight from trajectory data
+    key_actor_weight_frame: Dict[str, np.ndarray] = {}
+    for key in reward_keys:
+        aw_frame = np.zeros(n, dtype=np.float32)
+        for i, is_active in enumerate(key_seg_active[key]):
+            if is_active:
+                s = seg_offsets[i]
+                e = s + ep_lengths[i]
+                aw_frame[s:e] = key_seg_actor_weight[key][i]
+        key_actor_weight_frame[key] = aw_frame
+
+    combined_adv = np.zeros(n, dtype=np.float32)
+    for key in reward_keys:
+        aw_frame = key_actor_weight_frame[key]
+        if not np.any(aw_frame > 0.0):
             continue
         conf = confidences[key]
-        combined_adv = combined_adv + float(w) * conf * _normalize_adv(
+        combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
             advs_all[key], key_frame_mask[key],
         )
 
@@ -546,7 +566,7 @@ class TestLegacyConverter:
             critics[key] = MockCritic(OBS_DIM, seed=100 + i)
 
         gae_state = trajectories_to_gae_state(
-            trajs, REWARD_KEYS, GAMMAS, GAE_LAMBDA, critics, device, stage_weights,
+            trajs, REWARD_KEYS, GAMMAS, GAE_LAMBDAS, critics, device, stage_weights,
         )
 
         _assert_deep_equal(gae_state, golden["gae"], f"{label}/gae")

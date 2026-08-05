@@ -243,6 +243,7 @@ def capture_buffer_state(buf: PPOBuffer, reward_keys: Tuple[str, ...]) -> Dict[s
     for key in reward_keys:
         state[f"key_seg_active__{key}"] = list(buf.key_seg_active[key])
         state[f"key_seg_terminated__{key}"] = list(buf.key_seg_terminated[key])
+        state[f"key_seg_actor_weight__{key}"] = list(buf.key_seg_actor_weight[key])
         # reward_data: list of arrays per segment
         rd = buf.reward_data[key]
         state[f"reward_data__{key}"] = [arr.tolist() for arr in rd]
@@ -254,7 +255,7 @@ def capture_gae_state(
     buf: PPOBuffer,
     reward_keys: Tuple[str, ...],
     gammas: Dict[str, float],
-    gae_lambda: float,
+    gae_lambdas: Dict[str, float],
     critics: Dict[str, torch.nn.Module],
     device: torch.device,
     stage_weights: Tuple[float, ...],
@@ -336,7 +337,7 @@ def capture_gae_state(
             rewards = buf.reward_data[key][i]
             adv, ret = compute_gae(
                 rewards=rewards, values=values, last_value=last_value,
-                gamma=gammas[key], lam=gae_lambda,
+                gamma=gammas[key], lam=gae_lambdas[key],
             )
             advs_list.append(adv)
             rets_list.append(ret)
@@ -377,12 +378,24 @@ def capture_gae_state(
         result[mask] = ((active - mean) / std).astype(np.float32)
         return result
 
-    combined_adv = np.zeros_like(advs_all[reward_keys[0]], dtype=np.float32)
-    for w, key in zip(stage_weights, reward_keys):
-        if w == 0.0:
+    # Build per-key per-frame actor_weight from buffer
+    key_actor_weight_frame: Dict[str, np.ndarray] = {}
+    for key in reward_keys:
+        aw_frame = np.zeros(n, dtype=np.float32)
+        for i, is_active in enumerate(buf.key_seg_active[key]):
+            if is_active:
+                s = seg_offsets[i]
+                e = s + buf.ep_lengths[i]
+                aw_frame[s:e] = buf.key_seg_actor_weight[key][i]
+        key_actor_weight_frame[key] = aw_frame
+
+    combined_adv = np.zeros(n, dtype=np.float32)
+    for key in reward_keys:
+        aw_frame = key_actor_weight_frame[key]
+        if not np.any(aw_frame > 0.0):
             continue
         conf = confidences[key]
-        combined_adv = combined_adv + float(w) * conf * _normalize_adv(
+        combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
             advs_all[key], key_frame_mask[key],
         )
 
@@ -416,6 +429,7 @@ def capture_gae_state(
 REWARD_KEYS = ("r_a", "r_b")
 GAMMAS = {"r_a": 0.99, "r_b": 0.95}
 GAE_LAMBDA = 0.95
+GAE_LAMBDAS = {"r_a": 0.95, "r_b": 0.95}
 OBS_DIM = 4
 ACTION_DIM = 2
 
@@ -459,7 +473,7 @@ def _build_buffer_and_capture(
 
     buffer_state = capture_buffer_state(buf, REWARD_KEYS)
     gae_state = capture_gae_state(
-        buf, REWARD_KEYS, GAMMAS, GAE_LAMBDA, critics, device, stage_weights,
+        buf, REWARD_KEYS, GAMMAS, GAE_LAMBDAS, critics, device, stage_weights,
     )
 
     return {

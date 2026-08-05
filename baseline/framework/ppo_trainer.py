@@ -154,6 +154,11 @@ class PPOBuffer:
         self.key_seg_terminated: Dict[str, List[bool]] = {
             k: [] for k in reward_keys
         }
+        # Per-key per-segment actor_weight: weight for this channel's
+        # advantage in the policy gradient.  From ChannelData.actor_weight.
+        self.key_seg_actor_weight: Dict[str, List[float]] = {
+            k: [] for k in reward_keys
+        }
         self.episode_metrics: List[Dict[str, float]] = episode_metrics or []
         self.episode_lengths: List[int] = episode_lengths or []
 
@@ -227,12 +232,14 @@ class PPOBuffer:
                     cd = traj.channels[key]
                     self.key_seg_active[key].append(True)
                     self.key_seg_terminated[key].append(cd.is_terminated)
+                    self.key_seg_actor_weight[key].append(cd.actor_weight)
                     self.reward_data[key].append(
                         np.asarray(cd.reward, dtype=np.float32)
                     )
                 else:
                     self.key_seg_active[key].append(False)
                     self.key_seg_terminated[key].append(True)
+                    self.key_seg_actor_weight[key].append(0.0)
                     self.reward_data[key].append(
                         np.zeros(T_seg, dtype=np.float32)
                     )
@@ -327,7 +334,7 @@ def ppo_update(
     buf: PPOBuffer,
     reward_keys: Tuple[str, ...],
     gammas: Dict[str, float],
-    gae_lambda: float,
+    gae_lambdas: Dict[str, float],
     clip_eps: float,
     entropy_coef: float,
     grad_clip_norm: float,
@@ -436,7 +443,7 @@ def ppo_update(
                 values=values,
                 last_value=last_value,
                 gamma=gammas[key],
-                lam=gae_lambda,
+                lam=gae_lambdas[key],
             )
             advs_list.append(adv)
             rets_list.append(ret)
@@ -499,6 +506,19 @@ def ppo_update(
         result[mask] = ((active - mean) / std).astype(np.float32)
         return result
 
+    # Build per-key per-frame actor_weight arrays from buffer.
+    # These replace the scalar stage_weights in the default advantage
+    # combination, allowing per-trajectory actor_weight control.
+    key_actor_weight_frame: Dict[str, np.ndarray] = {}
+    for key in reward_keys:
+        aw_frame = np.zeros(n, dtype=np.float32)
+        for i, is_active in enumerate(buf.key_seg_active[key]):
+            if is_active:
+                s = seg_offsets[i]
+                e = s + buf.ep_lengths[i]
+                aw_frame[s:e] = buf.key_seg_actor_weight[key][i]
+        key_actor_weight_frame[key] = aw_frame
+
     if len(stage_weights) != len(reward_keys):
         raise ValueError(
             f"stage_weights must have {len(reward_keys)} entries (one per "
@@ -517,12 +537,13 @@ def ppo_update(
     if experiment is not None:
         combined_adv = experiment.combine_advantages(advs_all, stage_weights)
     if combined_adv is None:
-        combined_adv = np.zeros_like(advs_all[reward_keys[0]], dtype=np.float32)
-        for w, key in zip(stage_weights, reward_keys):
-            if w == 0.0:
+        combined_adv = np.zeros(n, dtype=np.float32)
+        for key in reward_keys:
+            aw_frame = key_actor_weight_frame[key]
+            if not np.any(aw_frame > 0.0):
                 continue
             conf = confidences[key]
-            combined_adv = combined_adv + float(w) * conf * _normalize_adv(
+            combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
                 advs_all[key], key_frame_mask[key],
             )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
