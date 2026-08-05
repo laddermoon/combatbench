@@ -297,6 +297,9 @@ def train_ppo(
             # 5.4 Build PPO buffer
             t0 = time.perf_counter()
             norm_weights = _norm_weights(weights)
+            # Expose normalized weights to v2 experiments via instance attribute
+            # so build_trajectories can bake them into ChannelData.actor_weight.
+            experiment._current_actor_weights = norm_weights
             all_trajs: List = []
             ep_metrics: List[Dict[str, float]] = []
             ep_lengths_orig: List[int] = []

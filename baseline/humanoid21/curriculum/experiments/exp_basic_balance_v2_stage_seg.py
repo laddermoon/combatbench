@@ -18,12 +18,17 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.experiment import Segment
+from baseline.framework.experiment import ExperimentV2, Segment
 from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.framework.trajectory import (
+    ChannelData,
+    RewardChannel,
+    Trajectory,
+)
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
-class BasicBalanceV2StageSegConfig(CombatExperimentBase):
+class BasicBalanceV2StageSegConfig(CombatExperimentBase, ExperimentV2):
 
     name = "basic_balance_v2_stage_seg"
     # r_struggle replaces r_fall: struggle-phase survival + phase transition rewards
@@ -171,62 +176,54 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         runs.append((seg_start, T, current))
         return runs
 
-    def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
-        """Phase-dependent reward extraction.
+    def reward_channels(self) -> Tuple[RewardChannel, ...]:
+        return tuple(
+            RewardChannel(name=k, gamma=self.gammas[k], gae_lambda=self.gae_lambda)
+            for k in self.reward_keys
+        )
 
-        Each phase run is a self-contained sub-episode whose entire
-        ``r_struggle`` signal is a single terminal reward on its **last
-        frame** (``end - 1``).  There is no per-step term in either phase.
+    def _current_actor_weight(self, key: str) -> float:
+        """Get normalized actor_weight for a reward key from the framework."""
+        weights = getattr(self, "_current_actor_weights", None)
+        if weights is None:
+            weights = self.initial_weights()
+        idx = self.reward_keys.index(key)
+        if idx < len(weights):
+            return float(weights[idx])
+        return 1.0
 
-        Struggle run ends by:
-          - recovering to stability -> +1.0
-          - falling                 -> -1.0
-          - timeout                 -> nothing (bootstrapped)
+    def build_trajectories(self, episode) -> List[Trajectory]:
+        """V2 trajectory builder — replaces extract_rewards + prepare_segments.
 
-        Stability run ends by:
-          - degrading to struggle -> -1.0
-          - falling               -> -1.0
-          - timeout               -> nothing (bootstrapped)
-
-        Discounting alone then orders every outcome correctly.  For a run of
-        length k, the return at its first frame is:
-
-          stability -> struggle : -gamma^(k-1)  -> maximized by large k
-                                                   (stay stable as long as possible)
-          struggle  -> recovery : +gamma^(k-1)  -> maximized by small k
-                                                   (recover as fast as possible)
-          struggle  -> fall     : -gamma^(k-1)  -> maximized by large k
-                                                   (delay falling)
-          any       -> timeout  :  0 + V(s_end) -> best possible outcome
-
-        r_cross, r_joint, r_vel, r_tilt, r_foot are identical to
-        basic_balance_v2; the framework masks them out on struggle runs via
-        ``Segment.key_weights``.
+        One trajectory per phase run, with per-channel rewards, termination,
+        and actor_weight baked into ChannelData.
         """
         T = episode.num_frames
+        if T == 0:
+            return []
+
+        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
+        obs_all = episode.observations.get(ep_target)
+        acts_all = episode.actions.get(ep_target)
+        fin_obs = episode.final_observation.get(ep_target)
+
+        if obs_all is None or acts_all is None or fin_obs is None:
+            return []
+
         fell = "imbalance" in episode.termination_proposals
+        runs = self._phase_runs(episode)
 
-        # --- r_struggle ---
+        # Pre-compute full-episode reward arrays (same logic as v1 extract_rewards)
         r_struggle = np.zeros(T, dtype=np.float32)
-
-        for start, end, is_struggle in self._phase_runs(episode):
+        for start, end, is_struggle in runs:
             if end < T:
-                # Phase boundary: the run ends because the phase flipped.
-                # Terminal reward belongs to the run's LAST frame (end - 1),
-                # not the frame where the new phase was first observed.
                 if is_struggle:
                     r_struggle[end - 1] += self.struggle_recover_bonus
                 else:
                     r_struggle[end - 1] += self.stability_to_struggle_penalty
             elif fell:
-                # Final run ended by falling.
                 r_struggle[end - 1] += self.struggle_fall_penalty
-            # else: final run ended by timeout -> no terminal, bootstrapped.
 
-        # --- r_height: per-step height reward, active only during struggle ---
-        # Dense shaping signal: higher torso = closer to recovery.
-        # Value = height * 0.01, so at standing height (~1.28m) each step
-        # gives ~0.0128, and near-ground (~0.3m) gives ~0.003.
         phase_node = episode.observer_outputs.get("phase")
         height_arr = np.zeros(T, dtype=np.float32)
         if phase_node is not None and isinstance(phase_node, dict):
@@ -237,7 +234,6 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
                     height_arr = np.zeros(T, dtype=np.float32)
         r_height = (height_arr * 0.01).astype(np.float32)
 
-        # --- Stability-phase rewards (same as basic_balance_v2) ---
         r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
 
         joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
@@ -266,7 +262,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        return {
+        all_rewards = {
             "r_struggle": r_struggle,
             "r_height": r_height,
             "r_cross": r_cross,
@@ -276,64 +272,60 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase):
             "r_foot": r_foot,
         }
 
-    def prepare_segments(self, episode) -> Optional[List[Segment]]:
-        """One segment per phase run, derived from the same ``_phase_runs``
-        decomposition that ``extract_rewards`` uses.
+        trajectories: List[Trajectory] = []
+        for start, end, is_struggle in runs:
+            T_seg = end - start
+            if T_seg == 0:
+                continue
 
-        Active critics:
-          - Struggle run:  ``r_struggle`` + ``r_height``.
-          - Stability run: all keys except ``r_height`` (which is a
-            struggle-only shaping signal and would be pure noise during
-            stability since height is nearly constant).
-
-        Termination:
-          - Ends at a phase boundary -> ``"terminated"``.  ``extract_rewards``
-            already placed an explicit terminal reward (+1 recovered / -1
-            degraded) on the run's last frame, so bootstrapping would
-            double-count the boundary value.
-          - Final run ended by falling -> ``"terminated"`` (explicit -1).
-          - Final run ended by timeout -> ``"truncated"``, bootstrap V(s_end).
-        """
-        T = episode.num_frames
-        if T == 0:
-            return []
-
-        fell = "imbalance" in episode.termination_proposals
-
-        segments: List[Segment] = []
-        for start, end, is_struggle in self._phase_runs(episode):
+            # Determine last_obs
             if end < T:
-                termination = "terminated"
+                last_obs = np.asarray(obs_all[end], dtype=np.float32)
             else:
-                termination = "terminated" if fell else "truncated"
+                last_obs = np.asarray(fin_obs, dtype=np.float32)
+
+            # Segment-level termination
+            if end < T:
+                seg_term = "terminated"
+            else:
+                seg_term = "terminated" if fell else "truncated"
+
+            # Per-key channel data
+            channels: Dict[str, ChannelData] = {}
 
             if is_struggle:
-                seg_key_weights = {"r_struggle": 1.0, "r_height": 1.0}
-                # r_struggle has an explicit terminal reward → terminated (V=0).
-                # r_height is dense shaping with no terminal → must bootstrap
-                # (truncated), otherwise V=0 at recovery makes the critic
-                # perversely value staying low over standing up.
-                # Exception: if the episode ended by falling, r_height is
-                # also terminated (no future height rewards after fall).
-                if end >= T and fell:
-                    seg_key_termination = {"r_struggle": "terminated", "r_height": "terminated"}
-                else:
-                    seg_key_termination = {"r_struggle": "terminated", "r_height": "truncated"}
+                active_keys = {"r_struggle", "r_height"}
+                # r_struggle: explicit terminal reward → terminated (V=0)
+                # r_height: dense shaping, no terminal → truncated (bootstrap)
+                # Exception: if fell, r_height also terminated
+                key_term = {
+                    "r_struggle": "terminated",
+                    "r_height": "terminated" if (end >= T and fell) else "truncated",
+                }
             else:
-                seg_key_weights = {"r_struggle": 1.0, "r_cross": 1.0, "r_joint": 1.0,
-                                   "r_vel": 1.0, "r_tilt": 1.0, "r_foot": 1.0}
-                seg_key_termination = None
+                active_keys = {"r_struggle", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot"}
+                key_term = {k: seg_term for k in active_keys}
 
-            segments.append(Segment(
-                start=start,
-                end=end,
-                weight=1.0,
-                key_weights=seg_key_weights,
-                termination=termination,
-                key_termination=seg_key_termination,
+            for key in self.reward_keys:
+                if key not in active_keys:
+                    continue
+                channels[key] = ChannelData(
+                    reward=all_rewards[key][start:end].astype(np.float32),
+                    is_terminated=(key_term.get(key, seg_term) == "terminated"),
+                    actor_weight=self._current_actor_weight(key),
+                )
+
+            trajectories.append(Trajectory(
+                obs=np.asarray(obs_all[start:end], dtype=np.float32),
+                actions=np.asarray(acts_all[start:end], dtype=np.float32),
+                last_obs=last_obs,
+                channels=channels,
+                importance=1.0,
+                mode=None,
+                log_prob=None,
             ))
 
-        return segments
+        return trajectories
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         fell = "imbalance" in episode.termination_proposals
