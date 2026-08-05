@@ -15,6 +15,7 @@ from baseline.common.algos import compute_gae
 from baseline.common.rollout import Episode
 
 from .experiment import CommonParams, Experiment, Segment, TrainablePolicy
+from .trajectory import Trajectory
 
 
 # ---------------------------------------------------------------------------
@@ -119,220 +120,153 @@ def set_seed(seed: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PPO buffer – flat numpy arrays assembled from a list of Episodes
+# PPO buffer – flat numpy arrays assembled from a list of Trajectories
 # ---------------------------------------------------------------------------
 
 class PPOBuffer:
-    """PPO buffer built from a list of :class:`Episode` objects.
+    """PPO buffer built from a list of :class:`Trajectory` objects.
 
-    Generic over reward keys — delegates reward extraction and episode
-    metrics entirely to ``experiment``.
+    V2 design: the buffer consumes pre-sliced trajectories produced by
+    ``resolve_trajectories`` (v2 ``build_trajectories`` or v1
+    ``legacy_to_trajectories``).  Per-channel rewards, termination, and
+    active flags come directly from ``Trajectory.channels``.
+
+    ``episode_metrics`` and ``episode_lengths`` are optional per-episode
+    metadata for logging only — they do not affect GAE or training.
     """
 
     def __init__(
         self,
-        episodes: Sequence[Episode],
-        stage_weights: Tuple[float, ...],
+        trajectories: List[Trajectory],
         actor: TrainablePolicy,
         device: torch.device,
-        experiment: Experiment,
-        common_params: CommonParams,
+        reward_keys: Tuple[str, ...],
+        episode_metrics: Optional[List[Dict[str, float]]] = None,
+        episode_lengths: Optional[List[int]] = None,
     ):
-        reward_keys = common_params.reward_keys
+        reward_keys = tuple(reward_keys)
         self.reward_data: Dict[str, List[np.ndarray]] = {
             k: [] for k in reward_keys
         }
-        # Per-key per-segment active mask: True if the key has real data
-        # for that segment, False if the segment is inactive for that key
-        # (used to skip GAE / critic training / advantage normalization).
         self.key_seg_active: Dict[str, List[bool]] = {
             k: [] for k in reward_keys
         }
-        # Per-key per-segment terminated flag: True if the key's segment
-        # ends with termination (last_value=0), False if truncated (bootstrap).
-        # When Segment.key_termination is None, all keys share the segment's
-        # termination flag (backward compatible).
         self.key_seg_terminated: Dict[str, List[bool]] = {
             k: [] for k in reward_keys
         }
-        self.episode_metrics: List[Dict[str, float]] = []
-        self.episode_lengths: List[int] = []  # original episode lengths (for logging)
+        self.episode_metrics: List[Dict[str, float]] = episode_metrics or []
+        self.episode_lengths: List[int] = episode_lengths or []
 
+        if not trajectories:
+            print(
+                f"[DEBUG] PPOBuffer: no trajectories provided",
+                flush=True,
+            )
+            self.obs = np.zeros((0,), np.float32)
+            self.actions = np.zeros((0,), np.float32)
+            self.log_probs = np.zeros(0, dtype=np.float32)
+            self.sample_weights = np.zeros(0, dtype=np.float32)
+            self.frame_modes: Optional[np.ndarray] = None
+            self.final_obs: List[np.ndarray] = []
+            self.ep_lengths: List[int] = []
+            return
+
+        # --- Batched evaluate_actions on all trajectory frames ---
+        all_obs = np.concatenate(
+            [t.obs for t in trajectories], axis=0,
+        ).astype(np.float32)
+        all_acts = np.concatenate(
+            [t.actions for t in trajectories], axis=0,
+        ).astype(np.float32)
+        all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
+        all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
+
+        any_mode = any(t.mode is not None for t in trajectories)
+        kwargs: Dict[str, Any] = {}
+        if any_mode:
+            all_modes = np.concatenate([
+                np.full(len(t.obs), float(t.mode) if t.mode is not None else 1.0,
+                        dtype=np.float32)
+                for t in trajectories
+            ])
+            kwargs['frame_modes'] = torch.as_tensor(
+                all_modes, dtype=torch.float32, device=device,
+            )
+
+        with torch.no_grad():
+            all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t, **kwargs)
+        all_lp_np = all_lp.cpu().numpy().astype(np.float32)
+
+        # --- Slice into per-trajectory segments ---
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
         fin_list: List[np.ndarray] = []
         weight_list: List[np.ndarray] = []
-        terms: List[bool] = []
         ep_lens: List[int] = []
         modes_list: List[np.ndarray] = []
 
-        # Phase 1: Collect valid episodes and pre-compute per-episode data
-        # (segments, rewards) without any GPU calls.
-        valid_eps: List[Tuple[np.ndarray, np.ndarray, np.ndarray, int, list, Dict[str, np.ndarray], Episode, np.ndarray, bool]] = []
-        for ep in episodes:
-            ep_target = str(ep.episode_options.get("agent_id", "robot_a"))
-            obs = ep.observations.get(ep_target)
-            acts = ep.actions.get(ep_target)
-            fin = ep.final_observation.get(ep_target)
-            if obs is None or acts is None or fin is None:
-                print(
-                    f"[DEBUG] Skipping episode {len(obs_list)+1}: "
-                    f"obs={obs is not None} acts={acts is not None} fin={fin is not None}",
-                    flush=True,
-                )
-                continue
-            T_full = int(acts.shape[0])
-            if T_full == 0:
-                continue
-
-            # Episode-level data: metrics and original length (per-episode).
-            self.episode_metrics.append(
-                experiment.compute_episode_metrics(ep)
-            )
-            self.episode_lengths.append(T_full)
-
-            # Resolve segments: try v2 API (prepare_segments) first,
-            # fall back to v1 (prepare_training_segments) + convert to Segment.
-            segs = _resolve_segments(experiment, ep)
-            if not segs:
-                continue  # entire episode excluded from training
-
-            # Extract rewards once for the full episode, then slice per segment.
-            rewards_full = experiment.extract_rewards(ep)
-
-            # Build per-frame mode array from Segment.mode.
-            ep_has_mode = any(seg.mode is not None for seg in segs)
-            ep_modes = np.ones(T_full, dtype=np.float32)
-            for seg in segs:
-                if seg.mode is not None:
-                    ep_modes[seg.start:seg.end] = float(seg.mode)
-            valid_eps.append((obs, acts, fin, T_full, segs, rewards_full, ep, ep_modes, ep_has_mode))
-
-        # Phase 2: Batched evaluate_actions — one GPU call for all episodes
-        # instead of 2048 per-episode calls.
-        if valid_eps:
-            all_obs = np.concatenate([e[0] for e in valid_eps], axis=0).astype(np.float32)
-            all_acts = np.concatenate([e[1] for e in valid_eps], axis=0).astype(np.float32)
-            all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
-            all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
-            any_has_mode = any(e[8] for e in valid_eps)
-            kwargs = {}
-            if any_has_mode:
-                all_modes = np.concatenate([e[7] for e in valid_eps], axis=0).astype(np.float32)
-                kwargs['frame_modes'] = torch.as_tensor(all_modes, dtype=torch.float32, device=device)
-            with torch.no_grad():
-                all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t, **kwargs)
-            all_lp_np = all_lp.cpu().numpy().astype(np.float32)
-        else:
-            all_lp_np = np.zeros(0, dtype=np.float32)
-
-        # Phase 3: Slice into segments using pre-computed log probs.
         offset = 0
-        for obs, acts, fin, T_full, segs, rewards_full, ep, ep_modes, ep_has_mode in valid_eps:
-            lp_full_np = all_lp_np[offset:offset + T_full]
-            offset += T_full
+        for traj in trajectories:
+            T_seg = len(traj.obs)
+            if T_seg == 0:
+                continue
 
-            for seg in segs:
-                start, end = seg.start, seg.end
-                weight = seg.weight
-                T_seg = end - start
-                if T_seg == 0:
-                    continue
+            obs_seg = np.asarray(traj.obs, dtype=np.float32)
+            acts_seg = np.asarray(traj.actions, dtype=np.float32)
+            lp_seg = all_lp_np[offset:offset + T_seg]
+            offset += T_seg
+            mode_seg = np.full(
+                T_seg, float(traj.mode) if traj.mode is not None else 1.0,
+                dtype=np.float32,
+            )
 
-                obs_seg = np.asarray(obs[start:end], dtype=np.float32)
-                acts_seg = np.asarray(acts[start:end], dtype=np.float32)
-                lp_seg = lp_full_np[start:end]
-                mode_seg = ep_modes[start:end]
-
-                # Termination handling for segment boundary.
-                # seg.termination overrides default behavior:
-                #   None / "auto": terminated if mid-episode, else episode's term
-                #   "terminated": always last_value=0, no bootstrap
-                #   "truncated": bootstrap from V(s_end)
-                term_mode = seg.termination
-                if term_mode == "truncated":
-                    if end < T_full:
-                        fin_seg = np.asarray(obs[end], dtype=np.float32)
-                    else:
-                        fin_seg = np.asarray(fin, dtype=np.float32)
-                    term_seg = False
-                elif term_mode == "terminated":
-                    if end < T_full:
-                        fin_seg = np.asarray(obs[end], dtype=np.float32)
-                    else:
-                        fin_seg = np.asarray(fin, dtype=np.float32)
-                    term_seg = True
-                else:  # None / "auto" — original behavior
-                    if end < T_full:
-                        fin_seg = np.asarray(obs[end], dtype=np.float32)
-                        term_seg = True
-                    else:
-                        fin_seg = np.asarray(fin, dtype=np.float32)
-                        term_seg = bool(ep.is_terminated)
-
-                # Per-key critic control: determine which keys are active.
-                if seg.key_weights is not None:
-                    active_keys = set(
-                        k for k, w in seg.key_weights.items() if w > 0.0
+            # Per-key data from trajectory channels
+            for key in reward_keys:
+                if key in traj.channels:
+                    cd = traj.channels[key]
+                    self.key_seg_active[key].append(True)
+                    self.key_seg_terminated[key].append(cd.is_terminated)
+                    self.reward_data[key].append(
+                        np.asarray(cd.reward, dtype=np.float32)
                     )
                 else:
-                    active_keys = set(reward_keys)
+                    self.key_seg_active[key].append(False)
+                    self.key_seg_terminated[key].append(True)
+                    self.reward_data[key].append(
+                        np.zeros(T_seg, dtype=np.float32)
+                    )
 
-                for key in reward_keys:
-                    is_active = key in active_keys
-                    self.key_seg_active[key].append(is_active)
-                    # Per-key termination: override segment-level if key_termination is set
-                    key_term = term_seg
-                    if seg.key_termination and key in seg.key_termination:
-                        kt = seg.key_termination[key]
-                        if kt == "truncated":
-                            key_term = False
-                        elif kt == "terminated":
-                            key_term = True
-                    self.key_seg_terminated[key].append(key_term)
-                    if is_active:
-                        r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
-                        self.reward_data[key].append(
-                            np.asarray(r_full[start:end], dtype=np.float32)
-                        )
-                    else:
-                        # Placeholder: zeros, will be masked in GAE/training.
-                        self.reward_data[key].append(
-                            np.zeros(T_seg, dtype=np.float32)
-                        )
-
-                obs_list.append(obs_seg)
-                act_list.append(acts_seg)
-                lp_list.append(lp_seg)
-                fin_list.append(fin_seg)
-                weight_list.append(np.full(T_seg, weight, dtype=np.float32))
-                terms.append(term_seg)
-                ep_lens.append(T_seg)
-                modes_list.append(mode_seg)
+            obs_list.append(obs_seg)
+            act_list.append(acts_seg)
+            lp_list.append(lp_seg)
+            fin_list.append(np.asarray(traj.last_obs, dtype=np.float32))
+            weight_list.append(
+                np.full(T_seg, traj.importance, dtype=np.float32)
+            )
+            ep_lens.append(T_seg)
+            modes_list.append(mode_seg)
 
         if not ep_lens:
             print(
-                f"[DEBUG] PPOBuffer: no valid episodes from {len(episodes)} input episodes",
+                f"[DEBUG] PPOBuffer: no valid frames from {len(trajectories)} trajectories",
                 flush=True,
             )
             self.obs = np.zeros((0,), np.float32)
             self.actions = np.zeros((0,), np.float32)
-            self.log_probs = np.zeros((0,), np.float32)
-            self.sample_weights = np.zeros((0,), np.float32)
-            self.frame_modes: Optional[np.ndarray] = None
-            self.final_obs: List[np.ndarray] = []
-            self.is_terminated: List[bool] = []
-            self.ep_lengths: List[int] = []
+            self.log_probs = np.zeros(0, dtype=np.float32)
+            self.sample_weights = np.zeros(0, dtype=np.float32)
+            self.frame_modes = None
+            self.final_obs = []
+            self.ep_lengths = []
             return
 
         self.obs = np.concatenate(obs_list, axis=0)
         self.actions = np.concatenate(act_list, axis=0)
         self.log_probs = np.concatenate(lp_list, axis=0)
         self.sample_weights = np.concatenate(weight_list, axis=0)
-        self.frame_modes = np.concatenate(modes_list, axis=0) if modes_list and any(e[8] for e in valid_eps) else None
+        self.frame_modes = np.concatenate(modes_list, axis=0) if any_mode else None
         self.final_obs = fin_list
-        self.is_terminated = terms
         self.ep_lengths = ep_lens
 
     def __len__(self) -> int:

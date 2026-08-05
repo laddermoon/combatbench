@@ -228,7 +228,6 @@ def capture_buffer_state(buf: PPOBuffer, reward_keys: Tuple[str, ...]) -> Dict[s
     state: Dict[str, Any] = {
         "ep_lengths": list(buf.ep_lengths),
         "episode_lengths": list(buf.episode_lengths),
-        "is_terminated": list(buf.is_terminated),
         "sample_weights": buf.sample_weights.tolist() if buf.sample_weights.size else [],
         "frame_modes": buf.frame_modes.tolist() if buf.frame_modes is not None else None,
         "obs_shape": list(buf.obs.shape),
@@ -431,13 +430,26 @@ def _build_buffer_and_capture(
     cp = experiment.common_params()
     device = torch.device("cpu")
 
+    # Convert episodes to trajectories via legacy converter
+    from baseline.framework.trajectory import legacy_to_trajectories
+    all_trajs = []
+    ep_metrics = []
+    ep_lengths = []
+    for ep in episodes:
+        ep_metrics.append(experiment.compute_episode_metrics(ep))
+        ep_lengths.append(ep.num_frames)
+        trajs = legacy_to_trajectories(
+            experiment, ep, REWARD_KEYS, GAMMAS, stage_weights,
+        )
+        all_trajs.extend(trajs)
+
     buf = PPOBuffer(
-        episodes=episodes,
-        stage_weights=stage_weights,
+        trajectories=all_trajs,
         actor=MockActor(),
         device=device,
-        experiment=experiment,
-        common_params=cp,
+        reward_keys=REWARD_KEYS,
+        episode_metrics=ep_metrics,
+        episode_lengths=ep_lengths,
     )
 
     # Build mock critics
@@ -589,18 +601,15 @@ def _build_s10() -> Dict[str, Any]:
 SCENARIO_BUILDERS: List[Tuple[str, callable, callable]] = [
     ("s1_single_terminated", _build_s1, lambda r: (
         r["buffer"]["ep_lengths"] == [10] and
-        r["buffer"]["is_terminated"] == [True] and
         r["gae"]["bootstrap_indices"] == [] and
         all(all(v == 0.0 for v in r["gae"][f"last_values__{k}"]) for k in REWARD_KEYS)
     )),
     ("s2_single_truncated", _build_s2, lambda r: (
-        r["buffer"]["is_terminated"] == [False] and
         r["gae"]["bootstrap_indices"] == [0] and
         all(r["gae"][f"last_values__{k}"][0] != 0.0 for k in REWARD_KEYS)
     )),
     ("s3_multi_segment_boundary", _build_s3, lambda r: (
-        r["buffer"]["ep_lengths"] == [5, 5] and
-        r["buffer"]["is_terminated"] == [True, True]
+        r["buffer"]["ep_lengths"] == [5, 5]
     )),
     ("s4_key_weights", _build_s4, lambda r: (
         r["buffer"]["key_seg_active__r_a"] == [True, False] and
