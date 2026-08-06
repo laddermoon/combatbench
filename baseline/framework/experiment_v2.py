@@ -510,20 +510,35 @@ class ExperimentV2(ABC):
     # State Persistence (for checkpoint resume)
     # ==================================================================
 
-    def scheduler_state(self) -> dict:
-        """Serialize mutable scheduler state for checkpointing."""
+    def state(self) -> dict:
+        """Serialize all internal state for checkpointing.
+
+        The framework calls this when saving a checkpoint and passes
+        the returned dict to ``load_state()`` on resume.
+
+        Suggested keys (experiment decides what's relevant):
+
+        - ``best_eval``: Best eval result so far (for ``on_eval`` to
+          compare against and determine ``is_new_best``).
+        - ``curriculum``: Current curriculum phase, stage, or any
+          scheduling state that affects ``build_trajectories`` behavior
+          (e.g. actor_weight schedule, phase transitions).
+        - ``update_count``: Number of updates completed (if the
+          experiment tracks this internally).
+        - Any other mutable state that influences ``build_jobs``,
+          ``build_trajectories``, or ``on_eval``.
+
+        Returns:
+            JSON-serializable dict.  Empty dict if no state to persist.
+        """
         return {}
 
-    def load_scheduler_state(self, state: dict) -> None:
-        """Restore scheduler state from a checkpoint."""
-        pass
+    def load_state(self, state: dict) -> None:
+        """Restore internal state from a checkpoint.
 
-    def training_state(self) -> dict:
-        """Serialize training hyperparameters for checkpointing."""
-        return {}
-
-    def load_training_state(self, state: dict) -> None:
-        """Restore training hyperparameters from a checkpoint."""
+        Args:
+            state: The dict previously returned by ``state()``.
+        """
         pass
 
     # ==================================================================
