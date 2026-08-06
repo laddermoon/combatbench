@@ -239,15 +239,12 @@ class CommonParams:
 class PPOParams:
     """PPO hyperparameters.
 
-    ``gae_lambda`` here is a global default.  Per-channel override is
-    via ``RewardChannel.gae_lambda``.  If the experiment's
-    ``reward_channels()`` all use the same gae_lambda, it should match
-    this value for consistency.
+    Per-channel ``gae_lambda`` is declared in ``RewardChannel`` via
+    ``reward_channels()`` — it is NOT a global parameter here.
     """
 
     log_std_min: float
     log_std_max: float
-    gae_lambda: float
     clip_eps: float
     entropy_coef: float
     target_kl: float
