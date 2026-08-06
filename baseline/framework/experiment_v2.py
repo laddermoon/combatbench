@@ -126,11 +126,11 @@ What the Experiment controls vs what the framework handles
 | Job construction   | build_jobs                          | ParallelRollouter.collect     |
 | Episode→Trajectory | build_trajectories (full control)   | Calls it per episode          |
 | GAE computation    | reward_channels (γ, λ config)       | Executes compute_gae          |
-| Adv normalization  | normalize_advantages (optional)     | Default: z-score on active    |
-| Adv combination    | combine_advantages (optional)       | Default: weighted by aw*conf  |
+| Adv normalization  | —                                   | Default: z-score on active    |
+| Adv combination    | —                                   | Default: weighted by aw*conf  |
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
-| Eval & scheduling  | compute_episode_metrics, compare_eval | Runs eval rollouts          |
+| Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
 | Checkpointing      | scheduler_state/training_state      | Save/load model weights       |
 
 Removed from v1
@@ -151,6 +151,13 @@ Removed from v1
 - ``stage_weights`` parameter in ``ppo_update``: Replaced by per-frame
   ``actor_weight`` from ``ChannelData``.
 - ``_current_actor_weights`` hack: Experiment owns weight scheduling.
+- ``compute_episode_metrics()`` / ``compare_eval()`` / ``scheduler_info()``:
+  Merged into ``on_eval()`` — the experiment receives raw episodes and
+  handles metrics, best-of-run judgment, and state updates internally.
+- ``normalize_advantages()`` / ``combine_advantages()`` /
+  ``normalize_sample_weights()``: Removed — framework defaults are not
+  customizable.  The experiment controls the pipeline through
+  ``reward_channels()`` and ``ChannelData.actor_weight``.
 """
 
 from __future__ import annotations
@@ -458,37 +465,45 @@ class ExperimentV2(ABC):
     # (per-channel influence on the actor).
 
     # ==================================================================
-    # Evaluation & Scheduling
+    # Evaluation
     # ==================================================================
 
     @abstractmethod
-    def compute_episode_metrics(self, episode: "Episode") -> Dict[str, float]:
-        """Compute aggregate metrics for one episode.
+    def on_eval(
+        self, episodes: List["Episode"], update: int,
+    ) -> Dict[str, Any]:
+        """Process evaluation results and update internal state.
 
-        Used for evaluation summaries and logging.  The returned dict
-        is aggregated (mean) across eval episodes by the framework.
+        Called once per eval cycle with all raw eval episodes.  The
+        experiment is responsible for:
 
-        Common metrics: ``survived``, ``mean_length``, ``struggle_ratio``,
-        ``recoveries``, etc.
+        - Computing per-episode and aggregate metrics (replaces v1's
+          ``compute_episode_metrics`` + framework aggregation).
+        - Updating internal curriculum/scheduler state based on eval
+          results (replaces v1's ``next_weights``).
+        - Determining whether this eval is a new best (replaces v1's
+          ``compare_eval``).
+        - Returning logging info (replaces v1's ``scheduler_info``).
+
+        The framework does NOT interpret any metrics — it only uses
+        ``is_new_best`` to decide whether to export the policy, and
+        passes ``info`` through to the logging line.
+
+        Args:
+            episodes: Raw eval episodes from rollout.
+            update: Current update index (0-based).
+
+        Returns:
+            Dict with at least::
+
+                {
+                    "is_new_best": bool,   # export policy if True
+                    "info": Dict[str, Any],  # free-form logging info
+                }
+
+            The ``info`` dict is printed by the framework as-is (e.g.
+            ``{"phase": "stability", "mean_length": 187.5, ...}``).
         """
-        ...
-
-    @abstractmethod
-    def compare_eval(
-        self,
-        esum: Dict[str, float],
-        best_esum: Dict[str, float],
-    ) -> bool:
-        """Return True if ``esum`` is better than ``best_esum``.
-
-        Used for best-of-run policy export.  If ``best_esum`` is empty
-        (first eval), return True.
-        """
-        ...
-
-    @abstractmethod
-    def scheduler_info(self) -> Dict[str, Any]:
-        """Return extra info dict for logging (phase, stage, etc.)."""
         ...
 
     # ==================================================================
