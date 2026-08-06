@@ -18,7 +18,7 @@ from .base import CombatExperimentV2Base
 
 class BasicBalanceV2(CombatExperimentV2Base):
 
-    name = "basic_balance_v2"
+    name = "v2_basic_balance_v2"
 
     # --- Reward channels ---
     _channel_names = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
