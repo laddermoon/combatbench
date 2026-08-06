@@ -159,6 +159,7 @@ class EpisodeRunner:
         runtime: EnvRuntime,
         policy_a: Policy,
         policy_b: Policy,
+        post_termination_action: str = "policy",
     ) -> None:
         self.runtime = runtime
         if not isinstance(policy_a, Policy):
@@ -173,6 +174,12 @@ class EpisodeRunner:
             )
         self.policy_a = policy_a
         self.policy_b = policy_b
+        if post_termination_action not in ("policy", "hold"):
+            raise ValueError(
+                f"post_termination_action must be 'policy' or 'hold'; "
+                f"got {post_termination_action!r}"
+            )
+        self.post_termination_action = post_termination_action
 
     # ------------------------------------------------------------------
     # Public API
@@ -209,29 +216,34 @@ class EpisodeRunner:
         episode_seeds = self._derive_seeds(base_seed)
         self._reset_all(episode_seeds, options=options)
 
-        # Initial observation pulled BEFORE the first step so the policy
-        # sees ``ctx`` AS-OF reset (matches standard RL conventions). We do
-        # NOT store it — the runner has no trajectory buffer; recorders
-        # snapshot whatever they need on their own ``on_pre_episode`` hook.
         obs_a, obs_b = self.runtime.get_observation()
+        a_active = True
+        b_active = True
+        last_action_a: Optional[np.ndarray] = None
+        last_action_b: Optional[np.ndarray] = None
 
-        while self.runtime.is_episode_active:
-            # ``want_extra=True`` asks the policy for its side-channel
-            # payload (log_prob / value / sampling info / …). The runner
-            # itself never inspects ``policy_extras`` — it only forwards
-            # the per-agent bundle to ``runtime.step`` so that attached
-            # recorders can persist it alongside the action snapshot.
-            # Policies that have nothing to report return ``extra=None``;
-            # we forward ``None`` in that case to keep recorder schemas
-            # tidy (empty-dict vs missing is a meaningless distinction).
-            action_a, extra_a = self.policy_a.act(
-                obs_a,
-                want_extra=want_extras,
-            )
-            action_b, extra_b = self.policy_b.act(
-                obs_b,
-                want_extra=want_extras,
-            )
+        while not self.runtime.is_episode_over():
+            if a_active or self.post_termination_action == "policy":
+                action_a, extra_a = self.policy_a.act(
+                    obs_a,
+                    want_extra=want_extras,
+                )
+                last_action_a = action_a
+            else:
+                if last_action_a is None:
+                    raise RuntimeError("hold strategy requires at least one prior action")
+                action_a, extra_a = last_action_a, None
+
+            if b_active or self.post_termination_action == "policy":
+                action_b, extra_b = self.policy_b.act(
+                    obs_b,
+                    want_extra=want_extras,
+                )
+                last_action_b = action_b
+            else:
+                if last_action_b is None:
+                    raise RuntimeError("hold strategy requires at least one prior action")
+                action_b, extra_b = last_action_b, None
 
             self.runtime.step(
                 action_a,
@@ -240,12 +252,8 @@ class EpisodeRunner:
                 action_b_extra=extra_b if extra_b else None,
             )
 
-            # Termination check uses runtime flags; recorders' post-step
-            # hooks have already fired inside ``runtime.step`` so they see
-            # the just-applied state.
-            terminated, truncated = self.runtime.get_termination_flags()
-            if terminated or truncated:
-                break
+            a_active = a_active and self.runtime.is_agent_active("robot_a")
+            b_active = b_active and self.runtime.is_agent_active("robot_b")
 
             obs_a, obs_b = self.runtime.get_observation()
 

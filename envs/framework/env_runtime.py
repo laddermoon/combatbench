@@ -5,7 +5,7 @@ import numpy as np
 
 from .backend import BaseSimulator
 from .common_plugins import TimeoutPlugin
-from .context import ReadOnlySimContext, SimContext, TerminationReason
+from .context import ReadOnlySimContext, SimContext
 from .plugin import BasePlugin
 from .recorder import PostActionRecorder
 from .observer_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
@@ -142,7 +142,7 @@ class _RuntimeCore:
         self._is_episode_active = True
         self.simulator.reset(seed=seed, options=options)
         self.plugin_manager.invoke("on_pre_episode", self.ctx, allow_mutator=True)
-        if self.ctx.is_terminated:
+        if self.ctx.all_agents_terminated:
             self._handle_termination()
 
     def step(self, action: Dict[str, Any]) -> None:
@@ -173,7 +173,7 @@ class _RuntimeCore:
         self.simulator.close()
 
     def _check_and_handle_termination(self) -> bool:
-        if self.ctx.is_terminated:
+        if self.ctx.all_agents_terminated:
             self._handle_termination()
             return True
         return False
@@ -394,19 +394,22 @@ class EnvRuntime:
         obs = self._core.simulator.get_observation()
         return obs["robot_a"], obs["robot_b"]
 
-    def get_termination_flags(self) -> Tuple[bool, bool]:
-        """Return ``(terminated, truncated)`` following Gymnasium semantics.
+    def is_episode_over(self) -> bool:
+        """True when all agents have terminated."""
+        return self._core.ctx.all_agents_terminated
 
-        Both flags can be True simultaneously when the same step hits a
-        non-timeout reason (e.g. KO) AND a timeout. Only ``TIMEOUT`` maps to
-        ``truncated``; all other reasons map to ``terminated``.
-        """
-        proposals = self._core.ctx.termination_proposals
-        if not proposals:
-            return False, False
-        truncated = TerminationReason.TIMEOUT in proposals
-        terminated = any(reason != TerminationReason.TIMEOUT for reason in proposals)
-        return terminated, truncated
+    def is_agent_active(self, agent_id: str) -> bool:
+        """True if ``agent_id`` has not yet terminated."""
+        return not self._core.ctx.agent_terminated.get(agent_id, False)
+
+    def get_agent_termination(self) -> Dict[str, Optional[str]]:
+        """Return first termination reason per agent, or None if not terminated."""
+        ctx = self._core.ctx
+        result: Dict[str, Optional[str]] = {}
+        for aid in self.AGENT_IDS:
+            proposals = ctx.agent_termination_proposals.get(aid, [])
+            result[aid] = proposals[0] if proposals else None
+        return result
 
     def render(self) -> Optional[np.ndarray]:
         return self._core.simulator.get_broadcastview_image()

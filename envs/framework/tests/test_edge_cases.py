@@ -79,10 +79,10 @@ class TestMultipleObserversSameName:
 class TestTerminationFlags:
     """测试终止标志解析"""
 
-    def test_timeout_returns_truncated_true(self, mock_simulator):
+    def test_timeout_ends_episode(self, mock_simulator):
         """
-        场景：只有 TIMEOUT 终止原因
-        预期：terminated=False, truncated=True
+        场景：只有 TIMEOUT 终止原因（issued to all agents）
+        预期：is_episode_over() returns True
         """
         from envs.framework.common_plugins import TimeoutPlugin
 
@@ -94,20 +94,13 @@ class TestTerminationFlags:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
 
-        terminated, truncated = runtime.get_termination_flags()
-        assert terminated is False
-        assert truncated is True
+        assert runtime.is_episode_over() is True
 
-    def test_ko_returns_terminated_true(self, mock_simulator):
+    def test_ko_ends_episode(self, mock_simulator):
         """
-        场景：只有 KO 终止原因
-        预期：terminated=True, truncated=False
+        场景：只有 KO 终止原因（issued to all agents）
+        预期：is_episode_over() returns True
         """
-        class KOPlugin:
-            def on_post_action_step(self, ctx):
-                ctx.request_termination(TerminationReason.KO)
-
-        # 由于不能直接继承 BasePlugin，用简单方式
         from envs.framework.plugin import BasePlugin
 
         class RealKOPlugin(BasePlugin):
@@ -122,17 +115,12 @@ class TestTerminationFlags:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
 
-        terminated, truncated = runtime.get_termination_flags()
-        assert terminated is True
-        assert truncated is False
+        assert runtime.is_episode_over() is True
 
-    def test_timeout_with_ko_returns_both_flags_true(self, mock_simulator):
+    def test_timeout_with_ko_ends_episode(self, mock_simulator):
         """
-        场景：TIMEOUT 和 KO 同时存在
-        预期：terminated=True AND truncated=True（Gymnasium 语义，两者可共存）
-
-        Note: 以前的实现在同步出现 KO+TIMEOUT 时会丢失 truncated 信号，导致
-        按时限截断的统计不准。C3 修复后两个 flag 独立。
+        场景：TIMEOUT 和 KO 同时存在（both issued to all agents）
+        预期：is_episode_over() returns True
         """
         from envs.framework.plugin import BasePlugin
 
@@ -149,9 +137,7 @@ class TestTerminationFlags:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
 
-        terminated, truncated = runtime.get_termination_flags()
-        assert terminated is True
-        assert truncated is True
+        assert runtime.is_episode_over() is True
 
 
 class TestRuntimeClose:

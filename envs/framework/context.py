@@ -3,6 +3,8 @@ from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
 
+AGENT_IDS: Tuple[str, ...] = ("robot_a", "robot_b")
+
 
 class TerminationReason:
     """定义常见的终止原因"""
@@ -194,7 +196,10 @@ class SimContext:
         # 派生黑板
         self.metrics: Dict[str, Any] = {}
         self.events: List[Any] = []
-        self.termination_proposals: List[str] = []
+        self.agent_termination_proposals: Dict[str, List[str]] = {
+            aid: [] for aid in AGENT_IDS
+        }
+        self.agent_terminated: Dict[str, bool] = {aid: False for aid in AGENT_IDS}
 
         # 读视图：始终可用，但仅暴露 IDataAccessor 许可的方法。
         self.accessor: IDataAccessor = _AccessorView(simulator)
@@ -203,26 +208,55 @@ class SimContext:
         self._mutator_view: _MutatorView = _MutatorView(simulator)
         self.mutator: Optional[IDataMutator] = None
 
-    def request_termination(self, reason: str = TerminationReason.CUSTOM) -> None:
-        """提出终止请求"""
-        self.termination_proposals.append(reason)
+    def request_termination(
+        self,
+        reason: str = TerminationReason.CUSTOM,
+        agent_id: Optional[str] = None,
+    ) -> None:
+        """提出终止请求。
+
+        - ``agent_id=None`` (default): issues ``reason`` to ALL agents
+          (robot_a AND robot_b). This is how timeout, out-of-bounds, etc.
+          work — they terminate everyone at once.
+        - ``agent_id="robot_a"``: only terminates robot_a. The episode
+          continues for robot_b until it also terminates or a global
+          termination is issued.
+        """
+        if agent_id is None:
+            for aid in AGENT_IDS:
+                self.agent_termination_proposals[aid].append(reason)
+                self.agent_terminated[aid] = True
+        else:
+            if agent_id not in self.agent_termination_proposals:
+                raise ValueError(
+                    f"Unknown agent_id {agent_id!r}; expected one of {AGENT_IDS}"
+                )
+            self.agent_termination_proposals[agent_id].append(reason)
+            self.agent_terminated[agent_id] = True
+
+    def is_agent_terminated(self, agent_id: str) -> bool:
+        """True if ``agent_id`` has any termination proposal."""
+        return self.agent_terminated.get(agent_id, False)
+
+    @property
+    def all_agents_terminated(self) -> bool:
+        """True if all agents have terminated. This is the episode-end condition."""
+        return all(self.agent_terminated.values())
+
+    # --- Deprecated aliases (backward compat) ---
+
+    @property
+    def termination_proposals(self) -> List[str]:
+        """Deprecated: union of all agents' termination proposals."""
+        result: List[str] = []
+        for aid in AGENT_IDS:
+            result.extend(self.agent_termination_proposals[aid])
+        return result
 
     @property
     def is_terminated(self) -> bool:
-        """判断是否已经收到终止请求（控制流语义，非 MDP 终止语义）。
-
-        ⚠️  WARNING: This returns True for ANY termination proposal,
-        including ``TIMEOUT`` (truncation).  This is correct for
-        *control-flow* ("should the episode loop stop?"), but NOT
-        for *RL semantics* ("is this a true MDP terminal state?").
-
-        For RL training decisions (bootstrap, done flags, etc.) use
-        ``EnvRuntime.get_termination_flags()`` or filter manually:
-            terminated = any(r != TerminationReason.TIMEOUT
-                             for r in ctx.termination_proposals)
-        See ``EpisodeRecorder.on_post_episode`` for the correct pattern.
-        """
-        return len(self.termination_proposals) > 0
+        """Deprecated: alias for ``all_agents_terminated``."""
+        return self.all_agents_terminated
 
     def clear_episode_state(self) -> None:
         """在 Episode 开始前清理历史状态。
@@ -235,7 +269,9 @@ class SimContext:
         self.physics_step = 0
         self.metrics.clear()
         self.events.clear()
-        self.termination_proposals.clear()
+        for aid in AGENT_IDS:
+            self.agent_termination_proposals[aid].clear()
+            self.agent_terminated[aid] = False
         self.episode_options.clear()
         self.base_seed = None
 
@@ -254,10 +290,29 @@ class ReadOnlySimContext:
     physics_step: int
     metrics: Mapping[str, Any]
     events: Tuple[Any, ...]
-    termination_proposals: Tuple[str, ...]
-    is_terminated: bool
+    agent_termination_proposals: Mapping[str, Tuple[str, ...]]
+    agent_terminated: Mapping[str, bool]
+    all_agents_terminated: bool
     base_seed: Optional[int] = None
     episode_options: Mapping[str, Any] = MappingProxyType({})
+
+    @property
+    def is_agent_terminated(self) -> Dict[str, bool]:
+        """Read-only mapping of agent_id -> terminated bool."""
+        return dict(self.agent_terminated)
+
+    @property
+    def termination_proposals(self) -> Tuple[str, ...]:
+        """Deprecated: union of all agents' termination proposals."""
+        result: List[str] = []
+        for aid in AGENT_IDS:
+            result.extend(self.agent_termination_proposals.get(aid, ()))
+        return tuple(result)
+
+    @property
+    def is_terminated(self) -> bool:
+        """Deprecated: alias for ``all_agents_terminated``."""
+        return self.all_agents_terminated
 
     @classmethod
     def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":
@@ -267,8 +322,12 @@ class ReadOnlySimContext:
             physics_step=ctx.physics_step,
             metrics=MappingProxyType(dict(ctx.metrics)),
             events=tuple(ctx.events),
-            termination_proposals=tuple(ctx.termination_proposals),
-            is_terminated=ctx.is_terminated,
+            agent_termination_proposals={
+                aid: tuple(ctx.agent_termination_proposals[aid])
+                for aid in AGENT_IDS
+            },
+            agent_terminated=dict(ctx.agent_terminated),
+            all_agents_terminated=ctx.all_agents_terminated,
             base_seed=ctx.base_seed,
             episode_options=MappingProxyType(dict(ctx.episode_options)),
         )
