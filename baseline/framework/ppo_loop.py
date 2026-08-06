@@ -27,7 +27,6 @@ from .ppo_trainer import (
     ppo_update,
     set_seed,
 )
-from .trajectory import resolve_trajectories
 
 # ---------------------------------------------------------------------------
 # Checkpoint
@@ -297,40 +296,18 @@ def train_ppo(
             # 5.4 Build PPO buffer
             t0 = time.perf_counter()
             norm_weights = _norm_weights(weights)
-            # Expose normalized weights to v2 experiments via instance attribute
-            # so build_trajectories can bake them into ChannelData.actor_weight.
-            experiment._current_actor_weights = norm_weights
-            all_trajs: List = []
-            ep_metrics: List[Dict[str, float]] = []
-            ep_lengths_orig: List[int] = []
-            for ep in episodes:
-                ep_metrics.append(experiment.compute_episode_metrics(ep))
-                ep_lengths_orig.append(ep.num_frames)
-                trajs = resolve_trajectories(
-                    experiment, ep, cp.reward_keys, cp.gammas, norm_weights,
-                )
-                all_trajs.extend(trajs)
             buf = PPOBuffer(
-                trajectories=all_trajs,
+                episodes=episodes,
+                stage_weights=norm_weights,
                 actor=actor,
                 device=device,
-                reward_keys=cp.reward_keys,
-                episode_metrics=ep_metrics,
-                episode_lengths=ep_lengths_orig,
+                experiment=experiment,
+                common_params=cp,
             )
             t_buffer = time.perf_counter() - t0
 
             # 5.5 PPO update
             t0 = time.perf_counter()
-            # Build per-channel gae_lambdas: v2 uses reward_channels(), v1 uses pp.gae_lambda
-            if hasattr(experiment, 'reward_channels') and callable(experiment.reward_channels):
-                try:
-                    channels = experiment.reward_channels()
-                    gae_lambdas = {ch.name: ch.gae_lambda for ch in channels}
-                except NotImplementedError:
-                    gae_lambdas = {k: pp.gae_lambda for k in cp.reward_keys}
-            else:
-                gae_lambdas = {k: pp.gae_lambda for k in cp.reward_keys}
             stats = ppo_update(
                 actor=actor,
                 critics=critics,
@@ -339,7 +316,7 @@ def train_ppo(
                 buf=buf,
                 reward_keys=cp.reward_keys,
                 gammas=cp.gammas,
-                gae_lambdas=gae_lambdas,
+                gae_lambda=pp.gae_lambda,
                 clip_eps=pp.clip_eps,
                 entropy_coef=pp.entropy_coef,
                 grad_clip_norm=cp.grad_clip_norm,
@@ -363,23 +340,13 @@ def train_ppo(
                 eval_jobs = experiment.build_eval_jobs(det_bp, eval_seed)
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
                 
-                eval_trajs: List = []
-                eval_ep_metrics: List[Dict[str, float]] = []
-                eval_ep_lengths: List[int] = []
-                for ep in eval_episodes:
-                    eval_ep_metrics.append(experiment.compute_episode_metrics(ep))
-                    eval_ep_lengths.append(ep.num_frames)
-                    trajs = resolve_trajectories(
-                        experiment, ep, cp.reward_keys, cp.gammas, norm_weights,
-                    )
-                    eval_trajs.extend(trajs)
                 eval_buf = PPOBuffer(
-                    trajectories=eval_trajs,
+                    episodes=eval_episodes,
+                    stage_weights=norm_weights,
                     actor=actor,
                     device=device,
-                    reward_keys=cp.reward_keys,
-                    episode_metrics=eval_ep_metrics,
-                    episode_lengths=eval_ep_lengths,
+                    experiment=experiment,
+                    common_params=cp,
                 )
                 if not eval_buf.is_empty():
                     esum = eval_buf.batch_summary()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Set, Tuple, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
 import torch
@@ -107,57 +107,6 @@ class SACParams:
     warmup_steps: int            # collect this many transitions before updating
     updates_per_step: int        # gradient steps per collected transition batch
     reward_scale: float = 1.0   # scale rewards to stabilize Q-function
-
-
-# ---------------------------------------------------------------------------
-# Segment — per-segment training control (v2 API)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Segment:
-    """A training sub-episode segment with per-key critic control.
-
-    Replaces the old ``(start, end, weight)`` / ``(start, end, weight, mode)``
-    tuples returned by ``prepare_training_segments``.  Old tuples are
-    auto-converted by the framework for backward compatibility.
-
-    Attributes:
-        start: Frame index (inclusive) where the segment begins.
-        end: Frame index (exclusive) where the segment ends.
-        weight: Sample importance — scales loss contribution for all
-            critics on this segment.  Default 1.0.
-        mode: Actor mode — passed to ``evaluate_actions`` as
-            ``frame_modes``.  None = no mode (actor computes from obs).
-        key_weights: Per-key critic control.
-            None = all keys active, use experiment's stage_weights
-            (backward compatible).
-            Dict[str, float] = only listed keys are trained on this segment.
-              - weight > 0: train critic, override stage_weight for this segment
-              - weight = 0: skip critic entirely (no data collected, no training)
-              - keys not listed: skip (same as weight=0)
-        termination: Boundary handling for GAE bootstrap at segment end.
-            None = auto: terminated if mid-episode (end < T), else
-            episode's termination (current behavior).
-            "terminated": always last_value=0, no bootstrap.
-            "truncated": bootstrap from V(s_end) — for natural transitions.
-        key_termination: Per-key override of ``termination``.
-            None = all keys use ``termination`` (default, backward compatible).
-            Dict[str, str] = maps specific keys to their own termination
-            mode ("terminated" or "truncated"), overriding the segment-level
-            ``termination`` for those keys.  Keys not in the dict fall back
-            to ``termination``.  Use this when different reward components
-            on the same segment need different bootstrap behavior — e.g.
-            a terminal reward key needs ``"terminated"`` while a dense
-            shaping key on the same segment needs ``"truncated"``.
-    """
-
-    start: int
-    end: int
-    weight: float = 1.0
-    mode: Optional[float] = None
-    key_weights: Optional[Dict[str, float]] = None
-    termination: Optional[str] = None
-    key_termination: Optional[Dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -335,34 +284,6 @@ class Experiment(ABC):
         T = episode.num_frames
         return [(0, T, 1.0)]
 
-    # ------------------------------------------------------------------
-    # Segment v2 API — prepare_segments
-    #
-    # Experiments can override prepare_segments to return List[Segment]
-    # with per-key critic control (key_weights), termination mode, etc.
-    #
-    # Framework resolution order:
-    #   1. If experiment overrides prepare_segments → use it
-    #   2. Else → call prepare_training_segments, convert tuples to Segment
-    #
-    # This keeps full backward compatibility: existing experiments that only
-    # implement prepare_training_segments work unchanged.
-    # ------------------------------------------------------------------
-
-    def prepare_segments(
-        self, episode: "Episode",
-    ) -> Optional[List[Segment]]:
-        """Return Segment list for per-key critic control, or None to fall
-        back to ``prepare_training_segments``.
-
-        Override this method to use the v2 Segment API with ``key_weights``,
-        ``termination`` mode, etc.  Returning None (default) tells the
-        framework to use the old ``prepare_training_segments`` path.
-
-        Return an empty list to skip the episode entirely.
-        """
-        return None
-
     def combine_advantages(
         self,
         advs: Dict[str, np.ndarray],
@@ -417,104 +338,3 @@ class Experiment(ABC):
     def load_training_state(self, state: dict) -> None:
         """Restore training hyperparameters from a checkpoint."""
         pass
-
-
-# ---------------------------------------------------------------------------
-# ExperimentV2 — trajectory-based API (PPO only)
-# ---------------------------------------------------------------------------
-
-class ExperimentV2(Experiment):
-    """Trajectory-based experiment API for PPO.
-
-    Subclass this (in addition to ``CombatExperimentBase``) to use the v2
-    ``Trajectory`` pipeline.  The framework's ``resolve_trajectories``
-    funnel detects ``build_trajectories`` and routes to it directly,
-    bypassing the v1 ``extract_rewards`` / ``prepare_segments`` path.
-
-    V2 experiments must implement:
-
-    - ``build_trajectories(episode) -> List[Trajectory]``:
-        The single source of truth for how an episode becomes training
-        data.  Replaces ``extract_rewards`` + ``prepare_segments``.
-        The experiment decides per-channel ``is_terminated``,
-        ``actor_weight``, and which channels are active on each trajectory.
-
-    - ``reward_channels() -> Tuple[RewardChannel, ...]``:
-        Declares per-channel gamma and gae_lambda.  Replaces the flat
-        ``gammas`` dict and global ``gae_lambda``.
-
-    V2 experiments do NOT need:
-    - ``extract_rewards`` — folded into ``build_trajectories``
-    - ``prepare_segments`` / ``prepare_training_segments`` — folded into
-      ``build_trajectories``
-    - ``combine_advantages`` — advantage combination uses
-      ``ChannelData.actor_weight`` directly
-    - ``initial_weights`` / ``next_weights`` for advantage computation —
-      weights are baked into ``ChannelData.actor_weight`` by the experiment.
-      (These methods are still called by ``ppo_loop`` for curriculum
-      scheduling and logging, but no longer feed into the GAE/adv path.)
-
-    SAC is not yet supported for v2 experiments.
-    """
-
-    # ------------------------------------------------------------------
-    # V2 abstract methods
-    # ------------------------------------------------------------------
-
-    def build_trajectories(self, episode: "Episode") -> List["Trajectory"]:
-        """Convert an episode into training trajectories.
-
-        This is the single source of truth for:
-        - How the episode is sliced into trajectories.
-        - Per-channel rewards, termination, and actor weights.
-        - Which channels are active on each trajectory.
-
-        Returns an empty list to skip the episode entirely.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement build_trajectories(). "
-            "This is required for ExperimentV2."
-        )
-
-    def reward_channels(self) -> Tuple["RewardChannel", ...]:
-        """Declare per-channel configuration (gamma, gae_lambda).
-
-        The order must match ``common_params().reward_keys``.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement reward_channels(). "
-            "This is required for ExperimentV2."
-        )
-
-    # ------------------------------------------------------------------
-    # V1 methods — explicitly disabled to catch accidental use
-    # ------------------------------------------------------------------
-
-    def extract_rewards(self, episode: "Episode") -> Dict[str, np.ndarray]:
-        """Deprecated in v2.  Use ``build_trajectories`` instead."""
-        raise NotImplementedError(
-            f"{type(self).__name__} is an ExperimentV2 — "
-            "extract_rewards is not used.  Implement build_trajectories."
-        )
-
-    def prepare_segments(self, episode: "Episode") -> Optional[List[Segment]]:
-        """Deprecated in v2.  Use ``build_trajectories`` instead."""
-        raise NotImplementedError(
-            f"{type(self).__name__} is an ExperimentV2 — "
-            "prepare_segments is not used.  Implement build_trajectories."
-        )
-
-    def prepare_training_segments(self, episode: "Episode"):
-        """Deprecated in v2.  Use ``build_trajectories`` instead."""
-        raise NotImplementedError(
-            f"{type(self).__name__} is an ExperimentV2 — "
-            "prepare_training_segments is not used.  Implement build_trajectories."
-        )
-
-    def combine_advantages(
-        self,
-        advs: Dict[str, np.ndarray],
-        stage_weights: Tuple[float, ...],
-    ) -> Optional[np.ndarray]:
-        """Deprecated in v2.  Advantage combination uses actor_weight."""
-        return None
