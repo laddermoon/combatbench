@@ -179,9 +179,8 @@ class TrainablePolicy(Protocol):
     The actor must support:
     - ``evaluate_actions``: recompute log_prob and entropy for given
       (obs, actions) pairs.  Used for PPO importance ratio computation.
-    - ``sample_action``: stochastic action sampling.  Used for rollout
-      (via the exported PolicyBlueprint, not directly in training).
-    - ``to_blueprint``: export a rollout-ready policy blueprint.
+    - ``to_blueprint``: export a rollout-ready policy blueprint, with
+      a ``stochastic`` flag to control sampling vs deterministic mode.
     """
 
     def evaluate_actions(
@@ -196,14 +195,17 @@ class TrainablePolicy(Protocol):
         """
         ...
 
-    def sample_action(
-        self, obs: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Reparameterized sample: return (action, log_prob)."""
-        ...
+    def to_blueprint(
+        self, dest_path: str, *, stochastic: bool = False,
+    ) -> PolicyBlueprint:
+        """Export a rollout-ready policy blueprint.
 
-    def to_blueprint(self, dest_path: str) -> PolicyBlueprint:
-        """Export a rollout-ready policy blueprint."""
+        Args:
+            dest_path: Directory path for the exported blueprint.
+            stochastic: If True, the blueprint uses stochastic sampling
+                (for training rollouts).  If False (default), it uses
+                deterministic mean actions (for evaluation).
+        """
         ...
 
 

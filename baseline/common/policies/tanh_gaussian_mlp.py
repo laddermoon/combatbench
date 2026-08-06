@@ -140,13 +140,20 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         """Toggle stochastic vs deterministic action sampling."""
         self._deterministic = bool(deterministic)
 
-    def to_blueprint(self, dest_path: Optional[str] = None) -> "PolicyBlueprint":
+    def to_blueprint(
+        self, dest_path: Optional[str] = None, *, stochastic: bool = False,
+    ) -> "PolicyBlueprint":
         """Export this policy to a deployable :class:`PolicyBlueprint`.
 
         Writes ``model.pt`` + ``policy.py`` (standalone, no repo deps) into
         ``dest_path`` and returns a blueprint that rebuilds the policy via
         the generated ``ExportedMLPPolicy`` class. When ``dest_path`` is
         ``None`` a temporary directory is used.
+
+        Args:
+            stochastic: If True, the exported blueprint uses stochastic
+                sampling (for training rollouts).  If False (default),
+                it uses deterministic mean actions (for evaluation).
         """
         import tempfile
 
@@ -161,14 +168,14 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         export_actor_policy_artifacts(
             actor=self,
             policy_dir=policy_dir,
-            stochastic=False,  # deterministic for deployment
+            stochastic=stochastic,
         )
 
         # Return blueprint pointing to the generated standalone policy.py
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
             cls=f"file:{policy_py_path}:ExportedMLPPolicy",
-            config={"stochastic": False},
+            config={"stochastic": stochastic},
         )
 
     # ------------------------------------------------------------------

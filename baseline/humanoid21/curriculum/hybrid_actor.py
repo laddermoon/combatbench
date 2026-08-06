@@ -157,11 +157,18 @@ class HybridActor(nn.Module):
 
         return log_probs, entropies
 
-    def to_blueprint(self, dest_path: str) -> PolicyBlueprint:
+    def to_blueprint(
+        self, dest_path: str, *, stochastic: bool = False,
+    ) -> PolicyBlueprint:
         """Export both sub-networks and a custom policy.py that routes at inference.
 
         Writes model.pt (with both state dicts) and a standalone policy.py
         that implements the hybrid routing logic.
+
+        Args:
+            stochastic: If True, the exported blueprint uses stochastic
+                sampling (for training rollouts).  If False (default),
+                it uses deterministic mean actions (for evaluation).
         """
         policy_dir = Path(dest_path)
         policy_dir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +195,7 @@ class HybridActor(nn.Module):
 
         blueprint = PolicyBlueprint(
             cls=f"file:{policy_dir / 'policy.py'}:ExportedHybridPolicy",
-            config={"stochastic": False},
+            config={"stochastic": stochastic},
         )
         blueprint.save(policy_dir / "policy_blueprint.yaml")
 

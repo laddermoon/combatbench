@@ -508,7 +508,7 @@ class MockActor:
         T = obs.shape[0]
         return torch.zeros(T, ACTION_DIM), torch.zeros(T)
 
-    def to_blueprint(self, dest_path: str):
+    def to_blueprint(self, dest_path: str, *, stochastic: bool = False):
         raise NotImplementedError
 
     def parameters(self):
