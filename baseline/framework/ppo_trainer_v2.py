@@ -206,6 +206,43 @@ class PPOBufferV2:
                 result[key] = (float(concat.mean()), float(concat.std()))
         return result
 
+    def trajectory_stats(self) -> Dict[str, Any]:
+        """Trajectory-level stats for logging — computed from buffer data."""
+        if not self.ep_lengths:
+            return {
+                "n_trajectories": 0,
+                "traj_len_mean": 0.0,
+                "traj_len_min": 0,
+                "traj_len_max": 0,
+                "total_steps": 0,
+                "per_channel": {},
+            }
+
+        ep_lens = np.array(self.ep_lengths)
+        total_steps = int(ep_lens.sum())
+
+        per_channel: Dict[str, Dict[str, float]] = {}
+        for key in self.reward_keys:
+            aws = self.key_seg_actor_weight[key]
+            active_flags = self.key_seg_active[key]
+            active_count = sum(1 for a in active_flags if a)
+            aw_vals = [aw for aw, a in zip(aws, active_flags) if a]
+            per_channel[key] = {
+                "actor_weight_mean": float(np.mean(aw_vals)) if aw_vals else 0.0,
+                "actor_weight_min": float(np.min(aw_vals)) if aw_vals else 0.0,
+                "actor_weight_max": float(np.max(aw_vals)) if aw_vals else 0.0,
+                "active_ratio": active_count / len(active_flags) if active_flags else 0.0,
+            }
+
+        return {
+            "n_trajectories": len(self.ep_lengths),
+            "traj_len_mean": float(ep_lens.mean()),
+            "traj_len_min": int(ep_lens.min()),
+            "traj_len_max": int(ep_lens.max()),
+            "total_steps": total_steps,
+            "per_channel": per_channel,
+        }
+
 
 # ---------------------------------------------------------------------------
 # PPO update — fixed defaults, no experiment overrides

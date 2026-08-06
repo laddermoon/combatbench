@@ -37,6 +37,37 @@ from .ppo_trainer_v2 import PPOBufferV2, ppo_update_v2, set_seed
 
 
 # ---------------------------------------------------------------------------
+# Episode-level stats (framework-computed, no experiment involvement)
+# ---------------------------------------------------------------------------
+
+def _episode_stats(episodes: List[Episode]) -> Dict[str, Any]:
+    """Compute episode-level stats from raw rollout episodes for logging."""
+    if not episodes:
+        return {
+            "n_episodes": 0,
+            "ep_len_mean": 0.0,
+            "ep_len_min": 0,
+            "ep_len_max": 0,
+            "termination_reasons": {},
+        }
+
+    lengths = [ep.num_frames for ep in episodes]
+    term_counts: Dict[str, int] = {}
+    for ep in episodes:
+        for agent_id, reason in ep.agent_termination_reason.items():
+            if reason:
+                term_counts[reason] = term_counts.get(reason, 0) + 1
+
+    return {
+        "n_episodes": len(episodes),
+        "ep_len_mean": float(np.mean(lengths)),
+        "ep_len_min": int(np.min(lengths)),
+        "ep_len_max": int(np.max(lengths)),
+        "termination_reasons": term_counts,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Config serialization (framework's job, not experiment's)
 # ---------------------------------------------------------------------------
 
@@ -422,20 +453,37 @@ def train_ppo_v2(
                         if last_video_proc is not None:
                             print(f"  [video:{video_path.name}]", flush=True)
 
-            # 7. Logging
+            # 7. Logging — framework-computed stats from Trajectory + Episode
+            ep_stats = _episode_stats(episodes)
+            traj_stats = buf.trajectory_stats()
             reward_stats = buf.reward_stats()
 
-            print(f"[update {u:4d}]", flush=True)
-
-            # Rollout / Episode metrics
-            ep_len_str = (
-                f"len={stats.get('ep_len_mean', 0.0):.1f} "
-                f"(min={stats.get('ep_len_min', 0.0):.1f}, "
-                f"max={stats.get('ep_len_max', 0.0):.1f})"
+            # [update] header
+            print(
+                f"[update {u:4d}] "
+                f"[episodes={ep_stats['n_episodes']} "
+                f"len={ep_stats['ep_len_mean']:.1f} "
+                f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']})] "
+                f"[trajs={traj_stats['n_trajectories']} "
+                f"steps={traj_stats['total_steps']}]",
+                flush=True,
             )
-            print(f"  [Rollout] {ep_len_str}", flush=True)
 
-            # Policy & Optimization stats
+            # [Rollout] — episode + trajectory + termination stats
+            term_strs = " ".join(
+                f"{k}:{v}" for k, v in ep_stats["termination_reasons"].items()
+            )
+            print(
+                f"  [Rollout] "
+                f"len={ep_stats['ep_len_mean']:.1f} "
+                f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']}) | "
+                f"n_episodes={ep_stats['n_episodes']} "
+                f"n_trajs={traj_stats['n_trajectories']} | "
+                f"terms={{{term_strs}}}",
+                flush=True,
+            )
+
+            # [Policy] & [PPO Opt]
             policy_loss = stats.get("policy_loss", 0.0)
             entropy = stats.get("entropy", 0.0)
             std_mean = stats.get("std_mean", 0.0)
@@ -458,9 +506,10 @@ def train_ppo_v2(
                 flush=True,
             )
 
-            # Critics details
+            # [Critics] — per-channel with actor_weight and active_ratio
             value_loss = stats.get("value_loss", 0.0)
             print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
+            chan_stats = traj_stats["per_channel"]
             for key in reward_keys:
                 r_mean, r_std = reward_stats.get(key, (0.0, 0.0))
                 rew_flow = f"{r_mean:+.3f}±{r_std:.3f}"
@@ -468,11 +517,16 @@ def train_ppo_v2(
                 ev_key = f"ev_{key}"
                 adv_std_key = f"adv_std_{key}"
                 conf_key = f"confidence_{key}"
+                cs = chan_stats.get(key, {})
+                aw_mean = cs.get("actor_weight_mean", 0.0)
+                active_ratio = cs.get("active_ratio", 0.0)
                 print(
                     f"    - {key:<12} | reward={rew_flow} | "
                     f"val_loss={stats.get(vloss_key, 0.0):.4f} | "
-                    f"explained_var={stats.get(ev_key, 0.0):+.3f} | "
-                    f"confidence={stats.get(conf_key, 1.0):.3f} | "
+                    f"ev={stats.get(ev_key, 0.0):+.3f} | "
+                    f"conf={stats.get(conf_key, 1.0):.3f} | "
+                    f"aw={aw_mean:.2f} | "
+                    f"active={active_ratio*100:.0f}% | "
                     f"adv_std={stats.get(adv_std_key, 0.0):.2f}",
                     flush=True,
                 )
@@ -482,11 +536,13 @@ def train_ppo_v2(
             raw_log_dict = {
                 "update": u,
                 "algo": "ppo",
-                "stats": stats,
+                "episode_stats": ep_stats,
+                "trajectory_stats": traj_stats,
                 "reward_stats": {
                     k: {"mean": v[0], "std": v[1]}
                     for k, v in reward_stats.items()
                 },
+                "stats": stats,
                 "timing": {
                     "total": round(t_total, 2),
                     "export": round(t_export, 2),
