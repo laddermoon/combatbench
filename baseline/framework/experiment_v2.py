@@ -131,7 +131,7 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
-| Checkpointing      | scheduler_state/training_state      | Save/load model weights       |
+| Checkpointing      | state/load_state                    | Save/load model + config.json |
 
 Removed from v1
 ---------------
@@ -158,13 +158,16 @@ Removed from v1
   ``normalize_sample_weights()``: Removed — framework defaults are not
   customizable.  The experiment controls the pipeline through
   ``reward_channels()`` and ``ChannelData.actor_weight``.
+- ``to_dict()`` / ``save_run_config()``: Removed — serialization is the
+  framework's responsibility.  The framework builds ``config.json`` from
+  ``reward_channels()``, ``common_params()``, ``ppo_params()``, and
+  ``state()``.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
@@ -541,34 +544,3 @@ class ExperimentV2(ABC):
         """
         pass
 
-    # ==================================================================
-    # Serialization
-    # ==================================================================
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Return a JSON-serializable config snapshot.
-
-        Override to add experiment-specific fields.  The framework calls
-        this to write ``run_dir/config.json``.
-        """
-        return {
-            "name": getattr(self, "name", ""),
-            "reward_keys": [ch.name for ch in self.reward_channels()],
-        }
-
-    def save_run_config(
-        self, run_dir: Path, *, smoke: bool = False, algo: str = "ppo",
-    ) -> None:
-        """Save run configuration to ``run_dir/config.json``."""
-        import json
-        import time
-
-        payload = {
-            "experiment": self.to_dict(),
-            "algorithm": algo,
-            "smoke": smoke,
-            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        run_dir.mkdir(parents=True, exist_ok=True)
-        with open(run_dir / "config.json", "w") as f:
-            json.dump(payload, f, indent=2, default=str)
