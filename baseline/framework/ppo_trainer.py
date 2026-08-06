@@ -216,7 +216,7 @@ class PPOBuffer:
                     term_seg = True
                 else:
                     fin_seg = np.asarray(fin, dtype=np.float32)
-                    term_seg = bool(ep.is_terminated)
+                    term_seg = all(r != "timeout" and r != "" for r in ep.agent_termination_reason.values())
 
                 for key in reward_keys:
                     r_full = rewards_full.get(key, np.zeros(T_full, dtype=np.float32))
