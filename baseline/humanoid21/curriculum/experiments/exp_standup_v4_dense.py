@@ -163,7 +163,7 @@ class StandupV4DenseConfig(CombatExperimentBase):
 
         success = 1.0 if max_stage >= 5.0 else 0.0
 
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         early_success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
 
         return {

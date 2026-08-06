@@ -320,7 +320,7 @@ class FightZeroConfig(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Per-episode metrics for fight evaluation and logging."""
         T = episode.num_frames
-        fell = any(p.startswith("imbalance") for p in episode.termination_proposals)
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
 
         oo = episode.observer_outputs
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)

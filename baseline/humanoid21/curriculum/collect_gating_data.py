@@ -175,7 +175,7 @@ def main() -> None:
                 T = ep.num_frames
                 
                 # Determine if the robot fell
-                fell = "imbalance" in ep.termination_proposals
+                fell = all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
                 
                 if fell:
                     chunk_falls += 1

@@ -204,7 +204,7 @@ class StandupV2Config(CombatExperimentBase):
             r[:] += stage5_bonus * (stages >= 5.0).astype(np.float32)
 
         # 4. Terminal success bonus
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         if any("success" in str(r_) for r_ in term_reasons):
             r[-1] += terminal_bonus
 
@@ -236,7 +236,7 @@ class StandupV2Config(CombatExperimentBase):
         final_potential = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0
 
         # Check termination reason
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         early_success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
 
         return {

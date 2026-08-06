@@ -261,6 +261,18 @@ class Episode:
 
     final_observation: Mapping[str, np.ndarray]
 
+    @property
+    def agent_termination_reason(self) -> Mapping[str, str]:
+        """Per-agent termination reason (first record for each agent).
+
+        Returns ``agent_id`` → single reason string.
+        Empty string if that agent has no termination records.
+        """
+        return {
+            aid: records[0][0] if records else ""
+            for aid, records in self.agent_termination_proposal_records.items()
+        }
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------

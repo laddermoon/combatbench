@@ -176,7 +176,7 @@ class StandupReproBase(CombatExperimentBase):
         if stages is not None and stage5_bonus > 0:
             r[:] += stage5_bonus * (stages >= 5.0).astype(np.float32)
 
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         if any("success" in str(r_) for r_ in term_reasons):
             r[-1] += terminal_bonus
 
@@ -201,7 +201,7 @@ class StandupReproBase(CombatExperimentBase):
         max_pot = float(np.max(potentials)) if potentials is not None and len(potentials) > 0 else 0.0
         final_pot = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0
 
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         early_success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
 
         return {

@@ -210,7 +210,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase, ExperimentV2):
         if obs_all is None or acts_all is None or fin_obs is None:
             return []
 
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         runs = self._phase_runs(episode)
 
         # Pre-compute full-episode reward arrays (same logic as v1 extract_rewards)
@@ -328,7 +328,7 @@ class BasicBalanceV2StageSegConfig(CombatExperimentBase, ExperimentV2):
         return trajectories
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         is_struggle, _ = self._extract_phase_info(episode)
         struggle_steps = int(np.sum(is_struggle))
         total_steps = episode.num_frames

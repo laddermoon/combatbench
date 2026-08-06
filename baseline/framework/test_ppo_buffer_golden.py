@@ -179,13 +179,16 @@ def make_episode(
     obs = rng.randn(T, obs_dim).astype(np.float32)
     acts = rng.randn(T, action_dim).astype(np.float32)
     final_obs = rng.randn(obs_dim).astype(np.float32)
+    if is_terminated:
+        records = {aid: tuple((r, 0) for r in termination_proposals) for aid in (agent_id, "robot_b")}
+    else:
+        records = {aid: (("timeout", 0),) for aid in (agent_id, "robot_b")}
     return Episode(
         base_seed=seed,
         episode_index=ep_idx,
         blueprint_hash="test_hash",
         num_frames=T,
-        termination_proposals=termination_proposals,
-        is_terminated=is_terminated,
+        agent_termination_proposal_records=records,
         episode_options={"agent_id": agent_id},
         observations={agent_id: obs},
         actions={agent_id: acts},

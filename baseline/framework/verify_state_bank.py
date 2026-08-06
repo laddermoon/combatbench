@@ -141,7 +141,7 @@ def main() -> None:
     verify_ep_lengths = []
 
     for i, ep in enumerate(episodes):
-        fell = "imbalance" in ep.termination_proposals
+        fell = all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
         verify_label = 0.0 if fell else 1.0
         verify_labels.append(verify_label)
         verify_ep_lengths.append(ep.num_frames)

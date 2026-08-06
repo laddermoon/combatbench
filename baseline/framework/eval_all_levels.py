@@ -75,7 +75,7 @@ def main() -> None:
         n_total = len(episodes)
         n_survived = sum(
             1 for ep in episodes
-            if "imbalance" not in ep.termination_proposals
+            if not all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
         )
         mean_len = np.mean([ep.num_frames for ep in episodes]) if episodes else 0.0
         survived_ratio = n_survived / n_total if n_total > 0 else 0.0

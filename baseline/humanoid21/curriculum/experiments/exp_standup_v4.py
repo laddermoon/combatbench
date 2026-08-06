@@ -181,7 +181,7 @@ class StandupV4Config(CombatExperimentBase):
             r[1:][upward] += trans_bonus
 
         # 5. Terminal success bonus
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         if any("success" in str(r_) for r_ in term_reasons):
             r[-1] += terminal_bonus
 
@@ -212,7 +212,7 @@ class StandupV4Config(CombatExperimentBase):
         max_potential = float(np.max(potentials)) if potentials is not None and len(potentials) > 0 else 0.0
         final_potential = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0
 
-        term_reasons = getattr(episode, "termination_proposals", [])
+        term_reasons = episode.agent_termination_reason.values()
         early_success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
 
         return {

@@ -91,7 +91,7 @@ class BasicBalanceV2Config(CombatExperimentBase):
         r_foot: foot clearance penalty/bonus.
         """
         T = episode.num_frames
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -150,7 +150,7 @@ class BasicBalanceV2Config(CombatExperimentBase):
         triggered (robot fell). ``"timeout"`` means the robot stood the full
         horizon — that counts as survived.
         """
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         return {"survived": 0.0 if fell else 1.0}
 
     def scheduler_info(self) -> Dict[str, Any]:

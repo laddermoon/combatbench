@@ -114,7 +114,7 @@ class EpisodeCollection:
         terminated = EpisodeCollection(self._blueprint)
         truncated = EpisodeCollection(self._blueprint)
         for episode in self._episodes:
-            (terminated if episode.is_terminated else truncated).append(episode)
+            (terminated if all(r != "timeout" and r != "" for r in episode.agent_termination_reason.values()) else truncated).append(episode)
         return terminated, truncated
 
     # ------------------------------------------------------------------

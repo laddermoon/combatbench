@@ -1,13 +1,10 @@
-"""Base class for 4-stage standup experiments.
+"""Base class for energy-based standup experiments.
 
-Uses Standup4StageRewarder with a natural prone-to-stand process:
-  Stage 0→1: roll over to prone (f_down guided)
-  Stage 1→2: find hand+foot support (exploration, allowed jump)
-  Stage 2→3: push up to standing (height+uprightness guided)
-  Stage 3→4: narrow feet (foot distance guided)
+Single continuous orbital-energy potential (StandupEnergyRewarder).
+No stage machinery.  Success = no hands/other body parts touching ground
+for 40 consecutive steps (~2 seconds), detected by StandupEnergyTerminationPlugin.
 
-Training: 2-phase chain (exploration → precise), same as original S1→S3 pattern.
-Thresholds from original S8/S9 final working config.
+Training: single phase, PPO with entropy exploration.
 """
 from __future__ import annotations
 
@@ -23,20 +20,20 @@ from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 
-class Standup4StageBase(CombatExperimentBase):
-    """Base class for 4-stage standup experiments."""
+class StandupEnergyBase(CombatExperimentBase):
+    """Base class for energy-based standup experiments."""
 
     reward_keys = ("r_standup",)
     gammas = {"r_standup": 0.99}
 
-    BLUEPRINT = "standup_4stage_env.yaml"
-    max_updates: int = 4000
+    BLUEPRINT = "standup_energy_env.yaml"
+    max_updates: int = 5000
     episodes_per_update: int = 512
     eval_episodes: int = 64
     eval_interval: int = 5
     video_eval_interval: int = 5
 
-    # PPO params — minibatch_size=4096 matching original
+    # PPO params
     log_std_min: float = -2.5
     learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
@@ -46,13 +43,12 @@ class Standup4StageBase(CombatExperimentBase):
     minibatch_size: int = 4096
     entropy_coef: float = 1e-3
 
-    # Reward config (Phase A matches S1: pure potential, no extras)
+    # Reward config
     DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
         "max_steps": 200,
         "potential_reward_scale": 1.0,
-        "terminal_success_bonus": 0.0,
+        "terminal_success_bonus": 100.0,
         "time_penalty": 0.0,
-        "stage4_per_step_bonus": 0.0,
     }
     custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
 
@@ -118,9 +114,6 @@ class Standup4StageBase(CombatExperimentBase):
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
         time_penalty = float(self.custom_config.get("time_penalty", 0.0))
-        stage4_bonus = float(self.custom_config.get("stage4_per_step_bonus", 0.0))
-
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -131,11 +124,10 @@ class Standup4StageBase(CombatExperimentBase):
 
         r[:] += time_penalty
 
-        if stages is not None and stage4_bonus > 0:
-            r[:] += stage4_bonus * (stages >= 4.0).astype(np.float32)
-
-        if stages is not None and terminal_bonus > 0:
-            if float(np.max(stages)) >= 4.0:
+        # Terminal success bonus: check termination reason
+        if terminal_bonus > 0:
+            term_reasons = episode.agent_termination_reason.values()
+            if any("success" in str(reason) for reason in term_reasons):
                 r[-1] += terminal_bonus
 
         return {"r_standup": r}
@@ -145,34 +137,29 @@ class Standup4StageBase(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         T = episode.num_frames
         oo = episode.observer_outputs
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        foot_dists = _extract_per_step_field(oo, "standup", "foot_distance", T)
-
-        if stages is not None and len(stages) > 0:
-            max_stage = float(np.max(stages))
-            final_stage = float(stages[-1])
-            success = 1.0 if max_stage >= 4.0 else 0.0
-            avg_stage = float(np.mean(stages))
-        else:
-            max_stage = final_stage = success = avg_stage = 0.0
+        e_scores = _extract_per_step_field(oo, "standup", "e_score", T)
+        is_balanced = _extract_per_step_field(oo, "standup", "is_balanced", T)
 
         max_pot = float(np.max(potentials)) if potentials is not None and len(potentials) > 0 else 0.0
         final_pot = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0
+        avg_e_score = float(np.mean(e_scores)) if e_scores is not None and len(e_scores) > 0 else 0.0
 
-        min_foot_dist = float(np.min(foot_dists)) if foot_dists is not None and len(foot_dists) > 0 else 0.0
-        final_foot_dist = float(foot_dists[-1]) if foot_dists is not None and len(foot_dists) > 0 else 0.0
+        balanced_steps = 0
+        if is_balanced is not None and len(is_balanced) > 0:
+            balanced_steps = int(np.sum(is_balanced > 0.5))
 
         term_reasons = episode.agent_termination_reason.values()
-        early_success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
+        success = 1.0 if any("success" in str(r) for r in term_reasons) else 0.0
+        stagnation = 1.0 if any("stagnation" in str(r) for r in term_reasons) else 0.0
 
         return {
-            "success": success, "early_success": early_success,
-            "max_stage": max_stage, "final_stage": final_stage,
-            "avg_stage": avg_stage, "max_potential": max_pot,
+            "success": success,
+            "stagnation": stagnation,
+            "max_potential": max_pot,
             "final_potential": final_pot,
-            "min_foot_dist": min_foot_dist,
-            "final_foot_dist": final_foot_dist,
+            "avg_e_score": avg_e_score,
+            "balanced_steps": balanced_steps,
         }
 
     # ---- Scheduler state --------------------------------------------------

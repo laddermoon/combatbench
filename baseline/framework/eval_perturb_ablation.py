@@ -59,7 +59,7 @@ def run(rollouter, experiment, policy_bp, seed, n_episodes, perturb, label):
     jobs = build_jobs(experiment, policy_bp, seed, n_episodes, perturb)
     episodes: List[Episode] = rollouter.collect(jobs)
     n = len(episodes)
-    n_surv = sum(1 for ep in episodes if "imbalance" not in ep.termination_proposals)
+    n_surv = sum(1 for ep in episodes if not all(r.startswith("imbalance") for r in ep.agent_termination_reason.values()))
     mean_len = float(np.mean([ep.num_frames for ep in episodes])) if episodes else 0.0
     ratio = n_surv / n if n else 0.0
     print(f"{label:<44} {ratio:8.3f} {mean_len:9.1f} {n - n_surv:7d}")

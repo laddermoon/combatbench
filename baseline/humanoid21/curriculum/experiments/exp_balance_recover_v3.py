@@ -207,7 +207,7 @@ class BalanceRecoverV3Config(CombatExperimentBase):
     # --- Reward extraction ---
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         T = episode.num_frames
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -217,7 +217,7 @@ class BalanceRecoverV3Config(CombatExperimentBase):
         return {"r_fall": r_fall}
 
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         return {
             "survived": 0.0 if fell else 1.0,
             "ep_length": float(episode.num_frames),

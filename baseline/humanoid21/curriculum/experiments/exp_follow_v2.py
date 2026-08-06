@@ -231,7 +231,7 @@ class FollowV2Config(CombatExperimentBase):
         oo = episode.observer_outputs
 
         # r_fall: per-step survival bonus + terminal signal
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -363,7 +363,7 @@ class FollowV2Config(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         """Per-episode metrics for eval comparison and logging."""
         T = episode.num_frames
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
 
         # hold_ratio: fraction of steps within 1.1m of opponent, computed from
         # RAW (unsmoothed) positions recorded by the approach_velocity observer.

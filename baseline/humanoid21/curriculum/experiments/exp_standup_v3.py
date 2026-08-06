@@ -208,7 +208,7 @@ class StandupV3Config(CombatExperimentBase):
             r_potential[:] += stage5_bonus * (stages >= 5.0).astype(np.float32)
 
         # --- Survival reward ---
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         per_step_survival = float(self.custom_config.get("per_step_survival_reward", 0.01))
         terminal_penalty = float(self.custom_config.get("terminal_fall_penalty", 1.0))
         r_fall = np.full(T, per_step_survival, dtype=np.float32)
@@ -268,7 +268,7 @@ class StandupV3Config(CombatExperimentBase):
         stages = _extract_per_step_field(oo, "standup", "stage", T)
         potentials = _extract_per_step_field(oo, "standup", "potential", T)
 
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         survived = 0.0 if fell else 1.0
 
         if stages is not None and len(stages) > 0:

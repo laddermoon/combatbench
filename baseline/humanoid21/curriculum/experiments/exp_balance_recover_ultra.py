@@ -201,7 +201,7 @@ class BalanceRecoverUltraConfig(CombatExperimentBase):
         r_cross: cross-support balance reward from CrossSupportBalanceRewarder.
         """
         T = episode.num_frames
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = float(self.custom_config["terminal_fall_penalty"])
         if fell:
@@ -259,7 +259,7 @@ class BalanceRecoverUltraConfig(CombatExperimentBase):
 
         Returns level/stage for eval comparison (higher level = better).
         """
-        fell = "imbalance" in episode.termination_proposals
+        fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         return {
             "survived": 0.0 if fell else 1.0,
             "level": float(self._level),  # higher level = harder perturbation = better

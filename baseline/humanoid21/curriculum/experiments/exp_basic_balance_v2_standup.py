@@ -158,7 +158,7 @@ class BasicBalanceV2StandupConfig(BasicBalanceV2Config):
                         break
         else:
             # No gating_mode info — fallback to old behavior
-            fell = "imbalance" in episode.termination_proposals
+            fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
             if fell:
                 r_fall[-1] = -penalty
             else:

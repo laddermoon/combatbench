@@ -164,7 +164,7 @@ def extract_phi_and_rewards(episode: Episode) -> Dict[str, np.ndarray]:
     initial_phi_arr = _extract_per_step_field(episode.observer_outputs, "height_phi", "initial_phi", T)
     initial_phi = float(initial_phi_arr[0]) if initial_phi_arr is not None else 0.0
 
-    fell = "imbalance" in episode.termination_proposals
+    fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
 
     # Delta rewards (ST-4): r_t = φ(t) - φ(t-1), γ_s=1.0
     r_delta = np.zeros(T, dtype=np.float32)
@@ -210,7 +210,7 @@ def compute_offline_gae(
     target = str(episode.episode_options.get("agent_id", "robot_a"))
     obs = episode.observations.get(target).astype(np.float32)
     fin_obs = episode.final_observation.get(target)
-    is_terminated = episode.is_terminated
+    is_terminated = all(r != "timeout" and r != "" for r in episode.agent_termination_reason.values())
 
     # Compute values
     obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device)

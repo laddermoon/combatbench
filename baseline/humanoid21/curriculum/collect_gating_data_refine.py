@@ -209,7 +209,7 @@ def main() -> None:
                 obs = ep.observations[agent_id]  # Shape: (T, obs_dim)
                 T = ep.num_frames
 
-                fell = "imbalance" in ep.termination_proposals
+                fell = all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
 
                 if fell:
                     chunk_falls += 1

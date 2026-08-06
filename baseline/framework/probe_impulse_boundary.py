@@ -132,7 +132,7 @@ def main() -> None:
         survived = 0
         lengths = []
         for ep in cell_eps:
-            fell = "imbalance" in ep.termination_proposals
+            fell = all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
             if not fell:
                 survived += 1
             lengths.append(ep.num_frames)

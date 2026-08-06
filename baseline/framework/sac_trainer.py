@@ -172,7 +172,7 @@ class ReplayBuffer:
         if not segs:
             return 0
 
-        is_terminated = bool(episode.is_terminated)
+        is_terminated = all(r != "timeout" and r != "" for r in episode.agent_termination_reason.values())
         n_added = 0
         for seg in segs:
             start, end, weight = seg.start, seg.end, seg.weight

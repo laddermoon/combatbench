@@ -32,7 +32,7 @@ ZERO = {k: 0.0 for k in DIMS}
 def run(rollouter, experiment, policy_bp, seed, n, perturb, label):
     episodes = rollouter.collect(build_jobs(experiment, policy_bp, seed, n, perturb))
     total = len(episodes)
-    surv = sum(1 for ep in episodes if "imbalance" not in ep.termination_proposals)
+    surv = sum(1 for ep in episodes if not all(r.startswith("imbalance") for r in ep.agent_termination_reason.values()))
     mean_len = float(np.mean([ep.num_frames for ep in episodes])) if episodes else 0.0
     print(f"{label:<52} {surv / total if total else 0:8.3f} {mean_len:9.1f} {total - surv:7d}")
 

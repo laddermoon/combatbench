@@ -119,7 +119,7 @@ def _extract_from_episode(ep, agent_id: str) -> Dict[str, Any] | None:
     else:
         dir_vec = np.zeros(3, dtype=np.float32)
 
-    fell = "imbalance" in ep.termination_proposals
+    fell = all(r.startswith("imbalance") for r in ep.agent_termination_reason.values())
     label = 0.0 if fell else 1.0
 
     return {

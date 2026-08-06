@@ -147,7 +147,7 @@ def _segment_termination(
         if seg.end < T:
             return "terminated"
         else:
-            return "terminated" if episode.is_terminated else "truncated"
+            return "terminated" if all(r != "timeout" and r != "" for r in episode.agent_termination_reason.values()) else "truncated"
 
 
 def _key_termination(
