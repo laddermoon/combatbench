@@ -228,9 +228,31 @@ class Episode:
     episode_index: int
     blueprint_hash: str
     num_frames: int
-    termination_proposals: Tuple[str, ...]
-    is_terminated: bool
     episode_options: Mapping[str, Any]
+
+    agent_termination_proposal_records: Mapping[str, Tuple[Tuple[str, int], ...]]
+    """Per-agent termination proposal history.
+
+    Maps ``agent_id`` → tuple of ``(reason, episode_step)`` pairs.
+    ``reason`` is the termination reason string (e.g. ``"ko"``,
+    ``"timeout"``, ``"imbalance_robot_a"``).
+    ``episode_step`` is the value of ``ctx.episode_step`` when the
+    proposal was **first proposed** — i.e. the action-step number
+    (starting from 1) at which ``on_post_action_step`` detected the
+    new reason. The same reason is only recorded once (first
+    occurrence).
+
+    Data slicing usage::
+
+        # EpisodeRecorder.on_post_episode guarantees records are non-empty.
+        records = episode.agent_termination_proposal_records["robot_a"]
+        first_reason, term_step = records[0]
+        obs_a = episode.observations["robot_a"][:term_step]
+        act_a = episode.actions["robot_a"][:term_step]
+
+        # True termination (non-timeout → bootstrap=0):
+        is_true_terminated = first_reason != "timeout"
+    """
 
     observations: Mapping[str, np.ndarray]
     actions: Mapping[str, np.ndarray]
@@ -251,8 +273,7 @@ class Episode:
         base_seed: int,
         episode_index: int,
         blueprint_hash: str,
-        termination_proposals: Sequence[str],
-        is_terminated: bool,
+        agent_termination_proposal_records: Mapping[str, Sequence[Tuple[str, int]]],
         episode_options: Optional[Mapping[str, Any]] = None,
         observer_names_to_keep: Optional[Sequence[str]] = None,
     ) -> "Episode":
@@ -262,6 +283,10 @@ class Episode:
         (one dict per ``on_post_action_step`` call): each must have
         ``observation``, ``action``, ``observer_outputs``, optionally
         ``action_extras``.
+
+        ``agent_termination_proposal_records``: per-agent tuple of
+        ``(reason, episode_step)`` pairs. See the field docstring for
+        semantics.
 
         ``observer_names_to_keep``: optional whitelist on the top-level
         ``observer_outputs`` keys. ``None`` keeps all.
@@ -282,13 +307,16 @@ class Episode:
             agent_id: np.asarray(value) for agent_id, value in final_observation.items()
         }
 
+        frozen_records: Dict[str, Tuple[Tuple[str, int], ...]] = {
+            aid: tuple(records) for aid, records in agent_termination_proposal_records.items()
+        }
+
         return cls(
             base_seed=int(base_seed),
             episode_index=int(episode_index),
             blueprint_hash=str(blueprint_hash),
             num_frames=int(len(frames)),
-            termination_proposals=tuple(str(reason) for reason in termination_proposals),
-            is_terminated=bool(is_terminated),
+            agent_termination_proposal_records=frozen_records,
             episode_options=dict(episode_options or {}),
             observations=observations,
             actions=actions,
@@ -300,7 +328,7 @@ class Episode:
     # ------------------------------------------------------------------
     # On-disk serialization (single-episode pair: <stem>.npz + <stem>.json)
     # ------------------------------------------------------------------
-    EPISODE_FORMAT_VERSION = 1
+    EPISODE_FORMAT_VERSION = 2
 
     def save(self, stem_path: Any) -> None:
         """Serialize to ``<stem_path>.npz`` (arrays) + ``<stem_path>.json``
@@ -346,8 +374,10 @@ class Episode:
             "episode_index": int(self.episode_index),
             "blueprint_hash": self.blueprint_hash,
             "num_frames": int(self.num_frames),
-            "termination_proposals": list(self.termination_proposals),
-            "is_terminated": bool(self.is_terminated),
+            "agent_termination_proposal_records": {
+                aid: [[reason, step] for reason, step in records]
+                for aid, records in self.agent_termination_proposal_records.items()
+            },
             "episode_options": _to_jsonable(dict(self.episode_options)),
             "observer_outputs_lists": {
                 key: _to_jsonable(value) for key, value in observer_lists.items()
@@ -372,7 +402,8 @@ class Episode:
             stem = stem.with_suffix("")
 
         meta = json.loads(stem.with_suffix(".json").read_text(encoding="utf-8"))
-        if int(meta.get("format_version", 0)) != cls.EPISODE_FORMAT_VERSION:
+        fmt_ver = int(meta.get("format_version", 0))
+        if fmt_ver != cls.EPISODE_FORMAT_VERSION:
             raise ValueError(
                 f"Unsupported episode format_version "
                 f"{meta.get('format_version')}; expected "
@@ -416,13 +447,19 @@ class Episode:
                 cursor = cursor.setdefault(sub, {})
             cursor[path[-1]] = list(values)
 
+        # Load agent_termination_proposal_records.
+        records_raw = meta.get("agent_termination_proposal_records", {})
+        agent_termination_proposal_records: Dict[str, Tuple[Tuple[str, int], ...]] = {
+            aid: tuple((r, int(s)) for r, s in pairs)
+            for aid, pairs in records_raw.items()
+        }
+
         return cls(
             base_seed=int(meta["base_seed"]),
             episode_index=int(meta["episode_index"]),
             blueprint_hash=str(meta["blueprint_hash"]),
             num_frames=int(meta["num_frames"]),
-            termination_proposals=tuple(meta["termination_proposals"]),
-            is_terminated=bool(meta["is_terminated"]),
+            agent_termination_proposal_records=agent_termination_proposal_records,
             episode_options=dict(meta.get("episode_options") or {}),
             observations=observations,
             actions=actions,

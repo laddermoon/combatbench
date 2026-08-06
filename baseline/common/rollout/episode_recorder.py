@@ -13,11 +13,11 @@ per-step buffering, but adds:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from envs.framework.context import ReadOnlySimContext, TerminationReason
+from envs.framework.context import AGENT_IDS, ReadOnlySimContext
 from envs.framework.recorder import PostActionRecorder
 
 from .episode import Episode
@@ -74,7 +74,10 @@ class EpisodeRecorder(PostActionRecorder):
         self._episode_index: int = -1
         self._base_seed: Optional[int] = None
         self._episode_options: Dict[str, Any] = {}
-        self._termination_proposals: tuple = ()
+        self._agent_termination_proposal_records: Dict[str, List[Tuple[str, int]]] = {
+            aid: [] for aid in AGENT_IDS
+        }
+        self._seen_reasons: Dict[str, set] = {aid: set() for aid in AGENT_IDS}
         self._final_observation: Dict[str, np.ndarray] = {}
         self._last_episode: Optional[Episode] = None
 
@@ -104,7 +107,8 @@ class EpisodeRecorder(PostActionRecorder):
         self._episode_index += 1
         self._base_seed = ctx.base_seed
         self._episode_options = dict(ctx.episode_options)
-        self._termination_proposals = ()
+        self._agent_termination_proposal_records = {aid: [] for aid in AGENT_IDS}
+        self._seen_reasons = {aid: set() for aid in AGENT_IDS}
         self._final_observation = {}
 
     def on_post_action_step(
@@ -134,9 +138,16 @@ class EpisodeRecorder(PostActionRecorder):
                 ),
             }
         )
-        # Track the latest termination proposals so we record the values
-        # that matched the final frame.
-        self._termination_proposals = tuple(ctx.termination_proposals)
+        # Track per-agent termination proposals: for each agent, detect
+        # new reasons not yet seen and record (reason, episode_step).
+        # Same reason is only recorded once (first occurrence).
+        for aid in AGENT_IDS:
+            for reason in ctx.agent_termination_proposals.get(aid, ()):
+                if reason not in self._seen_reasons[aid]:
+                    self._seen_reasons[aid].add(reason)
+                    self._agent_termination_proposal_records[aid].append(
+                        (reason, int(ctx.episode_step))
+                    )
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
         # Capture obs_{T+1} for RL bootstrap. Defensive: if the accessor
@@ -151,16 +162,15 @@ class EpisodeRecorder(PostActionRecorder):
         except Exception:
             self._final_observation = {}
 
-        # Fall back to ctx termination state if no step recorded one
-        # (zero-step episodes — unusual but possible).
-        termination = self._termination_proposals or tuple(ctx.termination_proposals)
-        # Truncation (TIMEOUT) is NOT a true MDP termination: the episode was
-        # cut off by the horizon but would otherwise continue, so RL trainers
-        # must bootstrap V(s_last). Only non-TIMEOUT reasons (fall/KO/foul/...)
-        # count as terminal. This matches EnvRuntime.get_termination_flags()'s
-        # Gymnasium semantics; using ctx.is_terminated here (len(proposals)>0)
-        # would wrongly flag timeouts as terminal and suppress bootstrapping.
-        is_terminated = any(r != TerminationReason.TIMEOUT for r in termination)
+        # Validate: every agent must have at least one termination proposal
+        # (episode ends only when all_agents_terminated is True).
+        for aid in AGENT_IDS:
+            if not self._agent_termination_proposal_records[aid]:
+                raise RuntimeError(
+                    f"EpisodeRecorder.on_post_episode: agent {aid!r} has no "
+                    f"termination proposal records — episode ended without "
+                    f"all agents terminated, indicating a bug in termination logic"
+                )
 
         if self._base_seed is None:
             raise RuntimeError(
@@ -170,14 +180,19 @@ class EpisodeRecorder(PostActionRecorder):
                 "produced Episode."
             )
 
+        # Freeze records into tuples.
+        frozen_records: Dict[str, Tuple[Tuple[str, int], ...]] = {
+            aid: tuple(self._agent_termination_proposal_records[aid])
+            for aid in AGENT_IDS
+        }
+
         self._last_episode = Episode.from_buffer_frames(
             frames=self._frames,
             final_observation=self._final_observation,
             base_seed=int(self._base_seed),
             episode_index=int(self._episode_index),
             blueprint_hash=self._blueprint_hash,
-            termination_proposals=termination,
-            is_terminated=is_terminated,
+            agent_termination_proposal_records=frozen_records,
             episode_options=self._episode_options,
             observer_names_to_keep=self._observer_whitelist,
         )
