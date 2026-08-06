@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from baseline.humanoid21.curriculum.experiments import get_experiment, list_experiments
+from baseline.experiments_v2 import get_v2_experiment, list_v2_experiments
 
 
 def _parse_args() -> argparse.Namespace:
@@ -124,18 +125,30 @@ def main() -> None:
         print("Available experiments:")
         for name in list_experiments():
             exp = get_experiment(name)
-            print(f"  {name}: reward_keys={exp.reward_keys}")
+            print(f"  {name} (v1): reward_keys={exp.reward_keys}")
+        for name in list_v2_experiments():
+            exp = get_v2_experiment(name)
+            channels = exp.reward_channels()
+            print(f"  {name} (v2): channels={[ch.name for ch in channels]}")
         return
 
     if args.experiment is None:
         print("Error: --experiment is required. Use --list-experiments to see options.")
         raise SystemExit(1)
 
-    experiment = get_experiment(args.experiment)
-
-    # Detect ExperimentV2 for dispatch
-    from baseline.framework.experiment_v2 import ExperimentV2
-    is_v2 = isinstance(experiment, ExperimentV2)
+    # Try v1 registry first, then v2
+    try:
+        experiment = get_experiment(args.experiment)
+        is_v2 = False
+    except KeyError:
+        try:
+            experiment = get_v2_experiment(args.experiment)
+            is_v2 = True
+        except KeyError:
+            print(f"Error: Unknown experiment {args.experiment!r}.")
+            print(f"  V1: {list_experiments()}")
+            print(f"  V2: {list_v2_experiments()}")
+            raise SystemExit(1)
 
     if args.smoke:
         if is_v2:
