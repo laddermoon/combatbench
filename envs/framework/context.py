@@ -243,21 +243,6 @@ class SimContext:
         """True if all agents have terminated. This is the episode-end condition."""
         return all(self.agent_terminated.values())
 
-    # --- Deprecated aliases (backward compat) ---
-
-    @property
-    def termination_proposals(self) -> List[str]:
-        """Deprecated: union of all agents' termination proposals."""
-        result: List[str] = []
-        for aid in AGENT_IDS:
-            result.extend(self.agent_termination_proposals[aid])
-        return result
-
-    @property
-    def is_terminated(self) -> bool:
-        """Deprecated: alias for ``all_agents_terminated``."""
-        return self.all_agents_terminated
-
     def clear_episode_state(self) -> None:
         """在 Episode 开始前清理历史状态。
 
@@ -300,19 +285,6 @@ class ReadOnlySimContext:
     def is_agent_terminated(self) -> Dict[str, bool]:
         """Read-only mapping of agent_id -> terminated bool."""
         return dict(self.agent_terminated)
-
-    @property
-    def termination_proposals(self) -> Tuple[str, ...]:
-        """Deprecated: union of all agents' termination proposals."""
-        result: List[str] = []
-        for aid in AGENT_IDS:
-            result.extend(self.agent_termination_proposals.get(aid, ()))
-        return tuple(result)
-
-    @property
-    def is_terminated(self) -> bool:
-        """Deprecated: alias for ``all_agents_terminated``."""
-        return self.all_agents_terminated
 
     @classmethod
     def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":

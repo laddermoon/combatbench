@@ -85,7 +85,7 @@ def _run_and_record(
 
             print(
                 f"    episode_{ep_idx:05d}: seed={seed}  steps={result['steps']}  "
-                f"terminated={episode.is_terminated}  saved to {stem.name}.{{npz,json}}"
+                f"term_records={dict(episode.agent_termination_proposal_records)}  saved to {stem.name}.{{npz,json}}"
             )
 
     dt = time.perf_counter() - t0

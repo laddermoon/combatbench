@@ -137,7 +137,7 @@ def run_episode(
     ctx = runtime.ctx
     result = {
         "steps": int(ctx.episode_step),
-        "termination_reasons": list(ctx.termination_proposals),
+        "termination_reasons": {aid: list(ctx.agent_termination_proposals[aid]) for aid in ("robot_a", "robot_b")},
         "seed": seed,
         "elapsed": elapsed,
         "trace": trace_plugin.get_trace(),

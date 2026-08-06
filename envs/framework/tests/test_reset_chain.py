@@ -100,7 +100,7 @@ class TestI2_TerminationProposalsCleanAfterReset:
     def test_clean_when_no_plugin_terminates(self, mock_simulator):
         runtime = EnvRuntime(simulator=mock_simulator)
         runtime.reset()
-        assert runtime.ctx.termination_proposals == []
+        assert all(len(runtime.ctx.agent_termination_proposals[aid]) == 0 for aid in ("robot_a", "robot_b"))
         assert runtime.is_episode_active is True
 
     def test_pre_episode_termination_yields_inactive_runtime(self, mock_simulator):
@@ -110,7 +110,10 @@ class TestI2_TerminationProposalsCleanAfterReset:
         )
         runtime.reset()
         # Plugin requested termination ⇒ episode immediately terminated.
-        assert "test_pre_episode_termination" in runtime.ctx.termination_proposals
+        all_proposals = []
+        for aid in ("robot_a", "robot_b"):
+            all_proposals.extend(runtime.ctx.agent_termination_proposals[aid])
+        assert "test_pre_episode_termination" in all_proposals
         assert runtime.is_episode_active is False
 
 
@@ -400,8 +403,11 @@ class _PostEpisodeRecordingPlugin(BasePlugin):
         return "post_episode_observer"
 
     def on_post_episode(self, ctx) -> None:
+        all_proposals = []
+        for aid in ("robot_a", "robot_b"):
+            all_proposals.extend(ctx.agent_termination_proposals[aid])
         self.post_episode_calls.append(
-            (ctx.episode_step, tuple(ctx.termination_proposals))
+            (ctx.episode_step, tuple(all_proposals))
         )
 
 
@@ -423,7 +429,7 @@ class TestG4_MidEpisodeResetGracefulTermination:
         # And the new episode is fresh.
         assert runtime.is_episode_active is True
         assert runtime.ctx.episode_step == 0
-        assert runtime.ctx.termination_proposals == []
+        assert all(len(runtime.ctx.agent_termination_proposals[aid]) == 0 for aid in ("robot_a", "robot_b"))
 
     def test_normal_reset_does_not_fire_extra_post_episode(self, mock_simulator):
         plugin = _PostEpisodeRecordingPlugin()

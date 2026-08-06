@@ -108,7 +108,7 @@ def main():
 
         ctx = runtime.ctx
         steps = int(ctx.episode_step)
-        terms = list(ctx.termination_proposals)
+        terms = {aid: list(ctx.agent_termination_proposals[aid]) for aid in ("robot_a", "robot_b")}
 
         # Read observer output from last step
         try:

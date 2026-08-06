@@ -100,7 +100,7 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
-from .context import ReadOnlySimContext
+from .context import AGENT_IDS, ReadOnlySimContext
 
 # ``imageio`` is imported lazily inside ``BaseFrameRecorder._write_image`` so
 # that framework users who never touch image recording (pure training / CI)
@@ -166,7 +166,7 @@ class PostActionRecorder(ABC):
       the step. They reflect the new post-action state.
     * ``ctx`` — the read-only context also reflects the post-action state
       (``episode_step`` / ``physics_step`` have been incremented,
-      ``termination_proposals`` / ``is_terminated`` are up-to-date).
+      ``agent_termination_proposals`` / ``all_agents_terminated`` are up-to-date).
 
     In RL-transition terms each call represents one ``(s_t, a_t, s'_{t+1})``
     tuple where ``s_t`` lives in ``observation`` and the post-action world
@@ -249,9 +249,10 @@ class EpisodeBufferRecorder(PostActionRecorder):
     * ``action_extras`` (the per-agent policy side-channel forwarded by
       :meth:`EnvRuntime.step`; ``None`` when the caller did not supply
       extras)
-    * ``termination_proposals`` (tuple) and ``is_terminated`` (bool) —
-      lifted directly from the read-only ctx; the reading discipline
-      mirrors what attached plugins see at the same hook
+    * ``agent_termination_proposals`` (per-agent tuple) and
+      ``all_agents_terminated`` (bool) — lifted directly from the read-only
+      ctx; the reading discipline mirrors what attached plugins see at the
+      same hook
 
     Scope
     -----
@@ -271,8 +272,8 @@ class EpisodeBufferRecorder(PostActionRecorder):
     Every frame originates from ``on_post_action_step``. Each frame
     stores the **pre-action** observation (``obs_t``) alongside the
     action that was taken. The terminal step's frame carries the
-    populated ``termination_proposals`` so consumers can detect episode
-    end without reading the runtime back.
+    populated ``agent_termination_proposals`` so consumers can detect
+    episode end without reading the runtime back.
 
     Parameters
     ----------
@@ -308,8 +309,11 @@ class EpisodeBufferRecorder(PostActionRecorder):
                         "observer_outputs":      {<name>: <value>, ...},
                         "action":                {<agent_id>: <ndarray>} | None,
                         "action_extras":         {<agent_id>: <dict | None>} | None,
-                        "termination_proposals": tuple[str, ...],
-                        "is_terminated":         bool,
+                        "agent_termination_proposals": {
+                            aid: ctx.agent_termination_proposals[aid]
+                            for aid in AGENT_IDS
+                        },
+                        "all_agents_terminated":         bool(ctx.all_agents_terminated),
                     },
                     ...
                 ],
@@ -380,11 +384,11 @@ class EpisodeBufferRecorder(PostActionRecorder):
                 snapshot({agent_id: extras for agent_id, extras in action_extras.items()})
                 if action_extras is not None else None
             ),
-            "termination_proposals": tuple(ctx.termination_proposals),
-            # NOTE: ctx.is_terminated includes TIMEOUT; for RL semantics use
-            # termination_proposals directly.  This field is kept for
-            # backward-compatible log consumers only.
-            "is_terminated": bool(ctx.is_terminated),
+            "agent_termination_proposals": {
+                aid: tuple(ctx.agent_termination_proposals[aid])
+                for aid in AGENT_IDS
+            },
+            "all_agents_terminated": bool(ctx.all_agents_terminated),
         }
 
 

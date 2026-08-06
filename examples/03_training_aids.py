@@ -244,7 +244,7 @@ def main() -> None:
         rb = float(runtime.get_observer_output("robot_b_reward") or 0.0)
         push_mag = float(runtime.ctx.metrics.get("curriculum_push_magnitude", 0.0))
         steps = int(runtime.ctx.episode_step)
-        term_reasons = list(runtime.ctx.termination_proposals)
+        term_reasons = {aid: list(runtime.ctx.agent_termination_proposals[aid]) for aid in ("robot_a", "robot_b")}
 
         print(
             f"{ep:>3} | {seed:>12} | {push_mag:>8.1f} | "

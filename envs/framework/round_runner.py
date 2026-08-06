@@ -20,6 +20,7 @@ import numpy as np
 
 from .blueprint import EnvBlueprint
 from .common_plugins import VideoRecorderPlugin
+from .context import AGENT_IDS
 from .episode_runner import EpisodeRunner
 from .policy import PolicyBlueprint
 from .recorder import PostActionRecorder
@@ -113,7 +114,10 @@ class RoundRunner:
         ctx = self._runtime.ctx
         return {
             "steps": int(ctx.episode_step),
-            "termination_reasons": list(ctx.termination_proposals),
+            "termination_reasons": {
+                aid: list(ctx.agent_termination_proposals[aid])
+                for aid in AGENT_IDS
+            },
             "seed": int(ctx.base_seed) if ctx.base_seed is not None else None,
             "health_a": float(ctx.metrics.get("health_a", 0.0)),
             "health_b": float(ctx.metrics.get("health_b", 0.0)),

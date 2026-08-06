@@ -113,7 +113,7 @@ def _demo_sequential(blueprint: EnvBlueprint, out_dir: Path, n_episodes: int = 3
         episode.save(stem)
         print(
             f"    episode_{ep_idx:05d}: seed={seed}  frames={episode.num_frames}  "
-            f"terminated={episode.is_terminated}  saved to {stem.name}.{{npz,json}}"
+            f"term_records={dict(episode.agent_termination_proposal_records)}  saved to {stem.name}.{{npz,json}}"
         )
     dt = time.perf_counter() - t0
     print(f"    wall-clock = {dt:.2f}s  ({dt / n_episodes:.2f}s/episode)")

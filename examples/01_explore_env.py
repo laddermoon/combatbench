@@ -75,7 +75,7 @@ def main() -> None:
     # Access combat-relevant info through the context
     ctx = runtime.ctx
     print(f"  {'metrics':<22}: {list(ctx.metrics.keys()) if ctx.metrics else []}")
-    print(f"  {'termination_proposals':<22}: {ctx.termination_proposals}")
+    print(f"  {'agent_termination_proposals':<22}: {dict(ctx.agent_termination_proposals)}")
     if "health_a" in ctx.metrics:
         print(f"  {'health_a':<22}: {ctx.metrics['health_a']}")
         print(f"  {'health_b':<22}: {ctx.metrics['health_b']}")
@@ -97,7 +97,7 @@ def main() -> None:
         },
         "context_after_one_step": {
             "metrics_keys": list(runtime.ctx.metrics.keys()) if runtime.ctx.metrics else [],
-            "termination_proposals": runtime.ctx.termination_proposals,
+            "agent_termination_proposals": dict(runtime.ctx.agent_termination_proposals),
         },
     }
 

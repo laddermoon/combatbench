@@ -251,11 +251,11 @@ class TestMaxSteps:
 
         runtime.reset()
         # reset 后不会立即终止
-        assert not runtime.ctx.is_terminated
+        assert not runtime.ctx.all_agents_terminated
 
         # 第一次 step 后终止
         runtime.step(np.zeros(21), np.zeros(21))
-        assert runtime.ctx.is_terminated
+        assert runtime.ctx.all_agents_terminated
 
     def test_max_steps_prevents_step(self, mock_simulator):
         """
@@ -270,7 +270,7 @@ class TestMaxSteps:
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
         assert runtime.ctx.episode_step == 1
-        assert runtime.ctx.is_terminated
+        assert runtime.ctx.all_agents_terminated
 
         # 尝试继续应该抛出异常
         with pytest.raises(RuntimeError, match="termination"):
@@ -322,7 +322,7 @@ class TestActionValidation:
         runtime.step(np.zeros(21), np.zeros(21))
 
         # Episode 已终止
-        assert runtime.ctx.is_terminated
+        assert runtime.ctx.all_agents_terminated
 
         # 尝试继续 step 应该抛出异常
         with pytest.raises(RuntimeError, match="termination"):

@@ -90,8 +90,7 @@ print("    episode finished.")
 print("[7] Inspecting recorded Episode ...")
 ep: Episode = recorder.get_last_episode()
 print(f"    base_seed       = {ep.base_seed}")
-print(f"    is_terminated   = {ep.is_terminated}")
-print(f"    termination     = {ep.termination_proposals}")
+print(f"    term_records    = {dict(ep.agent_termination_proposal_records)}")
 
 for agent in ("robot_a", "robot_b"):
     obs = ep.observations.get(agent)

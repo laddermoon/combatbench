@@ -196,10 +196,10 @@ class TestReadOnlyContextImmutability:
         # 验证原数据未变
         assert len(ctx.events) == 1
 
-    def test_readonly_termination_proposals_is_immutable(self, mock_simulator):
+    def test_readonly_agent_termination_proposals_is_immutable(self, mock_simulator):
         """
-        场景：尝试修改 ReadOnlySimContext.termination_proposals
-        预期：termination_proposals 是 tuple，无法修改
+        场景：尝试修改 ReadOnlySimContext.agent_termination_proposals
+        预期：agent_termination_proposals 的值是 tuple，无法修改
         """
         from envs.framework.context import ReadOnlySimContext
 
@@ -208,9 +208,9 @@ class TestReadOnlyContextImmutability:
 
         readonly = ReadOnlySimContext.from_sim_context(ctx)
 
-        # termination_proposals 是 tuple，无法修改
+        # agent_termination_proposals 的值是 tuple，无法修改
         with pytest.raises(AttributeError):
-            readonly.termination_proposals.append("another")
+            readonly.agent_termination_proposals["robot_a"].append("another")
 
     def test_readonly_accessor_is_still_functional(self, mock_simulator):
         """

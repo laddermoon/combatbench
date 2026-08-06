@@ -254,9 +254,11 @@ class TestTerminationPropagation:
         runtime.step(np.zeros(21), np.zeros(21))
 
         # 验证：两个终止原因都被保留
-        proposals = runtime.ctx.termination_proposals
-        assert "reason_a" in proposals
-        assert "reason_b" in proposals
+        all_proposals = []
+        for aid in ("robot_a", "robot_b"):
+            all_proposals.extend(runtime.ctx.agent_termination_proposals[aid])
+        assert "reason_a" in all_proposals
+        assert "reason_b" in all_proposals
 
     def test_terminated_runtime_cannot_step(self, mock_simulator):
         """
@@ -274,7 +276,7 @@ class TestTerminationPropagation:
         runtime.step(np.zeros(21), np.zeros(21))
 
         # Episode 已终止
-        assert runtime.ctx.is_terminated
+        assert runtime.ctx.all_agents_terminated
 
         # 尝试继续 step 应该抛出异常
         with pytest.raises(RuntimeError, match="termination"):
@@ -330,11 +332,11 @@ class TestEpisodeBoundary:
         # Episode 1
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
-        assert runtime.ctx.is_terminated
+        assert runtime.ctx.all_agents_terminated
 
         # Episode 2
         runtime.reset()
-        assert not runtime.ctx.is_terminated
+        assert not runtime.ctx.all_agents_terminated
         assert runtime.ctx.episode_step == 0
 
         # 可以正常 step
@@ -355,10 +357,10 @@ class TestEpisodeBoundary:
 
         runtime.reset()
         runtime.step(np.zeros(21), np.zeros(21))
-        assert len(runtime.ctx.termination_proposals) > 0
+        assert any(len(runtime.ctx.agent_termination_proposals[aid]) > 0 for aid in ("robot_a", "robot_b"))
 
         runtime.reset()
-        assert len(runtime.ctx.termination_proposals) == 0
+        assert all(len(runtime.ctx.agent_termination_proposals[aid]) == 0 for aid in ("robot_a", "robot_b"))
 
 
 class TestActionHandling:

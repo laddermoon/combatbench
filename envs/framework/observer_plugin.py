@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Set, Tuple
 
-from .context import ReadOnlySimContext, SimContext
+from .context import AGENT_IDS, ReadOnlySimContext, SimContext
 from .plugin import BasePlugin
 
 
@@ -287,8 +287,8 @@ class _ObserverDispatcherPlugin(BasePlugin):
             trigger_name,
             readonly_ctx.episode_step,
             readonly_ctx.physics_step,
-            readonly_ctx.termination_proposals,
-            readonly_ctx.is_terminated,
+            tuple(readonly_ctx.agent_termination_proposals[aid] for aid in AGENT_IDS),
+            readonly_ctx.all_agents_terminated,
         )
         if not force and process_token == self._last_process_token:
             return
