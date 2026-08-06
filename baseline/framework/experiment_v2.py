@@ -222,7 +222,6 @@ class CommonParams:
     """
 
     name: str
-    reward_keys: Tuple[str, ...]
     learning_rate: float
     critic_learning_rate: float
     grad_clip_norm: float
