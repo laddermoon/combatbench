@@ -133,13 +133,28 @@ def main() -> None:
 
     experiment = get_experiment(args.experiment)
 
+    # Detect ExperimentV2 for dispatch
+    from baseline.framework.experiment_v2 import ExperimentV2
+    is_v2 = isinstance(experiment, ExperimentV2)
+
     if args.smoke:
-        experiment.max_updates = 2
-        experiment.episodes_per_update = 8
-        experiment.eval_episodes = 4
-        experiment.eval_interval = 1
-        experiment.rollout_workers = 2
-        experiment.minibatch_size = 64
+        if is_v2:
+            cp = experiment.common_params()
+            pp = experiment.ppo_params()
+            import dataclasses
+            cp = dataclasses.replace(cp, max_updates=2, episodes_per_update=8,
+                                     eval_episodes=4, eval_interval=1,
+                                     rollout_workers=2)
+            pp = dataclasses.replace(pp, minibatch_size=64)
+            experiment.common_params = lambda: cp
+            experiment.ppo_params = lambda: pp
+        else:
+            experiment.max_updates = 2
+            experiment.episodes_per_update = 8
+            experiment.eval_episodes = 4
+            experiment.eval_interval = 1
+            experiment.rollout_workers = 2
+            experiment.minibatch_size = 64
 
     algo = args.algo
     run_name = args.run_name or f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -184,7 +199,11 @@ def main() -> None:
 
     resume_from = Path(args.resume_from).resolve() if args.resume_from else None
 
-    experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
+    if is_v2:
+        from baseline.framework.ppo_loop_v2 import save_run_config_v2
+        save_run_config_v2(experiment, run_dir, smoke=args.smoke, algo=algo)
+    else:
+        experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -209,7 +228,12 @@ def main() -> None:
     use_confidence = not args.no_confidence
     print(f"[confidence] {'on' if use_confidence else 'off'}", flush=True)
 
-    if algo == "ppo":
+    if is_v2:
+        if algo != "ppo":
+            raise ValueError(f"ExperimentV2 only supports PPO, got algo={algo}")
+        from baseline.framework.ppo_loop_v2 import train_ppo_v2
+        train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
+    elif algo == "ppo":
         from baseline.framework.ppo_loop import train_ppo
         train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
     elif algo == "sac":
