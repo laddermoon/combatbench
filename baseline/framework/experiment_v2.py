@@ -223,8 +223,6 @@ class CommonParams:
 
     name: str
     reward_keys: Tuple[str, ...]
-    obs_dim: int
-    action_dim: int
     learning_rate: float
     critic_learning_rate: float
     grad_clip_norm: float
