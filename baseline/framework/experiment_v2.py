@@ -447,87 +447,15 @@ class ExperimentV2(ABC):
         ...
 
     # ==================================================================
-    # Phase 3: Critic Update Configuration (optional overrides)
+    # Phase 3 & 4: Critic & Actor Update
     # ==================================================================
-
-    def normalize_advantages(
-        self, adv: np.ndarray, mask: np.ndarray,
-    ) -> Optional[np.ndarray]:
-        """Override per-channel advantage normalization.
-
-        Default (return None): z-score normalization on active frames
-        (frames where mask is True).  Inactive frames get zero advantage.
-
-        Override to implement custom normalization schemes, e.g.:
-        - Rank-based normalization
-        - Per-segment normalization instead of global
-        - Clipped normalization for stability
-
-        Args:
-            adv: ``(N,)`` advantage array for one channel across all
-                trajectories in the buffer.
-            mask: ``(N,)`` boolean array, True where this channel is
-                active.
-
-        Returns:
-            Normalized advantage array, or None to use framework default.
-        """
-        return None
-
-    # ==================================================================
-    # Phase 4: Actor Update Configuration (optional overrides)
-    # ==================================================================
-
-    def combine_advantages(
-        self,
-        advs: Dict[str, np.ndarray],
-        masks: Dict[str, np.ndarray],
-        actor_weights: Dict[str, np.ndarray],
-    ) -> Optional[np.ndarray]:
-        """Override multi-critic advantage combination.
-
-        Default (return None): weighted sum with confidence::
-
-            combined = Σ_c  actor_weight_c * confidence_c * norm_adv_c
-
-        where ``confidence_c = clip(EV_c, 0, 1) ** 0.5`` and
-        ``norm_adv_c`` is the per-channel normalized advantage.
-
-        Override to implement custom combination schemes, e.g.:
-        - Max-advantage selection
-        - Pareto-based multi-objective combination
-        - Dynamic weight scheduling based on training progress
-
-        Args:
-            advs: Per-channel advantage arrays, ``{name: (N,)}``.
-            masks: Per-channel active masks, ``{name: (N,) bool}``.
-            actor_weights: Per-channel per-frame actor_weight arrays,
-                ``{name: (N,) float}``.  These come from
-                ``ChannelData.actor_weight`` via the buffer.
-
-        Returns:
-            Combined advantage array ``(N,)``, or None for framework default.
-        """
-        return None
-
-    def normalize_sample_weights(
-        self, weights: np.ndarray,
-    ) -> Optional[np.ndarray]:
-        """Override sample weight normalization.
-
-        Default (return None): divide by mean (so mean = 1.0).
-
-        Override to implement custom normalization, e.g.:
-        - Min-max scaling
-        - Rank-based weighting
-
-        Args:
-            weights: ``(N,)`` sample weight array from ``Trajectory.importance``.
-
-        Returns:
-            Normalized weights, or None for framework default.
-        """
-        return None
+    #
+    # The framework handles GAE computation, advantage normalization
+    # (z-score on active frames), advantage combination (weighted by
+    # actor_weight * confidence), and PPO clipped surrogate.  These are
+    # not customizable — the experiment controls the pipeline through
+    # ``reward_channels()`` (γ, λ) and ``ChannelData.actor_weight``
+    # (per-channel influence on the actor).
 
     # ==================================================================
     # Evaluation & Scheduling
