@@ -432,11 +432,15 @@ class ExperimentV2(ABC):
     # ==================================================================
 
     @abstractmethod
-    def build_trajectories(self, episode: "Episode") -> List["Trajectory"]:
-        """Convert an episode into training trajectories.
+    def build_trajectories(self, episodes: List["Episode"]) -> List["Trajectory"]:
+        """Convert all episodes into training trajectories.
+
+        Receives the full batch of episodes at once so the experiment can
+        compute global statistics (e.g. phase frame-count ratios) and adjust
+        per-trajectory ``actor_weight`` accordingly before returning.
 
         This is the single source of truth for:
-        - How the episode is sliced into trajectories (phase-based,
+        - How each episode is sliced into trajectories (phase-based,
           gating-based, or whole-episode).
         - Per-channel rewards (dense shaping, terminal bonuses, penalties).
         - Per-channel termination (``is_terminated`` → V=0, or
@@ -448,7 +452,7 @@ class ExperimentV2(ABC):
         - Which channels are active on each trajectory (channels absent
           from ``Trajectory.channels`` are inactive).
 
-        Returns an empty list to skip the episode entirely.
+        Returns an empty list to skip all episodes entirely.
 
         The experiment should NOT fill ``Trajectory.log_prob`` — the
         framework's PPOBuffer does this via a batched

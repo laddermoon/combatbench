@@ -54,12 +54,19 @@ class BasicBalanceV2TruncState(CombatExperimentV2Base):
             for k in self._channel_names
         )
 
-    def build_trajectories(self, episode) -> List[Trajectory]:
-        """Convert episode into a single trajectory with all 6 channels.
+    def build_trajectories(self, episodes) -> List[Trajectory]:
+        """Convert episodes into trajectories — one per episode, all 6 channels.
 
         Only r_fall uses the fell-based termination flag. All state rewards
         (r_cross, r_joint, r_vel, r_tilt, r_foot) are always truncated.
         """
+        all_trajs: List[Trajectory] = []
+        for episode in episodes:
+            trajs = self._build_one(episode)
+            all_trajs.extend(trajs)
+        return all_trajs
+
+    def _build_one(self, episode) -> List[Trajectory]:
         T = episode.num_frames
         if T == 0:
             return []

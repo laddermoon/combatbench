@@ -49,12 +49,19 @@ class BasicBalanceV2(CombatExperimentV2Base):
             for k in self._channel_names
         )
 
-    def build_trajectories(self, episode) -> List[Trajectory]:
-        """Convert episode into a single trajectory with all 6 channels.
+    def build_trajectories(self, episodes) -> List[Trajectory]:
+        """Convert episodes into trajectories — one per episode, all 6 channels.
 
         V1 uses prepare_training_segments default = whole episode [(0, T, 1.0)].
         So V2 produces exactly one Trajectory covering the full episode.
         """
+        all_trajs: List[Trajectory] = []
+        for episode in episodes:
+            trajs = self._build_one(episode)
+            all_trajs.extend(trajs)
+        return all_trajs
+
+    def _build_one(self, episode) -> List[Trajectory]:
         T = episode.num_frames
         if T == 0:
             return []

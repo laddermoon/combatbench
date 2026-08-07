@@ -165,17 +165,18 @@ class BasicBalanceV2Dual(CombatExperimentV2Base):
             log_prob=None,
         )
 
-    def build_trajectories(self, episode) -> List[Trajectory]:
-        """Build two trajectories — one per agent perspective."""
-        trajectories: List[Trajectory] = []
-        for agent_id, cross_key, posture_key in [
-            ("robot_a", "cross_support_a", "posture_a"),
-            ("robot_b", "cross_support_b", "posture_b"),
-        ]:
-            traj = self._build_single_trajectory(episode, agent_id, cross_key, posture_key)
-            if traj is not None:
-                trajectories.append(traj)
-        return trajectories
+    def build_trajectories(self, episodes) -> List[Trajectory]:
+        """Build two trajectories per episode — one per agent perspective."""
+        all_trajs: List[Trajectory] = []
+        for episode in episodes:
+            for agent_id, cross_key, posture_key in [
+                ("robot_a", "cross_support_a", "posture_a"),
+                ("robot_b", "cross_support_b", "posture_b"),
+            ]:
+                traj = self._build_single_trajectory(episode, agent_id, cross_key, posture_key)
+                if traj is not None:
+                    all_trajs.append(traj)
+        return all_trajs
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:
         survived_count = 0

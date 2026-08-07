@@ -119,6 +119,33 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
     # Trajectory building
     # ------------------------------------------------------------------
 
+    def _count_phase_frames(
+        self,
+        episode,
+        agent_id: str,
+        phase_key: str,
+    ) -> Tuple[int, int]:
+        """Count struggle and stability frames for one agent (truncated)."""
+        T_full = episode.num_frames
+        if T_full == 0:
+            return (0, 0)
+
+        records = episode.agent_termination_proposal_records.get(agent_id, ())
+        if records:
+            first_reason, term_step = records[0]
+            fell = first_reason.startswith("imbalance")
+            T = term_step if fell else T_full
+        else:
+            T = T_full
+
+        if T == 0:
+            return (0, 0)
+
+        is_struggle = self._extract_phase_info(episode, phase_key, T)
+        n_struggle = int(is_struggle.sum())
+        n_stability = T - n_struggle
+        return (n_struggle, n_stability)
+
     def _build_agent_trajectories(
         self,
         episode,
@@ -126,8 +153,13 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
         cross_key: str,
         posture_key: str,
         phase_key: str,
+        stability_aw_scale: float = 1.0,
     ) -> List[Trajectory]:
-        """Build one Trajectory per phase run for a single agent."""
+        """Build one Trajectory per phase run for a single agent.
+
+        ``stability_aw_scale`` multiplies the actor_weight of all active
+        channels on stability-phase trajectories.
+        """
         T_full = episode.num_frames
         if T_full == 0:
             return []
@@ -282,6 +314,10 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
             for ch_idx, key in enumerate(self._channel_names):
                 aw = float(self._actor_weights[ch_idx]) if ch_idx < len(self._actor_weights) else 1.0
 
+                # Scale stability-phase active channels
+                if not is_str and key in active_keys:
+                    aw *= stability_aw_scale
+
                 if key not in active_keys:
                     channels[key] = ChannelData(
                         reward=np.zeros(T_run, dtype=np.float32),
@@ -313,18 +349,50 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
 
         return trajectories
 
-    def build_trajectories(self, episode) -> List[Trajectory]:
-        """Build trajectories — multiple per agent, one per phase run."""
-        trajectories: List[Trajectory] = []
-        for agent_id, cross_key, posture_key, phase_key in [
+    def build_trajectories(self, episodes) -> List[Trajectory]:
+        """Build trajectories — multiple per agent, one per phase run.
+
+        Two-pass: first count struggle/stability frames across all episodes
+        to compute a stability actor_weight scale, then build trajectories
+        with the adjusted weights so neither phase dominates the gradient.
+        """
+        agent_specs = [
             ("robot_a", "cross_support_a", "posture_a", "phase_a"),
             ("robot_b", "cross_support_b", "posture_b", "phase_b"),
-        ]:
-            agent_trajs = self._build_agent_trajectories(
-                episode, agent_id, cross_key, posture_key, phase_key,
-            )
-            trajectories.extend(agent_trajs)
-        return trajectories
+        ]
+
+        # --- Pass 1: count phase frames ---
+        n_struggle = 0
+        n_stability = 0
+        for episode in episodes:
+            for agent_id, _, _, phase_key in agent_specs:
+                ns, nb = self._count_phase_frames(episode, agent_id, phase_key)
+                n_struggle += ns
+                n_stability += nb
+
+        # --- Compute stability aw scale (total-weight balance, one-sided) ---
+        # Per-frame base total weights:
+        #   struggle: r_struggle_strug(3.0) + r_height(0.3) = 3.3
+        #   stability: r_struggle_stab(3.0) + r_cross(1.0) + 4×0.2 = 4.8
+        W_STRUGGLE = 3.0 + 0.3
+        W_STABILITY = 3.0 + 1.0 + 0.2 * 4
+        s_struggle = W_STRUGGLE * n_struggle
+        s_stability = W_STABILITY * n_stability
+        if s_stability < s_struggle and s_stability > 0:
+            stability_aw_scale = s_struggle / s_stability
+        else:
+            stability_aw_scale = 1.0
+
+        # --- Pass 2: build trajectories with scaled weights ---
+        all_trajs: List[Trajectory] = []
+        for episode in episodes:
+            for agent_id, cross_key, posture_key, phase_key in agent_specs:
+                agent_trajs = self._build_agent_trajectories(
+                    episode, agent_id, cross_key, posture_key, phase_key,
+                    stability_aw_scale=stability_aw_scale,
+                )
+                all_trajs.extend(agent_trajs)
+        return all_trajs
 
     # ------------------------------------------------------------------
     # Eval

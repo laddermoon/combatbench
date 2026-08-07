@@ -342,12 +342,9 @@ def train_ppo_v2(
             episodes: List[Episode] = rollouter.collect(jobs)
             t_rollout = time.perf_counter() - t0
 
-            # 4. Build trajectories (direct call, no funnel)
+            # 4. Build trajectories (batch call — experiment sees all episodes)
             t0 = time.perf_counter()
-            all_trajs: List = []
-            for ep in episodes:
-                trajs = experiment.build_trajectories(ep)
-                all_trajs.extend(trajs)
+            all_trajs = experiment.build_trajectories(episodes)
             buf = PPOBufferV2(
                 trajectories=all_trajs,
                 actor=actor,
