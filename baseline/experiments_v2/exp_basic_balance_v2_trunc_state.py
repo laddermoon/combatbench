@@ -1,7 +1,12 @@
-"""V2 implementation of basic_balance_v2 — identical behavior to V1.
+"""V2 basic_balance_v2 with per-channel termination — only r_fall terminated.
+
+Based on v2_basic_balance_v2. The only change: r_fall keeps the original
+termination logic (terminated if fell, truncated if timeout), while all
+state rewards (r_cross, r_joint, r_vel, r_tilt, r_foot) are always
+truncated (is_terminated=False, bootstrap from V(s_end)).
 
 Reward channels: r_fall, r_cross, r_joint, r_vel, r_tilt, r_foot
-All channels use gamma=0.99, gae_lambda=0.95 (matching V1 defaults).
+All channels use gamma=0.99, gae_lambda=0.95.
 """
 from __future__ import annotations
 
@@ -16,9 +21,9 @@ from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_pe
 from .base import CombatExperimentV2Base
 
 
-class BasicBalanceV2(CombatExperimentV2Base):
+class BasicBalanceV2TruncState(CombatExperimentV2Base):
 
-    name = "v2_basic_balance_v2"
+    name = "v2_basic_balance_v2_trunc_state"
 
     # --- Reward channels ---
     _channel_names = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
@@ -52,8 +57,8 @@ class BasicBalanceV2(CombatExperimentV2Base):
     def build_trajectories(self, episode) -> List[Trajectory]:
         """Convert episode into a single trajectory with all 6 channels.
 
-        V1 uses prepare_training_segments default = whole episode [(0, T, 1.0)].
-        So V2 produces exactly one Trajectory covering the full episode.
+        Only r_fall uses the fell-based termination flag. All state rewards
+        (r_cross, r_joint, r_vel, r_tilt, r_foot) are always truncated.
         """
         T = episode.num_frames
         if T == 0:
@@ -110,10 +115,10 @@ class BasicBalanceV2(CombatExperimentV2Base):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        # --- Termination ---
-        # V1: whole-episode segment. If fell → terminated (V=0).
-        # If survived (timeout) → truncated (bootstrap from V(s_end)).
-        is_terminated = fell
+        # --- Per-channel termination ---
+        # r_fall: terminated if fell (V=0), truncated if timeout (bootstrap)
+        # state rewards: always truncated (bootstrap from V(s_end))
+        is_terminated_fall = fell
 
         # --- Build channels ---
         all_rewards = {
@@ -128,9 +133,10 @@ class BasicBalanceV2(CombatExperimentV2Base):
         channels: Dict[str, ChannelData] = {}
         for idx, key in enumerate(self._channel_names):
             aw = float(self._actor_weights[idx]) if idx < len(self._actor_weights) else 1.0
+            is_term = is_terminated_fall if key == "r_fall" else False
             channels[key] = ChannelData(
                 reward=all_rewards[key].astype(np.float32),
-                is_terminated=is_terminated,
+                is_terminated=is_term,
                 actor_weight=aw,
             )
 
@@ -194,4 +200,4 @@ class BasicBalanceV2(CombatExperimentV2Base):
             self._actor_weights = tuple(float(w) for w in aw)
 
 
-EXPERIMENT = BasicBalanceV2()
+EXPERIMENT = BasicBalanceV2TruncState()

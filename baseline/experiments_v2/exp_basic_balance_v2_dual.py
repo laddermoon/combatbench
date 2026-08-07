@@ -1,7 +1,11 @@
-"""V2 implementation of basic_balance_v2 — identical behavior to V1.
+"""V2 dual-perspective basic_balance_v2 — two trajectories per episode.
+
+Each episode produces two trajectories: one from robot_a's perspective
+and one from robot_b's perspective. Both agents are observed and
+terminated independently via DualImbalanceTerminationPlugin.
 
 Reward channels: r_fall, r_cross, r_joint, r_vel, r_tilt, r_foot
-All channels use gamma=0.99, gae_lambda=0.95 (matching V1 defaults).
+All channels use gamma=0.99, gae_lambda=0.95.
 """
 from __future__ import annotations
 
@@ -16,32 +20,28 @@ from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_pe
 from .base import CombatExperimentV2Base
 
 
-class BasicBalanceV2(CombatExperimentV2Base):
+class BasicBalanceV2Dual(CombatExperimentV2Base):
 
-    name = "v2_basic_balance_v2"
+    name = "v2_basic_balance_v2_dual"
 
-    # --- Reward channels ---
     _channel_names = ("r_fall", "r_cross", "r_joint", "r_vel", "r_tilt", "r_foot")
     _gamma = 0.99
     _gae_lambda = 0.95
 
-    # --- Env / rollout config ---
-    env_blueprint = "basic_balance_v2_env.yaml"
+    env_blueprint = "basic_balance_v2_dual_env.yaml"
+    agent_used = "both"
 
-    # --- Reward constants ---
     per_step_survival_reward: float = 0.01
     terminal_fall_penalty: float = 1.0
 
-    # --- Actor weights (matching V1 initial_weights / next_weights) ---
+    episodes_per_update: int = 256 * 4
+
     _actor_weights: Tuple[float, ...] = (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
-    # --- Stateful scheduler ---
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
 
-    # ------------------------------------------------------------------
-    # ExperimentV2 abstract methods
-    # ------------------------------------------------------------------
+    _AGENT_IDS = ("robot_a", "robot_b")
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
         return tuple(
@@ -49,30 +49,48 @@ class BasicBalanceV2(CombatExperimentV2Base):
             for k in self._channel_names
         )
 
-    def build_trajectories(self, episode) -> List[Trajectory]:
-        """Convert episode into a single trajectory with all 6 channels.
+    def _build_single_trajectory(
+        self,
+        episode,
+        agent_id: str,
+        cross_key: str,
+        posture_key: str,
+    ) -> Trajectory:
+        """Build one trajectory for a single agent perspective.
 
-        V1 uses prepare_training_segments default = whole episode [(0, T, 1.0)].
-        So V2 produces exactly one Trajectory covering the full episode.
+        The trajectory is truncated at the agent's actual termination
+        step (from ``agent_termination_proposal_records``), excluding
+        post-fall steps where the robot is on the ground.
         """
-        T = episode.num_frames
-        if T == 0:
-            return []
+        T_full = episode.num_frames
+        if T_full == 0:
+            return None
 
-        ep_target = str(episode.episode_options.get("agent_id", "robot_a"))
-        obs_all = episode.observations.get(ep_target)
-        acts_all = episode.actions.get(ep_target)
-        fin_obs = episode.final_observation.get(ep_target)
+        records = episode.agent_termination_proposal_records.get(agent_id, ())
+        if records:
+            first_reason, term_step = records[0]
+            fell = first_reason.startswith("imbalance")
+            if fell:
+                T = term_step
+            else:
+                T = T_full
+        else:
+            fell = False
+            T = T_full
+
+        if T == 0:
+            return None
+
+        obs_all = episode.observations.get(agent_id)
+        acts_all = episode.actions.get(agent_id)
+        fin_obs = episode.final_observation.get(agent_id)
 
         if obs_all is None or acts_all is None or fin_obs is None:
-            return []
+            return None
 
-        fell = all(
-            r.startswith("imbalance")
-            for r in episode.agent_termination_reason.values()
-        )
+        obs_all = np.asarray(obs_all[:T], dtype=np.float32)
+        acts_all = np.asarray(acts_all[:T], dtype=np.float32)
 
-        # --- r_fall: per-step survival bonus + terminal signal ---
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
         penalty = self.terminal_fall_penalty
         if fell:
@@ -80,14 +98,21 @@ class BasicBalanceV2(CombatExperimentV2Base):
         else:
             r_fall[-1] = penalty
 
-        # --- r_cross ---
-        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
+        r_cross = _extract_per_step_scalar(episode.observer_outputs, cross_key, T_full)[:T]
 
-        # --- posture-based channels ---
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "joint_deviation", T_full)
+        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "joint_vel", T_full)
+        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "torso_tilt", T_full)
+        foot_height_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "foot_height", T_full)
+
+        if joint_dev_arr is not None:
+            joint_dev_arr = joint_dev_arr[:T]
+        if joint_vel_arr is not None:
+            joint_vel_arr = joint_vel_arr[:T]
+        if torso_tilt_arr is not None:
+            torso_tilt_arr = torso_tilt_arr[:T]
+        if foot_height_arr is not None:
+            foot_height_arr = foot_height_arr[:T]
 
         if joint_dev_arr is None:
             joint_dev_arr = np.zeros(T, dtype=np.float32)
@@ -110,12 +135,8 @@ class BasicBalanceV2(CombatExperimentV2Base):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        # --- Termination ---
-        # V1: whole-episode segment. If fell → terminated (V=0).
-        # If survived (timeout) → truncated (bootstrap from V(s_end)).
         is_terminated = fell
 
-        # --- Build channels ---
         all_rewards = {
             "r_fall": r_fall,
             "r_cross": r_cross,
@@ -134,37 +155,46 @@ class BasicBalanceV2(CombatExperimentV2Base):
                 actor_weight=aw,
             )
 
-        return [Trajectory(
-            obs=np.asarray(obs_all, dtype=np.float32),
-            actions=np.asarray(acts_all, dtype=np.float32),
+        return Trajectory(
+            obs=obs_all,
+            actions=acts_all,
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
             mode=None,
             log_prob=None,
-        )]
+        )
+
+    def build_trajectories(self, episode) -> List[Trajectory]:
+        """Build two trajectories — one per agent perspective."""
+        trajectories: List[Trajectory] = []
+        for agent_id, cross_key, posture_key in [
+            ("robot_a", "cross_support_a", "posture_a"),
+            ("robot_b", "cross_support_b", "posture_b"),
+        ]:
+            traj = self._build_single_trajectory(episode, agent_id, cross_key, posture_key)
+            if traj is not None:
+                trajectories.append(traj)
+        return trajectories
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:
-        """Process eval episodes — matches V1 compute_episode_metrics + compare_eval + next_weights."""
         survived_count = 0
+        total_agents = 0
         for ep in episodes:
-            fell = all(
-                r.startswith("imbalance")
-                for r in ep.agent_termination_reason.values()
-            )
-            if not fell:
-                survived_count += 1
+            for aid in self._AGENT_IDS:
+                total_agents += 1
+                term_reason = ep.agent_termination_reason.get(aid, "")
+                if not term_reason.startswith("imbalance"):
+                    survived_count += 1
 
-        survival_rate = float(survived_count / max(len(episodes), 1))
+        survival_rate = float(survived_count / max(total_agents, 1))
         self._survival_rate = survival_rate
 
         survived_metric = float(survived_count)
-
         is_new_best = survived_metric > self._best_survived
         if is_new_best:
             self._best_survived = survived_metric
 
-        # V1 next_weights always returns the same weights
         self._actor_weights = (3.0, 1.0, 0.2, 0.2, 0.2, 0.2)
 
         return {
@@ -174,10 +204,6 @@ class BasicBalanceV2(CombatExperimentV2Base):
                 "survival_rate": round(survival_rate, 3),
             },
         }
-
-    # ------------------------------------------------------------------
-    # State persistence
-    # ------------------------------------------------------------------
 
     def state(self) -> dict:
         return {
@@ -194,4 +220,4 @@ class BasicBalanceV2(CombatExperimentV2Base):
             self._actor_weights = tuple(float(w) for w in aw)
 
 
-EXPERIMENT = BasicBalanceV2()
+EXPERIMENT = BasicBalanceV2Dual()

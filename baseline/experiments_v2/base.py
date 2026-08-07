@@ -33,11 +33,10 @@ class CombatExperimentV2Base(ExperimentV2):
     """Class-attribute style base for humanoid21 combat V2 experiments.
 
     Subclass and override:
-    - Class attributes (name, obs_dim, action_dim, etc.)
+    - Class attributes (name, obs_dim, action_dim, env_blueprint, etc.)
     - ``reward_channels()`` — declare reward channels
     - ``build_trajectories()`` — episode → trajectories
     - ``on_eval()`` — eval processing + best-of-run
-    - ``_env_pb()`` — return the ParameterizedEnvBlueprint for this experiment
     """
 
     # --- Identity ---
@@ -78,15 +77,39 @@ class CombatExperimentV2Base(ExperimentV2):
 
     seed: int = 42
 
-    # --- Free-form experiment-specific parameters ---
-    DEFAULT_CUSTOM_CONFIG: Dict[str, Any] = {
-        "rollout_distance_min": 1.5,
-        "rollout_distance_max": 3.5,
-        "max_steps": 200,
-        "terminal_fall_penalty": 1.0,
-    }
-
-    custom_config: Dict[str, Any] = DEFAULT_CUSTOM_CONFIG
+    # --- Rollout / env configuration (subclass overrides) ---
+    # These parameters control how build_jobs() constructs rollout jobs.
+    # Each job is a tuple:
+    #   (policy_a_bp, policy_b_bp, env_bp, seed, episode_options)
+    # The framework's ParallelRollouter.collect() consumes these jobs to
+    # run parallel environment rollouts and produce Episode objects.
+    #
+    # env_blueprint: YAML filename under humanoid21/blueprints/ that
+    #   defines the ParameterizedEnvBlueprint (env plugins, observers,
+    #   termination conditions, etc.).  _env_pb() loads it from this path.
+    #
+    # agent_used: Controls which agent's perspective the rollout observes.
+    #   "random"  — each episode randomly selects robot_a or robot_b as
+    #               the observed agent (self-play).  The env_bp is
+    #               materialized with agent_id set per-episode.
+    #   "both"    — both agents are observed in a single env (dual mode).
+    #               The env_bp is materialized without agent_id; the env
+    #               itself manages both agents via DualImbalanceTerminationPlugin.
+    #   "robot_a" — always observe robot_a (fixed single-agent mode).
+    #   "robot_b" — always observe robot_b (fixed single-agent mode).
+    #
+    # max_steps: Maximum number of environment steps per episode.
+    #   Passed to env_bp.materialize(max_steps=...).
+    #
+    # init_distance_min / init_distance_max: Range for the initial
+    #   distance between the two robots at episode reset.  A random
+    #   value uniformly sampled from [min, max] is placed in
+    #   episode_options["initial_distance"] for each job.
+    env_blueprint: str = ""
+    agent_used: str = "random"
+    max_steps: int = 200
+    init_distance_min: float = 1.5
+    init_distance_max: float = 3.5
 
     # ------------------------------------------------------------------
     # Parameter access (ExperimentV2 interface)
@@ -154,12 +177,19 @@ class CombatExperimentV2Base(ExperimentV2):
         )
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
-        """Return the ParameterizedEnvBlueprint for this experiment.
+        """Load the ParameterizedEnvBlueprint from ``env_blueprint`` filename.
 
-        Subclass must override to specify the env blueprint file.
+        Subclass sets ``env_blueprint`` to the yaml filename (relative
+        to ``humanoid21/blueprints/``).  Override only for non-standard
+        blueprint loading logic.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement _env_pb()"
+        if not self.env_blueprint:
+            raise ValueError(
+                f"{self.__class__.__name__} must set env_blueprint "
+                "to a blueprint filename"
+            )
+        return ParameterizedEnvBlueprint.load(
+            Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints" / self.env_blueprint
         )
 
     # ------------------------------------------------------------------
@@ -178,23 +208,44 @@ class CombatExperimentV2Base(ExperimentV2):
         base_seed: int,
         n_episodes: int,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
-        max_steps = self.custom_config["max_steps"]
         rng = np.random.default_rng(base_seed)
 
+        if self.agent_used == "both":
+            env_bp = env_pb.materialize(max_steps=self.max_steps)
+            jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
+            for i in range(n_episodes):
+                seed = int(base_seed + i)
+                initial_distance = float(
+                    rng.uniform(self.init_distance_min, self.init_distance_max)
+                )
+                jobs.append((
+                    policy_bp, policy_bp,
+                    env_bp, seed,
+                    {"initial_distance": initial_distance},
+                ))
+            return jobs
+
+        # Single-agent modes: robot_a, robot_b, or random
+        agent_ids: Tuple[str, ...]
+        if self.agent_used == "random":
+            agent_ids = ("robot_a", "robot_b")
+        else:
+            agent_ids = (self.agent_used,)
+
         env_bps: Dict[str, EnvBlueprint] = {
-            aid: env_pb.materialize(max_steps=max_steps, agent_id=aid)
-            for aid in ("robot_a", "robot_b")
+            aid: env_pb.materialize(max_steps=self.max_steps, agent_id=aid)
+            for aid in agent_ids
         }
 
-        jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
+        jobs = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
-            agent_id = self._agent_from_rollout_seed(seed)
+            if self.agent_used == "random":
+                agent_id = self._agent_from_rollout_seed(seed)
+            else:
+                agent_id = self.agent_used
             initial_distance = float(
-                rng.uniform(
-                    self.custom_config["rollout_distance_min"],
-                    self.custom_config["rollout_distance_max"],
-                )
+                rng.uniform(self.init_distance_min, self.init_distance_max)
             )
             jobs.append((
                 policy_bp, policy_bp,
