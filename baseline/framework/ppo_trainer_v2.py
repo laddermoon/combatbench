@@ -4,7 +4,9 @@ Clean rewrite of ppo_trainer.py for the V2 experiment interface.
 Key differences from v1:
 
 - Buffer consumes ``List[Trajectory]`` directly — no v1 segment/legacy adapters.
-- No ``reward_keys`` parameter — discovered from ``Trajectory.channels``.
+- ``reward_keys`` passed explicitly by the training loop (from
+  ``experiment.reward_channels()``), ensuring consistency between
+  buffer and update.
 - No ``episode_metrics`` / ``episode_lengths`` — eval is ``on_eval()``'s job.
 - No ``batch_summary()`` / ``reward_summary()`` — logging is the loop's job.
 - ``ppo_update_v2`` takes ``RewardChannel`` tuple + ``PPOParams`` directly.
@@ -57,13 +59,8 @@ class PPOBufferV2:
         trajectories: List[Trajectory],
         actor: TrainablePolicy,
         device: torch.device,
+        reward_keys: Tuple[str, ...],
     ):
-        # Discover reward keys from the first non-empty trajectory.
-        reward_keys: Tuple[str, ...] = ()
-        for t in trajectories:
-            if len(t.obs) > 0 and t.channels:
-                reward_keys = tuple(t.channels.keys())
-                break
         self.reward_keys: Tuple[str, ...] = reward_keys
 
         self.reward_data: Dict[str, List[np.ndarray]] = {

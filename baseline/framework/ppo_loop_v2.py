@@ -352,6 +352,7 @@ def train_ppo_v2(
                 trajectories=all_trajs,
                 actor=actor,
                 device=device,
+                reward_keys=reward_keys,
             )
             t_buffer = time.perf_counter() - t0
 
