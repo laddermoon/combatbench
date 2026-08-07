@@ -1,11 +1,25 @@
 """PPO training loop for ExperimentV2.
 
 Clean rewrite of ppo_loop.py for the V2 experiment interface.
-Key differences from v1:
 
+Design intent
+-------------
+The V2 loop is a thin orchestrator: it owns the training *process*
+(rollout → trajectory → buffer → PPO update → eval → log → checkpoint)
+but delegates all *semantics* to the experiment — reward shaping,
+trajectory segmentation, actor_weight scheduling, and eval metrics.
+
+The framework never interprets rewards or decides how to slice episodes.
+It simply calls ``experiment.build_trajectories(all_episodes)`` with the
+full batch, letting the experiment compute global statistics (e.g. phase
+frame-count ratios) and adjust per-trajectory weights before returning.
+
+Key differences from v1
+-----------------------
 - Uses ``ExperimentV2`` (PPO-only, no SAC).
 - ``build_jobs()`` replaces separate ``build_rollout_jobs`` / ``build_eval_jobs``.
-- ``build_trajectories()`` called directly — no ``resolve_trajectories`` funnel.
+- ``build_trajectories(episodes)`` receives *all* episodes at once — no
+  per-episode funnel — so experiments can do cross-episode balancing.
 - ``on_eval()`` replaces ``compute_episode_metrics`` + ``compare_eval`` +
   ``next_weights`` + ``scheduler_info``.
 - ``state()`` / ``load_state()`` replaces split scheduler/training state.
@@ -38,6 +52,10 @@ from .ppo_trainer_v2 import PPOBufferV2, ppo_update_v2, set_seed
 
 # ---------------------------------------------------------------------------
 # Episode-level stats (framework-computed, no experiment involvement)
+#
+# These are pure diagnostics for logging. The experiment never sees them
+# and they do not influence training. Keeping them framework-owned avoids
+# boilerplate in every experiment subclass.
 # ---------------------------------------------------------------------------
 
 def _episode_stats(episodes: List[Episode]) -> Dict[str, Any]:
@@ -69,6 +87,10 @@ def _episode_stats(episodes: List[Episode]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Config serialization (framework's job, not experiment's)
+#
+# The framework serializes the experiment's public interface (common params,
+# ppo params, reward channels, state) into a reproducible config.json.
+# Experiments don't need to implement any serialization themselves.
 # ---------------------------------------------------------------------------
 
 def save_run_config_v2(
@@ -105,6 +127,11 @@ def save_run_config_v2(
 
 # ---------------------------------------------------------------------------
 # Checkpoint
+#
+# Checkpoints bundle actor + all critics + optimizers + experiment state
+# so training can resume from any point. On resume, the framework force-
+# aligns LR and log_std bounds to the *current* config, allowing config
+# changes (e.g. LR decay) between resume runs.
 # ---------------------------------------------------------------------------
 
 def save_checkpoint_v2(
@@ -204,6 +231,10 @@ def load_checkpoint_v2(
 
 # ---------------------------------------------------------------------------
 # Video recording (reused from v1)
+#
+# Video is rendered in a subprocess via round_runner to avoid blocking
+# the training loop. If a previous render is still running, the new one
+# is skipped rather than queued.
 # ---------------------------------------------------------------------------
 
 def _spawn_video_render(
@@ -241,6 +272,20 @@ def _spawn_video_render(
 
 # ---------------------------------------------------------------------------
 # Train (PPO V2)
+#
+# Core training loop. Each iteration:
+#   1. Export stochastic policy blueprint for rollout sampling
+#   2. Build rollout jobs (experiment decides agent/distance/seed)
+#   3. Collect episodes via parallel workers
+#   4. Build trajectories — experiment receives ALL episodes at once,
+#      enabling cross-episode statistics (e.g. phase frame balancing)
+#   5. PPO update — per-channel GAE, confidence-weighted advantage
+#      combination, clipped surrogate + value loss
+#   6. Eval — deterministic rollout, experiment computes metrics and
+#      decides best-of-run; framework handles checkpoint/video
+#   7. Logging — framework-computed episode/trajectory/reward stats
+#      + machine-readable __RAW_STATS__ line for external parsing
+#   8. Periodic checkpoint (aligned with eval_interval)
 # ---------------------------------------------------------------------------
 
 def train_ppo_v2(
@@ -256,7 +301,9 @@ def train_ppo_v2(
     channels = experiment.reward_channels()
     reward_keys = tuple(ch.name for ch in channels)
 
-    # Kill entire process group on SIGTERM/SIGINT
+    # --- Signal handling: kill entire process group (including rollout
+    #     workers) on SIGTERM/SIGINT so --background runs can be cleanly
+    #     stopped without orphaned subprocesses. ---
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)
     signal.signal(signal.SIGTERM, _shutdown_handler)
@@ -266,6 +313,9 @@ def train_ppo_v2(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- Build models ---
+    # One critic per reward channel. Each critic learns V(s) for its
+    # channel's reward stream, enabling per-channel GAE and confidence-
+    # weighted advantage combination in ppo_update_v2.
     actor = experiment.build_actor(device)
     critics = {
         ch.name: experiment.build_critic(ch.name, device)
@@ -280,7 +330,10 @@ def train_ppo_v2(
 
     start_update = 1
 
-    # --- Resume ---
+    # --- Resume from checkpoint ---
+    # Restores model weights, optimizer states, and experiment state.
+    # LR and log_std bounds are force-aligned to current config so
+    # hyperparameter changes between runs take effect immediately.
     if resume_from is not None:
         start_update = load_checkpoint_v2(
             Path(resume_from),
@@ -317,11 +370,16 @@ def train_ppo_v2(
         flush=True,
     )
 
+    # --- Main training loop ---
+    # ParallelRollouter maintains long-lived EnvRuntime instances across
+    # workers, amortizing environment construction cost over many updates.
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         for u in range(start_update, cp.max_updates + 1):
             t_update_start = time.perf_counter()
 
-            # 1. Export stochastic policy blueprint for training rollouts
+            # 1. Export stochastic policy blueprint for training rollouts.
+            #    Stochastic (log_std included) so rollout samples explore.
+            #    A fresh export each update ensures workers use the latest weights.
             t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"u{u:05d}"
             policy_bp = actor.to_blueprint(
@@ -329,7 +387,9 @@ def train_ppo_v2(
             )
             t_export = time.perf_counter() - t0
 
-            # 2. Build rollout jobs
+            # 2. Build rollout jobs.
+            #    Experiment decides agent assignment, initial distance, seeds.
+            #    Rollout seed is offset by update * batch size for reproducibility.
             t0 = time.perf_counter()
             rollout_seed = cp.seed + u * cp.episodes_per_update
             jobs = experiment.build_jobs(
@@ -337,12 +397,16 @@ def train_ppo_v2(
             )
             t_jobs = time.perf_counter() - t0
 
-            # 3. Rollout
+            # 3. Rollout — parallel episode collection across workers.
             t0 = time.perf_counter()
             episodes: List[Episode] = rollouter.collect(jobs)
             t_rollout = time.perf_counter() - t0
 
-            # 4. Build trajectories (batch call — experiment sees all episodes)
+            # 4. Build trajectories — experiment receives ALL episodes at once.
+            #    This is the key V2 design point: the experiment can compute
+            #    global statistics (e.g. struggle/stability frame ratios) and
+            #    adjust per-trajectory actor_weight before returning. The
+            #    framework then wraps trajectories into a flat PPOBufferV2.
             t0 = time.perf_counter()
             all_trajs = experiment.build_trajectories(episodes)
             buf = PPOBufferV2(
@@ -353,7 +417,9 @@ def train_ppo_v2(
             )
             t_buffer = time.perf_counter() - t0
 
-            # 5. PPO update
+            # 5. PPO update — per-channel GAE, z-score normalized advantages,
+            #    confidence-weighted combination, clipped surrogate loss.
+            #    See ppo_trainer_v2.py for the full algorithm.
             t0 = time.perf_counter()
             stats = ppo_update_v2(
                 actor=actor,
@@ -369,7 +435,9 @@ def train_ppo_v2(
             )
             t_ppo = time.perf_counter() - t0
 
-            # 6. Eval
+            # 6. Eval — deterministic policy rollout + experiment-defined metrics.
+            #    Experiment's on_eval returns {is_new_best, info}. Framework
+            #    saves best-of-run policy and spawns video on schedule.
             eval_info: Optional[Dict[str, Any]] = None
             t_eval = 0.0
             if u % cp.eval_interval == 0:
@@ -384,7 +452,8 @@ def train_ppo_v2(
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
 
-                # on_eval handles metrics, best-of-run, and state updates
+                # on_eval handles metrics, best-of-run selection, and any
+                # internal state updates (e.g. curriculum advancement).
                 result = experiment.on_eval(eval_episodes, u)
                 eval_info = result.get("info", {})
                 is_new_best = result.get("is_new_best", False)
@@ -394,7 +463,8 @@ def train_ppo_v2(
                               for k, v in eval_info.items()]
                 eval_line = f"[eval {u:4d}] " + " ".join(info_parts)
 
-                # Best-of-run snapshot
+                # Best-of-run snapshot — exported as clean inference policy
+                # (no log_std) for deployment and video rendering.
                 if is_new_best:
                     if hasattr(actor, "export_policy_artifacts"):
                         actor.export_policy_artifacts(
@@ -451,10 +521,11 @@ def train_ppo_v2(
                         if last_video_proc is not None:
                             print(f"  [video:{video_path.name}]", flush=True)
 
-            # 7. Logging — framework-computed stats from Trajectory + Episode
+            # 7. Logging — framework-computed stats from Trajectory + Episode.
+            #    Two layers: human-readable summary lines + machine-readable
+            #    __RAW_STATS__ JSON for external log parsing / plotting.
             ep_stats = _episode_stats(episodes)
-            traj_stats = buf.trajectory_stats()
-            reward_stats = buf.reward_stats()
+            buf_stats = buf.buffer_stats()
 
             # [update] header
             print(
@@ -462,8 +533,8 @@ def train_ppo_v2(
                 f"[episodes={ep_stats['n_episodes']} "
                 f"len={ep_stats['ep_len_mean']:.1f} "
                 f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']})] "
-                f"[trajs={traj_stats['n_trajectories']} "
-                f"steps={traj_stats['total_steps']}]",
+                f"[trajs={buf_stats['n_trajectories']} "
+                f"steps={buf_stats['total_steps']}]",
                 flush=True,
             )
 
@@ -476,7 +547,7 @@ def train_ppo_v2(
                 f"len={ep_stats['ep_len_mean']:.1f} "
                 f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']}) | "
                 f"n_episodes={ep_stats['n_episodes']} "
-                f"n_trajs={traj_stats['n_trajectories']} | "
+                f"n_trajs={buf_stats['n_trajectories']} | "
                 f"terms={{{term_strs}}}",
                 flush=True,
             )
@@ -504,42 +575,50 @@ def train_ppo_v2(
                 flush=True,
             )
 
-            # [Critics] — per-channel with actor_weight and active_ratio
+            # [Critics] — per-channel with reward, actor_weight, traj stats
             value_loss = stats.get("value_loss", 0.0)
             print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
-            chan_stats = traj_stats["per_channel"]
+            chan_stats = buf_stats["per_channel"]
             for key in reward_keys:
-                r_mean, r_std = reward_stats.get(key, (0.0, 0.0))
+                cs = chan_stats.get(key, {})
+                r_mean = cs.get("reward_mean", 0.0)
+                r_std = cs.get("reward_std", 0.0)
+                r_min = cs.get("reward_min", 0.0)
+                r_max = cs.get("reward_max", 0.0)
                 rew_flow = f"{r_mean:+.3f}±{r_std:.3f}"
                 vloss_key = f"vloss_{key}"
                 ev_key = f"ev_{key}"
                 adv_std_key = f"adv_std_{key}"
                 conf_key = f"confidence_{key}"
-                cs = chan_stats.get(key, {})
                 aw_mean = cs.get("actor_weight_mean", 0.0)
+                aw_min = cs.get("actor_weight_min", 0.0)
+                aw_max = cs.get("actor_weight_max", 0.0)
                 active_ratio = cs.get("active_ratio", 0.0)
+                n_active = cs.get("n_active_trajs", 0)
+                tl_mean = cs.get("traj_len_mean", 0.0)
+                tl_min = cs.get("traj_len_min", 0)
+                tl_max = cs.get("traj_len_max", 0)
                 print(
-                    f"    - {key:<12} | reward={rew_flow} | "
+                    f"    - {key:<12} | reward={rew_flow} "
+                    f"[{r_min:+.2f},{r_max:+.2f}] | "
                     f"val_loss={stats.get(vloss_key, 0.0):.4f} | "
                     f"ev={stats.get(ev_key, 0.0):+.3f} | "
                     f"conf={stats.get(conf_key, 1.0):.3f} | "
-                    f"aw={aw_mean:.2f} | "
+                    f"aw={aw_mean:.2f} [{aw_min:.2f},{aw_max:.2f}] | "
+                    f"trajs={n_active} len={tl_mean:.0f}({tl_min}-{tl_max}) | "
                     f"active={active_ratio*100:.0f}% | "
                     f"adv_std={stats.get(adv_std_key, 0.0):.2f}",
                     flush=True,
                 )
 
-            # Machine-readable raw logging
+            # Machine-readable raw logging — one JSON line per update.
+            # Contains all stats needed for offline analysis / plotting.
             t_total = time.perf_counter() - t_update_start
             raw_log_dict = {
                 "update": u,
                 "algo": "ppo",
                 "episode_stats": ep_stats,
-                "trajectory_stats": traj_stats,
-                "reward_stats": {
-                    k: {"mean": v[0], "std": v[1]}
-                    for k, v in reward_stats.items()
-                },
+                "buffer_stats": buf_stats,
                 "stats": stats,
                 "timing": {
                     "total": round(t_total, 2),
@@ -567,7 +646,8 @@ def train_ppo_v2(
                 flush=True,
             )
 
-            # 8. Periodic checkpoint
+            # 8. Periodic checkpoint — saved at eval intervals and at u=1
+            #    so the first update is always recoverable.
             if u % cp.eval_interval == 0 or u == 1:
                 save_checkpoint_v2(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",

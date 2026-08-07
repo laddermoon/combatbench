@@ -1,8 +1,34 @@
 """PPO buffer and update for ExperimentV2.
 
 Clean rewrite of ppo_trainer.py for the V2 experiment interface.
-Key differences from v1:
 
+Design intent
+-------------
+This module implements the *mechanics* of PPO with multi-channel
+advantages. It is deliberately experiment-agnostic: it knows nothing
+about reward semantics, phase segmentation, or curriculum scheduling.
+
+The core idea is **per-channel critics + confidence-weighted advantage
+combination**. Each reward channel has its own critic (V_c(s)), its own
+GAE computation, and its own z-score normalized advantage. The combined
+advantage that drives the actor is:
+
+    combined_adv = Σ_c  actor_weight_c × confidence_c × norm_adv_c
+
+where:
+- ``actor_weight_c`` is set by the experiment (curriculum control)
+- ``confidence_c = clip(EV_c, 0, 1)^0.5`` down-weights channels whose
+  critic is inaccurate (low explained variance)
+- ``norm_adv_c`` is z-score normalized on active frames only
+
+This design lets experiments decompose complex reward structures into
+independent channels (e.g. survival, posture, height) without worrying
+about scale mismatches — normalization handles that. The experiment's
+job is to decide *which channels exist* and *how much each matters*
+(actor_weight); the framework handles the rest.
+
+Key differences from v1
+-----------------------
 - Buffer consumes ``List[Trajectory]`` directly — no v1 segment/legacy adapters.
 - ``reward_keys`` passed explicitly by the training loop (from
   ``experiment.reward_channels()``), ensuring consistency between
@@ -27,7 +53,7 @@ from .trajectory import RewardChannel, Trajectory
 
 
 # ---------------------------------------------------------------------------
-# Seeding
+# Seeding — single entry point for reproducible training.
 # ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
@@ -40,6 +66,20 @@ def set_seed(seed: int) -> None:
 
 # ---------------------------------------------------------------------------
 # PPO buffer — flat numpy arrays from List[Trajectory]
+#
+# The buffer flattens a list of variable-length trajectories into
+# contiguous numpy arrays for batched GAE and minibatch updates.
+#
+# Key design: a single batched ``actor.evaluate_actions`` call computes
+# log_probs for ALL frames across ALL trajectories at once, then slices
+# the results back. This is far more efficient than per-trajectory calls.
+#
+# Per-channel data is tracked at the *segment* level (one entry per
+# trajectory per channel): active flag, is_terminated, actor_weight,
+# and reward array. Channels absent from a trajectory are marked
+# inactive with zero rewards — they contribute nothing to GAE or
+# advantage combination but still occupy array slots for uniform
+# indexing.
 # ---------------------------------------------------------------------------
 
 class PPOBufferV2:
@@ -52,6 +92,17 @@ class PPOBufferV2:
     All per-channel data (rewards, termination, actor_weight) comes from
     ``Trajectory.channels``.  Channels absent from a trajectory are
     marked inactive for that segment.
+
+    Layout (per channel, parallel lists indexed by trajectory):
+    - ``reward_data[key]``       — reward arrays, one per trajectory
+    - ``key_seg_active[key]``    — whether this channel is active per traj
+    - ``key_seg_terminated[key]``— whether this channel is terminated per traj
+    - ``key_seg_actor_weight[key]`` — scalar aw per traj
+
+    Flat arrays (concatenated across trajectories):
+    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``frame_modes``
+    - ``final_obs`` — per-trajectory last observation (for bootstrap)
+    - ``ep_lengths`` — per-trajectory frame count
     """
 
     def __init__(
@@ -87,6 +138,10 @@ class PPOBufferV2:
             return
 
         # --- Batched evaluate_actions on all trajectory frames ---
+        # Concatenate all observations and actions, run a single forward
+        # pass through the actor to get log_probs, then slice back.
+        # This is the most expensive call in buffer construction; batching
+        # is essential for GPU efficiency.
         all_obs = np.concatenate(
             [t.obs for t in trajectories], axis=0,
         ).astype(np.float32)
@@ -112,7 +167,10 @@ class PPOBufferV2:
             all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t, **kwargs)
         all_lp_np = all_lp.cpu().numpy().astype(np.float32)
 
-        # --- Slice into per-trajectory segments ---
+        # --- Slice log_probs back into per-trajectory segments ---
+        # Walk through trajectories in order, extracting the corresponding
+        # log_prob slice for each. Also extract per-channel data from
+        # Trajectory.channels, marking absent channels as inactive.
         obs_list: List[np.ndarray] = []
         act_list: List[np.ndarray] = []
         lp_list: List[np.ndarray] = []
@@ -136,7 +194,10 @@ class PPOBufferV2:
                 dtype=np.float32,
             )
 
-            # Per-key data from trajectory channels
+            # Per-key data from trajectory channels.
+            # If a channel key is present in traj.channels, it is active
+            # for this trajectory segment. Otherwise it is inactive
+            # (zero rewards, terminated=True, actor_weight=0).
             for key in reward_keys:
                 if key in traj.channels:
                     cd = traj.channels[key]
@@ -188,30 +249,25 @@ class PPOBufferV2:
     def is_empty(self) -> bool:
         return len(self.ep_lengths) == 0
 
-    def reward_stats(self) -> Dict[str, Tuple[float, float]]:
-        """Return per-channel (mean, std) of raw rewards — for logging."""
-        result: Dict[str, Tuple[float, float]] = {}
-        for key in self.reward_keys:
-            segments = self.reward_data[key]
-            if not segments:
-                result[key] = (0.0, 0.0)
-                continue
-            concat = np.concatenate(segments)
-            if concat.size == 0:
-                result[key] = (0.0, 0.0)
-            else:
-                result[key] = (float(concat.mean()), float(concat.std()))
-        return result
+    def buffer_stats(self) -> Dict[str, Any]:
+        """Comprehensive buffer statistics for logging.
 
-    def trajectory_stats(self) -> Dict[str, Any]:
-        """Trajectory-level stats for logging — computed from buffer data."""
+        Global stats:
+        - n_trajectories, total_steps, traj_len_mean/min/max
+
+        Per-channel stats (active segments only):
+        - n_active_trajs, active_ratio
+        - traj_len_min/max/mean (length of active trajectories)
+        - reward_min/max/mean/std (over all active frames)
+        - actor_weight_mean/min/max
+        """
         if not self.ep_lengths:
             return {
                 "n_trajectories": 0,
+                "total_steps": 0,
                 "traj_len_mean": 0.0,
                 "traj_len_min": 0,
                 "traj_len_max": 0,
-                "total_steps": 0,
                 "per_channel": {},
             }
 
@@ -220,33 +276,92 @@ class PPOBufferV2:
 
         per_channel: Dict[str, Dict[str, float]] = {}
         for key in self.reward_keys:
-            aws = self.key_seg_actor_weight[key]
             active_flags = self.key_seg_active[key]
-            active_count = sum(1 for a in active_flags if a)
-            aw_vals = [aw for aw, a in zip(aws, active_flags) if a]
+            aws = self.key_seg_actor_weight[key]
+            segs = self.reward_data[key]
+
+            active_indices = [i for i, a in enumerate(active_flags) if a]
+            n_active = len(active_indices)
+            n_total = len(active_flags)
+
+            if n_active == 0:
+                per_channel[key] = {
+                    "n_active_trajs": 0,
+                    "active_ratio": 0.0,
+                    "traj_len_min": 0,
+                    "traj_len_max": 0,
+                    "traj_len_mean": 0.0,
+                    "reward_min": 0.0,
+                    "reward_max": 0.0,
+                    "reward_mean": 0.0,
+                    "reward_std": 0.0,
+                    "actor_weight_mean": 0.0,
+                    "actor_weight_min": 0.0,
+                    "actor_weight_max": 0.0,
+                }
+                continue
+
+            active_lens = [self.ep_lengths[i] for i in active_indices]
+            active_aw = [aws[i] for i in active_indices]
+            active_segs = [segs[i] for i in active_indices]
+            concat = np.concatenate(active_segs)
+
             per_channel[key] = {
-                "actor_weight_mean": float(np.mean(aw_vals)) if aw_vals else 0.0,
-                "actor_weight_min": float(np.min(aw_vals)) if aw_vals else 0.0,
-                "actor_weight_max": float(np.max(aw_vals)) if aw_vals else 0.0,
-                "active_ratio": active_count / len(active_flags) if active_flags else 0.0,
+                "n_active_trajs": n_active,
+                "active_ratio": n_active / n_total if n_total else 0.0,
+                "traj_len_min": int(min(active_lens)),
+                "traj_len_max": int(max(active_lens)),
+                "traj_len_mean": float(np.mean(active_lens)),
+                "reward_min": float(concat.min()) if concat.size else 0.0,
+                "reward_max": float(concat.max()) if concat.size else 0.0,
+                "reward_mean": float(concat.mean()) if concat.size else 0.0,
+                "reward_std": float(concat.std()) if concat.size else 0.0,
+                "actor_weight_mean": float(np.mean(active_aw)),
+                "actor_weight_min": float(np.min(active_aw)),
+                "actor_weight_max": float(np.max(active_aw)),
             }
 
         return {
             "n_trajectories": len(self.ep_lengths),
+            "total_steps": total_steps,
             "traj_len_mean": float(ep_lens.mean()),
             "traj_len_min": int(ep_lens.min()),
             "traj_len_max": int(ep_lens.max()),
-            "total_steps": total_steps,
             "per_channel": per_channel,
         }
 
 
 # ---------------------------------------------------------------------------
 # PPO update — fixed defaults, no experiment overrides
+#
+# The update function is a pure function of (actor, critics, buffer,
+# hyperparameters). It does not call back into the experiment. This
+# makes the PPO algorithm fully reproducible and testable in isolation.
+#
+# Pipeline:
+#   1. Compute critic values V_c(s) for all frames, all channels
+#   2. Compute bootstrap values V_c(s_terminal) for truncated segments
+#   3. Per-channel GAE → advantages and returns
+#   4. Explained variance → confidence weights
+#   5. Combined advantage = Σ_c aw_c × conf_c × norm_adv_c
+#   6. Multi-epoch minibatch PPO with clipped surrogate + value loss
+#   7. Early stop on target_kl to prevent policy collapse
 # ---------------------------------------------------------------------------
 
 def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Z-score normalization on active frames.  Inactive frames get zero."""
+    """Z-score normalization on active frames.  Inactive frames get zero.
+
+    Normalization is per-channel and per-update: each channel's advantages
+    are independently centered and scaled to unit std. This means the
+    *absolute scale* of rewards across channels is irrelevant — only the
+    *relative pattern* within each channel matters. The experiment
+    controls cross-channel importance via actor_weight, not via reward
+    magnitudes.
+
+    Edge cases:
+    - No active frames → all zeros (channel contributes nothing).
+    - Zero variance (all advantages equal) → all zeros (no gradient signal).
+    """
     active = adv[mask]
     if active.size == 0:
         return np.zeros_like(adv, dtype=np.float32)
@@ -273,10 +388,14 @@ def ppo_update_v2(
 ) -> Dict[str, float]:
     """Multi-critic PPO update with fixed defaults.
 
-    - Advantage normalization: z-score on active frames.
+    - Advantage normalization: z-score on active frames (per-channel).
     - Advantage combination: ``Σ_c actor_weight_c * confidence_c * norm_adv_c``.
     - Sample weight normalization: divide by mean.
     - Early stop on target_kl.
+
+    The actor sees a single combined advantage (not per-channel). Critics
+    are updated independently on their own return targets. This decouples
+    value learning (per-channel) from policy learning (combined).
 
     Args:
         actor: Trainable actor with ``evaluate_actions``.
@@ -288,6 +407,8 @@ def ppo_update_v2(
         grad_clip_norm: Max gradient norm.
         device: Torch device.
         use_confidence: If True, weight advantages by ``clip(EV, 0, 1)**0.5``.
+            This down-weights channels whose critic has low explained variance,
+            preventing noisy advantage estimates from destabilizing the actor.
 
     Returns:
         Stats dict for logging.
@@ -298,7 +419,9 @@ def ppo_update_v2(
 
     obs_t = torch.as_tensor(buf.obs, dtype=torch.float32, device=device)
 
-    # --- Compute critic values for all frames ---
+    # --- 1. Compute critic values V_c(s) for all frames ---
+    # One forward pass per critic. Values are used for GAE (advantage)
+    # and explained variance (confidence).
     values_all: Dict[str, np.ndarray] = {}
     for key in reward_keys:
         with torch.no_grad():
@@ -306,7 +429,11 @@ def ppo_update_v2(
                 critics[key](obs_t).reshape(-1).cpu().numpy().astype(np.float32)
             )
 
-    # --- Bootstrap values for truncated segments ---
+    # --- 2. Bootstrap values for truncated segments ---
+    # A trajectory segment is "truncated" (not terminated) for a channel
+    # if is_terminated=False. In that case, GAE needs V_c(s_next) as the
+    # bootstrap value. We batch all truncated segments' final_obs into
+    # a single forward pass per critic.
     bootstrap_indices: List[int] = []
     bootstrap_obs: List[np.ndarray] = []
     for i, T in enumerate(buf.ep_lengths):
@@ -332,6 +459,8 @@ def ppo_update_v2(
         bootstrap_pos = {ep_idx: pos for pos, ep_idx in enumerate(bootstrap_indices)}
 
     # --- Segment offsets ---
+    # Precompute flat-array offsets for each trajectory segment so we
+    # can slice per-trajectory data without repeated cumsum.
     seg_offsets: List[int] = []
     _off = 0
     for T in buf.ep_lengths:
@@ -339,6 +468,9 @@ def ppo_update_v2(
         _off += T
 
     # --- Per-key frame-level active mask ---
+    # Expand per-segment active flags into per-frame boolean masks.
+    # These masks drive GAE (skip inactive segments), normalization
+    # (only active frames), and critic loss (only active frames).
     n = sum(buf.ep_lengths)
     key_frame_mask: Dict[str, np.ndarray] = {}
     for key in reward_keys:
@@ -350,7 +482,13 @@ def ppo_update_v2(
                 mask[s:e] = True
         key_frame_mask[key] = mask
 
-    # --- GAE per channel ---
+    # --- 3. Per-channel GAE ---
+    # For each channel, iterate over trajectory segments:
+    # - Inactive segments → zero advantages and returns (no signal)
+    # - Active terminated segments → last_value=0 (no bootstrap)
+    # - Active truncated segments → last_value=V_c(s_next) (bootstrap)
+    #
+    # GAE uses per-channel gamma and lambda from RewardChannel config.
     advs_all: Dict[str, np.ndarray] = {}
     rets_all: Dict[str, np.ndarray] = {}
 
@@ -395,7 +533,11 @@ def ppo_update_v2(
                 flush=True,
             )
 
-    # --- Explained variance per critic ---
+    # --- 4. Explained variance per critic ---
+    # EV = 1 - Var(y_true - y_pred) / Var(y_true)
+    # Measures how well the critic predicts actual returns. Used to
+    # compute confidence weights: low EV → low confidence → channel's
+    # advantage is down-weighted in the combined signal.
     explained_variances: Dict[str, float] = {}
     for key in reward_keys:
         mask = key_frame_mask[key]
@@ -417,7 +559,11 @@ def ppo_update_v2(
         rets_t[key] = torch.as_tensor(rets_all[key], dtype=torch.float32, device=device)
         ret_masks_t[key] = torch.as_tensor(key_frame_mask[key], device=device)
 
-    # --- Per-key per-frame actor_weight ---
+    # --- 5a. Per-key per-frame actor_weight ---
+    # Expand per-segment scalar actor_weight into per-frame arrays.
+    # This is where the experiment's curriculum scheduling (set during
+    # build_trajectories) enters the PPO update. The framework never
+    # modifies these values — it just applies them.
     key_actor_weight_frame: Dict[str, np.ndarray] = {}
     for key in reward_keys:
         aw_frame = np.zeros(n, dtype=np.float32)
@@ -428,13 +574,26 @@ def ppo_update_v2(
                 aw_frame[s:e] = buf.key_seg_actor_weight[key][i]
         key_actor_weight_frame[key] = aw_frame
 
-    # --- Confidence from explained variance ---
+    # --- 5b. Confidence from explained variance ---
+    # confidence_c = sqrt(clip(EV_c, 0, 1))
+    # Square root dampens the effect: a critic with EV=0.5 gets conf=0.71,
+    # not 0.5. This prevents overly aggressive down-weighting of partially
+    # trained critics, which would slow their learning signal.
     confidences: Dict[str, float] = {}
     for key in reward_keys:
         ev = explained_variances.get(f"ev_{key}", 0.0)
         confidences[key] = float(np.clip(ev, 0.0, 1.0) ** 0.5) if use_confidence else 1.0
 
-    # --- Combined advantage: Σ_c aw_c * conf_c * norm_adv_c ---
+    # --- 5c. Combined advantage: Σ_c aw_c * conf_c * norm_adv_c ---
+    # This is the single advantage signal the actor optimizes against.
+    # Each channel contributes independently:
+    #   - norm_adv_c: z-score normalized (scale-invariant across channels)
+    #   - conf_c: down-weights unreliable critics
+    #   - aw_c: experiment-controlled importance weight
+    #
+    # Channels with aw=0 or all-zero advantage are skipped entirely.
+    # The combined advantage is NOT re-normalized — its scale reflects
+    # the sum of weighted channel contributions.
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
@@ -447,20 +606,24 @@ def ppo_update_v2(
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
-    # --- Frame modes ---
+    # --- Frame modes (optional) ---
+    # Some actors use frame_modes for mode-conditioned policies (e.g.
+    # gating between safe/explore modes). Passed through to evaluate_actions.
     frame_modes_t: Optional[torch.Tensor] = None
     if buf.frame_modes is not None:
         frame_modes_t = torch.as_tensor(
             buf.frame_modes, dtype=torch.float32, device=device,
         )
 
-    # --- Episode length diagnostics ---
+    # --- Diagnostics: episode lengths and actor std ---
+    # These are logged but do not influence the update.
     ep_lengths = buf.ep_lengths
     ep_len_mean = float(np.mean(ep_lengths)) if ep_lengths else 0.0
     ep_len_min = float(np.min(ep_lengths)) if ep_lengths else 0.0
     ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
 
-    # --- Actor std diagnostics ---
+    # Actor std diagnostics — tracked to detect policy collapse
+    # (std → 0 means deterministic, no exploration) or explosion.
     with torch.no_grad():
         clamped_log_std = torch.clamp(actor.log_std, pp.log_std_min, pp.log_std_max)
         clamped_std = clamped_log_std.exp()
@@ -471,7 +634,11 @@ def ppo_update_v2(
     n_batches = max(1, n // pp.minibatch_size)
     n_episodes = len(buf.ep_lengths)
 
-    # --- Training loop ---
+    # --- 6. Training loop: multi-epoch minibatch PPO ---
+    # Each epoch shuffles all frames and iterates in minibatches.
+    # Critic and actor are updated alternately per minibatch.
+    # Early stop on target_kl prevents the policy from moving too far
+    # from the rollout policy (which would break the on-policy assumption).
     pol_losses: List[float] = []
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []
@@ -492,11 +659,18 @@ def ppo_update_v2(
             end = min(start + pp.minibatch_size, n)
             idx = perm[start:end]
 
-            # Sample weight normalization: divide by mean
+            # Sample weight normalization: divide by mean so the
+            # effective batch size is preserved regardless of individual
+            # trajectory importance weights. Currently all trajectories
+            # have importance=1.0, so this is a no-op.
             batch_weights = w_t[idx]
             batch_weights = batch_weights / (batch_weights.mean() + 1e-8)
 
             # --- Critic updates ---
+            # Each critic is trained only on its active frames (mask).
+            # Loss is MSE weighted by sample_weights, normalized by
+            # active count (not total batch size) so inactive frames
+            # don't dilute the gradient.
             for key in reward_keys:
                 critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
@@ -517,6 +691,10 @@ def ppo_update_v2(
                 val_losses[key].append(float(val_loss))
 
             # --- Actor update ---
+            # Standard PPO clipped surrogate:
+            #   L = -E[min(ratio * adv, clip(ratio) * adv)] - entropy_coef * H
+            # The advantage here is the combined_adv from step 5c.
+            # ratio = exp(new_log_prob - old_log_prob), clipped to [1±eps].
             if frame_modes_t is not None:
                 new_lp, entropy = actor.evaluate_actions(
                     obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
@@ -556,7 +734,12 @@ def ppo_update_v2(
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
 
-        # --- Epoch KL stats ---
+        # --- Epoch KL diagnostics ---
+        # Track KL divergence per epoch for early stopping and anomaly
+        # detection. Three warning conditions are checked:
+        # 1. KL too small → policy may be stuck or LR too low
+        # 2. KL monotonically increasing → risk of overshoot
+        # 3. KL jump (2x in one step) → potential instability
         mean_epoch_kl = float(np.mean(epoch_kls)) if epoch_kls else 0.0
         max_epoch_kl = float(np.max(epoch_kls)) if epoch_kls else 0.0
         std_epoch_kl = float(np.std(epoch_kls)) if epoch_kls else 0.0
@@ -603,6 +786,8 @@ def ppo_update_v2(
 
         pol_losses.extend(epoch_pol_losses)
 
+        # Early stop: if mean KL exceeds target, stop training epochs
+        # to prevent the policy from diverging too far from the rollout.
         if pp.target_kl > 0.0 and mean_epoch_kl > pp.target_kl:
             print(
                 f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
@@ -611,7 +796,10 @@ def ppo_update_v2(
             early_stop_kl = mean_epoch_kl
             break
 
-    # --- Aggregate stats ---
+    # --- 7. Aggregate stats for logging ---
+    # Collect per-channel and global statistics into a flat dict.
+    # The training loop formats these into human-readable lines and
+    # a machine-readable __RAW_STATS__ JSON line.
     per_critic_losses: Dict[str, float] = {
         f"vloss_{key}": float(np.mean(val_losses[key])) if val_losses[key] else 0.0
         for key in reward_keys

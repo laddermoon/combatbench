@@ -354,7 +354,11 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
 
         Two-pass: first count struggle/stability frames across all episodes
         to compute a stability actor_weight scale, then build trajectories
-        with the adjusted weights so neither phase dominates the gradient.
+        with the adjusted weights.
+
+        The scale targets a 10:1 total-weight ratio (stability:struggle),
+        counteracting the severe data imbalance where stability frames are
+        much rarer than struggle frames.
         """
         agent_specs = [
             ("robot_a", "cross_support_a", "posture_a", "phase_a"),
@@ -370,16 +374,18 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
                 n_struggle += ns
                 n_stability += nb
 
-        # --- Compute stability aw scale (total-weight balance, one-sided) ---
+        # --- Compute stability aw scale (target 10:1 total-weight ratio) ---
         # Per-frame base total weights:
         #   struggle: r_struggle_strug(3.0) + r_height(0.3) = 3.3
         #   stability: r_struggle_stab(3.0) + r_cross(1.0) + 4×0.2 = 4.8
+        TARGET_RATIO = 10.0
         W_STRUGGLE = 3.0 + 0.3
         W_STABILITY = 3.0 + 1.0 + 0.2 * 4
         s_struggle = W_STRUGGLE * n_struggle
         s_stability = W_STABILITY * n_stability
-        if s_stability < s_struggle and s_stability > 0:
-            stability_aw_scale = s_struggle / s_stability
+        # scale so that s_stability * scale = TARGET_RATIO * s_struggle
+        if s_stability > 0 and s_struggle > 0:
+            stability_aw_scale = (TARGET_RATIO * s_struggle) / s_stability
         else:
             stability_aw_scale = 1.0
 
