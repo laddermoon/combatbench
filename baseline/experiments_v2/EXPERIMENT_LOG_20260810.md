@@ -131,13 +131,28 @@
 ## 实验 9: fixaw_survonly（φ-scaled r_fall，仅 per-step survival reward）
 
 - **文件**: `exp_basic_balance_v2_phi_dual_fixaw_survonly.py`
-- **训练目录**: `runs/train_v2_basic_balance_v2_phi_dual_fixaw_survonly_ppo_20260810_*`（训练中）
+- **训练目录**: `runs/train_v2_basic_balance_v2_phi_dual_fixaw_survonly_ppo_20260810_175157`
 - **目的**: 在 fixaw 基础上去掉 fall penalty 和 timeout bonus，仅保留 `0.01×φ(t)` per-step reward。与 dual_survonly（固定 0.01）对比 φ-gating 的作用，与 fixaw/fixaw_notb 对比去掉终端信号的影响。
 - **设计**:
   - r_fall 每步奖励: `0.01 × φ(t)`，**无 fall penalty，无 timeout bonus**
   - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
-- **结果**: 训练中（U40+）
-- **状态**: 训练中
+- **结果**: **收敛到 100% 存活，步态为原地平衡**。首次存活 U450，100% 存活 U505（比 fixaw 的 U455 慢 50 updates）。U700+ ep_len=200，但 r_cross=-0.019（未学会交替迈步），r_vel=-0.65（低于 dual_survonly 的 -1.25，说明运动幅度更小）。与 fixaw 一致，固定 actor weight 下 φ-scaled r_fall 导致"原地微幅抖动"局部最优——去掉终端信号不改变这一结论。
+- **状态**: 已手动停止（U1037）
+
+---
+
+## 实验 10: phi_dual_survonly（φ² 动态 actor weight + survonly r_fall）
+
+- **文件**: `exp_basic_balance_v2_phi_dual_survonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_phi_dual_survonly_ppo_20260810_180122`
+- **目的**: phi_dual 去掉 fall penalty（phi_dual 本身已无 timeout bonus），仅保留 `0.01×φ(t)` per-step reward + φ² 动态 actor weight。与 phi_dual（有 fall penalty）对比 fall penalty 在 φ² aw 下的作用，与 fixaw_survonly（固定 aw）对比 φ² aw 在纯 survonly 信号下的作用。
+- **设计**:
+  - r_fall 每步奖励: `0.01 × φ(t)`，**无 fall penalty，无 timeout bonus**
+  - r_fall actor weight: 固定 `3.0`
+  - shaping actor weights: `base × φ²`（r_cross=1.0×φ², 其余=0.2×φ²）
+- **结果**: **收敛到 100% 存活，学会交替迈步**。首次存活 U365，100% 存活 U430（比 phi_dual 的 U385 慢 45 updates）。U500+ ep_len=200，r_cross≈0（交替迈步），r_vel=-0.82（与 phi_dual 的 -0.87 接近）。步态质量与 phi_dual 基本一致。
+- **分析**: 去掉 fall penalty 后收敛慢了 45 updates，但步态质量不受影响——φ² 动态 actor weight 是步态质量的决定因素，fall penalty 仅影响收敛速度。与 fixaw_survonly 对比：φ² aw 使 r_cross 从 -0.019 改善到 ≈0，r_vel 从 -0.65 恶化到 -0.82（更多运动），证实 φ² gate 释放了探索空间。
+- **状态**: 已手动停止（U904）
 
 ---
 
@@ -170,16 +185,19 @@
 |---|---|---|---|---|---|---|
 | fixaw | 0.01×φ | -1 | +1 | U345 | U455 | 原地平衡 |
 | fixaw_notb | 0.01×φ | -1 | 无 | U345 | U500 | 待确认 |
-| fixaw_survonly | 0.01×φ | 无 | 无 | 训练中 | 训练中 | 训练中 |
+| fixaw_survonly | 0.01×φ | 无 | 无 | U450 | U505 | 原地平衡 |
 
 ### φ² 动态 actor weight 组
 
 | 实验 | r_fall 每步 | r_fall fall | r_fall timeout | shaping aw | 首次存活 | 100%存活 | 步态 |
 |---|---|---|---|---|---|---|---|
 | phi_dual | 0.01×φ | -1 | 无 | base×φ² | U325 | U385 | 交替迈步 |
+| phi_dual_survonly | 0.01×φ | 无 | 无 | base×φ² | U365 | U430 | 交替迈步 |
 
 **核心发现**:
 1. φ² 动态 actor weight（phi_dual）是学到良好步态的关键因素。固定 actor weight + φ-scaled r_fall（fixaw）会导致策略陷入"原地微幅抖动"局部最优——shaping channels 的固定满权重惩罚了真实迈步所需的关节运动，策略选择最小化运动幅度来规避惩罚。
 2. fixaw_verify 证实 fixaw 的实现除 φ-scaled r_fall 外无任何 bug，与 dual_baseline 结果完全一致。
 3. fixaw_notb 去掉 timeout bonus 后仍能达到 100% 存活，收敛稍慢（U500 vs U455），说明 timeout bonus 对 fixaw 的收敛速度有正面影响但对步态质量无根本改变。
 4. **r_fall 消融（实验 5-8）**：在固定 actor weight + 固定 r_fall 条件下，四组实验最终都收敛到 100% 存活并学会交替迈步。收敛速度排序：survonly (U345) > baseline (U370) > notb (U420) > fallonly (U435) > falltb (U465)。纯稠密正向信号（survonly）最快，纯稀疏信号（falltb）最慢。fall penalty 是双刃剑——增加 adv_std 但拖慢早期探索。timeout bonus 效果依赖信号环境：有稠密信号时加速 50 updates（baseline vs notb），无稠密信号时反效果 -30 updates（falltb vs fallonly）。
+5. **survonly + φ² aw（实验 9-10）**：fixaw_survonly（固定 aw）收敛到 U505 但步态为原地平衡（r_cross=-0.019）；phi_dual_survonly（φ² aw）收敛到 U430 且学会交替迈步（r_cross≈0）。再次证实 φ² 动态 actor weight 是良好步态的决定因素——与 r_fall 是否有 fall penalty 无关。去掉 fall penalty 后 phi_dual_survonly 比 phi_dual 慢 45 updates（U430 vs U385），说明 fall penalty 在 φ² aw 下仍有加速收敛的作用。
+6. **步态质量对比（U700-U900 均值）**：r_cross 排序：phi_dual(-0.0002) ≈ phi_dual_survonly(-0.0003) > dual_survonly(-0.0003) > fixaw_survonly(-0.019)。r_vel 排序：fixaw_survonly(-0.65) > phi_dual(-0.87) ≈ phi_dual_survonly(-0.82) > dual_survonly(-1.25)。fixaw_survonly 的 r_vel 最小（运动最少）但 r_cross 最差（无交替迈步）——典型的"原地微幅抖动"局部最优。
