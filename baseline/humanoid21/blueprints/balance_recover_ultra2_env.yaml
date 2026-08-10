@@ -28,13 +28,14 @@ simulator:
     initial_pose_b: "standing"
 plugins:
   # Random initial state perturbation (applied at episode start).
-  # Reuses the existing disturbance plugin; note it uses target_robot.
-  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+  # Uses standing pose + small noise perturbation instead of uniform random.
+  - cls: "baseline.humanoid21.plugins.random_fall:RandomFallenStatePlugin"
     config:
       target_robots: ${agent_id}
       max_phy_steps: ${init_steps}
       height_threshold: 0.3
       reset_interval: 5
+      noise_scale: 0.1
 observer_plugins:
   cross_support:
     cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
