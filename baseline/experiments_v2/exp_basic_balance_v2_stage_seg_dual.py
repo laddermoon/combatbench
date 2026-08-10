@@ -52,6 +52,7 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
     struggle_recover_bonus: float = 1.0
     struggle_fall_penalty: float = -1.0
     stability_to_struggle_penalty: float = -1.0
+    stability_per_step_reward: float = 0.01
 
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
@@ -209,7 +210,8 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
                     # Last run and fell
                     r_struggle_strug[end - 1] += self.struggle_fall_penalty
             else:
-                # Stability phase run
+                # Stability phase run — dense per-step survival reward
+                r_struggle_stab[start:end] += self.stability_per_step_reward
                 if not is_last:
                     # Transition: stability -> struggle (degraded)
                     r_struggle_stab[end - 1] += self.stability_to_struggle_penalty

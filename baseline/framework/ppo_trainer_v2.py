@@ -41,7 +41,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -97,7 +97,7 @@ class PPOBufferV2:
     - ``reward_data[key]``       — reward arrays, one per trajectory
     - ``key_seg_active[key]``    — whether this channel is active per traj
     - ``key_seg_terminated[key]``— whether this channel is terminated per traj
-    - ``key_seg_actor_weight[key]`` — scalar aw per traj
+    - ``key_seg_actor_weight[key]`` — scalar or ``(T,)`` array aw per traj
 
     Flat arrays (concatenated across trajectories):
     - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``frame_modes``
@@ -123,7 +123,7 @@ class PPOBufferV2:
         self.key_seg_terminated: Dict[str, List[bool]] = {
             k: [] for k in reward_keys
         }
-        self.key_seg_actor_weight: Dict[str, List[float]] = {
+        self.key_seg_actor_weight: Dict[str, List[Union[float, np.ndarray]]] = {
             k: [] for k in reward_keys
         }
 
@@ -305,6 +305,9 @@ class PPOBufferV2:
             active_aw = [aws[i] for i in active_indices]
             active_segs = [segs[i] for i in active_indices]
             concat = np.concatenate(active_segs)
+            concat_aw = np.concatenate([
+                np.atleast_1d(np.asarray(aw, dtype=np.float32)) for aw in active_aw
+            ])
 
             per_channel[key] = {
                 "n_active_trajs": n_active,
@@ -316,9 +319,9 @@ class PPOBufferV2:
                 "reward_max": float(concat.max()) if concat.size else 0.0,
                 "reward_mean": float(concat.mean()) if concat.size else 0.0,
                 "reward_std": float(concat.std()) if concat.size else 0.0,
-                "actor_weight_mean": float(np.mean(active_aw)),
-                "actor_weight_min": float(np.min(active_aw)),
-                "actor_weight_max": float(np.max(active_aw)),
+                "actor_weight_mean": float(concat_aw.mean()) if concat_aw.size else 0.0,
+                "actor_weight_min": float(concat_aw.min()) if concat_aw.size else 0.0,
+                "actor_weight_max": float(concat_aw.max()) if concat_aw.size else 0.0,
             }
 
         return {
@@ -560,7 +563,9 @@ def ppo_update_v2(
         ret_masks_t[key] = torch.as_tensor(key_frame_mask[key], device=device)
 
     # --- 5a. Per-key per-frame actor_weight ---
-    # Expand per-segment scalar actor_weight into per-frame arrays.
+    # Expand per-segment actor_weight into per-frame arrays.
+    # actor_weight can be a scalar (broadcast to all frames) or a (T,)
+    # array (per-step weight for time-varying channel importance).
     # This is where the experiment's curriculum scheduling (set during
     # build_trajectories) enters the PPO update. The framework never
     # modifies these values — it just applies them.
@@ -570,8 +575,13 @@ def ppo_update_v2(
         for i, is_active in enumerate(buf.key_seg_active[key]):
             if is_active:
                 s = seg_offsets[i]
-                e = s + buf.ep_lengths[i]
-                aw_frame[s:e] = buf.key_seg_actor_weight[key][i]
+                T_seg = buf.ep_lengths[i]
+                e = s + T_seg
+                aw = buf.key_seg_actor_weight[key][i]
+                if np.isscalar(aw) or (isinstance(aw, np.ndarray) and aw.ndim == 0):
+                    aw_frame[s:e] = float(aw)
+                else:
+                    aw_frame[s:e] = np.asarray(aw, dtype=np.float32)[:T_seg]
         key_actor_weight_frame[key] = aw_frame
 
     # --- 5b. Confidence from explained variance ---

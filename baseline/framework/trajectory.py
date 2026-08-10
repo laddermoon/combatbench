@@ -10,7 +10,7 @@ This module defines the atomic units for PPO training in the v2 framework:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -50,11 +50,14 @@ class ChannelData:
         actor_weight: Weight for this channel's advantage in the policy
             gradient.  ``0.0`` means the critic is trained but does not
             influence the actor (useful for warming up a new critic).
+            Can be a scalar (same weight for all frames) or a ``(T,)``
+            array (per-step weight, enabling time-varying channel
+            importance within a single trajectory).
     """
 
     reward: np.ndarray
     is_terminated: bool
-    actor_weight: float = 1.0
+    actor_weight: Union[float, np.ndarray] = 1.0
 
 
 @dataclass

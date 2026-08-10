@@ -291,6 +291,128 @@ class ImbalanceTerminationPlugin(BasePlugin):
         return False
 
 
+class DualImbalanceTerminationPlugin(BasePlugin):
+    """Per-agent independent imbalance termination.
+
+    Unlike ``ImbalanceTerminationPlugin`` which terminates the entire
+    episode when any agent falls, this plugin issues per-agent
+    termination via ``ctx.request_termination(reason, agent_id=rid)``.
+    The episode continues until **both** agents have terminated (or
+    timeout), maximising data collection for the surviving agent.
+
+    Termination reasons:
+      - ``"imbalance_robot_a"`` / ``"imbalance_robot_b"`` — per-agent
+      - ``"timeout"`` — issued by ``TimeoutPlugin`` to both agents
+    """
+
+    FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
+
+    def __init__(
+        self,
+        force_threshold: float = 1.0,
+        tolerance: int = 1,
+        min_height: float = 0.0,
+    ) -> None:
+        self.force_threshold = float(force_threshold)
+        self.tolerance = int(tolerance)
+        self.min_height = float(min_height)
+        self._ground_geom_name: Optional[str] = None
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "force_threshold": self.force_threshold,
+            "tolerance": self.tolerance,
+            "min_height": self.min_height,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "DualImbalanceTerminationPlugin":
+        return cls(**config)
+
+    @property
+    def name(self) -> str:
+        return "dual_imbalance_termination"
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        static_data = ctx.accessor.get_static_data()
+        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+        self._imbalance_counter = {"robot_a": 0, "robot_b": 0}
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        if self.min_height > 0.0:
+            core_state = ctx.accessor.get_core_state()
+            all_below = True
+            for rid in ("robot_a", "robot_b"):
+                if rid in core_state:
+                    h = float(core_state[rid]["root_pos"][2])
+                    if h >= self.min_height:
+                        all_below = False
+                        break
+            if all_below:
+                return
+
+        a_fell = self._is_non_foot_grounded(ctx, "robot_a")
+        b_fell = self._is_non_foot_grounded(ctx, "robot_b")
+
+        if a_fell:
+            self._imbalance_counter["robot_a"] += 1
+        else:
+            self._imbalance_counter["robot_a"] = max(0, self._imbalance_counter["robot_a"] - 1)
+
+        if b_fell:
+            self._imbalance_counter["robot_b"] += 1
+        else:
+            self._imbalance_counter["robot_b"] = max(0, self._imbalance_counter["robot_b"] - 1)
+
+        a_term = self._imbalance_counter["robot_a"] >= self.tolerance
+        b_term = self._imbalance_counter["robot_b"] >= self.tolerance
+
+        if a_term and not ctx.is_agent_terminated("robot_a"):
+            ctx.request_termination("imbalance_robot_a", agent_id="robot_a")
+        if b_term and not ctx.is_agent_terminated("robot_b"):
+            ctx.request_termination("imbalance_robot_b", agent_id="robot_b")
+
+    def _is_non_foot_grounded(self, ctx: SimContext, robot_id: str) -> bool:
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get('contacts')
+        if cv is None or cv['ncon'] == 0:
+            return False
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+        geom_id_to_name = static_data.get('geom_id_to_name', {})
+        ground_geom = self._ground_geom_name or 'ground'
+
+        robot_aff = 1 if robot_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
+                continue
+
+            if geom_env != ground_geom:
+                continue
+            if float(force_mag[i]) < self.force_threshold:
+                continue
+            if not any(foot in body_robot for foot in self.FOOT_BODY_NAMES):
+                return True
+
+        return False
+
+
 class ImbalanceTerminationPlugin2(BasePlugin):
 
     # 双脚身体名称后缀
