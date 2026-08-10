@@ -58,6 +58,10 @@ def _parse_args() -> argparse.Namespace:
         "--background", action="store_true",
         help="Run in background (like nohup). Logs go to run_dir/train.log, PID to run_dir/pid.",
     )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Override experiment seed (default: use experiment's built-in seed).",
+    )
     return parser.parse_args()
 
 
@@ -149,6 +153,15 @@ def main() -> None:
             print(f"  V1: {list_experiments()}")
             print(f"  V2: {list_v2_experiments()}")
             raise SystemExit(1)
+
+    # --- Override seed if requested ---
+    if args.seed is not None:
+        if is_v2:
+            experiment.seed = args.seed
+            print(f"[seed] overridden to {args.seed} (v2)", flush=True)
+        else:
+            experiment.seed = args.seed
+            print(f"[seed] overridden to {args.seed} (v1)", flush=True)
 
     if args.smoke:
         if is_v2:
