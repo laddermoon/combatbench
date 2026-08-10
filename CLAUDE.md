@@ -209,28 +209,39 @@ Key design decisions:
 
 ### Training CLI
 
+> **CRITICAL — PYTHONPATH requirement**: All training commands must be run from the `things/combatbench/` directory with `PYTHONPATH` set to that directory. Otherwise `import baseline` will fail silently (especially in `--background` mode where stderr is redirected to the log file and errors are invisible).
+>
+> ```bash
+> # Correct way to launch background training:
+> cd /data1/mono/things/combatbench
+> PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=<N> \
+>   python3 -B baseline/framework/train.py --experiment <name> --algo ppo --background
+> ```
+>
+> **Do NOT wrap `--background` with `nohup ... &`** — `--background` already forks + setsid. Using nohup on top can cause the child process to be killed when the parent shell exits, and hides startup errors.
+
 ```bash
 # List available experiments
-python3 baseline/framework/train.py --list-experiments
+PYTHONPATH=. python3 baseline/framework/train.py --list-experiments
 
 # Smoke test (2 updates, 8 episodes, fast sanity check)
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
 
 # Full training (foreground, logs to console + run_dir/train.log)
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo
 
-# Background training (like nohup, logs to run_dir/train.log only)
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo --background
+# Background training (forks + setsid, logs to run_dir/train.log only)
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo --background
 
 # Resume from checkpoint
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo \
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo \
   --resume-from baseline/runs/train_basic_balance_ppo_20260101_120000/checkpoints/checkpoint_u01000.pt
 
 # Custom run name
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo --run-name my_exp_v1
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo --run-name my_exp_v1
 
 # Disable git code snapshot
-python3 baseline/framework/train.py --experiment basic_balance --algo ppo --no-snapshot
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --algo ppo --no-snapshot
 ```
 
 ### CLI Arguments
