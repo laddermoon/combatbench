@@ -76,6 +76,71 @@
 
 ---
 
+## 实验 5: dual_notb（固定 r_fall，去掉 timeout bonus）
+
+- **文件**: `exp_basic_balance_v2_dual_notb.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_dual_notb_ppo_20260810_145633`
+- **目的**: 在 dual_baseline 基础上去掉 r_fall 的 `+1` timeout bonus，观察 timeout bonus 对固定 r_fall 学习的影响。
+- **设计**:
+  - r_fall 每步奖励: 固定 `0.01`，摔倒 `-1`，**无 timeout bonus**
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: **收敛到 100% 存活**。首次存活 U285，100% 存活 U420（比 dual_baseline 的 U370 慢 50 updates）。U585 ep_len=199.4，r_cross≈0 说明有交替迈步。
+- **状态**: 已手动停止（U585）
+
+---
+
+## 实验 6: dual_survonly（固定 r_fall，仅 per-step survival reward）
+
+- **文件**: `exp_basic_balance_v2_dual_survonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_dual_survonly_ppo_20260810_145652`
+- **目的**: r_fall 仅保留每步 `+0.01` survival reward，去掉 fall penalty 和 timeout bonus。验证纯稠密正向信号是否足以驱动学习。
+- **设计**:
+  - r_fall 每步奖励: 固定 `0.01`，**无 fall penalty，无 timeout bonus**
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: **收敛最快**。首次存活 U320，100% 存活 U345（所有实验中最快）。U546 ep_len=199.9，r_cross≈0 说明有交替迈步。adv_std 最低（0.05 vs baseline 0.10），entropy 最低，策略改进最稳定。
+- **状态**: 已手动停止（U546）
+
+---
+
+## 实验 7: dual_fallonly（固定 r_fall，仅 fall penalty）
+
+- **文件**: `exp_basic_balance_v2_dual_fallonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_dual_fallonly_ppo_20260810_145710`
+- **目的**: r_fall 仅保留摔倒 `-1` 惩罚，去掉 per-step reward 和 timeout bonus。验证纯稀疏负向信号能否驱动学习。
+- **设计**:
+  - r_fall 每步奖励: `0`，**仅摔倒 `-1`**，无 timeout bonus
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: **最终收敛但最慢之一**。首次存活 U385，100% 存活 U435。U585 ep_len=200.0，r_cross≈0 说明有交替迈步。早期 U10 出现 ep_len 回退（22.8→20.0），策略短暂倾向于"快速结束"以减少 fall penalty 累积。
+- **状态**: 已手动停止（U585）
+
+---
+
+## 实验 8: dual_falltb（固定 r_fall，fall penalty + timeout bonus）
+
+- **文件**: `exp_basic_balance_v2_dual_falltb.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_dual_falltb_ppo_20260810_145738`
+- **目的**: r_fall 仅保留终端信号（fall `-1` + timeout `+1`），去掉 per-step reward。验证纯稀疏正负终端信号组合能否驱动学习。
+- **设计**:
+  - r_fall 每步奖励: `0`，摔倒 `-1`，timeout `+1`
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: **收敛最慢**。首次存活 U405，100% 存活 U465（所有实验中最慢）。U590 ep_len=199.4，r_cross≈0 说明有交替迈步。timeout bonus 在无稠密信号时反而拖慢收敛（比 fallonly 还慢 30 updates），因为增加了 V 拟合复杂度但未提供有用的中间梯度。
+- **状态**: 已手动停止（U590）
+
+---
+
+## 实验 9: fixaw_survonly（φ-scaled r_fall，仅 per-step survival reward）
+
+- **文件**: `exp_basic_balance_v2_phi_dual_fixaw_survonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_phi_dual_fixaw_survonly_ppo_20260810_*`（训练中）
+- **目的**: 在 fixaw 基础上去掉 fall penalty 和 timeout bonus，仅保留 `0.01×φ(t)` per-step reward。与 dual_survonly（固定 0.01）对比 φ-gating 的作用，与 fixaw/fixaw_notb 对比去掉终端信号的影响。
+- **设计**:
+  - r_fall 每步奖励: `0.01 × φ(t)`，**无 fall penalty，无 timeout bonus**
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: 训练中（U40+）
+- **状态**: 训练中
+
+---
+
 ## 原始基线参考
 
 - **文件**: `exp_basic_balance_v2.py`
@@ -87,16 +152,34 @@
 
 ## 关键对比总结
 
-| 实验 | r_fall 每步 | r_fall timeout | shaping aw | 首次存活 | 100%存活 | 步态 |
+### 固定 r_fall 组（r_fall 每步为固定 0.01 或 0，shaping aw 固定）
+
+| 实验 | r_fall 每步 | r_fall fall | r_fall timeout | 首次存活 | 100%存活 | 步态 |
 |---|---|---|---|---|---|---|
-| 原始 baseline | 0.01 (固定) | +1 | 固定 | U355 | U370 | 交替迈步 |
-| dual_baseline | 0.01 (固定) | +1 | 固定 | U355 | U370 | 交替迈步 |
-| phi_dual | 0.01×φ | 无 | base×φ² | U325 | U385 | 交替迈步 |
-| fixaw | 0.01×φ | +1 | 固定 | U345 | U455 | 原地平衡 |
-| fixaw_notb | 0.01×φ | 无 | 固定 | U345 | U500 | 待确认 |
-| fixaw_verify | 0.01 (固定) | +1 | 固定 | U280 | U385 | 与baseline一致 |
+| 原始 baseline | 0.01 (固定) | -1 | +1 | U355 | U370 | 交替迈步 |
+| dual_baseline | 0.01 (固定) | -1 | +1 | U355 | U370 | 交替迈步 |
+| dual_notb | 0.01 (固定) | -1 | 无 | U285 | U420 | 交替迈步 |
+| dual_survonly | 0.01 (固定) | 无 | 无 | U320 | U345 | 交替迈步 |
+| dual_fallonly | 0 | -1 | 无 | U385 | U435 | 交替迈步 |
+| dual_falltb | 0 | -1 | +1 | U405 | U465 | 交替迈步 |
+| fixaw_verify | 0.01 (固定) | -1 | +1 | U280 | U385 | 与baseline一致 |
+
+### φ-scaled r_fall 组（r_fall 每步为 0.01×φ(t)，shaping aw 固定）
+
+| 实验 | r_fall 每步 | r_fall fall | r_fall timeout | 首次存活 | 100%存活 | 步态 |
+|---|---|---|---|---|---|---|
+| fixaw | 0.01×φ | -1 | +1 | U345 | U455 | 原地平衡 |
+| fixaw_notb | 0.01×φ | -1 | 无 | U345 | U500 | 待确认 |
+| fixaw_survonly | 0.01×φ | 无 | 无 | 训练中 | 训练中 | 训练中 |
+
+### φ² 动态 actor weight 组
+
+| 实验 | r_fall 每步 | r_fall fall | r_fall timeout | shaping aw | 首次存活 | 100%存活 | 步态 |
+|---|---|---|---|---|---|---|---|
+| phi_dual | 0.01×φ | -1 | 无 | base×φ² | U325 | U385 | 交替迈步 |
 
 **核心发现**:
 1. φ² 动态 actor weight（phi_dual）是学到良好步态的关键因素。固定 actor weight + φ-scaled r_fall（fixaw）会导致策略陷入"原地微幅抖动"局部最优——shaping channels 的固定满权重惩罚了真实迈步所需的关节运动，策略选择最小化运动幅度来规避惩罚。
 2. fixaw_verify 证实 fixaw 的实现除 φ-scaled r_fall 外无任何 bug，与 dual_baseline 结果完全一致。
 3. fixaw_notb 去掉 timeout bonus 后仍能达到 100% 存活，收敛稍慢（U500 vs U455），说明 timeout bonus 对 fixaw 的收敛速度有正面影响但对步态质量无根本改变。
+4. **r_fall 消融（实验 5-8）**：在固定 actor weight + 固定 r_fall 条件下，四组实验最终都收敛到 100% 存活并学会交替迈步。收敛速度排序：survonly (U345) > baseline (U370) > notb (U420) > fallonly (U435) > falltb (U465)。纯稠密正向信号（survonly）最快，纯稀疏信号（falltb）最慢。fall penalty 是双刃剑——增加 adv_std 但拖慢早期探索。timeout bonus 效果依赖信号环境：有稠密信号时加速 50 updates（baseline vs notb），无稠密信号时反效果 -30 updates（falltb vs fallonly）。
