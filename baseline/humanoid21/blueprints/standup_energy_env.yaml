@@ -1,0 +1,54 @@
+# Energy-based standup environment blueprint (V1).
+#
+# Single continuous orbital-energy potential (StandupEnergyRewarder), no stage
+# machinery, no height term.  Goal: robot learns to swing up and balance on
+# two feet (squat is acceptable).  Success detection / terminal bonus are
+# handled by the experiment's extract_rewards (added in a later step).
+#
+# StandupEnergyTerminationPlugin ends the episode early with "standup_success"
+# when no hands/other body parts touch the ground for 40 consecutive steps
+# (~2 seconds).  Stagnation termination also included.
+# RandomFallenStatePlugin spawns the robot in a fallen pose, same as 4stage.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 200
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ${agent_id}
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.standup_energy_termination:StandupEnergyTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      balance_steps: 40
+      stagnation_height: 0.25
+      stagnation_steps: 150
+
+observer_plugins:
+  standup:
+    cls: "baseline.humanoid21.rewards.standup_energy:StandupEnergyRewarder"
+    config:
+      agent_id: ${agent_id}
