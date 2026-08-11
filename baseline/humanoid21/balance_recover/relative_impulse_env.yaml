@@ -1,0 +1,87 @@
+# Relative impulse boundary environment: RelativeImpulsePlugin generates
+# physically realistic perturbed states via internal sim + policy.
+# Direction is specified as a relative angle to the robot's heading.
+# Used by verify_monotonicity.py and future binary search boundary probing.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The robot we care about."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
+  policy_blueprint_path:
+    default: null
+    description: >-
+      Path to policy_blueprint.yaml for the internal sim. The policy
+      controls the robot during impulse application so that the perturbed
+      state is physically realistic.
+  impulse_body:
+    default: "torso"
+    description: "Body to apply impulse force on (fixed)."
+  force_magnitude:
+    default: 100
+    description: "Force magnitude (N), fixed value."
+  duration_action_steps:
+    default: 4
+    description: "Impulse duration (action steps), fixed value."
+  direction_angle:
+    default: [0, 360]
+    description: >-
+      Relative direction angle (degrees) to robot heading.
+      0=front, 90=right, 180=back, 270=left.
+      Scalar=fixed, [min,max]=random range.
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      tolerance: ${tolerance}
+
+  - cls: "baseline.humanoid21.balance_recover.relative_impulse_plugin:RelativeImpulsePlugin"
+    config:
+      target_robot: ${agent_id}
+      policy_blueprint_path: ${policy_blueprint_path}
+      impulse_body: ${impulse_body}
+      force_magnitude: ${force_magnitude}
+      duration_action_steps: ${duration_action_steps}
+      direction_angle: ${direction_angle}
+      phy_steps_per_action: 25
+
+  - cls: "envs.humanoid21.disturbance_plugins:StateCapturePlugin"
+    config:
+      target_robot: ${agent_id}
+
+observer_plugins:
+  state_capture:
+    cls: "envs.humanoid21.disturbance_plugins:StateCaptureObserver"
+    config:
+      target_robot: ${agent_id}
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  posture:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: ${agent_id}
+  wall_contact:
+    cls: "baseline.humanoid21.rewards.wall_contact:WallContactObserver"
+    config:
+      agent_id: ${agent_id}
