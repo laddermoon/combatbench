@@ -55,6 +55,12 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
 
+    # --- PPO tuning (conservative for warm-start) ---
+    learning_rate: float = 3e-5
+    target_kl: float = 0.03
+    eval_episodes: int = 64
+    eval_interval: int = 5
+
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "balance_recover" / "weighted_impulse_env.yaml"
