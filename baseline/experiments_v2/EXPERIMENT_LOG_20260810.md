@@ -172,7 +172,129 @@
   | **固定 0.01** | dual_survonly ✓ (交替迈步, U345) | **phi2aw_survonly** ← 本实验 |
   | **0.01×φ** | fixaw_survonly ✗ (原地平衡, U505) | phi_dual_survonly ✓ (交替迈步, U430) |
 
-- **状态**: 训练中
+- **结果**: **收敛到 100% 存活，学会交替迈步**。首次存活 U300，100% 存活 U335。步态质量与 phi_dual_survonly 一致（r_cross≈0）。
+- **状态**: 已手动停止（U463）
+
+---
+
+## 实验 12b: phi2aw_notb（固定 0.01 + fall penalty + 无 timeout + φ² shaping）
+
+- **文件**: `exp_basic_balance_v2_phi2aw_notb.py`
+- **训练目录**: `runs/p1_phi2aw_notb`（续跑目录: `runs/p1_phi2aw_notb_resume`）
+- **目的**: 在 phi2aw 基础上去掉 timeout bonus，测试 φ² shaping 下 timeout bonus 的影响。
+- **设计**:
+  - r_fall 每步奖励: 固定 `0.01`，摔倒 `-1`，**无 timeout bonus**
+  - shaping actor weights: `base × φ²`
+- **结果**: conv95×3 = U365，首次 100% = U355。步态窗口 [U365, U465) 内 r_cross=-0.0016，**交替迈步**。dip%=0.0%（stab 窗口 150 updates，未跑满 200）。
+- **状态**: 已停止（U517，含续跑）
+
+---
+
+## 实验 12c: survonly_tb（固定 0.01 survonly + timeout bonus + 固定 Shape）
+
+- **文件**: `exp_basic_balance_v2_survonly_tb.py`
+- **训练目录**: `runs/p2_survonly_tb`
+- **目的**: 在 dual_survonly 基础上加回 timeout bonus，测试固定 Shape 下 timeout bonus 对纯 survonly 信号的影响。
+- **设计**:
+  - r_fall 每步奖励: 固定 `0.01`，**无 fall penalty**，timeout `+1`
+  - actor weights: 固定 `(3.0, 1.0, 0.2, 0.2, 0.2, 0.2)`
+- **结果**: conv95×3 = U360，首次 100% = U340。步态 r_cross=-0.0019，**交替迈步**。dip%=5.0%（stab 窗口 200 updates 跑满）。
+- **状态**: 已停止（U560）
+
+---
+
+## 实验 12d: phi2aw_survonly_tb（固定 0.01 survonly + timeout bonus + φ² shaping）
+
+- **文件**: `exp_basic_balance_v2_phi2aw_survonly_tb.py`
+- **训练目录**: `runs/p3_phi2aw_survonly_tb`
+- **目的**: 在 phi2aw_survonly 基础上加 timeout bonus，测试 φ² shaping 下 timeout bonus 对纯 survonly 信号的影响。
+- **设计**:
+  - r_fall 每步奖励: 固定 `0.01`，**无 fall penalty**，timeout `+1`
+  - shaping actor weights: `base × φ²`
+- **结果**: conv95×3 = U390，首次 100% = U355。步态 r_cross=-0.0022，**交替迈步**。dip%=12.1%（stab 窗口 160 updates，未跑满 200）。
+- **状态**: 已停止（U552）
+
+---
+
+## 实验 12e: phi2aw_fallonly（无 survive + fall penalty + φ² shaping）
+
+- **文件**: `exp_basic_balance_v2_phi2aw_fallonly.py`
+- **训练目录**: `runs/p4_phi2aw_fallonly`
+- **目的**: 测试 φ² shaping 在仅有 fall penalty（无 per-step survive reward、无 timeout bonus）条件下能否驱动学习。
+- **设计**:
+  - r_fall 每步奖励: **无**，摔倒 `-1`，**无 timeout bonus**
+  - shaping actor weights: `base × φ²`
+- **结果**: conv95×3 = U395，首次 100% = U395。步态 r_cross=-0.0019，**交替迈步**。dip%=0.0%（stab 窗口 210 updates 跑满）。稳定性极佳。
+- **状态**: 已停止（U606）
+
+---
+
+## 实验 12f: phi_dual_tb（0.01×φ survive + fall penalty + timeout bonus + φ² shaping）
+
+- **文件**: `exp_basic_balance_v2_phi_dual_tb.py`
+- **训练目录**: `runs/p5_phi_dual_tb`
+- **目的**: 全信号组合（survive + fall + timeout + φ² shaping），与 phi_dual（无 timeout）对比 timeout bonus 在 φ² aw + φ-scaled r_fall 下的影响。
+- **设计**:
+  - r_fall 每步奖励: `0.01 × φ(t)`，摔倒 `-1`，timeout `+1`
+  - shaping actor weights: `base × φ²`
+- **结果**: conv95×3 = U360，首次 100% = U360。步态 r_cross=-0.0026，**交替迈步**。dip%=0.0%（stab 窗口 230 updates 跑满）。稳定性极佳。
+- **状态**: 已停止（U591）
+
+---
+
+## 实验 13: φ_A = min(height/1.28, uprightness) 消融
+
+### 13a: phi2aw_min_survonly
+
+- **文件**: `exp_basic_balance_v2_phi2aw_min_survonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_phi2aw_min_survonly_ppo_20260811_000400`
+- **目的**: 用 φ_A = min(height/1.28, uprightness) 替代 φ = uprightness × (height/1.28)，测试 min 形式是否改善 φ² shaping 效果。
+- **设计**: 固定 0.01 survonly + φ_A² shaping，无 fall/TB。
+- **结果**: 100% Eval at U360。比原版 phi2aw_survonly（U335）慢 25 updates。
+- **状态**: 已停止（U379）
+
+### 13b: phi_dual_min_survonly
+
+- **文件**: `exp_basic_balance_v2_phi_dual_min_survonly.py`
+- **训练目录**: `runs/train_v2_basic_balance_v2_phi_dual_min_survonly_ppo_20260811_000414`
+- **目的**: 用 φ_A 测试 0.01×φ_A survive + φ_A² shaping。
+- **结果**: U430 时仅 90.6%（未收敛）。比原版 phi_dual_survonly（U430 达 100%）显著更差。
+- **状态**: 已停止（U430）
+- **结论**: φ_A = min(height/1.28, uprightness) 未改善训练。min 形式放大了 uprightness 的不稳定性。后续实验继续使用原版 φ。
+
+---
+
+## P0: dual_survonly 多 seed 噪声标定
+
+> **完整分析见 `combatbench-research/workspace/experiment/seed_variance_report.md`**
+
+### P0a: 可复现性验证
+
+- **训练目录**: `runs/repro_dual_survonly_s42_r1`（seed=42 重跑）
+- **方法**: 用 `compare_runs.py` 逐 update 对比 10 个标量
+- **结果**: 150 updates 内最大相对误差 = 0.000e+00，**逐位完全一致**
+- **结论**: 训练管线是确定性的，σ 是真实的种子敏感性
+
+### P0b: 4-seed 噪声标定
+
+| Seed | 训练目录 | conv95×3 | 首次100% | bdgt | dip% | r_cross | 步态 |
+|------|---------|---------|---------|------|------|---------|------|
+| 42 | `runs/train_v2_basic_balance_v2_dual_survonly_ppo_20260810_145652` | U345 | U345 | 200 | 0.0% | -0.0016 | 交替迈步（前进绕圈） |
+| 43 | `runs/p0_dual_survonly_s43` | U600 | U600 | 1280 | 5.0% | -0.0020 | 交替迈步（后退靠墙） |
+| 44 | `runs/p0_dual_survonly_s44` | U505 | U510 | 1320 | 2.5% | -0.0009 | 交替迈步（前进绕圈） |
+| 45 | `runs/p0_dual_survonly_s45` (+ resume) | U365 | U370 | 150 | 11.4%~ | -0.0046 | 交替迈步（后退靠墙） |
+
+- **统计**: Mean = 454, σ = 120 updates, Range = 255 (U345~U600), CV = 26.6%
+- **结论**: σ=120 远超因子间差异（10~55 updates），所有单 seed 速度比较无统计意义
+
+### P0c: 方差本质分析（时间伸缩）
+
+- **方法**: 按各自 conv95×3 归一化时间轴后比较 ep_len_mean
+- **结果**: 固定 update 的 CV 高达 59%（U400），时间轴重标定后 CV 塌缩至 4.9%（均值）
+- 排除 s45（短预算）后，三种子在 conv+30 的 ep_len CV = **0.7%**
+- 时间伸缩因子: 0.76x ~ 1.32x（1.74x spread）
+- **结论**: σ=120 完全来自**相变（phase transition）时刻**的种子敏感性，非结果差异
+- **视频观察发现**: s42/s44 向前走绕圈，s43/s45 向后退靠墙——这是**结果维度的定性差异**（前进 vs 后退两个等价局部最优），奖励函数不区分方向
 
 ---
 
@@ -209,12 +331,17 @@
 
 ### φ² 动态 actor weight 组
 
-| 实验 | r_fall 每步 | r_fall fall | r_fall timeout | shaping aw | 首次存活 | 100%存活 | 步态 |
-|---|---|---|---|---|---|---|---|
-| phi_dual | 0.01×φ | -1 | 无 | base×φ² | U325 | U385 | 交替迈步 |
-| phi_dual_survonly | 0.01×φ | 无 | 无 | base×φ² | U365 | U430 | 交替迈步 |
-| phi2aw_survonly | 0.01 (固定) | 无 | 无 | base×φ² | U300 | U335 | 交替迈步 |
-| phi2aw | 0.01 (固定) | -1 | +1 | base×φ² | U310 | U350 | 交替迈步 |
+| 实验 | r_fall 每步 | r_fall fall | r_fall timeout | shaping aw | conv95×3 | 首次100% | dip% | 步态 |
+|---|---|---|---|---|---------|---------|------|------|
+| phi_dual | 0.01×φ | -1 | 无 | base×φ² | — | U385 | — | 交替迈步 |
+| phi_dual_survonly | 0.01×φ | 无 | 无 | base×φ² | — | U430 | — | 交替迈步 |
+| phi2aw_survonly | 0.01 (固定) | 无 | 无 | base×φ² | — | U335 | — | 交替迈步 |
+| phi2aw | 0.01 (固定) | -1 | +1 | base×φ² | — | U350 | — | 交替迈步 |
+| phi2aw_notb (P1) | 0.01 (固定) | -1 | 无 | base×φ² | U365 | U355 | 0.0%~ | 交替迈步 |
+| survonly_tb (P2) | 0.01 (固定) | 无 | +1 | 固定 | U360 | U340 | 5.0% | 交替迈步 |
+| phi2aw_survonly_tb (P3) | 0.01 (固定) | 无 | +1 | base×φ² | U390 | U355 | 12.1%~ | 交替迈步 |
+| phi2aw_fallonly (P4) | 无 | -1 | 无 | base×φ² | U395 | U395 | 0.0% | 交替迈步 |
+| phi_dual_tb (P5) | 0.01×φ | -1 | +1 | base×φ² | U360 | U360 | 0.0% | 交替迈步 |
 
 **核心发现**:
 1. φ² 动态 actor weight（phi_dual）是学到良好步态的关键因素。固定 actor weight + φ-scaled r_fall（fixaw）会导致策略陷入"原地微幅抖动"局部最优——shaping channels 的固定满权重惩罚了真实迈步所需的关节运动，策略选择最小化运动幅度来规避惩罚。
@@ -228,3 +355,6 @@
    - phi2aw_min_survonly（0.01 survive + φ_A² shaping, 无 fall/TB）: 100% Eval at U360. 比原版 phi2aw_survonly（U335）慢 25 updates。φ_A 并未加速收敛——min 形式在早期训练时 uprightness 波动大，min 选址导致 φ_A 比 φ_product 更不稳定。
    - phi_dual_min_survonly（0.01×φ_A survive + φ_A² shaping, 无 fall/TB）: U430 时仅 90.6%（未收敛）。比原版 phi_dual_survonly（U430 达 100%）显著更差。φ_A 的 min 形式在弱信号（0.01×φ）下表现不佳，可能因为 min 对 uprightness 的敏感性导致 survive reward 过度波动。
    - **结论**: φ_A = min(height/1.28, uprightness) 并未改善训练效果。在两种 survive 信号条件下均不如原版 φ = uprightness × (height/1.28)。min 形式反而放大了 uprightness 的不稳定性。后续实验继续使用原版 φ。
+9. **P1-P5 因子扩展实验（2026-08-11）**：补齐了因子矩阵中缺失的 5 个组合。所有 9 个 run（含 P0 多 seed）步态均为**交替迈步**，r_cross 在 -0.0009 ~ -0.0046 范围内。P4（phi2aw_fallonly，无 survive 信号）和 P5（phi_dual_tb，全信号）稳定性最佳（dip%=0.0%）。所有配置间 conv95×3 差异在 10~55 updates 范围内，**远小于 σ=120 的种子方差**，无统计意义。
+10. **多 seed 噪声标定（P0）**：4 seeds (42/43/44/45) 的 conv95×3 分别为 U345/U600/U505/U365，σ=120 updates。管线已验证逐位确定性（seed=42 重跑 150 updates 完全一致）。方差本质是**相变时刻的种子敏感性**（时间伸缩因子 0.76x~1.32x），而非结果差异——时间轴对齐后 ep_len CV 从 59% 塌缩至 0.7%（排除短预算 s45）。**所有单 seed 收敛速度结论需降级为"未验证"**。
+11. **前进 vs 后退等价局部最优（视频观察）**：s42/s44 向前走绕圈，s43/s45 向后退靠墙。奖励函数中 r_vel 惩罚的是关节角速度（非质心方向速度），r_cross 惩罚横向运动——**没有任何奖励项区分前进与后退**。两者是等价局部最优，agent 根据初始化随机落入。这是结果维度的定性差异，需要加入方向性奖励信号（如 forward velocity reward）才能消除。
