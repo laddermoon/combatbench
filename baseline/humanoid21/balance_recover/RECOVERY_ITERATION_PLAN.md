@@ -84,33 +84,240 @@ scale 0.90 下各维单独存活率 ≥ 0.99，五维合在一起 = 0.758。`f �
 - 中等时长与策略响应周期共振
 - 长时间推力反而让策略"靠上去"稳住
 
-#### 二分查找边界
+#### 单调性验证结果（2026-08-11）
 
-单调性确认后，对每个 (direction, force) 组合在 duration 轴上做二分查找：
+**验证方法**：使用 `RelativeImpulsePlugin`（方向相对机器人朝向），固定 force=50N，扫描 duration=1~20，每个 cell 跑 1 个 episode（seed 固定），判断目标机器人（robot_a）的终止原因是否为 imbalance。策略使用 `fixaw_survonly_crossphi2_s42` 导出策略。
 
-1. 初始化 lo=1, hi=max_duration（如 20）
-2. mid = (lo + hi) / 2，跑 N 个 episode 统计存活率
-3. 存活率 > 50% → lo = mid（还能扛更大 duration）
-4. 存活率 < 50% → hi = mid（边界在更短 duration）
-5. 收敛后得到 critical_duration(direction, force)
+**验证脚本**：`verify_monotonicity.py`
+**方向验证脚本**：`verify_direction_video.py`（生成 4 方向视频，已目视确认 robot_a 和 robot_b 方向均正确）
 
-**效率对比**：
-- 全网格扫描：16 方向 × 3 力 × 8 duration × 20 episodes ≈ 7680 episodes
-- 二分查找：48 组合 × ~5 次二分 × 20 episodes ≈ 4800 episodes，且边界精度更高
+**结果**：4 个方向均为**完美阶跃函数**，无非单调点：
 
-#### 拟合与采样
+| 方向 | 存活区间 | 摔倒区间 | 临界 duration |
+|---|---|---|---|
+| 0°（向前） | dur 1-6 | dur 7+ | **7** |
+| 90°（向右） | dur 1-8 | dur 9+ | **9** |
+| 180°（向后） | dur 1-5 | dur 6+ | **6** |
+| 270°（向左） | dur 1-4 | dur 5+ | **5** |
 
-得到 48 个 (direction, force) → critical_duration 数据点后：
+**结论**：
+- surv_rate(duration) 单调不增，**单调性假设成立**
+- 函数形态为阶跃式（0→1 跳变），非平滑递减
+- Spearman rho 偏低（-0.02~-0.70）是因为阶跃函数有大量 tied ranks，不代表非单调
+- **二分查找完全可行**：阶跃边界正是二分查找最擅长定位的场景
+- 每个点只需 1 个 episode（确定性策略 + 固定 seed），无需统计存活率
 
-1. **拟合边界曲面**：拟合 (direction, force) → critical_duration 的映射。可选方法：
-   - 2D 插值（方向需周期性处理）
-   - 参数化模型（如对每个力档位拟合方向→临界时长的傅里叶级数或 sigmoid）
-   - 高斯过程回归
-2. **训练采样**：从拟合的边界曲面附近采样扰动参数，侧重 critical_duration 附近（存活率 ~50% 区域）。两种采样策略：
-   - **边界附近采样**：duration ∈ [0.8×critical, 1.2×critical]，方向和力随机
-   - **分布采样**：按存活率加权采样，边界区域密度更高
+**注意事项**：
+- `direction_angle` 表示**力指向的方向**（机器人倒下的方向），不是力来源的方向
+- MuJoCo 右手坐标系（z-up）中 +y 指向机器人左侧，因此用 `heading - angle`（顺时针）使 90° 对应右方
+- 插件在 `on_pre_episode` 施力，此时机器人为 standing 姿态（pitch/roll≈0），heading 提取准确
 
-> 二分查找 + 拟合比全网格扫描更高效，且边界定位更精确。训练时从边界曲面灵活采样，不需要每轮精扫所有格子。
+#### 边界探测：全量并行扫描
+
+**方法选择**：虽然二分查找在串行场景下 episode 数更少，但全量扫描可以一次性提交所有 episode 并行执行，实际墙钟时间更短，且边界精度更高（每个 duration 都有数据点）。因此采用全量并行扫描而非二分查找。
+
+**扫描脚本**：`probe_boundary.py`
+
+**力档位设置**（固定，不随策略迭代变化）：
+
+| 档位 | 力 (N) | 物理意义 | 用途 |
+|---|---|---|---|
+| 轻 | 40 | ~0.2 倍体重，轻微推搡 | 弱策略边界低，强策略边界高，始终有区分度 |
+| 中 | 100 | ~0.5 倍体重，明显冲击 | 常规训练难度 |
+| 重 | 200 | ~1.0 倍体重，猛烈撞击 | 极限测试，只有很强策略才能恢复 |
+
+**扫描参数**：
+- 方向：16 个离散值（0°~337.5°，每 22.5° 一个）
+- 力档位：3 个（40N / 100N / 200N）
+- duration：1~40（全扫描）
+- 每 cell 1 个 episode（确定性策略 + 固定 seed）
+- 总 episodes：16 × 3 × 40 = 1920
+
+**使用方法**：
+
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_recover/probe_boundary.py \
+    --policy-export baseline/runs/fixaw_survonly_crossphi2_s42/policy \
+    --output baseline/humanoid21/balance_recover/boundary_fixaw_s42.csv \
+    --json-output baseline/humanoid21/balance_recover/boundary_fixaw_s42.json
+```
+
+**参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--policy-export` | （必填） | 策略导出目录（含 policy_blueprint.yaml） |
+| `--directions` | 16 方向（22.5° 间隔） | 逗号分隔的方向角度 |
+| `--forces` | `40,100,200` | 逗号分隔的力大小 |
+| `--duration-min` | 1 | 最小 duration |
+| `--duration-max` | 40 | 最大 duration |
+| `--workers` | 96 | 并行 worker 数 |
+| `--seed` | 42 | 基础种子 |
+| `--agent-id` | robot_a | 目标机器人 |
+| `--output` | boundary.csv | 完整扫描数据 CSV |
+| `--json-output` | boundary.json | 边界汇总 JSON |
+
+**输出格式**：
+- **CSV**：每行 (direction_angle, force, duration, survived, mean_len)，完整扫描数据
+- **JSON**：每行 (direction_angle, force, critical_duration)，边界汇总 + 元数据
+- **终端**：汇总表（每方向 × 每力的 critical_duration）+ 统计信息
+
+**critical_duration 定义**：最后一个存活的 duration，即 dur ≤ critical 存活、dur > critical 摔倒。
+
+**初代策略（fixaw_survonly_crossphi2_s42）扫描结果（2026-08-12）**：
+
+| 方向 | F=40N | F=100N | F=200N |
+|---|---|---|---|
+| 0°（前） | 7 | 2 | 0 |
+| 22.5° | 14 | 6 | 2 |
+| 45° | 12 | 4 | 1 |
+| 67.5° | 11 | 3 | 1 |
+| 90°（右） | 12 | 3 | 1 |
+| 112.5° | 12 | 3 | 1 |
+| 135° | 13 | 3 | 1 |
+| 157.5° | 10 | 2 | 1 |
+| 180°（后） | 7 | 2 | 1 |
+| 202.5° | 6 | 1 | 0 |
+| 225° | 5 | 1 | 0 |
+| 247.5° | 7 | 1 | 0 |
+| 270°（左） | 3 | 1 | 0 |
+| 292.5° | 4 | 0 | 0 |
+| 315° | 5 | 0 | 0 |
+| 337.5° | 6 | 2 | 0 |
+
+**统计**：
+- F=40N：mean=8.4，min=3，max=14 — 有很好的区分度
+- F=100N：mean=2.1，min=0，max=6 — 中等区分度
+- F=200N：mean=0.6，min=0，max=2 — 当前策略太弱，大部分直接摔倒
+
+**方向模式**：
+- 270°（左侧）最弱（crit=3），22.5° 最强（crit=14）
+- 左右不对称：右 90°=12 vs 左 270°=3
+- 前向（0°）和后向（180°）均为 7
+
+**性能**：1920 episodes，96 workers 并行，21 秒完成
+
+#### 权重分布生成
+
+从全量扫描结果生成训练用的采样分布，核心是**以跳变点为中心分配权重**，让训练扰动集中在策略的生存边界附近。
+
+**处理脚本**：`sample_distribution.py`
+
+**权重设计逻辑**：
+
+1. **找跳变点**：对每个 (direction, force) cell，在 duration 轴上找 1→0 的跳变位置。如 dur=7 存活、dur=8 摔倒，则 7 和 8 都是边界点
+2. **duration 权重衰减**：以跳变点为中心高斯衰减（sigma=3），远离跳变点的 duration 权重递减。如跳变在 7-8，则 dur=6 和 dur=9 权重稍低，dur=1 和 dur=40 权重最低
+3. **方向插值**：原始扫描只有 16 个离散方向（22.5° 间隔），在方向轴上做周期性线性插值，得到 360 个方向的权重分布
+4. **方向抖动**：最终采样时在插值后的方向附近加 ±5° 抖动，避免每次精确采到同一角度
+
+**使用方法**：
+
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_recover/sample_distribution.py \
+    --input baseline/humanoid21/balance_recover/boundary_fixaw_s42.csv \
+    --output-dir baseline/humanoid21/balance_recover/
+```
+
+**参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--input` | （必填） | 全量扫描 CSV（probe_boundary.py 输出） |
+| `--output-dir` | `.` | 输出目录 |
+| `--sigma` | 3.0 | duration 权重高斯衰减的 sigma |
+| `--n-interp` | 360 | 方向插值数 |
+| `--n-samples` | 1000 | 采样数 |
+| `--direction-jitter` | 5.0 | 方向抖动（度，±） |
+| `--seed` | 42 | 随机种子 |
+
+**输出文件**：
+
+| 文件 | 说明 |
+|---|---|
+| `sample_weights.npz` | 权重矩阵（interp_angles, interp_weights, forces, durations, transitions），供训练时加载 |
+| `samples.csv` | 1000 个采样参数（angle, force, duration） |
+| `sample_distribution.json` | 完整分布数据 |
+| `heatmap_survived_F{40,100,200}.png` | 存活/摔倒分布热力图 |
+| `heatmap_critical_duration_polar.png` | 临界 duration 极坐标图 |
+| `heatmap_weight_F{40,100,200}.png` | 各力档位采样权重热力图 |
+| `heatmap_weight_total.png` | 三力叠加总权重分布 |
+
+**初代策略分布统计**：
+- F=40N: 41.1%，F=100N: 32.5%，F=200N: 26.4%（轻力占比高因为边界更宽）
+- Duration mean=5.9，集中在边界附近
+- 方向覆盖均匀（mean=167.6°，std=105°）
+
+### 训练实验：加权冲量扰动训练
+
+#### 实验构成
+
+**实验文件**：`baseline/experiments_v2/exp_weighted_impulse.py`
+**环境蓝图**：`baseline/humanoid21/balance_recover/weighted_impulse_env.yaml`
+**插件**：`RelativeImpulsePlugin`（修改版，增加 `weight_npz_path` 参数）
+
+**参照实验**：`baseline/experiments_v2/exp_basic_balance_v2_phi_dual_fixaw_survonly_crossphi2_impulse.py`
+
+奖励设计和轨迹处理**完全照搬**参照实验：
+
+| 奖励通道 | 计算 | Actor Weight |
+|---|---|---|
+| `r_fall` | 0.01 × φ(t) per step，无终止信号 | 固定 3.0 |
+| `r_cross` | 交替支撑奖励/惩罚 | 1.0 × φ² |
+
+- **双代理**：robot_a 和 robot_b 同时被扰动，各自独立计算奖励和轨迹
+- **轨迹截断**：在代理终止步截断（imbalance 则截断到摔倒步，timeout 则用全长）
+- **φ 加权**：r_fall 按 φ(t) 缩放，r_cross 的 actor weight 按 φ² 缩放
+- **Warm-start**：从 BASE_POLICY_PATH 加载 checkpoint 权重
+
+#### 与参照实验的区别
+
+| 方面 | 参照实验 (crossphi2_impulse) | 本实验 (weighted_impulse) |
+|---|---|---|
+| 扰动插件 | `ImpulsePerturbationPlugin`（绝对方向） | `RelativeImpulsePlugin`（相对机器人朝向） |
+| 方向定义 | `random_horizontal`（均匀随机） | 从权重分布采样（边界加权） |
+| 力/时长 | 固定范围 [50,150]N / [2,4] steps | 从权重分布采样（40/100/200N × 1~40 steps） |
+| 环境变量 | `POLICY_BLUEPRINT_PATH`, `BASE_POLICY_PATH` | 增加 `WEIGHT_NPZ_PATH` |
+
+#### 插件修改
+
+`RelativeImpulsePlugin` 新增两个参数：
+
+| 参数 | 说明 |
+|---|---|
+| `weight_npz_path` | 权重分布文件路径。提供后按权重采样 (angle, force, duration)，忽略 force/direction/duration 固定参数 |
+| `direction_jitter` | 方向抖动（度，±），默认 5.0 |
+
+插件**不读任何环境变量**，所有参数通过构造函数传入。环境变量在实验类中捕获后通过 `env_bp.materialize()` 注入。
+
+#### 启动命令
+
+```bash
+POLICY_BLUEPRINT_PATH=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml \
+BASE_POLICY_PATH=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/model.pt \
+WEIGHT_NPZ_PATH=baseline/humanoid21/balance_recover/sample_weights.npz \
+PYTHONPATH=/data1/mono/things/combatbench python3 baseline/framework/train.py \
+    --experiment v2_weighted_impulse --algo ppo \
+    --run-name recover_weighted_gen0 --no-snapshot
+```
+
+**环境变量说明**：
+
+| 环境变量 | 必填 | 说明 |
+|---|---|---|
+| `POLICY_BLUEPRINT_PATH` | 是 | 内部 sim 的参考策略蓝图（`RelativeImpulsePlugin` 用此策略在内部 sim 中控制机器人，生成物理合理的扰动状态） |
+| `BASE_POLICY_PATH` | 是 | Warm-start checkpoint（`.pt` 文件，加载 actor 权重） |
+| `WEIGHT_NPZ_PATH` | 是 | 权重分布文件（`sample_distribution.py` 生成的 `sample_weights.npz`） |
+
+**可选**：加 `--background` 后台运行，日志在 `run_dir/train.log`。
+
+#### Smoke 测试
+
+```bash
+POLICY_BLUEPRINT_PATH=... BASE_POLICY_PATH=... WEIGHT_NPZ_PATH=... \
+python3 baseline/framework/train.py --experiment v2_weighted_impulse --algo ppo --smoke --no-snapshot --run-dir /tmp/test
+```
+
+已验证：2 updates 完成，survival_rate 0.125 → 0.500，权重采样正常工作。
 
 ### 为什么这样做
 
@@ -161,14 +368,14 @@ scale 0.90 下各维单独存活率 ≥ 0.99，五维合在一起 = 0.758。`f �
 
 ## 落地顺序
 
-| 步骤 | 产出 |
-|---|---|
-| **0** | 单调性验证：选 3-4 个代表性组合跑全 duration 扫描，确认 surv_rate 对 duration 单调递减 |
-| **1** | 二分查找边界：16 方向 × 3 力 = 48 组合，每个在 duration 轴上二分查找 critical_duration |
-| **2** | 拟合边界曲面：从 48 个数据点拟合 (direction, force) → critical_duration 映射 |
-| **3** | 奖励重构：两阶段 + 重标阈值 + 正向 `recovered` |
-| **4** | 训练实验：从拟合分布中采样扰动参数，配置 `ImpulsePerturbationPlugin` 实时扰动训练 |
-| **5** | 迭代循环 + 停止判据 + 守卫指标 |
+| 步骤 | 产出 | 状态 |
+|---|---|---|
+| **0** | 单调性验证：`verify_monotonicity.py` 跑全 duration 扫描，确认 surv_rate 对 duration 单调递减 | ✅ 完成 |
+| **1** | 全量并行扫描边界：`probe_boundary.py` 16方向×3力×40duration=1920 episodes | ✅ 完成 |
+| **2** | 权重分布生成：`sample_distribution.py` 从扫描结果生成 `sample_weights.npz` + 热力图 | ✅ 完成 |
+| **3** | 训练实验：`exp_weighted_impulse.py` + `weighted_impulse_env.yaml`，从权重分布采样扰动参数 | ✅ 完成 |
+| **4** | 正式训练：从 u00460 checkpoint 启动 `recover_weighted_gen0` | 🔄 进行中 |
+| **5** | 迭代循环：训练完成 → 重新探测边界 → 更新分布 → 再训练 | 待定 |
 
 ---
 
