@@ -1,0 +1,107 @@
+# Dual-agent balance environment with RelativeImpulsePlugin + weighted sampling.
+# Same observer structure as basic_balance_v2_phi_dual_impulse_env.yaml but uses
+# RelativeImpulsePlugin (direction relative to robot heading) with optional
+# weight_npz_path for boundary-weighted perturbation sampling.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  policy_blueprint_path:
+    default: null
+    description: >-
+      Path to policy_blueprint.yaml for the internal sim. The policy
+      controls the robot during impulse application so that the perturbed
+      state is physically realistic.
+  impulse_body:
+    default: "torso"
+    description: "Body to apply impulse force on."
+  force_magnitude:
+    default: 100
+    description: "Force magnitude (N). Used when weight_npz_path is null."
+  duration_action_steps:
+    default: 4
+    description: "Impulse duration (action steps). Used when weight_npz_path is null."
+  direction_angle:
+    default: [0, 360]
+    description: >-
+      Relative direction angle (degrees) to robot heading.
+      0=front, 90=right, 180=back, 270=left.
+      Used when weight_npz_path is null.
+  weight_npz_path:
+    default: null
+    description: >-
+      Path to .npz weight distribution file. When provided, samples
+      (direction_angle, force, duration) from the distribution, ignoring
+      force_magnitude/duration_action_steps/direction_angle.
+  direction_jitter:
+    default: 5.0
+    description: "Direction jitter (±degrees) in weighted sampling mode."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:DualImbalanceTerminationPlugin"
+    config:
+      force_threshold: 1.0
+      tolerance: 1
+
+  - cls: "baseline.humanoid21.balance_recover.relative_impulse_plugin:RelativeImpulsePlugin"
+    config:
+      target_robot: "robot_a"
+      policy_blueprint_path: ${policy_blueprint_path}
+      impulse_body: ${impulse_body}
+      force_magnitude: ${force_magnitude}
+      duration_action_steps: ${duration_action_steps}
+      direction_angle: ${direction_angle}
+      phy_steps_per_action: 25
+      weight_npz_path: ${weight_npz_path}
+      direction_jitter: ${direction_jitter}
+
+  - cls: "baseline.humanoid21.balance_recover.relative_impulse_plugin:RelativeImpulsePlugin"
+    config:
+      target_robot: "robot_b"
+      policy_blueprint_path: ${policy_blueprint_path}
+      impulse_body: ${impulse_body}
+      force_magnitude: ${force_magnitude}
+      duration_action_steps: ${duration_action_steps}
+      direction_angle: ${direction_angle}
+      phy_steps_per_action: 25
+      weight_npz_path: ${weight_npz_path}
+      direction_jitter: ${direction_jitter}
+observer_plugins:
+  cross_support_a:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_a"
+  cross_support_b:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_b"
+  posture_a:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: "robot_a"
+  posture_b:
+    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
+    config:
+      agent_id: "robot_b"
+  height_phi_a:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_a"
+  height_phi_b:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_b"

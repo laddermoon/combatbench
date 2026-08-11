@@ -55,21 +55,28 @@ class RelativeImpulsePlugin(BasePlugin):
         impulse_body: str = "torso",
         phy_steps_per_action: int = 25,
         random_seed: Optional[int] = None,
+        weight_npz_path: Optional[str] = None,
+        direction_jitter: float = 5.0,
     ):
         """
         Args:
             target_robot: 目标机器人 ID。
             policy_blueprint_path: 策略 blueprint YAML 路径（用于内部 sim）。
                 None 则用零 action（PD 控制器拉回默认站姿）。
-            force_magnitude: 力大小（N），固定值。
-            duration_action_steps: 持续时间（action step 数），固定值。
+            force_magnitude: 力大小（N），固定值。weight_npz_path 提供时忽略。
+            duration_action_steps: 持续时间（action step 数），固定值。weight_npz_path 提供时忽略。
             direction_angle: 相对机器人朝向的角度（度），表示**力指向的方向**
                 （即受力后机器人倒下的方向，不是力来源的方向）。
                 float=固定角度，(min, max)=随机采样范围。
                 0°=向前, 90°=向右, 180°=向后, 270°=向左。
+                weight_npz_path 提供时忽略。
             impulse_body: 施力部位，固定 torso。
             phy_steps_per_action: 每动作步的物理步数。
             random_seed: 随机种子。
+            weight_npz_path: 采样分布权重文件路径（.npz）。提供后按权重采样
+                (direction_angle, force, duration)，忽略 force/direction/duration 参数。
+                npz 需包含: interp_angles, interp_weights, forces, durations。
+            direction_jitter: 方向抖动范围（度，±），仅在 weight_npz_path 模式下生效。
         """
         self.target_robot = target_robot
         self.policy_blueprint_path = policy_blueprint_path
@@ -83,11 +90,30 @@ class RelativeImpulsePlugin(BasePlugin):
                                           float(direction_angle[1]))
         self.phy_steps_per_action = int(phy_steps_per_action)
         self._rng = np.random.RandomState(random_seed)
+        self._sample_rng = np.random.RandomState((random_seed or 0) + 1)
         self._internal_sim: Optional[Any] = None
         self._policy: Optional[Any] = None
+        self.direction_jitter = float(direction_jitter)
+        self._weight_npz_path = weight_npz_path
+
+        # 加载权重分布
+        self._weight_interp_angles: Optional[np.ndarray] = None
+        self._weight_interp_weights: Optional[np.ndarray] = None
+        self._weight_forces: Optional[np.ndarray] = None
+        self._weight_durations: Optional[np.ndarray] = None
+        self._weight_flat_probs: Optional[np.ndarray] = None
+        if weight_npz_path is not None:
+            data = np.load(weight_npz_path, allow_pickle=True)
+            self._weight_interp_angles = data["interp_angles"]
+            self._weight_interp_weights = data["interp_weights"]
+            self._weight_forces = data["forces"]
+            self._weight_durations = data["durations"]
+            flat = self._weight_interp_weights.flatten().astype(np.float64)
+            self._weight_flat_probs = flat / flat.sum()
 
     def set_episode_seed(self, seed: int) -> None:
         self._rng = np.random.RandomState(int(seed))
+        self._sample_rng = np.random.RandomState(int(seed) + 1)
 
     @property
     def name(self) -> str:
@@ -106,6 +132,8 @@ class RelativeImpulsePlugin(BasePlugin):
             "direction_angle": list(self.direction_angle_range),
             "impulse_body": self.impulse_body,
             "phy_steps_per_action": self.phy_steps_per_action,
+            "weight_npz_path": self._weight_npz_path,
+            "direction_jitter": self.direction_jitter,
         }
 
     @classmethod
@@ -146,8 +174,24 @@ class RelativeImpulsePlugin(BasePlugin):
         """采样相对角度（度）。"""
         return float(self._rng.uniform(*self.direction_angle_range))
 
+    def _sample_from_weights(self) -> Tuple[float, float, int]:
+        """从权重分布采样 (angle, force, duration)。"""
+        n_interp = len(self._weight_interp_angles)
+        n_forces = len(self._weight_forces)
+        n_durs = len(self._weight_durations)
+        idx = self._sample_rng.choice(len(self._weight_flat_probs), p=self._weight_flat_probs)
+        a_idx = idx // (n_forces * n_durs)
+        remainder = idx % (n_forces * n_durs)
+        f_idx = remainder // n_durs
+        d_idx = remainder % n_durs
+        angle = float(self._weight_interp_angles[a_idx]) + self._sample_rng.uniform(-self.direction_jitter, self.direction_jitter)
+        angle = angle % 360.0
+        force = float(self._weight_forces[f_idx])
+        duration = int(self._weight_durations[d_idx])
+        return angle, force, duration
+
     def _resolve_params(self, ctx: SimContext) -> Dict[str, Any]:
-        """解析扰动参数，支持 episode_options 覆盖。"""
+        """解析扰动参数，支持 episode_options 覆盖和权重分布采样。"""
         params = ctx.episode_options.get("impulse_params", None)
         if params is not None:
             return {
@@ -155,6 +199,14 @@ class RelativeImpulsePlugin(BasePlugin):
                 "direction_angle": float(params["impulse_direction_angle"]),
                 "force": float(params["impulse_force"]),
                 "duration_action_steps": int(params["impulse_duration_steps"]),
+            }
+        if self._weight_flat_probs is not None:
+            angle, force, duration = self._sample_from_weights()
+            return {
+                "body": self.impulse_body,
+                "direction_angle": angle,
+                "force": force,
+                "duration_action_steps": duration,
             }
         return {
             "body": self.impulse_body,
