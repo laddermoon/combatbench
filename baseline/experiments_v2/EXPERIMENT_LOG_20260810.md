@@ -224,3 +224,7 @@
 5. **survonly + φ² aw（实验 9-10）**：fixaw_survonly（固定 aw）收敛到 U505 但步态为原地平衡（r_cross=-0.019）；phi_dual_survonly（φ² aw）收敛到 U430 且学会交替迈步（r_cross≈0）。再次证实 φ² 动态 actor weight 是良好步态的决定因素——与 r_fall 是否有 fall penalty 无关。去掉 fall penalty 后 phi_dual_survonly 比 phi_dual 慢 45 updates（U430 vs U385），说明 fall penalty 在 φ² aw 下仍有加速收敛的作用。
 6. **步态质量对比（U700-U900 均值）**：r_cross 排序：phi_dual(-0.0002) ≈ phi_dual_survonly(-0.0003) > dual_survonly(-0.0003) > fixaw_survonly(-0.019)。r_vel 排序：fixaw_survonly(-0.65) > phi_dual(-0.87) ≈ phi_dual_survonly(-0.82) > dual_survonly(-1.25)。fixaw_survonly 的 r_vel 最小（运动最少）但 r_cross 最差（无交替迈步）——典型的"原地微幅抖动"局部最优。
 7. **phi2aw（0.01+fall+timeout+φ²）**: 收敛 U350，比 dual_baseline（固定 Shape, U385）快 35 updates。完成因子 4 的第 4 组实验，确认在固定 0.01 survive 信号下 φ² Shape 仍有中等优势（10-35 updates）。r_cross=-0.004（收敛初期），步态为交替迈步但质量仍在发展中。
+8. **φ_A = min(height/1.28, uprightness) 消融**:
+   - phi2aw_min_survonly（0.01 survive + φ_A² shaping, 无 fall/TB）: 100% Eval at U360. 比原版 phi2aw_survonly（U335）慢 25 updates。φ_A 并未加速收敛——min 形式在早期训练时 uprightness 波动大，min 选址导致 φ_A 比 φ_product 更不稳定。
+   - phi_dual_min_survonly（0.01×φ_A survive + φ_A² shaping, 无 fall/TB）: U430 时仅 90.6%（未收敛）。比原版 phi_dual_survonly（U430 达 100%）显著更差。φ_A 的 min 形式在弱信号（0.01×φ）下表现不佳，可能因为 min 对 uprightness 的敏感性导致 survive reward 过度波动。
+   - **结论**: φ_A = min(height/1.28, uprightness) 并未改善训练效果。在两种 survive 信号条件下均不如原版 φ = uprightness × (height/1.28)。min 形式反而放大了 uprightness 的不稳定性。后续实验继续使用原版 φ。
