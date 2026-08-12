@@ -1,7 +1,7 @@
-# Dual-agent balance environment with RelativeImpulsePlugin + weighted sampling.
-# Same observer structure as basic_balance_v2_phi_dual_impulse_env.yaml but uses
-# RelativeImpulsePlugin (direction relative to robot heading) with optional
-# weight_npz_path for boundary-weighted perturbation sampling.
+# Dual-agent balance environment with RelativeImpulsePlugin.
+# The plugin is a pure executor — disturbance parameters are injected
+# per-episode via episode_options["impulse_params"] by the experiment class.
+# Same observer structure as basic_balance_v2_phi_dual_impulse_env.yaml.
 
 parameters:
   initial_distance:
@@ -18,28 +18,7 @@ parameters:
       state is physically realistic.
   impulse_body:
     default: "torso"
-    description: "Body to apply impulse force on."
-  force_magnitude:
-    default: 100
-    description: "Force magnitude (N). Used when weight_npz_path is null."
-  duration_action_steps:
-    default: 4
-    description: "Impulse duration (action steps). Used when weight_npz_path is null."
-  direction_angle:
-    default: [0, 360]
-    description: >-
-      Relative direction angle (degrees) to robot heading.
-      0=front, 90=right, 180=back, 270=left.
-      Used when weight_npz_path is null.
-  weight_npz_path:
-    default: null
-    description: >-
-      Path to .npz weight distribution file. When provided, samples
-      (direction_angle, force, duration) from the distribution, ignoring
-      force_magnitude/duration_action_steps/direction_angle.
-  direction_jitter:
-    default: 5.0
-    description: "Direction jitter (±degrees) in weighted sampling mode."
+    description: "Default body to apply impulse force on (can be overridden per-robot)."
 runtime:
   phy_steps_per_action: 25
   max_steps: ${max_steps}
@@ -59,27 +38,10 @@ plugins:
 
   - cls: "baseline.humanoid21.balance_recover.relative_impulse_plugin:RelativeImpulsePlugin"
     config:
-      target_robot: "robot_a"
+      target_robots: ["robot_a", "robot_b"]
       policy_blueprint_path: ${policy_blueprint_path}
       impulse_body: ${impulse_body}
-      force_magnitude: ${force_magnitude}
-      duration_action_steps: ${duration_action_steps}
-      direction_angle: ${direction_angle}
       phy_steps_per_action: 25
-      weight_npz_path: ${weight_npz_path}
-      direction_jitter: ${direction_jitter}
-
-  - cls: "baseline.humanoid21.balance_recover.relative_impulse_plugin:RelativeImpulsePlugin"
-    config:
-      target_robot: "robot_b"
-      policy_blueprint_path: ${policy_blueprint_path}
-      impulse_body: ${impulse_body}
-      force_magnitude: ${force_magnitude}
-      duration_action_steps: ${duration_action_steps}
-      direction_angle: ${direction_angle}
-      phy_steps_per_action: 25
-      weight_npz_path: ${weight_npz_path}
-      direction_jitter: ${direction_jitter}
 observer_plugins:
   cross_support_a:
     cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"

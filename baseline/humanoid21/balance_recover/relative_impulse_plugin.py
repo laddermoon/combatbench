@@ -1,7 +1,8 @@
 """相对角度冲量扰动插件。
 
-与 ``ImpulsePerturbationPlugin`` 的核心逻辑相同（内部 sim + 策略生成物理一致的扰动状态），
-但方向参数改为**相对机器人朝向的角度**。
+纯执行层：从 ``episode_options["impulse_params"]`` 读取扰动参数，
+在内部 sim 中用 ``EnvRuntime`` + ``ConstantForcePlugin`` 施力，
+将扰动后的 core state 写回真实环境。
 
 方向定义（重要）：
     direction_angle 表示的是**力指向的方向**，即受力后机器人倒下的方向，
@@ -14,11 +15,30 @@
 
     对两个机器人使用相同的相对角度定义，方向转换在 ``on_pre_episode`` 中
     从 ``root_rot`` 提取 heading 后完成。
+
+episode_options 格式::
+
+    ctx.episode_options["impulse_params"] = {
+        "robot_a": {
+            "direction_angle": 90.0,
+            "force": 200.0,
+            "duration_action_steps": 4,
+            "body": "torso",
+        },
+        "robot_b": {
+            "direction_angle": 180.0,
+            "force": 150.0,
+            "duration_action_steps": 3,
+            "body": "head",
+        },
+    }
+
+    未出现在字典中的机器人不会被扰动。
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -28,93 +48,47 @@ from envs.framework.context import SimContext
 
 
 class RelativeImpulsePlugin(BasePlugin):
-    """相对角度冲量扰动插件。
+    """相对角度冲量扰动插件（纯执行层）。
 
     方向定义：direction_angle 是**力指向的方向**（机器人倒下的方向），
     不是力来源的方向：
         0°=向前, 90°=向右, 180°=向后, 270°=向左
 
     工作流程：
-    1. ``on_pre_episode`` 时读取真实环境的 core state，提取目标机器人 heading。
-    2. 将相对角度转换为绝对方向向量（heading - angle，顺时针）。
-    3. 在内部 sim 中施力 + 策略控制，持续 ``duration_action_steps`` 个 action step。
-    4. 取扰动后 core state 写回真实环境。
+    1. ``on_pre_episode`` 时从 ``episode_options["impulse_params"]`` 读取参数。
+    2. 对每个待扰动机器人，在内部 sim 中施力 + 策略控制。
+    3. 取扰动后 core state 写回真实环境。
 
-    参数来源（优先级从高到低）：
-    - **episode_options**：``ctx.episode_options["impulse_params"]`` 指定确切参数。
-    - **构造器参数**：用构造器传入的固定值或随机范围。
+    参数来源：``episode_options["impulse_params"]``，由实验类负责采样和组装。
     """
 
     def __init__(
         self,
-        target_robot: str = "robot_a",
+        target_robots: Union[str, List[str]] = ("robot_a", "robot_b"),
         policy_blueprint_path: Optional[str] = None,
-        force_magnitude: float = 100.0,
-        duration_action_steps: int = 4,
-        direction_angle: Union[float, Tuple[float, float]] = (0.0, 360.0),
         impulse_body: str = "torso",
         phy_steps_per_action: int = 25,
-        random_seed: Optional[int] = None,
-        weight_npz_path: Optional[str] = None,
-        direction_jitter: float = 5.0,
     ):
         """
         Args:
-            target_robot: 目标机器人 ID。
+            target_robots: 目标机器人 ID 或 ID 列表。默认两个机器人都扰动。
+                只有同时出现在 ``target_robots`` 和 ``episode_options`` 中的
+                机器人才会被实际扰动。
             policy_blueprint_path: 策略 blueprint YAML 路径（用于内部 sim）。
                 None 则用零 action（PD 控制器拉回默认站姿）。
-            force_magnitude: 力大小（N），固定值。weight_npz_path 提供时忽略。
-            duration_action_steps: 持续时间（action step 数），固定值。weight_npz_path 提供时忽略。
-            direction_angle: 相对机器人朝向的角度（度），表示**力指向的方向**
-                （即受力后机器人倒下的方向，不是力来源的方向）。
-                float=固定角度，(min, max)=随机采样范围。
-                0°=向前, 90°=向右, 180°=向后, 270°=向左。
-                weight_npz_path 提供时忽略。
-            impulse_body: 施力部位，固定 torso。
+            impulse_body: 默认施力部位，可被 episode_options 中的 per-robot body 覆盖。
             phy_steps_per_action: 每动作步的物理步数。
-            random_seed: 随机种子。
-            weight_npz_path: 采样分布权重文件路径（.npz）。提供后按权重采样
-                (direction_angle, force, duration)，忽略 force/direction/duration 参数。
-                npz 需包含: interp_angles, interp_weights, forces, durations。
-            direction_jitter: 方向抖动范围（度，±），仅在 weight_npz_path 模式下生效。
         """
-        self.target_robot = target_robot
+        if isinstance(target_robots, str):
+            self.target_robots = [target_robots]
+        else:
+            self.target_robots = list(target_robots)
         self.policy_blueprint_path = policy_blueprint_path
         self.impulse_body = impulse_body
-        self.force_magnitude = float(force_magnitude)
-        self.duration_action_steps = int(duration_action_steps)
-        if isinstance(direction_angle, (int, float)):
-            self.direction_angle_range = (float(direction_angle), float(direction_angle))
-        else:
-            self.direction_angle_range = (float(direction_angle[0]),
-                                          float(direction_angle[1]))
         self.phy_steps_per_action = int(phy_steps_per_action)
-        self._rng = np.random.RandomState(random_seed)
-        self._sample_rng = np.random.RandomState((random_seed or 0) + 1)
         self._internal_sim: Optional[Any] = None
         self._internal_runtime: Optional[Any] = None
         self._policy: Optional[Any] = None
-        self.direction_jitter = float(direction_jitter)
-        self._weight_npz_path = weight_npz_path
-
-        # 加载权重分布
-        self._weight_interp_angles: Optional[np.ndarray] = None
-        self._weight_interp_weights: Optional[np.ndarray] = None
-        self._weight_forces: Optional[np.ndarray] = None
-        self._weight_durations: Optional[np.ndarray] = None
-        self._weight_flat_probs: Optional[np.ndarray] = None
-        if weight_npz_path is not None:
-            data = np.load(weight_npz_path, allow_pickle=True)
-            self._weight_interp_angles = data["interp_angles"]
-            self._weight_interp_weights = data["interp_weights"]
-            self._weight_forces = data["forces"]
-            self._weight_durations = data["durations"]
-            flat = self._weight_interp_weights.flatten().astype(np.float64)
-            self._weight_flat_probs = flat / flat.sum()
-
-    def set_episode_seed(self, seed: int) -> None:
-        self._rng = np.random.RandomState(int(seed))
-        self._sample_rng = np.random.RandomState(int(seed) + 1)
 
     @property
     def name(self) -> str:
@@ -126,15 +100,10 @@ class RelativeImpulsePlugin(BasePlugin):
 
     def to_blueprint(self) -> Dict[str, Any]:
         return {
-            "target_robot": self.target_robot,
+            "target_robots": self.target_robots,
             "policy_blueprint_path": self.policy_blueprint_path,
-            "force_magnitude": self.force_magnitude,
-            "duration_action_steps": self.duration_action_steps,
-            "direction_angle": list(self.direction_angle_range),
             "impulse_body": self.impulse_body,
             "phy_steps_per_action": self.phy_steps_per_action,
-            "weight_npz_path": self._weight_npz_path,
-            "direction_jitter": self.direction_jitter,
         }
 
     @classmethod
@@ -148,7 +117,7 @@ class RelativeImpulsePlugin(BasePlugin):
         return self._internal_sim
 
     def _ensure_internal_runtime(self, force_plugin) -> Any:
-        """创建或复用内部 EnvRuntime。每次 episode 创建新的 ConstantForcePlugin。"""
+        """创建或复用内部 EnvRuntime。每次施力创建新的 ConstantForcePlugin。"""
         from envs.framework.env_runtime import EnvRuntime
         if self._internal_runtime is not None:
             self._internal_runtime.close()
@@ -184,126 +153,88 @@ class RelativeImpulsePlugin(BasePlugin):
         forward = rot.apply(np.array([1.0, 0.0, 0.0]))
         return float(np.arctan2(forward[1], forward[0]))
 
-    def _sample_relative_angle(self) -> float:
-        """采样相对角度（度）。"""
-        return float(self._rng.uniform(*self.direction_angle_range))
-
-    def _sample_from_weights(self) -> Tuple[float, float, int]:
-        """从权重分布采样 (angle, force, duration)。"""
-        n_interp = len(self._weight_interp_angles)
-        n_forces = len(self._weight_forces)
-        n_durs = len(self._weight_durations)
-        idx = self._sample_rng.choice(len(self._weight_flat_probs), p=self._weight_flat_probs)
-        a_idx = idx // (n_forces * n_durs)
-        remainder = idx % (n_forces * n_durs)
-        f_idx = remainder // n_durs
-        d_idx = remainder % n_durs
-        angle = float(self._weight_interp_angles[a_idx]) + self._sample_rng.uniform(-self.direction_jitter, self.direction_jitter)
-        angle = angle % 360.0
-        force = float(self._weight_forces[f_idx])
-        duration = int(self._weight_durations[d_idx])
-        return angle, force, duration
-
-    def _resolve_params(self, ctx: SimContext) -> Dict[str, Any]:
-        """解析扰动参数，支持 episode_options 覆盖和权重分布采样。"""
-        params = ctx.episode_options.get("impulse_params", None)
-        if params is not None:
-            return {
-                "body": params.get("impulse_body", self.impulse_body),
-                "direction_angle": float(params["impulse_direction_angle"]),
-                "force": float(params["impulse_force"]),
-                "duration_action_steps": int(params["impulse_duration_steps"]),
-            }
-        if self._weight_flat_probs is not None:
-            angle, force, duration = self._sample_from_weights()
-            return {
-                "body": self.impulse_body,
-                "direction_angle": angle,
-                "force": force,
-                "duration_action_steps": duration,
-            }
-        return {
-            "body": self.impulse_body,
-            "direction_angle": self._sample_relative_angle(),
-            "force": self.force_magnitude,
-            "duration_action_steps": self.duration_action_steps,
-        }
-
     def on_pre_episode(self, ctx: SimContext) -> None:
         from envs.humanoid21.disturbance_plugins import ConstantForcePlugin
 
-        other_robot = "robot_b" if self.target_robot == "robot_a" else "robot_a"
+        params_all = ctx.episode_options.get("impulse_params", {})
+        robots_to_disturb = [r for r in self.target_robots if r in params_all]
+        if not robots_to_disturb:
+            return
 
-        params = self._resolve_params(ctx)
-        body = params["body"]
-        rel_angle_deg = params["direction_angle"]
-        force = params["force"]
-        duration_action_steps = params["duration_action_steps"]
-        duration_phy_steps = duration_action_steps * self.phy_steps_per_action
-
-        # 1. 读取真实环境当前 core state
         real_state = ctx.accessor.get_core_state()
-
-        # 2. 从目标机器人 root_rot 提取 heading，计算绝对方向
-        root_rot = np.asarray(real_state[self.target_robot]["root_rot"], dtype=np.float64)
-        heading = self._extract_heading(root_rot)
-        abs_angle = heading - np.radians(rel_angle_deg)
-        direction = np.array([np.cos(abs_angle), np.sin(abs_angle), 0.0], dtype=np.float64)
-
-        # 3. 创建内部 EnvRuntime + ConstantForcePlugin
-        force_plugin = ConstantForcePlugin(
-            agent_id=self.target_robot,
-            force=force,
-            direction=rel_angle_deg,
-            duration_action_steps=duration_action_steps,
-            body_name=body,
-        )
-        runtime = self._ensure_internal_runtime(force_plugin)
-
-        # 4. 初始化内部 sim 状态
         sim = self._ensure_internal_sim()
-        runtime.reset()
-        sim.set_core_state(real_state)
-
-        # 5. 策略 reset
         policy = self._ensure_policy()
-        if policy is not None:
-            policy.reset(seed=int(self._rng.randint(0, 2**31 - 1)))
 
-        # 保存非目标机器人的初始状态（每个 action step 后重置，防止干扰）
-        non_target_state = {
-            rid: {k: v.copy() for k, v in state.items()}
-            for rid, state in real_state.items()
-            if rid != self.target_robot
-        }
+        for robot_id in robots_to_disturb:
+            p = params_all[robot_id]
+            body = p.get("body", self.impulse_body)
+            rel_angle_deg = float(p["direction_angle"])
+            force = float(p["force"])
+            duration_action_steps = int(p["duration_action_steps"])
+            duration_phy_steps = duration_action_steps * self.phy_steps_per_action
 
-        # 6. 循环 duration_action_steps 次 runtime.step()
-        #    EnvRuntime 自动管理 action 步/物理步节奏：
-        #    每 phy_steps_per_action 个物理步才 set_action 一次
-        #    ConstantForcePlugin 在 on_pre_phy_step 中每步施力
-        for _ in range(duration_action_steps):
+            # 1. 从目标机器人 root_rot 提取 heading，计算绝对方向
+            root_rot = np.asarray(real_state[robot_id]["root_rot"], dtype=np.float64)
+            heading = self._extract_heading(root_rot)
+            abs_angle = heading - np.radians(rel_angle_deg)
+            direction = np.array([np.cos(abs_angle), np.sin(abs_angle), 0.0], dtype=np.float64)
+
+            # 2. 创建内部 EnvRuntime + ConstantForcePlugin
+            force_plugin = ConstantForcePlugin(
+                agent_id=robot_id,
+                force=force,
+                direction=rel_angle_deg,
+                duration_action_steps=duration_action_steps,
+                body_name=body,
+            )
+            runtime = self._ensure_internal_runtime(force_plugin)
+
+            # 3. 初始化内部 sim 状态
+            runtime.reset()
+            sim.set_core_state(real_state)
+
+            # 4. 策略 reset
             if policy is not None:
-                obs = sim.get_observation()
-                action, _ = policy.act(obs.get(self.target_robot))
-            else:
-                action = np.zeros(21, dtype=np.float32)
-            runtime.step(action, np.zeros(21, dtype=np.float32))
+                policy.reset()
 
-            # 每个 action step 后重置非目标机器人
-            if non_target_state:
-                sim.set_core_state(non_target_state)
+            # 保存非目标机器人的初始状态（每个 action step 后重置，防止干扰）
+            other_robot = "robot_b" if robot_id == "robot_a" else "robot_a"
+            non_target_state = {
+                rid: {k: v.copy() for k, v in state.items()}
+                for rid, state in real_state.items()
+                if rid != robot_id
+            }
 
-        # 7. 取扰动后的 core state 写回真实环境
-        perturbed_state = sim.get_core_state()
-        ctx.mutator.set_core_state({
-            self.target_robot: perturbed_state[self.target_robot],
-        })
+            # 5. 循环 duration_action_steps 次 runtime.step()
+            #    EnvRuntime 自动管理 action 步/物理步节奏：
+            #    每 phy_steps_per_action 个物理步才 set_action 一次
+            #    ConstantForcePlugin 在 on_pre_phy_step 中每步施力
+            for _ in range(duration_action_steps):
+                if policy is not None:
+                    obs = sim.get_observation()
+                    action, _ = policy.act(obs.get(robot_id))
+                else:
+                    action = np.zeros(21, dtype=np.float32)
+                runtime.step(action, np.zeros(21, dtype=np.float32))
 
-        # 8. 记录元数据到 metrics
-        ctx.metrics[f"{self.target_robot}_impulse_body"] = body
-        ctx.metrics[f"{self.target_robot}_impulse_force"] = force
-        ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = duration_action_steps
-        ctx.metrics[f"{self.target_robot}_impulse_duration_phy_steps"] = duration_phy_steps
-        ctx.metrics[f"{self.target_robot}_impulse_direction"] = direction.tolist()
-        ctx.metrics[f"{self.target_robot}_impulse_direction_angle"] = rel_angle_deg
-        ctx.metrics[f"{self.target_robot}_impulse_heading"] = heading
+                # 每个 action step 后重置非目标机器人
+                if non_target_state:
+                    sim.set_core_state(non_target_state)
+
+            # 6. 取扰动后的 core state 写回真实环境
+            perturbed_state = sim.get_core_state()
+            ctx.mutator.set_core_state({
+                robot_id: perturbed_state[robot_id],
+            })
+
+            # 7. 记录元数据到 metrics
+            ctx.metrics[f"{robot_id}_impulse_body"] = body
+            ctx.metrics[f"{robot_id}_impulse_force"] = force
+            ctx.metrics[f"{robot_id}_impulse_duration_action_steps"] = duration_action_steps
+            ctx.metrics[f"{robot_id}_impulse_duration_phy_steps"] = duration_phy_steps
+            ctx.metrics[f"{robot_id}_impulse_direction"] = direction.tolist()
+            ctx.metrics[f"{robot_id}_impulse_direction_angle"] = rel_angle_deg
+            ctx.metrics[f"{robot_id}_impulse_heading"] = heading
+
+            # 更新 real_state，使下一个机器人的扰动基于当前状态
+            real_state = sim.get_core_state()
