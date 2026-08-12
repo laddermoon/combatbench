@@ -9,11 +9,10 @@ sample_distribution.py from probe_boundary.py scan results).
   - r_cross: alternating step reward/penalty, actor weight = 1.0 × φ²
   - r_fall actor weight: fixed 3.0
   - Impulse: (direction, force, duration) sampled from weight distribution
-  - Warm-start: loads actor weights from BASE_POLICY_PATH checkpoint
+  - Warm-start: use --resume-from to load from a previous checkpoint
 
 Environment variables (all captured here, not in plugin):
   POLICY_BLUEPRINT_PATH - path to reference policy_blueprint.yaml for internal sim
-  BASE_POLICY_PATH      - path to checkpoint .pt for warm-start (optional)
   WEIGHT_NPZ_PATH       - path to sample_weights.npz weight distribution file
 """
 from __future__ import annotations
@@ -23,7 +22,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-import torch
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
 from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
@@ -95,38 +93,6 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
             "policy_blueprint_path": str(Path(policy_bp_path).resolve()),
             "weight_npz_path": str(Path(weight_npz_path).resolve()),
         }
-
-    # ------------------------------------------------------------------
-    # Warm-start from base policy checkpoint
-    # ------------------------------------------------------------------
-
-    def build_actor(self, device: torch.device) -> Any:
-        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-
-        base_path = os.environ.get("BASE_POLICY_PATH")
-        if not base_path:
-            return super().build_actor(device)
-
-        ckpt_path = Path(base_path)
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-        payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
-
-        actor = TanhGaussianMLPPolicy(
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
-            hidden_dim=hidden_dim,
-            log_std_min=float(self.log_std_min),
-            log_std_max=float(self.log_std_max),
-            device=device,
-        )
-        state_dict = payload.get("actor_state_dict", payload.get("state_dict", {}))
-        actor.load_state_dict(state_dict, strict=False)
-        actor = actor.to(device)
-        actor.log_std_min = float(self.log_std_min)
-        return actor
 
     # ------------------------------------------------------------------
     # Job construction — inject impulse params into env materialize

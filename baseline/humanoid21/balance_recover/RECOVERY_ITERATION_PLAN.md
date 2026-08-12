@@ -293,11 +293,11 @@ PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_re
 
 ```bash
 POLICY_BLUEPRINT_PATH=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml \
-BASE_POLICY_PATH=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/model.pt \
 WEIGHT_NPZ_PATH=baseline/humanoid21/balance_recover/sample_weights.npz \
 PYTHONPATH=/data1/mono/things/combatbench python3 baseline/framework/train.py \
     --experiment v2_weighted_impulse --algo ppo \
-    --run-name recover_weighted_gen0 --no-snapshot
+    --run-name recover_weighted_gen0 --no-snapshot \
+    --resume-from baseline/runs/fixaw_survonly_crossphi2_s42/checkpoints/checkpoint_u00455.pt
 ```
 
 **环境变量说明**：
@@ -305,15 +305,16 @@ PYTHONPATH=/data1/mono/things/combatbench python3 baseline/framework/train.py \
 | 环境变量 | 必填 | 说明 |
 |---|---|---|
 | `POLICY_BLUEPRINT_PATH` | 是 | 内部 sim 的参考策略蓝图（`RelativeImpulsePlugin` 用此策略在内部 sim 中控制机器人，生成物理合理的扰动状态） |
-| `BASE_POLICY_PATH` | 是 | Warm-start checkpoint（`.pt` 文件，加载 actor 权重） |
 | `WEIGHT_NPZ_PATH` | 是 | 权重分布文件（`sample_distribution.py` 生成的 `sample_weights.npz`） |
+
+**Warm-start**：使用框架标准的 `--resume-from` 参数加载 checkpoint（含 actor + critic + optimizer + experiment state），不再需要 `BASE_POLICY_PATH` 环境变量。checkpoint 路径指向 `checkpoints/checkpoint_uXXXXX.pt`（训练保存的完整 checkpoint），而非导出的 `policy_exports/` 下的 `model.pt`。
 
 **可选**：加 `--background` 后台运行，日志在 `run_dir/train.log`。
 
 #### Smoke 测试
 
 ```bash
-POLICY_BLUEPRINT_PATH=... BASE_POLICY_PATH=... WEIGHT_NPZ_PATH=... \
+POLICY_BLUEPRINT_PATH=... WEIGHT_NPZ_PATH=... \
 python3 baseline/framework/train.py --experiment v2_weighted_impulse --algo ppo --smoke --no-snapshot --run-dir /tmp/test
 ```
 
