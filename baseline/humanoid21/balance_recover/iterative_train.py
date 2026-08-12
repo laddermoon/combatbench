@@ -5,6 +5,13 @@ Runs the full loop: probe -> sample -> train -> monitor -> log,
 repeating across generations.
 
 Usage:
+    # From scratch (no checkpoint):
+    python3 iterative_train.py \
+        --policy baseline/runs/standing/policy/policy_blueprint.yaml \
+        --start-gen 0 \
+        --max-gens 10
+
+    # Resume from a previous generation:
     python3 iterative_train.py \
         --policy baseline/runs/weighted_impulse_gen2/policy/policy_blueprint.yaml \
         --checkpoint baseline/runs/weighted_impulse_gen2/checkpoints/checkpoint_u01620.pt \
@@ -116,10 +123,10 @@ def launch_train(gen: int, checkpoint: str, policy_path: str, sample_npz: str) -
         "--set", f"policy_blueprint_path={policy_path}",
         "--set", f"weight_npz_path={sample_npz}",
         "--set", "reset_best=True",
-        "--resume-from", checkpoint,
-        "--reset-update",
         "--run-name", run_name,
     ]
+    if checkpoint:
+        cmd += ["--resume-from", checkpoint, "--reset-update"]
     env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
     log(gen, "TRAIN_START", f"checkpoint={checkpoint}")
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -245,8 +252,8 @@ def main():
     parser = argparse.ArgumentParser(description="Iterative balance recovery training")
     parser.add_argument("--policy", type=str, required=True,
                         help="Initial policy blueprint path")
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Initial checkpoint path")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Initial checkpoint path (omit for from-scratch training)")
     parser.add_argument("--start-gen", type=int, default=3,
                         help="Starting generation number")
     parser.add_argument("--max-gens", type=int, default=10,
