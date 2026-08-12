@@ -84,6 +84,7 @@
 | `weighted_impulse_env.yaml` | 训练环境蓝图 |
 | `relative_impulse_plugin.py` | 相对角度冲量插件 |
 | `exp_weighted_impulse.py` | 训练实验类（在 `baseline/experiments_v2/`） |
+| `plot_boundary_comparison.py` | 各代 boundary 对比可视化（静态 PNG + 动画 GIF/MP4） |
 
 ## 注意事项
 
