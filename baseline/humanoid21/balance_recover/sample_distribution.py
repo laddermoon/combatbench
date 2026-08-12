@@ -115,6 +115,103 @@ def compute_prob_matrix(
     return prob_matrix
 
 
+def plot_boundary_and_distribution(
+    angles: np.ndarray,
+    forces: np.ndarray,
+    durations: np.ndarray,
+    cds: np.ndarray,
+    prob_matrix: np.ndarray,
+    output_dir: Path,
+    sigma_k: float = 0.15,
+) -> None:
+    """生成边界 + 概率分布组合极坐标图。
+
+    每个 force 一列，上图显示 critical duration 边界（极坐标填充），
+    下图显示采样概率分布（极坐标热力图，angle=方向, radius=duration, color=概率），
+    并叠加边界曲线。
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list(
+        "custom", ["#0d1b2a", "#1b4965", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"], N=256
+    )
+    n_angles = len(angles)
+    n_durs = len(durations)
+    dur_max = float(durations[-1])
+    angles_rad = np.radians(angles)
+    angles_closed = np.append(angles_rad, angles_rad[0])
+
+    n_forces = len(forces)
+    fig, axes = plt.subplots(2, n_forces, figsize=(6 * n_forces, 12),
+                             subplot_kw={"projection": "polar"})
+    if n_forces == 1:
+        axes = axes[:, np.newaxis]
+
+    fig.suptitle(f"Boundary & Sampling Distribution (sigma_k={sigma_k})",
+                 fontsize=16, fontweight="bold", y=0.98)
+
+    for j, force in enumerate(forces):
+        # 上图: critical duration 边界
+        ax_bd = axes[0, j]
+        crit = cds[:, j]
+        crit_closed = np.append(crit, crit[0])
+        for k in range(n_angles):
+            ax_bd.fill(angles_closed[k:k+2], crit_closed[k:k+2],
+                       color=cmap(crit_closed[k] / dur_max), alpha=0.85)
+        ax_bd.plot(angles_closed, crit_closed, color="black", linewidth=1.5, zorder=5)
+        ax_bd.set_ylim(0, dur_max + 2)
+        ax_bd.set_theta_zero_location("E")
+        ax_bd.set_theta_direction(-1)
+        ax_bd.set_title(f"Boundary  F={int(force)}N\n(mean={crit.mean():.1f})",
+                        fontsize=12, pad=15)
+        ax_bd.set_xticks(np.deg2rad(np.arange(0, 360, 45)))
+        ax_bd.set_xticklabels(["0°", "315°", "270°", "225°", "180°", "135°", "90°", "45°"],
+                              fontsize=9)
+        ax_bd.grid(color="gray", alpha=0.3)
+
+        # 下图: 概率分布极坐标热力图
+        ax_pr = axes[1, j]
+        probs = prob_matrix[:, j, :]  # (n_angles, n_durs)
+        # 归一化到 [0, 1] 用于颜色映射
+        pmax = probs.max()
+        if pmax > 0:
+            probs_norm = probs / pmax
+        else:
+            probs_norm = probs
+
+        for i_a in range(n_angles):
+            i_next = (i_a + 1) % n_angles
+            for i_d in range(n_durs):
+                r0 = durations[i_d] - 0.5
+                r1 = durations[i_d] + 0.5
+                # 取相邻两个方向的平均概率作为扇区颜色
+                p_avg = (probs_norm[i_a, i_d] + probs_norm[i_next, i_d]) * 0.5
+                color = cmap(p_avg)
+                alpha = min(1.0, p_avg * 1.5 + 0.05)
+                theta_seg = [angles_rad[i_a], angles_rad[i_next], angles_rad[i_next], angles_rad[i_a]]
+                r_seg = [r0, r0, r1, r1]
+                ax_pr.fill(theta_seg, r_seg, color=color, alpha=alpha)
+
+        # 叠加边界曲线
+        ax_pr.plot(angles_closed, crit_closed, color="white", linewidth=2,
+                   linestyle="--", zorder=10)
+        ax_pr.set_ylim(0, dur_max + 2)
+        ax_pr.set_theta_zero_location("E")
+        ax_pr.set_theta_direction(-1)
+        ax_pr.set_title(f"Probability  F={int(force)}N\n(share={100*probs.sum():.1f}%)",
+                        fontsize=12, pad=15)
+        ax_pr.set_xticks(np.deg2rad(np.arange(0, 360, 45)))
+        ax_pr.set_xticklabels(["0°", "315°", "270°", "225°", "180°", "135°", "90°", "45°"],
+                              fontsize=9)
+        ax_pr.grid(color="gray", alpha=0.3)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    out_path = output_dir / "boundary_and_distribution.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Boundary + distribution plot saved to {out_path}")
+
+
 def plot_heatmaps(
     angles: np.ndarray,
     forces: np.ndarray,
@@ -277,6 +374,8 @@ def main() -> None:
     # 6. 生成热力图
     print(f"\nGenerating heatmaps...")
     plot_heatmaps(angles, forces, durations, cds, prob_matrix, output_dir)
+    plot_boundary_and_distribution(angles, forces, durations, cds, prob_matrix,
+                                   output_dir, sigma_k=args.sigma_k)
     print(f"Heatmaps saved to {output_dir}/")
 
     # 7. 打印采样统计
