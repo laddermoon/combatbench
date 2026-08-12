@@ -78,6 +78,7 @@
 - 训练自动导出 policy_exports，无需手动 export
 - 每轮训练最多 ~2000 updates，或超过 100 updates 没有提升则提前停止
 - 中间可能有 Bug，需持续监控训练日志
+- 每次操作后、发现问题后、修复后，都在「操作日志」section 追加记录，不要覆盖以前的记录
 - `exp_weighted_impulse.py` 中 `posture_key` 是死代码（已从 YAML 删除 observer），待清理
 
 ---
