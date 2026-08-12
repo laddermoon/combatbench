@@ -64,12 +64,14 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         policy_blueprint_path: Optional[str] = None,
         weight_npz_path: Optional[str] = None,
         direction_jitter: float = 5.0,
+        reset_best: bool = False,
     ):
         self._policy_blueprint_path = policy_blueprint_path
         self._sampler: Optional[Any] = None
         if weight_npz_path is not None:
             from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
             self._sampler = ImpulseSampler(weight_npz_path, direction_jitter)
+        self._reset_best = reset_best
 
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -276,7 +278,10 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
 
     def load_state(self, state: dict) -> None:
         self._survival_rate = float(state.get("survival_rate", 0.0))
-        self._best_survived = float(state.get("best_survived", -1.0))
+        if self._reset_best:
+            self._best_survived = -1.0
+        else:
+            self._best_survived = float(state.get("best_survived", -1.0))
 
 
 EXPERIMENT_CLASS = WeightedImpulseExperiment
