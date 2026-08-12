@@ -37,6 +37,10 @@ def _parse_args() -> argparse.Namespace:
         help="Short smoke run (max_updates=2, episodes_per_update=8, eval_episodes=4).",
     )
     parser.add_argument("--resume-from", type=str, default=None)
+    parser.add_argument(
+        "--reset-update", action="store_true",
+        help="Reset update counter to 0 when resuming (for new generation training).",
+    )
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
         "--list-experiments", action="store_true",
@@ -271,7 +275,7 @@ def main() -> None:
         if algo != "ppo":
             raise ValueError(f"ExperimentV2 only supports PPO, got algo={algo}")
         from baseline.framework.ppo_loop_v2 import train_ppo_v2
-        train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
+        train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
     elif algo == "ppo":
         from baseline.framework.ppo_loop import train_ppo
         train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)

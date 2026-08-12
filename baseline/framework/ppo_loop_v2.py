@@ -173,6 +173,7 @@ def load_checkpoint_v2(
     experiment: ExperimentV2,
     cp: CommonParams,
     pp: PPOParams,
+    reset_update: bool = False,
 ) -> int:
     """Load model weights and optimizer states from checkpoint.
 
@@ -212,6 +213,14 @@ def load_checkpoint_v2(
         flush=True,
     )
 
+    if reset_update:
+        saved_update = payload.get("update", 0)
+        payload["update"] = 0
+        state = payload.get("state", {})
+        state["update"] = 0
+        payload["state"] = state
+        print(f"[checkpoint] update counter reset to 0 (was {saved_update})", flush=True)
+
     # Restore experiment state
     saved_exp = payload.get("experiment_name", "")
     if saved_exp == cp.name:
@@ -226,7 +235,7 @@ def load_checkpoint_v2(
             flush=True,
         )
 
-    return int(payload.get("update", 0))
+    return 0 if reset_update else int(payload.get("update", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +306,7 @@ def train_ppo_v2(
     run_dir: Path,
     resume_from: Optional[Path] = None,
     use_confidence: bool = True,
+    reset_update: bool = False,
 ) -> None:
     """PPO training loop using the ExperimentV2 interface."""
     cp = experiment.common_params()
@@ -347,6 +357,7 @@ def train_ppo_v2(
             experiment=experiment,
             cp=cp,
             pp=pp,
+            reset_update=reset_update,
         )
         print(
             f"[resume] loaded from {resume_from}, starting at update={start_update}",
