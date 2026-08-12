@@ -106,6 +106,12 @@ def run_sample(gen: int) -> dict:
     shutil.copy2(json_src, json_dst)
     shutil.copy2(csv_src, csv_dst)
 
+    # Copy gen-suffixed versions of all heatmap/plot files
+    for pattern in ["heatmap_*.png", "boundary_and_distribution.png"]:
+        for src in _RUN_ROOT.glob(pattern):
+            dst = _RUN_ROOT / f"{src.stem}_gen{gen}{src.suffix}"
+            shutil.copy2(src, dst)
+
     with open(json_dst) as f:
         sample_info = json.load(f)
     stats = sample_info.get("sample_statistics", {})
