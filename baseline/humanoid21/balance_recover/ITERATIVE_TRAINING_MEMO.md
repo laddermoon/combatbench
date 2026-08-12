@@ -28,14 +28,17 @@
      ```
 
 2. **Sample** — `sample_distribution.py`
-   - 从边界数据生成训练用采样权重分布
+   - 从 boundary JSON 生成训练用采样概率矩阵
+   - 输入: `boundary_genN.json`（boundary JSON，非 CSV）
    - 输出: `sample_weights_genN.npz` / `sample_distribution_genN.json` / `samples_genN.csv` + 热力图
    - 每轮保留历史，不覆盖
+   - 采样策略: `sigma = k × cd`（k=0.15），CDF 区间概率，方向均分预算，force 截断归一化，扇区随机化
    - 命令:
      ```bash
      PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_recover/sample_distribution.py \
-         --input baseline/humanoid21/balance_recover/boundary_genN.csv \
-         --output-dir baseline/humanoid21/balance_recover/
+         --input baseline/humanoid21/balance_recover/boundary_genN.json \
+         --output-dir baseline/humanoid21/balance_recover/ \
+         --sigma-k 0.15
      ```
    - 训练时用 `--set weight_npz_path=.../sample_weights_genN.npz`
 

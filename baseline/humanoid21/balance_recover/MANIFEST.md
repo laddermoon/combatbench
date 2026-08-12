@@ -131,19 +131,48 @@ python3 balance_recover/plot_impulse_boundary.py \
 
 ### sample_distribution.py ✅
 
-权重分布加载与采样逻辑。包含 `ImpulseSampler` 类：从 `sample_weights.npz` 加载方向/力/持续时间权重分布，按权重采样扰动参数。
+采样分布预计算与采样器。从 boundary JSON 生成概率矩阵，保存为 `sample_weights.npz`，供训练时 `ImpulseSampler` 加载。
+
+**采样策略**：
+- 16 个方向均分预算（每个 1/16）
+- 每个方向内 3 个力（40N/100N/200N）各初始权重 1/3
+- `sigma = k × cd`（k=0.15），用高斯 CDF 区间概率 `P(d) = Φ((d+0.5-c)/σ) - Φ((d-0.5-c)/σ)`
+- 超出 [1, 40] 的概率丢弃，3 个力的保留权重归一化为 1
+- 采样时在选中方向所在 22.5° 扇区内做均匀随机化
 
 **创建原因**：将采样逻辑从 `RelativeImpulsePlugin` 和 `exp_weighted_impulse.py` 中抽出，封装为可复用的采样器。
+
+**用法（作为脚本预计算）**:
+
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 \
+    baseline/humanoid21/balance_recover/sample_distribution.py \
+    --input baseline/humanoid21/balance_recover/boundary_genN.json \
+    --output-dir baseline/humanoid21/balance_recover/ \
+    --sigma-k 0.15
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input` | (必填) | boundary JSON 路径（来自 `probe_boundary.py`） |
+| `--output-dir` | `.` | 输出目录 |
+| `--sigma-k` | `0.15` | 自适应 sigma 系数：`sigma = sigma_k × cd` |
+| `--duration-min` | `1` | 最小 duration |
+| `--duration-max` | `40` | 最大 duration |
+| `--n-samples` | `1000` | 采样统计数量 |
+| `--seed` | `42` | 随机种子 |
+
+**输出**: `sample_weights.npz`（概率矩阵）、`sample_distribution.json`、`samples.csv`、热力图 PNG
 
 **用法（作为模块）**:
 
 ```python
 from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
-sampler = ImpulseSampler("path/to/sample_weights.npz", direction_jitter=5.0)
+sampler = ImpulseSampler("path/to/sample_weights.npz")
 params = sampler.sample(rng)  # {"direction_angle", "force", "duration_action_steps", "body"}
 ```
 
-也可作为独立脚本运行，生成采样分布可视化和 `sample_weights.npz`。
+> **注**: `direction_jitter` 参数保留但不再使用，角度随机化改为扇区均匀采样（±11.25°）。旧格式 NPZ（`interp_angles`/`interp_weights`）仍兼容。
 
 ### verify_direction_video.py ✅
 
@@ -240,7 +269,7 @@ PYTHONPATH=/data1/mono/things/combatbench python3 \
 
 | 文件 | 说明 |
 |------|------|
-| `sample_weights.npz` | 采样权重分布（方向×力×持续时间的权重矩阵） |
+| `sample_weights.npz` | 采样概率矩阵（16方向×3力×40持续时间，含 `angles`, `forces`, `durations`, `prob_matrix`, `cds`, `sigma_k`） |
 | `sample_distribution.json` | 采样分布的完整 JSON 快照 |
 | `samples.csv` | 采样参数列表 |
 | `boundary_fixaw_s42.csv` / `.json` | 固定策略的边界探测结果 |
