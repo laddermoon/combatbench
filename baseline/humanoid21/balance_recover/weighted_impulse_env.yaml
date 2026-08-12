@@ -51,14 +51,6 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
     config:
       agent_id: "robot_b"
-  posture_a:
-    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
-    config:
-      agent_id: "robot_a"
-  posture_b:
-    cls: "baseline.humanoid21.rewards.posture_reward:PostureRewarder"
-    config:
-      agent_id: "robot_b"
   height_phi_a:
     cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
     config:
