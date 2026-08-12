@@ -41,7 +41,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 from envs.framework import BasePlugin
 from envs.framework.context import SimContext
@@ -136,23 +135,6 @@ class RelativeImpulsePlugin(BasePlugin):
             self._policy = bp.build()
         return self._policy
 
-    @staticmethod
-    def _extract_heading(root_rot: np.ndarray) -> float:
-        """从 root_rot 四元数 [w,x,y,z] 提取 heading（yaw, 弧度）。
-
-        heading = atan2(forward_y, forward_x)，其中 forward = R @ [1,0,0]
-        （局部 x 轴即机器人前方，与 simulator 的 face_vector 定义一致）。
-
-        前提假设：机器人基本直立（pitch/roll ≈ 0）。本插件在
-        ``on_pre_episode`` 中施力，此时刚 reset 为 standing 姿态，满足该假设。
-        若在已倾倒的状态上调用，前向轴向水平面的投影会被 pitch 污染，
-        提取的 heading 不再等于真实 yaw。
-        """
-        # scipy 用 [x,y,z,w] 顺序
-        rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])
-        forward = rot.apply(np.array([1.0, 0.0, 0.0]))
-        return float(np.arctan2(forward[1], forward[0]))
-
     def on_pre_episode(self, ctx: SimContext) -> None:
         from envs.humanoid21.disturbance_plugins import ConstantForcePlugin
 
@@ -173,13 +155,7 @@ class RelativeImpulsePlugin(BasePlugin):
             duration_action_steps = int(p["duration_action_steps"])
             duration_phy_steps = duration_action_steps * self.phy_steps_per_action
 
-            # 1. 从目标机器人 root_rot 提取 heading，计算绝对方向
-            root_rot = np.asarray(real_state[robot_id]["root_rot"], dtype=np.float64)
-            heading = self._extract_heading(root_rot)
-            abs_angle = heading - np.radians(rel_angle_deg)
-            direction = np.array([np.cos(abs_angle), np.sin(abs_angle), 0.0], dtype=np.float64)
-
-            # 2. 创建内部 EnvRuntime + ConstantForcePlugin
+            # 1. 创建内部 EnvRuntime + ConstantForcePlugin
             force_plugin = ConstantForcePlugin(
                 agent_id=robot_id,
                 force=force,
@@ -189,11 +165,11 @@ class RelativeImpulsePlugin(BasePlugin):
             )
             runtime = self._ensure_internal_runtime(force_plugin)
 
-            # 3. 初始化内部 sim 状态
+            # 2. 初始化内部 sim 状态
             runtime.reset()
             sim.set_core_state(real_state)
 
-            # 4. 策略 reset
+            # 3. 策略 reset
             if policy is not None:
                 policy.reset()
 
@@ -205,7 +181,7 @@ class RelativeImpulsePlugin(BasePlugin):
                 if rid != robot_id
             }
 
-            # 5. 循环 duration_action_steps 次 runtime.step()
+            # 4. 循环 duration_action_steps 次 runtime.step()
             #    EnvRuntime 自动管理 action 步/物理步节奏：
             #    每 phy_steps_per_action 个物理步才 set_action 一次
             #    ConstantForcePlugin 在 on_pre_phy_step 中每步施力
@@ -232,9 +208,7 @@ class RelativeImpulsePlugin(BasePlugin):
             ctx.metrics[f"{robot_id}_impulse_force"] = force
             ctx.metrics[f"{robot_id}_impulse_duration_action_steps"] = duration_action_steps
             ctx.metrics[f"{robot_id}_impulse_duration_phy_steps"] = duration_phy_steps
-            ctx.metrics[f"{robot_id}_impulse_direction"] = direction.tolist()
             ctx.metrics[f"{robot_id}_impulse_direction_angle"] = rel_angle_deg
-            ctx.metrics[f"{robot_id}_impulse_heading"] = heading
 
             # 更新 real_state，使下一个机器人的扰动基于当前状态
             real_state = sim.get_core_state()
