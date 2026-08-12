@@ -55,8 +55,11 @@ def plot_static(all_data, gens, gen_labels, forces, out_path: Path):
     cmap = make_colormap()
     theta = np.deg2rad(np.arange(361))
 
-    fig, axes = plt.subplots(3, 3, figsize=(18, 18), subplot_kw={'projection': 'polar'})
-    fig.suptitle('Boundary Critical Duration Comparison Across Generations',
+    n_gens = len(gens)
+    fig, axes = plt.subplots(n_gens, 3, figsize=(18, 6 * n_gens), subplot_kw={'projection': 'polar'})
+    if n_gens == 1:
+        axes = axes[np.newaxis, :]
+    fig.suptitle('Boundary Critical Duration Comparison Across Generations', 
                  fontsize=20, fontweight='bold', y=0.98)
 
     for i, gen in enumerate(gens):
@@ -87,15 +90,16 @@ def plot_animated(all_data, gens, gen_labels, forces, base_dir: Path):
     theta = np.deg2rad(np.arange(361))
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 7), subplot_kw={'projection': 'polar'})
+    n_gens = len(gens)
     n_frames_per_gen = 15
-    total_frames = 3 * n_frames_per_gen + 15
+    total_frames = n_gens * n_frames_per_gen + 15
 
     def get_frame_data(frame):
-        gen_idx = min(frame // n_frames_per_gen, 2)
-        next_idx = min(gen_idx + 1, 2)
+        gen_idx = min(frame // n_frames_per_gen, n_gens - 1)
+        next_idx = min(gen_idx + 1, n_gens - 1)
         frac = (frame % n_frames_per_gen) / n_frames_per_gen
-        if gen_idx == 2:
-            frac, next_idx = 0, 2
+        if gen_idx == n_gens - 1:
+            frac, next_idx = 0, n_gens - 1
         fd = {}
         for f in forces:
             v0, v1 = all_data[(gens[gen_idx], f)], all_data[(gens[next_idx], f)]
@@ -150,8 +154,21 @@ def main():
     else:
         base_dir = Path(__file__).resolve().parent
 
-    gens = ['gen0', 'gen1', 'gen2']
-    gen_labels = ['Gen 0', 'Gen 1', 'Gen 2']
+    # Auto-detect available generations
+    gens = []
+    gen_labels = []
+    i = 0
+    while True:
+        name = f'gen{i}'
+        if (base_dir / f'boundary_{name}.json').exists():
+            gens.append(name)
+            gen_labels.append(f'Gen {i}')
+            i += 1
+        else:
+            break
+    if not gens:
+        print(f"No boundary_gen*.json files found in {base_dir}")
+        return
     forces = [40.0, 100.0, 200.0]
 
     all_data = load_boundary_data(base_dir, gens, forces)
