@@ -506,10 +506,13 @@ class ExperimentV2(ABC):
                 {
                     "is_new_best": bool,   # export policy if True
                     "info": Dict[str, Any],  # free-form logging info
+                    "stop_training": bool,  # optional: request early stop
                 }
 
             The ``info`` dict is printed by the framework as-is (e.g.
             ``{"phase": "stability", "mean_length": 187.5, ...}``).
+            If ``stop_training`` is present and ``True``, the framework
+            breaks the training loop after the current update.
         """
         ...
 

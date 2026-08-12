@@ -461,6 +461,20 @@ def train_ppo_v2(
                 eval_info = result.get("info", {})
                 is_new_best = result.get("is_new_best", False)
 
+                if result.get("stop_training", False):
+                    print(f"[early_stop] no improvement for {getattr(experiment, '_no_improvement_limit', '?')} evals, stopping at update {u}", flush=True)
+                    save_checkpoint_v2(
+                        ckpt_dir / f"checkpoint_u{u:05d}.pt",
+                        actor=actor,
+                        critics=critics,
+                        actor_optimizer=actor_optimizer,
+                        critic_optimizers=critic_optimizers,
+                        experiment=experiment,
+                        cp=cp,
+                        update=u,
+                    )
+                    break
+
                 # Build eval line from info dict
                 info_parts = [f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
                               for k, v in eval_info.items()]

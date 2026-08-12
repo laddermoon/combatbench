@@ -52,6 +52,8 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
 
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
+    _last_best_update: int = 0
+    _no_improvement_limit: int = 100
 
     # --- PPO tuning (conservative for warm-start) ---
     learning_rate: float = 3e-5
@@ -72,6 +74,7 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
             from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
             self._sampler = ImpulseSampler(weight_npz_path, direction_jitter)
         self._reset_best = reset_best
+        self._last_best_update = 0
 
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -261,9 +264,14 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         is_new_best = survived_metric > self._best_survived
         if is_new_best:
             self._best_survived = survived_metric
+            self._last_best_update = update
+
+        no_improvement = update - self._last_best_update
+        stop_training = no_improvement >= self._no_improvement_limit
 
         return {
             "is_new_best": is_new_best,
+            "stop_training": stop_training,
             "info": {
                 "survived": survived_metric,
                 "survival_rate": round(survival_rate, 3),
@@ -274,14 +282,17 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         return {
             "survival_rate": self._survival_rate,
             "best_survived": self._best_survived,
+            "last_best_update": self._last_best_update,
         }
 
     def load_state(self, state: dict) -> None:
         self._survival_rate = float(state.get("survival_rate", 0.0))
         if self._reset_best:
             self._best_survived = -1.0
+            self._last_best_update = state.get("update", 0)
         else:
             self._best_survived = float(state.get("best_survived", -1.0))
+            self._last_best_update = state.get("last_best_update", state.get("update", 0))
 
 
 EXPERIMENT_CLASS = WeightedImpulseExperiment
