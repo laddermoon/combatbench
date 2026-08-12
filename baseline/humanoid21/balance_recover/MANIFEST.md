@@ -147,7 +147,34 @@ params = sampler.sample(rng)  # {"direction_angle", "force", "duration_action_st
 
 ### verify_direction_video.py ✅
 
-生成方向验证视频，用于可视化检查冲量方向是否正确。
+对 0°（正面）、90°（右侧）、180°（背面）、270°（左侧）各生成一个视频，用大力 + 长 duration 让用户目视确认冲量方向是否正确。支持 `--agent-id` 指定目标机器人。
+
+**创建原因**：验证 `RelativeImpulsePlugin` 重构后方向计算是否正确。
+
+**用法**:
+
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 \
+    baseline/humanoid21/balance_recover/verify_direction_video.py \
+    --policy-blueprint-path baseline/runs/.../policy_blueprint.yaml \
+    --force 300 --duration 8 \
+    --agent-id robot_a \
+    --output-dir /data1/dev/verify_direction
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--policy-blueprint-path` | (必填) | 策略蓝图路径 |
+| `--blueprint` | `weighted_impulse_env.yaml` | 环境蓝图路径 |
+| `--force` | `300` | 力大小 (N) |
+| `--duration` | `8` | 持续 action step 数 |
+| `--output-dir` | `/data1/dev/verify_direction` | 输出目录 |
+| `--max-steps` | `400` | 每 episode 最大步数 |
+| `--agent-id` | `robot_a` | 目标机器人（`robot_a` 或 `robot_b`） |
+
+**输出**: 4 个 MP4 文件（`impulse_<agent>_<label>_<angle>deg.mp4`）
+
+**已生成视频**: `verify_videos/` 下有 robot_a 和 robot_b 各 4 个方向共 8 个视频。
 
 ### verify_monotonicity.py ✅
 
@@ -222,7 +249,7 @@ params = sampler.sample(rng)  # {"direction_angle", "force", "duration_action_st
 | `monotonicity_50N.csv` / `_single.csv` / `monotonicity_check.csv` | 单调性验证数据 |
 | `heatmap_*.png` | 各种热力图（存活率、权重分布） |
 | `gen0/` | 第 0 代探测数据子目录 |
-| `verify_videos/` | 验证视频输出目录 |
+| `verify_videos/` | 方向验证视频（robot_a + robot_b 各 4 个方向，共 8 个 MP4） |
 
 ---
 
