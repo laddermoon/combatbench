@@ -57,6 +57,12 @@
 
 ### Gen 0（从零开始）
 
+- [x] Probe: `boundary_gen0.csv` / `.json`（1920 episodes）
+- [x] Sample: `sample_weights_gen0.npz`
+- [x] Train: `weighted_impulse_gen0_v2`（update 455→773，best@655 survived=101 sr=78.9%）
+
+### Gen 1
+
 - [ ] Probe
 - [ ] Sample
 - [ ] Train
@@ -92,3 +98,36 @@
 - 创建 `ITERATIVE_TRAINING_MEMO.md`
 - 初代策略: `fixaw_survonly_crossphi2_s42/u00460`
 - Gen 0 从零开始: probe → sample → train
+
+### 2026-08-12 13:26 — Gen 0 Probe + Sample
+
+- Probe: 16方向 × 3力 × 40 duration = 1920 episodes，22.8秒
+- 结果: F=40N mean_cd=1.4, F=100N mean_cd=0.4, F=200N mean_cd=0.1
+- Sample: `sample_weights_gen0.npz` 生成，角度 mean=176° std=106°, duration mean=2.8
+
+### 2026-08-12 13:27 — Gen 0 Train 启动
+
+- `--resume-from checkpoint_u00455.pt` (fixaw_survonly_crossphi2_s42)
+- run_dir: `baseline/runs/weighted_impulse_gen0_v2`
+- PID=1973623
+- 首次尝试 `--resume-from` 传目录报错 IsADirectoryError，改为传 `.pt` 文件成功
+
+### 2026-08-12 13:27~14:10 — Gen 0 Train 监控
+
+- update 455: survived=26, sr=20.3% (resume 初始)
+- update 475: survived=45, sr=35.2% [new_best]
+- update 525: survived=53, sr=41.4% [new_best]
+- update 550: survived=62, sr=48.4% [new_best]
+- update 580: survived=68, sr=53.1% [new_best]
+- update 595: survived=76, sr=59.4% [new_best]
+- update 650: survived=80, sr=62.5% [new_best]
+- update 655: survived=101, sr=78.9% [new_best] ← 最终 best
+- update 655→770: 115 updates 无新 best，满足 100 updates 无提升停止条件
+- update 773 停止时: ep_len_mean=169, timeout=1208/2048 (大部分跑满)
+
+### 2026-08-12 14:10 — Gen 0 Train 停止
+
+- kill PID 1973623
+- best policy: `weighted_impulse_gen0_v2/policy/` (update 655, survived=101, sr=78.9%)
+- 总训练: 318 updates (455→773)，约 45 分钟
+- 准备 Gen 1: 用 best policy 做 probe

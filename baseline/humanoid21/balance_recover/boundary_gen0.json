@@ -1,5 +1,5 @@
 {
-  "policy_export": "/data1/mono/things/combatbench/baseline/runs/recover_weighted_gen0/policy_exports/u00275",
+  "policy_blueprint_path": "/data1/mono/things/combatbench/baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml",
   "agent_id": "robot_a",
   "duration_range": [
     1,
@@ -33,147 +33,147 @@
     {
       "direction_angle": 0.0,
       "force": 40.0,
-      "critical_duration": 29
+      "critical_duration": 5
     },
     {
       "direction_angle": 0.0,
       "force": 100.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 0.0,
+      "force": 200.0,
+      "critical_duration": 1
+    },
+    {
+      "direction_angle": 22.5,
+      "force": 40.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 22.5,
+      "force": 100.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 22.5,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 45.0,
+      "force": 40.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 45.0,
+      "force": 100.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 45.0,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 67.5,
+      "force": 40.0,
       "critical_duration": 6
     },
     {
-      "direction_angle": 0.0,
-      "force": 200.0,
-      "critical_duration": 3
-    },
-    {
-      "direction_angle": 22.5,
-      "force": 40.0,
-      "critical_duration": 29
-    },
-    {
-      "direction_angle": 22.5,
+      "direction_angle": 67.5,
       "force": 100.0,
-      "critical_duration": 11
-    },
-    {
-      "direction_angle": 22.5,
-      "force": 200.0,
-      "critical_duration": 3
-    },
-    {
-      "direction_angle": 45.0,
-      "force": 40.0,
-      "critical_duration": 31
-    },
-    {
-      "direction_angle": 45.0,
-      "force": 100.0,
-      "critical_duration": 8
-    },
-    {
-      "direction_angle": 45.0,
-      "force": 200.0,
-      "critical_duration": 3
+      "critical_duration": 0
     },
     {
       "direction_angle": 67.5,
-      "force": 40.0,
-      "critical_duration": 19
-    },
-    {
-      "direction_angle": 67.5,
-      "force": 100.0,
-      "critical_duration": 4
-    },
-    {
-      "direction_angle": 67.5,
-      "force": 200.0,
-      "critical_duration": 2
-    },
-    {
-      "direction_angle": 90.0,
-      "force": 40.0,
-      "critical_duration": 28
-    },
-    {
-      "direction_angle": 90.0,
-      "force": 100.0,
-      "critical_duration": 4
-    },
-    {
-      "direction_angle": 90.0,
-      "force": 200.0,
-      "critical_duration": 2
-    },
-    {
-      "direction_angle": 112.5,
-      "force": 40.0,
-      "critical_duration": 20
-    },
-    {
-      "direction_angle": 112.5,
-      "force": 100.0,
-      "critical_duration": 4
-    },
-    {
-      "direction_angle": 112.5,
-      "force": 200.0,
-      "critical_duration": 2
-    },
-    {
-      "direction_angle": 135.0,
-      "force": 40.0,
-      "critical_duration": 16
-    },
-    {
-      "direction_angle": 135.0,
-      "force": 100.0,
-      "critical_duration": 3
-    },
-    {
-      "direction_angle": 135.0,
-      "force": 200.0,
-      "critical_duration": 2
-    },
-    {
-      "direction_angle": 157.5,
-      "force": 40.0,
-      "critical_duration": 18
-    },
-    {
-      "direction_angle": 157.5,
-      "force": 100.0,
-      "critical_duration": 4
-    },
-    {
-      "direction_angle": 157.5,
       "force": 200.0,
       "critical_duration": 1
     },
     {
+      "direction_angle": 90.0,
+      "force": 40.0,
+      "critical_duration": 2
+    },
+    {
+      "direction_angle": 90.0,
+      "force": 100.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 90.0,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 112.5,
+      "force": 40.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 112.5,
+      "force": 100.0,
+      "critical_duration": 3
+    },
+    {
+      "direction_angle": 112.5,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 135.0,
+      "force": 40.0,
+      "critical_duration": 3
+    },
+    {
+      "direction_angle": 135.0,
+      "force": 100.0,
+      "critical_duration": 2
+    },
+    {
+      "direction_angle": 135.0,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 157.5,
+      "force": 40.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 157.5,
+      "force": 100.0,
+      "critical_duration": 1
+    },
+    {
+      "direction_angle": 157.5,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
       "direction_angle": 180.0,
       "force": 40.0,
-      "critical_duration": 23
+      "critical_duration": 0
     },
     {
       "direction_angle": 180.0,
       "force": 100.0,
-      "critical_duration": 4
+      "critical_duration": 0
     },
     {
       "direction_angle": 180.0,
       "force": 200.0,
-      "critical_duration": 1
+      "critical_duration": 0
     },
     {
       "direction_angle": 202.5,
       "force": 40.0,
-      "critical_duration": 21
+      "critical_duration": 3
     },
     {
       "direction_angle": 202.5,
       "force": 100.0,
-      "critical_duration": 3
+      "critical_duration": 0
     },
     {
       "direction_angle": 202.5,
@@ -183,92 +183,92 @@
     {
       "direction_angle": 225.0,
       "force": 40.0,
-      "critical_duration": 16
+      "critical_duration": 0
     },
     {
       "direction_angle": 225.0,
       "force": 100.0,
-      "critical_duration": 3
+      "critical_duration": 0
     },
     {
       "direction_angle": 225.0,
       "force": 200.0,
-      "critical_duration": 1
+      "critical_duration": 0
     },
     {
       "direction_angle": 247.5,
       "force": 40.0,
-      "critical_duration": 15
+      "critical_duration": 0
     },
     {
       "direction_angle": 247.5,
       "force": 100.0,
-      "critical_duration": 2
+      "critical_duration": 0
     },
     {
       "direction_angle": 247.5,
       "force": 200.0,
-      "critical_duration": 1
+      "critical_duration": 0
     },
     {
       "direction_angle": 270.0,
       "force": 40.0,
-      "critical_duration": 18
+      "critical_duration": 0
     },
     {
       "direction_angle": 270.0,
       "force": 100.0,
-      "critical_duration": 2
+      "critical_duration": 0
     },
     {
       "direction_angle": 270.0,
       "force": 200.0,
-      "critical_duration": 1
+      "critical_duration": 0
     },
     {
       "direction_angle": 292.5,
       "force": 40.0,
-      "critical_duration": 12
+      "critical_duration": 0
     },
     {
       "direction_angle": 292.5,
       "force": 100.0,
-      "critical_duration": 4
+      "critical_duration": 0
     },
     {
       "direction_angle": 292.5,
       "force": 200.0,
-      "critical_duration": 1
+      "critical_duration": 0
     },
     {
       "direction_angle": 315.0,
       "force": 40.0,
-      "critical_duration": 8
+      "critical_duration": 0
     },
     {
       "direction_angle": 315.0,
       "force": 100.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 315.0,
+      "force": 200.0,
+      "critical_duration": 0
+    },
+    {
+      "direction_angle": 337.5,
+      "force": 40.0,
       "critical_duration": 3
     },
     {
-      "direction_angle": 315.0,
-      "force": 200.0,
-      "critical_duration": 1
-    },
-    {
-      "direction_angle": 337.5,
-      "force": 40.0,
-      "critical_duration": 12
-    },
-    {
       "direction_angle": 337.5,
       "force": 100.0,
-      "critical_duration": 4
+      "critical_duration": 0
     },
     {
       "direction_angle": 337.5,
       "force": 200.0,
-      "critical_duration": 2
+      "critical_duration": 0
     }
   ]
 }
