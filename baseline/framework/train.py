@@ -62,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
         "--seed", type=int, default=None,
         help="Override experiment seed (default: use experiment's built-in seed).",
     )
+    parser.add_argument(
+        "--set", action="append", default=[], metavar="KEY=VALUE",
+        help="Set experiment constructor parameter (can be repeated). "
+             "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
+    )
     return parser.parse_args()
 
 
@@ -140,13 +145,21 @@ def main() -> None:
         print("Error: --experiment is required. Use --list-experiments to see options.")
         raise SystemExit(1)
 
+    # Parse --set key=value pairs into a dict
+    set_params = {}
+    for item in args.set:
+        if "=" not in item:
+            raise SystemExit(f"Error: --set expects KEY=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        set_params[key.strip()] = value.strip()
+
     # Try v1 registry first, then v2
     try:
         experiment = get_experiment(args.experiment)
         is_v2 = False
     except KeyError:
         try:
-            experiment = get_v2_experiment(args.experiment)
+            experiment = get_v2_experiment(args.experiment, **set_params)
             is_v2 = True
         except KeyError:
             print(f"Error: Unknown experiment {args.experiment!r}.")

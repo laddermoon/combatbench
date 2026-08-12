@@ -201,4 +201,4 @@ class BasicBalanceV2(CombatExperimentV2Base):
             self._actor_weights = tuple(float(w) for w in aw)
 
 
-EXPERIMENT = BasicBalanceV2()
+EXPERIMENT_CLASS = BasicBalanceV2

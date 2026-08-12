@@ -200,4 +200,4 @@ class BasicBalanceV2DualFallOnly(CombatExperimentV2Base):
         self._best_survived = float(state.get("best_survived", -1.0))
 
 
-EXPERIMENT = BasicBalanceV2DualFallOnly()
+EXPERIMENT_CLASS = BasicBalanceV2DualFallOnly

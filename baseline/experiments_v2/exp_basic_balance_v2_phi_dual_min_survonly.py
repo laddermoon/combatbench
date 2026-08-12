@@ -245,4 +245,4 @@ class BasicBalanceV2PhiDualMinSurvOnly(CombatExperimentV2Base):
         self._best_survived = float(state.get("best_survived", -1.0))
 
 
-EXPERIMENT = BasicBalanceV2PhiDualMinSurvOnly()
+EXPERIMENT_CLASS = BasicBalanceV2PhiDualMinSurvOnly

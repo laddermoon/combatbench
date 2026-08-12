@@ -292,30 +292,32 @@ PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_re
 #### 启动命令
 
 ```bash
-POLICY_BLUEPRINT_PATH=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml \
-WEIGHT_NPZ_PATH=baseline/humanoid21/balance_recover/sample_weights.npz \
 PYTHONPATH=/data1/mono/things/combatbench python3 baseline/framework/train.py \
     --experiment v2_weighted_impulse --algo ppo \
     --run-name recover_weighted_gen0 --no-snapshot \
-    --resume-from baseline/runs/fixaw_survonly_crossphi2_s42/checkpoints/checkpoint_u00455.pt
+    --resume-from baseline/runs/fixaw_survonly_crossphi2_s42/checkpoints/checkpoint_u00455.pt \
+    --set policy_blueprint_path=baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml \
+    --set weight_npz_path=baseline/humanoid21/balance_recover/sample_weights.npz
 ```
 
-**环境变量说明**：
+**参数说明**：
 
-| 环境变量 | 必填 | 说明 |
+| 参数 | 来源 | 说明 |
 |---|---|---|
-| `POLICY_BLUEPRINT_PATH` | 是 | 内部 sim 的参考策略蓝图（`RelativeImpulsePlugin` 用此策略在内部 sim 中控制机器人，生成物理合理的扰动状态） |
-| `WEIGHT_NPZ_PATH` | 是 | 权重分布文件（`sample_distribution.py` 生成的 `sample_weights.npz`） |
+| `--resume-from` | CLI | Warm-start checkpoint（`checkpoints/checkpoint_uXXXXX.pt`，含 actor + critic + optimizer + experiment state） |
+| `--set policy_blueprint_path=...` | CLI | 内部 sim 的参考策略蓝图（`RelativeImpulsePlugin` 用此策略在内部 sim 中控制机器人，生成物理合理的扰动状态） |
+| `--set weight_npz_path=...` | CLI | 权重分布文件（`sample_distribution.py` 生成的 `sample_weights.npz`） |
 
-**Warm-start**：使用框架标准的 `--resume-from` 参数加载 checkpoint（含 actor + critic + optimizer + experiment state），不再需要 `BASE_POLICY_PATH` 环境变量。checkpoint 路径指向 `checkpoints/checkpoint_uXXXXX.pt`（训练保存的完整 checkpoint），而非导出的 `policy_exports/` 下的 `model.pt`。
+所有参数通过命令行 `--set` 注入，自动记录到训练目录的 `REPRODUCE.md` 中，无需环境变量。
 
 **可选**：加 `--background` 后台运行，日志在 `run_dir/train.log`。
 
 #### Smoke 测试
 
 ```bash
-POLICY_BLUEPRINT_PATH=... WEIGHT_NPZ_PATH=... \
-python3 baseline/framework/train.py --experiment v2_weighted_impulse --algo ppo --smoke --no-snapshot --run-dir /tmp/test
+python3 baseline/framework/train.py --experiment v2_weighted_impulse --algo ppo --smoke --no-snapshot --run-dir /tmp/test \
+    --set policy_blueprint_path=.../policy_blueprint.yaml \
+    --set weight_npz_path=.../sample_weights.npz
 ```
 
 已验证：2 updates 完成，survival_rate 0.125 → 0.500，权重采样正常工作。

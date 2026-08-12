@@ -449,4 +449,4 @@ class BasicBalanceV2StageSegDual(CombatExperimentV2Base):
             self._actor_weights = tuple(float(w) for w in aw)
 
 
-EXPERIMENT = BasicBalanceV2StageSegDual()
+EXPERIMENT_CLASS = BasicBalanceV2StageSegDual

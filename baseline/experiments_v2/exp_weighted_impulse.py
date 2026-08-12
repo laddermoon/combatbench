@@ -11,15 +11,14 @@ sample_distribution.py from probe_boundary.py scan results).
   - Impulse: (direction, force, duration) sampled from weight distribution
   - Warm-start: use --resume-from to load from a previous checkpoint
 
-Environment variables (all captured here, not in plugin):
-  POLICY_BLUEPRINT_PATH - path to reference policy_blueprint.yaml for internal sim
-  WEIGHT_NPZ_PATH       - path to sample_weights.npz weight distribution file
+Constructor params (injected via --set on the command line):
+  policy_blueprint_path - path to reference policy_blueprint.yaml for internal sim
+  weight_npz_path       - path to sample_weights.npz weight distribution file
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -59,6 +58,14 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
     eval_episodes: int = 64
     eval_interval: int = 5
 
+    def __init__(
+        self,
+        policy_blueprint_path: Optional[str] = None,
+        weight_npz_path: Optional[str] = None,
+    ):
+        self._policy_blueprint_path = policy_blueprint_path
+        self._weight_npz_path = weight_npz_path
+
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "balance_recover" / "weighted_impulse_env.yaml"
@@ -71,27 +78,25 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         )
 
     # ------------------------------------------------------------------
-    # Impulse perturbation parameters (all env vars captured here)
+    # Impulse perturbation parameters (injected via constructor --set)
     # ------------------------------------------------------------------
 
     def _impulse_params(self) -> Dict[str, Any]:
-        policy_bp_path = os.environ.get("POLICY_BLUEPRINT_PATH")
-        if not policy_bp_path:
+        if not self._policy_blueprint_path:
             raise ValueError(
-                "v2_weighted_impulse requires POLICY_BLUEPRINT_PATH environment variable. "
-                "Example: POLICY_BLUEPRINT_PATH=baseline/runs/.../policy/policy_blueprint.yaml"
+                "v2_weighted_impulse requires policy_blueprint_path. "
+                "Example: --set policy_blueprint_path=baseline/runs/.../policy_blueprint.yaml"
             )
 
-        weight_npz_path = os.environ.get("WEIGHT_NPZ_PATH")
-        if not weight_npz_path:
+        if not self._weight_npz_path:
             raise ValueError(
-                "v2_weighted_impulse requires WEIGHT_NPZ_PATH environment variable. "
-                "Example: WEIGHT_NPZ_PATH=baseline/humanoid21/balance_recover/sample_weights.npz"
+                "v2_weighted_impulse requires weight_npz_path. "
+                "Example: --set weight_npz_path=baseline/humanoid21/balance_recover/sample_weights.npz"
             )
 
         return {
-            "policy_blueprint_path": str(Path(policy_bp_path).resolve()),
-            "weight_npz_path": str(Path(weight_npz_path).resolve()),
+            "policy_blueprint_path": str(Path(self._policy_blueprint_path).resolve()),
+            "weight_npz_path": str(Path(self._weight_npz_path).resolve()),
         }
 
     # ------------------------------------------------------------------
@@ -264,4 +269,4 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         self._best_survived = float(state.get("best_survived", -1.0))
 
 
-EXPERIMENT = WeightedImpulseExperiment()
+EXPERIMENT_CLASS = WeightedImpulseExperiment

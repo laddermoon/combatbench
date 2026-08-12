@@ -285,4 +285,4 @@ class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentV2Base)
         self._best_survived = float(state.get("best_survived", -1.0))
 
 
-EXPERIMENT = BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse()
+EXPERIMENT_CLASS = BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse

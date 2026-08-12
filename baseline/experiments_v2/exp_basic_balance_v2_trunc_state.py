@@ -207,4 +207,4 @@ class BasicBalanceV2TruncState(CombatExperimentV2Base):
             self._actor_weights = tuple(float(w) for w in aw)
 
 
-EXPERIMENT = BasicBalanceV2TruncState()
+EXPERIMENT_CLASS = BasicBalanceV2TruncState

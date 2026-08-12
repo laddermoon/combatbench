@@ -172,6 +172,10 @@ def format_repro_command(
     repro_run_dir = original_repo_root / "baseline" / "runs" / repro_run_name
     parts.append(f"--run-dir {repro_run_dir}")
 
+    # Include --set params for reproducibility
+    for s in getattr(args, "set", []) or []:
+        parts.append(f"--set {s}")
+
     # Always skip snapshot on repro to avoid creating another branch
     parts.append("--no-snapshot")
 
