@@ -57,9 +57,9 @@
 
 ### Gen 0（从零开始）
 
-- [x] Probe: `boundary_fixaw_s42.csv` / `.json`（16方向 × 3力 × 40 duration = 1920 episodes）
-- [x] Sample: `sample_weights.npz` 已生成（后续轮次需带 genN 后缀保留历史）
-- [ ] Train: 待启动
+- [ ] Probe
+- [ ] Sample
+- [ ] Train
 
 ## 关键文件
 
@@ -86,15 +86,8 @@
 
 （追加记录，不要覆盖以前的记录）
 
-### 2026-08-12 12:38 — Gen 0 Probe + Sample
-
-- 用 `fixaw_survonly_crossphi2_s42/u00460` 策略跑全量扫描（1920 episodes，22秒）
-- 生成 `boundary_fixaw_s42.csv` / `.json`
-- 生成 `sample_weights.npz` / `sample_distribution.json` / `samples.csv` + 热力图
-- 采样统计: 角度 mean=177° std=106°, duration mean=2.8 std=1.8, 三档力各约1/3
-
-### 2026-08-12 13:13 — Memo 创建
+### 2026-08-12 13:15 — 实验启动
 
 - 创建 `ITERATIVE_TRAINING_MEMO.md`
-- 更新规则: sample_weights 每轮保留历史, 最多2000 updates, 100 updates无提升提前停
-- Gen 0 训练待启动
+- 初代策略: `fixaw_survonly_crossphi2_s42/u00460`
+- Gen 0 从零开始: probe → sample → train
