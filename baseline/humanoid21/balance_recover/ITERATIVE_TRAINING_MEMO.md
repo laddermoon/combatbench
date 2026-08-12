@@ -71,6 +71,12 @@
 
 ### Gen 2
 
+- [x] Probe: `boundary_gen2.csv` / `.json`（F=40N mean_cd=38.3，接近饱和）
+- [x] Sample: `sample_weights_gen2.npz`（duration mean=13.9）
+- [x] Train: `weighted_impulse_gen2`（update 1325→1728，best@1620 survived=62 sr=48.4%）
+
+### Gen 3
+
 - [ ] Probe
 - [ ] Sample
 - [ ] Train
@@ -171,3 +177,38 @@
 - **发现 Bug**: 视频渲染未传 `impulse_params` → 修复 `round_runner.py` + `ppo_loop_v2.py`
 - **发现问题**: 跨代 resume `_best_survived` 不重置 → 添加 `reset_best` 参数
 - 准备 Gen 2: 用 Gen 1 最新 policy + `reset_best=True`
+
+### 2026-08-12 16:20 — Gen 2 Probe + Sample
+
+- Probe: 用 Gen 1 最新 policy (u01329) 探测边界
+- 结果: F=40N mean_cd=38.3 (Gen1: 22.9), F=100N mean_cd=7.8 (Gen1: 5.5), F=200N mean_cd=3.3 (Gen1: 1.8)
+- F=40N 13/16 方向达到 40（满分），接近饱和
+- 持续弱点: 247.5°~270° (侧后方) 在所有力度下最弱
+- Sample: `sample_weights_gen2.npz`，duration mean=13.9 (Gen1: 11.5)
+
+### 2026-08-12 16:25 — Gen 2 Train 启动
+
+- `--resume-from checkpoint_u01325.pt` (gen1)
+- `--set reset_best=True`
+- run_dir: `baseline/runs/weighted_impulse_gen2`
+- PID=4143802
+- reset_best 生效: update 1325 survived=42 立即触发 [new_best]
+
+### 2026-08-12 16:25~17:10 — Gen 2 Train 监控
+
+- update 1325: survived=42 (初始, new_best)
+- update 1350: survived=52 (new_best)
+- update 1435: survived=54 (new_best)
+- update 1465: survived=55 (new_best)
+- update 1565: survived=56 (new_best)
+- update 1605: survived=58 (new_best)
+- update 1620: survived=62 sr=48.4% (最终 best)
+- update 1620→1725: 105 updates 无新 best，超过 100 阈值
+
+### 2026-08-12 17:10 — Gen 2 Train 停止
+
+- kill PID 4143802 (旧代码无 early stop，手动停止)
+- best policy: `weighted_impulse_gen2/policy/` (update 1620, survived=62, sr=48.4%)
+- 总训练: 403 updates (1325→1728)，约 45 分钟
+- Gen 2 有 policy/ 目录（多次触发 new_best）
+- 准备 Gen 3: 用 Gen 2 best policy 做 probe
