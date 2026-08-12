@@ -8,6 +8,8 @@ Usage:
     # From scratch (no checkpoint):
     python3 iterative_train.py \
         --policy baseline/runs/standing/policy/policy_blueprint.yaml \
+        --run-root /data1/dev/recovery_run1 \
+        --exp-name recovery_v2 \
         --start-gen 0 \
         --max-gens 10
 
@@ -15,7 +17,9 @@ Usage:
     python3 iterative_train.py \
         --policy baseline/runs/weighted_impulse_gen2/policy/policy_blueprint.yaml \
         --checkpoint baseline/runs/weighted_impulse_gen2/checkpoints/checkpoint_u01620.pt \
-        --start-gen 3 \
+        --run-root /data1/dev/recovery_run2 \
+        --exp-name recovery_v3 \
+        --start-gen 0 \
         --max-gens 10
 """
 
@@ -31,9 +35,12 @@ from datetime import datetime
 from pathlib import Path
 
 
-BASE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = BASE_DIR.parent.parent.parent  # /data1/mono/things/combatbench
-LOG_FILE = BASE_DIR / "iterative_train.log"
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent.parent  # /data1/mono/things/combatbench
+
+# 全局变量，由 main() 设置
+_RUN_ROOT: Path = SCRIPT_DIR
+_LOG_FILE: Path = SCRIPT_DIR / "iterative_train.log"
 
 
 def log(gen: int, phase: str, details: str = ""):
@@ -42,15 +49,15 @@ def log(gen: int, phase: str, details: str = ""):
     if details:
         line += f" | {details}"
     print(line, flush=True)
-    with open(LOG_FILE, "a") as f:
+    with open(_LOG_FILE, "a") as f:
         f.write(line + "\n")
 
 
 def run_probe(gen: int, policy_path: str, workers: int) -> dict:
-    csv_out = str(BASE_DIR / f"boundary_gen{gen}.csv")
-    json_out = str(BASE_DIR / f"boundary_gen{gen}.json")
+    csv_out = str(_RUN_ROOT / f"boundary_gen{gen}.csv")
+    json_out = str(_RUN_ROOT / f"boundary_gen{gen}.json")
     cmd = [
-        sys.executable, str(BASE_DIR / "probe_boundary.py"),
+        sys.executable, str(SCRIPT_DIR / "probe_boundary.py"),
         "--policy-blueprint-path", policy_path,
         "--output", csv_out,
         "--json-output", json_out,
@@ -75,11 +82,11 @@ def run_probe(gen: int, policy_path: str, workers: int) -> dict:
 
 
 def run_sample(gen: int) -> dict:
-    json_in = str(BASE_DIR / f"boundary_gen{gen}.json")
+    json_in = str(_RUN_ROOT / f"boundary_gen{gen}.json")
     cmd = [
-        sys.executable, str(BASE_DIR / "sample_distribution.py"),
+        sys.executable, str(SCRIPT_DIR / "sample_distribution.py"),
         "--input", json_in,
-        "--output-dir", str(BASE_DIR),
+        "--output-dir", str(_RUN_ROOT),
     ]
     env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
     log(gen, "SAMPLE_START")
@@ -89,12 +96,12 @@ def run_sample(gen: int) -> dict:
         raise RuntimeError(f"Sample failed: {result.returncode}")
 
     # Copy to gen-suffixed names
-    npz_src = BASE_DIR / "sample_weights.npz"
-    json_src = BASE_DIR / "sample_distribution.json"
-    csv_src = BASE_DIR / "samples.csv"
-    npz_dst = BASE_DIR / f"sample_weights_gen{gen}.npz"
-    json_dst = BASE_DIR / f"sample_distribution_gen{gen}.json"
-    csv_dst = BASE_DIR / f"samples_gen{gen}.csv"
+    npz_src = _RUN_ROOT / "sample_weights.npz"
+    json_src = _RUN_ROOT / "sample_distribution.json"
+    csv_src = _RUN_ROOT / "samples.csv"
+    npz_dst = _RUN_ROOT / f"sample_weights_gen{gen}.npz"
+    json_dst = _RUN_ROOT / f"sample_distribution_gen{gen}.json"
+    csv_dst = _RUN_ROOT / f"samples_gen{gen}.csv"
     shutil.copy2(npz_src, npz_dst)
     shutil.copy2(json_src, json_dst)
     shutil.copy2(csv_src, csv_dst)
@@ -112,8 +119,9 @@ def run_sample(gen: int) -> dict:
     return str(npz_dst)
 
 
-def launch_train(gen: int, checkpoint: str, policy_path: str, sample_npz: str) -> tuple:
-    run_name = f"weighted_impulse_gen{gen}"
+def launch_train(gen: int, checkpoint: str, policy_path: str, sample_npz: str,
+                 exp_name: str) -> tuple:
+    run_name = f"{exp_name}_gen{gen}"
     run_dir = REPO_ROOT / "baseline" / "runs" / run_name
     cmd = [
         sys.executable, str(REPO_ROOT / "baseline" / "framework" / "train.py"),
@@ -249,12 +257,18 @@ def find_latest_exports(run_dir: Path) -> tuple:
 
 
 def main():
+    global _RUN_ROOT, _LOG_FILE
+
     parser = argparse.ArgumentParser(description="Iterative balance recovery training")
     parser.add_argument("--policy", type=str, required=True,
                         help="Initial policy blueprint path")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Initial checkpoint path (omit for from-scratch training)")
-    parser.add_argument("--start-gen", type=int, default=3,
+    parser.add_argument("--run-root", type=str, required=True,
+                        help="Root directory for all intermediate files (boundary, samples, heatmaps, logs)")
+    parser.add_argument("--exp-name", type=str, default="weighted_impulse",
+                        help="Base name for training run directories (e.g. recovery_v2 -> recovery_v2_gen0)")
+    parser.add_argument("--start-gen", type=int, default=0,
                         help="Starting generation number")
     parser.add_argument("--max-gens", type=int, default=10,
                         help="Maximum generations to run")
@@ -262,10 +276,15 @@ def main():
                         help="Probe workers")
     args = parser.parse_args()
 
+    _RUN_ROOT = Path(args.run_root).resolve()
+    _RUN_ROOT.mkdir(parents=True, exist_ok=True)
+    _LOG_FILE = _RUN_ROOT / "iterative_train.log"
+
     policy_path = args.policy
     checkpoint = args.checkpoint
 
     log(args.start_gen, "ITERATIVE_TRAIN_START",
+        f"run_root={_RUN_ROOT} exp_name={args.exp_name} "
         f"policy={policy_path} checkpoint={checkpoint} max_gens={args.max_gens}")
 
     for gen in range(args.start_gen, args.start_gen + args.max_gens):
@@ -278,7 +297,7 @@ def main():
 
             # 3. Train
             pid, train_dir, log_path = launch_train(
-                gen, checkpoint, policy_path, sample_npz)
+                gen, checkpoint, policy_path, sample_npz, args.exp_name)
 
             # 4. Monitor
             info = monitor_train(gen, pid, log_path)
