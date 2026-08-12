@@ -92,6 +92,7 @@ class RelativeImpulsePlugin(BasePlugin):
         self._rng = np.random.RandomState(random_seed)
         self._sample_rng = np.random.RandomState((random_seed or 0) + 1)
         self._internal_sim: Optional[Any] = None
+        self._internal_runtime: Optional[Any] = None
         self._policy: Optional[Any] = None
         self.direction_jitter = float(direction_jitter)
         self._weight_npz_path = weight_npz_path
@@ -145,6 +146,19 @@ class RelativeImpulsePlugin(BasePlugin):
             from envs.humanoid21.simulator import Humanoid21Simulator
             self._internal_sim = Humanoid21Simulator()
         return self._internal_sim
+
+    def _ensure_internal_runtime(self, force_plugin) -> Any:
+        """创建或复用内部 EnvRuntime。每次 episode 创建新的 ConstantForcePlugin。"""
+        from envs.framework.env_runtime import EnvRuntime
+        if self._internal_runtime is not None:
+            self._internal_runtime.close()
+        sim = self._ensure_internal_sim()
+        self._internal_runtime = EnvRuntime(
+            simulator=sim,
+            plugins=[force_plugin],
+            phy_steps_per_action=self.phy_steps_per_action,
+        )
+        return self._internal_runtime
 
     def _ensure_policy(self) -> Any:
         if self._policy is None and self.policy_blueprint_path is not None:
@@ -216,8 +230,7 @@ class RelativeImpulsePlugin(BasePlugin):
         }
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        sim = self._ensure_internal_sim()
-        policy = self._ensure_policy()
+        from envs.humanoid21.disturbance_plugins import ConstantForcePlugin
 
         other_robot = "robot_b" if self.target_robot == "robot_a" else "robot_a"
 
@@ -228,64 +241,65 @@ class RelativeImpulsePlugin(BasePlugin):
         duration_action_steps = params["duration_action_steps"]
         duration_phy_steps = duration_action_steps * self.phy_steps_per_action
 
-        # 1. 读取真实环境当前 core state，初始化内部 sim
+        # 1. 读取真实环境当前 core state
         real_state = ctx.accessor.get_core_state()
-        sim.reset()
-        sim.set_core_state(real_state)
 
         # 2. 从目标机器人 root_rot 提取 heading，计算绝对方向
-        #    direction_angle 表示力指向的方向（机器人倒下的方向）：
-        #    0°=向前, 90°=向右, 180°=向后, 270°=向左
-        #    MuJoCo 右手坐标系（z-up）中 +y 指向机器人左侧，
-        #    因此用 heading - angle（顺时针旋转）使 90° 对应机器人右方。
         root_rot = np.asarray(real_state[self.target_robot]["root_rot"], dtype=np.float64)
         heading = self._extract_heading(root_rot)
         abs_angle = heading - np.radians(rel_angle_deg)
         direction = np.array([np.cos(abs_angle), np.sin(abs_angle), 0.0], dtype=np.float64)
 
-        # 3. 策略 reset
+        # 3. 创建内部 EnvRuntime + ConstantForcePlugin
+        force_plugin = ConstantForcePlugin(
+            agent_id=self.target_robot,
+            force=force,
+            direction=rel_angle_deg,
+            duration_action_steps=duration_action_steps,
+            body_name=body,
+        )
+        runtime = self._ensure_internal_runtime(force_plugin)
+
+        # 4. 初始化内部 sim 状态
+        sim = self._ensure_internal_sim()
+        runtime.reset()
+        sim.set_core_state(real_state)
+
+        # 5. 策略 reset
+        policy = self._ensure_policy()
         if policy is not None:
             policy.reset(seed=int(self._rng.randint(0, 2**31 - 1)))
 
-        # 保存非目标机器人的初始状态（定期重置，防止干扰）
+        # 保存非目标机器人的初始状态（每个 action step 后重置，防止干扰）
         non_target_state = {
             rid: {k: v.copy() for k, v in state.items()}
             for rid, state in real_state.items()
             if rid != self.target_robot
         }
 
-        # 4. 施力 + 策略控制 + 物理步
-        for i in range(duration_phy_steps):
+        # 6. 循环 duration_action_steps 次 runtime.step()
+        #    EnvRuntime 自动管理 action 步/物理步节奏：
+        #    每 phy_steps_per_action 个物理步才 set_action 一次
+        #    ConstantForcePlugin 在 on_pre_phy_step 中每步施力
+        for _ in range(duration_action_steps):
             if policy is not None:
                 obs = sim.get_observation()
                 action, _ = policy.act(obs.get(self.target_robot))
-                sim.set_action({
-                    self.target_robot: action,
-                    other_robot: np.zeros(21, dtype=np.float32),
-                })
             else:
-                sim.set_action({
-                    rid: np.zeros(21, dtype=np.float32)
-                    for rid in ("robot_a", "robot_b")
-                })
+                action = np.zeros(21, dtype=np.float32)
+            runtime.step(action, np.zeros(21, dtype=np.float32))
 
-            sim.apply_external_force(
-                body_name=body,
-                force=direction * force,
-                robot_id=self.target_robot,
-            )
-            sim.physical_step()
-
-            if non_target_state and (i + 1) % self.phy_steps_per_action == 0:
+            # 每个 action step 后重置非目标机器人
+            if non_target_state:
                 sim.set_core_state(non_target_state)
 
-        # 5. 取扰动后的 core state 写回真实环境
+        # 7. 取扰动后的 core state 写回真实环境
         perturbed_state = sim.get_core_state()
         ctx.mutator.set_core_state({
             self.target_robot: perturbed_state[self.target_robot],
         })
 
-        # 6. 记录元数据到 metrics
+        # 8. 记录元数据到 metrics
         ctx.metrics[f"{self.target_robot}_impulse_body"] = body
         ctx.metrics[f"{self.target_robot}_impulse_force"] = force
         ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = duration_action_steps

@@ -1115,6 +1115,133 @@ class ImpulsePerturbationPlugin(BasePlugin):
         ctx.metrics[f"{self.target_robot}_impulse_direction"] = direction.tolist()
 
 
+class ConstantForcePlugin(BasePlugin):
+    """恒定外力插件 — 在 episode 开始后持续施力指定步数。
+
+    通过 ``on_pre_phy_step`` 钩子在每个物理步施加恒定外力，
+    持续 ``duration_action_steps`` 个 action 步后自动停止。
+    与 ``EnvRuntime`` 配合使用，由 ``EnvRuntime`` 管理 action 步/物理步节奏。
+
+    方向处理（二维水平面）：
+        direction 参数为相对机器人朝向的角度（度）：
+        0°=向前, 90°=向右, 180°=向后, 270°=向左。
+
+        heading 提取方式：将局部 forward [1,0,0] 通过四元数旋转到世界坐标，
+        取 atan2(forward_y, forward_x)，丢弃 z 分量。
+        方向向量为 [cos(abs_angle), sin(abs_angle), 0]，z 分量恒为 0。
+
+        前提假设：机器人在施力时基本直立（pitch/roll ≈ 0）。
+        当机器人趴在地上（pitch ≈ 90°）时，forward 在水平面投影接近零向量，
+        heading 变得不稳定/无意义。但方向向量在 on_pre_episode 时已计算好，
+        后续不变，因此不影响扰动过程。
+        如需在非直立状态下使用（如连续扰动中再次施力），需要考虑三维方向处理。
+    """
+
+    def __init__(
+        self,
+        agent_id: str = "robot_a",
+        force: float = 100.0,
+        direction: float = 0.0,
+        duration_action_steps: int = 4,
+        body_name: str = "torso",
+    ):
+        """
+        Args:
+            agent_id: 目标机器人 ID（'robot_a' 或 'robot_b'）。
+            force: 力的大小（牛顿）。
+            direction: 相对角度（度），0°=向前, 90°=向右, 180°=向后, 270°=向左。
+            duration_action_steps: 持续时间（action 步数）。
+            body_name: 受力部位名称，必须在 ROBOT_BODY_TREE 中定义。
+        """
+        from envs.humanoid21.meta import Humanoid21Meta
+
+        valid_bodies = list(Humanoid21Meta.ROBOT_BODY_TREE.keys())
+        if body_name not in valid_bodies:
+            raise ValueError(
+                f"body_name must be one of {valid_bodies}, got {body_name!r}"
+            )
+
+        self.agent_id = agent_id
+        self.force = float(force)
+        self.direction = float(direction)
+        self.duration_action_steps = int(duration_action_steps)
+        self.body_name = body_name
+
+        self._direction_vec: Optional[np.ndarray] = None
+        self._remaining_action_steps = 0
+        self._active = False
+
+    @property
+    def name(self) -> str:
+        return "constant_force"
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "force": self.force,
+            "direction": self.direction,
+            "duration_action_steps": self.duration_action_steps,
+            "body_name": self.body_name,
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "ConstantForcePlugin":
+        return cls(**config)
+
+    @staticmethod
+    def _extract_heading(root_rot: np.ndarray) -> float:
+        """从 root_rot 四元数 [w,x,y,z] 提取 heading（yaw, 弧度）。
+
+        heading = atan2(forward_y, forward_x)，其中 forward = R @ [1,0,0]。
+        """
+        rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])
+        forward = rot.apply(np.array([1.0, 0.0, 0.0]))
+        return float(np.arctan2(forward[1], forward[0]))
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        """Episode 开始时初始化施力状态。"""
+        self._direction_vec = None  # 延迟到 on_pre_action_step 计算
+        self._remaining_action_steps = self.duration_action_steps
+        self._active = True
+
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        if self._direction_vec is None:
+            core_state = ctx.accessor.get_core_state()
+            root_rot = np.asarray(core_state[self.agent_id]["root_rot"], dtype=np.float64)
+            heading = self._extract_heading(root_rot)
+            abs_angle = heading - np.radians(self.direction)
+            self._direction_vec = np.array(
+                [np.cos(abs_angle), np.sin(abs_angle), 0.0], dtype=np.float64
+            )
+
+            ctx.metrics[f"{self.agent_id}_impulse_body"] = self.body_name
+            ctx.metrics[f"{self.agent_id}_impulse_force"] = self.force
+            ctx.metrics[f"{self.agent_id}_impulse_direction_angle"] = self.direction
+            ctx.metrics[f"{self.agent_id}_impulse_duration_action_steps"] = self.duration_action_steps
+            ctx.metrics[f"{self.agent_id}_impulse_direction"] = self._direction_vec.tolist()
+            ctx.metrics[f"{self.agent_id}_impulse_heading"] = heading
+
+        if self._remaining_action_steps <= 0:
+            self._active = False
+
+    def on_pre_phy_step(self, ctx: SimContext) -> None:
+        if not self._active or self._direction_vec is None:
+            return
+        ctx.mutator.apply_external_force(
+            body_name=self.body_name,
+            force=self._direction_vec * self.force,
+            robot_id=self.agent_id,
+        )
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        if self._remaining_action_steps > 0:
+            self._remaining_action_steps -= 1
+
+
 # ============================================================
 # 状态捕获插件 + 观察器（用于状态池生成）
 # ============================================================
