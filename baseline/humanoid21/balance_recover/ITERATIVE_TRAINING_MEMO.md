@@ -63,6 +63,14 @@
 
 ### Gen 1
 
+- [x] Probe: `boundary_gen1.csv` / `.json`（F=40N mean_cd=22.9，大幅提升）
+- [x] Sample: `sample_weights_gen1.npz`（duration mean=11.5）
+- [x] Train: `weighted_impulse_gen1`（update 771→1328，ep_len 113→156）
+  - **问题**: `_best_survived=101` 从 Gen 0 checkpoint 继承，Gen 1 eval 用更难的分布无法超越
+  - **修复**: 添加 `reset_best=True` 参数，新代重置 `_best_survived=-1`
+
+### Gen 2
+
 - [ ] Probe
 - [ ] Sample
 - [ ] Train
@@ -131,3 +139,34 @@
 - best policy: `weighted_impulse_gen0_v2/policy/` (update 655, survived=101, sr=78.9%)
 - 总训练: 318 updates (455→773)，约 45 分钟
 - 准备 Gen 1: 用 best policy 做 probe
+
+### 2026-08-12 14:15 — Gen 1 Probe + Sample
+
+- Probe: 用 Gen 0 best policy (u655) 探测边界
+- 结果: F=40N mean_cd=22.9 (Gen 0: 1.4), F=100N mean_cd=5.5 (Gen 0: 0.4), F=200N mean_cd=1.8 (Gen 0: 0.1)
+- Sample: `sample_weights_gen1.npz`，duration mean=11.5 (Gen 0: 2.8)，更难的分布
+
+### 2026-08-12 14:17 — Gen 1 Train 启动
+
+- `--resume-from checkpoint_u00770.pt` (gen0_v2)
+- run_dir: `baseline/runs/weighted_impulse_gen1`
+- PID=2766193
+- 用 Gen 1 sample weights (更难分布)
+
+### 2026-08-12 14:17~15:50 — Gen 1 Train 监控
+
+- update 771: ep_len=113, survived=47 (初始)
+- update 1085: survived=66 (Gen 1 最高)
+- update 1175: survived=68 (Gen 1 最高)
+- ep_len_mean 从 113→156，r_fall return=0.91，策略确实在进步
+- 但 `_best_survived=101` 从 Gen 0 继承，Gen 1 eval 用更难分布无法超越 → 无 new_best
+- update 1175→1325: 150 updates 无新 best，停止
+
+### 2026-08-12 15:50 — Gen 1 Train 停止
+
+- kill PID 2766193
+- 无 `policy/` 目录 (从未触发 new_best)
+- 用最新 export `u01329` 作为 Gen 2 probe 的 policy
+- **发现 Bug**: 视频渲染未传 `impulse_params` → 修复 `round_runner.py` + `ppo_loop_v2.py`
+- **发现问题**: 跨代 resume `_best_survived` 不重置 → 添加 `reset_best` 参数
+- 准备 Gen 2: 用 Gen 1 最新 policy + `reset_best=True`
