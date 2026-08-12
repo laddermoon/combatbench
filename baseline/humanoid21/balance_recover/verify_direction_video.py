@@ -6,7 +6,7 @@
 用法::
 
     PYTHONPATH=/data1/mono/things/combatbench python3 baseline/humanoid21/balance_recover/verify_direction_video.py \
-        --policy-export baseline/runs/fixaw_survonly_crossphi2_s42/policy \
+        --policy-blueprint-path baseline/runs/fixaw_survonly_crossphi2_s42/policy_exports/u00460/policy_blueprint.yaml \
         --force 300 --duration 8 \
         --output-dir /data1/dev/verify_direction
 """
@@ -27,11 +27,11 @@ from envs.framework.round_runner import RoundRunner
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Verify RelativeImpulsePlugin direction via video")
-    p.add_argument("--policy-export", required=True,
-                   help="Path to policy export directory")
+    p.add_argument("--policy-blueprint-path", required=True,
+                   help="Path to policy_blueprint.yaml")
     p.add_argument("--blueprint", type=str,
-                   default="baseline/humanoid21/balance_recover/relative_impulse_env.yaml",
-                   help="Path to relative impulse env blueprint YAML.")
+                   default="baseline/humanoid21/balance_recover/weighted_impulse_env.yaml",
+                   help="Path to env blueprint YAML.")
     p.add_argument("--force", type=float, default=300.0,
                    help="Force magnitude (N).")
     p.add_argument("--duration", type=int, default=8,
@@ -43,7 +43,7 @@ def main() -> None:
     p.add_argument("--agent-id", type=str, default="robot_a")
     args = p.parse_args()
 
-    policy_bp_path = Path(args.policy_export) / "policy_blueprint.yaml"
+    policy_bp_path = Path(args.policy_blueprint_path)
     policy_path_abs = str(policy_bp_path.resolve())
 
     env_pb = ParameterizedEnvBlueprint.load(args.blueprint)
@@ -64,18 +64,24 @@ def main() -> None:
 
         env_bp = env_pb.materialize(
             max_steps=args.max_steps,
-            agent_id=args.agent_id,
-            tolerance=6,
             policy_blueprint_path=policy_path_abs,
-            force_magnitude=args.force,
-            duration_action_steps=args.duration,
-            direction_angle=angle,
         )
 
         video_plugin = VideoRecorderPlugin(fps=30, output_path=str(video_path))
 
         policy_a = PolicyBlueprint.load(policy_bp_path).build()
         policy_b = PolicyBlueprint.load(policy_bp_path).build()
+
+        options = {
+            "impulse_params": {
+                args.agent_id: {
+                    "direction_angle": angle,
+                    "force": args.force,
+                    "duration_action_steps": args.duration,
+                    "body": "torso",
+                },
+            },
+        }
 
         runner = RoundRunner(
             blueprint=env_bp,
@@ -84,7 +90,7 @@ def main() -> None:
             video_plugin=video_plugin,
         )
 
-        result = runner.run(seed=42)
+        result = runner.run(seed=42, options=options)
         print(f"  Steps: {result['steps']}")
         print(f"  Termination: {result['termination_reasons']}")
 
