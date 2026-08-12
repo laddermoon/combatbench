@@ -435,3 +435,43 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+class ImpulseSampler:
+    """从权重 NPZ 文件加载分布并采样扰动参数。
+
+    NPZ 需包含: interp_angles, interp_weights, forces, durations。
+    """
+
+    def __init__(self, weight_npz_path: str, direction_jitter: float = 5.0):
+        data = np.load(weight_npz_path, allow_pickle=True)
+        self._interp_angles = data["interp_angles"]
+        self._interp_weights = data["interp_weights"]
+        self._forces = data["forces"]
+        self._durations = data["durations"]
+        flat = self._interp_weights.flatten().astype(np.float64)
+        self._flat_probs = flat / flat.sum()
+        self._direction_jitter = float(direction_jitter)
+
+    def sample(self, rng: np.random.RandomState) -> dict:
+        """采样一组扰动参数。
+
+        Returns:
+            {"direction_angle", "force", "duration_action_steps", "body"}
+        """
+        n_interp = len(self._interp_angles)
+        n_forces = len(self._forces)
+        n_durs = len(self._durations)
+        idx = rng.choice(len(self._flat_probs), p=self._flat_probs)
+        a_idx = idx // (n_forces * n_durs)
+        remainder = idx % (n_forces * n_durs)
+        f_idx = remainder // n_durs
+        d_idx = remainder % n_durs
+        angle = float(self._interp_angles[a_idx]) + rng.uniform(-self._direction_jitter, self._direction_jitter)
+        angle = angle % 360.0
+        return {
+            "direction_angle": angle,
+            "force": float(self._forces[f_idx]),
+            "duration_action_steps": int(self._durations[d_idx]),
+            "body": "torso",
+        }

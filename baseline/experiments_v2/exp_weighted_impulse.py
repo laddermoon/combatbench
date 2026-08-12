@@ -66,22 +66,10 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
         direction_jitter: float = 5.0,
     ):
         self._policy_blueprint_path = policy_blueprint_path
-        self._weight_npz_path = weight_npz_path
-        self._direction_jitter = float(direction_jitter)
-        self._sample_rng: Optional[np.random.RandomState] = None
-        self._weight_interp_angles: Optional[np.ndarray] = None
-        self._weight_interp_weights: Optional[np.ndarray] = None
-        self._weight_forces: Optional[np.ndarray] = None
-        self._weight_durations: Optional[np.ndarray] = None
-        self._weight_flat_probs: Optional[np.ndarray] = None
+        self._sampler: Optional[Any] = None
         if weight_npz_path is not None:
-            data = np.load(weight_npz_path, allow_pickle=True)
-            self._weight_interp_angles = data["interp_angles"]
-            self._weight_interp_weights = data["interp_weights"]
-            self._weight_forces = data["forces"]
-            self._weight_durations = data["durations"]
-            flat = self._weight_interp_weights.flatten().astype(np.float64)
-            self._weight_flat_probs = flat / flat.sum()
+            from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
+            self._sampler = ImpulseSampler(weight_npz_path, direction_jitter)
 
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -104,30 +92,11 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
                 "v2_weighted_impulse requires policy_blueprint_path. "
                 "Example: --set policy_blueprint_path=baseline/runs/.../policy_blueprint.yaml"
             )
-        if not self._weight_npz_path:
+        if self._sampler is None:
             raise ValueError(
                 "v2_weighted_impulse requires weight_npz_path. "
                 "Example: --set weight_npz_path=baseline/humanoid21/balance_recover/sample_weights.npz"
             )
-
-    def _sample_impulse(self, rng: np.random.RandomState) -> Dict[str, Any]:
-        """Sample one impulse parameter set from the weight distribution."""
-        n_interp = len(self._weight_interp_angles)
-        n_forces = len(self._weight_forces)
-        n_durs = len(self._weight_durations)
-        idx = rng.choice(len(self._weight_flat_probs), p=self._weight_flat_probs)
-        a_idx = idx // (n_forces * n_durs)
-        remainder = idx % (n_forces * n_durs)
-        f_idx = remainder // n_durs
-        d_idx = remainder % n_durs
-        angle = float(self._weight_interp_angles[a_idx]) + rng.uniform(-self._direction_jitter, self._direction_jitter)
-        angle = angle % 360.0
-        return {
-            "direction_angle": angle,
-            "force": float(self._weight_forces[f_idx]),
-            "duration_action_steps": int(self._weight_durations[d_idx]),
-            "body": "torso",
-        }
 
     # ------------------------------------------------------------------
     # Job construction — inject impulse params into env materialize
@@ -156,7 +125,7 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
             )
             sample_rng = np.random.RandomState(seed)
             impulse_params = {
-                aid: self._sample_impulse(sample_rng)
+                aid: self._sampler.sample(sample_rng)
                 for aid in self._AGENT_IDS
             }
             jobs.append((
