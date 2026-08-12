@@ -159,8 +159,7 @@ PYTHONPATH=/data1/mono/things/combatbench python3 \
 | `--sigma-k` | `0.15` | 自适应 sigma 系数：`sigma = sigma_k × cd` |
 | `--duration-min` | `1` | 最小 duration |
 | `--duration-max` | `40` | 最大 duration |
-| `--n-samples` | `1000` | 采样统计数量 |
-| `--seed` | `42` | 随机种子 |
+| `--seed` | `42` | 随机种子（仅用于统计采样） |
 
 **输出**: `sample_weights.npz`（概率矩阵）、`sample_distribution.json`、`samples.csv`、热力图 PNG
 
