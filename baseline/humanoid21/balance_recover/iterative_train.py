@@ -68,10 +68,10 @@ def run_probe(gen: int, policy_path: str, workers: int) -> dict:
 
 
 def run_sample(gen: int) -> dict:
-    csv_in = str(BASE_DIR / f"boundary_gen{gen}.csv")
+    json_in = str(BASE_DIR / f"boundary_gen{gen}.json")
     cmd = [
         sys.executable, str(BASE_DIR / "sample_distribution.py"),
-        "--input", csv_in,
+        "--input", json_in,
         "--output-dir", str(BASE_DIR),
     ]
     env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
