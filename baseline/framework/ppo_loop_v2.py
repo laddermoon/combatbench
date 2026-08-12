@@ -245,6 +245,7 @@ def _spawn_video_render(
     video_path: Path,
     seed: int,
     log_path: Path,
+    options_json: Optional[Path] = None,
 ) -> Optional[subprocess.Popen]:
     video_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +257,8 @@ def _spawn_video_render(
         "--video", str(video_path),
         "--seed", str(seed),
     ]
+    if options_json is not None:
+        cmd.extend(["--options-json", str(options_json)])
     try:
         log_f = open(log_path, "w")
         proc = subprocess.Popen(
@@ -501,7 +504,7 @@ def train_ppo_v2(
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
                     elif eval_jobs:
-                        v_p_a, v_p_b, v_env, v_seed, _ = eval_jobs[0]
+                        v_p_a, v_p_b, v_env, v_seed, v_options = eval_jobs[0]
                         video_path = video_dir / f"u{u:05d}.mp4"
                         log_path = video_dir / f"u{u:05d}.log"
                         v_env_path = video_dir / "video_env_blueprint.yaml"
@@ -510,6 +513,11 @@ def train_ppo_v2(
                         v_env.save(v_env_path)
                         v_p_a.save(v_p_a_path)
                         v_p_b.save(v_p_b_path)
+                        v_options_path: Optional[Path] = None
+                        if v_options:
+                            v_options_path = video_dir / "video_options.json"
+                            with open(v_options_path, "w") as f:
+                                json.dump(v_options, f)
                         last_video_proc = _spawn_video_render(
                             env_blueprint=v_env_path,
                             policy_a_blueprint=v_p_a_path,
@@ -517,6 +525,7 @@ def train_ppo_v2(
                             video_path=video_path,
                             seed=v_seed,
                             log_path=log_path,
+                            options_json=v_options_path,
                         )
                         if last_video_proc is not None:
                             print(f"  [video:{video_path.name}]", flush=True)

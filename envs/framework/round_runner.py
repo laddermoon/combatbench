@@ -243,6 +243,10 @@ def _main() -> None:
         "--score-log-file", type=str, default=None,
         help="Append a per-substep combat score audit log to this file.",
     )
+    parser.add_argument(
+        "--options-json", type=str, default=None,
+        help="Path to a JSON file with episode_options (e.g. impulse_params).",
+    )
     args = parser.parse_args()
 
     blueprint = EnvBlueprint.load(args.blueprint)
@@ -256,6 +260,12 @@ def _main() -> None:
 
     recorders = [_load_from_spec(spec) for spec in args.recorder]
 
+    import json as _json
+    episode_options = None
+    if args.options_json:
+        with open(args.options_json) as f:
+            episode_options = _json.load(f)
+
     with RoundRunner(
         blueprint=blueprint,
         policy_a=policy_a,
@@ -265,6 +275,7 @@ def _main() -> None:
     ) as runner:
         result = runner.run(
             seed=args.seed,
+            options=episode_options,
             want_extras=args.want_extras,
             initial_health_a=args.health_a,
             initial_health_b=args.health_b,
