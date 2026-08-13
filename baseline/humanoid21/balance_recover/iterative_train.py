@@ -106,9 +106,11 @@ def run_sample(gen: int) -> dict:
     shutil.copy2(json_src, json_dst)
     shutil.copy2(csv_src, csv_dst)
 
-    # Copy gen-suffixed versions of all heatmap/plot files
+    # Copy gen-suffixed versions of base heatmap/plot files (skip existing _gen files)
     for pattern in ["heatmap_*.png", "boundary_and_distribution.png"]:
         for src in _RUN_ROOT.glob(pattern):
+            if f"_gen" in src.stem:
+                continue
             dst = _RUN_ROOT / f"{src.stem}_gen{gen}{src.suffix}"
             shutil.copy2(src, dst)
 
