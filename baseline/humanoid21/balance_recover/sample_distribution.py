@@ -57,17 +57,21 @@ def compute_prob_matrix(
     durations: np.ndarray,
     sigma_k: float = 0.15,
     sigma_min: float = 0.01,
+    boundary_weight: float = 0.5,
 ) -> np.ndarray:
     """计算概率矩阵。
 
     对每个 (angle, force) cell:
-    - center = cd + 0.5 (cd=0 时 center=0.5)
-    - sigma = max(sigma_k * cd, sigma_min)
-    - P(d) = CDF(d+0.5) - CDF(d-0.5) for d in durations
-    - 超出 [1, max_dur] 的概率丢弃
+    - duration = cd+1: 固定占 boundary_weight (默认 50%)
+    - duration >= cd+2: 概率为 0
+    - duration <= cd: 剩余 (1 - boundary_weight) 按 Gaussian CDF 分配
+      - center = cd + 0.5, sigma = max(sigma_k * cd, sigma_min)
+      - P(d) = CDF(d+0.5) - CDF(d-0.5), 仅保留 d <= cd 的部分, 归一化
+
+    cd=0 时: duration=1 固定 100% (无恢复能力, 只采最短)
 
     每个方向均分预算 1/N_angles。
-    每个方向内 3 个 force 各初始权重 1/3，截断后归一化为 1。
+    每个方向内各 force 按保留概率归一化分配权重。
 
     Returns:
         prob_matrix: (N_angles, N_forces, N_durations) 归一化概率
@@ -85,22 +89,42 @@ def compute_prob_matrix(
 
         for j in range(n_forces):
             cd = cds[i, j]
-            center = cd + 0.5 if cd > 0 else 0.5
+
+            if cd == 0:
+                # 无恢复能力, 只采 duration=1
+                k1 = int(np.searchsorted(durations, 1))
+                if k1 < n_durs:
+                    cell_probs[j, k1] = 1.0
+                retained_weights[j] = 1.0
+                continue
+
+            # cd+1 固定占 boundary_weight
+            k_cd1 = int(np.searchsorted(durations, cd + 1))
+            if k_cd1 < n_durs:
+                cell_probs[j, k_cd1] = boundary_weight
+
+            # cd 及以下按 Gaussian CDF 分配剩余 (1 - boundary_weight)
+            center = cd + 0.5
             sigma = max(sigma_k * cd, sigma_min)
-
+            below_probs = np.zeros(n_durs, dtype=np.float64)
             for k, d in enumerate(durations):
+                if d > cd:
+                    continue
                 p = norm.cdf((d + 0.5 - center) / sigma) - norm.cdf((d - 0.5 - center) / sigma)
-                cell_probs[j, k] = p
+                below_probs[k] = p
 
-            retained = cell_probs[j].sum()
-            retained_weights[j] = retained
+            below_sum = below_probs.sum()
+            if below_sum > 0:
+                below_probs = below_probs / below_sum * (1.0 - boundary_weight)
+                cell_probs[j] += below_probs
+
+            retained_weights[j] = cell_probs[j].sum()
 
         # 归一化 force 权重
         total_retained = retained_weights.sum()
         if total_retained > 0:
             for j in range(n_forces):
                 if retained_weights[j] > 0:
-                    # 方向预算 1/n_angles × force 归一化权重 × 条件概率
                     prob_matrix[i, j, :] = (
                         (1.0 / n_angles)
                         * (retained_weights[j] / total_retained)
