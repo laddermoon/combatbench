@@ -191,7 +191,10 @@ class RelativeImpulsePlugin(BasePlugin):
                     action, _ = policy.act(obs.get(robot_id))
                 else:
                     action = np.zeros(21, dtype=np.float32)
-                runtime.step(action, np.zeros(21, dtype=np.float32))
+                if robot_id == "robot_a":
+                    runtime.step(action, np.zeros(21, dtype=np.float32))
+                else:
+                    runtime.step(np.zeros(21, dtype=np.float32), action)
 
                 # 每个 action step 后重置非目标机器人
                 if non_target_state:
