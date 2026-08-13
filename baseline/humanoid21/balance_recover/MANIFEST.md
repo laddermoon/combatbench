@@ -135,9 +135,12 @@ python3 balance_recover/plot_impulse_boundary.py \
 
 **采样策略**：
 - 16 个方向均分预算（每个 1/16）
-- 每个方向内 3 个力（40N/100N/200N）各初始权重 1/3
-- `sigma = k × cd`（k=0.15），用高斯 CDF 区间概率 `P(d) = Φ((d+0.5-c)/σ) - Φ((d-0.5-c)/σ)`
-- 超出 [1, 40] 的概率丢弃，3 个力的保留权重归一化为 1
+- 每个方向内各 force 按保留概率归一化分配权重
+- 对每个 (angle, force) cell：
+  - `duration = cd+1`：固定占 50%（`boundary_weight`）
+  - `duration ≥ cd+2`：概率为 0（硬截断）
+  - `duration ≤ cd`：剩余 50% 按高斯 CDF 分配（`center=cd+0.5, sigma=0.15*cd`）
+  - `cd=0`：duration=1 固定 100%
 - 采样时在选中方向所在 22.5° 扇区内做均匀随机化
 
 **创建原因**：将采样逻辑从 `RelativeImpulsePlugin` 和 `exp_weighted_impulse.py` 中抽出，封装为可复用的采样器。
@@ -203,6 +206,47 @@ PYTHONPATH=/data1/mono/things/combatbench python3 \
 **输出**: 4 个 MP4 文件（`impulse_<agent>_<label>_<angle>deg.mp4`）
 
 **已生成视频**: `verify_videos/` 下有 robot_a 和 robot_b 各 4 个方向共 8 个视频。
+
+### visualize_samples.py ✅
+
+加载 `ImpulseSampler` 从 NPZ 文件采样 N 个点 (angle, force, duration)，在内部 sim 中施加冲量，渲染冲量结束后的那一帧并保存为图片。图片上标注采样参数。用于可视化验证采样分布是否合理。
+
+**创建原因**：调试采样分布问题——检查冲量结束后机器人状态是否可恢复。
+
+**用法**:
+
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 \
+    baseline/humanoid21/balance_recover/visualize_samples.py \
+    --npz baseline/humanoid21/balance_recover/run_recovery_v2/sample_weights_gen0.npz \
+    --policy baseline/runs/.../policy_blueprint.yaml \
+    --num-samples 200 \
+    --output-dir /data1/dev/sample_vis
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--npz` | (必填) | 采样器 NPZ 文件路径 |
+| `--policy` | (必填) | 策略 blueprint 路径（用于内部 sim 控制机器人） |
+| `--num-samples` | `20` | 采样数量 |
+| `--output-dir` | (必填) | 图片输出目录 |
+| `--seed` | `42` | 随机种子 |
+| `--agent-id` | `robot_a` | 目标机器人 |
+
+**输出**: 每个采样点一张 PNG，文件名含角度/力/持续时间参数，图片左上角标注采样参数
+
+### run_visualize_all_gens.sh ✅
+
+批量脚本：为 Gen 0~9 各生成 200 张采样状态图片，每个代放到单独子目录。使用各代对应的策略和 NPZ 文件。
+
+**用法**:
+
+```bash
+cd /data1/mono/things/combatbench
+bash baseline/humanoid21/balance_recover/run_visualize_all_gens.sh
+```
+
+**输出**: `run_recovery_v2/sample_images/gen{0-9}/` 各 200 张 PNG
 
 ### verify_monotonicity.py ✅
 
@@ -278,6 +322,7 @@ PYTHONPATH=/data1/mono/things/combatbench python3 \
 | `heatmap_*.png` | 各种热力图（存活率、权重分布） |
 | `gen0/` | 第 0 代探测数据子目录 |
 | `verify_videos/` | 方向验证视频（robot_a + robot_b 各 4 个方向，共 8 个 MP4） |
+| `run_recovery_v2/sample_images/` | 采样状态图片集（gen0~gen9 各 200 张，由 `run_visualize_all_gens.sh` 生成） |
 
 ---
 
