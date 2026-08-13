@@ -113,7 +113,11 @@ def main() -> None:
         for _ in range(duration):
             obs = sim.get_observation()
             action, _ = policy.act(obs.get(args.agent_id))
-            runtime.step(action, np.zeros(21, dtype=np.float32))
+            zeros = np.zeros(21, dtype=np.float32)
+            if args.agent_id == "robot_a":
+                runtime.step(action, zeros)
+            else:
+                runtime.step(zeros, action)
 
         image = sim.get_broadcastview_image()
         annotated = annotate_image(image, angle, force, duration, i)
