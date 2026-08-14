@@ -60,7 +60,7 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
     # --- PPO tuning (conservative for warm-start) ---
     learning_rate: float = 3e-5
     target_kl: float = 0.03
-    eval_episodes: int = 64
+    eval_episodes: int = 512
     eval_interval: int = 5
 
     def __init__(
