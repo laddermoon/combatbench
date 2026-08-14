@@ -53,7 +53,9 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
     _last_best_update: int = 0
-    _no_improvement_limit: int = 100
+    _no_improvement_limit: int = 200
+    _min_updates: int = 600
+    max_updates: int = 2000
 
     # --- PPO tuning (conservative for warm-start) ---
     learning_rate: float = 3e-5
@@ -267,7 +269,8 @@ class WeightedImpulseExperiment(CombatExperimentV2Base):
             self._last_best_update = update
 
         no_improvement = update - self._last_best_update
-        stop_training = no_improvement >= self._no_improvement_limit
+        stop_training = (no_improvement >= self._no_improvement_limit
+                         and update >= self._min_updates)
 
         return {
             "is_new_best": is_new_best,
