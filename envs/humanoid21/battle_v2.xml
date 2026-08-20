@@ -1,10 +1,14 @@
 <?xml version='1.0' encoding='utf-8'?>
-<mujoco model="Laddermoon_Arena">
+<mujoco model="Laddermoon_Arena_v2">
+    <!-- impratio=10: friction constraints stiff enough to actually hold.
+         Measured: impratio=1 slips 5.48mm under mu=0.5 demand, impratio=10 slips 0.55mm.
+         iterations left at default 100 (200 gave bit-identical results). -->
+    <option timestep="0.002" impratio="10" />
     <default><motor ctrlrange="-1 1" ctrllimited="true" />
     <default class="body_a">
 
       
-      <geom type="capsule" condim="3" friction=".7 0.01 0.005" solimp=".5 .92 .018" solref=".02 1.2" margin="0.012" gap="0.010" material="body_a" group="1" rgba="1 0.2 0.2 1" />
+      <geom type="capsule" condim="3" friction="0.7 0.005 0.0001" solimp="0.9 0.95 0.002" solref="0.015 1" priority="1" material="body_a" group="1" rgba="1 0.2 0.2 1" />
       <default class="thigh_a">
         <geom size=".06" rgba="1 0.2 0.2 1" />
       </default>
@@ -12,7 +16,7 @@
         <geom fromto="0 0 0 0 0 -.3" size=".049" rgba="1 0.2 0.2 1" />
       </default>
       <default class="foot_a">
-        <geom size=".027" condim="4" friction="0.9 0.03 0.01" solimp=".9 .995 .001" solref=".004 1.0" margin="0.001" gap="0.0008" rgba="1 0.2 0.2 1" />
+        <geom size=".027" condim="3" friction="1.0 0.02 0.001" solimp="0.9 0.95 0.001" solref="0.01 1" priority="2" rgba="1 0.2 0.2 1" />
         <default class="foot1_a">
           <geom fromto="-.07 -.01 0 .14 -.03 0" rgba="1 0.2 0.2 1" />
         </default>
@@ -24,10 +28,10 @@
         <geom size=".04" rgba="1 0.2 0.2 1" />
       </default>
       <default class="arm_lower_a">
-        <geom size=".031" condim="3" solimp=".7 .97 .008" solref=".012 1.0" margin="0.006" gap="0.005" rgba="1 0.2 0.2 1" />
+        <geom size=".031" rgba="1 0.2 0.2 1" />
       </default>
       <default class="hand_a">
-        <geom type="sphere" size=".04" condim="3" solimp=".7 .97 .008" solref=".012 1.0" margin="0.006" gap="0.005" rgba="1 0.2 0.2 1" />
+        <geom type="sphere" size=".04" rgba="1 0.2 0.2 1" />
       </default>
 
       
@@ -69,7 +73,7 @@
   <default class="body_b">
 
       
-      <geom type="capsule" condim="3" friction=".7 0.01 0.005" solimp=".5 .92 .018" solref=".02 1.2" margin="0.012" gap="0.010" material="body_b" group="1" rgba="0.2 0.2 1 1" />
+      <geom type="capsule" condim="3" friction="0.7 0.005 0.0001" solimp="0.9 0.95 0.002" solref="0.015 1" priority="1" material="body_b" group="1" rgba="0.2 0.2 1 1" />
       <default class="thigh_b">
         <geom size=".06" rgba="0.2 0.2 1 1" />
       </default>
@@ -77,7 +81,7 @@
         <geom fromto="0 0 0 0 0 -.3" size=".049" rgba="0.2 0.2 1 1" />
       </default>
       <default class="foot_b">
-        <geom size=".027" condim="4" friction="0.9 0.03 0.01" solimp=".9 .995 .001" solref=".004 1.0" margin="0.001" gap="0.0008" rgba="0.2 0.2 1 1" />
+        <geom size=".027" condim="3" friction="1.0 0.02 0.001" solimp="0.9 0.95 0.001" solref="0.01 1" priority="2" rgba="0.2 0.2 1 1" />
         <default class="foot1_b">
           <geom fromto="-.07 -.01 0 .14 -.03 0" rgba="0.2 0.2 1 1" />
         </default>
@@ -89,10 +93,10 @@
         <geom size=".04" rgba="0.2 0.2 1 1" />
       </default>
       <default class="arm_lower_b">
-        <geom size=".031" condim="3" solimp=".7 .97 .008" solref=".012 1.0" margin="0.006" gap="0.005" rgba="0.2 0.2 1 1" />
+        <geom size=".031" rgba="0.2 0.2 1 1" />
       </default>
       <default class="hand_b">
-        <geom type="sphere" size=".04" condim="3" solimp=".7 .97 .008" solref=".012 1.0" margin="0.006" gap="0.005" rgba="0.2 0.2 1 1" />
+        <geom type="sphere" size=".04" rgba="0.2 0.2 1 1" />
       </default>
 
       
@@ -229,12 +233,12 @@
         <camera name="westcamera" pos="-3 0 3" xyaxes="0.0000 -1.0000 0.0000 0.4472 0.0000 0.8944" />
         <camera name="eastcamera" pos="3 0 3" xyaxes="0.0000 1.0000 -0.0000 -0.4472 0.0000 0.8944" />
         <camera name="ceilingcamera" pos="0 0 6" xyaxes="1.0000 0.0000 0.0000 -0.0000 1.0000 0.0000" />
-        <geom name="ground" type="plane" pos="0.0 0.0 0.0" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" material="mat_floor" />
+        <geom name="ground" type="plane" condim="3" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" pos="0.0 0.0 0.0" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" material="mat_floor" />
         <geom name="ceiling" type="plane" pos="0.0 0.0 6.1" size="3.05 3.05 0.1" xyaxes="-1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" material="mat_ceiling" />
-        <geom name="southwall" type="plane" pos="0.0 -3.05 3.05" size="3.05 3.05 0.1" xyaxes="-1.0000 -0.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
-        <geom name="northwall" type="plane" pos="0.0 3.05 3.05" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
-        <geom name="westwall" type="plane" pos="-3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="0.0000 1.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
-        <geom name="eastwall" type="plane" pos="3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="-0.0000 -1.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="southwall" type="plane" condim="3" friction="0.3 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" pos="0.0 -3.05 3.05" size="3.05 3.05 0.1" xyaxes="-1.0000 -0.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="northwall" type="plane" condim="3" friction="0.3 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" pos="0.0 3.05 3.05" size="3.05 3.05 0.1" xyaxes="1.0000 0.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="westwall" type="plane" condim="3" friction="0.3 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" pos="-3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="0.0000 1.0000 0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
+        <geom name="eastwall" type="plane" condim="3" friction="0.3 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" pos="3.05 0.0 3.05" size="3.05 3.05 0.1" xyaxes="-0.0000 -1.0000 -0.0000 0.0000 0.0000 1.0000" material="mat_wall" />
     <body name="torso_a" pos="-1.5 0 1.282" childclass="body_a" euler="0 0 0.0">
       <camera name="back_a" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom" />
       <camera name="side_a" pos="0 -3 1" xyaxes="1 0 0 0 1 2" mode="trackcom" />
