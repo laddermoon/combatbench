@@ -1,11 +1,10 @@
-"""Unified training CLI — supports PPO and SAC.
+"""Unified training CLI — PPO only.
 
 Usage::
 
-    python3 baseline/framework/train.py --experiment basic_balance --algo ppo
-    python3 baseline/framework/train.py --experiment basic_balance --algo sac
-    python3 baseline/framework/train.py --experiment basic_balance --algo ppo --smoke
-    python3 baseline/framework/train.py --experiment basic_balance --algo ppo --background
+    python3 baseline/framework/train.py --experiment basic_balance
+    python3 baseline/framework/train.py --experiment basic_balance --smoke
+    python3 baseline/framework/train.py --experiment basic_balance --background
     python3 baseline/framework/train.py --list-experiments
 """
 from __future__ import annotations
@@ -16,21 +15,20 @@ import sys
 import time
 from pathlib import Path
 
-from baseline.humanoid21.curriculum.experiments import get_experiment, list_experiments
 from baseline.experiments_v2 import get_v2_experiment, list_v2_experiments
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Unified trainer — PPO or SAC."
+        description="Unified trainer — PPO."
     )
     parser.add_argument(
         "--experiment", type=str, default=None,
         help="Experiment name (e.g. basic_balance, hybrid_standup_balance).",
     )
     parser.add_argument(
-        "--algo", type=str, default="ppo", choices=["ppo", "sac"],
-        help="Training algorithm: ppo or sac (default: ppo).",
+        "--algo", type=str, default="ppo", choices=["ppo"],
+        help="Training algorithm (default: ppo).",
     )
     parser.add_argument(
         "--smoke", action="store_true",
@@ -136,13 +134,10 @@ def main() -> None:
 
     if args.list_experiments:
         print("Available experiments:")
-        for name in list_experiments():
-            exp = get_experiment(name)
-            print(f"  {name} (v1): reward_keys={exp.reward_keys}")
         for name in list_v2_experiments():
             exp = get_v2_experiment(name)
             channels = exp.reward_channels()
-            print(f"  {name} (v2): channels={[ch.name for ch in channels]}")
+            print(f"  {name}: channels={[ch.name for ch in channels]}")
         return
 
     if args.experiment is None:
@@ -157,47 +152,28 @@ def main() -> None:
         key, value = item.split("=", 1)
         set_params[key.strip()] = value.strip()
 
-    # Try v1 registry first, then v2
     try:
-        experiment = get_experiment(args.experiment)
-        is_v2 = False
+        experiment = get_v2_experiment(args.experiment, **set_params)
     except KeyError:
-        try:
-            experiment = get_v2_experiment(args.experiment, **set_params)
-            is_v2 = True
-        except KeyError:
-            print(f"Error: Unknown experiment {args.experiment!r}.")
-            print(f"  V1: {list_experiments()}")
-            print(f"  V2: {list_v2_experiments()}")
-            raise SystemExit(1)
+        print(f"Error: Unknown experiment {args.experiment!r}.")
+        print(f"  Available: {list_v2_experiments()}")
+        raise SystemExit(1)
 
     # --- Override seed if requested ---
     if args.seed is not None:
-        if is_v2:
-            experiment.seed = args.seed
-            print(f"[seed] overridden to {args.seed} (v2)", flush=True)
-        else:
-            experiment.seed = args.seed
-            print(f"[seed] overridden to {args.seed} (v1)", flush=True)
+        experiment.seed = args.seed
+        print(f"[seed] overridden to {args.seed}", flush=True)
 
     if args.smoke:
-        if is_v2:
-            cp = experiment.common_params()
-            pp = experiment.ppo_params()
-            import dataclasses
-            cp = dataclasses.replace(cp, max_updates=2, episodes_per_update=8,
-                                     eval_episodes=4, eval_interval=1,
-                                     rollout_workers=2)
-            pp = dataclasses.replace(pp, minibatch_size=64)
-            experiment.common_params = lambda: cp
-            experiment.ppo_params = lambda: pp
-        else:
-            experiment.max_updates = 2
-            experiment.episodes_per_update = 8
-            experiment.eval_episodes = 4
-            experiment.eval_interval = 1
-            experiment.rollout_workers = 2
-            experiment.minibatch_size = 64
+        cp = experiment.common_params()
+        pp = experiment.ppo_params()
+        import dataclasses
+        cp = dataclasses.replace(cp, max_updates=2, episodes_per_update=8,
+                                 eval_episodes=4, eval_interval=1,
+                                 rollout_workers=2)
+        pp = dataclasses.replace(pp, minibatch_size=64)
+        experiment.common_params = lambda: cp
+        experiment.ppo_params = lambda: pp
 
     algo = args.algo
     run_name = args.run_name or f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -242,11 +218,8 @@ def main() -> None:
 
     resume_from = Path(args.resume_from).resolve() if args.resume_from else None
 
-    if is_v2:
-        from baseline.framework.ppo_loop_v2 import save_run_config_v2
-        save_run_config_v2(experiment, run_dir, smoke=args.smoke, algo=algo)
-    else:
-        experiment.save_run_config(run_dir, smoke=args.smoke, algo=algo)
+    from baseline.framework.ppo_loop_v2 import save_run_config_v2
+    save_run_config_v2(experiment, run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -271,19 +244,10 @@ def main() -> None:
     use_confidence = not args.no_confidence
     print(f"[confidence] {'on' if use_confidence else 'off'}", flush=True)
 
-    if is_v2:
-        if algo != "ppo":
-            raise ValueError(f"ExperimentV2 only supports PPO, got algo={algo}")
-        from baseline.framework.ppo_loop_v2 import train_ppo_v2
-        train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
-    elif algo == "ppo":
-        from baseline.framework.ppo_loop import train_ppo
-        train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence)
-    elif algo == "sac":
-        from baseline.framework.sac_loop import train_sac
-        train_sac(experiment, run_dir=run_dir, resume_from=resume_from)
-    else:
-        raise ValueError(f"Unknown algorithm: {algo}")
+    if algo != "ppo":
+        raise ValueError(f"Only PPO is supported, got algo={algo}")
+    from baseline.framework.ppo_loop_v2 import train_ppo_v2
+    train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
 
 
 if __name__ == "__main__":
