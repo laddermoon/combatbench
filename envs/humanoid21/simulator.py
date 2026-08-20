@@ -32,7 +32,7 @@ class Humanoid21Simulator(BaseSimulator):
     # 静态参数 — 从 Humanoid21Meta 引用，保持单一数据源
     DT = Humanoid21Meta.DT
     ACTION_DIM = Humanoid21Meta.ACTION_DIM
-    ARENA_XML = str(Path(__file__).parent / 'battle_v1.xml')
+    ARENA_XML = str(Path(__file__).parent / 'battle_circular_v2.xml')
     KP = Humanoid21Meta.KP
     KD = Humanoid21Meta.KD
     CONTROLLED_JOINTS = Humanoid21Meta.CONTROLLED_JOINTS
@@ -546,6 +546,10 @@ class Humanoid21Simulator(BaseSimulator):
         # 模块三：触觉力反馈 (2维)
         feet_forces = self._get_feet_forces(robot_id)
 
+        # 模块二扩展：场地中心在机体系中的位置 (3维)
+        # 场地中心 = 世界原点 (0,0,0)，转换到自身机体系
+        arena_center_local = self_rot_inv.apply(-self_pos)
+
         # 模块四：对手观测 (39维)
         # 4.1 对手基础位姿 (9维)
         opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, opp_torso_id)
@@ -587,12 +591,13 @@ class Humanoid21Simulator(BaseSimulator):
         ]).astype(np.float32)
 
         return {
-            # 模块二：全局状态 (10维)
+            # 模块二：全局状态 (13维)
             'root_state': {
                 'height': np.array([height], dtype=np.float32),  # 1维
                 'projected_gravity': projected_gravity.astype(np.float32),  # 3维
                 'linear_vel': linear_vel.astype(np.float32),  # 3维 (机体系)
                 'angular_vel': angular_vel.astype(np.float32),  # 3维 (机体系)
+                'arena_center_local': arena_center_local.astype(np.float32),  # 3维 (机体系)
             },
 
             # 模块三：触觉力反馈 (2维)
@@ -608,7 +613,7 @@ class Humanoid21Simulator(BaseSimulator):
             # 4.3 对手关键点速度 (15维)
             'opponent_keypoint_vel': opponent_keypoint_vel,
 
-            # 完整平铺观测 (93维) - 模块一+二+三+四
+            # 完整平铺观测 (96维) - 模块一+二+三+四
             'observation': np.concatenate([
                 proprioception,        # 42维 - 模块一本体感知
                 projected_gravity,        # 3维 - 重力投影(机体系)
@@ -616,6 +621,7 @@ class Humanoid21Simulator(BaseSimulator):
                 linear_vel,               # 3维 - 线速度(机体系)
                 angular_vel,              # 3维 - 角速度(机体系)
                 feet_forces,              # 2维 - 足底受力
+                arena_center_local,       # 3维 - 场地中心在机体系中的位置
                 opponent_basic['relative_pos'],     # 3维
                 opponent_basic['relative_vel'],     # 3维
                 opponent_basic['face_vector'],      # 3维
@@ -629,7 +635,7 @@ class Humanoid21Simulator(BaseSimulator):
                 opponent_keypoint_vel['hand_left'],  # 3维
                 opponent_keypoint_vel['foot_right'], # 3维
                 opponent_keypoint_vel['foot_left'],  # 3维
-            ]).astype(np.float32),  # 总共 93 维
+            ]).astype(np.float32),  # 总共 96 维
 
             # 兼容旧版本
             'uprightness': np.array([world_rot_mat[2, 2]], dtype=np.float32),
@@ -641,9 +647,9 @@ class Humanoid21Simulator(BaseSimulator):
         }
 
     def get_observation(self) -> Dict[str, Any]:
-        """Return per-agent flat observation vectors (93-dim).
+        """Return per-agent flat observation vectors (96-dim).
 
-        直接调用 ``_get_robot_view`` 计算每个机器人的视角并取出 93 维 ``observation``，
+        直接调用 ``_get_robot_view`` 计算每个机器人的视角并取出 96 维 ``observation``，
         **不再**走 ``get_derived_state(['robot_a','robot_b'])`` —— 后者会额外为每个
         机器人构建 per-body / per-joint 世界系数组 (``_collect_body_joint_arrays``)，
         而平铺观测完全不需要这些数据。``observation`` 的数值与原路径按位相同
@@ -1221,25 +1227,33 @@ class Humanoid21Simulator(BaseSimulator):
             want_dist = float(np.clip(dist_ab * 1.5, 2.5, 4.0))
 
             # --- side selection & arena clamping ---
-            # Arena walls at ±3.05 m; keep camera inside ±3.0 m.
-            # At ele=-20°, cam horizontal offset = dist * cos(20°) ≈ 0.94*dist.
-            # Max safe dist from center = 3.0 / cos(20°) ≈ 3.19 m, so dist<=4.0
-            # can push the camera out when lookat is not at center.
-            arena_limit = 3.0
+            # Circular arena radius = 3.44 m; keep camera inside the circle.
+            # Camera horizontal position = lookat_xy + dist * (-cos(azi), -sin(azi)) * cos(ele)
+            # Constraint: |cam_xy| <= arena_radius
+            arena_radius = 3.44
 
             def _max_dist_for_side(azi_deg: float, ele_deg: float,
                                    lookat: np.ndarray) -> float:
-                """Max dist along azi_deg that keeps camera inside arena."""
+                """Max dist along azi_deg that keeps camera inside circular arena."""
                 a = np.radians(azi_deg)
                 c = np.cos(np.radians(ele_deg))
-                cx = -np.cos(a) * c
-                cy = -np.sin(a) * c
-                limits = []
-                if abs(cx) > 1e-6:
-                    limits.append((arena_limit - abs(lookat[0])) / abs(cx))
-                if abs(cy) > 1e-6:
-                    limits.append((arena_limit - abs(lookat[1])) / abs(cy))
-                return float(min(limits)) if limits else 99.0
+                dx = -np.cos(a) * c
+                dy = -np.sin(a) * c
+                # cam = lookat + dist * (dx, dy)
+                # |cam|^2 <= R^2  =>  (dist*dx + lx)^2 + (dist*dy + ly)^2 <= R^2
+                # Quadratic: (dx^2+dy^2)*dist^2 + 2*(lx*dx+ly*dy)*dist + (lx^2+ly^2 - R^2) <= 0
+                A = dx * dx + dy * dy
+                B = 2.0 * (lookat[0] * dx + lookat[1] * dy)
+                C = lookat[0] ** 2 + lookat[1] ** 2 - arena_radius ** 2
+                if A < 1e-12:
+                    return 99.0
+                disc = B * B - 4.0 * A * C
+                if disc < 0:
+                    return 0.0
+                sqrt_disc = np.sqrt(disc)
+                d1 = (-B - sqrt_disc) / (2.0 * A)
+                d2 = (-B + sqrt_disc) / (2.0 * A)
+                return float(max(0.0, min(d1, d2)))
 
             azi_option_a = dir_angle + 90.0
             azi_option_b = dir_angle - 90.0

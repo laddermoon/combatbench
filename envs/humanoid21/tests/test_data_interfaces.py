@@ -5,7 +5,7 @@ Humanoid21 Simulator 数据接口完整测试
 严格按照 DATASPEC.md 验证所有数据接口的数据格式和数据内容正确性：
 1. get_static_data() - 静态属性
 2. get_core_state() - 核心状态
-3. get_derived_state() - 派生状态 (包括完整93维观测)
+3. get_derived_state() - 派生状态 (包括完整96维观测)
 4. 各模块的维度、数据类型、归一化范围验证
 """
 
@@ -283,11 +283,11 @@ def test_derived_state(sim):
             assert_shape(opponent_keypoint_vel[kp], (3,), f"{robot_id}.opponent_keypoint_vel.{kp}")
             print(f"  ✓ opponent_keypoint_vel.{kp}: {opponent_keypoint_vel[kp]}")
 
-        # ---- 完整平铺观测 (93维) ----
-        print("\n[完整平铺观测 93维]")
+        # ---- 完整平铺观测 (96维) ----
+        print("\n[完整平铺观测 96维]")
         assert 'observation' in view, f"{robot_id}: 缺少 observation"
         observation = view['observation']
-        assert_shape(observation, (93,), f"{robot_id}.observation")
+        assert_shape(observation, (96,), f"{robot_id}.observation")
         assert_dtype(observation, np.float32, f"{robot_id}.observation")
         print(f"  ✓ observation: shape={observation.shape}, dtype={observation.dtype}")
         print(f"    值范围: [{observation.min():.3f}, {observation.max():.3f}]")
@@ -324,7 +324,7 @@ def test_observation_decomposition(sim):
 
         # 获取完整观测
         obs = derived[robot_id]['observation']
-        assert obs.shape == (93,), f"{robot_id}: observation 维度错误"
+        assert obs.shape == (96,), f"{robot_id}: observation 维度错误"
 
         # 分解验证
         # 模块一：本体感知 (42维)
@@ -336,17 +336,22 @@ def test_observation_decomposition(sim):
         assert np.allclose(obs[0:42], proprioception), "模块一数据不匹配"
         print(f"✓ 模块一本体感知 (42维): 索引 [0:42]")
 
-        # 模块二：全局状态 (10维)
+        # 模块二：全局状态 (13维) — 在平铺向量中分两段：
+        #   [42:52] = gravity(3) + height(1) + linvel(3) + angvel(3)
+        #   [54:57] = arena_center_local(3)  (feet_forces 插在中间)
         root_state = derived[robot_id]['root_state']
-        module2 = np.concatenate([
+        module2_part1 = np.concatenate([
             root_state['projected_gravity'],  # 3维
             root_state['height'],             # 1维
             root_state['linear_vel'],         # 3维
             root_state['angular_vel'],        # 3维
         ])
-        assert module2.shape == (10,), "模块二维度错误"
-        assert np.allclose(obs[42:52], module2), "模块二数据不匹配"
-        print(f"✓ 模块二全局状态 (10维): 索引 [42:52]")
+        assert module2_part1.shape == (10,), "模块二(前段)维度错误"
+        assert np.allclose(obs[42:52], module2_part1), "模块二(前段)数据不匹配"
+        module2_part2 = root_state['arena_center_local']  # 3维
+        assert module2_part2.shape == (3,), "模块二(后段)维度错误"
+        assert np.allclose(obs[54:57], module2_part2), "模块二(后段)数据不匹配"
+        print(f"✓ 模块二全局状态 (13维): 索引 [42:52] + [54:57]")
 
         # 模块三：触觉力反馈 (2维)
         feet_forces = derived[robot_id]['feet_forces']
@@ -375,13 +380,13 @@ def test_observation_decomposition(sim):
             opponent_keypoint_vel['foot_left'],   # 3维
         ])
         assert module4.shape == (39,), "模块四维度错误"
-        assert np.allclose(obs[54:93], module4), "模块四数据不匹配"
-        print(f"✓ 模块四对手观测 (39维): 索引 [54:93]")
+        assert np.allclose(obs[57:96], module4), "模块四数据不匹配"
+        print(f"✓ 模块四对手观测 (39维): 索引 [57:96]")
 
         # 总维度验证
-        total_dim = 42 + 10 + 2 + 39
-        assert total_dim == 93, f"总维度计算错误: {total_dim}"
-        print(f"✓ 总维度验证: 42 + 10 + 2 + 39 = {total_dim}")
+        total_dim = 42 + 13 + 2 + 39
+        assert total_dim == 96, f"总维度计算错误: {total_dim}"
+        print(f"✓ 总维度验证: 42 + 13 + 2 + 39 = {total_dim}")
 
     print("\n✓ 观测空间维度分解验证通过")
 
@@ -576,7 +581,7 @@ def test_edge_cases(sim):
     # 验证观测维度
     for robot_id in ['robot_a', 'robot_b']:
         obs = derived[robot_id]['observation']
-        assert obs.shape == (93,), f"{robot_id}: reset 后观测维度异常"
+        assert obs.shape == (96,), f"{robot_id}: reset 后观测维度异常"
         assert not np.any(np.isnan(obs)), f"{robot_id}: reset 后观测包含 NaN"
         assert not np.any(np.isinf(obs)), f"{robot_id}: reset 后观测包含 Inf"
         print(f"  {robot_id} 观测: shape={obs.shape}, 无NaN/Inf ✓")
@@ -597,7 +602,7 @@ def test_edge_cases(sim):
         derived = sim.get_derived_state()
         obs = derived['robot_a']['observation']
 
-        assert obs.shape == (93,), f"极端动作 {i} 后观测维度异常"
+        assert obs.shape == (96,), f"极端动作 {i} 后观测维度异常"
         assert not np.any(np.isnan(obs)), f"极端动作 {i} 后观测包含 NaN"
         print(f"  极端动作 {i+1}: 观测正常 ✓")
 
@@ -894,8 +899,8 @@ def test_observation_value_ranges(sim):
         print(f"    范围: [{proprioception.min():.3f}, {proprioception.max():.3f}]")
         print(f"    ✓ 在 [-1, 1] 范围内")
 
-        # 模块二：全局状态 (10维)
-        # projected_gravity (3维) - 单位向量，应该在 [-1, 1] 且模长为 1
+        # 模块二：全局状态 (13维)
+        # projected_gravity (3维) - 单位向量，应该在 [-1, 1] 范围内且模长为 1
         projected_gravity = obs[42:45]
         print(f"  模块二 projected_gravity [42:45]: {projected_gravity}")
         assert np.all(projected_gravity >= -1) and np.all(projected_gravity <= 1), \
@@ -926,10 +931,16 @@ def test_observation_value_ranges(sim):
         assert np.all(feet_forces >= 0), f"feet_forces 应为非负: {feet_forces}"
         print(f"    ✓ 非负值")
 
+        # arena_center_local (3维) - 场地中心在机体系中的位置
+        arena_center_local = obs[54:57]
+        print(f"  模块二 arena_center_local [54:57]: {arena_center_local}")
+        assert not np.any(np.isnan(arena_center_local)), "arena_center_local 包含 NaN"
+        print(f"    ✓ 无 NaN")
+
         # 模块四：对手观测 (39维)
         # 相对位置和速度可能有较大值
-        opponent_data = obs[54:93]
-        print(f"  模块四对手观测 [54:93]:")
+        opponent_data = obs[57:96]
+        print(f"  模块四对手观测 [57:96]:")
         print(f"    范围: [{opponent_data.min():.3f}, {opponent_data.max():.3f}]")
         print(f"    ✓ 无异常值")
 
@@ -1208,7 +1219,7 @@ def test_set_core_state(sim):
 
     # 验证观测中的完整数据
     obs = derived['robot_a']['observation']
-    assert obs.shape == (93,), f"观测维度错误: {obs.shape}"
+    assert obs.shape == (96,), f"观测维度错误: {obs.shape}"
     print(f"  ✓ 观测维度正确: {obs.shape}")
 
     print("\n✓ set_core_state 完整功能验证通过")
@@ -1249,7 +1260,7 @@ def run_all_tests():
         print("  ✓ 静态属性 (get_static_data)")
         print("  ✓ 核心状态 (get_core_state)")
         print("  ✓ 派生状态 (get_derived_state)")
-        print("  ✓ 完整观测空间 (93维)")
+        print("  ✓ 完整观测空间 (96维)")
         print("  ✓ 归一化正确性")
         print("  ✓ 坐标系转换")
         print("  ✓ 动态一致性")

@@ -9,7 +9,7 @@ Humanoid21 仿真环境元数据定义与管理
   在 MuJoCo 概念之上, 按需添加战斗语义层 (ATTACK_PARTS, HITTABLE_PARTS, KEYPOINT_BODIES).
 
 两层结构:
-  Layer 1 — MuJoCo 概念 (与 battle_v1.xml 一一对应)
+  Layer 1 — MuJoCo 概念 (与 battle_circular_v2.xml 一一对应)
     ENV_GEOMS:        环境 geom 名称列表
     ROBOT_BODY_TREE:  机器人 body 树 (body → geoms, joints, children)
     CONTROLLED_JOINTS: policy 直接控制的 21 个关节 (顺序 = action vector 维度)
@@ -33,13 +33,13 @@ class Humanoid21Meta:
     """Humanoid21 对抗仿真环境的静态元数据定义、校验与运行时关联。"""
 
     # ============================================================
-    # Layer 1: MuJoCo 概念模型 — 与 battle_v1.xml 一一对应
+    # Layer 1: MuJoCo 概念模型 — 与 battle_circular_v2.xml 一一对应
     # ============================================================
 
     # --- 环境 Geoms (不属于任何机器人) ---
     ENV_GEOMS: List[str] = [
-        'ground', 'ceiling', 'southwall', 'northwall', 'westwall', 'eastwall',
-    ]
+        'ground', 'ceiling',
+    ] + [f'wall_{i:02d}' for i in range(24)]
 
     # --- 机器人 Body Tree ---
     # 每个 body 声明: 它包含哪些 geom、哪些 joint、它的子 body 是谁
