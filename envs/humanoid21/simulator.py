@@ -865,6 +865,7 @@ class Humanoid21Simulator(BaseSimulator):
                 - initial_pose_b: 机器人B的初始姿态
         """
         self._data_cache.clear()
+        self._cached_contacts_vec = None
         mujoco.mj_resetData(self.model, self.data)
 
         # 设置初始距离
