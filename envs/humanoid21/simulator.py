@@ -267,10 +267,14 @@ class Humanoid21Simulator(BaseSimulator):
         返回按 robot_a 和 robot_b 分离的字典，每个包含：
         - root_pos (3,): Torso 绝对位置
         - root_rot (4,): Torso 绝对姿态四元数 [w,x,y,z]
-        - root_vel_local (3,): Torso 局部线速度
-        - root_angular_vel_local (3,): Torso 局部角速度
+        - root_vel_local (3,): Torso 机体系线速度
+        - root_angular_vel_local (3,): Torso 机体系角速度（等效陀螺仪）
         - joint_pos_norm (21,): 归一化关节位置 [-1, 1]
         - joint_vel_norm (21,): 归一化关节速度
+
+        两个速度字段都是机体系，但底层来源不同：MuJoCo free joint 的
+        ``qvel[0:3]``（线速度）在世界系，需乘 ``R^T`` 转换；而 ``qvel[3:6]``
+        （角速度）本就在机体系，直接取用。
         """
         if '_core_state' in self._data_cache:
             return self._data_cache['_core_state']
@@ -286,15 +290,16 @@ class Humanoid21Simulator(BaseSimulator):
             root_pos = self.data.qpos[root_qpos_adr:root_qpos_adr+3].copy()
             root_rot = self.data.qpos[root_qpos_adr+3:root_qpos_adr+7].copy()  # [w,x,y,z]
 
-            # Root 速度 (全局坐标系)
+            # Root 速度
+            # MuJoCo free joint 的 qvel 两半部分坐标系不一致：
+            #   qvel[0:3] 线速度 → 世界系，需乘 R^T 转到机体系
+            #   qvel[3:6] 角速度 → 已经是机体系，直接取用
             root_qvel_adr = cache['root_qvel_adr']
             root_vel_global = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()
-            root_angular_vel_global = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()
 
-            # 转换到局部坐标系
             rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])  # scipy 用 xyzw
             root_vel_local = rot.inv().apply(root_vel_global)
-            root_angular_vel_local = rot.inv().apply(root_angular_vel_global)
+            root_angular_vel_local = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()
 
             # 关节位置和速度 (原始值)
             qpos_indices = cache['qpos_indices']
@@ -1064,8 +1069,8 @@ class Humanoid21Simulator(BaseSimulator):
             'robot_a': {
                 'root_pos': (3,),      # 根节点位置
                 'root_rot': (4,),      # 根节点四元数 [w,x,y,z]
-                'root_vel_local': (3,),      # 根节点局部线速度
-                'root_angular_vel_local': (3,), # 根节点局部角速度
+                'root_vel_local': (3,),      # 根节点机体系线速度
+                'root_angular_vel_local': (3,), # 根节点机体系角速度
                 'joint_pos_norm': (21,), # 归一化关节位置
                 'joint_vel_norm': (21,), # 归一化关节速度
             },
@@ -1093,23 +1098,21 @@ class Humanoid21Simulator(BaseSimulator):
             if 'root_rot' in robot_state:
                 self.data.qpos[root_qpos_adr+3:root_qpos_adr+7] = robot_state['root_rot']
 
-            # 设置根节点速度（需要从局部速度转换到全局速度）
+            # 设置根节点速度
+            # 与 get_core_state 对称：线速度需从机体系转回世界系再写入 qvel[0:3]，
+            # 而角速度本就以机体系存放于 qvel[3:6]，直接写入。
             if 'root_vel_local' in robot_state or 'root_angular_vel_local' in robot_state:
-                # 获取当前姿态
-                quat = self.data.qpos[root_qpos_adr+3:root_qpos_adr+7]  # [w,x,y,z]
-                rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-                rot_mat = rot.as_matrix()
-
-                # 局部速度转全局速度
                 if 'root_vel_local' in robot_state:
+                    # 获取当前姿态
+                    quat = self.data.qpos[root_qpos_adr+3:root_qpos_adr+7]  # [w,x,y,z]
+                    rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
                     local_vel = robot_state['root_vel_local']
-                    global_vel = rot_mat @ local_vel
+                    global_vel = rot.as_matrix() @ local_vel
                     self.data.qvel[root_qvel_adr:root_qvel_adr+3] = global_vel
 
                 if 'root_angular_vel_local' in robot_state:
-                    local_angular_vel = robot_state['root_angular_vel_local']
-                    global_angular_vel = rot_mat @ local_angular_vel
-                    self.data.qvel[root_qvel_adr+3:root_qvel_adr+6] = global_angular_vel
+                    self.data.qvel[root_qvel_adr+3:root_qvel_adr+6] = \
+                        robot_state['root_angular_vel_local']
 
             # 设置关节位置和速度（从归一化值转换回实际值）
             if 'joint_pos_norm' in robot_state:

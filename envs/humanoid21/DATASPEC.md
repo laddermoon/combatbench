@@ -52,14 +52,18 @@
 - **结构**:
   - **`root_pos`** (3,): Torso 的绝对世界坐标 `(x, y, z)`。
   - **`root_rot`** (4,): Torso 的绝对姿态四元数 `[w, x, y, z]`。
-  - **`root_vel_local`** (3,): Torso 在**自身局部坐标系**下的线速度。
-  - **`root_angular_vel_local`** (3,): Torso 在**自身局部坐标系**下的角速度。
+  - **`root_vel_local`** (3,): Torso 在**机体系**下的线速度。
+  - **`root_angular_vel_local`** (3,): Torso 在**机体系**下的角速度（等效陀螺仪读数）。
   - **`joint_pos_norm`** (21,): **归一化关节位置** `[-1, 1]`。
     - 计算公式: `(qpos - reference) / scale`
     - `reference` 为关节上下限的中间值，`scale` 为关节总行程的 1/2。
   - **`joint_vel_norm`** (21,): **归一化关节角速度**。
     - 计算公式: `qvel / scale`
     - 物理含义: 当前速度每秒能跨越的"半量程"数。它是 `joint_pos_norm` 对时间的精确导数。
+
+> **速度字段的坐标系：** 两个速度字段都在机体系，但底层来源不同。MuJoCo free joint 的
+> `qvel[0:3]`（线速度）在**世界系**，需左乘 `R^T` 转换；而 `qvel[3:6]`（角速度）**本就在机体系**，
+> 直接取用，不可再次旋转。`set_core_state` 按相同约定做逆变换，保证 get/set 往返一致。
 
 **模块一：本体感知 (42维)**
 
