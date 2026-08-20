@@ -1203,7 +1203,26 @@ class ConstantForcePlugin(BasePlugin):
         return float(np.arctan2(forward[1], forward[0]))
 
     def on_pre_episode(self, ctx: SimContext) -> None:
-        """Episode 开始时初始化施力状态。"""
+        """Episode 开始时初始化施力状态。
+
+        支持通过 ``episode_options["impulse_params"]`` 按 episode 覆盖参数。
+        格式::
+
+            {"robot_a": {"force": 100, "direction_angle": 45,
+                          "duration_action_steps": 4, "body": "torso"}}
+
+        其中 ``direction_angle`` 为相对角度（度），会赋给 ``self.direction``。
+        """
+        params = ctx.episode_options.get("impulse_params", {})
+        per_agent = params.get(self.agent_id, {})
+        if per_agent:
+            self.force = float(per_agent.get("force", self.force))
+            self.direction = float(per_agent.get("direction_angle", per_agent.get("direction", self.direction)))
+            self.duration_action_steps = int(per_agent.get("duration_action_steps", self.duration_action_steps))
+            body = per_agent.get("body", per_agent.get("body_name"))
+            if body is not None:
+                self.body_name = str(body)
+
         self._direction_vec = None  # 延迟到 on_pre_action_step 计算
         self._remaining_action_steps = self.duration_action_steps
         self._active = True
@@ -1245,6 +1264,52 @@ class ConstantForcePlugin(BasePlugin):
 # ============================================================
 # 状态捕获插件 + 观察器（用于状态池生成）
 # ============================================================
+
+
+class EpisodeEndCaptureObserver(BaseRuntimeUnit):
+    """在每个 action step 的 ``on_post_action_step`` 中直接从
+    ``ctx.accessor`` 读取 core_state + observation，并覆盖 ``self._output``。
+
+    ``EpisodeBufferRecorder`` 只在 ``on_post_action_step`` 时调用
+    ``get_output()`` 缓存帧，因此必须在此 hook 中写入（不能用
+    ``on_post_episode``，因为 recorder 不会在该 hook 中抓 observer
+    outputs）。每步覆盖确保最后一帧保存的是 episode-end 状态。
+
+    同时从 ``ctx.metrics`` 读取 impulse 元数据（由 ``ConstantForcePlugin``
+    等写入），无需额外 plugin 中转。
+    """
+
+    def __init__(self, target_robot: str = "robot_a") -> None:
+        self.target_robot = target_robot
+        self._output: Dict[str, Any] = {}
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        self._output = {}
+
+    def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
+        core_state = ctx.accessor.get_core_state()
+        robot_cs = core_state[self.target_robot]
+
+        obs = ctx.accessor.get_observation()
+        robot_obs = obs.get(self.target_robot)
+
+        metrics = ctx.metrics
+        self._output = {
+            "core_state": {k: np.asarray(v).copy() for k, v in robot_cs.items()},
+            "observation": np.asarray(robot_obs, dtype=np.float32).copy()
+            if robot_obs is not None else None,
+            "impulse_force": metrics.get(f"{self.target_robot}_impulse_force"),
+            "impulse_duration": metrics.get(
+                f"{self.target_robot}_impulse_duration_action_steps"
+            ),
+            "impulse_direction": metrics.get(f"{self.target_robot}_impulse_direction"),
+            "impulse_direction_angle": metrics.get(
+                f"{self.target_robot}_impulse_direction_angle"
+            ),
+        }
+
+    def get_output(self) -> Any:
+        return self._output if self._output else {}
 
 
 class StateCapturePlugin(BasePlugin):
@@ -1332,18 +1397,16 @@ class StateCaptureObserver(BaseRuntimeUnit):
 
 
 class StateBankInitPlugin(BasePlugin):
-    """从 .npz 状态池加载扰动状态，在 on_pre_episode 中注入到 sim。
+    """从 .npz 状态池加载状态，在 on_pre_episode 中注入到 sim。
 
-    用于训练阶段：替代 ImpulsePerturbationPlugin，直接从预生成的
-   状态池中采样一个状态设为初始状态，避免每次都跑内部仿真。
+    通用化设计：只负责加载 ``states`` 数组并按 ``state_bank_index``
+    注入 core_state，不读取任何 metadata 字段。
 
     工作流：
-    1. 加载 .npz 文件（states, labels, forces, durations, directions）
-    2. on_pre_episode 时，从状态池采样一个状态（按 episode_options
-       中的 state_bank_index 指定，或随机采样）
+    1. 加载 .npz 文件中的 ``states`` 数组
+    2. on_pre_episode 时，按 episode_options 中的 state_bank_index
+       指定索引（或随机采样）
     3. 用 ctx.mutator.set_core_state 注入到 sim
-
-    需要在蓝图中放在其他 on_pre_episode 插件之后（priority=0 默认）。
     """
 
     CORE_STATE_FIELDS = [
@@ -1390,11 +1453,6 @@ class StateBankInitPlugin(BasePlugin):
         data = np.load(self.state_bank_path, allow_pickle=True)
         self._bank = {
             "states": data["states"].astype(np.float32),
-            "labels": data["labels"].astype(np.float32),
-            "forces": data["forces"].astype(np.float32),
-            "durations": data["durations"].astype(np.int32),
-            "directions": data["directions"].astype(np.float32),
-            "ep_lengths": data["ep_lengths"].astype(np.int32),
         }
 
     def _unflatten_state(self, vec: np.ndarray) -> Dict[str, np.ndarray]:
@@ -1425,10 +1483,6 @@ class StateBankInitPlugin(BasePlugin):
         ctx.mutator.set_core_state(full_state)
 
         ctx.metrics[f"{self.target_robot}_state_bank_index"] = idx
-        ctx.metrics[f"{self.target_robot}_state_bank_label"] = float(self._bank["labels"][idx])
-        ctx.metrics[f"{self.target_robot}_impulse_force"] = float(self._bank["forces"][idx])
-        ctx.metrics[f"{self.target_robot}_impulse_duration_action_steps"] = int(self._bank["durations"][idx])
-        ctx.metrics[f"{self.target_robot}_impulse_direction"] = self._bank["directions"][idx].tolist()
 
 
 # ============================================================
@@ -1485,9 +1539,8 @@ if __name__ == "__main__":
     print("       target_robots='robot_a',  # 或 'robot_b' 或 'both'")
     print("       # 随机 action 从 uniform[-1, 1] 采样")
     print("       max_phy_steps=500,       # 最多跑500物理步")
-    print("       vel_threshold=0.05,      # 速度收敛阈值")
-    print("       convergence_window=10,   # 连续10步低于阈值算静止")
-    print("       reset_interval=5,        # 每5步重置非目标机器人")
+    print("       height_threshold=0.3,    # 高度低于此值时提前终止 (m)")
+    print("       reset_interval=50,       # 每50步重置非目标机器人")
     print("   )")
 
     print("\n6. 头部打击:")
