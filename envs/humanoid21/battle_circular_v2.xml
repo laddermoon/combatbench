@@ -199,7 +199,7 @@
     <motor name="elbow_left_b" gear="40" joint="elbow_left_b" />
   </actuator><option timestep="0.002" impratio="10" />
     <visual>
-        <global offwidth="640" offheight="480" />
+        <global offwidth="1920" offheight="1080" />
         <headlight ambient="0.4 0.4 0.4" diffuse="0.4 0.4 0.4" />
     </visual>
     <asset>
