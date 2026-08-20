@@ -144,15 +144,19 @@ if cv['ncon'] > 0:
 ### 4.2 单边视角信息 (Per-Robot Views)
 分别放置在 `robot_a` 和 `robot_b` 的键下，供策略网络感知博弈态势。
 
-#### 4.2.1 模块二：全局状态 (13维)
+#### 4.2.1 模块二：全局状态 (10维)
 **接口**: `robot_view['root_state']`
 
-| 数据项 | 维度 | 说明 |
-|---|---|---|
-| `height` | 1 | Z轴高度，判断是否倒地 |
-| `local_orientation` | 6 | 世界坐标四元数 → 局部旋转矩阵（取前两列） |
-| `linear_vel` | 3 | 全局坐标系下的线速度 |
-| `angular_vel` | 3 | 全局坐标系下的角速度 |
+| 数据项 | 维度 | 坐标系 | 说明 |
+|---|---|---|---|
+| `height` | 1 | 世界 | Z轴高度，判断是否倒地 |
+| `projected_gravity` | 3 | 机体 | 重力方向单位向量 `-R[2, :]`，站直时为 `(0,0,-1)`；yaw 不变 |
+| `linear_vel` | 3 | 机体 | 机体系线速度（由 `qvel[0:3]` 世界系值左乘 `R^T` 得到） |
+| `angular_vel` | 3 | 机体 | 机体系角速度（MuJoCo free joint `qvel[3:6]` 本就是机体系，直接取用） |
+
+> 旧版的 `local_orientation`（6维，机体轴在世界系下的表示）已被 `projected_gravity` 取代。
+> 前者包含绝对 yaw，在缺少 X/Y 坐标时属于不可用的冗余维度；后者绕重力轴旋转不变。
+> 标量 `uprightness` 仍保留，其值等于 `-projected_gravity[2]`。
 
 #### 4.2.2 模块三：触觉力反馈 (2维)
 **接口**: `robot_view['feet_forces']`
@@ -233,25 +237,40 @@ com = (p * m[:, None]).sum(0) / m.sum()
 
 ## 5. 观测空间总结 (Observation Space Summary)
 
-**总维度**: 96 维（每个机器人）
+**总维度**: 93 维（每个机器人）
 
 | 模块 | 维度 | 接口 | 说明 |
 |------|------|------|------|
 | 模块一：本体感知 | 42 | `get_core_state()[robot_id]['joint_pos_norm']`<br>`get_core_state()[robot_id]['joint_vel_norm']` | 关节角度和角速度 |
-| 模块二：全局状态 | 13 | `get_derived_state()[robot_id]['root_state']` | 高度、朝向、速度 |
+| 模块二：全局状态 | 10 | `get_derived_state()[robot_id]['root_state']` | 高度、重力投影、速度 |
 | 模块三：触觉力反馈 | 2 | `get_derived_state()[robot_id]['feet_forces']` | 足底受力 |
 | 模块四：对手观测 | 39 | `get_derived_state()[robot_id]['opponent_basic_pose']`<br>`get_derived_state()[robot_id]['opponent_keypoint_pos']`<br>`get_derived_state()[robot_id]['opponent_keypoint_vel']` | 对手位姿、关键点 |
-| **完整观测** | **96** | `get_derived_state()[robot_id]['observation']` | 所有模块平铺后的完整观测 |
+| **完整观测** | **93** | `get_derived_state()[robot_id]['observation']` | 所有模块平铺后的完整观测 |
+
+**平铺向量布局**:
+
+| 索引 | 长度 | 内容 | 坐标系 |
+|---|---|---|---|
+| `[0:21]` | 21 | 归一化关节角度 | — |
+| `[21:42]` | 21 | 归一化关节角速度 | — |
+| `[42:45]` | 3 | `projected_gravity` | 机体 |
+| `[45:46]` | 1 | `height` | 世界 |
+| `[46:49]` | 3 | `linear_vel` | 机体 |
+| `[49:52]` | 3 | `angular_vel` | 机体 |
+| `[52:54]` | 2 | `feet_forces` | 标量 |
+| `[54:93]` | 39 | 对手观测 | 机体 |
+
+除 `height` 和 `feet_forces` 外，所有向量均在机体系，因此整个观测对世界系的平移与 yaw 旋转不变。
 
 **完整观测获取**:
 
-完整 96 维观测直接包含在 `get_derived_state()[robot_id]['observation']` 中：
+完整 93 维观测直接包含在 `get_derived_state()[robot_id]['observation']` 中：
 
 ```python
 derived_state = sim.get_derived_state()
 
-# robot_a 完整观测 (96维) - 直接获取
-robot_a_obs = derived_state['robot_a']['observation']  # 96维，包含所有模块
+# robot_a 完整观测 (93维) - 直接获取
+robot_a_obs = derived_state['robot_a']['observation']  # 93维，包含所有模块
 ```
 
 如果需要单独访问各模块的数据：
@@ -282,16 +301,16 @@ get_derived_state()
 ├── torso_distance (全局)
 ├── contacts_vec (全局, MuJoCo 原生 ID + AFF 阵营分类, SoA 向量化)
 └── robot_a / robot_b
-    ├── root_state (模块二: 13维)
-    │   ├── height
-    │   ├── local_orientation
-    │   ├── linear_vel
-    │   └── angular_vel
+    ├── root_state (模块二: 10维)
+    │   ├── height              (世界系)
+    │   ├── projected_gravity   (机体系)
+    │   ├── linear_vel          (机体系)
+    │   └── angular_vel         (机体系)
     ├── feet_forces (模块三: 2维)
     ├── opponent_basic_pose (模块四.1: 9维)
     ├── opponent_keypoint_pos (模块四.2: 15维)
     ├── opponent_keypoint_vel (模块四.3: 15维)
-    ├── observation (96维平铺: 模块一+二+三+四)
+    ├── observation (93维平铺: 模块一+二+三+四)
     ├── uprightness (兼容旧版)
     └── opponent_in_local (兼容旧版)
 ```

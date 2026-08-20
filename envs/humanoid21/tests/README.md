@@ -24,19 +24,19 @@
 
 3. **派生状态测试 (get_derived_state)**
    - 全局对抗信息：torso_distance, combat_contacts
-   - 模块二：全局状态 (13维) - height, local_orientation, linear_vel, angular_vel
+   - 模块二：全局状态 (10维) - height, projected_gravity, linear_vel, angular_vel
    - 模块三：触觉力反馈 (2维) - feet_forces
    - 模块四：对手观测 (39维)
      - 对手基础位姿 (9维) - relative_pos, relative_vel, face_vector
      - 对手关键点位置 (15维) - head, hand_right, hand_left, foot_right, foot_left
      - 对手关键点速度 (15维)
-   - 完整平铺观测 (96维)
+   - 完整平铺观测 (93维)
 
 4. **观测空间维度分解验证**
    - 验证模块一本体感知 (42维): 索引 [0:42]
-   - 验证模块二全局状态 (13维): 索引 [42:55]
-   - 验证模块三触觉力反馈 (2维): 索引 [55:57]
-   - 验证模块四对手观测 (39维): 索引 [57:96]
+   - 验证模块二全局状态 (10维): 索引 [42:52]
+   - 验证模块三触觉力反馈 (2维): 索引 [52:54]
+   - 验证模块四对手观测 (39维): 索引 [54:93]
 
 5. **归一化正确性验证**
    - 测试上限归一化 (应为 +1.0)
@@ -117,7 +117,7 @@ pytest tests/ -v
   ✓ 静态属性 (get_static_data)
   ✓ 核心状态 (get_core_state)
   ✓ 派生状态 (get_derived_state)
-  ✓ 完整观测空间 (96维)
+  ✓ 完整观测空间 (93维)
   ✓ 归一化正确性
   ✓ 坐标系转换
   ✓ 动态一致性

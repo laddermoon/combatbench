@@ -500,7 +500,7 @@ class Humanoid21Simulator(BaseSimulator):
         获取单个机器人的视角信息
 
         按照 OBSERVATION_zh.md 返回完整的观测空间:
-        - 模块二：全局状态 (13维) - root_state
+        - 模块二：全局状态 (10维) - root_state
         - 模块三：触觉力反馈 (2维) - feet_forces
         - 模块四：对手观测 (39维) - opponent_*
         """
@@ -519,21 +519,24 @@ class Humanoid21Simulator(BaseSimulator):
         # 对象构造开销。
         self_rot_inv = self_rot.inv()
 
-        # 模块二：全局状态 (13维)
+        # 模块二：全局状态 (10维)
         # 1. 高度 (Z轴) - 1维
         height = self_pos[2]
 
-        # 2. 局部朝向 (6维) - 世界坐标四元数 → 局部旋转矩阵（取前两列）
-        # 获取自身在世界坐标系中的旋转矩阵
-        world_rot_mat = self_rot.as_matrix()  # shape: (3, 3)
-        # 提取前两列（局部坐标系的 x 和 y 轴在世界坐标系中的表示）
-        # 这样模型可以知道"我的前方朝向"和"我的左侧朝向"
-        local_orientation = world_rot_mat[:, :2].T.flatten()  # (6,) - 按列展平
+        # 2. 重力投影 (3维) - 重力方向在机体系下的单位向量 g_body = R^T @ [0,0,-1]
+        # 等价于旋转矩阵第三行取负；站直时为 (0, 0, -1)。
+        # 相比"机体轴在世界系下的表示"，该量绕重力轴 (yaw) 不变：朝东前倾 20° 与
+        # 朝北前倾 20° 得到同一个值，消除了在缺少 X/Y 坐标时无法利用的 yaw 冗余维度。
+        world_rot_mat = self_rot.as_matrix()  # shape: (3, 3) 机体系 → 世界系
+        projected_gravity = -world_rot_mat[2, :]  # (3,)
 
-        # 3. 运动速度 (6维)
+        # 3. 运动速度 (6维) —— 均在机体系下表示
+        # MuJoCo free joint 的 qvel 语义并不统一：线速度是世界系，角速度是机体系。
+        # 这里把线速度显式转到机体系，与角速度、对手观测保持同一坐标系。
         root_qvel_adr = cache['root_qvel_adr']
-        linear_vel = self.data.qvel[root_qvel_adr:root_qvel_adr+3].copy()  # 全局线速度
-        angular_vel = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()  # 全局角速度
+        linear_vel_world = self.data.qvel[root_qvel_adr:root_qvel_adr+3]
+        linear_vel = self_rot_inv.apply(linear_vel_world)  # 机体系线速度
+        angular_vel = self.data.qvel[root_qvel_adr+3:root_qvel_adr+6].copy()  # 机体系角速度 (等效陀螺仪)
 
         # 模块三：触觉力反馈 (2维)
         feet_forces = self._get_feet_forces(robot_id)
@@ -579,12 +582,12 @@ class Humanoid21Simulator(BaseSimulator):
         ]).astype(np.float32)
 
         return {
-            # 模块二：全局状态 (13维)
+            # 模块二：全局状态 (10维)
             'root_state': {
                 'height': np.array([height], dtype=np.float32),  # 1维
-                'local_orientation': local_orientation.astype(np.float32),  # 6维
-                'linear_vel': linear_vel.astype(np.float32),  # 3维
-                'angular_vel': angular_vel.astype(np.float32),  # 3维
+                'projected_gravity': projected_gravity.astype(np.float32),  # 3维
+                'linear_vel': linear_vel.astype(np.float32),  # 3维 (机体系)
+                'angular_vel': angular_vel.astype(np.float32),  # 3维 (机体系)
             },
 
             # 模块三：触觉力反馈 (2维)
@@ -600,13 +603,13 @@ class Humanoid21Simulator(BaseSimulator):
             # 4.3 对手关键点速度 (15维)
             'opponent_keypoint_vel': opponent_keypoint_vel,
 
-            # 完整平铺观测 (96维) - 模块一+二+三+四
+            # 完整平铺观测 (93维) - 模块一+二+三+四
             'observation': np.concatenate([
                 proprioception,        # 42维 - 模块一本体感知
-                local_orientation,       # 6维 - 局部朝向
+                projected_gravity,        # 3维 - 重力投影(机体系)
                 [height],                  # 1维 - 高度
-                linear_vel,               # 3维 - 线速度(全局)
-                angular_vel,              # 3维 - 角速度(全局)
+                linear_vel,               # 3维 - 线速度(机体系)
+                angular_vel,              # 3维 - 角速度(机体系)
                 feet_forces,              # 2维 - 足底受力
                 opponent_basic['relative_pos'],     # 3维
                 opponent_basic['relative_vel'],     # 3维
@@ -621,7 +624,7 @@ class Humanoid21Simulator(BaseSimulator):
                 opponent_keypoint_vel['hand_left'],  # 3维
                 opponent_keypoint_vel['foot_right'], # 3维
                 opponent_keypoint_vel['foot_left'],  # 3维
-            ]).astype(np.float32),  # 总共 96 维
+            ]).astype(np.float32),  # 总共 93 维
 
             # 兼容旧版本
             'uprightness': np.array([world_rot_mat[2, 2]], dtype=np.float32),
@@ -633,9 +636,9 @@ class Humanoid21Simulator(BaseSimulator):
         }
 
     def get_observation(self) -> Dict[str, Any]:
-        """Return per-agent flat observation vectors (96-dim).
+        """Return per-agent flat observation vectors (93-dim).
 
-        直接调用 ``_get_robot_view`` 计算每个机器人的视角并取出 96 维 ``observation``，
+        直接调用 ``_get_robot_view`` 计算每个机器人的视角并取出 93 维 ``observation``，
         **不再**走 ``get_derived_state(['robot_a','robot_b'])`` —— 后者会额外为每个
         机器人构建 per-body / per-joint 世界系数组 (``_collect_body_joint_arrays``)，
         而平铺观测完全不需要这些数据。``observation`` 的数值与原路径按位相同
