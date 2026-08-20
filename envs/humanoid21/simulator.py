@@ -505,7 +505,7 @@ class Humanoid21Simulator(BaseSimulator):
         获取单个机器人的视角信息
 
         按照 OBSERVATION_zh.md 返回完整的观测空间:
-        - 模块二：全局状态 (10维) - root_state
+        - 模块二：全局状态 (13维) - root_state
         - 模块三：触觉力反馈 (2维) - feet_forces
         - 模块四：对手观测 (39维) - opponent_*
         """
