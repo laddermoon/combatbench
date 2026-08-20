@@ -32,7 +32,7 @@ def _close_runtime(runtime: EnvRuntime) -> None:
 
 
 def _robot_total_mass(simulator: Humanoid21Simulator, robot_id: str) -> float:
-    cache = simulator._robot_cache[robot_id]
+    cache = simulator._robot(robot_id)
     body_ids = [int(body_id) for body_id in cache["body_ids"]]
     return float(np.sum(simulator.model.body_mass[body_ids]))
 

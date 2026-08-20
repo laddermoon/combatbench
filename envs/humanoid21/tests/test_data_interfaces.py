@@ -400,7 +400,7 @@ def test_normalization(sim):
         print(f"\n--- {robot_id} ---")
 
         joint_limits = static[robot_id]['joint_limits']
-        cache = sim._robot_cache[robot_id]
+        cache = sim._robot(robot_id)
         qpos_indices = cache['qpos_indices']
 
         # 测试上限归一化
@@ -642,8 +642,8 @@ def test_facevector_scenarios(sim):
 
     # 场景2: 手动设置两个机器人朝向相同
     print("\n--- 场景2: 同向站立 ---")
-    cache_a = sim._robot_cache['robot_a']
-    cache_b = sim._robot_cache['robot_b']
+    cache_a = sim._robot('robot_a')
+    cache_b = sim._robot('robot_b')
 
     # 设置两个机器人都朝向 +x (四元数 [1, 0, 0, 0])
     root_qpos_adr_a = cache_a['root_qpos_adr']
@@ -812,7 +812,7 @@ def test_local_velocity_transform(sim):
     # 场景2: 手动设置全局速度
     print("\n--- 场景2: 设置全局速度 ---")
 
-    cache_a = sim._robot_cache['robot_a']
+    cache_a = sim._robot('robot_a')
     root_qvel_adr_a = cache_a['root_qvel_adr']
 
     # 设置全局线速度为沿 x 轴 1 m/s
@@ -837,7 +837,7 @@ def test_local_velocity_transform(sim):
     print("\n--- 场景3: 旋转90度后设置速度 ---")
     sim.reset()
 
-    cache_a = sim._robot_cache['robot_a']
+    cache_a = sim._robot('robot_a')
     root_qpos_adr_a = cache_a['root_qpos_adr']
 
     # 将 robot_a 旋转90度（绕 z 轴），朝向 +y

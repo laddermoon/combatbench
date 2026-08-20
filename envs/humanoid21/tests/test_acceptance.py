@@ -16,10 +16,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from envs.humanoid21.simulator import Humanoid21Simulator
 
+import pytest
+
 
 # 视频输出目录
 VIDEO_DIR = Path(__file__).parent / 'test_videos'
 VIDEO_DIR.mkdir(exist_ok=True)
+
+
+@pytest.fixture(scope="module")
+def sim():
+    return Humanoid21Simulator()
+
+
+@pytest.fixture
+def record_video():
+    return False
 
 
 def save_video(frames: list, filename: str, fps: int = 30):
@@ -101,7 +113,7 @@ def test_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) -> 
                 target_rad = target_norm * norm_params['scale'] + norm_params['reference']
                 
                 # 实际位置 (rad)
-                cache = sim._robot_cache[robot_id]
+                cache = sim._robot(robot_id)
                 qpos_indices = cache['qpos_indices']
                 actual_rad = sim.data.qpos[qpos_indices]
                 
@@ -420,7 +432,7 @@ def test_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -
         # 记录控制力矩
         if step % 10 == 0:
             for robot_id in ['robot_a', 'robot_b']:
-                cache = sim._robot_cache[robot_id]
+                cache = sim._robot(robot_id)
                 actuator_ids = cache['actuator_ids']
 
                 # 获取 ctrl 值并转换为力矩
@@ -445,7 +457,7 @@ def test_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -
         mean_torque = np.abs(torques).mean(axis=0)
         
         # 获取 ctrl_range 用于计算百分比
-        cache = sim._robot_cache[robot_id]
+        cache = sim._robot(robot_id)
         actuator_ids = cache['actuator_ids']
         ctrl_ranges = []
         for act_id in actuator_ids:
