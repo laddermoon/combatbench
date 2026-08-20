@@ -1253,7 +1253,7 @@ class Humanoid21Simulator(BaseSimulator):
                 sqrt_disc = np.sqrt(disc)
                 d1 = (-B - sqrt_disc) / (2.0 * A)
                 d2 = (-B + sqrt_disc) / (2.0 * A)
-                return float(max(0.0, min(d1, d2)))
+                return float(max(0.0, d2))
 
             azi_option_a = dir_angle + 90.0
             azi_option_b = dir_angle - 90.0
