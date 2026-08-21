@@ -1,0 +1,51 @@
+# Path B config: initial state perturbation + K settling steps.
+# Each episode: perturb joint/root state → policy controls robot for K steps → capture final state.
+
+path: B
+episodes: 100000
+
+# Policy checkpoints × noise levels
+policy_dirs:
+  gen0: "baseline/runs/recovery_v5_gen0/policy"
+  gen1: "baseline/runs/recovery_v5_gen1/policy"
+  gen2: "baseline/runs/recovery_v5_gen2/policy"
+  gen3: "baseline/runs/recovery_v5_gen3/policy"
+  gen4: "baseline/runs/recovery_v5_gen4/policy"
+  gen5: "baseline/runs/recovery_v5_gen5/policy"
+  gen6: "baseline/runs/recovery_v5_gen6/policy"
+  gen7: "baseline/runs/recovery_v5_gen7/policy"
+  gen8: "baseline/runs/recovery_v5_gen8/policy"
+  gen9: "baseline/runs/recovery_v5_gen9/policy"
+policy_ids:
+  gen0: 0
+  gen1: 1
+  gen2: 2
+  gen3: 3
+  gen4: 4
+  gen5: 5
+  gen6: 6
+  gen7: 7
+  gen8: 8
+  gen9: 9
+noise_sigmas: [0.0, 0.05, 0.1, 0.2]
+
+# Environment
+env_yaml: "baseline/humanoid21/balance_recover/gating/state_pool_perturb_env.yaml"
+
+# Perturbation ranges (uniform sampling)
+perturb_ranges:
+  joint_pos_delta_max: [0.0, 0.5]
+  joint_vel_delta_max: [0.0, 2.0]
+  root_tilt_deg_max: [0.0, 20.0]
+  root_linear_velocity_delta_max: [0.0, 2.0]
+  root_angular_velocity_delta_max: [0.0, 1.0]
+
+settling_steps_options: [4, 8, 12, 16]
+
+# Episode settings
+initial_distance_range: [1.5, 3.0]
+margin_steps: 0
+episode_seed: 42
+
+# RNG
+seed: 12345

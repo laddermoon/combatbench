@@ -1,0 +1,45 @@
+# Labeling environment: load state from pool, run π_recover, check if robot recovers.
+# StateBankInitPlugin injects state by episode_options["state_bank_index"].
+# ImbalanceTerminationPlugin detects fall. max_steps=100 (5s at 20Hz).
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 100
+    description: "Max action steps for recovery."
+  agent_id:
+    default: "robot_a"
+    description: "The robot being labeled."
+  state_bank_path:
+    default: "baseline/humanoid21/balance_recover/gating/state_pool.npz"
+    description: "Path to state pool .npz file."
+  tolerance:
+    default: 6
+    description: "Consecutive imbalance steps before termination."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      tolerance: ${tolerance}
+
+  - cls: "envs.humanoid21.disturbance_plugins:StateBankInitPlugin"
+    config:
+      state_bank_path: ${state_bank_path}
+      target_robot: ${agent_id}
+      seed: 42
