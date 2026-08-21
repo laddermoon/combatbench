@@ -1,0 +1,70 @@
+# Follow experiment environment: single-agent chases a scripted moving target.
+# The opponent is controlled by RandomMovePlugin (teleport, never falls).
+# Only the learning agent is observed and terminated on imbalance.
+#
+# Observers:
+#   cross_support    — CrossSupportBalanceRewarder (r_cross source)
+#   height_phi       — HeightPhiObserver (phi for r_fall + actor_weight gating)
+#   approach_velocity — ApproachVelocityRewarder (records xy positions for
+#                       r_radial / r_tangential computation in build_trajectories)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+  agent_id:
+    default: "robot_a"
+    description: "The learning robot."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The moving target robot (controlled by RandomMovePlugin)."
+  random_move_speed:
+    default: 0.5
+    description: "Opponent movement speed (m/s)."
+  oppo_min_avoid_distance:
+    default: 1.2
+    description: "Minimum distance opponent keeps from learning robot."
+  tolerance:
+    default: 6
+    description: "Steps of consecutive imbalance before termination."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: ${agent_id}
+      tolerance: ${tolerance}
+  - cls: "baseline.humanoid21.plugins.random_move:RandomMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed: ${random_move_speed}
+      min_avoid_distance: ${oppo_min_avoid_distance}
+
+observer_plugins:
+  cross_support:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: ${agent_id}
+  height_phi:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: ${agent_id}
+  approach_velocity:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: ${agent_id}

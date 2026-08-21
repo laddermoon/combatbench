@@ -133,7 +133,7 @@ def launch_train(gen: int, checkpoint: str, policy_path: str, sample_npz: str,
     run_dir = REPO_ROOT / "baseline" / "runs" / run_name
     cmd = [
         sys.executable, str(REPO_ROOT / "baseline" / "framework" / "train.py"),
-        "--experiment", "v2_weighted_impulse",
+        "--experiment", "balance_recover",
         "--algo", "ppo",
         "--background",
         "--set", f"policy_blueprint_path={policy_path}",
