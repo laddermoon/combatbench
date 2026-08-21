@@ -76,7 +76,7 @@ class Follow(CombatExperimentV2Base):
     _base_actor_weights: Tuple[float, ...] = (3.0, 1.0, 3.0, 1.0)
 
     # --- Curriculum: opponent movement speed per level (m/s) ---
-    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
+    LEVEL_SPEEDS: Tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5)
     PROMOTE_HOLD_RATIO: float = 0.5
     PROMOTE_PATIENCE: int = 1
 
@@ -90,6 +90,8 @@ class Follow(CombatExperimentV2Base):
     _hold_ratio: float = 0.0
     _survival_rate: float = 0.0
     _best_survived: float = -1.0
+    _best_level: int = -1
+    _best_hold_ratio: float = -1.0
     _last_best_update: int = 0
 
     _AGENT_IDS = ("robot_a", "robot_b")
@@ -314,11 +316,19 @@ class Follow(CombatExperimentV2Base):
             else:
                 self._consecutive_pass = 0
 
-        # --- Best-of-run (survival count as primary metric) ---
+        # --- Best-of-run: 3-level priority (survived > level > hold_ratio) ---
         survived_metric = float(survived_count)
-        is_new_best = survived_metric > self._best_survived
+        current_level = self._level
+        is_new_best = (
+            survived_metric > self._best_survived
+            or (survived_metric == self._best_survived and current_level > self._best_level)
+            or (survived_metric == self._best_survived and current_level == self._best_level
+                and mean_hold_ratio > self._best_hold_ratio)
+        )
         if is_new_best:
             self._best_survived = survived_metric
+            self._best_level = current_level
+            self._best_hold_ratio = mean_hold_ratio
             self._last_best_update = update
 
         # --- Early stop ---
@@ -351,6 +361,8 @@ class Follow(CombatExperimentV2Base):
             "hold_ratio": self._hold_ratio,
             "survival_rate": self._survival_rate,
             "best_survived": self._best_survived,
+            "best_level": self._best_level,
+            "best_hold_ratio": self._best_hold_ratio,
             "last_best_update": self._last_best_update,
         }
 
@@ -360,6 +372,8 @@ class Follow(CombatExperimentV2Base):
         self._hold_ratio = float(state.get("hold_ratio", 0.0))
         self._survival_rate = float(state.get("survival_rate", 0.0))
         self._best_survived = float(state.get("best_survived", -1.0))
+        self._best_level = int(state.get("best_level", -1))
+        self._best_hold_ratio = float(state.get("best_hold_ratio", -1.0))
         self._last_best_update = int(state.get("last_best_update", 0))
 
 

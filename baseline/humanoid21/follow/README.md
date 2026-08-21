@@ -54,14 +54,19 @@
 8 级对手移动速度，从静止到快速：
 
 ```
-Level 0: 0.0 m/s (静止靶)
-Level 1: 0.1 m/s
-Level 2: 0.2 m/s
-Level 3: 0.3 m/s
-Level 4: 0.4 m/s
-Level 5: 0.5 m/s
-Level 6: 0.6 m/s
-Level 7: 0.7 m/s
+Level 0:  0.0 m/s (静止靶)
+Level 1:  0.1 m/s
+Level 2:  0.2 m/s
+Level 3:  0.3 m/s
+Level 4:  0.4 m/s
+Level 5:  0.5 m/s
+Level 6:  0.6 m/s
+Level 7:  0.7 m/s
+Level 8:  0.8 m/s
+Level 9:  0.9 m/s
+Level 10: 1.0 m/s
+Level 11: 1.2 m/s
+Level 12: 1.5 m/s
 ```
 
 **升级条件**：`hold_ratio ≥ 0.5` 且连续 1 次 eval 通过
