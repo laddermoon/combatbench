@@ -89,19 +89,25 @@ class StandupBalance(CombatExperimentV2Base):
     _no_improvement_limit: int = 200
     _min_updates: int = 600
 
-    # --- Curriculum: 12 levels, 3 force tiers ---
-    # Level 0-3: 40N, Level 4-7: 100N, Level 8-11: 200N
+    # --- Curriculum: 12 levels, 3 force tiers × 4 duration tiers ---
+    # Each force tier has 4 levels that progressively widen the duration
+    # range from 1-10 up to 1-40 action steps.  All forces share the same
+    # duration ceiling of 40 (matching balance_recover's design).
+    #
+    # Level 0-3:  40N  (dur 1-10, 1-20, 1-30, 1-40)
+    # Level 4-7:  100N (dur 1-10, 1-20, 1-30, 1-40)
+    # Level 8-11: 200N (dur 1-10, 1-20, 1-30, 1-40)
     LEVEL_FORCES: Tuple[float, ...] = (
         40.0, 40.0, 40.0, 40.0,       # level 0-3
         100.0, 100.0, 100.0, 100.0,   # level 4-7
         200.0, 200.0, 200.0, 200.0,   # level 8-11
     )
-    # Duration ranges per force tier (action steps), from balance_recover boundary data
-    DURATION_RANGES: Dict[float, Tuple[int, int]] = {
-        40.0: (1, 8),
-        100.0: (1, 6),
-        200.0: (1, 4),
-    }
+    # Per-level duration max (action steps).  Min is always 1.
+    LEVEL_DURATION_MAX: Tuple[int, ...] = (
+        10, 20, 30, 40,   # 40N
+        10, 20, 30, 40,   # 100N
+        10, 20, 30, 40,   # 200N
+    )
     PROMOTE_BALANCE_RATIO: float = 0.7
     PROMOTE_PATIENCE: int = 1
 
@@ -155,7 +161,9 @@ class StandupBalance(CombatExperimentV2Base):
         env_bp = env_pb.materialize(max_steps=self.max_steps)
 
         force = self.current_force
-        dur_min, dur_max = self.DURATION_RANGES[force]
+        idx = max(0, min(self._level, len(self.LEVEL_DURATION_MAX) - 1))
+        dur_max = int(self.LEVEL_DURATION_MAX[idx])
+        dur_min = 1
 
         jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
