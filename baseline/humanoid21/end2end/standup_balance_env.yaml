@@ -2,8 +2,10 @@
 # Both robots start from random fallen state (RandomFallenStatePlugin),
 # learn to stand up (StandingBalance4StageRewarder provides φ),
 # then learn to step alternately (CrossSupportBalanceRewarder).
-# After standing up (height > 1.2m), StandingTriggeredForcePlugin applies
+# After standing up (height > 1.1m), StandingTriggeredForcePlugin applies
 # external force perturbations to train balance robustness.
+# Note: validated standing torso height is ~1.28m, but the policy typically
+# stabilizes around 1.10-1.20m, so the trigger threshold is set to 1.1m.
 #
 # No imbalance termination — robot can fall and get back up.
 # φ² gating on r_cross ensures stepping reward only activates after standing.
@@ -43,7 +45,7 @@ plugins:
   - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
     config:
       target_robots: ["robot_a", "robot_b"]
-      standing_height_threshold: 1.2
+      standing_height_threshold: 1.1
       base_delay_steps: 10
       random_delay_max_steps: 20
       impulse_body: "torso"
