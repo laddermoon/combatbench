@@ -78,7 +78,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
     def __init__(
         self,
         target_robots: Union[str, Sequence[str]] = ("robot_a", "robot_b"),
-        standing_height_threshold: float = 1.2,
+        standing_height_threshold: float = 1.15,
         base_delay_steps: int = 10,
         random_delay_max_steps: int = 20,
         impulse_body: str = "torso",
@@ -198,7 +198,12 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     ctx.metrics[f"{rid}_push_active"] = False
 
             elif st.state == _DELAY:
-                if st.delay_remaining > 0:
+                if height < self.standing_height_threshold:
+                    # 机器人倒下，站立步数清零，回到等待
+                    st.state = _WAIT_STAND
+                    st.delay_remaining = 0
+                    ctx.metrics[f"{rid}_push_active"] = False
+                elif st.delay_remaining > 0:
                     st.delay_remaining -= 1
                 else:
                     # 延迟结束，进入施力

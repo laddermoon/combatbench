@@ -45,7 +45,7 @@ plugins:
   - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
     config:
       target_robots: ["robot_a", "robot_b"]
-      standing_height_threshold: 1.1
+      standing_height_threshold: 1.15
       base_delay_steps: 10
       random_delay_max_steps: 20
       impulse_body: "torso"
