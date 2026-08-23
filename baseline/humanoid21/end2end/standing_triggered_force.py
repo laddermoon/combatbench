@@ -50,6 +50,8 @@ class _RobotPushState:
         "duration_action_steps",
         "body_name",
         "push_count",
+        "fall_count",
+        "fell_during_push",
     )
 
     def __init__(self, robot_id: str, body_name: str):
@@ -63,6 +65,8 @@ class _RobotPushState:
         self.duration_action_steps: int = 0
         self.body_name = body_name
         self.push_count: int = 0
+        self.fall_count: int = 0
+        self.fell_during_push: bool = False
 
 
 class StandingTriggeredForcePlugin(BasePlugin):
@@ -179,7 +183,10 @@ class StandingTriggeredForcePlugin(BasePlugin):
             st.push_remaining = 0
             st.direction_vec = None
             st.push_count = 0
+            st.fall_count = 0
+            st.fell_during_push = False
             ctx.metrics[f"{rid}_push_count"] = 0
+            ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
@@ -221,6 +228,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     st.push_remaining = st.duration_action_steps
                     st.state = _PUSHING
                     st.push_count += 1
+                    st.fell_during_push = False
 
                     ctx.metrics[f"{rid}_impulse_body"] = st.body_name
                     ctx.metrics[f"{rid}_impulse_force"] = st.force
@@ -232,6 +240,12 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     ctx.metrics[f"{rid}_push_active"] = True
 
             elif st.state == _PUSHING:
+                # 施力期间检测机器人是否摔倒
+                if not st.fell_during_push and height < self.standing_height_threshold:
+                    st.fell_during_push = True
+                    st.fall_count += 1
+                    ctx.metrics[f"{rid}_fall_count"] = st.fall_count
+
                 if st.push_remaining <= 0:
                     # 施力结束，回到等待
                     st.state = _WAIT_STAND

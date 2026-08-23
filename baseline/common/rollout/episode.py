@@ -261,6 +261,13 @@ class Episode:
 
     final_observation: Mapping[str, np.ndarray]
 
+    episode_metrics: Mapping[str, Any] = field(default_factory=dict)
+    """Per-episode metrics snapshot from ``ctx.metrics`` at episode end.
+
+    Captured by ``EpisodeRecorder.on_post_episode``.  Contains any
+    metrics written by world plugins (e.g. push_count, fall_count).
+    """
+
     @property
     def agent_termination_reason(self) -> Mapping[str, str]:
         """Per-agent termination reason (first record for each agent).
@@ -288,6 +295,7 @@ class Episode:
         agent_termination_proposal_records: Mapping[str, Sequence[Tuple[str, int]]],
         episode_options: Optional[Mapping[str, Any]] = None,
         observer_names_to_keep: Optional[Sequence[str]] = None,
+        episode_metrics: Optional[Mapping[str, Any]] = None,
     ) -> "Episode":
         """Build an :class:`Episode` from raw recorder frames.
 
@@ -335,6 +343,7 @@ class Episode:
             action_extras=extras,
             observer_outputs=observer_outputs,
             final_observation=final_obs_dict,
+            episode_metrics=dict(episode_metrics or {}),
         )
 
     # ------------------------------------------------------------------

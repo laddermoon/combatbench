@@ -3,7 +3,7 @@
 From random fallen state → stand up → withstand external force perturbations.
 Built on top of the standup_step policy (warm-start via --resume-from).
 
-After standing up (torso height > 1.2m), StandingTriggeredForcePlugin applies
+After standing up (torso height > 1.15m), StandingTriggeredForcePlugin applies
 external force perturbations.  The robot must maintain balance or fall and
 recover.  No imbalance termination — every step is trainable.
 
@@ -12,10 +12,10 @@ Reward channels (same as standup_step):
   r_cross = cross-support signal,   actor_weight = 1.0 × φ²
 
 Curriculum: 12 levels across 3 force tiers (40N / 100N / 200N).
-  Level 0-3:  40N  (light)
-  Level 4-7:  100N (medium)
-  Level 8-11: 200N (heavy)
-Promotion when balance_ratio (fraction of steps with height > 1.0) >= 0.7.
+  Level 0-3:  40N  (dur 1-10, 11-20, 21-30, 31-40)
+  Level 4-7:  100N (dur 1-10, 11-20, 21-30, 31-40)
+  Level 8-11: 200N (dur 1-10, 11-20, 21-30, 31-40)
+Promotion when recovery_rate (1 - fall_count/push_count) >= 0.7.
 
 Blueprint: baseline/humanoid21/end2end/standup_balance_env.yaml
 """
@@ -109,7 +109,8 @@ class StandupBalance(CombatExperimentV2Base):
         (1, 10), (11, 20), (21, 30), (31, 40),   # 100N
         (1, 10), (11, 20), (21, 30), (31, 40),   # 200N
     )
-    PROMOTE_BALANCE_RATIO: float = 0.7
+    PROMOTE_RECOVERY_RATE: float = 0.7
+    """晋级阈值：扰动后不摔倒的比例（recovery_rate = 1 - fall/push）。"""
     PROMOTE_PATIENCE: int = 1
 
     # --- Stateful metrics ---
@@ -122,8 +123,9 @@ class StandupBalance(CombatExperimentV2Base):
     _level: int = 0
     _consecutive_pass: int = 0
     _balance_ratio: float = 0.0
+    _recovery_rate: float = 0.0
     _best_level: int = -1
-    _best_balance_ratio: float = -1.0
+    _best_recovery_rate: float = -1.0
 
     # ------------------------------------------------------------------
     # Blueprint loading — from end2end/ directory
@@ -286,11 +288,19 @@ class StandupBalance(CombatExperimentV2Base):
         success_count = 0
         n_agents = 0
         balance_ratios: List[float] = []
+        total_push = 0
+        total_fall = 0
 
         for ep in episodes:
             T = ep.num_frames
             if T == 0:
                 continue
+
+            # --- 从 episode_metrics 提取 push/fall count ---
+            em = dict(ep.episode_metrics) if hasattr(ep, "episode_metrics") else {}
+            for rid in self._AGENT_IDS:
+                total_push += int(em.get(f"{rid}_push_count", 0))
+                total_fall += int(em.get(f"{rid}_fall_count", 0))
 
             for agent_id, _, phi_key in self._AGENT_OBS:
                 n_agents += 1
@@ -321,12 +331,16 @@ class StandupBalance(CombatExperimentV2Base):
         success_rate = success_count / n
         mean_balance_ratio = float(np.mean(balance_ratios)) if balance_ratios else 0.0
 
+        # --- recovery_rate: 扰动后不摔倒的比例 ---
+        recovery_rate = float(1.0 - total_fall / max(total_push, 1)) if total_push > 0 else 1.0
+
         self._success_rate = success_rate
         self._balance_ratio = mean_balance_ratio
+        self._recovery_rate = recovery_rate
 
-        # --- Curriculum promotion ---
+        # --- Curriculum promotion: 基于 recovery_rate ---
         if self._level < len(self.LEVEL_FORCES) - 1:
-            if mean_balance_ratio >= self.PROMOTE_BALANCE_RATIO:
+            if recovery_rate >= self.PROMOTE_RECOVERY_RATE:
                 self._consecutive_pass += 1
                 if self._consecutive_pass >= self.PROMOTE_PATIENCE:
                     self._level += 1
@@ -334,19 +348,19 @@ class StandupBalance(CombatExperimentV2Base):
             else:
                 self._consecutive_pass = 0
 
-        # --- Best-of-run: level > balance_ratio > max_pot ---
+        # --- Best-of-run: level > recovery_rate > max_pot ---
         current_level = self._level
         is_new_best = (
             current_level > self._best_level
             or (current_level == self._best_level
-                and mean_balance_ratio > self._best_balance_ratio)
+                and recovery_rate > self._best_recovery_rate)
             or (current_level == self._best_level
-                and mean_balance_ratio == self._best_balance_ratio
+                and recovery_rate == self._best_recovery_rate
                 and mean_max_pot > self._best_potential)
         )
         if is_new_best:
             self._best_level = current_level
-            self._best_balance_ratio = mean_balance_ratio
+            self._best_recovery_rate = recovery_rate
             self._best_potential = mean_max_pot
             self._last_best_update = update
 
@@ -365,6 +379,9 @@ class StandupBalance(CombatExperimentV2Base):
                 "final_pot": round(mean_final_pot, 3),
                 "success": round(success_rate, 3),
                 "balance_ratio": round(mean_balance_ratio, 3),
+                "recovery_rate": round(recovery_rate, 3),
+                "push_count": total_push,
+                "fall_count": total_fall,
                 "level": float(self._level),
                 "force": round(self.current_force, 1),
             },
@@ -382,8 +399,9 @@ class StandupBalance(CombatExperimentV2Base):
             "level": self._level,
             "consecutive_pass": self._consecutive_pass,
             "balance_ratio": self._balance_ratio,
+            "recovery_rate": self._recovery_rate,
             "best_level": self._best_level,
-            "best_balance_ratio": self._best_balance_ratio,
+            "best_recovery_rate": self._best_recovery_rate,
         }
 
     def load_state(self, state: dict) -> None:
@@ -393,8 +411,9 @@ class StandupBalance(CombatExperimentV2Base):
         self._level = int(state.get("level", 0))
         self._consecutive_pass = int(state.get("consecutive_pass", 0))
         self._balance_ratio = float(state.get("balance_ratio", 0.0))
+        self._recovery_rate = float(state.get("recovery_rate", 0.0))
         self._best_level = int(state.get("best_level", -1))
-        self._best_balance_ratio = float(state.get("best_balance_ratio", -1.0))
+        self._best_recovery_rate = float(state.get("best_recovery_rate", -1.0))
 
 
 EXPERIMENT_CLASS = StandupBalance

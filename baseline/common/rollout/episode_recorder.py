@@ -195,6 +195,7 @@ class EpisodeRecorder(PostActionRecorder):
             agent_termination_proposal_records=frozen_records,
             episode_options=self._episode_options,
             observer_names_to_keep=self._observer_whitelist,
+            episode_metrics=_snapshot(dict(ctx.metrics)),
         )
 
 
