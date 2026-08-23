@@ -79,11 +79,11 @@ class StandupBalance(CombatExperimentV2Base):
     # --- Rollout schedule ---
     episodes_per_update: int = 512
     max_updates: int = 5000
-    eval_interval: int = 5
+    eval_interval: int = 3
     eval_episodes: int = 64
 
     # --- Video recording ---
-    video_eval_interval: int = 5
+    video_eval_interval: int = 2
 
     # --- Early stop ---
     _no_improvement_limit: int = 200
