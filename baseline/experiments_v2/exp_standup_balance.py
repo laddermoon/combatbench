@@ -109,9 +109,9 @@ class StandupBalance(CombatExperimentV2Base):
         (1, 10), (11, 20), (21, 30), (31, 40),   # 100N
         (1, 10), (11, 20), (21, 30), (31, 40),   # 200N
     )
-    PROMOTE_RECOVERY_RATE: float = 0.7
+    PROMOTE_RECOVERY_RATE: float = 0.8
     """晋级阈值：扰动后不摔倒的比例（recovery_rate = 1 - fall/push）。"""
-    PROMOTE_PATIENCE: int = 1
+    PROMOTE_PATIENCE: int = 2
 
     # --- Stateful metrics ---
     _best_potential: float = -1.0
@@ -369,12 +369,8 @@ class StandupBalance(CombatExperimentV2Base):
             self._best_potential = mean_max_pot
             self._last_best_update = update
 
-        # --- Early stop ---
-        no_improvement = update - self._last_best_update
-        stop_training = (
-            no_improvement >= self._no_improvement_limit
-            and update >= self._min_updates
-        )
+        # --- No early stop: train until user stops or max updates ---
+        stop_training = False
 
         return {
             "is_new_best": is_new_best,
