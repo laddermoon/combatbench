@@ -339,6 +339,7 @@ class StandupBalance(CombatExperimentV2Base):
         self._recovery_rate = recovery_rate
 
         # --- Curriculum promotion: 基于 recovery_rate ---
+        prev_level = self._level
         if self._level < len(self.LEVEL_FORCES) - 1:
             if recovery_rate >= self.PROMOTE_RECOVERY_RATE:
                 self._consecutive_pass += 1
@@ -347,6 +348,11 @@ class StandupBalance(CombatExperimentV2Base):
                     self._consecutive_pass = 0
             else:
                 self._consecutive_pass = 0
+
+        # 晋级时重置 best 指标，让每个 level 独立计算 best
+        if self._level > prev_level:
+            self._best_recovery_rate = -1.0
+            self._best_potential = -1.0
 
         # --- Best-of-run: level > recovery_rate > max_pot ---
         current_level = self._level
