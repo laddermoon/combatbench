@@ -2,10 +2,10 @@
 # Both robots start from random fallen state (RandomFallenStatePlugin),
 # learn to stand up (StandingBalance4StageRewarder provides φ),
 # then learn to step alternately (CrossSupportBalanceRewarder).
-# After standing up (height > 1.1m), StandingTriggeredForcePlugin applies
-# external force perturbations to train balance robustness.
-# Note: validated standing torso height is ~1.28m, but the policy typically
-# stabilizes around 1.10-1.20m, so the trigger threshold is set to 1.1m.
+# After standing up (height > 1.15m) and standing steadily for 1 second,
+# StandingTriggeredForcePlugin applies external force perturbations.
+# Fall detection uses third-point contact (non-foot body part touching
+# ground) during PUSHING + OBSERVE window (push duration + 1 second after).
 #
 # No imbalance termination — robot can fall and get back up.
 # φ² gating on r_cross ensures stepping reward only activates after standing.
@@ -46,9 +46,11 @@ plugins:
     config:
       target_robots: ["robot_a", "robot_b"]
       standing_height_threshold: 1.15
-      base_delay_steps: 10
-      random_delay_max_steps: 20
+      standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+      random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+      observe_steps: 20              # 施力后观察 1 秒
       impulse_body: "torso"
+      force_threshold: 1.0           # 接触力阈值 (N)
 
 observer_plugins:
   standing_balance_a:

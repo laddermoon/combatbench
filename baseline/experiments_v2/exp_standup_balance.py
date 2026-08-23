@@ -170,17 +170,16 @@ class StandupBalance(CombatExperimentV2Base):
         jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
-            rng = np.random.RandomState(seed)
-            # Sample impulse params for both robots
+            # 传递 force + duration 范围 + seed 给插件
+            # 插件内部每次扰动时独立采样 direction_angle 和 duration
             impulse_params = {}
             for rid in self._AGENT_IDS:
-                direction_angle = float(rng.uniform(0, 360))
-                duration = int(rng.randint(dur_min, dur_max + 1))
                 impulse_params[rid] = {
-                    "direction_angle": direction_angle,
                     "force": force,
-                    "duration_action_steps": duration,
+                    "duration_min": dur_min,
+                    "duration_max": dur_max,
                     "body": "torso",
+                    "seed": seed,
                 }
             jobs.append((
                 policy_bp, policy_bp,
