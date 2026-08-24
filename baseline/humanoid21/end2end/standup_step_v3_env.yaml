@@ -1,0 +1,72 @@
+# End-to-end standup + balance: phase-switched reward.
+# Both robots start from random fallen state (RandomFallenStatePlugin).
+#
+# Three observer sets:
+#   - StandingBalance4StageRewarder: 4-stage φ for standup phase (r_potential)
+#   - HeightPhiObserver: height-based φ for balance phase (r_fall)
+#   - FootStateObserver: per-foot height + contact for stepping (r_left_foot,
+#     r_right_foot) — replaces CrossSupportBalanceRewarder from v2
+#
+# Phase switching (per agent, per step, computed in experiment):
+#   STANDUP (h_torso < plateau):  r_potential = 0.01 × φ_4stage, weight=1.0
+#   BALANCE (h_torso >= plateau): r_fall = 0.01 × φ_height, weight=3.0
+#                                 r_left_foot / r_right_foot = clip(h_foot, ±0.1),
+#                                 weight = stepping state machine (γ=0.9)
+#   Fall back to STANDUP when h_torso < 0.7
+#
+# No imbalance termination — robot can fall and get back up.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps (standup ~100 + balance ~300)."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  height_phi_a:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_a"
+  height_phi_b:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
