@@ -5,7 +5,7 @@ From random fallen state → stand up → maintain balance + stepping.
 Two reward phases with hard switch based on torso height:
 
   STANDUP phase (h_torso < plateau):
-    r_potential = (1-γ) × φ_4stage = 0.01 × φ_4stage,  weight = 1.0
+    r_potential = (1-γ) × φ_4stage = 0.01 × φ_4stage,  weight = 3.0
     (same as exp_standup.py — pure 4-stage standing potential)
 
   BALANCE phase (h_torso >= plateau):
@@ -19,7 +19,7 @@ Two reward phases with hard switch based on torso height:
     BALANCE → STANDUP:  h_torso < 0.70  (fallen)
 
 Four reward channels (each with independent critic):
-  r_potential — active only in STANDUP phase,  γ=0.99
+  r_potential — active only in STANDUP phase,  γ=0.99, aw=3.0
   r_fall      — active only in BALANCE phase,  γ=0.99
   r_left_foot — active only in BALANCE phase,  γ=0.90
   r_right_foot— active only in BALANCE phase,  γ=0.90
@@ -105,6 +105,9 @@ class StandupStepV3(CombatExperimentV2Base):
 
     # --- r_fall actor weight (fixed, same as exp_basic_balance_step) ---
     r_fall_actor_weight: float = 3.0
+
+    # --- r_potential actor weight (fixed, standup phase) ---
+    r_potential_actor_weight: float = 3.0
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -402,7 +405,7 @@ class StandupStepV3(CombatExperimentV2Base):
 
         # --- Actor weights ---
         actor_weights = {
-            "r_potential": standup_mask.astype(np.float32),
+            "r_potential": (self.r_potential_actor_weight * standup_mask).astype(np.float32),
             "r_fall": (self.r_fall_actor_weight * balance_mask).astype(np.float32),
             "r_left_foot": w_left,
             "r_right_foot": w_right,
