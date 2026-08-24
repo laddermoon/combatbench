@@ -80,7 +80,7 @@ class StandupStepV2(CombatExperimentV2Base):
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
     agent_used = "both"
-    max_steps: int = 400
+    max_steps: int = 200
 
     # Observer keys: (agent_id, cross_key, phi4stage_key, phi_height_key)
     _AGENT_OBS = (
