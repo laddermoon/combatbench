@@ -73,6 +73,38 @@ weight was -W in DOUBLE) and needs no special-case branch.
 Negative actor_weight relies on the ``!= 0.0`` skip predicate in
 ``ppo_trainer_v2.ppo_update_v2`` (a channel whose weights are all <= 0 was
 previously dropped silently).
+
+TODO: gait-phase refinement inside single support
+--------------------------------------------------
+The current state machine treats the entire single-support phase (after
+the 10-step grace) as a single "switch now" block: push the swing foot
+down and the support foot up simultaneously.  A more natural gait has
+three sub-phases within one single-support cycle:
+
+  Phase A — swing lift (steps 1..N after entering SUPPORT_*):
+      Encourage the *swing* foot to rise (w[swing] = +W, w[support] = 0).
+      Goal: achieve good step height / ground clearance for a clean swing.
+
+  Phase B — swing descent (steps N..M, gradual ramp):
+      Progressively encourage the swing foot to *lower* (w[swing] ramps
+      from +W toward -W, w[support] stays ~0).
+      Goal: controlled foot placement, not a sudden drop.
+
+  Phase C — support transfer (after swing foot lands → DOUBLE):
+      Encourage the *previous support* foot to lift (w[old_support] = +W,
+      w[old_swing / new support] = 0 or -W).
+      Goal: complete the weight transfer and start the next step.
+
+Suggested parameter values (to be tuned):
+  N = 4   (Phase A duration, ~0.2 s — current grace already covers this)
+  M = 20  (Phase B start, ~1.0 s — gradual ramp from +W to -W over
+           several steps, e.g. linear or cosine schedule)
+
+This replaces the current flat "after grace: w[expected]=+W, w[other]=-W"
+with a temporally shaped schedule that mirrors a real gait cycle.  The
+self-correction property (expected_swing = opposite(last_swing)) still
+holds because the schedule is defined relative to the *current* swing
+foot, not to a global step counter.
 """
 from __future__ import annotations
 
@@ -158,6 +190,20 @@ class BasicBalanceStep(CombatExperimentV2Base):
     # ------------------------------------------------------------------
     # Stepping state machine
     # ------------------------------------------------------------------
+    #
+    # TODO(gait): The current implementation uses a flat two-phase schedule
+    #   (grace → switch).  The planned refinement splits single support into
+    #   three sub-phases with a temporally shaped weight schedule:
+    #
+    #     Phase A (steps 1..4):   w[swing] = +W,  w[support] = 0
+    #         → encourage swing foot to lift (good step height)
+    #     Phase B (steps 4..20):  w[swing] ramps +W → -W,  w[support] ≈ 0
+    #         → gradual swing descent (controlled foot placement)
+    #     Phase C (swing foot lands, back to DOUBLE):
+    #         w[old_support] = +W,  w[old_swing] = 0 or -W
+    #         → encourage lifting the previous support foot (weight transfer)
+    #
+    #   See the module-level docstring for the full design rationale.
 
     @staticmethod
     def _compute_foot_weights(
