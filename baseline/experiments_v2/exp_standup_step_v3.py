@@ -123,8 +123,8 @@ class StandupStepV3(CombatExperimentV2Base):
 
     # --- PPO tuning (aligned with exp_standup) ---
     log_std_min: float = -2.5
-    learning_rate: float = 3e-4
-    critic_learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
+    critic_learning_rate: float = 1e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
