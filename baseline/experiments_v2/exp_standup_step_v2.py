@@ -73,9 +73,9 @@ class StandupStepV2(CombatExperimentV2Base):
 
     # --- Base actor weights ---
     # r_potential: weight 1.0 (standup phase, same as exp_standup)
-    # r_fall: weight 3.0 (balance phase, same as exp_basic_balance)
-    # r_cross: weight 1.0 × φ_height² (balance phase, gated)
-    _base_actor_weights: Tuple[float, ...] = (1.0, 3.0, 1.0)
+    # r_fall: weight 1.0 (balance phase)
+    # r_cross: weight 0.33 × φ_height² (balance phase, gated)
+    _base_actor_weights: Tuple[float, ...] = (1.0, 1.0, 0.33)
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -89,10 +89,11 @@ class StandupStepV2(CombatExperimentV2Base):
     )
     _AGENT_IDS = ("robot_a", "robot_b")
 
-    # --- PPO tuning (conservative for warm-start) ---
-    learning_rate: float = 3e-5
+    # --- PPO tuning (aligned with exp_standup) ---
+    log_std_min: float = -2.5
+    learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
-    target_kl: float = 0.03
+    target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
     entropy_coef: float = 1e-3
