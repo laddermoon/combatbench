@@ -1,0 +1,51 @@
+# Dual-agent balance environment for basic_balance_step.
+#
+# Based on basic_balance_v2_phi_dual_env.yaml, with CrossSupportBalanceRewarder
+# replaced by FootStateObserver.  The stepping state machine now lives in the
+# experiment's build_trajectories (post-hoc scan over contact sequences), and
+# the observer only reports raw physical quantities:
+#   - h_left_foot / h_right_foot: foot midpoint height relative to standing
+#   - left_foot_contact / right_foot_contact: ground contact booleans
+#
+# HeightPhiObserver is kept for r_fall (φ = uprightness × height/standing_height).
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps."
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:DualImbalanceTerminationPlugin"
+    config:
+      force_threshold: 1.0
+      tolerance: 1
+observer_plugins:
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  height_phi_a:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_a"
+  height_phi_b:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: "robot_b"
