@@ -44,10 +44,14 @@ from .base import CombatExperimentV2Base
 
 
 # --- Phase thresholds ---
-H_STANDUP_TO_BALANCE: float = 1.20
-"""h_torso above this → enter BALANCE phase."""
+H_BALANCE_LOW_THRESHOLD: float = 1.0
+"""h_torso must be above this for plateau detection (entire window)."""
 H_BALANCE_TO_STANDUP: float = 0.70
 """h_torso below this → fall back to STANDUP phase."""
+PLATEAU_WINDOW: int = 20
+"""Sliding window size (action steps) for plateau detection."""
+PLATEAU_SLOPE_EPS: float = 0.005
+"""Max |slope| (m/step) for plateau detection."""
 
 
 class StandupStepV2(CombatExperimentV2Base):
@@ -134,27 +138,53 @@ class StandupStepV2(CombatExperimentV2Base):
     def _compute_phase_mask(
         h_torso: np.ndarray, T: int,
     ) -> np.ndarray:
-        """Compute per-step phase mask.
+        """Compute per-step phase mask (post-hoc, on full episode).
 
         Returns boolean array of shape (T,):
           True  = BALANCE phase
           False = STANDUP phase
 
-        Phase transitions:
-          STANDUP → BALANCE: h_torso >= H_STANDUP_TO_BALANCE
-          BALANCE → STANDUP: h_torso < H_BALANCE_TO_STANDUP
+        STANDUP → BALANCE: plateau detection on h_torso.
+          A sliding window of PLATEAU_WINDOW steps is scanned. When the
+          entire window is above H_BALANCE_LOW_THRESHOLD and the linear
+          regression slope is below PLATEAU_SLOPE_EPS, the window start
+          is marked as the BALANCE entry point.
+
+        BALANCE → STANDUP: h_torso < H_BALANCE_TO_STANDUP (fallen).
         """
         phase = np.zeros(T, dtype=bool)  # False = STANDUP
-        in_balance = False
-        for t in range(T):
-            h = float(h_torso[t])
+
+        # --- Find plateau entry point ---
+        balance_start = None
+        W = PLATEAU_WINDOW
+        for t in range(W, T + 1):
+            window = h_torso[t - W:t]
+            if np.all(window >= H_BALANCE_LOW_THRESHOLD):
+                # Linear regression slope
+                x = np.arange(W, dtype=np.float64)
+                y = window.astype(np.float64)
+                x_mean = x.mean()
+                y_mean = y.mean()
+                denom = np.sum((x - x_mean) ** 2)
+                if denom > 0:
+                    slope = np.sum((x - x_mean) * (y - y_mean)) / denom
+                else:
+                    slope = 0.0
+                if abs(slope) < PLATEAU_SLOPE_EPS:
+                    balance_start = t - W  # BALANCE starts at window start
+                    break
+
+        if balance_start is None:
+            return phase  # never reached plateau, all STANDUP
+
+        # --- Fill phase: BALANCE from plateau start, fall back if h < 0.7 ---
+        in_balance = True
+        for t in range(balance_start, T):
             if in_balance:
-                if h < H_BALANCE_TO_STANDUP:
+                if float(h_torso[t]) < H_BALANCE_TO_STANDUP:
                     in_balance = False
-            else:
-                if h >= H_STANDUP_TO_BALANCE:
-                    in_balance = True
             phase[t] = in_balance
+
         return phase
 
     # ------------------------------------------------------------------
@@ -241,8 +271,8 @@ class StandupStepV2(CombatExperimentV2Base):
 
         # --- Actor weights ---
         # r_potential: 1.0 in STANDUP, 0 in BALANCE
-        # r_fall: 3.0 in BALANCE, 0 in STANDUP
-        # r_cross: φ_height² in BALANCE, 0 in STANDUP
+        # r_fall: 1.0 in BALANCE, 0 in STANDUP
+        # r_cross: 0.33 × φ_height² in BALANCE, 0 in STANDUP
         actor_weights = {
             "r_potential": (self._base_actor_weights[0] * standup_mask).astype(np.float32),
             "r_fall": (self._base_actor_weights[1] * balance_mask).astype(np.float32),
