@@ -601,13 +601,15 @@ def ppo_update_v2(
     #   - conf_c: down-weights unreliable critics
     #   - aw_c: experiment-controlled importance weight
     #
-    # Channels with aw=0 or all-zero advantage are skipped entirely.
+    # Channels with aw=0 everywhere are skipped entirely (no contribution
+    # and avoids 0*NaN contamination from inactive critics).
+    # Negative aw is allowed: it inverts the channel's advantage direction.
     # The combined advantage is NOT re-normalized — its scale reflects
     # the sum of weighted channel contributions.
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
-        if not np.any(aw_frame > 0.0):
+        if not np.any(aw_frame != 0.0):
             continue
         conf = confidences[key]
         combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
