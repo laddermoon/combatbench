@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import numpy as np
+
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 
@@ -52,6 +54,23 @@ CROSS_SUPPORT_DOUBLE_SUPPORT_PENALTY_COEF = 0.0
 CROSS_SUPPORT_SINGLE_SUPPORT_BONUS = 0.0
 CROSS_SUPPORT_MIN_HEIGHT = 0.0
 
+# Foot lift height threshold: non-support foot's ankle_x joint height
+# must exceed STANDING_FOOT_HEIGHT + this value (m) to count as a real
+# single-support step.  Prevents micro-lift shuffling.
+# Standing ankle_x z ≈ 0.067 m, so threshold = 0.067 + 0.06 = 0.127 m.
+#
+# STANDING_FOOT_HEIGHT was obtained by measuring the ankle_x joint world
+# z-coordinate when the robot is in the default standing pose:
+#   sim = Humanoid21Simulator(initial_distance=2.0)
+#   sim.reset(seed=42, options={'initial_pose_a': 'standing',
+#                                'initial_pose_b': 'standing'})
+#   ds = sim.get_derived_state(['robot_a'])
+#   jwa = ds['robot_a']['joint_world_anchor']
+#   jwa['ankle_x_left_a'][2]  # → 0.067
+#   jwa['ankle_x_right_a'][2] # → 0.067
+CROSS_SUPPORT_FOOT_LIFT_MIN_HEIGHT = 0.06
+CROSS_SUPPORT_STANDING_FOOT_HEIGHT = 0.067
+
 
 class CrossSupportBalanceRewarder(BaseObserverPlugin):
     """交叉支撑平衡奖励插件（语义归约版）。
@@ -82,6 +101,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         double_support_penalty_coef: float = CROSS_SUPPORT_DOUBLE_SUPPORT_PENALTY_COEF,
         single_support_bonus: float = CROSS_SUPPORT_SINGLE_SUPPORT_BONUS,
         min_height: float = CROSS_SUPPORT_MIN_HEIGHT,
+        foot_lift_min_height: float = CROSS_SUPPORT_FOOT_LIFT_MIN_HEIGHT,
     ) -> None:
         self.agent_id = str(agent_id)
         self.initial_grace_steps = int(initial_grace_steps)
@@ -94,6 +114,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         self.double_support_penalty_coef = float(double_support_penalty_coef)
         self.single_support_bonus = float(single_support_bonus)
         self.min_height = float(min_height)
+        self.foot_lift_min_height = float(foot_lift_min_height)
 
         # 状态变量
         self._state: str = self.STATE_WAIT_FIRST_SINGLE_SUPPORT
@@ -118,7 +139,12 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         self._output = 0.0
         # 获取地面 geom 名称
         static_data = ctx.accessor.get_static_data()
-        self._ground_geom_name = static_data.get('ground_geom_name', 'ground')
+        if 'ground_geom_name' not in static_data:
+            raise KeyError(
+                f"on_pre_episode: 'ground_geom_name' not in static_data "
+                f"(available={list(static_data.keys())})"
+            )
+        self._ground_geom_name = static_data['ground_geom_name']
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         """计算每步奖励"""
@@ -130,7 +156,18 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         # Get robot height for gating single-support bonus
         if self.min_height > 0.0:
             core_state = ctx.accessor.get_core_state()
-            cs = core_state.get(self.agent_id, core_state.get('robot_a', {}))
+            if self.agent_id not in core_state:
+                raise KeyError(
+                    f"on_post_action_step: '{self.agent_id}' not in "
+                    f"core_state (available={list(core_state.keys())})"
+                )
+            cs = core_state[self.agent_id]
+            if 'root_pos' not in cs:
+                raise KeyError(
+                    f"on_post_action_step: 'root_pos' not in "
+                    f"core_state['{self.agent_id}'] "
+                    f"(available={list(cs.keys())})"
+                )
             root_height = float(cs['root_pos'][2])
         else:
             root_height = 1.0  # no gate
@@ -171,6 +208,7 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
             "double_support_penalty_coef": self.double_support_penalty_coef,
             "single_support_bonus": self.single_support_bonus,
             "min_height": self.min_height,
+            "foot_lift_min_height": self.foot_lift_min_height,
         }
 
     @classmethod
@@ -192,45 +230,101 @@ class CrossSupportBalanceRewarder(BaseObserverPlugin):
         robot_suffix = '_a' if self.agent_id == 'robot_a' else '_b'
         left_foot_body = f"foot_left{robot_suffix}"
         right_foot_body = f"foot_right{robot_suffix}"
-        ground_geom = self._ground_geom_name or "ground"
+        ground_geom = self._ground_geom_name
+        if ground_geom is None:
+            raise RuntimeError(
+                f"_get_foot_contact_state: _ground_geom_name is None "
+                f"(on_pre_episode not called?)"
+            )
 
         left_foot_contact = False
         right_foot_contact = False
 
-        if cv is None or cv['ncon'] == 0:
-            return left_foot_contact, right_foot_contact
+        if cv is not None and cv['ncon'] > 0:
+            static_data = ctx.accessor.get_static_data()
+            if 'body_id_to_name' not in static_data:
+                raise KeyError(
+                    f"_get_foot_contact_state: 'body_id_to_name' not in "
+                    f"static_data (available={list(static_data.keys())})"
+                )
+            if 'geom_id_to_name' not in static_data:
+                raise KeyError(
+                    f"_get_foot_contact_state: 'geom_id_to_name' not in "
+                    f"static_data (available={list(static_data.keys())})"
+                )
+            body_id_to_name = static_data['body_id_to_name']
+            geom_id_to_name = static_data['geom_id_to_name']
 
-        static_data = ctx.accessor.get_static_data()
-        body_id_to_name = static_data.get('body_id_to_name', {})
-        geom_id_to_name = static_data.get('geom_id_to_name', {})
+            robot_aff = 1 if self.agent_id == 'robot_a' else 2
 
-        robot_aff = 1 if self.agent_id == 'robot_a' else 2
+            aff1 = cv['aff1']
+            aff2 = cv['aff2']
+            geom1 = cv['geom1']
+            geom2 = cv['geom2']
+            body1 = cv['body1']
+            body2 = cv['body2']
 
-        aff1 = cv['aff1']
-        aff2 = cv['aff2']
-        geom1 = cv['geom1']
-        geom2 = cv['geom2']
-        body1 = cv['body1']
-        body2 = cv['body2']
+            for i in range(cv['ncon']):
+                if aff1[i] == 0 and aff2[i] == robot_aff:
+                    geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                    body_robot = body_id_to_name.get(int(body2[i]), '')
+                elif aff2[i] == 0 and aff1[i] == robot_aff:
+                    geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                    body_robot = body_id_to_name.get(int(body1[i]), '')
+                else:
+                    continue
 
-        for i in range(cv['ncon']):
-            if aff1[i] == 0 and aff2[i] == robot_aff:
-                geom_env = geom_id_to_name.get(int(geom1[i]), '')
-                body_robot = body_id_to_name.get(int(body2[i]), '')
-            elif aff2[i] == 0 and aff1[i] == robot_aff:
-                geom_env = geom_id_to_name.get(int(geom2[i]), '')
-                body_robot = body_id_to_name.get(int(body1[i]), '')
-            else:
-                continue
+                if geom_env != ground_geom:
+                    continue
+                if body_robot == left_foot_body:
+                    left_foot_contact = True
+                elif body_robot == right_foot_body:
+                    right_foot_contact = True
 
-            if geom_env != ground_geom:
-                continue
-            if body_robot == left_foot_body:
+        # --- Foot lift height check ---
+        # If a foot is not in contact but its ankle joint height is below
+        # STANDING_FOOT_HEIGHT + foot_lift_min_height, treat it as still in
+        # contact (micro-lift does not count as a real step).
+        if self.foot_lift_min_height > 0.0:
+            threshold = CROSS_SUPPORT_STANDING_FOOT_HEIGHT + self.foot_lift_min_height
+            left_h, right_h = self._get_foot_min_heights(ctx)
+            if not left_foot_contact and left_h < threshold:
                 left_foot_contact = True
-            elif body_robot == right_foot_body:
+            if not right_foot_contact and right_h < threshold:
                 right_foot_contact = True
 
         return left_foot_contact, right_foot_contact
+
+    def _get_foot_min_heights(self, ctx: ReadOnlySimContext) -> tuple[float, float]:
+        """获取左右脚踝关节（ankle_x）距地面的高度 (z)。
+
+        使用 derived_state["joint_world_anchor"] 获取踝关节世界坐标，
+        取 ankle_x 关节的 z 值作为脚的高度。
+        """
+        robot_suffix = '_a' if self.agent_id == 'robot_a' else '_b'
+        left_ankle = f"ankle_x_left{robot_suffix}"
+        right_ankle = f"ankle_x_right{robot_suffix}"
+
+        derived_state = ctx.accessor.get_derived_state([self.agent_id])
+        robot_state = derived_state.get(self.agent_id, {})
+        jwa = robot_state.get('joint_world_anchor', {})
+
+        if left_ankle not in jwa:
+            raise KeyError(
+                f"_get_foot_min_heights: '{left_ankle}' not in "
+                f"joint_world_anchor (agent={self.agent_id}, "
+                f"available={list(jwa.keys())})"
+            )
+        if right_ankle not in jwa:
+            raise KeyError(
+                f"_get_foot_min_heights: '{right_ankle}' not in "
+                f"joint_world_anchor (agent={self.agent_id}, "
+                f"available={list(jwa.keys())})"
+            )
+        left_z = float(jwa[left_ankle][2])
+        right_z = float(jwa[right_ankle][2])
+
+        return left_z, right_z
 
     def _single_support_foot(self, left_foot_contact: bool, right_foot_contact: bool) -> Optional[str]:
         """返回当前是否为单脚支撑：'left' / 'right' / None。"""
