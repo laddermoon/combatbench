@@ -53,14 +53,19 @@ Bookkeeping, per frame::
 
 Weights (W = 1.0)::
 
-    initial DOUBLE (last_swing is None)  →  w_L = +W, w_R = +W
+    initial DOUBLE (last_swing is None)
+        steps 1..6   (grace)              →  w_L =  0, w_R =  0
+        steps 7+                            →  w_L = +W, w_R = +W
     FLIGHT                               →  w_L =  0, w_R =  0
     SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   =  0
                                             w[support] = -W
     SUPPORT_*  steps 3..10  (Phase B)    →  w_L =  0, w_R =  0
     SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W
                                             w[support] =  0
-    DOUBLE transition (last_swing set)   →  w[prev_support] = +W
+    DOUBLE transition (last_swing set)
+        steps 1..6   (grace)              →  w[prev_support] =  0
+                                            w[prev_swing]   = -W
+        steps 7+                            →  w[prev_support] = +W
                                             w[prev_swing]   = -W
 
 Phase semantics
@@ -80,11 +85,19 @@ Phase C (steps 11+, ~0.55 s+):
     foot is left alone (w = 0): it should stay planted, not start lifting
     prematurely.
 
-DOUBLE transition (SUPPORT_* → DOUBLE, last_swing is set):
-    Encourage the *previous support* foot to lift (begin the next step)
-    and the *previous swing* foot to keep lowering (finish landing
-    cleanly).  This persists for the entire DOUBLE interval until the
-    robot lifts a foot into the next SUPPORT_*.
+DOUBLE (both initial and transition) has a grace period of
+DOUBLE_GRACE_STEPS (default 6) frames:
+
+  * Grace (steps 1..6):  allow the robot to settle on both feet.
+      - Initial:       w_L = 0, w_R = 0  (no push yet)
+      - Transition:    w[prev_swing] = -W (keep lowering the landing foot)
+                       w[prev_support] = 0 (don't push the other foot up yet)
+  * Post-grace (steps 7+):  resume encouraging the next step.
+      - Initial:       w_L = +W, w_R = +W  (lift either foot)
+      - Transition:    w[prev_swing]   = -W (finish landing)
+                       w[prev_support] = +W (lift, start next step)
+
+This persists until the robot lifts a foot into the next SUPPORT_*.
 
 Self-correction property
 ------------------------
@@ -140,6 +153,12 @@ no encouragement — let the swing foot travel naturally."""
 FOOT_HEIGHT_CLIP: float = 0.1
 """Foot height reward saturation (m).  Lifting beyond this earns nothing
 more, preventing a degenerate 'raise the knee as high as possible' policy."""
+
+DOUBLE_GRACE_STEPS: int = 6
+"""Grace period (steps) at the start of DOUBLE support.  During the first
+DOUBLE_GRACE_STEPS frames the robot is allowed to settle on both feet
+without being pushed to lift a foot.  After the grace period, the
+DOUBLE weights resume encouraging the next step."""
 
 
 class BasicBalanceStep(CombatExperimentV2Base):
@@ -203,8 +222,13 @@ class BasicBalanceStep(CombatExperimentV2Base):
     #   Phase C (steps PHASE_B_END+1..):  w[swing]=-W, w[support]=0
     #       → lower swing for landing, support stays planted
     #
-    # DOUBLE transition (prev SUPPORT_* → DOUBLE): w[prev_support]=+W,
-    # w[prev_swing]=-W — start the next step, finish the current landing.
+    # DOUBLE has a grace period (DOUBLE_GRACE_STEPS, default 6):
+    #   steps 1..6 (grace):
+    #     initial:    w_L=0, w_R=0
+    #     transition: w[prev_swing]=-W, w[prev_support]=0
+    #   steps 7+ (post-grace):
+    #     initial:    w_L=+W, w_R=+W
+    #     transition: w[prev_swing]=-W, w[prev_support]=+W
     #
     # See the module-level docstring for the full design rationale.
 
@@ -216,6 +240,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         weight: float = FOOT_WEIGHT,
         phase_a_steps: int = PHASE_A_STEPS,
         phase_b_end: int = PHASE_B_END,
+        double_grace_steps: int = DOUBLE_GRACE_STEPS,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Post-hoc scan producing per-frame actor weights for both feet.
 
@@ -228,6 +253,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         last_swing: Optional[str] = None
         prev_state: Optional[str] = None
         support_steps: int = 0
+        double_steps: int = 0
 
         for t in range(T):
             cl = bool(contact_l[t])
@@ -253,8 +279,13 @@ class BasicBalanceStep(CombatExperimentV2Base):
             if current_swing is not None:
                 last_swing = current_swing
                 support_steps = support_steps + 1 if state == prev_state else 1
+                double_steps = 0
+            elif state == STATE_DOUBLE:
+                double_steps = double_steps + 1 if state == prev_state else 1
+                support_steps = 0
             else:
                 support_steps = 0
+                double_steps = 0
 
             # --- Weights ---
             if state == STATE_FLIGHT:
@@ -281,20 +312,29 @@ class BasicBalanceStep(CombatExperimentV2Base):
                     else:
                         w_right[t] = -weight
             elif last_swing is None:
-                # Initial double support, no step taken yet: lift either foot.
-                w_left[t] = weight
-                w_right[t] = weight
-            else:
-                # DOUBLE transition: encourage the previous support foot to
-                # lift (start the next step) and the previous swing foot to
-                # keep lowering (finish landing).  previous_swing == last_swing,
-                # previous_support == opposite(last_swing).
-                if last_swing == "left":
-                    w_left[t] = -weight         # previous swing down
-                    w_right[t] = weight         # previous support up
-                else:
-                    w_right[t] = -weight
+                # Initial double support, no step taken yet.
+                # Grace: allow the robot to settle before pushing to lift.
+                if double_steps > double_grace_steps:
                     w_left[t] = weight
+                    w_right[t] = weight
+            else:
+                # DOUBLE transition: previous_swing == last_swing,
+                # previous_support == opposite(last_swing).
+                # Grace: let the landing foot settle (prev_swing=-W) but
+                # don't push the other foot up (prev_support=0) yet.
+                if double_steps > double_grace_steps:
+                    if last_swing == "left":
+                        w_left[t] = -weight     # previous swing down
+                        w_right[t] = weight     # previous support up
+                    else:
+                        w_right[t] = -weight
+                        w_left[t] = weight
+                else:
+                    # Grace period: only push prev_swing down.
+                    if last_swing == "left":
+                        w_left[t] = -weight     # previous swing down
+                    else:
+                        w_right[t] = -weight
 
             prev_state = state
 

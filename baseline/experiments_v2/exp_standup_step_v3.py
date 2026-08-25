@@ -59,6 +59,7 @@ from .exp_basic_balance_step import (
     FOOT_HEIGHT_CLIP,
     PHASE_A_STEPS,
     PHASE_B_END,
+    DOUBLE_GRACE_STEPS,
     STATE_DOUBLE,
     STATE_SUPPORT_L,
     STATE_SUPPORT_R,
@@ -232,6 +233,7 @@ class StandupStepV3(CombatExperimentV2Base):
         weight: float = FOOT_WEIGHT,
         phase_a_steps: int = PHASE_A_STEPS,
         phase_b_end: int = PHASE_B_END,
+        double_grace_steps: int = DOUBLE_GRACE_STEPS,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Post-hoc scan producing per-frame actor weights for both feet.
 
@@ -247,6 +249,7 @@ class StandupStepV3(CombatExperimentV2Base):
         last_swing: Optional[str] = None
         prev_state: Optional[str] = None
         support_steps: int = 0
+        double_steps: int = 0
 
         for t in range(T):
             if not balance_mask[t]:
@@ -254,6 +257,7 @@ class StandupStepV3(CombatExperimentV2Base):
                 last_swing = None
                 prev_state = None
                 support_steps = 0
+                double_steps = 0
                 continue
 
             cl = bool(contact_l[t])
@@ -279,8 +283,13 @@ class StandupStepV3(CombatExperimentV2Base):
             if current_swing is not None:
                 last_swing = current_swing
                 support_steps = support_steps + 1 if state == prev_state else 1
+                double_steps = 0
+            elif state == STATE_DOUBLE:
+                double_steps = double_steps + 1 if state == prev_state else 1
+                support_steps = 0
             else:
                 support_steps = 0
+                double_steps = 0
 
             # --- Weights ---
             if state == STATE_FLIGHT:
@@ -303,18 +312,26 @@ class StandupStepV3(CombatExperimentV2Base):
                     else:
                         w_right[t] = -weight
             elif last_swing is None:
-                # Initial double support: lift either foot.
-                w_left[t] = weight
-                w_right[t] = weight
-            else:
-                # DOUBLE transition: encourage previous support up,
-                # previous swing down.
-                if last_swing == "left":
-                    w_left[t] = -weight
-                    w_right[t] = weight
-                else:
-                    w_right[t] = -weight
+                # Initial double support: grace then lift either foot.
+                if double_steps > double_grace_steps:
                     w_left[t] = weight
+                    w_right[t] = weight
+            else:
+                # DOUBLE transition: grace then encourage previous support
+                # up, previous swing down.
+                if double_steps > double_grace_steps:
+                    if last_swing == "left":
+                        w_left[t] = -weight
+                        w_right[t] = weight
+                    else:
+                        w_right[t] = -weight
+                        w_left[t] = weight
+                else:
+                    # Grace period: only push prev_swing down.
+                    if last_swing == "left":
+                        w_left[t] = -weight
+                    else:
+                        w_right[t] = -weight
 
             prev_state = state
 
