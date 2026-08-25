@@ -30,7 +30,7 @@ Weights (W = 1.0)::
     initial DOUBLE (last_swing is None)
         steps 1..6   (grace)              →  w_L =  0, w_R =  0
         steps 7+                           →  w_L = +W, w_R = +W
-    FLIGHT                               →  w_L =  0, w_R =  0
+    FLIGHT                               →  continues previous state
     SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   =  0
                                             w[support] = -W
     SUPPORT_*  steps 3..10  (Phase B)    →  w_L =  0, w_R =  0
@@ -64,6 +64,14 @@ DOUBLE grace period (steps 1..6):
     The landing foot (prev_swing) is still encouraged to press down
     (w = -W), but the other foot (prev_support) is left alone (w = 0).
     After the grace period, the next step is initiated.
+
+FLIGHT continuation:
+    When both feet momentarily leave the ground (brief hop, gait
+    oscillation), the state is inherited from the previous frame rather
+    than resetting the gait schedule.  This means a SUPPORT_* → FLIGHT
+    transition continues counting support_steps, and a DOUBLE → FLIGHT
+    transition continues counting double_steps.  Only a FLIGHT at the
+    very start of the episode (no previous state) produces zero weights.
 
 Self-correction property
 ------------------------
@@ -154,6 +162,13 @@ def compute_foot_weights(
             state = STATE_SUPPORT_R
         else:
             state = STATE_FLIGHT
+
+        # --- FLIGHT is a continuation of the previous state ---
+        # A momentary loss of both contacts (brief hop, gait oscillation)
+        # should not reset the gait schedule.  Inherit the previous state
+        # so counters and weights continue as if the contact never left.
+        if state == STATE_FLIGHT and prev_state is not None and prev_state != STATE_FLIGHT:
+            state = prev_state
 
         # --- Bookkeeping ---
         if state == STATE_SUPPORT_L:
