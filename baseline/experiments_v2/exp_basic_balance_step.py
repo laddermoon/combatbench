@@ -55,7 +55,7 @@ Weights (W = 1.0)::
 
     initial DOUBLE (last_swing is None)  →  w_L = +W, w_R = +W
     FLIGHT                               →  w_L =  0, w_R =  0
-    SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   = +W
+    SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   =  0
                                             w[support] = -W
     SUPPORT_*  steps 3..10  (Phase B)    →  w_L =  0, w_R =  0
     SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W
@@ -66,8 +66,10 @@ Weights (W = 1.0)::
 Phase semantics
 ---------------
 Phase A (steps 1..2, ~0.1 s @ 20 Hz):
-    Encourage the swing foot to lift and the support foot to lower —
-    fast lift plus weight transfer onto the new support.
+    Press the support foot down only (w[support] = -W).  The swing foot
+    is left alone (w = 0) — its lift was already encouraged by the
+    preceding DOUBLE transition.  Goal: weight transfer onto the new
+    support foot.
 
 Phase B (steps 3..10, ~0.4 s):
     Coast — no encouragement.  Let the swing foot travel through the air
@@ -194,8 +196,8 @@ class BasicBalanceStep(CombatExperimentV2Base):
     # ------------------------------------------------------------------
     #
     # Single support is split into three sub-phases by support_steps:
-    #   Phase A (steps 1..PHASE_A_STEPS):  w[swing]=+W, w[support]=-W
-    #       → fast lift + weight transfer
+    #   Phase A (steps 1..PHASE_A_STEPS):  w[swing]=0, w[support]=-W
+    #       → press support foot down (weight transfer)
     #   Phase B (steps PHASE_A_STEPS+1..PHASE_B_END):  w=0
     #       → coast, let physics carry the swing
     #   Phase C (steps PHASE_B_END+1..):  w[swing]=-W, w[support]=0
@@ -262,12 +264,12 @@ class BasicBalanceStep(CombatExperimentV2Base):
                 # Single support — three sub-phases based on support_steps.
                 swing_is_left = current_swing == "left"
                 if support_steps <= phase_a_steps:
-                    # Phase A: encourage swing foot up, support foot down.
+                    # Phase A: press the support foot down only.
+                    # The swing foot is left alone (w=0) — lifting it is
+                    # driven by the DOUBLE transition that just ended.
                     if swing_is_left:
-                        w_left[t] = weight       # swing up
                         w_right[t] = -weight     # support down
                     else:
-                        w_right[t] = weight
                         w_left[t] = -weight
                 elif support_steps <= phase_b_end:
                     # Phase B: coast — no encouragement.

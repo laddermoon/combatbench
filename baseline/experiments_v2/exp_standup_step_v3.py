@@ -288,12 +288,10 @@ class StandupStepV3(CombatExperimentV2Base):
             elif current_swing is not None:
                 swing_is_left = current_swing == "left"
                 if support_steps <= phase_a_steps:
-                    # Phase A: encourage swing foot up, support foot down.
+                    # Phase A: press the support foot down only.
                     if swing_is_left:
-                        w_left[t] = weight
                         w_right[t] = -weight
                     else:
-                        w_right[t] = weight
                         w_left[t] = -weight
                 elif support_steps <= phase_b_end:
                     # Phase B: coast — no encouragement.
