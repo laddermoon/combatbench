@@ -348,7 +348,7 @@ class StandupStepV3(CombatExperimentV2Base):
         contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
         contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
         w_left, w_right = self._compute_foot_weights_masked(
-            contact_l > 0.5, contact_r > 0.5, balance_mask, T_full,
+            contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
         )
 
         # --- No early termination ---
