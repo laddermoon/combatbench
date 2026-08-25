@@ -54,7 +54,8 @@ from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
 from baseline.framework.ppo_trainer import _extract_per_step_field
 
 from .base import CombatExperimentV2Base
-from .exp_basic_balance_step import (
+from baseline.humanoid21.end2end.stepping_state_machine import (
+    compute_foot_weights,
     FOOT_WEIGHT,
     FOOT_HEIGHT_CLIP,
     PHASE_A_STEPS,
@@ -221,11 +222,11 @@ class StandupStepV3(CombatExperimentV2Base):
         return phase
 
     # ------------------------------------------------------------------
-    # Stepping state machine (phase-gated)
+    # Stepping state machine (phase-gated wrapper)
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_foot_weights(
+    def _compute_foot_weights_masked(
         contact_l: np.ndarray,
         contact_r: np.ndarray,
         balance_mask: np.ndarray,
@@ -235,105 +236,36 @@ class StandupStepV3(CombatExperimentV2Base):
         phase_b_end: int = PHASE_B_END,
         double_grace_steps: int = DOUBLE_GRACE_STEPS,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Post-hoc scan producing per-frame actor weights for both feet.
+        """Balance-gated foot weights.
 
-        Identical to ``exp_basic_balance_step._compute_foot_weights`` but
-        gated by ``balance_mask``: non-BALANCE frames get zero weight and
-        the state machine resets at each BALANCE segment entry.
+        Delegates to ``stepping_state_machine.compute_foot_weights`` on each
+        contiguous BALANCE segment.  Non-BALANCE (STANDUP) frames get zero
+        weight and the state machine resets at each segment boundary.
 
         Returns ``(w_left, w_right)``, each shape ``(T,)`` float32.
         """
         w_left = np.zeros(T, dtype=np.float32)
         w_right = np.zeros(T, dtype=np.float32)
 
-        last_swing: Optional[str] = None
-        prev_state: Optional[str] = None
-        support_steps: int = 0
-        double_steps: int = 0
-
-        for t in range(T):
-            if not balance_mask[t]:
-                # STANDUP frame: zero weight, reset state machine.
-                last_swing = None
-                prev_state = None
-                support_steps = 0
-                double_steps = 0
-                continue
-
-            cl = bool(contact_l[t])
-            cr = bool(contact_r[t])
-
-            if cl and cr:
-                state = STATE_DOUBLE
-            elif cl and not cr:
-                state = STATE_SUPPORT_L
-            elif cr and not cl:
-                state = STATE_SUPPORT_R
-            else:
-                state = STATE_FLIGHT
-
-            # --- Bookkeeping ---
-            if state == STATE_SUPPORT_L:
-                current_swing = "right"
-            elif state == STATE_SUPPORT_R:
-                current_swing = "left"
-            else:
-                current_swing = None
-
-            if current_swing is not None:
-                last_swing = current_swing
-                support_steps = support_steps + 1 if state == prev_state else 1
-                double_steps = 0
-            elif state == STATE_DOUBLE:
-                double_steps = double_steps + 1 if state == prev_state else 1
-                support_steps = 0
-            else:
-                support_steps = 0
-                double_steps = 0
-
-            # --- Weights ---
-            if state == STATE_FLIGHT:
-                pass
-            elif current_swing is not None:
-                swing_is_left = current_swing == "left"
-                if support_steps <= phase_a_steps:
-                    # Phase A: press the support foot down only.
-                    if swing_is_left:
-                        w_right[t] = -weight
-                    else:
-                        w_left[t] = -weight
-                elif support_steps <= phase_b_end:
-                    # Phase B: coast — no encouragement.
-                    pass
-                else:
-                    # Phase C: encourage swing foot down, leave support alone.
-                    if swing_is_left:
-                        w_left[t] = -weight
-                    else:
-                        w_right[t] = -weight
-            elif last_swing is None:
-                # Initial double support: grace then lift either foot.
-                if double_steps > double_grace_steps:
-                    w_left[t] = weight
-                    w_right[t] = weight
-            else:
-                # DOUBLE transition: grace then encourage previous support
-                # up, previous swing down.
-                if double_steps > double_grace_steps:
-                    if last_swing == "left":
-                        w_left[t] = -weight
-                        w_right[t] = weight
-                    else:
-                        w_right[t] = -weight
-                        w_left[t] = weight
-                else:
-                    # Grace period: only push prev_swing down.
-                    if last_swing == "left":
-                        w_left[t] = -weight
-                    else:
-                        w_right[t] = -weight
-
-            prev_state = state
+        seg_start = 0
+        for t in range(T + 1):
+            in_seg = t < T and bool(balance_mask[t])
+            seg_active = t > seg_start and (t == T or not in_seg)
+            if seg_active:
+                seg_len = t - seg_start
+                cl = np.asarray(contact_l[seg_start:t], dtype=np.float32)
+                cr = np.asarray(contact_r[seg_start:t], dtype=np.float32)
+                wl, wr = compute_foot_weights(
+                    cl, cr, seg_len,
+                    weight=weight,
+                    phase_a_steps=phase_a_steps,
+                    phase_b_end=phase_b_end,
+                    double_grace_steps=double_grace_steps,
+                )
+                w_left[seg_start:t] = wl
+                w_right[seg_start:t] = wr
+            if t < T and not in_seg:
+                seg_start = t + 1
 
         return w_left, w_right
 
@@ -411,7 +343,7 @@ class StandupStepV3(CombatExperimentV2Base):
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
         contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
-        w_left, w_right = self._compute_foot_weights(
+        w_left, w_right = self._compute_foot_weights_masked(
             contact_l > 0.5, contact_r > 0.5, balance_mask, T_full,
         )
 

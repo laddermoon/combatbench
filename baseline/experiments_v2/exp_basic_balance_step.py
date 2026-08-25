@@ -9,115 +9,11 @@ physically-grounded channels — one per foot::
     r_left_foot  = clip(h_left,  -0.1, 0.1) γ=0.90, aw = state machine
     r_right_foot = clip(h_right, -0.1, 0.1) γ=0.90, aw = state machine
 
-Design rationale
-----------------
 The reward carries only *physical fact* (foot height); the *intent* (which
-foot should rise / descend right now) is carried by ``actor_weight``.  This
-matters because:
+foot should rise / descend right now) is carried by ``actor_weight``.
 
-1. The stepping stage depends on history counters that are NOT in the 96-dim
-   Markov observation.  Baking the stage into the reward would force the
-   critic to estimate an unobservable quantity → low explained variance →
-   the framework's confidence weighting (``conf = clip(EV,0,1)**0.5``) would
-   automatically down-weight the channel.  Keeping the reward pure
-   (``r = h_foot``) makes the critic's target a clean function of the
-   observation.
-
-2. ``actor_weight`` is the *only* per-frame gating channel in the framework
-   (``key_seg_active`` is per-trajectory).  A zero reward does NOT disable a
-   channel — GAE still produces a nonzero advantage from bootstrapping.
-   Only ``aw = 0`` yields exactly zero contribution to ``combined_adv``.
-
-3. The schedule is known exactly at trajectory-build time, so applying it as
-   an actor_weight constant costs nothing, whereas hiding it in the reward
-   would require re-learning it.
-
-Stepping state machine (post-hoc scan over the contact sequence)
-----------------------------------------------------------------
-Physical state from ``(contact_L, contact_R)``::
-
-    (T, T) → DOUBLE      both feet down
-    (T, F) → SUPPORT_L   left supports,  right swings
-    (F, T) → SUPPORT_R   right supports, left swings
-    (F, F) → FLIGHT      neither foot down
-
-Bookkeeping, per frame::
-
-    if state is SUPPORT_*:
-        current_swing = the airborne foot
-        last_swing    = current_swing        # updated unconditionally
-        support_steps = support_steps + 1 if same state as previous else 1
-    else:
-        current_swing = None
-        support_steps = 0
-
-Weights (W = 1.0)::
-
-    initial DOUBLE (last_swing is None)
-        steps 1..6   (grace)              →  w_L =  0, w_R =  0
-        steps 7+                            →  w_L = +W, w_R = +W
-    FLIGHT                               →  w_L =  0, w_R =  0
-    SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   =  0
-                                            w[support] = -W
-    SUPPORT_*  steps 3..10  (Phase B)    →  w_L =  0, w_R =  0
-    SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W
-                                            w[support] =  0
-    DOUBLE transition (last_swing set)
-        steps 1..6   (grace)              →  w[prev_support] =  0
-                                            w[prev_swing]   = -W
-        steps 7+                            →  w[prev_support] = +W
-                                            w[prev_swing]   = -W
-
-Phase semantics
----------------
-Phase A (steps 1..2, ~0.1 s @ 20 Hz):
-    Press the support foot down only (w[support] = -W).  The swing foot
-    is left alone (w = 0) — its lift was already encouraged by the
-    preceding DOUBLE transition.  Goal: weight transfer onto the new
-    support foot.
-
-Phase B (steps 3..10, ~0.4 s):
-    Coast — no encouragement.  Let the swing foot travel through the air
-    naturally; only r_fall keeps the robot alive.
-
-Phase C (steps 11+, ~0.55 s+):
-    Encourage the swing foot to lower (prepare for landing).  The support
-    foot is left alone (w = 0): it should stay planted, not start lifting
-    prematurely.
-
-DOUBLE (both initial and transition) has a grace period of
-DOUBLE_GRACE_STEPS (default 6) frames:
-
-  * Grace (steps 1..6):  allow the robot to settle on both feet.
-      - Initial:       w_L = 0, w_R = 0  (no push yet)
-      - Transition:    w[prev_swing] = -W (keep lowering the landing foot)
-                       w[prev_support] = 0 (don't push the other foot up yet)
-  * Post-grace (steps 7+):  resume encouraging the next step.
-      - Initial:       w_L = +W, w_R = +W  (lift either foot)
-      - Transition:    w[prev_swing]   = -W (finish landing)
-                       w[prev_support] = +W (lift, start next step)
-
-This persists until the robot lifts a foot into the next SUPPORT_*.
-
-Self-correction property
-------------------------
-``last_swing`` is updated unconditionally to whichever foot is actually
-airborne.  In the DOUBLE transition the weights point at
-``opposite(last_swing)`` (previous support → lift) and ``last_swing``
-(previous swing → lower), so if the robot lifted the *wrong* foot on the
-previous step it is pushed back toward the correct foot during DOUBLE.
-
-Inside SUPPORT_* the weights follow the *actual* swing/support feet, not
-an expected-swing target.  This means that if the robot commits to
-lifting the same foot twice, Phase A will reinforce that choice (+W on
-the swing foot).  This is by design: once a foot is committed, let the
-gait cycle complete; correction happens at the next DOUBLE transition.
-Occasionally repeating the same foot is acceptable, and forcing a
-mid-stride correction would fight the physics.
-
-Negative actor_weight relies on the ``!= 0.0`` skip predicate in
-``ppo_trainer_v2.ppo_update_v2`` (a channel whose weights are all <= 0 was
-previously dropped silently).
+The stepping state machine and its rule table live in
+``baseline/humanoid21/end2end/stepping_state_machine.py``.
 """
 from __future__ import annotations
 
@@ -129,36 +25,20 @@ import numpy as np
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
 from baseline.framework.ppo_trainer import _extract_per_step_field
 
+from baseline.humanoid21.end2end.stepping_state_machine import (
+    compute_foot_weights,
+    FOOT_WEIGHT,
+    FOOT_HEIGHT_CLIP,
+    PHASE_A_STEPS,
+    PHASE_B_END,
+    DOUBLE_GRACE_STEPS,
+    STATE_DOUBLE,
+    STATE_SUPPORT_L,
+    STATE_SUPPORT_R,
+    STATE_FLIGHT,
+)
+
 from .base import CombatExperimentV2Base
-
-
-# --- Physical states ---
-STATE_DOUBLE = "double"
-STATE_SUPPORT_L = "support_l"   # left supports, right swings
-STATE_SUPPORT_R = "support_r"   # right supports, left swings
-STATE_FLIGHT = "flight"
-
-# --- Stepping state machine parameters ---
-FOOT_WEIGHT: float = 1.0
-"""Base actor_weight magnitude W for the two foot channels."""
-
-PHASE_A_STEPS: int = 2
-"""Phase A duration (steps 1..PHASE_A_STEPS): encourage swing foot to lift
-and support foot to lower — fast lift + weight transfer."""
-
-PHASE_B_END: int = 10
-"""Phase B ends at this step (steps PHASE_A_STEPS+1 .. PHASE_B_END): coast,
-no encouragement — let the swing foot travel naturally."""
-
-FOOT_HEIGHT_CLIP: float = 0.1
-"""Foot height reward saturation (m).  Lifting beyond this earns nothing
-more, preventing a degenerate 'raise the knee as high as possible' policy."""
-
-DOUBLE_GRACE_STEPS: int = 6
-"""Grace period (steps) at the start of DOUBLE support.  During the first
-DOUBLE_GRACE_STEPS frames the robot is allowed to settle on both feet
-without being pushed to lift a foot.  After the grace period, the
-DOUBLE weights resume encouraging the next step."""
 
 
 class BasicBalanceStep(CombatExperimentV2Base):
@@ -211,137 +91,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         )
 
     # ------------------------------------------------------------------
-    # Stepping state machine
-    # ------------------------------------------------------------------
-    #
-    # Single support is split into three sub-phases by support_steps:
-    #   Phase A (steps 1..PHASE_A_STEPS):  w[swing]=0, w[support]=-W
-    #       → press support foot down (weight transfer)
-    #   Phase B (steps PHASE_A_STEPS+1..PHASE_B_END):  w=0
-    #       → coast, let physics carry the swing
-    #   Phase C (steps PHASE_B_END+1..):  w[swing]=-W, w[support]=0
-    #       → lower swing for landing, support stays planted
-    #
-    # DOUBLE has a grace period (DOUBLE_GRACE_STEPS, default 6):
-    #   steps 1..6 (grace):
-    #     initial:    w_L=0, w_R=0
-    #     transition: w[prev_swing]=-W, w[prev_support]=0
-    #   steps 7+ (post-grace):
-    #     initial:    w_L=+W, w_R=+W
-    #     transition: w[prev_swing]=-W, w[prev_support]=+W
-    #
-    # See the module-level docstring for the full design rationale.
-
-    @staticmethod
-    def _compute_foot_weights(
-        contact_l: np.ndarray,
-        contact_r: np.ndarray,
-        T: int,
-        weight: float = FOOT_WEIGHT,
-        phase_a_steps: int = PHASE_A_STEPS,
-        phase_b_end: int = PHASE_B_END,
-        double_grace_steps: int = DOUBLE_GRACE_STEPS,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Post-hoc scan producing per-frame actor weights for both feet.
-
-        Returns ``(w_left, w_right)``, each shape ``(T,)`` float32.
-        See the module docstring for the full rule table.
-        """
-        w_left = np.zeros(T, dtype=np.float32)
-        w_right = np.zeros(T, dtype=np.float32)
-
-        last_swing: Optional[str] = None
-        prev_state: Optional[str] = None
-        support_steps: int = 0
-        double_steps: int = 0
-
-        for t in range(T):
-            cl = bool(contact_l[t])
-            cr = bool(contact_r[t])
-
-            if cl and cr:
-                state = STATE_DOUBLE
-            elif cl and not cr:
-                state = STATE_SUPPORT_L
-            elif cr and not cl:
-                state = STATE_SUPPORT_R
-            else:
-                state = STATE_FLIGHT
-
-            # --- Bookkeeping ---
-            if state == STATE_SUPPORT_L:
-                current_swing = "right"
-            elif state == STATE_SUPPORT_R:
-                current_swing = "left"
-            else:
-                current_swing = None
-
-            if current_swing is not None:
-                last_swing = current_swing
-                support_steps = support_steps + 1 if state == prev_state else 1
-                double_steps = 0
-            elif state == STATE_DOUBLE:
-                double_steps = double_steps + 1 if state == prev_state else 1
-                support_steps = 0
-            else:
-                support_steps = 0
-                double_steps = 0
-
-            # --- Weights ---
-            if state == STATE_FLIGHT:
-                # Neither foot down: don't inject a direction, let r_fall lead.
-                pass
-            elif current_swing is not None:
-                # Single support — three sub-phases based on support_steps.
-                swing_is_left = current_swing == "left"
-                if support_steps <= phase_a_steps:
-                    # Phase A: press the support foot down only.
-                    # The swing foot is left alone (w=0) — lifting it is
-                    # driven by the DOUBLE transition that just ended.
-                    if swing_is_left:
-                        w_right[t] = -weight     # support down
-                    else:
-                        w_left[t] = -weight
-                elif support_steps <= phase_b_end:
-                    # Phase B: coast — no encouragement.
-                    pass
-                else:
-                    # Phase C: encourage swing foot down, leave support alone.
-                    if swing_is_left:
-                        w_left[t] = -weight     # swing down
-                    else:
-                        w_right[t] = -weight
-            elif last_swing is None:
-                # Initial double support, no step taken yet.
-                # Grace: allow the robot to settle before pushing to lift.
-                if double_steps > double_grace_steps:
-                    w_left[t] = weight
-                    w_right[t] = weight
-            else:
-                # DOUBLE transition: previous_swing == last_swing,
-                # previous_support == opposite(last_swing).
-                # Grace: let the landing foot settle (prev_swing=-W) but
-                # don't push the other foot up (prev_support=0) yet.
-                if double_steps > double_grace_steps:
-                    if last_swing == "left":
-                        w_left[t] = -weight     # previous swing down
-                        w_right[t] = weight     # previous support up
-                    else:
-                        w_right[t] = -weight
-                        w_left[t] = weight
-                else:
-                    # Grace period: only push prev_swing down.
-                    if last_swing == "left":
-                        w_left[t] = -weight     # previous swing down
-                    else:
-                        w_right[t] = -weight
-
-            prev_state = state
-
-        return w_left, w_right
-
-    # ------------------------------------------------------------------
-    # Trajectory building
+    # Stepping state machine — delegated to stepping_state_machine.compute_foot_weights
     # ------------------------------------------------------------------
 
     def _build_agent_trajectory(
@@ -402,7 +152,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         contact_r = self._extract_foot_field(
             episode, foot_key, "right_foot_contact", T_full, T,
         )
-        w_left, w_right = self._compute_foot_weights(
+        w_left, w_right = compute_foot_weights(
             contact_l > 0.5, contact_r > 0.5, T,
         )
 
