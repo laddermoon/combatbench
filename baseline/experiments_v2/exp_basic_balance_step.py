@@ -64,6 +64,9 @@ class BasicBalanceStep(CombatExperimentV2Base):
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01
 
+    # --- Foot height reward saturation (overrides stepping_state_machine default) ---
+    foot_height_clip: float = 0.05
+
     # --- r_fall actor weight (fixed, same as exp_basic_balance) ---
     r_fall_actor_weight: float = 3.0
 
@@ -142,8 +145,8 @@ class BasicBalanceStep(CombatExperimentV2Base):
         # --- Foot heights (saturated) ---
         h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full, T)
         h_right = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full, T)
-        r_left = np.clip(h_left, -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP).astype(np.float32)
-        r_right = np.clip(h_right, -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP).astype(np.float32)
+        r_left = np.clip(h_left, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
+        r_right = np.clip(h_right, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = self._extract_foot_field(
