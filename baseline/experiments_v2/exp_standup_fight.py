@@ -30,8 +30,12 @@ Reward channels (8, each with independent critic):
   - r_radial:        radial approach vel,         aw = 3.0 × φ²
   - r_tangential:    tangential penalty,          aw = 1.0 × φ²
   - r_face:          facing_score × dist_gate,    aw = 1.0 × φ²
-  - r_damage_dealt:  damage dealt to opponent,    aw = dealt_weight × φ²
-  - r_damage_taken:  damage taken from opponent,  aw = taken_weight × φ²
+  - r_damage_dealt:  damage dealt to opponent,    aw = dealt_weight × dist_gate
+  - r_damage_taken:  damage taken from opponent,  aw = taken_weight × dist_gate
+
+dist_gate is a hard switch: 1.0 when distance to opponent ≤ 0.9 m, 0
+otherwise.  Damage channels only influence the policy when the robots
+are close enough to actually hit each other.
 
 The foot channels use the v2 stepping state machine
 (``stepping_state_machine.compute_foot_weights``) with Phase A/B/C,
@@ -73,6 +77,9 @@ from .base import CombatExperimentV2Base
 # --- Face reward constants (same as standup_face) ---
 D_FACE: float = 1.5     # m — face reward starts activating
 D_STRIKE: float = 0.7   # m — face reward fully active
+
+# --- Damage gate: hard switch, active within this distance ---
+D_DAMAGE_GATE: float = 0.9   # m — damage aw fully on when dist <= this, off otherwise
 
 
 class StandupFight(CombatExperimentV2Base):
@@ -354,12 +361,14 @@ class StandupFight(CombatExperimentV2Base):
             r_tangential = np.zeros(T_full, dtype=np.float32)
             self_xy = np.zeros((T_full, 2), dtype=np.float64)
             opp_xy = np.zeros((T_full, 2), dtype=np.float64)
+            dist = np.full(T_full, 1e9, dtype=np.float64)
         else:
             self_xy = np.stack([self_x[:T_full], self_y[:T_full]], axis=1)
             opp_xy = np.stack([opp_x[:T_full], opp_y[:T_full]], axis=1)
             r_radial, r_tangential = compute_radial_tangential_rewards(
                 self_xy, opp_xy,
             )
+            dist = np.linalg.norm(opp_xy[:T_full] - self_xy[:T_full], axis=1)
 
         # --- r_face: facing_score × dist_gate ---
         fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
@@ -371,7 +380,6 @@ class StandupFight(CombatExperimentV2Base):
             fwd_y = np.asarray(fwd_y[:T_full], dtype=np.float64)
             fwd = np.stack([fwd_x, fwd_y], axis=1)
 
-            dist = np.linalg.norm(opp_xy[:T_full] - self_xy[:T_full], axis=1)
             to_opp = opp_xy[:T_full] - self_xy[:T_full]
             to_opp_norm = np.linalg.norm(to_opp, axis=1)
             valid = to_opp_norm > 1e-6
@@ -400,9 +408,11 @@ class StandupFight(CombatExperimentV2Base):
         # --- No early termination (same as standup_face) ---
         is_terminated = False
 
-        # --- Actor weights: r_fall fixed, others gated by φ² ---
-        # Foot channels: state machine output × φ²
+        # --- Actor weights ---
+        # r_fall: fixed.  Foot/radial/tangential/face: gated by φ².
+        # Damage channels: hard distance gate (active when dist <= D_DAMAGE_GATE).
         phi_sq = (phi_arr ** 2).astype(np.float32)
+        damage_gate = (dist <= D_DAMAGE_GATE).astype(np.float32)
         actor_weights = {
             "r_fall": np.full(T_full, self._base_actor_weights[0], dtype=np.float32),
             "r_left_foot": (w_left_raw * phi_sq),
@@ -410,8 +420,8 @@ class StandupFight(CombatExperimentV2Base):
             "r_radial": (self._base_actor_weights[1] * phi_sq),
             "r_tangential": (self._base_actor_weights[2] * phi_sq),
             "r_face": (self._base_actor_weights[3] * phi_sq),
-            "r_damage_dealt": (self.damage_dealt_weight * phi_sq),
-            "r_damage_taken": (self.damage_taken_weight * phi_sq),
+            "r_damage_dealt": (self.damage_dealt_weight * damage_gate),
+            "r_damage_taken": (self.damage_taken_weight * damage_gate),
         }
 
         all_rewards = {
