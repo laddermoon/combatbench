@@ -11,7 +11,8 @@
 #
 # Reward channels (in experiment):
 #   r_fall          = 0.01 × φ(t),              aw = 3.0 (fixed)
-#   r_cross         = cross-support signal,      aw = 1.0 × φ²
+#   r_left_foot     = clip(h_left, -0.1, 0.1),   aw = state machine × φ²
+#   r_right_foot    = clip(h_right, -0.1, 0.1),  aw = state machine × φ²
 #   r_radial        = radial approach vel,       aw = 3.0 × φ²
 #   r_tangential    = tangential penalty,        aw = 1.0 × φ²
 #   r_face          = facing_score × dist_gate,  aw = 1.0 × φ²
@@ -62,8 +63,8 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
     config:
       agent_id: ${agent_id}
-  cross_support:
-    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+  foot_state:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
     config:
       agent_id: ${agent_id}
   approach_velocity:

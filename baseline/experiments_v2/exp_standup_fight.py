@@ -23,14 +23,20 @@ training round.  During rollout, each episode samples an opponent from
 the pool with weight ``decay^age`` (age=0 for the newest, larger for
 older), so recent policies are sampled more often.
 
-Reward channels (7, each with independent critic):
+Reward channels (8, each with independent critic):
   - r_fall:          0.01 × φ(t),                aw = 3.0 (fixed)
-  - r_cross:         cross-support signal,        aw = 1.0 × φ²
+  - r_left_foot:     clip(h_left, -0.1, 0.1),     aw = state machine × φ²
+  - r_right_foot:    clip(h_right, -0.1, 0.1),    aw = state machine × φ²
   - r_radial:        radial approach vel,         aw = 3.0 × φ²
   - r_tangential:    tangential penalty,          aw = 1.0 × φ²
   - r_face:          facing_score × dist_gate,    aw = 1.0 × φ²
   - r_damage_dealt:  damage dealt to opponent,    aw = dealt_weight × φ²
   - r_damage_taken:  damage taken from opponent,  aw = taken_weight × φ²
+
+The foot channels use the v2 stepping state machine
+(``stepping_state_machine.compute_foot_weights``) with Phase A/B/C,
+DOUBLE grace, and FLIGHT continuation.  See
+``baseline/humanoid21/end2end/stepping_state_machine.py`` for details.
 
 φ is the 4-stage standing potential.  Damage values come from
 ``DamageBreakdownRewarder`` which reads ``CombatScoringPlugin`` metrics.
@@ -52,10 +58,13 @@ import numpy as np
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
 from baseline.framework.ppo_trainer import (
     _extract_per_step_field,
-    _extract_per_step_scalar,
 )
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
+)
+from baseline.humanoid21.end2end.stepping_state_machine import (
+    compute_foot_weights,
+    FOOT_HEIGHT_CLIP,
 )
 
 from .base import CombatExperimentV2Base
@@ -78,12 +87,14 @@ class StandupFight(CombatExperimentV2Base):
 
     # --- Reward channels ---
     _channel_names = (
-        "r_fall", "r_cross", "r_radial", "r_tangential",
+        "r_fall", "r_left_foot", "r_right_foot",
+        "r_radial", "r_tangential",
         "r_face", "r_damage_dealt", "r_damage_taken",
     )
     _channel_gammas = {
         "r_fall": 0.99,
-        "r_cross": 0.99,
+        "r_left_foot": 0.90,
+        "r_right_foot": 0.90,
         "r_radial": 0.99,
         "r_tangential": 0.99,
         "r_face": 0.99,
@@ -115,7 +126,10 @@ class StandupFight(CombatExperimentV2Base):
     per_step_phi_coef: float = 0.01
 
     # --- Base actor weights (r_fall fixed, others gated by φ²) ---
-    _base_actor_weights: Tuple[float, ...] = (3.0, 1.0, 3.0, 1.0, 1.0)
+    # r_left_foot / r_right_foot use the state machine (per-frame), not a
+    # fixed scalar, so they are not in this tuple.
+    # Order: r_fall, r_radial, r_tangential, r_face
+    _base_actor_weights: Tuple[float, ...] = (3.0, 3.0, 1.0, 1.0)
 
     # --- Damage actor weights (configurable via --set) ---
     damage_dealt_weight: float = 3.0
@@ -298,12 +312,36 @@ class StandupFight(CombatExperimentV2Base):
         # --- r_fall ---
         r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
-        # --- r_cross ---
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T_full)
-        if r_cross is not None:
-            r_cross = r_cross[:T_full]
+        # --- r_left_foot / r_right_foot (foot heights + state machine) ---
+        h_left = _extract_per_step_field(oo, "foot_state", "h_left_foot", T_full)
+        h_right = _extract_per_step_field(oo, "foot_state", "h_right_foot", T_full)
+        contact_l = _extract_per_step_field(oo, "foot_state", "left_foot_contact", T_full)
+        contact_r = _extract_per_step_field(oo, "foot_state", "right_foot_contact", T_full)
+
+        if h_left is not None:
+            r_left_foot = np.clip(
+                np.asarray(h_left[:T_full], dtype=np.float32),
+                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
+            )
         else:
-            r_cross = np.zeros(T_full, dtype=np.float32)
+            r_left_foot = np.zeros(T_full, dtype=np.float32)
+        if h_right is not None:
+            r_right_foot = np.clip(
+                np.asarray(h_right[:T_full], dtype=np.float32),
+                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
+            )
+        else:
+            r_right_foot = np.zeros(T_full, dtype=np.float32)
+
+        if contact_l is not None and contact_r is not None:
+            w_left_raw, w_right_raw = compute_foot_weights(
+                np.asarray(contact_l[:T_full], dtype=bool),
+                np.asarray(contact_r[:T_full], dtype=bool),
+                T_full,
+            )
+        else:
+            w_left_raw = np.zeros(T_full, dtype=np.float32)
+            w_right_raw = np.zeros(T_full, dtype=np.float32)
 
         # --- r_radial / r_tangential ---
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
@@ -363,20 +401,23 @@ class StandupFight(CombatExperimentV2Base):
         is_terminated = False
 
         # --- Actor weights: r_fall fixed, others gated by φ² ---
+        # Foot channels: state machine output × φ²
         phi_sq = (phi_arr ** 2).astype(np.float32)
         actor_weights = {
             "r_fall": np.full(T_full, self._base_actor_weights[0], dtype=np.float32),
-            "r_cross": (self._base_actor_weights[1] * phi_sq),
-            "r_radial": (self._base_actor_weights[2] * phi_sq),
-            "r_tangential": (self._base_actor_weights[3] * phi_sq),
-            "r_face": (self._base_actor_weights[4] * phi_sq),
+            "r_left_foot": (w_left_raw * phi_sq),
+            "r_right_foot": (w_right_raw * phi_sq),
+            "r_radial": (self._base_actor_weights[1] * phi_sq),
+            "r_tangential": (self._base_actor_weights[2] * phi_sq),
+            "r_face": (self._base_actor_weights[3] * phi_sq),
             "r_damage_dealt": (self.damage_dealt_weight * phi_sq),
             "r_damage_taken": (self.damage_taken_weight * phi_sq),
         }
 
         all_rewards = {
             "r_fall": r_fall,
-            "r_cross": r_cross.astype(np.float32),
+            "r_left_foot": r_left_foot,
+            "r_right_foot": r_right_foot,
             "r_radial": r_radial.astype(np.float32),
             "r_tangential": r_tangential.astype(np.float32),
             "r_face": r_face,
