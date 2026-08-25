@@ -31,9 +31,10 @@ Weights (W = 1.0)::
         steps 1..6   (grace)              →  w_L =  0, w_R =  0
         steps 7+                           →  w_L = +W, w_R = +W
     FLIGHT                               →  continues previous state
-    SUPPORT_*  steps 1..2   (Phase A)    →  w[swing]   =  0
-                                            w[support] = -W
-    SUPPORT_*  steps 3..10  (Phase B)    →  w_L =  0, w_R =  0
+    SUPPORT_*  steps 1..2   (Phase A)    →  w[support] = -W
+                                            w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
+    SUPPORT_*  steps 3..10  (Phase B)    →  w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
+                                            w[support] =  0
     SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W
                                             w[support] =  0
     DOUBLE transition (last_swing set)
@@ -45,14 +46,16 @@ Weights (W = 1.0)::
 Phase semantics
 ---------------
 Phase A (steps 1..2, ~0.1 s @ 20 Hz):
-    Press the support foot down only (w[support] = -W).  The swing foot
-    is left alone (w = 0) — its lift was already encouraged by the
-    preceding DOUBLE transition.  Goal: weight transfer onto the new
-    support foot.
+    Press the support foot down (w[support] = -W).  The swing foot gets
+    +W if its height is below SWING_LIFT_THRESHOLD (it hasn't lifted
+    enough yet), otherwise w = 0 (lift was already encouraged by the
+    preceding DOUBLE transition).  Goal: weight transfer onto the new
+    support foot + ensure the swing foot actually leaves the ground.
 
 Phase B (steps 3..10, ~0.4 s):
-    Coast — no encouragement.  Let the swing foot travel through the air
-    naturally; only r_fall keeps the robot alive.
+    Coast — no support-foot encouragement.  The swing foot still gets
+    +W if below SWING_LIFT_THRESHOLD, ensuring it stays airborne.
+    Once lifted enough, let physics carry it naturally.
 
 Phase C (steps 11+, ~0.55 s+):
     Encourage the swing foot to lower (prepare for landing).  The support
@@ -127,20 +130,32 @@ FOOT_HEIGHT_CLIP: float = 0.1
 """Foot height reward saturation (m).  Lifting beyond this earns nothing
 more, preventing a degenerate 'raise the knee as high as possible' policy."""
 
+SWING_LIFT_THRESHOLD: float = 0.05
+"""Minimum swing-foot height (m) during Phase A/B before the lift
+encouragement turns off.  If the swing foot hasn't risen above this,
+a +W actor weight is applied to keep pushing it up."""
+
 
 def compute_foot_weights(
     contact_l: np.ndarray,
     contact_r: np.ndarray,
     T: int,
+    h_left: Optional[np.ndarray] = None,
+    h_right: Optional[np.ndarray] = None,
     weight: float = FOOT_WEIGHT,
     phase_a_steps: int = PHASE_A_STEPS,
     phase_b_end: int = PHASE_B_END,
     double_grace_steps: int = DOUBLE_GRACE_STEPS,
+    swing_lift_threshold: float = SWING_LIFT_THRESHOLD,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Post-hoc scan producing per-frame actor weights for both feet.
 
     Returns ``(w_left, w_right)``, each shape ``(T,)`` float32.
     See the module docstring for the full rule table.
+
+    ``h_left`` / ``h_right`` are per-frame foot heights (m) used for the
+    swing-lift gate in Phase A/B.  If omitted, the gate is disabled (as
+    if the swing foot is always above threshold).
     """
     w_left = np.zeros(T, dtype=np.float32)
     w_right = np.zeros(T, dtype=np.float32)
@@ -196,17 +211,35 @@ def compute_foot_weights(
         elif current_swing is not None:
             # Single support — three sub-phases based on support_steps.
             swing_is_left = current_swing == "left"
+
+            # Swing-lift gate: if the swing foot hasn't risen above
+            # threshold, keep pushing it up (+W).
+            if h_left is not None and h_right is not None:
+                h_swing = float(h_left[t]) if swing_is_left else float(h_right[t])
+                swing_needs_lift = h_swing < swing_lift_threshold
+            else:
+                swing_needs_lift = False
+
             if support_steps <= phase_a_steps:
-                # Phase A: press the support foot down only.
-                # The swing foot is left alone (w=0) — lifting it is
-                # driven by the DOUBLE transition that just ended.
+                # Phase A: press support foot down.
                 if swing_is_left:
                     w_right[t] = -weight     # support down
                 else:
                     w_left[t] = -weight
+                # Swing foot: +W if not lifted enough yet.
+                if swing_needs_lift:
+                    if swing_is_left:
+                        w_left[t] = weight
+                    else:
+                        w_right[t] = weight
             elif support_steps <= phase_b_end:
-                # Phase B: coast — no encouragement.
-                pass
+                # Phase B: coast on support foot.
+                # Swing foot: +W if not lifted enough yet.
+                if swing_needs_lift:
+                    if swing_is_left:
+                        w_left[t] = weight
+                    else:
+                        w_right[t] = weight
             else:
                 # Phase C: encourage swing foot down, leave support alone.
                 if swing_is_left:

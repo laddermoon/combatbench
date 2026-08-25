@@ -235,6 +235,8 @@ class StandupStepV3(CombatExperimentV2Base):
         contact_r: np.ndarray,
         balance_mask: np.ndarray,
         T: int,
+        h_left: Optional[np.ndarray] = None,
+        h_right: Optional[np.ndarray] = None,
         weight: float = FOOT_WEIGHT,
         phase_a_steps: int = PHASE_A_STEPS,
         phase_b_end: int = PHASE_B_END,
@@ -259,8 +261,11 @@ class StandupStepV3(CombatExperimentV2Base):
                 seg_len = t - seg_start
                 cl = np.asarray(contact_l[seg_start:t], dtype=np.float32)
                 cr = np.asarray(contact_r[seg_start:t], dtype=np.float32)
+                hl = np.asarray(h_left[seg_start:t], dtype=np.float32) if h_left is not None else None
+                hr = np.asarray(h_right[seg_start:t], dtype=np.float32) if h_right is not None else None
                 wl, wr = compute_foot_weights(
                     cl, cr, seg_len,
+                    h_left=hl, h_right=hr,
                     weight=weight,
                     phase_a_steps=phase_a_steps,
                     phase_b_end=phase_b_end,
@@ -349,6 +354,7 @@ class StandupStepV3(CombatExperimentV2Base):
         contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
         w_left, w_right = self._compute_foot_weights_masked(
             contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
+            h_left=h_left, h_right=h_right,
         )
 
         # --- No early termination ---

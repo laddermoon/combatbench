@@ -200,6 +200,8 @@ class Step(CombatExperimentV2Base):
                 np.asarray(contact_l[:T_full], dtype=bool),
                 np.asarray(contact_r[:T_full], dtype=bool),
                 T_full,
+                h_left=np.asarray(h_left[:T_full], dtype=np.float32) if h_left is not None else None,
+                h_right=np.asarray(h_right[:T_full], dtype=np.float32) if h_right is not None else None,
             )
         else:
             w_left = np.zeros(T_full, dtype=np.float32)

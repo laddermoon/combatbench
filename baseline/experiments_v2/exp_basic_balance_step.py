@@ -157,6 +157,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         )
         w_left, w_right = compute_foot_weights(
             contact_l.astype(bool), contact_r.astype(bool), T,
+            h_left=h_left, h_right=h_right,
         )
 
         is_terminated = fell
