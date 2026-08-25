@@ -19,10 +19,14 @@ Two reward phases with hard switch based on torso height:
     BALANCE → STANDUP:  h_torso < 0.70  (fallen)
 
 Four reward channels (each with independent critic):
-  r_potential — active only in STANDUP phase,  γ=0.99, aw=3.0
-  r_fall      — active only in BALANCE phase,  γ=0.99
-  r_left_foot — active only in BALANCE phase,  γ=0.90
-  r_right_foot— active only in BALANCE phase,  γ=0.90
+  r_potential — reward always present, aw=3.0 in STANDUP, 0 in BALANCE
+  r_fall      — reward always present, aw=3.0 in BALANCE, 0 in STANDUP
+  r_left_foot — reward always present, aw = state machine (BALANCE only)
+  r_right_foot— reward always present, aw = state machine (BALANCE only)
+
+Rewards are NOT masked — the critic can learn from the physical signal
+at all times.  Only actor_weight controls when each channel influences
+the policy update.
 
 φ_4stage comes from StandingBalance4StageRewarder ("potential" field).
 φ_height comes from HeightPhiObserver ("phi" field).
@@ -328,11 +332,11 @@ class StandupStepV3(CombatExperimentV2Base):
         balance_mask = self._compute_phase_mask(h_torso, T_full)
         standup_mask = ~balance_mask
 
-        # --- r_potential: active in STANDUP phase only ---
-        r_potential = (self.per_step_phi_coef * phi4_arr * standup_mask).astype(np.float32)
+        # --- r_potential: dense reward, critic learns at all times ---
+        r_potential = (self.per_step_phi_coef * phi4_arr).astype(np.float32)
 
-        # --- r_fall: active in BALANCE phase only ---
-        r_fall = (self.per_step_phi_coef * phi_h_arr * balance_mask).astype(np.float32)
+        # --- r_fall: dense reward, critic learns at all times ---
+        r_fall = (self.per_step_phi_coef * phi_h_arr).astype(np.float32)
 
         # --- Foot heights (saturated) ---
         h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)
