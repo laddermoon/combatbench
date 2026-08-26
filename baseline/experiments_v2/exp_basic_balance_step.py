@@ -28,7 +28,6 @@ from baseline.framework.ppo_trainer import _extract_per_step_field
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     FOOT_WEIGHT,
-    FOOT_HEIGHT_CLIP,
     PHASE_A_STEPS,
     PHASE_B_END,
     DOUBLE_GRACE_STEPS,

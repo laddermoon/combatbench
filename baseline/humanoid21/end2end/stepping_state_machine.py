@@ -126,7 +126,7 @@ DOUBLE_GRACE_STEPS frames the robot is allowed to settle on both feet
 without being pushed to lift a foot.  After the grace period, the
 DOUBLE weights resume encouraging the next step."""
 
-FOOT_HEIGHT_CLIP: float = 0.1
+FOOT_HEIGHT_CLIP: float = 0.05
 """Foot height reward saturation (m).  Lifting beyond this earns nothing
 more, preventing a degenerate 'raise the knee as high as possible' policy."""
 
