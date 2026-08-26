@@ -57,7 +57,6 @@ from .base import CombatExperimentV2Base
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     FOOT_WEIGHT,
-    FOOT_HEIGHT_CLIP,
     PHASE_A_STEPS,
     PHASE_B_END,
     DOUBLE_GRACE_STEPS,
@@ -105,6 +104,9 @@ class BalanceV2(CombatExperimentV2Base):
 
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01
+
+    # --- Foot height reward saturation ---
+    foot_height_clip: float = 0.05
 
     # --- r_fall actor weight (fixed, same as exp_basic_balance_step) ---
     r_fall_actor_weight: float = 3.0
@@ -411,8 +413,8 @@ class BalanceV2(CombatExperimentV2Base):
         # --- Foot heights (saturated) ---
         h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)
         h_right = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full)
-        r_left = np.clip(h_left, -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP).astype(np.float32)
-        r_right = np.clip(h_right, -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP).astype(np.float32)
+        r_left = np.clip(h_left, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
+        r_right = np.clip(h_right, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
