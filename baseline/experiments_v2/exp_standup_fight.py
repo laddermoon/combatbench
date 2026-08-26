@@ -70,6 +70,7 @@ from baseline.framework.ppo_trainer import _extract_per_step_field
 
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
+    FOLLOW_DIST_MAX,
 )
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
@@ -492,9 +493,13 @@ class StandupFight(CombatExperimentV2Base):
             self_xy = np.stack([self_x[:T_full], self_y[:T_full]], axis=1)
             opp_xy = np.stack([opp_x[:T_full], opp_y[:T_full]], axis=1)
             r_radial, r_tangential = compute_radial_tangential_rewards(
-                self_xy, opp_xy,
+                self_xy, opp_xy, gate=False,
             )
             dist = np.linalg.norm(opp_xy[:T_full] - self_xy[:T_full], axis=1)
+
+        # --- out_zone gate for r_radial / r_tangential actor weights ---
+        # Active when distance > FOLLOW_DIST_MAX (0.9m), i.e. outside striking range.
+        out_zone = (dist > FOLLOW_DIST_MAX).astype(np.float32)
 
         # --- r_face: facing_score (reward) + dist_gate (actor weight) ---
         fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
@@ -550,8 +555,8 @@ class StandupFight(CombatExperimentV2Base):
             "r_fall": (self.r_fall_actor_weight * balance_mask).astype(np.float32),
             "r_left_foot": w_left,
             "r_right_foot": w_right,
-            "r_radial": (self.r_radial_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
-            "r_tangential": (self.r_tangential_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_radial": (self.r_radial_actor_weight * out_zone * phi_h_sq * balance_mask).astype(np.float32),
+            "r_tangential": (self.r_tangential_actor_weight * out_zone * phi_h_sq * balance_mask).astype(np.float32),
             "r_face": (self.r_face_actor_weight * face_dist_gate * phi_h_sq * balance_mask).astype(np.float32),
             "r_damage_dealt": (self.damage_dealt_weight * damage_gate * balance_mask).astype(np.float32),
             "r_damage_taken": (self.damage_taken_weight * damage_gate * balance_mask).astype(np.float32),

@@ -401,7 +401,31 @@ def compute_radial_tangential_rewards(
     radial_coef: float = 1.0,
     tangential_coef: float = 1.0,
     disp_clip: float = APPROACH_DISP_CLIP,
+    gate: bool = True,
 ):
+    """平滑轨迹 → 速度 → 分解为径向（朝对手）与切向（横向）两个独立奖励。
+
+    流程::
+
+        1. 对自身轨迹做居中移动平均（去步态摆动）→ sm
+        2. 居中差分得每步净位移向量 disp（速度代理）
+        3. 计算"指向对手"单位向量 d_hat = (opp - sm) / |opp - sm|
+        4. 分解位移:
+             径向标量  v_rad = disp · d_hat        （正值=接近，负值=远离）
+             切向量    v_tan = disp - v_rad * d_hat
+             切向模长  |v_tan|                       （恒 ≥ 0）
+
+    奖励::
+
+        radial     =  radial_coef * v_rad            （接近时为正奖励，远离时为负惩罚）
+        tangential = -tangential_coef * |v_tan|      （恒为惩罚，横向移动越快惩罚越大）
+
+    门控: 当 ``gate=True``（默认，旧行为）时，仅在区外（distance > dist_max）
+    时给信号。当 ``gate=False`` 时，返回无门控的物理 reward，由调用方在
+    actor_weight 中自行加距离门控。
+
+    返回 ``(radial, tangential)``，均为 ``(T,)`` float32。
+    """
     """平滑轨迹 → 速度 → 分解为径向（朝对手）与切向（横向）两个独立奖励。
 
     流程::
@@ -464,11 +488,14 @@ def compute_radial_tangential_rewards(
     v_tangential_vec = disp - v_radial_scalar[:, None] * to_opp_hat
     v_tangential_mag = np.linalg.norm(v_tangential_vec, axis=1)
 
-    # 门控：仅在区外给信号。
+    # 门控：仅在区外给信号（旧行为）。gate=False 时返回无门控 reward。
     out_zone = dist > max(float(dist_max), 1e-6)
-    mask = out_zone & valid
-
-    radial[mask] = (radial_coef * v_radial_scalar[mask]).astype(np.float32)
-    tangential[mask] = (-tangential_coef * v_tangential_mag[mask]).astype(np.float32)
+    if gate:
+        mask = out_zone & valid
+        radial[mask] = (radial_coef * v_radial_scalar[mask]).astype(np.float32)
+        tangential[mask] = (-tangential_coef * v_tangential_mag[mask]).astype(np.float32)
+    else:
+        radial[valid] = (radial_coef * v_radial_scalar[valid]).astype(np.float32)
+        tangential[valid] = (-tangential_coef * v_tangential_mag[valid]).astype(np.float32)
 
     return radial, tangential
