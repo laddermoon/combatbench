@@ -16,6 +16,32 @@ from baseline.common.rollout import Episode
 
 from .experiment import CommonParams, Experiment, TrainablePolicy
 
+
+def _unpack_legacy_eval(result: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Adapt an actor's ``evaluate_actions`` result to the v1 (lp, H) shape.
+
+    The v2 contract returns an ``ActorEval`` and moves entropy into
+    ``stats`` / ``regularizer``.  This legacy loop still owns its own
+    ``entropy_coef``, so it needs the differentiable entropy tensor.
+
+    Note the actor's own regularizer is deliberately *not* applied here:
+    v1 adds ``-entropy_coef * entropy`` itself, and applying both would
+    double-count.  Actors that no longer expose a differentiable entropy
+    (mixture, flow, diffusion) are not supported by this legacy path —
+    only ``train_ppo_v2`` is reachable from ``train.py``.
+    """
+    if isinstance(result, tuple):
+        return result
+    entropy = getattr(result, "entropy", None)
+    if entropy is None:
+        raise TypeError(
+            "Legacy ppo_trainer requires a differentiable entropy from "
+            f"evaluate_actions; {type(result).__name__} does not provide one. "
+            "Use the v2 training path (train_ppo_v2) instead."
+        )
+    return result.log_prob, entropy
+
+
 # ---------------------------------------------------------------------------
 # Data helpers – work directly on Episode numpy arrays
 # ---------------------------------------------------------------------------
@@ -536,11 +562,12 @@ def ppo_update(
 
             # Step 2: Update actor (after all critics are updated)
             if frame_modes_t is not None:
-                new_lp, entropy = actor.evaluate_actions(
+                result = actor.evaluate_actions(
                     obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
                 )
             else:
-                new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
+                result = actor.evaluate_actions(obs_t[idx], act_t[idx])
+            new_lp, entropy = _unpack_legacy_eval(result)
 
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())

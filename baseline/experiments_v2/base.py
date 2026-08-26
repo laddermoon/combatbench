@@ -23,6 +23,7 @@ from envs.framework.policy import PolicyBlueprint
 from baseline.framework.experiment_v2 import (
     CommonParams,
     ExperimentV2,
+    ExplorationSpec,
     PPOParams,
     TrainablePolicy,
 )
@@ -47,8 +48,14 @@ class CombatExperimentV2Base(ExperimentV2):
     action_dim: int = 21
     actor_hidden_dim: int = 256
     critic_hidden_dim: int = 256
+
+    # --- Exploration ---
+    # Applied to the actor in build_actor() / exploration(), not through
+    # PPOParams: sigma bounds describe the Tanh-Gaussian and entropy_coef
+    # scales a family-specific regularizer, neither of which PPO knows about.
     log_std_min: float = -4.0
     log_std_max: float = 0.0
+    entropy_coef: float = 1e-3
 
     # --- Shared training ---
     learning_rate: float = 1e-4
@@ -57,7 +64,6 @@ class CombatExperimentV2Base(ExperimentV2):
 
     # --- PPO knobs ---
     clip_eps: float = 0.2
-    entropy_coef: float = 1e-3
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 8192
@@ -133,14 +139,38 @@ class CombatExperimentV2Base(ExperimentV2):
 
     def ppo_params(self) -> PPOParams:
         return PPOParams(
-            log_std_min=self.log_std_min,
-            log_std_max=self.log_std_max,
             clip_eps=self.clip_eps,
-            entropy_coef=self.entropy_coef,
             target_kl=self.target_kl,
             update_epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
         )
+
+    # ------------------------------------------------------------------
+    # Exploration scheduling
+    # ------------------------------------------------------------------
+
+    def exploration(
+        self, update: int, last_stats: Dict[str, Any] | None,
+    ) -> ExplorationSpec:
+        """Static exploration spec built from the class attributes.
+
+        This reproduces the pre-refactor behaviour exactly: ``entropy_coef``
+        is a constant for the whole run and the sampling temperature is the
+        policy's native 1.0.
+
+        Subclasses that want a schedule override this method.  ``last_stats``
+        carries the previous update's full stats (``approx_kl``,
+        ``clip_frac``, ``ev_*``, plus the policy's own ``entropy`` /
+        ``std_mean`` / ``tanh_sat_frac``), so a closed-loop schedule can be
+        written without any framework change, e.g.::
+
+            def exploration(self, update, last_stats):
+                coef = self.entropy_coef
+                if last_stats and last_stats.get("approx_kl", 1.0) < 0.005:
+                    coef *= 4.0     # policy is stuck, push it to explore
+                return ExplorationSpec(entropy_coef=coef)
+        """
+        return ExplorationSpec(entropy_coef=self.entropy_coef, temperature=1.0)
 
     # ------------------------------------------------------------------
     # Model construction
@@ -150,7 +180,12 @@ class CombatExperimentV2Base(ExperimentV2):
         blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
         bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
         actor = bp.build().to(device)
+        # The actor owns its distribution bounds now that they left
+        # PPOParams. Both are forced here (previously only log_std_min was),
+        # so the class attributes are authoritative and the values baked into
+        # init_policy.yaml cannot silently diverge from them.
         actor.log_std_min = float(self.log_std_min)
+        actor.log_std_max = float(self.log_std_max)
         return actor
 
     def build_critic(self, channel_name: str, device: torch.device) -> nn.Module:

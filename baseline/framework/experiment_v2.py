@@ -63,7 +63,22 @@ Design principles
    is building jobs for training or evaluation — it just builds N jobs
    with the given blueprint and seed.
 
-5. **Coexistence, not replacement.**
+5. **Exploration is a first-class, split responsibility.**
+
+   The experiment owns exploration *intent* (``exploration()`` returns an
+   ``ExplorationSpec`` per update, optionally reacting to the previous
+   update's stats); the policy owns exploration *mechanism*
+   (``set_exploration()`` interprets the spec for its own distribution
+   family, ``ActorEval.regularizer`` supplies whatever differentiable
+   regularizer that family supports).  The framework only routes.
+
+   This replaces a design where the framework hard-coded
+   ``loss -= entropy_coef * entropy`` and read ``actor.log_std``
+   directly — assumptions that hold only for a diagonal Gaussian with a
+   state-independent sigma, and that made the ``TrainablePolicy``
+   protocol incorrect for any other family.
+
+6. **Coexistence, not replacement.**
 
    The old ``Experiment`` ABC in ``experiment.py`` and
    ``CombatExperimentBase`` in ``base.py`` remain untouched.  The 40+
@@ -131,6 +146,8 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
+| Exploration        | exploration() → ExplorationSpec     | Routes spec → set_exploration |
+| Entropy / reg      | entropy_coef via ExplorationSpec    | Adds ActorEval.regularizer    |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
 
 Removed from v1
@@ -162,13 +179,22 @@ Removed from v1
   framework's responsibility.  The framework builds ``config.json`` from
   ``reward_channels()``, ``common_params()``, ``ppo_params()``, and
   ``state()``.
+- ``PPOParams.log_std_min`` / ``log_std_max``: Moved to the actor — they
+  describe a Tanh-Gaussian, not PPO.  Set them in ``build_actor()``.
+- ``PPOParams.entropy_coef``: Moved to ``ExplorationSpec``; the policy
+  applies it through ``ActorEval.regularizer``.
+- ``evaluate_actions() -> (log_prob, entropy)``: Now returns
+  ``ActorEval``, so a policy without a closed-form entropy no longer has
+  to fabricate one.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from dataclasses import dataclass, field
+from typing import (
+    Any, Dict, List, Mapping, Optional, Protocol, Tuple, runtime_checkable,
+)
 
 import numpy as np
 import torch
@@ -179,6 +205,87 @@ from envs.framework.policy import PolicyBlueprint
 
 
 # ---------------------------------------------------------------------------
+# Exploration contract
+#
+# Exploration has two owners, deliberately separated:
+#
+#   * The **experiment** owns exploration *policy* (intent): how much
+#     exploration is wanted at update N, possibly reacting to the previous
+#     update's statistics.  It expresses this as an ``ExplorationSpec``
+#     returned from ``ExperimentV2.exploration()``.
+#
+#   * The **policy** owns exploration *mechanism*: what "temperature 2.0"
+#     or "entropy_coef 1e-3" concretely means for its own distribution
+#     family.  It receives the spec via ``set_exploration()`` and reports
+#     back what it actually honoured.
+#
+# The framework only routes between the two.  It never inspects a spec
+# field nor interprets a stat key.  This is what allows non-Gaussian
+# actors (mixture, flow, diffusion) to be dropped in without touching
+# ppo_trainer_v2 / ppo_loop_v2.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ExplorationSpec:
+    """A per-update exploration directive from experiment to policy.
+
+    Every field is optional; ``None`` means "no opinion, keep whatever
+    the policy is already doing".  A policy honours the fields it
+    understands and silently ignores the rest — it then reports the
+    effective configuration back from ``set_exploration()``.
+
+    Attributes:
+        temperature: Multiplier on the policy's sampling noise.  ``1.0``
+            is the policy's native scale.  A Gaussian scales sigma; a
+            mixture scales component sigma and/or mixture logits; a
+            diffusion policy scales its terminal noise.  Semantics are
+            deliberately policy-defined.
+        entropy_coef: Coefficient for the policy's own entropy-like
+            regularizer.  Mutually exclusive with ``entropy_target``.
+        entropy_target: Desired entropy level.  A policy that supports it
+            adapts its own coefficient to track this target (SAC-style
+            auto-alpha).  Mutually exclusive with ``entropy_coef``.
+        clip_eps: PPO clip epsilon override for this update.
+        target_kl: PPO KL early-stop threshold override for this update.
+        policy_extras: Free-form key/value bag for policy-specific knobs
+            that do not deserve a typed field (e.g. a diffusion policy's
+            denoising step count, a mixture's component count).
+    """
+
+    temperature: Optional[float] = None
+    entropy_coef: Optional[float] = None
+    entropy_target: Optional[float] = None
+    clip_eps: Optional[float] = None
+    target_kl: Optional[float] = None
+    policy_extras: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ActorEval:
+    """Result of one :meth:`TrainablePolicy.evaluate_actions` call.
+
+    Attributes:
+        log_prob: ``(B,)`` log-probability of the given actions under the
+            *current* parameters.  Must be differentiable — this is the
+            numerator of the PPO importance ratio.
+        regularizer: Optional differentiable scalar that the framework
+            **adds** to the actor loss verbatim.  The policy is
+            responsible for the sign and the coefficient, so a Gaussian
+            returns ``-entropy_coef * entropy.mean()`` while a diffusion
+            policy may return ``None`` or something entirely different.
+            This is why ``entropy_coef`` is not a framework parameter.
+        stats: Diagnostics describing the policy's exploration state,
+            populated only when ``want_stats=True``.  Keys are chosen by
+            the policy; the framework merges them into its stats dict
+            without interpretation.
+    """
+
+    log_prob: torch.Tensor
+    regularizer: Optional[torch.Tensor] = None
+    stats: Optional[Dict[str, float]] = None
+
+
+# ---------------------------------------------------------------------------
 # Actor protocol
 # ---------------------------------------------------------------------------
 
@@ -186,22 +293,74 @@ from envs.framework.policy import PolicyBlueprint
 class TrainablePolicy(Protocol):
     """Interface that the PPO trainer requires from an actor.
 
-    The actor must support:
-    - ``evaluate_actions``: recompute log_prob and entropy for given
-      (obs, actions) pairs.  Used for PPO importance ratio computation.
-    - ``to_blueprint``: export a rollout-ready policy blueprint, with
-      a ``stochastic`` flag to control sampling vs deterministic mode.
+    Three methods, each with an unambiguous call site in the loop:
+
+    ===================================  ==================  ===================
+    when                                 call                yields
+    ===================================  ==================  ===================
+    once per update, before rollout      ``set_exploration`` effective config
+    once per update, buffer construction ``evaluate_actions``
+                                         ``want_stats=True`` batch-wide stats
+    ~epochs x minibatches per update     ``evaluate_actions`` log_prob + reg
+    ===================================  ==================  ===================
+
+    There is deliberately **no** parameter-inspection method (an earlier
+    draft had ``exploration_stats()``): as soon as sigma becomes
+    state-dependent, every such quantity turns into an expectation over a
+    state distribution and is meaningless without saying *which* states.
+    Distributional statistics therefore ride on ``ActorEval.stats``,
+    anchored to the one call that has a clean definition — the buffer's
+    single batched pass over the whole rollout under theta_old.  Scalar
+    configuration (which needs no data) comes back from
+    ``set_exploration`` instead.
     """
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
         *, frame_modes: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (log_prob, entropy) for given obs/actions.
+        want_stats: bool = False,
+    ) -> ActorEval:
+        """Recompute log_prob (and optional regularizer) for obs/actions.
 
         If ``frame_modes`` is provided, the actor should use it to route
         samples to the appropriate sub-network instead of computing mode
         from the observation.  Values are experiment-defined floats.
+        Mode is a *fact recorded at rollout time*, not a quantity to be
+        re-inferred, so it must be threaded through rather than derived.
+
+        Args:
+            obs: ``(B, obs_dim)`` observations.
+            actions: ``(B, action_dim)`` actions taken at rollout time.
+            frame_modes: Optional ``(B,)`` routing tags from rollout.
+            want_stats: When True, also populate ``ActorEval.stats`` with
+                distributional diagnostics over this batch.  The
+                framework sets this only for the single whole-batch call
+                in ``PPOBufferV2``; it is left False inside the
+                minibatch loop because building a float dict forces a
+                GPU sync on every minibatch.
+
+        Returns:
+            An :class:`ActorEval`.  Note the buffer's call happens under
+            ``torch.no_grad()``, so ``regularizer`` is non-differentiable
+            there and is ignored by the framework.
+        """
+        ...
+
+    def set_exploration(self, spec: ExplorationSpec) -> Dict[str, float]:
+        """Apply an exploration directive; return the *effective* config.
+
+        Called once per update before the rollout blueprint is exported,
+        so anything affecting sampling must take effect immediately.
+
+        The policy honours the fields it understands and ignores the
+        rest.  Because a policy may clamp or reinterpret a request, the
+        framework logs this return value rather than the requested spec
+        — logging the request would be dishonest.
+
+        Returns:
+            Scalar effective configuration, e.g.
+            ``{"entropy_coef": 0.001, "temperature": 1.0}``.  Keys are
+            policy-defined and logged without interpretation.
         """
         ...
 
@@ -209,6 +368,12 @@ class TrainablePolicy(Protocol):
         self, dest_path: str, *, stochastic: bool = False,
     ) -> PolicyBlueprint:
         """Export a rollout-ready policy blueprint.
+
+        The exported artifact must reproduce the sampling behaviour
+        implied by the most recent ``set_exploration`` call — otherwise
+        rollout actions would come from a different distribution than the
+        one ``evaluate_actions`` scores them under, silently breaking the
+        on-policy assumption.
 
         Args:
             dest_path: Directory path for the exported blueprint.
@@ -249,14 +414,29 @@ class CommonParams:
 class PPOParams:
     """PPO hyperparameters.
 
+    Strictly the knobs of the PPO *algorithm*.  Two categories used to
+    live here and no longer do:
+
+    - ``log_std_min`` / ``log_std_max``: properties of a Tanh-Gaussian
+      actor, not of PPO.  They were here only because the trainer used to
+      reach into ``actor.log_std`` to clamp it for logging.  They now
+      belong to the actor (set in ``build_actor``).
+    - ``entropy_coef``: the strength of a *policy-family-specific*
+      regularizer.  A mixture has no closed-form entropy and a diffusion
+      policy has no entropy at all, so hard-coding
+      ``loss -= entropy_coef * entropy`` in the framework made the actor
+      protocol a lie.  It is now carried by ``ExplorationSpec`` and
+      applied by the policy via ``ActorEval.regularizer``.
+
+    ``clip_eps`` and ``target_kl`` stay because they are genuinely PPO's,
+    but note they can be overridden per-update by ``ExplorationSpec`` —
+    the trust region is part of the exploration story.
+
     Per-channel ``gae_lambda`` is declared in ``RewardChannel`` via
     ``reward_channels()`` — it is NOT a global parameter here.
     """
 
-    log_std_min: float
-    log_std_max: float
     clip_eps: float
-    entropy_coef: float
     target_kl: float
     update_epochs: int
     minibatch_size: int
@@ -394,6 +574,48 @@ class ExperimentV2(ABC):
             device: Torch device to place the model on.
         """
         ...
+
+    # ==================================================================
+    # Exploration scheduling
+    # ==================================================================
+
+    def exploration(
+        self, update: int, last_stats: Optional[Dict[str, Any]],
+    ) -> Optional["ExplorationSpec"]:
+        """Return this update's exploration directive, or None to keep.
+
+        Called once per update **before** the rollout blueprint is
+        exported, so a returned ``temperature`` still affects sampling.
+
+        This method is the exploration counterpart of ``on_eval()``:
+        ``on_eval`` closes the loop on *reward weighting* using eval
+        episodes, while ``exploration`` closes the loop on *exploration
+        strength* using training statistics.  Before it existed, every
+        exploration knob was frozen for the whole run (``ppo_params()`` is
+        read once, outside the training loop) even though reward weights
+        were rescheduled every update — an asymmetry with no principled
+        justification.
+
+        Args:
+            update: Current update index (1-based, matches the loop).
+            last_stats: The full stats dict returned by ``ppo_update_v2``
+                for the previous update, or ``None`` on the first update
+                of a process.  Contains ``approx_kl``, ``clip_frac``,
+                ``ev_<channel>``, ``confidence_<channel>``,
+                ``adv_std_<channel>`` plus whatever keys the policy
+                contributed via ``ActorEval.stats`` (for a Tanh-Gaussian:
+                ``entropy``, ``std_mean``, ``std_min``, ``std_max``).
+                This is what makes closed-loop schedules possible, e.g.
+                raising ``entropy_coef`` when KL has been flat for
+                several updates.
+
+        Returns:
+            An ``ExplorationSpec``, or ``None`` to leave the policy's
+            current exploration configuration untouched.  The default
+            implementation returns ``None``, so an experiment that does
+            not care about exploration behaves exactly as before.
+        """
+        return None
 
     # ==================================================================
     # Phase 1: Job Construction

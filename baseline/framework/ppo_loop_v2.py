@@ -46,7 +46,13 @@ import torch
 from baseline.common.policies import export_actor_policy_artifacts
 from baseline.common.rollout import Episode, ParallelRollouter
 
-from .experiment_v2 import CommonParams, ExperimentV2, PPOParams, TrainablePolicy
+from .experiment_v2 import (
+    CommonParams,
+    ExperimentV2,
+    ExplorationSpec,
+    PPOParams,
+    TrainablePolicy,
+)
 from .ppo_trainer_v2 import PPOBufferV2, ppo_update_v2, set_seed
 
 
@@ -105,6 +111,11 @@ def save_run_config_v2(
     pp = experiment.ppo_params()
     channels = experiment.reward_channels()
 
+    # log_std bounds and entropy_coef left PPOParams, so record the initial
+    # ExplorationSpec too — otherwise config.json would silently lose the
+    # exploration configuration and stop being reproducible.
+    initial_spec = experiment.exploration(1, None)
+
     payload = {
         "experiment": {
             "name": cp.name,
@@ -114,6 +125,9 @@ def save_run_config_v2(
             ],
             "common_params": dataclasses.asdict(cp),
             "ppo_params": dataclasses.asdict(pp),
+            "initial_exploration": (
+                dataclasses.asdict(initial_spec) if initial_spec is not None else None
+            ),
             "state": experiment.state(),
         },
         "algorithm": algo,
@@ -172,7 +186,6 @@ def load_checkpoint_v2(
     critic_optimizers: Dict[str, torch.optim.Optimizer],
     experiment: ExperimentV2,
     cp: CommonParams,
-    pp: PPOParams,
     reset_update: bool = False,
 ) -> int:
     """Load model weights and optimizer states from checkpoint.
@@ -203,13 +216,20 @@ def load_checkpoint_v2(
             except RuntimeError as e:
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
-    # Force align LR and log_std bounds to current config
+    # Force align LR to current config so a config change between resume
+    # runs takes effect immediately.
+    #
+    # log_std bounds used to be force-aligned here too. That is now both
+    # unnecessary and wrong to do from the framework: ``build_actor()``
+    # runs *before* this function and already sets the bounds from the
+    # experiment, and ``load_state_dict`` cannot clobber them because they
+    # are plain Python floats rather than parameters or buffers. Reaching
+    # into a policy-specific attribute from the loop was exactly the
+    # coupling that broke non-Gaussian actors.
     for pg in actor_optimizer.param_groups:
         pg["lr"] = cp.learning_rate
-    actor.log_std_min = float(pp.log_std_min)
     print(
-        f"[checkpoint] Force aligned actor optimizer LR to {cp.learning_rate:.2e} "
-        f"and log_std_min to {pp.log_std_min}",
+        f"[checkpoint] Force aligned actor optimizer LR to {cp.learning_rate:.2e}",
         flush=True,
     )
 
@@ -356,7 +376,6 @@ def train_ppo_v2(
             critic_optimizers=critic_optimizers,
             experiment=experiment,
             cp=cp,
-            pp=pp,
             reset_update=reset_update,
         )
         print(
@@ -387,9 +406,38 @@ def train_ppo_v2(
     # --- Main training loop ---
     # ParallelRollouter maintains long-lived EnvRuntime instances across
     # workers, amortizing environment construction cost over many updates.
+    # Exploration state carried across updates.
+    #   last_stats  — previous update's stats, handed to experiment.exploration()
+    #                 so schedules can be closed-loop rather than open-loop.
+    #   exploration — the spec currently in force; kept so ppo_update_v2 can
+    #                 read its trust-region fields.
+    last_stats: Optional[Dict[str, Any]] = None
+    exploration: Optional[ExplorationSpec] = None
+    last_effective_exploration: Dict[str, float] = {}
+
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         for u in range(start_update, cp.max_updates + 1):
             t_update_start = time.perf_counter()
+
+            # 0. Exploration scheduling — must precede the blueprint export,
+            #    since a temperature change has to be baked into the artifact
+            #    the rollout workers sample from. If it happened after, the
+            #    workers would sample from one distribution while
+            #    evaluate_actions scored those actions under another, silently
+            #    breaking the on-policy assumption.
+            #
+            #    The experiment expresses intent (ExplorationSpec); the policy
+            #    decides what that means for its distribution family and
+            #    reports back what it actually honoured. We log the *effective*
+            #    config, not the request, because a policy may clamp or ignore
+            #    fields it does not support.
+            spec = experiment.exploration(u, last_stats)
+            if spec is not None:
+                exploration = spec
+                effective = actor.set_exploration(spec)
+                if effective != last_effective_exploration:
+                    print(f"  [explore] {effective}", flush=True)
+                    last_effective_exploration = dict(effective)
 
             # 1. Export stochastic policy blueprint for training rollouts.
             #    Stochastic (log_std included) so rollout samples explore.
@@ -446,8 +494,13 @@ def train_ppo_v2(
                 grad_clip_norm=cp.grad_clip_norm,
                 device=device,
                 use_confidence=use_confidence,
+                exploration=exploration,
             )
             t_ppo = time.perf_counter() - t0
+            # Feeds the next update's experiment.exploration() call. Contains
+            # approx_kl / clip_frac / ev_* plus whatever keys the policy
+            # contributed, which is what makes closed-loop schedules possible.
+            last_stats = stats
 
             # 6. Eval — deterministic policy rollout + experiment-defined metrics.
             #    Experiment's on_eval returns {is_new_best, info}. Framework
@@ -588,18 +641,23 @@ def train_ppo_v2(
 
             # [Policy] & [PPO Opt]
             policy_loss = stats.get("policy_loss", 0.0)
-            entropy = stats.get("entropy", 0.0)
-            std_mean = stats.get("std_mean", 0.0)
-            std_min = stats.get("std_min", 0.0)
-            std_max = stats.get("std_max", 0.0)
             epochs_done = stats.get("epochs_done", 0)
             approx_kl = stats.get("approx_kl", 0.0)
             max_kl = stats.get("max_kl", 0.0)
             early_stop_kl = stats.get("early_stop_kl", 0.0)
 
+            # Exploration diagnostics are rendered generically from whatever
+            # the policy reported. Hard-coding entropy/std here would reassert
+            # the Gaussian assumption this refactor removed; a mixture or
+            # diffusion policy contributes different keys and they still show
+            # up in the log without a framework change.
+            explore_str = " ".join(
+                f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
+                for k, v in sorted(buf.actor_stats.items())
+            )
             print(
-                f"  [Policy ] loss={policy_loss:.4f} entropy={entropy:.2f} "
-                f"std={std_mean:.3f} (min={std_min:.3f}, max={std_max:.3f})",
+                f"  [Policy ] loss={policy_loss:.4f}"
+                + (f" | {explore_str}" if explore_str else ""),
                 flush=True,
             )
             print(

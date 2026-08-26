@@ -76,12 +76,16 @@ class ExportedMLPPolicy(Policy):
         hidden_dim = int(payload.get("hidden_dim", payload.get("actor_hidden_dim", 256)))
 
         # Reuse training-time policy class (no code duplication).
+        # log_std_min/max/offset come from the payload so rollout sampling
+        # matches the sigma the trainer scores actions with; the defaults
+        # are only a fallback for pre-existing checkpoints.
         self._policy = TanhGaussianMLPPolicy(
             obs_dim=int(payload["obs_dim"]),
             action_dim=int(payload["action_dim"]),
             hidden_dim=hidden_dim,
             log_std_min=float(payload.get("log_std_min", -4.0)),
             log_std_max=float(payload.get("log_std_max", 0.0)),
+            log_std_offset=float(payload.get("log_std_offset", 0.0)),
         )
         self._policy.load_state_dict(payload["state_dict"], strict=False)
         self._policy.eval()
@@ -131,6 +135,17 @@ def build_actor_export_payload(
     export_payload["action_dim"] = int(getattr(actor, "action_dim", None) or actor.net[-1].out_features)
     export_payload["hidden_dim"] = int(getattr(actor, "hidden_dim", None) or actor.net[0].out_features)
     export_payload["actor_hidden_dim"] = int(export_payload["hidden_dim"])
+    # Sampling-distribution parameters must travel with the weights.
+    # Omitting them made the exported policy fall back to the module
+    # defaults (-4.0 / 0.0) while training clamped at the experiment's
+    # own bounds. Since ``log_std`` is stored unclamped, a floor of -2.5
+    # on the training side and -4.0 on the rollout side means rollout
+    # sampled with a *smaller* sigma than the sigma used to compute
+    # ``old_log_prob`` — a silent violation of the on-policy assumption
+    # that showed up nowhere in the logs.
+    export_payload["log_std_min"] = float(getattr(actor, "log_std_min", -4.0))
+    export_payload["log_std_max"] = float(getattr(actor, "log_std_max", 0.0))
+    export_payload["log_std_offset"] = float(getattr(actor, "_log_std_offset", 0.0))
     export_payload["state_dict"] = {
         key: value.detach().cpu()
         for key, value in actor.state_dict().items()

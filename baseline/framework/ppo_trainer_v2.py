@@ -127,6 +127,8 @@ class PPOBufferV2:
             k: [] for k in reward_keys
         }
 
+        self.actor_stats: Dict[str, float] = {}
+
         if not trajectories:
             self.obs = np.zeros((0,), np.float32)
             self.actions = np.zeros((0,), np.float32)
@@ -163,9 +165,22 @@ class PPOBufferV2:
                 all_modes, dtype=torch.float32, device=device,
             )
 
+        # This call is also the canonical measurement point for the
+        # policy's exploration state, hence ``want_stats=True``. It is the
+        # only evaluate_actions call that is (a) made exactly once per
+        # update, (b) over *all* frames rather than a random minibatch,
+        # and (c) still at theta_old, before any optimizer step. That makes
+        # its statistics a well-defined expectation over the rollout state
+        # distribution — unlike the ~400 minibatch calls, whose averages
+        # are contaminated by the update in progress. want_stats is left
+        # False there both for that reason and because building a float
+        # dict forces a GPU sync per minibatch.
         with torch.no_grad():
-            all_lp, _ = actor.evaluate_actions(all_obs_t, all_acts_t, **kwargs)
-        all_lp_np = all_lp.cpu().numpy().astype(np.float32)
+            ev = actor.evaluate_actions(all_obs_t, all_acts_t, want_stats=True, **kwargs)
+        all_lp_np = ev.log_prob.cpu().numpy().astype(np.float32)
+        # Policy-defined keys, merged into the update stats without
+        # interpretation. Empty for a policy that reports nothing.
+        self.actor_stats = dict(ev.stats or {})
 
         # --- Slice log_probs back into per-trajectory segments ---
         # Walk through trajectories in order, extracting the corresponding
@@ -388,6 +403,7 @@ def ppo_update_v2(
     grad_clip_norm: float,
     device: torch.device,
     use_confidence: bool = True,
+    exploration: Optional[ExplorationSpec] = None,
 ) -> Dict[str, float]:
     """Multi-critic PPO update with fixed defaults.
 
@@ -412,10 +428,25 @@ def ppo_update_v2(
         use_confidence: If True, weight advantages by ``clip(EV, 0, 1)**0.5``.
             This down-weights channels whose critic has low explained variance,
             preventing noisy advantage estimates from destabilizing the actor.
+        exploration: Optional per-update spec from the experiment. Only its
+            trust-region fields are consumed here (``clip_eps``,
+            ``target_kl``) — the distribution-shaping fields were already
+            applied to the policy before rollout via ``set_exploration``.
 
     Returns:
         Stats dict for logging.
     """
+    # Trust-region width is part of the exploration story: a wider clip
+    # lets the policy move further per update. The spec overrides
+    # PPOParams for this update only; PPOParams stays the run's baseline.
+    clip_eps = pp.clip_eps
+    target_kl = pp.target_kl
+    if exploration is not None:
+        if exploration.clip_eps is not None:
+            clip_eps = float(exploration.clip_eps)
+        if exploration.target_kl is not None:
+            target_kl = float(exploration.target_kl)
+
     reward_keys = tuple(ch.name for ch in reward_channels)
     gammas = {ch.name: ch.gamma for ch in reward_channels}
     gae_lambdas = {ch.name: ch.gae_lambda for ch in reward_channels}
@@ -627,21 +658,20 @@ def ppo_update_v2(
             buf.frame_modes, dtype=torch.float32, device=device,
         )
 
-    # --- Diagnostics: episode lengths and actor std ---
+    # --- Diagnostics: episode lengths ---
     # These are logged but do not influence the update.
     ep_lengths = buf.ep_lengths
     ep_len_mean = float(np.mean(ep_lengths)) if ep_lengths else 0.0
     ep_len_min = float(np.min(ep_lengths)) if ep_lengths else 0.0
     ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
 
-    # Actor std diagnostics — tracked to detect policy collapse
-    # (std → 0 means deterministic, no exploration) or explosion.
-    with torch.no_grad():
-        clamped_log_std = torch.clamp(actor.log_std, pp.log_std_min, pp.log_std_max)
-        clamped_std = clamped_log_std.exp()
-        std_mean = float(clamped_std.mean().item())
-        std_min = float(clamped_std.min().item())
-        std_max = float(clamped_std.max().item())
+    # Exploration diagnostics come from the policy itself, measured on the
+    # buffer's whole-batch pass at theta_old (see PPOBufferV2). The trainer
+    # used to compute them by reaching into ``actor.log_std`` directly,
+    # which (a) crashed for any actor without that exact attribute and
+    # (b) re-derived sigma with the trainer's own bounds instead of the
+    # actor's, so the two could silently disagree.
+    actor_stats: Dict[str, float] = dict(buf.actor_stats)
 
     n_batches = max(1, n // pp.minibatch_size)
     n_episodes = len(buf.ep_lengths)
@@ -655,7 +685,6 @@ def ppo_update_v2(
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []
     early_stop_kl = 0.0
-    all_entropies: List[float] = []
     all_clip_fracs: List[float] = []
     all_ratio_means: List[float] = []
     all_ratio_maxs: List[float] = []
@@ -704,15 +733,16 @@ def ppo_update_v2(
 
             # --- Actor update ---
             # Standard PPO clipped surrogate:
-            #   L = -E[min(ratio * adv, clip(ratio) * adv)] - entropy_coef * H
+            #   L = -E[min(ratio * adv, clip(ratio) * adv)] + policy_reg
             # The advantage here is the combined_adv from step 5c.
             # ratio = exp(new_log_prob - old_log_prob), clipped to [1±eps].
             if frame_modes_t is not None:
-                new_lp, entropy = actor.evaluate_actions(
+                ev = actor.evaluate_actions(
                     obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
                 )
             else:
-                new_lp, entropy = actor.evaluate_actions(obs_t[idx], act_t[idx])
+                ev = actor.evaluate_actions(obs_t[idx], act_t[idx])
+            new_lp = ev.log_prob
 
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
@@ -722,20 +752,26 @@ def ppo_update_v2(
             ratio = torch.exp(log_ratio)
             surr1 = ratio * adv_t[idx]
             surr2 = (
-                torch.clamp(ratio, 1.0 - pp.clip_eps, 1.0 + pp.clip_eps) * adv_t[idx]
+                torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
             )
             policy_loss = -(torch.min(surr1, surr2) * batch_weights).mean()
 
             with torch.no_grad():
                 clip_frac = float(
-                    ((ratio - 1.0).abs() > pp.clip_eps).float().mean().item()
+                    ((ratio - 1.0).abs() > clip_eps).float().mean().item()
                 )
                 all_clip_fracs.append(clip_frac)
                 all_ratio_means.append(float(ratio.mean().item()))
                 all_ratio_maxs.append(float(ratio.max().item()))
 
-            loss = policy_loss - pp.entropy_coef * entropy.mean()
-            all_entropies.append(float(entropy.mean().item()))
+            # The policy supplies its own regularizer, already signed and
+            # scaled — for a Tanh-Gaussian that is -entropy_coef * H, but a
+            # mixture may use a sampled entropy estimate and a diffusion
+            # policy may return None. The framework stays agnostic, which
+            # is why ``entropy_coef`` is no longer a PPO parameter.
+            loss = policy_loss
+            if ev.regularizer is not None:
+                loss = loss + ev.regularizer
 
             actor_optimizer.zero_grad()
             loss.backward()
@@ -800,7 +836,7 @@ def ppo_update_v2(
 
         # Early stop: if mean KL exceeds target, stop training epochs
         # to prevent the policy from diverging too far from the rollout.
-        if pp.target_kl > 0.0 and mean_epoch_kl > pp.target_kl:
+        if target_kl > 0.0 and mean_epoch_kl > target_kl:
             print(
                 f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
                 flush=True,
@@ -842,6 +878,12 @@ def ppo_update_v2(
     }
 
     return {
+        # Policy-contributed exploration stats (``entropy``, ``std_mean``,
+        # ``std_min``, ``std_max``, ... for a Tanh-Gaussian). Merged flat and
+        # verbatim: the key names are the policy's choice, not the
+        # framework's. Spread first so the framework's own keys always win a
+        # collision rather than being silently shadowed.
+        **actor_stats,
         "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
         "value_loss": float(np.mean([
             per_critic_losses[f"vloss_{key}"] for key in reward_keys
@@ -850,10 +892,6 @@ def ppo_update_v2(
         "max_kl": max_kl_overall,
         "early_stop_kl": early_stop_kl,
         "epochs_done": len(epoch_kl_stats),
-        "entropy": float(np.mean(all_entropies)) if all_entropies else 0.0,
-        "std_mean": std_mean,
-        "std_min": std_min,
-        "std_max": std_max,
         "ep_len_mean": ep_len_mean,
         "ep_len_min": ep_len_min,
         "ep_len_max": ep_len_max,

@@ -17,6 +17,11 @@ from torch.distributions import Normal
 
 from envs.framework.policy import Policy, PolicyBlueprint
 
+# The actor-side data types of the TrainablePolicy contract. Importing
+# them here is safe (experiment_v2 depends only on envs.framework, so
+# there is no cycle) and keeps a single definition of the contract.
+from baseline.framework.experiment_v2 import ActorEval, ExplorationSpec
+
 from .checkpoint import (
     DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
     build_actor_export_payload,
@@ -60,6 +65,8 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         device: torch.device | str = "cpu",
         deterministic: bool = False,
         model_path: Optional[str] = None,
+        log_std_offset: float = 0.0,
+        entropy_coef: float = 0.0,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -69,6 +76,11 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         self.log_std_max = float(log_std_max)
         self.device = torch.device(device)
         self._deterministic = bool(deterministic)
+        # Exploration state (see set_exploration). Kept as plain floats
+        # rather than buffers so they are owned by the *experiment's*
+        # schedule and never restored from a checkpoint's state_dict.
+        self._log_std_offset = float(log_std_offset)
+        self._entropy_coef = float(entropy_coef)
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.Tanh(),
@@ -87,9 +99,28 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
                 print(f"[TanhGaussianMLPPolicy] unexpected keys on load: {unexpected}", flush=True)
             self.to(self.device)
 
+    def effective_log_std(self) -> torch.Tensor:
+        """Return the ``(action_dim,)`` log-sigma actually used for sampling.
+
+        This is the single place where the exploration temperature and the
+        hard bounds are applied, so training-time scoring
+        (``evaluate_actions``) and rollout-time sampling
+        (``sample_action``) can never disagree.
+
+        The temperature offset is applied *before* clamping: the bounds
+        are hard limits, so a large temperature saturates rather than
+        escaping them.  The resulting sigma is reported in
+        ``ActorEval.stats`` so such saturation is visible in the log.
+        """
+        return torch.clamp(
+            self.log_std + self._log_std_offset,
+            self.log_std_min,
+            self.log_std_max,
+        )
+
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mean = self.net(obs)
-        log_std = torch.clamp(self.log_std, self.log_std_min, self.log_std_max)
+        log_std = self.effective_log_std()
         return mean, log_std.expand_as(mean)
 
     def sample_action(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -105,7 +136,25 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         mean, _ = self.forward(obs)
         return torch.tanh(mean)
 
-    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        frame_modes: Optional[torch.Tensor] = None,
+        want_stats: bool = False,
+    ) -> "ActorEval":
+        """Score ``actions`` under the current parameters.
+
+        Implements the :class:`~baseline.framework.experiment_v2.TrainablePolicy`
+        contract.  ``frame_modes`` is accepted and ignored — this backbone
+        is a single unconditional network with no sub-network routing.
+
+        The returned ``regularizer`` is the entropy bonus already signed
+        and scaled (``-entropy_coef * H``), so the framework can add it to
+        the actor loss without knowing that this family even has an
+        entropy.  ``entropy_coef`` comes from ``set_exploration``.
+        """
         clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
         raw_actions = torch.atanh(clipped_actions)
         mean, log_std = self.forward(obs)
@@ -113,7 +162,67 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         dist = Normal(mean, std)
         log_prob = dist.log_prob(raw_actions) - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)
         entropy = dist.entropy().sum(dim=-1)
-        return log_prob.sum(dim=-1), entropy
+
+        regularizer = None
+        if self._entropy_coef != 0.0:
+            regularizer = -self._entropy_coef * entropy.mean()
+
+        stats: Optional[Dict[str, float]] = None
+        if want_stats:
+            with torch.no_grad():
+                eff_std = self.effective_log_std().exp()
+                stats = {
+                    "entropy": float(entropy.mean().item()),
+                    "std_mean": float(eff_std.mean().item()),
+                    "std_min": float(eff_std.min().item()),
+                    "std_max": float(eff_std.max().item()),
+                    # Fraction of pre-tanh means in the saturated region.
+                    # High values mean the policy is pinned against the
+                    # action bounds, which mimics multi-modality while
+                    # actually destroying the gradient signal.
+                    "tanh_sat_frac": float(
+                        (mean.abs() > 2.0).float().mean().item()
+                    ),
+                }
+        return ActorEval(
+            log_prob=log_prob.sum(dim=-1),
+            regularizer=regularizer,
+            stats=stats,
+        )
+
+    # ------------------------------------------------------------------
+    # Exploration contract
+    # ------------------------------------------------------------------
+
+    def set_exploration(self, spec: "ExplorationSpec") -> Dict[str, float]:
+        """Apply an :class:`ExplorationSpec`; return the effective config.
+
+        Honoured fields:
+
+        - ``temperature``: multiplies sigma, implemented as an additive
+          offset of ``log(temperature)`` on ``log_std`` inside
+          :meth:`effective_log_std`.
+        - ``entropy_coef``: coefficient of the entropy bonus returned as
+          ``ActorEval.regularizer``.
+
+        Ignored fields: ``entropy_target`` (this backbone has no adaptive
+        coefficient — a state-independent sigma already tracks entropy
+        directly through the gradient), ``clip_eps`` / ``target_kl``
+        (consumed by the trainer, not the policy), ``policy_extras``.
+        """
+        if spec.temperature is not None:
+            temperature = float(spec.temperature)
+            if temperature <= 0.0:
+                raise ValueError(f"temperature must be > 0, got {temperature}")
+            self._log_std_offset = float(np.log(temperature))
+        if spec.entropy_coef is not None:
+            self._entropy_coef = float(spec.entropy_coef)
+        return {
+            "entropy_coef": self._entropy_coef,
+            "temperature": float(np.exp(self._log_std_offset)),
+            "log_std_min": self.log_std_min,
+            "log_std_max": self.log_std_max,
+        }
 
     # ------------------------------------------------------------------
     # Policy contract
