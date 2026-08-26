@@ -1,0 +1,70 @@
+# End-to-end balance reinforcement: standup + per-foot stepping + perturbation.
+# Both robots start from random fallen state (RandomFallenStatePlugin),
+# learn to stand up (StandingBalance4StageRewarder provides φ),
+# then learn to step alternately (FootStateObserver provides foot heights + contacts).
+# After standing up (height > 1.15m) and standing steadily for 1 second,
+# StandingTriggeredForcePlugin applies external force perturbations.
+#
+# No imbalance termination — robot can fall and get back up.
+# φ² gating on foot actor weights ensures stepping only activates after standing.
+#
+# Reward channels (in experiment):
+#   r_potential  = 0.01 × φ(t),              aw = 3.0 (fixed)
+#   r_left_foot  = clip(h_left, -0.05, 0.05), aw = state machine × φ²
+#   r_right_foot = clip(h_right, -0.05, 0.05), aw = state machine × φ²
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps (standup ~100 + balance/stepping ~300)."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      standing_height_threshold: 1.15
+      standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+      random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+      observe_steps: 20              # 施力后观察 1 秒
+      impulse_body: "torso"
+      force_threshold: 1.0           # 接触力阈值 (N)
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
