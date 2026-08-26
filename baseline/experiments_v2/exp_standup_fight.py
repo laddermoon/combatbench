@@ -105,7 +105,7 @@ class StandupFight(CombatExperimentV2Base):
     policy from the pool), faces it, and fights.
     """
 
-    name = "standup_fight"
+    name = "fight"
 
     # --- Network ---
     obs_dim: int = 96
