@@ -37,7 +37,6 @@ from baseline.framework.ppo_trainer import _extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
-    FOOT_HEIGHT_CLIP,
 )
 
 from .base import CombatExperimentV2Base
@@ -67,6 +66,9 @@ class Step(CombatExperimentV2Base):
 
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01
+
+    # --- Foot height reward saturation (overrides stepping_state_machine default) ---
+    foot_height_clip: float = 0.05
 
     # --- r_fall actor weight (fixed) ---
     r_fall_actor_weight: float = 3.0
@@ -176,14 +178,14 @@ class Step(CombatExperimentV2Base):
         if h_left is not None:
             r_left_foot = np.clip(
                 np.asarray(h_left[:T_full], dtype=np.float32),
-                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
+                -self.foot_height_clip, self.foot_height_clip,
             )
         else:
             r_left_foot = np.zeros(T_full, dtype=np.float32)
         if h_right is not None:
             r_right_foot = np.clip(
                 np.asarray(h_right[:T_full], dtype=np.float32),
-                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
+                -self.foot_height_clip, self.foot_height_clip,
             )
         else:
             r_right_foot = np.zeros(T_full, dtype=np.float32)
