@@ -2,7 +2,7 @@
 
 Combines ``exp_standup_step_v3.py`` (phase-switched standup/balance rewards
 with per-foot stepping) with ``exp_standup_balance.py`` (StandingTriggeredForcePlugin
-+ 12-level force/duration curriculum).
++ 12-level force/duration curriculum: 40N (4 levels × 10-step) + 100N (8 levels × 5-step)).
 
 From random fallen state → stand up → maintain balance + stepping → withstand
 external force perturbations.  Built on top of the standup_step_v3 policy
@@ -34,8 +34,8 @@ Rewards are NOT masked — the critic can learn from the physical signal
 at all times.  Only actor_weight controls when each channel influences
 the policy update.
 
-Perturbation curriculum (same as exp_standup_balance):
-  12 levels across 3 force tiers (40N / 100N / 200N).
+Perturbation curriculum:
+  12 levels: 40N (4 levels × 10-step duration) + 100N (8 levels × 5-step duration).
   Level 0-3:  40N  (dur 1-10, 11-20, 21-30, 31-40)
   Level 4-7:  100N (dur 1-10, 11-20, 21-30, 31-40)
   Level 8-11: 200N (dur 1-10, 11-20, 21-30, 31-40)
@@ -144,16 +144,15 @@ class BalanceV2(CombatExperimentV2Base):
     # --- Video recording ---
     video_eval_interval: int = 2
 
-    # --- Curriculum: 12 levels, 3 force tiers × 4 duration tiers ---
+    # --- Curriculum: 12 levels, 40N (4 levels × 10-step) + 100N (8 levels × 5-step) ---
     LEVEL_FORCES: Tuple[float, ...] = (
-        40.0, 40.0, 40.0, 40.0,       # level 0-3
-        100.0, 100.0, 100.0, 100.0,   # level 4-7
-        200.0, 200.0, 200.0, 200.0,   # level 8-11
+        40.0, 40.0, 40.0, 40.0,                               # level 0-3
+        100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0,  # level 4-11
     )
     LEVEL_DURATION_RANGES: Tuple[Tuple[int, int], ...] = (
-        (1, 10), (11, 20), (21, 30), (31, 40),   # 40N
-        (1, 10), (11, 20), (21, 30), (31, 40),   # 100N
-        (1, 10), (11, 20), (21, 30), (31, 40),   # 200N
+        (1, 10), (11, 20), (21, 30), (31, 40),               # 40N
+        (1, 5), (6, 10), (11, 15), (16, 20),                 # 100N
+        (21, 25), (26, 30), (31, 35), (36, 40),              # 100N
     )
     PROMOTE_RECOVERY_RATE: float = 0.8
     """晋级阈值：扰动后不摔倒的比例（recovery_rate = 1 - fall/push）。"""
