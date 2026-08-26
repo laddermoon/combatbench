@@ -15,7 +15,7 @@ Phase-switched rewards (same as follow_v2 / balance_v2):
     r_right_foot = clip(h_right, -0.05, 0.05), weight = stepping state machine
     r_radial     = radial approach vel,        weight = 3.0 × φ_height²
     r_tangential = tangential penalty,         weight = 1.0 × φ_height²
-    r_face       = facing_score × dist_gate,   weight = 1.0 × φ_height²
+    r_face       = facing_score,             weight = 1.0 × dist_gate × φ_height²
     r_damage_dealt = damage dealt,             weight = dealt_weight × dist_gate
     r_damage_taken = damage taken,             weight = taken_weight × dist_gate
 
@@ -48,7 +48,7 @@ Nine reward channels (each with independent critic):
   r_right_foot    — aw = state machine (BALANCE only)
   r_radial        — aw = 3.0 × φ_height² × BALANCE
   r_tangential    — aw = 1.0 × φ_height² × BALANCE
-  r_face          — aw = 1.0 × φ_height² × BALANCE
+  r_face          — aw = 1.0 × dist_gate × φ_height² × BALANCE
   r_damage_dealt  — aw = dealt_weight × dist_gate × BALANCE
   r_damage_taken  — aw = taken_weight × dist_gate × BALANCE
 
@@ -496,11 +496,12 @@ class StandupFight(CombatExperimentV2Base):
             )
             dist = np.linalg.norm(opp_xy[:T_full] - self_xy[:T_full], axis=1)
 
-        # --- r_face: facing_score × dist_gate ---
+        # --- r_face: facing_score (reward) + dist_gate (actor weight) ---
         fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
         fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
 
         r_face = np.zeros(T_full, dtype=np.float32)
+        face_dist_gate = np.zeros(T_full, dtype=np.float32)
         if fwd_x is not None and fwd_y is not None and self_x is not None:
             fwd_x = np.asarray(fwd_x[:T_full], dtype=np.float64)
             fwd_y = np.asarray(fwd_y[:T_full], dtype=np.float64)
@@ -514,10 +515,13 @@ class StandupFight(CombatExperimentV2Base):
 
             cos_angle = np.sum(fwd * to_opp_hat, axis=1)
             facing_score = np.maximum(0.0, cos_angle)
-            dist_gate = np.clip(
+
+            # dist_gate goes into actor_weight, not reward
+            face_dist_gate = np.clip(
                 (D_FACE - dist) / (D_FACE - D_STRIKE), 0.0, 1.0
-            )
-            r_face = (facing_score * dist_gate).astype(np.float32)
+            ).astype(np.float32)
+
+            r_face = facing_score.astype(np.float32)
 
         # --- r_damage_dealt / r_damage_taken ---
         dealt = _extract_per_step_field(oo, "damage_breakdown", "dealt", T_full)
@@ -548,7 +552,7 @@ class StandupFight(CombatExperimentV2Base):
             "r_right_foot": w_right,
             "r_radial": (self.r_radial_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
             "r_tangential": (self.r_tangential_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
-            "r_face": (self.r_face_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_face": (self.r_face_actor_weight * face_dist_gate * phi_h_sq * balance_mask).astype(np.float32),
             "r_damage_dealt": (self.damage_dealt_weight * damage_gate * balance_mask).astype(np.float32),
             "r_damage_taken": (self.damage_taken_weight * damage_gate * balance_mask).astype(np.float32),
         }

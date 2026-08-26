@@ -20,7 +20,7 @@ Two reward phases with hard switch based on torso height:
   Follow/face channels (always present, gated by φ_height² × BALANCE mask):
     r_radial     = radial approach vel,    weight = 3.0 × φ_height² × BALANCE
     r_tangential = tangential penalty,     weight = 1.0 × φ_height² × BALANCE
-    r_face       = facing_score × dist_gate, weight = 1.0 × φ_height² × BALANCE
+    r_face       = facing_score,             weight = 1.0 × dist_gate × φ_height² × BALANCE
 
 Seven reward channels (each with independent critic):
   r_potential  — reward always present, aw=3.0 in STANDUP, 0 in BALANCE
@@ -29,7 +29,7 @@ Seven reward channels (each with independent critic):
   r_right_foot — reward always present, aw = state machine (BALANCE only)
   r_radial     — reward always present, aw = 3.0 × φ_height² × BALANCE
   r_tangential — reward always present, aw = 1.0 × φ_height² × BALANCE
-  r_face       — reward always present, aw = 1.0 × φ_height² × BALANCE
+  r_face       — reward always present, aw = 1.0 × dist_gate × φ_height² × BALANCE
 
 Rewards are NOT masked — critics learn at all times.  Only actor_weight
 controls when each channel influences the policy update.
@@ -409,11 +409,12 @@ class FollowV2(CombatExperimentV2Base):
                 self_xy, opp_xy,
             )
 
-        # --- r_face: facing_score × dist_gate ---
+        # --- r_face: facing_score (reward) + dist_gate (actor weight) ---
         fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
         fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
 
         r_face = np.zeros(T_full, dtype=np.float32)
+        dist_gate = np.zeros(T_full, dtype=np.float32)
         if fwd_x is not None and fwd_y is not None and self_x is not None:
             fwd_x = np.asarray(fwd_x[:T_full], dtype=np.float64)
             fwd_y = np.asarray(fwd_y[:T_full], dtype=np.float64)
@@ -430,11 +431,12 @@ class FollowV2(CombatExperimentV2Base):
             cos_angle = np.sum(fwd * to_opp_hat, axis=1)
             facing_score = np.maximum(0.0, cos_angle)
 
+            # dist_gate goes into actor_weight, not reward
             dist_gate = np.clip(
                 (D_FACE - dist) / (D_FACE - D_STRIKE), 0.0, 1.0
-            )
+            ).astype(np.float32)
 
-            r_face = (facing_score * dist_gate).astype(np.float32)
+            r_face = facing_score.astype(np.float32)
 
         # --- No early termination ---
         is_terminated = False
@@ -451,7 +453,7 @@ class FollowV2(CombatExperimentV2Base):
             "r_right_foot": w_right,
             "r_radial": (self.r_radial_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
             "r_tangential": (self.r_tangential_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
-            "r_face": (self.r_face_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_face": (self.r_face_actor_weight * dist_gate * phi_h_sq * balance_mask).astype(np.float32),
         }
 
         all_rewards = {
