@@ -10,14 +10,15 @@
 # the opponent pool (assigned at rollout job construction time).
 #
 # Reward channels (in experiment):
-#   r_fall          = 0.01 × φ(t),              aw = 3.0 (fixed)
-#   r_left_foot     = clip(h_left, -0.1, 0.1),   aw = state machine × φ²
-#   r_right_foot    = clip(h_right, -0.1, 0.1),  aw = state machine × φ²
-#   r_radial        = radial approach vel,       aw = 3.0 × φ²
-#   r_tangential    = tangential penalty,        aw = 1.0 × φ²
-#   r_face          = facing_score × dist_gate,  aw = 1.0 × φ²
-#   r_damage_dealt  = damage dealt to opponent,  aw = dealt_weight × dist_gate
-#   r_damage_taken  = damage taken from opponent, aw = taken_weight × dist_gate
+#   r_potential     = 0.01 × φ_4stage,           aw = 3.0 (STANDUP only)
+#   r_fall          = 0.01 × φ_height,           aw = 3.0 (BALANCE only)
+#   r_left_foot     = clip(h_left, -0.05, 0.05),  aw = state machine (BALANCE only)
+#   r_right_foot    = clip(h_right, -0.05, 0.05), aw = state machine (BALANCE only)
+#   r_radial        = radial approach vel,        aw = 3.0 × φ_height² × BALANCE
+#   r_tangential    = tangential penalty,         aw = 1.0 × φ_height² × BALANCE
+#   r_face          = facing_score × dist_gate,   aw = 1.0 × φ_height² × BALANCE
+#   r_damage_dealt  = damage dealt to opponent,   aw = dealt_weight × dist_gate × BALANCE
+#   r_damage_taken  = damage taken from opponent, aw = taken_weight × dist_gate × BALANCE
 #   (dist_gate: hard switch, 1.0 when dist ≤ 0.9 m, 0 otherwise)
 
 parameters:
@@ -62,6 +63,10 @@ plugins:
 observer_plugins:
   standing_balance:
     cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: ${agent_id}
+  height_phi:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
     config:
       agent_id: ${agent_id}
   foot_state:

@@ -1,8 +1,26 @@
 """V2 end-to-end step 5: standup + follow + face + fight (self-play).
 
-On top of ``standup_face``, adds two damage reward channels and replaces
+On top of ``follow_v2``, adds two damage reward channels and replaces
 the scripted moving target (RandomMovePlugin) with a real opponent policy
 sampled from an opponent pool.
+
+Phase-switched rewards (same as follow_v2 / balance_v2):
+
+  STANDUP phase (h_torso < plateau):
+    r_potential = 0.01 × φ_4stage,  weight = 3.0
+
+  BALANCE phase (h_torso >= plateau):
+    r_fall       = 0.01 × φ_height,          weight = 3.0
+    r_left_foot  = clip(h_left, -0.05, 0.05),  weight = stepping state machine
+    r_right_foot = clip(h_right, -0.05, 0.05), weight = stepping state machine
+    r_radial     = radial approach vel,        weight = 3.0 × φ_height²
+    r_tangential = tangential penalty,         weight = 1.0 × φ_height²
+    r_face       = facing_score × dist_gate,   weight = 1.0 × φ_height²
+    r_damage_dealt = damage dealt,             weight = dealt_weight × dist_gate
+    r_damage_taken = damage taken,             weight = taken_weight × dist_gate
+
+All channels except r_potential are only active in BALANCE phase.
+Damage channels additionally gated by a hard distance gate (dist ≤ 0.9 m).
 
 Opponent pool
 -------------
@@ -17,37 +35,25 @@ blueprint paths and a decay coefficient::
         "decay": 0.95
     }
 
-The first entry is the initial policy (e.g. from ``standup_face``).
+The first entry is the initial policy (e.g. from ``follow_v2``).
 New entries are appended by the iterative training script after each
 training round.  During rollout, each episode samples an opponent from
 the pool with weight ``decay^age`` (age=0 for the newest, larger for
 older), so recent policies are sampled more often.
 
-Reward channels (8, each with independent critic):
-  - r_fall:          0.01 × φ(t),                aw = 3.0 (fixed)
-  - r_left_foot:     clip(h_left, -0.1, 0.1),     aw = state machine × φ²
-  - r_right_foot:    clip(h_right, -0.1, 0.1),    aw = state machine × φ²
-  - r_radial:        radial approach vel,         aw = 3.0 × φ²
-  - r_tangential:    tangential penalty,          aw = 1.0 × φ²
-  - r_face:          facing_score × dist_gate,    aw = 1.0 × φ²
-  - r_damage_dealt:  damage dealt to opponent,    aw = dealt_weight × dist_gate
-  - r_damage_taken:  damage taken from opponent,  aw = taken_weight × dist_gate
+Nine reward channels (each with independent critic):
+  r_potential     — aw=3.0 in STANDUP, 0 in BALANCE
+  r_fall          — aw=3.0 in BALANCE, 0 in STANDUP
+  r_left_foot     — aw = state machine (BALANCE only)
+  r_right_foot    — aw = state machine (BALANCE only)
+  r_radial        — aw = 3.0 × φ_height² × BALANCE
+  r_tangential    — aw = 1.0 × φ_height² × BALANCE
+  r_face          — aw = 1.0 × φ_height² × BALANCE
+  r_damage_dealt  — aw = dealt_weight × dist_gate × BALANCE
+  r_damage_taken  — aw = taken_weight × dist_gate × BALANCE
 
-dist_gate is a hard switch: 1.0 when distance to opponent ≤ 0.9 m, 0
-otherwise.  Damage channels only influence the policy when the robots
-are close enough to actually hit each other.
-
-The foot channels use the v2 stepping state machine
-(``stepping_state_machine.compute_foot_weights``) with Phase A/B/C,
-DOUBLE grace, and FLIGHT continuation.  See
-``baseline/humanoid21/end2end/stepping_state_machine.py`` for details.
-
-φ is the 4-stage standing potential.  Damage values come from
-``DamageBreakdownRewarder`` which reads ``CombatScoringPlugin`` metrics.
-
-Eval metric: mean net damage (dealt − taken) across eval episodes.
-Early stop when ``eval_target`` is met for ``eval_patience`` consecutive
-evals.
+Rewards are NOT masked — critics learn at all times.  Only actor_weight
+controls when each channel influences the policy update.
 
 Blueprint: baseline/humanoid21/end2end/standup_fight_env.yaml
 """
@@ -60,21 +66,29 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-)
+from baseline.framework.ppo_trainer import _extract_per_step_field
+
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
 )
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
-    FOOT_HEIGHT_CLIP,
+    FOOT_WEIGHT,
+    PHASE_A_STEPS,
+    PHASE_B_END,
+    DOUBLE_GRACE_STEPS,
 )
 
 from .base import CombatExperimentV2Base
 
 
-# --- Face reward constants (same as standup_face) ---
+# --- Phase thresholds (same as balance_v2 / follow_v2) ---
+H_BALANCE_LOW_THRESHOLD: float = 1.0
+H_BALANCE_TO_STANDUP: float = 0.70
+PLATEAU_WINDOW: int = 20
+PLATEAU_SLOPE_EPS: float = 0.005
+
+# --- Face reward constants (same as standup_face / follow_v2) ---
 D_FACE: float = 1.5     # m — face reward starts activating
 D_STRIKE: float = 0.7   # m — face reward fully active
 
@@ -92,13 +106,19 @@ class StandupFight(CombatExperimentV2Base):
 
     name = "standup_fight"
 
+    # --- Network ---
+    obs_dim: int = 96
+    action_dim: int = 21
+
     # --- Reward channels ---
     _channel_names = (
-        "r_fall", "r_left_foot", "r_right_foot",
-        "r_radial", "r_tangential",
-        "r_face", "r_damage_dealt", "r_damage_taken",
+        "r_potential", "r_fall",
+        "r_left_foot", "r_right_foot",
+        "r_radial", "r_tangential", "r_face",
+        "r_damage_dealt", "r_damage_taken",
     )
     _channel_gammas = {
+        "r_potential": 0.99,
         "r_fall": 0.99,
         "r_left_foot": 0.90,
         "r_right_foot": 0.90,
@@ -110,7 +130,29 @@ class StandupFight(CombatExperimentV2Base):
     }
     _gae_lambda = 0.95
 
+    # --- Reward constants ---
+    per_step_phi_coef: float = 0.01
+
+    # --- Foot height reward saturation ---
+    foot_height_clip: float = 0.05
+
+    # --- r_fall actor weight (fixed, balance phase) ---
+    r_fall_actor_weight: float = 3.0
+
+    # --- r_potential actor weight (fixed, standup phase) ---
+    r_potential_actor_weight: float = 3.0
+
+    # --- Follow/face base actor weights (gated by φ_height² × BALANCE) ---
+    r_radial_actor_weight: float = 3.0
+    r_tangential_actor_weight: float = 1.0
+    r_face_actor_weight: float = 1.0
+
+    # --- Damage actor weights (configurable via --set) ---
+    damage_dealt_weight: float = 3.0
+    damage_taken_weight: float = 1.0
+
     # --- Env / rollout config ---
+    env_blueprint = ""  # overridden via _env_pb()
     agent_used = "random"
     max_steps = 600
     INITIAL_DISTANCE: float = 2.0
@@ -121,26 +163,13 @@ class StandupFight(CombatExperimentV2Base):
     video_eval_interval: int = 2
     max_updates: int = 20000
 
-    # --- PPO tuning (match standup_face) ---
+    # --- PPO tuning (match standup_face / follow_v2) ---
     log_std_min: float = -1.8
     learning_rate: float = 3e-5
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
     entropy_coef: float = 1.5e-3
-
-    # --- Reward constants ---
-    per_step_phi_coef: float = 0.01
-
-    # --- Base actor weights (r_fall fixed, others gated by φ²) ---
-    # r_left_foot / r_right_foot use the state machine (per-frame), not a
-    # fixed scalar, so they are not in this tuple.
-    # Order: r_fall, r_radial, r_tangential, r_face
-    _base_actor_weights: Tuple[float, ...] = (3.0, 3.0, 1.0, 1.0)
-
-    # --- Damage actor weights (configurable via --set) ---
-    damage_dealt_weight: float = 3.0
-    damage_taken_weight: float = 1.0
 
     # --- Eval / early stop ---
     eval_target: Optional[float] = None
@@ -284,6 +313,98 @@ class StandupFight(CombatExperimentV2Base):
         return jobs
 
     # ------------------------------------------------------------------
+    # Phase determination (same as balance_v2 / follow_v2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_phase_mask(
+        h_torso: np.ndarray, T: int,
+    ) -> np.ndarray:
+        """Compute per-step phase mask (post-hoc, on full episode).
+
+        Returns boolean array of shape (T,):
+          True  = BALANCE phase
+          False = STANDUP phase
+        """
+        phase = np.zeros(T, dtype=bool)
+
+        balance_start = None
+        W = PLATEAU_WINDOW
+        for t in range(W, T + 1):
+            window = h_torso[t - W:t]
+            if np.all(window >= H_BALANCE_LOW_THRESHOLD):
+                x = np.arange(W, dtype=np.float64)
+                y = window.astype(np.float64)
+                x_mean = x.mean()
+                y_mean = y.mean()
+                denom = np.sum((x - x_mean) ** 2)
+                if denom > 0:
+                    slope = np.sum((x - x_mean) * (y - y_mean)) / denom
+                else:
+                    slope = 0.0
+                if abs(slope) < PLATEAU_SLOPE_EPS:
+                    balance_start = t - W
+                    break
+
+        if balance_start is None:
+            return phase
+
+        in_balance = True
+        for t in range(balance_start, T):
+            if in_balance:
+                if float(h_torso[t]) < H_BALANCE_TO_STANDUP:
+                    in_balance = False
+            phase[t] = in_balance
+
+        return phase
+
+    # ------------------------------------------------------------------
+    # Stepping state machine (phase-gated wrapper, same as balance_v2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_foot_weights_masked(
+        contact_l: np.ndarray,
+        contact_r: np.ndarray,
+        balance_mask: np.ndarray,
+        T: int,
+        h_left: Optional[np.ndarray] = None,
+        h_right: Optional[np.ndarray] = None,
+        weight: float = FOOT_WEIGHT,
+        phase_a_steps: int = PHASE_A_STEPS,
+        phase_b_end: int = PHASE_B_END,
+        double_grace_steps: int = DOUBLE_GRACE_STEPS,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Balance-gated foot weights."""
+        w_left = np.zeros(T, dtype=np.float32)
+        w_right = np.zeros(T, dtype=np.float32)
+
+        seg_start = 0
+        for t in range(T + 1):
+            in_seg = t < T and bool(balance_mask[t])
+            seg_active = t > seg_start and (t == T or not in_seg)
+            if seg_active:
+                seg_len = t - seg_start
+                cl = np.asarray(contact_l[seg_start:t], dtype=np.float32)
+                cr = np.asarray(contact_r[seg_start:t], dtype=np.float32)
+                hl = np.asarray(h_left[seg_start:t], dtype=np.float32) if h_left is not None else None
+                hr = np.asarray(h_right[seg_start:t], dtype=np.float32) if h_right is not None else None
+                wl, wr = compute_foot_weights(
+                    cl, cr, seg_len,
+                    h_left=hl, h_right=hr,
+                    weight=weight,
+                    phase_a_steps=phase_a_steps,
+                    phase_b_end=phase_b_end,
+                    double_grace_steps=double_grace_steps,
+                )
+                w_left[seg_start:t] = wl
+                w_right[seg_start:t] = wr
+            if t < T and not in_seg:
+                seg_start = t + 1
+
+        return w_left, w_right
+
+    # ------------------------------------------------------------------
     # Trajectory building
     # ------------------------------------------------------------------
 
@@ -308,49 +429,52 @@ class StandupFight(CombatExperimentV2Base):
 
         oo = episode.observer_outputs
 
-        # --- Extract φ (4-stage standing potential) ---
-        phi_arr = _extract_per_step_field(oo, "standing_balance", "potential", T_full)
-        if phi_arr is not None:
-            phi_arr = phi_arr[:T_full]
+        # --- Extract φ_4stage (StandingBalance4StageRewarder "potential") ---
+        phi4_arr = _extract_per_step_field(oo, "standing_balance", "potential", T_full)
+        if phi4_arr is not None:
+            phi4_arr = phi4_arr[:T_full]
         else:
-            phi_arr = np.zeros(T_full, dtype=np.float32)
-        phi_arr = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
+            phi4_arr = np.zeros(T_full, dtype=np.float32)
+        phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
-        # --- r_fall ---
-        r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
-
-        # --- r_left_foot / r_right_foot (foot heights + state machine) ---
-        h_left = _extract_per_step_field(oo, "foot_state", "h_left_foot", T_full)
-        h_right = _extract_per_step_field(oo, "foot_state", "h_right_foot", T_full)
-        contact_l = _extract_per_step_field(oo, "foot_state", "left_foot_contact", T_full)
-        contact_r = _extract_per_step_field(oo, "foot_state", "right_foot_contact", T_full)
-
-        if h_left is not None:
-            r_left_foot = np.clip(
-                np.asarray(h_left[:T_full], dtype=np.float32),
-                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
-            )
+        # --- Extract φ_height (HeightPhiObserver "phi") ---
+        phi_h_arr = _extract_per_step_field(oo, "height_phi", "phi", T_full)
+        if phi_h_arr is not None:
+            phi_h_arr = phi_h_arr[:T_full]
         else:
-            r_left_foot = np.zeros(T_full, dtype=np.float32)
-        if h_right is not None:
-            r_right_foot = np.clip(
-                np.asarray(h_right[:T_full], dtype=np.float32),
-                -FOOT_HEIGHT_CLIP, FOOT_HEIGHT_CLIP,
-            )
-        else:
-            r_right_foot = np.zeros(T_full, dtype=np.float32)
+            phi_h_arr = np.zeros(T_full, dtype=np.float32)
+        phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
-        if contact_l is not None and contact_r is not None:
-            w_left_raw, w_right_raw = compute_foot_weights(
-                np.asarray(contact_l[:T_full], dtype=bool),
-                np.asarray(contact_r[:T_full], dtype=bool),
-                T_full,
-                h_left=np.asarray(h_left[:T_full], dtype=np.float32) if h_left is not None else None,
-                h_right=np.asarray(h_right[:T_full], dtype=np.float32) if h_right is not None else None,
-            )
+        # --- Extract h_torso for phase determination ---
+        h_torso = _extract_per_step_field(oo, "standing_balance", "h_torso", T_full)
+        if h_torso is not None:
+            h_torso = h_torso[:T_full]
         else:
-            w_left_raw = np.zeros(T_full, dtype=np.float32)
-            w_right_raw = np.zeros(T_full, dtype=np.float32)
+            h_torso = np.zeros(T_full, dtype=np.float32)
+
+        # --- Compute phase mask ---
+        balance_mask = self._compute_phase_mask(h_torso, T_full)
+        standup_mask = ~balance_mask
+
+        # --- r_potential: dense reward, critic learns at all times ---
+        r_potential = (self.per_step_phi_coef * phi4_arr).astype(np.float32)
+
+        # --- r_fall: dense reward, critic learns at all times ---
+        r_fall = (self.per_step_phi_coef * phi_h_arr).astype(np.float32)
+
+        # --- Foot heights (saturated) ---
+        h_left = self._extract_foot_field(oo, "foot_state", "h_left_foot", T_full)
+        h_right = self._extract_foot_field(oo, "foot_state", "h_right_foot", T_full)
+        r_left = np.clip(h_left, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
+        r_right = np.clip(h_right, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
+
+        # --- Contacts → stepping state machine → foot actor weights ---
+        contact_l = self._extract_foot_field(oo, "foot_state", "left_foot_contact", T_full)
+        contact_r = self._extract_foot_field(oo, "foot_state", "right_foot_contact", T_full)
+        w_left, w_right = self._compute_foot_weights_masked(
+            contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
+            h_left=h_left, h_right=h_right,
+        )
 
         # --- r_radial / r_tangential ---
         self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
@@ -407,29 +531,33 @@ class StandupFight(CombatExperimentV2Base):
         else:
             r_taken = np.zeros(T_full, dtype=np.float32)
 
-        # --- No early termination (same as standup_face) ---
+        # --- No early termination ---
         is_terminated = False
 
         # --- Actor weights ---
-        # r_fall: fixed.  Foot/radial/tangential/face: gated by φ².
-        # Damage channels: hard distance gate (active when dist <= D_DAMAGE_GATE).
-        phi_sq = (phi_arr ** 2).astype(np.float32)
+        # r_potential: STANDUP phase only
+        # All other channels: BALANCE phase only
+        # Follow/face channels additionally gated by φ_height²
+        # Damage channels additionally gated by hard distance gate
+        phi_h_sq = (phi_h_arr ** 2).astype(np.float32)
         damage_gate = (dist <= D_DAMAGE_GATE).astype(np.float32)
         actor_weights = {
-            "r_fall": np.full(T_full, self._base_actor_weights[0], dtype=np.float32),
-            "r_left_foot": (w_left_raw * phi_sq),
-            "r_right_foot": (w_right_raw * phi_sq),
-            "r_radial": (self._base_actor_weights[1] * phi_sq),
-            "r_tangential": (self._base_actor_weights[2] * phi_sq),
-            "r_face": (self._base_actor_weights[3] * phi_sq),
-            "r_damage_dealt": (self.damage_dealt_weight * damage_gate),
-            "r_damage_taken": (self.damage_taken_weight * damage_gate),
+            "r_potential": (self.r_potential_actor_weight * standup_mask).astype(np.float32),
+            "r_fall": (self.r_fall_actor_weight * balance_mask).astype(np.float32),
+            "r_left_foot": w_left,
+            "r_right_foot": w_right,
+            "r_radial": (self.r_radial_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_tangential": (self.r_tangential_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_face": (self.r_face_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_damage_dealt": (self.damage_dealt_weight * damage_gate * balance_mask).astype(np.float32),
+            "r_damage_taken": (self.damage_taken_weight * damage_gate * balance_mask).astype(np.float32),
         }
 
         all_rewards = {
+            "r_potential": r_potential,
             "r_fall": r_fall,
-            "r_left_foot": r_left_foot,
-            "r_right_foot": r_right_foot,
+            "r_left_foot": r_left,
+            "r_right_foot": r_right,
             "r_radial": r_radial.astype(np.float32),
             "r_tangential": r_tangential.astype(np.float32),
             "r_face": r_face,
@@ -454,6 +582,20 @@ class StandupFight(CombatExperimentV2Base):
             mode=None,
             log_prob=None,
         )]
+
+    @staticmethod
+    def _extract_foot_field(
+        oo, observer_key: str, field: str, T_full: int,
+    ) -> np.ndarray:
+        """Extract a FootStateObserver field, truncated to ``T_full``."""
+        arr = _extract_per_step_field(oo, observer_key, field, T_full)
+        if arr is None:
+            raise KeyError(
+                f"_extract_foot_field: observer '{observer_key}' field '{field}' "
+                f"missing from observer_outputs "
+                f"(available observers={list(oo.keys())})"
+            )
+        return arr[:T_full]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:
         all_trajs: List[Trajectory] = []
