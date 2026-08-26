@@ -17,19 +17,19 @@ Two reward phases with hard switch based on torso height:
     r_left_foot  = clip(h_left,  -0.05, 0.05), weight = stepping state machine
     r_right_foot = clip(h_right, -0.05, 0.05), weight = stepping state machine
 
-  Follow/face channels (always present, gated by φ_height²):
-    r_radial     = radial approach vel,    weight = 3.0 × φ_height²
-    r_tangential = tangential penalty,     weight = 1.0 × φ_height²
-    r_face       = facing_score × dist_gate, weight = 1.0 × φ_height²
+  Follow/face channels (always present, gated by φ_height² × BALANCE mask):
+    r_radial     = radial approach vel,    weight = 3.0 × φ_height² × BALANCE
+    r_tangential = tangential penalty,     weight = 1.0 × φ_height² × BALANCE
+    r_face       = facing_score × dist_gate, weight = 1.0 × φ_height² × BALANCE
 
 Seven reward channels (each with independent critic):
   r_potential  — reward always present, aw=3.0 in STANDUP, 0 in BALANCE
   r_fall       — reward always present, aw=3.0 in BALANCE, 0 in STANDUP
   r_left_foot  — reward always present, aw = state machine (BALANCE only)
   r_right_foot — reward always present, aw = state machine (BALANCE only)
-  r_radial     — reward always present, aw = 3.0 × φ_height²
-  r_tangential — reward always present, aw = 1.0 × φ_height²
-  r_face       — reward always present, aw = 1.0 × φ_height²
+  r_radial     — reward always present, aw = 3.0 × φ_height² × BALANCE
+  r_tangential — reward always present, aw = 1.0 × φ_height² × BALANCE
+  r_face       — reward always present, aw = 1.0 × φ_height² × BALANCE
 
 Rewards are NOT masked — critics learn at all times.  Only actor_weight
 controls when each channel influences the policy update.
@@ -440,16 +440,18 @@ class FollowV2(CombatExperimentV2Base):
         is_terminated = False
 
         # --- Actor weights ---
-        # Follow/face channels gated by φ_height² (not φ_4stage²)
+        # r_potential: STANDUP phase only
+        # All other channels: BALANCE phase only
+        # Follow/face channels additionally gated by φ_height²
         phi_h_sq = (phi_h_arr ** 2).astype(np.float32)
         actor_weights = {
             "r_potential": (self.r_potential_actor_weight * standup_mask).astype(np.float32),
             "r_fall": (self.r_fall_actor_weight * balance_mask).astype(np.float32),
             "r_left_foot": w_left,
             "r_right_foot": w_right,
-            "r_radial": (self.r_radial_actor_weight * phi_h_sq),
-            "r_tangential": (self.r_tangential_actor_weight * phi_h_sq),
-            "r_face": (self.r_face_actor_weight * phi_h_sq),
+            "r_radial": (self.r_radial_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_tangential": (self.r_tangential_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
+            "r_face": (self.r_face_actor_weight * phi_h_sq * balance_mask).astype(np.float32),
         }
 
         all_rewards = {
