@@ -7,7 +7,7 @@ Based on ``exp_standup_step.py``, replacing the sparse ``r_cross`` channel
 (CrossSupportBalanceRewarder) with two dense per-foot height channels
 using the v2 stepping state machine::
 
-    r_fall       = 0.01 × φ(t),              γ=0.99, aw = 3.0 (fixed)
+    r_potential  = 0.01 × φ(t),             γ=0.99, aw = 3.0 (fixed)
     r_left_foot  = clip(h_left, -0.1, 0.1),  γ=0.90, aw = state machine × φ²
     r_right_foot = clip(h_right, -0.1, 0.1), γ=0.90, aw = state machine × φ²
 
@@ -18,7 +18,7 @@ the stepping state machine.  See
 rule table (Phase A/B/C, DOUBLE grace, FLIGHT continuation).
 
 φ² gating on the foot channels ensures stepping is only rewarded after
-the robot is standing.  r_fall is always active (fixed aw = 3.0).
+the robot is standing.  r_potential is always active (fixed aw = 3.0).
 
 No imbalance termination — the robot can fall and get back up.
 Every step is trainable (like standup, not like basic_balance).
@@ -56,9 +56,9 @@ class Step(CombatExperimentV2Base):
     action_dim: int = 21
 
     # --- Reward channels ---
-    _channel_names = ("r_fall", "r_left_foot", "r_right_foot")
+    _channel_names = ("r_potential", "r_left_foot", "r_right_foot")
     _channel_gammas = {
-        "r_fall": 0.99,
+        "r_potential": 0.99,
         "r_left_foot": 0.90,
         "r_right_foot": 0.90,
     }
@@ -70,8 +70,8 @@ class Step(CombatExperimentV2Base):
     # --- Foot height reward saturation (overrides stepping_state_machine default) ---
     foot_height_clip: float = 0.05
 
-    # --- r_fall actor weight (fixed) ---
-    r_fall_actor_weight: float = 3.0
+    # --- r_potential actor weight (fixed) ---
+    r_potential_actor_weight: float = 3.0
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -165,8 +165,8 @@ class Step(CombatExperimentV2Base):
             phi_arr = np.zeros(T_full, dtype=np.float32)
         phi_arr = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
 
-        # --- r_fall: 0.01 × φ(t) per step ---
-        r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
+        # --- r_potential: 0.01 × φ(t) per step ---
+        r_potential = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
         # --- Foot heights (saturated) ---
         h_left = _extract_per_step_field(
@@ -212,16 +212,16 @@ class Step(CombatExperimentV2Base):
         # --- No early termination: robot can fall and get back up ---
         is_terminated = False
 
-        # --- Actor weights: r_fall fixed, foot channels gated by φ² ---
+        # --- Actor weights: r_potential fixed, foot channels gated by φ² ---
         phi_sq = (phi_arr ** 2).astype(np.float32)
         actor_weights = {
-            "r_fall": np.full(T_full, self.r_fall_actor_weight, dtype=np.float32),
+            "r_potential": np.full(T_full, self.r_potential_actor_weight, dtype=np.float32),
             "r_left_foot": (w_left * phi_sq),
             "r_right_foot": (w_right * phi_sq),
         }
 
         all_rewards = {
-            "r_fall": r_fall,
+            "r_potential": r_potential,
             "r_left_foot": r_left_foot,
             "r_right_foot": r_right_foot,
         }
