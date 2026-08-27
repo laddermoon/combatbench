@@ -15,6 +15,7 @@ from .experiment import (
     ExplorationSpec,
     PPOParams,
     TrainablePolicy,
+    UpdateStats,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "ExplorationSpec",
     "PPOParams",
     "TrainablePolicy",
+    "UpdateStats",
 ]

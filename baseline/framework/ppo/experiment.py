@@ -443,6 +443,103 @@ class PPOParams:
 
 
 # ---------------------------------------------------------------------------
+# UpdateStats — typed summary of one ppo_update call
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class UpdateStats:
+    """Typed summary of one ``ppo_update`` call, passed to ``on_update``.
+
+    The framework guarantees every typed field.  Per-channel dicts are
+    keyed by ``RewardChannel.name``.  The ``policy_stats`` sub-mapping
+    carries whatever the actor contributed via ``ActorEval.stats`` — its
+    keys are the policy's choice (e.g. ``entropy``, ``std_mean`` for a
+    Tanh-Gaussian) and are **not** guaranteed across policy families.
+    Treat ``policy_stats`` as opaque hints, not a contract.
+
+    Use :meth:`to_log_dict` to produce the flat dict format expected by
+    ``__RAW_STATS__`` logging and ``analyze_training.py``.
+    """
+
+    # --- PPO core ---
+    approx_kl: float
+    max_kl: float
+    early_stop_kl: float
+    clip_frac: float
+    ratio_mean: float
+    ratio_max: float
+    policy_loss: float
+    value_loss: float
+    grad_norm_actor: float
+    epochs_done: int
+    n_batches: int
+    n_episodes: int
+    total_steps: int
+    ep_len_mean: float
+    ep_len_min: float
+    ep_len_max: float
+    epoch_kl_stats: List[Dict[str, Any]]
+
+    # --- Per-channel (keyed by channel name) ---
+    critic_losses: Dict[str, float]
+    explained_variance: Dict[str, float]
+    confidence: Dict[str, float]
+    adv_mean: Dict[str, float]
+    adv_std: Dict[str, float]
+    ret_mean: Dict[str, float]
+    ret_std: Dict[str, float]
+    critic_grad_norms: Dict[str, float]
+
+    # --- Policy-contributed (no contract) ---
+    policy_stats: Mapping[str, float]
+
+    def to_log_dict(self) -> Dict[str, Any]:
+        """Flatten to the legacy dict format for ``__RAW_STATS__`` logging.
+
+        ``policy_stats`` is spread to top level so that
+        ``analyze_training.py`` paths like ``stats.std_min`` keep working.
+        The framework's own keys always win collisions (spread first).
+        """
+        d: Dict[str, Any] = dict(self.policy_stats)
+        d.update({
+            "policy_loss": self.policy_loss,
+            "value_loss": self.value_loss,
+            "approx_kl": self.approx_kl,
+            "max_kl": self.max_kl,
+            "early_stop_kl": self.early_stop_kl,
+            "epochs_done": self.epochs_done,
+            "ep_len_mean": self.ep_len_mean,
+            "ep_len_min": self.ep_len_min,
+            "ep_len_max": self.ep_len_max,
+            "epoch_kl_stats": self.epoch_kl_stats,
+            "n_batches": self.n_batches,
+            "n_episodes": self.n_episodes,
+            "total_steps": self.total_steps,
+            "clip_frac": self.clip_frac,
+            "ratio_mean": self.ratio_mean,
+            "ratio_max": self.ratio_max,
+            "grad_norm_actor": self.grad_norm_actor,
+        })
+        for key, val in self.critic_losses.items():
+            d[f"vloss_{key}"] = val
+        for key, val in self.explained_variance.items():
+            d[f"ev_{key}"] = val
+        for key, val in self.confidence.items():
+            d[f"confidence_{key}"] = val
+        for key, val in self.adv_mean.items():
+            d[f"adv_mean_{key}"] = val
+        for key, val in self.adv_std.items():
+            d[f"adv_std_{key}"] = val
+        for key, val in self.ret_mean.items():
+            d[f"ret_mean_{key}"] = val
+        for key, val in self.ret_std.items():
+            d[f"ret_std_{key}"] = val
+        for key, val in self.critic_grad_norms.items():
+            d[f"grad_norm_{key}"] = val
+        return d
+
+
+# ---------------------------------------------------------------------------
 # Job type alias
 # ---------------------------------------------------------------------------
 
@@ -576,38 +673,63 @@ class ExperimentPPO(ABC):
         ...
 
     # ==================================================================
-    # Exploration scheduling
+    # Update feedback & Exploration scheduling
     # ==================================================================
+    #
+    # These two hooks form a symmetric pair, mirroring the on_eval /
+    # build_trajectories pair for curriculum scheduling:
+    #
+    #   on_update(stats, update)  →  experiment absorbs training stats
+    #                                 into internal state (e.g. KL history)
+    #   exploration(update)       →  experiment reads internal state and
+    #                                 returns an ExplorationSpec (or None)
+    #
+    # The framework calls on_update *after* ppo_update and exploration
+    # *before* the next rollout.  On the first update, exploration runs
+    # before any on_update has been called, so the experiment's initial
+    # state (set in __init__ or class attributes) is used.
+
+    def on_update(
+        self, stats: "UpdateStats", update: int,
+    ) -> None:
+        """Absorb training statistics into internal state.
+
+        Called once per update **after** ``ppo_update`` completes, with
+        the typed :class:`UpdateStats` for that update.  The experiment
+        can accumulate history (e.g. a rolling KL window) into instance
+        state, which ``exploration()`` will read on the next update.
+
+        This is the training-stats counterpart of ``on_eval()``:
+        ``on_eval`` closes the loop on *reward weighting* using eval
+        episodes, while ``on_update`` closes the loop on *exploration
+        strength* using training statistics.
+
+        The default implementation does nothing — an experiment that
+        does not need closed-loop exploration scheduling can ignore
+        this method entirely.
+
+        Args:
+            stats: Typed summary of this update's PPO results.  See
+                :class:`UpdateStats` for the full field list.  The
+                ``policy_stats`` sub-mapping carries policy-contributed
+                diagnostics (e.g. ``entropy``, ``std_mean`` for a
+                Tanh-Gaussian) but has **no cross-family contract** —
+                treat it as opaque hints.
+            update: Current update index (1-based, matches the loop).
+        """
+        pass
 
     def exploration(
-        self, update: int, last_stats: Optional[Dict[str, Any]],
+        self, update: int,
     ) -> Optional["ExplorationSpec"]:
         """Return this update's exploration directive, or None to keep.
 
         Called once per update **before** the rollout blueprint is
         exported, so a returned ``temperature`` still affects sampling.
-
-        This method is the exploration counterpart of ``on_eval()``:
-        ``on_eval`` closes the loop on *reward weighting* using eval
-        episodes, while ``exploration`` closes the loop on *exploration
-        strength* using training statistics.  Before it existed, every
-        exploration knob was frozen for the whole run (``ppo_params()`` is
-        read once, outside the training loop) even though reward weights
-        were rescheduled every update — an asymmetry with no principled
-        justification.
+        Reads whatever internal state ``on_update`` has accumulated.
 
         Args:
             update: Current update index (1-based, matches the loop).
-            last_stats: The full stats dict returned by ``ppo_update``
-                for the previous update, or ``None`` on the first update
-                of a process.  Contains ``approx_kl``, ``clip_frac``,
-                ``ev_<channel>``, ``confidence_<channel>``,
-                ``adv_std_<channel>`` plus whatever keys the policy
-                contributed via ``ActorEval.stats`` (for a Tanh-Gaussian:
-                ``entropy``, ``std_mean``, ``std_min``, ``std_max``).
-                This is what makes closed-loop schedules possible, e.g.
-                raising ``entropy_coef`` when KL has been flat for
-                several updates.
 
         Returns:
             An ``ExplorationSpec``, or ``None`` to leave the policy's

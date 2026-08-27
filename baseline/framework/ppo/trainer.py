@@ -48,7 +48,7 @@ import torch
 
 from baseline.common.algos import compute_gae
 
-from .experiment import PPOParams, TrainablePolicy
+from .experiment import PPOParams, TrainablePolicy, UpdateStats
 from .trajectory import RewardChannel, Trajectory
 
 
@@ -845,23 +845,24 @@ def ppo_update(
             break
 
     # --- 7. Aggregate stats for logging ---
-    # Collect per-channel and global statistics into a flat dict.
-    # The training loop formats these into human-readable lines and
-    # a machine-readable __RAW_STATS__ JSON line.
-    per_critic_losses: Dict[str, float] = {
-        f"vloss_{key}": float(np.mean(val_losses[key])) if val_losses[key] else 0.0
+    # Collect per-channel and global statistics into a typed UpdateStats.
+    # The training loop calls to_log_dict() for __RAW_STATS__ logging.
+    critic_losses: Dict[str, float] = {
+        key: float(np.mean(val_losses[key])) if val_losses[key] else 0.0
         for key in reward_keys
     }
-    per_adv_stats: Dict[str, float] = {}
+    adv_mean: Dict[str, float] = {}
+    adv_std: Dict[str, float] = {}
     for key in reward_keys:
         a = advs_all[key]
-        per_adv_stats[f"adv_mean_{key}"] = float(a.mean())
-        per_adv_stats[f"adv_std_{key}"] = float(a.std())
-    per_ret_stats: Dict[str, float] = {}
+        adv_mean[key] = float(a.mean())
+        adv_std[key] = float(a.std())
+    ret_mean: Dict[str, float] = {}
+    ret_std: Dict[str, float] = {}
     for key in reward_keys:
         r = rets_all[key]
-        per_ret_stats[f"ret_mean_{key}"] = float(r.mean())
-        per_ret_stats[f"ret_std_{key}"] = float(r.std())
+        ret_mean[key] = float(r.mean())
+        ret_std[key] = float(r.std())
 
     total_steps = sum(buf.ep_lengths)
     final_kl = epoch_kl_stats[-1]["mean_kl"] if epoch_kl_stats else 0.0
@@ -871,42 +872,49 @@ def ppo_update(
     ratio_mean = float(np.mean(all_ratio_means)) if all_ratio_means else 1.0
     ratio_max = float(max(all_ratio_maxs)) if all_ratio_maxs else 1.0
     grad_norm_actor = float(np.mean(all_grad_norms_actor)) if all_grad_norms_actor else 0.0
-    per_critic_grad_norms: Dict[str, float] = {
-        f"grad_norm_{key}": float(np.mean(all_grad_norms_critic[key]))
+    critic_grad_norms: Dict[str, float] = {
+        key: float(np.mean(all_grad_norms_critic[key]))
         if all_grad_norms_critic[key] else 0.0
         for key in reward_keys
     }
 
-    return {
-        # Policy-contributed exploration stats (``entropy``, ``std_mean``,
-        # ``std_min``, ``std_max``, ... for a Tanh-Gaussian). Merged flat and
-        # verbatim: the key names are the policy's choice, not the
-        # framework's. Spread first so the framework's own keys always win a
-        # collision rather than being silently shadowed.
-        **actor_stats,
-        "policy_loss": float(np.mean(pol_losses)) if pol_losses else 0.0,
-        "value_loss": float(np.mean([
-            per_critic_losses[f"vloss_{key}"] for key in reward_keys
-        ])) if reward_keys else 0.0,
-        "approx_kl": final_kl,
-        "max_kl": max_kl_overall,
-        "early_stop_kl": early_stop_kl,
-        "epochs_done": len(epoch_kl_stats),
-        "ep_len_mean": ep_len_mean,
-        "ep_len_min": ep_len_min,
-        "ep_len_max": ep_len_max,
-        "epoch_kl_stats": epoch_kl_stats,
-        "n_batches": n_batches,
-        "n_episodes": n_episodes,
-        "total_steps": total_steps,
-        "clip_frac": clip_frac_mean,
-        "ratio_mean": ratio_mean,
-        "ratio_max": ratio_max,
-        "grad_norm_actor": grad_norm_actor,
-        **per_critic_grad_norms,
-        **per_ret_stats,
-        **per_critic_losses,
-        **per_adv_stats,
-        **explained_variances,
-        **{f"confidence_{key}": confidences[key] for key in reward_keys},
+    # explained_variances is keyed by f"ev_{key}"; strip the prefix for the
+    # typed dict so consumers get clean channel-name keys.
+    ev_typed: Dict[str, float] = {
+        key: explained_variances.get(f"ev_{key}", 0.0)
+        for key in reward_keys
     }
+
+    policy_loss_val = float(np.mean(pol_losses)) if pol_losses else 0.0
+    value_loss_val = float(np.mean([
+        critic_losses[key] for key in reward_keys
+    ])) if reward_keys else 0.0
+
+    return UpdateStats(
+        approx_kl=final_kl,
+        max_kl=max_kl_overall,
+        early_stop_kl=early_stop_kl,
+        clip_frac=clip_frac_mean,
+        ratio_mean=ratio_mean,
+        ratio_max=ratio_max,
+        policy_loss=policy_loss_val,
+        value_loss=value_loss_val,
+        grad_norm_actor=grad_norm_actor,
+        epochs_done=len(epoch_kl_stats),
+        n_batches=n_batches,
+        n_episodes=n_episodes,
+        total_steps=total_steps,
+        ep_len_mean=ep_len_mean,
+        ep_len_min=ep_len_min,
+        ep_len_max=ep_len_max,
+        epoch_kl_stats=epoch_kl_stats,
+        critic_losses=critic_losses,
+        explained_variance=ev_typed,
+        confidence=dict(confidences),
+        adv_mean=adv_mean,
+        adv_std=adv_std,
+        ret_mean=ret_mean,
+        ret_std=ret_std,
+        critic_grad_norms=critic_grad_norms,
+        policy_stats=actor_stats,
+    )

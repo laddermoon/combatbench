@@ -154,29 +154,36 @@ class CombatExperimentPPOBase(ExperimentPPO):
         )
 
     # ------------------------------------------------------------------
-    # Exploration scheduling
+    # Update feedback & Exploration scheduling
     # ------------------------------------------------------------------
 
-    def exploration(
-        self, update: int, last_stats: Dict[str, Any] | None,
-    ) -> ExplorationSpec:
+    def on_update(self, stats, update: int) -> None:
+        """Default: no-op.  Override to accumulate training stats for
+        closed-loop exploration scheduling, e.g.::
+
+            def on_update(self, stats, update):
+                self._kl_history.append(stats.approx_kl)
+
+            def exploration(self, update):
+                coef = self.entropy_coef
+                if len(self._kl_history) >= 3 and all(
+                    kl < 0.005 for kl in self._kl_history[-3:]
+                ):
+                    coef *= 4.0  # KL flat for 3 updates, push exploration
+                return ExplorationSpec(entropy_coef=coef)
+        """
+        pass
+
+    def exploration(self, update: int) -> ExplorationSpec:
         """Static exploration spec built from the class attributes.
 
         This reproduces the pre-refactor behaviour exactly: ``entropy_coef``
         is a constant for the whole run and the sampling temperature is the
         policy's native 1.0.
 
-        Subclasses that want a schedule override this method.  ``last_stats``
-        carries the previous update's full stats (``approx_kl``,
-        ``clip_frac``, ``ev_*``, plus the policy's own ``entropy`` /
-        ``std_mean`` / ``tanh_sat_frac``), so a closed-loop schedule can be
-        written without any framework change, e.g.::
-
-            def exploration(self, update, last_stats):
-                coef = self.entropy_coef
-                if last_stats and last_stats.get("approx_kl", 1.0) < 0.005:
-                    coef *= 4.0     # policy is stuck, push it to explore
-                return ExplorationSpec(entropy_coef=coef)
+        Subclasses that want a schedule override ``on_update`` (to absorb
+        stats) and this method (to read accumulated state).  See the
+        ``on_update`` docstring for a closed-loop example.
         """
         return ExplorationSpec(entropy_coef=self.entropy_coef, temperature=1.0)
 

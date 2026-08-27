@@ -114,7 +114,7 @@ def save_run_config(
     # log_std bounds and entropy_coef left PPOParams, so record the initial
     # ExplorationSpec too — otherwise config.json would silently lose the
     # exploration configuration and stop being reproducible.
-    initial_spec = experiment.exploration(1, None)
+    initial_spec = experiment.exploration(1)
 
     payload = {
         "experiment": {
@@ -407,11 +407,8 @@ def train_ppo(
     # ParallelRollouter maintains long-lived EnvRuntime instances across
     # workers, amortizing environment construction cost over many updates.
     # Exploration state carried across updates.
-    #   last_stats  — previous update's stats, handed to experiment.exploration()
-    #                 so schedules can be closed-loop rather than open-loop.
     #   exploration — the spec currently in force; kept so ppo_update can
     #                 read its trust-region fields.
-    last_stats: Optional[Dict[str, Any]] = None
     exploration: Optional[ExplorationSpec] = None
     last_effective_exploration: Dict[str, float] = {}
 
@@ -431,7 +428,12 @@ def train_ppo(
             #    reports back what it actually honoured. We log the *effective*
             #    config, not the request, because a policy may clamp or ignore
             #    fields it does not support.
-            spec = experiment.exploration(u, last_stats)
+            #
+            #    exploration() reads internal state that on_update() has
+            #    accumulated from previous updates' stats. On the first
+            #    update of a process, on_update() has not been called yet,
+            #    so the experiment's initial state is used.
+            spec = experiment.exploration(u)
             if spec is not None:
                 exploration = spec
                 effective = actor.set_exploration(spec)
@@ -497,10 +499,11 @@ def train_ppo(
                 exploration=exploration,
             )
             t_ppo = time.perf_counter() - t0
-            # Feeds the next update's experiment.exploration() call. Contains
-            # approx_kl / clip_frac / ev_* plus whatever keys the policy
-            # contributed, which is what makes closed-loop schedules possible.
-            last_stats = stats
+            # 5b. Update feedback — let the experiment absorb this update's
+            #     training stats into internal state (e.g. KL history for
+            #     closed-loop exploration scheduling).  exploration() on the
+            #     next update will read whatever on_update() writes here.
+            experiment.on_update(stats, u)
 
             # 6. Eval — deterministic policy rollout + experiment-defined metrics.
             #    Experiment's on_eval returns {is_new_best, info}. Framework
@@ -640,11 +643,11 @@ def train_ppo(
             )
 
             # [Policy] & [PPO Opt]
-            policy_loss = stats.get("policy_loss", 0.0)
-            epochs_done = stats.get("epochs_done", 0)
-            approx_kl = stats.get("approx_kl", 0.0)
-            max_kl = stats.get("max_kl", 0.0)
-            early_stop_kl = stats.get("early_stop_kl", 0.0)
+            policy_loss = stats.policy_loss
+            epochs_done = stats.epochs_done
+            approx_kl = stats.approx_kl
+            max_kl = stats.max_kl
+            early_stop_kl = stats.early_stop_kl
 
             # Exploration diagnostics are rendered generically from whatever
             # the policy reported. Hard-coding entropy/std here would reassert
@@ -668,7 +671,7 @@ def train_ppo(
             )
 
             # [Critics] — per-channel with reward, actor_weight, traj stats
-            value_loss = stats.get("value_loss", 0.0)
+            value_loss = stats.value_loss
             print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
             chan_stats = buf_stats["per_channel"]
             for key in reward_keys:
@@ -678,10 +681,6 @@ def train_ppo(
                 r_min = cs.get("reward_min", 0.0)
                 r_max = cs.get("reward_max", 0.0)
                 rew_flow = f"{r_mean:+.3f}±{r_std:.3f}"
-                vloss_key = f"vloss_{key}"
-                ev_key = f"ev_{key}"
-                adv_std_key = f"adv_std_{key}"
-                conf_key = f"confidence_{key}"
                 aw_mean = cs.get("actor_weight_mean", 0.0)
                 aw_min = cs.get("actor_weight_min", 0.0)
                 aw_max = cs.get("actor_weight_max", 0.0)
@@ -693,13 +692,13 @@ def train_ppo(
                 print(
                     f"    - {key:<12} | reward={rew_flow} "
                     f"[{r_min:+.2f},{r_max:+.2f}] | "
-                    f"val_loss={stats.get(vloss_key, 0.0):.4f} | "
-                    f"ev={stats.get(ev_key, 0.0):+.3f} | "
-                    f"conf={stats.get(conf_key, 1.0):.3f} | "
+                    f"val_loss={stats.critic_losses.get(key, 0.0):.4f} | "
+                    f"ev={stats.explained_variance.get(key, 0.0):+.3f} | "
+                    f"conf={stats.confidence.get(key, 1.0):.3f} | "
                     f"aw={aw_mean:.2f} [{aw_min:.2f},{aw_max:.2f}] | "
                     f"trajs={n_active} len={tl_mean:.0f}({tl_min}-{tl_max}) | "
                     f"active={active_ratio*100:.0f}% | "
-                    f"adv_std={stats.get(adv_std_key, 0.0):.2f}",
+                    f"adv_std={stats.adv_std.get(key, 0.0):.2f}",
                     flush=True,
                 )
 
@@ -711,7 +710,7 @@ def train_ppo(
                 "algo": "ppo",
                 "episode_stats": ep_stats,
                 "buffer_stats": buf_stats,
-                "stats": stats,
+                "stats": stats.to_log_dict(),
                 "timing": {
                     "total": round(t_total, 2),
                     "export": round(t_export, 2),
