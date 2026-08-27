@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
@@ -131,7 +131,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- r_fall: 0.01 × φ(t) per step ---
-        phi_arr = _extract_per_step_field(
+        phi_arr = extract_per_step_field(
             episode.observer_outputs, phi_key, "phi", T_full,
         )
         if phi_arr is not None:
@@ -199,7 +199,7 @@ class BasicBalanceStep(CombatExperimentV2Base):
         Raises if the observer or field is missing — a silent zero fallback
         would make the stepping signal vanish without any error.
         """
-        arr = _extract_per_step_field(
+        arr = extract_per_step_field(
             episode.observer_outputs, foot_key, field, T_full,
         )
         if arr is None:

@@ -46,7 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
@@ -346,7 +346,7 @@ class FollowV2(CombatExperimentV2Base):
         oo = episode.observer_outputs
 
         # --- Extract φ_4stage (StandingBalance4StageRewarder "potential") ---
-        phi4_arr = _extract_per_step_field(oo, "standing_balance", "potential", T_full)
+        phi4_arr = extract_per_step_field(oo, "standing_balance", "potential", T_full)
         if phi4_arr is not None:
             phi4_arr = phi4_arr[:T_full]
         else:
@@ -354,7 +354,7 @@ class FollowV2(CombatExperimentV2Base):
         phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract φ_height (HeightPhiObserver "phi") ---
-        phi_h_arr = _extract_per_step_field(oo, "height_phi", "phi", T_full)
+        phi_h_arr = extract_per_step_field(oo, "height_phi", "phi", T_full)
         if phi_h_arr is not None:
             phi_h_arr = phi_h_arr[:T_full]
         else:
@@ -362,7 +362,7 @@ class FollowV2(CombatExperimentV2Base):
         phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract h_torso for phase determination ---
-        h_torso = _extract_per_step_field(oo, "standing_balance", "h_torso", T_full)
+        h_torso = extract_per_step_field(oo, "standing_balance", "h_torso", T_full)
         if h_torso is not None:
             h_torso = h_torso[:T_full]
         else:
@@ -393,10 +393,10 @@ class FollowV2(CombatExperimentV2Base):
         )
 
         # --- r_radial / r_tangential ---
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T_full, dtype=np.float32)
@@ -416,8 +416,8 @@ class FollowV2(CombatExperimentV2Base):
         out_zone = (_dist > FOLLOW_DIST_MAX).astype(np.float32)
 
         # --- r_face: facing_score (reward) + dist_gate (actor weight) ---
-        fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
-        fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
+        fwd_x = extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
+        fwd_y = extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
 
         r_face = np.zeros(T_full, dtype=np.float32)
         dist_gate = np.zeros(T_full, dtype=np.float32)
@@ -495,7 +495,7 @@ class FollowV2(CombatExperimentV2Base):
         oo, observer_key: str, field: str, T_full: int,
     ) -> np.ndarray:
         """Extract a FootStateObserver field, truncated to ``T_full``."""
-        arr = _extract_per_step_field(oo, observer_key, field, T_full)
+        arr = extract_per_step_field(oo, observer_key, field, T_full)
         if arr is None:
             raise KeyError(
                 f"_extract_foot_field: observer '{observer_key}' field '{field}' "
@@ -532,12 +532,12 @@ class FollowV2(CombatExperimentV2Base):
 
             T = ep.num_frames
             oo = ep.observer_outputs
-            self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-            self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-            opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-            opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
-            fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T)
-            fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T)
+            self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+            self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+            opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+            opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+            fwd_x = extract_per_step_field(oo, "face_opponent", "forward_x", T)
+            fwd_y = extract_per_step_field(oo, "face_opponent", "forward_y", T)
 
             if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
                 raw_dist = np.sqrt(

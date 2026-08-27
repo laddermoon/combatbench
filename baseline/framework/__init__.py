@@ -1,18 +1,16 @@
 """Curriculum learning framework v2 — unified PPO/SAC support."""
 from __future__ import annotations
 
-from .experiment import (
+from .experiment_v2 import (
     CommonParams,
-    Experiment,
+    ExperimentV2,
     PPOParams,
-    SACParams,
     TrainablePolicy,
 )
 
 __all__ = [
     "CommonParams",
-    "Experiment",
+    "ExperimentV2",
     "PPOParams",
-    "SACParams",
     "TrainablePolicy",
 ]

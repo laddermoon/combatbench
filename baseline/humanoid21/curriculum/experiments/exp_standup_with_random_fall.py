@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-    _extract_per_step_scalar,
+from baseline.common.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
 )
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -130,7 +130,7 @@ class StandupRandomFallConfig(CombatExperimentBase):
         oo = episode.observer_outputs
 
         # Extract potential values from the StandupPotentialRewarder observer plugin
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
         r_potential = np.zeros(T, dtype=np.float32)
         if potentials is not None:
             # r_potential[t] = potentials[t] - potentials[t-1] (Potential Difference)
@@ -142,7 +142,7 @@ class StandupRandomFallConfig(CombatExperimentBase):
             r_potential *= scale
 
         # Extract cross support balance reward
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+        r_cross = extract_per_step_scalar(oo, "cross_support", T)
         if r_cross is None:
             r_cross = np.zeros(T, dtype=np.float32)
 
@@ -158,8 +158,8 @@ class StandupRandomFallConfig(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
 
         if stages is not None and len(stages) > 0:
             max_stage = float(np.max(stages))

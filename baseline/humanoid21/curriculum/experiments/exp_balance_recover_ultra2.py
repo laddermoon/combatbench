@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -295,7 +295,7 @@ class BalanceRecoverUltra2Config(CombatExperimentBase):
         """
         T = episode.num_frames
 
-        contact_arr = _extract_per_step_field(
+        contact_arr = extract_per_step_field(
             episode.observer_outputs, "fall_contact", "is_non_foot_grounded", T
         )
         if contact_arr is None:
@@ -310,13 +310,13 @@ class BalanceRecoverUltra2Config(CombatExperimentBase):
             debounce_steps=self.fall_debounce_steps,
         )
 
-        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
+        r_cross = extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
         r_cross = np.where(is_fallen_mask, 0.0, r_cross)
 
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+        joint_dev_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
+        joint_vel_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
+        torso_tilt_arr = extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
+        foot_height_arr = extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
 
         if joint_dev_arr is None:
             joint_dev_arr = np.zeros(T, dtype=np.float32)
@@ -368,7 +368,7 @@ class BalanceRecoverUltra2Config(CombatExperimentBase):
         - ep_length: number of frames in episode
         """
         T = episode.num_frames
-        contact_arr = _extract_per_step_field(
+        contact_arr = extract_per_step_field(
             episode.observer_outputs, "fall_contact", "is_non_foot_grounded", T
         )
         if contact_arr is None:

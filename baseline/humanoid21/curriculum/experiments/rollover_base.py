@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -115,7 +115,7 @@ class RolloverBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
         gamma = self.gammas["r_standup"]
 
@@ -203,7 +203,7 @@ class RolloverBase(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         T = episode.num_frames
         oo = episode.observer_outputs
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
 
         max_pot = float(np.max(potentials)) if potentials is not None and len(potentials) > 0 else 0.0
         final_pot = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0

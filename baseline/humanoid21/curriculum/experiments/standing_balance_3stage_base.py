@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -140,7 +140,7 @@ class StandingBalance3StageBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standing_balance", "potential", T)
+        potentials = extract_per_step_field(oo, "standing_balance", "potential", T)
         r = np.zeros(T, dtype=np.float32)
 
         if potentials is not None:
@@ -171,9 +171,9 @@ class StandingBalance3StageBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standing_balance", "potential", T)
-        d_hf = _extract_per_step_field(oo, "standing_balance", "d_hf", T)
-        stages = _extract_per_step_field(oo, "standing_balance", "stage", T)
+        potentials = extract_per_step_field(oo, "standing_balance", "potential", T)
+        d_hf = extract_per_step_field(oo, "standing_balance", "d_hf", T)
+        stages = extract_per_step_field(oo, "standing_balance", "stage", T)
 
         if potentials is not None and len(potentials) > 0:
             max_potential = float(np.max(potentials))

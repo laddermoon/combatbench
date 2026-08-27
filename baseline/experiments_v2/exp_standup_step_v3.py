@@ -55,7 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from .base import CombatExperimentV2Base
 from baseline.humanoid21.end2end.stepping_state_machine import (
@@ -307,7 +307,7 @@ class StandupStepV3(CombatExperimentV2Base):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- Extract φ_4stage (StandingBalance4StageRewarder "potential") ---
-        phi4_arr = _extract_per_step_field(
+        phi4_arr = extract_per_step_field(
             episode.observer_outputs, phi4stage_key, "potential", T_full,
         )
         if phi4_arr is not None:
@@ -317,7 +317,7 @@ class StandupStepV3(CombatExperimentV2Base):
         phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract φ_height (HeightPhiObserver "phi") ---
-        phi_h_arr = _extract_per_step_field(
+        phi_h_arr = extract_per_step_field(
             episode.observer_outputs, phi_height_key, "phi", T_full,
         )
         if phi_h_arr is not None:
@@ -327,7 +327,7 @@ class StandupStepV3(CombatExperimentV2Base):
         phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract h_torso for phase determination ---
-        h_torso = _extract_per_step_field(
+        h_torso = extract_per_step_field(
             episode.observer_outputs, phi4stage_key, "h_torso", T_full,
         )
         if h_torso is not None:
@@ -404,7 +404,7 @@ class StandupStepV3(CombatExperimentV2Base):
         Raises if the observer or field is missing — a silent zero fallback
         would make the stepping signal vanish without any error.
         """
-        arr = _extract_per_step_field(
+        arr = extract_per_step_field(
             episode.observer_outputs, foot_key, field, T_full,
         )
         if arr is None:
@@ -442,7 +442,7 @@ class StandupStepV3(CombatExperimentV2Base):
 
             for agent_id, _, phi4stage_key, _ in self._AGENT_OBS:
                 n_agents += 1
-                phi = _extract_per_step_field(
+                phi = extract_per_step_field(
                     ep.observer_outputs, phi4stage_key, "potential", T,
                 )
                 if phi is not None and len(phi) > 0:

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentV2Base
 
@@ -132,7 +132,7 @@ class StandupStep(CombatExperimentV2Base):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- Extract φ (4-stage standing potential) ---
-        phi_arr = _extract_per_step_field(
+        phi_arr = extract_per_step_field(
             episode.observer_outputs, phi_key, "potential", T_full,
         )
         if phi_arr is not None:
@@ -145,7 +145,7 @@ class StandupStep(CombatExperimentV2Base):
         r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
         # --- r_cross: cross-support signal ---
-        r_cross = _extract_per_step_scalar(
+        r_cross = extract_per_step_scalar(
             episode.observer_outputs, cross_key, T_full,
         )
         if r_cross is not None:
@@ -212,7 +212,7 @@ class StandupStep(CombatExperimentV2Base):
 
             for agent_id, _, phi_key in self._AGENT_OBS:
                 n_agents += 1
-                phi = _extract_per_step_field(
+                phi = extract_per_step_field(
                     ep.observer_outputs, phi_key, "potential", T,
                 )
                 if phi is not None and len(phi) > 0:

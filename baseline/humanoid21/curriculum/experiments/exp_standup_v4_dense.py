@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -130,7 +130,7 @@ class StandupV4DenseConfig(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential_smooth", T)
+        potentials = extract_per_step_field(oo, "standup", "potential_smooth", T)
         r = np.zeros(T, dtype=np.float32)
 
         if potentials is not None:
@@ -146,8 +146,8 @@ class StandupV4DenseConfig(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential_smooth", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential_smooth", T)
 
         if stages is not None and len(stages) > 0:
             max_stage = float(np.max(stages))

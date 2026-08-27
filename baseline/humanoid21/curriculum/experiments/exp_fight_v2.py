@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-    _extract_per_step_scalar,
+from baseline.common.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
 )
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -229,13 +229,13 @@ class FightV2Config(CombatExperimentBase):
             r_fall[-1] = penalty
 
         # r_cross: cross-support balance reward
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+        r_cross = extract_per_step_scalar(oo, "cross_support", T)
 
         # Extract fields from the 'posture' observer
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+        joint_dev_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
+        joint_vel_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
+        torso_tilt_arr = extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
+        foot_height_arr = extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
 
         # Fallback if observer fields are missing
         if joint_dev_arr is None:
@@ -267,10 +267,10 @@ class FightV2Config(CombatExperimentBase):
         # r_radial / r_tangential: velocity decomposition
         from baseline.humanoid21.rewards.follow_opponent import compute_radial_tangential_rewards
 
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T, dtype=np.float32)
@@ -281,7 +281,7 @@ class FightV2Config(CombatExperimentBase):
             r_radial, r_tangential = compute_radial_tangential_rewards(self_xy, opp_xy)
 
         # r_damage: net damage (attack) reward
-        r_damage = _extract_per_step_scalar(oo, "damage", T)
+        r_damage = extract_per_step_scalar(oo, "damage", T)
         if r_damage is None:
             r_damage = np.zeros(T, dtype=np.float32)
 
@@ -369,10 +369,10 @@ class FightV2Config(CombatExperimentBase):
         fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
 
         oo = episode.observer_outputs
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
 
         mean_dist = 99.0
         min_dist = 99.0
@@ -386,7 +386,7 @@ class FightV2Config(CombatExperimentBase):
                 hold_ratio = float(np.mean(raw_dist <= 1.1))
 
         # Net damage from r_damage
-        r_damage = _extract_per_step_scalar(oo, "damage", T)
+        r_damage = extract_per_step_scalar(oo, "damage", T)
         damage_dealt = float(np.sum(r_damage)) if r_damage is not None else 0.0
 
         ep_target = str(episode.episode_options.get("agent_id", "robot_a"))

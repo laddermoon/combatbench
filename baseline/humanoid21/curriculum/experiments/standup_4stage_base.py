@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -114,13 +114,13 @@ class Standup4StageBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
         time_penalty = float(self.custom_config.get("time_penalty", 0.0))
         stage4_bonus = float(self.custom_config.get("stage4_per_step_bonus", 0.0))
 
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -145,9 +145,9 @@ class Standup4StageBase(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         T = episode.num_frames
         oo = episode.observer_outputs
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        foot_dists = _extract_per_step_field(oo, "standup", "foot_distance", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
+        foot_dists = extract_per_step_field(oo, "standup", "foot_distance", T)
 
         if stages is not None and len(stages) > 0:
             max_stage = float(np.max(stages))

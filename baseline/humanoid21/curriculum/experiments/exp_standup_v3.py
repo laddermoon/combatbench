@@ -28,9 +28,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-    _extract_per_step_scalar,
+from baseline.common.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
 )
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -184,10 +184,10 @@ class StandupV3Config(CombatExperimentBase):
         oo = episode.observer_outputs
 
         # --- PBRS potential ---
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        heights = _extract_per_step_field(oo, "height", "height", T)
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
+        heights = extract_per_step_field(oo, "height", "height", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        wall_contacts = extract_per_step_field(oo, "standup", "has_wall_contact", T)
 
         pot_scale = float(self.custom_config.get("potential_reward_scale", 10.0))
         wall_penalty = float(self.custom_config.get("wall_penalty", 0.0))
@@ -218,14 +218,14 @@ class StandupV3Config(CombatExperimentBase):
             r_fall[-1] = terminal_penalty
 
         # --- Cross-support balance ---
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+        r_cross = extract_per_step_scalar(oo, "cross_support", T)
         if r_cross is None:
             r_cross = np.zeros(T, dtype=np.float32)
 
         # --- Posture reward: torso tilt only ---
         # r_joint, r_vel, r_foot removed: they penalize all movement,
         # suppressing stepping. r_tilt kept to maintain upright posture.
-        torso_tilt_arr = _extract_per_step_field(oo, "posture", "torso_tilt", T)
+        torso_tilt_arr = extract_per_step_field(oo, "posture", "torso_tilt", T)
         if torso_tilt_arr is None:
             torso_tilt_arr = np.zeros(T, dtype=np.float32)
 
@@ -265,8 +265,8 @@ class StandupV3Config(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
 
         fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
         survived = 0.0 if fell else 1.0

@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from .base import CombatExperimentV2Base
 
@@ -115,7 +115,7 @@ class Standup(CombatExperimentV2Base):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- Extract potential φ(t) from observer ---
-        phi_arr = _extract_per_step_field(
+        phi_arr = extract_per_step_field(
             episode.observer_outputs, obs_key, "potential", T_full,
         )
         if phi_arr is not None:
@@ -162,13 +162,13 @@ class Standup(CombatExperimentV2Base):
                 continue
 
             for agent_id, obs_key in self._AGENT_OBS:
-                phi = _extract_per_step_field(
+                phi = extract_per_step_field(
                     ep.observer_outputs, obs_key, "potential", T,
                 )
-                stages = _extract_per_step_field(
+                stages = extract_per_step_field(
                     ep.observer_outputs, obs_key, "stage", T,
                 )
-                h_torso = _extract_per_step_field(
+                h_torso = extract_per_step_field(
                     ep.observer_outputs, obs_key, "h_torso", T,
                 )
 

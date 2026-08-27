@@ -24,9 +24,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-    _extract_per_step_scalar,
+from baseline.common.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
 )
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
@@ -182,7 +182,7 @@ class StandupFace(CombatExperimentV2Base):
         oo = episode.observer_outputs
 
         # --- Extract φ (4-stage standing potential) ---
-        phi_arr = _extract_per_step_field(oo, "standing_balance", "potential", T_full)
+        phi_arr = extract_per_step_field(oo, "standing_balance", "potential", T_full)
         if phi_arr is not None:
             phi_arr = phi_arr[:T_full]
         else:
@@ -193,17 +193,17 @@ class StandupFace(CombatExperimentV2Base):
         r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
         # --- r_cross ---
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T_full)
+        r_cross = extract_per_step_scalar(oo, "cross_support", T_full)
         if r_cross is not None:
             r_cross = r_cross[:T_full]
         else:
             r_cross = np.zeros(T_full, dtype=np.float32)
 
         # --- r_radial / r_tangential ---
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T_full, dtype=np.float32)
@@ -218,8 +218,8 @@ class StandupFace(CombatExperimentV2Base):
             )
 
         # --- r_face: facing_score × dist_gate ---
-        fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
-        fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
+        fwd_x = extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
+        fwd_y = extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
 
         r_face = np.zeros(T_full, dtype=np.float32)
         if fwd_x is not None and fwd_y is not None and self_x is not None:
@@ -315,12 +315,12 @@ class StandupFace(CombatExperimentV2Base):
 
             T = ep.num_frames
             oo = ep.observer_outputs
-            self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-            self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-            opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-            opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
-            fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T)
-            fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T)
+            self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+            self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+            opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+            opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+            fwd_x = extract_per_step_field(oo, "face_opponent", "forward_x", T)
+            fwd_y = extract_per_step_field(oo, "face_opponent", "forward_y", T)
 
             if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
                 raw_dist = np.sqrt(

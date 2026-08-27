@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentV2Base
 
@@ -82,12 +82,12 @@ class BasicBalanceV2DualSurvOnly(CombatExperimentV2Base):
         # --- r_fall: 0.01/step only, NO terminal signals ---
         r_fall = np.full(T, self.per_step_survival_reward, dtype=np.float32)
 
-        r_cross = _extract_per_step_scalar(episode.observer_outputs, cross_key, T_full)[:T]
+        r_cross = extract_per_step_scalar(episode.observer_outputs, cross_key, T_full)[:T]
 
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "joint_deviation", T_full)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "joint_vel", T_full)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "torso_tilt", T_full)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, posture_key, "foot_height", T_full)
+        joint_dev_arr = extract_per_step_field(episode.observer_outputs, posture_key, "joint_deviation", T_full)
+        joint_vel_arr = extract_per_step_field(episode.observer_outputs, posture_key, "joint_vel", T_full)
+        torso_tilt_arr = extract_per_step_field(episode.observer_outputs, posture_key, "torso_tilt", T_full)
+        foot_height_arr = extract_per_step_field(episode.observer_outputs, posture_key, "foot_height", T_full)
 
         if joint_dev_arr is not None:
             joint_dev_arr = joint_dev_arr[:T]

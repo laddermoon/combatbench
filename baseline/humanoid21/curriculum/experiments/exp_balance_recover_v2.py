@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -210,13 +210,13 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         else:
             r_fall[-1] = penalty
 
-        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
+        r_cross = extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
 
         # Extract fields from the 'posture' observer
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+        joint_dev_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
+        joint_vel_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
+        torso_tilt_arr = extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
+        foot_height_arr = extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
 
         # Fallback if observer fields are missing
         if joint_dev_arr is None:
@@ -245,7 +245,7 @@ class BalanceRecoverV2Config(CombatExperimentBase):
         excess_foot = np.maximum(0.0, foot_height_arr - 0.10)
         r_foot = np.where(excess_foot == 0.0, 0.01, 0.01 - 5.0 * excess_foot)
 
-        r_wall_contact = _extract_per_step_scalar(episode.observer_outputs, "wall_contact", T)
+        r_wall_contact = extract_per_step_scalar(episode.observer_outputs, "wall_contact", T)
         if r_wall_contact is None:
             r_wall_contact = np.zeros(T, dtype=np.float32)
         r_fall = r_fall + np.where(r_wall_contact > 0.0, -0.5, 0.0).astype(np.float32)

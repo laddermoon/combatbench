@@ -37,7 +37,7 @@ import torch
 from baseline.common.policies import CriticMLP
 from baseline.common.rollout import Episode, ParallelRollouter
 from baseline.common.algos import compute_gae
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from baseline.humanoid21.curriculum.experiments.phi_critic import PhiSubtractedCritic
 
 # Experiment configs
@@ -158,10 +158,10 @@ def extract_phi_and_rewards(episode: Episode) -> Dict[str, np.ndarray]:
     """Extract φ, Delta rewards, Dense rewards, ST-1 rewards, ST-2 rewards
     from a single episode using the same observer outputs."""
     T = episode.num_frames
-    phi = _extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
+    phi = extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
     if phi is None:
         phi = np.zeros(T, dtype=np.float32)
-    initial_phi_arr = _extract_per_step_field(episode.observer_outputs, "height_phi", "initial_phi", T)
+    initial_phi_arr = extract_per_step_field(episode.observer_outputs, "height_phi", "initial_phi", T)
     initial_phi = float(initial_phi_arr[0]) if initial_phi_arr is not None else 0.0
 
     fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())

@@ -21,7 +21,7 @@ from torch import nn
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 from baseline.humanoid21.curriculum.experiments.exp_st4_delta import ST4DeltaConfig
 from baseline.humanoid21.curriculum.experiments.phi_critic import PhiSubtractedCritic
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 

@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
+from baseline.common.rollout import (
+    extract_per_step_field,
 )
 from baseline.humanoid21.rewards.distance_potential import compute_dense_distance_reward
 from envs.framework.blueprint import EnvBlueprint
@@ -231,10 +231,10 @@ class FightZeroConfig(CombatExperimentBase):
         oo = episode.observer_outputs
 
         # r_distance: Dense distance potential from approach_velocity observer
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
 
         if all(v is not None for v in (self_x, self_y, opp_x, opp_y)):
             self_xy = np.stack([self_x, self_y], axis=1)
@@ -249,10 +249,10 @@ class FightZeroConfig(CombatExperimentBase):
             r_distance = np.zeros(T, dtype=np.float32)
 
         # r_damage_dealt / r_damage_taken: from DamageBreakdownRewarder
-        r_dealt = _extract_per_step_field(oo, "damage", "dealt", T)
+        r_dealt = extract_per_step_field(oo, "damage", "dealt", T)
         if r_dealt is None:
             r_dealt = np.zeros(T, dtype=np.float32)
-        r_taken = _extract_per_step_field(oo, "damage", "taken", T)
+        r_taken = extract_per_step_field(oo, "damage", "taken", T)
         if r_taken is None:
             r_taken = np.zeros(T, dtype=np.float32)
 
@@ -323,10 +323,10 @@ class FightZeroConfig(CombatExperimentBase):
         fell = all(r.startswith("imbalance") for r in episode.agent_termination_reason.values())
 
         oo = episode.observer_outputs
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T)
 
         mean_dist = 99.0
         min_dist = 99.0
@@ -340,8 +340,8 @@ class FightZeroConfig(CombatExperimentBase):
                 hold_ratio = float(np.mean(raw_dist <= 1.1))
 
         # Damage from breakdown
-        dealt_arr = _extract_per_step_field(oo, "damage", "dealt", T)
-        taken_arr = _extract_per_step_field(oo, "damage", "taken", T)
+        dealt_arr = extract_per_step_field(oo, "damage", "dealt", T)
+        taken_arr = extract_per_step_field(oo, "damage", "taken", T)
         damage_dealt = float(np.sum(dealt_arr)) if dealt_arr is not None else 0.0
         damage_taken = float(np.sum(taken_arr)) if taken_arr is not None else 0.0
 

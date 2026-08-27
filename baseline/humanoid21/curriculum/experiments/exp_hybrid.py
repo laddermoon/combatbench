@@ -34,9 +34,9 @@ import torch
 import torch.nn as nn
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_scalar,
-    _extract_per_step_field,
+from baseline.common.rollout import (
+    extract_per_step_scalar,
+    extract_per_step_field,
 )
 from baseline.humanoid21.curriculum.hybrid_actor import HybridActor, compute_uprightness
 from envs.framework.blueprint import EnvBlueprint
@@ -266,7 +266,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         survival = float(self.custom_config.get("per_step_survival_reward", 0.01))
 
         # --- r_standup: PBRS + survival + success bonus (standup phase only) ---
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 5.0))
 
         r_standup = np.zeros(T, dtype=np.float32)
@@ -298,17 +298,17 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         r_fall[standup_mask] = 0.0
 
         # --- r_cross: cross-support balance reward (balance phase) ---
-        r_cross = _extract_per_step_scalar(oo, "cross_support", T)
+        r_cross = extract_per_step_scalar(oo, "cross_support", T)
         if r_cross is None:
             r_cross = np.zeros(T, dtype=np.float32)
         r_cross = r_cross.copy()
         r_cross[standup_mask] = 0.0
 
         # --- r_joint, r_vel, r_tilt, r_foot: from posture observer (balance phase) ---
-        joint_dev_arr = _extract_per_step_field(oo, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(oo, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(oo, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(oo, "posture", "foot_height", T)
+        joint_dev_arr = extract_per_step_field(oo, "posture", "joint_deviation", T)
+        joint_vel_arr = extract_per_step_field(oo, "posture", "joint_vel", T)
+        torso_tilt_arr = extract_per_step_field(oo, "posture", "torso_tilt", T)
+        foot_height_arr = extract_per_step_field(oo, "posture", "foot_height", T)
 
         if joint_dev_arr is None:
             joint_dev_arr = np.zeros(T, dtype=np.float32)

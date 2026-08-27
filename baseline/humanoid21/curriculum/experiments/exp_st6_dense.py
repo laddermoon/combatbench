@@ -15,7 +15,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
@@ -58,7 +58,7 @@ class ST6DenseConfig(CombatExperimentBase):
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         T = episode.num_frames
-        phi = _extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
+        phi = extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
         if phi is None:
             phi = np.zeros(T, dtype=np.float32)
         r_fall = self.dense_coef * phi.astype(np.float32)

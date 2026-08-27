@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -124,8 +124,8 @@ class StandupOrigBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        heights = _extract_per_step_field(oo, "height", "height", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
+        heights = extract_per_step_field(oo, "height", "height", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
         h_scale = float(self.custom_config.get("height_reward_scale", 0.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
@@ -133,8 +133,8 @@ class StandupOrigBase(CombatExperimentBase):
         wall_penalty = float(self.custom_config.get("wall_penalty", 0.0))
         stage5_bonus = float(self.custom_config.get("stage5_per_step_bonus", 0.0))
 
-        wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
+        wall_contacts = extract_per_step_field(oo, "standup", "has_wall_contact", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -165,8 +165,8 @@ class StandupOrigBase(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         T = episode.num_frames
         oo = episode.observer_outputs
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
 
         if stages is not None and len(stages) > 0:
             max_stage = float(np.max(stages))

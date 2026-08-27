@@ -19,9 +19,9 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import (
-    _extract_per_step_field,
-    _extract_per_step_scalar,
+from baseline.common.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
 )
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -143,7 +143,7 @@ class StandupV4Config(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential_smooth", T)
+        potentials = extract_per_step_field(oo, "standup", "potential_smooth", T)
         pot_scale = float(self.custom_config["pot_scale"])
         terminal_bonus = float(self.custom_config["terminal_bonus"])
         wall_penalty = float(self.custom_config["wall_penalty"])
@@ -151,9 +151,9 @@ class StandupV4Config(CombatExperimentBase):
         stage5_bonus = float(self.custom_config["stage5_per_step_bonus"])
         trans_bonus = float(self.custom_config["transition_bonus"])
 
-        heights = _extract_per_step_field(oo, "height", "height", T)
-        wall_contacts = _extract_per_step_field(oo, "standup", "has_wall_contact", T)
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
+        heights = extract_per_step_field(oo, "height", "height", T)
+        wall_contacts = extract_per_step_field(oo, "standup", "has_wall_contact", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
 
         r = np.zeros(T, dtype=np.float32)
 
@@ -195,8 +195,8 @@ class StandupV4Config(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        stages = _extract_per_step_field(oo, "standup", "stage", T)
-        potentials = _extract_per_step_field(oo, "standup", "potential_gapped", T)
+        stages = extract_per_step_field(oo, "standup", "stage", T)
+        potentials = extract_per_step_field(oo, "standup", "potential_gapped", T)
 
         if stages is not None and len(stages) > 0:
             max_stage = float(np.max(stages))

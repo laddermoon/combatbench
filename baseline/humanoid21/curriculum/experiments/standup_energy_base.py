@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -110,7 +110,7 @@ class StandupEnergyBase(CombatExperimentBase):
         T = episode.num_frames
         oo = episode.observer_outputs
 
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
         pot_scale = float(self.custom_config.get("potential_reward_scale", 1.0))
         terminal_bonus = float(self.custom_config.get("terminal_success_bonus", 0.0))
         time_penalty = float(self.custom_config.get("time_penalty", 0.0))
@@ -137,9 +137,9 @@ class StandupEnergyBase(CombatExperimentBase):
     def compute_episode_metrics(self, episode) -> Dict[str, float]:
         T = episode.num_frames
         oo = episode.observer_outputs
-        potentials = _extract_per_step_field(oo, "standup", "potential", T)
-        e_scores = _extract_per_step_field(oo, "standup", "e_score", T)
-        is_balanced = _extract_per_step_field(oo, "standup", "is_balanced", T)
+        potentials = extract_per_step_field(oo, "standup", "potential", T)
+        e_scores = extract_per_step_field(oo, "standup", "e_score", T)
+        is_balanced = extract_per_step_field(oo, "standup", "is_balanced", T)
 
         max_pot = float(np.max(potentials)) if potentials is not None and len(potentials) > 0 else 0.0
         final_pot = float(potentials[-1]) if potentials is not None and len(potentials) > 0 else 0.0

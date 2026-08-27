@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_scalar, _extract_per_step_field
+from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentV2Base
 
@@ -88,13 +88,13 @@ class BasicBalanceV2(CombatExperimentV2Base):
             r_fall[-1] = penalty
 
         # --- r_cross ---
-        r_cross = _extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
+        r_cross = extract_per_step_scalar(episode.observer_outputs, "cross_support", T)
 
         # --- posture-based channels ---
-        joint_dev_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
-        joint_vel_arr = _extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
-        torso_tilt_arr = _extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
-        foot_height_arr = _extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
+        joint_dev_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_deviation", T)
+        joint_vel_arr = extract_per_step_field(episode.observer_outputs, "posture", "joint_vel", T)
+        torso_tilt_arr = extract_per_step_field(episode.observer_outputs, "posture", "torso_tilt", T)
+        foot_height_arr = extract_per_step_field(episode.observer_outputs, "posture", "foot_height", T)
 
         if joint_dev_arr is None:
             joint_dev_arr = np.zeros(T, dtype=np.float32)

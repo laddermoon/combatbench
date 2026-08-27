@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,
@@ -431,7 +431,7 @@ class StandupFight(CombatExperimentV2Base):
         oo = episode.observer_outputs
 
         # --- Extract φ_4stage (StandingBalance4StageRewarder "potential") ---
-        phi4_arr = _extract_per_step_field(oo, "standing_balance", "potential", T_full)
+        phi4_arr = extract_per_step_field(oo, "standing_balance", "potential", T_full)
         if phi4_arr is not None:
             phi4_arr = phi4_arr[:T_full]
         else:
@@ -439,7 +439,7 @@ class StandupFight(CombatExperimentV2Base):
         phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract φ_height (HeightPhiObserver "phi") ---
-        phi_h_arr = _extract_per_step_field(oo, "height_phi", "phi", T_full)
+        phi_h_arr = extract_per_step_field(oo, "height_phi", "phi", T_full)
         if phi_h_arr is not None:
             phi_h_arr = phi_h_arr[:T_full]
         else:
@@ -447,7 +447,7 @@ class StandupFight(CombatExperimentV2Base):
         phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract h_torso for phase determination ---
-        h_torso = _extract_per_step_field(oo, "standing_balance", "h_torso", T_full)
+        h_torso = extract_per_step_field(oo, "standing_balance", "h_torso", T_full)
         if h_torso is not None:
             h_torso = h_torso[:T_full]
         else:
@@ -478,10 +478,10 @@ class StandupFight(CombatExperimentV2Base):
         )
 
         # --- r_radial / r_tangential ---
-        self_x = _extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
-        self_y = _extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
-        opp_x = _extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
-        opp_y = _extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
+        self_x = extract_per_step_field(oo, "approach_velocity", "self_x", T_full)
+        self_y = extract_per_step_field(oo, "approach_velocity", "self_y", T_full)
+        opp_x = extract_per_step_field(oo, "approach_velocity", "opp_x", T_full)
+        opp_y = extract_per_step_field(oo, "approach_velocity", "opp_y", T_full)
 
         if self_x is None or self_y is None or opp_x is None or opp_y is None:
             r_radial = np.zeros(T_full, dtype=np.float32)
@@ -502,8 +502,8 @@ class StandupFight(CombatExperimentV2Base):
         out_zone = (dist > FOLLOW_DIST_MAX).astype(np.float32)
 
         # --- r_face: facing_score (reward) + dist_gate (actor weight) ---
-        fwd_x = _extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
-        fwd_y = _extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
+        fwd_x = extract_per_step_field(oo, "face_opponent", "forward_x", T_full)
+        fwd_y = extract_per_step_field(oo, "face_opponent", "forward_y", T_full)
 
         r_face = np.zeros(T_full, dtype=np.float32)
         face_dist_gate = np.zeros(T_full, dtype=np.float32)
@@ -529,8 +529,8 @@ class StandupFight(CombatExperimentV2Base):
             r_face = facing_score.astype(np.float32)
 
         # --- r_damage_dealt / r_damage_taken ---
-        dealt = _extract_per_step_field(oo, "damage_breakdown", "dealt", T_full)
-        taken = _extract_per_step_field(oo, "damage_breakdown", "taken", T_full)
+        dealt = extract_per_step_field(oo, "damage_breakdown", "dealt", T_full)
+        taken = extract_per_step_field(oo, "damage_breakdown", "taken", T_full)
         if dealt is not None:
             r_dealt = np.asarray(dealt[:T_full], dtype=np.float32)
         else:
@@ -597,7 +597,7 @@ class StandupFight(CombatExperimentV2Base):
         oo, observer_key: str, field: str, T_full: int,
     ) -> np.ndarray:
         """Extract a FootStateObserver field, truncated to ``T_full``."""
-        arr = _extract_per_step_field(oo, observer_key, field, T_full)
+        arr = extract_per_step_field(oo, observer_key, field, T_full)
         if arr is None:
             raise KeyError(
                 f"_extract_foot_field: observer '{observer_key}' field '{field}' "
@@ -638,8 +638,8 @@ class StandupFight(CombatExperimentV2Base):
                 survived_count += 1
 
             # --- Net damage ---
-            dealt = _extract_per_step_field(oo, "damage_breakdown", "dealt", T)
-            taken = _extract_per_step_field(oo, "damage_breakdown", "taken", T)
+            dealt = extract_per_step_field(oo, "damage_breakdown", "dealt", T)
+            taken = extract_per_step_field(oo, "damage_breakdown", "taken", T)
             if dealt is not None and taken is not None:
                 total_dealt = float(np.sum(dealt[:T]))
                 total_taken = float(np.sum(taken[:T]))

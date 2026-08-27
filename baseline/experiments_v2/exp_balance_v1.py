@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
@@ -220,7 +220,7 @@ class BalanceV1(CombatExperimentV2Base):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- Extract φ (4-stage standing potential) ---
-        phi_arr = _extract_per_step_field(
+        phi_arr = extract_per_step_field(
             episode.observer_outputs, phi_key, "potential", T_full,
         )
         if phi_arr is not None:
@@ -233,10 +233,10 @@ class BalanceV1(CombatExperimentV2Base):
         r_potential = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
         # --- Foot heights (saturated) ---
-        h_left = _extract_per_step_field(
+        h_left = extract_per_step_field(
             episode.observer_outputs, foot_key, "h_left_foot", T_full,
         )
-        h_right = _extract_per_step_field(
+        h_right = extract_per_step_field(
             episode.observer_outputs, foot_key, "h_right_foot", T_full,
         )
         if h_left is not None:
@@ -255,10 +255,10 @@ class BalanceV1(CombatExperimentV2Base):
             r_right_foot = np.zeros(T_full, dtype=np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
-        contact_l = _extract_per_step_field(
+        contact_l = extract_per_step_field(
             episode.observer_outputs, foot_key, "left_foot_contact", T_full,
         )
-        contact_r = _extract_per_step_field(
+        contact_r = extract_per_step_field(
             episode.observer_outputs, foot_key, "right_foot_contact", T_full,
         )
         if contact_l is not None and contact_r is not None:
@@ -344,7 +344,7 @@ class BalanceV1(CombatExperimentV2Base):
 
             for agent_id, _, phi_key in self._AGENT_OBS:
                 n_agents += 1
-                phi = _extract_per_step_field(
+                phi = extract_per_step_field(
                     ep.observer_outputs, phi_key, "potential", T,
                 )
                 if phi is not None and len(phi) > 0:
@@ -359,7 +359,7 @@ class BalanceV1(CombatExperimentV2Base):
                     success_count += 1
 
                 # balance_ratio: fraction of steps with h_torso > 1.0
-                h_torso = _extract_per_step_field(
+                h_torso = extract_per_step_field(
                     ep.observer_outputs, phi_key, "h_torso", T,
                 )
                 if h_torso is not None and len(h_torso) > 0:

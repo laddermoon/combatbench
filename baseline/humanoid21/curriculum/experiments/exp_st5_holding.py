@@ -16,7 +16,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.framework.ppo_trainer import _extract_per_step_field
+from baseline.common.rollout import extract_per_step_field
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
 
@@ -59,10 +59,10 @@ class ST5HoldingConfig(CombatExperimentBase):
 
     def extract_rewards(self, episode) -> Dict[str, np.ndarray]:
         T = episode.num_frames
-        phi = _extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
+        phi = extract_per_step_field(episode.observer_outputs, "height_phi", "phi", T)
         if phi is None:
             phi = np.zeros(T, dtype=np.float32)
-        initial_phi_arr = _extract_per_step_field(episode.observer_outputs, "height_phi", "initial_phi", T)
+        initial_phi_arr = extract_per_step_field(episode.observer_outputs, "height_phi", "initial_phi", T)
         initial_phi = float(initial_phi_arr[0]) if initial_phi_arr is not None else 0.0
 
         gs = self.shaping_gamma
