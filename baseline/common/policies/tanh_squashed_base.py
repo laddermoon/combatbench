@@ -42,7 +42,7 @@ from torch import nn
 
 from envs.framework.policy import Policy, PolicyBlueprint
 
-from baseline.framework.experiment_v2 import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval, ExplorationSpec
 
 
 # Epsilon for the tanh Jacobian correction:  log(1 - tanh(x)² + ε).

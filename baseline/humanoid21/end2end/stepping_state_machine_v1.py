@@ -56,7 +56,7 @@ correct foot.  Lifting the same foot twice therefore earns no reward (its
 weight was -W in DOUBLE) and needs no special-case branch.
 
 Negative actor_weight relies on the ``!= 0.0`` skip predicate in
-``ppo_trainer_v2.ppo_update_v2`` (a channel whose weights are all <= 0 was
+``ppo.trainer.ppo_update`` (a channel whose weights are all <= 0 was
 previously dropped silently).
 """
 from __future__ import annotations

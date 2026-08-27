@@ -31,7 +31,7 @@
 
 说明，这个步骤3和步骤4存在潜在的合并的可能性，因为实验发现加了face之后follow的更好.
 /data1/mono/things/combatbench/baseline/experiments_v2/exp_follow_v2.py
-考虑使用合并的方案
+使用合并的方案
 
 这上面的这些步骤完成之后，就会得到一个能够从倒地站立起来，并且走到对手跟前的这样一个策略。
 

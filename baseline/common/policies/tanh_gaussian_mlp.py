@@ -18,9 +18,9 @@ from torch.distributions import Normal
 from envs.framework.policy import Policy, PolicyBlueprint
 
 # The actor-side data types of the TrainablePolicy contract. Importing
-# them here is safe (experiment_v2 depends only on envs.framework, so
+# them here is safe (ppo.experiment depends only on envs.framework, so
 # there is no cycle) and keeps a single definition of the contract.
-from baseline.framework.experiment_v2 import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval, ExplorationSpec
 
 from .checkpoint import (
     DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
@@ -146,7 +146,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     ) -> "ActorEval":
         """Score ``actions`` under the current parameters.
 
-        Implements the :class:`~baseline.framework.experiment_v2.TrainablePolicy`
+        Implements the :class:`~baseline.framework.ppo.experiment.TrainablePolicy`
         contract.  ``frame_modes`` is accepted and ignored — this backbone
         is a single unconditional network with no sub-network routing.
 

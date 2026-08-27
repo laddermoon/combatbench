@@ -34,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
-from baseline.framework.experiment_v2 import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval, ExplorationSpec
 
 
 # ---------------------------------------------------------------------------

@@ -85,11 +85,11 @@ class SacBalance(CombatExperimentSACBase):
     # LayerNorm in Q trunk for stability (prevents Q overestimation crash)
     q_layer_norm: bool = True
     # Reward scale: amplify small per-step rewards (~0.005) so they're
-    # visible relative to the entropy bonus (alpha × |target_entropy| ≈
-    # 1.8/step). With scale=200, reward ≈ 1.0/step, comparable to the
-    # entropy bonus. PPO doesn't need this because GAE naturally amplifies
-    # credit assignment; SAC with 1-step TD does.
-    reward_scale: float = 200.0
+    # visible relative to the entropy bonus. Scale=200 caused Q
+    # overestimation and divergence at 1.5M env steps. Scale=50 with
+    # lower critic LR (1e-4) should be more stable while still
+    # providing enough signal.
+    reward_scale: float = 50.0
 
     # Reward constants
     per_step_phi_coef: float = 0.01

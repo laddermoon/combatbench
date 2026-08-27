@@ -93,7 +93,7 @@ Occasionally repeating the same foot is acceptable, and forcing a
 mid-stride correction would fight the physics.
 
 Negative actor_weight relies on the ``!= 0.0`` skip predicate in
-``ppo_trainer_v2.ppo_update_v2`` (a channel whose weights are all <= 0 was
+``ppo.trainer.ppo_update`` (a channel whose weights are all <= 0 was
 previously dropped silently).
 """
 from __future__ import annotations

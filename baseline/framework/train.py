@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from baseline.experiments_v2 import get_v2_experiment, list_v2_experiments
+from baseline.experiments_ppo import get_ppo_experiment, list_ppo_experiments
 from baseline.experiments_sac import get_sac_experiment, list_sac_experiments
 
 
@@ -137,9 +137,9 @@ def main() -> None:
     if args.list_experiments:
         print("Available experiments:")
         print("  [PPO]")
-        for name in list_v2_experiments():
+        for name in list_ppo_experiments():
             try:
-                exp = get_v2_experiment(name)
+                exp = get_ppo_experiment(name)
                 channels = exp.reward_channels()
                 print(f"    {name}: channels={[ch.name for ch in channels]}")
             except Exception as e:
@@ -180,10 +180,10 @@ def main() -> None:
             raise SystemExit(1)
     else:
         try:
-            experiment = get_v2_experiment(args.experiment, **set_params)
+            experiment = get_ppo_experiment(args.experiment, **set_params)
         except KeyError:
             print(f"Error: Unknown experiment {args.experiment!r}.")
-            print(f"  Available: {list_v2_experiments()}")
+            print(f"  Available: {list_ppo_experiments()}")
             raise SystemExit(1)
 
     # --- Override seed if requested ---
@@ -263,8 +263,8 @@ def main() -> None:
         from baseline.framework.sac.loop import save_run_config_sac
         save_run_config_sac(experiment, run_dir, smoke=args.smoke)
     else:
-        from baseline.framework.ppo_loop_v2 import save_run_config_v2
-        save_run_config_v2(experiment, run_dir, smoke=args.smoke, algo=algo)
+        from baseline.framework.ppo.loop import save_run_config
+        save_run_config(experiment, run_dir, smoke=args.smoke, algo=algo)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -294,8 +294,8 @@ def main() -> None:
         from baseline.framework.sac.loop import train_sac
         train_sac(experiment, run_dir=run_dir, resume_from=resume_from, reset_update=args.reset_update)
     else:
-        from baseline.framework.ppo_loop_v2 import train_ppo_v2
-        train_ppo_v2(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
+        from baseline.framework.ppo.loop import train_ppo
+        train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
 
 
 if __name__ == "__main__":
