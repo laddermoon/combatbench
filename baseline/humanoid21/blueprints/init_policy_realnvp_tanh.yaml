@@ -1,0 +1,13 @@
+version: 1
+cls: "baseline.common.policies.realnvp_tanh_mlp:RealNVPTanhMLPPolicy"
+config:
+  obs_dim: 96
+  action_dim: 21
+  hidden_dim: 256
+  num_layers: 4
+  scale_max: 1.0
+  conditioner_hidden: 64
+  log_std_min: -4.0
+  log_std_max: 0.0
+  device: "cpu"
+  deterministic: false
