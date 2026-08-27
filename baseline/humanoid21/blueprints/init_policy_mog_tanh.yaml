@@ -1,0 +1,11 @@
+version: 1
+cls: "baseline.common.policies.mog_tanh_mlp:MoGTanhMLPPolicy"
+config:
+  obs_dim: 96
+  action_dim: 21
+  hidden_dim: 256
+  K: 3
+  log_std_min: -4.0
+  log_std_max: 0.0
+  device: "cpu"
+  deterministic: false
