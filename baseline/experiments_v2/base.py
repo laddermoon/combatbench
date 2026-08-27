@@ -83,6 +83,14 @@ class CombatExperimentV2Base(ExperimentV2):
 
     seed: int = 42
 
+    # --- Policy blueprint ---
+    # Filename of the initial policy blueprint YAML under
+    # humanoid21/blueprints/.  Used by build_actor() to construct the
+    # actor.  New policy families override this to point to their own
+    # init_policy_<family>.yaml.  Default matches the baseline
+    # TanhGaussianMLPPolicy blueprint.
+    actor_blueprint: str = "init_policy.yaml"
+
     # --- Rollout / env configuration (subclass overrides) ---
     # These parameters control how build_jobs() constructs rollout jobs.
     # Each job is a tuple:
@@ -178,14 +186,19 @@ class CombatExperimentV2Base(ExperimentV2):
 
     def build_actor(self, device: torch.device) -> TrainablePolicy:
         blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
-        bp = PolicyBlueprint.load(blueprint_dir / "init_policy.yaml")
+        bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
         actor = bp.build().to(device)
         # The actor owns its distribution bounds now that they left
         # PPOParams. Both are forced here (previously only log_std_min was),
         # so the class attributes are authoritative and the values baked into
         # init_policy.yaml cannot silently diverge from them.
-        actor.log_std_min = float(self.log_std_min)
-        actor.log_std_max = float(self.log_std_max)
+        # Guarded with hasattr so policy families without scalar
+        # log_std_min/max (e.g. mixture, flow) aren't forced to grow
+        # attributes they don't use.
+        if hasattr(actor, "log_std_min"):
+            actor.log_std_min = float(self.log_std_min)
+        if hasattr(actor, "log_std_max"):
+            actor.log_std_max = float(self.log_std_max)
         return actor
 
     def build_critic(self, channel_name: str, device: torch.device) -> nn.Module:

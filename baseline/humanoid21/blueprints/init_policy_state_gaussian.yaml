@@ -1,0 +1,10 @@
+version: 1
+cls: "baseline.common.policies.state_gaussian_mlp:StateGaussianMLPPolicy"
+config:
+  obs_dim: 96
+  action_dim: 21
+  hidden_dim: 256
+  log_std_min: -4.0
+  log_std_max: 0.0
+  device: "cpu"
+  deterministic: false
