@@ -1,0 +1,11 @@
+version: 1
+cls: "baseline.common.policies.low_rank_gaussian_mlp:LowRankGaussianMLPPolicy"
+config:
+  obs_dim: 96
+  action_dim: 21
+  hidden_dim: 256
+  rank: 4
+  log_std_min: -4.0
+  log_std_max: 0.0
+  device: "cpu"
+  deterministic: false
