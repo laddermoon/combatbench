@@ -530,9 +530,15 @@ class FightShape(CombatExperimentPPOBase):
         opp_head_left_sh = self._extract_field(oo, "arm_state", "opp_head_to_left_shoulder", T_full)
         opp_head_right_sh = self._extract_field(oo, "arm_state", "opp_head_to_right_shoulder", T_full)
 
-        # --- Raw arm rewards (physical quantities, no gating) ---
-        r_left_elbow = left_elbow.astype(np.float32)
-        r_right_elbow = right_elbow.astype(np.float32)
+        # --- Raw arm rewards ---
+        # Elbow: map norm [-1,+1] to [0,1] where 1=extended(伸直), 0=flexed(收回)
+        #   r = (1 - norm) / 2
+        #   ATTACK aw=+W → reward↑ → norm↓ → extend
+        #   PREPARE aw=-W → reward↓ → norm↑ → flex
+        r_left_elbow = ((1.0 - left_elbow) * 0.5).astype(np.float32)
+        r_right_elbow = ((1.0 - right_elbow) * 0.5).astype(np.float32)
+        # Hand dist: raw 3D distance (m), unchanged
+        #   ATTACK aw=-W → distance↓, PREPARE aw=+W → distance↑
         r_left_hand_dist = left_hand_opp.astype(np.float32)
         r_right_hand_dist = right_hand_opp.astype(np.float32)
 

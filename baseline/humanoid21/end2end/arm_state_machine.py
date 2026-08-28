@@ -32,11 +32,11 @@ The preparing hand's completion does NOT trigger any transition.
 
 Output: four (T,) float32 arrays of actor weights, each in {-W, 0, +W}:
 
-    w_left_elbow      — -W when left=ATTACK (encourage norm → -1, elbow straight/伸直),
-                        +W when left=PREPARE (encourage norm → +1, elbow flexed/收回),
+    w_left_elbow      — +W when left=ATTACK (encourage elbow extension/伸直),
+                        -W when left=PREPARE (encourage elbow flexion/收回),
                         0 on invalid steps
-    w_right_elbow     — -W when right=ATTACK,
-                        +W when right=PREPARE,
+    w_right_elbow     — +W when right=ATTACK,
+                        -W when right=PREPARE,
                         0 on invalid steps
     w_left_hand_dist  — -W when left=ATTACK (encourage hand → opp head),
                         +W when left=PREPARE (encourage hand away from opp),
@@ -45,10 +45,18 @@ Output: four (T,) float32 arrays of actor weights, each in {-W, 0, +W}:
                         +W when right=PREPARE,
                         0 on invalid steps
 
-Elbow normalization (from simulator):
-    -1 = fully extended/straight (伸直, -100°) — punch extended
-    +1 = fully flexed/retracted (收回, +50°)   — chambered/retracted
-    ATTACK rewards extension (norm → -1), PREPARE rewards flexion (norm → +1).
+Elbow reward mapping (applied in the experiment, not here):
+    r_elbow = (1 - elbow_norm) / 2   →   range [0, 1]
+    norm=-1 (fully extended/伸直) → r=1.0 (punch extended)
+    norm=+1 (fully flexed/收回)   → r=0.0 (chambered/retracted)
+
+    With this mapping:
+    ATTACK: aw=+W → PPO maximizes → reward↑ → norm↓ → elbow extends (伸直)
+    PREPARE: aw=-W → PPO minimizes → reward↓ → norm↑ → elbow flexes (收回)
+
+Hand distance reward is the raw 3D distance (meters), unchanged:
+    ATTACK: aw=-W → encourages distance↓ (hand → opp head)
+    PREPARE: aw=+W → encourages distance↑ (hand away from opp)
 
 The experiment applies additional gating (phi_height², balance_mask) on top
 of these weights.  The distance + facing gate is applied HERE (as the valid
@@ -124,9 +132,12 @@ def _run_segment(
     for i, t in enumerate(range(start, end)):
         if state_a:
             # left=ATTACK, right=PREPARE
-            w_le[i] = -W
+            # Elbow: ATTACK aw=+W (reward=(1-norm)/2, +W → reward↑ → norm↓ → extend)
+            #         PREPARE aw=-W (→ reward↓ → norm↑ → flex)
+            # Hand dist: ATTACK aw=-W (→ distance↓), PREPARE aw=+W (→ distance↑)
+            w_le[i] = W
             w_lhd[i] = -W
-            w_re[i] = W
+            w_re[i] = -W
             w_rhd[i] = W
 
             # Check if left attack is complete
@@ -139,9 +150,9 @@ def _run_segment(
                 state_a = False  # switch to State B
         else:
             # right=ATTACK, left=PREPARE
-            w_le[i] = W
+            w_le[i] = -W
             w_lhd[i] = W
-            w_re[i] = -W
+            w_re[i] = W
             w_rhd[i] = -W
 
             # Check if right attack is complete
