@@ -1,0 +1,82 @@
+# Fight-shape: standup + follow + face + arm punch shaping (no scoring).
+#
+# Based on standup_fight_env.yaml:
+#   - Removes CombatScoringPlugin (no damage/KO tracking)
+#   - Removes DamageBreakdownRewarder (no per-step dealt/taken)
+#   - Adds ArmStateObserver (elbow angles, hand/head/shoulder distances)
+#
+# The learning agent starts from random fallen state, stands up, approaches
+# the opponent (a real policy from pool), faces it, and practices alternating
+# punches guided by arm-state shaping rewards (no damage scoring).
+#
+# Reward channels (in experiment):
+#   r_potential     = 0.01 × φ_4stage,           aw = 3.0 (STANDUP only)
+#   r_fall          = 0.01 × φ_height,           aw = 3.0 (BALANCE only)
+#   r_left_foot     = clip(h_left, -0.05, 0.05),  aw = state machine (BALANCE only)
+#   r_right_foot    = clip(h_right, -0.05, 0.05), aw = state machine (BALANCE only)
+#   r_radial        = radial approach vel,        aw = 3.0 × φ_height² × BALANCE
+#   r_tangential    = tangential penalty,         aw = 1.0 × φ_height² × BALANCE
+#   r_face          = facing_score,               aw = 1.0 × dist_gate × φ_height² × BALANCE
+#   r_left_elbow    = left elbow norm [-1,1],     aw = arm state machine × gate × BALANCE
+#   r_right_elbow   = right elbow norm [-1,1],    aw = arm state machine × gate × BALANCE
+#   r_left_hand_dist  = left hand → opp head (m), aw = arm state machine × gate × BALANCE
+#   r_right_hand_dist = right hand → opp head (m),aw = arm state machine × gate × BALANCE
+#   (gate: dist ≤ 0.9 m AND facing ≤ 30° off AND φ_height²)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps (standup ~100 + approach/fight ~500)."
+  agent_id:
+    default: "robot_a"
+    description: "The learning robot."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: ${agent_id}
+  height_phi:
+    cls: "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver"
+    config:
+      agent_id: ${agent_id}
+  foot_state:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: ${agent_id}
+  approach_velocity:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: ${agent_id}
+  face_opponent:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: ${agent_id}
+  arm_state:
+    cls: "baseline.humanoid21.end2end.arm_state_observer:ArmStateObserver"
+    config:
+      agent_id: ${agent_id}
