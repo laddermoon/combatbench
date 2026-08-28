@@ -536,7 +536,15 @@ class FightShape(CombatExperimentPPOBase):
         r_left_hand_dist = left_hand_opp.astype(np.float32)
         r_right_hand_dist = right_hand_opp.astype(np.float32)
 
-        # --- Arm state machine → base actor weights (±W) ---
+        # --- Arm gate: distance + facing (determines valid segments) ---
+        arm_dist_gate = (dist <= D_ARM_GATE)
+        arm_facing_gate = (cos_angle >= FACING_COS_THRESHOLD)
+        arm_valid_mask = arm_dist_gate & arm_facing_gate
+
+        # --- Arm state machine → base actor weights (±W or 0) ---
+        # State machine runs only on valid segments (dist<=0.9 AND facing<=30°).
+        # Each valid segment gets a fresh initial state.
+        # Invalid steps get zero weight from the state machine.
         w_le, w_re, w_lhd, w_rhd = compute_arm_weights(
             left_elbow.astype(np.float64),
             right_elbow.astype(np.float64),
@@ -546,19 +554,17 @@ class FightShape(CombatExperimentPPOBase):
             right_hand_sh.astype(np.float64),
             opp_head_left_sh.astype(np.float64),
             opp_head_right_sh.astype(np.float64),
+            valid_mask=arm_valid_mask,
             elbow_threshold=self.elbow_threshold,
             arm_weight=self.arm_weight,
         )
-
-        # --- Arm gate: distance + facing ---
-        arm_dist_gate = (dist <= D_ARM_GATE).astype(np.float32)
-        arm_facing_gate = (cos_angle >= FACING_COS_THRESHOLD).astype(np.float32)
-        arm_gate = arm_dist_gate * arm_facing_gate
 
         # --- No early termination ---
         is_terminated = False
 
         # --- Actor weights ---
+        # Arm channels: state machine already zeroed invalid steps.
+        # Additional phi_height² × BALANCE gating applied here.
         phi_h_sq = (phi_h_arr ** 2).astype(np.float32)
         actor_weights = {
             "r_potential": (self.r_potential_actor_weight * standup_mask).astype(np.float32),
@@ -568,10 +574,10 @@ class FightShape(CombatExperimentPPOBase):
             "r_radial": (self.r_radial_actor_weight * out_zone * phi_h_sq * balance_mask).astype(np.float32),
             "r_tangential": (self.r_tangential_actor_weight * out_zone * phi_h_sq * balance_mask).astype(np.float32),
             "r_face": (self.r_face_actor_weight * face_dist_gate * phi_h_sq * balance_mask).astype(np.float32),
-            "r_left_elbow": (w_le * arm_gate * phi_h_sq * balance_mask).astype(np.float32),
-            "r_right_elbow": (w_re * arm_gate * phi_h_sq * balance_mask).astype(np.float32),
-            "r_left_hand_dist": (w_lhd * arm_gate * phi_h_sq * balance_mask).astype(np.float32),
-            "r_right_hand_dist": (w_rhd * arm_gate * phi_h_sq * balance_mask).astype(np.float32),
+            "r_left_elbow": (w_le * phi_h_sq * balance_mask).astype(np.float32),
+            "r_right_elbow": (w_re * phi_h_sq * balance_mask).astype(np.float32),
+            "r_left_hand_dist": (w_lhd * phi_h_sq * balance_mask).astype(np.float32),
+            "r_right_hand_dist": (w_rhd * phi_h_sq * balance_mask).astype(np.float32),
         }
 
         all_rewards = {
