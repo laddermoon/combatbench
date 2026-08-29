@@ -27,7 +27,7 @@ Reward phases (unchanged from follow_v2):
     r_face       = facing_score,             aw = 1.0 × dist_gate × φ_h² × BALANCE
 
   Arm punch channels (NEW, gated by φ_height²; the state machine itself only
-  runs on valid segments where dist ≤ 0.9 m AND facing within ±30° AND BALANCE):
+  runs on valid segments where dist ≤ 1.1 m AND facing within ±60° AND BALANCE):
     r_left_elbow      = (1 - left_elbow_norm) / 2   ∈ [0, 1]
     r_right_elbow     = (1 - right_elbow_norm) / 2  ∈ [0, 1]
     r_left_hand_dist  = left hand → opp head (m)
@@ -93,9 +93,9 @@ D_FACE: float = 1.5     # m — face reward starts activating
 D_STRIKE: float = 0.7   # m — face reward fully active
 
 # --- Arm gate: striking range + facing cone ---
-D_ARM_GATE: float = 0.9
+D_ARM_GATE: float = 1.1
 """m — arm state machine runs only when opponent is within this distance."""
-FACING_ANGLE_DEG: float = 30.0
+FACING_ANGLE_DEG: float = 60.0
 """deg — arm state machine runs only within this angle off the opponent."""
 FACING_COS_THRESHOLD: float = math.cos(math.radians(FACING_ANGLE_DEG))  # ≈ 0.866
 

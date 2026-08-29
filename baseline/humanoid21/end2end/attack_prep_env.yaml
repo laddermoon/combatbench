@@ -32,7 +32,7 @@
 #   r_right_hand_dist = right hand → opp head (m), aw = arm machine × φ_h² × BALANCE
 #
 # The arm state machine only runs on valid segments:
-#   dist <= 0.9 m AND facing within ±30° of the opponent.
+#   dist <= 1.1 m AND facing within ±60° of the opponent.
 #
 # No imbalance termination — robot can fall and get back up.
 
