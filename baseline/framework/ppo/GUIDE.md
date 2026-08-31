@@ -549,14 +549,26 @@ def build_trajectories(self, episodes):
 
 `build_trajectories` 返回的 trajectory 列表中，**框架不检查 frame 是否重叠**。如果你从同一 episode 切出两条 trajectory 且它们的 frame 区间有交集，那些重叠 frame 会被当作独立数据点处理——没有任何去重。
 
-这会带来以下后果，全部是**静默的**（没有报错、没有警告）：
+后果的严重程度取决于**重叠的 frame 是否也共享相同的 reward channel**：
+
+**仅 frame 重叠，channel 不重叠**（如 Traj A: frame 0-60 只有 r_fall，Traj B: frame 40-100 只有 r_cross）：
 
 | 后果 | 机制 |
 |------|------|
-| **双倍梯度权重** | 重叠 frame 在 buffer 中出现两次，minibatch 随机采样时被抽中的概率是其他 frame 的两倍，对 actor 更新有双倍影响 |
-| **advantage 不一致** | 同一 (s, a) 在两条 trajectory 中各自做 GAE backward pass，由于 reward 序列、bootstrap value、累积路径不同，会得到**两个不同的 advantage 值**。PPO 的 clipped surrogate 会对同一个点产生两个可能矛盾的 gradient |
-| **z-score 统计偏移** | 重叠 frame 的两个 advantage 值都参与 per-channel 的 mean/std 计算，等于这些 frame 在归一化统计中获得双倍权重 |
-| **critic target 矛盾** | 同一个 s 在 critic loss 中出现两次，但两条 trajectory 的 GAE returns 可能不同，critic 被同时拉向两个方向 |
+| **双倍采样权重** | 重叠 frame 在 buffer 中出现两次，minibatch 随机采样时被抽中的概率是其他 frame 的两倍。两个 advantage 来自不同 channel，不算"矛盾"而是"不同视角"，但采样权重的翻倍是隐性的 |
+
+这种用法相对可控——每个 critic 只见到该 frame 一次，z-score 归一化也不受影响。主要代价是采样权重翻倍，可以用 `importance` 权重补偿。
+
+**frame 重叠 + channel 也重叠**（如 Traj A 和 Traj B 都有 r_fall，且 frame 40-60 重叠）：
+
+| 后果 | 机制 |
+|------|------|
+| **双倍梯度权重** | 同上，且更严重：同一个 channel 的 advantage 对同一 (s,a) 产生两份 gradient |
+| **advantage 不一致** | 同一 channel 在两条 trajectory 中各自做 GAE backward pass，由于 reward 序列、bootstrap value、累积路径不同，会得到**两个不同的 advantage 值**。PPO 的 ratio 对同一 (s,a) 相同，但 advantage 方向可能矛盾，clipped surrogate 产生互相冲突的 gradient |
+| **z-score 统计偏移** | 重叠 frame 的两个 advantage 值都参与该 channel 的 mean/std 计算，等于这些 frame 在归一化统计中获得双倍权重 |
+| **critic target 矛盾** | 同一个 s 在同一个 critic 的 loss 中出现两次，但两条 trajectory 的 GAE returns 可能不同，critic 被同时拉向两个方向 |
+
+这种用法**几乎总是错误的**。如果你发现自己需要这种结构，请阅读下面的替代方案。
 
 **为什么框架不去重**：去重后需要决定"保留哪个 advantage"，这本身就是一个语义决策，框架无法替你做。而且如果重叠 frame 的 advantage 一致，那重叠就没有意义——直接用一条 trajectory 即可。
 
