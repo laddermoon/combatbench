@@ -680,11 +680,23 @@ def ppo_update(
     # actor's, so the two could silently disagree.
     actor_stats: Dict[str, float] = dict(buf.actor_stats)
 
-    n_batches = max(1, n // pp.minibatch_size)
+    # Ceil division: the actual loop produces this many minibatches.
+    # Previously this used floor division (n // mb), which undercounted
+    # by 1 whenever n was not exactly divisible — the remainder batch
+    # was processed but not reported. Using ceil makes the reported
+    # n_batches match the actual loop iteration count.
+    n_batches = max(1, (n + pp.minibatch_size - 1) // pp.minibatch_size)
     n_episodes = len(buf.ep_lengths)
 
     # --- 6. Training loop: multi-epoch minibatch PPO ---
-    # Each epoch shuffles all frames and iterates in minibatches.
+    # Each epoch shuffles all frames and splits into n_batches roughly
+    # equal minibatches via ``torch.tensor_split``.  This replaces the
+    # old ``range(0, n, mb_size)`` loop which produced a tiny remainder
+    # batch (as small as a few dozen samples) that took a full Adam step
+    # with amplified gradient noise.  Even splitting ensures every
+    # minibatch is within 1 sample of ``n // n_batches``, so no single
+    # step is dominated by a handful of samples.
+    #
     # Critic and actor are updated alternately per minibatch.
     # Early stop on target_kl prevents the policy from moving too far
     # from the rollout policy (which would break the on-policy assumption).
@@ -703,9 +715,9 @@ def ppo_update(
         epoch_kls: List[float] = []
         epoch_pol_losses: List[float] = []
 
-        for start in range(0, n, pp.minibatch_size):
-            end = min(start + pp.minibatch_size, n)
-            idx = perm[start:end]
+        # Even minibatch split: each chunk has size n//n_batches or
+        # n//n_batches + 1.  No tiny remainder batch.
+        for idx in torch.tensor_split(perm, n_batches):
 
             # Sample weight normalization: divide by mean so the
             # effective batch size is preserved regardless of individual
