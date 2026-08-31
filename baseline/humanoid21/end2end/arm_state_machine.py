@@ -70,7 +70,7 @@ ELBOW_FLEX_THRESHOLD: float = 0.95
 """FLEX completes when elbow_norm >= this (nearly fully retracted)."""
 
 # Default arm actor weight magnitude.
-ARM_WEIGHT: float = 1.0
+ARM_WEIGHT: float = 3.0
 
 # Arm states
 _ATTACK = 0
