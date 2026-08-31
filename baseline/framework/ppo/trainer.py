@@ -742,10 +742,11 @@ def ppo_update(
         perm = torch.randperm(n, device=device)
         epoch_kls: List[float] = []
         epoch_pol_losses: List[float] = []
+        early_stop_this_epoch = False
 
         # Even minibatch split: each chunk has size n//n_batches or
         # n//n_batches + 1.  No tiny remainder batch.
-        for idx in torch.tensor_split(perm, n_batches):
+        for mb_idx, idx in enumerate(torch.tensor_split(perm, n_batches)):
 
             # Sample weight normalization: divide by mean so the
             # effective batch size is preserved regardless of individual
@@ -829,9 +830,36 @@ def ppo_update(
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
 
+            # --- Per-minibatch KL early stop ---
+            # Check immediately after each minibatch's actor update,
+            # not after the full epoch.  This gives target_kl real
+            # teeth: if KL blows up on minibatch 5 of 50, we stop
+            # right there instead of running 45 more updates that
+            # push the policy further past the trust region.
+            #
+            # We use the running mean of KL over all minibatches in
+            # this epoch so far (not just the latest one) to avoid
+            # stopping on a single noisy minibatch.  This matches the
+            # semantics of the old epoch-level check — "average KL
+            # this epoch exceeds target" — but triggers as soon as
+            # the running average crosses the threshold, not after
+            # all n_batches minibatches have run.
+            if target_kl > 0.0 and epoch_kls:
+                running_mean_kl = float(np.mean(epoch_kls))
+                if running_mean_kl > target_kl:
+                    print(
+                        f"  [early_stop] epoch={epoch} mb={mb_idx} "
+                        f"running_mean_kl={running_mean_kl:.4f} > "
+                        f"target_kl={target_kl:.4f}",
+                        flush=True,
+                    )
+                    early_stop_kl = running_mean_kl
+                    early_stop_this_epoch = True
+                    break
+
         # --- Epoch KL diagnostics ---
-        # Track KL divergence per epoch for early stopping and anomaly
-        # detection. Three warning conditions are checked:
+        # Track KL divergence per epoch for anomaly detection.
+        # Three warning conditions are checked:
         # 1. KL too small → policy may be stuck or LR too low
         # 2. KL monotonically increasing → risk of overshoot
         # 3. KL jump (2x in one step) → potential instability
@@ -881,14 +909,7 @@ def ppo_update(
 
         pol_losses.extend(epoch_pol_losses)
 
-        # Early stop: if mean KL exceeds target, stop training epochs
-        # to prevent the policy from diverging too far from the rollout.
-        if target_kl > 0.0 and mean_epoch_kl > target_kl:
-            print(
-                f"  [early_stop] epoch={epoch} mean_kl={mean_epoch_kl:.4f} > target",
-                flush=True,
-            )
-            early_stop_kl = mean_epoch_kl
+        if early_stop_this_epoch:
             break
 
     # --- 7. Aggregate stats for logging ---
