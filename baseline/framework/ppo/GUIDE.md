@@ -113,7 +113,24 @@ ChannelData(
 ```
 
 - **is_terminated**：该 channel 在这条 trajectory 上是否"终止"。不同 channel 在同一条 trajectory 上可以有不同的值。例如机器人摔倒：`r_fall` 标记 terminated（V=0），但 `r_cross` 可能标记 truncated（从 critic bootstrap）。
-- **actor_weight**：该 channel 的 advantage 对 policy gradient 的影响力。`0.0` 表示 critic 照常训练但不影响 actor（适合 warmup 新 critic）。可以是 `(T,)` 数组，实现**逐步权重变化**——这就是 curriculum scheduling 的核心机制。
+- **actor_weight**：该 channel 的 advantage 对 policy gradient 的影响力。可以是标量或 `(T,)` 数组（实现**逐步权重变化**，curriculum scheduling 的核心机制）。
+
+  `actor_weight` 在框架中有三个不同层面的作用，理解它们的区别很重要：
+
+  | 层面 | aw=0 的帧 | aw>0 的帧 |
+  |------|----------|----------|
+  | **Critic 训练** | ✓ 参与。critic 在所有 active 帧上学习 V(s)，与 aw 无关 | ✓ 参与 |
+  | **GAE 计算与传播** | ✓ 参与。GAE backward pass 穿过 aw=0 帧把未来 reward 传播到 aw>0 帧 | ✓ 参与 |
+  | **Advantage 归一化** | ✗ **不参与**。z-score 的 mean/std 只在 aw>0 帧上计算 | ✓ 参与 |
+  | **Actor gradient** | ✗ 不产生（乘以 0） | ✓ 产生 |
+
+  **为什么归一化排除 aw=0 帧**：归一化的目的是让实际驱动 actor 的 advantage 有稳定的尺度。aw=0 帧不产生 gradient，它们的 advantage 分布（可能属于不同 phase，reward 模式不同）如果混入统计，会扭曲 aw>0 帧的归一化结果。
+
+  **对软过渡无影响**：`aw == 0` 是精确零值判断。软过渡（如 `phi**2` 连续值）几乎不会恰好为 0，所以不会被排除。只有硬切换（布尔 mask 转浮点 → 精确 0.0）才会触发排除。
+
+  **典型用法**：
+  - `aw=0.0`（标量）：整个 channel 的 critic 照常训练但不影响 actor——适合 warmup 新 critic
+  - `aw` 为 `(T,)` 数组：逐步权重变化，如 `3.0 * standup_mask`（硬切换）或 `3.0 * phi**2`（软过渡）
 
 ### 3.3 Trajectory
 
@@ -461,6 +478,7 @@ class MyExperiment(ExperimentPPO):
 关键点：
 - `actor_weight=0.0` 的 channel 仍然训练 critic，但不影响 actor——适合 warmup
 - `actor_weight` 可以是 `(T,)` 数组，实现**单条 trajectory 内的逐步权重变化**（例如用 φ² gating）
+- `aw=0` 的帧**不参与 advantage 归一化统计**——z-score 的 mean/std 只在 aw>0 帧上计算，避免不同 phase 的 advantage 分布互相干扰（详见 §3.2）
 - 阶段切换逻辑放在 `on_eval` 里（基于 eval 结果），状态通过 `state()/load_state()` 持久化
 
 ### 5.2 探索调度
