@@ -643,8 +643,15 @@ def ppo_update(
         if not np.any(aw_frame != 0.0):
             continue
         conf = confidences[key]
+        # Normalize only on frames that actually contribute to the actor
+        # gradient (aw != 0).  Frames with aw=0 produce no gradient regardless
+        # of their advantage, so including them in the z-score statistics
+        # would distort the normalization of the frames that do matter —
+        # especially under hard phase switching where aw=0 frames belong to a
+        # different phase with a different advantage distribution.
+        norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
         combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
-            advs_all[key], key_frame_mask[key],
+            advs_all[key], norm_mask,
         )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
