@@ -847,9 +847,13 @@ def test_ppo_update_aw_zero_excluded_from_normalization():
 def test_ppo_update_confidence_cold_start():
     """When EV <= 0 (untrained critic), confidence=0 → no actor gradient.
 
-    A freshly initialized critic with random weights will have EV ≈ 0 or
-    negative on the first update. With use_confidence=True, this means
-    confidence=0, combined_adv=0, and policy_loss=0 (no actor gradient).
+    A zeroed critic with zero weights will have EV = 0 (Var(y_pred)=0,
+    so Var(y_true - y_pred) = Var(y_true), giving EV = 0). With
+    use_confidence=True, confidence=sqrt(clip(0,0,1))=0, combined_adv=0,
+    and policy_loss=0 (no actor gradient).
+
+    We zero the critic explicitly to guarantee EV=0 regardless of the
+    global torch RNG state (which varies by test order under pytest).
     """
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
@@ -863,6 +867,9 @@ def test_ppo_update_confidence_cold_start():
     actor._entropy_coef = 0.0  # no regularizer to isolate policy_loss
     buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
     critics = make_critics(("r_a",), obs_dim)
+    # Zero the critic → V(s)=0 for all s → EV=0 → confidence=0
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
     actor_opt, critic_opts = make_optimizers(actor, critics)
 
     channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
@@ -1547,12 +1554,11 @@ def test_update_stats_to_log_dict():
     print("test_update_stats_to_log_dict: PASS")
 
 
-def test_update_stats_adv_mean_includes_inactive_zeros():
-    """Documents issue #5: adv_mean/adv_std include inactive frames (zeros).
+def test_update_stats_adv_mean_excludes_inactive_zeros():
+    """#5 fix: adv_mean/adv_std now computed over active frames only.
 
-    The adv_mean and adv_std in UpdateStats are computed over ALL frames
-    including inactive ones (which have advantage=0), not just active
-    frames. This dilutes the statistics.
+    Previously these stats included inactive frames (advantage=0),
+    diluting the statistics. Now they use the channel's frame mask.
     """
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
@@ -1589,12 +1595,125 @@ def test_update_stats_adv_mean_includes_inactive_zeros():
         use_confidence=False,
     )
 
-    # adv_mean is computed over all T frames, including T_inactive zeros.
-    # So |adv_mean| should be smaller than if computed over active only.
-    # This documents the behavior, not necessarily that it's correct.
-    assert stats.adv_mean["r_a"] != 0.0 or T_active == 0  # likely nonzero
-    print(f"test_update_stats_adv_mean_includes_inactive_zeros: PASS "
-          f"(adv_mean={stats.adv_mean['r_a']:.4f}, adv_std={stats.adv_std['r_a']:.4f})")
+    # adv_mean should now reflect only the 32 active frames, not all 64.
+    # If it included inactive zeros, |adv_mean| would be roughly halved.
+    # We verify it's nonzero (active frames have real advantages).
+    assert stats.adv_mean["r_a"] != 0.0, (
+        "adv_mean should be nonzero when active frames have advantages"
+    )
+    # ret_mean should also only cover active frames
+    assert stats.ret_mean["r_a"] != 0.0, (
+        "ret_mean should be nonzero when active frames have returns"
+    )
+    print(f"test_update_stats_adv_mean_excludes_inactive_zeros: PASS "
+          f"(adv_mean={stats.adv_mean['r_a']:.4f}, adv_std={stats.adv_std['r_a']:.4f}, "
+          f"ret_mean={stats.ret_mean['r_a']:.4f})")
+
+
+def test_update_stats_adv_mean_all_inactive():
+    """#5 fix: when all frames are inactive, adv_mean/adv_std = 0.0.
+
+    No division by zero when the mask selects zero frames.
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 32
+
+    # Trajectory with r_a absent → all inactive
+    traj = make_trajectory(T, obs_dim, act_dim, {}, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=64)
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    assert stats.adv_mean["r_a"] == 0.0
+    assert stats.adv_std["r_a"] == 0.0
+    assert stats.ret_mean["r_a"] == 0.0
+    assert stats.ret_std["r_a"] == 0.0
+    print(f"test_update_stats_adv_mean_all_inactive: PASS (all zeros)")
+
+
+def test_zero_variance_warning(capsys=None):
+    """#13: warn when a channel has active frames but zero-variance advantages.
+
+    _normalize_adv silently returns all zeros when std < 1e-8 (all
+    advantages equal). The channel then contributes nothing to the
+    actor gradient, which can be confusing when debugging "why isn't
+    this channel influencing the policy?"
+    """
+    import io
+    import contextlib
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 32
+
+    # Use gamma=0, lambda=0 → advantage = reward (no discounting).
+    # With constant reward, all advantages are identical → zero variance
+    # → _normalize_adv returns zeros → warning should fire.
+    ch = make_channel_data(T, reward_scale=1.0, rng=rng)
+    ch.reward[:] = 1.0  # constant reward
+    ch.is_terminated = True  # no bootstrap
+
+    traj = make_trajectory(T, obs_dim, act_dim, {"r_a": ch}, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.0, gae_lambda=0.0),)
+    pp = make_pp_params(minibatch_size=64)
+
+    captured_lines = []
+    if capsys is not None:
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=False,
+        )
+        captured = capsys.readouterr()
+        captured_lines = captured.out.split("\n")
+    else:
+        buf_capture = io.StringIO()
+        with contextlib.redirect_stdout(buf_capture):
+            ppo_update(
+                actor=actor, critics=critics, actor_optimizer=actor_opt,
+                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+                use_confidence=False,
+            )
+        captured_lines = buf_capture.getvalue().split("\n")
+
+    warning_found = any(
+        "zero-variance advantages" in line
+        for line in captured_lines
+    )
+    assert warning_found, (
+        "Expected zero-variance warning when channel has active frames "
+        "but all advantages are equal"
+    )
+    print("test_zero_variance_warning: PASS")
 
 
 # ---------------------------------------------------------------------------
@@ -2462,7 +2581,9 @@ if __name__ == "__main__":
 
     # Stats
     test_update_stats_to_log_dict()
-    test_update_stats_adv_mean_includes_inactive_zeros()
+    test_update_stats_adv_mean_excludes_inactive_zeros()
+    test_update_stats_adv_mean_all_inactive()
+    test_zero_variance_warning()
 
     # Mixed scenarios
     test_mixed_channel_activity_across_trajectories()

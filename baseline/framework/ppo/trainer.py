@@ -583,10 +583,10 @@ def ppo_update(
         y_pred = values_all[key][mask]
         var_y = np.var(y_true) if y_true.size > 0 else 0.0
         if var_y < 1e-8:
-            ev = 0.0
+            ev_val = 0.0
         else:
-            ev = float(1.0 - np.var(y_true - y_pred) / var_y)
-        explained_variances[f"ev_{key}"] = ev
+            ev_val = float(1.0 - np.var(y_true - y_pred) / var_y)
+        explained_variances[f"ev_{key}"] = ev_val
 
     # --- Prepare tensors ---
     act_t = torch.as_tensor(buf.actions, dtype=torch.float32, device=device)
@@ -626,8 +626,8 @@ def ppo_update(
     # trained critics, which would slow their learning signal.
     confidences: Dict[str, float] = {}
     for key in reward_keys:
-        ev = explained_variances.get(f"ev_{key}", 0.0)
-        confidences[key] = float(np.clip(ev, 0.0, 1.0) ** 0.5) if use_confidence else 1.0
+        ev_val = explained_variances.get(f"ev_{key}", 0.0)
+        confidences[key] = float(np.clip(ev_val, 0.0, 1.0) ** 0.5) if use_confidence else 1.0
 
     # Cold-start warning: if use_confidence is on and every channel with
     # nonzero actor_weight has confidence=0, the combined advantage is
@@ -709,9 +709,26 @@ def ppo_update(
         # especially under hard phase switching where aw=0 frames belong to a
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
-        combined_adv = combined_adv + aw_normed * conf * _normalize_adv(
-            advs_all[key], norm_mask,
-        )
+        normed = _normalize_adv(advs_all[key], norm_mask)
+        combined_adv = combined_adv + aw_normed * conf * normed
+
+        # Warn if the channel has active frames with nonzero aw but
+        # _normalize_adv returned all zeros.  This happens when the
+        # active advantages have zero variance (all equal) or when only
+        # a single frame is active (std of one element = 0).  The
+        # channel silently contributes nothing to the actor gradient,
+        # which can be confusing when debugging "why isn't this channel
+        # influencing the policy?"
+        n_active = int(norm_mask.sum())
+        if n_active > 0 and not np.any(normed[norm_mask] != 0.0):
+            active_advs = advs_all[key][norm_mask]
+            print(
+                f"  [warn] channel '{key}' has {n_active} active frame(s) "
+                f"but zero-variance advantages (all equal to "
+                f"{active_advs[0]:.4f}). Channel contributes no actor "
+                f"gradient this update.",
+                flush=True,
+            )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
@@ -816,12 +833,12 @@ def ppo_update(
             # The advantage here is the combined_adv from step 5c.
             # ratio = exp(new_log_prob - old_log_prob), clipped to [1±eps].
             if frame_modes_t is not None:
-                ev = actor.evaluate_actions(
+                actor_eval = actor.evaluate_actions(
                     obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
                 )
             else:
-                ev = actor.evaluate_actions(obs_t[idx], act_t[idx])
-            new_lp = ev.log_prob
+                actor_eval = actor.evaluate_actions(obs_t[idx], act_t[idx])
+            new_lp = actor_eval.log_prob
 
             with torch.no_grad():
                 approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
@@ -849,8 +866,8 @@ def ppo_update(
             # policy may return None. The framework stays agnostic, which
             # is why ``entropy_coef`` is no longer a PPO parameter.
             loss = policy_loss
-            if ev.regularizer is not None:
-                loss = loss + ev.regularizer
+            if actor_eval.regularizer is not None:
+                loss = loss + actor_eval.regularizer
 
             actor_optimizer.zero_grad()
             loss.backward()
@@ -953,15 +970,15 @@ def ppo_update(
     adv_mean: Dict[str, float] = {}
     adv_std: Dict[str, float] = {}
     for key in reward_keys:
-        a = advs_all[key]
-        adv_mean[key] = float(a.mean())
-        adv_std[key] = float(a.std())
+        a = advs_all[key][key_frame_mask[key]]
+        adv_mean[key] = float(a.mean()) if a.size > 0 else 0.0
+        adv_std[key] = float(a.std()) if a.size > 0 else 0.0
     ret_mean: Dict[str, float] = {}
     ret_std: Dict[str, float] = {}
     for key in reward_keys:
-        r = rets_all[key]
-        ret_mean[key] = float(r.mean())
-        ret_std[key] = float(r.std())
+        r = rets_all[key][key_frame_mask[key]]
+        ret_mean[key] = float(r.mean()) if r.size > 0 else 0.0
+        ret_std[key] = float(r.std()) if r.size > 0 else 0.0
 
     total_steps = sum(buf.ep_lengths)
     final_kl = epoch_kl_stats[-1]["mean_kl"] if epoch_kl_stats else 0.0
