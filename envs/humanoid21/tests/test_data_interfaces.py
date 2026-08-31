@@ -240,7 +240,14 @@ def test_derived_state(sim):
         feet_forces = view['feet_forces']
         assert_shape(feet_forces, (2,), f"{robot_id}.feet_forces")
         assert np.all(feet_forces >= 0), f"{robot_id}: feet_forces 应为非负"
-        print(f"  ✓ feet_forces: [{feet_forces[0]:.1f} N, {feet_forces[1]:.1f} N]")
+        # 单位为体重倍数（无因次），不是牛顿。静止双脚站立时每脚约 0.5。
+        # 上界取 20 倍体重：正常落地冲击只有数倍，20x 足以捕捉“忘记归一化”
+        # 这类量纲回归（原始牛顿值约 200，会立刻触发）。
+        assert np.all(feet_forces < 20.0), (
+            f"{robot_id}: feet_forces 应已按体重归一化 (预期 O(1)), "
+            f"实际 {feet_forces} —— 是否遗漏了除以 body_weight?"
+        )
+        print(f"  ✓ feet_forces: [{feet_forces[0]:.3f}, {feet_forces[1]:.3f}] ×体重")
 
         # ---- 模块四：对手观测 (39维) ----
         print("\n[模块四: 对手观测 39维]")
@@ -925,11 +932,14 @@ def test_observation_value_ranges(sim):
         assert np.all(np.abs(angular_vel) < 50), f"angular_vel 异常: {angular_vel}"
         print(f"    ✓ 速度在合理范围内")
 
-        # 模块三：feet_forces (2维) - 应该非负
+        # 模块三：feet_forces (2维) - 非负，且已按体重归一化 (O(1) 无因次)
         feet_forces = obs[52:54]
-        print(f"  模块三 feet_forces [52:54]: {feet_forces}")
+        print(f"  模块三 feet_forces [52:54]: {feet_forces} (×体重)")
         assert np.all(feet_forces >= 0), f"feet_forces 应为非负: {feet_forces}"
-        print(f"    ✓ 非负值")
+        assert np.all(feet_forces < 20.0), (
+            f"feet_forces 应已按体重归一化 (预期 O(1)): {feet_forces}"
+        )
+        print(f"    ✓ 非负且量级正常")
 
         # arena_center_local (3维) - 场地中心在机体系中的位置
         arena_center_local = obs[54:57]

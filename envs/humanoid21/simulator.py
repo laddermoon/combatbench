@@ -795,11 +795,31 @@ class Humanoid21Simulator(BaseSimulator):
         }
     
     def _get_feet_forces(self, robot_id: str) -> np.ndarray:
-        """获取双脚与地面的接触受力 — 向量化版本，使用 contacts_vec"""
+        """获取双脚与地面的接触受力，**以自身体重 m*g 归一化**（无因次）。
+
+        返回 ``[right, left]``，单位为“体重的倍数”：静止站立时双脚各约 0.5，
+        单脚支撑约 1.0，落地冲击可到数倍。原始牛顿值可由本值乘
+        ``cache['body_weight']`` 精确还原。
+
+        为什么归一化
+        ------------
+        这两维原先是原始牛顿值（mean≈200, std≈240, max≈4500），而观测空间
+        其余 94 维都已是无因次量（|mean|<1.4, std∈[0.10, 4.04], |max|<26）。
+        实测结果：这 2 维占据了策略网络第一层输入能量的 **99.90%**，把
+        第一层的 tanh 推到 |z| 中位数 38.5（可用区间 |z|<2），90.9% 的
+        单元处于饱和，梯度中位数为 0，只有 9% 的单元还有可用梯度——第一层
+        退化成 sign() 且几乎不学习。而且训练 1114 个 update 后 W1 并没有
+        自发衰减这两列（衰减比仅 1.1x），说明梯度下降不会自己修好它。
+
+        除以 m*g 后该占比降到 0.61%，全局 std 比从 2377x 降到 39x，量纲
+        也变得有物理意义。这是静态常数而非训练统计量，因此放在观测定义处，
+        不引入任何训练状态。
+        """
         cache = self._robot(robot_id)
         kp = cache['keypoint_body_ids']
         foot_right_id = kp['foot_right']
         foot_left_id = kp['foot_left']
+        body_weight = cache['body_weight']
 
         ground_geom_id = self._ground_geom_id
 
@@ -829,7 +849,10 @@ class Humanoid21Simulator(BaseSimulator):
         right_force = float(np.sum(forces[bodies == foot_right_id]))
         left_force = float(np.sum(forces[bodies == foot_left_id]))
 
-        return np.array([right_force, left_force], dtype=np.float32)
+        return np.array(
+            [right_force / body_weight, left_force / body_weight],
+            dtype=np.float32,
+        )
 
     def set_action(self, action: Dict[str, Optional[Any]]) -> None:
         """

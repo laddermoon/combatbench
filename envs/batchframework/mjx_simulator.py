@@ -753,16 +753,23 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         }
 
     def _get_feet_forces_batch(self, data: mjx.Data, robot_id: str) -> np.ndarray:
-        """Get feet contact forces using actual contact force magnitudes.
+        """Get feet contact forces, **normalized by body weight m*g** (dimensionless).
 
         Uses the same force_mag computed in _extract_contacts_batch (from efc_force),
         matching the original simulator's _get_feet_forces which uses mj_contactForce output.
+
+        The division by ``body_weight`` must stay in lockstep with
+        ``Humanoid21Simulator._get_feet_forces`` — the two backends are
+        required to produce bit-comparable observations, so a unit change
+        in one without the other would silently desync them. See that
+        method's docstring for why the normalization exists.
         """
         cache = self._robots[robot_id]
         kp = cache["keypoint_body_ids"]
         foot_right_id = kp["foot_right"]
         foot_left_id = kp["foot_left"]
         ground_gid = self._ground_geom_id
+        body_weight = cache["body_weight"]
 
         # Extract contacts to get force_mag (same as _extract_contacts_batch)
         contacts = self._extract_contacts_batch(data)
@@ -789,7 +796,9 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
             axis=-1,
         )
 
-        return np.stack([right_force, left_force], axis=-1).astype(np.float32)
+        return (
+            np.stack([right_force, left_force], axis=-1) / body_weight
+        ).astype(np.float32)
 
     # ------------------------------------------------------------------
     # get_observation

@@ -462,6 +462,13 @@ class Humanoid21Meta:
                 [float(model.body_mass[bid]) for bid in sorted(body_ids)],
                 dtype=np.float32,
             )
+            # 体重 m*g (N) —— 观测中足底受力的归一化常量。
+            # 取自模型自身的质量与重力,而非硬编码 9.81,这样改 XML 的
+            # 质量或 opt.gravity 时归一化常量自动跟随,不会静默失配。
+            r['total_mass'] = float(r['body_masses'].sum())
+            r['body_weight'] = float(
+                r['total_mass'] * float(np.linalg.norm(model.opt.gravity))
+            )
 
             # 填充静态查找表: robot body/geom → name, aff
             aff_code = 1 if robot_id == 'robot_a' else 2
