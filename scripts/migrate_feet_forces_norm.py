@@ -157,6 +157,8 @@ def migrate_checkpoint(
             changes.extend([f"    [dry-run] {k} shape {tuple(actor_sd[k].shape)}" for k in keys])
 
     # --- Critics ---
+    # PPO: critics_state_dict = {channel_name: state_dict}
+    # SAC: critic_state_dict = {'shared': {'q1': sd, 'q2': sd, 'q1_target': sd, 'q2_target': sd, ...}}
     critics_sd = ck.get("critics_state_dict")
     if critics_sd is not None:
         for ch_name, ch_sd in critics_sd.items():
@@ -171,6 +173,30 @@ def migrate_checkpoint(
                 if keys:
                     changes.append(label)
                     changes.extend([f"    [dry-run] {k} shape {tuple(ch_sd[k].shape)}" for k in keys])
+
+    # SAC single critic (nested structure)
+    critic_sd = ck.get("critic_state_dict")
+    if critic_sd is not None:
+        # Walk the nested structure: critic_state_dict['shared']['q1'] etc.
+        shared = critic_sd.get("shared", critic_sd)
+        for sub_name, sub_sd in shared.items():
+            if not isinstance(sub_sd, dict):
+                continue
+            # Skip optimizer state dicts — they contain no weight matrices
+            # that take obs as input (only exp_avg / exp_avg_sq of same shape).
+            if "optimizer" in sub_name:
+                continue
+            label = f"critic[{sub_name}]:"
+            if not dry_run:
+                ch_changes = migrate_state_dict(sub_sd, body_weight, obs_dim, action_dim, f"critic.{sub_name}.")
+                if ch_changes:
+                    changes.append(label)
+                    changes.extend(ch_changes)
+            else:
+                keys = _find_first_linear_keys(sub_sd, obs_dim, action_dim)
+                if keys:
+                    changes.append(label)
+                    changes.extend([f"    [dry-run] {k} shape {tuple(sub_sd[k].shape)}" for k in keys])
 
     # --- Save ---
     if not dry_run:
@@ -231,7 +257,8 @@ def migrate_run_dir(
 
     ckpt_dir = run_dir / "checkpoints"
     if ckpt_dir.exists():
-        for pt in sorted(ckpt_dir.glob("checkpoint_u*.pt")):
+        # PPO uses checkpoint_u*.pt, SAC uses checkpoint_s*.pt
+        for pt in sorted(ckpt_dir.glob("checkpoint_[us]*.pt")):
             all_changes.extend(migrate_checkpoint(pt, body_weight, dry_run))
             all_changes.append("")
 
