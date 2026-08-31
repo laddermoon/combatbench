@@ -53,6 +53,16 @@ class ChannelData:
             Can be a scalar (same weight for all frames) or a ``(T,)``
             array (per-step weight, enabling time-varying channel
             importance within a single trajectory).
+
+            Per-frame L1 normalization: before combining advantages, the
+            framework rescales each frame's weights so that
+            ``Σ_c |aw_c| = 1``.  This decouples the *relative importance*
+            of channels from the *effective learning rate* of the actor.
+            Scaling all weights by a constant does not change the
+            combined advantage — only the ratio between channels matters.
+            Negative values are allowed (they invert the channel's
+            advantage direction) and the sign is preserved through
+            normalization.
     """
 
     reward: np.ndarray

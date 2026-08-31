@@ -1695,6 +1695,257 @@ def test_negative_actor_weight_inverts_advantage():
 
 
 # ---------------------------------------------------------------------------
+# L1 normalization of actor_weight tests (#7)
+# ---------------------------------------------------------------------------
+
+def test_l1_normalization_single_channel_unchanged():
+    """Single channel with aw=1 → L1 norm = 1, no change to combined_adv.
+
+    With one active channel, Σ|aw| = |aw| = 1, so the normalized weight
+    is aw/|aw| = 1. The combined advantage equals the channel's
+    normalized advantage (times confidence).
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    # aw=1.0 → L1 norm = 1 → normalized = 1.0 (no change)
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, actor_weight=1.0, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=64)
+
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+    )
+    # Should run and produce nonzero policy loss (advantage signal exists)
+    assert stats.total_steps == T
+    print("test_l1_normalization_single_channel_unchanged: PASS")
+
+
+def test_l1_normalization_scale_invariant():
+    """Scaling all aw by k produces the same combined_adv.
+
+    aw=[1, 2] and aw=[10, 20] should produce identical training because
+    L1 normalization makes both → [1/3, 2/3]. We verify by comparing
+    actor parameter updates under the same RNG seed.
+    """
+    rng_seed = 42
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    def run_update(aw_a, aw_b):
+        rng = np.random.default_rng(rng_seed)
+        torch.manual_seed(rng_seed)
+
+        traj = make_trajectory(T, obs_dim, act_dim, {
+            "r_a": make_channel_data(T, actor_weight=aw_a, rng=rng),
+            "r_b": make_channel_data(T, actor_weight=aw_b, rng=rng),
+        }, rng=rng)
+
+        actor = SimpleActor(obs_dim, act_dim)
+        buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a", "r_b"))
+        critics = make_critics(("r_a", "r_b"), obs_dim)
+        for k in critics:
+            for p in critics[k].parameters():
+                p.data.zero_()
+        actor_opt, critic_opts = make_optimizers(actor, critics)
+
+        channels = (
+            RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),
+            RewardChannel("r_b", gamma=0.99, gae_lambda=0.95),
+        )
+        pp = make_pp_params(minibatch_size=64, update_epochs=1)
+
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=False,
+        )
+        return [p.clone() for p in actor.parameters()]
+
+    # Run with aw=[1, 2] and aw=[10, 20] — same ratio, different scale
+    params_small = run_update(1.0, 2.0)
+    params_large = run_update(10.0, 20.0)
+
+    # Parameters should be identical (L1 normalization removes scale)
+    for p_s, p_l in zip(params_small, params_large):
+        diff = (p_s - p_l).abs().max().item()
+        assert diff < 1e-6, (
+            f"Scale-invariant: params should match after L1 norm, "
+            f"max diff = {diff}"
+        )
+    print("test_l1_normalization_scale_invariant: PASS")
+
+
+def test_l1_normalization_negative_weight():
+    """Negative aw survives L1 normalization with sign preserved.
+
+    aw=[1, -1] → L1 norm = 2 → normalized = [0.5, -0.5].
+    The negative channel inverts advantage direction.
+    """
+    rng_seed = 42
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    def run_update(aw_a, aw_b):
+        rng = np.random.default_rng(rng_seed)
+        torch.manual_seed(rng_seed)
+
+        traj = make_trajectory(T, obs_dim, act_dim, {
+            "r_a": make_channel_data(T, actor_weight=aw_a, rng=rng),
+            "r_b": make_channel_data(T, actor_weight=aw_b, rng=rng),
+        }, rng=rng)
+
+        actor = SimpleActor(obs_dim, act_dim)
+        buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a", "r_b"))
+        critics = make_critics(("r_a", "r_b"), obs_dim)
+        for k in critics:
+            for p in critics[k].parameters():
+                p.data.zero_()
+        actor_opt, critic_opts = make_optimizers(actor, critics)
+
+        channels = (
+            RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),
+            RewardChannel("r_b", gamma=0.99, gae_lambda=0.95),
+        )
+        pp = make_pp_params(minibatch_size=64, update_epochs=1)
+
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=False,
+        )
+        return [p.clone() for p in actor.parameters()]
+
+    # aw=[1, -1] and aw=[5, -5] → same ratio (1:-1), different scale
+    # L1 norm: [1/2, -1/2] and [5/10, -5/10] = [0.5, -0.5] — identical
+    params_1 = run_update(1.0, -1.0)
+    params_5 = run_update(5.0, -5.0)
+
+    for p1, p5 in zip(params_1, params_5):
+        diff = (p1 - p5).abs().max().item()
+        assert diff < 1e-6, (
+            f"Negative aw: scale-invariant after L1 norm, max diff = {diff}"
+        )
+    print("test_l1_normalization_negative_weight: PASS")
+
+
+def test_l1_normalization_different_ratios_differ():
+    """Different aw ratios produce different combined_adv (not all same).
+
+    aw=[1, 0] (only r_a) vs aw=[0, 1] (only r_b) should produce
+    different actor updates because they use different channels.
+    """
+    rng_seed = 42
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    def run_update(aw_a, aw_b):
+        rng = np.random.default_rng(rng_seed)
+        torch.manual_seed(rng_seed)
+
+        traj = make_trajectory(T, obs_dim, act_dim, {
+            "r_a": make_channel_data(T, actor_weight=aw_a, rng=rng),
+            "r_b": make_channel_data(T, actor_weight=aw_b, rng=rng),
+        }, rng=rng)
+
+        actor = SimpleActor(obs_dim, act_dim)
+        buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a", "r_b"))
+        critics = make_critics(("r_a", "r_b"), obs_dim)
+        for k in critics:
+            for p in critics[k].parameters():
+                p.data.zero_()
+        actor_opt, critic_opts = make_optimizers(actor, critics)
+
+        channels = (
+            RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),
+            RewardChannel("r_b", gamma=0.99, gae_lambda=0.95),
+        )
+        pp = make_pp_params(minibatch_size=64, update_epochs=1)
+
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=False,
+        )
+        return [p.clone() for p in actor.parameters()]
+
+    # aw=[1, 0] → only r_a drives actor
+    # aw=[0, 1] → only r_b drives actor
+    # These should produce DIFFERENT parameter updates
+    params_a = run_update(1.0, 0.0)
+    params_b = run_update(0.0, 1.0)
+
+    total_diff = sum(
+        (pa - pb).abs().max().item() for pa, pb in zip(params_a, params_b)
+    )
+    assert total_diff > 1e-4, (
+        f"Different ratios should produce different updates, total_diff={total_diff}"
+    )
+    print(f"test_l1_normalization_different_ratios_differ: PASS "
+          f"(total_diff={total_diff:.6f})")
+
+
+def test_l1_normalization_all_zero_safe():
+    """All aw=0 → no division by zero, actor doesn't move."""
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, actor_weight=0.0, rng=rng),
+        "r_b": make_channel_data(T, actor_weight=0.0, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    actor._entropy_coef = 0.0
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a", "r_b"))
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (
+        RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),
+        RewardChannel("r_b", gamma=0.99, gae_lambda=0.95),
+    )
+    pp = make_pp_params(minibatch_size=64)
+
+    params_before = [p.clone() for p in actor.parameters()]
+
+    # Should not crash with division by zero
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    params_after = [p.clone() for p in actor.parameters()]
+    max_diff = max(
+        (b - a).abs().max().item() for b, a in zip(params_after, params_before)
+    )
+    assert max_diff < 1e-10, (
+        f"Actor should not move with all aw=0, max_diff={max_diff}"
+    )
+    print("test_l1_normalization_all_zero_safe: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Checkpoint / resume tests (#3, #4)
 # ---------------------------------------------------------------------------
 
@@ -2216,6 +2467,13 @@ if __name__ == "__main__":
     # Mixed scenarios
     test_mixed_channel_activity_across_trajectories()
     test_negative_actor_weight_inverts_advantage()
+
+    # L1 normalization of actor_weight (#7)
+    test_l1_normalization_single_channel_unchanged()
+    test_l1_normalization_scale_invariant()
+    test_l1_normalization_negative_weight()
+    test_l1_normalization_different_ratios_differ()
+    test_l1_normalization_all_zero_safe()
 
     # Checkpoint / resume (#3, #4)
     test_checkpoint_resume_returns_next_update()

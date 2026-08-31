@@ -128,7 +128,8 @@ Data flow
     ppo_update(actor, critics, buf, ...)
          │
          ├── Per-channel: normalize advantages (z-score on active frames)
-         ├── Combine: combined_adv = Σ_c  actor_weight_c * confidence_c * norm_adv_c
+         ├── L1-normalize actor_weights per frame: Σ_c |aw_c| = 1
+         ├── Combine: combined_adv = Σ_c  aw_c_normed * confidence_c * norm_adv_c
          ├── Critic update: minimize MSE(V_c(s), ret_c) on active frames
          └── Actor update: PPO clipped surrogate on combined_adv
 

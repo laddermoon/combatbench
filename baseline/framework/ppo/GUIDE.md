@@ -49,7 +49,8 @@
        ▼
   8. ppo_update(actor, critics, buf, ...)
        │  每 channel: normalize advantage (z-score on active frames)
-       │  合并: combined_adv = Σ_c actor_weight_c × confidence_c × norm_adv_c
+       │  L1 归一化: 每帧 Σ_c |aw_c| = 1（解耦 aw 与有效学习率）
+       │  合并: combined_adv = Σ_c aw_c_normed × confidence_c × norm_adv_c
        │  Critic 更新: MSE(V_c, return_c)
        │  Actor 更新: PPO clipped surrogate on combined_adv
        │  → 返回 UpdateStats (typed)
@@ -74,7 +75,7 @@
 | Episode→Trajectory | `build_trajectories`（完全控制） | 调用它 |
 | GAE 计算 | `reward_channels`（声明 γ, λ） | 执行 compute_gae |
 | Advantage 归一化 | — | z-score on active frames |
-| Advantage 合并 | — | 加权 by actor_weight × confidence |
+| Advantage 合并 | — | L1 归一化 aw (Σ|aw|=1) 后加权 by aw × confidence |
 | Critic 更新 | — | MSE on returns |
 | Actor 更新 | — | PPO clipped surrogate |
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
@@ -115,22 +116,31 @@ ChannelData(
 - **is_terminated**：该 channel 在这条 trajectory 上是否"终止"。不同 channel 在同一条 trajectory 上可以有不同的值。例如机器人摔倒：`r_fall` 标记 terminated（V=0），但 `r_cross` 可能标记 truncated（从 critic bootstrap）。
 - **actor_weight**：该 channel 的 advantage 对 policy gradient 的影响力。可以是标量或 `(T,)` 数组（实现**逐步权重变化**，curriculum scheduling 的核心机制）。
 
-  `actor_weight` 在框架中有三个不同层面的作用，理解它们的区别很重要：
+  **L1 归一化**：合并 advantage 前，框架对每帧的 actor_weight 做 L1 归一化，使 `Σ_c |aw_c| = 1`。这意味着：
+  - **只有 channel 间的比例重要，绝对值不重要**。把所有 aw 同时乘以 k 不改变 combined_adv，不会影响有效学习率。
+  - **负权重保留方向**。`aw=-1` 表示反转该 channel 的 advantage 方向，归一化后符号不变。
+  - **集中权重 = 更强信号**。单 channel（aw=1）的 combined_adv std ≈ 1；两个等权 channel（aw=0.5, 0.5）的 std ≈ 0.71。
+
+  `actor_weight` 在框架中有四个不同层面的作用，理解它们的区别很重要：
 
   | 层面 | aw=0 的帧 | aw>0 的帧 |
   |------|----------|----------|
   | **Critic 训练** | ✓ 参与。critic 在所有 active 帧上学习 V(s)，与 aw 无关 | ✓ 参与 |
   | **GAE 计算与传播** | ✓ 参与。GAE backward pass 穿过 aw=0 帧把未来 reward 传播到 aw>0 帧 | ✓ 参与 |
   | **Advantage 归一化** | ✗ **不参与**。z-score 的 mean/std 只在 aw>0 帧上计算 | ✓ 参与 |
+  | **L1 归一化** | ✗ 不参与（|0|=0，不影响 Σ|aw|） | ✓ 参与。与其他 channel 的 aw 一起按 |aw| 比例分配 |
   | **Actor gradient** | ✗ 不产生（乘以 0） | ✓ 产生 |
 
   **为什么归一化排除 aw=0 帧**：归一化的目的是让实际驱动 actor 的 advantage 有稳定的尺度。aw=0 帧不产生 gradient，它们的 advantage 分布（可能属于不同 phase，reward 模式不同）如果混入统计，会扭曲 aw>0 帧的归一化结果。
+
+  **为什么做 L1 归一化**：不做归一化时，`combined_adv = Σ_c aw_c × conf_c × norm_adv_c` 的尺度正比于 `Σ|aw_c|`。用户以为自己在调"channel 重要性"，实际同时在调有效学习率。L1 归一化解耦了这两个维度：aw 只控制 channel 间的相对重要性，学习率完全由 optimizer LR 决定。
 
   **对软过渡无影响**：`aw == 0` 是精确零值判断。软过渡（如 `phi**2` 连续值）几乎不会恰好为 0，所以不会被排除。只有硬切换（布尔 mask 转浮点 → 精确 0.0）才会触发排除。
 
   **典型用法**：
   - `aw=0.0`（标量）：整个 channel 的 critic 照常训练但不影响 actor——适合 warmup 新 critic
   - `aw` 为 `(T,)` 数组：逐步权重变化，如 `3.0 * standup_mask`（硬切换）或 `3.0 * phi**2`（软过渡）
+  - `aw=-1.0`：反转该 channel 的 advantage 方向（归一化后仍为负）
 
 ### 3.3 Trajectory
 
@@ -479,6 +489,7 @@ class MyExperiment(ExperimentPPO):
 - `actor_weight=0.0` 的 channel 仍然训练 critic，但不影响 actor——适合 warmup
 - `actor_weight` 可以是 `(T,)` 数组，实现**单条 trajectory 内的逐步权重变化**（例如用 φ² gating）
 - `aw=0` 的帧**不参与 advantage 归一化统计**——z-score 的 mean/std 只在 aw>0 帧上计算，避免不同 phase 的 advantage 分布互相干扰（详见 §3.2）
+- **L1 归一化**：每帧 `Σ_c |aw_c| = 1`，只有 channel 间的比例重要，绝对值不影响有效学习率。把所有 aw 同时乘以 k 不改变训练结果。
 - 阶段切换逻辑放在 `on_eval` 里（基于 eval 结果），状态通过 `state()/load_state()` 持久化
 
 ### 5.2 探索调度
@@ -656,5 +667,5 @@ r_cross = extract_per_step_scalar(ep.observer_outputs, "cross_support_a", T)
 1. **先用 `--smoke` 跑**：2 轮 update，快速验证代码能跑通
 2. **看 `__RAW_STATS__` 行**：每轮输出的 JSON 包含完整的训练统计，可以 grep 出来分析
 3. **`is_terminated` 设错是最常见的 bug**：如果 critic loss 爆炸或 advantage 异常，先检查终止标志
-4. **`actor_weight` 全 0 = actor 不学习**：确认至少有一个 channel 的 actor_weight > 0
+4. **`actor_weight` 全 0 = actor 不学习**：确认至少有一个 channel 的 actor_weight > 0。注意 aw 经过 L1 归一化（`Σ|aw|=1`），绝对值不影响有效学习率——只有比例重要
 5. **`log_prob` 不要自己填**：留 `None`，框架的 PPOBuffer 会批量填充

@@ -13,10 +13,14 @@ combination**. Each reward channel has its own critic (V_c(s)), its own
 GAE computation, and its own z-score normalized advantage. The combined
 advantage that drives the actor is:
 
-    combined_adv = Σ_c  actor_weight_c × confidence_c × norm_adv_c
+    combined_adv = Σ_c  aw_c_normed × confidence_c × norm_adv_c
 
 where:
-- ``actor_weight_c`` is set by the experiment (curriculum control)
+- ``aw_c_normed`` is the per-frame L1-normalized actor_weight
+  (``Σ_c |aw_c| = 1`` per frame), set by the experiment (curriculum
+  control).  L1 normalization decouples relative channel importance
+  from effective learning rate: scaling all weights by a constant
+  does not change the combined advantage.
 - ``confidence_c = clip(EV_c, 0, 1)^0.5`` down-weights channels whose
   critic is inaccurate (low explained variance)
 - ``norm_adv_c`` is z-score normalized on active frames only
@@ -658,19 +662,46 @@ def ppo_update(
     # Each channel contributes independently:
     #   - norm_adv_c: z-score normalized (scale-invariant across channels)
     #   - conf_c: down-weights unreliable critics
-    #   - aw_c: experiment-controlled importance weight
+    #   - aw_c: experiment-controlled importance weight (L1-normalized)
+    #
+    # Per-frame L1 normalization: before combining, each frame's
+    # actor_weights are scaled so that Σ_c |aw_c| = 1.  This decouples
+    # the *relative importance* of channels from the *effective learning
+    # rate* of the actor.  Without normalization, scaling all weights
+    # by a constant k would scale combined_adv by k, silently multiplying
+    # the actor's step size — the user thinks they're tuning channel
+    # balance but is actually tuning LR.
+    #
+    # L1 (Σ|aw|=1) is chosen over L2 (Σaw²=1) because:
+    #   - It avoids divide-by-zero when positive and negative weights
+    #     cancel (Σaw=0 is possible with nonzero weights, but Σ|aw|=0
+    #     only when all weights are zero).
+    #   - "Budget of 1" is more intuitive than "unit energy".
+    #   - Concentrated weights (one dominant channel) produce stronger
+    #     combined_adv than distributed weights, which matches the
+    #     expectation that a single focused signal drives the actor
+    #     harder than several diluted ones.
+    #
+    # Negative aw is allowed: it inverts the channel's advantage direction.
+    # The sign is preserved through L1 normalization (only the magnitude
+    # is rescaled).
     #
     # Channels with aw=0 everywhere are skipped entirely (no contribution
     # and avoids 0*NaN contamination from inactive critics).
-    # Negative aw is allowed: it inverts the channel's advantage direction.
-    # The combined advantage is NOT re-normalized — its scale reflects
-    # the sum of weighted channel contributions.
+    aw_l1_sum = np.zeros(n, dtype=np.float32)
+    for key in reward_keys:
+        aw_l1_sum += np.abs(key_actor_weight_frame[key])
+
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
         if not np.any(aw_frame != 0.0):
             continue
         conf = confidences[key]
+        # L1-normalize: divide by per-frame Σ|aw|, with safe division
+        # (frames where all aw=0 get zero contribution anyway).
+        safe_l1 = np.where(aw_l1_sum > 1e-12, aw_l1_sum, 1.0)
+        aw_normed = aw_frame / safe_l1
         # Normalize only on frames that actually contribute to the actor
         # gradient (aw != 0).  Frames with aw=0 produce no gradient regardless
         # of their advantage, so including them in the z-score statistics
@@ -678,7 +709,7 @@ def ppo_update(
         # especially under hard phase switching where aw=0 frames belong to a
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
-        combined_adv = combined_adv + aw_frame * conf * _normalize_adv(
+        combined_adv = combined_adv + aw_normed * conf * _normalize_adv(
             advs_all[key], norm_mask,
         )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
