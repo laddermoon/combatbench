@@ -542,6 +542,37 @@ def build_trajectories(self, episodes):
 - 前一段的 `last_obs` 是 `obs[gate_step]`（下一段的第一帧）
 - 前一段标记 `is_terminated=True`（V=0，不 bootstrap），因为后续状态属于不同 policy，OOD bootstrap 会产生错误的乐观值估计
 
+#### ⚠️ 恶龙禁区：重叠 Trajectory
+
+> ** Dragons be here. ** 以下行为框架**不会阻止**你做，但除非你完全理解后果，
+> 否则不要碰。
+
+`build_trajectories` 返回的 trajectory 列表中，**框架不检查 frame 是否重叠**。如果你从同一 episode 切出两条 trajectory 且它们的 frame 区间有交集，那些重叠 frame 会被当作独立数据点处理——没有任何去重。
+
+这会带来以下后果，全部是**静默的**（没有报错、没有警告）：
+
+| 后果 | 机制 |
+|------|------|
+| **双倍梯度权重** | 重叠 frame 在 buffer 中出现两次，minibatch 随机采样时被抽中的概率是其他 frame 的两倍，对 actor 更新有双倍影响 |
+| **advantage 不一致** | 同一 (s, a) 在两条 trajectory 中各自做 GAE backward pass，由于 reward 序列、bootstrap value、累积路径不同，会得到**两个不同的 advantage 值**。PPO 的 clipped surrogate 会对同一个点产生两个可能矛盾的 gradient |
+| **z-score 统计偏移** | 重叠 frame 的两个 advantage 值都参与 per-channel 的 mean/std 计算，等于这些 frame 在归一化统计中获得双倍权重 |
+| **critic target 矛盾** | 同一个 s 在 critic loss 中出现两次，但两条 trajectory 的 GAE returns 可能不同，critic 被同时拉向两个方向 |
+
+**为什么框架不去重**：去重后需要决定"保留哪个 advantage"，这本身就是一个语义决策，框架无法替你做。而且如果重叠 frame 的 advantage 一致，那重叠就没有意义——直接用一条 trajectory 即可。
+
+**如果你确实需要重叠**，以下是用前更安全的替代方案：
+
+1. **同一帧需要多个 phase 视角的训练信号** → 用一条覆盖全 episode 的 trajectory + per-step `actor_weight` 数组。不同 channel 在不同 frame 上用不同的 `(T,)` 权重即可实现"同一帧受多个 critic 驱动"，且每帧只出现一次，GAE 连续，无矛盾。
+
+2. **同一 channel 在不同 phase 需要不同 γ/λ** → 拆成两个 channel（如 `r_fall_standup` 和 `r_fall_balance`），各自有独立的 `RewardChannel` 配置，然后用 per-step `actor_weight` 分别 gate。代价是多一个 critic，但行为等价且无副作用。
+
+3. **同一物理轨迹用不同假设重新标注** → 这属于 off-policy relabeling 范畴，on-policy PPO 的 buffer 设计不适合承载。考虑用 importance sampling 或专门的 off-policy buffer。
+
+**如果你经过以上分析仍然决定使用重叠 trajectory**，你需要自行承担以下责任：
+- 确认重叠 frame 在两条 trajectory 中的 reward 和 advantage 语义一致，或明确接受矛盾的 gradient
+- 用 `importance` 权重补偿双倍采样（例如重叠 frame 的 trajectory 设 `importance=0.5`）
+- 在实验文档中记录重叠设计的原因和预期效果
+
 ### 5.5 多 agent
 
 一个 episode 里两个机器人都在动。你可以为每个 agent 各建一条 trajectory：
