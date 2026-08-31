@@ -625,6 +625,34 @@ def ppo_update(
         ev = explained_variances.get(f"ev_{key}", 0.0)
         confidences[key] = float(np.clip(ev, 0.0, 1.0) ** 0.5) if use_confidence else 1.0
 
+    # Cold-start warning: if use_confidence is on and every channel with
+    # nonzero actor_weight has confidence=0, the combined advantage is
+    # all zeros and the actor receives no policy gradient.  This is
+    # expected for the first few updates while critics warm up, but if
+    # it persists the actor is silently doing nothing (only entropy reg
+    # drives it, if any).  Warn so the user can distinguish "training
+    # is working but slow" from "actor is not learning at all".
+    if use_confidence:
+        active_zero_conf = [
+            key for key in reward_keys
+            if confidences[key] == 0.0
+            and np.any(key_actor_weight_frame[key] != 0.0)
+        ]
+        active_nonzero_conf = [
+            key for key in reward_keys
+            if confidences[key] > 0.0
+            and np.any(key_actor_weight_frame[key] != 0.0)
+        ]
+        if active_zero_conf and not active_nonzero_conf:
+            print(
+                f"  [warn] all active channels have confidence=0 "
+                f"(zero EV critics). Actor receives no policy gradient "
+                f"this update. Channels: {active_zero_conf}. "
+                f"This is normal during critic warmup but concerning "
+                f"if it persists past the first few updates.",
+                flush=True,
+            )
+
     # --- 5c. Combined advantage: Σ_c aw_c * conf_c * norm_adv_c ---
     # This is the single advantage signal the actor optimizes against.
     # Each channel contributes independently:

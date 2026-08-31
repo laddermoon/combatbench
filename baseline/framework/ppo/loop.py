@@ -217,7 +217,9 @@ def load_checkpoint(
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
     # Force align LR to current config so a config change between resume
-    # runs takes effect immediately.
+    # runs takes effect immediately.  Both actor AND critic optimizers
+    # are aligned — previously only the actor was, so changing
+    # ``critic_learning_rate`` in config had no effect on resume.
     #
     # log_std bounds used to be force-aligned here too. That is now both
     # unnecessary and wrong to do from the framework: ``build_actor()``
@@ -230,6 +232,14 @@ def load_checkpoint(
         pg["lr"] = cp.learning_rate
     print(
         f"[checkpoint] Force aligned actor optimizer LR to {cp.learning_rate:.2e}",
+        flush=True,
+    )
+    for key, opt in critic_optimizers.items():
+        for pg in opt.param_groups:
+            pg["lr"] = cp.critic_learning_rate
+    print(
+        f"[checkpoint] Force aligned {len(critic_optimizers)} critic optimizer(s) "
+        f"LR to {cp.critic_learning_rate:.2e}",
         flush=True,
     )
 
@@ -245,9 +255,7 @@ def load_checkpoint(
     saved_exp = payload.get("experiment_name", "")
     if saved_exp == cp.name:
         experiment.load_state(payload.get("state", {}))
-        for pg in actor_optimizer.param_groups:
-            pg["lr"] = cp.learning_rate
-        print(f"[checkpoint] restored LR={cp.learning_rate:.2e}", flush=True)
+        print(f"[checkpoint] restored experiment state", flush=True)
     else:
         print(
             f"[checkpoint] experiment changed ({saved_exp} -> {cp.name}), "
@@ -255,7 +263,22 @@ def load_checkpoint(
             flush=True,
         )
 
-    return 0 if reset_update else int(payload.get("update", 0))
+    # Return the next update to run.  The checkpoint stores the update
+    # that was *completed* and saved; resuming should start from the next
+    # one, not rerun the completed update.  Previously this returned the
+    # raw stored value, causing the resumed run to rerun the last update
+    # with the same rollout seed (``seed + u * episodes_per_update``),
+    # wasting a cycle and producing duplicate data.
+    if reset_update:
+        return 1
+    saved_update = int(payload.get("update", 0))
+    next_update = saved_update + 1
+    print(
+        f"[checkpoint] resuming from update {next_update} "
+        f"(checkpoint was at update {saved_update})",
+        flush=True,
+    )
+    return next_update
 
 
 # ---------------------------------------------------------------------------

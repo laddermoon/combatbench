@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from baseline.common.algos import compute_gae
 from baseline.framework.ppo.experiment import (
     ActorEval,
+    CommonParams,
     ExplorationSpec,
     PPOParams,
 )
@@ -45,6 +46,10 @@ from baseline.framework.ppo.trainer import (
     PPOBuffer,
     _normalize_adv,
     ppo_update,
+)
+from baseline.framework.ppo.loop import (
+    load_checkpoint,
+    save_checkpoint,
 )
 
 
@@ -1564,6 +1569,466 @@ def test_negative_actor_weight_inverts_advantage():
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint / resume tests (#3, #4)
+# ---------------------------------------------------------------------------
+
+def _make_common_params(name="test_exp", lr=1e-4, critic_lr=3e-4):
+    """Build minimal CommonParams for checkpoint tests."""
+    return CommonParams(
+        name=name,
+        learning_rate=lr,
+        critic_learning_rate=critic_lr,
+        grad_clip_norm=1.0,
+        episodes_per_update=8,
+        max_updates=100,
+        eval_interval=5,
+        eval_episodes=4,
+        video_eval_interval=100,
+        rollout_workers=1,
+        eval_workers=1,
+        seed=42,
+    )
+
+
+class _DummyExperiment:
+    """Minimal experiment stub for checkpoint tests."""
+    def __init__(self, name="test_exp"):
+        self._name = name
+        self._state = {"best_eval": 0.0, "counter": 0}
+
+    @property
+    def name(self):
+        return self._name
+
+    def state(self):
+        return dict(self._state)
+
+    def load_state(self, state):
+        self._state = dict(state)
+
+
+def test_checkpoint_resume_returns_next_update():
+    """#3: load_checkpoint returns update+1, not the completed update.
+
+    The checkpoint stores the update that was *completed*. Resuming
+    should start from the next update, not rerun the completed one.
+    """
+    import tempfile
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    cp = _make_common_params()
+    experiment = _DummyExperiment(cp.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00100.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+            update=100,
+        )
+
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+        )
+
+    assert next_update == 101, (
+        f"Expected next_update=101 (completed=100+1), got {next_update}"
+    )
+    print(f"test_checkpoint_resume_returns_next_update: PASS (next={next_update})")
+
+
+def test_checkpoint_resume_update_zero():
+    """#3: checkpoint at update=0 → resume from update=1."""
+    import tempfile
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    cp = _make_common_params()
+    experiment = _DummyExperiment(cp.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00000.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+            update=0,
+        )
+
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+        )
+
+    assert next_update == 1, (
+        f"Expected next_update=1 (completed=0+1), got {next_update}"
+    )
+    print(f"test_checkpoint_resume_update_zero: PASS (next={next_update})")
+
+
+def test_checkpoint_reset_update_returns_one():
+    """#3: reset_update=True → return 1 (not 0), matching default start."""
+    import tempfile
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    cp = _make_common_params()
+    experiment = _DummyExperiment(cp.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00500.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+            update=500,
+        )
+
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+            reset_update=True,
+        )
+
+    # reset_update should return 1 (matching the default start_update=1),
+    # not 0 which would cause update 0 to run (off-by-one from 1-based).
+    assert next_update == 1, (
+        f"Expected next_update=1 with reset_update=True, got {next_update}"
+    )
+    print(f"test_checkpoint_reset_update_returns_one: PASS (next={next_update})")
+
+
+def test_checkpoint_force_aligns_critic_lr():
+    """#4: load_checkpoint force-aligns critic optimizer LR to config.
+
+    Previously only the actor optimizer LR was aligned. Changing
+    ``critic_learning_rate`` in config had no effect on resume because
+    the critic optimizers kept their old LR from the checkpoint.
+    """
+    import tempfile
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+
+    # Save with LR=3e-4
+    actor_opt, critic_opts = make_optimizers(actor, critics, lr=1e-4, critic_lr=3e-4)
+    cp_old = _make_common_params(lr=1e-4, critic_lr=3e-4)
+    experiment = _DummyExperiment(cp_old.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00100.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp_old,
+            update=100,
+        )
+
+        # Resume with different critic LR
+        cp_new = _make_common_params(lr=2e-4, critic_lr=7e-4)
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp_new,
+        )
+
+    # Actor LR should be aligned to new config
+    actor_lr = actor_opt.param_groups[0]["lr"]
+    assert abs(actor_lr - 2e-4) < 1e-12, (
+        f"Actor LR should be 2e-4, got {actor_lr}"
+    )
+    # Critic LR should be aligned to new config (this was the bug)
+    for key in ("r_a", "r_b"):
+        critic_lr = critic_opts[key].param_groups[0]["lr"]
+        assert abs(critic_lr - 7e-4) < 1e-12, (
+            f"Critic {key} LR should be 7e-4, got {critic_lr}"
+        )
+    print(f"test_checkpoint_force_aligns_critic_lr: PASS "
+          f"(actor={actor_lr:.1e}, r_a={critic_opts['r_a'].param_groups[0]['lr']:.1e}, "
+          f"r_b={critic_opts['r_b'].param_groups[0]['lr']:.1e})")
+
+
+def test_checkpoint_experiment_state_restored():
+    """Checkpoint resume restores experiment state."""
+    import tempfile
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    cp = _make_common_params()
+    experiment = _DummyExperiment(cp.name)
+    experiment._state = {"best_eval": 42.5, "counter": 7, "phase": "stability"}
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00100.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+            update=100,
+        )
+
+        # Reset experiment state, then load from checkpoint
+        experiment._state = {"best_eval": 0.0, "counter": 0}
+        load_checkpoint(
+            ckpt_path,
+            actor=actor,
+            critics=critics,
+            actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts,
+            experiment=experiment,
+            cp=cp,
+        )
+
+    assert experiment._state["best_eval"] == 42.5
+    assert experiment._state["counter"] == 7
+    assert experiment._state["phase"] == "stability"
+    print("test_checkpoint_experiment_state_restored: PASS")
+
+
+# ---------------------------------------------------------------------------
+# Confidence cold-start warning test (#8)
+# ---------------------------------------------------------------------------
+
+def test_confidence_cold_start_warning(capsys=None):
+    """#8: when all active channels have confidence=0, a warning is printed.
+
+    This test captures stdout and checks for the cold-start warning.
+    Works with both pytest (capsys fixture) and plain __main__ (redirect).
+
+    The critic is zeroed to guarantee EV=0 → confidence=0 regardless of
+    the global torch random state (which varies depending on test order).
+    """
+    import io
+    import contextlib
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    # Zero the critic so V(s)=0 for all s. With nonzero rewards,
+    # Var(y_true) > 0 and Var(y_true - y_pred) = Var(y_true), so EV = 0
+    # and confidence = sqrt(clip(0, 0, 1)) = 0. This guarantees the
+    # cold-start warning fires regardless of torch's global RNG state.
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=64)
+
+    # Capture stdout
+    captured_lines = []
+    if capsys is not None:
+        # pytest path
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=True,
+        )
+        captured = capsys.readouterr()
+        captured_lines = captured.out.split("\n")
+    else:
+        # __main__ path
+        buf_capture = io.StringIO()
+        with contextlib.redirect_stdout(buf_capture):
+            ppo_update(
+                actor=actor, critics=critics, actor_optimizer=actor_opt,
+                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+                use_confidence=True,
+            )
+        captured_lines = buf_capture.getvalue().split("\n")
+
+    # Look for the cold-start warning
+    warning_found = any(
+        "all active channels have confidence=0" in line
+        for line in captured_lines
+    )
+    assert warning_found, (
+        "Expected cold-start warning when all active channels have conf=0"
+    )
+    print("test_confidence_cold_start_warning: PASS")
+
+
+def test_confidence_no_warning_when_ev_positive(capsys=None):
+    """#8: no cold-start warning when at least one channel has conf>0.
+
+    We use use_confidence=False so all confidences are 1.0, which means
+    no warning should be emitted.
+    """
+    import io
+    import contextlib
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=64)
+
+    captured_lines = []
+    if capsys is not None:
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=False,
+        )
+        captured = capsys.readouterr()
+        captured_lines = captured.out.split("\n")
+    else:
+        buf_capture = io.StringIO()
+        with contextlib.redirect_stdout(buf_capture):
+            ppo_update(
+                actor=actor, critics=critics, actor_optimizer=actor_opt,
+                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+                use_confidence=False,
+            )
+        captured_lines = buf_capture.getvalue().split("\n")
+
+    warning_found = any(
+        "all active channels have confidence=0" in line
+        for line in captured_lines
+    )
+    assert not warning_found, (
+        "Should not warn when use_confidence=False (all conf=1.0)"
+    )
+    print("test_confidence_no_warning_when_ev_positive: PASS")
+
+
+def test_confidence_warning_skips_aw_zero_channels(capsys=None):
+    """#8: channels with aw=0 are not counted as 'active' for the warning.
+
+    If the only channel with confidence=0 has aw=0, no warning should
+    be emitted because that channel doesn't contribute to the actor
+    anyway.
+    """
+    import io
+    import contextlib
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    # r_a has aw=0 (no actor contribution), r_b has aw=1
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, actor_weight=0.0, rng=rng),
+        "r_b": make_channel_data(T, actor_weight=1.0, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a", "r_b"))
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (
+        RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),
+        RewardChannel("r_b", gamma=0.99, gae_lambda=0.95),
+    )
+    pp = make_pp_params(minibatch_size=64)
+
+    captured_lines = []
+    if capsys is not None:
+        ppo_update(
+            actor=actor, critics=critics, actor_optimizer=actor_opt,
+            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+            use_confidence=True,
+        )
+        captured = capsys.readouterr()
+        captured_lines = captured.out.split("\n")
+    else:
+        buf_capture = io.StringIO()
+        with contextlib.redirect_stdout(buf_capture):
+            ppo_update(
+                actor=actor, critics=critics, actor_optimizer=actor_opt,
+                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+                use_confidence=True,
+            )
+        captured_lines = buf_capture.getvalue().split("\n")
+
+    # r_a has aw=0 so it's not "active" for the warning. r_b has aw=1
+    # but its confidence might be 0 (random critic). If r_b conf=0,
+    # the warning should fire because r_b IS active. If r_b conf>0,
+    # no warning. Either way, the warning should NOT mention r_a.
+    cold_start_lines = [
+        line for line in captured_lines
+        if "all active channels have confidence=0" in line
+    ]
+    for line in cold_start_lines:
+        # r_a should not appear in the warning because aw=0
+        assert "r_a" not in line, (
+            f"r_a (aw=0) should not appear in cold-start warning: {line}"
+        )
+    print("test_confidence_warning_skips_aw_zero_channels: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1623,5 +2088,17 @@ if __name__ == "__main__":
     # Mixed scenarios
     test_mixed_channel_activity_across_trajectories()
     test_negative_actor_weight_inverts_advantage()
+
+    # Checkpoint / resume (#3, #4)
+    test_checkpoint_resume_returns_next_update()
+    test_checkpoint_resume_update_zero()
+    test_checkpoint_reset_update_returns_one()
+    test_checkpoint_force_aligns_critic_lr()
+    test_checkpoint_experiment_state_restored()
+
+    # Confidence cold-start warning (#8)
+    test_confidence_cold_start_warning()
+    test_confidence_no_warning_when_ev_positive()
+    test_confidence_warning_skips_aw_zero_channels()
 
     print("\nAll PPO trainer tests passed!")
