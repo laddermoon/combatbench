@@ -210,7 +210,7 @@ def load_checkpoint(
 
     try:
         actor_optimizer.load_state_dict(payload["actor_optimizer_state_dict"])
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         print(f"[checkpoint] Actor optimizer state mismatch: {e}", flush=True)
 
     saved_crit_opt = payload["critic_optimizers_state_dict"]
@@ -218,7 +218,7 @@ def load_checkpoint(
         if k in saved_crit_opt:
             try:
                 opt.load_state_dict(saved_crit_opt[k])
-            except RuntimeError as e:
+            except (RuntimeError, ValueError) as e:
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
     # Force align LR to current config so a config change between resume
