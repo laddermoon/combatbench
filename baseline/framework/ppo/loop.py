@@ -160,6 +160,10 @@ def save_checkpoint(
     update: int,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    # A4: Atomic checkpoint write.  Write to a temporary file then rename,
+    # so a SIGKILL mid-write cannot leave a truncated .pt that silently
+    # corrupts resume.  os.replace is atomic on POSIX.
+    tmp_path = ckpt_path.with_suffix(".pt.tmp")
     torch.save(
         {
             "algorithm": "ppo",
@@ -173,8 +177,9 @@ def save_checkpoint(
             "state": experiment.state(),
             "update": update,
         },
-        ckpt_path,
+        tmp_path,
     )
+    os.replace(tmp_path, ckpt_path)
 
 
 def load_checkpoint(
