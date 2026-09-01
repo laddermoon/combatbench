@@ -335,9 +335,12 @@ def test_observation_decomposition(sim):
 
         # 分解验证
         # 模块一：本体感知 (42维)
+        # 注意: joint_vel 在 observation 中做了 sqrt 变换, core_state 中是原始值
+        jvn = core[robot_id]['joint_vel_norm']
+        jvn_obs = np.sign(jvn) * np.sqrt(np.abs(jvn)) / 2
         proprioception = np.concatenate([
             core[robot_id]['joint_pos_norm'],  # 21维
-            core[robot_id]['joint_vel_norm'],  # 21维
+            jvn_obs,                           # 21维 (sqrt 变换)
         ])
         assert proprioception.shape == (42,), "模块一维度错误"
         assert np.allclose(obs[0:42], proprioception), "模块一数据不匹配"
@@ -346,12 +349,14 @@ def test_observation_decomposition(sim):
         # 模块二：全局状态 (13维) — 在平铺向量中分两段：
         #   [42:52] = gravity(3) + height(1) + linvel(3) + angvel(3)
         #   [54:57] = arena_center_local(3)  (feet_forces 插在中间)
+        # 注意: angular_vel 在 observation 中做了 sqrt 变换
         root_state = derived[robot_id]['root_state']
+        ang_vel_obs = np.sign(root_state['angular_vel']) * np.sqrt(np.abs(root_state['angular_vel'] / 2))
         module2_part1 = np.concatenate([
             root_state['projected_gravity'],  # 3维
             root_state['height'],             # 1维
             root_state['linear_vel'],         # 3维
-            root_state['angular_vel'],        # 3维
+            ang_vel_obs,                      # 3维 (sqrt 变换)
         ])
         assert module2_part1.shape == (10,), "模块二(前段)维度错误"
         assert np.allclose(obs[42:52], module2_part1), "模块二(前段)数据不匹配"
@@ -367,9 +372,14 @@ def test_observation_decomposition(sim):
         print(f"✓ 模块三触觉力反馈 (2维): 索引 [52:54]")
 
         # 模块四：对手观测 (39维)
+        # 注意: opp_kp_vel 手脚部分在 observation 中做了 sqrt 变换, 头部不变
         opponent_basic = derived[robot_id]['opponent_basic_pose']
         opponent_keypoint_pos = derived[robot_id]['opponent_keypoint_pos']
         opponent_keypoint_vel = derived[robot_id]['opponent_keypoint_vel']
+
+        # 手脚速度做 sqrt 变换
+        def sqrt_vel(v):
+            return np.sign(v) * np.sqrt(np.abs(v)) / 2
 
         module4 = np.concatenate([
             opponent_basic['relative_pos'],   # 3维
@@ -380,11 +390,11 @@ def test_observation_decomposition(sim):
             opponent_keypoint_pos['hand_left'],   # 3维
             opponent_keypoint_pos['foot_right'],  # 3维
             opponent_keypoint_pos['foot_left'],   # 3维
-            opponent_keypoint_vel['head'],    # 3维
-            opponent_keypoint_vel['hand_right'],  # 3维
-            opponent_keypoint_vel['hand_left'],   # 3维
-            opponent_keypoint_vel['foot_right'],  # 3维
-            opponent_keypoint_vel['foot_left'],   # 3维
+            opponent_keypoint_vel['head'],    # 3维 (不变换)
+            sqrt_vel(opponent_keypoint_vel['hand_right']),  # 3维 (sqrt 变换)
+            sqrt_vel(opponent_keypoint_vel['hand_left']),   # 3维 (sqrt 变换)
+            sqrt_vel(opponent_keypoint_vel['foot_right']),  # 3维 (sqrt 变换)
+            sqrt_vel(opponent_keypoint_vel['foot_left']),   # 3维 (sqrt 变换)
         ])
         assert module4.shape == (39,), "模块四维度错误"
         assert np.allclose(obs[57:96], module4), "模块四数据不匹配"
