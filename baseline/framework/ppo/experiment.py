@@ -493,6 +493,9 @@ class UpdateStats:
     # --- Policy-contributed (no contract) ---
     policy_stats: Mapping[str, float]
 
+    # --- Diagnostics (human-readable lines, not for programmatic use) ---
+    diagnostics: List[str] = field(default_factory=list)
+
     def to_log_dict(self) -> Dict[str, Any]:
         """Flatten to the legacy dict format for ``__RAW_STATS__`` logging.
 

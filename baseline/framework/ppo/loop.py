@@ -527,6 +527,10 @@ def train_ppo(
                 exploration=exploration,
             )
             t_ppo = time.perf_counter() - t0
+            # B8: Print diagnostics collected by ppo_update (kept pure
+            # by deferring all printing to the loop).
+            for line in stats.diagnostics:
+                print(line, flush=True)
             # 5b. Update feedback — let the experiment absorb this update's
             #     training stats into internal state (e.g. KL history for
             #     closed-loop exploration scheduling).  exploration() on the

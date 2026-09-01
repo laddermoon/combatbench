@@ -451,6 +451,12 @@ def ppo_update(
         if exploration.target_kl is not None:
             target_kl = float(exploration.target_kl)
 
+    # B8: Collect diagnostic messages instead of printing directly.
+    # ppo_update is supposed to be a pure function; printing is a side
+    # effect that makes it harder to test and reuse. The loop prints
+    # these lines after the call returns.
+    diagnostics: List[str] = []
+
     reward_keys = tuple(ch.name for ch in reward_channels)
     gammas = {ch.name: ch.gamma for ch in reward_channels}
     gae_lambdas = {ch.name: ch.gae_lambda for ch in reward_channels}
@@ -564,11 +570,10 @@ def ppo_update(
         mask = key_frame_mask[key]
         r_active = rets_all[key][mask]
         if r_active.size > 0:
-            print(
+            diagnostics.append(
                 f"  {key}: return=[{r_active.min():+.3f}, {r_active.max():+.3f}] "
                 f"mean={r_active.mean():+.3f} std={r_active.std():.3f} "
-                f"(active={mask.sum()}/{len(mask)})",
-                flush=True,
+                f"(active={mask.sum()}/{len(mask)})"
             )
 
     # --- 4. Explained variance per critic ---
@@ -648,13 +653,12 @@ def ppo_update(
             and np.any(key_actor_weight_frame[key] != 0.0)
         ]
         if active_zero_conf and not active_nonzero_conf:
-            print(
+            diagnostics.append(
                 f"  [warn] all active channels have confidence=0 "
                 f"(zero EV critics). Actor receives no policy gradient "
                 f"this update. Channels: {active_zero_conf}. "
                 f"This is normal during critic warmup but concerning "
-                f"if it persists past the first few updates.",
-                flush=True,
+                f"if it persists past the first few updates."
             )
 
     # --- 5c. Combined advantage: Σ_c aw_c * conf_c * norm_adv_c ---
@@ -722,12 +726,11 @@ def ppo_update(
         n_active = int(norm_mask.sum())
         if n_active > 0 and not np.any(normed[norm_mask] != 0.0):
             active_advs = advs_all[key][norm_mask]
-            print(
+            diagnostics.append(
                 f"  [warn] channel '{key}' has {n_active} active frame(s) "
                 f"but zero-variance advantages (all equal to "
                 f"{active_advs[0]:.4f}). Channel contributes no actor "
-                f"gradient this update.",
-                flush=True,
+                f"gradient this update."
             )
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
@@ -915,12 +918,11 @@ def ppo_update(
             if target_kl > 0.0 and epoch_kls:
                 running_mean_kl = float(np.mean(epoch_kls))
                 if running_mean_kl > target_kl:
-                    print(
+                    diagnostics.append(
                         f"  [early_stop] epoch={epoch} mb={mb_idx} "
                         f"running_mean_kl={running_mean_kl:.4f} > "
                         f"target_kl={target_kl:.4f} "
-                        f"(critics continue)",
-                        flush=True,
+                        f"(critics continue)"
                     )
                     early_stop_kl = running_mean_kl
                     early_stop_this_epoch = True
@@ -939,33 +941,29 @@ def ppo_update(
 
         if epoch_kls:
             kl_cv = std_epoch_kl / (mean_epoch_kl + 1e-8)
-            print(
+            diagnostics.append(
                 f"  [kl_stats] epoch={epoch} mean={mean_epoch_kl:.4f} std={std_epoch_kl:.4f} "
-                f"cv={kl_cv:.2f} n_batches={len(epoch_kls)}",
-                flush=True,
+                f"cv={kl_cv:.2f} n_batches={len(epoch_kls)}"
             )
 
         if mean_epoch_kl < 0.001:
-            print(
+            diagnostics.append(
                 f"  [warn] epoch={epoch} mean_kl={mean_epoch_kl:.6f} too small, "
-                f"policy may be stuck or LR too low",
-                flush=True,
+                f"policy may be stuck or LR too low"
             )
 
         if len(epoch_kls) >= 3:
             kls = np.array(epoch_kls)
             if np.all(np.diff(kls) > 0):
-                print(
+                diagnostics.append(
                     f"  [warn] epoch={epoch} KL monotonically increasing "
-                    f"({kls[0]:.4f} -> {kls[-1]:.4f}), risk of overshoot",
-                    flush=True,
+                    f"({kls[0]:.4f} -> {kls[-1]:.4f}), risk of overshoot"
                 )
             for i in range(1, len(kls)):
                 if kls[i] > kls[i-1] * 2 and kls[i] > 0.01:
-                    print(
+                    diagnostics.append(
                         f"  [warn] epoch={epoch} KL jump at step {i}: "
-                        f"{kls[i-1]:.4f} -> {kls[i]:.4f}",
-                        flush=True,
+                        f"{kls[i-1]:.4f} -> {kls[i]:.4f}"
                     )
                     break
 
@@ -1057,4 +1055,5 @@ def ppo_update(
         ret_std=ret_std,
         critic_grad_norms=critic_grad_norms,
         policy_stats=actor_stats,
+        diagnostics=diagnostics,
     )

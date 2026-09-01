@@ -1657,10 +1657,10 @@ def test_zero_variance_warning(capsys=None):
     advantages equal). The channel then contributes nothing to the
     actor gradient, which can be confusing when debugging "why isn't
     this channel influencing the policy?"
-    """
-    import io
-    import contextlib
 
+    B8: ppo_update now collects diagnostics into UpdateStats.diagnostics
+    instead of printing directly. The test checks the returned list.
+    """
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 32
@@ -1684,30 +1684,16 @@ def test_zero_variance_warning(capsys=None):
     channels = (RewardChannel("r_a", gamma=0.0, gae_lambda=0.0),)
     pp = make_pp_params(minibatch_size=64)
 
-    captured_lines = []
-    if capsys is not None:
-        ppo_update(
-            actor=actor, critics=critics, actor_optimizer=actor_opt,
-            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-            use_confidence=False,
-        )
-        captured = capsys.readouterr()
-        captured_lines = captured.out.split("\n")
-    else:
-        buf_capture = io.StringIO()
-        with contextlib.redirect_stdout(buf_capture):
-            ppo_update(
-                actor=actor, critics=critics, actor_optimizer=actor_opt,
-                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-                use_confidence=False,
-            )
-        captured_lines = buf_capture.getvalue().split("\n")
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+    )
 
     warning_found = any(
         "zero-variance advantages" in line
-        for line in captured_lines
+        for line in stats.diagnostics
     )
     assert warning_found, (
         "Expected zero-variance warning when channel has active frames "
@@ -2331,17 +2317,14 @@ def test_checkpoint_experiment_state_restored():
 # ---------------------------------------------------------------------------
 
 def test_confidence_cold_start_warning(capsys=None):
-    """#8: when all active channels have confidence=0, a warning is printed.
+    """#8: when all active channels have confidence=0, a warning is emitted.
 
-    This test captures stdout and checks for the cold-start warning.
-    Works with both pytest (capsys fixture) and plain __main__ (redirect).
+    B8: ppo_update now collects diagnostics into UpdateStats.diagnostics
+    instead of printing directly. The test checks the returned list.
 
     The critic is zeroed to guarantee EV=0 → confidence=0 regardless of
     the global torch random state (which varies depending on test order).
     """
-    import io
-    import contextlib
-
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 64
@@ -2364,34 +2347,17 @@ def test_confidence_cold_start_warning(capsys=None):
     channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
     pp = make_pp_params(minibatch_size=64)
 
-    # Capture stdout
-    captured_lines = []
-    if capsys is not None:
-        # pytest path
-        ppo_update(
-            actor=actor, critics=critics, actor_optimizer=actor_opt,
-            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-            use_confidence=True,
-        )
-        captured = capsys.readouterr()
-        captured_lines = captured.out.split("\n")
-    else:
-        # __main__ path
-        buf_capture = io.StringIO()
-        with contextlib.redirect_stdout(buf_capture):
-            ppo_update(
-                actor=actor, critics=critics, actor_optimizer=actor_opt,
-                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-                use_confidence=True,
-            )
-        captured_lines = buf_capture.getvalue().split("\n")
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=True,
+    )
 
     # Look for the cold-start warning
     warning_found = any(
         "all active channels have confidence=0" in line
-        for line in captured_lines
+        for line in stats.diagnostics
     )
     assert warning_found, (
         "Expected cold-start warning when all active channels have conf=0"
@@ -2405,9 +2371,6 @@ def test_confidence_no_warning_when_ev_positive(capsys=None):
     We use use_confidence=False so all confidences are 1.0, which means
     no warning should be emitted.
     """
-    import io
-    import contextlib
-
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 64
@@ -2424,30 +2387,16 @@ def test_confidence_no_warning_when_ev_positive(capsys=None):
     channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
     pp = make_pp_params(minibatch_size=64)
 
-    captured_lines = []
-    if capsys is not None:
-        ppo_update(
-            actor=actor, critics=critics, actor_optimizer=actor_opt,
-            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-            use_confidence=False,
-        )
-        captured = capsys.readouterr()
-        captured_lines = captured.out.split("\n")
-    else:
-        buf_capture = io.StringIO()
-        with contextlib.redirect_stdout(buf_capture):
-            ppo_update(
-                actor=actor, critics=critics, actor_optimizer=actor_opt,
-                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-                use_confidence=False,
-            )
-        captured_lines = buf_capture.getvalue().split("\n")
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+    )
 
     warning_found = any(
         "all active channels have confidence=0" in line
-        for line in captured_lines
+        for line in stats.diagnostics
     )
     assert not warning_found, (
         "Should not warn when use_confidence=False (all conf=1.0)"
@@ -2462,9 +2411,6 @@ def test_confidence_warning_skips_aw_zero_channels(capsys=None):
     be emitted because that channel doesn't contribute to the actor
     anyway.
     """
-    import io
-    import contextlib
-
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 64
@@ -2486,33 +2432,19 @@ def test_confidence_warning_skips_aw_zero_channels(capsys=None):
     )
     pp = make_pp_params(minibatch_size=64)
 
-    captured_lines = []
-    if capsys is not None:
-        ppo_update(
-            actor=actor, critics=critics, actor_optimizer=actor_opt,
-            critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-            pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-            use_confidence=True,
-        )
-        captured = capsys.readouterr()
-        captured_lines = captured.out.split("\n")
-    else:
-        buf_capture = io.StringIO()
-        with contextlib.redirect_stdout(buf_capture):
-            ppo_update(
-                actor=actor, critics=critics, actor_optimizer=actor_opt,
-                critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
-                pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
-                use_confidence=True,
-            )
-        captured_lines = buf_capture.getvalue().split("\n")
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=True,
+    )
 
     # r_a has aw=0 so it's not "active" for the warning. r_b has aw=1
     # but its confidence might be 0 (random critic). If r_b conf=0,
     # the warning should fire because r_b IS active. If r_b conf>0,
     # no warning. Either way, the warning should NOT mention r_a.
     cold_start_lines = [
-        line for line in captured_lines
+        line for line in stats.diagnostics
         if "all active channels have confidence=0" in line
     ]
     for line in cold_start_lines:
