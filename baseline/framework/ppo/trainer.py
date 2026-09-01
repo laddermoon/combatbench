@@ -854,12 +854,18 @@ def ppo_update(
                 actor_eval = actor.evaluate_actions(obs_t[idx], act_t[idx])
             new_lp = actor_eval.log_prob
 
-            with torch.no_grad():
-                approx_kl = float((old_lp_t[idx] - new_lp).mean().item())
-            epoch_kls.append(approx_kl)
-
             log_ratio = torch.clamp(new_lp - old_lp_t[idx], -20.0, 20.0)
             ratio = torch.exp(log_ratio)
+
+            with torch.no_grad():
+                # B2: k3 KL estimator: (ratio - 1) - log(ratio).
+                # Lower variance and always non-negative, unlike k1
+                # (mean(old_lp - new_lp)) which can go negative and has
+                # higher variance.  This changes early-stop behavior:
+                # k3 is a tighter lower bound on true KL, so target_kl
+                # triggers at a more honest distance from the rollout policy.
+                approx_kl = float(((ratio - 1.0) - log_ratio).mean().item())
+            epoch_kls.append(approx_kl)
             surr1 = ratio * adv_t[idx]
             surr2 = (
                 torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
