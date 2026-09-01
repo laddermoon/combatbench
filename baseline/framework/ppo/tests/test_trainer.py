@@ -2081,7 +2081,6 @@ def _make_common_params(name="test_exp", lr=1e-4, critic_lr=3e-4):
         eval_episodes=4,
         video_eval_interval=100,
         rollout_workers=1,
-        eval_workers=1,
         seed=42,
     )
 

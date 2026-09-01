@@ -90,7 +90,6 @@ class CombatExperimentSACBase(ExperimentSAC):
 
     # --- Parallelism ---
     rollout_workers: int = max(1, (os.cpu_count() or 1) // 2)
-    eval_workers: int = max(1, (os.cpu_count() or 1) // 4)
 
     seed: int = 42
 
@@ -120,7 +119,6 @@ class CombatExperimentSACBase(ExperimentSAC):
             eval_episodes=self.eval_episodes,
             video_eval_interval=self.video_eval_interval,
             rollout_workers=self.rollout_workers,
-            eval_workers=self.eval_workers,
             seed=self.seed,
         )
 

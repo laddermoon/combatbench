@@ -154,7 +154,6 @@ class CommonParamsSAC:
         eval_episodes: Number of episodes per evaluation.
         video_eval_interval: Record video every N evals (0 = off).
         rollout_workers: Number of parallel rollout workers.
-        eval_workers: Number of parallel eval workers.
         seed: Random seed.
     """
 
@@ -168,7 +167,6 @@ class CommonParamsSAC:
     eval_episodes: int
     video_eval_interval: int
     rollout_workers: int
-    eval_workers: int
     seed: int
 
 

@@ -256,7 +256,6 @@ class MyExperiment(ExperimentPPO):
             eval_episodes=self.eval_episodes,
             video_eval_interval=0,   # 0 = 不录视频
             rollout_workers=48,
-            eval_workers=16,
             seed=42,
         )
 

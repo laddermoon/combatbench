@@ -407,7 +407,6 @@ class CommonParams:
     eval_episodes: int
     video_eval_interval: int
     rollout_workers: int
-    eval_workers: int
     seed: int
 
 
