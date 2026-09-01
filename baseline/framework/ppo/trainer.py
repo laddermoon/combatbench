@@ -786,6 +786,14 @@ def ppo_update(
     all_grad_norms_actor: List[float] = []
     all_grad_norms_critic: Dict[str, List[float]] = {key: [] for key in reward_keys}
 
+    # B1: Critic updates are decoupled from actor KL early-stop.
+    # When the actor hits target_kl, we stop updating the actor but
+    # continue running critic updates for all remaining minibatches and
+    # epochs.  Critics fit a fixed regression target (precomputed GAE
+    # returns) and are not subject to trust-region constraints, so
+    # truncating them early only hurts value estimation quality.
+    actor_stopped = False
+
     for epoch in range(pp.update_epochs):
         perm = torch.randperm(n, device=device)
         epoch_kls: List[float] = []
@@ -832,6 +840,12 @@ def ppo_update(
             #   L = -E[min(ratio * adv, clip(ratio) * adv)] + policy_reg
             # The advantage here is the combined_adv from step 5c.
             # ratio = exp(new_log_prob - old_log_prob), clipped to [1±eps].
+            #
+            # B1: Skip actor update if KL early-stop already triggered,
+            # but let critics continue for remaining minibatches.
+            if actor_stopped:
+                continue
+
             if frame_modes_t is not None:
                 actor_eval = actor.evaluate_actions(
                     obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
@@ -898,12 +912,14 @@ def ppo_update(
                     print(
                         f"  [early_stop] epoch={epoch} mb={mb_idx} "
                         f"running_mean_kl={running_mean_kl:.4f} > "
-                        f"target_kl={target_kl:.4f}",
+                        f"target_kl={target_kl:.4f} "
+                        f"(critics continue)",
                         flush=True,
                     )
                     early_stop_kl = running_mean_kl
                     early_stop_this_epoch = True
-                    break
+                    actor_stopped = True
+                    # Don't break — let critics finish remaining minibatches.
 
         # --- Epoch KL diagnostics ---
         # Track KL divergence per epoch for anomaly detection.
@@ -957,8 +973,10 @@ def ppo_update(
 
         pol_losses.extend(epoch_pol_losses)
 
+        # B1: Don't break out of the epoch loop on actor early-stop.
+        # Critics continue training in remaining epochs.
         if early_stop_this_epoch:
-            break
+            continue
 
     # --- 7. Aggregate stats for logging ---
     # Collect per-channel and global statistics into a typed UpdateStats.
