@@ -797,10 +797,6 @@ class ExperimentPPO(ABC):
           from ``Trajectory.channels`` are inactive).
 
         Returns an empty list to skip all episodes entirely.
-
-        The experiment should NOT fill ``Trajectory.log_prob`` — the
-        framework's PPOBuffer does this via a batched
-        ``actor.evaluate_actions`` call.
         """
         ...
 

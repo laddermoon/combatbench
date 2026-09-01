@@ -346,7 +346,6 @@ class BasicBalanceV2StageSegDual(CombatExperimentPPOBase):
                 channels=channels,
                 importance=1.0,
                 mode=None,
-                log_prob=None,
             ))
 
         return trajectories

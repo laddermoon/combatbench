@@ -589,7 +589,6 @@ class StandupFight(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
-            log_prob=None,
         )]
 
     @staticmethod

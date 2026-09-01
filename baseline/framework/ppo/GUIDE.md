@@ -157,13 +157,11 @@ Trajectory(
     },
     importance=1.0,         # 该 trajectory 的样本权重
     mode=None,              # 可选：actor 路由模式
-    log_prob=None,          # 框架填充，实验不要碰
 )
 ```
 
 - 一个 episode 可以切成多条 trajectory（按阶段、按 gating 切换等）
 - `channels` 里**不包含**的 channel 在这条 trajectory 上是 inactive 的（不训练 critic，不贡献 advantage）
-- `log_prob` 必须留 `None`，框架的 PPOBuffer 会批量调用 `actor.evaluate_actions` 来填充
 
 ### 3.4 ExplorationSpec
 
@@ -363,7 +361,6 @@ class MyExperiment(ExperimentPPO):
                     ),
                 },
                 importance=1.0,
-                log_prob=None,  # 框架填充，不要自己填
             ))
         return all_trajs
 
@@ -667,4 +664,3 @@ r_cross = extract_per_step_scalar(ep.observer_outputs, "cross_support_a", T)
 2. **看 `__RAW_STATS__` 行**：每轮输出的 JSON 包含完整的训练统计，可以 grep 出来分析
 3. **`is_terminated` 设错是最常见的 bug**：如果 critic loss 爆炸或 advantage 异常，先检查终止标志
 4. **`actor_weight` 全 0 = actor 不学习**：确认至少有一个 channel 的 actor_weight > 0。注意 aw 经过 L1 归一化（`Σ|aw|=1`），绝对值不影响有效学习率——只有比例重要
-5. **`log_prob` 不要自己填**：留 `None`，框架的 PPOBuffer 会批量填充

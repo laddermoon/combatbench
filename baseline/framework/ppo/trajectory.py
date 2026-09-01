@@ -92,9 +92,6 @@ class Trajectory:
             loss and policy loss.
         mode: Optional actor routing mode (float).  If None, the actor
             computes mode from observation.
-        log_prob: ``(T,)`` float32 — old log probabilities, filled by the
-            framework's batched ``evaluate_actions`` call.  Experiments
-            must leave this as None.
     """
 
     obs: np.ndarray
@@ -103,4 +100,3 @@ class Trajectory:
     channels: Dict[str, ChannelData]
     importance: float = 1.0
     mode: Optional[float] = None
-    log_prob: Optional[np.ndarray] = None

@@ -146,7 +146,6 @@ class Standup(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
-            log_prob=None,
         )]
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:

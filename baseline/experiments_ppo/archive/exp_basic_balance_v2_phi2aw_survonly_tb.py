@@ -179,7 +179,6 @@ class BasicBalanceV2Phi2AWSurvOnlyTB(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
-            log_prob=None,
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:
