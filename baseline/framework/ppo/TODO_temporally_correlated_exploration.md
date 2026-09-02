@@ -1,9 +1,10 @@
 # TODO: 时间相关探索噪声（Temporally Correlated Exploration）
 
-**状态**：待办（设计草案，未实现）
+**状态**：已实现（Stage 1–5 完成，A/B 对照实验待跑）
 **优先级**：高 —— 直击"学不出节律行为"的根因
 **前置阅读**：`GUIDE.md`、`experiment.py`（`ExplorationSpec` / `TrainablePolicy`）、`trajectory.py`、`loop.py`
-**关联文档**：`baseline/common/policies/DESIGN_OVERVIEW.md`
+**关联文档**：`baseline/common/policies/DESIGN_OVERVIEW.md`、`CONTEXT_temporally_correlated_exploration.md`
+**实现提交**：见 git log `feat(policies): OU noise shift` 系列
 
 ---
 
@@ -71,49 +72,52 @@ OU 噪声过程的状态**必须物化进 Trajectory**，让 `evaluate_actions` 
 
 ### 3.2 概率分布的精确定义
 
-引入噪声状态后，策略分布不再是简单的 `TanhGaussian(μ(o), σ)`。需要明确：
+> **实现修正（2026-09-02）**：原方案 B 写作 `a ~ TanhGaussian(μ(o) + κ·x_t, σ)`，
+> 暗示要改分布的均值参数。实际实现采用了更精确的等价形式：**raw 空间平移**。
+>
+> 对任意分布 `p`，若 `z ~ p(·|o)` 且 `raw = z + s`（`s` 给定），则 `raw` 的密度是
+> `p(raw - s | o)`。所以：
+>
+> ```
+> 采样：z = _raw_sample(obs);   raw = z + s;   a = tanh(raw)
+> 打分：raw = atanh(a);          raw_log_prob = _raw_log_prob(obs, raw - s)
+> ```
+>
+> 这对 Gaussian、low-rank、MoG、RealNVP **全部数学精确**（平移一个密度而非近似），
+> 并且 `_raw_sample` / `_raw_log_prob` / `_raw_log_prob_per_dim` / `_raw_mode`
+> 四个 hook 的签名和实现**全部不变**——平移只发生在 `TanhSquashedPolicyBase`
+> 的 `sample_action` 和 `evaluate_actions` 两处。
+>
+> 原方案 B 的概念仍然正确（"用 OU 过程给均值加一个时间相关的扰动，但扰动量被
+> 记录下来"），只是实现方式从"改分布参数"简化为"平移 raw 空间"。
 
-**方案 A（推荐）：条件高斯，噪声状态作为"似然辅助变量"**
+**方案 A**：退化为 delta，无熵，不行。
 
-定义 `a = tanh(μ(o) + σ · x_t)`，其中 `x_t` 是 OU 过程的当前状态，**在给定 `x_t` 的条件下**：
+**方案 B（采用，以 raw 空间平移实现）**：见上方修正。
 
-```
-π(a | o, x_t) = TanhGaussian(μ(o) + σ·x_t, 0)   # 即退化为 tanh 上的 delta-like
-```
-
-但这退化成确定性映射，没有熵。不行。
-
-**方案 B（推荐）：噪声状态平移均值**
-
-```
-a ~ TanhGaussian(μ(o) + κ·x_t, σ)
-```
-
-`x_t` 是 OU 过程状态，`κ` 是噪声耦合强度。给定 `(o, x_t)`，`a` 的分布仍是 TanhGaussian，log_prob 可解析计算。OU 过程的 `x_t` 本身不参与 log_prob（它是采样辅助，不是分布参数），但**必须存进 trajectory 以便重算**。
-
-这是 ACT / Diffusion Policy 之外、on-policy 设定下最干净的做法。本质上是"用 OU 过程给均值加一个时间相关的扰动，但扰动量被记录下来"。
-
-**方案 C（更激进）：把 OU 状态当分布参数**
-
-把 `x_t` 视作策略的一部分，`π(a|o, x_t) = TanhGaussian(μ(o, x_t), σ(o))`，`x_t` 由策略网络自己预测。这接近 recurrent policy，复杂度高，不在本 TODO 范围。
-
-**采用方案 B。**
+**方案 C**：recurrent policy，复杂度高，不在本 TODO 范围。
 
 ### 3.3 数据流改动
 
+> **实现修正（2026-09-02）**：存 `s_t = noise_scale * x_t`（已施加的平移量），
+> 而非 OU 原始状态 `x_t`。契约变成"rollout 告诉你它究竟加了多少偏移"。
+> 训练侧 `evaluate_actions` **完全不需要任何 OU 参数**，只做一次减法。
+> κ 不一致这类 bug 从结构上不可能发生。字段命名为 `noise_shift`。
+
 ```
 rollout 端：
-  policy.act(o) → (a, x_t)        # 同时返回当前噪声状态
-  Episode 增加 noise_state 字段    # (T+1, D) 或 (T, D)
+  policy.act(o) → (a, extras={"log_prob": ..., "noise_shift": s_t})
+  Episode.action_extras[agent_id]["noise_shift"]  # (T, D) float32
 
 trajectory 端：
-  Trajectory 增加 noise_state: np.ndarray  # (T, D) float32
-  build_trajectories 时从 Episode 拷贝
+  Trajectory 增加 noise_shift: Optional[np.ndarray]  # (T, D) float32
+  build_trajectories 时从 episode.action_extras 提取并 [:T] 截断
 
 buffer / trainer 端：
-  evaluate_actions(obs, actions, noise_state=...) → ActorEval
-  TrainablePolicy.evaluate_actions 签名增加可选 noise_state 参数
-  log_prob = TanhGaussian(μ(o) + κ·noise_state, σ).log_prob(a)
+  evaluate_actions(obs, actions, noise_shift=...) → ActorEval
+  TrainablePolicy.evaluate_actions 签名增加可选 noise_shift 参数
+  raw_actions = atanh(actions) - noise_shift
+  log_prob = _raw_log_prob(obs, raw_actions) + tanh_jacobian
 ```
 
 ### 3.4 接口改动清单
@@ -138,9 +142,15 @@ buffer / trainer 端：
 
 ### 3.6 Entropy / 正则化
 
-引入 OU 扰动均值后，策略的**条件熵** `H[π(·|o, x_t)]` 仍由 σ 决定，与 baseline 一致。但**边际熵** `H[π(·|o)] = E_{x_t}[H[π(·|o, x_t)]] + H[x_t]` 会因为 `x_t` 的扩散而增大。
+> **实现确认（2026-09-02）**：此问题不存在。`evaluate_actions` 的正则项路径
+> 用的是 `_raw_sample` + `_raw_log_prob` 配对的 raw 空间估计，而**微分熵对平移
+> 不变**，所以该路径无需任何改动就已经是正确的条件熵。闭式正则项
+> （`Normal.entropy()`）同理。**该项工作量为零。**
 
-PPO 的 entropy 正则项应该用**条件熵**（在给定 `x_t` 下计算），否则会错误地奖励"OU 过程的随机性"而不是"策略本身的探索性"。`ActorEval.regularizer` 里返回的 entropy 必须是基于 `(o, x_t, a)` 的条件熵，不能对 `x_t` 做边际化。
+原分析（保留供参考）：引入 OU 扰动均值后，策略的**条件熵** `H[π(·|o, x_t)]` 仍由 σ
+决定，与 baseline 一致。但**边际熵** `H[π(·|o)]` 会因为 `x_t` 的扩散而增大。PPO 的
+entropy 正则项应该用**条件熵**（在给定 `x_t` 下计算），否则会错误地奖励"OU 过程的
+随机性"而不是"策略本身的探索性"。
 
 ### 3.7 与 `Trajectory.mode` 的关系
 
@@ -154,49 +164,50 @@ PPO 的 entropy 正则项应该用**条件熵**（在给定 `x_t` 下计算）�
 
 ### Stage 0：可行性验证（不写生产代码）
 
-- [ ] **0.1** 写一个最小脚本：在 `exp_basic_balance_step` 上把 rollout 采样噪声从白噪声换成离线生成的 OU 序列（直接替换 `to_blueprint` 导出的 σ），观察是否能学到迈步。
-  - 这一步**故意破坏 log_prob 正确性**，只为验证"频谱结构是根因"这个假设。
-  - 如果验证通过（策略开始迈步），再投入做正确的实现。
-  - 如果验证不通过，说明根因不在噪声频谱，本 TODO 暂停，重新诊断。
+- [x] **0.1** ~~写最小脚本验证~~ → **跳过**（用户决策：直接做正确实现）
 
-### Stage 1：接口扩展（向后兼容）
+### Stage 1：策略层（OU 能力）— ✅ 完成
 
-- [ ] **1.1** `Trajectory` 增加 `noise_state: Optional[np.ndarray]` 字段，默认 None。
-- [ ] **1.2** `TrainablePolicy.evaluate_actions` 签名增加 `noise_state: Optional[torch.Tensor] = None`，默认 None 时行为与现在完全一致。
-- [ ] **1.3** `Episode` 增加 `noise_states` 字段（per-agent dict），`build_trajectories` 透传。
-- [ ] **1.4** `ExplorationSpec` 增加 `noise_correlation: Optional[float] = None`（OU 的 θ，或 pink noise 的 1/f 指数）。
-- [ ] **1.5** 单测：旧 trajectory / 旧 episode / 旧 blueprint 走新代码路径，行为不变。
+- [x] **1.1** `TanhSquashedPolicyBase` 增加 OU 参数（`noise_tau_steps`, `noise_scale`）、AR(1) 步进、`reset(seed)`、`_next_noise_shift()`。
+- [x] **1.2** `sample_action` / `evaluate_actions` 支持 `noise_shift` 参数（raw 空间平移）。
+- [x] **1.3** `act` / `act_numpy` 线程化 noise_shift，`want_extra=True` 时返回 `{"log_prob": ..., "noise_shift": s_t}`。
+- [x] **1.4** `set_exploration` 接收 `noise_tau_steps` / `noise_scale`，`to_blueprint` 导出。
+- [x] **1.5** `export_generic.py` 生成的 `ExportedPolicy` 透传 OU 参数，`reset` 转发给内部策略。
+- [x] **1.6** 新建 `FixedSigmaGaussianMLPPolicy`（参数名与 baseline 一致，checkpoint 兼容）。
+- [x] **1.7** 新建 `init_policy_fixed_sigma_gaussian.yaml`。
 
-### Stage 2：策略实现
+### Stage 2：PPO 数据通道 — ✅ 完成
 
-- [ ] **2.1** 在 `TanhSquashedPolicyBase` 或新 mixin 中实现 OU 过程：`x_{t+1} = θ·(0 − x_t) + σ_ou·ξ_t`（zero-mean OU）。
-- [ ] **2.2** 采样路径：`a = tanh(μ(o) + σ·ε + κ·x_t)`，`ε ~ N(0,I)`，记录 `x_t` 到 episode。
-- [ ] **2.3** `evaluate_actions` 路径：`log_prob = TanhGaussian(μ(o) + κ·x_t, σ).log_prob(a)`，使用传入的 `noise_state`。
-- [ ] **2.4** `to_blueprint` 导出 OU 参数（θ, σ_ou, κ）和初始 `x_0`（通常为 0）。
-- [ ] **2.5** 单测：
-  - 给定固定 `(o, a, x_t)`，`evaluate_actions` 的 log_prob 与采样时记录的 log_prob 数值一致（within float tolerance）。
-  - OU 过程的 `x_t` 序列与离线 reference 实现一致。
-  - 旧策略（无 OU）走新接口，log_prob 与旧实现一致。
+- [x] **2.1** `ExplorationSpec` 增加 `noise_tau_steps` / `noise_scale` 字段。
+- [x] **2.2** `TrainablePolicy.evaluate_actions` protocol 签名增加 `noise_shift`。
+- [x] **2.3** `Trajectory` 增加 `noise_shift: Optional[np.ndarray]` 字段。
+- [x] **2.4** `PPOBuffer` 检测、校验（不一致直接 raise）、拼接、线程化 `noise_shift`。
+- [x] **2.5** `ppo_update` minibatch 调用点用 kwargs dict 线程化 `noise_shift`。
 
-### Stage 3：rollout 集成
+### Stage 3：实验接线 — ✅ 完成
 
-- [ ] **3.1** `ParallelRollouter` 透传 `noise_state`，确认 worker 进程能正确序列化/反序列化 OU 初始状态。
-- [ ] **3.2** Episode reset 时 OU 状态归零（或按 config 初始化）。
-- [ ] **3.3** `disturbance_plugins.py` 的 `set_core_state`（传送）发生时，OU 状态是否需要重置？—— **建议重置**，避免传送后的动作基于传送前的噪声状态。需要 observer/plugin 联动接口。
-- [ ] **3.4** 端到端 smoke training：`--smoke` 跑通，log_prob 重算与采样时一致（ratio 在 epoch 0 应接近 1，但不是恒等于 1）。
+- [x] **3.1** `CombatExperimentPPOBase` 增加 `noise_tau_steps` / `noise_scale` 类属性，`exploration()` 带入 spec。
+- [x] **3.2** `extract_noise_shift` helper（从 `episode.action_extras` 提取并 `[:T]` 截断）。
+- [x] **3.3** `exp_basic_balance_step.py` 的 `_build_agent_trajectory` 传入 `noise_shift`。
+- [x] **3.4** 新建 `exp_basic_balance_step_ctrl.py`（FixedSigma, noise_scale=0）和 `exp_basic_balance_step_ou.py`（FixedSigma, noise_scale=0.3, tau=10）。
 
-### Stage 4：实验验证
+### Stage 4：测试 — ✅ 完成
 
-- [ ] **4.1** 在 `exp_basic_balance_step` 上开启 OU 噪声，对照 baseline（白噪声），跑 3 个 seed。
-- [ ] **4.2** 指标：是否学到迈步、episode 长度、reward 曲线、entropy 曲线、clip_frac。
-- [ ] **4.3** 如果 OU 显著优于白噪声，推广到其他 exp_*。
-- [ ] **4.4** 如果 OU 不显著，尝试 pink noise（1/f^β，β=1）—— 频谱更集中在低频。
+- [x] **4.1** 退化等价（noise_scale=0 → 与 baseline bit-identical）。
+- [x] **4.2** 采样/打分一致性（最关键：sample with shift → score with shift → match）。
+- [x] **4.3** OU 统计量（稳态方差 ≈ 1，lag-1 自相关 ≈ exp(-1/τ)）。
+- [x] **4.4** reset 决定性（同 seed 同序列，reset 归零）。
+- [x] **4.5** 导出往返（OU 参数存活，act 返回 noise_shift，reset 转发）。
+- [x] **4.6** 端到端 PPOBuffer log_prob 一致。
+- [x] **4.7** 不一致输入报错（混合有/无 noise_shift → raise）。
+- [x] **4.8** 向后兼容（120 existing tests pass）。
 
-### Stage 5：生产化
+### Stage 5：对照实验 — ⏳ 待跑
 
-- [ ] **5.1** `ExplorationSpec.noise_correlation` 的调度：让 experiment 在 `exploration()` 里根据 `on_update` 状态动态调整 θ（早期强相关、后期趋白）。
-- [ ] **5.2** 决策日志：记录 OU 参数选择、调度策略、对照实验结果。
-- [ ] **5.3** 文档：更新 `GUIDE.md` 的探索章节，说明时间相关噪声的语义和配置。
+- [ ] **5.1** `basic_balance_step_ctrl` 与 `basic_balance_step_ou` 各跑 3 个 seed。
+- [ ] **5.2** 判读指标：是否出现迈步、episode 长度、entropy 曲线、clip_frac、KL。
+- [ ] **5.3** 若 OU 胜出 → 推广到其他实验。
+- [ ] **5.4** 若不显著 → 尝试更大 noise_scale 或 pink noise。
 
 ---
 
@@ -204,20 +215,22 @@ PPO 的 entropy 正则项应该用**条件熵**（在给定 `x_t` 下计算）�
 
 ### 5.1 已识别风险
 
-| 风险 | 严重度 | 缓解 |
-|---|---|---|
-| log_prob 重算与采样不一致（静默失效） | **高** | Stage 2.5 单测强制验证；rollout 时记录 log_prob 并与重算对比 |
-| OU 参数需要调参（θ, σ_ou, κ） | 中 | Stage 0 离线验证给出初始值；Stage 4 网格搜索 |
-| 传送（`set_core_state`）时 OU 状态联动 | 中 | Stage 3.3 显式处理 |
-| 条件熵 vs 边际熵混淆 | 中 | Stage 3.6 明确用条件熵；单测验证 regularizer 数值 |
-| worker 进程序列化 OU 状态 | 低 | Stage 3.1 验证 |
+| 风险 | 严重度 | 状态 | 缓解 |
+|---|---|---|---|
+| log_prob 重算与采样不一致（静默失效） | **高** | ✅ 已消除 | `test_ou_exploration.py` 采样/打分一致性 + PPOBuffer 端到端测试；不一致输入直接 raise |
+| `ExportedPolicy.reset` 不转发导致 OU 跨 episode 延续 | **高** | ✅ 已修复 | `export_generic.py` 的 `reset` 现在转发给内部策略；测试覆盖 |
+| OU 参数需要调参 | 中 | ⏳ 待调 | 单位方差归一化使 `noise_scale` 与 σ 可比，从 0.3 起 |
+| 平移放大 tanh 饱和 | 中 | ⏳ 待监控 | 平移零均值不引入偏置；监控 `tanh_sat_frac` |
+| 传送（`set_core_state`）时 OU 不重置 | 低 | 📋 后续处理 | `basic_balance_step` 不使用逐步传送，暂无暴露 |
+| ~~`_raw_sample` 签名修改影响四个子类~~ | ~~中~~ | ✅ 已消除 | raw 空间平移设计使子类 hook 完全不变 |
+| ~~条件熵 vs 边际熵混淆~~ | ~~中~~ | ✅ 已消除 | 微分熵对平移不变，正则项路径无需改动 |
 
 ### 5.2 未决问题
 
-- **Q1**：OU 噪声应该在**所有策略族**上支持，还是只在新策略族上？建议在 base class 实现，所有族继承，但 baseline `TanhGaussianMLPPolicy` 默认关闭（`κ=0`），保持 baseline 行为兼容。
-- **Q2**：`noise_state` 是 per-agent 独立的 OU 过程，还是共享？—— **独立**，两个机器人各自探索。
-- **Q3**：是否需要 pink noise（1/f）而非 OU？OU 是指数衰减相关，pink 是幂律衰减。pink 在频谱上更"粉"，但实现稍复杂（需要 Voss-McCartney 算法或 FFT 滤波）。建议先 OU，再 pink。
-- **Q4**：`evaluate_actions` 的 `noise_state` 参数是否应该成为 `TrainablePolicy` Protocol 的正式成员？—— 是，但作为可选参数，旧实现忽略它。
+- **Q1**：~~OU 噪声应该在所有策略族上支持？~~ → **已决策**：在 `TanhSquashedPolicyBase` 实现，所有新族继承；baseline `TanhGaussianMLPPolicy` 不改，用 `FixedSigmaGaussianMLPPolicy` 作为 OU-enabled 替代。
+- **Q2**：~~per-agent 独立还是共享？~~ → **已决策**：独立。`Policy.reset(seed)` 每个 agent 独立调用。
+- **Q3**：是否需要 pink noise？ → **待定**：先 OU，若不显著再 pink。
+- **Q4**：~~`noise_shift` 是否成为 Protocol 正式成员？~~ → **已决策**：是，作为可选参数，旧实现忽略它。
 
 ---
 
@@ -242,3 +255,13 @@ PPO 的 entropy 正则项应该用**条件熵**（在给定 `x_t` 下计算）�
 | 2026-09-01 | 采用方案 B（OU 扰动均值）而非方案 A/C | A 退化无熵，C 过于复杂；B 保持 TanhGaussian 解析性，log_prob 可重算 |
 | 2026-09-01 | Stage 0 先做离线验证 | 避免在未验证根因假设的情况下投入完整实现 |
 | 2026-09-01 | baseline 默认关闭 OU（κ=0） | 保持 baseline 行为兼容，符合"不改 baseline"原则 |
+| 2026-09-02 | 跳过 Stage 0，直接做正确实现 | 用户决策：不浪费时间去验证一个故意错误的实现 |
+| 2026-09-02 | 方案 B 实现为 raw 空间平移而非均值参数移位 | 对任意分布精确（平移密度 ≠ 近似），四个子类 hook 零改动，风险表删除该项 |
+| 2026-09-02 | 存 `noise_shift = noise_scale * x_t` 而非 OU 原始状态 `x_t` | 训练侧不需要任何 OU 参数，κ 不一致 bug 从结构上不可能 |
+| 2026-09-02 | 新建 `FixedSigmaGaussianMLPPolicy` 而非改 baseline | baseline 不动（用户要求）；新类参数名与 baseline 一致，checkpoint 兼容 |
+| 2026-09-02 | `ExportedPolicy.act` 委托给内部策略的 `act` | 消除两处采样逻辑漂移风险；OU 步进和 extras 由基类统一负责 |
+| 2026-09-02 | `ExportedPolicy.reset` 转发给内部策略 | 修复 OU 状态不按 episode 归零的 bug |
+| 2026-09-02 | `_compute_stats` 不覆盖子类已提供的 `entropy` | 让闭式熵（Normal.entropy）优先于 score-function 估计，与 baseline 一致 |
+| 2026-09-02 | OU 参数化为 `(noise_tau_steps, noise_scale)` 而非 `(θ, σ_ou, κ)` | τ 以 policy step 为单位有物理直觉（20Hz 下 τ=10 ≈ 0.5s）；`noise_scale` 与 σ 可比 |
+| 2026-09-02 | `PPOBuffer` 对不一致 `noise_shift` 输入直接 raise | 静默填零 = 错误的 log_prob = 最危险的静默失效模式 |
+| 2026-09-02 | A/B 对照用同一策略族（FixedSigma），只差 `noise_scale` | 排除"新策略族本身带来差异"这个混淆因素 |

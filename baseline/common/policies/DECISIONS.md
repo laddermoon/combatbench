@@ -287,3 +287,96 @@ PPO hyperparameters, and seed as the baseline.
 in ③ are documented as family-specific behaviors, not bugs. Future
 work could explore higher `entropy_coef` or entropy targets for
 families with closed-form entropy, and component-regularization for MoG.
+
+## D7: OU exploration via raw-space translation
+
+**Date:** 2026-09-02
+**Context:** The temporal exploration plan (see
+`TODO_temporally_correlated_exploration.md`) originally proposed
+shifting Gaussian means: `a ~ TanhGaussian(μ(o) + κ·x_t, σ)`. This
+would require every policy subclass to accept a mean-shift parameter
+in its raw hooks, creating 4× maintenance surface and potential for
+silent κ-mismatch bugs.
+
+**Decision:** Implemented OU as a **raw-space translation** applied
+in `TanhSquashedPolicyBase.sample_action` and `.evaluate_actions`
+only. The shift `s_t = noise_scale * x_t` is added to the raw sample
+and subtracted from `atanh(action)` before scoring:
+
+```
+sample:  z = _raw_sample(obs);  raw = z + s;  a = tanh(raw)
+score:   raw = atanh(a);  base_raw = raw - s;  lp = _raw_log_prob(obs, base_raw)
+```
+
+This is exact for diagonal Gaussian, low-rank Gaussian, MoG, and
+RealNVP because translation changes only the evaluation point of the
+base density, not its parameters. No subclass hook signature or
+implementation changed.
+
+**Rationale:**
+1. Zero subclass changes → zero risk of family-specific bugs.
+2. The stored field is `noise_shift` (the applied shift), not `x_t`
+   (the OU state). Training-side `evaluate_actions` does one
+   subtraction and never needs OU parameters, so κ-mismatch is
+   structurally impossible.
+3. Differential entropy is translation-invariant, so the existing
+   regularizer path is already correct with zero changes.
+
+**Impact:** `TanhSquashedPolicyBase` gained `noise_tau_steps`,
+`noise_scale`, AR(1) state, and `reset(seed)`. All four existing
+families (`StateGaussianMLPPolicy`, `LowRankGaussianMLPPolicy`,
+`MoGTanhMLPPolicy`, `RealNVPTanhMLPPolicy`) gained OU support via
+constructor passthrough without any hook changes. New
+`FixedSigmaGaussianMLPPolicy` provides a baseline-compatible
+checkpoint-loadable entry point. `ExplorationSpec` and
+`TrainablePolicy.evaluate_actions` gained optional `noise_shift`.
+`Trajectory` and `PPOBuffer` thread and validate the field.
+
+## D8: FixedSigmaGaussianMLPPolicy as OU-enabled baseline replacement
+
+**Date:** 2026-09-02
+**Context:** The user requires the baseline `TanhGaussianMLPPolicy`
+to remain behavior-compatible and not be modified. But the A/B
+experiment needs the same policy family with and without OU to
+isolate the noise effect.
+
+**Decision:** Created `FixedSigmaGaussianMLPPolicy` inheriting from
+`TanhSquashedPolicyBase` with identical architecture (`net.*`,
+`log_std`) and identical `effective_log_std` logic (temperature
+offset + hard clamp). State-dict keys match the baseline exactly,
+so `load_state_dict(baseline_sd, strict=True)` works.
+
+**Rationale:** Using the same policy family for both A/B arms
+(FixedSigma with `noise_scale=0` vs `noise_scale=0.3`) isolates the
+OU effect from any policy-family difference. If we used
+`TanhGaussianMLPPolicy` for control and `FixedSigmaGaussianMLPPolicy`
+for OU, a difference could be attributed to the policy class, not
+the noise.
+
+**Impact:** New file `fixed_sigma_gaussian_mlp.py`, new blueprint
+`init_policy_fixed_sigma_gaussian.yaml`. The
+`_compute_stats` method in `TanhSquashedPolicyBase` was updated to
+not override closed-form `entropy` from subclass stats (previously
+it always replaced with the score-function estimate, causing a
+mismatch with the baseline's `Normal.entropy()`).
+
+## D9: ExportedPolicy.reset forwards to inner policy
+
+**Date:** 2026-09-02
+**Context:** The generated `ExportedPolicy.reset(seed)` in
+`export_generic.py` previously only called `torch.manual_seed(seed)`
+and did not forward to the wrapped policy. This meant OU state
+would carry across episodes in exported policies, breaking the
+per-episode reset contract.
+
+**Decision:** Updated the generated template so `reset(seed)` calls
+`self._policy.reset(seed)` in addition to seeding Torch. Also
+updated `act` to delegate to `self._policy.act(...)` rather than
+duplicating sampling logic, ensuring OU stepping and extras
+generation happen in exactly one place.
+
+**Rationale:** Two independent sampling logic paths (one in the
+policy, one in the export wrapper) would inevitably drift. Delegating
+to the inner policy's `act` ensures the export always uses the
+policy's own OU stepping, extras format, and deterministic-mode
+handling.
