@@ -139,6 +139,7 @@ class PPOBuffer:
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.frame_modes: Optional[np.ndarray] = None
+            self.noise_shift: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
             return
@@ -167,6 +168,45 @@ class PPOBuffer:
             ])
             kwargs["frame_modes"] = torch.as_tensor(
                 all_modes, dtype=torch.float32, device=device,
+            )
+
+        # --- noise_shift consistency check and concatenation ---
+        # All trajectories in a buffer must either ALL have noise_shift
+        # or ALL have None.  Mixing the two means some frames were
+        # collected with OU exploration and others without — the
+        # log_prob recomputation would be silently wrong for the
+        # mismatched frames.  We raise rather than silently fill zeros,
+        # because a wrong log_prob is the single most dangerous failure
+        # mode in PPO (it corrupts the importance ratio without any
+        # visible symptom until training diverges).
+        has_shift = [t.noise_shift is not None for t in trajectories]
+        any_shift = any(has_shift)
+        all_shift = all(has_shift)
+        if any_shift and not all_shift:
+            raise ValueError(
+                "PPOBuffer: mixed noise_shift presence — some trajectories "
+                "have noise_shift and others don't. All trajectories in a "
+                "single buffer must be collected with the same exploration "
+                "configuration. This usually means the experiment is mixing "
+                "OU-enabled and OU-disabled rollouts, which would silently "
+                "corrupt log_prob recomputation."
+            )
+        if any_shift:
+            # Validate shapes: each noise_shift must be (T, action_dim)
+            # matching the trajectory's actions.
+            shift_segs: List[np.ndarray] = []
+            for t in trajectories:
+                ns = np.asarray(t.noise_shift, dtype=np.float32)
+                if ns.shape != t.actions.shape:
+                    raise ValueError(
+                        f"PPOBuffer: noise_shift shape {ns.shape} does not "
+                        f"match actions shape {t.actions.shape} for a "
+                        f"trajectory. They must be identical (T, action_dim)."
+                    )
+                shift_segs.append(ns)
+            all_shifts = np.concatenate(shift_segs, axis=0)
+            kwargs["noise_shift"] = torch.as_tensor(
+                all_shifts, dtype=torch.float32, device=device,
             )
 
         # This call is also the canonical measurement point for the
@@ -250,6 +290,7 @@ class PPOBuffer:
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.frame_modes = None
+            self.noise_shift = None
             self.final_obs = []
             self.ep_lengths = []
             return
@@ -259,6 +300,7 @@ class PPOBuffer:
         self.log_probs = np.concatenate(lp_list, axis=0)
         self.sample_weights = np.concatenate(weight_list, axis=0)
         self.frame_modes = np.concatenate(modes_list, axis=0) if any_mode else None
+        self.noise_shift = all_shifts if any_shift else None
         self.final_obs = fin_list
         self.ep_lengths = ep_lens
 
@@ -744,6 +786,17 @@ def ppo_update(
             buf.frame_modes, dtype=torch.float32, device=device,
         )
 
+    # --- Noise shift (optional) ---
+    # OU exploration shifts recorded at rollout time.  Threaded through
+    # to evaluate_actions so log_prob recomputation matches the shifted
+    # distribution exactly.  When None, no shift is applied (baseline
+    # white-noise behavior).
+    noise_shift_t: Optional[torch.Tensor] = None
+    if buf.noise_shift is not None:
+        noise_shift_t = torch.as_tensor(
+            buf.noise_shift, dtype=torch.float32, device=device,
+        )
+
     # --- Diagnostics: episode lengths ---
     # These are logged but do not influence the update.
     ep_lengths = buf.ep_lengths
@@ -849,12 +902,18 @@ def ppo_update(
             if actor_stopped:
                 continue
 
+            # Construct kwargs for evaluate_actions, threading through
+            # frame_modes and noise_shift when present.  Using a kwargs
+            # dict avoids a 2×2 branch explosion and keeps the call site
+            # readable as more optional threading fields are added.
+            eval_kwargs: Dict[str, Any] = {}
             if frame_modes_t is not None:
-                actor_eval = actor.evaluate_actions(
-                    obs_t[idx], act_t[idx], frame_modes=frame_modes_t[idx],
-                )
-            else:
-                actor_eval = actor.evaluate_actions(obs_t[idx], act_t[idx])
+                eval_kwargs["frame_modes"] = frame_modes_t[idx]
+            if noise_shift_t is not None:
+                eval_kwargs["noise_shift"] = noise_shift_t[idx]
+            actor_eval = actor.evaluate_actions(
+                obs_t[idx], act_t[idx], **eval_kwargs,
+            )
             new_lp = actor_eval.log_prob
 
             log_ratio = torch.clamp(new_lp - old_lp_t[idx], -20.0, 20.0)

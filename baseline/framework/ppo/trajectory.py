@@ -92,6 +92,15 @@ class Trajectory:
             loss and policy loss.
         mode: Optional actor routing mode (float).  If None, the actor
             computes mode from observation.
+        noise_shift: Optional ``(T, act_dim)`` float32 — raw-space shifts
+            applied at rollout time for temporally correlated exploration.
+            When present, the PPO buffer threads them into
+            ``evaluate_actions`` so log_prob recomputation matches the
+            rollout-time scoring exactly.  When None (the default), the
+            trajectory was collected without OU exploration and no shift
+            is applied.  All trajectories in a single buffer must either
+            all have ``noise_shift`` or all have None — mixing the two
+            is a configuration error that the buffer raises on.
     """
 
     obs: np.ndarray
@@ -100,3 +109,4 @@ class Trajectory:
     channels: Dict[str, ChannelData]
     importance: float = 1.0
     mode: Optional[float] = None
+    noise_shift: Optional[np.ndarray] = None

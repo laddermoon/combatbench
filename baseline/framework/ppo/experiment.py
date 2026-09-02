@@ -248,6 +248,14 @@ class ExplorationSpec:
             auto-alpha).  Mutually exclusive with ``entropy_coef``.
         clip_eps: PPO clip epsilon override for this update.
         target_kl: PPO KL early-stop threshold override for this update.
+        noise_tau_steps: OU exploration correlation time in policy steps.
+            ``None`` means "no opinion"; ``0.0`` means "disable OU".
+            A policy that supports temporal correlation (e.g.
+            ``FixedSigmaGaussianMLPPolicy``) uses this to configure its
+            AR(1) process.  Policies without OU support silently ignore it.
+        noise_scale: OU exploration shift steady-state std in raw space.
+            ``None`` means "no opinion"; ``0.0`` means "disable OU".
+            Directly comparable to the policy's native sigma.
         policy_extras: Free-form key/value bag for policy-specific knobs
             that do not deserve a typed field (e.g. a diffusion policy's
             denoising step count, a mixture's component count).
@@ -258,6 +266,8 @@ class ExplorationSpec:
     entropy_target: Optional[float] = None
     clip_eps: Optional[float] = None
     target_kl: Optional[float] = None
+    noise_tau_steps: Optional[float] = None
+    noise_scale: Optional[float] = None
     policy_extras: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -319,6 +329,7 @@ class TrainablePolicy(Protocol):
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
         *, frame_modes: Optional[torch.Tensor] = None,
+        noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
     ) -> ActorEval:
         """Recompute log_prob (and optional regularizer) for obs/actions.
@@ -329,10 +340,21 @@ class TrainablePolicy(Protocol):
         Mode is a *fact recorded at rollout time*, not a quantity to be
         re-inferred, so it must be threaded through rather than derived.
 
+        If ``noise_shift`` is provided (shape ``(B, action_dim)``), it is
+        the raw-space shift that was applied at rollout time to produce
+        temporally correlated exploration.  The actor subtracts it from
+        ``atanh(action)`` before scoring so the log_prob matches the
+        shifted distribution.  Like ``frame_modes``, this is a *fact
+        recorded at rollout time*, not a quantity to re-infer.
+
         Args:
             obs: ``(B, obs_dim)`` observations.
             actions: ``(B, action_dim)`` actions taken at rollout time.
             frame_modes: Optional ``(B,)`` routing tags from rollout.
+            noise_shift: Optional ``(B, action_dim)`` raw-space shifts
+                recorded at rollout time.  Used by policies with OU
+                exploration to exactly reproduce the rollout-time
+                log_prob.
             want_stats: When True, also populate ``ActorEval.stats`` with
                 distributional diagnostics over this batch.  The
                 framework sets this only for the single whole-batch call
