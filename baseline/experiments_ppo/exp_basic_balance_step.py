@@ -187,6 +187,7 @@ class BasicBalanceStep(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
+            noise_shift=self.extract_noise_shift(episode, agent_id, T),
         )]
 
     @staticmethod

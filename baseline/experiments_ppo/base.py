@@ -57,6 +57,18 @@ class CombatExperimentPPOBase(ExperimentPPO):
     log_std_max: float = 0.0
     entropy_coef: float = 1e-3
 
+    # --- Temporally correlated exploration (OU) ---
+    # noise_tau_steps: OU correlation time in policy steps.  0.0 disables
+    #   OU (white noise, the default).  At 20Hz, tau=10 ≈ 0.5 seconds.
+    # noise_scale: OU shift steady-state std in raw (pre-tanh) space.
+    #   Directly comparable to the policy's native sigma.  0.0 disables.
+    # These are passed to the actor via ExplorationSpec every update.
+    # The actor blueprint must point to a policy family that supports OU
+    # (e.g. FixedSigmaGaussianMLPPolicy).  The baseline TanhGaussianMLPPolicy
+    # silently ignores them.
+    noise_tau_steps: float = 0.0
+    noise_scale: float = 0.0
+
     # --- Shared training ---
     learning_rate: float = 1e-4
     critic_learning_rate: float = 3e-4
@@ -177,13 +189,20 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
         This reproduces the pre-refactor behaviour exactly: ``entropy_coef``
         is a constant for the whole run and the sampling temperature is the
-        policy's native 1.0.
+        policy's native 1.0.  The OU noise parameters (``noise_tau_steps``,
+        ``noise_scale``) are also passed through; they default to 0.0
+        (disabled) so existing experiments are unaffected.
 
         Subclasses that want a schedule override ``on_update`` (to absorb
         stats) and this method (to read accumulated state).  See the
         ``on_update`` docstring for a closed-loop example.
         """
-        return ExplorationSpec(entropy_coef=self.entropy_coef, temperature=1.0)
+        return ExplorationSpec(
+            entropy_coef=self.entropy_coef,
+            temperature=1.0,
+            noise_tau_steps=self.noise_tau_steps,
+            noise_scale=self.noise_scale,
+        )
 
     # ------------------------------------------------------------------
     # Model construction
@@ -248,6 +267,28 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_noise_shift(episode, agent_id: str, T: int) -> Optional[np.ndarray]:
+        """Extract the per-step OU noise shift for one agent, truncated to T.
+
+        Pulls ``noise_shift`` from ``episode.action_extras[agent_id]`` and
+        slices it to ``[:T]`` to match the trajectory's truncation point
+        (e.g. at a fall).  Returns ``None`` when the agent has no
+        ``noise_shift`` extras — this happens when the policy was
+        collected without OU exploration (``noise_scale=0``).
+
+        The caller must use the **same** ``T`` used to slice ``obs`` and
+        ``actions``; otherwise the shift would be misaligned with the
+        actions and log_prob recomputation would be silently wrong.
+        """
+        extras = episode.action_extras.get(agent_id)
+        if extras is None:
+            return None
+        ns = extras.get("noise_shift")
+        if ns is None:
+            return None
+        return np.asarray(ns, dtype=np.float32)[:T]
 
     @staticmethod
     def _agent_from_rollout_seed(seed: int) -> str:
