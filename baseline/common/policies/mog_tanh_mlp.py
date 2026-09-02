@@ -58,12 +58,15 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
         deterministic: bool = False,
         entropy_coef: float = 0.0,
         temperature: float = 1.0,
+        noise_tau_steps: float = 0.0,
+        noise_scale: float = 0.0,
         model_path: Optional[str] = None,
     ):
         super().__init__(
             obs_dim=obs_dim, action_dim=action_dim,
             device=device, deterministic=deterministic,
             entropy_coef=entropy_coef, temperature=temperature,
+            noise_tau_steps=noise_tau_steps, noise_scale=noise_scale,
         )
         self.hidden_dim = int(hidden_dim)
         self.K = int(K)

@@ -142,13 +142,16 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         actions: torch.Tensor,
         *,
         frame_modes: Optional[torch.Tensor] = None,
+        noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
     ) -> "ActorEval":
         """Score ``actions`` under the current parameters.
 
         Implements the :class:`~baseline.framework.ppo.experiment.TrainablePolicy`
-        contract.  ``frame_modes`` is accepted and ignored — this backbone
-        is a single unconditional network with no sub-network routing.
+        contract.  ``frame_modes`` and ``noise_shift`` are accepted and
+        ignored — this baseline backbone has no sub-network routing and
+        no OU exploration support.  Use :class:`FixedSigmaGaussianMLPPolicy`
+        for OU-enabled training from a baseline checkpoint.
 
         The returned ``regularizer`` is the entropy bonus already signed
         and scaled (``-entropy_coef * H``), so the framework can add it to

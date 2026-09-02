@@ -76,7 +76,11 @@ def build_generic_export_policy_code() -> str:
     2. Imports the policy class from ``policy_class_path``.
     3. Instantiates it with ``payload["config"]``.
     4. Loads ``payload["state_dict"]`` with ``strict=True``.
-    5. Applies ``temperature`` from the payload if present.
+    5. Applies ``temperature`` and OU noise params from the payload.
+    6. Delegates ``act`` to the inner policy so OU stepping, extras,
+       and stochastic/deterministic dispatch are handled in one place.
+    7. Forwards ``reset`` to the inner policy so OU state is zeroed
+       at episode boundaries.
     """
     return '''"""Policy module - generic export (auto-generated)."""
 from pathlib import Path
@@ -95,6 +99,14 @@ class ExportedPolicy(Policy):
     Reconstructs the policy from the recorded class path and constructor
     config, then loads weights with strict=True so any architecture
     mismatch surfaces as a loud crash rather than a silent partial load.
+
+    ``act`` delegates to the inner policy so that OU noise stepping,
+    extras collection, and stochastic/deterministic dispatch are all
+    handled by the policy's own ``act`` method — there is no duplicate
+    sampling logic here that could drift out of sync.
+
+    ``reset`` forwards to the inner policy so OU state (and any other
+    per-episode RNG state) is zeroed at episode boundaries.
     """
 
     def __init__(
@@ -113,10 +125,14 @@ class ExportedPolicy(Policy):
         cls = getattr(module, cls_name.strip())
 
         config = dict(payload["config"])
-        # Pass temperature from payload so rollout sampling matches
-        # the distribution the trainer scored actions under.
+        # Pass exploration-affecting fields from payload so rollout
+        # sampling matches the distribution the trainer scored under.
         if "temperature" in payload:
             config.setdefault("temperature", float(payload["temperature"]))
+        if "noise_tau_steps" in payload:
+            config.setdefault("noise_tau_steps", float(payload["noise_tau_steps"]))
+        if "noise_scale" in payload:
+            config.setdefault("noise_scale", float(payload["noise_scale"]))
 
         self._policy = cls(**config)
 
@@ -126,6 +142,7 @@ class ExportedPolicy(Policy):
         # immediately, not produce a silently wrong policy.
         self._policy.load_state_dict(payload["state_dict"], strict=True)
         self._policy.eval()
+        self._policy.set_deterministic(not stochastic)
         self.stochastic = bool(stochastic)
 
     def act(
@@ -133,22 +150,16 @@ class ExportedPolicy(Policy):
         observation: Any,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        obs_array = np.asarray(observation, dtype=np.float32)
-        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            if self.stochastic:
-                action, log_prob = self._policy.sample_action(obs_tensor)
-            else:
-                action = self._policy.deterministic_action(obs_tensor)
-        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
-        if not want_extra or not self.stochastic:
-            return action_np, None
-        return action_np, {"log_prob": float(log_prob.item())}
+        # Delegate to the inner policy's act so OU stepping, extras,
+        # and stochastic/deterministic dispatch are handled in one
+        # place.  This avoids a second copy of the sampling logic that
+        # could silently diverge from the policy's own act method.
+        return self._policy.act(observation, want_extra=want_extra)
 
     def reset(self, seed: Optional[int] = None) -> None:
-        if seed is not None:
-            torch.manual_seed(seed)
-        return None
+        # Forward to the inner policy so OU state is zeroed at episode
+        # boundaries and the per-agent seed reseeds its RNG.
+        self._policy.reset(seed)
 '''
 
 

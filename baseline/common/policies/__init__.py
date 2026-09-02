@@ -16,6 +16,7 @@ from .state_gaussian_mlp import StateGaussianMLPPolicy
 from .low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 from .mog_tanh_mlp import MoGTanhMLPPolicy
 from .realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+from .fixed_sigma_gaussian_mlp import FixedSigmaGaussianMLPPolicy
 
 __all__ = [
     "DEFAULT_LOG_STD_MIN",
@@ -27,6 +28,7 @@ __all__ = [
     "LowRankGaussianMLPPolicy",
     "MoGTanhMLPPolicy",
     "RealNVPTanhMLPPolicy",
+    "FixedSigmaGaussianMLPPolicy",
     "CriticMLP",
     "build_export_policy_code",
     "build_actor_export_payload",

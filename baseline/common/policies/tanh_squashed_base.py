@@ -55,6 +55,33 @@ _TANH_JAC_EPS = 1e-6
 _ATANH_CLAMP = 0.999999
 
 
+# ---------------------------------------------------------------------------
+# Temporally correlated exploration noise (OU process)
+#
+# The base class can optionally apply a raw-space shift to exploration
+# samples, drawn from an Ornstein-Uhlenbeck (AR(1)) process.  This
+# produces temporally correlated noise whose power spectrum is
+# concentrated at low frequencies, unlike the white (independent-per-step)
+# noise that a diagonal Gaussian produces by default.
+#
+# The shift is applied as a translation in raw (pre-tanh) space:
+#
+#   sampling:  z ~ p(·|o);   raw = z + s;   a = tanh(raw)
+#   scoring:   raw = atanh(a) - s;   log_prob = p.log_prob(raw) + jac
+#
+# This is exact for ANY raw distribution p (Gaussian, mixture, flow, ...)
+# because translating a density does not change its form — only its
+# evaluation point.  The subclass hooks (_raw_sample, _raw_log_prob, ...)
+# are completely unchanged.
+#
+# The shift s_t = noise_scale * x_t is recorded per-step in rollout
+# extras and threaded through to evaluate_actions, so the training side
+# never needs to know any OU parameter — it only subtracts the recorded
+# shift.  This eliminates the class of bugs where rollout-side and
+# training-side OU parameters disagree and silently corrupt log_prob.
+# ---------------------------------------------------------------------------
+
+
 class TanhSquashedPolicyBase(nn.Module, Policy):
     """Generic tanh-squashed policy base.
 
@@ -79,6 +106,8 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         deterministic: bool = False,
         entropy_coef: float = 0.0,
         temperature: float = 1.0,
+        noise_tau_steps: float = 0.0,
+        noise_scale: float = 0.0,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -88,6 +117,15 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         # Exploration state — plain floats, not buffers (see class docstring).
         self._entropy_coef = float(entropy_coef)
         self._temperature = float(temperature)
+        # OU exploration noise state.  noise_scale=0 disables the feature
+        # and makes the policy bit-identical to one without OU support.
+        self._noise_tau_steps = float(noise_tau_steps)
+        self._noise_scale = float(noise_scale)
+        self._ou_x: Optional[np.ndarray] = None
+        self._ou_rng: Optional[np.random.Generator] = None
+        self._ou_a: float = 0.0
+        self._ou_innov: float = 1.0
+        self._update_ou_params()
 
     # ------------------------------------------------------------------
     # Subclass hooks (raw space, pre-tanh)
@@ -174,11 +212,68 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         return -torch.log(1.0 - clipped_actions.pow(2) + _TANH_JAC_EPS)
 
     # ------------------------------------------------------------------
+    # OU exploration noise
+    # ------------------------------------------------------------------
+
+    def _update_ou_params(self) -> None:
+        """Recompute AR(1) coefficients from ``_noise_tau_steps``.
+
+        The process is parameterised as a unit-variance AR(1):
+
+            x_{t+1} = a * x_t + sqrt(1 - a^2) * xi,   xi ~ N(0, I)
+
+        where ``a = exp(-1 / tau)``.  This keeps ``Var(x) = 1`` for any
+        ``tau > 0``, so ``noise_scale`` is directly comparable to the
+        policy's native sigma (both are in raw-space units).
+        """
+        if self._noise_tau_steps > 0.0:
+            self._ou_a = float(np.exp(-1.0 / self._noise_tau_steps))
+            self._ou_innov = float(np.sqrt(1.0 - self._ou_a ** 2))
+        else:
+            # tau=0 → pure white noise (a=0).  Still unit variance.
+            self._ou_a = 0.0
+            self._ou_innov = 1.0
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reset OU state for a new episode.
+
+        Zeroes ``_ou_x`` and (re)seeds the numpy RNG.  Called by the
+        episode runner at every episode boundary, so each agent's OU
+        process starts fresh and is reproducible from the per-agent seed.
+        """
+        self._ou_x = np.zeros(self.action_dim, dtype=np.float32)
+        if seed is not None:
+            self._ou_rng = np.random.default_rng(int(seed))
+
+    def _next_noise_shift(self) -> Optional[np.ndarray]:
+        """Step the OU process and return the raw-space shift ``s_t``.
+
+        Returns ``None`` when OU is disabled (``noise_scale == 0``),
+        so callers can treat ``None`` as "no shift" without branching
+        on the policy's configuration.
+
+        The returned array has shape ``(action_dim,)`` and is in
+        raw (pre-tanh) space units.  It is recorded in rollout extras
+        and subtracted during ``evaluate_actions`` scoring.
+        """
+        if self._noise_scale == 0.0:
+            return None
+        if self._ou_x is None:
+            self._ou_x = np.zeros(self.action_dim, dtype=np.float32)
+        if self._ou_rng is None:
+            self._ou_rng = np.random.default_rng()
+        xi = self._ou_rng.standard_normal(self.action_dim).astype(np.float32)
+        self._ou_x = self._ou_a * self._ou_x + self._ou_innov * xi
+        return (self._noise_scale * self._ou_x).astype(np.float32)
+
+    # ------------------------------------------------------------------
     # Sampling / deterministic action
     # ------------------------------------------------------------------
 
     def sample_action(
         self, obs: torch.Tensor,
+        *,
+        noise_shift: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample a (post-tanh) action and compute its log_prob.
 
@@ -186,20 +281,36 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             (action, log_prob) where action is (B, action_dim) in
             [-1, 1] and log_prob is (B,).
 
+        When ``noise_shift`` is provided (shape ``(B, action_dim)`` or
+        broadcastable), it is added to the raw sample *before* tanh.
+        The log_prob is computed for the **unshifted** sample ``z``
+        (i.e. ``_raw_log_prob(obs, z)``), which is the correct density
+        of the shifted distribution evaluated at the shifted point:
+        ``p(z | o) = p(raw - s | o)``.  This matches
+        ``evaluate_actions(..., noise_shift=s)`` which computes
+        ``_raw_log_prob(obs, atanh(a) - s)``.
+
         Computation order matches TanhGaussianMLPPolicy: per-dimension
         (raw_log_prob - jacobian), then sum, when
         ``_raw_log_prob_per_dim`` is available.  Otherwise falls back
         to separate sums.
         """
-        raw_action, sample_extras = self._raw_sample(obs)
+        raw_sample, sample_extras = self._raw_sample(obs)
+        if noise_shift is not None:
+            raw_action = raw_sample + noise_shift
+        else:
+            raw_action = raw_sample
         action = torch.tanh(raw_action)
         clipped = torch.clamp(action, -_ATANH_CLAMP, _ATANH_CLAMP)
+        # Score the unshifted sample z = raw_action - noise_shift.
+        # When noise_shift is None, z == raw_action (no-op).
+        scored = raw_sample if noise_shift is not None else raw_action
         if hasattr(self, "_raw_log_prob_per_dim"):
-            raw_lp_per_dim, _ = self._raw_log_prob_per_dim(obs, raw_action)
+            raw_lp_per_dim, _ = self._raw_log_prob_per_dim(obs, scored)
             jac_per_dim = self._tanh_jacobian(clipped)
             log_prob = (raw_lp_per_dim + jac_per_dim).sum(dim=-1)
         else:
-            raw_log_prob, _ = self._raw_log_prob(obs, raw_action)
+            raw_log_prob, _ = self._raw_log_prob(obs, scored)
             log_prob = raw_log_prob + self._tanh_jacobian(clipped).sum(dim=-1)
         return action, log_prob
 
@@ -217,6 +328,7 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         actions: torch.Tensor,
         *,
         frame_modes: Optional[torch.Tensor] = None,
+        noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
     ) -> ActorEval:
         """Score actions under the current parameters.
@@ -225,6 +337,13 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         applied here (single source of truth), so subclasses only need
         to provide the raw-space log_prob.
 
+        When ``noise_shift`` is provided (shape ``(B, action_dim)``),
+        it is subtracted from ``atanh(action)`` before scoring, so the
+        log_prob matches the shifted distribution used at rollout time.
+        This is the training-side counterpart of ``sample_action``'s
+        ``noise_shift`` parameter — the shift is a *fact recorded at
+        rollout time*, not a quantity to re-infer.
+
         The computation order matches TanhGaussianMLPPolicy exactly:
         per-dimension (raw_log_prob - jacobian), then sum over the
         action dimension.  This is deliberately bit-identical to the
@@ -232,6 +351,9 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         """
         clipped_actions = torch.clamp(actions, -_ATANH_CLAMP, _ATANH_CLAMP)
         raw_actions = torch.atanh(clipped_actions)
+        if noise_shift is not None:
+            # Recover the unshifted sample: z = atanh(a) - s
+            raw_actions = raw_actions - noise_shift
         # _raw_log_prob returns (B,) — already summed over action dims.
         # For bit-identical matching with the baseline, we need the
         # per-dimension version.  Subclasses that want to support the
@@ -323,8 +445,14 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             score_extras=score_extras,
         )
         stats: Dict[str, float] = dict(family_stats or {})
-        # Always include the entropy estimate (score-function).
-        stats["entropy"] = float((-reg_raw_log_prob.mean()).item())
+        # Include the score-function entropy estimate only when the
+        # subclass did not already provide a closed-form "entropy" stat.
+        # This lets diagonal-Gaussian families report Normal.entropy()
+        # (which has a non-vanishing gradient as σ → 0) while mixture /
+        # flow families that lack closed-form entropy get the
+        # score-function estimate as fallback.
+        if "entropy" not in stats:
+            stats["entropy"] = float((-reg_raw_log_prob.mean()).item())
         return stats
 
     # ------------------------------------------------------------------
@@ -339,6 +467,11 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
           use it in their raw distribution construction.
         - ``entropy_coef``: stored as ``self._entropy_coef``.  Used in
           ``evaluate_actions`` to build the regularizer.
+        - ``noise_tau_steps``: OU correlation time in policy steps.
+          Updates the AR(1) coefficients.  Does not reset ``_ou_x``.
+        - ``noise_scale``: OU shift steady-state std in raw space.
+          ``0.0`` disables OU (the policy becomes bit-identical to one
+          without OU support).
 
         Ignored fields: ``entropy_target``, ``clip_eps``, ``target_kl``,
         ``policy_extras``.
@@ -350,9 +483,16 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             self._temperature = temperature
         if spec.entropy_coef is not None:
             self._entropy_coef = float(spec.entropy_coef)
+        if spec.noise_tau_steps is not None:
+            self._noise_tau_steps = float(spec.noise_tau_steps)
+            self._update_ou_params()
+        if spec.noise_scale is not None:
+            self._noise_scale = float(spec.noise_scale)
         return {
             "entropy_coef": self._entropy_coef,
             "temperature": self._temperature,
+            "noise_tau_steps": self._noise_tau_steps,
+            "noise_scale": self._noise_scale,
         }
 
     # ------------------------------------------------------------------
@@ -364,13 +504,25 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         observation: Any,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        """Single-step inference."""
+        """Single-step inference.
+
+        When stochastic and OU is enabled, steps the OU process and
+        applies the shift to the raw sample.  The shift is included in
+        the returned extras dict (key ``"noise_shift"``) so the rollout
+        can record it for exact log_prob recomputation during training.
+        """
+        noise_shift = None if self._deterministic else self._next_noise_shift()
         action_np, log_prob = self.act_numpy(
-            observation, device=self.device, deterministic=self._deterministic
+            observation, device=self.device,
+            deterministic=self._deterministic,
+            noise_shift=noise_shift,
         )
         if not want_extra or log_prob is None:
             return action_np, None
-        return action_np, {"log_prob": float(log_prob)}
+        extras: Dict[str, Any] = {"log_prob": float(log_prob)}
+        if noise_shift is not None:
+            extras["noise_shift"] = np.asarray(noise_shift, dtype=np.float32)
+        return action_np, extras
 
     def set_deterministic(self, deterministic: bool) -> None:
         """Toggle stochastic vs deterministic action sampling."""
@@ -378,15 +530,23 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
 
     def act_numpy(
         self, obs: np.ndarray, device: torch.device, deterministic: bool,
+        *,
+        noise_shift: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, Optional[float]]:
         """Numpy-flavoured single-step inference."""
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        shift_tensor = (
+            torch.as_tensor(noise_shift, dtype=torch.float32, device=device).unsqueeze(0)
+            if noise_shift is not None else None
+        )
         with torch.no_grad():
             if deterministic:
                 action = self.deterministic_action(obs_tensor)
                 log_prob = None
             else:
-                action, log_prob = self.sample_action(obs_tensor)
+                action, log_prob = self.sample_action(
+                    obs_tensor, noise_shift=shift_tensor,
+                )
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if log_prob is None:
             return action_np, None
@@ -422,6 +582,8 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             extra_payload={
                 "temperature": self._temperature,
                 "entropy_coef": self._entropy_coef,
+                "noise_tau_steps": self._noise_tau_steps,
+                "noise_scale": self._noise_scale,
             },
         )
 
