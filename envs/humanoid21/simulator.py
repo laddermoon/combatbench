@@ -590,6 +590,23 @@ class Humanoid21Simulator(BaseSimulator):
             joint_vel_norm,  # 21维
         ]).astype(np.float32)
 
+        # --- 观测空间非线性变换 (仅作用于 96 维 observation) ---
+        # 对速度类维度做 sign*sqrt 压缩, 压制抖动极端值, 放大微调信号。
+        # root_state / opponent_keypoint_vel 等字典字段保持原始物理值,
+        # 供 observer / reward plugin 使用。
+        joint_vel_obs = (np.sign(joint_vel_norm) * np.sqrt(np.abs(joint_vel_norm)) / 2).astype(np.float32)
+        ang_vel_obs = (np.sign(angular_vel) * np.sqrt(np.abs(angular_vel / 2))).astype(np.float32)
+        opp_kp_vel_head = opponent_keypoint_vel['head']  # 头部不做变换
+        opp_kp_vel_hands_feet = np.concatenate([
+            opponent_keypoint_vel['hand_right'],
+            opponent_keypoint_vel['hand_left'],
+            opponent_keypoint_vel['foot_right'],
+            opponent_keypoint_vel['foot_left'],
+        ])
+        opp_kp_vel_hands_feet_obs = (
+            np.sign(opp_kp_vel_hands_feet) * np.sqrt(np.abs(opp_kp_vel_hands_feet)) / 2
+        ).astype(np.float32)
+
         return {
             # 模块二：全局状态 (13维)
             'root_state': {
@@ -614,27 +631,29 @@ class Humanoid21Simulator(BaseSimulator):
             'opponent_keypoint_vel': opponent_keypoint_vel,
 
             # 完整平铺观测 (96维) - 模块一+二+三+四
+            # 速度类维度已做 sign*sqrt 变换 (见上方注释)
             'observation': np.concatenate([
-                proprioception,        # 42维 - 模块一本体感知
-                projected_gravity,        # 3维 - 重力投影(机体系)
-                [height],                  # 1维 - 高度
-                linear_vel,               # 3维 - 线速度(机体系)
-                angular_vel,              # 3维 - 角速度(机体系)
-                feet_forces,              # 2维 - 足底受力
-                arena_center_local,       # 3维 - 场地中心在机体系中的位置
-                opponent_basic['relative_pos'],     # 3维
-                opponent_basic['relative_vel'],     # 3维
-                opponent_basic['face_vector'],      # 3维
-                opponent_keypoint_pos['head'],       # 3维
-                opponent_keypoint_pos['hand_right'], # 3维
-                opponent_keypoint_pos['hand_left'],  # 3维
-                opponent_keypoint_pos['foot_right'], # 3维
-                opponent_keypoint_pos['foot_left'],  # 3维
-                opponent_keypoint_vel['head'],       # 3维
-                opponent_keypoint_vel['hand_right'], # 3维
-                opponent_keypoint_vel['hand_left'],  # 3维
-                opponent_keypoint_vel['foot_right'], # 3维
-                opponent_keypoint_vel['foot_left'],  # 3维
+                joint_pos_norm,                        # 21维 - 关节位置 (线性归一化)
+                joint_vel_obs,                         # 21维 - 关节速度 (sqrt 变换)
+                projected_gravity,                     # 3维 - 重力投影(机体系)
+                [height],                              # 1维 - 高度
+                linear_vel,                            # 3维 - 线速度(机体系)
+                ang_vel_obs,                           # 3维 - 角速度(机体系, sqrt 变换)
+                feet_forces,                           # 2维 - 足底受力
+                arena_center_local,                    # 3维 - 场地中心在机体系中的位置
+                opponent_basic['relative_pos'],        # 3维
+                opponent_basic['relative_vel'],        # 3维
+                opponent_basic['face_vector'],         # 3维
+                opponent_keypoint_pos['head'],         # 3维
+                opponent_keypoint_pos['hand_right'],   # 3维
+                opponent_keypoint_pos['hand_left'],    # 3维
+                opponent_keypoint_pos['foot_right'],   # 3维
+                opponent_keypoint_pos['foot_left'],    # 3维
+                opp_kp_vel_head,                       # 3维 - 对手头部速度 (不变换)
+                opp_kp_vel_hands_feet_obs[:3],         # 3维 - 对手右手速度 (sqrt 变换)
+                opp_kp_vel_hands_feet_obs[3:6],        # 3维 - 对手左手速度 (sqrt 变换)
+                opp_kp_vel_hands_feet_obs[6:9],        # 3维 - 对手右脚速度 (sqrt 变换)
+                opp_kp_vel_hands_feet_obs[9:12],       # 3维 - 对手左脚速度 (sqrt 变换)
             ]).astype(np.float32),  # 总共 96 维
 
             # 兼容旧版本
