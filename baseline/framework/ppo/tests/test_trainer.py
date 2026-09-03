@@ -30,7 +30,7 @@ import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from baseline.common.algos import compute_gae
+from baseline.framework.ppo.algos import compute_gae
 from baseline.framework.ppo.experiment import (
     ActorEval,
     CommonParams,

@@ -50,7 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from baseline.common.algos import compute_gae
+from baseline.framework.ppo.algos import compute_gae
 
 from .experiment import PPOParams, TrainablePolicy, UpdateStats
 from .trajectory import RewardChannel, Trajectory

@@ -1,5 +1,14 @@
 """Example 07 — Curriculum learning as an ``options_fn`` recipe.
 
+.. deprecated::
+    This example used ``baseline.common.eval.PolicyEvaluator``, which has
+    been removed (dead code — its dependency ``RolloutCollector`` no longer
+    exists).  The curriculum schedule closures (``linear_ramp``,
+    ``step_schedule``, ``cosine_schedule``, ``adaptive_schedule``) are still
+    valid patterns, but the evaluation harness needs to be rewritten to use
+    the current rollout stack (``ParallelRollouter``) before this example
+    can run again.
+
 Why this is an example, not a library
 -------------------------------------
 Curriculum schedules are 5-line closures over ``episode_index``. Wrapping
@@ -40,8 +49,11 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from _common import build_humanoid21_runtime
-from baseline.common.eval import PolicyEvaluator
 from envs.framework.policy import Policy
+
+# NOTE: baseline.common.eval.PolicyEvaluator was removed (dead code —
+# its dependency RolloutCollector no longer exists).  This example needs
+# to be updated to use the current rollout stack if revived.
 
 # Reuse the curriculum push plugin from example 03 — same code, no changes.
 import importlib.util

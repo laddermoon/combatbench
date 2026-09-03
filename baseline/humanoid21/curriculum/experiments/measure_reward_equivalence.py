@@ -36,7 +36,7 @@ import torch
 
 from baseline.common.policies import CriticMLP
 from baseline.common.rollout import Episode, ParallelRollouter
-from baseline.common.algos import compute_gae
+from baseline.framework.ppo.algos import compute_gae
 from baseline.common.rollout import extract_per_step_field
 from baseline.humanoid21.curriculum.experiments.phi_critic import PhiSubtractedCritic
 

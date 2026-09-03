@@ -9,7 +9,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from baseline.common.algos import PPOLossOutput, ppo_loss
+from baseline.framework.ppo.algos import PPOLossOutput, ppo_loss
 
 
 def _make_inputs(b: int = 8, *, seed: int = 0):

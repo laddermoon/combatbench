@@ -1,6 +1,7 @@
-"""Algorithm primitives: advantage estimation + on-policy update steps.
+"""PPO algorithm primitives: advantage estimation + on-policy update steps.
 
-See ``baseline/DESIGN.md`` §3.6.
+Moved from ``baseline/common/algos/`` — these are PPO-specific (GAE,
+PPO clipped surrogate loss).  SAC uses Q-learning, not GAE.
 """
 
 from .advantages import (
