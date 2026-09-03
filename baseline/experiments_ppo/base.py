@@ -58,8 +58,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   policy collapse.  Set to 0 to disable.
     # entropy_coef: coefficient for the entropy floor loss.
     explore_intensity: float = 0.0
-    entropy_floor: float = 0.0
-    entropy_coef: float = 1e-3
+    entropy_floor: float = 0.3
+    entropy_coef: float = 0.01
 
     # Sigma bounds — normalization reference points for the policy's
     # entropy, not hard clamps.  See DESIGN_migration_tanh_gaussian.md.
