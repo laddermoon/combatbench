@@ -1,5 +1,5 @@
 version: 1
-cls: "baseline.common.policies.low_rank_gaussian_mlp:LowRankGaussianMLPPolicy"
+cls: "baseline.framework.ppo.policies.low_rank_gaussian_mlp:LowRankGaussianMLPPolicy"
 config:
   obs_dim: 96
   action_dim: 21

@@ -38,7 +38,7 @@ def build_export_policy_code() -> str:
     """Return the source of the ``policy.py`` embedded in ``policy/`` dirs.
 
     The produced module defines ``ExportedMLPPolicy`` that reuses
-    :class:`baseline.common.policies.tanh_gaussian_mlp.TanhGaussianMLPPolicy`
+    :class:`baseline.framework.ppo.policies.tanh_gaussian_mlp.TanhGaussianMLPPolicy`
     from the repo. Requires the repo to be on ``sys.path`` (e.g., via
     PYTHONPATH=. when running).
 
@@ -53,7 +53,7 @@ import numpy as np
 import torch
 
 # Import from repo - requires baseline/ to be on sys.path
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from envs.framework.policy import Policy
 
 

@@ -1,5 +1,5 @@
 version: 1
-cls: "baseline.common.policies.fixed_sigma_gaussian_mlp:FixedSigmaGaussianMLPPolicy"
+cls: "baseline.framework.ppo.policies.fixed_sigma_gaussian_mlp:FixedSigmaGaussianMLPPolicy"
 config:
   obs_dim: 96
   action_dim: 21

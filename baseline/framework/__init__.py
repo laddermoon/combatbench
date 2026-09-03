@@ -1,6 +1,7 @@
-"""Curriculum learning framework — PPO + SAC support."""
+"""Training framework — PPO + SAC support, shared components."""
 from __future__ import annotations
 
+from .critic_mlp import CriticMLP
 from .ppo import (
     CommonParams,
     ExperimentPPO,
@@ -13,4 +14,5 @@ __all__ = [
     "ExperimentPPO",
     "PPOParams",
     "TrainablePolicy",
+    "CriticMLP",
 ]

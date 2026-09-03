@@ -203,8 +203,8 @@ from baseline.framework.ppo import (
 from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory,
 )
-from baseline.common.rollout import extract_per_step_scalar
-from baseline.common.policies import CriticMLP
+from baseline.framework.rollout import extract_per_step_scalar
+from baseline.framework.ppo.policies import CriticMLP
 
 # 你的环境蓝图和策略蓝图
 from envs.framework.blueprint import EnvBlueprint
@@ -642,10 +642,10 @@ def build_trajectories(self, episodes):
 
 ## 6. 常用工具函数
 
-从 observer outputs 提取 per-step 信号（定义在 `baseline.common.rollout`）：
+从 observer outputs 提取 per-step 信号（定义在 `baseline.framework.rollout`）：
 
 ```python
-from baseline.common.rollout import extract_per_step_field, extract_per_step_scalar
+from baseline.framework.rollout import extract_per_step_field, extract_per_step_scalar
 
 # 提取 dict-valued observer 的某个字段
 phi = extract_per_step_field(ep.observer_outputs, "height_phi_a", "phi", T)

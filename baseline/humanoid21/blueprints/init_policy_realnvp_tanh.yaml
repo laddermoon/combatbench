@@ -1,5 +1,5 @@
 version: 1
-cls: "baseline.common.policies.realnvp_tanh_mlp:RealNVPTanhMLPPolicy"
+cls: "baseline.framework.ppo.policies.realnvp_tanh_mlp:RealNVPTanhMLPPolicy"
 config:
   obs_dim: 96
   action_dim: 21

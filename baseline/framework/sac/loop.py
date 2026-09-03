@@ -29,8 +29,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from baseline.common.policies import export_actor_policy_artifacts
-from baseline.common.rollout import Episode, ParallelRollouter
+from baseline.framework.ppo.policies import export_actor_policy_artifacts
+from baseline.framework.rollout import Episode, ParallelRollouter
 
 from .experiment import (
     CommonParamsSAC,

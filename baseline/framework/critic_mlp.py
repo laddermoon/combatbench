@@ -3,7 +3,7 @@
 Two hidden Tanh layers, scalar output. Dim-parameterized so it can be
 used with any continuous-control environment that exposes a flat
 observation vector — the corresponding actor backbone is
-:class:`baseline.common.policies.TanhGaussianMLPPolicy`.
+:class:`baseline.framework.ppo.policies.TanhGaussianMLPPolicy`.
 """
 from __future__ import annotations
 

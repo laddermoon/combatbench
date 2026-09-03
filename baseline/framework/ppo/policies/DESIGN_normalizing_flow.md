@@ -327,7 +327,7 @@ Add to `ActorEval.stats`:
   is unlikely to matter for these tasks (see §1's honest expectation).
 - **Deployment export depending on repo-only imports.** The exported
   `policy.py` must import the flow class from
-  `baseline.common.policies.realnvp_tanh_mlp` — i.e. the deployment
+  `baseline.framework.ppo.policies.realnvp_tanh_mlp` — i.e. the deployment
   environment must have the combatbench repo importable. This is the
   same as ②③ (they also import their family class from the repo), but
   worth restating because the flow class is the most complex and the

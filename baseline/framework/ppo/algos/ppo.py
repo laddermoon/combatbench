@@ -5,7 +5,7 @@ stepping, epoch loop, minibatch iteration, and gradient clipping all
 live in the user's training script: keeping the loss stateless makes
 it easy to drop into custom training loops, share between PPO and GRPO
 (GRPO uses the same surrogate with a different advantage source —
-:func:`baseline.common.algos.compute_grpo_advantages`), and unit-test
+:func:`baseline.framework.ppo.algos.compute_grpo_advantages`), and unit-test
 the individual pieces.
 
 Standard PPO recipe (matches CleanRL / SB3 conventions):

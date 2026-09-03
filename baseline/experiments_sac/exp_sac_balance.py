@@ -30,7 +30,7 @@ from baseline.framework.sac.experiment import (
     SACRewardChannel,
     TrajectorySlice,
 )
-from baseline.common.rollout import extract_per_step_field, extract_per_step_scalar
+from baseline.framework.rollout import extract_per_step_field, extract_per_step_scalar
 
 from .base import CombatExperimentSACBase
 

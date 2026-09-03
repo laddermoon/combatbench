@@ -34,7 +34,7 @@ if str(COMBATBENCH_ROOT) not in sys.path:
 os.environ["PYTHONPATH"] = str(COMBATBENCH_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 from envs.framework.policy import PolicyBlueprint
-from baseline.common.rollout import ParallelRollouter, Episode
+from baseline.framework.rollout import ParallelRollouter, Episode
 from baseline.humanoid21.curriculum.experiments import get_experiment
 
 

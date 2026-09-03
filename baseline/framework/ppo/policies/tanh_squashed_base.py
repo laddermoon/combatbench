@@ -12,7 +12,7 @@ The base class owns:
   * ``evaluate_actions`` — the ``TrainablePolicy`` contract, including
     the tanh Jacobian correction (``-log(1 - tanh(raw)² + ε)``).
   * ``set_exploration`` — temperature / entropy_coef bookkeeping.
-  * ``to_blueprint`` — export via :mod:`baseline.common.policies.export_generic`.
+  * ``to_blueprint`` — export via :mod:`baseline.framework.ppo.policies.export_generic`.
 
 Subclasses implement four hooks, all in **raw space** (pre-tanh):
 
@@ -251,7 +251,7 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
     @property
     def export_class_path(self) -> str:
         """Dotted path to the policy class for export, e.g.
-        ``baseline.common.policies.state_gaussian_mlp:StateGaussianMLPPolicy``.
+        ``baseline.framework.ppo.policies.state_gaussian_mlp:StateGaussianMLPPolicy``.
 
         Subclasses must override this.
         """
@@ -580,7 +580,7 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
     ) -> PolicyBlueprint:
         """Export this policy to a deployable PolicyBlueprint.
 
-        Uses :mod:`baseline.common.policies.export_generic` for a
+        Uses :mod:`baseline.framework.ppo.policies.export_generic` for a
         family-agnostic export path with ``strict=True`` reload.
         """
         import tempfile

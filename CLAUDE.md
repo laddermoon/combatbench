@@ -46,7 +46,12 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
         - `base.py` - `CombatExperimentBase` (default impls for PPO + SAC)
         - `__init__.py` - Registry: `get_experiment()`, `list_experiments()`
       - `framework/` → renamed to `legacy_framework/` (to be deleted)
-  - `common/` - Shared utilities (policies, rollout, replay buffer)
+  - `framework/` - **Unified training framework** (PPO/SAC, shared components)
+    - `critic_mlp.py` - Shared `CriticMLP` (used by both PPO and SAC)
+    - `rollout/` - Shared rollout building blocks (`Episode`, `ParallelRollouter`, etc.)
+    - `ppo/policies/` - PPO policy families (`TanhGaussianMLPPolicy`, `StateGaussianMLPPolicy`, etc.)
+    - `ppo/algos/` - PPO algorithms (GAE, PPO update)
+    - `sac/` - SAC training loop + update logic
   - `runs/` - Training run outputs (gitignored, can be very large)
 
 ## Framework Architecture

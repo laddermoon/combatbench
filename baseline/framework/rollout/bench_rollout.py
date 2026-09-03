@@ -1,12 +1,12 @@
 """Benchmark rollout speed: random TanhGaussianMLPPolicy + blueprint.
 
 Usage:
-    PYTHONPATH=. python3 baseline/common/rollout/bench_rollout.py \
+    PYTHONPATH=. python3 baseline/framework/rollout/bench_rollout.py \
         baseline/humanoid21/blueprints/stage1_env.yaml \
         --episodes 256 --workers 48
 
     # Single-process debug:
-    PYTHONPATH=. python3 baseline/common/rollout/bench_rollout.py \
+    PYTHONPATH=. python3 baseline/framework/rollout/bench_rollout.py \
         baseline/humanoid21/blueprints/stage1_env.yaml \
         --episodes 4 --workers 1
 """
@@ -24,9 +24,9 @@ if COMBATBENCH not in sys.path:
 
 import numpy as np
 
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-from baseline.common.rollout.episode import Episode
-from baseline.common.rollout.episode_recorder import EpisodeRecorder
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.rollout.episode import Episode
+from baseline.framework.rollout.episode_recorder import EpisodeRecorder
 from envs.framework.episode_runner import EpisodeRunner
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
@@ -38,7 +38,7 @@ def bench_single(
     action_dim: int = 21,
 ) -> None:
     """Single-process benchmark: build once, run N episodes in a loop."""
-    from baseline.common.rollout.episode import blueprint_hash as _bp_hash
+    from baseline.framework.rollout.episode import blueprint_hash as _bp_hash
 
     env_pb = ParameterizedEnvBlueprint.load(env_bp_yaml)
     env_bp = env_pb.materialize()
@@ -97,7 +97,7 @@ def bench_parallel(
     action_dim: int = 21,
 ) -> None:
     """Multi-process benchmark: ParallelRollouter, fresh env+policy per job."""
-    from baseline.common.rollout.parallel_rollouter import ParallelRollouter
+    from baseline.framework.rollout.parallel_rollouter import ParallelRollouter
     from envs.framework.blueprint import EnvBlueprint
     from envs.framework.policy import PolicyBlueprint
 

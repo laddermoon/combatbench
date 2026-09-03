@@ -9,7 +9,7 @@ End-to-end smoke test that exercises:
   6. Verify the Episode data is sane
 
 Usage:
-    PYTHONPATH=. python3 baseline/common/policies/test_blueprint_episode.py
+    PYTHONPATH=. python3 baseline/framework/ppo/policies/test_blueprint_episode.py
 """
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ import sys
 from pathlib import Path
 
 # Ensure the combatbench repo root is importable when run directly.
-_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+_REPO_ROOT = str(Path(__file__).resolve().parents[4])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-from baseline.common.rollout.episode import Episode
-from baseline.common.rollout.episode import blueprint_hash as _bp_hash
-from baseline.common.rollout.episode_recorder import EpisodeRecorder
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.rollout.episode import Episode
+from baseline.framework.rollout.episode import blueprint_hash as _bp_hash
+from baseline.framework.rollout.episode_recorder import EpisodeRecorder
 from envs.framework.episode_runner import EpisodeRunner
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 
@@ -56,7 +56,7 @@ print(f"    rebuilt type = {type(rebuilt_policy).__name__}")
 
 # ── 3. Build env from blueprint.yaml ──────────────────────────────────────
 
-bp_path = Path(__file__).resolve().parents[3] / "envs" / "humanoid21" / "blueprint.yaml"
+bp_path = Path(__file__).resolve().parents[4] / "envs" / "humanoid21" / "blueprint.yaml"
 print(f"[4] Loading env blueprint from {bp_path} ...")
 env_pb = ParameterizedEnvBlueprint.load(bp_path)
 env_bp = env_pb.materialize()  # use all defaults

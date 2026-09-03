@@ -50,7 +50,7 @@ def build_generic_export_payload(
     Args:
         actor: The live policy module (must have ``state_dict()``).
         policy_class_path: Dotted path like
-            ``"baseline.common.policies.mog_tanh_mlp:MoGTanhMLPPolicy"``.
+            ``"baseline.framework.ppo.policies.mog_tanh_mlp:MoGTanhMLPPolicy"``.
         config: Full constructor kwargs needed to rebuild the module.
         extra_payload: Optional additional scalar fields (e.g.
             ``temperature``, ``entropy_coef``).

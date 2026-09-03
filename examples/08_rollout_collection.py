@@ -44,7 +44,7 @@ from envs.framework.episode_runner import EpisodeRunner
 from envs.framework.policy import Policy
 from policy.random.policy import RandomCombatPolicy
 
-from baseline.common.rollout import (
+from baseline.framework.rollout import (
     Episode,
     EpisodeCollection,
     EpisodeRecorder,

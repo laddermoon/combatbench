@@ -1,7 +1,7 @@
 """Example 07 — Curriculum learning as an ``options_fn`` recipe.
 
 .. deprecated::
-    This example used ``baseline.common.eval.PolicyEvaluator``, which has
+    This example used ``baseline.framework.eval.PolicyEvaluator``, which has
     been removed (dead code — its dependency ``RolloutCollector`` no longer
     exists).  The curriculum schedule closures (``linear_ramp``,
     ``step_schedule``, ``cosine_schedule``, ``adaptive_schedule``) are still
@@ -30,7 +30,7 @@ by writing four ``options_fn`` closures that produce a per-episode
   4. ``adaptive_schedule`` — push grows only if recent return >= threshold
      ("getting too easy → bump it up").
 
-We then plug each closure into :class:`baseline.common.eval.PolicyEvaluator`,
+We then plug each closure into :class:`baseline.framework.eval.PolicyEvaluator`,
 collect a small batch of episodes per schedule, and print mean returns +
 the actually-applied push magnitudes side-by-side.
 
@@ -51,7 +51,7 @@ import numpy as np
 from _common import build_humanoid21_runtime
 from envs.framework.policy import Policy
 
-# NOTE: baseline.common.eval.PolicyEvaluator was removed (dead code —
+# NOTE: baseline.framework.eval.PolicyEvaluator was removed (dead code —
 # its dependency RolloutCollector no longer exists).  This example needs
 # to be updated to use the current rollout stack if revived.
 

@@ -51,7 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.common.rollout import extract_per_step_field
+from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
 from baseline.humanoid21.end2end.stepping_state_machine import (

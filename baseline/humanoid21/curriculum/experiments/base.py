@@ -28,7 +28,7 @@ from baseline.framework.experiment import (
     SACParams,
     TrainablePolicy,
 )
-from baseline.common.policies import CriticMLP
+from baseline.framework.critic_mlp import CriticMLP
 
 
 class CombatExperimentBase(Experiment):

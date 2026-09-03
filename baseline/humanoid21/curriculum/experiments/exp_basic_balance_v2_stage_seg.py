@@ -19,7 +19,7 @@
 
 # from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
 # from baseline.framework.experiment_v2 import ExperimentV2
-# from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
+# from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 # from baseline.framework.trajectory import (
 #     ChannelData,
 #     RewardChannel,

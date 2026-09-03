@@ -8,10 +8,10 @@ correct.
 
 Run with:
     cd /data1/mono/things/combatbench
-    PYTHONPATH=. python3 -m pytest baseline/common/policies/test_policy_families.py -v
+    PYTHONPATH=. python3 -m pytest baseline/framework/ppo/policies/test_policy_families.py -v
 
 Or without pytest:
-    PYTHONPATH=. python3 baseline/common/policies/test_policy_families.py
+    PYTHONPATH=. python3 baseline/framework/ppo/policies/test_policy_families.py
 """
 from __future__ import annotations
 
@@ -28,12 +28,12 @@ import torch.nn as nn
 import unittest
 
 # Ensure repo is on sys.path when run directly.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.tanh_squashed_base import TanhSquashedPolicyBase
 from baseline.framework.ppo import ActorEval
 
 
@@ -93,7 +93,7 @@ class TestBaseClassEquivalence(unittest.TestCase):
     def test_diag_gaussian_matches_baseline(self):
         """A diagonal Gaussian via the base class must match
         TanhGaussianMLPPolicy's log_prob to 1e-6."""
-        from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
+        from baseline.framework.ppo.policies.tanh_squashed_base import TanhSquashedPolicyBase
 
         # Build the reference baseline policy.
         baseline = TanhGaussianMLPPolicy(
@@ -123,7 +123,7 @@ class TestBaseClassEquivalence(unittest.TestCase):
 
     def test_diag_gaussian_matches_baseline_sample(self):
         """sample_action log_prob must also match."""
-        from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
+        from baseline.framework.ppo.policies.tanh_squashed_base import TanhSquashedPolicyBase
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=self.obs_dim, action_dim=self.action_dim,
@@ -233,7 +233,7 @@ class _DiagGaussianRef(TanhSquashedPolicyBase):
 
     @property
     def export_class_path(self):
-        return "baseline.common.policies.test_policy_families:_DiagGaussianRef"
+        return "baseline.framework.ppo.policies.test_policy_families:_DiagGaussianRef"
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +360,7 @@ class TestStateGaussian(unittest.TestCase):
     def test_degenerate_equivalence(self):
         """With σ-head forced to constant matching baseline's log_std=-1,
         log_prob must match baseline to 1e-6."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=self.obs_dim, action_dim=self.action_dim,
@@ -396,7 +396,7 @@ class TestStateGaussian(unittest.TestCase):
 
     def test_normalization_2d(self):
         """For action_dim=2, the density must integrate to ~1."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=16, action_dim=2, hidden_dim=32,
@@ -410,7 +410,7 @@ class TestStateGaussian(unittest.TestCase):
 
     def test_sample_score_consistency(self):
         """Sampled actions' log_prob must be self-consistent."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -425,7 +425,7 @@ class TestStateGaussian(unittest.TestCase):
 
     def test_gradient_completeness(self):
         """All parameters must receive non-zero gradient."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -441,7 +441,7 @@ class TestStateGaussian(unittest.TestCase):
     def test_export_roundtrip(self):
         """Export → reload must reproduce actions and log_probs."""
         import tempfile
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -480,7 +480,7 @@ class TestStateGaussian(unittest.TestCase):
 
     def test_latency(self):
         """act() must be within 10× baseline latency."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -499,7 +499,7 @@ class TestStateGaussian(unittest.TestCase):
 
     def test_explore_intensity_scaling(self):
         """Higher explore_intensity must increase σ."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -542,8 +542,8 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_degenerate_equivalence(self):
         """With U=0, log_prob must match state-dependent Gaussian (①)."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         # Build ① as reference.
         ref = StateGaussianMLPPolicy(
@@ -592,7 +592,7 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_normalization_2d(self):
         """For action_dim=2, the density must integrate to ~1."""
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
             obs_dim=16, action_dim=2, hidden_dim=32, rank=1,
@@ -606,7 +606,7 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_sample_score_consistency(self):
         """Sampled actions' log_prob must be self-consistent."""
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, rank=4,
@@ -619,7 +619,7 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_gradient_completeness(self):
         """All parameters including U must receive non-zero gradient."""
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         # Use non-zero U so U gets gradient.  Randomize the U half.
         policy = LowRankGaussianMLPPolicy(
@@ -641,7 +641,7 @@ class TestLowRankGaussian(unittest.TestCase):
     def test_export_roundtrip(self):
         """Export → reload must reproduce actions."""
         import tempfile
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, rank=4,
@@ -667,7 +667,7 @@ class TestLowRankGaussian(unittest.TestCase):
     def test_export_roundtrip_rank_mismatch(self):
         """Wrong rank on reload must raise (strict=True catches it)."""
         import tempfile
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, rank=4,
@@ -684,7 +684,7 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_latency(self):
         """act() must be within 10× baseline latency."""
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -703,7 +703,7 @@ class TestLowRankGaussian(unittest.TestCase):
 
     def test_explore_intensity_scales_both_sigma_and_U(self):
         """Higher explore_intensity must scale both σ and U."""
-        from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
+        from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, rank=4,
@@ -747,8 +747,8 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_degenerate_equivalence_K1(self):
         """With K=1, log_prob must match state-dependent Gaussian (①)."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         ref = StateGaussianMLPPolicy(
             obs_dim=self.obs_dim, action_dim=self.action_dim,
@@ -788,7 +788,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_normalization_2d(self):
         """For action_dim=2, the density must integrate to ~1."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=16, action_dim=2, hidden_dim=32, K=3,
@@ -802,7 +802,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_sample_score_consistency(self):
         """Sampled actions' log_prob must be self-consistent."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -815,7 +815,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_gradient_completeness(self):
         """All three heads (logits, means, log_stds) must receive gradient."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -831,7 +831,7 @@ class TestMoGaussian(unittest.TestCase):
     def test_export_roundtrip(self):
         """Export → reload must reproduce actions."""
         import tempfile
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -852,7 +852,7 @@ class TestMoGaussian(unittest.TestCase):
     def test_export_roundtrip_K_mismatch(self):
         """Wrong K on reload must raise (strict=True catches it)."""
         import tempfile
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -867,7 +867,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_latency(self):
         """act() must be within 10× baseline latency."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -886,7 +886,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_explore_intensity_scales_sigma_not_logits(self):
         """Higher explore_intensity must scale σ but not change mixture logits."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -911,7 +911,7 @@ class TestMoGaussian(unittest.TestCase):
 
     def test_component_usage_matches_weights(self):
         """Effective component usage should ≈ mean(π_k) over many samples."""
-        from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
+        from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
@@ -958,8 +958,8 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_degenerate_equivalence_identity_flow(self):
         """With identity flow (s=0, t=0), log_prob must match ①."""
-        from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         ref = StateGaussianMLPPolicy(
             obs_dim=self.obs_dim, action_dim=self.action_dim,
@@ -997,7 +997,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_inverse_consistency(self):
         """inverse(forward(x)) ≈ x to 1e-5."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
@@ -1020,7 +1020,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_normalization_2d(self):
         """For action_dim=2, the density must integrate to ~1."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=16, action_dim=2, hidden_dim=32, num_layers=2,
@@ -1041,7 +1041,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_sample_score_consistency(self):
         """Sampled actions' log_prob must be self-consistent."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
@@ -1060,7 +1060,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_gradient_completeness(self):
         """All parameters including flow conditioners must receive gradient."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
@@ -1082,7 +1082,7 @@ class TestRealNVPFlow(unittest.TestCase):
     def test_export_roundtrip(self):
         """Export → reload must reproduce actions."""
         import tempfile
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
@@ -1109,7 +1109,7 @@ class TestRealNVPFlow(unittest.TestCase):
     def test_export_roundtrip_num_layers_mismatch(self):
         """Wrong num_layers on reload must raise (strict=True catches it)."""
         import tempfile
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
@@ -1124,7 +1124,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_latency(self):
         """act() must be within 10× baseline latency."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         baseline = TanhGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
@@ -1143,7 +1143,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
     def test_explore_intensity_scales_base_not_flow(self):
         """Higher explore_intensity must scale base σ but not flow parameters."""
-        from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
+        from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,

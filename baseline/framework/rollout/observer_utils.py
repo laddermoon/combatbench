@@ -1,7 +1,7 @@
 """Per-step observer-output extraction helpers.
 
 These utilities work directly on the stacked ``observer_outputs`` dict
-of an :class:`~baseline.common.rollout.episode.Episode`.  They are
+of an :class:`~baseline.framework.rollout.episode.Episode`.  They are
 pure data-extraction functions — no PPO / critic / optimizer logic —
 and are shared by both the v1 and v2 experiment/training paths.
 

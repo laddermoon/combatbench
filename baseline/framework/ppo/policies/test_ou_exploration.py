@@ -20,11 +20,11 @@ from torch.distributions import Normal
 
 import pytest
 
-from baseline.common.policies import (
+from baseline.framework.ppo.policies import (
     FixedSigmaGaussianMLPPolicy,
     TanhGaussianMLPPolicy,
 )
-from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
+from baseline.framework.ppo.policies.tanh_squashed_base import TanhSquashedPolicyBase
 from baseline.framework.ppo import ActorEval
 
 

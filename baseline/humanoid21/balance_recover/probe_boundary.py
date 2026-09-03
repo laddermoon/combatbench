@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from baseline.common.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 

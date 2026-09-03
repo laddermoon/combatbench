@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 # Import from repo - requires baseline/ to be on sys.path
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from envs.framework.policy import Policy
 
 

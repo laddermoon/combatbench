@@ -116,7 +116,7 @@ class BalanceRecoverV3Config(CombatExperimentBase):
 
     # --- Actor warm-start from base policy ---
     def build_actor(self, device: torch.device) -> Any:
-        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+        from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 
         base_path = os.environ.get("BASE_POLICY_PATH")
         if not base_path:

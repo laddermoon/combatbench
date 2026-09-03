@@ -34,10 +34,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from baseline.common.policies import CriticMLP
-from baseline.common.rollout import Episode, ParallelRollouter
+from baseline.framework.critic_mlp import CriticMLP
+from baseline.framework.rollout import Episode, ParallelRollouter
 from baseline.framework.ppo.algos import compute_gae
-from baseline.common.rollout import extract_per_step_field
+from baseline.framework.rollout import extract_per_step_field
 from baseline.humanoid21.curriculum.experiments.phi_critic import PhiSubtractedCritic
 
 # Experiment configs

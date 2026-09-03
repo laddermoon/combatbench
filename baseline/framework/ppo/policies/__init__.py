@@ -1,6 +1,5 @@
-"""Reusable policy / critic backbones and checkpoint IO."""
+"""PPO policy / critic backbones and checkpoint IO."""
 
-from .critic_mlp import CriticMLP
 from .tanh_gaussian_mlp import (
     DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
     DEFAULT_LOG_STD_MAX,
@@ -29,10 +28,8 @@ __all__ = [
     "MoGTanhMLPPolicy",
     "RealNVPTanhMLPPolicy",
     "FixedSigmaGaussianMLPPolicy",
-    "CriticMLP",
     "build_export_policy_code",
     "build_actor_export_payload",
     "export_actor_policy_artifacts",
     "export_policy_artifacts_from_checkpoint",
 ]
-

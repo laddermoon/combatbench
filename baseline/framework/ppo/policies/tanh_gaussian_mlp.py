@@ -1,9 +1,9 @@
 """Continuous-control actor backbone (Tanh-squashed Gaussian).
 
-Checkpoint / export IO has moved to :mod:`baseline.common.policies.checkpoint`
+Checkpoint / export IO lives in :mod:`baseline.framework.ppo.policies.checkpoint`
 and is re-exported from this module for backward compatibility with scripts
 that imported it from here (pre-PR1). New code should import directly from
-:mod:`baseline.common.policies.checkpoint`.
+:mod:`baseline.framework.ppo.policies.checkpoint`.
 """
 from __future__ import annotations
 

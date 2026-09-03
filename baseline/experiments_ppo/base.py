@@ -27,7 +27,7 @@ from baseline.framework.ppo import (
     PPOParams,
     TrainablePolicy,
 )
-from baseline.common.policies import CriticMLP
+from baseline.framework.critic_mlp import CriticMLP
 
 
 class CombatExperimentPPOBase(ExperimentPPO):

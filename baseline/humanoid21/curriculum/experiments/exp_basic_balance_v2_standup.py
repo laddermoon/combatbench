@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.exp_basic_balance_v2 import BasicBalanceV2Config
-from baseline.common.rollout import extract_per_step_field, extract_per_step_scalar
+from baseline.framework.rollout import extract_per_step_field, extract_per_step_scalar
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint

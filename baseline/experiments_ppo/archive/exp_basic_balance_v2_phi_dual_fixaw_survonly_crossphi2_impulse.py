@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
+from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
 
@@ -89,7 +89,7 @@ class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentPPOBase
     # ------------------------------------------------------------------
 
     def build_actor(self, device: torch.device) -> Any:
-        from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+        from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 
         base_path = os.environ.get("BASE_POLICY_PATH")
         if not base_path:

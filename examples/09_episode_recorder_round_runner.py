@@ -36,7 +36,7 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.round_runner import RoundRunner
 from policy.random.policy import RandomCombatPolicy
 
-from baseline.common.rollout import Episode, EpisodeRecorder, blueprint_hash
+from baseline.framework.rollout import Episode, EpisodeRecorder, blueprint_hash
 
 
 def _example_out_dir(name: str) -> Path:

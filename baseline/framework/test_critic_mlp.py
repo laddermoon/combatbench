@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from baseline.common.policies import CriticMLP
+from baseline.framework.critic_mlp import CriticMLP
 
 
 def test_scalar_output_per_observation():

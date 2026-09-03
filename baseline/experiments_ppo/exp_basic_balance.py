@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.common.rollout import extract_per_step_scalar, extract_per_step_field
+from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
 

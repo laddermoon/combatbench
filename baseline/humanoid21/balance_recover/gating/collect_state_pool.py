@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
-from baseline.common.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter
 from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint

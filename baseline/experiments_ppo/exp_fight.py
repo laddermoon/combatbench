@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.common.rollout import extract_per_step_field
+from baseline.framework.rollout import extract_per_step_field
 
 from baseline.humanoid21.rewards.follow_opponent import (
     compute_radial_tangential_rewards,

@@ -1,6 +1,6 @@
 """Rollout-side building blocks for on-policy baselines.
 
-See ``baseline/common/rollout/DESIGN.md`` for the full design.
+See ``baseline/framework/rollout/DESIGN.md`` for the full design.
 """
 
 from .episode import Episode, blueprint_hash

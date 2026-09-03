@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from baseline.common.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint

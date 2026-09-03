@@ -120,7 +120,7 @@ New file: `export_generic.py`. One function:
 def build_generic_export_payload(
     actor: nn.Module,
     *,
-    policy_class_path: str,   # e.g. "baseline.common.policies.mog_tanh_mlp:MoGTanhMLPPolicy"
+    policy_class_path: str,   # e.g. "baseline.framework.ppo.policies.mog_tanh_mlp:MoGTanhMLPPolicy"
     config: Dict[str, Any],   # full constructor kwargs, family-defined
     extra_payload: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:

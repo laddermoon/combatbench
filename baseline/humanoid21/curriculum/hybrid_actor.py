@@ -23,8 +23,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
-from baseline.common.policies.checkpoint import build_export_policy_code
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.checkpoint import build_export_policy_code
 from envs.framework.policy import Policy, PolicyBlueprint
 
 # Observation indices for uprightness computation
@@ -249,7 +249,7 @@ from typing import Any, Optional, Tuple
 import numpy as np
 import torch
 
-from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from envs.framework.policy import Policy
 
 _OBS_R00 = 42

@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.common.rollout import (
+from baseline.framework.rollout import (
     extract_per_step_field,
 )
 from baseline.humanoid21.rewards.distance_potential import compute_dense_distance_reward

@@ -24,7 +24,7 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
-from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
+from baseline.framework.ppo.policies.tanh_squashed_base import TanhSquashedPolicyBase
 
 DEFAULT_LOG_STD_MIN = -4.0
 DEFAULT_LOG_STD_MAX = 0.0
@@ -375,4 +375,4 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
 
     @property
     def export_class_path(self) -> str:
-        return "baseline.common.policies.realnvp_tanh_mlp:RealNVPTanhMLPPolicy"
+        return "baseline.framework.ppo.policies.realnvp_tanh_mlp:RealNVPTanhMLPPolicy"

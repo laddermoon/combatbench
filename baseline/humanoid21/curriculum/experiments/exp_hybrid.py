@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 
 from baseline.humanoid21.curriculum.experiments.base import CombatExperimentBase
-from baseline.common.rollout import (
+from baseline.framework.rollout import (
     extract_per_step_scalar,
     extract_per_step_field,
 )
@@ -138,7 +138,7 @@ class HybridStandupBalanceConfig(CombatExperimentBase):
         return actor.to(device)
 
     def build_critic(self, reward_key: str, device: torch.device) -> nn.Module:
-        from baseline.common.policies import CriticMLP
+        from baseline.framework.critic_mlp import CriticMLP
         return CriticMLP(
             obs_dim=self.obs_dim, hidden_dim=self.critic_hidden_dim,
         ).to(device)
