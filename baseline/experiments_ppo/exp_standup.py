@@ -37,6 +37,7 @@ class Standup(CombatExperimentPPOBase):
       r_t = (1-γ) × φ(t),  γ = 0.99  →  r_t = 0.01 × φ(t)
 
     Eval metric: max_potential across eval episodes.
+    Success: max_potential >= 0.9 (reached Stage 4 standing).
     """
 
     name = "standup"
@@ -50,23 +51,32 @@ class Standup(CombatExperimentPPOBase):
     _gamma: float = 0.99
     _gae_lambda: float = 0.95
 
-    # --- PPO tuning (aligned with original 4-stage ablation) ---
+    # --- Exploration ---
+    # 0.5 = neutral (policy uses its learned σ as-is).
+    # Standup needs exploration but not extreme — 0.6 gives mild expansion.
+    explore_intensity: float = 0.6
+    entropy_floor: float = 0.3
+    entropy_coef: float = 0.01
+
+    # --- PPO tuning ---
     log_std_min: float = -2.5
+    log_std_max: float = 0.0
     learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 1e-3
 
     # --- Rollout schedule ---
-    episodes_per_update: int = 512
-    max_updates: int = 5000
+    # 64 episodes × 2 agents = 128 trajectories per update.
+    # Each episode is 200 steps (no early termination), so ~25.6K steps/update.
+    episodes_per_update: int = 64
+    max_updates: int = 1500
     eval_interval: int = 5
-    eval_episodes: int = 64
+    eval_episodes: int = 16
 
     # --- Video recording ---
-    video_eval_interval: int = 2
+    video_eval_interval: int = 5
 
     # --- Env blueprint ---
     env_blueprint = "standup_4stage_dense_v2_env.yaml"
