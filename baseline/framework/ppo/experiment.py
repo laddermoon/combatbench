@@ -68,15 +68,26 @@ Design principles
    The experiment owns exploration *intent* (``exploration()`` returns an
    ``ExplorationSpec`` per update, optionally reacting to the previous
    update's stats); the policy owns exploration *mechanism*
-   (``set_exploration()`` interprets the spec for its own distribution
-   family, ``ActorEval.regularizer`` supplies whatever differentiable
-   regularizer that family supports).  The framework only routes.
+   (``set_exploration(explore_intensity)`` interprets the value for its own distribution
+   family, ``evaluate_actions`` returns a normalized entropy for the
+   framework to use in the entropy floor loss).  The framework only
+   routes.
+
+   Two primary knobs, both ∈ [0, 1]: ``explore_intensity`` (rollout
+   noise amplitude) and ``entropy_floor`` (training-side entropy floor).
+   For the common case where both should move together, set them to the
+   same value.  The framework computes the entropy floor loss from
+   ``ActorEval.entropy`` — a
+   one-sided hinge ``relu(floor - H_norm)`` analogous to PPO clip.
 
    This replaces a design where the framework hard-coded
    ``loss -= entropy_coef * entropy`` and read ``actor.log_std``
    directly — assumptions that hold only for a diagonal Gaussian with a
    state-independent sigma, and that made the ``TrainablePolicy``
-   protocol incorrect for any other family.
+   protocol incorrect for any other family.  It also replaces the
+   intermediate ``ActorEval.regularizer`` design where the policy
+   computed its own loss term — the coefficient is now a framework
+   concern, applied uniformly via the entropy floor.
 
 6. **Coexistence, not replacement.**
 
@@ -147,8 +158,8 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
-| Exploration        | exploration() → ExplorationSpec     | Routes spec → set_exploration |
-| Entropy / reg      | entropy_coef via ExplorationSpec    | Adds ActorEval.regularizer    |
+| Exploration        | exploration() → ExplorationSpec     | Routes explore_intensity → set_exploration |
+| Entropy floor      | entropy_floor via ExplorationSpec   | Computes relu(floor - H_norm) |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
 
 Removed from v1
@@ -182,11 +193,28 @@ Removed from v1
   ``state()``.
 - ``PPOParams.log_std_min`` / ``log_std_max``: Moved to the actor — they
   describe a Tanh-Gaussian, not PPO.  Set them in ``build_actor()``.
-- ``PPOParams.entropy_coef``: Moved to ``ExplorationSpec``; the policy
-  applies it through ``ActorEval.regularizer``.
+- ``PPOParams.entropy_coef``: Moved to ``ExplorationSpec.entropy_coef``
+  with a default linked to ``explore_intensity``.  The framework
+  computes the entropy floor loss from ``ActorEval.entropy`` — the
+  policy no longer computes its own loss term via
+  ``ActorEval.regularizer`` (field removed).
+- ``ExplorationSpec.temperature``, ``.entropy_target``, ``.clip_eps``,
+  ``.target_kl``, ``.noise_tau_steps``, ``.noise_scale``,
+  ``.policy_extras``: Removed.  ``explore_intensity`` replaces
+  ``temperature`` and ``noise_scale``; ``entropy_floor`` replaces
+  ``entropy_target``; ``clip_eps``/``target_kl`` are not per-update
+  overrides (stay in ``PPOParams``); ``noise_tau_steps`` is an init-time
+  policy config; ``policy_extras`` is unnecessary with only three
+  fields.
+- ``ActorEval.regularizer``: Removed.  Replaced by ``ActorEval.entropy``
+  — a per-obs, differentiable, normalized entropy in [0, 1] that the
+  framework uses to compute ``relu(entropy_floor - H_norm)``.  This
+  decouples the loss coefficient (framework concern) from the entropy
+  computation (policy concern).
 - ``evaluate_actions() -> (log_prob, entropy)``: Now returns
-  ``ActorEval``, so a policy without a closed-form entropy no longer has
-  to fabricate one.
+  ``ActorEval`` with ``log_prob``, ``entropy``, and optional ``stats``,
+  so a policy without a closed-form entropy can return a sampled
+  estimate without fabricating a regularizer.
 """
 
 from __future__ import annotations
@@ -210,65 +238,106 @@ from envs.framework.policy import PolicyBlueprint
 #
 # Exploration has two owners, deliberately separated:
 #
-#   * The **experiment** owns exploration *policy* (intent): how much
-#     exploration is wanted at update N, possibly reacting to the previous
-#     update's statistics.  It expresses this as an ``ExplorationSpec``
-#     returned from ``ExperimentPPO.exploration()``.
+#   * The **experiment** owns exploration *intent*: how much exploration
+#     is wanted at update N, possibly reacting to the previous update's
+#     statistics.  It expresses this as an ``ExplorationSpec`` returned
+#     from ``ExperimentPPO.exploration()``.
 #
-#   * The **policy** owns exploration *mechanism*: what "temperature 2.0"
-#     or "entropy_coef 1e-3" concretely means for its own distribution
-#     family.  It receives the spec via ``set_exploration()`` and reports
-#     back what it actually honoured.
+#   * The **policy** owns exploration *mechanism*: what "explore_intensity
+#     0.5" concretely means for its own distribution family.  It receives
+#     the value via ``set_exploration(explore_intensity)``.  The spec has
+#     only three fields: ``explore_intensity``, ``entropy_floor``, and
+#     ``entropy_coef``.
 #
-# The framework only routes between the two.  It never inspects a spec
-# field nor interprets a stat key.  This is what allows non-Gaussian
-# actors (mixture, flow, diffusion) to be dropped in without touching
-# ppo.trainer / ppo.loop.
+# Two primary knobs, both ∈ [0, 1]:
+#
+#   * ``explore_intensity`` — rollout side: how much noise to inject when
+#     sampling.  The policy maps this to its internal parameters (σ
+#     offset, noise_scale, etc.).
+#
+#   * ``entropy_floor`` — training side: the minimum normalized entropy
+#     the policy is allowed to have.  The framework computes a one-sided
+#     hinge loss ``entropy_coef * relu(floor - H_norm)`` that only
+#     activates when the policy's entropy drops below the floor —
+#     analogous to PPO clip's "only intervene when out of bounds".
+#
+# For the common case where both should move together, set them to the
+# same value.  For scenarios that require independent control (e.g.
+# on-policy + anti-collapse, or strong exploration + fast convergence),
+# set them separately.
+#
+# The framework computes the entropy floor loss from ``ActorEval.entropy``
+# (a per-obs, differentiable, normalized entropy in [0, 1] that the
+# policy returns from ``evaluate_actions``).  This replaces the old
+# ``ActorEval.regularizer`` design where the policy computed its own
+# loss term — the coefficient is now a framework concern, not a policy
+# concern.
+#
+# The framework only routes between the two owners.  It never inspects a
+# spec field beyond ``resolve()`` nor interprets a stat key.  This is
+# what allows non-Gaussian actors (mixture, flow, diffusion) to be
+# dropped in without touching ppo.trainer / ppo.loop.
+#
+# See ``DESIGN_unified_exploration_control.md`` for the full design.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ExplorationSpec:
     """A per-update exploration directive from experiment to policy.
 
-    Every field is optional; ``None`` means "no opinion, keep whatever
-    the policy is already doing".  A policy honours the fields it
-    understands and silently ignores the rest — it then reports the
-    effective configuration back from ``set_exploration()``.
+    Three fields, all optional (``None`` = "no opinion, keep current"):
+
+    - ``explore_intensity`` ∈ [0, 1]: rollout-side noise amplitude.
+    - ``entropy_floor`` ∈ [0, 1]: training-side entropy floor.
+    - ``entropy_coef``: coefficient for the entropy floor loss.
+
+    For the common case where exploration and anti-collapse should move
+    together, set ``explore_intensity`` and ``entropy_floor`` to the
+    same value.  For independent control (on-policy + anti-collapse,
+    strong exploration + fast convergence, async annealing), set them
+    separately.
+
+    PPO trust-region knobs (``clip_eps``, ``target_kl``) live in
+    :class:`PPOParams` and are not overridable per-update.  OU temporal
+    correlation (``noise_tau_steps``, ``noise_scale``) is an init-time
+    policy configuration, not a per-update directive.  Policy-family-
+    specific scaling is handled by ``explore_intensity`` — the policy
+    maps it to its own internal parameters.
+
+    See ``DESIGN_unified_exploration_control.md`` for the full design.
 
     Attributes:
-        temperature: Multiplier on the policy's sampling noise.  ``1.0``
-            is the policy's native scale.  A Gaussian scales sigma; a
-            mixture scales component sigma and/or mixture logits; a
-            diffusion policy scales its terminal noise.  Semantics are
-            deliberately policy-defined.
-        entropy_coef: Coefficient for the policy's own entropy-like
-            regularizer.  Mutually exclusive with ``entropy_target``.
-        entropy_target: Desired entropy level.  A policy that supports it
-            adapts its own coefficient to track this target (SAC-style
-            auto-alpha).  Mutually exclusive with ``entropy_coef``.
-        clip_eps: PPO clip epsilon override for this update.
-        target_kl: PPO KL early-stop threshold override for this update.
-        noise_tau_steps: OU exploration correlation time in policy steps.
-            ``None`` means "no opinion"; ``0.0`` means "disable OU".
-            A policy that supports temporal correlation (e.g.
-            ``FixedSigmaGaussianMLPPolicy``) uses this to configure its
-            AR(1) process.  Policies without OU support silently ignore it.
-        noise_scale: OU exploration shift steady-state std in raw space.
-            ``None`` means "no opinion"; ``0.0`` means "disable OU".
-            Directly comparable to the policy's native sigma.
-        policy_extras: Free-form key/value bag for policy-specific knobs
-            that do not deserve a typed field (e.g. a diffusion policy's
-            denoising step count, a mixture's component count).
+        explore_intensity: Rollout exploration strength ∈ [0, 1].
+            ``0`` = deterministic (no injected noise), ``1`` = maximum
+            noise.  The policy maps this to its internal parameters
+            (e.g. Gaussian σ offset, noise_scale).  ``None`` = no opinion.
+        entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
+            in the policy's *normalized* entropy (0 = fully certain,
+            1 = policy's maximum entropy).  The framework computes
+            ``entropy_floor_loss = entropy_coef * relu(floor - H_norm)``
+            — a one-sided hinge that only activates when the policy's
+            entropy drops below the floor, analogous to PPO clip.
+            ``None`` = no opinion (policy keeps its current floor).
+        entropy_coef: Coefficient for the entropy floor loss.  When
+            ``None``, the framework uses a default linked to
+            ``explore_intensity`` (e.g. ``0.01 * explore_intensity``).
+            Override when you want the coefficient independent of
+            exploration strength.
     """
 
-    temperature: Optional[float] = None
+    explore_intensity: Optional[float] = None
+    entropy_floor: Optional[float] = None
     entropy_coef: Optional[float] = None
-    entropy_target: Optional[float] = None
-    clip_eps: Optional[float] = None
-    target_kl: Optional[float] = None
-    noise_tau_steps: Optional[float] = None
-    noise_scale: Optional[float] = None
-    policy_extras: Mapping[str, Any] = field(default_factory=dict)
+
+    def resolve(self) -> Tuple[float, float]:
+        """Return ``(explore_intensity, entropy_floor)`` with fallbacks.
+
+        Returns the explicit values, defaulting to ``0.0`` when ``None``.
+
+        Returns:
+            ``(explore_intensity, entropy_floor)`` as floats in [0, 1].
+        """
+        return (self.explore_intensity or 0.0, self.entropy_floor or 0.0)
 
 
 @dataclass
@@ -278,13 +347,23 @@ class ActorEval:
     Attributes:
         log_prob: ``(B,)`` log-probability of the given actions under the
             *current* parameters.  Must be differentiable — this is the
-            numerator of the PPO importance ratio.
-        regularizer: Optional differentiable scalar that the framework
-            **adds** to the actor loss verbatim.  The policy is
-            responsible for the sign and the coefficient, so a Gaussian
-            returns ``-entropy_coef * entropy.mean()`` while a diffusion
-            policy may return ``None`` or something entirely different.
-            This is why ``entropy_coef`` is not a framework parameter.
+            numerator of the PPO importance ratio.  Action-dependent.
+        entropy: ``(B,)`` normalized entropy of the policy's own
+            distribution ``H(π(·|s))``, expressed in [0, 1] where 0 =
+            fully certain and 1 = the policy's maximum entropy.  Must be
+            differentiable — the framework uses it to compute the
+            entropy floor loss.  **Action-independent**: it depends
+            only on the observation and policy parameters, not on
+            which action was taken.  This is what makes it immune to
+            the on-policy gradient-zero problem that plagues
+            ``-log_prob.mean()``.
+
+            Each policy family is responsible for defining its own
+            ``H_max`` and normalizing: a Gaussian uses
+            ``H_norm = (H - H_min) / (H_max - H_min)``; a mixture uses
+            ``H_norm = H / H_max``; a flow uses a sampled estimate.  The
+            framework does not interpret the normalization — it trusts
+            the policy's [0, 1] output.
         stats: Diagnostics describing the policy's exploration state,
             populated only when ``want_stats=True``.  Keys are chosen by
             the policy; the framework merges them into its stats dict
@@ -292,7 +371,7 @@ class ActorEval:
     """
 
     log_prob: torch.Tensor
-    regularizer: Optional[torch.Tensor] = None
+    entropy: torch.Tensor
     stats: Optional[Dict[str, float]] = None
 
 
@@ -309,10 +388,10 @@ class TrainablePolicy(Protocol):
     ===================================  ==================  ===================
     when                                 call                yields
     ===================================  ==================  ===================
-    once per update, before rollout      ``set_exploration`` effective config
+    once per update, before rollout      ``set_exploration`` (no return)
     once per update, buffer construction ``evaluate_actions``
                                          ``want_stats=True`` batch-wide stats
-    ~epochs x minibatches per update     ``evaluate_actions`` log_prob + reg
+    ~epochs x minibatches per update     ``evaluate_actions`` log_prob + entropy
     ===================================  ==================  ===================
 
     There is deliberately **no** parameter-inspection method (an earlier
@@ -332,7 +411,13 @@ class TrainablePolicy(Protocol):
         noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
     ) -> ActorEval:
-        """Recompute log_prob (and optional regularizer) for obs/actions.
+        """Recompute log_prob and entropy for obs/actions.
+
+        Returns an :class:`ActorEval` with:
+        - ``log_prob``: action-dependent, used for PPO importance ratio.
+        - ``entropy``: action-independent normalized entropy ``H(π(·|s))``
+          in [0, 1], used by the framework for the entropy floor loss.
+        - ``stats``: optional diagnostics (only when ``want_stats=True``).
 
         If ``frame_modes`` is provided, the actor should use it to route
         samples to the appropriate sub-network instead of computing mode
@@ -346,6 +431,16 @@ class TrainablePolicy(Protocol):
         ``atanh(action)`` before scoring so the log_prob matches the
         shifted distribution.  Like ``frame_modes``, this is a *fact
         recorded at rollout time*, not a quantity to re-infer.
+
+        .. todo::
+            ``noise_shift`` leaks a policy-family-specific concept (raw
+            pre-tanh space) into the framework-level protocol.  A cleaner
+            design would let the policy own the full rollout→scoring
+            consistency contract internally (e.g. the policy records
+            whatever it needs at rollout time and reconstructs the
+            correct log_prob at training time without framework
+            involvement).  Deferred until a second policy family
+            actually needs a different consistency mechanism.
 
         Args:
             obs: ``(B, obs_dim)`` observations.
@@ -363,27 +458,30 @@ class TrainablePolicy(Protocol):
                 GPU sync on every minibatch.
 
         Returns:
-            An :class:`ActorEval`.  Note the buffer's call happens under
-            ``torch.no_grad()``, so ``regularizer`` is non-differentiable
-            there and is ignored by the framework.
+            An :class:`ActorEval`.  Both ``log_prob`` and ``entropy``
+            must be differentiable.  Note the buffer's call happens
+            under ``torch.no_grad()``, so they are non-differentiable
+            there and only the stats are consumed.
         """
         ...
 
-    def set_exploration(self, spec: ExplorationSpec) -> Dict[str, float]:
-        """Apply an exploration directive; return the *effective* config.
+    def set_exploration(self, explore_intensity: float) -> None:
+        """Apply an exploration directive.
 
         Called once per update before the rollout blueprint is exported,
         so anything affecting sampling must take effect immediately.
 
-        The policy honours the fields it understands and ignores the
-        rest.  Because a policy may clamp or reinterpret a request, the
-        framework logs this return value rather than the requested spec
-        — logging the request would be dishonest.
+        The policy maps ``explore_intensity`` to its internal parameters
+        (σ offset, noise_scale, etc.).  ``0`` = deterministic, ``1`` =
+        max noise.
 
-        Returns:
-            Scalar effective configuration, e.g.
-            ``{"entropy_coef": 0.001, "temperature": 1.0}``.  Keys are
-            policy-defined and logged without interpretation.
+        ``entropy_floor`` and ``entropy_coef`` are framework-side
+        concerns — the policy does not need to handle them.  The policy
+        only needs to return a correctly normalized ``entropy`` in
+        ``evaluate_actions`` for the framework to use.
+
+        Args:
+            explore_intensity: Rollout exploration strength ∈ [0, 1].
         """
         ...
 
@@ -443,16 +541,18 @@ class PPOParams:
       actor, not of PPO.  They were here only because the trainer used to
       reach into ``actor.log_std`` to clamp it for logging.  They now
       belong to the actor (set in ``build_actor``).
-    - ``entropy_coef``: the strength of a *policy-family-specific*
-      regularizer.  A mixture has no closed-form entropy and a diffusion
-      policy has no entropy at all, so hard-coding
-      ``loss -= entropy_coef * entropy`` in the framework made the actor
-      protocol a lie.  It is now carried by ``ExplorationSpec`` and
-      applied by the policy via ``ActorEval.regularizer``.
+    - ``entropy_coef``: the strength of the entropy floor loss.  It is
+      now carried by ``ExplorationSpec.entropy_coef`` with a default
+      linked to ``explore_intensity``.  The framework computes
+      ``entropy_coef * relu(entropy_floor - H_norm)`` from
+      ``ActorEval.entropy`` — a policy-family-agnostic, normalized
+      entropy in [0, 1].  This replaces the old
+      ``ActorEval.regularizer`` design where the policy computed its own
+      loss term.
 
-    ``clip_eps`` and ``target_kl`` stay because they are genuinely PPO's,
-    but note they can be overridden per-update by ``ExplorationSpec`` —
-    the trust region is part of the exploration story.
+    ``clip_eps`` and ``target_kl`` stay because they are genuinely PPO's.
+    They are not overridable per-update — the trust region is a fixed
+    property of the PPO configuration, not part of the exploration story.
 
     Per-channel ``gae_lambda`` is declared in ``RewardChannel`` via
     ``reward_channels()`` — it is NOT a global parameter here.
@@ -475,9 +575,10 @@ class UpdateStats:
     The framework guarantees every typed field.  Per-channel dicts are
     keyed by ``RewardChannel.name``.  The ``policy_stats`` sub-mapping
     carries whatever the actor contributed via ``ActorEval.stats`` — its
-    keys are the policy's choice (e.g. ``entropy``, ``std_mean`` for a
-    Tanh-Gaussian) and are **not** guaranteed across policy families.
-    Treat ``policy_stats`` as opaque hints, not a contract.
+    keys are the policy's choice (e.g. ``entropy_normalized``,
+    ``entropy_raw``, ``std_mean`` for a Tanh-Gaussian) and are **not**
+    guaranteed across policy families.  Treat ``policy_stats`` as opaque
+    hints, not a contract.
 
     Use :meth:`to_log_dict` to produce the flat dict format expected by
     ``__RAW_STATS__`` logging and ``analyze_training.py``.
@@ -737,8 +838,9 @@ class ExperimentPPO(ABC):
             stats: Typed summary of this update's PPO results.  See
                 :class:`UpdateStats` for the full field list.  The
                 ``policy_stats`` sub-mapping carries policy-contributed
-                diagnostics (e.g. ``entropy``, ``std_mean`` for a
-                Tanh-Gaussian) but has **no cross-family contract** —
+                diagnostics (e.g. ``entropy_normalized``, ``entropy_raw``,
+                ``std_mean`` for a Tanh-Gaussian) but has **no
+                cross-family contract** —
                 treat it as opaque hints.
             update: Current update index (1-based, matches the loop).
         """
