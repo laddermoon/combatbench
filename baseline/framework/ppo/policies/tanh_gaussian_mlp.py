@@ -84,7 +84,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         # Exploration state — plain float, not a buffer, so it is owned
         # by the experiment's schedule and never restored from a
         # checkpoint's state_dict.  set_exploration sets this; 0.0 means
-        # no extra noise (policy uses its learned σ as-is).
+        # neutral (policy uses its learned σ as-is, i.e. ei=0.5).
         self._log_std_offset = 0.0
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -200,21 +200,31 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     # Exploration contract
     # ------------------------------------------------------------------
 
+    # Span of the exploration offset in log-std space.
+    # At ei=0 or ei=1, offset = ∓EXPLORE_SPAN / 2, so σ is scaled by
+    # exp(∓EXPLORE_SPAN / 2).  With span=2.0 this gives ≈ 0.37x ~ 2.72x,
+    # a practical range that avoids extreme saturation.
+    EXPLORE_SPAN = 2.0
+
     def set_exploration(self, explore_intensity: float) -> None:
         """Apply an exploration directive.
 
-        ``explore_intensity`` ∈ [0, 1] controls how much extra noise is
-        added on top of the policy's learned σ:
+        ``explore_intensity`` ∈ [0, 1] is a symmetric temperature-like
+        control centered at 0.5:
 
-        - ``0`` = no extra noise (policy uses its learned σ as-is)
-        - ``1`` = maximum expected noise (offset = log_std_max - log_std_min)
+        - ``0.5`` = neutral (offset=0, policy uses its learned σ as-is)
+        - ``→ 0`` = compress (offset < 0, σ shrinks; ei=0 → σ × ~0.37)
+        - ``→ 1`` = expand (offset > 0, σ grows; ei=1 → σ × ~2.72)
 
         The offset is additive on log_std: ``effective_log_std = log_std
-        + offset``.  This preserves the policy's learned σ as the base
-        and only adds exploration on top.  See
-        ``DESIGN_migration_tanh_gaussian.md`` §2.
+        + offset``, which is mathematically equivalent to multiplying σ
+        by ``exp(offset)`` (a temperature scaling).  Operating in log
+        space keeps the offset linear in entropy and numerically stable.
+
+        **Warning**: ``ei=0`` nearly collapses sampling noise.  Only use
+        it deliberately; the safe default is ``0.5``.
         """
-        self._log_std_offset = float(explore_intensity) * (self.log_std_max - self.log_std_min)
+        self._log_std_offset = (float(explore_intensity) - 0.5) * self.EXPLORE_SPAN
 
     # ------------------------------------------------------------------
     # Policy contract

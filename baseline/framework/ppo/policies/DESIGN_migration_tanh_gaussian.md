@@ -27,22 +27,35 @@ Reads `DESIGN_unified_exploration_control.md` (框架层新接口设计) as prer
 
 ## 2. explore_intensity 和 entropy 的语义
 
-### explore_intensity：额外探索噪声
+### explore_intensity：对称 temperature 控制
 
-`explore_intensity` 控制的是**在策略学到的 σ 基础上叠加多少额外噪声**，不是替换策略 σ。
+`explore_intensity` 是一个对称的 temperature-like 控制，以 0.5 为中性点：
 
-- **0 = 不叠加**：offset=0，σ 就是策略自己学的值。策略完全自由表达。
-- **1 = 叠加最大预期噪声**：offset = log_std_max - log_std_min，σ 被推到
-  `log_std + (log_std_max - log_std_min)`。策略的判断被最大噪声淹没。
+- **0.5 = 中性**：offset=0，σ 就是策略自己学的值。策略完全自由表达。
+- **→ 0 = 挤压**：offset < 0，σ 变小。ei=0 时 offset = -EXPLORE_SPAN/2，
+  σ 缩放为 exp(-1) ≈ 0.37x。
+- **→ 1 = 扩平**：offset > 0，σ 变大。ei=1 时 offset = +EXPLORE_SPAN/2，
+  σ 缩放为 exp(+1) ≈ 2.72x。
 
 ```python
-self._log_std_offset = explore_intensity * (self.log_std_max - self.log_std_min)
+EXPLORE_SPAN = 2.0  # offset 范围 ±1.0，σ 缩放 0.37x ~ 2.72x
+
+self._log_std_offset = (explore_intensity - 0.5) * EXPLORE_SPAN
 effective_log_std = self.log_std + self._log_std_offset
 ```
 
-为什么是偏移量而不是绝对位置：策略通过 PPO 梯力学到的 σ 编码了"这个状态下该多确定"
-的判断。退火到 0 时应该回到策略自然分布，让策略自由表达——不应该被推到一个
-固定的确定性位置。确定性执行由 `deterministic=True` 控制，不是 `explore_intensity=0`。
+**为什么是 log 空间加法而不是 σ 空间乘法**：两者数学等价
+（`log_std + offset` ≡ `σ × exp(offset)`），但 log 空间加法有三个优势：
+1. `log_std` 本身就是网络参数，offset 和梯度在同一坐标系
+2. entropy 在 log 空间是线性的（`H = 0.5×log(2πe) + log_std`），offset 对熵的影响可预测
+3. 数值更稳定，clamp ±20 就够了
+
+**为什么 span=2.0 而不是 log_std_max - log_std_min=5**：span=5 时两端
+σ 缩放达 e^±2.5 ≈ 0.08x ~ 12.2x，极端到几乎不可能有用。span=2.0 给出
+0.37x ~ 2.72x，是实际训练中有用的范围。
+
+**警告**：`ei=0` 会将 σ 压缩到 ~0.37x，接近确定性采样。只在需要时使用，
+安全默认值是 0.5。
 
 ### log_std_min / log_std_max 的含义
 
@@ -75,9 +88,9 @@ entropy 始终反映策略自己认为的确定性。entropy_floor 约束的是�
 - `explore_intensity`：相对偏移，在策略 σ 上叠加。控制采样时的额外随机性。
 - `entropy_floor`：绝对下界，约束策略自身分布的熵。控制训练时的防坍缩。
 
-- `explore_intensity=0, entropy_floor=0.3`：采样用策略自然分布，但训练时不允许
+- `explore_intensity=0.5, entropy_floor=0.3`：采样用策略自然分布，但训练时不允许
   策略 σ 的熵低于 30%——hinge loss 防止策略坍缩。
-- `explore_intensity=0.8, entropy_floor=0.1`：采样时叠加大量噪声去探索，但允许
+- `explore_intensity=0.8, entropy_floor=0.1`：采样时扩平 σ 去探索，但允许
   策略自身快速收敛到低熵——hinge 只在策略熵极低时干预。
 
 ## 3. 不 clamp：防坍缩由 entropy floor 接管
@@ -243,9 +256,11 @@ log_prob 和 entropy 用同一个 `dist`（同一个 σ），不再分两路计�
 ### 5.4 `set_exploration`
 
 ```python
+EXPLORE_SPAN = 2.0  # offset 范围 ±1.0
+
 def set_exploration(self, explore_intensity: float) -> None:
-    # 偏移量映射：在策略 σ 基础上叠加额外噪声
-    self._log_std_offset = explore_intensity * (self.log_std_max - self.log_std_min)
+    # 对称映射：0.5 = 中性 (offset=0), 0 = 挤压, 1 = 扩平
+    self._log_std_offset = (explore_intensity - 0.5) * self.EXPLORE_SPAN
 ```
 
 移除：`spec` 参数、`Dict` 返回值、`temperature`/`entropy_coef` 分支。
@@ -304,8 +319,9 @@ def set_exploration(self, explore_intensity: float) -> None:
    同样属于框架侧迁移。
 
 3. **`explore_intensity` 语义与旧 `temperature` 不同**：旧 `temperature` 是乘法缩放
-   （`σ *= temperature`），新 `explore_intensity` 是加性偏移（0=不叠加，1=叠加最大预期噪声）。
-   实验的 exploration schedule 需要重新校准，数值不一一对应。
+   （`σ *= temperature`），新 `explore_intensity` 是以 0.5 为中心的对称偏移
+   （0.5=中性，0=压缩，1=扩平）。数学上等价于 `σ × exp(offset)`，但在 log 空间
+   操作。实验的 exploration schedule 需要重新校准，数值不一一对应。
 
 4. **log_prob 和 entropy 用不同 σ**：log_prob 用 effective σ（含 explore offset），
    entropy 用策略原始 σ（不含 offset）。这是有意为之——entropy 反映策略自身确定性，

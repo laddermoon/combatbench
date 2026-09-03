@@ -73,8 +73,9 @@ Design principles
    framework to use in the entropy floor loss).  The framework only
    routes.
 
-   Two primary knobs, both ∈ [0, 1]: ``explore_intensity`` (rollout
-   noise amplitude) and ``entropy_floor`` (training-side entropy floor).
+   Two primary knobs, both ∈ [0, 1]: ``explore_intensity`` (symmetric
+   temperature-like control, 0.5 = neutral) and ``entropy_floor``
+   (training-side entropy floor).
    For the common case where both should move together, set them to the
    same value.  The framework computes the entropy floor loss from
    ``ActorEval.entropy`` — a
@@ -287,7 +288,8 @@ class ExplorationSpec:
 
     Three fields, all optional (``None`` = "no opinion, keep current"):
 
-    - ``explore_intensity`` ∈ [0, 1]: rollout-side noise amplitude.
+    - ``explore_intensity`` ∈ [0, 1]: symmetric temperature-like control
+      centered at 0.5 (0.5 = neutral, 0 = compress, 1 = expand).
     - ``entropy_floor`` ∈ [0, 1]: training-side entropy floor.
     - ``entropy_coef``: coefficient for the entropy floor loss.
 
@@ -307,10 +309,12 @@ class ExplorationSpec:
     See ``DESIGN_unified_exploration_control.md`` for the full design.
 
     Attributes:
-        explore_intensity: Rollout exploration strength ∈ [0, 1].
-            ``0`` = deterministic (no injected noise), ``1`` = maximum
-            noise.  The policy maps this to its internal parameters
-            (e.g. Gaussian σ offset, noise_scale).  ``None`` = no opinion.
+        explore_intensity: Symmetric temperature-like control ∈ [0, 1].
+            ``0.5`` = neutral (policy uses its learned σ as-is),
+            ``→ 0`` = compress σ (less noise), ``→ 1`` = expand σ
+            (more noise).  The policy maps this to its internal
+            parameters (e.g. Gaussian log_std offset).  ``None`` = no
+            opinion.
         entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
             in the policy's *normalized* entropy (0 = fully certain,
             1 = policy's maximum entropy).  The framework computes
@@ -332,12 +336,17 @@ class ExplorationSpec:
     def resolve(self) -> Tuple[float, float]:
         """Return ``(explore_intensity, entropy_floor)`` with fallbacks.
 
-        Returns the explicit values, defaulting to ``0.0`` when ``None``.
+        Returns the explicit values, defaulting to ``0.5`` for
+        ``explore_intensity`` (neutral) and ``0.0`` for
+        ``entropy_floor`` when ``None``.
 
         Returns:
             ``(explore_intensity, entropy_floor)`` as floats in [0, 1].
         """
-        return (self.explore_intensity or 0.0, self.entropy_floor or 0.0)
+        return (
+            self.explore_intensity if self.explore_intensity is not None else 0.5,
+            self.entropy_floor if self.entropy_floor is not None else 0.0,
+        )
 
 
 @dataclass
@@ -472,8 +481,8 @@ class TrainablePolicy(Protocol):
         so anything affecting sampling must take effect immediately.
 
         The policy maps ``explore_intensity`` to its internal parameters
-        (σ offset, noise_scale, etc.).  ``0`` = deterministic, ``1`` =
-        max noise.
+        (σ offset, noise_scale, etc.).  ``0.5`` = neutral (policy uses
+        its learned σ as-is), ``→ 0`` = compress, ``→ 1`` = expand.
 
         ``entropy_floor`` and ``entropy_coef`` are framework-side
         concerns — the policy does not need to handle them.  The policy
@@ -481,7 +490,8 @@ class TrainablePolicy(Protocol):
         ``evaluate_actions`` for the framework to use.
 
         Args:
-            explore_intensity: Rollout exploration strength ∈ [0, 1].
+            explore_intensity: Symmetric temperature-like control ∈ [0, 1]
+                centered at 0.5.
         """
         ...
 

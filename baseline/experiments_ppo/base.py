@@ -50,14 +50,15 @@ class CombatExperimentPPOBase(ExperimentPPO):
     critic_hidden_dim: int = 256
 
     # --- Exploration ---
-    # explore_intensity: rollout-side noise amplitude ∈ [0, 1].
-    #   0 = no extra noise (policy uses its learned σ as-is).
-    #   1 = maximum expected noise (offset = log_std_max - log_std_min).
+    # explore_intensity: symmetric temperature-like control ∈ [0, 1].
+    #   0.5 = neutral (policy uses its learned σ as-is).
+    #   → 0 = compress σ (less noise; ei=0 → σ × ~0.37, near-deterministic).
+    #   → 1 = expand σ (more noise; ei=1 → σ × ~2.72, near-uniform).
     # entropy_floor: training-side entropy floor ∈ [0, 1].
     #   The framework computes relu(entropy_floor - H_norm) to prevent
     #   policy collapse.  Set to 0 to disable.
     # entropy_coef: coefficient for the entropy floor loss.
-    explore_intensity: float = 0.0
+    explore_intensity: float = 0.5
     entropy_floor: float = 0.3
     entropy_coef: float = 0.01
 
@@ -191,10 +192,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Static exploration spec built from the class attributes.
 
         Returns the three-field ``ExplorationSpec``:
-        - ``explore_intensity``: rollout noise amplitude (0 = no extra
-          noise, 1 = max).  Default 0.0 = pure on-policy.
-        - ``entropy_floor``: training-side entropy floor.  Default 0.0
-          = no floor (entropy_coef is irrelevant when floor is 0).
+        - ``explore_intensity``: symmetric temperature-like control
+          (0.5 = neutral, 0 = compress, 1 = expand).  Default 0.5.
+        - ``entropy_floor``: training-side entropy floor.  Default 0.3.
         - ``entropy_coef``: coefficient for the entropy floor loss.
 
         Subclasses that want a schedule override ``on_update`` (to absorb

@@ -68,16 +68,17 @@ PPO clip 的核心思想是"只在出问题时干预"：
 探索控制有两个正交旋钮：
 
 ```
-explore_intensity ∈ [0, 1]   → rollout 侧：采样噪声幅度
+explore_intensity ∈ [0, 1]   → rollout 侧：对称 temperature 控制（0.5=中性）
 entropy_floor     ∈ [0, 1]   → training 侧：策略熵下界
 ```
 
 **`explore_intensity`**（Rollout 路径）：
 ```
-噪声幅度 = explore_intensity × max_noise
+log_std_offset = (explore_intensity - 0.5) × EXPLORE_SPAN
 ```
-每个策略族自己定义 `max_noise` 的物理含义。Gaussian 是 `σ_max - σ_min`，
-MoG 是 component σ 的最大缩放，RealNVP 是 base σ 的最大缩放。
+以 0.5 为中性点（offset=0，策略用自身 σ），→ 0 压缩 σ，→ 1 扩平 σ。
+每个策略族自己定义 `EXPLORE_SPAN` 和映射方式。Gaussian 用 log 空间加法
+（等价于 σ 乘法缩放），MoG 是 component σ 的缩放，RealNVP 是 base σ 的缩放。
 
 **`entropy_floor`**（Training 路径）：
 ```
@@ -87,12 +88,12 @@ MoG 是 component σ 的最大缩放，RealNVP 是 base σ 的最大缩放。
 把 `entropy` 归一化到 [0, 1]，使 `entropy_floor` 可以直接作为归一化目标。
 
 ```python
-# 同步退火（最常见）
-set_exploration(explore_intensity=0.5, entropy_floor=0.5)
+# 中性（最常见默认）
+set_exploration(explore_intensity=0.5, entropy_floor=0.3)
 
 # 独立控制
-set_exploration(explore_intensity=0.0, entropy_floor=0.3)
-set_exploration(explore_intensity=0.8, entropy_floor=0.1)
+set_exploration(explore_intensity=0.5, entropy_floor=0.3)  # on-policy + 防坍缩
+set_exploration(explore_intensity=0.8, entropy_floor=0.1)  # 强探索 + 快收敛
 ```
 
 ### 3.2 为什么需要双旋钮
@@ -102,17 +103,17 @@ set_exploration(explore_intensity=0.8, entropy_floor=0.1)
 **场景 1：on-policy + 防坍缩（最常见的不同步需求）**
 
 ```
-explore_intensity = 0     (不注入探索噪声，纯 on-policy)
+explore_intensity = 0.5   (中性，纯 on-policy，策略用自身 σ)
 entropy_floor = 0.3       (但策略不能坍缩到中等以下)
 ```
 
 这是当前所有不用 OU 的实验的默认运行模式——纯 on-policy + entropy_coef 防坍缩。
-单旋钮在 explore_intensity=0 时熵下界也是 0，失去防坍缩保护，策略可以自由坍缩。
+单旋钮在 explore_intensity=0.5 时熵下界也是 0.5，防坍缩过强，策略无法收敛。
 
 **场景 2：强探索 + 快收敛**
 
 ```
-explore_intensity = 0.8   (采分散的动作去发现新行为)
+explore_intensity = 0.8   (扩平 σ 去发现新行为)
 entropy_floor = 0.1       (但允许策略在发现好行为后快速锁定)
 ```
 
@@ -122,9 +123,9 @@ entropy_floor = 0.1       (但允许策略在发现好行为后快速锁定)
 **场景 3：异步退火**
 
 ```
-update  500: explore=0.3, floor=0.7   (探索已退火，但防坍缩还在)
-update 1000: explore=0.0, floor=0.3   (探索停了，但防坍缩还在)
-update 2000: explore=0.0, floor=0.0   (完全自由收敛)
+update  500: explore=0.3, floor=0.7   (压缩探索，但防坍缩还在)
+update 1000: explore=0.5, floor=0.3   (回到中性，但防坍缩还在)
+update 2000: explore=0.5, floor=0.0   (完全自由收敛)
 ```
 
 探索先退、防坍缩后退。理由：探索噪声在后期是纯干扰（策略已经知道往哪走），
@@ -140,8 +141,12 @@ class ExplorationSpec:
     entropy_coef: Optional[float] = None
 
     def resolve(self) -> tuple[float, float]:
-        """返回 (explore_intensity, entropy_floor)，None 默认为 0.0。"""
-        return (self.explore_intensity or 0.0, self.entropy_floor or 0.0)
+        """返回 (explore_intensity, entropy_floor)。
+        explore_intensity 默认 0.5（中性），entropy_floor 默认 0.0。"""
+        return (
+            self.explore_intensity if self.explore_intensity is not None else 0.5,
+            self.entropy_floor if self.entropy_floor is not None else 0.0,
+        )
 ```
 
 ### 3.4 策略接口：evaluate_actions
@@ -282,7 +287,7 @@ PPO 的 advantage 信号本身就是"该往哪走"的指导。当策略熵高（
 ### 4.3 为什么不只用 σ_min 物理防坍缩
 
 ```
-effective_log_std_min = log_std_min + explore_intensity × (log_std_max - log_std_min)
+effective_log_std = log_std + (explore_intensity - 0.5) × EXPLORE_SPAN
 ```
 
 **优点**：简单直接，对 Gaussian 完美工作。
@@ -322,14 +327,14 @@ def exploration(self, update: int) -> ExplorationSpec:
 # on-policy + 防坍缩（场景 1）
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
-        explore_intensity=0.0,      # 不注入探索噪声
+        explore_intensity=0.5,      # 中性，纯 on-policy
         entropy_floor=0.3,          # 但策略不能坍缩到中等以下
     )
 
 # 强探索 + 快收敛（场景 2）
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
-        explore_intensity=0.8,      # 采分散的动作去发现新行为
+        explore_intensity=0.8,      # 扩平 σ 去发现新行为
         entropy_floor=0.1,          # 但允许策略快速锁定
     )
 
@@ -337,7 +342,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
     return ExplorationSpec(
-        explore_intensity=max(0.0, 1.0 - 2.0 * u),       # 探索先退
+        explore_intensity=max(0.5, 1.0 - 0.5 * u),         # 探索从 1.0 退到 0.5
         entropy_floor=0.5 * (1.0 + math.cos(math.pi * u)),  # 防坍缩后退
     )
 ```
@@ -347,7 +352,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
-        explore_intensity=0.5,      # rollout 探索强度
+        explore_intensity=0.7,      # 扩平 σ
         entropy_floor=0.5,          # 熵下界
         entropy_coef=0.01,          # 覆盖默认联动值 (0.01 * explore_intensity)
     )
@@ -374,16 +379,16 @@ class TrainablePolicy(Protocol):
         """
         ...
 
-    def set_exploration(self, spec: ExplorationSpec) -> Dict[str, Any]:
-        """接收探索指令，返回实际生效的配置。
+    def set_exploration(self, explore_intensity: float) -> None:
+        """接收探索指令。
 
-        explore_intensity 控制采样噪声幅度：
-            噪声 = explore_intensity × max_noise
+        explore_intensity 是对称 temperature 控制（0.5=中性）：
+            → 0 压缩 σ，→ 1 扩平 σ
         entropy_floor 控制策略熵下界（由框架在 ppo_update 里使用，
             策略不需要处理）。
 
         策略自己负责把 explore_intensity 映射到内部参数
-        （σ offset, noise_scale 等）。
+        （log_std offset, noise_scale 等）。
         """
         ...
 ```
@@ -509,7 +514,7 @@ if update % grad_diag_interval == 0:
 - [ ] `ExplorationSpec` 增加 `explore_intensity`、`entropy_floor` 字段。
 - [ ] 实现 `ExplorationSpec.resolve() → (explore_intensity, entropy_floor)` 方法。
 - [ ] 各策略族实现 `set_exploration` 对 `explore_intensity` 的映射：
-  - Gaussian: `log_std_offset = explore_intensity × (log_std_max - log_std_min)`，`noise_scale = explore_intensity × noise_scale_max`。
+  - Gaussian: `log_std_offset = (explore_intensity - 0.5) × EXPLORE_SPAN`，`noise_scale = (explore_intensity - 0.5) × 2 × noise_scale_max`。
   - MoG / RealNVP: 类似映射。
 - [ ] `noise_tau_steps` 保留为 init 时配置，`explore_intensity` 不控制时间结构。
 
@@ -528,9 +533,9 @@ if update % grad_diag_interval == 0:
 
 ### Stage 5：测试
 
-- [ ] 各策略族：`entropy_normalized ∈ [0, 1]`，`explore_intensity=0` 时接近 0，`explore_intensity=1` 时接近 1。
+- [ ] 各策略族：`entropy_normalized ∈ [0, 1]`，`explore_intensity=0.5` 时反映策略原始 σ。
 - [ ] 熵下界损失：H > floor 时梯度为零，H < floor 时梯度非零。
-- [ ] on-policy（`explore_intensity=0`）+ `entropy_floor>0` 时防坍缩仍然工作（不像 `-log_prob.mean()` 那样失效）。
+- [ ] on-policy（`explore_intensity=0.5`）+ `entropy_floor>0` 时防坍缩仍然工作（不像 `-log_prob.mean()` 那样失效）。
 - [ ] 同步退火：`explore_intensity` 和 `entropy_floor` 设成相同值，`entropy_normalized` 平滑跟随下界下降。
 - [ ] 异步退火：`explore_intensity` 和 `entropy_floor` 独立 schedule，互不干扰。
 - [ ] 向后兼容：旧实验（不用 explore/floor）行为不变。
@@ -556,6 +561,7 @@ if update % grad_diag_interval == 0:
 | 2026-09-03 | `noise_tau_steps` 保留为 init 时配置，不纳入旋钮 | 时间相关性是结构选择（像优化器类型），不是强度参数（像学习率）；init 时决定即可 |
 | 2026-09-03 | `ExplorationSpec` 只保留三个字段：`explore_intensity`、`entropy_floor`、`entropy_coef` | 控制复杂度；`temperature`/`noise_scale` 被 `explore_intensity` 替代，`entropy_target` 被 `entropy_floor` 替代，`clip_eps`/`target_kl` 不是 per-update 旋钮（留在 `PPOParams`），`policy_extras` 在三字段设计下无必要 |
 | 2026-09-03 | `entropy_coef` 默认联动 `explore_intensity` | 探索越强防坍缩也越强是合理默认；可被 `ExplorationSpec.entropy_coef` 覆盖 |
+| 2026-09-03 | `explore_intensity` 改为以 0.5 为中心的对称控制（0=压缩, 0.5=中性, 1=扩平） | 原单向设计（0=不加噪声, 1=最大噪声）只能加不能减；对称设计更直观（像 temperature），支持压缩场景。EXPLORE_SPAN=2.0 限制两端到 σ×0.37~2.72x，避免极端值。默认值从 0.0 改为 0.5 |
 
 ---
 
@@ -572,8 +578,8 @@ if update % grad_diag_interval == 0:
 阶段才加强探索。
 
 ```
-帧  1-30:  站立平衡（已学会）→ explore_intensity=0.1（确定性执行，保命）
-帧 30-60:  迈步（正在学）   → explore_intensity=0.8（强探索，发现步态）
+帧  1-30:  站立平衡（已学会）→ explore_intensity=0.4（轻微压缩，保命）
+帧 30-60:  迈步（正在学）   → explore_intensity=0.8（扩平 σ，发现步态）
 ```
 
 如果统一探索强度，会出现两难：

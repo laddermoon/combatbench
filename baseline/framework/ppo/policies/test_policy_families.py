@@ -448,8 +448,8 @@ class TestStateGaussian(unittest.TestCase):
             log_std_min=-4.0, log_std_max=0.0,
             temperature=1.0,
         )
-        # Set some non-default explore_intensity to verify it doesn't break export.
-        policy.set_exploration(0.0)
+        # Set non-default explore_intensity to verify it doesn't break export.
+        policy.set_exploration(0.3)
 
         obs_np = self.obs[0].cpu().numpy()
 
@@ -498,31 +498,32 @@ class TestStateGaussian(unittest.TestCase):
         )
 
     def test_explore_intensity_scaling(self):
-        """Higher explore_intensity must increase σ."""
+        """Higher explore_intensity must increase σ (symmetric: 0=compress, 0.5=neutral, 1=expand)."""
         from baseline.framework.ppo.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
         )
-        # Measure σ at explore_intensity=0 (no extra noise).
+        # Measure σ at explore_intensity=0 (compressed).
+        policy.set_exploration(0.0)
         with torch.no_grad():
             _, log_std_0 = policy._forward_head(self.obs[:16])
             std_0 = log_std_0.exp().mean().item()
 
-        # Set explore_intensity=0.5 (moderate extra noise).
+        # Set explore_intensity=0.5 (neutral = policy's own σ).
         policy.set_exploration(0.5)
         with torch.no_grad():
             _, log_std_5 = policy._forward_head(self.obs[:16])
             std_5 = log_std_5.exp().mean().item()
 
-        # Set explore_intensity=1.0 (maximum extra noise).
+        # Set explore_intensity=1.0 (expanded).
         policy.set_exploration(1.0)
         with torch.no_grad():
             _, log_std_1 = policy._forward_head(self.obs[:16])
             std_1 = log_std_1.exp().mean().item()
 
-        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
-        self.assertGreater(std_1, std_5, "explore_intensity=1.0 should increase σ further")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 (neutral) should have larger σ than 0.0 (compressed)")
+        self.assertGreater(std_1, std_5, "explore_intensity=1.0 (expanded) should have larger σ than 0.5 (neutral)")
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +703,7 @@ class TestLowRankGaussian(unittest.TestCase):
         )
 
     def test_explore_intensity_scales_both_sigma_and_U(self):
-        """Higher explore_intensity must scale both σ and U."""
+        """Higher explore_intensity must scale both σ and U (symmetric: 0=compress, 0.5=neutral, 1=expand)."""
         from baseline.framework.ppo.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
@@ -713,21 +714,22 @@ class TestLowRankGaussian(unittest.TestCase):
             ad = self.action_dim
             policy.head.weight.data[2*ad:, :] = torch.randn_like(policy.head.weight.data[2*ad:, :]) * 0.1
 
-        # Measure σ and U at explore_intensity=0.
+        # Measure σ and U at explore_intensity=0 (compressed).
+        policy.set_exploration(0.0)
         with torch.no_grad():
             _, log_std_0, U_0 = policy._forward_head(self.obs[:16])
             std_0 = log_std_0.exp().mean().item()
             U_norm_0 = U_0.flatten(1).norm(dim=-1).mean().item()
 
-        # Set explore_intensity=0.5.
+        # Set explore_intensity=0.5 (neutral).
         policy.set_exploration(0.5)
         with torch.no_grad():
             _, log_std_5, U_5 = policy._forward_head(self.obs[:16])
             std_5 = log_std_5.exp().mean().item()
             U_norm_5 = U_5.flatten(1).norm(dim=-1).mean().item()
 
-        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
-        self.assertGreater(U_norm_5, U_norm_0, "explore_intensity=0.5 should increase ||U||")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 (neutral) should have larger σ than 0.0 (compressed)")
+        self.assertGreater(U_norm_5, U_norm_0, "explore_intensity=0.5 (neutral) should have larger ||U|| than 0.0 (compressed)")
 
 
 # ---------------------------------------------------------------------------
@@ -885,26 +887,27 @@ class TestMoGaussian(unittest.TestCase):
         )
 
     def test_explore_intensity_scales_sigma_not_logits(self):
-        """Higher explore_intensity must scale σ but not change mixture logits."""
+        """Higher explore_intensity must scale σ but not change mixture logits (symmetric: 0=compress, 0.5=neutral)."""
         from baseline.framework.ppo.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
         )
-        # Measure σ and weights at explore_intensity=0.
+        # Measure σ and weights at explore_intensity=0 (compressed).
+        policy.set_exploration(0.0)
         with torch.no_grad():
             logits_0, _, log_stds_0 = policy._forward_head(self.obs[:16])
             std_0 = log_stds_0.exp().mean().item()
             weights_0 = torch.softmax(logits_0, dim=-1)
 
-        # Set explore_intensity=0.5.
+        # Set explore_intensity=0.5 (neutral).
         policy.set_exploration(0.5)
         with torch.no_grad():
             logits_5, _, log_stds_5 = policy._forward_head(self.obs[:16])
             std_5 = log_stds_5.exp().mean().item()
             weights_5 = torch.softmax(logits_5, dim=-1)
 
-        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 (neutral) should have larger σ than 0.0 (compressed)")
         # Weights should be unchanged (logits are not scaled).
         diff_weights = (weights_0 - weights_5).abs().max().item()
         self.assertLess(diff_weights, 1e-6, "Mixture weights should not change with temperature")
@@ -1142,24 +1145,25 @@ class TestRealNVPFlow(unittest.TestCase):
         )
 
     def test_explore_intensity_scales_base_not_flow(self):
-        """Higher explore_intensity must scale base σ but not flow parameters."""
+        """Higher explore_intensity must scale base σ but not flow parameters (symmetric: 0=compress, 0.5=neutral)."""
         from baseline.framework.ppo.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
         )
-        # Measure base σ at explore_intensity=0.
+        # Measure base σ at explore_intensity=0 (compressed).
+        policy.set_exploration(0.0)
         with torch.no_grad():
             _, base_dist_0 = policy._base_dist(self.obs[:16])
             std_0 = base_dist_0.stddev.mean().item()
 
-        # Set explore_intensity=0.5.
+        # Set explore_intensity=0.5 (neutral).
         policy.set_exploration(0.5)
         with torch.no_grad():
             _, base_dist_5 = policy._base_dist(self.obs[:16])
             std_5 = base_dist_5.stddev.mean().item()
 
-        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase base σ")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 (neutral) should have larger base σ than 0.0 (compressed)")
 
 
 # ---------------------------------------------------------------------------

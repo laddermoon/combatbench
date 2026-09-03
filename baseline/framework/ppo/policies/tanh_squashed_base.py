@@ -484,8 +484,9 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
         (old interface, for backward compat with unmigrated subclasses).
 
         **New interface** — ``explore_intensity: float`` ∈ [0, 1]:
-        - ``0`` = no extra noise (temperature=1.0)
-        - ``1`` = maximum expected noise
+        - ``0.5`` = neutral (temperature=1.0, no change)
+        - ``→ 0`` = compress σ (temperature < 1.0)
+        - ``→ 1`` = expand σ (temperature > 1.0)
 
         **Old interface** — ``ExplorationSpec``:
         - ``temperature``: stored as ``self._temperature``
@@ -505,14 +506,11 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
                 self._noise_scale = float(spec.noise_scale)
             return
 
-        # New interface: float explore_intensity → temperature.
-        if explore_intensity <= 0.0:
-            self._temperature = 1.0
-        else:
-            import math
-            self._temperature = float(math.exp(
-                explore_intensity * (self.log_std_max - self.log_std_min)
-            ))
+        # New interface: symmetric mapping centered at 0.5.
+        # 0.5 → temperature=1.0 (neutral), 0 → compress, 1 → expand.
+        import math
+        offset = (float(explore_intensity) - 0.5) * 2.0  # EXPLORE_SPAN=2.0
+        self._temperature = float(math.exp(offset))
 
     # ------------------------------------------------------------------
     # Policy ABC: act / set_deterministic
