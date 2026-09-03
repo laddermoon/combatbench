@@ -53,10 +53,12 @@ class Standup(CombatExperimentPPOBase):
 
     # --- Exploration ---
     # 0.5 = neutral (policy uses its learned σ as-is).
-    # Standup needs exploration but not extreme — 0.6 gives mild expansion.
-    explore_intensity: float = 0.6
-    entropy_floor: float = 0.3
-    entropy_coef: float = 0.01
+    # Standup requires precise motor control — no extra exploration noise.
+    explore_intensity: float = 0.5
+    # Disable entropy floor: standup needs the policy to converge to
+    # deterministic control.  The old run (success=1.0) had no floor.
+    entropy_floor: float = 0.0
+    entropy_coef: float = 0.001
 
     # --- PPO tuning ---
     log_std_min: float = -2.5
@@ -68,12 +70,13 @@ class Standup(CombatExperimentPPOBase):
     minibatch_size: int = 4096
 
     # --- Rollout schedule ---
-    # 64 episodes × 2 agents = 128 trajectories per update.
-    # Each episode is 200 steps (no early termination), so ~25.6K steps/update.
-    episodes_per_update: int = 64
+    # 512 episodes × 2 agents = 1024 trajectories per update.
+    # Each episode is 200 steps → ~204K steps/update.
+    # Large batch is critical for PPO stability on this task.
+    episodes_per_update: int = 512
     max_updates: int = 1500
     eval_interval: int = 5
-    eval_episodes: int = 16
+    eval_episodes: int = 64
 
     # --- Video recording ---
     video_eval_interval: int = 5
