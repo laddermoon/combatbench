@@ -50,22 +50,25 @@ class CombatExperimentPPOBase(ExperimentPPO):
     critic_hidden_dim: int = 256
 
     # --- Exploration ---
-    # Applied to the actor in build_actor() / exploration(), not through
-    # PPOParams: sigma bounds describe the Tanh-Gaussian and entropy_coef
-    # scales a family-specific regularizer, neither of which PPO knows about.
-    log_std_min: float = -4.0
-    log_std_max: float = 0.0
+    # explore_intensity: rollout-side noise amplitude ∈ [0, 1].
+    #   0 = no extra noise (policy uses its learned σ as-is).
+    #   1 = maximum expected noise (offset = log_std_max - log_std_min).
+    # entropy_floor: training-side entropy floor ∈ [0, 1].
+    #   The framework computes relu(entropy_floor - H_norm) to prevent
+    #   policy collapse.  Set to 0 to disable.
+    # entropy_coef: coefficient for the entropy floor loss.
+    explore_intensity: float = 0.0
+    entropy_floor: float = 0.0
     entropy_coef: float = 1e-3
 
+    # Sigma bounds — normalization reference points for the policy's
+    # entropy, not hard clamps.  See DESIGN_migration_tanh_gaussian.md.
+    log_std_min: float = -4.0
+    log_std_max: float = 0.0
+
     # --- Temporally correlated exploration (OU) ---
-    # noise_tau_steps: OU correlation time in policy steps.  0.0 disables
-    #   OU (white noise, the default).  At 20Hz, tau=10 ≈ 0.5 seconds.
-    # noise_scale: OU shift steady-state std in raw (pre-tanh) space.
-    #   Directly comparable to the policy's native sigma.  0.0 disables.
-    # These are passed to the actor via ExplorationSpec every update.
-    # The actor blueprint must point to a policy family that supports OU
-    # (e.g. FixedSigmaGaussianMLPPolicy).  The baseline TanhGaussianMLPPolicy
-    # silently ignores them.
+    # Set at build time on policies that support it (e.g.
+    # FixedSigmaGaussianMLPPolicy).  0.0 disables OU.
     noise_tau_steps: float = 0.0
     noise_scale: float = 0.0
 
@@ -187,21 +190,21 @@ class CombatExperimentPPOBase(ExperimentPPO):
     def exploration(self, update: int) -> ExplorationSpec:
         """Static exploration spec built from the class attributes.
 
-        This reproduces the pre-refactor behaviour exactly: ``entropy_coef``
-        is a constant for the whole run and the sampling temperature is the
-        policy's native 1.0.  The OU noise parameters (``noise_tau_steps``,
-        ``noise_scale``) are also passed through; they default to 0.0
-        (disabled) so existing experiments are unaffected.
+        Returns the three-field ``ExplorationSpec``:
+        - ``explore_intensity``: rollout noise amplitude (0 = no extra
+          noise, 1 = max).  Default 0.0 = pure on-policy.
+        - ``entropy_floor``: training-side entropy floor.  Default 0.0
+          = no floor (entropy_coef is irrelevant when floor is 0).
+        - ``entropy_coef``: coefficient for the entropy floor loss.
 
         Subclasses that want a schedule override ``on_update`` (to absorb
         stats) and this method (to read accumulated state).  See the
         ``on_update`` docstring for a closed-loop example.
         """
         return ExplorationSpec(
+            explore_intensity=self.explore_intensity,
+            entropy_floor=self.entropy_floor,
             entropy_coef=self.entropy_coef,
-            temperature=1.0,
-            noise_tau_steps=self.noise_tau_steps,
-            noise_scale=self.noise_scale,
         )
 
     # ------------------------------------------------------------------
@@ -223,6 +226,15 @@ class CombatExperimentPPOBase(ExperimentPPO):
             actor.log_std_min = float(self.log_std_min)
         if hasattr(actor, "log_std_max"):
             actor.log_std_max = float(self.log_std_max)
+        # OU exploration params (for FixedSigmaGaussianMLPPolicy).
+        # These were previously passed via ExplorationSpec every update,
+        # but now that ExplorationSpec no longer carries them, they are
+        # set once at build time.
+        if hasattr(actor, "_noise_tau_steps"):
+            actor._noise_tau_steps = float(self.noise_tau_steps)
+            actor._update_ou_params()
+        if hasattr(actor, "_noise_scale"):
+            actor._noise_scale = float(self.noise_scale)
         return actor
 
     def build_critic(self, channel_name: str, device: torch.device) -> nn.Module:

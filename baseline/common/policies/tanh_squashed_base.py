@@ -42,7 +42,7 @@ from torch import nn
 
 from envs.framework.policy import Policy, PolicyBlueprint
 
-from baseline.framework.ppo import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval
 
 
 # Epsilon for the tanh Jacobian correction:  log(1 - tanh(x)² + ε).
@@ -167,6 +167,12 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, float]]]:
         """Compute the family-owned regularizer and optional stats.
 
+        .. deprecated::
+            This hook is from the old ``ActorEval.regularizer`` design.
+            New policies should override :meth:`_entropy_and_stats`
+            instead.  This method is kept for backward compatibility
+            with subclasses that have not yet been migrated.
+
         The regularizer is **already signed and scaled** — the framework
         adds it verbatim to the actor loss.  For an entropy bonus this
         is ``-entropy_coef * entropy.mean()``.
@@ -175,6 +181,59 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             (regularizer, stats) where either may be None.
         """
         raise NotImplementedError
+
+    def _entropy_and_stats(
+        self,
+        obs: torch.Tensor,
+        want_stats: bool,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, float]]]:
+        """Compute per-obs normalized entropy and optional stats.
+
+        This is the new hook for the ``ActorEval.entropy`` design.
+        Returns ``(entropy_norm, stats)`` where ``entropy_norm`` is a
+        ``(B,)`` tensor of normalized entropy in [0, 1].
+
+        The default implementation calls :meth:`_regularizer_and_stats`
+        for backward compatibility with unmigrated subclasses.  It
+        draws a fresh sample to get a score-function entropy estimate
+        when the subclass does not provide closed-form entropy.
+
+        Subclasses should override this to return closed-form entropy
+        when available (e.g. diagonal Gaussian: ``Normal.entropy()``).
+
+        Returns:
+            (entropy_norm, stats) where entropy_norm is ``(B,)`` and
+            stats is an optional dict.
+        """
+        # Default: sample-based estimate via _regularizer_and_stats.
+        # This is a fallback for unmigrated subclasses.
+        raw_action, sample_extras = self._raw_sample(obs)
+        raw_log_prob, _ = self._raw_log_prob(obs, raw_action)
+        # Score-function entropy estimate (per-obs).
+        entropy_raw = -raw_log_prob  # (B,)
+        # Normalize using log_std_min/max if available.
+        if hasattr(self, "log_std_min") and hasattr(self, "log_std_max"):
+            import math
+            H_max = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + self.log_std_max)
+            H_min = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + self.log_std_min)
+            entropy_norm = (entropy_raw - H_min) / (H_max - H_min)
+        else:
+            # No normalization reference — return raw estimate clamped.
+            entropy_norm = torch.clamp(entropy_raw / 10.0, 0.0, 1.0)
+
+        stats = None
+        if want_stats:
+            _, stats = self._regularizer_and_stats(
+                obs, raw_action, raw_log_prob, True,
+                sample_extras, None,
+            )
+            if stats is None:
+                stats = {"entropy_raw": float(entropy_raw.mean().item())}
+            else:
+                stats = dict(stats)
+                stats.setdefault("entropy_raw", float(entropy_raw.mean().item()))
+
+        return entropy_norm, stats
 
     # ------------------------------------------------------------------
     # Export config (subclass provides constructor kwargs for round-trip)
@@ -367,58 +426,16 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             raw_log_prob, score_extras = self._raw_log_prob(obs, raw_actions)
             log_prob = raw_log_prob + self._tanh_jacobian(clipped_actions).sum(dim=-1)
 
-        # Regularizer + stats.
+        # Entropy + stats.
         #
-        # For the regularizer, we prefer the subclass's closed-form
-        # entropy (returned by _regularizer_and_stats) when available.
-        # This is critical for diagonal Gaussian families (① and ②)
-        # where the score-function estimate becomes unreliable when σ
-        # is small: -log_prob(rsample()) → 0 as σ → 0, so the
-        # regularizer gradient vanishes and σ collapses to zero.
-        # The closed-form entropy Normal.entropy() = 0.5*log(2πeσ²)
-        # has gradient 1/σ which correctly pushes σ up.
-        #
-        # For families without closed-form entropy (③ MoG, ④ flow),
-        # _regularizer_and_stats returns None for the regularizer,
-        # and we fall back to the score-function estimate.
-        #
-        # We always draw a fresh sample for stats (want_stats path),
-        # but only compute the score-function regularizer as fallback.
-        regularizer = None
-        stats: Optional[Dict[str, float]] = None
-        need_sample = want_stats or self._entropy_coef != 0.0
-        if need_sample:
-            # First, try the subclass's closed-form regularizer.
-            if self._entropy_coef != 0.0:
-                # Call _regularizer_and_stats with want_stats=False
-                # to get just the regularizer (no sample needed for
-                # closed-form entropy).
-                reg_cf, _ = self._regularizer_and_stats(
-                    obs, None, None, False, None, None,
-                )
-                if reg_cf is not None:
-                    regularizer = reg_cf
-
-            # Draw a fresh sample for stats and/or score-function fallback.
-            reg_raw_action, reg_sample_extras = self._raw_sample(obs)
-            reg_raw_log_prob, _ = self._raw_log_prob(obs, reg_raw_action)
-
-            # If no closed-form regularizer, use score-function estimate.
-            if self._entropy_coef != 0.0 and regularizer is None:
-                entropy_estimate = -reg_raw_log_prob.mean()
-                regularizer = -self._entropy_coef * entropy_estimate
-
-            if want_stats:
-                with torch.no_grad():
-                    stats = self._compute_stats(
-                        obs, raw_actions, log_prob,
-                        reg_raw_action, reg_raw_log_prob,
-                        score_extras, reg_sample_extras,
-                    )
+        # The policy returns a per-obs normalized entropy in [0, 1].
+        # The framework computes the entropy floor loss from this.
+        # See DESIGN_unified_exploration_control.md.
+        entropy, stats = self._entropy_and_stats(obs, want_stats)
 
         return ActorEval(
             log_prob=log_prob,
-            regularizer=regularizer,
+            entropy=entropy,
             stats=stats,
         )
 
@@ -459,41 +476,43 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
     # TrainablePolicy: set_exploration
     # ------------------------------------------------------------------
 
-    def set_exploration(self, spec: ExplorationSpec) -> Dict[str, float]:
-        """Apply an ExplorationSpec; return the effective config.
+    def set_exploration(self, explore_intensity) -> None:
+        """Apply an exploration directive.
 
-        Honoured fields:
-        - ``temperature``: stored as ``self._temperature``.  Subclasses
-          use it in their raw distribution construction.
-        - ``entropy_coef``: stored as ``self._entropy_coef``.  Used in
-          ``evaluate_actions`` to build the regularizer.
-        - ``noise_tau_steps``: OU correlation time in policy steps.
-          Updates the AR(1) coefficients.  Does not reset ``_ou_x``.
-        - ``noise_scale``: OU shift steady-state std in raw space.
-          ``0.0`` disables OU (the policy becomes bit-identical to one
-          without OU support).
+        Accepts either a float (new interface) or an
+        :class:`~baseline.framework.ppo.experiment.ExplorationSpec`
+        (old interface, for backward compat with unmigrated subclasses).
 
-        Ignored fields: ``entropy_target``, ``clip_eps``, ``target_kl``,
-        ``policy_extras``.
+        **New interface** — ``explore_intensity: float`` ∈ [0, 1]:
+        - ``0`` = no extra noise (temperature=1.0)
+        - ``1`` = maximum expected noise
+
+        **Old interface** — ``ExplorationSpec``:
+        - ``temperature``: stored as ``self._temperature``
+        - ``noise_tau_steps``: OU correlation time
+        - ``noise_scale``: OU shift steady-state std
+        - ``entropy_coef``: ignored (entropy floor is framework-side now)
         """
-        if spec.temperature is not None:
-            temperature = float(spec.temperature)
-            if temperature <= 0.0:
-                raise ValueError(f"temperature must be > 0, got {temperature}")
-            self._temperature = temperature
-        if spec.entropy_coef is not None:
-            self._entropy_coef = float(spec.entropy_coef)
-        if spec.noise_tau_steps is not None:
-            self._noise_tau_steps = float(spec.noise_tau_steps)
-            self._update_ou_params()
-        if spec.noise_scale is not None:
-            self._noise_scale = float(spec.noise_scale)
-        return {
-            "entropy_coef": self._entropy_coef,
-            "temperature": self._temperature,
-            "noise_tau_steps": self._noise_tau_steps,
-            "noise_scale": self._noise_scale,
-        }
+        # Backward compat: accept ExplorationSpec.
+        if not isinstance(explore_intensity, (int, float)):
+            spec = explore_intensity
+            if hasattr(spec, 'temperature') and spec.temperature is not None:
+                self._temperature = float(spec.temperature)
+            if hasattr(spec, 'noise_tau_steps') and spec.noise_tau_steps is not None:
+                self._noise_tau_steps = float(spec.noise_tau_steps)
+                self._update_ou_params()
+            if hasattr(spec, 'noise_scale') and spec.noise_scale is not None:
+                self._noise_scale = float(spec.noise_scale)
+            return
+
+        # New interface: float explore_intensity → temperature.
+        if explore_intensity <= 0.0:
+            self._temperature = 1.0
+        else:
+            import math
+            self._temperature = float(math.exp(
+                explore_intensity * (self.log_std_max - self.log_std_min)
+            ))
 
     # ------------------------------------------------------------------
     # Policy ABC: act / set_deterministic
@@ -581,7 +600,6 @@ class TanhSquashedPolicyBase(nn.Module, Policy):
             stochastic=stochastic,
             extra_payload={
                 "temperature": self._temperature,
-                "entropy_coef": self._entropy_coef,
                 "noise_tau_steps": self._noise_tau_steps,
                 "noise_scale": self._noise_scale,
             },

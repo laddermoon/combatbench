@@ -7,6 +7,7 @@ that imported it from here (pre-PR1). New code should import directly from
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -20,7 +21,7 @@ from envs.framework.policy import Policy, PolicyBlueprint
 # The actor-side data types of the TrainablePolicy contract. Importing
 # them here is safe (ppo.experiment depends only on envs.framework, so
 # there is no cycle) and keeps a single definition of the contract.
-from baseline.framework.ppo import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval
 
 from .checkpoint import (
     DEFAULT_EXPORT_ACTOR_HIDDEN_DIM,
@@ -32,6 +33,12 @@ from .checkpoint import (
 
 DEFAULT_LOG_STD_MIN = -4.0
 DEFAULT_LOG_STD_MAX = 1.0
+
+# Numerical safety bounds for log_std.  These are NOT business bounds —
+# they only prevent exp(log_std) from overflowing or underflowing.  Normal
+# training never approaches ±20.  See DESIGN_migration_tanh_gaussian.md §3.
+_LOG_STD_SAFE_MIN = -20.0  # exp(-20) ≈ 2e-9
+_LOG_STD_SAFE_MAX = 20.0   # exp(20) ≈ 5e8
 
 __all__ = [
     "DEFAULT_LOG_STD_MIN",
@@ -65,8 +72,6 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         device: torch.device | str = "cpu",
         deterministic: bool = False,
         model_path: Optional[str] = None,
-        log_std_offset: float = 0.0,
-        entropy_coef: float = 0.0,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
@@ -76,11 +81,11 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         self.log_std_max = float(log_std_max)
         self.device = torch.device(device)
         self._deterministic = bool(deterministic)
-        # Exploration state (see set_exploration). Kept as plain floats
-        # rather than buffers so they are owned by the *experiment's*
-        # schedule and never restored from a checkpoint's state_dict.
-        self._log_std_offset = float(log_std_offset)
-        self._entropy_coef = float(entropy_coef)
+        # Exploration state — plain float, not a buffer, so it is owned
+        # by the experiment's schedule and never restored from a
+        # checkpoint's state_dict.  set_exploration sets this; 0.0 means
+        # no extra noise (policy uses its learned σ as-is).
+        self._log_std_offset = 0.0
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.Tanh(),
@@ -100,22 +105,17 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
             self.to(self.device)
 
     def effective_log_std(self) -> torch.Tensor:
-        """Return the ``(action_dim,)`` log-sigma actually used for sampling.
+        """Return the ``(action_dim,)`` log-sigma used for sampling.
 
-        This is the single place where the exploration temperature and the
-        hard bounds are applied, so training-time scoring
-        (``evaluate_actions``) and rollout-time sampling
-        (``sample_action``) can never disagree.
-
-        The temperature offset is applied *before* clamping: the bounds
-        are hard limits, so a large temperature saturates rather than
-        escaping them.  The resulting sigma is reported in
-        ``ActorEval.stats`` so such saturation is visible in the log.
+        Only a numerical-safety clamp at ±20 is applied — no business
+        bounds.  ``log_std_min`` / ``log_std_max`` are normalization
+        reference points, not hard limits.  See
+        ``DESIGN_migration_tanh_gaussian.md`` §3.
         """
         return torch.clamp(
             self.log_std + self._log_std_offset,
-            self.log_std_min,
-            self.log_std_max,
+            _LOG_STD_SAFE_MIN,
+            _LOG_STD_SAFE_MAX,
         )
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -153,43 +153,46 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         no OU exploration support.  Use :class:`FixedSigmaGaussianMLPPolicy`
         for OU-enabled training from a baseline checkpoint.
 
-        The returned ``regularizer`` is the entropy bonus already signed
-        and scaled (``-entropy_coef * H``), so the framework can add it to
-        the actor loss without knowing that this family even has an
-        entropy.  ``entropy_coef`` comes from ``set_exploration``.
+        ``log_prob`` uses the effective σ (policy σ + explore offset) so
+        the PPO importance ratio is correct.  ``entropy`` uses the
+        policy's original σ (without explore offset) so it reflects the
+        policy's own certainty, not the temporary exploration noise.
+        See ``DESIGN_migration_tanh_gaussian.md`` §2.
         """
+        # log_prob: effective σ (policy σ + explore offset)
         clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
         raw_actions = torch.atanh(clipped_actions)
-        mean, log_std = self.forward(obs)
-        std = log_std.exp()
-        dist = Normal(mean, std)
-        log_prob = dist.log_prob(raw_actions) - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)
-        entropy = dist.entropy().sum(dim=-1)
+        mean, eff_log_std = self.forward(obs)
+        dist = Normal(mean, eff_log_std.exp())
+        log_prob = (dist.log_prob(raw_actions)
+                    - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)).sum(dim=-1)
 
-        regularizer = None
-        if self._entropy_coef != 0.0:
-            regularizer = -self._entropy_coef * entropy.mean()
+        # entropy: policy's original σ (no explore offset)
+        policy_log_std = self.log_std
+        entropy_raw = Normal(mean, policy_log_std.exp()).entropy().sum(dim=-1)
+        H_max = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + self.log_std_max)
+        H_min = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + self.log_std_min)
+        entropy_norm = (entropy_raw - H_min) / (H_max - H_min)
 
         stats: Optional[Dict[str, float]] = None
         if want_stats:
             with torch.no_grad():
-                eff_std = self.effective_log_std().exp()
+                policy_std = policy_log_std.exp()
+                eff_std = eff_log_std.exp()
                 stats = {
-                    "entropy": float(entropy.mean().item()),
-                    "std_mean": float(eff_std.mean().item()),
-                    "std_min": float(eff_std.min().item()),
-                    "std_max": float(eff_std.max().item()),
+                    "entropy_raw": float(entropy_raw.mean().item()),
+                    "std_mean": float(policy_std.mean().item()),
+                    "eff_std_mean": float(eff_std.mean().item()),
+                    "std_min": float(policy_std.min().item()),
+                    "std_max": float(policy_std.max().item()),
                     # Fraction of pre-tanh means in the saturated region.
-                    # High values mean the policy is pinned against the
-                    # action bounds, which mimics multi-modality while
-                    # actually destroying the gradient signal.
                     "tanh_sat_frac": float(
                         (mean.abs() > 2.0).float().mean().item()
                     ),
                 }
         return ActorEval(
-            log_prob=log_prob.sum(dim=-1),
-            regularizer=regularizer,
+            log_prob=log_prob,
+            entropy=entropy_norm,
             stats=stats,
         )
 
@@ -197,35 +200,21 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     # Exploration contract
     # ------------------------------------------------------------------
 
-    def set_exploration(self, spec: "ExplorationSpec") -> Dict[str, float]:
-        """Apply an :class:`ExplorationSpec`; return the effective config.
+    def set_exploration(self, explore_intensity: float) -> None:
+        """Apply an exploration directive.
 
-        Honoured fields:
+        ``explore_intensity`` ∈ [0, 1] controls how much extra noise is
+        added on top of the policy's learned σ:
 
-        - ``temperature``: multiplies sigma, implemented as an additive
-          offset of ``log(temperature)`` on ``log_std`` inside
-          :meth:`effective_log_std`.
-        - ``entropy_coef``: coefficient of the entropy bonus returned as
-          ``ActorEval.regularizer``.
+        - ``0`` = no extra noise (policy uses its learned σ as-is)
+        - ``1`` = maximum expected noise (offset = log_std_max - log_std_min)
 
-        Ignored fields: ``entropy_target`` (this backbone has no adaptive
-        coefficient — a state-independent sigma already tracks entropy
-        directly through the gradient), ``clip_eps`` / ``target_kl``
-        (consumed by the trainer, not the policy), ``policy_extras``.
+        The offset is additive on log_std: ``effective_log_std = log_std
+        + offset``.  This preserves the policy's learned σ as the base
+        and only adds exploration on top.  See
+        ``DESIGN_migration_tanh_gaussian.md`` §2.
         """
-        if spec.temperature is not None:
-            temperature = float(spec.temperature)
-            if temperature <= 0.0:
-                raise ValueError(f"temperature must be > 0, got {temperature}")
-            self._log_std_offset = float(np.log(temperature))
-        if spec.entropy_coef is not None:
-            self._entropy_coef = float(spec.entropy_coef)
-        return {
-            "entropy_coef": self._entropy_coef,
-            "temperature": float(np.exp(self._log_std_offset)),
-            "log_std_min": self.log_std_min,
-            "log_std_max": self.log_std_max,
-        }
+        self._log_std_offset = float(explore_intensity) * (self.log_std_max - self.log_std_min)
 
     # ------------------------------------------------------------------
     # Policy contract

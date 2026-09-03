@@ -474,24 +474,28 @@ def ppo_update(
         use_confidence: If True, weight advantages by ``clip(EV, 0, 1)**0.5``.
             This down-weights channels whose critic has low explained variance,
             preventing noisy advantage estimates from destabilizing the actor.
-        exploration: Optional per-update spec from the experiment. Only its
-            trust-region fields are consumed here (``clip_eps``,
-            ``target_kl``) — the distribution-shaping fields were already
-            applied to the policy before rollout via ``set_exploration``.
+        exploration: Optional per-update spec from the experiment.
+            ``entropy_floor`` and ``entropy_coef`` are consumed here to
+            compute the entropy floor loss; ``explore_intensity`` was
+            already applied to the policy before rollout via
+            ``set_exploration``.
 
     Returns:
         Stats dict for logging.
     """
-    # Trust-region width is part of the exploration story: a wider clip
-    # lets the policy move further per update. The spec overrides
-    # PPOParams for this update only; PPOParams stays the run's baseline.
+    # Trust-region knobs come from PPOParams (not overridable per-update).
     clip_eps = pp.clip_eps
     target_kl = pp.target_kl
+
+    # Entropy floor: the framework computes a one-sided hinge loss
+    # ``entropy_coef * relu(entropy_floor - H_norm)`` from the policy's
+    # normalized entropy.  This replaces the old ``ActorEval.regularizer``
+    # design where the policy computed its own loss term.
+    entropy_floor = 0.0
+    entropy_coef = 0.0
     if exploration is not None:
-        if exploration.clip_eps is not None:
-            clip_eps = float(exploration.clip_eps)
-        if exploration.target_kl is not None:
-            target_kl = float(exploration.target_kl)
+        entropy_floor = exploration.entropy_floor or 0.0
+        entropy_coef = exploration.entropy_coef or 0.0
 
     # B8: Collect diagnostic messages instead of printing directly.
     # ppo_update is supposed to be a pure function; printing is a side
@@ -942,14 +946,19 @@ def ppo_update(
                 all_ratio_means.append(float(ratio.mean().item()))
                 all_ratio_maxs.append(float(ratio.max().item()))
 
-            # The policy supplies its own regularizer, already signed and
-            # scaled — for a Tanh-Gaussian that is -entropy_coef * H, but a
-            # mixture may use a sampled entropy estimate and a diffusion
-            # policy may return None. The framework stays agnostic, which
-            # is why ``entropy_coef`` is no longer a PPO parameter.
+            # Entropy floor loss: one-sided hinge that only activates when
+            # the policy's normalized entropy drops below the floor.
+            # ``entropy_coef * relu(entropy_floor - H_norm)``.  This
+            # replaces the old ``ActorEval.regularizer`` design where the
+            # policy computed its own loss term.  The policy returns a
+            # per-obs normalized entropy in [0, 1]; the framework owns the
+            # coefficient and the floor.
             loss = policy_loss
-            if actor_eval.regularizer is not None:
-                loss = loss + actor_eval.regularizer
+            if entropy_coef > 0.0 and entropy_floor > 0.0:
+                floor_loss = entropy_coef * torch.relu(
+                    entropy_floor - actor_eval.entropy
+                ).mean()
+                loss = loss + floor_loss
 
             actor_optimizer.zero_grad()
             loss.backward()

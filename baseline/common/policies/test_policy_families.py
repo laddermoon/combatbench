@@ -34,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from baseline.common.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from baseline.common.policies.tanh_squashed_base import TanhSquashedPolicyBase
-from baseline.framework.ppo import ActorEval, ExplorationSpec
+from baseline.framework.ppo import ActorEval
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +332,6 @@ def gradient_completeness(
     # Forward + backward through evaluate_actions
     ev = policy.evaluate_actions(obs, actions)
     loss = ev.log_prob.mean()
-    if ev.regularizer is not None:
-        loss = loss + ev.regularizer
     loss.backward()
 
     results = {}
@@ -450,8 +448,8 @@ class TestStateGaussian(unittest.TestCase):
             log_std_min=-4.0, log_std_max=0.0,
             temperature=1.0,
         )
-        # Set some non-default entropy_coef to verify it doesn't break export.
-        policy.set_exploration(ExplorationSpec(entropy_coef=1e-3, temperature=1.0))
+        # Set some non-default explore_intensity to verify it doesn't break export.
+        policy.set_exploration(0.0)
 
         obs_np = self.obs[0].cpu().numpy()
 
@@ -499,32 +497,32 @@ class TestStateGaussian(unittest.TestCase):
             f"{base_latency*1e6:.1f}µs = {ratio:.1f}×, exceeds 10× budget",
         )
 
-    def test_temperature_scaling(self):
-        """Temperature > 1 must increase σ; temperature < 1 must decrease it."""
+    def test_explore_intensity_scaling(self):
+        """Higher explore_intensity must increase σ."""
         from baseline.common.policies.state_gaussian_mlp import StateGaussianMLPPolicy
 
         policy = StateGaussianMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256,
         )
-        # Measure σ at temperature=1.
+        # Measure σ at explore_intensity=0 (no extra noise).
         with torch.no_grad():
-            _, log_std_t1 = policy._forward_head(self.obs[:16])
-            std_t1 = log_std_t1.exp().mean().item()
+            _, log_std_0 = policy._forward_head(self.obs[:16])
+            std_0 = log_std_0.exp().mean().item()
 
-        # Set temperature=4.
-        policy.set_exploration(ExplorationSpec(temperature=4.0))
+        # Set explore_intensity=0.5 (moderate extra noise).
+        policy.set_exploration(0.5)
         with torch.no_grad():
-            _, log_std_t4 = policy._forward_head(self.obs[:16])
-            std_t4 = log_std_t4.exp().mean().item()
+            _, log_std_5 = policy._forward_head(self.obs[:16])
+            std_5 = log_std_5.exp().mean().item()
 
-        # Set temperature=0.25.
-        policy.set_exploration(ExplorationSpec(temperature=0.25))
+        # Set explore_intensity=1.0 (maximum extra noise).
+        policy.set_exploration(1.0)
         with torch.no_grad():
-            _, log_std_t025 = policy._forward_head(self.obs[:16])
-            std_t025 = log_std_t025.exp().mean().item()
+            _, log_std_1 = policy._forward_head(self.obs[:16])
+            std_1 = log_std_1.exp().mean().item()
 
-        self.assertGreater(std_t4, std_t1, "Temperature=4 should increase σ")
-        self.assertLess(std_t025, std_t1, "Temperature=0.25 should decrease σ")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
+        self.assertGreater(std_1, std_5, "explore_intensity=1.0 should increase σ further")
 
 
 # ---------------------------------------------------------------------------
@@ -703,8 +701,8 @@ class TestLowRankGaussian(unittest.TestCase):
             f"{base_latency*1e6:.1f}µs = {ratio:.1f}×, exceeds 10× budget",
         )
 
-    def test_temperature_scales_both_sigma_and_U(self):
-        """Temperature must scale both σ and U (covariance by T²)."""
+    def test_explore_intensity_scales_both_sigma_and_U(self):
+        """Higher explore_intensity must scale both σ and U."""
         from baseline.common.policies.low_rank_gaussian_mlp import LowRankGaussianMLPPolicy
 
         policy = LowRankGaussianMLPPolicy(
@@ -715,21 +713,21 @@ class TestLowRankGaussian(unittest.TestCase):
             ad = self.action_dim
             policy.head.weight.data[2*ad:, :] = torch.randn_like(policy.head.weight.data[2*ad:, :]) * 0.1
 
-        # Measure σ and U at T=1.
+        # Measure σ and U at explore_intensity=0.
         with torch.no_grad():
-            _, log_std_t1, U_t1 = policy._forward_head(self.obs[:16])
-            std_t1 = log_std_t1.exp().mean().item()
-            U_norm_t1 = U_t1.flatten(1).norm(dim=-1).mean().item()
+            _, log_std_0, U_0 = policy._forward_head(self.obs[:16])
+            std_0 = log_std_0.exp().mean().item()
+            U_norm_0 = U_0.flatten(1).norm(dim=-1).mean().item()
 
-        # Set T=4.
-        policy.set_exploration(ExplorationSpec(temperature=4.0))
+        # Set explore_intensity=0.5.
+        policy.set_exploration(0.5)
         with torch.no_grad():
-            _, log_std_t4, U_t4 = policy._forward_head(self.obs[:16])
-            std_t4 = log_std_t4.exp().mean().item()
-            U_norm_t4 = U_t4.flatten(1).norm(dim=-1).mean().item()
+            _, log_std_5, U_5 = policy._forward_head(self.obs[:16])
+            std_5 = log_std_5.exp().mean().item()
+            U_norm_5 = U_5.flatten(1).norm(dim=-1).mean().item()
 
-        self.assertGreater(std_t4, std_t1, "Temperature=4 should increase σ")
-        self.assertGreater(U_norm_t4, U_norm_t1, "Temperature=4 should increase ||U||")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
+        self.assertGreater(U_norm_5, U_norm_0, "explore_intensity=0.5 should increase ||U||")
 
 
 # ---------------------------------------------------------------------------
@@ -886,29 +884,29 @@ class TestMoGaussian(unittest.TestCase):
             f"{base_latency*1e6:.1f}µs = {ratio:.1f}×, exceeds 10× budget",
         )
 
-    def test_temperature_scales_sigma_not_logits(self):
-        """Temperature must scale σ but not change mixture logits."""
+    def test_explore_intensity_scales_sigma_not_logits(self):
+        """Higher explore_intensity must scale σ but not change mixture logits."""
         from baseline.common.policies.mog_tanh_mlp import MoGTanhMLPPolicy
 
         policy = MoGTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, K=3,
         )
-        # Measure σ and weights at T=1.
+        # Measure σ and weights at explore_intensity=0.
         with torch.no_grad():
-            logits_t1, _, log_stds_t1 = policy._forward_head(self.obs[:16])
-            std_t1 = log_stds_t1.exp().mean().item()
-            weights_t1 = torch.softmax(logits_t1, dim=-1)
+            logits_0, _, log_stds_0 = policy._forward_head(self.obs[:16])
+            std_0 = log_stds_0.exp().mean().item()
+            weights_0 = torch.softmax(logits_0, dim=-1)
 
-        # Set T=4.
-        policy.set_exploration(ExplorationSpec(temperature=4.0))
+        # Set explore_intensity=0.5.
+        policy.set_exploration(0.5)
         with torch.no_grad():
-            logits_t4, _, log_stds_t4 = policy._forward_head(self.obs[:16])
-            std_t4 = log_stds_t4.exp().mean().item()
-            weights_t4 = torch.softmax(logits_t4, dim=-1)
+            logits_5, _, log_stds_5 = policy._forward_head(self.obs[:16])
+            std_5 = log_stds_5.exp().mean().item()
+            weights_5 = torch.softmax(logits_5, dim=-1)
 
-        self.assertGreater(std_t4, std_t1, "Temperature=4 should increase σ")
-        # Weights should be unchanged (logits are not temperature-scaled).
-        diff_weights = (weights_t1 - weights_t4).abs().max().item()
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase σ")
+        # Weights should be unchanged (logits are not scaled).
+        diff_weights = (weights_0 - weights_5).abs().max().item()
         self.assertLess(diff_weights, 1e-6, "Mixture weights should not change with temperature")
 
     def test_component_usage_matches_weights(self):
@@ -1143,25 +1141,25 @@ class TestRealNVPFlow(unittest.TestCase):
             f"{base_latency*1e6:.1f}µs = {ratio:.1f}×, exceeds 10× budget",
         )
 
-    def test_temperature_scales_base_not_flow(self):
-        """Temperature must scale base σ but not flow parameters."""
+    def test_explore_intensity_scales_base_not_flow(self):
+        """Higher explore_intensity must scale base σ but not flow parameters."""
         from baseline.common.policies.realnvp_tanh_mlp import RealNVPTanhMLPPolicy
 
         policy = RealNVPTanhMLPPolicy(
             obs_dim=96, action_dim=21, hidden_dim=256, num_layers=4,
         )
-        # Measure base σ at T=1.
+        # Measure base σ at explore_intensity=0.
         with torch.no_grad():
-            _, base_dist_t1 = policy._base_dist(self.obs[:16])
-            std_t1 = base_dist_t1.stddev.mean().item()
+            _, base_dist_0 = policy._base_dist(self.obs[:16])
+            std_0 = base_dist_0.stddev.mean().item()
 
-        # Set T=4.
-        policy.set_exploration(ExplorationSpec(temperature=4.0))
+        # Set explore_intensity=0.5.
+        policy.set_exploration(0.5)
         with torch.no_grad():
-            _, base_dist_t4 = policy._base_dist(self.obs[:16])
-            std_t4 = base_dist_t4.stddev.mean().item()
+            _, base_dist_5 = policy._base_dist(self.obs[:16])
+            std_5 = base_dist_5.stddev.mean().item()
 
-        self.assertGreater(std_t4, std_t1, "Temperature=4 should increase base σ")
+        self.assertGreater(std_5, std_0, "explore_intensity=0.5 should increase base σ")
 
 
 # ---------------------------------------------------------------------------

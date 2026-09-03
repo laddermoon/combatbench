@@ -438,7 +438,6 @@ def train_ppo(
     #   exploration — the spec currently in force; kept so ppo_update can
     #                 read its trust-region fields.
     exploration: Optional[ExplorationSpec] = None
-    last_effective_exploration: Dict[str, float] = {}
 
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         for u in range(start_update, cp.max_updates + 1):
@@ -464,10 +463,8 @@ def train_ppo(
             spec = experiment.exploration(u)
             if spec is not None:
                 exploration = spec
-                effective = actor.set_exploration(spec)
-                if effective != last_effective_exploration:
-                    print(f"  [explore] {effective}", flush=True)
-                    last_effective_exploration = dict(effective)
+                explore_intensity, _ = spec.resolve()
+                actor.set_exploration(explore_intensity)
 
             # 1. Export stochastic policy blueprint for training rollouts.
             #    Stochastic (log_std included) so rollout samples explore.

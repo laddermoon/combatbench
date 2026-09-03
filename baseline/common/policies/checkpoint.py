@@ -85,7 +85,6 @@ class ExportedMLPPolicy(Policy):
             hidden_dim=hidden_dim,
             log_std_min=float(payload.get("log_std_min", -4.0)),
             log_std_max=float(payload.get("log_std_max", 0.0)),
-            log_std_offset=float(payload.get("log_std_offset", 0.0)),
         )
         self._policy.load_state_dict(payload["state_dict"], strict=False)
         self._policy.eval()
@@ -145,7 +144,6 @@ def build_actor_export_payload(
     # that showed up nowhere in the logs.
     export_payload["log_std_min"] = float(getattr(actor, "log_std_min", -4.0))
     export_payload["log_std_max"] = float(getattr(actor, "log_std_max", 0.0))
-    export_payload["log_std_offset"] = float(getattr(actor, "_log_std_offset", 0.0))
     export_payload["state_dict"] = {
         key: value.detach().cpu()
         for key, value in actor.state_dict().items()
