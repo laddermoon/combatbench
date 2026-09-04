@@ -166,13 +166,13 @@ class StandupStepV3(CombatExperimentPPOBase):
     # updates, starting after the stepping curriculum warmup.  This gives
     # the policy time to learn stepping without the conservative bias of
     # the balance reward, then gradually reintroduces stability.
-    r_fall_ramp_updates: int = 500
+    r_fall_ramp_updates: int = 800
 
     # --- Stepping curriculum warmup ---
     # For the first N updates, r_fall weight = 0 and foot weight is at
     # its full value.  This forces the policy to learn stepping first.
     # After N updates, r_fall begins ramping up.
-    stepping_warmup_updates: int = 100
+    stepping_warmup_updates: int = 200
 
     # --- r_potential actor weight (standup phase) ---
     # Reduced from 3.0 to 0.5: the standup behaviour is already learned
@@ -182,10 +182,11 @@ class StandupStepV3(CombatExperimentPPOBase):
     r_potential_actor_weight: float = 0.5
 
     # --- Foot reward scaling ---
-    # Increased from 0.05 to 0.20: 4x larger than the original.  The foot
-    # height reward needs to be strong enough to overcome the natural
-    # preference for standing still.
-    foot_height_clip: float = 0.20
+    # 0.30: 6x larger than the original 0.05.  The foot height reward
+    # needs to be strong enough that even small foot lifts produce a
+    # clear advantage signal.  With clip=0.30, a 1cm lift gives
+    # reward=0.01, and a 30cm lift gives reward=0.30.
+    foot_height_clip: float = 0.30
 
     # --- Foot actor weight override ---
     # The stepping state machine uses FOOT_WEIGHT=1.0 by default.  We
@@ -239,7 +240,7 @@ class StandupStepV3(CombatExperimentPPOBase):
 
     # --- Rollout schedule ---
     episodes_per_update: int = 512
-    max_updates: int = 2000
+    max_updates: int = 3000
     eval_interval: int = 5
     eval_episodes: int = 64
 
