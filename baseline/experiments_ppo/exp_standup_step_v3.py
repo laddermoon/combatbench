@@ -214,20 +214,22 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.85 → σ × exp(0.7 × 2.0) = σ × 2.01, very strong noise.
-    # The policy needs enough randomness to accidentally lift a foot and
-    # discover the foot reward.  σ×2.0 means the effective σ is about
-    # 0.35 (vs native 0.17), which should produce occasional large
-    # enough deviations in leg joints to lift a foot off the ground.
-    explore_intensity: float = 0.85
-    # 0.40 → prevents collapse back to pure-standup entropy (≈0.29).
-    # Higher than before because the stronger exploration (0.85) means
-    # the policy needs a higher floor to not collapse back when the
-    # exploration noise is removed during training updates.
-    entropy_floor: float = 0.40
-    # 0.05 → moderate coefficient, enough to counteract PPO's natural
-    # entropy reduction without dominating the gradient.
-    entropy_coef: float = 0.05
+    # 0.75 → σ × exp(0.5 × 2.0) = σ × 2.72, strong noise.
+    # Back to 0.75 (0.85 was too unstable).  The key change is the
+    # entropy_floor below — we force the policy's OWN σ to be high,
+    # not just the rollout σ.
+    explore_intensity: float = 0.75
+    # 0.55 → forces the policy's own σ to ≈0.29 (vs converged 0.17).
+    # This is the key: we don't just add rollout noise (explore_intensity),
+    # we force the policy to LEARN a wider distribution.  With floor=0.55,
+    # the hinge loss pushes log_std up until H_norm ≥ 0.55, which
+    # corresponds to σ ≈ 0.29 — almost 2x the converged standup value.
+    # This means the policy's own mean+σ distribution is wide enough to
+    # occasionally produce foot-lifting actions, even without the
+    # explore_intensity rollout noise.
+    entropy_floor: float = 0.55
+    # 0.10 → strong coefficient to make the floor binding.
+    entropy_coef: float = 0.10
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
