@@ -173,6 +173,13 @@ class StandupStepV3(CombatExperimentPPOBase):
     # stepping gradient competitive.
     foot_weight_override: float = 3.0
 
+    # --- Double grace override ---
+    # The state machine default is 6 steps (0.3s @ 20Hz).  We reduce it
+    # to 2 steps so the foot-lifting encouragement starts almost
+    # immediately when the robot enters the BALANCE phase, giving the
+    # policy more time per episode to discover stepping.
+    double_grace_override: int = 2
+
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
     agent_used = "both"
@@ -186,11 +193,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.65 → σ × exp(0.15 × 2.0) = σ × 1.35, moderate noise increase.
-    # Less than before (0.75) because the main issue was not rollout noise
-    # but reward signal strength.  Moderate noise is enough to discover
-    # stepping now that the foot reward is 9x stronger.
-    explore_intensity: float = 0.65
+    # 0.75 → σ × exp(0.5 × 2.0) = σ × 2.72, strong noise increase.
+    # The policy needs enough randomness to accidentally lift a foot and
+    # discover the foot reward.  Combined with the 9x stronger foot
+    # reward, this should create a positive feedback loop: lift foot →
+    # get reward → learn to lift intentionally.
+    explore_intensity: float = 0.75
     # 0.35 → prevents collapse back to pure-standup entropy (≈0.29).
     entropy_floor: float = 0.35
     # 0.05 → moderate coefficient, enough to counteract PPO's natural
@@ -430,6 +438,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
             h_left=h_left, h_right=h_right,
             weight=self.foot_weight_override,
+            double_grace_steps=self.double_grace_override,
         )
 
         # --- No early termination ---
