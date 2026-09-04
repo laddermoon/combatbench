@@ -24,6 +24,77 @@ __all__ = [
     "TruncatedNormalPolicy",
 ]
 
+
+def _build_export_policy_code() -> str:
+    """Return the source of the ``policy.py`` embedded in export dirs.
+
+    The produced module defines ``ExportedTruncNormPolicy`` that reuses
+    :class:`TruncatedNormalPolicy` from the repo.  Requires the repo
+    to be on ``sys.path`` (e.g., via PYTHONPATH=. when running).
+    """
+    return '''"""Policy module - imports from repo to reuse TruncatedNormalPolicy."""
+from pathlib import Path
+from typing import Any, Optional, Tuple
+
+import numpy as np
+import torch
+
+# Import from repo - requires baseline/ to be on sys.path
+from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormalPolicy
+from envs.framework.policy import Policy
+
+
+class ExportedTruncNormPolicy(Policy):
+    """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
+
+    Uses :class:`TruncatedNormalPolicy` from the training repo for
+    consistent architecture and behavior.
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        stochastic: bool = False,
+        **_ignored: Any,
+    ):
+        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
+        payload = torch.load(payload_path, map_location="cpu")
+
+        self._policy = TruncatedNormalPolicy(
+            obs_dim=int(payload["obs_dim"]),
+            action_dim=int(payload["action_dim"]),
+            hidden_dim=int(payload["hidden_dim"]),
+        )
+        self._policy.load_state_dict(payload["state_dict"], strict=False)
+        self._policy.eval()
+        self.stochastic = bool(stochastic)
+
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
+        """Return action for given observation."""
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            if self.stochastic:
+                action, _ = self._policy.sample_action(obs_tensor)
+            else:
+                action = self._policy.deterministic_action(obs_tensor)
+        return action.squeeze(0).cpu().numpy().astype(np.float32), None
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Optional: reseed RNG for reproducible rollouts."""
+        if seed is not None:
+            torch.manual_seed(seed)
+        return None
+
+
+# Backward compatibility alias
+Policy = ExportedTruncNormPolicy
+'''
+
 # Numerical safety bounds for log_std.
 _LOG_STD_SAFE_MIN = -20.0  # exp(-20) ≈ 2e-9
 _LOG_STD_SAFE_MAX = 20.0   # exp(20) ≈ 5e8
@@ -292,13 +363,37 @@ class TruncatedNormalPolicy(nn.Module, Policy):
     ) -> "PolicyBlueprint":
         """Export to a deployable PolicyBlueprint.
 
-        TODO: implement standalone export for truncated normal.
-        For now, raises NotImplementedError — export will be added
-        once the policy is validated in training.
+        Writes ``model.pt`` + ``policy.py`` (standalone, imports
+        TruncatedNormalPolicy from repo) into ``dest_path`` and returns
+        a blueprint that rebuilds the policy via the generated
+        ``ExportedTruncNormPolicy`` class.
         """
-        raise NotImplementedError(
-            "TruncatedNormalPolicy export not yet implemented. "
-            "Use TanhGaussianMLPPolicy for deployable policies."
+        import tempfile
+
+        if dest_path is None:
+            dest_path = tempfile.mkdtemp(prefix="policy_export_")
+        policy_dir = Path(dest_path)
+        policy_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save model payload
+        payload = {
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "hidden_dim": self.hidden_dim,
+            "state_dict": {
+                k: v.detach().cpu() for k, v in self.state_dict().items()
+            },
+        }
+        torch.save(payload, policy_dir / "model.pt")
+
+        # Generate standalone policy.py that imports from repo
+        policy_code = _build_export_policy_code()
+        (policy_dir / "policy.py").write_text(policy_code, encoding="utf-8")
+
+        policy_py_path = policy_dir / "policy.py"
+        return PolicyBlueprint(
+            cls=f"file:{policy_py_path}:ExportedTruncNormPolicy",
+            config={"stochastic": stochastic},
         )
 
     # ------------------------------------------------------------------
