@@ -154,8 +154,13 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- r_fall actor weight (fixed, same as exp_basic_balance_step) ---
     r_fall_actor_weight: float = 3.0
 
-    # --- r_potential actor weight (fixed, standup phase) ---
-    r_potential_actor_weight: float = 3.0
+    # --- r_potential actor weight (standup phase) ---
+    # Reduced from 3.0 to 1.0: the standup behaviour is already learned
+    # (pretrained), so we don't need the standup reward to dominate the
+    # policy gradient.  A lower weight keeps the standup signal alive
+    # (prevents forgetting) while letting the stepping channels drive
+    # exploration and learning.
+    r_potential_actor_weight: float = 1.0
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -174,9 +179,15 @@ class StandupStepV3(CombatExperimentPPOBase):
     # This gives the converged standup policy enough randomness to discover
     # stepping without completely destroying the standup behaviour.
     explore_intensity: float = 0.75
-    # 0.35 → prevents collapse back to pure-standup entropy (≈0.30).
-    entropy_floor: float = 0.35
-    entropy_coef: float = 0.01
+    # 0.40 → prevents collapse back to pure-standup entropy (≈0.29).
+    # The converged standup policy has normalized entropy ≈0.29; we set
+    # the floor above this to force the policy to maintain *more* entropy
+    # than pure standing requires, creating room for stepping exploration.
+    entropy_floor: float = 0.40
+    # 0.05 → 5x the default, needed because the PPO gradient from the
+    # standup reward channel (aw=3.0) is strong and would otherwise
+    # overwhelm the floor hinge loss.
+    entropy_coef: float = 0.05
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
