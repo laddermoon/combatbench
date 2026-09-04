@@ -219,20 +219,14 @@ class StandupStepV3(CombatExperimentPPOBase):
     # entropy_floor below — we force the policy's OWN σ to be high,
     # not just the rollout σ.
     explore_intensity: float = 0.75
-    # 0.55 → forces the policy's own σ to ≈0.29 (vs converged 0.17).
-    # This is the key: we don't just add rollout noise (explore_intensity),
-    # we force the policy to LEARN a wider distribution.  With floor=0.55,
-    # the hinge loss pushes log_std up until H_norm ≥ 0.55, which
-    # corresponds to σ ≈ 0.29 — almost 2x the converged standup value.
-    # This means the policy's own mean+σ distribution is wide enough to
-    # occasionally produce foot-lifting actions, even without the
-    # explore_intensity rollout noise.
-    entropy_floor: float = 0.55
-    # 0.30 → very strong coefficient.  The PPO gradient from the standup
-    # reward keeps pulling σ down, and coef=0.10 wasn't enough to
-    # counteract it.  With coef=0.30, the floor loss (0.30 × 0.28 = 0.084)
-    # is 12x larger than the PPO policy loss (~0.007), which should
-    # finally dominate and force σ up.
+    # 0.70 → forces the policy's own σ to ≈0.47 (vs converged 0.17).
+    # Combined with log_std_reset=-0.5 (σ=0.61), the floor at 0.70
+    # prevents σ from dropping below 0.47, giving the policy enough
+    # randomness to discover stepping while still being grounded in
+    # the standup behavior.
+    entropy_floor: float = 0.70
+    # 0.30 → very strong coefficient to hold the floor against PPO's
+    # natural entropy reduction.
     entropy_coef: float = 0.30
 
     # --- Sigma bounds (match standup training) ---
@@ -240,12 +234,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     log_std_max: float = 0.0
 
     # --- PPO tuning ---
-    # Standard LR (same as standup training).  The lower LR (5e-5) was
-    # too conservative — the policy couldn't move its mean action toward
-    # stepping fast enough.  With the strong foot reward and startup
-    # bias, a standard LR lets the policy actually learn the new behavior.
-    learning_rate: float = 3e-4
-    critic_learning_rate: float = 3e-4
+    # Lower LR to preserve standup behaviour while learning stepping.
+    # The standard LR (3e-4) was too aggressive — it collapsed σ faster
+    # than the entropy floor could counteract.  1e-4 is a compromise:
+    # slow enough for the floor to hold, fast enough to learn stepping.
+    learning_rate: float = 1e-4
+    critic_learning_rate: float = 1e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
@@ -282,6 +276,36 @@ class StandupStepV3(CombatExperimentPPOBase):
             )
             for k in self._channel_names
         )
+
+    # ------------------------------------------------------------------
+    # Actor construction with log_std reset
+    # ------------------------------------------------------------------
+
+    # When resuming from a pretrained standup checkpoint, the policy's
+    # log_std is very low (≈-1.8, σ≈0.17).  This makes the policy too
+    # deterministic to discover stepping.  We reset log_std to a higher
+    # value after loading, giving the policy enough randomness to
+    # explore foot-lifting actions.  The network weights (mean action)
+    # are preserved from the pretrained model.
+    log_std_reset_value: float = -0.5
+    """Reset log_std to this value after loading pretrained checkpoint.
+    -0.5 → σ ≈ 0.60, which is 3.5x the converged standup σ (0.17).
+    Set to None to disable the reset (use loaded log_std as-is)."""
+
+    def build_actor(self, device):
+        """Build actor and reset log_std for stepping exploration."""
+        import torch
+        actor = super().build_actor(device)
+        if self.log_std_reset_value is not None and hasattr(actor, "log_std"):
+            old_std = float(actor.log_std.data.exp().mean().item())
+            actor.log_std.data.fill_(self.log_std_reset_value)
+            new_std = float(actor.log_std.data.exp().mean().item())
+            print(
+                f"[log_std_reset] {old_std:.4f} → {new_std:.4f} "
+                f"(log_std={self.log_std_reset_value})",
+                flush=True,
+            )
+        return actor
 
     # ------------------------------------------------------------------
     # Phase determination
