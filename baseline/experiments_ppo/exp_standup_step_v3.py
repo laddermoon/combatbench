@@ -179,15 +179,17 @@ class StandupStepV3(CombatExperimentPPOBase):
     # This gives the converged standup policy enough randomness to discover
     # stepping without completely destroying the standup behaviour.
     explore_intensity: float = 0.75
-    # 0.40 → prevents collapse back to pure-standup entropy (≈0.29).
+    # 0.45 → prevents collapse back to pure-standup entropy (≈0.29).
     # The converged standup policy has normalized entropy ≈0.29; we set
-    # the floor above this to force the policy to maintain *more* entropy
-    # than pure standing requires, creating room for stepping exploration.
-    entropy_floor: float = 0.40
-    # 0.05 → 5x the default, needed because the PPO gradient from the
-    # standup reward channel (aw=3.0) is strong and would otherwise
-    # overwhelm the floor hinge loss.
-    entropy_coef: float = 0.05
+    # the floor well above this to force the policy to maintain *much*
+    # more entropy than pure standing requires, creating room for
+    # stepping exploration.
+    entropy_floor: float = 0.45
+    # 0.15 → 15x the default.  The PPO clip loss naturally pushes entropy
+    # down, and the standup reward channel reinforces this.  A strong
+    # coef is needed to make the floor hinge competitive with the PPO
+    # gradient.
+    entropy_coef: float = 0.15
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
@@ -197,7 +199,9 @@ class StandupStepV3(CombatExperimentPPOBase):
     # Lower LR to preserve standup behaviour while learning stepping.
     learning_rate: float = 5e-5
     critic_learning_rate: float = 1e-4
-    target_kl: float = 0.05
+    # Lower target_kl to limit per-update policy change, preserving
+    # the pretrained standup behaviour.
+    target_kl: float = 0.03
     update_epochs: int = 4
     minibatch_size: int = 4096
 
