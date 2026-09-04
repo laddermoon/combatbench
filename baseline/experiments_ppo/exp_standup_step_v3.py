@@ -155,12 +155,23 @@ class StandupStepV3(CombatExperimentPPOBase):
     r_fall_actor_weight: float = 3.0
 
     # --- r_potential actor weight (standup phase) ---
-    # Reduced from 3.0 to 1.0: the standup behaviour is already learned
-    # (pretrained), so we don't need the standup reward to dominate the
-    # policy gradient.  A lower weight keeps the standup signal alive
-    # (prevents forgetting) while letting the stepping channels drive
-    # exploration and learning.
-    r_potential_actor_weight: float = 1.0
+    # Reduced from 3.0 to 0.5: the standup behaviour is already learned
+    # (pretrained), so the standup reward only needs a weak signal to
+    # prevent forgetting.  This lets the stepping channels dominate
+    # the policy gradient during the BALANCE phase.
+    r_potential_actor_weight: float = 0.5
+
+    # --- Foot reward scaling ---
+    # Increased from 0.05 to 0.15: the foot height reward was 5.7x weaker
+    # than r_fall, so the policy ignored it.  A 3x larger clip makes the
+    # stepping signal competitive with the balance reward.
+    foot_height_clip: float = 0.15
+
+    # --- Foot actor weight override ---
+    # The stepping state machine uses FOOT_WEIGHT=1.0 by default.  We
+    # override it to 3.0 to match r_fall's actor weight, making the
+    # stepping gradient competitive.
+    foot_weight_override: float = 3.0
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -175,21 +186,16 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.75 → σ × exp(0.5 × 2.0) = σ × 2.72, roughly tripling rollout noise.
-    # This gives the converged standup policy enough randomness to discover
-    # stepping without completely destroying the standup behaviour.
-    explore_intensity: float = 0.75
-    # 0.45 → prevents collapse back to pure-standup entropy (≈0.29).
-    # The converged standup policy has normalized entropy ≈0.29; we set
-    # the floor well above this to force the policy to maintain *much*
-    # more entropy than pure standing requires, creating room for
-    # stepping exploration.
-    entropy_floor: float = 0.45
-    # 0.15 → 15x the default.  The PPO clip loss naturally pushes entropy
-    # down, and the standup reward channel reinforces this.  A strong
-    # coef is needed to make the floor hinge competitive with the PPO
-    # gradient.
-    entropy_coef: float = 0.15
+    # 0.65 → σ × exp(0.15 × 2.0) = σ × 1.35, moderate noise increase.
+    # Less than before (0.75) because the main issue was not rollout noise
+    # but reward signal strength.  Moderate noise is enough to discover
+    # stepping now that the foot reward is 9x stronger.
+    explore_intensity: float = 0.65
+    # 0.35 → prevents collapse back to pure-standup entropy (≈0.29).
+    entropy_floor: float = 0.35
+    # 0.05 → moderate coefficient, enough to counteract PPO's natural
+    # entropy reduction without dominating the gradient.
+    entropy_coef: float = 0.05
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
@@ -199,9 +205,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     # Lower LR to preserve standup behaviour while learning stepping.
     learning_rate: float = 5e-5
     critic_learning_rate: float = 1e-4
-    # Lower target_kl to limit per-update policy change, preserving
-    # the pretrained standup behaviour.
-    target_kl: float = 0.03
+    target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
 
@@ -425,6 +429,7 @@ class StandupStepV3(CombatExperimentPPOBase):
         w_left, w_right = self._compute_foot_weights_masked(
             contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
             h_left=h_left, h_right=h_right,
+            weight=self.foot_weight_override,
         )
 
         # --- No early termination ---
