@@ -190,19 +190,25 @@ U_total = mean(U_i),  i = 1..action_dim
 ### 6.3 explore_intensity：保留，线性缩放 σ
 
 explore_intensity 是框架要求的探索控制接口，必须保留。语义改为
-直接线性缩放 σ（不再用 log_std offset）：
+直接缩放 σ（不再用 log_std offset）：
 
 ```
-scale = 1/3 + (explore_intensity) × (3 - 1/3)    # 线性插值
+# 分段线性插值，三个锚点：0→1/3, 0.5→1, 1→3
+if ei <= 0.5:
+    scale = 1/3 + (ei / 0.5) × (1 - 1/3)
+else:
+    scale = 1 + ((ei - 0.5) / 0.5) × (3 - 1)
 σ_effective = σ × scale
 ```
 
 | explore_intensity | scale | 含义 |
 |---:|---:|---|
 | 0.0 | 1/3 ≈ 0.333 | 最大压缩：σ 除以 3 |
+| 0.25 | ≈ 0.667 | 中度压缩 |
 | 0.5 | 1.0 | 中性：不改变 σ |
+| 0.75 | 2.0 | 中度扩张 |
 | 1.0 | 3.0 | 最大扩张：σ 乘以 3 |
-| 中间 | 线性插值 | 平滑过渡 |
+| 中间 | 分段线性插值 | 平滑过渡 |
 
 这和 TanhGaussianMLPPolicy 的 offset 语义不同——之前是在 log_std 空间
 加偏移，现在是直接乘 σ。因为截断正态的 σ 已经在动作空间，直接缩放更自然。

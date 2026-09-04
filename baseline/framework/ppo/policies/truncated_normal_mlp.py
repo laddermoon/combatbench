@@ -1,0 +1,323 @@
+"""TruncatedNormalPolicy — truncated normal distribution on action space.
+
+Distribution is defined directly on [-1, 1] via a truncated normal,
+eliminating the pre-tanh / tanh-transform indirection of
+TanhGaussianMLPPolicy.
+
+See DESIGN_truncated_normal.md for the full design rationale.
+"""
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+import torch
+from torch import nn
+
+from envs.framework.policy import Policy, PolicyBlueprint
+
+from baseline.framework.ppo import ActorEval
+
+__all__ = [
+    "TruncatedNormalPolicy",
+]
+
+# Numerical safety bounds for log_std.
+_LOG_STD_SAFE_MIN = -20.0  # exp(-20) ≈ 2e-9
+_LOG_STD_SAFE_MAX = 20.0   # exp(20) ≈ 5e8
+
+# Constants for standard normal CDF / PDF.
+_SQRT_2 = math.sqrt(2.0)
+_SQRT_2PI = math.sqrt(2.0 * math.pi)
+_INV_SQRT_2PI = 1.0 / _SQRT_2PI
+
+# Action space bounds (hardcoded for humanoid21: [-1, 1]).
+_ACTION_LOW = -1.0
+_ACTION_HIGH = 1.0
+_ACTION_WIDTH = _ACTION_HIGH - _ACTION_LOW  # = 2.0
+
+
+def _std_normal_cdf(x: torch.Tensor) -> torch.Tensor:
+    """Standard normal CDF, differentiable via erf."""
+    return 0.5 * (1.0 + torch.erf(x / _SQRT_2))
+
+
+def _std_normal_pdf(x: torch.Tensor) -> torch.Tensor:
+    """Standard normal PDF, differentiable."""
+    return _INV_SQRT_2PI * torch.exp(-0.5 * x * x)
+
+
+def _std_normal_icdf(u: torch.Tensor) -> torch.Tensor:
+    """Standard normal inverse CDF, differentiable via erfinv.
+
+    u must be in (0, 1).  Clamped for numerical safety.
+    """
+    u_clamped = torch.clamp(u, 1e-6, 1.0 - 1e-6)
+    return _SQRT_2 * torch.erfinv(2.0 * u_clamped - 1.0)
+
+
+class TruncatedNormalPolicy(nn.Module, Policy):
+    """Truncated normal policy on [-1, 1].
+
+    mean = tanh(net(obs))  ∈ (-1, 1)
+    σ    = exp(log_std)    > 0  (global parameter, per-dim)
+
+    The distribution is Normal(mean, σ) truncated to [-1, 1] and
+    renormalized.  Sampling uses inverse-CDF reparameterization;
+    log_prob includes the truncation normalization term.
+
+    Uncertainty U = 1 / (2 × peak) is a geometric area ratio in [0, 1]:
+    0 = deterministic, 1 = uniform.  See DESIGN_truncated_normal.md §3.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int,
+        device: torch.device | str = "cpu",
+        deterministic: bool = False,
+    ):
+        super().__init__()
+        self.obs_dim = int(obs_dim)
+        self.action_dim = int(action_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.device = torch.device(device)
+        self._deterministic = bool(deterministic)
+
+        # Exploration state: linear σ scaling.
+        #   0.0 → σ × 1/3, 0.5 → σ × 1, 1.0 → σ × 3
+        # Plain float, not a buffer — owned by the experiment schedule.
+        self._explore_scale = 1.0
+
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+        self.log_std = nn.Parameter(
+            torch.full((action_dim,), -1.0, dtype=torch.float32)
+        )
+
+    # ------------------------------------------------------------------
+    # Distribution helpers
+    # ------------------------------------------------------------------
+
+    def effective_log_std(self) -> torch.Tensor:
+        """log_std with numerical safety clamp (no business bounds)."""
+        return torch.clamp(
+            self.log_std, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX
+        )
+
+    def effective_sigma(self) -> torch.Tensor:
+        """σ used for sampling / log_prob (includes explore scale)."""
+        return self.effective_log_std().exp() * self._explore_scale
+
+    def policy_sigma(self) -> torch.Tensor:
+        """σ without explore scale — for uncertainty U."""
+        return self.effective_log_std().exp()
+
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
+        raw_mean = self.net(obs)
+        mean = torch.tanh(raw_mean)  # ensure mean ∈ (-1, 1)
+        sigma = self.effective_sigma()
+        return mean, sigma.expand_as(mean)
+
+    def _trunc_params(
+        self, mean: torch.Tensor, sigma: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute standardized truncation bounds and normalization Z.
+
+        Returns (a, b, log_Z) where:
+            a = (low  - mean) / sigma   (standardized lower bound)
+            b = (high - mean) / sigma   (standardized upper bound)
+            Z  = Φ(b) - Φ(a)            (truncation normalization)
+        """
+        a = (_ACTION_LOW - mean) / sigma
+        b = (_ACTION_HIGH - mean) / sigma
+        cdf_b = _std_normal_cdf(b)
+        cdf_a = _std_normal_cdf(a)
+        Z = cdf_b - cdf_a
+        # Clamp Z away from 0 for numerical stability.
+        Z = torch.clamp(Z, min=1e-8)
+        log_Z = torch.log(Z)
+        return a, b, log_Z
+
+    # ------------------------------------------------------------------
+    # Sampling
+    # ------------------------------------------------------------------
+
+    def sample_action(
+        self, obs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample action ∈ [-1, 1] via inverse-CDF reparameterization.
+
+        Returns (action, log_prob) where log_prob is summed over dims.
+        """
+        mean, sigma = self.forward(obs)
+        a, b, log_Z = self._trunc_params(mean, sigma)
+
+        # Inverse-CDF sampling:
+        #   u ~ Uniform(Φ(a), Φ(b))
+        #   ε = Φ⁻¹(u)
+        #   action = mean + σ × ε
+        cdf_a = _std_normal_cdf(a)
+        cdf_b = _std_normal_cdf(b)
+        u = torch.rand_like(mean) * (cdf_b - cdf_a) + cdf_a
+        eps = _std_normal_icdf(u)
+        action = mean + sigma * eps
+        # Numerical safety: clamp to [-1, 1]
+        action = torch.clamp(action, _ACTION_LOW + 1e-6, _ACTION_HIGH - 1e-6)
+
+        # log_prob = Normal.log_prob(action) - log(Z)
+        z = (action - mean) / sigma
+        log_prob = (-0.5 * z * z - torch.log(sigma) - 0.5 * math.log(2 * math.pi)
+                    - log_Z)
+        return action, log_prob.sum(dim=-1)
+
+    def deterministic_action(self, obs: torch.Tensor) -> torch.Tensor:
+        """Return mean action (no sampling)."""
+        mean, _ = self.forward(obs)
+        return mean
+
+    # ------------------------------------------------------------------
+    # Evaluation (training-side)
+    # ------------------------------------------------------------------
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        *,
+        frame_modes: Optional[torch.Tensor] = None,
+        noise_shift: Optional[torch.Tensor] = None,
+        want_stats: bool = False,
+    ) -> ActorEval:
+        """Score actions and compute uncertainty for PPO.
+
+        log_prob uses effective σ (with explore scale) so the PPO
+        importance ratio is correct.  entropy (uncertainty U) uses
+        policy σ (without explore scale) so it reflects the policy's
+        own certainty.
+        """
+        mean, eff_sigma = self.forward(obs)
+        a, b, log_Z = self._trunc_params(mean, eff_sigma)
+
+        # log_prob: effective σ
+        actions_clamped = torch.clamp(
+            actions, _ACTION_LOW + 1e-6, _ACTION_HIGH - 1e-6
+        )
+        z = (actions_clamped - mean) / eff_sigma
+        log_prob = (-0.5 * z * z - torch.log(eff_sigma)
+                    - 0.5 * math.log(2 * math.pi) - log_Z)
+        log_prob = log_prob.sum(dim=-1)
+
+        # Uncertainty U = 1 / (2 × peak), using policy σ (no explore scale)
+        policy_sigma = self.policy_sigma()
+        policy_mean = torch.tanh(self.net(obs))  # recompute without explore
+        # mean ∈ (-1, 1) so peak is at x = mean
+        # peak = 1 / (σ × √(2π) × Z)
+        # U = σ × √(2π) × Z / 2
+        _, _, log_Z_policy = self._trunc_params(policy_mean, policy_sigma)
+        Z_policy = torch.exp(log_Z_policy)
+        U_per_dim = policy_sigma * _SQRT_2PI * Z_policy / _ACTION_WIDTH
+        # Arithmetic mean over dims → (B,)
+        uncertainty = U_per_dim.mean(dim=-1)
+
+        stats: Optional[Dict[str, float]] = None
+        if want_stats:
+            with torch.no_grad():
+                stats = {
+                    "uncertainty": float(uncertainty.mean().item()),
+                    "std_mean": float(policy_sigma.mean().item()),
+                    "eff_std_mean": float(eff_sigma.mean().item()),
+                    "std_min": float(policy_sigma.min().item()),
+                    "std_max": float(policy_sigma.max().item()),
+                    "mean_abs": float(policy_mean.abs().mean().item()),
+                }
+
+        return ActorEval(
+            log_prob=log_prob,
+            entropy=uncertainty,
+            stats=stats,
+        )
+
+    # ------------------------------------------------------------------
+    # Exploration contract
+    # ------------------------------------------------------------------
+
+    def set_exploration(self, explore_intensity: float) -> None:
+        """Apply exploration via piecewise-linear σ scaling.
+
+        explore_intensity ∈ [0, 1]:
+            0.0 → σ × 1/3  (maximum compression)
+            0.5 → σ × 1    (neutral)
+            1.0 → σ × 3    (maximum expansion)
+        Piecewise-linear interpolation between these three anchors.
+        """
+        ei = float(explore_intensity)
+        if ei <= 0.5:
+            # [0, 0.5]: 1/3 → 1
+            self._explore_scale = 1.0 / 3.0 + (ei / 0.5) * (1.0 - 1.0 / 3.0)
+        else:
+            # [0.5, 1]: 1 → 3
+            self._explore_scale = 1.0 + ((ei - 0.5) / 0.5) * (3.0 - 1.0)
+
+    # ------------------------------------------------------------------
+    # Policy contract
+    # ------------------------------------------------------------------
+
+    def act(
+        self,
+        observation: Any,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
+        action_np, log_prob = self.act_numpy(
+            observation, device=self.device, deterministic=self._deterministic
+        )
+        if not want_extra or log_prob is None:
+            return action_np, None
+        return action_np, {"log_prob": float(log_prob)}
+
+    def set_deterministic(self, deterministic: bool) -> None:
+        self._deterministic = bool(deterministic)
+
+    def to_blueprint(
+        self, dest_path: Optional[str] = None, *, stochastic: bool = False,
+    ) -> "PolicyBlueprint":
+        """Export to a deployable PolicyBlueprint.
+
+        TODO: implement standalone export for truncated normal.
+        For now, raises NotImplementedError — export will be added
+        once the policy is validated in training.
+        """
+        raise NotImplementedError(
+            "TruncatedNormalPolicy export not yet implemented. "
+            "Use TanhGaussianMLPPolicy for deployable policies."
+        )
+
+    # ------------------------------------------------------------------
+    # Numpy inference (for rollout workers)
+    # ------------------------------------------------------------------
+
+    def act_numpy(
+        self, obs: np.ndarray, device: torch.device, deterministic: bool
+    ) -> tuple[np.ndarray, Optional[float]]:
+        obs_tensor = torch.as_tensor(
+            obs, dtype=torch.float32, device=device
+        ).unsqueeze(0)
+        with torch.no_grad():
+            if deterministic:
+                action = self.deterministic_action(obs_tensor)
+                log_prob = None
+            else:
+                action, log_prob = self.sample_action(obs_tensor)
+        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
+        if log_prob is None:
+            return action_np, None
+        return action_np, float(log_prob.item())
