@@ -240,9 +240,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     log_std_max: float = 0.0
 
     # --- PPO tuning ---
-    # Lower LR to preserve standup behaviour while learning stepping.
-    learning_rate: float = 5e-5
-    critic_learning_rate: float = 1e-4
+    # Standard LR (same as standup training).  The lower LR (5e-5) was
+    # too conservative — the policy couldn't move its mean action toward
+    # stepping fast enough.  With the strong foot reward and startup
+    # bias, a standard LR lets the policy actually learn the new behavior.
+    learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
