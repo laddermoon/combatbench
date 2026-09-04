@@ -175,13 +175,13 @@ class StandupStepV3(CombatExperimentPPOBase):
     stepping_warmup_updates: int = 200
 
     # --- r_potential actor weight (standup phase) ---
-    # Set to 0.0: the standup behaviour is already learned (pretrained
-    # weights), so the standup reward is not needed during stepping
-    # training.  Setting it to 0 ensures the foot channels are the
-    # ONLY signal during the BALANCE phase, maximizing their relative
-    # advantage.  The standup behaviour is preserved by the pretrained
-    # network weights, not by the reward gradient.
-    r_potential_actor_weight: float = 0.0
+    # 1.0: needed to preserve standup behaviour.  Setting it to 0.0
+    # caused the policy to forget how to stand (final_pot dropped from
+    # 0.999 to 0.618 in 60 updates).  The pretrained weights alone are
+    # not enough — PPO updates drift the mean action without a reward
+    # anchor.  1.0 is a moderate value that preserves standup while
+    # letting the foot channels (weight 5.0) dominate during BALANCE.
+    r_potential_actor_weight: float = 1.0
 
     # --- Foot reward scaling ---
     # 0.30: 6x larger than the original 0.05.  The foot height reward
