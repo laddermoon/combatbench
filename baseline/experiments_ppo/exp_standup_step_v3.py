@@ -422,17 +422,17 @@ class StandupStepV3(CombatExperimentPPOBase):
                 )
 
                 # --- Startup bias: alternating foot-lift encouragement ---
-                # During the first N steps of each BALANCE segment, if the
-                # robot is still in double support (no step taken yet,
-                # i.e. all weights from the state machine are from the
-                # "initial double" branch), override with an alternating
-                # pattern that strongly encourages one foot at a time.
+                # During the first N steps of each BALANCE segment, for
+                # any frame where the robot is in double support (both
+                # feet down), override with an alternating pattern that
+                # strongly encourages one foot at a time.  This breaks
+                # the chicken-and-egg problem where the policy never
+                # enters a support phase because it never lifts a foot.
                 if startup_bias and seg_len > 0:
-                    # Check if no step has been taken yet (all contacts
-                    # are double support in this segment)
-                    no_step = bool(np.all(cl[:min(seg_len, startup_bias_steps)].astype(bool) & cr[:min(seg_len, startup_bias_steps)].astype(bool)))
-                    if no_step:
-                        for i in range(min(seg_len, startup_bias_steps)):
+                    n_bias = min(seg_len, startup_bias_steps)
+                    both_down = cl[:n_bias].astype(bool) & cr[:n_bias].astype(bool)
+                    for i in range(n_bias):
+                        if both_down[i]:
                             # Alternate every 5 steps: lift left, then right
                             if (i // 5) % 2 == 0:
                                 wl[i] = weight * 2.0  # strong lift left
