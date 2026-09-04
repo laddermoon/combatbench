@@ -214,14 +214,17 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.75 → σ × exp(0.5 × 2.0) = σ × 2.72, strong noise increase.
+    # 0.85 → σ × exp(0.7 × 2.0) = σ × 2.01, very strong noise.
     # The policy needs enough randomness to accidentally lift a foot and
-    # discover the foot reward.  Combined with the 9x stronger foot
-    # reward, this should create a positive feedback loop: lift foot →
-    # get reward → learn to lift intentionally.
-    explore_intensity: float = 0.75
-    # 0.35 → prevents collapse back to pure-standup entropy (≈0.29).
-    entropy_floor: float = 0.35
+    # discover the foot reward.  σ×2.0 means the effective σ is about
+    # 0.35 (vs native 0.17), which should produce occasional large
+    # enough deviations in leg joints to lift a foot off the ground.
+    explore_intensity: float = 0.85
+    # 0.40 → prevents collapse back to pure-standup entropy (≈0.29).
+    # Higher than before because the stronger exploration (0.85) means
+    # the policy needs a higher floor to not collapse back when the
+    # exploration noise is removed during training updates.
+    entropy_floor: float = 0.40
     # 0.05 → moderate coefficient, enough to counteract PPO's natural
     # entropy reduction without dominating the gradient.
     entropy_coef: float = 0.05
