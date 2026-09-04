@@ -228,8 +228,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     # occasionally produce foot-lifting actions, even without the
     # explore_intensity rollout noise.
     entropy_floor: float = 0.55
-    # 0.10 → strong coefficient to make the floor binding.
-    entropy_coef: float = 0.10
+    # 0.30 → very strong coefficient.  The PPO gradient from the standup
+    # reward keeps pulling σ down, and coef=0.10 wasn't enough to
+    # counteract it.  With coef=0.30, the floor loss (0.30 × 0.28 = 0.084)
+    # is 12x larger than the PPO policy loss (~0.007), which should
+    # finally dominate and force σ up.
+    entropy_coef: float = 0.30
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
