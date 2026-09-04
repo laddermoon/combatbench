@@ -151,8 +151,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- Foot height reward saturation ---
     foot_height_clip: float = 0.05
 
-    # --- r_fall actor weight (fixed, same as exp_basic_balance_step) ---
-    r_fall_actor_weight: float = 3.0
+    # --- r_fall actor weight (balance phase) ---
+    # Reduced from 3.0 to 1.0: the balance reward penalizes falling, but
+    # with a high weight it makes the policy too conservative to lift
+    # feet.  A lower weight still discourages falling but lets the foot
+    # reward dominate during stepping attempts.
+    r_fall_actor_weight: float = 1.0
 
     # --- r_potential actor weight (standup phase) ---
     # Reduced from 3.0 to 0.5: the standup behaviour is already learned
@@ -162,16 +166,16 @@ class StandupStepV3(CombatExperimentPPOBase):
     r_potential_actor_weight: float = 0.5
 
     # --- Foot reward scaling ---
-    # Increased from 0.05 to 0.15: the foot height reward was 5.7x weaker
-    # than r_fall, so the policy ignored it.  A 3x larger clip makes the
-    # stepping signal competitive with the balance reward.
-    foot_height_clip: float = 0.15
+    # Increased from 0.05 to 0.20: 4x larger than the original.  The foot
+    # height reward needs to be strong enough to overcome the natural
+    # preference for standing still.
+    foot_height_clip: float = 0.20
 
     # --- Foot actor weight override ---
     # The stepping state machine uses FOOT_WEIGHT=1.0 by default.  We
-    # override it to 3.0 to match r_fall's actor weight, making the
-    # stepping gradient competitive.
-    foot_weight_override: float = 3.0
+    # override it to 5.0 to make the stepping gradient dominant during
+    # the BALANCE phase.
+    foot_weight_override: float = 5.0
 
     # --- Double grace override ---
     # The state machine default is 6 steps (0.3s @ 20Hz).  We reduce it
