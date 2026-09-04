@@ -353,12 +353,22 @@ class StandupStepV3(CombatExperimentPPOBase):
         phase_a_steps: int = PHASE_A_STEPS,
         phase_b_end: int = PHASE_B_END,
         double_grace_steps: int = DOUBLE_GRACE_STEPS,
+        startup_bias: bool = True,
+        startup_bias_steps: int = 40,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Balance-gated foot weights.
 
         Delegates to ``stepping_state_machine.compute_foot_weights`` on each
         contiguous BALANCE segment.  Non-BALANCE (STANDUP) frames get zero
         weight and the state machine resets at each segment boundary.
+
+        **Startup bias**: When enabled, the first ``startup_bias_steps``
+        frames of each BALANCE segment get an asymmetric weight pattern
+        that alternates between encouraging left and right foot lifting
+        every 5 steps.  This breaks the chicken-and-egg problem where
+        the policy never enters a support phase because it never lifts
+        a foot.  The alternating pattern gives the policy a clear,
+        time-varying signal to try lifting one foot at a time.
 
         Returns ``(w_left, w_right)``, each shape ``(T,)`` float32.
         """
@@ -383,6 +393,27 @@ class StandupStepV3(CombatExperimentPPOBase):
                     phase_b_end=phase_b_end,
                     double_grace_steps=double_grace_steps,
                 )
+
+                # --- Startup bias: alternating foot-lift encouragement ---
+                # During the first N steps of each BALANCE segment, if the
+                # robot is still in double support (no step taken yet,
+                # i.e. all weights from the state machine are from the
+                # "initial double" branch), override with an alternating
+                # pattern that strongly encourages one foot at a time.
+                if startup_bias and seg_len > 0:
+                    # Check if no step has been taken yet (all contacts
+                    # are double support in this segment)
+                    no_step = bool(np.all(cl[:min(seg_len, startup_bias_steps)].astype(bool) & cr[:min(seg_len, startup_bias_steps)].astype(bool)))
+                    if no_step:
+                        for i in range(min(seg_len, startup_bias_steps)):
+                            # Alternate every 5 steps: lift left, then right
+                            if (i // 5) % 2 == 0:
+                                wl[i] = weight * 2.0  # strong lift left
+                                wr[i] = -weight * 0.5  # slight press right
+                            else:
+                                wr[i] = weight * 2.0  # strong lift right
+                                wl[i] = -weight * 0.5  # slight press left
+
                 w_left[seg_start:t] = wl
                 w_right[seg_start:t] = wr
             if t < T and not in_seg:
