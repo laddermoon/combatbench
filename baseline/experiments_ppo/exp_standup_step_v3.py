@@ -1,6 +1,12 @@
-"""V2 end-to-end: phase-switched standup + balance with per-foot stepping.
+"""V3 end-to-end: standup (pretrained) + balance with per-foot stepping.
 
-From random fallen state → stand up → maintain balance + stepping.
+from random fallen state → stand up → maintain balance + stepping.
+
+This experiment is designed to be **resumed from a pretrained standup
+checkpoint** (``--resume-from <standup_ckpt> --reset-update``).  The
+standup policy is already converged (std_mean≈0.18, entropy≈-7), so
+the key challenge is **re-injecting exploration** so the policy can
+discover stepping behaviour without forgetting how to stand.
 
 Two reward phases with hard switch based on torso height:
 
@@ -42,10 +48,41 @@ internal state (last_swing, support_steps, prev_state) is reset.
 
 See exp_basic_balance_step.py for the full state machine documentation.
 
+Exploration re-injection
+------------------------
+The pretrained standup policy has very low std (≈0.18) and negative
+entropy (≈-7 nats).  Without re-injection, the policy is too deterministic
+to discover stepping.  We use:
+
+  explore_intensity = 0.75  →  σ × exp(0.5 × 2.0) = σ × 2.72
+    This roughly triples the effective std during rollout, giving the
+    policy enough noise to try lifting feet while still being grounded
+    in the standup behaviour.
+
+  entropy_floor = 0.35
+    Prevents the policy from collapsing back to pure-standup during
+    training.  The floor is set above the converged standup entropy
+    (≈0.30) so the policy is pushed to maintain *more* entropy than
+    pure standing requires.
+
+  entropy_coef = 0.01
+    Standard coefficient for the floor hinge loss.
+
+  learning_rate = 5e-5  (half of standup's 1e-4)
+    Slower updates to preserve the standup behaviour while learning
+    the new stepping skill.
+
 No imbalance termination — robot can fall and get back up.
 Every step is trainable.
 
 Blueprint: baseline/humanoid21/end2end/standup_step_v3_env.yaml
+
+Usage (resuming from pretrained standup checkpoint):
+
+  PYTHONPATH=. python3 baseline/framework/train.py \\
+    --experiment standup_step_v3 --algo ppo \\
+    --resume-from baseline/runs/train_standup_ppo_<...>/checkpoints/checkpoint_u01200.pt \\
+    --reset-update --background
 """
 from __future__ import annotations
 
@@ -87,6 +124,9 @@ class StandupStepV3(CombatExperimentPPOBase):
 
     Dual-agent: both robots get RandomFallenStatePlugin and train
     simultaneously.  No early termination — robot can fall and recover.
+
+    Designed to resume from a pretrained standup checkpoint with
+    exploration re-injection (see module docstring).
     """
 
     name = "standup_step_v3"
@@ -120,7 +160,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
     agent_used = "both"
-    max_steps: int = 200
+    max_steps: int = 400  # standup ~100 + balance/stepping ~300
 
     # Observer keys: (agent_id, foot_key, phi4stage_key, phi_height_key)
     _AGENT_OBS = (
@@ -129,27 +169,40 @@ class StandupStepV3(CombatExperimentPPOBase):
     )
     _AGENT_IDS = ("robot_a", "robot_b")
 
-    # --- PPO tuning (aligned with exp_standup) ---
+    # --- Exploration (re-injection for pretrained standup policy) ---
+    # 0.75 → σ × exp(0.5 × 2.0) = σ × 2.72, roughly tripling rollout noise.
+    # This gives the converged standup policy enough randomness to discover
+    # stepping without completely destroying the standup behaviour.
+    explore_intensity: float = 0.75
+    # 0.35 → prevents collapse back to pure-standup entropy (≈0.30).
+    entropy_floor: float = 0.35
+    entropy_coef: float = 0.01
+
+    # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5
-    learning_rate: float = 1e-4
+    log_std_max: float = 0.0
+
+    # --- PPO tuning ---
+    # Lower LR to preserve standup behaviour while learning stepping.
+    learning_rate: float = 5e-5
     critic_learning_rate: float = 1e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 1e-3
 
     # --- Rollout schedule ---
     episodes_per_update: int = 512
-    max_updates: int = 5000
+    max_updates: int = 2000
     eval_interval: int = 5
     eval_episodes: int = 64
 
     # --- Video recording ---
-    video_eval_interval: int = 2
+    video_eval_interval: int = 5
 
     # --- Stateful metrics ---
     _best_potential: float = -1.0
     _success_rate: float = 0.0
+    _best_step_metric: float = -1.0
 
     # ------------------------------------------------------------------
     # Blueprint loading
@@ -428,9 +481,42 @@ class StandupStepV3(CombatExperimentPPOBase):
     # Eval
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _count_steps(
+        contact_l: np.ndarray, contact_r: np.ndarray, T: int,
+    ) -> int:
+        """Count the number of gait steps (support transitions) in a segment.
+
+        A "step" is a transition from SUPPORT_L to SUPPORT_R or vice versa,
+        passing through DOUBLE or FLIGHT.  We count the number of times
+        the support foot changes.
+        """
+        if T == 0:
+            return 0
+        steps = 0
+        prev_support = None  # 'L' or 'R'
+        for t in range(T):
+            cl = bool(contact_l[t])
+            cr = bool(contact_r[t])
+            if cl and not cr:
+                cur = 'L'
+            elif cr and not cl:
+                cur = 'R'
+            else:
+                cur = None  # DOUBLE or FLIGHT
+
+            if cur is not None and cur != prev_support:
+                if prev_support is not None:
+                    steps += 1
+                prev_support = cur
+        return steps
+
     def on_eval(self, episodes, update) -> Dict[str, Any]:
         max_pots = []
         final_pots = []
+        max_hs = []
+        step_counts = []
+        balance_fracs = []
         success_count = 0
         n_agents = 0
 
@@ -439,10 +525,15 @@ class StandupStepV3(CombatExperimentPPOBase):
             if T == 0:
                 continue
 
-            for agent_id, _, phi4stage_key, _ in self._AGENT_OBS:
+            for agent_id, foot_key, phi4stage_key, _ in self._AGENT_OBS:
                 n_agents += 1
+
+                # --- Standup metrics ---
                 phi = extract_per_step_field(
                     ep.observer_outputs, phi4stage_key, "potential", T,
+                )
+                h_torso = extract_per_step_field(
+                    ep.observer_outputs, phi4stage_key, "h_torso", T,
                 )
                 if phi is not None and len(phi) > 0:
                     mx = float(np.max(phi))
@@ -452,12 +543,50 @@ class StandupStepV3(CombatExperimentPPOBase):
                     fn = 0.0
                 max_pots.append(mx)
                 final_pots.append(fn)
+
+                if h_torso is not None and len(h_torso) > 0:
+                    max_hs.append(float(np.max(h_torso)))
+                else:
+                    max_hs.append(0.0)
+
                 if mx >= 0.9:
                     success_count += 1
+
+                # --- Phase mask ---
+                if h_torso is not None and len(h_torso) > 0:
+                    h_arr = np.asarray(h_torso[:T], dtype=np.float64)
+                    bmask = self._compute_phase_mask(h_arr, T)
+                else:
+                    bmask = np.zeros(T, dtype=bool)
+                balance_fracs.append(float(bmask.sum()) / max(T, 1))
+
+                # --- Stepping metrics (only in BALANCE phase) ---
+                try:
+                    contact_l = self._extract_foot_field(ep, foot_key, "left_foot_contact", T)
+                    contact_r = self._extract_foot_field(ep, foot_key, "right_foot_contact", T)
+                    # Count steps in BALANCE segments only
+                    total_steps = 0
+                    seg_start = 0
+                    for t in range(T + 1):
+                        in_seg = t < T and bool(bmask[t])
+                        seg_active = t > seg_start and (t == T or not in_seg)
+                        if seg_active:
+                            seg_len = t - seg_start
+                            cl = np.asarray(contact_l[seg_start:t], dtype=bool)
+                            cr = np.asarray(contact_r[seg_start:t], dtype=bool)
+                            total_steps += self._count_steps(cl, cr, seg_len)
+                        if t < T and not in_seg:
+                            seg_start = t + 1
+                    step_counts.append(total_steps)
+                except KeyError:
+                    step_counts.append(0)
 
         n = max(len(max_pots), 1)
         mean_max_pot = sum(max_pots) / n if max_pots else 0.0
         mean_final_pot = sum(final_pots) / n if final_pots else 0.0
+        mean_max_h = sum(max_hs) / n if max_hs else 0.0
+        mean_steps = sum(step_counts) / n if step_counts else 0.0
+        mean_balance_frac = sum(balance_fracs) / n if balance_fracs else 0.0
         success_rate = success_count / n
 
         self._success_rate = success_rate
@@ -466,13 +595,21 @@ class StandupStepV3(CombatExperimentPPOBase):
         if is_new_best:
             self._best_potential = mean_max_pot
 
+        # Track best step metric separately
+        is_best_steps = mean_steps > self._best_step_metric
+        if is_best_steps:
+            self._best_step_metric = mean_steps
+
         return {
             "is_new_best": is_new_best,
             "stop_training": False,
             "info": {
                 "max_pot": round(mean_max_pot, 3),
                 "final_pot": round(mean_final_pot, 3),
+                "max_h": round(mean_max_h, 3),
                 "success": round(success_rate, 3),
+                "steps": round(mean_steps, 1),
+                "bal_frac": round(mean_balance_frac, 3),
             },
         }
 
@@ -480,11 +617,13 @@ class StandupStepV3(CombatExperimentPPOBase):
         return {
             "best_potential": self._best_potential,
             "success_rate": self._success_rate,
+            "best_step_metric": self._best_step_metric,
         }
 
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
+        self._best_step_metric = float(state.get("best_step_metric", -1.0))
 
 
 EXPERIMENT_CLASS = StandupStepV3
