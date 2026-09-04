@@ -845,6 +845,12 @@ def ppo_update(
     all_ratio_maxs: List[float] = []
     all_grad_norms_actor: List[float] = []
     all_grad_norms_critic: Dict[str, List[float]] = {key: [] for key in reward_keys}
+    # Gradient diagnostics for log_std (collected on mb_idx==0 only)
+    all_pol_logstd_grads: List[float] = []
+    all_floor_logstd_grads: List[float] = []
+    all_pol_logstd_grad_sign: List[float] = []
+    all_floor_logstd_grad_sign: List[float] = []
+    all_floor_active_frac: List[float] = []
 
     # B1: Critic updates are decoupled from actor KL early-stop.
     # When the actor hits target_kl, we stop updating the actor but
@@ -954,11 +960,39 @@ def ppo_update(
             # per-obs normalized entropy in [0, 1]; the framework owns the
             # coefficient and the floor.
             loss = policy_loss
+            floor_loss = torch.tensor(0.0, device=policy_loss.device)
             if entropy_coef > 0.0 and entropy_floor > 0.0:
                 floor_loss = entropy_coef * torch.relu(
                     entropy_floor - actor_eval.entropy
                 ).mean()
                 loss = loss + floor_loss
+
+                # --- Gradient diagnostics for log_std ---
+                # Measure how much policy_loss vs floor_loss each contribute
+                # to the gradient on log_std.  This is critical for
+                # diagnosing why the entropy floor may not be holding.
+                # We use torch.autograd.grad with retain_graph=True to
+                # compute per-loss gradients without side effects on
+                # actor's .grad attributes.
+                if hasattr(actor, "log_std") and mb_idx == 0:
+                    pol_grads = torch.autograd.grad(
+                        policy_loss, actor.log_std,
+                        retain_graph=True, create_graph=False,
+                        allow_unused=True,
+                    )[0]
+                    floor_grads = torch.autograd.grad(
+                        floor_loss, actor.log_std,
+                        retain_graph=True, create_graph=False,
+                        allow_unused=True,
+                    )[0]
+                    if pol_grads is not None and floor_grads is not None:
+                        all_pol_logstd_grads.append(float(pol_grads.abs().mean().item()))
+                        all_floor_logstd_grads.append(float(floor_grads.abs().mean().item()))
+                        all_pol_logstd_grad_sign.append(float(pol_grads.mean().item()))
+                        all_floor_logstd_grad_sign.append(float(floor_grads.mean().item()))
+                        all_floor_active_frac.append(
+                            float((actor_eval.entropy < entropy_floor).float().mean().item())
+                        )
 
             actor_optimizer.zero_grad()
             loss.backward()
@@ -1053,6 +1087,21 @@ def ppo_update(
     # --- 7. Aggregate stats for logging ---
     # Collect per-channel and global statistics into a typed UpdateStats.
     # The training loop calls to_log_dict() for __RAW_STATS__ logging.
+
+    # Gradient diagnostics for log_std (printed as diagnostics lines)
+    if all_pol_logstd_grads:
+        pol_g = float(np.mean(all_pol_logstd_grads))
+        floor_g = float(np.mean(all_floor_logstd_grads))
+        pol_sign = float(np.mean(all_pol_logstd_grad_sign))
+        floor_sign = float(np.mean(all_floor_logstd_grad_sign))
+        floor_frac = float(np.mean(all_floor_active_frac))
+        diagnostics.append(
+            f"  [GradDiag] log_std grad: pol_abs={pol_g:.6f} "
+            f"floor_abs={floor_g:.6f} ratio={floor_g/(pol_g+1e-12):.2f}x | "
+            f"pol_sign={pol_sign:+.6f} floor_sign={floor_sign:+.6f} | "
+            f"floor_active={floor_frac:.3f}"
+        )
+
     critic_losses: Dict[str, float] = {
         key: float(np.mean(val_losses[key])) if val_losses[key] else 0.0
         for key in reward_keys
