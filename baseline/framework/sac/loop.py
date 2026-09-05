@@ -29,7 +29,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from baseline.framework.ppo.policies import export_actor_policy_artifacts
 from baseline.framework.rollout import Episode, ParallelRollouter
 
 from .experiment import (
@@ -588,16 +587,7 @@ def train_sac(
                             },
                         )
                     else:
-                        export_actor_policy_artifacts(
-                            actor=actor,
-                            policy_dir=policy_dir,
-                            extra_payload={
-                                "algorithm": "sac_v2",
-                                "experiment": cp.name,
-                                "env_step": env_step,
-                                "best_eval_info": eval_info,
-                            },
-                        )
+                        actor.to_blueprint(dest_path=str(policy_dir), stochastic=False)
                     eval_line += "  [new_best]"
 
                 print(eval_line, flush=True)
