@@ -1,8 +1,8 @@
 """Lightweight parallel episode collector.
 
-Each job is fully specified by a tuple::
-
-    (policy_a_blueprint, policy_b_blueprint, env_blueprint, seed, options)
+Each job is a :class:`Job` (frozen dataclass) specifying two policy
+blueprints, an env blueprint, a seed, env-only options, and per-policy
+explore_intensity.
 
 ``robot_a`` and ``robot_b`` may use different policies.
 The collector returns a flat ``List[Episode]`` in the same order as
@@ -29,6 +29,7 @@ from envs.framework.policy import PolicyBlueprint
 from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
+from .job import EiSpec, Job
 
 _logger = logging.getLogger(__name__)
 
@@ -51,7 +52,9 @@ def _run_job(
     policy_b_bp_dict: Dict[str, Any],
     env_bp_dict: Dict[str, Any],
     seed: int,
-    options: Optional[Dict[str, Any]] = None,
+    options: Optional[Dict[str, Any]],
+    ei_a: EiSpec,
+    ei_b: EiSpec,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
     env_bp = EnvBlueprint.from_dict(env_bp_dict)
@@ -67,12 +70,15 @@ def _run_job(
         policy_a=policy_a,
         policy_b=policy_b,
     )
-    runner.run_episode(seed=seed, options=options, want_extras=True)
+    runner.run_episode(
+        seed=seed, options=options, want_extras=True,
+        explore_intensity_a=ei_a, explore_intensity_b=ei_b,
+    )
     return recorder.get_last_episode()
 
 
 def _run_job_batch(
-    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]]]],
+    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EiSpec, EiSpec]],
 ) -> List[Episode]:
     """Run a batch of jobs, reusing EnvRuntime + Policy when blueprints match.
 
@@ -88,7 +94,7 @@ def _run_job_batch(
     current_pa_key: Optional[str] = None
     current_pb_key: Optional[str] = None
 
-    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options in tasks:
+    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ei_a, ei_b in tasks:
         env_key = json.dumps(env_bp_dict, sort_keys=True, ensure_ascii=False)
         pa_key = json.dumps(policy_a_bp_dict, sort_keys=True, ensure_ascii=False)
         pb_key = json.dumps(policy_b_bp_dict, sort_keys=True, ensure_ascii=False)
@@ -131,7 +137,10 @@ def _run_job_batch(
                 runner.set_policy_b(new_pb)
                 current_pb_key = pb_key
 
-        runner.run_episode(seed=seed, options=options, want_extras=True)
+        runner.run_episode(
+            seed=seed, options=options, want_extras=True,
+            explore_intensity_a=ei_a, explore_intensity_b=ei_b,
+        )
         episodes.append(recorder.get_last_episode())
 
     if runner is not None:
@@ -153,7 +162,7 @@ def _run_chunk(
 # ParallelRollouter
 # ---------------------------------------------------------------------------
 class ParallelRollouter:
-    """Collect :class:`Episode`s in parallel from blueprint tuples.
+    """Collect :class:`Episode`s in parallel from :class:`Job` objects.
 
     Parameters
     ----------
@@ -186,15 +195,7 @@ class ParallelRollouter:
     # ------------------------------------------------------------------
     def collect(
         self,
-        jobs: Sequence[
-            Tuple[
-                PolicyBlueprint,
-                PolicyBlueprint,
-                EnvBlueprint,
-                int,
-                Optional[Dict[str, Any]],
-            ]
-        ],
+        jobs: Sequence[Job],
     ) -> List[Episode]:
         """Run all jobs and return a list of :class:`Episode`.
 
@@ -205,9 +206,7 @@ class ParallelRollouter:
         Parameters
         ----------
         jobs:
-            ``(policy_a_blueprint, policy_b_blueprint, env_blueprint, seed,
-            options)`` per episode. ``options`` is optional and forwarded
-            to :meth:`EpisodeRunner.run_episode`.
+            :class:`Job` instances, one per episode.
 
         Returns
         -------
@@ -217,16 +216,20 @@ class ParallelRollouter:
         if not jobs:
             raise ValueError("jobs must not be empty")
 
-        # Serialize blueprints to plain dicts for pickling into workers
+        # Serialize blueprints to plain dicts for pickling into workers.
+        # explore_intensity (float or callable) is passed through as-is;
+        # callables must be top-level functions to be picklable.
         tasks = [
             (
-                policy_a_bp.to_dict(),
-                policy_b_bp.to_dict(),
-                env_bp.to_dict(),
-                int(seed),
-                dict(options) if options is not None else None,
+                job.policy_a_bp.to_dict(),
+                job.policy_b_bp.to_dict(),
+                job.env_bp.to_dict(),
+                int(job.seed),
+                dict(job.episode_options) if job.episode_options else None,
+                job.explore_intensity_a,
+                job.explore_intensity_b,
             )
-            for policy_a_bp, policy_b_bp, env_bp, seed, options in jobs
+            for job in jobs
         ]
 
         if self._num_workers <= 1:

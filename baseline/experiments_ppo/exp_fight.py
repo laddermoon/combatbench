@@ -81,6 +81,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
 )
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.rollout.job import EiSpec, Job
 
 
 # --- Phase thresholds (same as balance_v2 / follow_v2) ---
@@ -281,14 +282,14 @@ class StandupFight(CombatExperimentPPOBase):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
-    ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
+        explore_intensity: EiSpec = 0.0,
+    ) -> List[Job]:
         env_pb = self._env_pb()
         rng = np.random.default_rng(base_seed)
         pool_w = self._pool_weights()
         opponent_indices = rng.choice(len(self._pool), size=n_episodes, p=pool_w)
 
-        jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
+        jobs: List[Job] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
@@ -309,10 +310,15 @@ class StandupFight(CombatExperimentPPOBase):
             initial_distance = float(rng.uniform(
                 self.init_distance_min, self.init_distance_max,
             ))
-            jobs.append((
-                pa, pb, env_bp, seed,
-                {"agent_id": agent_id, "initial_distance": initial_distance, "explore_intensity": explore_intensity},
-            ))
+            jobs.append(Job(
+    policy_a_bp=pa,
+    policy_b_bp=pb,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
+    explore_intensity_a=explore_intensity,
+    explore_intensity_b=explore_intensity,
+))
         return jobs
 
     # ------------------------------------------------------------------

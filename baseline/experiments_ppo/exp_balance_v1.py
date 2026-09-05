@@ -36,6 +36,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
 )
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.rollout.job import EiSpec, Job
 
 
 class BalanceV1(CombatExperimentPPOBase):
@@ -168,8 +169,8 @@ class BalanceV1(CombatExperimentPPOBase):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
-    ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
+        explore_intensity: EiSpec = 0.0,
+    ) -> List[Job]:
         env_pb = self._env_pb()
         env_bp = env_pb.materialize(max_steps=self.max_steps)
 
@@ -177,7 +178,7 @@ class BalanceV1(CombatExperimentPPOBase):
         idx = max(0, min(self._level, len(self.LEVEL_DURATION_RANGES) - 1))
         dur_min, dur_max = self.LEVEL_DURATION_RANGES[idx]
 
-        jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
+        jobs: List[Job] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             impulse_params = {}
@@ -189,11 +190,15 @@ class BalanceV1(CombatExperimentPPOBase):
                     "body": "torso",
                     "seed": seed,
                 }
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bp, seed,
-                {"impulse_params": impulse_params, "explore_intensity": explore_intensity},
-            ))
+            jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={"impulse_params": impulse_params},
+    explore_intensity_a=explore_intensity,
+    explore_intensity_b=explore_intensity,
+))
         return jobs
 
     # ------------------------------------------------------------------

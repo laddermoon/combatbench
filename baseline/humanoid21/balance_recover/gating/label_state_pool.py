@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from baseline.framework.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter, Job
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -52,7 +52,13 @@ def build_labeling_jobs(
         options: Dict[str, Any] = {
             "state_bank_index": int(valid_indices[i]),
         }
-        jobs.append((recover_bp, recover_bp, env_bp, EPISODE_SEED, options))
+        jobs.append(Job(
+    policy_a_bp=recover_bp,
+    policy_b_bp=recover_bp,
+    env_bp=env_bp,
+    seed=EPISODE_SEED,
+    episode_options=options,
+))
     return jobs
 
 

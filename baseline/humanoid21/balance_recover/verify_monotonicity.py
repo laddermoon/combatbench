@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from baseline.framework.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter, Job
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -112,11 +112,13 @@ def main() -> None:
             start = len(all_jobs)
             for i in range(args.episodes_per_cell):
                 seed = base_seed + i
-                all_jobs.append((
-                    policy_bp, policy_bp,
-                    env_bp, seed,
-                    {"agent_id": args.agent_id, "initial_distance": 2.0},
-                ))
+                all_jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={"agent_id": args.agent_id, "initial_distance": 2.0},
+))
             cell_map.append((angle, duration, start, args.episodes_per_cell))
             base_seed += args.episodes_per_cell
 

@@ -122,6 +122,8 @@ import torch.nn as nn
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
+from baseline.framework.rollout.job import EiSpec, Job
+
 
 # ---------------------------------------------------------------------------
 # Exploration contract
@@ -201,11 +203,11 @@ class ExplorationSpec:
             exploration strength.
     """
 
-    explore_intensity: Optional[float] = None
+    explore_intensity: Optional[EiSpec] = None
     entropy_floor: Optional[float] = None
     entropy_coef: Optional[float] = None
 
-    def resolve(self) -> Tuple[float, float]:
+    def resolve(self) -> Tuple[EiSpec, float]:
         """Return ``(explore_intensity, entropy_floor)`` with fallbacks.
 
         Returns the explicit values, defaulting to ``0.0`` for
@@ -213,8 +215,8 @@ class ExplorationSpec:
         ``entropy_floor`` when ``None``.
 
         Returns:
-            ``(explore_intensity, entropy_floor)`` as floats in [-1, 1]
-            and [0, 1] respectively.
+            ``(explore_intensity, entropy_floor)``.  ``explore_intensity``
+            may be a float or a callable ``(obs, step) -> float``.
         """
         return (
             self.explore_intensity if self.explore_intensity is not None else 0.0,
@@ -696,7 +698,7 @@ class ExperimentPPO(ABC):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
+        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
 
@@ -705,11 +707,18 @@ class ExperimentPPO(ABC):
         is stochastic (training) or deterministic (eval) by passing the
         appropriate ``policy_bp``.
 
-        ``explore_intensity`` is injected into each job's
-        ``episode_options["explore_intensity"]`` so the rollout worker
-        passes it to ``policy.act`` at every step.  For evaluation,
-        the caller passes ``explore_intensity=0.0`` (neutral) — the
-        deterministic policy ignores it.
+        ``explore_intensity`` is placed into each :class:`Job`'s
+        ``explore_intensity_a`` / ``explore_intensity_b`` fields (not
+        into ``episode_options``, which is environment-only).  The
+        episode runner resolves it per-frame and passes it to
+        ``policy.act``.  For evaluation, the caller passes
+        ``explore_intensity=0.0`` (neutral) — the deterministic policy
+        ignores it.
+
+        ``explore_intensity`` may be a ``float`` (constant per episode)
+        or a callable ``(obs, step) -> float`` for per-frame scheduling.
+        Callables must be top-level functions to be picklable across
+        multiprocessing workers.
 
         Args:
             policy_bp: The actor's exported policy blueprint.  For
@@ -719,11 +728,11 @@ class ExperimentPPO(ABC):
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
             explore_intensity: Exploration intensity for this batch.
-                Default 0.0 (neutral).
+                Default 0.0 (neutral).  Applied to both agents; override
+                ``build_jobs`` to give each agent a different value.
 
         Returns:
-            List of Job tuples:
-            ``(policy_a_bp, policy_b_bp, env_bp, seed, episode_options)``
+            List of :class:`Job` instances, one per episode.
         """
         ...
 

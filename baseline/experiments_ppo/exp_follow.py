@@ -39,6 +39,7 @@ from baseline.humanoid21.rewards.follow_opponent import (
 )
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.rollout.job import EiSpec, Job
 
 
 class Follow(CombatExperimentPPOBase):
@@ -129,12 +130,12 @@ class Follow(CombatExperimentPPOBase):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
-    ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
+        explore_intensity: EiSpec = 0.0,
+    ) -> List[Job]:
         env_pb = self._env_pb()
         speed = self.current_speed
 
-        jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
+        jobs: List[Job] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             agent_id = self._agent_from_rollout_seed(seed)
@@ -145,11 +146,15 @@ class Follow(CombatExperimentPPOBase):
                 oppo_agent_id=oppo_agent_id,
                 random_move_speed=speed,
             )
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bp, seed,
-                {"agent_id": agent_id, "initial_distance": self.INITIAL_DISTANCE, "explore_intensity": explore_intensity},
-            ))
+            jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={"agent_id": agent_id, "initial_distance": self.INITIAL_DISTANCE},
+    explore_intensity_a=explore_intensity,
+    explore_intensity_b=explore_intensity,
+))
         return jobs
 
     # ------------------------------------------------------------------

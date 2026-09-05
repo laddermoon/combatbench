@@ -28,6 +28,7 @@ from baseline.framework.ppo import (
     TrainablePolicy,
 )
 from baseline.framework.critic_mlp import CriticMLP
+from baseline.framework.rollout.job import EiSpec, Job
 
 
 class CombatExperimentPPOBase(ExperimentPPO):
@@ -253,12 +254,14 @@ class CombatExperimentPPOBase(ExperimentPPO):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
-    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        explore_intensity: EiSpec = 0.0,
+    ) -> List[Job]:
         """Build self-play rollout jobs.
 
-        ``explore_intensity`` is injected into each job's ``options`` so
-        the rollout worker passes it to ``policy.act`` at every step.
+        ``explore_intensity`` is placed into each :class:`Job`'s
+        ``explore_intensity_a`` / ``explore_intensity_b`` fields (not
+        into ``episode_options``).  The episode runner resolves it
+        per-frame and passes it to ``policy.act``.
 
         Subclass can override for non-self-play scenarios.
         """
@@ -314,22 +317,26 @@ class CombatExperimentPPOBase(ExperimentPPO):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.0,
-    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+        explore_intensity: EiSpec = 0.0,
+    ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
-            jobs: List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]] = []
+            jobs: List[Job] = []
             for i in range(n_episodes):
                 seed = int(base_seed + i)
                 initial_distance = float(
                     rng.uniform(self.init_distance_min, self.init_distance_max)
                 )
-                jobs.append((
-                    policy_bp, policy_bp,
-                    env_bp, seed,
-                    {"initial_distance": initial_distance, "explore_intensity": explore_intensity},
+                jobs.append(Job(
+                    policy_a_bp=policy_bp,
+                    policy_b_bp=policy_bp,
+                    env_bp=env_bp,
+                    seed=seed,
+                    episode_options={"initial_distance": initial_distance},
+                    explore_intensity_a=explore_intensity,
+                    explore_intensity_b=explore_intensity,
                 ))
             return jobs
 
@@ -355,11 +362,14 @@ class CombatExperimentPPOBase(ExperimentPPO):
             initial_distance = float(
                 rng.uniform(self.init_distance_min, self.init_distance_max)
             )
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bps[agent_id], seed,
-                {"agent_id": agent_id, "initial_distance": initial_distance,
-                 "explore_intensity": explore_intensity},
+            jobs.append(Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bps[agent_id],
+                seed=seed,
+                episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
+                explore_intensity_a=explore_intensity,
+                explore_intensity_b=explore_intensity,
             ))
         return jobs
 

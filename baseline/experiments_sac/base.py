@@ -21,6 +21,7 @@ from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 from baseline.framework.ppo import TrainablePolicy
+from baseline.framework.rollout.job import Job
 from baseline.framework.sac.experiment import (
     CommonParamsSAC,
     DataSource,
@@ -195,7 +196,7 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+    ) -> List[Job]:
         return self._build_selfplay_jobs(
             self._env_pb(), policy_bp, base_seed, n_episodes,
         )
@@ -226,21 +227,23 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
+    ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
-            jobs = []
+            jobs: List[Job] = []
             for i in range(n_episodes):
                 seed = int(base_seed + i)
                 initial_distance = float(
                     rng.uniform(self.init_distance_min, self.init_distance_max)
                 )
-                jobs.append((
-                    policy_bp, policy_bp,
-                    env_bp, seed,
-                    {"initial_distance": initial_distance},
+                jobs.append(Job(
+                    policy_a_bp=policy_bp,
+                    policy_b_bp=policy_bp,
+                    env_bp=env_bp,
+                    seed=seed,
+                    episode_options={"initial_distance": initial_distance},
                 ))
             return jobs
 
@@ -265,10 +268,12 @@ class CombatExperimentSACBase(ExperimentSAC):
             initial_distance = float(
                 rng.uniform(self.init_distance_min, self.init_distance_max)
             )
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bps[agent_id], seed,
-                {"agent_id": agent_id, "initial_distance": initial_distance},
+            jobs.append(Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bps[agent_id],
+                seed=seed,
+                episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
             ))
         return jobs
 

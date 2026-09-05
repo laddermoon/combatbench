@@ -26,6 +26,7 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
 from baseline.framework.ppo import TrainablePolicy
+from baseline.framework.rollout.job import Job
 
 
 # ---------------------------------------------------------------------------

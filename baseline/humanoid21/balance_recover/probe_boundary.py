@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from baseline.framework.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter, Job
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
@@ -108,11 +108,13 @@ def main() -> None:
                     },
                 }
                 start = len(all_jobs)
-                all_jobs.append((
-                    policy_bp, policy_bp,
-                    env_bp, base_seed,
-                    options,
-                ))
+                all_jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=base_seed,
+    episode_options=options,
+))
                 cell_map.append((angle, force, duration, start))
                 base_seed += 1
 

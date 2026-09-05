@@ -453,10 +453,14 @@ def train_ppo(
             #    accumulated from previous updates' stats. On the first
             #    update of a process, on_update() has not been called yet,
             #    so the experiment's initial state is used.
+            #
+            #    explore_intensity may be a float or a callable
+            #    (obs, step) -> float for per-frame scheduling.  It is
+            #    passed through to build_jobs as-is.
             spec = experiment.exploration(u)
             if spec is not None:
                 exploration = spec
-                explore_intensity, _ = spec.resolve()
+                explore_intensity = spec.explore_intensity if spec.explore_intensity is not None else 0.0
             else:
                 explore_intensity = 0.0
 
@@ -464,7 +468,7 @@ def train_ppo(
             #    Stochastic (log_std included) so rollout samples explore.
             #    A fresh export each update ensures workers use the latest weights.
             #    The export is exploration-neutral — explore_intensity is
-            #    passed per-step via build_jobs → options → policy.act.
+            #    passed per-step via build_jobs → Job → policy.act.
             t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"u{u:05d}"
             policy_bp = actor.to_blueprint(
@@ -475,8 +479,8 @@ def train_ppo(
             # 2. Build rollout jobs.
             #    Experiment decides agent assignment, initial distance, seeds.
             #    Rollout seed is offset by update * batch size for reproducibility.
-            #    explore_intensity is injected into each job's options so the
-            #    rollout worker passes it to policy.act at every step.
+            #    explore_intensity is passed to build_jobs; the experiment
+            #    puts it into Job.explore_intensity_a/b (not episode_options).
             t0 = time.perf_counter()
             rollout_seed = cp.seed + u * cp.episodes_per_update
             jobs = experiment.build_jobs(

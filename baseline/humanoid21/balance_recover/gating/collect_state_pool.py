@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
-from baseline.framework.rollout import ParallelRollouter
+from baseline.framework.rollout import ParallelRollouter, Job
 from baseline.humanoid21.balance_recover.sample_distribution import ImpulseSampler
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
@@ -152,7 +152,13 @@ def build_path_a_jobs(
                 },
             }
 
-            jobs.append((noisy_bp, random_bp, env_bp, episode_seed, options))
+            jobs.append(Job(
+    policy_a_bp=noisy_bp,
+    policy_b_bp=random_bp,
+    env_bp=env_bp,
+    seed=episode_seed,
+    episode_options=options,
+))
 
     return jobs
 
@@ -206,7 +212,13 @@ def build_path_b_jobs(
                 },
             }
 
-            jobs.append((noisy_bp, random_bp, env_bp, episode_seed, options))
+            jobs.append(Job(
+    policy_a_bp=noisy_bp,
+    policy_b_bp=random_bp,
+    env_bp=env_bp,
+    seed=episode_seed,
+    episode_options=options,
+))
 
     return jobs
 

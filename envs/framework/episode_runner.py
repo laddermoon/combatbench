@@ -92,7 +92,7 @@ from __future__ import annotations
 import logging
 import secrets
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import numpy as np
 
@@ -189,6 +189,8 @@ class EpisodeRunner:
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
         want_extras: bool = False,
+        explore_intensity_a: Union[float, Callable[[np.ndarray, int], float]] = 0.0,
+        explore_intensity_b: Union[float, Callable[[np.ndarray, int], float]] = 0.0,
     ) -> None:
         """Run a single episode end-to-end. Returns ``None``.
 
@@ -206,35 +208,40 @@ class EpisodeRunner:
         on ``ctx.episode_options`` for plugins / observers / recorders to
         read per-episode parameters (HP carry-over, curriculum knobs,
         opponent snapshot id, …). See ``framework/RESET.md`` §4.
+        ``options`` must be **environment-only** — do not put
+        policy-related fields here.
 
         ``want_extras`` controls whether each ``policy.act`` is called
         with ``want_extra=True``. Default is ``False``; set to ``True``
         when you need the policy's side-channel payload (log-prob /
         value estimates for on-policy RL, etc.).
+
+        ``explore_intensity_a`` / ``explore_intensity_b`` are the
+        exploration intensities for each policy.  Either a constant
+        ``float`` (same value every step) or a callable
+        ``(obs, step) -> float`` that is called each step to produce a
+        per-frame value.  The runner records the resolved per-frame
+        value alongside the observation.  Default ``0.0`` (neutral).
         """
         base_seed = _resolve_seed(seed)
         episode_seeds = self._derive_seeds(base_seed)
         self._reset_all(episode_seeds, options=options)
-
-        # Extract per-episode explore_intensity from options.  This is
-        # threaded to policy.act at every step so the policy samples
-        # from the same distribution that evaluate_actions will later
-        # score under.  The episode runner records it per-frame as an
-        # input (alongside the observation), not as a policy output.
-        # Default 0.0 (neutral) when not specified.
-        explore_intensity = float((options or {}).get("explore_intensity", 0.0))
 
         obs_a, obs_b = self.runtime.get_observation()
         a_active = True
         b_active = True
         last_action_a: Optional[np.ndarray] = None
         last_action_b: Optional[np.ndarray] = None
+        step = 0
 
         while not self.runtime.is_episode_over():
+            ei_a = float(explore_intensity_a(obs_a, step)) if callable(explore_intensity_a) else float(explore_intensity_a)
+            ei_b = float(explore_intensity_b(obs_b, step)) if callable(explore_intensity_b) else float(explore_intensity_b)
+
             if a_active or self.post_termination_action == "policy":
                 action_a, extra_a = self.policy_a.act(
                     obs_a,
-                    explore_intensity=explore_intensity,
+                    explore_intensity=ei_a,
                     want_extra=want_extras,
                 )
                 last_action_a = action_a
@@ -246,7 +253,7 @@ class EpisodeRunner:
             if b_active or self.post_termination_action == "policy":
                 action_b, extra_b = self.policy_b.act(
                     obs_b,
-                    explore_intensity=explore_intensity,
+                    explore_intensity=ei_b,
                     want_extra=want_extras,
                 )
                 last_action_b = action_b
@@ -260,14 +267,15 @@ class EpisodeRunner:
                 action_b,
                 action_a_extra=extra_a if extra_a else None,
                 action_b_extra=extra_b if extra_b else None,
-                explore_intensity_a=explore_intensity,
-                explore_intensity_b=explore_intensity,
+                explore_intensity_a=ei_a,
+                explore_intensity_b=ei_b,
             )
 
             a_active = a_active and self.runtime.is_agent_active("robot_a")
             b_active = b_active and self.runtime.is_agent_active("robot_b")
 
             obs_a, obs_b = self.runtime.get_observation()
+            step += 1
 
     def set_policy_a(self, policy: Policy) -> None:
         """Replace policy_a in-place (no env rebuild)."""

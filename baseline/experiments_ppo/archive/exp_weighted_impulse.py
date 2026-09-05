@@ -27,6 +27,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.rollout.job import Job
 
 
 class WeightedImpulseExperiment(CombatExperimentPPOBase):
@@ -114,7 +115,7 @@ class WeightedImpulseExperiment(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
+    ) -> List[Job]:
         self._validate_config()
         env_pb = self._env_pb()
         rng = np.random.default_rng(base_seed)
@@ -124,7 +125,7 @@ class WeightedImpulseExperiment(CombatExperimentPPOBase):
             policy_blueprint_path=str(Path(self._policy_blueprint_path).resolve()),
         )
 
-        jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
+        jobs: List[Job] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             initial_distance = float(
@@ -135,14 +136,18 @@ class WeightedImpulseExperiment(CombatExperimentPPOBase):
                 aid: self._sampler.sample(sample_rng)
                 for aid in self._AGENT_IDS
             }
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bp, seed,
-                {
+            jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={
                     "initial_distance": initial_distance,
-                    "impulse_params": impulse_params,
-                },
-            ))
+                    "impulse_params": impulse_params
+},
+    explore_intensity_a=explore_intensity,
+    explore_intensity_b=explore_intensity,
+))
         return jobs
 
     # ------------------------------------------------------------------

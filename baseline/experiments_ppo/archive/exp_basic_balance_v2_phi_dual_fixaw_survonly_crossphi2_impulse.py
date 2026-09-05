@@ -27,6 +27,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.rollout.job import Job
 
 
 class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentPPOBase):
@@ -124,24 +125,28 @@ class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentPPOBase
         policy_bp,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
+    ) -> List[Job]:
         env_pb = self._env_pb()
         impulse = self._impulse_params()
         rng = np.random.default_rng(base_seed)
 
         env_bp = env_pb.materialize(max_steps=self.max_steps, **impulse)
 
-        jobs: List[Tuple[Any, Any, Any, int, Dict[str, Any]]] = []
+        jobs: List[Job] = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
             initial_distance = float(
                 rng.uniform(self.init_distance_min, self.init_distance_max)
             )
-            jobs.append((
-                policy_bp, policy_bp,
-                env_bp, seed,
-                {"initial_distance": initial_distance},
-            ))
+            jobs.append(Job(
+    policy_a_bp=policy_bp,
+    policy_b_bp=policy_bp,
+    env_bp=env_bp,
+    seed=seed,
+    episode_options={"initial_distance": initial_distance},
+    explore_intensity_a=explore_intensity,
+    explore_intensity_b=explore_intensity,
+))
         return jobs
 
     # ------------------------------------------------------------------
