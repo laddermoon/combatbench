@@ -51,9 +51,10 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
     # --- Exploration ---
     # explore_intensity: additive exploration strength ∈ [-1, 1].
-    #   0 = neutral (policy uses its learned σ as-is).
-    #   → +1 = expand σ (more noise; ei=+1 → σ × 3).
-    #   → -1 = suppress σ (less noise; ei=-1 → σ × 1/3).
+    #   0 = neutral (no change to policy distribution).
+    #   → +1 = maximum added exploration.
+    #   → -1 = maximum exploration suppression.
+    #   The specific mapping is policy-defined.
     # entropy_floor: training-side entropy floor ∈ [0, 1].
     #   The framework computes relu(entropy_floor - H_norm) to prevent
     #   policy collapse.  Set to 0 to disable.

@@ -253,8 +253,8 @@ from envs.framework.policy import PolicyBlueprint
 # Two primary knobs, both ∈ [0, 1]:
 #
 #   * ``explore_intensity`` — rollout side: how much noise to inject when
-#     sampling.  The policy maps this to its internal parameters (σ
-#     offset, noise_scale, etc.).
+#     sampling.  The policy maps this to its internal parameters; the
+#     specific mapping is policy-defined.
 #
 #   * ``entropy_floor`` — training side: the minimum normalized entropy
 #     the policy is allowed to have.  The framework computes a one-sided
@@ -310,11 +310,11 @@ class ExplorationSpec:
 
     Attributes:
         explore_intensity: Additive exploration strength ∈ [-1, 1].
-            ``0`` = neutral (policy uses its learned σ as-is),
-            ``→ +1`` = expand σ (more noise; ei=+1 → σ × 3),
-            ``→ -1`` = suppress σ (less noise; ei=-1 → σ × 1/3).
-            The policy maps this to its internal parameters via
-            ``scale = exp(ei * ln(3))``.  ``None`` = no opinion.
+            ``0`` = neutral (no change to policy distribution),
+            ``→ +1`` = maximum added exploration,
+            ``→ -1`` = maximum exploration suppression.
+            The specific meaning of each value is defined by the
+            policy, not the framework.  ``None`` = no opinion.
         entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
             in the policy's *normalized* entropy (0 = fully certain,
             1 = policy's maximum entropy).  The framework computes
@@ -406,7 +406,7 @@ class TrainablePolicy(Protocol):
     Exploration is **not** a mutable state on the policy.  The policy
     receives ``explore_intensity`` as a per-frame data field (via
     ``evaluate_actions``) or per-step parameter (via ``act``), and
-    computes its effective σ from it on every call.  This makes the
+    applies its own mapping from it on every call.  This makes the
     rollout→scoring consistency a data guarantee, not a timing
     guarantee.
 
@@ -430,10 +430,10 @@ class TrainablePolicy(Protocol):
 
         ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  The policy uses it
-        to compute the effective σ for log_prob evaluation, ensuring the
-        PPO importance ratio is computed under the same distribution that
-        produced the actions.  ``entropy`` (uncertainty) uses the policy's
-        own σ without exploration scaling.
+        to reproduce the same distribution that produced the actions,
+        ensuring the PPO importance ratio is correct.  ``entropy``
+        (uncertainty) uses the policy's own distribution without
+        exploration scaling.
 
         Args:
             obs: ``(B, obs_dim)`` observations.

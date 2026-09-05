@@ -8,7 +8,7 @@
 
 | 旋钮 | 范围 | 作用层 | 含义 |
 |---|---|---|---|
-| `explore_intensity` | `[-1, 1]` | Rollout | 附加探索强度。`0` = 不变，`+1` = 最大探索（σ×3），`-1` = 最大压制（σ×1/3） |
+| `explore_intensity` | `[-1, 1]` | Rollout | 附加探索强度。`0` = 不变，`+1` = 最大附加探索，`-1` = 最大探索压制 |
 | `entropy_floor` | `[0, 1]` | Training | 策略归一化熵下界。`0` = 不限制，`1` = 保持最大熵 |
 
 两者独立，可同步退火（设成相关联的 schedule）或异步退火。
@@ -21,23 +21,13 @@
 
 `explore_intensity` 是**附加在策略已学分布之上的探索强度**：
 
-- `0`：策略用自身学到的 σ，纯 on-policy
-- `+1`：最大附加探索，σ × 3
-- `-1`：最大探索压制，σ × 1/3
+- `0`：不改变策略分布，纯 on-policy
+- `+1`：最大附加探索
+- `-1`：最大探索压制
 
-### 2.2 映射函数
+**每个值的具体含义由策略自己定义。** 框架只规定 `[-1, 1]` 的范围和中性点 `0`，不规定 `+1` 或 `-1` 对应什么分布参数的变化。策略自己负责把 `explore_intensity` 映射到内部参数（如 σ 缩放、log_std 偏移、温度等）。
 
-```python
-scale = exp(ei × ln(3))
-σ_effective = σ × scale
-```
-
-指数映射的优势：
-- **对称**：`ei=+k` 和 `ei=-k` 互为倒数
-- **无分段**：一个表达式，无 piecewise 分支
-- **零点导数干净**：`d(scale)/d(ei)|_{ei=0} = ln(3) ≈ 1.1`
-
-### 2.3 数据流
+### 2.2 数据流
 
 ```
 experiment.exploration(u) → ExplorationSpec
@@ -54,7 +44,7 @@ experiment.exploration(u) → ExplorationSpec
 
 关键不变量：**rollout 采样和 PPO log_prob 重算用同一个 explore_intensity**，保证 importance ratio 正确。
 
-### 2.4 策略接口
+### 2.3 策略接口
 
 ```python
 def evaluate_actions(
