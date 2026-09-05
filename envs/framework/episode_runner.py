@@ -219,8 +219,10 @@ class EpisodeRunner:
         # Extract per-episode explore_intensity from options.  This is
         # threaded to policy.act at every step so the policy samples
         # from the same distribution that evaluate_actions will later
-        # score under.  Default 0.5 (neutral) when not specified.
-        explore_intensity = float((options or {}).get("explore_intensity", 0.5))
+        # score under.  The episode runner records it per-frame as an
+        # input (alongside the observation), not as a policy output.
+        # Default 0.0 (neutral) when not specified.
+        explore_intensity = float((options or {}).get("explore_intensity", 0.0))
 
         obs_a, obs_b = self.runtime.get_observation()
         a_active = True
@@ -258,6 +260,8 @@ class EpisodeRunner:
                 action_b,
                 action_a_extra=extra_a if extra_a else None,
                 action_b_extra=extra_b if extra_b else None,
+                explore_intensity_a=explore_intensity,
+                explore_intensity_b=explore_intensity,
             )
 
             a_active = a_active and self.runtime.is_agent_active("robot_a")

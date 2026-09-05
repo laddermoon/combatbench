@@ -94,7 +94,7 @@ class Trajectory:
             intensity used at rollout time.  Threaded into
             ``evaluate_actions`` so log_prob is computed under the same
             distribution that produced the actions.  When None, defaults
-            to 0.5 (neutral) in the buffer.
+            to 0.0 (neutral) in the buffer.
     """
 
     obs: np.ndarray

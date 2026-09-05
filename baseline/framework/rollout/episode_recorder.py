@@ -118,6 +118,7 @@ class EpisodeRecorder(PostActionRecorder):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         snap = _snapshot if self._snapshot_arrays else (lambda v: v)
         outputs: Dict[str, Any] = dict(observer_outputs)
@@ -134,6 +135,10 @@ class EpisodeRecorder(PostActionRecorder):
                 "action_extras": (
                     snap({agent: extras for agent, extras in action_extras.items()})
                     if action_extras is not None
+                    else None
+                ),
+                "explore_intensity": (
+                    dict(explore_intensities) if explore_intensities is not None
                     else None
                 ),
             }

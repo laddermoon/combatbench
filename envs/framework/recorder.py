@@ -183,6 +183,7 @@ class PostActionRecorder(ABC):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         """Hook fired after every action step.
 
@@ -199,6 +200,12 @@ class PostActionRecorder(ABC):
         extras. ``None`` (the parameter default) means "no extras at all
         this step", which is also what you get when an older caller invokes
         :meth:`EnvRuntime.step` without the new extra args.
+
+        ``explore_intensities`` is a per-agent mapping
+        ``{"robot_a": float, "robot_b": float}`` carrying the exploration
+        intensity that was passed to each policy's ``act()`` call for this
+        step.  It is an **input** to the policy decision, recorded by the
+        episode runner (not by the policy).
         """
         pass
 
@@ -356,6 +363,7 @@ class EpisodeBufferRecorder(PostActionRecorder):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         self._frames.append(
             self._build_frame(ctx, observation=observation, action=action,
@@ -528,6 +536,7 @@ class BaseFrameRecorder(PostActionRecorder):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         self._record_step(ctx, observer_outputs, action_extras=action_extras, observation=observation)
 

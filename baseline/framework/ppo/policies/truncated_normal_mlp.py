@@ -352,7 +352,6 @@ class TruncatedNormalPolicy(nn.Module, Policy):
             return action_np, None
         return action_np, {
             "log_prob": float(log_prob),
-            "explore_intensity": float(explore_intensity),
         }
 
     def set_deterministic(self, deterministic: bool) -> None:

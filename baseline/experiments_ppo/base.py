@@ -291,16 +291,13 @@ class CombatExperimentPPOBase(ExperimentPPO):
     def extract_explore_intensity(episode, agent_id: str, T: int) -> np.ndarray:
         """Extract per-frame explore_intensity for one agent, truncated to T.
 
-        Pulls ``explore_intensity`` from ``episode.action_extras[agent_id]``
-        and slices it to ``[:T]``.  Returns a ``(T,)`` float32 array
-        defaulting to 0.0 (neutral) when the episode has no
-        ``explore_intensity`` extras (e.g. collected by an old policy
-        or a deterministic eval policy).
+        Reads from ``episode.explore_intensities[agent_id]`` — the
+        per-frame input that was passed to ``policy.act`` at rollout
+        time, recorded by the episode runner.  Returns a ``(T,)``
+        float32 array defaulting to 0.0 (neutral) when the episode has
+        no recorded explore_intensity.
         """
-        extras = episode.action_extras.get(agent_id)
-        if extras is None:
-            return np.full(T, 0.0, dtype=np.float32)
-        ei = extras.get("explore_intensity")
+        ei = episode.explore_intensities.get(agent_id)
         if ei is None:
             return np.full(T, 0.0, dtype=np.float32)
         return np.asarray(ei, dtype=np.float32)[:T]
