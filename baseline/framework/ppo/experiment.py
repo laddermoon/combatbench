@@ -1,107 +1,50 @@
 """ExperimentPPO — clean PPO-only experiment abstraction.
 
-This module defines the new generation of experiment interface, designed
-from scratch to work with the V2 ``Trajectory`` data structures.  It
-eliminates the legacy baggage accumulated in ``experiment.py`` (dual
-PPO/SAC support, three generations of segment APIs, framework-managed
-weight scheduling) and provides a single, coherent contract between the
-experiment author and the PPO training loop.
+This module defines the experiment interface for PPO training.  It
+provides a single, coherent contract between the experiment author
+and the PPO training loop.
 
 Design principles
 -----------------
 
 1. **Experiment owns the full data pipeline.**
 
-   The v1 design split reward extraction (``extract_rewards``), episode
-   splitting (``prepare_segments``), and weight scheduling
-   (``initial_weights`` / ``next_weights``) across separate methods, with
-   the framework normalizing weights and passing them back into the
-   trajectory builder.  This created a circular dependency: the experiment
-   needed to know the framework's normalization to control actor_weight,
-   and the framework needed to know the experiment's weight semantics to
-   combine advantages.
-
-   In V2, ``build_trajectories(episode)`` is the single source of truth.
-   The experiment decides:
-   - How to slice the episode into trajectories (phase-based, gating-based,
-     or whole-episode).
-   - Per-channel rewards (dense shaping, terminal bonuses, penalties).
-   - Per-channel termination (``is_terminated`` → V=0 bootstrap, or
-     ``truncated`` → bootstrap from critic).
-   - Per-channel actor_weight (how much this channel's advantage influences
-     the policy gradient).  This can vary per trajectory, enabling
-     curriculum scheduling without framework involvement.
+   ``build_trajectories(episode)`` is the single source of truth.  The
+   experiment decides how to slice the episode into trajectories,
+   per-channel rewards, per-channel termination, and per-channel
+   actor_weight (how much this channel's advantage influences the
+   policy gradient).  actor_weight can vary per trajectory, enabling
+   curriculum scheduling without framework involvement.
 
 2. **Reward channels are first-class.**
 
    Each ``RewardChannel`` declares its own ``gamma`` and ``gae_lambda``.
    The framework builds one critic per channel and uses the channel's
-   parameters for GAE computation.  This replaces the v1 pattern of a
-   separate ``gammas`` dict in ``CommonParams`` and a global
-   ``gae_lambda`` in ``PPOParams``.
-
-   Per-channel ``gae_lambda`` is a V2 unique capability: sparse terminal
-   rewards benefit from high λ (low bias), while dense shaping rewards
-   benefit from lower λ (low variance).  The experiment author can now
-   tune this per channel without framework changes.
+   parameters for GAE computation.  Per-channel ``gae_lambda`` allows
+   sparse terminal rewards to use high λ (low bias) while dense shaping
+   rewards use lower λ (low variance).
 
 3. **PPO only.**
 
-   SAC support is removed.  No ``SACParams``, no ``build_q_critic``, no
-   ``sac_params()``.  This eliminates the algorithm-dispatch complexity
-   that complicated v1's abstract methods.  If SAC is needed in the
-   future, a separate ``ExperimentSAC`` class can be created without
-   polluting the PPO interface.
+   No SAC support.  If SAC is needed in the future, a separate
+   ``ExperimentSAC`` class can be created without polluting the PPO
+   interface.
 
 4. **One job builder.**
 
-   ``build_jobs(policy_bp, base_seed, n_episodes)`` replaces the separate
-   ``build_rollout_jobs`` and ``build_eval_jobs`` methods.  The caller
-   (training loop) controls whether the policy is stochastic (training
-   rollout) or deterministic (evaluation) by passing the appropriate
-   ``PolicyBlueprint``.  The experiment does not need to know whether it
-   is building jobs for training or evaluation — it just builds N jobs
-   with the given blueprint and seed.
+   ``build_jobs(policy_bp, base_seed, n_episodes)`` handles both
+   training and evaluation.  The caller controls whether the policy is
+   stochastic (training) or deterministic (eval) by passing the
+   appropriate ``PolicyBlueprint``.
 
-5. **Exploration is a first-class, split responsibility.**
+5. **Exploration is a split responsibility.**
 
-   The experiment owns exploration *intent* (``exploration()`` returns an
-   ``ExplorationSpec`` per update, optionally reacting to the previous
-   update's stats); the policy owns exploration *mechanism*
-   (``set_exploration(explore_intensity)`` interprets the value for its own distribution
-   family, ``evaluate_actions`` returns a normalized entropy for the
-   framework to use in the entropy floor loss).  The framework only
-   routes.
+   The experiment owns exploration *intent* (``exploration()`` returns
+   an ``ExplorationSpec`` per update); the policy owns exploration
+   *mechanism* (maps ``explore_intensity`` to its own internal
+   parameters).  The framework only routes.
 
-   Two primary knobs: ``explore_intensity`` (additive exploration
-   strength ∈ [-1, 1], 0 = neutral) and ``entropy_floor``
-   (training-side entropy floor ∈ [0, 1]).
-   For the common case where both should move together, set them to the
-   same value.  The framework computes the entropy floor loss from
-   ``ActorEval.entropy`` — a
-   one-sided hinge ``relu(floor - H_norm)`` analogous to PPO clip.
-
-   This replaces a design where the framework hard-coded
-   ``loss -= entropy_coef * entropy`` and read ``actor.log_std``
-   directly — assumptions that hold only for a diagonal Gaussian with a
-   state-independent sigma, and that made the ``TrainablePolicy``
-   protocol incorrect for any other family.  It also replaces the
-   intermediate ``ActorEval.regularizer`` design where the policy
-   computed its own loss term — the coefficient is now a framework
-   concern, applied uniformly via the entropy floor.
-
-6. **Coexistence, not replacement.**
-
-   The old ``Experiment`` ABC in ``experiment.py`` and
-   ``CombatExperimentBase`` in ``base.py`` remain untouched.  The 40+
-   existing v1 experiments continue to work via the legacy training path
-   (``train_ppo()``).  The training CLI (``train.py``) dispatches to
-   ``train_ppo()`` or ``train_ppo()`` based on whether the experiment
-   is an ``ExperimentPPO`` instance.
-
-   New experiments should inherit from ``ExperimentPPO`` directly (or from
-   a future ``CombatExperimentPPOBase`` that provides shared combat
-   defaults).  Old experiments are not migrated.
+   See ``DESIGN_unified_exploration_control.md`` for the full design.
 
 Data flow
 ---------
@@ -133,7 +76,7 @@ Data flow
     │     actor_weight                 │
     │   ),                             │
     │ }                                │
-    │ importance, mode                 │
+    │ explore_intensity                │
     └──────────────────────────────────┘
          │
          ▼  (PPOBuffer concatenates all trajectories)
@@ -159,63 +102,9 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
-| Exploration        | exploration() → ExplorationSpec     | Routes explore_intensity → set_exploration |
+| Exploration        | exploration() → ExplorationSpec     | Routes explore_intensity to policy.act / evaluate_actions |
 | Entropy floor      | entropy_floor via ExplorationSpec   | Computes relu(floor - H_norm) |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
-
-Removed from v1
----------------
-
-- ``initial_weights()`` / ``next_weights()``: The experiment manages
-  actor_weight internally in ``build_trajectories``.  No external weight
-  scheduling loop.
-- ``extract_rewards()``: Folded into ``build_trajectories``.
-- ``prepare_segments()`` / ``prepare_training_segments()``: Folded into
-  ``build_trajectories``.
-- ``build_rollout_jobs()`` / ``build_eval_jobs()``: Merged into
-  ``build_jobs()``.
-- ``video_env_blueprint()``: Deprecated; video uses eval_jobs[0].
-- ``Segment`` dataclass: Replaced by ``Trajectory`` + ``ChannelData``.
-- ``SACParams``, ``sac_params()``, ``build_q_critic()``: PPO only.
-- ``gammas`` dict in ``CommonParams``: Replaced by ``reward_channels()``.
-- ``stage_weights`` parameter in ``ppo_update``: Replaced by per-frame
-  ``actor_weight`` from ``ChannelData``.
-- ``_current_actor_weights`` hack: Experiment owns weight scheduling.
-- ``compute_episode_metrics()`` / ``compare_eval()`` / ``scheduler_info()``:
-  Merged into ``on_eval()`` — the experiment receives raw episodes and
-  handles metrics, best-of-run judgment, and state updates internally.
-- ``normalize_advantages()`` / ``combine_advantages()`` /
-  ``normalize_sample_weights()``: Removed — framework defaults are not
-  customizable.  The experiment controls the pipeline through
-  ``reward_channels()`` and ``ChannelData.actor_weight``.
-- ``to_dict()`` / ``save_run_config()``: Removed — serialization is the
-  framework's responsibility.  The framework builds ``config.json`` from
-  ``reward_channels()``, ``common_params()``, ``ppo_params()``, and
-  ``state()``.
-- ``PPOParams.log_std_min`` / ``log_std_max``: Moved to the actor — they
-  describe a Tanh-Gaussian, not PPO.  Set them in ``build_actor()``.
-- ``PPOParams.entropy_coef``: Moved to ``ExplorationSpec.entropy_coef``
-  with a default linked to ``explore_intensity``.  The framework
-  computes the entropy floor loss from ``ActorEval.entropy`` — the
-  policy no longer computes its own loss term via
-  ``ActorEval.regularizer`` (field removed).
-- ``ExplorationSpec.temperature``, ``.entropy_target``, ``.clip_eps``,
-  ``.target_kl``, ``.noise_tau_steps``, ``.noise_scale``,
-  ``.policy_extras``: Removed.  ``explore_intensity`` replaces
-  ``temperature`` and ``noise_scale``; ``entropy_floor`` replaces
-  ``entropy_target``; ``clip_eps``/``target_kl`` are not per-update
-  overrides (stay in ``PPOParams``); ``noise_tau_steps`` is an init-time
-  policy config; ``policy_extras`` is unnecessary with only three
-  fields.
-- ``ActorEval.regularizer``: Removed.  Replaced by ``ActorEval.entropy``
-  — a per-obs, differentiable, normalized entropy in [0, 1] that the
-  framework uses to compute ``relu(entropy_floor - H_norm)``.  This
-  decouples the loss coefficient (framework concern) from the entropy
-  computation (policy concern).
-- ``evaluate_actions() -> (log_prob, entropy)``: Now returns
-  ``ActorEval`` with ``log_prob``, ``entropy``, and optional ``stats``,
-  so a policy without a closed-form entropy can return a sampled
-  estimate without fabricating a regularizer.
 """
 
 from __future__ import annotations
@@ -244,40 +133,25 @@ from envs.framework.policy import PolicyBlueprint
 #     statistics.  It expresses this as an ``ExplorationSpec`` returned
 #     from ``ExperimentPPO.exploration()``.
 #
-#   * The **policy** owns exploration *mechanism*: what "explore_intensity
-#     0.5" concretely means for its own distribution family.  It receives
-#     the value via ``set_exploration(explore_intensity)``.  The spec has
-#     only three fields: ``explore_intensity``, ``entropy_floor``, and
-#     ``entropy_coef``.
+#   * The **policy** owns exploration *mechanism*: what each
+#     ``explore_intensity`` value concretely means for its own
+#     distribution.  It receives the value per-frame via
+#     ``evaluate_actions`` and per-step via ``act``.  The specific
+#     mapping is policy-defined.
 #
-# Two primary knobs, both ∈ [0, 1]:
+# Two primary knobs:
 #
-#   * ``explore_intensity`` — rollout side: how much noise to inject when
-#     sampling.  The policy maps this to its internal parameters; the
-#     specific mapping is policy-defined.
+#   * ``explore_intensity`` ∈ [-1, 1] — rollout side: additive exploration
+#     strength (0 = neutral, +1 = max explore, -1 = max suppress).
+#     The policy maps this to its internal parameters.
 #
-#   * ``entropy_floor`` — training side: the minimum normalized entropy
-#     the policy is allowed to have.  The framework computes a one-sided
-#     hinge loss ``entropy_coef * relu(floor - H_norm)`` that only
-#     activates when the policy's entropy drops below the floor —
-#     analogous to PPO clip's "only intervene when out of bounds".
-#
-# For the common case where both should move together, set them to the
-# same value.  For scenarios that require independent control (e.g.
-# on-policy + anti-collapse, or strong exploration + fast convergence),
-# set them separately.
-#
-# The framework computes the entropy floor loss from ``ActorEval.entropy``
-# (a per-obs, differentiable, normalized entropy in [0, 1] that the
-# policy returns from ``evaluate_actions``).  This replaces the old
-# ``ActorEval.regularizer`` design where the policy computed its own
-# loss term — the coefficient is now a framework concern, not a policy
-# concern.
+#   * ``entropy_floor`` ∈ [0, 1] — training side: the minimum normalized
+#     entropy the policy is allowed to have.  The framework computes a
+#     one-sided hinge loss ``entropy_coef * relu(floor - H_norm)`` that
+#     only activates when the policy's entropy drops below the floor.
 #
 # The framework only routes between the two owners.  It never inspects a
-# spec field beyond ``resolve()`` nor interprets a stat key.  This is
-# what allows non-Gaussian actors (mixture, flow, diffusion) to be
-# dropped in without touching ppo.trainer / ppo.loop.
+# spec field beyond ``resolve()`` nor interprets a stat key.
 #
 # See ``DESIGN_unified_exploration_control.md`` for the full design.
 # ---------------------------------------------------------------------------
@@ -300,11 +174,9 @@ class ExplorationSpec:
     separately.
 
     PPO trust-region knobs (``clip_eps``, ``target_kl``) live in
-    :class:`PPOParams` and are not overridable per-update.  OU temporal
-    correlation (``noise_tau_steps``, ``noise_scale``) is an init-time
-    policy configuration, not a per-update directive.  Policy-family-
-    specific scaling is handled by ``explore_intensity`` — the policy
-    maps it to its own internal parameters.
+    :class:`PPOParams` and are not overridable per-update.  The specific
+    mapping from ``explore_intensity`` to distribution parameters is
+    policy-defined.
 
     See ``DESIGN_unified_exploration_control.md`` for the full design.
 
@@ -476,8 +348,8 @@ class TrainablePolicy(Protocol):
 class CommonParams:
     """Training parameters shared across all PPO experiments.
 
-    Unlike v1, this does NOT include ``gammas`` — per-channel gamma and
-    gae_lambda are declared in ``RewardChannel`` via ``reward_channels()``.
+    Per-channel ``gamma`` and ``gae_lambda`` are declared in
+    ``RewardChannel`` via ``reward_channels()``, not here.
     """
 
     name: str
@@ -497,28 +369,15 @@ class CommonParams:
 class PPOParams:
     """PPO hyperparameters.
 
-    Strictly the knobs of the PPO *algorithm*.  Two categories used to
-    live here and no longer do:
+    Strictly the knobs of the PPO *algorithm*.  ``clip_eps`` and
+    ``target_kl`` are the trust-region parameters; they are not
+    overridable per-update.  Per-channel ``gae_lambda`` is declared in
+    ``RewardChannel`` via ``reward_channels()`` — it is NOT a global
+    parameter here.
 
-    - ``log_std_min`` / ``log_std_max``: properties of a Tanh-Gaussian
-      actor, not of PPO.  They were here only because the trainer used to
-      reach into ``actor.log_std`` to clamp it for logging.  They now
-      belong to the actor (set in ``build_actor``).
-    - ``entropy_coef``: the strength of the entropy floor loss.  It is
-      now carried by ``ExplorationSpec.entropy_coef`` with a default
-      linked to ``explore_intensity``.  The framework computes
-      ``entropy_coef * relu(entropy_floor - H_norm)`` from
-      ``ActorEval.entropy`` — a policy-family-agnostic, normalized
-      entropy in [0, 1].  This replaces the old
-      ``ActorEval.regularizer`` design where the policy computed its own
-      loss term.
-
-    ``clip_eps`` and ``target_kl`` stay because they are genuinely PPO's.
-    They are not overridable per-update — the trust region is a fixed
-    property of the PPO configuration, not part of the exploration story.
-
-    Per-channel ``gae_lambda`` is declared in ``RewardChannel`` via
-    ``reward_channels()`` — it is NOT a global parameter here.
+    Policy-specific parameters (e.g. log_std bounds) belong to the
+    actor, not here.  Entropy floor coefficient is carried by
+    ``ExplorationSpec.entropy_coef``.
     """
 
     clip_eps: float
@@ -538,10 +397,9 @@ class UpdateStats:
     The framework guarantees every typed field.  Per-channel dicts are
     keyed by ``RewardChannel.name``.  The ``policy_stats`` sub-mapping
     carries whatever the actor contributed via ``ActorEval.stats`` — its
-    keys are the policy's choice (e.g. ``entropy_normalized``,
-    ``entropy_raw``, ``std_mean`` for a Tanh-Gaussian) and are **not**
-    guaranteed across policy families.  Treat ``policy_stats`` as opaque
-    hints, not a contract.
+    keys are the policy's choice and are **not** guaranteed across
+    policy families.  Treat ``policy_stats`` as opaque hints, not a
+    contract.
 
     Use :meth:`to_log_dict` to produce the flat dict format expected by
     ``__RAW_STATS__`` logging and ``analyze_training.py``.
@@ -801,9 +659,7 @@ class ExperimentPPO(ABC):
             stats: Typed summary of this update's PPO results.  See
                 :class:`UpdateStats` for the full field list.  The
                 ``policy_stats`` sub-mapping carries policy-contributed
-                diagnostics (e.g. ``entropy_normalized``, ``entropy_raw``,
-                ``std_mean`` for a Tanh-Gaussian) but has **no
-                cross-family contract** —
+                diagnostics but has **no cross-family contract** —
                 treat it as opaque hints.
             update: Current update index (1-based, matches the loop).
         """
@@ -815,7 +671,7 @@ class ExperimentPPO(ABC):
         """Return this update's exploration directive, or None to keep.
 
         Called once per update **before** the rollout blueprint is
-        exported, so a returned ``temperature`` still affects sampling.
+        exported, so a returned ``explore_intensity`` affects sampling.
         Reads whatever internal state ``on_update`` has accumulated.
 
         Args:
