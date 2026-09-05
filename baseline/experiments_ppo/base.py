@@ -28,7 +28,7 @@ from baseline.framework.ppo import (
     TrainablePolicy,
 )
 from baseline.framework.critic_mlp import CriticMLP
-from baseline.framework.rollout.job import EiSpec, Job
+from baseline.framework.rollout.job import Job
 
 
 class CombatExperimentPPOBase(ExperimentPPO):
@@ -193,18 +193,17 @@ class CombatExperimentPPOBase(ExperimentPPO):
     def exploration(self, update: int) -> ExplorationSpec:
         """Static exploration spec built from the class attributes.
 
-        Returns the three-field ``ExplorationSpec``:
-        - ``explore_intensity``: additive exploration strength
-          (0 = neutral, +1 = expand, -1 = suppress).  Default 0.0.
+        Returns ``ExplorationSpec`` with:
         - ``entropy_floor``: training-side entropy floor.  Default 0.3.
         - ``entropy_coef``: coefficient for the entropy floor loss.
 
+        Note: ``explore_intensity`` is NOT part of this spec — it is
+        read from ``self.explore_intensity`` inside ``build_jobs``.
+
         Subclasses that want a schedule override ``on_update`` (to absorb
-        stats) and this method (to read accumulated state).  See the
-        ``on_update`` docstring for a closed-loop example.
+        stats) and this method (to read accumulated state).
         """
         return ExplorationSpec(
-            explore_intensity=self.explore_intensity,
             entropy_floor=self.entropy_floor,
             entropy_coef=self.entropy_coef,
         )
@@ -253,21 +252,17 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-        *,
-        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         """Build self-play rollout jobs.
 
-        ``explore_intensity`` is placed into each :class:`Job`'s
-        ``explore_intensity_a`` / ``explore_intensity_b`` fields (not
-        into ``episode_options``).  The episode runner resolves it
-        per-frame and passes it to ``policy.act``.
+        ``explore_intensity`` is read from ``self.explore_intensity``
+        and placed into each :class:`Job`'s ``explore_intensity_a`` /
+        ``explore_intensity_b`` fields.
 
         Subclass can override for non-self-play scenarios.
         """
         return self._build_selfplay_jobs(
             self._env_pb(), policy_bp, base_seed, n_episodes,
-            explore_intensity=explore_intensity,
         )
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
@@ -316,10 +311,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-        *,
-        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
+        ei = self.explore_intensity
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -335,8 +329,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     env_bp=env_bp,
                     seed=seed,
                     episode_options={"initial_distance": initial_distance},
-                    explore_intensity_a=explore_intensity,
-                    explore_intensity_b=explore_intensity,
+                    explore_intensity_a=ei,
+                    explore_intensity_b=ei,
                 ))
             return jobs
 
@@ -368,8 +362,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 env_bp=env_bps[agent_id],
                 seed=seed,
                 episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
-                explore_intensity_a=explore_intensity,
-                explore_intensity_b=explore_intensity,
+                explore_intensity_a=ei,
+                explore_intensity_b=ei,
             ))
         return jobs
 

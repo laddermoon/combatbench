@@ -26,7 +26,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
-from baseline.framework.rollout.job import EiSpec, Job
+from baseline.framework.rollout.job import Job
 
 
 class BalanceRecover(CombatExperimentPPOBase):
@@ -114,8 +114,6 @@ class BalanceRecover(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
-        *,
-        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         self._validate_config()
         env_pb = self._env_pb()
@@ -146,8 +144,8 @@ class BalanceRecover(CombatExperimentPPOBase):
                     "initial_distance": initial_distance,
                     "impulse_params": impulse_params
                 },
-    explore_intensity_a=explore_intensity,
-    explore_intensity_b=explore_intensity,
+    explore_intensity_a=self.explore_intensity,
+    explore_intensity_b=self.explore_intensity,
 ))
         return jobs
 

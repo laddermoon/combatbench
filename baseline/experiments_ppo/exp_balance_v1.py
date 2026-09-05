@@ -36,7 +36,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
 )
 
 from .base import CombatExperimentPPOBase
-from baseline.framework.rollout.job import EiSpec, Job
+from baseline.framework.rollout.job import Job
 
 
 class BalanceV1(CombatExperimentPPOBase):
@@ -168,8 +168,6 @@ class BalanceV1(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
-        *,
-        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         env_pb = self._env_pb()
         env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -196,8 +194,8 @@ class BalanceV1(CombatExperimentPPOBase):
     env_bp=env_bp,
     seed=seed,
     episode_options={"impulse_params": impulse_params},
-    explore_intensity_a=explore_intensity,
-    explore_intensity_b=explore_intensity,
+    explore_intensity_a=self.explore_intensity,
+    explore_intensity_b=self.explore_intensity,
 ))
         return jobs
 

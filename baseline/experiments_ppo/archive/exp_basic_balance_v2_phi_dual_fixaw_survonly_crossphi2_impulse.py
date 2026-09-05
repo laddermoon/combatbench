@@ -144,8 +144,8 @@ class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentPPOBase
     env_bp=env_bp,
     seed=seed,
     episode_options={"initial_distance": initial_distance},
-    explore_intensity_a=explore_intensity,
-    explore_intensity_b=explore_intensity,
+    explore_intensity_a=self.explore_intensity,
+    explore_intensity_b=self.explore_intensity,
 ))
         return jobs
 

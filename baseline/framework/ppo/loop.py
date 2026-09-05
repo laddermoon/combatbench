@@ -442,33 +442,19 @@ def train_ppo(
         for u in range(start_update, cp.max_updates + 1):
             t_update_start = time.perf_counter()
 
-            # 0. Exploration scheduling — resolve the per-update
-            #    explore_intensity and pass it to build_jobs.  The policy
-            #    is exploration-neutral: it receives explore_intensity as
-            #    a per-step parameter during rollout and as a per-frame
-            #    tensor during evaluate_actions.  There is no
-            #    set_exploration call and no mutable exploration state.
-            #
-            #    exploration() reads internal state that on_update() has
-            #    accumulated from previous updates' stats. On the first
-            #    update of a process, on_update() has not been called yet,
-            #    so the experiment's initial state is used.
-            #
-            #    explore_intensity may be a float or a callable
-            #    (obs, step) -> float for per-frame scheduling.  It is
-            #    passed through to build_jobs as-is.
+            # 0. Exploration scheduling — resolve PPO update parameters
+            #    (entropy_floor, entropy_coef) for this update.
+            #    explore_intensity is NOT here — it is decided inside
+            #    build_jobs and placed into each Job's fields.
             spec = experiment.exploration(u)
             if spec is not None:
                 exploration = spec
-                explore_intensity = spec.explore_intensity if spec.explore_intensity is not None else 0.0
             else:
-                explore_intensity = 0.0
+                exploration = None
 
             # 1. Export stochastic policy blueprint for training rollouts.
             #    Stochastic (log_std included) so rollout samples explore.
             #    A fresh export each update ensures workers use the latest weights.
-            #    The export is exploration-neutral — explore_intensity is
-            #    passed per-step via build_jobs → Job → policy.act.
             t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"u{u:05d}"
             policy_bp = actor.to_blueprint(
@@ -477,15 +463,12 @@ def train_ppo(
             t_export = time.perf_counter() - t0
 
             # 2. Build rollout jobs.
-            #    Experiment decides agent assignment, initial distance, seeds.
-            #    Rollout seed is offset by update * batch size for reproducibility.
-            #    explore_intensity is passed to build_jobs; the experiment
-            #    puts it into Job.explore_intensity_a/b (not episode_options).
+            #    Experiment decides agent assignment, initial distance, seeds,
+            #    and explore_intensity (internally, placed into Job fields).
             t0 = time.perf_counter()
             rollout_seed = cp.seed + u * cp.episodes_per_update
             jobs = experiment.build_jobs(
                 policy_bp, rollout_seed, cp.episodes_per_update,
-                explore_intensity=explore_intensity,
             )
             t_jobs = time.perf_counter() - t0
 
@@ -551,7 +534,6 @@ def train_ppo(
                 )
                 eval_jobs = experiment.build_jobs(
                     det_bp, eval_seed, cp.eval_episodes,
-                    explore_intensity=0.0,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
 

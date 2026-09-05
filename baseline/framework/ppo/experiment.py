@@ -176,19 +176,9 @@ class ExplorationSpec:
     separately.
 
     PPO trust-region knobs (``clip_eps``, ``target_kl``) live in
-    :class:`PPOParams` and are not overridable per-update.  The specific
-    mapping from ``explore_intensity`` to distribution parameters is
-    policy-defined.
-
-    See ``DESIGN_unified_exploration_control.md`` for the full design.
+    :class:`PPOParams` and are not overridable per-update.
 
     Attributes:
-        explore_intensity: Additive exploration strength ∈ [-1, 1].
-            ``0`` = neutral (no change to policy distribution),
-            ``→ +1`` = maximum added exploration,
-            ``→ -1`` = maximum exploration suppression.
-            The specific meaning of each value is defined by the
-            policy, not the framework.  ``None`` = no opinion.
         entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
             in the policy's normalized entropy.  The specific meaning
             of 0 and 1 is defined by the policy.  The framework computes
@@ -196,32 +186,12 @@ class ExplorationSpec:
             — a one-sided hinge that only activates when the policy's
             entropy drops below the floor, analogous to PPO clip.
             ``None`` = no opinion (policy keeps its current floor).
-        entropy_coef: Coefficient for the entropy floor loss.  When
-            ``None``, the framework uses a default linked to
-            ``explore_intensity`` (e.g. ``0.01 * max(explore_intensity, 0)``).
-            Override when you want the coefficient independent of
-            exploration strength.
+        entropy_coef: Coefficient for the entropy floor loss.
+            ``None`` = use default (0.0).
     """
 
-    explore_intensity: Optional[EiSpec] = None
     entropy_floor: Optional[float] = None
     entropy_coef: Optional[float] = None
-
-    def resolve(self) -> Tuple[EiSpec, float]:
-        """Return ``(explore_intensity, entropy_floor)`` with fallbacks.
-
-        Returns the explicit values, defaulting to ``0.0`` for
-        ``explore_intensity`` (neutral) and ``0.0`` for
-        ``entropy_floor`` when ``None``.
-
-        Returns:
-            ``(explore_intensity, entropy_floor)``.  ``explore_intensity``
-            may be a float or a callable ``(obs, step) -> float``.
-        """
-        return (
-            self.explore_intensity if self.explore_intensity is not None else 0.0,
-            self.entropy_floor if self.entropy_floor is not None else 0.0,
-        )
 
 
 @dataclass
@@ -670,20 +640,24 @@ class ExperimentPPO(ABC):
     def exploration(
         self, update: int,
     ) -> Optional["ExplorationSpec"]:
-        """Return this update's exploration directive, or None to keep.
+        """Return this update's PPO update parameters, or None to keep defaults.
 
-        Called once per update **before** the rollout blueprint is
-        exported, so a returned ``explore_intensity`` affects sampling.
-        Reads whatever internal state ``on_update`` has accumulated.
+        Called once per update **before** ``ppo_update``.  Returns
+        ``entropy_floor`` and ``entropy_coef`` for the entropy floor
+        loss.  Reads whatever internal state ``on_update`` has
+        accumulated.
+
+        Note: ``explore_intensity`` (rollout-time sampling) is NOT part
+        of this spec — it is decided inside ``build_jobs`` and placed
+        into each :class:`Job`'s ``explore_intensity_a`` /
+        ``explore_intensity_b`` fields.
 
         Args:
             update: Current update index (1-based, matches the loop).
 
         Returns:
-            An ``ExplorationSpec``, or ``None`` to leave the policy's
-            current exploration configuration untouched.  The default
-            implementation returns ``None``, so an experiment that does
-            not care about exploration behaves exactly as before.
+            An ``ExplorationSpec``, or ``None`` to use defaults
+            (entropy_floor=0.0, entropy_coef=0.0).
         """
         return None
 
@@ -697,8 +671,6 @@ class ExperimentPPO(ABC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-        *,
-        explore_intensity: EiSpec = 0.0,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
 
@@ -707,18 +679,10 @@ class ExperimentPPO(ABC):
         is stochastic (training) or deterministic (eval) by passing the
         appropriate ``policy_bp``.
 
-        ``explore_intensity`` is placed into each :class:`Job`'s
-        ``explore_intensity_a`` / ``explore_intensity_b`` fields (not
-        into ``episode_options``, which is environment-only).  The
-        episode runner resolves it per-frame and passes it to
-        ``policy.act``.  For evaluation, the caller passes
-        ``explore_intensity=0.0`` (neutral) — the deterministic policy
-        ignores it.
-
-        ``explore_intensity`` may be a ``float`` (constant per episode)
-        or a callable ``(obs, step) -> float`` for per-frame scheduling.
-        Callables must be top-level functions to be picklable across
-        multiprocessing workers.
+        The experiment decides ``explore_intensity_a`` /
+        ``explore_intensity_b`` internally — it may read class
+        attributes, internal state, or any other source.  This is the
+        experiment's implementation detail, not a framework parameter.
 
         Args:
             policy_bp: The actor's exported policy blueprint.  For
@@ -727,9 +691,6 @@ class ExperimentPPO(ABC):
             base_seed: Base random seed for this batch.  Each job should
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
-            explore_intensity: Exploration intensity for this batch.
-                Default 0.0 (neutral).  Applied to both agents; override
-                ``build_jobs`` to give each agent a different value.
 
         Returns:
             List of :class:`Job` instances, one per episode.
