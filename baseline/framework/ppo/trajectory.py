@@ -101,6 +101,11 @@ class Trajectory:
             is applied.  All trajectories in a single buffer must either
             all have ``noise_shift`` or all have None — mixing the two
             is a configuration error that the buffer raises on.
+        explore_intensity: ``(T,)`` float32 — per-frame exploration
+            intensity used at rollout time.  Threaded into
+            ``evaluate_actions`` so log_prob is computed under the same
+            distribution that produced the actions.  When None, defaults
+            to 0.5 (neutral) in the buffer.
     """
 
     obs: np.ndarray
@@ -110,3 +115,4 @@ class Trajectory:
     importance: float = 1.0
     mode: Optional[float] = None
     noise_shift: Optional[np.ndarray] = None
+    explore_intensity: Optional[np.ndarray] = None

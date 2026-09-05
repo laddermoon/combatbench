@@ -163,7 +163,7 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
         super().__init__(
             obs_dim=obs_dim, action_dim=action_dim,
             device=device, deterministic=deterministic,
-            entropy_coef=entropy_coef, temperature=temperature,
+            entropy_coef=entropy_coef,
             noise_tau_steps=noise_tau_steps, noise_scale=noise_scale,
         )
         self.hidden_dim = int(hidden_dim)
@@ -242,18 +242,26 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
     # Bounded log-std (same smooth squash as ①)
     # ------------------------------------------------------------------
 
-    def _bounded_log_std(self, raw_log_std: torch.Tensor) -> torch.Tensor:
-        offset = float(np.log(self._temperature)) if self._temperature > 0 else 0.0
+    def _bounded_log_std(
+        self, raw_log_std: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> torch.Tensor:
+        if isinstance(explore_intensity, torch.Tensor):
+            offset = (explore_intensity - 0.5) * 2.0
+            offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting
+        else:
+            offset = float(explore_intensity - 0.5) * 2.0
         t = torch.tanh(raw_log_std + offset)
         return self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (t + 1.0)
 
-    def _base_dist(self, obs: torch.Tensor) -> Tuple[torch.Tensor, Normal]:
+    def _base_dist(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> Tuple[torch.Tensor, Normal]:
         """Return (trunk_obs, base_normal_dist)."""
         h = self.trunk(obs)
         out = self.base_head(h)
         ad = self.action_dim
         mean, raw_log_std = out.split(ad, dim=-1)
-        log_std = self._bounded_log_std(raw_log_std)
+        log_std = self._bounded_log_std(raw_log_std, explore_intensity=explore_intensity)
         dist = Normal(mean, log_std.exp())
         return h, dist
 
@@ -287,16 +295,19 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
     # Raw-space hooks
     # ------------------------------------------------------------------
 
-    def _raw_sample(self, obs: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        trunk_obs, base_dist = self._base_dist(obs)
+    def _raw_sample(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> Tuple[torch.Tensor, None]:
+        trunk_obs, base_dist = self._base_dist(obs, explore_intensity=explore_intensity)
         z = base_dist.rsample()
         raw, _ = self._flow_forward(z, trunk_obs)
         return raw, None
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        trunk_obs, base_dist = self._base_dist(obs)
+        trunk_obs, base_dist = self._base_dist(obs, explore_intensity=explore_intensity)
         z, flow_log_det = self._flow_inverse(raw_action, trunk_obs)
         base_lp = base_dist.log_prob(z).sum(-1)
         raw_log_prob = base_lp + flow_log_det
@@ -308,7 +319,7 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
         Not the true mode of the flow distribution, but a reasonable
         deterministic action.
         """
-        trunk_obs, base_dist = self._base_dist(obs)
+        trunk_obs, base_dist = self._base_dist(obs, explore_intensity=0.5)
         z = base_dist.mean
         raw, _ = self._flow_forward(z, trunk_obs)
         return raw
@@ -322,7 +333,7 @@ class RealNVPTanhMLPPolicy(TanhSquashedPolicyBase):
         stats = None
         if want_stats:
             with torch.no_grad():
-                trunk_obs, base_dist = self._base_dist(obs)
+                trunk_obs, base_dist = self._base_dist(obs, explore_intensity=0.5)
                 base_std = base_dist.stddev  # (B, action_dim)
 
                 # Compute flow log_det for the scored actions.

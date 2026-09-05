@@ -40,9 +40,10 @@ class LowRankGaussianMLPPolicy(TanhSquashedPolicyBase):
     where σ is state-dependent (bounded via tanh squash like ①) and
     U is reshaped from U_flat to (B, action_dim, rank).
 
-    Temperature scales **both** σ and U by T, so the whole covariance
-    is scaled by T² — preserving the correlation structure while
-    scaling the spread.
+    ``explore_intensity`` scales **both** σ and U by exp(offset) (where
+    offset = (explore_intensity - 0.5) * 2), so the whole covariance
+    is scaled by exp(offset)² — preserving the correlation structure
+    while scaling the spread.
     """
 
     def __init__(
@@ -65,7 +66,7 @@ class LowRankGaussianMLPPolicy(TanhSquashedPolicyBase):
         super().__init__(
             obs_dim=obs_dim, action_dim=action_dim,
             device=device, deterministic=deterministic,
-            entropy_coef=entropy_coef, temperature=temperature,
+            entropy_coef=entropy_coef,
             noise_tau_steps=noise_tau_steps, noise_scale=noise_scale,
         )
         self.hidden_dim = int(hidden_dim)
@@ -115,28 +116,42 @@ class LowRankGaussianMLPPolicy(TanhSquashedPolicyBase):
     # Bounded log-std (same smooth squash as ①)
     # ------------------------------------------------------------------
 
-    def _bounded_log_std(self, raw_log_std: torch.Tensor) -> torch.Tensor:
-        offset = float(np.log(self._temperature)) if self._temperature > 0 else 0.0
+    def _bounded_log_std(
+        self, raw_log_std: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> torch.Tensor:
+        if isinstance(explore_intensity, torch.Tensor):
+            offset = (explore_intensity - 0.5) * 2.0
+            offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting with (B, action_dim)
+        else:
+            offset = float(explore_intensity - 0.5) * 2.0
         t = torch.tanh(raw_log_std + offset)
         return self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (t + 1.0)
 
     def _forward_head(
-        self, obs: torch.Tensor,
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (mean, bounded_log_std, U) where U is (B, action_dim, rank)."""
         h = self.trunk(obs)
         out = self.head(h)
         ad = self.action_dim
         mean, raw_log_std, U_flat = out.split([ad, ad, ad * self.rank], dim=-1)
-        log_std = self._bounded_log_std(raw_log_std)
+        log_std = self._bounded_log_std(raw_log_std, explore_intensity=explore_intensity)
         U = U_flat.view(-1, ad, self.rank)
-        # Apply temperature to U (scales covariance by T² when combined
-        # with σ scaling).
-        U = U * self._temperature
+        # Scale U by exp(offset) so the whole covariance is scaled by
+        # exp(offset)², preserving correlation structure while scaling
+        # the spread (matching the σ scaling from the log_std offset).
+        if isinstance(explore_intensity, torch.Tensor):
+            scale = torch.exp((explore_intensity - 0.5) * 2.0)
+            scale = scale.unsqueeze(-1).unsqueeze(-1)  # (B, 1, 1)
+        else:
+            scale = float(np.exp((explore_intensity - 0.5) * 2.0))
+        U = U * scale
         return mean, log_std, U
 
-    def _build_dist(self, obs: torch.Tensor) -> LowRankMultivariateNormal:
-        mean, log_std, U = self._forward_head(obs)
+    def _build_dist(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> LowRankMultivariateNormal:
+        mean, log_std, U = self._forward_head(obs, explore_intensity=explore_intensity)
         cov_diag = log_std.exp().pow(2) + _PD_MARGIN
         return LowRankMultivariateNormal(
             loc=mean,
@@ -148,26 +163,30 @@ class LowRankGaussianMLPPolicy(TanhSquashedPolicyBase):
     # Raw-space hooks
     # ------------------------------------------------------------------
 
-    def _raw_sample(self, obs: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        dist = self._build_dist(obs)
+    def _raw_sample(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> Tuple[torch.Tensor, None]:
+        dist = self._build_dist(obs, explore_intensity=explore_intensity)
         raw = dist.rsample()
         return raw, None
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        dist = self._build_dist(obs)
+        dist = self._build_dist(obs, explore_intensity=explore_intensity)
         return dist.log_prob(raw_action), None
 
     def _raw_mode(self, obs: torch.Tensor) -> torch.Tensor:
-        mean, _, _ = self._forward_head(obs)
+        mean, _, _ = self._forward_head(obs, explore_intensity=0.5)
         return mean
 
     def _regularizer_and_stats(
         self, obs, raw_action, raw_log_prob, want_stats,
         sample_extras, score_extras,
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, float]]]:
-        dist = self._build_dist(obs)
+        # Entropy uses the *learned* distribution (neutral explore_intensity).
+        dist = self._build_dist(obs, explore_intensity=0.5)
         entropy = dist.entropy()
 
         regularizer = None
@@ -177,7 +196,7 @@ class LowRankGaussianMLPPolicy(TanhSquashedPolicyBase):
         stats = None
         if want_stats:
             with torch.no_grad():
-                mean, log_std, U = self._forward_head(obs)
+                mean, log_std, U = self._forward_head(obs, explore_intensity=0.5)
                 eff_std = log_std.exp()
                 # U Frobenius norm: (B,) → mean/max over batch
                 U_frob = U.flatten(1).norm(dim=-1)  # (B,)

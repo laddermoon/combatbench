@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import torch
 from torch import nn
 from torch.distributions import Normal
@@ -46,7 +45,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         net = Linear(obs, hidden) → Tanh → Linear(hidden, hidden) → Tanh → Linear(hidden, action)
         log_std = Parameter((action_dim,))   # state-independent
 
-    Effective log_std = clamp(log_std + log(temperature), log_std_min, log_std_max)
+    Effective log_std = clamp(log_std + offset(explore_intensity), log_std_min, log_std_max)
 
     The ``net`` and ``log_std`` parameter names match the baseline
     exactly, so a baseline checkpoint can be loaded with ``strict=True``
@@ -65,7 +64,6 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         device: torch.device | str = "cpu",
         deterministic: bool = False,
         entropy_coef: float = 0.0,
-        temperature: float = 1.0,
         noise_tau_steps: float = 0.0,
         noise_scale: float = 0.0,
         model_path: Optional[str] = None,
@@ -73,7 +71,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         super().__init__(
             obs_dim=obs_dim, action_dim=action_dim,
             device=device, deterministic=deterministic,
-            entropy_coef=entropy_coef, temperature=temperature,
+            entropy_coef=entropy_coef,
             noise_tau_steps=noise_tau_steps, noise_scale=noise_scale,
         )
         self.hidden_dim = int(hidden_dim)
@@ -100,57 +98,70 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
             self.to(self.device)
 
     # ------------------------------------------------------------------
-    # Effective log-std (temperature offset + hard clamp, same as baseline)
+    # Effective log-std (explore_intensity offset + hard clamp, same as baseline)
     # ------------------------------------------------------------------
 
-    def _effective_log_std(self) -> torch.Tensor:
+    def _effective_log_std(self, explore_intensity: Any = 0.5) -> torch.Tensor:
         """Return the ``(action_dim,)`` log-sigma used for sampling.
 
-        Temperature is applied as an additive offset of ``log(temperature)``
-        before clamping to ``[log_std_min, log_std_max]`` — identical to
-        :meth:`TanhGaussianMLPPolicy.effective_log_std`.  This ensures
+        ``explore_intensity`` is mapped to an additive offset before
+        clamping to ``[log_std_min, log_std_max]`` — identical in spirit
+        to :meth:`TanhGaussianMLPPolicy.effective_log_std`.  This ensures
         training-time scoring and rollout-time sampling can never disagree.
+
+        ``explore_intensity=0.5`` (neutral) yields a zero offset, matching
+        the baseline ``temperature=1.0`` behavior.
         """
-        offset = float(np.log(self._temperature)) if self._temperature > 0 else 0.0
+        if isinstance(explore_intensity, torch.Tensor):
+            offset = (explore_intensity - 0.5) * 2.0
+            offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting
+        else:
+            offset = float(explore_intensity - 0.5) * 2.0
         return torch.clamp(
             self.log_std + offset,
             self.log_std_min,
             self.log_std_max,
         )
 
-    def _forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return (mean, effective_log_std_expanded)."""
         mean = self.net(obs)
-        log_std = self._effective_log_std()
+        log_std = self._effective_log_std(explore_intensity)
         return mean, log_std.expand_as(mean)
 
     # ------------------------------------------------------------------
     # Raw-space hooks
     # ------------------------------------------------------------------
 
-    def _raw_sample(self, obs: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward(obs)
+    def _raw_sample(
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+    ) -> Tuple[torch.Tensor, None]:
+        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
         std = log_std.exp()
         raw = mean + std * torch.randn_like(mean)
         return raw, None
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward(obs)
+        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action).sum(-1), None
 
     def _raw_log_prob_per_dim(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
         """Per-dimension log_prob for bit-identical baseline matching."""
-        mean, log_std = self._forward(obs)
+        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action), None
 
     def _raw_mode(self, obs: torch.Tensor) -> torch.Tensor:
-        mean, _ = self._forward(obs)
+        mean, _ = self._forward(obs, explore_intensity=0.5)
         return mean
 
     def _regularizer_and_stats(
@@ -162,7 +173,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         sample_extras: Optional[Dict[str, Any]],
         score_extras: Optional[Dict[str, Any]],
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, float]]]:
-        mean, log_std = self._forward(obs)
+        mean, log_std = self._forward(obs, explore_intensity=0.5)
         entropy = Normal(mean, log_std.exp()).entropy().sum(-1)
 
         regularizer = None
@@ -172,7 +183,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         stats: Optional[Dict[str, float]] = None
         if want_stats:
             with torch.no_grad():
-                eff_std = self._effective_log_std().exp()
+                eff_std = self._effective_log_std(0.5).exp()
                 stats = {
                     "entropy": float(entropy.mean().item()),
                     "std_mean": float(eff_std.mean().item()),

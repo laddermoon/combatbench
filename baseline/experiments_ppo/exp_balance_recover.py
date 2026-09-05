@@ -113,6 +113,8 @@ class BalanceRecover(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        explore_intensity: float = 0.5,
     ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
         self._validate_config()
         env_pb = self._env_pb()
@@ -140,6 +142,7 @@ class BalanceRecover(CombatExperimentPPOBase):
                 {
                     "initial_distance": initial_distance,
                     "impulse_params": impulse_params,
+                    "explore_intensity": explore_intensity,
                 },
             ))
         return jobs
@@ -230,6 +233,7 @@ class BalanceRecover(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
+            explore_intensity=self.extract_explore_intensity(episode, agent_id, T),
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:

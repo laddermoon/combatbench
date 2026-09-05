@@ -81,11 +81,6 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         self.log_std_max = float(log_std_max)
         self.device = torch.device(device)
         self._deterministic = bool(deterministic)
-        # Exploration state — plain float, not a buffer, so it is owned
-        # by the experiment's schedule and never restored from a
-        # checkpoint's state_dict.  set_exploration sets this; 0.0 means
-        # neutral (policy uses its learned σ as-is, i.e. ei=0.5).
-        self._log_std_offset = 0.0
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.Tanh(),
@@ -104,27 +99,36 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
                 print(f"[TanhGaussianMLPPolicy] unexpected keys on load: {unexpected}", flush=True)
             self.to(self.device)
 
-    def effective_log_std(self) -> torch.Tensor:
-        """Return the ``(action_dim,)`` log-sigma used for sampling.
+    def effective_log_std(self, explore_intensity: Any = 0.5) -> torch.Tensor:
+        """Return the ``(action_dim,)`` or ``(B, action_dim)`` log-sigma.
+
+        ``explore_intensity`` controls the additive offset in log-std
+        space: ``offset = (ei - 0.5) * EXPLORE_SPAN``.  May be a scalar
+        float or a ``(B,)`` tensor for per-frame exploration.
 
         Only a numerical-safety clamp at ±20 is applied — no business
         bounds.  ``log_std_min`` / ``log_std_max`` are normalization
         reference points, not hard limits.  See
         ``DESIGN_migration_tanh_gaussian.md`` §3.
         """
+        if isinstance(explore_intensity, torch.Tensor):
+            offset = (explore_intensity - 0.5) * self.EXPLORE_SPAN
+            offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting
+        else:
+            offset = float(explore_intensity - 0.5) * self.EXPLORE_SPAN
         return torch.clamp(
-            self.log_std + self._log_std_offset,
+            self.log_std + offset,
             _LOG_STD_SAFE_MIN,
             _LOG_STD_SAFE_MAX,
         )
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, explore_intensity: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
         mean = self.net(obs)
-        log_std = self.effective_log_std()
+        log_std = self.effective_log_std(explore_intensity)
         return mean, log_std.expand_as(mean)
 
-    def sample_action(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = self.forward(obs)
+    def sample_action(self, obs: torch.Tensor, *, explore_intensity: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+        mean, log_std = self.forward(obs, explore_intensity=explore_intensity)
         std = log_std.exp()
         dist = Normal(mean, std)
         raw_action = dist.rsample()
@@ -140,6 +144,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
+        explore_intensity: torch.Tensor,
         *,
         frame_modes: Optional[torch.Tensor] = None,
         noise_shift: Optional[torch.Tensor] = None,
@@ -153,16 +158,18 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         no OU exploration support.  Use :class:`FixedSigmaGaussianMLPPolicy`
         for OU-enabled training from a baseline checkpoint.
 
-        ``log_prob`` uses the effective σ (policy σ + explore offset) so
-        the PPO importance ratio is correct.  ``entropy`` uses the
-        policy's original σ (without explore offset) so it reflects the
-        policy's own certainty, not the temporary exploration noise.
+        ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
+        exploration intensity used at rollout time.  ``log_prob`` uses the
+        effective σ (policy σ + explore offset) so the PPO importance
+        ratio is correct.  ``entropy`` uses the policy's original σ
+        (without explore offset) so it reflects the policy's own
+        certainty, not the temporary exploration noise.
         See ``DESIGN_migration_tanh_gaussian.md`` §2.
         """
         # log_prob: effective σ (policy σ + explore offset)
         clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
         raw_actions = torch.atanh(clipped_actions)
-        mean, eff_log_std = self.forward(obs)
+        mean, eff_log_std = self.forward(obs, explore_intensity=explore_intensity)
         dist = Normal(mean, eff_log_std.exp())
         log_prob = (dist.log_prob(raw_actions)
                     - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)).sum(dim=-1)
@@ -206,46 +213,31 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     # a practical range that avoids extreme saturation.
     EXPLORE_SPAN = 2.0
 
-    def set_exploration(self, explore_intensity: float) -> None:
-        """Apply an exploration directive.
-
-        ``explore_intensity`` ∈ [0, 1] is a symmetric temperature-like
-        control centered at 0.5:
-
-        - ``0.5`` = neutral (offset=0, policy uses its learned σ as-is)
-        - ``→ 0`` = compress (offset < 0, σ shrinks; ei=0 → σ × ~0.37)
-        - ``→ 1`` = expand (offset > 0, σ grows; ei=1 → σ × ~2.72)
-
-        The offset is additive on log_std: ``effective_log_std = log_std
-        + offset``, which is mathematically equivalent to multiplying σ
-        by ``exp(offset)`` (a temperature scaling).  Operating in log
-        space keeps the offset linear in entropy and numerically stable.
-
-        **Warning**: ``ei=0`` nearly collapses sampling noise.  Only use
-        it deliberately; the safe default is ``0.5``.
-        """
-        self._log_std_offset = (float(explore_intensity) - 0.5) * self.EXPLORE_SPAN
-
     # ------------------------------------------------------------------
     # Policy contract
     # ------------------------------------------------------------------
     def act(
         self,
         observation: Any,
+        explore_intensity: float = 0.5,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Single-step inference.
 
         Returns ``(action, None)`` when ``want_extra=False``.
         When ``want_extra=True`` and the policy is stochastic, the
-        returned dict contains ``log_prob``.
+        returned dict contains ``log_prob`` and ``explore_intensity``.
         """
         action_np, log_prob = self.act_numpy(
-            observation, device=self.device, deterministic=self._deterministic
+            observation, device=self.device, deterministic=self._deterministic,
+            explore_intensity=explore_intensity,
         )
         if not want_extra or log_prob is None:
             return action_np, None
-        return action_np, {"log_prob": float(log_prob)}
+        return action_np, {
+            "log_prob": float(log_prob),
+            "explore_intensity": float(explore_intensity),
+        }
 
     def set_deterministic(self, deterministic: bool) -> None:
         """Toggle stochastic vs deterministic action sampling."""
@@ -292,14 +284,14 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     # ------------------------------------------------------------------
     # Numpy-flavoured inference (kept for backward compat with trainers)
     # ------------------------------------------------------------------
-    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool) -> tuple[np.ndarray, Optional[float]]:
+    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool, *, explore_intensity: Any = 0.5) -> tuple[np.ndarray, Optional[float]]:
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             if deterministic:
                 action = self.deterministic_action(obs_tensor)
                 log_prob = None
             else:
-                action, log_prob = self.sample_action(obs_tensor)
+                action, log_prob = self.sample_action(obs_tensor, explore_intensity=explore_intensity)
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if log_prob is None:
             return action_np, None

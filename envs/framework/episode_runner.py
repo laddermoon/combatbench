@@ -216,6 +216,12 @@ class EpisodeRunner:
         episode_seeds = self._derive_seeds(base_seed)
         self._reset_all(episode_seeds, options=options)
 
+        # Extract per-episode explore_intensity from options.  This is
+        # threaded to policy.act at every step so the policy samples
+        # from the same distribution that evaluate_actions will later
+        # score under.  Default 0.5 (neutral) when not specified.
+        explore_intensity = float((options or {}).get("explore_intensity", 0.5))
+
         obs_a, obs_b = self.runtime.get_observation()
         a_active = True
         b_active = True
@@ -226,6 +232,7 @@ class EpisodeRunner:
             if a_active or self.post_termination_action == "policy":
                 action_a, extra_a = self.policy_a.act(
                     obs_a,
+                    explore_intensity=explore_intensity,
                     want_extra=want_extras,
                 )
                 last_action_a = action_a
@@ -237,6 +244,7 @@ class EpisodeRunner:
             if b_active or self.post_termination_action == "policy":
                 action_b, extra_b = self.policy_b.act(
                     obs_b,
+                    explore_intensity=explore_intensity,
                     want_extra=want_extras,
                 )
                 last_action_b = action_b

@@ -77,6 +77,7 @@ class SimpleActor(nn.Module):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
+        explore_intensity: torch.Tensor,
         *, frame_modes=None, noise_shift=None, want_stats: bool = False,
     ) -> ActorEval:
         mean = self.net(obs)
@@ -103,9 +104,6 @@ class SimpleActor(nn.Module):
             }
 
         return ActorEval(log_prob=log_prob, entropy=entropy_norm, stats=stats)
-
-    def set_exploration(self, explore_intensity: float) -> None:
-        pass
 
     def to_blueprint(self, dest_path: str, *, stochastic: bool = False):
         raise NotImplementedError("Not needed for trainer tests")

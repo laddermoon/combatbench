@@ -125,10 +125,8 @@ class ExportedPolicy(Policy):
         cls = getattr(module, cls_name.strip())
 
         config = dict(payload["config"])
-        # Pass exploration-affecting fields from payload so rollout
-        # sampling matches the distribution the trainer scored under.
-        if "temperature" in payload:
-            config.setdefault("temperature", float(payload["temperature"]))
+        # OU noise parameters are still baked into the exported policy
+        # (they are architecture-level, not per-step exploration state).
         if "noise_tau_steps" in payload:
             config.setdefault("noise_tau_steps", float(payload["noise_tau_steps"]))
         if "noise_scale" in payload:
@@ -148,13 +146,16 @@ class ExportedPolicy(Policy):
     def act(
         self,
         observation: Any,
+        explore_intensity: float = 0.5,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         # Delegate to the inner policy's act so OU stepping, extras,
         # and stochastic/deterministic dispatch are handled in one
         # place.  This avoids a second copy of the sampling logic that
         # could silently diverge from the policy's own act method.
-        return self._policy.act(observation, want_extra=want_extra)
+        return self._policy.act(
+            observation, explore_intensity=explore_intensity, want_extra=want_extra,
+        )
 
     def reset(self, seed: Optional[int] = None) -> None:
         # Forward to the inner policy so OU state is zeroed at episode

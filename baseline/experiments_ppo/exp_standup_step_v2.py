@@ -300,6 +300,7 @@ class StandupStepV2(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
+            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:

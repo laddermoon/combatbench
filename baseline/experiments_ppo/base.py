@@ -251,13 +251,19 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        explore_intensity: float = 0.5,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         """Build self-play rollout jobs.
+
+        ``explore_intensity`` is injected into each job's ``options`` so
+        the rollout worker passes it to ``policy.act`` at every step.
 
         Subclass can override for non-self-play scenarios.
         """
         return self._build_selfplay_jobs(
             self._env_pb(), policy_bp, base_seed, n_episodes,
+            explore_intensity=explore_intensity,
         )
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
@@ -279,6 +285,24 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_explore_intensity(episode, agent_id: str, T: int) -> np.ndarray:
+        """Extract per-frame explore_intensity for one agent, truncated to T.
+
+        Pulls ``explore_intensity`` from ``episode.action_extras[agent_id]``
+        and slices it to ``[:T]``.  Returns a ``(T,)`` float32 array
+        defaulting to 0.5 (neutral) when the episode has no
+        ``explore_intensity`` extras (e.g. collected by an old policy
+        or a deterministic eval policy).
+        """
+        extras = episode.action_extras.get(agent_id)
+        if extras is None:
+            return np.full(T, 0.5, dtype=np.float32)
+        ei = extras.get("explore_intensity")
+        if ei is None:
+            return np.full(T, 0.5, dtype=np.float32)
+        return np.asarray(ei, dtype=np.float32)[:T]
 
     @staticmethod
     def extract_noise_shift(episode, agent_id: str, T: int) -> Optional[np.ndarray]:
@@ -313,6 +337,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        explore_intensity: float = 0.5,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         rng = np.random.default_rng(base_seed)
 
@@ -327,7 +353,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 jobs.append((
                     policy_bp, policy_bp,
                     env_bp, seed,
-                    {"initial_distance": initial_distance},
+                    {"initial_distance": initial_distance, "explore_intensity": explore_intensity},
                 ))
             return jobs
 
@@ -356,7 +382,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
             jobs.append((
                 policy_bp, policy_bp,
                 env_bps[agent_id], seed,
-                {"agent_id": agent_id, "initial_distance": initial_distance},
+                {"agent_id": agent_id, "initial_distance": initial_distance,
+                 "explore_intensity": explore_intensity},
             ))
         return jobs
 

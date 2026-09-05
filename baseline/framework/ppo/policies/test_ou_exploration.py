@@ -83,8 +83,8 @@ class TestDegenerateEquivalence:
         acts = torch.tanh(torch.randn(8, ACTION_DIM))
 
         with torch.no_grad():
-            ev1 = bp.evaluate_actions(obs, acts, want_stats=True)
-            ev2 = fp.evaluate_actions(obs, acts, want_stats=True)
+            ev1 = bp.evaluate_actions(obs, acts, torch.full((8,), 0.5), want_stats=True)
+            ev2 = fp.evaluate_actions(obs, acts, torch.full((8,), 0.5), want_stats=True)
 
         assert torch.allclose(ev1.log_prob, ev2.log_prob, atol=1e-6)
         # Stats are not compared: the baseline uses closed-form entropy
@@ -141,7 +141,7 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, lp_sample = policy.sample_action(obs, noise_shift=shift)
-            ev = policy.evaluate_actions(obs, action, noise_shift=shift)
+            ev = policy.evaluate_actions(obs, action, torch.full((16,), 0.5), noise_shift=shift)
             lp_eval = ev.log_prob
 
         assert torch.allclose(lp_sample, lp_eval, atol=1e-5), (
@@ -158,8 +158,8 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, _ = policy.sample_action(obs, noise_shift=shift)
-            ev_with = policy.evaluate_actions(obs, action, noise_shift=shift)
-            ev_without = policy.evaluate_actions(obs, action)
+            ev_with = policy.evaluate_actions(obs, action, torch.full((16,), 0.5), noise_shift=shift)
+            ev_without = policy.evaluate_actions(obs, action, torch.full((16,), 0.5))
 
         # They should differ — the shift changes which raw_action is scored.
         assert not torch.allclose(ev_with.log_prob, ev_without.log_prob, atol=1e-3)
@@ -171,9 +171,10 @@ class TestSamplingScoringConsistency:
         acts = torch.tanh(torch.randn(8, ACTION_DIM))
 
         with torch.no_grad():
-            ev_none = policy.evaluate_actions(obs, acts)
+            ev_none = policy.evaluate_actions(obs, acts, torch.full((8,), 0.5))
             ev_zero = policy.evaluate_actions(
-                obs, acts, noise_shift=torch.zeros(8, ACTION_DIM),
+                obs, acts, torch.full((8,), 0.5),
+                noise_shift=torch.zeros(8, ACTION_DIM),
             )
         assert torch.allclose(ev_none.log_prob, ev_zero.log_prob, atol=1e-6)
 
@@ -186,7 +187,7 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, lp_sample = policy.sample_action(obs, noise_shift=shift)
-            ev = policy.evaluate_actions(obs, action, noise_shift=shift)
+            ev = policy.evaluate_actions(obs, action, torch.full((8,), 0.5), noise_shift=shift)
 
         assert torch.allclose(lp_sample, ev.log_prob, atol=1e-5)
 
@@ -506,12 +507,12 @@ class TestInconsistentInputRejection:
 
 
 # ---------------------------------------------------------------------------
-# 8. set_exploration threading
+# 8. OU parameter management
 # ---------------------------------------------------------------------------
 
-class TestSetExploration:
+class TestOUParamManagement:
 
-    def test_set_exploration_updates_ou_params(self):
+    def test_ou_params_set_directly(self):
         """Setting OU params directly updates the policy's configuration."""
         policy = _make_policy()
         assert policy._noise_scale == 0.0
@@ -525,14 +526,13 @@ class TestSetExploration:
         assert policy._noise_tau_steps == 15.0
         assert policy._noise_scale == 0.5
 
-    def test_set_exploration_none_keeps_current(self):
-        """set_exploration with float should not change OU params."""
+    def test_ou_params_persist_when_unchanged(self):
+        """OU params should remain as configured when not explicitly changed."""
         policy = _make_policy(noise_tau_steps=10.0, noise_scale=0.3)
-        policy.set_exploration(0.5)  # float, no noise fields
         assert policy._noise_tau_steps == 10.0
         assert policy._noise_scale == 0.3
 
-    def test_ou_enabled_after_set_exploration(self):
+    def test_ou_enabled_after_direct_param_set(self):
         """After enabling OU directly, _next_noise_shift returns non-None."""
         policy = _make_policy()
         assert policy._next_noise_shift() is None

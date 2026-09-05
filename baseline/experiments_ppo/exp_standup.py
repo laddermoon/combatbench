@@ -159,6 +159,7 @@ class Standup(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
+            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
         )]
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:

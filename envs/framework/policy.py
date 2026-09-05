@@ -98,7 +98,12 @@ class Policy(ABC):
     """Abstract base class for all combatbench policies. See module docstring."""
 
     @abstractmethod
-    def act(self, observation: Any, want_extra: bool = False) -> Tuple[Any, Any | None]:
+    def act(
+        self,
+        observation: Any,
+        explore_intensity: float = 0.5,
+        want_extra: bool = False,
+    ) -> Tuple[Any, Any | None]:
         """Compute an action for the given observation.
 
         Parameters
@@ -107,6 +112,12 @@ class Policy(ABC):
             Whatever the simulator's ``get_observation()``
             returned. The framework imposes no type constraint; the
             policy and the observer agree on the schema.
+        explore_intensity:
+            Exploration intensity ∈ [0, 1], centered at 0.5 (neutral).
+            Stochastic policies use this to scale their sampling
+            distribution (e.g. σ).  Deterministic policies ignore it.
+            Default 0.5 so non-RL callers (round runner, match runner)
+            are unaffected.
         want_extra:
             If True the runner wants the optional ``extra`` payload
             (e.g. log-prob / value estimates for on-policy RL). When
@@ -122,7 +133,9 @@ class Policy(ABC):
         extra:
             Policy-defined auxiliary payload, or ``None``. Common
             choices: a dict of log-prob / value / entropy tensors for
-            on-policy RL trainers.
+            on-policy RL trainers.  Stochastic policies SHOULD include
+            ``"explore_intensity"`` so the rollout can record it
+            per-frame for exact log_prob recomputation during training.
 
         Stochasticity is the policy's responsibility — see the module
         docstring's "Determinism vs. stochasticity" section.

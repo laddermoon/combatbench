@@ -134,6 +134,8 @@ class StandupFace(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        explore_intensity: float = 0.5,
     ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
         env_pb = self._env_pb()
         speed = self.current_speed
@@ -152,7 +154,7 @@ class StandupFace(CombatExperimentPPOBase):
             jobs.append((
                 policy_bp, policy_bp,
                 env_bp, seed,
-                {"agent_id": agent_id, "initial_distance": self.INITIAL_DISTANCE},
+                {"agent_id": agent_id, "initial_distance": self.INITIAL_DISTANCE, "explore_intensity": explore_intensity},
             ))
         return jobs
 
@@ -284,6 +286,7 @@ class StandupFace(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             mode=None,
+            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:

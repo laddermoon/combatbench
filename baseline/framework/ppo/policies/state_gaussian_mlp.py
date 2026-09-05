@@ -112,60 +112,73 @@ class StateGaussianMLPPolicy(TanhSquashedPolicyBase):
     # Bounded log-std (smooth squash, not hard clamp)
     # ------------------------------------------------------------------
 
-    def _bounded_log_std(self, raw_log_std: torch.Tensor) -> torch.Tensor:
+    def _bounded_log_std(
+        self, raw_log_std: torch.Tensor, *, explore_intensity: float = 0.5,
+    ) -> torch.Tensor:
         """Squash raw log-std into [log_std_min, log_std_max] smoothly.
 
         Uses tanh:  bounded = min + 0.5*(max-min)*(tanh(raw + offset) + 1)
-        where offset = log(temperature) so temperature scales σ before
-        bounding (matching baseline's semantics: high temperature
-        saturates against log_std_max rather than exceeding it).
+        where offset is derived from ``explore_intensity`` so that higher
+        exploration scales σ before bounding (matching baseline's
+        semantics: high explore_intensity saturates against log_std_max
+        rather than exceeding it).
         """
-        offset = float(np.log(self._temperature)) if self._temperature > 0 else 0.0
+        if isinstance(explore_intensity, torch.Tensor):
+            offset = (explore_intensity - 0.5) * 2.0
+            offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting with (B, action_dim)
+        else:
+            offset = float(explore_intensity - 0.5) * 2.0
         t = torch.tanh(raw_log_std + offset)
         return self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (t + 1.0)
 
-    def _forward_head(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_head(
+        self, obs: torch.Tensor, *, explore_intensity: float = 0.5,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward through trunk + head, return (mean, bounded_log_std)."""
         h = self.trunk(obs)
         out = self.head(h)
         mean, raw_log_std = out.split(self.action_dim, dim=-1)
-        log_std = self._bounded_log_std(raw_log_std)
+        log_std = self._bounded_log_std(raw_log_std, explore_intensity=explore_intensity)
         return mean, log_std
 
     # ------------------------------------------------------------------
     # Raw-space hooks
     # ------------------------------------------------------------------
 
-    def _raw_sample(self, obs: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward_head(obs)
+    def _raw_sample(
+        self, obs: torch.Tensor, *, explore_intensity: float = 0.5,
+    ) -> Tuple[torch.Tensor, None]:
+        mean, log_std = self._forward_head(obs, explore_intensity=explore_intensity)
         std = log_std.exp()
         raw = mean + std * torch.randn_like(mean)
         return raw, None
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: float = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward_head(obs)
+        mean, log_std = self._forward_head(obs, explore_intensity=explore_intensity)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action).sum(-1), None
 
     def _raw_log_prob_per_dim(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
+        *, explore_intensity: float = 0.5,
     ) -> Tuple[torch.Tensor, None]:
         """Per-dimension log_prob for bit-identical baseline matching."""
-        mean, log_std = self._forward_head(obs)
+        mean, log_std = self._forward_head(obs, explore_intensity=explore_intensity)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action), None
 
     def _raw_mode(self, obs: torch.Tensor) -> torch.Tensor:
-        mean, _ = self._forward_head(obs)
+        mean, _ = self._forward_head(obs, explore_intensity=0.5)
         return mean
 
     def _regularizer_and_stats(
         self, obs, raw_action, raw_log_prob, want_stats,
         sample_extras, score_extras,
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, float]]]:
-        mean, log_std = self._forward_head(obs)
+        mean, log_std = self._forward_head(obs, explore_intensity=0.5)
         entropy = Normal(mean, log_std.exp()).entropy().sum(-1)
 
         regularizer = None

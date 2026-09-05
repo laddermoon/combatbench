@@ -140,6 +140,7 @@ class PPOBuffer:
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.frame_modes: Optional[np.ndarray] = None
             self.noise_shift: Optional[np.ndarray] = None
+            self.explore_intensity: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
             return
@@ -158,8 +159,19 @@ class PPOBuffer:
         all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
         all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
 
+        # --- explore_intensity (required) ---
+        # Threaded into evaluate_actions so log_prob is computed under
+        # the same distribution that produced the actions at rollout time.
+        all_ei = np.concatenate([
+            t.explore_intensity if t.explore_intensity is not None
+            else np.full(len(t.obs), 0.5, dtype=np.float32)
+            for t in trajectories
+        ]).astype(np.float32)
+        all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)
+        self.explore_intensity = all_ei
+
         any_mode = any(t.mode is not None for t in trajectories)
-        kwargs: Dict[str, Any] = {}
+        kwargs: Dict[str, Any] = {"explore_intensity": all_ei_t}
         if any_mode:
             all_modes = np.concatenate([
                 np.full(len(t.obs), float(t.mode) if t.mode is not None else 1.0,
@@ -801,6 +813,14 @@ def ppo_update(
             buf.noise_shift, dtype=torch.float32, device=device,
         )
 
+    # --- explore_intensity (required) ---
+    # Per-frame exploration intensity recorded at rollout time.  Threaded
+    # through to evaluate_actions so log_prob is computed under the same
+    # distribution that produced the actions.
+    ei_t = torch.as_tensor(
+        buf.explore_intensity, dtype=torch.float32, device=device,
+    )
+
     # --- Diagnostics: episode lengths ---
     # These are logged but do not influence the update.
     ep_lengths = buf.ep_lengths
@@ -916,7 +936,7 @@ def ppo_update(
             # frame_modes and noise_shift when present.  Using a kwargs
             # dict avoids a 2×2 branch explosion and keeps the call site
             # readable as more optional threading fields are added.
-            eval_kwargs: Dict[str, Any] = {}
+            eval_kwargs: Dict[str, Any] = {"explore_intensity": ei_t[idx]}
             if frame_modes_t is not None:
                 eval_kwargs["frame_modes"] = frame_modes_t[idx]
             if noise_shift_t is not None:

@@ -392,30 +392,31 @@ class ActorEval:
 class TrainablePolicy(Protocol):
     """Interface that the PPO trainer requires from an actor.
 
-    Three methods, each with an unambiguous call site in the loop:
+    Two methods, each with an unambiguous call site in the loop:
 
     ===================================  ==================  ===================
     when                                 call                yields
     ===================================  ==================  ===================
-    once per update, before rollout      ``set_exploration`` (no return)
     once per update, buffer construction ``evaluate_actions``
                                          ``want_stats=True`` batch-wide stats
     ~epochs x minibatches per update     ``evaluate_actions`` log_prob + entropy
     ===================================  ==================  ===================
 
-    There is deliberately **no** parameter-inspection method (an earlier
-    draft had ``exploration_stats()``): as soon as sigma becomes
-    state-dependent, every such quantity turns into an expectation over a
-    state distribution and is meaningless without saying *which* states.
-    Distributional statistics therefore ride on ``ActorEval.stats``,
-    anchored to the one call that has a clean definition — the buffer's
-    single batched pass over the whole rollout under theta_old.  Scalar
-    configuration (which needs no data) comes back from
-    ``set_exploration`` instead.
+    Exploration is **not** a mutable state on the policy.  The policy
+    receives ``explore_intensity`` as a per-frame data field (via
+    ``evaluate_actions``) or per-step parameter (via ``act``), and
+    computes its effective σ from it on every call.  This makes the
+    rollout→scoring consistency a data guarantee, not a timing
+    guarantee.
+
+    Distributional statistics ride on ``ActorEval.stats``, anchored to
+    the one call that has a clean definition — the buffer's single
+    batched pass over the whole rollout under theta_old.
     """
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
+        explore_intensity: torch.Tensor,
         *, frame_modes: Optional[torch.Tensor] = None,
         noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
@@ -427,6 +428,13 @@ class TrainablePolicy(Protocol):
         - ``entropy``: action-independent normalized entropy ``H(π(·|s))``
           in [0, 1], used by the framework for the entropy floor loss.
         - ``stats``: optional diagnostics (only when ``want_stats=True``).
+
+        ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
+        exploration intensity used at rollout time.  The policy uses it
+        to compute the effective σ for log_prob evaluation, ensuring the
+        PPO importance ratio is computed under the same distribution that
+        produced the actions.  ``entropy`` (uncertainty) uses the policy's
+        own σ without exploration scaling.
 
         If ``frame_modes`` is provided, the actor should use it to route
         samples to the appropriate sub-network instead of computing mode
@@ -441,19 +449,12 @@ class TrainablePolicy(Protocol):
         shifted distribution.  Like ``frame_modes``, this is a *fact
         recorded at rollout time*, not a quantity to re-infer.
 
-        .. todo::
-            ``noise_shift`` leaks a policy-family-specific concept (raw
-            pre-tanh space) into the framework-level protocol.  A cleaner
-            design would let the policy own the full rollout→scoring
-            consistency contract internally (e.g. the policy records
-            whatever it needs at rollout time and reconstructs the
-            correct log_prob at training time without framework
-            involvement).  Deferred until a second policy family
-            actually needs a different consistency mechanism.
-
         Args:
             obs: ``(B, obs_dim)`` observations.
             actions: ``(B, action_dim)`` actions taken at rollout time.
+            explore_intensity: ``(B,)`` per-frame exploration intensity
+                recorded at rollout time.  Required — the policy must
+                know what distribution produced the actions.
             frame_modes: Optional ``(B,)`` routing tags from rollout.
             noise_shift: Optional ``(B, action_dim)`` raw-space shifts
                 recorded at rollout time.  Used by policies with OU
@@ -474,37 +475,16 @@ class TrainablePolicy(Protocol):
         """
         ...
 
-    def set_exploration(self, explore_intensity: float) -> None:
-        """Apply an exploration directive.
-
-        Called once per update before the rollout blueprint is exported,
-        so anything affecting sampling must take effect immediately.
-
-        The policy maps ``explore_intensity`` to its internal parameters
-        (σ offset, noise_scale, etc.).  ``0.5`` = neutral (policy uses
-        its learned σ as-is), ``→ 0`` = compress, ``→ 1`` = expand.
-
-        ``entropy_floor`` and ``entropy_coef`` are framework-side
-        concerns — the policy does not need to handle them.  The policy
-        only needs to return a correctly normalized ``entropy`` in
-        ``evaluate_actions`` for the framework to use.
-
-        Args:
-            explore_intensity: Symmetric temperature-like control ∈ [0, 1]
-                centered at 0.5.
-        """
-        ...
-
     def to_blueprint(
         self, dest_path: str, *, stochastic: bool = False,
     ) -> PolicyBlueprint:
         """Export a rollout-ready policy blueprint.
 
-        The exported artifact must reproduce the sampling behaviour
-        implied by the most recent ``set_exploration`` call — otherwise
-        rollout actions would come from a different distribution than the
-        one ``evaluate_actions`` scores them under, silently breaking the
-        on-policy assumption.
+        The exported artifact is **exploration-neutral**: it does not
+        bake in any explore_intensity.  The rollout worker receives
+        explore_intensity as a per-step parameter via ``act``, ensuring
+        the sampling distribution matches what ``evaluate_actions``
+        later scores under.
 
         Args:
             dest_path: Directory path for the exported blueprint.
@@ -886,6 +866,8 @@ class ExperimentPPO(ABC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        explore_intensity: float = 0.5,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
 
@@ -894,6 +876,12 @@ class ExperimentPPO(ABC):
         is stochastic (training) or deterministic (eval) by passing the
         appropriate ``policy_bp``.
 
+        ``explore_intensity`` is injected into each job's
+        ``episode_options["explore_intensity"]`` so the rollout worker
+        passes it to ``policy.act`` at every step.  For evaluation,
+        the caller passes ``explore_intensity=0.5`` (neutral) — the
+        deterministic policy ignores it.
+
         Args:
             policy_bp: The actor's exported policy blueprint.  For
                 training rollouts, this has ``stochastic=True``.  For
@@ -901,6 +889,8 @@ class ExperimentPPO(ABC):
             base_seed: Base random seed for this batch.  Each job should
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
+            explore_intensity: Exploration intensity for this batch.
+                Default 0.5 (neutral).
 
         Returns:
             List of Job tuples:
