@@ -73,9 +73,9 @@ Design principles
    framework to use in the entropy floor loss).  The framework only
    routes.
 
-   Two primary knobs, both ∈ [0, 1]: ``explore_intensity`` (symmetric
-   temperature-like control, 0.5 = neutral) and ``entropy_floor``
-   (training-side entropy floor).
+   Two primary knobs: ``explore_intensity`` (additive exploration
+   strength ∈ [-1, 1], 0 = neutral) and ``entropy_floor``
+   (training-side entropy floor ∈ [0, 1]).
    For the common case where both should move together, set them to the
    same value.  The framework computes the entropy floor loss from
    ``ActorEval.entropy`` — a
@@ -288,8 +288,8 @@ class ExplorationSpec:
 
     Three fields, all optional (``None`` = "no opinion, keep current"):
 
-    - ``explore_intensity`` ∈ [0, 1]: symmetric temperature-like control
-      centered at 0.5 (0.5 = neutral, 0 = compress, 1 = expand).
+    - ``explore_intensity`` ∈ [-1, 1]: additive exploration strength
+      (0 = neutral, +1 = max expand, -1 = max suppress).
     - ``entropy_floor`` ∈ [0, 1]: training-side entropy floor.
     - ``entropy_coef``: coefficient for the entropy floor loss.
 
@@ -309,12 +309,12 @@ class ExplorationSpec:
     See ``DESIGN_unified_exploration_control.md`` for the full design.
 
     Attributes:
-        explore_intensity: Symmetric temperature-like control ∈ [0, 1].
-            ``0.5`` = neutral (policy uses its learned σ as-is),
-            ``→ 0`` = compress σ (less noise), ``→ 1`` = expand σ
-            (more noise).  The policy maps this to its internal
-            parameters (e.g. Gaussian log_std offset).  ``None`` = no
-            opinion.
+        explore_intensity: Additive exploration strength ∈ [-1, 1].
+            ``0`` = neutral (policy uses its learned σ as-is),
+            ``→ +1`` = expand σ (more noise; ei=+1 → σ × 3),
+            ``→ -1`` = suppress σ (less noise; ei=-1 → σ × 1/3).
+            The policy maps this to its internal parameters via
+            ``scale = exp(ei * ln(3))``.  ``None`` = no opinion.
         entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
             in the policy's *normalized* entropy (0 = fully certain,
             1 = policy's maximum entropy).  The framework computes
@@ -324,7 +324,7 @@ class ExplorationSpec:
             ``None`` = no opinion (policy keeps its current floor).
         entropy_coef: Coefficient for the entropy floor loss.  When
             ``None``, the framework uses a default linked to
-            ``explore_intensity`` (e.g. ``0.01 * explore_intensity``).
+            ``explore_intensity`` (e.g. ``0.01 * max(explore_intensity, 0)``).
             Override when you want the coefficient independent of
             exploration strength.
     """
@@ -336,15 +336,16 @@ class ExplorationSpec:
     def resolve(self) -> Tuple[float, float]:
         """Return ``(explore_intensity, entropy_floor)`` with fallbacks.
 
-        Returns the explicit values, defaulting to ``0.5`` for
+        Returns the explicit values, defaulting to ``0.0`` for
         ``explore_intensity`` (neutral) and ``0.0`` for
         ``entropy_floor`` when ``None``.
 
         Returns:
-            ``(explore_intensity, entropy_floor)`` as floats in [0, 1].
+            ``(explore_intensity, entropy_floor)`` as floats in [-1, 1]
+            and [0, 1] respectively.
         """
         return (
-            self.explore_intensity if self.explore_intensity is not None else 0.5,
+            self.explore_intensity if self.explore_intensity is not None else 0.0,
             self.entropy_floor if self.entropy_floor is not None else 0.0,
         )
 
@@ -847,7 +848,7 @@ class ExperimentPPO(ABC):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
 
@@ -859,7 +860,7 @@ class ExperimentPPO(ABC):
         ``explore_intensity`` is injected into each job's
         ``episode_options["explore_intensity"]`` so the rollout worker
         passes it to ``policy.act`` at every step.  For evaluation,
-        the caller passes ``explore_intensity=0.5`` (neutral) — the
+        the caller passes ``explore_intensity=0.0`` (neutral) — the
         deterministic policy ignores it.
 
         Args:
@@ -870,7 +871,7 @@ class ExperimentPPO(ABC):
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
             explore_intensity: Exploration intensity for this batch.
-                Default 0.5 (neutral).
+                Default 0.0 (neutral).
 
         Returns:
             List of Job tuples:

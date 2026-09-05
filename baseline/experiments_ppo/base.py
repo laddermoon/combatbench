@@ -50,15 +50,15 @@ class CombatExperimentPPOBase(ExperimentPPO):
     critic_hidden_dim: int = 256
 
     # --- Exploration ---
-    # explore_intensity: symmetric temperature-like control ∈ [0, 1].
-    #   0.5 = neutral (policy uses its learned σ as-is).
-    #   → 0 = compress σ (less noise; ei=0 → σ × ~0.37, near-deterministic).
-    #   → 1 = expand σ (more noise; ei=1 → σ × ~2.72, near-uniform).
+    # explore_intensity: additive exploration strength ∈ [-1, 1].
+    #   0 = neutral (policy uses its learned σ as-is).
+    #   → +1 = expand σ (more noise; ei=+1 → σ × 3).
+    #   → -1 = suppress σ (less noise; ei=-1 → σ × 1/3).
     # entropy_floor: training-side entropy floor ∈ [0, 1].
     #   The framework computes relu(entropy_floor - H_norm) to prevent
     #   policy collapse.  Set to 0 to disable.
     # entropy_coef: coefficient for the entropy floor loss.
-    explore_intensity: float = 0.5
+    explore_intensity: float = 0.0
     entropy_floor: float = 0.3
     entropy_coef: float = 0.01
 
@@ -192,8 +192,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Static exploration spec built from the class attributes.
 
         Returns the three-field ``ExplorationSpec``:
-        - ``explore_intensity``: symmetric temperature-like control
-          (0.5 = neutral, 0 = compress, 1 = expand).  Default 0.5.
+        - ``explore_intensity``: additive exploration strength
+          (0 = neutral, +1 = expand, -1 = suppress).  Default 0.0.
         - ``entropy_floor``: training-side entropy floor.  Default 0.3.
         - ``entropy_coef``: coefficient for the entropy floor loss.
 
@@ -252,7 +252,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         """Build self-play rollout jobs.
 
@@ -292,16 +292,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
         Pulls ``explore_intensity`` from ``episode.action_extras[agent_id]``
         and slices it to ``[:T]``.  Returns a ``(T,)`` float32 array
-        defaulting to 0.5 (neutral) when the episode has no
+        defaulting to 0.0 (neutral) when the episode has no
         ``explore_intensity`` extras (e.g. collected by an old policy
         or a deterministic eval policy).
         """
         extras = episode.action_extras.get(agent_id)
         if extras is None:
-            return np.full(T, 0.5, dtype=np.float32)
+            return np.full(T, 0.0, dtype=np.float32)
         ei = extras.get("explore_intensity")
         if ei is None:
-            return np.full(T, 0.5, dtype=np.float32)
+            return np.full(T, 0.0, dtype=np.float32)
         return np.asarray(ei, dtype=np.float32)[:T]
 
     @staticmethod
@@ -316,7 +316,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
     ) -> List[Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]]:
         rng = np.random.default_rng(base_seed)
 

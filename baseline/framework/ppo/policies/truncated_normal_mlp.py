@@ -20,6 +20,10 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 from baseline.framework.ppo import ActorEval
 
+# explore_intensity ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
+# Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
+_EXPLORE_K = math.log(3.0)
+
 __all__ = [
     "TruncatedNormalPolicy",
 ]
@@ -72,7 +76,7 @@ class ExportedTruncNormPolicy(Policy):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, None]:
         """Return action for given observation."""
@@ -182,26 +186,17 @@ class TruncatedNormalPolicy(nn.Module, Policy):
             self.log_std, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX
         )
 
-    def _explore_scale(self, explore_intensity: Any = 0.5) -> Any:
-        """Piecewise-linear σ scaling factor from explore_intensity.
+    def _explore_scale(self, explore_intensity: Any = 0.0) -> Any:
+        """Exponential σ scaling factor from explore_intensity.
 
-        0.0 → 1/3, 0.5 → 1.0, 1.0 → 3.0, linear in between.
-        Accepts scalar float or (B,) tensor.
+        ei=0 → 1.0 (neutral), ei=+1 → 3.0 (max explore), ei=-1 → 1/3 (max suppress).
+        scale = exp(ei * ln(3)).  Accepts scalar float or (B,) tensor.
         """
         if isinstance(explore_intensity, torch.Tensor):
-            ei = explore_intensity
-            scale = torch.where(
-                ei <= 0.5,
-                1.0 / 3.0 + (ei / 0.5) * (1.0 - 1.0 / 3.0),
-                1.0 + ((ei - 0.5) / 0.5) * (3.0 - 1.0),
-            )
-            return scale
-        ei = float(explore_intensity)
-        if ei <= 0.5:
-            return 1.0 / 3.0 + (ei / 0.5) * (1.0 - 1.0 / 3.0)
-        return 1.0 + ((ei - 0.5) / 0.5) * (3.0 - 1.0)
+            return torch.exp(explore_intensity * _EXPLORE_K)
+        return math.exp(float(explore_intensity) * _EXPLORE_K)
 
-    def effective_sigma(self, explore_intensity: Any = 0.5) -> torch.Tensor:
+    def effective_sigma(self, explore_intensity: Any = 0.0) -> torch.Tensor:
         """σ used for sampling / log_prob (includes explore scale)."""
         scale = self._explore_scale(explore_intensity)
         sigma = self.effective_log_std().exp()
@@ -213,7 +208,7 @@ class TruncatedNormalPolicy(nn.Module, Policy):
         """σ without explore scale — for uncertainty U."""
         return self.effective_log_std().exp()
 
-    def forward(self, obs: torch.Tensor, *, explore_intensity: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, explore_intensity: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
         raw_mean = self.net(obs)
         mean = torch.tanh(raw_mean)  # ensure mean ∈ (-1, 1)
@@ -245,7 +240,7 @@ class TruncatedNormalPolicy(nn.Module, Policy):
     # ------------------------------------------------------------------
 
     def sample_action(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, obs: torch.Tensor, *, explore_intensity: Any = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample action ∈ [-1, 1] via inverse-CDF reparameterization.
 
@@ -346,7 +341,7 @@ class TruncatedNormalPolicy(nn.Module, Policy):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         action_np, log_prob = self.act_numpy(
@@ -407,7 +402,7 @@ class TruncatedNormalPolicy(nn.Module, Policy):
 
     def act_numpy(
         self, obs: np.ndarray, device: torch.device, deterministic: bool,
-        *, explore_intensity: Any = 0.5,
+        *, explore_intensity: Any = 0.0,
     ) -> tuple[np.ndarray, Optional[float]]:
         obs_tensor = torch.as_tensor(
             obs, dtype=torch.float32, device=device

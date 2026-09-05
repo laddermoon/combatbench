@@ -458,7 +458,7 @@ def train_ppo(
                 exploration = spec
                 explore_intensity, _ = spec.resolve()
             else:
-                explore_intensity = 0.5
+                explore_intensity = 0.0
 
             # 1. Export stochastic policy blueprint for training rollouts.
             #    Stochastic (log_std included) so rollout samples explore.
@@ -547,7 +547,7 @@ def train_ppo(
                 )
                 eval_jobs = experiment.build_jobs(
                     det_bp, eval_seed, cp.eval_episodes,
-                    explore_intensity=0.5,
+                    explore_intensity=0.0,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
 

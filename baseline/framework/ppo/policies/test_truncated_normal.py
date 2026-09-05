@@ -7,7 +7,7 @@ Verifies:
 4. sample_action and evaluate_actions give consistent log_prob
 5. Uncertainty U is in [0, 1] and matches 1/(2×peak)
 6. U = 1 for uniform-like (large σ), U → 0 for narrow (small σ)
-7. explore_intensity scales σ correctly (1/3, 1, 3)
+7. explore_intensity scales σ correctly (ei=-1→1/3, 0→1, +1→3)
 8. Gradients flow to mean and log_std
 9. U is per-obs (depends on mean)
 """
@@ -114,7 +114,7 @@ class TestLogProb(unittest.TestCase):
         N = 100000
         x = torch.rand(N, ACTION_DIM) * 2.0 - 1.0  # uniform in [-1,1]
         obs_batch = obs.expand(N, -1)
-        ev = p.evaluate_actions(obs_batch, x, torch.full((N,), 0.5))
+        ev = p.evaluate_actions(obs_batch, x, torch.full((N,), 0.0))
         # ∫ exp(log_prob) dx ≈ (2/N) × Σ exp(log_prob_per_dim)
         # log_prob is summed over dims, so exp(log_prob) is joint density
         # ∫ joint dx = (2^d / N) × Σ exp(log_prob)
@@ -128,7 +128,7 @@ class TestLogProb(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         actions, lp_sample = p.sample_action(obs)
-        ev = p.evaluate_actions(obs, actions, torch.full((50,), 0.5))
+        ev = p.evaluate_actions(obs, actions, torch.full((50,), 0.0))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-4, f"sample vs evaluate diff = {diff}")
 
@@ -139,7 +139,7 @@ class TestUncertainty(unittest.TestCase):
     def test_u_in_range(self):
         p = _make_policy()
         obs = torch.randn(100, OBS_DIM)
-        ev = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.5))
+        ev = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
         u = ev.entropy
         self.assertTrue((u >= 0.0).all(), f"U < 0: min={u.min()}")
         self.assertTrue((u <= 1.0).all(), f"U > 1: max={u.max()}")
@@ -150,12 +150,12 @@ class TestUncertainty(unittest.TestCase):
         obs = torch.randn(100, OBS_DIM)
         # Large σ
         p.log_std.data.fill_(0.0)  # σ = 1.0
-        ev_large = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.5))
+        ev_large = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
         u_large = ev_large.entropy.mean().item()
 
         # Small σ
         p.log_std.data.fill_(-3.0)  # σ ≈ 0.05
-        ev_small = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.5))
+        ev_small = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
         u_small = ev_small.entropy.mean().item()
 
         self.assertGreater(u_large, u_small,
@@ -166,7 +166,7 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         p.log_std.data.fill_(-1.0)  # σ ≈ 0.368
         obs = torch.zeros(10, OBS_DIM)
-        ev = p.evaluate_actions(obs, torch.zeros(10, ACTION_DIM), torch.full((10,), 0.5))
+        ev = p.evaluate_actions(obs, torch.zeros(10, ACTION_DIM), torch.full((10,), 0.0))
         u_actual = ev.entropy[0].item()
 
         # Manual: use actual mean from network
@@ -192,8 +192,8 @@ class TestUncertainty(unittest.TestCase):
         # Two very different obs → different means → different Z → different U
         obs1 = torch.zeros(1, OBS_DIM)  # mean ≈ 0
         obs2 = torch.randn(1, OBS_DIM) * 5  # mean likely near ±1
-        ev1 = p.evaluate_actions(obs1, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.5))
-        ev2 = p.evaluate_actions(obs2, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.5))
+        ev1 = p.evaluate_actions(obs1, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.0))
+        ev2 = p.evaluate_actions(obs2, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.0))
         # They should be different (Z changes with mean position)
         self.assertNotAlmostEqual(ev1.entropy[0].item(), ev2.entropy[0].item(),
                                   places=3,
@@ -201,14 +201,14 @@ class TestUncertainty(unittest.TestCase):
 
 
 class TestExploreIntensity(unittest.TestCase):
-    """explore_intensity linear σ scaling."""
+    """explore_intensity exponential σ scaling: scale = exp(ei * ln(3))."""
 
     def test_scale_values(self):
         p = _make_policy()
         p.log_std.data.fill_(0.0)  # σ = 1.0
 
-        self.assertAlmostEqual(p._explore_scale(0.5), 1.0, places=6)
-        self.assertAlmostEqual(p._explore_scale(0.0), 1.0 / 3.0, places=6)
+        self.assertAlmostEqual(p._explore_scale(0.0), 1.0, places=6)
+        self.assertAlmostEqual(p._explore_scale(-1.0), 1.0 / 3.0, places=6)
         self.assertAlmostEqual(p._explore_scale(1.0), 3.0, places=6)
 
     def test_scale_affects_sampling_sigma(self):
@@ -216,12 +216,12 @@ class TestExploreIntensity(unittest.TestCase):
         p.log_std.data.fill_(0.0)  # σ = 1.0
 
         # Neutral
-        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), explore_intensity=0.5)
+        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), explore_intensity=0.0)
         self.assertAlmostEqual(sigma_neutral[0, 0].item(), 1.0, places=5)
 
-        # Compressed
-        _, sigma_compressed = p.forward(torch.randn(1, OBS_DIM), explore_intensity=0.0)
-        self.assertAlmostEqual(sigma_compressed[0, 0].item(), 1.0 / 3.0,
+        # Suppressed
+        _, sigma_suppressed = p.forward(torch.randn(1, OBS_DIM), explore_intensity=-1.0)
+        self.assertAlmostEqual(sigma_suppressed[0, 0].item(), 1.0 / 3.0,
                                places=5)
 
         # Expanded
@@ -235,7 +235,7 @@ class TestExploreIntensity(unittest.TestCase):
         obs = torch.randn(10, OBS_DIM)
         actions = torch.zeros(10, ACTION_DIM)
 
-        ev_neutral = p.evaluate_actions(obs, actions, torch.full((10,), 0.5))
+        ev_neutral = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
         ev_expanded = p.evaluate_actions(obs, actions, torch.full((10,), 1.0))
 
         diff = (ev_neutral.entropy - ev_expanded.entropy).abs().max().item()
@@ -250,7 +250,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.5))
+        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
         loss = ev.log_prob.mean() + ev.entropy.mean()
         loss.backward()
         self.assertIsNotNone(p.log_std.grad)
@@ -261,7 +261,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.5))
+        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
         loss = ev.log_prob.mean()
         loss.backward()
         for param in p.net.parameters():
@@ -272,7 +272,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.zeros(10, ACTION_DIM)
-        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.5))
+        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
         loss = ev.entropy.mean()
         loss.backward()
         self.assertIsNotNone(p.log_std.grad)
@@ -289,7 +289,7 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.zeros(10, ACTION_DIM)
-        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.5), want_stats=True)
+        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0), want_stats=True)
         self.assertIsNotNone(ev.stats)
         for key in ["uncertainty", "std_mean", "eff_std_mean",
                      "std_min", "std_max", "mean_abs"]:

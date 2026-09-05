@@ -208,7 +208,7 @@ class BalanceV2(CombatExperimentPPOBase):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
     ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
         env_pb = self._env_pb()
         env_bp = env_pb.materialize(max_steps=self.max_steps)

@@ -162,7 +162,7 @@ class PPOBuffer:
         # the same distribution that produced the actions at rollout time.
         all_ei = np.concatenate([
             t.explore_intensity if t.explore_intensity is not None
-            else np.full(len(t.obs), 0.5, dtype=np.float32)
+            else np.full(len(t.obs), 0.0, dtype=np.float32)
             for t in trajectories
         ]).astype(np.float32)
         all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)

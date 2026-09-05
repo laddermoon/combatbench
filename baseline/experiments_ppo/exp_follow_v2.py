@@ -207,7 +207,7 @@ class FollowV2(CombatExperimentPPOBase):
         base_seed: int,
         n_episodes: int,
         *,
-        explore_intensity: float = 0.5,
+        explore_intensity: float = 0.0,
     ) -> List[Tuple[Any, Any, Any, int, Dict[str, Any]]]:
         env_pb = self._env_pb()
         speed = self.current_speed

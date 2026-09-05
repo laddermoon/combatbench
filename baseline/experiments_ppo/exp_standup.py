@@ -52,9 +52,9 @@ class Standup(CombatExperimentPPOBase):
     _gae_lambda: float = 0.95
 
     # --- Exploration ---
-    # 0.5 = neutral (policy uses its learned σ as-is).
+    # 0.0 = neutral (policy uses its learned σ as-is).
     # Standup requires precise motor control — no extra exploration noise.
-    explore_intensity: float = 0.5
+    explore_intensity: float = 0.0
     # Disable entropy floor: standup needs the policy to converge to
     # deterministic control.  The old run (success=1.0) had no floor.
     entropy_floor: float = 0.0

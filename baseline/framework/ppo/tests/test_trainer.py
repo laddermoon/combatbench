@@ -446,11 +446,11 @@ def test_buffer_log_probs_sliced_correctly():
     with torch.no_grad():
         ev1 = actor.evaluate_actions(
             torch.as_tensor(t1.obs), torch.as_tensor(t1.actions),
-            torch.full((len(t1.obs),), 0.5),
+            torch.full((len(t1.obs),), 0.0),
         )
         ev2 = actor.evaluate_actions(
             torch.as_tensor(t2.obs), torch.as_tensor(t2.actions),
-            torch.full((len(t2.obs),), 0.5),
+            torch.full((len(t2.obs),), 0.0),
         )
     expected = np.concatenate([
         ev1.log_prob.numpy(), ev2.log_prob.numpy()
