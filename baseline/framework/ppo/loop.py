@@ -593,7 +593,10 @@ def train_ppo(
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
                     elif eval_jobs:
-                        v_p_a, v_p_b, v_env, v_seed, v_options = eval_jobs[0]
+                        v_job = eval_jobs[0]
+                        v_p_a, v_p_b = v_job.policy_a_bp, v_job.policy_b_bp
+                        v_env, v_seed = v_job.env_bp, v_job.seed
+                        v_options = v_job.episode_options
                         video_path = video_dir / f"u{u:05d}.mp4"
                         log_path = video_dir / f"u{u:05d}.log"
                         v_env_path = video_dir / "video_env_blueprint.yaml"
