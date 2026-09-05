@@ -316,8 +316,8 @@ class ExplorationSpec:
             The specific meaning of each value is defined by the
             policy, not the framework.  ``None`` = no opinion.
         entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
-            in the policy's *normalized* entropy (0 = fully certain,
-            1 = policy's maximum entropy).  The framework computes
+            in the policy's normalized entropy.  The specific meaning
+            of 0 and 1 is defined by the policy.  The framework computes
             ``entropy_floor_loss = entropy_coef * relu(floor - H_norm)``
             — a one-sided hinge that only activates when the policy's
             entropy drops below the floor, analogous to PPO clip.
@@ -358,22 +358,14 @@ class ActorEval:
         log_prob: ``(B,)`` log-probability of the given actions under the
             *current* parameters.  Must be differentiable — this is the
             numerator of the PPO importance ratio.  Action-dependent.
-        entropy: ``(B,)`` normalized entropy of the policy's own
-            distribution ``H(π(·|s))``, expressed in [0, 1] where 0 =
-            fully certain and 1 = the policy's maximum entropy.  Must be
-            differentiable — the framework uses it to compute the
-            entropy floor loss.  **Action-independent**: it depends
-            only on the observation and policy parameters, not on
-            which action was taken.  This is what makes it immune to
-            the on-policy gradient-zero problem that plagues
-            ``-log_prob.mean()``.
-
-            Each policy family is responsible for defining its own
-            ``H_max`` and normalizing: a Gaussian uses
-            ``H_norm = (H - H_min) / (H_max - H_min)``; a mixture uses
-            ``H_norm = H / H_max``; a flow uses a sampled estimate.  The
-            framework does not interpret the normalization — it trusts
-            the policy's [0, 1] output.
+        entropy: ``(B,)`` normalized entropy ∈ [0, 1], action-independent.
+            Must be differentiable — the framework uses it to compute
+            the entropy floor loss.  The specific meaning of 0 and 1 is
+            defined by the policy, not the framework.  The framework
+            only requires the range [0, 1] and that it is
+            action-independent (depends only on observation and policy
+            parameters).  This makes it immune to the on-policy
+            gradient-zero problem that plagues ``-log_prob.mean()``.
         stats: Diagnostics describing the policy's exploration state,
             populated only when ``want_stats=True``.  Keys are chosen by
             the policy; the framework merges them into its stats dict
