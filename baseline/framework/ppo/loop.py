@@ -43,7 +43,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from baseline.framework.ppo.policies import export_actor_policy_artifacts
 from baseline.framework.rollout import Episode, ParallelRollouter
 
 from .experiment import (
@@ -591,16 +590,9 @@ def train_ppo(
                             },
                         )
                     else:
-                        export_actor_policy_artifacts(
-                            actor=actor,
-                            policy_dir=policy_dir,
-                            extra_payload={
-                                "algorithm": "ppo_v2",
-                                "experiment": cp.name,
-                                "update": u,
-                                "best_eval_info": eval_info,
-                            },
-                        )
+                        # Generic path: use to_blueprint to export the
+                        # best policy for deployment and video rendering.
+                        actor.to_blueprint(dest_path=str(policy_dir), stochastic=False)
                     eval_line += "  [new_best]"
 
                 print(eval_line, flush=True)

@@ -78,7 +78,7 @@ class SimpleActor(nn.Module):
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
         explore_intensity: torch.Tensor,
-        *, frame_modes=None, noise_shift=None, want_stats: bool = False,
+        *, want_stats: bool = False,
     ) -> ActorEval:
         mean = self.net(obs)
         std = self.log_std.exp().expand_as(mean)
@@ -131,7 +131,6 @@ def make_trajectory(
     channels: dict,
     *,
     importance: float = 1.0,
-    mode: float = None,
     rng: np.random.Generator = None,
 ) -> Trajectory:
     """Build a random Trajectory with the given channel data."""
@@ -146,7 +145,6 @@ def make_trajectory(
         last_obs=last_obs,
         channels=channels,
         importance=importance,
-        mode=mode,
     )
 
 
@@ -447,10 +445,12 @@ def test_buffer_log_probs_sliced_correctly():
     # Recompute log_probs for each trajectory independently and compare
     with torch.no_grad():
         ev1 = actor.evaluate_actions(
-            torch.as_tensor(t1.obs), torch.as_tensor(t1.actions)
+            torch.as_tensor(t1.obs), torch.as_tensor(t1.actions),
+            torch.full((len(t1.obs),), 0.5),
         )
         ev2 = actor.evaluate_actions(
-            torch.as_tensor(t2.obs), torch.as_tensor(t2.actions)
+            torch.as_tensor(t2.obs), torch.as_tensor(t2.actions),
+            torch.full((len(t2.obs),), 0.5),
         )
     expected = np.concatenate([
         ev1.log_prob.numpy(), ev2.log_prob.numpy()
@@ -474,49 +474,6 @@ def test_buffer_sample_weights_from_importance():
         buf.sample_weights, np.full(T, 3.0, dtype=np.float32)
     )
     print("test_buffer_sample_weights_from_importance: PASS")
-
-
-def test_buffer_frame_modes_when_present():
-    """When any trajectory has mode != None, frame_modes is built."""
-    rng = np.random.default_rng(0)
-    T1, T2 = 8, 6
-    t1 = make_trajectory(
-        T1, 8, 3,
-        {"r_a": make_channel_data(T1, rng=rng)},
-        mode=2.0,
-        rng=rng,
-    )
-    t2 = make_trajectory(
-        T2, 8, 3,
-        {"r_a": make_channel_data(T2, rng=rng)},
-        mode=None,  # no mode → defaults to 1.0
-        rng=rng,
-    )
-    buf, _ = make_buffer([t1, t2], 8, 3, ("r_a",))
-    assert buf.frame_modes is not None
-    assert buf.frame_modes.shape == (T1 + T2,)
-    np.testing.assert_array_equal(
-        buf.frame_modes[:T1], np.full(T1, 2.0, dtype=np.float32)
-    )
-    np.testing.assert_array_equal(
-        buf.frame_modes[T1:], np.full(T2, 1.0, dtype=np.float32)
-    )
-    print("test_buffer_frame_modes_when_present: PASS")
-
-
-def test_buffer_frame_modes_none_when_all_none():
-    """When no trajectory has mode, frame_modes is None."""
-    rng = np.random.default_rng(0)
-    T = 8
-    traj = make_trajectory(
-        T, 8, 3,
-        {"r_a": make_channel_data(T, rng=rng)},
-        mode=None,
-        rng=rng,
-    )
-    buf, _ = make_buffer([traj], 8, 3, ("r_a",))
-    assert buf.frame_modes is None
-    print("test_buffer_frame_modes_none_when_all_none: PASS")
 
 
 def test_buffer_stats_basic():
@@ -2476,8 +2433,6 @@ if __name__ == "__main__":
     test_buffer_actor_weight_array()
     test_buffer_log_probs_sliced_correctly()
     test_buffer_sample_weights_from_importance()
-    test_buffer_frame_modes_when_present()
-    test_buffer_frame_modes_none_when_all_none()
     test_buffer_stats_basic()
 
     # ppo_update

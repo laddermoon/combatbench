@@ -417,9 +417,7 @@ class TrainablePolicy(Protocol):
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
         explore_intensity: torch.Tensor,
-        *, frame_modes: Optional[torch.Tensor] = None,
-        noise_shift: Optional[torch.Tensor] = None,
-        want_stats: bool = False,
+        *, want_stats: bool = False,
     ) -> ActorEval:
         """Recompute log_prob and entropy for obs/actions.
 
@@ -436,30 +434,12 @@ class TrainablePolicy(Protocol):
         produced the actions.  ``entropy`` (uncertainty) uses the policy's
         own σ without exploration scaling.
 
-        If ``frame_modes`` is provided, the actor should use it to route
-        samples to the appropriate sub-network instead of computing mode
-        from the observation.  Values are experiment-defined floats.
-        Mode is a *fact recorded at rollout time*, not a quantity to be
-        re-inferred, so it must be threaded through rather than derived.
-
-        If ``noise_shift`` is provided (shape ``(B, action_dim)``), it is
-        the raw-space shift that was applied at rollout time to produce
-        temporally correlated exploration.  The actor subtracts it from
-        ``atanh(action)`` before scoring so the log_prob matches the
-        shifted distribution.  Like ``frame_modes``, this is a *fact
-        recorded at rollout time*, not a quantity to re-infer.
-
         Args:
             obs: ``(B, obs_dim)`` observations.
             actions: ``(B, action_dim)`` actions taken at rollout time.
             explore_intensity: ``(B,)`` per-frame exploration intensity
                 recorded at rollout time.  Required — the policy must
                 know what distribution produced the actions.
-            frame_modes: Optional ``(B,)`` routing tags from rollout.
-            noise_shift: Optional ``(B, action_dim)`` raw-space shifts
-                recorded at rollout time.  Used by policies with OU
-                exploration to exactly reproduce the rollout-time
-                log_prob.
             want_stats: When True, also populate ``ActorEval.stats`` with
                 distributional diagnostics over this batch.  The
                 framework sets this only for the single whole-batch call

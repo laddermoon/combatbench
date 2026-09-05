@@ -90,17 +90,6 @@ class Trajectory:
             no advantage contribution).
         importance: Sample weight for this trajectory — scales both critic
             loss and policy loss.
-        mode: Optional actor routing mode (float).  If None, the actor
-            computes mode from observation.
-        noise_shift: Optional ``(T, act_dim)`` float32 — raw-space shifts
-            applied at rollout time for temporally correlated exploration.
-            When present, the PPO buffer threads them into
-            ``evaluate_actions`` so log_prob recomputation matches the
-            rollout-time scoring exactly.  When None (the default), the
-            trajectory was collected without OU exploration and no shift
-            is applied.  All trajectories in a single buffer must either
-            all have ``noise_shift`` or all have None — mixing the two
-            is a configuration error that the buffer raises on.
         explore_intensity: ``(T,)`` float32 — per-frame exploration
             intensity used at rollout time.  Threaded into
             ``evaluate_actions`` so log_prob is computed under the same
@@ -113,6 +102,4 @@ class Trajectory:
     last_obs: np.ndarray
     channels: Dict[str, ChannelData]
     importance: float = 1.0
-    mode: Optional[float] = None
-    noise_shift: Optional[np.ndarray] = None
     explore_intensity: Optional[np.ndarray] = None

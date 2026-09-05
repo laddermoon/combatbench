@@ -104,7 +104,7 @@ class PPOBuffer:
     - ``key_seg_actor_weight[key]`` — scalar or ``(T,)`` array aw per traj
 
     Flat arrays (concatenated across trajectories):
-    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``frame_modes``
+    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``explore_intensity``
     - ``final_obs`` — per-trajectory last observation (for bootstrap)
     - ``ep_lengths`` — per-trajectory frame count
     """
@@ -138,8 +138,6 @@ class PPOBuffer:
             self.actions = np.zeros((0,), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
-            self.frame_modes: Optional[np.ndarray] = None
-            self.noise_shift: Optional[np.ndarray] = None
             self.explore_intensity: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
@@ -170,56 +168,7 @@ class PPOBuffer:
         all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)
         self.explore_intensity = all_ei
 
-        any_mode = any(t.mode is not None for t in trajectories)
         kwargs: Dict[str, Any] = {"explore_intensity": all_ei_t}
-        if any_mode:
-            all_modes = np.concatenate([
-                np.full(len(t.obs), float(t.mode) if t.mode is not None else 1.0,
-                        dtype=np.float32)
-                for t in trajectories
-            ])
-            kwargs["frame_modes"] = torch.as_tensor(
-                all_modes, dtype=torch.float32, device=device,
-            )
-
-        # --- noise_shift consistency check and concatenation ---
-        # All trajectories in a buffer must either ALL have noise_shift
-        # or ALL have None.  Mixing the two means some frames were
-        # collected with OU exploration and others without — the
-        # log_prob recomputation would be silently wrong for the
-        # mismatched frames.  We raise rather than silently fill zeros,
-        # because a wrong log_prob is the single most dangerous failure
-        # mode in PPO (it corrupts the importance ratio without any
-        # visible symptom until training diverges).
-        has_shift = [t.noise_shift is not None for t in trajectories]
-        any_shift = any(has_shift)
-        all_shift = all(has_shift)
-        if any_shift and not all_shift:
-            raise ValueError(
-                "PPOBuffer: mixed noise_shift presence — some trajectories "
-                "have noise_shift and others don't. All trajectories in a "
-                "single buffer must be collected with the same exploration "
-                "configuration. This usually means the experiment is mixing "
-                "OU-enabled and OU-disabled rollouts, which would silently "
-                "corrupt log_prob recomputation."
-            )
-        if any_shift:
-            # Validate shapes: each noise_shift must be (T, action_dim)
-            # matching the trajectory's actions.
-            shift_segs: List[np.ndarray] = []
-            for t in trajectories:
-                ns = np.asarray(t.noise_shift, dtype=np.float32)
-                if ns.shape != t.actions.shape:
-                    raise ValueError(
-                        f"PPOBuffer: noise_shift shape {ns.shape} does not "
-                        f"match actions shape {t.actions.shape} for a "
-                        f"trajectory. They must be identical (T, action_dim)."
-                    )
-                shift_segs.append(ns)
-            all_shifts = np.concatenate(shift_segs, axis=0)
-            kwargs["noise_shift"] = torch.as_tensor(
-                all_shifts, dtype=torch.float32, device=device,
-            )
 
         # This call is also the canonical measurement point for the
         # policy's exploration state, hence ``want_stats=True``. It is the
@@ -248,7 +197,6 @@ class PPOBuffer:
         fin_list: List[np.ndarray] = []
         weight_list: List[np.ndarray] = []
         ep_lens: List[int] = []
-        modes_list: List[np.ndarray] = []
 
         offset = 0
         for traj in trajectories:
@@ -260,10 +208,6 @@ class PPOBuffer:
             acts_seg = np.asarray(traj.actions, dtype=np.float32)
             lp_seg = all_lp_np[offset:offset + T_seg]
             offset += T_seg
-            mode_seg = np.full(
-                T_seg, float(traj.mode) if traj.mode is not None else 1.0,
-                dtype=np.float32,
-            )
 
             # Per-key data from trajectory channels.
             # If a channel key is present in traj.channels, it is active
@@ -294,15 +238,12 @@ class PPOBuffer:
                 np.full(T_seg, traj.importance, dtype=np.float32)
             )
             ep_lens.append(T_seg)
-            modes_list.append(mode_seg)
 
         if not ep_lens:
             self.obs = np.zeros((0,), np.float32)
             self.actions = np.zeros((0,), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
-            self.frame_modes = None
-            self.noise_shift = None
             self.final_obs = []
             self.ep_lengths = []
             return
@@ -311,8 +252,6 @@ class PPOBuffer:
         self.actions = np.concatenate(act_list, axis=0)
         self.log_probs = np.concatenate(lp_list, axis=0)
         self.sample_weights = np.concatenate(weight_list, axis=0)
-        self.frame_modes = np.concatenate(modes_list, axis=0) if any_mode else None
-        self.noise_shift = all_shifts if any_shift else None
         self.final_obs = fin_list
         self.ep_lengths = ep_lens
 
@@ -793,26 +732,6 @@ def ppo_update(
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
-    # --- Frame modes (optional) ---
-    # Some actors use frame_modes for mode-conditioned policies (e.g.
-    # gating between safe/explore modes). Passed through to evaluate_actions.
-    frame_modes_t: Optional[torch.Tensor] = None
-    if buf.frame_modes is not None:
-        frame_modes_t = torch.as_tensor(
-            buf.frame_modes, dtype=torch.float32, device=device,
-        )
-
-    # --- Noise shift (optional) ---
-    # OU exploration shifts recorded at rollout time.  Threaded through
-    # to evaluate_actions so log_prob recomputation matches the shifted
-    # distribution exactly.  When None, no shift is applied (baseline
-    # white-noise behavior).
-    noise_shift_t: Optional[torch.Tensor] = None
-    if buf.noise_shift is not None:
-        noise_shift_t = torch.as_tensor(
-            buf.noise_shift, dtype=torch.float32, device=device,
-        )
-
     # --- explore_intensity (required) ---
     # Per-frame exploration intensity recorded at rollout time.  Threaded
     # through to evaluate_actions so log_prob is computed under the same
@@ -932,15 +851,8 @@ def ppo_update(
             if actor_stopped:
                 continue
 
-            # Construct kwargs for evaluate_actions, threading through
-            # frame_modes and noise_shift when present.  Using a kwargs
-            # dict avoids a 2×2 branch explosion and keeps the call site
-            # readable as more optional threading fields are added.
+            # Construct kwargs for evaluate_actions.
             eval_kwargs: Dict[str, Any] = {"explore_intensity": ei_t[idx]}
-            if frame_modes_t is not None:
-                eval_kwargs["frame_modes"] = frame_modes_t[idx]
-            if noise_shift_t is not None:
-                eval_kwargs["noise_shift"] = noise_shift_t[idx]
             actor_eval = actor.evaluate_actions(
                 obs_t[idx], act_t[idx], **eval_kwargs,
             )

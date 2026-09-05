@@ -299,7 +299,6 @@ class StandupStepV2(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            mode=None,
             explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
         )]
 

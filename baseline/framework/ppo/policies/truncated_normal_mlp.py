@@ -287,8 +287,6 @@ class TruncatedNormalPolicy(nn.Module, Policy):
         actions: torch.Tensor,
         explore_intensity: torch.Tensor,
         *,
-        frame_modes: Optional[torch.Tensor] = None,
-        noise_shift: Optional[torch.Tensor] = None,
         want_stats: bool = False,
     ) -> ActorEval:
         """Score actions and compute uncertainty for PPO.
