@@ -262,13 +262,24 @@ class EpisodeRunner:
                     raise RuntimeError("hold strategy requires at least one prior action")
                 action_b, extra_b = last_action_b, None
 
+            # Merge explore_intensity into action_extras so it travels
+            # through the same side-channel as log_prob / value etc.
+            # Even when extra is None (hold strategy after termination),
+            # we still create a minimal dict so ei is recorded per-frame.
+            if extra_a is not None:
+                extra_a["explore_intensity"] = ei_a
+            else:
+                extra_a = {"explore_intensity": ei_a}
+            if extra_b is not None:
+                extra_b["explore_intensity"] = ei_b
+            else:
+                extra_b = {"explore_intensity": ei_b}
+
             self.runtime.step(
                 action_a,
                 action_b,
-                action_a_extra=extra_a if extra_a else None,
-                action_b_extra=extra_b if extra_b else None,
-                explore_intensity_a=ei_a,
-                explore_intensity_b=ei_b,
+                action_a_extra=extra_a,
+                action_b_extra=extra_b,
             )
 
             a_active = a_active and self.runtime.is_agent_active("robot_a")

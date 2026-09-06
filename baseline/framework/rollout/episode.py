@@ -159,19 +159,26 @@ def _stack_explore_intensities(
     """Stack per-frame ``explore_intensity`` into ``{agent_id: (T,) float32}``.
 
     ``explore_intensity`` is a per-frame **input** to the policy decision
-    (alongside the observation), recorded by the episode runner.  Each
-    frame carries ``{agent_id: float}``.  Returns an empty dict if no
-    frame has ``explore_intensity``.
+    (alongside the observation).  It is carried inside ``action_extras``
+    as ``action_extras[agent_id]["explore_intensity"]``.  Returns an empty
+    dict if no frame has it.
     """
     if not frames:
         return {}
+    # Discover agent_ids from the first frame that has action_extras with
+    # explore_intensity.
     agent_ids: Optional[Sequence[str]] = None
     for frame in frames:
-        value = frame.get("explore_intensity")
-        if value is None:
+        ae = frame.get("action_extras")
+        if not ae:
             continue
-        agent_ids = list(value.keys())
-        break
+        ids = [
+            aid for aid, extras in ae.items()
+            if extras is not None and "explore_intensity" in extras
+        ]
+        if ids:
+            agent_ids = ids
+            break
     if agent_ids is None:
         return {}
 
@@ -179,11 +186,15 @@ def _stack_explore_intensities(
     for agent_id in agent_ids:
         per_frame: List[float] = []
         for frame in frames:
-            value = frame.get("explore_intensity")
-            if value is None or agent_id not in value:
+            ae = frame.get("action_extras")
+            if not ae or agent_id not in ae or ae[agent_id] is None:
+                per_frame.append(0.0)
+                continue
+            extras = ae[agent_id]
+            if "explore_intensity" not in extras:
                 per_frame.append(0.0)
             else:
-                per_frame.append(float(value[agent_id]))
+                per_frame.append(float(extras["explore_intensity"]))
         out[agent_id] = np.asarray(per_frame, dtype=np.float32)
     return out
 

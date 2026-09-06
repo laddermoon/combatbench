@@ -291,7 +291,7 @@ class EnvRuntime:
 
         Dispatches hook-specific positional args:
           - ``on_pre_episode`` / ``on_post_episode``: ``(ctx,)``
-          - ``on_post_action_step``: ``(ctx, observation, action, observer_outputs, action_extras, explore_intensities)``
+          - ``on_post_action_step``: ``(ctx, observation, action, observer_outputs, action_extras)``
 
         ``observation`` is the *pre-action* observation (captured before
         ``core.step()``) so recorders store ``obs_t`` alongside ``action_t``.
@@ -300,13 +300,12 @@ class EnvRuntime:
             return
         readonly_ctx = ReadOnlySimContext.from_sim_context(self._core.ctx)
         if hook_name == "on_post_action_step":
-            # extra_args = (pre_action_observation, action_extras, explore_intensities)
+            # extra_args = (pre_action_observation, action_extras)
             observation = extra_args[0]
             action = self._core.simulator.get_action()
             observer_outputs = self.get_observer_outputs()
             action_extras = extra_args[1] if len(extra_args) > 1 else None
-            explore_intensities = extra_args[2] if len(extra_args) > 2 else None
-            args = (readonly_ctx, observation, action, observer_outputs, action_extras, explore_intensities)
+            args = (readonly_ctx, observation, action, observer_outputs, action_extras)
         else:
             args = (readonly_ctx,)
         for recorder in self._recorders:
@@ -336,27 +335,18 @@ class EnvRuntime:
         action_b: Any,
         action_a_extra: Optional[Mapping[str, Any]] = None,
         action_b_extra: Optional[Mapping[str, Any]] = None,
-        explore_intensity_a: float = 0.0,
-        explore_intensity_b: float = 0.0,
     ) -> None:
         """Advance one action step.
 
         ``action_a_extra`` / ``action_b_extra`` are *optional* per-agent
         side-channel payloads produced by the policy alongside the action
-        (e.g. ``log_prob``, ``value``, sampling noise).  They are NOT
-        consumed by the simulator — they are passed through to recorders'
-        ``on_post_action_step`` hook as a single bundle
-        ``{"robot_a": action_a_extra, "robot_b": action_b_extra}``.  Each
-        entry is ``None`` when the caller did not provide extras for that
-        agent (e.g. scripted opponent), so recorders should treat ``None``
-        as "no extras this step for that agent".
-
-        ``explore_intensity_a`` / ``explore_intensity_b`` are the
-        exploration intensities that were passed to each policy's
-        ``act()`` call for this step.  They are **inputs** to the policy
-        decision (alongside the observation), not outputs.  Recorders
-        store them per-frame so trainers can reproduce the exact sampling
-        distribution during log_prob recomputation.
+        (e.g. ``log_prob``, ``value``, ``explore_intensity``, sampling
+        noise).  They are NOT consumed by the simulator — they are passed
+        through to recorders' ``on_post_action_step`` hook as a single
+        bundle ``{"robot_a": action_a_extra, "robot_b": action_b_extra}``.
+        Each entry is ``None`` when the caller did not provide extras for
+        that agent (e.g. scripted opponent), so recorders should treat
+        ``None`` as "no extras this step for that agent".
         """
         if not self._core.is_episode_active:
             raise RuntimeError("EnvRuntime.step() called before reset() or after episode termination.")
@@ -370,11 +360,7 @@ class EnvRuntime:
             "robot_a": action_a_extra,
             "robot_b": action_b_extra,
         }
-        explore_intensities: Dict[str, float] = {
-            "robot_a": explore_intensity_a,
-            "robot_b": explore_intensity_b,
-        }
-        self._invoke_recorders("on_post_action_step", observation, action_extras, explore_intensities)
+        self._invoke_recorders("on_post_action_step", observation, action_extras)
         if not self._core.is_episode_active:
             self._invoke_recorders("on_post_episode")
 

@@ -183,7 +183,6 @@ class PostActionRecorder(ABC):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
-        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         """Hook fired after every action step.
 
@@ -195,17 +194,12 @@ class PostActionRecorder(ABC):
         ``{"robot_a": <extras_a or None>, "robot_b": <extras_b or None>}``
         forwarded by :meth:`EnvRuntime.step` (see its docstring). It carries
         the side-channel payload produced by the policy alongside the action
-        — typically ``log_prob`` / ``value`` / sample info for RL trainers,
-        or ``None`` for scripted / inference-only callers that didn't pass
-        extras. ``None`` (the parameter default) means "no extras at all
-        this step", which is also what you get when an older caller invokes
-        :meth:`EnvRuntime.step` without the new extra args.
-
-        ``explore_intensities`` is a per-agent mapping
-        ``{"robot_a": float, "robot_b": float}`` carrying the exploration
-        intensity that was passed to each policy's ``act()`` call for this
-        step.  It is an **input** to the policy decision, recorded by the
-        episode runner (not by the policy).
+        — typically ``log_prob`` / ``value`` / ``explore_intensity`` / sample
+        info for RL trainers, or ``None`` for scripted / inference-only
+        callers that didn't pass extras. ``None`` (the parameter default)
+        means "no extras at all this step", which is also what you get when
+        an older caller invokes :meth:`EnvRuntime.step` without the extra
+        args.
         """
         pass
 
@@ -363,7 +357,6 @@ class EpisodeBufferRecorder(PostActionRecorder):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
-        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         self._frames.append(
             self._build_frame(ctx, observation=observation, action=action,
@@ -536,7 +529,6 @@ class BaseFrameRecorder(PostActionRecorder):
         action: Mapping[str, Any],
         observer_outputs: Mapping[str, Any],
         action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
-        explore_intensities: Optional[Mapping[str, float]] = None,
     ) -> None:
         self._record_step(ctx, observer_outputs, action_extras=action_extras, observation=observation)
 
