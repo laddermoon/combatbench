@@ -370,7 +370,11 @@ class EnvRuntime:
             "robot_a": action_a_extra,
             "robot_b": action_b_extra,
         }
-        self._invoke_recorders("on_post_action_step", observation, action_extras)
+        explore_intensities: Dict[str, float] = {
+            "robot_a": explore_intensity_a,
+            "robot_b": explore_intensity_b,
+        }
+        self._invoke_recorders("on_post_action_step", observation, action_extras, explore_intensities)
         if not self._core.is_episode_active:
             self._invoke_recorders("on_post_episode")
 
