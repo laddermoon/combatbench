@@ -122,7 +122,7 @@ import torch.nn as nn
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.framework.rollout.job import EiSpec, Job
+from baseline.framework.rollout.job import Job
 
 
 # ---------------------------------------------------------------------------
