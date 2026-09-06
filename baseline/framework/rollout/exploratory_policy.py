@@ -50,9 +50,9 @@ class ExploratoryPolicy(Policy):
         inner: "StochasticPolicy",
         explore_intensity: EiSpec = 0.0,
     ) -> None:
-        # Duck-typed: inner must have act(obs, *, explore_intensity, want_extra).
-        # We don't isinstance-check to avoid importing StochasticPolicy at
-        # module load time (circular dependency via ppo.__init__).
+        # Duck-typed: inner must have act().
+        # We don't isinstance-check StochasticPolicy to avoid importing it
+        # at module load time (circular dependency via ppo.__init__).
         if not hasattr(inner, "act"):
             raise TypeError(
                 f"inner must be a policy with act(); got {type(inner).__name__}"
@@ -60,6 +60,11 @@ class ExploratoryPolicy(Policy):
         self.inner = inner
         self._ei_spec: EiSpec = explore_intensity
         self._step: int = 0
+        # Detect whether inner.act accepts explore_intensity (StochasticPolicy)
+        # or not (plain Policy, e.g. exported eval policies).
+        import inspect
+        sig = inspect.signature(inner.act)
+        self._inner_accepts_ei = "explore_intensity" in sig.parameters
 
     def act(
         self,
@@ -73,9 +78,17 @@ class ExploratoryPolicy(Policy):
             else float(self._ei_spec)
         )
         self._step += 1
-        action, extra = self.inner.act(
-            observation, explore_intensity=ei, want_extra=want_extra,
-        )
+        # If inner is a StochasticPolicy (accepts explore_intensity), pass it.
+        # Otherwise (e.g. exported eval policies implementing plain Policy),
+        # call without it — ei is still recorded in extra for downstream use.
+        if self._inner_accepts_ei:
+            action, extra = self.inner.act(
+                observation, explore_intensity=ei, want_extra=want_extra,
+            )
+        else:
+            action, extra = self.inner.act(
+                observation, want_extra=want_extra,
+            )
         if extra is not None:
             extra["explore_intensity"] = ei
         else:
