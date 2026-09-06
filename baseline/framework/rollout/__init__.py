@@ -6,6 +6,7 @@ See ``baseline/framework/rollout/DESIGN.md`` for the full design.
 from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
+from .exploratory_policy import ExploratoryPolicy
 from .job import EiSpec, Job
 from .observer_utils import (
     coerce_per_step,
@@ -19,6 +20,7 @@ __all__ = [
     "EpisodeCollection",
     "EpisodeRecorder",
     "EiSpec",
+    "ExploratoryPolicy",
     "Job",
     "ParallelRollouter",
     "blueprint_hash",

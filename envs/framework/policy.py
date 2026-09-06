@@ -101,7 +101,7 @@ class Policy(ABC):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.0,
+        *,
         want_extra: bool = False,
     ) -> Tuple[Any, Any | None]:
         """Compute an action for the given observation.
@@ -112,12 +112,6 @@ class Policy(ABC):
             Whatever the simulator's ``get_observation()``
             returned. The framework imposes no type constraint; the
             policy and the observer agree on the schema.
-        explore_intensity:
-            Exploration intensity ∈ [-1, 1], 0 = neutral.  Stochastic
-            policies use this to scale their sampling distribution;
-            the specific mapping is policy-defined.  Deterministic
-            policies ignore it.  Default 0.0 so non-RL callers (round
-            runner, match runner) are unaffected.
         want_extra:
             If True the runner wants the optional ``extra`` payload
             (e.g. log-prob / value estimates for on-policy RL). When
@@ -133,9 +127,7 @@ class Policy(ABC):
         extra:
             Policy-defined auxiliary payload, or ``None``. Common
             choices: a dict of log-prob / value / entropy tensors for
-            on-policy RL trainers.  The episode runner records
-            ``explore_intensity`` separately as a per-frame input;
-            policies should NOT include it in ``extra``.
+            on-policy RL trainers.
 
         Stochasticity is the policy's responsibility — see the module
         docstring's "Determinism vs. stochasticity" section.

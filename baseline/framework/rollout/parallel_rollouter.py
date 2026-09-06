@@ -29,6 +29,7 @@ from envs.framework.policy import PolicyBlueprint
 from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
+from .exploratory_policy import ExploratoryPolicy
 from .job import EiSpec, Job
 
 _logger = logging.getLogger(__name__)
@@ -67,12 +68,11 @@ def _run_job(
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policy_a=policy_a,
-        policy_b=policy_b,
+        policy_a=ExploratoryPolicy(policy_a, explore_intensity=ei_a),
+        policy_b=ExploratoryPolicy(policy_b, explore_intensity=ei_b),
     )
     runner.run_episode(
         seed=seed, options=options, want_extras=True,
-        explore_intensity_a=ei_a, explore_intensity_b=ei_b,
     )
     return recorder.get_last_episode()
 
@@ -118,8 +118,8 @@ def _run_job_batch(
             policy_b = policy_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
             runner = EpisodeRunner(
                 runtime=runtime,
-                policy_a=policy_a,
-                policy_b=policy_b,
+                policy_a=ExploratoryPolicy(policy_a, explore_intensity=ei_a),
+                policy_b=ExploratoryPolicy(policy_b, explore_intensity=ei_b),
             )
             current_env_key = env_key
             current_pa_key = pa_key
@@ -128,18 +128,17 @@ def _run_job_batch(
             # Env unchanged — only update policies that changed.
             if pa_changed:
                 new_pa = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-                runner.set_policy_a(new_pa)
+                runner.set_policy_a(ExploratoryPolicy(new_pa, explore_intensity=ei_a))
                 if same_policy:
-                    runner.set_policy_b(new_pa)
+                    runner.set_policy_b(ExploratoryPolicy(new_pa, explore_intensity=ei_b))
                 current_pa_key = pa_key
             if pb_changed and not same_policy:
                 new_pb = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-                runner.set_policy_b(new_pb)
+                runner.set_policy_b(ExploratoryPolicy(new_pb, explore_intensity=ei_b))
                 current_pb_key = pb_key
 
         runner.run_episode(
             seed=seed, options=options, want_extras=True,
-            explore_intensity_a=ei_a, explore_intensity_b=ei_b,
         )
         episodes.append(recorder.get_last_episode())
 

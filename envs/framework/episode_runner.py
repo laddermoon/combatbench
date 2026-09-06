@@ -92,7 +92,7 @@ from __future__ import annotations
 import logging
 import secrets
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -189,8 +189,6 @@ class EpisodeRunner:
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
         want_extras: bool = False,
-        explore_intensity_a: Union[float, Callable[[np.ndarray, int], float]] = 0.0,
-        explore_intensity_b: Union[float, Callable[[np.ndarray, int], float]] = 0.0,
     ) -> None:
         """Run a single episode end-to-end. Returns ``None``.
 
@@ -216,12 +214,9 @@ class EpisodeRunner:
         when you need the policy's side-channel payload (log-prob /
         value estimates for on-policy RL, etc.).
 
-        ``explore_intensity_a`` / ``explore_intensity_b`` are the
-        exploration intensities for each policy.  Either a constant
-        ``float`` (same value every step) or a callable
-        ``(obs, step) -> float`` that is called each step to produce a
-        per-frame value.  The runner records the resolved per-frame
-        value alongside the observation.  Default ``0.0`` (neutral).
+        Exploration intensity is the caller's responsibility — wrap
+        the policy in :class:`ExploratoryPolicy` (or equivalent) before
+        constructing the runner.  The runner itself is exploration-agnostic.
         """
         base_seed = _resolve_seed(seed)
         episode_seeds = self._derive_seeds(base_seed)
@@ -232,16 +227,11 @@ class EpisodeRunner:
         b_active = True
         last_action_a: Optional[np.ndarray] = None
         last_action_b: Optional[np.ndarray] = None
-        step = 0
 
         while not self.runtime.is_episode_over():
-            ei_a = float(explore_intensity_a(obs_a, step)) if callable(explore_intensity_a) else float(explore_intensity_a)
-            ei_b = float(explore_intensity_b(obs_b, step)) if callable(explore_intensity_b) else float(explore_intensity_b)
-
             if a_active or self.post_termination_action == "policy":
                 action_a, extra_a = self.policy_a.act(
                     obs_a,
-                    explore_intensity=ei_a,
                     want_extra=want_extras,
                 )
                 last_action_a = action_a
@@ -253,7 +243,6 @@ class EpisodeRunner:
             if b_active or self.post_termination_action == "policy":
                 action_b, extra_b = self.policy_b.act(
                     obs_b,
-                    explore_intensity=ei_b,
                     want_extra=want_extras,
                 )
                 last_action_b = action_b
@@ -261,19 +250,6 @@ class EpisodeRunner:
                 if last_action_b is None:
                     raise RuntimeError("hold strategy requires at least one prior action")
                 action_b, extra_b = last_action_b, None
-
-            # Merge explore_intensity into action_extras so it travels
-            # through the same side-channel as log_prob / value etc.
-            # Even when extra is None (hold strategy after termination),
-            # we still create a minimal dict so ei is recorded per-frame.
-            if extra_a is not None:
-                extra_a["explore_intensity"] = ei_a
-            else:
-                extra_a = {"explore_intensity": ei_a}
-            if extra_b is not None:
-                extra_b["explore_intensity"] = ei_b
-            else:
-                extra_b = {"explore_intensity": ei_b}
 
             self.runtime.step(
                 action_a,
@@ -286,7 +262,6 @@ class EpisodeRunner:
             b_active = b_active and self.runtime.is_agent_active("robot_b")
 
             obs_a, obs_b = self.runtime.get_observation()
-            step += 1
 
     def set_policy_a(self, policy: Policy) -> None:
         """Replace policy_a in-place (no env rebuild)."""

@@ -19,6 +19,7 @@ from torch import nn
 from envs.framework.policy import Policy, PolicyBlueprint
 
 from baseline.framework.ppo import ActorEval
+from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
 
 # explore_intensity ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
 # Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
@@ -136,7 +137,7 @@ def _std_normal_icdf(u: torch.Tensor) -> torch.Tensor:
     return _SQRT_2 * torch.erfinv(2.0 * u_clamped - 1.0)
 
 
-class TruncatedNormalPolicy(nn.Module, Policy):
+class TruncatedNormalPolicy(nn.Module, StochasticPolicy):
     """Truncated normal policy on [-1, 1].
 
     mean = tanh(net(obs))  ∈ (-1, 1)
@@ -341,6 +342,7 @@ class TruncatedNormalPolicy(nn.Module, Policy):
     def act(
         self,
         observation: Any,
+        *,
         explore_intensity: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
