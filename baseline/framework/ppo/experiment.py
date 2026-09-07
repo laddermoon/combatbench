@@ -449,6 +449,52 @@ class UpdateStats:
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
+    # P0-3: Marks an update that was skipped because the buffer was empty
+    # (build_trajectories returned []).  Consumers like on_update() can
+    # check this to avoid polluting KL history with zeros.
+    is_empty: bool = False
+
+    @classmethod
+    def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
+        """Construct a zeroed UpdateStats for a skipped (empty-buffer) update.
+
+        P0-3: When ``build_trajectories`` returns ``[]``, ``ppo_update``
+        returns this instead of crashing.  All numeric fields are 0.0,
+        per-channel dicts are keyed by ``reward_keys`` with 0.0 values,
+        and ``is_empty=True`` so downstream consumers can skip it.
+        """
+        return cls(
+            approx_kl=0.0,
+            max_kl=0.0,
+            early_stop_kl=0.0,
+            clip_frac=0.0,
+            ratio_mean=1.0,
+            ratio_max=1.0,
+            policy_loss=0.0,
+            value_loss=0.0,
+            grad_norm_actor=0.0,
+            epochs_done=0,
+            actor_epochs_done=0,
+            n_batches=0,
+            n_episodes=0,
+            total_steps=0,
+            ep_len_mean=0.0,
+            ep_len_min=0.0,
+            ep_len_max=0.0,
+            epoch_kl_stats=[],
+            critic_losses={k: 0.0 for k in reward_keys},
+            explained_variance={k: 0.0 for k in reward_keys},
+            confidence={k: 0.0 for k in reward_keys},
+            adv_mean={k: 0.0 for k in reward_keys},
+            adv_std={k: 0.0 for k in reward_keys},
+            ret_mean={k: 0.0 for k in reward_keys},
+            ret_std={k: 0.0 for k in reward_keys},
+            critic_grad_norms={k: 0.0 for k in reward_keys},
+            policy_stats={},
+            diagnostics=[],
+            is_empty=True,
+        )
+
     def to_log_dict(self) -> Dict[str, Any]:
         """Flatten to the legacy dict format for ``__RAW_STATS__`` logging.
 
@@ -752,7 +798,12 @@ class ExperimentPPO(ABC):
         - Which channels are active on each trajectory (channels absent
           from ``Trajectory.channels`` are inactive).
 
-        Returns an empty list to skip all episodes entirely.
+        Returns an empty list to skip all episodes entirely.  When ``[]``
+        is returned, the framework skips the PPO update for this round
+        (``ppo_update`` returns a zeroed ``UpdateStats`` with
+        ``is_empty=True``), skips ``on_update`` so the experiment's KL
+        history is not polluted, but still runs eval, checkpoint, and
+        logging as normal.
         """
         ...
 

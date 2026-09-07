@@ -518,7 +518,16 @@ def train_ppo(
             #     training stats into internal state (e.g. KL history for
             #     closed-loop exploration scheduling).  exploration() on the
             #     next update will read whatever on_update() writes here.
-            experiment.on_update(stats, u)
+            #
+            # P0-3: Skip on_update for empty-buffer updates so the
+            # experiment's KL history doesn't get polluted with zeros
+            # (which would be misread as "KL too flat, push exploration").
+            if not stats.is_empty:
+                experiment.on_update(stats, u)
+            else:
+                print(f"  [skip] build_trajectories returned no usable frames "
+                      f"(episodes={len(episodes)}); PPO update skipped",
+                      flush=True)
 
             # 6. Eval — deterministic policy rollout + experiment-defined metrics.
             #    Experiment's on_eval returns {is_new_best, info}. Framework

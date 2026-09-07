@@ -134,8 +134,12 @@ class PPOBuffer:
         self.actor_stats: Dict[str, float] = {}
 
         if not trajectories:
-            self.obs = np.zeros((0,), np.float32)
-            self.actions = np.zeros((0,), np.float32)
+            # P0-3: Use 2-D shapes so downstream torch.as_tensor + nn.Linear
+            # don't crash on a 1-D (0,) array being treated as a single
+            # sample.  ppo_update also short-circuits on is_empty(), but
+            # correct shapes here reduce surprise for any other consumer.
+            self.obs = np.zeros((0, 0), np.float32)
+            self.actions = np.zeros((0, 0), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.explore_factor: Optional[np.ndarray] = None
@@ -240,8 +244,8 @@ class PPOBuffer:
             ep_lens.append(T_seg)
 
         if not ep_lens:
-            self.obs = np.zeros((0,), np.float32)
-            self.actions = np.zeros((0,), np.float32)
+            self.obs = np.zeros((0, 0), np.float32)
+            self.actions = np.zeros((0, 0), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.final_obs = []
@@ -434,6 +438,15 @@ def ppo_update(
     Returns:
         Stats dict for logging.
     """
+    # P0-3: Empty buffer (build_trajectories returned []) is a normal
+    # scenario in curriculum learning (all episodes filtered out).  Short
+    # circuit to a zeroed UpdateStats instead of crashing in nn.Linear
+    # on a 0-sample forward pass.  The loop checks is_empty and skips
+    # on_update to avoid polluting the experiment's KL history.
+    reward_keys = tuple(ch.name for ch in reward_channels)
+    if buf.is_empty():
+        return UpdateStats.empty(reward_keys)
+
     # Trust-region knobs come from PPOParams (not overridable per-update).
     clip_eps = pp.clip_eps
     target_kl = pp.target_kl
@@ -454,7 +467,6 @@ def ppo_update(
     # these lines after the call returns.
     diagnostics: List[str] = []
 
-    reward_keys = tuple(ch.name for ch in reward_channels)
     gammas = {ch.name: ch.gamma for ch in reward_channels}
     gae_lambdas = {ch.name: ch.gae_lambda for ch in reward_channels}
 

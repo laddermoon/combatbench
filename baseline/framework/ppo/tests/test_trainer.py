@@ -375,7 +375,49 @@ def test_buffer_empty():
     assert len(buf) == 0
     assert buf.ep_lengths == []
     assert buf.final_obs == []
+    # P0-3: obs must be 2-D so downstream torch.as_tensor + nn.Linear
+    # don't crash on a 1-D (0,) array being treated as a single sample.
+    assert buf.obs.ndim == 2, f"obs should be 2-D, got shape {buf.obs.shape}"
     print("test_buffer_empty: PASS")
+
+
+def test_ppo_update_empty_buffer_returns_empty_stats():
+    """P0-3: ppo_update on an empty buffer must not crash; returns zeroed stats.
+
+    Before the fix, this raised RuntimeError: mat1 and mat2 shapes cannot
+    be multiplied (1x0 and 8x16) because buf.obs was (0,) 1-D and nn.Linear
+    treated it as a single sample with 0 features.
+    """
+    actor = SimpleActor(8, 3)
+    buf = PPOBuffer([], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), 8)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params()
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    assert stats.is_empty is True, "empty-buffer stats must have is_empty=True"
+    assert stats.total_steps == 0
+    assert stats.approx_kl == 0.0
+    assert stats.epochs_done == 0
+    assert stats.actor_epochs_done == 0
+    assert stats.n_episodes == 0
+    assert stats.critic_losses == {"r_a": 0.0}
+    assert stats.epoch_kl_stats == []
+    print("test_ppo_update_empty_buffer_returns_empty_stats: PASS")
 
 
 def test_buffer_channel_inactive_when_absent():
@@ -2679,6 +2721,7 @@ if __name__ == "__main__":
     # PPOBuffer
     test_buffer_flatten_multiple_trajectories()
     test_buffer_empty()
+    test_ppo_update_empty_buffer_returns_empty_stats()
     test_buffer_channel_inactive_when_absent()
     test_buffer_actor_weight_scalar()
     test_buffer_actor_weight_array()
