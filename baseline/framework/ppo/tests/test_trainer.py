@@ -581,6 +581,103 @@ def test_ppo_update_runs_single_channel():
     print("test_ppo_update_runs_single_channel: PASS")
 
 
+# ---------------------------------------------------------------------------
+# P1-2: First-minibatch ratio consistency guard
+# ---------------------------------------------------------------------------
+
+def test_first_minibatch_ratio_is_one():
+    """P1-2: θ 未更新时，第一个 minibatch 的 ratio 必须≈1，无告警。
+
+    The guard checks that at epoch 0, minibatch 0, the ratio is ≈1.0
+    (the actor hasn't been updated yet, so new_lp must equal old_lp).
+    A clean run should produce no first-minibatch warning.
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=32)
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    first_mb_warnings = [d for d in stats.diagnostics if "first-minibatch" in d]
+    assert first_mb_warnings == [], (
+        "No first-minibatch ratio warning should fire on a clean run. "
+        "Got:\n" + "\n".join(first_mb_warnings)
+    )
+    print("test_first_minibatch_ratio_is_one: PASS (no spurious warning)")
+
+
+def test_ratio_guard_fires_on_corrupted_old_logp():
+    """P1-2: 人为污染 buf.log_probs，守卫必须报警。
+
+    If old_lp is corrupted (doesn't match what the actor would compute),
+    the first-minibatch ratio deviates from 1.0 and the guard must fire.
+    This simulates the export/import fidelity bugs (P0-5/P0-6) that
+    would otherwise silently corrupt training.
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    # Corrupt the stored log_probs so they disagree with the actor's
+    # recomputation.  This simulates an export/import fidelity bug.
+    buf.log_probs = buf.log_probs + 0.5
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(minibatch_size=32)
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    first_mb_warnings = [d for d in stats.diagnostics if "first-minibatch" in d]
+    assert len(first_mb_warnings) > 0, (
+        "first-minibatch ratio warning should fire when old_lp is corrupted. "
+        f"diagnostics: {stats.diagnostics}"
+    )
+    print(f"test_ratio_guard_fires_on_corrupted_old_logp: PASS "
+          f"({first_mb_warnings[0].strip()})")
+
+
 def test_ppo_update_critic_loss_decreases():
     """Over multiple updates, critic loss should decrease (critic learns)."""
     rng = np.random.default_rng(42)
@@ -2731,6 +2828,8 @@ if __name__ == "__main__":
 
     # ppo_update
     test_ppo_update_runs_single_channel()
+    test_first_minibatch_ratio_is_one()
+    test_ratio_guard_fires_on_corrupted_old_logp()
     test_ppo_update_critic_loss_decreases()
     test_ppo_update_multi_channel_combines_advantages()
     test_ppo_update_actor_weight_zero_no_actor_contribution()

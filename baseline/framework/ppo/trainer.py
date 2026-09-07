@@ -885,6 +885,28 @@ def ppo_update(
             log_ratio = torch.clamp(new_lp - old_lp_t[idx], -20.0, 20.0)
             ratio = torch.exp(log_ratio)
 
+            # P1-2: First-minibatch ratio consistency guard.
+            # At epoch 0, mb_idx 0, the actor has not been updated yet,
+            # so new_lp must equal old_lp and ratio must be ≈1.0.  Any
+            # deviation means the log_prob recomputation disagrees with
+            # the rollout-time theta_old — caused by export/import
+            # fidelity bugs (P0-5/P0-6), explore_factor threading
+            # errors, or CPU/GPU numerical divergence.  PPO would
+            # silently converge to a wrong target with no error.
+            # Threshold 1e-4 leaves room for float32 batch-vs-subset
+            # accumulation differences (~1e-6).  Warning only, not
+            # raise — calibrate before escalating.
+            if epoch == 0 and mb_idx == 0:
+                with torch.no_grad():
+                    max_dev = float((ratio - 1.0).abs().max().item())
+                if max_dev > 1e-4:
+                    diagnostics.append(
+                        f"  [warn] first-minibatch |ratio-1| = {max_dev:.2e} "
+                        f"(expected ~0). log_prob recomputation disagrees "
+                        f"with theta_old — check policy export/import "
+                        f"fidelity and explore_factor threading."
+                    )
+
             with torch.no_grad():
                 # B2: k3 KL estimator: (ratio - 1) - log(ratio).
                 # Lower variance and always non-negative, unlike k1
