@@ -15,7 +15,7 @@ Two reward phases with hard switch based on torso height:
     (same as exp_standup.py — pure 4-stage standing potential)
 
   BALANCE phase (h_torso >= plateau):
-    r_fall       = 0.01 × φ_height,         weight = curriculum (0→3.0)
+    r_fall       = 0.01 × φ_height,         weight = 3.0 (fixed)
     r_left_foot  = clip(h_left,  -0.3, 0.3), weight = stepping state machine
     r_right_foot = clip(h_right, -0.3, 0.3), weight = stepping state machine
 
@@ -25,7 +25,7 @@ Two reward phases with hard switch based on torso height:
 
 Four reward channels (each with independent critic):
   r_potential — reward always present, aw=1.0 in STANDUP, 0 in BALANCE
-  r_fall      — reward always present, aw=curriculum in BALANCE, 0 in STANDUP
+  r_fall      — reward always present, aw=3.0 in BALANCE, 0 in STANDUP
   r_left_foot — reward always present, aw = state machine (BALANCE only)
   r_right_foot— reward always present, aw = state machine (BALANCE only)
 
@@ -144,27 +144,9 @@ class StandupStepV3(CombatExperimentPPOBase):
     per_step_phi_coef: float = 0.01
 
     # --- r_fall actor weight (balance phase) ---
-    # This is the INITIAL value; the curriculum schedule in on_update()
-    # ramps it up as the policy learns to step.  Starting at 0 removes
-    # the conservative bias that prevents foot lifting.
-    r_fall_actor_weight: float = 0.0
-
-    # --- r_fall curriculum target ---
-    # The final r_fall weight after the curriculum ramp completes.
-    r_fall_target_weight: float = 3.0
-
-    # --- r_fall curriculum ramp ---
-    # r_fall weight ramps from 0 to r_fall_target_weight over this many
-    # updates, starting after the stepping curriculum warmup.  This gives
-    # the policy time to learn stepping without the conservative bias of
-    # the balance reward, then gradually reintroduces stability.
-    r_fall_ramp_updates: int = 800
-
-    # --- Stepping curriculum warmup ---
-    # For the first N updates, r_fall weight = 0 and foot weight is at
-    # its full value.  This forces the policy to learn stepping first.
-    # After N updates, r_fall begins ramping up.
-    stepping_warmup_updates: int = 200
+    # Fixed weight — no curriculum.  The balance survival reward is
+    # always active during BALANCE phase, coexisting with foot rewards.
+    r_fall_actor_weight: float = 3.0
 
     # --- r_potential actor weight (standup phase) ---
     # 1.0: needed to preserve standup behaviour.  Setting it to 0.0
@@ -550,40 +532,6 @@ class StandupStepV3(CombatExperimentPPOBase):
                 )
                 all_trajs.extend(trajs)
         return all_trajs
-
-    # ------------------------------------------------------------------
-    # Curriculum: r_fall weight schedule
-    # ------------------------------------------------------------------
-
-    def _current_r_fall_weight(self, update: int) -> float:
-        """Compute the r_fall actor weight for the given update number.
-
-        Phase 1 (update < stepping_warmup_updates): r_fall = 0.
-            The policy learns to lift feet without any stability bias.
-        Phase 2 (warmup ≤ update < warmup + ramp): linear ramp from 0
-            to r_fall_target_weight.  Stability is gradually reintroduced.
-        Phase 3 (update ≥ warmup + ramp): r_fall = r_fall_target_weight.
-            Full stability constraint, stepping must coexist with balance.
-        """
-        if update < self.stepping_warmup_updates:
-            return 0.0
-        ramp_start = self.stepping_warmup_updates
-        ramp_end = self.stepping_warmup_updates + self.r_fall_ramp_updates
-        if update >= ramp_end:
-            return self.r_fall_target_weight
-        frac = (update - ramp_start) / self.r_fall_ramp_updates
-        return self.r_fall_target_weight * frac
-
-    def on_update(self, stats, update: int) -> None:
-        """Curriculum hook: update r_fall_actor_weight based on update number."""
-        new_weight = self._current_r_fall_weight(update)
-        if abs(new_weight - self.r_fall_actor_weight) > 1e-6:
-            print(
-                f"[curriculum] update={update} r_fall_weight: "
-                f"{self.r_fall_actor_weight:.3f} → {new_weight:.3f}",
-                flush=True,
-            )
-            self.r_fall_actor_weight = new_weight
 
     # ------------------------------------------------------------------
     # Eval
