@@ -335,6 +335,41 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "log_prob": float(log_prob.item()),
         }
 
+    # ------------------------------------------------------------------
+    # P1-7: Exploration gradient diagnostics (policy-owned)
+    # ------------------------------------------------------------------
+
+    def exploration_grad_diagnostics(
+        self,
+        policy_loss: torch.Tensor,
+        floor_loss: torch.Tensor,
+    ) -> Optional[Dict[str, float]]:
+        """Report log_std gradient contributions from policy_loss vs floor_loss.
+
+        P1-7: Moved from trainer.py's ``hasattr(actor, "log_std")`` sniffing
+        into the policy itself.  The trainer no longer knows about
+        ``log_std`` — it calls this hook and the policy decides what to
+        report.
+        """
+        pol_grads = torch.autograd.grad(
+            policy_loss, self.log_std,
+            retain_graph=True, create_graph=False,
+            allow_unused=True,
+        )[0]
+        floor_grads = torch.autograd.grad(
+            floor_loss, self.log_std,
+            retain_graph=True, create_graph=False,
+            allow_unused=True,
+        )[0]
+        if pol_grads is None or floor_grads is None:
+            return None
+        return {
+            "pol_abs": float(pol_grads.abs().mean().item()),
+            "floor_abs": float(floor_grads.abs().mean().item()),
+            "pol_sign": float(pol_grads.mean().item()),
+            "floor_sign": float(floor_grads.mean().item()),
+        }
+
     def to_blueprint(
         self, dest_path: Optional[str] = None,
     ) -> "PolicyBlueprint":

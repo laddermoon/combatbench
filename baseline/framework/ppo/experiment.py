@@ -305,6 +305,41 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
         """
         raise NotImplementedError
 
+    def exploration_grad_diagnostics(
+        self,
+        policy_loss: torch.Tensor,
+        floor_loss: torch.Tensor,
+    ) -> Optional[Dict[str, float]]:
+        """Optional: report gradient diagnostics for exploration parameters.
+
+        P1-7: This hook lets the policy report how much ``policy_loss``
+        vs ``floor_loss`` each contribute to the gradient on the
+        policy's exploration parameters (e.g. Gaussian ``log_std``,
+        mixture temperature, flow scale).  The trainer calls this on
+        the first minibatch of each update and prints the result as a
+        ``[GradDiag]`` line.
+
+        The policy decides what "exploration parameters" means — the
+        framework no longer reaches into ``actor.log_std`` directly.
+        Returning ``None`` means "no diagnostics" (the default for
+        policies that don't have exploration parameters or don't want
+        to report them).
+
+        Args:
+            policy_loss: The PPO clipped surrogate loss (scalar tensor,
+                still part of the autograd graph).
+            floor_loss: The uncertainty floor hinge loss (scalar tensor,
+                still part of the autograd graph).
+
+        Returns:
+            A dict with keys ``pol_abs``, ``floor_abs``, ``pol_sign``,
+            ``floor_sign``, ``floor_active_frac`` — or ``None`` to skip.
+            The trainer uses ``pol_abs`` and ``floor_abs`` to compute
+            the ratio ``floor_abs / pol_abs`` that indicates whether
+            the floor is strong enough to counteract the policy gradient.
+        """
+        return None
+
     @abstractmethod
     def to_blueprint(
         self, dest_path: str,

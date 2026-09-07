@@ -949,29 +949,29 @@ def ppo_update(
                 floor_loss = uncertainty_coef * (gap ** 2).mean()
                 loss = loss + floor_loss
 
-                # --- Gradient diagnostics for log_std ---
-                # Measure how much policy_loss vs floor_loss each contribute
-                # to the gradient on log_std.  This is critical for
-                # diagnosing why the uncertainty floor may not be holding.
-                # We use torch.autograd.grad with retain_graph=True to
-                # compute per-loss gradients without side effects on
-                # actor's .grad attributes.
-                if hasattr(actor, "log_std") and mb_idx == 0:
-                    pol_grads = torch.autograd.grad(
-                        policy_loss, actor.log_std,
-                        retain_graph=True, create_graph=False,
-                        allow_unused=True,
-                    )[0]
-                    floor_grads = torch.autograd.grad(
-                        floor_loss, actor.log_std,
-                        retain_graph=True, create_graph=False,
-                        allow_unused=True,
-                    )[0]
-                    if pol_grads is not None and floor_grads is not None:
-                        all_pol_logstd_grads.append(float(pol_grads.abs().mean().item()))
-                        all_floor_logstd_grads.append(float(floor_grads.abs().mean().item()))
-                        all_pol_logstd_grad_sign.append(float(pol_grads.mean().item()))
-                        all_floor_logstd_grad_sign.append(float(floor_grads.mean().item()))
+                # --- Gradient diagnostics for exploration parameters ---
+                # P1-7: Moved from ``hasattr(actor, "log_std")`` sniffing
+                # into a policy-owned hook.  The trainer no longer knows
+                # about ``log_std`` — it calls
+                # ``actor.exploration_grad_diagnostics()`` and the policy
+                # decides what to report (Gaussian log_std, mixture
+                # temperature, flow scale, etc.) or returns None.
+                # The hasattr check is for test actors that don't
+                # inherit TrainablePolicy; real actors get the default
+                # ``return None`` from TrainablePolicy.
+                if (
+                    mb_idx == 0
+                    and uncertainty_coef > 0.0
+                    and hasattr(actor, "exploration_grad_diagnostics")
+                ):
+                    grad_diag = actor.exploration_grad_diagnostics(
+                        policy_loss, floor_loss,
+                    )
+                    if grad_diag is not None:
+                        all_pol_logstd_grads.append(grad_diag["pol_abs"])
+                        all_floor_logstd_grads.append(grad_diag["floor_abs"])
+                        all_pol_logstd_grad_sign.append(grad_diag["pol_sign"])
+                        all_floor_logstd_grad_sign.append(grad_diag["floor_sign"])
                         all_floor_active_frac.append(
                             float((actor_eval.uncertainty < uncertainty_floor).float().mean().item())
                         )
@@ -1084,7 +1084,10 @@ def ppo_update(
     # Collect per-channel and global statistics into a typed UpdateStats.
     # The training loop calls to_log_dict() for __RAW_STATS__ logging.
 
-    # Gradient diagnostics for log_std (printed as diagnostics lines)
+    # P1-7: Gradient diagnostics for exploration parameters (printed as
+    # diagnostics lines).  The policy owns the diagnostics via
+    # exploration_grad_diagnostics(); the trainer just aggregates and
+    # prints.  Format unchanged from pre-P1-7 so log parsers don't break.
     if all_pol_logstd_grads:
         pol_g = float(np.mean(all_pol_logstd_grads))
         floor_g = float(np.mean(all_floor_logstd_grads))
