@@ -5,4 +5,3 @@ config:
   action_dim: 21
   hidden_dim: 256
   device: "cpu"
-  deterministic: false

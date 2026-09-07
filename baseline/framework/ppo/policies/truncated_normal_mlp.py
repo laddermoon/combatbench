@@ -46,14 +46,17 @@ import torch
 
 # Import from repo - requires baseline/ to be on sys.path
 from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormalPolicy
+from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
 from envs.framework.policy import Policy
 
 
-class ExportedTruncNormPolicy(Policy):
+class ExportedTruncNormPolicy(Policy, StochasticPolicy):
     """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
 
-    Uses :class:`TruncatedNormalPolicy` from the training repo for
-    consistent architecture and behavior.
+    Implements both ``Policy`` (deterministic ``act()``) and
+    ``StochasticPolicy`` (sampling ``sample()``) so it can be used:
+    - As a ``Policy`` for deployment / competition (``act()`` -> mean).
+    - As a ``StochasticPolicy`` for training rollouts (``sample()``).
     """
 
     def __init__(
@@ -80,25 +83,42 @@ class ExportedTruncNormPolicy(Policy):
         *,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, None]:
-        """Return action for given observation."""
+        """Deterministic action -- returns the mean (Policy interface)."""
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            if self.stochastic:
-                action, _ = self._policy.sample_action(obs_tensor)
-            else:
-                action = self._policy.deterministic_action(obs_tensor)
+            action = self._policy.deterministic_action(obs_tensor)
         return action.squeeze(0).cpu().numpy().astype(np.float32), None
+
+    def sample(
+        self,
+        observation: Any,
+        *,
+        explore_intensity: float = 0.0,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, Optional[dict]]:
+        """Stochastic action -- sample from truncated normal (StochasticPolicy interface).
+
+        When ``stochastic=False``, falls back to deterministic mean action.
+        """
+        if not self.stochastic:
+            return self.act(observation, want_extra=want_extra)
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            action, log_prob = self._policy.sample_action(
+                obs_tensor, explore_intensity=explore_intensity,
+            )
+        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
+        if not want_extra or log_prob is None:
+            return action_np, None
+        return action_np, {"log_prob": float(log_prob.item())}
 
     def reset(self, seed: Optional[int] = None) -> None:
         """Optional: reseed RNG for reproducible rollouts."""
         if seed is not None:
             torch.manual_seed(seed)
         return None
-
-
-# Backward compatibility alias
-Policy = ExportedTruncNormPolicy
 '''
 
 # Numerical safety bounds for log_std.
@@ -135,7 +155,7 @@ def _std_normal_icdf(u: torch.Tensor) -> torch.Tensor:
     return _SQRT_2 * torch.erfinv(2.0 * u_clamped - 1.0)
 
 
-class TruncatedNormalPolicy(nn.Module, StochasticPolicy):
+class TruncatedNormalPolicy(nn.Module, StochasticPolicy, Policy):
     """Truncated normal policy on [-1, 1].
 
     mean = tanh(net(obs))  ∈ (-1, 1)
@@ -155,14 +175,12 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy):
         action_dim: int,
         hidden_dim: int,
         device: torch.device | str = "cpu",
-        deterministic: bool = False,
     ):
         super().__init__()
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
         self.hidden_dim = int(hidden_dim)
         self.device = torch.device(device)
-        self._deterministic = bool(deterministic)
 
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -334,28 +352,46 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy):
         )
 
     # ------------------------------------------------------------------
-    # Policy contract
+    # Policy contract (deterministic default behaviour)
     # ------------------------------------------------------------------
 
     def act(
         self,
         observation: Any,
         *,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
+        """Deterministic action — returns the mean of the truncated normal."""
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            action = self.deterministic_action(obs_tensor)
+        return action.squeeze(0).cpu().numpy().astype(np.float32), None
+
+    # ------------------------------------------------------------------
+    # StochasticPolicy contract (sampling with exploration control)
+    # ------------------------------------------------------------------
+
+    def sample(
+        self,
+        observation: Any,
+        *,
         explore_intensity: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        action_np, log_prob = self.act_numpy(
-            observation, device=self.device, deterministic=self._deterministic,
-            explore_intensity=explore_intensity,
-        )
+        """Stochastic action — sample from truncated normal with explore_intensity."""
+        obs_array = np.asarray(observation, dtype=np.float32)
+        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            action, log_prob = self.sample_action(
+                obs_tensor, explore_intensity=explore_intensity,
+            )
+        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:
             return action_np, None
         return action_np, {
-            "log_prob": float(log_prob),
+            "log_prob": float(log_prob.item()),
         }
-
-    def set_deterministic(self, deterministic: bool) -> None:
-        self._deterministic = bool(deterministic)
 
     def to_blueprint(
         self, dest_path: Optional[str] = None, *, stochastic: bool = False,
@@ -394,27 +430,3 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy):
             cls=f"file:{policy_py_path}:ExportedTruncNormPolicy",
             config={"stochastic": stochastic},
         )
-
-    # ------------------------------------------------------------------
-    # Numpy inference (for rollout workers)
-    # ------------------------------------------------------------------
-
-    def act_numpy(
-        self, obs: np.ndarray, device: torch.device, deterministic: bool,
-        *, explore_intensity: Any = 0.0,
-    ) -> tuple[np.ndarray, Optional[float]]:
-        obs_tensor = torch.as_tensor(
-            obs, dtype=torch.float32, device=device
-        ).unsqueeze(0)
-        with torch.no_grad():
-            if deterministic:
-                action = self.deterministic_action(obs_tensor)
-                log_prob = None
-            else:
-                action, log_prob = self.sample_action(
-                    obs_tensor, explore_intensity=explore_intensity,
-                )
-        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
-        if log_prob is None:
-            return action_np, None
-        return action_np, float(log_prob.item())

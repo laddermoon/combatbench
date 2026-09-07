@@ -9,21 +9,18 @@ just calls ``policy.act(obs, want_extra=...)``.
 The wrapper:
 1. Resolves ``explore_intensity`` per frame (constant float or callable
    ``(obs, step) -> float``).
-2. Calls ``inner.act(obs, explore_intensity=ei, want_extra=...)``.
+2. Calls ``inner.sample(obs, explore_intensity=ei, want_extra=...)``.
 3. Merges ``explore_intensity`` into the returned ``extra`` dict so it
    travels through ``action_extras`` to recorders and trainers.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union, TYPE_CHECKING
 
 import numpy as np
 
 from envs.framework.policy import Policy
 
-# Lazy import to avoid circular dependency:
-# rollout.__init__ → exploratory_policy → ppo.policies → ppo.__init__ → experiment → rollout
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
 
@@ -36,10 +33,14 @@ EiSpec = Union[float, Callable[[np.ndarray, int], float]]
 class ExploratoryPolicy(Policy):
     """Wrap a :class:`StochasticPolicy` with per-frame explore_intensity.
 
+    Implements :class:`Policy` by delegating to ``inner.sample()``.
+    The ``EpisodeRunner`` sees a plain ``Policy`` and is unaware of
+    exploration.
+
     Parameters
     ----------
     inner:
-        The stochastic policy to wrap.
+        The stochastic policy to wrap (must implement ``sample()``).
     explore_intensity:
         Constant ``float`` or callable ``(obs, step) -> float``.
         Default ``0.0`` (neutral).
@@ -50,21 +51,13 @@ class ExploratoryPolicy(Policy):
         inner: "StochasticPolicy",
         explore_intensity: EiSpec = 0.0,
     ) -> None:
-        # Duck-typed: inner must have act().
-        # We don't isinstance-check StochasticPolicy to avoid importing it
-        # at module load time (circular dependency via ppo.__init__).
-        if not hasattr(inner, "act"):
+        if not hasattr(inner, "sample"):
             raise TypeError(
-                f"inner must be a policy with act(); got {type(inner).__name__}"
+                f"inner must implement sample(); got {type(inner).__name__}"
             )
         self.inner = inner
         self._ei_spec: EiSpec = explore_intensity
         self._step: int = 0
-        # Detect whether inner.act accepts explore_intensity (StochasticPolicy)
-        # or not (plain Policy, e.g. exported eval policies).
-        import inspect
-        sig = inspect.signature(inner.act)
-        self._inner_accepts_ei = "explore_intensity" in sig.parameters
 
     def act(
         self,
@@ -78,17 +71,9 @@ class ExploratoryPolicy(Policy):
             else float(self._ei_spec)
         )
         self._step += 1
-        # If inner is a StochasticPolicy (accepts explore_intensity), pass it.
-        # Otherwise (e.g. exported eval policies implementing plain Policy),
-        # call without it — ei is still recorded in extra for downstream use.
-        if self._inner_accepts_ei:
-            action, extra = self.inner.act(
-                observation, explore_intensity=ei, want_extra=want_extra,
-            )
-        else:
-            action, extra = self.inner.act(
-                observation, want_extra=want_extra,
-            )
+        action, extra = self.inner.sample(
+            observation, explore_intensity=ei, want_extra=want_extra,
+        )
         if extra is not None:
             extra["explore_intensity"] = ei
         else:

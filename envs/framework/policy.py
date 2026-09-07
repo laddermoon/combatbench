@@ -95,7 +95,20 @@ __all__ = [
 
 
 class Policy(ABC):
-    """Abstract base class for all combatbench policies. See module docstring."""
+    """Abstract base class for all combatbench policies. See module docstring.
+
+    ``act()`` returns the policy's **default behaviour**.  For a plain
+    deterministic policy this is the (only) action it produces.  For a
+    stochastic policy that also implements
+    :class:`~baseline.framework.ppo.policies.stochastic_policy.StochasticPolicy`,
+    ``act()`` typically returns the deterministic mean action, while
+    ``sample()`` provides stochastic sampling with exploration control.
+
+    The :class:`~baseline.framework.rollout.exploratory_policy.ExploratoryPolicy`
+    wrapper is a ``Policy`` whose ``act()`` delegates to the inner
+    ``StochasticPolicy.sample()`` — so the ``EpisodeRunner`` always
+    calls ``act()`` and does not need to know about stochasticity.
+    """
 
     @abstractmethod
     def act(
@@ -104,7 +117,7 @@ class Policy(ABC):
         *,
         want_extra: bool = False,
     ) -> Tuple[Any, Any | None]:
-        """Compute an action for the given observation.
+        """Compute the default action for the given observation.
 
         Parameters
         ----------
@@ -128,9 +141,6 @@ class Policy(ABC):
             Policy-defined auxiliary payload, or ``None``. Common
             choices: a dict of log-prob / value / entropy tensors for
             on-policy RL trainers.
-
-        Stochasticity is the policy's responsibility — see the module
-        docstring's "Determinism vs. stochasticity" section.
         """
         raise NotImplementedError
 
