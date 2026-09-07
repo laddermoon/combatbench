@@ -187,9 +187,9 @@ U_total = mean(U_i),  i = 1..action_dim
 策略只负责输出 per-obs 不确定度 U。loss 的形式（单向 MSE、单向 L1、
 双向等）由框架（trainer）决定。策略文档不定义 loss。
 
-### 6.3 explore_intensity：指数缩放 σ
+### 6.3 explore_factor：指数缩放 σ
 
-explore_intensity 是框架要求的探索控制接口，必须保留。语义为
+explore_factor 是框架要求的探索控制接口，必须保留。语义为
 **附加的探索强度**，直接缩放 σ：
 
 ```
@@ -199,7 +199,7 @@ scale = exp(ei × ln(3))
 σ_effective = σ × scale
 ```
 
-| explore_intensity | scale | 含义 |
+| explore_factor | scale | 含义 |
 |---:|---:|---|
 | -1.0 | 1/3 ≈ 0.333 | 最大压制：σ 除以 3 |
 | -0.5 | ≈ 0.577 | 中度压制 |
@@ -212,7 +212,7 @@ scale = exp(ei × ln(3))
 在 ei=0 处导数为 k（线性近似好）、自然延伸到更大的 k 值。
 
 采样和 log_prob 用 `σ_effective`，不确定度 U 用策略原始 σ（不含
-explore_intensity 缩放），反映策略自身的确定度。
+explore_factor 缩放），反映策略自身的确定度。
 
 ### 6.4 checkpoint：不兼容
 

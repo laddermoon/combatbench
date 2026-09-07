@@ -299,7 +299,7 @@ class StandupStepV2(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
+            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:

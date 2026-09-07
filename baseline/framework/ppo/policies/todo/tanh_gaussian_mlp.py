@@ -99,10 +99,10 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
                 print(f"[TanhGaussianMLPPolicy] unexpected keys on load: {unexpected}", flush=True)
             self.to(self.device)
 
-    def effective_log_std(self, explore_intensity: Any = 0.5) -> torch.Tensor:
+    def effective_log_std(self, explore_factor: Any = 0.5) -> torch.Tensor:
         """Return the ``(action_dim,)`` or ``(B, action_dim)`` log-sigma.
 
-        ``explore_intensity`` controls the additive offset in log-std
+        ``explore_factor`` controls the additive offset in log-std
         space: ``offset = (ei - 0.5) * EXPLORE_SPAN``.  May be a scalar
         float or a ``(B,)`` tensor for per-frame exploration.
 
@@ -111,24 +111,24 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         reference points, not hard limits.  See
         ``DESIGN_migration_tanh_gaussian.md`` §3.
         """
-        if isinstance(explore_intensity, torch.Tensor):
-            offset = (explore_intensity - 0.5) * self.EXPLORE_SPAN
+        if isinstance(explore_factor, torch.Tensor):
+            offset = (explore_factor - 0.5) * self.EXPLORE_SPAN
             offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting
         else:
-            offset = float(explore_intensity - 0.5) * self.EXPLORE_SPAN
+            offset = float(explore_factor - 0.5) * self.EXPLORE_SPAN
         return torch.clamp(
             self.log_std + offset,
             _LOG_STD_SAFE_MIN,
             _LOG_STD_SAFE_MAX,
         )
 
-    def forward(self, obs: torch.Tensor, *, explore_intensity: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
         mean = self.net(obs)
-        log_std = self.effective_log_std(explore_intensity)
+        log_std = self.effective_log_std(explore_factor)
         return mean, log_std.expand_as(mean)
 
-    def sample_action(self, obs: torch.Tensor, *, explore_intensity: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
-        mean, log_std = self.forward(obs, explore_intensity=explore_intensity)
+    def sample_action(self, obs: torch.Tensor, *, explore_factor: Any = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+        mean, log_std = self.forward(obs, explore_factor=explore_factor)
         std = log_std.exp()
         dist = Normal(mean, std)
         raw_action = dist.rsample()
@@ -144,7 +144,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
-        explore_intensity: torch.Tensor,
+        explore_factor: torch.Tensor,
         *,
         frame_modes: Optional[torch.Tensor] = None,
         noise_shift: Optional[torch.Tensor] = None,
@@ -158,7 +158,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         no OU exploration support.  Use :class:`FixedSigmaGaussianMLPPolicy`
         for OU-enabled training from a baseline checkpoint.
 
-        ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
+        ``explore_factor`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  ``log_prob`` uses the
         effective σ (policy σ + explore offset) so the PPO importance
         ratio is correct.  ``entropy`` uses the policy's original σ
@@ -169,7 +169,7 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
         # log_prob: effective σ (policy σ + explore offset)
         clipped_actions = torch.clamp(actions, -0.999999, 0.999999)
         raw_actions = torch.atanh(clipped_actions)
-        mean, eff_log_std = self.forward(obs, explore_intensity=explore_intensity)
+        mean, eff_log_std = self.forward(obs, explore_factor=explore_factor)
         dist = Normal(mean, eff_log_std.exp())
         log_prob = (dist.log_prob(raw_actions)
                     - torch.log(1.0 - clipped_actions.pow(2) + 1e-6)).sum(dim=-1)
@@ -219,24 +219,24 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.5,
+        explore_factor: float = 0.5,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Single-step inference.
 
         Returns ``(action, None)`` when ``want_extra=False``.
         When ``want_extra=True`` and the policy is stochastic, the
-        returned dict contains ``log_prob`` and ``explore_intensity``.
+        returned dict contains ``log_prob`` and ``explore_factor``.
         """
         action_np, log_prob = self.act_numpy(
             observation, device=self.device, deterministic=self._deterministic,
-            explore_intensity=explore_intensity,
+            explore_factor=explore_factor,
         )
         if not want_extra or log_prob is None:
             return action_np, None
         return action_np, {
             "log_prob": float(log_prob),
-            "explore_intensity": float(explore_intensity),
+            "explore_factor": float(explore_factor),
         }
 
     def set_deterministic(self, deterministic: bool) -> None:
@@ -284,14 +284,14 @@ class TanhGaussianMLPPolicy(nn.Module, Policy):
     # ------------------------------------------------------------------
     # Numpy-flavoured inference (kept for backward compat with trainers)
     # ------------------------------------------------------------------
-    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool, *, explore_intensity: Any = 0.5) -> tuple[np.ndarray, Optional[float]]:
+    def act_numpy(self, obs: np.ndarray, device: torch.device, deterministic: bool, *, explore_factor: Any = 0.5) -> tuple[np.ndarray, Optional[float]]:
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             if deterministic:
                 action = self.deterministic_action(obs_tensor)
                 log_prob = None
             else:
-                action, log_prob = self.sample_action(obs_tensor, explore_intensity=explore_intensity)
+                action, log_prob = self.sample_action(obs_tensor, explore_factor=explore_factor)
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if log_prob is None:
             return action_np, None

@@ -7,7 +7,7 @@ Verifies:
 4. sample_action and evaluate_actions give consistent log_prob
 5. Uncertainty U is in [0, 1] and matches 1/(2×peak)
 6. U = 1 for uniform-like (large σ), U → 0 for narrow (small σ)
-7. explore_intensity scales σ correctly (ei=-1→1/3, 0→1, +1→3)
+7. explore_factor scales σ correctly (ei=-1→1/3, 0→1, +1→3)
 8. Gradients flow to mean and log_std
 9. U is per-obs (depends on mean)
 """
@@ -201,7 +201,7 @@ class TestUncertainty(unittest.TestCase):
 
 
 class TestExploreIntensity(unittest.TestCase):
-    """explore_intensity exponential σ scaling: scale = exp(ei * ln(3))."""
+    """explore_factor exponential σ scaling: scale = exp(ei * ln(3))."""
 
     def test_scale_values(self):
         p = _make_policy()
@@ -216,16 +216,16 @@ class TestExploreIntensity(unittest.TestCase):
         p.log_std.data.fill_(0.0)  # σ = 1.0
 
         # Neutral
-        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), explore_intensity=0.0)
+        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), explore_factor=0.0)
         self.assertAlmostEqual(sigma_neutral[0, 0].item(), 1.0, places=5)
 
         # Suppressed
-        _, sigma_suppressed = p.forward(torch.randn(1, OBS_DIM), explore_intensity=-1.0)
+        _, sigma_suppressed = p.forward(torch.randn(1, OBS_DIM), explore_factor=-1.0)
         self.assertAlmostEqual(sigma_suppressed[0, 0].item(), 1.0 / 3.0,
                                places=5)
 
         # Expanded
-        _, sigma_expanded = p.forward(torch.randn(1, OBS_DIM), explore_intensity=1.0)
+        _, sigma_expanded = p.forward(torch.randn(1, OBS_DIM), explore_factor=1.0)
         self.assertAlmostEqual(sigma_expanded[0, 0].item(), 3.0, places=5)
 
     def test_scale_does_not_affect_uncertainty(self):
@@ -240,7 +240,7 @@ class TestExploreIntensity(unittest.TestCase):
 
         diff = (ev_neutral.uncertainty - ev_expanded.uncertainty).abs().max().item()
         self.assertLess(diff, 1e-5,
-                        f"U should not change with explore_intensity, diff={diff}")
+                        f"U should not change with explore_factor, diff={diff}")
 
 
 class TestGradients(unittest.TestCase):

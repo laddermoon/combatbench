@@ -146,7 +146,7 @@ class ExportedPolicy(Policy):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.5,
+        explore_factor: float = 0.5,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         # Delegate to the inner policy's act so OU stepping, extras,
@@ -154,7 +154,7 @@ class ExportedPolicy(Policy):
         # place.  This avoids a second copy of the sampling logic that
         # could silently diverge from the policy's own act method.
         return self._policy.act(
-            observation, explore_intensity=explore_intensity, want_extra=want_extra,
+            observation, explore_factor=explore_factor, want_extra=want_extra,
         )
 
     def reset(self, seed: Optional[int] = None) -> None:

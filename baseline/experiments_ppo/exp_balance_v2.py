@@ -234,8 +234,8 @@ class BalanceV2(CombatExperimentPPOBase):
     env_bp=env_bp,
     seed=seed,
     episode_options={"impulse_params": impulse_params},
-    explore_intensity_a=self.explore_intensity,
-    explore_intensity_b=self.explore_intensity,
+    explore_factor_a=self.explore_factor,
+    explore_factor_b=self.explore_factor,
 ))
         return jobs
 
@@ -460,7 +460,7 @@ class BalanceV2(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
+            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
 
     @staticmethod

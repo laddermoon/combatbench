@@ -22,7 +22,7 @@ class StochasticPolicy(ABC):
     """Interface for policies that support stochastic sampling.
 
     ``sample()`` returns a stochastically sampled action.  The optional
-    ``explore_intensity ∈ [-1, 1]`` (0 = neutral) scales the sampling
+    ``explore_factor ∈ [-1, 1]`` (0 = neutral) scales the sampling
     distribution; the mapping is policy-defined.
     """
 
@@ -31,7 +31,7 @@ class StochasticPolicy(ABC):
         self,
         observation: Any,
         *,
-        explore_intensity: float = 0.0,
+        explore_factor: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[Any, Optional[dict]]:
         """Sample an action with optional exploration intensity.

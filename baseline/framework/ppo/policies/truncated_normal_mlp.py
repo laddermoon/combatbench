@@ -21,7 +21,7 @@ from envs.framework.policy import Policy, PolicyBlueprint
 from baseline.framework.ppo import ActorEval, TrainablePolicy
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
-# explore_intensity ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
+# explore_factor ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
 # Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
 _EXPLORE_K = math.log(3.0)
 
@@ -96,7 +96,7 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
         self,
         observation: Any,
         *,
-        explore_intensity: float = 0.0,
+        explore_factor: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[dict]]:
         """Stochastic action -- sample from truncated normal (StochasticPolicy interface)."""
@@ -104,7 +104,7 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action, log_prob = self._policy.sample_action(
-                obs_tensor, explore_intensity=explore_intensity,
+                obs_tensor, explore_factor=explore_factor,
             )
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:
@@ -200,19 +200,19 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             self.log_std, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX
         )
 
-    def _explore_scale(self, explore_intensity: Any = 0.0) -> Any:
-        """Exponential σ scaling factor from explore_intensity.
+    def _explore_scale(self, explore_factor: Any = 0.0) -> Any:
+        """Exponential σ scaling factor from explore_factor.
 
         ei=0 → 1.0 (neutral), ei=+1 → 3.0 (max explore), ei=-1 → 1/3 (max suppress).
         scale = exp(ei * ln(3)).  Accepts scalar float or (B,) tensor.
         """
-        if isinstance(explore_intensity, torch.Tensor):
-            return torch.exp(explore_intensity * _EXPLORE_K)
-        return math.exp(float(explore_intensity) * _EXPLORE_K)
+        if isinstance(explore_factor, torch.Tensor):
+            return torch.exp(explore_factor * _EXPLORE_K)
+        return math.exp(float(explore_factor) * _EXPLORE_K)
 
-    def effective_sigma(self, explore_intensity: Any = 0.0) -> torch.Tensor:
+    def effective_sigma(self, explore_factor: Any = 0.0) -> torch.Tensor:
         """σ used for sampling / log_prob (includes explore scale)."""
-        scale = self._explore_scale(explore_intensity)
+        scale = self._explore_scale(explore_factor)
         sigma = self.effective_log_std().exp()
         if isinstance(scale, torch.Tensor):
             return sigma * scale.unsqueeze(-1)  # (B, 1) * (action_dim,) → (B, action_dim)
@@ -222,11 +222,11 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         """σ without explore scale — for uncertainty U."""
         return self.effective_log_std().exp()
 
-    def forward(self, obs: torch.Tensor, *, explore_intensity: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
         raw_mean = self.net(obs)
         mean = torch.tanh(raw_mean)  # ensure mean ∈ (-1, 1)
-        sigma = self.effective_sigma(explore_intensity)
+        sigma = self.effective_sigma(explore_factor)
         return mean, sigma.expand_as(mean)
 
     def _trunc_params(
@@ -254,13 +254,13 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     # ------------------------------------------------------------------
 
     def sample_action(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.0,
+        self, obs: torch.Tensor, *, explore_factor: Any = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample action ∈ [-1, 1] via inverse-CDF reparameterization.
 
         Returns (action, log_prob) where log_prob is summed over dims.
         """
-        mean, sigma = self.forward(obs, explore_intensity=explore_intensity)
+        mean, sigma = self.forward(obs, explore_factor=explore_factor)
         a, b, log_Z = self._trunc_params(mean, sigma)
 
         # Inverse-CDF sampling:
@@ -294,19 +294,19 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
-        explore_intensity: torch.Tensor,
+        explore_factor: torch.Tensor,
         *,
         want_stats: bool = False,
     ) -> ActorEval:
         """Score actions and compute uncertainty for PPO.
 
-        ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
+        ``explore_factor`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  log_prob uses
         effective σ (with explore scale) so the PPO importance ratio is
         correct.  uncertainty (U) uses policy σ (without explore
         scale) so it reflects the policy's own certainty.
         """
-        mean, eff_sigma = self.forward(obs, explore_intensity=explore_intensity)
+        mean, eff_sigma = self.forward(obs, explore_factor=explore_factor)
         a, b, log_Z = self._trunc_params(mean, eff_sigma)
 
         # log_prob: effective σ
@@ -373,15 +373,15 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         observation: Any,
         *,
-        explore_intensity: float = 0.0,
+        explore_factor: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        """Stochastic action — sample from truncated normal with explore_intensity."""
+        """Stochastic action — sample from truncated normal with explore_factor."""
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             action, log_prob = self.sample_action(
-                obs_tensor, explore_intensity=explore_intensity,
+                obs_tensor, explore_factor=explore_factor,
             )
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:

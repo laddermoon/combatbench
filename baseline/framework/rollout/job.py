@@ -9,11 +9,11 @@ import numpy as np
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-#: Per-frame explore_intensity: a constant float, or a callable
+#: Per-frame explore_factor: a constant float, or a callable
 #: ``(obs, step) -> float`` that returns the value for each step.
 #: Callables must be top-level functions to be picklable across
 #: multiprocessing workers.
-EiSpec = Union[float, Callable[[np.ndarray, int], float]]
+EfSpec = Union[float, Callable[[np.ndarray, int], float]]
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class Job:
         ``simulator.reset(options=...)``.  This must be a plain,
         JSON-serializable dict — it is persisted in episode manifests.
         Do NOT put policy-related fields here.
-    explore_intensity_a / explore_intensity_b:
+    explore_factor_a / explore_factor_b:
         Exploration intensity for each policy.  Either a constant
         ``float`` (same value every step) or a callable
         ``(obs, step) -> float`` (per-frame).  Consumed by
@@ -52,6 +52,6 @@ class Job:
     env_bp: EnvBlueprint
     seed: int
     episode_options: Dict[str, Any] = field(default_factory=dict)
-    explore_intensity_a: EiSpec = 0.0
-    explore_intensity_b: EiSpec = 0.0
+    explore_factor_a: EfSpec = 0.0
+    explore_factor_b: EfSpec = 0.0
     stochastic: bool = True

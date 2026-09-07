@@ -42,7 +42,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
     Distribution (raw, pre-tanh):
         p(a|s) = Σ_k π_k(s) · N(a | μ_k(s), diag(σ_k(s)²))
 
-    ``explore_intensity`` scales component σ only (not mixture logits).
+    ``explore_factor`` scales component σ only (not mixture logits).
     """
 
     def __init__(
@@ -113,27 +113,27 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
     # ------------------------------------------------------------------
 
     def _bounded_log_std(
-        self, raw_log_std: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, raw_log_std: torch.Tensor, *, explore_factor: Any = 0.5,
     ) -> torch.Tensor:
         """Squash raw log-std into [log_std_min, log_std_max].
 
         Input shape: (B, K, action_dim).
 
-        ``explore_intensity`` shifts the log-std before squashing:
+        ``explore_factor`` shifts the log-std before squashing:
         0.5 = neutral (learned σ as-is), →0 = compress, →1 = expand.
         May be a scalar float or a ``(B,)`` tensor.
         """
-        if isinstance(explore_intensity, torch.Tensor):
-            offset = (explore_intensity - 0.5) * 2.0
+        if isinstance(explore_factor, torch.Tensor):
+            offset = (explore_factor - 0.5) * 2.0
             # Broadcast (B,) with (B, K, action_dim).
             offset = offset.view(offset.shape[0], 1, 1)
         else:
-            offset = float(explore_intensity - 0.5) * 2.0
+            offset = float(explore_factor - 0.5) * 2.0
         t = torch.tanh(raw_log_std + offset)
         return self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (t + 1.0)
 
     def _forward_head(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, obs: torch.Tensor, *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (logits, means, bounded_log_stds).
 
@@ -150,7 +150,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
         )
         means = means_flat.view(-1, K, ad)
         raw_log_stds = raw_log_stds_flat.view(-1, K, ad)
-        log_stds = self._bounded_log_std(raw_log_stds, explore_intensity=explore_intensity)
+        log_stds = self._bounded_log_std(raw_log_stds, explore_factor=explore_factor)
         return logits, means, log_stds
 
     # ------------------------------------------------------------------
@@ -158,10 +158,10 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
     # ------------------------------------------------------------------
 
     def _raw_sample(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, obs: torch.Tensor, *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
         """Sample via Gumbel-max component selection + per-component rsample."""
-        logits, means, log_stds = self._forward_head(obs, explore_intensity=explore_intensity)
+        logits, means, log_stds = self._forward_head(obs, explore_factor=explore_factor)
         B, K, ad = means.shape
 
         # Gumbel-max: sample one component per batch element.
@@ -186,7 +186,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
-        *, explore_intensity: Any = 0.5,
+        *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
         """Mixture log_prob via logsumexp.
 
@@ -195,7 +195,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
         The tanh Jacobian is added by the base class **after** this
         (it depends only on the action, not on the component).
         """
-        logits, means, log_stds = self._forward_head(obs, explore_intensity=explore_intensity)
+        logits, means, log_stds = self._forward_head(obs, explore_factor=explore_factor)
         B, K, ad = means.shape
 
         # Per-component log_prob: (B, K)
@@ -221,7 +221,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
         This is not the true mode of the mixture (which may be multimodal),
         but it's a reasonable deterministic action.
         """
-        logits, means, _ = self._forward_head(obs, explore_intensity=0.5)
+        logits, means, _ = self._forward_head(obs, explore_factor=0.5)
         idx = logits.argmax(dim=-1)  # (B,)
         ad = self.action_dim
         idx_exp = idx.view(-1, 1, 1).expand(-1, 1, ad)
@@ -240,7 +240,7 @@ class MoGTanhMLPPolicy(TanhSquashedPolicyBase):
         stats = None
         if want_stats:
             with torch.no_grad():
-                logits, means, log_stds = self._forward_head(obs, explore_intensity=0.5)
+                logits, means, log_stds = self._forward_head(obs, explore_factor=0.5)
                 # Mixture weight statistics.
                 weights = torch.softmax(logits, dim=-1)  # (B, K)
                 log_weights = torch.log_softmax(logits, dim=-1)

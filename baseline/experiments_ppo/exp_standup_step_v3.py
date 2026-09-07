@@ -54,7 +54,7 @@ The pretrained standup policy has very low std (≈0.18) and negative
 entropy (≈-7 nats).  Without re-injection, the policy is too deterministic
 to discover stepping.  We use:
 
-  explore_intensity = 0.63  →  σ × exp(0.63 × ln3) = σ × 2.0
+  explore_factor = 0.63  →  σ × exp(0.63 × ln3) = σ × 2.0
     This doubles the effective std during rollout, giving the
     policy enough noise to try lifting feet while still being grounded
     in the standup behaviour.
@@ -221,7 +221,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     # to new [-1,1] scale (0.63 = ln2/ln3, preserving σ×2.0).
     # The key change is the uncertainty_floor below — we force the policy's
     # OWN σ to be high, not just the rollout σ.
-    explore_intensity: float = 0.63
+    explore_factor: float = 0.63
     # 0.70 → forces the policy's own σ to ≈0.47 (vs converged 0.17).
     # Combined with log_std_reset=-0.5 (σ=0.61), the floor at 0.70
     # prevents σ from dropping below 0.47, giving the policy enough
@@ -564,7 +564,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
+            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
 
     @staticmethod

@@ -51,7 +51,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
     critic_hidden_dim: int = 256
 
     # --- Exploration ---
-    # explore_intensity: additive exploration strength ∈ [-1, 1].
+    # explore_factor: additive exploration strength ∈ [-1, 1].
     #   0 = neutral (no change to policy distribution).
     #   → +1 = maximum added exploration.
     #   → -1 = maximum exploration suppression.
@@ -60,7 +60,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   The framework computes relu(uncertainty_floor - U) to prevent
     #   policy collapse.  Set to 0 to disable.
     # uncertainty_coef: coefficient for the uncertainty floor loss.
-    explore_intensity: float = 0.0
+    explore_factor: float = 0.0
     uncertainty_floor: float = 0.3
     uncertainty_coef: float = 0.01
 
@@ -197,8 +197,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         - ``uncertainty_floor``: training-side uncertainty floor.  Default 0.3.
         - ``uncertainty_coef``: coefficient for the uncertainty floor loss.
 
-        Note: ``explore_intensity`` is NOT part of this spec — it is
-        read from ``self.explore_intensity`` inside ``build_jobs``.
+        Note: ``explore_factor`` is NOT part of this spec — it is
+        read from ``self.explore_factor`` inside ``build_jobs``.
 
         Subclasses that want a schedule override ``on_update`` (to absorb
         stats) and this method (to read accumulated state).
@@ -257,9 +257,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
     ) -> List[Job]:
         """Build self-play rollout jobs.
 
-        ``explore_intensity`` is read from ``self.explore_intensity``
-        and placed into each :class:`Job`'s ``explore_intensity_a`` /
-        ``explore_intensity_b`` fields.  ``stochastic`` is placed into
+        ``explore_factor`` is read from ``self.explore_factor``
+        and placed into each :class:`Job`'s ``explore_factor_a`` /
+        ``explore_factor_b`` fields.  ``stochastic`` is placed into
         each :class:`Job`'s ``stochastic`` field.
 
         Subclass can override for non-self-play scenarios.
@@ -289,14 +289,14 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def extract_explore_intensity(episode, agent_id: str, T: int) -> np.ndarray:
-        """Extract per-frame explore_intensity for one agent, truncated to T.
+    def extract_explore_factor(episode, agent_id: str, T: int) -> np.ndarray:
+        """Extract per-frame explore_factor for one agent, truncated to T.
 
         Reads from ``episode.explore_intensities[agent_id]`` — the
         per-frame input that was passed to ``policy.act`` at rollout
         time, recorded by the episode runner.  Returns a ``(T,)``
         float32 array defaulting to 0.0 (neutral) when the episode has
-        no recorded explore_intensity.
+        no recorded explore_factor.
         """
         ei = episode.explore_intensities.get(agent_id)
         if ei is None:
@@ -317,7 +317,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         stochastic: bool = True,
     ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
-        ei = self.explore_intensity
+        ei = self.explore_factor
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -333,8 +333,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     env_bp=env_bp,
                     seed=seed,
                     episode_options={"initial_distance": initial_distance},
-                    explore_intensity_a=ei,
-                    explore_intensity_b=ei,
+                    explore_factor_a=ei,
+                    explore_factor_b=ei,
                     stochastic=stochastic,
                 ))
             return jobs
@@ -367,8 +367,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 env_bp=env_bps[agent_id],
                 seed=seed,
                 episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
-                explore_intensity_a=ei,
-                explore_intensity_b=ei,
+                explore_factor_a=ei,
+                explore_factor_b=ei,
                 stochastic=stochastic,
             ))
         return jobs

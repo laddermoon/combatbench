@@ -194,7 +194,7 @@ class PostActionRecorder(ABC):
         ``{"robot_a": <extras_a or None>, "robot_b": <extras_b or None>}``
         forwarded by :meth:`EnvRuntime.step` (see its docstring). It carries
         the side-channel payload produced by the policy alongside the action
-        — typically ``log_prob`` / ``value`` / ``explore_intensity`` / sample
+        — typically ``log_prob`` / ``value`` / ``explore_factor`` / sample
         info for RL trainers, or ``None`` for scripted / inference-only
         callers that didn't pass extras. ``None`` (the parameter default)
         means "no extras at all this step", which is also what you get when

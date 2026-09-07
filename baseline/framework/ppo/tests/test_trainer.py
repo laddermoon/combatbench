@@ -77,7 +77,7 @@ class SimpleActor(nn.Module):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
-        explore_intensity: torch.Tensor,
+        explore_factor: torch.Tensor,
         *, want_stats: bool = False,
     ) -> ActorEval:
         mean = self.net(obs)

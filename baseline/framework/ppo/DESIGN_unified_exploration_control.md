@@ -8,53 +8,53 @@
 
 | 旋钮 | 范围 | 作用层 | 含义 |
 |---|---|---|---|
-| `explore_intensity` | `[-1, 1]` | Rollout | 附加探索强度。`0` = 不变，`+1` = 最大附加探索，`-1` = 最大探索压制 |
+| `explore_factor` | `[-1, 1]` | Rollout | 附加探索强度。`0` = 不变，`+1` = 最大附加探索，`-1` = 最大探索压制 |
 | `entropy_floor` | `[0, 1]` | Training | 策略归一化熵的下界。`0` = 不限制。1 的含义由策略定义 |
 
 两者独立，可同步退火（设成相关联的 schedule）或异步退火。
 
 ---
 
-## 2. explore_intensity
+## 2. explore_factor
 
 ### 2.1 语义
 
-`explore_intensity` 是**附加在策略已学分布之上的探索强度**：
+`explore_factor` 是**附加在策略已学分布之上的探索强度**：
 
 - `0`：不改变策略分布，纯 on-policy
 - `+1`：最大附加探索
 - `-1`：最大探索压制
 
-**每个值的具体含义由策略自己定义。** 框架只规定 `[-1, 1]` 的范围和中性点 `0`，不规定 `+1` 或 `-1` 对应什么分布参数的变化。策略自己负责把 `explore_intensity` 映射到内部参数（如 σ 缩放、log_std 偏移、温度等）。
+**每个值的具体含义由策略自己定义。** 框架只规定 `[-1, 1]` 的范围和中性点 `0`，不规定 `+1` 或 `-1` 对应什么分布参数的变化。策略自己负责把 `explore_factor` 映射到内部参数（如 σ 缩放、log_std 偏移、温度等）。
 
 ### 2.2 数据流
 
 ```
 experiment.exploration(u) → ExplorationSpec
-  → resolve() → (explore_intensity, entropy_floor)
-  → build_jobs(explore_intensity=ei)
-  → job options["explore_intensity"] = ei
-  → EpisodeRunner → policy.act(obs, explore_intensity=ei)
-  → action_extras["explore_intensity"] 记录每帧值
-  → extract_explore_intensity(episode, agent_id, T)
-  → Trajectory.explore_intensity  (T,) float32
+  → resolve() → (explore_factor, entropy_floor)
+  → build_jobs(explore_factor=ei)
+  → job options["explore_factor"] = ei
+  → EpisodeRunner → policy.act(obs, explore_factor=ei)
+  → action_extras["explore_factor"] 记录每帧值
+  → extract_explore_factor(episode, agent_id, T)
+  → Trajectory.explore_factor  (T,) float32
   → PPOBuffer 拼接 → evaluate_actions(obs, acts, ei_tensor)
   → ppo_update 每 minibatch 切片传入
 ```
 
-关键不变量：**rollout 采样和 PPO log_prob 重算用同一个 explore_intensity**，保证 importance ratio 正确。
+关键不变量：**rollout 采样和 PPO log_prob 重算用同一个 explore_factor**，保证 importance ratio 正确。
 
 ### 2.3 策略接口
 
 ```python
 def evaluate_actions(
     self, obs, actions,
-    explore_intensity: torch.Tensor,  # (B,) per-frame
+    explore_factor: torch.Tensor,  # (B,) per-frame
     *, want_stats: bool = False,
 ) -> ActorEval
 ```
 
-`explore_intensity` 是必传参数（无默认值），因为 PPO 要求 log_prob 在采样分布下计算。
+`explore_factor` 是必传参数（无默认值），因为 PPO 要求 log_prob 在采样分布下计算。
 
 ---
 
@@ -80,7 +80,7 @@ entropy_floor_loss = entropy_coef × relu(floor - H_norm).mean()
 
 ### 3.4 entropy_coef
 
-- 默认联动：`entropy_coef = 0.01 × max(explore_intensity, 0)`
+- 默认联动：`entropy_coef = 0.01 × max(explore_factor, 0)`
 - 可被 `ExplorationSpec.entropy_coef` 覆盖
 
 ---
@@ -90,13 +90,13 @@ entropy_floor_loss = entropy_coef × relu(floor - H_norm).mean()
 ```python
 @dataclass(frozen=True)
 class ExplorationSpec:
-    explore_intensity: Optional[float] = None   # 默认 0.0（中性）
+    explore_factor: Optional[float] = None   # 默认 0.0（中性）
     entropy_floor: Optional[float] = None       # 默认 0.0（不限制）
-    entropy_coef: Optional[float] = None        # 默认联动 explore_intensity
+    entropy_coef: Optional[float] = None        # 默认联动 explore_factor
 
     def resolve(self) -> tuple[float, float]:
         return (
-            self.explore_intensity if self.explore_intensity is not None else 0.0,
+            self.explore_factor if self.explore_factor is not None else 0.0,
             self.entropy_floor if self.entropy_floor is not None else 0.0,
         )
 ```
@@ -120,7 +120,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
     v = 1.0 - u  # 从 1.0 线性退到 0.0
-    return ExplorationSpec(explore_intensity=v, entropy_floor=0.3 * v)
+    return ExplorationSpec(explore_factor=v, entropy_floor=0.3 * v)
 ```
 
 ### 5. 异步退火（探索先退，防坍缩后退）
@@ -130,7 +130,7 @@ def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
     explore = max(0.0, 1.0 - 2.0 * u)           # u=0.5 时退到 0
     floor = 0.5 * (1.0 + math.cos(math.pi * u))  # u=1.0 时退到 0
-    return ExplorationSpec(explore_intensity=explore, entropy_floor=floor)
+    return ExplorationSpec(explore_factor=explore, entropy_floor=floor)
 ```
 
 ### 5. on-policy + 防坍缩
@@ -138,7 +138,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
-        explore_intensity=0.0,   # 纯 on-policy
+        explore_factor=0.0,   # 纯 on-policy
         entropy_floor=0.3,       # 但策略不能坍缩
     )
 ```
@@ -177,4 +177,4 @@ def exploration(self, update: int) -> ExplorationSpec:
 
 3. **策略自己负责归一化**：每个策略族知道自己的 H_max 和 σ 语义，框架不需要理解策略族细节。
 
-4. **per-frame 一致性**：rollout 采样和 PPO log_prob 重算用同一个 explore_intensity，保证 importance ratio 正确。
+4. **per-frame 一致性**：rollout 采样和 PPO log_prob 重算用同一个 explore_factor，保证 importance ratio 正确。

@@ -54,7 +54,7 @@ class Standup(CombatExperimentPPOBase):
     # --- Exploration ---
     # 0.0 = neutral (policy uses its learned σ as-is).
     # Standup requires precise motor control — no extra exploration noise.
-    explore_intensity: float = 0.0
+    explore_factor: float = 0.0
     # Disable uncertainty floor: standup needs the policy to converge to
     # deterministic control.  The old run (success=1.0) had no floor.
     uncertainty_floor: float = 0.0
@@ -158,7 +158,7 @@ class Standup(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_intensity=self.extract_explore_intensity(episode, agent_id, T_full),
+            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:

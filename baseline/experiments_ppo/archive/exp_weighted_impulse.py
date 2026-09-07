@@ -145,8 +145,8 @@ class WeightedImpulseExperiment(CombatExperimentPPOBase):
                     "initial_distance": initial_distance,
                     "impulse_params": impulse_params
 },
-    explore_intensity_a=self.explore_intensity,
-    explore_intensity_b=self.explore_intensity,
+    explore_factor_a=self.explore_factor,
+    explore_factor_b=self.explore_factor,
 ))
         return jobs
 

@@ -45,7 +45,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         net = Linear(obs, hidden) → Tanh → Linear(hidden, hidden) → Tanh → Linear(hidden, action)
         log_std = Parameter((action_dim,))   # state-independent
 
-    Effective log_std = clamp(log_std + offset(explore_intensity), log_std_min, log_std_max)
+    Effective log_std = clamp(log_std + offset(explore_factor), log_std_min, log_std_max)
 
     The ``net`` and ``log_std`` parameter names match the baseline
     exactly, so a baseline checkpoint can be loaded with ``strict=True``
@@ -98,25 +98,25 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
             self.to(self.device)
 
     # ------------------------------------------------------------------
-    # Effective log-std (explore_intensity offset + hard clamp, same as baseline)
+    # Effective log-std (explore_factor offset + hard clamp, same as baseline)
     # ------------------------------------------------------------------
 
-    def _effective_log_std(self, explore_intensity: Any = 0.5) -> torch.Tensor:
+    def _effective_log_std(self, explore_factor: Any = 0.5) -> torch.Tensor:
         """Return the ``(action_dim,)`` log-sigma used for sampling.
 
-        ``explore_intensity`` is mapped to an additive offset before
+        ``explore_factor`` is mapped to an additive offset before
         clamping to ``[log_std_min, log_std_max]`` — identical in spirit
         to :meth:`TanhGaussianMLPPolicy.effective_log_std`.  This ensures
         training-time scoring and rollout-time sampling can never disagree.
 
-        ``explore_intensity=0.5`` (neutral) yields a zero offset, matching
+        ``explore_factor=0.5`` (neutral) yields a zero offset, matching
         the baseline ``temperature=1.0`` behavior.
         """
-        if isinstance(explore_intensity, torch.Tensor):
-            offset = (explore_intensity - 0.5) * 2.0
+        if isinstance(explore_factor, torch.Tensor):
+            offset = (explore_factor - 0.5) * 2.0
             offset = offset.unsqueeze(-1)  # (B, 1) for broadcasting
         else:
-            offset = float(explore_intensity - 0.5) * 2.0
+            offset = float(explore_factor - 0.5) * 2.0
         return torch.clamp(
             self.log_std + offset,
             self.log_std_min,
@@ -124,11 +124,11 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         )
 
     def _forward(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, obs: torch.Tensor, *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return (mean, effective_log_std_expanded)."""
         mean = self.net(obs)
-        log_std = self._effective_log_std(explore_intensity)
+        log_std = self._effective_log_std(explore_factor)
         return mean, log_std.expand_as(mean)
 
     # ------------------------------------------------------------------
@@ -136,32 +136,32 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
     # ------------------------------------------------------------------
 
     def _raw_sample(
-        self, obs: torch.Tensor, *, explore_intensity: Any = 0.5,
+        self, obs: torch.Tensor, *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
+        mean, log_std = self._forward(obs, explore_factor=explore_factor)
         std = log_std.exp()
         raw = mean + std * torch.randn_like(mean)
         return raw, None
 
     def _raw_log_prob(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
-        *, explore_intensity: Any = 0.5,
+        *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
-        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
+        mean, log_std = self._forward(obs, explore_factor=explore_factor)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action).sum(-1), None
 
     def _raw_log_prob_per_dim(
         self, obs: torch.Tensor, raw_action: torch.Tensor,
-        *, explore_intensity: Any = 0.5,
+        *, explore_factor: Any = 0.5,
     ) -> Tuple[torch.Tensor, None]:
         """Per-dimension log_prob for bit-identical baseline matching."""
-        mean, log_std = self._forward(obs, explore_intensity=explore_intensity)
+        mean, log_std = self._forward(obs, explore_factor=explore_factor)
         dist = Normal(mean, log_std.exp())
         return dist.log_prob(raw_action), None
 
     def _raw_mode(self, obs: torch.Tensor) -> torch.Tensor:
-        mean, _ = self._forward(obs, explore_intensity=0.5)
+        mean, _ = self._forward(obs, explore_factor=0.5)
         return mean
 
     def _regularizer_and_stats(
@@ -173,7 +173,7 @@ class FixedSigmaGaussianMLPPolicy(TanhSquashedPolicyBase):
         sample_extras: Optional[Dict[str, Any]],
         score_extras: Optional[Dict[str, Any]],
     ) -> Tuple[Optional[torch.Tensor], Optional[Dict[str, float]]]:
-        mean, log_std = self._forward(obs, explore_intensity=0.5)
+        mean, log_std = self._forward(obs, explore_factor=0.5)
         entropy = Normal(mean, log_std.exp()).entropy().sum(-1)
 
         regularizer = None

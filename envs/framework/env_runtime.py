@@ -340,7 +340,7 @@ class EnvRuntime:
 
         ``action_a_extra`` / ``action_b_extra`` are *optional* per-agent
         side-channel payloads produced by the policy alongside the action
-        (e.g. ``log_prob``, ``value``, ``explore_intensity``, sampling
+        (e.g. ``log_prob``, ``value``, ``explore_factor``, sampling
         noise).  They are NOT consumed by the simulator — they are passed
         through to recorders' ``on_post_action_step`` hook as a single
         bundle ``{"robot_a": action_a_extra, "robot_b": action_b_extra}``.

@@ -18,44 +18,44 @@ Reads `DESIGN_unified_exploration_control.md` (框架层新接口设计) as prer
 | `ActorEval` 字段 | `log_prob`, `regularizer`, `stats` | `log_prob`, `entropy`, `stats` |
 | `regularizer` 语义 | 策略计算 `-entropy_coef * H.mean()`，标量 loss | 移除。框架从 `entropy` 自己算 hinge loss |
 | `entropy` 语义 | 不存在 | `(B,)` per-obs，可导，归一化到 [0,1] |
-| `set_exploration` 签名 | `(spec: ExplorationSpec) -> Dict[str, float]` | `(explore_intensity: float) -> None` |
-| `set_exploration` 接收 | `temperature`, `entropy_coef`, `noise_tau_steps`, `noise_scale` | 只接收 `explore_intensity` |
+| `set_exploration` 签名 | `(spec: ExplorationSpec) -> Dict[str, float]` | `(explore_factor: float) -> None` |
+| `set_exploration` 接收 | `temperature`, `entropy_coef`, `noise_tau_steps`, `noise_scale` | 只接收 `explore_factor` |
 | `entropy_coef` 归属 | 策略持有，用于构造 `regularizer` | 框架持有，用于 hinge loss |
-| `temperature` 归属 | 策略持有，`log_std += log(temperature)` | 移除。`explore_intensity` 统一映射 |
+| `temperature` 归属 | 策略持有，`log_std += log(temperature)` | 移除。`explore_factor` 统一映射 |
 
-## 2. explore_intensity → 内部参数映射
+## 2. explore_factor → 内部参数映射
 
 当前策略有两个影响采样噪声的内部参数：
 
 - `_temperature`：乘法缩放 σ，`effective_log_std = clamp(log_std + log(temperature), min, max)`
 - `_noise_scale`：OU 探索的稳态 std（raw space）
 
-新接口只给一个 `explore_intensity ∈ [0, 1]`，策略自己决定如何分配。
+新接口只给一个 `explore_factor ∈ [0, 1]`，策略自己决定如何分配。
 
 ### 映射方案
 
 ```
-explore_intensity = 0 → 确定性执行（temperature=1, noise_scale=0）
-explore_intensity = 1 → 最大探索（temperature=max_temp, noise_scale=max_noise）
+explore_factor = 0 → 确定性执行（temperature=1, noise_scale=0）
+explore_factor = 1 → 最大探索（temperature=max_temp, noise_scale=max_noise）
 ```
 
 **temperature 映射**：
 
 ```python
-# explore_intensity 线性映射到 log_std 偏移量
+# explore_factor 线性映射到 log_std 偏移量
 # 0 → offset=0（不改变 σ），1 → offset=log_std_max - log_std_min（最大偏移）
-log_std_offset = explore_intensity * (log_std_max - log_std_min)
+log_std_offset = explore_factor * (log_std_max - log_std_min)
 effective_log_std = clamp(log_std + log_std_offset, log_std_min, log_std_max)
 ```
 
-这比当前的 `log(temperature)` 更直观——`explore_intensity=0` 时 σ 不变，`explore_intensity=1` 时 σ 被推到 `log_std_max`。
+这比当前的 `log(temperature)` 更直观——`explore_factor=0` 时 σ 不变，`explore_factor=1` 时 σ 被推到 `log_std_max`。
 
 **noise_scale 映射**：
 
 ```python
-# explore_intensity 线性映射到 noise_scale
+# explore_factor 线性映射到 noise_scale
 # 0 → noise_scale=0（无 OU），1 → noise_scale=max_noise_scale
-noise_scale = explore_intensity * max_noise_scale
+noise_scale = explore_factor * max_noise_scale
 ```
 
 `max_noise_scale` 是 init 时配置的参数（如 0.3），不随 update 变化。
@@ -64,8 +64,8 @@ noise_scale = explore_intensity * max_noise_scale
 
 | 旧参数 | 新映射 | init 时配置 |
 |---|---|---|
-| `temperature` | 移除，被 `log_std_offset = explore_intensity × (log_std_max - log_std_min)` 替代 | `log_std_min`, `log_std_max` 保留 |
-| `noise_scale` | `noise_scale = explore_intensity × max_noise_scale` | `max_noise_scale` 新增，`noise_tau_steps` 保留为 init 配置 |
+| `temperature` | 移除，被 `log_std_offset = explore_factor × (log_std_max - log_std_min)` 替代 | `log_std_min`, `log_std_max` 保留 |
+| `noise_scale` | `noise_scale = explore_factor × max_noise_scale` | `max_noise_scale` 新增，`noise_tau_steps` 保留为 init 配置 |
 | `entropy_coef` | 移除，框架持有 | 不再是策略参数 |
 
 ## 3. 熵归一化
@@ -91,11 +91,11 @@ H_raw = Normal(mean, σ).entropy().sum(dim=-1)  # (B,) in nats
 H_norm = (H_raw - H_min) / (H_max - H_min)  # ∈ [0, 1]
 ```
 
-当 `explore_intensity=0` 且 `log_std` 在初始值 `-1.0` 时：
+当 `explore_factor=0` 且 `log_std` 在初始值 `-1.0` 时：
 - `H_raw ≈ action_dim × 0.5 × log(2πe × exp(-2.0))`
 - `H_norm ≈ (−1.0 − log_std_min) / (log_std_max − log_std_min) ≈ 0.75`（在 `[-4, 0]` 范围内）
 
-当 `explore_intensity=1` 时 σ 被推到 `log_std_max`，`H_norm → 1.0`。
+当 `explore_factor=1` 时 σ 被推到 `log_std_max`，`H_norm → 1.0`。
 当策略坍缩到 `log_std_min` 时，`H_norm → 0.0`。
 
 ### 为什么用 log_std_max/min 而不是理论最大熵
@@ -163,9 +163,9 @@ def __init__(
 
 ```python
 def _effective_log_std(self) -> torch.Tensor:
-    # explore_intensity=0 → offset=0（σ 不变）
-    # explore_intensity=1 → offset=log_std_max - log_std_min（σ 推到 max）
-    offset = self._explore_intensity * (self.log_std_max - self.log_std_min)
+    # explore_factor=0 → offset=0（σ 不变）
+    # explore_factor=1 → offset=log_std_max - log_std_min（σ 推到 max）
+    offset = self._explore_factor * (self.log_std_max - self.log_std_min)
     return torch.clamp(
         self.log_std + offset,
         self.log_std_min,
@@ -204,12 +204,12 @@ def _entropy_and_stats(
 ### 5.4 `set_exploration`
 
 ```python
-def set_exploration(self, explore_intensity: float) -> None:
-    self._explore_intensity = float(explore_intensity)
-    self._noise_scale = explore_intensity * self._max_noise_scale
+def set_exploration(self, explore_factor: float) -> None:
+    self._explore_factor = float(explore_factor)
+    self._noise_scale = explore_factor * self._max_noise_scale
 ```
 
-基类持有 `_explore_intensity`，子类的 `_effective_log_std` 读它。
+基类持有 `_explore_factor`，子类的 `_effective_log_std` 读它。
 基类持有 `_noise_scale`（OU 用），子类在 `set_exploration` 里更新它。
 
 ### 5.5 移除的代码
@@ -239,16 +239,16 @@ def __init__(
     self.action_dim = int(action_dim)
     self.device = torch.device(device)
     self._deterministic = bool(deterministic)
-    self._explore_intensity = 0.0  # 由 set_exploration 设置
+    self._explore_factor = 0.0  # 由 set_exploration 设置
     # OU 探索
     self._noise_tau_steps = float(noise_tau_steps)
     self._max_noise_scale = float(max_noise_scale)
-    self._noise_scale = 0.0  # = explore_intensity * max_noise_scale
+    self._noise_scale = 0.0  # = explore_factor * max_noise_scale
     ...
 ```
 
 移除：`_entropy_coef`, `_temperature`。
-新增：`_explore_intensity`, `_max_noise_scale`。
+新增：`_explore_factor`, `_max_noise_scale`。
 
 ### 6.2 `evaluate_actions`
 
@@ -269,9 +269,9 @@ def evaluate_actions(self, obs, actions, *, noise_shift=None, want_stats=False) 
 ### 6.3 `set_exploration`
 
 ```python
-def set_exploration(self, explore_intensity: float) -> None:
-    self._explore_intensity = float(explore_intensity)
-    self._noise_scale = explore_intensity * self._max_noise_scale
+def set_exploration(self, explore_factor: float) -> None:
+    self._explore_factor = float(explore_factor)
+    self._noise_scale = explore_factor * self._max_noise_scale
 ```
 
 ### 6.4 移除 `_compute_stats`
@@ -296,7 +296,7 @@ stats 现在直接从 `_entropy_and_stats` 返回，不需要 wrapper。
 
 ### 新增的字段
 
-`_explore_intensity`, `_max_noise_scale` 同样是 plain floats，不影响 `state_dict`。
+`_explore_factor`, `_max_noise_scale` 同样是 plain floats，不影响 `state_dict`。
 
 ### 结论
 
@@ -305,23 +305,23 @@ stats 现在直接从 `_entropy_and_stats` 返回，不需要 wrapper。
 ## 8. 迁移检查清单
 
 - [ ] `__init__` 参数更新（移除 `entropy_coef`/`temperature`/`noise_scale`，新增 `max_noise_scale`）
-- [ ] `_effective_log_std` 改用 `_explore_intensity` 偏移
+- [ ] `_effective_log_std` 改用 `_explore_factor` 偏移
 - [ ] `_regularizer_and_stats` → `_entropy_and_stats`（返回 per-obs 归一化熵）
 - [ ] `set_exploration` 改签名为 `(float) -> None`
 - [ ] 基类 `evaluate_actions` 移除 regularizer 逻辑，改用 `_entropy_and_stats`
 - [ ] 基类 `set_exploration` 改签名
-- [ ] 基类 `__init__` 移除 `_entropy_coef`/`_temperature`，新增 `_explore_intensity`/`_max_noise_scale`
+- [ ] 基类 `__init__` 移除 `_entropy_coef`/`_temperature`，新增 `_explore_factor`/`_max_noise_scale`
 - [ ] 基类移除 `_compute_stats`
 - [ ] `evaluate_actions` 移除 `frame_modes` 参数
 - [ ] 更新 `__init__.py` 导出（如有变化）
 - [ ] 更新测试
 - [ ] 验证 checkpoint 兼容性
-- [ ] 验证 entropy ∈ [0, 1] 且 explore_intensity=0/1 时行为正确
+- [ ] 验证 entropy ∈ [0, 1] 且 explore_factor=0/1 时行为正确
 
 ## 9. 风险
 
 1. **基类改动影响其他 4 个策略**：基类 hook 签名变化会导致 StateGaussian、LowRank、MoG、RealNVP 全部需要适配。但这是必要的——先改基类建立模式，后续策略按同样模式迁移。在所有策略迁移完成之前，未迁移的策略会 import error，这是预期的。
 
-2. **`explore_intensity` 映射的语义变化**：旧 `temperature=2.0` 对应 `log(2)≈0.69` 的 log_std 偏移；新 `explore_intensity` 映射到 `(log_std_max - log_std_min)` 范围。实验需要重新校准探索强度的 schedule。
+2. **`explore_factor` 映射的语义变化**：旧 `temperature=2.0` 对应 `log(2)≈0.69` 的 log_std 偏移；新 `explore_factor` 映射到 `(log_std_max - log_std_min)` 范围。实验需要重新校准探索强度的 schedule。
 
 3. **`entropy_coef` 移除后框架侧需要接管**：trainer 需要从 `ActorEval.entropy` 和 `ExplorationSpec.entropy_coef` 计算 hinge loss。这是框架侧的改动，不在本文档范围，但需要在实现前确认框架侧已就绪。

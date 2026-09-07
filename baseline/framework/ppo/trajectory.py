@@ -90,7 +90,7 @@ class Trajectory:
             no advantage contribution).
         importance: Sample weight for this trajectory — scales both critic
             loss and policy loss.
-        explore_intensity: ``(T,)`` float32 — per-frame exploration
+        explore_factor: ``(T,)`` float32 — per-frame exploration
             intensity used at rollout time.  Threaded into
             ``evaluate_actions`` so log_prob is computed under the same
             distribution that produced the actions.  When None, defaults
@@ -102,4 +102,4 @@ class Trajectory:
     last_obs: np.ndarray
     channels: Dict[str, ChannelData]
     importance: float = 1.0
-    explore_intensity: Optional[np.ndarray] = None
+    explore_factor: Optional[np.ndarray] = None

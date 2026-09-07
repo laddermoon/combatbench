@@ -41,7 +41,7 @@ Design principles
 
    The experiment owns exploration *intent* (``exploration()`` returns
    an ``ExplorationSpec`` per update); the policy owns exploration
-   *mechanism* (maps ``explore_intensity`` to its own internal
+   *mechanism* (maps ``explore_factor`` to its own internal
    parameters).  The framework only routes.
 
    See ``DESIGN_unified_exploration_control.md`` for the full design.
@@ -76,7 +76,7 @@ Data flow
     │     actor_weight                 │
     │   ),                             │
     │ }                                │
-    │ explore_intensity                │
+    │ explore_factor                │
     └──────────────────────────────────┘
          │
          ▼  (PPOBuffer concatenates all trajectories)
@@ -102,7 +102,7 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
-| Exploration        | exploration() → ExplorationSpec     | Routes explore_intensity to policy.act / evaluate_actions |
+| Exploration        | exploration() → ExplorationSpec     | Routes explore_factor to policy.act / evaluate_actions |
 | Uncertainty floor  | uncertainty_floor via ExplorationSpec | Computes relu(floor - U) |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
 """
@@ -137,14 +137,14 @@ from baseline.framework.rollout.job import Job
 #     from ``ExperimentPPO.exploration()``.
 #
 #   * The **policy** owns exploration *mechanism*: what each
-#     ``explore_intensity`` value concretely means for its own
+#     ``explore_factor`` value concretely means for its own
 #     distribution.  It receives the value per-frame via
 #     ``evaluate_actions`` and per-step via ``act``.  The specific
 #     mapping is policy-defined.
 #
 # Two primary knobs:
 #
-#   * ``explore_intensity`` ∈ [-1, 1] — rollout side: additive exploration
+#   * ``explore_factor`` ∈ [-1, 1] — rollout side: additive exploration
 #     strength (0 = neutral, +1 = max explore, -1 = max suppress).
 #     The policy maps this to its internal parameters.
 #
@@ -165,13 +165,13 @@ class ExplorationSpec:
 
     Three fields, all optional (``None`` = "no opinion, keep current"):
 
-    - ``explore_intensity`` ∈ [-1, 1]: additive exploration strength
+    - ``explore_factor`` ∈ [-1, 1]: additive exploration strength
       (0 = neutral, +1 = max expand, -1 = max suppress).
     - ``uncertainty_floor`` ∈ [0, 1]: training-side uncertainty floor.
     - ``uncertainty_coef``: coefficient for the uncertainty floor loss.
 
     For the common case where exploration and anti-collapse should move
-    together, set ``explore_intensity`` and ``uncertainty_floor`` to the
+    together, set ``explore_factor`` and ``uncertainty_floor`` to the
     same value.  For independent control (on-policy + anti-collapse,
     strong exploration + fast convergence, async annealing), set them
     separately.
@@ -252,7 +252,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
     by the blueprint.
 
     Exploration is **not** a mutable state on the policy.  The policy
-    receives ``explore_intensity`` as a per-frame data field (via
+    receives ``explore_factor`` as a per-frame data field (via
     ``evaluate_actions``) or per-step parameter (via ``sample``), and
     applies its own mapping from it on every call.  This makes the
     rollout→scoring consistency a data guarantee, not a timing
@@ -266,7 +266,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
     @abstractmethod
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
-        explore_intensity: torch.Tensor,
+        explore_factor: torch.Tensor,
         *, want_stats: bool = False,
     ) -> ActorEval:
         """Recompute log_prob and uncertainty for obs/actions.
@@ -277,7 +277,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
           in [0, 1], used by the framework for the uncertainty floor loss.
         - ``stats``: optional diagnostics (only when ``want_stats=True``).
 
-        ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
+        ``explore_factor`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  The policy uses it
         to reproduce the same distribution that produced the actions,
         ensuring the PPO importance ratio is correct.  ``uncertainty``
@@ -286,7 +286,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
         Args:
             obs: ``(B, obs_dim)`` observations.
             actions: ``(B, action_dim)`` actions taken at rollout time.
-            explore_intensity: ``(B,)`` per-frame exploration intensity
+            explore_factor: ``(B,)`` per-frame exploration intensity
                 recorded at rollout time.  Required — the policy must
                 know what distribution produced the actions.
             want_stats: When True, also populate ``ActorEval.stats`` with
@@ -646,10 +646,10 @@ class ExperimentPPO(ABC):
         loss.  Reads whatever internal state ``on_update`` has
         accumulated.
 
-        Note: ``explore_intensity`` (rollout-time sampling) is NOT part
+        Note: ``explore_factor`` (rollout-time sampling) is NOT part
         of this spec — it is decided inside ``build_jobs`` and placed
-        into each :class:`Job`'s ``explore_intensity_a`` /
-        ``explore_intensity_b`` fields.
+        into each :class:`Job`'s ``explore_factor_a`` /
+        ``explore_factor_b`` fields.
 
         Args:
             update: Current update index (1-based, matches the loop).
@@ -678,8 +678,8 @@ class ExperimentPPO(ABC):
         This unified method replaces v1's separate ``build_rollout_jobs``
         and ``build_eval_jobs``.
 
-        The experiment decides ``explore_intensity_a`` /
-        ``explore_intensity_b`` internally — it may read class
+        The experiment decides ``explore_factor_a`` /
+        ``explore_factor_b`` internally — it may read class
         attributes, internal state, or any other source.  This is the
         experiment's implementation detail, not a framework parameter.
 

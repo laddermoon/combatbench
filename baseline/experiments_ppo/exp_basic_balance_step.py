@@ -186,7 +186,7 @@ class BasicBalanceStep(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_intensity=self.extract_explore_intensity(episode, agent_id, T),
+            explore_factor=self.extract_explore_factor(episode, agent_id, T),
         )]
 
     @staticmethod

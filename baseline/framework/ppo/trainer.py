@@ -104,7 +104,7 @@ class PPOBuffer:
     - ``key_seg_actor_weight[key]`` — scalar or ``(T,)`` array aw per traj
 
     Flat arrays (concatenated across trajectories):
-    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``explore_intensity``
+    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``explore_factor``
     - ``final_obs`` — per-trajectory last observation (for bootstrap)
     - ``ep_lengths`` — per-trajectory frame count
     """
@@ -138,7 +138,7 @@ class PPOBuffer:
             self.actions = np.zeros((0,), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
-            self.explore_intensity: Optional[np.ndarray] = None
+            self.explore_factor: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
             return
@@ -157,18 +157,18 @@ class PPOBuffer:
         all_obs_t = torch.as_tensor(all_obs, dtype=torch.float32, device=device)
         all_acts_t = torch.as_tensor(all_acts, dtype=torch.float32, device=device)
 
-        # --- explore_intensity (required) ---
+        # --- explore_factor (required) ---
         # Threaded into evaluate_actions so log_prob is computed under
         # the same distribution that produced the actions at rollout time.
         all_ei = np.concatenate([
-            t.explore_intensity if t.explore_intensity is not None
+            t.explore_factor if t.explore_factor is not None
             else np.full(len(t.obs), 0.0, dtype=np.float32)
             for t in trajectories
         ]).astype(np.float32)
         all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)
-        self.explore_intensity = all_ei
+        self.explore_factor = all_ei
 
-        kwargs: Dict[str, Any] = {"explore_intensity": all_ei_t}
+        kwargs: Dict[str, Any] = {"explore_factor": all_ei_t}
 
         # This call is also the canonical measurement point for the
         # policy's exploration state, hence ``want_stats=True``. It is the
@@ -427,7 +427,7 @@ def ppo_update(
             preventing noisy advantage estimates from destabilizing the actor.
         exploration: Optional per-update spec from the experiment.
             ``uncertainty_floor`` and ``uncertainty_coef`` are consumed here to
-            compute the uncertainty floor loss; ``explore_intensity`` was
+            compute the uncertainty floor loss; ``explore_factor`` was
             already applied to the policy before rollout via
             ``set_exploration``.
 
@@ -732,12 +732,12 @@ def ppo_update(
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
-    # --- explore_intensity (required) ---
+    # --- explore_factor (required) ---
     # Per-frame exploration intensity recorded at rollout time.  Threaded
     # through to evaluate_actions so log_prob is computed under the same
     # distribution that produced the actions.
     ei_t = torch.as_tensor(
-        buf.explore_intensity, dtype=torch.float32, device=device,
+        buf.explore_factor, dtype=torch.float32, device=device,
     )
 
     # --- Diagnostics: episode lengths ---
@@ -852,7 +852,7 @@ def ppo_update(
                 continue
 
             # Construct kwargs for evaluate_actions.
-            eval_kwargs: Dict[str, Any] = {"explore_intensity": ei_t[idx]}
+            eval_kwargs: Dict[str, Any] = {"explore_factor": ei_t[idx]}
             actor_eval = actor.evaluate_actions(
                 obs_t[idx], act_t[idx], **eval_kwargs,
             )

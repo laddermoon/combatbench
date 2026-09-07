@@ -27,7 +27,7 @@
      导出策略蓝图用于 rollout
 3. build_jobs(policy_bp, base_seed, n_episodes) → List[Job]
      实验构建 rollout 任务（哪个环境、哪个对手、什么种子）
-     explore_intensity 注入到每个 job 的 episode_options
+     explore_factor 注入到每个 job 的 episode_options
 4. ParallelRollouter.collect(jobs) → List[Episode]
      框架并行执行 rollout，收集完整 episode
 5. build_trajectories(episodes) → List[Trajectory]
@@ -63,7 +63,7 @@
 | Actor 更新 | — | PPO clipped surrogate |
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
 | 训练统计反馈 | `on_update(stats, update)` | 调用它，传入 typed UpdateStats |
-| 探索 | `exploration(update)` → ExplorationSpec | 路由 explore_intensity 到 policy |
+| 探索 | `exploration(update)` → ExplorationSpec | 路由 explore_factor 到 policy |
 | Checkpoint | `state()` / `load_state()` | 存模型+config、恢复 |
 
 ---
@@ -127,7 +127,7 @@ Trajectory(
         "r_cross": ChannelData(...),
     },
     importance=1.0,         # 该 trajectory 的样本权重
-    explore_intensity=ei,   # (T,) 每帧探索强度
+    explore_factor=ei,   # (T,) 每帧探索强度
 )
 ```
 
@@ -140,15 +140,15 @@ Trajectory(
 
 ```python
 ExplorationSpec(
-    explore_intensity=0.0,   # ∈ [-1, 1]: 0=中性, +1=最大探索, -1=最大压制
+    explore_factor=0.0,   # ∈ [-1, 1]: 0=中性, +1=最大探索, -1=最大压制
     entropy_floor=0.3,       # ∈ [0, 1]: 策略归一化熵下界
-    entropy_coef=0.01,       # 熵下界损失系数，None=默认联动 explore_intensity
+    entropy_coef=0.01,       # 熵下界损失系数，None=默认联动 explore_factor
 )
 ```
 
 所有字段都是可选的，`None` 表示"不关心，保持现状"。
 
-- **explore_intensity**：附加探索强度。具体每个值对应什么分布参数的变化，由策略自己定义。框架只规定范围和中性点 0。
+- **explore_factor**：附加探索强度。具体每个值对应什么分布参数的变化，由策略自己定义。框架只规定范围和中性点 0。
 - **entropy_floor**：策略归一化熵的下界。0 和 1 的具体含义由策略定义。框架用单向 hinge `relu(floor - H_norm)` 计算损失，只在熵低于下界时产生梯度。
 
 详见 `DESIGN_unified_exploration_control.md`。
@@ -232,7 +232,7 @@ class MyExperiment(ExperimentPPO):
         return CriticMLP(obs_dim=self.obs_dim, hidden_dim=256).to(device)
 
     def exploration(self, update: int) -> ExplorationSpec | None:
-        return ExplorationSpec(explore_intensity=0.0, entropy_floor=0.3)
+        return ExplorationSpec(explore_factor=0.0, entropy_floor=0.3)
 
     def build_jobs(self, policy_bp, base_seed, n_episodes) -> List[Tuple]:
         env_pb = ParameterizedEnvBlueprint.load("path/to/env.yaml")
@@ -400,10 +400,10 @@ class MyExperiment(ExperimentPPO):
         if len(self._kl_history) >= 3:
             recent = self._kl_history[-3:]
             if all(kl < 0.005 for kl in recent):
-                return ExplorationSpec(explore_intensity=0.5)  # KL 太平，加大探索
+                return ExplorationSpec(explore_factor=0.5)  # KL 太平，加大探索
             elif max(recent) > 0.1:
-                return ExplorationSpec(explore_intensity=-0.3)  # KL 太大，压制探索
-        return ExplorationSpec(explore_intensity=0.0)  # 中性
+                return ExplorationSpec(explore_factor=-0.3)  # KL 太大，压制探索
+        return ExplorationSpec(explore_factor=0.0)  # 中性
 ```
 
 `UpdateStats` 的框架保证字段（跨策略族稳定）：`approx_kl`, `max_kl`, `clip_frac`, `policy_loss`, `value_loss`, `grad_norm_actor`, `epochs_done`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。

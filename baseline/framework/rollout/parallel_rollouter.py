@@ -2,7 +2,7 @@
 
 Each job is a :class:`Job` (frozen dataclass) specifying two policy
 blueprints, an env blueprint, a seed, env-only options, and per-policy
-explore_intensity.
+explore_factor.
 
 ``robot_a`` and ``robot_b`` may use different policies.
 The collector returns a flat ``List[Episode]`` in the same order as
@@ -30,7 +30,7 @@ from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
 from .exploratory_policy import ExploratoryPolicy
-from .job import EiSpec, Job
+from .job import EfSpec, Job
 
 _logger = logging.getLogger(__name__)
 
@@ -48,16 +48,16 @@ def _worker_init() -> None:  # pragma: no cover - runs in child
         pass
 
 
-def _wrap_policy(policy, ei: EiSpec, stochastic: bool):
+def _wrap_policy(policy, ef: EfSpec, stochastic: bool):
     """Wrap a policy for the EpisodeRunner.
 
     When ``stochastic=True``, wrap in :class:`ExploratoryPolicy` so
-    ``sample()`` is called with per-frame explore_intensity.
+    ``sample()`` is called with per-frame explore_factor.
     When ``stochastic=False``, return the policy as-is so ``act()``
     (deterministic) is called directly.
     """
     if stochastic:
-        return ExploratoryPolicy(policy, explore_intensity=ei)
+        return ExploratoryPolicy(policy, explore_factor=ef)
     return policy
 
 
@@ -67,8 +67,8 @@ def _run_job(
     env_bp_dict: Dict[str, Any],
     seed: int,
     options: Optional[Dict[str, Any]],
-    ei_a: EiSpec,
-    ei_b: EiSpec,
+    ef_a: EfSpec,
+    ef_b: EfSpec,
     stochastic: bool,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
@@ -82,8 +82,8 @@ def _run_job(
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policy_a=_wrap_policy(policy_a, ei_a, stochastic),
-        policy_b=_wrap_policy(policy_b, ei_b, stochastic),
+        policy_a=_wrap_policy(policy_a, ef_a, stochastic),
+        policy_b=_wrap_policy(policy_b, ef_b, stochastic),
     )
     runner.run_episode(
         seed=seed, options=options, want_extras=True,
@@ -92,7 +92,7 @@ def _run_job(
 
 
 def _run_job_batch(
-    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EiSpec, EiSpec, bool]],
+    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EfSpec, EfSpec, bool]],
 ) -> List[Episode]:
     """Run a batch of jobs, reusing EnvRuntime + Policy when blueprints match.
 
@@ -108,7 +108,7 @@ def _run_job_batch(
     current_pa_key: Optional[str] = None
     current_pb_key: Optional[str] = None
 
-    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ei_a, ei_b, stochastic in tasks:
+    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ef_a, ef_b, stochastic in tasks:
         env_key = json.dumps(env_bp_dict, sort_keys=True, ensure_ascii=False)
         pa_key = json.dumps(policy_a_bp_dict, sort_keys=True, ensure_ascii=False)
         pb_key = json.dumps(policy_b_bp_dict, sort_keys=True, ensure_ascii=False)
@@ -132,8 +132,8 @@ def _run_job_batch(
             policy_b = policy_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
             runner = EpisodeRunner(
                 runtime=runtime,
-                policy_a=_wrap_policy(policy_a, ei_a, stochastic),
-                policy_b=_wrap_policy(policy_b, ei_b, stochastic),
+                policy_a=_wrap_policy(policy_a, ef_a, stochastic),
+                policy_b=_wrap_policy(policy_b, ef_b, stochastic),
             )
             current_env_key = env_key
             current_pa_key = pa_key
@@ -142,13 +142,13 @@ def _run_job_batch(
             # Env unchanged — only update policies that changed.
             if pa_changed:
                 new_pa = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-                runner.set_policy_a(_wrap_policy(new_pa, ei_a, stochastic))
+                runner.set_policy_a(_wrap_policy(new_pa, ef_a, stochastic))
                 if same_policy:
-                    runner.set_policy_b(_wrap_policy(new_pa, ei_b, stochastic))
+                    runner.set_policy_b(_wrap_policy(new_pa, ef_b, stochastic))
                 current_pa_key = pa_key
             if pb_changed and not same_policy:
                 new_pb = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-                runner.set_policy_b(_wrap_policy(new_pb, ei_b, stochastic))
+                runner.set_policy_b(_wrap_policy(new_pb, ef_b, stochastic))
                 current_pb_key = pb_key
 
         runner.run_episode(
@@ -230,7 +230,7 @@ class ParallelRollouter:
             raise ValueError("jobs must not be empty")
 
         # Serialize blueprints to plain dicts for pickling into workers.
-        # explore_intensity (float or callable) is passed through as-is;
+        # explore_factor (float or callable) is passed through as-is;
         # callables must be top-level functions to be picklable.
         tasks = [
             (
@@ -239,8 +239,8 @@ class ParallelRollouter:
                 job.env_bp.to_dict(),
                 int(job.seed),
                 dict(job.episode_options) if job.episode_options else None,
-                job.explore_intensity_a,
-                job.explore_intensity_b,
+                job.explore_factor_a,
+                job.explore_factor_b,
                 job.stochastic,
             )
             for job in jobs

@@ -8,7 +8,7 @@ Key differences from the baseline:
   no pre-tanh / tanh-transform indirection.
 - Uncertainty U = 1/(2×peak) replaces normalized entropy:
   natural [0,1], 0 = deterministic, 1 = uniform.
-- explore_intensity scales σ directly (piecewise-linear: 1/3 to 3×).
+- explore_factor scales σ directly (piecewise-linear: 1/3 to 3×).
 - No checkpoint compatibility with TanhGaussianMLPPolicy.
 
 See DESIGN_truncated_normal.md for full design rationale.

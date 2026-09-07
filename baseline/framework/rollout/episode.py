@@ -156,17 +156,17 @@ def _stack_agent_field(
 def _stack_explore_intensities(
     frames: Sequence[Mapping[str, Any]],
 ) -> Dict[str, np.ndarray]:
-    """Stack per-frame ``explore_intensity`` into ``{agent_id: (T,) float32}``.
+    """Stack per-frame ``explore_factor`` into ``{agent_id: (T,) float32}``.
 
-    ``explore_intensity`` is a per-frame **input** to the policy decision
+    ``explore_factor`` is a per-frame **input** to the policy decision
     (alongside the observation).  It is carried inside ``action_extras``
-    as ``action_extras[agent_id]["explore_intensity"]``.  Returns an empty
+    as ``action_extras[agent_id]["explore_factor"]``.  Returns an empty
     dict if no frame has it.
     """
     if not frames:
         return {}
     # Discover agent_ids from the first frame that has action_extras with
-    # explore_intensity.
+    # explore_factor.
     agent_ids: Optional[Sequence[str]] = None
     for frame in frames:
         ae = frame.get("action_extras")
@@ -174,7 +174,7 @@ def _stack_explore_intensities(
             continue
         ids = [
             aid for aid, extras in ae.items()
-            if extras is not None and "explore_intensity" in extras
+            if extras is not None and "explore_factor" in extras
         ]
         if ids:
             agent_ids = ids
@@ -191,10 +191,10 @@ def _stack_explore_intensities(
                 per_frame.append(0.0)
                 continue
             extras = ae[agent_id]
-            if "explore_intensity" not in extras:
+            if "explore_factor" not in extras:
                 per_frame.append(0.0)
             else:
-                per_frame.append(float(extras["explore_intensity"]))
+                per_frame.append(float(extras["explore_factor"]))
         out[agent_id] = np.asarray(per_frame, dtype=np.float32)
     return out
 
@@ -309,7 +309,7 @@ class Episode:
     This is the **input** that was passed to ``policy.act`` at each step,
     recorded by the episode runner (not by the policy).  Trainers use it
     to reproduce the exact sampling distribution during log_prob
-    recomputation.  Empty dict when no explore_intensity was recorded.
+    recomputation.  Empty dict when no explore_factor was recorded.
     """
     observer_outputs: Mapping[str, Any]
 

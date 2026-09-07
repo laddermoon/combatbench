@@ -19,17 +19,17 @@ Reads `DESIGN_unified_exploration_control.md` (框架层新接口设计) as prer
 | `ActorEval` 字段 | `log_prob`, `regularizer`, `stats` | `log_prob`, `entropy`, `stats` |
 | `regularizer` | 策略算 `-entropy_coef * H.mean()`，标量 loss | 移除，框架从 `entropy` 自己算 hinge loss |
 | `entropy` | 不存在 | `(B,)` per-obs，可导，归一化到 [0,1] |
-| `set_exploration` | `(spec: ExplorationSpec) -> Dict[str, float]` | `(explore_intensity: float) -> None` |
-| `set_exploration` 接收 | `temperature`, `entropy_coef` | 只接收 `explore_intensity` |
+| `set_exploration` | `(spec: ExplorationSpec) -> Dict[str, float]` | `(explore_factor: float) -> None` |
+| `set_exploration` 接收 | `temperature`, `entropy_coef` | 只接收 `explore_factor` |
 | `entropy_coef` | 策略持有 | 框架持有 |
-| `temperature` | 策略持有，`log_std += log(temperature)` | 移除，被 `explore_intensity` 偏移量映射替代 |
-| `_log_std_offset` | 由 `temperature` 设置 | 由 `explore_intensity` 偏移量映射设置 |
+| `temperature` | 策略持有，`log_std += log(temperature)` | 移除，被 `explore_factor` 偏移量映射替代 |
+| `_log_std_offset` | 由 `temperature` 设置 | 由 `explore_factor` 偏移量映射设置 |
 
-## 2. explore_intensity 和 entropy 的语义
+## 2. explore_factor 和 entropy 的语义
 
-### explore_intensity：对称 temperature 控制
+### explore_factor：对称 temperature 控制
 
-`explore_intensity` 是一个对称的 temperature-like 控制，以 0.5 为中性点：
+`explore_factor` 是一个对称的 temperature-like 控制，以 0.5 为中性点：
 
 - **0.5 = 中性**：offset=0，σ 就是策略自己学的值。策略完全自由表达。
 - **→ 0 = 挤压**：offset < 0，σ 变小。ei=0 时 offset = -EXPLORE_SPAN/2，
@@ -40,14 +40,14 @@ Reads `DESIGN_unified_exploration_control.md` (框架层新接口设计) as prer
 ```python
 EXPLORE_SPAN = 2.0  # offset 范围 ±1.0，σ 缩放 0.37x ~ 2.72x
 
-self._log_std_offset = (explore_intensity - 0.5) * EXPLORE_SPAN
+self._log_std_offset = (explore_factor - 0.5) * EXPLORE_SPAN
 effective_log_std = self.log_std + self._log_std_offset
 ```
 
 #### EXPLORE_SPAN 的含义和选择
 
 `EXPLORE_SPAN` 控制 offset 的最大幅度，也就是 σ 能被缩放多少倍。
-它决定了 explore_intensity 两端的极端效果：
+它决定了 explore_factor 两端的极端效果：
 
 | EXPLORE_SPAN | ei=0 (压缩极) | ei=0.5 (中性) | ei=1 (扩平极) | 有用 ei 范围 |
 |---|---|---|---|---|
@@ -88,7 +88,7 @@ span=2.0 让整个 [0, 1] 区间都有实际意义，调参时不需要在 [0, 0
 `ei=0` 会将 σ 压缩到 ~0.37x，接近确定性采样。只在需要时使用，
 安全默认值是 0.5。如果误设 ei=0，探索几乎消失，PPO 可能因采样过于集中而卡住。
 
-#### explore_intensity 数值速查表
+#### explore_factor 数值速查表
 
 > **目标**：给一个数字就能有体感，想深入时往下看公式。
 > σ_scale = exp((ei - 0.5) × EXPLORE_SPAN)，EXPLORE_SPAN=2.0。
@@ -124,7 +124,7 @@ span=2.0 让整个 [0, 1] 区间都有实际意义，调参时不需要在 [0, 0
 - `ei < 0.3` 或 `ei > 0.8` 属于"明显偏离 native"，需要明确理由
 
 **诊断指标**：训练日志中的 `eff_std_mean` 是含探索偏移的 σ。
-如果 `eff_std_mean > 2.0`，说明 tanh 接近饱和，explore_intensity 偏高或 span 偏大。
+如果 `eff_std_mean > 2.0`，说明 tanh 接近饱和，explore_factor 偏高或 span 偏大。
 
 ### log_std_min / log_std_max 的含义
 
@@ -133,7 +133,7 @@ span=2.0 让整个 [0, 1] 区间都有实际意义，调参时不需要在 [0, 0
 - **log_std_max = 1.0**（σ ≈ 2.7）：熵归一化的上界参考点。
 
   > 保持默认 1.0 不变。`log_std_max` 不再需要代表"tanh 输出接近均匀"的 σ，
-  > 它只是归一化参考点。explore_intensity 的缩放范围由 `EXPLORE_SPAN` 控制，
+  > 它只是归一化参考点。explore_factor 的缩放范围由 `EXPLORE_SPAN` 控制，
   > 不再依赖 `log_std_max - log_std_min`。
 
 ### entropy：策略自身分布的确定性
@@ -146,20 +146,20 @@ policy_log_std = self.log_std  # 不加 _log_std_offset
 entropy_raw = Normal(mean, policy_log_std.exp()).entropy().sum(dim=-1)
 ```
 
-这样 entropy 不受 `explore_intensity` 影响——不管实验叠加了多少探索噪声，
+这样 entropy 不受 `explore_factor` 影响——不管实验叠加了多少探索噪声，
 entropy 始终反映策略自己认为的确定性。entropy_floor 约束的是策略内在分布，
 不是采样分布。
 
-### explore_intensity 和 entropy_floor 的关系
+### explore_factor 和 entropy_floor 的关系
 
 两者不在同一个坐标系，这是**有意为之**：
 
-- `explore_intensity`：相对偏移，在策略 σ 上叠加。控制采样时的额外随机性。
+- `explore_factor`：相对偏移，在策略 σ 上叠加。控制采样时的额外随机性。
 - `entropy_floor`：绝对下界，约束策略自身分布的熵。控制训练时的防坍缩。
 
-- `explore_intensity=0.5, entropy_floor=0.3`：采样用策略自然分布，但训练时不允许
+- `explore_factor=0.5, entropy_floor=0.3`：采样用策略自然分布，但训练时不允许
   策略 σ 的熵低于 30%——hinge loss 防止策略坍缩。
-- `explore_intensity=0.8, entropy_floor=0.1`：采样时扩平 σ 去探索，但允许
+- `explore_factor=0.8, entropy_floor=0.1`：采样时扩平 σ 去探索，但允许
   策略自身快速收敛到低熵——hinge 只在策略熵极低时干预。
 
 ## 3. 不 clamp：防坍缩由 entropy floor 接管
@@ -196,7 +196,7 @@ def effective_log_std(self) -> torch.Tensor:
 ```
 
 这个 clamp 只在数值异常时激活，正常训练中 `log_std` 不会接近 `±20`。
-`log_std_min` / `log_std_max` 不再用于 clamp，只用于 explore_intensity 映射
+`log_std_min` / `log_std_max` 不再用于 clamp，只用于 explore_factor 映射
 和熵归一化（见 §4）。
 
 ## 4. 熵归一化
@@ -234,7 +234,7 @@ H_norm = (H_raw - H_min) / (H_max - H_min)
 `H_norm` 可以超出 `[0, 1]`——这是有用信号，表示策略正在试图突破预期工作范围。
 hinge loss 的梯度正好能把它推回来。
 
-**注意：H_norm 不受 `explore_intensity` 影响**。不管实验叠加了多少探索噪声，
+**注意：H_norm 不受 `explore_factor` 影响**。不管实验叠加了多少探索噪声，
 entropy 始终反映策略自身分布的熵。这是 entropy_floor 能有效防坍缩的前提——
 它约束的是策略内在属性，不是采样时的临时噪声。
 
@@ -449,9 +449,9 @@ log_prob 和 entropy 用同一个 `dist`（同一个 σ），不再分两路计�
 ```python
 EXPLORE_SPAN = 2.0  # offset 范围 ±1.0
 
-def set_exploration(self, explore_intensity: float) -> None:
+def set_exploration(self, explore_factor: float) -> None:
     # 对称映射：0.5 = 中性 (offset=0), 0 = 挤压, 1 = 扩平
-    self._log_std_offset = (explore_intensity - 0.5) * self.EXPLORE_SPAN
+    self._log_std_offset = (explore_factor - 0.5) * self.EXPLORE_SPAN
 ```
 
 移除：`spec` 参数、`Dict` 返回值、`temperature`/`entropy_coef` 分支。
@@ -489,13 +489,13 @@ def set_exploration(self, explore_intensity: float) -> None:
 - [ ] `evaluate_actions` 返回 `entropy`（per-obs 归一化）替代 `regularizer`
 - [ ] `evaluate_actions` 中 log_prob 用 effective σ，entropy 用策略原始 σ
 - [ ] `evaluate_actions` 保留 `frame_modes` 参数（协议级，本策略忽略）
-- [ ] `set_exploration` 改签名为 `(explore_intensity: float) -> None`，偏移量映射
+- [ ] `set_exploration` 改签名为 `(explore_factor: float) -> None`，偏移量映射
 - [ ] 移除 `_entropy_coef` 字段
 - [ ] 移除 `ExplorationSpec` 导入
 - [ ] stats 中 `entropy` → `entropy_raw`（nats），新增 `eff_std_mean`（含探索偏移的 σ）
 - [ ] 更新测试
 - [ ] 验证 checkpoint 兼容性
-- [ ] 验证 `explore_intensity=0` 时 entropy 反映策略原始 σ，不受 offset 影响
+- [ ] 验证 `explore_factor=0` 时 entropy 反映策略原始 σ，不受 offset 影响
 - [ ] 验证 `log_std` 突破 `log_std_min` 时 `H_norm < 0` 且 hinge loss 梯度非零
 
 ## 8. 风险
@@ -509,8 +509,8 @@ def set_exploration(self, explore_intensity: float) -> None:
    loss 项。需要同步更新 `trainer.py` 改为从 `ActorEval.entropy` 算 hinge loss。
    同样属于框架侧迁移。
 
-3. **`explore_intensity` 语义与旧 `temperature` 不同**：旧 `temperature` 是乘法缩放
-   （`σ *= temperature`），新 `explore_intensity` 是以 0.5 为中心的对称偏移
+3. **`explore_factor` 语义与旧 `temperature` 不同**：旧 `temperature` 是乘法缩放
+   （`σ *= temperature`），新 `explore_factor` 是以 0.5 为中心的对称偏移
    （0.5=中性，0=压缩，1=扩平）。数学上等价于 `σ × exp(offset)`，但在 log 空间
    操作。实验的 exploration schedule 需要重新校准，数值不一一对应。
 

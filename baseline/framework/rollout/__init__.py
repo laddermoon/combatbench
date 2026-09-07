@@ -7,7 +7,7 @@ from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
 from .exploratory_policy import ExploratoryPolicy
-from .job import EiSpec, Job
+from .job import EfSpec, Job
 from .observer_utils import (
     coerce_per_step,
     extract_per_step_field,
@@ -19,7 +19,7 @@ __all__ = [
     "Episode",
     "EpisodeCollection",
     "EpisodeRecorder",
-    "EiSpec",
+    "EfSpec",
     "ExploratoryPolicy",
     "Job",
     "ParallelRollouter",

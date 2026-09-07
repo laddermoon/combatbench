@@ -93,7 +93,7 @@ class ExportedMLPPolicy(Policy):
     def act(
         self,
         observation: Any,
-        explore_intensity: float = 0.5,
+        explore_factor: float = 0.5,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, None]:
         """Return action for given observation."""
@@ -102,7 +102,7 @@ class ExportedMLPPolicy(Policy):
         with torch.no_grad():
             if self.stochastic:
                 action, _ = self._policy.sample_action(
-                    obs_tensor, explore_intensity=explore_intensity,
+                    obs_tensor, explore_factor=explore_factor,
                 )
             else:
                 action = self._policy.deterministic_action(obs_tensor)

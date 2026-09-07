@@ -444,7 +444,7 @@ def train_ppo(
 
             # 0. Exploration scheduling — resolve PPO update parameters
             #    (uncertainty_floor, uncertainty_coef) for this update.
-            #    explore_intensity is NOT here — it is decided inside
+            #    explore_factor is NOT here — it is decided inside
             #    build_jobs and placed into each Job's fields.
             spec = experiment.exploration(u)
             if spec is not None:
@@ -464,7 +464,7 @@ def train_ppo(
 
             # 2. Build rollout jobs.
             #    Experiment decides agent assignment, initial distance, seeds,
-            #    and explore_intensity (internally, placed into Job fields).
+            #    and explore_factor (internally, placed into Job fields).
             t0 = time.perf_counter()
             rollout_seed = cp.seed + u * cp.episodes_per_update
             jobs = experiment.build_jobs(
