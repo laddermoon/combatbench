@@ -14,6 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -411,6 +412,142 @@ class TestExportStrictLoading(unittest.TestCase):
         # Passing an unexpected kwarg should raise TypeError.
         with self.assertRaises(TypeError):
             bp.build(unknown_param=True)
+
+
+# ---------------------------------------------------------------------------
+# P0-6: Self-contained exports (no baseline.* imports)
+# ---------------------------------------------------------------------------
+
+class TestExportSelfContained(unittest.TestCase):
+    """P0-6: Exported policy.py must not import from baseline.* or envs.*.
+
+    Before the fix, the exported policy.py imported
+    ``baseline.framework.ppo.policies.truncated_normal_mlp``, which broke
+    81 historical artifacts when that module was moved to ``policies/todo/``.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.mkdtemp(prefix="p0_6_test_")
+
+    def test_export_policy_py_has_no_repo_imports(self):
+        """The generated policy.py must not import from baseline.* or envs.*."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        p.to_blueprint(dest_path=self._tmp)
+        policy_code = (Path(self._tmp) / "policy.py").read_text()
+        # Check for forbidden imports
+        for forbidden in [
+            "from baseline", "import baseline",
+            "from envs", "import envs",
+        ]:
+            self.assertNotIn(forbidden, policy_code,
+                             f"Exported policy.py must not contain '{forbidden}'")
+
+    def test_export_has_manifest(self):
+        """Export directory contains MANIFEST.json with required fields."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        p.to_blueprint(dest_path=self._tmp)
+        import json
+        manifest = json.loads(
+            (Path(self._tmp) / "MANIFEST.json").read_text()
+        )
+        self.assertEqual(manifest["format_version"], 1)
+        self.assertEqual(manifest["policy_class"], "TruncatedNormalPolicy")
+        self.assertEqual(manifest["exported_class"], "ExportedTruncNormPolicy")
+        self.assertIn("arch", manifest)
+        self.assertIn("files", manifest)
+
+    def test_export_works_without_repo_on_path(self):
+        """Exported policy loads and runs with no baseline.* on sys.path.
+
+        This is the core P0-6 test: simulate a user who has the export
+        directory but NOT the repo.  We load the exported policy.py in
+        a subprocess with a clean PYTHONPATH (only stdlib + torch/numpy)
+        and verify it produces the same output as the training-side policy.
+        """
+        import subprocess
+        import sys
+
+        torch.manual_seed(42)
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        bp = p.to_blueprint(dest_path=self._tmp)
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        expected = p.act(obs)[0]
+
+        # Run in a subprocess with a restricted PYTHONPATH that does NOT
+        # include the repo.  The export must work on its own.
+        runner = (
+            "import sys; sys.path.insert(0, {tmp!r}); "
+            "from policy import ExportedTruncNormPolicy; "
+            "import numpy as np; "
+            "p = ExportedTruncNormPolicy(); "
+            "obs = np.array({obs!r}, dtype=np.float32); "
+            "a, _ = p.act(obs); "
+            "print(repr(a.tolist()))"
+        ).format(
+            tmp=self._tmp,
+            obs=obs.tolist(),
+        )
+        # Use the same Python with site-packages (for torch/numpy) but
+        # strip the repo from sys.path by not passing PYTHONPATH=repo.
+        result = subprocess.run(
+            [sys.executable, "-c", runner],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": "/usr/bin:/bin:/usr/local/bin",
+                 "HOME": "/root",
+                 "LD_LIBRARY_PATH": "/usr/local/lib",
+                 "PYTHONPATH": self._tmp},  # only the export dir
+        )
+        if result.returncode != 0:
+            self.fail(
+                f"Subprocess failed (no repo on path):\n"
+                f"stdout: {result.stdout}\n"
+                f"stderr: {result.stderr}"
+            )
+        actual = np.array(eval(result.stdout.strip()), dtype=np.float32)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=0,
+                                   err_msg="Exported policy output differs from training-side")
+
+
+class TestExportParity(unittest.TestCase):
+    """P0-6 方案 A life-line: training-side and export-side must agree.
+
+    The export inlines the inference code.  If the two implementations
+    drift (e.g., someone changes the training-side math but not the
+    template), this test catches it immediately.
+    """
+
+    def test_parity_act_deterministic(self):
+        """act() (deterministic mean) must match bit-for-bit."""
+        torch.manual_seed(999)
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        bp = p.to_blueprint(dest_path=tempfile.mkdtemp(prefix="parity_"))
+        loaded = bp.build()
+        # Test on multiple non-zero inputs
+        for seed in range(10):
+            torch.manual_seed(seed)
+            obs = torch.randn(OBS_DIM).numpy().astype(np.float32)
+            expected = p.act(obs)[0]
+            actual = loaded.act(obs)[0]
+            np.testing.assert_allclose(actual, expected, rtol=0, atol=0,
+                                       err_msg=f"Parity failed on seed {seed}")
+
+    def test_parity_sample_stochastic(self):
+        """sample() with fixed torch seed must match bit-for-bit."""
+        torch.manual_seed(777)
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        bp = p.to_blueprint(dest_path=tempfile.mkdtemp(prefix="parity_"))
+        loaded = bp.build()
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        # Use the same random seed for both sampling calls
+        torch.manual_seed(12345)
+        expected_action, expected_lp = p.sample(obs, explore_factor=0.5, want_extra=True)
+        torch.manual_seed(12345)
+        actual_action, actual_lp = loaded.sample(obs, explore_factor=0.5, want_extra=True)
+        np.testing.assert_allclose(actual_action, expected_action, rtol=0, atol=0,
+                                   err_msg="Sampled action parity failed")
+        self.assertAlmostEqual(actual_lp["log_prob"], expected_lp["log_prob"], places=6,
+                               msg="log_prob parity failed")
 
 
 # ---------------------------------------------------------------------------

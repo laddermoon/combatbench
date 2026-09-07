@@ -291,22 +291,29 @@ class PolicyBlueprint:
 
         ``overrides`` are merged on top of ``self.config`` (overrides win)
         and forwarded to the policy's ``__init__``. The result is checked
-        to be a :class:`Policy` subclass instance; subclasses that accept
+        to have an ``act`` method (duck-typing); subclasses that accept
         ``**kwargs`` will silently absorb keys they do not recognize, by
         the loader's existing convention.
+
+        P0-6: The check is duck-typed (``hasattr(cls, 'act')``) rather
+        than ``issubclass(cls, Policy)`` so that self-contained exported
+        policies (which inline a minimal ``Policy`` stub instead of
+        importing from ``envs.framework.policy``) can be loaded.
         """
         cls = _resolve_policy_class(self.cls)
-        if not issubclass(cls, Policy):
+        # P0-6: Duck-type check instead of issubclass — self-contained
+        # exports don't import envs.framework.policy.Policy.
+        if not hasattr(cls, "act"):
             raise TypeError(
                 f"{self.cls} resolves to {cls.__name__}, which does not "
-                f"subclass envs.framework.policy.Policy"
+                f"have an 'act' method (Policy protocol)."
             )
         kwargs: Dict[str, Any] = {**self.config, **overrides}
         instance = cls(**kwargs)
-        if not isinstance(instance, Policy):
+        if not hasattr(instance, "act"):
             raise TypeError(
                 f"{self.cls}(**kwargs) produced {type(instance).__name__}, "
-                f"which is not a Policy instance"
+                f"which does not have an 'act' method."
             )
         return instance
 

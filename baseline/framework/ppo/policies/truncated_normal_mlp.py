@@ -33,115 +33,17 @@ __all__ = [
 def _build_export_policy_code() -> str:
     """Return the source of the ``policy.py`` embedded in export dirs.
 
-    The produced module defines ``ExportedTruncNormPolicy`` that reuses
-    :class:`TruncatedNormalPolicy` from the repo.  Requires the repo
-    to be on ``sys.path`` (e.g., via PYTHONPATH=. when running).
+    P0-6: The export is now self-contained — it reads from a real
+    template file (``_export_template.py``) that has no imports from
+    ``baseline.*`` or ``envs.*``.  This means exported policies work
+    without the repo on ``sys.path`` and are immune to internal
+    refactoring.
+
+    The template is a real ``.py`` file (not a string literal) so it
+    can be linted, type-checked, and tested on its own.
     """
-    return '''"""Policy module - imports from repo to reuse TruncatedNormalPolicy."""
-from pathlib import Path
-from typing import Any, Optional, Tuple
-
-import numpy as np
-import torch
-
-# Import from repo - requires baseline/ to be on sys.path
-from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormalPolicy
-from baseline.framework.ppo.stochastic_policy import StochasticPolicy
-from envs.framework.policy import Policy
-
-_EXPORT_FORMAT_VERSION = 1
-
-
-class ExportedTruncNormPolicy(Policy, StochasticPolicy):
-    """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
-
-    Implements both ``Policy`` (deterministic ``act()``) and
-    ``StochasticPolicy`` (sampling ``sample()``) so it can be used:
-    - As a ``Policy`` for deployment / competition / eval (``act()`` -> mean).
-    - As a ``StochasticPolicy`` for training rollouts (``sample()``).
-
-    Whether the policy is used stochastically or deterministically is
-    controlled by the ``Job.stochastic`` flag at rollout time, not by
-    this class.
-    """
-
-    def __init__(self, model_path: Optional[str] = None):
-        payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
-        payload = torch.load(payload_path, map_location="cpu")
-
-        # P0-5: Validate format version and policy class before loading.
-        # This turns silent corruption (missing keys, wrong architecture)
-        # into an explicit error with actionable information.
-        fv = payload.get("format_version", 0)
-        if fv != _EXPORT_FORMAT_VERSION:
-            raise RuntimeError(
-                f"Policy export format version mismatch: "
-                f"file has {fv}, loader expects {_EXPORT_FORMAT_VERSION}. "
-                f"This export was created by a different version of "
-                f"the framework. Re-export the policy with the current code."
-            )
-        pcls = payload.get("policy_class", "unknown")
-        if pcls != "TruncatedNormalPolicy":
-            raise RuntimeError(
-                f"Policy class mismatch: file says {pcls!r}, "
-                f"loader expects 'TruncatedNormalPolicy'."
-            )
-        arch = payload.get("arch", {})
-        obs_dim = int(arch.get("obs_dim", payload.get("obs_dim", 0)))
-        action_dim = int(arch.get("action_dim", payload.get("action_dim", 0)))
-        hidden_dim = int(arch.get("hidden_dim", payload.get("hidden_dim", 0)))
-
-        self._policy = TruncatedNormalPolicy(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            hidden_dim=hidden_dim,
-        )
-        # P0-5: strict=True so missing or unexpected keys raise
-        # RuntimeError instead of silently producing a partially-random
-        # policy.  This is the core fix: before, strict=False would
-        # load a checkpoint with missing layers without any warning,
-        # and the missing layers kept their random initialization.
-        self._policy.load_state_dict(payload["state_dict"], strict=True)
-        self._policy.eval()
-
-    def act(
-        self,
-        observation: Any,
-        *,
-        want_extra: bool = False,
-    ) -> Tuple[np.ndarray, None]:
-        """Deterministic action -- returns the mean (Policy interface)."""
-        obs_array = np.asarray(observation, dtype=np.float32)
-        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            action = self._policy.deterministic_action(obs_tensor)
-        return action.squeeze(0).cpu().numpy().astype(np.float32), None
-
-    def sample(
-        self,
-        observation: Any,
-        *,
-        explore_factor: float = 0.0,
-        want_extra: bool = False,
-    ) -> Tuple[np.ndarray, Optional[dict]]:
-        """Stochastic action -- sample from truncated normal (StochasticPolicy interface)."""
-        obs_array = np.asarray(observation, dtype=np.float32)
-        obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            action, log_prob = self._policy.sample_action(
-                obs_tensor, explore_factor=explore_factor,
-            )
-        action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
-        if not want_extra or log_prob is None:
-            return action_np, None
-        return action_np, {"log_prob": float(log_prob.item())}
-
-    def reset(self, seed: Optional[int] = None) -> None:
-        """Optional: reseed RNG for reproducible rollouts."""
-        if seed is not None:
-            torch.manual_seed(seed)
-        return None
-'''
+    template_path = Path(__file__).resolve().parent / "_export_template.py"
+    return template_path.read_text(encoding="utf-8")
 
 # Numerical safety bounds for log_std.
 _LOG_STD_SAFE_MIN = -20.0  # exp(-20) ≈ 2e-9
@@ -436,18 +338,25 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     def to_blueprint(
         self, dest_path: Optional[str] = None,
     ) -> "PolicyBlueprint":
-        """Export to a deployable PolicyBlueprint.
+        """Export to a deployable, self-contained PolicyBlueprint.
 
-        Writes ``model.pt`` + ``policy.py`` (standalone, imports
-        TruncatedNormalPolicy from repo) into ``dest_path`` and returns
-        a blueprint that rebuilds the policy via the generated
-        ``ExportedTruncNormPolicy`` class.
+        P0-6: Writes ``model.pt`` + ``policy.py`` (self-contained, no
+        imports from ``baseline.*``) + ``MANIFEST.json`` into
+        ``dest_path`` and returns a blueprint that rebuilds the policy
+        via the ``ExportedTruncNormPolicy`` class.
 
-        The exported policy implements both ``Policy`` (deterministic
-        ``act()``) and ``StochasticPolicy`` (sampling ``sample()``).
-        Whether it is used stochastically or deterministically is
-        controlled by the ``Job.stochastic`` flag at rollout time.
+        The exported ``policy.py`` is a copy of ``_export_template.py``,
+        which inlines the full truncated-normal inference logic.  It
+        depends only on ``torch``, ``numpy``, ``math``, and the standard
+        library — no repo modules.  This makes the export immune to
+        internal refactoring and usable without the repo on
+        ``sys.path``.
+
+        A parity test in ``test_truncated_normal.py`` verifies that the
+        training-side ``TruncatedNormalPolicy`` and the exported version
+        produce bit-identical outputs on the same inputs.
         """
+        import json
         import tempfile
 
         if dest_path is None:
@@ -458,8 +367,6 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         # Save model payload
         # P0-5: Include format_version, policy_class, and arch so the
         # loader can validate compatibility before attempting to load.
-        # P0-6 will make the export self-contained; format_version is
-        # the shared contract between the two fixes.
         state_dict = {
             k: v.detach().cpu() for k, v in self.state_dict().items()
         }
@@ -481,9 +388,27 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         }
         torch.save(payload, policy_dir / "model.pt")
 
-        # Generate standalone policy.py that imports from repo
+        # P0-6: Write self-contained policy.py from the template file.
+        # No string-literal codegen — the template is a real .py file
+        # that can be linted and tested.
         policy_code = _build_export_policy_code()
         (policy_dir / "policy.py").write_text(policy_code, encoding="utf-8")
+
+        # P0-6: MANIFEST.json for artifact traceability.
+        manifest = {
+            "format_version": 1,
+            "policy_class": "TruncatedNormalPolicy",
+            "arch": {
+                "obs_dim": self.obs_dim,
+                "action_dim": self.action_dim,
+                "hidden_dim": self.hidden_dim,
+            },
+            "files": ["model.pt", "policy.py", "MANIFEST.json"],
+            "exported_class": "ExportedTruncNormPolicy",
+        }
+        (policy_dir / "MANIFEST.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8",
+        )
 
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(

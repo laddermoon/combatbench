@@ -162,14 +162,18 @@ class EpisodeRunner:
         post_termination_action: str = "policy",
     ) -> None:
         self.runtime = runtime
-        if not isinstance(policy_a, Policy):
+        # P0-6: Duck-type check — self-contained exported policies
+        # inline a minimal Policy stub instead of importing from
+        # envs.framework.policy, so isinstance() fails.  Check for the
+        # act() method instead.
+        if not hasattr(policy_a, "act"):
             raise TypeError(
-                f"policy_a must subclass envs.framework.policy.Policy; "
+                f"policy_a must have an 'act' method (Policy protocol); "
                 f"got {type(policy_a).__name__}"
             )
-        if not isinstance(policy_b, Policy):
+        if not hasattr(policy_b, "act"):
             raise TypeError(
-                f"policy_b must subclass envs.framework.policy.Policy; "
+                f"policy_b must have an 'act' method (Policy protocol); "
                 f"got {type(policy_b).__name__}"
             )
         self.policy_a = policy_a
@@ -265,18 +269,20 @@ class EpisodeRunner:
 
     def set_policy_a(self, policy: Policy) -> None:
         """Replace policy_a in-place (no env rebuild)."""
-        if not isinstance(policy, Policy):
+        # P0-6: Duck-type check (see __init__ for rationale).
+        if not hasattr(policy, "act"):
             raise TypeError(
-                f"policy must subclass envs.framework.policy.Policy; "
+                f"policy must have an 'act' method (Policy protocol); "
                 f"got {type(policy).__name__}"
             )
         self.policy_a = policy
 
     def set_policy_b(self, policy: Policy) -> None:
         """Replace policy_b in-place (no env rebuild)."""
-        if not isinstance(policy, Policy):
+        # P0-6: Duck-type check (see __init__ for rationale).
+        if not hasattr(policy, "act"):
             raise TypeError(
-                f"policy must subclass envs.framework.policy.Policy; "
+                f"policy must have an 'act' method (Policy protocol); "
                 f"got {type(policy).__name__}"
             )
         self.policy_b = policy
