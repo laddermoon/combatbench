@@ -469,17 +469,6 @@ class UpdateStats:
 
 
 # ---------------------------------------------------------------------------
-# Job type alias
-# ---------------------------------------------------------------------------
-
-# A rollout job is a tuple of:
-#   (policy_a_blueprint, policy_b_blueprint, env_blueprint, seed, episode_options)
-# The experiment builds these in build_jobs(); the framework's
-# ParallelRollouter.collect() consumes them.
-Job = Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]
-
-
-# ---------------------------------------------------------------------------
 # ExperimentPPO ABC
 # ---------------------------------------------------------------------------
 
