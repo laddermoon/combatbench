@@ -9,7 +9,7 @@
 第二步，训练机器人迈步。还是从倒地开始，然后在战力模型的基础上加上这个迈步奖励。
 让预期得到的是一个能够会站起来之后会迈步的一个策略。 迈部的奖励也算是条件奖励吧，只有在机器人已经完全站立起来之后才触发这个奖励
 /data1/mono/things/combatbench/baseline/experiments_v2/exp_standup_step_v3.py
-/data1/mono/things/combatbench/baseline/experiments_v2/exp_step.py
+/data1/mono/things/combatbench/baseline/experiments_v2/exp_step.py（弃）
 看起来第一个效果好。
 
 上面两个实验也考虑合并成一个。那就是直接从第二步开始训练
