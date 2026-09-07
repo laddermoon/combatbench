@@ -23,13 +23,14 @@
 
 1. exploration(update) → ExplorationSpec
      实验决定本轮探索参数，读取 on_update() 累积的内部状态
-2. actor.to_blueprint(stochastic=True) → PolicyBlueprint
-     导出策略蓝图用于 rollout
-3. build_jobs(policy_bp, base_seed, n_episodes) → List[Job]
+2. actor.to_blueprint() → PolicyBlueprint
+     导出策略蓝图用于 rollout（同时实现 Policy 和 StochasticPolicy）
+3. build_jobs(policy_bp, base_seed, n_episodes, stochastic=True) → List[Job]
      实验构建 rollout 任务（哪个环境、哪个对手、什么种子）
-     explore_factor 注入到每个 job 的 episode_options
+     explore_factor 注入到每个 Job 的 explore_factor_a / explore_factor_b 字段
 4. ParallelRollouter.collect(jobs) → List[Episode]
      框架并行执行 rollout，收集完整 episode
+     stochastic=True 时策略包入 ExploratoryPolicy，调用 sample()
 5. build_trajectories(episodes) → List[Trajectory]
      实验把 episode 切成 trajectory，填入每个 channel 的
      reward / is_terminated / actor_weight
@@ -44,7 +45,7 @@
      Actor 更新: PPO clipped surrogate on combined_adv
 8. on_update(stats, update)
      实验吸收本轮训练统计到内部状态
-9. (每 eval_interval 轮) build_jobs(det_policy_bp, ...) → eval episodes
+9. (每 eval_interval 轮) build_jobs(det_policy_bp, ..., stochastic=False) → eval episodes
      on_eval(eval_episodes, update) → {is_new_best, info, stop_training?}
 10. save checkpoint (每 N 轮): actor/critic/optimizer + experiment.state()
 ```
@@ -63,7 +64,7 @@
 | Actor 更新 | — | PPO clipped surrogate |
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
 | 训练统计反馈 | `on_update(stats, update)` | 调用它，传入 typed UpdateStats |
-| 探索 | `exploration(update)` → ExplorationSpec | 路由 explore_factor 到 policy |
+| 探索 | `exploration(update)` → ExplorationSpec | 路由 explore_factor 到 ExploratoryPolicy → sample() |
 | Checkpoint | `state()` / `load_state()` | 存模型+config、恢复 |
 
 ---
@@ -127,7 +128,7 @@ Trajectory(
         "r_cross": ChannelData(...),
     },
     importance=1.0,         # 该 trajectory 的样本权重
-    explore_factor=ei,   # (T,) 每帧探索强度
+    explore_factor=ef,   # (T,) 每帧探索因子
 )
 ```
 
@@ -140,16 +141,16 @@ Trajectory(
 
 ```python
 ExplorationSpec(
-    explore_factor=0.0,   # ∈ [-1, 1]: 0=中性, +1=最大探索, -1=最大压制
-    entropy_floor=0.3,       # ∈ [0, 1]: 策略归一化熵下界
-    entropy_coef=0.01,       # 熵下界损失系数，None=默认联动 explore_factor
+    explore_factor=0.0,      # ∈ [-1, 1]: 0=中性, +1=最大探索, -1=最大压制
+    uncertainty_floor=0.3,   # ∈ [0, 1]: 策略不确定性下界
+    uncertainty_coef=0.01,   # 不确定性下界损失系数，None=默认联动 explore_factor
 )
 ```
 
 所有字段都是可选的，`None` 表示"不关心，保持现状"。
 
 - **explore_factor**：附加探索强度。具体每个值对应什么分布参数的变化，由策略自己定义。框架只规定范围和中性点 0。
-- **entropy_floor**：策略归一化熵的下界。0 和 1 的具体含义由策略定义。框架用单向 hinge `relu(floor - H_norm)` 计算损失，只在熵低于下界时产生梯度。
+- **uncertainty_floor**：策略不确定性的下界。0 和 1 的具体含义由策略定义。框架用单向 hinge `relu(floor - U)` 计算损失，只在不确定性低于下界时产生梯度。
 
 详见 `DESIGN_unified_exploration_control.md`。
 
@@ -232,15 +233,21 @@ class MyExperiment(ExperimentPPO):
         return CriticMLP(obs_dim=self.obs_dim, hidden_dim=256).to(device)
 
     def exploration(self, update: int) -> ExplorationSpec | None:
-        return ExplorationSpec(explore_factor=0.0, entropy_floor=0.3)
+        return ExplorationSpec(explore_factor=0.0, uncertainty_floor=0.3)
 
-    def build_jobs(self, policy_bp, base_seed, n_episodes) -> List[Tuple]:
+    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True) -> List[Job]:
         env_pb = ParameterizedEnvBlueprint.load("path/to/env.yaml")
         jobs = []
         for i in range(n_episodes):
             seed = base_seed + i
             env_bp = env_pb.materialize(max_steps=200, agent_id="robot_a")
-            jobs.append((policy_bp, policy_bp, env_bp, seed, {}))
+            jobs.append(Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bp,
+                seed=seed,
+                stochastic=stochastic,
+            ))
         return jobs
 
     def build_trajectories(self, episodes) -> List[Trajectory]:
@@ -326,7 +333,7 @@ EXPERIMENT_CLASS = MyExperiment
 | `ppo_params()` | **必须** | 训练开始 | 返回 PPO 超参 |
 | `build_actor(device)` | **必须** | 训练开始 | 构建并返回 actor |
 | `build_critic(name, device)` | **必须** | 训练开始（每 channel 一次） | 构建并返回 V critic |
-| `build_jobs(bp, seed, n)` | **必须** | 每 update（训练+eval） | 构建 rollout 任务列表 |
+| `build_jobs(bp, seed, n, stochastic=)` | **必须** | 每 update（训练+eval） | 构建 rollout 任务列表 |
 | `build_trajectories(episodes)` | **必须** | 每 update | episode → trajectory |
 | `on_eval(episodes, update)` | **必须** | 每 eval_interval 轮 | 计算 eval 指标、判断 best、更新状态 |
 | `on_update(stats, update)` | 可选 | 每 update 后 | 吸收训练统计到内部状态，默认 no-op |
@@ -406,7 +413,7 @@ class MyExperiment(ExperimentPPO):
         return ExplorationSpec(explore_factor=0.0)  # 中性
 ```
 
-`UpdateStats` 的框架保证字段（跨策略族稳定）：`approx_kl`, `max_kl`, `clip_frac`, `policy_loss`, `value_loss`, `grad_norm_actor`, `epochs_done`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。
+`UpdateStats` 的框架保证字段（跨策略族稳定）：`approx_kl`, `max_kl`, `clip_frac`, `policy_loss`, `value_loss`, `grad_norm_actor`, `epochs_done`, `uncertainty`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。
 
 `policy_stats` 子 dict 是策略贡献的诊断，**无跨策略族契约**，当作 opaque hints 用。
 

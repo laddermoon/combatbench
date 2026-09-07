@@ -9,7 +9,7 @@
 | 旋钮 | 范围 | 作用层 | 含义 |
 |---|---|---|---|
 | `explore_factor` | `[-1, 1]` | Rollout | 附加探索强度。`0` = 不变，`+1` = 最大附加探索，`-1` = 最大探索压制 |
-| `entropy_floor` | `[0, 1]` | Training | 策略归一化熵的下界。`0` = 不限制。1 的含义由策略定义 |
+| `uncertainty_floor` | `[0, 1]` | Training | 策略不确定性的下界。`0` = 不限制。1 的含义由策略定义 |
 
 两者独立，可同步退火（设成相关联的 schedule）或异步退火。
 
@@ -31,14 +31,15 @@
 
 ```
 experiment.exploration(u) → ExplorationSpec
-  → resolve() → (explore_factor, entropy_floor)
-  → build_jobs(explore_factor=ei)
-  → job options["explore_factor"] = ei
-  → EpisodeRunner → policy.act(obs, explore_factor=ei)
+  → resolve() → (explore_factor, uncertainty_floor)
+  → build_jobs(explore_factor=ef)
+  → Job.explore_factor_a / explore_factor_b = ef
+  → ParallelRollouter: stochastic=True → ExploratoryPolicy(policy, ef)
+  → EpisodeRunner → ExploratoryPolicy.act() → inner.sample(obs, explore_factor=ef)
   → action_extras["explore_factor"] 记录每帧值
   → extract_explore_factor(episode, agent_id, T)
   → Trajectory.explore_factor  (T,) float32
-  → PPOBuffer 拼接 → evaluate_actions(obs, acts, ei_tensor)
+  → PPOBuffer 拼接 → evaluate_actions(obs, acts, ef_tensor)
   → ppo_update 每 minibatch 切片传入
 ```
 
@@ -58,30 +59,30 @@ def evaluate_actions(
 
 ---
 
-## 3. entropy_floor
+## 3. uncertainty_floor
 
 ### 3.1 语义
 
-策略返回归一化熵 `H_norm ∈ [0, 1]`。**0 和 1 的具体含义由策略自己定义**，框架只限定数值范围。`entropy_floor` 是这个归一化熵的下界。
+策略返回不确定性 `U ∈ [0, 1]`。**0 和 1 的具体含义由策略自己定义**，框架只限定数值范围。`uncertainty_floor` 是这个不确定性的下界。
 
 ### 3.2 损失函数
 
 ```python
-entropy_floor_loss = entropy_coef × relu(floor - H_norm).mean()
+uncertainty_floor_loss = uncertainty_coef × relu(floor - U).mean()
 ```
 
-**单向 hinge**：只在 `H_norm < floor` 时产生梯度，推熵上升。`H_norm ≥ floor` 时梯度为零，策略由 advantage 自由驱动。
+**单向 hinge**：只在 `U < floor` 时产生梯度，推不确定性上升。`U ≥ floor` 时梯度为零，策略由 advantage 自由驱动。
 
 这和 PPO clip 的哲学一致："只在出问题时干预"。
 
-### 3.3 为什么用解析熵而非 `-log_prob.mean()`
+### 3.3 为什么用解析不确定性而非 `-log_prob.mean()`
 
-`-log_prob.mean()` 在 on-policy 时梯度恒为零（score function gradient 的经典结论），无法防坍缩。解析熵 `H(π(·|s))` 是分布属性，不依赖采样了哪个 action，梯度在任何情况下都非零。
+`-log_prob.mean()` 在 on-policy 时梯度恒为零（score function gradient 的经典结论），无法防坍缩。解析不确定性 `U(π(·|s))` 是分布属性，不依赖采样了哪个 action，梯度在任何情况下都非零。
 
-### 3.4 entropy_coef
+### 3.4 uncertainty_coef
 
-- 默认联动：`entropy_coef = 0.01 × max(explore_factor, 0)`
-- 可被 `ExplorationSpec.entropy_coef` 覆盖
+- 默认联动：`uncertainty_coef = 0.01 × max(explore_factor, 0)`
+- 可被 `ExplorationSpec.uncertainty_coef` 覆盖
 
 ---
 
@@ -90,14 +91,14 @@ entropy_floor_loss = entropy_coef × relu(floor - H_norm).mean()
 ```python
 @dataclass(frozen=True)
 class ExplorationSpec:
-    explore_factor: Optional[float] = None   # 默认 0.0（中性）
-    entropy_floor: Optional[float] = None       # 默认 0.0（不限制）
-    entropy_coef: Optional[float] = None        # 默认联动 explore_factor
+    explore_factor: Optional[float] = None      # 默认 0.0（中性）
+    uncertainty_floor: Optional[float] = None   # 默认 0.0（不限制）
+    uncertainty_coef: Optional[float] = None    # 默认联动 explore_factor
 
     def resolve(self) -> tuple[float, float]:
         return (
             self.explore_factor if self.explore_factor is not None else 0.0,
-            self.entropy_floor if self.entropy_floor is not None else 0.0,
+            self.uncertainty_floor if self.uncertainty_floor is not None else 0.0,
         )
 ```
 
@@ -111,7 +112,7 @@ class ExplorationSpec:
 
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
-    return ExplorationSpec()  # ei=0, floor=0
+    return ExplorationSpec()  # ef=0, floor=0
 ```
 
 ### 5. 同步退火
@@ -120,7 +121,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
     v = 1.0 - u  # 从 1.0 线性退到 0.0
-    return ExplorationSpec(explore_factor=v, entropy_floor=0.3 * v)
+    return ExplorationSpec(explore_factor=v, uncertainty_floor=0.3 * v)
 ```
 
 ### 5. 异步退火（探索先退，防坍缩后退）
@@ -130,7 +131,7 @@ def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
     explore = max(0.0, 1.0 - 2.0 * u)           # u=0.5 时退到 0
     floor = 0.5 * (1.0 + math.cos(math.pi * u))  # u=1.0 时退到 0
-    return ExplorationSpec(explore_factor=explore, entropy_floor=floor)
+    return ExplorationSpec(explore_factor=explore, uncertainty_floor=floor)
 ```
 
 ### 5. on-policy + 防坍缩
@@ -139,7 +140,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
         explore_factor=0.0,   # 纯 on-policy
-        entropy_floor=0.3,       # 但策略不能坍缩
+        uncertainty_floor=0.3,   # 但策略不能坍缩
     )
 ```
 
@@ -151,7 +152,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 
 | 指标 | 含义 |
 |---|---|
-| `uncertainty` | 归一化熵 ∈ [0, 1]（策略自身确定度，不含 explore scale） |
+| `uncertainty` | 归一化不确定性 ∈ [0, 1]（策略自身不确定度，不含 explore scale） |
 | `std_mean` | 策略原始 σ 均值 |
 | `eff_std_mean` | 有效 σ 均值（含 explore scale） |
 | `std_min` / `std_max` | σ 范围 |
@@ -173,7 +174,7 @@ def exploration(self, update: int) -> ExplorationSpec:
 
 1. **探索和防坍缩是两件不同的事**：探索改变数据分布（rollout），防坍缩约束策略参数（training）。两个独立旋钮。
 
-2. **只在出问题时干预**：熵下界用单向 hinge，策略在安全区内由 advantage 自由驱动。和 PPO clip 哲学一致。
+2. **只在出问题时干预**：不确定性下界用单向 hinge，策略在安全区内由 advantage 自由驱动。和 PPO clip 哲学一致。
 
 3. **策略自己负责归一化**：每个策略族知道自己的 H_max 和 σ 语义，框架不需要理解策略族细节。
 
