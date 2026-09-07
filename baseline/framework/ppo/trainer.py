@@ -884,19 +884,19 @@ def ppo_update(
                 all_ratio_means.append(float(ratio.mean().item()))
                 all_ratio_maxs.append(float(ratio.max().item()))
 
-            # Entropy floor loss: one-sided hinge that only activates when
-            # the policy's normalized uncertainty drops below the floor.
-            # ``uncertainty_coef * relu(uncertainty_floor - U)``.  This
-            # replaces the old ``ActorEval.regularizer`` design where the
-            # policy computed its own loss term.  The policy returns a
-            # per-obs normalized uncertainty in [0, 1]; the framework owns the
-            # coefficient and the floor.
+            # Uncertainty floor loss: one-sided quadratic hinge that only
+            # activates when the policy's normalized uncertainty drops below
+            # the floor.  ``uncertainty_coef * relu(floor - U)^2``.  The
+            # quadratic form gives stronger push when U is far below the
+            # floor and a smooth taper as U approaches the floor, avoiding
+            # the overshoot risk of a linear hinge.
             loss = policy_loss
             floor_loss = torch.tensor(0.0, device=policy_loss.device)
             if uncertainty_coef > 0.0 and uncertainty_floor > 0.0:
-                floor_loss = uncertainty_coef * torch.relu(
+                gap = torch.relu(
                     uncertainty_floor - actor_eval.uncertainty
-                ).mean()
+                )
+                floor_loss = uncertainty_coef * (gap ** 2).mean()
                 loss = loss + floor_loss
 
                 # --- Gradient diagnostics for log_std ---

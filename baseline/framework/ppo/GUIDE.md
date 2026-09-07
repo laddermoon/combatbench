@@ -150,7 +150,7 @@ ExplorationSpec(
 所有字段都是可选的，`None` 表示"不关心，保持现状"。
 
 - **explore_factor**：附加探索强度。具体每个值对应什么分布参数的变化，由策略自己定义。框架只规定范围和中性点 0。
-- **uncertainty_floor**：策略不确定性的下界。0 和 1 的具体含义由策略定义。框架用单向 hinge `relu(floor - U)` 计算损失，只在不确定性低于下界时产生梯度。
+- **uncertainty_floor**：策略不确定性的下界。0 和 1 的具体含义由策略定义。框架用单向二次 hinge `relu(floor - U)²` 计算损失，只在不确定性低于下界时产生梯度。
 
 详见 `DESIGN_unified_exploration_control.md`。
 

@@ -68,10 +68,10 @@ def evaluate_actions(
 ### 3.2 损失函数
 
 ```python
-uncertainty_floor_loss = uncertainty_coef × relu(floor - U).mean()
+uncertainty_floor_loss = uncertainty_coef × relu(floor - U)².mean()
 ```
 
-**单向 hinge**：只在 `U < floor` 时产生梯度，推不确定性上升。`U ≥ floor` 时梯度为零，策略由 advantage 自由驱动。
+**单向二次 hinge**：只在 `U < floor` 时产生梯度，推不确定性上升。`U ≥ floor` 时梯度为零，策略由 advantage 自由驱动。二次形式使远离 floor 时推力更强，接近 floor 时平滑减弱，避免过冲。
 
 这和 PPO clip 的哲学一致："只在出问题时干预"。
 
