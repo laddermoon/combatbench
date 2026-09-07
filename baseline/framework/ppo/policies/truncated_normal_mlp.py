@@ -177,7 +177,6 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
         self.hidden_dim = int(hidden_dim)
-        self.device = torch.device(device)
 
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -189,6 +188,25 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self.log_std = nn.Parameter(
             torch.full((action_dim,), -1.0, dtype=torch.float32)
         )
+
+        # P0-4: Move parameters to the requested device via the standard
+        # nn.Module.to() instead of storing a stale snapshot.  The
+        # @property below derives the runtime device from parameters, so
+        # .to(device) / .cuda() / DataParallel all keep it in sync.
+        self.to(torch.device(device))
+
+    @property
+    def device(self) -> torch.device:
+        """Runtime device of this policy's parameters.
+
+        P0-4: Derived from the first parameter so that ``.to(device)``,
+        ``.cuda()``, and ``DataParallel`` automatically keep it in sync.
+        This replaces the old ``self.device = torch.device(device)``
+        snapshot in ``__init__``, which was never updated by
+        ``nn.Module.to()`` and caused ``act()`` to crash after
+        ``policy.to('cuda')`` (parameters on cuda, input on cpu).
+        """
+        return next(self.parameters()).device
 
     # ------------------------------------------------------------------
     # Distribution helpers

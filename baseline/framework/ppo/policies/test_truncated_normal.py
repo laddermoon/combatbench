@@ -296,5 +296,69 @@ class TestStats(unittest.TestCase):
             self.assertIn(key, ev.stats)
 
 
+# ---------------------------------------------------------------------------
+# P0-4: .to(device) must keep self.device in sync
+# ---------------------------------------------------------------------------
+
+class TestDeviceSync(unittest.TestCase):
+    """P0-4: .to(device) / .cuda() must update self.device.
+
+    Before the fix, ``self.device`` was a plain attribute set in
+    ``__init__`` and never updated by ``nn.Module.to()``.  After
+    ``policy.to('cuda')``, parameters were on cuda but ``act()`` still
+    placed the input on cpu → RuntimeError.
+    """
+
+    def test_device_follows_to(self):
+        """self.device reflects the current parameter device after .to()."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        self.assertEqual(p.device.type, "cpu")
+        p_cpu = p.to("cpu")
+        self.assertEqual(p_cpu.device.type, "cpu")
+        self.assertEqual(p.device.type, "cpu")  # in-place .to() updates p too
+
+    def test_act_after_to_cpu(self):
+        """act() works after .to('cpu') (the common eval/export path)."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        p.to("cpu")
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        action, _ = p.act(obs)
+        self.assertEqual(action.shape, (ACTION_DIM,))
+        self.assertTrue(np.all(np.abs(action) <= 1.0))
+
+    def test_act_with_device_kwarg_init(self):
+        """Constructing with device='cpu' then act() works."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM, device="cpu")
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        action, _ = p.act(obs)
+        self.assertEqual(action.shape, (ACTION_DIM,))
+
+    @unittest.skipIf(not torch.cuda.is_available(), "需要 GPU")
+    def test_act_after_to_cuda(self):
+        """act() works after .to('cuda') — the exact bug from P0-4.
+
+        Before the fix, this raised:
+          RuntimeError: Expected all tensors to be on the same device,
+          but found at least two devices, cuda:0 and cpu!
+        """
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        p.to("cuda")
+        self.assertEqual(p.device.type, "cuda")
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        action, _ = p.act(obs)
+        self.assertEqual(action.shape, (ACTION_DIM,))
+        self.assertTrue(np.all(np.abs(action) <= 1.0))
+
+    @unittest.skipIf(not torch.cuda.is_available(), "需要 GPU")
+    def test_sample_after_to_cuda(self):
+        """sample() also works after .to('cuda')."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        p.to("cuda")
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        action, extra = p.sample(obs, explore_factor=0.5, want_extra=True)
+        self.assertEqual(action.shape, (ACTION_DIM,))
+        self.assertIn("log_prob", extra)
+
+
 if __name__ == "__main__":
     unittest.main()
