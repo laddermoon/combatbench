@@ -4,29 +4,28 @@ from random fallen state → stand up → maintain balance + stepping.
 
 This experiment is designed to be **resumed from a pretrained standup
 checkpoint** (``--resume-from <standup_ckpt> --reset-update``).  The
-standup policy is already converged (std_mean≈0.18, entropy≈-7), so
-the key challenge is **re-injecting exploration** so the policy can
+standup policy is already converged (std_mean≈0.15, uncertainty≈0.17),
+so the key challenge is **re-injecting exploration** so the policy can
 discover stepping behaviour without forgetting how to stand.
 
 Two reward phases with hard switch based on torso height:
 
   STANDUP phase (h_torso < plateau):
-    r_potential = (1-γ) × φ_4stage = 0.01 × φ_4stage,  weight = 3.0
+    r_potential = (1-γ) × φ_4stage = 0.01 × φ_4stage,  weight = 1.0
     (same as exp_standup.py — pure 4-stage standing potential)
 
   BALANCE phase (h_torso >= plateau):
-    r_fall       = 0.01 × φ_height,         weight = 3.0 (fixed)
-    r_left_foot  = clip(h_left,  -0.1, 0.1), weight = stepping state machine
-    r_right_foot = clip(h_right, -0.1, 0.1), weight = stepping state machine
-    (same as exp_basic_balance_step.py — survival + per-foot stepping)
+    r_fall       = 0.01 × φ_height,         weight = curriculum (0→3.0)
+    r_left_foot  = clip(h_left,  -0.3, 0.3), weight = stepping state machine
+    r_right_foot = clip(h_right, -0.3, 0.3), weight = stepping state machine
 
   Phase transitions (per agent, per step):
     STANDUP → BALANCE:  plateau detection on h_torso
     BALANCE → STANDUP:  h_torso < 0.70  (fallen)
 
 Four reward channels (each with independent critic):
-  r_potential — reward always present, aw=3.0 in STANDUP, 0 in BALANCE
-  r_fall      — reward always present, aw=3.0 in BALANCE, 0 in STANDUP
+  r_potential — reward always present, aw=1.0 in STANDUP, 0 in BALANCE
+  r_fall      — reward always present, aw=curriculum in BALANCE, 0 in STANDUP
   r_left_foot — reward always present, aw = state machine (BALANCE only)
   r_right_foot— reward always present, aw = state machine (BALANCE only)
 
@@ -50,27 +49,27 @@ See exp_basic_balance_step.py for the full state machine documentation.
 
 Exploration re-injection
 ------------------------
-The pretrained standup policy has very low std (≈0.18) and negative
-entropy (≈-7 nats).  Without re-injection, the policy is too deterministic
-to discover stepping.  We use:
+The pretrained standup policy has low std (≈0.15) and uncertainty (≈0.17).
+Without re-injection, the policy is too deterministic to discover stepping.
+We use the framework's built-in exploration controls:
 
-  explore_factor = 0.63  →  σ × exp(0.63 × ln3) = σ × 2.0
+  explore_factor = 0.63  →  σ × exp(0.63 × ln3) ≈ σ × 2.0
     This doubles the effective std during rollout, giving the
     policy enough noise to try lifting feet while still being grounded
     in the standup behaviour.
 
   uncertainty_floor = 0.35
-    Prevents the policy from collapsing back to pure-standup during
-    training.  The floor is set above the converged standup entropy
-    (≈0.30) so the policy is pushed to maintain *more* entropy than
-    pure standing requires.
+    Prevents the policy's own σ from collapsing back to the converged
+    standup value (uncertainty≈0.17).  The floor at 0.35 forces the
+    policy to maintain more uncertainty than pure standing requires,
+    keeping foot-lifting actions discoverable throughout training.
 
   uncertainty_coef = 0.01
     Standard coefficient for the floor hinge loss.
 
-  learning_rate = 5e-5  (half of standup's 1e-4)
-    Slower updates to preserve the standup behaviour while learning
-    the new stepping skill.
+  learning_rate = 1e-4  (same as standup)
+    PPO updates are moderated by the uncertainty floor — no need to
+    slow down the LR separately.
 
 No imbalance termination — robot can fall and get back up.
 Every step is trainable.
@@ -101,10 +100,6 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     PHASE_A_STEPS,
     PHASE_B_END,
     DOUBLE_GRACE_STEPS,
-    STATE_DOUBLE,
-    STATE_SUPPORT_L,
-    STATE_SUPPORT_R,
-    STATE_FLIGHT,
 )
 
 
@@ -147,9 +142,6 @@ class StandupStepV3(CombatExperimentPPOBase):
 
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01
-
-    # --- Foot height reward saturation ---
-    foot_height_clip: float = 0.05
 
     # --- r_fall actor weight (balance phase) ---
     # This is the INITIAL value; the curriculum schedule in on_update()
@@ -216,31 +208,19 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.63 → σ × exp(0.63 × ln3) = σ × 2.0, strong noise.
-    # Converted from old [0,1] scale (0.75, where 0.5=neutral → σ×2.0)
-    # to new [-1,1] scale (0.63 = ln2/ln3, preserving σ×2.0).
-    # The key change is the uncertainty_floor below — we force the policy's
-    # OWN σ to be high, not just the rollout σ.
+    # 0.63 → σ × exp(0.63 × ln3) ≈ σ × 2.0, strong rollout noise.
+    # This doubles the effective std during rollout, giving the policy
+    # enough noise to try lifting feet while still being grounded in
+    # the standup behaviour.
     explore_factor: float = 0.63
-    # 0.70 → forces the policy's own σ to ≈0.47 (vs converged 0.17).
-    # Combined with log_std_reset=-0.5 (σ=0.61), the floor at 0.70
-    # prevents σ from dropping below 0.47, giving the policy enough
-    # randomness to discover stepping while still being grounded in
-    # the standup behavior.
-    uncertainty_floor: float = 0.70
-    # 0.30 → very strong coefficient to hold the floor against PPO's
-    # natural entropy reduction.
-    uncertainty_coef: float = 0.30
-
-    # --- Sigma bounds (match standup training) ---
-    log_std_min: float = -2.5
-    log_std_max: float = 0.0
+    # 0.35 → forces the policy's own uncertainty to stay above 0.35
+    # (vs converged standup uncertainty≈0.17).  This prevents the
+    # policy from collapsing back to pure-standup during training.
+    uncertainty_floor: float = 0.35
+    # 0.01 → standard coefficient for the floor hinge loss.
+    uncertainty_coef: float = 0.01
 
     # --- PPO tuning ---
-    # Lower LR to preserve standup behaviour while learning stepping.
-    # The standard LR (3e-4) was too aggressive — it collapsed σ faster
-    # than the entropy floor could counteract.  1e-4 is a compromise:
-    # slow enough for the floor to hold, fast enough to learn stepping.
     learning_rate: float = 1e-4
     critic_learning_rate: float = 1e-4
     target_kl: float = 0.05
@@ -279,36 +259,6 @@ class StandupStepV3(CombatExperimentPPOBase):
             )
             for k in self._channel_names
         )
-
-    # ------------------------------------------------------------------
-    # Actor construction with log_std reset
-    # ------------------------------------------------------------------
-
-    # When resuming from a pretrained standup checkpoint, the policy's
-    # log_std is very low (≈-1.8, σ≈0.17).  This makes the policy too
-    # deterministic to discover stepping.  We reset log_std to a higher
-    # value after loading, giving the policy enough randomness to
-    # explore foot-lifting actions.  The network weights (mean action)
-    # are preserved from the pretrained model.
-    log_std_reset_value: float = -0.5
-    """Reset log_std to this value after loading pretrained checkpoint.
-    -0.5 → σ ≈ 0.60, which is 3.5x the converged standup σ (0.17).
-    Set to None to disable the reset (use loaded log_std as-is)."""
-
-    def build_actor(self, device):
-        """Build actor and reset log_std for stepping exploration."""
-        import torch
-        actor = super().build_actor(device)
-        if self.log_std_reset_value is not None and hasattr(actor, "log_std"):
-            old_std = float(actor.log_std.data.exp().mean().item())
-            actor.log_std.data.fill_(self.log_std_reset_value)
-            new_std = float(actor.log_std.data.exp().mean().item())
-            print(
-                f"[log_std_reset] {old_std:.4f} → {new_std:.4f} "
-                f"(log_std={self.log_std_reset_value})",
-                flush=True,
-            )
-        return actor
 
     # ------------------------------------------------------------------
     # Phase determination
