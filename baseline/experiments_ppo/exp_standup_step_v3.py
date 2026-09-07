@@ -217,11 +217,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     # (vs converged standup uncertainty≈0.17).  This prevents the
     # policy from collapsing back to pure-standup during training.
     uncertainty_floor: float = 0.35
-    # 0.1 → with quadratic hinge (coef × relu(floor-U)²), the gradient
-    # scales with the gap.  At U=0.12, floor=0.35: grad ≈ 2×0.1×0.23 =
-    # 0.046, comparable to policy_loss gradient (~0.01).  Near the floor
-    # the gradient tapers smoothly to zero, avoiding overshoot.
-    uncertainty_coef: float = 0.1
+    # 5.0 → with quadratic hinge, GradDiag showed coef=0.1 gave
+    # floor/pol ratio=0.02x (still dominated by policy gradient).
+    # dU/dlog_std is inherently small for TruncatedNormalPolicy, so
+    # coef must be large to compensate.  At 5.0 the ratio should
+    # reach ~1.0x, giving floor enough leverage to hold σ up.
+    uncertainty_coef: float = 5.0
 
     # --- PPO tuning ---
     learning_rate: float = 1e-4
