@@ -100,7 +100,7 @@ class Policy(ABC):
     ``act()`` returns the policy's **default behaviour**.  For a plain
     deterministic policy this is the (only) action it produces.  For a
     stochastic policy that also implements
-    :class:`~baseline.framework.ppo.policies.stochastic_policy.StochasticPolicy`,
+    :class:`~baseline.framework.ppo.stochastic_policy.StochasticPolicy`,
     ``act()`` typically returns the deterministic mean action, while
     ``sample()`` provides stochastic sampling with exploration control.
 

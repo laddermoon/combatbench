@@ -39,7 +39,12 @@ class Job:
         ``(obs, step) -> float`` (per-frame).  Consumed by
         :class:`ExploratoryPolicy` which wraps the raw policy before
         passing it to :class:`EpisodeRunner`.
-        Defaults to ``0.0`` (neutral).
+        Defaults to ``0.0`` (neutral).  Only used when ``stochastic=True``.
+    stochastic:
+        If True (default), policies are wrapped in
+        :class:`ExploratoryPolicy` and ``sample()`` is called for
+        stochastic rollout.  If False, policies are used directly as
+        ``Policy`` and ``act()`` is called for deterministic evaluation.
     """
 
     policy_a_bp: PolicyBlueprint
@@ -49,3 +54,4 @@ class Job:
     episode_options: Dict[str, Any] = field(default_factory=dict)
     explore_intensity_a: EiSpec = 0.0
     explore_intensity_b: EiSpec = 0.0
+    stochastic: bool = True

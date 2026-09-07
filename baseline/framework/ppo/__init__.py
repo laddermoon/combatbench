@@ -17,6 +17,7 @@ from .experiment import (
     TrainablePolicy,
     UpdateStats,
 )
+from .stochastic_policy import StochasticPolicy
 
 __all__ = [
     "ActorEval",
@@ -24,6 +25,7 @@ __all__ = [
     "ExperimentPPO",
     "ExplorationSpec",
     "PPOParams",
+    "StochasticPolicy",
     "TrainablePolicy",
     "UpdateStats",
 ]

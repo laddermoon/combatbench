@@ -22,7 +22,7 @@ import numpy as np
 from envs.framework.policy import Policy
 
 if TYPE_CHECKING:
-    from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
+    from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
 #: Per-frame explore_intensity: a constant float, or a callable
 #: ``(obs, step) -> float``.  Callables must be top-level functions to

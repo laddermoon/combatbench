@@ -23,7 +23,7 @@ Key differences from v1
 - ``on_eval()`` replaces ``compute_episode_metrics`` + ``compare_eval`` +
   ``next_weights`` + ``scheduler_info``.
 - ``state()`` / ``load_state()`` replaces split scheduler/training state.
-- ``to_blueprint(stochastic=...)`` replaces manual ``config["stochastic"]`` hack.
+- ``to_blueprint()`` exports a policy that implements both Policy and StochasticPolicy.
 - Framework builds ``config.json`` from experiment's public interface.
 - No ``_current_actor_weights`` hack.
 - No plateau detection (experiment can do this in ``on_eval`` if needed).
@@ -458,7 +458,7 @@ def train_ppo(
             t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"u{u:05d}"
             policy_bp = actor.to_blueprint(
-                dest_path=str(export_dir), stochastic=True,
+                dest_path=str(export_dir),
             )
             t_export = time.perf_counter() - t0
 
@@ -530,10 +530,11 @@ def train_ppo(
                 eval_seed = cp.seed + 100_000 + u * 97
                 eval_export_dir = run_dir / "policy_exports" / f"u{u:05d}_eval"
                 det_bp = actor.to_blueprint(
-                    dest_path=str(eval_export_dir), stochastic=False,
+                    dest_path=str(eval_export_dir),
                 )
                 eval_jobs = experiment.build_jobs(
                     det_bp, eval_seed, cp.eval_episodes,
+                    stochastic=False,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
 
@@ -578,7 +579,7 @@ def train_ppo(
                     else:
                         # Generic path: use to_blueprint to export the
                         # best policy for deployment and video rendering.
-                        actor.to_blueprint(dest_path=str(policy_dir), stochastic=False)
+                        actor.to_blueprint(dest_path=str(policy_dir))
                     eval_line += "  [new_best]"
 
                 print(eval_line, flush=True)

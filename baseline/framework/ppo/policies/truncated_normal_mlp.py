@@ -18,8 +18,8 @@ from torch import nn
 
 from envs.framework.policy import Policy, PolicyBlueprint
 
-from baseline.framework.ppo import ActorEval
-from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
+from baseline.framework.ppo import ActorEval, TrainablePolicy
+from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
 # explore_intensity ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
 # Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
@@ -46,7 +46,7 @@ import torch
 
 # Import from repo - requires baseline/ to be on sys.path
 from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormalPolicy
-from baseline.framework.ppo.policies.stochastic_policy import StochasticPolicy
+from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from envs.framework.policy import Policy
 
 
@@ -55,14 +55,17 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
 
     Implements both ``Policy`` (deterministic ``act()``) and
     ``StochasticPolicy`` (sampling ``sample()``) so it can be used:
-    - As a ``Policy`` for deployment / competition (``act()`` -> mean).
+    - As a ``Policy`` for deployment / competition / eval (``act()`` -> mean).
     - As a ``StochasticPolicy`` for training rollouts (``sample()``).
+
+    Whether the policy is used stochastically or deterministically is
+    controlled by the ``Job.stochastic`` flag at rollout time, not by
+    this class.
     """
 
     def __init__(
         self,
         model_path: Optional[str] = None,
-        stochastic: bool = False,
         **_ignored: Any,
     ):
         payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
@@ -75,7 +78,6 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
         )
         self._policy.load_state_dict(payload["state_dict"], strict=False)
         self._policy.eval()
-        self.stochastic = bool(stochastic)
 
     def act(
         self,
@@ -97,12 +99,7 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
         explore_intensity: float = 0.0,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[dict]]:
-        """Stochastic action -- sample from truncated normal (StochasticPolicy interface).
-
-        When ``stochastic=False``, falls back to deterministic mean action.
-        """
-        if not self.stochastic:
-            return self.act(observation, want_extra=want_extra)
+        """Stochastic action -- sample from truncated normal (StochasticPolicy interface)."""
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
@@ -155,7 +152,7 @@ def _std_normal_icdf(u: torch.Tensor) -> torch.Tensor:
     return _SQRT_2 * torch.erfinv(2.0 * u_clamped - 1.0)
 
 
-class TruncatedNormalPolicy(nn.Module, StochasticPolicy, Policy):
+class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     """Truncated normal policy on [-1, 1].
 
     mean = tanh(net(obs))  ∈ (-1, 1)
@@ -394,7 +391,7 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy, Policy):
         }
 
     def to_blueprint(
-        self, dest_path: Optional[str] = None, *, stochastic: bool = False,
+        self, dest_path: Optional[str] = None,
     ) -> "PolicyBlueprint":
         """Export to a deployable PolicyBlueprint.
 
@@ -402,6 +399,11 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy, Policy):
         TruncatedNormalPolicy from repo) into ``dest_path`` and returns
         a blueprint that rebuilds the policy via the generated
         ``ExportedTruncNormPolicy`` class.
+
+        The exported policy implements both ``Policy`` (deterministic
+        ``act()``) and ``StochasticPolicy`` (sampling ``sample()``).
+        Whether it is used stochastically or deterministically is
+        controlled by the ``Job.stochastic`` flag at rollout time.
         """
         import tempfile
 
@@ -428,5 +430,4 @@ class TruncatedNormalPolicy(nn.Module, StochasticPolicy, Policy):
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
             cls=f"file:{policy_py_path}:ExportedTruncNormPolicy",
-            config={"stochastic": stochastic},
         )

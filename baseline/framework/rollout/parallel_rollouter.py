@@ -48,6 +48,19 @@ def _worker_init() -> None:  # pragma: no cover - runs in child
         pass
 
 
+def _wrap_policy(policy, ei: EiSpec, stochastic: bool):
+    """Wrap a policy for the EpisodeRunner.
+
+    When ``stochastic=True``, wrap in :class:`ExploratoryPolicy` so
+    ``sample()`` is called with per-frame explore_intensity.
+    When ``stochastic=False``, return the policy as-is so ``act()``
+    (deterministic) is called directly.
+    """
+    if stochastic:
+        return ExploratoryPolicy(policy, explore_intensity=ei)
+    return policy
+
+
 def _run_job(
     policy_a_bp_dict: Dict[str, Any],
     policy_b_bp_dict: Dict[str, Any],
@@ -56,6 +69,7 @@ def _run_job(
     options: Optional[Dict[str, Any]],
     ei_a: EiSpec,
     ei_b: EiSpec,
+    stochastic: bool,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
     env_bp = EnvBlueprint.from_dict(env_bp_dict)
@@ -68,8 +82,8 @@ def _run_job(
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policy_a=ExploratoryPolicy(policy_a, explore_intensity=ei_a),
-        policy_b=ExploratoryPolicy(policy_b, explore_intensity=ei_b),
+        policy_a=_wrap_policy(policy_a, ei_a, stochastic),
+        policy_b=_wrap_policy(policy_b, ei_b, stochastic),
     )
     runner.run_episode(
         seed=seed, options=options, want_extras=True,
@@ -78,7 +92,7 @@ def _run_job(
 
 
 def _run_job_batch(
-    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EiSpec, EiSpec]],
+    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EiSpec, EiSpec, bool]],
 ) -> List[Episode]:
     """Run a batch of jobs, reusing EnvRuntime + Policy when blueprints match.
 
@@ -94,7 +108,7 @@ def _run_job_batch(
     current_pa_key: Optional[str] = None
     current_pb_key: Optional[str] = None
 
-    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ei_a, ei_b in tasks:
+    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ei_a, ei_b, stochastic in tasks:
         env_key = json.dumps(env_bp_dict, sort_keys=True, ensure_ascii=False)
         pa_key = json.dumps(policy_a_bp_dict, sort_keys=True, ensure_ascii=False)
         pb_key = json.dumps(policy_b_bp_dict, sort_keys=True, ensure_ascii=False)
@@ -118,8 +132,8 @@ def _run_job_batch(
             policy_b = policy_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
             runner = EpisodeRunner(
                 runtime=runtime,
-                policy_a=ExploratoryPolicy(policy_a, explore_intensity=ei_a),
-                policy_b=ExploratoryPolicy(policy_b, explore_intensity=ei_b),
+                policy_a=_wrap_policy(policy_a, ei_a, stochastic),
+                policy_b=_wrap_policy(policy_b, ei_b, stochastic),
             )
             current_env_key = env_key
             current_pa_key = pa_key
@@ -128,13 +142,13 @@ def _run_job_batch(
             # Env unchanged — only update policies that changed.
             if pa_changed:
                 new_pa = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-                runner.set_policy_a(ExploratoryPolicy(new_pa, explore_intensity=ei_a))
+                runner.set_policy_a(_wrap_policy(new_pa, ei_a, stochastic))
                 if same_policy:
-                    runner.set_policy_b(ExploratoryPolicy(new_pa, explore_intensity=ei_b))
+                    runner.set_policy_b(_wrap_policy(new_pa, ei_b, stochastic))
                 current_pa_key = pa_key
             if pb_changed and not same_policy:
                 new_pb = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-                runner.set_policy_b(ExploratoryPolicy(new_pb, explore_intensity=ei_b))
+                runner.set_policy_b(_wrap_policy(new_pb, ei_b, stochastic))
                 current_pb_key = pb_key
 
         runner.run_episode(
@@ -227,6 +241,7 @@ class ParallelRollouter:
                 dict(job.episode_options) if job.episode_options else None,
                 job.explore_intensity_a,
                 job.explore_intensity_b,
+                job.stochastic,
             )
             for job in jobs
         ]

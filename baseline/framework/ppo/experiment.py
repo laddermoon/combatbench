@@ -32,10 +32,10 @@ Design principles
 
 4. **One job builder.**
 
-   ``build_jobs(policy_bp, base_seed, n_episodes)`` handles both
-   training and evaluation.  The caller controls whether the policy is
-   stochastic (training) or deterministic (eval) by passing the
-   appropriate ``PolicyBlueprint``.
+   ``build_jobs(policy_bp, base_seed, n_episodes, stochastic=...)`` handles
+   both training and evaluation.  ``stochastic=True`` wraps policies in
+   ``ExploratoryPolicy`` for training rollouts; ``stochastic=False`` uses
+   policies directly as ``Policy`` for deterministic evaluation.
 
 5. **Exploration is a split responsibility.**
 
@@ -54,7 +54,7 @@ Data flow
     ActorPolicyBlueprint (from framework)
          │
          ▼
-    build_jobs(policy_bp, base_seed, n_episodes)
+    build_jobs(policy_bp, base_seed, n_episodes, stochastic=...)
          │
          ▼  (ParallelRollouter collects)
     List[Episode]
@@ -112,7 +112,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import (
-    Any, Dict, List, Mapping, Optional, Protocol, Tuple, runtime_checkable,
+    Any, Dict, List, Mapping, Optional, Tuple,
 )
 
 import numpy as np
@@ -120,8 +120,9 @@ import torch
 import torch.nn as nn
 
 from envs.framework.blueprint import EnvBlueprint
-from envs.framework.policy import PolicyBlueprint
+from envs.framework.policy import Policy, PolicyBlueprint
 
+from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from baseline.framework.rollout.job import Job
 
 
@@ -225,23 +226,33 @@ class ActorEval:
 # Actor protocol
 # ---------------------------------------------------------------------------
 
-@runtime_checkable
-class TrainablePolicy(Protocol):
+class TrainablePolicy(StochasticPolicy, Policy, ABC):
     """Interface that the PPO trainer requires from an actor.
 
-    Two methods, each with an unambiguous call site in the loop:
+    Inherits both :class:`StochasticPolicy` (``sample()`` for rollout
+    sampling) and :class:`Policy` (``act()`` for deterministic
+    deployment / evaluation), and adds two PPO-specific methods:
 
     ===================================  ==================  ===================
     when                                 call                yields
     ===================================  ==================  ===================
+    training rollout (via ExploratoryPolicy) ``sample``     action + log_prob
+    eval / deployment                    ``act``             deterministic action
     once per update, buffer construction ``evaluate_actions``
                                          ``want_stats=True`` batch-wide stats
     ~epochs x minibatches per update     ``evaluate_actions`` log_prob + entropy
     ===================================  ==================  ===================
 
+    The exported policy implements both ``Policy`` and
+    ``StochasticPolicy``.  Training rollouts wrap it in
+    :class:`ExploratoryPolicy` (which calls ``sample()``); evaluation
+    and deployment use it directly as a ``Policy`` (which calls
+    ``act()``).  This is controlled by the ``Job.stochastic`` flag, not
+    by the blueprint.
+
     Exploration is **not** a mutable state on the policy.  The policy
     receives ``explore_intensity`` as a per-frame data field (via
-    ``evaluate_actions``) or per-step parameter (via ``act``), and
+    ``evaluate_actions``) or per-step parameter (via ``sample``), and
     applies its own mapping from it on every call.  This makes the
     rollout→scoring consistency a data guarantee, not a timing
     guarantee.
@@ -251,6 +262,7 @@ class TrainablePolicy(Protocol):
     batched pass over the whole rollout under theta_old.
     """
 
+    @abstractmethod
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
         explore_intensity: torch.Tensor,
@@ -290,26 +302,24 @@ class TrainablePolicy(Protocol):
             under ``torch.no_grad()``, so they are non-differentiable
             there and only the stats are consumed.
         """
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     def to_blueprint(
-        self, dest_path: str, *, stochastic: bool = False,
+        self, dest_path: str,
     ) -> PolicyBlueprint:
-        """Export a rollout-ready policy blueprint.
+        """Export a deployable policy blueprint.
 
-        The exported artifact is **exploration-neutral**: it does not
-        bake in any explore_intensity.  The rollout worker receives
-        explore_intensity as a per-step parameter via ``act``, ensuring
-        the sampling distribution matches what ``evaluate_actions``
-        later scores under.
+        The exported artifact implements both ``Policy`` (deterministic
+        ``act()``) and ``StochasticPolicy`` (sampling ``sample()``).
+        Whether it is used stochastically (training rollout) or
+        deterministically (eval / deployment) is controlled by the
+        ``Job.stochastic`` flag at rollout time, not by the blueprint.
 
         Args:
             dest_path: Directory path for the exported blueprint.
-            stochastic: If True, the blueprint uses stochastic sampling
-                (for training rollouts).  If False (default), it uses
-                deterministic mean actions (for evaluation).
         """
-        ...
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -671,13 +681,13 @@ class ExperimentPPO(ABC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        stochastic: bool = True,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
 
         This unified method replaces v1's separate ``build_rollout_jobs``
-        and ``build_eval_jobs``.  The caller controls whether the policy
-        is stochastic (training) or deterministic (eval) by passing the
-        appropriate ``policy_bp``.
+        and ``build_eval_jobs``.
 
         The experiment decides ``explore_intensity_a`` /
         ``explore_intensity_b`` internally — it may read class
@@ -685,12 +695,15 @@ class ExperimentPPO(ABC):
         experiment's implementation detail, not a framework parameter.
 
         Args:
-            policy_bp: The actor's exported policy blueprint.  For
-                training rollouts, this has ``stochastic=True``.  For
-                evaluation, it is deterministic (mean action).
+            policy_bp: The actor's exported policy blueprint.
             base_seed: Base random seed for this batch.  Each job should
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
+            stochastic: If True (default), jobs are stochastic —
+                policies are wrapped in :class:`ExploratoryPolicy` and
+                ``sample()`` is called for training rollouts.  If False,
+                jobs are deterministic — policies are used directly as
+                ``Policy`` and ``act()`` is called for evaluation.
 
         Returns:
             List of :class:`Job` instances, one per episode.

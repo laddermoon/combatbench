@@ -252,17 +252,20 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        stochastic: bool = True,
     ) -> List[Job]:
         """Build self-play rollout jobs.
 
         ``explore_intensity`` is read from ``self.explore_intensity``
         and placed into each :class:`Job`'s ``explore_intensity_a`` /
-        ``explore_intensity_b`` fields.
+        ``explore_intensity_b`` fields.  ``stochastic`` is placed into
+        each :class:`Job`'s ``stochastic`` field.
 
         Subclass can override for non-self-play scenarios.
         """
         return self._build_selfplay_jobs(
-            self._env_pb(), policy_bp, base_seed, n_episodes,
+            self._env_pb(), policy_bp, base_seed, n_episodes, stochastic,
         )
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
@@ -311,6 +314,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        stochastic: bool = True,
     ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
         ei = self.explore_intensity
@@ -331,6 +335,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     episode_options={"initial_distance": initial_distance},
                     explore_intensity_a=ei,
                     explore_intensity_b=ei,
+                    stochastic=stochastic,
                 ))
             return jobs
 
@@ -364,6 +369,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
                 explore_intensity_a=ei,
                 explore_intensity_b=ei,
+                stochastic=stochastic,
             ))
         return jobs
 
