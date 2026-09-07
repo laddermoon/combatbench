@@ -49,6 +49,8 @@ from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormal
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from envs.framework.policy import Policy
 
+_EXPORT_FORMAT_VERSION = 1
+
 
 class ExportedTruncNormPolicy(Policy, StochasticPolicy):
     """Runtime-loadable policy backed by a ``model.pt`` checkpoint.
@@ -63,20 +65,43 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
     this class.
     """
 
-    def __init__(
-        self,
-        model_path: Optional[str] = None,
-        **_ignored: Any,
-    ):
+    def __init__(self, model_path: Optional[str] = None):
         payload_path = Path(model_path) if model_path is not None else Path(__file__).resolve().parent / "model.pt"
         payload = torch.load(payload_path, map_location="cpu")
 
+        # P0-5: Validate format version and policy class before loading.
+        # This turns silent corruption (missing keys, wrong architecture)
+        # into an explicit error with actionable information.
+        fv = payload.get("format_version", 0)
+        if fv != _EXPORT_FORMAT_VERSION:
+            raise RuntimeError(
+                f"Policy export format version mismatch: "
+                f"file has {fv}, loader expects {_EXPORT_FORMAT_VERSION}. "
+                f"This export was created by a different version of "
+                f"the framework. Re-export the policy with the current code."
+            )
+        pcls = payload.get("policy_class", "unknown")
+        if pcls != "TruncatedNormalPolicy":
+            raise RuntimeError(
+                f"Policy class mismatch: file says {pcls!r}, "
+                f"loader expects 'TruncatedNormalPolicy'."
+            )
+        arch = payload.get("arch", {})
+        obs_dim = int(arch.get("obs_dim", payload.get("obs_dim", 0)))
+        action_dim = int(arch.get("action_dim", payload.get("action_dim", 0)))
+        hidden_dim = int(arch.get("hidden_dim", payload.get("hidden_dim", 0)))
+
         self._policy = TruncatedNormalPolicy(
-            obs_dim=int(payload["obs_dim"]),
-            action_dim=int(payload["action_dim"]),
-            hidden_dim=int(payload["hidden_dim"]),
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
         )
-        self._policy.load_state_dict(payload["state_dict"], strict=False)
+        # P0-5: strict=True so missing or unexpected keys raise
+        # RuntimeError instead of silently producing a partially-random
+        # policy.  This is the core fix: before, strict=False would
+        # load a checkpoint with missing layers without any warning,
+        # and the missing layers kept their random initialization.
+        self._policy.load_state_dict(payload["state_dict"], strict=True)
         self._policy.eval()
 
     def act(
@@ -431,13 +456,28 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         policy_dir.mkdir(parents=True, exist_ok=True)
 
         # Save model payload
+        # P0-5: Include format_version, policy_class, and arch so the
+        # loader can validate compatibility before attempting to load.
+        # P0-6 will make the export self-contained; format_version is
+        # the shared contract between the two fixes.
+        state_dict = {
+            k: v.detach().cpu() for k, v in self.state_dict().items()
+        }
         payload = {
+            "format_version": 1,
+            "policy_class": "TruncatedNormalPolicy",
+            "arch": {
+                "obs_dim": self.obs_dim,
+                "action_dim": self.action_dim,
+                "hidden_dim": self.hidden_dim,
+            },
+            # Legacy flat fields (kept for backward compat with old
+            # loaders that read payload["obs_dim"] directly).
             "obs_dim": self.obs_dim,
             "action_dim": self.action_dim,
             "hidden_dim": self.hidden_dim,
-            "state_dict": {
-                k: v.detach().cpu() for k, v in self.state_dict().items()
-            },
+            "state_dict": state_dict,
+            "state_dict_keys": sorted(state_dict.keys()),
         }
         torch.save(payload, policy_dir / "model.pt")
 

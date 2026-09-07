@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -294,6 +295,122 @@ class TestStats(unittest.TestCase):
         for key in ["uncertainty", "std_mean", "eff_std_mean",
                      "std_min", "std_max", "mean_abs"]:
             self.assertIn(key, ev.stats)
+
+
+# ---------------------------------------------------------------------------
+# P0-5: strict loading + format validation for exported policies
+# ---------------------------------------------------------------------------
+
+class TestExportStrictLoading(unittest.TestCase):
+    """P0-5: Exported policy loading must be strict and validated.
+
+    Before the fix, `load_state_dict(strict=False)` silently loaded
+    checkpoints with missing keys, producing partially-random policies
+    that run without any warning.  This is fatal for a benchmark project.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.mkdtemp(prefix="p0_5_test_")
+        self._model_path = str(Path(self._tmp) / "model.pt")
+
+    def _make_export(self):
+        """Export a policy and return the model.pt path."""
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        bp = p.to_blueprint(dest_path=self._tmp)
+        return bp, self._model_path
+
+    def _load_payload(self):
+        return torch.load(self._model_path, map_location="cpu")
+
+    def _save_payload(self, payload):
+        torch.save(payload, self._model_path)
+
+    def test_export_payload_has_format_metadata(self):
+        """Payload includes format_version, policy_class, arch, keys."""
+        self._make_export()
+        p = self._load_payload()
+        self.assertEqual(p["format_version"], 1)
+        self.assertEqual(p["policy_class"], "TruncatedNormalPolicy")
+        self.assertEqual(p["arch"]["obs_dim"], OBS_DIM)
+        self.assertEqual(p["arch"]["action_dim"], ACTION_DIM)
+        self.assertEqual(p["arch"]["hidden_dim"], HIDDEN_DIM)
+        self.assertIn("state_dict_keys", p)
+        self.assertIsInstance(p["state_dict_keys"], list)
+
+    def test_export_roundtrip_exact(self):
+        """Export → reload produces identical actions on non-zero input.
+
+        Key: use NON-ZERO input.  With zero input, a missing first-layer
+        weight is masked (output = bias only) and the test passes even
+        with strict=False.  This is the trap that hid the bug.
+        """
+        torch.manual_seed(123)
+        p = TruncatedNormalPolicy(OBS_DIM, ACTION_DIM, HIDDEN_DIM)
+        bp = p.to_blueprint(dest_path=self._tmp)
+        obs = np.random.randn(OBS_DIM).astype(np.float32)  # non-zero!
+        expected = p.act(obs)[0]
+        loaded = bp.build()
+        actual = loaded.act(obs)[0]
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
+
+    def test_export_rejects_missing_keys(self):
+        """Missing state_dict key → RuntimeError, not silent random policy."""
+        bp, _ = self._make_export()
+        payload = self._load_payload()
+        sd = dict(payload["state_dict"])
+        # Remove a critical weight key
+        removed = "net.0.weight"
+        sd.pop(removed)
+        payload["state_dict"] = sd
+        self._save_payload(payload)
+        with self.assertRaises(RuntimeError) as ctx:
+            bp.build()
+        self.assertIn(removed, str(ctx.exception),
+                      f"Error should mention missing key {removed}")
+
+    def test_export_rejects_extra_keys(self):
+        """Extra state_dict key → RuntimeError (strict=True catches both)."""
+        bp, _ = self._make_export()
+        payload = self._load_payload()
+        sd = dict(payload["state_dict"])
+        sd["nonexistent.layer.weight"] = torch.zeros(4, 4)
+        payload["state_dict"] = sd
+        self._save_payload(payload)
+        with self.assertRaises(RuntimeError):
+            bp.build()
+
+    def test_export_rejects_wrong_format_version(self):
+        """Wrong format_version → RuntimeError with actionable message."""
+        bp, _ = self._make_export()
+        payload = self._load_payload()
+        payload["format_version"] = 999
+        self._save_payload(payload)
+        with self.assertRaises(RuntimeError) as ctx:
+            bp.build()
+        self.assertIn("format version", str(ctx.exception).lower())
+
+    def test_export_rejects_wrong_policy_class(self):
+        """Wrong policy_class → RuntimeError."""
+        bp, _ = self._make_export()
+        payload = self._load_payload()
+        payload["policy_class"] = "SomeOtherPolicy"
+        self._save_payload(payload)
+        with self.assertRaises(RuntimeError) as ctx:
+            bp.build()
+        self.assertIn("class mismatch", str(ctx.exception).lower())
+
+    def test_export_no_silent_param_swallowing(self):
+        """**_ignored removed: unknown kwargs must raise TypeError.
+
+        Before the fix, `**_ignored: Any` silently swallowed any
+        misspelled blueprint parameter, making typos invisible.
+        """
+        bp, _ = self._make_export()
+        # The loader __init__ now takes only model_path, no **kwargs.
+        # Passing an unexpected kwarg should raise TypeError.
+        with self.assertRaises(TypeError):
+            bp.build(unknown_param=True)
 
 
 # ---------------------------------------------------------------------------
