@@ -657,6 +657,7 @@ def train_ppo(
             # [Policy] & [PPO Opt]
             policy_loss = stats.policy_loss
             epochs_done = stats.epochs_done
+            actor_epochs_done = stats.actor_epochs_done
             approx_kl = stats.approx_kl
             max_kl = stats.max_kl
             early_stop_kl = stats.early_stop_kl
@@ -677,6 +678,7 @@ def train_ppo(
             )
             print(
                 f"  [PPO Opt] epochs={epochs_done}/{pp.update_epochs} "
+                f"actor_epochs={actor_epochs_done}/{pp.update_epochs} "
                 f"kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} "
                 f"(stop_kl={early_stop_kl:.4f})",
                 flush=True,

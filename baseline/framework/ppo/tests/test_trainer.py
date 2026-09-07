@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 
@@ -1461,6 +1462,234 @@ def test_kl_early_stop_no_trigger():
 
 
 # ---------------------------------------------------------------------------
+# P0-1 regression: approx_kl must reflect real KL after early stop
+# ---------------------------------------------------------------------------
+# These tests lock in the fix for the silent KL-reporting bug described in
+# FIXPLAN.md P0-1.  Before the fix, `approx_kl` was taken from
+# `epoch_kl_stats[-1]["mean_kl"]`, which after B1 (critic/actor early-stop
+# decoupling) was always an empty epoch with mean_kl=0.0, hiding the fact
+# that KL had actually blown up and triggered early stop.
+#
+# The fix aggregates KL over every minibatch the actor actually ran, and
+# adds `actor_epochs_done` so downstream consumers can distinguish "actor
+# stopped early" from "all epochs ran".  These tests must fail on the
+# pre-fix code and pass after.
+
+def _run_high_kl_update(*, target_kl=0.001, update_epochs=4, lr=1e-1):
+    """Build an update that is guaranteed to blow KL past `target_kl`.
+
+    Returns (stats, pp, n_batches_per_epoch).
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 512
+    mb_size = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, reward_scale=10.0, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    # Zero critic → EV=0 → confidence=0 → no actor gradient if confidence
+    # weighting is on.  Disable it so the actor actually moves and KL grows.
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
+    actor_opt, critic_opts = make_optimizers(actor, critics, lr=lr)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(
+        target_kl=target_kl, minibatch_size=mb_size,
+        update_epochs=update_epochs,
+    )
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+    n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)
+    return stats, pp, n_batches_per_epoch
+
+
+def test_approx_kl_reflects_real_kl_after_early_stop():
+    """early-stop 触发后，approx_kl 必须仍反映真实 KL，不能是 0。
+
+    This is the core P0-1 regression.  Before the fix, `approx_kl` was
+    read from the last epoch's mean_kl, which after actor early-stop was
+    always 0.0 (the actor never ran in those epochs), so `on_update`
+    consumers saw `approx_kl=0` exactly when KL had actually blown up.
+    """
+    stats, pp, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
+
+    # Precondition: early stop must have actually triggered.  If this
+    # fails, the test setup is wrong, not the fix.
+    assert stats.early_stop_kl > 0.0, (
+        "Precondition failed: early stop did not trigger. "
+        f"early_stop_kl={stats.early_stop_kl}"
+    )
+
+    # The fix: approx_kl is the mean of every actor minibatch KL, so it
+    # must be positive and on the same order as the value that triggered
+    # the stop (not 0.0).
+    assert stats.approx_kl > 0.0, (
+        f"approx_kl must be > 0 after early stop, got {stats.approx_kl}. "
+        "This is the P0-1 regression: the reported KL hides the blow-up."
+    )
+    # Same order of magnitude as the triggering KL (within 2x).  We use a
+    # loose relative tolerance because approx_kl is a mean over all actor
+    # minibatches (including the small-KL ones before the blow-up), while
+    # early_stop_kl is the running mean at the moment of the trigger.
+    assert stats.approx_kl == pytest.approx(stats.early_stop_kl, rel=2.0), (
+        f"approx_kl ({stats.approx_kl}) should be on the order of "
+        f"early_stop_kl ({stats.early_stop_kl}), not 0 or unrelated."
+    )
+
+    # max_kl must also come from real actor KLs, not from the empty-epoch
+    # aggregation that happened to be correct only because max(0)=0.
+    assert stats.max_kl > 0.0
+    assert stats.max_kl >= stats.approx_kl
+
+    print(
+        f"test_approx_kl_reflects_real_kl_after_early_stop: PASS "
+        f"(approx_kl={stats.approx_kl:.6f}, early_stop_kl={stats.early_stop_kl:.6f}, "
+        f"max_kl={stats.max_kl:.6f})"
+    )
+
+
+def test_actor_epochs_done_after_early_stop():
+    """actor_epochs_done must be < epochs_done when actor early-stops.
+
+    `epochs_done` counts every epoch the critic ran (always = update_epochs
+    under B1).  `actor_epochs_done` counts only epochs where the actor
+    actually took at least one minibatch step.  When early stop fires in
+    epoch 0, actor_epochs_done should be 1 and epochs_done should be
+    update_epochs.
+    """
+    stats, pp, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
+
+    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    assert stats.actor_epochs_done < stats.epochs_done, (
+        f"actor_epochs_done ({stats.actor_epochs_done}) should be < "
+        f"epochs_done ({stats.epochs_done}) after early stop"
+    )
+    assert stats.actor_epochs_done >= 1, (
+        f"actor must have run at least one epoch, got {stats.actor_epochs_done}"
+    )
+    assert stats.epochs_done == pp.update_epochs, (
+        f"epochs_done should equal update_epochs ({pp.update_epochs}) "
+        f"under B1 critic-continuation, got {stats.epochs_done}"
+    )
+    print(
+        f"test_actor_epochs_done_after_early_stop: PASS "
+        f"(actor_epochs_done={stats.actor_epochs_done}, "
+        f"epochs_done={stats.epochs_done})"
+    )
+
+
+def test_no_stuck_warning_when_actor_stopped():
+    """actor 停更的 epoch 不应产生 'policy may be stuck' 告警。
+
+    Before the fix, the empty post-stop epochs had mean_kl=0.0, which
+    tripped the `mean_epoch_kl < 0.001` "policy may be stuck" warning —
+    actively misleading the operator to raise the LR exactly when KL had
+    just blown up.  The fix guards that warning with `if epoch_kls:`.
+    """
+    stats, _, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
+
+    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    stuck = [d for d in stats.diagnostics if "may be stuck" in d]
+    assert stuck == [], (
+        "No 'policy may be stuck' warnings should fire for epochs where "
+        "the actor was stopped. Got:\n" + "\n".join(stuck)
+    )
+    print(f"test_no_stuck_warning_when_actor_stopped: PASS (0 spurious warnings)")
+
+
+def test_epoch_kl_stats_marks_actor_active():
+    """epoch_kl_stats entries must carry an `actor_active` flag.
+
+    Offline analysis scripts need to distinguish 'KL really was 0 in this
+    epoch' from 'the actor was stopped and never ran'.  The fix adds an
+    `actor_active` boolean to each entry.
+    """
+    stats, _, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
+
+    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    assert len(stats.epoch_kl_stats) == 4
+    active_flags = [e.get("actor_active") for e in stats.epoch_kl_stats]
+    # First epoch (where the actor ran until early-stop) must be True.
+    assert active_flags[0] is True, (
+        f"epoch 0 should have actor_active=True, got {active_flags[0]}"
+    )
+    # All subsequent epochs must be False (actor was stopped).
+    assert all(f is False for f in active_flags[1:]), (
+        f"post-stop epochs should have actor_active=False, got {active_flags}"
+    )
+    print(f"test_epoch_kl_stats_marks_actor_active: PASS (flags={active_flags})")
+
+
+def test_target_kl_zero_disables_early_stop():
+    """target_kl=0.0 表示关闭 early-stop（不是零容忍）。
+
+    This locks in the semantic that the existing `test_kl_early_stop_triggers`
+    test incorrectly relied on.  target_kl=0.0 means the per-minibatch guard
+    `if target_kl > 0.0 and epoch_kls:` is False, so no early stop fires and
+    the actor runs every epoch.
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics, lr=1e-2)
+
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = make_pp_params(target_kl=0.0, minibatch_size=32, update_epochs=3)
+
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=pp,
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+    )
+
+    assert stats.early_stop_kl == 0.0, (
+        f"target_kl=0.0 disables early stop, got early_stop_kl={stats.early_stop_kl}"
+    )
+    assert stats.actor_epochs_done == 3, (
+        f"actor should run all 3 epochs with early stop disabled, "
+        f"got actor_epochs_done={stats.actor_epochs_done}"
+    )
+    assert stats.epochs_done == 3
+    # Every epoch should be marked actor_active=True.
+    assert all(e["actor_active"] is True for e in stats.epoch_kl_stats), (
+        "all epochs should have actor_active=True when early stop is disabled"
+    )
+    print(f"test_target_kl_zero_disables_early_stop: PASS (actor_epochs_done=3)")
+
+
+# ---------------------------------------------------------------------------
 # Stats / logging tests
 # ---------------------------------------------------------------------------
 
@@ -2458,6 +2687,13 @@ if __name__ == "__main__":
     test_kl_early_stop_triggers()
     test_kl_early_stop_mid_epoch()
     test_kl_early_stop_no_trigger()
+
+    # P0-1 regression: approx_kl after early stop
+    test_approx_kl_reflects_real_kl_after_early_stop()
+    test_actor_epochs_done_after_early_stop()
+    test_no_stuck_warning_when_actor_stopped()
+    test_epoch_kl_stats_marks_actor_active()
+    test_target_kl_zero_disables_early_stop()
     test_kl_early_stop_no_partial_epoch_when_kl_low()
 
     # Stats

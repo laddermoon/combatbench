@@ -398,6 +398,14 @@ class UpdateStats:
     value_loss: float
     grad_norm_actor: float
     epochs_done: int
+    # P0-1: Number of epochs where the actor actually took at least one
+    # minibatch step.  Under B1 (critic/actor early-stop decoupling),
+    # `epochs_done` always equals `update_epochs` because critics keep
+    # running after the actor stops, so it no longer carries information
+    # about whether the actor stopped early.  `actor_epochs_done` does.
+    # When early stop is disabled or never triggers, actor_epochs_done ==
+    # epochs_done == update_epochs.
+    actor_epochs_done: int
     n_batches: int
     n_episodes: int
     total_steps: int
@@ -437,6 +445,7 @@ class UpdateStats:
             "max_kl": self.max_kl,
             "early_stop_kl": self.early_stop_kl,
             "epochs_done": self.epochs_done,
+            "actor_epochs_done": self.actor_epochs_done,
             "ep_len_mean": self.ep_len_mean,
             "ep_len_min": self.ep_len_min,
             "ep_len_max": self.ep_len_max,

@@ -248,7 +248,16 @@ class TrainingLogAnalyzer:
             })
 
         # ---- Check 2: PPO Early Stop (KL trust-region rupture) ----
-        epochs_dones = _series(win, "stats.epochs_done")
+        # P0-1: Prefer `actor_epochs_done` (counts only epochs where the
+        # actor actually ran) over `epochs_done` (counts critic epochs,
+        # which under B1 always equals update_epochs and so carries no
+        # early-stop signal).  Fall back to `epochs_done` for logs written
+        # before the P0-1 fix so old runs still analyze correctly.
+        actor_epochs_dones = _series(win, "stats.actor_epochs_done")
+        if actor_epochs_dones:
+            epochs_dones = actor_epochs_dones
+        else:
+            epochs_dones = _series(win, "stats.epochs_done")
         avg_epochs = sum(epochs_dones) / len(epochs_dones) if epochs_dones else 0
         # Read update_epochs from the last entry if available (not in stats,
         # but we can infer from max epochs_done seen across history).
@@ -263,7 +272,7 @@ class TrainingLogAnalyzer:
                     "every update. Data efficiency is very low."
                 ),
                 "evidence": (
-                    f"  avg epochs_done = {avg_epochs:.1f} (typical target: {max_epochs_seen})\n"
+                    f"  avg actor_epochs_done = {avg_epochs:.1f} (typical target: {max_epochs_seen})\n"
                     f"  series: {epochs_dones}\n"
                     f"  KL values: {[round(x, 4) for x in kls]}"
                 ),
@@ -530,7 +539,8 @@ class TrainingLogAnalyzer:
         ppo_keys = [
             k for k in (
                 "policy_loss", "value_loss", "approx_kl", "max_kl",
-                "epochs_done", "uncertainty", "std_mean", "std_min",
+                "epochs_done", "actor_epochs_done",
+                "uncertainty", "std_mean", "std_min",
                 "ep_len_mean", "n_episodes", "n_batches", "total_steps",
                 "clip_frac", "ratio_mean", "ratio_max", "grad_norm_actor",
             ) if k in stats

@@ -799,6 +799,18 @@ def ppo_update(
     # truncating them early only hurts value estimation quality.
     actor_stopped = False
 
+    # P0-1: Aggregate KL over every minibatch the actor actually ran.
+    # Before this, `approx_kl` was read from `epoch_kl_stats[-1]["mean_kl"]`,
+    # which after B1 was always an empty post-stop epoch with mean_kl=0.0 —
+    # hiding the very KL blow-up that triggered the stop.  This list is the
+    # source of truth for the reported `approx_kl` and `max_kl`.
+    all_actor_kls: List[float] = []
+    # Number of epochs in which the actor took at least one minibatch step.
+    # Contrasts with `epochs_done` (= len(epoch_kl_stats) = update_epochs
+    # under B1 critic-continuation) so downstream consumers can tell whether
+    # the actor stopped early.
+    actor_epochs_done = 0
+
     for epoch in range(pp.update_epochs):
         perm = torch.randperm(n, device=device)
         epoch_kls: List[float] = []
@@ -870,6 +882,10 @@ def ppo_update(
                 # triggers at a more honest distance from the rollout policy.
                 approx_kl = float(((ratio - 1.0) - log_ratio).mean().item())
             epoch_kls.append(approx_kl)
+            # P0-1: feed the global actor-KL aggregator so the reported
+            # approx_kl/max_kl reflect every minibatch the actor actually
+            # ran, not just the last epoch's (possibly empty) mean.
+            all_actor_kls.append(approx_kl)
             surr1 = ratio * adv_t[idx]
             surr2 = (
                 torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
@@ -980,7 +996,13 @@ def ppo_update(
                 f"cv={kl_cv:.2f} n_batches={len(epoch_kls)}"
             )
 
-        if mean_epoch_kl < 0.001:
+        # P0-1: Guard the "may be stuck" warning with `if epoch_kls:`.
+        # Before B1, an empty epoch_kls meant the whole epoch was skipped
+        # and the warning never fired.  After B1, the actor is stopped but
+        # critics keep running, so epoch_kls is empty and mean_epoch_kl
+        # defaults to 0.0 — which tripped this warning and told the
+        # operator to *raise* the LR exactly when KL had just blown up.
+        if epoch_kls and mean_epoch_kl < 0.001:
             diagnostics.append(
                 f"  [warn] epoch={epoch} mean_kl={mean_epoch_kl:.6f} too small, "
                 f"policy may be stuck or LR too low"
@@ -1001,12 +1023,20 @@ def ppo_update(
                     )
                     break
 
+        # P0-1: Mark whether the actor actually ran this epoch so offline
+        # analysis can distinguish "KL really was 0" from "actor was
+        # stopped and never ran".  Also count actor-active epochs for the
+        # new `actor_epochs_done` stat.
+        actor_active_this_epoch = bool(epoch_kls)
+        if actor_active_this_epoch:
+            actor_epochs_done += 1
         epoch_kl_stats.append({
             "epoch": epoch,
             "mean_kl": mean_epoch_kl,
             "max_kl": max_epoch_kl,
             "std_kl": std_epoch_kl,
             "n_minibatches": len(epoch_kls),
+            "actor_active": actor_active_this_epoch,
         })
 
         pol_losses.extend(epoch_pol_losses)
@@ -1052,8 +1082,14 @@ def ppo_update(
         ret_std[key] = float(r.std()) if r.size > 0 else 0.0
 
     total_steps = sum(buf.ep_lengths)
-    final_kl = epoch_kl_stats[-1]["mean_kl"] if epoch_kl_stats else 0.0
-    max_kl_overall = max((s["max_kl"] for s in epoch_kl_stats), default=0.0)
+    # P0-1: approx_kl/max_kl come from every actor minibatch actually run,
+    # not from the last epoch's (possibly empty) mean.  Before this fix,
+    # `epoch_kl_stats[-1]["mean_kl"]` was 0.0 after early stop because the
+    # trailing epochs had no actor minibatches, hiding the KL blow-up from
+    # every downstream consumer (on_update exploration schedulers,
+    # analyze_training.py, the [PPO Opt] log line).
+    final_kl = float(np.mean(all_actor_kls)) if all_actor_kls else 0.0
+    max_kl_overall = float(np.max(all_actor_kls)) if all_actor_kls else 0.0
 
     clip_frac_mean = float(np.mean(all_clip_fracs)) if all_clip_fracs else 0.0
     ratio_mean = float(np.mean(all_ratio_means)) if all_ratio_means else 1.0
@@ -1088,6 +1124,7 @@ def ppo_update(
         value_loss=value_loss_val,
         grad_norm_actor=grad_norm_actor,
         epochs_done=len(epoch_kl_stats),
+        actor_epochs_done=actor_epochs_done,
         n_batches=n_batches,
         n_episodes=n_episodes,
         total_steps=total_steps,
