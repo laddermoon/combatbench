@@ -360,12 +360,31 @@ class PPOParams:
     Policy-specific parameters (e.g. log_std bounds) belong to the
     actor, not here.  Entropy floor coefficient is carried by
     ``ExplorationSpec.uncertainty_coef``.
+
+    ``target_kl`` semantics:
+      - ``target_kl > 0.0``: per-minibatch KL early-stop is active.  If
+        the running mean KL within an epoch exceeds ``target_kl``, the
+        actor stops updating for the rest of this and all subsequent
+        epochs (critics continue — see B1 in ``ppo_update``).
+      - ``target_kl == 0.0``: KL early-stop is **disabled**, not
+        "zero-tolerance".  The actor runs every epoch and minibatch.
+        This is the default behavior when you want to run vanilla PPO
+        without a trust-region guard.
     """
 
     clip_eps: float
     target_kl: float
     update_epochs: int
     minibatch_size: int
+
+    def __post_init__(self):
+        # Validate at construction so misconfiguration surfaces immediately
+        # rather than as a silent behavioral difference mid-training.
+        if self.target_kl < 0.0:
+            raise ValueError(
+                f"target_kl must be >= 0.0, got {self.target_kl}. "
+                f"Use 0.0 to disable KL early-stop."
+            )
 
 
 # ---------------------------------------------------------------------------

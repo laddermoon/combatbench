@@ -1257,27 +1257,34 @@ def test_minibatch_count_exact_division():
 # ---------------------------------------------------------------------------
 
 def test_kl_early_stop_triggers():
-    """target_kl=0.0 forces immediate early stop after first minibatch.
+    """A tight target_kl + high LR triggers early stop, and the stats reflect it.
 
-    With per-minibatch early stop, the check runs after each minibatch.
-    target_kl=0.0 means any positive running-mean KL triggers a stop
-    immediately — no need to finish the epoch.
+    P0-2 fix: the old version used target_kl=0.0, which *disables* early
+    stop (not "zero tolerance"), so early_stop_kl was always 0 and the
+    entire assertion block was skipped by `if stats.early_stop_kl > 0.0:`.
+    This version uses a real small target_kl with a high LR so early stop
+    is guaranteed to fire, and asserts unconditionally.
     """
+    torch.manual_seed(0)
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
-    T = 64
+    T = 512
+    mb_size = 64
 
     traj = make_trajectory(T, obs_dim, act_dim, {
-        "r_a": make_channel_data(T, rng=rng),
+        "r_a": make_channel_data(T, reward_scale=10.0, rng=rng),
     }, rng=rng)
 
     actor = SimpleActor(obs_dim, act_dim)
     buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
     critics = make_critics(("r_a",), obs_dim)
-    actor_opt, critic_opts = make_optimizers(actor, critics, lr=1e-2)
+    # Zero critic so confidence=0 doesn't suppress actor gradient.
+    for p in critics["r_a"].parameters():
+        p.data.zero_()
+    actor_opt, critic_opts = make_optimizers(actor, critics, lr=1e-1)
 
     channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
-    pp = make_pp_params(target_kl=0.0, minibatch_size=32, update_epochs=4)
+    pp = make_pp_params(target_kl=0.001, minibatch_size=mb_size, update_epochs=4)
 
     stats = ppo_update(
         actor=actor,
@@ -1292,25 +1299,32 @@ def test_kl_early_stop_triggers():
         use_confidence=False,
     )
 
-    # target_kl=0.0 means any positive KL triggers early stop.
-    # With per-minibatch checking, this should stop during epoch 0
-    # (after the first minibatch with positive KL). If KL happens to
-    # be 0 or negative (approx KL can be negative), we continue.
-    if stats.early_stop_kl > 0.0:
-        assert stats.epochs_done <= 1, (
-            f"Should early-stop at epoch 0 or 1 with per-minibatch check, "
-            f"got epochs_done={stats.epochs_done}"
-        )
-        # The epoch that triggered the stop should have fewer than
-        # n_batches minibatches (it stopped mid-epoch).
-        last_epoch = stats.epoch_kl_stats[-1]
-        expected_n_batches = max(1, (T + 31) // 32)  # ceil(64/32) = 2
-        assert last_epoch["n_minibatches"] <= expected_n_batches, (
-            f"Stopped epoch should have <= {expected_n_batches} minibatches, "
-            f"got {last_epoch['n_minibatches']}"
-        )
+    # Unconditional: early stop must have triggered.  If this fails, the
+    # test setup is wrong — not the code under test.
+    assert stats.early_stop_kl > 0.0, (
+        f"Early stop should trigger with target_kl=0.001 and lr=0.1, "
+        f"got early_stop_kl={stats.early_stop_kl}"
+    )
+    # P0-1: actor_epochs_done < epochs_done when actor stops early.
+    assert stats.actor_epochs_done < stats.epochs_done, (
+        f"actor_epochs_done ({stats.actor_epochs_done}) should be < "
+        f"epochs_done ({stats.epochs_done}) after early stop"
+    )
+    # The triggering epoch is the one where actor_active=True and
+    # mean_kl > target_kl.  It must have fewer minibatches than a full
+    # epoch (it stopped mid-epoch).
+    n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)
+    triggering = next(
+        e for e in stats.epoch_kl_stats
+        if e["actor_active"] and e["mean_kl"] > pp.target_kl
+    )
+    assert 0 < triggering["n_minibatches"] <= n_batches_per_epoch, (
+        f"Triggering epoch should have 1..{n_batches_per_epoch} minibatches, "
+        f"got {triggering['n_minibatches']}"
+    )
     print(f"test_kl_early_stop_triggers: PASS "
-          f"(epochs_done={stats.epochs_done}, early_stop_kl={stats.early_stop_kl})")
+          f"(actor_epochs_done={stats.actor_epochs_done}, "
+          f"early_stop_kl={stats.early_stop_kl:.6f})")
 
 
 def test_kl_early_stop_mid_epoch():
@@ -1321,8 +1335,13 @@ def test_kl_early_stop_mid_epoch():
     minibatches in the epoch complete.  This verifies the check is
     per-minibatch, not per-epoch.
 
-    We use a high LR to make KL grow quickly and a tight target_kl.
+    P0-2 fix: the old version asserted on `epoch_kl_stats[-1]`, which
+    after B1 is always an empty post-stop epoch with n_minibatches=0,
+    making `0 < 8` trivially true.  This version finds the *triggering*
+    epoch (the one where actor_active=True and mean_kl > target_kl) and
+    asserts on it.
     """
+    torch.manual_seed(0)
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 512  # large buffer → many minibatches
@@ -1359,25 +1378,28 @@ def test_kl_early_stop_mid_epoch():
 
     n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)  # 8
 
-    if stats.early_stop_kl > 0.0:
-        # The key assertion: the epoch that triggered early stop should
-        # have FEWER minibatches than a full epoch.  If the check were
-        # per-epoch, n_minibatches would always equal n_batches_per_epoch.
-        last_epoch = stats.epoch_kl_stats[-1]
-        assert last_epoch["n_minibatches"] < n_batches_per_epoch, (
-            f"Per-minibatch early stop should stop mid-epoch: "
-            f"n_minibatches={last_epoch['n_minibatches']} < "
-            f"full_epoch={n_batches_per_epoch}"
-        )
-        print(f"test_kl_early_stop_mid_epoch: PASS "
-              f"(stopped at mb {last_epoch['n_minibatches']}/{n_batches_per_epoch}, "
-              f"kl={stats.early_stop_kl:.6f})")
-    else:
-        # KL might not exceed target if the actor doesn't move enough.
-        # In that case, verify all epochs ran fully.
-        assert stats.epochs_done == pp.update_epochs
-        print(f"test_kl_early_stop_mid_epoch: PASS (no early stop, "
-              f"KL stayed below target)")
+    # Unconditional: early stop must trigger.
+    assert stats.early_stop_kl > 0.0, (
+        f"Early stop should trigger with target_kl=0.001 and lr=0.1, "
+        f"got early_stop_kl={stats.early_stop_kl}"
+    )
+    # P0-2 fix: find the *triggering* epoch, not [-1].  The triggering
+    # epoch is the one where the actor was active and KL exceeded target.
+    triggering = next(
+        e for e in stats.epoch_kl_stats
+        if e["actor_active"] and e["mean_kl"] > pp.target_kl
+    )
+    # The key assertion: the triggering epoch stopped mid-epoch, so it
+    # has fewer minibatches than a full epoch.  If the check were
+    # per-epoch, n_minibatches would always equal n_batches_per_epoch.
+    assert 0 < triggering["n_minibatches"] < n_batches_per_epoch, (
+        f"Per-minibatch early stop should stop mid-epoch: "
+        f"n_minibatches={triggering['n_minibatches']} < "
+        f"full_epoch={n_batches_per_epoch}"
+    )
+    print(f"test_kl_early_stop_mid_epoch: PASS "
+          f"(stopped at mb {triggering['n_minibatches']}/{n_batches_per_epoch}, "
+          f"kl={stats.early_stop_kl:.6f})")
 
 
 def test_kl_early_stop_no_partial_epoch_when_kl_low():
