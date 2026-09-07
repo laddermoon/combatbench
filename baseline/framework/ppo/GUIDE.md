@@ -159,173 +159,73 @@ ExplorationSpec(
 
 ## 4. 如何写一个新实验
 
-继承 `ExperimentPPO`，实现所有 abstract 方法。以下是一个完整的最小示例：
+继承 `ExperimentPPO`（或更常用的 `CombatExperimentPPOBase`），实现所有 abstract 方法。
+
+**完整可运行的最小示例见 [`baseline/experiments_ppo/exp_minimal.py`](../../experiments_ppo/exp_minimal.py)。** 这个文件是一个真实的、自动注册的实验（`--experiment minimal`），有测试覆盖（`baseline/framework/ppo/tests/test_minimal_example.py`），确保它永远可运行。下面逐段讲解其中的关键部分。
+
+### 4.0 文件骨架
 
 ```python
 """exp_my_experiment.py — 我的最小实验"""
-from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+from baseline.experiments_ppo.base import CombatExperimentPPOBase
 
-import numpy as np
-import torch
-import torch.nn as nn
-
-from baseline.framework.ppo import (
-    CommonParams, ExperimentPPO, ExplorationSpec,
-    PPOParams, TrainablePolicy,
-)
-from baseline.framework.ppo.trajectory import (
-    ChannelData, RewardChannel, Trajectory,
-)
-from baseline.framework.rollout import extract_per_step_scalar
-from baseline.framework.ppo.policies import CriticMLP
-
-from envs.framework.blueprint import EnvBlueprint
-from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from envs.framework.policy import PolicyBlueprint
-
-
-class MyExperiment(ExperimentPPO):
-
+class MyExperiment(CombatExperimentPPOBase):
     name = "my_experiment"
-    obs_dim = 96
-    action_dim = 21
-    learning_rate = 1e-4
-    episodes_per_update = 256
-    max_updates = 5000
-    eval_interval = 5
-    eval_episodes = 16
-    _best_score: float = -1.0
-
-    def reward_channels(self) -> Tuple[RewardChannel, ...]:
-        return (
-            RewardChannel("r_fall", gamma=0.99, gae_lambda=0.95),
-            RewardChannel("r_cross", gamma=0.99, gae_lambda=0.95),
-        )
-
-    def common_params(self) -> CommonParams:
-        return CommonParams(
-            name=self.name,
-            learning_rate=self.learning_rate,
-            critic_learning_rate=3e-4,
-            grad_clip_norm=1.0,
-            episodes_per_update=self.episodes_per_update,
-            max_updates=self.max_updates,
-            eval_interval=self.eval_interval,
-            eval_episodes=self.eval_episodes,
-            video_eval_interval=0,
-            rollout_workers=48,
-            seed=42,
-        )
-
-    def ppo_params(self) -> PPOParams:
-        return PPOParams(
-            clip_eps=0.2,
-            target_kl=0.05,
-            update_epochs=4,
-            minibatch_size=8192,
-        )
-
-    def build_actor(self, device: torch.device) -> TrainablePolicy:
-        bp = PolicyBlueprint.load("path/to/init_policy.yaml")
-        return bp.build().to(device)
-
-    def build_critic(self, channel_name: str, device: torch.device) -> nn.Module:
-        return CriticMLP(obs_dim=self.obs_dim, hidden_dim=256).to(device)
-
-    def exploration(self, update: int) -> ExplorationSpec | None:
-        return ExplorationSpec(uncertainty_floor=0.3)
-
-    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True) -> List[Job]:
-        env_pb = ParameterizedEnvBlueprint.load("path/to/env.yaml")
-        jobs = []
-        for i in range(n_episodes):
-            seed = base_seed + i
-            env_bp = env_pb.materialize(max_steps=200, agent_id="robot_a")
-            jobs.append(Job(
-                policy_a_bp=policy_bp,
-                policy_b_bp=policy_bp,
-                env_bp=env_bp,
-                seed=seed,
-                stochastic=stochastic,
-            ))
-        return jobs
-
-    def build_trajectories(self, episodes) -> List[Trajectory]:
-        all_trajs = []
-        for ep in episodes:
-            agent_id = "robot_a"
-            T = ep.num_frames
-            if T == 0:
-                continue
-
-            obs = np.asarray(ep.observations[agent_id], dtype=np.float32)
-            acts = np.asarray(ep.actions[agent_id], dtype=np.float32)
-            fin = np.asarray(ep.final_observation[agent_id], dtype=np.float32)
-
-            r_cross = extract_per_step_scalar(
-                ep.observer_outputs, "cross_support_a", T,
-            )
-            phi = extract_per_step_scalar(
-                ep.observer_outputs, "height_phi_a", T,
-            )
-            r_fall = 0.01 * np.clip(phi, 0.0, 1.0)
-
-            term_reason = ep.agent_termination_reason.get(agent_id, "")
-            fell = term_reason.startswith("imbalance")
-
-            all_trajs.append(Trajectory(
-                obs=obs,
-                actions=acts,
-                last_obs=fin,
-                channels={
-                    "r_fall": ChannelData(
-                        reward=r_fall.astype(np.float32),
-                        is_terminated=fell,
-                        actor_weight=3.0,
-                    ),
-                    "r_cross": ChannelData(
-                        reward=r_cross.astype(np.float32),
-                        is_terminated=fell,
-                        actor_weight=1.0,
-                    ),
-                },
-                importance=1.0,
-            ))
-        return all_trajs
-
-    def on_eval(self, episodes, update) -> Dict[str, Any]:
-        survived = 0
-        total = 0
-        for ep in episodes:
-            for aid in ("robot_a", "robot_b"):
-                total += 1
-                if not ep.agent_termination_reason.get(aid, "").startswith("imbalance"):
-                    survived += 1
-
-        is_new_best = survived > self._best_score
-        if is_new_best:
-            self._best_score = float(survived)
-
-        return {
-            "is_new_best": is_new_best,
-            "info": {
-                "survived": float(survived),
-                "survival_rate": round(survived / max(total, 1), 3),
-            },
-        }
-
-    def state(self) -> dict:
-        return {"best_score": self._best_score}
-
-    def load_state(self, state: dict) -> None:
-        self._best_score = float(state.get("best_score", -1.0))
-
+    # ... 覆盖 class attributes 和 abstract methods ...
 
 EXPERIMENT_CLASS = MyExperiment
 ```
 
-### 4.1 方法清单
+> **为什么继承 `CombatExperimentPPOBase` 而不是直接继承 `ExperimentPPO`？**
+> `CombatExperimentPPOBase` 提供了 combat 环境的默认实现（`build_actor`、
+> `build_critic`、`build_jobs`、`common_params`、`ppo_params`、`exploration`），
+> 你只需要覆盖 class attributes 和 `reward_channels()`、`build_trajectories()`、
+> `on_eval()`、`state()`/`load_state()`。直接继承 `ExperimentPPO` 需要实现
+> 所有 abstract 方法，适合非 combat 环境或完全自定义的场景。
+
+### 4.1 关键方法
+
+以 `exp_minimal.py` 为参考，以下是你需要实现的核心方法：
+
+**`reward_channels()`** — 声明所有 reward channel 的 name/gamma/lambda：
+
+```python
+def reward_channels(self) -> Tuple[RewardChannel, ...]:
+    return (
+        RewardChannel("r_potential", gamma=0.99, gae_lambda=0.95),
+    )
+```
+
+**`build_trajectories(episodes)`** — episode → trajectory：
+
+```python
+def build_trajectories(self, episodes) -> List[Trajectory]:
+    all_trajs = []
+    for episode in episodes:
+        for agent_id, obs_key in self._AGENT_OBS:
+            trajs = self._build_agent_trajectory(episode, agent_id, obs_key)
+            all_trajs.extend(trajs)
+    return all_trajs
+```
+
+> ⚠️ `build_trajectories` 返回空列表 `[]` 会跳过本轮 PPO update（P0-3）。
+> 这是 curriculum learning 早期阶段的正常情况。
+
+**`on_eval(episodes, update)`** — 计算 eval 指标、判断 best：
+
+```python
+def on_eval(self, episodes, update) -> Dict[str, Any]:
+    # ... 计算 metrics ...
+    is_new_best = mean_max_pot > self._best_potential
+    if is_new_best:
+        self._best_potential = mean_max_pot
+    return {"is_new_best": is_new_best, "info": {...}}
+```
+
+> ⚠️ `is_new_best=True` 时框架会导出策略到 `policy/` 目录。确保你的 best
+> 判断逻辑是单调的（只有真正更好才返回 True），否则会频繁导出。
+
+### 4.2 方法清单
 
 | 方法 | 必须? | 何时被调用 | 你要做什么 |
 |------|-------|-----------|-----------|
@@ -338,15 +238,20 @@ EXPERIMENT_CLASS = MyExperiment
 | `build_trajectories(episodes)` | **必须** | 每 update | episode → trajectory |
 | `on_eval(episodes, update)` | **必须** | 每 eval_interval 轮 | 计算 eval 指标、判断 best、更新状态 |
 | `on_update(stats, update)` | 可选 | 每 update 后 | 吸收训练统计到内部状态，默认 no-op |
-| `exploration(update)` | 可选 | 每 update 前 | 返回 ExplorationSpec，默认 None |
+| `exploration(update)` | 可选 | 每 update 前 | 返回 ExplorationSpec（uncertainty_floor/coef），默认 None |
 | `state()` | 可选 | checkpoint 时 | 序列化内部状态 |
 | `load_state(state)` | 可选 | resume 时 | 恢复内部状态 |
 
-### 4.2 运行
+> `CombatExperimentPPOBase` 已提供 `common_params()`、`ppo_params()`、
+> `build_actor()`、`build_critic()`、`build_jobs()`、`exploration()` 的默认
+> 实现，继承它时只需覆盖 class attributes 和 `reward_channels()`、
+> `build_trajectories()`、`on_eval()`、`state()`/`load_state()`。
+
+### 4.3 运行
 
 ```bash
 cd /data1/mono/things/combatbench
-PYTHONPATH=. python3 baseline/framework/train.py --experiment my_experiment --algo ppo --smoke
+PYTHONPATH=. python3 baseline/framework/train.py --experiment minimal --algo ppo --smoke
 ```
 
 `--smoke` 跑 2 轮快速验证。确认没问题后去掉 `--smoke` 正式训练，或加 `--background` 后台运行。
