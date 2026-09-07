@@ -41,6 +41,7 @@ class Standup(CombatExperimentPPOBase):
     """
 
     name = "standup"
+    actor_blueprint = "init_policy_truncated_normal.yaml"
 
     # --- Network ---
     obs_dim: int = 96
