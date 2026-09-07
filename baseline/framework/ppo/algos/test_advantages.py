@@ -1,6 +1,7 @@
-"""Tests for ``compute_gae``, ``compute_returns_to_go``, ``compute_grpo_advantages``.
+"""Tests for ``compute_gae`` and ``compute_returns_to_go``.
 
 Pin the contract from ``baseline/DESIGN.md`` §3.6.
+P1-6: Removed ``compute_grpo_advantages`` tests (GRPO was dead code).
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.ppo.algos import (
     compute_gae,
-    compute_grpo_advantages,
     compute_returns_to_go,
 )
 
@@ -119,62 +119,3 @@ class TestReturnsToGo:
         # ret[0] = 0 + 0.5*1 = 0.5
         np.testing.assert_allclose(ret, [0.5, 1.0, 2.0], atol=1e-6)
 
-
-# ---------------------------------------------------------------------------
-# GRPO
-# ---------------------------------------------------------------------------
-class TestGRPOAdvantages:
-    def test_centered_within_group(self):
-        # Three episodes with returns [0, 5, 10]; mean=5, std≈4.082.
-        rewards = [
-            np.array([0.0, 0.0], dtype=np.float32),
-            np.array([5.0, 0.0], dtype=np.float32),
-            np.array([10.0, 0.0], dtype=np.float32),
-        ]
-        adv = compute_grpo_advantages(
-            rewards, gamma=1.0, broadcast_to_steps=False,
-        )
-        # Sum of centered values must be ~0.
-        assert abs(sum(adv)) < 1e-5
-        # Highest-return episode has advantage > 0; lowest has < 0.
-        assert adv[2] > 0
-        assert adv[0] < 0
-
-    def test_broadcast_to_steps_matches_episode_lengths(self):
-        rewards = [
-            np.zeros(3, dtype=np.float32),
-            np.zeros(7, dtype=np.float32),
-            np.zeros(2, dtype=np.float32),
-        ]
-        # All-zero rewards → all returns zero → std=eps → advantages all zero
-        # but we still want shapes.
-        adv = compute_grpo_advantages(rewards)
-        assert [a.shape[0] for a in adv] == [3, 7, 2]
-        for a in adv:
-            np.testing.assert_allclose(a, 0.0, atol=1e-3)
-
-    def test_within_episode_advantage_is_constant(self):
-        # GRPO is a per-episode scalar; broadcasting it across steps means
-        # all values within one episode should be identical.
-        rewards = [
-            np.array([1.0, 2.0, 3.0], dtype=np.float32),
-            np.array([4.0, 5.0], dtype=np.float32),
-        ]
-        adv = compute_grpo_advantages(rewards, gamma=1.0)
-        for a in adv:
-            assert a.std() == pytest.approx(0.0, abs=1e-6)
-
-    def test_gamma_discounts_within_episode(self):
-        # For one-step-each episodes, gamma should not matter.
-        rewards = [np.array([1.0]), np.array([2.0]), np.array([3.0])]
-        a05 = compute_grpo_advantages(rewards, gamma=0.5, broadcast_to_steps=False)
-        a10 = compute_grpo_advantages(rewards, gamma=1.0, broadcast_to_steps=False)
-        np.testing.assert_allclose(a05, a10, atol=1e-6)
-
-    def test_empty_group_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            compute_grpo_advantages([])
-
-    def test_2d_per_episode_rewards_rejected(self):
-        with pytest.raises(ValueError, match="1-D"):
-            compute_grpo_advantages([np.zeros((3, 2))])
