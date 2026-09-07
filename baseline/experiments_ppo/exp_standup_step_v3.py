@@ -15,9 +15,9 @@ Two reward phases with hard switch based on torso height:
     (same as exp_standup.py — pure 4-stage standing potential)
 
   BALANCE phase (h_torso >= plateau):
-    r_fall       = 0.01 × φ_height,         weight = 3.0 (fixed)
-    r_left_foot  = clip(h_left,  -0.3, 0.3), weight = stepping state machine
-    r_right_foot = clip(h_right, -0.3, 0.3), weight = stepping state machine
+    r_fall       = 0.01 × φ_height,         weight = 1.0 (fixed)
+    r_left_foot  = clip(h_left,  -0.3, 0.3), weight = stepping state machine (W=1.0)
+    r_right_foot = clip(h_right, -0.3, 0.3), weight = stepping state machine (W=1.0)
 
   Phase transitions (per agent, per step):
     STANDUP → BALANCE:  plateau detection on h_torso
@@ -146,7 +146,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- r_fall actor weight (balance phase) ---
     # Fixed weight — no curriculum.  The balance survival reward is
     # always active during BALANCE phase, coexisting with foot rewards.
-    r_fall_actor_weight: float = 3.0
+    r_fall_actor_weight: float = 1.0
 
     # --- r_potential actor weight (standup phase) ---
     # 1.0: needed to preserve standup behaviour.  Setting it to 0.0
@@ -165,10 +165,8 @@ class StandupStepV3(CombatExperimentPPOBase):
     foot_height_clip: float = 0.30
 
     # --- Foot actor weight override ---
-    # The stepping state machine uses FOOT_WEIGHT=1.0 by default.  We
-    # override it to 5.0 to make the stepping gradient dominant during
-    # the BALANCE phase.
-    foot_weight_override: float = 5.0
+    # The stepping state machine uses FOOT_WEIGHT=1.0 by default.
+    foot_weight_override: float = 1.0
 
     # --- Double grace override ---
     # The state machine default is 6 steps (0.3s @ 20Hz).  We reduce it
