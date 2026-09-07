@@ -265,7 +265,13 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         # Uncertainty U = 1 / (2 × peak), using policy σ (no explore scale)
         policy_sigma = self.policy_sigma()
-        policy_mean = torch.tanh(self.net(obs))  # recompute without explore
+        # P1-8: Reuse the mean from forward() — mean does not depend on
+        # explore_factor (explore_factor only scales sigma).  This avoids
+        # a redundant full forward pass + autograd graph that doubled the
+        # actor's per-minibatch cost.
+        # If a future policy makes explore_factor affect mean (e.g.
+        # directional noise injection), this reuse must be reverted.
+        policy_mean = mean
         # mean ∈ (-1, 1) so peak is at x = mean
         # peak = 1 / (σ × √(2π) × Z)
         # U = σ × √(2π) × Z / 2
