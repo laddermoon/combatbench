@@ -64,17 +64,6 @@ class CombatExperimentPPOBase(ExperimentPPO):
     uncertainty_floor: float = 0.3
     uncertainty_coef: float = 0.01
 
-    # Sigma bounds — normalization reference points for the policy's
-    # uncertainty, not hard clamps.  See DESIGN_migration_tanh_gaussian.md.
-    log_std_min: float = -4.0
-    log_std_max: float = 0.0
-
-    # --- Temporally correlated exploration (OU) ---
-    # Set at build time on policies that support it (e.g.
-    # FixedSigmaGaussianMLPPolicy).  0.0 disables OU.
-    noise_tau_steps: float = 0.0
-    noise_scale: float = 0.0
-
     # --- Shared training ---
     learning_rate: float = 1e-4
     critic_learning_rate: float = 3e-4
@@ -103,17 +92,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # --- Policy blueprint ---
     # Filename of the initial policy blueprint YAML under
     # humanoid21/blueprints/.  Used by build_actor() to construct the
-    # actor.  New policy families override this to point to their own
-    # init_policy_<family>.yaml.  Default matches the baseline
-    # TanhGaussianMLPPolicy blueprint.
-    actor_blueprint: str = "init_policy.yaml"
+    # actor.  Default is TruncatedNormalPolicy.
+    actor_blueprint: str = "init_policy_truncated_normal.yaml"
 
     # --- Rollout / env configuration (subclass overrides) ---
     # These parameters control how build_jobs() constructs rollout jobs.
-    # Each job is a tuple:
-    #   (policy_a_bp, policy_b_bp, env_bp, seed, episode_options)
-    # The framework's ParallelRollouter.collect() consumes these jobs to
-    # run parallel environment rollouts and produce Episode objects.
+    # Each job is a Job dataclass carrying policy blueprints, env
+    # blueprint, seed, episode options, explore_factor, and stochastic
+    # flag.  The framework's ParallelRollouter.collect() consumes these
+    # jobs to run parallel environment rollouts and produce Episode
+    # objects.
     #
     # env_blueprint: YAML filename under humanoid21/blueprints/ that
     #   defines the ParameterizedEnvBlueprint (env plugins, observers,
@@ -216,26 +204,6 @@ class CombatExperimentPPOBase(ExperimentPPO):
         blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
         bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
         actor = bp.build().to(device)
-        # The actor owns its distribution bounds now that they left
-        # PPOParams. Both are forced here (previously only log_std_min was),
-        # so the class attributes are authoritative and the values baked into
-        # init_policy.yaml cannot silently diverge from them.
-        # Guarded with hasattr so policy families without scalar
-        # log_std_min/max (e.g. mixture, flow) aren't forced to grow
-        # attributes they don't use.
-        if hasattr(actor, "log_std_min"):
-            actor.log_std_min = float(self.log_std_min)
-        if hasattr(actor, "log_std_max"):
-            actor.log_std_max = float(self.log_std_max)
-        # OU exploration params (for FixedSigmaGaussianMLPPolicy).
-        # These were previously passed via ExplorationSpec every update,
-        # but now that ExplorationSpec no longer carries them, they are
-        # set once at build time.
-        if hasattr(actor, "_noise_tau_steps"):
-            actor._noise_tau_steps = float(self.noise_tau_steps)
-            actor._update_ou_params()
-        if hasattr(actor, "_noise_scale"):
-            actor._noise_scale = float(self.noise_scale)
         return actor
 
     def build_critic(self, channel_name: str, device: torch.device) -> nn.Module:
@@ -293,8 +261,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Extract per-frame explore_factor for one agent, truncated to T.
 
         Reads from ``episode.explore_intensities[agent_id]`` — the
-        per-frame input that was passed to ``policy.act`` at rollout
-        time, recorded by the episode runner.  Returns a ``(T,)``
+        per-frame value that was passed to ``policy.sample()`` at
+        rollout time, recorded by the episode runner.  Returns a ``(T,)``
         float32 array defaulting to 0.0 (neutral) when the episode has
         no recorded explore_factor.
         """

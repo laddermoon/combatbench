@@ -62,8 +62,6 @@ class Standup(CombatExperimentPPOBase):
     uncertainty_coef: float = 0.001
 
     # --- PPO tuning ---
-    log_std_min: float = -2.5
-    log_std_max: float = 0.0
     learning_rate: float = 3e-4
     critic_learning_rate: float = 3e-4
     target_kl: float = 0.05
