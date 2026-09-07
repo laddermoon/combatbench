@@ -243,7 +243,7 @@ class TrainingLogAnalyzer:
                 ),
                 "remedy": (
                     "1. Raise log_std_min in the experiment config (e.g. from -2.7 to -2.0).\n"
-                    "2. Increase entropy_coef to encourage exploration."
+                    "2. Increase uncertainty_coef to encourage exploration."
                 ),
             })
 
@@ -419,7 +419,7 @@ class TrainingLogAnalyzer:
                     "remedy": (
                         "1. Increase the actor learning rate.\n"
                         "2. Check if advantages are being normalized correctly.\n"
-                        "3. Verify that entropy_coef isn't dominating the loss."
+                        "3. Verify that uncertainty_coef isn't dominating the loss."
                     ),
                 })
 
@@ -530,7 +530,7 @@ class TrainingLogAnalyzer:
         ppo_keys = [
             k for k in (
                 "policy_loss", "value_loss", "approx_kl", "max_kl",
-                "epochs_done", "entropy", "std_mean", "std_min",
+                "epochs_done", "uncertainty", "std_mean", "std_min",
                 "ep_len_mean", "n_episodes", "n_batches", "total_steps",
                 "clip_frac", "ratio_mean", "ratio_max", "grad_norm_actor",
             ) if k in stats
@@ -805,7 +805,7 @@ class TrainingLogAnalyzer:
         ep_len = stats.get("ep_len_mean", 0.0)
         kl = stats.get("approx_kl", 0.0)
         epochs = stats.get("epochs_done", 0)
-        entropy = stats.get("entropy", 0.0)
+        uncertainty = stats.get("uncertainty", 0.0)
         n_ep = stats.get("n_episodes", 0)
         clip_frac = stats.get("clip_frac", 0.0)
         t_total = timing.get("total", 0.0)
@@ -814,7 +814,7 @@ class TrainingLogAnalyzer:
             f"ep_len={_fmt_float(ep_len, 1)}  ",
             f"n_ep={n_ep}  ",
             f"kl={kl:.4f}  epochs={epochs}  ",
-            f"entropy={entropy:.2f}  ",
+            f"uncertainty={uncertainty:.2f}  ",
             f"clip={clip_frac:.1%}",
         ]
         if t_total:

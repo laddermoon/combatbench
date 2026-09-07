@@ -145,7 +145,7 @@ class FollowV2(CombatExperimentPPOBase):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
-    entropy_coef: float = 1.5e-3
+    uncertainty_coef: float = 1.5e-3
 
     # --- Curriculum ---
     LEVEL_SPEEDS: Tuple[float, ...] = (

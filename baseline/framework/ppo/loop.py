@@ -110,7 +110,7 @@ def save_run_config(
     pp = experiment.ppo_params()
     channels = experiment.reward_channels()
 
-    # log_std bounds and entropy_coef left PPOParams, so record the initial
+    # log_std bounds and uncertainty_coef left PPOParams, so record the initial
     # ExplorationSpec too — otherwise config.json would silently lose the
     # exploration configuration and stop being reproducible.
     initial_spec = experiment.exploration(1)
@@ -443,7 +443,7 @@ def train_ppo(
             t_update_start = time.perf_counter()
 
             # 0. Exploration scheduling — resolve PPO update parameters
-            #    (entropy_floor, entropy_coef) for this update.
+            #    (uncertainty_floor, uncertainty_coef) for this update.
             #    explore_intensity is NOT here — it is decided inside
             #    build_jobs and placed into each Job's fields.
             spec = experiment.exploration(u)
@@ -662,7 +662,7 @@ def train_ppo(
             early_stop_kl = stats.early_stop_kl
 
             # Exploration diagnostics are rendered generically from whatever
-            # the policy reported. Hard-coding entropy/std here would reassert
+            # the policy reported. Hard-coding uncertainty/std here would reassert
             # the Gaussian assumption this refactor removed; a mixture or
             # diffusion policy contributes different keys and they still show
             # up in the log without a framework change.

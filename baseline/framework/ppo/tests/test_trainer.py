@@ -90,20 +90,20 @@ class SimpleActor(nn.Module):
         )
         log_prob = log_prob.sum(dim=-1)
 
-        # Normalized entropy for the entropy floor loss.
-        entropy_raw = dist.entropy().sum(dim=-1)
+        # Normalized uncertainty for the uncertainty floor loss.
+        uncertainty_raw = dist.entropy().sum(dim=-1)
         H_max = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + 1.0)
         H_min = self.action_dim * (0.5 * math.log(2 * math.pi * math.e) + (-4.0))
-        entropy_norm = (entropy_raw - H_min) / (H_max - H_min)
+        uncertainty_norm = (uncertainty_raw - H_min) / (H_max - H_min)
 
         stats = None
         if want_stats:
             stats = {
-                "entropy_raw": float(entropy_raw.mean().item()),
+                "uncertainty_raw": float(uncertainty_raw.mean().item()),
                 "std_mean": float(std.mean().item()),
             }
 
-        return ActorEval(log_prob=log_prob, entropy=entropy_norm, stats=stats)
+        return ActorEval(log_prob=log_prob, uncertainty=uncertainty_norm, stats=stats)
 
     def to_blueprint(self, dest_path: str, *, stochastic: bool = False):
         raise NotImplementedError("Not needed for trainer tests")
@@ -1024,7 +1024,7 @@ def test_ppo_update_inactive_channel_no_critic_grad():
 
 
 def test_ppo_update_exploration_spec_overrides():
-    """ExplorationSpec with entropy_floor activates the floor loss."""
+    """ExplorationSpec with uncertainty_floor activates the floor loss."""
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 64
@@ -1041,8 +1041,8 @@ def test_ppo_update_exploration_spec_overrides():
     channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
     pp = make_pp_params(clip_eps=0.2, target_kl=0.05, minibatch_size=32)
 
-    # High entropy_floor + nonzero coef should add floor loss.
-    spec = ExplorationSpec(entropy_floor=0.9, entropy_coef=1.0)
+    # High uncertainty_floor + nonzero coef should add floor loss.
+    spec = ExplorationSpec(uncertainty_floor=0.9, uncertainty_coef=1.0)
 
     stats = ppo_update(
         actor=actor,

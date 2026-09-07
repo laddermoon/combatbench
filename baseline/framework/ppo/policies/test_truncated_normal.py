@@ -140,7 +140,7 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(100, OBS_DIM)
         ev = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
-        u = ev.entropy
+        u = ev.uncertainty
         self.assertTrue((u >= 0.0).all(), f"U < 0: min={u.min()}")
         self.assertTrue((u <= 1.0).all(), f"U > 1: max={u.max()}")
 
@@ -151,12 +151,12 @@ class TestUncertainty(unittest.TestCase):
         # Large σ
         p.log_std.data.fill_(0.0)  # σ = 1.0
         ev_large = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
-        u_large = ev_large.entropy.mean().item()
+        u_large = ev_large.uncertainty.mean().item()
 
         # Small σ
         p.log_std.data.fill_(-3.0)  # σ ≈ 0.05
         ev_small = p.evaluate_actions(obs, torch.zeros(100, ACTION_DIM), torch.full((100,), 0.0))
-        u_small = ev_small.entropy.mean().item()
+        u_small = ev_small.uncertainty.mean().item()
 
         self.assertGreater(u_large, u_small,
                            f"U(σ=1)={u_large} should > U(σ=0.05)={u_small}")
@@ -167,7 +167,7 @@ class TestUncertainty(unittest.TestCase):
         p.log_std.data.fill_(-1.0)  # σ ≈ 0.368
         obs = torch.zeros(10, OBS_DIM)
         ev = p.evaluate_actions(obs, torch.zeros(10, ACTION_DIM), torch.full((10,), 0.0))
-        u_actual = ev.entropy[0].item()
+        u_actual = ev.uncertainty[0].item()
 
         # Manual: use actual mean from network
         with torch.no_grad():
@@ -195,7 +195,7 @@ class TestUncertainty(unittest.TestCase):
         ev1 = p.evaluate_actions(obs1, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.0))
         ev2 = p.evaluate_actions(obs2, torch.zeros(1, ACTION_DIM), torch.full((1,), 0.0))
         # They should be different (Z changes with mean position)
-        self.assertNotAlmostEqual(ev1.entropy[0].item(), ev2.entropy[0].item(),
+        self.assertNotAlmostEqual(ev1.uncertainty[0].item(), ev2.uncertainty[0].item(),
                                   places=3,
                                   msg="U should differ for different obs")
 
@@ -238,7 +238,7 @@ class TestExploreIntensity(unittest.TestCase):
         ev_neutral = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
         ev_expanded = p.evaluate_actions(obs, actions, torch.full((10,), 1.0))
 
-        diff = (ev_neutral.entropy - ev_expanded.entropy).abs().max().item()
+        diff = (ev_neutral.uncertainty - ev_expanded.uncertainty).abs().max().item()
         self.assertLess(diff, 1e-5,
                         f"U should not change with explore_intensity, diff={diff}")
 
@@ -251,7 +251,7 @@ class TestGradients(unittest.TestCase):
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
         ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
-        loss = ev.log_prob.mean() + ev.entropy.mean()
+        loss = ev.log_prob.mean() + ev.uncertainty.mean()
         loss.backward()
         self.assertIsNotNone(p.log_std.grad)
         self.assertFalse(torch.allclose(p.log_std.grad,
@@ -273,7 +273,7 @@ class TestGradients(unittest.TestCase):
         obs = torch.randn(10, OBS_DIM)
         actions = torch.zeros(10, ACTION_DIM)
         ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
-        loss = ev.entropy.mean()
+        loss = ev.uncertainty.mean()
         loss.backward()
         self.assertIsNotNone(p.log_std.grad)
         # U increases with σ (wider → more uncertain), so gradient should

@@ -163,7 +163,7 @@ class FightShape(CombatExperimentPPOBase):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
-    entropy_coef: float = 1.5e-3
+    uncertainty_coef: float = 1.5e-3
 
     # --- Eval / early stop ---
     eval_target: Optional[float] = None

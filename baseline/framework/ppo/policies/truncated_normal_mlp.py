@@ -303,7 +303,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  log_prob uses
         effective σ (with explore scale) so the PPO importance ratio is
-        correct.  entropy (uncertainty U) uses policy σ (without explore
+        correct.  uncertainty (U) uses policy σ (without explore
         scale) so it reflects the policy's own certainty.
         """
         mean, eff_sigma = self.forward(obs, explore_intensity=explore_intensity)
@@ -344,7 +344,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         return ActorEval(
             log_prob=log_prob,
-            entropy=uncertainty,
+            uncertainty=uncertainty,
             stats=stats,
         )
 

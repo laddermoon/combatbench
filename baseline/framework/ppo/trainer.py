@@ -426,8 +426,8 @@ def ppo_update(
             This down-weights channels whose critic has low explained variance,
             preventing noisy advantage estimates from destabilizing the actor.
         exploration: Optional per-update spec from the experiment.
-            ``entropy_floor`` and ``entropy_coef`` are consumed here to
-            compute the entropy floor loss; ``explore_intensity`` was
+            ``uncertainty_floor`` and ``uncertainty_coef`` are consumed here to
+            compute the uncertainty floor loss; ``explore_intensity`` was
             already applied to the policy before rollout via
             ``set_exploration``.
 
@@ -439,14 +439,14 @@ def ppo_update(
     target_kl = pp.target_kl
 
     # Entropy floor: the framework computes a one-sided hinge loss
-    # ``entropy_coef * relu(entropy_floor - H_norm)`` from the policy's
-    # normalized entropy.  This replaces the old ``ActorEval.regularizer``
+    # ``uncertainty_coef * relu(uncertainty_floor - U)`` from the policy's
+    # normalized uncertainty.  This replaces the old ``ActorEval.regularizer``
     # design where the policy computed its own loss term.
-    entropy_floor = 0.0
-    entropy_coef = 0.0
+    uncertainty_floor = 0.0
+    uncertainty_coef = 0.0
     if exploration is not None:
-        entropy_floor = exploration.entropy_floor or 0.0
-        entropy_coef = exploration.entropy_coef or 0.0
+        uncertainty_floor = exploration.uncertainty_floor or 0.0
+        uncertainty_coef = exploration.uncertainty_coef or 0.0
 
     # B8: Collect diagnostic messages instead of printing directly.
     # ppo_update is supposed to be a pure function; printing is a side
@@ -635,7 +635,7 @@ def ppo_update(
     # nonzero actor_weight has confidence=0, the combined advantage is
     # all zeros and the actor receives no policy gradient.  This is
     # expected for the first few updates while critics warm up, but if
-    # it persists the actor is silently doing nothing (only entropy reg
+    # it persists the actor is silently doing nothing (only uncertainty reg
     # drives it, if any).  Warn so the user can distinguish "training
     # is working but slow" from "actor is not learning at all".
     if use_confidence:
@@ -885,24 +885,24 @@ def ppo_update(
                 all_ratio_maxs.append(float(ratio.max().item()))
 
             # Entropy floor loss: one-sided hinge that only activates when
-            # the policy's normalized entropy drops below the floor.
-            # ``entropy_coef * relu(entropy_floor - H_norm)``.  This
+            # the policy's normalized uncertainty drops below the floor.
+            # ``uncertainty_coef * relu(uncertainty_floor - U)``.  This
             # replaces the old ``ActorEval.regularizer`` design where the
             # policy computed its own loss term.  The policy returns a
-            # per-obs normalized entropy in [0, 1]; the framework owns the
+            # per-obs normalized uncertainty in [0, 1]; the framework owns the
             # coefficient and the floor.
             loss = policy_loss
             floor_loss = torch.tensor(0.0, device=policy_loss.device)
-            if entropy_coef > 0.0 and entropy_floor > 0.0:
-                floor_loss = entropy_coef * torch.relu(
-                    entropy_floor - actor_eval.entropy
+            if uncertainty_coef > 0.0 and uncertainty_floor > 0.0:
+                floor_loss = uncertainty_coef * torch.relu(
+                    uncertainty_floor - actor_eval.uncertainty
                 ).mean()
                 loss = loss + floor_loss
 
                 # --- Gradient diagnostics for log_std ---
                 # Measure how much policy_loss vs floor_loss each contribute
                 # to the gradient on log_std.  This is critical for
-                # diagnosing why the entropy floor may not be holding.
+                # diagnosing why the uncertainty floor may not be holding.
                 # We use torch.autograd.grad with retain_graph=True to
                 # compute per-loss gradients without side effects on
                 # actor's .grad attributes.
@@ -923,7 +923,7 @@ def ppo_update(
                         all_pol_logstd_grad_sign.append(float(pol_grads.mean().item()))
                         all_floor_logstd_grad_sign.append(float(floor_grads.mean().item()))
                         all_floor_active_frac.append(
-                            float((actor_eval.entropy < entropy_floor).float().mean().item())
+                            float((actor_eval.uncertainty < uncertainty_floor).float().mean().item())
                         )
 
             actor_optimizer.zero_grad()

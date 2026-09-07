@@ -59,13 +59,13 @@ to discover stepping.  We use:
     policy enough noise to try lifting feet while still being grounded
     in the standup behaviour.
 
-  entropy_floor = 0.35
+  uncertainty_floor = 0.35
     Prevents the policy from collapsing back to pure-standup during
     training.  The floor is set above the converged standup entropy
     (≈0.30) so the policy is pushed to maintain *more* entropy than
     pure standing requires.
 
-  entropy_coef = 0.01
+  uncertainty_coef = 0.01
     Standard coefficient for the floor hinge loss.
 
   learning_rate = 5e-5  (half of standup's 1e-4)
@@ -219,7 +219,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     # 0.63 → σ × exp(0.63 × ln3) = σ × 2.0, strong noise.
     # Converted from old [0,1] scale (0.75, where 0.5=neutral → σ×2.0)
     # to new [-1,1] scale (0.63 = ln2/ln3, preserving σ×2.0).
-    # The key change is the entropy_floor below — we force the policy's
+    # The key change is the uncertainty_floor below — we force the policy's
     # OWN σ to be high, not just the rollout σ.
     explore_intensity: float = 0.63
     # 0.70 → forces the policy's own σ to ≈0.47 (vs converged 0.17).
@@ -227,10 +227,10 @@ class StandupStepV3(CombatExperimentPPOBase):
     # prevents σ from dropping below 0.47, giving the policy enough
     # randomness to discover stepping while still being grounded in
     # the standup behavior.
-    entropy_floor: float = 0.70
+    uncertainty_floor: float = 0.70
     # 0.30 → very strong coefficient to hold the floor against PPO's
     # natural entropy reduction.
-    entropy_coef: float = 0.30
+    uncertainty_coef: float = 0.30
 
     # --- Sigma bounds (match standup training) ---
     log_std_min: float = -2.5

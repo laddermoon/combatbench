@@ -55,10 +55,10 @@ class Standup(CombatExperimentPPOBase):
     # 0.0 = neutral (policy uses its learned σ as-is).
     # Standup requires precise motor control — no extra exploration noise.
     explore_intensity: float = 0.0
-    # Disable entropy floor: standup needs the policy to converge to
+    # Disable uncertainty floor: standup needs the policy to converge to
     # deterministic control.  The old run (success=1.0) had no floor.
-    entropy_floor: float = 0.0
-    entropy_coef: float = 0.001
+    uncertainty_floor: float = 0.0
+    uncertainty_coef: float = 0.001
 
     # --- PPO tuning ---
     log_std_min: float = -2.5

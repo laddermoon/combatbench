@@ -21,7 +21,7 @@ Standard PPO recipe (matches CleanRL / SB3 conventions):
     value_loss  = 0.5 * max(v_unclipped, v_clipped).mean()
     [if value_clip is None: value_loss = 0.5 * v_unclipped.mean()]
 
-  total_loss   = policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
+  total_loss   = policy_loss + value_coef * value_loss - uncertainty_coef * uncertainty.mean()
 
 Diagnostics (returned alongside the loss, useful for early-stop /
 logging):
@@ -36,8 +36,8 @@ Design rules:
     (adv.std() + eps)`` is the standard CleanRL trick — easy to do
     inside ``ppo_loss(..., normalize_advantages=True)`` so we offer it
     as a flag).
-  * Entropy can be either a per-sample tensor of shape ``(B,)`` or
-    ``None``. ``None`` skips the entropy term entirely (e.g. for
+  * Uncertainty can be either a per-sample tensor of shape ``(B,)`` or
+    ``None``. ``None`` skips the uncertainty term entirely (e.g. for
     deterministic actors during eval-style fine-tuning).
 """
 from __future__ import annotations
@@ -59,7 +59,7 @@ class PPOLossOutput:
     loss: torch.Tensor
     policy_loss: torch.Tensor
     value_loss: torch.Tensor
-    entropy: torch.Tensor
+    uncertainty: torch.Tensor
     approx_kl: torch.Tensor
     clip_fraction: torch.Tensor
     explained_variance: torch.Tensor
@@ -73,19 +73,19 @@ def ppo_loss(
     values_old: torch.Tensor,
     values_new: torch.Tensor,
     returns: torch.Tensor,
-    entropy: Optional[torch.Tensor] = None,
+    uncertainty: Optional[torch.Tensor] = None,
     clip_range: float = 0.2,
     value_clip: Optional[float] = 0.2,
     value_coef: float = 0.5,
-    entropy_coef: float = 0.0,
+    uncertainty_coef: float = 0.0,
     normalize_advantages: bool = True,
     advantage_eps: float = 1e-8,
 ) -> PPOLossOutput:
-    """Compute PPO clipped surrogate + value + entropy losses.
+    """Compute PPO clipped surrogate + value + uncertainty losses.
 
     Shape requirements (``B`` = minibatch size):
       log_probs_old / log_probs_new / advantages / values_old / values_new
-      / returns / (entropy if not None) all ``(B,)``.
+      / returns / (uncertainty if not None) all ``(B,)``.
     """
     _validate_shapes(
         log_probs_old=log_probs_old,
@@ -94,7 +94,7 @@ def ppo_loss(
         values_old=values_old,
         values_new=values_new,
         returns=returns,
-        entropy=entropy,
+        uncertainty=uncertainty,
     )
 
     advantages_used = advantages
@@ -124,13 +124,13 @@ def ppo_loss(
         ) ** 2
         value_loss = 0.5 * torch.max(v_unclipped, v_clipped).mean()
 
-    if entropy is not None:
-        entropy_mean = entropy.mean()
+    if uncertainty is not None:
+        uncertainty_mean = uncertainty.mean()
     else:
-        entropy_mean = torch.zeros((), device=log_probs_new.device)
+        uncertainty_mean = torch.zeros((), device=log_probs_new.device)
 
     total_loss = (
-        policy_loss + value_coef * value_loss - entropy_coef * entropy_mean
+        policy_loss + value_coef * value_loss - uncertainty_coef * uncertainty_mean
     )
 
     with torch.no_grad():
@@ -149,7 +149,7 @@ def ppo_loss(
         loss=total_loss,
         policy_loss=policy_loss.detach(),
         value_loss=value_loss.detach(),
-        entropy=entropy_mean.detach(),
+        uncertainty=uncertainty_mean.detach(),
         approx_kl=approx_kl,
         clip_fraction=clip_fraction,
         explained_variance=explained_variance,

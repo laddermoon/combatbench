@@ -56,16 +56,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   → +1 = maximum added exploration.
     #   → -1 = maximum exploration suppression.
     #   The specific mapping is policy-defined.
-    # entropy_floor: training-side entropy floor ∈ [0, 1].
-    #   The framework computes relu(entropy_floor - H_norm) to prevent
+    # uncertainty_floor: training-side uncertainty floor ∈ [0, 1].
+    #   The framework computes relu(uncertainty_floor - U) to prevent
     #   policy collapse.  Set to 0 to disable.
-    # entropy_coef: coefficient for the entropy floor loss.
+    # uncertainty_coef: coefficient for the uncertainty floor loss.
     explore_intensity: float = 0.0
-    entropy_floor: float = 0.3
-    entropy_coef: float = 0.01
+    uncertainty_floor: float = 0.3
+    uncertainty_coef: float = 0.01
 
     # Sigma bounds — normalization reference points for the policy's
-    # entropy, not hard clamps.  See DESIGN_migration_tanh_gaussian.md.
+    # uncertainty, not hard clamps.  See DESIGN_migration_tanh_gaussian.md.
     log_std_min: float = -4.0
     log_std_max: float = 0.0
 
@@ -181,12 +181,12 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 self._kl_history.append(stats.approx_kl)
 
             def exploration(self, update):
-                coef = self.entropy_coef
+                coef = self.uncertainty_coef
                 if len(self._kl_history) >= 3 and all(
                     kl < 0.005 for kl in self._kl_history[-3:]
                 ):
                     coef *= 4.0  # KL flat for 3 updates, push exploration
-                return ExplorationSpec(entropy_coef=coef)
+                return ExplorationSpec(uncertainty_coef=coef)
         """
         pass
 
@@ -194,8 +194,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Static exploration spec built from the class attributes.
 
         Returns ``ExplorationSpec`` with:
-        - ``entropy_floor``: training-side entropy floor.  Default 0.3.
-        - ``entropy_coef``: coefficient for the entropy floor loss.
+        - ``uncertainty_floor``: training-side uncertainty floor.  Default 0.3.
+        - ``uncertainty_coef``: coefficient for the uncertainty floor loss.
 
         Note: ``explore_intensity`` is NOT part of this spec — it is
         read from ``self.explore_intensity`` inside ``build_jobs``.
@@ -204,8 +204,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         stats) and this method (to read accumulated state).
         """
         return ExplorationSpec(
-            entropy_floor=self.entropy_floor,
-            entropy_coef=self.entropy_coef,
+            uncertainty_floor=self.uncertainty_floor,
+            uncertainty_coef=self.uncertainty_coef,
         )
 
     # ------------------------------------------------------------------

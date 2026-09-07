@@ -72,7 +72,7 @@ def print_comparison(ctrl_entries, ou_entries):
     metrics = [
         ("update", "update", "Update #"),
         ("ep_len_mean", "episode_stats.ep_len_mean", "Episode length"),
-        ("entropy", "stats.entropy", "Entropy"),
+        ("uncertainty", "stats.uncertainty", "Uncertainty"),
         ("std_mean", "stats.std_mean", "Std mean"),
         ("tanh_sat_frac", "stats.tanh_sat_frac", "Tanh sat frac"),
         ("approx_kl", "stats.approx_kl", "Approx KL"),

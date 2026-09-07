@@ -68,7 +68,7 @@ class Follow(CombatExperimentPPOBase):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096 * 4
-    entropy_coef: float = 1.5e-3
+    uncertainty_coef: float = 1.5e-3
 
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01

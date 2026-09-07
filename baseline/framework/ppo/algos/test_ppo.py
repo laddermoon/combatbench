@@ -21,7 +21,7 @@ def _make_inputs(b: int = 8, *, seed: int = 0):
         values_old=torch.randn(b, generator=g),
         values_new=torch.randn(b, generator=g),
         returns=torch.randn(b, generator=g),
-        entropy=torch.rand(b, generator=g),
+        uncertainty=torch.rand(b, generator=g),
     )
 
 
@@ -30,7 +30,7 @@ class TestShapesAndOutputs:
         out = ppo_loss(**_make_inputs())
         assert isinstance(out, PPOLossOutput)
         # All scalar.
-        for name in ("loss", "policy_loss", "value_loss", "entropy",
+        for name in ("loss", "policy_loss", "value_loss", "uncertainty",
                      "approx_kl", "clip_fraction", "explained_variance"):
             assert getattr(out, name).dim() == 0, name
 
@@ -41,11 +41,11 @@ class TestShapesAndOutputs:
         out.loss.backward()
         assert x["log_probs_new"].grad is not None
 
-    def test_entropy_none_zeros_term(self):
+    def test_uncertainty_none_zeros_term(self):
         x = _make_inputs()
-        x["entropy"] = None
-        out = ppo_loss(**x, entropy_coef=10.0)
-        assert out.entropy.item() == 0.0
+        x["uncertainty"] = None
+        out = ppo_loss(**x, uncertainty_coef=10.0)
+        assert out.uncertainty.item() == 0.0
 
 
 class TestShapeValidation:
@@ -63,7 +63,7 @@ class TestShapeValidation:
         x["values_old"] = x["values_old"].unsqueeze(-1)
         x["values_new"] = x["values_new"].unsqueeze(-1)
         x["returns"] = x["returns"].unsqueeze(-1)
-        x["entropy"] = x["entropy"].unsqueeze(-1)
+        x["uncertainty"] = x["uncertainty"].unsqueeze(-1)
         with pytest.raises(ValueError, match="1-D"):
             ppo_loss(**x)
 
@@ -131,7 +131,7 @@ class TestNormalizeAdvantages:
         # log_probs identical → ratio=1 → policy_loss = -mean(adv) = -5
         x["log_probs_new"] = x["log_probs_old"].clone()
         out = ppo_loss(**x, normalize_advantages=False, value_coef=0.0,
-                       entropy_coef=0.0)
+                       uncertainty_coef=0.0)
         assert out.policy_loss.item() == pytest.approx(-5.0, abs=1e-5)
 
     def test_on_centers_advantages(self):
@@ -141,5 +141,5 @@ class TestNormalizeAdvantages:
         x["advantages"] = torch.full((8,), 5.0)
         x["log_probs_new"] = x["log_probs_old"].clone()
         out = ppo_loss(**x, normalize_advantages=True, value_coef=0.0,
-                       entropy_coef=0.0)
+                       uncertainty_coef=0.0)
         assert abs(out.policy_loss.item()) < 1e-3

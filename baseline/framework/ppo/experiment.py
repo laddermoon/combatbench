@@ -103,7 +103,7 @@ What the Experiment controls vs what the framework handles
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
 | Exploration        | exploration() → ExplorationSpec     | Routes explore_intensity to policy.act / evaluate_actions |
-| Entropy floor      | entropy_floor via ExplorationSpec   | Computes relu(floor - H_norm) |
+| Uncertainty floor  | uncertainty_floor via ExplorationSpec | Computes relu(floor - U) |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
 """
 
@@ -148,10 +148,10 @@ from baseline.framework.rollout.job import Job
 #     strength (0 = neutral, +1 = max explore, -1 = max suppress).
 #     The policy maps this to its internal parameters.
 #
-#   * ``entropy_floor`` ∈ [0, 1] — training side: the minimum normalized
-#     entropy the policy is allowed to have.  The framework computes a
-#     one-sided hinge loss ``entropy_coef * relu(floor - H_norm)`` that
-#     only activates when the policy's entropy drops below the floor.
+#   * ``uncertainty_floor`` ∈ [0, 1] — training side: the minimum
+#     uncertainty the policy is allowed to have.  The framework computes a
+#     one-sided hinge loss ``uncertainty_coef * relu(floor - U)`` that
+#     only activates when the policy's uncertainty drops below the floor.
 #
 # The framework only routes between the two owners.  It never inspects a
 # spec field beyond ``resolve()`` nor interprets a stat key.
@@ -167,11 +167,11 @@ class ExplorationSpec:
 
     - ``explore_intensity`` ∈ [-1, 1]: additive exploration strength
       (0 = neutral, +1 = max expand, -1 = max suppress).
-    - ``entropy_floor`` ∈ [0, 1]: training-side entropy floor.
-    - ``entropy_coef``: coefficient for the entropy floor loss.
+    - ``uncertainty_floor`` ∈ [0, 1]: training-side uncertainty floor.
+    - ``uncertainty_coef``: coefficient for the uncertainty floor loss.
 
     For the common case where exploration and anti-collapse should move
-    together, set ``explore_intensity`` and ``entropy_floor`` to the
+    together, set ``explore_intensity`` and ``uncertainty_floor`` to the
     same value.  For independent control (on-policy + anti-collapse,
     strong exploration + fast convergence, async annealing), set them
     separately.
@@ -180,19 +180,20 @@ class ExplorationSpec:
     :class:`PPOParams` and are not overridable per-update.
 
     Attributes:
-        entropy_floor: Training-side entropy floor ∈ [0, 1], expressed
-            in the policy's normalized entropy.  The specific meaning
-            of 0 and 1 is defined by the policy.  The framework computes
-            ``entropy_floor_loss = entropy_coef * relu(floor - H_norm)``
-            — a one-sided hinge that only activates when the policy's
-            entropy drops below the floor, analogous to PPO clip.
-            ``None`` = no opinion (policy keeps its current floor).
-        entropy_coef: Coefficient for the entropy floor loss.
+        uncertainty_floor: Training-side uncertainty floor ∈ [0, 1],
+            expressed in the policy's uncertainty metric.  The specific
+            meaning of 0 and 1 is defined by the policy.  The framework
+            computes ``uncertainty_floor_loss = uncertainty_coef *
+            relu(floor - U)`` — a one-sided hinge that only activates
+            when the policy's uncertainty drops below the floor,
+            analogous to PPO clip.  ``None`` = no opinion (policy keeps
+            its current floor).
+        uncertainty_coef: Coefficient for the uncertainty floor loss.
             ``None`` = use default (0.0).
     """
 
-    entropy_floor: Optional[float] = None
-    entropy_coef: Optional[float] = None
+    uncertainty_floor: Optional[float] = None
+    uncertainty_coef: Optional[float] = None
 
 
 @dataclass
@@ -203,10 +204,10 @@ class ActorEval:
         log_prob: ``(B,)`` log-probability of the given actions under the
             *current* parameters.  Must be differentiable — this is the
             numerator of the PPO importance ratio.  Action-dependent.
-        entropy: ``(B,)`` normalized entropy ∈ [0, 1], action-independent.
+        uncertainty: ``(B,)`` uncertainty ∈ [0, 1], action-independent.
             Must be differentiable — the framework uses it to compute
-            the entropy floor loss.  The specific meaning of 0 and 1 is
-            defined by the policy, not the framework.  The framework
+            the uncertainty floor loss.  The specific meaning of 0 and 1
+            is defined by the policy, not the framework.  The framework
             only requires the range [0, 1] and that it is
             action-independent (depends only on observation and policy
             parameters).  This makes it immune to the on-policy
@@ -218,7 +219,7 @@ class ActorEval:
     """
 
     log_prob: torch.Tensor
-    entropy: torch.Tensor
+    uncertainty: torch.Tensor
     stats: Optional[Dict[str, float]] = None
 
 
@@ -240,7 +241,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
     eval / deployment                    ``act``             deterministic action
     once per update, buffer construction ``evaluate_actions``
                                          ``want_stats=True`` batch-wide stats
-    ~epochs x minibatches per update     ``evaluate_actions`` log_prob + entropy
+    ~epochs x minibatches per update     ``evaluate_actions`` log_prob + uncertainty
     ===================================  ==================  ===================
 
     The exported policy implements both ``Policy`` and
@@ -268,20 +269,19 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
         explore_intensity: torch.Tensor,
         *, want_stats: bool = False,
     ) -> ActorEval:
-        """Recompute log_prob and entropy for obs/actions.
+        """Recompute log_prob and uncertainty for obs/actions.
 
         Returns an :class:`ActorEval` with:
         - ``log_prob``: action-dependent, used for PPO importance ratio.
-        - ``entropy``: action-independent normalized entropy ``H(π(·|s))``
-          in [0, 1], used by the framework for the entropy floor loss.
+        - ``uncertainty``: action-independent uncertainty ``U(π(·|s))``
+          in [0, 1], used by the framework for the uncertainty floor loss.
         - ``stats``: optional diagnostics (only when ``want_stats=True``).
 
         ``explore_intensity`` is a ``(B,)`` tensor recording the per-frame
         exploration intensity used at rollout time.  The policy uses it
         to reproduce the same distribution that produced the actions,
-        ensuring the PPO importance ratio is correct.  ``entropy``
-        (uncertainty) uses the policy's own distribution without
-        exploration scaling.
+        ensuring the PPO importance ratio is correct.  ``uncertainty``
+        uses the policy's own distribution without exploration scaling.
 
         Args:
             obs: ``(B, obs_dim)`` observations.
@@ -297,7 +297,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
                 GPU sync on every minibatch.
 
         Returns:
-            An :class:`ActorEval`.  Both ``log_prob`` and ``entropy``
+            An :class:`ActorEval`.  Both ``log_prob`` and ``uncertainty``
             must be differentiable.  Note the buffer's call happens
             under ``torch.no_grad()``, so they are non-differentiable
             there and only the stats are consumed.
@@ -359,7 +359,7 @@ class PPOParams:
 
     Policy-specific parameters (e.g. log_std bounds) belong to the
     actor, not here.  Entropy floor coefficient is carried by
-    ``ExplorationSpec.entropy_coef``.
+    ``ExplorationSpec.uncertainty_coef``.
     """
 
     clip_eps: float
@@ -653,7 +653,7 @@ class ExperimentPPO(ABC):
         """Return this update's PPO update parameters, or None to keep defaults.
 
         Called once per update **before** ``ppo_update``.  Returns
-        ``entropy_floor`` and ``entropy_coef`` for the entropy floor
+        ``uncertainty_floor`` and ``uncertainty_coef`` for the uncertainty floor
         loss.  Reads whatever internal state ``on_update`` has
         accumulated.
 
@@ -667,7 +667,7 @@ class ExperimentPPO(ABC):
 
         Returns:
             An ``ExplorationSpec``, or ``None`` to use defaults
-            (entropy_floor=0.0, entropy_coef=0.0).
+            (uncertainty_floor=0.0, uncertainty_coef=0.0).
         """
         return None
 

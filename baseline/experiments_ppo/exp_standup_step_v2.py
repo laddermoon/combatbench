@@ -100,7 +100,7 @@ class StandupStepV2(CombatExperimentPPOBase):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 1e-3
+    uncertainty_coef: float = 1e-3
 
     # --- Rollout schedule ---
     episodes_per_update: int = 512
