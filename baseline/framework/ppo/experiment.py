@@ -102,7 +102,8 @@ What the Experiment controls vs what the framework handles
 | Critic update      | —                                   | MSE on returns, masked        |
 | Actor update       | —                                   | PPO clipped surrogate         |
 | Eval & scheduling  | on_eval (full control)              | Runs eval rollouts, exports   |
-| Exploration        | exploration() → ExplorationSpec     | Routes explore_factor to policy.act / evaluate_actions |
+| Exploration (train) | exploration() → ExplorationSpec   | Returns uncertainty_floor / uncertainty_coef |
+| Exploration (rollout) | build_jobs() → Job.explore_factor | Routes explore_factor to policy.act / evaluate_actions |
 | Uncertainty floor  | uncertainty_floor via ExplorationSpec | Computes relu(floor - U) |
 | Checkpointing      | state/load_state                    | Save/load model + config.json |
 """
@@ -154,7 +155,8 @@ from baseline.framework.rollout.job import Job
 #     only activates when the policy's uncertainty drops below the floor.
 #
 # The framework only routes between the two owners.  It never inspects a
-# spec field beyond ``resolve()`` nor interprets a stat key.
+# spec field beyond ``uncertainty_floor`` / ``uncertainty_coef`` nor
+# interprets a stat key.
 #
 # See ``DESIGN_unified_exploration_control.md`` for the full design.
 # ---------------------------------------------------------------------------
@@ -163,18 +165,17 @@ from baseline.framework.rollout.job import Job
 class ExplorationSpec:
     """A per-update exploration directive from experiment to policy.
 
-    Three fields, all optional (``None`` = "no opinion, keep current"):
+    Two fields, both optional (``None`` = "no opinion, keep current"):
 
-    - ``explore_factor`` ∈ [-1, 1]: additive exploration strength
-      (0 = neutral, +1 = max expand, -1 = max suppress).
     - ``uncertainty_floor`` ∈ [0, 1]: training-side uncertainty floor.
     - ``uncertainty_coef``: coefficient for the uncertainty floor loss.
 
-    For the common case where exploration and anti-collapse should move
-    together, set ``explore_factor`` and ``uncertainty_floor`` to the
-    same value.  For independent control (on-policy + anti-collapse,
-    strong exploration + fast convergence, async annealing), set them
-    separately.
+    ``explore_factor`` (rollout-time sampling exploration) is **NOT**
+    part of this spec — it is decided inside ``build_jobs`` and placed
+    into each :class:`Job`'s ``explore_factor_a`` /
+    ``explore_factor_b`` fields.  This separation gives ``build_jobs``
+    per-job / per-agent / per-frame granularity that a single spec
+    field cannot express.
 
     PPO trust-region knobs (``clip_eps``, ``target_kl``) live in
     :class:`PPOParams` and are not overridable per-update.

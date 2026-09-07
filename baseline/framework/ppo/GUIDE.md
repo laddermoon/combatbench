@@ -22,7 +22,7 @@
 每个 update 的完整流程:
 
 1. exploration(update) → ExplorationSpec
-     实验决定本轮探索参数，读取 on_update() 累积的内部状态
+     实验决定本轮训练侧防坍缩参数（uncertainty_floor, uncertainty_coef）
 2. actor.to_blueprint() → PolicyBlueprint
      导出策略蓝图用于 rollout（同时实现 Policy 和 StochasticPolicy）
 3. build_jobs(policy_bp, base_seed, n_episodes, stochastic=True) → List[Job]
@@ -64,7 +64,8 @@
 | Actor 更新 | — | PPO clipped surrogate |
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
 | 训练统计反馈 | `on_update(stats, update)` | 调用它，传入 typed UpdateStats |
-| 探索 | `exploration(update)` → ExplorationSpec | 路由 explore_factor 到 ExploratoryPolicy → sample() |
+| 探索 | `exploration(update)` → ExplorationSpec | 返回 uncertainty_floor / uncertainty_coef（训练侧防坍缩） |
+| Rollout 探索 | `build_jobs()` → Job.explore_factor_a/b | 路由 explore_factor 到 ExploratoryPolicy → sample() |
 | Checkpoint | `state()` / `load_state()` | 存模型+config、恢复 |
 
 ---
@@ -137,20 +138,20 @@ Trajectory(
 
 ### 3.4 ExplorationSpec
 
-实验对探索的"意图"，由实验在每轮 update 前返回：
+实验对训练侧探索的"意图"，由实验在每轮 update 前返回：
 
 ```python
 ExplorationSpec(
-    explore_factor=0.0,      # ∈ [-1, 1]: 0=中性, +1=最大探索, -1=最大压制
     uncertainty_floor=0.3,   # ∈ [0, 1]: 策略不确定性下界
-    uncertainty_coef=0.01,   # 不确定性下界损失系数，None=默认联动 explore_factor
+    uncertainty_coef=0.01,   # 不确定性下界损失系数，None=默认 0.0
 )
 ```
 
 所有字段都是可选的，`None` 表示"不关心，保持现状"。
 
-- **explore_factor**：附加探索强度。具体每个值对应什么分布参数的变化，由策略自己定义。框架只规定范围和中性点 0。
 - **uncertainty_floor**：策略不确定性的下界。0 和 1 的具体含义由策略定义。框架用单向二次 hinge `relu(floor - U)²` 计算损失，只在不确定性低于下界时产生梯度。
+
+> **注意**：``explore_factor``（rollout 采样时的附加探索强度）**不在** ``ExplorationSpec`` 里。它在 ``build_jobs`` 中决定，写入每个 ``Job`` 的 ``explore_factor_a`` / ``explore_factor_b`` 字段。这样 ``build_jobs`` 可以按 per-job / per-agent / per-frame 设置不同的探索强度，比单个 spec 字段表达力更强。实验通常从 ``self.explore_factor``（``CommonParams`` 字段）读取默认值。
 
 详见 `DESIGN_unified_exploration_control.md`。
 
@@ -233,7 +234,7 @@ class MyExperiment(ExperimentPPO):
         return CriticMLP(obs_dim=self.obs_dim, hidden_dim=256).to(device)
 
     def exploration(self, update: int) -> ExplorationSpec | None:
-        return ExplorationSpec(explore_factor=0.0, uncertainty_floor=0.3)
+        return ExplorationSpec(uncertainty_floor=0.3)
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True) -> List[Job]:
         env_pb = ParameterizedEnvBlueprint.load("path/to/env.yaml")
@@ -394,7 +395,7 @@ class MyExperiment(ExperimentPPO):
 
 ### 5.2 探索调度
 
-通过 `on_update` + `exploration` 这对 hook 实现：
+通过 `on_update` + `exploration` 这对 hook 实现训练侧的防坍缩调度：
 
 ```python
 class MyExperiment(ExperimentPPO):
@@ -407,11 +408,18 @@ class MyExperiment(ExperimentPPO):
         if len(self._kl_history) >= 3:
             recent = self._kl_history[-3:]
             if all(kl < 0.005 for kl in recent):
-                return ExplorationSpec(explore_factor=0.5)  # KL 太平，加大探索
+                # KL 太平 → 策略可能在坍缩，抬高不确定性下界
+                return ExplorationSpec(uncertainty_floor=0.5, uncertainty_coef=0.01)
             elif max(recent) > 0.1:
-                return ExplorationSpec(explore_factor=-0.3)  # KL 太大，压制探索
-        return ExplorationSpec(explore_factor=0.0)  # 中性
+                # KL 太大 → 放松下界，让 advantage 自由驱动
+                return ExplorationSpec(uncertainty_floor=0.0)
+        return ExplorationSpec(uncertainty_floor=0.3)  # 默认下界
 ```
+
+> **rollout 侧的 ``explore_factor`` 调度**：如果需要根据 KL 历史动态调整
+> rollout 时的探索强度，在 ``on_update`` 里修改 ``self.explore_factor``
+> （``CommonParams`` 字段），``build_jobs`` 会自动读取它。这和
+> ``exploration()`` 返回的 ``ExplorationSpec`` 是两个独立的旋钮。
 
 `UpdateStats` 的框架保证字段（跨策略族稳定）：`approx_kl`, `max_kl`, `clip_frac`, `policy_loss`, `value_loss`, `grad_norm_actor`, `epochs_done`, `uncertainty`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。
 

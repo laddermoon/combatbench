@@ -30,10 +30,7 @@
 ### 2.2 数据流
 
 ```
-experiment.exploration(u) → ExplorationSpec
-  → resolve() → (explore_factor, uncertainty_floor)
-  → build_jobs(explore_factor=ef)
-  → Job.explore_factor_a / explore_factor_b = ef
+experiment.build_jobs(...) → Job.explore_factor_a / explore_factor_b = ef
   → ParallelRollouter: stochastic=True → ExploratoryPolicy(policy, ef)
   → EpisodeRunner → ExploratoryPolicy.act() → inner.sample(obs, explore_factor=ef)
   → action_extras["explore_factor"] 记录每帧值
@@ -41,9 +38,18 @@ experiment.exploration(u) → ExplorationSpec
   → Trajectory.explore_factor  (T,) float32
   → PPOBuffer 拼接 → evaluate_actions(obs, acts, ef_tensor)
   → ppo_update 每 minibatch 切片传入
+
+experiment.exploration(u) → ExplorationSpec
+  → (uncertainty_floor, uncertainty_coef)
+  → ppo_update 计算 uncertainty_floor_loss = coef × relu(floor - U)²
 ```
 
 关键不变量：**rollout 采样和 PPO log_prob 重算用同一个 explore_factor**，保证 importance ratio 正确。
+
+> **注意**：``explore_factor`` 和 ``uncertainty_floor`` 是两个独立的旋钮。
+> ``explore_factor`` 在 ``build_jobs`` 中决定（通常从 ``self.explore_factor``
+> 读取），不经过 ``ExplorationSpec``。``ExplorationSpec`` 只管训练侧的
+> ``uncertainty_floor`` 和 ``uncertainty_coef``。
 
 ### 2.3 策略接口
 
@@ -81,8 +87,8 @@ uncertainty_floor_loss = uncertainty_coef × relu(floor - U)².mean()
 
 ### 3.4 uncertainty_coef
 
-- 默认联动：`uncertainty_coef = 0.01 × max(explore_factor, 0)`
-- 可被 `ExplorationSpec.uncertainty_coef` 覆盖
+- 默认值：`0.0`（不产生 floor loss）
+- 由 `ExplorationSpec.uncertainty_coef` 显式设置，`None` = 使用默认 0.0
 
 ---
 
@@ -91,18 +97,15 @@ uncertainty_floor_loss = uncertainty_coef × relu(floor - U)².mean()
 ```python
 @dataclass(frozen=True)
 class ExplorationSpec:
-    explore_factor: Optional[float] = None      # 默认 0.0（中性）
     uncertainty_floor: Optional[float] = None   # 默认 0.0（不限制）
-    uncertainty_coef: Optional[float] = None    # 默认联动 explore_factor
-
-    def resolve(self) -> tuple[float, float]:
-        return (
-            self.explore_factor if self.explore_factor is not None else 0.0,
-            self.uncertainty_floor if self.uncertainty_floor is not None else 0.0,
-        )
+    uncertainty_coef: Optional[float] = None    # 默认 0.0
 ```
 
 实验类通过 `exploration(update)` 方法返回 `ExplorationSpec`，实现 per-update 退火。
+
+> **注意**：``explore_factor`` 不在 ``ExplorationSpec`` 里。它在 ``build_jobs``
+> 中决定，写入 ``Job.explore_factor_a`` / ``explore_factor_b``。这样
+> ``build_jobs`` 可以按 per-job / per-agent / per-frame 设置不同的探索强度。
 
 ---
 
@@ -112,37 +115,32 @@ class ExplorationSpec:
 
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
-    return ExplorationSpec()  # ef=0, floor=0
+    return ExplorationSpec()  # floor=0, coef=0
 ```
 
-### 5. 同步退火
+### 5.2 防坍缩退火
 
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
     u = update / self.max_updates
-    v = 1.0 - u  # 从 1.0 线性退到 0.0
-    return ExplorationSpec(explore_factor=v, uncertainty_floor=0.3 * v)
+    floor = 0.3 * (1.0 - u)  # 从 0.3 线性退到 0.0
+    return ExplorationSpec(uncertainty_floor=floor, uncertainty_coef=0.01)
 ```
 
-### 5. 异步退火（探索先退，防坍缩后退）
-
-```python
-def exploration(self, update: int) -> ExplorationSpec:
-    u = update / self.max_updates
-    explore = max(0.0, 1.0 - 2.0 * u)           # u=0.5 时退到 0
-    floor = 0.5 * (1.0 + math.cos(math.pi * u))  # u=1.0 时退到 0
-    return ExplorationSpec(explore_factor=explore, uncertainty_floor=floor)
-```
-
-### 5. on-policy + 防坍缩
+### 5.3 on-policy + 防坍缩
 
 ```python
 def exploration(self, update: int) -> ExplorationSpec:
     return ExplorationSpec(
-        explore_factor=0.0,   # 纯 on-policy
-        uncertainty_floor=0.3,   # 但策略不能坍缩
+        uncertainty_floor=0.3,   # 策略不能坍缩
+        uncertainty_coef=0.01,
     )
 ```
+
+> **rollout 侧的 ``explore_factor`` 调度**：如果需要同步退火 rollout 探索
+> 强度，在 ``on_update`` 里修改 ``self.explore_factor``，``build_jobs``
+> 会自动读取它。这和 ``exploration()`` 返回的 ``ExplorationSpec`` 是两个
+> 独立的旋钮，可以同步也可以异步。
 
 ---
 
