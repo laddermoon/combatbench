@@ -207,10 +207,9 @@ class StandupStepV3(CombatExperimentPPOBase):
     explore_factor: float = 0.0
     # Phase-1 floor: pulls uncertainty up from standup value (≈0.17)
     # toward 0.35 so the policy can explore foot-lifting actions.
-    # Disabled permanently once uncertainty reaches the floor for
-    # `floor_confirm_updates` consecutive updates (see on_update /
+    # Disabled permanently once uncertainty reaches `phase2_threshold`
+    # for `floor_confirm_updates` consecutive updates (see on_update /
     # exploration overrides below).
-    uncertainty_floor: float = 0.35
     # 5.0 → with quadratic hinge, GradDiag showed coef=0.1 gave
     # floor/pol ratio=0.02x (still dominated by policy gradient).
     # dU/dlog_std is inherently small for TruncatedNormalPolicy, so
@@ -236,12 +235,22 @@ class StandupStepV3(CombatExperimentPPOBase):
 
     # --- Two-stage floor scheduling ---
     # Phase 1: floor loss active, pulls uncertainty up from standup value
-    #          (≈0.17) toward floor (0.35).
-    # Phase 2: once uncertainty has stayed at/above floor for
-    #          `floor_confirm_updates` consecutive updates, the floor
+    #          (≈0.17) toward `uncertainty_floor` (0.35).
+    # Phase 2: once uncertainty has stayed at/above `phase2_threshold`
+    #          for `floor_confirm_updates` consecutive updates, the floor
     #          loss is permanently disabled so PPO can focus on learning
     #          stepping action and naturally tighten σ.
     # One-way switch: once disabled, stays disabled (no re-arming).
+    #
+    # Why phase2_threshold < uncertainty_floor:
+    #   The floor loss is a quadratic hinge `coef * relu(floor - U)^2`,
+    #   whose gradient `2*coef*(floor - U)` vanishes as U approaches floor.
+    #   Near the target the floor push becomes too weak to overcome PPO
+    #   gradient, so U typically plateaus below floor.  Decoupling the
+    #   trigger threshold from the floor lets phase 2 fire at a level
+    #   the floor can actually reach.
+    uncertainty_floor: float = 0.35
+    phase2_threshold: float = 0.30
     floor_confirm_updates: int = 5
 
     # --- Stateful metrics ---
@@ -260,9 +269,14 @@ class StandupStepV3(CombatExperimentPPOBase):
         """Track uncertainty for two-stage floor scheduling.
 
         Appends the policy's uncertainty to ``_uncertainty_history``.
-        Once uncertainty has stayed at/above ``uncertainty_floor`` for
+        Once uncertainty has stayed at/above ``phase2_threshold`` for
         ``floor_confirm_updates`` consecutive updates, sets
         ``_floor_disabled=True`` (one-way switch).
+
+        Note: ``phase2_threshold`` is intentionally below
+        ``uncertainty_floor`` because the quadratic hinge
+        ``coef * relu(floor - U)^2`` has vanishing gradient as U
+        approaches floor, so U typically plateaus below floor.
         """
         if self._uncertainty_history is None:
             self._uncertainty_history = []
@@ -273,14 +287,15 @@ class StandupStepV3(CombatExperimentPPOBase):
         window = self._uncertainty_history[-self.floor_confirm_updates:]
         if (
             len(window) >= self.floor_confirm_updates
-            and all(v >= self.uncertainty_floor for v in window)
+            and all(v >= self.phase2_threshold for v in window)
         ):
             self._floor_disabled = True
             self._floor_disabled_at = update
             print(
-                f"  [floor] uncertainty reached floor={self.uncertainty_floor} "
-                f"for {self.floor_confirm_updates} consecutive updates "
-                f"(u={u:.4f}); disabling floor loss at update {update}",
+                f"  [floor] uncertainty reached phase2_threshold="
+                f"{self.phase2_threshold} for {self.floor_confirm_updates} "
+                f"consecutive updates (u={u:.4f}); disabling floor loss "
+                f"at update {update}",
                 flush=True,
             )
 
