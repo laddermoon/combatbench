@@ -6,6 +6,30 @@
 >
 > 本文档中的所有问题**均已在当前代码上实际复现**，不是代码审查的猜测。复现方式写在各条目的「复现」小节里。
 
+### 进度总览
+
+| 条目 | 状态 | Commit |
+|---|---|---|
+| P0-1 | ✅ 已修复 | `c15f800` |
+| P0-2 | ✅ 已修复 | `75bc2c2` |
+| P0-3 | ✅ 已修复 | `07d3769` |
+| P0-4 | ✅ 已修复 | `e382a37` |
+| P0-5 | ✅ 已修复 | `c34c2cb` |
+| P0-6 | ✅ 已修复 | `4304b41` |
+| P1-1 | ⏳ 未修复 | — |
+| P1-2 | ✅ 已修复 | `1a06179` |
+| P1-3 | ⏳ 未修复 | — |
+| P1-4 | ✅ 已修复（仅文档） | `a1f8868` |
+| P1-5 | ✅ 已修复 | `6b16719` |
+| P1-6 | ✅ 已修复 | `33d01c1` |
+| P1-7 | ✅ 已修复 | `dc28514` |
+| P1-8 | ✅ 已修复 | `43632e0` |
+| P1-9 ~ P1-14 | ⏳ 未修复 | — |
+| P2-1 ~ P2-5 | ⏳ 未修复 | — |
+
+> **说明**：P1-4 按用户要求仅校正文档使其与当前实现一致，未改动 `ExplorationSpec` 字段或运行逻辑。
+> 已修复条目均通过 `baseline/framework/ppo` 全量测试（当前基线：116 passed）。
+
 ---
 
 ## 0. 怎么用这份文档
@@ -49,6 +73,8 @@
 ---
 
 ## P0-1. early-stop 之后 `UpdateStats.approx_kl` 被错误地报成 0.0
+
+> **状态：✅ 已修复** — commit `c15f800`
 
 **危害等级：最高。这是一个会让闭环探索调度做出完全相反决策的静默逻辑错误。**
 
@@ -159,6 +185,8 @@ def test_no_stuck_warning_when_actor_stopped():
 
 ## P0-2. 两个 early-stop 测试是「空测试」，这是 P0-1 能存活的直接原因
 
+> **状态：✅ 已修复** — commit `75bc2c2`
+
 ### 问题是什么
 
 `tests/test_trainer.py` 里的 `test_kl_early_stop_triggers` 和 `test_kl_early_stop_mid_epoch` **恒为绿灯但什么也没测**。它们提供了虚假的安全感，是 P0-1 这类回归能悄悄上线的根本原因。
@@ -230,6 +258,8 @@ early-stop 后最后一个 epoch 的 `n_minibatches` 必然是 0（actor 没跑�
 ---
 
 ## P0-3. `build_trajectories` 返回 `[]` 会崩，但文档明确承诺可以
+
+> **状态：✅ 已修复** — commit `07d3769`
 
 ### 问题是什么
 
@@ -305,6 +335,8 @@ def test_loop_survives_empty_trajectories():
 ---
 
 ## P0-4. `TruncatedNormalPolicy.to(device)` 之后 `self.device` 不更新，`act()` 崩
+
+> **状态：✅ 已修复** — commit `e382a37`
 
 ### 问题是什么
 
@@ -383,6 +415,8 @@ def test_policy_device_follows_to():
 ---
 
 ## P0-5. 导出策略用 `load_state_dict(strict=False)`，会静默产出随机权重的策略
+
+> **状态：✅ 已修复** — commit `c34c2cb`
 
 **这对一个 benchmark 项目是致命的静默失败。**
 
@@ -467,6 +501,8 @@ def test_export_roundtrip_exact():
 
 ## P0-6. 导出的策略不是自包含的，81 个历史 artifact 已经全部失效
 
+> **状态：✅ 已修复** — commit `4304b41`
+
 ### 问题是什么
 
 `to_blueprint()` 生成的 `policy.py` 是**一段写在字符串字面量里的源码**（`_build_export_policy_code()`，L33-119），而这段源码 `from baseline.framework.ppo.policies.truncated_normal_mlp import TruncatedNormalPolicy` —— 即**导出物反向依赖仓库当前状态**。而它的 docstring 却宣称 "standalone"。
@@ -546,6 +582,8 @@ def test_golden_artifact_still_loads():
 ---
 
 ## P1-1. `explained_variance` 其实不是 explained variance，而 confidence 加权完全建立在它之上
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -639,6 +677,8 @@ def test_ev_is_lambda_invariant_after_fix():
 
 ## P1-2. 没有任何 rollout↔训练的一致性守卫
 
+> **状态：✅ 已修复** — commit `1a06179`
+
 ### 问题是什么
 
 框架**丢弃**了 rollout 时算出的 log_prob（`ExploratoryPolicy` 明明把它放进了 `extra["log_prob"]`），改用 `PPOBuffer` 在主进程 GPU 上用活 actor 重算。
@@ -713,6 +753,8 @@ def test_ratio_guard_fires_on_corrupted_old_logp():
 
 ## P1-3. `combined_adv` 合并后不再归一化，有效学习率随 critic 质量漂移
 
+> **状态：⏳ 未修复** — 待处理
+
 ### 问题是什么
 
 L1 归一化解决了 `actor_weight` 的尺度问题（这是本框架的亮点），但 `confidence ∈ [0,1]` 直接乘在外面，**没有任何补偿**：
@@ -768,6 +810,8 @@ combined_adv += aw_normed * conf * normed    # aw_normed 的 L1 和为 1，conf 
 ---
 
 ## P1-4. `ExplorationSpec` 的代码与两份文档完全不一致
+
+> **状态：✅ 已修复（仅文档）** — commit `a1f8868`。按用户要求，仅校正文档使其与当前实现一致；`ExplorationSpec` 字段及运行逻辑未改动。
 
 ### 问题是什么
 
@@ -836,6 +880,8 @@ False
 
 ## P1-5. `GUIDE.md` 的示例代码跑不起来
 
+> **状态：✅ 已修复** — commit `6b16719`
+
 ### 问题是什么
 
 除了 P1-4 的 `ExplorationSpec` 之外，`GUIDE.md` §4 那个「完整的最小示例」还有：
@@ -888,6 +934,8 @@ False
 
 ## P1-6. `algos/ppo.py` 是第二套、且与实际使用的实现不一致的 PPO
 
+> **状态：✅ 已修复** — commit `33d01c1`
+
 ### 问题是什么
 
 `algos/ppo.py`（`ppo_loss` + `PPOLossOutput`）整个文件、以及 `compute_grpo_advantages`、`compute_returns_to_go`，**全仓库零引用**：
@@ -936,6 +984,8 @@ $ grep -rn "ppo_loss\|compute_grpo_advantages\|compute_returns_to_go" --include=
 ---
 
 ## P1-7. `hasattr(actor, "log_std")` —— 通用 trainer 里残留的策略族耦合
+
+> **状态：✅ 已修复** — commit `dc28514`
 
 ### 问题是什么
 
@@ -1001,6 +1051,8 @@ if hasattr(actor, "log_std") and mb_idx == 0:
 
 ## P1-8. `evaluate_actions` 里多算了一整遍 `net(obs)`
 
+> **状态：✅ 已修复** — commit `43632e0`
+
 ### 问题是什么
 
 `policies/truncated_normal_mlp.py` L309-331：
@@ -1041,6 +1093,8 @@ policy_mean = mean   # mean 与 explore_factor 无关，直接复用
 ---
 
 ## P1-9. `compute_gae` 是逐步 Python 循环
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1095,6 +1149,8 @@ def test_gae_vectorized_matches_reference(lam, gamma, T):
 ---
 
 ## P1-10. eval 的种子每轮都变，`is_new_best` 在比较不同的随机试验
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1154,6 +1210,8 @@ def test_eval_and_train_seed_spaces_disjoint():
 ---
 
 ## P1-11. `SIGINT`/`SIGTERM` 直接 `SIGKILL` 自己的进程组
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1217,6 +1275,8 @@ worker 清理交给 `ParallelRollouter.__exit__`（`with` 语句已经保证会�
 
 ## P1-12. 磁盘无界增长
 
+> **状态：⏳ 未修复** — 待处理
+
 ### 问题是什么
 
 - `policy_exports/u{N:05d}/` **每个 update 都写一个目录**（L459），eval 轮再多一个 `u{N:05d}_eval`（L531）。`max_updates=5000` → 上万个目录，从不清理。
@@ -1257,6 +1317,8 @@ def test_prune_keeps_last_n_and_ignores_unknown_files():
 ---
 
 ## P1-13. 缺少 on-policy PPO 的标配组件（或缺少「不做」的声明）
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1321,6 +1383,8 @@ def test_prune_keeps_last_n_and_ignores_unknown_files():
 ---
 
 ## P1-14. `TruncatedNormalPolicy` 的 action bound 硬编码，rollout 用全局 RNG
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1394,6 +1458,8 @@ def test_uncertainty_in_unit_range():
 
 ## P2-1. 这个包无法被安装或独立使用（开源的头号阻塞项）
 
+> **状态：⏳ 未修复** — 待处理
+
 ### 问题是什么
 
 所有 import 都是仓库根的绝对导入：
@@ -1460,6 +1526,8 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 ## P2-2. 框架与具体环境强耦合，没有任何标准环境上的收敛证据
 
+> **状态：⏳ 未修复** — 待处理
+
 ### 问题是什么
 
 框架的核心模块直接依赖 CombatBench 环境：
@@ -1512,6 +1580,8 @@ CleanRL 的全部说服力来自于「每个实现都附带在标准 benchmark �
 ---
 
 ## P2-3. 没有 CI，没有 lint，有 5 处 undefined name
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
@@ -1579,6 +1649,8 @@ trainer.py:403     undefined name 'ExplorationSpec'
 
 ## P2-4. 文档结构不适合外部读者
 
+> **状态：⏳ 未修复** — 待处理
+
 ### 问题是什么
 
 | 问题 | 具体表现 |
@@ -1642,6 +1714,8 @@ trainer.py:403     undefined name 'ExplorationSpec'
 ---
 
 ## P2-5. 测试风格不惯用，缺覆盖率与 property-based 测试
+
+> **状态：⏳ 未修复** — 待处理
 
 ### 问题是什么
 
