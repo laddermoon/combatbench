@@ -53,10 +53,12 @@ The pretrained standup policy has low std (≈0.15) and uncertainty (≈0.17).
 Without re-injection, the policy is too deterministic to discover stepping.
 We use the framework's built-in exploration controls:
 
-  explore_factor = 0.63  →  σ × exp(0.63 × ln3) ≈ σ × 2.0
-    This doubles the effective std during rollout, giving the
-    policy enough noise to try lifting feet while still being grounded
-    in the standup behaviour.
+  explore_factor = 0.0  →  no rollout σ scaling
+    Rollout uses the policy's own σ directly.  Exploration is driven
+    entirely by the two-stage uncertainty floor below, which controls
+    the policy's own σ through training-side loss.  This keeps
+    rollout noise and policy σ coupled — when the floor is disabled
+    in phase 2, σ can tighten without any residual rollout inflation.
 
   Two-stage uncertainty floor:
     Phase 1 (floor active):
@@ -196,11 +198,13 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- Exploration (re-injection for pretrained standup policy) ---
-    # 0.63 → σ × exp(0.63 × ln3) ≈ σ × 2.0, strong rollout noise.
-    # This doubles the effective std during rollout, giving the policy
-    # enough noise to try lifting feet while still being grounded in
-    # the standup behaviour.
-    explore_factor: float = 0.63
+    # 0.0 → no rollout σ scaling.  Exploration is driven entirely by
+    # the two-stage uncertainty floor (uncertainty_floor/coef), which
+    # controls the policy's own σ through training-side loss.  This
+    # keeps rollout noise and policy σ coupled: when the floor is
+    # disabled in phase 2, σ can tighten without residual rollout
+    # inflation.
+    explore_factor: float = 0.0
     # Phase-1 floor: pulls uncertainty up from standup value (≈0.17)
     # toward 0.35 so the policy can explore foot-lifting actions.
     # Disabled permanently once uncertainty reaches the floor for
