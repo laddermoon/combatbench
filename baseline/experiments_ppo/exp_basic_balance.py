@@ -1,0 +1,210 @@
+"""Basic balance: φ-scaled survival r_fall + φ²-gated r_cross.
+
+Dual-agent balance experiment with two reward channels:
+
+  - r_fall: 0.01 × φ(t) per step, no fall penalty, no timeout bonus.
+    Actor weight fixed at 3.0 (always active).
+  - r_cross: alternating step reward/penalty from CrossSupportBalanceRewarder.
+    Actor weight = 1.0 × φ² (gated by posture quality — only influences
+    the policy when the robot is upright).
+
+φ comes from HeightPhiObserver ("phi" field).
+
+No early standup phase — robots start standing (initial_pose: "standing").
+Imbalance termination is active: fallen robots are truncated and
+bootstrapped with is_terminated=True.
+
+Blueprint: baseline/humanoid21/blueprints/basic_balance_v2_phi_dual_env.yaml
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+
+from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
+from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
+
+from .base import CombatExperimentPPOBase
+
+
+class BasicBalance(CombatExperimentPPOBase):
+
+    name = "basic_balance"
+
+    _channel_names = ("r_fall", "r_cross")
+    _gamma = 0.99
+    _gae_lambda = 0.95
+
+    env_blueprint = "basic_balance_v2_phi_dual_env.yaml"
+    agent_used = "both"
+
+    episodes_per_update: int = 256 * 4
+
+    # --- Reward constants ---
+    per_step_phi_coef: float = 0.01
+
+    # --- Exploration: disabled (ef=0, floor=0) ---
+    # Pure on-policy PPO with the policy's own σ.  No exploration
+    # re-injection, no uncertainty floor.  The policy learns from
+    # advantage signal only.
+    explore_factor: float = 0.0
+    uncertainty_floor: float = 0.0
+    uncertainty_coef: float = 0.0
+
+    # --- Base actor weights (r_fall fixed, r_cross gated by φ²) ---
+    _base_actor_weights: Tuple[float, ...] = (3.0, 1.0)
+
+    _AGENT_IDS = ("robot_a", "robot_b")
+
+    _survival_rate: float = 0.0
+    _best_survived: float = -1.0
+
+    def reward_channels(self) -> Tuple[RewardChannel, ...]:
+        return tuple(
+            RewardChannel(name=k, gamma=self._gamma, gae_lambda=self._gae_lambda)
+            for k in self._channel_names
+        )
+
+    def _build_agent_trajectory(
+        self,
+        episode,
+        agent_id: str,
+        cross_key: str,
+        posture_key: str,
+        phi_key: str,
+    ) -> List[Trajectory]:
+        T_full = episode.num_frames
+        if T_full == 0:
+            return []
+
+        # --- Truncate at agent's termination step ---
+        records = episode.agent_termination_proposal_records.get(agent_id, ())
+        if records:
+            first_reason, term_step = records[0]
+            fell = first_reason.startswith("imbalance")
+            T = term_step if fell else T_full
+        else:
+            fell = False
+            T = T_full
+
+        if T == 0:
+            return []
+
+        obs_all = episode.observations.get(agent_id)
+        acts_all = episode.actions.get(agent_id)
+        fin_obs = episode.final_observation.get(agent_id)
+
+        if obs_all is None or acts_all is None or fin_obs is None:
+            return []
+
+        obs_all = np.asarray(obs_all, dtype=np.float32)
+        acts_all = np.asarray(acts_all, dtype=np.float32)
+
+        # --- Extract φ per step ---
+        # Fail loud: missing observer/field is a configuration error, not a
+        # silent zero-fallback situation.  See CLAUDE.md "Fail Loud".
+        phi_arr = extract_per_step_field(episode.observer_outputs, phi_key, "phi", T_full)
+        if phi_arr is None:
+            raise KeyError(
+                f"observer '{phi_key}' field 'phi' missing "
+                f"from episode.observer_outputs "
+                f"(available={list(episode.observer_outputs.keys())})"
+            )
+        phi_arr = np.clip(phi_arr[:T], 0.0, 1.0).astype(np.float32)
+
+        # --- r_fall: 0.01 × φ(t) per step only — no terminal signal ---
+        r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
+
+        # --- r_cross ---
+        r_cross = extract_per_step_scalar(episode.observer_outputs, cross_key, T_full)
+        if r_cross is not None:
+            r_cross = r_cross[:T]
+        else:
+            r_cross = np.zeros(T, dtype=np.float32)
+
+        # --- Actor weights: r_fall fixed, r_cross gated by φ² ---
+        is_terminated = fell
+
+        # --- Build channels ---
+        all_rewards = {
+            "r_fall": r_fall,
+            "r_cross": r_cross.astype(np.float32),
+        }
+
+        # r_fall: fixed weight; r_cross: base × φ² per step
+        actor_weights = {
+            "r_fall": np.full(T, self._base_actor_weights[0], dtype=np.float32),
+            "r_cross": (self._base_actor_weights[1] * phi_arr ** 2).astype(np.float32),
+        }
+
+        channels: Dict[str, ChannelData] = {}
+        for idx, key in enumerate(self._channel_names):
+            channels[key] = ChannelData(
+                reward=all_rewards[key].astype(np.float32),
+                is_terminated=is_terminated,
+                actor_weight=actor_weights[key],
+            )
+
+        return [Trajectory(
+            obs=np.asarray(obs_all[:T], dtype=np.float32),
+            actions=np.asarray(acts_all[:T], dtype=np.float32),
+            last_obs=np.asarray(fin_obs, dtype=np.float32),
+            channels=channels,
+            importance=1.0,
+            explore_factor=self.extract_explore_factor(episode, agent_id, T),
+        )]
+
+    def build_trajectories(self, episodes) -> List[Trajectory]:
+        agent_specs = [
+            ("robot_a", "cross_support_a", "posture_a", "height_phi_a"),
+            ("robot_b", "cross_support_b", "posture_b", "height_phi_b"),
+        ]
+
+        all_trajs: List[Trajectory] = []
+        for episode in episodes:
+            for agent_id, cross_key, posture_key, phi_key in agent_specs:
+                agent_trajs = self._build_agent_trajectory(
+                    episode, agent_id, cross_key, posture_key, phi_key,
+                )
+                all_trajs.extend(agent_trajs)
+        return all_trajs
+
+    def on_eval(self, episodes, update) -> Dict[str, Any]:
+        survived_count = 0
+        total_agents = 0
+        for ep in episodes:
+            for aid in self._AGENT_IDS:
+                total_agents += 1
+                term_reason = ep.agent_termination_reason.get(aid, "")
+                if not term_reason.startswith("imbalance"):
+                    survived_count += 1
+
+        survival_rate = float(survived_count / max(total_agents, 1))
+        self._survival_rate = survival_rate
+
+        survived_metric = float(survived_count)
+        is_new_best = survived_metric > self._best_survived
+        if is_new_best:
+            self._best_survived = survived_metric
+
+        return {
+            "is_new_best": is_new_best,
+            "info": {
+                "survived": survived_metric,
+                "survival_rate": round(survival_rate, 3),
+            },
+        }
+
+    def state(self) -> dict:
+        return {
+            "survival_rate": self._survival_rate,
+            "best_survived": self._best_survived,
+        }
+
+    def load_state(self, state: dict) -> None:
+        self._survival_rate = float(state.get("survival_rate", 0.0))
+        self._best_survived = float(state.get("best_survived", -1.0))
+
+
+EXPERIMENT_CLASS = BasicBalance
