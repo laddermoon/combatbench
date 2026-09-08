@@ -47,8 +47,8 @@ internal state (last_swing, support_steps, prev_state) is reset.
 
 See exp_basic_balance_step.py for the full state machine documentation.
 
-Exploration re-injection
-------------------------
+Exploration re-injection (two-stage floor scheduling)
+----------------------------------------------------
 The pretrained standup policy has low std (≈0.15) and uncertainty (≈0.17).
 Without re-injection, the policy is too deterministic to discover stepping.
 We use the framework's built-in exploration controls:
@@ -58,14 +58,21 @@ We use the framework's built-in exploration controls:
     policy enough noise to try lifting feet while still being grounded
     in the standup behaviour.
 
-  uncertainty_floor = 0.35
-    Prevents the policy's own σ from collapsing back to the converged
-    standup value (uncertainty≈0.17).  The floor at 0.35 forces the
-    policy to maintain more uncertainty than pure standing requires,
-    keeping foot-lifting actions discoverable throughout training.
+  Two-stage uncertainty floor:
+    Phase 1 (floor active):
+      uncertainty_floor = 0.35, uncertainty_coef = 5.0
+      The floor loss pulls the policy's own uncertainty up from the
+      converged standup value (≈0.17) toward 0.35, opening up σ enough
+      to explore foot-lifting actions.
 
-  uncertainty_coef = 0.01
-    Standard coefficient for the floor hinge loss.
+    Phase 2 (floor disabled, one-way switch):
+      Once uncertainty has stayed at/above the floor for
+      `floor_confirm_updates` (default 5) consecutive updates, the
+      floor loss is permanently disabled.  PPO then learns purely
+      from the advantage signal and σ can naturally tighten as the
+      policy becomes confident about stepping.  This prevents the
+      floor from holding the policy in an over-random state that
+      blocks fine action learning.
 
   learning_rate = 1e-4  (same as standup)
     PPO updates are moderated by the uncertainty floor — no need to
@@ -94,6 +101,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.ppo.experiment import ExplorationSpec
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     FOOT_WEIGHT,
@@ -193,9 +201,11 @@ class StandupStepV3(CombatExperimentPPOBase):
     # enough noise to try lifting feet while still being grounded in
     # the standup behaviour.
     explore_factor: float = 0.63
-    # 0.35 → forces the policy's own uncertainty to stay above 0.35
-    # (vs converged standup uncertainty≈0.17).  This prevents the
-    # policy from collapsing back to pure-standup during training.
+    # Phase-1 floor: pulls uncertainty up from standup value (≈0.17)
+    # toward 0.35 so the policy can explore foot-lifting actions.
+    # Disabled permanently once uncertainty reaches the floor for
+    # `floor_confirm_updates` consecutive updates (see on_update /
+    # exploration overrides below).
     uncertainty_floor: float = 0.35
     # 5.0 → with quadratic hinge, GradDiag showed coef=0.1 gave
     # floor/pol ratio=0.02x (still dominated by policy gradient).
@@ -220,14 +230,70 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- Video recording ---
     video_eval_interval: int = 5
 
+    # --- Two-stage floor scheduling ---
+    # Phase 1: floor loss active, pulls uncertainty up from standup value
+    #          (≈0.17) toward floor (0.35).
+    # Phase 2: once uncertainty has stayed at/above floor for
+    #          `floor_confirm_updates` consecutive updates, the floor
+    #          loss is permanently disabled so PPO can focus on learning
+    #          stepping action and naturally tighten σ.
+    # One-way switch: once disabled, stays disabled (no re-arming).
+    floor_confirm_updates: int = 5
+
     # --- Stateful metrics ---
     _best_potential: float = -1.0
     _success_rate: float = 0.0
     _best_step_metric: float = -1.0
+    _uncertainty_history: list = None  # list[float], recent uncertainty
+    _floor_disabled: bool = False
+    _floor_disabled_at: int = -1  # update index when floor was disabled
 
     # ------------------------------------------------------------------
     # Blueprint loading
     # ------------------------------------------------------------------
+
+    def on_update(self, stats, update: int) -> None:
+        """Track uncertainty for two-stage floor scheduling.
+
+        Appends the policy's uncertainty to ``_uncertainty_history``.
+        Once uncertainty has stayed at/above ``uncertainty_floor`` for
+        ``floor_confirm_updates`` consecutive updates, sets
+        ``_floor_disabled=True`` (one-way switch).
+        """
+        if self._uncertainty_history is None:
+            self._uncertainty_history = []
+        u = float(stats.policy_stats.get("uncertainty", 0.0))
+        self._uncertainty_history.append(u)
+        if self._floor_disabled:
+            return
+        window = self._uncertainty_history[-self.floor_confirm_updates:]
+        if (
+            len(window) >= self.floor_confirm_updates
+            and all(v >= self.uncertainty_floor for v in window)
+        ):
+            self._floor_disabled = True
+            self._floor_disabled_at = update
+            print(
+                f"  [floor] uncertainty reached floor={self.uncertainty_floor} "
+                f"for {self.floor_confirm_updates} consecutive updates "
+                f"(u={u:.4f}); disabling floor loss at update {update}",
+                flush=True,
+            )
+
+    def exploration(self, update: int) -> ExplorationSpec:
+        """Two-stage exploration spec.
+
+        Phase 1 (floor active): returns the configured floor/coef so the
+        floor loss pulls uncertainty up.
+        Phase 2 (floor disabled): returns zero floor/coef so PPO learns
+        purely from advantage signal and σ can naturally tighten.
+        """
+        if self._floor_disabled:
+            return ExplorationSpec(uncertainty_floor=0.0, uncertainty_coef=0.0)
+        return ExplorationSpec(
+            uncertainty_floor=self.uncertainty_floor,
+            uncertainty_coef=self.uncertainty_coef,
+        )
 
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
