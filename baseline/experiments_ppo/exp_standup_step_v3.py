@@ -58,6 +58,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
+from baseline.framework.ppo.experiment import ExplorationSpec
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     FOOT_WEIGHT,
@@ -141,9 +142,28 @@ class StandupStepV3(CombatExperimentPPOBase):
     # --- Video recording ---
     video_eval_interval: int = 2
 
+    # --- Exploration: two-stage uncertainty floor ---
+    # Phase 1: floor loss pulls uncertainty up from standup value (≈0.17)
+    #          toward 0.35 so the policy can explore foot-lifting.
+    # Phase 2: once uncertainty stays at/above phase2_threshold for
+    #          floor_confirm_updates consecutive updates, floor loss is
+    #          permanently disabled (one-way switch).  PPO then learns
+    #          purely from advantage and σ can naturally tighten.
+    #
+    # phase2_threshold < uncertainty_floor because the quadratic hinge
+    # coef*relu(floor-U)^2 has vanishing gradient as U→floor, so U
+    # typically plateaus below floor.
+    uncertainty_floor: float = 0.35
+    phase2_threshold: float = 0.30
+    floor_confirm_updates: int = 5
+    uncertainty_coef: float = 5.0
+
     # --- Stateful metrics ---
     _best_potential: float = -1.0
     _success_rate: float = 0.0
+    _uncertainty_history: list = None
+    _floor_disabled: bool = False
+    _floor_disabled_at: int = -1
 
     # ------------------------------------------------------------------
     # Blueprint loading
@@ -153,6 +173,47 @@ class StandupStepV3(CombatExperimentPPOBase):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "end2end" / "standup_step_v3_env.yaml"
         return ParameterizedEnvBlueprint.load(bp_path)
+
+    def on_update(self, stats, update: int) -> None:
+        """Track uncertainty for two-stage floor scheduling.
+
+        Once uncertainty stays at/above phase2_threshold for
+        floor_confirm_updates consecutive updates, permanently disable
+        the floor loss (one-way switch).
+        """
+        if self._uncertainty_history is None:
+            self._uncertainty_history = []
+        u = float(stats.policy_stats.get("uncertainty", 0.0))
+        self._uncertainty_history.append(u)
+        if self._floor_disabled:
+            return
+        window = self._uncertainty_history[-self.floor_confirm_updates:]
+        if (
+            len(window) >= self.floor_confirm_updates
+            and all(v >= self.phase2_threshold for v in window)
+        ):
+            self._floor_disabled = True
+            self._floor_disabled_at = update
+            print(
+                f"  [floor] uncertainty reached phase2_threshold="
+                f"{self.phase2_threshold} for {self.floor_confirm_updates} "
+                f"consecutive updates (u={u:.4f}); disabling floor loss "
+                f"at update {update}",
+                flush=True,
+            )
+
+    def exploration(self, update: int) -> ExplorationSpec:
+        """Two-stage exploration spec.
+
+        Phase 1 (floor active): configured floor/coef.
+        Phase 2 (floor disabled): zero floor/coef.
+        """
+        if self._floor_disabled:
+            return ExplorationSpec(uncertainty_floor=0.0, uncertainty_coef=0.0)
+        return ExplorationSpec(
+            uncertainty_floor=self.uncertainty_floor,
+            uncertainty_coef=self.uncertainty_coef,
+        )
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
         return tuple(
