@@ -55,7 +55,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.common.rollout import extract_per_step_field
+from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
 from baseline.humanoid21.end2end.stepping_state_machine import (
@@ -64,10 +64,6 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     PHASE_A_STEPS,
     PHASE_B_END,
     DOUBLE_GRACE_STEPS,
-    STATE_DOUBLE,
-    STATE_SUPPORT_L,
-    STATE_SUPPORT_R,
-    STATE_FLIGHT,
 )
 
 
@@ -130,13 +126,11 @@ class StandupStepV3(CombatExperimentPPOBase):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # --- PPO tuning (aligned with exp_standup) ---
-    log_std_min: float = -2.5
     learning_rate: float = 1e-4
     critic_learning_rate: float = 1e-4
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 4096
-    entropy_coef: float = 1e-3
 
     # --- Rollout schedule ---
     episodes_per_update: int = 512
@@ -391,7 +385,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            mode=None,
+            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
 
     @staticmethod
