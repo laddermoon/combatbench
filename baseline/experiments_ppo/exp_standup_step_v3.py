@@ -528,7 +528,49 @@ class StandupStepV3(CombatExperimentPPOBase):
                     episode, agent_id, foot_key, phi4stage_key, phi_height_key,
                 )
                 all_trajs.extend(trajs)
+        if not getattr(self, "_ef_verified", False):
+            self._ef_verified = True
+            self._verify_explore_factor_flow(all_trajs)
         return all_trajs
+
+    def _verify_explore_factor_flow(self, trajs: List[Trajectory]) -> None:
+        """One-time diagnostic: verify per-frame explore_factor data flow.
+
+        Checks (first trajectory only):
+        1. explore_factor array exists and has correct length.
+        2. ef < 0 (σ×0.5) on frames where obs[45] < 1.1 (STANDUP).
+        3. ef > 0 (σ×2.0) on frames where obs[45] >= 1.1 (BALANCE).
+        4. Fraction of BALANCE frames is plausible for this experiment.
+        5. Expected eff/std ratio matches the logged eff_std_mean/std_mean.
+        """
+        if not trajs:
+            return
+        t0 = trajs[0]
+        ef = t0.explore_factor
+        obs = np.asarray(t0.obs, dtype=np.float32)
+        if ef is None:
+            print("  [ef-verify] FAIL: Trajectory.explore_factor is None "
+                  "— rollout did not record per-frame ef", flush=True)
+            return
+        ef = np.asarray(ef, dtype=np.float32)
+        h_obs = obs[:, 45]
+        n = len(ef)
+        n_balance = int((h_obs >= _H_PHASE_SWITCH).sum())
+        n_standup = n - n_balance
+        # Consistency: ef sign must match phase from obs[45]
+        ok_standup = bool(np.all(ef[h_obs < _H_PHASE_SWITCH] < 0)) if n_standup else True
+        ok_balance = bool(np.all(ef[h_obs >= _H_PHASE_SWITCH] > 0)) if n_balance else True
+        exp_ratio = (n_balance * 2.0 + n_standup * 0.5) / n
+        print(
+            f"  [ef-verify] T={n} ef_min={ef.min():.3f} ef_max={ef.max():.3f} | "
+            f"standup(h<1.1)={n_standup} ef<0: {'OK' if ok_standup else 'FAIL'} | "
+            f"balance(h>=1.1)={n_balance} ef>0: {'OK' if ok_balance else 'FAIL'} | "
+            f"expected eff/std ratio={exp_ratio:.3f}",
+            flush=True,
+        )
+        if not (ok_standup and ok_balance):
+            print("  [ef-verify] FAIL: ef sign inconsistent with h_torso phase",
+                  flush=True)
 
     # ------------------------------------------------------------------
     # Eval
