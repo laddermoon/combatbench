@@ -27,11 +27,6 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import torch
 
-from baseline.framework.ppo.policies import (
-    DEFAULT_LOG_STD_MAX,
-    DEFAULT_LOG_STD_MIN,
-    TanhGaussianMLPPolicy,
-)
 from envs.framework import (
     BaseObserverPlugin,
     BasePlugin,
