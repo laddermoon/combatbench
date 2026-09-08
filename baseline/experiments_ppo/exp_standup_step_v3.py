@@ -497,33 +497,43 @@ class StandupStepV3(CombatExperimentPPOBase):
         acts_all = np.asarray(acts_all, dtype=np.float32)
 
         # --- Extract φ_4stage (StandingBalance4StageRewarder "potential") ---
+        # Raise on missing observer/field — a silent zero fallback would
+        # make r_potential vanish without any error, causing the policy to
+        # forget standup.  extract_per_step_field already guarantees
+        # length == T_full via coerce_per_step, so no truncation needed.
         phi4_arr = extract_per_step_field(
             episode.observer_outputs, phi4stage_key, "potential", T_full,
         )
-        if phi4_arr is not None:
-            phi4_arr = phi4_arr[:T_full]
-        else:
-            phi4_arr = np.zeros(T_full, dtype=np.float32)
+        if phi4_arr is None:
+            raise KeyError(
+                f"observer '{phi4stage_key}' field 'potential' missing "
+                f"from episode.observer_outputs "
+                f"(available={list(episode.observer_outputs.keys())})"
+            )
         phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract φ_height (HeightPhiObserver "phi") ---
         phi_h_arr = extract_per_step_field(
             episode.observer_outputs, phi_height_key, "phi", T_full,
         )
-        if phi_h_arr is not None:
-            phi_h_arr = phi_h_arr[:T_full]
-        else:
-            phi_h_arr = np.zeros(T_full, dtype=np.float32)
+        if phi_h_arr is None:
+            raise KeyError(
+                f"observer '{phi_height_key}' field 'phi' missing "
+                f"from episode.observer_outputs "
+                f"(available={list(episode.observer_outputs.keys())})"
+            )
         phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract h_torso for phase determination ---
         h_torso = extract_per_step_field(
             episode.observer_outputs, phi4stage_key, "h_torso", T_full,
         )
-        if h_torso is not None:
-            h_torso = h_torso[:T_full]
-        else:
-            h_torso = np.zeros(T_full, dtype=np.float32)
+        if h_torso is None:
+            raise KeyError(
+                f"observer '{phi4stage_key}' field 'h_torso' missing "
+                f"from episode.observer_outputs "
+                f"(available={list(episode.observer_outputs.keys())})"
+            )
 
         # --- Compute phase mask ---
         balance_mask = self._compute_phase_mask(h_torso, T_full)
@@ -590,10 +600,12 @@ class StandupStepV3(CombatExperimentPPOBase):
     def _extract_foot_field(
         episode, foot_key: str, field: str, T_full: int,
     ) -> np.ndarray:
-        """Extract a FootStateObserver field, truncated to ``T_full``.
+        """Extract a FootStateObserver field.
 
         Raises if the observer or field is missing — a silent zero fallback
         would make the stepping signal vanish without any error.
+        ``extract_per_step_field`` already guarantees length == T_full via
+        ``coerce_per_step``, so no truncation is needed.
         """
         arr = extract_per_step_field(
             episode.observer_outputs, foot_key, field, T_full,
@@ -604,7 +616,7 @@ class StandupStepV3(CombatExperimentPPOBase):
                 f"missing from episode.observer_outputs "
                 f"(available observers={list(episode.observer_outputs.keys())})"
             )
-        return arr[:T_full]
+        return arr
 
     def build_trajectories(self, episodes) -> List[Trajectory]:
         all_trajs: List[Trajectory] = []
