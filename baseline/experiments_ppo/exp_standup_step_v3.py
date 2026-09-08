@@ -109,10 +109,10 @@ class StandupStepV3(CombatExperimentPPOBase):
     foot_height_clip: float = 0.05
 
     # --- r_fall actor weight (fixed, same as exp_basic_balance_step) ---
-    r_fall_actor_weight: float = 3.0
+    r_fall_actor_weight: float = 1.0
 
     # --- r_potential actor weight (fixed, standup phase) ---
-    r_potential_actor_weight: float = 3.0
+    r_potential_actor_weight: float = 1.0
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
