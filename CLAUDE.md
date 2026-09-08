@@ -503,6 +503,33 @@ static_data = sim.accessor.get_static_data()
 - [`envs/humanoid21/OBSERVATION_zh.md`](envs/humanoid21/OBSERVATION_zh.md) - 96-dim observation details
 - [`policy/README.md`](policy/README.md) - Policy implementation guide
 
+## Code Principles
+
+### Fail Loud, Never Hide Problems
+
+**不要静默失败，不要隐藏问题。** 这是本项目的核心代码守则。
+
+- **缺失数据必须报错，不能静默回退**：observer 字段缺失、配置项不存在、checkpoint key 不匹配等问题，必须 `raise`（`KeyError`/`ValueError`），不能用 `np.zeros()`、`None`、默认值等静默回退。静默回退会让训练继续运行但学到错误的东西，比崩溃更危险。
+- **不要用截取掩盖长度不一致**：如果底层函数（如 `coerce_per_step`）已经保证了长度，不要再加 `[:T]` 截取。截取会掩盖长度不一致的 bug——应该让底层检查暴露问题，而不是在上层静默截断。
+- **不要用 try/except 吞掉异常**：除非有明确的恢复策略，否则不要 catch 异常后继续。`except: pass` 是 bug 的温床。
+- **不要用 hasattr/getattr 绕过类型检查**：如果接口契约要求某个方法或属性存在，直接调用，让 `AttributeError` 暴露问题。
+
+**反面案例（已修复）**：
+```python
+# BAD: 静默零回退，observer 缺失时不报错
+h_torso = extract_per_step_field(...)
+if h_torso is not None:
+    h_torso = h_torso[:T_full]
+else:
+    h_torso = np.zeros(T_full, dtype=np.float32)  # 静默回退！
+
+# GOOD: 缺失就报错
+h_torso = extract_per_step_field(...)
+if h_torso is None:
+    raise KeyError(f"observer '{key}' field 'h_torso' missing ...")
+# 不截取 — coerce_per_step 已保证长度
+```
+
 ## Important Notes
 
 - **Observation dimension**: 96 (not 127 - old version)
