@@ -153,7 +153,7 @@ def _stack_agent_field(
     return out
 
 
-def _stack_explore_intensities(
+def _stack_explore_factors(
     frames: Sequence[Mapping[str, Any]],
 ) -> Dict[str, np.ndarray]:
     """Stack per-frame ``explore_factor`` into ``{agent_id: (T,) float32}``.
@@ -303,7 +303,7 @@ class Episode:
     observations: Mapping[str, np.ndarray]
     actions: Mapping[str, np.ndarray]
     action_extras: Mapping[str, Mapping[str, np.ndarray]]
-    explore_intensities: Mapping[str, np.ndarray]
+    explore_factors: Mapping[str, np.ndarray]
     """Per-agent per-frame exploration intensity ``(T,)`` float32.
 
     This is the **input** that was passed to ``policy.act`` at each step,
@@ -368,7 +368,7 @@ class Episode:
         observations = _stack_agent_field(frames, "observation")
         actions = _stack_agent_field(frames, "action")
         extras = _stack_action_extras(frames)
-        explore_intensities = _stack_explore_intensities(frames)
+        explore_factors = _stack_explore_factors(frames)
 
         observer_frames: List[Mapping[str, Any]] = []
         for frame in frames:
@@ -396,7 +396,7 @@ class Episode:
             observations=observations,
             actions=actions,
             action_extras=extras,
-            explore_intensities=explore_intensities,
+            explore_factors=explore_factors,
             observer_outputs=observer_outputs,
             final_observation=final_obs_dict,
             episode_metrics=dict(episode_metrics or {}),
@@ -426,8 +426,8 @@ class Episode:
         for agent_id, extras in self.action_extras.items():
             for key, value in extras.items():
                 arrays[f"extras__{agent_id}__{key}"] = np.asarray(value)
-        for agent_id, value in self.explore_intensities.items():
-            arrays[f"ei__{agent_id}"] = np.asarray(value, dtype=np.float32)
+        for agent_id, value in self.explore_factors.items():
+            arrays[f"ef__{agent_id}"] = np.asarray(value, dtype=np.float32)
         for agent_id, value in self.final_observation.items():
             arrays[f"final_obs__{agent_id}"] = np.asarray(value)
 
@@ -494,7 +494,7 @@ class Episode:
             observations: Dict[str, np.ndarray] = {}
             actions: Dict[str, np.ndarray] = {}
             action_extras: Dict[str, Dict[str, np.ndarray]] = {}
-            explore_intensities: Dict[str, np.ndarray] = {}
+            explore_factors: Dict[str, np.ndarray] = {}
             final_observation: Dict[str, np.ndarray] = {}
             observer_arrays: Dict[Tuple[str, ...], np.ndarray] = {}
             for key in keys:
@@ -507,8 +507,8 @@ class Episode:
                     rest = key[len("extras__"):]
                     agent_id, _, sub = rest.partition("__")
                     action_extras.setdefault(agent_id, {})[sub] = value
-                elif key.startswith("ei__"):
-                    explore_intensities[key[len("ei__"):]] = value
+                elif key.startswith("ef__"):
+                    explore_factors[key[len("ef__"):]] = value
                 elif key.startswith("final_obs__"):
                     final_observation[key[len("final_obs__"):]] = value
                 elif key.startswith("obs_outputs__"):
@@ -546,7 +546,7 @@ class Episode:
             observations=observations,
             actions=actions,
             action_extras=action_extras,
-            explore_intensities=explore_intensities,
+            explore_factors=explore_factors,
             observer_outputs=observer_outputs,
             final_observation=final_observation,
         )
