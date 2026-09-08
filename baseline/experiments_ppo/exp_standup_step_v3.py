@@ -79,6 +79,29 @@ PLATEAU_SLOPE_EPS: float = 0.005
 """Max |slope| (m/step) for plateau detection."""
 
 
+# --- Phase-dependent explore_factor (per-frame callable) ---
+# obs[45] = h_torso (root body z, meters).
+# STANDUP (h < 1.1): ef = -0.631 → σ × 0.5 (more deterministic, focus on standing)
+# BALANCE (h ≥ 1.1): ef = +0.631 → σ × 2.0 (more random, explore stepping)
+# Must be top-level for multiprocessing picklability.
+import math as _math
+_EF_STANDUP = _math.log(0.5) / _math.log(3)    # ≈ -0.631
+_EF_BALANCE = _math.log(2.0) / _math.log(3)   # ≈ +0.631
+_H_PHASE_SWITCH = 1.1
+
+
+def phase_explore_factor(obs, step):
+    """Per-frame explore_factor based on torso height.
+
+    Returns a negative ef (σ × 0.5) when the robot is low (STANDUP)
+    and a positive ef (σ × 2.0) when upright (BALANCE).
+    """
+    h_torso = float(obs[45])
+    if h_torso >= _H_PHASE_SWITCH:
+        return _EF_BALANCE
+    return _EF_STANDUP
+
+
 class StandupStepV3(CombatExperimentPPOBase):
     """End-to-end standup + balance with phase-switched reward.
 
@@ -173,6 +196,34 @@ class StandupStepV3(CombatExperimentPPOBase):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "end2end" / "standup_step_v3_env.yaml"
         return ParameterizedEnvBlueprint.load(bp_path)
+
+    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True):
+        """Override to use phase-dependent per-frame explore_factor.
+
+        ``self.explore_factor`` is ignored — the callable
+        ``phase_explore_factor`` decides ef per frame from obs[45]
+        (h_torso): σ×0.5 in STANDUP, σ×2.0 in BALANCE.
+        """
+        from baseline.framework.rollout import Job
+        env_bp = self._env_pb().materialize(max_steps=self.max_steps)
+        rng = np.random.default_rng(base_seed)
+        jobs = []
+        for i in range(n_episodes):
+            seed = int(base_seed + i)
+            initial_distance = float(
+                rng.uniform(self.init_distance_min, self.init_distance_max)
+            )
+            jobs.append(Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bp,
+                seed=seed,
+                episode_options={"initial_distance": initial_distance},
+                explore_factor_a=phase_explore_factor,
+                explore_factor_b=phase_explore_factor,
+                stochastic=stochastic,
+            ))
+        return jobs
 
     def on_update(self, stats, update: int) -> None:
         """Track uncertainty for two-stage floor scheduling.
