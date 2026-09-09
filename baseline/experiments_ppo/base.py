@@ -342,6 +342,48 @@ class CombatExperimentPPOBase(ExperimentPPO):
         return jobs
 
     # ------------------------------------------------------------------
+    # S5: Behavior probes (ExperimentPPO interface)
+    # ------------------------------------------------------------------
+
+    def build_probe_jobs(
+        self,
+        policy_bp: PolicyBlueprint,
+        suite: "ProbeSuite",
+    ) -> List[Job]:
+        """Build deterministic jobs for a probe suite.
+
+        S5: Default implementation builds jobs with ``stochastic=False``
+        using the suite's seeds and ``episode_options``.  Override for
+        custom env setup (e.g. specific initial states, single-agent
+        mode for probing).
+
+        The resulting jobs are consumed by
+        :func:`baseline.framework.ppo.debug.probes.run_probe_suite`,
+        which collects episodes via :class:`ParallelRollouter` and
+        evaluates each probe's predicate on each episode.
+
+        Args:
+            policy_bp: Deployable policy blueprint (loaded from a
+                specific update's ``policy_exports/uNNNNN/``).
+            suite: The :class:`ProbeSuite` to build jobs for.
+
+        Returns:
+            List of :class:`Job`, one per seed in ``suite.seeds``.
+        """
+        env_bp = self._env_pb().materialize(max_steps=self.max_steps)
+        return [
+            Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bp,
+                seed=seed,
+                episode_options=dict(suite.episode_options),
+                stochastic=False,
+            )
+            for seed in suite.seeds
+        ]
+
+    # ------------------------------------------------------------------
     # State persistence (ExperimentPPO interface)
     # ------------------------------------------------------------------
 

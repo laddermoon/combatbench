@@ -113,7 +113,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import (
-    Any, Dict, List, Mapping, Optional, Tuple,
+    Any, Callable, Dict, List, Mapping, Optional, Tuple,
 )
 
 import numpy as np
@@ -639,6 +639,52 @@ class UpdateStats:
 
 
 # ---------------------------------------------------------------------------
+# S5: Behavior probes + metric verifiers
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BehaviorProbe:
+    """A single behavior predicate evaluated on an Episode.
+
+    S5: The predicate signature is ``(Episode, agent_id) -> bool``, so
+    it can run offline on any :class:`Episode` (from rollout, snapshot,
+    or test fixture) and can be unit tested without a live
+    environment.  See ``DEBUG_GUIDE.md`` §3.7 ``probe``.
+
+    Probes answer ①环 of the nine-link signal chain: "did the target
+    behavior ever physically happen?"  They are the only direct way
+    to confirm ①环 — metrics are indirect and can be fooled by
+    contact jitter.
+    """
+
+    name: str
+    predicate: Callable[..., bool]
+    """``(Episode, agent_id) -> bool`` — pass/fail for one agent in one
+    episode.  ``Episode`` is :class:`baseline.framework.rollout.episode.Episode`.
+    """
+
+
+@dataclass(frozen=True)
+class ProbeSuite:
+    """A named collection of behavior probes with fixed seeds.
+
+    Fixed seeds ensure the same initial states are used across
+    updates, making probe results directly comparable.  Episode
+    options (e.g. ``initial_distance``) are the same for all seeds
+    in a suite.
+    """
+
+    name: str
+    probes: Tuple[BehaviorProbe, ...]
+    seeds: Tuple[int, ...]
+    """One seed per episode.  Each seed produces one deterministic
+    episode (``stochastic=False``).  Length = number of episodes
+    per probe run."""
+    episode_options: Mapping[str, Any] = field(default_factory=dict)
+    """Environment-only options forwarded to ``simulator.reset``."""
+
+
+# ---------------------------------------------------------------------------
 # ExperimentPPO ABC
 # ---------------------------------------------------------------------------
 
@@ -993,4 +1039,48 @@ class ExperimentPPO(ABC):
             state: The dict previously returned by ``state()``.
         """
         pass
+
+    # ==================================================================
+    # S5: Behavior probes + metric verifiers (optional)
+    # ==================================================================
+
+    def probe_suites(self) -> Tuple[ProbeSuite, ...]:
+        """Declare behavior probe suites for this experiment.
+
+        S5: Returns ``()`` by default — "this experiment has no probes"
+        is a complete answer, not a missing one.  Override to declare
+        probes that answer ①环 (did the behavior ever happen?).
+
+        Probes use deterministic rollout (``stochastic=False``) with the
+        suite's fixed seeds, so results are comparable across updates.
+        The CLI ``debug.py probe`` loads a policy export for a given
+        update, runs the suite, and reports per-probe pass rates.
+
+        See ``DEBUG_GUIDE.md`` §3.7 ``probe`` and
+        ``DESIGN_debug_system.md`` §5.2.
+
+        Returns:
+            Tuple of :class:`ProbeSuite`.  Empty by default.
+        """
+        return ()
+
+    def metric_verifiers(self) -> Dict[str, Callable[..., float]]:
+        """Declare strict metric definitions for verification.
+
+        S5: Returns ``{}`` by default.  Override to provide strict
+        versions of metrics that can be compared with the production
+        definitions via ``debug.py metric --verify``.
+
+        The key is the metric name (e.g. ``"steps"``), and the value is
+        a function ``(Episode, agent_id) -> float`` that computes the
+        strict metric value for one agent in one episode.
+
+        See ``DEBUG_GUIDE.md`` §3.6 ``metric --verify`` and
+        ``DESIGN_debug_system.md`` §5.3.
+
+        Returns:
+            Dict mapping metric name to strict computation function.
+            Empty by default.
+        """
+        return {}
 

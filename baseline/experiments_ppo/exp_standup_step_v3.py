@@ -58,7 +58,11 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
-from baseline.framework.ppo.experiment import ExplorationSpec
+from baseline.framework.ppo.experiment import (
+    BehaviorProbe,
+    ExplorationSpec,
+    ProbeSuite,
+)
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     FOOT_WEIGHT,
@@ -701,6 +705,354 @@ class StandupStepV3(CombatExperimentPPOBase):
         self._floor_disabled = bool(state.get("floor_disabled", False))
         self._floor_disabled_at = int(state.get("floor_disabled_at", -1))
         self._step_success_streak = int(state.get("step_success_streak", 0))
+
+    # ------------------------------------------------------------------
+    # S5: Behavior probes + metric verifiers
+    # ------------------------------------------------------------------
+    # Four locomotion probes covering the full stand-up → balance →
+    # stepping chain.  Each predicate is (Episode, agent_id) -> bool,
+    # runnable offline on any Episode.  See DEBUG_GUIDE.md §3.7.
+    #
+    # Strict 'steps' metric: min swing duration + min support duration +
+    # alternating feet.  See DEBUG_GUIDE.md §3.6.
+
+    # --- Probe thresholds (class attributes for easy tuning) ---
+    probe_balance_min_frames: int = 100
+    """Min consecutive BALANCE frames for maintain_balance probe."""
+    probe_swing_min_height: float = 0.03
+    """Min swing foot height (m) for swing_foot_clear probe."""
+    probe_swing_min_frames: int = 5
+    """Min swing duration (frames) for swing_foot_clear probe."""
+    probe_alternating_min_cycles: int = 2
+    """Min alternating support cycles for alternating_support probe."""
+
+    # --- Strict steps thresholds ---
+    strict_steps_swing_min_height: float = 0.03
+    strict_steps_swing_min_frames: int = 5
+    strict_steps_support_min_frames: int = 3
+
+    @staticmethod
+    def _get_agent_observer_keys(agent_id: str) -> Tuple[str, str]:
+        """Map agent_id → (foot_key, phi4stage_key) from _AGENT_OBS."""
+        for aid, foot_key, phi4stage_key, _ in StandupStepV3._AGENT_OBS:
+            if aid == agent_id:
+                return foot_key, phi4stage_key
+        raise KeyError(
+            f"agent_id {agent_id!r} not in _AGENT_OBS; "
+            f"available: {[a for a, *_ in StandupStepV3._AGENT_OBS]}"
+        )
+
+    # --- Probe predicates ---
+
+    def _probe_stand_up_from_fallen(self, episode, agent_id: str) -> bool:
+        """Robot reaches potential ≥ 0.9 at some point (①环: stand-up)."""
+        _, phi4stage_key = self._get_agent_observer_keys(agent_id)
+        T = episode.num_frames
+        if T == 0:
+            return False
+        phi = extract_per_step_field(
+            episode.observer_outputs, phi4stage_key, "potential", T,
+        )
+        if phi is None or len(phi) == 0:
+            return False
+        return float(np.max(phi)) >= 0.9
+
+    def _probe_maintain_balance(self, episode, agent_id: str) -> bool:
+        """Robot stays in BALANCE phase for ≥ probe_balance_min_frames
+        consecutively (①环: balance hold)."""
+        _, phi4stage_key = self._get_agent_observer_keys(agent_id)
+        T = episode.num_frames
+        if T == 0:
+            return False
+        h_torso = extract_per_step_field(
+            episode.observer_outputs, phi4stage_key, "h_torso", T,
+        )
+        if h_torso is None:
+            return False
+        balance_mask = self._compute_phase_mask(
+            np.asarray(h_torso[:T], dtype=np.float32), T,
+        )
+        # Find longest consecutive BALANCE run
+        max_run = 0
+        current_run = 0
+        for m in balance_mask:
+            if m:
+                current_run += 1
+                if current_run > max_run:
+                    max_run = current_run
+            else:
+                current_run = 0
+        return max_run >= self.probe_balance_min_frames
+
+    def _probe_swing_foot_clear(self, episode, agent_id: str) -> bool:
+        """A foot lifts ≥ probe_swing_min_height for ≥ probe_swing_min_frames
+        consecutive frames while the other foot stays on the ground
+        (①环: foot lift)."""
+        foot_key, _ = self._get_agent_observer_keys(agent_id)
+        T = episode.num_frames
+        if T == 0:
+            return False
+        h_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_left_foot", T,
+        )
+        h_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_right_foot", T,
+        )
+        contact_l = extract_per_step_field(
+            episode.observer_outputs, foot_key, "left_foot_contact", T,
+        )
+        contact_r = extract_per_step_field(
+            episode.observer_outputs, foot_key, "right_foot_contact", T,
+        )
+        if any(x is None for x in [h_left, h_right, contact_l, contact_r]):
+            return False
+        h_left = np.asarray(h_left[:T], dtype=np.float32)
+        h_right = np.asarray(h_right[:T], dtype=np.float32)
+        contact_l = np.asarray(contact_l[:T], dtype=bool)
+        contact_r = np.asarray(contact_r[:T], dtype=bool)
+        # Check left foot swing (right stays on ground)
+        if self._has_swing_phase(
+            h_left, contact_l, contact_r,
+            self.probe_swing_min_height, self.probe_swing_min_frames,
+        ):
+            return True
+        # Check right foot swing (left stays on ground)
+        if self._has_swing_phase(
+            h_right, contact_r, contact_l,
+            self.probe_swing_min_height, self.probe_swing_min_frames,
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _has_swing_phase(
+        h_swing: np.ndarray, contact_swing: np.ndarray,
+        contact_support: np.ndarray,
+        min_height: float, min_frames: int,
+    ) -> bool:
+        """Check if the swing foot lifted high enough for long enough
+        while the support foot stayed on the ground."""
+        airborne = ~contact_swing
+        high_enough = h_swing >= min_height
+        support_down = contact_support
+        # Swing phase: airborne AND high enough AND support foot down
+        swing_mask = airborne & high_enough & support_down
+        # Find longest consecutive run
+        max_run = 0
+        current_run = 0
+        for m in swing_mask:
+            if m:
+                current_run += 1
+                if current_run > max_run:
+                    max_run = current_run
+            else:
+                current_run = 0
+        return max_run >= min_frames
+
+    def _probe_alternating_support(self, episode, agent_id: str) -> bool:
+        """Feet alternate support at least probe_alternating_min_cycles
+        complete cycles (①环: gait).  A cycle = left-support → right-support
+        or vice versa, with each support phase lasting ≥ 1 frame."""
+        foot_key, _ = self._get_agent_observer_keys(agent_id)
+        T = episode.num_frames
+        if T == 0:
+            return False
+        contact_l = extract_per_step_field(
+            episode.observer_outputs, foot_key, "left_foot_contact", T,
+        )
+        contact_r = extract_per_step_field(
+            episode.observer_outputs, foot_key, "right_foot_contact", T,
+        )
+        if contact_l is None or contact_r is None:
+            return False
+        contact_l = np.asarray(contact_l[:T], dtype=bool)
+        contact_r = np.asarray(contact_r[:T], dtype=bool)
+        # Support phases: one foot down, other up
+        # left_support = contact_l & ~contact_r
+        # right_support = ~contact_l & contact_r
+        # Count transitions between left_support and right_support
+        left_support = contact_l & ~contact_r
+        right_support = ~contact_l & contact_r
+        # Build a sequence of support states (skip double/flight)
+        transitions = 0
+        last_state = None  # "left" or "right"
+        for i in range(T):
+            if left_support[i]:
+                current = "left"
+            elif right_support[i]:
+                current = "right"
+            else:
+                continue  # double or flight — skip
+            if last_state is not None and current != last_state:
+                transitions += 1
+            last_state = current
+        # cycles = transitions (each transition is one half-cycle boundary)
+        # A full cycle = 2 transitions (left→right→left)
+        cycles = transitions // 2
+        return cycles >= self.probe_alternating_min_cycles
+
+    # --- Strict steps metric verifier ---
+
+    def _strict_steps(self, episode, agent_id: str) -> float:
+        """Count true alternating steps with duration constraints (⑨环).
+
+        A "true step" requires:
+        1. Swing foot lifts ≥ strict_steps_swing_min_height for
+           ≥ strict_steps_swing_min_frames consecutive frames
+        2. Support foot stays on the ground during the swing
+        3. Consecutive steps must alternate feet
+        4. Only counted during BALANCE phase
+        """
+        foot_key, phi4stage_key = self._get_agent_observer_keys(agent_id)
+        T = episode.num_frames
+        if T == 0:
+            return 0.0
+        h_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_left_foot", T,
+        )
+        h_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_right_foot", T,
+        )
+        contact_l = extract_per_step_field(
+            episode.observer_outputs, foot_key, "left_foot_contact", T,
+        )
+        contact_r = extract_per_step_field(
+            episode.observer_outputs, foot_key, "right_foot_contact", T,
+        )
+        h_torso = extract_per_step_field(
+            episode.observer_outputs, phi4stage_key, "h_torso", T,
+        )
+        if any(x is None for x in
+               [h_left, h_right, contact_l, contact_r, h_torso]):
+            return 0.0
+        h_left = np.asarray(h_left[:T], dtype=np.float32)
+        h_right = np.asarray(h_right[:T], dtype=np.float32)
+        contact_l = np.asarray(contact_l[:T], dtype=bool)
+        contact_r = np.asarray(contact_r[:T], dtype=bool)
+        h_torso = np.asarray(h_torso[:T], dtype=np.float32)
+        # BALANCE phase only
+        balance_mask = self._compute_phase_mask(h_torso, T)
+        # Find swing phases for each foot
+        left_swings = self._find_swing_phases(
+            h_left, contact_l, contact_r, balance_mask,
+            self.strict_steps_swing_min_height,
+            self.strict_steps_swing_min_frames,
+            self.strict_steps_support_min_frames,
+        )
+        right_swings = self._find_swing_phases(
+            h_right, contact_r, contact_l, balance_mask,
+            self.strict_steps_swing_min_height,
+            self.strict_steps_swing_min_frames,
+            self.strict_steps_support_min_frames,
+        )
+        # Merge and sort by start frame
+        all_swings = [(s, e, "left") for s, e in left_swings]
+        all_swings += [(s, e, "right") for s, e in right_swings]
+        all_swings.sort(key=lambda x: x[0])
+        if len(all_swings) < 2:
+            return float(len(all_swings))
+        # Count alternating steps
+        count = 1
+        last_foot = all_swings[0][2]
+        for _, _, foot in all_swings[1:]:
+            if foot != last_foot:
+                count += 1
+                last_foot = foot
+        return float(count)
+
+    @staticmethod
+    def _find_swing_phases(
+        h_swing: np.ndarray, contact_swing: np.ndarray,
+        contact_support: np.ndarray, balance_mask: np.ndarray,
+        min_height: float, min_swing_frames: int,
+        min_support_frames: int,
+    ) -> List[Tuple[int, int]]:
+        """Find contiguous swing phases meeting all duration constraints.
+
+        A swing phase is a maximal run of frames where:
+        - swing foot is airborne (not in contact)
+        - swing foot height ≥ min_height
+        - support foot is in contact
+        - all frames are in BALANCE phase
+        - the run length ≥ min_swing_frames
+        - the support foot was down for ≥ min_support_frames before
+          the swing started (prevents single-frame support)
+
+        Returns list of (start, end) frame indices (end exclusive).
+        """
+        T = len(h_swing)
+        swing_mask = (
+            (~contact_swing)
+            & (h_swing >= min_height)
+            & contact_support
+            & balance_mask
+        )
+        phases = []
+        i = 0
+        while i < T:
+            if not swing_mask[i]:
+                i += 1
+                continue
+            # Start of a swing phase
+            start = i
+            while i < T and swing_mask[i]:
+                i += 1
+            end = i
+            # Check duration
+            if end - start >= min_swing_frames:
+                # Check support duration before swing start
+                support_run = 0
+                j = start - 1
+                while j >= 0 and contact_support[j] and balance_mask[j]:
+                    support_run += 1
+                    j -= 1
+                if support_run >= min_support_frames:
+                    phases.append((start, end))
+        return phases
+
+    # --- Interface methods ---
+
+    def probe_suites(self) -> Tuple[ProbeSuite, ...]:
+        """Locomotion probe suite for stepping behavior.
+
+        16 fixed seeds → 16 deterministic episodes per update.  Probes
+        cover the full stand-up → balance → stepping chain:
+        - stand_up_from_fallen: ①环 (potential ≥ 0.9)
+        - maintain_balance_100f: balance hold ≥ 100 frames
+        - swing_foot_clear_3cm_5f: foot lifts 3cm for 5 frames
+        - alternating_support_2cyc: gait with ≥ 2 alternating cycles
+        """
+        return (
+            ProbeSuite(
+                name="locomotion",
+                probes=(
+                    BehaviorProbe(
+                        "stand_up_from_fallen",
+                        self._probe_stand_up_from_fallen,
+                    ),
+                    BehaviorProbe(
+                        "maintain_balance_100f",
+                        self._probe_maintain_balance,
+                    ),
+                    BehaviorProbe(
+                        "swing_foot_clear_3cm_5f",
+                        self._probe_swing_foot_clear,
+                    ),
+                    BehaviorProbe(
+                        "alternating_support_2cyc",
+                        self._probe_alternating_support,
+                    ),
+                ),
+                seeds=tuple(42 + i * 100 for i in range(16)),
+                episode_options={"initial_distance": 2.0},
+            ),
+        )
+
+    def metric_verifiers(self) -> Dict[str, Any]:
+        """Strict 'steps' metric: min swing + min support + alternating."""
+        return {
+            "steps": self._strict_steps,
+        }
 
 
 EXPERIMENT_CLASS = StandupStepV3
