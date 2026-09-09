@@ -114,6 +114,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import (
     Any, Callable, Dict, List, Mapping, Optional, Tuple,
+    TYPE_CHECKING,
 )
 
 import numpy as np
@@ -122,6 +123,9 @@ import torch.nn as nn
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import Policy, PolicyBlueprint
+
+if TYPE_CHECKING:
+    from baseline.framework.ppo.debug.knobs import KnobCheck
 
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from baseline.framework.rollout.job import Job
@@ -1128,4 +1132,29 @@ class ExperimentPPO(ABC):
             array.  Empty by default.
         """
         return {}
+
+    # ==================================================================
+    # S6: Knob checks (optional)
+    # ==================================================================
+
+    def knob_checks(self) -> Tuple["KnobCheck", ...]:
+        """Declare experiment-specific knob checks for ``intervene-check``.
+
+        S6: Returns ``()`` by default — "this experiment has no custom
+        knobs" is a complete answer.  Override to add experiment-specific
+        knobs that ``debug.py intervene-check`` will verify alongside the
+        framework's built-in knobs.
+
+        A knob check verifies that a configured parameter actually entered
+        the training data pathway.  The framework registers built-in
+        knobs (explore_factor, uncertainty_floor, floor_weight, resume,
+        observer); experiments add their own here.
+
+        See ``DEBUG_GUIDE.md`` §3.8 ``intervene-check`` and
+        ``DESIGN_debug_system.md`` §5.4.
+
+        Returns:
+            Tuple of :class:`KnobCheck`.  Empty by default.
+        """
+        return ()
 

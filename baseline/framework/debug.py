@@ -3,6 +3,7 @@
 S5: ``probe`` and ``metric --verify`` (§3.7, §3.6).
 S2: ``snapshot`` and ``replay`` (§3.11).
 S3: ``chain``, ``attribute``, ``frame`` (§3.2, §3.3, §3.4).
+S6: ``intervene-check``, ``compare``, ``noise``, ``timeline`` (§3.8–§3.10).
 
 Usage::
 
@@ -33,6 +34,25 @@ Usage::
         --id ep0003:robot_a:137
     PYTHONPATH=. python3 baseline/framework/debug.py frame <snapshot_dir> \\
         --where "combine.aw_normed.r_left_foot < 0" --limit 20
+
+    # Intervene-check (S6)
+    PYTHONPATH=. python3 baseline/framework/debug.py intervene-check <run_dir>
+    PYTHONPATH=. python3 baseline/framework/debug.py intervene-check <run_dir> \\
+        --knob explore_factor
+
+    # Compare two runs (S6)
+    PYTHONPATH=. python3 baseline/framework/debug.py compare <runA> <runB>
+    PYTHONPATH=. python3 baseline/framework/debug.py compare <runA> <runB> \\
+        --noise-band noise.json
+
+    # Noise baseline (S6)
+    PYTHONPATH=. python3 baseline/framework/debug.py noise \\
+        --experiment standup_step_v3 --seeds 4 --updates 50
+
+    # Event timeline (S6)
+    PYTHONPATH=. python3 baseline/framework/debug.py timeline <run_dir>
+    PYTHONPATH=. python3 baseline/framework/debug.py timeline <run_dir> \\
+        --overlay uncertainty,max_pot
 """
 from __future__ import annotations
 
@@ -346,11 +366,91 @@ def cmd_frame(args: argparse.Namespace) -> None:
     print(result)
 
 
+def cmd_intervene_check(args: argparse.Namespace) -> None:
+    """Intervene-check — verify configured knobs entered the data pathway."""
+    from baseline.framework.ppo.debug.intervene import intervene_check
+
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists():
+        print(f"Error: run_dir does not exist: {run_dir}")
+        raise SystemExit(1)
+
+    snapshot_dir = Path(args.snapshot).resolve() if args.snapshot else None
+    result = intervene_check(
+        run_dir,
+        update=args.at,
+        knob_name=args.knob,
+        snapshot_dir=snapshot_dir,
+    )
+    print(result)
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    """Compare two training runs metric-by-metric."""
+    from baseline.framework.ppo.debug.compare import compare
+
+    run_a = Path(args.run_a).resolve()
+    run_b = Path(args.run_b).resolve()
+    if not run_a.exists():
+        print(f"Error: run_a does not exist: {run_a}")
+        raise SystemExit(1)
+    if not run_b.exists():
+        print(f"Error: run_b does not exist: {run_b}")
+        raise SystemExit(1)
+
+    noise_band_path = Path(args.noise_band).resolve() if args.noise_band else None
+    result = compare(
+        run_a, run_b,
+        window=args.window,
+        noise_band_path=noise_band_path,
+    )
+    print(result)
+
+
+def cmd_noise(args: argparse.Namespace) -> None:
+    """Noise baseline — launch multi-seed training and compute noise band."""
+    from baseline.framework.ppo.debug.noise import noise
+
+    seeds = [int(s) for s in args.seeds.split(",")]
+    output = Path(args.output).resolve() if args.output else None
+
+    result = noise(
+        experiment=args.experiment,
+        seeds=seeds,
+        updates=args.updates,
+        algo=args.algo,
+        output=output,
+        window=args.window,
+        wait=not args.no_wait,
+    )
+    print(result)
+    if output:
+        print(f"\n噪声带已保存到: {output}")
+
+
+def cmd_timeline(args: argparse.Namespace) -> None:
+    """Event timeline — show events and metric sparklines on one axis."""
+    from baseline.framework.ppo.debug.timeline import timeline
+
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists():
+        print(f"Error: run_dir does not exist: {run_dir}")
+        raise SystemExit(1)
+
+    overlay = None
+    if args.overlay:
+        overlay = [m.strip() for m in args.overlay.split(",")]
+
+    result = timeline(run_dir, overlay=overlay)
+    print(result)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="debug.py",
         description="Debug CLI — probes, metrics, snapshots, replay, "
-                    "chain, attribute, frame (S5 + S2 + S3)",
+                    "chain, attribute, frame, intervene-check, compare, "
+                    "noise, timeline (S5 + S2 + S3 + S6)",
     )
     subparsers = parser.add_subparsers(dest="command", help="Sub-command")
 
@@ -511,6 +611,88 @@ def main() -> None:
         help="Render the frame (not yet implemented)",
     )
     p_frame.set_defaults(func=cmd_frame)
+
+    # --- intervene-check (S6) ---
+    p_intervene = subparsers.add_parser(
+        "intervene-check",
+        help="Verify configured knobs entered the data pathway (§3.8)",
+    )
+    p_intervene.add_argument("run_dir", type=str, help="Training run directory")
+    p_intervene.add_argument(
+        "--at", type=int, default=None,
+        help="Update number (default: latest from log)",
+    )
+    p_intervene.add_argument(
+        "--knob", type=str, default=None,
+        help="Only check this knob (default: all)",
+    )
+    p_intervene.add_argument(
+        "--snapshot", type=str, default=None,
+        help="Snapshot directory (default: auto-find <run_dir>/debug/u<NNNNN>)",
+    )
+    p_intervene.set_defaults(func=cmd_intervene_check)
+
+    # --- compare (S6) ---
+    p_compare = subparsers.add_parser(
+        "compare", help="Compare two training runs metric-by-metric (§3.9)",
+    )
+    p_compare.add_argument("run_a", type=str, help="First run directory")
+    p_compare.add_argument("run_b", type=str, help="Second run directory")
+    p_compare.add_argument(
+        "--window", type=int, default=1,
+        help="Number of recent updates to average (default: 1)",
+    )
+    p_compare.add_argument(
+        "--noise-band", type=str, default=None,
+        help="Path to noise band JSON (from `debug.py noise`) for significance testing",
+    )
+    p_compare.set_defaults(func=cmd_compare)
+
+    # --- noise (S6) ---
+    p_noise = subparsers.add_parser(
+        "noise", help="Launch multi-seed training to establish noise baseline (§3.9)",
+    )
+    p_noise.add_argument(
+        "--experiment", type=str, required=True,
+        help="Experiment name",
+    )
+    p_noise.add_argument(
+        "--seeds", type=str, default="42,43,44,45",
+        help="Comma-separated seeds (default: 42,43,44,45)",
+    )
+    p_noise.add_argument(
+        "--updates", type=int, default=50,
+        help="Max updates per run (default: 50)",
+    )
+    p_noise.add_argument(
+        "--algo", type=str, default="ppo",
+        help="Algorithm: ppo or sac (default: ppo)",
+    )
+    p_noise.add_argument(
+        "--window", type=int, default=5,
+        help="Number of recent updates to average per run (default: 5)",
+    )
+    p_noise.add_argument(
+        "--output", type=str, default=None,
+        help="Path to save noise band JSON",
+    )
+    p_noise.add_argument(
+        "--no-wait", action="store_true",
+        help="Don't wait for runs to complete (just launch)",
+    )
+    p_noise.set_defaults(func=cmd_noise)
+
+    # --- timeline (S6) ---
+    p_timeline = subparsers.add_parser(
+        "timeline", help="Event timeline with metric sparklines (§3.10)",
+    )
+    p_timeline.add_argument("run_dir", type=str, help="Training run directory")
+    p_timeline.add_argument(
+        "--overlay", type=str, default=None,
+        help="Comma-separated metric names to show as sparklines "
+             "(e.g. 'uncertainty,max_pot')",
+    )
+    p_timeline.set_defaults(func=cmd_timeline)
 
     args = parser.parse_args()
     if not args.command:

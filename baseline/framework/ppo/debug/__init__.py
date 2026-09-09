@@ -27,4 +27,16 @@ S3: chain / attribute / frame (``DEBUG_GUIDE.md`` §3.2/§3.3/§3.4,
 S3 depends on S1 (provenance), S2 (snapshot/replay), S0 (aggregates),
 and S5 (probes).  It is a pure consumer of existing data — no new
 training-time instrumentation.
+
+S6: intervene-check / compare / noise / timeline
+(``DEBUG_GUIDE.md`` §3.8–§3.10, ``DESIGN_debug_system.md`` §5.4):
+- :mod:`knobs` — KnobCheck registry + 5 built-in knob checks
+- :mod:`intervene` — verify configured knobs entered the data pathway
+- :mod:`compare` — cross-run comparison with optional noise band
+- :mod:`noise` — launch multi-seed training to establish noise baseline
+- :mod:`timeline` — event timeline with metric sparklines
+
+S6 has no dependencies on S1–S5 (but reuses log parsing patterns from
+S3's ``attribute`` module).  ``intervene-check`` optionally uses S2
+snapshots for observer/per-frame knobs.
 """

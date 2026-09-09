@@ -67,6 +67,11 @@ def _parse_args() -> argparse.Namespace:
         help="Override experiment seed (default: use experiment's built-in seed).",
     )
     parser.add_argument(
+        "--max-updates", type=int, default=None,
+        help="Override max_updates (default: use experiment's configured value). "
+             "Used by `debug.py noise` to run short multi-seed baselines.",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment constructor parameter (can be repeated). "
              "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
@@ -190,6 +195,14 @@ def main() -> None:
     if args.seed is not None:
         experiment.seed = args.seed
         print(f"[seed] overridden to {args.seed}", flush=True)
+
+    # --- Override max_updates if requested (S6: used by `debug.py noise`) ---
+    if args.max_updates is not None:
+        import dataclasses as _dc
+        cp = experiment.common_params()
+        cp = _dc.replace(cp, max_updates=args.max_updates)
+        experiment.common_params = lambda: cp
+        print(f"[max_updates] overridden to {args.max_updates}", flush=True)
 
     if args.smoke:
         import dataclasses
