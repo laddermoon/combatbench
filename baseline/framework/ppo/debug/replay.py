@@ -109,6 +109,8 @@ def replay_snapshot(
     *,
     device: Optional[torch.device] = None,
     experiment: Optional[ExperimentPPO] = None,
+    include_full_grad_override: Optional[bool] = None,
+    out_subdir: Optional[str] = None,
 ) -> ReplayResult:
     """Re-run ppo_update on a snapshot with full debug recording.
 
@@ -120,7 +122,17 @@ def replay_snapshot(
         snapshot_dir: Path to ``<run_dir>/debug/u{u:05d}/``.
         device: Torch device (default: CPU).
         experiment: Pre-loaded experiment (optional; loaded from
-            manifest if not provided).
+            manifest if not provided).  When provided, the caller is
+            responsible for any mutations (e.g. whatif overrides) —
+            ``replay_snapshot`` does not deep-copy the experiment.
+        include_full_grad_override: When not None, overrides the
+            manifest's ``include_full_grad`` flag.  Used by ``whatif``
+            to force full-grad capture for gradient-direction cosine
+            even when the original snapshot didn't request it.
+        out_subdir: When set, write replay outputs to
+            ``<snapshot_dir>/<out_subdir>/`` instead of
+            ``<snapshot_dir>/replay/``.  Used by ``whatif`` to keep
+            per-variant replays separate from the baseline replay.
 
     Returns:
         :class:`ReplayResult` with stats + debug_arrays + paths.
@@ -132,7 +144,10 @@ def replay_snapshot(
     manifest = _load_manifest(snapshot_dir)
     update = manifest["update"]
     episodes_mode = manifest.get("episodes_mode", "subset")
-    include_full_grad = manifest.get("include_full_grad", False)
+    if include_full_grad_override is not None:
+        include_full_grad = bool(include_full_grad_override)
+    else:
+        include_full_grad = manifest.get("include_full_grad", False)
 
     # --- Load experiment ---
     if experiment is None:
@@ -206,7 +221,14 @@ def replay_snapshot(
     )
 
     # --- Sink for per-frame debug recording ---
-    replay_dir = snapshot_dir / "replay"
+    # When out_subdir is set (e.g. whatif per-variant replays), write to
+    # <snapshot_dir>/<out_subdir>/ instead of <snapshot_dir>/replay/.
+    # This keeps the baseline replay intact while letting whatif write
+    # per-variant outputs alongside it.
+    if out_subdir is not None:
+        replay_dir = snapshot_dir / out_subdir
+    else:
+        replay_dir = snapshot_dir / "replay"
     replay_dir.mkdir(parents=True, exist_ok=True)
     sink = NpzSink(replay_dir)
 

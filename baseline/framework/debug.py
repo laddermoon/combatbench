@@ -445,12 +445,66 @@ def cmd_timeline(args: argparse.Namespace) -> None:
     print(result)
 
 
+def cmd_whatif(args: argparse.Namespace) -> None:
+    """Offline counterfactual — re-run ppo_update with parameter overrides."""
+    import torch
+    from baseline.framework.ppo.debug.replay import _load_experiment, _load_manifest
+    from baseline.framework.ppo.debug.whatif import (
+        parse_set_args,
+        parse_sweep_arg,
+        whatif,
+        render_report,
+        save_report,
+    )
+
+    snapshot_dir = Path(args.snapshot_dir).resolve()
+    if not snapshot_dir.exists():
+        print(f"Error: snapshot_dir does not exist: {snapshot_dir}")
+        raise SystemExit(1)
+
+    # Load the experiment to get declared params for parsing.
+    manifest = _load_manifest(snapshot_dir)
+    experiment = _load_experiment(snapshot_dir, manifest)
+    declared = experiment.whatif_params()
+
+    # Parse --set / --sweep (mutually exclusive at the argparse level).
+    overrides = None
+    sweep_key = None
+    sweep_values = None
+    if args.set_pairs:
+        overrides = parse_set_args(args.set_pairs, declared)
+    elif args.sweep:
+        sweep_key, sweep_values = parse_sweep_arg(args.sweep, declared)
+
+    device = torch.device(args.device) if args.device else None
+
+    report = whatif(
+        snapshot_dir,
+        overrides=overrides,
+        sweep_key=sweep_key,
+        sweep_values=sweep_values,
+        noise_band_path=Path(args.noise_band).resolve() if args.noise_band else None,
+        run_dir=Path(args.run_dir).resolve() if args.run_dir else None,
+        full_grad=args.full_grad,
+        device=device,
+    )
+
+    # Persist to <snapshot>/whatif/<run_id>/
+    run_id = "set" if overrides is not None else f"sweep_{sweep_key}"
+    whatif_dir = snapshot_dir / "whatif" / run_id
+    save_report(report, whatif_dir)
+
+    print(render_report(report))
+    print(f"\n  report saved: {whatif_dir / 'report.json'}")
+    print(f"  report text:  {whatif_dir / 'report.txt'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="debug.py",
         description="Debug CLI — probes, metrics, snapshots, replay, "
                     "chain, attribute, frame, intervene-check, compare, "
-                    "noise, timeline (S5 + S2 + S3 + S6)",
+                    "noise, timeline, whatif (S5 + S2 + S3 + S6 + S4)",
     )
     subparsers = parser.add_subparsers(dest="command", help="Sub-command")
 
@@ -693,6 +747,43 @@ def main() -> None:
              "(e.g. 'uncertainty,max_pot')",
     )
     p_timeline.set_defaults(func=cmd_timeline)
+
+    # --- whatif (S4) ---
+    p_whatif = subparsers.add_parser(
+        "whatif", help="Offline counterfactual — re-run ppo_update with "
+                       "parameter overrides (§3.5)",
+    )
+    p_whatif.add_argument("snapshot_dir", type=str, help="Snapshot directory")
+    mx = p_whatif.add_mutually_exclusive_group(required=True)
+    mx.add_argument(
+        "--set", dest="set_pairs", action="append", default=None,
+        metavar="key=value",
+        help="Apply a single override (repeatable for multiple). "
+             "E.g. --set foot_height_clip=0.30",
+    )
+    mx.add_argument(
+        "--sweep", type=str, default=None,
+        metavar="key=v1,v2,...",
+        help="Sweep one parameter over a list of values. "
+             "E.g. --sweep foot_actor_weight=1,3,5,10",
+    )
+    p_whatif.add_argument(
+        "--noise-band", type=str, default=None,
+        help="Path to an S6 noise-band JSON for significance classification.",
+    )
+    p_whatif.add_argument(
+        "--run-dir", type=str, default=None,
+        help="Training run directory (for baseline self-verification).",
+    )
+    p_whatif.add_argument(
+        "--full-grad", action="store_true",
+        help="Force full-grad capture for gradient-direction cosine.",
+    )
+    p_whatif.add_argument(
+        "--device", type=str, default=None,
+        help="Torch device (default: cpu).",
+    )
+    p_whatif.set_defaults(func=cmd_whatif)
 
     args = parser.parse_args()
     if not args.command:

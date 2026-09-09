@@ -198,6 +198,14 @@ class StandupStepV3(CombatExperimentPPOBase):
     _uncertainty_history: list = None
     _floor_disabled: bool = False
     _floor_disabled_at: int = -1
+
+    # --- S4 whatif override state (None = not overridden) ---
+    # Set by apply_whatif_overrides(); read by exploration() and
+    # _build_agent_trajectory().  These are per-instance, so a fresh
+    # experiment reconstructed by the registry starts clean.
+    _override_foot_weight: Optional[float] = None
+    _override_uncertainty_floor: Optional[float] = None
+    _override_uncertainty_coef: Optional[float] = None
     _step_success_streak: int = 0
 
     # ------------------------------------------------------------------
@@ -253,7 +261,19 @@ class StandupStepV3(CombatExperimentPPOBase):
 
         Phase 1 (floor active): configured floor/coef.
         Phase 2 (floor disabled): zero floor/coef.
+
+        S4 whatif: when ``_override_uncertainty_floor`` /
+        ``_override_uncertainty_coef`` are set (by
+        ``apply_whatif_overrides``), they take precedence over the
+        phase logic — whatif is a single-update counterfactual, not a
+        multi-update phase simulation, so the floor-disable phase is
+        irrelevant.
         """
+        if self._override_uncertainty_floor is not None or self._override_uncertainty_coef is not None:
+            return ExplorationSpec(
+                uncertainty_floor=self._override_uncertainty_floor if self._override_uncertainty_floor is not None else 0.0,
+                uncertainty_coef=self._override_uncertainty_coef if self._override_uncertainty_coef is not None else 0.0,
+            )
         if self._floor_disabled:
             return ExplorationSpec(uncertainty_floor=0.0, uncertainty_coef=0.0)
         return ExplorationSpec(
@@ -455,9 +475,15 @@ class StandupStepV3(CombatExperimentPPOBase):
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
         contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
+        foot_weight_kwargs: Dict[str, Any] = dict(
+            h_left=h_left, h_right=h_right,
+        )
+        # S4 whatif: override the per-step foot weight scalar.
+        if self._override_foot_weight is not None:
+            foot_weight_kwargs["weight"] = self._override_foot_weight
         w_left, w_right = self._compute_foot_weights_masked(
             contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
-            h_left=h_left, h_right=h_right,
+            **foot_weight_kwargs,
         )
 
         # --- No early termination ---
@@ -1200,6 +1226,110 @@ class StandupStepV3(CombatExperimentPPOBase):
         return {
             "steps": self._strict_steps,
         }
+
+    # ==================================================================
+    # S4: whatif overrides
+    # ==================================================================
+
+    def whatif_params(self) -> Dict[str, "WhatifParam"]:
+        """Declare parameters overridable by ``debug.py whatif``.
+
+        See ``DEBUG_GUIDE.md`` §3.5 and ``DESIGN_debug_system.md`` §7 S4.
+        """
+        from baseline.framework.ppo.debug.whatif import WhatifParam
+        return {
+            "foot_height_clip": WhatifParam(
+                name="foot_height_clip",
+                type=float,
+                description="Saturation clip for foot-height reward (m).",
+                requires_rebuild=True,
+            ),
+            "r_potential_actor_weight": WhatifParam(
+                name="r_potential_actor_weight",
+                type=float,
+                description="Actor weight for the r_potential channel.",
+                requires_rebuild=True,
+            ),
+            "r_fall_actor_weight": WhatifParam(
+                name="r_fall_actor_weight",
+                type=float,
+                description="Actor weight for the r_fall channel.",
+                requires_rebuild=True,
+            ),
+            "foot_weight": WhatifParam(
+                name="foot_weight",
+                type=float,
+                description=(
+                    "Per-step foot actor weight (FOOT_WEIGHT in the "
+                    "stepping state machine)."
+                ),
+                requires_rebuild=True,
+            ),
+            "uncertainty_floor": WhatifParam(
+                name="uncertainty_floor",
+                type=float,
+                description=(
+                    "Exploration uncertainty floor. Overrides the "
+                    "phase logic — whatif is single-update."
+                ),
+                requires_rebuild=False,
+            ),
+            "uncertainty_coef": WhatifParam(
+                name="uncertainty_coef",
+                type=float,
+                description="Coefficient for the uncertainty floor loss.",
+                requires_rebuild=False,
+            ),
+            # Alias matching the DEBUG_GUIDE.md example:
+            #   --set 'channel.r_potential.actor_weight=0'
+            "channel.r_potential.actor_weight": WhatifParam(
+                name="channel.r_potential.actor_weight",
+                type=float,
+                description=(
+                    "Alias for r_potential_actor_weight "
+                    "(DEBUG_GUIDE.md §3.5 example syntax)."
+                ),
+                requires_rebuild=True,
+            ),
+            "channel.r_fall.actor_weight": WhatifParam(
+                name="channel.r_fall.actor_weight",
+                type=float,
+                description=(
+                    "Alias for r_fall_actor_weight "
+                    "(DEBUG_GUIDE.md §3.5 example syntax)."
+                ),
+                requires_rebuild=True,
+            ),
+        }
+
+    def apply_whatif_overrides(self, overrides: Dict[str, Any]) -> None:
+        """Apply whatif overrides to this experiment instance.
+
+        Simple field params are set via ``setattr``.  ``foot_weight``
+        is stored in ``_override_foot_weight`` and read by
+        ``_build_agent_trajectory``.  ``uncertainty_floor`` /
+        ``uncertainty_coef`` are stored in override fields and read by
+        ``exploration()``.  ``channel.<name>.actor_weight`` aliases
+        map to the corresponding ``r_<name>_actor_weight`` field.
+        """
+        # Map channel aliases to the real field names.
+        alias_map = {
+            "channel.r_potential.actor_weight": "r_potential_actor_weight",
+            "channel.r_fall.actor_weight": "r_fall_actor_weight",
+        }
+        for key, value in overrides.items():
+            if key == "foot_weight":
+                self._override_foot_weight = float(value)
+            elif key == "uncertainty_floor":
+                self._override_uncertainty_floor = float(value)
+            elif key == "uncertainty_coef":
+                self._override_uncertainty_coef = float(value)
+            elif key in alias_map:
+                setattr(self, alias_map[key], value)
+            else:
+                # Direct field set for foot_height_clip,
+                # r_potential_actor_weight, r_fall_actor_weight.
+                setattr(self, key, value)
 
 
 EXPERIMENT_CLASS = StandupStepV3

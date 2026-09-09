@@ -39,4 +39,16 @@ S6: intervene-check / compare / noise / timeline
 S6 has no dependencies on S1–S5 (but reuses log parsing patterns from
 S3's ``attribute`` module).  ``intervene-check`` optionally uses S2
 snapshots for observer/per-frame knobs.
+
+S4: whatif (offline counterfactual)
+(``DEBUG_GUIDE.md`` §3.5, ``DESIGN_debug_system.md`` §7 S4):
+- :mod:`whatif` — re-run ppo_update with parameter overrides on a
+  snapshot, compare against baseline replay (gradient cosine,
+  combined-adv cosine, influence-share deltas, leg-joint grad share),
+  classify against S6 noise band
+
+S4 depends on S2 (snapshot/replay) and S6 (noise band).  It is a pure
+consumer of both — no new training-time instrumentation.  It is a
+falsification tool: it can reliably reject ineffective changes but
+cannot prove a change will train successfully.
 """

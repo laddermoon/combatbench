@@ -126,6 +126,7 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 if TYPE_CHECKING:
     from baseline.framework.ppo.debug.knobs import KnobCheck
+    from baseline.framework.ppo.debug.whatif import WhatifParam
 
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from baseline.framework.rollout.job import Job
@@ -1157,4 +1158,64 @@ class ExperimentPPO(ABC):
             Tuple of :class:`KnobCheck`.  Empty by default.
         """
         return ()
+
+    # ==================================================================
+    # S4: whatif overrides (optional)
+    # ==================================================================
+
+    def whatif_params(self) -> Dict[str, "WhatifParam"]:
+        """Declare parameters overridable by ``debug.py whatif --set/--sweep``.
+
+        S4: Returns ``{}`` by default — "this experiment declares no
+        whatif params" is a complete answer.  Override to declare
+        experiment-specific knobs that ``debug.py whatif`` can apply.
+
+        Each param's ``requires_rebuild`` flag tells the framework whether
+        applying it requires re-running ``build_trajectories`` + ``PPOBuffer``
+        (e.g. reward computation, ``actor_weight`` masks) or only affects
+        ``ppo_update``-time inputs (e.g. the exploration spec, which is
+        read inside ``replay_snapshot`` via ``experiment.exploration(update)``).
+
+        The framework parses ``--set``/``--sweep``, validates keys against
+        this declaration, parses values according to each param's ``type``,
+        and calls :meth:`apply_whatif_overrides` on a fresh experiment
+        instance before re-running the standard replay path.  Generic code
+        never guesses experiment-specific field names (P5).
+
+        See ``DEBUG_GUIDE.md`` §3.5 ``whatif`` and
+        ``DESIGN_debug_system.md`` §7 S4.
+
+        Returns:
+            Dict mapping param name to :class:`WhatifParam`.  Empty by
+            default.
+        """
+        return ()
+
+    def apply_whatif_overrides(self, overrides: Dict[str, Any]) -> None:
+        """Apply a set of ``whatif`` overrides to this experiment instance.
+
+        S4: Called by ``whatif.py`` after validation against
+        :meth:`whatif_params`.  The default implementation raises
+        ``NotImplementedError`` — experiments must opt in by declaring
+        params via :meth:`whatif_params` and implementing this hook.
+
+        The experiment mutates its own fields / internal config here.
+        The framework then calls the standard replay path
+        (``build_trajectories``, ``debug_arrays``, ``PPOBuffer``,
+        ``ppo_update``) on the mutated instance.  ``replay_snapshot``
+        deep-copies the actor + critics, so the snapshot is not mutated;
+        the experiment instance is reconstructed fresh per variant via
+        the registry, so override mutations on one variant do not leak
+        to the next.
+
+        Args:
+            overrides: Dict mapping declared param name to parsed value.
+                Keys are guaranteed to be in :meth:`whatif_params`;
+                values are parsed to the declared ``type``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement whatif overrides. "
+            f"Declare whatif_params() and implement apply_whatif_overrides() "
+            f"to enable `debug.py whatif`."
+        )
 
