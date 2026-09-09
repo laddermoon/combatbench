@@ -376,6 +376,31 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "floor_sign": float(floor_grads.mean().item()),
         }
 
+    def action_dim_grad_norms(self) -> Optional[np.ndarray]:
+        """Per-action-dimension gradient norms from the output layer.
+
+        S0: The output layer is ``net[-1]``: ``nn.Linear(hidden_dim,
+        action_dim)``.  Its weight has shape ``(action_dim,
+        hidden_dim)`` — each row corresponds to one action dimension.
+        We report the L2 norm of each row's gradient as a proxy for
+        how much that action dimension is being driven by the current
+        loss.
+
+        Must be called after ``backward()`` and before
+        ``step()``/``zero_grad()``.  Returns ``None`` if the gradient
+        is not populated (e.g. before the first backward) or if the
+        network structure is unexpected.
+        """
+        last_layer = self.net[-1]
+        if not isinstance(last_layer, nn.Linear):
+            return None
+        grad = last_layer.weight.grad
+        if grad is None:
+            return None
+        # (action_dim, hidden_dim) → (action_dim,)
+        norms = grad.detach().norm(dim=1).cpu().numpy().astype(np.float32)
+        return norms
+
     def to_blueprint(
         self, dest_path: Optional[str] = None,
     ) -> "PolicyBlueprint":

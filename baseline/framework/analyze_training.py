@@ -543,6 +543,7 @@ class TrainingLogAnalyzer:
                 "uncertainty", "std_mean", "std_min",
                 "ep_len_mean", "n_episodes", "n_batches", "total_steps",
                 "clip_frac", "ratio_mean", "ratio_max", "grad_norm_actor",
+                "dead_frame_ratio",
             ) if k in stats
         ]
         if ppo_keys:
@@ -565,6 +566,21 @@ class TrainingLogAnalyzer:
         )
         if ret_keys:
             groups["ret"] = ret_keys
+
+        # S0: per-channel influence share — auto-discovered
+        influence_keys = sorted(k for k in stats if k.startswith("influence_share_"))
+        if influence_keys:
+            groups["influence"] = influence_keys
+
+        # S0: per-channel normalized actor weight — auto-discovered
+        aw_normed_keys = sorted(k for k in stats if k.startswith("aw_normed_"))
+        if aw_normed_keys:
+            groups["aw_normed"] = aw_normed_keys
+
+        # S0: per-action-dim gradient norms — auto-discovered
+        grad_dim_keys = sorted(k for k in stats if k.startswith("grad_dim_"))
+        if grad_dim_keys:
+            groups["grad_dim"] = grad_dim_keys
 
         # timing — throughput breakdown
         timing = last.get("timing") or {}
@@ -595,9 +611,12 @@ class TrainingLogAnalyzer:
             "ev":     "Critic EV",
             "grad":   "Grad Norm",
             "ret":    "Critic Target (returns)",
+            "influence": "Influence Share",
+            "aw_normed": "Normed Actor Weight",
+            "grad_dim": "Per-Dim Grad Norm",
             "timing": "Timing",
         }
-        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
+        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "influence", "aw_normed", "grad_dim", "timing"]
 
         for group in group_order:
             if group not in groups:
@@ -727,9 +746,12 @@ class TrainingLogAnalyzer:
             "ev":     "Critic EV",
             "grad":   "Grad Norm",
             "ret":    "Critic Target (returns)",
+            "influence": "Influence Share",
+            "aw_normed": "Normed Actor Weight",
+            "grad_dim": "Per-Dim Grad Norm",
             "timing": "Timing",
         }
-        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
+        group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "influence", "aw_normed", "grad_dim", "timing"]
 
         filt = metric_filter.lower() if metric_filter else None
 
@@ -1014,9 +1036,12 @@ def render_metric_list(analyzer: TrainingLogAnalyzer) -> str:
         "ev":     "Critic EV",
         "grad":   "Grad Norm",
         "ret":    "Critic Target (returns)",
+        "influence": "Influence Share",
+        "aw_normed": "Normed Actor Weight",
+        "grad_dim": "Per-Dim Grad Norm",
         "timing": "Timing",
     }
-    group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "timing"]
+    group_order = ["sinfo", "bsum", "esum", "rsum", "ppo", "ev", "grad", "ret", "influence", "aw_normed", "grad_dim", "timing"]
 
     lines: List[str] = [f"\n{BOLD}Discovered Metrics{RESET}\n"]
     for group in group_order:

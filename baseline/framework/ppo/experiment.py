@@ -340,6 +340,32 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
         """
         return None
 
+    def action_dim_grad_norms(self) -> Optional[np.ndarray]:
+        """Optional: return per-action-dimension gradient norms.
+
+        S0: This hook lets the policy report how much gradient each
+        action dimension is receiving from the current loss.  The
+        trainer calls this after ``backward()`` and before
+        ``step()``/``zero_grad()``, and records the result in
+        ``UpdateStats.action_dim_grad_norms``.
+
+        The policy decides how to map its parameters to action
+        dimensions — the framework cannot do this generically because
+        different policy families have different architectures.  For
+        example, a Gaussian MLP with a linear output layer can report
+        the per-row L2 norm of the output weight gradient.
+
+        Returning ``None`` (the default) means "not supported" — the
+        ``UpdateStats.action_dim_grad_norms`` field will be ``None``
+        and downstream tools will report "per-dim gradients not
+        available for this policy family".
+
+        Returns:
+            ``(action_dim,)`` float32 numpy array of gradient norms,
+            or ``None``.
+        """
+        return None
+
     @abstractmethod
     def to_blueprint(
         self, dest_path: str,
@@ -482,6 +508,25 @@ class UpdateStats:
     # --- Policy-contributed (no contract) ---
     policy_stats: Mapping[str, float]
 
+    # --- S0: Debug aggregates (always-on, no sink required) ---
+    # Per-channel L1-normalized actor_weight mean (after per-frame L1
+    # normalization, i.e. Σ_c |aw_c| = 1 per frame).  This is the
+    # *effective* weight, not the configured value — see DEBUG_GUIDE.md
+    # §7.2 "配置值 ≠ 实际影响力".
+    actor_weight_normed: Dict[str, float] = field(default_factory=dict)
+    # Per-channel influence share: Σ_frames |aw_normed × conf × normed_adv|,
+    # normalized across channels to sum=1.  Answers "who is driving the
+    # policy this update?" — see DEBUG_GUIDE.md §3.3 `attribute`.
+    influence_share: Dict[str, float] = field(default_factory=dict)
+    # Fraction of frames where Σ_c |aw_c| <= 1e-12 (no actor gradient
+    # contribution at all).  High values mean most frames are dead weight.
+    dead_frame_ratio: float = 0.0
+    # Per-action-dimension gradient norms (action_dim,), or None if the
+    # policy does not implement action_dim_grad_norms().  Answers "which
+    # joints are being trained?" — see DEBUG_GUIDE.md §3.3 `attribute
+    # --by action-dim`.
+    action_dim_grad_norms: Optional[np.ndarray] = None
+
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
@@ -527,6 +572,10 @@ class UpdateStats:
             ret_std={k: 0.0 for k in reward_keys},
             critic_grad_norms={k: 0.0 for k in reward_keys},
             policy_stats={},
+            actor_weight_normed={k: 0.0 for k in reward_keys},
+            influence_share={k: 0.0 for k in reward_keys},
+            dead_frame_ratio=0.0,
+            action_dim_grad_norms=None,
             diagnostics=[],
             is_empty=True,
         )
@@ -575,6 +624,17 @@ class UpdateStats:
             d[f"ret_std_{key}"] = val
         for key, val in self.critic_grad_norms.items():
             d[f"grad_norm_{key}"] = val
+        # S0 aggregates — flattened for analyze_training.py auto-discovery.
+        d["dead_frame_ratio"] = self.dead_frame_ratio
+        for key, val in self.actor_weight_normed.items():
+            d[f"aw_normed_{key}"] = val
+        for key, val in self.influence_share.items():
+            d[f"influence_share_{key}"] = val
+        # action_dim_grad_norms: flatten to grad_dim_00, grad_dim_01, ...
+        # so analyze_training.py's scalar auto-discovery picks them up.
+        if self.action_dim_grad_norms is not None:
+            for i, g in enumerate(self.action_dim_grad_norms):
+                d[f"grad_dim_{i:02d}"] = float(g)
         return d
 
 

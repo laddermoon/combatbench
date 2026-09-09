@@ -52,7 +52,7 @@ import torch
 
 from baseline.framework.ppo.algos import compute_gae
 
-from .experiment import PPOParams, TrainablePolicy, UpdateStats
+from .experiment import ExplorationSpec, PPOParams, TrainablePolicy, UpdateStats
 from .trajectory import RewardChannel, Trajectory
 
 
@@ -417,7 +417,7 @@ def ppo_update(
     device: torch.device,
     use_confidence: bool = True,
     exploration: Optional[ExplorationSpec] = None,
-) -> Dict[str, float]:
+) -> UpdateStats:
     """Multi-critic PPO update with fixed defaults.
 
     - Advantage normalization: z-score on active frames (per-channel).
@@ -448,7 +448,7 @@ def ppo_update(
             ``set_exploration``.
 
     Returns:
-        Stats dict for logging.
+        :class:`UpdateStats` for logging and ``on_update``.
     """
     # P0-3: Empty buffer (build_trajectories returned []) is a normal
     # scenario in curriculum learning (all episodes filtered out).  Short
@@ -717,6 +717,15 @@ def ppo_update(
     for key in reward_keys:
         aw_l1_sum += np.abs(key_actor_weight_frame[key])
 
+    # S0: Aggregates for `attribute` tool (DEBUG_GUIDE.md §3.3).
+    # influence_num[key] = Σ_frames |aw_normed × conf × normed_adv| —
+    # the unnormalized influence of each channel.  Final influence_share
+    # is computed after the loop by dividing by the total.
+    influence_num: Dict[str, float] = {key: 0.0 for key in reward_keys}
+    # aw_normed_mean[key] = mean(|aw_normed|) over all frames — the
+    # effective per-channel weight after L1 normalization.
+    aw_normed_mean: Dict[str, float] = {key: 0.0 for key in reward_keys}
+
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
@@ -737,6 +746,10 @@ def ppo_update(
         normed = _normalize_adv(advs_all[key], norm_mask)
         combined_adv = combined_adv + aw_normed * conf * normed
 
+        # S0: accumulate per-channel influence and normalized weight mean.
+        influence_num[key] = float(np.sum(np.abs(aw_normed * conf * normed)))
+        aw_normed_mean[key] = float(np.mean(np.abs(aw_normed)))
+
         # Warn if the channel has active frames with nonzero aw but
         # _normalize_adv returned all zeros.  This happens when the
         # active advantages have zero variance (all equal) or when only
@@ -753,6 +766,20 @@ def ppo_update(
                 f"{active_advs[0]:.4f}). Channel contributes no actor "
                 f"gradient this update."
             )
+
+    # S0: Finalize aggregates.
+    # dead_frame_ratio: fraction of frames where all actor_weights are
+    # zero — these frames contribute no policy gradient at all.
+    dead_frame_ratio = float(np.mean(aw_l1_sum <= 1e-12))
+    # influence_share: normalize influence_num to sum=1 across channels.
+    # When total_influence is 0 (cold start, all advantages zero), all
+    # shares are 0 — this is a legitimate state, not a bug.
+    total_influence = sum(influence_num.values())
+    influence_share: Dict[str, float] = {
+        key: (v / total_influence if total_influence > 1e-12 else 0.0)
+        for key, v in influence_num.items()
+    }
+
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
@@ -830,6 +857,15 @@ def ppo_update(
     # returns) and are not subject to trust-region constraints, so
     # truncating them early only hurts value estimation quality.
     actor_stopped = False
+
+    # S0: Per-action-dimension gradient norms (policy-owned, optional).
+    # Captured after each actor backward() and before step()/zero_grad().
+    # We keep the last non-None value — one measurement per update is
+    # sufficient (every minibatch in the same update sees the same
+    # loss landscape, just different samples).  Using the last rather
+    # than the first means we get the post-convergence gradient, which
+    # is more representative of the update's final direction.
+    action_dim_grad_norms_val: Optional[np.ndarray] = None
 
     # P0-1: Aggregate KL over every minibatch the actor actually ran.
     # Before this, `approx_kl` was read from `epoch_kl_stats[-1]["mean_kl"]`,
@@ -1019,6 +1055,19 @@ def ppo_update(
                 actor.parameters(), grad_clip_norm,
             )
             all_grad_norms_actor.append(float(grad_norm_a))
+
+            # S0: Capture per-action-dim gradient norms after backward()
+            # and before step().  The policy owns the mapping from
+            # parameters to action dimensions.  hasattr check is for
+            # test actors that don't inherit TrainablePolicy; real
+            # actors get the default ``return None``.
+            if hasattr(actor, "action_dim_grad_norms"):
+                _adg = actor.action_dim_grad_norms()
+                if _adg is not None:
+                    action_dim_grad_norms_val = np.asarray(
+                        _adg, dtype=np.float32,
+                    )
+
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
 
@@ -1187,6 +1236,66 @@ def ppo_update(
         critic_losses[key] for key in reward_keys
     ])) if reward_keys else 0.0
 
+    # --- S0: Invariant guards (DEBUG_GUIDE.md §5.1) ---
+    # These are warning-level diagnostics (appended to `diagnostics`,
+    # not raised).  Cold-start zero-signal states are legitimate —
+    # raising would prevent training from ever warming up.  The guards
+    # exist so the user and `health` tool can see them, not to halt
+    # training.  Data-corruption-level issues (length mismatch) use
+    # assert instead.
+    # Invariant 4: obs/action/reward length consistency.
+    assert len(buf.obs) == len(buf.actions) == n, (
+        f"[inv] length mismatch: obs={len(buf.obs)} "
+        f"actions={len(buf.actions)} n={n}"
+    )
+    # Invariant 1: 100% dead frames — no actor gradient at all.
+    if dead_frame_ratio >= 1.0:
+        diagnostics.append(
+            f"  [inv] dead_frame_ratio=1.0: no frame contributes any "
+            f"actor gradient. All actor_weight is zero or all "
+            f"advantages are zero."
+        )
+    # Invariant 2: nonzero actor_weight but zero total influence —
+    # advantages are all zero (zero-variance or zero-mean).
+    nonzero_aw_exists = any(
+        np.any(key_actor_weight_frame[key] != 0.0) for key in reward_keys
+    )
+    if total_influence < 1e-12 and nonzero_aw_exists:
+        diagnostics.append(
+            f"  [inv] total influence=0 despite nonzero actor_weight: "
+            f"all normalized advantages are zero (zero-variance or "
+            f"zero-mean). Check critic EV and reward signal."
+        )
+    # Invariant 3: NaN/Inf in combined_adv.
+    if not np.all(np.isfinite(combined_adv)):
+        bad_idx = np.where(~np.isfinite(combined_adv))[0]
+        diagnostics.append(
+            f"  [inv] combined_adv contains NaN/Inf at "
+            f"frame(s) {bad_idx[:10].tolist()}"
+            f"{'...' if len(bad_idx) > 10 else ''}. "
+            f"Check reward, values, GAE for numerical instability."
+        )
+    # Invariant 5: NaN/Inf in per-channel rewards.
+    for key in reward_keys:
+        for i, seg in enumerate(buf.reward_data[key]):
+            if not np.all(np.isfinite(seg)):
+                diagnostics.append(
+                    f"  [inv] channel '{key}' reward segment {i} "
+                    f"contains NaN/Inf."
+                )
+                break
+    # Invariant 6: nonzero reward but all-zero advantages — GAE
+    # produced nothing despite a signal existing.
+    for key in reward_keys:
+        all_reward = np.concatenate(buf.reward_data[key]) if buf.reward_data[key] else np.array([])
+        if all_reward.size > 0 and np.any(all_reward != 0.0):
+            if np.all(advs_all[key] == 0.0):
+                diagnostics.append(
+                    f"  [inv] channel '{key}' has nonzero reward but "
+                    f"all-zero advantages. Check gamma, gae_lambda, "
+                    f"and critic values."
+                )
+
     return UpdateStats(
         approx_kl=final_kl,
         max_kl=max_kl_overall,
@@ -1215,5 +1324,9 @@ def ppo_update(
         ret_std=ret_std,
         critic_grad_norms=critic_grad_norms,
         policy_stats=actor_stats,
+        actor_weight_normed=aw_normed_mean,
+        influence_share=influence_share,
+        dead_frame_ratio=dead_frame_ratio,
+        action_dim_grad_norms=action_dim_grad_norms_val,
         diagnostics=diagnostics,
     )
