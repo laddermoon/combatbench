@@ -377,7 +377,12 @@ r_cross = extract_per_step_scalar(ep.observer_outputs, "cross_support_a", T)
 
 ## 7. 调试建议
 
+> **完整内容见 `DEBUG_GUIDE.md`** —— 三层可观测性模型、症状→排查路径速查表、
+> 指标字典、不变量清单。遇到问题请从那份文档的 §4「症状 → 排查路径」入手。
+
+四条最常用的：
+
 1. **先用 `--smoke` 跑**：2 轮 update，快速验证代码能跑通
-2. **看 `__RAW_STATS__` 行**：每轮输出的 JSON 包含完整的训练统计
+2. **先跑 `analyze_training.py --diagnostics-only`**：内置 9 条健康诊断规则，30 秒出结论
 3. **`is_terminated` 设错是最常见的 bug**：如果 critic loss 爆炸或 advantage 异常，先检查终止标志
 4. **`actor_weight` 全 0 = actor 不学习**：确认至少有一个 channel 的 actor_weight > 0
