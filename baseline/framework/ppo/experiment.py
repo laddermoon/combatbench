@@ -1084,3 +1084,48 @@ class ExperimentPPO(ABC):
         """
         return {}
 
+    # ==================================================================
+    # S2: Experiment intermediate quantities (optional)
+    # ==================================================================
+
+    def debug_arrays(
+        self,
+        episodes: List["Episode"],
+        trajectories: List["Trajectory"],
+    ) -> Dict[str, "np.ndarray"]:
+        """Export per-frame named arrays for snapshot/replay.
+
+        S2: Returns ``{}`` by default — "this experiment has no debug
+        arrays" is a complete answer.  Override to export intermediate
+        quantities (phase masks, contacts, state-machine branches) that
+        align with the trajectory timeline.
+
+        Contract:
+            - The 0th dimension of every returned array MUST equal the
+              total frame count after trajectory concatenation
+              (``sum(len(t.obs) for t in trajectories)``).
+            - Array order MUST align with ``trajectories`` (i.e. already
+              truncated to trajectory length, not the full episode length
+              ``T_full``).  Experiments computing on ``T_full`` must
+              slice to the trajectory length before returning.
+            - Must call the same helpers as production code (P2 from
+              ``DESIGN_debug_system.md`` — no logic duplication).
+
+        The framework passes the full ``episodes`` list (from rollout)
+        plus the already-built ``trajectories``.  Use
+        ``traj.provenance`` (S1) to map each trajectory back to its
+        source episode + agent when reconstructing per-frame quantities.
+
+        See ``DESIGN_debug_system.md`` §5.1.
+
+        Args:
+            episodes: All rollout episodes for this update.
+            trajectories: Trajectories built from ``episodes`` by
+                ``build_trajectories``.
+
+        Returns:
+            Dict mapping array name to ``(total_frames, ...)`` numpy
+            array.  Empty by default.
+        """
+        return {}
+

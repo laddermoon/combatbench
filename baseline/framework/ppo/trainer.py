@@ -45,7 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -54,6 +54,9 @@ from baseline.framework.ppo.algos import compute_gae
 
 from .experiment import ExplorationSpec, PPOParams, TrainablePolicy, UpdateStats
 from .trajectory import RewardChannel, Trajectory, TrajectoryProvenance
+
+if TYPE_CHECKING:
+    from .debug.sink import DebugSink
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +506,8 @@ def ppo_update(
     device: torch.device,
     use_confidence: bool = True,
     exploration: Optional[ExplorationSpec] = None,
+    debug_sink: "Optional[DebugSink]" = None,
+    include_full_grad: bool = False,
 ) -> UpdateStats:
     """Multi-critic PPO update with fixed defaults.
 
@@ -532,6 +537,14 @@ def ppo_update(
             compute the uncertainty floor loss; ``explore_factor`` was
             already applied to the policy before rollout via
             ``set_exploration``.
+        debug_sink: Optional write-only sink (S2).  When present, records
+            named arrays at fixed stages (``buffer`` / ``gae`` / ``combine``
+            / ``update``).  Must not change algorithm branches or consume
+            RNG (P1/P3).  See ``debug.sink`` for the stage/name contract.
+        include_full_grad: When True and ``debug_sink`` is present,
+            capture the full actor gradient (flat 1-D tensor + param-name
+            list) for epoch 0, minibatch 0 under the ``update`` stage.
+            Off by default (large).
 
     Returns:
         :class:`UpdateStats` for logging and ``on_update``.
@@ -544,6 +557,15 @@ def ppo_update(
     reward_keys = tuple(ch.name for ch in reward_channels)
     if buf.is_empty():
         return UpdateStats.empty(reward_keys)
+
+    # S2: buffer-stage debug recording (write-only, no RNG, no branch change).
+    # Records the flattened buffer arrays + frame_ids from S1 provenance.
+    if debug_sink is not None:
+        debug_sink.record("buffer", "old_log_prob", buf.log_probs)
+        debug_sink.record("buffer", "explore_factor", buf.explore_factor)
+        debug_sink.record("buffer", "floor_weight", buf.floor_weight)
+        debug_sink.record("buffer", "sample_weights", buf.sample_weights)
+        debug_sink.record("buffer", "frame_ids", buf.frame_ids())
 
     # Trust-region knobs come from PPOParams (not overridable per-update).
     clip_eps = pp.clip_eps
@@ -683,6 +705,28 @@ def ppo_update(
                 f"(active={mask.sum()}/{len(mask)})"
             )
 
+    # S2: gae-stage debug recording — per-channel values/advantages/returns/masks.
+    # bootstrap_value is per-segment (one scalar per trajectory segment);
+    # we record it as a per-segment array aligned with ep_lengths.
+    if debug_sink is not None:
+        for key in reward_keys:
+            debug_sink.record("gae", f"values.{key}", values_all[key])
+            debug_sink.record("gae", f"advantages.{key}", advs_all[key])
+            debug_sink.record("gae", f"returns.{key}", rets_all[key])
+            debug_sink.record("gae", f"active_mask.{key}", key_frame_mask[key])
+            # Per-segment bootstrap value (0.0 for terminated/absent segments).
+            boot_per_seg = np.zeros(len(buf.ep_lengths), dtype=np.float32)
+            for i in range(len(buf.ep_lengths)):
+                if (
+                    buf.key_seg_active[key][i]
+                    and not buf.key_seg_terminated[key][i]
+                    and i in bootstrap_pos
+                ):
+                    boot_per_seg[i] = float(
+                        bootstrap_values[key][bootstrap_pos[i]]
+                    )
+            debug_sink.record("gae", f"bootstrap_value.{key}", boot_per_seg)
+
     # --- 4. Explained variance per critic ---
     # EV = 1 - Var(y_true - y_pred) / Var(y_true)
     # Measures how well the critic predicts actual returns. Used to
@@ -813,6 +857,11 @@ def ppo_update(
     aw_normed_mean: Dict[str, float] = {key: 0.0 for key in reward_keys}
 
     combined_adv = np.zeros(n, dtype=np.float32)
+    # S2: per-channel combine-stage intermediates (for debug_sink recording).
+    _combine_aw_normed: Dict[str, np.ndarray] = {}
+    _combine_normed_adv: Dict[str, np.ndarray] = {}
+    _combine_contribution: Dict[str, np.ndarray] = {}
+    _combine_norm_mask: Dict[str, np.ndarray] = {}
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
         if not np.any(aw_frame != 0.0):
@@ -831,6 +880,12 @@ def ppo_update(
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
         normed = _normalize_adv(advs_all[key], norm_mask)
         combined_adv = combined_adv + aw_normed * conf * normed
+
+        # S2: capture combine-stage intermediates for debug recording.
+        _combine_aw_normed[key] = aw_normed
+        _combine_normed_adv[key] = normed
+        _combine_contribution[key] = (aw_normed * conf * normed).astype(np.float32)
+        _combine_norm_mask[key] = norm_mask
 
         # S0: accumulate per-channel influence and normalized weight mean.
         influence_num[key] = float(np.sum(np.abs(aw_normed * conf * normed)))
@@ -865,6 +920,25 @@ def ppo_update(
         key: (v / total_influence if total_influence > 1e-12 else 0.0)
         for key, v in influence_num.items()
     }
+
+    # S2: combine-stage debug recording — per-channel intermediates + globals.
+    if debug_sink is not None:
+        debug_sink.record("combine", "aw_l1_sum", aw_l1_sum)
+        debug_sink.record("combine", "combined_adv", combined_adv)
+        for key in reward_keys:
+            debug_sink.record("combine", f"aw_frame.{key}", key_actor_weight_frame[key])
+            if key in _combine_aw_normed:
+                debug_sink.record("combine", f"aw_normed.{key}", _combine_aw_normed[key])
+                debug_sink.record("combine", f"normed_adv.{key}", _combine_normed_adv[key])
+                debug_sink.record("combine", f"contribution.{key}", _combine_contribution[key])
+                debug_sink.record("combine", f"norm_mask.{key}", _combine_norm_mask[key])
+            else:
+                # Channel had no nonzero aw — record zeros for schema stability.
+                debug_sink.record("combine", f"aw_normed.{key}", np.zeros(n, dtype=np.float32))
+                debug_sink.record("combine", f"normed_adv.{key}", np.zeros(n, dtype=np.float32))
+                debug_sink.record("combine", f"contribution.{key}", np.zeros(n, dtype=np.float32))
+                debug_sink.record("combine", f"norm_mask.{key}", np.zeros(n, dtype=bool))
+            debug_sink.record("combine", f"conf.{key}", np.float32(confidences[key]))
 
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
@@ -1156,6 +1230,53 @@ def ppo_update(
 
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
+
+            # S2: update-stage debug recording — per-minibatch arrays.
+            # Captured after step() so the recording itself can't affect
+            # the optimizer.  All values are detached numpy copies.
+            if debug_sink is not None:
+                with torch.no_grad():
+                    debug_sink.record_minibatch(
+                        epoch, mb_idx, "ratio",
+                        ratio.detach().cpu().numpy(),
+                    )
+                    debug_sink.record_minibatch(
+                        epoch, mb_idx, "clip_mask",
+                        ((ratio - 1.0).abs() > clip_eps).detach().cpu().numpy(),
+                    )
+                    debug_sink.record_minibatch(
+                        epoch, mb_idx, "policy_loss",
+                        float(policy_loss.detach().cpu().item()),
+                    )
+                    debug_sink.record_minibatch(
+                        epoch, mb_idx, "floor_loss",
+                        float(floor_loss.detach().cpu().item()),
+                    )
+                    debug_sink.record_minibatch(
+                        epoch, mb_idx, "grad_norm",
+                        float(grad_norm_a),
+                    )
+                    # --full-grad: capture full actor gradient for epoch 0, mb 0.
+                    if (
+                        include_full_grad
+                        and epoch == 0
+                        and mb_idx == 0
+                    ):
+                        flat_grads = []
+                        param_names = []
+                        for name, p in actor.named_parameters():
+                            if p.grad is not None:
+                                flat_grads.append(p.grad.detach().cpu().numpy().ravel())
+                                param_names.append(name)
+                        if flat_grads:
+                            full_grad = np.concatenate(flat_grads)
+                            debug_sink.record_minibatch(
+                                0, 0, "full_grad", full_grad,
+                            )
+                            debug_sink.record_minibatch(
+                                0, 0, "full_grad_param_names",
+                                np.array(param_names, dtype=object),
+                            )
 
             # --- Per-minibatch KL early stop ---
             # Check immediately after each minibatch's actor update,

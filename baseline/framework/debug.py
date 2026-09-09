@@ -182,10 +182,94 @@ def _print_metric_verification(v) -> None:
         print(f"  判定：✓ 当前指标与严格定义一致。")
 
 
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    """Write a sentinel file to request a snapshot from a running training."""
+    import json
+    from pathlib import Path as P
+
+    run_dir = P(args.run_dir).resolve()
+    if not run_dir.exists():
+        print(f"Error: run_dir does not exist: {run_dir}")
+        raise SystemExit(1)
+
+    hypothesis = args.hypothesis
+    if not hypothesis or not hypothesis.strip():
+        print("Error: --hypothesis is required and must be non-empty.")
+        print("  If you can't state a hypothesis, run `health` or `chain` first.")
+        raise SystemExit(1)
+
+    episodes_mode = "all" if args.episodes == "all" else "subset"
+    episodes_n = 0 if args.episodes == "all" else int(args.episodes)
+
+    request = {
+        "hypothesis": hypothesis,
+        "episodes_mode": episodes_mode,
+        "episodes_n": episodes_n,
+        "include_full_grad": args.full_grad,
+    }
+    sentinel = run_dir / "debug_request.json"
+    with open(sentinel, "w") as f:
+        json.dump(request, f, indent=2)
+
+    print(f"Snapshot requested for next update boundary.")
+    print(f"  run_dir: {run_dir}")
+    print(f"  hypothesis: {hypothesis}")
+    print(f"  episodes: {args.episodes}")
+    print(f"  full_grad: {args.full_grad}")
+    print(f"  sentinel: {sentinel}")
+    print(f"  The snapshot will be captured at the next update's boundary,")
+    print(f"  in <run_dir>/debug/u<NNNNN>/.")
+
+
+def cmd_replay(args: argparse.Namespace) -> None:
+    """Re-run ppo_update on a snapshot with full debug recording."""
+    import torch
+    from baseline.framework.ppo.debug.replay import (
+        replay_snapshot,
+        verify_against_log,
+    )
+
+    snapshot_dir = Path(args.snapshot_dir).resolve()
+    if not snapshot_dir.exists():
+        print(f"Error: snapshot_dir does not exist: {snapshot_dir}")
+        raise SystemExit(1)
+
+    device = torch.device(args.device) if args.device else None
+    result = replay_snapshot(snapshot_dir, device=device)
+
+    print(f"Replay @ update {result.update}")
+    print(f"  snapshot: {result.snapshot_dir}")
+    print(f"  episodes: {result.episodes_mode}:{result.n_episodes}")
+    print(f"  frames: {result.n_frames}")
+    print(f"  replay output: {result.replay_dir}")
+    if result.debug_arrays:
+        print(f"  debug_arrays: {sorted(result.debug_arrays.keys())}")
+
+    if args.verify:
+        if not args.run_dir:
+            print("\n  --verify requires --run-dir")
+            return
+        run_dir = Path(args.run_dir).resolve()
+        verification = verify_against_log(snapshot_dir, run_dir)
+        print()
+        if not verification.comparable:
+            print(f"Self-verification: NOT COMPARABLE")
+            print(f"  episodes_mode={verification.episodes_mode} (only 'all' is comparable)")
+            return
+        print(f"Self-verification: {verification.verdict.upper()}")
+        print(f"  passed={verification.n_passed} failed={verification.n_failed} skipped={verification.n_skipped}")
+        if verification.n_failed > 0:
+            print()
+            print("  Failed fields:")
+            for fc in verification.fields:
+                if not fc.passed:
+                    print(f"    {fc.name}: log={fc.log_value} replay={fc.replay_value} ({fc.note})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="debug.py",
-        description="Debug CLI — behavior probes + metric verification (S5)",
+        description="Debug CLI — probes, metrics, snapshots, replay (S5 + S2)",
     )
     subparsers = parser.add_subparsers(dest="command", help="Sub-command")
 
@@ -235,6 +319,44 @@ def main() -> None:
         help="Number of parallel rollout workers (default: 2)",
     )
     p_metric.set_defaults(func=cmd_metric)
+
+    # --- snapshot (S2) ---
+    p_snapshot = subparsers.add_parser(
+        "snapshot", help="Request a snapshot from a running training",
+    )
+    p_snapshot.add_argument("run_dir", type=str, help="Training run directory")
+    p_snapshot.add_argument(
+        "--hypothesis", type=str, required=True,
+        help="What you're looking for (required — DEBUG_GUIDE.md §6 discipline 6)",
+    )
+    p_snapshot.add_argument(
+        "--episodes", type=str, default="8",
+        help="Number of episodes to capture: N (subset, first N) or 'all' (default: 8)",
+    )
+    p_snapshot.add_argument(
+        "--full-grad", action="store_true",
+        help="Capture full actor gradient for epoch 0, mb 0 (large)",
+    )
+    p_snapshot.set_defaults(func=cmd_snapshot)
+
+    # --- replay (S2) ---
+    p_replay = subparsers.add_parser(
+        "replay", help="Re-run ppo_update on a snapshot with debug recording",
+    )
+    p_replay.add_argument("snapshot_dir", type=str, help="Snapshot directory")
+    p_replay.add_argument(
+        "--run-dir", type=str, default=None,
+        help="Training run directory (for --verify)",
+    )
+    p_replay.add_argument(
+        "--verify", action="store_true",
+        help="Verify replayed stats against training log (requires --run-dir)",
+    )
+    p_replay.add_argument(
+        "--device", type=str, default=None,
+        help="Torch device (default: cpu)",
+    )
+    p_replay.set_defaults(func=cmd_replay)
 
     args = parser.parse_args()
     if not args.command:

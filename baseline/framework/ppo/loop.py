@@ -53,6 +53,7 @@ from .experiment import (
     TrainablePolicy,
 )
 from .trainer import PPOBuffer, ppo_update, set_seed
+from .debug.snapshot import poll_request, capture_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +443,12 @@ def train_ppo(
         for u in range(start_update, cp.max_updates + 1):
             t_update_start = time.perf_counter()
 
+            # S2: Check for debug snapshot request (sentinel file).
+            #    Single os.path.exists when no request — negligible overhead.
+            #    When found, snapshot is captured after build_trajectories
+            #    (before ppo_update) so it has θ_old + pre-update critics.
+            debug_req = poll_request(run_dir, u)
+
             # 0. Exploration scheduling — resolve PPO update parameters
             #    (uncertainty_floor, uncertainty_coef) for this update.
             #    explore_factor is NOT here — it is decided inside
@@ -491,6 +498,23 @@ def train_ppo(
                 reward_keys=reward_keys,
             )
             t_buffer = time.perf_counter() - t0
+
+            # S2: Capture debug snapshot if requested (before ppo_update
+            # so it has θ_old + pre-update critics + exact episodes).
+            if debug_req is not None:
+                # Get env_blueprint from the first job (all jobs share it).
+                env_bp = jobs[0].env_bp if jobs else None
+                capture_snapshot(
+                    run_dir=run_dir,
+                    update=u,
+                    request=debug_req,
+                    episodes=episodes,
+                    actor=actor,
+                    actor_export_dir=export_dir,
+                    critics=critics,
+                    experiment_name=cp.name,
+                    env_blueprint=env_bp,
+                )
 
             # 5. PPO update — per-channel GAE, z-score normalized advantages,
             #    confidence-weighted combination, clipped surrogate loss.

@@ -545,6 +545,132 @@ class StandupStepV3(CombatExperimentPPOBase):
             self._verify_explore_factor_flow(all_trajs)
         return all_trajs
 
+    # ------------------------------------------------------------------
+    # S2: Experiment intermediate quantities for debug snapshots/replay
+    # ------------------------------------------------------------------
+
+    def debug_arrays(self, episodes, trajectories) -> Dict[str, np.ndarray]:
+        """Export per-frame intermediate quantities aligned with trajectories.
+
+        S2: Reconstructs ``balance_mask``, ``h_left``, ``h_right``,
+        ``contact_l``, ``contact_r`` by calling the same production
+        helpers (``_compute_phase_mask``, ``_extract_foot_field``) —
+        no logic duplication (P2 from DESIGN_debug_system.md).
+
+        Uses ``traj.provenance`` (S1) to map each trajectory back to its
+        source episode + agent.  Trajectories without provenance are
+        skipped (their arrays are zero-filled to maintain alignment).
+
+        Contract: 0th dim = sum(len(t.obs) for t in trajectories).
+        """
+        if not trajectories:
+            return {
+                "balance_mask": np.zeros(0, dtype=bool),
+                "h_left": np.zeros(0, dtype=np.float32),
+                "h_right": np.zeros(0, dtype=np.float32),
+                "contact_l": np.zeros(0, dtype=bool),
+                "contact_r": np.zeros(0, dtype=bool),
+            }
+
+        # Build lookup: episode_index -> episode (for provenance mapping).
+        ep_by_index: Dict[int, Any] = {}
+        for ep in episodes:
+            ep_by_index[ep.episode_index] = ep
+
+        # Build lookup: agent_id -> (foot_key, phi4stage_key, phi_height_key).
+        agent_obs_map: Dict[str, Tuple[str, str, str]] = {
+            aid: (fk, pk, hk) for aid, fk, pk, hk in self._AGENT_OBS
+        }
+
+        balance_parts: List[np.ndarray] = []
+        h_left_parts: List[np.ndarray] = []
+        h_right_parts: List[np.ndarray] = []
+        contact_l_parts: List[np.ndarray] = []
+        contact_r_parts: List[np.ndarray] = []
+
+        for traj in trajectories:
+            T_seg = len(traj.obs)
+            if T_seg == 0:
+                continue
+
+            # Default: zeros (for trajectories without provenance).
+            if traj.provenance is None:
+                balance_parts.append(np.zeros(T_seg, dtype=bool))
+                h_left_parts.append(np.zeros(T_seg, dtype=np.float32))
+                h_right_parts.append(np.zeros(T_seg, dtype=np.float32))
+                contact_l_parts.append(np.zeros(T_seg, dtype=bool))
+                contact_r_parts.append(np.zeros(T_seg, dtype=bool))
+                continue
+
+            prov = traj.provenance
+            episode = ep_by_index.get(prov.episode_index)
+            if episode is None:
+                # Episode not found — zero-fill to maintain alignment.
+                balance_parts.append(np.zeros(T_seg, dtype=bool))
+                h_left_parts.append(np.zeros(T_seg, dtype=np.float32))
+                h_right_parts.append(np.zeros(T_seg, dtype=np.float32))
+                contact_l_parts.append(np.zeros(T_seg, dtype=bool))
+                contact_r_parts.append(np.zeros(T_seg, dtype=bool))
+                continue
+
+            agent_id = prov.agent_id
+            obs_keys = agent_obs_map.get(agent_id)
+            if obs_keys is None:
+                balance_parts.append(np.zeros(T_seg, dtype=bool))
+                h_left_parts.append(np.zeros(T_seg, dtype=np.float32))
+                h_right_parts.append(np.zeros(T_seg, dtype=np.float32))
+                contact_l_parts.append(np.zeros(T_seg, dtype=bool))
+                contact_r_parts.append(np.zeros(T_seg, dtype=bool))
+                continue
+
+            foot_key, phi4stage_key, _ = obs_keys
+            T_full = episode.num_frames
+
+            # Reconstruct on full episode, then slice to trajectory segment.
+            # t_start is the offset within the episode; trajectory length
+            # is the segment length.
+            h_torso = extract_per_step_field(
+                episode.observer_outputs, phi4stage_key, "h_torso", T_full,
+            )
+            if h_torso is not None:
+                h_torso = h_torso[:T_full]
+            else:
+                h_torso = np.zeros(T_full, dtype=np.float32)
+
+            balance_full = self._compute_phase_mask(h_torso, T_full)
+
+            h_left_full = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)
+            h_right_full = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full)
+            contact_l_full = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
+            contact_r_full = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
+
+            # Slice to the trajectory segment using provenance t_start.
+            t_start = prov.t_start
+            t_end = t_start + T_seg
+            balance_parts.append(balance_full[t_start:t_end].astype(bool))
+            h_left_parts.append(np.asarray(h_left_full[t_start:t_end], dtype=np.float32))
+            h_right_parts.append(np.asarray(h_right_full[t_start:t_end], dtype=np.float32))
+            contact_l_parts.append(contact_l_full[t_start:t_end].astype(bool))
+            contact_r_parts.append(contact_r_full[t_start:t_end].astype(bool))
+
+        total_frames = sum(len(t.obs) for t in trajectories)
+        result = {
+            "balance_mask": np.concatenate(balance_parts) if balance_parts else np.zeros(0, dtype=bool),
+            "h_left": np.concatenate(h_left_parts) if h_left_parts else np.zeros(0, dtype=np.float32),
+            "h_right": np.concatenate(h_right_parts) if h_right_parts else np.zeros(0, dtype=np.float32),
+            "contact_l": np.concatenate(contact_l_parts) if contact_l_parts else np.zeros(0, dtype=bool),
+            "contact_r": np.concatenate(contact_r_parts) if contact_r_parts else np.zeros(0, dtype=bool),
+        }
+
+        # Contract enforcement: 0th dim must equal total frames.
+        for name, arr in result.items():
+            assert len(arr) == total_frames, (
+                f"debug_arrays contract violation: {name} has length {len(arr)} "
+                f"but total trajectory frames = {total_frames}"
+            )
+
+        return result
+
     def _verify_explore_factor_flow(self, trajs: List[Trajectory]) -> None:
         """One-time diagnostic: verify per-frame explore_factor data flow.
 
