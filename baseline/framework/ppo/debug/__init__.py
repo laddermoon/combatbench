@@ -16,4 +16,15 @@ S2: DebugSink + snapshot + replay (``DEBUG_GUIDE.md`` §3.11,
 - :mod:`replay` — offline re-run of ppo_update with self-verification
 
 S2 depends on S1 (provenance) for frame-level data alignment.
+
+S3: chain / attribute / frame (``DEBUG_GUIDE.md`` §3.2/§3.3/§3.4,
+``DESIGN_debug_system.md`` §7):
+- :mod:`where` — ``--where`` expression parser for frame filtering
+- :mod:`attribute` — update attribution from training log S0 aggregates
+- :mod:`chain` — nine-ring signal chain profile (log + snapshot + probe)
+- :mod:`frame` — frame-level inspector (``--id`` + ``--where``)
+
+S3 depends on S1 (provenance), S2 (snapshot/replay), S0 (aggregates),
+and S5 (probes).  It is a pure consumer of existing data — no new
+training-time instrumentation.
 """

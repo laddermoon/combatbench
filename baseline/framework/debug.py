@@ -1,23 +1,38 @@
-"""Debug CLI — behavior probes + metric verification.
+"""Debug CLI — behavior probes + metric verification + chain/attribute/frame.
 
-S5: This CLI implements the ``probe`` and ``metric --verify``
-subcommands from ``DEBUG_GUIDE.md`` §3.7 and §3.6.
+S5: ``probe`` and ``metric --verify`` (§3.7, §3.6).
+S2: ``snapshot`` and ``replay`` (§3.11).
+S3: ``chain``, ``attribute``, ``frame`` (§3.2, §3.3, §3.4).
 
 Usage::
 
     # Run behavior probes at update 250
     PYTHONPATH=. python3 baseline/framework/debug.py probe <run_dir> --at 250
 
-    # Run a specific suite across multiple updates
-    PYTHONPATH=. python3 baseline/framework/debug.py probe <run_dir> \\
-        --suite locomotion --sweep-updates 100:300:20
-
     # Verify the 'steps' metric at update 250
     PYTHONPATH=. python3 baseline/framework/debug.py metric <run_dir> \\
         --verify steps --at 250
 
-    # List available metric verifiers
-    PYTHONPATH=. python3 baseline/framework/debug.py metric <run_dir>
+    # Request a snapshot from a running training
+    PYTHONPATH=. python3 baseline/framework/debug.py snapshot <run_dir> \\
+        --hypothesis "test why KL is high"
+
+    # Replay a snapshot with full debug recording
+    PYTHONPATH=. python3 baseline/framework/debug.py replay <snapshot_dir>
+
+    # Signal chain profile (S3)
+    PYTHONPATH=. python3 baseline/framework/debug.py chain <run_dir> \\
+        --channel r_left_foot --at 250
+
+    # Update attribution (S3)
+    PYTHONPATH=. python3 baseline/framework/debug.py attribute <run_dir> \\
+        --window 20
+
+    # Frame inspector (S3)
+    PYTHONPATH=. python3 baseline/framework/debug.py frame <snapshot_dir> \\
+        --id ep0003:robot_a:137
+    PYTHONPATH=. python3 baseline/framework/debug.py frame <snapshot_dir> \\
+        --where "combine.aw_normed.r_left_foot < 0" --limit 20
 """
 from __future__ import annotations
 
@@ -266,10 +281,76 @@ def cmd_replay(args: argparse.Namespace) -> None:
                     print(f"    {fc.name}: log={fc.log_value} replay={fc.replay_value} ({fc.note})")
 
 
+def cmd_chain(args: argparse.Namespace) -> None:
+    """Signal chain profile — locate the breakpoint in the nine-ring chain."""
+    from baseline.framework.ppo.debug.chain import chain, render_report
+
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists():
+        print(f"Error: run_dir does not exist: {run_dir}")
+        raise SystemExit(1)
+
+    report = chain(
+        run_dir,
+        channel=args.channel,
+        update=args.at,
+        behavior=args.behavior,
+        snapshot_dir=Path(args.snapshot) if args.snapshot else None,
+        run_probes=not args.no_probe,
+        n_workers=args.workers,
+    )
+    print(render_report(report))
+
+
+def cmd_attribute(args: argparse.Namespace) -> None:
+    """Update attribution — who is driving the policy?"""
+    from baseline.framework.ppo.debug.attribute import attribute
+
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists():
+        print(f"Error: run_dir does not exist: {run_dir}")
+        raise SystemExit(1)
+
+    report = attribute(
+        run_dir,
+        update=args.at,
+        window=args.window,
+        by_action_dim=args.by == "action-dim",
+    )
+    print(report)
+
+
+def cmd_frame(args: argparse.Namespace) -> None:
+    """Frame-level inspector — inspect a single frame or filter by condition."""
+    from baseline.framework.ppo.debug.frame import frame
+
+    snapshot_dir = Path(args.snapshot_dir).resolve()
+    if not snapshot_dir.exists():
+        print(f"Error: snapshot_dir does not exist: {snapshot_dir}")
+        raise SystemExit(1)
+
+    if not args.id and not args.where:
+        print("Error: either --id or --where must be given.")
+        raise SystemExit(1)
+
+    if args.render:
+        print("[info] --render not yet implemented (S3 TODO); showing data only.")
+
+    result = frame(
+        snapshot_dir,
+        frame_id=args.id,
+        where=args.where,
+        limit=args.limit,
+        render=args.render,
+    )
+    print(result)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="debug.py",
-        description="Debug CLI — probes, metrics, snapshots, replay (S5 + S2)",
+        description="Debug CLI — probes, metrics, snapshots, replay, "
+                    "chain, attribute, frame (S5 + S2 + S3)",
     )
     subparsers = parser.add_subparsers(dest="command", help="Sub-command")
 
@@ -357,6 +438,79 @@ def main() -> None:
         help="Torch device (default: cpu)",
     )
     p_replay.set_defaults(func=cmd_replay)
+
+    # --- chain (S3) ---
+    p_chain = subparsers.add_parser(
+        "chain", help="Signal chain profile — locate the breakpoint (§3.2)",
+    )
+    p_chain.add_argument("run_dir", type=str, help="Training run directory")
+    p_chain.add_argument(
+        "--channel", type=str, required=True,
+        help="Reward channel name (e.g. r_left_foot)",
+    )
+    p_chain.add_argument(
+        "--at", type=int, default=None,
+        help="Update number (default: latest from log)",
+    )
+    p_chain.add_argument(
+        "--behavior", type=str, default=None,
+        help="Behavior name for display (optional)",
+    )
+    p_chain.add_argument(
+        "--snapshot", type=str, default=None,
+        help="Snapshot directory (default: auto-find <run_dir>/debug/u<NNNNN>)",
+    )
+    p_chain.add_argument(
+        "--no-probe", action="store_true",
+        help="Skip running probes (①⑨ rings will show '未测')",
+    )
+    p_chain.add_argument(
+        "--workers", type=int, default=2,
+        help="Number of parallel rollout workers for probes (default: 2)",
+    )
+    p_chain.set_defaults(func=cmd_chain)
+
+    # --- attribute (S3) ---
+    p_attr = subparsers.add_parser(
+        "attribute", help="Update attribution — who is driving the policy? (§3.3)",
+    )
+    p_attr.add_argument("run_dir", type=str, help="Training run directory")
+    p_attr.add_argument(
+        "--at", type=int, default=None,
+        help="Update number (default: latest from log)",
+    )
+    p_attr.add_argument(
+        "--window", type=int, default=1,
+        help="Number of recent updates to average (default: 1)",
+    )
+    p_attr.add_argument(
+        "--by", type=str, default=None,
+        help="Break down by: 'action-dim' for per-action-dimension gradients",
+    )
+    p_attr.set_defaults(func=cmd_attribute)
+
+    # --- frame (S3) ---
+    p_frame = subparsers.add_parser(
+        "frame", help="Frame-level inspector — inspect or filter frames (§3.4)",
+    )
+    p_frame.add_argument("snapshot_dir", type=str, help="Snapshot directory")
+    p_frame.add_argument(
+        "--id", type=str, default=None,
+        help="Frame ID like ep0003:robot_a:137",
+    )
+    p_frame.add_argument(
+        "--where", type=str, default=None,
+        help='Filter expression: "combine.aw_normed.r_left_foot < 0"',
+    )
+    p_frame.add_argument(
+        "--limit", type=int, default=20,
+        help="Max frames to return from --where (default: 20)",
+    )
+    p_frame.add_argument(
+        "--render", action="store_true",
+        help="Render the frame (not yet implemented)",
+    )
+    p_frame.set_defaults(func=cmd_frame)
 
     args = parser.parse_args()
     if not args.command:
