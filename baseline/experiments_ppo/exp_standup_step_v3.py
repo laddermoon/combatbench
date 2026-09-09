@@ -166,20 +166,22 @@ class StandupStepV3(CombatExperimentPPOBase):
     video_eval_interval: int = 2
 
     # --- Exploration: two-stage uncertainty floor ---
-    # Phase 1: floor loss pulls uncertainty up from standup value (≈0.17)
-    #          toward 0.35 so the policy can explore foot-lifting.
-    # Phase 2: once uncertainty stays at/above phase2_threshold for
-    #          floor_confirm_updates consecutive updates, floor loss is
+    # Phase 1: floor loss pulls uncertainty up so the policy can explore
+    #          foot-lifting.  floor_weight (balance_mask) restricts the
+    #          floor loss to BALANCE-phase frames only.
+    # Phase 2: once the robot demonstrates stepping in ALL eval episodes
+    #          for step_confirm_updates consecutive evals, floor loss is
     #          permanently disabled (one-way switch).  PPO then learns
     #          purely from advantage and σ can naturally tighten.
     #
-    # phase2_threshold < uncertainty_floor because the quadratic hinge
-    # coef*relu(floor-U)^2 has vanishing gradient as U→floor, so U
-    # typically plateaus below floor.
-    uncertainty_floor: float = 0.35
-    phase2_threshold: float = 0.30
-    floor_confirm_updates: int = 5
+    # Stepping success (per eval episode, per agent): after entering the
+    # BALANCE phase, BOTH feet must have lifted above step_lift_threshold
+    # at some point.  An update is "stepping-successful" if ALL eval
+    # episodes (all agents) succeed.
+    uncertainty_floor: float = 0.4
     uncertainty_coef: float = 5.0
+    step_lift_threshold: float = 0.05
+    step_confirm_updates: int = 3
 
     # --- Stateful metrics ---
     _best_potential: float = -1.0
@@ -187,6 +189,7 @@ class StandupStepV3(CombatExperimentPPOBase):
     _uncertainty_history: list = None
     _floor_disabled: bool = False
     _floor_disabled_at: int = -1
+    _step_success_streak: int = 0
 
     # ------------------------------------------------------------------
     # Blueprint loading
@@ -226,32 +229,15 @@ class StandupStepV3(CombatExperimentPPOBase):
         return jobs
 
     def on_update(self, stats, update: int) -> None:
-        """Track uncertainty for two-stage floor scheduling.
+        """Track uncertainty history for diagnostics.
 
-        Once uncertainty stays at/above phase2_threshold for
-        floor_confirm_updates consecutive updates, permanently disable
-        the floor loss (one-way switch).
+        Floor disable is now driven by stepping success in ``on_eval``,
+        not by uncertainty level here.
         """
         if self._uncertainty_history is None:
             self._uncertainty_history = []
         u = float(stats.policy_stats.get("uncertainty", 0.0))
         self._uncertainty_history.append(u)
-        if self._floor_disabled:
-            return
-        window = self._uncertainty_history[-self.floor_confirm_updates:]
-        if (
-            len(window) >= self.floor_confirm_updates
-            and all(v >= self.phase2_threshold for v in window)
-        ):
-            self._floor_disabled = True
-            self._floor_disabled_at = update
-            print(
-                f"  [floor] uncertainty reached phase2_threshold="
-                f"{self.phase2_threshold} for {self.floor_confirm_updates} "
-                f"consecutive updates (u={u:.4f}); disabling floor loss "
-                f"at update {update}",
-                flush=True,
-            )
 
     def exploration(self, update: int) -> ExplorationSpec:
         """Two-stage exploration spec.
@@ -582,13 +568,14 @@ class StandupStepV3(CombatExperimentPPOBase):
         final_pots = []
         success_count = 0
         n_agents = 0
+        step_success_count = 0  # agents that demonstrated stepping
 
         for ep in episodes:
             T = ep.num_frames
             if T == 0:
                 continue
 
-            for agent_id, _, phi4stage_key, _ in self._AGENT_OBS:
+            for agent_id, foot_key, phi4stage_key, _ in self._AGENT_OBS:
                 n_agents += 1
                 phi = extract_per_step_field(
                     ep.observer_outputs, phi4stage_key, "potential", T,
@@ -604,12 +591,39 @@ class StandupStepV3(CombatExperimentPPOBase):
                 if mx >= 0.9:
                     success_count += 1
 
+                # --- Stepping detection ---
+                # After entering BALANCE phase, both feet must have
+                # lifted above step_lift_threshold at some point.
+                step_ok = self._check_stepping(ep, foot_key, phi4stage_key, T)
+                if step_ok:
+                    step_success_count += 1
+
         n = max(len(max_pots), 1)
         mean_max_pot = sum(max_pots) / n if max_pots else 0.0
         mean_final_pot = sum(final_pots) / n if final_pots else 0.0
         success_rate = success_count / n
+        step_success_rate = step_success_count / n if n_agents else 0.0
 
         self._success_rate = success_rate
+
+        # --- Floor disable: stepping-based ---
+        # An update is "stepping-successful" if ALL eval episodes (all
+        # agents) demonstrated stepping.  After step_confirm_updates
+        # consecutive successes, permanently disable the floor loss.
+        if not self._floor_disabled:
+            if n_agents > 0 and step_success_count == n_agents:
+                self._step_success_streak += 1
+                if self._step_success_streak >= self.step_confirm_updates:
+                    self._floor_disabled = True
+                    self._floor_disabled_at = update
+                    print(
+                        f"  [floor] stepping success for "
+                        f"{self.step_confirm_updates} consecutive evals; "
+                        f"disabling floor loss at update {update}",
+                        flush=True,
+                    )
+            else:
+                self._step_success_streak = 0
 
         is_new_best = mean_max_pot > self._best_potential
         if is_new_best:
@@ -622,18 +636,71 @@ class StandupStepV3(CombatExperimentPPOBase):
                 "max_pot": round(mean_max_pot, 3),
                 "final_pot": round(mean_final_pot, 3),
                 "success": round(success_rate, 3),
+                "step": round(step_success_rate, 3),
             },
         }
+
+    @staticmethod
+    def _check_stepping(
+        episode, foot_key: str, phi4stage_key: str, T: int,
+    ) -> bool:
+        """Check if the agent demonstrated stepping in this episode.
+
+        Stepping = after entering the BALANCE phase, BOTH feet must
+        have lifted above ``step_lift_threshold`` at some point.
+
+        Uses ``_compute_phase_mask`` on h_torso (from the 4-stage
+        rewarder) to find BALANCE frames, then checks max foot heights
+        within those frames.
+        """
+        # --- h_torso for phase determination ---
+        h_torso = extract_per_step_field(
+            episode.observer_outputs, phi4stage_key, "h_torso", T,
+        )
+        if h_torso is None:
+            return False
+        h_torso = np.asarray(h_torso[:T], dtype=np.float32)
+
+        # --- Foot heights ---
+        h_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_left_foot", T,
+        )
+        h_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_right_foot", T,
+        )
+        if h_left is None or h_right is None:
+            return False
+        h_left = np.asarray(h_left[:T], dtype=np.float32)
+        h_right = np.asarray(h_right[:T], dtype=np.float32)
+
+        # --- BALANCE phase mask ---
+        balance_mask = StandupStepV3._compute_phase_mask(h_torso, T)
+        if not balance_mask.any():
+            return False  # never reached BALANCE
+
+        # --- Both feet must have lifted above threshold ---
+        max_h_left = float(h_left[balance_mask].max())
+        max_h_right = float(h_right[balance_mask].max())
+        return (
+            max_h_left >= StandupStepV3.step_lift_threshold
+            and max_h_right >= StandupStepV3.step_lift_threshold
+        )
 
     def state(self) -> dict:
         return {
             "best_potential": self._best_potential,
             "success_rate": self._success_rate,
+            "floor_disabled": self._floor_disabled,
+            "floor_disabled_at": self._floor_disabled_at,
+            "step_success_streak": self._step_success_streak,
         }
 
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
+        self._floor_disabled = bool(state.get("floor_disabled", False))
+        self._floor_disabled_at = int(state.get("floor_disabled_at", -1))
+        self._step_success_streak = int(state.get("step_success_streak", 0))
 
 
 EXPERIMENT_CLASS = StandupStepV3
