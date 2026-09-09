@@ -54,7 +54,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
+from baseline.framework.ppo.trajectory import (
+    ChannelData,
+    RewardChannel,
+    Trajectory,
+    TrajectoryProvenance,
+)
 from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
@@ -481,6 +486,21 @@ class StandupStepV3(CombatExperimentPPOBase):
                 actor_weight=actor_weights[key],
             )
 
+        # S1: Build provenance for frame-level debugging.
+        # episode_index is Episode.episode_index (not list index) — stable
+        # across parallel collection ordering.  termination_reason from
+        # the agent's first termination record ("" = no termination).
+        term_reason = ""
+        records = episode.agent_termination_proposal_records.get(agent_id, ())
+        if records:
+            term_reason = records[0][0]
+        prov = TrajectoryProvenance(
+            episode_index=episode.episode_index,
+            agent_id=agent_id,
+            t_start=0,
+            termination_reason=term_reason,
+        )
+
         return [Trajectory(
             obs=obs_all,
             actions=acts_all,
@@ -489,6 +509,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             importance=1.0,
             explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
             floor_weight=balance_mask.astype(np.float32),
+            provenance=prov,
         )]
 
     @staticmethod
