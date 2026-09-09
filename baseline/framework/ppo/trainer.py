@@ -143,6 +143,7 @@ class PPOBuffer:
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.explore_factor: Optional[np.ndarray] = None
+            self.floor_weight: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
             return
@@ -171,6 +172,17 @@ class PPOBuffer:
         ]).astype(np.float32)
         all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)
         self.explore_factor = all_ei
+
+        # --- floor_weight (optional, defaults to ones for backward compat) ---
+        # Per-frame weight for the uncertainty floor loss.  None → ones
+        # so existing experiments that don't set this field get the
+        # current behavior (floor loss applies uniformly to all frames).
+        all_fw = np.concatenate([
+            t.floor_weight if t.floor_weight is not None
+            else np.ones(len(t.obs), dtype=np.float32)
+            for t in trajectories
+        ]).astype(np.float32)
+        self.floor_weight = all_fw
 
         kwargs: Dict[str, Any] = {"explore_factor": all_ei_t}
 
@@ -752,6 +764,14 @@ def ppo_update(
         buf.explore_factor, dtype=torch.float32, device=device,
     )
 
+    # --- floor_weight (optional per-frame mask for uncertainty floor) ---
+    # When provided by the experiment, restricts the floor loss to
+    # specific frames (e.g. BALANCE-phase only).  Defaults to ones
+    # (all frames) when the experiment does not set Trajectory.floor_weight.
+    floor_weight_t = torch.as_tensor(
+        buf.floor_weight, dtype=torch.float32, device=device,
+    )
+
     # --- Diagnostics: episode lengths ---
     # These are logged but do not influence the update.
     ep_lengths = buf.ep_lengths
@@ -936,17 +956,25 @@ def ppo_update(
 
             # Uncertainty floor loss: one-sided quadratic hinge that only
             # activates when the policy's normalized uncertainty drops below
-            # the floor.  ``uncertainty_coef * relu(floor - U)^2``.  The
+            # the floor.  ``uncertainty_coef * relu(floor - U)^2 * fw``.  The
             # quadratic form gives stronger push when U is far below the
             # floor and a smooth taper as U approaches the floor, avoiding
             # the overshoot risk of a linear hinge.
+            #
+            # Per-frame ``floor_weight`` (fw) gates which frames contribute
+            # to the floor loss.  Normalization divides by the minibatch
+            # size B (not fw.sum()), so the floor loss magnitude scales
+            # linearly with the fraction of active frames — when few frames
+            # are active the floor loss is weak, preventing it from
+            # overwhelming the policy gradient in cold-start phases.
             loss = policy_loss
             floor_loss = torch.tensor(0.0, device=policy_loss.device)
             if uncertainty_coef > 0.0 and uncertainty_floor > 0.0:
+                fw_mb = floor_weight_t[idx]  # (B,) per-frame floor weight
                 gap = torch.relu(
                     uncertainty_floor - actor_eval.uncertainty
                 )
-                floor_loss = uncertainty_coef * (gap ** 2).mean()
+                floor_loss = uncertainty_coef * (gap ** 2 * fw_mb).mean()
                 loss = loss + floor_loss
 
                 # --- Gradient diagnostics for exploration parameters ---
@@ -972,9 +1000,18 @@ def ppo_update(
                         all_floor_logstd_grads.append(grad_diag["floor_abs"])
                         all_pol_logstd_grad_sign.append(grad_diag["pol_sign"])
                         all_floor_logstd_grad_sign.append(grad_diag["floor_sign"])
-                        all_floor_active_frac.append(
-                            float((actor_eval.uncertainty < uncertainty_floor).float().mean().item())
-                        )
+                        # floor_active_frac: fraction of *floor-weighted*
+                        # frames where uncertainty is below the floor.
+                        # Only counts frames with fw > 0.
+                        fw_active = fw_mb > 0
+                        if fw_active.any():
+                            frac = float(
+                                (actor_eval.uncertainty[fw_active]
+                                 < uncertainty_floor).float().mean().item()
+                            )
+                        else:
+                            frac = 0.0
+                        all_floor_active_frac.append(frac)
 
             actor_optimizer.zero_grad()
             loss.backward()

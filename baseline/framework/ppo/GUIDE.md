@@ -151,6 +151,8 @@ ExplorationSpec(
 
 - **uncertainty_floor**：策略不确定性的下界。0 和 1 的具体含义由策略定义。框架用单向二次 hinge `relu(floor - U)²` 计算损失，只在不确定性低于下界时产生梯度。
 
+- **Trajectory.floor_weight**：`(T,)` per-frame 权重，控制哪些帧贡献到 floor loss。`None` → buffer 填 ones（所有帧等权，向后兼容）。实验在 `build_trajectories` 时填入，例如只让 BALANCE 阶段的帧生效：`floor_weight=balance_mask.astype(np.float32)`。归一化方式为 `(gap² * fw).mean()`（除以 B），floor loss 强度随 active 帧占比线性缩放。
+
 > **注意**：``explore_factor``（rollout 采样时的附加探索强度）**不在** ``ExplorationSpec`` 里。它在 ``build_jobs`` 中决定，写入每个 ``Job`` 的 ``explore_factor_a`` / ``explore_factor_b`` 字段。这样 ``build_jobs`` 可以按 per-job / per-agent / per-frame 设置不同的探索强度，比单个 spec 字段表达力更强。实验通常从 ``self.explore_factor``（``CommonParams`` 字段）读取默认值。
 
 详见 `DESIGN_unified_exploration_control.md`。

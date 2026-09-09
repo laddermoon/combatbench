@@ -95,6 +95,13 @@ class Trajectory:
             ``evaluate_actions`` so log_prob is computed under the same
             distribution that produced the actions.  When None, defaults
             to 0.0 (neutral) in the buffer.
+        floor_weight: ``(T,)`` float32 — per-frame weight for the
+            uncertainty floor loss.  Allows the experiment to restrict
+            the floor loss to specific frames (e.g. only BALANCE-phase
+            frames).  When None, the buffer fills with ones so the floor
+            loss applies uniformly to all frames (backward compatible).
+            The experiment owns the per-frame semantics; the framework
+            only routes this array to ``ppo_update``.
     """
 
     obs: np.ndarray
@@ -103,3 +110,4 @@ class Trajectory:
     channels: Dict[str, ChannelData]
     importance: float = 1.0
     explore_factor: Optional[np.ndarray] = None
+    floor_weight: Optional[np.ndarray] = None

@@ -498,6 +498,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             channels=channels,
             importance=1.0,
             explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
+            floor_weight=balance_mask.astype(np.float32),
         )]
 
     @staticmethod

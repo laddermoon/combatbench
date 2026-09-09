@@ -39,9 +39,13 @@ experiment.build_jobs(...) → Job.explore_factor_a / explore_factor_b = ef
   → PPOBuffer 拼接 → evaluate_actions(obs, acts, ef_tensor)
   → ppo_update 每 minibatch 切片传入
 
+experiment.build_trajectories(...) → Trajectory.floor_weight  (T,) float32
+  → PPOBuffer 拼接（None → ones，向后兼容）
+  → ppo_update 每 minibatch 切片，作为 floor loss 的 per-frame 权重
+
 experiment.exploration(u) → ExplorationSpec
   → (uncertainty_floor, uncertainty_coef)
-  → ppo_update 计算 uncertainty_floor_loss = coef × relu(floor - U)²
+  → ppo_update 计算 uncertainty_floor_loss = coef × (relu(floor - U)² × fw).mean()
 ```
 
 关键不变量：**rollout 采样和 PPO log_prob 重算用同一个 explore_factor**，保证 importance ratio 正确。

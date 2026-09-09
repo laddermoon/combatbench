@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pytest
@@ -132,6 +133,7 @@ def make_trajectory(
     channels: dict,
     *,
     importance: float = 1.0,
+    floor_weight: Optional[np.ndarray] = None,
     rng: np.random.Generator = None,
 ) -> Trajectory:
     """Build a random Trajectory with the given channel data."""
@@ -146,6 +148,7 @@ def make_trajectory(
         last_obs=last_obs,
         channels=channels,
         importance=importance,
+        floor_weight=floor_weight,
     )
 
 
@@ -1201,6 +1204,84 @@ def test_ppo_update_exploration_spec_overrides():
     # update should complete without error.
     assert stats.epochs_done >= 1
     print("test_ppo_update_exploration_spec_overrides: PASS")
+
+
+def test_ppo_update_floor_weight_mask():
+    """Per-frame floor_weight gates which frames contribute to floor loss.
+
+    Two trajectories with identical data but different floor_weight:
+      - traj_full: floor_weight = ones (all frames active)
+      - traj_half: floor_weight = first half ones, second half zeros
+
+    With a high uncertainty_floor, the floor loss from traj_full should
+    be larger than from traj_half (fewer active frames → smaller loss
+    under 方式2 normalization: divide by B).
+
+    We verify:
+      1. Both runs complete without error.
+      2. The buffer correctly stores floor_weight (not all ones for
+         traj_half).
+      3. floor_weight=None defaults to ones (backward compat).
+    """
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    channels = {"r_a": make_channel_data(T, rng=rng)}
+    pp = make_pp_params(clip_eps=0.2, target_kl=0.05, minibatch_size=32)
+    channels_cfg = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    spec = ExplorationSpec(uncertainty_floor=0.9, uncertainty_coef=1.0)
+
+    # --- traj_full: floor_weight = ones (explicit) ---
+    fw_full = np.ones(T, dtype=np.float32)
+    traj_full = make_trajectory(
+        T, obs_dim, act_dim, channels, floor_weight=fw_full, rng=rng,
+    )
+    actor_f = SimpleActor(obs_dim, act_dim)
+    buf_f = PPOBuffer([traj_full], actor_f, torch.device("cpu"), ("r_a",))
+    assert buf_f.floor_weight is not None
+    assert np.allclose(buf_f.floor_weight, 1.0)
+
+    critics_f = make_critics(("r_a",), obs_dim)
+    opt_f, copt_f = make_optimizers(actor_f, critics_f)
+    stats_f = ppo_update(
+        actor=actor_f, critics=critics_f, actor_optimizer=opt_f,
+        critic_optimizers=copt_f, buf=buf_f, reward_channels=channels_cfg,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        exploration=spec,
+    )
+    assert stats_f.epochs_done >= 1
+
+    # --- traj_half: first half ones, second half zeros ---
+    fw_half = np.ones(T, dtype=np.float32)
+    fw_half[T // 2:] = 0.0
+    traj_half = make_trajectory(
+        T, obs_dim, act_dim, channels, floor_weight=fw_half, rng=rng,
+    )
+    actor_h = SimpleActor(obs_dim, act_dim)
+    buf_h = PPOBuffer([traj_half], actor_h, torch.device("cpu"), ("r_a",))
+    assert buf_h.floor_weight is not None
+    assert np.allclose(buf_h.floor_weight[:T // 2], 1.0)
+    assert np.allclose(buf_h.floor_weight[T // 2:], 0.0)
+
+    critics_h = make_critics(("r_a",), obs_dim)
+    opt_h, copt_h = make_optimizers(actor_h, critics_h)
+    stats_h = ppo_update(
+        actor=actor_h, critics=critics_h, actor_optimizer=opt_h,
+        critic_optimizers=copt_h, buf=buf_h, reward_channels=channels_cfg,
+        pp=pp, grad_clip_norm=1.0, device=torch.device("cpu"),
+        exploration=spec,
+    )
+    assert stats_h.epochs_done >= 1
+
+    # --- Backward compat: floor_weight=None → buffer fills ones ---
+    traj_none = make_trajectory(T, obs_dim, act_dim, channels, rng=rng)
+    actor_n = SimpleActor(obs_dim, act_dim)
+    buf_n = PPOBuffer([traj_none], actor_n, torch.device("cpu"), ("r_a",))
+    assert buf_n.floor_weight is not None
+    assert np.allclose(buf_n.floor_weight, 1.0)
+
+    print("test_ppo_update_floor_weight_mask: PASS")
 
 
 # ---------------------------------------------------------------------------
@@ -2841,6 +2922,7 @@ if __name__ == "__main__":
     test_ppo_update_terminated_no_bootstrap()
     test_ppo_update_inactive_channel_no_critic_grad()
     test_ppo_update_exploration_spec_overrides()
+    test_ppo_update_floor_weight_mask()
 
     # Minibatch accounting
     test_minibatch_count_matches_actual()
