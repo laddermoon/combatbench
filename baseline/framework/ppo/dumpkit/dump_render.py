@@ -153,25 +153,21 @@ def render_episode(
             status = verification_result["status"]
             if status == "pass":
                 print(f"[render] verification: PASS")
-                print(f"  early frames (first {verification_result['n_early_frames']}): "
-                      f"obs={verification_result['max_obs_diff_early']:.2e} "
-                      f"action={verification_result['max_action_diff_early']:.2e}")
-                print(f"  all frames ({verification_result['n_frames_compared']}): "
-                      f"obs={verification_result['max_obs_diff_all']:.2e} "
-                      f"action={verification_result['max_action_diff_all']:.2e}")
-                if verification_result['max_obs_diff_all'] > 1e-3:
-                    print(f"  note: later frames diverge due to physics chaos (expected)")
+                print(f"  frames: {verification_result['n_frames_compared']}/{verification_result['n_frames_total']}")
+                print(f"  max obs diff:    {verification_result['max_obs_diff']:.2e}")
+                print(f"  max action diff: {verification_result['max_action_diff']:.2e}")
             else:
                 print(f"[render] verification: FAIL")
-                print(f"  early frames (first {verification_result['n_early_frames']}): "
-                      f"obs={verification_result['max_obs_diff_early']:.2e} "
-                      f"action={verification_result['max_action_diff_early']:.2e}")
+                print(f"  frames: {verification_result['n_frames_compared']}/{verification_result['n_frames_total']}")
+                print(f"  max obs diff:    {verification_result['max_obs_diff']:.2e}")
+                print(f"  max action diff: {verification_result['max_action_diff']:.2e}")
                 print(f"  WARNING: Recorded data does NOT match dump data!")
                 print(f"  The images may not correspond to the training trajectory.")
                 print(f"  Possible causes:")
                 print(f"    - Policy export mismatch (weights or explore_factor)")
                 print(f"    - Environment blueprint mismatch")
                 print(f"    - Seed derivation mismatch")
+                print(f"    - torch thread count mismatch (should be 1)")
                 print(f"  Do NOT use these images as ground truth for the dump.")
 
     return record_dir
@@ -184,7 +180,18 @@ def _run_round_runner(
     episode_options: Optional[Dict[str, Any]],
     record_dir: Path,
 ) -> Dict[str, Any]:
-    """Run round_runner with BaseFrameRecorder and return the result dict."""
+    """Run round_runner with BaseFrameRecorder and return the result dict.
+
+    Sets ``torch.set_num_threads(1)`` to match the training worker's
+    BLAS configuration.  Multi-threaded BLAS uses a different floating-
+    point reduction order, which produces tiny (~1e-8) differences
+    that compound across frames and eventually cause visible divergence.
+    Without this, the replay would diverge from the training trajectory
+    even with identical seeds, policies, and environments.
+    """
+    import torch
+    torch.set_num_threads(1)
+
     from envs.framework.blueprint import EnvBlueprint
     from envs.framework.policy import PolicyBlueprint
     from envs.framework.round_runner import RoundRunner
@@ -253,20 +260,19 @@ def _verify_recorded_vs_dump(
         dump_act_b = ep_data["actions.robot_b"][frame_start:frame_end]
 
     n_frames = frame_end - frame_start
-    # Only the first N frames must match tightly; physics diverges after.
-    verify_n_early = min(10, n_frames)
-    threshold_early = 1e-3  # generous for float32
+    # With torch.set_num_threads(1), the replay is bit-exact, so we
+    # can verify ALL frames.  The threshold is generous (1e-3) to
+    # allow for float32 JSON round-trip in the recorded data.
+    threshold = 1e-3
 
-    max_obs_diff_early = 0.0
-    max_action_diff_early = 0.0
-    max_obs_diff_all = 0.0
-    max_action_diff_all = 0.0
+    max_obs_diff = 0.0
+    max_action_diff = 0.0
     n_compared = 0
 
     for i in range(n_frames):
         step_file = recorded_ep_dir / f"step_{i + 1:05d}.json"
         if not step_file.exists():
-            if verbose and i < verify_n_early:
+            if verbose:
                 print(f"  frame {i}: recorded step {i + 1} not found!")
             continue
 
@@ -279,15 +285,11 @@ def _verify_recorded_vs_dump(
 
         if len(rec_obs_a) > 0 and i < len(dump_obs_a):
             od = float(np.abs(dump_obs_a[i] - rec_obs_a).max())
-            max_obs_diff_all = max(max_obs_diff_all, od)
-            if i < verify_n_early:
-                max_obs_diff_early = max(max_obs_diff_early, od)
+            max_obs_diff = max(max_obs_diff, od)
 
         if len(rec_act_a) > 0 and i < len(dump_act_a):
             ad = float(np.abs(dump_act_a[i] - rec_act_a).max())
-            max_action_diff_all = max(max_action_diff_all, ad)
-            if i < verify_n_early:
-                max_action_diff_early = max(max_action_diff_early, ad)
+            max_action_diff = max(max_action_diff, ad)
 
         # Compare robot_b
         if has_robot_b:
@@ -295,38 +297,28 @@ def _verify_recorded_vs_dump(
             rec_act_b = np.array(rec.get("action", {}).get("robot_b", []), dtype=np.float32)
             if len(rec_obs_b) > 0 and i < len(dump_obs_b):
                 od = float(np.abs(dump_obs_b[i] - rec_obs_b).max())
-                max_obs_diff_all = max(max_obs_diff_all, od)
-                if i < verify_n_early:
-                    max_obs_diff_early = max(max_obs_diff_early, od)
+                max_obs_diff = max(max_obs_diff, od)
             if len(rec_act_b) > 0 and i < len(dump_act_b):
                 ad = float(np.abs(dump_act_b[i] - rec_act_b).max())
-                max_action_diff_all = max(max_action_diff_all, ad)
-                if i < verify_n_early:
-                    max_action_diff_early = max(max_action_diff_early, ad)
+                max_action_diff = max(max_action_diff, ad)
 
         n_compared += 1
 
-    # Pass/fail based on early frames only.
     status = "pass" if (
-        max_obs_diff_early < threshold_early
-        and max_action_diff_early < threshold_early
+        max_obs_diff < threshold and max_action_diff < threshold
     ) else "fail"
 
     return {
         "status": status,
-        "max_obs_diff_early": max_obs_diff_early,
-        "max_action_diff_early": max_action_diff_early,
-        "max_obs_diff_all": max_obs_diff_all,
-        "max_action_diff_all": max_action_diff_all,
+        "max_obs_diff": max_obs_diff,
+        "max_action_diff": max_action_diff,
         "n_frames_compared": n_compared,
-        "n_early_frames": verify_n_early,
-        "threshold": threshold_early,
+        "n_frames_total": n_frames,
+        "threshold": threshold,
         "note": (
-            "Pass/fail based on first {n} frames only. Physics simulations "
-            "exhibit chaotic divergence: tiny float32 differences compound "
-            "exponentially, so later frames may diverge even when the "
-            "trajectory is correct."
-        ).format(n=verify_n_early),
+            "With torch.set_num_threads(1), the replay is bit-exact. "
+            "All frames must match within float32 JSON round-trip tolerance."
+        ),
         "frame_mapping": "recorded step (N+1) <-> dump frame N (off-by-one: step_00000 is initial state)",
     }
 
