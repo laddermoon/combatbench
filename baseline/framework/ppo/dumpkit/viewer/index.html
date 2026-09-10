@@ -17,6 +17,7 @@
     --red: #e06c75;
     --orange: #d19a66;
     --yellow: #e5c07b;
+    --purple: #c678dd;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; }
@@ -36,7 +37,7 @@
   #content { flex: 1; overflow: auto; padding: 0; }
 
   /* Context bar */
-  #context-bar { background: var(--panel); border-top: 1px solid var(--border); padding: 6px 16px; display: flex; gap: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  #context-bar { background: var(--panel); border-top: 1px solid var(--border); padding: 6px 16px; display: flex; gap: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
   #context-bar .ctx-item { display: flex; gap: 4px; }
   #context-bar .ctx-label { color: var(--muted); }
   #context-bar .ctx-value { color: var(--text); }
@@ -46,7 +47,7 @@
   .page.active { display: block; }
 
   /* Home page */
-  .home-layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; padding: 16px; height: 100%; }
+  .home-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px; height: 100%; }
   .home-left { overflow: auto; }
   .home-right { overflow: auto; }
 
@@ -69,18 +70,29 @@
   .timeline-card .stat { font-size: 12px; }
   .timeline-card .stat .label { color: var(--muted); }
   .timeline-card .stat .value { color: var(--text); }
+  .timeline-thumb { margin-top: 8px; }
 
   /* Scene 1: Episode detail */
-  .ep-layout { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: 1fr auto; gap: 0; height: 100%; }
+  .ep-layout { display: grid; grid-template-columns: 1fr 400px; grid-template-rows: 1fr auto; gap: 0; height: 100%; }
   .ep-image { background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; border-right: 1px solid var(--border); }
   .ep-image img { max-width: 100%; max-height: 100%; }
   .ep-image .placeholder { color: var(--muted); }
   .ep-data { background: var(--panel); overflow-y: auto; padding: 12px 16px; }
-  .ep-data h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .ep-data h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; user-select: none; }
+  .ep-data h3:hover { color: var(--accent); }
+  .ep-data h3 .collapse-icon { display: inline-block; width: 14px; color: var(--muted); }
   .ep-data pre { margin: 0 0 14px 0; padding: 8px 10px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
+  .ep-data pre.collapsed { max-height: 80px; overflow: hidden; }
   .ep-data .traj-list { }
-  .ep-data .traj-item { padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
+  .ep-data .traj-item { padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px; cursor: pointer; font-size: 12px; }
   .ep-data .traj-item:hover { border-color: var(--accent); background: var(--panel-alt); }
+  .ep-data .traj-item .traj-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .ep-data .traj-item .traj-channels { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+  .ep-data .traj-item .traj-channels .ch-row { display: flex; gap: 4px; }
+  .ep-data .traj-item .traj-channels .ch-name { color: var(--muted); min-width: 60px; }
+  .ep-data .traj-item .traj-channels .ch-val { color: var(--text); }
+  .ep-data .traj-item.uncovered { opacity: 0.5; cursor: default; }
+  .ep-data .traj-item.uncovered:hover { border-color: var(--border); background: var(--panel); }
   .ep-controls { grid-column: 1 / 3; background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; }
   .ep-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
   .ep-controls button:hover { border-color: var(--accent); }
@@ -94,18 +106,20 @@
   .traj-tab.active { color: var(--text); border-bottom-color: var(--accent); }
   .traj-tab:hover { color: var(--text); }
   .traj-content { flex: 1; overflow: auto; padding: 16px; }
-  .traj-controls { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; }
+  .traj-controls { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .traj-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
   .traj-controls button:hover { border-color: var(--accent); }
-  .traj-controls input[type="range"] { flex: 1; }
+  .traj-controls input[type="range"] { flex: 1; min-width: 100px; }
   .traj-controls .frame-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); min-width: 100px; text-align: right; }
+  .traj-controls select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 3px 6px; border-radius: 4px; font-size: 12px; }
 
   /* Charts */
   .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
   .chart-container h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-  svg.chart { width: 100%; height: 200px; }
+  svg.chart { width: 100%; height: 200px; cursor: crosshair; }
   .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; }
-  .chart-legend .leg-item { display: flex; align-items: center; gap: 4px; }
+  .chart-legend .leg-item { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .chart-legend .leg-item.disabled { opacity: 0.4; }
   .chart-legend .leg-color { width: 12px; height: 2px; }
 
   /* Data tables */
@@ -118,6 +132,7 @@
   .data-table td.num { color: var(--green); text-align: right; }
   .data-table td.neg { color: var(--red); text-align: right; }
   .data-table td.bool { color: var(--orange); }
+  .data-table td.muted { color: var(--muted); }
 
   /* Scene 4: Timeline */
   .timeline-layout { padding: 16px; height: 100%; overflow: auto; }
@@ -135,6 +150,14 @@
   .badge.green { background: #1a3a1a; color: var(--green); }
   .badge.red { background: #3a1a1a; color: var(--red); }
   .badge.orange { background: #3a2a1a; color: var(--orange); }
+  .badge.muted { background: #2a2a2a; color: var(--muted); }
+
+  /* Toggle controls */
+  .toggle-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .toggle-bar .toggle-group { display: flex; gap: 4px; align-items: center; }
+  .toggle-bar .toggle-label { color: var(--muted); font-size: 11px; }
+  .toggle-bar input[type="checkbox"] { cursor: pointer; }
+  .toggle-bar label { cursor: pointer; font-size: 11px; color: var(--text); }
 </style>
 </head>
 <body>
@@ -162,6 +185,7 @@
             <h2>Training Timeline</h2>
             <div class="desc">Global view of the entire update's training dynamics (KL, loss, gradients per minibatch).</div>
             <div class="stats" id="timeline-stats"></div>
+            <div class="timeline-thumb" id="timeline-thumb"></div>
           </div>
         </div>
       </div>
@@ -175,11 +199,11 @@
         </div>
         <div class="ep-data" id="ep-data-panel"></div>
         <div class="ep-controls">
-          <button id="ep-btn-first">⏮</button>
-          <button id="ep-btn-prev">◀</button>
-          <button id="ep-btn-play">▶</button>
-          <button id="ep-btn-next">▶</button>
-          <button id="ep-btn-last">⏭</button>
+          <button id="ep-btn-first" title="First frame">⏮</button>
+          <button id="ep-btn-prev" title="Previous">◀</button>
+          <button id="ep-btn-play" title="Play">▶</button>
+          <button id="ep-btn-next" title="Next">▶</button>
+          <button id="ep-btn-last" title="Last frame">⏭</button>
           <input id="ep-slider" type="range" min="0" max="0" value="0" />
           <div class="frame-label" id="ep-frame-label">- / -</div>
         </div>
@@ -195,13 +219,14 @@
         </div>
         <div class="traj-content" id="traj-content"></div>
         <div class="traj-controls">
-          <button id="traj-btn-first">⏮</button>
-          <button id="traj-btn-prev">◀</button>
-          <button id="traj-btn-play">▶</button>
-          <button id="traj-btn-next">▶</button>
-          <button id="traj-btn-last">⏭</button>
+          <button id="traj-btn-first" title="First">⏮</button>
+          <button id="traj-btn-prev" title="Previous">◀</button>
+          <button id="traj-btn-play" title="Play">▶</button>
+          <button id="traj-btn-next" title="Next">▶</button>
+          <button id="traj-btn-last" title="Last">⏭</button>
           <input id="traj-slider" type="range" min="0" max="0" value="0" />
           <div class="frame-label" id="traj-frame-label">- / -</div>
+          <select id="epoch-selector" style="display:none"></select>
         </div>
       </div>
     </div>
@@ -232,7 +257,6 @@
     episodeList: null,
     trajMap: null,
     currentPage: 'home',
-    breadcrumb: [],
 
     selectedEpisode: null,
     selectedTraj: null,
@@ -249,11 +273,16 @@
     trajTab: 'target',
     trajOverview: null,
     trajEpochCompare: null,
+    trajEpochOverview: null,  // per-epoch data for Scene 3
     trajPlaying: false,
     trajPlayTimer: null,
 
     // Timeline page state
     timelineData: null,
+
+    // Chart toggles
+    targetChartToggles: {},  // channel -> {reward, value, adv, ret}
+    epochChartToggles: {},   // line -> visible
   };
 
   // --- DOM helpers ---
@@ -282,7 +311,8 @@
       }
     }
     if (state.currentPage === 'traj' && state.selectedTraj !== null) {
-      crumbs.push({label: `Trajectory ${state.selectedTraj}`, page: 'traj'});
+      const tabLabel = state.trajTab === 'target' ? 'Target' : 'Epoch';
+      crumbs.push({label: `Trajectory ${state.selectedTraj} (${tabLabel})`, page: 'traj'});
     }
     if (state.currentPage === 'timeline') {
       crumbs.push({label: 'Timeline', page: 'timeline'});
@@ -308,7 +338,7 @@
     $('ctx-frame').textContent = state.selectedFrame ?? '-';
     $('ctx-epoch').textContent = state.selectedEpoch ?? '-';
     $('ctx-step').textContent = state.selectedStep ?? '-';
-    $('ctx-frameid').textContent = '-';
+    // frame_id is set per-scene
   }
 
   function navigate(page) {
@@ -344,18 +374,20 @@
   }
 
   // --- SVG chart helper ---
+  const CHART_COLORS = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
+
   function makeChart(dataSeries, options = {}) {
     const width = options.width || 800;
     const height = options.height || 200;
-    const xLabel = options.xLabel || 'Frame';
-    const yLabel = options.yLabel || '';
+    const n = dataSeries.length > 0 ? dataSeries[0].data.length : 0;
 
-    const allVals = dataSeries.flatMap(s => s.data);
-    if (allVals.length === 0) {
+    // Filter visible series
+    const visibleSeries = dataSeries.filter(s => s.visible !== false);
+    const allVals = visibleSeries.flatMap(s => s.data);
+    if (allVals.length === 0 || n === 0) {
       return '<div class="loading">no data</div>';
     }
 
-    const n = dataSeries[0].data.length;
     const yMin = Math.min(...allVals);
     const yMax = Math.max(...allVals);
     const yPad = (yMax - yMin) * 0.1 || 1;
@@ -369,7 +401,7 @@
     const xScale = i => margin.left + (n <= 1 ? 0 : (i / (n - 1)) * w);
     const yScale = v => margin.top + h - ((v - yLo) / (yHi - yLo)) * h;
 
-    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" data-chart-n="${n}">`;
 
     // Grid lines
     for (let i = 0; i <= 4; i++) {
@@ -385,11 +417,34 @@
       svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
     }
 
+    // Clip band (for ratio charts)
+    if (options.clipBand) {
+      const yLoClip = yScale(options.clipBand.lo);
+      const yHiClip = yScale(options.clipBand.hi);
+      svg += `<rect x="${margin.left}" y="${yHiClip}" width="${w}" height="${Math.max(0, yLoClip - yHiClip)}" fill="var(--accent-dim)" opacity="0.15"/>`;
+    }
+
+    // Epoch boundary markers (for timeline)
+    if (options.epochBoundaries) {
+      for (const eb of options.epochBoundaries) {
+        const x = xScale(eb.step);
+        svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>`;
+      }
+    }
+
+    // Early stop marker
+    if (options.earlyStopStep !== undefined && options.earlyStopStep >= 0 && options.earlyStopStep < n) {
+      const x = xScale(options.earlyStopStep);
+      svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4,2"/>`;
+      svg += `<text x="${x + 3}" y="${margin.top + 10}" fill="var(--red)" font-size="10">early stop</text>`;
+    }
+
     // Data lines
-    dataSeries.forEach(s => {
+    visibleSeries.forEach(s => {
       if (s.data.length < 2) return;
       let pts = '';
       s.data.forEach((v, i) => {
+        if (isNaN(v)) return;
         pts += `${xScale(i)},${yScale(v)} `;
       });
       svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.5"/>`;
@@ -403,14 +458,38 @@
 
     svg += `</svg>`;
 
-    // Legend
+    // Legend with toggle
     let legend = '<div class="chart-legend">';
-    dataSeries.forEach(s => {
-      legend += `<div class="leg-item"><div class="leg-color" style="background:${s.color}"></div>${escapeHtml(s.label)}</div>`;
+    dataSeries.forEach((s, i) => {
+      const disabled = s.visible === false ? ' disabled' : '';
+      legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><div class="leg-color" style="background:${s.color}"></div>${escapeHtml(s.label)}</div>`;
     });
     legend += '</div>';
 
     return svg + legend;
+  }
+
+  // Wire chart click-to-jump
+  function wireChartClick(container, onJump) {
+    container.querySelectorAll('svg.chart').forEach(svg => {
+      svg.addEventListener('click', e => {
+        const n = parseInt(svg.dataset.chartN);
+        if (!n) return;
+        const rect = svg.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const margin = {left: 50, right: 10};
+        const w = rect.width - margin.left - margin.right;
+        const frac = (x - margin.left) / w;
+        const frame = Math.round(frac * (n - 1));
+        if (frame >= 0 && frame < n) onJump(frame);
+      });
+    });
+    // Wire legend toggles
+    container.querySelectorAll('.chart-legend .leg-item').forEach(el => {
+      el.addEventListener('click', () => {
+        el.classList.toggle('disabled');
+      });
+    });
   }
 
   // --- Init ---
@@ -430,7 +509,6 @@
 
   // --- Home page ---
   function renderHome() {
-    // Episode table
     const container = $('episode-list-container');
     if (!state.episodeList || state.episodeList.length === 0) {
       container.innerHTML = '<div class="loading">no episodes</div>';
@@ -457,25 +535,40 @@
       });
     });
 
-    // Timeline entry card
     renderTimelineStats();
-    $('timeline-entry').addEventListener('click', () => navigate('timeline'));
+    $('timeline-entry').onclick = () => navigate('timeline');
   }
 
   function renderTimelineStats() {
     const el = $('timeline-stats');
+    const thumb = $('timeline-thumb');
     if (!state.manifest) {
       el.innerHTML = '<div class="loading">loading...</div>';
       return;
     }
     if (!state.manifest.has_timeline) {
       el.innerHTML = '<div class="desc">timeline.npz not available for this dump</div>';
+      thumb.innerHTML = '';
       return;
     }
     el.innerHTML = `
-      <div class="stat"><div class="label">Timeline</div><div class="value">Available</div></div>
-      <div class="stat"><div class="label">Click to view</div><div class="value">→</div></div>
+      <div class="stat"><div class="label">Steps</div><div class="value">${state.manifest.n_steps}</div></div>
+      <div class="stat"><div class="label">Epochs</div><div class="value">${state.manifest.n_epochs}</div></div>
     `;
+    if (state.manifest.early_stop_step >= 0) {
+      el.innerHTML += `<div class="stat"><div class="label">Early Stop</div><div class="value warn">step ${state.manifest.early_stop_step}</div></div>`;
+    }
+    // Load timeline thumbnail
+    fetchJson('/api/timeline/overview').then(tl => {
+      state.timelineData = tl;
+      if (tl.kl && tl.kl.length > 0) {
+        const series = [{label: 'KL', data: tl.kl, color: '#4fa3ff'}];
+        if (tl.target_kl && !isNaN(tl.target_kl)) {
+          series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
+        }
+        thumb.innerHTML = makeChart(series, {height: 120, earlyStopStep: tl.early_stop_step});
+      }
+    }).catch(() => { thumb.innerHTML = ''; });
   }
 
   // --- Episode page (Scene 1) ---
@@ -490,7 +583,6 @@
     const pos = state.selectedEpisode;
     if (pos === null) return;
 
-    // Get episode info from trajMap for num_frames
     const epInfo = state.trajMap?.[pos];
     const numFrames = epInfo?.num_frames || 0;
 
@@ -525,42 +617,107 @@
       // Data panel
       let html = '';
 
-      // Trajectories
+      // Trajectories with per-frame channel data
       if (data.trajectories && data.trajectories.length > 0) {
-        html += '<h3>Trajectories</h3><div class="traj-list">';
+        html += '<h3><span class="collapse-icon">▼</span> Trajectories</h3><div class="traj-list">';
+        const channels = state.manifest.channel_names || [];
         data.trajectories.forEach(t => {
+          if (!t.covered) {
+            html += `<div class="traj-item uncovered">
+              <div class="traj-header"><b>Trajectory ${t.traj_idx}</b> <span class="badge muted">uncovered</span></div>
+              <div class="desc" style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t_start=${t.t_start} · len=${t.length} · frame ${frame} not in [${t.t_start}, ${t.t_start + t.length})</div>
+            </div>`;
+            return;
+          }
           html += `<div class="traj-item" data-traj="${t.traj_idx}">
-            <b>Trajectory ${t.traj_idx}</b> · ${escapeHtml(t.agent_id)} · t=${t.t_start} · len=${t.length}
-          </div>`;
+            <div class="traj-header">
+              <b>Trajectory ${t.traj_idx}</b>
+              <span style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t=${t.t_start}+${t.traj_frame} · len=${t.length}</span>
+            </div>`;
+          if (t.frame_id) {
+            html += `<div style="font-size:10px;color:var(--muted);margin-bottom:2px">frame_id: ${escapeHtml(t.frame_id)}</div>`;
+          }
+          // Per-channel data
+          html += '<div class="traj-channels">';
+          channels.forEach(ch => {
+            const rw = t[`reward_${ch}`];
+            const aw = t[`actor_weight_${ch}`];
+            const it = t[`is_terminated_${ch}`];
+            html += `<div class="ch-row"><span class="ch-name">${escapeHtml(ch)}</span><span class="ch-val">r=${fmt(rw,3)} aw=${fmt(aw,3)}${it ? ' ⚡' : ''}</span></div>`;
+          });
+          html += '</div>';
+          // Extra fields
+          const extras = [];
+          if (t.floor_weight !== undefined) extras.push(`fw=${fmt(t.floor_weight,3)}`);
+          if (t.explore_factor !== undefined) extras.push(`ef=${fmt(t.explore_factor,3)}`);
+          if (t.importance !== undefined) extras.push(`imp=${fmt(t.importance,3)}`);
+          if (extras.length > 0) {
+            html += `<div style="font-size:10px;color:var(--muted);margin-top:2px">${extras.join(' · ')}</div>`;
+          }
+          html += '</div>';
         });
         html += '</div>';
       }
 
-      // Per-agent obs/actions
+      // Per-agent obs/actions (collapsible)
       const agents = state.manifest.agent_ids || [];
       agents.forEach(aid => {
         const obsKey = `obs_${aid}`;
         const actKey = `actions_${aid}`;
+        const efKey = `explore_factor_${aid}`;
         if (data[obsKey]) {
-          html += `<h3>Observation (${escapeHtml(aid)})</h3>`;
-          html += `<pre>${data[obsKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
+          const n = data[obsKey].length;
+          html += `<h3 data-collapse="obs-${aid}"><span class="collapse-icon">▼</span> Observation (${escapeHtml(aid)}) [${n}d]</h3>`;
+          html += `<pre id="obs-${aid}" class="collapsed">${data[obsKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
         }
         if (data[actKey]) {
-          html += `<h3>Actions (${escapeHtml(aid)})</h3>`;
-          html += `<pre>${data[actKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
+          const n = data[actKey].length;
+          html += `<h3 data-collapse="act-${aid}"><span class="collapse-icon">▼</span> Actions (${escapeHtml(aid)}) [${n}d]</h3>`;
+          html += `<pre id="act-${aid}" class="collapsed">${data[actKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
+        }
+        if (data[efKey] !== undefined) {
+          html += `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">explore_factor (${escapeHtml(aid)}): <span style="color:var(--text)">${fmt(data[efKey], 4)}</span></div>`;
         }
       });
 
-      // Observer outputs
+      // Observer outputs (grouped by observer key)
       if (data.observer_outputs && Object.keys(data.observer_outputs).length > 0) {
-        html += '<h3>Observer Outputs</h3>';
-        html += `<pre>${escapeHtml(JSON.stringify(data.observer_outputs, null, 2))}</pre>`;
+        // Group by observer key
+        const grouped = {};
+        for (const [k, v] of Object.entries(data.observer_outputs)) {
+          const dotIdx = k.indexOf('.');
+          if (dotIdx > 0) {
+            const obsKey = k.substring(0, dotIdx);
+            const field = k.substring(dotIdx + 1);
+            if (!grouped[obsKey]) grouped[obsKey] = {};
+            grouped[obsKey][field] = v;
+          } else {
+            grouped[k] = v;
+          }
+        }
+        html += '<h3 data-collapse="obs-outputs"><span class="collapse-icon">▼</span> Observer Outputs</h3>';
+        html += '<div id="obs-outputs">';
+        for (const [obsKey, fields] of Object.entries(grouped)) {
+          html += `<div style="margin-bottom:6px"><b style="color:var(--accent);font-size:11px">${escapeHtml(obsKey)}</b>`;
+          if (typeof fields === 'object' && !Array.isArray(fields)) {
+            html += '<table style="width:100%;font-size:11px;font-family:ui-monospace,monospace">';
+            for (const [field, val] of Object.entries(fields)) {
+              const display = Array.isArray(val) ? `[${val.length}]` : fmt(val, 4);
+              html += `<tr><td style="color:var(--muted);padding:2px 4px">${escapeHtml(field)}</td><td style="padding:2px 4px">${display}</td></tr>`;
+            }
+            html += '</table>';
+          } else {
+            html += `<span style="font-family:ui-monospace,monospace;font-size:11px"> ${fmt(fields, 4)}</span>`;
+          }
+          html += '</div>';
+        }
+        html += '</div>';
       }
 
       // Termination
       if (data.termination) {
-        html += '<h3>Termination</h3>';
-        html += `<pre>${escapeHtml(JSON.stringify(data.termination, null, 2))}</pre>`;
+        html += '<h3 data-collapse="term"><span class="collapse-icon">▼</span> Termination</h3>';
+        html += `<pre id="term">${escapeHtml(JSON.stringify(data.termination, null, 2))}</pre>`;
       }
 
       $('ep-data-panel').innerHTML = html;
@@ -573,6 +730,25 @@
         });
       });
 
+      // Wire collapsible headers
+      $('ep-data-panel').querySelectorAll('h3[data-collapse]').forEach(h => {
+        h.addEventListener('click', () => {
+          const target = $(h.dataset.collapse);
+          if (target) {
+            target.classList.toggle('collapsed');
+            const icon = h.querySelector('.collapse-icon');
+            if (icon) icon.textContent = target.classList.contains('collapsed') ? '▼' : '▲';
+          }
+        });
+      });
+
+      // Update frame_id in context bar
+      if (data.trajectories && data.trajectories.length > 0 && data.trajectories[0].frame_id) {
+        $('ctx-frameid').textContent = data.trajectories[0].frame_id;
+      } else {
+        $('ctx-frameid').textContent = '-';
+      }
+
     } catch (e) {
       $('ep-data-panel').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
@@ -584,6 +760,7 @@
     state.selectedFrame = 0;
     state.trajOverview = null;
     state.trajEpochCompare = null;
+    state.trajEpochOverview = null;
     navigate('traj');
     await renderTraj();
   }
@@ -599,6 +776,13 @@
         $('traj-slider').min = 0;
         $('traj-slider').max = Math.max(0, T - 1);
         $('traj-slider').value = state.selectedFrame;
+        // Initialize chart toggles
+        const channels = state.trajOverview.channels || [];
+        channels.forEach((ch, i) => {
+          if (!state.targetChartToggles[ch]) {
+            state.targetChartToggles[ch] = {reward: false, value: true, adv: true, ret: false};
+          }
+        });
       } catch (e) {
         $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;
@@ -608,7 +792,7 @@
     if (state.trajTab === 'target') {
       renderTrajTarget();
     } else {
-      renderTrajEpoch();
+      await renderTrajEpoch();
     }
   }
 
@@ -617,30 +801,54 @@
     if (!ov) return;
     const frame = state.selectedFrame;
     const channels = ov.channels || [];
-    const colors = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
 
     let html = '';
 
-    // Charts: value/adv/return per channel
+    // Toggle bar for chart lines
+    html += '<div class="toggle-bar">';
     channels.forEach((ch, ci) => {
-      const color = colors[ci % colors.length];
-      const series = [];
-      if (ov[`values_${ch}`]) series.push({label: `value`, data: ov[`values_${ch}`], color: color});
-      if (ov[`rets_${ch}`]) series.push({label: `return`, data: ov[`rets_${ch}`], color: '#e5c07b'});
-      if (ov[`advs_${ch}`]) series.push({label: `advantage`, data: ov[`advs_${ch}`], color: '#e06c75'});
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>${escapeHtml(ch)}: Value / Advantage / Return</h3>`;
-        html += makeChart(series, {currentFrame: frame});
-        html += `</div>`;
+      const color = CHART_COLORS[ci % CHART_COLORS.length];
+      const toggles = state.targetChartToggles[ch] || {};
+      html += `<div class="toggle-group" style="border-left:2px solid ${color};padding-left:6px">`;
+      html += `<span class="toggle-label">${escapeHtml(ch)}:</span>`;
+      for (const [key, label] of [['reward','r'],['value','v'],['adv','a'],['ret','R']]) {
+        const checked = toggles[key] ? 'checked' : '';
+        html += `<input type="checkbox" data-ch="${escapeHtml(ch)}" data-line="${key}" ${checked} id="tg-${ch}-${key}"><label for="tg-${ch}-${key}">${label}</label>`;
       }
+      html += '</div>';
     });
+    html += '</div>';
 
-    // Combined advantage
+    // Unified trend chart
+    const series = [];
+    channels.forEach((ch, ci) => {
+      const color = CHART_COLORS[ci % CHART_COLORS.length];
+      const toggles = state.targetChartToggles[ch] || {};
+      if (toggles.reward && ov[`reward_${ch}`]) series.push({label: `${ch} reward`, data: ov[`reward_${ch}`], color: color, visible: toggles.reward});
+      if (toggles.value && ov[`values_${ch}`]) series.push({label: `${ch} value`, data: ov[`values_${ch}`], color: color, visible: toggles.value});
+      if (toggles.adv && ov[`advs_${ch}`]) series.push({label: `${ch} adv`, data: ov[`advs_${ch}`], color: color, visible: toggles.adv});
+      if (toggles.ret && ov[`rets_${ch}`]) series.push({label: `${ch} return`, data: ov[`rets_${ch}`], color: color, visible: toggles.ret});
+    });
+    if (series.length > 0) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Trend (toggle lines above)</h3>`;
+      html += makeChart(series, {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // Combined advantage chart
     if (ov.combined_adv) {
       html += `<div class="chart-container">`;
       html += `<h3>Combined Advantage (actor signal)</h3>`;
       html += makeChart([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // aw_l1_sum chart
+    if (ov.aw_l1_sum) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Actor Weight L1 Sum</h3>`;
+      html += makeChart([{label: 'aw_l1_sum', data: ov.aw_l1_sum, color: '#e5c07b'}], {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -652,50 +860,109 @@
       html += `</div>`;
     }
 
-    // Frame detail table
+    // Frame detail + Per-Channel Data table
     html += '<div class="data-grid">';
     html += '<div class="data-table"><h3>Frame Detail</h3><table>';
-    html += '<tr><th>Field</th><th>Value</th></tr>';
+    html += '<tr><th>Channel</th><th>reward</th><th>value</th><th>adv</th><th>return</th><th>aw</th><th>active</th></tr>';
     channels.forEach(ch => {
       const v = ov[`values_${ch}`]?.[frame];
       const a = ov[`advs_${ch}`]?.[frame];
       const r = ov[`rets_${ch}`]?.[frame];
       const rw = ov[`reward_${ch}`]?.[frame];
       const aw = ov[`actor_weight_${ch}`]?.[frame];
-      html += `<tr><td colspan="2" style="color:var(--accent)"><b>${escapeHtml(ch)}</b></td></tr>`;
-      html += `<tr><td>value</td><td class="num">${fmt(v)}</td></tr>`;
-      html += `<tr><td>advantage</td><td class="${a < 0 ? 'neg' : 'num'}">${fmt(a)}</td></tr>`;
-      html += `<tr><td>return</td><td class="num">${fmt(r)}</td></tr>`;
-      html += `<tr><td>reward</td><td class="num">${fmt(rw)}</td></tr>`;
-      html += `<tr><td>actor_weight</td><td class="num">${fmt(aw)}</td></tr>`;
+      const active = ov.key_frame_mask?.[ch]?.[frame];
+      const terminated = ov[`is_terminated_${ch}`];
+      html += `<tr><td>${escapeHtml(ch)}</td>`;
+      html += `<td class="num">${fmt(rw)}</td>`;
+      html += `<td class="num">${fmt(v)}</td>`;
+      html += `<td class="${a < 0 ? 'neg' : 'num'}">${fmt(a)}</td>`;
+      html += `<td class="num">${fmt(r)}</td>`;
+      html += `<td class="num">${fmt(aw)}</td>`;
+      if (active === false) {
+        html += `<td class="muted">${terminated ? 'terminated' : 'inactive'}</td>`;
+      } else {
+        html += `<td class="bool">${active === true ? 'yes' : '-'}</td>`;
+      }
+      html += '</tr>';
     });
     if (ov.combined_adv) {
-      html += `<tr><td colspan="2" style="color:var(--accent)"><b>combined</b></td></tr>`;
-      html += `<tr><td>combined_adv</td><td class="${ov.combined_adv[frame] < 0 ? 'neg' : 'num'}">${fmt(ov.combined_adv[frame])}</td></tr>`;
+      html += `<tr><td colspan="7" style="color:var(--accent)"><b>combined_adv = ${fmt(ov.combined_adv[frame])}</b></td></tr>`;
     }
     if (ov.old_log_prob) {
-      html += `<tr><td>old_log_prob</td><td class="num">${fmt(ov.old_log_prob[frame])}</td></tr>`;
+      html += `<tr><td colspan="7"><b>old_log_prob</b> = ${fmt(ov.old_log_prob[frame])}</td></tr>`;
     }
     if (ov.frame_ids) {
-      html += `<tr><td>frame_id</td><td>${escapeHtml(ov.frame_ids[frame] || '-')}</td></tr>`;
+      html += `<tr><td colspan="7"><b>frame_id</b> = ${escapeHtml(ov.frame_ids[frame] || '-')}</td></tr>`;
     }
     html += '</table></div>';
 
-    // Confidence / EV
-    html += '<div class="data-table"><h3>Channel Summary</h3><table>';
-    html += '<tr><th>Channel</th><th>Conf</th><th>EV</th><th>AW</th></tr>';
+    // Combine Chain table
+    html += '<div class="data-table"><h3>Combine Chain</h3><table>';
+    html += '<tr><th>Channel</th><th>conf</th><th>EV</th><th>aw (frame)</th><th>aw_normed</th></tr>';
+    const awL1 = ov.aw_l1_sum?.[frame] || 0;
     channels.forEach(ch => {
       const conf = ov.confidences?.[ch];
       const ev = ov.explained_variances?.[ch];
-      const aw = ov.actor_weights?.[ch];
-      html += `<tr><td>${escapeHtml(ch)}</td><td class="num">${fmt(conf, 3)}</td><td class="num">${fmt(ev, 3)}</td><td class="num">${fmt(aw, 3)}</td></tr>`;
+      const aw = ov.actor_weights?.[ch]?.[frame];
+      const awNormed = awL1 > 0 ? (aw / awL1) : 0;
+      html += `<tr><td>${escapeHtml(ch)}</td>`;
+      html += `<td class="num">${fmt(conf, 3)}</td>`;
+      html += `<td class="num">${fmt(ev, 3)}</td>`;
+      html += `<td class="num">${fmt(aw)}</td>`;
+      html += `<td class="num">${fmt(awNormed, 4)}</td></tr>`;
     });
+    html += `<tr><td colspan="5" style="color:var(--accent)"><b>aw_l1_sum = ${fmt(awL1)}</b></td></tr>`;
     html += '</table></div>';
     html += '</div>'; // data-grid
+
+    // Bootstrap table
+    if (ov.bootstrap_values || ov.is_bootstrap_seg) {
+      html += '<div class="data-table" style="margin-top:16px"><h3>Bootstrap</h3><table>';
+      html += '<tr><th>Channel</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
+      channels.forEach(ch => {
+        const term = ov[`is_terminated_${ch}`];
+        const bv = ov.bootstrap_values?.[ch];
+        html += `<tr><td>${escapeHtml(ch)}</td>`;
+        html += `<td class="bool">${term ? 'yes' : 'no'}</td>`;
+        html += `<td class="num">${term ? '-' : fmt(bv)}</td></tr>`;
+      });
+      html += '</table></div>';
+    }
+
+    // Extra trajectory info
+    html += '<div class="data-table" style="margin-top:16px"><h3>Trajectory Info</h3><table>';
+    html += `<tr><th>Field</th><th>Value</th></tr>`;
+    html += `<tr><td>length</td><td class="num">${ov.length}</td></tr>`;
+    if (ov.importance !== undefined) html += `<tr><td>importance</td><td class="num">${fmt(ov.importance)}</td></tr>`;
+    if (ov.floor_weight) html += `<tr><td>floor_weight (frame)</td><td class="num">${fmt(ov.floor_weight[frame])}</td></tr>`;
+    if (ov.explore_factor) html += `<tr><td>explore_factor (frame)</td><td class="num">${fmt(ov.explore_factor[frame])}</td></tr>`;
+    html += '</table></div>';
 
     $('traj-content').innerHTML = html;
     $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
     updateContextBar();
+
+    // Update frame_id
+    if (ov.frame_ids) {
+      $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
+    }
+
+    // Wire toggle checkboxes
+    $('traj-content').querySelectorAll('input[type="checkbox"][data-ch]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const ch = cb.dataset.ch;
+        const line = cb.dataset.line;
+        if (!state.targetChartToggles[ch]) state.targetChartToggles[ch] = {};
+        state.targetChartToggles[ch][line] = cb.checked;
+        renderTrajTarget();
+      });
+    });
+
+    // Wire chart click
+    wireChartClick($('traj-content'), f => {
+      state.selectedFrame = f;
+      renderTrajTarget();
+    });
   }
 
   async function renderTrajEpoch() {
@@ -714,57 +981,149 @@
 
     const ec = state.trajEpochCompare;
     const nEpochs = ec.n_epochs || 0;
-    const colors = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
+    const clipEps = ec.clip_eps ?? state.manifest?.clip_eps ?? 0.2;
+
+    // Build epoch selector
+    const epochSel = $('epoch-selector');
+    epochSel.style.display = nEpochs > 0 ? '' : 'none';
+    epochSel.innerHTML = '';
+    for (let e = 0; e < nEpochs; e++) {
+      const stopped = ec.actor_stopped_epoch !== undefined && e >= ec.actor_stopped_epoch;
+      const opt = document.createElement('option');
+      opt.value = e;
+      opt.textContent = `Epoch ${e}${stopped ? ' (stopped)' : ''}`;
+      epochSel.appendChild(opt);
+    }
+    epochSel.value = state.selectedEpoch;
+
+    // Load per-epoch overview if needed
+    if (state.trajEpochOverview?.epoch !== state.selectedEpoch) {
+      try {
+        state.trajEpochOverview = await fetchJson(`/api/trajectory/${trajIdx}/epoch/${state.selectedEpoch}/overview`);
+      } catch (e) {
+        $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+    }
+
+    const eo = state.trajEpochOverview;
+    const channels = state.manifest?.channel_names || [];
 
     let html = '';
 
-    // Ratio comparison across epochs
-    if (ec.epochs && ec.epochs.length > 0) {
+    // Per-epoch ratio chart with clip band
+    if (eo.ratio) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Ratio (epoch ${state.selectedEpoch}) — clip_eps=${fmt(clipEps, 3)}</h3>`;
+      const series = [{label: 'ratio', data: eo.ratio, color: '#4fa3ff'}];
+      // Add clip bounds
+      const clipLo = new Array(eo.ratio.length).fill(1 - clipEps);
+      const clipHi = new Array(eo.ratio.length).fill(1 + clipEps);
+      series.push({label: 'clip lo', data: clipLo, color: '#e06c75'});
+      series.push({label: 'clip hi', data: clipHi, color: '#e06c75'});
+      html += makeChart(series, {currentFrame: frame, clipBand: {lo: 1-clipEps, hi: 1+clipEps}});
+      html += `</div>`;
+    }
+
+    // new_value vs old_value vs return (per channel, first channel)
+    if (channels.length > 0) {
+      const ch = channels[0];
+      const nvKey = `new_value_${ch}`;
+      const ovKey = `old_value_${ch}`;
+      const retKey = `return_${ch}`;
+      const series = [];
+      if (eo[nvKey]) series.push({label: `new_value (${ch})`, data: eo[nvKey], color: '#4fa3ff'});
+      if (eo[ovKey]) series.push({label: `old_value (${ch})`, data: eo[ovKey], color: '#e06c75'});
+      if (eo[retKey]) series.push({label: `return (${ch})`, data: eo[retKey], color: '#e5c07b'});
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Critic Value: ${escapeHtml(ch)} (epoch ${state.selectedEpoch})</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    }
+
+    // Epoch comparison overlay
+    if (ec.epochs && ec.epochs.length > 1) {
       const series = ec.epochs.map((e, i) => ({
         label: `epoch ${e.epoch}`,
         data: e.ratio || [],
-        color: colors[i % colors.length],
+        color: CHART_COLORS[i % CHART_COLORS.length],
       }));
       html += `<div class="chart-container">`;
-      html += `<h3>Ratio across Epochs (clip_eps=${state.manifest?.clip_eps ?? 0.2})</h3>`;
-      // Add clip lines
-      const clipEps = 0.2; // from timeline data, but we use default
+      html += `<h3>Ratio across Epochs</h3>`;
       html += makeChart(series, {currentFrame: frame});
       html += `</div>`;
     }
 
-    // Clip mask comparison
+    // Clip fraction per epoch
     if (ec.epochs && ec.epochs.length > 0) {
       html += `<div class="chart-container">`;
       html += `<h3>Clip Fraction per Epoch</h3>`;
       const clipData = ec.epochs.map(e => {
         const cm = e.clip_mask || [];
-        const frac = cm.filter(x => x).length / Math.max(1, cm.length);
-        return frac;
+        return cm.filter(x => x).length / Math.max(1, cm.length);
       });
       html += makeChart([{label: 'clip_frac', data: clipData, color: '#e06c75'}], {currentFrame: state.selectedEpoch});
       html += `</div>`;
     }
 
-    // Frame detail: ratio at each epoch for selected frame
-    html += '<div class="data-table"><h3>Frame Detail — Ratio per Epoch</h3><table>';
-    html += '<tr><th>Epoch</th><th>Ratio</th><th>Clipped</th></tr>';
-    ec.epochs.forEach(e => {
-      const r = e.ratio?.[frame];
-      const c = e.clip_mask?.[frame];
-      html += `<tr><td>${e.epoch}</td>`;
-      html += `<td class="${r && Math.abs(r - 1) > 0.2 ? 'neg' : 'num'}">${fmt(r)}</td>`;
-      html += `<td class="bool">${c ? 'YES' : 'no'}</td></tr>`;
-    });
+    // Actor Dynamics table
+    html += '<div class="data-grid">';
+    html += '<div class="data-table"><h3>Actor Dynamics (frame)</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    const ratio = eo.ratio?.[frame];
+    const clipMask = eo.clip_mask?.[frame];
+    const oldLp = eo.old_log_prob?.[frame];
+    const newLp = eo.new_log_prob?.[frame];
+    html += `<tr><td>old_log_prob</td><td class="num">${fmt(oldLp)}</td></tr>`;
+    html += `<tr><td>new_log_prob</td><td class="num">${fmt(newLp)}</td></tr>`;
+    html += `<tr><td>ratio</td><td class="${ratio && Math.abs(ratio - 1) > clipEps ? 'neg' : 'num'}">${fmt(ratio)}</td></tr>`;
+    html += `<tr><td>clip_eps</td><td class="num">${fmt(clipEps, 3)}</td></tr>`;
+    html += `<tr><td>clip_mask</td><td class="bool">${clipMask ? 'YES' : 'no'}</td></tr>`;
+    if (eo.combined_adv) {
+      html += `<tr><td>combined_adv</td><td class="${eo.combined_adv[frame] < 0 ? 'neg' : 'num'}">${fmt(eo.combined_adv[frame])}</td></tr>`;
+    }
+    // surr1 = exp(new_lp - old_lp) * combined_adv
+    if (oldLp !== undefined && newLp !== undefined && eo.combined_adv) {
+      const surr1 = Math.exp(newLp - oldLp) * eo.combined_adv[frame];
+      const surr2 = Math.max(Math.min(ratio, 1+clipEps), 1-clipEps) * eo.combined_adv[frame];
+      html += `<tr><td>surr1 (est)</td><td class="num">${fmt(surr1)}</td></tr>`;
+      html += `<tr><td>surr2 (est)</td><td class="num">${fmt(surr2)}</td></tr>`;
+    }
     html += '</table></div>';
 
+    // Critic Dynamics table
+    html += '<div class="data-table"><h3>Critic Dynamics (frame)</h3><table>';
+    html += '<tr><th>Channel</th><th>old_value</th><th>new_value</th><th>return</th></tr>';
+    channels.forEach(ch => {
+      const ov_val = eo[`old_value_${ch}`]?.[frame];
+      const nv = eo[`new_value_${ch}`]?.[frame];
+      const ret = eo[`return_${ch}`]?.[frame];
+      html += `<tr><td>${escapeHtml(ch)}</td>`;
+      html += `<td class="num">${fmt(ov_val)}</td>`;
+      html += `<td class="num">${fmt(nv)}</td>`;
+      html += `<td class="num">${fmt(ret)}</td></tr>`;
+    });
+    html += '</table></div>';
+    html += '</div>'; // data-grid
+
+    // Early stop info
     if (ec.actor_stopped_epoch !== undefined && ec.actor_stopped_epoch >= 0) {
-      html += `<div class="desc" style="margin-top:8px">Actor stopped at epoch ${ec.actor_stopped_epoch}</div>`;
+      html += `<div class="desc" style="margin-top:8px;color:var(--orange)">⚠ Actor stopped at epoch ${ec.actor_stopped_epoch}</div>`;
     }
 
     $('traj-content').innerHTML = html;
-    $('traj-frame-label').textContent = `${frame + 1} / ${ec.length}`;
+    $('traj-frame-label').textContent = `${frame + 1} / ${eo.length}`;
     updateContextBar();
+    state.selectedEpoch = eo.epoch;
+    $('ctx-epoch').textContent = state.selectedEpoch;
+
+    // Wire chart click
+    wireChartClick($('traj-content'), f => {
+      state.selectedFrame = f;
+      renderTrajEpoch();
+    });
   }
 
   // --- Timeline page (Scene 4) ---
@@ -798,6 +1157,7 @@
     html += `<div class="summary-stat"><div class="label">Batches/Epoch</div><div class="value">${tl.n_batches}</div></div>`;
     html += `<div class="summary-stat"><div class="label">Total Steps</div><div class="value">${tl.n_steps}</div></div>`;
     html += `<div class="summary-stat"><div class="label">Target KL</div><div class="value">${fmt(tl.target_kl, 4)}</div></div>`;
+    html += `<div class="summary-stat"><div class="label">Clip Eps</div><div class="value">${fmt(tl.clip_eps, 4)}</div></div>`;
     if (tl.early_stop_step >= 0) {
       html += `<div class="summary-stat"><div class="label">Early Stop</div><div class="value warn">step ${tl.early_stop_step}</div></div>`;
     } else {
@@ -805,7 +1165,26 @@
     }
     html += '</div>';
 
-    // KL chart
+    // Step slider
+    html += '<div class="card" style="margin-bottom:16px">';
+    html += '<div style="display:flex;align-items:center;gap:10px">';
+    html += '<button id="tl-btn-prev" style="background:var(--panel-alt);color:var(--text);border:1px solid var(--border);padding:4px 10px;border-radius:4px;cursor:pointer">◀</button>';
+    html += `<input id="tl-slider" type="range" min="0" max="${tl.n_steps - 1}" value="${state.selectedStep}" style="flex:1"/>`;
+    html += '<button id="tl-btn-next" style="background:var(--panel-alt);color:var(--text);border:1px solid var(--border);padding:4px 10px;border-radius:4px;cursor:pointer">▶</button>';
+    html += `<span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);min-width:80px;text-align:right" id="tl-step-label">step ${state.selectedStep} / ${tl.n_steps - 1}</span>`;
+    html += '</div></div>';
+
+    // Compute epoch boundaries for markers
+    const epochBoundaries = [];
+    if (tl.epoch_idx) {
+      for (let i = 1; i < tl.epoch_idx.length; i++) {
+        if (tl.epoch_idx[i] !== tl.epoch_idx[i-1]) {
+          epochBoundaries.push({step: i, epoch: tl.epoch_idx[i]});
+        }
+      }
+    }
+
+    // KL chart with epoch boundaries + early stop
     if (tl.kl) {
       html += '<div class="chart-container">';
       html += '<h3>KL Evolution (per minibatch)</h3>';
@@ -813,12 +1192,10 @@
       if (tl.running_mean_kl) {
         series.push({label: 'running_mean_KL', data: tl.running_mean_kl, color: '#e5c07b'});
       }
-      // Target KL line
       if (tl.target_kl && !isNaN(tl.target_kl)) {
-        const targetLine = new Array(tl.kl.length).fill(tl.target_kl);
-        series.push({label: 'target_kl', data: targetLine, color: '#e06c75'});
+        series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
       }
-      html += makeChart(series, {currentFrame: state.selectedStep, xLabel: 'Step'});
+      html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries, earlyStopStep: tl.early_stop_step});
       html += '</div>';
     }
 
@@ -826,36 +1203,62 @@
     if (tl.clip_frac) {
       html += '<div class="chart-container">';
       html += '<h3>Clip Fraction</h3>';
-      html += makeChart([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep});
+      html += makeChart([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
-    // Policy / value loss
-    const lossSeries = [];
-    if (tl.policy_loss) lossSeries.push({label: 'policy_loss', data: tl.policy_loss, color: '#4fa3ff'});
-    if (lossSeries.length > 0) {
+    // Ratio
+    if (tl.ratio_mean) {
+      html += '<div class="chart-container">';
+      html += '<h3>Ratio Mean / Max</h3>';
+      const series = [
+        {label: 'ratio_mean', data: tl.ratio_mean, color: '#4fa3ff'},
+      ];
+      if (tl.ratio_max) series.push({label: 'ratio_max', data: tl.ratio_max, color: '#e06c75'});
+      html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries});
+      html += '</div>';
+    }
+
+    // Policy loss
+    if (tl.policy_loss) {
       html += '<div class="chart-container">';
       html += '<h3>Policy Loss</h3>';
-      html += makeChart(lossSeries, {currentFrame: state.selectedStep});
+      html += makeChart([{label: 'policy_loss', data: tl.policy_loss, color: '#4fa3ff'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
-    // Gradient norms
-    const gradSeries = [];
-    if (tl.actor_grad) gradSeries.push({label: 'actor_grad', data: tl.actor_grad, color: '#4fa3ff'});
-    if (gradSeries.length > 0) {
+    // Actor gradient
+    if (tl.actor_grad) {
       html += '<div class="chart-container">';
       html += '<h3>Actor Gradient Norm</h3>';
-      html += makeChart(gradSeries, {currentFrame: state.selectedStep});
+      html += makeChart([{label: 'actor_grad', data: tl.actor_grad, color: '#6ec86e'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
-    // Step detail table
-    html += '<div class="data-grid">';
-    html += '<div class="data-table"><h3>Step Detail</h3><table>';
-    html += '<tr><th>Field</th><th>Value</th></tr>';
+    // Per-channel critic loss
+    const channels = state.manifest?.channel_names || [];
+    channels.forEach(ch => {
+      const cl = tl[`critic_loss_${ch}`];
+      const cg = tl[`critic_grad_${ch}`];
+      if (cl || cg) {
+        html += '<div class="chart-container">';
+        html += `<h3>Critic: ${escapeHtml(ch)}</h3>`;
+        const series = [];
+        if (cl) series.push({label: 'critic_loss', data: cl, color: '#4fa3ff'});
+        if (cg) series.push({label: 'critic_grad', data: cg, color: '#e5c07b'});
+        html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries});
+        html += '</div>';
+      }
+    });
+
+    // Step detail tables
     const step = state.selectedStep;
-    const fields = [
+    html += '<div class="data-grid">';
+
+    // Actor Stats
+    html += '<div class="data-table"><h3>Actor Stats (step ' + step + ')</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    const actorFields = [
       ['epoch', tl.epoch_idx?.[step], 'num'],
       ['mb', tl.mb_idx?.[step], 'num'],
       ['actor_active', tl.actor_active?.[step], 'bool'],
@@ -867,38 +1270,77 @@
       ['policy_loss', tl.policy_loss?.[step], 'num'],
       ['actor_grad', tl.actor_grad?.[step], 'num'],
     ];
-    fields.forEach(([label, val, type]) => {
+    actorFields.forEach(([label, val, type]) => {
       if (val === undefined) return;
       let display = val;
       if (type === 'bool') display = val ? 'YES' : 'no';
       else if (type === 'num') display = fmt(val);
-      html += `<tr><td>${label}</td><td class="${type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num')}">${display}</td></tr>`;
+      const cls = type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num');
+      html += `<tr><td>${label}</td><td class="${cls}">${display}</td></tr>`;
     });
+    // KL vs target
+    if (tl.kl?.[step] !== undefined && tl.target_kl && !isNaN(tl.target_kl)) {
+      const klRatio = tl.kl[step] / tl.target_kl;
+      html += `<tr><td>kl / target_kl</td><td class="${klRatio > 1 ? 'neg' : 'num'}">${fmt(klRatio, 3)}</td></tr>`;
+    }
+    html += '</table></div>';
 
-    // Per-channel critic losses
-    const channels = state.manifest?.channel_names || [];
+    // Critic Stats
+    html += '<div class="data-table"><h3>Critic Stats (step ' + step + ')</h3><table>';
+    html += '<tr><th>Channel</th><th>loss</th><th>grad</th></tr>';
     channels.forEach(ch => {
       const cl = tl[`critic_loss_${ch}`]?.[step];
       const cg = tl[`critic_grad_${ch}`]?.[step];
       if (cl !== undefined || cg !== undefined) {
-        html += `<tr><td colspan="2" style="color:var(--accent)"><b>${escapeHtml(ch)}</b></td></tr>`;
-        if (cl !== undefined) html += `<tr><td>critic_loss</td><td class="num">${fmt(cl)}</td></tr>`;
-        if (cg !== undefined) html += `<tr><td>critic_grad</td><td class="num">${fmt(cg)}</td></tr>`;
+        html += `<tr><td>${escapeHtml(ch)}</td>`;
+        html += `<td class="num">${fmt(cl)}</td>`;
+        html += `<td class="num">${fmt(cg)}</td></tr>`;
       }
     });
     html += '</table></div>';
+    html += '</div>'; // data-grid
 
-    // Early stop info
-    html += '<div class="data-table"><h3>Early Stop</h3><table>';
-    html += `<tr><th>Field</th><th>Value</th></tr>`;
-    html += `<tr><td>early_stop_step</td><td class="num">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
+    // Early Stop Analysis
+    html += '<div class="data-table" style="margin-top:16px"><h3>Early Stop Analysis</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    html += `<tr><td>early_stop_step</td><td class="${tl.early_stop_step >= 0 ? 'neg' : 'num'}">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
     html += `<tr><td>target_kl</td><td class="num">${fmt(tl.target_kl, 4)}</td></tr>`;
     html += `<tr><td>clip_eps</td><td class="num">${fmt(tl.clip_eps, 4)}</td></tr>`;
+    if (tl.early_stop_step >= 0 && tl.running_mean_kl) {
+      const stopKL = tl.running_mean_kl[tl.early_stop_step];
+      html += `<tr><td>running_mean_kl at stop</td><td class="num">${fmt(stopKL)}</td></tr>`;
+      html += `<tr><td>remaining steps</td><td class="num">${tl.n_steps - tl.early_stop_step - 1}</td></tr>`;
+    }
     html += '</table></div>';
-    html += '</div>';
 
     el.innerHTML = html;
     updateContextBar();
+    $('ctx-step').textContent = state.selectedStep;
+
+    // Wire step slider
+    const slider = $('tl-slider');
+    if (slider) {
+      slider.addEventListener('input', e => {
+        state.selectedStep = parseInt(e.target.value);
+        renderTimeline();
+      });
+    }
+    const btnPrev = $('tl-btn-prev');
+    if (btnPrev) btnPrev.addEventListener('click', () => {
+      state.selectedStep = Math.max(0, state.selectedStep - 1);
+      renderTimeline();
+    });
+    const btnNext = $('tl-btn-next');
+    if (btnNext) btnNext.addEventListener('click', () => {
+      state.selectedStep = Math.min(tl.n_steps - 1, state.selectedStep + 1);
+      renderTimeline();
+    });
+
+    // Wire chart click
+    wireChartClick(el, s => {
+      state.selectedStep = s;
+      renderTimeline();
+    });
   }
 
   // --- Event wiring ---
@@ -963,11 +1405,19 @@
     }
   });
 
+  // Epoch selector
+  $('epoch-selector').addEventListener('change', e => {
+    state.selectedEpoch = parseInt(e.target.value);
+    state.trajEpochOverview = null;  // force reload
+    renderTrajEpoch();
+  });
+
   // Tab switching
   $('tab-target').addEventListener('click', () => {
     state.trajTab = 'target';
     $('tab-target').classList.add('active');
     $('tab-epoch').classList.remove('active');
+    $('epoch-selector').style.display = 'none';
     renderTrajTarget();
   });
   $('tab-epoch').addEventListener('click', () => {
@@ -979,13 +1429,19 @@
 
   // Keyboard
   document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     if (state.currentPage === 'episode') {
       if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); e.preventDefault(); }
     } else if (state.currentPage === 'traj') {
       if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('traj-slider').max), state.selectedFrame + 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); e.preventDefault(); }
+    } else if (state.currentPage === 'timeline') {
+      if (e.key === 'ArrowRight') {
+        const maxStep = state.timelineData?.n_steps ? state.timelineData.n_steps - 1 : 0;
+        state.selectedStep = Math.min(maxStep, state.selectedStep + 1); renderTimeline(); e.preventDefault();
+      }
+      else if (e.key === 'ArrowLeft') { state.selectedStep = Math.max(0, state.selectedStep - 1); renderTimeline(); e.preventDefault(); }
     }
   });
 

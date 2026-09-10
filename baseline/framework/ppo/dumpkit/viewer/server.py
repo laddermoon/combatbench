@@ -332,6 +332,20 @@ class ViewerAPI:
         m["has_images"] = self.data.has_images
         m["has_timeline"] = self.data.timeline_npz is not None
         m["has_epoch_frames"] = self.data.epoch_frames_npz is not None
+        # clip_eps and target_kl from timeline
+        tl = self.data.timeline_npz
+        if tl is not None:
+            m["clip_eps"] = float(tl["clip_eps"]) if "clip_eps" in tl else 0.2
+            m["target_kl"] = float(tl["target_kl"]) if "target_kl" in tl else float("nan")
+            m["n_epochs"] = int(tl["n_epochs"]) if "n_epochs" in tl else 0
+            m["n_steps"] = int(tl["n_steps"]) if "n_steps" in tl else 0
+            m["early_stop_step"] = int(tl["early_stop_step"]) if "early_stop_step" in tl else -1
+        else:
+            m["clip_eps"] = 0.2
+            m["target_kl"] = float("nan")
+            m["n_epochs"] = 0
+            m["n_steps"] = 0
+            m["early_stop_step"] = -1
         return m
 
     # -- /api/episode_list --------------------------------------------------
@@ -415,12 +429,60 @@ class ViewerAPI:
             except (json.JSONDecodeError, KeyError, IndexError):
                 pass
 
-        # Associated trajectories
+        # Associated trajectories with per-frame channel data
         tm = self.data.traj_map
-        if ep_pos < len(tm):
-            result["trajectories"] = tm[ep_pos].get("trajectories", [])
-        else:
-            result["trajectories"] = []
+        ep_trajs = tm[ep_pos].get("trajectories", []) if ep_pos < len(tm) else []
+        traj_npz = self.data.trajectories_npz
+        seg_offsets = self.data.seg_offsets
+
+        enriched_trajs = []
+        for t in ep_trajs:
+            traj_idx = t["traj_idx"]
+            t_start = t["t_start"]
+            t_len = t["length"]
+            # The trajectory frame corresponding to this episode frame
+            traj_frame = frame - t_start
+            covered = 0 <= traj_frame < t_len
+
+            entry: Dict[str, Any] = {
+                "traj_idx": traj_idx,
+                "agent_id": t["agent_id"],
+                "t_start": t_start,
+                "length": t_len,
+                "covered": covered,
+                "traj_frame": traj_frame if covered else -1,
+            }
+
+            # Per-frame channel data for this trajectory at this frame
+            if covered and traj_npz is not None and traj_idx < len(seg_offsets) - 1:
+                flat_idx = int(seg_offsets[traj_idx]) + traj_frame
+                for ch in self.data.channel_names:
+                    rew_key = f"reward.{ch}"
+                    aw_key = f"actor_weight.{ch}"
+                    if rew_key in traj_npz:
+                        entry[f"reward_{ch}"] = float(traj_npz[rew_key][flat_idx])
+                    if aw_key in traj_npz:
+                        entry[f"actor_weight_{ch}"] = float(traj_npz[aw_key][flat_idx])
+                # floor_weight, explore_factor
+                if "floor_weight" in traj_npz:
+                    entry["floor_weight"] = float(traj_npz["floor_weight"][flat_idx])
+                if "explore_factor" in traj_npz:
+                    entry["explore_factor"] = float(traj_npz["explore_factor"][flat_idx])
+                # Per-channel is_terminated (per-trajectory scalar)
+                for ch in self.data.channel_names:
+                    it_key = f"is_terminated.{ch}"
+                    if it_key in traj_npz:
+                        entry[f"is_terminated_{ch}"] = bool(traj_npz[it_key][traj_idx])
+                # importance (per-trajectory scalar)
+                if "importance" in traj_npz:
+                    entry["importance"] = float(traj_npz["importance"][traj_idx])
+                # frame_id
+                if "frame_id" in traj_npz:
+                    entry["frame_id"] = str(traj_npz["frame_id"][flat_idx])
+
+            enriched_trajs.append(entry)
+
+        result["trajectories"] = enriched_trajs
 
         return 200, result
 
@@ -476,6 +538,25 @@ class ViewerAPI:
                             result[f"{prefix}_{ch}"] = _arr_to_list(
                                 np.asarray(d[ch][start:end], dtype=np.float32)
                             )
+            # key_frame_mask per channel (per-frame bool)
+            kfm = gae.get("key_frame_mask")
+            if kfm is not None:
+                d = _dict_item(kfm)
+                if isinstance(d, dict):
+                    result["key_frame_mask"] = {
+                        ch: [bool(x) for x in np.asarray(v[start:end])]
+                        for ch, v in d.items()
+                    }
+            # key_seg_active / key_seg_terminated (per-trajectory bool)
+            for seg_key in ("key_seg_active", "key_seg_terminated"):
+                seg = gae.get(seg_key)
+                if seg is not None:
+                    d = _dict_item(seg)
+                    if isinstance(d, dict):
+                        result[seg_key] = {
+                            ch: bool(np.asarray(v)[traj_idx]) if traj_idx < len(v) else False
+                            for ch, v in d.items()
+                        }
             # bootstrap info
             bv = gae.get("bootstrap_values")
             if bv is not None:
@@ -490,6 +571,9 @@ class ViewerAPI:
             bi = gae.get("bootstrap_indices")
             if bi is not None:
                 result["bootstrap_indices"] = _arr_to_list(np.asarray(bi))
+            # Check if this trajectory is a bootstrap segment
+            if bi is not None and traj_idx in np.asarray(bi).tolist():
+                result["is_bootstrap_seg"] = True
 
         # Combine: combined_adv
         combine = self.data.combine_npz
@@ -497,6 +581,10 @@ class ViewerAPI:
             ca = combine.get("combined_adv")
             if ca is not None:
                 result["combined_adv"] = _arr_to_list(ca[start:end])
+            # aw_l1_sum (per-frame)
+            aw_l1 = combine.get("aw_l1_sum")
+            if aw_l1 is not None:
+                result["aw_l1_sum"] = _arr_to_list(aw_l1[start:end])
             # confidence / EV per channel
             conf = combine.get("confidences")
             if conf is not None:
@@ -517,6 +605,20 @@ class ViewerAPI:
                         ch: _arr_to_list(np.asarray(v[start:end], dtype=np.float32))
                         for ch, v in d.items()
                     }
+
+        # Trajectory-level: floor_weight, explore_factor, importance
+        if traj_npz is not None:
+            if "floor_weight" in traj_npz:
+                result["floor_weight"] = _arr_to_list(traj_npz["floor_weight"][start:end])
+            if "explore_factor" in traj_npz:
+                result["explore_factor"] = _arr_to_list(traj_npz["explore_factor"][start:end])
+            if "importance" in traj_npz:
+                result["importance"] = float(traj_npz["importance"][traj_idx])
+            # is_terminated per channel (per-trajectory)
+            for ch in self.data.channel_names:
+                it_key = f"is_terminated.{ch}"
+                if it_key in traj_npz:
+                    result[f"is_terminated_{ch}"] = bool(traj_npz[it_key][traj_idx])
 
         # Buffer: old log_prob
         buf = self.data.buffer_npz
@@ -606,6 +708,48 @@ class ViewerAPI:
             if nv_key in ef:
                 result[f"new_value_{ch}"] = _arr_to_list(ef[nv_key][start:end])
 
+        # Cross-reference: old_log_prob from buffer
+        buf = self.data.buffer_npz
+        if buf is not None and "log_probs" in buf:
+            result["old_log_prob"] = _arr_to_list(buf["log_probs"][start:end])
+
+        # Cross-reference: old_value and return from gae
+        gae = self.data.gae_npz
+        if gae is not None:
+            for ch in self.data.channel_names:
+                va = gae.get("values_all")
+                if va is not None:
+                    d = _dict_item(va)
+                    if isinstance(d, dict) and ch in d:
+                        result[f"old_value_{ch}"] = _arr_to_list(
+                            np.asarray(d[ch][start:end], dtype=np.float32)
+                        )
+                ra = gae.get("rets_all")
+                if ra is not None:
+                    d = _dict_item(ra)
+                    if isinstance(d, dict) and ch in d:
+                        result[f"return_{ch}"] = _arr_to_list(
+                            np.asarray(d[ch][start:end], dtype=np.float32)
+                        )
+
+        # Cross-reference: combined_adv from combine
+        combine = self.data.combine_npz
+        if combine is not None:
+            ca = combine.get("combined_adv")
+            if ca is not None:
+                result["combined_adv"] = _arr_to_list(ca[start:end])
+
+        # clip_eps from timeline or update
+        tl = self.data.timeline_npz
+        if tl is not None and "clip_eps" in tl:
+            result["clip_eps"] = float(tl["clip_eps"])
+        else:
+            result["clip_eps"] = 0.2
+
+        # actor_stopped_epoch
+        if "actor_stopped_epoch" in ef:
+            result["actor_stopped_epoch"] = int(ef["actor_stopped_epoch"])
+
         return 200, result
 
     # -- /api/trajectory/<idx>/epoch/<e>/frame/<f> -------------------------
@@ -664,6 +808,13 @@ class ViewerAPI:
         # actor_stopped_epoch
         if "actor_stopped_epoch" in ef:
             result["actor_stopped_epoch"] = int(ef["actor_stopped_epoch"])
+
+        # clip_eps from timeline
+        tl = self.data.timeline_npz
+        if tl is not None and "clip_eps" in tl:
+            result["clip_eps"] = float(tl["clip_eps"])
+        else:
+            result["clip_eps"] = 0.2
 
         return 200, result
 
