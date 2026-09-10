@@ -100,6 +100,13 @@ def _serialize_episodes(episodes: List[Episode]) -> Dict[str, Any]:
     data["episode_indices"] = np.array([ep.episode_index for ep in episodes])
     data["num_frames"] = np.array([ep.num_frames for ep in episodes])
     data["base_seeds"] = np.array([ep.base_seed for ep in episodes])
+    # Frame offsets for locating a specific episode's frames in the
+    # concatenated arrays.  episode_frame_offsets[i] is the start index
+    # of episode i; episode_frame_offsets[i+1] is the end (exclusive).
+    frame_offsets = np.zeros(len(episodes) + 1, dtype=np.int64)
+    for i, ep in enumerate(episodes):
+        frame_offsets[i + 1] = frame_offsets[i] + ep.num_frames
+    data["episode_frame_offsets"] = frame_offsets
 
     # Per-agent arrays (concatenated across episodes).
     agent_ids = set()
@@ -535,26 +542,39 @@ def _render_record_guide(
         "浏览器打开 http://localhost:8765/viewer.html ，逐帧查看图片 + observer 输出。",
         "肉眼抽检：foot_state 对不对？contacts 切对没有？height_phi 曲线合不合理？",
         "",
-        "## 3. 验证：录制 vs Dump 逐帧对比",
+        "## 3. 自动录制 + 校验（推荐）",
         "",
-        "录制的 episode 应与 `episodes.npz` 中对应 episode 逐帧一致",
-        "（同 seed + 同 env + 同 policy + 同 explore_factor = 同轨迹）。",
-        "可用以下脚本对比：",
+        "用 `debug.py render` 子命令自动录制图片并校验数据一致性：",
         "",
         "```bash",
-        f"PYTHONPATH=. python3 -c \"import numpy as np; ...\"  # TODO: 对比脚本",
+        f"PYTHONPATH=. python3 baseline/framework/ppo/debug.py render {run_dir} \\",
+        f"  --episode 0",
         "```",
         "",
-        "## 4. 录制多个 Episode",
+        "该命令会：",
+        "1. 读取 dump 中的 stochastic_policy + env_blueprint + episode seed",
+        "2. 用 round_runner + BaseFrameRecorder 生成逐帧 PNG + JSON",
+        "3. 自动校验录制的 obs/actions 与 episodes.npz 逐帧一致",
+        "4. 写入 association.json 记录图片与 dump 数据的关联",
         "",
-        "修改 `--seed` 参数录制不同初始条件的 episode。训练时每个 episode",
-        "的 seed 为 `base_seed + i`，可按需选择。",
+        "校验失败时会明确警告，请仔细阅读警告信息。",
+        "",
+        "## 4. 手动录制（可选）",
+        "",
+        "上面的手动 round_runner 命令仍然可用，适合需要自定义参数的场景。",
+        "手动录制不会自动校验，需要自行对比数据。",
+        "",
+        "## 5. 录制多个 Episode",
+        "",
+        "修改 `--episode` 参数（render 子命令）或 `--seed` 参数（手动命令）",
+        "录制不同初始条件的 episode。每个 episode 的 seed 记录在 episodes.npz 的 base_seeds 数组中。",
         "",
         "## 数据说明",
         "",
         f"- env_blueprint: 训练 update {update} 实际使用的 env 配置",
         f"- policy: {policy_desc}",
         f"- seed: {job.seed} (训练时该 episode 的实际 seed)",
+        f"- episode seeds: 见 episodes.npz 中的 base_seeds 数组（所有 episode 的 seed）",
     ])
     if job.episode_options:
         lines.append(f"- episode_options: {dict(job.episode_options)}")
