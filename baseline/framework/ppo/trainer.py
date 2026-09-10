@@ -615,6 +615,7 @@ def ppo_update(
             "rets_all": dict(rets_all),
             "key_frame_mask": dict(key_frame_mask),
             "bootstrap_values": dict(bootstrap_values) if bootstrap_values else {},
+            "bootstrap_indices": np.array(bootstrap_indices, dtype=np.int64),
             "key_seg_active": {k: np.array(v, dtype=bool) for k, v in buf.key_seg_active.items()},
             "key_seg_terminated": {k: np.array(v, dtype=bool) for k, v in buf.key_seg_terminated.items()},
         }
@@ -879,6 +880,19 @@ def ppo_update(
     # the actor stopped early.
     actor_epochs_done = 0
 
+    # --- Dump-only: per-minibatch timeline tracking (Scene 4) ---
+    # Collects per-step stats for the update timeline view.  Zero overhead
+    # when dump_callback is None — the lists stay empty and are never
+    # serialized.
+    timeline_steps: List[Dict[str, Any]] = []
+    early_stop_step = -1
+
+    # --- Dump-only: per-epoch full-batch sampling (Scene 3) ---
+    # After each epoch's minibatch loop, a full-batch forward pass captures
+    # per-frame ratio / clip_mask / new_value at that epoch's end state.
+    # Zero overhead when dump_callback is None.
+    epoch_frames_data: List[Dict[str, Any]] = []
+
     for epoch in range(pp.update_epochs):
         perm = torch.randperm(n, device=device)
         epoch_kls: List[float] = []
@@ -901,6 +915,8 @@ def ppo_update(
             # Loss is MSE weighted by sample_weights, normalized by
             # active count (not total batch size) so inactive frames
             # don't dilute the gradient.
+            step_critic_loss = {key: float("nan") for key in reward_keys}
+            step_critic_grad = {key: float("nan") for key in reward_keys}
             for key in reward_keys:
                 critic_optimizers[key].zero_grad()
                 new_val = critics[key](obs_t[idx]).squeeze(-1)
@@ -919,6 +935,29 @@ def ppo_update(
                 all_grad_norms_critic[key].append(float(grad_norm_c))
                 critic_optimizers[key].step()
                 val_losses[key].append(float(val_loss))
+                if dump_callback is not None:
+                    step_critic_loss[key] = float(val_loss)
+                    step_critic_grad[key] = float(grad_norm_c)
+
+            # --- Dump-only: prepare timeline step (Scene 4) ---
+            # Actor stats are NaN until the actor update fills them.
+            # If the actor is stopped, this step is appended with NaN
+            # actor stats and the loop continues.
+            if dump_callback is not None:
+                _timeline_step: Dict[str, Any] = {
+                    "epoch": epoch,
+                    "mb": mb_idx,
+                    "actor_active": False,
+                    "kl": float("nan"),
+                    "clip_frac": float("nan"),
+                    "ratio_mean": float("nan"),
+                    "ratio_max": float("nan"),
+                    "policy_loss": float("nan"),
+                    "actor_grad": float("nan"),
+                    "running_mean_kl": float("nan"),
+                    "critic_loss": dict(step_critic_loss),
+                    "critic_grad": dict(step_critic_grad),
+                }
 
             # --- Actor update ---
             # Standard PPO clipped surrogate:
@@ -929,6 +968,8 @@ def ppo_update(
             # B1: Skip actor update if KL early-stop already triggered,
             # but let critics continue for remaining minibatches.
             if actor_stopped:
+                if dump_callback is not None:
+                    timeline_steps.append(_timeline_step)
                 continue
 
             # Construct kwargs for evaluate_actions.
@@ -1108,7 +1149,21 @@ def ppo_update(
                     early_stop_kl = running_mean_kl
                     early_stop_this_epoch = True
                     actor_stopped = True
+                    early_stop_step = epoch * n_batches + mb_idx
                     # Don't break — let critics finish remaining minibatches.
+
+            # --- Dump-only: fill timeline step with actor stats (Scene 4) ---
+            if dump_callback is not None:
+                _timeline_step["actor_active"] = True
+                _timeline_step["kl"] = approx_kl
+                _timeline_step["clip_frac"] = clip_frac
+                _timeline_step["ratio_mean"] = float(ratio.mean().item())
+                _timeline_step["ratio_max"] = float(ratio.max().item())
+                _timeline_step["policy_loss"] = float(policy_loss)
+                _timeline_step["actor_grad"] = float(grad_norm_a)
+                if epoch_kls:
+                    _timeline_step["running_mean_kl"] = float(np.mean(epoch_kls))
+                timeline_steps.append(_timeline_step)
 
         # --- Epoch KL diagnostics ---
         # Track KL divergence per epoch for anomaly detection.
@@ -1172,6 +1227,37 @@ def ppo_update(
 
         pol_losses.extend(epoch_pol_losses)
 
+        # --- Dump hook: epoch_frames stage (Scene 3) ---
+        # Per-epoch full-batch forward pass to capture per-frame ratio,
+        # clip_mask, and new_value at this epoch's end state.  This is
+        # the only expensive dump operation (one actor + N_critic forward
+        # passes on the full batch), but it only runs when dump_callback
+        # is active — zero production overhead.
+        if dump_callback is not None:
+            with torch.no_grad():
+                epoch_eval = actor.evaluate_actions(
+                    obs_t, act_t, explore_factor=ei_t,
+                )
+                epoch_new_lp = epoch_eval.log_prob
+                epoch_log_ratio = torch.clamp(
+                    epoch_new_lp - old_lp_t, -20.0, 20.0,
+                )
+                epoch_ratio = torch.exp(epoch_log_ratio)
+                epoch_clip_mask = (epoch_ratio - 1.0).abs() > clip_eps
+                epoch_new_val = {
+                    key: critics[key](obs_t).reshape(-1)
+                    .cpu().numpy().astype(np.float32)
+                    for key in reward_keys
+                }
+            epoch_frames_data.append({
+                "epoch": epoch,
+                "ratio": epoch_ratio.cpu().numpy().astype(np.float32),
+                "clip_mask": epoch_clip_mask.cpu().numpy().astype(bool),
+                "new_log_prob": epoch_new_lp.cpu().numpy().astype(np.float32),
+                "new_value": epoch_new_val,
+                "actor_stopped": actor_stopped,
+            })
+
         # B1: Don't break out of the epoch loop on actor early-stop.
         # Critics continue training in remaining epochs.
         if early_stop_this_epoch:
@@ -1180,6 +1266,80 @@ def ppo_update(
     # --- 7. Aggregate stats for logging ---
     # Collect per-channel and global statistics into a typed UpdateStats.
     # The training loop calls to_log_dict() for __RAW_STATS__ logging.
+
+    # --- Dump hook: timeline + epoch_frames (Scene 3 + 4) ---
+    # Serialize per-minibatch timeline and per-epoch frame snapshots for
+    # the debug viewer.  Zero overhead when dump_callback is None — the
+    # lists stay empty and this block is skipped.
+    if dump_callback is not None:
+        if timeline_steps:
+            timeline_epoch_idx = np.array(
+                [s["epoch"] for s in timeline_steps], dtype=np.int64,
+            )
+            timeline_mb_idx = np.array(
+                [s["mb"] for s in timeline_steps], dtype=np.int64,
+            )
+            timeline_actor_active = np.array(
+                [s["actor_active"] for s in timeline_steps], dtype=bool,
+            )
+            timeline_kl = np.array(
+                [s["kl"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_clip_frac = np.array(
+                [s["clip_frac"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_ratio_mean = np.array(
+                [s["ratio_mean"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_ratio_max = np.array(
+                [s["ratio_max"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_policy_loss = np.array(
+                [s["policy_loss"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_actor_grad = np.array(
+                [s["actor_grad"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_running_mean_kl = np.array(
+                [s["running_mean_kl"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_critic_loss = {
+                key: np.array(
+                    [s["critic_loss"][key] for s in timeline_steps],
+                    dtype=np.float32,
+                )
+                for key in reward_keys
+            }
+            timeline_critic_grad = {
+                key: np.array(
+                    [s["critic_grad"][key] for s in timeline_steps],
+                    dtype=np.float32,
+                )
+                for key in reward_keys
+            }
+            dump_callback("timeline", {
+                "n_epochs": np.array(len(epoch_kl_stats)),
+                "n_batches": np.array(n_batches),
+                "n_steps": np.array(len(timeline_steps)),
+                "epoch_idx": timeline_epoch_idx,
+                "mb_idx": timeline_mb_idx,
+                "actor_active": timeline_actor_active,
+                "kl": timeline_kl,
+                "clip_frac": timeline_clip_frac,
+                "ratio_mean": timeline_ratio_mean,
+                "ratio_max": timeline_ratio_max,
+                "policy_loss": timeline_policy_loss,
+                "actor_grad": timeline_actor_grad,
+                "running_mean_kl": timeline_running_mean_kl,
+                "critic_loss": timeline_critic_loss,
+                "critic_grad": timeline_critic_grad,
+                "early_stop_step": np.array(early_stop_step, dtype=np.int64),
+                "target_kl": np.array(target_kl, dtype=np.float32),
+                "clip_eps": np.array(clip_eps, dtype=np.float32),
+            })
+
+        if epoch_frames_data:
+            dump_callback("epoch_frames", {"epochs": epoch_frames_data})
 
     # P1-7: Gradient diagnostics for exploration parameters (printed as
     # diagnostics lines).  The policy owns the diagnostics via

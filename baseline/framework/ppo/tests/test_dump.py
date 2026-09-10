@@ -363,6 +363,41 @@ def test_capture_dump_writes_all_files():
         assert "approx_kl" in update_data
         assert "grad_norm_actor_pre_clip" in update_data
 
+        # Check timeline.npz (Scene 4)
+        assert (dump_dir / "timeline.npz").exists()
+        tl = np.load(dump_dir / "timeline.npz", allow_pickle=True)
+        assert "n_steps" in tl
+        assert "kl" in tl
+        assert "clip_frac" in tl
+        assert "epoch_idx" in tl
+        assert "mb_idx" in tl
+        assert "actor_active" in tl
+        assert "early_stop_step" in tl
+        assert "target_kl" in tl
+        assert "clip_eps" in tl
+        # n_steps = n_epochs * n_batches
+        n_steps = int(tl["n_steps"])
+        assert n_steps == int(tl["n_epochs"]) * int(tl["n_batches"])
+        assert len(tl["kl"]) == n_steps
+
+        # Check epoch_frames.npz (Scene 3)
+        assert (dump_dir / "epoch_frames.npz").exists()
+        ef = np.load(dump_dir / "epoch_frames.npz", allow_pickle=True)
+        assert "n_epochs" in ef
+        assert "actor_stopped_epoch" in ef
+        n_ef_epochs = int(ef["n_epochs"])
+        assert n_ef_epochs == int(tl["n_epochs"])
+        # Each epoch should have ratio, clip_mask, new_log_prob
+        for e in range(n_ef_epochs):
+            assert f"ratio.{e}" in ef
+            assert f"clip_mask.{e}" in ef
+            assert f"new_log_prob.{e}" in ef
+            assert f"new_value.{e}.r_test" in ef
+
+        # Check manifest has new fields
+        assert manifest["has_timeline"] is True
+        assert manifest["has_epoch_frames"] is True
+
         # Check RECORD_GUIDE.md contains round_runner command
         guide = (dump_dir / "RECORD_GUIDE.md").read_text()
         assert "round_runner" in guide
@@ -459,6 +494,8 @@ def test_ppo_update_callback_stages():
     assert "gae" in stages_seen
     assert "combine" in stages_seen
     assert "update" in stages_seen
+    assert "timeline" in stages_seen
+    assert "epoch_frames" in stages_seen
     print("test_ppo_update_callback_stages: PASS")
 
 

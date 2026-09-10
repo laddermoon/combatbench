@@ -683,6 +683,8 @@ def capture_dump(
         "n_episodes": len(episodes),
         "n_trajectories": len(trajectories),
         "total_steps": int(sum(len(t.obs) for t in trajectories)),
+        "has_timeline": "timeline" in dump_collector,
+        "has_epoch_frames": "epoch_frames" in dump_collector,
     }
     # Git commit from code_snapshot.json if present.
     snapshot_info = run_dir / "code_snapshot.json"
@@ -743,6 +745,38 @@ def capture_dump(
     if "update" in dump_collector:
         update_data.update(dump_collector["update"])
     np.savez_compressed(dump_dir / "update.npz", **update_data)
+
+    # --- timeline.npz (from dump_collector, Scene 4) ---
+    # Per-minibatch training dynamics: KL, clip_frac, ratio, loss, grad
+    # across all epochs × minibatches.  Very small (~13 KB).
+    if "timeline" in dump_collector:
+        np.savez_compressed(
+            dump_dir / "timeline.npz",
+            **dump_collector["timeline"],
+        )
+
+    # --- epoch_frames.npz (from dump_collector, Scene 3) ---
+    # Per-epoch full-batch forward pass snapshots: per-frame ratio,
+    # clip_mask, new_log_prob, new_value at each epoch's end state.
+    # Larger (~20 MB) but only captured when dump_callback is active.
+    if "epoch_frames" in dump_collector:
+        ef_list = dump_collector["epoch_frames"]["epochs"]
+        n_epochs = len(ef_list)
+        actor_stopped_epoch = next(
+            (e["epoch"] for e in ef_list if e["actor_stopped"]), -1,
+        )
+        ef_data: Dict[str, Any] = {
+            "n_epochs": np.array(n_epochs),
+            "actor_stopped_epoch": np.array(actor_stopped_epoch, dtype=np.int64),
+        }
+        for e in ef_list:
+            ep = e["epoch"]
+            ef_data[f"ratio.{ep}"] = e["ratio"]
+            ef_data[f"clip_mask.{ep}"] = e["clip_mask"]
+            ef_data[f"new_log_prob.{ep}"] = e["new_log_prob"]
+            for ch, v in e["new_value"].items():
+                ef_data[f"new_value.{ep}.{ch}"] = v
+        np.savez_compressed(dump_dir / "epoch_frames.npz", **ef_data)
 
     # --- stochastic policy export (bake explore_factor into policy.py) ---
     stochastic_policy_path: Optional[Path] = None
