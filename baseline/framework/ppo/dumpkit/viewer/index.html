@@ -1,0 +1,997 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CombatBench Debug Viewer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-alt: #1f232c;
+    --text: #e6e6e6;
+    --muted: #8a93a6;
+    --accent: #4fa3ff;
+    --accent-dim: #2a4a6a;
+    --border: #252a36;
+    --green: #6ec86e;
+    --red: #e06c75;
+    --orange: #d19a66;
+    --yellow: #e5c07b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; }
+  #root { display: flex; flex-direction: column; height: 100vh; }
+
+  /* Header */
+  header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 12px; }
+  header .title { font-weight: 600; font-size: 14px; }
+  header .meta { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  header .spacer { flex: 1; }
+  header .breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  header .breadcrumb a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  header .breadcrumb a:hover { text-decoration: underline; }
+  header .breadcrumb .sep { color: var(--muted); }
+
+  /* Main content */
+  #content { flex: 1; overflow: auto; padding: 0; }
+
+  /* Context bar */
+  #context-bar { background: var(--panel); border-top: 1px solid var(--border); padding: 6px 16px; display: flex; gap: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+  #context-bar .ctx-item { display: flex; gap: 4px; }
+  #context-bar .ctx-label { color: var(--muted); }
+  #context-bar .ctx-value { color: var(--text); }
+
+  /* Pages */
+  .page { display: none; height: 100%; }
+  .page.active { display: block; }
+
+  /* Home page */
+  .home-layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; padding: 16px; height: 100%; }
+  .home-left { overflow: auto; }
+  .home-right { overflow: auto; }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px 0; font-size: 13px; color: var(--text); }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+
+  /* Episode table */
+  table.ep-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.ep-table th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  table.ep-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.ep-table tr { cursor: pointer; }
+  table.ep-table tr:hover { background: var(--panel-alt); }
+  table.ep-table tr.active { background: var(--accent-dim); }
+
+  /* Timeline card */
+  .timeline-card { cursor: pointer; }
+  .timeline-card:hover { border-color: var(--accent); }
+  .timeline-card .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .timeline-card .stat { font-size: 12px; }
+  .timeline-card .stat .label { color: var(--muted); }
+  .timeline-card .stat .value { color: var(--text); }
+
+  /* Scene 1: Episode detail */
+  .ep-layout { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: 1fr auto; gap: 0; height: 100%; }
+  .ep-image { background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; border-right: 1px solid var(--border); }
+  .ep-image img { max-width: 100%; max-height: 100%; }
+  .ep-image .placeholder { color: var(--muted); }
+  .ep-data { background: var(--panel); overflow-y: auto; padding: 12px 16px; }
+  .ep-data h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .ep-data pre { margin: 0 0 14px 0; padding: 8px 10px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
+  .ep-data .traj-list { }
+  .ep-data .traj-item { padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
+  .ep-data .traj-item:hover { border-color: var(--accent); background: var(--panel-alt); }
+  .ep-controls { grid-column: 1 / 3; background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; }
+  .ep-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .ep-controls button:hover { border-color: var(--accent); }
+  .ep-controls input[type="range"] { flex: 1; }
+  .ep-controls .frame-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); min-width: 100px; text-align: right; }
+
+  /* Scene 2+3: Trajectory detail */
+  .traj-layout { height: 100%; display: flex; flex-direction: column; }
+  .traj-tabs { background: var(--panel); border-bottom: 1px solid var(--border); display: flex; gap: 0; padding: 0 16px; }
+  .traj-tab { padding: 10px 20px; cursor: pointer; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; }
+  .traj-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .traj-tab:hover { color: var(--text); }
+  .traj-content { flex: 1; overflow: auto; padding: 16px; }
+  .traj-controls { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; }
+  .traj-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .traj-controls button:hover { border-color: var(--accent); }
+  .traj-controls input[type="range"] { flex: 1; }
+  .traj-controls .frame-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); min-width: 100px; text-align: right; }
+
+  /* Charts */
+  .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  .chart-container h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  svg.chart { width: 100%; height: 200px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; }
+  .chart-legend .leg-item { display: flex; align-items: center; gap: 4px; }
+  .chart-legend .leg-color { width: 12px; height: 2px; }
+
+  /* Data tables */
+  .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .data-table { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .data-table h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .data-table table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .data-table th { text-align: left; padding: 4px 6px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .data-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  .data-table td.num { color: var(--green); text-align: right; }
+  .data-table td.neg { color: var(--red); text-align: right; }
+  .data-table td.bool { color: var(--orange); }
+
+  /* Scene 4: Timeline */
+  .timeline-layout { padding: 16px; height: 100%; overflow: auto; }
+  .timeline-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .summary-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+  .summary-stat .label { color: var(--muted); font-size: 11px; }
+  .summary-stat .value { color: var(--text); font-size: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .summary-stat .value.warn { color: var(--orange); }
+  .summary-stat .value.danger { color: var(--red); }
+
+  /* Misc */
+  .loading { color: var(--muted); padding: 40px; text-align: center; }
+  .error-msg { color: var(--red); padding: 20px; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .badge.green { background: #1a3a1a; color: var(--green); }
+  .badge.red { background: #3a1a1a; color: var(--red); }
+  .badge.orange { background: #3a2a1a; color: var(--orange); }
+</style>
+</head>
+<body>
+<div id="root">
+  <header>
+    <div class="title">CombatBench Debug Viewer</div>
+    <div class="meta" id="header-meta">loading...</div>
+    <div class="spacer"></div>
+    <div class="breadcrumb" id="breadcrumb"></div>
+  </header>
+
+  <div id="content">
+    <!-- Home page -->
+    <div class="page" id="page-home">
+      <div class="home-layout">
+        <div class="home-left">
+          <div class="card">
+            <h2>Episode List</h2>
+            <div class="desc">Select an episode to view its frame-by-frame data and associated trajectories.</div>
+            <div id="episode-list-container"></div>
+          </div>
+        </div>
+        <div class="home-right">
+          <div class="card timeline-card" id="timeline-entry">
+            <h2>Training Timeline</h2>
+            <div class="desc">Global view of the entire update's training dynamics (KL, loss, gradients per minibatch).</div>
+            <div class="stats" id="timeline-stats"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Episode detail (Scene 1) -->
+    <div class="page" id="page-episode">
+      <div class="ep-layout">
+        <div class="ep-image" id="ep-image-panel">
+          <div class="placeholder">select a frame</div>
+        </div>
+        <div class="ep-data" id="ep-data-panel"></div>
+        <div class="ep-controls">
+          <button id="ep-btn-first">⏮</button>
+          <button id="ep-btn-prev">◀</button>
+          <button id="ep-btn-play">▶</button>
+          <button id="ep-btn-next">▶</button>
+          <button id="ep-btn-last">⏭</button>
+          <input id="ep-slider" type="range" min="0" max="0" value="0" />
+          <div class="frame-label" id="ep-frame-label">- / -</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trajectory detail (Scene 2 + 3) -->
+    <div class="page" id="page-traj">
+      <div class="traj-layout">
+        <div class="traj-tabs">
+          <div class="traj-tab active" data-tab="target" id="tab-target">Target</div>
+          <div class="traj-tab" data-tab="epoch" id="tab-epoch">Epoch</div>
+        </div>
+        <div class="traj-content" id="traj-content"></div>
+        <div class="traj-controls">
+          <button id="traj-btn-first">⏮</button>
+          <button id="traj-btn-prev">◀</button>
+          <button id="traj-btn-play">▶</button>
+          <button id="traj-btn-next">▶</button>
+          <button id="traj-btn-last">⏭</button>
+          <input id="traj-slider" type="range" min="0" max="0" value="0" />
+          <div class="frame-label" id="traj-frame-label">- / -</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeline (Scene 4) -->
+    <div class="page" id="page-timeline">
+      <div class="timeline-layout" id="timeline-content"></div>
+    </div>
+  </div>
+
+  <div id="context-bar">
+    <div class="ctx-item"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
+    <div class="ctx-item"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
+    <div class="ctx-item"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
+    <div class="ctx-item"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
+    <div class="ctx-item"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // --- Global state ---
+  const state = {
+    manifest: null,
+    episodeList: null,
+    trajMap: null,
+    currentPage: 'home',
+    breadcrumb: [],
+
+    selectedEpisode: null,
+    selectedTraj: null,
+    selectedFrame: 0,
+    selectedEpoch: 0,
+    selectedStep: 0,
+
+    // Episode page state
+    epData: null,
+    epPlaying: false,
+    epPlayTimer: null,
+
+    // Trajectory page state
+    trajTab: 'target',
+    trajOverview: null,
+    trajEpochCompare: null,
+    trajPlaying: false,
+    trajPlayTimer: null,
+
+    // Timeline page state
+    timelineData: null,
+  };
+
+  // --- DOM helpers ---
+  const $ = id => document.getElementById(id);
+  const pages = {
+    home: $('page-home'),
+    episode: $('page-episode'),
+    traj: $('page-traj'),
+    timeline: $('page-timeline'),
+  };
+
+  function showPage(name) {
+    Object.values(pages).forEach(p => p.classList.remove('active'));
+    pages[name].classList.add('active');
+    state.currentPage = name;
+    updateBreadcrumb();
+  }
+
+  function updateBreadcrumb() {
+    const bc = $('breadcrumb');
+    bc.innerHTML = '';
+    const crumbs = [{label: 'Home', page: 'home'}];
+    if (state.currentPage === 'episode' || state.currentPage === 'traj') {
+      if (state.selectedEpisode !== null) {
+        crumbs.push({label: `Episode ${state.selectedEpisode}`, page: 'episode'});
+      }
+    }
+    if (state.currentPage === 'traj' && state.selectedTraj !== null) {
+      crumbs.push({label: `Trajectory ${state.selectedTraj}`, page: 'traj'});
+    }
+    if (state.currentPage === 'timeline') {
+      crumbs.push({label: 'Timeline', page: 'timeline'});
+    }
+
+    crumbs.forEach((c, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'sep';
+        sep.textContent = '›';
+        bc.appendChild(sep);
+      }
+      const a = document.createElement('a');
+      a.textContent = c.label;
+      a.addEventListener('click', () => navigate(c.page));
+      bc.appendChild(a);
+    });
+  }
+
+  function updateContextBar() {
+    $('ctx-episode').textContent = state.selectedEpisode ?? '-';
+    $('ctx-traj').textContent = state.selectedTraj ?? '-';
+    $('ctx-frame').textContent = state.selectedFrame ?? '-';
+    $('ctx-epoch').textContent = state.selectedEpoch ?? '-';
+    $('ctx-step').textContent = state.selectedStep ?? '-';
+    $('ctx-frameid').textContent = '-';
+  }
+
+  function navigate(page) {
+    showPage(page);
+    if (page === 'home') renderHome();
+    else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
+    else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
+    else if (page === 'timeline') renderTimeline();
+  }
+
+  // --- Fetch helper ---
+  async function fetchJson(url) {
+    const r = await fetch(url, {cache: 'no-store'});
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`${r.status}: ${text}`);
+    }
+    return r.json();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function fmt(v, digits=4) {
+    if (v === null || v === undefined) return '-';
+    if (typeof v === 'number') {
+      if (isNaN(v)) return 'NaN';
+      if (Math.abs(v) < 0.001 && v !== 0) return v.toExponential(digits);
+      return v.toFixed(digits);
+    }
+    return String(v);
+  }
+
+  // --- SVG chart helper ---
+  function makeChart(dataSeries, options = {}) {
+    const width = options.width || 800;
+    const height = options.height || 200;
+    const xLabel = options.xLabel || 'Frame';
+    const yLabel = options.yLabel || '';
+
+    const allVals = dataSeries.flatMap(s => s.data);
+    if (allVals.length === 0) {
+      return '<div class="loading">no data</div>';
+    }
+
+    const n = dataSeries[0].data.length;
+    const yMin = Math.min(...allVals);
+    const yMax = Math.max(...allVals);
+    const yPad = (yMax - yMin) * 0.1 || 1;
+    const yLo = yMin - yPad;
+    const yHi = yMax + yPad;
+
+    const margin = {top: 10, right: 10, bottom: 20, left: 50};
+    const w = width - margin.left - margin.right;
+    const h = height - margin.top - margin.bottom;
+
+    const xScale = i => margin.left + (n <= 1 ? 0 : (i / (n - 1)) * w);
+    const yScale = v => margin.top + h - ((v - yLo) / (yHi - yLo)) * h;
+
+    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+
+    // Grid lines
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + (h / 4) * i;
+      const val = yHi - (i / 4) * (yHi - yLo);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${fmt(val, 2)}</text>`;
+    }
+
+    // Zero line
+    if (yLo < 0 && yHi > 0) {
+      const yz = yScale(0);
+      svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
+    }
+
+    // Data lines
+    dataSeries.forEach(s => {
+      if (s.data.length < 2) return;
+      let pts = '';
+      s.data.forEach((v, i) => {
+        pts += `${xScale(i)},${yScale(v)} `;
+      });
+      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.5"/>`;
+    });
+
+    // Current frame marker
+    if (options.currentFrame !== undefined && options.currentFrame >= 0 && options.currentFrame < n) {
+      const x = xScale(options.currentFrame);
+      svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--accent)" stroke-width="1" opacity="0.6"/>`;
+    }
+
+    svg += `</svg>`;
+
+    // Legend
+    let legend = '<div class="chart-legend">';
+    dataSeries.forEach(s => {
+      legend += `<div class="leg-item"><div class="leg-color" style="background:${s.color}"></div>${escapeHtml(s.label)}</div>`;
+    });
+    legend += '</div>';
+
+    return svg + legend;
+  }
+
+  // --- Init ---
+  async function init() {
+    try {
+      state.manifest = await fetchJson('/api/manifest');
+      $('header-meta').textContent =
+        `update ${state.manifest.update} · ${state.manifest.experiment_name} · ${state.manifest.total_steps} steps · ${state.manifest.n_episodes} eps · ${state.manifest.n_trajectories} trajs`;
+      state.episodeList = await fetchJson('/api/episode_list');
+      state.trajMap = await fetchJson('/api/traj_map');
+      renderHome();
+      showPage('home');
+    } catch (e) {
+      $('content').innerHTML = `<div class="error-msg">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // --- Home page ---
+  function renderHome() {
+    // Episode table
+    const container = $('episode-list-container');
+    if (!state.episodeList || state.episodeList.length === 0) {
+      container.innerHTML = '<div class="loading">no episodes</div>';
+      return;
+    }
+    let html = '<table class="ep-table"><thead><tr>';
+    html += '<th>#</th><th>Seed</th><th>Frames</th><th>Trajectories</th>';
+    html += '</tr></thead><tbody>';
+    state.episodeList.forEach(ep => {
+      html += `<tr data-pos="${ep.list_pos}">`;
+      html += `<td>${ep.list_pos}</td>`;
+      html += `<td>${ep.seed ?? '-'}</td>`;
+      html += `<td>${ep.num_frames ?? '-'}</td>`;
+      html += `<td>${ep.n_trajectories}</td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('tr[data-pos]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const pos = parseInt(tr.dataset.pos);
+        selectEpisode(pos);
+      });
+    });
+
+    // Timeline entry card
+    renderTimelineStats();
+    $('timeline-entry').addEventListener('click', () => navigate('timeline'));
+  }
+
+  function renderTimelineStats() {
+    const el = $('timeline-stats');
+    if (!state.manifest) {
+      el.innerHTML = '<div class="loading">loading...</div>';
+      return;
+    }
+    if (!state.manifest.has_timeline) {
+      el.innerHTML = '<div class="desc">timeline.npz not available for this dump</div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="stat"><div class="label">Timeline</div><div class="value">Available</div></div>
+      <div class="stat"><div class="label">Click to view</div><div class="value">→</div></div>
+    `;
+  }
+
+  // --- Episode page (Scene 1) ---
+  async function selectEpisode(pos) {
+    state.selectedEpisode = pos;
+    state.selectedFrame = 0;
+    navigate('episode');
+    await renderEpisode();
+  }
+
+  async function renderEpisode() {
+    const pos = state.selectedEpisode;
+    if (pos === null) return;
+
+    // Get episode info from trajMap for num_frames
+    const epInfo = state.trajMap?.[pos];
+    const numFrames = epInfo?.num_frames || 0;
+
+    $('ep-slider').min = 0;
+    $('ep-slider').max = Math.max(0, numFrames - 1);
+    $('ep-slider').value = state.selectedFrame;
+
+    await renderEpisodeFrame();
+  }
+
+  async function renderEpisodeFrame() {
+    const pos = state.selectedEpisode;
+    const frame = state.selectedFrame;
+    if (pos === null) return;
+
+    $('ep-frame-label').textContent = `${frame + 1} / ${parseInt($('ep-slider').max) + 1}`;
+    $('ep-slider').value = frame;
+    updateContextBar();
+
+    try {
+      const data = await fetchJson(`/api/episode/${pos}/frame/${frame}`);
+      state.epData = data;
+
+      // Image
+      const imgPanel = $('ep-image-panel');
+      if (data.has_image) {
+        imgPanel.innerHTML = `<img src="/img/${pos}/${frame}" alt="frame ${frame}"/>`;
+      } else {
+        imgPanel.innerHTML = '<div class="placeholder">no image (run render first)</div>';
+      }
+
+      // Data panel
+      let html = '';
+
+      // Trajectories
+      if (data.trajectories && data.trajectories.length > 0) {
+        html += '<h3>Trajectories</h3><div class="traj-list">';
+        data.trajectories.forEach(t => {
+          html += `<div class="traj-item" data-traj="${t.traj_idx}">
+            <b>Trajectory ${t.traj_idx}</b> · ${escapeHtml(t.agent_id)} · t=${t.t_start} · len=${t.length}
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      // Per-agent obs/actions
+      const agents = state.manifest.agent_ids || [];
+      agents.forEach(aid => {
+        const obsKey = `obs_${aid}`;
+        const actKey = `actions_${aid}`;
+        if (data[obsKey]) {
+          html += `<h3>Observation (${escapeHtml(aid)})</h3>`;
+          html += `<pre>${data[obsKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
+        }
+        if (data[actKey]) {
+          html += `<h3>Actions (${escapeHtml(aid)})</h3>`;
+          html += `<pre>${data[actKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
+        }
+      });
+
+      // Observer outputs
+      if (data.observer_outputs && Object.keys(data.observer_outputs).length > 0) {
+        html += '<h3>Observer Outputs</h3>';
+        html += `<pre>${escapeHtml(JSON.stringify(data.observer_outputs, null, 2))}</pre>`;
+      }
+
+      // Termination
+      if (data.termination) {
+        html += '<h3>Termination</h3>';
+        html += `<pre>${escapeHtml(JSON.stringify(data.termination, null, 2))}</pre>`;
+      }
+
+      $('ep-data-panel').innerHTML = html;
+
+      // Wire trajectory clicks
+      $('ep-data-panel').querySelectorAll('.traj-item[data-traj]').forEach(el => {
+        el.addEventListener('click', () => {
+          const trajIdx = parseInt(el.dataset.traj);
+          selectTrajectory(trajIdx);
+        });
+      });
+
+    } catch (e) {
+      $('ep-data-panel').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // --- Trajectory page (Scene 2 + 3) ---
+  async function selectTrajectory(trajIdx) {
+    state.selectedTraj = trajIdx;
+    state.selectedFrame = 0;
+    state.trajOverview = null;
+    state.trajEpochCompare = null;
+    navigate('traj');
+    await renderTraj();
+  }
+
+  async function renderTraj() {
+    if (state.selectedTraj === null) return;
+
+    // Load overview if needed
+    if (!state.trajOverview) {
+      try {
+        state.trajOverview = await fetchJson(`/api/trajectory/${state.selectedTraj}/overview`);
+        const T = state.trajOverview.length;
+        $('traj-slider').min = 0;
+        $('traj-slider').max = Math.max(0, T - 1);
+        $('traj-slider').value = state.selectedFrame;
+      } catch (e) {
+        $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+    }
+
+    if (state.trajTab === 'target') {
+      renderTrajTarget();
+    } else {
+      renderTrajEpoch();
+    }
+  }
+
+  function renderTrajTarget() {
+    const ov = state.trajOverview;
+    if (!ov) return;
+    const frame = state.selectedFrame;
+    const channels = ov.channels || [];
+    const colors = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
+
+    let html = '';
+
+    // Charts: value/adv/return per channel
+    channels.forEach((ch, ci) => {
+      const color = colors[ci % colors.length];
+      const series = [];
+      if (ov[`values_${ch}`]) series.push({label: `value`, data: ov[`values_${ch}`], color: color});
+      if (ov[`rets_${ch}`]) series.push({label: `return`, data: ov[`rets_${ch}`], color: '#e5c07b'});
+      if (ov[`advs_${ch}`]) series.push({label: `advantage`, data: ov[`advs_${ch}`], color: '#e06c75'});
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>${escapeHtml(ch)}: Value / Advantage / Return</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    });
+
+    // Combined advantage
+    if (ov.combined_adv) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Combined Advantage (actor signal)</h3>`;
+      html += makeChart([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // Old log prob
+    if (ov.old_log_prob) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Old Log Prob (θ_old)</h3>`;
+      html += makeChart([{label: 'log_prob', data: ov.old_log_prob, color: '#c678dd'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // Frame detail table
+    html += '<div class="data-grid">';
+    html += '<div class="data-table"><h3>Frame Detail</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    channels.forEach(ch => {
+      const v = ov[`values_${ch}`]?.[frame];
+      const a = ov[`advs_${ch}`]?.[frame];
+      const r = ov[`rets_${ch}`]?.[frame];
+      const rw = ov[`reward_${ch}`]?.[frame];
+      const aw = ov[`actor_weight_${ch}`]?.[frame];
+      html += `<tr><td colspan="2" style="color:var(--accent)"><b>${escapeHtml(ch)}</b></td></tr>`;
+      html += `<tr><td>value</td><td class="num">${fmt(v)}</td></tr>`;
+      html += `<tr><td>advantage</td><td class="${a < 0 ? 'neg' : 'num'}">${fmt(a)}</td></tr>`;
+      html += `<tr><td>return</td><td class="num">${fmt(r)}</td></tr>`;
+      html += `<tr><td>reward</td><td class="num">${fmt(rw)}</td></tr>`;
+      html += `<tr><td>actor_weight</td><td class="num">${fmt(aw)}</td></tr>`;
+    });
+    if (ov.combined_adv) {
+      html += `<tr><td colspan="2" style="color:var(--accent)"><b>combined</b></td></tr>`;
+      html += `<tr><td>combined_adv</td><td class="${ov.combined_adv[frame] < 0 ? 'neg' : 'num'}">${fmt(ov.combined_adv[frame])}</td></tr>`;
+    }
+    if (ov.old_log_prob) {
+      html += `<tr><td>old_log_prob</td><td class="num">${fmt(ov.old_log_prob[frame])}</td></tr>`;
+    }
+    if (ov.frame_ids) {
+      html += `<tr><td>frame_id</td><td>${escapeHtml(ov.frame_ids[frame] || '-')}</td></tr>`;
+    }
+    html += '</table></div>';
+
+    // Confidence / EV
+    html += '<div class="data-table"><h3>Channel Summary</h3><table>';
+    html += '<tr><th>Channel</th><th>Conf</th><th>EV</th><th>AW</th></tr>';
+    channels.forEach(ch => {
+      const conf = ov.confidences?.[ch];
+      const ev = ov.explained_variances?.[ch];
+      const aw = ov.actor_weights?.[ch];
+      html += `<tr><td>${escapeHtml(ch)}</td><td class="num">${fmt(conf, 3)}</td><td class="num">${fmt(ev, 3)}</td><td class="num">${fmt(aw, 3)}</td></tr>`;
+    });
+    html += '</table></div>';
+    html += '</div>'; // data-grid
+
+    $('traj-content').innerHTML = html;
+    $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
+    updateContextBar();
+  }
+
+  async function renderTrajEpoch() {
+    const frame = state.selectedFrame;
+    const trajIdx = state.selectedTraj;
+
+    // Load epoch compare data
+    if (!state.trajEpochCompare) {
+      try {
+        state.trajEpochCompare = await fetchJson(`/api/trajectory/${trajIdx}/epoch_compare`);
+      } catch (e) {
+        $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+    }
+
+    const ec = state.trajEpochCompare;
+    const nEpochs = ec.n_epochs || 0;
+    const colors = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
+
+    let html = '';
+
+    // Ratio comparison across epochs
+    if (ec.epochs && ec.epochs.length > 0) {
+      const series = ec.epochs.map((e, i) => ({
+        label: `epoch ${e.epoch}`,
+        data: e.ratio || [],
+        color: colors[i % colors.length],
+      }));
+      html += `<div class="chart-container">`;
+      html += `<h3>Ratio across Epochs (clip_eps=${state.manifest?.clip_eps ?? 0.2})</h3>`;
+      // Add clip lines
+      const clipEps = 0.2; // from timeline data, but we use default
+      html += makeChart(series, {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // Clip mask comparison
+    if (ec.epochs && ec.epochs.length > 0) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Clip Fraction per Epoch</h3>`;
+      const clipData = ec.epochs.map(e => {
+        const cm = e.clip_mask || [];
+        const frac = cm.filter(x => x).length / Math.max(1, cm.length);
+        return frac;
+      });
+      html += makeChart([{label: 'clip_frac', data: clipData, color: '#e06c75'}], {currentFrame: state.selectedEpoch});
+      html += `</div>`;
+    }
+
+    // Frame detail: ratio at each epoch for selected frame
+    html += '<div class="data-table"><h3>Frame Detail — Ratio per Epoch</h3><table>';
+    html += '<tr><th>Epoch</th><th>Ratio</th><th>Clipped</th></tr>';
+    ec.epochs.forEach(e => {
+      const r = e.ratio?.[frame];
+      const c = e.clip_mask?.[frame];
+      html += `<tr><td>${e.epoch}</td>`;
+      html += `<td class="${r && Math.abs(r - 1) > 0.2 ? 'neg' : 'num'}">${fmt(r)}</td>`;
+      html += `<td class="bool">${c ? 'YES' : 'no'}</td></tr>`;
+    });
+    html += '</table></div>';
+
+    if (ec.actor_stopped_epoch !== undefined && ec.actor_stopped_epoch >= 0) {
+      html += `<div class="desc" style="margin-top:8px">Actor stopped at epoch ${ec.actor_stopped_epoch}</div>`;
+    }
+
+    $('traj-content').innerHTML = html;
+    $('traj-frame-label').textContent = `${frame + 1} / ${ec.length}`;
+    updateContextBar();
+  }
+
+  // --- Timeline page (Scene 4) ---
+  async function renderTimeline() {
+    const el = $('timeline-content');
+    if (!state.manifest?.has_timeline) {
+      el.innerHTML = '<div class="loading">timeline.npz not available for this dump</div>';
+      return;
+    }
+
+    if (!state.timelineData) {
+      try {
+        state.timelineData = await fetchJson('/api/timeline/overview');
+      } catch (e) {
+        el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+    }
+
+    const tl = state.timelineData;
+    if (!tl.available) {
+      el.innerHTML = '<div class="loading">timeline not available</div>';
+      return;
+    }
+
+    let html = '';
+
+    // Summary stats
+    html += '<div class="timeline-summary">';
+    html += `<div class="summary-stat"><div class="label">Epochs</div><div class="value">${tl.n_epochs}</div></div>`;
+    html += `<div class="summary-stat"><div class="label">Batches/Epoch</div><div class="value">${tl.n_batches}</div></div>`;
+    html += `<div class="summary-stat"><div class="label">Total Steps</div><div class="value">${tl.n_steps}</div></div>`;
+    html += `<div class="summary-stat"><div class="label">Target KL</div><div class="value">${fmt(tl.target_kl, 4)}</div></div>`;
+    if (tl.early_stop_step >= 0) {
+      html += `<div class="summary-stat"><div class="label">Early Stop</div><div class="value warn">step ${tl.early_stop_step}</div></div>`;
+    } else {
+      html += `<div class="summary-stat"><div class="label">Early Stop</div><div class="value">no</div></div>`;
+    }
+    html += '</div>';
+
+    // KL chart
+    if (tl.kl) {
+      html += '<div class="chart-container">';
+      html += '<h3>KL Evolution (per minibatch)</h3>';
+      const series = [{label: 'KL', data: tl.kl, color: '#4fa3ff'}];
+      if (tl.running_mean_kl) {
+        series.push({label: 'running_mean_KL', data: tl.running_mean_kl, color: '#e5c07b'});
+      }
+      // Target KL line
+      if (tl.target_kl && !isNaN(tl.target_kl)) {
+        const targetLine = new Array(tl.kl.length).fill(tl.target_kl);
+        series.push({label: 'target_kl', data: targetLine, color: '#e06c75'});
+      }
+      html += makeChart(series, {currentFrame: state.selectedStep, xLabel: 'Step'});
+      html += '</div>';
+    }
+
+    // Clip fraction
+    if (tl.clip_frac) {
+      html += '<div class="chart-container">';
+      html += '<h3>Clip Fraction</h3>';
+      html += makeChart([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep});
+      html += '</div>';
+    }
+
+    // Policy / value loss
+    const lossSeries = [];
+    if (tl.policy_loss) lossSeries.push({label: 'policy_loss', data: tl.policy_loss, color: '#4fa3ff'});
+    if (lossSeries.length > 0) {
+      html += '<div class="chart-container">';
+      html += '<h3>Policy Loss</h3>';
+      html += makeChart(lossSeries, {currentFrame: state.selectedStep});
+      html += '</div>';
+    }
+
+    // Gradient norms
+    const gradSeries = [];
+    if (tl.actor_grad) gradSeries.push({label: 'actor_grad', data: tl.actor_grad, color: '#4fa3ff'});
+    if (gradSeries.length > 0) {
+      html += '<div class="chart-container">';
+      html += '<h3>Actor Gradient Norm</h3>';
+      html += makeChart(gradSeries, {currentFrame: state.selectedStep});
+      html += '</div>';
+    }
+
+    // Step detail table
+    html += '<div class="data-grid">';
+    html += '<div class="data-table"><h3>Step Detail</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    const step = state.selectedStep;
+    const fields = [
+      ['epoch', tl.epoch_idx?.[step], 'num'],
+      ['mb', tl.mb_idx?.[step], 'num'],
+      ['actor_active', tl.actor_active?.[step], 'bool'],
+      ['kl', tl.kl?.[step], 'num'],
+      ['running_mean_kl', tl.running_mean_kl?.[step], 'num'],
+      ['clip_frac', tl.clip_frac?.[step], 'num'],
+      ['ratio_mean', tl.ratio_mean?.[step], 'num'],
+      ['ratio_max', tl.ratio_max?.[step], 'num'],
+      ['policy_loss', tl.policy_loss?.[step], 'num'],
+      ['actor_grad', tl.actor_grad?.[step], 'num'],
+    ];
+    fields.forEach(([label, val, type]) => {
+      if (val === undefined) return;
+      let display = val;
+      if (type === 'bool') display = val ? 'YES' : 'no';
+      else if (type === 'num') display = fmt(val);
+      html += `<tr><td>${label}</td><td class="${type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num')}">${display}</td></tr>`;
+    });
+
+    // Per-channel critic losses
+    const channels = state.manifest?.channel_names || [];
+    channels.forEach(ch => {
+      const cl = tl[`critic_loss_${ch}`]?.[step];
+      const cg = tl[`critic_grad_${ch}`]?.[step];
+      if (cl !== undefined || cg !== undefined) {
+        html += `<tr><td colspan="2" style="color:var(--accent)"><b>${escapeHtml(ch)}</b></td></tr>`;
+        if (cl !== undefined) html += `<tr><td>critic_loss</td><td class="num">${fmt(cl)}</td></tr>`;
+        if (cg !== undefined) html += `<tr><td>critic_grad</td><td class="num">${fmt(cg)}</td></tr>`;
+      }
+    });
+    html += '</table></div>';
+
+    // Early stop info
+    html += '<div class="data-table"><h3>Early Stop</h3><table>';
+    html += `<tr><th>Field</th><th>Value</th></tr>`;
+    html += `<tr><td>early_stop_step</td><td class="num">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
+    html += `<tr><td>target_kl</td><td class="num">${fmt(tl.target_kl, 4)}</td></tr>`;
+    html += `<tr><td>clip_eps</td><td class="num">${fmt(tl.clip_eps, 4)}</td></tr>`;
+    html += '</table></div>';
+    html += '</div>';
+
+    el.innerHTML = html;
+    updateContextBar();
+  }
+
+  // --- Event wiring ---
+  // Episode controls
+  $('ep-slider').addEventListener('input', e => {
+    state.selectedFrame = parseInt(e.target.value);
+    renderEpisodeFrame();
+  });
+  $('ep-btn-first').addEventListener('click', () => { state.selectedFrame = 0; renderEpisodeFrame(); });
+  $('ep-btn-prev').addEventListener('click', () => { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); });
+  $('ep-btn-next').addEventListener('click', () => { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); });
+  $('ep-btn-last').addEventListener('click', () => { state.selectedFrame = parseInt($('ep-slider').max); renderEpisodeFrame(); });
+  $('ep-btn-play').addEventListener('click', () => {
+    if (state.epPlaying) {
+      clearInterval(state.epPlayTimer);
+      state.epPlaying = false;
+      $('ep-btn-play').textContent = '▶';
+    } else {
+      state.epPlaying = true;
+      $('ep-btn-play').textContent = '⏸';
+      state.epPlayTimer = setInterval(() => {
+        if (state.selectedFrame >= parseInt($('ep-slider').max)) {
+          clearInterval(state.epPlayTimer);
+          state.epPlaying = false;
+          $('ep-btn-play').textContent = '▶';
+          return;
+        }
+        state.selectedFrame++;
+        renderEpisodeFrame();
+      }, 200);
+    }
+  });
+
+  // Trajectory controls
+  $('traj-slider').addEventListener('input', e => {
+    state.selectedFrame = parseInt(e.target.value);
+    if (state.trajTab === 'target') renderTrajTarget();
+    else renderTrajEpoch();
+  });
+  $('traj-btn-first').addEventListener('click', () => { state.selectedFrame = 0; state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); });
+  $('traj-btn-prev').addEventListener('click', () => { state.selectedFrame = Math.max(0, state.selectedFrame - 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); });
+  $('traj-btn-next').addEventListener('click', () => { state.selectedFrame = Math.min(parseInt($('traj-slider').max), state.selectedFrame + 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); });
+  $('traj-btn-last').addEventListener('click', () => { state.selectedFrame = parseInt($('traj-slider').max); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); });
+  $('traj-btn-play').addEventListener('click', () => {
+    if (state.trajPlaying) {
+      clearInterval(state.trajPlayTimer);
+      state.trajPlaying = false;
+      $('traj-btn-play').textContent = '▶';
+    } else {
+      state.trajPlaying = true;
+      $('traj-btn-play').textContent = '⏸';
+      state.trajPlayTimer = setInterval(() => {
+        if (state.selectedFrame >= parseInt($('traj-slider').max)) {
+          clearInterval(state.trajPlayTimer);
+          state.trajPlaying = false;
+          $('traj-btn-play').textContent = '▶';
+          return;
+        }
+        state.selectedFrame++;
+        state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch();
+      }, 200);
+    }
+  });
+
+  // Tab switching
+  $('tab-target').addEventListener('click', () => {
+    state.trajTab = 'target';
+    $('tab-target').classList.add('active');
+    $('tab-epoch').classList.remove('active');
+    renderTrajTarget();
+  });
+  $('tab-epoch').addEventListener('click', () => {
+    state.trajTab = 'epoch';
+    $('tab-epoch').classList.add('active');
+    $('tab-target').classList.remove('active');
+    renderTrajEpoch();
+  });
+
+  // Keyboard
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    if (state.currentPage === 'episode') {
+      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); e.preventDefault(); }
+    } else if (state.currentPage === 'traj') {
+      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('traj-slider').max), state.selectedFrame + 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); state.trajTab === 'target' ? renderTrajTarget() : renderTrajEpoch(); e.preventDefault(); }
+    }
+  });
+
+  // Start
+  init();
+})();
+</script>
+</body>
+</html>

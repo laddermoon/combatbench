@@ -330,7 +330,14 @@ def test_capture_dump_writes_all_files():
         assert (dump_dir / "gae.npz").exists()
         assert (dump_dir / "combine.npz").exists()
         assert (dump_dir / "update.npz").exists()
+        assert (dump_dir / "traj_map.json").exists()
         assert (dump_dir / "RECORD_GUIDE.md").exists()
+
+        # Check traj_map.json
+        traj_map = json.loads((dump_dir / "traj_map.json").read_text())
+        assert len(traj_map) == 1  # 1 episode
+        assert traj_map[0]["list_pos"] == 0
+        assert len(traj_map[0]["trajectories"]) >= 1
 
         # Check manifest
         manifest = json.loads((dump_dir / "manifest.json").read_text())

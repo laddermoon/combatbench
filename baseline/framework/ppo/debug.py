@@ -128,6 +128,29 @@ def _cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_viewer(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.viewer.server import serve
+
+    dump_dir = Path(args.dump_dir).resolve()
+    if not dump_dir.is_dir():
+        print(f"error: dump directory does not exist: {dump_dir}", file=sys.stderr)
+        return 2
+    if not (dump_dir / "manifest.json").exists():
+        print(
+            f"error: {dump_dir} is not a valid dump directory "
+            f"(missing manifest.json)",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        serve(dump_dir, port=args.port, open_browser=not args.no_browser)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="debug.py",
@@ -191,6 +214,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Episode index to render (0-based, default 0).",
     )
     p_render.set_defaults(func=_cmd_render)
+
+    # --- viewer subcommand ---
+    p_viewer = sub.add_parser(
+        "viewer",
+        help="Launch the debug viewer web app for a captured dump.",
+        description=(
+            "Start an HTTP server that serves the debug viewer frontend "
+            "and API endpoints reading from the dump directory.  Open "
+            "http://localhost:<port>/ in your browser."
+        ),
+    )
+    p_viewer.add_argument(
+        "dump_dir",
+        type=str,
+        help="Dump directory (e.g. runs/.../dumps/u00008/).",
+    )
+    p_viewer.add_argument(
+        "--port",
+        type=int,
+        default=8766,
+        help="HTTP port (default: 8766).",
+    )
+    p_viewer.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not auto-open the browser.",
+    )
+    p_viewer.set_defaults(func=_cmd_viewer)
 
     return parser
 
