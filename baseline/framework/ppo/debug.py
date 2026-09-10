@@ -87,7 +87,8 @@ def _cmd_dump(args: argparse.Namespace) -> int:
     print()
     print("To render images and auto-verify:")
     print(f"  PYTHONPATH=. python3 baseline/framework/ppo/debug.py render "
-          f"{run_dir} --episode 0")
+          f"{run_dir}/dumps/u<NNNNN> --episode 0")
+    print("  (or just pass the run_dir to auto-discover the latest dump)")
     return 0
 
 
@@ -105,21 +106,25 @@ def _find_latest_dump(run_dir: Path) -> Optional[Path]:
 def _cmd_render(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.dump_render import render_episode
 
-    run_dir = Path(args.run_dir).resolve()
-    if not run_dir.is_dir():
-        print(f"error: run directory does not exist: {run_dir}", file=sys.stderr)
+    target = Path(args.target).resolve()
+    if not target.is_dir():
+        print(f"error: directory does not exist: {target}", file=sys.stderr)
         return 2
 
-    # Auto-discover the latest dump
-    dump_dir = _find_latest_dump(run_dir)
-    if dump_dir is None:
-        print(
-            f"error: no dump found under {run_dir}/dumps/. "
-            f"Request a dump first with: python3 baseline/framework/ppo/debug.py "
-            f"dump {run_dir} --hypothesis \"...\"",
-            file=sys.stderr,
-        )
-        return 2
+    # If target is a dump dir (has episodes.npz), use it directly.
+    # Otherwise treat it as a run_dir and auto-discover the latest dump.
+    if (target / "episodes.npz").exists():
+        dump_dir = target
+    else:
+        dump_dir = _find_latest_dump(target)
+        if dump_dir is None:
+            print(
+                f"error: no dump found under {target}/dumps/. "
+                f"Request a dump first with: python3 baseline/framework/ppo/debug.py "
+                f"dump {target} --hypothesis \"...\"",
+                file=sys.stderr,
+            )
+            return 2
 
     print(f"[render] using dump: {dump_dir}")
 
@@ -194,9 +199,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_render.add_argument(
-        "run_dir",
+        "target",
         type=str,
-        help="Training run directory (auto-discovers latest dump).",
+        help="Dump directory (e.g. runs/.../dumps/u00008/) or run directory "
+             "(auto-discovers latest dump).",
     )
     p_render.add_argument(
         "--episode",

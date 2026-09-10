@@ -547,7 +547,7 @@ def _render_record_guide(
         "用 `debug.py render` 子命令自动录制图片并校验数据一致性：",
         "",
         "```bash",
-        f"PYTHONPATH=. python3 baseline/framework/ppo/debug.py render {run_dir} \\",
+        f"PYTHONPATH=. python3 baseline/framework/ppo/debug.py render {dump_dir} \\",
         f"  --episode 0",
         "```",
         "",
