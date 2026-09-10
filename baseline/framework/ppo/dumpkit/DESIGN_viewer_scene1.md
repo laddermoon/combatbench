@@ -21,11 +21,13 @@ Trajectory 的数量、长度、起始帧都由实验的 `build_trajectories()` 
 
 ### FrameID 的语义
 
-`frame_id` 格式 `ep{episode_index:04d}:{agent_id}:{t}` 描述的是 **episode 内的相对位置**（第几个 agent、第几帧），不是全局唯一标识。`episode_index` 在多 worker 下会循环（0-5），这是正常的——FrameID 不需要全局唯一。
+`frame_id` 格式 `ep{episode_pos:04d}:{agent_id}:{t}`，其中 `episode_pos` 是 episode 在 dump 批次中的**列表位置**（全局唯一）。由 `dump_capture._make_frame_ids` 用 obs 内容匹配生成，不在生产路径中产生。
+
+匹配失败的 trajectory 用 `flat:{i}` 标记，viewer 应明确提示"溯源不可用"。
 
 ### 映射方式
 
-dump capture 时同时持有 `episodes` 列表和 `trajectories` 列表。`build_trajectories` 按 episodes 列表顺序遍历，每个 episode 产生的 trajectory 顺序追加。因此可以按遍历顺序直接建立映射，保存为 `traj_map.json`：
+dump capture 时 `_make_frame_ids` 已经通过 obs 内容匹配生成了 `frame_id` 数组。`traj_map.json` 直接从 `frame_id` 解析，不需要额外的 provenance 机制：
 
 ```json
 {
@@ -56,54 +58,46 @@ dump capture 时同时持有 `episodes` 列表和 `trajectories` 列表。`build
 
 ### 映射构建算法
 
-`build_trajectories` 按 episodes 列表顺序遍历，每个 episode 产生若干 trajectory 顺序追加到 `all_trajs`。dump capture 时按同样的顺序遍历即可重建映射：
+`_make_frame_ids` 已用 obs 内容匹配生成 `frame_id`（`ep{pos:04d}:{agent}:{t}`）。`traj_map.json` 从 `frame_id` 数组 + `ep_lengths` 直接解析，不需要 provenance：
 
 ```python
-def build_traj_map(episodes, trajectories):
-    """Build episode list_pos → trajectory mapping.
+def build_traj_map(episodes, trajectories, frame_ids):
+    """从 frame_id 数组解析 episode → trajectory 映射。
 
-    Relies on the fact that build_trajectories processes episodes
-    in list order and appends trajectories sequentially.
+    frame_ids 由 _make_frame_ids 用 obs 内容匹配生成。
+    每个 trajectory 的首帧 frame_id 包含 (episode_pos, agent_id, t_start)。
     """
-    ep_map = []
-    traj_idx = 0
-    for ep_pos, episode in enumerate(episodes):
-        # Count how many trajectories this episode produced.
-        # Match by provenance: episode_index + agent_id + t_start.
-        ep_trajs = []
-        while traj_idx < len(trajectories):
-            traj = trajectories[traj_idx]
-            prov = traj.provenance
-            if prov is None:
-                # No provenance — can't determine which episode.
-                # Assign to current episode as fallback.
-                ep_trajs.append({
-                    "traj_idx": traj_idx,
-                    "agent_id": "unknown",
-                    "t_start": 0,
-                    "length": len(traj.obs),
-                })
-                traj_idx += 1
-                continue
-            if prov.episode_index != episode.episode_index:
-                break  # Belongs to a later episode
-            ep_trajs.append({
-                "traj_idx": traj_idx,
-                "agent_id": prov.agent_id,
-                "t_start": prov.t_start,
-                "length": len(traj.obs),
-            })
-            traj_idx += 1
-        ep_map.append({
-            "list_pos": ep_pos,
-            "seed": episode.base_seed,
-            "num_frames": episode.num_frames,
-            "trajectories": ep_trajs,
+    ep_map = [[] for _ in range(len(episodes))]
+    offset = 0
+    for traj_idx, traj in enumerate(trajectories):
+        T = len(traj.obs)
+        if T == 0:
+            continue
+        fid = str(frame_ids[offset])
+        if fid.startswith("flat:"):
+            # 匹配失败，无法关联到任何 episode
+            # 不加入任何 ep_map 条目，viewer 显示"溯源不可用"
+            offset += T
+            continue
+        # 解析 ep{pos:04d}:{agent_id}:{t_start}
+        parts = fid.split(":")
+        ep_pos = int(parts[0][2:])  # 去掉 "ep" 前缀
+        agent_id = parts[1]
+        t_start = int(parts[2])
+        ep_map[ep_pos].append({
+            "traj_idx": traj_idx,
+            "agent_id": agent_id,
+            "t_start": t_start,
+            "length": T,
         })
-    return ep_map
+        offset += T
+    return [{
+        "list_pos": i,
+        "seed": ep.base_seed,
+        "num_frames": ep.num_frames,
+        "trajectories": trajs,
+    } for i, (ep, trajs) in enumerate(zip(episodes, ep_map))]
 ```
-
-注意：`episode_index` 在多 worker 下会循环，所以匹配时需要按列表顺序消费 trajectory，不能跳跃匹配。上面的算法假设 trajectory 列表顺序与 episode 列表顺序一致（由 `build_trajectories` 的遍历顺序保证）。
 
 ## 数据关系
 
@@ -136,7 +130,7 @@ Episode `i`（列表位置）的帧范围：`[episode_frame_offsets[i], episode_
 | `floor_weight` | (total_frames,) | 逐帧 floor_weight |
 | `explore_factor` | (total_frames,) | 逐帧探索因子 |
 | `importance` | (n_trajs,) | per-trajectory 重要性权重 |
-| `frame_id` | (total_frames,) | 帧标识 `ep{N:04d}:{agent}:{t}`（episode 内相对位置，非全局唯一） |
+| `frame_id` | (total_frames,) | 帧标识 `ep{pos:04d}:{agent}:{t}`（pos=列表位置，全局唯一）；匹配失败为 `flat:{i}` |
 
 Trajectory `j` 的全局帧范围：`[sum(ep_lengths[:j]), sum(ep_lengths[:j+1]))`
 
@@ -305,7 +299,7 @@ def get_traj_frame(dump_dir, ep_list_pos, ep_frame, traj_map):
 GET /api/manifest
   → {
       n_episodes, channel_names, observer_keys, has_images,
-      traj_map: { episodes: [{list_pos, episode_index, seed, num_frames, trajectories: [...]}] }
+      traj_map: { episodes: [{list_pos, seed, num_frames, trajectories: [...]}] }
     }
 
 GET /api/episode/<list_pos>/frame/<frame>
@@ -353,21 +347,17 @@ GET /api/image/<list_pos>/<frame>
 
 ### 1. dump capture 增加 traj_map.json
 
-在 `dump_capture.py` 中，`_serialize_trajectories` 之后，生成 `traj_map.json`：
+在 `dump_capture.py` 中，`_make_frame_ids` 生成 `frame_id` 数组后，从中解析 `traj_map.json`：
 
 ```python
-def _build_traj_map(episodes, trajectories):
-    """Build episode list_pos → trajectory mapping.
-
-    Relies on the fact that build_trajectories processes episodes
-    in list order and appends trajectories sequentially.
-    """
+def _build_traj_map(episodes, trajectories, frame_ids):
+    """从 frame_id 数组解析 episode → trajectory 映射。"""
     # ... (see 映射构建算法 above)
 ```
 
-### 2. 处理 provenance 缺失的情况
+### 2. 处理匹配失败的情况
 
-如果 trajectory 没有 provenance（`traj.provenance is None`），`traj_map.json` 中该 trajectory 标记为 `"unmapped": true`，viewer 显示"溯源不可用"。
+如果 `_make_frame_ids` 对某条 trajectory 匹配失败（obs 内容不在任何 episode 中），`frame_id` 为 `flat:{i}`。`traj_map.json` 中该 trajectory 不加入任何 episode 的映射，viewer 显示"溯源不可用"。
 
 ## 不做的事
 
