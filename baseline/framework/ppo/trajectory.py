@@ -70,37 +70,6 @@ class ChannelData:
     actor_weight: Union[float, np.ndarray] = 1.0
 
 
-@dataclass(frozen=True)
-class TrajectoryProvenance:
-    """轨迹来源。调试功能的前置依赖；生产路径不读取。
-
-    由实验在 ``build_trajectories`` 中填充，框架不解释、不强制。
-    缺失时逐帧溯源不可用——调试工具应明确提示，不静默给出错误 ID。
-
-    帧定位：``(episode_pos, agent_id, t_start) + 段内偏移`` 已足够
-    定位任意帧，无需按帧存储（节省 3 个长度为 n 的数组）。
-
-    ``episode_pos`` 是 episode 在 ``build_trajectories`` 接收的列表
-    中的位置（全局唯一）。**不要**用 ``Episode.episode_index``——
-    那是 per-worker 计数器，多 worker 下会循环，不唯一。
-
-    帧 ID 规范（全体工具统一）::
-
-        ep{episode_pos:04d}:{agent_id}:{t}    例：ep0003:robot_a:137
-    """
-
-    episode_pos: int
-    """Episode 在 build_trajectories 接收的列表中的位置（全局唯一）。
-    不是 Episode.episode_index（per-worker 计数器，多 worker 下循环）。"""
-    agent_id: str
-    t_start: int = 0
-    """本段首帧在 episode 内的步号。整段轨迹时为 0；
-    分段轨迹时为本段起始帧。"""
-    termination_reason: str = ""
-    """该 agent 的终止原因，"" = 未终止。从
-    ``episode.agent_termination_proposal_records[agent_id]`` 取。"""
-
-
 @dataclass
 class Trajectory:
     """Atomic training unit for PPO.
@@ -142,6 +111,3 @@ class Trajectory:
     importance: float = 1.0
     explore_factor: Optional[np.ndarray] = None
     floor_weight: Optional[np.ndarray] = None
-    provenance: Optional[TrajectoryProvenance] = None
-    """轨迹来源。调试工具用；生产路径不读取。None = 未提供，
-    逐帧溯源不可用（调试工具应明确提示，不静默给出错误 ID）。"""

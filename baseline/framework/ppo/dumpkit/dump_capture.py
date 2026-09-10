@@ -37,26 +37,28 @@ import numpy as np
 
 from baseline.framework.ppo.experiment import UpdateStats
 from baseline.framework.ppo.trainer import PPOBuffer
-from baseline.framework.ppo.trajectory import Trajectory, TrajectoryProvenance
+from baseline.framework.ppo.trajectory import Trajectory
 from baseline.framework.rollout.episode import Episode
 from baseline.framework.rollout.job import Job
 
 
 # ---------------------------------------------------------------------------
-# Provenance inference — obs content matching
+# Frame ID generation — obs content matching (dump-only, not in production)
 # ---------------------------------------------------------------------------
 
-def _infer_provenance(
+def _make_frame_ids(
     trajectories: List[Trajectory],
     episodes: List[Episode],
-) -> None:
-    """用 obs 内容匹配，自动推断 trajectory → episode 映射。
+) -> np.ndarray:
+    """用 obs 内容匹配生成 frame_id 数组。
 
     trajectory.obs 是 episode.observations[agent_id] 的连续切片，
     所以 obs[0] 可以唯一定位到 (episode_pos, agent_id, t_start)。
 
     用 hash 索引加速：O(total_frames) 建表 + O(n_trajs) 查表。
-    修改 trajectory.provenance in-place。
+    匹配失败的 trajectory 用 ``flat:{i}`` 标记。
+
+    返回 ``(n_total_frames,)`` dtype=object 的字符串数组。
     """
     # 建 hash 索引：obs bytes hash → [(ep_pos, agent_id, t), ...]
     index: Dict[int, List[Tuple[int, str, int]]] = {}
@@ -67,26 +69,34 @@ def _infer_provenance(
                 h = hash(obs_arr[t].tobytes())
                 index.setdefault(h, []).append((ep_pos, agent_id, t))
 
-    # 查表 + 验证
+    n_total = sum(len(t.obs) for t in trajectories)
+    ids = np.empty(n_total, dtype=object)
+    flat = 0
     for traj in trajectories:
-        if traj.provenance is not None:
-            continue  # 实验已填，跳过
-        if len(traj.obs) == 0:
+        T = len(traj.obs)
+        if T == 0:
             continue
+        # 查表匹配
         h = hash(np.asarray(traj.obs[0], dtype=np.float32).tobytes())
+        matched = False
         for ep_pos, agent_id, t_start in index.get(h, []):
             ep_obs = np.asarray(
                 episodes[ep_pos].observations[agent_id], dtype=np.float32,
             )
-            if t_start + len(traj.obs) > len(ep_obs):
+            if t_start + T > len(ep_obs):
                 continue
-            if np.array_equal(traj.obs, ep_obs[t_start:t_start + len(traj.obs)]):
-                traj.provenance = TrajectoryProvenance(
-                    episode_pos=ep_pos,
-                    agent_id=agent_id,
-                    t_start=t_start,
-                )
+            if np.array_equal(traj.obs, ep_obs[t_start:t_start + T]):
+                for j in range(T):
+                    ids[flat + j] = (
+                        f"ep{ep_pos:04d}:{agent_id}:{t_start + j}"
+                    )
+                matched = True
                 break
+        if not matched:
+            for j in range(T):
+                ids[flat + j] = f"flat:{flat + j}"
+        flat += T
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +265,7 @@ def _serialize_trajectories(
     return data
 
 
-def _serialize_buffer(buf: PPOBuffer) -> Dict[str, Any]:
+def _serialize_buffer(buf: PPOBuffer, frame_ids: np.ndarray) -> Dict[str, Any]:
     """Build the buffer.npz payload from the actual PPOBuffer."""
     data: Dict[str, Any] = {
         "obs": buf.obs,
@@ -265,13 +275,8 @@ def _serialize_buffer(buf: PPOBuffer) -> Dict[str, Any]:
         "explore_factor": buf.explore_factor,
         "floor_weight": buf.floor_weight,
         "ep_lengths": np.array(buf.ep_lengths),
+        "frame_id": frame_ids,
     }
-    fids = buf.frame_ids()
-    if fids is not None:
-        data["frame_id"] = fids
-    else:
-        n = len(buf.log_probs)
-        data["frame_id"] = np.array([f"flat:{i}" for i in range(n)], dtype=object)
     return data
 
 
@@ -710,11 +715,8 @@ def capture_dump(
     else:
         job = None
 
-    # --- provenance inference (obs content matching) ---
-    _infer_provenance(trajectories, episodes)
-
-    # --- frame_ids for correlation ---
-    frame_ids = buf.frame_ids()
+    # --- frame_ids for correlation (obs content matching, dump-only) ---
+    frame_ids = _make_frame_ids(trajectories, episodes)
 
     # --- episodes.npz ---
     ep_data = _serialize_episodes(episodes)
@@ -725,7 +727,7 @@ def capture_dump(
     np.savez_compressed(dump_dir / "trajectories.npz", **traj_data)
 
     # --- buffer.npz ---
-    buf_data = _serialize_buffer(buf)
+    buf_data = _serialize_buffer(buf, frame_ids)
     np.savez_compressed(dump_dir / "buffer.npz", **buf_data)
 
     # --- gae.npz (from dump_collector) ---

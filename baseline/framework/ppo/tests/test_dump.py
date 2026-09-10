@@ -341,8 +341,9 @@ def test_capture_dump_writes_all_files():
         # Check frame_id in buffer.npz
         buf_data = np.load(dump_dir / "buffer.npz", allow_pickle=True)
         assert "frame_id" in buf_data
-        # Without provenance, frame_id is flat:{i}
-        assert buf_data["frame_id"][0] == "flat:0"
+        # _make_frame_ids matches by obs content; fake episode uses same
+        # seed as trajectory, so obs matches → ep0000:robot_a:0
+        assert buf_data["frame_id"][0] == "ep0000:robot_a:0"
 
         # Check frame_id in trajectories.npz
         traj_data = np.load(dump_dir / "trajectories.npz", allow_pickle=True)
