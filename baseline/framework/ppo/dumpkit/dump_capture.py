@@ -37,9 +37,56 @@ import numpy as np
 
 from baseline.framework.ppo.experiment import UpdateStats
 from baseline.framework.ppo.trainer import PPOBuffer
-from baseline.framework.ppo.trajectory import Trajectory
+from baseline.framework.ppo.trajectory import Trajectory, TrajectoryProvenance
 from baseline.framework.rollout.episode import Episode
 from baseline.framework.rollout.job import Job
+
+
+# ---------------------------------------------------------------------------
+# Provenance inference — obs content matching
+# ---------------------------------------------------------------------------
+
+def _infer_provenance(
+    trajectories: List[Trajectory],
+    episodes: List[Episode],
+) -> None:
+    """用 obs 内容匹配，自动推断 trajectory → episode 映射。
+
+    trajectory.obs 是 episode.observations[agent_id] 的连续切片，
+    所以 obs[0] 可以唯一定位到 (episode_pos, agent_id, t_start)。
+
+    用 hash 索引加速：O(total_frames) 建表 + O(n_trajs) 查表。
+    修改 trajectory.provenance in-place。
+    """
+    # 建 hash 索引：obs bytes hash → [(ep_pos, agent_id, t), ...]
+    index: Dict[int, List[Tuple[int, str, int]]] = {}
+    for ep_pos, episode in enumerate(episodes):
+        for agent_id, ep_obs in episode.observations.items():
+            obs_arr = np.asarray(ep_obs, dtype=np.float32)
+            for t in range(len(obs_arr)):
+                h = hash(obs_arr[t].tobytes())
+                index.setdefault(h, []).append((ep_pos, agent_id, t))
+
+    # 查表 + 验证
+    for traj in trajectories:
+        if traj.provenance is not None:
+            continue  # 实验已填，跳过
+        if len(traj.obs) == 0:
+            continue
+        h = hash(np.asarray(traj.obs[0], dtype=np.float32).tobytes())
+        for ep_pos, agent_id, t_start in index.get(h, []):
+            ep_obs = np.asarray(
+                episodes[ep_pos].observations[agent_id], dtype=np.float32,
+            )
+            if t_start + len(traj.obs) > len(ep_obs):
+                continue
+            if np.array_equal(traj.obs, ep_obs[t_start:t_start + len(traj.obs)]):
+                traj.provenance = TrajectoryProvenance(
+                    episode_pos=ep_pos,
+                    agent_id=agent_id,
+                    t_start=t_start,
+                )
+                break
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +709,9 @@ def capture_dump(
             )
     else:
         job = None
+
+    # --- provenance inference (obs content matching) ---
+    _infer_provenance(trajectories, episodes)
 
     # --- frame_ids for correlation ---
     frame_ids = buf.frame_ids()

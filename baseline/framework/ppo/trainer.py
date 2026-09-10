@@ -286,7 +286,7 @@ class PPOBuffer:
     def frame_id(self, flat_index: int) -> str:
         """平坦索引 → 帧 ID。
 
-        格式 ``ep{episode_index:04d}:{agent_id}:{t}``。
+        格式 ``ep{episode_pos:04d}:{agent_id}:{t}``。
         无 provenance 时返回 ``flat:{i}``（调试工具据此提示溯源不可用，
         不静默给出错误 ID）。
         """
@@ -299,7 +299,7 @@ class PPOBuffer:
                 if prov is None:
                     return f"flat:{flat_index}"
                 t = prov.t_start + (flat_index - offset)
-                return f"ep{prov.episode_index:04d}:{prov.agent_id}:{t}"
+                return f"ep{prov.episode_pos:04d}:{prov.agent_id}:{t}"
             offset += T
         return f"flat:{flat_index}"
 
@@ -320,7 +320,7 @@ class PPOBuffer:
             prov = self.seg_provenance[i]
             for j in range(T):
                 ids[offset + j] = (
-                    f"ep{prov.episode_index:04d}:{prov.agent_id}:{prov.t_start + j}"
+                    f"ep{prov.episode_pos:04d}:{prov.agent_id}:{prov.t_start + j}"
                 )
             offset += T
         return ids
@@ -353,7 +353,7 @@ class PPOBuffer:
         offset = 0
         for i, T in enumerate(self.ep_lengths):
             prov = self.seg_provenance[i]
-            ep_str = f"ep{prov.episode_index:04d}"
+            ep_str = f"ep{prov.episode_pos:04d}"
             for j in range(T):
                 t = prov.t_start + j
                 if (ep_pat == "*" or ep_pat == ep_str) and \

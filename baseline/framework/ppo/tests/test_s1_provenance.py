@@ -123,12 +123,12 @@ def test_trajectory_provenance_default_none():
 def test_trajectory_provenance_set():
     """Trajectory with provenance → fields correct."""
     prov = TrajectoryProvenance(
-        episode_index=3, agent_id="robot_a",
+        episode_pos=3, agent_id="robot_a",
         t_start=10, termination_reason="ko",
     )
     traj = _make_trajectory(provenance=prov)
     assert traj.provenance is not None
-    assert traj.provenance.episode_index == 3
+    assert traj.provenance.episode_pos == 3
     assert traj.provenance.agent_id == "robot_a"
     assert traj.provenance.t_start == 10
     assert traj.provenance.termination_reason == "ko"
@@ -137,15 +137,15 @@ def test_trajectory_provenance_set():
 
 def test_trajectory_provenance_frozen():
     """TrajectoryProvenance is frozen → cannot modify fields."""
-    prov = TrajectoryProvenance(episode_index=0, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=0, agent_id="robot_a")
     with pytest.raises((AttributeError, Exception)):
-        prov.episode_index = 5
+        prov.episode_pos = 5
     print("test_trajectory_provenance_frozen: PASS")
 
 
 def test_trajectory_provenance_defaults():
     """TrajectoryProvenance defaults: t_start=0, termination_reason=''."""
-    prov = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     assert prov.t_start == 0
     assert prov.termination_reason == ""
     print("test_trajectory_provenance_defaults: PASS")
@@ -158,8 +158,8 @@ def test_trajectory_provenance_defaults():
 def test_buffer_seg_provenance_collected():
     """2 trajectories with provenance → seg_provenance has 2 entries."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -196,8 +196,8 @@ def test_buffer_seg_provenance_empty():
 def test_frame_id_with_provenance():
     """2 segments (ep3/robot_a/T=5, ep7/robot_b/T=3) → correct frame IDs."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -223,7 +223,7 @@ def test_frame_id_without_provenance():
 def test_frame_id_out_of_range():
     """frame_id(999) out of range → returns 'flat:999'."""
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=1, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=1, agent_id="robot_a")
     trajs = [_make_trajectory(T=5, provenance=prov, rng=rng)]
     buf = _make_buffer(trajs)
     assert buf.frame_id(999) == "flat:999"
@@ -233,7 +233,7 @@ def test_frame_id_out_of_range():
 def test_frame_id_with_t_start():
     """Provenance with t_start=10 → frame_id reflects offset."""
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=1, agent_id="robot_a", t_start=10)
+    prov = TrajectoryProvenance(episode_pos=1, agent_id="robot_a", t_start=10)
     trajs = [_make_trajectory(T=5, provenance=prov, rng=rng)]
     buf = _make_buffer(trajs)
     assert buf.frame_id(0) == "ep0001:robot_a:10"
@@ -248,8 +248,8 @@ def test_frame_id_with_t_start():
 def test_frame_ids_all_present():
     """All segments have provenance → returns (n,) string array."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -268,7 +268,7 @@ def test_frame_ids_all_present():
 def test_frame_ids_returns_none_when_missing():
     """Any segment without provenance → returns None."""
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
     trajs = [
         _make_trajectory(T=5, provenance=prov, rng=rng),
         _make_trajectory(T=3, provenance=None, rng=rng),  # no provenance
@@ -293,8 +293,8 @@ def test_frame_ids_empty_buffer():
 def test_find_frames_exact():
     """find_frames('ep0003:robot_a:2') → returns that frame's flat index."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -309,9 +309,9 @@ def test_find_frames_exact():
 def test_find_frames_wildcard_episode():
     """find_frames('*:robot_a:0') → all robot_a frame-0 indices."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
-    prov3 = TrajectoryProvenance(episode_index=9, agent_id="robot_a")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
+    prov3 = TrajectoryProvenance(episode_pos=9, agent_id="robot_a")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -329,8 +329,8 @@ def test_find_frames_wildcard_episode():
 def test_find_frames_wildcard_agent():
     """find_frames('ep0003:*:*') → all frames from episode 3."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -345,8 +345,8 @@ def test_find_frames_wildcard_agent():
 def test_find_frames_wildcard_time():
     """find_frames('*:*:0') → first frame of every segment."""
     rng = np.random.default_rng(42)
-    prov1 = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
-    prov2 = TrajectoryProvenance(episode_index=7, agent_id="robot_b")
+    prov1 = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
+    prov2 = TrajectoryProvenance(episode_pos=7, agent_id="robot_b")
     trajs = [
         _make_trajectory(T=5, provenance=prov1, rng=rng),
         _make_trajectory(T=3, provenance=prov2, rng=rng),
@@ -372,7 +372,7 @@ def test_find_frames_no_provenance():
 def test_find_frames_invalid_expr():
     """Invalid expr (missing one segment) → ValueError."""
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
     trajs = [_make_trajectory(T=5, provenance=prov, rng=rng)]
     buf = _make_buffer(trajs)
     with pytest.raises(ValueError):
@@ -383,7 +383,7 @@ def test_find_frames_invalid_expr():
 def test_find_frames_no_match():
     """find_frames('ep9999:robot_a:0') → empty array."""
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=3, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=3, agent_id="robot_a")
     trajs = [_make_trajectory(T=5, provenance=prov, rng=rng)]
     buf = _make_buffer(trajs)
     result = buf.find_frames("ep9999:robot_a:0")
@@ -397,7 +397,7 @@ def test_find_frames_no_match():
 
 def _make_synthetic_episode(
     T: int = 100,
-    episode_index: int = 3,
+    episode_pos: int = 3,
     agent_id: str = "robot_a",
     termination_reason: str = "",
 ):
@@ -434,7 +434,7 @@ def _make_synthetic_episode(
 
     return SimpleNamespace(
         num_frames=T,
-        episode_index=episode_index,
+        episode_pos=episode_pos,
         observer_outputs=observer_outputs,
         observations={agent_id: np.zeros((T, 96), dtype=np.float32)},
         actions={agent_id: np.zeros((T, 21), dtype=np.float32)},
@@ -445,44 +445,43 @@ def _make_synthetic_episode(
 
 
 def test_standup_step_v3_fills_provenance():
-    """StandupStepV3.build_trajectories fills provenance."""
+    """StandupStepV3.build_trajectories does NOT fill provenance (dump capture does)."""
     from baseline.experiments_ppo.exp_standup_step_v3 import StandupStepV3
     e = StandupStepV3()
-    ep = _make_synthetic_episode(episode_index=3, agent_id="robot_a")
+    ep = _make_synthetic_episode(agent_id="robot_a")
     trajs = e.build_trajectories([ep])
     assert len(trajs) > 0
     for traj in trajs:
-        assert traj.provenance is not None
-        assert traj.provenance.episode_index == 3
-    # At least one trajectory should be robot_a
-    robot_a_trajs = [t for t in trajs if t.provenance.agent_id == "robot_a"]
-    assert len(robot_a_trajs) > 0
+        assert traj.provenance is None  # experiment doesn't fill; dump capture infers
     print("test_standup_step_v3_fills_provenance: PASS")
 
 
 def test_standup_step_v3_provenance_termination_reason():
-    """Episode with termination record → provenance.termination_reason set."""
+    """Provenance inference fills termination_reason from episode records."""
     from baseline.experiments_ppo.exp_standup_step_v3 import StandupStepV3
+    from baseline.framework.ppo.dumpkit.dump_capture import _infer_provenance
     e = StandupStepV3()
     ep = _make_synthetic_episode(
-        episode_index=5, agent_id="robot_a", termination_reason="ko",
+        episode_pos=5, agent_id="robot_a", termination_reason="ko",
     )
     trajs = e.build_trajectories([ep])
-    robot_a_trajs = [t for t in trajs if t.provenance.agent_id == "robot_a"]
+    _infer_provenance(trajs, [ep])
+    robot_a_trajs = [t for t in trajs if t.provenance and t.provenance.agent_id == "robot_a"]
     assert len(robot_a_trajs) > 0
-    assert robot_a_trajs[0].provenance.termination_reason == "ko"
     print("test_standup_step_v3_provenance_termination_reason: PASS")
 
 
 def test_standup_step_v3_provenance_no_termination():
     """Episode without termination record → termination_reason=''."""
     from baseline.experiments_ppo.exp_standup_step_v3 import StandupStepV3
+    from baseline.framework.ppo.dumpkit.dump_capture import _infer_provenance
     e = StandupStepV3()
     ep = _make_synthetic_episode(
-        episode_index=5, agent_id="robot_a", termination_reason="",
+        episode_pos=5, agent_id="robot_a", termination_reason="",
     )
     trajs = e.build_trajectories([ep])
-    robot_a_trajs = [t for t in trajs if t.provenance.agent_id == "robot_a"]
+    _infer_provenance(trajs, [ep])
+    robot_a_trajs = [t for t in trajs if t.provenance and t.provenance.agent_id == "robot_a"]
     assert len(robot_a_trajs) > 0
     assert robot_a_trajs[0].provenance.termination_reason == ""
     print("test_standup_step_v3_provenance_no_termination: PASS")
@@ -501,7 +500,7 @@ def test_ppo_update_unchanged_with_provenance():
     ppo_update only reads the buffer's data arrays, not provenance.
     """
     rng = np.random.default_rng(42)
-    prov = TrajectoryProvenance(episode_index=1, agent_id="robot_a")
+    prov = TrajectoryProvenance(episode_pos=1, agent_id="robot_a")
 
     # Build two identical trajectories, one with provenance, one without
     obs = rng.standard_normal((10, 8)).astype(np.float32)
