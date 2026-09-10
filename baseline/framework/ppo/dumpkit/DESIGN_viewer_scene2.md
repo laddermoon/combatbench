@@ -1,5 +1,18 @@
 # Debug Viewer — 场景二：Trajectory → Value / Advantage / Return 视图
 
+## 定位与边界
+
+**场景二聚焦于"训练输入数据的截面"**——即 PPO update 中 epoch 循环**之前**计算的所有数据。
+
+这些数据是 epoch-invariant 的：value / advantage / return / combined_adv 在整个多 epoch 训练循环中不变，是 actor 和 critic 的训练目标。
+
+**不在场景二范围内**：
+- per-epoch 演化（KL 随 epoch 变化、ratio 偏离、early stop 触发）
+- per-minibatch 动态（per-frame ratio / clip mask / gradient）
+- policy 参数变化（θ_old → θ_new 的移动）
+
+这些属于"训练过程动态"，是后续场景的职责。当前 dump 也没有保存 per-epoch / per-minibatch 数据。
+
 ## 目的
 
 回答一个问题：**"这条 trajectory 的每一帧，critic 估了什么值，GAE 算了什么 advantage，combine 后 actor 实际用了什么信号？"**
@@ -15,7 +28,7 @@
 
 ## 核心概念
 
-### 数据流水线（trainer.py `ppo_update`）
+### 数据流水线（trainer.py `ppo_update`，epoch 循环之前）
 
 ```
 reward (per-channel, per-frame)
@@ -25,8 +38,11 @@ reward (per-channel, per-frame)
   × confidence_c = sqrt(clip(EV_c))   [combine.npz: confidences]
   × actor_weight_c (L1-normalized)    [combine.npz: key_actor_weight_frame]
   ↓ Σ_c → combined_adv                [combine.npz: combined_adv]
-  ↓ PPO clip(ratio, combined_adv)     [update.npz: policy_loss, KL, ...]
 ```
+
+这些数据是 **epoch-invariant** 的：在整个多 epoch 训练循环中不变，是 actor 和 critic 的训练目标。
+
+epoch 循环（参数更新、KL 演化、early stop）不属于场景二，是后续场景的职责。
 
 ### 关键关系
 
@@ -153,14 +169,12 @@ seg_offset[j] = sum(ep_lengths[:j])
 │  └──────────────────────────────────────────────────────────────────┘ │
 │                                                                        │
 │  ┌──────────────────────────────────────────────────────────────────┐ │
-│  │ Update Context (global, this update)                             │ │
+│  │ Bootstrap (this trajectory)                                      │ │
 │  │                                                                    │ │
-│  │ KL: 0.0132 (max 0.0213)  clip_frac: 20.1%  ratio: 1.000 (max 2.64)│ │
-│  │ policy_loss: -0.0088  actor_grad: 2.77  epochs: 4/4  batches: 50  │ │
-│  │                                                                    │ │
-│  │ bootstrap: this trajectory is truncated → V(s_next) used:         │ │
+│  │ status: truncated → V(s_next) used for GAE bootstrap             │ │
 │  │   r_potential: +0.0071  r_fall: -0.1032  r_left_foot: +0.5071     │ │
 │  │   r_right_foot: +0.5050                                            │ │
+│  │ (terminated → "no bootstrap (terminated)")                       │ │
 │  └──────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -190,10 +204,9 @@ seg_offset[j] = sum(ep_lengths[:j])
    - 底部显示 `combined_adv` 最终值
    - 让用户看到每个 channel 如何贡献到 actor 信号
 
-3. **Update Context**：全局统计 + bootstrap 信息
-   - KL / clip_frac / ratio / policy_loss / grad_norm
-   - 如果当前 trajectory 是 truncated（非 terminated），显示 bootstrap V(s_next)
-   - 如果是 terminated，显示 "no bootstrap (terminated)"
+3. **Bootstrap**：当前 trajectory 的 bootstrap 信息
+   - 如果 truncated（非 terminated），显示 per-channel bootstrap V(s_next)
+   - 如果 terminated，显示 "no bootstrap (terminated)"
 
 ## 交互
 
@@ -291,9 +304,6 @@ GET /api/trajectory/<traj_idx>/frame/<local_frame>
       // bootstrap
       is_terminated: { channel: bool, ... },
       bootstrap_value: { channel: float or null, ... },
-      // update context
-      approx_kl, max_kl, clip_frac, ratio_mean, ratio_max,
-      policy_loss, grad_norm_actor, epochs_done, n_batches,
     }
 ```
 
@@ -389,7 +399,10 @@ Scene 1 的 `traj_map.json` 已经建立了 trajectory → episode 映射。Scen
 
 ## 不做的事
 
-- 不做跨 trajectory 对比（那是其他场景）
+- 不做 per-epoch 演化（KL 随 epoch 变化、ratio 偏离、early stop 触发）——属于训练过程动态，是后续场景的职责
+- 不做 per-minibatch 动态（per-frame ratio / clip mask / gradient）——同上
+- 不做 policy 参数变化可视化（θ_old → θ_new）——同上
+- 不做跨 trajectory 对比
 - 不做梯度可视化（数据量太大，且 update.npz 只保存了 epoch 0 mb 0 的梯度）
 - 不做 critic 网络结构可视化
 - 不做多 update 对比
