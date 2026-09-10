@@ -53,6 +53,8 @@ from .experiment import (
     TrainablePolicy,
 )
 from .trainer import PPOBuffer, ppo_update, set_seed
+from .dumpkit.dump_request import poll_dump_request
+from .dumpkit.dump_capture import capture_dump
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +444,12 @@ def train_ppo(
         for u in range(start_update, cp.max_updates + 1):
             t_update_start = time.perf_counter()
 
-            # 0. Exploration scheduling — resolve PPO update parameters
+            # 0. Dump request poll — check for a one-shot dump trigger.
+            #    When found, capture the complete update data after ppo_update.
+            dump_req = poll_dump_request(run_dir, u)
+            dump_collector: Dict[str, Dict[str, Any]] = {}
+
+            # 0b. Exploration scheduling — resolve PPO update parameters
             #    (uncertainty_floor, uncertainty_coef) for this update.
             #    explore_factor is NOT here — it is decided inside
             #    build_jobs and placed into each Job's fields.
@@ -508,8 +515,37 @@ def train_ppo(
                 device=device,
                 use_confidence=use_confidence,
                 exploration=exploration,
+                dump_callback=(
+                    lambda stage, data: dump_collector.__setitem__(stage, data)
+                ) if dump_req is not None else None,
+                include_full_grad=(
+                    dump_req.include_full_grad
+                    if dump_req is not None else False
+                ),
             )
             t_ppo = time.perf_counter() - t0
+
+            # 5a. Dump capture — when a request was polled, write the
+            #     complete update data (episodes, trajectories, buffer,
+            #     GAE, combine, gradients) + RECORD_GUIDE.md to
+            #     <run_dir>/dumps/u{u:05d}/.  All data from actual training
+            #     objects — no reconstruction.
+            if dump_req is not None and not stats.is_empty:
+                try:
+                    capture_dump(
+                        run_dir=run_dir,
+                        update=u,
+                        request=dump_req,
+                        episodes=episodes,
+                        trajectories=all_trajs,
+                        buf=buf,
+                        stats=stats,
+                        jobs=jobs,
+                        dump_collector=dump_collector,
+                        experiment_name=cp.name,
+                    )
+                except Exception as e:
+                    print(f"[dump] capture failed: {e}", flush=True)
             # B8: Print diagnostics collected by ppo_update (kept pure
             # by deferring all printing to the loop).
             for line in stats.diagnostics:

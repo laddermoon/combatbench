@@ -45,7 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -503,7 +503,9 @@ def ppo_update(
     device: torch.device,
     use_confidence: bool = True,
     exploration: Optional[ExplorationSpec] = None,
-) -> Dict[str, float]:
+    dump_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    include_full_grad: bool = False,
+) -> UpdateStats:
     """Multi-critic PPO update with fixed defaults.
 
     - Advantage normalization: z-score on active frames (per-channel).
@@ -532,9 +534,17 @@ def ppo_update(
             compute the uncertainty floor loss; ``explore_factor`` was
             already applied to the policy before rollout via
             ``set_exploration``.
+        dump_callback: Optional ``callable(stage, data)`` invoked at
+            ``"gae"``, ``"combine"``, and ``"update"`` stages with the
+            already-computed arrays.  Used by the dump capture path to
+            snapshot real training data without altering the update.
+            When ``None`` (default) no callback is invoked — zero overhead.
+        include_full_grad: When True and ``dump_callback`` is set, capture
+            the full flat actor gradient at epoch 0, minibatch 0.  Off by
+            default (large).
 
     Returns:
-        Stats dict for logging.
+        UpdateStats for logging.
     """
     # P0-3: Empty buffer (build_trajectories returned []) is a normal
     # scenario in curriculum learning (all episodes filtered out).  Short
@@ -682,6 +692,19 @@ def ppo_update(
                 f"mean={r_active.mean():+.3f} std={r_active.std():.3f} "
                 f"(active={mask.sum()}/{len(mask)})"
             )
+
+    # --- Dump hook: GAE stage ---
+    if dump_callback is not None:
+        gae_payload: Dict[str, Any] = {
+            "values_all": dict(values_all),
+            "advs_all": dict(advs_all),
+            "rets_all": dict(rets_all),
+            "key_frame_mask": dict(key_frame_mask),
+            "bootstrap_values": dict(bootstrap_values) if bootstrap_values else {},
+            "key_seg_active": {k: np.array(v, dtype=bool) for k, v in buf.key_seg_active.items()},
+            "key_seg_terminated": {k: np.array(v, dtype=bool) for k, v in buf.key_seg_terminated.items()},
+        }
+        dump_callback("gae", gae_payload)
 
     # --- 4. Explained variance per critic ---
     # EV = 1 - Var(y_true - y_pred) / Var(y_true)
@@ -839,6 +862,19 @@ def ppo_update(
                 f"{active_advs[0]:.4f}). Channel contributes no actor "
                 f"gradient this update."
             )
+
+    # --- Dump hook: combine stage ---
+    if dump_callback is not None:
+        combine_payload: Dict[str, Any] = {
+            "combined_adv": combined_adv,
+            "key_actor_weight_frame": dict(key_actor_weight_frame),
+            "confidences": dict(confidences),
+            "aw_l1_sum": aw_l1_sum,
+            "key_frame_mask": dict(key_frame_mask),
+            "explained_variances": dict(explained_variances),
+        }
+        dump_callback("combine", combine_payload)
+
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
@@ -1104,6 +1140,30 @@ def ppo_update(
             grad_norm_a = torch.nn.utils.clip_grad_norm_(
                 actor.parameters(), grad_clip_norm,
             )
+
+            # --- Dump hook: update stage (epoch 0, minibatch 0 only) ---
+            if dump_callback is not None and epoch == 0 and mb_idx == 0:
+                update_payload: Dict[str, Any] = {
+                    "grad_norm_actor_pre_clip": float(grad_norm_a),
+                    "policy_loss": float(policy_loss),
+                    "epoch_idx": epoch,
+                    "mb_idx": mb_idx,
+                }
+                # Per-parameter grad norms (diagnostic).
+                param_grad_norms: Dict[str, float] = {}
+                for name, p in actor.named_parameters():
+                    if p.grad is not None:
+                        param_grad_norms[name] = float(p.grad.norm().item())
+                update_payload["param_grad_norms"] = param_grad_norms
+                # Full flat gradient (optional — large).
+                if include_full_grad:
+                    full_grad = torch.cat(
+                        [p.grad.detach().flatten()
+                         for p in actor.parameters() if p.grad is not None]
+                    ).cpu().numpy()
+                    update_payload["full_grad"] = full_grad
+                dump_callback("update", update_payload)
+
             all_grad_norms_actor.append(float(grad_norm_a))
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
