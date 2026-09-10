@@ -53,7 +53,7 @@ import torch
 from baseline.framework.ppo.algos import compute_gae
 
 from .experiment import PPOParams, TrainablePolicy, UpdateStats
-from .trajectory import RewardChannel, Trajectory
+from .trajectory import RewardChannel, Trajectory, TrajectoryProvenance
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +132,7 @@ class PPOBuffer:
         }
 
         self.actor_stats: Dict[str, float] = {}
+        self.seg_provenance: List[Optional[TrajectoryProvenance]] = []
 
         if not trajectories:
             # P0-3: Use 2-D shapes so downstream torch.as_tensor + nn.Linear
@@ -254,6 +255,7 @@ class PPOBuffer:
                 np.full(T_seg, traj.importance, dtype=np.float32)
             )
             ep_lens.append(T_seg)
+            self.seg_provenance.append(traj.provenance)
 
         if not ep_lens:
             self.obs = np.zeros((0, 0), np.float32)
@@ -276,6 +278,90 @@ class PPOBuffer:
 
     def is_empty(self) -> bool:
         return len(self.ep_lengths) == 0
+
+    # ------------------------------------------------------------------
+    # Frame provenance — flat index → (episode, agent, t)
+    # ------------------------------------------------------------------
+
+    def frame_id(self, flat_index: int) -> str:
+        """平坦索引 → 帧 ID。
+
+        格式 ``ep{episode_index:04d}:{agent_id}:{t}``。
+        无 provenance 时返回 ``flat:{i}``（调试工具据此提示溯源不可用，
+        不静默给出错误 ID）。
+        """
+        if not self.seg_provenance or not self.ep_lengths:
+            return f"flat:{flat_index}"
+        offset = 0
+        for i, T in enumerate(self.ep_lengths):
+            if flat_index < offset + T:
+                prov = self.seg_provenance[i]
+                if prov is None:
+                    return f"flat:{flat_index}"
+                t = prov.t_start + (flat_index - offset)
+                return f"ep{prov.episode_index:04d}:{prov.agent_id}:{t}"
+            offset += T
+        return f"flat:{flat_index}"
+
+    def frame_ids(self) -> Optional[np.ndarray]:
+        """全部帧 ID（有 provenance 时），否则 None。
+
+        返回 ``(n,)`` dtype=object 的字符串数组。任一段无 provenance
+        则返回 None（全有或全无，不混合）。
+        """
+        if not self.seg_provenance or not self.ep_lengths:
+            return None
+        if any(p is None for p in self.seg_provenance):
+            return None
+        n = sum(self.ep_lengths)
+        ids = np.empty(n, dtype=object)
+        offset = 0
+        for i, T in enumerate(self.ep_lengths):
+            prov = self.seg_provenance[i]
+            for j in range(T):
+                ids[offset + j] = (
+                    f"ep{prov.episode_index:04d}:{prov.agent_id}:{prov.t_start + j}"
+                )
+            offset += T
+        return ids
+
+    def find_frames(self, expr: str) -> np.ndarray:
+        """按表达式筛帧，返回匹配的平坦索引数组。
+
+        表达式格式 ``ep{N}:{agent}:{t}``，任一字段可用 ``*`` 通配。
+        例：``ep0003:robot_a:*``、``*:robot_a:137``、``ep0003:*:*``。
+
+        无 provenance 时返回空数组并打印警告。
+        """
+        if not self.seg_provenance or not self.ep_lengths:
+            import sys
+            print("[warn] no provenance — frame search unavailable",
+                  file=sys.stderr)
+            return np.array([], dtype=int)
+        if any(p is None for p in self.seg_provenance):
+            import sys
+            print("[warn] some segments lack provenance — frame search unavailable",
+                  file=sys.stderr)
+            return np.array([], dtype=int)
+        parts = expr.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                f"frame ID expr must be ep{{N}}:{{agent}}:{{t}}, got {expr!r}"
+            )
+        ep_pat, agent_pat, t_pat = parts
+        matches = []
+        offset = 0
+        for i, T in enumerate(self.ep_lengths):
+            prov = self.seg_provenance[i]
+            ep_str = f"ep{prov.episode_index:04d}"
+            for j in range(T):
+                t = prov.t_start + j
+                if (ep_pat == "*" or ep_pat == ep_str) and \
+                   (agent_pat == "*" or agent_pat == prov.agent_id) and \
+                   (t_pat == "*" or int(t_pat) == t):
+                    matches.append(offset + j)
+            offset += T
+        return np.array(matches, dtype=int)
 
     def buffer_stats(self) -> Dict[str, Any]:
         """Comprehensive buffer statistics for logging.

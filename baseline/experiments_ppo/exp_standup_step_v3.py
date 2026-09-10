@@ -54,7 +54,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
+from baseline.framework.ppo.trajectory import (
+    ChannelData,
+    RewardChannel,
+    Trajectory,
+    TrajectoryProvenance,
+)
 from baseline.framework.rollout import extract_per_step_field
 
 from .base import CombatExperimentPPOBase
@@ -477,6 +482,21 @@ class StandupStepV3(CombatExperimentPPOBase):
                 actor_weight=actor_weights[key],
             )
 
+        # 轨迹来源：episode_index + agent_id + t_start + 终止原因。
+        # episode_index 是 Episode.episode_index（不是列表下标），
+        # 在并行收集顺序下保持稳定。termination_reason 取该 agent 的
+        # 首条终止记录（"" = 未终止）。
+        term_reason = ""
+        records = episode.agent_termination_proposal_records.get(agent_id, ())
+        if records:
+            term_reason = records[0][0]
+        prov = TrajectoryProvenance(
+            episode_index=episode.episode_index,
+            agent_id=agent_id,
+            t_start=0,
+            termination_reason=term_reason,
+        )
+
         return [Trajectory(
             obs=obs_all,
             actions=acts_all,
@@ -485,6 +505,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             importance=1.0,
             explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
             floor_weight=balance_mask.astype(np.float32),
+            provenance=prov,
         )]
 
     @staticmethod
