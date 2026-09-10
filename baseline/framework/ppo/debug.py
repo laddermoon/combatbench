@@ -88,43 +88,24 @@ def _cmd_dump(args: argparse.Namespace) -> int:
     print("To render images and auto-verify:")
     print(f"  PYTHONPATH=. python3 baseline/framework/ppo/debug.py render "
           f"{run_dir}/dumps/u<NNNNN> --episode 0")
-    print("  (or just pass the run_dir to auto-discover the latest dump)")
     return 0
-
-
-def _find_latest_dump(run_dir: Path) -> Optional[Path]:
-    """Find the latest dump directory under <run_dir>/dumps/u*/."""
-    dumps_root = run_dir / "dumps"
-    if not dumps_root.is_dir():
-        return None
-    candidates = sorted(dumps_root.glob("u*"))
-    # Filter to valid dump dirs (must have episodes.npz)
-    valid = [d for d in candidates if (d / "episodes.npz").exists()]
-    return valid[-1] if valid else None
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.dump_render import render_episode
 
-    target = Path(args.target).resolve()
-    if not target.is_dir():
-        print(f"error: directory does not exist: {target}", file=sys.stderr)
+    dump_dir = Path(args.dump_dir).resolve()
+    if not dump_dir.is_dir():
+        print(f"error: dump directory does not exist: {dump_dir}", file=sys.stderr)
         return 2
 
-    # If target is a dump dir (has episodes.npz), use it directly.
-    # Otherwise treat it as a run_dir and auto-discover the latest dump.
-    if (target / "episodes.npz").exists():
-        dump_dir = target
-    else:
-        dump_dir = _find_latest_dump(target)
-        if dump_dir is None:
-            print(
-                f"error: no dump found under {target}/dumps/. "
-                f"Request a dump first with: python3 baseline/framework/ppo/debug.py "
-                f"dump {target} --hypothesis \"...\"",
-                file=sys.stderr,
-            )
-            return 2
+    if not (dump_dir / "episodes.npz").exists():
+        print(
+            f"error: {dump_dir} is not a valid dump directory "
+            f"(missing episodes.npz)",
+            file=sys.stderr,
+        )
+        return 2
 
     print(f"[render] using dump: {dump_dir}")
 
@@ -199,10 +180,9 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_render.add_argument(
-        "target",
+        "dump_dir",
         type=str,
-        help="Dump directory (e.g. runs/.../dumps/u00008/) or run directory "
-             "(auto-discovers latest dump).",
+        help="Dump directory (e.g. runs/.../dumps/u00008/).",
     )
     p_render.add_argument(
         "--episode",
