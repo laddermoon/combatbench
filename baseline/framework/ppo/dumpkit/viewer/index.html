@@ -704,6 +704,28 @@
     if (options.currentFrame !== undefined && options.currentFrame >= 0 && options.currentFrame < n) {
       const x = xScale(options.currentFrame);
       svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--accent)" stroke-width="1" opacity="0.6"/>`;
+      // Value labels at the current frame position
+      // Each visible series gets a small label showing its value at currentFrame.
+      // Labels are stacked vertically to avoid overlap, alternating above/below
+      // the data point.
+      const cf = options.currentFrame;
+      const labels = visibleSeries.filter(s => s.data.length > cf && !isNaN(s.data[cf]));
+      // Determine label placement: stack from top, each label ~13px tall
+      const labelH = 13;
+      let labelIdx = 0;
+      labels.forEach(s => {
+        const val = s.data[cf];
+        const y = yScale(val);
+        const ly = margin.top + 2 + labelIdx * labelH;
+        const text = fmt(val, 4);
+        // Colored dot + value text
+        svg += `<rect x="${x + 3}" y="${ly - 9}" width="${text.length * 6 + 4}" height="12" fill="var(--bg)" opacity="0.85" rx="2"/>`;
+        svg += `<circle cx="${x + 5}" cy="${ly - 3}" r="2" fill="${s.color}"/>`;
+        svg += `<text x="${x + 10}" y="${ly}" fill="${s.color}" font-size="10" font-family="ui-monospace,monospace">${text}</text>`;
+        // Small marker dot on the line
+        svg += `<circle cx="${x}" cy="${y}" r="2.5" fill="${s.color}" stroke="var(--bg)" stroke-width="0.5"/>`;
+        labelIdx++;
+      });
     }
 
     svg += `</svg>`;
