@@ -1049,12 +1049,8 @@
         });
       });
 
-      // Update frame_id in context bar
-      if (data.trajectories && data.trajectories.length > 0 && data.trajectories[0].frame_id) {
-        $('ctx-frameid').textContent = data.trajectories[0].frame_id;
-      } else {
-        $('ctx-frameid').textContent = '-';
-      }
+      // Update frame_id in context bar (episode-level, no agent)
+      $('ctx-frameid').textContent = `ep${String(pos).padStart(4, '0')}:${frame}`;
 
     } catch (e) {
       $('ep-data-panel').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
