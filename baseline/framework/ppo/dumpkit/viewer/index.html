@@ -1250,23 +1250,38 @@
       html += `<div class="channel-block">`;
       html += `<h3 class="channel-title">${escapeHtml(ch)}</h3>`;
 
-      // Chart: reward, value, advantage, return (NOT normalized adv — that's in cross-channel)
-      const series1 = [];
-      const lineDefs1 = [
-        ['reward', 'reward', `reward_${ch}`, '#4fa3ff'],
-        ['value', 'value', `values_${ch}`, '#6ec86e'],
-        ['adv', 'advantage', `advs_${ch}`, '#e5c07b'],
-        ['ret', 'return', `rets_${ch}`, '#c678dd'],
-      ];
-      for (const [, label, dataKey, color] of lineDefs1) {
-        if (ov[dataKey]) {
-          series1.push({label: label, data: ov[dataKey], color: color});
+      // Chart 1: reward + advantage (same magnitude — per-step quantities)
+      {
+        const series = [];
+        if (ov[`reward_${ch}`]) {
+          series.push({label: 'reward', data: ov[`reward_${ch}`], color: '#4fa3ff'});
+        }
+        if (ov[`advs_${ch}`]) {
+          series.push({label: 'advantage', data: ov[`advs_${ch}`], color: '#e5c07b'});
+        }
+        if (series.length > 0) {
+          html += `<div class="chart-container">`;
+          html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Reward & Advantage (per-step)</h4>`;
+          html += makeChart(series, {currentFrame: frame});
+          html += `</div>`;
         }
       }
-      if (series1.length > 0) {
-        html += `<div class="chart-container">`;
-        html += makeChart(series1, {currentFrame: frame});
-        html += `</div>`;
+
+      // Chart 2: return + value (same magnitude — cumulative quantities)
+      {
+        const series = [];
+        if (ov[`rets_${ch}`]) {
+          series.push({label: 'return', data: ov[`rets_${ch}`], color: '#c678dd'});
+        }
+        if (ov[`values_${ch}`]) {
+          series.push({label: 'value', data: ov[`values_${ch}`], color: '#6ec86e'});
+        }
+        if (series.length > 0) {
+          html += `<div class="chart-container">`;
+          html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Return & Value (cumulative)</h4>`;
+          html += makeChart(series, {currentFrame: frame});
+          html += `</div>`;
+        }
       }
 
       html += `</div>`; // channel-block
