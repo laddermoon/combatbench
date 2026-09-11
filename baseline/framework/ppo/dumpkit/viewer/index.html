@@ -850,8 +850,22 @@
       }
       html += `<div class="info-item"><span class="info-label">Frame:</span><span class="info-value">${frame + 1} / ${parseInt($('ep-slider').max) + 1}</span></div>`;
       if (data.termination) {
-        const termReason = data.termination.reason || data.termination.termination_reason || 'unknown';
-        html += `<div class="info-item"><span class="info-label">Termination:</span><span class="info-value">${escapeHtml(termReason)}</span></div>`;
+        // Per-agent termination: {robot_a: [[reason, step]], robot_b: [...]}
+        const term = data.termination;
+        let termSummary = '';
+        if (typeof term === 'object' && !Array.isArray(term)) {
+          const reasons = [];
+          for (const [aid, recs] of Object.entries(term)) {
+            if (Array.isArray(recs) && recs.length > 0) {
+              const r = Array.isArray(recs[0]) ? recs[0][0] : recs[0];
+              reasons.push(`${aid}: ${r}`);
+            }
+          }
+          termSummary = reasons.join(', ') || 'unknown';
+        } else {
+          termSummary = String(term);
+        }
+        html += `<div class="info-item"><span class="info-label">Termination:</span><span class="info-value">${escapeHtml(termSummary)}</span></div>`;
       }
       html += '</div>';
 
@@ -925,10 +939,28 @@
         html += '</div>';
       }
 
-      // Termination
+      // Termination (per-agent)
       if (data.termination) {
         html += '<h3 data-collapse="term"><span class="collapse-icon">▼</span> Termination</h3>';
-        html += `<pre id="term">${escapeHtml(JSON.stringify(data.termination, null, 2))}</pre>`;
+        const term = data.termination;
+        if (typeof term === 'object' && !Array.isArray(term)) {
+          html += '<div id="term"><table class="data-table" style="width:100%">';
+          html += '<tr><th>Agent</th><th>Reason</th><th>Step</th></tr>';
+          for (const [aid, records] of Object.entries(term)) {
+            if (Array.isArray(records)) {
+              records.forEach(rec => {
+                const reason = Array.isArray(rec) ? rec[0] : rec;
+                const step = Array.isArray(rec) ? rec[1] : '-';
+                html += `<tr><td>${escapeHtml(aid)}</td><td class="bool">${escapeHtml(String(reason))}</td><td class="num">${step}</td></tr>`;
+              });
+            } else {
+              html += `<tr><td>${escapeHtml(aid)}</td><td colspan="2">${escapeHtml(String(records))}</td></tr>`;
+            }
+          }
+          html += '</table></div>';
+        } else {
+          html += `<pre id="term">${escapeHtml(JSON.stringify(term, null, 2))}</pre>`;
+        }
       }
 
       // --- Section separator ---

@@ -422,7 +422,11 @@ class ViewerAPI:
         term_records = ep_npz.get("_termination_records")
         if term_records is not None and term_records.size > 0:
             try:
-                term_data = json.loads(str(term_records.item() if term_records.dtype == object else term_records[0]))
+                if term_records.dtype == object:
+                    raw = str(term_records.item())
+                else:
+                    raw = str(term_records.item() if term_records.ndim == 0 else term_records[0])
+                term_data = json.loads(raw)
                 ep_key = f"ep{ep_pos:04d}"
                 if ep_key in term_data:
                     result["termination"] = term_data[ep_key]
