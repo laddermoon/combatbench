@@ -406,32 +406,29 @@ class ViewerAPI:
             if not k.startswith("observer_outputs."):
                 continue
             rest = k[len("observer_outputs."):]
-            # observer_outputs.{key}.{field} — field is per-frame
+            # observer_outputs.{key} or observer_outputs.{key}.{field}
             parts = rest.split(".", 1)
             obs_key = parts[0]
-            if len(parts) == 2:
-                field = parts[1]
-                ep_arr = ep_npz[k]
-                # Per-episode object array: ep_arr[ep_pos] → per-frame array
-                if ep_arr.dtype == object and ep_pos < len(ep_arr):
-                    frame_arr = ep_arr[ep_pos]
-                    if frame_arr is None:
-                        continue
-                    frame_arr = np.asarray(frame_arr)
-                    if frame < len(frame_arr):
-                        val = frame_arr[frame]
-                    else:
-                        continue
+            field = parts[1] if len(parts) == 2 else None
+            ep_arr = ep_npz[k]
+            # Per-episode object array: ep_arr[ep_pos] → per-frame array
+            if ep_arr.dtype == object and ep_pos < len(ep_arr):
+                frame_arr = ep_arr[ep_pos]
+                if frame_arr is None:
+                    continue
+                frame_arr = np.asarray(frame_arr)
+                if frame < len(frame_arr):
+                    val = frame_arr[frame]
                 else:
-                    # Fallback: treat as per-frame flat array
-                    val = ep_arr[idx]
-                if np.isscalar(val) or np.ndim(val) == 0:
-                    observer_data[f"{obs_key}.{field}"] = float(val)
-                else:
-                    observer_data[f"{obs_key}.{field}"] = _arr_to_list(val)
+                    continue
             else:
-                # Scalar observer output (not per-frame)
-                pass
+                # Fallback: treat as per-frame flat array
+                val = ep_arr[idx]
+            out_key = f"{obs_key}.{field}" if field else obs_key
+            if np.isscalar(val) or np.ndim(val) == 0:
+                observer_data[out_key] = float(val)
+            else:
+                observer_data[out_key] = _arr_to_list(val)
         result["observer_outputs"] = observer_data
 
         # Termination info
