@@ -441,11 +441,11 @@ class StandupStepV3(CombatExperimentPPOBase):
         # --- r_fall: dense reward, critic learns at all times ---
         r_fall = (self.per_step_phi_coef * phi_h_arr).astype(np.float32)
 
-        # --- Foot heights (saturated) ---
+        # --- Foot heights (saturated, non-negative) ---
         h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)
         h_right = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full)
-        r_left = np.clip(h_left, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
-        r_right = np.clip(h_right, -self.foot_height_clip, self.foot_height_clip).astype(np.float32)
+        r_left = np.clip(h_left, 0.0, self.foot_height_clip).astype(np.float32)
+        r_right = np.clip(h_right, 0.0, self.foot_height_clip).astype(np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
