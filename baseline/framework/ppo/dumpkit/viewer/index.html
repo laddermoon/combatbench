@@ -696,7 +696,8 @@
         if (isNaN(v)) return;
         pts += `${xScale(i)},${yScale(v)} `;
       });
-      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.5"/>`;
+      const dashAttr = s.dashed ? ' stroke-dasharray="6,3"' : '';
+      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.5"${dashAttr}/>`;
     });
 
     // Current frame marker
@@ -711,7 +712,8 @@
     let legend = '<div class="chart-legend">';
     dataSeries.forEach((s, i) => {
       const disabled = s.visible === false ? ' disabled' : '';
-      legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><div class="leg-color" style="background:${s.color}"></div>${escapeHtml(s.label)}</div>`;
+      const dashStyle = s.dashed ? ' style="background:repeating-linear-gradient(90deg,' + s.color + ' 0,' + s.color + ' 4px,transparent 4px,transparent 7px)"' : '';
+      legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><div class="leg-color" style="background:${s.color}"${dashStyle}></div>${escapeHtml(s.label)}</div>`;
     });
     legend += '</div>';
 
@@ -1159,6 +1161,27 @@
       html += `<div class="chart-container">`;
       html += `<h3>Old Log Prob (θ_old)</h3>`;
       html += makeChart([{label: 'log_prob', data: ov.old_log_prob, color: '#c678dd'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // Uncertainty + uncertainty floor
+    // Shows per-frame policy uncertainty U (at θ_old) and the floor that
+    // the uncertainty floor loss enforces.  When U < floor, the floor loss
+    // pushes the policy to explore more.  Both come from dump data — no
+    // frontend computation.
+    if (ov.uncertainty) {
+      const series = [{label: 'uncertainty', data: ov.uncertainty, color: '#e06c75'}];
+      // Render the floor as a horizontal reference line spanning all frames.
+      if (ov.uncertainty_floor !== undefined && ov.uncertainty_floor > 0) {
+        const floorLine = new Array(ov.uncertainty.length).fill(ov.uncertainty_floor);
+        series.push({label: 'uncertainty_floor', data: floorLine, color: '#56b6c2', dashed: true});
+      }
+      html += `<div class="chart-container">`;
+      const floorLabel = ov.uncertainty_floor !== undefined && ov.uncertainty_floor > 0
+        ? ` (floor=${ov.uncertainty_floor.toFixed(4)}, coef=${(ov.uncertainty_coef ?? 0).toFixed(4)})`
+        : '';
+      html += `<h3>Uncertainty${floorLabel}</h3>`;
+      html += makeChart(series, {currentFrame: frame});
       html += `</div>`;
     }
 

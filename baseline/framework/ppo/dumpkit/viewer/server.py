@@ -659,10 +659,25 @@ class ViewerAPI:
                 if it_key in traj_npz:
                     result[f"is_terminated_{ch}"] = bool(traj_npz[it_key][traj_idx])
 
-        # Buffer: old log_prob
+        # Buffer: old log_prob, per-frame uncertainty
         buf = self.data.buffer_npz
         if buf is not None and "log_probs" in buf:
             result["old_log_prob"] = _arr_to_list(buf["log_probs"][start:end])
+        if buf is not None and "uncertainty" in buf and len(buf["uncertainty"]) > 0:
+            result["uncertainty"] = _arr_to_list(
+                np.asarray(buf["uncertainty"][start:end], dtype=np.float32)
+            )
+
+        # Combine: uncertainty_floor and uncertainty_coef (per-update scalars)
+        if combine is not None:
+            if "uncertainty_floor" in combine:
+                result["uncertainty_floor"] = float(
+                    np.asarray(combine["uncertainty_floor"]).item()
+                )
+            if "uncertainty_coef" in combine:
+                result["uncertainty_coef"] = float(
+                    np.asarray(combine["uncertainty_coef"]).item()
+                )
 
         return 200, result
 

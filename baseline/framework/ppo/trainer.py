@@ -144,6 +144,7 @@ class PPOBuffer:
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.explore_factor: Optional[np.ndarray] = None
             self.floor_weight: Optional[np.ndarray] = None
+            self.uncertainty: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
             self.ep_lengths: List[int] = []
             return
@@ -199,9 +200,15 @@ class PPOBuffer:
         with torch.no_grad():
             ev = actor.evaluate_actions(all_obs_t, all_acts_t, want_stats=True, **kwargs)
         all_lp_np = ev.log_prob.cpu().numpy().astype(np.float32)
+        # Per-frame uncertainty U ∈ [0, 1] at theta_old, action-independent.
+        # Same measurement point as log_prob — the whole-batch pass before
+        # any optimizer step.  Dumped so the viewer can show U vs the
+        # uncertainty floor without recomputing it.
+        all_uncertainty_np = ev.uncertainty.cpu().numpy().astype(np.float32)
         # Policy-defined keys, merged into the update stats without
         # interpretation. Empty for a policy that reports nothing.
         self.actor_stats = dict(ev.stats or {})
+        self.uncertainty = all_uncertainty_np
 
         # --- Slice log_probs back into per-trajectory segments ---
         # Walk through trajectories in order, extracting the corresponding
@@ -800,6 +807,8 @@ def ppo_update(
             "explained_variances": dict(explained_variances),
             "normed_advs": dict(normed_advs),
             "aw_normed": dict(aw_normed_all),
+            "uncertainty_floor": np.array(uncertainty_floor, dtype=np.float32),
+            "uncertainty_coef": np.array(uncertainty_coef, dtype=np.float32),
         }
         dump_callback("combine", combine_payload)
 

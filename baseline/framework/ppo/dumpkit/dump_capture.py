@@ -320,6 +320,7 @@ def _serialize_buffer(buf: PPOBuffer, frame_ids: np.ndarray) -> Dict[str, Any]:
         "sample_weights": buf.sample_weights,
         "explore_factor": buf.explore_factor,
         "floor_weight": buf.floor_weight,
+        "uncertainty": buf.uncertainty if buf.uncertainty is not None else np.zeros(0, dtype=np.float32),
         "ep_lengths": np.array(buf.ep_lengths),
         "frame_id": frame_ids,
     }
