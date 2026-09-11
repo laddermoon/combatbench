@@ -398,6 +398,9 @@ class ViewerAPI:
                 result[f"explore_factor_{aid}"] = float(ep_npz[ef_key][idx])
 
         # Observer outputs for this frame
+        # Observer output arrays are per-episode (shape=(n_episodes,)
+        # dtype=object), where each element is a per-frame array.
+        # Index by episode position, then by frame within that episode.
         observer_data: Dict[str, Any] = {}
         for k in ep_npz:
             if not k.startswith("observer_outputs."):
@@ -408,8 +411,21 @@ class ViewerAPI:
             obs_key = parts[0]
             if len(parts) == 2:
                 field = parts[1]
-                val = ep_npz[k][idx]
-                if np.isscalar(val) or val.ndim == 0:
+                ep_arr = ep_npz[k]
+                # Per-episode object array: ep_arr[ep_pos] → per-frame array
+                if ep_arr.dtype == object and ep_pos < len(ep_arr):
+                    frame_arr = ep_arr[ep_pos]
+                    if frame_arr is None:
+                        continue
+                    frame_arr = np.asarray(frame_arr)
+                    if frame < len(frame_arr):
+                        val = frame_arr[frame]
+                    else:
+                        continue
+                else:
+                    # Fallback: treat as per-frame flat array
+                    val = ep_arr[idx]
+                if np.isscalar(val) or np.ndim(val) == 0:
                     observer_data[f"{obs_key}.{field}"] = float(val)
                 else:
                     observer_data[f"{obs_key}.{field}"] = _arr_to_list(val)
