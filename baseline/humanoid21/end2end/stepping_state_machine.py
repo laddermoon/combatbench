@@ -126,6 +126,15 @@ DOUBLE_GRACE_STEPS frames the robot is allowed to settle on both feet
 without being pushed to lift a foot.  After the grace period, the
 DOUBLE weights resume encouraging the next step."""
 
+CONTACT_HOLD_STEPS: int = 4
+"""Minimum consecutive frames for a contact signal to be considered
+"real".  A foot must report contact for this many frames in a row
+before the state machine sees it as contacted.  A single-frame gap
+in contact does not immediately release — the contact stays "held"
+until a gap of the same length breaks it.  This debounce eliminates
+MuJoCo contact jitter (1-2 frame spikes/drops) without adding latency
+beyond the hold window."""
+
 FOOT_HEIGHT_CLIP: float = 0.05
 """Foot height reward saturation (m).  Lifting beyond this earns nothing
 more, preventing a degenerate 'raise the knee as high as possible' policy."""
@@ -134,6 +143,52 @@ SWING_LIFT_THRESHOLD: float = 0.05
 """Minimum swing-foot height (m) during Phase A/B before the lift
 encouragement turns off.  If the swing foot hasn't risen above this,
 a +W actor weight is applied to keep pushing it up."""
+
+
+def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
+    """Debounce a boolean contact signal with a minimum-hold filter.
+
+    A contact must persist for ``hold`` consecutive frames before it is
+    accepted as "on".  Once on, it stays on until contact is absent for
+    ``hold`` consecutive frames.  This eliminates 1-2 frame jitter from
+    MuJoCo contact detection without adding latency beyond the hold
+    window.
+
+    The filter is causal (only uses past + current frames), so it is
+    safe for any post-hoc scan order.
+    """
+    T = len(contact)
+    out = np.zeros(T, dtype=bool)
+    held = False
+    on_count = 0
+    off_count = 0
+    for t in range(T):
+        raw = bool(contact[t])
+        if held:
+            if raw:
+                off_count = 0
+                out[t] = True
+            else:
+                off_count += 1
+                if off_count >= hold:
+                    held = False
+                    on_count = 0
+                    out[t] = False
+                else:
+                    out[t] = True  # still holding
+        else:
+            if raw:
+                on_count += 1
+                off_count = 0
+                if on_count >= hold:
+                    held = True
+                    out[t] = True
+                else:
+                    out[t] = False
+            else:
+                on_count = 0
+                out[t] = False
+    return out
 
 
 def compute_foot_weights(
@@ -159,6 +214,13 @@ def compute_foot_weights(
     """
     w_left = np.zeros(T, dtype=np.float32)
     w_right = np.zeros(T, dtype=np.float32)
+
+    # Debounce contact signals: require CONTACT_HOLD_STEPS consecutive
+    # frames to confirm or release a contact.  Eliminates MuJoCo
+    # contact jitter (1-2 frame spikes/drops) that would cause the
+    # state machine to spuriously switch states.
+    contact_l = _hold_filter(contact_l, CONTACT_HOLD_STEPS)
+    contact_r = _hold_filter(contact_r, CONTACT_HOLD_STEPS)
 
     last_swing: Optional[str] = None
     prev_state: Optional[str] = None
