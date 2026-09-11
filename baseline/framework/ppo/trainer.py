@@ -741,16 +741,26 @@ def ppo_update(
     for key in reward_keys:
         aw_l1_sum += np.abs(key_actor_weight_frame[key])
 
+    # Per-channel normalized advantage and normalized actor weight.
+    # Collected here so the dump can expose them without frontend
+    # recomputation.  aw_normed_c = aw_c / Σ|aw| (per-frame L1 norm).
+    # normed_adv_c = z-score(adv_c) on active frames.
+    normed_advs: Dict[str, np.ndarray] = {}
+    aw_normed_all: Dict[str, np.ndarray] = {}
+
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
         if not np.any(aw_frame != 0.0):
+            normed_advs[key] = np.zeros(n, dtype=np.float32)
+            aw_normed_all[key] = np.zeros(n, dtype=np.float32)
             continue
         conf = confidences[key]
         # L1-normalize: divide by per-frame Σ|aw|, with safe division
         # (frames where all aw=0 get zero contribution anyway).
         safe_l1 = np.where(aw_l1_sum > 1e-12, aw_l1_sum, 1.0)
         aw_normed = aw_frame / safe_l1
+        aw_normed_all[key] = aw_normed
         # Normalize only on frames that actually contribute to the actor
         # gradient (aw != 0).  Frames with aw=0 produce no gradient regardless
         # of their advantage, so including them in the z-score statistics
@@ -759,6 +769,7 @@ def ppo_update(
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
         normed = _normalize_adv(advs_all[key], norm_mask)
+        normed_advs[key] = normed
         combined_adv = combined_adv + aw_normed * conf * normed
 
         # Warn if the channel has active frames with nonzero aw but
@@ -787,6 +798,8 @@ def ppo_update(
             "aw_l1_sum": aw_l1_sum,
             "key_frame_mask": dict(key_frame_mask),
             "explained_variances": dict(explained_variances),
+            "normed_advs": dict(normed_advs),
+            "aw_normed": dict(aw_normed_all),
         }
         dump_callback("combine", combine_payload)
 

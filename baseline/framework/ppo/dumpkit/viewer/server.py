@@ -626,6 +626,24 @@ class ViewerAPI:
                         ch: _arr_to_list(np.asarray(v[start:end], dtype=np.float32))
                         for ch, v in d.items()
                     }
+            # normed_advs: per-channel z-score normalized advantage
+            na = combine.get("normed_advs")
+            if na is not None:
+                d = _dict_item(na)
+                if isinstance(d, dict):
+                    for ch, v in d.items():
+                        result[f"normed_adv_{ch}"] = _arr_to_list(
+                            np.asarray(v[start:end], dtype=np.float32)
+                        )
+            # aw_normed: per-channel L1-normalized actor weight
+            awn = combine.get("aw_normed")
+            if awn is not None:
+                d = _dict_item(awn)
+                if isinstance(d, dict):
+                    for ch, v in d.items():
+                        result[f"aw_normed_{ch}"] = _arr_to_list(
+                            np.asarray(v[start:end], dtype=np.float32)
+                        )
 
         # Trajectory-level: floor_weight, explore_factor, importance
         if traj_npz is not None:

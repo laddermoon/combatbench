@@ -132,6 +132,18 @@
   .traj-card.uncovered { opacity: 0.5; cursor: default; }
   .traj-card.uncovered:hover { border-color: var(--border); background: var(--panel-alt); }
 
+  /* Per-channel block in Trajectory Target view */
+  .channel-block { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  .channel-block .channel-title { margin: 0 0 8px 0; font-size: 13px; color: var(--accent); font-weight: 600; }
+  .channel-block .chart-container { margin-bottom: 8px; padding: 8px; }
+  .channel-block .channel-tbl { width: 100%; border-collapse: collapse; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .channel-block .channel-tbl th { text-align: left; padding: 4px 6px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  .channel-block .channel-tbl td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  .channel-block .channel-tbl td.num { color: var(--green); text-align: right; }
+  .channel-block .channel-tbl td.neg { color: var(--red); text-align: right; }
+  .channel-block .channel-tbl td.bool { color: var(--orange); }
+  .channel-block .channel-tbl td.muted { color: var(--muted); }
+
   .ep-data .traj-item { padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px; cursor: pointer; font-size: 12px; }
   .ep-data .traj-item:hover { border-color: var(--accent); background: var(--panel-alt); }
   .ep-data .traj-item .traj-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
@@ -1107,42 +1119,22 @@
 
     let html = '';
 
-    // Per-channel trend charts (one chart per channel)
-    const lineDefs = [
-      ['reward', 'reward', '#4fa3ff'],
-      ['value', 'value', '#6ec86e'],
-      ['adv', 'advantage', '#e5c07b'],
-      ['ret', 'return', '#c678dd'],
-    ];
-    channels.forEach((ch, ci) => {
-      const series = [];
-      for (const [key, label, color] of lineDefs) {
-        const dataKey = key === 'value' ? `values_${ch}` : key === 'adv' ? `advs_${ch}` : key === 'ret' ? `rets_${ch}` : `reward_${ch}`;
-        if (ov[dataKey]) {
-          series.push({label: label, data: ov[dataKey], color: color});
-        }
-      }
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>${escapeHtml(ch)}</h3>`;
-        html += makeChart(series, {currentFrame: frame});
-        html += `</div>`;
-      }
-    });
+    // === 1. Trajectory Info (trajectory-level) ===
+    html += '<div class="data-table"><h3>Trajectory Info</h3><table>';
+    html += `<tr><th>Field</th><th>Value</th></tr>`;
+    html += `<tr><td>length</td><td class="num">${ov.length}</td></tr>`;
+    if (ov.importance !== undefined) html += `<tr><td>importance</td><td class="num">${fmt(ov.importance)}</td></tr>`;
+    html += '</table></div>';
+
+    // === 2. Per-Frame Data (frame-level shared) ===
+    html += '<div class="section-sep"></div>';
+    html += '<div class="section-sep-label">Per-Frame Data</div>';
 
     // Combined advantage chart
     if (ov.combined_adv) {
       html += `<div class="chart-container">`;
       html += `<h3>Combined Advantage (actor signal)</h3>`;
       html += makeChart([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
-      html += `</div>`;
-    }
-
-    // aw_l1_sum chart
-    if (ov.aw_l1_sum) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Actor Weight L1 Sum</h3>`;
-      html += makeChart([{label: 'aw_l1_sum', data: ov.aw_l1_sum, color: '#e5c07b'}], {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -1170,81 +1162,65 @@
       html += `</div>`;
     }
 
-    // Frame detail + Per-Channel Data table
-    html += '<div class="data-grid">';
-    html += '<div class="data-table"><h3>Frame Detail</h3><table>';
-    html += '<tr><th>Channel</th><th>reward</th><th>value</th><th>adv</th><th>return</th><th>aw</th><th>active</th></tr>';
-    channels.forEach(ch => {
-      const v = ov[`values_${ch}`]?.[frame];
-      const a = ov[`advs_${ch}`]?.[frame];
-      const r = ov[`rets_${ch}`]?.[frame];
-      const rw = ov[`reward_${ch}`]?.[frame];
-      const aw = ov[`actor_weight_${ch}`]?.[frame];
-      const active = ov.key_frame_mask?.[ch]?.[frame];
-      const terminated = ov[`is_terminated_${ch}`];
-      html += `<tr><td>${escapeHtml(ch)}</td>`;
-      html += `<td class="num">${fmt(rw)}</td>`;
-      html += `<td class="num">${fmt(v)}</td>`;
-      html += `<td class="${a < 0 ? 'neg' : 'num'}">${fmt(a)}</td>`;
-      html += `<td class="num">${fmt(r)}</td>`;
-      html += `<td class="num">${fmt(aw)}</td>`;
-      if (active === false) {
-        html += `<td class="muted">${terminated ? 'terminated' : 'inactive'}</td>`;
-      } else {
-        html += `<td class="bool">${active === true ? 'yes' : '-'}</td>`;
-      }
-      html += '</tr>';
-    });
-    if (ov.combined_adv) {
-      html += `<tr><td colspan="7" style="color:var(--accent)"><b>combined_adv = ${fmt(ov.combined_adv[frame])}</b></td></tr>`;
-    }
-    if (ov.old_log_prob) {
-      html += `<tr><td colspan="7"><b>old_log_prob</b> = ${fmt(ov.old_log_prob[frame])}</td></tr>`;
-    }
-    if (ov.frame_ids) {
-      html += `<tr><td colspan="7"><b>frame_id</b> = ${escapeHtml(ov.frame_ids[frame] || '-')}</td></tr>`;
-    }
-    html += '</table></div>';
+    // === 3. Per-Channel Data ===
+    html += '<div class="section-sep"></div>';
+    html += '<div class="section-sep-label">Per-Channel Data</div>';
 
-    // Combine Chain table
-    html += '<div class="data-table"><h3>Combine Chain</h3><table>';
-    html += '<tr><th>Channel</th><th>conf</th><th>EV</th><th>aw (frame)</th><th>aw_normed</th></tr>';
-    const awL1 = ov.aw_l1_sum?.[frame] || 0;
-    channels.forEach(ch => {
+    channels.forEach((ch, ci) => {
+      html += `<div class="channel-block">`;
+      html += `<h3 class="channel-title">${escapeHtml(ch)}</h3>`;
+
+      // Chart 1: reward, value, advantage, return, normalized advantage
+      const series1 = [];
+      const lineDefs1 = [
+        ['reward', 'reward', `reward_${ch}`, '#4fa3ff'],
+        ['value', 'value', `values_${ch}`, '#6ec86e'],
+        ['adv', 'advantage', `advs_${ch}`, '#e5c07b'],
+        ['ret', 'return', `rets_${ch}`, '#c678dd'],
+        ['normed_adv', 'normalized advantage', `normed_adv_${ch}`, '#e06c75'],
+      ];
+      for (const [, label, dataKey, color] of lineDefs1) {
+        if (ov[dataKey]) {
+          series1.push({label: label, data: ov[dataKey], color: color});
+        }
+      }
+      if (series1.length > 0) {
+        html += `<div class="chart-container">`;
+        html += makeChart(series1, {currentFrame: frame});
+        html += `</div>`;
+      }
+
+      // Chart 2: AW, normed AW
+      const series2 = [];
+      if (ov[`actor_weight_${ch}`]) {
+        series2.push({label: 'actor_weight', data: ov[`actor_weight_${ch}`], color: '#d19a66'});
+      }
+      if (ov[`aw_normed_${ch}`]) {
+        series2.push({label: 'normed_aw', data: ov[`aw_normed_${ch}`], color: '#56b6c2'});
+      }
+      if (series2.length > 0) {
+        html += `<div class="chart-container">`;
+        html += makeChart(series2, {currentFrame: frame});
+        html += `</div>`;
+      }
+
+      // Per-channel table: confidence, EV, terminated, bootstrap V(s_next)
+      html += '<table class="channel-tbl">';
+      html += '<tr><th>confidence</th><th>explained_variance</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
       const conf = ov.confidences?.[ch];
       const ev = ov.explained_variances?.[ch];
-      const aw = ov.actor_weights?.[ch]?.[frame];
-      const awNormed = awL1 > 0 ? (aw / awL1) : 0;
-      html += `<tr><td>${escapeHtml(ch)}</td>`;
-      html += `<td class="num">${fmt(conf, 3)}</td>`;
-      html += `<td class="num">${fmt(ev, 3)}</td>`;
-      html += `<td class="num">${fmt(aw)}</td>`;
-      html += `<td class="num">${fmt(awNormed, 4)}</td></tr>`;
+      const term = ov[`is_terminated_${ch}`];
+      const bv = ov.bootstrap_values?.[ch];
+      html += `<tr>`;
+      html += `<td class="num">${fmt(conf, 4)}</td>`;
+      html += `<td class="num">${fmt(ev, 4)}</td>`;
+      html += `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>`;
+      html += `<td class="num">${term ? '-' : fmt(bv)}</td>`;
+      html += `</tr>`;
+      html += '</table>';
+
+      html += `</div>`; // channel-block
     });
-    html += `<tr><td colspan="5" style="color:var(--accent)"><b>aw_l1_sum = ${fmt(awL1)}</b></td></tr>`;
-    html += '</table></div>';
-    html += '</div>'; // data-grid
-
-    // Bootstrap table
-    if (ov.bootstrap_values || ov.is_bootstrap_seg) {
-      html += '<div class="data-table" style="margin-top:16px"><h3>Bootstrap</h3><table>';
-      html += '<tr><th>Channel</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
-      channels.forEach(ch => {
-        const term = ov[`is_terminated_${ch}`];
-        const bv = ov.bootstrap_values?.[ch];
-        html += `<tr><td>${escapeHtml(ch)}</td>`;
-        html += `<td class="bool">${term ? 'yes' : 'no'}</td>`;
-        html += `<td class="num">${term ? '-' : fmt(bv)}</td></tr>`;
-      });
-      html += '</table></div>';
-    }
-
-    // Extra trajectory info
-    html += '<div class="data-table" style="margin-top:16px"><h3>Trajectory Info</h3><table>';
-    html += `<tr><th>Field</th><th>Value</th></tr>`;
-    html += `<tr><td>length</td><td class="num">${ov.length}</td></tr>`;
-    if (ov.importance !== undefined) html += `<tr><td>importance</td><td class="num">${fmt(ov.importance)}</td></tr>`;
-    html += '</table></div>';
 
     $('traj-content').innerHTML = html;
     $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
