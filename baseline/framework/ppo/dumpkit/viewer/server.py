@@ -629,7 +629,11 @@ class ViewerAPI:
             if ev is not None:
                 d = _dict_item(ev)
                 if isinstance(d, dict):
-                    result["explained_variances"] = {ch: float(v) for ch, v in d.items()}
+                    # Strip "ev_" prefix if present so keys match channel names
+                    result["explained_variances"] = {
+                        (ch[3:] if ch.startswith("ev_") else ch): float(v)
+                        for ch, v in d.items()
+                    }
             kaw = combine.get("key_actor_weight_frame")
             if kaw is not None:
                 d = _dict_item(kaw)

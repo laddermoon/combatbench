@@ -1140,20 +1140,21 @@
       html += `</div>`;
     }
 
-    // floor_weight chart
-    if (ov.floor_weight) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Floor Weight</h3>`;
-      html += makeChart([{label: 'floor_weight', data: ov.floor_weight, color: '#d19a66'}], {currentFrame: frame});
-      html += `</div>`;
-    }
-
-    // explore_factor chart
-    if (ov.explore_factor) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Explore Factor</h3>`;
-      html += makeChart([{label: 'explore_factor', data: ov.explore_factor, color: '#c678dd'}], {currentFrame: frame});
-      html += `</div>`;
+    // Floor Weight + Explore Factor (both exploration-related, combined)
+    {
+      const series = [];
+      if (ov.floor_weight) {
+        series.push({label: 'floor_weight', data: ov.floor_weight, color: '#d19a66'});
+      }
+      if (ov.explore_factor) {
+        series.push({label: 'explore_factor', data: ov.explore_factor, color: '#c678dd'});
+      }
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Exploration (Floor Weight + Explore Factor)</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
     }
 
     // Old log prob
@@ -1185,7 +1186,63 @@
       html += `</div>`;
     }
 
-    // === 3. Per-Channel Data ===
+    // === 3. Cross-Channel Comparison ===
+    // Normalized metrics are comparable across channels — show them together.
+    html += '<div class="section-sep"></div>';
+    html += '<div class="section-sep-label">Cross-Channel Comparison</div>';
+
+    // All channels' Normalized Advantage in one chart
+    {
+      const series = [];
+      channels.forEach((ch, ci) => {
+        const key = `normed_adv_${ch}`;
+        if (ov[key]) {
+          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
+        }
+      });
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Normalized Advantage (all channels)</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    }
+
+    // All channels' Actor Weight in one chart
+    {
+      const series = [];
+      channels.forEach((ch, ci) => {
+        const key = `actor_weight_${ch}`;
+        if (ov[key]) {
+          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
+        }
+      });
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Actor Weight (all channels)</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    }
+
+    // All channels' Normalized Actor Weight in one chart
+    {
+      const series = [];
+      channels.forEach((ch, ci) => {
+        const key = `aw_normed_${ch}`;
+        if (ov[key]) {
+          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
+        }
+      });
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Normalized Actor Weight (all channels)</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    }
+
+    // === 4. Per-Channel Data ===
     html += '<div class="section-sep"></div>';
     html += '<div class="section-sep-label">Per-Channel Data</div>';
 
@@ -1193,14 +1250,13 @@
       html += `<div class="channel-block">`;
       html += `<h3 class="channel-title">${escapeHtml(ch)}</h3>`;
 
-      // Chart 1: reward, value, advantage, return, normalized advantage
+      // Chart: reward, value, advantage, return (NOT normalized adv — that's in cross-channel)
       const series1 = [];
       const lineDefs1 = [
         ['reward', 'reward', `reward_${ch}`, '#4fa3ff'],
         ['value', 'value', `values_${ch}`, '#6ec86e'],
         ['adv', 'advantage', `advs_${ch}`, '#e5c07b'],
         ['ret', 'return', `rets_${ch}`, '#c678dd'],
-        ['normed_adv', 'normalized advantage', `normed_adv_${ch}`, '#e06c75'],
       ];
       for (const [, label, dataKey, color] of lineDefs1) {
         if (ov[dataKey]) {
@@ -1213,37 +1269,40 @@
         html += `</div>`;
       }
 
-      // Chart 2: AW, normed AW
-      const series2 = [];
-      if (ov[`actor_weight_${ch}`]) {
-        series2.push({label: 'actor_weight', data: ov[`actor_weight_${ch}`], color: '#d19a66'});
-      }
-      if (ov[`aw_normed_${ch}`]) {
-        series2.push({label: 'normed_aw', data: ov[`aw_normed_${ch}`], color: '#56b6c2'});
-      }
-      if (series2.length > 0) {
-        html += `<div class="chart-container">`;
-        html += makeChart(series2, {currentFrame: frame});
-        html += `</div>`;
-      }
-
-      // Per-channel table: confidence, EV, terminated, bootstrap V(s_next)
-      html += '<table class="channel-tbl">';
-      html += '<tr><th>confidence</th><th>explained_variance</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
-      const conf = ov.confidences?.[ch];
-      const ev = ov.explained_variances?.[ch];
-      const term = ov[`is_terminated_${ch}`];
-      const bv = ov.bootstrap_values?.[ch];
-      html += `<tr>`;
-      html += `<td class="num">${fmt(conf, 4)}</td>`;
-      html += `<td class="num">${fmt(ev, 4)}</td>`;
-      html += `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>`;
-      html += `<td class="num">${term ? '-' : fmt(bv)}</td>`;
-      html += `</tr>`;
-      html += '</table>';
-
       html += `</div>`; // channel-block
     });
+
+    // === 5. Channel Summary Table ===
+    // confidence, explained_variance, terminated, bootstrap V(s_next)
+    // — one row per channel, single 2D table.
+    {
+      const hasAny = channels.some(ch => {
+        return ov.confidences?.[ch] !== undefined
+            || ov.explained_variances?.[ch] !== undefined
+            || ov[`is_terminated_${ch}`] !== undefined
+            || ov.bootstrap_values?.[ch] !== undefined;
+      });
+      if (hasAny) {
+        html += '<div class="section-sep"></div>';
+        html += '<div class="section-sep-label">Channel Summary</div>';
+        html += '<table class="data-table" style="width:100%">';
+        html += '<tr><th>Channel</th><th>confidence</th><th>explained_variance</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
+        channels.forEach(ch => {
+          const conf = ov.confidences?.[ch];
+          const ev = ov.explained_variances?.[ch];
+          const term = ov[`is_terminated_${ch}`];
+          const bv = ov.bootstrap_values?.[ch];
+          html += `<tr>`;
+          html += `<td><strong>${escapeHtml(ch)}</strong></td>`;
+          html += `<td class="num">${fmt(conf, 4)}</td>`;
+          html += `<td class="num">${fmt(ev, 4)}</td>`;
+          html += `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>`;
+          html += `<td class="num">${term ? '-' : fmt(bv)}</td>`;
+          html += `</tr>`;
+        });
+        html += '</table>';
+      }
+    }
 
     $('traj-content').innerHTML = html;
     $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
