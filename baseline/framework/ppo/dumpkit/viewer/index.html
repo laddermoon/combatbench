@@ -80,6 +80,50 @@
   .ep-data h3 .collapse-icon { display: inline-block; width: 14px; color: var(--muted); }
   .ep-data pre { margin: 0 0 14px 0; padding: 8px 10px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
   .ep-data pre.collapsed { max-height: 80px; overflow: hidden; }
+
+  /* Episode info bar */
+  .ep-info-bar { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; display: flex; flex-wrap: wrap; gap: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .ep-info-bar .info-item { display: flex; gap: 4px; }
+  .ep-info-bar .info-label { color: var(--muted); }
+  .ep-info-bar .info-value { color: var(--text); }
+
+  /* Agent grid (obs/actions side by side) */
+  .agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; margin-bottom: 12px; }
+
+  /* Compact value grid for obs/actions */
+  .vec-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .vec-grid .vec-cell { display: flex; gap: 2px; }
+  .vec-grid .vec-idx { color: var(--muted); min-width: 22px; text-align: right; }
+  .vec-grid .vec-val { color: var(--text); }
+  .vec-grid .vec-val.neg { color: var(--red); }
+  .vec-grid.collapsed { max-height: 80px; overflow: hidden; }
+
+  /* Observer outputs auto-fill grid */
+  .obs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+  .obs-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .obs-card .obs-title { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+  .obs-card table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .obs-card td { padding: 2px 4px; }
+  .obs-card td.obs-field { color: var(--muted); }
+
+  /* Section separator */
+  .section-sep { border-top: 1px solid var(--border); margin: 16px 0; }
+  .section-sep-label { background: var(--bg); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding: 0 8px; margin-top: -8px; margin-left: 16px; display: inline-block; position: relative; top: -8px; }
+
+  /* Trajectory auto-fill grid */
+  .traj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .traj-card { padding: 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; background: var(--panel-alt); }
+  .traj-card:hover { border-color: var(--accent); background: var(--panel); }
+  .traj-card .traj-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .traj-card .traj-channels { display: grid; grid-template-columns: 1fr; gap: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+  .traj-card .traj-channels .ch-row { display: flex; gap: 4px; }
+  .traj-card .traj-channels .ch-name { color: var(--muted); min-width: 70px; }
+  .traj-card .traj-channels .ch-val { color: var(--text); }
+  .traj-card .traj-extras { font-size: 10px; color: var(--muted); margin-top: 4px; }
+  .traj-card .traj-frameid { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+  .traj-card.uncovered { opacity: 0.5; cursor: default; }
+  .traj-card.uncovered:hover { border-color: var(--border); background: var(--panel-alt); }
+
   .ep-data .traj-item { padding: 8px; border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px; cursor: pointer; font-size: 12px; }
   .ep-data .traj-item:hover { border-color: var(--accent); background: var(--panel-alt); }
   .ep-data .traj-item .traj-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
@@ -735,75 +779,67 @@
         hideFloatImage();
       }
 
-      // Data panel
+      const channels = state.manifest.channel_names || [];
+      const agents = state.manifest.agent_ids || [];
       let html = '';
 
-      // Trajectories with per-frame channel data
-      if (data.trajectories && data.trajectories.length > 0) {
-        html += '<h3><span class="collapse-icon">▼</span> Trajectories</h3><div class="traj-list">';
-        const channels = state.manifest.channel_names || [];
-        data.trajectories.forEach(t => {
-          if (!t.covered) {
-            html += `<div class="traj-item uncovered">
-              <div class="traj-header"><b>Trajectory ${t.traj_idx}</b> <span class="badge muted">uncovered</span></div>
-              <div class="desc" style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t_start=${t.t_start} · len=${t.length} · frame ${frame} not in [${t.t_start}, ${t.t_start + t.length})</div>
-            </div>`;
-            return;
+      // --- Episode info bar ---
+      const epInfo = state.trajMap?.[pos];
+      html += '<div class="ep-info-bar">';
+      html += `<div class="info-item"><span class="info-label">Episode:</span><span class="info-value">${pos}</span></div>`;
+      if (epInfo?.seed !== null && epInfo?.seed !== undefined) {
+        html += `<div class="info-item"><span class="info-label">Seed:</span><span class="info-value">${epInfo.seed}</span></div>`;
+      }
+      html += `<div class="info-item"><span class="info-label">Frame:</span><span class="info-value">${frame + 1} / ${parseInt($('ep-slider').max) + 1}</span></div>`;
+      if (data.termination) {
+        const termReason = data.termination.reason || data.termination.termination_reason || 'unknown';
+        html += `<div class="info-item"><span class="info-label">Termination:</span><span class="info-value">${escapeHtml(termReason)}</span></div>`;
+      }
+      html += '</div>';
+
+      // --- Episode-level data (obs/actions/observer outputs) ---
+
+      // Per-agent obs/actions in auto-fit grid
+      if (agents.length > 0) {
+        html += '<div class="agent-grid">';
+        agents.forEach(aid => {
+          const obsKey = `obs_${aid}`;
+          const actKey = `actions_${aid}`;
+          const efKey = `explore_factor_${aid}`;
+          html += '<div>';
+          // Observation (collapsible, compact grid)
+          if (data[obsKey]) {
+            const n = data[obsKey].length;
+            html += `<h3 data-collapse="obs-${aid}"><span class="collapse-icon">▼</span> Observation (${escapeHtml(aid)}) [${n}d]</h3>`;
+            html += `<div id="obs-${aid}" class="collapsed vec-grid">`;
+            data[obsKey].forEach((v, i) => {
+              const cls = v < 0 ? 'vec-val neg' : 'vec-val';
+              html += `<div class="vec-cell"><span class="vec-idx">[${i}]</span><span class="${cls}">${fmt(v, 4)}</span></div>`;
+            });
+            html += '</div>';
           }
-          html += `<div class="traj-item" data-traj="${t.traj_idx}">
-            <div class="traj-header">
-              <b>Trajectory ${t.traj_idx}</b>
-              <span style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t=${t.t_start}+${t.traj_frame} · len=${t.length}</span>
-            </div>`;
-          if (t.frame_id) {
-            html += `<div style="font-size:10px;color:var(--muted);margin-bottom:2px">frame_id: ${escapeHtml(t.frame_id)}</div>`;
+          // Actions (full display, compact grid)
+          if (data[actKey]) {
+            const n = data[actKey].length;
+            html += `<h3 data-collapse="act-${aid}"><span class="collapse-icon">▼</span> Actions (${escapeHtml(aid)}) [${n}d]</h3>`;
+            html += `<div id="act-${aid}" class="vec-grid">`;
+            data[actKey].forEach((v, i) => {
+              const cls = v < 0 ? 'vec-val neg' : 'vec-val';
+              html += `<div class="vec-cell"><span class="vec-idx">[${i}]</span><span class="${cls}">${fmt(v, 4)}</span></div>`;
+            });
+            html += '</div>';
           }
-          // Per-channel data
-          html += '<div class="traj-channels">';
-          channels.forEach(ch => {
-            const rw = t[`reward_${ch}`];
-            const aw = t[`actor_weight_${ch}`];
-            const it = t[`is_terminated_${ch}`];
-            html += `<div class="ch-row"><span class="ch-name">${escapeHtml(ch)}</span><span class="ch-val">r=${fmt(rw,3)} aw=${fmt(aw,3)}${it ? ' ⚡' : ''}</span></div>`;
-          });
-          html += '</div>';
-          // Extra fields
-          const extras = [];
-          if (t.floor_weight !== undefined) extras.push(`fw=${fmt(t.floor_weight,3)}`);
-          if (t.explore_factor !== undefined) extras.push(`ef=${fmt(t.explore_factor,3)}`);
-          if (t.importance !== undefined) extras.push(`imp=${fmt(t.importance,3)}`);
-          if (extras.length > 0) {
-            html += `<div style="font-size:10px;color:var(--muted);margin-top:2px">${extras.join(' · ')}</div>`;
+          // explore_factor
+          if (data[efKey] !== undefined) {
+            html += `<div style="font-size:11px;color:var(--muted);margin-top:4px">explore_factor: <span style="color:var(--text)">${fmt(data[efKey], 4)}</span></div>`;
           }
           html += '</div>';
         });
         html += '</div>';
       }
 
-      // Per-agent obs/actions (collapsible)
-      const agents = state.manifest.agent_ids || [];
-      agents.forEach(aid => {
-        const obsKey = `obs_${aid}`;
-        const actKey = `actions_${aid}`;
-        const efKey = `explore_factor_${aid}`;
-        if (data[obsKey]) {
-          const n = data[obsKey].length;
-          html += `<h3 data-collapse="obs-${aid}"><span class="collapse-icon">▼</span> Observation (${escapeHtml(aid)}) [${n}d]</h3>`;
-          html += `<pre id="obs-${aid}" class="collapsed">${data[obsKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
-        }
-        if (data[actKey]) {
-          const n = data[actKey].length;
-          html += `<h3 data-collapse="act-${aid}"><span class="collapse-icon">▼</span> Actions (${escapeHtml(aid)}) [${n}d]</h3>`;
-          html += `<pre id="act-${aid}" class="collapsed">${data[actKey].map((v, i) => `[${i}] ${fmt(v, 4)}`).join('\n')}</pre>`;
-        }
-        if (data[efKey] !== undefined) {
-          html += `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">explore_factor (${escapeHtml(aid)}): <span style="color:var(--text)">${fmt(data[efKey], 4)}</span></div>`;
-        }
-      });
-
-      // Observer outputs (grouped by observer key)
+      // Observer outputs (auto-fill grid)
       if (data.observer_outputs && Object.keys(data.observer_outputs).length > 0) {
-        // Group by observer key
         const grouped = {};
         for (const [k, v] of Object.entries(data.observer_outputs)) {
           const dotIdx = k.indexOf('.');
@@ -817,18 +853,19 @@
           }
         }
         html += '<h3 data-collapse="obs-outputs"><span class="collapse-icon">▼</span> Observer Outputs</h3>';
-        html += '<div id="obs-outputs">';
+        html += '<div id="obs-outputs" class="obs-grid">';
         for (const [obsKey, fields] of Object.entries(grouped)) {
-          html += `<div style="margin-bottom:6px"><b style="color:var(--accent);font-size:11px">${escapeHtml(obsKey)}</b>`;
+          html += '<div class="obs-card">';
+          html += `<div class="obs-title">${escapeHtml(obsKey)}</div>`;
           if (typeof fields === 'object' && !Array.isArray(fields)) {
-            html += '<table style="width:100%;font-size:11px;font-family:ui-monospace,monospace">';
+            html += '<table>';
             for (const [field, val] of Object.entries(fields)) {
               const display = Array.isArray(val) ? `[${val.length}]` : fmt(val, 4);
-              html += `<tr><td style="color:var(--muted);padding:2px 4px">${escapeHtml(field)}</td><td style="padding:2px 4px">${display}</td></tr>`;
+              html += `<tr><td class="obs-field">${escapeHtml(field)}</td><td>${display}</td></tr>`;
             }
             html += '</table>';
           } else {
-            html += `<span style="font-family:ui-monospace,monospace;font-size:11px"> ${fmt(fields, 4)}</span>`;
+            html += `<span style="font-family:ui-monospace,monospace;font-size:11px">${fmt(fields, 4)}</span>`;
           }
           html += '</div>';
         }
@@ -841,10 +878,55 @@
         html += `<pre id="term">${escapeHtml(JSON.stringify(data.termination, null, 2))}</pre>`;
       }
 
+      // --- Section separator ---
+      html += '<div class="section-sep"></div>';
+      html += '<div class="section-sep-label">Trajectories</div>';
+
+      // --- Trajectory data (auto-fill grid) ---
+      if (data.trajectories && data.trajectories.length > 0) {
+        html += '<div class="traj-grid">';
+        data.trajectories.forEach(t => {
+          if (!t.covered) {
+            html += `<div class="traj-card uncovered">
+              <div class="traj-header"><b>Trajectory ${t.traj_idx}</b> <span class="badge muted">uncovered</span></div>
+              <div class="traj-extras">${escapeHtml(t.agent_id)} · t_start=${t.t_start} · len=${t.length} · frame ${frame} not in range</div>
+            </div>`;
+            return;
+          }
+          html += `<div class="traj-card" data-traj="${t.traj_idx}">`;
+          html += `<div class="traj-header">
+            <b>Trajectory ${t.traj_idx}</b>
+            <span style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t=${t.t_start}+${t.traj_frame} · len=${t.length}</span>
+          </div>`;
+          if (t.frame_id) {
+            html += `<div class="traj-frameid">frame_id: ${escapeHtml(t.frame_id)}</div>`;
+          }
+          html += '<div class="traj-channels">';
+          channels.forEach(ch => {
+            const rw = t[`reward_${ch}`];
+            const aw = t[`actor_weight_${ch}`];
+            const it = t[`is_terminated_${ch}`];
+            html += `<div class="ch-row"><span class="ch-name">${escapeHtml(ch)}</span><span class="ch-val">r=${fmt(rw,3)} aw=${fmt(aw,3)}${it ? ' ⚡' : ''}</span></div>`;
+          });
+          html += '</div>';
+          const extras = [];
+          if (t.floor_weight !== undefined) extras.push(`fw=${fmt(t.floor_weight,3)}`);
+          if (t.explore_factor !== undefined) extras.push(`ef=${fmt(t.explore_factor,3)}`);
+          if (t.importance !== undefined) extras.push(`imp=${fmt(t.importance,3)}`);
+          if (extras.length > 0) {
+            html += `<div class="traj-extras">${extras.join(' · ')}</div>`;
+          }
+          html += '</div>';
+        });
+        html += '</div>';
+      } else {
+        html += '<div style="color:var(--muted);padding:8px">No trajectories associated with this episode frame.</div>';
+      }
+
       $('ep-data-panel').innerHTML = html;
 
       // Wire trajectory clicks
-      $('ep-data-panel').querySelectorAll('.traj-item[data-traj]').forEach(el => {
+      $('ep-data-panel').querySelectorAll('.traj-card[data-traj]').forEach(el => {
         el.addEventListener('click', () => {
           const trajIdx = parseInt(el.dataset.traj);
           selectTrajectory(trajIdx);
