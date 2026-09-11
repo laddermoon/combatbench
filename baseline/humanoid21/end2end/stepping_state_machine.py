@@ -127,13 +127,11 @@ without being pushed to lift a foot.  After the grace period, the
 DOUBLE weights resume encouraging the next step."""
 
 CONTACT_HOLD_STEPS: int = 4
-"""Minimum consecutive frames for a contact signal to be considered
-"real".  A foot must report contact for this many frames in a row
-before the state machine sees it as contacted.  A single-frame gap
-in contact does not immediately release — the contact stays "held"
-until a gap of the same length breaks it.  This debounce eliminates
-MuJoCo contact jitter (1-2 frame spikes/drops) without adding latency
-beyond the hold window."""
+"""Minimum burst length for a contact signal to be kept.  Contact bursts
+shorter than this (1-3 frame spikes from MuJoCo jitter) are removed
+entirely.  Bursts ≥ CONTACT_HOLD_STEPS are kept as-is with no delay.
+This is a post-hoc filter (uses future frames), applied on the full
+trajectory before the state machine scan."""
 
 FOOT_HEIGHT_CLIP: float = 0.05
 """Foot height reward saturation (m).  Lifting beyond this earns nothing
@@ -146,48 +144,35 @@ a +W actor weight is applied to keep pushing it up."""
 
 
 def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
-    """Debounce a boolean contact signal with a minimum-hold filter.
+    """Remove short contact bursts (post-hoc, no delay).
 
-    A contact must persist for ``hold`` consecutive frames before it is
-    accepted as "on".  Once on, it stays on until contact is absent for
-    ``hold`` consecutive frames.  This eliminates 1-2 frame jitter from
-    MuJoCo contact detection without adding latency beyond the hold
-    window.
+    Scans for consecutive runs of contact=True.  Runs shorter than
+    ``hold`` frames are removed entirely (set to False).  Runs ≥ ``hold``
+    are kept as-is with no delay on onset or release.
 
-    The filter is causal (only uses past + current frames), so it is
-    safe for any post-hoc scan order.
+    Example (hold=4):
+        001000  → 000000   (1-frame spike removed)
+        011110  → 011110   (4-frame burst kept)
+        011100  → 000000   (3-frame burst removed)
+
+    This is a post-hoc filter — it uses the full signal and may look
+    ahead.  Safe for trajectory post-processing.
     """
     T = len(contact)
-    out = np.zeros(T, dtype=bool)
-    held = False
-    on_count = 0
-    off_count = 0
-    for t in range(T):
-        raw = bool(contact[t])
-        if held:
-            if raw:
-                off_count = 0
-                out[t] = True
-            else:
-                off_count += 1
-                if off_count >= hold:
-                    held = False
-                    on_count = 0
-                    out[t] = False
-                else:
-                    out[t] = True  # still holding
+    out = contact.copy()
+    t = 0
+    while t < T:
+        if contact[t]:
+            # Find end of this burst
+            run_end = t
+            while run_end < T and contact[run_end]:
+                run_end += 1
+            run_len = run_end - t
+            if run_len < hold:
+                out[t:run_end] = False
+            t = run_end
         else:
-            if raw:
-                on_count += 1
-                off_count = 0
-                if on_count >= hold:
-                    held = True
-                    out[t] = True
-                else:
-                    out[t] = False
-            else:
-                on_count = 0
-                out[t] = False
+            t += 1
     return out
 
 
