@@ -1107,37 +1107,28 @@
 
     let html = '';
 
-    // Toggle bar for chart lines
-    html += '<div class="toggle-bar">';
+    // Per-channel trend charts (one chart per channel)
+    const lineDefs = [
+      ['reward', 'reward', '#4fa3ff'],
+      ['value', 'value', '#6ec86e'],
+      ['adv', 'advantage', '#e5c07b'],
+      ['ret', 'return', '#c678dd'],
+    ];
     channels.forEach((ch, ci) => {
-      const color = CHART_COLORS[ci % CHART_COLORS.length];
-      const toggles = state.targetChartToggles[ch] || {};
-      html += `<div class="toggle-group" style="border-left:2px solid ${color};padding-left:6px">`;
-      html += `<span class="toggle-label">${escapeHtml(ch)}:</span>`;
-      for (const [key, label] of [['reward','r'],['value','v'],['adv','a'],['ret','R']]) {
-        const checked = toggles[key] ? 'checked' : '';
-        html += `<input type="checkbox" data-ch="${escapeHtml(ch)}" data-line="${key}" ${checked} id="tg-${ch}-${key}"><label for="tg-${ch}-${key}">${label}</label>`;
+      const series = [];
+      for (const [key, label, color] of lineDefs) {
+        const dataKey = key === 'value' ? `values_${ch}` : key === 'adv' ? `advs_${ch}` : key === 'ret' ? `rets_${ch}` : `reward_${ch}`;
+        if (ov[dataKey]) {
+          series.push({label: label, data: ov[dataKey], color: color});
+        }
       }
-      html += '</div>';
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>${escapeHtml(ch)}</h3>`;
+        html += makeChart(series, {currentFrame: frame});
+        html += `</div>`;
+      }
     });
-    html += '</div>';
-
-    // Unified trend chart
-    const series = [];
-    channels.forEach((ch, ci) => {
-      const color = CHART_COLORS[ci % CHART_COLORS.length];
-      const toggles = state.targetChartToggles[ch] || {};
-      if (toggles.reward && ov[`reward_${ch}`]) series.push({label: `${ch} reward`, data: ov[`reward_${ch}`], color: color, visible: toggles.reward});
-      if (toggles.value && ov[`values_${ch}`]) series.push({label: `${ch} value`, data: ov[`values_${ch}`], color: color, visible: toggles.value});
-      if (toggles.adv && ov[`advs_${ch}`]) series.push({label: `${ch} adv`, data: ov[`advs_${ch}`], color: color, visible: toggles.adv});
-      if (toggles.ret && ov[`rets_${ch}`]) series.push({label: `${ch} return`, data: ov[`rets_${ch}`], color: color, visible: toggles.ret});
-    });
-    if (series.length > 0) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Trend (toggle lines above)</h3>`;
-      html += makeChart(series, {currentFrame: frame});
-      html += `</div>`;
-    }
 
     // Combined advantage chart
     if (ov.combined_adv) {
@@ -1152,6 +1143,22 @@
       html += `<div class="chart-container">`;
       html += `<h3>Actor Weight L1 Sum</h3>`;
       html += makeChart([{label: 'aw_l1_sum', data: ov.aw_l1_sum, color: '#e5c07b'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // floor_weight chart
+    if (ov.floor_weight) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Floor Weight</h3>`;
+      html += makeChart([{label: 'floor_weight', data: ov.floor_weight, color: '#d19a66'}], {currentFrame: frame});
+      html += `</div>`;
+    }
+
+    // explore_factor chart
+    if (ov.explore_factor) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Explore Factor</h3>`;
+      html += makeChart([{label: 'explore_factor', data: ov.explore_factor, color: '#c678dd'}], {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -1237,8 +1244,6 @@
     html += `<tr><th>Field</th><th>Value</th></tr>`;
     html += `<tr><td>length</td><td class="num">${ov.length}</td></tr>`;
     if (ov.importance !== undefined) html += `<tr><td>importance</td><td class="num">${fmt(ov.importance)}</td></tr>`;
-    if (ov.floor_weight) html += `<tr><td>floor_weight (frame)</td><td class="num">${fmt(ov.floor_weight[frame])}</td></tr>`;
-    if (ov.explore_factor) html += `<tr><td>explore_factor (frame)</td><td class="num">${fmt(ov.explore_factor[frame])}</td></tr>`;
     html += '</table></div>';
 
     $('traj-content').innerHTML = html;
@@ -1257,17 +1262,6 @@
     if (ov.frame_ids) {
       $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
     }
-
-    // Wire toggle checkboxes
-    $('traj-content').querySelectorAll('input[type="checkbox"][data-ch]').forEach(cb => {
-      cb.addEventListener('change', () => {
-        const ch = cb.dataset.ch;
-        const line = cb.dataset.line;
-        if (!state.targetChartToggles[ch]) state.targetChartToggles[ch] = {};
-        state.targetChartToggles[ch][line] = cb.checked;
-        renderTrajTarget();
-      });
-    });
 
     // Wire chart click
     wireChartClick($('traj-content'), f => {
