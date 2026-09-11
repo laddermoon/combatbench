@@ -121,6 +121,14 @@
   .traj-card .traj-channels .ch-val { color: var(--text); }
   .traj-card .traj-extras { font-size: 10px; color: var(--muted); margin-top: 4px; }
   .traj-card .traj-frameid { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+  .traj-card .traj-ch-tbl { width: 100%; border-collapse: collapse; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 4px; }
+  .traj-card .traj-ch-tbl th { text-align: left; padding: 3px 4px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  .traj-card .traj-ch-tbl td { padding: 2px 4px; border-bottom: 1px solid var(--border); }
+  .traj-card .traj-ch-tbl td.ch-name { color: var(--text); }
+  .traj-card .traj-ch-tbl td.num { color: var(--green); text-align: right; }
+  .traj-card .traj-ch-tbl td.neg { color: var(--red); text-align: right; }
+  .traj-card .traj-ch-tbl td.bool { color: var(--orange); }
+  .traj-card .traj-ch-tbl td.muted { color: var(--muted); }
   .traj-card.uncovered { opacity: 0.5; cursor: default; }
   .traj-card.uncovered:hover { border-color: var(--border); background: var(--panel-alt); }
 
@@ -946,18 +954,24 @@
           if (t.frame_id) {
             html += `<div class="traj-frameid">frame_id: ${escapeHtml(t.frame_id)}</div>`;
           }
-          html += '<div class="traj-channels">';
+          // Channel table with full column names
+          html += '<table class="traj-ch-tbl">';
+          html += '<tr><th>Channel</th><th>reward</th><th>actor_weight</th><th>terminated</th></tr>';
           channels.forEach(ch => {
             const rw = t[`reward_${ch}`];
             const aw = t[`actor_weight_${ch}`];
             const it = t[`is_terminated_${ch}`];
-            html += `<div class="ch-row"><span class="ch-name">${escapeHtml(ch)}</span><span class="ch-val">r=${fmt(rw,3)} aw=${fmt(aw,3)}${it ? ' ⚡' : ''}</span></div>`;
+            html += `<tr><td class="ch-name">${escapeHtml(ch)}</td>`;
+            html += `<td class="num">${fmt(rw,3)}</td>`;
+            html += `<td class="num">${fmt(aw,3)}</td>`;
+            html += `<td class="${it ? 'bool' : 'muted'}">${it ? 'yes' : 'no'}</td></tr>`;
           });
-          html += '</div>';
+          html += '</table>';
+          // Extra fields with full names
           const extras = [];
-          if (t.floor_weight !== undefined) extras.push(`fw=${fmt(t.floor_weight,3)}`);
-          if (t.explore_factor !== undefined) extras.push(`ef=${fmt(t.explore_factor,3)}`);
-          if (t.importance !== undefined) extras.push(`imp=${fmt(t.importance,3)}`);
+          if (t.floor_weight !== undefined) extras.push(`floor_weight: ${fmt(t.floor_weight,3)}`);
+          if (t.explore_factor !== undefined) extras.push(`explore_factor: ${fmt(t.explore_factor,3)}`);
+          if (t.importance !== undefined) extras.push(`importance: ${fmt(t.importance,3)}`);
           if (extras.length > 0) {
             html += `<div class="traj-extras">${extras.join(' · ')}</div>`;
           }
