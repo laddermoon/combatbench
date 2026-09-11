@@ -340,12 +340,12 @@
   </div>
 
   <div id="context-bar">
-    <div class="ctx-item"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
-    <div class="ctx-item"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
-    <div class="ctx-item"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
-    <div class="ctx-item"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
-    <div class="ctx-item"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
-    <div class="ctx-item"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
+    <div class="ctx-item" data-pages="episode"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
+    <div class="ctx-item" data-pages="traj"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
+    <div class="ctx-item" data-pages="episode traj-target"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item" data-pages="traj-epoch"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
+    <div class="ctx-item" data-pages="timeline"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
+    <div class="ctx-item" data-pages="episode traj-target"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
   </div>
 </div>
 
@@ -401,10 +401,23 @@
     pages[name].classList.add('active');
     state.currentPage = name;
     updateBreadcrumb();
+    updateContextBarVisibility();
     // Hide floating image when leaving episode/traj pages
     if (name !== 'episode' && name !== 'traj') {
       hideFloatImage();
     }
+  }
+
+  function updateContextBarVisibility() {
+    // Determine the effective context key from page + traj tab
+    let ctxKey = state.currentPage;
+    if (state.currentPage === 'traj') {
+      ctxKey = state.trajTab === 'epoch' ? 'traj-epoch' : 'traj-target';
+    }
+    document.querySelectorAll('#context-bar .ctx-item').forEach(el => {
+      const pages = (el.dataset.pages || '').split(' ');
+      el.style.display = pages.includes(ctxKey) ? '' : 'none';
+    });
   }
 
   // --- Floating image widget ---
@@ -1728,12 +1741,14 @@
     $('tab-target').classList.add('active');
     $('tab-epoch').classList.remove('active');
     $('epoch-selector').style.display = 'none';
+    updateContextBarVisibility();
     renderTrajTarget();
   });
   $('tab-epoch').addEventListener('click', () => {
     state.trajTab = 'epoch';
     $('tab-epoch').classList.add('active');
     $('tab-target').classList.remove('active');
+    updateContextBarVisibility();
     renderTrajEpoch();
   });
 
