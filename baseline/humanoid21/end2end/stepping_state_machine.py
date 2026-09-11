@@ -144,35 +144,49 @@ a +W actor weight is applied to keep pushing it up."""
 
 
 def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
-    """Remove short contact bursts (post-hoc, no delay).
+    """Remove short bursts in both directions (post-hoc, no delay).
 
-    Scans for consecutive runs of contact=True.  Runs shorter than
-    ``hold`` frames are removed entirely (set to False).  Runs ≥ ``hold``
-    are kept as-is with no delay on onset or release.
+    Symmetric filter: runs of either True or False shorter than ``hold``
+    frames are absorbed into the surrounding signal.
+
+    - Short True bursts (< hold) → set to False  (contact jitter spikes)
+    - Short False bursts (< hold) → set to True   (contact jitter gaps)
 
     Example (hold=4):
-        001000  → 000000   (1-frame spike removed)
-        011110  → 011110   (4-frame burst kept)
-        011100  → 000000   (3-frame burst removed)
+        001000  → 000000   (1-frame True spike removed)
+        011110  → 011110   (4-frame True burst kept)
+        111101111 → 111111111  (1-frame False gap filled)
+        1110000111 → 1110000111 (3-frame False gap kept)
 
     This is a post-hoc filter — it uses the full signal and may look
     ahead.  Safe for trajectory post-processing.
     """
     T = len(contact)
-    out = contact.copy()
+    if T == 0:
+        return contact.copy()
+
+    # Find all runs (alternating True/False), record (start, length, value)
+    runs = []
     t = 0
     while t < T:
-        if contact[t]:
-            # Find end of this burst
-            run_end = t
-            while run_end < T and contact[run_end]:
-                run_end += 1
-            run_len = run_end - t
-            if run_len < hold:
-                out[t:run_end] = False
-            t = run_end
-        else:
-            t += 1
+        val = bool(contact[t])
+        run_end = t
+        while run_end < T and bool(contact[run_end]) == val:
+            run_end += 1
+        runs.append((t, run_end - t, val))
+        t = run_end
+
+    if len(runs) <= 1:
+        return contact.copy()
+
+    out = contact.copy()
+    # Interior short runs (not first, not last) get absorbed into neighbors
+    for i in range(1, len(runs) - 1):
+        start, length, val = runs[i]
+        if length < hold:
+            # Absorb: set this run to the opposite of its value
+            # (i.e. merge into surrounding runs)
+            out[start:start + length] = not val
     return out
 
 
