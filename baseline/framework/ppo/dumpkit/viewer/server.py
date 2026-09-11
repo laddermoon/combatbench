@@ -496,6 +496,18 @@ class ViewerAPI:
 
     # -- /api/trajectory/<idx>/overview ------------------------------------
 
+    def _find_traj_provenance(self, traj_idx: int) -> Tuple[Optional[int], Optional[int]]:
+        """Find episode_pos and t_start for a trajectory by searching traj_map.
+
+        Returns (episode_pos, t_start) or (None, None) if not found.
+        """
+        tm = self.data.traj_map
+        for ep in tm:
+            for t in ep.get("trajectories", []):
+                if t.get("traj_idx") == traj_idx:
+                    return ep.get("list_pos"), t.get("t_start")
+        return None, None
+
     def _traj_overview(self, traj_idx: int) -> Tuple[int, Dict[str, Any]]:
         offsets = self.data.seg_offsets
         if traj_idx < 0 or traj_idx + 1 >= len(offsets):
@@ -509,6 +521,11 @@ class ViewerAPI:
             "length": T,
             "channels": self.data.channel_names,
         }
+
+        # Episode provenance (for image lookup)
+        ep_pos, t_start = self._find_traj_provenance(traj_idx)
+        result["episode_pos"] = ep_pos
+        result["t_start"] = t_start
 
         # Frame IDs
         traj_npz = self.data.trajectories_npz
@@ -690,6 +707,11 @@ class ViewerAPI:
             "epoch": epoch,
             "length": end - start,
         }
+
+        # Episode provenance (for image lookup)
+        ep_pos, t_start = self._find_traj_provenance(traj_idx)
+        result["episode_pos"] = ep_pos
+        result["t_start"] = t_start
 
         ratio_key = f"ratio.{epoch}"
         clip_key = f"clip_mask.{epoch}"
