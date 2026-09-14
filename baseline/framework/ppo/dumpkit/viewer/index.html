@@ -458,6 +458,7 @@
 
     selectedEpisode: null,
     selectedTraj: null,
+    epDelta: null,             // policy-drift delta data for selectedEpisode
     selectedFrame: 0,
     selectedEpoch: 0,
     selectedStep: 0,
@@ -884,6 +885,43 @@
     });
   }
 
+  // --- Heatmap helper ---
+  // rows: [{label, values: [v0..vD]}].  Diverging colour scale centred
+  // at 0 over [minV, maxV]; cell tooltip shows the exact value.
+  function makeHeatmap(rows, options = {}) {
+    if (!rows.length || !rows[0].values.length) return '';
+    const D = rows[0].values.length;
+    const minV = options.min ?? -1, maxV = options.max ?? 1;
+    const half = Math.max(Math.abs(minV), Math.abs(maxV)) || 1;
+    const cw = options.cellW ?? 26, ch = options.cellH ?? 20;
+    const lw = options.labelW ?? 62;
+    const W = lw + D * cw, H = rows.length * ch + 16;
+    const color = v => {
+      if (v === null || v === undefined || isNaN(v)) return 'var(--panel)';
+      const t = Math.max(-1, Math.min(1, v / half));
+      // negative → blue (#4fa3ff), positive → red (#e06c75), 0 → panel
+      const tgt = t < 0 ? [79, 163, 255] : [224, 108, 117];
+      const base = [30, 33, 40];
+      const a = Math.abs(t);
+      const c = base.map((b, i) => Math.round(b + (tgt[i] - b) * a));
+      return `rgb(${c[0]},${c[1]},${c[2]})`;
+    };
+    let svg = `<svg class="heatmap" width="${W}" height="${H}">`;
+    // column headers (dim indices)
+    for (let d = 0; d < D; d++) {
+      svg += `<text x="${lw + d * cw + cw / 2}" y="11" text-anchor="middle" font-size="9" fill="var(--muted)">${d}</text>`;
+    }
+    rows.forEach((r, ri) => {
+      const y = 16 + ri * ch;
+      svg += `<text x="${lw - 6}" y="${y + ch / 2 + 3}" text-anchor="end" font-size="10" fill="var(--muted)">${escapeHtml(r.label)}</text>`;
+      r.values.forEach((v, d) => {
+        const tip = `${r.label} · dim ${d}: ${fmt(v, 4)}`;
+        svg += `<rect x="${lw + d * cw}" y="${y}" width="${cw - 1}" height="${ch - 1}" fill="${color(v)}" rx="2"><title>${escapeHtml(tip)}</title></rect>`;
+      });
+    });
+    return svg + '</svg>';
+  }
+
   // --- Init ---
   async function loadDump(name) {
     // Load (or switch to) a dump. name=null in direct dump mode.
@@ -894,6 +932,7 @@
     state.trajMap = await fetchJson(api('traj_map'));
     // Reset per-dump state
     state.epData = null;
+    state.epDelta = null;
     state.trajOverview = null;
     state.trajEpochCompare = null;
     state.trajEpochOverview = null;
@@ -1435,6 +1474,58 @@
   }
 
   // --- Episode page (Scene 1) ---
+  // --- Policy Drift Δ section (debug.py delta output) ---
+  function buildDeltaSectionHtml(pos, frame) {
+    const d = state.epDelta;
+    if (!d || !d.available) return '';
+    let html = '<div class="section-sep"></div>';
+    html += '<div class="section-sep-label">Policy Drift Δ</div>';
+    html += `<div style="color:var(--muted);font-size:12px;margin:4px 0 10px">Deterministic action of each policy generation on this episode's observations (episode actions unused — both sides deterministic). Trained agents only.</div>`;
+    for (const [aid, adata] of Object.entries(d.agents)) {
+      const acts = adata.actions;            // (G+1, T, D): row 0 = current policy
+      const G = acts.length - 1;
+      if (G < 1 || frame >= acts[0].length) continue;
+      const T = acts[0].length;
+      const D = acts[0][0].length;
+
+      html += `<h3>${escapeHtml(aid)}</h3>`;
+
+      // Chart 1: ‖Δ_g(t)‖₂ per frame, one line per reference generation
+      const series = [];
+      for (let g = 1; g <= G; g++) {
+        const norm = new Array(T);
+        for (let t = 0; t < T; t++) {
+          let s = 0;
+          for (let k = 0; k < D; k++) {
+            const dd = acts[0][t][k] - acts[g][t][k];
+            s += dd * dd;
+          }
+          norm[t] = Math.sqrt(s);
+        }
+        // gen1 darkest, farther generations lighter
+        const alpha = G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0;
+        series.push({
+          label: `‖Δ vs u${String(d.gen_updates[g]).padStart(5, '0')}‖`,
+          data: norm,
+          color: `rgba(79,163,255,${alpha.toFixed(2)})`,
+        });
+      }
+      html += makeChart(series, {currentFrame: frame});
+
+      // Chart 2: generations × action-dims heatmap of raw actions at frame
+      const rows = acts.map((a, g) => ({
+        label: `u${String(d.gen_updates[g]).padStart(5, '0')}${g === 0 ? ' (cur)' : ''}`,
+        values: a[frame],
+      }));
+      html += `<div style="color:var(--muted);font-size:11px;margin:6px 0 2px">Deterministic action per generation at frame ${frame} (rows=u, cols=action dim, range [-1,1])</div>`;
+      html += makeHeatmap(rows, {min: -1, max: 1});
+    }
+    if (d.missing_updates && d.missing_updates.length) {
+      html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">missing exports: ${d.missing_updates.map(u => 'u' + String(u).padStart(5, '0')).join(', ')}</div>`;
+    }
+    return html;
+  }
+
   async function selectEpisode(pos) {
     state.selectedEpisode = pos;
     state.selectedFrame = 0;
@@ -1452,6 +1543,16 @@
     $('ep-slider').min = 0;
     $('ep-slider').max = Math.max(0, numFrames - 1);
     $('ep-slider').value = state.selectedFrame;
+
+    // Policy-drift delta data (episode-level, cached per episode)
+    if (!state.epDelta || state.epDelta._pos !== pos) {
+      try {
+        state.epDelta = await fetchJson(api(`episode/${pos}/delta`));
+      } catch (e) {
+        state.epDelta = {available: false};
+      }
+      state.epDelta._pos = pos;
+    }
 
     await renderEpisodeFrame();
   }
@@ -1602,6 +1703,9 @@
         }
       }
 
+      // --- Policy Drift Δ (per-generation deterministic actions) ---
+      html += buildDeltaSectionHtml(pos, frame);
+
       // --- Section separator ---
       html += '<div class="section-sep"></div>';
       html += '<div class="section-sep-label">Trajectories</div>';
@@ -1673,6 +1777,12 @@
             if (icon) icon.textContent = target.classList.contains('collapsed') ? '▼' : '▲';
           }
         });
+      });
+
+      // Wire delta chart click-to-jump
+      wireChartClick($('ep-data-panel'), f => {
+        state.selectedFrame = f;
+        renderEpisodeFrame();
       });
 
       // Update frame_id in context bar (episode-level, no agent)

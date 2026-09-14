@@ -91,6 +91,37 @@ def _cmd_dump(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_delta(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_delta import compute_delta
+
+    dump_dir = Path(args.dump_dir).resolve()
+    if not dump_dir.is_dir():
+        print(f"error: dump directory does not exist: {dump_dir}", file=sys.stderr)
+        return 2
+    if not (dump_dir / "episodes.npz").exists():
+        print(
+            f"error: {dump_dir} is not a valid dump directory "
+            f"(missing episodes.npz)",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        out_dir = compute_delta(
+            dump_dir=dump_dir,
+            episode_pos=args.episode,
+            gens=args.gens,
+        )
+    except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    print()
+    print(f"Delta data: {out_dir}")
+    print("Open the episode page in the viewer — the Policy Drift section appears automatically.")
+    return 0
+
+
 def _cmd_render(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.dump_render import render_episode
 
@@ -207,6 +238,40 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Episode index to render (0-based, default 0).",
     )
     p_render.set_defaults(func=_cmd_render)
+
+    # --- delta subcommand ---
+    p_delta = sub.add_parser(
+        "delta",
+        help="Compute policy-drift deltas for a dumped episode (offline diagnostic).",
+        description=(
+            "Replay the episode's stored observations through the "
+            "deterministic act() of each policy generation "
+            "(policy_exports/u{update-g}) and record the action vectors "
+            "into <dump_dir>/delta/episode_NNNNN/.  Episode actions are "
+            "not used — both sides of the delta are deterministic.  Only "
+            "agents that produced trajectories (per traj_map) are "
+            "evaluated, so non-self-play episodes only analyse the "
+            "trained side."
+        ),
+    )
+    p_delta.add_argument(
+        "dump_dir",
+        type=str,
+        help="Dump directory (e.g. runs/.../dumps/u00008/).",
+    )
+    p_delta.add_argument(
+        "--episode",
+        type=int,
+        required=True,
+        help="Episode list position to analyse (0-based).",
+    )
+    p_delta.add_argument(
+        "--gens",
+        type=int,
+        default=3,
+        help="How many generations back to compare (1..10, default 3).",
+    )
+    p_delta.set_defaults(func=_cmd_delta)
 
     # --- viewer subcommand ---
     p_viewer = sub.add_parser(

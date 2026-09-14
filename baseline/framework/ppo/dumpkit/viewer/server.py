@@ -483,6 +483,8 @@ class ViewerAPI:
                 return 200, self.data.traj_map
             elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "frame":
                 return self._episode_frame(int(parts[2]), int(parts[4]))
+            elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "delta":
+                return self._episode_delta(int(parts[2]))
             elif endpoint == "image" and len(parts) >= 4:
                 return self._image(int(parts[2]), int(parts[3]))
             elif endpoint == "trajectory" and len(parts) >= 3:
@@ -687,6 +689,37 @@ class ViewerAPI:
         result["trajectories"] = enriched_trajs
 
         return 200, result
+
+    # -- /api/episode/<pos>/delta --------------------------------------------
+
+    def _episode_delta(self, ep_pos: int) -> Tuple[int, Dict[str, Any]]:
+        """Policy-drift delta data produced by ``debug.py delta``.
+
+        Returns per-generation deterministic actions for each trained
+        agent: ``agents[aid]["actions"][g][t][dim]`` where g=0 is the
+        rollout policy (update u) and g≥1 are reference generations.
+        """
+        delta_dir = self.data.dump_dir / "delta" / f"episode_{ep_pos:05d}"
+        npz_path = delta_dir / "delta.npz"
+        meta_path = delta_dir / "meta.json"
+        if not npz_path.exists() or not meta_path.exists():
+            return 200, {"available": False, "episode_pos": ep_pos}
+
+        meta = json.loads(meta_path.read_text())
+        npz = np.load(npz_path)
+        agents: Dict[str, Any] = {}
+        for aid in meta.get("agents", []):
+            key = f"actions.{aid}"
+            if key in npz:
+                agents[aid] = {"actions": _arr_to_list(npz[key])}
+        return 200, {
+            "available": True,
+            "episode_pos": ep_pos,
+            "update": meta["update"],
+            "gen_updates": meta["gen_updates"],
+            "missing_updates": meta.get("missing_updates", []),
+            "agents": agents,
+        }
 
     # -- /api/image/<pos>/<f> -----------------------------------------------
 
