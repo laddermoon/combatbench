@@ -705,9 +705,10 @@
     const height = options.height || 200;
     const n = dataSeries.length > 0 ? dataSeries[0].data.length : 0;
 
-    // Filter visible series
+    // Filter visible series — drop null/NaN/undefined so they never plot as 0
+    const isNum = v => typeof v === 'number' && !isNaN(v);
     const visibleSeries = dataSeries.filter(s => s.visible !== false);
-    const allVals = visibleSeries.flatMap(s => s.data);
+    const allVals = visibleSeries.flatMap(s => s.data).filter(isNum);
     if (allVals.length === 0 || n === 0) {
       return '<div class="loading">no data</div>';
     }
@@ -768,7 +769,7 @@
       if (s.data.length < 2) return;
       let pts = '';
       s.data.forEach((v, i) => {
-        if (isNaN(v)) return;
+        if (!isNum(v)) return;
         pts += `${xScale(i)},${yScale(v)} `;
       });
       const dashAttr = s.dashed ? ' stroke-dasharray="6,3"' : '';
@@ -784,7 +785,7 @@
       // Labels are stacked vertically to avoid overlap, alternating above/below
       // the data point.
       const cf = options.currentFrame;
-      const labels = visibleSeries.filter(s => s.data.length > cf && !isNaN(s.data[cf]));
+      const labels = visibleSeries.filter(s => s.data.length > cf && isNum(s.data[cf]));
       // Determine label placement: stack from top, each label ~13px tall
       const labelH = 13;
       let labelIdx = 0;
@@ -1803,7 +1804,7 @@
       html += '<tr><th>Epoch</th><th>clip_frac</th><th>ratio_mean</th><th>ratio_max</th><th>max |r−1|</th><th>status</th></tr>';
       ec.epochs.forEach(e => {
         const cm = e.clip_mask || [];
-        const ratio = e.ratio || [];
+        const ratio = (e.ratio || []).filter(v => typeof v === 'number' && !isNaN(v));
         const clipFrac = cm.length ? cm.filter(x => x).length / cm.length : NaN;
         const rMean = ratio.length ? ratio.reduce((a, b) => a + b, 0) / ratio.length : NaN;
         const rMax = ratio.length ? Math.max(...ratio) : NaN;
@@ -1873,7 +1874,8 @@
     if (eo.combined_adv) {
       html += `<tr><td>combined_adv</td><td class="${eo.combined_adv[frame] < 0 ? 'neg' : 'num'}">${fmt(eo.combined_adv[frame])}</td></tr>`;
     }
-    if (oldLp !== undefined && newLp !== undefined && eo.combined_adv) {
+    if (typeof oldLp === 'number' && typeof newLp === 'number' &&
+        typeof ratio === 'number' && typeof eo.combined_adv?.[frame] === 'number') {
       const surr1 = Math.exp(newLp - oldLp) * eo.combined_adv[frame];
       const surr2 = Math.max(Math.min(ratio, 1 + clipEps), 1 - clipEps) * eo.combined_adv[frame];
       html += `<tr><td>surr1 (est)</td><td class="num">${fmt(surr1)}</td></tr>`;
@@ -2131,13 +2133,14 @@
     actorFields.forEach(([label, val, type]) => {
       if (val === undefined) return;
       let display = val;
-      if (type === 'bool') display = val ? 'YES' : 'no';
+      if (val === null) display = '-';
+      else if (type === 'bool') display = val ? 'YES' : 'no';
       else if (type === 'num') display = fmt(val);
       const cls = type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num');
       html += `<tr><td>${label}</td><td class="${cls}">${display}</td></tr>`;
     });
     // KL vs target
-    if (tl.kl?.[step] !== undefined && tl.target_kl && !isNaN(tl.target_kl)) {
+    if (typeof tl.kl?.[step] === 'number' && tl.target_kl && !isNaN(tl.target_kl)) {
       const klRatio = tl.kl[step] / tl.target_kl;
       html += `<tr><td>kl / target_kl</td><td class="${klRatio > 1 ? 'neg' : 'num'}">${fmt(klRatio, 3)}</td></tr>`;
     }

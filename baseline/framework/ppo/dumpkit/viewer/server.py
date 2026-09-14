@@ -10,6 +10,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import math
 import socketserver
 import sys
 import threading
@@ -1153,6 +1154,23 @@ class ViewerAPI:
 # HTTP handler
 # ---------------------------------------------------------------------------
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/±Inf) with None.
+
+    ``json.dumps`` emits bare ``NaN``/``Infinity`` literals which are not
+    valid JSON — ``JSON.parse`` in the browser rejects the whole response.
+    Dump arrays legitimately contain NaN (e.g. timeline steps after an
+    actor early-stop), so sanitize here for every API response.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 class _ViewerHandler(BaseHTTPRequestHandler):
     """HTTP handler that serves the frontend + API + static images.
 
@@ -1233,7 +1251,10 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+        self.wfile.write(
+            json.dumps(_json_safe(body), ensure_ascii=False, allow_nan=False)
+            .encode("utf-8")
+        )
 
     def _handle_image(self, path: str):
         rd = self.run_data
