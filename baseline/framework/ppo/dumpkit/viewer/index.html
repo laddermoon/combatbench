@@ -51,6 +51,16 @@
   .home-left { overflow: auto; }
   .home-right { overflow: auto; }
 
+  /* Run page */
+  .run-layout { padding: 16px; height: 100%; overflow: auto; }
+  table.dump-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.dump-table th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  table.dump-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.dump-table tr { cursor: pointer; }
+  table.dump-table tr:hover { background: var(--panel-alt); }
+  .metric-chart { margin-bottom: 18px; }
+  .metric-chart h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); }
+
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
   .card h2 { margin: 0 0 12px 0; font-size: 13px; color: var(--text); }
   .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
@@ -272,6 +282,22 @@
   </header>
 
   <div id="content">
+    <!-- Run home (run mode only): dump list + training metrics -->
+    <div class="page" id="page-run">
+      <div class="run-layout">
+        <div class="card">
+          <h2>Dumps</h2>
+          <div class="desc">Captured update dumps. Click a dump to enter its episode/trajectory views.</div>
+          <div id="dump-list-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
+          <h2>Training Metrics</h2>
+          <div class="desc">Per-update stats parsed from train.log (__RAW_STATS__).</div>
+          <div id="metrics-container"><div class="loading">loading...</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Home page -->
     <div class="page" id="page-home">
       <div class="home-layout">
@@ -367,6 +393,12 @@
 
   // --- Global state ---
   const state = {
+    mode: 'dump',          // 'run' | 'dump'
+    dumpName: null,        // run mode: which dump is loaded
+    runInfo: null,
+    runDumps: null,
+    runMetrics: null,
+
     manifest: null,
     episodeList: null,
     trajMap: null,
@@ -402,11 +434,36 @@
   // --- DOM helpers ---
   const $ = id => document.getElementById(id);
   const pages = {
+    run: $('page-run'),
     home: $('page-home'),
     episode: $('page-episode'),
     traj: $('page-traj'),
     timeline: $('page-timeline'),
   };
+
+  // --- URL helpers ---
+  // In run mode with a loaded dump, API calls are scoped under
+  // /api/dump/<name>/ and images under /img/dump/<name>/.
+  function api(path) {
+    const prefix = (state.mode === 'run' && state.dumpName)
+      ? `/api/dump/${state.dumpName}` : '/api';
+    return `${prefix}/${path}`;
+  }
+  function imgUrl(ep, frame) {
+    return (state.mode === 'run' && state.dumpName)
+      ? `/img/dump/${state.dumpName}/${ep}/${frame}` : `/img/${ep}/${frame}`;
+  }
+  // Browser URL for the current view state (deep-linkable).
+  function urlForCurrent() {
+    const d = (state.mode === 'run' && state.dumpName) ? `/dump/${state.dumpName}` : '';
+    switch (state.currentPage) {
+      case 'run': return '/';
+      case 'episode': return `${d}/episode/${state.selectedEpisode}`;
+      case 'traj': return `${d}/trajectory/${state.selectedTraj}`;
+      case 'timeline': return `${d}/timeline`;
+      default: return d + '/';
+    }
+  }
 
   function showPage(name) {
     Object.values(pages).forEach(p => p.classList.remove('active'));
@@ -503,7 +560,15 @@
   function updateBreadcrumb() {
     const bc = $('breadcrumb');
     bc.innerHTML = '';
-    const crumbs = [{label: 'Home', page: 'home'}];
+    const crumbs = [];
+    if (state.mode === 'run') {
+      crumbs.push({label: 'Run', page: 'run'});
+      if (state.currentPage !== 'run' && state.dumpName) {
+        crumbs.push({label: state.dumpName, page: 'home'});
+      }
+    } else {
+      crumbs.push({label: 'Home', page: 'home'});
+    }
     if (state.currentPage === 'episode' || state.currentPage === 'traj') {
       if (state.selectedEpisode !== null) {
         crumbs.push({label: `Episode ${state.selectedEpisode}`, page: 'episode'});
@@ -540,9 +605,11 @@
     // frame_id is set per-scene
   }
 
-  function navigate(page) {
+  function navigate(page, push = true) {
     showPage(page);
-    if (page === 'home') renderHome();
+    if (push) history.pushState({}, '', urlForCurrent());
+    if (page === 'run') renderRunHome();
+    else if (page === 'home') renderHome();
     else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
     else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
     else if (page === 'timeline') renderTimeline();
@@ -766,18 +833,251 @@
   }
 
   // --- Init ---
+  async function loadDump(name) {
+    // Load (or switch to) a dump. name=null in direct dump mode.
+    if (state.dumpName === name && state.manifest) return;
+    state.dumpName = name;
+    state.manifest = await fetchJson(api('manifest'));
+    state.episodeList = await fetchJson(api('episode_list'));
+    state.trajMap = await fetchJson(api('traj_map'));
+    // Reset per-dump state
+    state.epData = null;
+    state.trajOverview = null;
+    state.trajEpochCompare = null;
+    state.trajEpochOverview = null;
+    state.timelineData = null;
+    state.selectedEpisode = null;
+    state.selectedTraj = null;
+    state.selectedFrame = 0;
+    state.selectedEpoch = 0;
+    state.selectedStep = 0;
+  }
+
+  async function selectDump(name) {
+    try {
+      await loadDump(name);
+    } catch (e) {
+      $('dump-list-container').innerHTML =
+        `<div class="error-msg">Failed to load dump ${escapeHtml(name)}: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    setDumpHeader();
+    navigate('home');
+  }
+
+  function setDumpHeader() {
+    $('header-meta').textContent =
+      `update ${state.manifest.update} · ${state.manifest.experiment_name} · ${state.manifest.total_steps} steps · ${state.manifest.n_episodes} eps · ${state.manifest.n_trajectories} trajs`;
+  }
+
   async function init() {
     try {
-      state.manifest = await fetchJson('/api/manifest');
-      $('header-meta').textContent =
-        `update ${state.manifest.update} · ${state.manifest.experiment_name} · ${state.manifest.total_steps} steps · ${state.manifest.n_episodes} eps · ${state.manifest.n_trajectories} trajs`;
-      state.episodeList = await fetchJson('/api/episode_list');
-      state.trajMap = await fetchJson('/api/traj_map');
-      renderHome();
-      showPage('home');
+      const modeRes = await fetchJson('/api/mode');
+      state.mode = modeRes.mode;
+      if (state.mode === 'run') {
+        state.runInfo = await fetchJson('/api/run/info');
+        state.runDumps = await fetchJson('/api/run/dumps');
+        $('header-meta').textContent =
+          `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ${state.runInfo.n_dumps} dumps`;
+      } else {
+        await loadDump(null);
+        setDumpHeader();
+      }
+      await applyRoute(location.pathname);
     } catch (e) {
       $('content').innerHTML = `<div class="error-msg">Failed to load: ${escapeHtml(e.message)}</div>`;
     }
+  }
+
+  // --- URL routing ---
+  // Run mode: /, /dump/<name>/, /dump/<name>/episode/<pos>,
+  //           /dump/<name>/trajectory/<idx>, /dump/<name>/timeline
+  // Dump mode: /, /episode/<pos>, /trajectory/<idx>, /timeline
+  async function applyRoute(path) {
+    let sub = path;
+    if (state.mode === 'run') {
+      const m = path.match(/^\/dump\/([^/?]+)(\/.*)?$/);
+      if (!m) {
+        showPage('run');
+        renderRunHome();
+        return;
+      }
+      try {
+        await loadDump(decodeURIComponent(m[1]));
+      } catch (e) {
+        $('content').innerHTML = `<div class="error-msg">Dump not found: ${escapeHtml(m[1])}</div>`;
+        return;
+      }
+      setDumpHeader();
+      sub = m[2] || '/';
+    }
+    applySubRoute(sub);
+  }
+
+  function applySubRoute(sub) {
+    let mm;
+    if ((mm = sub.match(/^\/episode\/(\d+)/))) {
+      state.selectedEpisode = parseInt(mm[1]);
+      state.selectedFrame = 0;
+      showPage('episode');
+      renderEpisode();
+    } else if ((mm = sub.match(/^\/trajectory\/(\d+)/))) {
+      state.selectedTraj = parseInt(mm[1]);
+      state.selectedFrame = 0;
+      state.trajTab = 'target';
+      state.trajOverview = null;
+      state.trajEpochCompare = null;
+      state.trajEpochOverview = null;
+      showPage('traj');
+      renderTraj();
+    } else if (sub.startsWith('/timeline')) {
+      showPage('timeline');
+      renderTimeline();
+    } else {
+      showPage('home');
+      renderHome();
+    }
+  }
+
+  window.addEventListener('popstate', () => {
+    applyRoute(location.pathname);
+  });
+
+  // --- Run home page ---
+  // Metric chart ordering: holistic/important first, granular later.
+  const CORE_CHARTS = [
+    {title: 'Episode Length', keys: ['stats.ep_len_mean', 'stats.ep_len_min', 'stats.ep_len_max']},
+    {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
+    {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
+    {title: 'Uncertainty & Std', keys: ['stats.uncertainty', 'stats.std_mean', 'stats.eff_std_mean', 'stats.std_min', 'stats.std_max']},
+    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
+    {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor']},
+    {title: 'Mean |Action|', keys: ['stats.mean_abs']},
+  ];
+  // Per-channel metric groups (pc.<metric>.<ch>), most important first.
+  const PC_ORDER = [
+    'pc.ev', 'pc.confidence', 'pc.reward_mean', 'pc.vloss',
+    'pc.adv_mean', 'pc.ret_mean', 'pc.actor_weight_mean',
+  ];
+
+  async function renderRunHome() {
+    if (state.runInfo) {
+      $('header-meta').textContent =
+        `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ${state.runInfo.n_dumps} dumps`;
+    }
+    // Refresh dump list + metrics each visit (train.log grows during training).
+    try {
+      state.runDumps = await fetchJson('/api/run/dumps');
+      state.runMetrics = await fetchJson('/api/run/metrics');
+    } catch (e) {
+      $('dump-list-container').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+
+    // Dumps table
+    const dl = $('dump-list-container');
+    const dumps = state.runDumps || [];
+    if (dumps.length === 0) {
+      dl.innerHTML = '<div class="loading">no dumps yet — use debug.py dump to capture one</div>';
+    } else {
+      let html = '<table class="dump-table"><thead><tr>';
+      html += '<th>Dump</th><th>Update</th><th>Episodes</th><th>Trajectories</th><th>Steps</th><th>Captured</th>';
+      html += '</tr></thead><tbody>';
+      dumps.forEach(d => {
+        html += `<tr data-name="${escapeHtml(d.name)}">`;
+        html += `<td>${escapeHtml(d.name)}</td>`;
+        html += `<td>${d.update ?? '-'}</td>`;
+        html += `<td>${d.n_episodes ?? '-'}</td>`;
+        html += `<td>${d.n_trajectories ?? '-'}</td>`;
+        html += `<td>${d.total_steps ?? '-'}</td>`;
+        html += `<td>${d.mtime ? new Date(d.mtime * 1000).toLocaleString() : '-'}</td>`;
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      dl.innerHTML = html;
+      dl.querySelectorAll('tr[data-name]').forEach(tr => {
+        tr.addEventListener('click', () => selectDump(tr.dataset.name));
+      });
+    }
+
+    // Metrics charts
+    const mc = $('metrics-container');
+    const metrics = state.runMetrics;
+    if (!metrics || metrics.length === 0) {
+      mc.innerHTML = '<div class="loading">no __RAW_STATS__ found in train.log</div>';
+      return;
+    }
+    mc.innerHTML = buildMetricsCharts(metrics);
+  }
+
+  function buildMetricsCharts(metrics) {
+    // Collect all keys
+    const allKeys = new Set();
+    metrics.forEach(u => Object.keys(u).forEach(k => { if (k !== 'update') allKeys.add(k); }));
+    const seriesFor = key => metrics.map(u => (typeof u[key] === 'number' ? u[key] : NaN));
+
+    let html = '';
+    const used = new Set();
+
+    // 1. Core grouped charts
+    CORE_CHARTS.forEach(spec => {
+      const keys = spec.keys.filter(k => allKeys.has(k));
+      if (keys.length === 0) return;
+      const series = keys.map((k, i) => ({
+        label: k.split('.').pop(), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
+      }));
+      keys.forEach(k => used.add(k));
+      html += `<div class="metric-chart"><h3>${escapeHtml(spec.title)}</h3>`;
+      html += makeChart(series, {height: 160});
+      html += '</div>';
+    });
+
+    // 2. Remaining stats.* keys (individual charts, alphabetical)
+    const remStats = [...allKeys].filter(k => k.startsWith('stats.') && !used.has(k)).sort();
+    remStats.forEach(k => {
+      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(6))}</h3>`;
+      html += makeChart([{label: k.slice(6), data: seriesFor(k), color: '#4fa3ff'}], {height: 140});
+      html += '</div>';
+    });
+
+    // 3. Per-channel groups: pc.<metric>.<ch>
+    const pcMetrics = new Set();
+    allKeys.forEach(k => {
+      const m = k.match(/^pc\.([^.]+)\.(.+)$/);
+      if (m) pcMetrics.add(m[1]);
+    });
+    const ordered = [...pcMetrics].sort((a, b) => {
+      const ia = PC_ORDER.indexOf('pc.' + a), ib = PC_ORDER.indexOf('pc.' + b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    ordered.forEach(metric => {
+      const chans = [...allKeys]
+        .filter(k => k.startsWith(`pc.${metric}.`))
+        .map(k => k.slice(`pc.${metric}.`.length))
+        .sort();
+      const series = chans.map((ch, i) => ({
+        label: ch, data: seriesFor(`pc.${metric}.${ch}`), color: CHART_COLORS[i % CHART_COLORS.length],
+      }));
+      html += `<div class="metric-chart"><h3>${escapeHtml(metric)} (per channel)</h3>`;
+      html += makeChart(series, {height: 160});
+      html += '</div>';
+    });
+
+    // 4. Episode stats
+    [...allKeys].filter(k => k.startsWith('ep.')).sort().forEach(k => {
+      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(3))}</h3>`;
+      html += makeChart([{label: k.slice(3), data: seriesFor(k), color: '#6ec86e'}], {height: 140});
+      html += '</div>';
+    });
+
+    // 5. Timing
+    [...allKeys].filter(k => k.startsWith('time.')).sort().forEach(k => {
+      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(5))}</h3>`;
+      html += makeChart([{label: k.slice(5), data: seriesFor(k), color: '#8a93a6'}], {height: 140});
+      html += '</div>';
+    });
+
+    return html;
   }
 
   // --- Home page ---
@@ -788,7 +1088,7 @@
       return;
     }
     let html = '<table class="ep-table"><thead><tr>';
-    html += '<th>#</th><th>Seed</th><th>Frames</th><th>Trajectories</th>';
+    html += '<th>#</th><th>Seed</th><th>Frames</th><th>Trajectories</th><th>Rendered</th>';
     html += '</tr></thead><tbody>';
     state.episodeList.forEach(ep => {
       html += `<tr data-pos="${ep.list_pos}">`;
@@ -796,6 +1096,7 @@
       html += `<td>${ep.seed ?? '-'}</td>`;
       html += `<td>${ep.num_frames ?? '-'}</td>`;
       html += `<td>${ep.n_trajectories}</td>`;
+      html += `<td class="${ep.rendered ? 'bool' : 'muted'}">${ep.rendered ? '✓' : '—'}</td>`;
       html += '</tr>';
     });
     html += '</tbody></table>';
@@ -832,7 +1133,7 @@
       el.innerHTML += `<div class="stat"><div class="label">Early Stop</div><div class="value warn">step ${state.manifest.early_stop_step}</div></div>`;
     }
     // Load timeline thumbnail
-    fetchJson('/api/timeline/overview').then(tl => {
+    fetchJson(api('timeline/overview')).then(tl => {
       state.timelineData = tl;
       if (tl.kl && tl.kl.length > 0) {
         const series = [{label: 'KL', data: tl.kl, color: '#4fa3ff'}];
@@ -876,12 +1177,12 @@
     updateContextBar();
 
     try {
-      const data = await fetchJson(`/api/episode/${pos}/frame/${frame}`);
+      const data = await fetchJson(api(`episode/${pos}/frame/${frame}`));
       state.epData = data;
 
       // Image (floating widget)
       if (data.has_image) {
-        showFloatImage(`/img/${pos}/${frame}`, `Episode ${pos} · Frame ${frame}`);
+        showFloatImage(imgUrl(pos, frame), `Episode ${pos} · Frame ${frame}`);
       } else {
         hideFloatImage();
       }
@@ -1110,7 +1411,7 @@
     // Load overview if needed
     if (!state.trajOverview) {
       try {
-        state.trajOverview = await fetchJson(`/api/trajectory/${state.selectedTraj}/overview`);
+        state.trajOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/overview`));
         const T = state.trajOverview.length;
         $('traj-slider').min = 0;
         $('traj-slider').max = Math.max(0, T - 1);
@@ -1348,7 +1649,7 @@
     // Show floating image for trajectory frame
     if (ov.episode_pos !== null && ov.episode_pos !== undefined) {
       const epFrame = (ov.t_start || 0) + frame;
-      showFloatImage(`/img/${ov.episode_pos}/${epFrame}`, `Traj ${state.selectedTraj} · Frame ${frame}`);
+      showFloatImage(imgUrl(ov.episode_pos, epFrame), `Traj ${state.selectedTraj} · Frame ${frame}`);
     } else {
       hideFloatImage();
     }
@@ -1372,7 +1673,7 @@
     // Load epoch compare data
     if (!state.trajEpochCompare) {
       try {
-        state.trajEpochCompare = await fetchJson(`/api/trajectory/${trajIdx}/epoch_compare`);
+        state.trajEpochCompare = await fetchJson(api(`trajectory/${trajIdx}/epoch_compare`));
       } catch (e) {
         $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;
@@ -1399,7 +1700,7 @@
     // Load per-epoch overview if needed
     if (state.trajEpochOverview?.epoch !== state.selectedEpoch) {
       try {
-        state.trajEpochOverview = await fetchJson(`/api/trajectory/${trajIdx}/epoch/${state.selectedEpoch}/overview`);
+        state.trajEpochOverview = await fetchJson(api(`trajectory/${trajIdx}/epoch/${state.selectedEpoch}/overview`));
       } catch (e) {
         $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;
@@ -1522,7 +1823,7 @@
     // Show floating image for trajectory frame (same as target tab)
     if (eo.episode_pos !== null && eo.episode_pos !== undefined) {
       const epFrame = (eo.t_start || 0) + frame;
-      showFloatImage(`/img/${eo.episode_pos}/${epFrame}`, `Traj ${state.selectedTraj} · Epoch ${eo.epoch} · Frame ${frame}`);
+      showFloatImage(imgUrl(eo.episode_pos, epFrame), `Traj ${state.selectedTraj} · Epoch ${eo.epoch} · Frame ${frame}`);
     } else {
       hideFloatImage();
     }
@@ -1544,7 +1845,7 @@
 
     if (!state.timelineData) {
       try {
-        state.timelineData = await fetchJson('/api/timeline/overview');
+        state.timelineData = await fetchJson(api('timeline/overview'));
       } catch (e) {
         el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;

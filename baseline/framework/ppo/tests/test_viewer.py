@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
-from baseline.framework.ppo.dumpkit.viewer.server import DumpData, ViewerAPI
+from baseline.framework.ppo.dumpkit.viewer.server import DumpData, RunData, ViewerAPI
 from baseline.framework.ppo.experiment import (
     ActorEval,
     PPOParams,
@@ -564,6 +564,158 @@ def test_api_epoch_compare_has_clip_eps():
 
 
 # ---------------------------------------------------------------------------
+# Rendered flag + RunData tests
+# ---------------------------------------------------------------------------
+
+def test_episode_rendered_flag():
+    """episode_rendered / episode_list.rendered reflect record/episode_NNNNN PNGs."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        data = DumpData(dump_dir)
+        api = ViewerAPI(data)
+
+        # Not rendered yet
+        assert data.episode_rendered(0) is False
+        status, body = api.handle("/api/episode_list")
+        assert status == 200
+        assert body[0]["rendered"] is False
+
+        # An empty episode dir without PNGs still counts as not rendered
+        ep_dir = dump_dir / "record" / "episode_00000"
+        ep_dir.mkdir(parents=True)
+        assert data.episode_rendered(0) is False
+
+        # With a PNG → rendered
+        (ep_dir / "step_00001.png").write_bytes(b"\x89PNG fake")
+        assert data.episode_rendered(0) is True
+        status, body = api.handle("/api/episode_list")
+        assert body[0]["rendered"] is True
+        print("test_episode_rendered_flag: PASS")
+
+
+def _write_train_log(run_dir: Path) -> Path:
+    log = run_dir / "train.log"
+    log.write_text(
+        "human readable line\n"
+        '__RAW_STATS__ {"update": 1, "episode_stats": {"ep_len_mean": 10.0}, '
+        '"buffer_stats": {"per_channel": {"r_test": {"reward_mean": 0.5}}}, '
+        '"stats": {"policy_loss": -0.01, "ev_r_test": 0.8, '
+        '"epoch_kl_stats": [{"kl": 0.1}]}, '
+        '"timing": {"total": 1.2}}\n'
+        "another line\n"
+        '__RAW_STATS__ {"update": 2, "episode_stats": {"ep_len_mean": 11.0}, '
+        '"buffer_stats": {"per_channel": {"r_test": {"reward_mean": 0.6}}}, '
+        '"stats": {"policy_loss": -0.02, "ev_r_test": 0.85}, '
+        '"timing": {"total": 1.3}}\n',
+        encoding="utf-8",
+    )
+    return log
+
+
+def test_run_data_dumps():
+    """RunData.dumps() lists dump dirs with manifest metadata."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent  # tmpdir/run
+
+        rd = RunData(run_dir)
+        dumps = rd.dumps()
+        assert len(dumps) == 1
+        assert dumps[0]["name"] == "u00001"
+        assert dumps[0]["update"] == 1
+        assert dumps[0]["n_episodes"] == 1
+        assert "mtime" in dumps[0]
+        print("test_run_data_dumps: PASS")
+
+
+def test_run_data_metrics():
+    """RunData.metrics() parses + flattens __RAW_STATS__ lines."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        _write_train_log(run_dir)
+
+        rd = RunData(run_dir)
+        metrics = rd.metrics()
+        assert len(metrics) == 2
+        m0 = metrics[0]
+        assert m0["update"] == 1
+        assert m0["stats.policy_loss"] == -0.01
+        assert m0["ep.ep_len_mean"] == 10.0
+        assert m0["pc.reward_mean.r_test"] == 0.5
+        # stats.ev_<ch> is regrouped into pc.ev.<ch>
+        assert m0["pc.ev.r_test"] == 0.8
+        assert "stats.ev_r_test" not in m0
+        # Non-scalar fields are dropped
+        assert "stats.epoch_kl_stats" not in m0
+        assert m0["time.total"] == 1.2
+        assert metrics[1]["update"] == 2
+        print("test_run_data_metrics: PASS")
+
+
+def test_run_data_metrics_incremental():
+    """metrics() picks up appended lines and survives a partial tail line."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        log = _write_train_log(run_dir)
+
+        rd = RunData(run_dir)
+        assert len(rd.metrics()) == 2
+
+        # Append a complete line → re-parse picks it up
+        with open(log, "a", encoding="utf-8") as f:
+            f.write('__RAW_STATS__ {"update": 3, "stats": {"policy_loss": -0.03}}\n')
+        metrics = rd.metrics()
+        assert len(metrics) == 3
+        assert metrics[2]["stats.policy_loss"] == -0.03
+
+        # A partial (newline-less) tail line is deferred, not dropped
+        with open(log, "a", encoding="utf-8") as f:
+            f.write('__RAW_STATS__ {"update": 4, "stats": {"policy_loss": -0.04}}')
+        assert len(rd.metrics()) == 3
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("\n")
+        metrics = rd.metrics()
+        assert len(metrics) == 4
+        print("test_run_data_metrics_incremental: PASS")
+
+
+def test_run_data_get_dump_api():
+    """get_dump_api resolves valid dump names, rejects unknown ones."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+
+        rd = RunData(run_dir)
+        api = rd.get_dump_api("u00001")
+        assert api is not None
+        status, body = api.handle("/api/manifest")
+        assert status == 200
+        assert body["update"] == 1
+        # Cached
+        assert rd.get_dump_api("u00001") is api
+        # Unknown dump
+        assert rd.get_dump_api("u99999") is None
+        assert rd.get_dump_api("../outside") is None
+        print("test_run_data_get_dump_api: PASS")
+
+
+def test_run_data_no_train_log():
+    """RunData works without train.log — metrics() returns []."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+
+        rd = RunData(run_dir)
+        assert rd.metrics() == []
+        info = rd.run_info()
+        assert info["has_train_log"] is False
+        assert info["n_dumps"] == 1
+        print("test_run_data_no_train_log: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -593,4 +745,10 @@ if __name__ == "__main__":
     test_api_unknown_endpoint()
     test_api_image_not_found()
     test_traj_map_fallback_from_frame_ids()
+    test_episode_rendered_flag()
+    test_run_data_dumps()
+    test_run_data_metrics()
+    test_run_data_metrics_incremental()
+    test_run_data_get_dump_api()
+    test_run_data_no_train_log()
     print("\nAll viewer tests passed!")

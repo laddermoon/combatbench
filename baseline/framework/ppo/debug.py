@@ -131,20 +131,13 @@ def _cmd_render(args: argparse.Namespace) -> int:
 def _cmd_viewer(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.viewer.server import serve
 
-    dump_dir = Path(args.dump_dir).resolve()
-    if not dump_dir.is_dir():
-        print(f"error: dump directory does not exist: {dump_dir}", file=sys.stderr)
-        return 2
-    if not (dump_dir / "manifest.json").exists():
-        print(
-            f"error: {dump_dir} is not a valid dump directory "
-            f"(missing manifest.json)",
-            file=sys.stderr,
-        )
+    target = Path(args.path).resolve()
+    if not target.is_dir():
+        print(f"error: directory does not exist: {target}", file=sys.stderr)
         return 2
 
     try:
-        serve(dump_dir, port=args.port, open_browser=not args.no_browser)
+        serve(target, port=args.port, open_browser=not args.no_browser)
     except (FileNotFoundError, NotADirectoryError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -218,17 +211,20 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- viewer subcommand ---
     p_viewer = sub.add_parser(
         "viewer",
-        help="Launch the debug viewer web app for a captured dump.",
+        help="Launch the debug viewer web app for a run or a captured dump.",
         description=(
             "Start an HTTP server that serves the debug viewer frontend "
-            "and API endpoints reading from the dump directory.  Open "
-            "http://localhost:<port>/ in your browser."
+            "and API endpoints.  Pass a training run directory "
+            "(runs/.../ containing dumps/ and train.log) for the run-level "
+            "view, or a dump directory (runs/.../dumps/u00008/) to jump "
+            "straight into that dump.  Open http://localhost:<port>/ "
+            "in your browser."
         ),
     )
     p_viewer.add_argument(
-        "dump_dir",
+        "path",
         type=str,
-        help="Dump directory (e.g. runs/.../dumps/u00008/).",
+        help="Run directory or dump directory.",
     )
     p_viewer.add_argument(
         "--port",

@@ -189,6 +189,17 @@ class DumpData:
 
     # -- image path ---------------------------------------------------------
 
+    def episode_rendered(self, episode_pos: int) -> bool:
+        """True if record/episode_NNNNN exists with at least one PNG."""
+        ep_dir = self.dump_dir / "record" / f"episode_{episode_pos:05d}"
+        if not ep_dir.is_dir():
+            return False
+        try:
+            next(ep_dir.glob("step_*.png"))
+            return True
+        except StopIteration:
+            return False
+
     def image_path(self, episode_pos: int, frame: int) -> Optional[Path]:
         """Return the PNG path for a given episode and frame.
 
@@ -204,6 +215,178 @@ class DumpData:
         if png.exists():
             return png
         return None
+
+
+# ---------------------------------------------------------------------------
+# RunData — training-run level data (dump list + train.log metrics)
+# ---------------------------------------------------------------------------
+
+class RunData:
+    """Training run directory: scan dumps and parse __RAW_STATS__ from train.log."""
+
+    def __init__(self, run_dir: Path):
+        self.run_dir = Path(run_dir).resolve()
+        if not self.run_dir.is_dir():
+            raise NotADirectoryError(f"run dir not found: {self.run_dir}")
+        self._dump_apis: Dict[str, "ViewerAPI"] = {}
+        self._metrics_cache: Optional[List[Dict[str, Any]]] = None
+        self._metrics_offset: int = 0
+
+    # -- dump discovery -----------------------------------------------------
+
+    def dumps(self) -> List[Dict[str, Any]]:
+        """List dumps under run_dir/dumps/, sorted by update number."""
+        dumps_dir = self.run_dir / "dumps"
+        result: List[Dict[str, Any]] = []
+        if not dumps_dir.is_dir():
+            return result
+        for d in sorted(dumps_dir.iterdir()):
+            if not d.is_dir() or not d.name.startswith("u"):
+                continue
+            manifest_path = d / "manifest.json"
+            entry: Dict[str, Any] = {"name": d.name}
+            if manifest_path.exists():
+                try:
+                    with open(manifest_path, encoding="utf-8") as f:
+                        m = json.load(f)
+                    entry["update"] = m.get("update")
+                    entry["n_episodes"] = m.get("n_episodes")
+                    entry["n_trajectories"] = m.get("n_trajectories")
+                    entry["total_steps"] = m.get("total_steps")
+                    entry["experiment_name"] = m.get("experiment_name")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            # Captured time from dir mtime
+            entry["mtime"] = d.stat().st_mtime
+            result.append(entry)
+        result.sort(key=lambda e: e.get("update") or 0)
+        return result
+
+    def get_dump_api(self, name: str) -> Optional["ViewerAPI"]:
+        """Get (or lazily create) a ViewerAPI for dump <name>."""
+        if name in self._dump_apis:
+            return self._dump_apis[name]
+        dump_dir = self.run_dir / "dumps" / name
+        if not dump_dir.is_dir() or not (dump_dir / "manifest.json").exists():
+            return None
+        api = ViewerAPI(DumpData(dump_dir))
+        self._dump_apis[name] = api
+        return api
+
+    def dump_image_path(self, name: str, ep_pos: int, frame: int) -> Optional[Path]:
+        api = self.get_dump_api(name)
+        if api is None:
+            return None
+        return api.data.image_path(ep_pos, frame)
+
+    # -- train.log metrics --------------------------------------------------
+
+    @property
+    def train_log_path(self) -> Path:
+        return self.run_dir / "train.log"
+
+    def metrics(self) -> List[Dict[str, Any]]:
+        """Parse __RAW_STATS__ JSON lines from train.log.
+
+        Incremental: tracks byte offset so a growing log is cheap to re-parse.
+        Each entry is {update, stats: {...flat scalars...}, timing: {...}}.
+        """
+        log = self.train_log_path
+        if not log.exists():
+            return []
+        size = log.stat().st_size
+        if self._metrics_cache is not None and size == self._metrics_offset:
+            return self._metrics_cache
+        if self._metrics_cache is None or size < self._metrics_offset:
+            # First parse, or log was truncated/rotated — start over.
+            self._metrics_cache = []
+            self._metrics_offset = 0
+        with open(log, "rb") as f:
+            f.seek(self._metrics_offset)
+            tail = f.read()
+        # Only consume up to the last newline — a partially-written trailing
+        # line gets another chance on the next call.
+        last_nl = tail.rfind(b"\n")
+        if last_nl < 0:
+            return self._metrics_cache
+        complete = tail[: last_nl + 1]
+        self._metrics_offset += len(complete)
+        for line in complete.decode("utf-8", errors="replace").splitlines():
+            marker = "__RAW_STATS__"
+            idx = line.find(marker)
+            if idx < 0:
+                continue
+            try:
+                raw = json.loads(line[idx + len(marker):])
+            except json.JSONDecodeError:
+                continue
+            entry = self._flatten_update(raw)
+            if entry is not None:
+                self._metrics_cache.append(entry)
+        return self._metrics_cache
+
+    @staticmethod
+    def _flatten_update(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Flatten one __RAW_STATS__ record into scalar fields for charting."""
+        update = raw.get("update")
+        if update is None:
+            return None
+        out: Dict[str, Any] = {"update": int(update)}
+
+        # Channel names (for grouping per-channel metrics in stats.*)
+        buf = raw.get("buffer_stats") or {}
+        pc = buf.get("per_channel") or {}
+        channels = [c for c in pc.keys() if isinstance(c, str)] if isinstance(pc, dict) else []
+
+        stats = raw.get("stats") or {}
+        for k, v in stats.items():
+            if not isinstance(v, (int, float)):
+                continue  # skip non-scalars (e.g. epoch_kl_stats list)
+            # Re-classify per-channel keys like "vloss_r_potential" → pc.vloss.r_potential
+            grouped = False
+            for ch in channels:
+                if k.endswith("_" + ch):
+                    out[f"pc.{k[:-len(ch) - 1]}.{ch}"] = float(v)
+                    grouped = True
+                    break
+            if not grouped:
+                out[f"stats.{k}"] = float(v)
+
+        ep = raw.get("episode_stats") or {}
+        for k, v in ep.items():
+            if isinstance(v, (int, float)):
+                out[f"ep.{k}"] = float(v)
+        # per-channel buffer stats → pc.<field>.<ch>
+        if isinstance(pc, dict):
+            for ch, fields in pc.items():
+                if not isinstance(fields, dict):
+                    continue
+                for k, v in fields.items():
+                    if isinstance(v, (int, float)):
+                        out[f"pc.{k}.{ch}"] = float(v)
+
+        timing = raw.get("timing") or {}
+        for k, v in timing.items():
+            if isinstance(v, (int, float)):
+                out[f"time.{k}"] = float(v)
+        return out
+
+    def run_info(self) -> Dict[str, Any]:
+        config_path = self.run_dir / "config.json"
+        exp_name = None
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = json.load(f)
+                exp_name = cfg.get("experiment", {}).get("name")
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {
+            "run_name": self.run_dir.name,
+            "experiment_name": exp_name,
+            "has_train_log": self.train_log_path.exists(),
+            "n_dumps": len(self.dumps()),
+        }
 
 
 def _build_traj_map_from_frame_ids(
@@ -359,6 +542,7 @@ class ViewerAPI:
                 "seed": ep.get("seed"),
                 "num_frames": ep.get("num_frames"),
                 "n_trajectories": len(ep.get("trajectories", [])),
+                "rendered": self.data.episode_rendered(ep["list_pos"]),
             })
         return result
 
@@ -972,14 +1156,21 @@ class ViewerAPI:
 class _ViewerHandler(BaseHTTPRequestHandler):
     """HTTP handler that serves the frontend + API + static images.
 
-    The ``api`` and ``viewer_dir`` are accessed via the server instance
-    (``self.server.api`` / ``self.server.viewer_dir``), injected by
-    ``serve()``.
+    Two modes:
+
+    - dump mode: ``server.api`` is a ViewerAPI; routes ``/api/...``, ``/img/...``.
+    - run mode: ``server.run_data`` is a RunData; routes ``/api/run/...``,
+      ``/api/dump/<name>/...``, ``/img/dump/<name>/...``, and ``/dump/<name>/...``
+      serves the SPA for client-side routing.
     """
 
     @property
-    def api(self) -> ViewerAPI:
-        return self.server.api  # type: ignore[attr-defined]
+    def api(self) -> Optional[ViewerAPI]:
+        return getattr(self.server, "api", None)  # type: ignore[attr-defined]
+
+    @property
+    def run_data(self) -> Optional[RunData]:
+        return getattr(self.server, "run_data", None)  # type: ignore[attr-defined]
 
     @property
     def viewer_dir(self) -> Path:
@@ -1001,11 +1192,40 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._handle_image(path)
             return
 
-        # Static files
+        # Static files / SPA
         self._handle_static(path)
 
+    # -- run-mode routing ---------------------------------------------------
+
+    def _run_api(self, path: str) -> Tuple[int, Any]:
+        """Handle run-scoped API paths (run mode only)."""
+        rd = self.run_data
+        assert rd is not None
+        if path == "/api/run/info":
+            return 200, rd.run_info()
+        if path == "/api/run/dumps":
+            return 200, rd.dumps()
+        if path == "/api/run/metrics":
+            return 200, rd.metrics()
+        if path.startswith("/api/dump/"):
+            # /api/dump/<name>/<endpoint...>
+            rest = path[len("/api/dump/"):]
+            name, _, sub = rest.partition("/")
+            api = rd.get_dump_api(name)
+            if api is None:
+                return 404, {"error": f"dump not found: {name}"}
+            return api.handle("/api/" + sub)
+        return 404, {"error": f"unknown run api: {path}"}
+
     def _handle_api(self, path: str):
-        status, body = self.api.handle(path)
+        if path == "/api/mode":
+            status, body = 200, {
+                "mode": "run" if self.run_data is not None else "dump",
+            }
+        elif self.run_data is not None:
+            status, body = self._run_api(path)
+        else:
+            status, body = self.api.handle(path)  # type: ignore[union-attr]
         if status == 200 and isinstance(body, Path):
             # Image binary response
             self._serve_file(body, "image/png")
@@ -1016,18 +1236,34 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
 
     def _handle_image(self, path: str):
-        # /img/<ep_pos>/<frame>
-        parts = path.strip("/").split("/")
-        if len(parts) != 3:
-            self.send_error(404)
-            return
-        try:
-            ep_pos = int(parts[1])
-            frame = int(parts[2])
-        except ValueError:
-            self.send_error(404)
-            return
-        png_path = self.api.data.image_path(ep_pos, frame)
+        rd = self.run_data
+        if rd is not None:
+            # /img/dump/<name>/<ep_pos>/<frame>
+            parts = path.strip("/").split("/")
+            if len(parts) != 5 or parts[1] != "dump":
+                self.send_error(404)
+                return
+            name = parts[2]
+            try:
+                ep_pos = int(parts[3])
+                frame = int(parts[4])
+            except ValueError:
+                self.send_error(404)
+                return
+            png_path = rd.dump_image_path(name, ep_pos, frame)
+        else:
+            # /img/<ep_pos>/<frame>
+            parts = path.strip("/").split("/")
+            if len(parts) != 3:
+                self.send_error(404)
+                return
+            try:
+                ep_pos = int(parts[1])
+                frame = int(parts[2])
+            except ValueError:
+                self.send_error(404)
+                return
+            png_path = self.api.data.image_path(ep_pos, frame)  # type: ignore[union-attr]
         if png_path is None or not png_path.exists():
             self.send_error(404)
             return
@@ -1035,6 +1271,15 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
     def _handle_static(self, path: str):
         if path == "/" or path == "":
+            path = "/index.html"
+        elif self.run_data is not None and (
+            path == "/dump" or path.startswith("/dump/")
+        ):
+            # SPA deep-link into a dump page — serve the app shell.
+            path = "/index.html"
+        elif "." not in path.rsplit("/", 1)[-1]:
+            # SPA deep-link without a file suffix (e.g. /episode/3 in
+            # dump mode) — serve the app shell.
             path = "/index.html"
         # Security: only serve files from viewer_dir
         file_path = (self.viewer_dir / path.lstrip("/")).resolve()
@@ -1070,37 +1315,49 @@ class _ThreadingServer(socketserver.ThreadingTCPServer):
 
 
 def serve(
-    dump_dir: Path,
+    path: Path,
     port: int = 8766,
     open_browser: bool = True,
 ) -> None:
     """Start the viewer HTTP server.
 
     Args:
-        dump_dir: Path to the dump directory (e.g. runs/.../dumps/u00008/).
+        path: Path to a dump directory (runs/.../dumps/u00008/) or a training
+            run directory (runs/.../ containing dumps/ and/or train.log).
         port: HTTP port (default 8766).
         open_browser: Auto-open the browser (default True).
     """
-    dump_dir = Path(dump_dir).resolve()
-    if not dump_dir.is_dir():
-        raise NotADirectoryError(f"dump dir not found: {dump_dir}")
+    path = Path(path).resolve()
+    if not path.is_dir():
+        raise NotADirectoryError(f"dir not found: {path}")
 
     if not _BUNDLED_HTML.exists():
         raise FileNotFoundError(f"bundled index.html not found: {_BUNDLED_HTML}")
 
-    data = DumpData(dump_dir)
-    api = ViewerAPI(data)
-
-    # Verify manifest exists
-    _ = data.manifest
+    is_dump = (path / "manifest.json").exists()
+    is_run = not is_dump and (
+        (path / "dumps").is_dir() or (path / "train.log").exists()
+    )
+    if not is_dump and not is_run:
+        raise FileNotFoundError(
+            f"not a dump or run dir (no manifest.json / dumps/ / train.log): {path}"
+        )
 
     with _ThreadingServer(("", port), _ViewerHandler) as httpd:
-        # Inject api and viewer_dir into the server instance so handlers
-        # can access them via self.server.api / self.server.viewer_dir.
-        httpd.api = api  # type: ignore[attr-defined]
+        # Inject api (dump mode) or run_data (run mode) plus viewer_dir into
+        # the server instance so handlers can access them via self.server.
+        if is_dump:
+            data = DumpData(path)
+            _ = data.manifest  # verify manifest exists
+            httpd.api = ViewerAPI(data)  # type: ignore[attr-defined]
+            httpd.run_data = None  # type: ignore[attr-defined]
+            print(f"[viewer] serving dump: {path}", flush=True)
+        else:
+            httpd.api = None  # type: ignore[attr-defined]
+            httpd.run_data = RunData(path)  # type: ignore[attr-defined]
+            print(f"[viewer] serving run: {path}", flush=True)
         httpd.viewer_dir = _HERE  # type: ignore[attr-defined]
         url = f"http://localhost:{port}/"
-        print(f"[viewer] serving dump: {dump_dir}", flush=True)
         print(f"[viewer] url: {url}", flush=True)
         print(f"[viewer] press Ctrl+C to stop", flush=True)
         if open_browser:
@@ -1112,4 +1369,4 @@ def serve(
             httpd.shutdown()
 
 
-__all__ = ["DumpData", "ViewerAPI", "serve"]
+__all__ = ["DumpData", "RunData", "ViewerAPI", "serve"]
