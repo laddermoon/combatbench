@@ -87,6 +87,31 @@
   .timeline-card .stat .label { color: var(--muted); }
   .timeline-card .stat .value { color: var(--text); }
   .timeline-thumb { margin-top: 8px; }
+  .dataflow-card { cursor: pointer; }
+  .dataflow-card:hover { border-color: var(--accent); }
+  .df-mini { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .df-mini span { font-size: 11px; color: var(--accent); background: rgba(79,163,255,0.08); border: 1px solid rgba(79,163,255,0.25); padding: 2px 8px; border-radius: 10px; }
+  .df-mini i { color: var(--muted); font-style: normal; font-size: 11px; }
+  /* Data Flow page */
+  .df-flow { max-width: 880px; margin: 0 auto; padding-bottom: 60px; }
+  .df-stage { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
+  .df-stage-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .df-stage-num { color: var(--accent); font-weight: 700; font-size: 15px; }
+  .df-stage h2 { margin: 0; font-size: 15px; color: var(--text); }
+  .df-stage .df-goal { color: var(--muted); font-size: 12px; }
+  .df-goto { margin-left: auto; font-size: 12px; color: var(--accent); cursor: pointer; border: 1px solid rgba(79,163,255,0.3); border-radius: 4px; padding: 3px 10px; background: none; }
+  .df-goto:hover { background: rgba(79,163,255,0.12); }
+  .df-groups { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .df-group { display: flex; gap: 10px; align-items: baseline; }
+  .df-gran { flex: 0 0 150px; font-size: 10px; color: var(--accent2, #c586c0); text-transform: uppercase; letter-spacing: 0.5px; }
+  .df-fields { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .df-field { font-size: 12px; }
+  .df-field code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .df-field .df-mean { color: var(--muted); margin-left: 4px; }
+  .df-edge { display: flex; align-items: center; gap: 12px; padding: 6px 0 6px 28px; color: var(--muted); font-size: 12px; }
+  .df-edge .arrow { color: var(--accent); font-size: 16px; }
+  .df-note { max-width: 880px; margin: 0 auto 16px; color: var(--muted); font-size: 12px; }
+  .df-note b { color: var(--text); }
 
   /* Scene 1: Episode detail */
   .ep-layout { display: flex; flex-direction: column; height: 100%; }
@@ -327,6 +352,13 @@
           </div>
         </div>
         <div class="home-right">
+          <div class="card dataflow-card" id="dataflow-entry">
+            <h2>Data Flow</h2>
+            <div class="desc">The logical pipeline of one update — where every number comes from.</div>
+            <div class="df-mini">
+              <span>Episode</span><i>▸</i><span>Trajectory</span><i>▸</i><span>Targets</span><i>▸</i><span>Update</span><i>▸</i><span>Run</span>
+            </div>
+          </div>
           <div class="card timeline-card" id="timeline-entry">
             <h2>Training Timeline</h2>
             <div class="desc">Global view of the entire update's training dynamics (KL, loss, gradients per minibatch).</div>
@@ -373,6 +405,11 @@
     <!-- Timeline (Scene 4) -->
     <div class="page" id="page-timeline">
       <div class="timeline-layout" id="timeline-content"></div>
+    </div>
+
+    <!-- Data Flow (logical pipeline) -->
+    <div class="page" id="page-dataflow">
+      <div class="df-flow" id="dataflow-content"></div>
     </div>
   </div>
 
@@ -453,6 +490,7 @@
     episode: $('page-episode'),
     traj: $('page-traj'),
     timeline: $('page-timeline'),
+    dataflow: $('page-dataflow'),
   };
 
   // --- URL helpers ---
@@ -475,6 +513,7 @@
       case 'episode': return `${d}/episode/${state.selectedEpisode}`;
       case 'traj': return `${d}/trajectory/${state.selectedTraj}`;
       case 'timeline': return `${d}/timeline`;
+      case 'dataflow': return `${d}/dataflow`;
       default: return d + '/';
     }
   }
@@ -589,6 +628,9 @@
     if (state.currentPage === 'timeline') {
       crumbs.push({label: 'Timeline', page: 'timeline'});
     }
+    if (state.currentPage === 'dataflow') {
+      crumbs.push({label: 'Data Flow', page: 'dataflow'});
+    }
 
     crumbs.forEach((c, i) => {
       if (i > 0) {
@@ -621,6 +663,7 @@
     else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
     else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
     else if (page === 'timeline') renderTimeline();
+    else if (page === 'dataflow') renderDataflow();
   }
 
   // --- Fetch helper ---
@@ -941,6 +984,9 @@
     } else if (sub.startsWith('/timeline')) {
       showPage('timeline');
       renderTimeline();
+    } else if (sub.startsWith('/dataflow')) {
+      showPage('dataflow');
+      renderDataflow();
     } else {
       showPage('home');
       renderHome();
@@ -1229,6 +1275,7 @@
 
     renderTimelineStats();
     $('timeline-entry').onclick = () => navigate('timeline');
+    $('dataflow-entry').onclick = () => navigate('dataflow');
   }
 
   function renderTimelineStats() {
@@ -1261,6 +1308,130 @@
         thumb.innerHTML = makeChart(series, {height: 120, earlyStopStep: tl.early_stop_step});
       }
     }).catch(() => { thumb.innerHTML = ''; });
+  }
+
+  // --- Data Flow page (logical pipeline) ---
+  // Purely static content: the logical data model of one update, with
+  // links into the pages that show the real data. No implementation
+  // details (packing, buffers, indices) — only what exists logically,
+  // at which granularity, and what derives it.
+  function renderDataflow() {
+    const el = $('dataflow-content');
+    const F = (name, mean) =>
+      `<div class="df-field"><code>${escapeHtml(name)}</code><span class="df-mean">${escapeHtml(mean)}</span></div>`;
+    const G = (gran, fieldsHtml) =>
+      `<div class="df-group"><div class="df-gran">${gran}</div><div class="df-fields">${fieldsHtml}</div></div>`;
+
+    const stages = [
+      {
+        num: '①', name: 'Episode',
+        goal: 'What actually happened in the environment',
+        goto: 'episode', gotoLabel: 'Episode page →',
+        groups: [
+          G('per-episode', F('seed', 'rollout seed') + F('length', 'frames until termination') +
+             F('termination', 'why it ended') + F('observer summaries', 'episode-level metrics')),
+          G('per-frame × agent', F('obs', 'what the policy saw') + F('action', 'what the policy did') +
+             F('observer_outputs', 'reward signals, metrics, custom fields')),
+        ],
+      },
+      {
+        num: '②', name: 'Trajectory',
+        goal: 'Trainable samples — episodes re-sliced per agent, per channel',
+        edge: 'build_trajectories — experiment-defined mapping: one episode → any number of trajectories',
+        goto: 'traj', gotoLabel: 'Trajectory page →',
+        groups: [
+          G('per-trajectory', F('length', 'sampled frame span') + F('importance', 'sampling weight') +
+             F('last_obs', 'bootstrap state for value at t+T')),
+          G('per-frame', F('obs · action', 'aligned sample pair') +
+             F('log_prob', 'under θ_old (rollout-time)') +
+             F('explore_factor', 'exploration scale applied') +
+             F('floor_weight', 'uncertainty-floor gate')),
+          G('per-frame × channel', F('reward', 'channel reward') +
+             F('actor_weight', 'gate: should this frame teach the actor?') +
+             F('is_active / is_terminated', 'channel lifecycle flags')),
+        ],
+      },
+      {
+        num: '③', name: 'Training Targets',
+        goal: 'The signal the actor actually learns from — computed once, invariant across epochs',
+        edge: 'critic forward + GAE + combine',
+        goto: 'traj', gotoLabel: 'Trajectory page →',
+        groups: [
+          G('per-channel', F('EV', 'explained variance — is the critic learning?') +
+             F('confidence', '√clip(EV) — trust weight on this channel')),
+          G('per-frame × channel', F('value', 'critic estimate V(s)') +
+             F('advantage', 'GAE: how much better than expected') +
+             F('return', 'adv + value — critic regression target') +
+             F('normed_adv · aw_normed', 'per-channel / per-frame normalized')),
+          G('per-frame', F('combined_adv', 'Σ_c aw_normed · conf · normed_adv — the one number that moves the policy')),
+        ],
+      },
+      {
+        num: '④', name: 'Update Dynamics',
+        goal: 'How the parameters actually moved, step by step',
+        edge: 'SGD loop — n_epochs × n_minibatches',
+        goto: 'timeline', gotoLabel: 'Timeline page →',
+        groups: [
+          G('per-step (minibatch)', F('kl · running_mean_kl', 'drift vs θ_old, early-stop signal') +
+             F('ratio_mean/max · clip_frac', 'how far samples re-weighted') +
+             F('policy_loss · actor_grad', 'actor update magnitude') +
+             F('critic_loss · critic_grad', 'per-channel critic updates') +
+             F('actor_active · early_stop', 'whether/where the actor stopped')),
+          G('per-epoch × frame', F('ratio · clip_mask', 'per-sample deviation after each epoch') +
+             F('new_log_prob · new_value', 'policy/critic re-evaluation')),
+          G('per-update', F('aggregated stats', 'losses, KL, EV, adv stats, grad norms')),
+        ],
+      },
+      {
+        num: '⑤', name: 'Run',
+        goal: 'The same metrics, accumulated across updates',
+        edge: 'accumulate over updates',
+        goto: state.mode === 'run' ? 'run' : null,
+        gotoLabel: 'Run home →',
+        groups: [
+          G('per-update', F('episode stats', 'length / return distribution per update') +
+             F('training stats', 'loss, KL, uncertainty, per-channel metrics') +
+             F('timing', 'rollout vs update cost')),
+        ],
+      },
+    ];
+
+    let html = `<div class="df-note">
+      The <b>logical</b> data model of one PPO update. Each stage lists what exists at each
+      granularity and what derives it. Storage details are deliberately omitted —
+      this is the mental model, not the file layout.
+    </div>`;
+
+    stages.forEach((s, i) => {
+      if (i > 0 && s.edge) {
+        html += `<div class="df-edge"><span class="arrow">↓</span><span>${escapeHtml(s.edge)}</span></div>`;
+      }
+      html += `<div class="df-stage"><div class="df-stage-head">` +
+        `<span class="df-stage-num">${s.num}</span><h2>${escapeHtml(s.name)}</h2>` +
+        `<span class="df-goal">${escapeHtml(s.goal)}</span>`;
+      if (s.goto) {
+        html += `<button class="df-goto" data-goto="${s.goto}">${escapeHtml(s.gotoLabel)}</button>`;
+      }
+      html += `</div><div class="df-groups">${s.groups.join('')}</div></div>`;
+    });
+    el.innerHTML = html;
+
+    el.querySelectorAll('[data-goto]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.dataset.goto;
+        if (target === 'episode') {
+          if (state.selectedEpisode === null) state.selectedEpisode = 0;
+          state.selectedFrame = 0;
+        } else if (target === 'traj') {
+          if (state.selectedTraj === null) state.selectedTraj = 0;
+          state.selectedFrame = 0;
+          state.trajOverview = null;
+          state.trajEpochCompare = null;
+          state.trajEpochOverview = null;
+        }
+        navigate(target);
+      });
+    });
   }
 
   // --- Episode page (Scene 1) ---
