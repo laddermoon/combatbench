@@ -1144,9 +1144,9 @@
     {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac'],
      hint: 'ratio_mean/max = exp(new_lp − old_lp) 的均值/极值——新旧策略对同一动作的分歧度（1=不变）。\nclip_frac = |ratio−1| > clip_eps 的帧占比——这些位置的 surrogate 梯度被掐死。'},
     {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl'],
-     hint: 'approx_kl：k3 估计量 mean((ratio−1) − log ratio)，恒非负、比 k1 方差低；按本 update 实际跑过的 actor minibatch 聚合（早停后不拿空 epoch 的 0 充数）。\nmax_kl：单 minibatch 最大值。actor 在 approx_kl ≥ target_kl 时早停。'},
+     hint: '二者都是 per-minibatch k3 KL（(ratio−1) − log ratio）的聚合：\napprox_kl = 本 update 实际跑过的所有 actor minibatch 的均值；max_kl = 其中的单点最大值。\n注意早停依据的不是它俩：判定用"当前 epoch 内的 running mean KL > target_kl"——触发值存在 early_stop_kl（见 Epochs & Early Stop），它可以 ≠ max_kl（单点峰值可能出现在别的 epoch，也可能被 running mean 稀释）。'},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl'],
-     hint: 'epochs_done：完成的 epoch 数（B1 解耦下恒 = update_epochs——actor 停了 critic 仍继续）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的 KL（0=未触发；量级远小于 epoch 计数所以贴底）。'},
+     hint: 'epochs_done：完成的 epoch 数（B1 解耦下恒 = update_epochs——actor 停了 critic 仍继续）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的"本 epoch running mean KL"（0=未触发）。它是滑动均值不是单点峰值，所以与 max_kl 不相等是正常的；量级远小于 epoch 计数所以贴底。'},
     {timing: true,
      hint: '每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。'},
   ];
