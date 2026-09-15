@@ -1141,8 +1141,8 @@
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
      hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
     {pc: 'grad_norm'},
-    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac'],
-     hint: 'ratio_mean/max = exp(new_lp − old_lp) 的均值/极值——新旧策略对同一动作的分歧度（1=不变）。\nclip_frac = |ratio−1| > clip_eps 的帧占比——这些位置的 surrogate 梯度被掐死。'},
+    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_min', 'stats.ratio_max', 'stats.clip_frac', 'stats.clip_frac_hi', 'stats.clip_frac_lo'],
+     hint: 'ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。mean 是均值，max 是上尾（加压方向），min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\nclip_frac = |ratio−1| > clip_eps 的帧占比；hi = r>1+ε 上尾、lo = r<1−ε 下尾，两尾不相交故 clip_frac = hi + lo。注意越界只在一半情况下真杀梯度：hi 配合 A>0、lo 配合 A<0 才被掐——所以 hi/lo 是"越界占比"而非"被掐占比"。'},
     {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl'],
      hint: '二者都是 per-minibatch k3 KL（(ratio−1) − log ratio）的聚合：\napprox_kl = 本 update 实际跑过的所有 actor minibatch 的均值；max_kl = 其中的单点最大值。\n注意早停依据的不是它俩：判定用"当前 epoch 内的 running mean KL > target_kl"——触发值存在 early_stop_kl（见 Epochs & Early Stop），它可以 ≠ max_kl（单点峰值可能出现在别的 epoch，也可能被 running mean 稀释）。'},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl'],
@@ -2427,12 +2427,15 @@
     // Per-epoch summary table — one row per epoch, click to inspect
     if (ec.epochs && ec.epochs.length > 0) {
       html += '<div class="data-table"><h3>Epoch Summary</h3><table>';
-      html += '<tr><th>Epoch</th><th>clip_frac</th><th>ratio_mean</th><th>ratio_max</th><th>max |r−1|</th><th>status</th></tr>';
+      html += '<tr><th>Epoch</th><th>clip_frac</th><th>clip_hi/lo</th><th>ratio_mean</th><th>ratio_min</th><th>ratio_max</th><th>max |r−1|</th><th>status</th></tr>';
       ec.epochs.forEach(e => {
         const cm = e.clip_mask || [];
         const ratio = (e.ratio || []).filter(v => typeof v === 'number' && !isNaN(v));
         const clipFrac = cm.length ? cm.filter(x => x).length / cm.length : NaN;
+        const clipHi = ratio.length ? ratio.filter(r => r > 1 + clipEps).length / ratio.length : NaN;
+        const clipLo = ratio.length ? ratio.filter(r => r < 1 - clipEps).length / ratio.length : NaN;
         const rMean = ratio.length ? ratio.reduce((a, b) => a + b, 0) / ratio.length : NaN;
+        const rMin = ratio.length ? Math.min(...ratio) : NaN;
         const rMax = ratio.length ? Math.max(...ratio) : NaN;
         const maxDev = ratio.length ? Math.max(...ratio.map(r => Math.abs(r - 1))) : NaN;
         const stopped = stoppedAt !== undefined && stoppedAt >= 0 && e.epoch >= stoppedAt;
@@ -2440,7 +2443,9 @@
         html += `<tr data-epoch="${e.epoch}"${active}>`;
         html += `<td><strong>${e.epoch}</strong></td>`;
         html += `<td class="num">${fmt(clipFrac)}</td>`;
+        html += `<td class="num">${fmt(clipHi)}/${fmt(clipLo)}</td>`;
         html += `<td class="num">${fmt(rMean)}</td>`;
+        html += `<td class="num">${fmt(rMin)}</td>`;
         html += `<td class="num">${fmt(rMax)}</td>`;
         html += `<td class="num">${fmt(maxDev)}</td>`;
         html += `<td class="${stopped ? 'neg' : 'muted'}">${stopped ? 'stopped' : 'active'}</td>`;
@@ -2689,21 +2694,27 @@
       html += '</div>';
     }
 
-    // Clip fraction
+    // Clip fraction (total + per-tail split)
     if (tl.clip_frac) {
       html += '<div class="chart-container">';
       html += '<h3>Clip Fraction</h3>';
-      html += chartBox([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep, epochBoundaries});
+      const series = [
+        {label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'},
+      ];
+      if (tl.clip_frac_hi) series.push({label: 'clip_frac_hi (r>1+ε)', data: tl.clip_frac_hi, color: '#c678dd'});
+      if (tl.clip_frac_lo) series.push({label: 'clip_frac_lo (r<1−ε)', data: tl.clip_frac_lo, color: '#e5c07b'});
+      html += chartBox(series, {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
     // Ratio
     if (tl.ratio_mean) {
       html += '<div class="chart-container">';
-      html += '<h3>Ratio Mean / Max</h3>';
+      html += '<h3>Ratio Mean / Min / Max</h3>';
       const series = [
         {label: 'ratio_mean', data: tl.ratio_mean, color: '#4fa3ff'},
       ];
+      if (tl.ratio_min) series.push({label: 'ratio_min', data: tl.ratio_min, color: '#56b6c2'});
       if (tl.ratio_max) series.push({label: 'ratio_max', data: tl.ratio_max, color: '#e06c75'});
       html += chartBox(series, {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';

@@ -1188,8 +1188,9 @@ class ViewerAPI:
 
         n_steps = result["n_steps"]
         for key in ["epoch_idx", "mb_idx", "actor_active", "kl", "clip_frac",
-                     "ratio_mean", "ratio_max", "policy_loss", "actor_grad",
-                     "running_mean_kl"]:
+                     "clip_frac_hi", "clip_frac_lo",
+                     "ratio_mean", "ratio_max", "ratio_min", "policy_loss",
+                     "actor_grad", "running_mean_kl"]:
             if key in tl:
                 arr = tl[key]
                 if arr.dtype == bool:
@@ -1224,8 +1225,9 @@ class ViewerAPI:
 
         result: Dict[str, Any] = {"step": step}
         for key in ["epoch_idx", "mb_idx", "actor_active", "kl", "clip_frac",
-                     "ratio_mean", "ratio_max", "policy_loss", "actor_grad",
-                     "running_mean_kl"]:
+                     "clip_frac_hi", "clip_frac_lo",
+                     "ratio_mean", "ratio_max", "ratio_min", "policy_loss",
+                     "actor_grad", "running_mean_kl"]:
             if key in ov and step < len(ov[key]):
                 result[key] = ov[key][step]
 

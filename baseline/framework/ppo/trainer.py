@@ -872,8 +872,11 @@ def ppo_update(
     epoch_kl_stats: List[Dict[str, float]] = []
     early_stop_kl = 0.0
     all_clip_fracs: List[float] = []
+    all_clip_frac_his: List[float] = []
+    all_clip_frac_los: List[float] = []
     all_ratio_means: List[float] = []
     all_ratio_maxs: List[float] = []
+    all_ratio_mins: List[float] = []
     all_grad_norms_actor: List[float] = []
     all_grad_norms_critic: Dict[str, List[float]] = {key: [] for key in reward_keys}
     # Per-loss gradient norms over ALL actor parameters, computed by the
@@ -980,8 +983,11 @@ def ppo_update(
                     "actor_active": False,
                     "kl": float("nan"),
                     "clip_frac": float("nan"),
+                    "clip_frac_hi": float("nan"),
+                    "clip_frac_lo": float("nan"),
                     "ratio_mean": float("nan"),
                     "ratio_max": float("nan"),
+                    "ratio_min": float("nan"),
                     "policy_loss": float("nan"),
                     "actor_grad": float("nan"),
                     "running_mean_kl": float("nan"),
@@ -1054,12 +1060,27 @@ def ppo_update(
             policy_loss = -(torch.min(surr1, surr2) * batch_weights).mean()
 
             with torch.no_grad():
+                # Split the clip mask by tail: hi counts ratio > 1+eps
+                # (boost overshoot), lo counts ratio < 1-eps (suppression
+                # overshoot).  clip_frac = hi + lo exactly — the two masks
+                # are disjoint.  Whether a tail-crossing sample's gradient
+                # is actually killed also depends on the advantage sign.
+                clip_mask_hi = ratio > (1.0 + clip_eps)
+                clip_mask_lo = ratio < (1.0 - clip_eps)
                 clip_frac = float(
-                    ((ratio - 1.0).abs() > clip_eps).float().mean().item()
+                    (clip_mask_hi | clip_mask_lo).float().mean().item()
                 )
+                clip_frac_hi = float(clip_mask_hi.float().mean().item())
+                clip_frac_lo = float(clip_mask_lo.float().mean().item())
+                r_mean = float(ratio.mean().item())
+                r_max = float(ratio.max().item())
+                r_min = float(ratio.min().item())
                 all_clip_fracs.append(clip_frac)
-                all_ratio_means.append(float(ratio.mean().item()))
-                all_ratio_maxs.append(float(ratio.max().item()))
+                all_clip_frac_his.append(clip_frac_hi)
+                all_clip_frac_los.append(clip_frac_lo)
+                all_ratio_means.append(r_mean)
+                all_ratio_maxs.append(r_max)
+                all_ratio_mins.append(r_min)
 
             # Uncertainty floor loss: one-sided quadratic hinge that only
             # activates when the policy's normalized uncertainty drops below
@@ -1203,8 +1224,11 @@ def ppo_update(
                 _timeline_step["actor_active"] = True
                 _timeline_step["kl"] = approx_kl
                 _timeline_step["clip_frac"] = clip_frac
-                _timeline_step["ratio_mean"] = float(ratio.mean().item())
-                _timeline_step["ratio_max"] = float(ratio.max().item())
+                _timeline_step["clip_frac_hi"] = clip_frac_hi
+                _timeline_step["clip_frac_lo"] = clip_frac_lo
+                _timeline_step["ratio_mean"] = r_mean
+                _timeline_step["ratio_max"] = r_max
+                _timeline_step["ratio_min"] = r_min
                 _timeline_step["policy_loss"] = float(policy_loss)
                 _timeline_step["actor_grad"] = float(grad_norm_a)
                 if epoch_kls:
@@ -1334,11 +1358,20 @@ def ppo_update(
             timeline_clip_frac = np.array(
                 [s["clip_frac"] for s in timeline_steps], dtype=np.float32,
             )
+            timeline_clip_frac_hi = np.array(
+                [s["clip_frac_hi"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_clip_frac_lo = np.array(
+                [s["clip_frac_lo"] for s in timeline_steps], dtype=np.float32,
+            )
             timeline_ratio_mean = np.array(
                 [s["ratio_mean"] for s in timeline_steps], dtype=np.float32,
             )
             timeline_ratio_max = np.array(
                 [s["ratio_max"] for s in timeline_steps], dtype=np.float32,
+            )
+            timeline_ratio_min = np.array(
+                [s["ratio_min"] for s in timeline_steps], dtype=np.float32,
             )
             timeline_policy_loss = np.array(
                 [s["policy_loss"] for s in timeline_steps], dtype=np.float32,
@@ -1372,8 +1405,11 @@ def ppo_update(
                 "actor_active": timeline_actor_active,
                 "kl": timeline_kl,
                 "clip_frac": timeline_clip_frac,
+                "clip_frac_hi": timeline_clip_frac_hi,
+                "clip_frac_lo": timeline_clip_frac_lo,
                 "ratio_mean": timeline_ratio_mean,
                 "ratio_max": timeline_ratio_max,
+                "ratio_min": timeline_ratio_min,
                 "policy_loss": timeline_policy_loss,
                 "actor_grad": timeline_actor_grad,
                 "running_mean_kl": timeline_running_mean_kl,
@@ -1432,8 +1468,15 @@ def ppo_update(
     max_kl_overall = float(np.max(all_actor_kls)) if all_actor_kls else 0.0
 
     clip_frac_mean = float(np.mean(all_clip_fracs)) if all_clip_fracs else 0.0
+    clip_frac_hi_mean = (
+        float(np.mean(all_clip_frac_his)) if all_clip_frac_his else 0.0
+    )
+    clip_frac_lo_mean = (
+        float(np.mean(all_clip_frac_los)) if all_clip_frac_los else 0.0
+    )
     ratio_mean = float(np.mean(all_ratio_means)) if all_ratio_means else 1.0
     ratio_max = float(max(all_ratio_maxs)) if all_ratio_maxs else 1.0
+    ratio_min = float(min(all_ratio_mins)) if all_ratio_mins else 1.0
     grad_norm_actor = float(np.mean(all_grad_norms_actor)) if all_grad_norms_actor else 0.0
     critic_grad_norms: Dict[str, float] = {
         key: float(np.mean(all_grad_norms_critic[key]))
@@ -1471,8 +1514,11 @@ def ppo_update(
         max_kl=max_kl_overall,
         early_stop_kl=early_stop_kl,
         clip_frac=clip_frac_mean,
+        clip_frac_hi=clip_frac_hi_mean,
+        clip_frac_lo=clip_frac_lo_mean,
         ratio_mean=ratio_mean,
         ratio_max=ratio_max,
+        ratio_min=ratio_min,
         policy_loss=policy_loss_val,
         floor_loss=floor_loss_val,
         action_grad_pol=action_grad_pol,

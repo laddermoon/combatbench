@@ -500,6 +500,19 @@ class UpdateStats:
     action_grad_pol: float = 0.0
     action_grad_floor: float = 0.0
 
+    # --- Ratio tail & clip decomposition ---
+    # ratio_min: min over per-minibatch ratio minimums — the lower tail
+    #   (suppression direction), complementing ratio_max's boost side.
+    # clip_frac_hi / clip_frac_lo: fraction of samples with ratio above
+    #   1+clip_eps / below 1-clip_eps.  The two masks are disjoint so
+    #   clip_frac = hi + lo exactly.  Note a tail-crossing sample only
+    #   loses its surrogate gradient when the advantage sign matches
+    #   (hi & A>0, lo & A<0) — these are tail fractions, not effective
+    #   clip fractions.
+    ratio_min: float = 1.0
+    clip_frac_hi: float = 0.0
+    clip_frac_lo: float = 0.0
+
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
@@ -578,8 +591,11 @@ class UpdateStats:
             "total_steps": self.total_steps,
             "uncertainty": self.uncertainty,
             "clip_frac": self.clip_frac,
+            "clip_frac_hi": self.clip_frac_hi,
+            "clip_frac_lo": self.clip_frac_lo,
             "ratio_mean": self.ratio_mean,
             "ratio_max": self.ratio_max,
+            "ratio_min": self.ratio_min,
             "grad_norm_actor": self.grad_norm_actor,
         })
         for key, val in self.critic_losses.items():
