@@ -465,6 +465,8 @@
     runDumps: null,
     runMetrics: null,
     selectedUpdateIdx: null,   // index into runMetrics array
+    _chartSpecs: {},           // run-page chart registry (chartbox id → spec)
+    _chartHidden: {},          // legend toggle state, persists across re-renders (keyed by chart title)
 
     manifest: null,
     episodeList: null,
@@ -759,6 +761,13 @@
   // --- SVG chart helper ---
   const CHART_COLORS = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
 
+  // Named dash styles for series.dash / legend dim swatches.
+  const DASH_PATTERNS = {dot: '2,3', dash: '6,3', longdash: '10,4', dashdot: '8,3,2,3'};
+  // Metric suffix → dash style, for merged per-channel charts
+  // (color = channel, dash = metric). mean is the solid primary line.
+  const METRIC_DASH = {min: 'dot', max: 'longdash', std: 'dash', mean: null};
+  const METRIC_RANK = {min: 0, max: 1, std: 2, mean: 3};  // draw order: mean on top
+
   function makeChart(dataSeries, options = {}) {
     const width = options.width || 800;
     const height = options.height || 200;
@@ -831,8 +840,9 @@
         if (!isNum(v)) return;
         pts += `${xScale(i)},${yScale(v)} `;
       });
-      const dashAttr = s.dashed ? ' stroke-dasharray="6,3"' : '';
-      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="1.5"${dashAttr}/>`;
+      const dash = s.dash || (s.dashed ? 'dash' : null);
+      const dashAttr = dash ? ` stroke-dasharray="${DASH_PATTERNS[dash] || dash}"` : '';
+      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${s.width || 1.5}"${dashAttr}/>`;
     });
 
     // Current frame marker
@@ -865,14 +875,38 @@
 
     svg += `</svg>`;
 
-    // Legend with toggle
-    let legend = '<div class="chart-legend">';
-    dataSeries.forEach((s, i) => {
-      const disabled = s.visible === false ? ' disabled' : '';
-      const dashStyle = s.dashed ? ' style="background:repeating-linear-gradient(90deg,' + s.color + ' 0,' + s.color + ' 4px,transparent 4px,transparent 7px)"' : '';
-      legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><div class="leg-color" style="background:${s.color}"${dashStyle}></div>${escapeHtml(s.label)}</div>`;
-    });
-    legend += '</div>';
+    // Legend. Grouped charts (series carry group/dim) get two orthogonal
+    // toggle rows: groups by color, dims by dash style. Other charts get
+    // the classic per-series legend.
+    let legend = '';
+    if (options.legendGroups || options.legendDims) {
+      if (options.legendGroups) {
+        legend += '<div class="chart-legend">';
+        options.legendGroups.forEach(g => {
+          const off = options.hiddenGroups && options.hiddenGroups.has(g.name) ? ' disabled' : '';
+          legend += `<div class="leg-item${off}" data-g="${escapeHtml(g.name)}"><div class="leg-color" style="background:${g.color}"></div>${escapeHtml(g.name)}</div>`;
+        });
+        legend += '</div>';
+      }
+      if (options.legendDims) {
+        legend += '<div class="chart-legend">';
+        options.legendDims.forEach(d => {
+          const off = options.hiddenDims && options.hiddenDims.has(d.name) ? ' disabled' : '';
+          const pat = d.dash ? (DASH_PATTERNS[d.dash] || d.dash) : 'none';
+          legend += `<div class="leg-item${off}" data-d="${escapeHtml(d.name)}"><svg width="16" height="4" style="flex:none"><line x1="0" y1="2" x2="16" y2="2" stroke="#cfd6e4" stroke-width="1.5" stroke-dasharray="${pat}"/></svg>${escapeHtml(d.name)}</div>`;
+        });
+        legend += '</div>';
+      }
+    } else {
+      legend = '<div class="chart-legend">';
+      dataSeries.forEach((s, i) => {
+        const disabled = s.visible === false ? ' disabled' : '';
+        const dash = s.dash || (s.dashed ? 'dash' : null);
+        const pat = dash ? (DASH_PATTERNS[dash] || dash) : 'none';
+        legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><svg width="14" height="4" style="flex:none"><line x1="0" y1="2" x2="14" y2="2" stroke="${s.color}" stroke-width="1.5" stroke-dasharray="${pat}"/></svg>${escapeHtml(s.label)}</div>`;
+      });
+      legend += '</div>';
+    }
 
     return svg + legend;
   }
@@ -1085,6 +1119,8 @@
   //   {title, keys:[...]}  merged chart over those metric keys
   //   {pc: '<metric>'}     per-channel group pc.<metric>.<ch>
   //   {timing: true}       merged time.* chart
+  //   {pcm, metrics:[...]} per-channel multi-metric chart — color =
+  //                        channel, dash style = metric, two toggle rows
   // Policy-contributed metrics (policy.*) always render last, one chart
   // per key — never merged with framework metrics.
   const FRAMEWORK_LAYOUT = [
@@ -1096,17 +1132,10 @@
     {pc: 'active_ratio'},
     {keys: ['stats.n_batches']},
     {keys: ['stats.total_steps']},
-    {pc: 'reward_min'},
-    {pc: 'reward_max'},
-    {pc: 'reward_std'},
-    {pc: 'reward_mean'},
-    {pc: 'actor_weight_min'},
-    {pc: 'actor_weight_max'},
-    {pc: 'actor_weight_mean'},
-    {pc: 'ret_mean'},
-    {pc: 'ret_std'},
-    {pc: 'adv_mean'},
-    {pc: 'adv_std'},
+    {pcm: 'reward', metrics: ['reward_min', 'reward_max', 'reward_std', 'reward_mean']},
+    {pcm: 'actor_weight', metrics: ['actor_weight_min', 'actor_weight_max', 'actor_weight_mean']},
+    {pcm: 'ret', metrics: ['ret_mean', 'ret_std']},
+    {pcm: 'adv', metrics: ['adv_mean', 'adv_std']},
     {pc: 'ev'},
     {pc: 'confidence'},
     {title: 'Uncertainty', keys: ['stats.uncertainty']},
@@ -1193,8 +1222,63 @@
     const metrics = state.runMetrics;
     if (!metrics || metrics.length === 0) return;
     $('metrics-container').innerHTML = buildMetricsCharts(metrics);
-    // Click a chart → move the update cursor there
-    wireChartClick($('metrics-container'), i => selectUpdateIdx(i));
+    mountMetricsCharts($('metrics-container'));
+  }
+
+  // Render registered chartbox placeholders and wire interactions:
+  // click → move the update cursor; legend chips → real toggles
+  // (grouped charts get orthogonal group/dim toggle rows; plain charts
+  // toggle per series). Re-renders the chart on every toggle.
+  function mountMetricsCharts(container) {
+    container.querySelectorAll('.chartbox[data-chart-id]').forEach(box => {
+      const spec = state._chartSpecs[box.dataset.chartId];
+      if (!spec) return;
+      const render = () => {
+        const series = spec.series.map(s => ({
+          ...s,
+          visible: s.visible !== false &&
+                   !spec.hiddenGroups.has(s.group) &&
+                   !spec.hiddenDims.has(s.dim),
+        }));
+        box.innerHTML = makeChart(series, {
+          ...spec.options,
+          hiddenGroups: spec.hiddenGroups, hiddenDims: spec.hiddenDims,
+          legendGroups: spec.legendGroups, legendDims: spec.legendDims,
+        });
+        const svg = box.querySelector('svg.chart');
+        if (svg) {
+          svg.addEventListener('click', e => {
+            const n = parseInt(svg.dataset.chartN);
+            if (!n) return;
+            const rect = svg.getBoundingClientRect();
+            const w = rect.width - 50 - 10;
+            const i = Math.round((e.clientX - rect.left - 50) / w * (n - 1));
+            if (i >= 0 && i < n) selectUpdateIdx(i);
+          });
+        }
+        box.querySelectorAll('.leg-item[data-g]').forEach(el => {
+          el.addEventListener('click', () => {
+            const g = el.dataset.g;
+            spec.hiddenGroups.has(g) ? spec.hiddenGroups.delete(g) : spec.hiddenGroups.add(g);
+            render();
+          });
+        });
+        box.querySelectorAll('.leg-item[data-d]').forEach(el => {
+          el.addEventListener('click', () => {
+            const d = el.dataset.d;
+            spec.hiddenDims.has(d) ? spec.hiddenDims.delete(d) : spec.hiddenDims.add(d);
+            render();
+          });
+        });
+        box.querySelectorAll('.leg-item[data-leg-idx]').forEach(el => {
+          el.addEventListener('click', () => {
+            const s = spec.series[parseInt(el.dataset.legIdx)];
+            if (s) { s.visible = s.visible === false ? true : false; render(); }
+          });
+        });
+      };
+      render();
+    });
   }
 
   function renderUpdateDetail() {
@@ -1291,19 +1375,39 @@
 
     let html = '';
     const used = new Set();
+    let chartSeq = 0;
+    state._chartSpecs = {};
     const labelFor = k =>
       k.startsWith('pc.') ? k.split('.').pop() : k.split('.').slice(1).join('.');
+    // Registers a deferred chart: emits a placeholder div, spec lands in
+    // state._chartSpecs for mountMetricsCharts() to render + wire toggles.
+    const emitChart = (title, series, opts = {}) => {
+      const id = 'mc' + (chartSeq++);
+      const saved = state._chartHidden[title] || {groups: new Set(), dims: new Set()};
+      state._chartHidden[title] = saved;
+      state._chartSpecs[id] = {
+        title, series,
+        hiddenGroups: saved.groups, hiddenDims: saved.dims,
+        legendGroups: opts.legendGroups, legendDims: opts.legendDims,
+        options: {height: opts.height || 160, currentFrame: cur},
+      };
+      const tip = opts.hint ? ` class="has-tip" data-tip="${escapeHtml(opts.hint)}"` : '';
+      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>` +
+              `<div class="chartbox" data-chart-id="${id}"></div></div>`;
+    };
     const emit = (title, keys, opts = {}) => {
       const series = keys.map((k, i) => ({
         label: labelFor(k), data: seriesFor(k),
         color: opts.color || CHART_COLORS[i % CHART_COLORS.length],
       }));
       keys.forEach(k => used.add(k));
-      const tip = opts.hint ? ` class="has-tip" data-tip="${escapeHtml(opts.hint)}"` : '';
-      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>`;
-      html += makeChart(series, {height: opts.height || 160, currentFrame: cur});
-      html += '</div>';
+      emitChart(title, series, opts);
     };
+    const dashFor = m => {
+      const suf = m.split('_').pop();
+      return suf in METRIC_DASH ? METRIC_DASH[suf] : 'dashdot';
+    };
+    const rankFor = m => METRIC_RANK[m.split('_').pop()] ?? 2;
 
     // 1. Framework-owned charts — fixed editorial order (FRAMEWORK_LAYOUT)
     FRAMEWORK_LAYOUT.forEach(spec => {
@@ -1317,6 +1421,38 @@
           .filter(k => k.startsWith(`pc.${spec.pc}.`))
           .sort();
         if (keys.length) emit(`${spec.pc} (per channel)`, keys);
+        return;
+      }
+      if (spec.pcm) {
+        // Merged multi-metric per-channel chart: color = channel,
+        // dash = metric.  Mean-like metrics draw last (on top).
+        const chans = new Set();
+        spec.metrics.forEach(m => {
+          [...allKeys].forEach(k => {
+            if (k.startsWith(`pc.${m}.`)) chans.add(k.slice(m.length + 4));
+          });
+        });
+        const chList = [...chans].sort();
+        const series = [];
+        spec.metrics.forEach(m => {
+          chList.forEach((ch, ci) => {
+            const key = `pc.${m}.${ch}`;
+            if (!allKeys.has(key)) return;
+            used.add(key);
+            series.push({
+              label: `${ch}·${m}`, data: seriesFor(key),
+              color: CHART_COLORS[ci % CHART_COLORS.length],
+              dash: dashFor(m), width: m.split('_').pop() === 'mean' ? 2.2 : 1.2,
+              group: ch, dim: m,
+            });
+          });
+        });
+        if (!series.length) return;
+        series.sort((a, b) => rankFor(a.dim) - rankFor(b.dim));
+        emitChart(`${spec.pcm} (per channel)`, series, {
+          legendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
+          legendDims: spec.metrics.map(m => ({name: m, dash: dashFor(m)})),
+        });
         return;
       }
       const keys = spec.keys.filter(k => allKeys.has(k));
