@@ -867,6 +867,7 @@ def ppo_update(
     # Early stop on target_kl prevents the policy from moving too far
     # from the rollout policy (which would break the on-policy assumption).
     pol_losses: List[float] = []
+    floor_losses: List[float] = []
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []
     early_stop_kl = 0.0
@@ -875,6 +876,13 @@ def ppo_update(
     all_ratio_maxs: List[float] = []
     all_grad_norms_actor: List[float] = []
     all_grad_norms_critic: Dict[str, List[float]] = {key: [] for key in reward_keys}
+    # Per-loss gradient norms over ALL actor parameters, computed by the
+    # framework directly (no policy hook) on each epoch's first minibatch.
+    # ``allow_unused`` maps params untouched by a loss to zero — e.g. the
+    # floor loss only reaches exploration-side params on Gaussian actors.
+    all_action_grad_pol: List[float] = []
+    all_action_grad_floor: List[float] = []
+    actor_params = list(actor.parameters())
     # Gradient diagnostics for log_std (collected on mb_idx==0 only)
     all_pol_logstd_grads: List[float] = []
     all_floor_logstd_grads: List[float] = []
@@ -1075,6 +1083,23 @@ def ppo_update(
                 )
                 floor_loss = uncertainty_coef * (gap ** 2 * fw_mb).mean()
                 loss = loss + floor_loss
+            floor_losses.append(float(floor_loss))
+
+            if mb_idx == 0:
+                # Framework-owned per-loss gradient magnitudes over all
+                # actor parameters (one extra autograd per epoch).
+                def _loss_grad_norm(loss_t: torch.Tensor) -> float:
+                    if not loss_t.requires_grad:
+                        return 0.0
+                    gs = torch.autograd.grad(
+                        loss_t, actor_params,
+                        retain_graph=True, allow_unused=True,
+                    )
+                    sq = sum(float((g ** 2).sum()) for g in gs if g is not None)
+                    return float(sq ** 0.5)
+
+                all_action_grad_pol.append(_loss_grad_norm(policy_loss))
+                all_action_grad_floor.append(_loss_grad_norm(floor_loss))
 
                 # --- Gradient diagnostics for exploration parameters ---
                 # P1-7: Moved from ``hasattr(actor, "log_std")`` sniffing
@@ -1425,6 +1450,13 @@ def ppo_update(
     }
 
     policy_loss_val = float(np.mean(pol_losses)) if pol_losses else 0.0
+    floor_loss_val = float(np.mean(floor_losses)) if floor_losses else 0.0
+    action_grad_pol = (
+        float(np.mean(all_action_grad_pol)) if all_action_grad_pol else 0.0
+    )
+    action_grad_floor = (
+        float(np.mean(all_action_grad_floor)) if all_action_grad_floor else 0.0
+    )
     value_loss_val = float(np.mean([
         critic_losses[key] for key in reward_keys
     ])) if reward_keys else 0.0
@@ -1443,6 +1475,9 @@ def ppo_update(
         ratio_mean=ratio_mean,
         ratio_max=ratio_max,
         policy_loss=policy_loss_val,
+        floor_loss=floor_loss_val,
+        action_grad_pol=action_grad_pol,
+        action_grad_floor=action_grad_floor,
         value_loss=value_loss_val,
         grad_norm_actor=grad_norm_actor,
         epochs_done=len(epoch_kl_stats),

@@ -489,6 +489,17 @@ class UpdateStats:
     # --- Policy-contributed (no contract) ---
     policy_stats: Mapping[str, float]
 
+    # --- Loss decomposition (framework-computed) ---
+    # floor_loss: the uncertainty-floor hinge term, mean over actor
+    #   minibatches actually run. 0.0 when the floor mechanism is off.
+    # action_grad_pol / action_grad_floor: L2 norm of each loss term's
+    #   gradient over ALL actor parameters (autograd.grad, allow_unused
+    #   → untouched params count as 0), sampled on each epoch's first
+    #   minibatch and averaged. Framework-owned — no policy hook.
+    floor_loss: float = 0.0
+    action_grad_pol: float = 0.0
+    action_grad_floor: float = 0.0
+
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
@@ -549,6 +560,9 @@ class UpdateStats:
         d: Dict[str, Any] = dict(self.policy_stats)
         d.update({
             "policy_loss": self.policy_loss,
+            "floor_loss": self.floor_loss,
+            "action_grad_pol": self.action_grad_pol,
+            "action_grad_floor": self.action_grad_floor,
             "value_loss": self.value_loss,
             "approx_kl": self.approx_kl,
             "max_kl": self.max_kl,
