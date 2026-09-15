@@ -885,41 +885,70 @@
     });
   }
 
-  // --- Heatmap helper ---
-  // rows: [{label, values: [v0..vD]}].  Diverging colour scale centred
-  // at 0 over [minV, maxV]; cell tooltip shows the exact value.
-  function makeHeatmap(rows, options = {}) {
-    if (!rows.length || !rows[0].values.length) return '';
-    const D = rows[0].values.length;
-    const minV = options.min ?? -1, maxV = options.max ?? 1;
-    const half = Math.max(Math.abs(minV), Math.abs(maxV)) || 1;
-    const cw = options.cellW ?? 26, ch = options.cellH ?? 20;
-    const lw = options.labelW ?? 62;
-    const W = lw + D * cw, H = rows.length * ch + 16;
-    const color = v => {
-      if (v === null || v === undefined || isNaN(v)) return 'var(--panel)';
-      const t = Math.max(-1, Math.min(1, v / half));
-      // negative → blue (#4fa3ff), positive → red (#e06c75), 0 → panel
-      const tgt = t < 0 ? [79, 163, 255] : [224, 108, 117];
-      const base = [30, 33, 40];
-      const a = Math.abs(t);
-      const c = base.map((b, i) => Math.round(b + (tgt[i] - b) * a));
-      return `rgb(${c[0]},${c[1]},${c[2]})`;
-    };
-    let svg = `<svg class="heatmap" width="${W}" height="${H}">`;
-    // column headers (dim indices)
-    for (let d = 0; d < D; d++) {
-      svg += `<text x="${lw + d * cw + cw / 2}" y="11" text-anchor="middle" font-size="9" fill="var(--muted)">${d}</text>`;
+  // --- Sorted action chart (policy-drift delta) ---
+  // genLabels: [G+1 labels], values: (G+1, D) raw deterministic actions at
+  // the selected frame.  X positions are action dims permuted so gen-0
+  // (the rollout policy) is monotonically decreasing; every generation is
+  // reordered by the same permutation.  A generation that is uniformly
+  // shifted relative to gen-0 therefore sits wholly above/below it —
+  // crossings reveal dims whose drift flips sign.  Y is fixed to [-1, 1].
+  function makeSortedActionChart(genLabels, values, options = {}) {
+    const D = values[0].length;
+    if (!D) return '';
+    const perm = values[0]
+      .map((v, i) => i)
+      .sort((a, b) => values[0][b] - values[0][a]);
+
+    const width = options.width || 800, height = options.height || 180;
+    const margin = {top: 10, right: 12, bottom: 30, left: 44};
+    const w = width - margin.left - margin.right;
+    const h = height - margin.top - margin.bottom;
+    const yLo = -1.08, yHi = 1.08;
+    const xScale = i => margin.left + (D <= 1 ? w / 2 : (i / (D - 1)) * w);
+    const yScale = v => margin.top + h - ((v - yLo) / (yHi - yLo)) * h;
+
+    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+    // y grid
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + (h / 4) * i;
+      const val = yHi - (i / 4) * (yHi - yLo);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${val.toFixed(1)}</text>`;
     }
-    rows.forEach((r, ri) => {
-      const y = 16 + ri * ch;
-      svg += `<text x="${lw - 6}" y="${y + ch / 2 + 3}" text-anchor="end" font-size="10" fill="var(--muted)">${escapeHtml(r.label)}</text>`;
-      r.values.forEach((v, d) => {
-        const tip = `${r.label} · dim ${d}: ${fmt(v, 4)}`;
-        svg += `<rect x="${lw + d * cw}" y="${y}" width="${cw - 1}" height="${ch - 1}" fill="${color(v)}" rx="2"><title>${escapeHtml(tip)}</title></rect>`;
+    // zero line
+    const yz = yScale(0);
+    svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
+    // x labels = original dim indices (sorted order)
+    perm.forEach((d, i) => {
+      const x = xScale(i);
+      svg += `<text x="${x}" y="${margin.top + h + 12}" text-anchor="middle" fill="var(--muted)" font-size="8" font-family="ui-monospace,monospace">d${d}</text>`;
+    });
+    svg += `<text x="${width - margin.right}" y="${margin.top + h + 24}" text-anchor="end" fill="var(--muted)" font-size="9">dims sorted by current action (desc)</text>`;
+
+    // lines + point markers (tooltips carry the original dim index)
+    values.forEach((vals, g) => {
+      const G = values.length - 1;
+      const alpha = g === 0 ? 1.0 : (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 0.85);
+      const color = g === 0 ? 'var(--accent)' : `rgba(224,108,117,${alpha.toFixed(2)})`;
+      let pts = '';
+      perm.forEach((d, i) => { pts += `${xScale(i)},${yScale(vals[d])} `; });
+      svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${g === 0 ? 2 : 1.5}"/>`;
+      perm.forEach((d, i) => {
+        svg += `<circle cx="${xScale(i)}" cy="${yScale(vals[d])}" r="${g === 0 ? 3 : 2.2}" fill="${color}"><title>${escapeHtml(genLabels[g])} · dim ${d}: ${fmt(vals[d], 4)}</title></circle>`;
       });
     });
-    return svg + '</svg>';
+    svg += '</svg>';
+
+    // legend (same markup as makeChart so toggles work)
+    let legend = '<div class="chart-legend">';
+    genLabels.forEach((lab, g) => {
+      const G = values.length - 1;
+      const alpha = g === 0 ? 1.0 : (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 0.85);
+      const color = g === 0 ? 'var(--accent)' : `rgba(224,108,117,${alpha.toFixed(2)})`;
+      legend += `<div class="leg-item"><div class="leg-color" style="background:${color}"></div>${escapeHtml(lab)}</div>`;
+    });
+    legend += '</div>';
+    return svg + legend;
   }
 
   // --- Init ---
@@ -1512,13 +1541,13 @@
       }
       html += makeChart(series, {currentFrame: frame});
 
-      // Chart 2: generations × action-dims heatmap of raw actions at frame
-      const rows = acts.map((a, g) => ({
-        label: `u${String(d.gen_updates[g]).padStart(5, '0')}${g === 0 ? ' (cur)' : ''}`,
-        values: a[frame],
-      }));
-      html += `<div style="color:var(--muted);font-size:11px;margin:6px 0 2px">Deterministic action per generation at frame ${frame} (rows=u, cols=action dim, range [-1,1])</div>`;
-      html += makeHeatmap(rows, {min: -1, max: 1});
+      // Chart 2: deterministic actions at the selected frame — dims sorted
+      // by gen-0 (current policy) descending; crossings = sign-flipped drift
+      const genLabels = d.gen_updates.map((u, g) =>
+        `u${String(u).padStart(5, '0')}${g === 0 ? ' (cur)' : ''}`);
+      const frameActs = acts.map(a => a[frame]);
+      html += `<div style="color:var(--muted);font-size:11px;margin:6px 0 2px">Deterministic action per generation at frame ${frame} — dims sorted by current policy's action (desc); a line wholly above/below gen-0 means one-sided drift, crossings mean sign-flipped dims.</div>`;
+      html += makeSortedActionChart(genLabels, frameActs);
     }
     if (d.missing_updates && d.missing_updates.length) {
       html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">missing exports: ${d.missing_updates.map(u => 'u' + String(u).padStart(5, '0')).join(', ')}</div>`;
