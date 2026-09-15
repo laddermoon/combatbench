@@ -831,12 +831,12 @@ def ppo_update(
         buf.floor_weight, dtype=torch.float32, device=device,
     )
 
-    # --- Diagnostics: episode lengths ---
+    # --- Diagnostics: trajectory lengths ---
     # These are logged but do not influence the update.
     traj_lengths = buf.traj_lengths
-    ep_len_mean = float(np.mean(traj_lengths)) if traj_lengths else 0.0
-    ep_len_min = float(np.min(traj_lengths)) if traj_lengths else 0.0
-    ep_len_max = float(np.max(traj_lengths)) if traj_lengths else 0.0
+    traj_len_mean = float(np.mean(traj_lengths)) if traj_lengths else 0.0
+    traj_len_min = float(np.min(traj_lengths)) if traj_lengths else 0.0
+    traj_len_max = float(np.max(traj_lengths)) if traj_lengths else 0.0
 
     # Exploration diagnostics come from the policy itself, measured on the
     # buffer's whole-batch pass at theta_old (see PPOBuffer). The trainer
@@ -1451,9 +1451,9 @@ def ppo_update(
         n_trajectories=n_trajectories,
         total_steps=total_steps,
         uncertainty=uncertainty_mean,
-        ep_len_mean=ep_len_mean,
-        ep_len_min=ep_len_min,
-        ep_len_max=ep_len_max,
+        traj_len_mean=traj_len_mean,
+        traj_len_min=traj_len_min,
+        traj_len_max=traj_len_max,
         epoch_kl_stats=epoch_kl_stats,
         critic_losses=critic_losses,
         explained_variance=ev_typed,

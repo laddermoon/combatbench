@@ -379,6 +379,10 @@ class RunData:
             # so old logs display the honest name.
             if k == "n_episodes":
                 k = "n_trajectories"
+            # stats.ep_len_* in older logs were trajectory lengths
+            # (computed from buf.traj_lengths); renamed upstream.
+            if k.startswith("ep_len_"):
+                k = "traj_" + k[3:]
             if k in policy_keys:
                 # Policy-contributed (spread into stats for legacy
                 # consumers); emit under policy.* if not already there.

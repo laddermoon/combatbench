@@ -468,9 +468,12 @@ class UpdateStats:
     # Framework-owned: aggregated from the ActorEval.uncertainty contract
     # field (consumed by the floor loss), not from policy_stats.
     uncertainty: float
-    ep_len_mean: float
-    ep_len_min: float
-    ep_len_max: float
+    # Trajectory lengths (buffer trajectories are the training unit —
+    # an episode can contribute more than one). Real episode lengths
+    # live in episode_stats (ep.*).
+    traj_len_mean: float
+    traj_len_min: float
+    traj_len_max: float
     epoch_kl_stats: List[Dict[str, Any]]
 
     # --- Per-channel (keyed by channel name) ---
@@ -519,9 +522,9 @@ class UpdateStats:
             n_trajectories=0,
             total_steps=0,
             uncertainty=0.0,
-            ep_len_mean=0.0,
-            ep_len_min=0.0,
-            ep_len_max=0.0,
+            traj_len_mean=0.0,
+            traj_len_min=0.0,
+            traj_len_max=0.0,
             epoch_kl_stats=[],
             critic_losses={k: 0.0 for k in reward_keys},
             explained_variance={k: 0.0 for k in reward_keys},
@@ -552,9 +555,9 @@ class UpdateStats:
             "early_stop_kl": self.early_stop_kl,
             "epochs_done": self.epochs_done,
             "actor_epochs_done": self.actor_epochs_done,
-            "ep_len_mean": self.ep_len_mean,
-            "ep_len_min": self.ep_len_min,
-            "ep_len_max": self.ep_len_max,
+            "traj_len_mean": self.traj_len_mean,
+            "traj_len_min": self.traj_len_min,
+            "traj_len_max": self.traj_len_max,
             "epoch_kl_stats": self.epoch_kl_stats,
             "n_batches": self.n_batches,
             "n_trajectories": self.n_trajectories,

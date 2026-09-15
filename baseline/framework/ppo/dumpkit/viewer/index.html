@@ -1081,24 +1081,47 @@
   });
 
   // --- Run home page ---
-  // Metric chart ordering: holistic/important first, granular later.
-  const CORE_CHARTS = [
-    {title: 'Episode Length', keys: ['stats.ep_len_mean', 'stats.ep_len_min', 'stats.ep_len_max'],
-     suppress: ['ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max']},
-    {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
-    {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
+  // Framework-owned charts in a fixed editorial order. Spec kinds:
+  //   {title, keys:[...]}  merged chart over those metric keys
+  //   {pc: '<metric>'}     per-channel group pc.<metric>.<ch>
+  //   {timing: true}       merged time.* chart
+  // Policy-contributed metrics (policy.*) always render last, one chart
+  // per key — never merged with framework metrics.
+  const FRAMEWORK_LAYOUT = [
+    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
+    {title: 'Episode Length & Trajectory Length', keys: [
+      'ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max',
+      'stats.traj_len_mean', 'stats.traj_len_min', 'stats.traj_len_max']},
+    {pc: 'n_active_trajs'},
+    {pc: 'active_ratio'},
+    {keys: ['stats.n_batches']},
+    {keys: ['stats.total_steps']},
+    {pc: 'reward_min'},
+    {pc: 'reward_max'},
+    {pc: 'reward_std'},
+    {pc: 'reward_mean'},
+    {pc: 'actor_weight_min'},
+    {pc: 'actor_weight_max'},
+    {pc: 'actor_weight_mean'},
+    {pc: 'ret_mean'},
+    {pc: 'ret_std'},
+    {pc: 'adv_mean'},
+    {pc: 'adv_std'},
+    {pc: 'ev'},
+    {pc: 'confidence'},
     {title: 'Uncertainty', keys: ['stats.uncertainty']},
-    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
+    {pc: 'vloss'},
+    {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
      hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
-    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
+    {pc: 'grad_norm'},
+    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
+    {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl']},
+    {timing: true},
   ];
-  // Per-channel metric groups (pc.<metric>.<ch>), most important first.
-  const PC_ORDER = [
-    'pc.ev', 'pc.confidence', 'pc.reward_mean', 'pc.vloss',
-    'pc.adv_mean', 'pc.ret_mean', 'pc.actor_weight_mean',
-  ];
+  // pc metrics aggregated elsewhere — never rendered per channel.
+  const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max']);
 
   async function renderRunHome() {
     if (state.runInfo) {
@@ -1268,96 +1291,67 @@
 
     let html = '';
     const used = new Set();
-
-    // 1. Core grouped charts
-    CORE_CHARTS.forEach(spec => {
-      const keys = spec.keys.filter(k => allKeys.has(k));
-      if (keys.length === 0) return;
+    const labelFor = k =>
+      k.startsWith('pc.') ? k.split('.').pop() : k.split('.').slice(1).join('.');
+    const emit = (title, keys, opts = {}) => {
       const series = keys.map((k, i) => ({
-        label: k.split('.').pop(), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
+        label: labelFor(k), data: seriesFor(k),
+        color: opts.color || CHART_COLORS[i % CHART_COLORS.length],
       }));
       keys.forEach(k => used.add(k));
-      // suppress duplicate keys covered by this chart (ep.* aliases)
-      (spec.suppress || []).forEach(k => used.add(k));
-      const tip = spec.hint ? ` class="has-tip" data-tip="${escapeHtml(spec.hint)}"` : '';
-      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(spec.title)}</h3>`;
-      html += makeChart(series, {height: 160, currentFrame: cur});
+      const tip = opts.hint ? ` class="has-tip" data-tip="${escapeHtml(opts.hint)}"` : '';
+      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>`;
+      html += makeChart(series, {height: opts.height || 160, currentFrame: cur});
       html += '</div>';
+    };
+
+    // 1. Framework-owned charts — fixed editorial order (FRAMEWORK_LAYOUT)
+    FRAMEWORK_LAYOUT.forEach(spec => {
+      if (spec.timing) {
+        const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
+        if (timeKeys.length) emit('Timing (s/update)', timeKeys, {height: 180});
+        return;
+      }
+      if (spec.pc) {
+        const keys = [...allKeys]
+          .filter(k => k.startsWith(`pc.${spec.pc}.`))
+          .sort();
+        if (keys.length) emit(`${spec.pc} (per channel)`, keys);
+        return;
+      }
+      const keys = spec.keys.filter(k => allKeys.has(k));
+      if (keys.length) emit(spec.title || labelFor(keys[0]), keys, spec);
     });
 
-    // 2. Remaining stats.* keys (individual charts, alphabetical)
-    const remStats = [...allKeys].filter(k => k.startsWith('stats.') && !used.has(k)).sort();
-    remStats.forEach(k => {
-      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(6))}</h3>`;
-      html += makeChart([{label: k.slice(6), data: seriesFor(k), color: '#4fa3ff'}], {height: 140, currentFrame: cur});
-      html += '</div>';
+    // 2. Framework keys not covered by the layout — forward compat for
+    //    new metrics; grouped pc.* by metric, suppressed ones skipped.
+    const pcGroups = {};
+    const otherKeys = [];
+    [...allKeys].forEach(k => {
+      if (used.has(k) || k.startsWith('policy.')) return;
+      const m = k.match(/^pc\.([^.]+)\..+$/);
+      if (m) {
+        if (PC_SUPPRESS.has(m[1])) { used.add(k); return; }
+        (pcGroups[m[1]] = pcGroups[m[1]] || []).push(k);
+      } else otherKeys.push(k);
     });
+    if (otherKeys.length || Object.keys(pcGroups).length) {
+      html += '<div class="metrics-group-title">Other framework metrics</div>';
+      otherKeys.sort().forEach(k =>
+        emit(labelFor(k), [k], {height: 140, color: '#4fa3ff'}));
+      Object.keys(pcGroups).sort().forEach(metric =>
+        emit(`${metric} (per channel)`, pcGroups[metric].sort()));
+    }
 
-    // 2b. Policy-contributed metrics (policy.*) — separate group, uniform
-    //     presentation: one chart per key, no merging. Keys keep their
-    //     emission order (policy_stats dict order is preserved through
-    //     JSON → Set), so the policy controls its own stat ordering.
+    // 3. Policy-contributed metrics (policy.*) — always last, uniform
+    //    presentation: one chart per key, no merging. Keys keep their
+    //    emission order (policy_stats dict order is preserved through
+    //    JSON → Set), so the policy controls its own stat ordering.
     const polKeys = [...allKeys].filter(k => k.startsWith('policy.'));
     if (polKeys.length) {
       html += '<div class="metrics-group-title">Policy-defined metrics</div>';
-      polKeys.forEach(k => {
-        const name = k.slice(7);
-        html += `<div class="metric-chart"><h3>${escapeHtml(name)}</h3>`;
-        html += makeChart([{label: name, data: seriesFor(k), color: '#c98b3f'}], {height: 140, currentFrame: cur});
-        html += '</div>';
-      });
-    }
-
-    // 3. Per-channel groups: pc.<metric>.<ch>
-    const pcMetrics = new Set();
-    allKeys.forEach(k => {
-      const m = k.match(/^pc\.([^.]+)\.(.+)$/);
-      if (m) pcMetrics.add(m[1]);
-    });
-    const ordered = [...pcMetrics].sort((a, b) => {
-      const ia = PC_ORDER.indexOf('pc.' + a), ib = PC_ORDER.indexOf('pc.' + b);
-      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-    });
-    ordered.forEach(metric => {
-      const chans = [...allKeys]
-        .filter(k => k.startsWith(`pc.${metric}.`))
-        .map(k => k.slice(`pc.${metric}.`.length))
-        .sort();
-      const series = chans.map((ch, i) => ({
-        label: ch, data: seriesFor(`pc.${metric}.${ch}`), color: CHART_COLORS[i % CHART_COLORS.length],
-      }));
-      html += `<div class="metric-chart"><h3>${escapeHtml(metric)} (per channel)</h3>`;
-      html += makeChart(series, {height: 160, currentFrame: cur});
-      html += '</div>';
-    });
-
-    // 4. Episode stats — ep_len_* group into one chart; other keys
-    //    individually; keys already covered by core charts skipped
-    const epLenKeys = [...allKeys].filter(k => /^ep\.ep_len_/.test(k) && !used.has(k)).sort();
-    if (epLenKeys.length) {
-      const series = epLenKeys.map((k, i) => ({
-        label: k.slice(10), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
-      }));
-      html += `<div class="metric-chart"><h3>ep_len (min/mean/max)</h3>`;
-      html += makeChart(series, {height: 160, currentFrame: cur});
-      html += '</div>';
-      epLenKeys.forEach(k => used.add(k));
-    }
-    [...allKeys].filter(k => k.startsWith('ep.') && !used.has(k)).sort().forEach(k => {
-      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(3))}</h3>`;
-      html += makeChart([{label: k.slice(3), data: seriesFor(k), color: '#6ec86e'}], {height: 140, currentFrame: cur});
-      html += '</div>';
-    });
-
-    // 5. Timing — all time.* series in one chart
-    const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
-    if (timeKeys.length) {
-      const series = timeKeys.map((k, i) => ({
-        label: k.slice(5), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
-      }));
-      html += `<div class="metric-chart"><h3>Timing (s/update)</h3>`;
-      html += makeChart(series, {height: 180, currentFrame: cur});
-      html += '</div>';
+      polKeys.forEach(k =>
+        emit(k.slice(7), [k], {height: 140, color: '#c98b3f'}));
     }
 
     return html;

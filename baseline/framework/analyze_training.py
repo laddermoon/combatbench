@@ -316,7 +316,7 @@ class TrainingLogAnalyzer:
                 })
 
         # ---- Check 4: Episode Length Death Spiral ----
-        ep_means = _series(win, "stats.ep_len_mean")
+        ep_means = _series(win, "stats.traj_len_mean")
         avg_ep_mean = sum(ep_means) / len(ep_means) if ep_means else 1000.0
         if avg_ep_mean <= 30.0:
             conclusions.append({
@@ -541,7 +541,7 @@ class TrainingLogAnalyzer:
                 "policy_loss", "value_loss", "approx_kl", "max_kl",
                 "epochs_done", "actor_epochs_done",
                 "uncertainty", "std_mean", "std_min",
-                "ep_len_mean", "n_episodes", "n_batches", "total_steps",
+                "traj_len_mean", "n_trajectories", "n_batches", "total_steps",
                 "clip_frac", "ratio_mean", "ratio_max", "grad_norm_actor",
             ) if k in stats
         ]
@@ -812,17 +812,17 @@ class TrainingLogAnalyzer:
         u = last.get("update", 0)
         stats = last.get("stats", {})
         timing = last.get("timing", {})
-        ep_len = stats.get("ep_len_mean", 0.0)
+        ep_len = stats.get("traj_len_mean", 0.0)
         kl = stats.get("approx_kl", 0.0)
         epochs = stats.get("epochs_done", 0)
         uncertainty = stats.get("uncertainty", 0.0)
-        n_ep = stats.get("n_episodes", 0)
+        n_ep = stats.get("n_trajectories", 0)
         clip_frac = stats.get("clip_frac", 0.0)
         t_total = timing.get("total", 0.0)
         parts = [
             f"  {BOLD}Update {u}{RESET}  ",
-            f"ep_len={_fmt_float(ep_len, 1)}  ",
-            f"n_ep={n_ep}  ",
+            f"traj_len={_fmt_float(ep_len, 1)}  ",
+            f"n_traj={n_ep}  ",
             f"kl={kl:.4f}  epochs={epochs}  ",
             f"uncertainty={uncertainty:.2f}  ",
             f"clip={clip_frac:.1%}",
