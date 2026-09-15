@@ -53,6 +53,9 @@
 
   /* Run page */
   .run-layout { padding: 16px; height: 100%; overflow: auto; }
+  #page-run.active { display: flex; flex-direction: column; }
+  #page-run.active .run-layout { flex: 1; min-height: 0; }
+  .run-bottom-bar { flex-shrink: 0; margin-bottom: 0; padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--border); }
   table.dump-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   table.dump-table th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
   table.dump-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
@@ -323,14 +326,7 @@
         </div>
         <div class="card">
           <h2>Update Detail</h2>
-          <div class="desc">Scrub the update timeline (or click a chart) to inspect one update's stats.</div>
-          <div class="update-controls">
-            <button id="upd-btn-prev" title="Previous update">◀</button>
-            <button id="upd-btn-next" title="Next update">▶</button>
-            <input id="upd-slider" type="range" min="0" max="0" value="0" />
-            <span id="upd-label" class="upd-label">-</span>
-            <span id="upd-dump-link"></span>
-          </div>
+          <div class="desc">Scrub the update timeline (bottom bar) or click a chart to inspect one update's stats.</div>
           <div id="update-detail-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
@@ -338,6 +334,13 @@
           <div class="desc">Per-update stats parsed from train.log (__RAW_STATS__). The marker shows the selected update.</div>
           <div id="metrics-container"><div class="loading">loading...</div></div>
         </div>
+      </div>
+      <div class="update-controls run-bottom-bar">
+        <button id="upd-btn-prev" title="Previous update">◀</button>
+        <button id="upd-btn-next" title="Next update">▶</button>
+        <input id="upd-slider" type="range" min="0" max="0" value="0" />
+        <span id="upd-label" class="upd-label">-</span>
+        <span id="upd-dump-link"></span>
       </div>
     </div>
 
@@ -1068,7 +1071,8 @@
   // --- Run home page ---
   // Metric chart ordering: holistic/important first, granular later.
   const CORE_CHARTS = [
-    {title: 'Episode Length', keys: ['stats.ep_len_mean', 'stats.ep_len_min', 'stats.ep_len_max']},
+    {title: 'Episode Length', keys: ['stats.ep_len_mean', 'stats.ep_len_min', 'stats.ep_len_max'],
+     suppress: ['ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max']},
     {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
     {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
     {title: 'Uncertainty & Std', keys: ['stats.uncertainty', 'stats.std_mean', 'stats.eff_std_mean', 'stats.std_min', 'stats.std_max']},
@@ -1259,6 +1263,8 @@
         label: k.split('.').pop(), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
       }));
       keys.forEach(k => used.add(k));
+      // suppress duplicate keys covered by this chart (ep.* aliases)
+      (spec.suppress || []).forEach(k => used.add(k));
       html += `<div class="metric-chart"><h3>${escapeHtml(spec.title)}</h3>`;
       html += makeChart(series, {height: 160, currentFrame: cur});
       html += '</div>';
@@ -1295,19 +1301,34 @@
       html += '</div>';
     });
 
-    // 4. Episode stats
-    [...allKeys].filter(k => k.startsWith('ep.')).sort().forEach(k => {
+    // 4. Episode stats — ep_len_* group into one chart; other keys
+    //    individually; keys already covered by core charts skipped
+    const epLenKeys = [...allKeys].filter(k => /^ep\.ep_len_/.test(k) && !used.has(k)).sort();
+    if (epLenKeys.length) {
+      const series = epLenKeys.map((k, i) => ({
+        label: k.slice(10), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
+      }));
+      html += `<div class="metric-chart"><h3>ep_len (min/mean/max)</h3>`;
+      html += makeChart(series, {height: 160, currentFrame: cur});
+      html += '</div>';
+      epLenKeys.forEach(k => used.add(k));
+    }
+    [...allKeys].filter(k => k.startsWith('ep.') && !used.has(k)).sort().forEach(k => {
       html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(3))}</h3>`;
       html += makeChart([{label: k.slice(3), data: seriesFor(k), color: '#6ec86e'}], {height: 140, currentFrame: cur});
       html += '</div>';
     });
 
-    // 5. Timing
-    [...allKeys].filter(k => k.startsWith('time.')).sort().forEach(k => {
-      html += `<div class="metric-chart"><h3>${escapeHtml(k.slice(5))}</h3>`;
-      html += makeChart([{label: k.slice(5), data: seriesFor(k), color: '#8a93a6'}], {height: 140, currentFrame: cur});
+    // 5. Timing — all time.* series in one chart
+    const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
+    if (timeKeys.length) {
+      const series = timeKeys.map((k, i) => ({
+        label: k.slice(5), data: seriesFor(k), color: CHART_COLORS[i % CHART_COLORS.length],
+      }));
+      html += `<div class="metric-chart"><h3>Timing (s/update)</h3>`;
+      html += makeChart(series, {height: 180, currentFrame: cur});
       html += '</div>';
-    });
+    }
 
     return html;
   }
