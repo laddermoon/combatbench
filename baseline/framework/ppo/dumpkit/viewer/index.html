@@ -1089,7 +1089,7 @@
     {title: 'Uncertainty & Std', keys: ['stats.uncertainty', 'stats.std_mean', 'stats.eff_std_mean', 'stats.std_min', 'stats.std_max']},
     {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
-     hint: 'Actor 全部参数梯度的 L2 范数，clip 前原始值、按 minibatch 平均。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
+     hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
     {title: 'Mean |Action|', keys: ['stats.mean_abs']},
     {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl']},
