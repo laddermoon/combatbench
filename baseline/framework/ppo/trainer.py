@@ -106,7 +106,7 @@ class PPOBuffer:
     Flat arrays (concatenated across trajectories):
     - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``explore_factor``
     - ``final_obs`` — per-trajectory last observation (for bootstrap)
-    - ``ep_lengths`` — per-trajectory frame count
+    - ``traj_lengths`` — per-trajectory frame count
     """
 
     def __init__(
@@ -146,7 +146,7 @@ class PPOBuffer:
             self.floor_weight: Optional[np.ndarray] = None
             self.uncertainty: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
-            self.ep_lengths: List[int] = []
+            self.traj_lengths: List[int] = []
             return
 
         # --- Batched evaluate_actions on all trajectory frames ---
@@ -219,7 +219,7 @@ class PPOBuffer:
         lp_list: List[np.ndarray] = []
         fin_list: List[np.ndarray] = []
         weight_list: List[np.ndarray] = []
-        ep_lens: List[int] = []
+        traj_lens: List[int] = []
 
         offset = 0
         for traj in trajectories:
@@ -260,15 +260,15 @@ class PPOBuffer:
             weight_list.append(
                 np.full(T_seg, traj.importance, dtype=np.float32)
             )
-            ep_lens.append(T_seg)
+            traj_lens.append(T_seg)
 
-        if not ep_lens:
+        if not traj_lens:
             self.obs = np.zeros((0, 0), np.float32)
             self.actions = np.zeros((0, 0), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
             self.final_obs = []
-            self.ep_lengths = []
+            self.traj_lengths = []
             return
 
         self.obs = np.concatenate(obs_list, axis=0)
@@ -276,13 +276,13 @@ class PPOBuffer:
         self.log_probs = np.concatenate(lp_list, axis=0)
         self.sample_weights = np.concatenate(weight_list, axis=0)
         self.final_obs = fin_list
-        self.ep_lengths = ep_lens
+        self.traj_lengths = traj_lens
 
     def __len__(self) -> int:
-        return sum(self.ep_lengths)
+        return sum(self.traj_lengths)
 
     def is_empty(self) -> bool:
-        return len(self.ep_lengths) == 0
+        return len(self.traj_lengths) == 0
 
     def buffer_stats(self) -> Dict[str, Any]:
         """Comprehensive buffer statistics for logging.
@@ -296,7 +296,7 @@ class PPOBuffer:
         - reward_min/max/mean/std (over all active frames)
         - actor_weight_mean/min/max
         """
-        if not self.ep_lengths:
+        if not self.traj_lengths:
             return {
                 "n_trajectories": 0,
                 "total_steps": 0,
@@ -306,8 +306,8 @@ class PPOBuffer:
                 "per_channel": {},
             }
 
-        ep_lens = np.array(self.ep_lengths)
-        total_steps = int(ep_lens.sum())
+        traj_lens = np.array(self.traj_lengths)
+        total_steps = int(traj_lens.sum())
 
         per_channel: Dict[str, Dict[str, float]] = {}
         for key in self.reward_keys:
@@ -336,7 +336,7 @@ class PPOBuffer:
                 }
                 continue
 
-            active_lens = [self.ep_lengths[i] for i in active_indices]
+            active_lens = [self.traj_lengths[i] for i in active_indices]
             active_aw = [aws[i] for i in active_indices]
             active_segs = [segs[i] for i in active_indices]
             concat = np.concatenate(active_segs)
@@ -360,11 +360,11 @@ class PPOBuffer:
             }
 
         return {
-            "n_trajectories": len(self.ep_lengths),
+            "n_trajectories": len(self.traj_lengths),
             "total_steps": total_steps,
-            "traj_len_mean": float(ep_lens.mean()),
-            "traj_len_min": int(ep_lens.min()),
-            "traj_len_max": int(ep_lens.max()),
+            "traj_len_mean": float(traj_lens.mean()),
+            "traj_len_min": int(traj_lens.min()),
+            "traj_len_max": int(traj_lens.max()),
             "per_channel": per_channel,
         }
 
@@ -518,7 +518,7 @@ def ppo_update(
     # a single forward pass per critic.
     bootstrap_indices: List[int] = []
     bootstrap_obs: List[np.ndarray] = []
-    for i, T in enumerate(buf.ep_lengths):
+    for i, T in enumerate(buf.traj_lengths):
         needs_boot = any(
             buf.key_seg_active[key][i] and not buf.key_seg_terminated[key][i]
             for key in reward_keys
@@ -545,7 +545,7 @@ def ppo_update(
     # can slice per-trajectory data without repeated cumsum.
     seg_offsets: List[int] = []
     _off = 0
-    for T in buf.ep_lengths:
+    for T in buf.traj_lengths:
         seg_offsets.append(_off)
         _off += T
 
@@ -553,14 +553,14 @@ def ppo_update(
     # Expand per-segment active flags into per-frame boolean masks.
     # These masks drive GAE (skip inactive segments), normalization
     # (only active frames), and critic loss (only active frames).
-    n = sum(buf.ep_lengths)
+    n = sum(buf.traj_lengths)
     key_frame_mask: Dict[str, np.ndarray] = {}
     for key in reward_keys:
         mask = np.zeros(n, dtype=bool)
         for i, is_active in enumerate(buf.key_seg_active[key]):
             if is_active:
                 s = seg_offsets[i]
-                e = s + buf.ep_lengths[i]
+                e = s + buf.traj_lengths[i]
                 mask[s:e] = True
         key_frame_mask[key] = mask
 
@@ -578,7 +578,7 @@ def ppo_update(
         advs_list = []
         rets_list = []
 
-        for i, T in enumerate(buf.ep_lengths):
+        for i, T in enumerate(buf.traj_lengths):
             s = seg_offsets[i]
             values = values_all[key][s : s + T]
 
@@ -667,7 +667,7 @@ def ppo_update(
         for i, is_active in enumerate(buf.key_seg_active[key]):
             if is_active:
                 s = seg_offsets[i]
-                T_seg = buf.ep_lengths[i]
+                T_seg = buf.traj_lengths[i]
                 e = s + T_seg
                 aw = buf.key_seg_actor_weight[key][i]
                 if np.isscalar(aw) or (isinstance(aw, np.ndarray) and aw.ndim == 0):
@@ -833,10 +833,10 @@ def ppo_update(
 
     # --- Diagnostics: episode lengths ---
     # These are logged but do not influence the update.
-    ep_lengths = buf.ep_lengths
-    ep_len_mean = float(np.mean(ep_lengths)) if ep_lengths else 0.0
-    ep_len_min = float(np.min(ep_lengths)) if ep_lengths else 0.0
-    ep_len_max = float(np.max(ep_lengths)) if ep_lengths else 0.0
+    traj_lengths = buf.traj_lengths
+    ep_len_mean = float(np.mean(traj_lengths)) if traj_lengths else 0.0
+    ep_len_min = float(np.min(traj_lengths)) if traj_lengths else 0.0
+    ep_len_max = float(np.max(traj_lengths)) if traj_lengths else 0.0
 
     # Exploration diagnostics come from the policy itself, measured on the
     # buffer's whole-batch pass at theta_old (see PPOBuffer). The trainer
@@ -852,7 +852,7 @@ def ppo_update(
     # was processed but not reported. Using ceil makes the reported
     # n_batches match the actual loop iteration count.
     n_batches = max(1, (n + pp.minibatch_size - 1) // pp.minibatch_size)
-    n_trajectories = len(buf.ep_lengths)
+    n_trajectories = len(buf.traj_lengths)
 
     # --- 6. Training loop: multi-epoch minibatch PPO ---
     # Each epoch shuffles all frames and splits into n_batches roughly
@@ -1397,7 +1397,7 @@ def ppo_update(
         ret_mean[key] = float(r.mean()) if r.size > 0 else 0.0
         ret_std[key] = float(r.std()) if r.size > 0 else 0.0
 
-    total_steps = sum(buf.ep_lengths)
+    total_steps = sum(buf.traj_lengths)
     # P0-1: approx_kl/max_kl come from every actor minibatch actually run,
     # not from the last epoch's (possibly empty) mean.  Before this fix,
     # `epoch_kl_stats[-1]["mean_kl"]` was 0.0 after early stop because the

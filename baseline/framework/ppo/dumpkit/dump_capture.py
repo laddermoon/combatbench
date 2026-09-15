@@ -253,7 +253,7 @@ def _serialize_trajectories(
     """Build the trajectories.npz payload from actual Trajectory objects."""
     data: Dict[str, Any] = {}
     data["n_trajectories"] = np.array(len(trajectories))
-    data["ep_lengths"] = np.array([len(t.obs) for t in trajectories])
+    data["traj_lengths"] = np.array([len(t.obs) for t in trajectories])
 
     # Per-channel reward / actor_weight (concatenated).
     if trajectories:
@@ -321,7 +321,7 @@ def _serialize_buffer(buf: PPOBuffer, frame_ids: np.ndarray) -> Dict[str, Any]:
         "explore_factor": buf.explore_factor,
         "floor_weight": buf.floor_weight,
         "uncertainty": buf.uncertainty if buf.uncertainty is not None else np.zeros(0, dtype=np.float32),
-        "ep_lengths": np.array(buf.ep_lengths),
+        "traj_lengths": np.array(buf.traj_lengths),
         "frame_id": frame_ids,
     }
     return data

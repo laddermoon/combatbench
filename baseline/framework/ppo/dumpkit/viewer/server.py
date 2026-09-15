@@ -88,10 +88,11 @@ class DumpData:
         if traj_npz is None:
             return []
         frame_ids = traj_npz.get("frame_id")
-        ep_lengths = traj_npz.get("ep_lengths", np.array([]))
-        if frame_ids is None or len(ep_lengths) == 0:
+        # Backward compat: older dumps store this as "ep_lengths".
+        traj_lengths = traj_npz.get("traj_lengths", traj_npz.get("ep_lengths", np.array([])))
+        if frame_ids is None or len(traj_lengths) == 0:
             return []
-        return _build_traj_map_from_frame_ids(frame_ids, ep_lengths)
+        return _build_traj_map_from_frame_ids(frame_ids, traj_lengths)
 
     @property
     def episodes_npz(self) -> Optional[Dict[str, np.ndarray]]:
@@ -175,9 +176,11 @@ class DumpData:
         traj = self.trajectories_npz
         if traj is None:
             return np.array([0])
-        ep_lengths = traj["ep_lengths"]
-        offsets = np.zeros(len(ep_lengths) + 1, dtype=np.int64)
-        offsets[1:] = np.cumsum(ep_lengths)
+        traj_lengths = traj.get("traj_lengths")
+        if traj_lengths is None:
+            traj_lengths = traj["ep_lengths"]  # backward compat: old dumps
+        offsets = np.zeros(len(traj_lengths) + 1, dtype=np.int64)
+        offsets[1:] = np.cumsum(traj_lengths)
         return offsets
 
     @property
@@ -344,7 +347,7 @@ class RunData:
             if not isinstance(v, (int, float)):
                 continue  # skip non-scalars (e.g. epoch_kl_stats list)
             # Backward compat: stats.n_episodes in older logs actually
-            # counted buffer trajectories (len(buf.ep_lengths)), not
+            # counted buffer trajectories (len(buf.traj_lengths)), not
             # episodes.  Renamed to n_trajectories upstream; remap here
             # so old logs display the honest name.
             if k == "n_episodes":
@@ -398,15 +401,15 @@ class RunData:
 
 def _build_traj_map_from_frame_ids(
     frame_ids: np.ndarray,
-    ep_lengths: np.ndarray,
+    traj_lengths: np.ndarray,
 ) -> List[Dict[str, Any]]:
     """Build traj_map from frame_id array when traj_map.json is missing."""
-    n_trajs = len(ep_lengths)
+    n_trajs = len(traj_lengths)
     # We don't have episode info, so build a minimal map.
     ep_map: Dict[int, List[Dict[str, Any]]] = {}
     offset = 0
     for traj_idx in range(n_trajs):
-        T = int(ep_lengths[traj_idx])
+        T = int(traj_lengths[traj_idx])
         if T == 0:
             continue
         fid = str(frame_ids[offset])

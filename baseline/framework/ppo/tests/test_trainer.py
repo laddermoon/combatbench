@@ -356,7 +356,7 @@ def test_buffer_flatten_multiple_trajectories():
 
     buf, _ = make_buffer([t1, t2], obs_dim, act_dim, ("r_a",))
 
-    assert buf.ep_lengths == [T1, T2]
+    assert buf.traj_lengths == [T1, T2]
     assert len(buf) == T1 + T2
     assert buf.obs.shape == (T1 + T2, obs_dim)
     assert buf.actions.shape == (T1 + T2, act_dim)
@@ -376,7 +376,7 @@ def test_buffer_empty():
     buf, _ = make_buffer([], 8, 3, ("r_a",))
     assert buf.is_empty()
     assert len(buf) == 0
-    assert buf.ep_lengths == []
+    assert buf.traj_lengths == []
     assert buf.final_obs == []
     # P0-3: obs must be 2-D so downstream torch.as_tensor + nn.Linear
     # don't crash on a 1-D (0,) array being treated as a single sample.
