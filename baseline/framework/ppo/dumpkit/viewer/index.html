@@ -63,6 +63,7 @@
   table.dump-table tr:hover { background: var(--panel-alt); }
   .metric-chart { margin-bottom: 18px; }
   .metric-chart h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); }
+  .metrics-group-title { margin: 22px 0 10px 0; padding-top: 14px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
   .metric-chart h3.has-tip { cursor: help; position: relative; display: inline-block; }
   .metric-chart h3.has-tip::after {
     content: attr(data-tip);
@@ -1086,11 +1087,9 @@
      suppress: ['ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max']},
     {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
     {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
-    {title: 'Uncertainty & Std', keys: ['stats.uncertainty', 'stats.std_mean', 'stats.eff_std_mean', 'stats.std_min', 'stats.std_max']},
     {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
      hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
-    {title: 'Mean |Action|', keys: ['stats.mean_abs']},
     {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl']},
   ];
@@ -1292,6 +1291,24 @@
       html += makeChart([{label: k.slice(6), data: seriesFor(k), color: '#4fa3ff'}], {height: 140, currentFrame: cur});
       html += '</div>';
     });
+
+    // 2b. Policy-contributed metrics (policy.*) — separate group, uniform
+    //     presentation: one chart per key, no merging. Preferred order
+    //     first, unknown keys alphabetical after.
+    const POLICY_ORDER = ['uncertainty', 'std_mean', 'eff_std_mean', 'std_min', 'std_max', 'mean_abs'];
+    const polKeys = [...allKeys].filter(k => k.startsWith('policy.')).sort((a, b) => {
+      const ia = POLICY_ORDER.indexOf(a.slice(7)), ib = POLICY_ORDER.indexOf(b.slice(7));
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b);
+    });
+    if (polKeys.length) {
+      html += '<div class="metrics-group-title">Policy-defined metrics</div>';
+      polKeys.forEach(k => {
+        const name = k.slice(7);
+        html += `<div class="metric-chart"><h3>${escapeHtml(name)}</h3>`;
+        html += makeChart([{label: name, data: seriesFor(k), color: '#c98b3f'}], {height: 140, currentFrame: cur});
+        html += '</div>';
+      });
+    }
 
     // 3. Per-channel groups: pc.<metric>.<ch>
     const pcMetrics = new Set();

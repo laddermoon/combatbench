@@ -225,6 +225,15 @@ class DumpData:
 # RunData — training-run level data (dump list + train.log metrics)
 # ---------------------------------------------------------------------------
 
+# Keys historically contributed via ActorEval.stats (truncated_normal_mlp).
+# Used to re-classify stats.* keys in old logs that predate the
+# raw["policy_stats"] provenance field.
+_LEGACY_POLICY_STAT_KEYS = frozenset({
+    "uncertainty", "std_mean", "eff_std_mean", "std_min", "std_max",
+    "mean_abs",
+})
+
+
 class RunData:
     """Training run directory: scan dumps and parse __RAW_STATS__ from train.log."""
 
@@ -342,6 +351,19 @@ class RunData:
         pc = buf.get("per_channel") or {}
         channels = [c for c in pc.keys() if isinstance(c, str)] if isinstance(pc, dict) else []
 
+        # Policy-contributed stats get their own policy.* namespace so the
+        # UI can group them separately from framework-guaranteed stats.*.
+        # Newer logs carry raw["policy_stats"]; for older logs fall back
+        # to the key set truncated_normal_mlp historically emitted.
+        pol = raw.get("policy_stats")
+        if isinstance(pol, dict):
+            policy_keys = set(pol.keys())
+            for k, v in pol.items():
+                if isinstance(v, (int, float)):
+                    out[f"policy.{k}"] = float(v)
+        else:
+            policy_keys = _LEGACY_POLICY_STAT_KEYS
+
         stats = raw.get("stats") or {}
         for k, v in stats.items():
             if not isinstance(v, (int, float)):
@@ -352,6 +374,11 @@ class RunData:
             # so old logs display the honest name.
             if k == "n_episodes":
                 k = "n_trajectories"
+            if k in policy_keys:
+                # Policy-contributed (spread into stats for legacy
+                # consumers); emit under policy.* if not already there.
+                out.setdefault(f"policy.{k}", float(v))
+                continue
             # Re-classify per-channel keys like "vloss_r_potential" → pc.vloss.r_potential
             grouped = False
             for ch in channels:

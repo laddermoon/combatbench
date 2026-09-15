@@ -770,6 +770,11 @@ def train_ppo(
                 "episode_stats": ep_stats,
                 "buffer_stats": buf_stats,
                 "stats": stats.to_log_dict(),
+                # Policy-contributed stats as a separate sub-mapping so
+                # consumers can tell them apart from framework-guaranteed
+                # keys (stats.to_log_dict() spreads them into `stats` for
+                # legacy flat-format consumers like analyze_training.py).
+                "policy_stats": dict(stats.policy_stats),
                 "timing": {
                     "total": round(t_total, 2),
                     "export": round(t_export, 2),
