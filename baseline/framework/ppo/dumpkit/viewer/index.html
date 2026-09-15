@@ -1294,13 +1294,10 @@
     });
 
     // 2b. Policy-contributed metrics (policy.*) — separate group, uniform
-    //     presentation: one chart per key, no merging. Preferred order
-    //     first, unknown keys alphabetical after.
-    const POLICY_ORDER = ['std_mean', 'eff_std_mean', 'std_min', 'std_max', 'mean_abs'];
-    const polKeys = [...allKeys].filter(k => k.startsWith('policy.')).sort((a, b) => {
-      const ia = POLICY_ORDER.indexOf(a.slice(7)), ib = POLICY_ORDER.indexOf(b.slice(7));
-      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b);
-    });
+    //     presentation: one chart per key, no merging. Keys keep their
+    //     emission order (policy_stats dict order is preserved through
+    //     JSON → Set), so the policy controls its own stat ordering.
+    const polKeys = [...allKeys].filter(k => k.startsWith('policy.'));
     if (polKeys.length) {
       html += '<div class="metrics-group-title">Policy-defined metrics</div>';
       polKeys.forEach(k => {
