@@ -1079,6 +1079,8 @@
     {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor']},
     {title: 'Mean |Action|', keys: ['stats.mean_abs']},
+    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
+    {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl']},
   ];
   // Per-channel metric groups (pc.<metric>.<ch>), most important first.
   const PC_ORDER = [
