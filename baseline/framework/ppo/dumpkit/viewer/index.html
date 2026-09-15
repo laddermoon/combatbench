@@ -332,6 +332,10 @@
     <div class="page" id="page-run">
       <div class="run-layout">
         <div class="card">
+          <h2>Run Info</h2>
+          <div id="run-info-panel"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
           <h2>Dumps</h2>
           <div class="desc">Captured update dumps. Click a dump to enter its episode/trajectory views.</div>
           <div id="dump-list-container"><div class="loading">loading...</div></div>
@@ -1135,11 +1139,68 @@
   // pc metrics aggregated elsewhere — never rendered per channel.
   const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max']);
 
+  // Run Info card: experiment config + code snapshot, grouped rows of
+  // label/value chips. Renders whatever fields exist — missing fields
+  // are skipped rather than shown as placeholders.
+  function renderRunInfoPanel() {
+    const el = $('run-info-panel');
+    const info = state.runInfo;
+    if (!info) { el.innerHTML = ''; return; }
+    const cfg = info.config || {};
+    const exp = cfg.experiment || {};
+    const cp = exp.common_params || {};
+    const pp = exp.ppo_params || {};
+    const ex = exp.initial_exploration || {};
+    const snap = info.code_snapshot || {};
+
+    const row = items =>
+      '<div class="ep-info-bar">' +
+      items.filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) =>
+          `<div class="info-item"><span class="info-label">${escapeHtml(k)}</span>` +
+          `<span class="info-value">${escapeHtml(String(v))}</span></div>`)
+        .join('') +
+      '</div>';
+
+    let html = '';
+    html += row([
+      ['run', info.run_name], ['dir', info.run_dir],
+      ['algo', cfg.algorithm], ['saved_at', cfg.saved_at],
+    ]);
+    if (snap.commit) {
+      html += row([
+        ['branch', snap.branch],
+        ['commit', String(snap.commit).slice(0, 8)],
+        ['base', `${snap.base_branch || ''}@${String(snap.base_commit || '').slice(0, 8)}`],
+      ]);
+    }
+    html += row([
+      ['lr', cp.learning_rate], ['critic_lr', cp.critic_learning_rate],
+      ['grad_clip', cp.grad_clip_norm], ['eps/update', cp.episodes_per_update],
+      ['max_updates', cp.max_updates], ['eval_int', cp.eval_interval],
+      ['eval_eps', cp.eval_episodes], ['video_int', cp.video_eval_interval],
+      ['workers', cp.rollout_workers], ['seed', cp.seed],
+    ]);
+    html += row([
+      ['clip_eps', pp.clip_eps], ['target_kl', pp.target_kl],
+      ['epochs', pp.update_epochs], ['minibatch', pp.minibatch_size],
+      ['U_floor', ex.uncertainty_floor], ['U_coef', ex.uncertainty_coef],
+    ]);
+    const rcs = exp.reward_channels || [];
+    if (rcs.length) {
+      html += row(rcs.map(c => [
+        c.name, `γ=${c.gamma} λ=${c.gae_lambda}`,
+      ]));
+    }
+    el.innerHTML = html;
+  }
+
   async function renderRunHome() {
     if (state.runInfo) {
       $('header-meta').textContent =
         `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ${state.runInfo.n_dumps} dumps`;
     }
+    renderRunInfoPanel();
     // Refresh dump list + metrics each visit (train.log grows during training).
     try {
       state.runDumps = await fetchJson('/api/run/dumps');

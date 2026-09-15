@@ -420,6 +420,7 @@ class RunData:
     def run_info(self) -> Dict[str, Any]:
         config_path = self.run_dir / "config.json"
         exp_name = None
+        cfg: Optional[Dict[str, Any]] = None
         if config_path.exists():
             try:
                 with open(config_path, encoding="utf-8") as f:
@@ -427,9 +428,20 @@ class RunData:
                 exp_name = cfg.get("experiment", {}).get("name")
             except (json.JSONDecodeError, OSError):
                 pass
+        snapshot = None
+        snap_path = self.run_dir / "code_snapshot.json"
+        if snap_path.exists():
+            try:
+                with open(snap_path, encoding="utf-8") as f:
+                    snapshot = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
         return {
             "run_name": self.run_dir.name,
             "experiment_name": exp_name,
+            "run_dir": str(self.run_dir),
+            "config": cfg,
+            "code_snapshot": snapshot,
             "has_train_log": self.train_log_path.exists(),
             "n_dumps": len(self.dumps()),
         }
