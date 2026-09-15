@@ -1139,11 +1139,10 @@
     {pcm: 'actor_weight', metrics: ['actor_weight_min', 'actor_weight_max', 'actor_weight_mean']},
     {pcm: 'ret', metrics: ['ret_mean', 'ret_std']},
     {pcm: 'adv', metrics: ['adv_mean', 'adv_std']},
-    {pc: 'ev'},
-    {pc: 'confidence'},
+    {pcm: 'ev & confidence', metrics: ['ev', 'confidence']},
     {title: 'Uncertainty', keys: ['stats.uncertainty']},
     {pc: 'vloss'},
-    {title: 'Policy & Value Loss', keys: ['stats.policy_loss', 'stats.value_loss']},
+    {title: 'Policy Loss', keys: ['stats.policy_loss']},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
      hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
     {pc: 'grad_norm'},
@@ -1423,11 +1422,16 @@
       keys.forEach(k => used.add(k));
       emitChart(title, series, opts);
     };
-    const dashFor = m => {
+    const FALLBACK_DASHES = ['dash', 'dot', 'longdash', 'dashdot'];
+    const dashFor = (m, i) => {
       const suf = m.split('_').pop();
-      return suf in METRIC_DASH ? METRIC_DASH[suf] : 'dashdot';
+      if (suf in METRIC_DASH) return METRIC_DASH[suf];
+      return i === 0 ? null : FALLBACK_DASHES[(i - 1) % FALLBACK_DASHES.length];
     };
-    const rankFor = m => METRIC_RANK[m.split('_').pop()] ?? 2;
+    const rankFor = (m, i) => {
+      const suf = m.split('_').pop();
+      return suf in METRIC_RANK ? METRIC_RANK[suf] : (i === 0 ? 3 : 2);
+    };
 
     // 1. Framework-owned charts — fixed editorial order (FRAMEWORK_LAYOUT)
     FRAMEWORK_LAYOUT.forEach(spec => {
@@ -1454,7 +1458,8 @@
         });
         const chList = [...chans].sort();
         const series = [];
-        spec.metrics.forEach(m => {
+        spec.metrics.forEach((m, mi) => {
+          const dash = dashFor(m, mi);
           chList.forEach((ch, ci) => {
             const key = `pc.${m}.${ch}`;
             if (!allKeys.has(key)) return;
@@ -1462,16 +1467,17 @@
             series.push({
               label: `${ch}·${m}`, data: seriesFor(key),
               color: CHART_COLORS[ci % CHART_COLORS.length],
-              dash: dashFor(m), width: m.split('_').pop() === 'mean' ? 2.2 : 1.2,
+              dash, width: dash === null ? 2.2 : 1.2,
               group: ch, dim: m,
             });
           });
         });
         if (!series.length) return;
-        series.sort((a, b) => rankFor(a.dim) - rankFor(b.dim));
+        series.sort((a, b) => rankFor(a.dim, spec.metrics.indexOf(a.dim)) -
+                               rankFor(b.dim, spec.metrics.indexOf(b.dim)));
         emitChart(`${spec.pcm} (per channel)`, series, {
           legendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
-          legendDims: spec.metrics.map(m => ({name: m, dash: dashFor(m)})),
+          legendDims: spec.metrics.map((m, mi) => ({name: m, dash: dashFor(m, mi)})),
         });
         return;
       }
