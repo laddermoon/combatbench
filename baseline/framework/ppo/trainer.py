@@ -1083,23 +1083,6 @@ def ppo_update(
                 )
                 floor_loss = uncertainty_coef * (gap ** 2 * fw_mb).mean()
                 loss = loss + floor_loss
-            floor_losses.append(float(floor_loss))
-
-            if mb_idx == 0:
-                # Framework-owned per-loss gradient magnitudes over all
-                # actor parameters (one extra autograd per epoch).
-                def _loss_grad_norm(loss_t: torch.Tensor) -> float:
-                    if not loss_t.requires_grad:
-                        return 0.0
-                    gs = torch.autograd.grad(
-                        loss_t, actor_params,
-                        retain_graph=True, allow_unused=True,
-                    )
-                    sq = sum(float((g ** 2).sum()) for g in gs if g is not None)
-                    return float(sq ** 0.5)
-
-                all_action_grad_pol.append(_loss_grad_norm(policy_loss))
-                all_action_grad_floor.append(_loss_grad_norm(floor_loss))
 
                 # --- Gradient diagnostics for exploration parameters ---
                 # P1-7: Moved from ``hasattr(actor, "log_std")`` sniffing
@@ -1111,11 +1094,10 @@ def ppo_update(
                 # The hasattr check is for test actors that don't
                 # inherit TrainablePolicy; real actors get the default
                 # ``return None`` from TrainablePolicy.
-                if (
-                    mb_idx == 0
-                    and uncertainty_coef > 0.0
-                    and hasattr(actor, "exploration_grad_diagnostics")
-                ):
+                # Must stay inside this branch: floor_loss is only
+                # differentiable here (else it is a constant zero
+                # tensor) and fw_mb is only defined here.
+                if mb_idx == 0 and hasattr(actor, "exploration_grad_diagnostics"):
                     grad_diag = actor.exploration_grad_diagnostics(
                         policy_loss, floor_loss,
                     )
@@ -1136,6 +1118,23 @@ def ppo_update(
                         else:
                             frac = 0.0
                         all_floor_active_frac.append(frac)
+            floor_losses.append(float(floor_loss))
+
+            if mb_idx == 0:
+                # Framework-owned per-loss gradient magnitudes over all
+                # actor parameters (one extra autograd per epoch).
+                def _loss_grad_norm(loss_t: torch.Tensor) -> float:
+                    if not loss_t.requires_grad:
+                        return 0.0
+                    gs = torch.autograd.grad(
+                        loss_t, actor_params,
+                        retain_graph=True, allow_unused=True,
+                    )
+                    sq = sum(float((g ** 2).sum()) for g in gs if g is not None)
+                    return float(sq ** 0.5)
+
+                all_action_grad_pol.append(_loss_grad_norm(policy_loss))
+                all_action_grad_floor.append(_loss_grad_norm(floor_loss))
 
             actor_optimizer.zero_grad()
             loss.backward()
