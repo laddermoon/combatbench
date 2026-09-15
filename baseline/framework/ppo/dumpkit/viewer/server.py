@@ -343,6 +343,12 @@ class RunData:
         for k, v in stats.items():
             if not isinstance(v, (int, float)):
                 continue  # skip non-scalars (e.g. epoch_kl_stats list)
+            # Backward compat: stats.n_episodes in older logs actually
+            # counted buffer trajectories (len(buf.ep_lengths)), not
+            # episodes.  Renamed to n_trajectories upstream; remap here
+            # so old logs display the honest name.
+            if k == "n_episodes":
+                k = "n_trajectories"
             # Re-classify per-channel keys like "vloss_r_potential" → pc.vloss.r_potential
             grouped = False
             for ch in channels:

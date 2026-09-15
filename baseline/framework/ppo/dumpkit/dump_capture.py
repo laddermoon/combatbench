@@ -342,7 +342,7 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         "epochs_done": np.array(stats.epochs_done),
         "actor_epochs_done": np.array(stats.actor_epochs_done),
         "n_batches": np.array(stats.n_batches),
-        "n_episodes": np.array(stats.n_episodes),
+        "n_trajectories": np.array(stats.n_trajectories),
         "total_steps": np.array(stats.total_steps),
     }
     for key, val in stats.critic_losses.items():

@@ -852,7 +852,7 @@ def ppo_update(
     # was processed but not reported. Using ceil makes the reported
     # n_batches match the actual loop iteration count.
     n_batches = max(1, (n + pp.minibatch_size - 1) // pp.minibatch_size)
-    n_episodes = len(buf.ep_lengths)
+    n_trajectories = len(buf.ep_lengths)
 
     # --- 6. Training loop: multi-epoch minibatch PPO ---
     # Each epoch shuffles all frames and splits into n_batches roughly
@@ -1442,7 +1442,7 @@ def ppo_update(
         epochs_done=len(epoch_kl_stats),
         actor_epochs_done=actor_epochs_done,
         n_batches=n_batches,
-        n_episodes=n_episodes,
+        n_trajectories=n_trajectories,
         total_steps=total_steps,
         ep_len_mean=ep_len_mean,
         ep_len_min=ep_len_min,

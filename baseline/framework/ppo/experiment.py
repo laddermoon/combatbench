@@ -462,7 +462,7 @@ class UpdateStats:
     # epochs_done == update_epochs.
     actor_epochs_done: int
     n_batches: int
-    n_episodes: int
+    n_trajectories: int
     total_steps: int
     ep_len_mean: float
     ep_len_min: float
@@ -512,7 +512,7 @@ class UpdateStats:
             epochs_done=0,
             actor_epochs_done=0,
             n_batches=0,
-            n_episodes=0,
+            n_trajectories=0,
             total_steps=0,
             ep_len_mean=0.0,
             ep_len_min=0.0,
@@ -552,7 +552,7 @@ class UpdateStats:
             "ep_len_max": self.ep_len_max,
             "epoch_kl_stats": self.epoch_kl_stats,
             "n_batches": self.n_batches,
-            "n_episodes": self.n_episodes,
+            "n_trajectories": self.n_trajectories,
             "total_steps": self.total_steps,
             "clip_frac": self.clip_frac,
             "ratio_mean": self.ratio_mean,

@@ -417,7 +417,7 @@ def test_ppo_update_empty_buffer_returns_empty_stats():
     assert stats.approx_kl == 0.0
     assert stats.epochs_done == 0
     assert stats.actor_epochs_done == 0
-    assert stats.n_episodes == 0
+    assert stats.n_trajectories == 0
     assert stats.critic_losses == {"r_a": 0.0}
     assert stats.epoch_kl_stats == []
     print("test_ppo_update_empty_buffer_returns_empty_stats: PASS")
@@ -577,7 +577,7 @@ def test_ppo_update_runs_single_channel():
     )
 
     assert stats.total_steps == T
-    assert stats.n_episodes == 1
+    assert stats.n_trajectories == 1
     assert "r_a" in stats.critic_losses
     assert "r_a" in stats.explained_variance
     assert "r_a" in stats.confidence
