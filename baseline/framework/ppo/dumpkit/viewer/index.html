@@ -862,7 +862,10 @@
         const val = s.data[cf];
         const y = yScale(val);
         const ly = margin.top + 2 + labelIdx * labelH;
-        const text = fmt(val, 4);
+        // Grouped charts share color per group — prefix the dim name
+        // (e.g. "min -0.32") so same-colored labels stay identifiable.
+        const tag = s.dim ? s.dim.split('_').pop() + ' ' : '';
+        const text = tag + fmt(val, 4);
         // Colored dot + value text
         svg += `<rect x="${x + 3}" y="${ly - 9}" width="${text.length * 6 + 4}" height="12" fill="var(--bg)" opacity="0.85" rx="2"/>`;
         svg += `<circle cx="${x + 5}" cy="${ly - 3}" r="2" fill="${s.color}"/>`;
@@ -1233,6 +1236,10 @@
     container.querySelectorAll('.chartbox[data-chart-id]').forEach(box => {
       const spec = state._chartSpecs[box.dataset.chartId];
       if (!spec) return;
+      const visibleCount = () => spec.series.filter(s =>
+        s.visible !== false &&
+        !spec.hiddenGroups.has(s.group) &&
+        !spec.hiddenDims.has(s.dim)).length;
       const render = () => {
         const series = spec.series.map(s => ({
           ...s,
@@ -1259,21 +1266,34 @@
         box.querySelectorAll('.leg-item[data-g]').forEach(el => {
           el.addEventListener('click', () => {
             const g = el.dataset.g;
-            spec.hiddenGroups.has(g) ? spec.hiddenGroups.delete(g) : spec.hiddenGroups.add(g);
+            const was = spec.hiddenGroups.has(g);
+            was ? spec.hiddenGroups.delete(g) : spec.hiddenGroups.add(g);
+            if (visibleCount() === 0) {           // never allow zero lines
+              was ? spec.hiddenGroups.add(g) : spec.hiddenGroups.delete(g);
+              return;
+            }
             render();
           });
         });
         box.querySelectorAll('.leg-item[data-d]').forEach(el => {
           el.addEventListener('click', () => {
             const d = el.dataset.d;
-            spec.hiddenDims.has(d) ? spec.hiddenDims.delete(d) : spec.hiddenDims.add(d);
+            const was = spec.hiddenDims.has(d);
+            was ? spec.hiddenDims.delete(d) : spec.hiddenDims.add(d);
+            if (visibleCount() === 0) {
+              was ? spec.hiddenDims.add(d) : spec.hiddenDims.delete(d);
+              return;
+            }
             render();
           });
         });
         box.querySelectorAll('.leg-item[data-leg-idx]').forEach(el => {
           el.addEventListener('click', () => {
             const s = spec.series[parseInt(el.dataset.legIdx)];
-            if (s) { s.visible = s.visible === false ? true : false; render(); }
+            if (!s) return;
+            s.visible = s.visible === false ? true : false;
+            if (visibleCount() === 0) { s.visible = true; return; }
+            render();
           });
         });
       };
