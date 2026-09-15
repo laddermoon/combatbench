@@ -1146,7 +1146,7 @@
     {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl'],
      hint: '二者都是 per-minibatch k3 KL（(ratio−1) − log ratio）的聚合：\napprox_kl = 本 update 实际跑过的所有 actor minibatch 的均值；max_kl = 其中的单点最大值。\n注意早停依据的不是它俩：判定用"当前 epoch 内的 running mean KL > target_kl"——触发值存在 early_stop_kl（见 Epochs & Early Stop），它可以 ≠ max_kl（单点峰值可能出现在别的 epoch，也可能被 running mean 稀释）。'},
     {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl'],
-     hint: 'epochs_done：完成的 epoch 数（B1 解耦下恒 = update_epochs——actor 停了 critic 仍继续）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的"本 epoch running mean KL"（0=未触发）。它是滑动均值不是单点峰值，所以与 max_kl 不相等是正常的；量级远小于 epoch 计数所以贴底。'},
+     hint: 'epochs_done：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的"本 epoch running mean KL"（0=未触发）。它是滑动均值不是单点峰值，所以与 max_kl 不相等是正常的；量级远小于 epoch 计数所以贴底。'},
     {timing: true,
      hint: '每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。'},
   ];
@@ -1156,7 +1156,7 @@
     n_active_trajs: '该 channel 活跃轨迹数。活跃 = 该 trajectory 的 channels 中含此 key；不活跃轨迹 reward=0、不参与该 channel 的 advantage。',
     active_ratio: 'n_active_trajs / 总轨迹数——该 channel 的活跃占比。',
     vloss: '该 channel critic 的 (V−ret)² 帧加权 MSE，minibatch 平均。critic 跑满全部 epoch（actor 早停不影响它）。',
-    grad_norm: '该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nB1 解耦：actor 被 KL 早停后 critic 仍跑满 epoch，采样窗口比 actor 梯度大。',
+    grad_norm: '该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nactor 被 KL 早停后 critic 仍跑满全部 epoch，采样窗口比 actor 梯度大。',
     reward_min: '该 channel 逐帧原始 reward 的最小值（活跃轨迹全部帧）。',
     reward_max: '该 channel 逐帧原始 reward 的最大值（活跃轨迹全部帧）。',
     reward_mean: '该 channel 逐帧原始 reward 的均值（活跃轨迹全部帧）。',
