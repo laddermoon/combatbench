@@ -344,6 +344,7 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         "n_batches": np.array(stats.n_batches),
         "n_trajectories": np.array(stats.n_trajectories),
         "total_steps": np.array(stats.total_steps),
+        "uncertainty": np.array(stats.uncertainty),
     }
     for key, val in stats.critic_losses.items():
         data[f"critic_loss.{key}"] = np.array(val)

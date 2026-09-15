@@ -229,9 +229,14 @@ class DumpData:
 # Used to re-classify stats.* keys in old logs that predate the
 # raw["policy_stats"] provenance field.
 _LEGACY_POLICY_STAT_KEYS = frozenset({
-    "uncertainty", "std_mean", "eff_std_mean", "std_min", "std_max",
-    "mean_abs",
+    "std_mean", "eff_std_mean", "std_min", "std_max", "mean_abs",
 })
+
+# Stats keys the framework owns even when a policy also emits them inside
+# ActorEval.stats: uncertainty is aggregated from the contract field
+# ActorEval.uncertainty (consumed by the floor loss), so it classifies as
+# stats.uncertainty, never policy.uncertainty.
+_FRAMEWORK_STAT_KEYS = frozenset({"uncertainty"})
 
 
 class RunData:
@@ -357,9 +362,9 @@ class RunData:
         # to the key set truncated_normal_mlp historically emitted.
         pol = raw.get("policy_stats")
         if isinstance(pol, dict):
-            policy_keys = set(pol.keys())
+            policy_keys = set(pol.keys()) - _FRAMEWORK_STAT_KEYS
             for k, v in pol.items():
-                if isinstance(v, (int, float)):
+                if k in policy_keys and isinstance(v, (int, float)):
                     out[f"policy.{k}"] = float(v)
         else:
             policy_keys = _LEGACY_POLICY_STAT_KEYS

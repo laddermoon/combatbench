@@ -1428,6 +1428,12 @@ def ppo_update(
     value_loss_val = float(np.mean([
         critic_losses[key] for key in reward_keys
     ])) if reward_keys else 0.0
+    # Framework-owned scalar: mean of the contract field ActorEval
+    # .uncertainty over the whole buffer (also emitted by the policy's
+    # stats block, but the framework aggregates it itself).
+    uncertainty_mean = (
+        float(buf.uncertainty.mean()) if buf.uncertainty is not None else 0.0
+    )
 
     return UpdateStats(
         approx_kl=final_kl,
@@ -1444,6 +1450,7 @@ def ppo_update(
         n_batches=n_batches,
         n_trajectories=n_trajectories,
         total_steps=total_steps,
+        uncertainty=uncertainty_mean,
         ep_len_mean=ep_len_mean,
         ep_len_min=ep_len_min,
         ep_len_max=ep_len_max,

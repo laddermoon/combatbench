@@ -464,6 +464,10 @@ class UpdateStats:
     n_batches: int
     n_trajectories: int
     total_steps: int
+    # Mean per-frame uncertainty U over the whole buffer at theta_old.
+    # Framework-owned: aggregated from the ActorEval.uncertainty contract
+    # field (consumed by the floor loss), not from policy_stats.
+    uncertainty: float
     ep_len_mean: float
     ep_len_min: float
     ep_len_max: float
@@ -514,6 +518,7 @@ class UpdateStats:
             n_batches=0,
             n_trajectories=0,
             total_steps=0,
+            uncertainty=0.0,
             ep_len_mean=0.0,
             ep_len_min=0.0,
             ep_len_max=0.0,
@@ -554,6 +559,7 @@ class UpdateStats:
             "n_batches": self.n_batches,
             "n_trajectories": self.n_trajectories,
             "total_steps": self.total_steps,
+            "uncertainty": self.uncertainty,
             "clip_frac": self.clip_frac,
             "ratio_mean": self.ratio_mean,
             "ratio_max": self.ratio_max,
