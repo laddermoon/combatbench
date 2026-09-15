@@ -465,8 +465,9 @@
     runDumps: null,
     runMetrics: null,
     selectedUpdateIdx: null,   // index into runMetrics array
-    _chartSpecs: {},           // run-page chart registry (chartbox id → spec)
-    _chartHidden: {},          // legend toggle state, persists across re-renders (keyed by chart title)
+    _chartSpecs: {},           // deferred-chart registry (chartbox id → spec), reset per page build
+    _chartSeq: 0,              // chart id counter, reset per page build for stable keys
+    _chartHidden: {},          // legend toggle state, persists across re-renders (keyed by page/chart key)
 
     manifest: null,
     episodeList: null,
@@ -914,29 +915,6 @@
     return svg + legend;
   }
 
-  // Wire chart click-to-jump
-  function wireChartClick(container, onJump) {
-    container.querySelectorAll('svg.chart').forEach(svg => {
-      svg.addEventListener('click', e => {
-        const n = parseInt(svg.dataset.chartN);
-        if (!n) return;
-        const rect = svg.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const margin = {left: 50, right: 10};
-        const w = rect.width - margin.left - margin.right;
-        const frac = (x - margin.left) / w;
-        const frame = Math.round(frac * (n - 1));
-        if (frame >= 0 && frame < n) onJump(frame);
-      });
-    });
-    // Wire legend toggles
-    container.querySelectorAll('.chart-legend .leg-item').forEach(el => {
-      el.addEventListener('click', () => {
-        el.classList.toggle('disabled');
-      });
-    });
-  }
-
   // --- Sorted action chart (policy-drift delta) ---
   // genLabels: [G+1 labels], values: (G+1, D) raw deterministic actions at
   // the selected frame.  X positions are action dims permuted so gen-0
@@ -1220,46 +1198,65 @@
     renderMetricsCharts();
   }
 
+  // Registers a deferred chart and returns a placeholder div. Toggle
+  // state persists in state._chartHidden keyed by opts.key (defaults to
+  // `page:seq` — seq resets at the start of each page build, so keys are
+  // stable across re-renders of that page).
+  function chartBox(series, options = {}, opts = {}) {
+    const id = 'c' + (state._chartSeq = (state._chartSeq || 0) + 1);
+    const key = opts.key || `${state.currentPage}:${id}`;
+    const saved = state._chartHidden[key] ||
+      {groups: new Set(), dims: new Set(), series: new Set()};
+    state._chartHidden[key] = saved;
+    state._chartSpecs[id] = {
+      key, series,
+      hiddenGroups: saved.groups, hiddenDims: saved.dims,
+      hiddenSeries: saved.series,
+      legendGroups: opts.legendGroups, legendDims: opts.legendDims,
+      options,
+    };
+    return `<div class="chartbox" data-chart-id="${id}"></div>`;
+  }
+
   function renderMetricsCharts() {
     const metrics = state.runMetrics;
     if (!metrics || metrics.length === 0) return;
     $('metrics-container').innerHTML = buildMetricsCharts(metrics);
-    mountMetricsCharts($('metrics-container'));
+    mountCharts($('metrics-container'), i => selectUpdateIdx(i));
   }
 
   // Render registered chartbox placeholders and wire interactions:
-  // click → move the update cursor; legend chips → real toggles
-  // (grouped charts get orthogonal group/dim toggle rows; plain charts
-  // toggle per series). Re-renders the chart on every toggle.
-  function mountMetricsCharts(container) {
+  // click → onJump(x-index); legend chips → real toggles (grouped
+  // charts get orthogonal group/dim rows; plain charts toggle per
+  // series). Re-renders the chart on every toggle. Hiding the last
+  // visible line is refused.
+  function mountCharts(container, onJump) {
     container.querySelectorAll('.chartbox[data-chart-id]').forEach(box => {
       const spec = state._chartSpecs[box.dataset.chartId];
       if (!spec) return;
-      const visibleCount = () => spec.series.filter(s =>
+      const isVisible = s =>
         s.visible !== false &&
         !spec.hiddenGroups.has(s.group) &&
-        !spec.hiddenDims.has(s.dim)).length;
+        !spec.hiddenDims.has(s.dim) &&
+        !spec.hiddenSeries.has(s.label);
+      const visibleCount = () => spec.series.filter(isVisible).length;
       const render = () => {
-        const series = spec.series.map(s => ({
-          ...s,
-          visible: s.visible !== false &&
-                   !spec.hiddenGroups.has(s.group) &&
-                   !spec.hiddenDims.has(s.dim),
-        }));
+        const series = spec.series.map(s => ({...s, visible: isVisible(s)}));
         box.innerHTML = makeChart(series, {
           ...spec.options,
           hiddenGroups: spec.hiddenGroups, hiddenDims: spec.hiddenDims,
+          hiddenSeries: spec.hiddenSeries,
           legendGroups: spec.legendGroups, legendDims: spec.legendDims,
         });
         const svg = box.querySelector('svg.chart');
-        if (svg) {
+        if (svg && onJump) {
           svg.addEventListener('click', e => {
             const n = parseInt(svg.dataset.chartN);
             if (!n) return;
             const rect = svg.getBoundingClientRect();
             const w = rect.width - 50 - 10;
             const i = Math.round((e.clientX - rect.left - 50) / w * (n - 1));
-            if (i >= 0 && i < n) selectUpdateIdx(i);
+            if (i >= 0 && i < n) onJump(i);
           });
         }
         box.querySelectorAll('.leg-item[data-g]').forEach(el => {
@@ -1290,8 +1287,12 @@
           el.addEventListener('click', () => {
             const s = spec.series[parseInt(el.dataset.legIdx)];
             if (!s) return;
-            s.visible = s.visible === false ? true : false;
-            if (visibleCount() === 0) { s.visible = true; return; }
+            const was = spec.hiddenSeries.has(s.label);
+            was ? spec.hiddenSeries.delete(s.label) : spec.hiddenSeries.add(s.label);
+            if (visibleCount() === 0) {
+              was ? spec.hiddenSeries.add(s.label) : spec.hiddenSeries.delete(s.label);
+              return;
+            }
             render();
           });
         });
@@ -1394,25 +1395,18 @@
 
     let html = '';
     const used = new Set();
-    let chartSeq = 0;
+    state._chartSeq = 0;
     state._chartSpecs = {};
     const labelFor = k =>
       k.startsWith('pc.') ? k.split('.').pop() : k.split('.').slice(1).join('.');
-    // Registers a deferred chart: emits a placeholder div, spec lands in
-    // state._chartSpecs for mountMetricsCharts() to render + wire toggles.
+    // Deferred chart: placeholder div + spec in state._chartSpecs for
+    // mountCharts() to render + wire toggles.
     const emitChart = (title, series, opts = {}) => {
-      const id = 'mc' + (chartSeq++);
-      const saved = state._chartHidden[title] || {groups: new Set(), dims: new Set()};
-      state._chartHidden[title] = saved;
-      state._chartSpecs[id] = {
-        title, series,
-        hiddenGroups: saved.groups, hiddenDims: saved.dims,
-        legendGroups: opts.legendGroups, legendDims: opts.legendDims,
-        options: {height: opts.height || 160, currentFrame: cur},
-      };
+      const box = chartBox(series, {height: opts.height || 160, currentFrame: cur},
+        {key: 'run:' + title,
+         legendGroups: opts.legendGroups, legendDims: opts.legendDims});
       const tip = opts.hint ? ` class="has-tip" data-tip="${escapeHtml(opts.hint)}"` : '';
-      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>` +
-              `<div class="chartbox" data-chart-id="${id}"></div></div>`;
+      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>${box}</div>`;
     };
     const emit = (title, keys, opts = {}) => {
       const series = keys.map((k, i) => ({
@@ -1580,7 +1574,9 @@
         if (tl.target_kl && !isNaN(tl.target_kl)) {
           series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
         }
-        thumb.innerHTML = makeChart(series, {height: 120, earlyStopStep: tl.early_stop_step});
+        thumb.innerHTML = chartBox(series, {height: 120, earlyStopStep: tl.early_stop_step},
+          {key: 'dump:tl-thumb'});
+        mountCharts(thumb, null);
       }
     }).catch(() => { thumb.innerHTML = ''; });
   }
@@ -1746,7 +1742,7 @@
           color: `rgba(79,163,255,${alpha.toFixed(2)})`,
         });
       }
-      html += makeChart(series, {currentFrame: frame});
+      html += chartBox(series, {currentFrame: frame});
 
       // Chart 2: deterministic actions at the selected frame — dims sorted
       // by gen-0 (current policy) descending; crossings = sign-flipped drift
@@ -1816,6 +1812,8 @@
       const channels = state.manifest.channel_names || [];
       const agents = state.manifest.agent_ids || [];
       let html = '';
+      state._chartSeq = 0;
+      state._chartSpecs = {};
 
       // --- Episode info bar ---
       const epInfo = state.trajMap?.[pos];
@@ -2015,8 +2013,8 @@
         });
       });
 
-      // Wire delta chart click-to-jump
-      wireChartClick($('ep-data-panel'), f => {
+      // Mount deferred charts: click-to-jump + real legend toggles
+      mountCharts($('ep-data-panel'), f => {
         state.selectedFrame = f;
         renderEpisodeFrame();
       });
@@ -2090,7 +2088,7 @@
     if (ov.combined_adv) {
       html += `<div class="chart-container">`;
       html += `<h3>Combined Advantage (actor signal)</h3>`;
-      html += makeChart([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
+      html += chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -2106,7 +2104,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Exploration (Floor Weight + Explore Factor)</h3>`;
-        html += makeChart(series, {currentFrame: frame});
+        html += chartBox(series, {currentFrame: frame});
         html += `</div>`;
       }
     }
@@ -2115,7 +2113,7 @@
     if (ov.old_log_prob) {
       html += `<div class="chart-container">`;
       html += `<h3>Old Log Prob (θ_old)</h3>`;
-      html += makeChart([{label: 'log_prob', data: ov.old_log_prob, color: '#c678dd'}], {currentFrame: frame});
+      html += chartBox([{label: 'log_prob', data: ov.old_log_prob, color: '#c678dd'}], {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -2136,7 +2134,7 @@
         ? ` (floor=${ov.uncertainty_floor.toFixed(4)}, coef=${(ov.uncertainty_coef ?? 0).toFixed(4)})`
         : '';
       html += `<h3>Uncertainty${floorLabel}</h3>`;
-      html += makeChart(series, {currentFrame: frame});
+      html += chartBox(series, {currentFrame: frame});
       html += `</div>`;
     }
 
@@ -2157,7 +2155,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Normalized Advantage (all channels)</h3>`;
-        html += makeChart(series, {currentFrame: frame});
+        html += chartBox(series, {currentFrame: frame});
         html += `</div>`;
       }
     }
@@ -2174,7 +2172,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Actor Weight (all channels)</h3>`;
-        html += makeChart(series, {currentFrame: frame});
+        html += chartBox(series, {currentFrame: frame});
         html += `</div>`;
       }
     }
@@ -2191,7 +2189,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Normalized Actor Weight (all channels)</h3>`;
-        html += makeChart(series, {currentFrame: frame});
+        html += chartBox(series, {currentFrame: frame});
         html += `</div>`;
       }
     }
@@ -2216,7 +2214,7 @@
         if (series.length > 0) {
           html += `<div class="chart-container">`;
           html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Reward & Advantage (per-step)</h4>`;
-          html += makeChart(series, {currentFrame: frame});
+          html += chartBox(series, {currentFrame: frame});
           html += `</div>`;
         }
       }
@@ -2233,7 +2231,7 @@
         if (series.length > 0) {
           html += `<div class="chart-container">`;
           html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Return & Value (cumulative)</h4>`;
-          html += makeChart(series, {currentFrame: frame});
+          html += chartBox(series, {currentFrame: frame});
           html += `</div>`;
         }
       }
@@ -2310,7 +2308,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Ratio across Epochs — clip_eps=${fmt(clipEps, 3)}</h3>`;
-        html += makeChart(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
+        html += chartBox(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
         html += `</div>`;
       }
     }
@@ -2354,7 +2352,7 @@
       const series = [{label: 'ratio', data: eo.ratio, color: '#4fa3ff'}];
       series.push({label: 'clip lo', data: new Array(eo.ratio.length).fill(1 - clipEps), color: '#e06c75'});
       series.push({label: 'clip hi', data: new Array(eo.ratio.length).fill(1 + clipEps), color: '#e06c75'});
-      html += makeChart(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
+      html += chartBox(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
       html += `</div>`;
     }
 
@@ -2370,7 +2368,7 @@
       if (series.length > 0) {
         html += `<div class="chart-container">`;
         html += `<h3>Critic Value: ${escapeHtml(ch)} (epoch ${eo.epoch})</h3>`;
-        html += makeChart(series, {currentFrame: frame});
+        html += chartBox(series, {currentFrame: frame});
         html += `</div>`;
       }
     });
@@ -2468,6 +2466,8 @@
     }
     epochSel.value = state.selectedEpoch;
 
+    state._chartSeq = 0;
+    state._chartSpecs = {};
     $('traj-content').innerHTML = buildTrajTargetHtml() + buildTrajEpochHtml();
     $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
     updateContextBar();
@@ -2485,8 +2485,8 @@
       $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
     }
 
-    // Wire chart click-to-jump
-    wireChartClick($('traj-content'), f => {
+    // Mount deferred charts: click-to-jump + real legend toggles
+    mountCharts($('traj-content'), f => {
       state.selectedFrame = f;
       renderTrajPage();
     });
@@ -2527,6 +2527,8 @@
     }
 
     let html = '';
+    state._chartSeq = 0;
+    state._chartSpecs = {};
 
     // Summary stats
     html += '<div class="timeline-summary">';
@@ -2572,7 +2574,7 @@
       if (tl.target_kl && !isNaN(tl.target_kl)) {
         series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
       }
-      html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries, earlyStopStep: tl.early_stop_step});
+      html += chartBox(series, {currentFrame: state.selectedStep, epochBoundaries, earlyStopStep: tl.early_stop_step});
       html += '</div>';
     }
 
@@ -2580,7 +2582,7 @@
     if (tl.clip_frac) {
       html += '<div class="chart-container">';
       html += '<h3>Clip Fraction</h3>';
-      html += makeChart([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep, epochBoundaries});
+      html += chartBox([{label: 'clip_frac', data: tl.clip_frac, color: '#e06c75'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
@@ -2592,7 +2594,7 @@
         {label: 'ratio_mean', data: tl.ratio_mean, color: '#4fa3ff'},
       ];
       if (tl.ratio_max) series.push({label: 'ratio_max', data: tl.ratio_max, color: '#e06c75'});
-      html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries});
+      html += chartBox(series, {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
@@ -2600,7 +2602,7 @@
     if (tl.policy_loss) {
       html += '<div class="chart-container">';
       html += '<h3>Policy Loss</h3>';
-      html += makeChart([{label: 'policy_loss', data: tl.policy_loss, color: '#4fa3ff'}], {currentFrame: state.selectedStep, epochBoundaries});
+      html += chartBox([{label: 'policy_loss', data: tl.policy_loss, color: '#4fa3ff'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
@@ -2608,7 +2610,7 @@
     if (tl.actor_grad) {
       html += '<div class="chart-container">';
       html += '<h3>Actor Gradient Norm</h3>';
-      html += makeChart([{label: 'actor_grad', data: tl.actor_grad, color: '#6ec86e'}], {currentFrame: state.selectedStep, epochBoundaries});
+      html += chartBox([{label: 'actor_grad', data: tl.actor_grad, color: '#6ec86e'}], {currentFrame: state.selectedStep, epochBoundaries});
       html += '</div>';
     }
 
@@ -2623,7 +2625,7 @@
         const series = [];
         if (cl) series.push({label: 'critic_loss', data: cl, color: '#4fa3ff'});
         if (cg) series.push({label: 'critic_grad', data: cg, color: '#e5c07b'});
-        html += makeChart(series, {currentFrame: state.selectedStep, epochBoundaries});
+        html += chartBox(series, {currentFrame: state.selectedStep, epochBoundaries});
         html += '</div>';
       }
     });
@@ -2714,8 +2716,8 @@
       renderTimeline();
     });
 
-    // Wire chart click
-    wireChartClick(el, s => {
+    // Mount deferred charts: click-to-jump + real legend toggles
+    mountCharts(el, s => {
       state.selectedStep = s;
       renderTimeline();
     });
