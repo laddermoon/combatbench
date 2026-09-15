@@ -8,50 +8,55 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
 
 ## Project Structure
 
-- `assets/` - MuJoCo XML models, textures, meshes (arena: `battle_v1.xml`)
+- `assets/` - Images only (arena XML models live in `envs/humanoid21/`: `battle_v1.xml`, `battle_v2.xml`)
 - `envs/` - Environment implementations
   - `framework/` - Core framework interfaces (BasePlugin, SimContext, etc.)
+  - `batchframework/` - MJX-based batched simulator (experimental)
   - `humanoid21/` - 21-DOF humanoid robot environment
     - `simulator.py` - Main simulator (`Humanoid21Simulator`)
     - `plugins.py` - Combat plugins (scoring, non-fall constraint, frozen robot)
     - `observer_plugins.py` - Gymnasium observation plugin
     - `disturbance_plugins.py` - External disturbance plugins
+    - `battle_v1.xml` / `battle_v2.xml` - Arena MuJoCo models
     - `DATASPEC.md` - Data interface specification
     - `OBSERVATION_zh.md` - Observation space documentation (96-dim)
-  - `t800/` - T800 robot environment (larger DOF robot)
   - `framework/round_runner.py` - `RoundRunner` class and CLI for running complete rounds
   - `framework/match_runner.py` - `MatchRunner` for multi-round matches
 - `policy/` - Policy reference implementations
   - `random/` - RandomCombatPolicy directory (with policy.py)
   - `humanoid21/standing/` - StandingCombatPolicy directory (with policy.py, model.pt)
+  - `baseline/` - Trained baseline policies (fight, follow families)
   - `blueprints/` - Policy blueprint YAML files
-  - `examples/` - User-submitted competition policies
 - `envs/framework/policy.py` - `Policy` ABC, `PolicyBlueprint`, `ParameterizedPolicyBlueprint`
 - `docs/` - Rules, environment specs, robot details
 - `baseline/` - Training implementations
-  - `framework/` - **Unified training framework** (PPO/SAC, code snapshot, experiment base)
+  - `framework/` - **Unified training framework** (PPO/SAC, code snapshot, shared components)
     - `train.py` - Main training CLI (supports `--background`, `--smoke`, `--resume-from`, `--no-snapshot`, `--run-dir`)
-    - `experiment.py` - `Experiment` ABC + `CommonParams`, `PPOParams`, `SACParams` dataclasses
-    - `ppo_loop.py` / `ppo_trainer.py` - PPO training loop + update logic (multi-critic, confidence weighting, plateau detection)
-    - `sac_loop.py` / `sac_trainer.py` - SAC training loop + update logic (multi-critic Q, auto-alpha)
+    - `ppo/` - PPO implementation
+      - `experiment.py` - `ExperimentPPO` ABC + `CommonParams`, `PPOParams` dataclasses
+      - `loop.py` / `trainer.py` - PPO training loop + update logic (multi-critic, confidence weighting)
+      - `trajectory.py` - `Trajectory`, `ChannelData`, `RewardChannel`
+      - `policies/` - PPO policy families (`TruncatedNormalPolicy`, etc.)
+      - `algos/` - PPO algorithms (GAE / advantage computation)
+      - `GUIDE.md` - Full framework usage guide
+    - `sac/` - SAC implementation
+      - `experiment.py` - `ExperimentSAC` ABC + `SACParams` dataclass
+      - `loop.py` / `trainer.py` - SAC training loop + update logic (multi-critic Q, auto-alpha)
+    - `rollout/` - Shared rollout building blocks (`Episode`, `Job`, `ParallelRollouter`, etc.)
+    - `critic_mlp.py` - Shared `CriticMLP` (used by both PPO and SAC)
     - `code_snapshot.py` - Git-based code snapshot for experiment reproducibility
     - `analyze_training.py` - Training log analysis & visualization
+    - `obsolete/` - Legacy framework code (kept for reference)
+  - `experiments_ppo/` - **PPO experiment registry** — auto-discovers `exp_*.py` files
+    - `base.py` - `CombatExperimentPPOBase` (shared defaults for humanoid21 combat experiments)
+    - `__init__.py` - Registry: `get_ppo_experiment()`, `list_ppo_experiments()`
+    - `README.md` - How to launch / add experiments
+  - `experiments_sac/` - SAC experiment registry (`get_sac_experiment()`, `list_sac_experiments()`)
   - `humanoid21/` - Humanoid21-specific training code
-    - `standing.py` - Standing baseline (PPO with risk-aware exploration)
     - `rewards/` - Reward observer implementations (standup, balance, etc.)
     - `plugins/` - Custom termination/disturbance plugins
     - `blueprints/` - Environment blueprint YAML files
-    - `curriculum/` - Curriculum learning experiments
-      - `experiments/` - Auto-discovered experiment registry (`exp_*.py` files)
-        - `base.py` - `CombatExperimentBase` (default impls for PPO + SAC)
-        - `__init__.py` - Registry: `get_experiment()`, `list_experiments()`
-      - `framework/` → renamed to `legacy_framework/` (to be deleted)
-  - `framework/` - **Unified training framework** (PPO/SAC, shared components)
-    - `critic_mlp.py` - Shared `CriticMLP` (used by both PPO and SAC)
-    - `rollout/` - Shared rollout building blocks (`Episode`, `ParallelRollouter`, etc.)
-    - `ppo/policies/` - PPO policy families (`TanhGaussianMLPPolicy`, `StateGaussianMLPPolicy`, etc.)
-    - `ppo/algos/` - PPO algorithms (GAE, PPO update)
-    - `sac/` - SAC training loop + update logic
+    - `curriculum/` - Legacy curriculum experiments + gating/mixed-policy scripts (`experiments/` is the old registry — superseded by `experiments_ppo/`)
   - `runs/` - Training run outputs (gitignored, can be very large)
 
 ## Framework Architecture
@@ -70,11 +75,18 @@ envs/framework/
 ├── backend.py          # IDataAccessor, IDataMutator, BaseSimulator interfaces
 ├── context.py          # SimContext, ReadOnlySimContext, TerminationReason
 ├── plugin.py           # BasePlugin for world rules
-├── runtime_plugin.py   # BaseObserverPlugin for observations/rewards
+├── observer_plugin.py  # BaseObserverPlugin for observations/rewards
 ├── env_runtime.py      # EnvRuntime (main public API)
+├── blueprint.py        # EnvBlueprint / PolicyBlueprint loading
+├── parameterized_blueprint.py  # ParameterizedEnvBlueprint (materialize with knobs)
+├── policy.py           # Policy ABC, PolicyBlueprint, ParameterizedPolicyBlueprint
 ├── common_plugins.py   # TimeoutPlugin, VideoRecorderPlugin
+├── episode_runner.py   # Episode execution loop
 ├── round_runner.py     # RoundRunner for single-round evaluation
 ├── match_runner.py     # MatchRunner for multi-round matches
+├── recorder.py         # BaseFrameRecorder (per-step PNG + JSON dumps)
+├── recorder_viewer.py  # Web viewer for recordings
+├── replay.py           # Replay utilities
 ├── DESIGN.md           # Architecture design specification (Chinese)
 └── README.md           # Framework usage documentation
 ```
@@ -157,7 +169,7 @@ World rule plugin with lifecycle hooks:
 - `priority: int` - Execution order (higher first)
 - `require_mutator: bool` - Request write permission
 
-#### BaseObserverPlugin (`runtime_plugin.py`)
+#### BaseObserverPlugin (`observer_plugin.py`)
 
 Read-only observation/reward computation:
 - `on_pre_episode(ctx)` - Called after reset (same name as BasePlugin)
@@ -207,9 +219,9 @@ runtime.attach_observer_plugin("name", observer_plugin)
 The training framework in `baseline/framework/` is a custom multi-critic PPO/SAC implementation with curriculum learning support. It does **not** use Stable-Baselines3.
 
 Key design decisions:
-- **Multi-critic**: One value/Q critic per reward component (e.g. `r_fall`, `r_cross`, `r_joint`, ...)
-- **Curriculum scheduling**: Each experiment defines `initial_weights()` and `next_weights()` to control reward component weighting across training
-- **Experiment registry**: Auto-discovers `exp_*.py` files in `baseline/humanoid21/curriculum/experiments/`
+- **Multi-critic**: One value/Q critic per reward channel (e.g. `r_fall`, `r_cross`, `r_joint`, ...)
+- **Curriculum scheduling**: Experiments control per-channel `actor_weight` in `build_trajectories()` — no framework hooks needed
+- **Experiment registries**: Auto-discover `exp_*.py` files in `baseline/experiments_ppo/` and `baseline/experiments_sac/` (selected via `--algo`)
 - **Parallel rollout**: Multi-process episode collection via `ParallelRollouter`
 
 ### Training CLI
@@ -287,12 +299,12 @@ Every training run (unless `--no-snapshot`) creates a git branch `exp/<run_name>
 
 ### Adding a New Experiment
 
-1. Create `baseline/humanoid21/curriculum/experiments/exp_<name>.py`
-2. Define a class inheriting `CombatExperimentBase`
-3. Set `name`, `reward_keys`, `gammas`, `BLUEPRINT`
-4. Implement: `extract_rewards()`, `compute_episode_metrics()`, `initial_weights()`, `next_weights()`, `build_rollout_jobs()`, `build_eval_jobs()`, `compare_eval()`, `scheduler_info()`
-5. Export singleton: `EXPERIMENT = MyExperimentConfig()`
-6. The registry auto-discovers it on next `--list-experiments`
+See `baseline/experiments_ppo/README.md` for the full walkthrough. In short:
+
+1. Create `baseline/experiments_ppo/exp_<name>.py` (or `baseline/experiments_sac/` for SAC)
+2. Define a class satisfying the `ExperimentPPO` interface — either inherit `ExperimentPPO` and implement all abstract methods, or inherit `CombatExperimentPPOBase` (`experiments_ppo/base.py`) and only override class attributes + `reward_channels()` / `build_trajectories()` / `on_eval()`
+3. Export the class: `EXPERIMENT_CLASS = MyExperiment`
+4. The registry auto-discovers it on next `--list-experiments`
 
 ### Background Mode
 
@@ -537,7 +549,7 @@ if h_torso is None:
 - **Data format**: Structured by `robot_id` (robot_a/robot_b), not flat arrays
 - **Plugin system**: Uses `SimContext` with accessor/mutator pattern
 - **Training framework**: Custom PPO/SAC in `baseline/framework/`, not Stable-Baselines3
-- **Experiment registry**: Auto-discovers `exp_*.py` in `baseline/humanoid21/curriculum/experiments/`
+- **Experiment registries**: Auto-discover `exp_*.py` in `baseline/experiments_ppo/` and `baseline/experiments_sac/`
 - **Run directories**: `baseline/runs/` is gitignored, can be very large (checkpoints + videos)
-- **Legacy code**: `baseline/humanoid21/curriculum/legacy_framework/` is deprecated, all imports now point to `baseline/framework/`
+- **Legacy code**: `baseline/framework/obsolete/` and `baseline/humanoid21/curriculum/` are legacy; the old experiment registry in `curriculum/experiments/` is superseded by `experiments_ppo/`
 - **Code snapshot**: Training runs create git branches `exp/*` for reproducibility; clean up with `git branch -D exp/...` when no longer needed
