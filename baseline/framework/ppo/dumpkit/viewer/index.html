@@ -1109,20 +1109,30 @@
   // Policy-contributed metrics (policy.*) always render last, one chart
   // per key — never merged with framework metrics.
   const FRAMEWORK_LAYOUT = [
-    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories']},
+    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories'],
+     hint: 'ep.n_episodes：本 update 真实跑的环境 episode 数。\nstats.n_trajectories：进入 buffer 的轨迹段数——一个 episode 可拆出多条（如每 agent 一条），PPO 的训练单位是轨迹。'},
     {title: 'Episode Length & Trajectory Length', keys: [
       'ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max',
-      'stats.traj_len_mean', 'stats.traj_len_min', 'stats.traj_len_max']},
+      'stats.traj_len_mean', 'stats.traj_len_min', 'stats.traj_len_max'],
+     hint: 'ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\nstats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_steps）。\n一条轨迹恰好覆盖一条 episode 时两者相等。'},
     {pc: 'n_active_trajs'},
     {pc: 'active_ratio'},
-    {keys: ['stats.n_batches']},
-    {keys: ['stats.total_steps']},
-    {pcm: 'reward', metrics: ['reward_min', 'reward_max', 'reward_std', 'reward_mean']},
-    {pcm: 'actor_weight', metrics: ['actor_weight_min', 'actor_weight_max', 'actor_weight_mean']},
-    {pcm: 'ret', metrics: ['ret_mean', 'ret_std']},
-    {pcm: 'adv', metrics: ['adv_mean', 'adv_std']},
-    {pcm: 'ev & confidence', metrics: ['ev', 'confidence']},
-    {title: 'Uncertainty', keys: ['stats.uncertainty']},
+    {keys: ['stats.n_batches'],
+     hint: '每个 update 的 minibatch 数 = tensor_split(总帧数, n_batches)。'},
+    {keys: ['stats.total_steps'],
+     hint: '本 update buffer 的总帧数 = Σ traj_len。'},
+    {pcm: 'reward', metrics: ['reward_min', 'reward_max', 'reward_std', 'reward_mean'],
+     hint: '该 channel 逐帧原始 reward 在活跃轨迹上的统计。\nmin=点线、max=长虚线（上下界），std=短虚线（离散度），mean=加粗实线（主体）。\n颜色=channel、线型=指标；两行图例可分别 toggle channel 或指标。'},
+    {pcm: 'actor_weight', metrics: ['actor_weight_min', 'actor_weight_max', 'actor_weight_mean'],
+     hint: '实验侧 build_trajectories 给每条轨迹该 channel 的 actor_weight——课程权重。\n它决定该 channel 的 advantage 进入 combined_adv 的相对权重：combined = Σ aw·confidence·norm_adv，aw 逐帧 L1 归一化。'},
+    {pcm: 'ret', metrics: ['ret_mean', 'ret_std'],
+     hint: '该 channel 折扣回报 return 的 mean/std——critic 的拟合目标（GAE 的 γ 口径）。'},
+    {pcm: 'adv', metrics: ['adv_mean', 'adv_std'],
+     hint: '该 channel 原始 GAE advantage 的 mean/std（仅活跃帧、未归一化）。\n真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。'},
+    {pcm: 'ev & confidence', metrics: ['ev', 'confidence'],
+     hint: 'ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\nconfidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。'},
+    {title: 'Uncertainty', keys: ['stats.uncertainty'],
+     hint: '框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\nU ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。'},
     {pc: 'vloss'},
     {title: 'Policy & Floor Loss', keys: ['stats.policy_loss', 'stats.floor_loss'],
      hint: 'policy_loss：PPO-clip 替代目标 −mean(min(ratio·A, clip(ratio)·A))，minibatch 平均。\nfloor_loss：uncertainty 单边二次 hinge —— coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n两者相加（非本图）才是实际反传的总损失。'},
@@ -1131,11 +1141,44 @@
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
      hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
     {pc: 'grad_norm'},
-    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac']},
-    {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl']},
-    {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl']},
-    {timing: true},
+    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_max', 'stats.clip_frac'],
+     hint: 'ratio_mean/max = exp(new_lp − old_lp) 的均值/极值——新旧策略对同一动作的分歧度（1=不变）。\nclip_frac = |ratio−1| > clip_eps 的帧占比——这些位置的 surrogate 梯度被掐死。'},
+    {title: 'KL', keys: ['stats.approx_kl', 'stats.max_kl'],
+     hint: 'approx_kl：k3 估计量 mean((ratio−1) − log ratio)，恒非负、比 k1 方差低；按本 update 实际跑过的 actor minibatch 聚合（早停后不拿空 epoch 的 0 充数）。\nmax_kl：单 minibatch 最大值。actor 在 approx_kl ≥ target_kl 时早停。'},
+    {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl'],
+     hint: 'epochs_done：完成的 epoch 数（B1 解耦下恒 = update_epochs——actor 停了 critic 仍继续）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的 KL（0=未触发；量级远小于 epoch 计数所以贴底）。'},
+    {timing: true,
+     hint: '每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。'},
   ];
+  // Per-channel metric hints — used by pc.* fallback charts; pcm-merged
+  // charts carry their own hint on the spec.
+  const PC_HINTS = {
+    n_active_trajs: '该 channel 活跃轨迹数。活跃 = 该 trajectory 的 channels 中含此 key；不活跃轨迹 reward=0、不参与该 channel 的 advantage。',
+    active_ratio: 'n_active_trajs / 总轨迹数——该 channel 的活跃占比。',
+    vloss: '该 channel critic 的 (V−ret)² 帧加权 MSE，minibatch 平均。critic 跑满全部 epoch（actor 早停不影响它）。',
+    grad_norm: '该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nB1 解耦：actor 被 KL 早停后 critic 仍跑满 epoch，采样窗口比 actor 梯度大。',
+    reward_min: '该 channel 逐帧原始 reward 的最小值（活跃轨迹全部帧）。',
+    reward_max: '该 channel 逐帧原始 reward 的最大值（活跃轨迹全部帧）。',
+    reward_mean: '该 channel 逐帧原始 reward 的均值（活跃轨迹全部帧）。',
+    reward_std: '该 channel 逐帧原始 reward 的标准差（活跃轨迹全部帧）。',
+    actor_weight_min: '该 channel 轨迹 actor_weight 的最小值。',
+    actor_weight_max: '该 channel 轨迹 actor_weight 的最大值。',
+    actor_weight_mean: '该 channel 轨迹 actor_weight 的均值。',
+    ret_mean: '该 channel 折扣回报 return 的均值（活跃轨迹）。',
+    ret_std: '该 channel 折扣回报 return 的标准差（活跃轨迹）。',
+    adv_mean: '该 channel 原始 GAE advantage 的均值（仅活跃帧、未归一化）。',
+    adv_std: '该 channel 原始 GAE advantage 的标准差（仅活跃帧、未归一化）。',
+    ev: 'explained variance = 1 − Var(ret−V)/Var(ret)：critic 拟合质量。',
+    confidence: '√clip(ev,0,1)——乘进 combined_adv 的通道置信权重。',
+  };
+  // Fallback hints for leftover scalar stats.* keys not covered by the
+  // layout (e.g. value_loss).
+  const STATS_HINTS = {
+    value_loss: '所有 channel critic value loss 的均值标量（分 channel 明细见 vloss 图）。',
+  };
+  const POLICY_HINT =
+    '策略自定义统计量——policy 的 evaluate_actions(want_stats) 发出的 policy_stats。\n' +
+    '语义与计算完全由策略决定，框架仅透传展示。';
   // pc metrics aggregated elsewhere — never rendered per channel.
   const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max']);
 
@@ -1495,14 +1538,14 @@
     FRAMEWORK_LAYOUT.forEach(spec => {
       if (spec.timing) {
         const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
-        if (timeKeys.length) emit('Timing (s/update)', timeKeys, {height: 180});
+        if (timeKeys.length) emit('Timing (s/update)', timeKeys, {height: 180, hint: spec.hint});
         return;
       }
       if (spec.pc) {
         const keys = [...allKeys]
           .filter(k => k.startsWith(`pc.${spec.pc}.`))
           .sort();
-        if (keys.length) emit(`${spec.pc} (per channel)`, keys);
+        if (keys.length) emit(`${spec.pc} (per channel)`, keys, {hint: PC_HINTS[spec.pc]});
         return;
       }
       if (spec.pcm) {
@@ -1534,6 +1577,7 @@
         series.sort((a, b) => rankFor(a.dim, spec.metrics.indexOf(a.dim)) -
                                rankFor(b.dim, spec.metrics.indexOf(b.dim)));
         emitChart(`${spec.pcm} (per channel)`, series, {
+          hint: spec.hint,
           legendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
           legendDims: spec.metrics.map((m, mi) => ({name: m, dash: dashFor(m, mi)})),
         });
@@ -1558,9 +1602,12 @@
     if (otherKeys.length || Object.keys(pcGroups).length) {
       html += '<div class="metrics-group-title">Other framework metrics</div>';
       otherKeys.sort().forEach(k =>
-        emit(labelFor(k), [k], {height: 140, color: '#4fa3ff'}));
+        emit(labelFor(k), [k], {height: 140, color: '#4fa3ff',
+          hint: STATS_HINTS[k.split('.').slice(1).join('.')] ||
+                `框架标量指标 ${k}。`}));
       Object.keys(pcGroups).sort().forEach(metric =>
-        emit(`${metric} (per channel)`, pcGroups[metric].sort()));
+        emit(`${metric} (per channel)`, pcGroups[metric].sort(),
+          {hint: PC_HINTS[metric] || `per-channel 指标 pc.${metric}.*。`}));
     }
 
     // 3. Policy-contributed metrics (policy.*) — always last, uniform
@@ -1571,7 +1618,7 @@
     if (polKeys.length) {
       html += '<div class="metrics-group-title">Policy-defined metrics</div>';
       polKeys.forEach(k =>
-        emit(k.slice(7), [k], {height: 140, color: '#c98b3f'}));
+        emit(k.slice(7), [k], {height: 140, color: '#c98b3f', hint: POLICY_HINT}));
     }
 
     return html;
