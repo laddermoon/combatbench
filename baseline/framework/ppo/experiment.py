@@ -513,6 +513,18 @@ class UpdateStats:
     clip_frac_hi: float = 0.0
     clip_frac_lo: float = 0.0
 
+    # --- Post-update surrogate cross-section (final actor, full buffer) ---
+    # post_clip_dloss: delta of the double-clipped surrogate vs the r=1
+    #   baseline — -mean[w*A*(clip(r,1-eps,1+eps)-1)] evaluated once at
+    #   update end.  Negative = net alignment with the fixed advantages;
+    #   unlike the PPO min() surrogate both tails are clamped, so the
+    #   value is a bounded per-sample measure of direction.
+    # post_ratio_bins: 9 fractions of ALL samples (sum=1) — final ratio
+    #   in 4 bands (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by
+    #   advantage sign, plus the exact-zero-advantage share.
+    post_clip_dloss: float = 0.0
+    post_ratio_bins: Dict[str, float] = field(default_factory=dict)
+
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
@@ -596,8 +608,11 @@ class UpdateStats:
             "ratio_mean": self.ratio_mean,
             "ratio_max": self.ratio_max,
             "ratio_min": self.ratio_min,
+            "post_clip_dloss": self.post_clip_dloss,
             "grad_norm_actor": self.grad_norm_actor,
         })
+        for key, val in self.post_ratio_bins.items():
+            d[f"rbin_{key}"] = val
         for key, val in self.critic_losses.items():
             d[f"vloss_{key}"] = val
         for key, val in self.explained_variance.items():

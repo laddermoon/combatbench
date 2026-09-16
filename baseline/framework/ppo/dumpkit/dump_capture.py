@@ -339,6 +339,7 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         "ratio_mean": np.array(stats.ratio_mean),
         "ratio_max": np.array(stats.ratio_max),
         "ratio_min": np.array(stats.ratio_min),
+        "post_clip_dloss": np.array(stats.post_clip_dloss),
         "policy_loss": np.array(stats.policy_loss),
         "floor_loss": np.array(stats.floor_loss),
         "action_grad_pol": np.array(stats.action_grad_pol),
@@ -368,6 +369,8 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         data[f"ret_std.{key}"] = np.array(val)
     for key, val in stats.critic_grad_norms.items():
         data[f"critic_grad_norm.{key}"] = np.array(val)
+    for key, val in stats.post_ratio_bins.items():
+        data[f"rbin_{key}"] = np.array(val)
     return data
 
 

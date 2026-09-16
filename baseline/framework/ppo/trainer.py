@@ -1458,6 +1458,58 @@ def ppo_update(
         ret_std[key] = float(r.std()) if r.size > 0 else 0.0
 
     total_steps = sum(buf.traj_lengths)
+
+    # --- Post-update surrogate cross-section ---
+    # One chunked no-grad pass with the FINAL actor over the whole
+    # buffer.  Unlike the per-minibatch metrics above (each evaluated at
+    # a different iterate mid-update), these are a single snapshot at a
+    # uniform endpoint.
+    #
+    #   post_clip_dloss: delta of the DOUBLE-clipped surrogate vs the
+    #     r=1 baseline — -mean[w * A * (clip(r,1-eps,1+eps) - 1)].
+    #     Negative = the update net-aligned with the fixed advantages;
+    #     near 0 / positive = no consistent direction.  Both tails are
+    #     clamped so outlier ratios cannot dominate the mean.
+    #   post_ratio_bins: final-ratio distribution over 4 bands
+    #     (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by advantage
+    #     sign, plus the exact-zero-advantage share — 9 fractions of ALL
+    #     samples, summing to 1.0.
+    post_clip_dloss = 0.0
+    post_ratio_bins: Dict[str, float] = {}
+    if n > 0:
+        with torch.no_grad():
+            new_lp_all = torch.empty(n, dtype=torch.float32, device=device)
+            _CHUNK = 8192
+            for _s in range(0, n, _CHUNK):
+                _idx = slice(_s, min(_s + _CHUNK, n))
+                new_lp_all[_idx] = actor.evaluate_actions(
+                    obs_t[_idx], act_t[_idx], explore_factor=ei_t[_idx],
+                ).log_prob
+            r_all = torch.exp(
+                torch.clamp(new_lp_all - old_lp_t, -20.0, 20.0)
+            )
+            w_norm = w_t / (w_t.mean() + 1e-8)
+            contrib = w_norm * adv_t * (
+                torch.clamp(r_all, 1.0 - clip_eps, 1.0 + clip_eps) - 1.0
+            )
+            post_clip_dloss = -float(contrib.mean().item())
+            _pos = adv_t > 0
+            _neg = adv_t < 0
+            _bands = (
+                ("ltlo", r_all < 1.0 - clip_eps),
+                ("lo", (r_all >= 1.0 - clip_eps) & (r_all < 1.0)),
+                ("hi", (r_all >= 1.0) & (r_all <= 1.0 + clip_eps)),
+                ("gthi", r_all > 1.0 + clip_eps),
+            )
+            for _side, _sm in (("pos", _pos), ("neg", _neg)):
+                for _bn, _bm in _bands:
+                    post_ratio_bins[f"{_side}_{_bn}"] = float(
+                        (_sm & _bm).float().mean().item()
+                    )
+            post_ratio_bins["zero"] = float(
+                (~_pos & ~_neg).float().mean().item()
+            )
+
     # P0-1: approx_kl/max_kl come from every actor minibatch actually run,
     # not from the last epoch's (possibly empty) mean.  Before this fix,
     # `epoch_kl_stats[-1]["mean_kl"]` was 0.0 after early stop because the
@@ -1519,6 +1571,8 @@ def ppo_update(
         ratio_mean=ratio_mean,
         ratio_max=ratio_max,
         ratio_min=ratio_min,
+        post_clip_dloss=post_clip_dloss,
+        post_ratio_bins=post_ratio_bins,
         policy_loss=policy_loss_val,
         floor_loss=floor_loss_val,
         action_grad_pol=action_grad_pol,
