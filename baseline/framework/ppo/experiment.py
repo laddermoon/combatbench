@@ -525,6 +525,17 @@ class UpdateStats:
     post_clip_dloss: float = 0.0
     post_ratio_bins: Dict[str, float] = field(default_factory=dict)
 
+    # post_kl_*: k3 KL ((r-1) - log r) between pi_old and the FINAL actor,
+    #   computed once over the whole buffer at update end — the actual
+    #   trust-region displacement, cleanly comparable across updates
+    #   (unlike approx_kl, whose minibatch mean mixes iterates and whose
+    #   sample set shrinks when the actor early-stops).  pos/neg split by
+    #   advantage sign shows which side the displacement concentrated on.
+    post_kl_mean: float = 0.0
+    post_kl_max: float = 0.0
+    post_kl_pos: float = 0.0
+    post_kl_neg: float = 0.0
+
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     diagnostics: List[str] = field(default_factory=list)
 
@@ -609,6 +620,10 @@ class UpdateStats:
             "ratio_max": self.ratio_max,
             "ratio_min": self.ratio_min,
             "post_clip_dloss": self.post_clip_dloss,
+            "post_kl_mean": self.post_kl_mean,
+            "post_kl_max": self.post_kl_max,
+            "post_kl_pos": self.post_kl_pos,
+            "post_kl_neg": self.post_kl_neg,
             "grad_norm_actor": self.grad_norm_actor,
         })
         for key, val in self.post_ratio_bins.items():

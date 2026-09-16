@@ -1474,8 +1474,13 @@ def ppo_update(
     #     (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by advantage
     #     sign, plus the exact-zero-advantage share — 9 fractions of ALL
     #     samples, summing to 1.0.
+    #   post_kl_*: k3 KL(pi_old || pi_final) over the whole buffer —
+    #     the update's actual displacement.  mean = trust-region
+    #     distance; max = single-sample concentration; pos/neg split
+    #     by advantage sign shows which side the policy moved on.
     post_clip_dloss = 0.0
     post_ratio_bins: Dict[str, float] = {}
+    post_kl_mean = post_kl_max = post_kl_pos = post_kl_neg = 0.0
     if n > 0:
         with torch.no_grad():
             new_lp_all = torch.empty(n, dtype=torch.float32, device=device)
@@ -1495,6 +1500,15 @@ def ppo_update(
             post_clip_dloss = -float(contrib.mean().item())
             _pos = adv_t > 0
             _neg = adv_t < 0
+            # k3 KL at the final iterate; r_all is already log-clamped
+            # to ±20 so (r-1) - log r stays finite.
+            k3 = (r_all - 1.0) - torch.log(r_all)
+            post_kl_mean = float(k3.mean().item())
+            post_kl_max = float(k3.max().item())
+            if bool(_pos.any()):
+                post_kl_pos = float(k3[_pos].mean().item())
+            if bool(_neg.any()):
+                post_kl_neg = float(k3[_neg].mean().item())
             _bands = (
                 ("ltlo", r_all < 1.0 - clip_eps),
                 ("lo", (r_all >= 1.0 - clip_eps) & (r_all < 1.0)),
@@ -1573,6 +1587,10 @@ def ppo_update(
         ratio_min=ratio_min,
         post_clip_dloss=post_clip_dloss,
         post_ratio_bins=post_ratio_bins,
+        post_kl_mean=post_kl_mean,
+        post_kl_max=post_kl_max,
+        post_kl_pos=post_kl_pos,
+        post_kl_neg=post_kl_neg,
         policy_loss=policy_loss_val,
         floor_loss=floor_loss_val,
         action_grad_pol=action_grad_pol,
