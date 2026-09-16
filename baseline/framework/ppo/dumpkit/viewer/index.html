@@ -1519,6 +1519,8 @@
      hint: '该 channel 原始 GAE advantage 的 mean/std（仅活跃帧、未归一化）。\n真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。'},
     {pcm: 'ev & confidence', metrics: ['ev', 'confidence'],
      hint: 'ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\nconfidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。'},
+    {title: 'Exploration Spec', keys: ['stats.uncertainty_floor', 'stats.uncertainty_coef'],
+     hint: '本 update 实际生效的 ExplorationSpec：uncertainty_floor（U 下限）与 uncertainty_coef（hinge 系数）。\n由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。\nfloor_loss = coef·mean(relu(floor−U)²)，floor 线低于 Uncertainty 图的 U 曲线时 hinge 开始激活。'},
     {title: 'Learning Rate', keys: ['stats.actor_lr', 'stats.critic_lr'],
      hint: '本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。'},
     {title: 'Uncertainty', keys: ['stats.uncertainty'],

@@ -1593,6 +1593,8 @@ def ppo_update(
         post_kl_neg=post_kl_neg,
         policy_loss=policy_loss_val,
         floor_loss=floor_loss_val,
+        uncertainty_floor=float(uncertainty_floor),
+        uncertainty_coef=float(uncertainty_coef),
         action_grad_pol=action_grad_pol,
         action_grad_floor=action_grad_floor,
         value_loss=value_loss_val,

@@ -518,6 +518,12 @@ class UpdateStats:
     floor_loss: float = 0.0
     action_grad_pol: float = 0.0
     action_grad_floor: float = 0.0
+    # uncertainty_floor / uncertainty_coef: the ExplorationSpec values
+    #   actually in force for this update (resolved by the loop, not by
+    #   the trainer).  Logged so scheduled floor/coef changes are
+    #   visible per-update rather than only as the initial config.
+    uncertainty_floor: float = 0.0
+    uncertainty_coef: float = 0.0
 
     # --- Ratio tail & clip decomposition ---
     # ratio_min: min over per-minibatch ratio minimums — the lower tail
@@ -618,6 +624,8 @@ class UpdateStats:
             "floor_loss": self.floor_loss,
             "action_grad_pol": self.action_grad_pol,
             "action_grad_floor": self.action_grad_floor,
+            "uncertainty_floor": self.uncertainty_floor,
+            "uncertainty_coef": self.uncertainty_coef,
             "value_loss": self.value_loss,
             "approx_kl": self.approx_kl,
             "max_kl": self.max_kl,
