@@ -49,6 +49,7 @@ from .experiment import (
     CommonParams,
     ExperimentPPO,
     ExplorationSpec,
+    LRSpec,
     PPOParams,
     TrainablePolicy,
 )
@@ -116,6 +117,7 @@ def save_run_config(
     # ExplorationSpec too — otherwise config.json would silently lose the
     # exploration configuration and stop being reproducible.
     initial_spec = experiment.exploration(1)
+    initial_lr = experiment.lr_schedule(1)
 
     payload = {
         "experiment": {
@@ -128,6 +130,9 @@ def save_run_config(
             "ppo_params": dataclasses.asdict(pp),
             "initial_exploration": (
                 dataclasses.asdict(initial_spec) if initial_spec is not None else None
+            ),
+            "initial_lr_schedule": (
+                dataclasses.asdict(initial_lr) if initial_lr is not None else None
             ),
             "state": experiment.state(),
         },
@@ -459,6 +464,20 @@ def train_ppo(
             else:
                 exploration = None
 
+            # 0c. LR scheduling — per-update absolute LR overrides.
+            #     Symmetric with exploration(): the experiment returns an
+            #     LRSpec (absolute values, consistent with the resume
+            #     force-align path) or None to keep the current LR.
+            lr_spec = experiment.lr_schedule(u)
+            if lr_spec is not None:
+                if lr_spec.actor_lr is not None:
+                    for pg in actor_optimizer.param_groups:
+                        pg["lr"] = lr_spec.actor_lr
+                if lr_spec.critic_lr is not None:
+                    for copt in critic_optimizers.values():
+                        for pg in copt.param_groups:
+                            pg["lr"] = lr_spec.critic_lr
+
             # 1. Export stochastic policy blueprint for training rollouts.
             #    Stochastic (log_std included) so rollout samples explore.
             #    A fresh export each update ensures workers use the latest weights.
@@ -764,12 +783,23 @@ def train_ppo(
             # Machine-readable raw logging — one JSON line per update.
             # Contains all stats needed for offline analysis / plotting.
             t_total = time.perf_counter() - t_update_start
+            # Applied (not requested) LRs — read from param_groups so the
+            # realized schedule is what gets logged, including resume
+            # force-aligns and any external adjustment.
+            _first_copt = next(iter(critic_optimizers.values()), None)
             raw_log_dict = {
                 "update": u,
                 "algo": "ppo",
                 "episode_stats": ep_stats,
                 "buffer_stats": buf_stats,
-                "stats": stats.to_log_dict(),
+                "stats": {
+                    "actor_lr": actor_optimizer.param_groups[0]["lr"],
+                    "critic_lr": (
+                        _first_copt.param_groups[0]["lr"]
+                        if _first_copt is not None else 0.0
+                    ),
+                    **stats.to_log_dict(),
+                },
                 # Policy-contributed stats as a separate sub-mapping so
                 # consumers can tell them apart from framework-guaranteed
                 # keys (stats.to_log_dict() spreads them into `stats` for

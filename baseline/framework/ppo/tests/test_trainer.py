@@ -2878,6 +2878,34 @@ def test_confidence_warning_skips_aw_zero_channels(capsys=None):
     print("test_confidence_warning_skips_aw_zero_channels: PASS")
 
 
+def test_lr_spec_and_schedule_hook():
+    """LRSpec is a frozen absolute-LR directive; the default
+    lr_schedule hook keeps the current LR."""
+    import dataclasses
+    from baseline.framework.ppo.experiment import (
+        ExperimentPPO, LRSpec,
+    )
+
+    # defaults: no opinion on either optimizer
+    spec = LRSpec()
+    assert spec.actor_lr is None and spec.critic_lr is None
+    # absolute values, frozen
+    spec = LRSpec(actor_lr=1e-4, critic_lr=3e-4)
+    assert spec.actor_lr == 1e-4 and spec.critic_lr == 3e-4
+    try:
+        spec.actor_lr = 9e-9
+        raise AssertionError("LRSpec should be frozen")
+    except dataclasses.FrozenInstanceError:
+        pass
+    # default hook exists and returns None (keep current)
+    assert ExperimentPPO.lr_schedule(object(), 1) is None
+    # serialization for config.json's initial_lr_schedule
+    assert dataclasses.asdict(LRSpec(actor_lr=1e-4)) == {
+        "actor_lr": 1e-4, "critic_lr": None,
+    }
+    print("test_lr_spec_and_schedule_hook: PASS")
+
+
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
@@ -2970,5 +2998,8 @@ if __name__ == "__main__":
     test_confidence_cold_start_warning()
     test_confidence_no_warning_when_ev_positive()
     test_confidence_warning_skips_aw_zero_channels()
+
+    # LR scheduling hook
+    test_lr_spec_and_schedule_hook()
 
     print("\nAll PPO trainer tests passed!")

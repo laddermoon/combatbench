@@ -1519,6 +1519,8 @@
      hint: '该 channel 原始 GAE advantage 的 mean/std（仅活跃帧、未归一化）。\n真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。'},
     {pcm: 'ev & confidence', metrics: ['ev', 'confidence'],
      hint: 'ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\nconfidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。'},
+    {title: 'Learning Rate', keys: ['stats.actor_lr', 'stats.critic_lr'],
+     hint: '本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。'},
     {title: 'Uncertainty', keys: ['stats.uncertainty'],
      hint: '框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\nU ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。'},
     {pc: 'vloss'},
@@ -1586,6 +1588,7 @@
     const cp = exp.common_params || {};
     const pp = exp.ppo_params || {};
     const ex = exp.initial_exploration || {};
+    const lrs = exp.initial_lr_schedule || {};
     const snap = info.code_snapshot || {};
 
     const row = items =>
@@ -1620,6 +1623,7 @@
       ['clip_eps', pp.clip_eps], ['target_kl', pp.target_kl],
       ['epochs', pp.update_epochs], ['minibatch', pp.minibatch_size],
       ['U_floor', ex.uncertainty_floor], ['U_coef', ex.uncertainty_coef],
+      ['sched_actor_lr', lrs.actor_lr], ['sched_critic_lr', lrs.critic_lr],
     ]);
     const rcs = exp.reward_channels || [];
     if (rcs.length) {

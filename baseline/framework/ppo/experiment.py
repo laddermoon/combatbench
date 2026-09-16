@@ -197,6 +197,25 @@ class ExplorationSpec:
     uncertainty_coef: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class LRSpec:
+    """A per-update optimizer LR directive from experiment to framework.
+
+    Returned by :meth:`ExperimentPPO.lr_schedule`.  Both fields are
+    **absolute** learning rates (not multipliers), matching the resume
+    path which force-aligns optimizer LRs to ``CommonParams`` values.
+    ``None`` = no opinion (keep the current LR).
+
+    Attributes:
+        actor_lr: LR applied to every actor optimizer param group.
+        critic_lr: LR applied to every critic optimizer (all channels
+            share one value, mirroring ``critic_learning_rate``).
+    """
+
+    actor_lr: Optional[float] = None
+    critic_lr: Optional[float] = None
+
+
 @dataclass
 class ActorEval:
     """Result of one :meth:`TrainablePolicy.evaluate_actions` call.
@@ -836,6 +855,30 @@ class ExperimentPPO(ABC):
         Returns:
             An ``ExplorationSpec``, or ``None`` to use defaults
             (uncertainty_floor=0.0, uncertainty_coef=0.0).
+        """
+        return None
+
+    def lr_schedule(
+        self, update: int,
+    ) -> Optional["LRSpec"]:
+        """Return this update's optimizer LR, or None to keep current.
+
+        Called once per update before ``ppo_update``, symmetric with
+        ``exploration()``.  Returns **absolute** learning rates (not
+        multipliers), consistent with the resume path that force-aligns
+        optimizer LRs to ``CommonParams`` values.
+
+        May read state accumulated by ``on_update()`` — enabling
+        closed-loop schedules (e.g. decay once a rolling KL window
+        saturates).  The *actual* applied LRs are logged to
+        ``__RAW_STATS__`` under ``stats.actor_lr`` / ``stats.critic_lr``
+        so the realized schedule is always observable.
+
+        Args:
+            update: Current update index (1-based, matches the loop).
+
+        Returns:
+            An ``LRSpec``, or ``None`` to keep the current LR.
         """
         return None
 
