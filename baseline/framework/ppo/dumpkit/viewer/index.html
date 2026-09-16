@@ -1135,7 +1135,7 @@
      hint: '框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\nU ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。'},
     {pc: 'vloss'},
     {title: 'Policy & Floor Loss', keys: ['stats.policy_loss', 'stats.floor_loss'],
-     hint: 'policy_loss：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n为何初始≈0：epoch0 首 minibatch 所有 r=1 → loss = −mean(w·A)，归一化 A 均值=0。\n为何会变正/上升：clip 截断的是梯度不是值——有利方向收益封顶（每样本最多贡献 ε·|A|），不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界）。少数恶化样本可抵消大量改善样本 → 均值偏正是结构性现象，正负不代表学没学。\nfloor_loss：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n两者相加（非本图）才是实际反传的总损失。'},
+     hint: 'policy_loss：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n为何初始≈0：epoch0 首 minibatch 所有 r=1 → loss = −mean(w·A)；仅当该批加权 A 均值=0 时严格为 0（单通道 z-score 归一化下近似成立）。\n为何会变正/上升：有利方向 r 越过 ε 边界后该项目标值进入平台、该项梯度归零（收益封顶 ε·|A|）；不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界）。少数恶化样本可抵消大量改善 → 均值偏正是结构性现象，正负不代表学没学。\nfloor_loss：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n两者相加（非本图）才是实际反传的总损失。'},
     {title: 'Loss → Actor ∇', keys: ['stats.action_grad_pol', 'stats.action_grad_floor'],
      hint: '两种损失各自对 actor 全部参数的梯度 L2 范数（autograd.grad，未触达的参数计 0）。\n每 epoch 首个 minibatch 采样、按 update 平均。\n· action_grad_pol：clipped surrogate 对动作网络的拉力\n· action_grad_floor：floor hinge 的拉力——按设计应只落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数'},
     {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
