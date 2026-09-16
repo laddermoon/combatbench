@@ -57,6 +57,7 @@ def _render_status() -> Dict[str, Any]:
         status = "running" if rc is None else ("done" if rc == 0 else "error")
         return {
             "job": {
+                "kind": job["kind"],
                 "dump": job["dump"],
                 "episode": job["episode"],
                 "status": status,
@@ -67,20 +68,43 @@ def _render_status() -> Dict[str, Any]:
         }
 
 
-def _start_render(
-    dump_dir: Path, dump_name: str, episode: int,
+_JOB_CMD = {
+    "render": ("render", "render_ep{:05d}.log"),
+    "delta": ("delta", "delta_ep{:05d}.log"),
+}
+
+
+def _start_job(
+    kind: str,
+    dump_dir: Path,
+    dump_name: str,
+    episode: int,
+    gens: Optional[int] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    """Spawn `debug.py render` in the background; refuses a second job."""
+    """Spawn `debug.py <kind>` in the background; refuses a second job.
+
+    One background job at a time for the whole viewer — renders and
+    deltas share the slot so heavy work never stacks up.
+    """
     global _RENDER_JOB
     if episode < 0:
         return 400, {"error": "episode must be >= 0"}
     if not (dump_dir / "episodes.npz").exists():
         return 404, {"error": f"not a valid dump: {dump_dir}"}
+    sub, log_tmpl = _JOB_CMD[kind]
+    cmd = [
+        sys.executable, "-B", "-m", "baseline.framework.ppo.debug",
+        sub, str(dump_dir), "--episode", str(episode),
+    ]
+    if kind == "delta":
+        if gens is None or not 1 <= gens <= 10:
+            return 400, {"error": "gens must be an int in [1, 10]"}
+        cmd += ["--gens", str(gens)]
     with _RENDER_LOCK:
         if _RENDER_JOB is not None and _RENDER_JOB["proc"].poll() is None:
             j = _RENDER_JOB
             return 409, {
-                "error": "a render is already running "
+                "error": f"a {j['kind']} job is already running "
                          f"({j['dump']} episode {j['episode']})",
             }
         # Repo root = parents[5] of .../baseline/framework/ppo/dumpkit/viewer/
@@ -89,15 +113,11 @@ def _start_render(
         env["PYTHONPATH"] = (
             str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
         )
-        log_path = dump_dir / f"render_ep{episode:05d}.log"
+        log_path = dump_dir / log_tmpl.format(episode)
         log_f = open(log_path, "w", encoding="utf-8")
         try:
             proc = subprocess.Popen(
-                [
-                    sys.executable, "-B", "-m",
-                    "baseline.framework.ppo.debug",
-                    "render", str(dump_dir), "--episode", str(episode),
-                ],
+                cmd,
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
                 cwd=str(repo_root),
@@ -105,8 +125,9 @@ def _start_render(
             )
         except OSError as e:
             log_f.close()
-            return 500, {"error": f"failed to spawn render: {e}"}
+            return 500, {"error": f"failed to spawn {kind}: {e}"}
         _RENDER_JOB = {
+            "kind": kind,
             "dump": dump_name,
             "episode": episode,
             "proc": proc,
@@ -115,8 +136,8 @@ def _start_render(
             "log": str(log_path),
         }
         return 200, {
-            "ok": True, "dump": dump_name, "episode": episode,
-            "log": str(log_path),
+            "ok": True, "kind": kind, "dump": dump_name,
+            "episode": episode, "log": str(log_path),
         }
 
 
@@ -1793,27 +1814,31 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._handle_dump_request()
             return
 
-        # Render endpoints — run mode: /api/dump/<name>/render;
-        # single-dump mode: /api/render.  Rendering only needs the dump
-        # directory, so it is allowed regardless of run status.
-        m = re.match(r"^/api/dump/([^/]+)/render$", path)
+        # Render / delta endpoints — run mode: /api/dump/<name>/<kind>;
+        # single-dump mode: /api/<kind>.  Both only need the dump
+        # directory, so they are allowed regardless of run status.
+        m = re.match(r"^/api/dump/([^/]+)/(render|delta)$", path)
         if m and self.run_data is not None:
             name = urllib.parse.unquote(m.group(1))
             api = self.run_data.get_dump_api(name)
             if api is None:
                 self.send_error(404)
                 return
-            self._handle_render_request(api.data, name)
+            self._handle_job_request(m.group(2), api.data, name)
             return
-        if path == "/api/render" and self.api is not None:
+        if path in ("/api/render", "/api/delta") and self.api is not None:
             data = self.api.data
-            self._handle_render_request(data, data.dump_dir.name)
+            self._handle_job_request(
+                path.rsplit("/", 1)[-1], data, data.dump_dir.name,
+            )
             return
 
         self.send_error(404)
 
-    def _handle_render_request(self, data: "DumpData", dump_name: str):
-        """POST .../render {"episode": N} — start a background render."""
+    def _handle_job_request(
+        self, kind: str, data: "DumpData", dump_name: str,
+    ):
+        """POST .../<render|delta> {"episode": N, "gens": G?}."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -1824,7 +1849,15 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             self._reply_json(400, {"error": "episode (int) is required"})
             return
-        status, resp = _start_render(data.dump_dir, dump_name, episode)
+        gens = body.get("gens")
+        try:
+            gens = int(gens) if gens is not None else None
+        except (TypeError, ValueError):
+            self._reply_json(400, {"error": "gens must be an int in [1, 10]"})
+            return
+        status, resp = _start_job(
+            kind, data.dump_dir, dump_name, episode, gens,
+        )
         self._reply_json(status, resp)
 
     def _handle_dump_request(self):

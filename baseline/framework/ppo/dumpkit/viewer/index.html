@@ -73,6 +73,8 @@
   .render-btn:hover:not(:disabled) { border-color: var(--accent); }
   .render-btn:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
   .render-busy { color: var(--muted); font-size: 11px; }
+  .delta-trigger { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+  .delta-trigger select { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; color: var(--text); padding: 2px 6px; font-size: 12px; }
   .metric-chart { background: #20242e; border: 1px solid #333b4d; border-radius: 8px; padding: 12px 14px 10px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .metric-chart h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .metrics-group-title { margin: 26px 0 12px 0; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
@@ -2120,7 +2122,7 @@
         alert(j.error || `render failed (${r.status})`);
         return;
       }
-      state.renderJob = {dump: j.dump, episode: pos, status: 'running'};
+      state.renderJob = {kind: 'render', dump: j.dump, episode: pos, status: 'running'};
       if (state.currentPage === 'home') renderHome();
       scheduleRenderPoll();
     } catch (e) {
@@ -2148,22 +2150,46 @@
       const running = !!(state.renderJob && state.renderJob.status === 'running');
       if (running) {
         // Newly discovered job → refresh buttons once to show ⏳/disabled.
-        if ((!prev || prev.status !== 'running') &&
-            state.currentPage === 'home') {
-          renderHome();
+        if (!prev || prev.status !== 'running') {
+          if (state.currentPage === 'home') renderHome();
+          else if (state.currentPage === 'episode') renderEpisode();
         }
         scheduleRenderPoll();
       } else if (prev && prev.status === 'running') {
-        // Just finished — reload the list so ✓ appears even if the
-        // user was on another page when it completed.
-        if (state.dumpName || state.mode === 'dump') {
-          try {
-            state.episodeList = await fetchJson(api('episode_list'));
-          } catch (e) { /* dump unloaded meanwhile — ignore */ }
+        // Just finished — refresh whichever view consumes the result.
+        if (prev.kind === 'delta') {
+          state.epDelta = null;
+          if (state.currentPage === 'episode') renderEpisode();
+        } else {
+          if (state.dumpName || state.mode === 'dump') {
+            try {
+              state.episodeList = await fetchJson(api('episode_list'));
+            } catch (e) { /* dump unloaded meanwhile — ignore */ }
+          }
+          if (state.currentPage === 'home') renderHome();
         }
-        if (state.currentPage === 'home') renderHome();
       }
     } catch (e) { /* status endpoint unavailable — ignore */ }
+  }
+
+  async function startDelta(pos, gens) {
+    try {
+      const r = await fetch(api('delta'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({episode: pos, gens}),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        alert(j.error || `delta failed (${r.status})`);
+        return;
+      }
+      state.renderJob = {kind: 'delta', dump: j.dump, episode: pos, status: 'running'};
+      renderEpisodeFrame();   // show ⏳ in the delta section
+      scheduleRenderPoll();
+    } catch (e) {
+      alert(String(e));
+    }
   }
 
   // --- Home page ---
@@ -2387,7 +2413,37 @@
   // --- Policy Drift Δ section (debug.py delta output) ---
   function buildDeltaSectionHtml(pos, frame) {
     const d = state.epDelta;
-    if (!d || !d.available) return '';
+    if (!d || !d.available) {
+      // No delta yet — offer a trigger.  Shares the viewer's single
+      // background-job slot with renders.
+      const job = state.renderJob;
+      const running = job && job.status === 'running';
+      const thisJob = running && job.kind === 'delta' && job.episode === pos &&
+        (state.dumpName ? job.dump === state.dumpName : true);
+      let h = '<div class="section-sep"></div>';
+      h += '<div class="section-sep-label">Policy Drift Δ</div>';
+      if (thisJob) {
+        h += '<div class="render-busy">⏳ computing delta…</div>';
+      } else {
+        const dis = running ? ' disabled title="another job is running"' : '';
+        const opts = [...Array(10)].map((_, i) =>
+          `<option value="${i + 1}"${i === 2 ? ' selected' : ''}>${i + 1}</option>`).join('');
+        h += '<div class="delta-trigger">' +
+          '<span class="muted">no delta computed for this episode — ' +
+          'compare against</span> ' +
+          `<select id="delta-gens">${opts}</select>` +
+          '<span class="muted"> generations</span> ' +
+          `<button id="delta-btn" class="render-btn"${dis}>Compute Δ</button>` +
+          '</div>';
+        if (job && job.kind === 'delta' && job.episode === pos &&
+            job.status === 'error' &&
+            (state.dumpName ? job.dump === state.dumpName : true)) {
+          h += `<div class="dump-msg">delta failed (exit ${job.returncode}) — ` +
+               `see ${escapeHtml(job.log || 'log')}</div>`;
+        }
+      }
+      return h;
+    }
     let html = '<div class="section-sep"></div>';
     html += '<div class="section-sep-label">Policy Drift Δ</div>';
     html += `<div style="color:var(--muted);font-size:12px;margin:4px 0 10px">Deterministic action of each policy generation on this episode's observations (episode actions unused — both sides deterministic). Trained agents only.</div>`;
@@ -2670,6 +2726,15 @@
       }
 
       $('ep-data-panel').innerHTML = html;
+
+      // Wire the delta trigger (shown when no delta data exists)
+      const dBtn = $('delta-btn');
+      if (dBtn) {
+        dBtn.addEventListener('click', () => {
+          const gens = parseInt(($('delta-gens') || {}).value || '3');
+          startDelta(pos, gens);
+        });
+      }
 
       // Wire trajectory clicks
       $('ep-data-panel').querySelectorAll('.traj-card[data-traj]').forEach(el => {
