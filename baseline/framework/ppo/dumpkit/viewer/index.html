@@ -69,6 +69,10 @@
   .dump-trigger button:disabled { opacity: 0.5; cursor: default; }
   .dump-pending { margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
   .dump-msg { margin-top: 6px; font-size: 11px; color: #e08080; }
+  .render-btn { background: var(--panel-alt); color: var(--accent); border: 1px solid var(--border); padding: 2px 10px; border-radius: 5px; cursor: pointer; font-size: 11px; }
+  .render-btn:hover:not(:disabled) { border-color: var(--accent); }
+  .render-btn:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+  .render-busy { color: var(--muted); font-size: 11px; }
   .metric-chart { background: #20242e; border: 1px solid #333b4d; border-radius: 8px; padding: 12px 14px 10px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .metric-chart h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .metrics-group-title { margin: 26px 0 12px 0; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
@@ -565,6 +569,7 @@
     videosList: null,      // run-scoped eval videos
     selectedVideoIdx: null,
     dumpName: null,        // run mode: which dump is loaded
+    renderJob: null,       // in-flight/finished render job {dump, episode, status}
     runInfo: null,
     runDumps: null,
     runMetrics: null,
@@ -2102,6 +2107,65 @@
     return html;
   }
 
+  // --- Episode render trigger ---
+  async function startRender(pos) {
+    try {
+      const r = await fetch(api('render'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({episode: pos}),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        alert(j.error || `render failed (${r.status})`);
+        return;
+      }
+      state.renderJob = {dump: j.dump, episode: pos, status: 'running'};
+      if (state.currentPage === 'home') renderHome();
+      scheduleRenderPoll();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  let _renderPoll = null;
+  function scheduleRenderPoll() {
+    if (_renderPoll) return;
+    _renderPoll = setTimeout(async () => {
+      _renderPoll = null;
+      await refreshRenderStatus();
+    }, 3000);
+  }
+
+  // Poll the global render job; when it finishes, reload the episode
+  // list so the ✓ appears.  Called once per home-page render and then
+  // self-reschedules (deduped) while a job is running.
+  async function refreshRenderStatus() {
+    try {
+      const j = await fetchJson(api('render-status'));
+      const prev = state.renderJob;
+      state.renderJob = j.job || null;
+      const running = !!(state.renderJob && state.renderJob.status === 'running');
+      if (running) {
+        // Newly discovered job → refresh buttons once to show ⏳/disabled.
+        if ((!prev || prev.status !== 'running') &&
+            state.currentPage === 'home') {
+          renderHome();
+        }
+        scheduleRenderPoll();
+      } else if (prev && prev.status === 'running') {
+        // Just finished — reload the list so ✓ appears even if the
+        // user was on another page when it completed.
+        if (state.dumpName || state.mode === 'dump') {
+          try {
+            state.episodeList = await fetchJson(api('episode_list'));
+          } catch (e) { /* dump unloaded meanwhile — ignore */ }
+        }
+        if (state.currentPage === 'home') renderHome();
+      }
+    } catch (e) { /* status endpoint unavailable — ignore */ }
+  }
+
   // --- Home page ---
   function renderHome() {
     const container = $('episode-list-container');
@@ -2112,13 +2176,24 @@
     let html = '<table class="ep-table"><thead><tr>';
     html += '<th>#</th><th>Seed</th><th>Frames</th><th>Trajectories</th><th>Rendered</th>';
     html += '</tr></thead><tbody>';
+    const job = state.renderJob;
+    const jobRunning = job && job.status === 'running';
+    const jobThisDump = jobRunning &&
+      (state.dumpName ? job.dump === state.dumpName : true);
     state.episodeList.forEach(ep => {
       html += `<tr data-pos="${ep.list_pos}">`;
       html += `<td>${ep.list_pos}</td>`;
       html += `<td>${ep.seed ?? '-'}</td>`;
       html += `<td>${ep.num_frames ?? '-'}</td>`;
       html += `<td>${ep.n_trajectories}</td>`;
-      html += `<td class="${ep.rendered ? 'bool' : 'muted'}">${ep.rendered ? '✓' : '—'}</td>`;
+      if (ep.rendered) {
+        html += '<td class="bool">✓</td>';
+      } else if (jobThisDump && job.episode === ep.list_pos) {
+        html += '<td class="render-busy">⏳ rendering</td>';
+      } else {
+        const dis = jobRunning ? ' disabled title="another render is running"' : '';
+        html += `<td><button class="render-btn" data-pos="${ep.list_pos}"${dis}>Render</button></td>`;
+      }
       html += '</tr>';
     });
     html += '</tbody></table>';
@@ -2130,6 +2205,20 @@
         selectEpisode(pos);
       });
     });
+
+    // Render buttons — POST spawns `debug.py render` server-side; only
+    // one render runs at a time across the whole viewer.
+    container.querySelectorAll('.render-btn').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        const pos = parseInt(b.dataset.pos);
+        if (!confirm(`Render episode ${pos}?\n` +
+                     `Replays the dumped episode with the stochastic policy ` +
+                     `(can take a while).`)) return;
+        startRender(pos);
+      });
+    });
+    refreshRenderStatus();
 
     renderTimelineStats();
     $('timeline-entry').onclick = () => navigate('timeline');

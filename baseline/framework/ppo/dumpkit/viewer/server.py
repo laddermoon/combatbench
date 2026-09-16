@@ -14,6 +14,7 @@ import math
 import os
 import re
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -33,6 +34,90 @@ from baseline.framework.ppo.dumpkit.dump_request import (
 
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
+
+
+# ---------------------------------------------------------------------------
+# Episode render job — one at a time, runs `debug.py render` as a subprocess
+# ---------------------------------------------------------------------------
+
+_RENDER_LOCK = threading.Lock()
+_RENDER_JOB: Optional[Dict[str, Any]] = None
+
+
+def _render_status() -> Dict[str, Any]:
+    """Current render job as a JSON-safe dict (job=None when idle)."""
+    with _RENDER_LOCK:
+        job = _RENDER_JOB
+        if job is None:
+            return {"job": None}
+        rc = job["proc"].poll()
+        if rc is not None and job.get("log_f") is not None:
+            job["log_f"].close()
+            job["log_f"] = None
+        status = "running" if rc is None else ("done" if rc == 0 else "error")
+        return {
+            "job": {
+                "dump": job["dump"],
+                "episode": job["episode"],
+                "status": status,
+                "returncode": rc,
+                "started": job["started"],
+                "log": job["log"],
+            }
+        }
+
+
+def _start_render(
+    dump_dir: Path, dump_name: str, episode: int,
+) -> Tuple[int, Dict[str, Any]]:
+    """Spawn `debug.py render` in the background; refuses a second job."""
+    global _RENDER_JOB
+    if episode < 0:
+        return 400, {"error": "episode must be >= 0"}
+    if not (dump_dir / "episodes.npz").exists():
+        return 404, {"error": f"not a valid dump: {dump_dir}"}
+    with _RENDER_LOCK:
+        if _RENDER_JOB is not None and _RENDER_JOB["proc"].poll() is None:
+            j = _RENDER_JOB
+            return 409, {
+                "error": "a render is already running "
+                         f"({j['dump']} episode {j['episode']})",
+            }
+        # Repo root = parents[5] of .../baseline/framework/ppo/dumpkit/viewer/
+        repo_root = Path(__file__).resolve().parents[5]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (
+            str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        )
+        log_path = dump_dir / f"render_ep{episode:05d}.log"
+        log_f = open(log_path, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                [
+                    sys.executable, "-B", "-m",
+                    "baseline.framework.ppo.debug",
+                    "render", str(dump_dir), "--episode", str(episode),
+                ],
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=str(repo_root),
+                env=env,
+            )
+        except OSError as e:
+            log_f.close()
+            return 500, {"error": f"failed to spawn render: {e}"}
+        _RENDER_JOB = {
+            "dump": dump_name,
+            "episode": episode,
+            "proc": proc,
+            "log_f": log_f,
+            "started": time.time(),
+            "log": str(log_path),
+        }
+        return 200, {
+            "ok": True, "dump": dump_name, "episode": episode,
+            "log": str(log_path),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1707,7 +1792,40 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         if self.run_data is not None and path == "/api/run/dump-request":
             self._handle_dump_request()
             return
+
+        # Render endpoints — run mode: /api/dump/<name>/render;
+        # single-dump mode: /api/render.  Rendering only needs the dump
+        # directory, so it is allowed regardless of run status.
+        m = re.match(r"^/api/dump/([^/]+)/render$", path)
+        if m and self.run_data is not None:
+            name = urllib.parse.unquote(m.group(1))
+            api = self.run_data.get_dump_api(name)
+            if api is None:
+                self.send_error(404)
+                return
+            self._handle_render_request(api.data, name)
+            return
+        if path == "/api/render" and self.api is not None:
+            data = self.api.data
+            self._handle_render_request(data, data.dump_dir.name)
+            return
+
         self.send_error(404)
+
+    def _handle_render_request(self, data: "DumpData", dump_name: str):
+        """POST .../render {"episode": N} — start a background render."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            body = {}
+        try:
+            episode = int(body.get("episode"))
+        except (TypeError, ValueError):
+            self._reply_json(400, {"error": "episode (int) is required"})
+            return
+        status, resp = _start_render(data.dump_dir, dump_name, episode)
+        self._reply_json(status, resp)
 
     def _handle_dump_request(self):
         """POST /api/run/dump-request — write the dump sentinel file.
@@ -1803,7 +1921,12 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_api(self, path: str):
-        if path == "/api/mode":
+        if path == "/api/render-status" or (
+            path.startswith("/api/dump/") and path.endswith("/render-status")
+        ):
+            # Global single-job render status — works in every mode.
+            status, body = 200, _render_status()
+        elif path == "/api/mode":
             mode = (
                 "runs" if self.runs_root is not None
                 else "run" if self.run_data is not None else "dump"
