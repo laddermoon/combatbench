@@ -61,6 +61,14 @@
   table.dump-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
   table.dump-table tr { cursor: pointer; }
   table.dump-table tr:hover { background: var(--panel-alt); }
+  .dump-trigger { display: flex; gap: 8px; margin: 10px 0 4px; }
+  .dump-trigger input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 10px; font-size: 12px; }
+  .dump-trigger input:focus { outline: none; border-color: var(--accent); }
+  .dump-trigger button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  .dump-trigger button:hover:not(:disabled) { border-color: var(--accent); }
+  .dump-trigger button:disabled { opacity: 0.5; cursor: default; }
+  .dump-pending { margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+  .dump-msg { margin-top: 6px; font-size: 11px; color: #e08080; }
   .metric-chart { background: #20242e; border: 1px solid #333b4d; border-radius: 8px; padding: 12px 14px 10px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .metric-chart h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .metrics-group-title { margin: 26px 0 12px 0; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
@@ -419,6 +427,7 @@
         <div class="card">
           <h2>Dumps</h2>
           <div class="desc">Captured update dumps. Click a dump to enter its episode/trajectory views.</div>
+          <div id="dump-trigger-container"></div>
           <div id="dump-list-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
@@ -1664,6 +1673,62 @@
         `success ${vids[0].eval_success != null ? fmt(vids[0].eval_success, 2) : '-'}</div>` +
         `<a class="vid-link" id="open-videos-link">Open videos page →</a>`;
       $('open-videos-link').addEventListener('click', () => navigate('videos'));
+    }
+
+    // Dump trigger — only for a live run.  Writes the same
+    // dump_request.json sentinel that `debug.py dump` writes; the
+    // training loop consumes it at the next update boundary.
+    const dt = $('dump-trigger-container');
+    const runStatus = state.runInfo && state.runInfo.status;
+    if (runStatus === 'running') {
+      if (state.runInfo.dump_pending) {
+        dt.innerHTML =
+          '<div class="dump-pending">⏳ dump request pending — ' +
+          'captured at the next update boundary</div>';
+      } else {
+        dt.innerHTML =
+          '<div class="dump-trigger">' +
+          '<input id="dump-hypo" type="text" ' +
+          'placeholder="hypothesis: what are you looking for?" />' +
+          '<button id="dump-trigger-btn">Trigger dump</button></div>' +
+          '<div id="dump-trigger-msg" class="dump-msg"></div>';
+        const btn = $('dump-trigger-btn');
+        const input = $('dump-hypo');
+        const msg = $('dump-trigger-msg');
+        const submit = async () => {
+          const hypothesis = input.value.trim();
+          if (!hypothesis) {
+            msg.textContent = 'hypothesis is required';
+            return;
+          }
+          btn.disabled = true;
+          try {
+            const r = await fetch(api('run/dump-request'), {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({hypothesis}),
+            });
+            const j = await r.json();
+            if (r.ok) {
+              dt.innerHTML =
+                '<div class="dump-pending">⏳ dump requested — ' +
+                'captured at the next update boundary</div>';
+            } else {
+              msg.textContent = j.error || `error ${r.status}`;
+              btn.disabled = false;
+            }
+          } catch (e) {
+            msg.textContent = String(e);
+            btn.disabled = false;
+          }
+        };
+        btn.addEventListener('click', submit);
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') submit();
+        });
+      }
+    } else {
+      dt.innerHTML = '';
     }
 
     // Dumps table

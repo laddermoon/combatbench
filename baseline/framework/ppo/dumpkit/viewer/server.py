@@ -26,6 +26,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from baseline.framework.ppo.dumpkit.dump_request import (
+    DumpRequest,
+    SENTINEL_FILENAME,
+)
+
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
 
@@ -520,7 +525,33 @@ class RunData:
             "code_snapshot": snapshot,
             "has_train_log": self.train_log_path.exists(),
             "n_dumps": len(self.dumps()),
+            "status": self.status(),
+            "dump_pending": (self.run_dir / SENTINEL_FILENAME).exists(),
         }
+
+    def status(self) -> str:
+        """Live status — same rules as the runs index."""
+        max_updates = None
+        cfg_path = self.run_dir / "config.json"
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                max_updates = (
+                    (cfg.get("experiment") or {})
+                    .get("common_params") or {}
+                ).get("max_updates")
+            except (json.JSONDecodeError, OSError):
+                pass
+        log = self.train_log_path
+        last, _ = (
+            _tail_raw_stats(log) if log.exists() else (None, None)
+        )
+        update = last.get("update") if isinstance(last, dict) else None
+        try:
+            activity = log.stat().st_mtime
+        except OSError:
+            activity = self.run_dir.stat().st_mtime
+        return _determine_status(self.run_dir, update, max_updates, activity)
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +637,27 @@ def _run_created_ts(
         return 0.0
 
 
+def _determine_status(
+    run_dir: Path,
+    update: Optional[int],
+    max_updates: Optional[int],
+    activity: float,
+) -> str:
+    """Run status from pid liveness, completion, and log freshness."""
+    alive = _pid_alive(run_dir / "pid")
+    fresh = (time.time() - activity) < 90.0
+    if alive:
+        return "running"
+    if update is not None and max_updates and update >= max_updates:
+        return "finished"
+    if alive is None and fresh:
+        # No pid file but the log moved within the last 90s.
+        return "running"
+    if update is None:
+        return "unknown"
+    return "stopped"
+
+
 def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
     """Lightweight per-run summary for the runs index."""
     cfg: Optional[Dict[str, Any]] = None
@@ -628,19 +680,7 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
         activity = log_path.stat().st_mtime
     except OSError:
         activity = run_dir.stat().st_mtime
-    alive = _pid_alive(run_dir / "pid")
-    fresh = (time.time() - activity) < 90.0
-    if alive:
-        status = "running"
-    elif update is not None and max_updates and update >= max_updates:
-        status = "finished"
-    elif alive is None and fresh:
-        # No pid file but the log moved within the last 90s.
-        status = "running"
-    elif update is None:
-        status = "unknown"
-    else:
-        status = "stopped"
+    status = _determine_status(run_dir, update, max_updates, activity)
     dumps_dir = run_dir / "dumps"
     n_dumps = 0
     if dumps_dir.is_dir():
@@ -1649,6 +1689,77 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
         # Static files / SPA
         self._handle_static(path)
+
+    def do_POST(self):
+        path = self.path.split("?")[0]  # strip query
+
+        # Runs-root mode: /run/<name>/... scopes everything below it.
+        if self.runs_root is not None:
+            m = re.match(r"^/run/([^/]+)(/.*)?$", path)
+            if m:
+                rd = self._run_for_name(urllib.parse.unquote(m.group(1)))
+                if rd is None:
+                    self.send_error(404)
+                    return
+                self._run_override = rd
+                path = m.group(2) or "/"
+
+        if self.run_data is not None and path == "/api/run/dump-request":
+            self._handle_dump_request()
+            return
+        self.send_error(404)
+
+    def _handle_dump_request(self):
+        """POST /api/run/dump-request — write the dump sentinel file.
+
+        Body: {"hypothesis": str (required), "full_grad": bool}.
+        Only accepted while the run is alive and no request is pending.
+        """
+        rd = self.run_data
+        assert rd is not None
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            body = {}
+        hypothesis = str(body.get("hypothesis") or "").strip()
+        include_full_grad = bool(body.get("full_grad"))
+        try:
+            req = DumpRequest(
+                hypothesis=hypothesis, include_full_grad=include_full_grad,
+            )
+        except ValueError as e:
+            self._reply_json(400, {"error": str(e)})
+            return
+        if rd.status() != "running":
+            self._reply_json(409, {"error": "run is not running"})
+            return
+        sentinel = rd.run_dir / SENTINEL_FILENAME
+        if sentinel.exists():
+            self._reply_json(409, {
+                "error": "a dump request is already pending — "
+                         "it will be consumed at the next update",
+            })
+            return
+        payload = {
+            "hypothesis": req.hypothesis,
+            "include_full_grad": req.include_full_grad,
+            "requested_via": "viewer",
+        }
+        sentinel.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._reply_json(200, {"ok": True})
+
+    def _reply_json(self, status: int, body: Any):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(
+            json.dumps(_json_safe(body), ensure_ascii=False, allow_nan=False)
+            .encode("utf-8")
+        )
 
     # -- run-mode routing ---------------------------------------------------
 
