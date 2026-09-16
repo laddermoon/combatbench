@@ -17,6 +17,7 @@ so the recorded trajectory should match the training trajectory frame-by-frame.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -117,6 +118,31 @@ def render_episode(
             f"Recorded episode directory not found: {recorded_ep_dir}"
         )
 
+    # The session-index name collides across renders — rename to the
+    # dump's list position so episodes coexist and the viewer can key
+    # frames by list_pos (episode_rendered / image_path).
+    target_ep_dir = record_dir / f"episode_{episode_index:05d}"
+    if target_ep_dir != recorded_ep_dir:
+        if target_ep_dir.exists():
+            shutil.rmtree(target_ep_dir)  # re-render overwrites
+        recorded_ep_dir.rename(target_ep_dir)
+        recorded_ep_dir = target_ep_dir
+        # The embedded manifest/index carry the recorder's session index
+        # (0); align them with the dump episode index so the record dir
+        # stays self-consistent for recorder_viewer.
+        manifest_path = recorded_ep_dir / "manifest.json"
+        if manifest_path.exists():
+            try:
+                m = json.loads(manifest_path.read_text(encoding="utf-8"))
+                m["episode_index"] = episode_index
+                manifest_path.write_text(
+                    json.dumps(m, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except (json.JSONDecodeError, OSError):
+                pass
+        _rewrite_record_index(record_dir)
+
     # --- Auto-verify ---
     if verbose:
         print(f"[render] verifying recorded data against dump...")
@@ -141,6 +167,14 @@ def render_episode(
         verification_result=verification_result,
     )
 
+    # Per-episode copy lives with the images it describes; the top-level
+    # association.json stays as a "last rendered" pointer (the debug.py
+    # CLI prints that path).
+    ep_assoc_path = recorded_ep_dir / "association.json"
+    ep_assoc_path.write_text(
+        json.dumps(association, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     assoc_path = record_dir / "association.json"
     assoc_path.write_text(
         json.dumps(association, indent=2, ensure_ascii=False),
@@ -171,6 +205,46 @@ def render_episode(
                 print(f"  Do NOT use these images as ground truth for the dump.")
 
     return record_dir
+
+
+def _rewrite_record_index(record_dir: Path) -> None:
+    """Rebuild ``record/index.json`` as the union of episode_* dirs.
+
+    Mirrors ``BaseFrameRecorder._write_root_index`` — needed after a
+    render renames the session-indexed ``episode_00000`` to the dump's
+    list position.
+    """
+    entries: List[Dict[str, Any]] = []
+    for episode_dir in sorted(record_dir.glob("episode_*")):
+        manifest_path = episode_dir / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            m = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        entries.append({
+            "episode_index": int(m.get("episode_index", -1)),
+            "dir": episode_dir.name,
+            "num_steps": int(m.get("num_steps", 0)),
+        })
+    entries.sort(key=lambda e: e["episode_index"])
+    version = 1
+    index_path = record_dir / "index.json"
+    if index_path.exists():
+        try:
+            version = json.loads(
+                index_path.read_text(encoding="utf-8")
+            ).get("manifest_version", 1)
+        except (json.JSONDecodeError, OSError):
+            pass
+    index_path.write_text(
+        json.dumps(
+            {"manifest_version": version, "episodes": entries},
+            indent=2, ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _run_round_runner(
