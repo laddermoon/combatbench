@@ -301,6 +301,73 @@ class RunData:
             return None
         return api.data.image_path(ep_pos, frame)
 
+    # -- eval videos --------------------------------------------------------
+
+    _VIDEO_NAME = re.compile(r"^u(\d+)\.mp4$")
+
+    def videos(self) -> List[Dict[str, Any]]:
+        """Eval videos under videos/, newest first.  Each uNNNNN.mp4 may
+        carry a uNNNNN.log sidecar (steps/termination/health/seed);
+        eval.* metrics are joined in by update number."""
+        vdir = self.run_dir / "videos"
+        if not vdir.is_dir():
+            return []
+        by_update = {m["update"]: m for m in self.metrics()}
+        out: List[Dict[str, Any]] = []
+        for f in sorted(vdir.iterdir()):
+            m = self._VIDEO_NAME.match(f.name)
+            if not m or not f.is_file():
+                continue
+            upd = int(m.group(1))
+            meta: Dict[str, Any] = {}
+            side = f.with_suffix(".log")
+            if side.exists():
+                try:
+                    # The sidecar is captured stdout: warnings + a
+                    # "Video saved to ..." line, then a JSON result block.
+                    txt = side.read_text(encoding="utf-8")
+                    i = txt.find("\n{")
+                    i = 0 if txt.startswith("{") else (i + 1 if i >= 0 else -1)
+                    if i >= 0:
+                        meta, _ = json.JSONDecoder().raw_decode(txt[i:])
+                except (json.JSONDecodeError, OSError):
+                    meta = {}
+            try:
+                st = f.stat()
+                size, mtime = st.st_size, st.st_mtime
+            except OSError:
+                size, mtime = 0, 0.0
+            term = meta.get("termination_reasons") or {}
+            entry: Dict[str, Any] = {
+                "name": f.name,
+                "update": upd,
+                "size": size,
+                "mtime": mtime,
+                "steps": meta.get("steps"),
+                "seed": meta.get("seed"),
+                "health_a": meta.get("health_a"),
+                "health_b": meta.get("health_b"),
+                "term_a": (term.get("robot_a") or [None])[0],
+                "term_b": (term.get("robot_b") or [None])[0],
+            }
+            mu = by_update.get(upd)
+            if mu is not None:
+                entry["eval_success"] = mu.get("eval.success")
+                entry["eval_pot"] = mu.get("eval.final_pot")
+                entry["eval_max_pot"] = mu.get("eval.max_pot")
+            out.append(entry)
+        out.sort(key=lambda e: e["update"], reverse=True)
+        return out
+
+    def video_path(self, name: str) -> Optional[Path]:
+        if not self._VIDEO_NAME.match(name):
+            return None
+        vdir = (self.run_dir / "videos").resolve()
+        p = (vdir / name).resolve()
+        if p.parent != vdir or not p.is_file():
+            return None
+        return p
+
     # -- train.log metrics --------------------------------------------------
 
     @property
@@ -401,6 +468,11 @@ class RunData:
                     break
             if not grouped:
                 out[f"stats.{k}"] = float(v)
+
+        ev = raw.get("eval_info") or {}
+        for k, v in ev.items():
+            if isinstance(v, (int, float)):
+                out[f"eval.{k}"] = float(v)
 
         ep = raw.get("episode_stats") or {}
         for k, v in ep.items():
@@ -576,6 +648,13 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
             1 for c in dumps_dir.iterdir()
             if c.is_dir() and (c / "manifest.json").exists()
         )
+    videos_dir = run_dir / "videos"
+    n_videos = 0
+    if videos_dir.is_dir():
+        n_videos = sum(
+            1 for c in videos_dir.iterdir()
+            if c.is_file() and c.suffix == ".mp4"
+        )
     return {
         "name": run_dir.name,
         "experiment": exp.get("name"),
@@ -588,6 +667,7 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
         "created": _run_created_ts(run_dir.name, run_dir, cfg),
         "activity": activity,
         "n_dumps": n_dumps,
+        "n_videos": n_videos,
     }
 
 
@@ -1562,6 +1642,11 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._handle_image(path)
             return
 
+        # Eval video route (binary, Range-capable)
+        if path.startswith("/video/"):
+            self._handle_video(path)
+            return
+
         # Static files / SPA
         self._handle_static(path)
 
@@ -1577,6 +1662,8 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return 200, rd.dumps()
         if path == "/api/run/metrics":
             return 200, rd.metrics()
+        if path == "/api/run/videos":
+            return 200, rd.videos()
         if path.startswith("/api/dump/"):
             # /api/dump/<name>/<endpoint...>
             rest = path[len("/api/dump/"):]
@@ -1664,6 +1751,51 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         self._serve_file(png_path, "image/png")
+
+    def _handle_video(self, path: str):
+        rd = self.run_data
+        p = rd.video_path(path[len("/video/"):]) if rd is not None else None
+        if p is None:
+            self.send_error(404)
+            return
+        self._serve_file_range(p, "video/mp4")
+
+    def _serve_file_range(self, path: Path, content_type: str):
+        """Serve a file with minimal HTTP Range support (video seeking)."""
+        size = path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        range_hdr = self.headers.get("Range")
+        if range_hdr:
+            m = re.match(r"bytes=(\d*)-(\d*)$", range_hdr.strip())
+            if m:
+                if m.group(1):
+                    start = int(m.group(1))
+                    if m.group(2):
+                        end = int(m.group(2))
+                elif m.group(2):  # suffix range: bytes=-N
+                    start = max(0, size - int(m.group(2)))
+                end = min(end, size - 1)
+                if start > end:
+                    self.send_error(416)
+                    return
+                status = 206
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(length))
+        self.end_headers()
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(1 << 16, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def _handle_static(self, path: str):
         if path == "/" or path == "":

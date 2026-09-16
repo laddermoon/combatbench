@@ -108,6 +108,21 @@
   .runs-pager button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
   .runs-pager button:disabled { opacity: 0.4; cursor: default; }
 
+  /* Videos page */
+  #page-videos { height: 100%; }
+  #page-videos.active { display: block; }
+  .videos-layout { display: grid; grid-template-columns: 420px 1fr; gap: 16px; padding: 16px; height: 100%; box-sizing: border-box; }
+  .videos-layout .card { display: flex; flex-direction: column; min-height: 0; margin-bottom: 0; }
+  .videos-list-wrap { overflow: auto; flex: 1; min-height: 0; }
+  .videos-player-card video { width: 100%; max-height: 62vh; background: #000; border-radius: 6px; }
+  .videos-nav { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+  .videos-nav button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .videos-nav button:disabled { opacity: 0.4; cursor: default; }
+  .vid-meta { margin-top: 10px; }
+  .vid-meta table { font-size: 12px; }
+  .vid-meta td { padding: 3px 10px 3px 0; }
+  a.vid-link { color: var(--accent); cursor: pointer; }
+
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
   .card h2 { margin: 0 0 12px 0; font-size: 13px; color: var(--text); }
   .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
@@ -373,6 +388,27 @@
       </div>
     </div>
 
+    <!-- Videos page (run scoped): eval video list + player -->
+    <div class="page" id="page-videos">
+      <div class="videos-layout">
+        <div class="card">
+          <h2>Eval Videos</h2>
+          <div class="desc">video_eval_interval snapshots, newest update first. Click a row to play.</div>
+          <div class="videos-list-wrap" id="videos-list-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card videos-player-card">
+          <h2 id="videos-title">-</h2>
+          <div class="videos-nav">
+            <button id="vid-prev" title="Newer update">◀ newer</button>
+            <button id="vid-next" title="Older update">older ▶</button>
+            <span class="muted" id="vid-pos"></span>
+          </div>
+          <video id="vid-player" controls preload="metadata"></video>
+          <div class="vid-meta" id="vid-meta"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Run home (run mode only): dump list + training metrics -->
     <div class="page" id="page-run">
       <div class="run-layout">
@@ -384,6 +420,11 @@
           <h2>Dumps</h2>
           <div class="desc">Captured update dumps. Click a dump to enter its episode/trajectory views.</div>
           <div id="dump-list-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
+          <h2>Videos</h2>
+          <div class="desc">Evaluation videos recorded every video_eval_interval.</div>
+          <div id="videos-card-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
           <h2>Update Detail</h2>
@@ -512,6 +553,8 @@
     rootMode: null,        // server context reported by /api/mode
     runName: null,         // runs mode: selected run (from /run/<name>/)
     runsQ: {q: '', page: 1, size: 20, sort: 'created', order: 'desc'},
+    videosList: null,      // run-scoped eval videos
+    selectedVideoIdx: null,
     dumpName: null,        // run mode: which dump is loaded
     runInfo: null,
     runDumps: null,
@@ -558,6 +601,7 @@
   const pages = {
     runs: $('page-runs'),
     run: $('page-run'),
+    videos: $('page-videos'),
     home: $('page-home'),
     episode: $('page-episode'),
     traj: $('page-traj'),
@@ -583,6 +627,12 @@
       url = `/run/${encodeURIComponent(state.runName)}${url}`;
     return url;
   }
+  function videoUrl(name) {
+    let url = `/video/${name}`;
+    if (state.rootMode === 'runs' && state.runName)
+      url = `/run/${encodeURIComponent(state.runName)}${url}`;
+    return url;
+  }
   // Browser URL for the current view state (deep-linkable).
   function urlForCurrent() {
     const r = (state.rootMode === 'runs' && state.runName)
@@ -595,6 +645,7 @@
       case 'traj': return `${r}${d}/trajectory/${state.selectedTraj}`;
       case 'timeline': return `${r}${d}/timeline`;
       case 'dataflow': return `${r}${d}/dataflow`;
+      case 'videos': return `${r}/videos`;
       default: return r + d + '/';
     }
   }
@@ -718,6 +769,9 @@
     if (state.currentPage === 'dataflow') {
       crumbs.push({label: 'Data Flow', page: 'dataflow'});
     }
+    if (state.currentPage === 'videos') {
+      crumbs.push({label: 'Videos', page: 'videos'});
+    }
 
     crumbs.forEach((c, i) => {
       if (i > 0) {
@@ -758,6 +812,7 @@
     else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
     else if (page === 'timeline') renderTimeline();
     else if (page === 'dataflow') renderDataflow();
+    else if (page === 'videos') renderVideos();
   }
 
   // --- Fetch helper ---
@@ -1142,6 +1197,8 @@
         state.mode = 'run';
         state.dumpName = null;
         state.manifest = null;
+        state.videosList = null;
+        state.selectedVideoIdx = null;
         try {
           state.runInfo = await fetchJson(api('run/info'));
           state.runDumps = await fetchJson(api('run/dumps'));
@@ -1158,8 +1215,13 @@
     if (state.mode === 'run') {
       const m = sub.match(/^\/dump\/([^/?]+)(\/.*)?$/);
       if (!m) {
-        showPage('run');
-        renderRunHome();
+        if (sub.startsWith('/videos')) {
+          showPage('videos');
+          renderVideos();
+        } else {
+          showPage('run');
+          renderRunHome();
+        }
         return;
       }
       try {
@@ -1238,7 +1300,7 @@
     const cols = [
       ['status', 'status'], ['name', 'name'], ['experiment', 'experiment'],
       ['update', 'update'], ['success', 'eval'], [null, 'dumps'],
-      ['created', 'created'], ['activity', 'activity'],
+      [null, 'videos'], ['created', 'created'], ['activity', 'activity'],
     ];
     let html = '<table class="runs-table"><thead><tr>';
     cols.forEach(([key, label]) => {
@@ -1249,7 +1311,7 @@
     });
     html += '</tr></thead><tbody>';
     if (!data.runs.length) {
-      html += '<tr><td colspan="8" style="color:var(--muted);' +
+      html += '<tr><td colspan="9" style="color:var(--muted);' +
         'padding:24px;text-align:center">no runs found</td></tr>';
     }
     data.runs.forEach(r => {
@@ -1265,6 +1327,9 @@
         `<i style="width:${pct}%"></i></div>${prog}</div></td>`;
       html += `<td>${r.eval_success != null ? fmt(r.eval_success, 2) : '-'}</td>`;
       html += `<td>${r.n_dumps}</td>`;
+      html += `<td>${r.n_videos
+        ? `<a class="vid-link" data-name="${escapeHtml(r.name)}">▶ ${r.n_videos}</a>`
+        : '-'}</td>`;
       html += `<td>${r.created ? fmtDate(r.created) : '-'}</td>`;
       html += `<td>${r.activity ? fmtAgo(r.activity) : '-'}</td>`;
       html += '</tr>';
@@ -1283,6 +1348,14 @@
     $('runs-table-container').querySelectorAll('tr.run-row').forEach(tr => {
       tr.addEventListener('click', () => {
         const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+    $('runs-table-container').querySelectorAll('.vid-link').forEach(a => {
+      a.addEventListener('click', e => {
+        e.stopPropagation();
+        const p = `/run/${encodeURIComponent(a.dataset.name)}/videos`;
         history.pushState({}, '', p);
         applyRoute(p);
       });
@@ -1328,6 +1401,91 @@
       renderRunsIndex();
     }
   }, 10000);
+
+  // --- Videos page (run scoped) ---
+  async function renderVideos() {
+    if (state.mode !== 'run') return;
+    const cont = $('videos-list-container');
+    try {
+      state.videosList = await fetchJson(api('run/videos'));
+    } catch (e) {
+      cont.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const vids = state.videosList;
+    if (!vids.length) {
+      cont.innerHTML = '<div class="loading">no eval videos in this run</div>';
+      $('videos-title').textContent = '-';
+      $('vid-player').removeAttribute('src');
+      $('vid-meta').innerHTML = '';
+      $('vid-pos').textContent = '';
+      return;
+    }
+    if (state.selectedVideoIdx === null ||
+        state.selectedVideoIdx >= vids.length) {
+      state.selectedVideoIdx = 0;
+    }
+    let html = '<table class="dump-table"><thead><tr>' +
+      '<th>update</th><th>steps</th><th>term a / b</th><th>success</th>' +
+      '</tr></thead><tbody>';
+    vids.forEach((v, i) => {
+      html += `<tr data-i="${i}">`;
+      html += `<td>u${String(v.update).padStart(5, '0')}</td>`;
+      html += `<td>${v.steps ?? '-'}</td>`;
+      html += `<td>${escapeHtml(v.term_a || '-')} / ${escapeHtml(v.term_b || '-')}</td>`;
+      html += `<td>${v.eval_success != null ? fmt(v.eval_success, 2) : '-'}</td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    cont.innerHTML = html;
+    cont.querySelectorAll('tr[data-i]').forEach(tr => {
+      tr.addEventListener('click', () => selectVideo(parseInt(tr.dataset.i)));
+    });
+    renderVideoPlayer();
+  }
+
+  function selectVideo(i) {
+    const vids = state.videosList || [];
+    if (!vids.length) return;
+    state.selectedVideoIdx = Math.max(0, Math.min(vids.length - 1, i));
+    renderVideoPlayer();
+  }
+
+  function renderVideoPlayer() {
+    const vids = state.videosList || [];
+    const v = vids[state.selectedVideoIdx];
+    if (!v) return;
+    $('videos-list-container').querySelectorAll('tr[data-i]').forEach(tr =>
+      tr.classList.toggle(
+        'dump-active', parseInt(tr.dataset.i) === state.selectedVideoIdx));
+    $('videos-title').textContent = `u${String(v.update).padStart(5, '0')}`;
+    $('vid-pos').textContent =
+      `${state.selectedVideoIdx + 1} / ${vids.length}`;
+    $('vid-prev').disabled = state.selectedVideoIdx <= 0;
+    $('vid-next').disabled = state.selectedVideoIdx >= vids.length - 1;
+    $('vid-player').src = videoUrl(v.name);
+    const rows = [
+      ['steps', v.steps],
+      ['seed', v.seed],
+      ['termination a', v.term_a],
+      ['termination b', v.term_b],
+      ['health a', v.health_a],
+      ['health b', v.health_b],
+      ['eval success', v.eval_success],
+      ['eval final_pot', v.eval_pot],
+      ['eval max_pot', v.eval_max_pot],
+      ['size', v.size ? (v.size / 1e6).toFixed(1) + ' MB' : null],
+      ['mtime', v.mtime ? fmtDate(v.mtime) : null],
+    ];
+    $('vid-meta').innerHTML = '<table>' + rows.map(([k, val]) =>
+      `<tr><td style="color:var(--muted)">${k}</td>` +
+      `<td>${val ?? '-'}</td></tr>`).join('') + '</table>';
+  }
+
+  $('vid-prev').addEventListener('click', () =>
+    selectVideo((state.selectedVideoIdx ?? 0) - 1));
+  $('vid-next').addEventListener('click', () =>
+    selectVideo((state.selectedVideoIdx ?? 0) + 1));
 
   // --- Run home page ---
   // Framework-owned charts in a fixed editorial order. Spec kinds:
@@ -1482,9 +1640,24 @@
     try {
       state.runDumps = await fetchJson(api('run/dumps'));
       state.runMetrics = await fetchJson(api('run/metrics'));
+      state.videosList = await fetchJson(api('run/videos'));
     } catch (e) {
       $('dump-list-container').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       return;
+    }
+
+    // Videos card
+    const vc = $('videos-card-container');
+    const vids = state.videosList || [];
+    if (!vids.length) {
+      vc.innerHTML = '<div class="loading">no eval videos</div>';
+    } else {
+      vc.innerHTML =
+        `<div style="margin-bottom:8px">${vids.length} videos · ` +
+        `latest u${String(vids[0].update).padStart(5, '0')} · ` +
+        `success ${vids[0].eval_success != null ? fmt(vids[0].eval_success, 2) : '-'}</div>` +
+        `<a class="vid-link" id="open-videos-link">Open videos page →</a>`;
+      $('open-videos-link').addEventListener('click', () => navigate('videos'));
     }
 
     // Dumps table
@@ -3170,6 +3343,9 @@
         state.selectedStep = Math.min(maxStep, state.selectedStep + 1); renderTimeline(); e.preventDefault();
       }
       else if (e.key === 'ArrowLeft') { state.selectedStep = Math.max(0, state.selectedStep - 1); renderTimeline(); e.preventDefault(); }
+    } else if (state.currentPage === 'videos') {
+      if (e.key === 'ArrowRight') { selectVideo((state.selectedVideoIdx ?? 0) + 1); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { selectVideo((state.selectedVideoIdx ?? 0) - 1); e.preventDefault(); }
     }
   });
 

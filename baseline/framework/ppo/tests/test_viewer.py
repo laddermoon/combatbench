@@ -718,6 +718,64 @@ def test_run_data_no_train_log():
         print("test_run_data_no_train_log: PASS")
 
 
+def test_run_data_videos():
+    """videos() lists mp4s newest-first, joining sidecar meta + eval."""
+    with tempfile.TemporaryDirectory() as d:
+        run_dir = Path(d) / "run"
+        vdir = run_dir / "videos"
+        vdir.mkdir(parents=True)
+        (vdir / "u00025.mp4").write_bytes(b"x" * 10)
+        (vdir / "u00025.log").write_text(json.dumps({
+            "steps": 200, "seed": 7,
+            "termination_reasons": {"robot_a": ["timeout"],
+                                    "robot_b": ["ko"]},
+            "health_a": 1.0, "health_b": 0.0,
+        }), encoding="utf-8")
+        (vdir / "u00050.mp4").write_bytes(b"y" * 20)   # no sidecar
+        (vdir / "notes.txt").write_text("ignore me")  # non-mp4 skipped
+        (run_dir / "train.log").write_text(
+            '__RAW_STATS__ {"update": 25, "eval_info": '
+            '{"success": 0.5, "final_pot": 0.9}}\n'
+            '__RAW_STATS__ {"update": 50, "eval_info": '
+            '{"success": 1.0, "final_pot": 1.0}}\n',
+            encoding="utf-8",
+        )
+        rd = RunData(run_dir)
+        vids = rd.videos()
+        assert len(vids) == 2
+        assert vids[0]["name"] == "u00050.mp4"      # newest update first
+        assert vids[0]["eval_success"] == 1.0
+        assert vids[0]["eval_pot"] == 1.0
+        assert vids[0]["steps"] is None           # missing sidecar
+        assert vids[1]["update"] == 25
+        assert vids[1]["term_a"] == "timeout"
+        assert vids[1]["term_b"] == "ko"
+        assert vids[1]["health_a"] == 1.0
+        assert vids[1]["seed"] == 7
+        # video_path: whitelist + existence
+        assert rd.video_path("u00025.mp4") is not None
+        assert rd.video_path("../x.mp4") is None
+        assert rd.video_path("u00099.mp4") is None
+        assert rd.video_path("notes.txt") is None
+        print("test_run_data_videos: PASS")
+
+
+def test_run_data_metrics_has_eval_keys():
+    """eval_info scalars flatten to eval.* keys in metrics()."""
+    with tempfile.TemporaryDirectory() as d:
+        run_dir = Path(d) / "run"
+        run_dir.mkdir()
+        (run_dir / "train.log").write_text(
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.1}, '
+            '"eval_info": {"success": 0.75, "final_pot": 0.8}}\n',
+            encoding="utf-8",
+        )
+        m = RunData(run_dir).metrics()[0]
+        assert m["eval.success"] == 0.75
+        assert m["eval.final_pot"] == 0.8
+        print("test_run_data_metrics_has_eval_keys: PASS")
+
+
 # ---------------------------------------------------------------------------
 # Runs-root index (list_runs / query_runs_index / resolve_run)
 # ---------------------------------------------------------------------------
@@ -890,4 +948,6 @@ if __name__ == "__main__":
     test_list_runs_status_rules()
     test_query_runs_index_filter_sort_paginate()
     test_resolve_run_validation_and_cache()
+    test_run_data_videos()
+    test_run_data_metrics_has_eval_keys()
     print("\nAll viewer tests passed!")
