@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -65,6 +67,31 @@ from .dumpkit.dump_capture import capture_dump
 # and they do not influence training. Keeping them framework-owned avoids
 # boilerplate in every experiment subclass.
 # ---------------------------------------------------------------------------
+
+_EXP_METRIC_KEY = re.compile(r"^[a-z0-9_]+$")
+
+
+def _sanitize_exp_metrics(m: Any) -> Dict[str, float]:
+    """Keep only finite scalar metrics with safe key names.
+
+    ``on_update()`` may return arbitrary objects; anything that is not a
+    finite ``int``/``float``/``bool`` scalar, or whose key is not a
+    lowercase ``[a-z0-9_]`` identifier (dots would corrupt the viewer's
+    ``exp.*`` flattening), is silently dropped.  ``None`` and
+    non-mapping returns yield ``{}`` — no experiment metrics.
+    """
+    if not isinstance(m, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for k, v in m.items():
+        if not isinstance(k, str) or not _EXP_METRIC_KEY.match(k):
+            continue
+        if isinstance(v, bool):
+            out[k] = float(v)
+        elif isinstance(v, (int, float)) and math.isfinite(v):
+            out[k] = float(v)
+    return out
+
 
 def _episode_stats(episodes: List[Episode]) -> Dict[str, Any]:
     """Compute episode-level stats from raw rollout episodes for logging."""
@@ -577,8 +604,11 @@ def train_ppo(
             # P0-3: Skip on_update for empty-buffer updates so the
             # experiment's KL history doesn't get polluted with zeros
             # (which would be misread as "KL too flat, push exploration").
+            exp_metrics: Optional[Dict[str, float]] = None
             if not stats.is_empty:
-                experiment.on_update(stats, u)
+                exp_metrics = _sanitize_exp_metrics(
+                    experiment.on_update(stats, u)
+                )
             else:
                 print(f"  [skip] build_trajectories returned no usable frames "
                       f"(episodes={len(episodes)}); PPO update skipped",
@@ -815,6 +845,8 @@ def train_ppo(
                     "eval": round(t_eval, 2),
                 },
             }
+            if exp_metrics:
+                raw_log_dict["experiment"] = exp_metrics
             if eval_info is not None:
                 raw_log_dict["eval_info"] = eval_info
             print(f"__RAW_STATS__ {json.dumps(raw_log_dict, default=str)}", flush=True)

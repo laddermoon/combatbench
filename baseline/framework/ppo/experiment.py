@@ -815,7 +815,7 @@ class ExperimentPPO(ABC):
 
     def on_update(
         self, stats: "UpdateStats", update: int,
-    ) -> None:
+    ) -> Optional[Mapping[str, float]]:
         """Absorb training statistics into internal state.
 
         Called once per update **after** ``ppo_update`` completes, with
@@ -828,10 +828,6 @@ class ExperimentPPO(ABC):
         episodes, while ``on_update`` closes the loop on *exploration
         strength* using training statistics.
 
-        The default implementation does nothing — an experiment that
-        does not need closed-loop exploration scheduling can ignore
-        this method entirely.
-
         Args:
             stats: Typed summary of this update's PPO results.  See
                 :class:`UpdateStats` for the full field list.  The
@@ -839,8 +835,24 @@ class ExperimentPPO(ABC):
                 diagnostics but has **no cross-family contract** —
                 treat it as opaque hints.
             update: Current update index (1-based, matches the loop).
+
+        Returns:
+            Optional experiment-defined metrics for this update.  Any
+            returned mapping is logged under the ``experiment`` key of
+            ``__RAW_STATS__`` and surfaces in the viewer as ``exp.*``
+            charts — the update-time mirror of ``on_eval``'s ``info``
+            dict.  ``None`` (the default) logs nothing.  Only finite
+            scalars with ``[a-z0-9_]`` keys are kept.
+
+            Metrics needing episode/trajectory data are accumulated
+            during ``build_trajectories()`` (which sees every episode)
+            and reported here — e.g. stash ``self._final_pots`` while
+            building, then ``return {"online_success": ...}``.  A
+            subclass that overrides ``on_update`` for its own state
+            tracking should ``super().on_update(stats, update)`` and
+            merge the returned dict so it doesn't drop base metrics.
         """
-        pass
+        return None
 
     def exploration(
         self, update: int,

@@ -161,12 +161,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # Update feedback & Exploration scheduling
     # ------------------------------------------------------------------
 
-    def on_update(self, stats, update: int) -> None:
+    def on_update(self, stats, update: int):
         """Default: no-op.  Override to accumulate training stats for
-        closed-loop exploration scheduling, e.g.::
+        closed-loop exploration scheduling, and/or to emit
+        experiment-defined metrics (``exp.*`` in the viewer), e.g.::
 
             def on_update(self, stats, update):
+                metrics = super().on_update(stats, update) or {}
                 self._kl_history.append(stats.approx_kl)
+                metrics["kl_3u_mean"] = sum(self._kl_history[-3:]) / 3
+                return metrics
 
             def exploration(self, update):
                 coef = self.uncertainty_coef
@@ -176,7 +180,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     coef *= 4.0  # KL flat for 3 updates, push exploration
                 return ExplorationSpec(uncertainty_coef=coef)
         """
-        pass
+        return None
 
     def exploration(self, update: int) -> ExplorationSpec:
         """Static exploration spec built from the class attributes.

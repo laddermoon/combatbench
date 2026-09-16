@@ -656,6 +656,53 @@ def test_run_data_metrics():
         print("test_run_data_metrics: PASS")
 
 
+def test_run_data_metrics_experiment():
+    """experiment dict in __RAW_STATS__ flattens to exp.*; invalid dropped."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        log = run_dir / "train.log"
+        log.write_text(
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.01}, '
+            '"experiment": {"online_success": 0.25, "bad_nan": NaN, '
+            '"bad_str": "x", "count": 3}}\n',
+            encoding="utf-8",
+        )
+        rd = RunData(run_dir)
+        m = rd.metrics()[0]
+        assert m["exp.online_success"] == 0.25
+        assert m["exp.count"] == 3.0
+        assert "exp.bad_nan" not in m  # non-finite dropped
+        assert "exp.bad_str" not in m  # non-scalar dropped
+        # Old logs without "experiment" still parse — covered by
+        # test_run_data_metrics (its log has no experiment key).
+        print("test_run_data_metrics_experiment: PASS")
+
+
+def test_sanitize_exp_metrics():
+    """_sanitize_exp_metrics keeps finite scalars with safe keys only."""
+    from baseline.framework.ppo.loop import _sanitize_exp_metrics
+
+    out = _sanitize_exp_metrics({
+        "ok": 1.5,
+        "int_val": 2,
+        "flag": True,
+        "nan_val": float("nan"),
+        "inf_val": float("inf"),
+        "Bad Key": 1.0,
+        "dotted.key": 1.0,
+        "nested": {"a": 1},
+        "arr": np.array([1.0]),
+        "str_val": "x",
+        5: 1.0,
+    })
+    assert out == {"ok": 1.5, "int_val": 2.0, "flag": 1.0}
+    assert _sanitize_exp_metrics(None) == {}
+    assert _sanitize_exp_metrics("not a dict") == {}
+    assert _sanitize_exp_metrics({}) == {}
+    print("test_sanitize_exp_metrics: PASS")
+
+
 def test_run_data_metrics_incremental():
     """metrics() picks up appended lines and survives a partial tail line."""
     with tempfile.TemporaryDirectory() as d:

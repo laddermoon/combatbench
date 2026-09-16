@@ -20,7 +20,7 @@ Observer:  StandingBalance4StageRewarder (provides "potential" per step)
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -93,6 +93,9 @@ class Standup(CombatExperimentPPOBase):
     # --- Stateful metrics ---
     _best_potential: float = -1.0
     _success_rate: float = 0.0
+    # Final potentials of the current update's trajectories, collected
+    # by _build_agent_trajectory and consumed by on_update's metrics.
+    _ep_final_pots: Optional[list] = None
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
         return (
@@ -104,6 +107,7 @@ class Standup(CombatExperimentPPOBase):
         )
 
     def build_trajectories(self, episodes) -> List[Trajectory]:
+        self._ep_final_pots = []
         all_trajs: List[Trajectory] = []
         for episode in episodes:
             for agent_id, obs_key in self._AGENT_OBS:
@@ -132,6 +136,10 @@ class Standup(CombatExperimentPPOBase):
         )
         if phi_arr is not None:
             phi_arr = phi_arr[:T_full]
+            if phi_arr.size and self._ep_final_pots is not None:
+                self._ep_final_pots.append(
+                    float(np.clip(phi_arr[-1], 0.0, 1.0))
+                )
         else:
             phi_arr = np.zeros(T_full, dtype=np.float32)
         phi_arr = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
@@ -159,6 +167,24 @@ class Standup(CombatExperimentPPOBase):
             importance=1.0,
             explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
         )]
+
+    def on_update(self, stats, update):
+        """Per-update experiment metrics (logged as exp.*).
+
+        online_success: fraction of this update's trajectories whose
+        FINAL potential reached >= 0.9 (ended standing) — a dense
+        per-update proxy for the sparse eval success curve.
+
+        final_potential_mean: mean final potential across trajectories.
+        """
+        finals = self._ep_final_pots or []
+        self._ep_final_pots = []
+        if not finals:
+            return None
+        return {
+            "online_success": sum(1 for p in finals if p >= 0.9) / len(finals),
+            "final_potential_mean": sum(finals) / len(finals),
+        }
 
     def on_eval(self, episodes, update) -> Dict[str, Any]:
         max_pots = []

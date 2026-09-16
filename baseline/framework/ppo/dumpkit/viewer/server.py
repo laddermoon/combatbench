@@ -589,6 +589,15 @@ class RunData:
         for k, v in ep.items():
             if isinstance(v, (int, float)):
                 out[f"ep.{k}"] = float(v)
+
+        # Experiment-defined metrics (on_update() return value) get
+        # their own exp.* namespace — parallel to policy.*, absent in
+        # logs written before this field existed.
+        exp = raw.get("experiment")
+        if isinstance(exp, dict):
+            for k, v in exp.items():
+                if isinstance(v, (int, float)) and math.isfinite(v):
+                    out[f"exp.{k}"] = float(v)
         # per-channel buffer stats → pc.<field>.<ch>
         if isinstance(pc, dict):
             for ch, fields in pc.items():
