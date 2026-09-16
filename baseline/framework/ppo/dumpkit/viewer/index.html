@@ -82,6 +82,32 @@
   .update-controls a.dump-link { color: var(--accent); cursor: pointer; font-size: 12px; margin-left: 8px; }
   table.dump-table tr.dump-active { background: var(--accent-dim); }
 
+  /* Runs index page */
+  #page-runs { padding: 16px; overflow: auto; height: 100%; }
+  .runs-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .runs-toolbar input[type="text"] { flex: 0 0 260px; background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font-size: 12px; }
+  .runs-toolbar select, .runs-toolbar button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  .runs-toolbar .muted { color: var(--muted); font-size: 12px; margin-left: auto; }
+  table.runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.runs-table th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; cursor: pointer; white-space: nowrap; user-select: none; }
+  table.runs-table th:hover { color: var(--text); }
+  table.runs-table th .sort-arrow { color: var(--accent); }
+  table.runs-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  table.runs-table tr.run-row { cursor: pointer; }
+  table.runs-table tr.run-row:hover { background: var(--panel-alt); }
+  table.runs-table td.run-name { font-family: ui-monospace, monospace; color: var(--accent); }
+  .st-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .st-running { background: rgba(110,200,110,0.15); color: var(--green); }
+  .st-finished { background: rgba(79,163,255,0.15); color: var(--accent); }
+  .st-stopped { background: rgba(209,154,102,0.15); color: var(--orange); }
+  .st-unknown { background: var(--panel-alt); color: var(--muted); }
+  .prog-cell { display: flex; align-items: center; gap: 6px; }
+  .prog-bar { width: 60px; height: 4px; background: var(--panel-alt); border-radius: 2px; overflow: hidden; flex-shrink: 0; }
+  .prog-bar i { display: block; height: 100%; background: var(--accent); }
+  .runs-pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; color: var(--muted); font-size: 12px; }
+  .runs-pager button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  .runs-pager button:disabled { opacity: 0.4; cursor: default; }
+
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
   .card h2 { margin: 0 0 12px 0; font-size: 13px; color: var(--text); }
   .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
@@ -328,6 +354,25 @@
   </header>
 
   <div id="content">
+    <!-- Runs index (runs-root mode only): all runs under the root -->
+    <div class="page" id="page-runs">
+      <div class="card">
+        <h2>Runs</h2>
+        <div class="runs-toolbar">
+          <input id="runs-search" type="text" placeholder="search name / experiment / algo..." />
+          <select id="runs-size">
+            <option value="20">20 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+          </select>
+          <button id="runs-refresh">Refresh</button>
+          <span class="muted" id="runs-count"></span>
+        </div>
+        <div id="runs-table-container"><div class="loading">loading...</div></div>
+        <div class="runs-pager" id="runs-pager"></div>
+      </div>
+    </div>
+
     <!-- Run home (run mode only): dump list + training metrics -->
     <div class="page" id="page-run">
       <div class="run-layout">
@@ -463,7 +508,10 @@
 
   // --- Global state ---
   const state = {
-    mode: 'dump',          // 'run' | 'dump'
+    mode: 'dump',          // 'runs' | 'run' | 'dump'
+    rootMode: null,        // server context reported by /api/mode
+    runName: null,         // runs mode: selected run (from /run/<name>/)
+    runsQ: {q: '', page: 1, size: 20, sort: 'created', order: 'desc'},
     dumpName: null,        // run mode: which dump is loaded
     runInfo: null,
     runDumps: null,
@@ -508,6 +556,7 @@
   // --- DOM helpers ---
   const $ = id => document.getElementById(id);
   const pages = {
+    runs: $('page-runs'),
     run: $('page-run'),
     home: $('page-home'),
     episode: $('page-episode'),
@@ -517,27 +566,36 @@
   };
 
   // --- URL helpers ---
-  // In run mode with a loaded dump, API calls are scoped under
-  // /api/dump/<name>/ and images under /img/dump/<name>/.
+  // In runs mode every API/image/page URL for a selected run is prefixed
+  // /run/<name>; in run mode with a loaded dump, API calls are additionally
+  // scoped under /api/dump/<name>/ and images under /img/dump/<name>/.
   function api(path) {
-    const prefix = (state.mode === 'run' && state.dumpName)
+    let prefix = (state.mode === 'run' && state.dumpName)
       ? `/api/dump/${state.dumpName}` : '/api';
+    if (state.rootMode === 'runs' && state.runName)
+      prefix = `/run/${encodeURIComponent(state.runName)}${prefix}`;
     return `${prefix}/${path}`;
   }
   function imgUrl(ep, frame) {
-    return (state.mode === 'run' && state.dumpName)
+    let url = (state.mode === 'run' && state.dumpName)
       ? `/img/dump/${state.dumpName}/${ep}/${frame}` : `/img/${ep}/${frame}`;
+    if (state.rootMode === 'runs' && state.runName)
+      url = `/run/${encodeURIComponent(state.runName)}${url}`;
+    return url;
   }
   // Browser URL for the current view state (deep-linkable).
   function urlForCurrent() {
+    const r = (state.rootMode === 'runs' && state.runName)
+      ? `/run/${encodeURIComponent(state.runName)}` : '';
     const d = (state.mode === 'run' && state.dumpName) ? `/dump/${state.dumpName}` : '';
     switch (state.currentPage) {
-      case 'run': return '/';
-      case 'episode': return `${d}/episode/${state.selectedEpisode}`;
-      case 'traj': return `${d}/trajectory/${state.selectedTraj}`;
-      case 'timeline': return `${d}/timeline`;
-      case 'dataflow': return `${d}/dataflow`;
-      default: return d + '/';
+      case 'runs': return '/';
+      case 'run': return `${r}/`;
+      case 'episode': return `${r}${d}/episode/${state.selectedEpisode}`;
+      case 'traj': return `${r}${d}/trajectory/${state.selectedTraj}`;
+      case 'timeline': return `${r}${d}/timeline`;
+      case 'dataflow': return `${r}${d}/dataflow`;
+      default: return r + d + '/';
     }
   }
 
@@ -632,8 +690,14 @@
     const bc = $('breadcrumb');
     bc.innerHTML = '';
     const crumbs = [];
+    if (state.rootMode === 'runs') {
+      crumbs.push({label: 'Runs', page: 'runs'});
+    }
     if (state.mode === 'run') {
-      crumbs.push({label: 'Run', page: 'run'});
+      crumbs.push({
+        label: (state.rootMode === 'runs' && state.runName) ? state.runName : 'Run',
+        page: 'run',
+      });
       if (state.currentPage !== 'run' && state.dumpName) {
         crumbs.push({label: state.dumpName, page: 'home'});
       }
@@ -679,9 +743,16 @@
   }
 
   function navigate(page, push = true) {
+    if (page === 'runs') {
+      // Leave the selected run — back to the index.
+      state.runName = null;
+      state.dumpName = null;
+      state.mode = 'runs';
+    }
     showPage(page);
     if (push) history.pushState({}, '', urlForCurrent());
-    if (page === 'run') renderRunHome();
+    if (page === 'runs') renderRunsIndex();
+    else if (page === 'run') renderRunHome();
     else if (page === 'home') renderHome();
     else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
     else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
@@ -1027,15 +1098,19 @@
   async function init() {
     try {
       const modeRes = await fetchJson('/api/mode');
+      state.rootMode = modeRes.mode;
       state.mode = modeRes.mode;
       if (state.mode === 'run') {
         state.runInfo = await fetchJson('/api/run/info');
         state.runDumps = await fetchJson('/api/run/dumps');
         $('header-meta').textContent =
           `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ${state.runInfo.n_dumps} dumps`;
-      } else {
+      } else if (state.mode === 'dump') {
         await loadDump(null);
         setDumpHeader();
+      } else {
+        // runs mode — applyRoute() resolves /run/<name>/... or the index
+        $('header-meta').textContent = 'runs index';
       }
       await applyRoute(location.pathname);
     } catch (e) {
@@ -1044,13 +1119,44 @@
   }
 
   // --- URL routing ---
-  // Run mode: /, /dump/<name>/, /dump/<name>/episode/<pos>,
-  //           /dump/<name>/trajectory/<idx>, /dump/<name>/timeline
+  // Runs mode: / (index), /run/<name>/, /run/<name>/dump/<d>/...
+  // Run mode:  /, /dump/<name>/, /dump/<name>/episode/<pos>,
+  //            /dump/<name>/trajectory/<idx>, /dump/<name>/timeline
   // Dump mode: /, /episode/<pos>, /trajectory/<idx>, /timeline
   async function applyRoute(path) {
     let sub = path;
+    if (state.rootMode === 'runs') {
+      const rm = path.match(/^\/run\/([^/?]+)(\/.*)?$/);
+      if (!rm) {
+        state.runName = null;
+        state.dumpName = null;
+        state.mode = 'runs';
+        $('header-meta').textContent = 'runs index';
+        showPage('runs');
+        renderRunsIndex();
+        return;
+      }
+      const name = decodeURIComponent(rm[1]);
+      if (state.runName !== name || state.mode !== 'run') {
+        state.runName = name;
+        state.mode = 'run';
+        state.dumpName = null;
+        state.manifest = null;
+        try {
+          state.runInfo = await fetchJson(api('run/info'));
+          state.runDumps = await fetchJson(api('run/dumps'));
+        } catch (e) {
+          $('content').innerHTML =
+            `<div class="error-msg">Run not found: ${escapeHtml(name)} (${escapeHtml(e.message)})</div>`;
+          return;
+        }
+        $('header-meta').textContent =
+          `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ${state.runInfo.n_dumps} dumps`;
+      }
+      sub = rm[2] || '/';
+    }
     if (state.mode === 'run') {
-      const m = path.match(/^\/dump\/([^/?]+)(\/.*)?$/);
+      const m = sub.match(/^\/dump\/([^/?]+)(\/.*)?$/);
       if (!m) {
         showPage('run');
         renderRunHome();
@@ -1098,6 +1204,130 @@
   window.addEventListener('popstate', () => {
     applyRoute(location.pathname);
   });
+
+  // --- Runs index page (runs-root mode) ---
+  function fmtDate(ts) {
+    const d = new Date(ts * 1000);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+      `${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function fmtAgo(ts) {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 90) return `${Math.round(s)}s ago`;
+    if (s < 3600) return `${Math.round(s / 60)}m ago`;
+    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  }
+
+  async function renderRunsIndex() {
+    if (state.rootMode !== 'runs' || state.currentPage !== 'runs') return;
+    const q = state.runsQ;
+    const url = `/api/runs?q=${encodeURIComponent(q.q)}&page=${q.page}` +
+      `&size=${q.size}&sort=${q.sort}&order=${q.order}`;
+    let data;
+    try {
+      data = await fetchJson(url);
+    } catch (e) {
+      $('runs-table-container').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    $('runs-count').textContent =
+      `${data.total} run${data.total === 1 ? '' : 's'}`;
+    const cols = [
+      ['status', 'status'], ['name', 'name'], ['experiment', 'experiment'],
+      ['update', 'update'], ['success', 'eval'], [null, 'dumps'],
+      ['created', 'created'], ['activity', 'activity'],
+    ];
+    let html = '<table class="runs-table"><thead><tr>';
+    cols.forEach(([key, label]) => {
+      const arrow = (key && q.sort === key)
+        ? (q.order === 'asc' ? '▲' : '▼') : '';
+      html += `<th data-sort="${key || ''}">${label}` +
+        `<span class="sort-arrow">${arrow}</span></th>`;
+    });
+    html += '</tr></thead><tbody>';
+    if (!data.runs.length) {
+      html += '<tr><td colspan="8" style="color:var(--muted);' +
+        'padding:24px;text-align:center">no runs found</td></tr>';
+    }
+    data.runs.forEach(r => {
+      const prog = (r.update != null && r.max_updates)
+        ? `${r.update}/${r.max_updates}` : (r.update != null ? `${r.update}` : '-');
+      const pct = (r.update != null && r.max_updates)
+        ? Math.min(100, 100 * r.update / r.max_updates) : 0;
+      html += `<tr class="run-row" data-name="${escapeHtml(r.name)}">`;
+      html += `<td><span class="st-badge st-${r.status}">${r.status}</span></td>`;
+      html += `<td class="run-name">${escapeHtml(r.name)}</td>`;
+      html += `<td>${escapeHtml((r.experiment || '?') + (r.algo ? ' · ' + r.algo : ''))}</td>`;
+      html += `<td><div class="prog-cell"><div class="prog-bar">` +
+        `<i style="width:${pct}%"></i></div>${prog}</div></td>`;
+      html += `<td>${r.eval_success != null ? fmt(r.eval_success, 2) : '-'}</td>`;
+      html += `<td>${r.n_dumps}</td>`;
+      html += `<td>${r.created ? fmtDate(r.created) : '-'}</td>`;
+      html += `<td>${r.activity ? fmtAgo(r.activity) : '-'}</td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    $('runs-table-container').innerHTML = html;
+    $('runs-table-container').querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.sort;
+        if (!k) return;
+        if (q.sort === k) q.order = (q.order === 'asc' ? 'desc' : 'asc');
+        else { q.sort = k; q.order = 'desc'; }
+        renderRunsIndex();
+      });
+    });
+    $('runs-table-container').querySelectorAll('tr.run-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+    const nPages = Math.max(1, Math.ceil(data.total / q.size));
+    if (q.page > nPages) q.page = nPages;
+    const pager = $('runs-pager');
+    pager.innerHTML = '';
+    const mk = (label, dis, fn) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.disabled = dis;
+      b.addEventListener('click', fn);
+      pager.appendChild(b);
+    };
+    mk('◀ prev', q.page <= 1, () => { q.page--; renderRunsIndex(); });
+    const info = document.createElement('span');
+    info.textContent = `page ${q.page} / ${nPages}`;
+    pager.appendChild(info);
+    mk('next ▶', q.page >= nPages, () => { q.page++; renderRunsIndex(); });
+  }
+
+  // Runs index toolbar wiring (elements always exist in the DOM).
+  let _runsSearchTimer = null;
+  $('runs-search').addEventListener('input', e => {
+    clearTimeout(_runsSearchTimer);
+    _runsSearchTimer = setTimeout(() => {
+      state.runsQ.q = e.target.value;
+      state.runsQ.page = 1;
+      renderRunsIndex();
+    }, 250);
+  });
+  $('runs-size').addEventListener('change', e => {
+    state.runsQ.size = parseInt(e.target.value);
+    state.runsQ.page = 1;
+    renderRunsIndex();
+  });
+  $('runs-refresh').addEventListener('click', () => renderRunsIndex());
+  // Auto-refresh the index while it is the visible page.
+  setInterval(() => {
+    if (state.currentPage === 'runs' &&
+        document.visibilityState === 'visible') {
+      renderRunsIndex();
+    }
+  }, 10000);
 
   // --- Run home page ---
   // Framework-owned charts in a fixed editorial order. Spec kinds:
@@ -1250,8 +1480,8 @@
     renderRunInfoPanel();
     // Refresh dump list + metrics each visit (train.log grows during training).
     try {
-      state.runDumps = await fetchJson('/api/run/dumps');
-      state.runMetrics = await fetchJson('/api/run/metrics');
+      state.runDumps = await fetchJson(api('run/dumps'));
+      state.runMetrics = await fetchJson(api('run/metrics'));
     } catch (e) {
       $('dump-list-container').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       return;

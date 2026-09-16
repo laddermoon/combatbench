@@ -282,14 +282,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "and API endpoints.  Pass a training run directory "
             "(runs/.../ containing dumps/ and train.log) for the run-level "
             "view, or a dump directory (runs/.../dumps/u00008/) to jump "
-            "straight into that dump.  Open http://localhost:<port>/ "
-            "in your browser."
+            "straight into that dump.  Pass a runs-root directory (or no "
+            "argument — defaults to baseline/runs) for the multi-run index.  "
+            "Open http://localhost:<port>/ in your browser."
         ),
     )
     p_viewer.add_argument(
         "path",
         type=str,
-        help="Run directory or dump directory.",
+        nargs="?",
+        default="baseline/runs",
+        help="Run directory, dump directory, or runs-root directory "
+             "(default: baseline/runs).",
     )
     p_viewer.add_argument(
         "--port",

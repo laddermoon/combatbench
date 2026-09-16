@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import re
 import socketserver
 import sys
 import threading
+import time
+import urllib.parse
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -445,6 +449,231 @@ class RunData:
             "has_train_log": self.train_log_path.exists(),
             "n_dumps": len(self.dumps()),
         }
+
+
+# ---------------------------------------------------------------------------
+# Runs-root mode: index of every run under a parent directory
+# ---------------------------------------------------------------------------
+
+_RUN_NAME_TS = re.compile(r"_(\d{8})_(\d{6})$")
+
+
+def _tail_raw_stats(
+    log_path: Path, tail_bytes: int = 262144,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """(latest stats, latest stats with eval_info) from train.log's tail.
+
+    Index view needs only the latest update — tail-read avoids parsing
+    whole logs for every run on every listing.  eval_info only exists on
+    eval_interval updates, so the scan keeps going backwards until it
+    also finds one line carrying eval results (or exhausts the tail).
+    """
+    try:
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as f:
+            f.seek(max(0, size - tail_bytes))
+            tail = f.read()
+    except OSError:
+        return None, None
+    latest: Optional[Dict[str, Any]] = None
+    latest_eval: Optional[Dict[str, Any]] = None
+    for line in reversed(tail.decode("utf-8", errors="replace").splitlines()):
+        i = line.find("__RAW_STATS__")
+        if i < 0:
+            continue
+        try:
+            d = json.loads(line[i + len("__RAW_STATS__"):])
+        except json.JSONDecodeError:
+            continue
+        if latest is None:
+            latest = d
+        if latest_eval is None and d.get("eval_info"):
+            latest_eval = d
+        if latest is not None and latest_eval is not None:
+            break
+    return latest, latest_eval
+
+
+def _pid_alive(pid_path: Path) -> Optional[bool]:
+    """True/False when a pid file exists; None when absent or unreadable."""
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _run_created_ts(
+    name: str, run_dir: Path, cfg: Optional[Dict[str, Any]],
+) -> float:
+    """Best-effort creation time: config saved_at → name ts → dir mtime."""
+    if cfg:
+        saved = cfg.get("saved_at")
+        if isinstance(saved, str):
+            try:
+                return time.mktime(
+                    time.strptime(saved, "%Y-%m-%d %H:%M:%S")
+                )
+            except ValueError:
+                pass
+    m = _RUN_NAME_TS.search(name)
+    if m:
+        try:
+            return time.mktime(
+                time.strptime(m.group(0).lstrip("_"), "%Y%m%d_%H%M%S")
+            )
+        except ValueError:
+            pass
+    try:
+        return run_dir.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
+    """Lightweight per-run summary for the runs index."""
+    cfg: Optional[Dict[str, Any]] = None
+    cfg_path = run_dir / "config.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cfg = None
+    log_path = run_dir / "train.log"
+    last, last_eval = (
+        _tail_raw_stats(log_path) if log_path.exists() else (None, None)
+    )
+    exp = (cfg or {}).get("experiment") or {}
+    common = exp.get("common_params") or {}
+    max_updates = common.get("max_updates")
+    update = last.get("update") if isinstance(last, dict) else None
+    eval_info = (last_eval or {}).get("eval_info") or {}
+    try:
+        activity = log_path.stat().st_mtime
+    except OSError:
+        activity = run_dir.stat().st_mtime
+    alive = _pid_alive(run_dir / "pid")
+    fresh = (time.time() - activity) < 90.0
+    if alive:
+        status = "running"
+    elif update is not None and max_updates and update >= max_updates:
+        status = "finished"
+    elif alive is None and fresh:
+        # No pid file but the log moved within the last 90s.
+        status = "running"
+    elif update is None:
+        status = "unknown"
+    else:
+        status = "stopped"
+    dumps_dir = run_dir / "dumps"
+    n_dumps = 0
+    if dumps_dir.is_dir():
+        n_dumps = sum(
+            1 for c in dumps_dir.iterdir()
+            if c.is_dir() and (c / "manifest.json").exists()
+        )
+    return {
+        "name": run_dir.name,
+        "experiment": exp.get("name"),
+        "algo": (cfg or {}).get("algorithm"),
+        "status": status,
+        "update": update,
+        "max_updates": max_updates,
+        "eval_success": eval_info.get("success"),
+        "eval_pot": eval_info.get("final_pot") or eval_info.get("max_pot"),
+        "created": _run_created_ts(run_dir.name, run_dir, cfg),
+        "activity": activity,
+        "n_dumps": n_dumps,
+    }
+
+
+def list_runs(root: Path) -> List[Dict[str, Any]]:
+    """All run dirs under root (anything containing config.json or
+    train.log), unsorted."""
+    out: List[Dict[str, Any]] = []
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return out
+    for d in children:
+        if not d.is_dir():
+            continue
+        if not ((d / "config.json").exists() or (d / "train.log").exists()):
+            continue
+        out.append(_scan_run_summary(d))
+    return out
+
+
+def query_runs_index(
+    runs: List[Dict[str, Any]],
+    *,
+    q: str = "",
+    sort: str = "created",
+    order: str = "desc",
+    page: int = 1,
+    size: int = 20,
+) -> Dict[str, Any]:
+    """Filter / sort / paginate a list of run summaries (pure function —
+    the /api/runs handler is a thin wrapper over this)."""
+    page = max(1, page)
+    size = min(200, max(1, size))
+    q = q.strip().lower()
+    if q:
+        runs = [
+            r for r in runs
+            if q in r["name"].lower()
+            or q in str(r.get("experiment") or "").lower()
+            or q in str(r.get("algo") or "").lower()
+        ]
+    else:
+        runs = list(runs)
+    sort_keys = {
+        "name": lambda r: (r["name"] or "").lower(),
+        "experiment": lambda r: (r.get("experiment") or "").lower(),
+        "status": lambda r: r["status"],
+        "update": lambda r: (
+            r["update"] if r["update"] is not None else -1),
+        "success": lambda r: (
+            r["eval_success"]
+            if r["eval_success"] is not None else -1),
+        "created": lambda r: r.get("created") or 0,
+        "activity": lambda r: r.get("activity") or 0,
+    }
+    runs.sort(
+        key=sort_keys.get(sort, sort_keys["created"]),
+        reverse=(order != "asc"),
+    )
+    total = len(runs)
+    start = (page - 1) * size
+    return {
+        "total": total,
+        "page": page,
+        "size": size,
+        "runs": runs[start:start + size],
+    }
+
+
+def resolve_run(
+    root: Path, name: str, cache: Dict[str, "RunData"],
+) -> Optional["RunData"]:
+    """Resolve a run name to a cached RunData. Only direct children of
+    root that look like run dirs are accepted (blocks ../ etc.)."""
+    if not name or "/" in name or "\\" in name:
+        return None
+    d = (root / name).resolve()
+    if d.parent != root or not d.is_dir():
+        return None
+    if not ((d / "config.json").exists() or (d / "train.log").exists()):
+        return None
+    rd = cache.get(name)
+    if rd is None:
+        rd = RunData(d)
+        cache[name] = rd
+    return rd
 
 
 def _build_traj_map_from_frame_ids(
@@ -1272,7 +1501,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     - run mode: ``server.run_data`` is a RunData; routes ``/api/run/...``,
       ``/api/dump/<name>/...``, ``/img/dump/<name>/...``, and ``/dump/<name>/...``
       serves the SPA for client-side routing.
+    - runs mode: ``server.runs_root`` is a Path whose children are run dirs;
+      ``/`` serves the runs index, ``/api/runs`` lists summaries, and
+      ``/run/<name>/...`` prefixes scope all run/dump routes to that run.
     """
+
+    # Set when the request is scoped to /run/<name>/... in runs mode.
+    _run_override: Optional["RunData"] = None
 
     @property
     def api(self) -> Optional[ViewerAPI]:
@@ -1280,7 +1515,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
 
     @property
     def run_data(self) -> Optional[RunData]:
+        if self._run_override is not None:
+            return self._run_override
         return getattr(self.server, "run_data", None)  # type: ignore[attr-defined]
+
+    @property
+    def runs_root(self) -> Optional[Path]:
+        return getattr(self.server, "runs_root", None)  # type: ignore[attr-defined]
 
     @property
     def viewer_dir(self) -> Path:
@@ -1289,8 +1530,27 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002
         return  # quiet
 
+    def _run_for_name(self, name: str) -> Optional["RunData"]:
+        root = self.runs_root
+        if root is None:
+            return None
+        return resolve_run(
+            root, name, self.server.run_cache  # type: ignore[attr-defined]
+        )
+
     def do_GET(self):
         path = self.path.split("?")[0]  # strip query
+
+        # Runs-root mode: /run/<name>/... scopes everything below it.
+        if self.runs_root is not None:
+            m = re.match(r"^/run/([^/]+)(/.*)?$", path)
+            if m:
+                rd = self._run_for_name(urllib.parse.unquote(m.group(1)))
+                if rd is None:
+                    self.send_error(404)
+                    return
+                self._run_override = rd
+                path = m.group(2) or "/"
 
         # API routes
         if path.startswith("/api/"):
@@ -1327,13 +1587,36 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return api.handle("/api/" + sub)
         return 404, {"error": f"unknown run api: {path}"}
 
+    def _runs_index(self) -> Dict[str, Any]:
+        """GET /api/runs?q=&page=&size=&sort=&order= — paginated summaries."""
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            page = int((qs.get("page") or ["1"])[0])
+            size = int((qs.get("size") or ["20"])[0])
+        except ValueError:
+            page, size = 1, 20
+        return query_runs_index(
+            list_runs(self.runs_root),  # type: ignore[arg-type]
+            q=(qs.get("q") or [""])[0],
+            sort=(qs.get("sort") or ["created"])[0],
+            order=(qs.get("order") or ["desc"])[0],
+            page=page,
+            size=size,
+        )
+
     def _handle_api(self, path: str):
         if path == "/api/mode":
-            status, body = 200, {
-                "mode": "run" if self.run_data is not None else "dump",
-            }
+            mode = (
+                "runs" if self.runs_root is not None
+                else "run" if self.run_data is not None else "dump"
+            )
+            status, body = 200, {"mode": mode}
         elif self.run_data is not None:
             status, body = self._run_api(path)
+        elif self.runs_root is not None and path == "/api/runs":
+            status, body = 200, self._runs_index()
+        elif self.runs_root is not None:
+            status, body = 404, {"error": f"unknown api: {path}"}
         else:
             status, body = self.api.handle(path)  # type: ignore[union-attr]
         if status == 200 and isinstance(body, Path):
@@ -1435,8 +1718,9 @@ def serve(
     """Start the viewer HTTP server.
 
     Args:
-        path: Path to a dump directory (runs/.../dumps/u00008/) or a training
-            run directory (runs/.../ containing dumps/ and/or train.log).
+        path: Path to a dump directory (runs/.../dumps/u00008/), a training
+            run directory (runs/.../ containing dumps/ and/or train.log),
+            or a runs-root directory whose children are run dirs.
         port: HTTP port (default 8766).
         open_browser: Auto-open the browser (default True).
     """
@@ -1450,25 +1734,38 @@ def serve(
     is_dump = (path / "manifest.json").exists()
     is_run = not is_dump and (
         (path / "dumps").is_dir() or (path / "train.log").exists()
+        or (path / "config.json").exists()
     )
-    if not is_dump and not is_run:
+    if not is_dump and not is_run and not list_runs(path):
         raise FileNotFoundError(
-            f"not a dump or run dir (no manifest.json / dumps/ / train.log): {path}"
+            f"not a dump / run / runs-root dir "
+            f"(no manifest.json / dumps/ / train.log / run children): {path}"
         )
 
     with _ThreadingServer(("", port), _ViewerHandler) as httpd:
-        # Inject api (dump mode) or run_data (run mode) plus viewer_dir into
-        # the server instance so handlers can access them via self.server.
+        # Inject api (dump mode) or run_data (run mode) or runs_root
+        # (runs index mode) plus viewer_dir into the server instance so
+        # handlers can access them via self.server.
+        httpd.runs_root = None  # type: ignore[attr-defined]
         if is_dump:
             data = DumpData(path)
             _ = data.manifest  # verify manifest exists
             httpd.api = ViewerAPI(data)  # type: ignore[attr-defined]
             httpd.run_data = None  # type: ignore[attr-defined]
             print(f"[viewer] serving dump: {path}", flush=True)
-        else:
+        elif is_run:
             httpd.api = None  # type: ignore[attr-defined]
             httpd.run_data = RunData(path)  # type: ignore[attr-defined]
             print(f"[viewer] serving run: {path}", flush=True)
+        else:
+            httpd.api = None  # type: ignore[attr-defined]
+            httpd.run_data = None  # type: ignore[attr-defined]
+            httpd.runs_root = path  # type: ignore[attr-defined]
+            httpd.run_cache = {}  # type: ignore[attr-defined]
+            print(
+                f"[viewer] serving runs root: {path} "
+                f"({len(list_runs(path))} runs)", flush=True
+            )
         httpd.viewer_dir = _HERE  # type: ignore[attr-defined]
         url = f"http://localhost:{port}/"
         print(f"[viewer] url: {url}", flush=True)

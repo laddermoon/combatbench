@@ -16,6 +16,7 @@ Conventions follow test_dump.py:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -29,7 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
-from baseline.framework.ppo.dumpkit.viewer.server import DumpData, RunData, ViewerAPI
+from baseline.framework.ppo.dumpkit.viewer.server import (
+    DumpData, RunData, ViewerAPI, list_runs, query_runs_index, resolve_run,
+)
 from baseline.framework.ppo.experiment import (
     ActorEval,
     PPOParams,
@@ -716,6 +719,138 @@ def test_run_data_no_train_log():
 
 
 # ---------------------------------------------------------------------------
+# Runs-root index (list_runs / query_runs_index / resolve_run)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_run(
+    root: Path, name: str, *, update=None, max_updates=100,
+    eval_success=None, config=True, log=True, pid=None,
+) -> Path:
+    d = root / name
+    d.mkdir()
+    if config:
+        cfg = {
+            "algorithm": "ppo",
+            "experiment": {
+                "name": name,
+                "common_params": {"max_updates": max_updates},
+            },
+        }
+        (d / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    if log:
+        lines = ["human line"]
+        if update is not None:
+            ev = (
+                f', "eval_info": {{"success": {eval_success}}}'
+                if eval_success is not None else ""
+            )
+            lines.append(f'__RAW_STATS__ {{"update": {update}{ev}}}')
+        (d / "train.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if pid is not None:
+        (d / "pid").write_text(str(pid), encoding="utf-8")
+    return d
+
+
+def test_list_runs_discovers_and_summarizes():
+    """list_runs finds run dirs by markers, summarizes config + log tail."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _make_fake_run(root, "train_a_ppo_20260101_100000",
+                       update=10, max_updates=10, eval_success=1.0)
+        _make_fake_run(root, "train_b_ppo_20260102_100000",
+                       update=5, max_updates=10, pid=99999999)
+        (root / "not_a_run").mkdir()          # no markers → skipped
+        (root / "loose.txt").write_text("x")  # non-dir → skipped
+
+        runs = list_runs(root)
+        assert len(runs) == 2
+        a = next(r for r in runs if r["name"] == "train_a_ppo_20260101_100000")
+        b = next(r for r in runs if r["name"] == "train_b_ppo_20260102_100000")
+        assert a["status"] == "finished"        # update == max_updates
+        assert a["eval_success"] == 1.0
+        assert a["algo"] == "ppo"
+        # name timestamp parsed for created
+        assert a["created"] > 0
+        assert b["status"] == "stopped"         # dead pid, incomplete
+        assert b["update"] == 5
+        assert b["eval_success"] is None        # last stats has no eval_info
+        print("test_list_runs_discovers_and_summarizes: PASS")
+
+
+def test_list_runs_status_rules():
+    """running / finished / stopped / unknown classification."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _make_fake_run(root, "live", update=5, pid=os.getpid())
+        _make_fake_run(root, "fresh", update=5)          # no pid, fresh log
+        _make_fake_run(root, "dead", update=5, pid=99999999)
+        _make_fake_run(root, "empty", update=None, pid=99999999)  # no stats
+        runs = {r["name"]: r for r in list_runs(root)}
+        assert runs["live"]["status"] == "running"
+        assert runs["fresh"]["status"] == "running"      # mtime heuristic
+        assert runs["dead"]["status"] == "stopped"
+        assert runs["empty"]["status"] == "unknown"
+        print("test_list_runs_status_rules: PASS")
+
+
+def test_query_runs_index_filter_sort_paginate():
+    """query_runs_index: search filter, created-desc default, pagination."""
+    runs = [
+        {"name": "train_floor_ppo_20260103_000000", "experiment": "floor",
+         "algo": "ppo", "status": "running", "update": 3, "max_updates": 10,
+         "eval_success": 0.5, "created": 300.0, "activity": 300.0,
+         "n_dumps": 0},
+        {"name": "train_ctrl_ppo_20260101_000000", "experiment": "ctrl",
+         "algo": "ppo", "status": "finished", "update": 10, "max_updates": 10,
+         "eval_success": 1.0, "created": 100.0, "activity": 100.0,
+         "n_dumps": 2},
+        {"name": "train_floor2_ppo_20260102_000000", "experiment": "floor2",
+         "algo": "ppo", "status": "stopped", "update": 7, "max_updates": 10,
+         "eval_success": 0.8, "created": 200.0, "activity": 200.0,
+         "n_dumps": 1},
+    ]
+    # default: created desc
+    res = query_runs_index(runs)
+    assert [r["name"] for r in res["runs"]] == [
+        "train_floor_ppo_20260103_000000",
+        "train_floor2_ppo_20260102_000000",
+        "train_ctrl_ppo_20260101_000000",
+    ]
+    # search over name + experiment
+    res = query_runs_index(runs, q="floor")
+    assert res["total"] == 2
+    res = query_runs_index(runs, q="CTRL")
+    assert res["total"] == 1
+    # pagination
+    res = query_runs_index(runs, size=2, page=1)
+    assert res["total"] == 3 and len(res["runs"]) == 2
+    res = query_runs_index(runs, size=2, page=2)
+    assert len(res["runs"]) == 1
+    # sort by update asc
+    res = query_runs_index(runs, sort="update", order="asc")
+    assert [r["update"] for r in res["runs"]] == [3, 7, 10]
+    print("test_query_runs_index_filter_sort_paginate: PASS")
+
+
+def test_resolve_run_validation_and_cache():
+    """resolve_run accepts real run dirs, rejects traversal, caches."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _make_fake_run(root, "train_x", update=1)
+        (root / "plain_dir").mkdir()
+        cache = {}
+        rd = resolve_run(root, "train_x", cache)
+        assert isinstance(rd, RunData)
+        assert resolve_run(root, "train_x", cache) is rd  # cached
+        assert resolve_run(root, "..", cache) is None
+        assert resolve_run(root, "a/b", cache) is None
+        assert resolve_run(root, "nonexistent", cache) is None
+        assert resolve_run(root, "plain_dir", cache) is None  # no markers
+        print("test_resolve_run_validation_and_cache: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -751,4 +886,8 @@ if __name__ == "__main__":
     test_run_data_metrics_incremental()
     test_run_data_get_dump_api()
     test_run_data_no_train_log()
+    test_list_runs_discovers_and_summarizes()
+    test_list_runs_status_rules()
+    test_query_runs_index_filter_sort_paginate()
+    test_resolve_run_validation_and_cache()
     print("\nAll viewer tests passed!")
