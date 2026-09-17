@@ -127,14 +127,14 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "early_stop_kl_mean：触发 KL 早停当刻的\"本 epoch running mean KL\"（0=未触发）。与 kl_mean 同数量级，放在 KL 图便于直接比较\"日常过程位移\"和\"触发早停的位移阈值\"——若 kl_mean 持续逼近 early_stop_kl_mean 说明更新正贴着 target_kl 走。\n"
              "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×kl_mean = 位移集中在末段爆发；post_kl_mean < kl_mean = 中途位移被后续 minibatch 回退（churn）。\n"
              "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats。"},
-    {"title": "Epochs, Batches & Early Stop",
-     "keys": ["stats.epochs_done", "stats.actor_epochs_done", "stats.n_batches", "stats.actor_steps"],
-     "right": ["stats.early_stop_kl_mean"],
-     "hint": "epochs_done：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\n"
-             "actor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\n"
-             "n_batches：每个 epoch 的 minibatch 数。\n"
-             "actor_steps：actor 实际跑的 minibatch 步数总和，由 epoch_kl_stats 的 n_minibatches 累加——早停 epoch 只算到触发 KL 阈值的那个 minibatch，因此 <= n_batches × actor_epochs_done。\n"
-             "early_stop_kl_mean（右轴）：触发早停当刻的\"本 epoch running mean KL\"（0=未触发）。它是滑动均值不是单点峰值，所以与 kl_max 不相等是正常的；现在使用独立的右轴，避免被 epoch 计数量级压扁。"},
+    {"title": "Epochs, Batches & Actor Steps",
+     "keys": ["stats.epochs_done", "stats.actor_epochs_done"],
+     "right": ["stats.n_batches", "stats.actor_steps"],
+     "hint": "epochs_done（左轴）：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\n"
+             "actor_epochs_done（左轴）：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\n"
+             "n_batches（右轴）：每个 epoch 的 minibatch 数。\n"
+             "actor_steps（右轴）：actor 实际跑的 minibatch 步数总和，由 epoch_kl_stats 的 n_minibatches 累加——早停 epoch 只算到触发 KL 阈值的那个 minibatch，因此 <= n_batches × actor_epochs_done。\n"
+             "右轴的 n_batches / actor_steps 与左轴的 epoch 计数量级不同，分轴显示避免互相压扁。"},
     {"timing": True,
      "hint": "每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。"},
 ]
