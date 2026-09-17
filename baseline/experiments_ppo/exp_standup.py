@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from baseline.framework.ppo.experiment import LRSpec
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
 from baseline.framework.rollout import extract_per_step_field
 
@@ -263,6 +264,20 @@ class Standup(CombatExperimentPPOBase):
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
+
+    def lr_schedule(self, update: int) -> Optional[LRSpec]:
+        """Early-boost LR schedule.
+
+        Start at 1.5x the configured base LR and linearly decay to the
+        base by update 50.  This gives the policy more gradient energy
+        during the initial exploration of the standup phase space, then
+        settles to a stable base rate for refinement.
+        """
+        factor = 1.0 + 0.5 * max(0.0, 1.0 - (update - 1) / 50.0)
+        return LRSpec(
+            actor_lr=self.learning_rate * factor,
+            critic_lr=self.critic_learning_rate * factor,
+        )
 
     def __init__(self, **kwargs):
         """Support --set KEY=VALUE overrides from train.py.
