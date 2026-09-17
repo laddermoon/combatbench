@@ -752,6 +752,117 @@ def test_metric_doc():
     print("test_metric_doc: PASS")
 
 
+def test_run_summary():
+    """RunData.summary(): per-key zone/hint + latest/min/max + updates."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        (run_dir / "train.log").write_text(
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.01}, '
+            '"experiment": {"online_success": 0.1}}\n'
+            '__RAW_STATS__ {"update": 2, "stats": {"policy_loss": -0.05}, '
+            '"experiment": {"online_success": 0.3}, '
+            '"eval_info": {"success": 0.5}}\n',
+            encoding="utf-8",
+        )
+        s = RunData(run_dir).summary()
+        assert s["n_updates"] == 2
+        assert s["run"] == run_dir.name
+
+        pl = s["metrics"]["stats.policy_loss"]
+        assert pl["n"] == 2 and pl["zone"] == "framework"
+        assert pl["latest"] == -0.05 and pl["latest_update"] == 2
+        assert pl["min"] == -0.05 and pl["min_update"] == 2
+        assert pl["max"] == -0.01 and pl["max_update"] == 1
+        assert pl["first_update"] == 1
+
+        es = s["metrics"]["exp.online_success"]
+        assert es["zone"] == "experiment" and es["n"] == 2
+        assert "on_update" in es["hint"]
+
+        ev = s["metrics"]["eval.success"]
+        assert ev["zone"] == "eval" and ev["n"] == 1  # sparse, honest
+        assert ev["first_update"] == 2 and ev["latest"] == 0.5
+        print("test_run_summary: PASS")
+
+
+def test_debug_metrics_cmd(capsys):
+    """debug.py metrics: JSON output, filters, name resolution, exit codes."""
+    from baseline.framework.ppo import debug
+
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        _write_train_log(run_dir)
+        runs_root = run_dir.parent
+        capsys.readouterr()  # drain fixture prints ([dump] captured ...)
+
+        assert debug.main(["metrics", str(run_dir), "--tail", "1"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["n_updates"] == 1 and out["metrics"][0]["update"] == 2
+
+        assert debug.main(
+            ["metrics", str(run_dir), "--keys", "policy_loss"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert set(out["metrics"][0]) == {"update", "stats.policy_loss"}
+
+        assert debug.main(
+            ["metrics", str(run_dir), "--from-update", "2"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["n_updates"] == 1
+
+        # Run-name resolution under --runs-root
+        assert debug.main(
+            ["metrics", run_dir.name, "--runs-root", str(runs_root),
+             "--tail", "1"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["run"] == run_dir.name
+
+        # Missing run → exit 2
+        assert debug.main(
+            ["metrics", "no_such_run", "--runs-root", str(runs_root)]) == 2
+        capsys.readouterr()
+        print("test_debug_metrics_cmd: PASS")
+
+
+def test_debug_summary_cmd(capsys):
+    """debug.py summary: digest JSON with zone+hint attached."""
+    from baseline.framework.ppo import debug
+
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        _write_train_log(run_dir)
+        capsys.readouterr()  # drain fixture prints
+
+        assert debug.main(["summary", str(run_dir)]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["n_updates"] == 2
+        assert out["metrics"]["stats.policy_loss"]["latest"] == -0.02
+        assert "zone" in out["metrics"]["stats.policy_loss"]
+
+        assert debug.main(
+            ["summary", str(run_dir), "--keys", "ep_len"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert set(out["metrics"]) == {"ep.ep_len_mean"}
+        print("test_debug_summary_cmd: PASS")
+
+
+def test_debug_catalog_cmd(capsys):
+    """debug.py catalog: full catalog or single-key doc."""
+    from baseline.framework.ppo import debug
+
+    assert debug.main(["catalog", "--key", "stats.post_kl_mean"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["zone"] == "framework" and "KL" in out["hint"]
+
+    assert debug.main(["catalog"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert len(out["layout"]) > 0
+    assert [z["prefix"] for z in out["zones"]] == ["exp.", "eval.", "policy."]
+    print("test_debug_catalog_cmd: PASS")
+
+
 def test_run_data_metrics_incremental():
     """metrics() picks up appended lines and survives a partial tail line."""
     with tempfile.TemporaryDirectory() as d:

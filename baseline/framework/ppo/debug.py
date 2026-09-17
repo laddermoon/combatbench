@@ -24,6 +24,20 @@ record is written linking the images to the dump frames.
 
 ``--hypothesis`` is mandatory for ``dump``.  Writing a dump without a
 hypothesis is rejected — you must articulate what you're looking for first.
+
+Read-only metric queries (agent-facing, JSON on stdout)::
+
+    # Flattened per-update metrics — identical to the viewer's
+    # /api/run/metrics (same RunData._flatten_update code path).
+    debug.py metrics <run_dir|run_name> [--keys kl,lr] [--tail 20]
+                                       [--from-update A --to-update B] [--docs]
+
+    # One-shot digest: per-metric zone/hint + latest/min/max + where they
+    # occurred — the orientation command to run first.
+    debug.py summary <run_dir|run_name> [--keys kl]
+
+    # Metric semantics catalog (the same data the viewer renders).
+    debug.py catalog [--key stats.post_kl_mean]
 """
 from __future__ import annotations
 
@@ -36,6 +50,124 @@ from baseline.framework.ppo.dumpkit.dump_request import (
     DumpRequest,
     SENTINEL_FILENAME,
 )
+
+_DEFAULT_RUNS_ROOT = "baseline/runs"
+
+
+def _emit(obj, pretty: bool) -> None:
+    print(json.dumps(
+        obj, indent=2 if pretty else None,
+        ensure_ascii=False, default=str,
+    ))
+
+
+def _resolve_run(arg: str, runs_root: str) -> Path:
+    """Resolve <run>: a run-dir path, or a run name under runs_root.
+
+    Name lookup follows the same safety rules as the viewer's
+    resolve_run (direct child only, must contain config.json or
+    train.log).  Raises FileNotFoundError on failure.
+    """
+    p = Path(arg).resolve()
+    if p.is_dir():
+        return p
+    root = Path(runs_root).resolve()
+    candidate = (root / arg).resolve()
+    if (
+        "/" not in arg and "\\" not in arg
+        and candidate.parent == root
+        and candidate.is_dir()
+        and (
+            (candidate / "config.json").exists()
+            or (candidate / "train.log").exists()
+        )
+    ):
+        return candidate
+    raise FileNotFoundError(
+        f"run not found: {arg} (not a directory, and no run named "
+        f"'{arg}' under {root})"
+    )
+
+
+def _run_arg_or_error(args) -> Path:
+    return _resolve_run(args.run, args.runs_root)
+
+
+def _key_patterns(keys_arg: str) -> list:
+    return [k.strip() for k in keys_arg.split(",") if k.strip()]
+
+
+def _cmd_metrics(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.metric_catalog import metric_doc
+    from baseline.framework.ppo.dumpkit.viewer.server import RunData
+
+    try:
+        run_dir = _run_arg_or_error(args)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    metrics = RunData(run_dir).metrics()
+    if args.from_update is not None:
+        metrics = [m for m in metrics if m["update"] >= args.from_update]
+    if args.to_update is not None:
+        metrics = [m for m in metrics if m["update"] <= args.to_update]
+    if args.tail is not None:
+        metrics = metrics[-args.tail:] if args.tail > 0 else []
+    if args.keys:
+        pats = _key_patterns(args.keys)
+        metrics = [
+            {"update": m["update"], **{
+                k: v for k, v in m.items()
+                if k != "update" and any(p in k for p in pats)
+            }}
+            for m in metrics
+        ]
+
+    out = {
+        "run": run_dir.name,
+        "run_dir": str(run_dir),
+        "n_updates": len(metrics),
+        "metrics": metrics,
+    }
+    if args.docs:
+        keys = sorted({k for m in metrics for k in m if k != "update"})
+        out["docs"] = {k: metric_doc(k) for k in keys}
+    _emit(out, args.pretty)
+    return 0
+
+
+def _cmd_summary(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.viewer.server import RunData
+
+    try:
+        run_dir = _run_arg_or_error(args)
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    out = RunData(run_dir).summary()
+    if args.keys:
+        pats = _key_patterns(args.keys)
+        out["metrics"] = {
+            k: v for k, v in out["metrics"].items()
+            if any(p in k for p in pats)
+        }
+    _emit(out, args.pretty)
+    return 0
+
+
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.metric_catalog import (
+        catalog,
+        metric_doc,
+    )
+
+    if args.key:
+        _emit(metric_doc(args.key), args.pretty)
+    else:
+        _emit(catalog(), args.pretty)
+    return 0
 
 
 def _cmd_dump(args: argparse.Namespace) -> int:
@@ -307,6 +439,78 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not auto-open the browser.",
     )
     p_viewer.set_defaults(func=_cmd_viewer)
+
+    # --- metrics subcommand (read-only, JSON) ---
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="Print flattened per-update metrics as JSON (same data as the viewer).",
+        description=(
+            "Parse __RAW_STATS__ from <run>/train.log with the same "
+            "RunData._flatten_update the viewer serves at "
+            "/api/run/metrics — identical output, no server needed.  "
+            "<run> is a run directory or a run name under --runs-root."
+        ),
+    )
+    p_metrics.add_argument("run", type=str,
+        help="Run directory, or run name under --runs-root.")
+    p_metrics.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT,
+        help="Root for run-name resolution (default: baseline/runs).")
+    p_metrics.add_argument("--keys", type=str, default="",
+        help="Comma-separated substrings — keep only matching metric keys "
+             "(e.g. 'kl,lr' or 'eval.').")
+    p_metrics.add_argument("--from-update", type=int, default=None,
+        dest="from_update", help="First update to include (inclusive).")
+    p_metrics.add_argument("--to-update", type=int, default=None,
+        dest="to_update", help="Last update to include (inclusive).")
+    p_metrics.add_argument("--tail", type=int, default=None,
+        help="Keep only the last N updates (after range filtering).")
+    p_metrics.add_argument("--docs", action="store_true",
+        help="Attach per-key {zone, hint} docs from the metric catalog.")
+    p_metrics.add_argument("--pretty", action="store_true",
+        help="Pretty-print JSON output.")
+    p_metrics.set_defaults(func=_cmd_metrics)
+
+    # --- summary subcommand (read-only, JSON) ---
+    p_summary = sub.add_parser(
+        "summary",
+        help="Per-metric digest: zone, hint, latest, min/max + where they occurred.",
+        description=(
+            "One-shot orientation digest of a run's metrics.  For every "
+            "metric key: namespace zone, semantic hint (metric_catalog), "
+            "presence count, latest value, and min/max with the update "
+            "indices where they occurred.  Run this first before "
+            "drilling into 'metrics' or dumps."
+        ),
+    )
+    p_summary.add_argument("run", type=str,
+        help="Run directory, or run name under --runs-root.")
+    p_summary.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT,
+        help="Root for run-name resolution (default: baseline/runs).")
+    p_summary.add_argument("--keys", type=str, default="",
+        help="Comma-separated substrings — keep only matching metric keys.")
+    p_summary.add_argument("--pretty", action="store_true",
+        help="Pretty-print JSON output.")
+    p_summary.set_defaults(func=_cmd_summary)
+
+    # --- catalog subcommand (read-only, JSON) ---
+    p_catalog = sub.add_parser(
+        "catalog",
+        help="Print the metric semantics catalog (or one key's doc).",
+        description=(
+            "Dump dumpkit/metric_catalog.catalog() — the same data the "
+            "viewer serves at /api/catalog: chart layout, hint tables, "
+            "and the exp./eval./policy. zone definitions.  "
+            "Use --key to resolve a single flattened metric key to its "
+            "{zone, hint} doc."
+        ),
+    )
+    p_catalog.add_argument("--key", type=str, default="",
+        help="Resolve one flattened key (e.g. stats.post_kl_mean) to its doc.")
+    p_catalog.add_argument("--pretty", action="store_true",
+        help="Pretty-print JSON output.")
+    p_catalog.set_defaults(func=_cmd_catalog)
 
     return parser
 

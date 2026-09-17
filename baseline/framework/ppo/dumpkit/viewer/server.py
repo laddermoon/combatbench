@@ -33,6 +33,7 @@ from baseline.framework.ppo.dumpkit.dump_request import (
 )
 from baseline.framework.ppo.dumpkit.metric_catalog import (
     catalog as _metric_catalog,
+    metric_doc,
 )
 
 _HERE = Path(__file__).resolve().parent
@@ -527,6 +528,52 @@ class RunData:
             if entry is not None:
                 self._metrics_cache.append(entry)
         return self._metrics_cache
+
+    def summary(self) -> Dict[str, Any]:
+        """Per-metric digest of the flattened update series.
+
+        For every flat key present in metrics(): presence stats (n,
+        first/latest update), latest value, and min/max with their
+        update indices — each annotated with zone + hint from
+        metric_catalog so the output is self-describing.  Sparse keys
+        (eval.*) report n < n_updates honestly.
+        """
+        metrics = self.metrics()
+        per_key: Dict[str, Any] = {}
+        keys = sorted(
+            {k for u in metrics for k in u if k != "update"}
+        )
+        for k in keys:
+            pts = [
+                (u["update"], u[k]) for u in metrics
+                if isinstance(u.get(k), (int, float))
+            ]
+            if not pts:
+                continue
+            vals = [v for _, v in pts]
+            v_min, v_max = min(vals), max(vals)
+            doc = metric_doc(k)
+            per_key[k] = {
+                "zone": doc["zone"],
+                "hint": doc["hint"],
+                "n": len(pts),
+                "first_update": pts[0][0],
+                "latest": vals[-1],
+                "latest_update": pts[-1][0],
+                "min": v_min,
+                "min_update": pts[vals.index(v_min)][0],
+                "max": v_max,
+                "max_update": pts[vals.index(v_max)][0],
+            }
+        info = self.run_info()
+        return {
+            "run": self.run_dir.name,
+            "run_dir": str(self.run_dir),
+            "experiment_name": info["experiment_name"],
+            "status": info["status"],
+            "n_updates": len(metrics),
+            "metrics": per_key,
+        }
 
     @staticmethod
     def _flatten_update(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
