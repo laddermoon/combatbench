@@ -477,7 +477,30 @@ class UpdateStats:
     ``__RAW_STATS__`` logging and the debug viewer.
     """
 
-    # --- PPO core ---
+    # --- Update shape (what entered this update) ---
+    # len(buf.traj_lengths) — trajectory segments in the buffer; an
+    #   episode can contribute more than one.
+    n_trajectories: int
+    # sum(buf.traj_lengths) — total frames in the buffer.
+    total_steps: int
+    # max(1, ceil(total_steps / minibatch_size)) — minibatches per
+    #   epoch; the split is even, no tiny remainder batch.
+    n_batches: int
+    # len(epoch_kl_stats) — under B1 this equals update_epochs because
+    #   critics run every epoch even after the actor early-stops; see
+    #   actor_epochs_done for actor-side progress.
+    epochs_done: int
+    # P0-1: Number of epochs where the actor actually took at least one
+    # minibatch step.  Under B1 (critic/actor early-stop decoupling),
+    # `epochs_done` always equals `update_epochs` because critics keep
+    # running after the actor stops, so it no longer carries information
+    # about whether the actor stopped early.  `actor_epochs_done` does.
+    # When early stop is disabled or never triggers, actor_epochs_done ==
+    # epochs_done == update_epochs.
+    actor_epochs_done: int
+
+    # --- Process dynamics (per-minibatch samples, aggregated over the
+    #     actor minibatches actually run) ---
     # Mean of the per-minibatch k3 KL estimates  mean[(r-1) - log r]
     #   over ALL actor minibatches actually run — r = exp(new_lp-old_lp)
     #   is recomputed per minibatch against the frozen rollout policy.
@@ -491,16 +514,24 @@ class UpdateStats:
     #   minibatch where target_kl early-stop fired (running_mean_kl >
     #   target_kl).  0.0 if early stop never triggered.
     early_stop_kl_mean: float
-    # Mean over actor minibatches of the per-minibatch fraction of
-    #   samples with ratio outside [1-eps, 1+eps]  (= clip_frac_hi_mean +
-    #   clip_frac_lo_mean; the two masks are disjoint).  Conventional
-    #   name: clip_frac.
-    clip_frac_mean: float
-    # Mean over actor minibatches of per-minibatch ratio means.
+    # Ratio family — r = exp(new_lp - old_lp) per minibatch; the three
+    #   aggregations (mean / min / max) describe center and both tails.
+    #   ratio_min is the suppression-direction tail — trending toward 0
+    #   means sampled actions are being zeroed out (exploration
+    #   collapse precursor); ratio_max is the boost-direction tail.
     ratio_mean: float
-    # Max over actor minibatches of per-minibatch ratio maximums —
-    #   the strongest single-sample boost seen during the update.
+    ratio_min: float
     ratio_max: float
+    # Clip family — fraction of minibatch samples with ratio outside
+    #   [1-eps, 1+eps], averaged over actor minibatches.  hi = r>1+eps
+    #   boost tail, lo = r<1-eps suppression tail; the masks are
+    #   disjoint so clip_frac_mean = hi + lo exactly.  A tail-crossing
+    #   sample only loses its surrogate gradient when the advantage
+    #   sign matches (hi & A>0, lo & A<0) — these are tail fractions,
+    #   not effective clip fractions.  (Conventional name: clip_frac.)
+    clip_frac_mean: float
+    clip_frac_hi_mean: float
+    clip_frac_lo_mean: float
     # Mean over actor minibatches of the clipped surrogate loss
     #   -mean[min(r*A, clip(r,1-eps,1+eps)*A) * w], where A is the
     #   combined advantage and w = per-frame sample_weight renormalized
@@ -512,42 +543,66 @@ class UpdateStats:
     # Mean over actor minibatches of the PRE-clip total grad L2 norm
     #   (clip_grad_norm_ returns the norm before clipping).
     grad_norm_actor_mean: float
-    # len(epoch_kl_stats) — under B1 this equals update_epochs because
-    #   critics run every epoch even after the actor early-stops; see
-    #   actor_epochs_done for actor-side progress.
-    epochs_done: int
-    # P0-1: Number of epochs where the actor actually took at least one
-    # minibatch step.  Under B1 (critic/actor early-stop decoupling),
-    # `epochs_done` always equals `update_epochs` because critics keep
-    # running after the actor stops, so it no longer carries information
-    # about whether the actor stopped early.  `actor_epochs_done` does.
-    # When early stop is disabled or never triggers, actor_epochs_done ==
-    # epochs_done == update_epochs.
-    actor_epochs_done: int
-    # max(1, ceil(total_steps / minibatch_size)) — minibatches per
-    #   epoch; the split is even, no tiny remainder batch.
-    n_batches: int
-    # len(buf.traj_lengths) — trajectory segments in the buffer; an
-    #   episode can contribute more than one.
-    n_trajectories: int
-    # sum(buf.traj_lengths) — total frames in the buffer.
-    total_steps: int
-    # buf.uncertainty.mean() — mean per-frame uncertainty U over the
-    #   whole buffer at theta_old.  Framework-owned: aggregated from the
-    #   ActorEval.uncertainty contract field (consumed by the floor
-    #   loss), not from policy_stats.
-    uncertainty_mean: float
+    # One dict per epoch: {kl_mean, kl_max, kl_std, n_minibatches}
+    #   computed over that epoch's actor-minibatch k3 values.  Epochs
+    #   where the actor was stopped appear with n_minibatches=0 and
+    #   zeroed stats.  len(epoch_kl_stats) == epochs_done.
+    epoch_kl_stats: List[Dict[str, Any]]
+
+    # --- Buffer descriptors (pre-update, over buf.*) ---
     # mean/min/max over buf.traj_lengths.  Buffer trajectories are the
     #   training unit — an episode can contribute more than one.  Real
     #   episode lengths live in episode_stats (ep.*).
     traj_len_mean: float
     traj_len_min: float
     traj_len_max: float
-    # One dict per epoch: {kl_mean, kl_max, kl_std, n_minibatches}
-    #   computed over that epoch's actor-minibatch k3 values.  Epochs
-    #   where the actor was stopped appear with n_minibatches=0 and
-    #   zeroed stats.  len(epoch_kl_stats) == epochs_done.
-    epoch_kl_stats: List[Dict[str, Any]]
+
+    # --- Uncertainty floor mechanism (exploration regularizer) ---
+    # buf.uncertainty.mean() — mean per-frame uncertainty U over the
+    #   whole buffer at theta_old.  Framework-owned: aggregated from the
+    #   ActorEval.uncertainty contract field, not from policy_stats.
+    uncertainty_mean: float
+    # uncertainty_floor / uncertainty_coef: the ExplorationSpec values
+    #   actually in force for this update (resolved by the loop, not by
+    #   the trainer).  Logged so scheduled floor/coef changes are
+    #   visible per-update rather than only as the initial config.
+    uncertainty_floor: float
+    uncertainty_coef: float
+    # floor_loss_mean: the uncertainty-floor hinge term
+    #   uncertainty_coef * mean(relu(floor - U)^2 * floor_weight),
+    #   averaged over actor minibatches actually run. 0.0 when the
+    #   floor mechanism is off (coef=0 or floor=0).
+    floor_loss_mean: float
+    # action_grad_pol_mean / action_grad_floor_mean: L2 norm of each
+    #   loss term's gradient over ALL actor parameters (autograd.grad,
+    #   allow_unused → untouched params count as 0), sampled on each
+    #   epoch's first minibatch and averaged. Framework-owned — no
+    #   policy hook.
+    action_grad_pol_mean: float
+    action_grad_floor_mean: float
+
+    # --- Post-update cross-section (final actor, whole buffer) ---
+    # post_kl_*: k3 KL ((r-1) - log r) between pi_old and the FINAL actor,
+    #   computed once over the whole buffer at update end — the actual
+    #   trust-region displacement, cleanly comparable across updates
+    #   (unlike kl_mean, whose minibatch mean mixes iterates and whose
+    #   sample set shrinks when the actor early-stops).  pos/neg split by
+    #   advantage sign shows which side the displacement concentrated on.
+    post_kl_mean: float
+    post_kl_max: float
+    post_kl_pos_mean: float
+    post_kl_neg_mean: float
+    # post_clip_dloss_mean: delta of the double-clipped surrogate vs the
+    #   r=1 baseline — -mean[w*A*(clip(r,1-eps,1+eps)-1)] evaluated once
+    #   at update end.  Negative = net alignment with the fixed
+    #   advantages; unlike the PPO min() surrogate both tails are
+    #   clamped, so the value is a bounded per-sample measure of
+    #   direction.
+    post_clip_dloss_mean: float
+    # post_ratio_bins: 9 fractions of ALL samples (sum=1) — final ratio
+    #   in 4 bands (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by
+    #   advantage sign, plus the exact-zero-advantage share.
+    post_ratio_bins: Dict[str, float]
 
     # --- Per-channel (keyed by channel name) ---
     # Mean over that channel's minibatch value losses: masked weighted
@@ -579,64 +634,6 @@ class UpdateStats:
     #   ActorEval.stats at rollout-eval time.
     policy_stats: Mapping[str, float]
 
-    # --- Loss decomposition (framework-computed) ---
-    # floor_loss_mean: the uncertainty-floor hinge term
-    #   uncertainty_coef * mean(relu(floor - U)^2 * floor_weight),
-    #   averaged over actor minibatches actually run. 0.0 when the
-    #   floor mechanism is off (coef=0 or floor=0).
-    # action_grad_pol_mean / action_grad_floor_mean: L2 norm of each
-    #   loss term's gradient over ALL actor parameters (autograd.grad,
-    #   allow_unused → untouched params count as 0), sampled on each
-    #   epoch's first minibatch and averaged. Framework-owned — no
-    #   policy hook.
-    floor_loss_mean: float = 0.0
-    action_grad_pol_mean: float = 0.0
-    action_grad_floor_mean: float = 0.0
-    # uncertainty_floor / uncertainty_coef: the ExplorationSpec values
-    #   actually in force for this update (resolved by the loop, not by
-    #   the trainer).  Logged so scheduled floor/coef changes are
-    #   visible per-update rather than only as the initial config.
-    uncertainty_floor: float = 0.0
-    uncertainty_coef: float = 0.0
-
-    # --- Ratio tail & clip decomposition ---
-    # ratio_min: min over per-minibatch ratio minimums — the lower tail
-    #   (suppression direction), complementing ratio_max's boost side.
-    # clip_frac_hi_mean / clip_frac_lo_mean: fraction of samples with
-    #   ratio above 1+clip_eps / below 1-clip_eps, averaged over actor
-    #   minibatches.  The two masks are disjoint so clip_frac_mean =
-    #   hi + lo exactly.  Note a tail-crossing sample only loses its
-    #   surrogate gradient when the advantage sign matches
-    #   (hi & A>0, lo & A<0) — these are tail fractions, not effective
-    #   clip fractions.
-    ratio_min: float = 1.0
-    clip_frac_hi_mean: float = 0.0
-    clip_frac_lo_mean: float = 0.0
-
-    # --- Post-update surrogate cross-section (final actor, full buffer) ---
-    # post_clip_dloss_mean: delta of the double-clipped surrogate vs the
-    #   r=1 baseline — -mean[w*A*(clip(r,1-eps,1+eps)-1)] evaluated once
-    #   at update end.  Negative = net alignment with the fixed
-    #   advantages; unlike the PPO min() surrogate both tails are
-    #   clamped, so the value is a bounded per-sample measure of
-    #   direction.
-    # post_ratio_bins: 9 fractions of ALL samples (sum=1) — final ratio
-    #   in 4 bands (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by
-    #   advantage sign, plus the exact-zero-advantage share.
-    post_clip_dloss_mean: float = 0.0
-    post_ratio_bins: Dict[str, float] = field(default_factory=dict)
-
-    # post_kl_*: k3 KL ((r-1) - log r) between pi_old and the FINAL actor,
-    #   computed once over the whole buffer at update end — the actual
-    #   trust-region displacement, cleanly comparable across updates
-    #   (unlike kl_mean, whose minibatch mean mixes iterates and whose
-    #   sample set shrinks when the actor early-stops).  pos/neg split by
-    #   advantage sign shows which side the displacement concentrated on.
-    post_kl_mean: float = 0.0
-    post_kl_max: float = 0.0
-    post_kl_pos_mean: float = 0.0
-    post_kl_neg_mean: float = 0.0
-
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
     # Warning/info strings collected inside ppo_update (per-channel
     #   return ranges, [kl_stats] per-epoch CV lines, zero-confidence /
@@ -663,7 +660,10 @@ class UpdateStats:
             kl_max=0.0,
             early_stop_kl_mean=0.0,
             clip_frac_mean=0.0,
+            clip_frac_hi_mean=0.0,
+            clip_frac_lo_mean=0.0,
             ratio_mean=1.0,
+            ratio_min=1.0,
             ratio_max=1.0,
             policy_loss_mean=0.0,
             value_loss_mean=0.0,
@@ -678,6 +678,17 @@ class UpdateStats:
             traj_len_min=0.0,
             traj_len_max=0.0,
             epoch_kl_stats=[],
+            uncertainty_floor=0.0,
+            uncertainty_coef=0.0,
+            floor_loss_mean=0.0,
+            action_grad_pol_mean=0.0,
+            action_grad_floor_mean=0.0,
+            post_kl_mean=0.0,
+            post_kl_max=0.0,
+            post_kl_pos_mean=0.0,
+            post_kl_neg_mean=0.0,
+            post_clip_dloss_mean=0.0,
+            post_ratio_bins={},
             critic_loss_mean={k: 0.0 for k in reward_keys},
             explained_variance={k: 0.0 for k in reward_keys},
             confidence={k: 0.0 for k in reward_keys},
@@ -700,38 +711,43 @@ class UpdateStats:
         """
         d: Dict[str, Any] = dict(self.policy_stats)
         d.update({
-            "policy_loss_mean": self.policy_loss_mean,
-            "floor_loss_mean": self.floor_loss_mean,
-            "action_grad_pol_mean": self.action_grad_pol_mean,
-            "action_grad_floor_mean": self.action_grad_floor_mean,
-            "uncertainty_floor": self.uncertainty_floor,
-            "uncertainty_coef": self.uncertainty_coef,
-            "value_loss_mean": self.value_loss_mean,
+            # --- Update shape ---
+            "n_trajectories": self.n_trajectories,
+            "total_steps": self.total_steps,
+            "n_batches": self.n_batches,
+            "epochs_done": self.epochs_done,
+            "actor_epochs_done": self.actor_epochs_done,
+            # --- Process dynamics ---
             "kl_mean": self.kl_mean,
             "kl_max": self.kl_max,
             "early_stop_kl_mean": self.early_stop_kl_mean,
-            "epochs_done": self.epochs_done,
-            "actor_epochs_done": self.actor_epochs_done,
-            "traj_len_mean": self.traj_len_mean,
-            "traj_len_min": self.traj_len_min,
-            "traj_len_max": self.traj_len_max,
-            "epoch_kl_stats": self.epoch_kl_stats,
-            "n_batches": self.n_batches,
-            "n_trajectories": self.n_trajectories,
-            "total_steps": self.total_steps,
-            "uncertainty_mean": self.uncertainty_mean,
+            "ratio_mean": self.ratio_mean,
+            "ratio_min": self.ratio_min,
+            "ratio_max": self.ratio_max,
             "clip_frac_mean": self.clip_frac_mean,
             "clip_frac_hi_mean": self.clip_frac_hi_mean,
             "clip_frac_lo_mean": self.clip_frac_lo_mean,
-            "ratio_mean": self.ratio_mean,
-            "ratio_max": self.ratio_max,
-            "ratio_min": self.ratio_min,
-            "post_clip_dloss_mean": self.post_clip_dloss_mean,
+            "policy_loss_mean": self.policy_loss_mean,
+            "value_loss_mean": self.value_loss_mean,
+            "grad_norm_actor_mean": self.grad_norm_actor_mean,
+            "epoch_kl_stats": self.epoch_kl_stats,
+            # --- Buffer descriptors ---
+            "traj_len_mean": self.traj_len_mean,
+            "traj_len_min": self.traj_len_min,
+            "traj_len_max": self.traj_len_max,
+            # --- Uncertainty floor ---
+            "uncertainty_mean": self.uncertainty_mean,
+            "uncertainty_floor": self.uncertainty_floor,
+            "uncertainty_coef": self.uncertainty_coef,
+            "floor_loss_mean": self.floor_loss_mean,
+            "action_grad_pol_mean": self.action_grad_pol_mean,
+            "action_grad_floor_mean": self.action_grad_floor_mean,
+            # --- Post-update cross-section ---
             "post_kl_mean": self.post_kl_mean,
             "post_kl_max": self.post_kl_max,
             "post_kl_pos_mean": self.post_kl_pos_mean,
             "post_kl_neg_mean": self.post_kl_neg_mean,
-            "grad_norm_actor_mean": self.grad_norm_actor_mean,
+            "post_clip_dloss_mean": self.post_clip_dloss_mean,
         })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val
