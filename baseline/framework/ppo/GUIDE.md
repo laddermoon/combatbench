@@ -379,8 +379,11 @@ r_cross = extract_per_step_scalar(ep.observer_outputs, "cross_support_a", T)
 
 ## 7. 调试建议
 
-> **完整内容见 `DEBUG_GUIDE.md`** —— 三层可观测性模型、症状→排查路径速查表、
-> 指标字典、不变量清单。遇到问题请从那份文档的 §4「症状 → 排查路径」入手。
+> **完整内容见 `dumpkit/CONTEXT.md`** —— Debug 工具集能力地图：
+> `debug.py` 命令速查（runs/summary/metrics/catalog/dump/render/delta）、
+> 指标命名空间（stats.*/ep.*/pc.*/exp.*/eval.*/policy.*）、HTTP 端点、
+> dump 截面下钻路径。指标语义（每个指标是什么、怎么读）见
+> `dumpkit/metric_catalog.py`——也可 `debug.py catalog --key <key>` 直接查。
 
 四条最常用的：
 
