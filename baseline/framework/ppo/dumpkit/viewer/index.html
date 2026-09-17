@@ -923,36 +923,55 @@
     // Filter visible series — drop null/NaN/undefined so they never plot as 0
     const isNum = v => typeof v === 'number' && !isNaN(v);
     const visibleSeries = dataSeries.filter(s => s.visible !== false);
-    const allVals = visibleSeries.flatMap(s => s.data).filter(isNum);
-    if (allVals.length === 0 || n === 0) {
+    const leftSeries = visibleSeries.filter(s => s.axis !== 'right');
+    const rightSeries = visibleSeries.filter(s => s.axis === 'right');
+    const leftVals = leftSeries.flatMap(s => s.data).filter(isNum);
+    const rightVals = rightSeries.flatMap(s => s.data).filter(isNum);
+    if ((leftVals.length === 0 && rightVals.length === 0) || n === 0) {
       return '<div class="loading">no data</div>';
     }
 
-    const yMin = Math.min(...allVals);
-    const yMax = Math.max(...allVals);
-    const yPad = (yMax - yMin) * 0.1 || 1;
-    const yLo = yMin - yPad;
-    const yHi = yMax + yPad;
+    function yDomain(vals) {
+      if (vals.length === 0) return {lo: 0, hi: 1};
+      const yMin = Math.min(...vals);
+      const yMax = Math.max(...vals);
+      const yPad = (yMax - yMin) * 0.1 || 1;
+      return {lo: yMin - yPad, hi: yMax + yPad};
+    }
+    const ld = yDomain(leftVals);
+    const rd = yDomain(rightVals);
+    const hasRight = rightSeries.length > 0;
 
-    const margin = {top: 10, right: 10, bottom: 20, left: 50};
+    const margin = {top: 10, right: hasRight ? 40 : 10, bottom: 20, left: 50};
     const w = width - margin.left - margin.right;
     const h = height - margin.top - margin.bottom;
 
     const xScale = i => margin.left + (n <= 1 ? 0 : (i / (n - 1)) * w);
-    const yScale = v => margin.top + h - ((v - yLo) / (yHi - yLo)) * h;
+    const yScale = v => margin.top + h - ((v - ld.lo) / (ld.hi - ld.lo)) * h;
+    const yScaleR = v => margin.top + h - ((v - rd.lo) / (rd.hi - rd.lo)) * h;
+    const yFor = (s, v) => s.axis === 'right' ? yScaleR(v) : yScale(v);
 
     let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" data-chart-n="${n}">`;
 
-    // Grid lines
+    // Grid lines (left axis)
     for (let i = 0; i <= 4; i++) {
       const y = margin.top + (h / 4) * i;
-      const val = yHi - (i / 4) * (yHi - yLo);
+      const val = ld.hi - (i / 4) * (ld.hi - ld.lo);
       svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
       svg += `<text x="${margin.left - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${fmt(val, 2)}</text>`;
     }
 
+    // Right axis labels
+    if (hasRight) {
+      for (let i = 0; i <= 4; i++) {
+        const y = margin.top + (h / 4) * i;
+        const val = rd.hi - (i / 4) * (rd.hi - rd.lo);
+        svg += `<text x="${width - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${fmt(val, 2)}</text>`;
+      }
+    }
+
     // Zero line
-    if (yLo < 0 && yHi > 0) {
+    if (ld.lo < 0 && ld.hi > 0) {
       const yz = yScale(0);
       svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
     }
@@ -985,7 +1004,7 @@
       let pts = '';
       s.data.forEach((v, i) => {
         if (!isNum(v)) return;
-        pts += `${xScale(i)},${yScale(v)} `;
+        pts += `${xScale(i)},${yFor(s, v)} `;
       });
       const dash = s.dash || (s.dashed ? 'dash' : null);
       const dashAttr = dash ? ` stroke-dasharray="${DASH_PATTERNS[dash] || dash}"` : '';
@@ -1018,7 +1037,7 @@
       const labelH = 13;
       let labelIdx = 0;
       labels.forEach(({s, lv}) => {
-        const y = yScale(lv.v);
+        const y = yFor(s, lv.v);
         const ly = margin.top + 2 + labelIdx * labelH;
         // Grouped charts share color per group — prefix the dim name
         // (e.g. "min -0.32") so same-colored labels stay identifiable.
@@ -1955,6 +1974,18 @@
         label: labelFor(k), data: seriesFor(k),
         color: opts.color || CHART_COLORS[i % CHART_COLORS.length],
       }));
+      // Optional right-axis keys (scale mismatch, e.g. epochs vs KL)
+      if (opts.right) {
+        opts.right.forEach((k, i) => {
+          if (!allKeys.has(k)) return;
+          used.add(k);
+          series.push({
+            label: labelFor(k), data: seriesFor(k),
+            color: CHART_COLORS[(keys.length + i) % CHART_COLORS.length],
+            axis: 'right',
+          });
+        });
+      }
       keys.forEach(k => used.add(k));
       emitChart(title, series, opts);
     };
