@@ -36,17 +36,18 @@ from typing import Any, Dict, List, Optional
 # ---------------------------------------------------------------------
 
 FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
-    {"title": "Episodes & Trajectories",
+    {"title": "Episodes, Trajectories & Active Trajectories",
      "keys": ["ep.n_episodes", "stats.n_trajectories"],
+     "pc": "n_active_trajs",
      "hint": "ep.n_episodes：本 update 真实跑的环境 episode 数。\n"
-             "stats.n_trajectories：进入 buffer 的轨迹段数——一个 episode 可拆出多条（如每 agent 一条），PPO 的训练单位是轨迹。"},
+             "stats.n_trajectories：进入 buffer 的轨迹段总数——一个 episode 可拆出多条（如每 agent 一条），PPO 的训练单位是轨迹。\n"
+             "n_active_trajs.*：各 reward channel 的活跃轨迹数（该 channel 有非零 reward 的 trajectory 数量），与总数对比可看出哪些 channel 在本 update 被激活。"},
     {"title": "Episode Length & Trajectory Length",
      "keys": ["ep.ep_len_mean", "ep.ep_len_min", "ep.ep_len_max",
               "stats.traj_len_mean", "stats.traj_len_min", "stats.traj_len_max"],
      "hint": "ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\n"
              "stats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_steps）。\n"
              "一条轨迹恰好覆盖一条 episode 时两者相等。"},
-    {"pc": "n_active_trajs"},
     {"pc": "active_ratio"},
     {"keys": ["stats.n_batches"],
      "hint": "每个 update 的 minibatch 数 = tensor_split(总帧数, n_batches)。"},

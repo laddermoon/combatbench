@@ -2008,10 +2008,16 @@
         return;
       }
       if (spec.pc) {
-        const keys = [...allKeys]
+        const pcKeys = [...allKeys]
           .filter(k => k.startsWith(`pc.${spec.pc}.`))
           .sort();
-        if (keys.length) emit(`${spec.pc} (per channel)`, keys, {hint: cat.pc_hints[spec.pc]});
+        const baseKeys = spec.keys ? spec.keys.filter(k => allKeys.has(k)) : [];
+        const keys = [...baseKeys, ...pcKeys];
+        if (keys.length) {
+          const title = spec.title || `${spec.pc} (per channel)`;
+          const hint = spec.hint || (baseKeys.length ? "" : cat.pc_hints[spec.pc]);
+          emit(title, keys, {hint});
+        }
         return;
       }
       if (spec.pcm) {

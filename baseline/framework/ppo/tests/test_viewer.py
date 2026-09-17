@@ -712,7 +712,11 @@ def test_metric_catalog_structure():
     assert cat["layout"] and isinstance(cat["layout"], list)
     for spec in cat["layout"]:
         kinds = [k for k in ("keys", "pc", "pcm", "timing") if k in spec]
-        assert len(kinds) == 1, f"bad spec shape: {spec}"
+        # A spec can combine framework keys with a single pc overlay.
+        # pc/pcm/timing are mutually exclusive; keys can appear alongside pc.
+        assert kinds, f"empty spec: {spec}"
+        multi = [k for k in ("pc", "pcm", "timing") if k in spec]
+        assert len(multi) <= 1, f"conflicting spec shape: {spec}"
         if "keys" in spec:
             assert spec["hint"], f"keys spec missing hint: {spec}"
             for key in spec["keys"]:
