@@ -1001,24 +1001,35 @@
       // Labels are stacked vertically to avoid overlap, alternating above/below
       // the data point.
       const cf = options.currentFrame;
-      const labels = visibleSeries.filter(s => s.data.length > cf && isNum(s.data[cf]));
+      // Sparse series (e.g. eval.* only present every eval_interval
+      // updates) have NaN at cf — fall back to the most recent valid
+      // point so the label still shows the latest known value.  The
+      // on-line marker is drawn at that point's real index.
+      const lastVal = s => {
+        for (let i = Math.min(cf, s.data.length - 1); i >= 0; i--) {
+          if (isNum(s.data[i])) return {i, v: s.data[i]};
+        }
+        return null;
+      };
+      const labels = visibleSeries
+        .map(s => ({s, lv: lastVal(s)}))
+        .filter(x => x.lv !== null);
       // Determine label placement: stack from top, each label ~13px tall
       const labelH = 13;
       let labelIdx = 0;
-      labels.forEach(s => {
-        const val = s.data[cf];
-        const y = yScale(val);
+      labels.forEach(({s, lv}) => {
+        const y = yScale(lv.v);
         const ly = margin.top + 2 + labelIdx * labelH;
         // Grouped charts share color per group — prefix the dim name
         // (e.g. "min -0.32") so same-colored labels stay identifiable.
         const tag = s.dim ? s.dim.split('_').pop() + ' ' : '';
-        const text = tag + fmt(val, 4);
+        const text = tag + fmt(lv.v, 4);
         // Colored dot + value text
         svg += `<rect x="${x + 3}" y="${ly - 9}" width="${text.length * 6 + 4}" height="12" fill="var(--bg)" opacity="0.85" rx="2"/>`;
         svg += `<circle cx="${x + 5}" cy="${ly - 3}" r="2" fill="${s.color}"/>`;
         svg += `<text x="${x + 10}" y="${ly}" fill="${s.color}" font-size="10" font-family="ui-monospace,monospace">${text}</text>`;
-        // Small marker dot on the line
-        svg += `<circle cx="${x}" cy="${y}" r="2.5" fill="${s.color}" stroke="var(--bg)" stroke-width="0.5"/>`;
+        // Small marker dot on the line, at the value's actual index
+        svg += `<circle cx="${xScale(lv.i)}" cy="${y}" r="2.5" fill="${s.color}" stroke="var(--bg)" stroke-width="0.5"/>`;
         labelIdx++;
       });
     }
