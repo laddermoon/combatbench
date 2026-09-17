@@ -1594,6 +1594,9 @@
   const EXP_HINT =
     '实验自定义指标——experiment.on_update() 的返回值，每个 update 记录一次。\n' +
     '语义由实验定义（如在线成功率的连续曲线），框架仅透传展示。';
+  const EVAL_HINT =
+    '评估指标——experiment.on_eval() 返回的 info，仅在 eval_interval 的 update 上有值。\n' +
+    '曲线为稀疏点直连（无评估的 update 跳过不画）。';
   // pc metrics aggregated elsewhere — never rendered per channel.
   const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max']);
 
@@ -2080,7 +2083,8 @@
     const pcGroups = {};
     const otherKeys = [];
     [...allKeys].forEach(k => {
-      if (used.has(k) || k.startsWith('policy.') || k.startsWith('exp.')) return;
+      if (used.has(k) || k.startsWith('policy.') || k.startsWith('exp.') ||
+          k.startsWith('eval.')) return;
       const m = k.match(/^pc\.([^.]+)\..+$/);
       if (m) {
         if (PC_SUPPRESS.has(m[1])) { used.add(k); return; }
@@ -2099,8 +2103,7 @@
     }
 
     // 3. Experiment-contributed metrics (exp.*) — emitted by
-    //    experiment.on_update()'s return value; one chart per key,
-    //    before the policy group (policy stays last).
+    //    experiment.on_update()'s return value; one chart per key.
     const expKeys = [...allKeys].filter(k => k.startsWith('exp.'));
     if (expKeys.length) {
       html += '<div class="metrics-group-title">Experiment metrics</div>';
@@ -2108,7 +2111,17 @@
         emit(k.slice(4), [k], {height: 140, color: '#7fb069', hint: EXP_HINT}));
     }
 
-    // 4. Policy-contributed metrics (policy.*) — always last, uniform
+    // 4. Eval metrics (eval.*) — experiment.on_eval()'s info dict,
+    //    sparse: only present on eval_interval updates, rendered as
+    //    line-through-gaps.  One chart per key.
+    const evalKeys = [...allKeys].filter(k => k.startsWith('eval.'));
+    if (evalKeys.length) {
+      html += '<div class="metrics-group-title">Eval metrics</div>';
+      evalKeys.forEach(k =>
+        emit(k.slice(5), [k], {height: 140, color: '#5bb8d4', hint: EVAL_HINT}));
+    }
+
+    // 5. Policy-contributed metrics (policy.*) — always last, uniform
     //    presentation: one chart per key, no merging. Keys keep their
     //    emission order (policy_stats dict order is preserved through
     //    JSON → Set), so the policy controls its own stat ordering.
