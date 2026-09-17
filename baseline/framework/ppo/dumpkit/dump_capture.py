@@ -344,7 +344,6 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         "floor_loss_mean": np.array(stats.floor_loss_mean),
         "action_grad_pol_mean": np.array(stats.action_grad_pol_mean),
         "action_grad_floor_mean": np.array(stats.action_grad_floor_mean),
-        "value_loss_mean": np.array(stats.value_loss_mean),
         "grad_norm_actor_mean": np.array(stats.grad_norm_actor_mean),
         "epochs_done": np.array(stats.epochs_done),
         "actor_epochs_done": np.array(stats.actor_epochs_done),

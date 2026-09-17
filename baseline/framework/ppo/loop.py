@@ -779,8 +779,6 @@ def train_ppo(
             )
 
             # [Critics] — per-channel with reward, actor_weight, traj stats
-            value_loss_mean = stats.value_loss_mean
-            print(f"  [Critics] total_vloss={value_loss_mean:.4f}", flush=True)
             chan_stats = buf_stats["per_channel"]
             for key in reward_keys:
                 cs = chan_stats.get(key, {})

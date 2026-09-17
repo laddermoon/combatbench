@@ -537,9 +537,6 @@ class UpdateStats:
     #   combined advantage and w = per-frame sample_weight renormalized
     #   to mean 1 within the minibatch.  (Conventional name: policy_loss.)
     policy_loss_mean: float
-    # Mean over channels of critic_loss_mean[c] — a cross-channel average
-    #   of the per-channel masked-MSE means, not a joint loss value.
-    value_loss_mean: float
     # Mean over actor minibatches of the PRE-clip total grad L2 norm
     #   (clip_grad_norm_ returns the norm before clipping).
     grad_norm_actor_mean: float
@@ -666,7 +663,6 @@ class UpdateStats:
             ratio_min=1.0,
             ratio_max=1.0,
             policy_loss_mean=0.0,
-            value_loss_mean=0.0,
             grad_norm_actor_mean=0.0,
             epochs_done=0,
             actor_epochs_done=0,
@@ -728,7 +724,6 @@ class UpdateStats:
             "clip_frac_hi_mean": self.clip_frac_hi_mean,
             "clip_frac_lo_mean": self.clip_frac_lo_mean,
             "policy_loss_mean": self.policy_loss_mean,
-            "value_loss_mean": self.value_loss_mean,
             "grad_norm_actor_mean": self.grad_norm_actor_mean,
             "epoch_kl_stats": self.epoch_kl_stats,
             # --- Buffer descriptors ---

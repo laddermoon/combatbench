@@ -733,8 +733,8 @@ def test_metric_doc():
     """metric_doc resolves flat keys to zone + hint."""
     from baseline.framework.ppo.dumpkit.metric_catalog import metric_doc
 
-    d = metric_doc("stats.value_loss_mean")
-    assert d["zone"] == "framework" and "value loss" in d["hint"]
+    d = metric_doc("stats.policy_loss_mean")
+    assert d["zone"] == "framework" and "policy_loss_mean" in d["hint"]
     # Layout key falls back to its chart-group hint
     d = metric_doc("stats.post_kl_mean")
     assert d["zone"] == "framework" and "KL" in d["hint"]

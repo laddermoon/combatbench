@@ -162,9 +162,9 @@ PC_HINTS: Dict[str, str] = {
 }
 
 # Fallback hints for leftover scalar stats.* keys not covered by the
-# layout (e.g. value_loss_mean).
+# layout. Empty for now — all framework scalars are either in the layout
+# or in the open-ended zones.
 STATS_HINTS: Dict[str, str] = {
-    "value_loss_mean": "所有 channel critic value loss 的均值标量（分 channel 明细见 vloss_mean 图）。",
 }
 
 # Conventional-name aliases for chart legends — several renamed metrics
@@ -178,7 +178,6 @@ KEY_LABELS: Dict[str, str] = {
     "clip_frac_hi_mean": "clip_frac_hi_mean (clip_frac_hi)",
     "clip_frac_lo_mean": "clip_frac_lo_mean (clip_frac_lo)",
     "policy_loss_mean": "policy_loss_mean (policy_loss)",
-    "value_loss_mean": "value_loss_mean (value_loss)",
     "floor_loss_mean": "floor_loss_mean (floor_loss)",
     "action_grad_pol_mean": "action_grad_pol_mean (action_grad_pol)",
     "action_grad_floor_mean": "action_grad_floor_mean (action_grad_floor)",

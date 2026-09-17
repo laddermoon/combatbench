@@ -1565,9 +1565,6 @@ def ppo_update(
     action_grad_floor = (
         float(np.mean(all_action_grad_floor)) if all_action_grad_floor else 0.0
     )
-    value_loss_val = float(np.mean([
-        critic_loss_mean[key] for key in reward_keys
-    ])) if reward_keys else 0.0
     # Framework-owned scalar: mean of the contract field ActorEval
     # .uncertainty over the whole buffer (also emitted by the policy's
     # stats block, but the framework aggregates it itself).
@@ -1597,7 +1594,6 @@ def ppo_update(
         uncertainty_coef=float(uncertainty_coef),
         action_grad_pol_mean=action_grad_pol,
         action_grad_floor_mean=action_grad_floor,
-        value_loss_mean=value_loss_val,
         grad_norm_actor_mean=grad_norm_actor,
         epochs_done=len(epoch_kl_stats),
         actor_epochs_done=actor_epochs_done,

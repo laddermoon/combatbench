@@ -1967,7 +1967,6 @@ def test_update_stats_to_log_dict():
 
     d = stats.to_log_dict()
     assert "policy_loss_mean" in d
-    assert "value_loss_mean" in d
     assert "kl_mean" in d
     assert "vloss_mean_r_a" in d
     assert "ev_r_a" in d
