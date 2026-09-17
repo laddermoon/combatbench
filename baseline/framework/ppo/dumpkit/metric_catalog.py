@@ -124,11 +124,14 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "9 条线都是全部样本的占比，合计=1。\n"
              "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）。pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
-                             "stats.post_kl_pos", "stats.post_kl_neg"],
-     "hint": "update 结束后用最终 actor 在全 buffer 上重算的 k3 KL（(r−1)−log r）——本次更新的真实位移，跨 update 可比。\n"
+                             "stats.post_kl_pos", "stats.post_kl_neg",
+                             "stats.approx_kl"],
+     "hint": "post_kl_*：update 结束后用最终 actor 在全 buffer 上重算的 k3 KL（(r−1)−log r）——本次更新的真实位移，跨 update 可比，是\"推了多远\"的权威读数。\n"
              "mean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos/neg：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n"
              "读法：mean ≈ target_kl 且 actor 早停 = 健康撞墙；mean 明显低于 early_stop_kl（Epochs 图）= 早停后位移部分回退。\n"
-             "注：过程指标 approx_kl/max_kl（minibatch 时刻值）仍在 Timeline 页可见。"},
+             "approx_kl：过程量——update 内所有 actor minibatch 的 k3 均值，每个 minibatch 在当时迭代点上测量。读作\"update 过程中 actor 平均工作的位移水平\"，不是端点位移（端点看 post_kl_mean）。它恒受 ramp 结构影响（首 minibatch ≈0 后单调爬升）且分母随早停截断变化，绝对值系统性低于 post_kl_mean 属正常。\n"
+             "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×approx_kl = 位移集中在末段爆发；post_kl_mean < approx_kl = 中途位移被后续 minibatch 回退（churn）。\n"
+             "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats；max_kl（单点峰值，噪声大）在 Other framework metrics。"},
     {"title": "Epochs & Early Stop",
      "keys": ["stats.epochs_done", "stats.actor_epochs_done", "stats.early_stop_kl"],
      "hint": "epochs_done：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\n"
