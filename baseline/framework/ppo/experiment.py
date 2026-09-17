@@ -462,15 +462,42 @@ class UpdateStats:
     """
 
     # --- PPO core ---
+    # Mean of the per-minibatch k3 KL estimates  mean[(r-1) - log r]
+    #   over ALL actor minibatches actually run — r = exp(new_lp-old_lp)
+    #   is recomputed per minibatch against the frozen rollout policy.
+    #   Aggregated globally, not the last epoch's mean, so it survives
+    #   actor early-stop.
     approx_kl: float
+    # Max over the same per-minibatch k3 means — the worst single
+    #   minibatch displacement seen during this update.
     max_kl: float
+    # Running mean of the current epoch's per-minibatch k3 values at the
+    #   minibatch where target_kl early-stop fired (running_mean_kl >
+    #   target_kl).  0.0 if early stop never triggered.
     early_stop_kl: float
+    # Mean over actor minibatches of the per-minibatch fraction of
+    #   samples with ratio outside [1-eps, 1+eps]  (= clip_frac_hi +
+    #   clip_frac_lo; the two masks are disjoint).
     clip_frac: float
+    # Mean over actor minibatches of per-minibatch ratio means.
     ratio_mean: float
+    # Max over actor minibatches of per-minibatch ratio maximums —
+    #   the strongest single-sample boost seen during the update.
     ratio_max: float
+    # Mean over actor minibatches of the clipped surrogate loss
+    #   -mean[min(r*A, clip(r,1-eps,1+eps)*A) * w], where A is the
+    #   combined advantage and w = per-frame sample_weight renormalized
+    #   to mean 1 within the minibatch.
     policy_loss: float
+    # Mean over channels of critic_losses[c] — a cross-channel average
+    #   of the per-channel masked-MSE means, not a joint loss value.
     value_loss: float
+    # Mean over actor minibatches of the PRE-clip total grad L2 norm
+    #   (clip_grad_norm_ returns the norm before clipping).
     grad_norm_actor: float
+    # len(epoch_kl_stats) — under B1 this equals update_epochs because
+    #   critics run every epoch even after the actor early-stops; see
+    #   actor_epochs_done for actor-side progress.
     epochs_done: int
     # P0-1: Number of epochs where the actor actually took at least one
     # minibatch step.  Under B1 (critic/actor early-stop decoupling),
@@ -480,37 +507,66 @@ class UpdateStats:
     # When early stop is disabled or never triggers, actor_epochs_done ==
     # epochs_done == update_epochs.
     actor_epochs_done: int
+    # max(1, ceil(total_steps / minibatch_size)) — minibatches per
+    #   epoch; the split is even, no tiny remainder batch.
     n_batches: int
+    # len(buf.traj_lengths) — trajectory segments in the buffer; an
+    #   episode can contribute more than one.
     n_trajectories: int
+    # sum(buf.traj_lengths) — total frames in the buffer.
     total_steps: int
-    # Mean per-frame uncertainty U over the whole buffer at theta_old.
-    # Framework-owned: aggregated from the ActorEval.uncertainty contract
-    # field (consumed by the floor loss), not from policy_stats.
+    # buf.uncertainty.mean() — mean per-frame uncertainty U over the
+    #   whole buffer at theta_old.  Framework-owned: aggregated from the
+    #   ActorEval.uncertainty contract field (consumed by the floor
+    #   loss), not from policy_stats.
     uncertainty: float
-    # Trajectory lengths (buffer trajectories are the training unit —
-    # an episode can contribute more than one). Real episode lengths
-    # live in episode_stats (ep.*).
+    # mean/min/max over buf.traj_lengths.  Buffer trajectories are the
+    #   training unit — an episode can contribute more than one.  Real
+    #   episode lengths live in episode_stats (ep.*).
     traj_len_mean: float
     traj_len_min: float
     traj_len_max: float
+    # One dict per epoch: {mean_kl, max_kl, std_kl, n_minibatches}
+    #   computed over that epoch's actor-minibatch k3 values.  Epochs
+    #   where the actor was stopped appear with n_minibatches=0 and
+    #   zeroed stats.  len(epoch_kl_stats) == epochs_done.
     epoch_kl_stats: List[Dict[str, Any]]
 
     # --- Per-channel (keyed by channel name) ---
+    # Mean over that channel's minibatch value losses: masked weighted
+    #   MSE  sum((V_c - ret_c)^2 * mask * w) / n_active  on frames where
+    #   the channel is active (mask excludes inactive segments).
     critic_losses: Dict[str, float]
+    # 1 - Var(ret_c - V_c) / Var(ret_c) on channel-active frames, using
+    #   theta_old values (before this update's critic steps); 0.0 when
+    #   Var(ret_c) < 1e-8.
     explained_variance: Dict[str, float]
+    # clip(EV_c, 0, 1) ** 0.5 — the advantage multiplier actually
+    #   applied to channel c this update (1.0 for all channels when
+    #   use_confidence=False).
     confidence: Dict[str, float]
+    # Mean/std of the RAW per-channel GAE advantages on channel-active
+    #   frames — before the z-score normalization and aw*confidence
+    #   weighting that produce the combined advantage.
     adv_mean: Dict[str, float]
     adv_std: Dict[str, float]
+    # Mean/std of per-channel GAE lambda-returns (ret = adv + V_old,
+    #   the critic's regression target) on channel-active frames.
     ret_mean: Dict[str, float]
     ret_std: Dict[str, float]
+    # Mean over minibatches of that critic's pre-clip grad L2 norm.
     critic_grad_norms: Dict[str, float]
 
     # --- Policy-contributed (no contract) ---
+    # dict(buf.actor_stats) — whatever the policy contributed via
+    #   ActorEval.stats at rollout-eval time.
     policy_stats: Mapping[str, float]
 
     # --- Loss decomposition (framework-computed) ---
-    # floor_loss: the uncertainty-floor hinge term, mean over actor
-    #   minibatches actually run. 0.0 when the floor mechanism is off.
+    # floor_loss: the uncertainty-floor hinge term
+    #   uncertainty_coef * mean(relu(floor - U)^2 * floor_weight),
+    #   averaged over actor minibatches actually run. 0.0 when the
+    #   floor mechanism is off (coef=0 or floor=0).
     # action_grad_pol / action_grad_floor: L2 norm of each loss term's
     #   gradient over ALL actor parameters (autograd.grad, allow_unused
     #   → untouched params count as 0), sampled on each epoch's first
@@ -562,6 +618,10 @@ class UpdateStats:
     post_kl_neg: float = 0.0
 
     # --- Diagnostics (human-readable lines, not for programmatic use) ---
+    # Warning/info strings collected inside ppo_update (per-channel
+    #   return ranges, [kl_stats] per-epoch CV lines, zero-confidence /
+    #   zero-variance warnings, floor diagnostics); the loop prints them
+    #   to train.log — they are NOT part of __RAW_STATS__ flattening.
     diagnostics: List[str] = field(default_factory=list)
 
     # P0-3: Marks an update that was skipped because the buffer was empty
