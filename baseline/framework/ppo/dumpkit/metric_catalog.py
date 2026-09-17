@@ -69,18 +69,15 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
     {"pcm": "ev & confidence", "metrics": ["ev", "confidence"],
      "hint": "ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\n"
              "confidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。"},
-    {"title": "Exploration Spec",
-     "keys": ["stats.uncertainty_floor", "stats.uncertainty_coef"],
-     "hint": "本 update 实际生效的 ExplorationSpec：uncertainty_floor（U 下限）与 uncertainty_coef（hinge 系数）。\n"
-             "由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。\n"
-             "floor_loss_mean = coef·mean(relu(floor−U)²)，floor 线低于 Uncertainty 图的 U 曲线时 hinge 开始激活。"},
+    {"title": "Uncertainty & Exploration Spec",
+     "keys": ["stats.uncertainty_mean", "stats.uncertainty_floor", "stats.uncertainty_coef"],
+     "hint": "合并图：buffer 全帧在 θ_old 下的 ActorEval.uncertainty 均值 U，以及本 update 实际生效的 exploration spec（floor + coef）。\n"
+             "U ∈ [0,1]、与 action 无关；floor 线可视作 U 的警戒下限。floor_loss_mean = coef·mean(relu(floor−U)²) —— U 低于 floor 时 hinge 开始激活。\n"
+             "spec 由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。"},
     {"title": "Learning Rate", "keys": ["stats.actor_lr", "stats.critic_lr"],
      "hint": "本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n"
              "由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n"
              "恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。"},
-    {"title": "Uncertainty", "keys": ["stats.uncertainty_mean"],
-     "hint": "框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\n"
-             "U ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。"},
     {"pc": "vloss_mean"},
     {"title": "Policy & Floor Loss",
      "keys": ["stats.policy_loss_mean", "stats.floor_loss_mean"],
