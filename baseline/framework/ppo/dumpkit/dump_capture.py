@@ -330,31 +330,31 @@ def _serialize_buffer(buf: PPOBuffer, frame_ids: np.ndarray) -> Dict[str, Any]:
 def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
     """Build the update.npz payload from actual UpdateStats."""
     data: Dict[str, Any] = {
-        "approx_kl": np.array(stats.approx_kl),
-        "max_kl": np.array(stats.max_kl),
-        "early_stop_kl": np.array(stats.early_stop_kl),
-        "clip_frac": np.array(stats.clip_frac),
-        "clip_frac_hi": np.array(stats.clip_frac_hi),
-        "clip_frac_lo": np.array(stats.clip_frac_lo),
+        "kl_mean": np.array(stats.kl_mean),
+        "kl_max": np.array(stats.kl_max),
+        "early_stop_kl_mean": np.array(stats.early_stop_kl_mean),
+        "clip_frac_mean": np.array(stats.clip_frac_mean),
+        "clip_frac_hi_mean": np.array(stats.clip_frac_hi_mean),
+        "clip_frac_lo_mean": np.array(stats.clip_frac_lo_mean),
         "ratio_mean": np.array(stats.ratio_mean),
         "ratio_max": np.array(stats.ratio_max),
         "ratio_min": np.array(stats.ratio_min),
-        "post_clip_dloss": np.array(stats.post_clip_dloss),
-        "policy_loss": np.array(stats.policy_loss),
-        "floor_loss": np.array(stats.floor_loss),
-        "action_grad_pol": np.array(stats.action_grad_pol),
-        "action_grad_floor": np.array(stats.action_grad_floor),
-        "value_loss": np.array(stats.value_loss),
-        "grad_norm_actor": np.array(stats.grad_norm_actor),
+        "post_clip_dloss_mean": np.array(stats.post_clip_dloss_mean),
+        "policy_loss_mean": np.array(stats.policy_loss_mean),
+        "floor_loss_mean": np.array(stats.floor_loss_mean),
+        "action_grad_pol_mean": np.array(stats.action_grad_pol_mean),
+        "action_grad_floor_mean": np.array(stats.action_grad_floor_mean),
+        "value_loss_mean": np.array(stats.value_loss_mean),
+        "grad_norm_actor_mean": np.array(stats.grad_norm_actor_mean),
         "epochs_done": np.array(stats.epochs_done),
         "actor_epochs_done": np.array(stats.actor_epochs_done),
         "n_batches": np.array(stats.n_batches),
         "n_trajectories": np.array(stats.n_trajectories),
         "total_steps": np.array(stats.total_steps),
-        "uncertainty": np.array(stats.uncertainty),
+        "uncertainty_mean": np.array(stats.uncertainty_mean),
     }
-    for key, val in stats.critic_losses.items():
-        data[f"critic_loss.{key}"] = np.array(val)
+    for key, val in stats.critic_loss_mean.items():
+        data[f"critic_loss_mean.{key}"] = np.array(val)
     for key, val in stats.explained_variance.items():
         data[f"ev.{key}"] = np.array(val)
     for key, val in stats.confidence.items():
@@ -367,8 +367,8 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         data[f"ret_mean.{key}"] = np.array(val)
     for key, val in stats.ret_std.items():
         data[f"ret_std.{key}"] = np.array(val)
-    for key, val in stats.critic_grad_norms.items():
-        data[f"critic_grad_norm.{key}"] = np.array(val)
+    for key, val in stats.critic_grad_norm_mean.items():
+        data[f"critic_grad_norm_mean.{key}"] = np.array(val)
     for key, val in stats.post_ratio_bins.items():
         data[f"rbin_{key}"] = np.array(val)
     return data
@@ -826,7 +826,7 @@ def capture_dump(
     np.savez_compressed(dump_dir / "update.npz", **update_data)
 
     # --- timeline.npz (from dump_collector, Scene 4) ---
-    # Per-minibatch training dynamics: KL, clip_frac, ratio, loss, grad
+    # Per-minibatch training dynamics: KL, clip_frac_mean, ratio, loss, grad
     # across all epochs × minibatches.  Very small (~13 KB).
     if "timeline" in dump_collector:
         np.savez_compressed(

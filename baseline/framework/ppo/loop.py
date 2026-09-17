@@ -749,12 +749,12 @@ def train_ppo(
             )
 
             # [Policy] & [PPO Opt]
-            policy_loss = stats.policy_loss
+            policy_loss_mean = stats.policy_loss_mean
             epochs_done = stats.epochs_done
             actor_epochs_done = stats.actor_epochs_done
-            approx_kl = stats.approx_kl
-            max_kl = stats.max_kl
-            early_stop_kl = stats.early_stop_kl
+            kl_mean = stats.kl_mean
+            kl_max = stats.kl_max
+            early_stop_kl_mean = stats.early_stop_kl_mean
 
             # Exploration diagnostics are rendered generically from whatever
             # the policy reported. Hard-coding uncertainty/std here would reassert
@@ -766,21 +766,21 @@ def train_ppo(
                 for k, v in sorted(buf.actor_stats.items())
             )
             print(
-                f"  [Policy ] loss={policy_loss:.4f}"
+                f"  [Policy ] loss={policy_loss_mean:.4f}"
                 + (f" | {explore_str}" if explore_str else ""),
                 flush=True,
             )
             print(
                 f"  [PPO Opt] epochs={epochs_done}/{pp.update_epochs} "
                 f"actor_epochs={actor_epochs_done}/{pp.update_epochs} "
-                f"kl_mean={approx_kl:.4f} kl_max={max_kl:.4f} "
-                f"(stop_kl={early_stop_kl:.4f})",
+                f"kl_mean={kl_mean:.4f} kl_max={kl_max:.4f} "
+                f"(stop_kl={early_stop_kl_mean:.4f})",
                 flush=True,
             )
 
             # [Critics] — per-channel with reward, actor_weight, traj stats
-            value_loss = stats.value_loss
-            print(f"  [Critics] total_vloss={value_loss:.4f}", flush=True)
+            value_loss_mean = stats.value_loss_mean
+            print(f"  [Critics] total_vloss={value_loss_mean:.4f}", flush=True)
             chan_stats = buf_stats["per_channel"]
             for key in reward_keys:
                 cs = chan_stats.get(key, {})
@@ -800,7 +800,7 @@ def train_ppo(
                 print(
                     f"    - {key:<12} | reward={rew_flow} "
                     f"[{r_min:+.2f},{r_max:+.2f}] | "
-                    f"val_loss={stats.critic_losses.get(key, 0.0):.4f} | "
+                    f"val_loss={stats.critic_loss_mean.get(key, 0.0):.4f} | "
                     f"ev={stats.explained_variance.get(key, 0.0):+.3f} | "
                     f"conf={stats.confidence.get(key, 1.0):.3f} | "
                     f"aw={aw_mean:.2f} [{aw_min:.2f},{aw_max:.2f}] | "
@@ -833,7 +833,7 @@ def train_ppo(
                 # Policy-contributed stats as a separate sub-mapping so
                 # consumers can tell them apart from framework-guaranteed
                 # keys (stats.to_log_dict() spreads them into `stats` for
-                # legacy flat-format consumers like analyze_training.py).
+                # legacy flat-format consumers).
                 "policy_stats": dict(stats.policy_stats),
                 "timing": {
                     "total": round(t_total, 2),

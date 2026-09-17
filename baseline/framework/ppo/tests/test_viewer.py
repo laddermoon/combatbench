@@ -175,7 +175,7 @@ def test_dump_data_loads_npz_files():
         assert data.combine_npz is not None
         assert "combined_adv" in data.combine_npz
         assert data.update_npz is not None
-        assert "approx_kl" in data.update_npz
+        assert "kl_mean" in data.update_npz
         print("test_dump_data_loads_npz_files: PASS")
 
 
@@ -602,13 +602,13 @@ def _write_train_log(run_dir: Path) -> Path:
         "human readable line\n"
         '__RAW_STATS__ {"update": 1, "episode_stats": {"ep_len_mean": 10.0}, '
         '"buffer_stats": {"per_channel": {"r_test": {"reward_mean": 0.5}}}, '
-        '"stats": {"policy_loss": -0.01, "ev_r_test": 0.8, '
+        '"stats": {"policy_loss_mean": -0.01, "ev_r_test": 0.8, '
         '"epoch_kl_stats": [{"kl": 0.1}]}, '
         '"timing": {"total": 1.2}}\n'
         "another line\n"
         '__RAW_STATS__ {"update": 2, "episode_stats": {"ep_len_mean": 11.0}, '
         '"buffer_stats": {"per_channel": {"r_test": {"reward_mean": 0.6}}}, '
-        '"stats": {"policy_loss": -0.02, "ev_r_test": 0.85}, '
+        '"stats": {"policy_loss_mean": -0.02, "ev_r_test": 0.85}, '
         '"timing": {"total": 1.3}}\n',
         encoding="utf-8",
     )
@@ -643,7 +643,7 @@ def test_run_data_metrics():
         assert len(metrics) == 2
         m0 = metrics[0]
         assert m0["update"] == 1
-        assert m0["stats.policy_loss"] == -0.01
+        assert m0["stats.policy_loss_mean"] == -0.01
         assert m0["ep.ep_len_mean"] == 10.0
         assert m0["pc.reward_mean.r_test"] == 0.5
         # stats.ev_<ch> is regrouped into pc.ev.<ch>
@@ -663,7 +663,7 @@ def test_run_data_metrics_experiment():
         run_dir = dump_dir.parent.parent
         log = run_dir / "train.log"
         log.write_text(
-            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.01}, '
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss_mean": -0.01}, '
             '"experiment": {"online_success": 0.25, "bad_nan": NaN, '
             '"bad_str": "x", "count": 3}}\n',
             encoding="utf-8",
@@ -733,7 +733,7 @@ def test_metric_doc():
     """metric_doc resolves flat keys to zone + hint."""
     from baseline.framework.ppo.dumpkit.metric_catalog import metric_doc
 
-    d = metric_doc("stats.value_loss")
+    d = metric_doc("stats.value_loss_mean")
     assert d["zone"] == "framework" and "value loss" in d["hint"]
     # Layout key falls back to its chart-group hint
     d = metric_doc("stats.post_kl_mean")
@@ -758,9 +758,9 @@ def test_run_summary():
         dump_dir = _create_test_dump(Path(d))
         run_dir = dump_dir.parent.parent
         (run_dir / "train.log").write_text(
-            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.01}, '
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss_mean": -0.01}, '
             '"experiment": {"online_success": 0.1}}\n'
-            '__RAW_STATS__ {"update": 2, "stats": {"policy_loss": -0.05}, '
+            '__RAW_STATS__ {"update": 2, "stats": {"policy_loss_mean": -0.05}, '
             '"experiment": {"online_success": 0.3}, '
             '"eval_info": {"success": 0.5}}\n',
             encoding="utf-8",
@@ -769,7 +769,7 @@ def test_run_summary():
         assert s["n_updates"] == 2
         assert s["run"] == run_dir.name
 
-        pl = s["metrics"]["stats.policy_loss"]
+        pl = s["metrics"]["stats.policy_loss_mean"]
         assert pl["n"] == 2 and pl["zone"] == "framework"
         assert pl["latest"] == -0.05 and pl["latest_update"] == 2
         assert pl["min"] == -0.05 and pl["min_update"] == 2
@@ -805,9 +805,9 @@ def test_debug_metrics_cmd(capsys):
         assert out["n_updates"] == 1 and out["metrics"][0]["update"] == 2
 
         assert debug.main(
-            ["metrics", str(run_dir), "--keys", "policy_loss"]) == 0
+            ["metrics", str(run_dir), "--keys", "policy_loss_mean"]) == 0
         out = json.loads(capsys.readouterr().out)
-        assert set(out["metrics"][0]) == {"update", "stats.policy_loss"}
+        assert set(out["metrics"][0]) == {"update", "stats.policy_loss_mean"}
 
         assert debug.main(
             ["metrics", str(run_dir), "--from-update", "2"]) == 0
@@ -841,8 +841,8 @@ def test_debug_summary_cmd(capsys):
         assert debug.main(["summary", str(run_dir)]) == 0
         out = json.loads(capsys.readouterr().out)
         assert out["n_updates"] == 2
-        assert out["metrics"]["stats.policy_loss"]["latest"] == -0.02
-        assert "zone" in out["metrics"]["stats.policy_loss"]
+        assert out["metrics"]["stats.policy_loss_mean"]["latest"] == -0.02
+        assert "zone" in out["metrics"]["stats.policy_loss_mean"]
 
         assert debug.main(
             ["summary", str(run_dir), "--keys", "ep_len"]) == 0
@@ -943,14 +943,14 @@ def test_run_data_metrics_incremental():
 
         # Append a complete line → re-parse picks it up
         with open(log, "a", encoding="utf-8") as f:
-            f.write('__RAW_STATS__ {"update": 3, "stats": {"policy_loss": -0.03}}\n')
+            f.write('__RAW_STATS__ {"update": 3, "stats": {"policy_loss_mean": -0.03}}\n')
         metrics = rd.metrics()
         assert len(metrics) == 3
-        assert metrics[2]["stats.policy_loss"] == -0.03
+        assert metrics[2]["stats.policy_loss_mean"] == -0.03
 
         # A partial (newline-less) tail line is deferred, not dropped
         with open(log, "a", encoding="utf-8") as f:
-            f.write('__RAW_STATS__ {"update": 4, "stats": {"policy_loss": -0.04}}')
+            f.write('__RAW_STATS__ {"update": 4, "stats": {"policy_loss_mean": -0.04}}')
         assert len(rd.metrics()) == 3
         with open(log, "a", encoding="utf-8") as f:
             f.write("\n")
@@ -1041,7 +1041,7 @@ def test_run_data_metrics_has_eval_keys():
         run_dir = Path(d) / "run"
         run_dir.mkdir()
         (run_dir / "train.log").write_text(
-            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss": -0.1}, '
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss_mean": -0.1}, '
             '"eval_info": {"success": 0.75, "final_pot": 0.8}}\n',
             encoding="utf-8",
         )

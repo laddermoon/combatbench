@@ -870,7 +870,7 @@ def ppo_update(
     floor_losses: List[float] = []
     val_losses: Dict[str, List[float]] = {key: [] for key in reward_keys}
     epoch_kl_stats: List[Dict[str, float]] = []
-    early_stop_kl = 0.0
+    early_stop_kl_mean = 0.0
     all_clip_fracs: List[float] = []
     all_clip_frac_his: List[float] = []
     all_clip_frac_los: List[float] = []
@@ -902,10 +902,10 @@ def ppo_update(
     actor_stopped = False
 
     # P0-1: Aggregate KL over every minibatch the actor actually ran.
-    # Before this, `approx_kl` was read from `epoch_kl_stats[-1]["mean_kl"]`,
+    # Before this, `kl_mean` was read from `epoch_kl_stats[-1]["kl_mean"]`,
     # which after B1 was always an empty post-stop epoch with mean_kl=0.0 —
     # hiding the very KL blow-up that triggered the stop.  This list is the
-    # source of truth for the reported `approx_kl` and `max_kl`.
+    # source of truth for the reported `kl_mean` and `kl_max`.
     all_actor_kls: List[float] = []
     # Number of epochs in which the actor took at least one minibatch step.
     # Contrasts with `epochs_done` (= len(epoch_kl_stats) = update_epochs
@@ -1050,7 +1050,7 @@ def ppo_update(
                 approx_kl = float(((ratio - 1.0) - log_ratio).mean().item())
             epoch_kls.append(approx_kl)
             # P0-1: feed the global actor-KL aggregator so the reported
-            # approx_kl/max_kl reflect every minibatch the actor actually
+            # kl_mean/kl_max reflect every minibatch the actor actually
             # ran, not just the last epoch's (possibly empty) mean.
             all_actor_kls.append(approx_kl)
             surr1 = ratio * adv_t[idx]
@@ -1213,7 +1213,7 @@ def ppo_update(
                         f"target_kl={target_kl:.4f} "
                         f"(critics continue)"
                     )
-                    early_stop_kl = running_mean_kl
+                    early_stop_kl_mean = running_mean_kl
                     early_stop_this_epoch = True
                     actor_stopped = True
                     early_stop_step = epoch * n_batches + mb_idx
@@ -1288,9 +1288,9 @@ def ppo_update(
             actor_epochs_done += 1
         epoch_kl_stats.append({
             "epoch": epoch,
-            "mean_kl": mean_epoch_kl,
-            "max_kl": max_epoch_kl,
-            "std_kl": std_epoch_kl,
+            "kl_mean": mean_epoch_kl,
+            "kl_max": max_epoch_kl,
+            "kl_std": std_epoch_kl,
             "n_minibatches": len(epoch_kls),
             "actor_active": actor_active_this_epoch,
         })
@@ -1440,7 +1440,7 @@ def ppo_update(
             f"floor_active={floor_frac:.3f}"
         )
 
-    critic_losses: Dict[str, float] = {
+    critic_loss_mean: Dict[str, float] = {
         key: float(np.mean(val_losses[key])) if val_losses[key] else 0.0
         for key in reward_keys
     }
@@ -1465,7 +1465,7 @@ def ppo_update(
     # a different iterate mid-update), these are a single snapshot at a
     # uniform endpoint.
     #
-    #   post_clip_dloss: delta of the DOUBLE-clipped surrogate vs the
+    #   post_clip_dloss_mean: delta of the DOUBLE-clipped surrogate vs the
     #     r=1 baseline — -mean[w * A * (clip(r,1-eps,1+eps) - 1)].
     #     Negative = the update net-aligned with the fixed advantages;
     #     near 0 / positive = no consistent direction.  Both tails are
@@ -1478,9 +1478,9 @@ def ppo_update(
     #     the update's actual displacement.  mean = trust-region
     #     distance; max = single-sample concentration; pos/neg split
     #     by advantage sign shows which side the policy moved on.
-    post_clip_dloss = 0.0
+    post_clip_dloss_mean = 0.0
     post_ratio_bins: Dict[str, float] = {}
-    post_kl_mean = post_kl_max = post_kl_pos = post_kl_neg = 0.0
+    post_kl_mean = post_kl_max = post_kl_pos_mean = post_kl_neg_mean = 0.0
     if n > 0:
         with torch.no_grad():
             new_lp_all = torch.empty(n, dtype=torch.float32, device=device)
@@ -1497,7 +1497,7 @@ def ppo_update(
             contrib = w_norm * adv_t * (
                 torch.clamp(r_all, 1.0 - clip_eps, 1.0 + clip_eps) - 1.0
             )
-            post_clip_dloss = -float(contrib.mean().item())
+            post_clip_dloss_mean = -float(contrib.mean().item())
             _pos = adv_t > 0
             _neg = adv_t < 0
             # k3 KL at the final iterate; r_all is already log-clamped
@@ -1506,9 +1506,9 @@ def ppo_update(
             post_kl_mean = float(k3.mean().item())
             post_kl_max = float(k3.max().item())
             if bool(_pos.any()):
-                post_kl_pos = float(k3[_pos].mean().item())
+                post_kl_pos_mean = float(k3[_pos].mean().item())
             if bool(_neg.any()):
-                post_kl_neg = float(k3[_neg].mean().item())
+                post_kl_neg_mean = float(k3[_neg].mean().item())
             _bands = (
                 ("ltlo", r_all < 1.0 - clip_eps),
                 ("lo", (r_all >= 1.0 - clip_eps) & (r_all < 1.0)),
@@ -1524,12 +1524,12 @@ def ppo_update(
                 (~_pos & ~_neg).float().mean().item()
             )
 
-    # P0-1: approx_kl/max_kl come from every actor minibatch actually run,
+    # P0-1: kl_mean/kl_max come from every actor minibatch actually run,
     # not from the last epoch's (possibly empty) mean.  Before this fix,
-    # `epoch_kl_stats[-1]["mean_kl"]` was 0.0 after early stop because the
+    # `epoch_kl_stats[-1]["kl_mean"]` was 0.0 after early stop because the
     # trailing epochs had no actor minibatches, hiding the KL blow-up from
     # every downstream consumer (on_update exploration schedulers,
-    # analyze_training.py, the [PPO Opt] log line).
+    # the [PPO Opt] log line, the debug viewer).
     final_kl = float(np.mean(all_actor_kls)) if all_actor_kls else 0.0
     max_kl_overall = float(np.max(all_actor_kls)) if all_actor_kls else 0.0
 
@@ -1544,7 +1544,7 @@ def ppo_update(
     ratio_max = float(max(all_ratio_maxs)) if all_ratio_maxs else 1.0
     ratio_min = float(min(all_ratio_mins)) if all_ratio_mins else 1.0
     grad_norm_actor = float(np.mean(all_grad_norms_actor)) if all_grad_norms_actor else 0.0
-    critic_grad_norms: Dict[str, float] = {
+    critic_grad_norm_mean: Dict[str, float] = {
         key: float(np.mean(all_grad_norms_critic[key]))
         if all_grad_norms_critic[key] else 0.0
         for key in reward_keys
@@ -1566,7 +1566,7 @@ def ppo_update(
         float(np.mean(all_action_grad_floor)) if all_action_grad_floor else 0.0
     )
     value_loss_val = float(np.mean([
-        critic_losses[key] for key in reward_keys
+        critic_loss_mean[key] for key in reward_keys
     ])) if reward_keys else 0.0
     # Framework-owned scalar: mean of the contract field ActorEval
     # .uncertainty over the whole buffer (also emitted by the policy's
@@ -1576,47 +1576,47 @@ def ppo_update(
     )
 
     return UpdateStats(
-        approx_kl=final_kl,
-        max_kl=max_kl_overall,
-        early_stop_kl=early_stop_kl,
-        clip_frac=clip_frac_mean,
-        clip_frac_hi=clip_frac_hi_mean,
-        clip_frac_lo=clip_frac_lo_mean,
+        kl_mean=final_kl,
+        kl_max=max_kl_overall,
+        early_stop_kl_mean=early_stop_kl_mean,
+        clip_frac_mean=clip_frac_mean,
+        clip_frac_hi_mean=clip_frac_hi_mean,
+        clip_frac_lo_mean=clip_frac_lo_mean,
         ratio_mean=ratio_mean,
         ratio_max=ratio_max,
         ratio_min=ratio_min,
-        post_clip_dloss=post_clip_dloss,
+        post_clip_dloss_mean=post_clip_dloss_mean,
         post_ratio_bins=post_ratio_bins,
         post_kl_mean=post_kl_mean,
         post_kl_max=post_kl_max,
-        post_kl_pos=post_kl_pos,
-        post_kl_neg=post_kl_neg,
-        policy_loss=policy_loss_val,
-        floor_loss=floor_loss_val,
+        post_kl_pos_mean=post_kl_pos_mean,
+        post_kl_neg_mean=post_kl_neg_mean,
+        policy_loss_mean=policy_loss_val,
+        floor_loss_mean=floor_loss_val,
         uncertainty_floor=float(uncertainty_floor),
         uncertainty_coef=float(uncertainty_coef),
-        action_grad_pol=action_grad_pol,
-        action_grad_floor=action_grad_floor,
-        value_loss=value_loss_val,
-        grad_norm_actor=grad_norm_actor,
+        action_grad_pol_mean=action_grad_pol,
+        action_grad_floor_mean=action_grad_floor,
+        value_loss_mean=value_loss_val,
+        grad_norm_actor_mean=grad_norm_actor,
         epochs_done=len(epoch_kl_stats),
         actor_epochs_done=actor_epochs_done,
         n_batches=n_batches,
         n_trajectories=n_trajectories,
         total_steps=total_steps,
-        uncertainty=uncertainty_mean,
+        uncertainty_mean=uncertainty_mean,
         traj_len_mean=traj_len_mean,
         traj_len_min=traj_len_min,
         traj_len_max=traj_len_max,
         epoch_kl_stats=epoch_kl_stats,
-        critic_losses=critic_losses,
+        critic_loss_mean=critic_loss_mean,
         explained_variance=ev_typed,
         confidence=dict(confidences),
         adv_mean=adv_mean,
         adv_std=adv_std,
         ret_mean=ret_mean,
         ret_std=ret_std,
-        critic_grad_norms=critic_grad_norms,
+        critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,
     )

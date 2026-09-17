@@ -62,7 +62,7 @@
 │    new_value  = critic_current(s_t)               ← critic 当前估计  │
 │                                                                      │
 │  per-epoch (标量):                                                   │
-│    mean_kl, max_kl, actor_active                                     │
+│    kl_mean, kl_max, kl_std, actor_active                             │
 │                                                                      │
 │  视角：每个 epoch 结束时，policy 对每帧的评估怎么变了                 │
 └──────────────────────────┬──────────────────────────────────────────┘

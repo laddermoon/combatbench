@@ -2,7 +2,7 @@
 
 Per-update actor LR rules, driven by the *previous* update's UpdateStats:
 
-  - previous update early-stopped (``early_stop_kl > 0``)  → LR × 0.8
+  - previous update early-stopped (``early_stop_kl_mean > 0``)  → LR × 0.8
   - previous ``post_kl_max`` < 0.2 × ``target_kl``         → LR × 1.1
 
 Early stop takes precedence — an update that hit the KL cap never
@@ -40,7 +40,7 @@ class StandupFloor04LR(StandupFloor04):
         # exp.* charts keep working under this override.
         metrics = dict(super().on_update(stats, update) or {})
         if not stats.is_empty:
-            self._prev_early_stop = stats.early_stop_kl > 0.0
+            self._prev_early_stop = stats.early_stop_kl_mean > 0.0
             self._prev_post_kl_max = stats.post_kl_max
         return metrics or None
 

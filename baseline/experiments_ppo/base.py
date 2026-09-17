@@ -168,7 +168,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
             def on_update(self, stats, update):
                 metrics = super().on_update(stats, update) or {}
-                self._kl_history.append(stats.approx_kl)
+                self._kl_history.append(stats.kl_mean)
                 metrics["kl_3u_mean"] = sum(self._kl_history[-3:]) / 3
                 return metrics
 

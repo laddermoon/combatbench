@@ -414,11 +414,11 @@ def test_ppo_update_empty_buffer_returns_empty_stats():
 
     assert stats.is_empty is True, "empty-buffer stats must have is_empty=True"
     assert stats.total_steps == 0
-    assert stats.approx_kl == 0.0
+    assert stats.kl_mean == 0.0
     assert stats.epochs_done == 0
     assert stats.actor_epochs_done == 0
     assert stats.n_trajectories == 0
-    assert stats.critic_losses == {"r_a": 0.0}
+    assert stats.critic_loss_mean == {"r_a": 0.0}
     assert stats.epoch_kl_stats == []
     print("test_ppo_update_empty_buffer_returns_empty_stats: PASS")
 
@@ -578,7 +578,7 @@ def test_ppo_update_runs_single_channel():
 
     assert stats.total_steps == T
     assert stats.n_trajectories == 1
-    assert "r_a" in stats.critic_losses
+    assert "r_a" in stats.critic_loss_mean
     assert "r_a" in stats.explained_variance
     assert "r_a" in stats.confidence
     print("test_ppo_update_runs_single_channel: PASS")
@@ -720,7 +720,7 @@ def test_ppo_update_critic_loss_decreases():
             grad_clip_norm=1.0,
             device=torch.device("cpu"),
         )
-        loss = stats.critic_losses["r_a"]
+        loss = stats.critic_loss_mean["r_a"]
         if first_loss is None:
             first_loss = loss
         last_loss = loss
@@ -766,8 +766,8 @@ def test_ppo_update_multi_channel_combines_advantages():
         device=torch.device("cpu"),
     )
 
-    assert "r_a" in stats.critic_losses
-    assert "r_b" in stats.critic_losses
+    assert "r_a" in stats.critic_loss_mean
+    assert "r_b" in stats.critic_loss_mean
     assert "r_a" in stats.explained_variance
     assert "r_b" in stats.explained_variance
     print("test_ppo_update_multi_channel_combines_advantages: PASS")
@@ -777,7 +777,7 @@ def test_ppo_update_actor_weight_zero_no_actor_contribution():
     """Channel with aw=0: critic trains but actor gets no gradient from it.
 
     We verify by checking that the combined advantage is all zeros when
-    ALL channels have aw=0, meaning policy_loss comes only from the
+    ALL channels have aw=0, meaning policy_loss_mean comes only from the
     regularizer (if any).
     """
     rng = np.random.default_rng(42)
@@ -813,7 +813,7 @@ def test_ppo_update_actor_weight_zero_no_actor_contribution():
 
     # With aw=0 everywhere and no regularizer, the channel is skipped
     # entirely (trainer.py:643: `if not np.any(aw_frame != 0.0): continue`).
-    # So combined_adv is all zeros, policy_loss = 0, no actor gradient.
+    # So combined_adv is all zeros, policy_loss_mean = 0, no actor gradient.
     # Actor params should not change (zero gradient → Adam produces no step
     # because there's nothing to step on; but Adam with zero grad still
     # applies momentum from previous steps. On the first call, momentum=0,
@@ -827,7 +827,7 @@ def test_ppo_update_actor_weight_zero_no_actor_contribution():
         f"max_diff={max_diff}"
     )
     # Critic should still have trained (loss is nonzero)
-    assert stats.critic_losses["r_a"] > 0, "Critic should still train with aw=0"
+    assert stats.critic_loss_mean["r_a"] > 0, "Critic should still train with aw=0"
     print("test_ppo_update_actor_weight_zero_no_actor_contribution: PASS")
 
 
@@ -934,9 +934,9 @@ def test_ppo_update_aw_zero_excluded_from_normalization():
     # and std=1 among themselves.
     #
     # We can't directly read combined_adv from stats, but we can verify
-    # the test runs and produces a non-trivial policy_loss (meaning the
+    # the test runs and produces a non-trivial policy_loss_mean (meaning the
     # advantage signal is not zero).
-    assert stats.policy_loss != 0 or stats.epochs_done > 0
+    assert stats.policy_loss_mean != 0 or stats.epochs_done > 0
     print("test_ppo_update_aw_zero_excluded_from_normalization: PASS")
 
 
@@ -946,7 +946,7 @@ def test_ppo_update_confidence_cold_start():
     A zeroed critic with zero weights will have EV = 0 (Var(y_pred)=0,
     so Var(y_true - y_pred) = Var(y_true), giving EV = 0). With
     use_confidence=True, confidence=sqrt(clip(0,0,1))=0, combined_adv=0,
-    and policy_loss=0 (no actor gradient).
+    and policy_loss_mean=0 (no actor gradient).
 
     We zero the critic explicitly to guarantee EV=0 regardless of the
     global torch RNG state (which varies by test order under pytest).
@@ -1162,7 +1162,7 @@ def test_ppo_update_inactive_channel_no_critic_grad():
         f"Inactive channel critic should not move, max_diff={max_diff}"
     )
     # r_b critic loss should be 0 (no active frames)
-    assert stats.critic_losses["r_b"] == 0.0
+    assert stats.critic_loss_mean["r_b"] == 0.0
     print("test_ppo_update_inactive_channel_no_critic_grad: PASS")
 
 
@@ -1480,8 +1480,8 @@ def test_kl_early_stop_triggers():
     """A tight target_kl + high LR triggers early stop, and the stats reflect it.
 
     P0-2 fix: the old version used target_kl=0.0, which *disables* early
-    stop (not "zero tolerance"), so early_stop_kl was always 0 and the
-    entire assertion block was skipped by `if stats.early_stop_kl > 0.0:`.
+    stop (not "zero tolerance"), so early_stop_kl_mean was always 0 and the
+    entire assertion block was skipped by `if stats.early_stop_kl_mean > 0.0:`.
     This version uses a real small target_kl with a high LR so early stop
     is guaranteed to fire, and asserts unconditionally.
     """
@@ -1521,9 +1521,9 @@ def test_kl_early_stop_triggers():
 
     # Unconditional: early stop must have triggered.  If this fails, the
     # test setup is wrong — not the code under test.
-    assert stats.early_stop_kl > 0.0, (
+    assert stats.early_stop_kl_mean > 0.0, (
         f"Early stop should trigger with target_kl=0.001 and lr=0.1, "
-        f"got early_stop_kl={stats.early_stop_kl}"
+        f"got early_stop_kl_mean={stats.early_stop_kl_mean}"
     )
     # P0-1: actor_epochs_done < epochs_done when actor stops early.
     assert stats.actor_epochs_done < stats.epochs_done, (
@@ -1536,7 +1536,7 @@ def test_kl_early_stop_triggers():
     n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)
     triggering = next(
         e for e in stats.epoch_kl_stats
-        if e["actor_active"] and e["mean_kl"] > pp.target_kl
+        if e["actor_active"] and e["kl_mean"] > pp.target_kl
     )
     assert 0 < triggering["n_minibatches"] <= n_batches_per_epoch, (
         f"Triggering epoch should have 1..{n_batches_per_epoch} minibatches, "
@@ -1544,7 +1544,7 @@ def test_kl_early_stop_triggers():
     )
     print(f"test_kl_early_stop_triggers: PASS "
           f"(actor_epochs_done={stats.actor_epochs_done}, "
-          f"early_stop_kl={stats.early_stop_kl:.6f})")
+          f"early_stop_kl_mean={stats.early_stop_kl_mean:.6f})")
 
 
 def test_kl_early_stop_mid_epoch():
@@ -1599,15 +1599,15 @@ def test_kl_early_stop_mid_epoch():
     n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)  # 8
 
     # Unconditional: early stop must trigger.
-    assert stats.early_stop_kl > 0.0, (
+    assert stats.early_stop_kl_mean > 0.0, (
         f"Early stop should trigger with target_kl=0.001 and lr=0.1, "
-        f"got early_stop_kl={stats.early_stop_kl}"
+        f"got early_stop_kl_mean={stats.early_stop_kl_mean}"
     )
     # P0-2 fix: find the *triggering* epoch, not [-1].  The triggering
     # epoch is the one where the actor was active and KL exceeded target.
     triggering = next(
         e for e in stats.epoch_kl_stats
-        if e["actor_active"] and e["mean_kl"] > pp.target_kl
+        if e["actor_active"] and e["kl_mean"] > pp.target_kl
     )
     # The key assertion: the triggering epoch stopped mid-epoch, so it
     # has fewer minibatches than a full epoch.  If the check were
@@ -1619,7 +1619,7 @@ def test_kl_early_stop_mid_epoch():
     )
     print(f"test_kl_early_stop_mid_epoch: PASS "
           f"(stopped at mb {triggering['n_minibatches']}/{n_batches_per_epoch}, "
-          f"kl={stats.early_stop_kl:.6f})")
+          f"kl={stats.early_stop_kl_mean:.6f})")
 
 
 def test_kl_early_stop_no_partial_epoch_when_kl_low():
@@ -1656,7 +1656,7 @@ def test_kl_early_stop_no_partial_epoch_when_kl_low():
 
     n_batches_per_epoch = max(1, (T + mb_size - 1) // mb_size)  # 4
     assert stats.epochs_done == 2
-    assert stats.early_stop_kl == 0.0
+    assert stats.early_stop_kl_mean == 0.0
     # Every epoch should have run all minibatches
     for ep_stat in stats.epoch_kl_stats:
         assert ep_stat["n_minibatches"] == n_batches_per_epoch, (
@@ -1699,16 +1699,16 @@ def test_kl_early_stop_no_trigger():
     )
 
     assert stats.epochs_done == 3, f"Should run all 3 epochs, got {stats.epochs_done}"
-    assert stats.early_stop_kl == 0.0
+    assert stats.early_stop_kl_mean == 0.0
     print(f"test_kl_early_stop_no_trigger: PASS (epochs_done={stats.epochs_done})")
 
 
 # ---------------------------------------------------------------------------
-# P0-1 regression: approx_kl must reflect real KL after early stop
+# P0-1 regression: kl_mean must reflect real KL after early stop
 # ---------------------------------------------------------------------------
 # These tests lock in the fix for the silent KL-reporting bug described in
-# FIXPLAN.md P0-1.  Before the fix, `approx_kl` was taken from
-# `epoch_kl_stats[-1]["mean_kl"]`, which after B1 (critic/actor early-stop
+# FIXPLAN.md P0-1.  Before the fix, `kl_mean` was taken from
+# `epoch_kl_stats[-1]["kl_mean"]`, which after B1 (critic/actor early-stop
 # decoupling) was always an empty epoch with mean_kl=0.0, hiding the fact
 # that KL had actually blown up and triggered early stop.
 #
@@ -1763,47 +1763,47 @@ def _run_high_kl_update(*, target_kl=0.001, update_epochs=4, lr=1e-1):
 
 
 def test_approx_kl_reflects_real_kl_after_early_stop():
-    """early-stop 触发后，approx_kl 必须仍反映真实 KL，不能是 0。
+    """early-stop 触发后，kl_mean 必须仍反映真实 KL，不能是 0。
 
-    This is the core P0-1 regression.  Before the fix, `approx_kl` was
+    This is the core P0-1 regression.  Before the fix, `kl_mean` was
     read from the last epoch's mean_kl, which after actor early-stop was
     always 0.0 (the actor never ran in those epochs), so `on_update`
-    consumers saw `approx_kl=0` exactly when KL had actually blown up.
+    consumers saw `kl_mean=0` exactly when KL had actually blown up.
     """
     stats, pp, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
 
     # Precondition: early stop must have actually triggered.  If this
     # fails, the test setup is wrong, not the fix.
-    assert stats.early_stop_kl > 0.0, (
+    assert stats.early_stop_kl_mean > 0.0, (
         "Precondition failed: early stop did not trigger. "
-        f"early_stop_kl={stats.early_stop_kl}"
+        f"early_stop_kl_mean={stats.early_stop_kl_mean}"
     )
 
-    # The fix: approx_kl is the mean of every actor minibatch KL, so it
+    # The fix: kl_mean is the mean of every actor minibatch KL, so it
     # must be positive and on the same order as the value that triggered
     # the stop (not 0.0).
-    assert stats.approx_kl > 0.0, (
-        f"approx_kl must be > 0 after early stop, got {stats.approx_kl}. "
+    assert stats.kl_mean > 0.0, (
+        f"kl_mean must be > 0 after early stop, got {stats.kl_mean}. "
         "This is the P0-1 regression: the reported KL hides the blow-up."
     )
     # Same order of magnitude as the triggering KL (within 2x).  We use a
-    # loose relative tolerance because approx_kl is a mean over all actor
+    # loose relative tolerance because kl_mean is a mean over all actor
     # minibatches (including the small-KL ones before the blow-up), while
-    # early_stop_kl is the running mean at the moment of the trigger.
-    assert stats.approx_kl == pytest.approx(stats.early_stop_kl, rel=2.0), (
-        f"approx_kl ({stats.approx_kl}) should be on the order of "
-        f"early_stop_kl ({stats.early_stop_kl}), not 0 or unrelated."
+    # early_stop_kl_mean is the running mean at the moment of the trigger.
+    assert stats.kl_mean == pytest.approx(stats.early_stop_kl_mean, rel=2.0), (
+        f"kl_mean ({stats.kl_mean}) should be on the order of "
+        f"early_stop_kl_mean ({stats.early_stop_kl_mean}), not 0 or unrelated."
     )
 
-    # max_kl must also come from real actor KLs, not from the empty-epoch
+    # kl_max must also come from real actor KLs, not from the empty-epoch
     # aggregation that happened to be correct only because max(0)=0.
-    assert stats.max_kl > 0.0
-    assert stats.max_kl >= stats.approx_kl
+    assert stats.kl_max > 0.0
+    assert stats.kl_max >= stats.kl_mean
 
     print(
         f"test_approx_kl_reflects_real_kl_after_early_stop: PASS "
-        f"(approx_kl={stats.approx_kl:.6f}, early_stop_kl={stats.early_stop_kl:.6f}, "
-        f"max_kl={stats.max_kl:.6f})"
+        f"(kl_mean={stats.kl_mean:.6f}, early_stop_kl_mean={stats.early_stop_kl_mean:.6f}, "
+        f"kl_max={stats.kl_max:.6f})"
     )
 
 
@@ -1818,7 +1818,7 @@ def test_actor_epochs_done_after_early_stop():
     """
     stats, pp, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
 
-    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    assert stats.early_stop_kl_mean > 0.0, "Precondition: early stop must trigger"
     assert stats.actor_epochs_done < stats.epochs_done, (
         f"actor_epochs_done ({stats.actor_epochs_done}) should be < "
         f"epochs_done ({stats.epochs_done}) after early stop"
@@ -1847,7 +1847,7 @@ def test_no_stuck_warning_when_actor_stopped():
     """
     stats, _, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
 
-    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    assert stats.early_stop_kl_mean > 0.0, "Precondition: early stop must trigger"
     stuck = [d for d in stats.diagnostics if "may be stuck" in d]
     assert stuck == [], (
         "No 'policy may be stuck' warnings should fire for epochs where "
@@ -1865,7 +1865,7 @@ def test_epoch_kl_stats_marks_actor_active():
     """
     stats, _, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)
 
-    assert stats.early_stop_kl > 0.0, "Precondition: early stop must trigger"
+    assert stats.early_stop_kl_mean > 0.0, "Precondition: early stop must trigger"
     assert len(stats.epoch_kl_stats) == 4
     active_flags = [e.get("actor_active") for e in stats.epoch_kl_stats]
     # First epoch (where the actor ran until early-stop) must be True.
@@ -1916,8 +1916,8 @@ def test_target_kl_zero_disables_early_stop():
         use_confidence=False,
     )
 
-    assert stats.early_stop_kl == 0.0, (
-        f"target_kl=0.0 disables early stop, got early_stop_kl={stats.early_stop_kl}"
+    assert stats.early_stop_kl_mean == 0.0, (
+        f"target_kl=0.0 disables early stop, got early_stop_kl_mean={stats.early_stop_kl_mean}"
     )
     assert stats.actor_epochs_done == 3, (
         f"actor should run all 3 epochs with early stop disabled, "
@@ -1966,10 +1966,10 @@ def test_update_stats_to_log_dict():
     )
 
     d = stats.to_log_dict()
-    assert "policy_loss" in d
-    assert "value_loss" in d
-    assert "approx_kl" in d
-    assert "vloss_r_a" in d
+    assert "policy_loss_mean" in d
+    assert "value_loss_mean" in d
+    assert "kl_mean" in d
+    assert "vloss_mean_r_a" in d
     assert "ev_r_a" in d
     assert "confidence_r_a" in d
     assert "adv_mean_r_a" in d
@@ -2168,8 +2168,8 @@ def test_mixed_channel_activity_across_trajectories():
     )
 
     # Both critics should have nonzero loss (each has T active frames)
-    assert stats.critic_losses["r_a"] > 0
-    assert stats.critic_losses["r_b"] > 0
+    assert stats.critic_loss_mean["r_a"] > 0
+    assert stats.critic_loss_mean["r_b"] > 0
     # r_a is active on traj 1, inactive on traj 2
     assert buf.key_seg_active["r_a"] == [True, False]
     assert buf.key_seg_active["r_b"] == [False, True]
@@ -2962,7 +2962,7 @@ if __name__ == "__main__":
     test_kl_early_stop_mid_epoch()
     test_kl_early_stop_no_trigger()
 
-    # P0-1 regression: approx_kl after early stop
+    # P0-1 regression: kl_mean after early stop
     test_approx_kl_reflects_real_kl_after_early_stop()
     test_actor_epochs_done_after_early_stop()
     test_no_stuck_warning_when_actor_stopped()

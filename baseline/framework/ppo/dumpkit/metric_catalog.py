@@ -73,48 +73,51 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
      "keys": ["stats.uncertainty_floor", "stats.uncertainty_coef"],
      "hint": "本 update 实际生效的 ExplorationSpec：uncertainty_floor（U 下限）与 uncertainty_coef（hinge 系数）。\n"
              "由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。\n"
-             "floor_loss = coef·mean(relu(floor−U)²)，floor 线低于 Uncertainty 图的 U 曲线时 hinge 开始激活。"},
+             "floor_loss_mean = coef·mean(relu(floor−U)²)，floor 线低于 Uncertainty 图的 U 曲线时 hinge 开始激活。"},
     {"title": "Learning Rate", "keys": ["stats.actor_lr", "stats.critic_lr"],
      "hint": "本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n"
              "由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n"
              "恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。"},
-    {"title": "Uncertainty", "keys": ["stats.uncertainty"],
+    {"title": "Uncertainty", "keys": ["stats.uncertainty_mean"],
      "hint": "框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\n"
              "U ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。"},
-    {"pc": "vloss"},
-    {"title": "Policy & Floor Loss", "keys": ["stats.policy_loss", "stats.floor_loss"],
-     "hint": "policy_loss：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n"
+    {"pc": "vloss_mean"},
+    {"title": "Policy & Floor Loss",
+     "keys": ["stats.policy_loss_mean", "stats.floor_loss_mean"],
+     "hint": "policy_loss_mean：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n"
              "为何初始≈0：epoch0 首 minibatch 所有 r=1 → loss = −mean(w·A)；仅当该批加权 A 均值=0 时严格为 0（单通道 z-score 归一化下近似成立）。\n"
              "为何会变正/上升：有利方向 r 越过 ε 边界后该项目标值进入平台、该项梯度归零（收益封顶 ε·|A|）；不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界）。少数恶化样本可抵消大量改善 → 均值偏正是结构性现象，正负不代表学没学。\n"
-             "floor_loss：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n"
+             "floor_loss_mean：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n"
              "两者相加（非本图）才是实际反传的总损失。"},
-    {"title": "Loss → Actor ∇", "keys": ["stats.action_grad_pol", "stats.action_grad_floor"],
+    {"title": "Loss → Actor ∇",
+     "keys": ["stats.action_grad_pol_mean", "stats.action_grad_floor_mean"],
      "hint": "两种损失各自对 actor 全部参数的梯度 L2 范数（autograd.grad，未触达的参数计 0）。\n"
              "每 epoch 首个 minibatch 采样、按 update 平均。\n"
-             "· action_grad_pol：clipped surrogate 对动作网络的拉力\n"
-             "· action_grad_floor：floor hinge 的拉力——按设计应只落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数"},
-    {"title": "Actor Gradient Norm", "keys": ["stats.grad_norm_actor"],
+             "· action_grad_pol_mean：clipped surrogate 对动作网络的拉力\n"
+             "· action_grad_floor_mean：floor hinge 的拉力——按设计应只落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数"},
+    {"title": "Actor Gradient Norm", "keys": ["stats.grad_norm_actor_mean"],
      "hint": "每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\n"
              "clip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n"
              "读法：衡量\"策略想迈多大步\"vs clip 允许的实际步长。\n"
              "· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n"
              "· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n"
              "· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）"},
-    {"pc": "grad_norm"},
+    {"pc": "grad_norm_mean"},
     {"title": "Ratio & Clip Fraction",
      "keys": ["stats.ratio_mean", "stats.ratio_min", "stats.ratio_max",
-              "stats.clip_frac", "stats.clip_frac_hi", "stats.clip_frac_lo"],
+              "stats.clip_frac_mean", "stats.clip_frac_hi_mean",
+              "stats.clip_frac_lo_mean"],
      "hint": "ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。mean 是均值，max 是上尾（加压方向），min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\n"
-             "clip_frac = |ratio−1| > clip_eps 的帧占比，对 update 内所有 actor minibatch 取均值；hi = r>1+ε 上尾、lo = r<1−ε 下尾，两尾不相交故 clip_frac = hi + lo。\n"
-             "读法：clip_frac 是\"clip 平均参与度\"——本次 update 有多大比例的样本被削掉 surrogate 梯度；它不是\"末态 clip 强度\"，末态请看 Post-Update Ratio Bins 的 ltlo/gthi 带。\n"
+             "clip_frac_mean = |ratio−1| > clip_eps 的帧占比，对 update 内所有 actor minibatch 取均值；hi = r>1+ε 上尾、lo = r<1−ε 下尾，两尾不相交故 clip_frac_mean = hi + lo。\n"
+             "读法：clip_frac_mean 是\"clip 平均参与度\"——本次 update 有多大比例的样本被削掉 surrogate 梯度；它不是\"末态 clip 强度\"，末态请看 Post-Update Ratio Bins 的 ltlo/gthi 带。\n"
              "常见误读：\n"
              "· 每个 update 内 clip_frac 天然从 ≈0 爬升（ratio 从 1 起步、随 minibatch 推进扩散）——within-update 上升是机械形态，与 KL 累积冗余，不是异常信号；mean 把爬升段和稳态段混合，系统性低估末态。\n"
              "· 早停截断 minibatch 集合：actor_epochs_done 不同的 update 其 mean 分母结构不同，跨 update 的小差异不可比。\n"
              "· 越界只在一半情况下真杀梯度：hi 配合 A>0、lo 配合 A<0 才被掐——hi/lo 是\"越界占比\"而非\"被掐占比\"。\n"
              "想看 within-update 形态用 dump timeline（Scene 4）：若 epoch0 前几个 minibatch 就高 clip，说明 rollout 分布与训练起点失配或步长过大。"},
-    {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss"],
+    {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss_mean"],
      "hint": "update 结束后用最终 actor 对全部样本重算 ratio，再算\"双向 clip\"surrogate 相对 r=1 基线的变化：−mean[w·A·(clip(r,1−ε,1+ε)−1)]。\n"
-             "与 policy_loss 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n"
+             "与 policy_loss_mean 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n"
              "读法：负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
     {"title": "Post-Update Ratio Bins",
      "keys": ["stats.rbin_pos_ltlo", "stats.rbin_pos_lo", "stats.rbin_pos_hi",
@@ -124,19 +127,20 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "9 条线都是全部样本的占比，合计=1。\n"
              "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）。pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
-                             "stats.post_kl_pos", "stats.post_kl_neg",
-                             "stats.approx_kl"],
+                             "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
+                             "stats.kl_mean"],
      "hint": "post_kl_*：update 结束后用最终 actor 在全 buffer 上重算的 k3 KL（(r−1)−log r）——本次更新的真实位移，跨 update 可比，是\"推了多远\"的权威读数。\n"
-             "mean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos/neg：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n"
-             "读法：mean ≈ target_kl 且 actor 早停 = 健康撞墙；mean 明显低于 early_stop_kl（Epochs 图）= 早停后位移部分回退。\n"
-             "approx_kl：过程量——update 内所有 actor minibatch 的 k3 均值，每个 minibatch 在当时迭代点上测量。读作\"update 过程中 actor 平均工作的位移水平\"，不是端点位移（端点看 post_kl_mean）。它恒受 ramp 结构影响（首 minibatch ≈0 后单调爬升）且分母随早停截断变化，绝对值系统性低于 post_kl_mean 属正常。\n"
-             "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×approx_kl = 位移集中在末段爆发；post_kl_mean < approx_kl = 中途位移被后续 minibatch 回退（churn）。\n"
-             "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats；max_kl（单点峰值，噪声大）在 Other framework metrics。"},
+             "mean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos_mean/neg_mean：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n"
+             "读法：mean ≈ target_kl 且 actor 早停 = 健康撞墙；mean 明显低于 early_stop_kl_mean（Epochs 图）= 早停后位移部分回退。\n"
+             "kl_mean：过程量——update 内所有 actor minibatch 的 k3 均值，每个 minibatch 在当时迭代点上测量。读作\"update 过程中 actor 平均工作的位移水平\"，不是端点位移（端点看 post_kl_mean）。它恒受 ramp 结构影响（首 minibatch ≈0 后单调爬升）且分母随早停截断变化，绝对值系统性低于 post_kl_mean 属正常。\n"
+             "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×kl_mean = 位移集中在末段爆发；post_kl_mean < kl_mean = 中途位移被后续 minibatch 回退（churn）。\n"
+             "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats；kl_max（单点峰值，噪声大）在 Other framework metrics。"},
     {"title": "Epochs & Early Stop",
-     "keys": ["stats.epochs_done", "stats.actor_epochs_done", "stats.early_stop_kl"],
+     "keys": ["stats.epochs_done", "stats.actor_epochs_done",
+              "stats.early_stop_kl_mean"],
      "hint": "epochs_done：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\n"
              "actor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\n"
-             "early_stop_kl：触发早停当刻的\"本 epoch running mean KL\"（0=未触发）。它是滑动均值不是单点峰值，所以与 max_kl 不相等是正常的；量级远小于 epoch 计数所以贴底。"},
+             "early_stop_kl_mean：触发早停当刻的\"本 epoch running mean KL\"（0=未触发）。它是滑动均值不是单点峰值，所以与 kl_max 不相等是正常的；量级远小于 epoch 计数所以贴底。"},
     {"timing": True,
      "hint": "每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。"},
 ]
@@ -146,8 +150,8 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
 PC_HINTS: Dict[str, str] = {
     "n_active_trajs": "该 channel 活跃轨迹数。活跃 = 该 trajectory 的 channels 中含此 key；不活跃轨迹 reward=0、不参与该 channel 的 advantage。",
     "active_ratio": "n_active_trajs / 总轨迹数——该 channel 的活跃占比。",
-    "vloss": "该 channel critic 的 (V−ret)² 帧加权 MSE，minibatch 平均。critic 跑满全部 epoch（actor 早停不影响它）。",
-    "grad_norm": "该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nactor 被 KL 早停后 critic 仍跑满全部 epoch，采样窗口比 actor 梯度大。",
+    "vloss_mean": "该 channel critic 的 (V−ret)² 帧加权 MSE，minibatch 平均。critic 跑满全部 epoch（actor 早停不影响它）。",
+    "grad_norm_mean": "该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nactor 被 KL 早停后 critic 仍跑满全部 epoch，采样窗口比 actor 梯度大。",
     "reward_min": "该 channel 逐帧原始 reward 的最小值（活跃轨迹全部帧）。",
     "reward_max": "该 channel 逐帧原始 reward 的最大值（活跃轨迹全部帧）。",
     "reward_mean": "该 channel 逐帧原始 reward 的均值（活跃轨迹全部帧）。",
@@ -164,9 +168,31 @@ PC_HINTS: Dict[str, str] = {
 }
 
 # Fallback hints for leftover scalar stats.* keys not covered by the
-# layout (e.g. value_loss).
+# layout (e.g. value_loss_mean).
 STATS_HINTS: Dict[str, str] = {
-    "value_loss": "所有 channel critic value loss 的均值标量（分 channel 明细见 vloss 图）。",
+    "value_loss_mean": "所有 channel critic value loss 的均值标量（分 channel 明细见 vloss_mean 图）。",
+}
+
+# Conventional-name aliases for chart legends — several renamed metrics
+# correspond to names the PPO literature uses, so legends display
+# e.g. "kl_mean (approx_kl)".
+KEY_LABELS: Dict[str, str] = {
+    "kl_mean": "kl_mean (approx_kl)",
+    "kl_max": "kl_max (max_kl)",
+    "early_stop_kl_mean": "early_stop_kl_mean (early_stop_kl)",
+    "clip_frac_mean": "clip_frac_mean (clip_frac)",
+    "clip_frac_hi_mean": "clip_frac_hi_mean (clip_frac_hi)",
+    "clip_frac_lo_mean": "clip_frac_lo_mean (clip_frac_lo)",
+    "policy_loss_mean": "policy_loss_mean (policy_loss)",
+    "value_loss_mean": "value_loss_mean (value_loss)",
+    "floor_loss_mean": "floor_loss_mean (floor_loss)",
+    "action_grad_pol_mean": "action_grad_pol_mean (action_grad_pol)",
+    "action_grad_floor_mean": "action_grad_floor_mean (action_grad_floor)",
+    "grad_norm_actor_mean": "grad_norm_actor_mean (grad_norm_actor)",
+    "uncertainty_mean": "uncertainty_mean (uncertainty)",
+    "post_clip_dloss_mean": "post_clip_dloss_mean (post_clip_dloss)",
+    "post_kl_pos_mean": "post_kl_pos_mean (post_kl_pos)",
+    "post_kl_neg_mean": "post_kl_neg_mean (post_kl_neg)",
 }
 
 # ---------------------------------------------------------------------
@@ -208,6 +234,7 @@ def catalog() -> Dict[str, Any]:
         "pc_hints": PC_HINTS,
         "stats_hints": STATS_HINTS,
         "zones": ZONES,
+        "labels": KEY_LABELS,
     }
 
 
@@ -222,9 +249,11 @@ def _zone_for(key: str) -> Dict[str, Any]:
 def metric_doc(key: str) -> Dict[str, Any]:
     """Resolve one flattened metric key to its semantic doc.
 
-    Returns ``{"key", "zone", "hint"}`` — ``hint`` may be empty when no
-    specific doc exists (open-ended zones / undocumented stats keys);
-    the zone-level hint still describes the namespace.
+    Returns ``{"key", "zone", "hint", "label"}`` — ``hint`` may be empty
+    when no specific doc exists (open-ended zones / undocumented stats
+    keys); the zone-level hint still describes the namespace.  ``label``
+    carries the conventional-name alias for renamed framework keys
+    (e.g. ``kl_mean (approx_kl)``).
     """
     z = _zone_for(key)
     hint = ""
@@ -245,4 +274,9 @@ def metric_doc(key: str) -> Dict[str, Any]:
                         break
     else:
         hint = z.get("hint", "")
-    return {"key": key, "zone": z["zone"], "hint": hint or z.get("hint", "")}
+    label = (
+        KEY_LABELS.get(key[6:], key[6:])
+        if key.startswith("stats.") else key.split(".", 1)[-1]
+    )
+    return {"key": key, "zone": z["zone"],
+            "hint": hint or z.get("hint", ""), "label": label}

@@ -354,8 +354,8 @@ _LEGACY_POLICY_STAT_KEYS = frozenset({
 # Stats keys the framework owns even when a policy also emits them inside
 # ActorEval.stats: uncertainty is aggregated from the contract field
 # ActorEval.uncertainty (consumed by the floor loss), so it classifies as
-# stats.uncertainty, never policy.uncertainty.
-_FRAMEWORK_STAT_KEYS = frozenset({"uncertainty"})
+# stats.uncertainty_mean, never policy.uncertainty_mean.
+_FRAMEWORK_STAT_KEYS = frozenset({"uncertainty_mean"})
 
 
 class RunData:

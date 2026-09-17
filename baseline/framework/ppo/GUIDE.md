@@ -309,7 +309,7 @@ class MyExperiment(ExperimentPPO):
     _kl_history: List[float] = []
 
     def on_update(self, stats, update):
-        self._kl_history.append(stats.approx_kl)
+        self._kl_history.append(stats.kl_mean)
 
     def exploration(self, update):
         if len(self._kl_history) >= 3:
@@ -328,7 +328,7 @@ class MyExperiment(ExperimentPPO):
 > （``CommonParams`` 字段），``build_jobs`` 会自动读取它。这和
 > ``exploration()`` 返回的 ``ExplorationSpec`` 是两个独立的旋钮。
 
-`UpdateStats` 的框架保证字段（跨策略族稳定）：`approx_kl`, `max_kl`, `clip_frac`, `policy_loss`, `value_loss`, `grad_norm_actor`, `epochs_done`, `uncertainty`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。
+`UpdateStats` 的框架保证字段（跨策略族稳定）：`kl_mean`, `kl_max`, `clip_frac_mean`, `policy_loss_mean`, `value_loss_mean`, `grad_norm_actor_mean`, `epochs_done`, `uncertainty_mean`, per-channel 的 `explained_variance`/`confidence`/`adv_mean`/`adv_std` 等。命名规则：聚合量必带 `_mean`/`_max`/`_min`/`_std` 尾标；`post_*` 前缀 = update 结束后的端点截面，无前缀 = update 过程中的 minibatch 采样。
 
 `policy_stats` 子 dict 是策略贡献的诊断，**无跨策略族契约**，当作 opaque hints 用。
 
@@ -388,6 +388,6 @@ r_cross = extract_per_step_scalar(ep.observer_outputs, "cross_support_a", T)
 四条最常用的：
 
 1. **先用 `--smoke` 跑**：2 轮 update，快速验证代码能跑通
-2. **先跑 `analyze_training.py --diagnostics-only`**：内置 9 条健康诊断规则，30 秒出结论
+2. **先跑 `debug.py summary <run_dir>`**：每个指标的 latest/min/max + 语义读法一次出全
 3. **`is_terminated` 设错是最常见的 bug**：如果 critic loss 爆炸或 advantage 异常，先检查终止标志
 4. **`actor_weight` 全 0 = actor 不学习**：确认至少有一个 channel 的 actor_weight > 0

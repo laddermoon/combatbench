@@ -367,7 +367,7 @@ def test_capture_dump_writes_all_files():
 
         # Check update.npz
         update_data = np.load(dump_dir / "update.npz", allow_pickle=True)
-        assert "approx_kl" in update_data
+        assert "kl_mean" in update_data
         assert "grad_norm_actor_pre_clip" in update_data
 
         # Check timeline.npz (Scene 4)
@@ -453,9 +453,9 @@ def test_ppo_update_no_callback_unchanged():
         device=torch.device("cpu"),
     )
     # Should produce valid stats
-    assert hasattr(stats, "approx_kl")
-    assert hasattr(stats, "policy_loss")
-    assert hasattr(stats, "grad_norm_actor")
+    assert hasattr(stats, "kl_mean")
+    assert hasattr(stats, "policy_loss_mean")
+    assert hasattr(stats, "grad_norm_actor_mean")
     print("test_ppo_update_no_callback_unchanged: PASS")
 
 

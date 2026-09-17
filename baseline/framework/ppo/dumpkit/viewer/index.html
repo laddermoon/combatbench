@@ -1934,8 +1934,13 @@
     const used = new Set();
     state._chartSeq = 0;
     state._chartSpecs = {};
-    const labelFor = k =>
-      k.startsWith('pc.') ? k.split('.').pop() : k.split('.').slice(1).join('.');
+    const labelFor = k => {
+      const bare =
+        k.startsWith('pc.') ? k.split('.').pop() : k.split('.').slice(1).join('.');
+      // Conventional-name alias for renamed framework keys, e.g.
+      // "kl_mean (approx_kl)" — served by the catalog's labels map.
+      return ((state.catalog && state.catalog.labels) || {})[bare] || bare;
+    };
     // Deferred chart: placeholder div + spec in state._chartSpecs for
     // mountCharts() to render + wire toggles.
     const emitChart = (title, series, opts = {}) => {
