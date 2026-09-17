@@ -48,7 +48,6 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
      "hint": "ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\n"
              "stats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_steps）。\n"
              "一条轨迹恰好覆盖一条 episode 时两者相等。"},
-    {"pc": "active_ratio"},
     {"keys": ["stats.n_batches"],
      "hint": "每个 update 的 minibatch 数 = tensor_split(总帧数, n_batches)。"},
     {"keys": ["stats.total_steps"],
