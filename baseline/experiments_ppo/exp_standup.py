@@ -264,5 +264,30 @@ class Standup(CombatExperimentPPOBase):
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
 
+    def __init__(self, **kwargs):
+        """Support --set KEY=VALUE overrides from train.py.
+
+        Only public class attributes can be overridden; private
+        (underscore-prefixed) attributes and reward internals are
+        protected.  Values are coerced to the type of the current
+        class attribute.
+        """
+        for key, value in kwargs.items():
+            if key.startswith("_") or not hasattr(self, key):
+                raise ValueError(
+                    f"Standup does not accept parameter {key!r}"
+                )
+            cur = getattr(self, key)
+            if callable(cur) or not isinstance(cur, (bool, int, float, str)):
+                raise ValueError(
+                    f"Standup parameter {key!r} is not a tunable scalar"
+                )
+            typ = type(cur)
+            if typ is bool:
+                value = str(value).lower() in ("true", "1", "yes", "on")
+            else:
+                value = typ(value)
+            setattr(self, key, value)
+
 
 EXPERIMENT_CLASS = Standup
