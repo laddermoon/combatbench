@@ -322,6 +322,12 @@ See `baseline/experiments_ppo/README.md` for the full walkthrough. In short:
 
 All output (Python `print()`, C-level stdout/stderr) is tee'd to `run_dir/train.log`. In foreground mode, output also goes to the console. The log includes human-readable training progress and machine-readable `__RAW_STATS__` JSON lines for monitoring scripts.
 
+### Debug Toolkit
+
+`baseline/framework/ppo/debug.py` is a toolset for inspecting training runs — fully offline JSON queries (`runs`/`summary`/`metrics`/`catalog`, byte-identical to the viewer's `/api/*`), one-shot update cross-section capture (`dump`), episode rendering (`render`), policy-drift analysis (`delta`), and the web viewer (`viewer`). Metric semantics live in `baseline/framework/ppo/dumpkit/metric_catalog.py` (single source for the viewer's chart hints and the CLI's `--docs`/`catalog` output).
+
+**For AI agents**: read `baseline/framework/ppo/dumpkit/CONTEXT.md` first — it's the capability map (command table, data granularity ladder, metric namespaces, HTTP endpoints, gotchas).
+
 ## Common Commands
 
 ### Installation

@@ -1,43 +1,52 @@
 #!/usr/bin/env python3
-"""Debug CLI — request a one-shot update dump from a running training.
+"""Debug toolset for PPO training runs — organized by the question you have.
 
-Usage:
-    # Request a dump (writes a sentinel, training loop captures at next update):
-    PYTHONPATH=. python3 baseline/framework/ppo/debug.py dump <run_dir> \
-        --hypothesis "why is KL high at update 250"
+All read commands print JSON on stdout (--pretty to indent).  Write
+commands (dump) take effect at the next update boundary.  Commands work
+fully offline — no viewer server needed.  <run> accepts a directory
+path or a run name under --runs-root (default baseline/runs).
 
-    # Render images for a captured episode and auto-verify:
-    PYTHONPATH=. python3 baseline/framework/ppo/debug.py render <run_dir> \
-        --episode 0
+Usage by question::
+
+    What runs exist?
+        debug.py runs [--status running] [--tail 5]
+
+    How did a run's metrics evolve?  (RunData.summary/metrics — same
+    flattening code as the viewer's /api/run/*, identical output.)
+        debug.py summary <run> [--keys kl]      # digest FIRST: per-key
+                                                # zone+hint+latest+min/max
+        debug.py metrics <run> [--keys eval.] [--tail 20] [--docs]
+                              [--from-update A --to-update B]
+
+    What does a metric key mean?  (metric_catalog.py — same data the
+    viewer renders as chart hints.)
+        debug.py catalog [--key stats.post_kl_mean]
+
+    What happened INSIDE update N?  (cross-section capture)
+        debug.py dump <run_dir> --hypothesis "why is KL high at u250"
+          → <run_dir>/dumps/uNNNNN/  (episodes/trajectories/GAE/grads)
+          → inspect in the viewer: debug.py viewer <run_dir>
+
+    See a dumped episode frame by frame / did the policy drift?
+        debug.py render <dump_dir> --episode 0   # PNGs + auto-verify
+        debug.py delta  <dump_dir> --episode 0 --gens 3
+
+    Interactive UI (human-facing):
+        debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
 
 The ``dump`` subcommand writes a sentinel file ``<run_dir>/dump_request.json``.
 The training loop polls for this file at the top of each update; when found,
 it captures the complete update data (episodes, trajectories, GAE,
 combine, gradients) into ``<run_dir>/dumps/u{N:05d}/`` and writes a
 ``RECORD_GUIDE.md`` with the exact recorder commands for independent
-visual inspection.
+visual inspection.  ``--hypothesis`` is mandatory — writing a dump without
+stating what you're looking for is rejected.
 
 The ``render`` subcommand reads a captured dump, runs round_runner with
 the stochastic wrapped policy to generate per-frame PNG images, and
-auto-verifies the recorded data against the dump data.  An association
-record is written linking the images to the dump frames.
+auto-verifies the recorded data against the dump data.
 
-``--hypothesis`` is mandatory for ``dump``.  Writing a dump without a
-hypothesis is rejected — you must articulate what you're looking for first.
-
-Read-only metric queries (agent-facing, JSON on stdout)::
-
-    # Flattened per-update metrics — identical to the viewer's
-    # /api/run/metrics (same RunData._flatten_update code path).
-    debug.py metrics <run_dir|run_name> [--keys kl,lr] [--tail 20]
-                                       [--from-update A --to-update B] [--docs]
-
-    # One-shot digest: per-metric zone/hint + latest/min/max + where they
-    # occurred — the orientation command to run first.
-    debug.py summary <run_dir|run_name> [--keys kl]
-
-    # Metric semantics catalog (the same data the viewer renders).
-    debug.py catalog [--key stats.post_kl_mean]
+Capability map for AI agents: baseline/framework/ppo/dumpkit/CONTEXT.md
 """
 from __future__ import annotations
 
@@ -154,6 +163,25 @@ def _cmd_summary(args: argparse.Namespace) -> int:
             if any(p in k for p in pats)
         }
     _emit(out, args.pretty)
+    return 0
+
+
+def _cmd_runs(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.viewer.server import list_runs
+
+    root = Path(args.runs_root).resolve()
+    if not root.is_dir():
+        print(f"error: runs root does not exist: {root}", file=sys.stderr)
+        return 2
+
+    runs = list_runs(root)
+    if args.status:
+        runs = [r for r in runs if r.get("status") == args.status]
+    runs.sort(key=lambda r: r.get("activity") or 0, reverse=True)
+    if args.tail is not None:
+        runs = runs[: args.tail] if args.tail > 0 else []
+
+    _emit({"runs_root": str(root), "runs": runs}, args.pretty)
     return 0
 
 
@@ -310,13 +338,28 @@ def _cmd_viewer(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="debug.py",
-        description="Debug CLI — request a one-shot update dump from a running training.",
+        description="Debug toolset for PPO training runs.",
+        epilog=(
+            "by question:\n"
+            "  runs     What runs exist?\n"
+            "  summary  How is the run doing overall? (digest — run first)\n"
+            "  metrics  How did metrics evolve update-by-update?\n"
+            "  catalog  What does a metric key mean?\n"
+            "  dump     Capture update N's full cross-section.\n"
+            "  viewer   Interactive UI over all of the above.\n"
+            "  render   PNG frames for a dumped episode (+ auto-verify).\n"
+            "  delta    Policy drift across generations for a dumped episode.\n"
+            "\n"
+            "read commands print JSON to stdout (--pretty to indent);\n"
+            "see dumpkit/CONTEXT.md for the full capability map."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_dump = sub.add_parser(
         "dump",
-        help="Request a one-shot dump of the next update's complete data.",
+        help="What happened inside the next update? Capture its full cross-section into dumps/uNNNNN/.",
         description=(
             "Write a sentinel file to <run_dir>/dump_request.json. "
             "The training loop will capture the next update's complete "
@@ -349,7 +392,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- render subcommand ---
     p_render = sub.add_parser(
         "render",
-        help="Render images for a captured episode and auto-verify.",
+        help="See a dumped episode frame by frame: PNG render + auto-verify.",
         description=(
             "Auto-discover the latest dump under <run_dir>/dumps/, run "
             "round_runner with the stochastic wrapped policy to generate "
@@ -374,7 +417,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- delta subcommand ---
     p_delta = sub.add_parser(
         "delta",
-        help="Compute policy-drift deltas for a dumped episode (offline diagnostic).",
+        help="Did the policy drift? Deterministic replay of a dumped episode against older generations.",
         description=(
             "Replay the episode's stored observations through the "
             "deterministic act() of each policy generation "
@@ -408,7 +451,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- viewer subcommand ---
     p_viewer = sub.add_parser(
         "viewer",
-        help="Launch the debug viewer web app for a run or a captured dump.",
+        help="Interactive web UI over runs, metrics, dumps, episodes, trajectories, timelines.",
         description=(
             "Start an HTTP server that serves the debug viewer frontend "
             "and API endpoints.  Pass a training run directory "
@@ -440,10 +483,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_viewer.set_defaults(func=_cmd_viewer)
 
+    # --- runs subcommand (read-only, JSON) ---
+    p_runs = sub.add_parser(
+        "runs",
+        help="What runs exist? List runs under a root as JSON.",
+        description=(
+            "List training runs under --runs-root (default baseline/runs) "
+            "as JSON: name, experiment, status, update/max_updates, "
+            "eval_success, n_dumps, n_videos, created/activity timestamps.  "
+            "Sorted by activity, newest first.  The entry point for "
+            "orienting on an unfamiliar machine or runs root."
+        ),
+    )
+    p_runs.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT,
+        help="Runs root directory (default: baseline/runs).")
+    p_runs.add_argument("--status", type=str, default="",
+        help="Keep only runs with this status (running/finished/stopped/unknown).")
+    p_runs.add_argument("--tail", type=int, default=None,
+        help="Keep only the N most recently active runs.")
+    p_runs.add_argument("--pretty", action="store_true",
+        help="Pretty-print JSON output.")
+    p_runs.set_defaults(func=_cmd_runs)
+
     # --- metrics subcommand (read-only, JSON) ---
     p_metrics = sub.add_parser(
         "metrics",
-        help="Print flattened per-update metrics as JSON (same data as the viewer).",
+        help="How did metrics evolve? Flattened per-update series as JSON (identical to the viewer API).",
         description=(
             "Parse __RAW_STATS__ from <run>/train.log with the same "
             "RunData._flatten_update the viewer serves at "
@@ -474,7 +540,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- summary subcommand (read-only, JSON) ---
     p_summary = sub.add_parser(
         "summary",
-        help="Per-metric digest: zone, hint, latest, min/max + where they occurred.",
+        help="How is the run doing overall? Per-metric digest with semantics attached — run this first.",
         description=(
             "One-shot orientation digest of a run's metrics.  For every "
             "metric key: namespace zone, semantic hint (metric_catalog), "
@@ -497,7 +563,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- catalog subcommand (read-only, JSON) ---
     p_catalog = sub.add_parser(
         "catalog",
-        help="Print the metric semantics catalog (or one key's doc).",
+        help="What does a metric mean? Full semantics catalog, or one key's doc.",
         description=(
             "Dump dumpkit/metric_catalog.catalog() — the same data the "
             "viewer serves at /api/catalog: chart layout, hint tables, "

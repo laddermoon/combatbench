@@ -572,6 +572,8 @@ class RunData:
             "experiment_name": info["experiment_name"],
             "status": info["status"],
             "n_updates": len(metrics),
+            "n_dumps": info["n_dumps"],
+            "dumps": [d["name"] for d in self.dumps()],
             "metrics": per_key,
         }
 

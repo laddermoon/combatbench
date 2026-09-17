@@ -783,6 +783,9 @@ def test_run_summary():
         ev = s["metrics"]["eval.success"]
         assert ev["zone"] == "eval" and ev["n"] == 1  # sparse, honest
         assert ev["first_update"] == 2 and ev["latest"] == 0.5
+
+        # Drill-down availability is part of the digest
+        assert s["n_dumps"] == 1 and s["dumps"] == ["u00001"]
         print("test_run_summary: PASS")
 
 
@@ -846,6 +849,71 @@ def test_debug_summary_cmd(capsys):
         out = json.loads(capsys.readouterr().out)
         assert set(out["metrics"]) == {"ep.ep_len_mean"}
         print("test_debug_summary_cmd: PASS")
+
+
+def test_debug_runs_cmd(capsys):
+    """debug.py runs: list runs, filters, ordering, empty root."""
+    from baseline.framework.ppo import debug
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        # Two minimal run dirs (config.json marks them as runs)
+        for name in ("run_a", "run_b"):
+            rd = root / name
+            rd.mkdir()
+            (rd / "config.json").write_text(
+                '{"experiment": {"name": "exp_' + name + '"}}',
+                encoding="utf-8",
+            )
+        (root / "not_a_run").mkdir()  # ignored: no config.json/train.log
+
+        assert debug.main(["runs", "--runs-root", str(root)]) == 0
+        out = json.loads(capsys.readouterr().out)
+        names = [r["name"] for r in out["runs"]]
+        assert sorted(names) == ["run_a", "run_b"]
+        r0 = out["runs"][0]
+        for f in ("experiment", "status", "update", "n_dumps",
+                  "created", "activity"):
+            assert f in r0, f"missing field {f}"
+
+        # --status filter
+        assert debug.main(
+            ["runs", "--runs-root", str(root), "--status", "running"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert all(r["status"] == "running" for r in out["runs"])
+
+        # --tail 1 keeps a single run
+        assert debug.main(
+            ["runs", "--runs-root", str(root), "--tail", "1"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert len(out["runs"]) == 1
+
+        # Empty root → valid empty list; missing root → exit 2
+        empty = root / "empty"
+        empty.mkdir()
+        assert debug.main(["runs", "--runs-root", str(empty)]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["runs"] == []
+        assert debug.main(
+            ["runs", "--runs-root", str(root / "nope")]) == 2
+        capsys.readouterr()
+        print("test_debug_runs_cmd: PASS")
+
+
+def test_debug_help_smoke(capsys):
+    """Top-level -h prints the question-map epilog."""
+    from baseline.framework.ppo import debug
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        debug.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "by question:" in out
+    for cmd in ("runs", "summary", "metrics", "catalog",
+                "dump", "viewer", "render", "delta"):
+        assert cmd in out
+    print("test_debug_help_smoke: PASS")
 
 
 def test_debug_catalog_cmd(capsys):
