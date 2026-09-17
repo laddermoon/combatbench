@@ -1182,6 +1182,9 @@
       const modeRes = await fetchJson('/api/mode');
       state.rootMode = modeRes.mode;
       state.mode = modeRes.mode;
+      // Metric semantics catalog (shared source: metric_catalog.py).
+      // Non-fatal — charts degrade to generic rendering without it.
+      state.catalog = await fetchJson('/api/catalog').catch(() => null);
       if (state.mode === 'run') {
         state.runInfo = await fetchJson('/api/run/info');
         state.runDumps = await fetchJson('/api/run/dumps');
@@ -1523,91 +1526,11 @@
   //                        channel, dash style = metric, two toggle rows
   // Policy-contributed metrics (policy.*) always render last, one chart
   // per key — never merged with framework metrics.
-  const FRAMEWORK_LAYOUT = [
-    {title: 'Episodes & Trajectories', keys: ['ep.n_episodes', 'stats.n_trajectories'],
-     hint: 'ep.n_episodes：本 update 真实跑的环境 episode 数。\nstats.n_trajectories：进入 buffer 的轨迹段数——一个 episode 可拆出多条（如每 agent 一条），PPO 的训练单位是轨迹。'},
-    {title: 'Episode Length & Trajectory Length', keys: [
-      'ep.ep_len_mean', 'ep.ep_len_min', 'ep.ep_len_max',
-      'stats.traj_len_mean', 'stats.traj_len_min', 'stats.traj_len_max'],
-     hint: 'ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\nstats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_steps）。\n一条轨迹恰好覆盖一条 episode 时两者相等。'},
-    {pc: 'n_active_trajs'},
-    {pc: 'active_ratio'},
-    {keys: ['stats.n_batches'],
-     hint: '每个 update 的 minibatch 数 = tensor_split(总帧数, n_batches)。'},
-    {keys: ['stats.total_steps'],
-     hint: '本 update buffer 的总帧数 = Σ traj_len。'},
-    {pcm: 'reward', metrics: ['reward_min', 'reward_max', 'reward_std', 'reward_mean'],
-     hint: '该 channel 逐帧原始 reward 在活跃轨迹上的统计。\nmin=点线、max=长虚线（上下界），std=短虚线（离散度），mean=加粗实线（主体）。\n颜色=channel、线型=指标；两行图例可分别 toggle channel 或指标。'},
-    {pcm: 'actor_weight', metrics: ['actor_weight_min', 'actor_weight_max', 'actor_weight_mean'],
-     hint: '实验侧 build_trajectories 给每条轨迹该 channel 的 actor_weight——课程权重。\n它决定该 channel 的 advantage 进入 combined_adv 的相对权重：combined = Σ aw·confidence·norm_adv，aw 逐帧 L1 归一化。'},
-    {pcm: 'ret', metrics: ['ret_mean', 'ret_std'],
-     hint: '该 channel 折扣回报 return 的 mean/std——critic 的拟合目标（GAE 的 γ 口径）。'},
-    {pcm: 'adv', metrics: ['adv_mean', 'adv_std'],
-     hint: '该 channel 原始 GAE advantage 的 mean/std（仅活跃帧、未归一化）。\n真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。'},
-    {pcm: 'ev & confidence', metrics: ['ev', 'confidence'],
-     hint: 'ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\nconfidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。'},
-    {title: 'Exploration Spec', keys: ['stats.uncertainty_floor', 'stats.uncertainty_coef'],
-     hint: '本 update 实际生效的 ExplorationSpec：uncertainty_floor（U 下限）与 uncertainty_coef（hinge 系数）。\n由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。\nfloor_loss = coef·mean(relu(floor−U)²)，floor 线低于 Uncertainty 图的 U 曲线时 hinge 开始激活。'},
-    {title: 'Learning Rate', keys: ['stats.actor_lr', 'stats.critic_lr'],
-     hint: '本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。'},
-    {title: 'Uncertainty', keys: ['stats.uncertainty'],
-     hint: '框架指标：buffer 全帧在 θ_old（训练前一次前向）下的 ActorEval.uncertainty 均值。\nU ∈ [0,1]、与 action 无关；被 floor 损失 relu(floor−U) 消费。σ 收缩或截断区间变化都会压低 U。'},
-    {pc: 'vloss'},
-    {title: 'Policy & Floor Loss', keys: ['stats.policy_loss', 'stats.floor_loss'],
-     hint: 'policy_loss：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n为何初始≈0：epoch0 首 minibatch 所有 r=1 → loss = −mean(w·A)；仅当该批加权 A 均值=0 时严格为 0（单通道 z-score 归一化下近似成立）。\n为何会变正/上升：有利方向 r 越过 ε 边界后该项目标值进入平台、该项梯度归零（收益封顶 ε·|A|）；不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界）。少数恶化样本可抵消大量改善 → 均值偏正是结构性现象，正负不代表学没学。\nfloor_loss：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n两者相加（非本图）才是实际反传的总损失。'},
-    {title: 'Loss → Actor ∇', keys: ['stats.action_grad_pol', 'stats.action_grad_floor'],
-     hint: '两种损失各自对 actor 全部参数的梯度 L2 范数（autograd.grad，未触达的参数计 0）。\n每 epoch 首个 minibatch 采样、按 update 平均。\n· action_grad_pol：clipped surrogate 对动作网络的拉力\n· action_grad_floor：floor hinge 的拉力——按设计应只落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数'},
-    {title: 'Actor Gradient Norm', keys: ['stats.grad_norm_actor'],
-     hint: '每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\nclip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n读法：衡量"策略想迈多大步"vs clip 允许的实际步长。\n· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）'},
-    {pc: 'grad_norm'},
-    {title: 'Ratio & Clip Fraction', keys: ['stats.ratio_mean', 'stats.ratio_min', 'stats.ratio_max', 'stats.clip_frac', 'stats.clip_frac_hi', 'stats.clip_frac_lo'],
-     hint: 'ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。mean 是均值，max 是上尾（加压方向），min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\nclip_frac = |ratio−1| > clip_eps 的帧占比；hi = r>1+ε 上尾、lo = r<1−ε 下尾，两尾不相交故 clip_frac = hi + lo。注意越界只在一半情况下真杀梯度：hi 配合 A>0、lo 配合 A<0 才被掐——所以 hi/lo 是"越界占比"而非"被掐占比"。'},
-    {title: 'Post-Update ΔClipLoss', keys: ['stats.post_clip_dloss'],
-     hint: 'update 结束后用最终 actor 对全部样本重算 ratio，再算"双向 clip"surrogate 相对 r=1 基线的变化：−mean[w·A·(clip(r,1−ε,1+ε)−1)]。\n与 policy_loss 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n读法：负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。'},
-    {title: 'Post-Update Ratio Bins', keys: ['stats.rbin_pos_ltlo', 'stats.rbin_pos_lo', 'stats.rbin_pos_hi', 'stats.rbin_pos_gthi', 'stats.rbin_neg_ltlo', 'stats.rbin_neg_lo', 'stats.rbin_neg_hi', 'stats.rbin_neg_gthi', 'stats.rbin_zero'],
-     hint: 'update 结束后最终策略的 ratio 分布，按 advantage 符号分组：pos_*/neg_* 各 4 段（ltlo: r<1−ε｜lo: [1−ε,1)｜hi: [1,1+ε]，含 r=1｜gthi: r>1+ε），zero = A=0 样本占比。\n9 条线都是全部样本的占比，合计=1。\n理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）。pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。'},
-    {title: 'KL', keys: ['stats.post_kl_mean', 'stats.post_kl_max', 'stats.post_kl_pos', 'stats.post_kl_neg'],
-     hint: 'update 结束后用最终 actor 在全 buffer 上重算的 k3 KL（(r−1)−log r）——本次更新的真实位移，跨 update 可比。\nmean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos/neg：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n读法：mean ≈ target_kl 且 actor 早停 = 健康撞墙；mean 明显低于 early_stop_kl（Epochs 图）= 早停后位移部分回退。\n注：过程指标 approx_kl/max_kl（minibatch 时刻值）仍在 Timeline 页可见。'},
-    {title: 'Epochs & Early Stop', keys: ['stats.epochs_done', 'stats.actor_epochs_done', 'stats.early_stop_kl'],
-     hint: 'epochs_done：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\nactor_epochs_done：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\nearly_stop_kl：触发早停当刻的"本 epoch running mean KL"（0=未触发）。它是滑动均值不是单点峰值，所以与 max_kl 不相等是正常的；量级远小于 epoch 计数所以贴底。'},
-    {timing: true,
-     hint: '每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。'},
-  ];
-  // Per-channel metric hints — used by pc.* fallback charts; pcm-merged
-  // charts carry their own hint on the spec.
-  const PC_HINTS = {
-    n_active_trajs: '该 channel 活跃轨迹数。活跃 = 该 trajectory 的 channels 中含此 key；不活跃轨迹 reward=0、不参与该 channel 的 advantage。',
-    active_ratio: 'n_active_trajs / 总轨迹数——该 channel 的活跃占比。',
-    vloss: '该 channel critic 的 (V−ret)² 帧加权 MSE，minibatch 平均。critic 跑满全部 epoch（actor 早停不影响它）。',
-    grad_norm: '该 channel critic 网络的梯度 L2 范数（clip 前、minibatch 平均）。\nactor 被 KL 早停后 critic 仍跑满全部 epoch，采样窗口比 actor 梯度大。',
-    reward_min: '该 channel 逐帧原始 reward 的最小值（活跃轨迹全部帧）。',
-    reward_max: '该 channel 逐帧原始 reward 的最大值（活跃轨迹全部帧）。',
-    reward_mean: '该 channel 逐帧原始 reward 的均值（活跃轨迹全部帧）。',
-    reward_std: '该 channel 逐帧原始 reward 的标准差（活跃轨迹全部帧）。',
-    actor_weight_min: '该 channel 轨迹 actor_weight 的最小值。',
-    actor_weight_max: '该 channel 轨迹 actor_weight 的最大值。',
-    actor_weight_mean: '该 channel 轨迹 actor_weight 的均值。',
-    ret_mean: '该 channel 折扣回报 return 的均值（活跃轨迹）。',
-    ret_std: '该 channel 折扣回报 return 的标准差（活跃轨迹）。',
-    adv_mean: '该 channel 原始 GAE advantage 的均值（仅活跃帧、未归一化）。',
-    adv_std: '该 channel 原始 GAE advantage 的标准差（仅活跃帧、未归一化）。',
-    ev: 'explained variance = 1 − Var(ret−V)/Var(ret)：critic 拟合质量。',
-    confidence: '√clip(ev,0,1)——乘进 combined_adv 的通道置信权重。',
-  };
-  // Fallback hints for leftover scalar stats.* keys not covered by the
-  // layout (e.g. value_loss).
-  const STATS_HINTS = {
-    value_loss: '所有 channel critic value loss 的均值标量（分 channel 明细见 vloss 图）。',
-  };
-  const POLICY_HINT =
-    '策略自定义统计量——policy 的 evaluate_actions(want_stats) 发出的 policy_stats。\n' +
-    '语义与计算完全由策略决定，框架仅透传展示。';
-  const EXP_HINT =
-    '实验自定义指标——experiment.on_update() 的返回值，每个 update 记录一次。\n' +
-    '语义由实验定义（如在线成功率的连续曲线），框架仅透传展示。';
-  const EVAL_HINT =
-    '评估指标——experiment.on_eval() 返回的 info，仅在 eval_interval 的 update 上有值。\n' +
-    '曲线为稀疏点直连（无评估的 update 跳过不画）。';
+  // Metric semantics (layout + hints + zones) come from the server:
+  // GET /api/catalog → state.catalog.  The Python-side
+  // dumpkit/metric_catalog.py is the single source of truth — the same
+  // data agents consume, so chart hints here and agent docs never drift.
+
   // pc metrics aggregated elsewhere — never rendered per channel.
   const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max']);
 
@@ -2002,6 +1925,11 @@
     const seriesFor = key => metrics.map(u => (typeof u[key] === 'number' ? u[key] : NaN));
     const cur = state.selectedUpdateIdx;  // update cursor drawn on every chart
 
+    // Catalog from /api/catalog (metric_catalog.py — shared with agents).
+    // Fallback keeps charts renderable if the fetch somehow failed.
+    const cat = state.catalog ||
+      {layout: [], zones: [], pc_hints: {}, stats_hints: {}};
+
     let html = '';
     const used = new Set();
     state._chartSeq = 0;
@@ -2036,8 +1964,8 @@
       return suf in METRIC_RANK ? METRIC_RANK[suf] : (i === 0 ? 3 : 2);
     };
 
-    // 1. Framework-owned charts — fixed editorial order (FRAMEWORK_LAYOUT)
-    FRAMEWORK_LAYOUT.forEach(spec => {
+    // 1. Framework-owned charts — fixed editorial order (catalog.layout)
+    cat.layout.forEach(spec => {
       if (spec.timing) {
         const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
         if (timeKeys.length) emit('Timing (s/update)', timeKeys, {height: 180, hint: spec.hint});
@@ -2047,7 +1975,7 @@
         const keys = [...allKeys]
           .filter(k => k.startsWith(`pc.${spec.pc}.`))
           .sort();
-        if (keys.length) emit(`${spec.pc} (per channel)`, keys, {hint: PC_HINTS[spec.pc]});
+        if (keys.length) emit(`${spec.pc} (per channel)`, keys, {hint: cat.pc_hints[spec.pc]});
         return;
       }
       if (spec.pcm) {
@@ -2093,9 +2021,9 @@
     //    new metrics; grouped pc.* by metric, suppressed ones skipped.
     const pcGroups = {};
     const otherKeys = [];
+    const zonePrefixes = cat.zones.map(z => z.prefix);
     [...allKeys].forEach(k => {
-      if (used.has(k) || k.startsWith('policy.') || k.startsWith('exp.') ||
-          k.startsWith('eval.')) return;
+      if (used.has(k) || zonePrefixes.some(p => k.startsWith(p))) return;
       const m = k.match(/^pc\.([^.]+)\..+$/);
       if (m) {
         if (PC_SUPPRESS.has(m[1])) { used.add(k); return; }
@@ -2106,42 +2034,24 @@
       html += '<div class="metrics-group-title">Other framework metrics</div>';
       otherKeys.sort().forEach(k =>
         emit(labelFor(k), [k], {height: 140, color: '#4fa3ff',
-          hint: STATS_HINTS[k.split('.').slice(1).join('.')] ||
+          hint: cat.stats_hints[k.split('.').slice(1).join('.')] ||
                 `框架标量指标 ${k}。`}));
       Object.keys(pcGroups).sort().forEach(metric =>
         emit(`${metric} (per channel)`, pcGroups[metric].sort(),
-          {hint: PC_HINTS[metric] || `per-channel 指标 pc.${metric}.*。`}));
+          {hint: cat.pc_hints[metric] || `per-channel 指标 pc.${metric}.*。`}));
     }
 
-    // 3. Experiment-contributed metrics (exp.*) — emitted by
-    //    experiment.on_update()'s return value; one chart per key.
-    const expKeys = [...allKeys].filter(k => k.startsWith('exp.'));
-    if (expKeys.length) {
-      html += '<div class="metrics-group-title">Experiment metrics</div>';
-      expKeys.forEach(k =>
-        emit(k.slice(4), [k], {height: 140, color: '#7fb069', hint: EXP_HINT}));
-    }
-
-    // 4. Eval metrics (eval.*) — experiment.on_eval()'s info dict,
-    //    sparse: only present on eval_interval updates, rendered as
-    //    line-through-gaps.  One chart per key.
-    const evalKeys = [...allKeys].filter(k => k.startsWith('eval.'));
-    if (evalKeys.length) {
-      html += '<div class="metrics-group-title">Eval metrics</div>';
-      evalKeys.forEach(k =>
-        emit(k.slice(5), [k], {height: 140, color: '#5bb8d4', hint: EVAL_HINT}));
-    }
-
-    // 5. Policy-contributed metrics (policy.*) — always last, uniform
-    //    presentation: one chart per key, no merging. Keys keep their
-    //    emission order (policy_stats dict order is preserved through
-    //    JSON → Set), so the policy controls its own stat ordering.
-    const polKeys = [...allKeys].filter(k => k.startsWith('policy.'));
-    if (polKeys.length) {
-      html += '<div class="metrics-group-title">Policy-defined metrics</div>';
-      polKeys.forEach(k =>
-        emit(k.slice(7), [k], {height: 140, color: '#c98b3f', hint: POLICY_HINT}));
-    }
+    // 3. Open-ended zones (exp.*/eval.*/policy.*) — one chart per key,
+    //    driven by catalog.zones: {prefix, title, color, hint, sparse}.
+    //    Keys keep their emission order (source dict order is preserved
+    //    through JSON → Set), so the producer controls its own ordering.
+    cat.zones.forEach(z => {
+      const keys = [...allKeys].filter(k => k.startsWith(z.prefix));
+      if (!keys.length) return;
+      html += `<div class="metrics-group-title">${escapeHtml(z.title)}</div>`;
+      keys.forEach(k => emit(k.slice(z.prefix.length), [k],
+        {height: 140, color: z.color, hint: z.hint}));
+    });
 
     return html;
   }

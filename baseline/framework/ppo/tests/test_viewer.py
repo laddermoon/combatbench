@@ -703,6 +703,55 @@ def test_sanitize_exp_metrics():
     print("test_sanitize_exp_metrics: PASS")
 
 
+def test_metric_catalog_structure():
+    """catalog() is JSON-safe, well-shaped, and covers the open zones."""
+    import json as _json
+    from baseline.framework.ppo.dumpkit.metric_catalog import catalog
+
+    cat = catalog()
+    assert cat["layout"] and isinstance(cat["layout"], list)
+    for spec in cat["layout"]:
+        kinds = [k for k in ("keys", "pc", "pcm", "timing") if k in spec]
+        assert len(kinds) == 1, f"bad spec shape: {spec}"
+        if "keys" in spec:
+            assert spec["hint"], f"keys spec missing hint: {spec}"
+            for key in spec["keys"]:
+                assert "." in key, f"unnamespaced layout key: {key}"
+        if "pcm" in spec:
+            assert spec["metrics"], f"pcm spec missing metrics: {spec}"
+            assert spec["hint"], f"pcm spec missing hint: {spec}"
+    prefixes = [z["prefix"] for z in cat["zones"]]
+    assert prefixes == ["exp.", "eval.", "policy."]
+    for z in cat["zones"]:
+        assert z["title"] and z["color"] and z["hint"]
+    # Round-trips through JSON — what /api/catalog actually serves.
+    _json.loads(_json.dumps(cat))
+    print("test_metric_catalog_structure: PASS")
+
+
+def test_metric_doc():
+    """metric_doc resolves flat keys to zone + hint."""
+    from baseline.framework.ppo.dumpkit.metric_catalog import metric_doc
+
+    d = metric_doc("stats.value_loss")
+    assert d["zone"] == "framework" and "value loss" in d["hint"]
+    # Layout key falls back to its chart-group hint
+    d = metric_doc("stats.post_kl_mean")
+    assert d["zone"] == "framework" and "KL" in d["hint"]
+    d = metric_doc("pc.ev.r_test")
+    assert d["zone"] == "framework" and "explained variance" in d["hint"]
+    d = metric_doc("exp.online_success")
+    assert d["zone"] == "experiment" and "on_update" in d["hint"]
+    d = metric_doc("eval.success")
+    assert d["zone"] == "eval" and "on_eval" in d["hint"]
+    d = metric_doc("policy.foo")
+    assert d["zone"] == "policy" and "policy_stats" in d["hint"]
+    # Unknown framework key → framework zone, empty-ish hint ok
+    d = metric_doc("stats.no_such_metric")
+    assert d["zone"] == "framework"
+    print("test_metric_doc: PASS")
+
+
 def test_run_data_metrics_incremental():
     """metrics() picks up appended lines and survives a partial tail line."""
     with tempfile.TemporaryDirectory() as d:

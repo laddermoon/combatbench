@@ -31,6 +31,9 @@ from baseline.framework.ppo.dumpkit.dump_request import (
     DumpRequest,
     SENTINEL_FILENAME,
 )
+from baseline.framework.ppo.dumpkit.metric_catalog import (
+    catalog as _metric_catalog,
+)
 
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
@@ -1963,7 +1966,10 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_api(self, path: str):
-        if path == "/api/render-status" or (
+        if path == "/api/catalog":
+            # Metric semantics catalog — global, mode-independent.
+            status, body = 200, _metric_catalog()
+        elif path == "/api/render-status" or (
             path.startswith("/api/dump/") and path.endswith("/render-status")
         ):
             # Global single-job render status — works in every mode.
