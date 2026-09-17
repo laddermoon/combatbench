@@ -100,29 +100,24 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n"
              "· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）"},
     {"pc": "grad_norm_mean"},
-    {"title": "Ratio & Clip Fraction",
-     "keys": ["stats.ratio_mean", "stats.ratio_min", "stats.ratio_max",
-              "stats.clip_frac_mean", "stats.clip_frac_hi_mean",
-              "stats.clip_frac_lo_mean"],
-     "hint": "ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。mean 是均值，max 是上尾（加压方向），min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\n"
-             "clip_frac_mean = |ratio−1| > clip_eps 的帧占比，对 update 内所有 actor minibatch 取均值；hi = r>1+ε 上尾、lo = r<1−ε 下尾，两尾不相交故 clip_frac_mean = hi + lo。\n"
-             "读法：clip_frac_mean 是\"clip 平均参与度\"——本次 update 有多大比例的样本被削掉 surrogate 梯度；它不是\"末态 clip 强度\"，末态请看 Post-Update Ratio Bins 的 ltlo/gthi 带。\n"
-             "常见误读：\n"
-             "· 每个 update 内 clip_frac 天然从 ≈0 爬升（ratio 从 1 起步、随 minibatch 推进扩散）——within-update 上升是机械形态，与 KL 累积冗余，不是异常信号；mean 把爬升段和稳态段混合，系统性低估末态。\n"
-             "· 早停截断 minibatch 集合：actor_epochs_done 不同的 update 其 mean 分母结构不同，跨 update 的小差异不可比。\n"
-             "· 越界只在一半情况下真杀梯度：hi 配合 A>0、lo 配合 A<0 才被掐——hi/lo 是\"越界占比\"而非\"被掐占比\"。\n"
-             "想看 within-update 形态用 dump timeline（Scene 4）：若 epoch0 前几个 minibatch 就高 clip，说明 rollout 分布与训练起点失配或步长过大。"},
+    {"title": "Ratio",
+     "keys": ["stats.ratio_mean", "stats.ratio_min", "stats.ratio_max"],
+     "hint": "ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。\n"
+             "mean 是 update 内所有 actor minibatch ratio 均值的平均；max 是上尾（加压方向）；min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\n"
+             "within-update ratio 天然从 1 起步、随 minibatch 推进扩散，所以均值会被 early minibatch 拉低；末态 ratio 的精确分布请看\"Clip Fraction & Post-Update Ratio Bins\"图。"},
+    {"title": "Clip Fraction & Post-Update Ratio Bins",
+     "keys": ["stats.clip_frac_mean", "stats.clip_frac_hi_mean", "stats.clip_frac_lo_mean",
+              "stats.rbin_pos_ltlo", "stats.rbin_pos_lo", "stats.rbin_pos_hi",
+              "stats.rbin_pos_gthi", "stats.rbin_neg_ltlo", "stats.rbin_neg_lo",
+              "stats.rbin_neg_hi", "stats.rbin_neg_gthi", "stats.rbin_zero"],
+     "hint": "合并图：过程 clip 参与度 + update 结束后最终 ratio 分布。\n"
+             "clip_frac_mean/hi/lo：update 内 actor minibatch 上 ratio 越界 [1−ε,1+ε] 的样本占比；hi = r>1+ε 加压尾、lo = r<1−ε 压制尾，两尾不相交故 clip_frac_mean = hi + lo。它是\"clip 平均参与度\"，不是\"末态 clip 强度\"；想看 within-update 形态用 dump timeline。\n"
+             "rbin_*：update 结束后最终 actor 的 ratio 按 advantage 符号分 9 段（ltlo: r<1−ε｜lo: [1−ε,1)｜hi: [1,1+ε]，含 r=1｜gthi: r>1+ε），zero = A=0 样本占比，合计=1。\n"
+             "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）；pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
     {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss_mean"],
      "hint": "update 结束后用最终 actor 对全部样本重算 ratio，再算\"双向 clip\"surrogate 相对 r=1 基线的变化：−mean[w·A·(clip(r,1−ε,1+ε)−1)]。\n"
              "与 policy_loss_mean 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n"
              "读法：负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
-    {"title": "Post-Update Ratio Bins",
-     "keys": ["stats.rbin_pos_ltlo", "stats.rbin_pos_lo", "stats.rbin_pos_hi",
-              "stats.rbin_pos_gthi", "stats.rbin_neg_ltlo", "stats.rbin_neg_lo",
-              "stats.rbin_neg_hi", "stats.rbin_neg_gthi", "stats.rbin_zero"],
-     "hint": "update 结束后最终策略的 ratio 分布，按 advantage 符号分组：pos_*/neg_* 各 4 段（ltlo: r<1−ε｜lo: [1−ε,1)｜hi: [1,1+ε]，含 r=1｜gthi: r>1+ε），zero = A=0 样本占比。\n"
-             "9 条线都是全部样本的占比，合计=1。\n"
-             "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）。pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
                              "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
                              "stats.kl_mean", "stats.kl_max",
