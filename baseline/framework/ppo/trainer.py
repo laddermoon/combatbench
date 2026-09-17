@@ -1598,6 +1598,7 @@ def ppo_update(
         epochs_done=len(epoch_kl_stats),
         actor_epochs_done=actor_epochs_done,
         n_batches=n_batches,
+        actor_steps=sum(int(s["n_minibatches"]) for s in epoch_kl_stats),
         n_trajectories=n_trajectories,
         total_steps=total_steps,
         uncertainty_mean=uncertainty_mean,

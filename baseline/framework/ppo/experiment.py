@@ -486,6 +486,13 @@ class UpdateStats:
     # max(1, ceil(total_steps / minibatch_size)) — minibatches per
     #   epoch; the split is even, no tiny remainder batch.
     n_batches: int
+    # Total number of actor minibatch steps actually taken this update,
+    #   summed from epoch_kl_stats[*]["n_minibatches"] — the exact count
+    #   of minibatches where the actor ran (and usually took a gradient
+    #   step, except the triggering minibatch of an early stop).  This is
+    #   <= n_batches * actor_epochs_done because the early-stop epoch is
+    #   truncated at the KL-threshold minibatch.
+    actor_steps: int
     # len(epoch_kl_stats) — under B1 this equals update_epochs because
     #   critics run every epoch even after the actor early-stops; see
     #   actor_epochs_done for actor-side progress.
@@ -667,6 +674,7 @@ class UpdateStats:
             epochs_done=0,
             actor_epochs_done=0,
             n_batches=0,
+            actor_steps=0,
             n_trajectories=0,
             total_steps=0,
             uncertainty_mean=0.0,
@@ -711,6 +719,7 @@ class UpdateStats:
             "n_trajectories": self.n_trajectories,
             "total_steps": self.total_steps,
             "n_batches": self.n_batches,
+            "actor_steps": self.actor_steps,
             "epochs_done": self.epochs_done,
             "actor_epochs_done": self.actor_epochs_done,
             # --- Process dynamics ---
