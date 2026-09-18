@@ -621,15 +621,21 @@ class UpdateStats:
     #   applied to channel c this update (1.0 for all channels when
     #   use_confidence=False).
     confidence: Dict[str, float]
-    # Mean/std of the RAW per-channel GAE advantages on channel-active
-    #   frames — before the z-score normalization and aw*confidence
-    #   weighting that produce the combined advantage.
+    # Mean/std/min/max of the RAW per-channel GAE advantages on
+    #   channel-active frames — before the z-score normalization and
+    #   aw*confidence weighting that produce the combined advantage.
+    #   min/max are per-frame extrema (not per-trajectory).
     adv_mean: Dict[str, float]
     adv_std: Dict[str, float]
-    # Mean/std of per-channel GAE lambda-returns (ret = adv + V_old,
-    #   the critic's regression target) on channel-active frames.
+    adv_min: Dict[str, float]
+    adv_max: Dict[str, float]
+    # Mean/std/min/max of per-channel GAE lambda-returns (ret = adv +
+    #   V_old, the critic's regression target) on channel-active frames.
+    #   min/max are per-frame extrema (not per-trajectory).
     ret_mean: Dict[str, float]
     ret_std: Dict[str, float]
+    ret_min: Dict[str, float]
+    ret_max: Dict[str, float]
     # Mean over minibatches of that critic's pre-clip grad L2 norm.
     critic_grad_norm_mean: Dict[str, float]
 
@@ -698,8 +704,12 @@ class UpdateStats:
             confidence={k: 0.0 for k in reward_keys},
             adv_mean={k: 0.0 for k in reward_keys},
             adv_std={k: 0.0 for k in reward_keys},
+            adv_min={k: 0.0 for k in reward_keys},
+            adv_max={k: 0.0 for k in reward_keys},
             ret_mean={k: 0.0 for k in reward_keys},
             ret_std={k: 0.0 for k in reward_keys},
+            ret_min={k: 0.0 for k in reward_keys},
+            ret_max={k: 0.0 for k in reward_keys},
             critic_grad_norm_mean={k: 0.0 for k in reward_keys},
             policy_stats={},
             diagnostics=[],
@@ -765,10 +775,18 @@ class UpdateStats:
             d[f"adv_mean_{key}"] = val
         for key, val in self.adv_std.items():
             d[f"adv_std_{key}"] = val
+        for key, val in self.adv_min.items():
+            d[f"adv_min_{key}"] = val
+        for key, val in self.adv_max.items():
+            d[f"adv_max_{key}"] = val
         for key, val in self.ret_mean.items():
             d[f"ret_mean_{key}"] = val
         for key, val in self.ret_std.items():
             d[f"ret_std_{key}"] = val
+        for key, val in self.ret_min.items():
+            d[f"ret_min_{key}"] = val
+        for key, val in self.ret_max.items():
+            d[f"ret_max_{key}"] = val
         for key, val in self.critic_grad_norm_mean.items():
             d[f"grad_norm_mean_{key}"] = val
         return d

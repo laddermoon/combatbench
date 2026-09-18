@@ -55,15 +55,19 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
      "hint": "该 channel 逐帧原始 reward 在活跃轨迹上的统计。\n"
              "min=点线、max=长虚线（上下界），std=短虚线（离散度），mean=加粗实线（主体）。\n"
              "颜色=channel、线型=指标；两行图例可分别 toggle channel 或指标。"},
+    {"pcm": "ret", "metrics": ["ret_min", "ret_max", "ret_std", "ret_mean"],
+     "hint": "该 channel 折扣回报 return 的统计（活跃帧）——critic 的拟合目标（GAE 的 γ 口径）。\n"
+             "min/max 为逐帧极值（非逐轨迹）：min 恒接近 0（每条轨迹末帧 return≈末帧 reward），max 反映最佳轨迹质量。\n"
+             "线型约定同 reward 图：min=点线、max=长虚线、std=短虚线、mean=加粗实线。"},
+    {"pcm": "adv", "metrics": ["adv_min", "adv_max", "adv_std", "adv_mean"],
+     "hint": "该 channel 原始 GAE advantage 的统计（仅活跃帧、未归一化）。\n"
+             "min/max 为逐帧极值：反映 advantage 分布的上下尾——极端值提示优势/劣势帧的幅值。\n"
+             "真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。\n"
+             "线型约定同 reward 图：min=点线、max=长虚线、std=短虚线、mean=加粗实线。"},
     {"pcm": "actor_weight",
      "metrics": ["actor_weight_min", "actor_weight_max", "actor_weight_mean"],
      "hint": "实验侧 build_trajectories 给每条轨迹该 channel 的 actor_weight——课程权重。\n"
              "它决定该 channel 的 advantage 进入 combined_adv 的相对权重：combined = Σ aw·confidence·norm_adv，aw 逐帧 L1 归一化。"},
-    {"pcm": "ret", "metrics": ["ret_mean", "ret_std"],
-     "hint": "该 channel 折扣回报 return 的 mean/std——critic 的拟合目标（GAE 的 γ 口径）。"},
-    {"pcm": "adv", "metrics": ["adv_mean", "adv_std"],
-     "hint": "该 channel 原始 GAE advantage 的 mean/std（仅活跃帧、未归一化）。\n"
-             "真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。"},
     {"pcm": "ev & confidence", "metrics": ["ev", "confidence"],
      "hint": "ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\n"
              "confidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。"},
@@ -153,10 +157,14 @@ PC_HINTS: Dict[str, str] = {
     "actor_weight_min": "该 channel 轨迹 actor_weight 的最小值。",
     "actor_weight_max": "该 channel 轨迹 actor_weight 的最大值。",
     "actor_weight_mean": "该 channel 轨迹 actor_weight 的均值。",
-    "ret_mean": "该 channel 折扣回报 return 的均值（活跃轨迹）。",
-    "ret_std": "该 channel 折扣回报 return 的标准差（活跃轨迹）。",
+    "ret_mean": "该 channel 折扣回报 return 的均值（活跃帧）。",
+    "ret_std": "该 channel 折扣回报 return 的标准差（活跃帧）。",
+    "ret_min": "该 channel 折扣回报 return 的最小值（活跃帧；逐帧极值，非逐轨迹）。",
+    "ret_max": "该 channel 折扣回报 return 的最大值（活跃帧；逐帧极值，非逐轨迹）。",
     "adv_mean": "该 channel 原始 GAE advantage 的均值（仅活跃帧、未归一化）。",
     "adv_std": "该 channel 原始 GAE advantage 的标准差（仅活跃帧、未归一化）。",
+    "adv_min": "该 channel 原始 GAE advantage 的最小值（仅活跃帧、未归一化；逐帧极值）。",
+    "adv_max": "该 channel 原始 GAE advantage 的最大值（仅活跃帧、未归一化；逐帧极值）。",
     "ev": "explained variance = 1 − Var(ret−V)/Var(ret)：critic 拟合质量。",
     "confidence": "√clip(ev,0,1)——乘进 combined_adv 的通道置信权重。",
 }

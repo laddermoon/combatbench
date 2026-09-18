@@ -1446,16 +1446,24 @@ def ppo_update(
     }
     adv_mean: Dict[str, float] = {}
     adv_std: Dict[str, float] = {}
+    adv_min: Dict[str, float] = {}
+    adv_max: Dict[str, float] = {}
     for key in reward_keys:
         a = advs_all[key][key_frame_mask[key]]
         adv_mean[key] = float(a.mean()) if a.size > 0 else 0.0
         adv_std[key] = float(a.std()) if a.size > 0 else 0.0
+        adv_min[key] = float(a.min()) if a.size > 0 else 0.0
+        adv_max[key] = float(a.max()) if a.size > 0 else 0.0
     ret_mean: Dict[str, float] = {}
     ret_std: Dict[str, float] = {}
+    ret_min: Dict[str, float] = {}
+    ret_max: Dict[str, float] = {}
     for key in reward_keys:
         r = rets_all[key][key_frame_mask[key]]
         ret_mean[key] = float(r.mean()) if r.size > 0 else 0.0
         ret_std[key] = float(r.std()) if r.size > 0 else 0.0
+        ret_min[key] = float(r.min()) if r.size > 0 else 0.0
+        ret_max[key] = float(r.max()) if r.size > 0 else 0.0
 
     total_steps = sum(buf.traj_lengths)
 
@@ -1611,8 +1619,12 @@ def ppo_update(
         confidence=dict(confidences),
         adv_mean=adv_mean,
         adv_std=adv_std,
+        adv_min=adv_min,
+        adv_max=adv_max,
         ret_mean=ret_mean,
         ret_std=ret_std,
+        ret_min=ret_min,
+        ret_max=ret_max,
         critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,

@@ -362,10 +362,18 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         data[f"adv_mean.{key}"] = np.array(val)
     for key, val in stats.adv_std.items():
         data[f"adv_std.{key}"] = np.array(val)
+    for key, val in stats.adv_min.items():
+        data[f"adv_min.{key}"] = np.array(val)
+    for key, val in stats.adv_max.items():
+        data[f"adv_max.{key}"] = np.array(val)
     for key, val in stats.ret_mean.items():
         data[f"ret_mean.{key}"] = np.array(val)
     for key, val in stats.ret_std.items():
         data[f"ret_std.{key}"] = np.array(val)
+    for key, val in stats.ret_min.items():
+        data[f"ret_min.{key}"] = np.array(val)
+    for key, val in stats.ret_max.items():
+        data[f"ret_max.{key}"] = np.array(val)
     for key, val in stats.critic_grad_norm_mean.items():
         data[f"critic_grad_norm_mean.{key}"] = np.array(val)
     for key, val in stats.post_ratio_bins.items():
