@@ -814,11 +814,19 @@
     bc.innerHTML = '';
     const crumbs = [];
     if (state.rootMode === 'runs') {
-      crumbs.push({label: 'Runs', page: 'runs'});
-      crumbs.push({label: 'Experiments', page: 'experiments'});
-    }
-    if (state.currentPage === 'experiment' && state.expName) {
-      crumbs.push({label: state.expName, page: 'experiment'});
+      // Runs and Experiments are parallel top-level roots — never chain
+      // them.  expName stays set when a run was entered from an experiment
+      // dashboard, so that path keeps its Experiments › <exp> context.
+      const inExpCtx = !!state.expName &&
+        (state.currentPage === 'experiment' || state.mode === 'run');
+      crumbs.push(inExpCtx
+        ? {label: 'Experiments', page: 'experiments'}
+        : {label: state.currentPage === 'experiments'
+            ? 'Experiments' : 'Runs',
+           page: state.currentPage === 'experiments' ? 'experiments' : 'runs'});
+      if (inExpCtx) {
+        crumbs.push({label: state.expName, page: 'experiment'});
+      }
     }
     if (state.mode === 'run') {
       crumbs.push({
@@ -828,7 +836,7 @@
       if (state.currentPage !== 'run' && state.dumpName) {
         crumbs.push({label: state.dumpName, page: 'home'});
       }
-    } else {
+    } else if (state.rootMode !== 'runs') {
       crumbs.push({label: 'Home', page: 'home'});
     }
     if (state.currentPage === 'episode' || state.currentPage === 'traj') {
@@ -878,6 +886,7 @@
       state.runName = null;
       state.dumpName = null;
       state.mode = 'runs';
+      if (page !== 'experiment') state.expName = null;
     }
     showPage(page);
     if (push) history.pushState({}, '', urlForCurrent());
@@ -1296,6 +1305,7 @@
       if (path === '/experiments' || path === '/experiments/') {
         state.runName = null;
         state.dumpName = null;
+        state.expName = null;
         state.mode = 'runs';
         $('header-meta').textContent = 'experiments';
         showPage('experiments');
@@ -1316,6 +1326,7 @@
       if (!rm) {
         state.runName = null;
         state.dumpName = null;
+        state.expName = null;
         state.mode = 'runs';
         $('header-meta').textContent = 'runs index';
         showPage('runs');
