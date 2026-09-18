@@ -621,6 +621,17 @@ class UpdateStats:
     #   clamped, so the value is a bounded per-sample measure of
     #   direction.
     post_clip_dloss_mean: float
+    # Additive decomposition of post_clip_dloss_mean into the parts
+    #   contributed by advantage-aligned vs anti-aligned per-sample
+    #   moves, in the same loss units:
+    #     dloss_gain = -mean(relu(contrib))   <= 0  (favorable pull)
+    #     dloss_harm = -mean(min(contrib,0))  >= 0  (unfavorable push)
+    #   Invariant: dloss_mean = dloss_gain + dloss_harm exactly.
+    #   When dloss worsens: gain rising toward 0 = under-optimized
+    #   (truncated/weak); harm rising = more samples moved against
+    #   their advantage (conflicting/noisy direction).
+    post_clip_dloss_gain: float
+    post_clip_dloss_harm: float
     # post_ratio_bins: 9 fractions of ALL samples (sum=1) — final ratio
     #   in 4 bands (r<1-eps, [1-eps,1), [1,1+eps], >1+eps) split by
     #   advantage sign, plus the exact-zero-advantage share.
@@ -716,6 +727,8 @@ class UpdateStats:
             post_kl_pos_mean=0.0,
             post_kl_neg_mean=0.0,
             post_clip_dloss_mean=0.0,
+            post_clip_dloss_gain=0.0,
+            post_clip_dloss_harm=0.0,
             post_ratio_bins={},
             critic_loss_mean={k: 0.0 for k in reward_keys},
             explained_variance={k: 0.0 for k in reward_keys},
@@ -780,6 +793,8 @@ class UpdateStats:
             "post_kl_pos_mean": self.post_kl_pos_mean,
             "post_kl_neg_mean": self.post_kl_neg_mean,
             "post_clip_dloss_mean": self.post_clip_dloss_mean,
+            "post_clip_dloss_gain": self.post_clip_dloss_gain,
+            "post_clip_dloss_harm": self.post_clip_dloss_harm,
         })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val

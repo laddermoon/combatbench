@@ -116,10 +116,14 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "clip_frac_mean/hi/lo：update 内 actor minibatch 上 ratio 越界 [1−ε,1+ε] 的样本占比；hi = r>1+ε 加压尾、lo = r<1−ε 压制尾，两尾不相交故 clip_frac_mean = hi + lo。它是\"clip 平均参与度\"，不是\"末态 clip 强度\"；想看 within-update 形态用 dump timeline。\n"
              "rbin_*：update 结束后最终 actor 的 ratio 按 advantage 符号分 9 段（ltlo: r<1−ε｜lo: [1−ε,1)｜hi: [1,1+ε]，含 r=1｜gthi: r>1+ε），zero = A=0 样本占比，合计=1。\n"
              "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）；pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
-    {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss_mean"],
+    {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss_mean",
+                             "stats.post_clip_dloss_gain",
+                             "stats.post_clip_dloss_harm"],
      "hint": "update 结束后用最终 actor 对全部样本重算 ratio，再算\"双向 clip\"surrogate 相对 r=1 基线的变化：−mean[w·A·(clip(r,1−ε,1+ε)−1)]。\n"
              "与 policy_loss_mean 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n"
-             "读法：负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
+             "dloss_mean = dloss_gain + dloss_harm 严格成立（加法分解，同一 loss 单位）：gain ≤ 0 = 顺 advantage 方向移动的有利贡献（把 loss 往下拉）；harm ≥ 0 = 逆 advantage 方向移动的不利贡献（把 loss 往上推）。\n"
+             "dloss 变差时看拆项定位：gain 趋向 0 = 没学够（步数被截断/位移不足）；harm 上升 = 学歪了（更多样本被推向反 adv 方向，噪声/冲突梯度的候选形态）；两者同升 = 位移大但方向混杂——KL 大而 dloss 改善少时常伴此形态。\n"
+             "读法：dloss_mean 负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
                              "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
                              "stats.kl_mean", "stats.kl_max",
@@ -192,6 +196,8 @@ KEY_LABELS: Dict[str, str] = {
     "grad_norm_actor_mean": "grad_norm_actor_mean (grad_norm_actor)",
     "uncertainty_mean": "uncertainty_mean (uncertainty)",
     "post_clip_dloss_mean": "post_clip_dloss_mean (post_clip_dloss)",
+    "post_clip_dloss_gain": "post_clip_dloss_gain (dloss_gain, <=0)",
+    "post_clip_dloss_harm": "post_clip_dloss_harm (dloss_harm, >=0)",
     "post_kl_pos_mean": "post_kl_pos_mean (post_kl_pos)",
     "post_kl_neg_mean": "post_kl_neg_mean (post_kl_neg)",
 }

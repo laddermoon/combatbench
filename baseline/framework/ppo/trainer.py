@@ -1493,6 +1493,8 @@ def ppo_update(
     #     distance; max = single-sample concentration; pos/neg split
     #     by advantage sign shows which side the policy moved on.
     post_clip_dloss_mean = 0.0
+    post_clip_dloss_gain = 0.0
+    post_clip_dloss_harm = 0.0
     post_ratio_bins: Dict[str, float] = {}
     post_kl_mean = post_kl_max = post_kl_pos_mean = post_kl_neg_mean = 0.0
     if n > 0:
@@ -1512,6 +1514,11 @@ def ppo_update(
                 torch.clamp(r_all, 1.0 - clip_eps, 1.0 + clip_eps) - 1.0
             )
             post_clip_dloss_mean = -float(contrib.mean().item())
+            # Additive decomposition in loss units:
+            #   gain <= 0 (advantage-aligned pull) + harm >= 0
+            #   (anti-aligned push) == dloss_mean exactly.
+            post_clip_dloss_gain = -float(contrib.clamp(min=0.0).mean().item())
+            post_clip_dloss_harm = -float(contrib.clamp(max=0.0).mean().item())
             _pos = adv_t > 0
             _neg = adv_t < 0
             # k3 KL at the final iterate; r_all is already log-clamped
@@ -1597,6 +1604,8 @@ def ppo_update(
         ratio_max=ratio_max,
         ratio_min=ratio_min,
         post_clip_dloss_mean=post_clip_dloss_mean,
+        post_clip_dloss_gain=post_clip_dloss_gain,
+        post_clip_dloss_harm=post_clip_dloss_harm,
         post_ratio_bins=post_ratio_bins,
         post_kl_mean=post_kl_mean,
         post_kl_max=post_kl_max,
