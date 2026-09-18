@@ -9,6 +9,7 @@ Usage::
 """
 from __future__ import annotations
 
+import ast
 import json
 import math
 import os
@@ -941,6 +942,259 @@ def query_runs_index(
         "page": page,
         "size": size,
         "runs": runs[start:start + size],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Experiment introspection — static AST scan of experiments_ppo/_sac.
+# No imports: keeps the viewer dependency-free so it can serve logs on
+# machines without the training stack.
+# ---------------------------------------------------------------------------
+
+_BASELINE_DIR = Path(__file__).resolve().parents[4]  # .../baseline
+
+
+def _literal_scalar(node: ast.AST) -> Tuple[bool, Any]:
+    """(True, value) for literal scalar assigns; (False, None) otherwise."""
+    try:
+        v = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError):
+        return False, None
+    return isinstance(v, (bool, int, float, str)), v
+
+
+def _parse_experiment_file(path: Path) -> Dict[str, Any]:
+    """Static parse of one experiment/base file.
+
+    Returns {doc, experiment_class, classes: {ClassName: {bases, attrs,
+    has_kwargs_init}}}.  attrs = public scalar class attributes
+    (the ``--set``-overridable knob space by convention).
+    """
+    out: Dict[str, Any] = {"doc": "", "experiment_class": None, "classes": {}}
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return out
+    out["doc"] = ast.get_docstring(tree) or ""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            info: Dict[str, Any] = {"bases": [], "attrs": {}, "has_kwargs_init": False}
+            for b in node.bases:
+                if isinstance(b, ast.Name):
+                    info["bases"].append(b.id)
+                elif isinstance(b, ast.Attribute):
+                    info["bases"].append(b.attr)
+            for item in node.body:
+                target: Optional[ast.Name] = None
+                value_node: Optional[ast.AST] = None
+                annotation: Optional[ast.AST] = None
+                if isinstance(item, ast.FunctionDef):
+                    if item.name == "__init__" and item.args.kwarg is not None:
+                        info["has_kwargs_init"] = True
+                    continue
+                elif (isinstance(item, ast.AnnAssign)
+                      and isinstance(item.target, ast.Name)):
+                    target = item.target
+                    value_node = item.value
+                    annotation = item.annotation
+                elif (isinstance(item, ast.Assign)
+                      and len(item.targets) == 1
+                      and isinstance(item.targets[0], ast.Name)):
+                    target = item.targets[0]
+                    value_node = item.value
+                if target is None or target.id.startswith("_") or value_node is None:
+                    continue
+                ok, v = _literal_scalar(value_node)
+                if not ok:
+                    continue
+                typ = annotation.id if isinstance(annotation, ast.Name) else type(v).__name__
+                info["attrs"][target.id] = {"type": typ, "default": v}
+            out["classes"][node.name] = info
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if (isinstance(t, ast.Name) and t.id == "EXPERIMENT_CLASS"
+                        and isinstance(node.value, ast.Name)):
+                    out["experiment_class"] = node.value.id
+    return out
+
+
+def scan_experiments() -> List[Dict[str, Any]]:
+    """Discover all PPO/SAC experiments with their tunable attributes."""
+    results: List[Dict[str, Any]] = []
+    for algo in ("ppo", "sac"):
+        pkg_dir = _BASELINE_DIR / f"experiments_{algo}"
+        if not pkg_dir.is_dir():
+            continue
+        # First pass: class table across the whole package (exp_*.py +
+        # base.py) so subclass→base attribute resolution works.
+        class_map: Dict[str, Dict[str, Any]] = {}
+        parsed_files: List[Tuple[Path, Dict[str, Any]]] = []
+        for f in sorted(pkg_dir.glob("*.py")):
+            if f.name.startswith("__"):
+                continue
+            parsed = _parse_experiment_file(f)
+            parsed_files.append((f, parsed))
+            class_map.update(parsed["classes"])
+        for f, parsed in parsed_files:
+            cls_name = parsed["experiment_class"]
+            if cls_name is None or cls_name not in parsed["classes"]:
+                continue
+            # Merge attrs over the resolvable MRO (subclass wins by
+            # visiting it first).
+            attrs: Dict[str, Dict[str, Any]] = {}
+            has_kwargs_init = False
+            seen: set = set()
+            stack = [cls_name]
+            while stack:
+                cname = stack.pop()
+                if cname in seen:
+                    continue
+                seen.add(cname)
+                cinfo = class_map.get(cname)
+                if cinfo is None:
+                    continue
+                has_kwargs_init = has_kwargs_init or cinfo["has_kwargs_init"]
+                for k, v in cinfo["attrs"].items():
+                    attrs.setdefault(k, v)
+                stack.extend(cinfo["bases"])
+            exp_name = attrs.get("name", {}).get("default") or cls_name
+            doc = parsed["doc"]
+            results.append({
+                "name": exp_name,
+                "class": cls_name,
+                "algo": algo,
+                "title": doc.strip().splitlines()[0] if doc.strip() else "",
+                "doc": doc,
+                "source": str(f.relative_to(_BASELINE_DIR.parent)),
+                "tunable": has_kwargs_init,
+                "tunables": [
+                    {"key": k, "type": v["type"], "default": v["default"]}
+                    for k, v in sorted(attrs.items())
+                    if k != "name"
+                ],
+            })
+    results.sort(key=lambda e: (e["algo"], e["name"]))
+    return results
+
+
+def _experiment_of(run: Dict[str, Any], names: set) -> Optional[str]:
+    """Which experiment a run belongs to: config name first, then the
+    train_<exp>_<algo>_<ts> naming convention as fallback."""
+    exp = run.get("experiment")
+    if exp in names:
+        return exp
+    for n in names:
+        if run["name"].startswith(f"train_{n}_"):
+            return n
+    return None
+
+
+def _run_group_stats(rs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    latest = max(rs, key=lambda r: r.get("activity") or 0, default=None)
+    return {
+        "n_runs": len(rs),
+        "n_running": sum(1 for r in rs if r.get("status") == "running"),
+        "latest_activity": latest.get("activity") if latest else None,
+        "latest_run": latest["name"] if latest else None,
+        "latest_eval_pot": latest.get("eval_pot") if latest else None,
+        "latest_eval_success": latest.get("eval_success") if latest else None,
+    }
+
+
+def experiments_index(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """GET /api/experiments — every discovered experiment + run stats."""
+    exps = scan_experiments()
+    names = {e["name"] for e in exps}
+    by_exp: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for r in runs:
+        by_exp.setdefault(_experiment_of(r, names), []).append(r)
+    out: List[Dict[str, Any]] = []
+    for e in exps:
+        rs = by_exp.pop(e["name"], [])
+        out.append({k: e[k] for k in ("name", "algo", "title", "tunable", "source")}
+                    | _run_group_stats(rs))
+    if by_exp.get(None):
+        out.append({"name": "(unassigned)", "algo": "",
+                    "title": "runs whose experiment is unregistered or has no config",
+                    "tunable": False, "source": "",
+                    **_run_group_stats(by_exp[None])})
+    return out
+
+
+def experiment_detail(
+    name: str, runs: List[Dict[str, Any]], root: Path,
+) -> Optional[Dict[str, Any]]:
+    """GET /api/experiment/<name> — dashboard payload."""
+    exps = {e["name"]: e for e in scan_experiments()}
+    info = exps.get(name)
+    if info is None:
+        return None
+    exp_runs = [r for r in runs if _experiment_of(r, set(exps)) == name]
+    exp_runs.sort(key=lambda r: r.get("created") or 0, reverse=True)
+
+    # Flatten each run's config params; a key becomes a "diff column"
+    # when its value varies across runs.
+    param_maps: Dict[str, Dict[str, Any]] = {}
+    schema: Optional[Dict[str, Any]] = None
+    for r in exp_runs:
+        cfg_path = root / r["name"] / "config.json"
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        exp_cfg = cfg.get("experiment") or {}
+        if schema is None and exp_cfg:
+            schema = {
+                k: exp_cfg[k]
+                for k in ("common_params", "ppo_params", "sac_params",
+                          "initial_exploration", "initial_lr_schedule")
+                if exp_cfg.get(k) is not None
+            }
+        flat: Dict[str, Any] = {}
+        for sect in ("common_params", "ppo_params", "sac_params",
+                     "initial_exploration"):
+            sect_v = exp_cfg.get(sect)
+            if isinstance(sect_v, dict):
+                flat.update(sect_v)
+        param_maps[r["name"]] = flat
+    all_keys: set = set()
+    for m in param_maps.values():
+        all_keys.update(m)
+    diff_keys = sorted(
+        k for k in all_keys if k != "name"
+        if len({json.dumps(m.get(k), sort_keys=True, default=str)
+                for m in param_maps.values()}) > 1
+    )
+    for r in exp_runs:
+        m = param_maps.get(r["name"])
+        r["params"] = {k: m.get(k) for k in diff_keys} if m else {}
+
+    # Latest checkpoint per run — feeds the resume-from dropdown.
+    checkpoints: List[Dict[str, Any]] = []
+    for r in exp_runs:
+        ck_dir = root / r["name"] / "checkpoints"
+        if not ck_dir.is_dir():
+            continue
+        best: Optional[Tuple[int, Path]] = None
+        for f in ck_dir.glob("checkpoint_u*.pt"):
+            m = re.match(r"checkpoint_u(\d+)\.pt$", f.name)
+            if m and (best is None or int(m.group(1)) > best[0]):
+                best = (int(m.group(1)), f)
+        if best is not None:
+            try:
+                rel = str(best[1].relative_to(root.parent.parent))
+            except ValueError:
+                rel = str(best[1])
+            checkpoints.append({"run": r["name"], "update": best[0], "path": rel})
+    checkpoints.sort(key=lambda c: c["update"], reverse=True)
+
+    return {
+        **info,
+        "schema": schema,
+        "diff_params": diff_keys,
+        "runs": exp_runs,
+        "checkpoints": checkpoints,
+        "cwd": str(_BASELINE_DIR.parent),
     }
 
 
@@ -2033,6 +2287,16 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             status, body = self._run_api(path)
         elif self.runs_root is not None and path == "/api/runs":
             status, body = 200, self._runs_index()
+        elif self.runs_root is not None and path == "/api/experiments":
+            status, body = 200, experiments_index(list_runs(self.runs_root))
+        elif self.runs_root is not None and path.startswith("/api/experiment/"):
+            exp_name = urllib.parse.unquote(path[len("/api/experiment/"):])
+            detail = experiment_detail(
+                exp_name, list_runs(self.runs_root), self.runs_root)
+            if detail is not None:
+                status, body = 200, detail
+            else:
+                status, body = 404, {"error": f"unknown experiment: {exp_name}"}
         elif self.runs_root is not None:
             status, body = 404, {"error": f"unknown api: {path}"}
         else:

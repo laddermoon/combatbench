@@ -110,6 +110,15 @@
   table.runs-table tr.run-row { cursor: pointer; }
   table.runs-table tr.run-row:hover { background: var(--panel-alt); }
   table.runs-table td.run-name { font-family: ui-monospace, monospace; color: var(--accent); }
+  /* Experiments pages */
+  .exp-runs-wrap { overflow-x: auto; }
+  #exp-doc { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; margin-top: 6px; }
+  .exp-cmd { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; user-select: all; }
+  .launch-grid { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; align-items: center; font-size: 12px; margin-bottom: 10px; max-width: 760px; }
+  .launch-grid label { color: var(--muted); }
+  .launch-grid input[type="text"], .launch-grid select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-size: 12px; width: 100%; box-sizing: border-box; }
+  .launch-grid .tunables-title { grid-column: 1 / -1; color: var(--muted); border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
+  #exp-copy { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
   .st-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
   .st-running { background: rgba(110,200,110,0.15); color: var(--green); }
   .st-finished { background: rgba(79,163,255,0.15); color: var(--accent); }
@@ -395,10 +404,51 @@
             <option value="100">100 / page</option>
           </select>
           <button id="runs-refresh">Refresh</button>
+          <button id="runs-experiments">Experiments</button>
           <span class="muted" id="runs-count"></span>
         </div>
         <div id="runs-table-container"><div class="loading">loading...</div></div>
         <div class="runs-pager" id="runs-pager"></div>
+      </div>
+    </div>
+
+    <!-- Experiments index (runs-root mode): all experiments + run stats -->
+    <div class="page" id="page-experiments">
+      <div class="card">
+        <h2>Experiments</h2>
+        <div class="runs-toolbar">
+          <button id="exps-refresh">Refresh</button>
+          <button id="exps-runs">Runs</button>
+          <span class="muted" id="exps-count"></span>
+        </div>
+        <div id="exps-table-container"><div class="loading">loading...</div></div>
+      </div>
+    </div>
+
+    <!-- Experiment dashboard (runs-root mode): one experiment -->
+    <div class="page" id="page-experiment">
+      <div class="card">
+        <h2 id="exp-title">-</h2>
+        <div class="muted" id="exp-sub"></div>
+        <details id="exp-doc-wrap" style="margin-top:8px">
+          <summary class="muted" style="cursor:pointer">docstring</summary>
+          <pre id="exp-doc"></pre>
+        </details>
+      </div>
+      <div class="card">
+        <h2>Parameters</h2>
+        <div id="exp-params"></div>
+      </div>
+      <div class="card">
+        <h2>Runs <span class="muted" id="exp-runs-count"></span></h2>
+        <div class="exp-runs-wrap" id="exp-runs"></div>
+      </div>
+      <div class="card">
+        <h2>Launch Command</h2>
+        <div class="muted" style="margin-bottom:8px">生成 train.py 启动命令（不执行）— 修改字段实时更新。</div>
+        <div id="exp-launch"></div>
+        <pre id="exp-cmd" class="exp-cmd"></pre>
+        <button id="exp-copy">Copy</button>
       </div>
     </div>
 
@@ -567,6 +617,8 @@
     mode: 'dump',          // 'runs' | 'run' | 'dump'
     rootMode: null,        // server context reported by /api/mode
     runName: null,         // runs mode: selected run (from /run/<name>/)
+    expName: null,         // runs mode: selected experiment (dashboard)
+    expDetail: null,       // cached /api/experiment/<name> payload
     runsQ: {q: '', page: 1, size: 20, sort: 'created', order: 'desc'},
     videosList: null,      // run-scoped eval videos
     selectedVideoIdx: null,
@@ -616,6 +668,8 @@
   const $ = id => document.getElementById(id);
   const pages = {
     runs: $('page-runs'),
+    experiments: $('page-experiments'),
+    experiment: $('page-experiment'),
     run: $('page-run'),
     videos: $('page-videos'),
     home: $('page-home'),
@@ -656,6 +710,8 @@
     const d = (state.mode === 'run' && state.dumpName) ? `/dump/${state.dumpName}` : '';
     switch (state.currentPage) {
       case 'runs': return '/';
+      case 'experiments': return '/experiments';
+      case 'experiment': return `/experiment/${encodeURIComponent(state.expName || '')}`;
       case 'run': return `${r}/`;
       case 'episode': return `${r}${d}/episode/${state.selectedEpisode}`;
       case 'traj': return `${r}${d}/trajectory/${state.selectedTraj}`;
@@ -759,6 +815,10 @@
     const crumbs = [];
     if (state.rootMode === 'runs') {
       crumbs.push({label: 'Runs', page: 'runs'});
+      crumbs.push({label: 'Experiments', page: 'experiments'});
+    }
+    if (state.currentPage === 'experiment' && state.expName) {
+      crumbs.push({label: state.expName, page: 'experiment'});
     }
     if (state.mode === 'run') {
       crumbs.push({
@@ -813,8 +873,8 @@
   }
 
   function navigate(page, push = true) {
-    if (page === 'runs') {
-      // Leave the selected run — back to the index.
+    if (page === 'runs' || page === 'experiments' || page === 'experiment') {
+      // Leave the selected run — back to a runs-root-level page.
       state.runName = null;
       state.dumpName = null;
       state.mode = 'runs';
@@ -822,6 +882,8 @@
     showPage(page);
     if (push) history.pushState({}, '', urlForCurrent());
     if (page === 'runs') renderRunsIndex();
+    else if (page === 'experiments') renderExperiments();
+    else if (page === 'experiment') renderExperiment();
     else if (page === 'run') renderRunHome();
     else if (page === 'home') renderHome();
     else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
@@ -1230,6 +1292,26 @@
   async function applyRoute(path) {
     let sub = path;
     if (state.rootMode === 'runs') {
+      const em = path.match(/^\/experiment\/([^/?]+)\/?$/);
+      if (path === '/experiments' || path === '/experiments/') {
+        state.runName = null;
+        state.dumpName = null;
+        state.mode = 'runs';
+        $('header-meta').textContent = 'experiments';
+        showPage('experiments');
+        renderExperiments();
+        return;
+      }
+      if (em) {
+        state.runName = null;
+        state.dumpName = null;
+        state.mode = 'runs';
+        state.expName = decodeURIComponent(em[1]);
+        $('header-meta').textContent = `experiment · ${state.expName}`;
+        showPage('experiment');
+        renderExperiment();
+        return;
+      }
       const rm = path.match(/^\/run\/([^/?]+)(\/.*)?$/);
       if (!rm) {
         state.runName = null;
@@ -1443,12 +1525,225 @@
     renderRunsIndex();
   });
   $('runs-refresh').addEventListener('click', () => renderRunsIndex());
-  // Auto-refresh the index while it is the visible page.
-  setInterval(() => {
-    if (state.currentPage === 'runs' &&
-        document.visibilityState === 'visible') {
-      renderRunsIndex();
+
+  // --- Experiments pages (runs-root mode) ---
+  async function renderExperiments() {
+    if (state.rootMode !== 'runs' || state.currentPage !== 'experiments') return;
+    let data;
+    try {
+      data = await fetchJson('/api/experiments');
+    } catch (e) {
+      $('exps-table-container').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
     }
+    $('exps-count').textContent = `${data.length} experiments`;
+    // Most-recent activity first; the (unassigned) pseudo-group pins last.
+    const rows = [...data].sort((a, b) => {
+      if (a.name === '(unassigned)') return 1;
+      if (b.name === '(unassigned)') return -1;
+      return (b.latest_activity || 0) - (a.latest_activity || 0);
+    });
+    let html = '<table class="runs-table"><thead><tr>' +
+      '<th>experiment</th><th>algo</th><th>runs</th><th>latest eval</th>' +
+      '<th>latest activity</th><th>--set</th><th>description</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(e => {
+      const running = e.n_running
+        ? ` <span class="badge green">${e.n_running} running</span>` : '';
+      const real = e.name !== '(unassigned)';
+      html += `<tr class="run-row exp-row" data-name="${escapeHtml(e.name)}"` +
+        `${real ? '' : ' style="cursor:default;opacity:.6"'}>` +
+        `<td class="run-name">${escapeHtml(e.name)}</td>` +
+        `<td>${escapeHtml(e.algo || '-')}</td>` +
+        `<td>${e.n_runs}${running}</td>` +
+        `<td>${e.latest_eval_pot != null ? fmt(e.latest_eval_pot, 3) : '-'}</td>` +
+        `<td>${e.latest_activity ? fmtAgo(e.latest_activity) : '-'}</td>` +
+        `<td>${e.tunable ? '<span class="badge green">--set</span>' : '<span class="badge muted">static</span>'}</td>` +
+        `<td style="white-space:normal;color:var(--muted)">${escapeHtml(e.title || '')}</td>` +
+        `</tr>`;
+    });
+    html += '</tbody></table>';
+    $('exps-table-container').innerHTML = html;
+    $('exps-table-container').querySelectorAll('tr.exp-row').forEach(tr => {
+      if (tr.dataset.name === '(unassigned)') return;
+      tr.addEventListener('click', () => {
+        state.expName = tr.dataset.name;
+        navigate('experiment');
+      });
+    });
+  }
+  $('exps-refresh').addEventListener('click', () => renderExperiments());
+  $('exps-runs').addEventListener('click', () => navigate('runs'));
+  $('runs-experiments').addEventListener('click', () => navigate('experiments'));
+
+  async function renderExperiment() {
+    if (state.currentPage !== 'experiment' || !state.expName) return;
+    let d;
+    try {
+      d = await fetchJson(`/api/experiment/${encodeURIComponent(state.expName)}`);
+    } catch (e) {
+      $('exp-title').textContent = state.expName;
+      $('exp-sub').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    state.expDetail = d;
+    $('exp-title').textContent = d.name;
+    $('exp-sub').textContent =
+      `${d.algo} · ${d.class} · ${d.source}` +
+      (d.tunable ? '' : ' · --set 不可用（构造函数不接受 **kwargs）');
+    $('exp-doc').textContent = d.doc || '';
+    $('exp-doc-wrap').style.display = d.doc ? '' : 'none';
+    _renderExpParams(d);
+    _renderExpRuns(d);
+    _renderLaunch(d);
+  }
+
+  function _renderExpParams(d) {
+    const el = $('exp-params');
+    let html = '';
+    if (d.tunables && d.tunables.length) {
+      const note = d.tunable
+        ? '可通过 --set KEY=VALUE 覆盖的类属性（默认值来自类定义）：'
+        : '类属性默认值（当前实验不接受 --set，仅供参照）：';
+      html += `<div class="muted" style="margin-bottom:6px">${note}</div>`;
+      const open = d.tunable ? '' : '<details><summary class="muted" style="cursor:pointer">' +
+        `${d.tunables.length} attrs</summary>`;
+      html += open +
+        '<table class="runs-table"><thead><tr><th>key</th><th>type</th><th>default</th></tr></thead><tbody>';
+      d.tunables.forEach(t => {
+        html += `<tr><td class="run-name">${escapeHtml(t.key)}</td>` +
+          `<td>${escapeHtml(t.type)}</td>` +
+          `<td>${escapeHtml(JSON.stringify(t.default))}</td></tr>`;
+      });
+      html += '</tbody></table>' + (d.tunable ? '' : '</details>');
+    }
+    if (d.schema) {
+      html += '<details style="margin-top:10px"><summary class="muted" ' +
+        'style="cursor:pointer">最新 run 的 config 快照（common_params / ppo_params / initial_exploration）</summary>' +
+        `<pre class="exp-cmd">${escapeHtml(JSON.stringify(d.schema, null, 2))}</pre></details>`;
+    }
+    el.innerHTML = html || '<div class="muted">no parameter info</div>';
+  }
+
+  function _renderExpRuns(d) {
+    const el = $('exp-runs');
+    $('exp-runs-count').textContent = `(${d.runs.length})`;
+    // Diff columns: only params whose values actually vary AND are
+    // non-null in at least one run (schema-evolution noise stays out).
+    const diffKeys = (d.diff_params || []).filter(k =>
+      d.runs.some(r => (r.params || {})[k] != null));
+    let html = '<table class="runs-table"><thead><tr>' +
+      '<th>status</th><th>run</th><th>update</th><th>eval</th><th>pot</th>';
+    diffKeys.forEach(k => { html += `<th>${escapeHtml(k)}</th>`; });
+    html += '<th>created</th><th>activity</th></tr></thead><tbody>';
+    if (!d.runs.length) {
+      html += `<tr><td colspan="${7 + diffKeys.length}" class="muted" ` +
+        'style="padding:20px;text-align:center">no runs yet</td></tr>';
+    }
+    d.runs.forEach(r => {
+      const prog = (r.update != null && r.max_updates)
+        ? `${r.update}/${r.max_updates}` : (r.update != null ? `${r.update}` : '-');
+      html += `<tr class="run-row exp-run-row" data-name="${escapeHtml(r.name)}">` +
+        `<td><span class="st-badge st-${r.status}">${r.status}</span></td>` +
+        `<td class="run-name">${escapeHtml(r.name)}</td>` +
+        `<td>${prog}</td>` +
+        `<td>${r.eval_success != null ? fmt(r.eval_success, 2) : '-'}</td>` +
+        `<td>${r.eval_pot != null ? fmt(r.eval_pot, 3) : '-'}</td>`;
+      diffKeys.forEach(k => {
+        const v = (r.params || {})[k];
+        html += `<td>${v == null ? '-'
+          : escapeHtml(typeof v === 'number' ? fmt(v, 4) : String(v))}</td>`;
+      });
+      html += `<td>${r.created ? fmtDate(r.created) : '-'}</td>` +
+        `<td>${r.activity ? fmtAgo(r.activity) : '-'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.querySelectorAll('tr.exp-run-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+  }
+
+  function _renderLaunch(d) {
+    const el = $('exp-launch');
+    const ts = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const stamp = `${ts.getFullYear()}${p2(ts.getMonth() + 1)}${p2(ts.getDate())}` +
+      `_${p2(ts.getHours())}${p2(ts.getMinutes())}${p2(ts.getSeconds())}`;
+    let html = '<div class="launch-grid">';
+    html += `<label>run-name</label><input type="text" id="lz-name" ` +
+      `value="train_${d.name}_${d.algo}_${stamp}">`;
+    html += '<label>resume-from</label><select id="lz-resume">' +
+      '<option value="">(from scratch)</option>';
+    (d.checkpoints || []).forEach(c => {
+      html += `<option value="${escapeHtml(c.path)}">` +
+        `${escapeHtml(c.run)} · u${c.update}</option>`;
+    });
+    html += '</select>';
+    html += '<label>CUDA_VISIBLE_DEVICES</label>' +
+      '<input type="text" id="lz-cuda" placeholder="(all GPUs)">';
+    html += '<label>flags</label><span>' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-bg" checked> --background</label> ' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-nosnap" checked> --no-snapshot</label> ' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-smoke"> --smoke</label></span>';
+    if (d.tunable && d.tunables && d.tunables.length) {
+      html += '<div class="tunables-title">--set overrides（与默认值不同才生成）</div>';
+      d.tunables.forEach(t => {
+        const dv = String(t.default);
+        html += `<label>${escapeHtml(t.key)}</label>` +
+          `<input type="text" class="lz-set" data-key="${escapeHtml(t.key)}" ` +
+          `data-default="${escapeHtml(dv)}" value="${escapeHtml(dv)}">`;
+      });
+    } else {
+      html += '<div class="tunables-title">此实验不接受 --set 参数覆盖</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    el.querySelectorAll('input,select').forEach(i =>
+      i.addEventListener('input', () => _updateCmd(d)));
+    _updateCmd(d);
+    $('exp-copy').onclick = () => {
+      navigator.clipboard.writeText($('exp-cmd').textContent).then(() => {
+        $('exp-copy').textContent = 'Copied ✓';
+        setTimeout(() => { $('exp-copy').textContent = 'Copy'; }, 1200);
+      });
+    };
+  }
+
+  function _updateCmd(d) {
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const chk = id => !!(document.getElementById(id) || {}).checked;
+    const parts = ['PYTHONPATH=.'];
+    if (g('lz-cuda').trim()) parts.push(`CUDA_VISIBLE_DEVICES=${g('lz-cuda').trim()}`);
+    parts.push('python3 -B baseline/framework/train.py');
+    parts.push(`--experiment ${d.name}`);
+    parts.push(`--algo ${d.algo}`);
+    if (g('lz-name').trim()) parts.push(`--run-name ${g('lz-name').trim()}`);
+    if (g('lz-resume')) parts.push(`--resume-from ${g('lz-resume')}`);
+    if (chk('lz-bg')) parts.push('--background');
+    if (chk('lz-nosnap')) parts.push('--no-snapshot');
+    if (chk('lz-smoke')) parts.push('--smoke');
+    document.querySelectorAll('.lz-set').forEach(inp => {
+      const v = inp.value.trim();
+      if (v && v !== inp.dataset.default) {
+        parts.push(`--set ${inp.dataset.key}=${v}`);
+      }
+    });
+    $('exp-cmd').textContent = `cd ${d.cwd} && ` + parts.join(' ');
+  }
+
+  // Auto-refresh the index while it is the visible page.  The experiment
+  // dashboard is deliberately excluded — rebuilding it would clobber the
+  // launch form's in-progress edits.
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (state.currentPage === 'runs') renderRunsIndex();
+    else if (state.currentPage === 'experiments') renderExperiments();
   }, 10000);
 
   // --- Videos page (run scoped) ---

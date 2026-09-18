@@ -32,6 +32,7 @@ from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
 from baseline.framework.ppo.dumpkit.viewer.server import (
     DumpData, RunData, ViewerAPI, list_runs, query_runs_index, resolve_run,
+    scan_experiments, experiments_index, experiment_detail,
 )
 from baseline.framework.ppo.experiment import (
     ActorEval,
@@ -1191,6 +1192,108 @@ def test_resolve_run_validation_and_cache():
 # Run all tests
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Experiments index / dashboard (runs-root mode)
+# ---------------------------------------------------------------------------
+
+def test_scan_experiments_discovers_registry():
+    """scan_experiments() parses exp_*.py files into a metadata table."""
+    exps = scan_experiments()
+    names = {e["name"] for e in exps}
+    assert "basic_balance" in names          # known PPO experiment
+    ppo = [e for e in exps if e["algo"] == "ppo"]
+    assert ppo, "expected at least one PPO experiment"
+    for e in ppo:
+        assert e["source"].endswith(".py")
+        assert isinstance(e["tunables"], list)
+        assert all("key" in t and "default" in t for t in e["tunables"])
+        # 'name' is identity, never a tunable
+        assert all(t["key"] != "name" for t in e["tunables"])
+    print("test_scan_experiments_discovers_registry: PASS")
+
+
+def _exp_run(root: Path, name: str, exp: str, *, created: float,
+             params: dict, update=10, checkpoint=None) -> dict:
+    """A run summary + config.json/checkpoint on disk for exp tests."""
+    d = _make_fake_run(root, name, update=update)
+    cfg = {
+        "algorithm": "ppo",
+        "experiment": {
+            "name": exp,
+            "common_params": {"max_updates": 100},
+            "ppo_params": params,
+        },
+    }
+    (d / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    if checkpoint is not None:
+        ck = d / "checkpoints"
+        ck.mkdir()
+        (ck / f"checkpoint_u{checkpoint:05d}.pt").write_text("x")
+    return {
+        "name": name, "experiment": exp, "algo": "ppo",
+        "status": "finished", "update": update, "max_updates": 100,
+        "eval_success": 1.0, "eval_pot": 0.9,
+        "created": created, "activity": created, "n_dumps": 0,
+    }
+
+
+def test_experiments_index_groups_runs():
+    """experiments_index groups run stats by experiment + (unassigned)."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        runs = [
+            _exp_run(root, "train_basic_balance_ppo_20260101_000000",
+                     "basic_balance", created=100.0, params={}),
+            _exp_run(root, "train_basic_balance_ppo_20260102_000000",
+                     "basic_balance", created=200.0, params={}),
+            _exp_run(root, "orphan_run", "unregistered_exp",
+                     created=50.0, params={}),
+        ]
+        idx = experiments_index(runs)
+        by_name = {e["name"]: e for e in idx}
+        bb = by_name["basic_balance"]
+        assert bb["n_runs"] == 2
+        assert bb["latest_activity"] == 200.0
+        assert bb["latest_eval_pot"] == 0.9
+        un = by_name["(unassigned)"]
+        assert un["n_runs"] == 1
+        assert un["latest_run"] == "orphan_run"
+        print("test_experiments_index_groups_runs: PASS")
+
+
+def test_experiment_detail_diffs_and_checkpoints():
+    """experiment_detail returns params diff columns + latest ckpt per run."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        runs = [
+            _exp_run(root, "train_basic_balance_ppo_20260101_000000",
+                     "basic_balance", created=100.0,
+                     params={"learning_rate": 3e-4, "target_kl": 0.05},
+                     checkpoint=500),
+            _exp_run(root, "train_basic_balance_ppo_20260102_000000",
+                     "basic_balance", created=200.0,
+                     params={"learning_rate": 2e-4, "target_kl": 0.05},
+                     checkpoint=800),
+        ]
+        det = experiment_detail("basic_balance", runs, root)
+        assert det is not None
+        assert det["name"] == "basic_balance"
+        assert len(det["runs"]) == 2
+        # learning_rate varies → diff column; target_kl same → not a diff
+        assert "learning_rate" in det["diff_params"]
+        assert "target_kl" not in det["diff_params"]
+        assert "name" not in det["diff_params"]
+        # each run carries only the diff keys
+        assert set(det["runs"][0]["params"]) == {"learning_rate"}
+        # latest checkpoint per run, newest update first
+        assert [c["update"] for c in det["checkpoints"]] == [800, 500]
+        assert det["schema"]["common_params"]["max_updates"] == 100
+        assert det["cwd"]
+        # unknown experiment → None → 404 upstream
+        assert experiment_detail("no_such_exp", runs, root) is None
+        print("test_experiment_detail_diffs_and_checkpoints: PASS")
+
+
 if __name__ == "__main__":
     test_dump_data_loads_manifest()
     test_dump_data_loads_npz_files()
@@ -1229,4 +1332,7 @@ if __name__ == "__main__":
     test_resolve_run_validation_and_cache()
     test_run_data_videos()
     test_run_data_metrics_has_eval_keys()
+    test_scan_experiments_discovers_registry()
+    test_experiments_index_groups_runs()
+    test_experiment_detail_diffs_and_checkpoints()
     print("\nAll viewer tests passed!")
