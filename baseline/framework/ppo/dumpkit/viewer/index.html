@@ -111,6 +111,10 @@
   table.runs-table tr.run-row:hover { background: var(--panel-alt); }
   table.runs-table td.run-name { font-family: ui-monospace, monospace; color: var(--accent); }
   /* Experiments pages */
+  .index-nav { display: flex; gap: 2px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .index-nav a { padding: 6px 14px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .index-nav a:hover { color: var(--text); }
+  .index-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
   .exp-runs-wrap { overflow-x: auto; }
   #exp-doc { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; margin-top: 6px; }
   .exp-cmd { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; user-select: all; }
@@ -395,7 +399,10 @@
     <!-- Runs index (runs-root mode only): all runs under the root -->
     <div class="page" id="page-runs">
       <div class="card">
-        <h2>Runs</h2>
+        <div class="index-nav">
+          <a class="active" data-nav="runs">Runs</a>
+          <a data-nav="experiments">Experiments</a>
+        </div>
         <div class="runs-toolbar">
           <input id="runs-search" type="text" placeholder="search name / experiment / algo..." />
           <select id="runs-size">
@@ -404,7 +411,6 @@
             <option value="100">100 / page</option>
           </select>
           <button id="runs-refresh">Refresh</button>
-          <button id="runs-experiments">Experiments</button>
           <span class="muted" id="runs-count"></span>
         </div>
         <div id="runs-table-container"><div class="loading">loading...</div></div>
@@ -415,10 +421,12 @@
     <!-- Experiments index (runs-root mode): all experiments + run stats -->
     <div class="page" id="page-experiments">
       <div class="card">
-        <h2>Experiments</h2>
+        <div class="index-nav">
+          <a data-nav="runs">Runs</a>
+          <a class="active" data-nav="experiments">Experiments</a>
+        </div>
         <div class="runs-toolbar">
           <button id="exps-refresh">Refresh</button>
-          <button id="exps-runs">Runs</button>
           <span class="muted" id="exps-count"></span>
         </div>
         <div id="exps-table-container"><div class="loading">loading...</div></div>
@@ -1585,8 +1593,10 @@
     });
   }
   $('exps-refresh').addEventListener('click', () => renderExperiments());
-  $('exps-runs').addEventListener('click', () => navigate('runs'));
-  $('runs-experiments').addEventListener('click', () => navigate('experiments'));
+  // Runs ⇄ Experiments tab strip on both index pages.
+  document.querySelectorAll('.index-nav a').forEach(a => {
+    a.addEventListener('click', () => navigate(a.dataset.nav));
+  });
 
   async function renderExperiment() {
     if (state.currentPage !== 'experiment' || !state.expName) return;
