@@ -46,9 +46,9 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
      "keys": ["ep.ep_len_mean", "ep.ep_len_min", "ep.ep_len_max",
               "stats.traj_len_mean", "stats.traj_len_min", "stats.traj_len_max"],
      "hint": "ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\n"
-             "stats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_steps）。\n"
+             "stats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_frames）。\n"
              "一条轨迹恰好覆盖一条 episode 时两者相等。"},
-    {"keys": ["stats.total_steps"],
+    {"keys": ["stats.total_frames"],
      "hint": "本 update buffer 的总帧数 = Σ traj_len。"},
     {"pcm": "reward",
      "metrics": ["reward_min", "reward_max", "reward_std", "reward_mean"],

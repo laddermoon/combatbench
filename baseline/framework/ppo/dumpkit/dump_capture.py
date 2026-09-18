@@ -349,7 +349,7 @@ def _serialize_stats(stats: UpdateStats) -> Dict[str, Any]:
         "actor_epochs_done": np.array(stats.actor_epochs_done),
         "n_batches": np.array(stats.n_batches),
         "n_trajectories": np.array(stats.n_trajectories),
-        "total_steps": np.array(stats.total_steps),
+        "total_frames": np.array(stats.total_frames),
         "uncertainty_mean": np.array(stats.uncertainty_mean),
     }
     for key, val in stats.critic_loss_mean.items():
@@ -761,7 +761,7 @@ def capture_dump(
         "include_full_grad": request.include_full_grad,
         "n_episodes": len(episodes),
         "n_trajectories": len(trajectories),
-        "total_steps": int(sum(len(t.obs) for t in trajectories)),
+        "total_frames": int(sum(len(t.obs) for t in trajectories)),
         "has_timeline": "timeline" in dump_collector,
         "has_epoch_frames": "epoch_frames" in dump_collector,
     }
@@ -893,7 +893,7 @@ def capture_dump(
     print(
         f"[dump] captured update {update} → {dump_dir} "
         f"(episodes={len(episodes)}, trajs={len(trajectories)}, "
-        f"steps={manifest['total_steps']}, "
+        f"frames={manifest['total_frames']}, "
         f"full_grad={request.include_full_grad})",
         flush=True,
     )

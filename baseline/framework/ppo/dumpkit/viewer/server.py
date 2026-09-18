@@ -389,7 +389,7 @@ class RunData:
                     entry["update"] = m.get("update")
                     entry["n_episodes"] = m.get("n_episodes")
                     entry["n_trajectories"] = m.get("n_trajectories")
-                    entry["total_steps"] = m.get("total_steps")
+                    entry["total_frames"] = m.get("total_frames")
                     entry["experiment_name"] = m.get("experiment_name")
                 except (json.JSONDecodeError, OSError):
                     pass

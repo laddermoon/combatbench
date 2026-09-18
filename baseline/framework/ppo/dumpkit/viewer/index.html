@@ -1193,7 +1193,7 @@
 
   function setDumpHeader() {
     $('header-meta').textContent =
-      `update ${state.manifest.update} · ${state.manifest.experiment_name} · ${state.manifest.total_steps} steps · ${state.manifest.n_episodes} eps · ${state.manifest.n_trajectories} trajs`;
+      `update ${state.manifest.update} · ${state.manifest.experiment_name} · ${state.manifest.total_frames} frames · ${state.manifest.n_episodes} eps · ${state.manifest.n_trajectories} trajs`;
   }
 
   async function init() {
@@ -1704,7 +1704,7 @@
       dl.innerHTML = '<div class="loading">no dumps yet — use debug.py dump to capture one</div>';
     } else {
       let html = '<table class="dump-table"><thead><tr>';
-      html += '<th>Dump</th><th>Update</th><th>Episodes</th><th>Trajectories</th><th>Steps</th><th>Captured</th>';
+      html += '<th>Dump</th><th>Update</th><th>Episodes</th><th>Trajectories</th><th>Frames</th><th>Captured</th>';
       html += '</tr></thead><tbody>';
       dumps.forEach(d => {
         html += `<tr data-name="${escapeHtml(d.name)}">`;
@@ -1712,7 +1712,7 @@
         html += `<td>${d.update ?? '-'}</td>`;
         html += `<td>${d.n_episodes ?? '-'}</td>`;
         html += `<td>${d.n_trajectories ?? '-'}</td>`;
-        html += `<td>${d.total_steps ?? '-'}</td>`;
+        html += `<td>${d.total_frames ?? '-'}</td>`;
         html += `<td>${d.mtime ? new Date(d.mtime * 1000).toLocaleString() : '-'}</td>`;
         html += '</tr>';
       });

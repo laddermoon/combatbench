@@ -468,6 +468,9 @@ class UpdateStats:
       actor evaluated once over the whole buffer).  Metrics sampled
       per minibatch *during* the update carry no prefix — unprefixed
       means "proc" by convention.
+    - ``frames`` = environment data (``total_frames``, ``traj_len_*``,
+      ``ep_len_*``); ``steps`` = optimizer minibatch steps
+      (``actor_steps``).  The two units never share a name.
     - Where a name diverges from conventional PPO vocabulary
       (``approx_kl`` → ``kl_mean``, ``clip_frac`` → ``clip_frac_mean``,
       ``policy_loss`` → ``policy_loss_mean``), the debug catalog maps
@@ -482,8 +485,8 @@ class UpdateStats:
     #   episode can contribute more than one.
     n_trajectories: int
     # sum(buf.traj_lengths) — total frames in the buffer.
-    total_steps: int
-    # max(1, ceil(total_steps / minibatch_size)) — minibatches per
+    total_frames: int
+    # max(1, ceil(total_frames / minibatch_size)) — minibatches per
     #   epoch; the split is even, no tiny remainder batch.
     n_batches: int
     # Total number of actor minibatch steps actually taken this update,
@@ -682,7 +685,7 @@ class UpdateStats:
             n_batches=0,
             actor_steps=0,
             n_trajectories=0,
-            total_steps=0,
+            total_frames=0,
             uncertainty_mean=0.0,
             traj_len_mean=0.0,
             traj_len_min=0.0,
@@ -727,7 +730,7 @@ class UpdateStats:
         d.update({
             # --- Update shape ---
             "n_trajectories": self.n_trajectories,
-            "total_steps": self.total_steps,
+            "total_frames": self.total_frames,
             "n_batches": self.n_batches,
             "actor_steps": self.actor_steps,
             "epochs_done": self.epochs_done,

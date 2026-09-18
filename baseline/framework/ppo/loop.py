@@ -730,7 +730,7 @@ def train_ppo(
                 f"len={ep_stats['ep_len_mean']:.1f} "
                 f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']})] "
                 f"[trajs={buf_stats['n_trajectories']} "
-                f"steps={buf_stats['total_steps']}]",
+                f"frames={buf_stats['total_frames']}]",
                 flush=True,
             )
 

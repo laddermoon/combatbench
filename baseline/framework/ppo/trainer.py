@@ -288,7 +288,7 @@ class PPOBuffer:
         """Comprehensive buffer statistics for logging.
 
         Global stats:
-        - n_trajectories, total_steps, traj_len_mean/min/max
+        - n_trajectories, total_frames, traj_len_mean/min/max
 
         Per-channel stats (active segments only):
         - n_active_trajs, active_ratio
@@ -299,7 +299,7 @@ class PPOBuffer:
         if not self.traj_lengths:
             return {
                 "n_trajectories": 0,
-                "total_steps": 0,
+                "total_frames": 0,
                 "traj_len_mean": 0.0,
                 "traj_len_min": 0,
                 "traj_len_max": 0,
@@ -307,7 +307,7 @@ class PPOBuffer:
             }
 
         traj_lens = np.array(self.traj_lengths)
-        total_steps = int(traj_lens.sum())
+        total_frames = int(traj_lens.sum())
 
         per_channel: Dict[str, Dict[str, float]] = {}
         for key in self.reward_keys:
@@ -361,7 +361,7 @@ class PPOBuffer:
 
         return {
             "n_trajectories": len(self.traj_lengths),
-            "total_steps": total_steps,
+            "total_frames": total_frames,
             "traj_len_mean": float(traj_lens.mean()),
             "traj_len_min": int(traj_lens.min()),
             "traj_len_max": int(traj_lens.max()),
@@ -1465,7 +1465,7 @@ def ppo_update(
         ret_min[key] = float(r.min()) if r.size > 0 else 0.0
         ret_max[key] = float(r.max()) if r.size > 0 else 0.0
 
-    total_steps = sum(buf.traj_lengths)
+    total_frames = sum(buf.traj_lengths)
 
     # --- Post-update surrogate cross-section ---
     # One chunked no-grad pass with the FINAL actor over the whole
@@ -1608,7 +1608,7 @@ def ppo_update(
         n_batches=n_batches,
         actor_steps=sum(int(s["n_minibatches"]) for s in epoch_kl_stats),
         n_trajectories=n_trajectories,
-        total_steps=total_steps,
+        total_frames=total_frames,
         uncertainty_mean=uncertainty_mean,
         traj_len_mean=traj_len_mean,
         traj_len_min=traj_len_min,

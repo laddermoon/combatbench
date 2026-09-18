@@ -413,7 +413,7 @@ def test_ppo_update_empty_buffer_returns_empty_stats():
     )
 
     assert stats.is_empty is True, "empty-buffer stats must have is_empty=True"
-    assert stats.total_steps == 0
+    assert stats.total_frames == 0
     assert stats.kl_mean == 0.0
     assert stats.epochs_done == 0
     assert stats.actor_epochs_done == 0
@@ -536,7 +536,7 @@ def test_buffer_stats_basic():
 
     stats = buf.buffer_stats()
     assert stats["n_trajectories"] == 2
-    assert stats["total_steps"] == T1 + T2
+    assert stats["total_frames"] == T1 + T2
     assert "per_channel" in stats
     assert stats["per_channel"]["r_a"]["n_active_trajs"] == 2
     print("test_buffer_stats_basic: PASS")
@@ -576,7 +576,7 @@ def test_ppo_update_runs_single_channel():
         device=torch.device("cpu"),
     )
 
-    assert stats.total_steps == T
+    assert stats.total_frames == T
     assert stats.n_trajectories == 1
     assert "r_a" in stats.critic_loss_mean
     assert "r_a" in stats.explained_variance
@@ -865,7 +865,7 @@ def test_ppo_update_per_frame_actor_weight():
         grad_clip_norm=1.0,
         device=torch.device("cpu"),
     )
-    assert stats.total_steps == T
+    assert stats.total_frames == T
     print("test_ppo_update_per_frame_actor_weight: PASS")
 
 
@@ -1079,7 +1079,7 @@ def test_ppo_update_truncated_bootstrap():
         grad_clip_norm=1.0,
         device=torch.device("cpu"),
     )
-    assert stats.total_steps == T
+    assert stats.total_frames == T
     print("test_ppo_update_truncated_bootstrap: PASS")
 
 
@@ -1112,7 +1112,7 @@ def test_ppo_update_terminated_no_bootstrap():
         grad_clip_norm=1.0,
         device=torch.device("cpu"),
     )
-    assert stats.total_steps == T
+    assert stats.total_frames == T
     print("test_ppo_update_terminated_no_bootstrap: PASS")
 
 
@@ -1293,7 +1293,7 @@ def test_minibatch_count_matches_actual():
 
     Previously n_batches used floor division while the loop used ceil,
     causing a reported vs actual off-by-one on every update where
-    total_steps was not exactly divisible by minibatch_size.  Now both
+    total_frames was not exactly divisible by minibatch_size.  Now both
     use ceil, so they match.
     """
     rng = np.random.default_rng(42)
@@ -1434,7 +1434,7 @@ def test_no_tiny_minibatch():
 
 
 def test_minibatch_count_exact_division():
-    """When total_steps is exactly divisible, n_batches is correct."""
+    """When total_frames is exactly divisible, n_batches is correct."""
     rng = np.random.default_rng(42)
     obs_dim, act_dim = 8, 3
     T = 128  # exactly divisible by 32
@@ -1973,7 +1973,7 @@ def test_update_stats_to_log_dict():
     assert "confidence_r_a" in d
     assert "adv_mean_r_a" in d
     assert "adv_std_r_a" in d
-    assert "total_steps" in d
+    assert "total_frames" in d
     print("test_update_stats_to_log_dict: PASS")
 
 
@@ -2217,7 +2217,7 @@ def test_negative_actor_weight_inverts_advantage():
             use_confidence=False,
         )
         # Should run without error for both positive and negative weights
-        assert stats.total_steps == T
+        assert stats.total_frames == T
 
     print("test_negative_actor_weight_inverts_advantage: PASS")
 
@@ -2259,7 +2259,7 @@ def test_l1_normalization_single_channel_unchanged():
         use_confidence=False,
     )
     # Should run and produce nonzero policy loss (advantage signal exists)
-    assert stats.total_steps == T
+    assert stats.total_frames == T
     print("test_l1_normalization_single_channel_unchanged: PASS")
 
 
