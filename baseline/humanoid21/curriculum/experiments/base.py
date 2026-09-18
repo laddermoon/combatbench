@@ -64,6 +64,7 @@ class CombatExperimentBase(Experiment):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 8192
+    early_stop_kl_window: int = 10
 
     # --- SAC knobs ---
     sac_tau: float = 0.005
@@ -136,6 +137,7 @@ class CombatExperimentBase(Experiment):
             target_kl=self.target_kl,
             update_epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
+            early_stop_kl_window=self.early_stop_kl_window,
         )
 
     def build_v_critic(self, reward_key: str, device: torch.device) -> nn.Module:

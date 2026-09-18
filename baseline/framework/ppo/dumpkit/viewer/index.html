@@ -2652,7 +2652,7 @@
         edge: 'SGD loop — n_epochs × n_minibatches',
         goto: 'timeline', gotoLabel: 'Timeline page →',
         groups: [
-          G('per-step (minibatch)', F('kl · running_mean_kl', 'drift vs θ_old, early-stop signal') +
+          G('per-step (minibatch)', F('kl · window_mean_kl', 'drift vs θ_old, early-stop signal') +
              F('ratio_mean/max · clip_frac', 'how far samples re-weighted') +
              F('policy_loss · actor_grad', 'actor update magnitude') +
              F('critic_loss · critic_grad', 'per-channel critic updates') +
@@ -3621,8 +3621,11 @@
       html += '<div class="chart-container">';
       html += '<h3>KL Evolution (per minibatch)</h3>';
       const series = [{label: 'KL', data: tl.kl, color: '#4fa3ff'}];
-      if (tl.running_mean_kl) {
-        series.push({label: 'running_mean_KL', data: tl.running_mean_kl, color: '#e5c07b'});
+      // window_mean_kl is the current name; running_mean_kl survives
+      // in dumps captured before the sliding-window early stop.
+      const tlWindowKL = tl.window_mean_kl || tl.running_mean_kl;
+      if (tlWindowKL) {
+        series.push({label: 'window_mean_KL', data: tlWindowKL, color: '#e5c07b'});
       }
       if (tl.target_kl && !isNaN(tl.target_kl)) {
         series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
@@ -3701,7 +3704,7 @@
       ['mb', tl.mb_idx?.[step], 'num'],
       ['actor_active', tl.actor_active?.[step], 'bool'],
       ['kl', tl.kl?.[step], 'num'],
-      ['running_mean_kl', tl.running_mean_kl?.[step], 'num'],
+      ['window_mean_kl', (tl.window_mean_kl || tl.running_mean_kl)?.[step], 'num'],
       ['clip_frac', tl.clip_frac?.[step], 'num'],
       ['ratio_mean', tl.ratio_mean?.[step], 'num'],
       ['ratio_max', tl.ratio_max?.[step], 'num'],
@@ -3745,9 +3748,10 @@
     html += `<tr><td>early_stop_step</td><td class="${tl.early_stop_step >= 0 ? 'neg' : 'num'}">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
     html += `<tr><td>target_kl</td><td class="num">${fmt(tl.target_kl, 4)}</td></tr>`;
     html += `<tr><td>clip_eps</td><td class="num">${fmt(tl.clip_eps, 4)}</td></tr>`;
-    if (tl.early_stop_step >= 0 && tl.running_mean_kl) {
-      const stopKL = tl.running_mean_kl[tl.early_stop_step];
-      html += `<tr><td>running_mean_kl at stop</td><td class="num">${fmt(stopKL)}</td></tr>`;
+    const stopKLs = tl.window_mean_kl || tl.running_mean_kl;
+    if (tl.early_stop_step >= 0 && stopKLs) {
+      const stopKL = stopKLs[tl.early_stop_step];
+      html += `<tr><td>window_mean_kl at stop</td><td class="num">${fmt(stopKL)}</td></tr>`;
       html += `<tr><td>remaining steps</td><td class="num">${tl.n_steps - tl.early_stop_step - 1}</td></tr>`;
     }
     html += '</table></div>';

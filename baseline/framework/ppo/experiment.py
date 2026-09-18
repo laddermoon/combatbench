@@ -417,20 +417,30 @@ class PPOParams:
     ``ExplorationSpec.uncertainty_coef``.
 
     ``target_kl`` semantics:
-      - ``target_kl > 0.0``: per-minibatch KL early-stop is active.  If
-        the running mean KL within an epoch exceeds ``target_kl``, the
-        actor stops updating for the rest of this and all subsequent
-        epochs (critics continue — see B1 in ``ppo_update``).
+      - ``target_kl > 0.0``: per-minibatch KL early-stop is active.  The
+        actor stops updating when the mean KL over the last
+        ``early_stop_kl_window`` minibatches exceeds ``target_kl`` — a
+        sliding window that crosses epoch boundaries, so the criterion
+        is identical at every minibatch position (critics continue —
+        see B1 in ``ppo_update``).
       - ``target_kl == 0.0``: KL early-stop is **disabled**, not
         "zero-tolerance".  The actor runs every epoch and minibatch.
         This is the default behavior when you want to run vanilla PPO
         without a trust-region guard.
+
+    ``early_stop_kl_window``: number of most-recent minibatches whose
+    KL is averaged for the early-stop decision.  ``1`` = instantaneous
+    per-minibatch KL (most responsive, noisiest); larger values smooth
+    minibatch sampling noise at the cost of reacting a few minibatches
+    later.  The window spans epoch boundaries — it is NOT reset per
+    epoch, which keeps the effective threshold position-independent.
     """
 
     clip_eps: float
     target_kl: float
     update_epochs: int
     minibatch_size: int
+    early_stop_kl_window: int
 
     def __post_init__(self):
         # Validate at construction so misconfiguration surfaces immediately
@@ -439,6 +449,11 @@ class PPOParams:
             raise ValueError(
                 f"target_kl must be >= 0.0, got {self.target_kl}. "
                 f"Use 0.0 to disable KL early-stop."
+            )
+        if self.early_stop_kl_window < 1:
+            raise ValueError(
+                f"early_stop_kl_window must be >= 1, "
+                f"got {self.early_stop_kl_window}."
             )
 
 
@@ -521,8 +536,8 @@ class UpdateStats:
     #   minibatch displacement seen during this update.
     kl_max: float
     # Running mean of the current epoch's per-minibatch k3 values at the
-    #   minibatch where target_kl early-stop fired (running_mean_kl >
-    #   target_kl).  0.0 if early stop never triggered.
+    #   minibatch where target_kl early-stop fired (sliding-window mean
+    #   KL > target_kl).  0.0 if early stop never triggered.
     early_stop_kl_mean: float
     # Ratio family — r = exp(new_lp - old_lp) per minibatch; the three
     #   aggregations (mean / min / max) describe center and both tails.

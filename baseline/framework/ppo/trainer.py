@@ -45,6 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -919,6 +920,9 @@ def ppo_update(
     # serialized.
     timeline_steps: List[Dict[str, Any]] = []
     early_stop_step = -1
+    # Sliding window over the most recent minibatch KLs — crosses epoch
+    # boundaries so the early-stop criterion is position-independent.
+    kl_window: deque = deque(maxlen=pp.early_stop_kl_window)
 
     # --- Dump-only: per-epoch full-batch sampling (Scene 3) ---
     # After each epoch's minibatch loop, a full-batch forward pass captures
@@ -990,7 +994,7 @@ def ppo_update(
                     "ratio_min": float("nan"),
                     "policy_loss": float("nan"),
                     "actor_grad": float("nan"),
-                    "running_mean_kl": float("nan"),
+                    "window_mean_kl": float("nan"),
                     "critic_loss": dict(step_critic_loss),
                     "critic_grad": dict(step_critic_grad),
                 }
@@ -1053,6 +1057,7 @@ def ppo_update(
             # kl_mean/kl_max reflect every minibatch the actor actually
             # ran, not just the last epoch's (possibly empty) mean.
             all_actor_kls.append(approx_kl)
+            kl_window.append(approx_kl)
             surr1 = ratio * adv_t[idx]
             surr2 = (
                 torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
@@ -1197,23 +1202,24 @@ def ppo_update(
             # right there instead of running 45 more updates that
             # push the policy further past the trust region.
             #
-            # We use the running mean of KL over all minibatches in
-            # this epoch so far (not just the latest one) to avoid
-            # stopping on a single noisy minibatch.  This matches the
-            # semantics of the old epoch-level check — "average KL
-            # this epoch exceeds target" — but triggers as soon as
-            # the running average crosses the threshold, not after
-            # all n_batches minibatches have run.
-            if target_kl > 0.0 and epoch_kls:
-                running_mean_kl = float(np.mean(epoch_kls))
-                if running_mean_kl > target_kl:
+            # The criterion is the mean of the last
+            # ``early_stop_kl_window`` minibatch KLs — a sliding window
+            # that persists across epoch boundaries.  Averaging avoids
+            # stopping on a single noisy minibatch; keeping the window
+            # independent of epochs keeps the effective threshold the
+            # same at every minibatch position (a per-epoch running
+            # mean was ~2x stricter at each epoch's first minibatch,
+            # which made early stops cluster at k*n_batches + 1).
+            if target_kl > 0.0 and kl_window:
+                window_mean_kl = float(np.mean(kl_window))
+                if window_mean_kl > target_kl:
                     diagnostics.append(
                         f"  [early_stop] epoch={epoch} mb={mb_idx} "
-                        f"running_mean_kl={running_mean_kl:.4f} > "
+                        f"window_mean_kl={window_mean_kl:.4f} > "
                         f"target_kl={target_kl:.4f} "
                         f"(critics continue)"
                     )
-                    early_stop_kl_mean = running_mean_kl
+                    early_stop_kl_mean = window_mean_kl
                     early_stop_this_epoch = True
                     actor_stopped = True
                     early_stop_step = epoch * n_batches + mb_idx
@@ -1231,8 +1237,8 @@ def ppo_update(
                 _timeline_step["ratio_min"] = r_min
                 _timeline_step["policy_loss"] = float(policy_loss)
                 _timeline_step["actor_grad"] = float(grad_norm_a)
-                if epoch_kls:
-                    _timeline_step["running_mean_kl"] = float(np.mean(epoch_kls))
+                if kl_window:
+                    _timeline_step["window_mean_kl"] = float(np.mean(kl_window))
                 timeline_steps.append(_timeline_step)
 
         # --- Epoch KL diagnostics ---
@@ -1379,8 +1385,8 @@ def ppo_update(
             timeline_actor_grad = np.array(
                 [s["actor_grad"] for s in timeline_steps], dtype=np.float32,
             )
-            timeline_running_mean_kl = np.array(
-                [s["running_mean_kl"] for s in timeline_steps], dtype=np.float32,
+            timeline_window_mean_kl = np.array(
+                [s["window_mean_kl"] for s in timeline_steps], dtype=np.float32,
             )
             timeline_critic_loss = {
                 key: np.array(
@@ -1412,7 +1418,7 @@ def ppo_update(
                 "ratio_min": timeline_ratio_min,
                 "policy_loss": timeline_policy_loss,
                 "actor_grad": timeline_actor_grad,
-                "running_mean_kl": timeline_running_mean_kl,
+                "window_mean_kl": timeline_window_mean_kl,
                 "critic_loss": timeline_critic_loss,
                 "critic_grad": timeline_critic_grad,
                 "early_stop_step": np.array(early_stop_step, dtype=np.int64),

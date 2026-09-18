@@ -75,13 +75,13 @@
 │                                                                      │
 │  actor:                                                              │
 │    ratio, clip_frac, policy_loss, actor_grad, KL                     │
-│    running_mean_kl → 判断是否 early stop                              │
+│    window_mean_kl (滑动窗口) → 判断是否 early stop                              │
 │  critic (per-channel):                                              │
 │    critic_loss, critic_grad                                          │
 │  状态:                                                               │
 │    epoch_idx, mb_idx, actor_active                                   │
 │                                                                      │
-│  early stop: running_mean_kl > target_kl → actor 冻结，critic 继续   │
+│  early stop: window_mean_kl > target_kl → actor 冻结，critic 继续   │
 │                                                                      │
 │  视角：训练过程的每一步发生了什么，KL 怎么走，何时 early stop         │
 └─────────────────────────────────────────────────────────────────────┘

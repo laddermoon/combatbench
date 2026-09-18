@@ -74,6 +74,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
     target_kl: float = 0.05
     update_epochs: int = 4
     minibatch_size: int = 8192
+    # Minibatches averaged for the KL early-stop decision — a sliding
+    # window that persists across epoch boundaries.  1 = instantaneous
+    # per-minibatch KL; larger values smooth sampling noise at the cost
+    # of stopping a few minibatches later.
+    early_stop_kl_window: int = 10
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -155,6 +160,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
             target_kl=self.target_kl,
             update_epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
+            early_stop_kl_window=self.early_stop_kl_window,
         )
 
     # ------------------------------------------------------------------

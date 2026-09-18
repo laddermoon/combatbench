@@ -128,7 +128,7 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "mean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos_mean/neg_mean：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n"
              "kl_mean：过程量——update 内所有 actor minibatch 的 k3 均值，每个 minibatch 在当时迭代点上测量。读作\"update 过程中 actor 平均工作的位移水平\"，不是端点位移（端点看 post_kl_mean）。它恒受 ramp 结构影响（首 minibatch ≈0 后单调爬升）且分母随早停截断变化，绝对值系统性低于 post_kl_mean 属正常。\n"
              "kl_max：过程量中单个 minibatch 的 k3 峰值，噪声大、受个别异常样本主导，主要作为异常尖刺报警（突然冲高 = 某个 minibatch 有 outlier 优势样本被大幅加压）。\n"
-             "early_stop_kl_mean：触发 KL 早停当刻的\"本 epoch running mean KL\"（0=未触发）。与 kl_mean 同数量级，放在 KL 图便于直接比较\"日常过程位移\"和\"触发早停的位移阈值\"——若 kl_mean 持续逼近 early_stop_kl_mean 说明更新正贴着 target_kl 走。\n"
+             "early_stop_kl_mean：触发 KL 早停当刻的滑动窗口均值 KL（最近 early_stop_kl_window 个 minibatch，跨 epoch 边界；0=未触发）。与 kl_mean 同数量级，放在 KL 图便于直接比较\"日常过程位移\"和\"触发早停的位移阈值\"——若 kl_mean 持续逼近 early_stop_kl_mean 说明更新正贴着 target_kl 走。\n"
              "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×kl_mean = 位移集中在末段爆发；post_kl_mean < kl_mean = 中途位移被后续 minibatch 回退（churn）。\n"
              "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats。"},
     {"title": "Epochs, Batches & Actor Steps",

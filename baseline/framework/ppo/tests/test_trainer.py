@@ -211,12 +211,14 @@ def make_pp_params(
     target_kl=0.05,
     update_epochs=4,
     minibatch_size=64,
+    early_stop_kl_window=8,
 ) -> PPOParams:
     return PPOParams(
         clip_eps=clip_eps,
         target_kl=target_kl,
         update_epochs=update_epochs,
         minibatch_size=minibatch_size,
+        early_stop_kl_window=early_stop_kl_window,
     )
 
 
