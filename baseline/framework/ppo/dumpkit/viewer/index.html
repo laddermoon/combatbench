@@ -2323,7 +2323,10 @@
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
       ` · pairs ${(+gs.n_pairs).toLocaleString()}` +
-      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} in edge rows</span> (<${nUnder} / ≥${nOver})` : '') +
+      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} in edge rows</span> (<${nUnder} / ≥${nOver})` :
+        // old-format artifacts have no edge rows — pairs were dropped
+        (!hasExt && gs.n_pairs_in_hist < gs.n_pairs)
+          ? ` · <span style="color:var(--orange)">${gs.n_pairs - gs.n_pairs_in_hist} pairs out of norm range (not shown)</span>` : '') +
       ` · mean <b>${(+gs.pair_mean).toExponential(2)}</b>` +
       ` · std <b>${(+gs.pair_std).toExponential(2)}</b>` +
       (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');
