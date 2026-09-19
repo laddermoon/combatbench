@@ -828,6 +828,14 @@ def capture_dump(
     if "combine" in dump_collector:
         np.savez_compressed(dump_dir / "combine.npz", **dump_collector["combine"])
 
+    # --- gradsig.npz (from dump_collector, ADV gradient-signal detail) ---
+    # Per-sampled-frame detail behind the gradsig/u{N}.npz histogram:
+    # flat buffer indices, per-frame gradient norms, the surrogate/floor
+    # scalar coefficients, and the leave-one-out projection onto the
+    # other sampled frames' resultant.
+    if "gradsig" in dump_collector:
+        np.savez_compressed(dump_dir / "gradsig.npz", **dump_collector["gradsig"])
+
     # --- update.npz (from stats + dump_collector) ---
     update_data = _serialize_stats(stats)
     if "update" in dump_collector:

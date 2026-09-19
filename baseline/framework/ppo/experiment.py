@@ -442,6 +442,26 @@ class PPOParams:
     minibatch_size: int
     early_stop_kl_window: int
 
+    # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
+    # At the start of each update (after combined_adv, before any actor
+    # step), the trainer samples ``grad_sig_sample_size`` buffer frames
+    # and computes each frame's improvement-direction gradient of the
+    # actual training loss (surrogate + floor) at theta_old.  Pairwise
+    # s_ij = cos(g_i, g_j) * sqrt(||g_i||*||g_j||) yields the run-level
+    # scalars grad_sig_mean / grad_sig_std plus a compact 2D histogram
+    # (cos-bin x geomean-norm-bin) stored under run_dir/gradsig/.
+    # grad_sig_sample_size = 0 disables the diagnostic entirely.
+    grad_sig_sample_size: int = 1000
+    grad_sig_interval: int = 1
+    grad_sig_cos_bins: int = 64
+    grad_sig_norm_bins: int = 32
+    # Norm-bin range for the histogram's second axis.  Both > 0 (and
+    # hi > lo) pins an explicit log-spaced range; otherwise the range is
+    # derived on the first computed update and frozen in
+    # gradsig/meta.json for cross-update comparability.
+    grad_sig_norm_lo: float = 0.0
+    grad_sig_norm_hi: float = 0.0
+
     def __post_init__(self):
         # Validate at construction so misconfiguration surfaces immediately
         # rather than as a silent behavioral difference mid-training.
@@ -455,6 +475,74 @@ class PPOParams:
                 f"early_stop_kl_window must be >= 1, "
                 f"got {self.early_stop_kl_window}."
             )
+        if self.grad_sig_sample_size < 0:
+            raise ValueError(
+                f"grad_sig_sample_size must be >= 0, "
+                f"got {self.grad_sig_sample_size}."
+            )
+        if self.grad_sig_interval < 1:
+            raise ValueError(
+                f"grad_sig_interval must be >= 1, "
+                f"got {self.grad_sig_interval}."
+            )
+        if self.grad_sig_cos_bins < 4:
+            raise ValueError(
+                f"grad_sig_cos_bins must be >= 4, "
+                f"got {self.grad_sig_cos_bins}."
+            )
+        if self.grad_sig_norm_bins < 4:
+            raise ValueError(
+                f"grad_sig_norm_bins must be >= 4, "
+                f"got {self.grad_sig_norm_bins}."
+            )
+        if (self.grad_sig_norm_lo > 0.0) != (self.grad_sig_norm_hi > 0.0):
+            raise ValueError(
+                f"grad_sig_norm_lo/hi must be set together (or both 0 for "
+                f"auto), got lo={self.grad_sig_norm_lo} "
+                f"hi={self.grad_sig_norm_hi}."
+            )
+        if self.grad_sig_norm_lo > 0.0 and self.grad_sig_norm_hi <= self.grad_sig_norm_lo:
+            raise ValueError(
+                f"grad_sig_norm_hi must be > grad_sig_norm_lo, got "
+                f"lo={self.grad_sig_norm_lo} hi={self.grad_sig_norm_hi}."
+            )
+
+
+# ---------------------------------------------------------------------------
+# GradDiagSpec — per-update request for the ADV gradient-signal diagnostic
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class GradDiagSpec:
+    """Request for the frame-level gradient-consensus diagnostic.
+
+    Built by the training loop for updates where the diagnostic runs
+    (``pp.grad_sig_sample_size > 0`` and the interval matches), then
+    passed to ``ppo_update``.  The trainer samples ``sample_size``
+    buffer frames with a dedicated RNG seeded from ``seed`` (isolated
+    from the training RNG stream), computes each sampled frame's
+    improvement-direction gradient of the actual training loss
+    (surrogate + floor hinge) at theta_old, and emits pairwise
+    statistics plus a compact 2D histogram.
+
+    Attributes:
+        sample_size: Frames to sample this update (clamped to buffer
+            size by the trainer).
+        cos_bins: Number of cosine-similarity bins, fixed linear
+            coverage of [-1, 1].
+        norm_bins: Number of geometric-mean-norm bins (log-spaced).
+        norm_edges: ``(norm_bins + 1,)`` fixed norm-bin edges, or
+            ``None`` to derive them from this update's pair norms
+            (the loop then freezes them in ``gradsig/meta.json``).
+        seed: Seed for the dedicated sampling RNG — never touches the
+            training RNG stream.
+    """
+
+    sample_size: int
+    cos_bins: int
+    norm_bins: int
+    norm_edges: Optional[np.ndarray]
+    seed: int
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +773,32 @@ class UpdateStats:
     # check this to avoid polluting KL history with zeros.
     is_empty: bool = False
 
+    # --- ADV gradient-signal diagnostic (theta_old, pre-update sampling) ---
+    # grad_sig_mean / grad_sig_std: mean / std over i<j of the pairwise
+    #   quantity s_ij = cos(g_i,g_j) * sqrt(||g_i||*||g_j||), where g_i is
+    #   sampled frame i's improvement-direction gradient of the actual
+    #   training loss (surrogate + floor hinge) at theta_old.
+    #   mean = geometric-norm-weighted consensus strength; std =
+    #   dispersion of pairwise relationships (NOT pure noise — gradient
+    #   norm heterogeneity alone inflates it; see the per-update 2D
+    #   histogram for the decomposition).
+    # grad_sig_frames: sampled frames with a usable (finite, nonzero-norm)
+    #   gradient — coverage indicator; compare with the configured
+    #   sample size.
+    # grad_sig_norm_med: median per-frame gradient L2 norm (scale context).
+    # grad_sig_time_s: wall time of the diagnostic inside ppo_update.
+    # All zeros when the diagnostic is disabled or did not run this update.
+    grad_sig_mean: float = 0.0
+    grad_sig_std: float = 0.0
+    grad_sig_frames: int = 0
+    grad_sig_norm_med: float = 0.0
+    grad_sig_time_s: float = 0.0
+    # Non-logged transport for the per-update histogram artifact — the
+    # loop writes it to ``gradsig/uNNNNN.npz`` (the histogram is not a
+    # scalar and must not inflate __RAW_STATS__).  None = the diagnostic
+    # did not run this update.
+    grad_sig_payload: Optional[Dict[str, Any]] = None
+
     @classmethod
     def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
         """Construct a zeroed UpdateStats for a skipped (empty-buffer) update.
@@ -745,6 +859,11 @@ class UpdateStats:
             policy_stats={},
             diagnostics=[],
             is_empty=True,
+            grad_sig_mean=0.0,
+            grad_sig_std=0.0,
+            grad_sig_frames=0,
+            grad_sig_norm_med=0.0,
+            grad_sig_time_s=0.0,
         )
 
     def to_log_dict(self) -> Dict[str, Any]:
@@ -795,6 +914,12 @@ class UpdateStats:
             "post_clip_dloss_mean": self.post_clip_dloss_mean,
             "post_clip_dloss_gain": self.post_clip_dloss_gain,
             "post_clip_dloss_harm": self.post_clip_dloss_harm,
+            # --- ADV gradient-signal diagnostic ---
+            "grad_sig_mean": self.grad_sig_mean,
+            "grad_sig_std": self.grad_sig_std,
+            "grad_sig_frames": self.grad_sig_frames,
+            "grad_sig_norm_med": self.grad_sig_norm_med,
+            "grad_sig_time_s": self.grad_sig_time_s,
         })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val

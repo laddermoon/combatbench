@@ -484,6 +484,41 @@ class RunData:
             return None
         return p
 
+    # -- gradsig artifacts --------------------------------------------------
+
+    def grad_sig(self, update: int) -> Optional[Dict[str, Any]]:
+        """Load ``gradsig/uNNNNN.npz`` for one update → JSON-safe dict.
+
+        The npz is written by the training loop when the ADV gradient-
+        signal diagnostic runs; missing files (old runs, skipped
+        intervals) return ``None`` → the API reports ``available: false``.
+        """
+        p = self.run_dir / "gradsig" / f"u{update:05d}.npz"
+        if not p.is_file():
+            return None
+        try:
+            with np.load(p) as d:
+                return {
+                    "available": True,
+                    "update": int(update),
+                    # hist[norm_bin, cos_bin] — joint pair counts.
+                    "hist": d["hist"].tolist(),
+                    "cos_edges": d["cos_edges"].tolist(),
+                    "norm_edges": d["norm_edges"].tolist(),
+                    "n_sampled": int(d["n_sampled"]),
+                    "n_valid": int(d["n_valid"]),
+                    "n_excluded": int(d["n_excluded"]),
+                    "n_pairs": int(d["n_pairs"]),
+                    "n_pairs_in_hist": int(d["n_pairs_in_hist"]),
+                    "pair_mean": float(d["pair_mean"]),
+                    "pair_std": float(d["pair_std"]),
+                    "norm_quantiles": d["norm_quantiles"].tolist(),
+                    "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
+                    "norm_edges_derived": bool(d["norm_edges_derived"]),
+                }
+        except (OSError, KeyError, ValueError):
+            return None
+
     # -- train.log metrics --------------------------------------------------
 
     @property
@@ -2241,6 +2276,12 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return 200, rd.metrics()
         if path == "/api/run/videos":
             return 200, rd.videos()
+        m = re.match(r"^/api/run/gradsig/(\d+)$", path)
+        if m:
+            gs = rd.grad_sig(int(m.group(1)))
+            if gs is None:
+                return 404, {"available": False}
+            return 200, gs
         if path.startswith("/api/dump/"):
             # /api/dump/<name>/<endpoint...>
             rest = path[len("/api/dump/"):]

@@ -45,6 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
+import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -53,7 +54,7 @@ import torch
 
 from baseline.framework.ppo.algos import compute_gae
 
-from .experiment import PPOParams, TrainablePolicy, UpdateStats
+from .experiment import GradDiagSpec, PPOParams, TrainablePolicy, UpdateStats
 from .trajectory import RewardChannel, Trajectory
 
 
@@ -413,6 +414,219 @@ def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return result
 
 
+# ---------------------------------------------------------------------------
+# ADV gradient-signal diagnostic — frame-level gradient consensus at θ_old
+#
+# For sampled frames i, computes each frame's improvement-direction
+# gradient of the actual training loss (surrogate + uncertainty floor):
+#
+#     g_i = ∇[ w_i·A_i·log π(a_i|s_i) − coef·relu(floor − U_i)²·fw_i ]
+#
+# i.e. −∂loss_i/∂θ evaluated at the pre-update parameters (where r=1 and
+# the PPO clip is inactive, so the per-frame surrogate gradient is
+# exactly w_i·A_i·∇log π_i).  The 1/B minibatch normalization is a
+# uniform scale that cancels in cos and s_ij, so it is omitted.
+#
+# Pairwise quantity over i<j:  s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)
+# — equivalent to the inner product of h_i = g_i/√‖g_i‖: direction is
+# preserved while magnitude is sqrt-compressed so a few huge gradients
+# cannot dominate.  Emits mean/std (run-level scalars) plus a joint 2D
+# histogram over (geomean-norm bin, cos bin) for the per-update view.
+#
+# Everything goes through the existing ``evaluate_actions`` contract —
+# no new policy interface.  One batched forward builds a single autograd
+# graph; each sampled frame then gets its own backward pass.  This is
+# deliberately the generic (slow but correct) path: ~N python-level
+# backwards per diagnostic run, gated by PPOParams.grad_sig_sample_size.
+# ---------------------------------------------------------------------------
+
+def _grad_signal_diag(
+    actor: TrainablePolicy,
+    obs_t: torch.Tensor,
+    act_t: torch.Tensor,
+    ei_t: torch.Tensor,
+    w_t: torch.Tensor,
+    adv_t: torch.Tensor,
+    floor_weight_t: torch.Tensor,
+    uncertainty_floor: float,
+    uncertainty_coef: float,
+    spec: GradDiagSpec,
+    device: torch.device,
+    diagnostics: List[str],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, np.ndarray]], Optional[Dict[str, np.ndarray]]]:
+    """Run the gradient-consensus diagnostic; returns (scalars, hist, dump).
+
+    - ``scalars``: the ``grad_sig_*`` fields for :class:`UpdateStats`.
+    - ``hist``: npz-ready dict for ``gradsig/uNNNNN.npz`` — joint 2D
+      histogram ``hist[norm_bin, cos_bin]``, bin edges, coverage counts,
+      and norm quantiles.  ``None`` when fewer than 2 valid gradients.
+    - ``dump``: per-sampled-frame detail (flat buffer indices, gradient
+      norms, leave-one-out projection onto the other frames' resultant)
+      for the dump collector.  ``None`` when fewer than 2 valid
+      gradients.
+    """
+    t_start = time.perf_counter()
+    scalars: Dict[str, Any] = {
+        "grad_sig_mean": 0.0,
+        "grad_sig_std": 0.0,
+        "grad_sig_frames": 0,
+        "grad_sig_norm_med": 0.0,
+        "grad_sig_time_s": 0.0,
+    }
+    n = int(obs_t.shape[0])
+    n_samp = min(int(spec.sample_size), n)
+    if n_samp < 2:
+        scalars["grad_sig_time_s"] = time.perf_counter() - t_start
+        return scalars, None, None
+
+    # Dedicated RNG — must not consume the training RNG stream.
+    rng = np.random.default_rng(spec.seed)
+    sel = np.sort(rng.choice(n, size=n_samp, replace=False).astype(np.int64))
+    idx = torch.as_tensor(sel, dtype=torch.long, device=device)
+
+    params = [p for p in actor.parameters() if p.requires_grad]
+    if not params:
+        raise RuntimeError("[gradsig] actor has no trainable parameters")
+
+    # One batched forward builds a single autograd graph over all sampled
+    # frames; each frame's scalar then gets its own backward pass against
+    # the shared graph (retain_graph until the last frame).
+    ev = actor.evaluate_actions(
+        obs_t[idx], act_t[idx], explore_factor=ei_t[idx],
+    )
+    if not ev.log_prob.requires_grad:
+        raise RuntimeError(
+            "[gradsig] evaluate_actions returned a non-differentiable "
+            "log_prob — per-frame gradients cannot be computed."
+        )
+    w_adv = w_t[idx] * adv_t[idx]
+    scalar = w_adv * ev.log_prob
+    floor_active = uncertainty_coef > 0.0 and uncertainty_floor > 0.0
+    floor_pen = torch.zeros(n_samp, dtype=torch.float32, device=device)
+    if floor_active:
+        if ev.uncertainty is None or not ev.uncertainty.requires_grad:
+            raise RuntimeError(
+                "[gradsig] uncertainty floor is active (coef>0, floor>0) "
+                "but evaluate_actions does not provide a differentiable "
+                "uncertainty — the floor term cannot be reproduced."
+            )
+        gap = torch.relu(uncertainty_floor - ev.uncertainty)
+        floor_pen = uncertainty_coef * gap * gap * floor_weight_t[idx]
+        scalar = scalar - floor_pen
+
+    n_params = sum(int(p.numel()) for p in params)
+    G = torch.empty((n_samp, n_params), dtype=torch.float32, device=device)
+    for i in range(n_samp):
+        gs = torch.autograd.grad(
+            scalar[i], params,
+            retain_graph=(i < n_samp - 1),
+            allow_unused=True,
+        )
+        G[i] = torch.cat([
+            (g if g is not None else torch.zeros_like(p)).reshape(-1)
+            for g, p in zip(gs, params)
+        ])
+
+    norms = G.norm(dim=1)
+    finite = torch.isfinite(G).all(dim=1)
+    # Zero / near-zero gradients have no defined direction — excluded and
+    # counted rather than silently mapped to cos=0.
+    valid = finite & (norms > 1e-12)
+    n_valid = int(valid.sum().item())
+    n_nonfinite = int((~finite).sum().item())
+    if n_nonfinite:
+        diagnostics.append(
+            f"  [gradsig] {n_nonfinite}/{n_samp} sampled frames produced "
+            f"non-finite gradients — excluded from pairwise stats"
+        )
+    scalars["grad_sig_frames"] = n_valid
+    if n_valid >= 1:
+        scalars["grad_sig_norm_med"] = float(norms[valid].median().item())
+
+    # Per-sampled-frame dump detail is available even when too few valid
+    # gradients exist for pairwise stats — the valid mask records why.
+    loo_proj = torch.full((n_samp,), float("nan"), device=device)
+    if n_valid >= 2:
+        # Leave-one-out projection: how strongly each frame pulls with
+        # or against the resultant of the OTHER sampled frames.
+        Gv0 = G[valid]
+        total0 = Gv0.sum(dim=0)
+        loo0 = total0.unsqueeze(0) - Gv0
+        loo_proj[valid] = (
+            (Gv0 * loo0).sum(dim=1) / loo0.norm(dim=1).clamp_min(1e-12)
+        )
+    dump_payload: Dict[str, np.ndarray] = {
+        "sampled_idx": sel,
+        "valid": valid.cpu().numpy(),
+        "grad_norm": norms.cpu().numpy().astype(np.float32),
+        "w_adv": w_adv.detach().cpu().numpy().astype(np.float32),
+        "floor_pen": floor_pen.detach().cpu().numpy().astype(np.float32),
+        "loo_proj": loo_proj.cpu().numpy().astype(np.float32),
+        "n_params": np.array(n_params, dtype=np.int64),
+    }
+
+    if n_valid < 2:
+        scalars["grad_sig_time_s"] = time.perf_counter() - t_start
+        return scalars, None, dump_payload
+
+    Gv = G[valid]
+    nv = norms[valid]
+    sq_nv = nv.sqrt()
+    H = Gv / sq_nv.unsqueeze(1)          # h_i = g_i/√‖g_i‖ → s_ij = h_i·h_j
+    U = Gv / nv.unsqueeze(1)             # unit vectors   → c_ij = cos
+    S = H @ H.T
+    C = U @ U.T
+    iu = torch.triu_indices(n_valid, n_valid, offset=1, device=device)
+    s_vals = S[iu[0], iu[1]]
+    c_vals = C[iu[0], iu[1]]
+    b_vals = sq_nv[iu[0]] * sq_nv[iu[1]]  # √(n_i·n_j) geomean norm
+
+    mean_s = float(s_vals.mean().item())
+    std_s = float(s_vals.std(unbiased=False).item())
+    scalars["grad_sig_mean"] = mean_s
+    scalars["grad_sig_std"] = std_s
+
+    # 2D histogram: rows = geomean-norm bins (log-spaced), cols = cos bins.
+    c_np = c_vals.cpu().numpy().astype(np.float64)
+    b_np = b_vals.cpu().numpy().astype(np.float64)
+    cos_edges = np.linspace(-1.0, 1.0, spec.cos_bins + 1)
+    if spec.norm_edges is not None:
+        norm_edges = np.asarray(spec.norm_edges, dtype=np.float64)
+        edges_derived = False
+    else:
+        b_pos = b_np[b_np > 0.0]
+        lo = max(float(b_pos.min()) * 0.9, 1e-300)
+        hi = float(b_pos.max()) * 1.1
+        norm_edges = np.geomspace(lo, hi, spec.norm_bins + 1)
+        edges_derived = True
+    hist, _, _ = np.histogram2d(b_np, c_np, bins=[norm_edges, cos_edges])
+    n_pairs = int(s_vals.numel())
+    n_pairs_in_hist = int(hist.sum())
+
+    norms_np = nv.cpu().numpy().astype(np.float64)
+    hist_payload: Dict[str, np.ndarray] = {
+        "hist": hist.astype(np.int64),
+        "cos_edges": cos_edges.astype(np.float64),
+        "norm_edges": norm_edges.astype(np.float64),
+        "norm_edges_derived": np.array(bool(edges_derived)),
+        "n_sampled": np.array(n_samp, dtype=np.int64),
+        "n_valid": np.array(n_valid, dtype=np.int64),
+        "n_excluded": np.array(n_samp - n_valid, dtype=np.int64),
+        "n_nonfinite": np.array(n_nonfinite, dtype=np.int64),
+        "n_pairs": np.array(n_pairs, dtype=np.int64),
+        "n_pairs_in_hist": np.array(n_pairs_in_hist, dtype=np.int64),
+        "pair_mean": np.array(mean_s, dtype=np.float64),
+        "pair_std": np.array(std_s, dtype=np.float64),
+        "norm_quantiles": np.quantile(
+            norms_np, [0.05, 0.25, 0.5, 0.75, 0.95],
+        ).astype(np.float64),
+        "n_params": np.array(n_params, dtype=np.int64),
+    }
+
+    scalars["grad_sig_time_s"] = time.perf_counter() - t_start
+    return scalars, hist_payload, dump_payload
+
+
 def ppo_update(
     actor: TrainablePolicy,
     critics: Dict[str, torch.nn.Module],
@@ -427,6 +641,7 @@ def ppo_update(
     exploration: Optional[ExplorationSpec] = None,
     dump_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     include_full_grad: bool = False,
+    grad_diag: Optional[GradDiagSpec] = None,
 ) -> UpdateStats:
     """Multi-critic PPO update with fixed defaults.
 
@@ -464,6 +679,11 @@ def ppo_update(
         include_full_grad: When True and ``dump_callback`` is set, capture
             the full flat actor gradient at epoch 0, minibatch 0.  Off by
             default (large).
+        grad_diag: Optional :class:`GradDiagSpec` — when set, run the
+            frame-level gradient-consensus diagnostic at theta_old right
+            before the epoch loop.  Scalars land in UpdateStats; the
+            histogram payload is returned via ``stats.grad_sig_payload``
+            for the loop to persist under ``gradsig/``.
 
     Returns:
         UpdateStats for logging.
@@ -854,6 +1074,31 @@ def ppo_update(
     # n_batches match the actual loop iteration count.
     n_batches = max(1, (n + pp.minibatch_size - 1) // pp.minibatch_size)
     n_trajectories = len(buf.traj_lengths)
+
+    # --- 5d. ADV gradient-signal diagnostic (theta_old, pre-update) ---
+    # Measures the consensus structure of the per-frame gradient signal
+    # the actual training loss (surrogate + floor) induces on the actor.
+    # Computed here because the actor is still exactly theta_old and
+    # adv_t / w_t / ei_t / floor_weight_t are all materialized.  Scalars
+    # land in UpdateStats; the histogram payload rides back via
+    # stats.grad_sig_payload for the loop to persist under gradsig/
+    # (a 2048-bin matrix must not go into the __RAW_STATS__ JSON line).
+    grad_sig_scalars: Dict[str, Any] = {
+        "grad_sig_mean": 0.0,
+        "grad_sig_std": 0.0,
+        "grad_sig_frames": 0,
+        "grad_sig_norm_med": 0.0,
+        "grad_sig_time_s": 0.0,
+    }
+    grad_sig_payload: Optional[Dict[str, np.ndarray]] = None
+    if grad_diag is not None:
+        grad_sig_scalars, grad_sig_payload, gradsig_dump = _grad_signal_diag(
+            actor, obs_t, act_t, ei_t, w_t, adv_t, floor_weight_t,
+            float(uncertainty_floor), float(uncertainty_coef),
+            grad_diag, device, diagnostics,
+        )
+        if dump_callback is not None and gradsig_dump is not None:
+            dump_callback("gradsig", gradsig_dump)
 
     # --- 6. Training loop: multi-epoch minibatch PPO ---
     # Each epoch shuffles all frames and splits into n_batches roughly
@@ -1643,4 +1888,10 @@ def ppo_update(
         critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,
+        grad_sig_mean=float(grad_sig_scalars["grad_sig_mean"]),
+        grad_sig_std=float(grad_sig_scalars["grad_sig_std"]),
+        grad_sig_frames=int(grad_sig_scalars["grad_sig_frames"]),
+        grad_sig_norm_med=float(grad_sig_scalars["grad_sig_norm_med"]),
+        grad_sig_time_s=float(grad_sig_scalars["grad_sig_time_s"]),
+        grad_sig_payload=grad_sig_payload,
     )

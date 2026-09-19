@@ -328,9 +328,11 @@ class MyExperiment(ExperimentPPO):
 > （``CommonParams`` 字段），``build_jobs`` 会自动读取它。这和
 > ``exploration()`` 返回的 ``ExplorationSpec`` 是两个独立的旋钮。
 
-`UpdateStats` 的框架保证字段（跨策略族稳定）：`kl_mean`, `kl_max`, `clip_frac_mean`, `policy_loss_mean`, `grad_norm_actor_mean`, `epochs_done`, `uncertainty_mean`, per-channel 的 `critic_loss_mean`/`explained_variance`/`confidence`/`adv_mean`/`adv_std`/`adv_min`/`adv_max`/`ret_mean`/`ret_std`/`ret_min`/`ret_max` 等。命名规则：聚合量必带 `_mean`/`_max`/`_min`/`_std` 尾标；`post_*` 前缀 = update 结束后的端点截面，无前缀 = update 过程中的 minibatch 采样。
+`UpdateStats` 的框架保证字段（跨策略族稳定）：`kl_mean`, `kl_max`, `clip_frac_mean`, `policy_loss_mean`, `grad_norm_actor_mean`, `epochs_done`, `uncertainty_mean`, `grad_sig_mean`, `grad_sig_std`, `grad_sig_frames`, `grad_sig_norm_med`, `grad_sig_time_s`, per-channel 的 `critic_loss_mean`/`explained_variance`/`confidence`/`adv_mean`/`adv_std`/`adv_min`/`adv_max`/`ret_mean`/`ret_std`/`ret_min`/`ret_max` 等。命名规则：聚合量必带 `_mean`/`_max`/`_min`/`_std` 尾标；`post_*` 前缀 = update 结束后的端点截面，无前缀 = update 过程中的 minibatch 采样。
 
 `policy_stats` 子 dict 是策略贡献的诊断，**无跨策略族契约**，当作 opaque hints 用。
+
+`grad_sig_*` 一组来自框架内置的 **ADV 梯度信号诊断**（θ_old 截面）：每个 update 的 epoch 循环开始前，从 buffer 抽样若干帧，逐帧计算真实训练损失（surrogate + floor）的改善方向梯度，再统计两两配对 `s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)` 的均值（共识强度）与标准差（配对离散度）。二维分布写入 `run_dir/gradsig/uNNNNN.npz`，可在 Debug Viewer 的 Update Detail 查看热力图。语义边界与读法见 `metric_catalog.py` 的 hint——注意共识强不代表 ADV 正确，std 高也可能是范数不均而非冲突。配置项（`PPOParams`，实验侧经 `CombatExperimentPPOBase` 同名类属性暴露）：`grad_sig_sample_size`（默认 1000，0 关闭）、`grad_sig_interval`（每 N 个 update 跑一次）、`grad_sig_cos_bins`/`grad_sig_norm_bins`（直方图分辨率）、`grad_sig_norm_lo`/`grad_sig_norm_hi`（显式 norm 分箱范围；0=首个 update 自动派生并冻结到 `gradsig/meta.json`）。通用逐帧 autograd 路径参考耗时：96k 参数 actor、N=1000 时 CPU 约 2.5s/update（`grad_sig_time_s` 可自查）。
 
 ### 5.3 Per-channel GAE lambda
 

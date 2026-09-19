@@ -51,6 +51,7 @@ from .experiment import (
     CommonParams,
     ExperimentPPO,
     ExplorationSpec,
+    GradDiagSpec,
     LRSpec,
     PPOParams,
     TrainablePolicy,
@@ -545,6 +546,52 @@ def train_ppo(
             )
             t_buffer = time.perf_counter() - t0
 
+            # 4b. ADV gradient-signal diagnostic spec — the trainer samples
+            #     frames at theta_old and computes per-frame training-loss
+            #     gradients (surrogate + floor).  Norm-bin edges are frozen
+            #     in gradsig/meta.json after the first computed update so
+            #     all updates share a comparable axis; explicit
+            #     grad_sig_norm_lo/hi config overrides the frozen range.
+            #     The seed is derived from (run seed, update) and consumed
+            #     by a dedicated RNG — the training RNG stream is
+            #     untouched, preserving bit-identical reproduction.
+            grad_diag: Optional[GradDiagSpec] = None
+            if (
+                pp.grad_sig_sample_size > 0
+                and (
+                    u % pp.grad_sig_interval == 0
+                    # A pending dump forces the diagnostic so the dump's
+                    # gradsig.npz detail payload exists even on updates
+                    # the interval would skip.
+                    or dump_req is not None
+                )
+            ):
+                gradsig_dir = run_dir / "gradsig"
+                meta_path = gradsig_dir / "meta.json"
+                norm_edges: Optional[np.ndarray] = None
+                if pp.grad_sig_norm_lo > 0.0:
+                    norm_edges = np.geomspace(
+                        pp.grad_sig_norm_lo, pp.grad_sig_norm_hi,
+                        pp.grad_sig_norm_bins + 1,
+                    )
+                elif meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text())
+                        if meta.get("norm_bins") == pp.grad_sig_norm_bins:
+                            norm_edges = np.asarray(
+                                meta["norm_edges"], dtype=np.float64,
+                            )
+                    except (json.JSONDecodeError, OSError, KeyError,
+                            TypeError, ValueError):
+                        norm_edges = None  # re-derive below
+                grad_diag = GradDiagSpec(
+                    sample_size=pp.grad_sig_sample_size,
+                    cos_bins=pp.grad_sig_cos_bins,
+                    norm_bins=pp.grad_sig_norm_bins,
+                    norm_edges=norm_edges,
+                    seed=cp.seed * 1000003 + u,
+                )
+
             # 5. PPO update — per-channel GAE, z-score normalized advantages,
             #    confidence-weighted combination, clipped surrogate loss.
             #    See ppo.trainer.py for the full algorithm.
@@ -568,8 +615,43 @@ def train_ppo(
                     dump_req.include_full_grad
                     if dump_req is not None else False
                 ),
+                grad_diag=grad_diag,
             )
             t_ppo = time.perf_counter() - t0
+
+            # 5a-i. Persist the gradient-signal histogram — the scalars
+            #     already went into train.log via to_log_dict(); the 2D
+            #     histogram is too large for JSON and lives in
+            #     gradsig/uNNNNN.npz.  meta.json records the frozen bin
+            #     edges (written on first derived update, or when the
+            #     file is missing).
+            if stats.grad_sig_payload is not None:
+                try:
+                    gradsig_dir = run_dir / "gradsig"
+                    gradsig_dir.mkdir(parents=True, exist_ok=True)
+                    payload = stats.grad_sig_payload
+                    np.savez_compressed(
+                        gradsig_dir / f"u{u:05d}.npz", **payload,
+                    )
+                    meta_path = gradsig_dir / "meta.json"
+                    if (
+                        bool(payload["norm_edges_derived"])
+                        or not meta_path.exists()
+                    ):
+                        meta_path.write_text(json.dumps({
+                            "version": 1,
+                            "sample_size": pp.grad_sig_sample_size,
+                            "cos_bins": pp.grad_sig_cos_bins,
+                            "norm_bins": pp.grad_sig_norm_bins,
+                            "cos_edges": payload["cos_edges"].tolist(),
+                            "norm_edges": payload["norm_edges"].tolist(),
+                            "norm_edges_derived": bool(
+                                payload["norm_edges_derived"]
+                            ),
+                            "derived_update": u,
+                        }, indent=2))
+                except Exception as e:
+                    print(f"[gradsig] write failed: {e}", flush=True)
 
             # 5a. Dump capture — when a request was polled, write the
             #     complete update data (episodes, trajectories, buffer,

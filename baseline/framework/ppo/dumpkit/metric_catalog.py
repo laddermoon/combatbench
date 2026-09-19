@@ -124,6 +124,15 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "dloss_mean = dloss_gain + dloss_harm 严格成立（加法分解，同一 loss 单位）：gain ≤ 0 = 顺 advantage 方向移动的有利贡献（把 loss 往下拉）；harm ≥ 0 = 逆 advantage 方向移动的不利贡献（把 loss 往上推）。\n"
              "dloss 变差时看拆项定位：gain 趋向 0 = 没学够（步数被截断/位移不足）；harm 上升 = 学歪了（更多样本被推向反 adv 方向，噪声/冲突梯度的候选形态）；两者同升 = 位移大但方向混杂——KL 大而 dloss 改善少时常伴此形态。\n"
              "读法：dloss_mean 负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
+    {"title": "ADV Gradient Signal (θ_old)",
+     "keys": ["stats.grad_sig_mean", "stats.grad_sig_std",
+              "stats.grad_sig_norm_med"],
+     "hint": "每个 update 开始前（actor 仍是 θ_old）从 buffer 随机抽 N 帧，逐帧计算真实训练损失（surrogate + floor hinge）对该帧的改善方向梯度 g_i，再对 i<j 配对计算 s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖) ——等价于先把每帧幅度压缩为 √n_i 再求内积：保留方向、削弱个别巨大梯度的支配。\n"
+             "grad_sig_mean：s_ij 均值——几何范数加权后的梯度共识强度。理想独立采样下它是 E[h]·E[h] = ‖E[h]‖²，即可重复共同方向的强度。≈0 有多种解释（方向分散/幅度微弱/正负抵消），不等于\"信号坏\"。\n"
+             "grad_sig_std：s_ij 的标准差——配对关系的离散度，不是纯噪声：方向完全一致但范数差异大也会产生高 std。区分两者要看 update 详情里的二维分布（cos × 范数档）。\n"
+             "grad_sig_norm_med：采样帧梯度范数中位数——幅度标尺，配合 mean/std 判断数值大小是否有意义。\n"
+             "注意：这是\"当前策略下 ADV 诱导的梯度共识\"指标，不直接证明 ADV 对错——系统性偏差同样会产生一致方向。零范数帧（无方向）不计入配对。\n"
+             "每 update 的二维分布（cos 分箱 × 几何范数分箱）见 run 目录 gradsig/u*.npz 与 Update Detail 的 Gradient Signal 面板；点击本图任意 update 可跳转。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
                              "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
                              "stats.kl_mean", "stats.kl_max",
@@ -200,6 +209,9 @@ KEY_LABELS: Dict[str, str] = {
     "post_clip_dloss_harm": "post_clip_dloss_harm (dloss_harm, >=0)",
     "post_kl_pos_mean": "post_kl_pos_mean (post_kl_pos)",
     "post_kl_neg_mean": "post_kl_neg_mean (post_kl_neg)",
+    "grad_sig_mean": "grad_sig_mean (consensus)",
+    "grad_sig_std": "grad_sig_std (pair_std)",
+    "grad_sig_norm_med": "grad_sig_norm_med (median ‖g‖)",
 }
 
 # ---------------------------------------------------------------------

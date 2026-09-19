@@ -680,6 +680,59 @@ def test_run_data_metrics_experiment():
         print("test_run_data_metrics_experiment: PASS")
 
 
+def test_run_data_grad_sig():
+    """RunData.grad_sig() round-trips a gradsig/uNNNNN.npz artifact into
+    a JSON-safe payload; missing artifacts return None."""
+    with tempfile.TemporaryDirectory() as d:
+        run_dir = Path(d) / "run"
+        gs_dir = run_dir / "gradsig"
+        gs_dir.mkdir(parents=True)
+
+        cos_edges = np.linspace(-1.0, 1.0, 9)
+        norm_edges = np.geomspace(1e-2, 1e2, 5)
+        hist = np.zeros((4, 8), dtype=np.int64)
+        hist[2, 6] = 7
+        np.savez_compressed(
+            gs_dir / "u00042.npz",
+            hist=hist,
+            cos_edges=cos_edges,
+            norm_edges=norm_edges,
+            n_sampled=np.array(50),
+            n_valid=np.array(48),
+            n_excluded=np.array(2),
+            n_pairs=np.array(1128),
+            n_pairs_in_hist=np.array(1128),
+            pair_mean=np.array(0.123),
+            pair_std=np.array(0.456),
+            norm_quantiles=np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+            norm_edges_derived=np.array(True),
+        )
+
+        rd = RunData(run_dir)
+        out = rd.grad_sig(42)
+        assert out is not None
+        assert out["available"] is True
+        assert out["update"] == 42
+        assert out["hist"][2][6] == 7
+        assert len(out["cos_edges"]) == 9
+        assert len(out["norm_edges"]) == 5
+        assert out["n_sampled"] == 50
+        assert out["n_valid"] == 48
+        assert out["n_excluded"] == 2
+        assert out["n_pairs"] == 1128
+        assert abs(out["pair_mean"] - 0.123) < 1e-9
+        assert out["norm_edges_derived"] is True
+        # JSON-serializable
+        json.dumps(out, allow_nan=False)
+
+        # Missing artifact → None (→ API 404 + available: false)
+        assert rd.grad_sig(43) is None
+        # Malformed / corrupt npz → None, not an exception
+        (gs_dir / "u00099.npz").write_bytes(b"not an npz")
+        assert rd.grad_sig(99) is None
+        print("test_run_data_grad_sig: PASS")
+
+
 def test_sanitize_exp_metrics():
     """_sanitize_exp_metrics keeps finite scalars with safe keys only."""
     from baseline.framework.ppo.loop import _sanitize_exp_metrics
@@ -1332,6 +1385,7 @@ if __name__ == "__main__":
     test_resolve_run_validation_and_cache()
     test_run_data_videos()
     test_run_data_metrics_has_eval_keys()
+    test_run_data_grad_sig()
     test_scan_experiments_discovers_registry()
     test_experiments_index_groups_runs()
     test_experiment_detail_diffs_and_checkpoints()

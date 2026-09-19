@@ -80,6 +80,23 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # of stopping a few minibatches later.
     early_stop_kl_window: int = 10
 
+    # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
+    # Per-update diagnostic: sample N buffer frames, compute each frame's
+    # improvement-direction gradient of the actual training loss
+    # (surrogate + floor), emit pairwise consensus scalars + a compact
+    # 2D histogram under run_dir/gradsig/.  0 disables it.
+    grad_sig_sample_size: int = 1000
+    # Run the diagnostic every N-th update (1 = every update).
+    grad_sig_interval: int = 1
+    # Histogram resolution: cosine bins over [-1,1] × log-spaced
+    # geomean-norm bins.
+    grad_sig_cos_bins: int = 64
+    grad_sig_norm_bins: int = 32
+    # Explicit norm-bin range (log-spaced); both 0 = auto-derive on the
+    # first computed update, then freeze in gradsig/meta.json.
+    grad_sig_norm_lo: float = 0.0
+    grad_sig_norm_hi: float = 0.0
+
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
     max_updates: int = 10000
@@ -161,6 +178,12 @@ class CombatExperimentPPOBase(ExperimentPPO):
             update_epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
             early_stop_kl_window=self.early_stop_kl_window,
+            grad_sig_sample_size=self.grad_sig_sample_size,
+            grad_sig_interval=self.grad_sig_interval,
+            grad_sig_cos_bins=self.grad_sig_cos_bins,
+            grad_sig_norm_bins=self.grad_sig_norm_bins,
+            grad_sig_norm_lo=self.grad_sig_norm_lo,
+            grad_sig_norm_hi=self.grad_sig_norm_hi,
         )
 
     # ------------------------------------------------------------------

@@ -38,6 +38,7 @@ from baseline.framework.ppo.experiment import (
     ActorEval,
     CommonParams,
     ExplorationSpec,
+    GradDiagSpec,
     PPOParams,
 )
 from baseline.framework.ppo.trajectory import (
@@ -47,6 +48,7 @@ from baseline.framework.ppo.trajectory import (
 )
 from baseline.framework.ppo.trainer import (
     PPOBuffer,
+    _grad_signal_diag,
     _normalize_adv,
     ppo_update,
 )
@@ -2908,6 +2910,294 @@ def test_lr_spec_and_schedule_hook():
 
 
 # ---------------------------------------------------------------------------
+# ADV gradient-signal diagnostic (grad_sig_*)
+# ---------------------------------------------------------------------------
+
+def _manual_frame_grads(actor, obs, act, ei, w, adv, fw, floor, coef, sel):
+    """Independent reimplementation of the per-frame scalar → gradient.
+
+    Builds one graph over the selected frames (same as the trainer),
+    then takes one autograd.grad per frame of
+
+        scalar_i = w_i * A_i * log_prob_i
+                   - coef * relu(floor - U_i)^2 * fw_i
+    """
+    sel_t = torch.as_tensor(np.asarray(sel), dtype=torch.long)
+    ev = actor.evaluate_actions(
+        obs[sel_t], act[sel_t], explore_factor=ei[sel_t])
+    scalar = (w[sel_t] * adv[sel_t]) * ev.log_prob
+    if coef > 0.0 and floor > 0.0:
+        gap = torch.relu(floor - ev.uncertainty)
+        scalar = scalar - coef * gap * gap * fw[sel_t]
+    params = [p for p in actor.parameters() if p.requires_grad]
+    rows = []
+    for i in range(len(sel)):
+        gs = torch.autograd.grad(
+            scalar[i], params, retain_graph=True, allow_unused=True)
+        rows.append(torch.cat([
+            (g if g is not None else torch.zeros_like(p)).reshape(-1)
+            for g, p in zip(gs, params)
+        ]))
+    return torch.stack(rows)
+
+
+def _grad_diag_inputs(n=60, obs_dim=8, act_dim=4, seed=3):
+    rng_np = np.random.default_rng(seed)
+    actor = SimpleActor(obs_dim, act_dim)
+    obs = torch.randn(n, obs_dim)
+    act = torch.as_tensor(
+        rng_np.uniform(-0.9, 0.9, (n, act_dim)).astype(np.float32))
+    ei = torch.zeros(n)
+    w = torch.ones(n)
+    adv = torch.as_tensor(
+        rng_np.standard_normal(n).astype(np.float32))
+    fw = torch.ones(n)
+    return actor, obs, act, ei, w, adv, fw
+
+
+def test_grad_signal_diag_math_and_determinism():
+    """_grad_signal_diag grads match an independent autograd recompute,
+    the pairwise mean satisfies the h-vector identity, and sampling is
+    seeded deterministically."""
+    torch.manual_seed(0)
+    actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
+    floor, coef = 0.3, 0.05
+    spec = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
+                        norm_edges=None, seed=7)
+    diags: list = []
+    scalars, hist, dump = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+        torch.device("cpu"), diags)
+
+    # Dedicated RNG reproduces the same sorted frame subset.
+    sel = np.sort(
+        np.random.default_rng(7).choice(60, size=40, replace=False))
+    np.testing.assert_array_equal(dump["sampled_idx"], sel)
+
+    # Per-frame norms match the independent recompute (surrogate +
+    # floor scalar, same construction).
+    G = _manual_frame_grads(actor, obs, act, ei, w, adv, fw,
+                            floor, coef, sel)
+    nv = G.norm(dim=1)
+    np.testing.assert_allclose(
+        dump["grad_norm"], nv.numpy(), rtol=1e-5, atol=1e-6)
+
+    # h-vector identity: mean_{i<j} s_ij = (‖Σh‖² − Σ‖h‖²)/(N(N−1))
+    # where h_i = g_i / √‖g_i‖ and s_ij = h_i·h_j.
+    h = G / nv.sqrt().unsqueeze(1)
+    ident = float(
+        (h.sum(0).pow(2).sum() - h.pow(2).sum()) / (40 * 39))
+    assert abs(ident - scalars["grad_sig_mean"]) < 1e-5, (
+        f"identity {ident} != mean {scalars['grad_sig_mean']}")
+
+    # Leave-one-out projection consistency: p_i = g_i·(G_tot−g_i)/‖·‖.
+    tot = G.sum(0)
+    loo = tot.unsqueeze(0) - G
+    np.testing.assert_allclose(
+        dump["loo_proj"],
+        ((G * loo).sum(1) / loo.norm(dim=1)).numpy(),
+        rtol=1e-4, atol=1e-5)
+
+    # Histogram covers all pairs; edges were derived (not configured).
+    assert hist is not None
+    assert int(hist["hist"].sum()) == int(hist["n_pairs"]) == 40 * 39 // 2
+    assert int(hist["n_pairs_in_hist"]) == int(hist["n_pairs"])
+    assert bool(hist["norm_edges_derived"])
+    assert hist["hist"].shape == (8, 16)
+    assert len(hist["cos_edges"]) == 17
+    assert len(hist["norm_edges"]) == 9
+    assert len(hist["norm_quantiles"]) == 5
+
+    assert scalars["grad_sig_frames"] == 40
+    assert scalars["grad_sig_std"] >= 0.0
+    assert scalars["grad_sig_norm_med"] > 0.0
+    assert scalars["grad_sig_time_s"] > 0.0
+
+    # Determinism: identical spec → identical sampled indices.
+    _, _, dump2 = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+        torch.device("cpu"), [])
+    np.testing.assert_array_equal(
+        dump["sampled_idx"], dump2["sampled_idx"])
+
+    print("test_grad_signal_diag_math_and_determinism: PASS")
+
+
+def test_grad_signal_diag_sum_matches_batch_grad():
+    """Σ_i g_i over sampled frames equals the autograd gradient of the
+    summed per-frame scalar — the contract that per-frame decomposition
+    reproduces the actual training-loss gradient direction."""
+    torch.manual_seed(1)
+    actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
+    floor, coef = 0.3, 0.05
+    spec = GradDiagSpec(sample_size=30, cos_bins=8, norm_bins=4,
+                        norm_edges=None, seed=11)
+    _, _, dump = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+        torch.device("cpu"), [])
+    sel = dump["sampled_idx"]
+
+    # Sum of per-frame grads (via norms * reconstruction is impossible —
+    # instead compare against the gradient of the summed scalar).
+    G = _manual_frame_grads(actor, obs, act, ei, w, adv, fw,
+                            floor, coef, sel)
+
+    sel_t = torch.as_tensor(sel, dtype=torch.long)
+    ev = actor.evaluate_actions(
+        obs[sel_t], act[sel_t], explore_factor=ei[sel_t])
+    total = ((w[sel_t] * adv[sel_t]) * ev.log_prob
+             - coef * torch.relu(floor - ev.uncertainty).pow(2)
+             * fw[sel_t]).sum()
+    params = [p for p in actor.parameters() if p.requires_grad]
+    gs = torch.autograd.grad(total, params)
+    batch_grad = torch.cat([g.reshape(-1) for g in gs])
+    np.testing.assert_allclose(
+        G.sum(0).numpy(), batch_grad.numpy(), rtol=1e-5, atol=1e-6)
+
+    # The same identity holds for the diagnostic's loo_proj: p_i = g_i·
+    # (Σ_{j≠i} g_j)/‖·‖ — already checked numerically above; here just
+    # assert the recorded grad_norms correspond to G.
+    np.testing.assert_allclose(
+        dump["grad_norm"], G.norm(dim=1).numpy(), rtol=1e-5, atol=1e-6)
+    print("test_grad_signal_diag_sum_matches_batch_grad: PASS")
+
+
+def test_grad_signal_diag_zero_adv_no_hist():
+    """All-zero advantages (e.g. confidence cold-start) yield no valid
+    gradients: scalars zeroed, no histogram, but the dump payload still
+    records the sampling + valid mask."""
+    torch.manual_seed(0)
+    actor, obs, act, ei, w, _, fw = _grad_diag_inputs()
+    adv = torch.zeros(60)
+    spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
+                        norm_edges=None, seed=7)
+    scalars, hist, dump = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw,
+        uncertainty_floor=0.0, uncertainty_coef=0.0,
+        spec=spec, device=torch.device("cpu"), diagnostics=[])
+    assert scalars["grad_sig_frames"] == 0
+    assert scalars["grad_sig_mean"] == 0.0
+    assert hist is None
+    # dump payload exists and records why frames were excluded
+    assert dump is not None
+    assert dump["valid"].sum() == 0
+    assert len(dump["sampled_idx"]) == 40
+    print("test_grad_signal_diag_zero_adv_no_hist: PASS")
+
+
+def test_ppo_update_grad_diag_e2e():
+    """ppo_update emits grad_sig scalars + npz payload and the gradsig
+    dump stage when grad_diag is configured and dump_callback active."""
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, reward_scale=1.0, rng=rng),
+    }, rng=rng)
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+
+    collector = {}
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=make_pp_params(minibatch_size=32),
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        use_confidence=False,
+        exploration=ExplorationSpec(
+            uncertainty_floor=0.3, uncertainty_coef=0.01),
+        dump_callback=lambda s, d: collector.__setitem__(s, d),
+        grad_diag=GradDiagSpec(
+            sample_size=32, cos_bins=8, norm_bins=4,
+            norm_edges=None, seed=5),
+    )
+
+    assert stats.grad_sig_frames > 0
+    assert stats.grad_sig_payload is not None
+    hist = stats.grad_sig_payload["hist"]
+    assert hist.shape == (4, 8)
+    assert stats.grad_sig_payload["n_pairs"] == \
+        stats.grad_sig_frames * (stats.grad_sig_frames - 1) // 2
+
+    # to_log_dict carries the scalars for __RAW_STATS__ flattening.
+    d = stats.to_log_dict()
+    for k in ("grad_sig_mean", "grad_sig_std", "grad_sig_frames",
+              "grad_sig_norm_med", "grad_sig_time_s"):
+        assert k in d, k
+
+    # The dump stage was emitted with per-frame detail.
+    assert "gradsig" in collector
+    g = collector["gradsig"]
+    for k in ("sampled_idx", "valid", "grad_norm", "w_adv",
+              "floor_pen", "loo_proj", "n_params"):
+        assert k in g, k
+    assert len(g["sampled_idx"]) == 32
+    print("test_ppo_update_grad_diag_e2e: PASS")
+
+
+def test_ppo_update_grad_diag_disabled():
+    """Without grad_diag, ppo_update leaves the scalars at zero and the
+    payload at None — no diagnostic cost, no dump stage."""
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, rng=rng),
+    }, rng=rng)
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+
+    collector = {}
+    stats = ppo_update(
+        actor=actor,
+        critics=critics,
+        actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts,
+        buf=buf,
+        reward_channels=channels,
+        pp=make_pp_params(minibatch_size=32),
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+        dump_callback=lambda s, d: collector.__setitem__(s, d),
+    )
+    assert stats.grad_sig_frames == 0
+    assert stats.grad_sig_mean == 0.0
+    assert stats.grad_sig_time_s == 0.0
+    assert stats.grad_sig_payload is None
+    assert "gradsig" not in collector
+    print("test_ppo_update_grad_diag_disabled: PASS")
+
+
+def test_grad_signal_diag_no_trainable_params_raises():
+    """An actor with no trainable parameters fails loudly."""
+    torch.manual_seed(0)
+    actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
+    for p in actor.parameters():
+        p.requires_grad_(False)
+    spec = GradDiagSpec(sample_size=10, cos_bins=8, norm_bins=4,
+                        norm_edges=None, seed=1)
+    try:
+        _grad_signal_diag(
+            actor, obs, act, ei, w, adv, fw,
+            0.3, 0.05, spec, torch.device("cpu"), [])
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "no trainable parameters" in str(e)
+    print("test_grad_signal_diag_no_trainable_params_raises: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -3002,5 +3292,13 @@ if __name__ == "__main__":
 
     # LR scheduling hook
     test_lr_spec_and_schedule_hook()
+
+    # ADV gradient-signal diagnostic
+    test_grad_signal_diag_math_and_determinism()
+    test_grad_signal_diag_sum_matches_batch_grad()
+    test_grad_signal_diag_zero_adv_no_hist()
+    test_ppo_update_grad_diag_e2e()
+    test_ppo_update_grad_diag_disabled()
+    test_grad_signal_diag_no_trainable_params_raises()
 
     print("\nAll PPO trainer tests passed!")
