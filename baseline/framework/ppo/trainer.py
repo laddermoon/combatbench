@@ -587,7 +587,9 @@ def _grad_signal_diag(
     scalars["grad_sig_std"] = std_s
 
     # 2D histogram: rows = geomean-norm bins (log-spaced), cols = cos bins.
-    c_np = c_vals.cpu().numpy().astype(np.float64)
+    # Clip cosine into [-1, 1] — float error in U@U.T can produce
+    # ±1.0000001 which histogram2d would silently drop.
+    c_np = np.clip(c_vals.cpu().numpy().astype(np.float64), -1.0, 1.0)
     b_np = b_vals.cpu().numpy().astype(np.float64)
     cos_edges = np.linspace(-1.0, 1.0, spec.cos_bins + 1)
     if spec.norm_edges is not None:
@@ -600,8 +602,18 @@ def _grad_signal_diag(
         norm_edges = np.geomspace(lo, hi, spec.norm_bins + 1)
         edges_derived = True
     hist, _, _ = np.histogram2d(b_np, c_np, bins=[norm_edges, cos_edges])
+    # Pairs whose geomean norm falls outside the (possibly frozen) norm
+    # range are NOT dropped — they keep their cosine information in
+    # dedicated under/overflow rows so drift in gradient magnitude stays
+    # visible without breaking cross-update bin comparability.
+    hist_under = np.histogram(
+        c_np[b_np < norm_edges[0]], bins=cos_edges)[0]
+    hist_over = np.histogram(
+        c_np[b_np >= norm_edges[-1]], bins=cos_edges)[0]
     n_pairs = int(s_vals.numel())
     n_pairs_in_hist = int(hist.sum())
+    n_over = int(hist_over.sum())
+    n_under = int(hist_under.sum())
 
     norms_np = nv.cpu().numpy().astype(np.float64)
     hist_payload: Dict[str, np.ndarray] = {
@@ -615,6 +627,12 @@ def _grad_signal_diag(
         "n_nonfinite": np.array(n_nonfinite, dtype=np.int64),
         "n_pairs": np.array(n_pairs, dtype=np.int64),
         "n_pairs_in_hist": np.array(n_pairs_in_hist, dtype=np.int64),
+        # Cosine-only rows for pairs outside the norm range — rendered
+        # as the heatmap's top (over) / bottom (under) extra rows.
+        "hist_under": hist_under.astype(np.int64),
+        "hist_over": hist_over.astype(np.int64),
+        "n_under": np.array(n_under, dtype=np.int64),
+        "n_over": np.array(n_over, dtype=np.int64),
         "pair_mean": np.array(mean_s, dtype=np.float64),
         "pair_std": np.array(std_s, dtype=np.float64),
         "norm_quantiles": np.quantile(

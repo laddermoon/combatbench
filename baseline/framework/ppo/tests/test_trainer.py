@@ -3007,6 +3007,12 @@ def test_grad_signal_diag_math_and_determinism():
     assert len(hist["cos_edges"]) == 17
     assert len(hist["norm_edges"]) == 9
     assert len(hist["norm_quantiles"]) == 5
+    # Under/overflow cosine rows always present; every pair is binned
+    # into hist or an edge row.
+    assert hist["hist_under"].shape == (16,)
+    assert hist["hist_over"].shape == (16,)
+    assert int(hist["hist"].sum() + hist["hist_under"].sum()
+               + hist["hist_over"].sum()) == int(hist["n_pairs"])
 
     assert scalars["grad_sig_frames"] == 40
     assert scalars["grad_sig_std"] >= 0.0
@@ -3060,6 +3066,30 @@ def test_grad_signal_diag_sum_matches_batch_grad():
     np.testing.assert_allclose(
         dump["grad_norm"], G.norm(dim=1).numpy(), rtol=1e-5, atol=1e-6)
     print("test_grad_signal_diag_sum_matches_batch_grad: PASS")
+
+
+def test_grad_signal_diag_norm_overflow_rows():
+    """Pairs outside the frozen norm range keep their cosine info in
+    dedicated under/overflow rows instead of being dropped."""
+    torch.manual_seed(0)
+    actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
+    # Deliberately narrow frozen norm range → most pairs overflow.
+    spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
+                        norm_edges=np.geomspace(1e-6, 1e-4, 5), seed=7)
+    scalars, hist, dump = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, 0.3, 0.05, spec,
+        torch.device("cpu"), [])
+    assert hist is not None
+    n_pairs = int(hist["n_pairs"])
+    n_over = int(hist["n_over"])
+    assert n_over > 0  # real grads are far above 1e-4 geomean norm
+    assert int(hist["hist_over"].sum()) == n_over
+    # Every pair is accounted for: interior + under + over == n_pairs.
+    assert int(hist["n_pairs_in_hist"]) + n_over + int(hist["n_under"]) \
+        == n_pairs
+    # Mean/std are computed on ALL pairs (unaffected by binning).
+    assert scalars["grad_sig_frames"] == 40
+    print("test_grad_signal_diag_norm_overflow_rows: PASS")
 
 
 def test_grad_signal_diag_zero_adv_no_hist():
@@ -3296,6 +3326,7 @@ if __name__ == "__main__":
     # ADV gradient-signal diagnostic
     test_grad_signal_diag_math_and_determinism()
     test_grad_signal_diag_sum_matches_batch_grad()
+    test_grad_signal_diag_norm_overflow_rows()
     test_grad_signal_diag_zero_adv_no_hist()
     test_ppo_update_grad_diag_e2e()
     test_ppo_update_grad_diag_disabled()

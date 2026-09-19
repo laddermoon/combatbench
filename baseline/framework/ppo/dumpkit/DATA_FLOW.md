@@ -119,7 +119,9 @@ g_i      = ∇_θ scalar_i          (θ = θ_old，含 surrogate + floor 两项)
 - **二维分布**（`run_dir/gradsig/uNNNNN.npz`，~8KB/update）：
   `hist[norm_bin, cos_bin]` 联合计数 + 分箱边界 + 覆盖计数 +
   范数分位数。norm 轴为 log 分箱，边界在首个计算 update 派生后
-  冻结进 `gradsig/meta.json`，保证跨 update 可比。
+  冻结进 `gradsig/meta.json`，保证跨 update 可比；越界配对不丢弃，
+  保留 cosine 信息收进 `hist_under`/`hist_over` 两条边缘行
+  （热力图的底/顶行）。
 - **dump 细节**（仅 dump 时，`dumps/uNNNNN/gradsig.npz`）：采样帧
   的扁平 buffer 索引、逐帧梯度范数、w·A 与 floor 标量系数、
   leave-one-out 投影（该帧对其余样本合力的支持/反对强度）。

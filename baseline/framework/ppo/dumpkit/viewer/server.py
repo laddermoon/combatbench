@@ -510,6 +510,19 @@ class RunData:
                     "n_excluded": int(d["n_excluded"]),
                     "n_pairs": int(d["n_pairs"]),
                     "n_pairs_in_hist": int(d["n_pairs_in_hist"]),
+                    # Under/overflow cosine rows (absent in npz written
+                    # before this field existed → frontend skips the
+                    # extra rows).
+                    "hist_under": (
+                        d["hist_under"].tolist() if "hist_under" in d
+                        else None
+                    ),
+                    "hist_over": (
+                        d["hist_over"].tolist() if "hist_over" in d
+                        else None
+                    ),
+                    "n_under": int(d["n_under"]) if "n_under" in d else 0,
+                    "n_over": int(d["n_over"]) if "n_over" in d else 0,
                     "pair_mean": float(d["pair_mean"]),
                     "pair_std": float(d["pair_std"]),
                     "norm_quantiles": d["norm_quantiles"].tolist(),

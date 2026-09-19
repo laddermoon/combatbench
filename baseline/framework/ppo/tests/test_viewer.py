@@ -706,6 +706,10 @@ def test_run_data_grad_sig():
             pair_std=np.array(0.456),
             norm_quantiles=np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
             norm_edges_derived=np.array(True),
+            hist_under=np.array([0, 0, 0, 1, 2, 0, 0, 0], dtype=np.int64),
+            hist_over=np.array([0, 0, 0, 0, 3, 4, 0, 0], dtype=np.int64),
+            n_under=np.array(3),
+            n_over=np.array(7),
         )
 
         rd = RunData(run_dir)
@@ -722,11 +726,33 @@ def test_run_data_grad_sig():
         assert out["n_pairs"] == 1128
         assert abs(out["pair_mean"] - 0.123) < 1e-9
         assert out["norm_edges_derived"] is True
+        # Under/overflow edge rows come through when present.
+        assert out["hist_under"] == [0, 0, 0, 1, 2, 0, 0, 0]
+        assert out["hist_over"] == [0, 0, 0, 0, 3, 4, 0, 0]
+        assert out["n_under"] == 3
+        assert out["n_over"] == 7
         # JSON-serializable
         json.dumps(out, allow_nan=False)
 
+        # Old-format artifact without the edge-row fields → None fields,
+        # not an exception (viewer skips the extra rows).
+        np.savez_compressed(
+            gs_dir / "u00043.npz",
+            hist=hist, cos_edges=cos_edges, norm_edges=norm_edges,
+            n_sampled=np.array(50), n_valid=np.array(48),
+            n_excluded=np.array(2), n_pairs=np.array(1128),
+            n_pairs_in_hist=np.array(1128),
+            pair_mean=np.array(0.1), pair_std=np.array(0.2),
+            norm_quantiles=np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+            norm_edges_derived=np.array(True),
+        )
+        old = rd.grad_sig(43)
+        assert old is not None
+        assert old["hist_under"] is None and old["hist_over"] is None
+        assert old["n_under"] == 0 and old["n_over"] == 0
+
         # Missing artifact → None (→ API 404 + available: false)
-        assert rd.grad_sig(43) is None
+        assert rd.grad_sig(44) is None
         # Malformed / corrupt npz → None, not an exception
         (gs_dir / "u00099.npz").write_bytes(b"not an npz")
         assert rd.grad_sig(99) is None

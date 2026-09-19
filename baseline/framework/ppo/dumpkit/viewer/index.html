@@ -2257,7 +2257,7 @@
       '<div class="desc" style="color:var(--muted);font-size:12px;margin-bottom:8px">' +
       'Pairwise distribution of per-frame training-loss gradients over sampled frames — ' +
       'x: cos(g_i,g_j), y: √(‖g_i‖·‖g_j‖) (log-spaced bins), color: pair share. ' +
-      'Left strip: share of pairs per norm bin.</div>' +
+      'Left strip: share of pairs per norm bin. Edge rows collect pairs above/below the (frozen) norm range.</div>' +
       '<div id="gradsig-panel"><div class="loading">loading…</div></div></div>';
     $('update-detail-container').innerHTML = html;
     loadGradSigPanel(u.update);
@@ -2292,16 +2292,28 @@
 
   function renderGradSig(el, gs) {
     const H = gs.hist || [];
-    const nRows = H.length;
-    const nCols = nRows ? (H[0] || []).length : 0;
-    if (!nRows || !nCols) {
+    const nCols = H.length ? (H[0] || []).length : 0;
+    if (!H.length || !nCols) {
       el.innerHTML = '<div class="muted" style="font-size:12px">empty histogram</div>';
       return;
     }
     const ce = gs.cos_edges || [], ne = gs.norm_edges || [];
-    const rowSum = H.map(r => (r || []).reduce((a, b) => a + (+b || 0), 0));
+    // Extended matrix: dedicated under/overflow rows (bottom / top) for
+    // pairs outside the frozen norm range — they keep cosine info.
+    const hasExt = Array.isArray(gs.hist_under) && Array.isArray(gs.hist_over);
+    const Hx = hasExt ? [gs.hist_under, ...H, gs.hist_over] : H;
+    const nRows = Hx.length;
+    const rowSum = Hx.map(r => (r || []).reduce((a, b) => a + (+b || 0), 0));
     const total = rowSum.reduce((a, b) => a + b, 0);
     const maxRow = Math.max(1, ...rowSum);
+    const nUnder = +gs.n_under || 0, nOver = +gs.n_over || 0;
+    const fmtE = v => (v === 0 ? '0' : (+v).toExponential(1));
+    const rowLabel = r => {
+      if (hasExt && r === 0) return `< ${fmtE(ne[0])}`;
+      if (hasExt && r === nRows - 1) return `≥ ${fmtE(ne[ne.length - 1])}`;
+      const k = hasExt ? r - 1 : r;
+      return `[${fmtE(ne[k])}, ${fmtE(ne[k + 1])})`;
+    };
 
     el.innerHTML = '';
     const head = document.createElement('div');
@@ -2311,7 +2323,7 @@
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
       ` · pairs ${(+gs.n_pairs).toLocaleString()}` +
-      ((gs.n_pairs_in_hist < gs.n_pairs) ? ` · ${gs.n_pairs - gs.n_pairs_in_hist} pairs out of norm range` : '') +
+      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} in edge rows</span> (<${nUnder} / ≥${nOver})` : '') +
       ` · mean <b>${(+gs.pair_mean).toExponential(2)}</b>` +
       ` · std <b>${(+gs.pair_std).toExponential(2)}</b>` +
       (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');
@@ -2342,23 +2354,33 @@
     const px = ml + mg;
     const pw = W - px - mr, ph = Hh - mt - mb;
     const cw = pw / nCols, chh = ph / nRows;
-    const fmtE = v => (v === 0 ? '0' : (+v).toExponential(1));
     const cellProb = (r, c) => mode === 'joint'
-      ? (total ? (H[r][c] || 0) / total : 0)
-      : (rowSum[r] ? (H[r][c] || 0) / rowSum[r] : 0);
+      ? (total ? (Hx[r][c] || 0) / total : 0)
+      : (rowSum[r] ? (Hx[r][c] || 0) / rowSum[r] : 0);
 
     function draw() {
       ctx.clearRect(0, 0, W, Hh);
       let maxV = 0;
       for (let r = 0; r < nRows; r++) for (let c = 0; c < nCols; c++) maxV = Math.max(maxV, cellProb(r, c));
       if (maxV <= 0) maxV = 1;
-      // Heat cells — norm bin 0 (lowest geomean norm) at the bottom.
+      // Heat cells — row 0 (lowest geomean norm / underflow) at bottom.
       for (let r = 0; r < nRows; r++) {
         for (let c = 0; c < nCols; c++) {
           const k = Math.pow(cellProb(r, c) / maxV, 0.35);
           ctx.fillStyle = `rgb(${Math.round(24 + 205 * k)},${Math.round(30 + 150 * k)},${Math.round(50 + 10 * k)})`;
           ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
         }
+      }
+      // Dashed separators between the under/overflow edge rows and the
+      // interior norm bins.
+      if (hasExt) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.setLineDash([4, 3]);
+        [1, nRows - 1].forEach(r => {
+          const y = mt + (nRows - r) * chh;
+          ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
+        });
+        ctx.setLineDash([]);
       }
       // Row-marginal strip: share of pairs living in each norm bin.
       for (let r = 0; r < nRows; r++) {
@@ -2380,8 +2402,8 @@
       });
       ctx.fillText('cos(g_i, g_j)', px + pw / 2, mt + ph + 30);
       ctx.textAlign = 'right';
-      [0, Math.floor(nRows / 2), nRows].forEach(r => {
-        ctx.fillText(fmtE(ne[r]), px - mg - 4, mt + (nRows - r) * chh + 3);
+      [0, Math.floor(nRows / 2), nRows - 1].forEach(r => {
+        ctx.fillText(rowLabel(r), px - mg - 4, mt + (nRows - 1 - r) * chh + chh / 2 + 3);
       });
       ctx.save();
       ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
@@ -2400,10 +2422,10 @@
       const rTop = Math.floor((e.clientY - rect.top - mt) / chh);
       if (c < 0 || c >= nCols || rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
       const r = nRows - 1 - rTop;
-      const cnt = H[r][c] || 0;
+      const cnt = Hx[r][c] || 0;
       tip.textContent =
         `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
-        `norm∈[${fmtE(ne[r])}, ${fmtE(ne[r + 1])}) · ` +
+        `norm ${rowLabel(r)} · ` +
         `pairs=${cnt.toLocaleString()} · joint ${(100 * cnt / (total || 1)).toFixed(3)}%` +
         ` · row-cond ${(rowSum[r] ? 100 * cnt / rowSum[r] : 0).toFixed(2)}%` +
         ` · row share ${(100 * rowSum[r] / (total || 1)).toFixed(2)}%`;
