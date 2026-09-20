@@ -388,15 +388,22 @@ class PPOBuffer:
 #   7. Early stop on target_kl to prevent policy collapse
 # ---------------------------------------------------------------------------
 
-def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Z-score normalization on active frames.  Inactive frames get zero.
+def _normalize_adv(
+    adv: np.ndarray, mask: np.ndarray, center: bool = True,
+) -> np.ndarray:
+    """Advantage normalization on active frames.  Inactive frames get zero.
 
     Normalization is per-channel and per-update: each channel's advantages
-    are independently centered and scaled to unit std. This means the
-    *absolute scale* of rewards across channels is irrelevant — only the
-    *relative pattern* within each channel matters. The experiment
-    controls cross-channel importance via actor_weight, not via reward
-    magnitudes.
+    are independently scaled to unit std (and, with ``center=True``,
+    centered to zero mean). This means the *absolute scale* of rewards
+    across channels is irrelevant — only the *relative pattern* within
+    each channel matters. The experiment controls cross-channel
+    importance via actor_weight, not via reward magnitudes.
+
+    ``center=False`` (``adv_norm="std"``) skips the mean subtraction:
+    A/std preserves the raw advantage sign of every frame, whereas
+    z-scoring flips the sign — and thus the surrogate gradient direction
+    — of frames on the wrong side of the batch mean.
 
     Edge cases:
     - No active frames → all zeros (channel contributes nothing).
@@ -405,7 +412,7 @@ def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
     active = adv[mask]
     if active.size == 0:
         return np.zeros_like(adv, dtype=np.float32)
-    mean = float(active.mean())
+    mean = float(active.mean()) if center else 0.0
     std = float(active.std())
     if std < 1e-8:
         return np.zeros_like(adv, dtype=np.float32)
@@ -1099,7 +1106,9 @@ def ppo_update(
         # especially under hard phase switching where aw=0 frames belong to a
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
-        normed = _normalize_adv(advs_all[key], norm_mask)
+        normed = _normalize_adv(
+            advs_all[key], norm_mask, center=(pp.adv_norm == "zscore"),
+        )
         normed_advs[key] = normed
         combined_adv = combined_adv + aw_normed * conf * normed
 

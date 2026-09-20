@@ -442,6 +442,15 @@ class PPOParams:
     minibatch_size: int
     early_stop_kl_window: int
 
+    # Per-channel advantage normalization applied to the full buffer
+    # before channels are combined:
+    #   "zscore" — (A − mean)/std.  Batch-mean centering; frames near
+    #       the batch mean can flip sign, which also flips that frame's
+    #       surrogate gradient direction.
+    #   "std"    — A/std.  Scale-only normalization; preserves the raw
+    #       advantage sign of every frame.
+    adv_norm: str = "zscore"
+
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # At the start of each update (after combined_adv, before any actor
     # step), the trainer computes the full-buffer aggregate gradient
@@ -480,6 +489,11 @@ class PPOParams:
             raise ValueError(
                 f"early_stop_kl_window must be >= 1, "
                 f"got {self.early_stop_kl_window}."
+            )
+        if self.adv_norm not in ("zscore", "std"):
+            raise ValueError(
+                f"adv_norm must be 'zscore' or 'std', got "
+                f"{self.adv_norm!r}."
             )
         if self.grad_sig_sample_size < 0:
             raise ValueError(

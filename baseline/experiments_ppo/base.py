@@ -79,6 +79,10 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # per-minibatch KL; larger values smooth sampling noise at the cost
     # of stopping a few minibatches later.
     early_stop_kl_window: int = 10
+    # Per-channel advantage normalization: "zscore" = (A−μ)/σ
+    # (batch-mean centering), "std" = A/σ (scale only, preserves the
+    # raw advantage sign of every frame).
+    adv_norm: str = "zscore"
 
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # Per-update diagnostic: compute the full-buffer aggregate gradient
@@ -179,6 +183,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
             update_epochs=self.update_epochs,
             minibatch_size=self.minibatch_size,
             early_stop_kl_window=self.early_stop_kl_window,
+            adv_norm=self.adv_norm,
             grad_sig_sample_size=self.grad_sig_sample_size,
             grad_sig_interval=self.grad_sig_interval,
             grad_sig_cos_bins=self.grad_sig_cos_bins,

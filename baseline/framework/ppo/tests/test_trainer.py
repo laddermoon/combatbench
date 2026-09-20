@@ -341,6 +341,18 @@ def test_normalize_adv_single_active_frame():
     print("test_normalize_adv_single_active_frame: PASS")
 
 
+def test_normalize_adv_no_center_preserves_sign():
+    """center=False (adv_norm="std") scales only — raw signs preserved."""
+    adv = np.array([1.0, 2.0, 3.0, -4.0, 0.5], dtype=np.float32)
+    mask = np.array([True, True, True, True, True])
+    result = _normalize_adv(adv, mask, center=False)
+    std = adv.std()
+    np.testing.assert_allclose(
+        result, (adv / std).astype(np.float32), atol=1e-6)
+    assert np.all(np.sign(result[mask]) == np.sign(adv[mask]))
+    print("test_normalize_adv_no_center_preserves_sign: PASS")
+
+
 # ---------------------------------------------------------------------------
 # PPOBuffer tests
 # ---------------------------------------------------------------------------
