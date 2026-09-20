@@ -812,7 +812,8 @@ class UpdateStats:
     # grad_sig_frames: sampled frames with a usable (finite, nonzero-norm)
     #   gradient — coverage indicator; compare with the configured
     #   sample size.
-    # grad_sig_norm_med: median per-frame gradient L2 norm (scale context).
+    # grad_sig_norm_mean: mean per-frame gradient L2 norm over the
+    #   sample — the coherence denominator: ‖G‖ = mean‖g_i‖ × coherence.
     # grad_sig_time_s: wall time of the diagnostic inside ppo_update.
     # All zeros when the diagnostic is disabled or did not run this update.
     grad_sig_gnorm: float = 0.0
@@ -822,7 +823,7 @@ class UpdateStats:
     grad_sig_frac_neg: float = 0.0
     grad_sig_dir_cos: float = 0.0
     grad_sig_frames: int = 0
-    grad_sig_norm_med: float = 0.0
+    grad_sig_norm_mean: float = 0.0
     grad_sig_time_s: float = 0.0
     # Non-logged transport for the per-update histogram artifact — the
     # loop writes it to ``gradsig/uNNNNN.npz`` (the histogram is not a
@@ -902,7 +903,7 @@ class UpdateStats:
             grad_sig_frac_neg=0.0,
             grad_sig_dir_cos=0.0,
             grad_sig_frames=0,
-            grad_sig_norm_med=0.0,
+            grad_sig_norm_mean=0.0,
             grad_sig_time_s=0.0,
         )
 
@@ -962,7 +963,7 @@ class UpdateStats:
             "grad_sig_frac_neg": self.grad_sig_frac_neg,
             "grad_sig_dir_cos": self.grad_sig_dir_cos,
             "grad_sig_frames": self.grad_sig_frames,
-            "grad_sig_norm_med": self.grad_sig_norm_med,
+            "grad_sig_norm_mean": self.grad_sig_norm_mean,
             "grad_sig_time_s": self.grad_sig_time_s,
         })
         for key, val in self.post_ratio_bins.items():

@@ -124,23 +124,23 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "dloss_mean = dloss_gain + dloss_harm 严格成立（加法分解，同一 loss 单位）：gain ≤ 0 = 顺 advantage 方向移动的有利贡献（把 loss 往下拉）；harm ≥ 0 = 逆 advantage 方向移动的不利贡献（把 loss 往上推）。\n"
              "dloss 变差时看拆项定位：gain 趋向 0 = 没学够（步数被截断/位移不足）；harm 上升 = 学歪了（更多样本被推向反 adv 方向，噪声/冲突梯度的候选形态）；两者同升 = 位移大但方向混杂——KL 大而 dloss 改善少时常伴此形态。\n"
              "读法：dloss_mean 负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
-    {"title": "Aggregate Gradient G (θ_old)",
-     "keys": ["stats.grad_sig_gnorm", "stats.grad_sig_coherence",
-              "stats.grad_sig_dir_cos"],
+    {"title": "‖G‖ vs mean(p_i) (θ_old)",
+     "keys": ["stats.grad_sig_gnorm", "stats.grad_sig_proj_mean"],
+     "right": ["stats.grad_sig_norm_mean"],
      "hint": "每个 update 开始前（actor 仍是 θ_old）在完整 buffer 上分块反传得到总体梯度 G = mean_i g_i（真实训练损失：surrogate + floor hinge）。‖G‖ 是优化器介入前的原始合力强度——不是 Adam/clip/早停之后的实际位移。\n"
-             "grad_sig_gnorm：‖G‖——净拉力强度（\"信号强弱\"）。增长既可来自个体拉力变强，也可来自方向更一致——拆开看 coherence。\n"
-             "grad_sig_coherence：‖G‖/mean‖g_i‖ ∈[0,1]——总拉力聚合后的存活率：1=全部同向，越小抵消越狠（分母为采样估计）。它低不必然是有害冲突——方向散开也稀释合力；是否真有帧被牺牲看 frac_neg。\n"
-             "grad_sig_dir_cos：cos(G_u, G_{u−1})——合力方向的跨 update 持续性。低/负 = 每次更新在追移动靶（θ 变了、批次也换了，低值属正常漂移范围）。\n"
-             "恒等校验：完整 buffer 上 mean_i(g_i·Ĝ) = ‖G‖；采样估计即 grad_sig_proj_mean，偏差超出 std(p)/√n 标准误才说明采样不具代表性（‖G‖≪std(p) 时相对偏差大属正常噪声）。"},
+             "grad_sig_gnorm：‖G‖——净拉力强度（\"信号强弱\"）。\n"
+             "grad_sig_proj_mean：mean(p_i)=mean(g_i·Ĝ)——恒等式 mean(p)=‖G‖ 的采样估计，与 gnorm 应近似重合（两条线叠在一起 = 采样有代表性）；偏差超出 std(p)/√n 标准误才说明采样不具代表性（‖G‖≪std(p) 时相对偏差大属正常噪声）。\n"
+             "grad_sig_norm_mean（右轴）：mean‖g_i‖——逐帧拉力均值，coherence 的分母：‖G‖ = mean‖g_i‖ × coherence。注意它与 ‖G‖ 不接近相等——差一个 coherence 倍（方向分散时可达百倍级）。"},
+    {"title": "Coherence & Direction (θ_old)",
+     "keys": ["stats.grad_sig_coherence", "stats.grad_sig_dir_cos"],
+     "hint": "grad_sig_coherence：‖G‖/mean‖g_i‖ ∈[0,1]——总拉力聚合后的存活率：1=全部同向，越小抵消越狠。它低不必然是有害冲突——方向散开也稀释合力；是否真有帧被牺牲看 frac_neg。\n"
+             "grad_sig_dir_cos：cos(G_u, G_{u−1})——合力方向的跨 update 持续性。低/负 = 每次更新在追移动靶（θ 变了、批次也换了，低值属正常漂移范围）。"},
     {"title": "Per-frame Support vs G (θ_old)",
-     "keys": ["stats.grad_sig_frac_neg", "stats.grad_sig_proj_std",
-              "stats.grad_sig_norm_med"],
-     "right": ["stats.grad_sig_proj_mean"],
+     "keys": ["stats.grad_sig_frac_neg"],
+     "right": ["stats.grad_sig_proj_std"],
      "hint": "θ_old 处抽样 N 帧，逐帧算训练损失梯度 g_i 并投影到总体方向 Ĝ：p_i = g_i·Ĝ（正=这一步改善它，负=这一步牺牲它）。\n"
              "grad_sig_frac_neg：P(p_i<0)——本 update 方向牺牲的帧占比，最直接的\"谁被损害\"读数。\n"
-             "grad_sig_proj_std：std(p_i)——逐帧获益离散度；合力是否均匀分配。\n"
-             "grad_sig_proj_mean（右轴）：mean(p_i)——‖G‖ 的无偏估计（恒等式 mean(p)=‖G‖），与 gnorm 图对照是采样代表性校验。\n"
-             "grad_sig_norm_med：‖g_i‖ 中位数——幅度标尺。\n"
+             "grad_sig_proj_std（右轴）：std(p_i)——逐帧获益离散度；合力是否均匀分配。\n"
              "每 update 的二维分布（‖g_i‖ 分位 × cos 分箱）、P(cos) 边缘与 p_i 投影直方图见 gradsig/u*.npz 与 Update Detail 的 Gradient Signal 面板。"},
     {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
                              "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
@@ -221,10 +221,10 @@ KEY_LABELS: Dict[str, str] = {
     "grad_sig_gnorm": "grad_sig_gnorm (‖G‖)",
     "grad_sig_coherence": "grad_sig_coherence (‖G‖/mean‖g‖)",
     "grad_sig_dir_cos": "grad_sig_dir_cos (dir persist)",
-    "grad_sig_proj_mean": "grad_sig_proj_mean (mean p)",
+    "grad_sig_proj_mean": "grad_sig_proj_mean (mean p ≈ ‖G‖)",
     "grad_sig_proj_std": "grad_sig_proj_std (std p)",
     "grad_sig_frac_neg": "grad_sig_frac_neg (P(p<0))",
-    "grad_sig_norm_med": "grad_sig_norm_med (median ‖g‖)",
+    "grad_sig_norm_mean": "grad_sig_norm_mean (mean ‖g_i‖)",
 }
 
 # ---------------------------------------------------------------------

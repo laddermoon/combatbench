@@ -487,7 +487,7 @@ def _grad_signal_diag(
         "grad_sig_frac_neg": 0.0,
         "grad_sig_dir_cos": 0.0,
         "grad_sig_frames": 0,
-        "grad_sig_norm_med": 0.0,
+        "grad_sig_norm_mean": 0.0,
         "grad_sig_time_s": 0.0,
     }
     n = int(obs_t.shape[0])
@@ -601,8 +601,6 @@ def _grad_signal_diag(
             f"non-finite gradients — excluded from stats"
         )
     scalars["grad_sig_frames"] = n_valid
-    if n_valid >= 1:
-        scalars["grad_sig_norm_med"] = float(norms[valid].median().item())
 
     dump_payload: Dict[str, np.ndarray] = {
         "sampled_idx": sel,
@@ -643,6 +641,7 @@ def _grad_signal_diag(
     proj_std = float(proj.std(unbiased=False).item())
     frac_neg = float((proj < 0).float().mean().item())
     mean_gnorm = float(nv.mean().item())
+    scalars["grad_sig_norm_mean"] = mean_gnorm
     scalars["grad_sig_proj_mean"] = proj_mean
     scalars["grad_sig_proj_std"] = proj_std
     scalars["grad_sig_frac_neg"] = frac_neg
@@ -1195,7 +1194,7 @@ def ppo_update(
         "grad_sig_frac_neg": 0.0,
         "grad_sig_dir_cos": 0.0,
         "grad_sig_frames": 0,
-        "grad_sig_norm_med": 0.0,
+        "grad_sig_norm_mean": 0.0,
         "grad_sig_time_s": 0.0,
     }
     grad_sig_payload: Optional[Dict[str, np.ndarray]] = None
@@ -2006,7 +2005,7 @@ def ppo_update(
         grad_sig_frac_neg=float(grad_sig_scalars["grad_sig_frac_neg"]),
         grad_sig_dir_cos=float(grad_sig_scalars["grad_sig_dir_cos"]),
         grad_sig_frames=int(grad_sig_scalars["grad_sig_frames"]),
-        grad_sig_norm_med=float(grad_sig_scalars["grad_sig_norm_med"]),
+        grad_sig_norm_mean=float(grad_sig_scalars["grad_sig_norm_mean"]),
         grad_sig_time_s=float(grad_sig_scalars["grad_sig_time_s"]),
         grad_sig_payload=grad_sig_payload,
         grad_sig_gvec=grad_sig_gvec,

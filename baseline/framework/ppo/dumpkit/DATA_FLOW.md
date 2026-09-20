@@ -128,8 +128,8 @@ c_i = cos(g_i, G)    (纯方向)
   度）、`grad_sig_frac_neg`（P(p<0)，被本 update 方向牺牲的帧
   占比）、`grad_sig_dir_cos`（cos(G_u, G_{u−1})，合力方向跨
   update 持续性；G 由 loop 在内存中传递不落盘）、
-  `grad_sig_frames`（有效帧数）、`grad_sig_norm_med`、
-  `grad_sig_time_s`。
+  `grad_sig_frames`（有效帧数）、`grad_sig_norm_mean`（mean‖g_i‖，
+  coherence 的分母）、`grad_sig_time_s`。
 - **二维分布 + 逐帧数组**（`run_dir/gradsig/uNNNNN.npz`）：
   `hist[norm_bin, cos_bin]` 帧计数 + 分箱边界 + 覆盖计数 +
   范数分位数 + 逐帧 `grad_norm`/`cos`/`proj`/`valid` 数组（前端

@@ -3015,7 +3015,8 @@ def test_grad_signal_diag_math_and_determinism():
                - gnorm / float(nv.mean().item())) < 1e-5
     assert scalars["grad_sig_dir_cos"] == 0.0
     assert scalars["grad_sig_frames"] == 40
-    assert scalars["grad_sig_norm_med"] > 0.0
+    assert abs(scalars["grad_sig_norm_mean"]
+               - float(nv.mean().item())) < 1e-5
     assert scalars["grad_sig_time_s"] > 0.0
 
     # Direction persistence: feeding this update's G back as prev_g
@@ -3196,7 +3197,7 @@ def test_ppo_update_grad_diag_e2e():
     d = stats.to_log_dict()
     for k in ("grad_sig_gnorm", "grad_sig_coherence", "grad_sig_proj_mean",
               "grad_sig_proj_std", "grad_sig_frac_neg", "grad_sig_dir_cos",
-              "grad_sig_frames", "grad_sig_norm_med", "grad_sig_time_s"):
+              "grad_sig_frames", "grad_sig_norm_mean", "grad_sig_time_s"):
         assert k in d, k
 
     # The dump stage was emitted with per-frame detail.
