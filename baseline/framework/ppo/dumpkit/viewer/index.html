@@ -2329,17 +2329,20 @@
     const qs = gs.norm_quantiles || [];
     const gnorm = +gs.gnorm || 0;
     const pmean = +gs.proj_mean || 0;
-    // mean(p_i) estimates ‖G‖ on the full buffer — a large deviation
-    // flags the sampled gradients as unrepresentative (or a bug).
-    const dev = gnorm > 1e-12 ? Math.abs(pmean - gnorm) / gnorm : 0;
+    // mean(p_i) estimates ‖G‖ on the full buffer with standard error
+    // std(p)/√n — flag only deviations beyond the noise floor (a fixed
+    // relative threshold false-fires when ‖G‖ ≪ std(p), i.e. low
+    // coherence).
+    const pse = (+gs.proj_std || 0) / Math.sqrt(Math.max(+gs.n_valid || 1, 1));
+    const pz = pse > 1e-12 ? Math.abs(pmean - gnorm) / pse : 0;
     head.innerHTML =
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
       ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} beyond axis</span> (<${nUnder} / ≥${nOver})` : '') +
       ` · ‖G‖ <b>${gnorm.toExponential(2)}</b>` +
       ` · coherence <b>${(+gs.coherence).toFixed(3)}</b>` +
-      ` · mean(p) ${pmean.toExponential(2)}` +
-      (dev > 0.05 ? ` <span style="color:var(--orange)">(Δ${(100 * dev).toFixed(0)}% vs ‖G‖ — sampling check)</span>` : '') +
+      ` · mean(p) ${pmean.toExponential(2)} ±${pse.toExponential(1)}` +
+      (pz > 4 ? ` <span style="color:var(--orange)">(${pz.toFixed(1)}σ vs ‖G‖ — sampling check)</span>` : '') +
       ` · frac(p<0) <b>${(100 * (+gs.frac_neg)).toFixed(1)}%</b>` +
       ` · dir cos ${(+gs.dir_cos).toFixed(3)}` +
       (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');

@@ -131,7 +131,7 @@ FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
              "grad_sig_gnorm：‖G‖——净拉力强度（\"信号强弱\"）。增长既可来自个体拉力变强，也可来自方向更一致——拆开看 coherence。\n"
              "grad_sig_coherence：‖G‖/mean‖g_i‖ ∈[0,1]——总拉力聚合后的存活率：1=全部同向，越小抵消越狠（分母为采样估计）。它低不必然是有害冲突——方向散开也稀释合力；是否真有帧被牺牲看 frac_neg。\n"
              "grad_sig_dir_cos：cos(G_u, G_{u−1})——合力方向的跨 update 持续性。低/负 = 每次更新在追移动靶（θ 变了、批次也换了，低值属正常漂移范围）。\n"
-             "恒等校验：完整 buffer 上 mean_i(g_i·Ĝ) = ‖G‖；采样估计即 grad_sig_proj_mean，二者偏差大说明采样不具代表性。"},
+             "恒等校验：完整 buffer 上 mean_i(g_i·Ĝ) = ‖G‖；采样估计即 grad_sig_proj_mean，偏差超出 std(p)/√n 标准误才说明采样不具代表性（‖G‖≪std(p) 时相对偏差大属正常噪声）。"},
     {"title": "Per-frame Support vs G (θ_old)",
      "keys": ["stats.grad_sig_frac_neg", "stats.grad_sig_proj_std",
               "stats.grad_sig_norm_med"],

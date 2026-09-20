@@ -651,14 +651,18 @@ def _grad_signal_diag(
     )
 
     # Sampling-representativeness check: mean(p_i) is an unbiased
-    # estimator of ‖G‖ — a large deviation means the sampled gradients
-    # no longer represent the full buffer (or a bookkeeping bug).
-    dev = abs(proj_mean - gnorm) / max(gnorm, 1e-12)
-    if dev > 0.05:
+    # estimator of ‖G‖ with standard error std(p)/√n — a deviation far
+    # beyond that noise floor means the sample is unrepresentative (or
+    # a bookkeeping bug).  A fixed relative threshold would false-fire
+    # whenever ‖G‖ is small next to the projection spread (low-
+    # coherence early training: ‖G‖~0.2 vs std(p)~6), so z-score it.
+    se = proj_std / float(np.sqrt(max(n_valid, 1)))
+    z = abs(proj_mean - gnorm) / max(se, 1e-12)
+    if z > 4.0:
         diagnostics.append(
             f"  [gradsig] mean(p_i)={proj_mean:.4g} deviates "
-            f"{dev * 100:.1f}% from ||G||={gnorm:.4g} — sampled frames "
-            f"under-represent the full-buffer gradient"
+            f"{z:.1f}σ (SE={se:.4g}) from ||G||={gnorm:.4g} — sampled "
+            f"frames under-represent the full-buffer gradient"
         )
 
     # 2D histogram: rows = per-frame norm bins, cols = cos bins — frame
