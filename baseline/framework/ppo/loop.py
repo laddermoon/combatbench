@@ -56,7 +56,12 @@ from .experiment import (
     PPOParams,
     TrainablePolicy,
 )
-from .trainer import PPOBuffer, ppo_update, set_seed
+from .trainer import (
+    PPOBuffer,
+    _GRADSIG_TAIL_SPAN,
+    ppo_update,
+    set_seed,
+)
 from .dumpkit.dump_request import poll_dump_request
 from .dumpkit.dump_capture import capture_dump
 
@@ -70,6 +75,23 @@ from .dumpkit.dump_capture import capture_dump
 # ---------------------------------------------------------------------------
 
 _EXP_METRIC_KEY = re.compile(r"^[a-z0-9_]+$")
+
+
+def _gradsig_with_tail(
+    interior_edges: np.ndarray, tail_bins: int,
+) -> np.ndarray:
+    """Append log-spaced tail bins above the interior norm range.
+
+    The complete norm axis = interior bins + tail bins; the tail spans
+    ``_GRADSIG_TAIL_SPAN`` above the interior top edge so high-norm
+    pairs keep bin resolution instead of saturating one overflow cell.
+    """
+    interior_edges = np.asarray(interior_edges, dtype=np.float64)
+    if tail_bins <= 0:
+        return interior_edges
+    hi = float(interior_edges[-1])
+    tail = np.geomspace(hi, hi * _GRADSIG_TAIL_SPAN, tail_bins + 1)[1:]
+    return np.concatenate([interior_edges, tail])
 
 
 def _sanitize_exp_metrics(m: Any) -> Dict[str, float]:
@@ -568,16 +590,23 @@ def train_ppo(
             ):
                 gradsig_dir = run_dir / "gradsig"
                 meta_path = gradsig_dir / "meta.json"
+                tail_bins = pp.grad_sig_norm_tail_bins
                 norm_edges: Optional[np.ndarray] = None
                 if pp.grad_sig_norm_lo > 0.0:
-                    norm_edges = np.geomspace(
+                    # Configured interior range — append the tail bins
+                    # so the high-norm tail is still resolved.
+                    interior = np.geomspace(
                         pp.grad_sig_norm_lo, pp.grad_sig_norm_hi,
                         pp.grad_sig_norm_bins + 1,
                     )
+                    norm_edges = _gradsig_with_tail(interior, tail_bins)
                 elif meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())
-                        if meta.get("norm_bins") == pp.grad_sig_norm_bins:
+                        if (
+                            meta.get("norm_bins") == pp.grad_sig_norm_bins
+                            and meta.get("tail_bins", 0) == tail_bins
+                        ):
                             norm_edges = np.asarray(
                                 meta["norm_edges"], dtype=np.float64,
                             )
@@ -589,6 +618,7 @@ def train_ppo(
                     cos_bins=pp.grad_sig_cos_bins,
                     norm_bins=pp.grad_sig_norm_bins,
                     norm_edges=norm_edges,
+                    tail_bins=tail_bins,
                     seed=cp.seed * 1000003 + u,
                 )
 
@@ -643,6 +673,7 @@ def train_ppo(
                             "sample_size": pp.grad_sig_sample_size,
                             "cos_bins": pp.grad_sig_cos_bins,
                             "norm_bins": pp.grad_sig_norm_bins,
+                            "tail_bins": pp.grad_sig_norm_tail_bins,
                             "cos_edges": payload["cos_edges"].tolist(),
                             "norm_edges": payload["norm_edges"].tolist(),
                             "norm_edges_derived": bool(

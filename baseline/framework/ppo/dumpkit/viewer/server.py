@@ -523,6 +523,16 @@ class RunData:
                     ),
                     "n_under": int(d["n_under"]) if "n_under" in d else 0,
                     "n_over": int(d["n_over"]) if "n_over" in d else 0,
+                    # Row layout: last n_tail_bins rows of hist are the
+                    # resolved tail bins.  0/None = all rows interior
+                    # (old artifacts).
+                    "n_interior_bins": (
+                        int(d["n_interior_bins"])
+                        if "n_interior_bins" in d else len(d["hist"])
+                    ),
+                    "n_tail_bins": (
+                        int(d["n_tail_bins"]) if "n_tail_bins" in d else 0
+                    ),
                     "pair_mean": float(d["pair_mean"]),
                     "pair_std": float(d["pair_std"]),
                     "norm_quantiles": d["norm_quantiles"].tolist(),

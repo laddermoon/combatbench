@@ -96,6 +96,10 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # first computed update, then freeze in gradsig/meta.json.
     grad_sig_norm_lo: float = 0.0
     grad_sig_norm_hi: float = 0.0
+    # Resolved tail bins above the interior norm range (~4 decades) —
+    # the high-norm pairs are the most diagnostic, so they get real
+    # resolution instead of one overflow row.  0 disables.
+    grad_sig_norm_tail_bins: int = 8
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -184,6 +188,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
             grad_sig_norm_bins=self.grad_sig_norm_bins,
             grad_sig_norm_lo=self.grad_sig_norm_lo,
             grad_sig_norm_hi=self.grad_sig_norm_hi,
+            grad_sig_norm_tail_bins=self.grad_sig_norm_tail_bins,
         )
 
     # ------------------------------------------------------------------

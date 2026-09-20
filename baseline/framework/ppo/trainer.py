@@ -440,6 +440,12 @@ def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
 # backwards per diagnostic run, gated by PPOParams.grad_sig_sample_size.
 # ---------------------------------------------------------------------------
 
+# Tail span for the gradient-signal norm axis: tail bins log-span this
+# factor ABOVE the interior top edge (4 decades — far beyond plausible
+# gradient-norm drift; the top overflow row is a pure safety net).
+_GRADSIG_TAIL_SPAN = 1e4
+
+
 def _grad_signal_diag(
     actor: TrainablePolicy,
     obs_t: torch.Tensor,
@@ -593,13 +599,25 @@ def _grad_signal_diag(
     b_np = b_vals.cpu().numpy().astype(np.float64)
     cos_edges = np.linspace(-1.0, 1.0, spec.cos_bins + 1)
     if spec.norm_edges is not None:
+        # Complete axis provided (frozen meta.json or configured range
+        # with tail already appended by the loop).
         norm_edges = np.asarray(spec.norm_edges, dtype=np.float64)
         edges_derived = False
     else:
         b_pos = b_np[b_np > 0.0]
-        lo = max(float(b_pos.min()) * 0.9, 1e-300)
-        hi = float(b_pos.max()) * 1.1
-        norm_edges = np.geomspace(lo, hi, spec.norm_bins + 1)
+        # Interior anchors at quantiles, not min/max: the interior top
+        # is p99×1.25 so the heavy tail (the most diagnostic pairs —
+        # strong gradients agreeing or conflicting) lands in the
+        # resolved tail bins instead of saturating the top interior bin.
+        lo = max(float(np.quantile(b_pos, 0.01)) * 0.8, 1e-300)
+        hi = float(np.quantile(b_pos, 0.99)) * 1.25
+        interior = np.geomspace(lo, hi, spec.norm_bins + 1)
+        if spec.tail_bins > 0:
+            tail = np.geomspace(
+                hi, hi * _GRADSIG_TAIL_SPAN, spec.tail_bins + 1)[1:]
+            norm_edges = np.concatenate([interior, tail])
+        else:
+            norm_edges = interior
         edges_derived = True
     hist, _, _ = np.histogram2d(b_np, c_np, bins=[norm_edges, cos_edges])
     # Pairs whose geomean norm falls outside the (possibly frozen) norm
@@ -627,8 +645,11 @@ def _grad_signal_diag(
         "n_nonfinite": np.array(n_nonfinite, dtype=np.int64),
         "n_pairs": np.array(n_pairs, dtype=np.int64),
         "n_pairs_in_hist": np.array(n_pairs_in_hist, dtype=np.int64),
-        # Cosine-only rows for pairs outside the norm range — rendered
-        # as the heatmap's top (over) / bottom (under) extra rows.
+        # Row layout marker for the viewer: the last ``n_tail_bins``
+        # rows of ``hist`` are the resolved tail bins; hist_under /
+        # hist_over are the extreme edge rows outside the whole axis.
+        "n_interior_bins": np.array(spec.norm_bins, dtype=np.int64),
+        "n_tail_bins": np.array(spec.tail_bins, dtype=np.int64),
         "hist_under": hist_under.astype(np.int64),
         "hist_over": hist_over.astype(np.int64),
         "n_under": np.array(n_under, dtype=np.int64),

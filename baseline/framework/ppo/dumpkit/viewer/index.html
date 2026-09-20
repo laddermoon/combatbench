@@ -2374,16 +2374,26 @@
           ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
         }
       }
-      // Dashed separators between the under/overflow edge rows and the
-      // interior norm bins.
+      // Separators: under|interior, interior|tail, top-bin|over.
       if (hasExt) {
+        const nInt = +gs.n_interior_bins || (nRows - 2);
+        const nTail = +gs.n_tail_bins || 0;
+        const seamRows = [1, nRows - 1];           // under / over edges
+        if (nTail > 0) seamRows.push(nInt + 1);    // interior | tail
         ctx.strokeStyle = 'rgba(255,255,255,0.35)';
         ctx.setLineDash([4, 3]);
-        [1, nRows - 1].forEach(r => {
+        seamRows.forEach(r => {
           const y = mt + (nRows - r) * chh;
           ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
         });
         ctx.setLineDash([]);
+        // Label the tail region so the eye reads the axis segments.
+        if (nTail > 0) {
+          ctx.fillStyle = 'rgba(138,147,166,0.8)';
+          ctx.textAlign = 'left';
+          ctx.fillText('tail', px + pw + 2 > W - 24 ? px + pw - 22 : px + pw + 2,
+                       mt + (nTail / 2) * chh + 3);
+        }
       }
       // Row-marginal strip: share of pairs living in each norm bin.
       for (let r = 0; r < nRows; r++) {

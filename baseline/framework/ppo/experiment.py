@@ -461,6 +461,11 @@ class PPOParams:
     # gradsig/meta.json for cross-update comparability.
     grad_sig_norm_lo: float = 0.0
     grad_sig_norm_hi: float = 0.0
+    # Extra log-spaced bins appended ABOVE the interior norm range —
+    # the high-energy tail is where strong-gradient agreement/conflict
+    # lives, so it gets real bin resolution (spanning ~4 decades)
+    # instead of a single overflow row.  0 disables tail bins.
+    grad_sig_norm_tail_bins: int = 8
 
     def __post_init__(self):
         # Validate at construction so misconfiguration surfaces immediately
@@ -494,6 +499,11 @@ class PPOParams:
             raise ValueError(
                 f"grad_sig_norm_bins must be >= 4, "
                 f"got {self.grad_sig_norm_bins}."
+            )
+        if self.grad_sig_norm_tail_bins < 0:
+            raise ValueError(
+                f"grad_sig_norm_tail_bins must be >= 0, "
+                f"got {self.grad_sig_norm_tail_bins}."
             )
         if (self.grad_sig_norm_lo > 0.0) != (self.grad_sig_norm_hi > 0.0):
             raise ValueError(
@@ -530,10 +540,16 @@ class GradDiagSpec:
             size by the trainer).
         cos_bins: Number of cosine-similarity bins, fixed linear
             coverage of [-1, 1].
-        norm_bins: Number of geometric-mean-norm bins (log-spaced).
-        norm_edges: ``(norm_bins + 1,)`` fixed norm-bin edges, or
-            ``None`` to derive them from this update's pair norms
-            (the loop then freezes them in ``gradsig/meta.json``).
+        norm_bins: Number of geometric-mean-norm bins in the INTERIOR
+            range (log-spaced).
+        norm_edges: Complete norm-bin edge array — ``norm_bins``
+            interior edges plus ``tail_bins`` tail edges appended above
+            (built by the loop from config or meta.json), or ``None``
+            to derive both from this update's pair norms (the loop then
+            freezes them in ``gradsig/meta.json``).
+        tail_bins: Number of log-spaced tail bins above the interior
+            top edge (see ``GRADSIG_TAIL_SPAN``); the high-norm tail is
+            resolved rather than flattened into one overflow row.
         seed: Seed for the dedicated sampling RNG — never touches the
             training RNG stream.
     """
@@ -542,6 +558,7 @@ class GradDiagSpec:
     cos_bins: int
     norm_bins: int
     norm_edges: Optional[np.ndarray]
+    tail_bins: int
     seed: int
 
 

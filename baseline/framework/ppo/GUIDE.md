@@ -332,7 +332,7 @@ class MyExperiment(ExperimentPPO):
 
 `policy_stats` 子 dict 是策略贡献的诊断，**无跨策略族契约**，当作 opaque hints 用。
 
-`grad_sig_*` 一组来自框架内置的 **ADV 梯度信号诊断**（θ_old 截面）：每个 update 的 epoch 循环开始前，从 buffer 抽样若干帧，逐帧计算真实训练损失（surrogate + floor）的改善方向梯度，再统计两两配对 `s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)` 的均值（共识强度）与标准差（配对离散度）。二维分布写入 `run_dir/gradsig/uNNNNN.npz`，可在 Debug Viewer 的 Update Detail 查看热力图。语义边界与读法见 `metric_catalog.py` 的 hint——注意共识强不代表 ADV 正确，std 高也可能是范数不均而非冲突。配置项（`PPOParams`，实验侧经 `CombatExperimentPPOBase` 同名类属性暴露）：`grad_sig_sample_size`（默认 1000，0 关闭）、`grad_sig_interval`（每 N 个 update 跑一次）、`grad_sig_cos_bins`/`grad_sig_norm_bins`（直方图分辨率）、`grad_sig_norm_lo`/`grad_sig_norm_hi`（显式 norm 分箱范围；0=首个 update 自动派生并冻结到 `gradsig/meta.json`）。通用逐帧 autograd 路径参考耗时：96k 参数 actor、N=1000 时 CPU 约 2.5s/update（`grad_sig_time_s` 可自查）。
+`grad_sig_*` 一组来自框架内置的 **ADV 梯度信号诊断**（θ_old 截面）：每个 update 的 epoch 循环开始前，从 buffer 抽样若干帧，逐帧计算真实训练损失（surrogate + floor）的改善方向梯度，再统计两两配对 `s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)` 的均值（共识强度）与标准差（配对离散度）。二维分布写入 `run_dir/gradsig/uNNNNN.npz`，可在 Debug Viewer 的 Update Detail 查看热力图。语义边界与读法见 `metric_catalog.py` 的 hint——注意共识强不代表 ADV 正确，std 高也可能是范数不均而非冲突。配置项（`PPOParams`，实验侧经 `CombatExperimentPPOBase` 同名类属性暴露）：`grad_sig_sample_size`（默认 1000，0 关闭）、`grad_sig_interval`（每 N 个 update 跑一次）、`grad_sig_cos_bins`/`grad_sig_norm_bins`（直方图分辨率）、`grad_sig_norm_lo`/`grad_sig_norm_hi`（显式 norm 分箱范围；0=首个 update 自动派生并冻结到 `gradsig/meta.json`）、`grad_sig_norm_tail_bins`（内部区间之上的尾部解析 bin 数，默认 8，覆盖 ~4 个数量级——高范数配对保留结构而非压成单行）。通用逐帧 autograd 路径参考耗时：96k 参数 actor、N=1000 时 CPU 约 2.5s/update（`grad_sig_time_s` 可自查）。
 
 ### 5.3 Per-channel GAE lambda
 
