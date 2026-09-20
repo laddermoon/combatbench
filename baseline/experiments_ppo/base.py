@@ -88,18 +88,14 @@ class CombatExperimentPPOBase(ExperimentPPO):
     grad_sig_sample_size: int = 1000
     # Run the diagnostic every N-th update (1 = every update).
     grad_sig_interval: int = 1
-    # Histogram resolution: cosine bins over [-1,1] × log-spaced
-    # geomean-norm bins.
+    # Histogram resolution: cosine bins over [-1,1] × equal-mass
+    # quantile geomean-norm bins (each row ~1/norm_bins of pairs).
     grad_sig_cos_bins: int = 64
-    grad_sig_norm_bins: int = 32
+    grad_sig_norm_bins: int = 40
     # Explicit norm-bin range (log-spaced); both 0 = auto-derive on the
     # first computed update, then freeze in gradsig/meta.json.
     grad_sig_norm_lo: float = 0.0
     grad_sig_norm_hi: float = 0.0
-    # Resolved tail bins above the interior norm range (~4 decades) —
-    # the high-norm pairs are the most diagnostic, so they get real
-    # resolution instead of one overflow row.  0 disables.
-    grad_sig_norm_tail_bins: int = 8
 
     # --- Rollout schedule ---
     episodes_per_update: int = 256 * 8
@@ -188,7 +184,6 @@ class CombatExperimentPPOBase(ExperimentPPO):
             grad_sig_norm_bins=self.grad_sig_norm_bins,
             grad_sig_norm_lo=self.grad_sig_norm_lo,
             grad_sig_norm_hi=self.grad_sig_norm_hi,
-            grad_sig_norm_tail_bins=self.grad_sig_norm_tail_bins,
         )
 
     # ------------------------------------------------------------------

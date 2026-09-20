@@ -2963,7 +2963,7 @@ def test_grad_signal_diag_math_and_determinism():
     actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
     floor, coef = 0.3, 0.05
     spec = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
-                        norm_edges=None, tail_bins=4, seed=7)
+                        norm_edges=None, seed=7)
     diags: list = []
     scalars, hist, dump = _grad_signal_diag(
         actor, obs, act, ei, w, adv, fw, floor, coef, spec,
@@ -3003,16 +3003,14 @@ def test_grad_signal_diag_math_and_determinism():
     assert int(hist["hist"].sum()) == int(hist["n_pairs"]) == 40 * 39 // 2
     assert int(hist["n_pairs_in_hist"]) == int(hist["n_pairs"])
     assert bool(hist["norm_edges_derived"])
-    # hist rows = interior bins + tail bins (8 + 4 here).
-    assert hist["hist"].shape == (12, 16)
+    # Quantile bins: hist rows = len(norm_edges) - 1 (8 requested).
+    assert hist["hist"].shape == (len(hist["norm_edges"]) - 1, 16)
     assert len(hist["cos_edges"]) == 17
-    # Combined edge array: interior (8) + tail (4) → 13 edges.
-    assert len(hist["norm_edges"]) == 13
-    assert int(hist["n_interior_bins"]) == 8
-    assert int(hist["n_tail_bins"]) == 4
-    # Edges strictly increasing; tail starts at the interior top.
+    # Edges strictly increasing; quantile bins are equal-mass at the
+    # derivation update — row sums within a loose factor of uniform.
     assert np.all(np.diff(hist["norm_edges"]) > 0)
-    assert hist["norm_edges"][8] > hist["norm_edges"][7]
+    rs = hist["hist"].sum(axis=1)
+    assert rs.max() <= rs.min() * 2 + 4
     assert len(hist["norm_quantiles"]) == 5
     # Under/overflow cosine rows always present; every pair is binned
     # into hist or an edge row.
@@ -3044,7 +3042,7 @@ def test_grad_signal_diag_sum_matches_batch_grad():
     actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
     floor, coef = 0.3, 0.05
     spec = GradDiagSpec(sample_size=30, cos_bins=8, norm_bins=4,
-                        norm_edges=None, tail_bins=4, seed=11)
+                        norm_edges=None, seed=11)
     _, _, dump = _grad_signal_diag(
         actor, obs, act, ei, w, adv, fw, floor, coef, spec,
         torch.device("cpu"), [])
@@ -3082,7 +3080,7 @@ def test_grad_signal_diag_norm_overflow_rows():
     actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
     # Deliberately narrow frozen norm range → most pairs overflow.
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
-                        norm_edges=np.geomspace(1e-6, 1e-4, 5), tail_bins=0, seed=7)
+                        norm_edges=np.geomspace(1e-6, 1e-4, 5), seed=7)
     scalars, hist, dump = _grad_signal_diag(
         actor, obs, act, ei, w, adv, fw, 0.3, 0.05, spec,
         torch.device("cpu"), [])
@@ -3107,7 +3105,7 @@ def test_grad_signal_diag_zero_adv_no_hist():
     actor, obs, act, ei, w, _, fw = _grad_diag_inputs()
     adv = torch.zeros(60)
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
-                        norm_edges=None, tail_bins=4, seed=7)
+                        norm_edges=None, seed=7)
     scalars, hist, dump = _grad_signal_diag(
         actor, obs, act, ei, w, adv, fw,
         uncertainty_floor=0.0, uncertainty_coef=0.0,
@@ -3154,15 +3152,15 @@ def test_ppo_update_grad_diag_e2e():
         dump_callback=lambda s, d: collector.__setitem__(s, d),
         grad_diag=GradDiagSpec(
             sample_size=32, cos_bins=8, norm_bins=4,
-            norm_edges=None, tail_bins=4, seed=5),
+            norm_edges=None, seed=5),
     )
 
     assert stats.grad_sig_frames > 0
     assert stats.grad_sig_payload is not None
     hist = stats.grad_sig_payload["hist"]
-    # interior (4) + tail (4) rows
-    assert hist.shape == (8, 8)
-    assert int(stats.grad_sig_payload["n_tail_bins"]) == 4
+    # hist rows = derived quantile edges - 1 (4 requested)
+    assert hist.shape == (
+        len(stats.grad_sig_payload["norm_edges"]) - 1, 8)
     assert stats.grad_sig_payload["n_pairs"] == \
         stats.grad_sig_frames * (stats.grad_sig_frames - 1) // 2
 
@@ -3225,7 +3223,7 @@ def test_grad_signal_diag_no_trainable_params_raises():
     for p in actor.parameters():
         p.requires_grad_(False)
     spec = GradDiagSpec(sample_size=10, cos_bins=8, norm_bins=4,
-                        norm_edges=None, tail_bins=0, seed=1)
+                        norm_edges=None, seed=1)
     try:
         _grad_signal_diag(
             actor, obs, act, ei, w, adv, fw,

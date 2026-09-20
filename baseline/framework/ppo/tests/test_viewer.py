@@ -734,8 +734,8 @@ def test_run_data_grad_sig():
         # JSON-serializable
         json.dumps(out, allow_nan=False)
 
-        # Old-format artifact without the edge-row fields → None fields,
-        # not an exception (viewer skips the extra rows).
+        # Old-format artifact missing the edge-row fields → treated as
+        # unavailable (KeyError caught → None → API reports no data).
         np.savez_compressed(
             gs_dir / "u00043.npz",
             hist=hist, cos_edges=cos_edges, norm_edges=norm_edges,
@@ -746,10 +746,7 @@ def test_run_data_grad_sig():
             norm_quantiles=np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
             norm_edges_derived=np.array(True),
         )
-        old = rd.grad_sig(43)
-        assert old is not None
-        assert old["hist_under"] is None and old["hist_over"] is None
-        assert old["n_under"] == 0 and old["n_over"] == 0
+        assert rd.grad_sig(43) is None
 
         # Missing artifact → None (→ API 404 + available: false)
         assert rd.grad_sig(44) is None

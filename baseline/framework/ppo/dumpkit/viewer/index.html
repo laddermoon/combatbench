@@ -2256,8 +2256,8 @@
     html += '<div class="data-table" style="margin-top:16px"><h3>ADV Gradient Signal (θ_old)</h3>' +
       '<div class="desc" style="color:var(--muted);font-size:12px;margin-bottom:8px">' +
       'Pairwise distribution of per-frame training-loss gradients over sampled frames — ' +
-      'x: cos(g_i,g_j), y: √(‖g_i‖·‖g_j‖) (log-spaced bins), color: pair share. ' +
-      'Left strip: share of pairs per norm bin. Edge rows collect pairs above/below the (frozen) norm range.</div>' +
+      'x: cos(g_i,g_j), y: √(‖g_i‖·‖g_j‖) (equal-mass quantile bins, frozen at first update), color: pair share. ' +
+      'Bottom strip: P(cos) marginal. Edge rows collect pairs that drifted beyond the frozen axis.</div>' +
       '<div id="gradsig-panel"><div class="loading">loading…</div></div></div>';
     $('update-detail-container').innerHTML = html;
     loadGradSigPanel(u.update);
@@ -2298,22 +2298,28 @@
       return;
     }
     const ce = gs.cos_edges || [], ne = gs.norm_edges || [];
-    // Extended matrix: dedicated under/overflow rows (bottom / top) for
-    // pairs outside the frozen norm range — they keep cosine info.
-    const hasExt = Array.isArray(gs.hist_under) && Array.isArray(gs.hist_over);
-    const Hx = hasExt ? [gs.hist_under, ...H, gs.hist_over] : H;
+    // Extended matrix: dedicated under/overflow rows (bottom / top)
+    // collect pairs beyond the frozen quantile axis — empty at the
+    // derivation update, they fill as gradient norms drift.
+    const Hx = [gs.hist_under, ...H, gs.hist_over];
     const nRows = Hx.length;
+    const nInt = nRows - 2;
     const rowSum = Hx.map(r => (r || []).reduce((a, b) => a + (+b || 0), 0));
+    const colSum = Array.from({length: nCols}, (_, c) =>
+      Hx.reduce((a, r) => a + (+r[c] || 0), 0));
     const total = rowSum.reduce((a, b) => a + b, 0);
     const maxRow = Math.max(1, ...rowSum);
+    const maxCol = Math.max(1, ...colSum);
     const nUnder = +gs.n_under || 0, nOver = +gs.n_over || 0;
     const fmtE = v => (v === 0 ? '0' : (+v).toExponential(1));
+    // Row r: 0 = under edge, nRows-1 = over edge, else quantile bin r-1.
     const rowLabel = r => {
-      if (hasExt && r === 0) return `< ${fmtE(ne[0])}`;
-      if (hasExt && r === nRows - 1) return `≥ ${fmtE(ne[ne.length - 1])}`;
-      const k = hasExt ? r - 1 : r;
-      return `[${fmtE(ne[k])}, ${fmtE(ne[k + 1])})`;
+      if (r === 0) return `< ${fmtE(ne[0])}`;
+      if (r === nRows - 1) return `≥ ${fmtE(ne[ne.length - 1])}`;
+      return `[${fmtE(ne[r - 1])}, ${fmtE(ne[r])})`;
     };
+    const rowPct = r => r <= 0 || r > nInt ? '' :
+      `p${Math.round(100 * (r - 1) / nInt)}–p${Math.round(100 * r / nInt)}`;
 
     el.innerHTML = '';
     const head = document.createElement('div');
@@ -2323,10 +2329,7 @@
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
       ` · pairs ${(+gs.n_pairs).toLocaleString()}` +
-      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} in edge rows</span> (<${nUnder} / ≥${nOver})` :
-        // old-format artifacts have no edge rows — pairs were dropped
-        (!hasExt && gs.n_pairs_in_hist < gs.n_pairs)
-          ? ` · <span style="color:var(--orange)">${gs.n_pairs - gs.n_pairs_in_hist} pairs out of norm range (not shown)</span>` : '') +
+      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} beyond axis</span> (<${nUnder} / ≥${nOver})` : '') +
       ` · mean <b>${(+gs.pair_mean).toExponential(2)}</b>` +
       ` · std <b>${(+gs.pair_std).toExponential(2)}</b>` +
       (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');
@@ -2341,7 +2344,7 @@
     ctrl.appendChild(btn); ctrl.appendChild(cap);
     el.appendChild(ctrl);
 
-    const W = 720, Hh = 380, ml = 96, mr = 10, mt = 6, mb = 40, mg = 26;
+    const W = 720, Hh = 430, ml = 96, mr = 10, mt = 6, xmh = 44, mb = 34, mg = 26;
     const canvas = document.createElement('canvas');
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W * dpr; canvas.height = Hh * dpr;
@@ -2355,7 +2358,7 @@
 
     let mode = 'joint';
     const px = ml + mg;
-    const pw = W - px - mr, ph = Hh - mt - mb;
+    const pw = W - px - mr, ph = Hh - mt - xmh - mb;
     const cw = pw / nCols, chh = ph / nRows;
     const cellProb = (r, c) => mode === 'joint'
       ? (total ? (Hx[r][c] || 0) / total : 0)
@@ -2366,7 +2369,7 @@
       let maxV = 0;
       for (let r = 0; r < nRows; r++) for (let c = 0; c < nCols; c++) maxV = Math.max(maxV, cellProb(r, c));
       if (maxV <= 0) maxV = 1;
-      // Heat cells — row 0 (lowest geomean norm / underflow) at bottom.
+      // Heat cells — row 0 (underflow) at bottom, over at top.
       for (let r = 0; r < nRows; r++) {
         for (let c = 0; c < nCols; c++) {
           const k = Math.pow(cellProb(r, c) / maxV, 0.35);
@@ -2374,28 +2377,17 @@
           ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
         }
       }
-      // Separators: under|interior, interior|tail, top-bin|over.
-      if (hasExt) {
-        const nInt = +gs.n_interior_bins || (nRows - 2);
-        const nTail = +gs.n_tail_bins || 0;
-        const seamRows = [1, nRows - 1];           // under / over edges
-        if (nTail > 0) seamRows.push(nInt + 1);    // interior | tail
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.setLineDash([4, 3]);
-        seamRows.forEach(r => {
-          const y = mt + (nRows - r) * chh;
-          ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
-        });
-        ctx.setLineDash([]);
-        // Label the tail region so the eye reads the axis segments.
-        if (nTail > 0) {
-          ctx.fillStyle = 'rgba(138,147,166,0.8)';
-          ctx.textAlign = 'left';
-          ctx.fillText('tail', px + pw + 2 > W - 24 ? px + pw - 22 : px + pw + 2,
-                       mt + (nTail / 2) * chh + 3);
-        }
-      }
-      // Row-marginal strip: share of pairs living in each norm bin.
+      // Dashed seams separating the under/over edge rows.
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.setLineDash([4, 3]);
+      [1, nRows - 1].forEach(r => {
+        const y = mt + (nRows - r) * chh;
+        ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      // Row-marginal strip: share of pairs per norm row.  Equal-mass
+      // quantile bins make it flat at the derivation update; deviation
+      // from flat later = gradient-norm drift across updates.
       for (let r = 0; r < nRows; r++) {
         const w = (rowSum[r] / maxRow) * (mg - 4);
         ctx.fillStyle = 'rgba(79,163,255,0.75)';
@@ -2403,42 +2395,68 @@
       }
       ctx.strokeStyle = '#252a36';
       ctx.strokeRect(px, mt, pw, ph);
+
+      // X-marginal strip below the heatmap: the aggregate pairwise
+      // cosine distribution P(cos) over all sampled pairs — always the
+      // joint marginal regardless of the normalization toggle.
+      const xy = mt + ph;
+      for (let c = 0; c < nCols; c++) {
+        const h = (colSum[c] / maxCol) * (xmh - 8);
+        ctx.fillStyle = 'rgba(79,163,255,0.6)';
+        ctx.fillRect(px + c * cw, xy + xmh - h, Math.ceil(cw), h);
+      }
+      ctx.strokeStyle = '#252a36';
+      ctx.strokeRect(px, xy, pw, xmh);
+
       ctx.fillStyle = '#8a93a6';
       ctx.font = '10px ui-monospace, monospace';
       ctx.textAlign = 'center';
       [-1, -0.5, 0, 0.5, 1].forEach(v => {
         const c = Math.max(0, Math.min(nCols - 1e-9, (v - ce[0]) / (ce[nCols] - ce[0]) * nCols));
         const x = px + c * cw;
-        ctx.fillText(String(v), x, mt + ph + 14);
+        ctx.fillText(String(v), x, xy + xmh + 14);
         ctx.strokeStyle = 'rgba(37,42,54,0.7)';
-        ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, mt + ph); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, xy + xmh); ctx.stroke();
       });
-      ctx.fillText('cos(g_i, g_j)', px + pw / 2, mt + ph + 30);
+      ctx.fillText('cos(g_i, g_j)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
+      // Y ticks: percentile anchors (quantile bins) + edge-row marks.
       ctx.textAlign = 'right';
-      [0, Math.floor(nRows / 2), nRows - 1].forEach(r => {
-        ctx.fillText(rowLabel(r), px - mg - 4, mt + (nRows - 1 - r) * chh + chh / 2 + 3);
+      ctx.fillText(`<${fmtE(ne[0])}`, px - mg - 4, mt + ph - chh / 2 + 3);
+      ctx.fillText(`≥${fmtE(ne[ne.length - 1])}`, px - mg - 4, mt + chh / 2 + 3);
+      [0.25, 0.5, 0.75, 1.0].forEach(q => {
+        const k = Math.min(ne.length - 2, Math.round(q * nInt));
+        const y = mt + (nInt - k) * chh + chh / 2 + 3;
+        ctx.fillText(`p${Math.round(q * 100)} ${fmtE(ne[k])}`, px - mg - 4, y);
       });
       ctx.save();
       ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
       ctx.textAlign = 'center';
-      ctx.fillText('√(‖g_i‖·‖g_j‖)', 0, 0);
+      ctx.fillText('√(‖g_i‖·‖g_j‖)  (quantile bins)', 0, 0);
       ctx.restore();
       cap.textContent = mode === 'joint'
         ? 'joint probability (all cells sum to 1)'
-        : 'per-norm-bin conditional (each row sums to 1)';
-      btn.textContent = mode === 'joint' ? 'joint → per-norm-bin' : 'per-norm-bin → joint';
+        : 'per-row conditional (each norm bin row sums to 1)';
+      btn.textContent = mode === 'joint' ? 'joint → per-row' : 'per-row → joint';
     }
     btn.addEventListener('click', () => { mode = mode === 'joint' ? 'cond' : 'joint'; draw(); });
     canvas.addEventListener('mousemove', e => {
       const rect = canvas.getBoundingClientRect();
       const c = Math.floor((e.clientX - rect.left - px) / cw);
       const rTop = Math.floor((e.clientY - rect.top - mt) / chh);
-      if (c < 0 || c >= nCols || rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
+      if (c < 0 || c >= nCols) { tip.textContent = ''; return; }
+      if (rTop >= nRows && e.clientY - rect.top <= mt + ph + xmh) {
+        // Hovering the X-marginal strip.
+        tip.textContent =
+          `P(cos) marginal: cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
+          `pairs=${colSum[c].toLocaleString()} · ${(100 * colSum[c] / (total || 1)).toFixed(2)}%`;
+        return;
+      }
+      if (rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
       const r = nRows - 1 - rTop;
       const cnt = Hx[r][c] || 0;
       tip.textContent =
         `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
-        `norm ${rowLabel(r)} · ` +
+        `norm ${rowLabel(r)} ${rowPct(r)} · ` +
         `pairs=${cnt.toLocaleString()} · joint ${(100 * cnt / (total || 1)).toFixed(3)}%` +
         ` · row-cond ${(rowSum[r] ? 100 * cnt / rowSum[r] : 0).toFixed(2)}%` +
         ` · row share ${(100 * rowSum[r] / (total || 1)).toFixed(2)}%`;

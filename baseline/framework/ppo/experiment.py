@@ -454,18 +454,16 @@ class PPOParams:
     grad_sig_sample_size: int = 1000
     grad_sig_interval: int = 1
     grad_sig_cos_bins: int = 64
-    grad_sig_norm_bins: int = 32
+    # Norm bins are equal-mass quantile bins derived from the first
+    # computed update (~1/norm_bins of pairs per row), then frozen in
+    # gradsig/meta.json.  The top bins naturally span the heavy tail.
+    grad_sig_norm_bins: int = 40
     # Norm-bin range for the histogram's second axis.  Both > 0 (and
     # hi > lo) pins an explicit log-spaced range; otherwise the range is
     # derived on the first computed update and frozen in
     # gradsig/meta.json for cross-update comparability.
     grad_sig_norm_lo: float = 0.0
     grad_sig_norm_hi: float = 0.0
-    # Extra log-spaced bins appended ABOVE the interior norm range —
-    # the high-energy tail is where strong-gradient agreement/conflict
-    # lives, so it gets real bin resolution (spanning ~4 decades)
-    # instead of a single overflow row.  0 disables tail bins.
-    grad_sig_norm_tail_bins: int = 8
 
     def __post_init__(self):
         # Validate at construction so misconfiguration surfaces immediately
@@ -499,11 +497,6 @@ class PPOParams:
             raise ValueError(
                 f"grad_sig_norm_bins must be >= 4, "
                 f"got {self.grad_sig_norm_bins}."
-            )
-        if self.grad_sig_norm_tail_bins < 0:
-            raise ValueError(
-                f"grad_sig_norm_tail_bins must be >= 0, "
-                f"got {self.grad_sig_norm_tail_bins}."
             )
         if (self.grad_sig_norm_lo > 0.0) != (self.grad_sig_norm_hi > 0.0):
             raise ValueError(
@@ -540,16 +533,13 @@ class GradDiagSpec:
             size by the trainer).
         cos_bins: Number of cosine-similarity bins, fixed linear
             coverage of [-1, 1].
-        norm_bins: Number of geometric-mean-norm bins in the INTERIOR
-            range (log-spaced).
-        norm_edges: Complete norm-bin edge array — ``norm_bins``
-            interior edges plus ``tail_bins`` tail edges appended above
-            (built by the loop from config or meta.json), or ``None``
-            to derive both from this update's pair norms (the loop then
-            freezes them in ``gradsig/meta.json``).
-        tail_bins: Number of log-spaced tail bins above the interior
-            top edge (see ``GRADSIG_TAIL_SPAN``); the high-norm tail is
-            resolved rather than flattened into one overflow row.
+        norm_bins: Number of geometric-mean-norm bins.  When edges are
+            derived (``norm_edges=None``) they are equal-mass quantile
+            bins — each row holds ~1/norm_bins of the pairs.
+        norm_edges: Complete norm-bin edge array (frozen meta.json or
+            configured range), or ``None`` to derive quantile edges
+            from this update's pair norms (the loop then freezes them
+            in ``gradsig/meta.json``).
         seed: Seed for the dedicated sampling RNG — never touches the
             training RNG stream.
     """
@@ -558,7 +548,6 @@ class GradDiagSpec:
     cos_bins: int
     norm_bins: int
     norm_edges: Optional[np.ndarray]
-    tail_bins: int
     seed: int
 
 

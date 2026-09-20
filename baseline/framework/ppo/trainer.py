@@ -440,12 +440,6 @@ def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
 # backwards per diagnostic run, gated by PPOParams.grad_sig_sample_size.
 # ---------------------------------------------------------------------------
 
-# Tail span for the gradient-signal norm axis: tail bins log-span this
-# factor ABOVE the interior top edge (4 decades — far beyond plausible
-# gradient-norm drift; the top overflow row is a pure safety net).
-_GRADSIG_TAIL_SPAN = 1e4
-
-
 def _grad_signal_diag(
     actor: TrainablePolicy,
     obs_t: torch.Tensor,
@@ -599,35 +593,36 @@ def _grad_signal_diag(
     b_np = b_vals.cpu().numpy().astype(np.float64)
     cos_edges = np.linspace(-1.0, 1.0, spec.cos_bins + 1)
     if spec.norm_edges is not None:
-        # Complete axis provided (frozen meta.json or configured range
-        # with tail already appended by the loop).
+        # Frozen axis from meta.json, or an explicit configured range.
         norm_edges = np.asarray(spec.norm_edges, dtype=np.float64)
         edges_derived = False
     else:
+        # Equal-mass quantile bins: every row holds ~1/norm_bins of the
+        # derivation update's pairs, so resolution concentrates where
+        # the mass is and the heavy tail stays resolved (the top bins
+        # are wide but always populated).  Edges freeze into meta.json —
+        # later drift shows up as mass migrating toward the edge rows.
         b_pos = b_np[b_np > 0.0]
-        # Interior anchors at quantiles, not min/max: the interior top
-        # is p99×1.25 so the heavy tail (the most diagnostic pairs —
-        # strong gradients agreeing or conflicting) lands in the
-        # resolved tail bins instead of saturating the top interior bin.
-        lo = max(float(np.quantile(b_pos, 0.01)) * 0.8, 1e-300)
-        hi = float(np.quantile(b_pos, 0.99)) * 1.25
-        interior = np.geomspace(lo, hi, spec.norm_bins + 1)
-        if spec.tail_bins > 0:
-            tail = np.geomspace(
-                hi, hi * _GRADSIG_TAIL_SPAN, spec.tail_bins + 1)[1:]
-            norm_edges = np.concatenate([interior, tail])
-        else:
-            norm_edges = interior
+        norm_edges = np.unique(
+            np.quantile(b_pos, np.linspace(0.0, 1.0, spec.norm_bins + 1))
+        ).astype(np.float64)
+        if norm_edges.size < 2:
+            v = float(b_pos[0]) if b_pos.size else 1.0
+            norm_edges = np.array([v * 0.9, v * 1.1], dtype=np.float64)
         edges_derived = True
     hist, _, _ = np.histogram2d(b_np, c_np, bins=[norm_edges, cos_edges])
     # Pairs whose geomean norm falls outside the (possibly frozen) norm
     # range are NOT dropped — they keep their cosine information in
     # dedicated under/overflow rows so drift in gradient magnitude stays
     # visible without breaking cross-update bin comparability.
+    # Edge semantics match histogram2d: interior bins are [a,b) except
+    # the last, which is closed [a,b] — so "under" is strict < and
+    # "over" is strict > (a pair exactly on the outer edge belongs to
+    # the boundary bin, not the edge row).
     hist_under = np.histogram(
         c_np[b_np < norm_edges[0]], bins=cos_edges)[0]
     hist_over = np.histogram(
-        c_np[b_np >= norm_edges[-1]], bins=cos_edges)[0]
+        c_np[b_np > norm_edges[-1]], bins=cos_edges)[0]
     n_pairs = int(s_vals.numel())
     n_pairs_in_hist = int(hist.sum())
     n_over = int(hist_over.sum())
@@ -645,11 +640,9 @@ def _grad_signal_diag(
         "n_nonfinite": np.array(n_nonfinite, dtype=np.int64),
         "n_pairs": np.array(n_pairs, dtype=np.int64),
         "n_pairs_in_hist": np.array(n_pairs_in_hist, dtype=np.int64),
-        # Row layout marker for the viewer: the last ``n_tail_bins``
-        # rows of ``hist`` are the resolved tail bins; hist_under /
-        # hist_over are the extreme edge rows outside the whole axis.
-        "n_interior_bins": np.array(spec.norm_bins, dtype=np.int64),
-        "n_tail_bins": np.array(spec.tail_bins, dtype=np.int64),
+        # Cosine profiles of pairs outside the (frozen) norm axis —
+        # empty at the derivation update, they fill as gradient norms
+        # drift beyond the initial [min, max]: a free drift detector.
         "hist_under": hist_under.astype(np.int64),
         "hist_over": hist_over.astype(np.int64),
         "n_under": np.array(n_under, dtype=np.int64),

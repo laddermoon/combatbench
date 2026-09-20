@@ -510,29 +510,12 @@ class RunData:
                     "n_excluded": int(d["n_excluded"]),
                     "n_pairs": int(d["n_pairs"]),
                     "n_pairs_in_hist": int(d["n_pairs_in_hist"]),
-                    # Under/overflow cosine rows (absent in npz written
-                    # before this field existed → frontend skips the
-                    # extra rows).
-                    "hist_under": (
-                        d["hist_under"].tolist() if "hist_under" in d
-                        else None
-                    ),
-                    "hist_over": (
-                        d["hist_over"].tolist() if "hist_over" in d
-                        else None
-                    ),
-                    "n_under": int(d["n_under"]) if "n_under" in d else 0,
-                    "n_over": int(d["n_over"]) if "n_over" in d else 0,
-                    # Row layout: last n_tail_bins rows of hist are the
-                    # resolved tail bins.  0/None = all rows interior
-                    # (old artifacts).
-                    "n_interior_bins": (
-                        int(d["n_interior_bins"])
-                        if "n_interior_bins" in d else len(d["hist"])
-                    ),
-                    "n_tail_bins": (
-                        int(d["n_tail_bins"]) if "n_tail_bins" in d else 0
-                    ),
+                    # Under/overflow edge rows — cosine profiles of
+                    # pairs outside the frozen quantile norm axis.
+                    "hist_under": d["hist_under"].tolist(),
+                    "hist_over": d["hist_over"].tolist(),
+                    "n_under": int(d["n_under"]),
+                    "n_over": int(d["n_over"]),
                     "pair_mean": float(d["pair_mean"]),
                     "pair_std": float(d["pair_std"]),
                     "norm_quantiles": d["norm_quantiles"].tolist(),
