@@ -120,15 +120,15 @@ c_i = cos(g_i, G)    (纯方向)
 
 产出：
 
-- **标量**（进 `__RAW_STATS__` → `stats.*`）：`grad_sig_gnorm`
+- **标量**（进 `__RAW_STATS__` → `stats.*`）：`grad_sig_g_norm`
   （‖G‖，净拉力强度）、`grad_sig_coherence`（‖G‖/mean‖g_i‖，总
   拉力聚合后的存活率）、`grad_sig_proj_mean`（mean p_i，‖G‖ 的
   采样估计——恒等式 mean(p)=‖G‖ 在完整 buffer 上严格成立，偏差
   大说明采样不具代表性）、`grad_sig_proj_std`（逐帧获益离散
-  度）、`grad_sig_frac_neg`（P(p<0)，被本 update 方向牺牲的帧
+  度）、`grad_sig_frac_neg_mean`（P(p<0)，被本 update 方向牺牲的帧
   占比）、`grad_sig_dir_cos`（cos(G_u, G_{u−1})，合力方向跨
   update 持续性；G 由 loop 在内存中传递不落盘）、
-  `grad_sig_frames`（有效帧数）、`grad_sig_norm_mean`（mean‖g_i‖，
+  `grad_sig_n_frames`（有效帧数）、`grad_sig_norm_mean`（mean‖g_i‖，
   coherence 的分母）、`grad_sig_time_s`。
 - **二维分布 + 逐帧数组**（`run_dir/gradsig/uNNNNN.npz`）：
   `hist[norm_bin, cos_bin]` 帧计数 + 分箱边界 + 覆盖计数 +

@@ -328,7 +328,7 @@ class MyExperiment(ExperimentPPO):
 > （``CommonParams`` 字段），``build_jobs`` 会自动读取它。这和
 > ``exploration()`` 返回的 ``ExplorationSpec`` 是两个独立的旋钮。
 
-`UpdateStats` 的框架保证字段（跨策略族稳定）：`kl_mean`, `kl_max`, `clip_frac_mean`, `policy_loss_mean`, `grad_norm_actor_mean`, `epochs_done`, `uncertainty_mean`, `grad_sig_gnorm`, `grad_sig_coherence`, `grad_sig_proj_mean`, `grad_sig_proj_std`, `grad_sig_frac_neg`, `grad_sig_dir_cos`, `grad_sig_frames`, `grad_sig_norm_mean`, `grad_sig_time_s`, per-channel 的 `critic_loss_mean`/`explained_variance`/`confidence`/`adv_mean`/`adv_std`/`adv_min`/`adv_max`/`ret_mean`/`ret_std`/`ret_min`/`ret_max` 等。命名规则：聚合量必带 `_mean`/`_max`/`_min`/`_std` 尾标；`post_*` 前缀 = update 结束后的端点截面，无前缀 = update 过程中的 minibatch 采样。
+`UpdateStats` 的框架保证字段（跨策略族稳定）：`kl_mean`, `kl_max`, `clip_frac_mean`, `policy_loss_mean`, `grad_norm_actor_mean`, `epochs_done`, `uncertainty_mean`, `grad_sig_g_norm`, `grad_sig_coherence`, `grad_sig_proj_mean`, `grad_sig_proj_std`, `grad_sig_frac_neg_mean`, `grad_sig_dir_cos`, `grad_sig_n_frames`, `grad_sig_norm_mean`, `grad_sig_time_s`, per-channel 的 `critic_loss_mean`/`explained_variance`/`confidence`/`adv_mean`/`adv_std`/`adv_min`/`adv_max`/`ret_mean`/`ret_std`/`ret_min`/`ret_max` 等。命名规则：聚合量必带 `_mean`/`_max`/`_min`/`_std` 尾标；`post_*` 前缀 = update 结束后的端点截面，无前缀 = update 过程中的 minibatch 采样。
 
 `policy_stats` 子 dict 是策略贡献的诊断，**无跨策略族契约**，当作 opaque hints 用。
 

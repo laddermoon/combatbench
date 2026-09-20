@@ -449,7 +449,7 @@ class PPOParams:
     # via chunked backwards, then samples ``grad_sig_sample_size``
     # buffer frames and computes each frame's improvement-direction
     # gradient g_i.  Per-frame projection p_i = g_i·G_hat and cosine
-    # yield the run-level scalars (grad_sig_gnorm / coherence /
+    # yield the run-level scalars (grad_sig_g_norm / coherence /
     # proj_mean / proj_std / frac_neg / dir_cos) plus a compact 2D
     # histogram (per-frame-norm-bin x cos-bin) and raw per-frame arrays
     # stored under run_dir/gradsig/.
@@ -797,7 +797,7 @@ class UpdateStats:
     #   improvement-direction gradient; p_i = g_i·G_hat is its signed
     #   projection onto the aggregate direction (positive = helped by
     #   this update's direction, negative = sacrificed).
-    # grad_sig_gnorm: ||G|| — net pull strength (intended, pre-optimizer).
+    # grad_sig_g_norm: ||G|| — net pull strength (intended, pre-optimizer).
     # grad_sig_coherence: ||G|| / mean||g_i|| — fraction of total pull
     #   surviving aggregation (1 = all frames pull the same way; the
     #   denominator is estimated from the sampled frames).
@@ -805,24 +805,24 @@ class UpdateStats:
     #   estimator of ||G|| (identity mean(p)=||G|| on the full buffer);
     #   large deviation flags a sampling/implementation problem.
     # grad_sig_proj_std: std(p_i) — dispersion of per-frame gains.
-    # grad_sig_frac_neg: P(p_i < 0) — fraction of frames this update's
+    # grad_sig_frac_neg_mean: P(p_i < 0) — fraction of frames this update's
     #   direction sacrifices.
     # grad_sig_dir_cos: cos(G_u, G_{u-1}) — direction persistence of the
     #   aggregate pull across updates; 0 on the first diagnostic update.
-    # grad_sig_frames: sampled frames with a usable (finite, nonzero-norm)
+    # grad_sig_n_frames: sampled frames with a usable (finite, nonzero-norm)
     #   gradient — coverage indicator; compare with the configured
     #   sample size.
     # grad_sig_norm_mean: mean per-frame gradient L2 norm over the
     #   sample — the coherence denominator: ‖G‖ = mean‖g_i‖ × coherence.
     # grad_sig_time_s: wall time of the diagnostic inside ppo_update.
     # All zeros when the diagnostic is disabled or did not run this update.
-    grad_sig_gnorm: float = 0.0
+    grad_sig_g_norm: float = 0.0
     grad_sig_coherence: float = 0.0
     grad_sig_proj_mean: float = 0.0
     grad_sig_proj_std: float = 0.0
-    grad_sig_frac_neg: float = 0.0
+    grad_sig_frac_neg_mean: float = 0.0
     grad_sig_dir_cos: float = 0.0
-    grad_sig_frames: int = 0
+    grad_sig_n_frames: int = 0
     grad_sig_norm_mean: float = 0.0
     grad_sig_time_s: float = 0.0
     # Non-logged transport for the per-update histogram artifact — the
@@ -896,13 +896,13 @@ class UpdateStats:
             policy_stats={},
             diagnostics=[],
             is_empty=True,
-            grad_sig_gnorm=0.0,
+            grad_sig_g_norm=0.0,
             grad_sig_coherence=0.0,
             grad_sig_proj_mean=0.0,
             grad_sig_proj_std=0.0,
-            grad_sig_frac_neg=0.0,
+            grad_sig_frac_neg_mean=0.0,
             grad_sig_dir_cos=0.0,
-            grad_sig_frames=0,
+            grad_sig_n_frames=0,
             grad_sig_norm_mean=0.0,
             grad_sig_time_s=0.0,
         )
@@ -956,13 +956,13 @@ class UpdateStats:
             "post_clip_dloss_gain": self.post_clip_dloss_gain,
             "post_clip_dloss_harm": self.post_clip_dloss_harm,
             # --- ADV gradient-signal diagnostic ---
-            "grad_sig_gnorm": self.grad_sig_gnorm,
+            "grad_sig_g_norm": self.grad_sig_g_norm,
             "grad_sig_coherence": self.grad_sig_coherence,
             "grad_sig_proj_mean": self.grad_sig_proj_mean,
             "grad_sig_proj_std": self.grad_sig_proj_std,
-            "grad_sig_frac_neg": self.grad_sig_frac_neg,
+            "grad_sig_frac_neg_mean": self.grad_sig_frac_neg_mean,
             "grad_sig_dir_cos": self.grad_sig_dir_cos,
-            "grad_sig_frames": self.grad_sig_frames,
+            "grad_sig_n_frames": self.grad_sig_n_frames,
             "grad_sig_norm_mean": self.grad_sig_norm_mean,
             "grad_sig_time_s": self.grad_sig_time_s,
         })

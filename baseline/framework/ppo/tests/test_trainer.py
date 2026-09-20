@@ -2990,7 +2990,7 @@ def test_grad_signal_diag_math_and_determinism():
     gnorm = float(G_full.norm().item())
     np.testing.assert_allclose(
         g_vec, G_full.numpy(), rtol=1e-4, atol=1e-6)
-    assert abs(scalars["grad_sig_gnorm"] - gnorm) < 1e-5
+    assert abs(scalars["grad_sig_g_norm"] - gnorm) < 1e-5
 
     # Full-buffer identity: mean_i(g_i·Ĝ) = ‖G‖ exactly.
     G_hat = G_full / G_full.norm()
@@ -3009,12 +3009,12 @@ def test_grad_signal_diag_math_and_determinism():
     # mean‖g‖ over the sample; dir_cos = 0 without prev_g.
     assert abs(scalars["grad_sig_proj_mean"] - proj_man.mean()) < 1e-5
     assert abs(scalars["grad_sig_proj_std"] - proj_man.std()) < 1e-5
-    assert abs(scalars["grad_sig_frac_neg"]
+    assert abs(scalars["grad_sig_frac_neg_mean"]
                - float((proj_man < 0).mean())) < 1e-6
     assert abs(scalars["grad_sig_coherence"]
                - gnorm / float(nv.mean().item())) < 1e-5
     assert scalars["grad_sig_dir_cos"] == 0.0
-    assert scalars["grad_sig_frames"] == 40
+    assert scalars["grad_sig_n_frames"] == 40
     assert abs(scalars["grad_sig_norm_mean"]
                - float(nv.mean().item())) < 1e-5
     assert scalars["grad_sig_time_s"] > 0.0
@@ -3117,7 +3117,7 @@ def test_grad_signal_diag_norm_overflow_rows():
     # Every valid frame is accounted for: interior + under + over.
     assert int(hist["n_frames_in_hist"]) + n_over + int(hist["n_under"]) \
         == n_valid
-    assert scalars["grad_sig_frames"] == 40
+    assert scalars["grad_sig_n_frames"] == 40
     print("test_grad_signal_diag_norm_overflow_rows: PASS")
 
 
@@ -3134,8 +3134,8 @@ def test_grad_signal_diag_zero_adv_no_hist():
         actor, obs, act, ei, w, adv, fw,
         uncertainty_floor=0.0, uncertainty_coef=0.0, mb_size=17,
         spec=spec, device=torch.device("cpu"), diagnostics=[])
-    assert scalars["grad_sig_frames"] == 0
-    assert scalars["grad_sig_gnorm"] == 0.0
+    assert scalars["grad_sig_n_frames"] == 0
+    assert scalars["grad_sig_g_norm"] == 0.0
     assert hist is None
     # G is the zero vector but still returned so the loop can chain it
     # into next update's dir_cos (guarded by its norm there).
@@ -3182,22 +3182,22 @@ def test_ppo_update_grad_diag_e2e():
             norm_edges=None, seed=5),
     )
 
-    assert stats.grad_sig_frames > 0
+    assert stats.grad_sig_n_frames > 0
     assert stats.grad_sig_payload is not None
     hist = stats.grad_sig_payload["hist"]
     # hist rows = derived quantile edges - 1 (4 requested)
     assert hist.shape == (
         len(stats.grad_sig_payload["norm_edges"]) - 1, 8)
-    assert stats.grad_sig_payload["n_valid"] == stats.grad_sig_frames
+    assert stats.grad_sig_payload["n_valid"] == stats.grad_sig_n_frames
     # Aggregate gradient rides back for the loop's prev_g chaining.
     assert stats.grad_sig_gvec is not None
-    assert stats.grad_sig_gnorm > 0.0
+    assert stats.grad_sig_g_norm > 0.0
 
     # to_log_dict carries the scalars for __RAW_STATS__ flattening.
     d = stats.to_log_dict()
-    for k in ("grad_sig_gnorm", "grad_sig_coherence", "grad_sig_proj_mean",
-              "grad_sig_proj_std", "grad_sig_frac_neg", "grad_sig_dir_cos",
-              "grad_sig_frames", "grad_sig_norm_mean", "grad_sig_time_s"):
+    for k in ("grad_sig_g_norm", "grad_sig_coherence", "grad_sig_proj_mean",
+              "grad_sig_proj_std", "grad_sig_frac_neg_mean", "grad_sig_dir_cos",
+              "grad_sig_n_frames", "grad_sig_norm_mean", "grad_sig_time_s"):
         assert k in d, k
 
     # The dump stage was emitted with per-frame detail.
@@ -3238,8 +3238,8 @@ def test_ppo_update_grad_diag_disabled():
         device=torch.device("cpu"),
         dump_callback=lambda s, d: collector.__setitem__(s, d),
     )
-    assert stats.grad_sig_frames == 0
-    assert stats.grad_sig_gnorm == 0.0
+    assert stats.grad_sig_n_frames == 0
+    assert stats.grad_sig_g_norm == 0.0
     assert stats.grad_sig_time_s == 0.0
     assert stats.grad_sig_payload is None
     assert "gradsig" not in collector

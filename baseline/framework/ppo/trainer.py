@@ -480,13 +480,13 @@ def _grad_signal_diag(
     """
     t_start = time.perf_counter()
     scalars: Dict[str, Any] = {
-        "grad_sig_gnorm": 0.0,
+        "grad_sig_g_norm": 0.0,
         "grad_sig_coherence": 0.0,
         "grad_sig_proj_mean": 0.0,
         "grad_sig_proj_std": 0.0,
-        "grad_sig_frac_neg": 0.0,
+        "grad_sig_frac_neg_mean": 0.0,
         "grad_sig_dir_cos": 0.0,
-        "grad_sig_frames": 0,
+        "grad_sig_n_frames": 0,
         "grad_sig_norm_mean": 0.0,
         "grad_sig_time_s": 0.0,
     }
@@ -550,7 +550,7 @@ def _grad_signal_diag(
         g_sum = g_sum + _flat_grad(scalar_c.sum())
     G_full = g_sum / float(n)
     gnorm = float(G_full.norm().item())
-    scalars["grad_sig_gnorm"] = gnorm
+    scalars["grad_sig_g_norm"] = gnorm
     # Direction persistence vs the previous diagnostic update's G.
     if spec.prev_g is not None:
         prev = torch.as_tensor(
@@ -600,7 +600,7 @@ def _grad_signal_diag(
             f"  [gradsig] {n_nonfinite}/{n_samp} sampled frames produced "
             f"non-finite gradients — excluded from stats"
         )
-    scalars["grad_sig_frames"] = n_valid
+    scalars["grad_sig_n_frames"] = n_valid
 
     dump_payload: Dict[str, np.ndarray] = {
         "sampled_idx": sel,
@@ -644,7 +644,7 @@ def _grad_signal_diag(
     scalars["grad_sig_norm_mean"] = mean_gnorm
     scalars["grad_sig_proj_mean"] = proj_mean
     scalars["grad_sig_proj_std"] = proj_std
-    scalars["grad_sig_frac_neg"] = frac_neg
+    scalars["grad_sig_frac_neg_mean"] = frac_neg
     scalars["grad_sig_coherence"] = (
         gnorm / mean_gnorm if mean_gnorm > 1e-12 else 0.0
     )
@@ -1187,13 +1187,13 @@ def ppo_update(
     # stats.grad_sig_payload for the loop to persist under gradsig/
     # (a 2048-bin matrix must not go into the __RAW_STATS__ JSON line).
     grad_sig_scalars: Dict[str, Any] = {
-        "grad_sig_gnorm": 0.0,
+        "grad_sig_g_norm": 0.0,
         "grad_sig_coherence": 0.0,
         "grad_sig_proj_mean": 0.0,
         "grad_sig_proj_std": 0.0,
-        "grad_sig_frac_neg": 0.0,
+        "grad_sig_frac_neg_mean": 0.0,
         "grad_sig_dir_cos": 0.0,
-        "grad_sig_frames": 0,
+        "grad_sig_n_frames": 0,
         "grad_sig_norm_mean": 0.0,
         "grad_sig_time_s": 0.0,
     }
@@ -1998,13 +1998,13 @@ def ppo_update(
         critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,
-        grad_sig_gnorm=float(grad_sig_scalars["grad_sig_gnorm"]),
+        grad_sig_g_norm=float(grad_sig_scalars["grad_sig_g_norm"]),
         grad_sig_coherence=float(grad_sig_scalars["grad_sig_coherence"]),
         grad_sig_proj_mean=float(grad_sig_scalars["grad_sig_proj_mean"]),
         grad_sig_proj_std=float(grad_sig_scalars["grad_sig_proj_std"]),
-        grad_sig_frac_neg=float(grad_sig_scalars["grad_sig_frac_neg"]),
+        grad_sig_frac_neg_mean=float(grad_sig_scalars["grad_sig_frac_neg_mean"]),
         grad_sig_dir_cos=float(grad_sig_scalars["grad_sig_dir_cos"]),
-        grad_sig_frames=int(grad_sig_scalars["grad_sig_frames"]),
+        grad_sig_n_frames=int(grad_sig_scalars["grad_sig_n_frames"]),
         grad_sig_norm_mean=float(grad_sig_scalars["grad_sig_norm_mean"]),
         grad_sig_time_s=float(grad_sig_scalars["grad_sig_time_s"]),
         grad_sig_payload=grad_sig_payload,
