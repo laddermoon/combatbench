@@ -2293,35 +2293,51 @@
   }
 
   function renderGradSig(el, gs) {
-    const H = gs.hist || [];
-    const nCols = H.length ? (H[0] || []).length : 0;
-    if (!H.length || !nCols) {
-      el.innerHTML = '<div class="muted" style="font-size:12px">empty histogram</div>';
+    // Re-bin from the raw per-frame arrays so the norm axis is always
+    // THIS update's own equal-mass quantile bins — the stored
+    // hist/norm_edges (frozen at the first update) are ignored.
+    const gnArr = gs.grad_norm || [], cosArr = gs.cos || [],
+          valArr = gs.valid || [];
+    const gn = [], cs = [];
+    for (let i = 0; i < gnArr.length; i++) {
+      if (!valArr[i]) continue;
+      const v = +gnArr[i], c = +cosArr[i];
+      if (isFinite(v) && isFinite(c)) { gn.push(v); cs.push(c); }
+    }
+    if (!gn.length) {
+      el.innerHTML = '<div class="muted" style="font-size:12px">no per-frame gradient data for this update</div>';
       return;
     }
-    const ce = gs.cos_edges || [], ne = gs.norm_edges || [];
-    // Extended matrix: dedicated under/overflow rows (bottom / top)
-    // collect frames beyond the frozen quantile axis — empty at the
-    // derivation update, they fill as gradient norms drift.
-    const Hx = [gs.hist_under, ...H, gs.hist_over];
-    const nRows = Hx.length;
-    const nInt = nRows - 2;
-    const rowSum = Hx.map(r => (r || []).reduce((a, b) => a + (+b || 0), 0));
+    const nFr = gn.length;
+    const ce = gs.cos_edges || [];
+    const nCols = ce.length > 1 ? ce.length - 1 : 64;
+    const cosLo = ce.length > 1 ? +ce[0] : -1,
+          cosHi = ce.length > 1 ? +ce[nCols] : 1;
+    // nY equal-mass bins (~2.5% each) over this update's norms.
+    const nY = 40;
+    const sorted = gn.slice().sort((a, b) => a - b);
+    const qe = [];
+    for (let j = 0; j < nY; j++)
+      qe.push(sorted[Math.min(nFr - 1, Math.floor(j * nFr / nY))]);
+    qe.push(sorted[nFr - 1] * (1 + 1e-9) + 1e-12);  // last bin closed
+    const H = Array.from({length: nY}, () => new Array(nCols).fill(0));
+    for (let i = 0; i < nFr; i++) {
+      let yb = 0;
+      while (yb < nY - 1 && gn[i] >= qe[yb + 1]) yb++;
+      const xb = Math.max(0, Math.min(nCols - 1,
+        Math.floor((cs[i] - cosLo) / (cosHi - cosLo) * nCols)));
+      H[yb][xb]++;
+    }
+    const nRows = nY;
+    const rowSum = H.map(r => r.reduce((a, b) => a + b, 0));
     const colSum = Array.from({length: nCols}, (_, c) =>
-      Hx.reduce((a, r) => a + (+(r || [])[c] || 0), 0));
-    const total = rowSum.reduce((a, b) => a + b, 0);
-    const maxRow = Math.max(1, ...rowSum);
+      H.reduce((a, r) => a + r[c], 0));
+    const total = nFr;
     const maxCol = Math.max(1, ...colSum);
-    const nUnder = +gs.n_under || 0, nOver = +gs.n_over || 0;
     const fmtE = v => (v === 0 ? '0' : (+v).toExponential(1));
-    // Row r: 0 = under edge, nRows-1 = over edge, else quantile bin r-1.
-    const rowLabel = r => {
-      if (r === 0) return `< ${fmtE(ne[0])}`;
-      if (r === nRows - 1) return `≥ ${fmtE(ne[ne.length - 1])}`;
-      return `[${fmtE(ne[r - 1])}, ${fmtE(ne[r])})`;
-    };
-    const rowPct = r => r <= 0 || r > nInt ? '' :
-      `p${Math.round(100 * (r - 1) / nInt)}–p${Math.round(100 * r / nInt)}`;
+    const rowLabel = r => `[${fmtE(qe[r])}, ${fmtE(qe[r + 1])})`;
+    const rowPct = r =>
+      `p${+(100 * r / nY).toFixed(1)}–p${+(100 * (r + 1) / nY).toFixed(1)}`;
 
     el.innerHTML = '';
     const head = document.createElement('div');
@@ -2338,7 +2354,6 @@
     head.innerHTML =
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
-      ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} beyond axis</span> (<${nUnder} / ≥${nOver})` : '') +
       ` · ‖G‖ <b>${gnorm.toExponential(2)}</b>` +
       ` · coherence <b>${(+gs.coherence).toFixed(3)}</b>` +
       ` · mean(p) ${pmean.toExponential(2)} ±${pse.toExponential(1)}` +
@@ -2357,7 +2372,7 @@
     ctrl.appendChild(btn); ctrl.appendChild(cap);
     el.appendChild(ctrl);
 
-    const W = 720, Hh = 430, ml = 96, mr = 78, mt = 6, xmh = 44, mb = 34, mg = 26;
+    const W = 720, Hh = 430, ml = 96, mr = 78, mt = 6, xmh = 44, mb = 34, mg = 4;
     const canvas = document.createElement('canvas');
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W * dpr; canvas.height = Hh * dpr;
@@ -2374,7 +2389,7 @@
     const pw = W - px - mr, ph = Hh - mt - xmh - mb;
     const cw = pw / nCols, chh = ph / nRows;
     const cellProb = (r, c) => {
-      const v = +((Hx[r] || [])[c]) || 0;
+      const v = +((H[r] || [])[c]) || 0;
       return mode === 'joint'
         ? (total ? v / total : 0)
         : (rowSum[r] ? v / rowSum[r] : 0);
@@ -2411,22 +2426,6 @@
           ctx.fillStyle = cellColor(kOf(cellProb(r, c)));
           ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
         }
-      }
-      // Dashed seams separating the under/over edge rows.
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-      ctx.setLineDash([4, 3]);
-      [1, nRows - 1].forEach(r => {
-        const y = mt + (nRows - r) * chh;
-        ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
-      });
-      ctx.setLineDash([]);
-      // Row-marginal strip: share of frames per norm row.  Equal-mass
-      // quantile bins make it flat at the derivation update; deviation
-      // from flat later = gradient-norm drift across updates.
-      for (let r = 0; r < nRows; r++) {
-        const w = (rowSum[r] / maxRow) * (mg - 4);
-        ctx.fillStyle = 'rgba(79,163,255,0.75)';
-        ctx.fillRect(px - 4 - w, mt + (nRows - 1 - r) * chh, w, Math.ceil(chh));
       }
       ctx.strokeStyle = '#252a36';
       ctx.strokeRect(px, mt, pw, ph);
@@ -2486,19 +2485,14 @@
       });
       ctx.fillText('cos(g_i, G)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
       // Y ticks: percentile anchors (quantile bins) + edge-row marks.
-      // Y ticks: percentile edges.  ne[e] is the boundary between
-      // interior bins e-1 and e — the label sits exactly on that
-      // boundary (y = top of interior region + (nInt+1-e) rows).
-      // The p100 edge is the over-row threshold itself, labeled
-      // "≥… (p100)" on the edge row instead of duplicating it.
+      // Y ticks: every 4th quantile edge → p0, p10, …, p100 — the
+      // labels sit exactly on bin boundaries (edge e is the boundary
+      // between bins e-1 and e at y = mt + (nY-e)*chh).
       ctx.textAlign = 'right';
-      ctx.fillText(`<${fmtE(ne[0])}`, px - mg - 4, mt + ph - chh / 2 + 3);
-      ctx.fillText(`≥${fmtE(ne[ne.length - 1])} (p100)`, px - mg - 4, mt + chh / 2 + 3);
-      [0.25, 0.5, 0.75].forEach(q => {
-        const e = Math.round(q * nInt);
-        const y = mt + (nInt + 1 - e) * chh;
-        ctx.fillText(`p${Math.round(q * 100)} ${fmtE(ne[e])}`, px - mg - 4, y + 3);
-      });
+      for (let e = 0; e <= nY; e += 4) {
+        const y = mt + (nY - e) * chh;
+        ctx.fillText(`p${e * 100 / nY} ${fmtE(qe[e])}`, px - mg - 4, y + 3);
+      }
       ctx.save();
       ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
       ctx.textAlign = 'center';
@@ -2524,7 +2518,7 @@
       }
       if (rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
       const r = nRows - 1 - rTop;
-      const cnt = (Hx[r] || [])[c] || 0;
+      const cnt = (H[r] || [])[c] || 0;
       tip.textContent =
         `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
         `norm ${rowLabel(r)} ${rowPct(r)} · ` +
@@ -2535,6 +2529,75 @@
     canvas.addEventListener('mouseleave', () => { tip.textContent = ''; });
     draw();
 
+    // --- ‖g_i‖ distribution: 1D linear-bin histogram ---------------
+    // Equal-width linear bins over this update's norm range — shows
+    // the actual distribution shape (the 2D plot's quantile axis
+    // flattens it by construction).  Bar heights are log10(count) so
+    // the heavy right tail stays visible next to the peak.
+    {
+      const lo = sorted[0], hi = sorted[nFr - 1];
+      const nB = 64, bw = (hi - lo) / nB || 1;
+      const cnt = new Array(nB).fill(0);
+      gn.forEach(v => cnt[Math.max(0, Math.min(nB - 1,
+        Math.floor((v - lo) / bw)))]++);
+      const maxC = Math.max(1, ...cnt);
+      const gHh = 148, gph = 92, gmT = 10;
+      const gcap = document.createElement('div');
+      gcap.style.cssText = 'font-size:12px;color:var(--muted);margin:10px 0 4px';
+      gcap.innerHTML = '<b>‖g_i‖ distribution</b> — per-frame gradient norm (linear bins, log-height)';
+      el.appendChild(gcap);
+      const gcv = document.createElement('canvas');
+      gcv.width = W * dpr; gcv.height = gHh * dpr;
+      gcv.style.cssText = `width:${W}px;height:${gHh}px;max-width:100%;cursor:crosshair`;
+      el.appendChild(gcv);
+      const g2 = gcv.getContext('2d');
+      g2.scale(dpr, dpr);
+      const gbw = pw / nB;
+      const lg = Math.max(Math.log10(maxC), 1e-6);
+      const hOf = c => c <= 0 ? 0 : (Math.log10(c) / lg) * gph;
+      for (let b = 0; b < nB; b++) {
+        g2.fillStyle = 'rgba(79,163,255,0.75)';
+        g2.fillRect(px + b * gbw, gmT + gph - hOf(cnt[b]),
+          Math.ceil(gbw), hOf(cnt[b]));
+      }
+      // Count ticks (log positions) on the left edge of the plot.
+      g2.fillStyle = '#8a93a6';
+      g2.font = '10px ui-monospace, monospace';
+      g2.textAlign = 'right';
+      [1, 10, 100, 1000].filter(c => c <= maxC).forEach(c => {
+        const y = gmT + gph - hOf(c);
+        g2.fillText(String(c), px - 4, y + 3);
+        g2.strokeStyle = 'rgba(37,42,54,0.6)';
+        g2.beginPath(); g2.moveTo(px, y); g2.lineTo(px + pw, y); g2.stroke();
+      });
+      // Median marker.
+      const med = sorted[nFr >> 1];
+      const mx = px + (med - lo) / (hi - lo || 1) * pw;
+      g2.strokeStyle = 'rgba(255,255,255,0.55)';
+      g2.setLineDash([4, 3]);
+      g2.beginPath(); g2.moveTo(mx, gmT); g2.lineTo(mx, gmT + gph); g2.stroke();
+      g2.setLineDash([]);
+      g2.strokeStyle = '#252a36';
+      g2.strokeRect(px, gmT, pw, gph);
+      g2.textAlign = 'center';
+      g2.fillText(fmtE(lo), px + 22, gmT + gph + 13);
+      g2.fillText(`med ${fmtE(med)}`, mx, gmT + gph + 13);
+      g2.fillText(fmtE(hi), px + pw - 22, gmT + gph + 13);
+      g2.fillText('‖g_i‖  (per-frame gradient norm)', px + pw / 2, gmT + gph + 28);
+      const gtip = document.createElement('div');
+      gtip.style.cssText = 'font-size:11px;color:var(--muted);margin-top:2px;min-height:14px;font-family:ui-monospace,monospace';
+      el.appendChild(gtip);
+      gcv.addEventListener('mousemove', e => {
+        const rect = gcv.getBoundingClientRect();
+        const b = Math.floor((e.clientX - rect.left - px) / gbw);
+        if (b < 0 || b >= nB) { gtip.textContent = ''; return; }
+        gtip.textContent =
+          `‖g‖∈[${fmtE(lo + b * bw)}, ${fmtE(lo + (b + 1) * bw)}) · ` +
+          `frames=${cnt[b].toLocaleString()} · ${(100 * cnt[b] / nFr).toFixed(2)}%`;
+      });
+      gcv.addEventListener('mouseleave', () => { gtip.textContent = ''; });
+    }
+
     // --- Projection strip: distribution of p_i = g_i·Ĝ -------------
     // Positive p_i = frame i's objective improves under the batch
     // direction; negative = sacrificed by this update.  Bins are
@@ -2542,9 +2605,9 @@
     // cannot flatten the histogram; out-of-range values clip into the
     // edge bins (counts preserved).
     const pv = [];
-    const validArr = gs.valid || [], projArr = gs.proj || [];
+    const projArr = gs.proj || [];
     for (let i = 0; i < projArr.length; i++)
-      if (validArr[i] && projArr[i] !== null && isFinite(+projArr[i]))
+      if (valArr[i] && projArr[i] !== null && isFinite(+projArr[i]))
         pv.push(+projArr[i]);
     if (pv.length) {
       const qOf = (a, q) => {
@@ -2559,7 +2622,11 @@
         pbins[Math.max(0, Math.min(nB - 1, Math.floor(t)))]++;
       });
       const pMax = Math.max(1, ...pbins);
-      const pHh = 92, pph = 56, pmt = 6;
+      const pcap = document.createElement('div');
+      pcap.style.cssText = 'font-size:12px;color:var(--muted);margin:10px 0 4px';
+      pcap.innerHTML = '<b>Projection p_i = g_i·Ĝ</b> — signed projection onto the batch direction (symmetric linear bins, log-height)';
+      el.appendChild(pcap);
+      const pHh = 170, pph = 112, pmt = 10;
       const pcv = document.createElement('canvas');
       pcv.width = W * dpr; pcv.height = pHh * dpr;
       pcv.style.cssText = `width:${W}px;height:${pHh}px;max-width:100%;cursor:crosshair`;
@@ -2567,20 +2634,30 @@
       const pctx = pcv.getContext('2d');
       pctx.scale(dpr, dpr);
       const bcw = pw / nB;
+      const plg = Math.max(Math.log10(pMax), 1e-6);
+      const phOf = c => c <= 0 ? 0 : (Math.log10(c) / plg) * pph;
       const binLo = b => -rEdge + 2 * rEdge * b / nB;
       for (let b = 0; b < nB; b++) {
-        const h = (pbins[b] / pMax) * pph;
         pctx.fillStyle = binLo(b) < 0 && binLo(b + 1) <= 0
           ? 'rgba(255,120,90,0.75)' : 'rgba(79,163,255,0.75)';
-        pctx.fillRect(px + b * bcw, pmt + pph - h, Math.ceil(bcw), h);
+        pctx.fillRect(px + b * bcw, pmt + pph - phOf(pbins[b]),
+          Math.ceil(bcw), phOf(pbins[b]));
       }
+      // Count ticks (log positions) on the left edge.
+      pctx.fillStyle = '#8a93a6';
+      pctx.font = '10px ui-monospace, monospace';
+      pctx.textAlign = 'right';
+      [1, 10, 100, 1000].filter(c => c <= pMax).forEach(c => {
+        const y = pmt + pph - phOf(c);
+        pctx.fillText(String(c), px - 4, y + 3);
+        pctx.strokeStyle = 'rgba(37,42,54,0.6)';
+        pctx.beginPath(); pctx.moveTo(px, y); pctx.lineTo(px + pw, y); pctx.stroke();
+      });
       const zx = px + pw / 2;
       pctx.strokeStyle = 'rgba(255,255,255,0.55)';
       pctx.beginPath(); pctx.moveTo(zx, pmt); pctx.lineTo(zx, pmt + pph); pctx.stroke();
       pctx.strokeStyle = '#252a36';
       pctx.strokeRect(px, pmt, pw, pph);
-      pctx.fillStyle = '#8a93a6';
-      pctx.font = '10px ui-monospace, monospace';
       pctx.textAlign = 'center';
       [[-rEdge, px + 24], [0, zx], [rEdge, px + pw - 24]].forEach(([v, x]) =>
         pctx.fillText(fmtE(v), x, pmt + pph + 13));
