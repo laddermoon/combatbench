@@ -2956,17 +2956,17 @@ def _grad_diag_inputs(n=60, obs_dim=8, act_dim=4, seed=3):
 
 
 def test_grad_signal_diag_math_and_determinism():
-    """_grad_signal_diag grads match an independent autograd recompute,
-    the pairwise mean satisfies the h-vector identity, and sampling is
-    seeded deterministically."""
+    """_grad_signal_diag per-frame grads match an independent autograd
+    recompute, ‖G‖ equals the full-buffer mean gradient, proj/cos are
+    consistent with Ĝ, and sampling is seeded deterministically."""
     torch.manual_seed(0)
     actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
     floor, coef = 0.3, 0.05
     spec = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
                         norm_edges=None, seed=7)
     diags: list = []
-    scalars, hist, dump = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+    scalars, hist, dump, g_vec = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec,
         torch.device("cpu"), diags)
 
     # Dedicated RNG reproduces the same sorted frame subset.
@@ -2976,57 +2976,87 @@ def test_grad_signal_diag_math_and_determinism():
 
     # Per-frame norms match the independent recompute (surrogate +
     # floor scalar, same construction).
-    G = _manual_frame_grads(actor, obs, act, ei, w, adv, fw,
-                            floor, coef, sel)
-    nv = G.norm(dim=1)
+    Gs = _manual_frame_grads(actor, obs, act, ei, w, adv, fw,
+                             floor, coef, sel)
+    nv = Gs.norm(dim=1)
     np.testing.assert_allclose(
         dump["grad_norm"], nv.numpy(), rtol=1e-5, atol=1e-6)
 
-    # h-vector identity: mean_{i<j} s_ij = (‖Σh‖² − Σ‖h‖²)/(N(N−1))
-    # where h_i = g_i / √‖g_i‖ and s_ij = h_i·h_j.
-    h = G / nv.sqrt().unsqueeze(1)
-    ident = float(
-        (h.sum(0).pow(2).sum() - h.pow(2).sum()) / (40 * 39))
-    assert abs(ident - scalars["grad_sig_mean"]) < 1e-5, (
-        f"identity {ident} != mean {scalars['grad_sig_mean']}")
-
-    # Leave-one-out projection consistency: p_i = g_i·(G_tot−g_i)/‖·‖.
-    tot = G.sum(0)
-    loo = tot.unsqueeze(0) - G
+    # Aggregate gradient: g_vec equals the mean over the FULL buffer
+    # (all 60 frames; mb_size=17 exercises a remainder chunk).
+    Gall = _manual_frame_grads(
+        actor, obs, act, ei, w, adv, fw, floor, coef, np.arange(60))
+    G_full = Gall.mean(0)
+    gnorm = float(G_full.norm().item())
     np.testing.assert_allclose(
-        dump["loo_proj"],
-        ((G * loo).sum(1) / loo.norm(dim=1)).numpy(),
-        rtol=1e-4, atol=1e-5)
+        g_vec, G_full.numpy(), rtol=1e-4, atol=1e-6)
+    assert abs(scalars["grad_sig_gnorm"] - gnorm) < 1e-5
 
-    # Histogram covers all pairs; edges were derived (not configured).
-    assert hist is not None
-    assert int(hist["hist"].sum()) == int(hist["n_pairs"]) == 40 * 39 // 2
-    assert int(hist["n_pairs_in_hist"]) == int(hist["n_pairs"])
-    assert bool(hist["norm_edges_derived"])
-    # Quantile bins: hist rows = len(norm_edges) - 1 (8 requested).
-    assert hist["hist"].shape == (len(hist["norm_edges"]) - 1, 16)
-    assert len(hist["cos_edges"]) == 17
-    # Edges strictly increasing; quantile bins are equal-mass at the
-    # derivation update — row sums within a loose factor of uniform.
-    assert np.all(np.diff(hist["norm_edges"]) > 0)
-    rs = hist["hist"].sum(axis=1)
-    assert rs.max() <= rs.min() * 2 + 4
-    assert len(hist["norm_quantiles"]) == 5
-    # Under/overflow cosine rows always present; every pair is binned
-    # into hist or an edge row.
-    assert hist["hist_under"].shape == (16,)
-    assert hist["hist_over"].shape == (16,)
-    assert int(hist["hist"].sum() + hist["hist_under"].sum()
-               + hist["hist_over"].sum()) == int(hist["n_pairs"])
+    # Full-buffer identity: mean_i(g_i·Ĝ) = ‖G‖ exactly.
+    G_hat = G_full / G_full.norm()
+    np.testing.assert_allclose(
+        float((Gall @ G_hat).mean().item()), gnorm, rtol=1e-5, atol=1e-6)
 
+    # Per-sample proj/cos match g_i·Ĝ and p_i/‖g_i‖.
+    proj_man = (Gs @ G_hat).numpy()
+    np.testing.assert_allclose(
+        dump["proj"], proj_man.astype(np.float32), rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(
+        dump["cos"], (proj_man / nv.numpy()).astype(np.float32),
+        rtol=1e-4, atol=1e-6)
+
+    # Scalars: proj stats over the same sample; coherence = ‖G‖ /
+    # mean‖g‖ over the sample; dir_cos = 0 without prev_g.
+    assert abs(scalars["grad_sig_proj_mean"] - proj_man.mean()) < 1e-5
+    assert abs(scalars["grad_sig_proj_std"] - proj_man.std()) < 1e-5
+    assert abs(scalars["grad_sig_frac_neg"]
+               - float((proj_man < 0).mean())) < 1e-6
+    assert abs(scalars["grad_sig_coherence"]
+               - gnorm / float(nv.mean().item())) < 1e-5
+    assert scalars["grad_sig_dir_cos"] == 0.0
     assert scalars["grad_sig_frames"] == 40
-    assert scalars["grad_sig_std"] >= 0.0
     assert scalars["grad_sig_norm_med"] > 0.0
     assert scalars["grad_sig_time_s"] > 0.0
 
+    # Direction persistence: feeding this update's G back as prev_g
+    # yields cos=1; the negated vector yields cos=−1.
+    spec_prev = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
+                             norm_edges=None, seed=7, prev_g=g_vec)
+    s2, _, _, _ = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec_prev,
+        torch.device("cpu"), [])
+    assert abs(s2["grad_sig_dir_cos"] - 1.0) < 1e-5
+    spec_neg = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
+                            norm_edges=None, seed=7, prev_g=-g_vec)
+    s3, _, _, _ = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec_neg,
+        torch.device("cpu"), [])
+    assert abs(s3["grad_sig_dir_cos"] + 1.0) < 1e-5
+
+    # Histogram covers all valid frames; edges were derived this update.
+    assert hist is not None
+    assert int(hist["hist"].sum()) == int(hist["n_valid"]) == 40
+    assert int(hist["n_frames_in_hist"]) == 40
+    assert bool(hist["norm_edges_derived"])
+    assert hist["hist"].shape == (len(hist["norm_edges"]) - 1, 16)
+    assert len(hist["cos_edges"]) == 17
+    assert np.all(np.diff(hist["norm_edges"]) > 0)
+    # Equal-mass quantile bins at the derivation update — row sums
+    # within a loose factor of uniform.
+    rs = hist["hist"].sum(axis=1)
+    assert rs.max() <= rs.min() * 2 + 4
+    assert len(hist["norm_quantiles"]) == 5
+    assert hist["hist_under"].shape == (16,)
+    assert hist["hist_over"].shape == (16,)
+    assert int(hist["hist"].sum() + hist["hist_under"].sum()
+               + hist["hist_over"].sum()) == int(hist["n_valid"])
+    # Raw per-frame arrays are stored for the viewer.
+    for k in ("grad_norm", "cos", "proj", "valid"):
+        assert k in hist, k
+
     # Determinism: identical spec → identical sampled indices.
-    _, _, dump2 = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+    _, _, dump2, _ = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec,
         torch.device("cpu"), [])
     np.testing.assert_array_equal(
         dump["sampled_idx"], dump2["sampled_idx"])
@@ -3043,13 +3073,11 @@ def test_grad_signal_diag_sum_matches_batch_grad():
     floor, coef = 0.3, 0.05
     spec = GradDiagSpec(sample_size=30, cos_bins=8, norm_bins=4,
                         norm_edges=None, seed=11)
-    _, _, dump = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, spec,
+    _, _, dump, _ = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, floor, coef, 16, spec,
         torch.device("cpu"), [])
     sel = dump["sampled_idx"]
 
-    # Sum of per-frame grads (via norms * reconstruction is impossible —
-    # instead compare against the gradient of the summed scalar).
     G = _manual_frame_grads(actor, obs, act, ei, w, adv, fw,
                             floor, coef, sel)
 
@@ -3064,35 +3092,30 @@ def test_grad_signal_diag_sum_matches_batch_grad():
     batch_grad = torch.cat([g.reshape(-1) for g in gs])
     np.testing.assert_allclose(
         G.sum(0).numpy(), batch_grad.numpy(), rtol=1e-5, atol=1e-6)
-
-    # The same identity holds for the diagnostic's loo_proj: p_i = g_i·
-    # (Σ_{j≠i} g_j)/‖·‖ — already checked numerically above; here just
-    # assert the recorded grad_norms correspond to G.
     np.testing.assert_allclose(
         dump["grad_norm"], G.norm(dim=1).numpy(), rtol=1e-5, atol=1e-6)
     print("test_grad_signal_diag_sum_matches_batch_grad: PASS")
 
 
 def test_grad_signal_diag_norm_overflow_rows():
-    """Pairs outside the frozen norm range keep their cosine info in
+    """Frames outside the frozen norm range keep their cosine info in
     dedicated under/overflow rows instead of being dropped."""
     torch.manual_seed(0)
     actor, obs, act, ei, w, adv, fw = _grad_diag_inputs()
-    # Deliberately narrow frozen norm range → most pairs overflow.
+    # Deliberately narrow frozen norm range → most frames overflow.
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
                         norm_edges=np.geomspace(1e-6, 1e-4, 5), seed=7)
-    scalars, hist, dump = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, 0.3, 0.05, spec,
+    scalars, hist, dump, _ = _grad_signal_diag(
+        actor, obs, act, ei, w, adv, fw, 0.3, 0.05, 17, spec,
         torch.device("cpu"), [])
     assert hist is not None
-    n_pairs = int(hist["n_pairs"])
+    n_valid = int(hist["n_valid"])
     n_over = int(hist["n_over"])
-    assert n_over > 0  # real grads are far above 1e-4 geomean norm
+    assert n_over > 0  # real grads are far above 1e-4
     assert int(hist["hist_over"].sum()) == n_over
-    # Every pair is accounted for: interior + under + over == n_pairs.
-    assert int(hist["n_pairs_in_hist"]) + n_over + int(hist["n_under"]) \
-        == n_pairs
-    # Mean/std are computed on ALL pairs (unaffected by binning).
+    # Every valid frame is accounted for: interior + under + over.
+    assert int(hist["n_frames_in_hist"]) + n_over + int(hist["n_under"]) \
+        == n_valid
     assert scalars["grad_sig_frames"] == 40
     print("test_grad_signal_diag_norm_overflow_rows: PASS")
 
@@ -3100,19 +3123,22 @@ def test_grad_signal_diag_norm_overflow_rows():
 def test_grad_signal_diag_zero_adv_no_hist():
     """All-zero advantages (e.g. confidence cold-start) yield no valid
     gradients: scalars zeroed, no histogram, but the dump payload still
-    records the sampling + valid mask."""
+    records the sampling + valid mask and g_vec is the zero vector."""
     torch.manual_seed(0)
     actor, obs, act, ei, w, _, fw = _grad_diag_inputs()
     adv = torch.zeros(60)
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
                         norm_edges=None, seed=7)
-    scalars, hist, dump = _grad_signal_diag(
+    scalars, hist, dump, g_vec = _grad_signal_diag(
         actor, obs, act, ei, w, adv, fw,
-        uncertainty_floor=0.0, uncertainty_coef=0.0,
+        uncertainty_floor=0.0, uncertainty_coef=0.0, mb_size=17,
         spec=spec, device=torch.device("cpu"), diagnostics=[])
     assert scalars["grad_sig_frames"] == 0
-    assert scalars["grad_sig_mean"] == 0.0
+    assert scalars["grad_sig_gnorm"] == 0.0
     assert hist is None
+    # G is the zero vector but still returned so the loop can chain it
+    # into next update's dir_cos (guarded by its norm there).
+    assert g_vec is not None
     # dump payload exists and records why frames were excluded
     assert dump is not None
     assert dump["valid"].sum() == 0
@@ -3161,20 +3187,23 @@ def test_ppo_update_grad_diag_e2e():
     # hist rows = derived quantile edges - 1 (4 requested)
     assert hist.shape == (
         len(stats.grad_sig_payload["norm_edges"]) - 1, 8)
-    assert stats.grad_sig_payload["n_pairs"] == \
-        stats.grad_sig_frames * (stats.grad_sig_frames - 1) // 2
+    assert stats.grad_sig_payload["n_valid"] == stats.grad_sig_frames
+    # Aggregate gradient rides back for the loop's prev_g chaining.
+    assert stats.grad_sig_gvec is not None
+    assert stats.grad_sig_gnorm > 0.0
 
     # to_log_dict carries the scalars for __RAW_STATS__ flattening.
     d = stats.to_log_dict()
-    for k in ("grad_sig_mean", "grad_sig_std", "grad_sig_frames",
-              "grad_sig_norm_med", "grad_sig_time_s"):
+    for k in ("grad_sig_gnorm", "grad_sig_coherence", "grad_sig_proj_mean",
+              "grad_sig_proj_std", "grad_sig_frac_neg", "grad_sig_dir_cos",
+              "grad_sig_frames", "grad_sig_norm_med", "grad_sig_time_s"):
         assert k in d, k
 
     # The dump stage was emitted with per-frame detail.
     assert "gradsig" in collector
     g = collector["gradsig"]
     for k in ("sampled_idx", "valid", "grad_norm", "w_adv",
-              "floor_pen", "loo_proj", "n_params"):
+              "floor_pen", "proj", "cos", "n_params"):
         assert k in g, k
     assert len(g["sampled_idx"]) == 32
     print("test_ppo_update_grad_diag_e2e: PASS")
@@ -3209,7 +3238,7 @@ def test_ppo_update_grad_diag_disabled():
         dump_callback=lambda s, d: collector.__setitem__(s, d),
     )
     assert stats.grad_sig_frames == 0
-    assert stats.grad_sig_mean == 0.0
+    assert stats.grad_sig_gnorm == 0.0
     assert stats.grad_sig_time_s == 0.0
     assert stats.grad_sig_payload is None
     assert "gradsig" not in collector
@@ -3227,7 +3256,7 @@ def test_grad_signal_diag_no_trainable_params_raises():
     try:
         _grad_signal_diag(
             actor, obs, act, ei, w, adv, fw,
-            0.3, 0.05, spec, torch.device("cpu"), [])
+            0.3, 0.05, 16, spec, torch.device("cpu"), [])
         raise AssertionError("expected RuntimeError")
     except RuntimeError as e:
         assert "no trainable parameters" in str(e)

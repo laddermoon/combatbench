@@ -472,6 +472,11 @@ def train_ppo(
     #   exploration — the spec currently in force; kept so ppo_update can
     #                 read its trust-region fields.
     exploration: Optional[ExplorationSpec] = None
+    # Previous diagnostic update's aggregate gradient G, held in memory
+    # and passed back via GradDiagSpec.prev_g so the trainer can emit
+    # grad_sig_dir_cos (direction persistence across updates).  Never
+    # persisted — a resume simply skips one dir_cos reading.
+    prev_gvec: Optional[np.ndarray] = None
 
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         for u in range(start_update, cp.max_updates + 1):
@@ -546,15 +551,18 @@ def train_ppo(
             )
             t_buffer = time.perf_counter() - t0
 
-            # 4b. ADV gradient-signal diagnostic spec — the trainer samples
-            #     frames at theta_old and computes per-frame training-loss
-            #     gradients (surrogate + floor).  Norm-bin edges are frozen
-            #     in gradsig/meta.json after the first computed update so
-            #     all updates share a comparable axis; explicit
-            #     grad_sig_norm_lo/hi config overrides the frozen range.
-            #     The seed is derived from (run seed, update) and consumed
-            #     by a dedicated RNG — the training RNG stream is
-            #     untouched, preserving bit-identical reproduction.
+            # 4b. ADV gradient-signal diagnostic spec — the trainer
+            #     computes the full-buffer aggregate gradient G via
+            #     chunked backwards, then samples frames at theta_old
+            #     and computes per-frame training-loss gradients
+            #     (surrogate + floor) projected onto G.  Norm-bin edges
+            #     are frozen in gradsig/meta.json after the first
+            #     computed update so all updates share a comparable
+            #     axis; explicit grad_sig_norm_lo/hi config overrides
+            #     the frozen range.  The seed is derived from (run seed,
+            #     update) and consumed by a dedicated RNG — the training
+            #     RNG stream is untouched, preserving bit-identical
+            #     reproduction.
             grad_diag: Optional[GradDiagSpec] = None
             if (
                 pp.grad_sig_sample_size > 0
@@ -578,7 +586,13 @@ def train_ppo(
                 elif meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())
-                        if meta.get("norm_bins") == pp.grad_sig_norm_bins:
+                        # norm_axis guards against reusing edges frozen
+                        # under a different axis semantics (e.g. the old
+                        # pairwise geomean format).
+                        if (
+                            meta.get("norm_bins") == pp.grad_sig_norm_bins
+                            and meta.get("norm_axis") == "per_frame_norm"
+                        ):
                             norm_edges = np.asarray(
                                 meta["norm_edges"], dtype=np.float64,
                             )
@@ -591,6 +605,7 @@ def train_ppo(
                     norm_bins=pp.grad_sig_norm_bins,
                     norm_edges=norm_edges,
                     seed=cp.seed * 1000003 + u,
+                    prev_g=prev_gvec,
                 )
 
             # 5. PPO update — per-channel GAE, z-score normalized advantages,
@@ -622,10 +637,14 @@ def train_ppo(
 
             # 5a-i. Persist the gradient-signal histogram — the scalars
             #     already went into train.log via to_log_dict(); the 2D
-            #     histogram is too large for JSON and lives in
-            #     gradsig/uNNNNN.npz.  meta.json records the frozen bin
-            #     edges (written on first derived update, or when the
-            #     file is missing).
+            #     histogram + raw per-frame arrays are too large for
+            #     JSON and live in gradsig/uNNNNN.npz.  meta.json
+            #     records the frozen bin edges (written on first
+            #     derived update, or when the file is missing).  The
+            #     aggregate gradient vector rides back in memory via
+            #     stats.grad_sig_gvec for next update's dir_cos.
+            if stats.grad_sig_gvec is not None:
+                prev_gvec = stats.grad_sig_gvec
             if stats.grad_sig_payload is not None:
                 try:
                     gradsig_dir = run_dir / "gradsig"
@@ -640,7 +659,8 @@ def train_ppo(
                         or not meta_path.exists()
                     ):
                         meta_path.write_text(json.dumps({
-                            "version": 1,
+                            "version": 2,
+                            "norm_axis": "per_frame_norm",
                             "sample_size": pp.grad_sig_sample_size,
                             "cos_bins": pp.grad_sig_cos_bins,
                             "norm_bins": pp.grad_sig_norm_bins,

@@ -444,18 +444,21 @@ class PPOParams:
 
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # At the start of each update (after combined_adv, before any actor
-    # step), the trainer samples ``grad_sig_sample_size`` buffer frames
-    # and computes each frame's improvement-direction gradient of the
-    # actual training loss (surrogate + floor) at theta_old.  Pairwise
-    # s_ij = cos(g_i, g_j) * sqrt(||g_i||*||g_j||) yields the run-level
-    # scalars grad_sig_mean / grad_sig_std plus a compact 2D histogram
-    # (cos-bin x geomean-norm-bin) stored under run_dir/gradsig/.
+    # step), the trainer computes the full-buffer aggregate gradient
+    # G = mean_i g_i of the actual training loss (surrogate + floor)
+    # via chunked backwards, then samples ``grad_sig_sample_size``
+    # buffer frames and computes each frame's improvement-direction
+    # gradient g_i.  Per-frame projection p_i = g_i·G_hat and cosine
+    # yield the run-level scalars (grad_sig_gnorm / coherence /
+    # proj_mean / proj_std / frac_neg / dir_cos) plus a compact 2D
+    # histogram (per-frame-norm-bin x cos-bin) and raw per-frame arrays
+    # stored under run_dir/gradsig/.
     # grad_sig_sample_size = 0 disables the diagnostic entirely.
-    grad_sig_sample_size: int = 1000
+    grad_sig_sample_size: int = 2000
     grad_sig_interval: int = 1
     grad_sig_cos_bins: int = 64
     # Norm bins are equal-mass quantile bins derived from the first
-    # computed update (~1/norm_bins of pairs per row), then frozen in
+    # computed update (~1/norm_bins of frames per row), then frozen in
     # gradsig/meta.json.  The top bins naturally span the heavy tail.
     grad_sig_norm_bins: int = 40
     # Norm-bin range for the histogram's second axis.  Both > 0 (and
@@ -517,31 +520,38 @@ class PPOParams:
 
 @dataclass(frozen=True)
 class GradDiagSpec:
-    """Request for the frame-level gradient-consensus diagnostic.
+    """Request for the frame-level gradient-signal diagnostic.
 
     Built by the training loop for updates where the diagnostic runs
     (``pp.grad_sig_sample_size > 0`` and the interval matches), then
-    passed to ``ppo_update``.  The trainer samples ``sample_size``
-    buffer frames with a dedicated RNG seeded from ``seed`` (isolated
-    from the training RNG stream), computes each sampled frame's
-    improvement-direction gradient of the actual training loss
-    (surrogate + floor hinge) at theta_old, and emits pairwise
-    statistics plus a compact 2D histogram.
+    passed to ``ppo_update``.  The trainer first computes the aggregate
+    gradient G = mean_i g_i over the FULL buffer via chunked backwards,
+    then samples ``sample_size`` buffer frames with a dedicated RNG
+    seeded from ``seed`` (isolated from the training RNG stream) and
+    computes each sampled frame's improvement-direction gradient of the
+    actual training loss (surrogate + floor hinge) at theta_old.
+    Per-frame projections p_i = g_i·G_hat and cosines yield the
+    run-level scalars plus a 2D histogram and raw per-frame arrays.
 
     Attributes:
         sample_size: Frames to sample this update (clamped to buffer
             size by the trainer).
         cos_bins: Number of cosine-similarity bins, fixed linear
             coverage of [-1, 1].
-        norm_bins: Number of geometric-mean-norm bins.  When edges are
+        norm_bins: Number of per-frame-norm bins.  When edges are
             derived (``norm_edges=None``) they are equal-mass quantile
-            bins — each row holds ~1/norm_bins of the pairs.
+            bins — each row holds ~1/norm_bins of the frames.
         norm_edges: Complete norm-bin edge array (frozen meta.json or
             configured range), or ``None`` to derive quantile edges
-            from this update's pair norms (the loop then freezes them
+            from this update's frame norms (the loop then freezes them
             in ``gradsig/meta.json``).
         seed: Seed for the dedicated sampling RNG — never touches the
             training RNG stream.
+        prev_g: The aggregate gradient G from the previous diagnostic
+            update, held in loop memory (never persisted), used to
+            compute ``grad_sig_dir_cos`` — the direction persistence
+            of the aggregate pull across updates.  ``None`` on the
+            first diagnostic update.
     """
 
     sample_size: int
@@ -549,6 +559,7 @@ class GradDiagSpec:
     norm_bins: int
     norm_edges: Optional[np.ndarray]
     seed: int
+    prev_g: Optional[np.ndarray] = None
 
 
 # ---------------------------------------------------------------------------
@@ -779,23 +790,37 @@ class UpdateStats:
     # check this to avoid polluting KL history with zeros.
     is_empty: bool = False
 
-    # --- ADV gradient-signal diagnostic (theta_old, pre-update sampling) ---
-    # grad_sig_mean / grad_sig_std: mean / std over i<j of the pairwise
-    #   quantity s_ij = cos(g_i,g_j) * sqrt(||g_i||*||g_j||), where g_i is
-    #   sampled frame i's improvement-direction gradient of the actual
-    #   training loss (surrogate + floor hinge) at theta_old.
-    #   mean = geometric-norm-weighted consensus strength; std =
-    #   dispersion of pairwise relationships (NOT pure noise — gradient
-    #   norm heterogeneity alone inflates it; see the per-update 2D
-    #   histogram for the decomposition).
+    # --- ADV gradient-signal diagnostic (theta_old, pre-update) ---
+    # G = mean_i g_i is the aggregate gradient of the actual training
+    #   loss (surrogate + floor hinge) over the FULL buffer, computed
+    #   via chunked backwards at theta_old.  g_i is sampled frame i's
+    #   improvement-direction gradient; p_i = g_i·G_hat is its signed
+    #   projection onto the aggregate direction (positive = helped by
+    #   this update's direction, negative = sacrificed).
+    # grad_sig_gnorm: ||G|| — net pull strength (intended, pre-optimizer).
+    # grad_sig_coherence: ||G|| / mean||g_i|| — fraction of total pull
+    #   surviving aggregation (1 = all frames pull the same way; the
+    #   denominator is estimated from the sampled frames).
+    # grad_sig_proj_mean: mean(p_i) over the sample — an unbiased
+    #   estimator of ||G|| (identity mean(p)=||G|| on the full buffer);
+    #   large deviation flags a sampling/implementation problem.
+    # grad_sig_proj_std: std(p_i) — dispersion of per-frame gains.
+    # grad_sig_frac_neg: P(p_i < 0) — fraction of frames this update's
+    #   direction sacrifices.
+    # grad_sig_dir_cos: cos(G_u, G_{u-1}) — direction persistence of the
+    #   aggregate pull across updates; 0 on the first diagnostic update.
     # grad_sig_frames: sampled frames with a usable (finite, nonzero-norm)
     #   gradient — coverage indicator; compare with the configured
     #   sample size.
     # grad_sig_norm_med: median per-frame gradient L2 norm (scale context).
     # grad_sig_time_s: wall time of the diagnostic inside ppo_update.
     # All zeros when the diagnostic is disabled or did not run this update.
-    grad_sig_mean: float = 0.0
-    grad_sig_std: float = 0.0
+    grad_sig_gnorm: float = 0.0
+    grad_sig_coherence: float = 0.0
+    grad_sig_proj_mean: float = 0.0
+    grad_sig_proj_std: float = 0.0
+    grad_sig_frac_neg: float = 0.0
+    grad_sig_dir_cos: float = 0.0
     grad_sig_frames: int = 0
     grad_sig_norm_med: float = 0.0
     grad_sig_time_s: float = 0.0
@@ -804,6 +829,11 @@ class UpdateStats:
     # scalar and must not inflate __RAW_STATS__).  None = the diagnostic
     # did not run this update.
     grad_sig_payload: Optional[Dict[str, Any]] = None
+    # Non-logged transport of this update's aggregate gradient vector —
+    # the loop holds it in memory and passes it back as spec.prev_g on
+    # the next diagnostic update to compute grad_sig_dir_cos.  Never
+    # persisted (a ~100k-float vector per update would bloat the npz).
+    grad_sig_gvec: Optional[np.ndarray] = None
 
     @classmethod
     def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
@@ -865,8 +895,12 @@ class UpdateStats:
             policy_stats={},
             diagnostics=[],
             is_empty=True,
-            grad_sig_mean=0.0,
-            grad_sig_std=0.0,
+            grad_sig_gnorm=0.0,
+            grad_sig_coherence=0.0,
+            grad_sig_proj_mean=0.0,
+            grad_sig_proj_std=0.0,
+            grad_sig_frac_neg=0.0,
+            grad_sig_dir_cos=0.0,
             grad_sig_frames=0,
             grad_sig_norm_med=0.0,
             grad_sig_time_s=0.0,
@@ -921,8 +955,12 @@ class UpdateStats:
             "post_clip_dloss_gain": self.post_clip_dloss_gain,
             "post_clip_dloss_harm": self.post_clip_dloss_harm,
             # --- ADV gradient-signal diagnostic ---
-            "grad_sig_mean": self.grad_sig_mean,
-            "grad_sig_std": self.grad_sig_std,
+            "grad_sig_gnorm": self.grad_sig_gnorm,
+            "grad_sig_coherence": self.grad_sig_coherence,
+            "grad_sig_proj_mean": self.grad_sig_proj_mean,
+            "grad_sig_proj_std": self.grad_sig_proj_std,
+            "grad_sig_frac_neg": self.grad_sig_frac_neg,
+            "grad_sig_dir_cos": self.grad_sig_dir_cos,
             "grad_sig_frames": self.grad_sig_frames,
             "grad_sig_norm_med": self.grad_sig_norm_med,
             "grad_sig_time_s": self.grad_sig_time_s,

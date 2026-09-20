@@ -11,8 +11,9 @@
 
 ```
 run          train.log 里的 __RAW_STATS__ JSON 行 —— 每 update 一条扁平时序
-  ├─ gradsig gradsig/uNNNNN.npz —— 每 update 的 ADV 梯度共识二维分布
-  │          （cos × 几何范数分箱），meta.json 冻结 norm 分箱边界
+  ├─ gradsig gradsig/uNNNNN.npz —— 每 update 的 ADV 梯度信号分布
+  │          （cos(g_i,G) × ‖g_i‖ 分箱 + 逐帧 proj/cos 数组），
+  │          meta.json 冻结 norm 分箱边界（norm_axis: per_frame_norm）
   └─ dump    dumps/uNNNNN/ —— 单个 update 的完整截面（episodes.npz、buffer.npz、
              update.npz、gradsig.npz、manifest.json、policy 导出、episode_options.json）
       ├─ episode   环境对局的逐帧 obs/action/observer 输出
@@ -121,9 +122,10 @@ POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 - run 名解析只允许 `runs_root` 的直接子目录且须含 config.json 或 train.log。
 - 新起的 run 才有新字段（如 exp.*/post_kl_*/uncertainty_floor）——老 run
   日志缺字段属正常向后兼容，不是解析失败。
-- `stats.grad_sig_*`（ADV 梯度共识诊断）：`grad_sig_sample_size=0` 或
+- `stats.grad_sig_*`（ADV 梯度信号诊断）：`grad_sig_sample_size=0` 或
   老 run 没有 gradsig/ 工件时，图表缺线、`/api/run/gradsig/<u>` 返回
-  404 `{available:false}`——不是错误。零范数帧不计入配对统计。
+  404 `{available:false}`——不是错误。零范数帧不计入投影/余弦统计；
+  旧 pairwise 格式的工件被当作不可用而非误读。
 - dump 请求会强制该 update 运行 gradsig 诊断（即使被 interval 跳过），
   保证 dumps/uNNNNN/gradsig.npz 细节存在。
 

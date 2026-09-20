@@ -81,15 +81,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
     early_stop_kl_window: int = 10
 
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
-    # Per-update diagnostic: sample N buffer frames, compute each frame's
-    # improvement-direction gradient of the actual training loss
-    # (surrogate + floor), emit pairwise consensus scalars + a compact
-    # 2D histogram under run_dir/gradsig/.  0 disables it.
-    grad_sig_sample_size: int = 1000
+    # Per-update diagnostic: compute the full-buffer aggregate gradient
+    # G of the actual training loss (surrogate + floor), sample N buffer
+    # frames for per-frame gradients g_i, and emit ‖G‖/coherence/
+    # projection scalars + a 2D histogram + raw per-frame arrays under
+    # run_dir/gradsig/.  0 disables it.
+    grad_sig_sample_size: int = 2000
     # Run the diagnostic every N-th update (1 = every update).
     grad_sig_interval: int = 1
     # Histogram resolution: cosine bins over [-1,1] × equal-mass
-    # quantile geomean-norm bins (each row ~1/norm_bins of pairs).
+    # quantile per-frame-norm bins (each row ~1/norm_bins of frames).
     grad_sig_cos_bins: int = 64
     grad_sig_norm_bins: int = 40
     # Explicit norm-bin range (log-spaced); both 0 = auto-derive on the

@@ -415,29 +415,37 @@ def _normalize_adv(adv: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# ADV gradient-signal diagnostic — frame-level gradient consensus at θ_old
+# ADV gradient-signal diagnostic — per-frame gradients vs the aggregate
+# direction at θ_old
 #
-# For sampled frames i, computes each frame's improvement-direction
-# gradient of the actual training loss (surrogate + uncertainty floor):
+# G = (1/n)Σg_i is the aggregate gradient of the actual training loss
+# (surrogate + uncertainty floor) over the FULL buffer — the direction
+# a full-batch gradient step would take at the pre-update parameters.
+# It is computed by chunked backwards (gradient of mean loss = mean of
+# per-frame gradients by linearity), NOT by per-frame backwards over
+# the whole buffer — roughly one actor-epoch of compute.
+#
+# For sampled frames i, the per-frame improvement-direction gradient is
 #
 #     g_i = ∇[ w_i·A_i·log π(a_i|s_i) − coef·relu(floor − U_i)²·fw_i ]
 #
-# i.e. −∂loss_i/∂θ evaluated at the pre-update parameters (where r=1 and
-# the PPO clip is inactive, so the per-frame surrogate gradient is
-# exactly w_i·A_i·∇log π_i).  The 1/B minibatch normalization is a
-# uniform scale that cancels in cos and s_ij, so it is omitted.
+# i.e. −∂loss_i/∂θ at θ_old (r=1, clip inactive).  Each valid frame is
+# then compared with the aggregate direction:
 #
-# Pairwise quantity over i<j:  s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)
-# — equivalent to the inner product of h_i = g_i/√‖g_i‖: direction is
-# preserved while magnitude is sqrt-compressed so a few huge gradients
-# cannot dominate.  Emits mean/std (run-level scalars) plus a joint 2D
-# histogram over (geomean-norm bin, cos bin) for the per-update view.
+#     p_i = g_i·Ĝ   signed projection — per-unit-step gain for frame i
+#                   under the batch direction (positive = helped,
+#                   negative = sacrificed by this update)
+#     c_i = cos(g_i, G)   pure direction
+#
+# Identity: mean(p_i) = ‖G‖ exactly on the same frame set — the sampled
+# mean is an unbiased estimator and doubles as a representativeness
+# check.  Scalars plus a (per-frame-norm × cos) 2D histogram and raw
+# per-frame arrays go to gradsig/uNNNNN.npz.
 #
 # Everything goes through the existing ``evaluate_actions`` contract —
-# no new policy interface.  One batched forward builds a single autograd
-# graph; each sampled frame then gets its own backward pass.  This is
-# deliberately the generic (slow but correct) path: ~N python-level
-# backwards per diagnostic run, gated by PPOParams.grad_sig_sample_size.
+# no new policy interface.  Per-frame gradients use the generic (slow
+# but correct) path: ~N python-level backwards per diagnostic run,
+# gated by PPOParams.grad_sig_sample_size.
 # ---------------------------------------------------------------------------
 
 def _grad_signal_diag(
@@ -450,71 +458,124 @@ def _grad_signal_diag(
     floor_weight_t: torch.Tensor,
     uncertainty_floor: float,
     uncertainty_coef: float,
+    mb_size: int,
     spec: GradDiagSpec,
     device: torch.device,
     diagnostics: List[str],
-) -> Tuple[Dict[str, Any], Optional[Dict[str, np.ndarray]], Optional[Dict[str, np.ndarray]]]:
-    """Run the gradient-consensus diagnostic; returns (scalars, hist, dump).
+) -> Tuple[Dict[str, Any], Optional[Dict[str, np.ndarray]],
+           Optional[Dict[str, np.ndarray]], Optional[np.ndarray]]:
+    """Run the gradient-signal diagnostic.
+
+    Returns ``(scalars, hist, dump, g_vec)``:
 
     - ``scalars``: the ``grad_sig_*`` fields for :class:`UpdateStats`.
     - ``hist``: npz-ready dict for ``gradsig/uNNNNN.npz`` — joint 2D
-      histogram ``hist[norm_bin, cos_bin]``, bin edges, coverage counts,
-      and norm quantiles.  ``None`` when fewer than 2 valid gradients.
-    - ``dump``: per-sampled-frame detail (flat buffer indices, gradient
-      norms, leave-one-out projection onto the other frames' resultant)
-      for the dump collector.  ``None`` when fewer than 2 valid
-      gradients.
+      histogram ``hist[norm_bin, cos_bin]`` of frame counts, bin edges,
+      edge rows, scalars, and raw per-frame arrays (grad_norm, cos,
+      proj, valid).  ``None`` when no usable direction exists.
+    - ``dump``: per-sampled-frame detail for the dump collector.
+    - ``g_vec``: the aggregate gradient G (float32 cpu array) — the
+      loop holds it in memory and passes it back as ``spec.prev_g``
+      next update for ``grad_sig_dir_cos``.  Never persisted.
     """
     t_start = time.perf_counter()
     scalars: Dict[str, Any] = {
-        "grad_sig_mean": 0.0,
-        "grad_sig_std": 0.0,
+        "grad_sig_gnorm": 0.0,
+        "grad_sig_coherence": 0.0,
+        "grad_sig_proj_mean": 0.0,
+        "grad_sig_proj_std": 0.0,
+        "grad_sig_frac_neg": 0.0,
+        "grad_sig_dir_cos": 0.0,
         "grad_sig_frames": 0,
         "grad_sig_norm_med": 0.0,
         "grad_sig_time_s": 0.0,
     }
     n = int(obs_t.shape[0])
     n_samp = min(int(spec.sample_size), n)
-    if n_samp < 2:
+    if n_samp < 1 or n < 1:
         scalars["grad_sig_time_s"] = time.perf_counter() - t_start
-        return scalars, None, None
-
-    # Dedicated RNG — must not consume the training RNG stream.
-    rng = np.random.default_rng(spec.seed)
-    sel = np.sort(rng.choice(n, size=n_samp, replace=False).astype(np.int64))
-    idx = torch.as_tensor(sel, dtype=torch.long, device=device)
+        return scalars, None, None, None
 
     params = [p for p in actor.parameters() if p.requires_grad]
     if not params:
         raise RuntimeError("[gradsig] actor has no trainable parameters")
+    n_params = sum(int(p.numel()) for p in params)
+    floor_active = uncertainty_coef > 0.0 and uncertainty_floor > 0.0
+
+    def _frame_scalar(sl) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Per-frame improvement-direction scalar + floor penalty on a
+        frame slice.  Returns ``(scalar, floor_pen)`` — the penalty is
+        already subtracted from the scalar and is returned separately
+        only for reporting."""
+        ev = actor.evaluate_actions(
+            obs_t[sl], act_t[sl], explore_factor=ei_t[sl],
+        )
+        if not ev.log_prob.requires_grad:
+            raise RuntimeError(
+                "[gradsig] evaluate_actions returned a non-differentiable "
+                "log_prob — per-frame gradients cannot be computed."
+            )
+        scalar = w_t[sl] * adv_t[sl] * ev.log_prob
+        floor_pen = torch.zeros_like(scalar)
+        if floor_active:
+            if ev.uncertainty is None or not ev.uncertainty.requires_grad:
+                raise RuntimeError(
+                    "[gradsig] uncertainty floor is active (coef>0, "
+                    "floor>0) but evaluate_actions does not provide a "
+                    "differentiable uncertainty — the floor term cannot "
+                    "be reproduced."
+                )
+            gap = torch.relu(uncertainty_floor - ev.uncertainty)
+            floor_pen = (
+                uncertainty_coef * gap * gap * floor_weight_t[sl]
+            )
+            scalar = scalar - floor_pen
+        return scalar, floor_pen
+
+    def _flat_grad(loss: torch.Tensor) -> torch.Tensor:
+        gs = torch.autograd.grad(loss, params, allow_unused=True)
+        return torch.cat([
+            (g if g is not None else torch.zeros_like(p)).reshape(-1)
+            for g, p in zip(gs, params)
+        ])
+
+    # --- Aggregate gradient G over the FULL buffer ---
+    # ∇mean_i scalar_i = (1/n)Σ∇scalar_i — accumulate the chunk-wise
+    # gradient sums (autograd.grad returns fresh tensors, .grad of the
+    # actor's parameters is untouched).
+    g_sum = torch.zeros(n_params, dtype=torch.float32, device=device)
+    chunk = max(1, int(mb_size))
+    for lo in range(0, n, chunk):
+        scalar_c, _ = _frame_scalar(slice(lo, lo + chunk))
+        g_sum = g_sum + _flat_grad(scalar_c.sum())
+    G_full = g_sum / float(n)
+    gnorm = float(G_full.norm().item())
+    scalars["grad_sig_gnorm"] = gnorm
+    # Direction persistence vs the previous diagnostic update's G.
+    if spec.prev_g is not None:
+        prev = torch.as_tensor(
+            np.asarray(spec.prev_g, dtype=np.float32), device=device,
+        )
+        denom = prev.norm() * G_full.norm()
+        if float(denom.item()) > 1e-12:
+            scalars["grad_sig_dir_cos"] = float(
+                torch.dot(G_full, prev).item() / float(denom.item())
+            )
+    g_vec = G_full.detach().cpu().numpy().astype(np.float32)
+
+    # --- Sampled per-frame gradients (dedicated RNG, never touches the
+    #     training RNG stream) ---
+    rng = np.random.default_rng(spec.seed)
+    sel = np.sort(rng.choice(n, size=n_samp, replace=False).astype(np.int64))
+    idx = torch.as_tensor(sel, dtype=torch.long, device=device)
 
     # One batched forward builds a single autograd graph over all sampled
     # frames; each frame's scalar then gets its own backward pass against
     # the shared graph (retain_graph until the last frame).
-    ev = actor.evaluate_actions(
-        obs_t[idx], act_t[idx], explore_factor=ei_t[idx],
-    )
-    if not ev.log_prob.requires_grad:
-        raise RuntimeError(
-            "[gradsig] evaluate_actions returned a non-differentiable "
-            "log_prob — per-frame gradients cannot be computed."
-        )
-    w_adv = w_t[idx] * adv_t[idx]
-    scalar = w_adv * ev.log_prob
-    floor_active = uncertainty_coef > 0.0 and uncertainty_floor > 0.0
-    floor_pen = torch.zeros(n_samp, dtype=torch.float32, device=device)
-    if floor_active:
-        if ev.uncertainty is None or not ev.uncertainty.requires_grad:
-            raise RuntimeError(
-                "[gradsig] uncertainty floor is active (coef>0, floor>0) "
-                "but evaluate_actions does not provide a differentiable "
-                "uncertainty — the floor term cannot be reproduced."
-            )
-        gap = torch.relu(uncertainty_floor - ev.uncertainty)
-        floor_pen = uncertainty_coef * gap * gap * floor_weight_t[idx]
-        scalar = scalar - floor_pen
+    scalar, floor_pen = _frame_scalar(idx)
+    w_adv = (w_t[idx] * adv_t[idx]).detach().cpu().numpy()
+    floor_pen_np = floor_pen.detach().cpu().numpy().astype(np.float32)
 
-    n_params = sum(int(p.numel()) for p in params)
     G = torch.empty((n_samp, n_params), dtype=torch.float32, device=device)
     for i in range(n_samp):
         gs = torch.autograd.grad(
@@ -537,98 +598,99 @@ def _grad_signal_diag(
     if n_nonfinite:
         diagnostics.append(
             f"  [gradsig] {n_nonfinite}/{n_samp} sampled frames produced "
-            f"non-finite gradients — excluded from pairwise stats"
+            f"non-finite gradients — excluded from stats"
         )
     scalars["grad_sig_frames"] = n_valid
     if n_valid >= 1:
         scalars["grad_sig_norm_med"] = float(norms[valid].median().item())
 
-    # Per-sampled-frame dump detail is available even when too few valid
-    # gradients exist for pairwise stats — the valid mask records why.
-    loo_proj = torch.full((n_samp,), float("nan"), device=device)
-    if n_valid >= 2:
-        # Leave-one-out projection: how strongly each frame pulls with
-        # or against the resultant of the OTHER sampled frames.
-        Gv0 = G[valid]
-        total0 = Gv0.sum(dim=0)
-        loo0 = total0.unsqueeze(0) - Gv0
-        loo_proj[valid] = (
-            (Gv0 * loo0).sum(dim=1) / loo0.norm(dim=1).clamp_min(1e-12)
-        )
     dump_payload: Dict[str, np.ndarray] = {
         "sampled_idx": sel,
         "valid": valid.cpu().numpy(),
         "grad_norm": norms.cpu().numpy().astype(np.float32),
-        "w_adv": w_adv.detach().cpu().numpy().astype(np.float32),
-        "floor_pen": floor_pen.detach().cpu().numpy().astype(np.float32),
-        "loo_proj": loo_proj.cpu().numpy().astype(np.float32),
+        "w_adv": w_adv.astype(np.float32),
+        "floor_pen": floor_pen_np,
         "n_params": np.array(n_params, dtype=np.int64),
     }
 
-    if n_valid < 2:
+    nan = np.full(n_samp, np.nan, dtype=np.float32)
+    proj_np = nan.copy()
+    cos_np = nan.copy()
+
+    if n_valid < 1 or gnorm < 1e-12:
+        if n_valid >= 1 and gnorm < 1e-12:
+            diagnostics.append(
+                "  [gradsig] aggregate gradient ≈ 0 — direction "
+                "undefined; proj/cos stats skipped"
+            )
         scalars["grad_sig_time_s"] = time.perf_counter() - t_start
-        return scalars, None, dump_payload
+        return scalars, None, dump_payload, g_vec
 
     Gv = G[valid]
     nv = norms[valid]
-    sq_nv = nv.sqrt()
-    H = Gv / sq_nv.unsqueeze(1)          # h_i = g_i/√‖g_i‖ → s_ij = h_i·h_j
-    U = Gv / nv.unsqueeze(1)             # unit vectors   → c_ij = cos
-    S = H @ H.T
-    C = U @ U.T
-    iu = torch.triu_indices(n_valid, n_valid, offset=1, device=device)
-    s_vals = S[iu[0], iu[1]]
-    c_vals = C[iu[0], iu[1]]
-    b_vals = sq_nv[iu[0]] * sq_nv[iu[1]]  # √(n_i·n_j) geomean norm
+    G_hat = G_full / G_full.norm()
+    proj = Gv @ G_hat                        # (n_valid,)
+    cos = proj / nv                          # p_i / ‖g_i‖
 
-    mean_s = float(s_vals.mean().item())
-    std_s = float(s_vals.std(unbiased=False).item())
-    scalars["grad_sig_mean"] = mean_s
-    scalars["grad_sig_std"] = std_s
+    proj_np[valid.cpu().numpy()] = proj.cpu().numpy().astype(np.float32)
+    cos_np[valid.cpu().numpy()] = np.clip(
+        cos.cpu().numpy().astype(np.float32), -1.0, 1.0,
+    )
+    dump_payload["proj"] = proj_np
+    dump_payload["cos"] = cos_np
 
-    # 2D histogram: rows = geomean-norm bins (log-spaced), cols = cos bins.
-    # Clip cosine into [-1, 1] — float error in U@U.T can produce
-    # ±1.0000001 which histogram2d would silently drop.
-    c_np = np.clip(c_vals.cpu().numpy().astype(np.float64), -1.0, 1.0)
-    b_np = b_vals.cpu().numpy().astype(np.float64)
+    proj_mean = float(proj.mean().item())
+    proj_std = float(proj.std(unbiased=False).item())
+    frac_neg = float((proj < 0).float().mean().item())
+    mean_gnorm = float(nv.mean().item())
+    scalars["grad_sig_proj_mean"] = proj_mean
+    scalars["grad_sig_proj_std"] = proj_std
+    scalars["grad_sig_frac_neg"] = frac_neg
+    scalars["grad_sig_coherence"] = (
+        gnorm / mean_gnorm if mean_gnorm > 1e-12 else 0.0
+    )
+
+    # Sampling-representativeness check: mean(p_i) is an unbiased
+    # estimator of ‖G‖ — a large deviation means the sampled gradients
+    # no longer represent the full buffer (or a bookkeeping bug).
+    dev = abs(proj_mean - gnorm) / max(gnorm, 1e-12)
+    if dev > 0.05:
+        diagnostics.append(
+            f"  [gradsig] mean(p_i)={proj_mean:.4g} deviates "
+            f"{dev * 100:.1f}% from ||G||={gnorm:.4g} — sampled frames "
+            f"under-represent the full-buffer gradient"
+        )
+
+    # 2D histogram: rows = per-frame norm bins, cols = cos bins — frame
+    # counts (not pair counts).  Norm axis: frozen meta.json edges, an
+    # explicit configured range, or equal-mass quantile bins derived
+    # this update (~1/norm_bins of frames per row; the heavy tail stays
+    # resolved in wide but populated top bins).
+    c_np = np.clip(cos.cpu().numpy().astype(np.float64), -1.0, 1.0)
+    b_np = nv.cpu().numpy().astype(np.float64)
     cos_edges = np.linspace(-1.0, 1.0, spec.cos_bins + 1)
     if spec.norm_edges is not None:
-        # Frozen axis from meta.json, or an explicit configured range.
         norm_edges = np.asarray(spec.norm_edges, dtype=np.float64)
         edges_derived = False
     else:
-        # Equal-mass quantile bins: every row holds ~1/norm_bins of the
-        # derivation update's pairs, so resolution concentrates where
-        # the mass is and the heavy tail stays resolved (the top bins
-        # are wide but always populated).  Edges freeze into meta.json —
-        # later drift shows up as mass migrating toward the edge rows.
-        b_pos = b_np[b_np > 0.0]
         norm_edges = np.unique(
-            np.quantile(b_pos, np.linspace(0.0, 1.0, spec.norm_bins + 1))
+            np.quantile(b_np, np.linspace(0.0, 1.0, spec.norm_bins + 1))
         ).astype(np.float64)
         if norm_edges.size < 2:
-            v = float(b_pos[0]) if b_pos.size else 1.0
+            v = float(b_np[0])
             norm_edges = np.array([v * 0.9, v * 1.1], dtype=np.float64)
         edges_derived = True
     hist, _, _ = np.histogram2d(b_np, c_np, bins=[norm_edges, cos_edges])
-    # Pairs whose geomean norm falls outside the (possibly frozen) norm
-    # range are NOT dropped — they keep their cosine information in
-    # dedicated under/overflow rows so drift in gradient magnitude stays
-    # visible without breaking cross-update bin comparability.
-    # Edge semantics match histogram2d: interior bins are [a,b) except
-    # the last, which is closed [a,b] — so "under" is strict < and
-    # "over" is strict > (a pair exactly on the outer edge belongs to
-    # the boundary bin, not the edge row).
+    # Frames outside the (possibly frozen) norm axis keep their cosine
+    # information in dedicated under/overflow rows — empty at the
+    # derivation update, they fill as gradient norms drift: a free
+    # drift detector.  Boundary semantics match histogram2d (last bin
+    # is closed): under is strict <, over is strict >.
     hist_under = np.histogram(
         c_np[b_np < norm_edges[0]], bins=cos_edges)[0]
     hist_over = np.histogram(
         c_np[b_np > norm_edges[-1]], bins=cos_edges)[0]
-    n_pairs = int(s_vals.numel())
-    n_pairs_in_hist = int(hist.sum())
-    n_over = int(hist_over.sum())
-    n_under = int(hist_under.sum())
 
-    norms_np = nv.cpu().numpy().astype(np.float64)
     hist_payload: Dict[str, np.ndarray] = {
         "hist": hist.astype(np.int64),
         "cos_edges": cos_edges.astype(np.float64),
@@ -638,25 +700,31 @@ def _grad_signal_diag(
         "n_valid": np.array(n_valid, dtype=np.int64),
         "n_excluded": np.array(n_samp - n_valid, dtype=np.int64),
         "n_nonfinite": np.array(n_nonfinite, dtype=np.int64),
-        "n_pairs": np.array(n_pairs, dtype=np.int64),
-        "n_pairs_in_hist": np.array(n_pairs_in_hist, dtype=np.int64),
-        # Cosine profiles of pairs outside the (frozen) norm axis —
-        # empty at the derivation update, they fill as gradient norms
-        # drift beyond the initial [min, max]: a free drift detector.
+        "n_frames_in_hist": np.array(int(hist.sum()), dtype=np.int64),
         "hist_under": hist_under.astype(np.int64),
         "hist_over": hist_over.astype(np.int64),
-        "n_under": np.array(n_under, dtype=np.int64),
-        "n_over": np.array(n_over, dtype=np.int64),
-        "pair_mean": np.array(mean_s, dtype=np.float64),
-        "pair_std": np.array(std_s, dtype=np.float64),
+        "n_under": np.array(int(hist_under.sum()), dtype=np.int64),
+        "n_over": np.array(int(hist_over.sum()), dtype=np.int64),
+        "gnorm": np.array(gnorm, dtype=np.float64),
+        "coherence": np.array(scalars["grad_sig_coherence"], np.float64),
+        "dir_cos": np.array(scalars["grad_sig_dir_cos"], np.float64),
+        "proj_mean": np.array(proj_mean, dtype=np.float64),
+        "proj_std": np.array(proj_std, dtype=np.float64),
+        "frac_neg": np.array(frac_neg, dtype=np.float64),
+        # Raw per-frame arrays — the frontend builds the projection
+        # histogram and any percentile without a frozen axis.
+        "grad_norm": norms.cpu().numpy().astype(np.float32),
+        "cos": cos_np.astype(np.float32),
+        "proj": proj_np.astype(np.float32),
+        "valid": valid.cpu().numpy(),
         "norm_quantiles": np.quantile(
-            norms_np, [0.05, 0.25, 0.5, 0.75, 0.95],
+            b_np, [0.05, 0.25, 0.5, 0.75, 0.95],
         ).astype(np.float64),
         "n_params": np.array(n_params, dtype=np.int64),
     }
 
     scalars["grad_sig_time_s"] = time.perf_counter() - t_start
-    return scalars, hist_payload, dump_payload
+    return scalars, hist_payload, dump_payload, g_vec
 
 
 def ppo_update(
@@ -1116,18 +1184,25 @@ def ppo_update(
     # stats.grad_sig_payload for the loop to persist under gradsig/
     # (a 2048-bin matrix must not go into the __RAW_STATS__ JSON line).
     grad_sig_scalars: Dict[str, Any] = {
-        "grad_sig_mean": 0.0,
-        "grad_sig_std": 0.0,
+        "grad_sig_gnorm": 0.0,
+        "grad_sig_coherence": 0.0,
+        "grad_sig_proj_mean": 0.0,
+        "grad_sig_proj_std": 0.0,
+        "grad_sig_frac_neg": 0.0,
+        "grad_sig_dir_cos": 0.0,
         "grad_sig_frames": 0,
         "grad_sig_norm_med": 0.0,
         "grad_sig_time_s": 0.0,
     }
     grad_sig_payload: Optional[Dict[str, np.ndarray]] = None
+    grad_sig_gvec: Optional[np.ndarray] = None
     if grad_diag is not None:
-        grad_sig_scalars, grad_sig_payload, gradsig_dump = _grad_signal_diag(
+        (
+            grad_sig_scalars, grad_sig_payload, gradsig_dump, grad_sig_gvec,
+        ) = _grad_signal_diag(
             actor, obs_t, act_t, ei_t, w_t, adv_t, floor_weight_t,
             float(uncertainty_floor), float(uncertainty_coef),
-            grad_diag, device, diagnostics,
+            pp.minibatch_size, grad_diag, device, diagnostics,
         )
         if dump_callback is not None and gradsig_dump is not None:
             dump_callback("gradsig", gradsig_dump)
@@ -1401,14 +1476,14 @@ def ppo_update(
                 # differentiable here (else it is a constant zero
                 # tensor) and fw_mb is only defined here.
                 if mb_idx == 0 and hasattr(actor, "exploration_grad_diagnostics"):
-                    grad_diag = actor.exploration_grad_diagnostics(
+                    expl_diag = actor.exploration_grad_diagnostics(
                         policy_loss, floor_loss,
                     )
-                    if grad_diag is not None:
-                        all_pol_logstd_grads.append(grad_diag["pol_abs"])
-                        all_floor_logstd_grads.append(grad_diag["floor_abs"])
-                        all_pol_logstd_grad_sign.append(grad_diag["pol_sign"])
-                        all_floor_logstd_grad_sign.append(grad_diag["floor_sign"])
+                    if expl_diag is not None:
+                        all_pol_logstd_grads.append(expl_diag["pol_abs"])
+                        all_floor_logstd_grads.append(expl_diag["floor_abs"])
+                        all_pol_logstd_grad_sign.append(expl_diag["pol_sign"])
+                        all_floor_logstd_grad_sign.append(expl_diag["floor_sign"])
                         # floor_active_frac: fraction of *floor-weighted*
                         # frames where uncertainty is below the floor.
                         # Only counts frames with fw > 0.
@@ -1920,10 +1995,15 @@ def ppo_update(
         critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,
-        grad_sig_mean=float(grad_sig_scalars["grad_sig_mean"]),
-        grad_sig_std=float(grad_sig_scalars["grad_sig_std"]),
+        grad_sig_gnorm=float(grad_sig_scalars["grad_sig_gnorm"]),
+        grad_sig_coherence=float(grad_sig_scalars["grad_sig_coherence"]),
+        grad_sig_proj_mean=float(grad_sig_scalars["grad_sig_proj_mean"]),
+        grad_sig_proj_std=float(grad_sig_scalars["grad_sig_proj_std"]),
+        grad_sig_frac_neg=float(grad_sig_scalars["grad_sig_frac_neg"]),
+        grad_sig_dir_cos=float(grad_sig_scalars["grad_sig_dir_cos"]),
         grad_sig_frames=int(grad_sig_scalars["grad_sig_frames"]),
         grad_sig_norm_med=float(grad_sig_scalars["grad_sig_norm_med"]),
         grad_sig_time_s=float(grad_sig_scalars["grad_sig_time_s"]),
         grad_sig_payload=grad_sig_payload,
+        grad_sig_gvec=grad_sig_gvec,
     )

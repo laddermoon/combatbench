@@ -21,6 +21,7 @@ Output layout::
     ├── buffer.npz            # obs, actions, log_probs, frame_ids
     ├── gae.npz               # per-channel: values, advantages, returns
     ├── combine.npz           # combined_adv, aw_normed, confidence
+    ├── gradsig.npz           # sampled frames: grad norms, w·A, floor, proj/cos vs G
     ├── update.npz            # UpdateStats + grad norms
     └── RECORD_GUIDE.md       # exact recorder commands for visual inspection
 """
@@ -831,8 +832,8 @@ def capture_dump(
     # --- gradsig.npz (from dump_collector, ADV gradient-signal detail) ---
     # Per-sampled-frame detail behind the gradsig/u{N}.npz histogram:
     # flat buffer indices, per-frame gradient norms, the surrogate/floor
-    # scalar coefficients, and the leave-one-out projection onto the
-    # other sampled frames' resultant.
+    # scalar coefficients, and each frame's signed projection + cosine
+    # onto the full-buffer aggregate direction G.
     if "gradsig" in dump_collector:
         np.savez_compressed(dump_dir / "gradsig.npz", **dump_collector["gradsig"])
 

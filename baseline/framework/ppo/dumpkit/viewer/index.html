@@ -2250,14 +2250,16 @@
       html += '</table></div>';
     }
     html += '</div>';
-    // ADV Gradient Signal — per-update pairwise histogram artifact
+    // ADV Gradient Signal — per-update histogram artifact
     // (gradsig/uNNNNN.npz), fetched lazily so old runs and interval-
     // skipped updates degrade to a one-line notice instead of an error.
     html += '<div class="data-table" style="margin-top:16px"><h3>ADV Gradient Signal (θ_old)</h3>' +
       '<div class="desc" style="color:var(--muted);font-size:12px;margin-bottom:8px">' +
-      'Pairwise distribution of per-frame training-loss gradients over sampled frames — ' +
-      'x: cos(g_i,g_j), y: √(‖g_i‖·‖g_j‖) (equal-mass quantile bins, frozen at first update), color: pair share. ' +
-      'Bottom strip: P(cos) marginal. Edge rows collect pairs that drifted beyond the frozen axis.</div>' +
+      'Per-frame training-loss gradients g_i vs the full-buffer aggregate direction G ' +
+      '(G = mean of all frame gradients). x: cos(g_i,G), y: ‖g_i‖ (equal-mass quantile bins, ' +
+      'frozen at first update), color: frame share. Strips below: P(cos) marginal and the ' +
+      'projection distribution p_i = g_i·Ĝ — positive = helped by this update\'s direction, ' +
+      'negative = sacrificed. Edge rows collect frames that drifted beyond the frozen axis.</div>' +
       '<div id="gradsig-panel"><div class="loading">loading…</div></div></div>';
     $('update-detail-container').innerHTML = html;
     loadGradSigPanel(u.update);
@@ -2265,7 +2267,7 @@
 
   // --- Gradient Signal panel (per-update 2D histogram) ---------------
   // Loads gradsig/uNNNNN.npz via the run API and renders the joint
-  // (norm-bin × cos-bin) pair distribution as a heatmap.  Follows
+  // (per-frame-norm-bin × cos-bin) frame distribution as a heatmap.  Follows
   // selectedUpdateIdx through renderUpdateDetail like every other panel.
   function loadGradSigPanel(update) {
     const el = document.getElementById('gradsig-panel');
@@ -2299,7 +2301,7 @@
     }
     const ce = gs.cos_edges || [], ne = gs.norm_edges || [];
     // Extended matrix: dedicated under/overflow rows (bottom / top)
-    // collect pairs beyond the frozen quantile axis — empty at the
+    // collect frames beyond the frozen quantile axis — empty at the
     // derivation update, they fill as gradient norms drift.
     const Hx = [gs.hist_under, ...H, gs.hist_over];
     const nRows = Hx.length;
@@ -2325,13 +2327,21 @@
     const head = document.createElement('div');
     head.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:6px';
     const qs = gs.norm_quantiles || [];
+    const gnorm = +gs.gnorm || 0;
+    const pmean = +gs.proj_mean || 0;
+    // mean(p_i) estimates ‖G‖ on the full buffer — a large deviation
+    // flags the sampled gradients as unrepresentative (or a bug).
+    const dev = gnorm > 1e-12 ? Math.abs(pmean - gnorm) / gnorm : 0;
     head.innerHTML =
       `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
       (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
-      ` · pairs ${(+gs.n_pairs).toLocaleString()}` +
       ((nUnder + nOver) ? ` · <span style="color:var(--orange)">${nUnder + nOver} beyond axis</span> (<${nUnder} / ≥${nOver})` : '') +
-      ` · mean <b>${(+gs.pair_mean).toExponential(2)}</b>` +
-      ` · std <b>${(+gs.pair_std).toExponential(2)}</b>` +
+      ` · ‖G‖ <b>${gnorm.toExponential(2)}</b>` +
+      ` · coherence <b>${(+gs.coherence).toFixed(3)}</b>` +
+      ` · mean(p) ${pmean.toExponential(2)}` +
+      (dev > 0.05 ? ` <span style="color:var(--orange)">(Δ${(100 * dev).toFixed(0)}% vs ‖G‖ — sampling check)</span>` : '') +
+      ` · frac(p<0) <b>${(100 * (+gs.frac_neg)).toFixed(1)}%</b>` +
+      ` · dir cos ${(+gs.dir_cos).toFixed(3)}` +
       (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');
     el.appendChild(head);
 
@@ -2388,7 +2398,7 @@
         ctx.beginPath(); ctx.moveTo(px, y); ctx.lineTo(px + pw, y); ctx.stroke();
       });
       ctx.setLineDash([]);
-      // Row-marginal strip: share of pairs per norm row.  Equal-mass
+      // Row-marginal strip: share of frames per norm row.  Equal-mass
       // quantile bins make it flat at the derivation update; deviation
       // from flat later = gradient-norm drift across updates.
       for (let r = 0; r < nRows; r++) {
@@ -2399,8 +2409,8 @@
       ctx.strokeStyle = '#252a36';
       ctx.strokeRect(px, mt, pw, ph);
 
-      // X-marginal strip below the heatmap: the aggregate pairwise
-      // cosine distribution P(cos) over all sampled pairs — always the
+      // X-marginal strip below the heatmap: the aggregate cosine
+      // distribution P(cos) over all sampled frames — always the
       // joint marginal regardless of the normalization toggle.
       const xy = mt + ph;
       for (let c = 0; c < nCols; c++) {
@@ -2421,7 +2431,7 @@
         ctx.strokeStyle = 'rgba(37,42,54,0.7)';
         ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, xy + xmh); ctx.stroke();
       });
-      ctx.fillText('cos(g_i, g_j)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
+      ctx.fillText('cos(g_i, G)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
       // Y ticks: percentile anchors (quantile bins) + edge-row marks.
       ctx.textAlign = 'right';
       ctx.fillText(`<${fmtE(ne[0])}`, px - mg - 4, mt + ph - chh / 2 + 3);
@@ -2434,7 +2444,7 @@
       ctx.save();
       ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
       ctx.textAlign = 'center';
-      ctx.fillText('√(‖g_i‖·‖g_j‖)  (quantile bins)', 0, 0);
+      ctx.fillText('‖g_i‖  (quantile bins)', 0, 0);
       ctx.restore();
       cap.textContent = mode === 'joint'
         ? 'joint probability (all cells sum to 1)'
@@ -2451,7 +2461,7 @@
         // Hovering the X-marginal strip.
         tip.textContent =
           `P(cos) marginal: cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
-          `pairs=${colSum[c].toLocaleString()} · ${(100 * colSum[c] / (total || 1)).toFixed(2)}%`;
+          `frames=${colSum[c].toLocaleString()} · ${(100 * colSum[c] / (total || 1)).toFixed(2)}%`;
         return;
       }
       if (rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
@@ -2460,12 +2470,80 @@
       tip.textContent =
         `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
         `norm ${rowLabel(r)} ${rowPct(r)} · ` +
-        `pairs=${cnt.toLocaleString()} · joint ${(100 * cnt / (total || 1)).toFixed(3)}%` +
+        `frames=${cnt.toLocaleString()} · joint ${(100 * cnt / (total || 1)).toFixed(3)}%` +
         ` · row-cond ${(rowSum[r] ? 100 * cnt / rowSum[r] : 0).toFixed(2)}%` +
         ` · row share ${(100 * rowSum[r] / (total || 1)).toFixed(2)}%`;
     });
     canvas.addEventListener('mouseleave', () => { tip.textContent = ''; });
     draw();
+
+    // --- Projection strip: distribution of p_i = g_i·Ĝ -------------
+    // Positive p_i = frame i's objective improves under the batch
+    // direction; negative = sacrificed by this update.  Bins are
+    // symmetric around 0 over the central 99% so one extreme frame
+    // cannot flatten the histogram; out-of-range values clip into the
+    // edge bins (counts preserved).
+    const pv = [];
+    const validArr = gs.valid || [], projArr = gs.proj || [];
+    for (let i = 0; i < projArr.length; i++)
+      if (validArr[i] && projArr[i] !== null && isFinite(+projArr[i]))
+        pv.push(+projArr[i]);
+    if (pv.length) {
+      const qOf = (a, q) => {
+        const s = a.slice().sort((x, y) => x - y);
+        return s[Math.min(s.length - 1, Math.floor(q * s.length))];
+      };
+      const rEdge = Math.max(1e-12,
+        Math.max(Math.abs(qOf(pv, 0.005)), Math.abs(qOf(pv, 0.995))));
+      const nB = 64, pbins = new Array(nB).fill(0);
+      pv.forEach(v => {
+        const t = (v + rEdge) / (2 * rEdge) * nB;
+        pbins[Math.max(0, Math.min(nB - 1, Math.floor(t)))]++;
+      });
+      const pMax = Math.max(1, ...pbins);
+      const pHh = 92, pph = 56, pmt = 6;
+      const pcv = document.createElement('canvas');
+      pcv.width = W * dpr; pcv.height = pHh * dpr;
+      pcv.style.cssText = `width:${W}px;height:${pHh}px;max-width:100%;cursor:crosshair`;
+      el.appendChild(pcv);
+      const pctx = pcv.getContext('2d');
+      pctx.scale(dpr, dpr);
+      const bcw = pw / nB;
+      const binLo = b => -rEdge + 2 * rEdge * b / nB;
+      for (let b = 0; b < nB; b++) {
+        const h = (pbins[b] / pMax) * pph;
+        pctx.fillStyle = binLo(b) < 0 && binLo(b + 1) <= 0
+          ? 'rgba(255,120,90,0.75)' : 'rgba(79,163,255,0.75)';
+        pctx.fillRect(px + b * bcw, pmt + pph - h, Math.ceil(bcw), h);
+      }
+      const zx = px + pw / 2;
+      pctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      pctx.beginPath(); pctx.moveTo(zx, pmt); pctx.lineTo(zx, pmt + pph); pctx.stroke();
+      pctx.strokeStyle = '#252a36';
+      pctx.strokeRect(px, pmt, pw, pph);
+      pctx.fillStyle = '#8a93a6';
+      pctx.font = '10px ui-monospace, monospace';
+      pctx.textAlign = 'center';
+      [[-rEdge, px + 24], [0, zx], [rEdge, px + pw - 24]].forEach(([v, x]) =>
+        pctx.fillText(fmtE(v), x, pmt + pph + 13));
+      pctx.fillText('p_i = g_i·Ĝ   ·   <0 sacrificed · >0 helped',
+        px + pw / 2, pmt + pph + 28);
+      const ptip = document.createElement('div');
+      ptip.style.cssText = 'font-size:11px;color:var(--muted);margin-top:2px;min-height:14px;font-family:ui-monospace,monospace';
+      el.appendChild(ptip);
+      pcv.addEventListener('mousemove', e => {
+        const rect = pcv.getBoundingClientRect();
+        const b = Math.floor((e.clientX - rect.left - px) / bcw);
+        if (b < 0 || b >= nB || e.clientY - rect.top > pmt + pph) {
+          ptip.textContent = ''; return;
+        }
+        ptip.textContent =
+          `p_i∈[${binLo(b).toExponential(2)}, ${binLo(b + 1).toExponential(2)}) · ` +
+          `frames=${pbins[b].toLocaleString()} · ${(100 * pbins[b] / pv.length).toFixed(2)}% · ` +
+          `mean ${pmean.toExponential(2)} · std ${(+gs.proj_std).toExponential(2)}`;
+      });
+      pcv.addEventListener('mouseleave', () => { ptip.textContent = ''; });
+    }
   }
 
   function buildMetricsCharts(metrics) {

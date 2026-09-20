@@ -692,24 +692,37 @@ def test_run_data_grad_sig():
         norm_edges = np.geomspace(1e-2, 1e2, 5)
         hist = np.zeros((4, 8), dtype=np.int64)
         hist[2, 6] = 7
+        grad_norm = np.array([0.5, 1.0, 2.0, np.nan], dtype=np.float32)
+        cos = np.array([0.1, -0.2, 0.9, np.nan], dtype=np.float32)
+        proj = np.array([0.05, -0.2, 1.8, np.nan], dtype=np.float32)
+        valid = np.array([True, True, True, False])
         np.savez_compressed(
             gs_dir / "u00042.npz",
             hist=hist,
             cos_edges=cos_edges,
             norm_edges=norm_edges,
-            n_sampled=np.array(50),
-            n_valid=np.array(48),
-            n_excluded=np.array(2),
-            n_pairs=np.array(1128),
-            n_pairs_in_hist=np.array(1128),
-            pair_mean=np.array(0.123),
-            pair_std=np.array(0.456),
+            n_sampled=np.array(4),
+            n_valid=np.array(3),
+            n_excluded=np.array(1),
+            n_nonfinite=np.array(1),
+            n_frames_in_hist=np.array(3),
+            gnorm=np.array(0.123),
+            coherence=np.array(0.42),
+            dir_cos=np.array(0.77),
+            proj_mean=np.array(0.55),
+            proj_std=np.array(0.9),
+            frac_neg=np.array(1.0 / 3.0),
             norm_quantiles=np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
             norm_edges_derived=np.array(True),
             hist_under=np.array([0, 0, 0, 1, 2, 0, 0, 0], dtype=np.int64),
             hist_over=np.array([0, 0, 0, 0, 3, 4, 0, 0], dtype=np.int64),
             n_under=np.array(3),
             n_over=np.array(7),
+            grad_norm=grad_norm,
+            cos=cos,
+            proj=proj,
+            valid=valid,
+            n_params=np.array(1234),
         )
 
         rd = RunData(run_dir)
@@ -720,21 +733,34 @@ def test_run_data_grad_sig():
         assert out["hist"][2][6] == 7
         assert len(out["cos_edges"]) == 9
         assert len(out["norm_edges"]) == 5
-        assert out["n_sampled"] == 50
-        assert out["n_valid"] == 48
-        assert out["n_excluded"] == 2
-        assert out["n_pairs"] == 1128
-        assert abs(out["pair_mean"] - 0.123) < 1e-9
+        assert out["n_sampled"] == 4
+        assert out["n_valid"] == 3
+        assert out["n_excluded"] == 1
+        assert out["n_frames_in_hist"] == 3
+        assert abs(out["gnorm"] - 0.123) < 1e-9
+        assert abs(out["coherence"] - 0.42) < 1e-9
+        assert abs(out["dir_cos"] - 0.77) < 1e-9
+        assert abs(out["proj_mean"] - 0.55) < 1e-9
+        assert abs(out["proj_std"] - 0.9) < 1e-9
+        assert abs(out["frac_neg"] - 1.0 / 3.0) < 1e-9
         assert out["norm_edges_derived"] is True
         # Under/overflow edge rows come through when present.
         assert out["hist_under"] == [0, 0, 0, 1, 2, 0, 0, 0]
         assert out["hist_over"] == [0, 0, 0, 0, 3, 4, 0, 0]
         assert out["n_under"] == 3
         assert out["n_over"] == 7
+        # Raw per-frame arrays; the invalid frame's non-finite values
+        # serialize as null (literal NaN would break fetch().json()).
+        assert out["grad_norm"][:3] == [0.5, 1.0, 2.0]
+        assert out["grad_norm"][3] is None
+        assert out["cos"][3] is None
+        assert out["proj"][3] is None
+        assert out["valid"] == [True, True, True, False]
+        assert out["norm_quantile_levels"] == [0.05, 0.25, 0.5, 0.75, 0.95]
         # JSON-serializable
         json.dumps(out, allow_nan=False)
 
-        # Old-format artifact missing the edge-row fields → treated as
+        # Old pairwise-format artifact missing the new keys → treated as
         # unavailable (KeyError caught → None → API reports no data).
         np.savez_compressed(
             gs_dir / "u00043.npz",

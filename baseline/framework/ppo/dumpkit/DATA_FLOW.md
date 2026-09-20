@@ -101,38 +101,56 @@
 ## 阶段 3.5：ADV 梯度信号诊断（θ_old 截面）
 
 在 combined_adv 确定之后、epoch 循环开始之前——此时 actor 恰为
-θ_old——框架从 buffer 随机抽样 `grad_sig_sample_size` 帧（专用 RNG，
-`seed = f(run_seed, update)`，不消耗训练随机流），对每帧计算**真实
-训练损失**在该帧的改善方向梯度：
+θ_old——框架对每帧定义**真实训练损失**的改善方向梯度：
 
 ```
 scalar_i = w_i·A_i·log_prob_i − coef·relu(floor − U_i)²·floor_weight_i
 g_i      = ∇_θ scalar_i          (θ = θ_old，含 surrogate + floor 两项)
 ```
 
-然后对 i<j 配对计算 `s_ij = cos(g_i,g_j)·√(‖g_i‖·‖g_j‖)`（等价于把
-每帧幅度压缩为 √n_i 后求内积），产出：
+先对**整个 buffer** 分块反向累积得到聚合梯度 `G = mean_i g_i`
+（等价于完整 mean-loss 的一次梯度），再从 buffer 随机抽样
+`grad_sig_sample_size` 帧（专用 RNG，`seed = f(run_seed, update)`，
+不消耗训练随机流）逐帧求梯度并投影到聚合方向 `Ĝ = G/‖G‖`：
 
-- **标量**（进 `__RAW_STATS__` → `stats.*`）：`grad_sig_mean`（共识
-  强度）、`grad_sig_std`（配对离散度）、`grad_sig_frames`（有效帧
-  数）、`grad_sig_norm_med`（梯度范数中位数）、`grad_sig_time_s`。
-- **二维分布**（`run_dir/gradsig/uNNNNN.npz`，~8KB/update）：
-  `hist[norm_bin, cos_bin]` 联合计数 + 分箱边界 + 覆盖计数 +
-  范数分位数。norm 轴为**等质量分位数分箱**（
-  `grad_sig_norm_bins` 个 bin，派生 update 上每行恰装
-  ~1/norm_bins 配对）——分辨率自动集中在数据密集处，顶部 bin
-  自然延伸覆盖高能长尾。边界冻结进 `gradsig/meta.json` 保证跨
-  update 可比；之后梯度范数漂移表现为配对向顶部 bin 迁移，超出
-  首 update [min, max] 范围的配对收进 `hist_under`/`hist_over`
-  兜底行（热力图的最底/最顶行，虚线分隔）。
+```
+p_i = g_i·Ĝ          (带符号投影：>0 = 本 update 方向使该帧获益，<0 = 被牺牲)
+c_i = cos(g_i, G)    (纯方向)
+```
+
+产出：
+
+- **标量**（进 `__RAW_STATS__` → `stats.*`）：`grad_sig_gnorm`
+  （‖G‖，净拉力强度）、`grad_sig_coherence`（‖G‖/mean‖g_i‖，总
+  拉力聚合后的存活率）、`grad_sig_proj_mean`（mean p_i，‖G‖ 的
+  采样估计——恒等式 mean(p)=‖G‖ 在完整 buffer 上严格成立，偏差
+  大说明采样不具代表性）、`grad_sig_proj_std`（逐帧获益离散
+  度）、`grad_sig_frac_neg`（P(p<0)，被本 update 方向牺牲的帧
+  占比）、`grad_sig_dir_cos`（cos(G_u, G_{u−1})，合力方向跨
+  update 持续性；G 由 loop 在内存中传递不落盘）、
+  `grad_sig_frames`（有效帧数）、`grad_sig_norm_med`、
+  `grad_sig_time_s`。
+- **二维分布 + 逐帧数组**（`run_dir/gradsig/uNNNNN.npz`）：
+  `hist[norm_bin, cos_bin]` 帧计数 + 分箱边界 + 覆盖计数 +
+  范数分位数 + 逐帧 `grad_norm`/`cos`/`proj`/`valid` 数组（前端
+  自行分箱投影直方图，无需冻结轴）。norm 轴为**等质量分位数
+  分箱**（`grad_sig_norm_bins` 个 bin，派生 update 上每行恰装
+  ~1/norm_bins 帧），边界冻结进 `gradsig/meta.json`（带
+  `norm_axis: "per_frame_norm"` 标记，旧 pairwise 格式的 meta
+  不会被复用）；超出首 update 范围的帧收进
+  `hist_under`/`hist_over` 兜底行。
 - **dump 细节**（仅 dump 时，`dumps/uNNNNN/gradsig.npz`）：采样帧
   的扁平 buffer 索引、逐帧梯度范数、w·A 与 floor 标量系数、
-  leave-one-out 投影（该帧对其余样本合力的支持/反对强度）。
+  逐帧 p_i/c_i。
   有 dump 请求时会强制运行诊断，即使该 update 被 interval 跳过。
 
-解读边界：**共识 ≠ 正确**——系统性偏差的 ADV 同样产生一致方向；
-std 是配对离散度而非纯噪声（范数不均也会抬高它）；零范数帧（无
-方向）单独计数不进配对分布。语义详见 metric_catalog.py 的 hint。
+解读边界：‖G‖ 是聚合后的**净**强度，同时受个体拉力与方向一致性
+影响——配 coherence 拆开看；coherence 低不必然是有害冲突（方向
+散开也稀释合力），是否真有帧被牺牲看 frac_neg；p_i 是相对"已选
+定方向"的一阶获益，正交方向的可能性不在其中；G 是 θ_old 处的原
+始意图，不等于 Adam/clip/minibatch 后的实际位移；零范数帧（无
+方向）单独计数不进分布；‖G‖≈0 时方向无定义，proj/cos 统计不产
+出。语义详见 metric_catalog.py 的 hint。
 
 ## 关键边界
 

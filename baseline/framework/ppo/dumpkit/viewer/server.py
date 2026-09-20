@@ -359,6 +359,19 @@ _LEGACY_POLICY_STAT_KEYS = frozenset({
 _FRAMEWORK_STAT_KEYS = frozenset({"uncertainty_mean"})
 
 
+def _nan_to_null(arr: np.ndarray) -> List[Any]:
+    """float array → JSON-safe list; non-finite values become ``None``.
+
+    ``json.dumps`` emits a bare ``NaN``/``Infinity`` literal for
+    non-finite floats — invalid JSON that makes ``fetch().json()``
+    throw client-side.  Explicit nulls keep the payload parseable.
+    """
+    return [
+        (float(v) if np.isfinite(v) else None)
+        for v in np.asarray(arr, dtype=np.float64).ravel()
+    ]
+
+
 class RunData:
     """Training run directory: scan dumps and parse __RAW_STATS__ from train.log."""
 
@@ -491,7 +504,9 @@ class RunData:
 
         The npz is written by the training loop when the ADV gradient-
         signal diagnostic runs; missing files (old runs, skipped
-        intervals) return ``None`` → the API reports ``available: false``.
+        intervals) and artifacts written by a different format
+        generation (KeyError on a required key) return ``None`` → the
+        API reports ``available: false``.
         """
         p = self.run_dir / "gradsig" / f"u{update:05d}.npz"
         if not p.is_file():
@@ -501,23 +516,36 @@ class RunData:
                 return {
                     "available": True,
                     "update": int(update),
-                    # hist[norm_bin, cos_bin] — joint pair counts.
+                    # hist[norm_bin, cos_bin] — frame counts (per-frame
+                    # norm bins × cos bins vs the aggregate direction).
                     "hist": d["hist"].tolist(),
                     "cos_edges": d["cos_edges"].tolist(),
                     "norm_edges": d["norm_edges"].tolist(),
                     "n_sampled": int(d["n_sampled"]),
                     "n_valid": int(d["n_valid"]),
                     "n_excluded": int(d["n_excluded"]),
-                    "n_pairs": int(d["n_pairs"]),
-                    "n_pairs_in_hist": int(d["n_pairs_in_hist"]),
+                    "n_frames_in_hist": int(d["n_frames_in_hist"]),
                     # Under/overflow edge rows — cosine profiles of
-                    # pairs outside the frozen quantile norm axis.
+                    # frames outside the frozen quantile norm axis.
                     "hist_under": d["hist_under"].tolist(),
                     "hist_over": d["hist_over"].tolist(),
                     "n_under": int(d["n_under"]),
                     "n_over": int(d["n_over"]),
-                    "pair_mean": float(d["pair_mean"]),
-                    "pair_std": float(d["pair_std"]),
+                    # Aggregate-direction scalars.
+                    "gnorm": float(d["gnorm"]),
+                    "coherence": float(d["coherence"]),
+                    "dir_cos": float(d["dir_cos"]),
+                    "proj_mean": float(d["proj_mean"]),
+                    "proj_std": float(d["proj_std"]),
+                    "frac_neg": float(d["frac_neg"]),
+                    # Raw per-frame arrays — the frontend bins the
+                    # projection histogram itself.  Non-finite values
+                    # (invalid frames) become null: a literal NaN or
+                    # Infinity in the JSON would break fetch().json().
+                    "grad_norm": _nan_to_null(d["grad_norm"]),
+                    "cos": _nan_to_null(d["cos"]),
+                    "proj": _nan_to_null(d["proj"]),
+                    "valid": d["valid"].tolist(),
                     "norm_quantiles": d["norm_quantiles"].tolist(),
                     "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
                     "norm_edges_derived": bool(d["norm_edges_derived"]),
