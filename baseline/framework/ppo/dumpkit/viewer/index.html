@@ -2486,13 +2486,18 @@
       });
       ctx.fillText('cos(g_i, G)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
       // Y ticks: percentile anchors (quantile bins) + edge-row marks.
+      // Y ticks: percentile edges.  ne[e] is the boundary between
+      // interior bins e-1 and e — the label sits exactly on that
+      // boundary (y = top of interior region + (nInt+1-e) rows).
+      // The p100 edge is the over-row threshold itself, labeled
+      // "≥… (p100)" on the edge row instead of duplicating it.
       ctx.textAlign = 'right';
       ctx.fillText(`<${fmtE(ne[0])}`, px - mg - 4, mt + ph - chh / 2 + 3);
-      ctx.fillText(`≥${fmtE(ne[ne.length - 1])}`, px - mg - 4, mt + chh / 2 + 3);
-      [0.25, 0.5, 0.75, 1.0].forEach(q => {
-        const k = Math.min(ne.length - 2, Math.round(q * nInt));
-        const y = mt + (nInt - k) * chh + chh / 2 + 3;
-        ctx.fillText(`p${Math.round(q * 100)} ${fmtE(ne[k])}`, px - mg - 4, y);
+      ctx.fillText(`≥${fmtE(ne[ne.length - 1])} (p100)`, px - mg - 4, mt + chh / 2 + 3);
+      [0.25, 0.5, 0.75].forEach(q => {
+        const e = Math.round(q * nInt);
+        const y = mt + (nInt + 1 - e) * chh;
+        ctx.fillText(`p${Math.round(q * 100)} ${fmtE(ne[e])}`, px - mg - 4, y + 3);
       });
       ctx.save();
       ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
