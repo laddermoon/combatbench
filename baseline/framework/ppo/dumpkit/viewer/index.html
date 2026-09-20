@@ -2306,7 +2306,7 @@
     const nInt = nRows - 2;
     const rowSum = Hx.map(r => (r || []).reduce((a, b) => a + (+b || 0), 0));
     const colSum = Array.from({length: nCols}, (_, c) =>
-      Hx.reduce((a, r) => a + (+r[c] || 0), 0));
+      Hx.reduce((a, r) => a + (+(r || [])[c] || 0), 0));
     const total = rowSum.reduce((a, b) => a + b, 0);
     const maxRow = Math.max(1, ...rowSum);
     const maxCol = Math.max(1, ...colSum);
@@ -2360,9 +2360,12 @@
     const px = ml + mg;
     const pw = W - px - mr, ph = Hh - mt - xmh - mb;
     const cw = pw / nCols, chh = ph / nRows;
-    const cellProb = (r, c) => mode === 'joint'
-      ? (total ? (Hx[r][c] || 0) / total : 0)
-      : (rowSum[r] ? (Hx[r][c] || 0) / rowSum[r] : 0);
+    const cellProb = (r, c) => {
+      const v = +((Hx[r] || [])[c]) || 0;
+      return mode === 'joint'
+        ? (total ? v / total : 0)
+        : (rowSum[r] ? v / rowSum[r] : 0);
+    };
 
     function draw() {
       ctx.clearRect(0, 0, W, Hh);
@@ -2453,7 +2456,7 @@
       }
       if (rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
       const r = nRows - 1 - rTop;
-      const cnt = Hx[r][c] || 0;
+      const cnt = (Hx[r] || [])[c] || 0;
       tip.textContent =
         `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
         `norm ${rowLabel(r)} ${rowPct(r)} · ` +
