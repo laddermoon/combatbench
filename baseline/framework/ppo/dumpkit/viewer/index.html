@@ -2357,7 +2357,7 @@
     ctrl.appendChild(btn); ctrl.appendChild(cap);
     el.appendChild(ctrl);
 
-    const W = 720, Hh = 430, ml = 96, mr = 10, mt = 6, xmh = 44, mb = 34, mg = 26;
+    const W = 720, Hh = 430, ml = 96, mr = 78, mt = 6, xmh = 44, mb = 34, mg = 26;
     const canvas = document.createElement('canvas');
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W * dpr; canvas.height = Hh * dpr;
@@ -2385,11 +2385,30 @@
       let maxV = 0;
       for (let r = 0; r < nRows; r++) for (let c = 0; c < nCols; c++) maxV = Math.max(maxV, cellProb(r, c));
       if (maxV <= 0) maxV = 1;
+      // Log-spaced color mapping: equal *ratios* get equal color
+      // distance, so a 10× difference is always a visible step.
+      // loV = display floor (~2.3 decades below max); cells at or
+      // below it share the darkest color.
+      const loV = maxV / 200;
+      const kOf = v => v <= 0 ? 0 :
+        Math.min(1, Math.log(Math.max(v, loV) / loV) / Math.log(maxV / loV));
+      // Multi-hue ramp (viridis-like): dark purple → blue → teal →
+      // green → yellow.  Each k band is a distinct hue so adjacent
+      // levels stay visually separable.
+      const ramp = [
+        [68, 1, 84], [59, 82, 139], [33, 145, 140],
+        [94, 201, 98], [253, 231, 37],
+      ];
+      const cellColor = k => {
+        const x = Math.min(1, Math.max(0, k)) * (ramp.length - 1);
+        const i = Math.min(ramp.length - 2, Math.floor(x));
+        const f = x - i, a = ramp[i], b = ramp[i + 1];
+        return `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)},${Math.round(a[1] + (b[1] - a[1]) * f)},${Math.round(a[2] + (b[2] - a[2]) * f)})`;
+      };
       // Heat cells — row 0 (underflow) at bottom, over at top.
       for (let r = 0; r < nRows; r++) {
         for (let c = 0; c < nCols; c++) {
-          const k = Math.pow(cellProb(r, c) / maxV, 0.35);
-          ctx.fillStyle = `rgb(${Math.round(24 + 205 * k)},${Math.round(30 + 150 * k)},${Math.round(50 + 10 * k)})`;
+          ctx.fillStyle = cellColor(kOf(cellProb(r, c)));
           ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
         }
       }
@@ -2411,6 +2430,37 @@
       }
       ctx.strokeStyle = '#252a36';
       ctx.strokeRect(px, mt, pw, ph);
+
+      // Colorbar legend in the right margin — same log mapping as the
+      // cells; tick labels show the cell share at each color level
+      // (top = densest cell this update).
+      const lbx = px + pw + 14, lbw = 12, lbh = ph;
+      for (let i = 0; i < lbh; i++) {
+        ctx.fillStyle = cellColor(1 - i / lbh);
+        ctx.fillRect(lbx, mt + i, lbw, 1);
+      }
+      ctx.strokeStyle = '#252a36';
+      ctx.strokeRect(lbx, mt, lbw, lbh);
+      ctx.fillStyle = '#8a93a6';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'left';
+      const fmtShare = v => {
+        const p = 100 * v;
+        return (p >= 0.1 ? p.toFixed(1)
+              : p >= 0.01 ? p.toFixed(2)
+              : p.toExponential(0)) + '%';
+      };
+      [1, 0.75, 0.5, 0.25].forEach(k => {
+        const v = loV * Math.pow(maxV / loV, k);
+        ctx.fillText(fmtShare(v), lbx + lbw + 4, mt + (1 - k) * lbh + 3);
+      });
+      ctx.fillText(`≤${fmtShare(loV)}`, lbx + lbw + 4, mt + lbh);
+      ctx.save();
+      ctx.translate(lbx + lbw + 45, mt + lbh / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.textAlign = 'center';
+      ctx.fillText('cell share (log)', 0, 0);
+      ctx.restore();
 
       // X-marginal strip below the heatmap: the aggregate cosine
       // distribution P(cos) over all sampled frames — always the
