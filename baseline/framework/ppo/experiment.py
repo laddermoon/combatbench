@@ -471,6 +471,16 @@ class PPOParams:
     adv_winsorize_sigma: float = 0.0
     adv_winsorize_from_update: int = 0
 
+    # Dual-Clip floor (Ye et al. 2020): for adv<0 the standard
+    # min(surr1,surr2) selects the unclipped branch once ratio > 1+eps,
+    # and the surrogate diverges to −∞ as ratio grows — gradient
+    # coefficient ∝ |adv·ratio|.  dual_clip_c floors the surrogate at
+    # c·adv: frames past ratio > c contribute a constant value and zero
+    # gradient.  0.0 disables; typical c ≈ 3.  Gated by
+    # dual_clip_from_update for resume-time activation.
+    dual_clip_c: float = 0.0
+    dual_clip_from_update: int = 0
+
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # At the start of each update (after combined_adv, before any actor
     # step), the trainer computes the full-buffer aggregate gradient
@@ -538,6 +548,16 @@ class PPOParams:
             raise ValueError(
                 f"adv_winsorize_from_update must be >= 0, got "
                 f"{self.adv_winsorize_from_update}."
+            )
+        if self.dual_clip_c < 0.0 or (0.0 < self.dual_clip_c < 1.0):
+            raise ValueError(
+                f"dual_clip_c must be 0.0 (disabled) or >= 1.0, got "
+                f"{self.dual_clip_c}."
+            )
+        if self.dual_clip_from_update < 0:
+            raise ValueError(
+                f"dual_clip_from_update must be >= 0, got "
+                f"{self.dual_clip_from_update}."
             )
         if self.grad_sig_sample_size < 0:
             raise ValueError(
@@ -900,6 +920,11 @@ class UpdateStats:
     #   bound — so the stat doubles as an activation indicator.
     adv_winsorize_clip_frac: float = 0.0
 
+    # Mean over actor minibatches of the fraction of frames sitting on
+    #   the dual-clip floor (adv<0 AND ratio>dual_clip_c) — the blind
+    #   quadrant of standard clipping.  0.0 when dual clip is disabled.
+    dual_clip_frac_mean: float = 0.0
+
     @classmethod
     def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
         """Construct a zeroed UpdateStats for a skipped (empty-buffer) update.
@@ -1030,6 +1055,7 @@ class UpdateStats:
             "grad_sig_norm_mean": self.grad_sig_norm_mean,
             "grad_sig_time_s": self.grad_sig_time_s,
             "adv_winsorize_clip_frac": self.adv_winsorize_clip_frac,
+            "dual_clip_frac_mean": self.dual_clip_frac_mean,
         })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val

@@ -3493,6 +3493,91 @@ def test_checkpoint_reset_update_skips_rng():
     print("test_checkpoint_reset_update_skips_rng: PASS")
 
 
+def test_ppo_surrogate_dual_clip():
+    """_ppo_surrogate: standard clip is unbounded in the adv<0, ratio>1+ε
+    quadrant; dual_clip_c floors it at c·adv with zero gradient."""
+    from baseline.framework.ppo.trainer import _ppo_surrogate
+
+    ratio = torch.tensor([0.5, 1.0, 1.5, 3.0, 117.0])
+    adv = torch.tensor([-1.0, -1.0, -1.0, -1.0, -13.0])
+
+    # Standard clip — exactly min(r·A, clip(r)·A).
+    s = _ppo_surrogate(ratio, adv, 0.2)
+    np.testing.assert_allclose(
+        s.numpy(), np.minimum(ratio.numpy() * adv.numpy(),
+                              0.8 * adv.numpy()),
+    )
+    assert float(s[4]) == -1521.0  # 117·(−13): unbounded blind quadrant
+
+    # Dual clip c=3 floors adv<0 frames at c·adv.
+    sd = _ppo_surrogate(ratio, adv, 0.2, dual_clip_c=3.0)
+    assert float(sd[4]) == -39.0            # 3·(−13)
+    assert float(sd[3]) == -3.0             # ratio=c boundary
+    assert float(sd[2]) == -1.5             # ratio in (1+ε, c): surr1 active
+    # adv>0 frames untouched.
+    s2 = _ppo_surrogate(torch.tensor([10.0]), torch.tensor([1.0]),
+                        0.2, dual_clip_c=3.0)
+    assert abs(float(s2[0]) - 1.2) < 1e-6   # standard clip applies
+
+    # Gradient: zero past c (floored = constant), = adv before c.
+    r_past = torch.tensor([10.0], requires_grad=True)
+    _ppo_surrogate(r_past, torch.tensor([-1.0]), 0.2, 3.0).backward()
+    assert float(r_past.grad) == 0.0
+    r_mid = torch.tensor([2.0], requires_grad=True)
+    _ppo_surrogate(r_mid, torch.tensor([-1.0]), 0.2, 3.0).backward()
+    assert float(r_mid.grad) == -1.0
+
+    print("test_ppo_surrogate_dual_clip: PASS")
+
+
+def test_ppo_update_dual_clip_runs():
+    """dual_clip_c>0 runs end-to-end and reports dual_clip_frac_mean."""
+    import dataclasses
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, reward_scale=1.0, rng=rng),
+    }, rng=rng)
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+    pp = dataclasses.replace(
+        make_pp_params(minibatch_size=32), dual_clip_c=3.0,
+    )
+    stats = ppo_update(
+        actor=actor, critics=critics,
+        actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+        buf=buf, reward_channels=channels, pp=pp,
+        grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+    )
+    assert stats.dual_clip_frac_mean >= 0.0
+
+    # Gate: from_update beyond current → disabled → stat stays 0.
+    actor2 = SimpleActor(obs_dim, act_dim)
+    buf2 = PPOBuffer([traj], actor2, torch.device("cpu"), ("r_a",))
+    actor_opt2, critic_opts2 = make_optimizers(actor2, critics)
+    pp2 = dataclasses.replace(
+        make_pp_params(minibatch_size=32),
+        dual_clip_c=3.0, dual_clip_from_update=5,
+    )
+    stats2 = ppo_update(
+        actor=actor2, critics=critics,
+        actor_optimizer=actor_opt2, critic_optimizers=critic_opts2,
+        buf=buf2, reward_channels=channels, pp=pp2,
+        grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+        update_index=2,
+    )
+    assert stats2.dual_clip_frac_mean == 0.0
+
+    print("test_ppo_update_dual_clip_runs: PASS")
+
+
 def test_ppo_update_adv_winsorize():
     """adv_winsorize_sigma caps the combined advantage; gated by update index.
 
@@ -3669,8 +3754,10 @@ if __name__ == "__main__":
     test_ppo_update_grad_diag_disabled()
     test_grad_signal_diag_no_trainable_params_raises()
 
-    # ADV winsorize
+    # ADV winsorize / dual clip / gauss_rank
     test_ppo_update_adv_winsorize()
     test_normalize_adv_gauss_rank()
+    test_ppo_surrogate_dual_clip()
+    test_ppo_update_dual_clip_runs()
 
     print("\nAll PPO trainer tests passed!")

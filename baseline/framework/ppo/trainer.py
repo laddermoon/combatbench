@@ -445,6 +445,35 @@ def _normalize_adv(
     return result
 
 
+def _ppo_surrogate(
+    ratio: torch.Tensor,
+    adv: torch.Tensor,
+    clip_eps: float,
+    dual_clip_c: float = 0.0,
+) -> torch.Tensor:
+    """Per-frame PPO surrogate value.
+
+    Standard clipped surrogate ``min(ratio·A, clip(ratio,1±ε)·A)``.
+
+    ``dual_clip_c > 0`` adds the Dual-Clip floor (Ye et al. 2020): for
+    ``A < 0`` the min() selects the unclipped ``ratio·A`` branch once
+    ``ratio > 1+ε``, and it diverges to −∞ as ratio grows — a
+    negative-adv frame whose probability was inflated by
+    generalization contributes an unbounded negative surrogate and a
+    gradient coefficient ∝ |adv·ratio|.  The floor ``max(min(...),
+    c·A)`` caps the surrogate at ``c·A``; frames past ``ratio > c``
+    contribute a constant value and zero gradient.  Typical c ≈ 3.
+    """
+    surr1 = ratio * adv
+    surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv
+    surr = torch.min(surr1, surr2)
+    if dual_clip_c > 0.0:
+        surr = torch.where(
+            adv < 0.0, torch.maximum(surr, dual_clip_c * adv), surr,
+        )
+    return surr
+
+
 # ---------------------------------------------------------------------------
 # ADV gradient-signal diagnostic — per-frame gradients vs the aggregate
 # direction at θ_old
@@ -834,6 +863,13 @@ def ppo_update(
 
     # Trust-region knobs come from PPOParams (not overridable per-update).
     clip_eps = pp.clip_eps
+    # Dual-clip floor (see _ppo_surrogate): bounds the adv<0, ratio>1+ε
+    # blind quadrant.  Gated by update index like the other resume-time
+    # interventions.
+    dual_clip_c = pp.dual_clip_c
+    dual_clip_active = (
+        dual_clip_c > 0.0 and update_index >= pp.dual_clip_from_update
+    )
     target_kl = pp.target_kl
 
     # Entropy floor: the framework computes a one-sided hinge loss
@@ -1308,6 +1344,7 @@ def ppo_update(
     all_clip_fracs: List[float] = []
     all_clip_frac_his: List[float] = []
     all_clip_frac_los: List[float] = []
+    all_dual_clip_fracs: List[float] = []
     all_ratio_means: List[float] = []
     all_ratio_maxs: List[float] = []
     all_ratio_mins: List[float] = []
@@ -1449,6 +1486,7 @@ def ppo_update(
                     "dtheta_cos_descent": float("nan"),
                     "floor_loss": float("nan"),
                     "mb_size": float("nan"),
+                    "dual_clip_frac": float("nan"),
                     "critic_loss": dict(step_critic_loss),
                     "critic_grad": dict(step_critic_grad),
                 }
@@ -1512,11 +1550,12 @@ def ppo_update(
             # ran, not just the last epoch's (possibly empty) mean.
             all_actor_kls.append(approx_kl)
             kl_window.append(approx_kl)
-            surr1 = ratio * adv_t[idx]
-            surr2 = (
-                torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv_t[idx]
+            adv_mb = adv_t[idx]
+            surr = _ppo_surrogate(
+                ratio, adv_mb, clip_eps,
+                dual_clip_c if dual_clip_active else 0.0,
             )
-            policy_loss = -(torch.min(surr1, surr2) * batch_weights).mean()
+            policy_loss = -(surr * batch_weights).mean()
 
             with torch.no_grad():
                 # Split the clip mask by tail: hi counts ratio > 1+eps
@@ -1540,6 +1579,16 @@ def ppo_update(
                 all_ratio_means.append(r_mean)
                 all_ratio_maxs.append(r_max)
                 all_ratio_mins.append(r_min)
+                # Fraction of frames sitting in the dual-clip floor:
+                # adv<0 AND ratio > c — the blind quadrant of standard
+                # clipping where surr1 diverges unbounded.
+                dual_clip_frac = float("nan")
+                if dual_clip_active:
+                    dual_clip_frac = float(
+                        ((adv_mb < 0.0) & (ratio > dual_clip_c))
+                        .float().mean().item()
+                    )
+                    all_dual_clip_fracs.append(dual_clip_frac)
 
             # Uncertainty floor loss: one-sided quadratic hinge that only
             # activates when the policy's normalized uncertainty drops below
@@ -1739,6 +1788,7 @@ def ppo_update(
                     _timeline_step["n_ratio_lt05"] = float((ratio < 0.5).sum())
                     _timeline_step["floor_loss"] = float(floor_loss)
                     _timeline_step["mb_size"] = float(idx.numel())
+                    _timeline_step["dual_clip_frac"] = dual_clip_frac
                 timeline_steps.append(_timeline_step)
 
         # --- Epoch KL diagnostics ---
@@ -1900,7 +1950,7 @@ def ppo_update(
                     "argmin_ratio_logr",
                     "n_ratio_gt2", "n_ratio_lt05",
                     "dtheta_norm", "dtheta_cos_descent",
-                    "floor_loss", "mb_size",
+                    "floor_loss", "mb_size", "dual_clip_frac",
                 )
             }
             timeline_critic_loss = {
@@ -2160,6 +2210,10 @@ def ppo_update(
         policy_stats=actor_stats,
         diagnostics=diagnostics,
         adv_winsorize_clip_frac=adv_winsorize_clip_frac,
+        dual_clip_frac_mean=(
+            float(np.mean(all_dual_clip_fracs)) if all_dual_clip_fracs
+            else 0.0
+        ),
         grad_sig_g_norm=float(grad_sig_scalars["grad_sig_g_norm"]),
         grad_sig_coherence=float(grad_sig_scalars["grad_sig_coherence"]),
         grad_sig_proj_mean=float(grad_sig_scalars["grad_sig_proj_mean"]),

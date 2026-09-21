@@ -89,6 +89,16 @@ def _parse_args() -> argparse.Namespace:
              "(default 0 = every update).",
     )
     parser.add_argument(
+        "--dual-clip-c", type=float, default=None,
+        help="Dual-Clip floor for the adv<0 blind quadrant: surrogate "
+             "capped at c·adv (typical c=3). Omitted = disabled.",
+    )
+    parser.add_argument(
+        "--dual-clip-from-update", type=int, default=0,
+        help="Update index from which --dual-clip-c applies "
+             "(default 0 = every update).",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment constructor parameter (can be repeated). "
              "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
@@ -240,6 +250,20 @@ def main() -> None:
         print(
             f"[adv_norm] switching to '{args.adv_norm}' from update "
             f"{args.adv_norm_from_update}", flush=True,
+        )
+
+    if args.dual_clip_c is not None and algo == "ppo":
+        import dataclasses
+        pp = experiment.ppo_params()
+        pp = dataclasses.replace(
+            pp,
+            dual_clip_c=args.dual_clip_c,
+            dual_clip_from_update=args.dual_clip_from_update,
+        )
+        experiment.ppo_params = lambda: pp
+        print(
+            f"[dual_clip] surrogate floored at {args.dual_clip_c}·adv "
+            f"from update {args.dual_clip_from_update}", flush=True,
         )
 
     if args.smoke:
