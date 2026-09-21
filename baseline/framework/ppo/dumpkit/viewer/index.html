@@ -2514,7 +2514,7 @@
           if (g.zone_rest) emitSpec(g);
           (g.charts || []).forEach(emitSpec);
           // Group rendered no charts (all keys absent) — drop its title.
-          if (html.length === afterTitle) html = before;
+          if (html.length === afterTitle) html = html.slice(0, before);
         });
         html += `</details>`;
       }
@@ -2537,7 +2537,11 @@
       else otherKeys.push(k);
     });
     if (otherKeys.length || Object.keys(pcGroups).length) {
-      html += '<details class="metrics-expand">' +
+      // When the catalog has no sections (e.g. a stale viewer server
+      // serving an old catalog shape), open the fallback bucket so the
+      // metrics stay visible instead of collapsing to nothing.
+      const noSections = !(cat.sections || []).length;
+      html += `<details class="metrics-expand"${noSections ? ' open' : ''}>` +
         '<summary>其他框架指标（未归入分区）</summary>';
       otherKeys.sort().forEach(k =>
         emit(labelFor(k), [k], {height: 140, color: '#4fa3ff',
