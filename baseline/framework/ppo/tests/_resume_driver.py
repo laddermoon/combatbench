@@ -10,12 +10,10 @@ does (dataclasses.replace on common_params/ppo_params) and calls
 is a process-boundary property — an in-process rerun would inherit
 module-level state a real resume cannot see.
 
-``--dump-updates`` lists update indices that should carry a dump
-request (the only trigger for the gradsig diagnostic).  For update 1
-the sentinel is written before ``train_ppo`` starts; for later updates
-an ``on_update`` wrapper writes it after the preceding update — the
-loop polls the sentinel at the top of each update, so this is
-deterministic, not timing-dependent.
+``--dump-updates`` lists update indices that should carry a scheduled
+dump request (the only trigger for the gradsig diagnostic) — passed
+straight through to ``train_ppo(dump_updates=...)``, the same path
+``train.py --dump-at`` uses.
 """
 from __future__ import annotations
 
@@ -56,36 +54,13 @@ def main() -> None:
     dump_updates = {
         int(x) for x in args.dump_updates.split(",") if x.strip()
     }
-    if dump_updates:
-        import re
-        def _write_sentinel() -> None:
-            (run_dir / "dump_request.json").write_text(json.dumps({
-                "hypothesis": "resume-equivalence probe",
-            }))
-
-        # First update this process will run: 1 for a fresh run, or
-        # ckpt_update+1 when resuming (parsed from the filename).
-        first_update = 1
-        if args.resume_from:
-            m = re.search(r"checkpoint_u(\d+)\.pt$", args.resume_from)
-            if m:
-                first_update = int(m.group(1)) + 1
-        if first_update in dump_updates:
-            _write_sentinel()
-        orig_on_update = exp.on_update
-
-        def _on_update(stats, update):
-            out = orig_on_update(stats, update)
-            if update + 1 in dump_updates:
-                _write_sentinel()
-            return out
-
-        exp.on_update = _on_update  # type: ignore
 
     train_ppo(
         experiment=exp,
         run_dir=run_dir,
         resume_from=Path(args.resume_from) if args.resume_from else None,
+        dump_updates=dump_updates,
+        dump_hypothesis="resume-equivalence probe",
     )
 
 

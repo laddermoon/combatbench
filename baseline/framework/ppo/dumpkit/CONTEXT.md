@@ -80,9 +80,13 @@ debug.py catalog --key stats.post_kl_mean
 #   → {key, zone, hint}
 
 # —— update N 内部发生了什么？（截面采集，需要 run 正在训练）
-debug.py dump <run_dir> --hypothesis "why is KL high at u250"
+debug.py dump <run_dir> [--hypothesis "why is KL high at u250"]
 #   → 写 sentinel，训练循环在下一 update 边界捕获到 dumps/uNNNNN/
-#   ⚠ --hypothesis 必填：说不清在查什么就不该 dump
+#   --hypothesis 可选（dump 是通用工具，写上让产物自描述）
+
+# —— 预约 dump：启动时指定 update（可配合 --resume-from 精确复现）
+train.py ... --resume-from ckpt_u280 --dump-at 282 [--dump-hypothesis "..."]
+#   → 该 run 到 u282 时自动完整捕获（含 gradsig），request.json 记 source=cli
 
 # —— 看 dump 的逐帧画面 / 验证回放一致性
 debug.py render <dump_dir> --episode 0

@@ -1983,7 +1983,7 @@
         dt.innerHTML =
           '<div class="dump-trigger">' +
           '<input id="dump-hypo" type="text" ' +
-          'placeholder="hypothesis: what are you looking for?" />' +
+          'placeholder="hypothesis (optional): what are you looking for?" />' +
           '<button id="dump-trigger-btn">Trigger dump</button></div>' +
           '<div id="dump-trigger-msg" class="dump-msg"></div>';
         const btn = $('dump-trigger-btn');
@@ -1991,10 +1991,6 @@
         const msg = $('dump-trigger-msg');
         const submit = async () => {
           const hypothesis = input.value.trim();
-          if (!hypothesis) {
-            msg.textContent = 'hypothesis is required';
-            return;
-          }
           btn.disabled = true;
           try {
             const r = await fetch(api('run/dump-request'), {

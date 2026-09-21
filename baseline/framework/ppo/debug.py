@@ -39,8 +39,10 @@ The training loop polls for this file at the top of each update; when found,
 it captures the complete update data (episodes, trajectories, GAE,
 combine, gradients) into ``<run_dir>/dumps/u{N:05d}/`` and writes a
 ``RECORD_GUIDE.md`` with the exact recorder commands for independent
-visual inspection.  ``--hypothesis`` is mandatory — writing a dump without
-stating what you're looking for is rejected.
+visual inspection.  ``--hypothesis`` is optional — the dump is a
+general-purpose tool, though stating what you're looking for makes the
+artifact self-describing.  Dumps can also be scheduled at launch with
+``train.py --dump-at``.
 
 The ``render`` subcommand reads a captured dump, runs round_runner with
 the stochastic wrapped policy to generate per-frame PNG images, and
@@ -211,14 +213,7 @@ def _cmd_dump(args: argparse.Namespace) -> int:
         )
         return 2
 
-    hypothesis = args.hypothesis
-    if not hypothesis or not hypothesis.strip():
-        print(
-            "error: --hypothesis is required and must be non-empty.\n"
-            "If you can't state a hypothesis, you're not ready to dump.",
-            file=sys.stderr,
-        )
-        return 2
+    hypothesis = (args.hypothesis or "").strip()
 
     sentinel = run_dir / SENTINEL_FILENAME
     if sentinel.exists():
@@ -237,7 +232,7 @@ def _cmd_dump(args: argparse.Namespace) -> int:
     sentinel.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"Dump requested for run: {run_dir}")
-    print(f"  hypothesis: {hypothesis}")
+    print(f"  hypothesis: {hypothesis or '(none)'}")
     print(f"  include_full_grad: {args.full_grad}")
     print()
     print("The next update boundary will capture data into:")
@@ -375,10 +370,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dump.add_argument(
         "--hypothesis",
         type=str,
-        required=True,
+        default="",
         help=(
-            "Mandatory. State what you're investigating — e.g. "
-            "'why is KL high at update 250'. Empty/whitespace is rejected."
+            "Optional. What you're investigating — e.g. "
+            "'why is KL high at update 250'. Recorded into the dump "
+            "for provenance."
         ),
     )
     p_dump.add_argument(

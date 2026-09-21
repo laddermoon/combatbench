@@ -41,7 +41,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
 import torch
@@ -60,7 +60,7 @@ from .experiment import (
     resolve_update_params,
 )
 from .trainer import PPOBuffer, ppo_update, set_seed
-from .dumpkit.dump_request import poll_dump_request
+from .dumpkit.dump_request import DumpRequest, poll_dump_request
 from .dumpkit.dump_capture import capture_dump
 
 
@@ -138,6 +138,7 @@ def save_run_config(
     *,
     smoke: bool = False,
     algo: str = "ppo",
+    dump_at: Optional[List[int]] = None,
 ) -> None:
     """Build and save ``run_dir/config.json`` from experiment's public interface."""
     cp = experiment.common_params()
@@ -169,6 +170,7 @@ def save_run_config(
         },
         "algorithm": algo,
         "smoke": smoke,
+        "dump_at": sorted(dump_at) if dump_at else [],
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -470,12 +472,22 @@ def train_ppo(
     use_confidence: bool = True,
     reset_update: bool = False,
     param_patches: Optional[List[Tuple[int, str, Any]]] = None,
+    dump_updates: Optional[Set[int]] = None,
+    dump_hypothesis: str = "",
+    dump_full_grad: bool = False,
 ) -> None:
     """PPO training loop using the ExperimentPPO interface.
 
     ``param_patches``: ``[(from_update, field, value), ...]`` applied on
     top of ``experiment.param_overrides(u)`` each update (CLI wins on
     conflicts).  See ``resolve_update_params`` for routing/validation.
+
+    ``dump_updates``: absolute update indices that carry a scheduled
+    dump request (``--dump-at``) — the update runs the full capture +
+    gradsig diagnostic as if a sentinel had been written in advance.
+    A sentinel found at the same update wins (manual request beats the
+    schedule).  ``dump_hypothesis``/``dump_full_grad`` shape the
+    synthesized request.
     """
     cp = experiment.common_params()
     pp = experiment.ppo_params()
@@ -573,14 +585,43 @@ def train_ppo(
     patches = param_patches or []
     prev_applied_ovr: Optional[Dict[str, Any]] = None
 
+    # Scheduled dumps (--dump-at): absolute update indices.  Warn early
+    # about requests that can never fire — a typo'd index should be
+    # visible at launch, not discovered hours later.
+    scheduled_dumps: Set[int] = set(dump_updates or ())
+    for u_req in sorted(scheduled_dumps):
+        if u_req < start_update:
+            print(
+                f"[dump] --dump-at {u_req} < start_update {start_update} "
+                f"— will never fire",
+                flush=True,
+            )
+        elif u_req > cp.max_updates:
+            print(
+                f"[dump] --dump-at {u_req} > max_updates {cp.max_updates} "
+                f"— will never fire",
+                flush=True,
+            )
+
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         u = start_update
         while True:
             t_update_start = time.perf_counter()
 
-            # 0. Dump request poll — check for a one-shot dump trigger.
-            #    When found, capture the complete update data after ppo_update.
+            # 0. Dump request poll — sentinel file first (a manual
+            #    request beats the schedule), then the launch-time
+            #    --dump-at set.  Either way the update gets the full
+            #    capture + gradsig diagnostic after ppo_update.
             dump_req = poll_dump_request(run_dir, u)
+            if dump_req is None and u in scheduled_dumps:
+                dump_req = DumpRequest(
+                    hypothesis=(
+                        dump_hypothesis
+                        or f"scheduled dump (--dump-at u{u})"
+                    ),
+                    include_full_grad=dump_full_grad,
+                    source="cli",
+                )
             dump_collector: Dict[str, Dict[str, Any]] = {}
 
             # 0a. Per-update parameter resolution — experiment hook

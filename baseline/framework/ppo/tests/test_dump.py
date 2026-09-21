@@ -1,12 +1,13 @@
 """Tests for the dump capture system (CLI + sentinel + capture).
 
 Tests cover:
-- DumpRequest: hypothesis required, frozen, defaults.
+- DumpRequest: optional hypothesis, frozen, defaults, source provenance.
 - poll_dump_request: no sentinel → None, valid → parsed + moved,
-  corrupt → rejected, missing hypothesis → rejected.
+  corrupt → left in place, missing hypothesis → still valid.
 - capture_dump: writes all NPZ files, frame_id present, manifest correct,
+  request.json synthesized for scheduled (non-sentinel) requests,
   RECORD_GUIDE.md contains round_runner command.
-- CLI: dump subcommand writes sentinel, rejects empty hypothesis,
+- CLI: dump subcommand writes sentinel with or without hypothesis,
   rejects missing run_dir, refuses existing sentinel.
 - ppo_update with dump_callback: callback receives correct stages,
   no callback → unchanged (regression).
@@ -65,23 +66,17 @@ from baseline.framework.ppo.tests.test_trainer import (
 # DumpRequest tests
 # ---------------------------------------------------------------------------
 
-def test_dump_request_requires_hypothesis():
-    """DumpRequest rejects empty/whitespace hypothesis."""
-    try:
-        DumpRequest(hypothesis="")
-        assert False, "should have raised"
-    except ValueError:
-        pass
-    try:
-        DumpRequest(hypothesis="   ")
-        assert False, "should have raised"
-    except ValueError:
-        pass
-    # Valid
-    req = DumpRequest(hypothesis="test why KL is high")
-    assert req.hypothesis == "test why KL is high"
+def test_dump_request_hypothesis_optional():
+    """DumpRequest accepts an empty/missing hypothesis — the dump is a
+    general-purpose tool; the hypothesis just annotates provenance."""
+    req = DumpRequest()
+    assert req.hypothesis == ""
     assert req.include_full_grad is False
-    print("test_dump_request_requires_hypothesis: PASS")
+    assert req.source == "sentinel"
+    req2 = DumpRequest(hypothesis="test why KL is high", source="cli")
+    assert req2.hypothesis == "test why KL is high"
+    assert req2.source == "cli"
+    print("test_dump_request_hypothesis_optional: PASS")
 
 
 def test_dump_request_frozen():
@@ -145,18 +140,22 @@ def test_poll_corrupt_sentinel():
 
 
 def test_poll_missing_hypothesis():
-    """poll returns None when hypothesis is missing and moves sentinel aside."""
+    """Sentinel without a hypothesis is a valid request — hypothesis is
+    optional provenance, not a gate."""
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         run_dir = Path(d)
         sentinel = run_dir / SENTINEL_FILENAME
         sentinel.write_text(json.dumps({"include_full_grad": True}))
-        result = poll_dump_request(run_dir, update=0)
-        assert result is None
-        # Sentinel moved to rejected dir
+        result = poll_dump_request(run_dir, update=7)
+        assert result is not None
+        assert result.hypothesis == ""
+        assert result.include_full_grad is True
+        assert result.source == "sentinel"
+        # Sentinel consumed into the update's dump dir.
         assert not sentinel.exists()
-        rejected_dir = run_dir / "dumps" / "rejected"
-        assert rejected_dir.exists()
+        moved = run_dir / "dumps" / "u00007" / "request.json"
+        assert moved.exists()
     print("test_poll_missing_hypothesis: PASS")
 
 
@@ -344,6 +343,14 @@ def test_capture_dump_writes_all_files():
         assert manifest["update"] == 1
         assert manifest["hypothesis"] == "test capture"
         assert manifest["experiment_name"] == "test_exp"
+        assert manifest["dump_source"] == "sentinel"
+
+        # request.json was synthesized (no sentinel moved one in) and
+        # carries the request's provenance.
+        reqj = json.loads((dump_dir / "request.json").read_text())
+        assert reqj["hypothesis"] == "test capture"
+        assert reqj["include_full_grad"] is False
+        assert reqj["source"] == "sentinel"
 
         # Check frame_id in buffer.npz
         buf_data = np.load(dump_dir / "buffer.npz", allow_pickle=True)
@@ -413,6 +420,77 @@ def test_capture_dump_writes_all_files():
         assert "--options-json" in guide
 
     print("test_capture_dump_writes_all_files: PASS")
+
+
+def test_capture_dump_synthesizes_request_json():
+    """Scheduled (--dump-at) requests have no sentinel file — capture_dump
+    writes a synthetic request.json carrying source="cli"; a pre-existing
+    (sentinel-moved) request.json is never overwritten."""
+    import tempfile
+    obs_dim, action_dim = 8, 4
+    T = 10
+    channels = (RewardChannel(name="r_test", gamma=0.99, gae_lambda=0.95),)
+    rng = np.random.default_rng(42)
+    trajs = [
+        Trajectory(
+            obs=rng.standard_normal((T, obs_dim)).astype(np.float32),
+            actions=rng.uniform(-0.9, 0.9, (T, action_dim)).astype(np.float32),
+            last_obs=rng.standard_normal(obs_dim).astype(np.float32),
+            channels={"r_test": make_channel_data(T, rng=rng)},
+            importance=1.0,
+        )
+    ]
+    buf, actor = make_buffer(trajs, obs_dim, action_dim, ("r_test",))
+    critics = make_critics(("r_test",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    stats = ppo_update(
+        actor=actor, critics=critics, actor_optimizer=actor_opt,
+        critic_optimizers=critic_opts, buf=buf, reward_channels=channels,
+        pp=make_pp_params(), grad_clip_norm=0.5,
+        device=torch.device("cpu"),
+    )
+    episodes = [_make_fake_episode(T=T, obs_dim=obs_dim, action_dim=action_dim)]
+    jobs = [_make_fake_job(seed=42)]
+
+    with tempfile.TemporaryDirectory() as d:
+        run_dir = Path(d)
+        (run_dir / "config.json").write_text(json.dumps({"name": "test_exp"}))
+
+        # Scheduled dump: no request.json exists beforehand.
+        req = DumpRequest(
+            hypothesis="scheduled probe", source="cli",
+        )
+        dump_dir = capture_dump(
+            run_dir=run_dir, update=3, request=req, episodes=episodes,
+            trajectories=trajs, buf=buf, stats=stats, jobs=jobs,
+            dump_collector={}, experiment_name="test_exp",
+        )
+        reqj = json.loads((dump_dir / "request.json").read_text())
+        assert reqj["source"] == "cli"
+        assert reqj["hypothesis"] == "scheduled probe"
+        manifest = json.loads((dump_dir / "manifest.json").read_text())
+        assert manifest["dump_source"] == "cli"
+
+        # Sentinel path: request.json already exists (moved by poll) —
+        # capture_dump must not overwrite the original file.
+        dump2 = run_dir / "dumps" / "u00004"
+        dump2.mkdir(parents=True)
+        original = {
+            "hypothesis": "sentinel probe", "include_full_grad": True,
+            "requested_via": "viewer",
+        }
+        (dump2 / "request.json").write_text(json.dumps(original))
+        req2 = DumpRequest(
+            hypothesis="sentinel probe", include_full_grad=True,
+        )
+        capture_dump(
+            run_dir=run_dir, update=4, request=req2, episodes=episodes,
+            trajectories=trajs, buf=buf, stats=stats, jobs=jobs,
+            dump_collector={}, experiment_name="test_exp",
+        )
+        reqj2 = json.loads((dump2 / "request.json").read_text())
+        assert reqj2 == original  # untouched, extra viewer field intact
+    print("test_capture_dump_synthesizes_request_json: PASS")
 
 
 # ---------------------------------------------------------------------------
@@ -526,17 +604,19 @@ def test_cli_dump_writes_sentinel():
     print("test_cli_dump_writes_sentinel: PASS")
 
 
-def test_cli_dump_rejects_empty_hypothesis():
-    """CLI rejects empty hypothesis."""
+def test_cli_dump_without_hypothesis():
+    """CLI dump works without --hypothesis (optional provenance)."""
     import tempfile
     from baseline.framework.ppo.debug import main
     with tempfile.TemporaryDirectory() as d:
         run_dir = Path(d)
         (run_dir / "config.json").write_text(json.dumps({"name": "test"}))
-        rc = main(["dump", str(run_dir), "--hypothesis", ""])
-        assert rc == 2
-        assert not (run_dir / SENTINEL_FILENAME).exists()
-    print("test_cli_dump_rejects_empty_hypothesis: PASS")
+        rc = main(["dump", str(run_dir)])
+        assert rc == 0
+        data = json.loads((run_dir / SENTINEL_FILENAME).read_text())
+        assert data["hypothesis"] == ""
+        assert data["include_full_grad"] is False
+    print("test_cli_dump_without_hypothesis: PASS")
 
 
 def test_cli_dump_rejects_missing_run_dir():
@@ -583,7 +663,7 @@ def test_cli_dump_full_grad_flag():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    test_dump_request_requires_hypothesis()
+    test_dump_request_hypothesis_optional()
     test_dump_request_frozen()
     test_poll_no_sentinel()
     test_poll_valid_sentinel()
@@ -591,10 +671,11 @@ if __name__ == "__main__":
     test_poll_missing_hypothesis()
     test_poll_one_shot()
     test_capture_dump_writes_all_files()
+    test_capture_dump_synthesizes_request_json()
     test_ppo_update_no_callback_unchanged()
     test_ppo_update_callback_stages()
     test_cli_dump_writes_sentinel()
-    test_cli_dump_rejects_empty_hypothesis()
+    test_cli_dump_without_hypothesis()
     test_cli_dump_rejects_missing_run_dir()
     test_cli_dump_refuses_existing_sentinel()
     test_cli_dump_full_grad_flag()

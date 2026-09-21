@@ -176,6 +176,14 @@ def format_repro_command(
     for s in getattr(args, "set", []) or []:
         parts.append(f"--set {s}")
 
+    # Scheduled dumps (--dump-at) and their options
+    for u in getattr(args, "dump_at", []) or []:
+        parts.append(f"--dump-at {u}")
+    if getattr(args, "dump_hypothesis", ""):
+        parts.append(f"--dump-hypothesis {args.dump_hypothesis!r}")
+    if getattr(args, "dump_full_grad", False):
+        parts.append("--dump-full-grad")
+
     # Always skip snapshot on repro to avoid creating another branch
     parts.append("--no-snapshot")
 

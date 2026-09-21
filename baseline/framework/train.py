@@ -99,6 +99,23 @@ def _parse_args() -> argparse.Namespace:
              "(default 0 = every update).",
     )
     parser.add_argument(
+        "--dump-at", action="append", default=[], metavar="UPDATE[,UPDATE...]",
+        help="Schedule a dump (full update capture + gradsig diagnostic) "
+             "at update N. Repeatable or comma-separated, absolute update "
+             "indices — combine with --resume-from to dump an exact "
+             "reproduced update, e.g. --resume-from ckpt_u280 --dump-at 282.",
+    )
+    parser.add_argument(
+        "--dump-hypothesis", type=str, default="",
+        help="Hypothesis recorded into each scheduled dump's request.json "
+             "(optional; default labels it as a --dump-at schedule).",
+    )
+    parser.add_argument(
+        "--dump-full-grad", action="store_true",
+        help="Scheduled dumps also capture the full flat actor gradient "
+             "(epoch 0, minibatch 0; large).",
+    )
+    parser.add_argument(
         "--param", action="append", default=[], metavar="KEY=VALUE[@UPDATE]",
         help="Generic per-update parameter patch applied on top of the "
              "experiment's param_overrides() (CLI wins on conflicts). "
@@ -270,6 +287,27 @@ def main() -> None:
             from_u = 0
         param_patches.append((from_u, key, _param_value(val)))
 
+    # --- Scheduled dumps (--dump-at) ---
+    dump_updates = set()
+    for item in args.dump_at:
+        for tok in item.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                dump_updates.add(int(tok))
+            except ValueError:
+                raise SystemExit(
+                    f"Error: --dump-at expects integer update indices, "
+                    f"got {item!r}"
+                )
+    if dump_updates and algo == "ppo":
+        print(
+            f"[dump] scheduled at updates {sorted(dump_updates)}"
+            + (f" (full_grad)" if args.dump_full_grad else ""),
+            flush=True,
+        )
+
     if args.adv_winsorize_sigma is not None and algo == "ppo":
         param_patches.append((
             args.adv_winsorize_from_update,
@@ -378,7 +416,8 @@ def main() -> None:
         save_run_config_sac(experiment, run_dir, smoke=args.smoke)
     else:
         from baseline.framework.ppo.loop import save_run_config
-        save_run_config(experiment, run_dir, smoke=args.smoke, algo=algo)
+        save_run_config(experiment, run_dir, smoke=args.smoke, algo=algo,
+                        dump_at=sorted(dump_updates))
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -409,7 +448,14 @@ def main() -> None:
         train_sac(experiment, run_dir=run_dir, resume_from=resume_from, reset_update=args.reset_update)
     else:
         from baseline.framework.ppo.loop import train_ppo
-        train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update, param_patches=param_patches)
+        train_ppo(
+            experiment, run_dir=run_dir, resume_from=resume_from,
+            use_confidence=use_confidence, reset_update=args.reset_update,
+            param_patches=param_patches,
+            dump_updates=dump_updates,
+            dump_hypothesis=args.dump_hypothesis,
+            dump_full_grad=args.dump_full_grad,
+        )
 
 
 if __name__ == "__main__":

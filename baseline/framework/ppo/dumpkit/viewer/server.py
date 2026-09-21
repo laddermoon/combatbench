@@ -2313,7 +2313,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     def _handle_dump_request(self):
         """POST /api/run/dump-request — write the dump sentinel file.
 
-        Body: {"hypothesis": str (required), "full_grad": bool}.
+        Body: {"hypothesis": str (optional), "full_grad": bool}.
         Only accepted while the run is alive and no request is pending.
         """
         rd = self.run_data
@@ -2323,15 +2323,10 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, json.JSONDecodeError):
             body = {}
-        hypothesis = str(body.get("hypothesis") or "").strip()
-        include_full_grad = bool(body.get("full_grad"))
-        try:
-            req = DumpRequest(
-                hypothesis=hypothesis, include_full_grad=include_full_grad,
-            )
-        except ValueError as e:
-            self._reply_json(400, {"error": str(e)})
-            return
+        req = DumpRequest(
+            hypothesis=str(body.get("hypothesis") or "").strip(),
+            include_full_grad=bool(body.get("full_grad")),
+        )
         if rd.status() != "running":
             self._reply_json(409, {"error": "run is not running"})
             return

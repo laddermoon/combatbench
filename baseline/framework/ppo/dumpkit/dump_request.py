@@ -3,11 +3,12 @@
 A running training loop checks for a sentinel file
 ``<run_dir>/dump_request.json`` at the top of each update.  When found,
 it captures the complete update data (episodes, trajectories, GAE,
-combine, gradients) into ``<run_dir>/dumps/u{u:05d}/``.
+combine, gradients, gradsig diagnostic) into ``<run_dir>/dumps/u{u:05d}/``.
 
-``hypothesis`` is mandatory — writing a dump without a hypothesis is
-rejected.  This forces the user to articulate what they're looking for
-before grabbing data.
+``hypothesis`` is optional but encouraged — writing down what you're
+looking for makes the dump self-describing later.  Dumps may also be
+scheduled at launch via ``train.py --dump-at`` (``source="cli"``) —
+see ``loop.py``.
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ import json
 import os
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -25,25 +25,23 @@ SENTINEL_FILENAME = "dump_request.json"
 
 @dataclass(frozen=True)
 class DumpRequest:
-    """A parsed dump request from the sentinel file.
+    """A parsed dump request.
 
     Attributes:
-        hypothesis: Mandatory — forces the user to articulate intent.
-            Empty/whitespace → rejected at parse time.
+        hypothesis: Free-text intent recorded into the dump (optional —
+            the dump is a general-purpose tool, but a hypothesis makes
+            it self-describing).
         include_full_grad: When True, capture the full flat actor
             gradient (epoch 0, minibatch 0).  Off by default (large).
+        source: Provenance — ``"sentinel"`` for a sentinel-file request,
+            ``"cli"`` for a launch-time ``--dump-at`` schedule.  Written
+            into request.json / manifest so the dump records how it was
+            triggered.
     """
 
-    hypothesis: str
+    hypothesis: str = ""
     include_full_grad: bool = False
-
-    def __post_init__(self):
-        if not self.hypothesis or not self.hypothesis.strip():
-            raise ValueError(
-                "dump_request.json: 'hypothesis' is required and must be "
-                "non-empty. If you can't state a hypothesis, you're not "
-                "ready to dump."
-            )
+    source: str = "sentinel"
 
 
 def poll_dump_request(
@@ -56,7 +54,7 @@ def poll_dump_request(
     single ``os.path.exists`` check, negligible overhead).
 
     When the sentinel exists:
-    1. Read + parse it (rejecting if ``hypothesis`` is missing).
+    1. Read + parse it.
     2. Atomically move it to ``<run_dir>/dumps/u{u:05d}/request.json``
        (same filesystem → ``os.rename`` is atomic on POSIX).
     3. Return the parsed :class:`DumpRequest`.
@@ -81,22 +79,11 @@ def poll_dump_request(
         )
         return None
 
-    try:
-        req = DumpRequest(
-            hypothesis=raw.get("hypothesis", ""),
-            include_full_grad=raw.get("include_full_grad", False),
-        )
-    except ValueError as e:
-        print(f"[dump] rejecting dump request: {e}", flush=True)
-        # Move the bad request aside so it doesn't block future requests.
-        reject_dir = run_dir / "dumps" / "rejected"
-        reject_dir.mkdir(parents=True, exist_ok=True)
-        reject_path = reject_dir / f"request_u{update:05d}_{int(datetime.now().timestamp())}.json"
-        try:
-            os.rename(str(sentinel), str(reject_path))
-        except OSError:
-            pass
-        return None
+    req = DumpRequest(
+        hypothesis=raw.get("hypothesis", "") or "",
+        include_full_grad=raw.get("include_full_grad", False),
+        source="sentinel",
+    )
 
     # Atomic move to the per-update dump directory.
     dump_dir = run_dir / "dumps" / f"u{update:05d}"

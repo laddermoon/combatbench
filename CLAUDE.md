@@ -274,6 +274,10 @@ PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --al
 | `--background` | off | Run in background (fork + setsid) |
 | `--no-snapshot` | off | Skip git code snapshot |
 | `--no-confidence` | off | Disable EV-based confidence weighting (PPO) |
+| `--dump-at` | none | Schedule a dump at update N (repeatable/comma list; e.g. `--resume-from ckpt_u280 --dump-at 282` captures the exact reproduced update) |
+| `--dump-hypothesis` | `""` | Hypothesis recorded into scheduled dumps' request.json |
+| `--dump-full-grad` | off | Scheduled dumps also capture the full flat actor gradient |
+| `--param` | none | Per-update param patch `KEY=VALUE[@UPDATE]` (repeatable) |
 | `--list-experiments` | off | List experiments and exit |
 
 ### Run Directory Structure

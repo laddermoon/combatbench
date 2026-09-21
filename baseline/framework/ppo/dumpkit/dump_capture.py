@@ -8,7 +8,7 @@ configuration.  No reconstruction, no separate pipeline.
 Output layout::
 
     <run_dir>/dumps/u{N:05d}/
-    ├── request.json          # original request (moved by poll)
+    ├── request.json          # original request (moved by poll, or synthesized for --dump-at)
     ├── manifest.json         # update, timestamp, experiment, hypothesis
     ├── env_blueprint.yaml    # serialized from jobs[0].env_bp
     ├── episode_options.json  # from jobs[0].episode_options
@@ -755,6 +755,18 @@ def capture_dump(
     dump_dir = run_dir / "dumps" / f"u{update:05d}"
     dump_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- request.json ---
+    # Sentinel requests arrive as a moved file (poll_dump_request);
+    # scheduled (--dump-at) requests have no source file, so synthesize
+    # one — every dump carries its provenance.
+    req_path = dump_dir / "request.json"
+    if not req_path.exists():
+        req_path.write_text(json.dumps({
+            "hypothesis": request.hypothesis,
+            "include_full_grad": request.include_full_grad,
+            "source": request.source,
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+
     # --- manifest.json ---
     manifest: Dict[str, Any] = {
         "update": update,
@@ -762,6 +774,7 @@ def capture_dump(
         "experiment_name": experiment_name,
         "hypothesis": request.hypothesis,
         "include_full_grad": request.include_full_grad,
+        "dump_source": request.source,
         "n_episodes": len(episodes),
         "n_trajectories": len(trajectories),
         "total_frames": int(sum(len(t.obs) for t in trajectories)),
