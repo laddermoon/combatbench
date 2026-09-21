@@ -767,6 +767,7 @@ def capture_dump(
         "total_frames": int(sum(len(t.obs) for t in trajectories)),
         "has_timeline": "timeline" in dump_collector,
         "has_epoch_frames": "epoch_frames" in dump_collector,
+        "has_gradsig": "gradsig" in dump_collector,
     }
     # Git commit from code_snapshot.json if present.
     snapshot_info = run_dir / "code_snapshot.json"
@@ -830,10 +831,12 @@ def capture_dump(
         np.savez_compressed(dump_dir / "combine.npz", **dump_collector["combine"])
 
     # --- gradsig.npz (from dump_collector, ADV gradient-signal detail) ---
-    # Per-sampled-frame detail behind the gradsig/u{N}.npz histogram:
-    # flat buffer indices, per-frame gradient norms, the surrogate/floor
-    # scalar coefficients, and each frame's signed projection + cosine
-    # onto the full-buffer aggregate direction G.
+    # The merged payload of two contributors: the trainer's per-sampled-
+    # frame detail (flat buffer indices, per-frame gradient norms, the
+    # surrogate/floor scalar coefficients, signed projection + cosine
+    # onto the full-buffer aggregate direction G) and the loop's
+    # histogram payload (2D hist + frozen/derived edges + scalars) — so
+    # the dump artifact is self-contained.
     if "gradsig" in dump_collector:
         np.savez_compressed(dump_dir / "gradsig.npz", **dump_collector["gradsig"])
 

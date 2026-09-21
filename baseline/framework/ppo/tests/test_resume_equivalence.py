@@ -16,9 +16,13 @@ Checks, strongest first:
      order, gradients, optimizer math) was bitwise identical.
   2. ``__RAW_STATS__`` lines for the resumed updates — all fields equal
      except the ``timing`` block.
-  3. ``dir_cos`` present at the first resumed update — regression check
-     that prev_gvec was restored (a v1 resume would emit none).
-  4. gradsig npz arrays for resumed updates — np.array_equal.
+  3. ``dir_cos`` present at the first resumed *dump* update — regression
+     check that prev_gvec was restored (a v1 resume would emit none).
+     The gradsig diagnostic is dump-only, so the driver schedules dump
+     requests at u1 (seeds prev_gvec into ckpt_u2) and u3 (first resumed
+     update reads it back).
+  4. gradsig npz arrays inside the resumed update's dump —
+     ``dumps/u00003/gradsig.npz``, np.array_equal on update-local keys.
 
 Requires MuJoCo; skipped when unavailable.
 """
@@ -57,7 +61,12 @@ CKPT_UPDATE = 2      # checkpoint boundary: eval_interval=2 -> u2 exists
 END_UPDATE = 4       # both branches reach u4
 
 
-def _run_driver(run_dir: Path, max_updates: int, resume_from: Path = None) -> str:
+def _run_driver(
+    run_dir: Path,
+    max_updates: int,
+    resume_from: Path = None,
+    dump_updates: tuple = (),
+) -> str:
     """Run the driver as its own process; return captured stdout."""
     cmd = [
         sys.executable, str(_DRIVER),
@@ -66,6 +75,8 @@ def _run_driver(run_dir: Path, max_updates: int, resume_from: Path = None) -> st
     ]
     if resume_from is not None:
         cmd += ["--resume-from", str(resume_from)]
+    if dump_updates:
+        cmd += ["--dump-updates", ",".join(str(u) for u in dump_updates)]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_PROJECT_ROOT)
     proc = subprocess.run(
@@ -145,11 +156,17 @@ def test_resume_continuation_is_bit_identical(tmp_path):
     dir_b1 = tmp_path / "run_B1"  # u1..u2, produces checkpoint_u2
     dir_b2 = tmp_path / "run_B2"  # resume -> u3..u4
 
-    out_a = _run_driver(dir_a, END_UPDATE)
-    out_b1 = _run_driver(dir_b1, CKPT_UPDATE)
+    # Dump requests schedule the (dump-only) gradsig diagnostic: u1
+    # seeds prev_gvec so ckpt_u2 carries it; u3 — the first resumed
+    # update — must then emit dir_cos against the restored vector.
+    out_a = _run_driver(dir_a, END_UPDATE, dump_updates=(1, CKPT_UPDATE + 1))
+    out_b1 = _run_driver(dir_b1, CKPT_UPDATE, dump_updates=(1,))
     ckpt = dir_b1 / "checkpoints" / f"checkpoint_u{CKPT_UPDATE:05d}.pt"
     assert ckpt.exists(), f"missing checkpoint {ckpt}"
-    out_b2 = _run_driver(dir_b2, END_UPDATE, resume_from=ckpt)
+    out_b2 = _run_driver(
+        dir_b2, END_UPDATE, resume_from=ckpt,
+        dump_updates=(CKPT_UPDATE + 1,),
+    )
 
     stats_a = _parse_raw_stats(out_a)
     stats_b1 = _parse_raw_stats(out_b1)
@@ -178,15 +195,17 @@ def test_resume_continuation_is_bit_identical(tmp_path):
         )
 
     # prev_gvec regression: dir_cos must exist at the first resumed
-    # update (would be absent on a v1/no-RNG resume).
+    # dump update (would be absent on a v1/no-RNG resume).  u3 is the
+    # only diagnostic update after the boundary, and both sides computed
+    # it against the u1 aggregate gradient.
     s3 = stats_b2[CKPT_UPDATE + 1]["stats"]
     assert "grad_sig_dir_cos" in s3, (
-        "resumed run missing dir_cos at first update — "
-        "prev_gvec was not restored"
+        "resumed run missing dir_cos at first dump update — "
+        "the dump-only diagnostic did not run"
     )
     assert s3["grad_sig_dir_cos"] == (
         stats_a[CKPT_UPDATE + 1]["stats"]["grad_sig_dir_cos"]
-    )
+    ), "dir_cos differs — prev_gvec was not restored from checkpoint"
 
     # Strongest check: the final checkpoint payloads — params, Adam
     # moments, experiment state, and the saved RNG streams — all equal.
@@ -203,22 +222,30 @@ def test_resume_continuation_is_bit_identical(tmp_path):
         "final checkpoints differ:\n" + "\n".join(diffs[:30])
     )
 
-    # gradsig artifacts for resumed updates.  Only update-local data is
-    # compared: the raw per-frame arrays and the diagnostic scalars.
-    # Axis-derived artifacts (hist, *_edges, hist_over/under, n_*in_hist)
-    # are intentionally excluded — they depend on the run-local frozen
-    # meta.json, which a fresh run dir rederives from ITS first update.
-    # Resume into the SAME dir keeps meta.json and reproduces even those
-    # identically; resume into a NEW dir re-bins identical raw data.
+    # gradsig artifacts live inside the dump now
+    # (dumps/uNNNNN/gradsig.npz).  Only update-local data is compared:
+    # the raw per-frame arrays and the diagnostic scalars.  Axis-derived
+    # artifacts (hist, *_edges, hist_over/under, n_*in_hist) are
+    # intentionally excluded — they depend on the run-local frozen
+    # meta.json, which a fresh run dir rederives from ITS first
+    # diagnostic update.  Resume into the SAME dir keeps meta.json and
+    # reproduces even those identically; resume into a NEW dir re-bins
+    # identical raw data.
     _GRADSIG_LOCAL_KEYS = (
         "grad_norm", "cos", "proj", "valid", "norm_quantiles",
         "gnorm", "coherence", "dir_cos", "proj_mean", "proj_std",
         "frac_neg", "n_sampled", "n_valid", "n_excluded",
-        "n_nonfinite", "n_params",
+        "n_nonfinite", "n_params", "sampled_idx", "w_adv", "floor_pen",
     )
     for u in range(CKPT_UPDATE + 1, END_UPDATE + 1):
-        npz_a = dir_a / "gradsig" / f"u{u:05d}.npz"
-        npz_b = dir_b2 / "gradsig" / f"u{u:05d}.npz"
+        npz_a = dir_a / "dumps" / f"u{u:05d}" / "gradsig.npz"
+        npz_b = dir_b2 / "dumps" / f"u{u:05d}" / "gradsig.npz"
+        if u == CKPT_UPDATE + 1:
+            # u3 carries a dump request on both sides — the merged
+            # gradsig.npz must exist (silent skip would mask a missing
+            # artifact).
+            assert npz_a.exists(), f"missing {npz_a}"
+            assert npz_b.exists(), f"missing {npz_b}"
         if not (npz_a.exists() and npz_b.exists()):
             continue
         da, db = np.load(npz_a), np.load(npz_b)

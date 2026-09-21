@@ -246,6 +246,49 @@ class DumpData:
     def epoch_frames_npz(self) -> Optional[Dict[str, np.ndarray]]:
         return self._load_npz("epoch_frames")
 
+    @property
+    def gradsig_npz(self) -> Optional[Dict[str, np.ndarray]]:
+        return self._load_npz("gradsig")
+
+    def grad_sig(self) -> Optional[Dict[str, Any]]:
+        """Load ``gradsig.npz`` → JSON-safe payload.
+
+        The dump npz merges the run-level histogram payload with the
+        per-frame dump detail (``sampled_idx``/``w_adv``/``floor_pen``).
+        When the diagnostic bailed before the histogram (zero aggregate
+        gradient, no valid frames) only the raw arrays exist — return a
+        degraded ``partial`` payload instead of KeyError → 404.
+        """
+        d = self.gradsig_npz
+        if d is None:
+            return None
+        try:
+            upd = int(self.manifest.get("update", -1))
+        except (FileNotFoundError, TypeError, ValueError):
+            upd = -1
+        extras = (
+            "sampled_idx", "w_adv", "floor_pen", "n_params",
+        )
+        try:
+            out = _grad_sig_json(d, update=upd)
+        except KeyError:
+            out = {
+                "available": True,
+                "partial": True,
+                "update": upd,
+                "n_sampled": int(d["valid"].shape[0]),
+                "n_valid": int(d["valid"].sum()),
+                "grad_norm": _nan_to_null(d["grad_norm"]),
+                "valid": d["valid"].tolist(),
+            }
+        for k in extras + ("proj", "cos"):
+            if k in d and k not in out:
+                out[k] = (
+                    _nan_to_null(d[k]) if d[k].dtype.kind == "f"
+                    else d[k].tolist()
+                )
+        return out
+
     # -- derived helpers ----------------------------------------------------
 
     @property
@@ -370,6 +413,52 @@ def _nan_to_null(arr: np.ndarray) -> List[Any]:
         (float(v) if np.isfinite(v) else None)
         for v in np.asarray(arr, dtype=np.float64).ravel()
     ]
+
+
+def _grad_sig_json(d: Dict[str, np.ndarray], update: int) -> Dict[str, Any]:
+    """gradsig npz dict → JSON-safe payload.
+
+    Shared by the legacy run-level artifact (``gradsig/uNNNNN.npz``)
+    and the dump artifact (``dumps/uNNNNN/gradsig.npz``) — both carry
+    the same hist + scalar + per-frame keys.
+    """
+    return {
+        "available": True,
+        "update": int(update),
+        # hist[norm_bin, cos_bin] — frame counts (per-frame
+        # norm bins × cos bins vs the aggregate direction).
+        "hist": d["hist"].tolist(),
+        "cos_edges": d["cos_edges"].tolist(),
+        "norm_edges": d["norm_edges"].tolist(),
+        "n_sampled": int(d["n_sampled"]),
+        "n_valid": int(d["n_valid"]),
+        "n_excluded": int(d["n_excluded"]),
+        "n_frames_in_hist": int(d["n_frames_in_hist"]),
+        # Under/overflow edge rows — cosine profiles of
+        # frames outside the frozen quantile norm axis.
+        "hist_under": d["hist_under"].tolist(),
+        "hist_over": d["hist_over"].tolist(),
+        "n_under": int(d["n_under"]),
+        "n_over": int(d["n_over"]),
+        # Aggregate-direction scalars.
+        "gnorm": float(d["gnorm"]),
+        "coherence": float(d["coherence"]),
+        "dir_cos": float(d["dir_cos"]),
+        "proj_mean": float(d["proj_mean"]),
+        "proj_std": float(d["proj_std"]),
+        "frac_neg": float(d["frac_neg"]),
+        # Raw per-frame arrays — the frontend bins the
+        # projection histogram itself.  Non-finite values
+        # (invalid frames) become null: a literal NaN or
+        # Infinity in the JSON would break fetch().json().
+        "grad_norm": _nan_to_null(d["grad_norm"]),
+        "cos": _nan_to_null(d["cos"]),
+        "proj": _nan_to_null(d["proj"]),
+        "valid": d["valid"].tolist(),
+        "norm_quantiles": d["norm_quantiles"].tolist(),
+        "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
+        "norm_edges_derived": bool(d["norm_edges_derived"]),
+    }
 
 
 class RunData:
@@ -502,54 +591,18 @@ class RunData:
     def grad_sig(self, update: int) -> Optional[Dict[str, Any]]:
         """Load ``gradsig/uNNNNN.npz`` for one update → JSON-safe dict.
 
-        The npz is written by the training loop when the ADV gradient-
-        signal diagnostic runs; missing files (old runs, skipped
-        intervals) and artifacts written by a different format
-        generation (KeyError on a required key) return ``None`` → the
-        API reports ``available: false``.
+        Legacy run-level artifact: the diagnostic is now dump-only, so
+        this file only exists in runs written before the dump-only
+        switch.  Missing files and artifacts written by a different
+        format generation (KeyError on a required key) return ``None``
+        → the API reports ``available: false``.
         """
         p = self.run_dir / "gradsig" / f"u{update:05d}.npz"
         if not p.is_file():
             return None
         try:
             with np.load(p) as d:
-                return {
-                    "available": True,
-                    "update": int(update),
-                    # hist[norm_bin, cos_bin] — frame counts (per-frame
-                    # norm bins × cos bins vs the aggregate direction).
-                    "hist": d["hist"].tolist(),
-                    "cos_edges": d["cos_edges"].tolist(),
-                    "norm_edges": d["norm_edges"].tolist(),
-                    "n_sampled": int(d["n_sampled"]),
-                    "n_valid": int(d["n_valid"]),
-                    "n_excluded": int(d["n_excluded"]),
-                    "n_frames_in_hist": int(d["n_frames_in_hist"]),
-                    # Under/overflow edge rows — cosine profiles of
-                    # frames outside the frozen quantile norm axis.
-                    "hist_under": d["hist_under"].tolist(),
-                    "hist_over": d["hist_over"].tolist(),
-                    "n_under": int(d["n_under"]),
-                    "n_over": int(d["n_over"]),
-                    # Aggregate-direction scalars.
-                    "gnorm": float(d["gnorm"]),
-                    "coherence": float(d["coherence"]),
-                    "dir_cos": float(d["dir_cos"]),
-                    "proj_mean": float(d["proj_mean"]),
-                    "proj_std": float(d["proj_std"]),
-                    "frac_neg": float(d["frac_neg"]),
-                    # Raw per-frame arrays — the frontend bins the
-                    # projection histogram itself.  Non-finite values
-                    # (invalid frames) become null: a literal NaN or
-                    # Infinity in the JSON would break fetch().json().
-                    "grad_norm": _nan_to_null(d["grad_norm"]),
-                    "cos": _nan_to_null(d["cos"]),
-                    "proj": _nan_to_null(d["proj"]),
-                    "valid": d["valid"].tolist(),
-                    "norm_quantiles": d["norm_quantiles"].tolist(),
-                    "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
-                    "norm_edges_derived": bool(d["norm_edges_derived"]),
-                }
+                return _grad_sig_json(dict(d), update=int(update))
         except (OSError, KeyError, ValueError):
             return None
 
@@ -1407,6 +1460,11 @@ class ViewerAPI:
                     return 200, self._timeline_overview()
                 elif parts[2] == "step" and len(parts) >= 4:
                     return self._timeline_step(int(parts[3]))
+            elif endpoint == "gradsig":
+                gs = self.data.grad_sig()
+                if gs is None:
+                    return 404, {"available": False}
+                return 200, gs
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -1421,6 +1479,7 @@ class ViewerAPI:
         m["has_images"] = self.data.has_images
         m["has_timeline"] = self.data.timeline_npz is not None
         m["has_epoch_frames"] = self.data.epoch_frames_npz is not None
+        m["has_gradsig"] = self.data.gradsig_npz is not None
         # clip_eps and target_kl from timeline
         tl = self.data.timeline_npz
         if tl is not None:

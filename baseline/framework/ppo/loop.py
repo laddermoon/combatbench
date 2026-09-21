@@ -50,6 +50,7 @@ from baseline.framework.rollout import Episode, ParallelRollouter
 
 from .experiment import (
     CommonParams,
+    DUMP_GRADSIG_SAMPLE_SIZE,
     ExperimentPPO,
     ExplorationSpec,
     GradDiagSpec,
@@ -684,29 +685,21 @@ def train_ppo(
             )
             t_buffer = time.perf_counter() - t0
 
-            # 4b. ADV gradient-signal diagnostic spec — the trainer
+            # 4b. ADV gradient-signal diagnostic spec — DUMP-ONLY.
+            #     When this update carries a dump request, the trainer
             #     computes the full-buffer aggregate gradient G via
-            #     chunked backwards, then samples frames at theta_old
-            #     and computes per-frame training-loss gradients
-            #     (surrogate + floor) projected onto G.  Norm-bin edges
-            #     are frozen in gradsig/meta.json after the first
-            #     computed update so all updates share a comparable
-            #     axis; explicit grad_sig_norm_lo/hi config overrides
-            #     the frozen range.  The seed is derived from (run seed,
-            #     update) and consumed by a dedicated RNG — the training
-            #     RNG stream is untouched, preserving bit-identical
-            #     reproduction.
+            #     chunked backwards, then samples DUMP_GRADSIG_SAMPLE_SIZE
+            #     frames at theta_old and computes per-frame training-
+            #     loss gradients (surrogate + floor) projected onto G.
+            #     Norm-bin edges are frozen in gradsig/meta.json after
+            #     the first diagnostic update so all dumps in the run
+            #     share a comparable axis; explicit grad_sig_norm_lo/hi
+            #     config overrides the frozen range.  The seed is derived
+            #     from (run seed, update) and consumed by a dedicated
+            #     RNG — the training RNG stream is untouched, preserving
+            #     bit-identical reproduction.
             grad_diag: Optional[GradDiagSpec] = None
-            if (
-                pp_u.grad_sig_sample_size > 0
-                and (
-                    u % pp_u.grad_sig_interval == 0
-                    # A pending dump forces the diagnostic so the dump's
-                    # gradsig.npz detail payload exists even on updates
-                    # the interval would skip.
-                    or dump_req is not None
-                )
-            ):
+            if dump_req is not None:
                 gradsig_dir = run_dir / "gradsig"
                 meta_path = gradsig_dir / "meta.json"
                 norm_edges: Optional[np.ndarray] = None
@@ -733,7 +726,7 @@ def train_ppo(
                             TypeError, ValueError):
                         norm_edges = None  # re-derive below
                 grad_diag = GradDiagSpec(
-                    sample_size=pp_u.grad_sig_sample_size,
+                    sample_size=DUMP_GRADSIG_SAMPLE_SIZE,
                     cos_bins=pp_u.grad_sig_cos_bins,
                     norm_bins=pp_u.grad_sig_norm_bins,
                     norm_edges=norm_edges,
@@ -769,24 +762,26 @@ def train_ppo(
             )
             t_ppo = time.perf_counter() - t0
 
-            # 5a-i. Persist the gradient-signal histogram — the scalars
-            #     already went into train.log via to_log_dict(); the 2D
-            #     histogram + raw per-frame arrays are too large for
-            #     JSON and live in gradsig/uNNNNN.npz.  meta.json
-            #     records the frozen bin edges (written on first
-            #     derived update, or when the file is missing).  The
-            #     aggregate gradient vector rides back in memory via
-            #     stats.grad_sig_gvec for next update's dir_cos.
+            # 5a-i. Gradient-signal payload → the dump's gradsig.npz.
+            #     The scalars already went into train.log via
+            #     to_log_dict() (grad_sig_ran marks the update); the 2D
+            #     histogram + raw per-frame arrays are merged into
+            #     dump_collector["gradsig"] so the dump artifact is
+            #     self-contained.  meta.json records the frozen bin
+            #     edges (written on first derived update, or when the
+            #     file is missing).  The aggregate gradient vector
+            #     rides back in memory via stats.grad_sig_gvec for the
+            #     next diagnostic update's dir_cos.
             if stats.grad_sig_gvec is not None:
                 prev_gvec = stats.grad_sig_gvec
-            if stats.grad_sig_payload is not None:
+            if stats.grad_sig_payload is not None and dump_req is not None:
                 try:
+                    payload = stats.grad_sig_payload
+                    dump_collector.setdefault("gradsig", {}).update(
+                        payload
+                    )
                     gradsig_dir = run_dir / "gradsig"
                     gradsig_dir.mkdir(parents=True, exist_ok=True)
-                    payload = stats.grad_sig_payload
-                    np.savez_compressed(
-                        gradsig_dir / f"u{u:05d}.npz", **payload,
-                    )
                     meta_path = gradsig_dir / "meta.json"
                     if (
                         bool(payload["norm_edges_derived"])
@@ -795,7 +790,7 @@ def train_ppo(
                         meta_path.write_text(json.dumps({
                             "version": 2,
                             "norm_axis": "per_frame_norm",
-                            "sample_size": pp_u.grad_sig_sample_size,
+                            "sample_size": DUMP_GRADSIG_SAMPLE_SIZE,
                             "cos_bins": pp_u.grad_sig_cos_bins,
                             "norm_bins": pp_u.grad_sig_norm_bins,
                             "cos_edges": payload["cos_edges"].tolist(),

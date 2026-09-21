@@ -500,12 +500,12 @@ def _ppo_surrogate(
 # Identity: mean(p_i) = ‖G‖ exactly on the same frame set — the sampled
 # mean is an unbiased estimator and doubles as a representativeness
 # check.  Scalars plus a (per-frame-norm × cos) 2D histogram and raw
-# per-frame arrays go to gradsig/uNNNNN.npz.
+# per-frame arrays go into the dump's gradsig.npz.
 #
 # Everything goes through the existing ``evaluate_actions`` contract —
 # no new policy interface.  Per-frame gradients use the generic (slow
 # but correct) path: ~N python-level backwards per diagnostic run,
-# gated by PPOParams.grad_sig_sample_size.
+# gated by the loop passing a GradDiagSpec (dump-requested updates only).
 # ---------------------------------------------------------------------------
 
 def _grad_signal_diag(
@@ -529,7 +529,7 @@ def _grad_signal_diag(
     Returns ``(scalars, hist, dump, g_vec)``:
 
     - ``scalars``: the ``grad_sig_*`` fields for :class:`UpdateStats`.
-    - ``hist``: npz-ready dict for ``gradsig/uNNNNN.npz`` — joint 2D
+    - ``hist``: npz-ready dict for ``dumps/uNNNNN/gradsig.npz`` — joint 2D
       histogram ``hist[norm_bin, cos_bin]`` of frame counts, bin edges,
       edge rows, scalars, and raw per-frame arrays (grad_norm, cos,
       proj, valid).  ``None`` when no usable direction exists.
@@ -845,9 +845,10 @@ def ppo_update(
             default (large).
         grad_diag: Optional :class:`GradDiagSpec` — when set, run the
             frame-level gradient-consensus diagnostic at theta_old right
-            before the epoch loop.  Scalars land in UpdateStats; the
-            histogram payload is returned via ``stats.grad_sig_payload``
-            for the loop to persist under ``gradsig/``.
+            before the epoch loop (dump-requested updates only).  Scalars
+            land in UpdateStats; the histogram payload is returned via
+            ``stats.grad_sig_payload`` for the loop to merge into the
+            dump's ``gradsig.npz``.
 
     Returns:
         UpdateStats for logging.
@@ -2192,6 +2193,7 @@ def ppo_update(
             else 0.0
         ),
         grad_sig_g_norm=float(grad_sig_scalars["grad_sig_g_norm"]),
+        grad_sig_ran=grad_diag is not None,
         grad_sig_coherence=float(grad_sig_scalars["grad_sig_coherence"]),
         grad_sig_proj_mean=float(grad_sig_scalars["grad_sig_proj_mean"]),
         grad_sig_proj_std=float(grad_sig_scalars["grad_sig_proj_std"]),

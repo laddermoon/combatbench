@@ -470,19 +470,18 @@ class PPOParams:
     dual_clip_c: float = 0.0
 
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
-    # At the start of each update (after combined_adv, before any actor
-    # step), the trainer computes the full-buffer aggregate gradient
-    # G = mean_i g_i of the actual training loss (surrogate + floor)
-    # via chunked backwards, then samples ``grad_sig_sample_size``
-    # buffer frames and computes each frame's improvement-direction
-    # gradient g_i.  Per-frame projection p_i = g_i·G_hat and cosine
-    # yield the run-level scalars (grad_sig_g_norm / coherence /
-    # proj_mean / proj_std / frac_neg / dir_cos) plus a compact 2D
-    # histogram (per-frame-norm-bin x cos-bin) and raw per-frame arrays
-    # stored under run_dir/gradsig/.
-    # grad_sig_sample_size = 0 disables the diagnostic entirely.
-    grad_sig_sample_size: int = 2000
-    grad_sig_interval: int = 1
+    # DUMP-ONLY diagnostic: it runs only on updates that carry a dump
+    # request (loop.py wires it via GradDiagSpec — there is no periodic
+    # collection).  At the start of such an update (after combined_adv,
+    # before any actor step), the trainer computes the full-buffer
+    # aggregate gradient G = mean_i g_i of the actual training loss
+    # (surrogate + floor) via chunked backwards, then samples
+    # DUMP_GRADSIG_SAMPLE_SIZE buffer frames and computes each frame's
+    # improvement-direction gradient g_i.  Per-frame projection
+    # p_i = g_i·G_hat and cosine yield the scalars (grad_sig_g_norm /
+    # coherence / proj_mean / proj_std / frac_neg / dir_cos) plus the
+    # histogram + raw per-frame arrays stored inside the dump's
+    # gradsig.npz.
     grad_sig_cos_bins: int = 64
     # Norm bins are equal-mass quantile bins derived from the first
     # computed update (~1/norm_bins of frames per row), then frozen in
@@ -523,16 +522,6 @@ class PPOParams:
             raise ValueError(
                 f"dual_clip_c must be 0.0 (disabled) or >= 1.0, got "
                 f"{self.dual_clip_c}."
-            )
-        if self.grad_sig_sample_size < 0:
-            raise ValueError(
-                f"grad_sig_sample_size must be >= 0, "
-                f"got {self.grad_sig_sample_size}."
-            )
-        if self.grad_sig_interval < 1:
-            raise ValueError(
-                f"grad_sig_interval must be >= 1, "
-                f"got {self.grad_sig_interval}."
             )
         if self.grad_sig_cos_bins < 4:
             raise ValueError(
@@ -645,13 +634,20 @@ def resolve_update_params(
 # GradDiagSpec — per-update request for the ADV gradient-signal diagnostic
 # ---------------------------------------------------------------------------
 
+# Frames sampled per dump-triggered diagnostic.  Fixed, not a parameter:
+# the diagnostic exists to serve dumps, and a single sampling depth keeps
+# gradsig.npz artifacts comparable across runs and updates.
+DUMP_GRADSIG_SAMPLE_SIZE = 2000
+
+
 @dataclass(frozen=True)
 class GradDiagSpec:
     """Request for the frame-level gradient-signal diagnostic.
 
-    Built by the training loop for updates where the diagnostic runs
-    (``pp.grad_sig_sample_size > 0`` and the interval matches), then
-    passed to ``ppo_update``.  The trainer first computes the aggregate
+    Built by the training loop for dump-requested updates only — the
+    diagnostic is an on-demand investigation tool, not periodic
+    telemetry — then passed to ``ppo_update``.  The trainer first
+    computes the aggregate
     gradient G = mean_i g_i over the FULL buffer via chunked backwards,
     then samples ``sample_size`` buffer frames with a dedicated RNG
     seeded from ``seed`` (isolated from the training RNG stream) and
@@ -942,7 +938,10 @@ class UpdateStats:
     # grad_sig_norm_mean: mean per-frame gradient L2 norm over the
     #   sample — the coherence denominator: ‖G‖ = mean‖g_i‖ × coherence.
     # grad_sig_time_s: wall time of the diagnostic inside ppo_update.
-    # All zeros when the diagnostic is disabled or did not run this update.
+    # These keys are emitted into __RAW_STATS__ ONLY when the diagnostic
+    # actually ran (dump-requested update) — absence = not measured,
+    # which must stay distinguishable from a measured zero.
+    grad_sig_ran: bool = False
     grad_sig_g_norm: float = 0.0
     grad_sig_coherence: float = 0.0
     grad_sig_proj_mean: float = 0.0
@@ -953,9 +952,9 @@ class UpdateStats:
     grad_sig_norm_mean: float = 0.0
     grad_sig_time_s: float = 0.0
     # Non-logged transport for the per-update histogram artifact — the
-    # loop writes it to ``gradsig/uNNNNN.npz`` (the histogram is not a
-    # scalar and must not inflate __RAW_STATS__).  None = the diagnostic
-    # did not run this update.
+    # loop merges it into the dump's ``gradsig.npz`` (the histogram is
+    # not a scalar and must not inflate __RAW_STATS__).  None = the
+    # diagnostic did not run this update.
     grad_sig_payload: Optional[Dict[str, Any]] = None
     # Non-logged transport of this update's aggregate gradient vector —
     # the loop holds it in memory and passes it back as spec.prev_g on
@@ -1093,19 +1092,23 @@ class UpdateStats:
             "post_clip_dloss_mean": self.post_clip_dloss_mean,
             "post_clip_dloss_gain": self.post_clip_dloss_gain,
             "post_clip_dloss_harm": self.post_clip_dloss_harm,
-            # --- ADV gradient-signal diagnostic ---
-            "grad_sig_g_norm": self.grad_sig_g_norm,
-            "grad_sig_coherence": self.grad_sig_coherence,
-            "grad_sig_proj_mean": self.grad_sig_proj_mean,
-            "grad_sig_proj_std": self.grad_sig_proj_std,
-            "grad_sig_frac_neg_mean": self.grad_sig_frac_neg_mean,
-            "grad_sig_dir_cos": self.grad_sig_dir_cos,
-            "grad_sig_n_frames": self.grad_sig_n_frames,
-            "grad_sig_norm_mean": self.grad_sig_norm_mean,
-            "grad_sig_time_s": self.grad_sig_time_s,
             "adv_winsorize_clip_frac": self.adv_winsorize_clip_frac,
             "dual_clip_frac_mean": self.dual_clip_frac_mean,
         })
+        # grad_sig_* scalars only when the dump-triggered diagnostic ran
+        # — a measured value is meaningful, an unmeasured zero is not.
+        if self.grad_sig_ran:
+            d.update({
+                "grad_sig_g_norm": self.grad_sig_g_norm,
+                "grad_sig_coherence": self.grad_sig_coherence,
+                "grad_sig_proj_mean": self.grad_sig_proj_mean,
+                "grad_sig_proj_std": self.grad_sig_proj_std,
+                "grad_sig_frac_neg_mean": self.grad_sig_frac_neg_mean,
+                "grad_sig_dir_cos": self.grad_sig_dir_cos,
+                "grad_sig_n_frames": self.grad_sig_n_frames,
+                "grad_sig_norm_mean": self.grad_sig_norm_mean,
+                "grad_sig_time_s": self.grad_sig_time_s,
+            })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val
         for key, val in self.critic_loss_mean.items():

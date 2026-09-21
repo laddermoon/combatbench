@@ -2282,8 +2282,9 @@
   // Layout is fully data-driven from /api/catalog (metric_catalog.py):
   // six themed sections in fixed order, each with curated charts plus
   // expandable detail groups.  gradsig (per-frame gradient diagnostic)
-  // panels were removed from the Run dashboard — the data API and the
-  // gradsig/*.npz artifacts remain for dump-side investigation.
+  // panels were removed from the Run dashboard — the diagnostic is
+  // dump-only now, its data lives inside dumps/uNNNNN/gradsig.npz
+  // (run-level gradsig/*.npz remains readable for old runs).
 
   function buildMetricsCharts(metrics) {
     // Collect all chartable keys — META_KEYS are row-level metadata

@@ -3237,6 +3237,7 @@ def test_ppo_update_grad_diag_e2e():
             norm_edges=None, seed=5),
     )
 
+    assert stats.grad_sig_ran is True
     assert stats.grad_sig_n_frames > 0
     assert stats.grad_sig_payload is not None
     hist = stats.grad_sig_payload["hist"]
@@ -3293,12 +3294,42 @@ def test_ppo_update_grad_diag_disabled():
         device=torch.device("cpu"),
         dump_callback=lambda s, d: collector.__setitem__(s, d),
     )
+    assert stats.grad_sig_ran is False
     assert stats.grad_sig_n_frames == 0
     assert stats.grad_sig_g_norm == 0.0
     assert stats.grad_sig_time_s == 0.0
     assert stats.grad_sig_payload is None
     assert "gradsig" not in collector
+    # No misleading zero-valued grad_sig_* keys in __RAW_STATS__ —
+    # the fields only exist on updates where the diagnostic ran.
+    d = stats.to_log_dict()
+    assert not any(k.startswith("grad_sig_") for k in d), (
+        "non-diagnostic update must not log grad_sig_* fields")
     print("test_ppo_update_grad_diag_disabled: PASS")
+
+
+def test_ppo_params_gradsig_is_dump_only():
+    """grad_sig_sample_size / grad_sig_interval no longer exist — the
+    diagnostic is dump-triggered only, with an internal fixed sample
+    count.  Passing the old knobs must fail loudly (TypeError), not be
+    silently ignored."""
+    base = dict(clip_eps=0.2, target_kl=0.05, update_epochs=4,
+                minibatch_size=64, early_stop_kl_window=8)
+    for kw in ({"grad_sig_sample_size": 2000},
+               {"grad_sig_interval": 5}):
+        try:
+            PPOParams(**base, **kw)  # type: ignore[arg-type]
+            raise AssertionError(f"expected TypeError for {kw}")
+        except TypeError:
+            pass
+    # The shape knobs remain configurable.
+    import dataclasses
+    pp = make_pp_params()
+    pp = dataclasses.replace(
+        pp, grad_sig_cos_bins=16, grad_sig_norm_bins=8,
+        grad_sig_norm_lo=1e-3, grad_sig_norm_hi=10.0)
+    assert pp.grad_sig_cos_bins == 16
+    print("test_ppo_params_gradsig_is_dump_only: PASS")
 
 
 def test_grad_signal_diag_no_trainable_params_raises():

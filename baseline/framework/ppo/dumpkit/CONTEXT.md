@@ -11,16 +11,20 @@
 
 ```
 run          train.log 里的 __RAW_STATS__ JSON 行 —— 每 update 一条扁平时序
-  ├─ gradsig gradsig/uNNNNN.npz —— 每 update 的 ADV 梯度信号分布
-  │          （cos(g_i,G) × ‖g_i‖ 分箱 + 逐帧 proj/cos 数组），
-  │          meta.json 冻结 norm 分箱边界（norm_axis: per_frame_norm）
   └─ dump    dumps/uNNNNN/ —— 单个 update 的完整截面（episodes.npz、buffer.npz、
              update.npz、gradsig.npz、manifest.json、policy 导出、episode_options.json）
       ├─ episode   环境对局的逐帧 obs/action/observer 输出
       ├─ trajectory 训练用轨迹段（训练目标：ret/adv/actor_weight/confidence）
-      └─ timeline  update 内部动力学（minibatch/epoch 级的 KL、ratio、loss）
+      ├─ timeline  update 内部动力学（minibatch/epoch 级的 KL、ratio、loss）
+      └─ gradsig   gradsig.npz —— 该 update 的 ADV 梯度信号分布
+                   （cos(g_i,G) × ‖g_i‖ 分箱 + 逐帧 proj/cos 数组），
+                   由 dump 请求触发；run 级 gradsig/meta.json 冻结
+                   norm 分箱边界（norm_axis: per_frame_norm）
   └─ 派生产物  record/（render 的 PNG 帧）、delta/（跨代 policy 漂移）
 ```
+
+注：旧 run 可能仍有 run 级 `gradsig/uNNNNN.npz`（dump-only 改造前
+的周期性工件），读取 API 保留但新 run 不再产生。
 
 ## 指标命名空间（扁平化后的一级前缀 = 来源/归属）
 
@@ -100,11 +104,11 @@ debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
 GET /api/mode | /api/catalog | /api/render-status
 GET /api/runs?q=&page=&size=&sort=&order=                     (runs 模式)
 GET /run/<name>/api/run/{info,dumps,metrics,videos}           (runs 模式)
-GET /run/<name>/api/run/gradsig/<update>                      (runs 模式)
+GET /run/<name>/api/run/gradsig/<update>                      (runs 模式, 旧 run)
 GET /api/run/{info,dumps,metrics,videos}                      (run 模式)
-GET /api/run/gradsig/<update>                                 (run 模式)
+GET /api/run/gradsig/<update>                                 (run 模式, 旧 run)
 GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
-    manifest | episode_list | traj_map
+    manifest | episode_list | traj_map | gradsig
     episode/<pos>/frame/<f> | episode/<pos>/delta | image/<a>/<b>
     trajectory/<i> | trajectory/<i>/frame/<f>
     trajectory/<i>/epoch/<e>/overview|frame/<f> | trajectory/<i>/epoch_compare
@@ -124,15 +128,18 @@ POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 - run 名解析只允许 `runs_root` 的直接子目录且须含 config.json 或 train.log。
 - 新起的 run 才有新字段（如 exp.*/post_kl_*/uncertainty_floor）——老 run
   日志缺字段属正常向后兼容，不是解析失败。
-- `stats.grad_sig_*`（ADV 梯度信号诊断）：**已从 Run Dashboard 移除**
-  （suppress_prefixes 挡掉自动补图）——采集、gradsig/*.npz 工件与
-  `/api/run/gradsig/<u>` 保留给 dump/agent 调查用；API 返回
-  404 `{available:false}` 不是错误。零范数帧不计入投影/余弦统计；
-  旧 pairwise 格式的工件被当作不可用而非误读。
+- `stats.grad_sig_*`（ADV 梯度信号诊断）：**dump-only**——只在带 dump
+  请求的 update 上运行（内部固定 2000 帧采样，`sample_size`/`interval`
+  公共参数已删除），数据并入 `dumps/uNNNNN/gradsig.npz`（hist +
+  逐帧数组自包含），经 `DumpData.grad_sig()` / `/api/dump/<d>/gradsig`
+  读取。非诊断 update 不输出 `grad_sig_*` 字段（`grad_sig_ran` 标记）。
+  Dashboard 不出现（suppress_prefixes 挡掉旧 run 的残留键）。
+  `/api/run/gradsig/<u>` 只为旧 run 的 `gradsig/u*.npz` 服务，404
+  `{available:false}` 不是错误。零范数帧不计入投影/余弦统计；
+  旧 pairwise 格式的工件被当作不可用而非误读。诊断约 +5s/update，
+  这也是它不属于常规遥测的原因。
 - `param_overrides` 是行级元数据（dict），经 `_flatten_update` 透传、
   只在 Update Detail 显示，不进图、不在 `stats.*` 下。
-- dump 请求会强制该 update 运行 gradsig 诊断（即使被 interval 跳过），
-  保证 dumps/uNNNNN/gradsig.npz 细节存在。
 
 ## 文档索引
 

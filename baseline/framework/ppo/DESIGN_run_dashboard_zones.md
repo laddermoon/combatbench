@@ -271,9 +271,11 @@ jobs/export 等小项默认不强调。total 不作为阶段再次叠加进组�
 - Update Detail 的梯度热力图、边缘分布、投影分布
 - 相关辅助标量的 fallback 自动补图
 
-不删除历史 `gradsig/` 工件，不改采集默认值。计算能力保留并改为
-Dump 按需调用是后续任务（注意 `grad_sig_sample_size=0` 目前会同时
-关掉 Dump 内的 gradsig 采集，接线需要单独处理）。
+不删除历史 `gradsig/` 工件（旧 run 仍可读）。诊断已改为
+**dump-only**：`grad_sig_sample_size`/`grad_sig_interval` 公共参数
+已删除，周期性采集路径已移除；dump 请求触发时以内部固定 2000 帧
+运行诊断，数据自包含地写入 `dumps/uNNNNN/gradsig.npz`，经
+`DumpData.grad_sig()` / `/api/dump/<d>/gradsig` 读取。
 
 ## 验收场景
 

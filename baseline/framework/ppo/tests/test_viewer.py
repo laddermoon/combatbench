@@ -827,6 +827,111 @@ def test_run_data_grad_sig():
         print("test_run_data_grad_sig: PASS")
 
 
+def _write_gradsig_npz(path: Path, with_hist: bool = True) -> None:
+    """Write a dump-side gradsig.npz — the merged hist + per-frame
+    payload the loop produces on dump-requested updates."""
+    cos_edges = np.linspace(-1.0, 1.0, 9)
+    norm_edges = np.geomspace(1e-2, 1e2, 5)
+    payload = {
+        "sampled_idx": np.array([0, 3, 5, 7], dtype=np.int64),
+        "valid": np.array([True, True, True, False]),
+        "grad_norm": np.array([0.5, 1.0, 2.0, np.nan], dtype=np.float32),
+        "w_adv": np.array([0.1, -0.4, 0.9, 0.0], dtype=np.float32),
+        "floor_pen": np.array([0.0, 0.0, 0.02, 0.0], dtype=np.float32),
+        "n_params": np.array(1234),
+        "proj": np.array([0.05, -0.2, 1.8, np.nan], dtype=np.float32),
+        "cos": np.array([0.1, -0.2, 0.9, np.nan], dtype=np.float32),
+    }
+    if with_hist:
+        hist = np.zeros((4, 8), dtype=np.int64)
+        hist[2, 6] = 7
+        payload.update({
+            "hist": hist,
+            "cos_edges": cos_edges,
+            "norm_edges": norm_edges,
+            "n_sampled": np.array(4),
+            "n_valid": np.array(3),
+            "n_excluded": np.array(1),
+            "n_nonfinite": np.array(1),
+            "n_frames_in_hist": np.array(3),
+            "gnorm": np.array(0.123),
+            "coherence": np.array(0.42),
+            "dir_cos": np.array(0.77),
+            "proj_mean": np.array(0.55),
+            "proj_std": np.array(0.9),
+            "frac_neg": np.array(1.0 / 3.0),
+            "norm_quantiles": np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+            "norm_edges_derived": np.array(True),
+            "hist_under": np.zeros(8, dtype=np.int64),
+            "hist_over": np.zeros(8, dtype=np.int64),
+            "n_under": np.array(0),
+            "n_over": np.array(0),
+        })
+    np.savez_compressed(path, **payload)
+
+
+def test_dump_data_grad_sig():
+    """DumpData.grad_sig() round-trips dumps/uNNNNN/gradsig.npz — the
+    merged histogram + per-frame dump payload — and degrades to a
+    ``partial`` payload when the diagnostic bailed before the histogram.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = Path(d) / "u00042"
+        dump_dir.mkdir(parents=True)
+        (dump_dir / "manifest.json").write_text(
+            json.dumps({"update": 42}))
+        _write_gradsig_npz(dump_dir / "gradsig.npz")
+
+        dd = DumpData(dump_dir)
+        out = dd.grad_sig()
+        assert out is not None
+        assert out["available"] is True
+        assert "partial" not in out
+        assert out["update"] == 42
+        assert out["hist"][2][6] == 7
+        assert abs(out["dir_cos"] - 0.77) < 1e-9
+        # Dump-only extras are merged in.
+        assert out["sampled_idx"] == [0, 3, 5, 7]
+        np.testing.assert_allclose(
+            out["w_adv"], [0.1, -0.4, 0.9, 0.0], rtol=1e-6)
+        np.testing.assert_allclose(out["floor_pen"][2], 0.02, rtol=1e-6)
+        assert out["proj"][3] is None  # invalid frame → JSON null
+        json.dumps(out, allow_nan=False)
+
+        # API endpoint serves the same payload.
+        api = ViewerAPI(dd)
+        status, body = api.handle("/api/gradsig")
+        assert status == 200 and body["available"] is True
+        m_status, manifest = api.handle("/api/manifest")
+        assert m_status == 200 and manifest["has_gradsig"] is True
+
+        # Partial path: diagnostic bailed before the histogram (only
+        # the raw per-frame arrays exist) → degraded payload, not 404.
+        dump_dir2 = Path(d) / "u00043"
+        dump_dir2.mkdir()
+        (dump_dir2 / "manifest.json").write_text(
+            json.dumps({"update": 43}))
+        _write_gradsig_npz(dump_dir2 / "gradsig.npz", with_hist=False)
+        out2 = DumpData(dump_dir2).grad_sig()
+        assert out2["available"] is True and out2["partial"] is True
+        assert out2["update"] == 43
+        assert out2["n_sampled"] == 4 and out2["n_valid"] == 3
+        assert "hist" not in out2
+        assert out2["sampled_idx"] == [0, 3, 5, 7]
+        json.dumps(out2, allow_nan=False)
+
+        # No gradsig.npz at all → None → API 404 + available: false.
+        dump_dir3 = Path(d) / "u00044"
+        dump_dir3.mkdir()
+        (dump_dir3 / "manifest.json").write_text(
+            json.dumps({"update": 44}))
+        dd3 = DumpData(dump_dir3)
+        assert dd3.grad_sig() is None
+        status3, body3 = ViewerAPI(dd3).handle("/api/gradsig")
+        assert status3 == 404 and body3["available"] is False
+        print("test_dump_data_grad_sig: PASS")
+
+
 def test_sanitize_exp_metrics():
     """_sanitize_exp_metrics keeps finite scalars with safe keys only."""
     from baseline.framework.ppo.loop import _sanitize_exp_metrics
@@ -1485,6 +1590,7 @@ if __name__ == "__main__":
     test_run_data_videos()
     test_run_data_metrics_has_eval_keys()
     test_run_data_grad_sig()
+    test_dump_data_grad_sig()
     test_scan_experiments_discovers_registry()
     test_experiments_index_groups_runs()
     test_experiment_detail_diffs_and_checkpoints()
