@@ -712,6 +712,7 @@ def train_ppo(
                     if dump_req is not None else False
                 ),
                 grad_diag=grad_diag,
+                update_index=u,
             )
             t_ppo = time.perf_counter() - t0
 

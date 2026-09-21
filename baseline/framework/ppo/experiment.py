@@ -451,6 +451,16 @@ class PPOParams:
     #       advantage sign of every frame.
     adv_norm: str = "zscore"
 
+    # Winsorize (缩尾) the normalized COMBINED advantage at ±sigma
+    # before it enters the surrogate.  Bounds the per-frame gradient
+    # coefficient |adv| so a single outlier trajectory cannot dominate
+    # the update direction.  0.0 disables.  ``adv_winsorize_from_update``
+    # gates activation by update index — resume from an earlier
+    # checkpoint with from_update=N applies winsorize only from update
+    # N onward, preserving the preceding trajectory bit-identically.
+    adv_winsorize_sigma: float = 0.0
+    adv_winsorize_from_update: int = 0
+
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # At the start of each update (after combined_adv, before any actor
     # step), the trainer computes the full-buffer aggregate gradient
@@ -494,6 +504,16 @@ class PPOParams:
             raise ValueError(
                 f"adv_norm must be 'zscore' or 'std', got "
                 f"{self.adv_norm!r}."
+            )
+        if self.adv_winsorize_sigma < 0.0:
+            raise ValueError(
+                f"adv_winsorize_sigma must be >= 0.0, got "
+                f"{self.adv_winsorize_sigma}."
+            )
+        if self.adv_winsorize_from_update < 0:
+            raise ValueError(
+                f"adv_winsorize_from_update must be >= 0, got "
+                f"{self.adv_winsorize_from_update}."
             )
         if self.grad_sig_sample_size < 0:
             raise ValueError(
@@ -850,6 +870,12 @@ class UpdateStats:
     # persisted (a ~100k-float vector per update would bloat the npz).
     grad_sig_gvec: Optional[np.ndarray] = None
 
+    # Fraction of buffer frames whose normalized combined advantage was
+    #   clipped to ±adv_winsorize_sigma this update.  0.0 when winsorize
+    #   is disabled, gated off for this update, or nothing exceeded the
+    #   bound — so the stat doubles as an activation indicator.
+    adv_winsorize_clip_frac: float = 0.0
+
     @classmethod
     def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
         """Construct a zeroed UpdateStats for a skipped (empty-buffer) update.
@@ -979,6 +1005,7 @@ class UpdateStats:
             "grad_sig_n_frames": self.grad_sig_n_frames,
             "grad_sig_norm_mean": self.grad_sig_norm_mean,
             "grad_sig_time_s": self.grad_sig_time_s,
+            "adv_winsorize_clip_frac": self.adv_winsorize_clip_frac,
         })
         for key, val in self.post_ratio_bins.items():
             d[f"rbin_{key}"] = val

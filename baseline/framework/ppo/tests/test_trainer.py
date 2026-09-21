@@ -3451,6 +3451,73 @@ def test_checkpoint_reset_update_skips_rng():
     print("test_checkpoint_reset_update_skips_rng: PASS")
 
 
+def test_ppo_update_adv_winsorize():
+    """adv_winsorize_sigma caps the combined advantage; gated by update index.
+
+    Winsorize clips the normalized combined_adv to ±sigma before it
+    enters the surrogate.  With sigma=0.5 and z-scored random-reward
+    advantages, some frames almost surely exceed the bound, so the
+    clipped payload must stay within ±0.5 while combined_adv_raw keeps
+    the unclipped values.  When update_index < from_update the clip is
+    skipped entirely and combined_adv_raw is absent from the payload.
+    """
+    import dataclasses
+
+    rng = np.random.default_rng(42)
+    obs_dim, act_dim = 8, 3
+    T = 64
+
+    traj = make_trajectory(T, obs_dim, act_dim, {
+        "r_a": make_channel_data(T, reward_scale=1.0, rng=rng),
+    }, rng=rng)
+
+    actor = SimpleActor(obs_dim, act_dim)
+    buf = PPOBuffer([traj], actor, torch.device("cpu"), ("r_a",))
+    critics = make_critics(("r_a",), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    channels = (RewardChannel("r_a", gamma=0.99, gae_lambda=0.95),)
+
+    # Active: sigma=0.5, applies from update 0.
+    captured: dict = {}
+    pp = dataclasses.replace(
+        make_pp_params(minibatch_size=32), adv_winsorize_sigma=0.5,
+    )
+    stats = ppo_update(
+        actor=actor, critics=critics,
+        actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+        buf=buf, reward_channels=channels, pp=pp,
+        grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+        dump_callback=lambda s, d: captured.__setitem__(s, d),
+        update_index=0,
+    )
+    comb = captured["combine"]["combined_adv"]
+    raw = captured["combine"]["combined_adv_raw"]
+    assert float(np.abs(comb).max()) <= 0.5 + 1e-6
+    assert float(np.abs(raw).max()) > 0.5  # z-scored random advs exceed 0.5
+    assert stats.adv_winsorize_clip_frac > 0.0
+
+    # Gated off: from_update=5, current update_index=2 → no clip.
+    captured2: dict = {}
+    pp2 = dataclasses.replace(
+        make_pp_params(minibatch_size=32),
+        adv_winsorize_sigma=0.5, adv_winsorize_from_update=5,
+    )
+    stats2 = ppo_update(
+        actor=actor, critics=critics,
+        actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+        buf=buf, reward_channels=channels, pp=pp2,
+        grad_clip_norm=1.0, device=torch.device("cpu"),
+        use_confidence=False,
+        dump_callback=lambda s, d: captured2.__setitem__(s, d),
+        update_index=2,
+    )
+    assert "combined_adv_raw" not in captured2["combine"]
+    assert stats2.adv_winsorize_clip_frac == 0.0
+
+    print("test_ppo_update_adv_winsorize: PASS")
+
+
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
@@ -3559,5 +3626,8 @@ if __name__ == "__main__":
     test_ppo_update_grad_diag_e2e()
     test_ppo_update_grad_diag_disabled()
     test_grad_signal_diag_no_trainable_params_raises()
+
+    # ADV winsorize
+    test_ppo_update_adv_winsorize()
 
     print("\nAll PPO trainer tests passed!")

@@ -754,6 +754,7 @@ def ppo_update(
     dump_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     include_full_grad: bool = False,
     grad_diag: Optional[GradDiagSpec] = None,
+    update_index: int = 0,
 ) -> UpdateStats:
     """Multi-critic PPO update with fixed defaults.
 
@@ -1131,10 +1132,37 @@ def ppo_update(
                 f"gradient this update."
             )
 
+    # --- Optional winsorize (缩尾): cap the combined advantage at
+    #     ±adv_winsorize_sigma before it enters the surrogate.  Bounds
+    #     the per-frame gradient coefficient |adv| so an outlier
+    #     trajectory (e.g. a whole episode the critic overestimated)
+    #     cannot dominate the update direction.  Gated by update index
+    #     so a resumed run can enable it at a chosen update while
+    #     keeping the preceding prefix bit-identical.
+    combined_adv_raw: Optional[np.ndarray] = None
+    adv_winsorize_clip_frac = 0.0
+    if (
+        pp.adv_winsorize_sigma > 0.0
+        and update_index >= pp.adv_winsorize_from_update
+    ):
+        combined_adv_raw = combined_adv
+        combined_adv = np.clip(
+            combined_adv, -pp.adv_winsorize_sigma, pp.adv_winsorize_sigma,
+        ).astype(np.float32)
+        adv_winsorize_clip_frac = float(
+            (combined_adv_raw != combined_adv).mean()
+        )
+        diagnostics.append(
+            f"  [winsorize] combined_adv clipped to "
+            f"±{pp.adv_winsorize_sigma}σ: {adv_winsorize_clip_frac:.3%} "
+            f"of frames exceeded the bound (u{update_index})"
+        )
+
     # --- Dump hook: combine stage ---
     if dump_callback is not None:
         combine_payload: Dict[str, Any] = {
             "combined_adv": combined_adv,
+            "adv_winsorize_clip_frac": np.float32(adv_winsorize_clip_frac),
             "key_actor_weight_frame": dict(key_actor_weight_frame),
             "confidences": dict(confidences),
             "aw_l1_sum": aw_l1_sum,
@@ -1145,6 +1173,8 @@ def ppo_update(
             "uncertainty_floor": np.array(uncertainty_floor, dtype=np.float32),
             "uncertainty_coef": np.array(uncertainty_coef, dtype=np.float32),
         }
+        if combined_adv_raw is not None:
+            combine_payload["combined_adv_raw"] = combined_adv_raw
         dump_callback("combine", combine_payload)
 
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
@@ -2092,6 +2122,7 @@ def ppo_update(
         critic_grad_norm_mean=critic_grad_norm_mean,
         policy_stats=actor_stats,
         diagnostics=diagnostics,
+        adv_winsorize_clip_frac=adv_winsorize_clip_frac,
         grad_sig_g_norm=float(grad_sig_scalars["grad_sig_g_norm"]),
         grad_sig_coherence=float(grad_sig_scalars["grad_sig_coherence"]),
         grad_sig_proj_mean=float(grad_sig_scalars["grad_sig_proj_mean"]),

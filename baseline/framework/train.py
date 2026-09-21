@@ -67,6 +67,16 @@ def _parse_args() -> argparse.Namespace:
         help="Override experiment seed (default: use experiment's built-in seed).",
     )
     parser.add_argument(
+        "--adv-winsorize-sigma", type=float, default=None,
+        help="Winsorize (clip) normalized combined advantage to ±sigma "
+             "before it enters the PPO surrogate. Omitted = disabled.",
+    )
+    parser.add_argument(
+        "--adv-winsorize-from-update", type=int, default=0,
+        help="Update index from which --adv-winsorize-sigma applies "
+             "(default 0 = every update).",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment constructor parameter (can be repeated). "
              "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
@@ -190,6 +200,21 @@ def main() -> None:
     if args.seed is not None:
         experiment.seed = args.seed
         print(f"[seed] overridden to {args.seed}", flush=True)
+
+    if args.adv_winsorize_sigma is not None and algo == "ppo":
+        import dataclasses
+        pp = experiment.ppo_params()
+        pp = dataclasses.replace(
+            pp,
+            adv_winsorize_sigma=args.adv_winsorize_sigma,
+            adv_winsorize_from_update=args.adv_winsorize_from_update,
+        )
+        experiment.ppo_params = lambda: pp
+        print(
+            f"[winsorize] combined_adv clipped to "
+            f"±{args.adv_winsorize_sigma}σ from update "
+            f"{args.adv_winsorize_from_update}", flush=True,
+        )
 
     if args.smoke:
         import dataclasses
