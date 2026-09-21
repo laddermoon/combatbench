@@ -864,12 +864,9 @@ def ppo_update(
     # Trust-region knobs come from PPOParams (not overridable per-update).
     clip_eps = pp.clip_eps
     # Dual-clip floor (see _ppo_surrogate): bounds the adv<0, ratio>1+ε
-    # blind quadrant.  Gated by update index like the other resume-time
-    # interventions.
+    # blind quadrant.
     dual_clip_c = pp.dual_clip_c
-    dual_clip_active = (
-        dual_clip_c > 0.0 and update_index >= pp.dual_clip_from_update
-    )
+    dual_clip_active = dual_clip_c > 0.0
     target_kl = pp.target_kl
 
     # Entropy floor: the framework computes a one-sided hinge loss
@@ -1147,21 +1144,6 @@ def ppo_update(
     normed_advs: Dict[str, np.ndarray] = {}
     aw_normed_all: Dict[str, np.ndarray] = {}
 
-    # adv_norm_late switch: once update_index reaches
-    # adv_norm_late_from_update, normalization method changes.  Lets a
-    # resumed run switch methods at a chosen update while keeping the
-    # preceding prefix bit-identical.
-    adv_norm_method = pp.adv_norm
-    if (
-        pp.adv_norm_late is not None
-        and update_index >= pp.adv_norm_late_from_update
-    ):
-        adv_norm_method = pp.adv_norm_late
-        diagnostics.append(
-            f"  [adv_norm] switched to '{adv_norm_method}' "
-            f"(from_update={pp.adv_norm_late_from_update}, u{update_index})"
-        )
-
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
@@ -1183,7 +1165,7 @@ def ppo_update(
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
         normed = _normalize_adv(
-            advs_all[key], norm_mask, method=adv_norm_method,
+            advs_all[key], norm_mask, method=pp.adv_norm,
         )
         normed_advs[key] = normed
         combined_adv = combined_adv + aw_normed * conf * normed
@@ -1209,15 +1191,10 @@ def ppo_update(
     #     ±adv_winsorize_sigma before it enters the surrogate.  Bounds
     #     the per-frame gradient coefficient |adv| so an outlier
     #     trajectory (e.g. a whole episode the critic overestimated)
-    #     cannot dominate the update direction.  Gated by update index
-    #     so a resumed run can enable it at a chosen update while
-    #     keeping the preceding prefix bit-identical.
+    #     cannot dominate the update direction.
     combined_adv_raw: Optional[np.ndarray] = None
     adv_winsorize_clip_frac = 0.0
-    if (
-        pp.adv_winsorize_sigma > 0.0
-        and update_index >= pp.adv_winsorize_from_update
-    ):
+    if pp.adv_winsorize_sigma > 0.0:
         combined_adv_raw = combined_adv
         combined_adv = np.clip(
             combined_adv, -pp.adv_winsorize_sigma, pp.adv_winsorize_sigma,

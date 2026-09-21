@@ -111,7 +111,7 @@ What the Experiment controls vs what the framework handles
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dc_fields, replace
 from typing import (
     Any, Dict, List, Mapping, Optional, Tuple,
 )
@@ -454,32 +454,20 @@ class PPOParams:
     #       normal order statistics, implicitly bounds the tail at
     #       ±Φ⁻¹(1−1/2n) with no threshold parameter.
     adv_norm: str = "zscore"
-    # Optional method switch: when set, replaces ``adv_norm`` once
-    # update_index >= adv_norm_late_from_update.  Enables resume-time
-    # interventions that change normalization from a chosen update
-    # while keeping the prefix bit-identical.
-    adv_norm_late: Optional[str] = None
-    adv_norm_late_from_update: int = 0
 
     # Winsorize (缩尾) the normalized COMBINED advantage at ±sigma
     # before it enters the surrogate.  Bounds the per-frame gradient
     # coefficient |adv| so a single outlier trajectory cannot dominate
-    # the update direction.  0.0 disables.  ``adv_winsorize_from_update``
-    # gates activation by update index — resume from an earlier
-    # checkpoint with from_update=N applies winsorize only from update
-    # N onward, preserving the preceding trajectory bit-identically.
+    # the update direction.  0.0 disables.
     adv_winsorize_sigma: float = 0.0
-    adv_winsorize_from_update: int = 0
 
     # Dual-Clip floor (Ye et al. 2020): for adv<0 the standard
     # min(surr1,surr2) selects the unclipped branch once ratio > 1+eps,
     # and the surrogate diverges to −∞ as ratio grows — gradient
     # coefficient ∝ |adv·ratio|.  dual_clip_c floors the surrogate at
     # c·adv: frames past ratio > c contribute a constant value and zero
-    # gradient.  0.0 disables; typical c ≈ 3.  Gated by
-    # dual_clip_from_update for resume-time activation.
+    # gradient.  0.0 disables; typical c ≈ 3.
     dual_clip_c: float = 0.0
-    dual_clip_from_update: int = 0
 
     # --- ADV gradient-signal diagnostic (theta_old frame sampling) ---
     # At the start of each update (after combined_adv, before any actor
@@ -526,38 +514,15 @@ class PPOParams:
                 f"adv_norm must be one of {_adv_norm_methods}, got "
                 f"{self.adv_norm!r}."
             )
-        if (
-            self.adv_norm_late is not None
-            and self.adv_norm_late not in _adv_norm_methods
-        ):
-            raise ValueError(
-                f"adv_norm_late must be one of {_adv_norm_methods} or "
-                f"None, got {self.adv_norm_late!r}."
-            )
-        if self.adv_norm_late_from_update < 0:
-            raise ValueError(
-                f"adv_norm_late_from_update must be >= 0, got "
-                f"{self.adv_norm_late_from_update}."
-            )
         if self.adv_winsorize_sigma < 0.0:
             raise ValueError(
                 f"adv_winsorize_sigma must be >= 0.0, got "
                 f"{self.adv_winsorize_sigma}."
             )
-        if self.adv_winsorize_from_update < 0:
-            raise ValueError(
-                f"adv_winsorize_from_update must be >= 0, got "
-                f"{self.adv_winsorize_from_update}."
-            )
         if self.dual_clip_c < 0.0 or (0.0 < self.dual_clip_c < 1.0):
             raise ValueError(
                 f"dual_clip_c must be 0.0 (disabled) or >= 1.0, got "
                 f"{self.dual_clip_c}."
-            )
-        if self.dual_clip_from_update < 0:
-            raise ValueError(
-                f"dual_clip_from_update must be >= 0, got "
-                f"{self.dual_clip_from_update}."
             )
         if self.grad_sig_sample_size < 0:
             raise ValueError(
@@ -590,6 +555,90 @@ class PPOParams:
                 f"grad_sig_norm_hi must be > grad_sig_norm_lo, got "
                 f"lo={self.grad_sig_norm_lo} hi={self.grad_sig_norm_hi}."
             )
+
+
+# ---------------------------------------------------------------------------
+# Per-update parameter overrides
+# ---------------------------------------------------------------------------
+#
+# The experiment may return a flat override mapping from
+# ``param_overrides(update)`` each update; ``resolve_update_params``
+# applies it on top of the base CommonParams/PPOParams for that update
+# only.  Keys are routed to whichever dataclass declares the field —
+# the two have no colliding names.  Validation happens through
+# ``dataclasses.replace`` → ``__post_init__``, so an illegal value fails
+# at the update boundary with the normal message.
+#
+# Blacklisted fields cannot be overridden mid-run:
+#   - ``name``            — experiment identity.
+#   - ``seed``            — the run's RNG-stream identity; changing it
+#       mid-run silently re-derivs every downstream seed.
+#   - ``rollout_workers`` — the ParallelRollouter pool is created once
+#       before the loop; resizing requires a rebuild the framework
+#       does not perform.
+
+_PARAM_OVERRIDE_BLACKLIST = frozenset(
+    {"name", "seed", "rollout_workers"}
+)
+
+
+def _param_field_names() -> Tuple[frozenset, frozenset]:
+    return (
+        frozenset(f.name for f in _dc_fields(CommonParams)),
+        frozenset(f.name for f in _dc_fields(PPOParams)),
+    )
+
+
+def resolve_update_params(
+    base_cp: CommonParams,
+    base_pp: PPOParams,
+    override: Optional[Mapping[str, Any]],
+) -> Tuple[CommonParams, PPOParams, Dict[str, Any]]:
+    """Apply a flat per-update override dict to the owning dataclass.
+
+    Args:
+        base_cp, base_pp: The experiment's base parameters.
+        override: ``{field_name: value}`` or None.  Applied for this
+            update only — repeat the override on every update it should
+            stay active.
+
+    Returns:
+        ``(cp_effective, pp_effective, applied)`` where ``applied`` is
+        the validated override dict actually used (for logging).
+
+    Raises:
+        ValueError: Unknown field, blacklisted field, or a value that
+            fails dataclass validation — with context naming the field.
+    """
+    if not override:
+        return base_cp, base_pp, {}
+
+    cp_names, pp_names = _param_field_names()
+    unknown = sorted(set(override) - cp_names - pp_names)
+    if unknown:
+        allowed = sorted(cp_names | pp_names)
+        raise ValueError(
+            f"param_overrides: unknown field(s) {unknown}. "
+            f"Allowed fields: {allowed}."
+        )
+    blocked = sorted(set(override) & _PARAM_OVERRIDE_BLACKLIST)
+    if blocked:
+        raise ValueError(
+            f"param_overrides: field(s) {blocked} cannot be changed "
+            f"mid-run (identity or fixed resources). Allowed fields: "
+            f"{sorted((cp_names | pp_names) - _PARAM_OVERRIDE_BLACKLIST)}."
+        )
+
+    cp_kwargs = {k: v for k, v in override.items() if k in cp_names}
+    pp_kwargs = {k: v for k, v in override.items() if k in pp_names}
+    try:
+        cp_eff = replace(base_cp, **cp_kwargs) if cp_kwargs else base_cp
+        pp_eff = replace(base_pp, **pp_kwargs) if pp_kwargs else base_pp
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"param_overrides: invalid value in {override}: {e}"
+        ) from e
+    return cp_eff, pp_eff, dict(override)
 
 
 # ---------------------------------------------------------------------------
@@ -1311,6 +1360,34 @@ class ExperimentPPO(ABC):
 
         Returns:
             An ``LRSpec``, or ``None`` to keep the current LR.
+        """
+        return None
+
+    def param_overrides(
+        self, update: int,
+    ) -> Optional[Mapping[str, Any]]:
+        """Return per-update parameter overrides, or None to use base.
+
+        Called once per update, before exploration/lr_schedule.  The
+        returned flat ``{field_name: value}`` mapping is routed to
+        ``CommonParams`` or ``PPOParams`` by field name, applied via
+        ``dataclasses.replace`` for this update only, and recorded in
+        ``__RAW_STATS__.param_overrides`` plus the train log.
+
+        Return the override on **every** update it should stay active —
+        the framework resolves effective params fresh each update, so a
+        resumed run needs no event history::
+
+            def param_overrides(self, update):
+                if update >= 282:
+                    return {"dual_clip_c": 3.0}
+                return None
+
+        May read state accumulated by ``on_update()`` for closed-loop
+        schedules.  Blacklisted fields (``name``, ``seed``,
+        ``rollout_workers``) and unknown fields raise ``ValueError``.
+        CLI ``--param KEY=VALUE[@UPDATE]`` patches apply *after* this
+        hook and win on conflicts.
         """
         return None
 

@@ -56,6 +56,7 @@ from .experiment import (
     LRSpec,
     PPOParams,
     TrainablePolicy,
+    resolve_update_params,
 )
 from .trainer import PPOBuffer, ppo_update, set_seed
 from .dumpkit.dump_request import poll_dump_request
@@ -195,6 +196,7 @@ def save_checkpoint(
     update: int,
     prev_gvec: Optional[np.ndarray] = None,
     n_evals_done: int = 0,
+    param_overrides: Optional[Dict[str, Any]] = None,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     # A4: Atomic checkpoint write.  Write to a temporary file then rename,
@@ -238,6 +240,9 @@ def save_checkpoint(
             "loop_state": {
                 "prev_gvec": prev_gvec,
                 "n_evals_done": int(n_evals_done),
+                # Forensic snapshot of the per-update parameter
+                # overrides in force when this checkpoint was written.
+                "param_overrides": dict(param_overrides or {}),
             },
         },
         tmp_path,
@@ -463,8 +468,14 @@ def train_ppo(
     resume_from: Optional[Path] = None,
     use_confidence: bool = True,
     reset_update: bool = False,
+    param_patches: Optional[List[Tuple[int, str, Any]]] = None,
 ) -> None:
-    """PPO training loop using the ExperimentPPO interface."""
+    """PPO training loop using the ExperimentPPO interface.
+
+    ``param_patches``: ``[(from_update, field, value), ...]`` applied on
+    top of ``experiment.param_overrides(u)`` each update (CLI wins on
+    conflicts).  See ``resolve_update_params`` for routing/validation.
+    """
     cp = experiment.common_params()
     pp = experiment.ppo_params()
     channels = experiment.reward_channels()
@@ -558,14 +569,56 @@ def train_ppo(
     # in v2 checkpoints so a resumed run keeps dir_cos continuity.
     prev_gvec: Optional[np.ndarray] = resume_ctx.get("prev_gvec")
 
+    patches = param_patches or []
+    prev_applied_ovr: Optional[Dict[str, Any]] = None
+
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
-        for u in range(start_update, cp.max_updates + 1):
+        u = start_update
+        while True:
             t_update_start = time.perf_counter()
 
             # 0. Dump request poll — check for a one-shot dump trigger.
             #    When found, capture the complete update data after ppo_update.
             dump_req = poll_dump_request(run_dir, u)
             dump_collector: Dict[str, Dict[str, Any]] = {}
+
+            # 0a. Per-update parameter resolution — experiment hook
+            #     first, CLI patches last (CLI wins on conflicts).  The
+            #     resolved cp_u/pp_u are used everywhere below so that
+            #     rollout, update, diagnostics and logging all see the
+            #     same effective parameters.
+            exp_ovr = experiment.param_overrides(u)
+            cli_ovr = {k: v for frm, k, v in patches if frm <= u}
+            cp_u, pp_u, applied_ovr = resolve_update_params(
+                cp, pp, {**(exp_ovr or {}), **cli_ovr},
+            )
+            if u > cp_u.max_updates:
+                break
+            if applied_ovr != prev_applied_ovr:
+                if applied_ovr:
+                    print(
+                        f"[params] u{u} effective overrides: {applied_ovr}",
+                        flush=True,
+                    )
+                elif prev_applied_ovr:
+                    print(
+                        f"[params] u{u} overrides cleared — back to base",
+                        flush=True,
+                    )
+                prev_applied_ovr = applied_ovr
+
+            # Apply LR overrides to the optimizer param_groups when they
+            # differ from the currently-applied values; lr_schedule may
+            # still override them below.
+            if cp_u.learning_rate != actor_optimizer.param_groups[0]["lr"]:
+                for pg in actor_optimizer.param_groups:
+                    pg["lr"] = cp_u.learning_rate
+            if critic_optimizers:
+                _copt0 = next(iter(critic_optimizers.values()))
+                if cp_u.critic_learning_rate != _copt0.param_groups[0]["lr"]:
+                    for copt in critic_optimizers.values():
+                        for pg in copt.param_groups:
+                            pg["lr"] = cp_u.critic_learning_rate
 
             # 0b. Exploration scheduling — resolve PPO update parameters
             #    (uncertainty_floor, uncertainty_coef) for this update.
@@ -605,9 +658,9 @@ def train_ppo(
             #    Experiment decides agent assignment, initial distance, seeds,
             #    and explore_factor (internally, placed into Job fields).
             t0 = time.perf_counter()
-            rollout_seed = cp.seed + u * cp.episodes_per_update
+            rollout_seed = cp.seed + u * cp_u.episodes_per_update
             jobs = experiment.build_jobs(
-                policy_bp, rollout_seed, cp.episodes_per_update,
+                policy_bp, rollout_seed, cp_u.episodes_per_update,
             )
             t_jobs = time.perf_counter() - t0
 
@@ -645,9 +698,9 @@ def train_ppo(
             #     reproduction.
             grad_diag: Optional[GradDiagSpec] = None
             if (
-                pp.grad_sig_sample_size > 0
+                pp_u.grad_sig_sample_size > 0
                 and (
-                    u % pp.grad_sig_interval == 0
+                    u % pp_u.grad_sig_interval == 0
                     # A pending dump forces the diagnostic so the dump's
                     # gradsig.npz detail payload exists even on updates
                     # the interval would skip.
@@ -657,11 +710,11 @@ def train_ppo(
                 gradsig_dir = run_dir / "gradsig"
                 meta_path = gradsig_dir / "meta.json"
                 norm_edges: Optional[np.ndarray] = None
-                if pp.grad_sig_norm_lo > 0.0:
+                if pp_u.grad_sig_norm_lo > 0.0:
                     # Explicit fixed axis (log-spaced, absolute scale).
                     norm_edges = np.geomspace(
-                        pp.grad_sig_norm_lo, pp.grad_sig_norm_hi,
-                        pp.grad_sig_norm_bins + 1,
+                        pp_u.grad_sig_norm_lo, pp_u.grad_sig_norm_hi,
+                        pp_u.grad_sig_norm_bins + 1,
                     )
                 elif meta_path.exists():
                     try:
@@ -670,7 +723,7 @@ def train_ppo(
                         # under a different axis semantics (e.g. the old
                         # pairwise geomean format).
                         if (
-                            meta.get("norm_bins") == pp.grad_sig_norm_bins
+                            meta.get("norm_bins") == pp_u.grad_sig_norm_bins
                             and meta.get("norm_axis") == "per_frame_norm"
                         ):
                             norm_edges = np.asarray(
@@ -680,9 +733,9 @@ def train_ppo(
                             TypeError, ValueError):
                         norm_edges = None  # re-derive below
                 grad_diag = GradDiagSpec(
-                    sample_size=pp.grad_sig_sample_size,
-                    cos_bins=pp.grad_sig_cos_bins,
-                    norm_bins=pp.grad_sig_norm_bins,
+                    sample_size=pp_u.grad_sig_sample_size,
+                    cos_bins=pp_u.grad_sig_cos_bins,
+                    norm_bins=pp_u.grad_sig_norm_bins,
                     norm_edges=norm_edges,
                     seed=cp.seed * 1000003 + u,
                     prev_g=prev_gvec,
@@ -699,8 +752,8 @@ def train_ppo(
                 critic_optimizers=critic_optimizers,
                 buf=buf,
                 reward_channels=channels,
-                pp=pp,
-                grad_clip_norm=cp.grad_clip_norm,
+                pp=pp_u,
+                grad_clip_norm=cp_u.grad_clip_norm,
                 device=device,
                 use_confidence=use_confidence,
                 exploration=exploration,
@@ -742,9 +795,9 @@ def train_ppo(
                         meta_path.write_text(json.dumps({
                             "version": 2,
                             "norm_axis": "per_frame_norm",
-                            "sample_size": pp.grad_sig_sample_size,
-                            "cos_bins": pp.grad_sig_cos_bins,
-                            "norm_bins": pp.grad_sig_norm_bins,
+                            "sample_size": pp_u.grad_sig_sample_size,
+                            "cos_bins": pp_u.grad_sig_cos_bins,
+                            "norm_bins": pp_u.grad_sig_norm_bins,
                             "cos_edges": payload["cos_edges"].tolist(),
                             "norm_edges": payload["norm_edges"].tolist(),
                             "norm_edges_derived": bool(
@@ -772,7 +825,7 @@ def train_ppo(
                         stats=stats,
                         jobs=jobs,
                         dump_collector=dump_collector,
-                        experiment_name=cp.name,
+                        experiment_name=cp_u.name,
                     )
                 except Exception as e:
                     print(f"[dump] capture failed: {e}", flush=True)
@@ -803,7 +856,7 @@ def train_ppo(
             #    saves best-of-run policy and spawns video on schedule.
             eval_info: Optional[Dict[str, Any]] = None
             t_eval = 0.0
-            if u % cp.eval_interval == 0:
+            if u % cp_u.eval_interval == 0:
                 t0 = time.perf_counter()
                 eval_seed = cp.seed + 100_000 + u * 97
                 eval_export_dir = run_dir / "policy_exports" / f"u{u:05d}_eval"
@@ -811,7 +864,7 @@ def train_ppo(
                     dest_path=str(eval_export_dir),
                 )
                 eval_jobs = experiment.build_jobs(
-                    det_bp, eval_seed, cp.eval_episodes,
+                    det_bp, eval_seed, cp_u.eval_episodes,
                     stochastic=False,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
@@ -835,6 +888,7 @@ def train_ppo(
                         update=u,
                         prev_gvec=prev_gvec,
                         n_evals_done=n_evals_done,
+                        param_overrides=applied_ovr,
                     )
                     break
 
@@ -851,7 +905,7 @@ def train_ppo(
                             policy_dir=policy_dir,
                             extra_payload={
                                 "algorithm": "ppo_v2",
-                                "experiment": cp.name,
+                                "experiment": cp_u.name,
                                 "update": u,
                                 "best_eval_info": eval_info,
                             },
@@ -868,8 +922,8 @@ def train_ppo(
                 # Video render
                 n_evals_done += 1
                 if (
-                    cp.video_eval_interval > 0
-                    and n_evals_done % cp.video_eval_interval == 0
+                    cp_u.video_eval_interval > 0
+                    and n_evals_done % cp_u.video_eval_interval == 0
                 ):
                     if last_video_proc is not None and last_video_proc.poll() is None:
                         print(f"  [video_skip:prev_running]", flush=True)
@@ -957,8 +1011,8 @@ def train_ppo(
                 flush=True,
             )
             print(
-                f"  [PPO Opt] epochs={epochs_done}/{pp.update_epochs} "
-                f"actor_epochs={actor_epochs_done}/{pp.update_epochs} "
+                f"  [PPO Opt] epochs={epochs_done}/{pp_u.update_epochs} "
+                f"actor_epochs={actor_epochs_done}/{pp_u.update_epochs} "
                 f"kl_mean={kl_mean:.4f} kl_max={kl_max:.4f} "
                 f"(stop_kl={early_stop_kl_mean:.4f})",
                 flush=True,
@@ -1031,6 +1085,11 @@ def train_ppo(
             }
             if exp_metrics:
                 raw_log_dict["experiment"] = exp_metrics
+            if applied_ovr:
+                # Effective per-update parameter overrides in force for
+                # this update — the dashboard draws a config-change
+                # marker; no dedicated panel needed.
+                raw_log_dict["param_overrides"] = applied_ovr
             if eval_info is not None:
                 raw_log_dict["eval_info"] = eval_info
             print(f"__RAW_STATS__ {json.dumps(raw_log_dict, default=str)}", flush=True)
@@ -1049,7 +1108,7 @@ def train_ppo(
 
             # 8. Periodic checkpoint — saved at eval intervals and at u=1
             #    so the first update is always recoverable.
-            if u % cp.eval_interval == 0 or u == 1:
+            if u % cp_u.eval_interval == 0 or u == 1:
                 save_checkpoint(
                     ckpt_dir / f"checkpoint_u{u:05d}.pt",
                     actor=actor,
@@ -1061,4 +1120,7 @@ def train_ppo(
                     update=u,
                     prev_gvec=prev_gvec,
                     n_evals_done=n_evals_done,
+                    param_overrides=applied_ovr,
                 )
+
+            u += 1

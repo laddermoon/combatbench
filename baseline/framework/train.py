@@ -99,6 +99,16 @@ def _parse_args() -> argparse.Namespace:
              "(default 0 = every update).",
     )
     parser.add_argument(
+        "--param", action="append", default=[], metavar="KEY=VALUE[@UPDATE]",
+        help="Generic per-update parameter patch applied on top of the "
+             "experiment's param_overrides() (CLI wins on conflicts). "
+             "FIELD must be a CommonParams/PPOParams field "
+             "(name/seed/rollout_workers excluded). "
+             "Example: --param dual_clip_c=3@282 activates dual-clip "
+             "from update 282; omit @UPDATE for every update. "
+             "Repeatable.",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment constructor parameter (can be repeated). "
              "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
@@ -223,15 +233,48 @@ def main() -> None:
         experiment.seed = args.seed
         print(f"[seed] overridden to {args.seed}", flush=True)
 
+    # --- Per-update parameter patches ---
+    # Generic mechanism: [(from_update, field, value)] resolved by the
+    # loop each update after experiment.param_overrides() (CLI wins).
+    # The three specialized flag pairs below are kept as compatibility
+    # shims — they now just translate into the same patch list instead
+    # of mutating ppo_params directly.
+    param_patches = []
+
+    def _param_value(raw: str):
+        if raw.lower() in ("true", "false"):
+            return raw.lower() == "true"
+        for conv in (int, float):
+            try:
+                return conv(raw)
+            except ValueError:
+                pass
+        return raw
+
+    for item in args.param:
+        if "=" not in item:
+            raise SystemExit(
+                f"Error: --param expects KEY=VALUE[@UPDATE], got {item!r}"
+            )
+        key, val = item.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if "@" in val:
+            val, _, from_u = val.rpartition("@")
+            try:
+                from_u = int(from_u)
+            except ValueError:
+                raise SystemExit(
+                    f"Error: --param expects integer @UPDATE, got {item!r}"
+                )
+        else:
+            from_u = 0
+        param_patches.append((from_u, key, _param_value(val)))
+
     if args.adv_winsorize_sigma is not None and algo == "ppo":
-        import dataclasses
-        pp = experiment.ppo_params()
-        pp = dataclasses.replace(
-            pp,
-            adv_winsorize_sigma=args.adv_winsorize_sigma,
-            adv_winsorize_from_update=args.adv_winsorize_from_update,
-        )
-        experiment.ppo_params = lambda: pp
+        param_patches.append((
+            args.adv_winsorize_from_update,
+            "adv_winsorize_sigma", args.adv_winsorize_sigma,
+        ))
         print(
             f"[winsorize] combined_adv clipped to "
             f"±{args.adv_winsorize_sigma}σ from update "
@@ -239,32 +282,28 @@ def main() -> None:
         )
 
     if args.adv_norm is not None and algo == "ppo":
-        import dataclasses
-        pp = experiment.ppo_params()
-        pp = dataclasses.replace(
-            pp,
-            adv_norm_late=args.adv_norm,
-            adv_norm_late_from_update=args.adv_norm_from_update,
-        )
-        experiment.ppo_params = lambda: pp
+        param_patches.append((
+            args.adv_norm_from_update,
+            "adv_norm", args.adv_norm,
+        ))
         print(
             f"[adv_norm] switching to '{args.adv_norm}' from update "
             f"{args.adv_norm_from_update}", flush=True,
         )
 
     if args.dual_clip_c is not None and algo == "ppo":
-        import dataclasses
-        pp = experiment.ppo_params()
-        pp = dataclasses.replace(
-            pp,
-            dual_clip_c=args.dual_clip_c,
-            dual_clip_from_update=args.dual_clip_from_update,
-        )
-        experiment.ppo_params = lambda: pp
+        param_patches.append((
+            args.dual_clip_from_update,
+            "dual_clip_c", args.dual_clip_c,
+        ))
         print(
             f"[dual_clip] surrogate floored at {args.dual_clip_c}·adv "
             f"from update {args.dual_clip_from_update}", flush=True,
         )
+
+    if param_patches and algo == "ppo":
+        for from_u, key, val in sorted(param_patches):
+            print(f"[param] {key}={val} from update {from_u}", flush=True)
 
     if args.smoke:
         import dataclasses
@@ -370,7 +409,7 @@ def main() -> None:
         train_sac(experiment, run_dir=run_dir, resume_from=resume_from, reset_update=args.reset_update)
     else:
         from baseline.framework.ppo.loop import train_ppo
-        train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update)
+        train_ppo(experiment, run_dir=run_dir, resume_from=resume_from, use_confidence=use_confidence, reset_update=args.reset_update, param_patches=param_patches)
 
 
 if __name__ == "__main__":

@@ -241,6 +241,7 @@ def on_eval(self, episodes, update) -> Dict[str, Any]:
 | `on_eval(episodes, update)` | **必须** | 每 eval_interval 轮 | 计算 eval 指标、判断 best、更新状态 |
 | `on_update(stats, update)` | 可选 | 每 update 后 | 吸收训练统计到内部状态，默认 no-op |
 | `exploration(update)` | 可选 | 每 update 前 | 返回 ExplorationSpec（uncertainty_floor/coef），默认 None |
+| `param_overrides(update)` | 可选 | 每 update 最前 | 返回 `{字段名: 值}` 覆盖本 update 的 CommonParams/PPOParams，默认 None |
 | `state()` | 可选 | checkpoint 时 | 序列化内部状态 |
 | `load_state(state)` | 可选 | resume 时 | 恢复内部状态 |
 
@@ -375,6 +376,51 @@ v2 checkpoint 还保存了全局 RNG 状态（python `random` / `numpy` / torch 
 - **CUDA 设备数变化**：跳过 CUDA RNG 恢复并警告。
 - **`--reset-update`**：语义是"暖启动新训练"，故意不恢复 RNG/loop 计数器——与全新 run 一致。
 - **改实验名**：实验状态不恢复（原行为）；改 config（如 LR）则按当前 config 强制对齐 optimizer LR（原行为）。
+
+### 5.7 Per-update 参数覆盖（动态参数 + 现场干预）
+
+实验可以通过 `param_overrides(update)` 在**每个 update 的固定边界**动态修改可改参数；框架负责落实（应用到 optimizer/rollout/eval）并记录。典型场景是**现场干预实验**——事件发生在 update N，checkpoint 在 N−k：从 checkpoint resume，保持前缀逐位一致，到 update N 起切换参数，与对照 run 做受控对比（u280 resume → u282 开启 dual-clip 即此模式）。
+
+```python
+class MyExperiment(ExperimentPPO):
+    def param_overrides(self, update):
+        # 声明式：返回的是"本 update 想要生效的覆盖"，不是一次性事件。
+        # 必须在每个想生效的 update 都返回，resume 到任意 update 都正确。
+        if update >= 282:
+            return {"dual_clip_c": 3.0}
+        return None
+```
+
+**可改范围**：`PPOParams` 全部字段 + `CommonParams` 大部分字段（含 `learning_rate`/`critic_learning_rate`——框架会同步写 optimizer param_groups；`episodes_per_update`、`eval_interval`、`eval_episodes`、`video_eval_interval`、`grad_clip_norm`、`max_updates` 也可改）。**黑名单**（改了会破坏 run 身份/资源语义，直接 `ValueError`）：`name`、`seed`、`rollout_workers`。不在此机制的字段：`gamma`/`gae_lambda`（走 `reward_channels()` 声明）、`uncertainty_floor`/`uncertainty_coef`/`explore_factor`（走 `exploration()`/`build_jobs` 通道）——各走各的通道，不要混用。
+
+**生效边界**：每 update 开头解析一次，整个 update 内冻结——rollout、buffer、PPO 更新、诊断、日志使用同一份 `cp_u`/`pp_u` 快照，不会 mid-update 漂移。要改 rollout 相关量（如 `episodes_per_update`）从该 update 的 rollout 起生效；PPO 训练量（`dual_clip_c` 等）只影响该 update 的训练，不影响已生成的 rollout 数据。
+
+**CLI patch**（对实验 hook 之后应用，冲突时 CLI 胜出）：
+
+```bash
+# 通用形式：KEY=VALUE[@UPDATE]，可重复；省略 @UPDATE = 每个 update
+PYTHONPATH=. python3 baseline/framework/train.py --experiment X --algo ppo \
+  --resume-from .../checkpoint_u00280.pt \
+  --param dual_clip_c=3@282 \
+  --param adv_winsorize_sigma=4@282
+
+# 兼容 shim：以下三对旧 flag 仍可用，内部翻译成同样的 patch
+--adv-winsorize-sigma 4 --adv-winsorize-from-update 282
+--adv-norm gauss_rank --adv-norm-from-update 282
+--dual-clip-c 3 --dual-clip-from-update 282
+```
+
+**记录**：覆盖集变化时 train.log 打 `[params] uN effective overrides: {...}` 行；`__RAW_STATS__` 每 update 带 `param_overrides` 字段（viewer 画变更标记即可）；checkpoint `loop_state.param_overrides` 保存当次生效快照用于取证。因为解析是**无状态的**（每 update 从 base + hook + patch 重新计算），resume 不需要事件历史回放——`if update >= 282` 这类写法在任意起点都成立。
+
+**u280→u282 干预的标准姿势**：
+
+```bash
+# 对照：从 u280 resume，前两个 update 原样跑（u282 rollout 由未修改策略生成），
+# u282 起切换训练参数。与原 run 的 u282 dump 逐 minibatch 对照。
+PYTHONPATH=. python3 baseline/framework/train.py --experiment X --algo ppo \
+  --resume-from baseline/runs/<run>/checkpoints/checkpoint_u00280.pt \
+  --run-dir baseline/runs/<arm_name> --param adv_norm=gauss_rank@282
+```
 
 ---
 

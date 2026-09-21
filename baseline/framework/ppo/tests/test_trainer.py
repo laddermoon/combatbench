@@ -3557,13 +3557,13 @@ def test_ppo_update_dual_clip_runs():
     )
     assert stats.dual_clip_frac_mean >= 0.0
 
-    # Gate: from_update beyond current → disabled → stat stays 0.
+    # Disabled: dual_clip_c=0 → stat stays 0 (scheduling lives in the
+    # experiment/param_overrides layer, not in the trainer).
     actor2 = SimpleActor(obs_dim, act_dim)
     buf2 = PPOBuffer([traj], actor2, torch.device("cpu"), ("r_a",))
     actor_opt2, critic_opts2 = make_optimizers(actor2, critics)
     pp2 = dataclasses.replace(
-        make_pp_params(minibatch_size=32),
-        dual_clip_c=3.0, dual_clip_from_update=5,
+        make_pp_params(minibatch_size=32), dual_clip_c=0.0,
     )
     stats2 = ppo_update(
         actor=actor2, critics=critics,
@@ -3579,14 +3579,15 @@ def test_ppo_update_dual_clip_runs():
 
 
 def test_ppo_update_adv_winsorize():
-    """adv_winsorize_sigma caps the combined advantage; gated by update index.
+    """adv_winsorize_sigma caps the combined advantage.
 
     Winsorize clips the normalized combined_adv to ±sigma before it
     enters the surrogate.  With sigma=0.5 and z-scored random-reward
     advantages, some frames almost surely exceed the bound, so the
     clipped payload must stay within ±0.5 while combined_adv_raw keeps
-    the unclipped values.  When update_index < from_update the clip is
-    skipped entirely and combined_adv_raw is absent from the payload.
+    the unclipped values.  With sigma=0 the clip is skipped entirely
+    and combined_adv_raw is absent from the payload.  (Update-level
+    activation is the experiment/param_overrides layer's job.)
     """
     import dataclasses
 
@@ -3624,11 +3625,10 @@ def test_ppo_update_adv_winsorize():
     assert float(np.abs(raw).max()) > 0.5  # z-scored random advs exceed 0.5
     assert stats.adv_winsorize_clip_frac > 0.0
 
-    # Gated off: from_update=5, current update_index=2 → no clip.
+    # Disabled: sigma=0 → no clip, no raw payload.
     captured2: dict = {}
     pp2 = dataclasses.replace(
-        make_pp_params(minibatch_size=32),
-        adv_winsorize_sigma=0.5, adv_winsorize_from_update=5,
+        make_pp_params(minibatch_size=32), adv_winsorize_sigma=0.0,
     )
     stats2 = ppo_update(
         actor=actor, critics=critics,
