@@ -22,6 +22,7 @@ Conventions follow baseline/framework/sac/tests/test_trainer.py:
 from __future__ import annotations
 
 import math
+import random
 import sys
 from pathlib import Path
 from typing import Optional
@@ -3277,6 +3278,180 @@ def test_grad_signal_diag_no_trainable_params_raises():
 
 
 # ---------------------------------------------------------------------------
+# Resume bit-identicality — RNG state round-trip (v2 checkpoints)
+# ---------------------------------------------------------------------------
+
+def _consume_rng_once():
+    """Draw one sample from each global RNG the checkpoint must restore."""
+    return (
+        torch.randperm(64),
+        np.random.random(8),
+        random.random(),
+        torch.randperm(64, device="cuda")
+        if torch.cuda.is_available() else None,
+    )
+
+
+def _assert_rng_draws_equal(ref, got):
+    assert torch.equal(ref[0], got[0]), "torch CPU randperm diverged after resume"
+    assert np.array_equal(ref[1], got[1]), "numpy RNG diverged after resume"
+    assert ref[2] == got[2], "python random diverged after resume"
+    if ref[3] is not None:
+        assert torch.equal(ref[3].cpu(), got[3].cpu()), (
+            "torch CUDA randperm diverged after resume"
+        )
+
+
+def test_checkpoint_rng_state_roundtrip():
+    """v2 checkpoint restores global RNG → resumed stream is bit-identical.
+
+    Simulates: run consumes RNG → checkpoint → NEW PROCESS (set_seed +
+    model-init consumption) → load_checkpoint → continued consumption
+    must equal the uninterrupted stream.  This is the core property that
+    makes ``--resume-from`` reproduce minibatch order exactly.
+    """
+    from baseline.framework.ppo.trainer import set_seed
+    import tempfile
+
+    obs_dim, act_dim = 8, 3
+    cp = _make_common_params()
+    gvec = np.arange(5, dtype=np.float32)
+
+    # --- "Original" run: seed, consume, checkpoint, keep consuming ---
+    set_seed(cp.seed)
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    experiment = _DummyExperiment(cp.name)
+
+    _consume_rng_once()  # stand-in for updates 1..K consumption
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "checkpoint_u00010.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor, critics=critics,
+            actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+            experiment=experiment, cp=cp, update=10,
+            prev_gvec=gvec, n_evals_done=3,
+        )
+        reference = _consume_rng_once()  # uninterrupted continuation
+
+        # --- "Resumed" process: fresh seed + init consumption + load ---
+        set_seed(cp.seed)
+        actor2 = SimpleActor(obs_dim, act_dim)
+        critics2 = make_critics(("r_a", "r_b"), obs_dim)
+        actor_opt2, critic_opts2 = make_optimizers(actor2, critics2)
+        experiment2 = _DummyExperiment(cp.name)
+        _consume_rng_once()  # stand-in for build/init RNG consumption
+
+        resume_ctx = {}
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor2, critics=critics2,
+            actor_optimizer=actor_opt2, critic_optimizers=critic_opts2,
+            experiment=experiment2, cp=cp,
+            resume_ctx=resume_ctx,
+        )
+        assert next_update == 11
+        got = _consume_rng_once()
+
+    _assert_rng_draws_equal(reference, got)
+    assert np.array_equal(resume_ctx["prev_gvec"], gvec)
+    assert resume_ctx["n_evals_done"] == 3
+    print("test_checkpoint_rng_state_roundtrip: PASS")
+
+
+def test_checkpoint_v1_warns_and_proceeds(capsys):
+    """v1 checkpoint (no rng_state) warns loudly but still loads."""
+    import tempfile
+
+    obs_dim, act_dim = 8, 3
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    cp = _make_common_params()
+    experiment = _DummyExperiment(cp.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "ckpt.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor, critics=critics,
+            actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+            experiment=experiment, cp=cp, update=10,
+        )
+        # Strip the v2-only keys to emulate a pre-v2 checkpoint file.
+        v1_path = Path(tmpdir) / "ckpt_v1.pt"
+        payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        for k in ("rng_state", "loop_state", "checkpoint_format"):
+            payload.pop(k, None)
+        torch.save(payload, v1_path)
+
+        resume_ctx = {}
+        next_update = load_checkpoint(
+            v1_path,
+            actor=actor, critics=critics,
+            actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+            experiment=experiment, cp=cp,
+            resume_ctx=resume_ctx,
+        )
+
+    assert next_update == 11
+    assert "no RNG state" in capsys.readouterr().out
+    # v1 has no loop_state either → ctx falls back to fresh defaults.
+    assert resume_ctx["prev_gvec"] is None
+    assert resume_ctx["n_evals_done"] == 0
+    print("test_checkpoint_v1_warns_and_proceeds: PASS")
+
+
+def test_checkpoint_reset_update_skips_rng():
+    """reset_update=True keeps RNG at post-init position (warm-start).
+
+    A reset resume is a *new* run seeded identically — its RNG must be
+    at the fresh-post-init position, not the interrupted stream, and
+    loop counters must not be carried over.
+    """
+    from baseline.framework.ppo.trainer import set_seed
+    import tempfile
+
+    obs_dim, act_dim = 8, 3
+    cp = _make_common_params()
+    actor = SimpleActor(obs_dim, act_dim)
+    critics = make_critics(("r_a", "r_b"), obs_dim)
+    actor_opt, critic_opts = make_optimizers(actor, critics)
+    experiment = _DummyExperiment(cp.name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ckpt_path = Path(tmpdir) / "ckpt.pt"
+        save_checkpoint(
+            ckpt_path,
+            actor=actor, critics=critics,
+            actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+            experiment=experiment, cp=cp, update=10,
+            prev_gvec=np.ones(3, dtype=np.float32), n_evals_done=7,
+        )
+
+        set_seed(cp.seed)  # fresh process init position
+        post_init = torch.get_rng_state()
+        resume_ctx = {}
+        next_update = load_checkpoint(
+            ckpt_path,
+            actor=actor, critics=critics,
+            actor_optimizer=actor_opt, critic_optimizers=critic_opts,
+            experiment=experiment, cp=cp,
+            reset_update=True,
+            resume_ctx=resume_ctx,
+        )
+
+    assert next_update == 1
+    assert torch.equal(torch.get_rng_state(), post_init), (
+        "reset_update must not restore mid-stream RNG"
+    )
+    assert "prev_gvec" not in resume_ctx and "n_evals_done" not in resume_ctx
+    print("test_checkpoint_reset_update_skips_rng: PASS")
+
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -3363,6 +3538,10 @@ if __name__ == "__main__":
     test_checkpoint_reset_update_returns_one()
     test_checkpoint_force_aligns_critic_lr()
     test_checkpoint_experiment_state_restored()
+
+    # Resume bit-identicality (v2 checkpoints)
+    test_checkpoint_rng_state_roundtrip()
+    test_checkpoint_reset_update_skips_rng()
 
     # Confidence cold-start warning (#8)
     test_confidence_cold_start_warning()

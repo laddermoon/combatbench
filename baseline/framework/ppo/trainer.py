@@ -45,6 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
+import random
 import time
 from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -63,7 +64,8 @@ from .trajectory import RewardChannel, Trajectory
 # ---------------------------------------------------------------------------
 
 def set_seed(seed: int) -> None:
-    """Set numpy + torch (CPU/CUDA) seeds in one call."""
+    """Set python-random + numpy + torch (CPU/CUDA) seeds in one call."""
+    random.seed(int(seed))
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
     if torch.cuda.is_available():

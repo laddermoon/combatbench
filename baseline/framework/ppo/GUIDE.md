@@ -362,6 +362,20 @@ def reward_channels(self):
 
 实验的内部状态通过 `state()` / `load_state()` 自动持久化。需要持久化的典型状态：`_best_score`、`_phase`、任何影响 `build_trajectories` 或 `on_eval` 行为的可变状态。模型权重和 optimizer state 由框架自动处理。
 
+#### Resume 的确定性保证（checkpoint format v2）
+
+v2 checkpoint 还保存了全局 RNG 状态（python `random` / `numpy` / torch CPU / torch CUDA）与 loop 计数器（`prev_gvec`、`n_evals_done`）。因此：
+
+- **同实验、同 config 的 `--resume-from` 续训与不间断训练 bit-identical**：模型参数、optimizer 状态、minibatch 顺序（`torch.randperm` 消耗 CUDA RNG）、RAW_STATS 全部一致。由 `tests/test_resume_equivalence.py` 的双进程等价测试保证。
+- 前提：rollout/eval/gradsig 的随机性全部由 per-update 派生种子驱动（`cp.seed + u*episodes` 等），不依赖全局 RNG——框架已如此设计；**实验代码若在 `build_trajectories`/`on_update` 中引入未持久化的随机源，等价性即被打破**——请使用 `np.random.default_rng(派生种子)`，不要消费全局 RNG。
+
+以下情形**不保证** bit-identical，load 时会打印警告：
+
+- **v1 checkpoint**（无 `rng_state` 字段）：仅恢复权重/optimizer/实验状态，minibatch 顺序将从 post-init RNG 位置继续，轨迹分叉。v1 checkpoint 无法回溯补齐 RNG——要精确复现旧 run 的某个 update，只能从 run 起点重跑。
+- **CUDA 设备数变化**：跳过 CUDA RNG 恢复并警告。
+- **`--reset-update`**：语义是"暖启动新训练"，故意不恢复 RNG/loop 计数器——与全新 run 一致。
+- **改实验名**：实验状态不恢复（原行为）；改 config（如 LR）则按当前 config 强制对齐 optimizer LR（原行为）。
+
 ---
 
 ## 6. 工具函数

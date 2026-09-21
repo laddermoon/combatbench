@@ -34,6 +34,7 @@ import dataclasses
 import json
 import math
 import os
+import random
 import re
 import signal
 import subprocess
@@ -192,6 +193,8 @@ def save_checkpoint(
     experiment: ExperimentPPO,
     cp: CommonParams,
     update: int,
+    prev_gvec: Optional[np.ndarray] = None,
+    n_evals_done: int = 0,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     # A4: Atomic checkpoint write.  Write to a temporary file then rename,
@@ -201,6 +204,10 @@ def save_checkpoint(
     torch.save(
         {
             "algorithm": "ppo",
+            # Checkpoint format version.  v1 = weights/optimizer/state
+            # only; v2 adds rng_state + loop_state so a resumed run can
+            # continue bit-identically to an uninterrupted one.
+            "checkpoint_format": 2,
             "actor_state_dict": actor.state_dict(),
             "critics_state_dict": {k: v.state_dict() for k, v in critics.items()},
             "actor_optimizer_state_dict": actor_optimizer.state_dict(),
@@ -210,6 +217,28 @@ def save_checkpoint(
             "experiment_name": cp.name,
             "state": experiment.state(),
             "update": update,
+            # Global RNG states captured at the end of this update —
+            # exactly the stream position an uninterrupted run would
+            # have entering the next update.  torch.randperm (minibatch
+            # order) consumes the CUDA RNG every epoch; without this the
+            # resumed run silently diverges.
+            "rng_state": {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch_cpu": torch.get_rng_state(),
+                "torch_cuda": (
+                    torch.cuda.get_rng_state_all()
+                    if torch.cuda.is_available()
+                    else []
+                ),
+            },
+            # Loop-local state that is not derivable from the model:
+            # prev_gvec feeds the next update's grad_sig_dir_cos;
+            # n_evals_done keeps video cadence aligned.
+            "loop_state": {
+                "prev_gvec": prev_gvec,
+                "n_evals_done": int(n_evals_done),
+            },
         },
         tmp_path,
     )
@@ -226,10 +255,13 @@ def load_checkpoint(
     experiment: ExperimentPPO,
     cp: CommonParams,
     reset_update: bool = False,
+    resume_ctx: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Load model weights and optimizer states from checkpoint.
 
-    Returns the update number to resume from.
+    Returns the update number to resume from.  If ``resume_ctx`` is
+    given, it is filled with restored loop-local state (``prev_gvec``,
+    ``n_evals_done``) for the caller to pick up.
     """
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
@@ -301,6 +333,48 @@ def load_checkpoint(
             f"resetting state",
             flush=True,
         )
+
+    # Restore global RNG + loop-local state (v2 checkpoints only).
+    # This is what makes a resumed continuation bit-identical to an
+    # uninterrupted run: torch.randperm (minibatch order) consumes the
+    # CUDA RNG every epoch, so without restoring it the resumed run
+    # silently follows a different update trajectory.  With
+    # reset_update=True the semantics are "fresh run with warm weights"
+    # — the RNG deliberately stays at its post-init position, matching
+    # a brand-new run, and loop counters start at zero.
+    if not reset_update:
+        rng_state = payload.get("rng_state")
+        if rng_state is None:
+            print(
+                "[checkpoint] v1 format: no RNG state saved — minibatch "
+                "order will diverge; continuation is NOT bit-identical",
+                flush=True,
+            )
+        else:
+            random.setstate(rng_state["python"])
+            np.random.set_state(rng_state["numpy"])
+            torch.set_rng_state(rng_state["torch_cpu"])
+            cuda_states = rng_state.get("torch_cuda") or []
+            if cuda_states and torch.cuda.is_available():
+                if len(cuda_states) == torch.cuda.device_count():
+                    torch.cuda.set_rng_state_all(cuda_states)
+                else:
+                    print(
+                        f"[checkpoint] CUDA device count changed "
+                        f"({len(cuda_states)} -> {torch.cuda.device_count()}); "
+                        f"skipping CUDA RNG restore — not bit-identical",
+                        flush=True,
+                    )
+            elif cuda_states:
+                print(
+                    "[checkpoint] checkpoint has CUDA RNG state but CUDA "
+                    "is unavailable; skipping — not bit-identical",
+                    flush=True,
+                )
+        loop_state = payload.get("loop_state") or {}
+        if resume_ctx is not None:
+            resume_ctx["prev_gvec"] = loop_state.get("prev_gvec")
+            resume_ctx["n_evals_done"] = int(loop_state.get("n_evals_done", 0))
 
     # Return the next update to run.  The checkpoint stores the update
     # that was *completed* and saved; resuming should start from the next
@@ -429,6 +503,9 @@ def train_ppo(
     # Restores model weights, optimizer states, and experiment state.
     # LR and log_std bounds are force-aligned to current config so
     # hyperparameter changes between runs take effect immediately.
+    # resume_ctx carries restored loop-local state (RNG is restored
+    # inside load_checkpoint itself).
+    resume_ctx: Dict[str, Any] = {}
     if resume_from is not None:
         start_update = load_checkpoint(
             Path(resume_from),
@@ -439,6 +516,7 @@ def train_ppo(
             experiment=experiment,
             cp=cp,
             reset_update=reset_update,
+            resume_ctx=resume_ctx,
         )
         print(
             f"[resume] loaded from {resume_from}, starting at update={start_update}",
@@ -452,8 +530,10 @@ def train_ppo(
     video_dir.mkdir(parents=True, exist_ok=True)
     print(f"run_dir={run_dir} experiment={cp.name} algo=ppo", flush=True)
 
-    # Video recording state
-    n_evals_done = 0
+    # Video recording state — n_evals_done is restored on resume so
+    # the video cadence (n_evals_done % video_eval_interval) continues
+    # where the interrupted run left off.
+    n_evals_done = resume_ctx.get("n_evals_done", 0)
     last_video_proc: Optional[subprocess.Popen] = None
 
     print(
@@ -474,9 +554,9 @@ def train_ppo(
     exploration: Optional[ExplorationSpec] = None
     # Previous diagnostic update's aggregate gradient G, held in memory
     # and passed back via GradDiagSpec.prev_g so the trainer can emit
-    # grad_sig_dir_cos (direction persistence across updates).  Never
-    # persisted — a resume simply skips one dir_cos reading.
-    prev_gvec: Optional[np.ndarray] = None
+    # grad_sig_dir_cos (direction persistence across updates).  Persisted
+    # in v2 checkpoints so a resumed run keeps dir_cos continuity.
+    prev_gvec: Optional[np.ndarray] = resume_ctx.get("prev_gvec")
 
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
         for u in range(start_update, cp.max_updates + 1):
@@ -752,6 +832,8 @@ def train_ppo(
                         experiment=experiment,
                         cp=cp,
                         update=u,
+                        prev_gvec=prev_gvec,
+                        n_evals_done=n_evals_done,
                     )
                     break
 
@@ -976,4 +1058,6 @@ def train_ppo(
                     experiment=experiment,
                     cp=cp,
                     update=u,
+                    prev_gvec=prev_gvec,
+                    n_evals_done=n_evals_done,
                 )
