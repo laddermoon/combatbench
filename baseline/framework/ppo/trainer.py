@@ -1361,6 +1361,27 @@ def ppo_update(
                     "policy_loss": float("nan"),
                     "actor_grad": float("nan"),
                     "window_mean_kl": float("nan"),
+                    # Extended causal-chain fields (NaN for actor-stopped
+                    # steps): per-minibatch combined-ADV stats, identity
+                    # of the extreme-ratio frames, realized parameter
+                    # step ‖Δθ‖ and its alignment with the clipped
+                    # descent direction, floor loss, minibatch size.
+                    "adv_mean": float("nan"),
+                    "adv_std": float("nan"),
+                    "adv_min": float("nan"),
+                    "adv_max": float("nan"),
+                    "argmax_ratio_bufidx": float("nan"),
+                    "argmax_ratio_adv": float("nan"),
+                    "argmax_ratio_logr": float("nan"),
+                    "argmin_ratio_bufidx": float("nan"),
+                    "argmin_ratio_adv": float("nan"),
+                    "argmin_ratio_logr": float("nan"),
+                    "n_ratio_gt2": float("nan"),
+                    "n_ratio_lt05": float("nan"),
+                    "dtheta_norm": float("nan"),
+                    "dtheta_cos_descent": float("nan"),
+                    "floor_loss": float("nan"),
+                    "mb_size": float("nan"),
                     "critic_loss": dict(step_critic_loss),
                     "critic_grad": dict(step_critic_grad),
                 }
@@ -1558,6 +1579,20 @@ def ppo_update(
                 dump_callback("update", update_payload)
 
             all_grad_norms_actor.append(float(grad_norm_a))
+            # --- Dump-only: pre-step snapshot so the timeline can record
+            #     the realized parameter displacement ‖Δθ‖ (Adam-warped
+            #     step) and its alignment with the clipped gradient. ---
+            if dump_callback is not None:
+                _theta_pre = torch.cat(
+                    [p.detach().reshape(-1) for p in actor.parameters()]
+                )
+                _grad_flat = torch.cat(
+                    [
+                        p.grad.detach().reshape(-1)
+                        for p in actor.parameters()
+                        if p.grad is not None
+                    ]
+                )
             actor_optimizer.step()
             epoch_pol_losses.append(float(policy_loss))
 
@@ -1605,6 +1640,38 @@ def ppo_update(
                 _timeline_step["actor_grad"] = float(grad_norm_a)
                 if kl_window:
                     _timeline_step["window_mean_kl"] = float(np.mean(kl_window))
+                # Extended causal-chain fields — all pure reads under
+                # no_grad; no RNG, no math changes.
+                with torch.no_grad():
+                    _theta_post = torch.cat(
+                        [p.detach().reshape(-1) for p in actor.parameters()]
+                    )
+                    _dtheta = _theta_post - _theta_pre
+                    _timeline_step["dtheta_norm"] = float(_dtheta.norm())
+                    # Cosine of the realized step with the clipped
+                    # *descent* direction -g: +1 = pure gradient step.
+                    _timeline_step["dtheta_cos_descent"] = float(
+                        torch.nn.functional.cosine_similarity(
+                            _dtheta, -_grad_flat, dim=0,
+                        )
+                    )
+                    _mb_adv = adv_t[idx]
+                    _timeline_step["adv_mean"] = float(_mb_adv.mean())
+                    _timeline_step["adv_std"] = float(_mb_adv.std())
+                    _timeline_step["adv_min"] = float(_mb_adv.min())
+                    _timeline_step["adv_max"] = float(_mb_adv.max())
+                    _i_hi = int(torch.argmax(ratio))
+                    _i_lo = int(torch.argmin(ratio))
+                    _timeline_step["argmax_ratio_bufidx"] = float(idx[_i_hi])
+                    _timeline_step["argmax_ratio_adv"] = float(_mb_adv[_i_hi])
+                    _timeline_step["argmax_ratio_logr"] = float(log_ratio[_i_hi])
+                    _timeline_step["argmin_ratio_bufidx"] = float(idx[_i_lo])
+                    _timeline_step["argmin_ratio_adv"] = float(_mb_adv[_i_lo])
+                    _timeline_step["argmin_ratio_logr"] = float(log_ratio[_i_lo])
+                    _timeline_step["n_ratio_gt2"] = float((ratio > 2.0).sum())
+                    _timeline_step["n_ratio_lt05"] = float((ratio < 0.5).sum())
+                    _timeline_step["floor_loss"] = float(floor_loss)
+                    _timeline_step["mb_size"] = float(idx.numel())
                 timeline_steps.append(_timeline_step)
 
         # --- Epoch KL diagnostics ---
@@ -1754,6 +1821,21 @@ def ppo_update(
             timeline_window_mean_kl = np.array(
                 [s["window_mean_kl"] for s in timeline_steps], dtype=np.float32,
             )
+            # Extended causal-chain fields — one float32 array per key,
+            # NaN where the step was actor-stopped.
+            timeline_extra = {
+                k: np.array([s[k] for s in timeline_steps], dtype=np.float32)
+                for k in (
+                    "adv_mean", "adv_std", "adv_min", "adv_max",
+                    "argmax_ratio_bufidx", "argmax_ratio_adv",
+                    "argmax_ratio_logr",
+                    "argmin_ratio_bufidx", "argmin_ratio_adv",
+                    "argmin_ratio_logr",
+                    "n_ratio_gt2", "n_ratio_lt05",
+                    "dtheta_norm", "dtheta_cos_descent",
+                    "floor_loss", "mb_size",
+                )
+            }
             timeline_critic_loss = {
                 key: np.array(
                     [s["critic_loss"][key] for s in timeline_steps],
@@ -1785,6 +1867,7 @@ def ppo_update(
                 "policy_loss": timeline_policy_loss,
                 "actor_grad": timeline_actor_grad,
                 "window_mean_kl": timeline_window_mean_kl,
+                **timeline_extra,
                 "critic_loss": timeline_critic_loss,
                 "critic_grad": timeline_critic_grad,
                 "early_stop_step": np.array(early_stop_step, dtype=np.int64),
