@@ -39,8 +39,10 @@ CLI 与 HTTP API 共用——两者输出逐字节相同，不存在第二份解
 
 ## 指标语义：metric_catalog.py（单一信息源）
 
-指标含义/读法/诊断倾向全部集中在 `metric_catalog.py`（chart 布局 +
-hint 表 + 分区定义）。任何入口拿到的都是同一份：
+指标含义/读法/诊断倾向全部集中在 `metric_catalog.py`（**六分区
+sectioned 布局**：task → policy_update → signal → explore → sampling →
+cost；每区 curated 精选图 + expanded 折叠辅助组；图 spec 携带
+subtitle/guide/zone_pick/spike_keys 元数据）。任何入口拿到的都是同一份：
 
 - `debug.py catalog` —— 全量目录；`--key <flat_key>` 单键解析 {zone, hint}
 - `debug.py metrics --docs` —— 数据旁附每个 key 的语义
@@ -122,16 +124,20 @@ POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 - run 名解析只允许 `runs_root` 的直接子目录且须含 config.json 或 train.log。
 - 新起的 run 才有新字段（如 exp.*/post_kl_*/uncertainty_floor）——老 run
   日志缺字段属正常向后兼容，不是解析失败。
-- `stats.grad_sig_*`（ADV 梯度信号诊断）：`grad_sig_sample_size=0` 或
-  老 run 没有 gradsig/ 工件时，图表缺线、`/api/run/gradsig/<u>` 返回
-  404 `{available:false}`——不是错误。零范数帧不计入投影/余弦统计；
+- `stats.grad_sig_*`（ADV 梯度信号诊断）：**已从 Run Dashboard 移除**
+  （suppress_prefixes 挡掉自动补图）——采集、gradsig/*.npz 工件与
+  `/api/run/gradsig/<u>` 保留给 dump/agent 调查用；API 返回
+  404 `{available:false}` 不是错误。零范数帧不计入投影/余弦统计；
   旧 pairwise 格式的工件被当作不可用而非误读。
+- `param_overrides` 是行级元数据（dict），经 `_flatten_update` 透传、
+  只在 Update Detail 显示，不进图、不在 `stats.*` 下。
 - dump 请求会强制该 update 运行 gradsig 诊断（即使被 interval 跳过），
   保证 dumps/uNNNNN/gradsig.npz 细节存在。
 
 ## 文档索引
 
 - `DATA_FLOW.md` —— dump 捕获管线数据流
+- `../DESIGN_run_dashboard_zones.md` —— Run 页六分区指标系统设计文档
 - `DESIGN_viewer_overview.md` + `DESIGN_viewer_scene1-4.md` —— viewer 设计
 - 每个 dump 内的 `RECORD_GUIDE.md` —— 该截面的录制/复现命令
 - 项目根 `CLAUDE.md` —— 训练框架总览；`experiments_ppo/README.md` —— 实验注册

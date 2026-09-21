@@ -733,6 +733,13 @@ class RunData:
         for k, v in timing.items():
             if isinstance(v, (int, float)):
                 out[f"time.{k}"] = float(v)
+
+        # param_overrides: per-update effective parameter overrides —
+        # row-level metadata for Update Detail (config-change evidence),
+        # never a chartable metric.
+        po = raw.get("param_overrides")
+        if isinstance(po, dict) and po:
+            out["param_overrides"] = po
         return out
 
     def run_info(self) -> Dict[str, Any]:

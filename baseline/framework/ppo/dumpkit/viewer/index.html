@@ -78,17 +78,19 @@
   .metric-chart { background: #20242e; border: 1px solid #333b4d; border-radius: 8px; padding: 12px 14px 10px; margin-bottom: 18px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
   .metric-chart h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .metrics-group-title { margin: 26px 0 12px 0; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
-  .metric-chart h3.has-tip { cursor: help; position: relative; display: inline-block; }
-  .metric-chart h3.has-tip::after {
-    content: attr(data-tip);
-    position: absolute; left: 0; top: calc(100% + 5px);
-    display: none; width: max-content; max-width: 460px;
-    padding: 8px 10px; background: #1c2330; border: 1px solid var(--border);
-    border-radius: 6px; color: #cfd6e4; font-size: 11px; font-weight: normal;
-    line-height: 1.55; white-space: pre-wrap; z-index: 60;
-    text-transform: none; letter-spacing: normal; box-shadow: 0 4px 14px rgba(0,0,0,.45);
-  }
-  .metric-chart h3.has-tip:hover::after { display: block; }
+  .metrics-section { margin-bottom: 8px; }
+  .metrics-section-head { display: flex; align-items: baseline; gap: 12px;
+    margin: 22px 0 10px 0; padding-top: 14px; border-top: 2px solid var(--border); }
+  .metrics-section-head h2 { margin: 0; font-size: 14px; }
+  .metrics-section-q { font-size: 12px; color: var(--muted); }
+  .chart-sub { font-size: 12px; color: var(--muted); margin: -4px 0 6px 0; }
+  .chart-guide { font-size: 11px; margin: 0 0 6px 0; }
+  .chart-guide summary { cursor: pointer; color: var(--muted); }
+  .chart-guide-body { white-space: pre-wrap; color: var(--muted);
+    padding: 6px 8px; border-left: 2px solid var(--border); margin-top: 4px; }
+  .metrics-expand { margin: 4px 0 18px 0; }
+  .metrics-expand > summary { cursor: pointer; color: var(--muted);
+    font-size: 12px; padding: 4px 0; }
   .update-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .update-controls input[type="range"] { flex: 1; }
   .update-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; }
@@ -1077,6 +1079,15 @@
       svg += `<text x="${x + 3}" y="${margin.top + 10}" fill="var(--red)" font-size="10">early stop</text>`;
     }
 
+    // Vertical event markers (e.g. early-stop updates on run charts)
+    if (options.vMarkers) {
+      for (const m of options.vMarkers) {
+        if (m < 0 || m >= n) continue;
+        const x = xScale(m);
+        svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--red)" stroke-width="1.2" stroke-dasharray="4,2" opacity="0.8"/>`;
+      }
+    }
+
     // Data lines
     visibleSeries.forEach(s => {
       if (s.data.length < 2) return;
@@ -1867,7 +1878,8 @@
   // data agents consume, so chart hints here and agent docs never drift.
 
   // pc metrics aggregated elsewhere — never rendered per channel.
-  const PC_SUPPRESS = new Set(['traj_len_min', 'traj_len_mean', 'traj_len_max', 'active_ratio']);
+  // Suppression now lives in the catalog (suppress / suppress_prefixes)
+  // — see metric_catalog.py SUPPRESS_KEYS / SUPPRESS_PREFIXES.
 
   // Run Info card: experiment config + code snapshot, grouped rows of
   // label/value chips. Renders whatever fields exist — missing fields
@@ -2196,6 +2208,18 @@
     // Grouped tables for this update's flattened fields
     let html = '<div class="data-grid">';
 
+    // param_overrides — effective per-update parameter overrides in
+    // force for this update (config-change evidence, not a chart).
+    if (u.param_overrides && typeof u.param_overrides === 'object'
+        && Object.keys(u.param_overrides).length) {
+      html += '<div class="data-table"><h3>Param Overrides (this update)</h3><table>';
+      html += '<tr><th>Field</th><th>Value</th></tr>';
+      Object.keys(u.param_overrides).sort().forEach(k => {
+        html += `<tr><td>${escapeHtml(k)}</td><td class="num">${escapeHtml(String(u.param_overrides[k]))}</td></tr>`;
+      });
+      html += '</table></div>';
+    }
+
     // stats.* table
     const statKeys = Object.keys(u).filter(k => k.startsWith('stats.')).sort();
     if (statKeys.length) {
@@ -2250,448 +2274,36 @@
       html += '</table></div>';
     }
     html += '</div>';
-    // ADV Gradient Signal — per-update histogram artifact
-    // (gradsig/uNNNNN.npz), fetched lazily so old runs and interval-
-    // skipped updates degrade to a one-line notice instead of an error.
-    html += '<div class="data-table" style="margin-top:16px"><h3>ADV Gradient Signal (θ_old)</h3>' +
-      '<div class="desc" style="color:var(--muted);font-size:12px;margin-bottom:8px">' +
-      'Per-frame training-loss gradients g_i vs the full-buffer aggregate direction G ' +
-      '(G = mean of all frame gradients). x: cos(g_i,G), y: ‖g_i‖ (equal-mass quantile bins, ' +
-      'frozen at first update), color: frame share. Strips below: P(cos) marginal and the ' +
-      'projection distribution p_i = g_i·Ĝ — positive = helped by this update\'s direction, ' +
-      'negative = sacrificed. Edge rows collect frames that drifted beyond the frozen axis.</div>' +
-      '<div id="gradsig-panel"><div class="loading">loading…</div></div></div>';
     $('update-detail-container').innerHTML = html;
-    loadGradSigPanel(u.update);
   }
 
-  // --- Gradient Signal panel (per-update 2D histogram) ---------------
-  // Loads gradsig/uNNNNN.npz via the run API and renders the joint
-  // (per-frame-norm-bin × cos-bin) frame distribution as a heatmap.  Follows
-  // selectedUpdateIdx through renderUpdateDetail like every other panel.
-  function loadGradSigPanel(update) {
-    const el = document.getElementById('gradsig-panel');
-    if (!el) return;
-    // Run-scoped endpoint — bypass api() so an open dump doesn't add a
-    // /api/dump/<name>/ prefix; keep only the runs-mode /run/<name> scope.
-    let url = `/api/run/gradsig/${update}`;
-    if (state.rootMode === 'runs' && state.runName)
-      url = `/run/${encodeURIComponent(state.runName)}${url}`;
-    fetch(url, {cache: 'no-store'})
-      .then(r => {
-        if (!r.ok) throw new Error('no-data');
-        return r.json();
-      })
-      .then(gs => {
-        if (document.getElementById('gradsig-panel') !== el) return;  // stale
-        renderGradSig(el, gs);
-      })
-      .catch(() => {
-        if (document.getElementById('gradsig-panel') !== el) return;
-        el.innerHTML = '<div class="muted" style="font-size:12px">no gradient-signal data for this update</div>';
-      });
-  }
-
-  function renderGradSig(el, gs) {
-    // Re-bin from the raw per-frame arrays so the norm axis is always
-    // THIS update's own equal-mass quantile bins — the stored
-    // hist/norm_edges (frozen at the first update) are ignored.
-    const gnArr = gs.grad_norm || [], cosArr = gs.cos || [],
-          valArr = gs.valid || [];
-    const gn = [], cs = [];
-    for (let i = 0; i < gnArr.length; i++) {
-      if (!valArr[i]) continue;
-      const v = +gnArr[i], c = +cosArr[i];
-      if (isFinite(v) && isFinite(c)) { gn.push(v); cs.push(c); }
-    }
-    if (!gn.length) {
-      el.innerHTML = '<div class="muted" style="font-size:12px">no per-frame gradient data for this update</div>';
-      return;
-    }
-    const nFr = gn.length;
-    const ce = gs.cos_edges || [];
-    const nCols = ce.length > 1 ? ce.length - 1 : 64;
-    const cosLo = ce.length > 1 ? +ce[0] : -1,
-          cosHi = ce.length > 1 ? +ce[nCols] : 1;
-    // nY equal-mass bins (~2.5% each) over this update's norms.
-    const nY = 40;
-    const sorted = gn.slice().sort((a, b) => a - b);
-    const qe = [];
-    for (let j = 0; j < nY; j++)
-      qe.push(sorted[Math.min(nFr - 1, Math.floor(j * nFr / nY))]);
-    qe.push(sorted[nFr - 1] * (1 + 1e-9) + 1e-12);  // last bin closed
-    const H = Array.from({length: nY}, () => new Array(nCols).fill(0));
-    for (let i = 0; i < nFr; i++) {
-      let yb = 0;
-      while (yb < nY - 1 && gn[i] >= qe[yb + 1]) yb++;
-      const xb = Math.max(0, Math.min(nCols - 1,
-        Math.floor((cs[i] - cosLo) / (cosHi - cosLo) * nCols)));
-      H[yb][xb]++;
-    }
-    const nRows = nY;
-    const rowSum = H.map(r => r.reduce((a, b) => a + b, 0));
-    const colSum = Array.from({length: nCols}, (_, c) =>
-      H.reduce((a, r) => a + r[c], 0));
-    const total = nFr;
-    const maxCol = Math.max(1, ...colSum);
-    const fmtE = v => (v === 0 ? '0' : (+v).toExponential(1));
-    const rowLabel = r => `[${fmtE(qe[r])}, ${fmtE(qe[r + 1])})`;
-    const rowPct = r =>
-      `p${+(100 * r / nY).toFixed(1)}–p${+(100 * (r + 1) / nY).toFixed(1)}`;
-
-    el.innerHTML = '';
-    const head = document.createElement('div');
-    head.style.cssText = 'font-size:12px;color:var(--muted);margin-bottom:6px';
-    const qs = gs.norm_quantiles || [];
-    const gnorm = +gs.gnorm || 0;
-    const pmean = +gs.proj_mean || 0;
-    // mean(p_i) estimates ‖G‖ on the full buffer with standard error
-    // std(p)/√n — flag only deviations beyond the noise floor (a fixed
-    // relative threshold false-fires when ‖G‖ ≪ std(p), i.e. low
-    // coherence).
-    const pse = (+gs.proj_std || 0) / Math.sqrt(Math.max(+gs.n_valid || 1, 1));
-    const pz = pse > 1e-12 ? Math.abs(pmean - gnorm) / pse : 0;
-    head.innerHTML =
-      `frames <b>${gs.n_valid}</b>/${gs.n_sampled}` +
-      (gs.n_excluded ? ` · <span style="color:var(--orange)">${gs.n_excluded} excluded (zero/non-finite ‖g‖)</span>` : '') +
-      ` · ‖G‖ <b>${gnorm.toExponential(2)}</b>` +
-      ` · coherence <b>${(+gs.coherence).toFixed(3)}</b>` +
-      ` · mean(p) ${pmean.toExponential(2)} ±${pse.toExponential(1)}` +
-      (pz > 4 ? ` <span style="color:var(--orange)">(${pz.toFixed(1)}σ vs ‖G‖ — sampling check)</span>` : '') +
-      ` · frac(p<0) <b>${(100 * (+gs.frac_neg)).toFixed(1)}%</b>` +
-      ` · dir cos ${(+gs.dir_cos).toFixed(3)}` +
-      (qs.length >= 5 ? ` · ‖g‖ median ${(+qs[2]).toExponential(2)} [p5 ${(+qs[0]).toExponential(1)}, p95 ${(+qs[4]).toExponential(1)}]` : '');
-    el.appendChild(head);
-
-    const ctrl = document.createElement('div');
-    ctrl.style.cssText = 'margin-bottom:6px;font-size:12px';
-    const btn = document.createElement('button');
-    btn.style.cssText = 'background:var(--panel-alt);color:var(--text);border:1px solid var(--border);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:12px';
-    const cap = document.createElement('span');
-    cap.style.cssText = 'margin-left:8px;color:var(--muted)';
-    ctrl.appendChild(btn); ctrl.appendChild(cap);
-    el.appendChild(ctrl);
-
-    const W = 720, Hh = 430, ml = 96, mr = 78, mt = 6, xmh = 44, mb = 34, mg = 4;
-    const canvas = document.createElement('canvas');
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = W * dpr; canvas.height = Hh * dpr;
-    canvas.style.cssText = `width:${W}px;height:${Hh}px;max-width:100%;cursor:crosshair`;
-    el.appendChild(canvas);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    const tip = document.createElement('div');
-    tip.style.cssText = 'font-size:11px;color:var(--muted);margin-top:4px;min-height:14px;font-family:ui-monospace,monospace';
-    el.appendChild(tip);
-
-    let mode = 'joint';
-    const px = ml + mg;
-    const pw = W - px - mr, ph = Hh - mt - xmh - mb;
-    const cw = pw / nCols, chh = ph / nRows;
-    const cellProb = (r, c) => {
-      const v = +((H[r] || [])[c]) || 0;
-      return mode === 'joint'
-        ? (total ? v / total : 0)
-        : (rowSum[r] ? v / rowSum[r] : 0);
-    };
-
-    function draw() {
-      ctx.clearRect(0, 0, W, Hh);
-      let maxV = 0;
-      for (let r = 0; r < nRows; r++) for (let c = 0; c < nCols; c++) maxV = Math.max(maxV, cellProb(r, c));
-      if (maxV <= 0) maxV = 1;
-      // Log-spaced color mapping: equal *ratios* get equal color
-      // distance, so a 10× difference is always a visible step.
-      // loV = display floor (~2.3 decades below max); cells at or
-      // below it share the darkest color.
-      const loV = maxV / 200;
-      const kOf = v => v <= 0 ? 0 :
-        Math.min(1, Math.log(Math.max(v, loV) / loV) / Math.log(maxV / loV));
-      // Multi-hue ramp (viridis-like): dark purple → blue → teal →
-      // green → yellow.  Each k band is a distinct hue so adjacent
-      // levels stay visually separable.
-      const ramp = [
-        [68, 1, 84], [59, 82, 139], [33, 145, 140],
-        [94, 201, 98], [253, 231, 37],
-      ];
-      const cellColor = k => {
-        const x = Math.min(1, Math.max(0, k)) * (ramp.length - 1);
-        const i = Math.min(ramp.length - 2, Math.floor(x));
-        const f = x - i, a = ramp[i], b = ramp[i + 1];
-        return `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)},${Math.round(a[1] + (b[1] - a[1]) * f)},${Math.round(a[2] + (b[2] - a[2]) * f)})`;
-      };
-      // Heat cells — row 0 (underflow) at bottom, over at top.
-      for (let r = 0; r < nRows; r++) {
-        for (let c = 0; c < nCols; c++) {
-          ctx.fillStyle = cellColor(kOf(cellProb(r, c)));
-          ctx.fillRect(px + c * cw, mt + (nRows - 1 - r) * chh, Math.ceil(cw), Math.ceil(chh));
-        }
-      }
-      ctx.strokeStyle = '#252a36';
-      ctx.strokeRect(px, mt, pw, ph);
-
-      // Colorbar legend in the right margin — same log mapping as the
-      // cells; tick labels show the cell share at each color level
-      // (top = densest cell this update).
-      const lbx = px + pw + 14, lbw = 12, lbh = ph;
-      for (let i = 0; i < lbh; i++) {
-        ctx.fillStyle = cellColor(1 - i / lbh);
-        ctx.fillRect(lbx, mt + i, lbw, 1);
-      }
-      ctx.strokeStyle = '#252a36';
-      ctx.strokeRect(lbx, mt, lbw, lbh);
-      ctx.fillStyle = '#8a93a6';
-      ctx.font = '10px ui-monospace, monospace';
-      ctx.textAlign = 'left';
-      const fmtShare = v => {
-        const p = 100 * v;
-        return (p >= 0.1 ? p.toFixed(1)
-              : p >= 0.01 ? p.toFixed(2)
-              : p.toExponential(0)) + '%';
-      };
-      [1, 0.75, 0.5, 0.25].forEach(k => {
-        const v = loV * Math.pow(maxV / loV, k);
-        ctx.fillText(fmtShare(v), lbx + lbw + 4, mt + (1 - k) * lbh + 3);
-      });
-      ctx.fillText(`≤${fmtShare(loV)}`, lbx + lbw + 4, mt + lbh);
-      ctx.save();
-      ctx.translate(lbx + lbw + 45, mt + lbh / 2);
-      ctx.rotate(Math.PI / 2);
-      ctx.textAlign = 'center';
-      ctx.fillText('cell share (log)', 0, 0);
-      ctx.restore();
-
-      // X-marginal strip below the heatmap: the aggregate cosine
-      // distribution P(cos) over all sampled frames — always the
-      // joint marginal regardless of the normalization toggle.
-      const xy = mt + ph;
-      for (let c = 0; c < nCols; c++) {
-        const h = (colSum[c] / maxCol) * (xmh - 8);
-        ctx.fillStyle = 'rgba(79,163,255,0.6)';
-        ctx.fillRect(px + c * cw, xy + xmh - h, Math.ceil(cw), h);
-      }
-      ctx.strokeStyle = '#252a36';
-      ctx.strokeRect(px, xy, pw, xmh);
-
-      ctx.fillStyle = '#8a93a6';
-      ctx.font = '10px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      [-1, -0.5, 0, 0.5, 1].forEach(v => {
-        const c = Math.max(0, Math.min(nCols - 1e-9, (v - ce[0]) / (ce[nCols] - ce[0]) * nCols));
-        const x = px + c * cw;
-        ctx.fillText(String(v), x, xy + xmh + 14);
-        ctx.strokeStyle = 'rgba(37,42,54,0.7)';
-        ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, xy + xmh); ctx.stroke();
-      });
-      ctx.fillText('cos(g_i, G)  ·  strip = P(cos) marginal', px + pw / 2, xy + xmh + 30);
-      // Y ticks: percentile anchors (quantile bins) + edge-row marks.
-      // Y ticks: every 4th quantile edge → p0, p10, …, p100 — the
-      // labels sit exactly on bin boundaries (edge e is the boundary
-      // between bins e-1 and e at y = mt + (nY-e)*chh).
-      ctx.textAlign = 'right';
-      for (let e = 0; e <= nY; e += 4) {
-        const y = mt + (nY - e) * chh;
-        ctx.fillText(`p${e * 100 / nY} ${fmtE(qe[e])}`, px - mg - 4, y + 3);
-      }
-      ctx.save();
-      ctx.translate(12, mt + ph / 2); ctx.rotate(-Math.PI / 2);
-      ctx.textAlign = 'center';
-      ctx.fillText('‖g_i‖  (quantile bins)', 0, 0);
-      ctx.restore();
-      cap.textContent = mode === 'joint'
-        ? 'joint probability (all cells sum to 1)'
-        : 'per-row conditional (each norm bin row sums to 1)';
-      btn.textContent = mode === 'joint' ? 'joint → per-row' : 'per-row → joint';
-    }
-    btn.addEventListener('click', () => { mode = mode === 'joint' ? 'cond' : 'joint'; draw(); });
-    canvas.addEventListener('mousemove', e => {
-      const rect = canvas.getBoundingClientRect();
-      const c = Math.floor((e.clientX - rect.left - px) / cw);
-      const rTop = Math.floor((e.clientY - rect.top - mt) / chh);
-      if (c < 0 || c >= nCols) { tip.textContent = ''; return; }
-      if (rTop >= nRows && e.clientY - rect.top <= mt + ph + xmh) {
-        // Hovering the X-marginal strip.
-        tip.textContent =
-          `P(cos) marginal: cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
-          `frames=${colSum[c].toLocaleString()} · ${(100 * colSum[c] / (total || 1)).toFixed(2)}%`;
-        return;
-      }
-      if (rTop < 0 || rTop >= nRows) { tip.textContent = ''; return; }
-      const r = nRows - 1 - rTop;
-      const cnt = (H[r] || [])[c] || 0;
-      tip.textContent =
-        `cos∈[${(+ce[c]).toFixed(3)}, ${(+ce[c + 1]).toFixed(3)}) · ` +
-        `norm ${rowLabel(r)} ${rowPct(r)} · ` +
-        `frames=${cnt.toLocaleString()} · joint ${(100 * cnt / (total || 1)).toFixed(3)}%` +
-        ` · row-cond ${(rowSum[r] ? 100 * cnt / rowSum[r] : 0).toFixed(2)}%` +
-        ` · row share ${(100 * rowSum[r] / (total || 1)).toFixed(2)}%`;
-    });
-    canvas.addEventListener('mouseleave', () => { tip.textContent = ''; });
-    draw();
-
-    // --- ‖g_i‖ distribution: 1D linear-bin histogram ---------------
-    // Equal-width linear bins over this update's norm range — shows
-    // the actual distribution shape (the 2D plot's quantile axis
-    // flattens it by construction).  Bar heights are log10(count) so
-    // the heavy right tail stays visible next to the peak.
-    {
-      const lo = sorted[0], hi = sorted[nFr - 1];
-      const nB = 64, bw = (hi - lo) / nB || 1;
-      const cnt = new Array(nB).fill(0);
-      gn.forEach(v => cnt[Math.max(0, Math.min(nB - 1,
-        Math.floor((v - lo) / bw)))]++);
-      const maxC = Math.max(1, ...cnt);
-      const gHh = 148, gph = 92, gmT = 10;
-      const gcap = document.createElement('div');
-      gcap.style.cssText = 'font-size:12px;color:var(--muted);margin:10px 0 4px';
-      gcap.innerHTML = '<b>‖g_i‖ distribution</b> — per-frame gradient norm (linear bins, log-height)';
-      el.appendChild(gcap);
-      const gcv = document.createElement('canvas');
-      gcv.width = W * dpr; gcv.height = gHh * dpr;
-      gcv.style.cssText = `width:${W}px;height:${gHh}px;max-width:100%;cursor:crosshair`;
-      el.appendChild(gcv);
-      const g2 = gcv.getContext('2d');
-      g2.scale(dpr, dpr);
-      const gbw = pw / nB;
-      const lg = Math.max(Math.log10(maxC), 1e-6);
-      const hOf = c => c <= 0 ? 0 : (Math.log10(c) / lg) * gph;
-      for (let b = 0; b < nB; b++) {
-        g2.fillStyle = 'rgba(79,163,255,0.75)';
-        g2.fillRect(px + b * gbw, gmT + gph - hOf(cnt[b]),
-          Math.ceil(gbw), hOf(cnt[b]));
-      }
-      // Count ticks (log positions) on the left edge of the plot.
-      g2.fillStyle = '#8a93a6';
-      g2.font = '10px ui-monospace, monospace';
-      g2.textAlign = 'right';
-      [1, 10, 100, 1000].filter(c => c <= maxC).forEach(c => {
-        const y = gmT + gph - hOf(c);
-        g2.fillText(String(c), px - 4, y + 3);
-        g2.strokeStyle = 'rgba(37,42,54,0.6)';
-        g2.beginPath(); g2.moveTo(px, y); g2.lineTo(px + pw, y); g2.stroke();
-      });
-      // Median marker.
-      const med = sorted[nFr >> 1];
-      const mx = px + (med - lo) / (hi - lo || 1) * pw;
-      g2.strokeStyle = 'rgba(255,255,255,0.55)';
-      g2.setLineDash([4, 3]);
-      g2.beginPath(); g2.moveTo(mx, gmT); g2.lineTo(mx, gmT + gph); g2.stroke();
-      g2.setLineDash([]);
-      g2.strokeStyle = '#252a36';
-      g2.strokeRect(px, gmT, pw, gph);
-      g2.textAlign = 'center';
-      g2.fillText(fmtE(lo), px + 22, gmT + gph + 13);
-      g2.fillText(`med ${fmtE(med)}`, mx, gmT + gph + 13);
-      g2.fillText(fmtE(hi), px + pw - 22, gmT + gph + 13);
-      g2.fillText('‖g_i‖  (per-frame gradient norm)', px + pw / 2, gmT + gph + 28);
-      const gtip = document.createElement('div');
-      gtip.style.cssText = 'font-size:11px;color:var(--muted);margin-top:2px;min-height:14px;font-family:ui-monospace,monospace';
-      el.appendChild(gtip);
-      gcv.addEventListener('mousemove', e => {
-        const rect = gcv.getBoundingClientRect();
-        const b = Math.floor((e.clientX - rect.left - px) / gbw);
-        if (b < 0 || b >= nB) { gtip.textContent = ''; return; }
-        gtip.textContent =
-          `‖g‖∈[${fmtE(lo + b * bw)}, ${fmtE(lo + (b + 1) * bw)}) · ` +
-          `frames=${cnt[b].toLocaleString()} · ${(100 * cnt[b] / nFr).toFixed(2)}%`;
-      });
-      gcv.addEventListener('mouseleave', () => { gtip.textContent = ''; });
-    }
-
-    // --- Projection strip: distribution of p_i = g_i·Ĝ -------------
-    // Positive p_i = frame i's objective improves under the batch
-    // direction; negative = sacrificed by this update.  Bins are
-    // symmetric around 0 over the central 99% so one extreme frame
-    // cannot flatten the histogram; out-of-range values clip into the
-    // edge bins (counts preserved).
-    const pv = [];
-    const projArr = gs.proj || [];
-    for (let i = 0; i < projArr.length; i++)
-      if (valArr[i] && projArr[i] !== null && isFinite(+projArr[i]))
-        pv.push(+projArr[i]);
-    if (pv.length) {
-      const qOf = (a, q) => {
-        const s = a.slice().sort((x, y) => x - y);
-        return s[Math.min(s.length - 1, Math.floor(q * s.length))];
-      };
-      const rEdge = Math.max(1e-12,
-        Math.max(Math.abs(qOf(pv, 0.005)), Math.abs(qOf(pv, 0.995))));
-      const nB = 64, pbins = new Array(nB).fill(0);
-      pv.forEach(v => {
-        const t = (v + rEdge) / (2 * rEdge) * nB;
-        pbins[Math.max(0, Math.min(nB - 1, Math.floor(t)))]++;
-      });
-      const pMax = Math.max(1, ...pbins);
-      const pcap = document.createElement('div');
-      pcap.style.cssText = 'font-size:12px;color:var(--muted);margin:10px 0 4px';
-      pcap.innerHTML = '<b>Projection p_i = g_i·Ĝ</b> — signed projection onto the batch direction (symmetric linear bins, log-height)';
-      el.appendChild(pcap);
-      const pHh = 170, pph = 112, pmt = 10;
-      const pcv = document.createElement('canvas');
-      pcv.width = W * dpr; pcv.height = pHh * dpr;
-      pcv.style.cssText = `width:${W}px;height:${pHh}px;max-width:100%;cursor:crosshair`;
-      el.appendChild(pcv);
-      const pctx = pcv.getContext('2d');
-      pctx.scale(dpr, dpr);
-      const bcw = pw / nB;
-      const plg = Math.max(Math.log10(pMax), 1e-6);
-      const phOf = c => c <= 0 ? 0 : (Math.log10(c) / plg) * pph;
-      const binLo = b => -rEdge + 2 * rEdge * b / nB;
-      for (let b = 0; b < nB; b++) {
-        pctx.fillStyle = binLo(b) < 0 && binLo(b + 1) <= 0
-          ? 'rgba(255,120,90,0.75)' : 'rgba(79,163,255,0.75)';
-        pctx.fillRect(px + b * bcw, pmt + pph - phOf(pbins[b]),
-          Math.ceil(bcw), phOf(pbins[b]));
-      }
-      // Count ticks (log positions) on the left edge.
-      pctx.fillStyle = '#8a93a6';
-      pctx.font = '10px ui-monospace, monospace';
-      pctx.textAlign = 'right';
-      [1, 10, 100, 1000].filter(c => c <= pMax).forEach(c => {
-        const y = pmt + pph - phOf(c);
-        pctx.fillText(String(c), px - 4, y + 3);
-        pctx.strokeStyle = 'rgba(37,42,54,0.6)';
-        pctx.beginPath(); pctx.moveTo(px, y); pctx.lineTo(px + pw, y); pctx.stroke();
-      });
-      const zx = px + pw / 2;
-      pctx.strokeStyle = 'rgba(255,255,255,0.55)';
-      pctx.beginPath(); pctx.moveTo(zx, pmt); pctx.lineTo(zx, pmt + pph); pctx.stroke();
-      pctx.strokeStyle = '#252a36';
-      pctx.strokeRect(px, pmt, pw, pph);
-      pctx.textAlign = 'center';
-      [[-rEdge, px + 24], [0, zx], [rEdge, px + pw - 24]].forEach(([v, x]) =>
-        pctx.fillText(fmtE(v), x, pmt + pph + 13));
-      pctx.fillText('p_i = g_i·Ĝ   ·   <0 sacrificed · >0 helped',
-        px + pw / 2, pmt + pph + 28);
-      const ptip = document.createElement('div');
-      ptip.style.cssText = 'font-size:11px;color:var(--muted);margin-top:2px;min-height:14px;font-family:ui-monospace,monospace';
-      el.appendChild(ptip);
-      pcv.addEventListener('mousemove', e => {
-        const rect = pcv.getBoundingClientRect();
-        const b = Math.floor((e.clientX - rect.left - px) / bcw);
-        if (b < 0 || b >= nB || e.clientY - rect.top > pmt + pph) {
-          ptip.textContent = ''; return;
-        }
-        ptip.textContent =
-          `p_i∈[${binLo(b).toExponential(2)}, ${binLo(b + 1).toExponential(2)}) · ` +
-          `frames=${pbins[b].toLocaleString()} · ${(100 * pbins[b] / pv.length).toFixed(2)}% · ` +
-          `mean ${pmean.toExponential(2)} · std ${(+gs.proj_std).toExponential(2)}`;
-      });
-      pcv.addEventListener('mouseleave', () => { ptip.textContent = ''; });
-    }
-  }
+  // --- Training Metrics (sectioned dashboard) -------------------------
+  //
+  // Layout is fully data-driven from /api/catalog (metric_catalog.py):
+  // six themed sections in fixed order, each with curated charts plus
+  // expandable detail groups.  gradsig (per-frame gradient diagnostic)
+  // panels were removed from the Run dashboard — the data API and the
+  // gradsig/*.npz artifacts remain for dump-side investigation.
 
   function buildMetricsCharts(metrics) {
-    // Collect all keys
+    // Collect all chartable keys — META_KEYS are row-level metadata
+    // (e.g. param_overrides dict), never metrics.
+    const META_KEYS = new Set(['update', 'param_overrides']);
     const allKeys = new Set();
-    metrics.forEach(u => Object.keys(u).forEach(k => { if (k !== 'update') allKeys.add(k); }));
+    metrics.forEach(u => Object.keys(u).forEach(k => { if (!META_KEYS.has(k)) allKeys.add(k); }));
     const seriesFor = key => metrics.map(u => (typeof u[key] === 'number' ? u[key] : NaN));
     const cur = state.selectedUpdateIdx;  // update cursor drawn on every chart
 
     // Catalog from /api/catalog (metric_catalog.py — shared with agents).
-    // Fallback keeps charts renderable if the fetch somehow failed.
     const cat = state.catalog ||
-      {layout: [], zones: [], pc_hints: {}, stats_hints: {}};
+      {sections: [], zones: [], pc_hints: {}, stats_hints: {},
+       suppress: [], suppress_prefixes: []};
+    const SUPPRESS = new Set(cat.suppress || []);
+    const SUPPRESS_PRE = cat.suppress_prefixes || [];
+    const isSuppressed = k =>
+      SUPPRESS.has(k) || SUPPRESS_PRE.some(p => k.startsWith(p));
+    const zoneOf = prefix =>
+      (cat.zones || []).find(z => prefix === z.prefix.slice(0, -1));
 
     let html = '';
     const used = new Set();
@@ -2705,13 +2317,23 @@
       return ((state.catalog && state.catalog.labels) || {})[bare] || bare;
     };
     // Deferred chart: placeholder div + spec in state._chartSpecs for
-    // mountCharts() to render + wire toggles.
+    // mountCharts() to render + wire toggles.  Curated charts carry a
+    // one-line subtitle (what question it answers) and an expandable
+    // "如何读这张图" guide (what to watch / next step / limits).
     const emitChart = (title, series, opts = {}) => {
-      const box = chartBox(series, {height: opts.height || 160, currentFrame: cur},
+      const box = chartBox(series, {
+          height: opts.height || 160, currentFrame: cur,
+          vMarkers: opts.vMarkers,
+        },
         {key: 'run:' + title,
          legendGroups: opts.legendGroups, legendDims: opts.legendDims});
-      const tip = opts.hint ? ` class="has-tip" data-tip="${escapeHtml(opts.hint)}"` : '';
-      html += `<div class="metric-chart"><h3${tip}>${escapeHtml(title)}</h3>${box}</div>`;
+      const sub = opts.subtitle
+        ? `<div class="chart-sub">${escapeHtml(opts.subtitle)}</div>` : '';
+      const gd = opts.guide || opts.hint;
+      const guide = gd
+        ? `<details class="chart-guide"><summary>如何读这张图</summary>` +
+          `<div class="chart-guide-body">${escapeHtml(gd)}</div></details>` : '';
+      html += `<div class="metric-chart"><h3>${escapeHtml(title)}</h3>${sub}${guide}${box}</div>`;
     };
     const emit = (title, keys, opts = {}) => {
       const series = keys.map((k, i) => ({
@@ -2730,6 +2352,24 @@
           });
         });
       }
+      // spike_keys: event markers — only nonzero values count (e.g.
+      // early_stop_kl_mean is 0 when not triggered).  Drawn as red
+      // vertical markers plus a legend entry whose data is NaN outside
+      // trigger points.
+      (opts.spikeKeys || []).forEach(k => {
+        if (!allKeys.has(k)) return;
+        used.add(k);
+        const idxs = [], data = [];
+        metrics.forEach((u, i) => {
+          const v = u[k];
+          const on = typeof v === 'number' && v > 0;
+          data.push(on ? v : NaN);
+          if (on) idxs.push(i);
+        });
+        opts.vMarkers = (opts.vMarkers || []).concat(idxs);
+        series.push({label: labelFor(k), data, color: 'var(--red)',
+                     dash: 'dot', width: 1});
+      });
       keys.forEach(k => used.add(k));
       emitChart(title, series, opts);
     };
@@ -2744,25 +2384,45 @@
       return suf in METRIC_RANK ? METRIC_RANK[suf] : (i === 0 ? 3 : 2);
     };
 
-    // 1. Framework-owned charts — fixed editorial order (catalog.layout)
-    cat.layout.forEach(spec => {
+    // Resolve one chart spec to flat keys / series and emit it.
+    // Handles: keys, right, spike_keys, pc, pcm, timing, zone_pick,
+    // zone_rest.  Returns true if anything was emitted.
+    const emitSpec = spec => {
+      if (spec.zone_rest) {
+        // All remaining keys of a zone namespace (not claimed by a
+        // zone_pick curated chart) — one small chart each.
+        const pre = spec.zone_rest + '.';
+        const z = zoneOf(spec.zone_rest) || {};
+        const keys = [...allKeys].filter(k =>
+          k.startsWith(pre) && !used.has(k) && !isSuppressed(k));
+        keys.forEach(k => {
+          used.add(k);
+          emit(k.slice(pre.length), [k],
+            {height: 140, color: z.color, guide: z.hint});
+        });
+        return keys.length > 0;
+      }
       if (spec.timing) {
-        const timeKeys = [...allKeys].filter(k => k.startsWith('time.')).sort();
-        if (timeKeys.length) emit('Timing (s/update)', timeKeys, {height: 180, hint: spec.hint});
-        return;
+        const timeKeys = [...allKeys].filter(k =>
+          k.startsWith('time.') && !used.has(k) && !isSuppressed(k)).sort();
+        if (timeKeys.length)
+          emit('Timing (s/update)', timeKeys,
+            {height: 180, guide: spec.guide || spec.hint});
+        return timeKeys.length > 0;
       }
       if (spec.pc) {
         const pcKeys = [...allKeys]
-          .filter(k => k.startsWith(`pc.${spec.pc}.`))
+          .filter(k => k.startsWith(`pc.${spec.pc}.`) && !isSuppressed(k))
           .sort();
         const baseKeys = spec.keys ? spec.keys.filter(k => allKeys.has(k)) : [];
         const keys = [...baseKeys, ...pcKeys];
         if (keys.length) {
           const title = spec.title || `${spec.pc} (per channel)`;
-          const hint = spec.hint || (baseKeys.length ? "" : cat.pc_hints[spec.pc]);
-          emit(title, keys, {hint});
+          const guide = spec.guide || spec.hint ||
+            (baseKeys.length ? "" : cat.pc_hints[spec.pc]);
+          emit(title, keys, {guide});
         }
-        return;
+        return keys.length > 0;
       }
       if (spec.pcm) {
         // Merged multi-metric per-channel chart: color = channel,
@@ -2770,7 +2430,8 @@
         const chans = new Set();
         spec.metrics.forEach(m => {
           [...allKeys].forEach(k => {
-            if (k.startsWith(`pc.${m}.`)) chans.add(k.slice(m.length + 4));
+            if (k.startsWith(`pc.${m}.`) && !isSuppressed(k))
+              chans.add(k.slice(m.length + 4));
           });
         });
         const chList = [...chans].sort();
@@ -2789,55 +2450,104 @@
             });
           });
         });
-        if (!series.length) return;
+        if (!series.length) return false;
         series.sort((a, b) => rankFor(a.dim, spec.metrics.indexOf(a.dim)) -
                                rankFor(b.dim, spec.metrics.indexOf(b.dim)));
-        emitChart(`${spec.pcm} (per channel)`, series, {
-          hint: spec.hint,
+        emitChart(spec.title || `${spec.pcm} (per channel)`, series, {
+          subtitle: spec.subtitle,
+          guide: spec.guide || spec.hint,
           legendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
           legendDims: spec.metrics.map((m, mi) => ({name: m, dash: dashFor(m, mi)})),
         });
-        return;
+        return true;
       }
-      const keys = spec.keys.filter(k => allKeys.has(k));
-      if (keys.length) emit(spec.title || labelFor(keys[0]), keys, spec);
+      // zone_pick: up to `max` keys of the zone — prefer-listed names
+      // first; if none of the preferred names exist at all, fall back to
+      // the first `max` keys so the card still shows something.
+      if (spec.zone_pick) {
+        const pre = spec.zone_pick + '.';
+        const zoneKeys = [...allKeys]
+          .filter(k => k.startsWith(pre) && !isSuppressed(k)).sort();
+        const picked = [];
+        (spec.prefer || []).forEach(name => {
+          const k = pre + name;
+          if (zoneKeys.includes(k) && picked.length < (spec.max || 2))
+            picked.push(k);
+        });
+        if (!picked.length)
+          zoneKeys.slice(0, spec.max || 2).forEach(k => picked.push(k));
+        picked.forEach(k => used.add(k));
+        if (picked.length)
+          emit(spec.title || spec.zone_pick, picked, spec);
+        return picked.length > 0;
+      }
+      const keys = (spec.keys || []).filter(k =>
+        allKeys.has(k) && !isSuppressed(k));
+      const spikes = (spec.spike_keys || []).filter(k =>
+        allKeys.has(k) && !isSuppressed(k));
+      if (!keys.length && !spikes.length) return false;
+      emit(spec.title || (keys.length ? labelFor(keys[0]) : 'metrics'),
+        keys, {...spec, spikeKeys: spikes});
+      return true;
+    };
+
+    // Sections — fixed editorial order; curated charts then expandable
+    // detail groups.
+    (cat.sections || []).forEach(sec => {
+      const secHtmlStart = html.length;
+      html += `<div class="metrics-section">` +
+        `<div class="metrics-section-head">` +
+        `<h2>${escapeHtml(sec.title)}</h2>` +
+        (sec.question
+          ? `<div class="metrics-section-q">${escapeHtml(sec.question)}</div>`
+          : '') +
+        `</div>`;
+      (sec.curated || []).forEach(emitSpec);
+      const groups = sec.expanded || [];
+      if (groups.length) {
+        html += `<details class="metrics-expand">` +
+          `<summary>展开更多 · 辅助图</summary>`;
+        groups.forEach(g => {
+          const before = html.length;
+          html += `<div class="metrics-group-title">${escapeHtml(g.title)}</div>`;
+          const afterTitle = html.length;
+          if (g.zone_rest) emitSpec(g);
+          (g.charts || []).forEach(emitSpec);
+          // Group rendered no charts (all keys absent) — drop its title.
+          if (html.length === afterTitle) html = before;
+        });
+        html += `</details>`;
+      }
+      html += '</div>';
+      // A section whose curated charts were all absent keeps only the
+      // header + expander — still useful (expanded may hold data).
     });
 
-    // 2. Framework keys not covered by the layout — forward compat for
-    //    new metrics; grouped pc.* by metric, suppressed ones skipped.
+    // Fallback: framework keys no section claimed, grouped into one
+    // collapsed bucket at the bottom — new metrics stay discoverable
+    // without auto-growing the curated dashboard.
     const pcGroups = {};
     const otherKeys = [];
-    const zonePrefixes = cat.zones.map(z => z.prefix);
+    const zonePrefixes = (cat.zones || []).map(z => z.prefix);
     [...allKeys].forEach(k => {
-      if (used.has(k) || zonePrefixes.some(p => k.startsWith(p))) return;
+      if (used.has(k) || isSuppressed(k) ||
+          zonePrefixes.some(p => k.startsWith(p))) return;
       const m = k.match(/^pc\.([^.]+)\..+$/);
-      if (m) {
-        if (PC_SUPPRESS.has(m[1])) { used.add(k); return; }
-        (pcGroups[m[1]] = pcGroups[m[1]] || []).push(k);
-      } else otherKeys.push(k);
+      if (m) (pcGroups[m[1]] = pcGroups[m[1]] || []).push(k);
+      else otherKeys.push(k);
     });
     if (otherKeys.length || Object.keys(pcGroups).length) {
-      html += '<div class="metrics-group-title">Other framework metrics</div>';
+      html += '<details class="metrics-expand">' +
+        '<summary>其他框架指标（未归入分区）</summary>';
       otherKeys.sort().forEach(k =>
         emit(labelFor(k), [k], {height: 140, color: '#4fa3ff',
-          hint: cat.stats_hints[k.split('.').slice(1).join('.')] ||
+          guide: cat.stats_hints[k.split('.').slice(1).join('.')] ||
                 `框架标量指标 ${k}。`}));
       Object.keys(pcGroups).sort().forEach(metric =>
         emit(`${metric} (per channel)`, pcGroups[metric].sort(),
-          {hint: cat.pc_hints[metric] || `per-channel 指标 pc.${metric}.*。`}));
+          {guide: cat.pc_hints[metric] || `per-channel 指标 pc.${metric}.*。`}));
+      html += '</details>';
     }
-
-    // 3. Open-ended zones (exp.*/eval.*/policy.*) — one chart per key,
-    //    driven by catalog.zones: {prefix, title, color, hint, sparse}.
-    //    Keys keep their emission order (source dict order is preserved
-    //    through JSON → Set), so the producer controls its own ordering.
-    cat.zones.forEach(z => {
-      const keys = [...allKeys].filter(k => k.startsWith(z.prefix));
-      if (!keys.length) return;
-      html += `<div class="metrics-group-title">${escapeHtml(z.title)}</div>`;
-      keys.forEach(k => emit(k.slice(z.prefix.length), [k],
-        {height: 140, color: z.color, hint: z.hint}));
-    });
 
     return html;
   }

@@ -680,6 +680,51 @@ def test_run_data_metrics_experiment():
         print("test_run_data_metrics_experiment: PASS")
 
 
+def test_run_data_metrics_param_overrides():
+    """param_overrides dict in __RAW_STATS__ is carried through as
+    row-level metadata (Update Detail config-change evidence) — not
+    flattened into chartable stats.* keys."""
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _create_test_dump(Path(d))
+        run_dir = dump_dir.parent.parent
+        log = run_dir / "train.log"
+        log.write_text(
+            '__RAW_STATS__ {"update": 1, "stats": {"policy_loss_mean": -0.01}}\n'
+            '__RAW_STATS__ {"update": 2, "stats": {"policy_loss_mean": -0.02}, '
+            '"param_overrides": {"dual_clip_c": 3, "learning_rate": 0.0001}}\n',
+            encoding="utf-8",
+        )
+        rd = RunData(run_dir)
+        ms = rd.metrics()
+        assert "param_overrides" not in ms[0]  # absent → no key at all
+        assert ms[1]["param_overrides"] == {
+            "dual_clip_c": 3, "learning_rate": 0.0001}
+        # Never leaks into a chartable stats.* / flat key
+        assert not any(k.startswith("stats.param_overrides")
+                       or "param_overrides." in k for k in ms[1])
+        print("test_run_data_metrics_param_overrides: PASS")
+
+
+def test_metric_catalog_sections():
+    """catalog() serves the six themed sections in fixed order; curated
+    specs carry subtitle+guide; suppression covers grad_sig."""
+    from baseline.framework.ppo.dumpkit.metric_catalog import catalog
+
+    cat = catalog()
+    ids = [s["id"] for s in cat["sections"]]
+    assert ids == ["task", "policy_update", "signal",
+                   "explore", "sampling", "cost"]
+    for sec in cat["sections"]:
+        assert sec["title"] and sec["question"], sec["id"]
+        assert sec["curated"], f"section {sec['id']} has no curated charts"
+        for spec in sec["curated"]:
+            assert spec.get("subtitle"), f"curated spec missing subtitle: {spec}"
+            assert spec.get("guide"), f"curated spec missing guide: {spec}"
+    # gradsig scalars must not auto-chart — suppressed by prefix
+    assert "stats.grad_sig_" in cat["suppress_prefixes"]
+    print("test_metric_catalog_sections: PASS")
+
+
 def test_run_data_grad_sig():
     """RunData.grad_sig() round-trips a gradsig/uNNNNN.npz artifact into
     a JSON-safe payload; missing artifacts return None."""
@@ -814,19 +859,24 @@ def test_metric_catalog_structure():
     cat = catalog()
     assert cat["layout"] and isinstance(cat["layout"], list)
     for spec in cat["layout"]:
-        kinds = [k for k in ("keys", "pc", "pcm", "timing") if k in spec]
+        kinds = [k for k in ("keys", "pc", "pcm", "timing",
+                             "zone_pick", "zone_rest") if k in spec]
         # A spec can combine framework keys with a single pc overlay.
-        # pc/pcm/timing are mutually exclusive; keys can appear alongside pc.
+        # pc/pcm/timing/zone_pick/zone_rest are mutually exclusive;
+        # keys can appear alongside pc.
         assert kinds, f"empty spec: {spec}"
-        multi = [k for k in ("pc", "pcm", "timing") if k in spec]
+        multi = [k for k in ("pc", "pcm", "timing",
+                             "zone_pick", "zone_rest") if k in spec]
         assert len(multi) <= 1, f"conflicting spec shape: {spec}"
         if "keys" in spec:
-            assert spec["hint"], f"keys spec missing hint: {spec}"
+            assert spec.get("hint") or spec.get("guide"), \
+                f"keys spec missing doc: {spec}"
             for key in spec["keys"]:
                 assert "." in key, f"unnamespaced layout key: {key}"
         if "pcm" in spec:
             assert spec["metrics"], f"pcm spec missing metrics: {spec}"
-            assert spec["hint"], f"pcm spec missing hint: {spec}"
+            assert spec.get("hint") or spec.get("guide"), \
+                f"pcm spec missing doc: {spec}"
     prefixes = [z["prefix"] for z in cat["zones"]]
     assert prefixes == ["exp.", "eval.", "policy."]
     for z in cat["zones"]:

@@ -1,9 +1,16 @@
 """Run-metrics catalog — single source of truth for metric semantics.
 
 Everything the Debug viewer knows about *what a metric means* lives
-here as data: the framework chart layout (grouping, ordering, hints),
-per-channel / leftover-stat hint tables, and the open-ended zone
-definitions (experiment / eval / policy namespaces).
+here as data: the sectioned chart layout (six themed sections, each
+with curated charts plus expandable detail groups), per-channel /
+leftover-stat hint tables, and the open-ended zone definitions
+(experiment / eval / policy namespaces).
+
+Dashboard boundary (see ``../DESIGN_run_dashboard_zones.md``): curated
+charts exist to surface problems and point at evidence; expanded groups
+aid triage; root-causing belongs to Resume/Dump/Delta tooling.  Every
+curated chart carries a ``subtitle`` (what question it answers) and a
+``guide`` (what changes matter, what to do next, what it cannot show).
 
 Consumers:
 - ``viewer/server.py`` serves ``catalog()`` at ``/api/catalog``.
@@ -22,147 +29,280 @@ Key namespaces emitted by ``RunData._flatten_update``:
 - ``exp.*``     experiment.on_update() return value (ZONES)
 - ``eval.*``    experiment.on_eval() info dict — sparse (ZONES)
 - ``policy.*``  policy_stats contributed by the policy (ZONES)
+
+Section spec shapes::
+
+    {"id": str, "title": str, "question": str,
+     "curated": [chart_spec, ...],
+     "expanded": [{"title": str, "charts": [chart_spec, ...]}, ...]}
+
+Chart spec shapes (unchanged ones kept for expanded groups):
+  {"title": str, "keys": [flat_key, ...], "right": [...],
+   "subtitle": str, "guide": str}
+  {"spike_keys": [...]}            render only non-zero values (markers)
+  {"pc": "<metric>"}               per-channel chart
+  {"pcm": "<name>", "metrics": [...]}  merged per-channel chart
+  {"zone_pick": "eval"|"exp"|"policy", "prefer": [key, ...], "max": int}
+      pick up to ``max`` present keys of the zone, prefer-listed first
+  {"zone_rest": "eval"|"exp"|"policy"}
+      render all keys of the zone not already consumed by zone_pick
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------
-# Framework chart layout — fixed editorial order.  Spec shapes:
-#   {"title": str, "keys": [flat_key, ...], "hint": str}
-#   {"pc": "<metric>"}                        per-channel chart
-#   {"pcm": "<name>", "metrics": [...], "hint": str}  merged per-channel
-#   {"timing": true, "hint": str}             time.* catch-all chart
+# Keys that must never render as charts — they are metadata, not
+# metrics, or belong to investigation tooling rather than the dashboard.
 # ---------------------------------------------------------------------
 
-FRAMEWORK_LAYOUT: List[Dict[str, Any]] = [
-    {"title": "Episodes, Trajectories & Active Trajectories",
-     "keys": ["ep.n_episodes", "stats.n_trajectories"],
-     "pc": "n_active_trajs",
-     "hint": "ep.n_episodes：本 update 真实跑的环境 episode 数。\n"
-             "stats.n_trajectories：进入 buffer 的轨迹段总数——一个 episode 可拆出多条（如每 agent 一条），PPO 的训练单位是轨迹。\n"
-             "n_active_trajs.*：各 reward channel 的活跃轨迹数（该 channel 有非零 reward 的 trajectory 数量），与总数对比可看出哪些 channel 在本 update 被激活。"},
-    {"title": "Episode Length & Trajectory Length",
-     "keys": ["ep.ep_len_mean", "ep.ep_len_min", "ep.ep_len_max",
-              "stats.traj_len_mean", "stats.traj_len_min", "stats.traj_len_max"],
-     "hint": "ep.ep_len_*：环境 episode 的帧数统计（episode_stats，真实对局长度）。\n"
-             "stats.traj_len_*：buffer 轨迹段的帧数统计（Σ=total_frames）。\n"
-             "一条轨迹恰好覆盖一条 episode 时两者相等。"},
-    {"keys": ["stats.total_frames"],
-     "hint": "本 update buffer 的总帧数 = Σ traj_len。"},
-    {"pcm": "reward",
-     "metrics": ["reward_min", "reward_max", "reward_std", "reward_mean"],
-     "hint": "该 channel 逐帧原始 reward 在活跃轨迹上的统计。\n"
-             "min=点线、max=长虚线（上下界），std=短虚线（离散度），mean=加粗实线（主体）。\n"
-             "颜色=channel、线型=指标；两行图例可分别 toggle channel 或指标。"},
-    {"pcm": "ret", "metrics": ["ret_min", "ret_max", "ret_std", "ret_mean"],
-     "hint": "该 channel 折扣回报 return 的统计（活跃帧）——critic 的拟合目标（GAE 的 γ 口径）。\n"
-             "min/max 为逐帧极值（非逐轨迹）：min 恒接近 0（每条轨迹末帧 return≈末帧 reward），max 反映最佳轨迹质量。\n"
-             "线型约定同 reward 图：min=点线、max=长虚线、std=短虚线、mean=加粗实线。"},
-    {"pcm": "adv", "metrics": ["adv_min", "adv_max", "adv_std", "adv_mean"],
-     "hint": "该 channel 原始 GAE advantage 的统计（仅活跃帧、未归一化）。\n"
-             "min/max 为逐帧极值：反映 advantage 分布的上下尾——极端值提示优势/劣势帧的幅值。\n"
-             "真正送进 actor 的是另一份量：norm_adv = 本图经 z-score 后 × actor_weight × confidence。\n"
-             "线型约定同 reward 图：min=点线、max=长虚线、std=短虚线、mean=加粗实线。"},
-    {"pcm": "actor_weight",
-     "metrics": ["actor_weight_min", "actor_weight_max", "actor_weight_mean"],
-     "hint": "实验侧 build_trajectories 给每条轨迹该 channel 的 actor_weight——课程权重。\n"
-             "它决定该 channel 的 advantage 进入 combined_adv 的相对权重：combined = Σ aw·confidence·norm_adv，aw 逐帧 L1 归一化。"},
-    {"pcm": "ev & confidence", "metrics": ["ev", "confidence"],
-     "hint": "ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美拟合，<0=不如直接猜均值。\n"
-             "confidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。"},
-    {"title": "Uncertainty & Exploration Spec",
-     "keys": ["stats.uncertainty_mean", "stats.uncertainty_floor", "stats.uncertainty_coef"],
-     "hint": "合并图：buffer 全帧在 θ_old 下的 ActorEval.uncertainty 均值 U，以及本 update 实际生效的 exploration spec（floor + coef）。\n"
-             "U ∈ [0,1]、与 action 无关；floor 线可视作 U 的警戒下限。floor_loss_mean = coef·mean(relu(floor−U)²) —— U 低于 floor 时 hinge 开始激活。\n"
-             "spec 由 experiment.exploration(update) 逐 update 下发；恒定直线 = 未启用调度。"},
-    {"title": "Learning Rate", "keys": ["stats.actor_lr", "stats.critic_lr"],
-     "hint": "本 update 实际生效的学习率（从 optimizer param_groups 读取）。\n"
-             "由 experiment.lr_schedule(update) 逐 update 下发 LRSpec 绝对值；None = 保持现状。\n"
-             "恒定直线 = 未启用调度；逐步下降 = 学习率衰减生效中。"},
-    {"pc": "vloss_mean"},
-    {"title": "Policy & Floor Loss",
-     "keys": ["stats.policy_loss_mean", "stats.floor_loss_mean"],
-     "hint": "policy_loss_mean：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n"
-             "为何初始≈0：epoch0 首 minibatch 所有 r=1 → loss = −mean(w·A)；仅当该批加权 A 均值=0 时严格为 0（单通道 z-score 归一化下近似成立）。\n"
-             "为何会变正/上升：有利方向 r 越过 ε 边界后该项目标值进入平台、该项梯度归零（收益封顶 ε·|A|）；不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界）。少数恶化样本可抵消大量改善 → 均值偏正是结构性现象，正负不代表学没学。\n"
-             "floor_loss_mean：uncertainty 单边二次 hinge coef·mean(relu(floor−U)²·fw)，未激活时为 0。\n"
-             "两者相加（非本图）才是实际反传的总损失。"},
-    {"title": "Loss → Actor ∇",
-     "keys": ["stats.action_grad_pol_mean", "stats.action_grad_floor_mean"],
-     "hint": "两种损失各自对 actor 全部参数的梯度 L2 范数（autograd.grad，未触达的参数计 0）。\n"
-             "每 epoch 首个 minibatch 采样、按 update 平均。\n"
-             "· action_grad_pol_mean：clipped surrogate 对动作网络的拉力\n"
-             "· action_grad_floor_mean：floor hinge 的拉力——按设计应只落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数"},
-    {"title": "Actor Gradient Norm", "keys": ["stats.grad_norm_actor_mean"],
-     "hint": "每个 update 一个点：该 update 内所有 actor minibatch 梯度 L2 范数的均值，clip 前原始值。\n"
-             "clip 阈值 1.0：范数超过时所有梯度等比缩放至范数 1（方向不变）。\n"
-             "读法：衡量\"策略想迈多大步\"vs clip 允许的实际步长。\n"
-             "· 持续远高于 1 → clip 在主导步长，有效步长被压缩\n"
-             "· 孤立尖刺 → 多为某个 batch 的 advantage 异常，可对照 KL/Timeline\n"
-             "· 持续趋近 0 → 警惕梯度死亡（advantage ~0 或 tanh 饱和）"},
-    {"pc": "grad_norm_mean"},
-    {"title": "Ratio",
-     "keys": ["stats.ratio_mean", "stats.ratio_min", "stats.ratio_max"],
-     "hint": "ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。\n"
-             "mean 是 update 内所有 actor minibatch ratio 均值的平均；max 是上尾（加压方向）；min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\n"
-             "within-update ratio 天然从 1 起步、随 minibatch 推进扩散，所以均值会被 early minibatch 拉低；末态 ratio 的精确分布请看\"Clip Fraction & Post-Update Ratio Bins\"图。"},
-    {"title": "Clip Fraction & Post-Update Ratio Bins",
-     "keys": ["stats.clip_frac_mean", "stats.clip_frac_hi_mean", "stats.clip_frac_lo_mean",
-              "stats.rbin_pos_ltlo", "stats.rbin_pos_lo", "stats.rbin_pos_hi",
-              "stats.rbin_pos_gthi", "stats.rbin_neg_ltlo", "stats.rbin_neg_lo",
-              "stats.rbin_neg_hi", "stats.rbin_neg_gthi", "stats.rbin_zero"],
-     "hint": "合并图：过程 clip 参与度 + update 结束后最终 ratio 分布。\n"
-             "clip_frac_mean/hi/lo：update 内 actor minibatch 上 ratio 越界 [1−ε,1+ε] 的样本占比；hi = r>1+ε 加压尾、lo = r<1−ε 压制尾，两尾不相交故 clip_frac_mean = hi + lo。它是\"clip 平均参与度\"，不是\"末态 clip 强度\"；想看 within-update 形态用 dump timeline。\n"
-             "rbin_*：update 结束后最终 actor 的 ratio 按 advantage 符号分 9 段（ltlo: r<1−ε｜lo: [1−ε,1)｜hi: [1,1+ε]，含 r=1｜gthi: r>1+ε），zero = A=0 样本占比，合计=1。\n"
-             "理想形态：pos 样本集中在 hi/gthi（概率被抬高）、neg 样本集中在 lo/ltlo（被压低）；pos_ltlo 或 neg_gthi 占比高 = 大量样本被推向反方向。"},
-    {"title": "Post-Update ΔClipLoss", "keys": ["stats.post_clip_dloss_mean",
-                             "stats.post_clip_dloss_gain",
-                             "stats.post_clip_dloss_harm"],
-     "hint": "update 结束后用最终 actor 对全部样本重算 ratio，再算\"双向 clip\"surrogate 相对 r=1 基线的变化：−mean[w·A·(clip(r,1−ε,1+ε)−1)]。\n"
-             "与 policy_loss_mean 的区别：不取 min、两尾都截断——每样本贡献限在 ±ε·w·|A|，不被极端 ratio 主导。\n"
-             "dloss_mean = dloss_gain + dloss_harm 严格成立（加法分解，同一 loss 单位）：gain ≤ 0 = 顺 advantage 方向移动的有利贡献（把 loss 往下拉）；harm ≥ 0 = 逆 advantage 方向移动的不利贡献（把 loss 往上推）。\n"
-             "dloss 变差时看拆项定位：gain 趋向 0 = 没学够（步数被截断/位移不足）；harm 上升 = 学歪了（更多样本被推向反 adv 方向，噪声/冲突梯度的候选形态）；两者同升 = 位移大但方向混杂——KL 大而 dloss 改善少时常伴此形态。\n"
-             "读法：dloss_mean 负 = 本 update 对该批固定 advantage 净顺应（越负越好）；≈0 或正 = 无一致方向（信号弱/相互冲突/已过时的 adv）。衡量的是对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
-    {"title": "‖G‖ vs mean(p_i) (θ_old)",
-     "keys": ["stats.grad_sig_g_norm", "stats.grad_sig_proj_mean"],
-     "right": ["stats.grad_sig_norm_mean"],
-     "hint": "每个 update 开始前（actor 仍是 θ_old）在完整 buffer 上分块反传得到总体梯度 G = mean_i g_i（真实训练损失：surrogate + floor hinge）。‖G‖ 是优化器介入前的原始合力强度——不是 Adam/clip/早停之后的实际位移。\n"
-             "grad_sig_g_norm：‖G‖——净拉力强度（\"信号强弱\"）。\n"
-             "grad_sig_proj_mean：mean(p_i)=mean(g_i·Ĝ)——恒等式 mean(p)=‖G‖ 的采样估计，与 gnorm 应近似重合（两条线叠在一起 = 采样有代表性）；偏差超出 std(p)/√n 标准误才说明采样不具代表性（‖G‖≪std(p) 时相对偏差大属正常噪声）。\n"
-             "grad_sig_norm_mean（右轴）：mean‖g_i‖——逐帧拉力均值，coherence 的分母：‖G‖ = mean‖g_i‖ × coherence。注意它与 ‖G‖ 不接近相等——差一个 coherence 倍（方向分散时可达百倍级）。"},
-    {"title": "Coherence & Direction (θ_old)",
-     "keys": ["stats.grad_sig_coherence", "stats.grad_sig_dir_cos"],
-     "hint": "grad_sig_coherence：‖G‖/mean‖g_i‖ ∈[0,1]——总拉力聚合后的存活率：1=全部同向，越小抵消越狠。它低不必然是有害冲突——方向散开也稀释合力；是否真有帧被牺牲看 frac_neg。\n"
-             "grad_sig_dir_cos：cos(G_u, G_{u−1})——合力方向的跨 update 持续性。低/负 = 每次更新在追移动靶（θ 变了、批次也换了，低值属正常漂移范围）。"},
-    {"title": "Per-frame Support vs G (θ_old)",
-     "keys": ["stats.grad_sig_frac_neg_mean"],
-     "right": ["stats.grad_sig_proj_std"],
-     "hint": "θ_old 处抽样 N 帧，逐帧算训练损失梯度 g_i 并投影到总体方向 Ĝ：p_i = g_i·Ĝ（正=这一步改善它，负=这一步牺牲它）。\n"
-             "grad_sig_frac_neg_mean：P(p_i<0)——本 update 方向牺牲的帧占比，最直接的\"谁被损害\"读数。\n"
-             "grad_sig_proj_std（右轴）：std(p_i)——逐帧获益离散度；合力是否均匀分配。\n"
-             "每 update 的二维分布（‖g_i‖ 分位 × cos 分箱）、P(cos) 边缘与 p_i 投影直方图见 gradsig/u*.npz 与 Update Detail 的 Gradient Signal 面板。"},
-    {"title": "KL", "keys": ["stats.post_kl_mean", "stats.post_kl_max",
-                             "stats.post_kl_pos_mean", "stats.post_kl_neg_mean",
-                             "stats.kl_mean", "stats.kl_max",
-                             "stats.early_stop_kl_mean"],
-     "hint": "post_kl_*：update 结束后用最终 actor 在全 buffer 上重算的 k3 KL（(r−1)−log r）——本次更新的真实位移，跨 update 可比，是\"推了多远\"的权威读数。\n"
-             "mean：全 buffer 平均位移（信任域距离）；max：单样本最大位移（位移是否集中于少数样本）；pos_mean/neg_mean：A>0 / A<0 样本上的平均位移——理想是 pos 侧位移占优。\n"
-             "kl_mean：过程量——update 内所有 actor minibatch 的 k3 均值，每个 minibatch 在当时迭代点上测量。读作\"update 过程中 actor 平均工作的位移水平\"，不是端点位移（端点看 post_kl_mean）。它恒受 ramp 结构影响（首 minibatch ≈0 后单调爬升）且分母随早停截断变化，绝对值系统性低于 post_kl_mean 属正常。\n"
-             "kl_max：过程量中单个 minibatch 的 k3 峰值，噪声大、受个别异常样本主导，主要作为异常尖刺报警（突然冲高 = 某个 minibatch 有 outlier 优势样本被大幅加压）。\n"
-             "early_stop_kl_mean：触发 KL 早停当刻的滑动窗口均值 KL（最近 early_stop_kl_window 个 minibatch，跨 epoch 边界；0=未触发）。与 kl_mean 同数量级，放在 KL 图便于直接比较\"日常过程位移\"和\"触发早停的位移阈值\"——若 kl_mean 持续逼近 early_stop_kl_mean 说明更新正贴着 target_kl 走。\n"
-             "潜在用途：与 post_kl_mean 对比揭示位移时序——post_kl_mean ≫ 2×kl_mean = 位移集中在末段爆发；post_kl_mean < kl_mean = 中途位移被后续 minibatch 回退（churn）。\n"
-             "逐 minibatch/逐 epoch 的 k3 序列见 dump Timeline 与 epoch_kl_stats。"},
-    {"title": "Epochs, Batches & Actor Steps",
-     "keys": ["stats.epochs_done", "stats.actor_epochs_done"],
-     "right": ["stats.n_batches", "stats.actor_steps"],
-     "hint": "epochs_done（左轴）：完成的 epoch 数（恒 = update_epochs——actor 被 KL 早停后 critic 仍继续跑完全部 epoch）。\n"
-             "actor_epochs_done（左轴）：actor 至少跑过一个 minibatch 的 epoch 数——actor 早停则它 < epochs_done。\n"
-             "n_batches（右轴）：每个 epoch 的 minibatch 数。\n"
-             "actor_steps（右轴）：actor 实际跑的 minibatch 步数总和，由 epoch_kl_stats 的 n_minibatches 累加——早停 epoch 只算到触发 KL 阈值的那个 minibatch，因此 <= n_batches × actor_epochs_done。\n"
-             "右轴的 n_batches / actor_steps 与左轴的 epoch 计数量级不同，分轴显示避免互相压扁。"},
-    {"timing": True,
-     "hint": "每 update 各阶段耗时（s）：jobs/rollout/buffer/ppo/eval/export + total。"},
+SUPPRESS_KEYS = frozenset({
+    "param_overrides",  # per-update dict — shown in Update Detail
+})
+
+# stats.* prefixes suppressed entirely: the gradsig (per-frame gradient
+# vs aggregate) diagnostic moved out of the dashboard into on-demand
+# dump tooling — its scalars still exist in old logs but must not
+# auto-chart.
+SUPPRESS_PREFIXES = ("stats.grad_sig_",)
+
+
+# ---------------------------------------------------------------------
+# Sectioned layout — fixed editorial order, six themed sections.
+# ---------------------------------------------------------------------
+
+SECTIONS: List[Dict[str, Any]] = [
+
+    # 1 ────────────────────────────────────────────────────────────
+    {"id": "task",
+     "title": "任务表现",
+     "question": "训练有没有让任务做得更好？",
+     "curated": [
+        {"zone_pick": "eval", "max": 2,
+         "prefer": ["success", "survival_rate", "survived",
+                    "final_pot", "max_pot", "max_stage", "max_h"],
+         "title": "评估表现",
+         "subtitle": "固定评估条件下策略的任务能力曲线。",
+         "guide": "值得注意：持续停滞、突然退化、波动变大；两个指标一升一降。\n"
+                  "下一步：看对应评估视频；检查配置/课程变化；对照策略更新与探索状态分区。多比较几个评估点，别盯单点。\n"
+                  "不能说明：单次评估不能证明稳定提升；受评估样本、场景、随机性影响，也不说明变化的原因。"},
+        {"zone_pick": "exp", "max": 2,
+         "prefer": ["online_success", "final_potential_mean"],
+         "title": "在线表现",
+         "subtitle": "训练 rollout 中实际采集到的行为表现。",
+         "guide": "值得注意：在线表现突然下降、长期不变；与评估曲线明显背离。\n"
+                  "下一步：核对训练与评估的探索方式、场景难度、课程和数据组成差异，再决定看哪些 episode。\n"
+                  "不能说明：在线数据来自带探索、可能变动的训练分布，不等价于固定评估条件下的策略能力。"},
+     ],
+     "expanded": [
+        {"title": "其余评估指标", "zone_rest": "eval"},
+        {"title": "其余在线指标", "zone_rest": "exp"},
+     ]},
+
+    # 2 ────────────────────────────────────────────────────────────
+    {"id": "policy_update",
+     "title": "策略更新",
+     "question": "PPO 是否在正常推进——更新被截断了吗，漂移正常吗？",
+     "curated": [
+        {"title": "策略漂移与早停",
+         "keys": ["stats.post_kl_mean", "stats.kl_mean"],
+         "spike_keys": ["stats.early_stop_kl_mean"],
+         "subtitle": "本轮策略相对采样策略改变了多少，以及是否触发 KL 早停。",
+         "guide": "post_kl_mean：update 结束后用最终 actor 在全 buffer 上重算的平均 k3 KL——端点位移。\n"
+                  "kl_mean：update 内所有 actor minibatch 的过程均值，系统性低于端点值属正常（首 minibatch≈0）。\n"
+                  "early_stop 标记：只在触发早停的 update 上出现（值为触发当刻的窗口均值 KL）。\n"
+                  "值得注意：KL 突然升高；早停开始频繁；KL 长期≈0；过程/末态关系改变。\n"
+                  "下一步：先看 Actor 更新执行量；展开 ratio/梯度辅助图；局部突变则定位首次异常 update，进 Dump timeline。\n"
+                  "不能说明：KL 更低≠更好、更高≠更坏；是采样估计不是参数位移，更不是任务收益。"},
+        {"title": "Actor 更新执行量",
+         "keys": ["stats.actor_epochs_done", "stats.epochs_done"],
+         "right": ["stats.actor_steps"],
+         "subtitle": "Actor 实际执行了多少更新；Critic 继续时它是否提前停。",
+         "guide": "actor_epochs_done vs epochs_done：actor 早停则前者 < 后者（critic 不受影响跑满）。\n"
+                  "actor_steps（右轴）：actor 实际跑的 minibatch 总数——早停 epoch 只算到触发处。\n"
+                  "值得注意：步数突然下降；actor/总 epoch 开始分离；更新量长期偏低。\n"
+                  "下一步：对照早停标记；检查 epochs/minibatch/buffer 配置变化，区分主动改配置与提前截断。\n"
+                  "不能说明：跑满 epoch 不等于学习效率高；步数变化也可能只是数据量或 minibatch 配置变了。"},
+     ],
+     "expanded": [
+        {"title": "概率变化", "charts": [
+            {"title": "Ratio",
+             "keys": ["stats.ratio_mean", "stats.ratio_min", "stats.ratio_max"],
+             "guide": "ratio = exp(new_lp − old_lp)，新旧策略对同一动作的分歧度（1=不变）。\n"
+                      "mean 是 update 内所有 actor minibatch ratio 均值的平均；max 是上尾（加压方向）；min 是下尾（压制方向——趋 0 = 某些已采样动作被新策略近乎清零，探索坍缩前兆）。\n"
+                      "within-update ratio 天然从 1 起步、随 minibatch 推进扩散，所以均值会被 early minibatch 拉低；末态分布见 Clip Fraction & Ratio Bins。"},
+            {"title": "Clip Fraction & Post-Update Ratio Bins",
+             "keys": ["stats.clip_frac_mean", "stats.clip_frac_hi_mean",
+                      "stats.clip_frac_lo_mean",
+                      "stats.rbin_pos_ltlo", "stats.rbin_pos_lo",
+                      "stats.rbin_pos_hi", "stats.rbin_pos_gthi",
+                      "stats.rbin_neg_ltlo", "stats.rbin_neg_lo",
+                      "stats.rbin_neg_hi", "stats.rbin_neg_gthi",
+                      "stats.rbin_zero"],
+             "guide": "clip_frac_mean/hi/lo：update 内 actor minibatch 上 ratio 越界 [1−ε,1+ε] 的样本占比；hi = r>1+ε 加压尾、lo = r<1−ε 压制尾，clip_frac_mean = hi + lo。过程参与度，不是末态强度。\n"
+                      "rbin_*：update 结束后最终 actor 的 ratio 按 advantage 符号分 9 段（ltlo/lo/hi/gthi + zero），合计=1。\n"
+                      "理想形态：pos 集中在 hi/gthi、neg 集中在 lo/ltlo；pos_ltlo 或 neg_gthi 高 = 大量样本被推向反方向。"},
+        ]},
+        {"title": "优化信号", "charts": [
+            {"title": "Policy Loss",
+             "keys": ["stats.policy_loss_mean"],
+             "guide": "policy_loss_mean：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n"
+                      "会变正/上升是结构性现象：有利方向收益封顶 ε·|A|，不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界），少数恶化样本可抵消大量改善——正负不代表学没学。"},
+            {"title": "Actor Gradient Norm",
+             "keys": ["stats.grad_norm_actor_mean"],
+             "guide": "该 update 内所有 actor minibatch 梯度 L2 范数均值，clip 前原始值（阈值见 grad_clip_norm）。\n"
+                      "持续远高于阈值 → clip 主导步长；孤立尖刺 → 多为某 batch 的 advantage 异常；持续趋 0 → 警惕梯度死亡。"},
+        ]},
+        {"title": "更新末态", "charts": [
+            {"title": "Post-Update KL 细分",
+             "keys": ["stats.post_kl_max", "stats.post_kl_pos_mean",
+                      "stats.post_kl_neg_mean", "stats.kl_max"],
+             "guide": "post_kl_max：单样本最大位移——位移是否集中于少数样本。\n"
+                      "post_kl_pos/neg_mean：A>0 / A<0 样本上的平均位移。\n"
+                      "kl_max：过程量中单个 minibatch 的峰值，噪声大，用作尖刺报警。\n"
+                      "post_kl_mean ≫ 2×kl_mean = 位移集中在末段；post_kl_mean < kl_mean = 中途位移被后续 minibatch 回退（churn）。"},
+            {"title": "Post-Update ΔClipLoss",
+             "keys": ["stats.post_clip_dloss_mean",
+                      "stats.post_clip_dloss_gain",
+                      "stats.post_clip_dloss_harm"],
+             "guide": "update 结束后用最终 actor 对全部样本重算 ratio 的双向 clip surrogate 变化：−mean[w·A·(clip(r)−1)]。每样本贡献限 ±ε·w·|A|，不被极端 ratio 主导。\n"
+                      "dloss_mean = gain + harm 严格成立：gain ≤ 0 = 顺 adv 方向的有利贡献；harm ≥ 0 = 逆向的不利贡献。\n"
+                      "变差时看拆项：gain→0 没学够；harm 升 = 学歪了；同升 = 位移大但方向混杂。衡量对当前 adv 估计的顺应度，不直接等于真实回报提升。"},
+        ]},
+        {"title": "配置与调度", "charts": [
+            {"title": "Learning Rate",
+             "keys": ["stats.actor_lr", "stats.critic_lr"],
+             "guide": "本 update 实际生效的学习率（从 optimizer param_groups 读取，含 lr_schedule 与 param_overrides 的结果）。\n"
+                      "恒定直线 = 未启用调度；阶跃 = param override 或 schedule 切换。"},
+            {"title": "Batches per Epoch",
+             "keys": ["stats.n_batches"],
+             "guide": "每个 epoch 的 minibatch 数 = total_frames / minibatch_size。变化说明 buffer 规模或 minibatch 配置变了。"},
+        ]},
+     ]},
+
+    # 3 ────────────────────────────────────────────────────────────
+    {"id": "signal",
+     "title": "训练信号",
+     "question": "Critic 产生的学习依据是否可靠，哪些通道实际在参与训练？",
+     "curated": [
+        {"pcm": "ev & confidence", "metrics": ["ev", "confidence"],
+         "title": "Critic 解释度与通道置信度",
+         "subtitle": "各 reward channel 的 critic 拟合质量与置信权重。",
+         "guide": "ev = 1 − Var(ret−V)/Var(ret)：critic 对该 channel return 的解释度——1=完美，<0=不如猜均值。\n"
+                  "confidence = √clip(ev,0,1)：乘进 combined_adv，自动压低不可信 critic 的通道权重。\n"
+                  "值得注意：EV 突降或长期为负；confidence 长期≈0；某通道明显落后。\n"
+                  "下一步：展开该通道的 reward/ret/adv/vloss/actor_weight，分辨目标分布变化、拟合问题还是权重机制失效。\n"
+                  "不能说明：高 EV 不保证 adv 无异常尾部或 value 无偏差；confidence 高≠该通道重要或贡献大。"},
+     ],
+     "expanded": [
+        {"title": "通道信号量", "charts": [
+            {"pcm": "reward",
+             "metrics": ["reward_min", "reward_max", "reward_std", "reward_mean"],
+             "guide": "该 channel 逐帧原始 reward 在活跃轨迹上的统计。min=点线、max=长虚线、std=短虚线、mean=加粗实线；颜色=channel。"},
+            {"pcm": "ret",
+             "metrics": ["ret_min", "ret_max", "ret_std", "ret_mean"],
+             "guide": "该 channel 折扣回报 return（critic 拟合目标，GAE γ 口径）。min≈0（末帧 return≈末帧 reward）；max 反映最佳轨迹质量。"},
+            {"pcm": "adv",
+             "metrics": ["adv_min", "adv_max", "adv_std", "adv_mean"],
+             "guide": "该 channel 原始 GAE advantage 统计（活跃帧、未归一化）。min/max 反映分布上下尾——极端值提示异常帧幅值。\n"
+                      "注意：真正进 actor 的是 norm_adv = 本图经 adv_norm 变换后 × actor_weight × confidence。"},
+            {"pcm": "actor_weight",
+             "metrics": ["actor_weight_min", "actor_weight_max",
+                         "actor_weight_mean"],
+             "guide": "build_trajectories 给的课程权重，决定该 channel advantage 进入 combined_adv 的相对权重（逐帧 L1 归一化）。"},
+        ]},
+        {"title": "Critic 健康", "charts": [
+            {"pc": "vloss_mean"},
+            {"pc": "grad_norm_mean"},
+        ]},
+     ]},
+
+    # 4 ────────────────────────────────────────────────────────────
+    {"id": "explore",
+     "title": "探索状态",
+     "question": "策略是否过早收缩，探索保护是否持续介入？",
+     "curated": [
+        {"title": "不确定性与保护下限",
+         "keys": ["stats.uncertainty_mean", "stats.uncertainty_floor"],
+         "subtitle": "策略不确定性均值 vs 配置的保护下限。",
+         "guide": "uncertainty_mean：buffer 全帧在 θ_old 下的 ActorEval.uncertainty 均值 U ∈ [0,1]。\n"
+                  "uncertainty_floor：本 update 生效的保护下限（exploration spec）。\n"
+                  "值得注意：不确定性快速下降；长期低于下限；下限调整后不响应；任务停滞同时持续收缩。\n"
+                  "下一步：展开 floor loss 与梯度分解；看视频判断行为是否僵化。\n"
+                  "不能说明：均值不代表所有状态；高于 floor 不代表局部保护项未激活；高不确定性≠有用探索。"},
+     ],
+     "expanded": [
+        {"title": "保护项与梯度", "charts": [
+            {"title": "Floor Loss & Coef",
+             "keys": ["stats.floor_loss_mean", "stats.uncertainty_coef"],
+             "guide": "floor_loss_mean = coef·mean(relu(floor−U)²·fw)：单边二次 hinge，未激活为 0。\n"
+                      "uncertainty_coef：本 update 生效的保护系数（exploration spec）。"},
+            {"title": "Loss → Actor ∇",
+             "keys": ["stats.action_grad_pol_mean",
+                      "stats.action_grad_floor_mean"],
+             "guide": "两种损失各自对 actor 参数的梯度 L2 范数（每 epoch 首 minibatch 采样、按 update 平均）。\n"
+                      "action_grad_floor 按设计只应落在探索参数上、幅值小；异常升高提示 floor 泄漏进了动作参数。"},
+        ]},
+        {"title": "策略自定义指标", "zone_rest": "policy"},
+     ]},
+
+    # 5 ────────────────────────────────────────────────────────────
+    {"id": "sampling",
+     "title": "采样与轨迹",
+     "question": "本轮用什么规模、什么形态的数据在训练？",
+     "curated": [
+        {"title": "Episode 与 Trajectory 数量",
+         "keys": ["ep.n_episodes", "stats.n_trajectories"],
+         "subtitle": "实际采集的 episode 数 vs 进入 buffer 的轨迹段数。",
+         "guide": "n_episodes：本 update 真实跑的环境 episode 数；n_trajectories：buffer 轨迹段总数（一个 episode 可拆多条，如每 agent 一条）。\n"
+                  "值得注意：数量意外下降；两者比例突变；与 episodes_per_update 配置不符。\n"
+                  "下一步：检查 trajectory 切分、agent 参与和通道激活；必要时看 Dump 映射。\n"
+                  "不能说明：数量多不等于信息量大——重复、强相关数据不因数量大变成高质量样本。"},
+        {"title": "Episode 与 Trajectory 长度",
+         "keys": ["ep.ep_len_mean", "stats.traj_len_mean"],
+         "subtitle": "环境交互长度与训练轨迹长度的均值趋势。",
+         "guide": "ep_len_mean：真实对局长度均值；traj_len_mean：buffer 轨迹段长度均值——一一对应时两者相等。\n"
+                  "值得注意：长度突降；两者开始明显分离；长期固定 timeout。\n"
+                  "下一步：检查终止原因、时间上限和切分规则；结合任务表现及 episode 证据判断。\n"
+                  "不能说明：长不一定好、短不一定坏——可能是更早失败或更快成功，须由任务语义解释。"},
+     ],
+     "expanded": [
+        {"title": "规模与覆盖", "charts": [
+            {"keys": ["stats.total_frames"],
+             "title": "Total Frames",
+             "guide": "本 update buffer 总帧数 = Σ traj_len。"},
+            {"pc": "n_active_trajs"},
+            {"pc": "active_ratio"},
+        ]},
+        {"title": "长度范围", "charts": [
+            {"title": "Episode & Trajectory Length (range)",
+             "keys": ["ep.ep_len_min", "ep.ep_len_max",
+                      "stats.traj_len_min", "stats.traj_len_max"],
+             "guide": "episode / trajectory 长度的 min/max 范围——发散说明数据形态不均一。"},
+            {"pc": "traj_len_mean"},
+        ]},
+     ]},
+
+    # 6 ────────────────────────────────────────────────────────────
+    {"id": "cost",
+     "title": "运行开销",
+     "question": "时间花在哪里，是否出现运行瓶颈？",
+     "curated": [
+        {"title": "每轮耗时与阶段组成",
+         "keys": ["time.total", "time.rollout", "time.ppo", "time.eval"],
+         "subtitle": "每 update 总耗时及主要阶段分解。",
+         "guide": "total：一轮总耗时；rollout/ppo/eval：三大阶段（buffer/jobs/export 等小项见展开）。\n"
+                  "值得注意：总耗时阶跃增长；某阶段持续变慢；周期性尖峰。\n"
+                  "下一步：对照数据规模、actor 步数、评估周期和诊断开关，再查资源竞争或具体阶段。\n"
+                  "不能说明：每轮更快≠效率更高——可能只是数据变少或提前停止；不据此声称样本效率提升。"},
+     ],
+     "expanded": [
+        {"title": "全部阶段耗时", "charts": [
+            {"title": "Minor Phases",
+             "keys": ["time.buffer", "time.jobs", "time.export"],
+             "guide": "buffer 构建、jobs 构建、policy 导出等小阶段耗时。"},
+        ]},
+     ]},
 ]
 
 # Per-channel metric hints — used by pc.* fallback charts; pcm-merged
@@ -261,12 +401,25 @@ ZONES: List[Dict[str, Any]] = [
 def catalog() -> Dict[str, Any]:
     """JSON-safe catalog dict served at /api/catalog and consumed by
     index.html — and by agents / future debug.py CLI commands."""
+    # "layout" is the flattened view of every chart spec across all
+    # sections — kept for agents/tools that enumerate charts without
+    # caring about the section structure.
+    layout: List[Dict[str, Any]] = []
+    for sec in SECTIONS:
+        layout.extend(sec.get("curated") or [])
+        for grp in sec.get("expanded") or []:
+            if grp.get("zone_rest"):
+                layout.append({"zone_rest": grp["zone_rest"]})
+            layout.extend(grp.get("charts") or [])
     return {
-        "layout": FRAMEWORK_LAYOUT,
+        "sections": SECTIONS,
+        "layout": layout,
         "pc_hints": PC_HINTS,
         "stats_hints": STATS_HINTS,
         "zones": ZONES,
         "labels": KEY_LABELS,
+        "suppress": sorted(SUPPRESS_KEYS),
+        "suppress_prefixes": list(SUPPRESS_PREFIXES),
     }
 
 
@@ -297,12 +450,18 @@ def metric_doc(key: str) -> Dict[str, Any]:
                 hint = PC_HINTS.get(parts[1], "")
         elif key.startswith("stats."):
             hint = STATS_HINTS.get(key[6:], "")
-            # Layout keys carry a group-level hint — surface it so a
-            # documented layout key resolves to its chart's hint.
+            # Keys placed in a section chart carry the chart's guide —
+            # surface it so a documented key resolves to its chart's doc.
             if not hint:
-                for spec in FRAMEWORK_LAYOUT:
-                    if key in (spec.get("keys") or []):
-                        hint = spec.get("hint", "")
+                for sec in SECTIONS:
+                    specs = list(sec.get("curated") or [])
+                    for grp in sec.get("expanded") or []:
+                        specs.extend(grp.get("charts") or [])
+                    for spec in specs:
+                        if key in (spec.get("keys") or []):
+                            hint = spec.get("guide") or spec.get("hint", "")
+                            break
+                    if hint:
                         break
     else:
         hint = z.get("hint", "")
