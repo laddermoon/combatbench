@@ -45,6 +45,7 @@ Key differences from v1
 """
 from __future__ import annotations
 
+import math
 import random
 import time
 from collections import deque
@@ -52,6 +53,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from scipy.special import erfinv as _sp_erfinv
+from scipy.stats import rankdata as _sp_rankdata
 
 from baseline.framework.ppo.algos import compute_gae
 
@@ -391,34 +394,53 @@ class PPOBuffer:
 # ---------------------------------------------------------------------------
 
 def _normalize_adv(
-    adv: np.ndarray, mask: np.ndarray, center: bool = True,
+    adv: np.ndarray, mask: np.ndarray, method: str = "zscore",
 ) -> np.ndarray:
     """Advantage normalization on active frames.  Inactive frames get zero.
 
     Normalization is per-channel and per-update: each channel's advantages
-    are independently scaled to unit std (and, with ``center=True``,
-    centered to zero mean). This means the *absolute scale* of rewards
+    are independently scaled. This means the *absolute scale* of rewards
     across channels is irrelevant — only the *relative pattern* within
     each channel matters. The experiment controls cross-channel
     importance via actor_weight, not via reward magnitudes.
 
-    ``center=False`` (``adv_norm="std"``) skips the mean subtraction:
-    A/std preserves the raw advantage sign of every frame, whereas
-    z-scoring flips the sign — and thus the surrogate gradient direction
-    — of frames on the wrong side of the batch mean.
+    Methods:
+    - ``"zscore"`` — (A − mean)/std.  Batch-mean centering; frames near
+      the batch mean can flip sign, which also flips that frame's
+      surrogate gradient direction.
+    - ``"std"`` — A/std.  Scale-only normalization; preserves the raw
+      advantage sign of every frame.
+    - ``"gauss_rank"`` — Gaussian quantile transform: ranks → uniform
+      quantiles → Φ⁻¹.  Output is exactly N(0,1)-shaped: order is
+      preserved, magnitudes are replaced by the expected normal order
+      statistics.  Implicitly bounds the tail at ±Φ⁻¹(1−1/2n) (≈±4.9σ
+      for n=204800) with no threshold parameter — an outlier trajectory
+      cannot dominate the surrogate coefficient the way a −13σ z-score
+      outlier can.
 
     Edge cases:
     - No active frames → all zeros (channel contributes nothing).
-    - Zero variance (all advantages equal) → all zeros (no gradient signal).
+    - Zero variance (all advantages equal) → all zeros.  For
+      ``gauss_rank`` this falls out naturally: tied ranks all map to
+      the median quantile → 0.
     """
     active = adv[mask]
     if active.size == 0:
         return np.zeros_like(adv, dtype=np.float32)
-    mean = float(active.mean()) if center else 0.0
+    result = np.zeros_like(adv, dtype=np.float32)
+    if method == "gauss_rank":
+        # rankdata 'average' gives tied values the same (mean) rank, so
+        # equal advantages map to equal quantiles.  Φ⁻¹(q) = √2·erfinv(2q−1).
+        ranks = _sp_rankdata(active, method="average")
+        q = (ranks - 0.5) / active.size
+        result[mask] = (
+            math.sqrt(2.0) * _sp_erfinv(2.0 * q - 1.0)
+        ).astype(np.float32)
+        return result
+    mean = float(active.mean()) if method == "zscore" else 0.0
     std = float(active.std())
     if std < 1e-8:
         return np.zeros_like(adv, dtype=np.float32)
-    result = np.zeros_like(adv, dtype=np.float32)
     result[mask] = ((active - mean) / std).astype(np.float32)
     return result
 
@@ -1089,6 +1111,21 @@ def ppo_update(
     normed_advs: Dict[str, np.ndarray] = {}
     aw_normed_all: Dict[str, np.ndarray] = {}
 
+    # adv_norm_late switch: once update_index reaches
+    # adv_norm_late_from_update, normalization method changes.  Lets a
+    # resumed run switch methods at a chosen update while keeping the
+    # preceding prefix bit-identical.
+    adv_norm_method = pp.adv_norm
+    if (
+        pp.adv_norm_late is not None
+        and update_index >= pp.adv_norm_late_from_update
+    ):
+        adv_norm_method = pp.adv_norm_late
+        diagnostics.append(
+            f"  [adv_norm] switched to '{adv_norm_method}' "
+            f"(from_update={pp.adv_norm_late_from_update}, u{update_index})"
+        )
+
     combined_adv = np.zeros(n, dtype=np.float32)
     for key in reward_keys:
         aw_frame = key_actor_weight_frame[key]
@@ -1110,7 +1147,7 @@ def ppo_update(
         # different phase with a different advantage distribution.
         norm_mask = key_frame_mask[key] & (aw_frame != 0.0)
         normed = _normalize_adv(
-            advs_all[key], norm_mask, center=(pp.adv_norm == "zscore"),
+            advs_all[key], norm_mask, method=adv_norm_method,
         )
         normed_advs[key] = normed
         combined_adv = combined_adv + aw_normed * conf * normed

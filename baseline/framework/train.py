@@ -77,6 +77,18 @@ def _parse_args() -> argparse.Namespace:
              "(default 0 = every update).",
     )
     parser.add_argument(
+        "--adv-norm", choices=["zscore", "std", "gauss_rank"],
+        default=None,
+        help="Override advantage normalization method. With "
+             "--adv-norm-from-update, the switch happens at that update "
+             "(resume-time intervention); default 0 = every update.",
+    )
+    parser.add_argument(
+        "--adv-norm-from-update", type=int, default=0,
+        help="Update index from which --adv-norm applies "
+             "(default 0 = every update).",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment constructor parameter (can be repeated). "
              "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
@@ -214,6 +226,20 @@ def main() -> None:
             f"[winsorize] combined_adv clipped to "
             f"±{args.adv_winsorize_sigma}σ from update "
             f"{args.adv_winsorize_from_update}", flush=True,
+        )
+
+    if args.adv_norm is not None and algo == "ppo":
+        import dataclasses
+        pp = experiment.ppo_params()
+        pp = dataclasses.replace(
+            pp,
+            adv_norm_late=args.adv_norm,
+            adv_norm_late_from_update=args.adv_norm_from_update,
+        )
+        experiment.ppo_params = lambda: pp
+        print(
+            f"[adv_norm] switching to '{args.adv_norm}' from update "
+            f"{args.adv_norm_from_update}", flush=True,
         )
 
     if args.smoke:

@@ -343,15 +343,57 @@ def test_normalize_adv_single_active_frame():
 
 
 def test_normalize_adv_no_center_preserves_sign():
-    """center=False (adv_norm="std") scales only — raw signs preserved."""
+    """method="std" scales only — raw signs preserved."""
     adv = np.array([1.0, 2.0, 3.0, -4.0, 0.5], dtype=np.float32)
     mask = np.array([True, True, True, True, True])
-    result = _normalize_adv(adv, mask, center=False)
+    result = _normalize_adv(adv, mask, method="std")
     std = adv.std()
     np.testing.assert_allclose(
         result, (adv / std).astype(np.float32), atol=1e-6)
     assert np.all(np.sign(result[mask]) == np.sign(adv[mask]))
     print("test_normalize_adv_no_center_preserves_sign: PASS")
+
+
+def test_normalize_adv_gauss_rank():
+    """gauss_rank: order-preserving, N(0,1)-shaped, bounded tail."""
+    from scipy.stats import norm
+
+    # Heavy tail: one outlier among otherwise-similar values.
+    adv = np.array([-0.05, -0.03, 0.0, 0.02, 0.04, 100.0],
+                   dtype=np.float32)
+    mask = np.ones(6, dtype=bool)
+    result = _normalize_adv(adv, mask, method="gauss_rank")
+
+    # Order preserved and symmetric around 0.
+    order = np.argsort(adv)
+    assert np.all(np.diff(result[order]) > 0)
+    sr = np.sort(result)
+    np.testing.assert_allclose(sr, -sr[::-1], atol=1e-6)
+    # Max value equals Φ⁻¹(1 − 0.5/n) — bounded regardless of how
+    # extreme the raw outlier is.
+    n = 6
+    expected_max = norm.ppf(1.0 - 0.5 / n)
+    np.testing.assert_allclose(result.max(), expected_max, rtol=1e-5)
+    # Doubling the outlier changes nothing — pure rank transform.
+    adv2 = adv.copy(); adv2[5] = 1e6
+    result2 = _normalize_adv(adv2, mask, method="gauss_rank")
+    np.testing.assert_allclose(result, result2, atol=1e-6)
+
+    # Ties → same rank → same quantile.
+    adv_tie = np.array([1.0, 1.0, 1.0, 2.0], dtype=np.float32)
+    r_tie = _normalize_adv(adv_tie, np.ones(4, bool), method="gauss_rank")
+    assert r_tie[0] == r_tie[1] == r_tie[2]
+
+    # Inactive frames stay zero; all-equal active → all zeros.
+    m2 = np.array([False, True, True, True, True, True])
+    r2 = _normalize_adv(adv, m2, method="gauss_rank")
+    assert r2[0] == 0.0
+    adv_eq = np.ones(4, dtype=np.float32)
+    np.testing.assert_array_equal(
+        _normalize_adv(adv_eq, np.ones(4, bool), method="gauss_rank"),
+        np.zeros(4, dtype=np.float32),
+    )
+    print("test_normalize_adv_gauss_rank: PASS")
 
 
 # ---------------------------------------------------------------------------
@@ -3629,5 +3671,6 @@ if __name__ == "__main__":
 
     # ADV winsorize
     test_ppo_update_adv_winsorize()
+    test_normalize_adv_gauss_rank()
 
     print("\nAll PPO trainer tests passed!")

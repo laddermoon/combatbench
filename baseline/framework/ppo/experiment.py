@@ -449,7 +449,17 @@ class PPOParams:
     #       surrogate gradient direction.
     #   "std"    — A/std.  Scale-only normalization; preserves the raw
     #       advantage sign of every frame.
+    #   "gauss_rank" — rank → uniform quantile → Φ⁻¹.  Output is exactly
+    #       N(0,1)-shaped; preserves ordering, replaces magnitudes with
+    #       normal order statistics, implicitly bounds the tail at
+    #       ±Φ⁻¹(1−1/2n) with no threshold parameter.
     adv_norm: str = "zscore"
+    # Optional method switch: when set, replaces ``adv_norm`` once
+    # update_index >= adv_norm_late_from_update.  Enables resume-time
+    # interventions that change normalization from a chosen update
+    # while keeping the prefix bit-identical.
+    adv_norm_late: Optional[str] = None
+    adv_norm_late_from_update: int = 0
 
     # Winsorize (缩尾) the normalized COMBINED advantage at ±sigma
     # before it enters the surrogate.  Bounds the per-frame gradient
@@ -500,10 +510,24 @@ class PPOParams:
                 f"early_stop_kl_window must be >= 1, "
                 f"got {self.early_stop_kl_window}."
             )
-        if self.adv_norm not in ("zscore", "std"):
+        _adv_norm_methods = ("zscore", "std", "gauss_rank")
+        if self.adv_norm not in _adv_norm_methods:
             raise ValueError(
-                f"adv_norm must be 'zscore' or 'std', got "
+                f"adv_norm must be one of {_adv_norm_methods}, got "
                 f"{self.adv_norm!r}."
+            )
+        if (
+            self.adv_norm_late is not None
+            and self.adv_norm_late not in _adv_norm_methods
+        ):
+            raise ValueError(
+                f"adv_norm_late must be one of {_adv_norm_methods} or "
+                f"None, got {self.adv_norm_late!r}."
+            )
+        if self.adv_norm_late_from_update < 0:
+            raise ValueError(
+                f"adv_norm_late_from_update must be >= 0, got "
+                f"{self.adv_norm_late_from_update}."
             )
         if self.adv_winsorize_sigma < 0.0:
             raise ValueError(
