@@ -48,15 +48,16 @@
 
   /* Home page */
   .home-layout { padding: 16px; height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
-  .ana-trio { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 20px; align-items: start; }
-  @media (max-width: 1200px) { .ana-trio { grid-template-columns: 1fr; } }
+  .ana-duo { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .ana-duo { grid-template-columns: 1fr; } }
   .ana-cell { min-width: 0; }
   .ana-cell h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .hist-svg { display: block; width: 100%; }
-  .hist-strip { margin: 8px 0; font-size: 11px; }
-  .hist-strip .hs-head { display: flex; justify-content: space-between; margin-bottom: 2px; }
-  .hist-strip .hs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hist-strip .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chain-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .chain-stage { min-width: 0; }
+  .chain-stage .hs-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 11px; }
+  .chain-stage .hs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chain-stage .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .steps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 12px; }
   .steps-grid .chart-container { margin-bottom: 0; }
   .steps-detail { margin-top: 14px; }
@@ -577,21 +578,20 @@
         </div>
         <div class="card">
           <h2>Signal Summary <span class="gs-scope">cross-section of this update</span></h2>
-          <div class="ana-trio">
+          <div class="ana-duo">
             <div class="ana-cell">
               <h3>ADV distribution · final</h3>
               <div id="adv-hist"><div class="loading">loading...</div></div>
-            </div>
-            <div class="ana-cell">
-              <h3>ADV transform chain</h3>
-              <div class="desc">raw → normed → weighted → winsorized (own x-axis each)</div>
-              <div id="adv-stages"><div class="loading">loading...</div></div>
             </div>
             <div class="ana-cell">
               <h3>Gradient signal <span class="gs-scope">sampled ≤2000 · θ_old</span></h3>
               <div class="gs-heat" id="gs-heat"></div>
               <div class="gs-side" id="gs-stats"></div>
             </div>
+          </div>
+          <div class="ana-cell" style="margin-top:16px">
+            <h3>ADV transform chain <span class="gs-scope">raw → normed → weighted → winsorized · own x-axis each</span></h3>
+            <div id="adv-stages" class="chain-row"><div class="loading">loading...</div></div>
           </div>
           <div id="gs-top"></div>
         </div>
@@ -3146,10 +3146,10 @@
       `p1 ${fmt(fin.p1, 2)} / p99 ${fmt(fin.p99, 2)} — lines: p1·median·p99</div>`;
     let sh = '';
     for (const st of stages) {
-      sh += `<div class="hist-strip">` +
+      sh += `<div class="chain-stage">` +
         `<div class="hs-head"><span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
         `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}]</span></div>` +
-        _histSvg(st, 340, 56, false) + `</div>`;
+        _histSvg(st, 320, 96) + `</div>`;
     }
     stagesEl.innerHTML = sh;
   }
