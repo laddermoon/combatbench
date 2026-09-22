@@ -204,6 +204,13 @@ def test_observer_join():
         h = f["observer.height.h"]
         exp = np.array([0, .01, .02, 0, .02, .04, .03, .04, .06, .08])
         assert np.allclose(h, exp), h
+        # suffixed name = agent filter: only that agent's trajs get data
+        ha = f["observer.height_a.h"]
+        assert np.isnan(ha[[3, 4, 5, 8, 9]]).all()
+        assert np.allclose(ha[[0, 1, 2, 6, 7]], [0, .01, .02, .03, .04])
+        # columns advertise canonical (unsuffixed) names only
+        assert "observer.height.h" in f.columns
+        assert "observer.height_a.h" not in f.columns
         print("test_observer_join: PASS")
 
 

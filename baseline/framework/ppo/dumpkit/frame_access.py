@@ -504,17 +504,30 @@ class FrameTable(Table):
             return None
         prov = self._ds._traj_provenance
         suffix = field and f".{field}" or ""
+        # An explicit ``_x`` tail on the observer name is an agent filter:
+        # ``observer.foot_state_a.X`` resolves only on robot_a
+        # trajectories (other agents' rows stay NaN).  The canonical
+        # public name is unsuffixed ``observer.foot_state.X``, resolved
+        # per-trajectory by that trajectory's agent.
+        m2 = re.match(r"^(.*)_([a-z])$", base)
+        req = m2.group(2) if m2 else None
+        stem = m2.group(1) if m2 else base
         # Per-trajectory source keys
         keys: List[Optional[str]] = []
         proto: Optional[np.ndarray] = None
+        ep_keys = ep.keys()
         for t in prov:
             key = None
             if t is not None:
                 suff = _agent_suffix(str(t["agent_id"]))
-                for cand in (
-                        f"observer_outputs.{base}_{suff}{suffix}",
-                        f"observer_outputs.{base}{suffix}"):
-                    if cand in ep.keys():
+                if req is not None:
+                    cands = ([f"observer_outputs.{stem}_{req}{suffix}"]
+                             if suff == req else [])
+                else:
+                    cands = [f"observer_outputs.{stem}_{suff}{suffix}",
+                             f"observer_outputs.{stem}{suffix}"]
+                for cand in cands:
+                    if cand in ep_keys:
                         key = cand
                         break
             keys.append(key)
@@ -586,7 +599,9 @@ class FrameTable(Table):
         for k in self._ds.npz("episodes").keys():
             if k.startswith("observer_outputs."):
                 rest = k[len("observer_outputs."):]
-                cols.append("observer." + re.sub(r"_[a-z]$", "", rest))
+                # Canonical public name drops the agent suffix on the
+                # observer-name component: foot_state_a.X → foot_state.X
+                cols.append("observer." + re.sub(r"_[a-z](?=\.|$)", "", rest))
         # Derived per-channel contribution column (aw_normed×conf×normed_adv)
         comb = self._ds.npz("combine")
         if isinstance(comb.get_dict("confidences"), dict):
