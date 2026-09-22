@@ -35,7 +35,8 @@ Weights (W = 1.0)::
                                             w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
     SUPPORT_*  steps 3..10  (Phase B)    →  w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
                                             w[support] =  0
-    SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W
+    SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W if h_swing >= SWING_LIFT_THRESHOLD
+                                                          else +W (late lift still pushed up)
                                             w[support] =  0
     DOUBLE transition (last_swing set)
         steps 1..6   (grace)              →  w[prev_support] =  0
@@ -58,8 +59,11 @@ Phase B (steps 3..10, ~0.4 s):
     Once lifted enough, let physics carry it naturally.
 
 Phase C (steps 11+, ~0.55 s+):
-    Encourage the swing foot to lower (prepare for landing).  The support
-    foot is left alone (w = 0): it should stay planted, not start lifting
+    The swing foot is overdue.  If it reached SWING_LIFT_THRESHOLD,
+    encourage it to lower (prepare for landing).  If it never lifted
+    enough, keep pushing it up (+W) — a foot that is still below the bar
+    must not be punished for making slow progress.  The support foot is
+    left alone (w = 0): it should stay planted, not start lifting
     prematurely.
 
 DOUBLE grace period (steps 1..6):
@@ -302,8 +306,16 @@ def compute_foot_weights(
                     else:
                         w_right[t] = weight
             else:
-                # Phase C: encourage swing foot down, leave support alone.
-                if swing_is_left:
+                # Phase C: swing overdue.  If the foot reached the lift
+                # threshold, encourage descent; if it never lifted enough,
+                # keep pushing up — a late lift must not be punished for
+                # still making progress.
+                if swing_needs_lift:
+                    if swing_is_left:
+                        w_left[t] = weight
+                    else:
+                        w_right[t] = weight
+                elif swing_is_left:
                     w_left[t] = -weight     # swing down
                 else:
                     w_right[t] = -weight

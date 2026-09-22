@@ -20,6 +20,12 @@ rule table (Phase A/B/C, DOUBLE grace, FLIGHT continuation).
 φ² gating on the foot channels ensures stepping is only rewarded after
 the robot is standing.  r_potential is always active (fixed aw = 3.0).
 
+Exploration is phase-dependent via per-frame ``explore_factor``:
+σ×0.5 while low (protect the warm-started standup skill), σ×2.0 while
+standing (the u50 dump showed +W lift intents convert to real lifts only
+~0.5% of the time — isotropic σ≈0.30 never produces the ~5 cm
+coordinated hip+knee excursion needed to create positive advantage).
+
 No imbalance termination — the robot can fall and get back up.
 Every step is trainable (like standup, not like basic_balance).
 
@@ -27,6 +33,7 @@ Blueprint: baseline/humanoid21/end2end/step_env.yaml
 """
 from __future__ import annotations
 
+import math as _math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +48,21 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
 )
 
 from .base import CombatExperimentPPOBase
+
+
+# --- Phase-dependent explore_factor (per-frame callable) ---
+# obs[45] = h_torso (root body z, meters).  σ multiplier = 3^ef.
+# low      (h < 1.1): ef = -0.631 → σ × 0.5 (protect standup skill)
+# standing (h ≥ 1.1): ef = +0.631 → σ × 2.0 (explore stepping)
+# Must be top-level for multiprocessing picklability.
+_EF_LOW = _math.log(0.5) / _math.log(3)    # ≈ -0.631
+_EF_STAND = _math.log(2.0) / _math.log(3)  # ≈ +0.631
+_H_EF_SWITCH = 1.1
+
+
+def _phase_explore_factor(obs, step):
+    """Per-frame explore_factor: quiet while low, loud while standing."""
+    return _EF_STAND if float(obs[45]) >= _H_EF_SWITCH else _EF_LOW
 
 
 class Step(CombatExperimentPPOBase):
@@ -268,7 +290,77 @@ class Step(CombatExperimentPPOBase):
                     episode, agent_id, foot_key, phi_key,
                 )
                 all_trajs.extend(trajs)
+        if not getattr(self, "_ef_verified", False):
+            self._ef_verified = True
+            self._verify_explore_factor_flow(all_trajs)
         return all_trajs
+
+    # ------------------------------------------------------------------
+    # Rollout jobs — phase-dependent explore_factor
+    # ------------------------------------------------------------------
+
+    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True):
+        """Per-frame explore_factor: σ×0.5 while low, σ×2.0 while standing.
+
+        Overrides the scalar ``self.explore_factor`` — the callable on
+        obs[45] (h_torso) concentrates exploration on standing frames,
+        where stepping must be discovered, and keeps the standup phase
+        deterministic so the warm-started skill is not perturbed.
+        """
+        from baseline.framework.rollout import Job
+        env_bp = self._env_pb().materialize(max_steps=self.max_steps)
+        rng = np.random.default_rng(base_seed)
+        jobs = []
+        for i in range(n_episodes):
+            seed = int(base_seed + i)
+            initial_distance = float(
+                rng.uniform(self.init_distance_min, self.init_distance_max)
+            )
+            jobs.append(Job(
+                policy_a_bp=policy_bp,
+                policy_b_bp=policy_bp,
+                env_bp=env_bp,
+                seed=seed,
+                episode_options={"initial_distance": initial_distance},
+                explore_factor_a=_phase_explore_factor,
+                explore_factor_b=_phase_explore_factor,
+                stochastic=stochastic,
+            ))
+        return jobs
+
+    def _verify_explore_factor_flow(self, trajs: List[Trajectory]) -> None:
+        """One-time diagnostic: verify per-frame explore_factor data flow.
+
+        Checks (first trajectory only): ef array exists, ef < 0 where
+        obs[45] < 1.1 (low), ef > 0 where obs[45] >= 1.1 (standing).
+        """
+        if not trajs:
+            return
+        t0 = trajs[0]
+        ef = t0.explore_factor
+        obs = np.asarray(t0.obs, dtype=np.float32)
+        if ef is None:
+            print("  [ef-verify] FAIL: Trajectory.explore_factor is None "
+                  "— rollout did not record per-frame ef", flush=True)
+            return
+        ef = np.asarray(ef, dtype=np.float32)
+        h_obs = obs[:, 45]
+        n = len(ef)
+        n_stand = int((h_obs >= _H_EF_SWITCH).sum())
+        n_low = n - n_stand
+        ok_low = bool(np.all(ef[h_obs < _H_EF_SWITCH] < 0)) if n_low else True
+        ok_stand = bool(np.all(ef[h_obs >= _H_EF_SWITCH] > 0)) if n_stand else True
+        exp_ratio = (n_stand * 2.0 + n_low * 0.5) / n
+        print(
+            f"  [ef-verify] T={n} ef_min={ef.min():.3f} ef_max={ef.max():.3f} | "
+            f"low(h<1.1)={n_low} ef<0: {'OK' if ok_low else 'FAIL'} | "
+            f"stand(h>=1.1)={n_stand} ef>0: {'OK' if ok_stand else 'FAIL'} | "
+            f"expected eff/std ratio={exp_ratio:.3f}",
+            flush=True,
+        )
+        if not (ok_low and ok_stand):
+            print("  [ef-verify] FAIL: ef sign inconsistent with h_torso phase",
+                  flush=True)
 
     # ------------------------------------------------------------------
     # Eval — track standing success

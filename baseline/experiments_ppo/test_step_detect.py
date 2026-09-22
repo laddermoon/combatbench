@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
+    compute_foot_weights,
     detect_step_cycles,
 )
 
@@ -129,3 +130,57 @@ def test_nonstanding_liftoff_rejected():
     assert r["n_cycles_left"] == 0
     assert r["n_cycles_right"] == 1
     assert r["stepped"] is False  # only one foot has a valid cycle
+
+
+# ----------------------------------------------------------------------
+# Phase C lift gate — a swing foot that never reached the threshold must
+# keep getting +W late in the phase, not unconditional -W.
+# ----------------------------------------------------------------------
+
+def _long_swing(T: int, h_during_swing) -> tuple:
+    """DOUBLE for 10 frames, then left foot airborne for 20 frames
+    (SUPPORT_R: support_steps 1..20, Phase C begins at step 11 → t=20)."""
+    cl = np.ones(T, dtype=bool)
+    cr = np.ones(T, dtype=bool)
+    hl = np.zeros(T, dtype=np.float32)
+    hr = np.zeros(T, dtype=np.float32)
+    cl[10:30] = False                      # left airborne t=10..29
+    hl[10:30] = h_during_swing
+    return cl, cr, hl, hr
+
+
+def test_phase_c_shallow_swing_keeps_lift_weight():
+    T = 60
+    cl, cr, hl, hr = _long_swing(T, np.full(20, 0.01, dtype=np.float32))
+    wl, wr = compute_foot_weights(cl, cr, T, h_left=hl, h_right=hr)
+    # Phase C (t=20..29): h < threshold → +W (keep pushing up)
+    assert np.all(wl[20:30] > 0)
+    assert np.all(wr[20:30] == 0)
+
+
+def test_phase_c_lifted_swing_gets_press_weight():
+    T = 60
+    cl, cr, hl, hr = _long_swing(T, np.full(20, 0.08, dtype=np.float32))
+    wl, wr = compute_foot_weights(cl, cr, T, h_left=hl, h_right=hr)
+    # Phase C (t=20..29): h >= threshold → -W (come down)
+    assert np.all(wl[20:30] < 0)
+    assert np.all(wr[20:30] == 0)
+
+
+def test_phase_c_late_lift_not_punished():
+    """Foot crosses threshold mid-Phase-C: +W before, -W after."""
+    T = 60
+    h = np.full(20, 0.01, dtype=np.float32)
+    h[15:] = 0.08                          # crosses at t=25
+    cl, cr, hl, hr = _long_swing(T, h)
+    wl, wr = compute_foot_weights(cl, cr, T, h_left=hl, h_right=hr)
+    assert np.all(wl[20:25] > 0)           # still below bar → keep lifting
+    assert np.all(wl[25:30] < 0)           # above bar → descend
+
+
+def test_phase_c_no_height_data_stays_press():
+    """Backward compat: without h arrays Phase C is unconditional -W."""
+    T = 60
+    cl, cr, _, _ = _long_swing(T, np.zeros(20, dtype=np.float32))
+    wl, wr = compute_foot_weights(cl, cr, T)
+    assert np.all(wl[20:30] < 0)
