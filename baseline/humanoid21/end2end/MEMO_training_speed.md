@@ -189,7 +189,7 @@ u1–249 段本就是 floor=0.4（与基线逐位一致），续跑无损失。
 
 \* 壁钟跨时期不可比（verify_resume_A 历史日志显示 10.5s/u，
 当时机器负载/rollout worker 不同）；以 update 数为主指标。
-| `floorsched_s42_r245` (C1) | 进行中 | — | u250 后 floor 降至 0.25，等逃逸点 |
+| `floorsched_s42_r245` (C1) | u370 vs 基线 u365 | — | **无效**：floor 如期在 u250 降（floor_loss→0），但 post-drop slope 1.06e-3 ≈ 基线同窗口 1.08e-3，逃逸点在噪声内。σ 下压力不是爬坡约束 |
 
 **修正"KL 预算"假设**：kl_util 低不是因为优化步数不够，而是
 KL cap 本身就限制每 update 位移。ue8 只是把同一份数据消费得
