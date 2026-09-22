@@ -487,3 +487,34 @@ policy_class 和 strict state_dict；记录 `uncertainty_kind=marginal_renyi2_wi
 本轮文档不启动训练。后续“可用性验收”与“是否更优 / 有何特性”的实验分开：
 前者验证接口与数值实现，后者需要一致的 U、受控初始化 / 容量和多 seed 证据。
 不得把单次训练或通过有限测试称为所有状态下实现正确的数学证明。
+
+## 13. 实现记录（已落地）
+
+实现于 `mixture_truncated_normal_mlp.py`，导出模板
+`_export_template_mixture_truncnorm.py`（`ExportedMixtureTruncNormPolicy`），
+blueprint `init_policy_mixture_truncated_normal.yaml`，测试
+`test_mixture_truncated_normal.py`（42 项），对照实验
+`exp_standup_floor04_mixture.py`。
+
+实现细节，相对于前文规范：
+
+- **Head 布局**：`[logits (K) | raw_mean (K·D) | raw_log_std (K·D)]`，
+  分量优先（component-major），单个 `nn.Linear`。
+- **初始化参数**：`num_components`（默认 3）、`component_init_noise`
+  （默认 0.02）为构造参数；mean 块 = 分量 0 默认初始化 + 各分量独立
+  N(0, noise) 扰动，σ 块 w=0/b=−1，logits 全零。
+- **Z 的浮点形式**：按 §10.1 使用 erf 求和形式
+  `Z = 0.5·[erf((1−μ)/√2σ) + erf((1+μ)/√2σ)]`，μ∈[−1,1] 保证两项非负，
+  无大 σ 相消；`clamp_min(tiny)` 仅为下溢兜底。
+- **采样**：`torch.multinomial(exp(log_pi))` 选分量后逐维 erf 空间
+  inverse-CDF。**K=1 时跳过多项分布采样**（分量恒为 0，不消耗 RNG），
+  使 K=1 的随机数流与单分量策略一致，退化等价测试可用同 seed 对拍。
+- **U 计算**：全部 log 空间，`(B,K,K,D)`  pairwise 张量后
+  `logsumexp` 收缩 K×K；`clamp(0,1)` 仅吸收 sub-ulp 舍入。
+  buffer 整批调用（B=204800, K=3, D=21）在 `no_grad` 下约产生
+  ~1.5GB 瞬态张量，实测通过，暂不分块；如换大 K/D 或 GPU 内存紧张
+  再按 batch 分块。
+- **诊断**：实现了 §11 表中的全部指标（K=1 时省略 overlap）。
+- **已验证**：§12 数学与分布、uncertainty 与梯度、工程验收中除
+  「端到端真实 PPO 更新」外的全部条目；其中 U 与 log_prob 的解析
+  梯度通过 float64 gradcheck，采样矩与分量频率与 scipy 参考吻合。
