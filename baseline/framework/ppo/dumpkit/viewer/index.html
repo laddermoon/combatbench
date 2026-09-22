@@ -2489,29 +2489,15 @@
     // one-line subtitle (what question it answers) and an expandable
     // "如何读这张图" guide (what to watch / next step / limits).
     const emitChart = (title, series, opts = {}) => {
-      if (cmp && !opts.inPanel) {
+      if (cmp) {
         // Label rule: chart with >1 distinct sub-label → "run·sub",
-        // otherwise just the run name.
+        // otherwise just the run name.  Never split crowded overlays —
+        // comparison only works when lines share one axis.
         const subs = new Set(series.map(s => s.sub));
         series.forEach(s => {
           s.label = subs.size > 1
             ? `${cmp.runs[s.run].name}·${s.sub}` : cmp.runs[s.run].name;
         });
-        // Crowded overlay (>12 lines) → one panel per run; panels keep
-        // the single-run colour coding (subColor) and short labels.
-        // 12 keeps core curated charts overlaid (3 keys × 3 runs = 9).
-        if (series.length > 12) {
-          cmp.runs.forEach((r, ri) => {
-            const sub = series.filter(s => s.run === ri).map(s =>
-              ({...s, label: s.sub, color: s.subColor || s.color,
-                group: s.subGroup || s.group}));
-            if (sub.length)
-              emitChart(`${title} · ${r.name}`, sub,
-                {...opts, inPanel: true,
-                 legendGroups: opts.splitLegendGroups || opts.legendGroups});
-          });
-          return;
-        }
       }
       const box = chartBox(series, {
           height: opts.height || 160, currentFrame: cur,
@@ -2687,9 +2673,25 @@
           legendGroups: cmp
             ? cmp.runs.map(r => ({name: r.name, color: r.color}))
             : chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
-          splitLegendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
           legendDims: spec.metrics.map((m, mi) => ({name: m, dash: dashFor(m, mi)})),
         });
+        return true;
+      }
+      // zone_all: every key of the zone namespace in ONE chart — used
+      // for eval.*, where whatever the experiment emits is by definition
+      // a headline metric.  No prefer/fallback picking.
+      if (spec.zone_all) {
+        const pre = spec.zone_all + '.';
+        const z = zoneOf(spec.zone_all) || {};
+        const keys = [...allKeys]
+          .filter(k => k.startsWith(pre) && !isSuppressed(k)).sort();
+        if (!keys.length) {
+          html += `<div class="metric-chart"><h3>${escapeHtml(spec.title || spec.zone_all)}</h3>` +
+            `<div class="loading">本实验无 ${escapeHtml(pre)}* 指标输出</div></div>`;
+          return true;
+        }
+        keys.forEach(k => used.add(k));
+        emit(spec.title || spec.zone_all, keys, spec);
         return true;
       }
       // zone_pick: up to `max` keys of the zone — prefer-listed names

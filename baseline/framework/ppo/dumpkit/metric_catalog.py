@@ -42,6 +42,9 @@ Chart spec shapes (unchanged ones kept for expanded groups):
   {"spike_keys": [...]}            render only non-zero values (markers)
   {"pc": "<metric>"}               per-channel chart
   {"pcm": "<name>", "metrics": [...]}  merged per-channel chart
+  {"zone_all": "eval"|"exp"|"policy"}
+      render ALL keys of the zone in a single chart — for namespaces
+      where every emitted key is headline by definition (eval.*)
   {"zone_pick": "eval"|"exp"|"policy", "prefer": [key, ...], "max": int}
       pick up to ``max`` present keys of the zone, prefer-listed first
   {"zone_rest": "eval"|"exp"|"policy"}
@@ -78,25 +81,15 @@ SECTIONS: List[Dict[str, Any]] = [
      "title": "任务表现",
      "question": "训练有没有让任务做得更好？",
      "curated": [
-        {"zone_pick": "eval", "max": 2,
-         "prefer": ["success", "survival_rate", "survived",
-                    "final_pot", "max_pot", "max_stage", "max_h"],
+        {"zone_all": "eval",
          "title": "评估表现",
-         "subtitle": "固定评估条件下策略的任务能力曲线。",
+         "subtitle": "固定评估条件下策略的任务能力曲线——实验 on_eval 输出的全部指标。",
          "guide": "值得注意：持续停滞、突然退化、波动变大；两个指标一升一降。\n"
                   "下一步：看对应评估视频；检查配置/课程变化；对照策略更新与探索状态分区。多比较几个评估点，别盯单点。\n"
                   "不能说明：单次评估不能证明稳定提升；受评估样本、场景、随机性影响，也不说明变化的原因。"},
-        {"zone_pick": "exp", "max": 2,
-         "prefer": ["online_success", "final_potential_mean"],
-         "title": "在线表现",
-         "subtitle": "训练 rollout 中实际采集到的行为表现。",
-         "guide": "值得注意：在线表现突然下降、长期不变；与评估曲线明显背离。\n"
-                  "下一步：核对训练与评估的探索方式、场景难度、课程和数据组成差异，再决定看哪些 episode。\n"
-                  "不能说明：在线数据来自带探索、可能变动的训练分布，不等价于固定评估条件下的策略能力。"},
      ],
      "expanded": [
-        {"title": "其余评估指标", "zone_rest": "eval"},
-        {"title": "其余在线指标", "zone_rest": "exp"},
+        {"title": "在线指标（实验 on_update 输出）", "zone_rest": "exp"},
      ]},
 
     # 2 ────────────────────────────────────────────────────────────
