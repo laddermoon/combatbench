@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -662,6 +663,47 @@ def test_cli_dump_full_grad_flag():
 # Main
 # ---------------------------------------------------------------------------
 
+
+
+def test_cli_analysis_commands(capsys=None):
+    """inspect/samples/trace/timeline subcommands emit JSON over a
+    hand-written dump fixture and return 0."""
+    import io
+    import contextlib
+    from baseline.framework.ppo.debug import main
+    from baseline.framework.ppo.tests.test_dump_analysis import _make_dump
+
+    with tempfile.TemporaryDirectory() as d:
+        dump_dir = _make_dump(Path(d), early_stop=2)
+        for argv in (
+            ["inspect", str(dump_dir)],
+            ["samples", str(dump_dir), "--sort", "neg_proj",
+             "--limit", "5"],
+            ["trace", str(dump_dir), "--buffer-index", "4"],
+            ["timeline", str(dump_dir), "--key-steps"],
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = main(argv)
+            assert rc == 0, argv
+            json.loads(buf.getvalue())  # valid JSON
+
+        # <run>:u<N> shorthand resolves under --runs-root
+        runs_root = Path(d) / "runs"
+        run_dir = runs_root / "myrun"
+        (run_dir / "dumps").mkdir(parents=True)
+        (run_dir / "config.json").write_text("{}")
+        _make_dump(run_dir / "dumps")  # writes u00010 inside
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["inspect", "myrun:u10",
+                       "--runs-root", str(runs_root)])
+        assert rc == 0
+        assert json.loads(buf.getvalue())["meta"]["update"] == 10
+        print("test_cli_analysis_commands: PASS")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_dump_request_hypothesis_optional()
     test_dump_request_frozen()
@@ -679,4 +721,5 @@ if __name__ == "__main__":
     test_cli_dump_rejects_missing_run_dir()
     test_cli_dump_refuses_existing_sentinel()
     test_cli_dump_full_grad_flag()
+    test_cli_analysis_commands()
     print("\nAll dump tests passed!")

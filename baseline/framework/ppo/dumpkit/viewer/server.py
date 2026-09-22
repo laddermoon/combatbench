@@ -36,6 +36,7 @@ from baseline.framework.ppo.dumpkit.metric_catalog import (
     catalog as _metric_catalog,
     metric_doc,
 )
+from baseline.framework.ppo.dumpkit import dump_analysis as _da
 
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
@@ -1421,8 +1422,12 @@ class ViewerAPI:
     def __init__(self, data: DumpData):
         self.data = data
 
-    def handle(self, path: str) -> Tuple[int, Any]:
-        """Route an /api/... path and return (HTTP status, response body)."""
+    def handle(self, path: str, query: str = "") -> Tuple[int, Any]:
+        """Route an /api/... path and return (HTTP status, response body).
+
+        ``query`` is the raw query string — ``do_GET`` strips it before
+        dispatch, so endpoints that take parameters receive it here.
+        """
         parts = path.strip("/").split("/")
         # parts[0] == "api"
         if len(parts) < 2:
@@ -1460,11 +1465,18 @@ class ViewerAPI:
                     return 200, self._timeline_overview()
                 elif parts[2] == "step" and len(parts) >= 4:
                     return self._timeline_step(int(parts[3]))
+            elif endpoint == "gradsig" and len(parts) >= 3 \
+                    and parts[2] == "samples":
+                return self._gradsig_samples(query)
             elif endpoint == "gradsig":
                 gs = self.data.grad_sig()
                 if gs is None:
                     return 404, {"available": False}
                 return 200, gs
+            elif endpoint == "inspect":
+                return 200, _da.inspect_dump(self.data)
+            elif endpoint == "trace" and len(parts) >= 3:
+                return _da.trace_frame(self.data, int(parts[2]))
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -2077,74 +2089,33 @@ class ViewerAPI:
     # -- /api/timeline/overview ---------------------------------------------
 
     def _timeline_overview(self) -> Dict[str, Any]:
-        tl = self.data.timeline_npz
-        if tl is None:
-            return {"error": "timeline.npz not found", "available": False}
-
-        result: Dict[str, Any] = {
-            "available": True,
-            "n_epochs": int(tl["n_epochs"]) if "n_epochs" in tl else 0,
-            "n_batches": int(tl["n_batches"]) if "n_batches" in tl else 0,
-            "n_steps": int(tl["n_steps"]) if "n_steps" in tl else 0,
-            "early_stop_step": int(tl["early_stop_step"]) if "early_stop_step" in tl else -1,
-            "target_kl": float(tl["target_kl"]) if "target_kl" in tl else float("nan"),
-            "clip_eps": float(tl["clip_eps"]) if "clip_eps" in tl else 0.2,
-        }
-
-        n_steps = result["n_steps"]
-        for key in ["epoch_idx", "mb_idx", "actor_active", "kl", "clip_frac",
-                     "clip_frac_hi", "clip_frac_lo",
-                     "ratio_mean", "ratio_max", "ratio_min", "policy_loss",
-                     "actor_grad", "running_mean_kl", "window_mean_kl"]:
-            if key in tl:
-                arr = tl[key]
-                if arr.dtype == bool:
-                    result[key] = [bool(x) for x in arr]
-                else:
-                    result[key] = _arr_to_list(np.asarray(arr, dtype=np.float32))
-
-        # Per-channel critic_loss / critic_grad
-        for ch in self.data.channel_names:
-            cl_key = f"critic_loss"
-            if cl_key in tl:
-                d = _dict_item(tl[cl_key])
-                if isinstance(d, dict) and ch in d:
-                    result[f"critic_loss_{ch}"] = _arr_to_list(np.asarray(d[ch], dtype=np.float32))
-            cg_key = f"critic_grad"
-            if cg_key in tl:
-                d = _dict_item(tl[cg_key])
-                if isinstance(d, dict) and ch in d:
-                    result[f"critic_grad_{ch}"] = _arr_to_list(np.asarray(d[ch], dtype=np.float32))
-
-        return result
+        return _da.timeline_overview(self.data)
 
     # -- /api/timeline/step/<s> --------------------------------------------
 
     def _timeline_step(self, step: int) -> Tuple[int, Dict[str, Any]]:
-        ov = self._timeline_overview()
-        if not ov.get("available"):
-            return 404, {"error": "timeline not available"}
-        n_steps = ov["n_steps"]
-        if step < 0 or step >= n_steps:
-            return 404, {"error": f"step {step} out of range (n_steps={n_steps})"}
+        return _da.timeline_step(self.data, step)
 
-        result: Dict[str, Any] = {"step": step}
-        for key in ["epoch_idx", "mb_idx", "actor_active", "kl", "clip_frac",
-                     "clip_frac_hi", "clip_frac_lo",
-                     "ratio_mean", "ratio_max", "ratio_min", "policy_loss",
-                     "actor_grad", "running_mean_kl", "window_mean_kl"]:
-            if key in ov and step < len(ov[key]):
-                result[key] = ov[key][step]
+    # -- /api/gradsig/samples ----------------------------------------------
 
-        for ch in self.data.channel_names:
-            cl_key = f"critic_loss_{ch}"
-            if cl_key in ov and step < len(ov[cl_key]):
-                result[cl_key] = ov[cl_key][step]
-            cg_key = f"critic_grad_{ch}"
-            if cg_key in ov and step < len(ov[cg_key]):
-                result[cg_key] = ov[cg_key][step]
-
-        return 200, result
+    def _gradsig_samples(self, query: str) -> Tuple[int, Any]:
+        """Ranked sampled-frame table; params via query string."""
+        qs = urllib.parse.parse_qs(query)
+        def _one(name, default=None):
+            v = qs.get(name)
+            return v[0] if v else default
+        try:
+            return _da.gradsig_samples(
+                self.data,
+                sort=_one("sort", "abs_proj"),
+                sign=_one("sign", "all"),
+                limit=int(_one("limit", "50")),
+                offset=int(_one("offset", "0")),
+                group_by=_one("group_by"),
+                include_invalid=_one("include_invalid") in ("1", "true"),
+            )
+        except ValueError as e:
+            return 400, {"error": f"bad query parameter: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -2384,7 +2355,9 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             api = rd.get_dump_api(name)
             if api is None:
                 return 404, {"error": f"dump not found: {name}"}
-            return api.handle("/api/" + sub)
+            return api.handle(
+                "/api/" + sub,
+                urllib.parse.urlparse(self.path).query)
         return 404, {"error": f"unknown run api: {path}"}
 
     def _runs_index(self) -> Dict[str, Any]:
@@ -2436,7 +2409,8 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         elif self.runs_root is not None:
             status, body = 404, {"error": f"unknown api: {path}"}
         else:
-            status, body = self.api.handle(path)  # type: ignore[union-attr]
+            status, body = self.api.handle(  # type: ignore[union-attr]
+                path, urllib.parse.urlparse(self.path).query)
         if status == 200 and isinstance(body, Path):
             # Image binary response
             self._serve_file(body, "image/png")

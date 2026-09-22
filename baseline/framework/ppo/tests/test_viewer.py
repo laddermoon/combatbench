@@ -1551,6 +1551,60 @@ def test_experiment_detail_diffs_and_checkpoints():
         print("test_experiment_detail_diffs_and_checkpoints: PASS")
 
 
+
+
+def test_dump_analysis_endpoints():
+    """New analysis endpoints on ViewerAPI route into the shared
+    dump_analysis layer: inspect / gradsig/samples / trace, and the
+    timeline overview carries the previously-unexposed fields."""
+    from baseline.framework.ppo.tests.test_dump_analysis import _make_dump
+    with tempfile.TemporaryDirectory() as d:
+        dd = DumpData(_make_dump(Path(d), early_stop=2))
+        api = ViewerAPI(dd)
+
+        st, body = api.handle("/api/inspect")
+        assert st == 200 and body["meta"]["update"] == 10
+        assert body["capabilities"]["gradsig"] == "full"
+        assert body["timeline"]["early_stop_step"] == 2
+        assert any(f["kind"] == "early_stop" for f in body["flags"])
+
+        st, body = api.handle("/api/timeline/overview")
+        assert st == 200
+        for k in ("dtheta_norm", "dtheta_cos_descent", "adv_mean",
+                  "argmax_ratio_bufidx", "dual_clip_frac", "floor_loss",
+                  "mb_size", "key_steps"):
+            assert k in body, k
+        st, body = api.handle("/api/timeline/step/1")
+        assert st == 200 and body["actor_grad"] == 9.0
+        assert "dtheta_norm" in body
+
+        st, body = api.handle("/api/gradsig/samples",
+                              "sort=neg_proj&limit=5")
+        assert st == 200
+        assert body["meta"]["scope"] == "sampled"
+        assert body["rows"][0]["proj"] == -4.0
+        assert body["rows"][0]["episode"] == 0
+        st, body = api.handle("/api/gradsig/samples", "sort=nope")
+        assert st == 400
+
+        st, body = api.handle("/api/trace/4")
+        assert st == 200
+        assert body["location"]["episode"] == 0
+        assert body["gradsig"]["sampled"] is True
+        st, body = api.handle("/api/trace/99")
+        assert st == 404
+
+        # Missing gradsig → samples 404, inspect still fine.
+        dd2 = DumpData(_make_dump(Path(d) / "nog", with_gradsig=False))
+        api2 = ViewerAPI(dd2)
+        st, body = api2.handle("/api/gradsig/samples")
+        assert st == 404 and body["available"] is False
+        st, body = api2.handle("/api/inspect")
+        assert st == 200 and body["capabilities"]["gradsig"] is False
+        print("test_dump_analysis_endpoints: PASS")
+
+
+
 if __name__ == "__main__":
     test_dump_data_loads_manifest()
     test_dump_data_loads_npz_files()
@@ -1593,5 +1647,6 @@ if __name__ == "__main__":
     test_dump_data_grad_sig()
     test_scan_experiments_discovers_registry()
     test_experiments_index_groups_runs()
+    test_dump_analysis_endpoints()
     test_experiment_detail_diffs_and_checkpoints()
     print("\nAll viewer tests passed!")

@@ -27,6 +27,13 @@ Usage by question::
           → <run_dir>/dumps/uNNNNN/  (episodes/trajectories/GAE/grads)
           → inspect in the viewer: debug.py viewer <run_dir>
 
+    Analyze a captured dump (same functions as the viewer API):
+        debug.py inspect  <dump>             # overview + factual flags
+        debug.py samples  <dump> --sort neg_proj --limit 20
+        debug.py trace    <dump> --buffer-index N  (or --frame ep:A:t)
+        debug.py timeline <dump> [--step N | --key-steps]
+          <dump> = dump dir path, or <run>:u<N> shorthand.
+
     See a dumped episode frame by frame / did the policy drift?
         debug.py render <dump_dir> --episode 0   # PNGs + auto-verify
         debug.py delta  <dump_dir> --episode 0 --gens 3
@@ -102,6 +109,42 @@ def _resolve_run(arg: str, runs_root: str) -> Path:
 
 def _run_arg_or_error(args) -> Path:
     return _resolve_run(args.run, args.runs_root)
+
+
+def _resolve_dump(arg: str, runs_root: str) -> Path:
+    """Resolve <dump>: a dump-dir path, or ``<run>:u<N>`` / ``<run>:<N>``
+    shorthand resolved under runs_root (``<run>`` may itself be a path
+    or a run name).  Raises FileNotFoundError on failure.
+    """
+    p = Path(arg).resolve()
+    if p.is_dir():
+        return p
+    if ":" in arg:
+        run_part, _, upd = arg.rpartition(":")
+        upd = upd.lstrip("u")
+        try:
+            u = int(upd)
+        except ValueError:
+            u = -1
+        if u >= 0:
+            run_dir = _resolve_run(run_part, runs_root)
+            d = run_dir / "dumps" / f"u{u:05d}"
+            if d.is_dir():
+                return d
+            raise FileNotFoundError(
+                f"dump u{u:05d} not found under {run_dir}/dumps/")
+    raise FileNotFoundError(
+        f"dump not found: {arg} (not a directory; for shorthand use "
+        f"<run>:u<N> under {Path(runs_root).resolve()})")
+
+
+def _open_dump(args):
+    from baseline.framework.ppo.dumpkit.viewer.server import DumpData
+    try:
+        return DumpData(_resolve_dump(args.dump, args.runs_root))
+    except (FileNotFoundError, NotADirectoryError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 def _key_patterns(keys_arg: str) -> list:
@@ -198,6 +241,72 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
     else:
         _emit(catalog(), args.pretty)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Dump analysis commands — same functions as the viewer's /api/... endpoints
+# (dumpkit/dump_analysis.py); identical output, fully offline.
+# ---------------------------------------------------------------------------
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_analysis import inspect_dump
+    _emit(inspect_dump(_open_dump(args)), args.pretty)
+    return 0
+
+
+def _cmd_samples(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_analysis import gradsig_samples
+    status, body = gradsig_samples(
+        _open_dump(args),
+        sort=args.sort, sign=args.sign, limit=args.limit,
+        offset=args.offset, group_by=args.group_by,
+        include_invalid=args.include_invalid,
+    )
+    _emit(body, args.pretty)
+    return 0 if status == 200 else 1
+
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_analysis import trace_frame
+    dd = _open_dump(args)
+    idx = args.buffer_index
+    if idx is None:
+        if args.frame is None:
+            print("error: --buffer-index or --frame is required",
+                  file=sys.stderr)
+            return 2
+        buf = dd.buffer_npz
+        if buf is None or "frame_id" not in buf:
+            print("error: buffer.npz/frame_id unavailable", file=sys.stderr)
+            return 2
+        import numpy as np
+        hit = np.where(buf["frame_id"] == args.frame)[0]
+        if not hit.size:
+            print(f"error: frame_id '{args.frame}' not found in buffer",
+                  file=sys.stderr)
+            return 2
+        idx = int(hit[0])
+    status, body = trace_frame(dd, idx)
+    _emit(body, args.pretty)
+    return 0 if status == 200 else 1
+
+
+def _cmd_timeline(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_analysis import (
+        timeline_overview, timeline_step,
+    )
+    dd = _open_dump(args)
+    if args.step is not None:
+        status, body = timeline_step(dd, args.step)
+    else:
+        body = timeline_overview(dd)
+        status = 200 if body.get("available") else 1
+        if args.key_steps and body.get("key_steps"):
+            body = {"key_steps": body["key_steps"],
+                    "early_stop_step": body.get("early_stop_step"),
+                    "n_steps": body.get("n_steps")}
+    _emit(body, args.pretty)
+    return 0 if status == 200 else 1
 
 
 def _cmd_dump(args: argparse.Namespace) -> int:
@@ -573,6 +682,95 @@ def _build_parser() -> argparse.ArgumentParser:
     p_catalog.add_argument("--pretty", action="store_true",
         help="Pretty-print JSON output.")
     p_catalog.set_defaults(func=_cmd_catalog)
+
+    # --- dump analysis commands (shared layer: dumpkit/dump_analysis.py) ---
+    _DUMP_HELP = (
+        "Dump dir path, or <run>:u<N> shorthand under --runs-root."
+    )
+
+    p_inspect = sub.add_parser(
+        "inspect",
+        help="Dump overview: capabilities, ADV/gradsig/update summaries, factual flags.",
+        description=(
+            "Cross-section summary of one captured update: what data "
+            "exists, what the advantage/gradient/update look like, and "
+            "factual 'worth inspecting' hints with evidence pointers."
+        ),
+    )
+    p_inspect.add_argument("dump", type=str, help=_DUMP_HELP)
+    p_inspect.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT)
+    p_inspect.add_argument("--pretty", action="store_true")
+    p_inspect.set_defaults(func=_cmd_inspect)
+
+    p_samples = sub.add_parser(
+        "samples",
+        help="Ranked sampled-gradient frames with episode/trajectory provenance.",
+        description=(
+            "Per-frame gradient diagnostics (sampled, theta_old): "
+            "proj/cos/grad_norm/w_adv joined to episode/agent/frame. "
+            "All statistics are over the sampled subset only."
+        ),
+    )
+    p_samples.add_argument("dump", type=str, help=_DUMP_HELP)
+    p_samples.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT)
+    p_samples.add_argument(
+        "--sort", default="abs_proj",
+        choices=["abs_proj", "proj", "neg_proj", "grad_norm", "w_adv"])
+    p_samples.add_argument(
+        "--sign", default="all", choices=["all", "pos", "neg"],
+        help="Filter by projection sign onto the aggregate gradient.")
+    p_samples.add_argument("--limit", type=int, default=50)
+    p_samples.add_argument("--offset", type=int, default=0)
+    p_samples.add_argument(
+        "--group-by", default=None, choices=["episode"],
+        help="Aggregate sampled frames per episode (pos/neg sums kept "
+             "separate).")
+    p_samples.add_argument(
+        "--include-invalid", action="store_true",
+        help="Keep frames whose gradient was non-finite/zero-norm.")
+    p_samples.add_argument("--pretty", action="store_true")
+    p_samples.set_defaults(func=_cmd_samples)
+
+    p_trace = sub.add_parser(
+        "trace",
+        help="Everything recorded about one buffer frame, joined across stages.",
+        description=(
+            "Trace one flat buffer index through buffer → GAE → combine "
+            "→ gradsig → epoch snapshots → timeline refs, with "
+            "episode/agent/frame provenance and deep links."
+        ),
+    )
+    p_trace.add_argument("dump", type=str, help=_DUMP_HELP)
+    p_trace.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT)
+    p_trace.add_argument("--buffer-index", type=int, default=None)
+    p_trace.add_argument(
+        "--frame", type=str, default=None,
+        help="frame_id like 'ep0007:robot_a:123' — resolved to its "
+             "buffer index.")
+    p_trace.add_argument("--pretty", action="store_true")
+    p_trace.set_defaults(func=_cmd_trace)
+
+    p_timeline = sub.add_parser(
+        "timeline",
+        help="Per-minibatch update timeline: KL/dtheta/ratio + key steps.",
+        description=(
+            "Per-minibatch record of the update (all captured fields "
+            "including dtheta_norm and extreme-ratio frame indices), "
+            "plus a derived key_steps index."
+        ),
+    )
+    p_timeline.add_argument("dump", type=str, help=_DUMP_HELP)
+    p_timeline.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT)
+    p_timeline.add_argument("--step", type=int, default=None,
+                            help="Single step detail instead of overview.")
+    p_timeline.add_argument("--key-steps", action="store_true",
+                            help="Only the key_steps index.")
+    p_timeline.add_argument("--pretty", action="store_true")
+    p_timeline.set_defaults(func=_cmd_timeline)
 
     return parser
 
