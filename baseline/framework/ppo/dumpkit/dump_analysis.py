@@ -316,7 +316,7 @@ def timeline_step(dd, step: int) -> Tuple[int, Dict[str, Any]]:
 
 def inspect_dump(dd) -> Dict[str, Any]:
     """The dump home payload: provenance, capabilities, per-stage
-    summaries, factual 'worth inspecting' flags, and drill-down links."""
+    summaries, and drill-down links."""
     try:
         m = dd.manifest
     except (FileNotFoundError, TypeError):
@@ -368,24 +368,6 @@ def inspect_dump(dd) -> Dict[str, Any]:
         if "combined_adv_raw" in cb:
             adv_blk["combined_adv_raw"] = _summ(
                 np.asarray(cb["combined_adv_raw"], dtype=np.float64))
-        # Per-channel normed ADV — flags channels that carry no signal.
-        na = _dict_item(cb["normed_advs"]) if "normed_advs" in cb else {}
-        km = _dict_item(cb["key_frame_mask"]) if "key_frame_mask" in cb else {}
-        ch_zero: List[str] = []
-        if isinstance(na, dict):
-            for ch, a in na.items():
-                a = np.asarray(a, dtype=np.float64)
-                active = None
-                if isinstance(km, dict) and ch in km:
-                    active = np.asarray(km[ch], dtype=bool)
-                    a_use = a[active] if active.size == a.size else a
-                else:
-                    a_use = a
-                a_use = a_use[np.isfinite(a_use)]
-                if a_use.size and float(np.abs(a_use).max()) < 1e-9:
-                    ch_zero.append(str(ch))
-        if ch_zero:
-            adv_blk["zero_signal_channels"] = ch_zero
         out["adv"] = adv_blk
 
     # -- gradient signal ----------------------------------------------------
@@ -432,7 +414,6 @@ def inspect_dump(dd) -> Dict[str, Any]:
             "key_steps": tlo.get("key_steps"),
         }
 
-    out["flags"] = _flags(out, tlo)
     out["links"] = {
         "samples": "gradsig/samples?sort=abs_proj&limit=20",
         "timeline": "timeline/overview",
@@ -455,76 +436,6 @@ def _capabilities(dd) -> Dict[str, Any]:
         False if gs is None else ("full" if "hist" in gs else "partial")
     )
     return caps
-
-
-def _flags(out: Dict[str, Any], tlo: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Factual 'worth inspecting' hints — observable facts with evidence
-    pointers, never causal claims."""
-    flags: List[Dict[str, Any]] = []
-    tl = out.get("timeline") or {}
-    es = tl.get("early_stop_step")
-    if es is not None and es >= 0:
-        ep = mb = wmk = None
-        if tlo.get("epoch_idx") and es < len(tlo["epoch_idx"]):
-            ep = tlo["epoch_idx"][es]
-            mb = tlo["mb_idx"][es]
-        if tlo.get("window_mean_kl") and es < len(tlo["window_mean_kl"]):
-            wmk = tlo["window_mean_kl"][es]
-        flags.append({
-            "kind": "early_stop",
-            "text": f"actor early-stopped at step {es} "
-                    f"(epoch {ep}, minibatch {mb}); "
-                    f"window_mean_kl={wmk} vs target={tl.get('target_kl')}",
-            "evidence": {"endpoint": "timeline", "step": es},
-        })
-    adv = out.get("adv") or {}
-    wcf = adv.get("winsorize_clip_frac")
-    if wcf:
-        flags.append({
-            "kind": "winsorize",
-            "text": f"combined_adv winsorized: {wcf:.1%} of frames clipped",
-            "evidence": {"endpoint": "inspect", "section": "adv"},
-        })
-    for ch in adv.get("zero_signal_channels") or []:
-        flags.append({
-            "kind": "zero_signal_channel",
-            "text": f"channel '{ch}' has active frames but zero normed ADV "
-                    f"— contributes no actor signal this update",
-            "evidence": {"endpoint": "inspect", "section": "adv"},
-        })
-    g = out.get("gradsig") or {}
-    if g.get("frac_neg") is not None and g["frac_neg"] > 0.5:
-        flags.append({
-            "kind": "frac_neg_majority",
-            "text": f"{g['frac_neg']:.0%} of sampled frames project "
-                    f"against the aggregate gradient direction",
-            "evidence": {"endpoint": "gradsig/samples",
-                         "query": "sort=neg_proj&limit=20"},
-        })
-    if (g.get("coherence") is not None and g["coherence"] < 0.05
-            and g.get("gnorm")):
-        flags.append({
-            "kind": "low_coherence",
-            "text": f"coherence={g['coherence']:.3f}: aggregate ‖G‖ is a "
-                    f"small residue of opposing per-frame gradients",
-            "evidence": {"endpoint": "gradsig/samples",
-                         "query": "sort=abs_proj&limit=20"},
-        })
-    # Sampling-representativeness: same z-test the trainer logs.
-    pm, ps, nv = g.get("proj_mean"), g.get("proj_std"), g.get("n_valid")
-    gn = g.get("gnorm")
-    if None not in (pm, ps, nv, gn) and nv and nv > 0:
-        se = ps / math.sqrt(nv)
-        if se > 0 and abs(pm - gn) / se > 4.0:
-            flags.append({
-                "kind": "sample_unrepresentative",
-                "text": f"mean(proj)={pm:.4g} deviates >4σ from "
-                        f"‖G‖={gn:.4g} — sampled frames under-represent "
-                        f"the full-buffer gradient",
-                "evidence": {"endpoint": "gradsig/samples",
-                             "query": "sort=abs_proj&limit=20"},
-            })
-    return flags
 
 
 # ---------------------------------------------------------------------------

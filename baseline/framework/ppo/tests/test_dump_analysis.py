@@ -200,11 +200,7 @@ def test_inspect_overview():
         assert abs(out["adv"]["winsorize_clip_frac"] - 0.2) < 1e-6
         assert out["gradsig"]["n_sampled"] == 3
         assert out["timeline"]["early_stop_step"] == 2
-        kinds = [f["kind"] for f in out["flags"]]
-        assert "early_stop" in kinds and "winsorize" in kinds
-        # Every flag carries an evidence pointer
-        for f in out["flags"]:
-            assert "evidence" in f and "endpoint" in f["evidence"]
+        assert "flags" not in out
         json.dumps(out, allow_nan=False)
         print("test_inspect_overview: PASS")
 

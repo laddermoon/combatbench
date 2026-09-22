@@ -194,10 +194,6 @@
   .cap { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--muted); opacity: 0.5; }
   .cap.on { color: #6ec86e; border-color: rgba(110,200,110,0.4); opacity: 1; }
   .cap.partial { color: #e5c07b; border-color: rgba(229,192,123,0.4); opacity: 1; }
-  .ov-flags { margin-top: 8px; }
-  .ov-flag { font-size: 12px; padding: 6px 9px; border-left: 2px solid var(--accent); background: rgba(79,163,255,0.06); margin-bottom: 4px; cursor: pointer; border-radius: 0 4px 4px 0; }
-  .ov-flag:hover { background: rgba(79,163,255,0.14); }
-  .ov-flag .fk { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-right: 6px; }
   .gs-scope { font-size: 11px; color: var(--muted); font-weight: normal; }
   .gs-heat { margin: 10px 0 4px; }
   .gs-heat svg { display: block; }
@@ -577,7 +573,6 @@
         <div class="card" id="overview-card">
           <h2>Overview <span class="gs-scope" id="ov-meta"></span></h2>
           <div class="caps" id="ov-caps"></div>
-          <div class="ov-flags" id="ov-flags"></div>
         </div>
         <div class="card">
           <h2>Signal Summary <span class="gs-scope">cross-section of this update</span></h2>
@@ -3094,32 +3089,6 @@
       return `<span class="cap ${cls}">${k}${v === 'partial' ? '·partial' : ''}</span>`;
     }).join('');
     $('ov-caps').innerHTML = caps;
-
-    const fl = $('ov-flags');
-    if (ins.flags && ins.flags.length) {
-      fl.innerHTML = '<div class="desc" style="margin-bottom:4px">worth inspecting:</div>' +
-        ins.flags.map((f, i) =>
-          `<div class="ov-flag" data-fi="${i}"><span class="fk">${escapeHtml(f.kind)}</span>${escapeHtml(f.text)}</div>`).join('');
-      fl.querySelectorAll('.ov-flag').forEach(el =>
-        el.addEventListener('click', () => {
-          const f = ins.flags[parseInt(el.dataset.fi)];
-          const ev = f.evidence || {};
-          if (ev.endpoint === 'timeline' && ev.step !== undefined) {
-            state.selectedStep = ev.step;
-            navigate('timeline');
-          } else if (ev.endpoint === 'gradsig/samples' && ev.query) {
-            const q = new URLSearchParams(ev.query);
-            state.gsQuery = {
-              sort: q.get('sort') || 'abs_proj',
-              sign: q.get('sign') || 'all',
-            };
-            renderGradsigSamples();
-            $('gs-top').scrollIntoView({behavior: 'smooth'});
-          }
-        }));
-    } else {
-      fl.innerHTML = '';
-    }
   }
 
   // --- ADV distribution + transform chain (adv/hist endpoint) ---

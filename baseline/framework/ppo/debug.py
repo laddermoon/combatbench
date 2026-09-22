@@ -28,7 +28,7 @@ Usage by question::
           → inspect in the viewer: debug.py viewer <run_dir>
 
     Analyze a captured dump (same functions as the viewer API):
-        debug.py inspect  <dump>             # overview + factual flags
+        debug.py inspect  <dump>             # overview of one captured update
         debug.py samples  <dump> --sort neg_proj --limit 20
         debug.py trace    <dump> --buffer-index N  (or --frame ep:A:t)
         debug.py timeline <dump> [--step N | --key-steps]
@@ -690,11 +690,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_inspect = sub.add_parser(
         "inspect",
-        help="Dump overview: capabilities, ADV/gradsig/update summaries, factual flags.",
+        help="Dump overview: capabilities, ADV/gradsig/update summaries.",
         description=(
             "Cross-section summary of one captured update: what data "
-            "exists, what the advantage/gradient/update look like, and "
-            "factual 'worth inspecting' hints with evidence pointers."
+            "exists, and what the advantage/gradient/update look like."
         ),
     )
     p_inspect.add_argument("dump", type=str, help=_DUMP_HELP)

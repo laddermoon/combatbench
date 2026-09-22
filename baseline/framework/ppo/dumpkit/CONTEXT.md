@@ -100,7 +100,7 @@ debug.py delta <dump_dir> --episode 0 --gens 3
 debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
 
 # —— 分析一个已捕获的 dump（dump_analysis.py，与 HTTP 端点同一实现）
-debug.py inspect  <dump>                    # 总览：能力矩阵+各阶段摘要+事实flags
+debug.py inspect  <dump>                    # 总览：能力矩阵+各阶段摘要
 debug.py samples  <dump> --sort neg_proj --limit 20 [--sign neg]
                                             [--group-by episode]   # 梯度样本表
 debug.py trace    <dump> --buffer-index N   # 一帧贯穿 buffer→GAE→combine

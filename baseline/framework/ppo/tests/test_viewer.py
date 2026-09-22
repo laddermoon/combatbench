@@ -1566,7 +1566,7 @@ def test_dump_analysis_endpoints():
         assert st == 200 and body["meta"]["update"] == 10
         assert body["capabilities"]["gradsig"] == "full"
         assert body["timeline"]["early_stop_step"] == 2
-        assert any(f["kind"] == "early_stop" for f in body["flags"])
+        assert "flags" not in body
 
         st, body = api.handle("/api/timeline/overview")
         assert st == 200
