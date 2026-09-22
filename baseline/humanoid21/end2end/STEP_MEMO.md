@@ -241,3 +241,32 @@ h>3cm 占 2.6%、>5cm 占 0.25%；+W→抬脚(>3cm) 转化率 ~12%。
 2. **Phase C 顶点对齐**：`w_swing = -W` 仅在脚下降时（dh≤0），
    上升中的高脚不再被罚
 3. 继续加大站立 ef 或 FOOT_WEIGHT
+
+---
+
+## [2026-09-23] run 000000 判决：平台期，u101 终止；干预 #4 上线
+
+**判决**：u90 eval —— hmax 7→9mm 90 eval 几乎不动，swings ~9.4/ep
+平台，step≈0；u70+ KL early-stop 频发（10/15 update actor_steps
+<400）。信号符号已修对但 >5cm 事件（仅 0.24% 帧）仍净负梯度，
+均值吸收速度≈0。判定平台期，u101 终止。
+
+**干预 #4（commit 358ca11）— 三处联动，目标：>5cm 残余否决 + 支付比**：
+
+1. **事件完成奖励** `step_cycle_bonus=0.5`：`detect_step_cycles`
+   （与 eval 同一判定）命中的摆动窗内逐帧加 bonus —— 真实迈步 vs
+   微步支付比 ~1.07× → ~50×
+2. **ss_mask ±hold 膨胀**：去抖滞后导致摆动边界帧落进 !ss 吃满
+   aw=3 否决（u50: 334/780 帧）——膨胀后边界帧同豁免
+3. **Phase C/A/B 顶点对齐**：超阈但仍在上升的摆动脚保持 +W，
+   -W 只在过顶点后 —— 上升顶点不再被惩罚
+
+**新 run**：`train_step_ppo_20260923_014732`（pid 2602274, GPU2,
+ckpt u01500, lr=1e-4, dump u50/150/300）。
+
+u1 即验证奖励流改变：foot reward_max 0.05→**0.22**（bonus 命中），
+reward_mean ~2×，adv_std 4×（0.02→0.08），aw_pot mean 2.08→0.83，
+foot critic ev 0.53/0.48。
+
+**判据**：eval `cycles`/`hmax` 应开始爬升；u50 dump 看 >5cm 帧
+combined_adv 是否转正、bonus 是否落在正确的帧。
