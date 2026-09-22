@@ -157,7 +157,7 @@ run 首页 "compare →" / 页内 chips。
 - `stats.grad_sig_*`（ADV 梯度信号诊断）：**dump-only**——只在带 dump
   请求的 update 上运行（内部固定 2000 帧采样，`sample_size`/`interval`
   公共参数已删除），数据并入 `dumps/uNNNNN/gradsig.npz`（hist +
-  逐帧数组自包含），经 `DumpData.grad_sig()` / `/api/dump/<d>/gradsig`
+  逐帧数组自包含），经 `_dump_gradsig(ds)` / `/api/dump/<d>/gradsig`
   读取。非诊断 update 不输出 `grad_sig_*` 字段（`grad_sig_ran` 标记）。
   Dashboard 不出现（suppress_prefixes 挡掉旧 run 的残留键）。
   `/api/run/gradsig/<u>` 只为旧 run 的 `gradsig/u*.npz` 服务，404

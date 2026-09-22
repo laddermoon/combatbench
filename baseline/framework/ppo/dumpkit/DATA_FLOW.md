@@ -159,10 +159,23 @@ c_i = cos(g_i, G)    (纯方向)
 - **阶段 3.5**：θ_old 截面诊断。只读不改，专用 RNG，训练无感知。
 - **阶段 4-5**：训练过程。参数在变，数据在变。
 
+## 访问层（frame_access.py）
+
+所有 dump 消费的统一入口 `DumpDataset`：持有各 `*.npz` 的懒加载
+句柄（`NpzSource`，按 member 解压、读 zip 目录不读数据），暴露
+四个行空间表——`frames`（traj 帧，canonical）、`trajs`、
+`episodes`、`timeline`/`gradsig`。标准化列名
+（`reward./actor_weight./adv./value./ret./normed_adv./aw_normed./
+contrib./observer.<okey>.<field>/epoch.<e>.*`）经 `Table.col()`
+解析；observer 列经预计算的 `ep_flat_idx` join 进 traj 帧空间；
+`contrib.{ch} = aw_normed × conf × normed_adv` 是唯一的内建派生列
+（其余走 `register_column`）。接口即列向量 + numpy mask——不造
+查询 DSL，需要通用分析时 `to_pandas()`。
+
 ## 分析层（dump_analysis.py）
 
 对已捕获 dump 的只读分析——本文档的所有阶段数据经
-`DumpData` 惰性读入，`inspect_dump` / `gradsig_samples` /
+`DumpDataset` 惰性读入，`inspect_dump` / `gradsig_samples` /
 `trace_frame` / `timeline_overview` 四个函数产出 JSON-safe 结果，
 HTTP API（`/api/dump/<d>/inspect|gradsig/samples|trace/<i>`）、
 `debug.py` 同名子命令与前端首页卡片共用同一实现（无第二份解析）。

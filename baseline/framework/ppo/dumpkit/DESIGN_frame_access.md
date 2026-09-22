@@ -287,14 +287,14 @@ conv = (hit & (f["aw.r_left_foot"] > 0)).mean()
 
 ## 7. 迁移计划
 
-| 阶段 | 内容 | 验证 |
-|---|---|---|
-| P0 | 新模块 `dumpkit/frame_access.py`：DumpDataset + 3 张表 + SCHEMA + join + 懒加载 | 单测：列解析、双格式 observer、flat: frame_id、traj 切片、contrib |
-| P1 | `dump_analysis.py` 内部改调 ds（函数签名不变） | CLI/HTTP 输出逐字节不变 |
-| P2 | `server.py` 端点逐个改 ds；DumpData 保留为薄 shim 委托 ds，最后删 | endpoint 对拍 |
-| P3 | `dump_delta.py`/`dump_render.py` 接入 ds | render 校验流程不变 |
-| P4 | （可选）`debug.py frames` 单命令：谓词+聚合 | — |
-| P5 | （可选）SCHEMA 常量反哺 dump_capture 写侧，schema 单源化 | — |
+| 阶段 | 内容 | 验证 | 状态 |
+|---|---|---|---|
+| P0 | 新模块 `dumpkit/frame_access.py`：DumpDataset + 3 张表 + SCHEMA + join + 懒加载 | 单测：列解析、双格式 observer、flat: frame_id、traj 切片、contrib | ✅ 13 tests |
+| P1 | `dump_analysis.py` 内部改调 ds（函数签名不变） | CLI/HTTP 输出逐字节不变 | ✅ |
+| P2 | `server.py` 端点逐个改 ds；**DumpData 直接删除、不留 shim**（按"不背历史包袱"指示） | endpoint 对拍 + 214 tests | ✅ |
+| P3 | `dump_delta.py`/`dump_render.py`/`debug.py` 接入 ds | render 校验流程不变 | ✅ |
+| P4 | （可选）`debug.py frames` 单命令：谓词+聚合 | — | pending |
+| P5 | （可选）SCHEMA 常量反哺 dump_capture 写侧，schema 单源化 | — | pending |
 
 每个阶段独立可交付，P1-P3 是纯内部重构（对外行为不变）。
 
