@@ -32,6 +32,8 @@
   header .breadcrumb a { color: var(--accent); cursor: pointer; text-decoration: none; }
   header .breadcrumb a:hover { text-decoration: underline; }
   header .breadcrumb .sep { color: var(--muted); }
+  header .header-link { color: var(--accent); cursor: pointer; font-size: 12px; margin-right: 16px; text-decoration: none; white-space: nowrap; }
+  header .header-link:hover { text-decoration: underline; }
 
   /* Main content */
   #content { flex: 1; overflow: auto; padding: 0; }
@@ -441,6 +443,7 @@
     <div class="title">CombatBench Debug Viewer</div>
     <div class="meta" id="header-meta">loading...</div>
     <div class="spacer"></div>
+    <a class="header-link" id="nav-dataflow" title="The logical data model of one PPO update — start here">Data Flow ?</a>
     <div class="breadcrumb" id="breadcrumb"></div>
   </header>
 
@@ -606,8 +609,8 @@
           <div id="episode-list-container"></div>
         </div>
         <div class="card dataflow-card" id="dataflow-entry">
-          <h2>Data Flow</h2>
-          <div class="desc">The logical pipeline of one update — where every number comes from.</div>
+          <h2>Data Flow <span class="gs-scope">new here? start with this</span></h2>
+          <div class="desc">The logical data model of one PPO update — the mental model behind every page.</div>
           <div class="df-mini">
             <span>Episode</span><i>▸</i><span>Trajectory</span><i>▸</i><span>Targets</span><i>▸</i><span>Update</span><i>▸</i><span>Run</span>
           </div>
@@ -909,6 +912,7 @@
   $('img-modal-close').addEventListener('click', () => $('img-modal').classList.remove('visible'));
   $('img-modal').addEventListener('click', e => { if (e.target === $('img-modal')) $('img-modal').classList.remove('visible'); });
   $('float-img-close').addEventListener('click', e => { e.stopPropagation(); hideFloatImage(); });
+  $('nav-dataflow').addEventListener('click', () => navigate('dataflow'));
 
   function updateBreadcrumb() {
     const bc = $('breadcrumb');
@@ -1434,6 +1438,18 @@
         renderExperiment();
         return;
       }
+      if (path === '/dataflow' || path === '/dataflow/') {
+        // The pipeline mental model is reachable from the index too —
+        // no run/dump needed; goto buttons degrade when no dump is open.
+        state.runName = null;
+        state.dumpName = null;
+        state.expName = null;
+        state.mode = 'runs';
+        $('header-meta').textContent = 'data flow';
+        showPage('dataflow');
+        renderDataflow();
+        return;
+      }
       const cm = path.match(/^\/compare\/([^/?]+)\/?$/);
       if (cm) {
         state.runName = null;
@@ -1485,6 +1501,9 @@
         if (sub.startsWith('/videos')) {
           showPage('videos');
           renderVideos();
+        } else if (sub.startsWith('/dataflow')) {
+          showPage('dataflow');
+          renderDataflow();
         } else {
           showPage('run');
           renderRunHome();
@@ -3526,11 +3545,14 @@
     const G = (gran, fieldsHtml) =>
       `<div class="df-group"><div class="df-gran">${gran}</div><div class="df-fields">${fieldsHtml}</div></div>`;
 
+    // Drill-down buttons only make sense with an open dump; the page
+    // itself is static and reachable from any context.
+    const inDump = !!state.dumpName;
     const stages = [
       {
         num: '①', name: 'Episode',
         goal: 'What actually happened in the environment',
-        goto: 'episode', gotoLabel: 'Episode page →',
+        goto: inDump ? 'episode' : null, gotoLabel: 'Episode page →',
         groups: [
           G('per-episode', F('seed', 'rollout seed') + F('length', 'frames until termination') +
              F('termination', 'why it ended') + F('observer summaries', 'episode-level metrics')),
@@ -3542,7 +3564,7 @@
         num: '②', name: 'Trajectory',
         goal: 'Trainable samples — episodes re-sliced per agent, per channel',
         edge: 'build_trajectories — experiment-defined mapping: one episode → any number of trajectories',
-        goto: 'traj', gotoLabel: 'Trajectory page →',
+        goto: inDump ? 'traj' : null, gotoLabel: 'Trajectory page →',
         groups: [
           G('per-trajectory', F('length', 'sampled frame span') + F('importance', 'sampling weight') +
              F('last_obs', 'bootstrap state for value at t+T')),
@@ -3559,7 +3581,7 @@
         num: '③', name: 'Training Targets',
         goal: 'The signal the actor actually learns from — computed once, invariant across epochs',
         edge: 'critic forward + GAE + combine',
-        goto: 'traj', gotoLabel: 'Trajectory page →',
+        goto: inDump ? 'traj' : null, gotoLabel: 'Trajectory page →',
         groups: [
           G('per-channel', F('EV', 'explained variance — is the critic learning?') +
              F('confidence', '√clip(EV) — trust weight on this channel')),
@@ -3574,7 +3596,7 @@
         num: '④', name: 'Update Dynamics',
         goal: 'How the parameters actually moved, step by step',
         edge: 'SGD loop — n_epochs × n_minibatches',
-        goto: 'timeline', gotoLabel: 'Timeline page →',
+        goto: inDump ? 'timeline' : null, gotoLabel: 'Timeline page →',
         groups: [
           G('per-step (minibatch)', F('kl · window_mean_kl', 'drift vs θ_old, early-stop signal') +
              F('ratio_mean/max · clip_frac', 'how far samples re-weighted') +
