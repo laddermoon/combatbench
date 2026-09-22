@@ -74,6 +74,85 @@ efficiency。episode 数改动除外——它直接压缩 rollout 壁钟。
   verify_resume_A 的 gradsig/u*.npz 旧格式有全量 per-update 数据可先用）
 - 逃逸归因：trajectory 级 ADV 贡献视图（trace_frame 是帧级）
 
+## 分析 #1：逃逸点画像与假设清单（2026-09-22）
+
+数据源：verify_resume_A（1500u 全量 gradsig + train.log）、三 seed × 三臂
+对比组、base_from0_s2（同臂未逃逸对照）。
+
+### 核心发现：逃逸不是相变，是阈值穿越
+
+verify_resume_A 逃逸窗口 u350–u400 内，coherence/frac_neg/σ/KL/clip
+全部连续无跳变。真实结构是：
+
+- **fpm（final_potential_mean）从 u60 起以 ~2.5e-3/update 线性爬坡**，
+  u340 达 ~0.85，u365–u400 穿越 0.9 阈值 → eval.success 阶跃。
+- "逃逸快慢" = 爬坡斜率。速度优化 = 提高 d(fpm)/du。
+- 基线爬坡期（u60–u365，~300 updates）占逃逸前时间的 ~95%。
+  最后过顶只占 ~40 updates。
+
+### 发现：KL 预算半闲置（最强信号）
+
+- approach 期 kl_mean ≈ 0.025，target_kl = 0.05 → **利用率 ~50%**
+- 早停率仅 2.8%（4 epoch × 50mb 全部跑完），epoch 间 KL 均匀分布
+- 跨 run corr(kl_mean, fpm_slope) = **0.53**；同臂内也成立：
+  base_s2 kl_util 48%/slope 1.84 vs verify kl 56%/slope 2.51
+- 弱旁证：standup_tune 系 lr=2e-4+tkl=0.03 → esc u720（更慢的爬坡）；
+  lr=1e-3+tkl=0.03+ue=6 → u28 崩（过猛）
+
+### 发现：收敛后早停浪费
+
+post-escape 早停率 86%（s42）、66–82%（s1）。逃逸后才撞 KL cap。
+对"逃逸时间"指标无影响，对"收敛时间"是主要浪费源。
+
+### 发现：ADV 信号先天稀薄
+
+raw adv_std ≈ 0.008（dense potential 单帧差异小），z-score 放大到
+±19 → 近均值帧符号翻转 → coherence ≈ 0.008（帧级梯度大面积互抵）。
+这是所有"信号结构"类杠杆的理论基础。
+
+### 发现：探索量单调缓降
+
+std 0.368→0.27、U 0.456→0.31（floor=0.4 下 hinge 全程咬合，
+floor_loss>0）。grank 臂 std 更低（0.243），逃逸 u295 时 std=0.222。
+
+### 假设清单（按证据强度排序）
+
+**A. KL 预算类 —— 每 update 位移量不足**
+| 臂 | 参数 | 机制 | 成本 |
+|---|---|---|---|
+| A1 epochs↑ | update_epochs 4→8 | 同数据多榨更新，早停自限在 cap | ppo 1.3s→~2.6s，几乎免费 |
+| A2 lr↑ | lr 3e-4→5~6e-4 | 直接放大步长 | 稳定性风险 |
+| A3 adaptive lr | exp_standup_floor04_lr 已有 | KL 欠填→涨，早停→降 | 已写好 |
+| A4 clip_eps↑ | 0.2→0.3 | clip_frac 32% 偏高，放行大 ratio 帧 | 免费 |
+
+**B. 数据预算类**
+| 臂 | 参数 | 检验什么 |
+|---|---|---|
+| B1 episodes↓ | 512→256（+epochs 4→8 保优化步数） | 逃逸是"发现驱动"还是"精度驱动"：若 slope 掉 <50% 则净赚 ~1.7× update 率 |
+| B2 episodes↑ | 512→1024 | 若 cancellation 需更多数据对冲（贵，2× rollout） |
+
+**C. 探索机制类**
+| 臂 | 参数 | 检验什么 |
+|---|---|---|
+| C1 floor schedule | floor 0.4→0.25 @u250（--param 免改码） | 前期保探索后期要精度 |
+| C2 explore_factor | 0→0.1 | 纯噪声探索是否助发现 |
+
+**D. ADV 结构类**
+| 臂 | 参数 | 检验什么 |
+|---|---|---|
+| D1 advstd | adv_norm=std（exp 已存在） | 去中心化保符号，减 cancellation |
+| D2 γ/λ | γ0.99→0.98 / λ0.95→0.9 | 加厚局部 adv 信号 |
+
+**E. 收敛后效率类**（不加速逃逸，加速精修）
+| 臂 | 参数 |
+|---|---|
+| E1 | target_kl/lr 收敛后下调（A3 覆盖） |
+
+### 待定首发臂建议
+
+A1（epochs 8）或 A2（lr 5e-4）+ B1（eps256/ue8）+ C1（floor 排程）。
+3 GPU 并行初筛，u500 未逃逸即杀。
+
 ## 进展日志
 
 ### 2026-09-22 任务启动
