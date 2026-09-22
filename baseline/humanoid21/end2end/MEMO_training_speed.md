@@ -365,6 +365,31 @@ clip03 的 s1/s2 确认臂已起（GPU1/2），若 clip03 在三个 seed 上都
 - clip_eps=0.3 若三 seed 都 ≥基线 → 收下 ~20u 的稳健改进作为新默认
 - γ/λ 调整（reward channel 配置，需实验子类）
 
+### 2026-09-22 中段监控 #6：同 seed 基线修正 + clip03 跨 seed 稳健
+
+**方法修正**：此前 Δfpm 全部对 s42 基线（verify_resume_A）比较——
+跨 seed 对比有系统性偏差（各 seed 的基线斜率不同）。启用 per-seed
+基线：s42→verify_resume_A，s1→base_from0_s1（esc u343），
+s2→base_from0_s2（u342 未逃逸，fpm 仅 0.66——"慢 seed"）。
+
+同 seed 重算后画面变化很大：
+
+| run | 同 seed Δ | 结论 |
+|---|---|---|
+| clip03_s42 | esc u347（−18u） | ✅ s42 正 |
+| clip03_s1 | +0.118 @u103 | 进行中，正 |
+| clip03_s2 | +0.175 @u106 | 进行中，正——**若逃逸则翻盘最慢 seed** |
+| clip04_s42 | −0.17 已杀 | 负 |
+| clip04_s1 | −0.045 @u229 | 衰减到负 |
+| clip04_s2 | −0.010 @u237 | 中性 |
+| ef05_s42 | +0.048 @u73 | 早期正，跟踪 |
+
+**clip04 同 seed 判定：≈中性/负**（跨 seed 的 +0.19 是 s1 基线慢的
+假象）。**clip03（clip_eps=0.3）在三 seed 同 seed Δ 全正——目前是
+唯一稳健改进候选**，幅度约 −20~−40u 逃逸。
+
+clip03_s42 逃逸后数据已够（succ 0.93 @u439），已停收 GPU4。
+
 **已起 `ef05_s42`**（GPU5，`standup_floor04_ef`，e=0.5 → rollout
 σ×1.73）：探索宽度杠杆的首次测试。机制：explore_factor 只放大
 采样 σ（训练 σ 不变，重要性比率已含 ei 修正）。已验证生效：
