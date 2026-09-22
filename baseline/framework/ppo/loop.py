@@ -294,6 +294,38 @@ def _pad_input_dims(
     return out
 
 
+def _pad_optimizer_state(
+    opt: torch.optim.Optimizer, *, tag: str
+) -> None:
+    """Pad restored optimizer state rows to match widened params.
+
+    ``load_state_dict`` does not shape-check moment buffers, so a resume
+    after input-dim expansion would crash inside ``step()``.  Zero-pad
+    any 2-D state tensor (exp_avg, exp_avg_sq, …) whose last dim is
+    narrower than its parameter — zero moments for the new columns.
+    """
+    for p, st in opt.state.items():
+        for key, sv in list(st.items()):
+            if (
+                torch.is_tensor(sv)
+                and sv.ndim == 2
+                and sv.shape != p.shape
+                and sv.shape[0] == p.shape[0]
+                and sv.shape[1] < p.shape[1]
+            ):
+                st[key] = torch.cat(
+                    [sv, torch.zeros(
+                        p.shape[0], p.shape[1] - sv.shape[1],
+                        dtype=sv.dtype, device=sv.device)],
+                    dim=1,
+                )
+                print(
+                    f"[checkpoint] {tag} optimizer: zero-padded state "
+                    f"'{key}' {sv.shape[1]} -> {p.shape[1]}",
+                    flush=True,
+                )
+
+
 def load_checkpoint(
     ckpt_path: Path,
     *,
@@ -329,6 +361,7 @@ def load_checkpoint(
 
     try:
         actor_optimizer.load_state_dict(payload["actor_optimizer_state_dict"])
+        _pad_optimizer_state(actor_optimizer, tag="actor")
     except (RuntimeError, ValueError) as e:
         print(f"[checkpoint] Actor optimizer state mismatch: {e}", flush=True)
 
@@ -337,6 +370,7 @@ def load_checkpoint(
         if k in saved_crit_opt:
             try:
                 opt.load_state_dict(saved_crit_opt[k])
+                _pad_optimizer_state(opt, tag=f"critic '{k}'")
             except (RuntimeError, ValueError) as e:
                 print(f"[checkpoint] Critic {k} optimizer state mismatch: {e}", flush=True)
 
