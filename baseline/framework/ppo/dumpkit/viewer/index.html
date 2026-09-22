@@ -53,9 +53,10 @@
   .ana-cell { min-width: 0; }
   .ana-cell h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .hist-svg { display: block; width: 100%; }
-  .hist-strip { display: grid; grid-template-columns: 130px 1fr 120px; gap: 8px; align-items: center; margin: 3px 0; font-size: 11px; }
+  .hist-strip { margin: 8px 0; font-size: 11px; }
+  .hist-strip .hs-head { display: flex; justify-content: space-between; margin-bottom: 2px; }
   .hist-strip .hs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .hist-strip .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+  .hist-strip .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .steps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 12px; }
   .steps-grid .chart-container { margin-bottom: 0; }
   .steps-detail { margin-top: 14px; }
@@ -3146,9 +3147,9 @@
     let sh = '';
     for (const st of stages) {
       sh += `<div class="hist-strip">` +
-        `<span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
-        `<span>${_histSvg(st, 240, 30, false)}</span>` +
-        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}]</span></div>`;
+        `<div class="hs-head"><span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
+        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}]</span></div>` +
+        _histSvg(st, 340, 56, false) + `</div>`;
     }
     stagesEl.innerHTML = sh;
   }
@@ -3380,7 +3381,7 @@
     const W = 560, H = nR * 17 + 30;
     const cw = (W - 46) / nC, ch = (H - 30) / nR;
     const max = Math.max(1, ...hist.flat());
-    let s = `<svg width="${W}" height="${H}">`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
     for (let r = 0; r < nR; r++) {           // draw top row = highest norm
       const src = nR - 1 - r;
       for (let c = 0; c < nC; c++) {
