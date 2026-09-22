@@ -53,10 +53,10 @@
   .ana-cell { min-width: 0; }
   .ana-cell h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .hist-svg { display: block; width: 100%; }
-  .chain-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .chain-row { display: flex; flex-direction: column; gap: 10px; }
   .chain-stage { min-width: 0; }
-  .chain-stage .hs-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 11px; }
-  .chain-stage .hs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chain-stage .hs-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12px; }
+  .chain-stage .hs-label { color: var(--text); }
   .chain-stage .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .steps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 12px; }
   .steps-grid .chart-container { margin-bottom: 0; }
@@ -3101,7 +3101,7 @@
     const pad = {l: 4, r: 4, t: 4, b: labels ? 15 : 2};
     const cw = (W - pad.l - pad.r) / n;
     const maxC = Math.max(1, ...h.counts);
-    let s = `<svg class="hist-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+    let s = `<svg class="hist-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px">`;
     for (let i = 0; i < n; i++) {
       const bh = (h.counts[i] / maxC) * (H - pad.t - pad.b);
       if (bh > 0)
@@ -3141,15 +3141,15 @@
     }
     const stages = body.stages;
     const fin = stages[stages.length - 1];
-    histEl.innerHTML = _histSvg(fin) +
+    histEl.innerHTML = _histSvg(fin, 560, 150) +
       `<div class="desc">n=${fin.n_valid} · mean ${fmt(fin.mean, 3)} · std ${fmt(fin.std, 2)} · ` +
       `p1 ${fmt(fin.p1, 2)} / p99 ${fmt(fin.p99, 2)} — lines: p1·median·p99</div>`;
     let sh = '';
     for (const st of stages) {
       sh += `<div class="chain-stage">` +
         `<div class="hs-head"><span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
-        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}]</span></div>` +
-        _histSvg(st, 320, 96) + `</div>`;
+        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}] · n=${st.n_valid}</span></div>` +
+        _histSvg(st, 1200, 90) + `</div>`;
     }
     stagesEl.innerHTML = sh;
   }
