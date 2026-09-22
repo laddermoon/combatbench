@@ -101,7 +101,13 @@ class Step(CombatExperimentPPOBase):
     target_kl: float = 0.03
     update_epochs: int = 4
     minibatch_size: int = 4096
-    uncertainty_coef: float = 1e-3
+    # --- Exploration (aligned with exp_standup_floor04) ---
+    # floor=0.3/coef=1e-3 was inert: the ckpt's U≈0.46 sits above the
+    # hinge and coef was 3 orders too weak to resist σ collapse.  The
+    # step task needs sustained exploration pressure — floor=0.4 engages
+    # almost immediately and coef=1.0 actually bites.
+    uncertainty_floor: float = 0.4
+    uncertainty_coef: float = 1.0
 
     # --- Rollout schedule ---
     episodes_per_update: int = 512
