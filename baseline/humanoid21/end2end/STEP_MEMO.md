@@ -189,3 +189,55 @@ min=0、ef-verify OK、kl=0.011-0.013 健康。
 应止跌回升；eval `hmax` 应脱离 8mm。若 combined 仍负 →
 查 ss_mask/φ_trail 实现细节；若转正但 hmax 不涨 →
 探索瓶颈仍在，考虑继续放大站立 σ 或 FOOT_WEIGHT。
+
+---
+
+## [2026-09-23] u50 dump 验证（run 000000）— 豁免门生效，残留否决在 >5cm 帧
+
+**判读工具升级**：`dumpkit/frame_access.py`（DumpDataset 懒加载访问层）
+已落地并迁移全部消费方（server/dump_analysis/dump_delta/dump_render/
+debug.py，无 DumpData shim）。跨通道归因现在 ~10 行。
+
+**修正**：此前分析误用 `observer.standing_balance_a.*`（agent A 数据套到
+所有帧）。正确用法是不带后缀的 `observer.standing_balance.*`——访问层
+按 traj_map 逐轨迹路由到对应 agent。
+
+**豁免门验证（u50）**：
+
+| 帧集 | n | aw_pot | phi |
+|---|---|---|---|
+| stand + 去抖单支撑 | 79071 | **0.040** | 0.988 |
+| stand + 非单支撑 | 298984 | 3.000 | 0.988 |
+| 非站立 | 31545 | 2.577 | 0.328 |
+
+门按设计工作。**lifted 帧梯度**：
+
+| h | n | combined | contrib.pot | contrib.feet |
+|---|---|---|---|---|
+| 3-5cm | 9044 | **+0.072** | -0.026 | +0.049×2 |
+| >5cm | 780 | **-0.209** | -0.204 | L+0.04/R-0.05 |
+
+>5cm 帧分解：334 帧为 !ss（flight/去抖滞后 → 豁免不适用，aw=3 →
+contrib -0.26）；446 帧为 ss（aw_pot=0.075 已豁免，但 r_potential
+critic 的 normed_adv 本身为负 → contrib -0.16，且 Phase C 对超阈
+摆动脚 -W → 顶点的正 adv 被负权重打回）。
+
+**支付排序已正确**（per-traj）：pk>5cm 轨迹 foot_ret=8.92 >
+2-5cm 的 8.36，pot_ret 几乎不掉（3.73 vs 3.76）——没有微步陷阱，
+只是 >5cm 帧的瞬时梯度仍为负。
+
+**rollout 分布**：站立帧 h p50=11.5/p90=22/p99=36/p99.9=60mm，
+h>3cm 占 2.6%、>5cm 占 0.25%；+W→抬脚(>3cm) 转化率 ~12%。
+
+**eval 平台期**：hmax 7→9mm（90 eval 几乎不动），swings 9.4/ep
+稳定，step≈0。事件在 rollout 尾部存在且梯度转正，但均值吸收极慢
+—— >5cm 事件仅 0.24% 帧 × 残负梯度；同时 u70+ 起 KL early-stop
+频发（actor_steps 47-104/400，kl_max 冲到 0.137），更新被截断。
+
+**候选下一干预**（若 u150 仍平台）：
+1. **事件完成奖励**：detect_step_cycles 命中的摆动窗内给 bonus
+   （如 +0.5 摊到 airborne 帧）——真实迈步 vs 微步的支付比从
+   ~1.07× 拉到 ~50×，直接对齐 eval 指标
+2. **Phase C 顶点对齐**：`w_swing = -W` 仅在脚下降时（dh≤0），
+   上升中的高脚不再被罚
+3. 继续加大站立 ef 或 FOOT_WEIGHT
