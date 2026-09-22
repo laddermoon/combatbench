@@ -28,7 +28,7 @@ Blueprint: baseline/humanoid21/end2end/step_env.yaml
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -37,6 +37,7 @@ from baseline.framework.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
+    detect_step_cycles,
 )
 
 from .base import CombatExperimentPPOBase
@@ -71,10 +72,14 @@ class Step(CombatExperimentPPOBase):
     foot_height_clip: float = 0.05
 
     # --- Eval stepping detection ---
-    # A foot "steps" when it leaves the ground (contact False) AND rises
-    # above step_lift_threshold within a standing frame (φ ≥ step_phi_gate).
+    # A swing attempt: one foot airborne (debounced contact) for
+    # >= min_air_frames while the other foot stays down, starting on a
+    # standing frame (φ >= step_phi_gate).  A valid cycle additionally
+    # reaches step_lift_threshold and lands on a standing frame.
+    # See stepping_state_machine.detect_step_cycles.
     step_lift_threshold: float = 0.05
     step_phi_gate: float = 0.9
+    step_min_air_frames: int = 3
 
     # --- r_potential actor weight (fixed) ---
     r_potential_actor_weight: float = 3.0
@@ -268,6 +273,10 @@ class Step(CombatExperimentPPOBase):
         final_pots = []
         success_count = 0
         step_success_count = 0  # agents that demonstrated stepping
+        all_cycles = []         # valid step cycles per agent
+        all_swings = []         # swing attempts per agent
+        all_hmax = []           # mean swing peak height per agent
+        all_alt = []            # alternation ratio per agent (>=2 cycles)
         n_agents = 0
 
         for ep in episodes:
@@ -291,8 +300,17 @@ class Step(CombatExperimentPPOBase):
                 if mx >= 0.9:
                     success_count += 1
 
-                if self._check_stepping(ep, foot_key, phi_key, T):
-                    step_success_count += 1
+                det = self._detect_stepping(ep, foot_key, phi_key, T)
+                if det is not None:
+                    if det["stepped"]:
+                        step_success_count += 1
+                    all_cycles.append(
+                        det["n_cycles_left"] + det["n_cycles_right"]
+                    )
+                    all_swings.append(det["n_swings"])
+                    all_hmax.append(det["h_swing_max"])
+                    if det["alt_ratio"] is not None:
+                        all_alt.append(det["alt_ratio"])
 
         n = max(len(max_pots), 1)
         mean_max_pot = sum(max_pots) / n if max_pots else 0.0
@@ -322,19 +340,22 @@ class Step(CombatExperimentPPOBase):
                 "final_pot": round(mean_final_pot, 3),
                 "success": round(success_rate, 3),
                 "step": round(step_success_rate, 3),
+                "cycles": round(sum(all_cycles) / max(len(all_cycles), 1), 2),
+                "swings": round(sum(all_swings) / max(len(all_swings), 1), 2),
+                "hmax": round(sum(all_hmax) / max(len(all_hmax), 1), 3),
+                "alt": round(sum(all_alt) / max(len(all_alt), 1), 3)
+                      if all_alt else None,
             },
         }
 
     @staticmethod
-    def _check_stepping(
+    def _detect_stepping(
         episode, foot_key: str, phi_key: str, T: int,
-    ) -> bool:
-        """Check if the agent demonstrated stepping in this episode.
+    ) -> Optional[dict]:
+        """Run step-cycle detection for one agent in one episode.
 
-        Stepping = within standing frames (φ ≥ step_phi_gate), BOTH feet
-        left the ground (contact False) while lifted above
-        ``step_lift_threshold``.  The contact requirement guards against
-        a tilted-but-grounded foot inflating the midpoint height.
+        Returns the ``detect_step_cycles`` result dict, or ``None`` when
+        any required observer field is missing.
         """
         phi = extract_per_step_field(
             episode.observer_outputs, phi_key, "potential", T,
@@ -353,26 +374,18 @@ class Step(CombatExperimentPPOBase):
         )
         if phi is None or h_left is None or h_right is None \
                 or c_left is None or c_right is None:
-            return False
+            return None
 
-        phi = np.asarray(phi[:T], dtype=np.float32)
-        h_left = np.asarray(h_left[:T], dtype=np.float32)
-        h_right = np.asarray(h_right[:T], dtype=np.float32)
-        standing = phi >= Step.step_phi_gate
-        if not standing.any():
-            return False
-
-        left_lift = (
-            standing
-            & (~np.asarray(c_left[:T], dtype=bool))
-            & (h_left >= Step.step_lift_threshold)
-        ).any()
-        right_lift = (
-            standing
-            & (~np.asarray(c_right[:T], dtype=bool))
-            & (h_right >= Step.step_lift_threshold)
-        ).any()
-        return bool(left_lift and right_lift)
+        standing = np.asarray(phi[:T], dtype=np.float32) >= Step.step_phi_gate
+        return detect_step_cycles(
+            np.asarray(c_left[:T], dtype=bool),
+            np.asarray(c_right[:T], dtype=bool),
+            np.asarray(h_left[:T], dtype=np.float32),
+            np.asarray(h_right[:T], dtype=np.float32),
+            standing,
+            min_air_steps=Step.step_min_air_frames,
+            h_thresh=Step.step_lift_threshold,
+        )
 
     def state(self) -> dict:
         return {

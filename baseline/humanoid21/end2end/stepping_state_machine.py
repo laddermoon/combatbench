@@ -335,3 +335,102 @@ def compute_foot_weights(
         prev_state = state
 
     return w_left, w_right
+
+
+# ----------------------------------------------------------------------
+# Step-cycle detection (eval/diagnostic, shares the debounced-contact view)
+# ----------------------------------------------------------------------
+
+def detect_step_cycles(
+    contact_l: np.ndarray,
+    contact_r: np.ndarray,
+    h_left: np.ndarray,
+    h_right: np.ndarray,
+    standing: np.ndarray,
+    *,
+    hold: int = CONTACT_HOLD_STEPS,
+    min_air_steps: int = 3,
+    h_thresh: float = SWING_LIFT_THRESHOLD,
+) -> dict:
+    """Post-hoc detection of valid step cycles on debounced contacts.
+
+    A *swing attempt* for foot F is a contiguous run of the SUPPORT state
+    where F is airborne, starting on a standing frame and lasting at
+    least ``min_air_steps`` frames.  A *valid step cycle* additionally
+    requires:
+
+      1. peak foot height during the swing >= ``h_thresh``;
+      2. the run ends with F regaining contact (lands) — runs that end in
+         FLIGHT (hop/stumble) or at episode end do not count;
+      3. the landing frame is also a standing frame (falling down is not
+         a step).
+
+    Because the run is contiguous SUPPORT_* by construction, the other
+    foot stays on the ground for the whole swing — a hop (both feet
+    airborne) can never be counted.
+
+    All inputs are per-frame arrays of length T.  ``standing`` is the
+    caller's standing gate (e.g. ``phi >= 0.9``).
+
+    Returns a dict::
+
+        cycles         list of (foot, t_off, t_land, h_peak)
+        n_cycles_left  valid cycles completed by the left foot
+        n_cycles_right valid cycles completed by the right foot
+        n_swings       swing attempts (standing + min duration, any height)
+        h_swing_max    mean peak swing height over attempts (0 if none)
+        alt_ratio      fraction of consecutive cycles on opposite feet
+                       (None when fewer than 2 cycles)
+        stepped        True iff both feet completed >= 1 valid cycle
+    """
+    contact_l = _hold_filter(np.asarray(contact_l, dtype=bool), hold)
+    contact_r = _hold_filter(np.asarray(contact_r, dtype=bool), hold)
+    h_left = np.asarray(h_left, dtype=np.float32)
+    h_right = np.asarray(h_right, dtype=np.float32)
+    standing = np.asarray(standing, dtype=bool)
+    T = len(contact_l)
+
+    cycles = []
+    n_swings = 0
+    h_peaks = []
+
+    t = 0
+    while t < T:
+        cl, cr = bool(contact_l[t]), bool(contact_r[t])
+        if cl == cr:
+            t += 1
+            continue
+        # SUPPORT_L: left down, right swings.  SUPPORT_R: right down, left swings.
+        swing_is_left = cr
+        a = t
+        while t < T and bool(contact_l[t]) == cl and bool(contact_r[t]) == cr:
+            t += 1
+        b = t  # run = [a, b)
+
+        if not standing[a] or (b - a) < min_air_steps:
+            continue
+        h_swing = h_left if swing_is_left else h_right
+        h_peak = float(h_swing[a:b].max())
+        n_swings += 1
+        h_peaks.append(h_peak)
+
+        landed = b < T and (
+            bool(contact_l[b]) if swing_is_left else bool(contact_r[b])
+        )
+        if landed and standing[b] and h_peak >= h_thresh:
+            cycles.append(("left" if swing_is_left else "right", a, b, h_peak))
+
+    n_alt = sum(
+        1 for i in range(1, len(cycles)) if cycles[i][0] != cycles[i - 1][0]
+    )
+    n_left = sum(1 for c in cycles if c[0] == "left")
+
+    return {
+        "cycles": cycles,
+        "n_cycles_left": n_left,
+        "n_cycles_right": len(cycles) - n_left,
+        "n_swings": n_swings,
+        "h_swing_max": float(np.mean(h_peaks)) if h_peaks else 0.0,
+        "alt_ratio": (n_alt / (len(cycles) - 1)) if len(cycles) >= 2 else None,
+        "stepped": n_left >= 1 and (len(cycles) - n_left) >= 1,
+    }
