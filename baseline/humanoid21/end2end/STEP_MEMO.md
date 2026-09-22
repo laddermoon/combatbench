@@ -321,3 +321,16 @@ vs"该压"，mean 无法把抬脚固化成决策 → 事件永远稀有 → 被 
 首层权重按新维度补零列，新输入初始惰性，policy 与 ckpt 完全等价，
 再学习"cmd_lift_L=1 → 抬左脚"。这是让抬脚成为*决策*而非*巧合*
 的必要条件 —— 与文献中 phase-conditioned locomotion 一致。
+
+**干预 #5 已上线（commit 2a89bab + optimizer pad）**：
+`GaitClockSimulator` 在 obs[96:99] 注入 cmd_L/cmd_R/窗口进度（动作步
+索引的确定性函数，与轨迹帧号对齐）；reward 侧改用
+`clock_foot_weights`（指令脚 +W 抬升/−W 落地，支撑脚恒 −W）。
+load_checkpoint 支持输入维零填充扩展（权重+Adam 状态），暖启动
+policy 初始与 ckpt 完全等价。
+
+新 run：`train_step_ppo_20260923_053633`（pid 1196165, GPU2,
+lr=1e-4, dump u1551/1651/1801 —— 本次为绝对编号）。
+
+**判据**：eval swings/hmax 应突破前值平台（17/12mm）；u1551 dump
+看 cmd_L=1 窗口内 h_left 响应率（目标 ≫0.5%）、combined_adv 符号。
