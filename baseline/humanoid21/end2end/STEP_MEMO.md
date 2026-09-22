@@ -270,3 +270,9 @@ foot critic ev 0.53/0.48。
 
 **判据**：eval `cycles`/`hmax` 应开始爬升；u50 dump 看 >5cm 帧
 combined_adv 是否转正、bonus 是否落在正确的帧。
+
+**修正**：本 run resume 计数器从 1501 起（旧 run 从 1 起），
+`--dump-at 50/150/300` 全部 <start_update 永不触发（loop 有 warning）。
+已改用 sentinel 机制（`dump_request.json` 一次性触发下一 update）+
+后台 watcher 在绝对 u1550/1650/1800 武装 —— 等价于 run 内第
+50/150/300 个 update。教训：resume 后 dump-at 必须用绝对编号。
