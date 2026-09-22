@@ -426,6 +426,7 @@
   .cmp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .cmp-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 12px; padding: 4px 10px; font-size: 12px; font-family: ui-monospace, monospace; }
   .cmp-chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .cmp-chip .chip-prog { color: var(--muted); font-size: 11px; }
   .cmp-chip .x { cursor: pointer; color: var(--muted); margin-left: 2px; }
   .cmp-chip .x:hover { color: var(--red); }
   .cmp-chip.cmp-err { border-color: var(--red); }
@@ -2796,6 +2797,7 @@
       const d = state.cmpData[name] || {};
       return {name, color: CMP_COLORS[i % CMP_COLORS.length],
               entries: d.entries || [], byUpdate: d.byUpdate || new Map(),
+              maxUpdates: d.maxUpdates, status: d.status,
               error: d.error};
     }).filter(r => !r.error);
   }
@@ -2808,11 +2810,18 @@
     await Promise.all(state.cmpRuns.map(async name => {
       if (state.cmpData[name]) return;
       try {
-        const entries = await fetchJson(
-          `/run/${encodeURIComponent(name)}/api/run/metrics`);
+        const [entries, info] = await Promise.all([
+          fetchJson(`/run/${encodeURIComponent(name)}/api/run/metrics`),
+          fetchJson(`/run/${encodeURIComponent(name)}/api/run/info`)
+            .catch(() => null),
+        ]);
+        const common = ((info && info.config && info.config.experiment) || {})
+          .common_params || {};
         state.cmpData[name] = {
           entries,
           byUpdate: new Map(entries.map(e => [e.update, e])),
+          maxUpdates: common.max_updates || null,
+          status: (info && info.status) || null,
         };
       } catch (e) {
         state.cmpData[name] = {error: String(e.message || e)};
@@ -2832,10 +2841,16 @@
     const el = $('cmp-chips');
     let html = '';
     state.cmpRuns.forEach((name, i) => {
-      const err = state.cmpData[name] && state.cmpData[name].error;
+      const d = state.cmpData[name] || {};
+      const err = d.error;
+      const last = d.entries && d.entries.length
+        ? d.entries[d.entries.length - 1].update : null;
+      const prog = last != null
+        ? `u${last}${d.maxUpdates ? '/' + d.maxUpdates : ''}` : '';
       html += `<span class="cmp-chip${err ? ' cmp-err' : ''}">` +
         `<i style="background:${CMP_COLORS[i % CMP_COLORS.length]}"></i>` +
         `${escapeHtml(name)}` +
+        (prog ? `<span class="chip-prog">${prog}</span>` : '') +
         `<span class="x" data-name="${escapeHtml(name)}" title="remove">✕</span>` +
         `</span>`;
     });
@@ -2883,7 +2898,7 @@
     };
     const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null;
     let html = '<table class="cmp-summary"><thead><tr>' +
-      '<th>run</th><th>start</th><th>succ≥0.5</th><th>succ≥0.9</th>' +
+      '<th>run</th><th>progress</th><th>succ≥0.5</th><th>succ≥0.9</th>' +
       '<th>last10 succ</th><th>last10 final_pot</th><th>early-stop</th>' +
       '<th>mean steps</th><th>total time</th></tr></thead><tbody>';
     runs.forEach(r => {
@@ -2895,9 +2910,16 @@
         ? steps.filter(s => s < 200).length / steps.length : null;
       const m10s = mean(succ.slice(-10).map(p => p[1]));
       const m10f = mean(fp.slice(-10).map(p => p[1]));
+      const last = r.entries.length
+        ? r.entries[r.entries.length - 1].update : null;
+      const pct = (last != null && r.maxUpdates)
+        ? Math.min(100, 100 * last / r.maxUpdates) : 0;
+      const progTxt = last != null
+        ? `u${last}${r.maxUpdates ? '/' + r.maxUpdates : ''}` : '—';
       html += `<tr><td><span class="rundot" ` +
         `style="background:${r.color}"></span>${escapeHtml(r.name)}</td>` +
-        `<td>u${r.entries.length ? r.entries[0].update : '—'}</td>` +
+        `<td><div class="prog-cell"><div class="prog-bar">` +
+        `<i style="width:${pct}%"></i></div>${progTxt}</div></td>` +
         `<td>${firstGe(succ, 0.5)}</td><td>${firstGe(succ, 0.9)}</td>` +
         `<td>${m10s == null ? '—' : fmt(m10s, 3)}</td>` +
         `<td>${m10f == null ? '—' : fmt(m10f, 3)}</td>` +
