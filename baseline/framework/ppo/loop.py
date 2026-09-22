@@ -460,7 +460,18 @@ def load_checkpoint(
                 )
         loop_state = payload.get("loop_state") or {}
         if resume_ctx is not None:
-            resume_ctx["prev_gvec"] = loop_state.get("prev_gvec")
+            prev_gvec = loop_state.get("prev_gvec")
+            # Drop stale gradient vector after obs/param expansion —
+            # grad_sig_dir_cos dots it against the new full gradient.
+            n_params = sum(int(p.numel()) for p in actor.parameters())
+            if prev_gvec is not None and len(np.asarray(prev_gvec)) != n_params:
+                print(
+                    f"[checkpoint] dropping prev_gvec "
+                    f"({len(np.asarray(prev_gvec))} != {n_params} params)",
+                    flush=True,
+                )
+                prev_gvec = None
+            resume_ctx["prev_gvec"] = prev_gvec
             resume_ctx["n_evals_done"] = int(loop_state.get("n_evals_done", 0))
 
     # Return the next update to run.  The checkpoint stores the update
