@@ -434,6 +434,8 @@ class FrameTable(Table):
     def _resolve(self, name: str) -> Optional[np.ndarray]:
         if name.startswith("contrib."):
             return self._contrib(name[len("contrib."):])
+        if name.startswith("aw."):
+            name = "actor_weight." + name[3:]
 
         for f in _FRAME_FILES:
             arr = self._ds.npz(f).get(name)
