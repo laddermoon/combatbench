@@ -361,53 +361,6 @@ class StateTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "log_prob": float(log_prob.item()),
         }
 
-    # ------------------------------------------------------------------
-    # Exploration gradient diagnostics (policy-owned, P1-7)
-    # ------------------------------------------------------------------
-
-    def exploration_grad_diagnostics(
-        self,
-        policy_loss: torch.Tensor,
-        floor_loss: torch.Tensor,
-    ) -> Optional[Dict[str, float]]:
-        """Report σ-side gradient contributions from policy_loss vs floor_loss.
-
-        The "exploration parameters" here are the log-std half of the
-        shared head — ``head.weight[action_dim:]`` and
-        ``head.bias[action_dim:]``.  Gradients are taken w.r.t. the full
-        head tensors (autograd requires leaf params) and the σ half is
-        sliced out afterwards.
-        """
-        params = [self.head.weight, self.head.bias]
-        d = self.action_dim
-        pol_grads = torch.autograd.grad(
-            policy_loss, params,
-            retain_graph=True, create_graph=False,
-            allow_unused=True,
-        )
-        floor_grads = torch.autograd.grad(
-            floor_loss, params,
-            retain_graph=True, create_graph=False,
-            allow_unused=True,
-        )
-        if any(g is None for g in pol_grads) or any(
-            g is None for g in floor_grads
-        ):
-            return None
-
-        def _sigma_half(grads: Tuple[torch.Tensor, ...]) -> torch.Tensor:
-            w_grad, b_grad = grads
-            return torch.cat([w_grad[d:].reshape(-1), b_grad[d:].reshape(-1)])
-
-        pol_half = _sigma_half(pol_grads)
-        floor_half = _sigma_half(floor_grads)
-        return {
-            "pol_abs": float(pol_half.abs().mean().item()),
-            "floor_abs": float(floor_half.abs().mean().item()),
-            "pol_sign": float(pol_half.mean().item()),
-            "floor_sign": float(floor_half.mean().item()),
-        }
-
     def to_blueprint(
         self, dest_path: Optional[str] = None,
     ) -> "PolicyBlueprint":

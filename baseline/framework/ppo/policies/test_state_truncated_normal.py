@@ -393,22 +393,6 @@ class TestGradients(unittest.TestCase):
             f"∂U/∂(σ-bias) should be positive, got {p.head.bias.grad[d:]}",
         )
 
-    def test_exploration_grad_diagnostics(self):
-        """The hook returns grads over the σ half of head params."""
-        p = _make_policy()
-        obs = torch.randn(10, OBS_DIM)
-        actions = torch.zeros(10, ACTION_DIM)
-        ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0))
-        policy_loss = -ev.log_prob.mean()
-        floor_loss = (torch.relu(0.9 - ev.uncertainty) ** 2).mean()
-        diag = p.exploration_grad_diagnostics(policy_loss, floor_loss)
-        self.assertIsNotNone(diag)
-        for key in ("pol_abs", "floor_abs", "pol_sign", "floor_sign"):
-            self.assertIn(key, diag)
-        self.assertGreater(diag["floor_abs"], 0.0,
-                           "floor loss should produce nonzero σ grads")
-
-
 class TestStats(unittest.TestCase):
     """want_stats returns expected keys."""
 

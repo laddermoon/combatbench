@@ -74,14 +74,7 @@ U = mean(U_per_dim)                        # (B,)
 - `evaluate_actions` 一次 trunk+head 前向同时得到 mean、policy σ、
   effective σ —— 天然满足 P1-8（不重复 forward）
 
-## 6. 探索梯度诊断
-
-无全局 `log_std`。"探索参数" = head 的 σ 半侧：
-`head.weight[action_dim:]` 与 `head.bias[action_dim:]`。
-`exploration_grad_diagnostics` 对完整 head 参数取 autograd.grad 后
-切出 σ 半侧，上报 `pol_abs/floor_abs/pol_sign/floor_sign`。
-
-## 7. 正确性保证：退化等价测试
+## 6. 正确性保证：退化等价测试
 
 `test_state_truncated_normal.py::TestDegenerateEquivalence`：
 将基线 `net[0]`/`net[2]` 拷入 trunk、`net[4]` 拷入 head 的 mean
@@ -93,13 +86,13 @@ forward / sample_action / evaluate_actions 输出 **bit-identical**
 助手（Φ、Φ⁻¹、log_Z）直接从 `truncated_normal_mlp` import，计算
 顺序逐行一致。
 
-## 8. stats 增量
+## 7. stats 增量
 
 沿用基线 keys（uncertainty/std_mean/eff_std_mean/std_min/std_max/
 mean_abs），新增 `std_std`：batch 内 σ 的空间方差。≈0 表示 σ head
 接近常数（行为退化为全局 σ 基线）；>0 表示状态依赖性被实际使用。
 
-## 9. 接入方式
+## 8. 接入方式
 
 ```yaml
 # baseline/humanoid21/blueprints/init_policy_state_truncated_normal.yaml
