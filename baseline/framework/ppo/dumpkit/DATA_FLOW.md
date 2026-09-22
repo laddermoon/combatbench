@@ -94,7 +94,7 @@
 | 1. Episode | obs, action, terminated, observer | Scene 1：Episode → Trajectory |
 | 2. Trajectory | reward, actor_weight, per-channel | Scene 1：Episode → Trajectory |
 | 3. 训练目标 | value, advantage, return, combined_adv | Scene 2：Trajectory → 训练目标 |
-| 3.5 gradsig | grad_sig_* 标量 + cos×norm 二维分布 | run 首页图表 + Update Detail |
+| 3.5 gradsig | grad_sig_* 标量 + cos×norm 二维分布 | run 首页图表 |
 | 4. Epoch | ratio, clip_mask, new_value | Scene 3：Trajectory × Epoch |
 | 5. Minibatch | KL, loss, grad, clip_frac | Scene 4：Update 时间线 |
 

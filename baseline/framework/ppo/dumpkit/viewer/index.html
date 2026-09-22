@@ -114,6 +114,13 @@
   .update-controls .upd-label { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); min-width: 130px; }
   .update-controls a.dump-link { color: var(--accent); cursor: pointer; font-size: 12px; margin-left: 8px; }
   table.dump-table tr.dump-active { background: var(--accent-dim); }
+  /* Run Info param groups + override marks */
+  .param-group { font-size: 11px; color: var(--muted); letter-spacing: 0.4px;
+    margin: 8px 0 2px 0; font-family: ui-monospace, monospace; }
+  .info-item .ovr-mark { color: var(--orange); margin-left: 4px;
+    font-size: 10px; cursor: help; }
+  .upd-no-ovr { color: var(--muted); font-size: 12px; padding: 10px 2px;
+    align-self: center; }
 
   /* Runs index page */
   #page-runs { padding: 16px; overflow: auto; height: 100%; }
@@ -555,7 +562,7 @@
         </div>
         <div class="card">
           <h2>Update Detail</h2>
-          <div class="desc">Scrub the update timeline (bottom bar) or click a chart to inspect one update's stats.</div>
+          <div class="desc">Effective parameters at the selected update — scheduled values plus mid-run overrides. Static initial config is in Run Info above; per-update numbers live in the charts below.</div>
           <div id="update-detail-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
@@ -2049,18 +2056,32 @@
     const exp = cfg.experiment || {};
     const cp = exp.common_params || {};
     const pp = exp.ppo_params || {};
-    const ex = exp.initial_exploration || {};
-    const lrs = exp.initial_lr_schedule || {};
     const snap = info.code_snapshot || {};
+
+    // Fields patched mid-run via --param (union across updates) get a
+    // ▲ mark so an initial value here isn't mistaken for the value in
+    // force — the effective per-update values live in Update Detail.
+    const ovrKeys = new Set();
+    (state.runMetrics || []).forEach(m => {
+      const po = m.param_overrides;
+      if (po && typeof po === 'object')
+        Object.keys(po).forEach(k => ovrKeys.add(k));
+    });
 
     const row = items =>
       '<div class="ep-info-bar">' +
       items.filter(([, v]) => v !== undefined && v !== null && v !== '')
-        .map(([k, v]) =>
-          `<div class="info-item"><span class="info-label">${escapeHtml(k)}</span>` +
-          `<span class="info-value">${escapeHtml(String(v))}</span></div>`)
-        .join('') +
+        .map(([k, v, rawKey]) => {
+          const mark = rawKey && ovrKeys.has(rawKey)
+            ? '<span class="ovr-mark" title="overridden mid-run — see Update Detail">▲</span>'
+            : '';
+          return `<div class="info-item"><span class="info-label">${escapeHtml(k)}</span>` +
+            `<span class="info-value">${escapeHtml(String(v))}${mark}</span></div>`;
+        }).join('') +
       '</div>';
+    // Every field of a params dict, display label optionally remapped.
+    const dictRow = (obj, labels) =>
+      row(Object.keys(obj).sort().map(k => [labels[k] || k, obj[k], k]));
 
     let html = '';
     html += row([
@@ -2074,21 +2095,19 @@
         ['base', `${snap.base_branch || ''}@${String(snap.base_commit || '').slice(0, 8)}`],
       ]);
     }
-    html += row([
-      ['lr', cp.learning_rate], ['critic_lr', cp.critic_learning_rate],
-      ['grad_clip', cp.grad_clip_norm], ['eps/update', cp.episodes_per_update],
-      ['max_updates', cp.max_updates], ['eval_int', cp.eval_interval],
-      ['eval_eps', cp.eval_episodes], ['video_int', cp.video_eval_interval],
-      ['workers', cp.rollout_workers], ['seed', cp.seed],
-    ]);
-    html += row([
-      ['clip_eps', pp.clip_eps], ['target_kl', pp.target_kl],
-      ['epochs', pp.update_epochs], ['minibatch', pp.minibatch_size],
-      ['U_floor', ex.uncertainty_floor], ['U_coef', ex.uncertainty_coef],
-      ['sched_actor_lr', lrs.actor_lr], ['sched_critic_lr', lrs.critic_lr],
-    ]);
+    // Static initial config — the full param dicts, grouped. Scheduled
+    // quantities (exploration floor/coef, lr) are intentionally not
+    // here: their effective values are logged per update and shown in
+    // Update Detail.
+    html += '<div class="param-group">common_params</div>';
+    html += dictRow(cp, {
+      learning_rate: 'init_lr', critic_learning_rate: 'init_critic_lr',
+    });
+    html += '<div class="param-group">ppo_params</div>';
+    html += dictRow(pp, {});
     const rcs = exp.reward_channels || [];
     if (rcs.length) {
+      html += '<div class="param-group">reward_channels</div>';
       html += row(rcs.map(c => [
         c.name, `γ=${c.gamma} λ=${c.gae_lambda}`,
       ]));
@@ -2107,6 +2126,9 @@
       state.runDumps = await fetchJson(api('run/dumps'));
       state.runMetrics = await fetchJson(api('run/metrics'));
       state.videosList = await fetchJson(api('run/videos'));
+      // Override marks (▲) depend on metrics — re-render now that the
+      // union of param_overrides keys is known.
+      renderRunInfoPanel();
     } catch (e) {
       $('dump-list-container').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       return;
@@ -2358,11 +2380,31 @@
       tr.classList.toggle('dump-active', !!d && d.update === u.update);
     });
 
-    // Grouped tables for this update's flattened fields
+    // Effective parameters at this update. Two sources:
+    //  - scheduled values are logged per update in stats.*
+    //    (exploration floor/coef, actor/critic lr)
+    //  - --param patches arrive via param_overrides
+    // Everything else (static common/ppo params) is in Run Info —
+    // initial value + what you see here = the params in force.
     let html = '<div class="data-grid">';
 
-    // param_overrides — effective per-update parameter overrides in
-    // force for this update (config-change evidence, not a chart).
+    const schedKeys = [
+      ['stats.uncertainty_floor', 'uncertainty_floor'],
+      ['stats.uncertainty_coef', 'uncertainty_coef'],
+      ['stats.actor_lr', 'actor_lr'],
+      ['stats.critic_lr', 'critic_lr'],
+    ];
+    const schedRows = schedKeys
+      .filter(([k]) => u[k] !== undefined && u[k] !== null)
+      .map(([k, label]) =>
+        `<tr><td>${escapeHtml(label)}</td><td class="num">${fmt(u[k])}</td></tr>`)
+      .join('');
+    if (schedRows) {
+      html += '<div class="data-table"><h3>Scheduled Params (effective)</h3><table>';
+      html += '<tr><th>Field</th><th>Value</th></tr>' + schedRows;
+      html += '</table></div>';
+    }
+
     if (u.param_overrides && typeof u.param_overrides === 'object'
         && Object.keys(u.param_overrides).length) {
       html += '<div class="data-table"><h3>Param Overrides (this update)</h3><table>';
@@ -2371,60 +2413,9 @@
         html += `<tr><td>${escapeHtml(k)}</td><td class="num">${escapeHtml(String(u.param_overrides[k]))}</td></tr>`;
       });
       html += '</table></div>';
-    }
-
-    // stats.* table
-    const statKeys = Object.keys(u).filter(k => k.startsWith('stats.')).sort();
-    if (statKeys.length) {
-      html += '<div class="data-table"><h3>PPO Stats</h3><table>';
-      html += '<tr><th>Field</th><th>Value</th></tr>';
-      statKeys.forEach(k => {
-        html += `<tr><td>${escapeHtml(k.slice(6))}</td><td class="num">${fmt(u[k])}</td></tr>`;
-      });
-      html += '</table></div>';
-    }
-
-    // pc.<metric>.<ch> → matrix: rows = metric, cols = channel
-    const pcMetrics = new Map();  // metric -> {ch: val}
-    Object.keys(u).forEach(k => {
-      const m = k.match(/^pc\.([^.]+)\.(.+)$/);
-      if (m) {
-        if (!pcMetrics.has(m[1])) pcMetrics.set(m[1], {});
-        pcMetrics.get(m[1])[m[2]] = u[k];
-      }
-    });
-    if (pcMetrics.size) {
-      const chans = [...new Set([...pcMetrics.values()].flatMap(o => Object.keys(o)))].sort();
-      html += '<div class="data-table"><h3>Per-Channel</h3><table>';
-      html += '<tr><th>metric</th>' + chans.map(c => `<th>${escapeHtml(c)}</th>`).join('') + '</tr>';
-      [...pcMetrics.keys()].sort().forEach(metric => {
-        html += `<tr><td>${escapeHtml(metric)}</td>`;
-        chans.forEach(c => {
-          html += `<td class="num">${fmt(pcMetrics.get(metric)[c])}</td>`;
-        });
-        html += '</tr>';
-      });
-      html += '</table></div>';
-    }
-
-    // ep.* + time.* tables side by side
-    const epKeys = Object.keys(u).filter(k => k.startsWith('ep.')).sort();
-    if (epKeys.length) {
-      html += '<div class="data-table"><h3>Episode Stats</h3><table>';
-      html += '<tr><th>Field</th><th>Value</th></tr>';
-      epKeys.forEach(k => {
-        html += `<tr><td>${escapeHtml(k.slice(3))}</td><td class="num">${fmt(u[k])}</td></tr>`;
-      });
-      html += '</table></div>';
-    }
-    const timeKeys = Object.keys(u).filter(k => k.startsWith('time.')).sort();
-    if (timeKeys.length) {
-      html += '<div class="data-table"><h3>Timing</h3><table>';
-      html += '<tr><th>Field</th><th>Value</th></tr>';
-      timeKeys.forEach(k => {
-        html += `<tr><td>${escapeHtml(k.slice(5))}</td><td class="num">${fmt(u[k], 2)}</td></tr>`;
-      });
-      html += '</table></div>';
+    } else {
+      html += '<div class="upd-no-ovr">no param overrides at this update — ' +
+        'static params match Run Info initial config</div>';
     }
     html += '</div>';
     $('update-detail-container').innerHTML = html;

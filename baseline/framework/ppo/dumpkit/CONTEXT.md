@@ -165,7 +165,12 @@ run 首页 "compare →" / 页内 chips。
   旧 pairwise 格式的工件被当作不可用而非误读。诊断约 +5s/update，
   这也是它不属于常规遥测的原因。
 - `param_overrides` 是行级元数据（dict），经 `_flatten_update` 透传、
-  只在 Update Detail 显示，不进图、不在 `stats.*` 下。
+  只在 Update Detail 显示，不进图、不在 `stats.*` 下。Update Detail
+  现在只回答"本 update 生效参数"：调度值（stats 里的
+  uncertainty_floor/coef、actor_lr、critic_lr）+ param_overrides；
+  stats/pc/ep/time 数字表已删（信息与曲线重复）。Run Info 渲染
+  common_params/ppo_params/reward_channels 全量字段，被 override
+  过的字段打 ▲ 标记（依赖 metrics 加载完重渲染）。
 - `dump_analysis.py` 是 dump 分析的**唯一计算源**：HTTP 端点、前端、
   CLI 都调它。语义红线（写进响应 meta）：gradsig 是 ≤2000 帧 θ_old
   抽样、proj<0=反向而非"坏样本"、dtheta_* 是 Adam 后的实际位移而非

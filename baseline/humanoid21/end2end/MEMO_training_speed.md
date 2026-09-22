@@ -74,6 +74,14 @@ efficiency。episode 数改动除外——它直接压缩 rollout 壁钟。
   verify_resume_A 的 gradsig/u*.npz 旧格式有全量 per-update 数据可先用）
 - 逃逸归因：trajectory 级 ADV 贡献视图（trace_frame 是帧级）
 
+### 已补（本任务线内）
+
+- Run 页信息架构修正：Run Info = 全量静态初始参数
+  （common_params/ppo_params/reward_channels，被 override 的字段打 ▲）；
+  Update Detail = 本 update 生效参数（调度值 stats.uncertainty_floor/
+  coef/actor_lr/critic_lr + param_overrides），stats/pc/ep/time 数字表
+  删除（与曲线重复）。初始+覆盖=有效参数的读法闭环。
+
 ## 分析 #1：逃逸点画像与假设清单（2026-09-22）
 
 数据源：verify_resume_A（1500u 全量 gradsig + train.log）、三 seed × 三臂
