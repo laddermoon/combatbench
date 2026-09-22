@@ -253,6 +253,47 @@ def save_checkpoint(
     os.replace(tmp_path, ckpt_path)
 
 
+def _pad_input_dims(
+    saved: Dict[str, torch.Tensor],
+    module: torch.nn.Module,
+    *,
+    tag: str,
+) -> Dict[str, torch.Tensor]:
+    """Zero-pad input dims when a checkpoint's weights are narrower.
+
+    Resume-with-obs-extension: when the current module expects a wider
+    input than the checkpoint (e.g. 96→99 gait-clock dims), each saved
+    2-D weight whose only shape difference is a smaller last dim is
+    right-padded with zeros — new observation inputs start inert and the
+    loaded function is initially identical to the checkpoint's.  Any
+    other shape mismatch is left for ``load_state_dict`` to reject.
+    """
+    cur = module.state_dict()
+    out: Dict[str, torch.Tensor] = {}
+    for k, v in saved.items():
+        tgt = cur.get(k)
+        if (
+            tgt is not None
+            and v.ndim == 2
+            and tgt.ndim == 2
+            and tgt.shape != v.shape
+            and tgt.shape[0] == v.shape[0]
+            and tgt.shape[1] > v.shape[1]
+        ):
+            pad = torch.zeros(
+                tgt.shape[0], tgt.shape[1] - v.shape[1], dtype=v.dtype
+            )
+            out[k] = torch.cat([v, pad], dim=1)
+            print(
+                f"[checkpoint] {tag}: zero-padded '{k}' input "
+                f"{v.shape[1]} -> {tgt.shape[1]}",
+                flush=True,
+            )
+        else:
+            out[k] = v
+    return out
+
+
 def load_checkpoint(
     ckpt_path: Path,
     *,
@@ -273,12 +314,16 @@ def load_checkpoint(
     """
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    actor.load_state_dict(payload["actor_state_dict"])
+    actor.load_state_dict(
+        _pad_input_dims(payload["actor_state_dict"], actor, tag="actor")
+    )
 
     saved = payload["critics_state_dict"]
     for k, v in critics.items():
         if k in saved:
-            v.load_state_dict(saved[k])
+            v.load_state_dict(
+                _pad_input_dims(saved[k], v, tag=f"critic '{k}'")
+            )
         else:
             print(f"[checkpoint] critic '{k}' not in checkpoint -> fresh init", flush=True)
 

@@ -383,6 +383,83 @@ def compute_foot_weights(
 
 
 # ----------------------------------------------------------------------
+# Clock-driven commands (observable gait schedule)
+# ----------------------------------------------------------------------
+
+GAIT_PERIOD: int = 40
+"""Action steps per full L+R command cycle (must match the simulator's
+``gait_period``).  Each foot owns half the cycle — e.g. 40 @ 20 Hz gives
+a 2 s cycle, 1 s per foot."""
+
+GAIT_LAND_FRAC: float = 0.75
+"""Within a foot's window, the last (1 - GAIT_LAND_FRAC) commands landing
+(-W) so the foot is back down before the other foot's window starts."""
+
+
+def clock_foot_weights(
+    T: int,
+    h_left: Optional[np.ndarray] = None,
+    h_right: Optional[np.ndarray] = None,
+    *,
+    period: int = GAIT_PERIOD,
+    land_frac: float = GAIT_LAND_FRAC,
+    weight: float = FOOT_WEIGHT,
+    lift_threshold: float = SWING_LIFT_THRESHOLD,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-frame actor weights driven by the observable gait clock.
+
+    Unlike :func:`compute_foot_weights` (which reacts to measured
+    contacts), the commanded foot is a deterministic function of the
+    frame index — identical to the ``cmd_L``/``cmd_R``/``wprog``
+    observation dims appended by ``GaitClockSimulator``.  The policy can
+    therefore learn "when cmd_L=1 → lift left foot" as an ordinary
+    state→action mapping instead of inferring invisible intent.
+
+    Rules per frame ``t`` (later gated by φ² in the experiment — the
+    raw schedule runs regardless of standing state):
+
+    - commanded foot: ``+W`` while below ``lift_threshold`` or still
+      rising (apex-aligned); once the window passes ``land_frac`` of its
+      length the command flips to ``-W`` so the foot lands before the
+      window ends.  A commanded foot that is already high and no longer
+      rising mid-window gets 0 (coast).
+    - support foot: ``-W`` — it must stay down; an uncommanded lift is
+      always punished (self-correction built in).
+    """
+    w_left = np.zeros(T, dtype=np.float32)
+    w_right = np.zeros(T, dtype=np.float32)
+    half = max(1, period // 2)
+    hl = np.asarray(h_left, dtype=np.float32) if h_left is not None else None
+    hr = np.asarray(h_right, dtype=np.float32) if h_right is not None else None
+
+    for t in range(T):
+        pos = t % period
+        if pos < half:
+            cmd_left, wprog = True, pos / half
+        else:
+            cmd_left, wprog = False, (pos - half) / half
+
+        h_cmd = (hl if cmd_left else hr)
+        h_cmd_t = float(h_cmd[t]) if h_cmd is not None else None
+        h_prev = (
+            float(h_cmd[t - 1]) if h_cmd is not None and t > 0 else h_cmd_t
+        )
+        rising = h_cmd_t is not None and h_cmd_t > h_prev
+        needs_lift = h_cmd_t is not None and h_cmd_t < lift_threshold
+
+        if wprog < land_frac:
+            w_cmd = weight if (h_cmd_t is None or needs_lift or rising) else 0.0
+        else:
+            w_cmd = -weight
+        if cmd_left:
+            w_left[t], w_right[t] = w_cmd, -weight
+        else:
+            w_right[t], w_left[t] = w_cmd, -weight
+
+    return w_left, w_right
+
+
+# ----------------------------------------------------------------------
 # Step-cycle detection (eval/diagnostic, shares the debounced-contact view)
 # ----------------------------------------------------------------------
 

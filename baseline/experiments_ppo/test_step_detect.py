@@ -299,3 +299,38 @@ def test_step_cycle_bonus_skips_invalid_swings():
     rl = trajs[0].channels["r_left_foot"].reward
     # dense term only (clip of the ramped height), no bonus
     assert rl[10:20].max() <= 0.02 + 1e-6
+
+
+def test_clock_foot_weights_alternating():
+    """Clock commands: left window +W, right window +W, support -W."""
+    from baseline.humanoid21.end2end.stepping_state_machine import (
+        clock_foot_weights,
+    )
+    T, P = 80, 40
+    wl, wr = clock_foot_weights(T, period=P)
+    # frames 0..19 = left window (cmd_L), 20..39 = right window
+    assert (wl[0:15] > 0).all()          # left lift phase
+    assert (wl[15:20] < 0).all()         # left land phase (τ>=0.75)
+    assert (wr[0:20] < 0).all()          # right is support
+    assert (wr[20:35] > 0).all()         # right lift phase
+    assert (wl[20:40] < 0).all()         # left is support
+    # cycle repeats
+    assert (wl[40:55] > 0).all()
+
+
+def test_clock_foot_weights_apex_coast():
+    """Commanded foot already high & descending mid-window -> 0 (coast)."""
+    from baseline.humanoid21.end2end.stepping_state_machine import (
+        clock_foot_weights,
+    )
+    T, P = 40, 40
+    hl = np.zeros(T); hr = np.zeros(T)
+    # left window is frames 0..19; make h high & descending at t=5
+    hl[:] = 0.0
+    hl[4] = 0.06; hl[5] = 0.05  # above thresh, falling -> coast (0)
+    wl, wr = clock_foot_weights(
+        T, h_left=hl, h_right=hr, period=P)
+    assert wl[4] > 0       # rising into apex
+    assert wl[5] == 0      # high + descending mid-window -> coast
+    assert wl[16] < 0      # land phase
+    assert wr[5] < 0       # support always pressed

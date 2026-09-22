@@ -25,12 +25,16 @@ runtime:
   strict: true
 
 simulator:
-  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  # GaitClockSimulator appends 3 dims to obs (indices 96..98):
+  # cmd_L / cmd_R / window-progress — the stepping command the policy
+  # can see (aligned with clock_foot_weights on the reward side).
+  cls: "baseline.humanoid21.end2end.gait_clock_simulator:GaitClockSimulator"
   config:
     initial_distance: ${initial_distance}
     debug_torque: false
     initial_pose_a: "standing"
     initial_pose_b: "standing"
+    gait_period: 40
 
 plugins:
   - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"

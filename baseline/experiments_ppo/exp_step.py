@@ -12,10 +12,11 @@ using the v2 stepping state machine::
     r_right_foot = clip(h_right, 0, 0.05),   γ=0.90, aw = state machine × φ²
 
 The reward carries only *physical fact* (foot height); the *intent* (which
-foot should rise / descend right now) is carried by ``actor_weight`` via
-the stepping state machine.  See
-``baseline/humanoid21/end2end/stepping_state_machine.py`` for the full
-rule table (Phase A/B/C, DOUBLE grace, FLIGHT continuation).
+foot should rise / descend right now) is carried BOTH by ``actor_weight``
+AND by the observation: ``GaitClockSimulator`` appends cmd_L / cmd_R /
+window-progress dims so the command is a learnable state feature.  The
+reward side replays the identical schedule via ``clock_foot_weights``
+(the u01651 dump showed invisible +W intents convert at only ~0.5%).
 
 φ² gating on the foot channels ensures stepping is only rewarded after
 the robot is standing.  r_potential is always active (fixed aw = 3.0).
@@ -44,7 +45,8 @@ from baseline.framework.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     CONTACT_HOLD_STEPS,
-    compute_foot_weights,
+    GAIT_PERIOD,
+    clock_foot_weights,
     detect_step_cycles,
     single_support_mask,
 )
@@ -77,7 +79,10 @@ class Step(CombatExperimentPPOBase):
     name = "step"
 
     # --- Network ---
-    obs_dim: int = 96
+    # 96 base dims + 3 gait-clock dims (cmd_L / cmd_R / window progress)
+    # appended by GaitClockSimulator — the stepping command is an
+    # observable state feature, not invisible advantage shaping.
+    obs_dim: int = 99
     action_dim: int = 21
 
     # --- Reward channels ---
@@ -177,6 +182,18 @@ class Step(CombatExperimentPPOBase):
         from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "end2end" / "step_env.yaml"
         return ParameterizedEnvBlueprint.load(bp_path)
+
+    def build_actor(self, device):
+        """Build actor with obs_dim=99 (96 base + 3 gait-clock dims).
+
+        Warm-start compatible: ``load_checkpoint`` zero-pads the first
+        layer's input columns, so the extended inputs start inert and
+        the restored policy is initially identical to the standup ckpt.
+        """
+        from envs.framework.policy import PolicyBlueprint
+        blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
+        bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
+        return bp.build(obs_dim=self.obs_dim).to(device)
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
         return tuple(
@@ -282,17 +299,18 @@ class Step(CombatExperimentPPOBase):
                 else:
                     r_right_foot[t_off:t_land] += per_frame
 
-        if contact_l is not None and contact_r is not None:
-            w_left, w_right = compute_foot_weights(
-                np.asarray(contact_l[:T_full], dtype=bool),
-                np.asarray(contact_r[:T_full], dtype=bool),
-                T_full,
-                h_left=np.asarray(h_left[:T_full], dtype=np.float32) if h_left is not None else None,
-                h_right=np.asarray(h_right[:T_full], dtype=np.float32) if h_right is not None else None,
-            )
-        else:
-            w_left = np.zeros(T_full, dtype=np.float32)
-            w_right = np.zeros(T_full, dtype=np.float32)
+        # --- Clock-driven foot commands (observable via obs[96:99]) ---
+        # The commanded foot is a deterministic function of the frame
+        # index — the policy sees it in obs, so +W intents become a
+        # learnable state→action mapping.  Replaces the contact-reactive
+        # state machine, whose commands converted to real lifts only
+        # ~0.5% of the time (u01651 dump).
+        w_left, w_right = clock_foot_weights(
+            T_full,
+            h_left=np.asarray(h_left[:T_full], dtype=np.float32) if h_left is not None else None,
+            h_right=np.asarray(h_right[:T_full], dtype=np.float32) if h_right is not None else None,
+            period=GAIT_PERIOD,
+        )
 
         # --- No early termination: robot can fall and get back up ---
         is_terminated = False
