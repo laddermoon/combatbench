@@ -164,7 +164,17 @@ A1（epochs 8）或 A2（lr 5e-4）+ B1（eps256/ue8）+ C1（floor 排程）。
 |---|---|---|---|
 | `ue8_s42` | 0 | A1 | `update_epochs=8` |
 | `eps256_s42` | 1 | B1 | `episodes_per_update=256, update_epochs=8`（数据减半、单帧消费 8 次，优化步数与基线持平） |
-| `floorsched_s42` | 4 | C1 | `uncertainty_floor=0.25@250`（u250 前与基线逐位一致） |
+| `floorsched_s42` | 4 | C1 | ~~`uncertainty_floor=0.25@250`~~ **配置错误已修正** |
+
+**事故记录**：`uncertainty_floor` 不是 CommonParams/PPOParams 字段——
+它走 `experiment.exploration(update) → ExplorationSpec` 通道，`--param`
+白名单里没有它。run 在 u250 补丁生效时抛 `ValueError` 崩溃。
+
+**修正**：新建 `exp_standup_floor04_floorsched.py`，用 `exploration()`
+钩子做排程（u<250: floor=0.4，u≥250: floor=0.25），从
+`floorsched_s42/checkpoint_u00245.pt` 续跑为 `floorsched_s42_r245`。
+u1–249 段本就是 floor=0.4（与基线逐位一致），续跑无损失。
+教训：排程类改动先查字段归属——`--param` 只管 cp/pp 数据类字段。
 
 早期观测：ue8 的 asteps=400（8×50）正常；eps256 每 update 102K 帧
 （asteps=200=8×25mb）。u1 均有初始 KL 尖峰早停（基线同样现象，
