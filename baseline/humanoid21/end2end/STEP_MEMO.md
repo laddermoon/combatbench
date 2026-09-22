@@ -276,3 +276,27 @@ combined_adv 是否转正、bonus 是否落在正确的帧。
 已改用 sentinel 机制（`dump_request.json` 一次性触发下一 update）+
 后台 watcher 在绝对 u1550/1650/1800 武装 —— 等价于 run 内第
 50/150/300 个 update。教训：resume 后 dump-at 必须用绝对编号。
+
+### run 014732 — u01551 dump 分析（run 内第 51 update）
+
+**梯度符号全面转正**（对比 run 000000 u50 同口径）：
+
+| lifted 帧 | run000000 | run014732 |
+|---|---|---|
+| h=3-5cm combined | +0.035 | **+0.126** |
+| h>5cm combined | -0.070 | **+1.329** |
+| >5cm contrib.pot | -0.097 | **+0.008** |
+| >5cm contrib.feet | — | **+0.66/+0.66** |
+| lift&ss aw_pot | 0.075 | 0.49（膨胀后更宽豁免）|
+
+事件奖励生效：reward>0.1 帧 0.07-0.09%（~330 帧，对应完成的周期），
+foot reward_max=0.217。h>5cm 站立帧占比 0.38%（前值 0.25%）。
+
+**frame_access 修复**（commit 8f13888）：`observer.X_a.field` 此前对
+所有 traj 都 gather agent-a 数组（一半 traj 错配）——现 `_[a-z]`
+后缀=agent 过滤（不匹配 traj 置 NaN），canonical 名
+`observer.X.field` 按 traj agent 解析。此前 u50 veto 结论方向不变
+（两 agent 同 episode 分布近似），但绝对值略有偏差。
+
+**eval 早期**（u1505-1545）：success=1.0 守住，swings 3.9→12.2/ep，
+hmax 4→10mm 缓升，cycles 偶现（0.01-0.03）。下一判据 u1650 dump。
