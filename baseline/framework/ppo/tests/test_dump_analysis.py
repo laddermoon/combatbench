@@ -17,7 +17,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from baseline.framework.ppo.dumpkit.viewer.server import DumpData
+from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
 from baseline.framework.ppo.dumpkit import dump_analysis as da
 
 
@@ -182,8 +182,8 @@ def _make_dump(root: Path, with_gradsig: bool = True,
     return d
 
 
-def _dd(path: Path) -> DumpData:
-    return DumpData(path)
+def _dd(path: Path) -> DumpDataset:
+    return DumpDataset(path)
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 """Shared dump-analysis layer — the single computation source behind the
 viewer API, the frontend, and ``debug.py`` CLI commands.
 
-All functions are pure and read-only: they take a ``DumpData`` (or any
-object exposing the same lazy accessors — ``manifest``, ``buffer_npz``,
-``gae_npz``, ``combine_npz``, ``timeline_npz``, ``epoch_frames_npz``,
-``gradsig_npz``, ``channel_names``) and return JSON-safe dicts
-(no NaN/Inf literals, no numpy types).
+All functions are pure and read-only: they take a ``DumpDataset``
+(``dumpkit.frame_access``) and return JSON-safe dicts (no NaN/Inf
+literals, no numpy types).  All dump file access — member naming,
+dict-of-array unwrapping, frame↔trajectory↔episode index math — lives
+in the DumpDataset layer; this module only computes.
 
 Semantic contract every caller must preserve:
 
@@ -29,6 +29,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from baseline.framework.ppo.dumpkit.frame_access import (
+    DumpDataset,
+    parse_frame_id,  # re-exported: older callers import it from here
+)
+
 
 # ---------------------------------------------------------------------------
 # Small local helpers (kept dependency-free so this module never imports the
@@ -47,13 +52,6 @@ def _f(v: Any) -> Optional[float]:
 def _i(v: Any) -> Optional[int]:
     x = _f(v)
     return int(x) if x is not None else None
-
-
-def _dict_item(arr: np.ndarray) -> Any:
-    """Extract dict from a 0-d object array (npz-serialized dict)."""
-    if isinstance(arr, np.ndarray) and arr.dtype == object and arr.size == 1:
-        return arr.item()
-    return arr
 
 
 def _nan_to_null(arr: np.ndarray) -> List[Any]:
@@ -92,84 +90,6 @@ def _summ(arr: np.ndarray) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Frame ↔ trajectory/episode mapping
-# ---------------------------------------------------------------------------
-
-def _frame_map(dd) -> Optional[Dict[str, Any]]:
-    """Per-buffer-frame provenance lookup.
-
-    Returns dict with:
-      frame_id:     object array of 'epNNNN:agent:t' or 'flat:*'
-      traj_lengths: int array
-      traj_starts:  int array — flat offset where each trajectory begins
-    or None when buffer.npz/frame_id is unavailable.
-    """
-    buf = dd.buffer_npz
-    if buf is None or "frame_id" not in buf:
-        return None
-    fid = buf["frame_id"]
-    tl = buf.get("traj_lengths")
-    starts = None
-    if tl is not None and len(tl) > 0:
-        tl = np.asarray(tl, dtype=np.int64)
-        starts = np.concatenate([[0], np.cumsum(tl)[:-1]]).astype(np.int64)
-    return {"frame_id": fid, "traj_lengths": tl, "traj_starts": starts}
-
-
-def parse_frame_id(fid: Any) -> Optional[Dict[str, Any]]:
-    """'ep0007:robot_a:123' → {episode, agent, env_frame}; 'flat:*' → None."""
-    s = str(fid)
-    if s.startswith("flat:"):
-        return None
-    parts = s.split(":")
-    if len(parts) != 3 or not parts[0].startswith("ep"):
-        return None
-    try:
-        return {
-            "episode": int(parts[0][2:]),
-            "agent": parts[1],
-            "env_frame": int(parts[2]),
-        }
-    except ValueError:
-        return None
-
-
-def _traj_of(fm: Dict[str, Any], buf_idx: int) -> Tuple[Optional[int], Optional[int]]:
-    """buffer flat index → (traj_idx, frame offset inside that traj)."""
-    starts = fm.get("traj_starts")
-    tl = fm.get("traj_lengths")
-    if starts is None or tl is None:
-        return None, None
-    if buf_idx < 0 or buf_idx >= int(tl.sum()):
-        return None, None
-    t = int(np.searchsorted(starts, buf_idx, side="right") - 1)
-    return t, buf_idx - int(starts[t])
-
-
-def _locate(dd, fm: Optional[Dict[str, Any]], buf_idx: int) -> Dict[str, Any]:
-    """Full provenance for one buffer index."""
-    loc: Dict[str, Any] = {"buffer_idx": buf_idx, "mapped": False}
-    if fm is None or buf_idx < 0 or buf_idx >= len(fm["frame_id"]):
-        loc["reason"] = "buffer.npz/frame_id unavailable or index out of range"
-        return loc
-    parsed = parse_frame_id(fm["frame_id"][buf_idx])
-    traj_idx, traj_frame = _traj_of(fm, buf_idx)
-    if traj_idx is not None:
-        loc["traj_idx"] = traj_idx
-        loc["traj_frame"] = traj_frame
-    if parsed is None:
-        loc["reason"] = "frame_id is flat:* or unparsable — not an env episode frame"
-        return loc
-    loc.update({
-        "mapped": True,
-        "episode": parsed["episode"],
-        "agent": parsed["agent"],
-        "env_frame": parsed["env_frame"],
-    })
-    return loc
-
-
-# ---------------------------------------------------------------------------
 # Timeline — overview with every captured field + derived key steps
 # ---------------------------------------------------------------------------
 
@@ -188,27 +108,28 @@ _TIMELINE_ARRAY_KEYS = (
 )
 
 
-def timeline_overview(dd) -> Dict[str, Any]:
+def timeline_overview(ds: DumpDataset) -> Dict[str, Any]:
     """Full per-minibatch timeline incl. fields the trainer captures but
     the old API dropped, plus a ``key_steps`` index for fast navigation."""
-    tl = dd.timeline_npz
-    if tl is None:
+    t = ds.timeline
+    if not ds.npz("timeline").available:
         return {"available": False, "reason": "timeline.npz not found"}
 
     result: Dict[str, Any] = {
         "available": True,
-        "n_epochs": _i(tl.get("n_epochs")) or 0,
-        "n_batches": _i(tl.get("n_batches")) or 0,
-        "n_steps": _i(tl.get("n_steps")) or 0,
-        "early_stop_step": _i(tl.get("early_stop_step")) if "early_stop_step" in tl else -1,
-        "target_kl": _f(tl.get("target_kl")),
-        "clip_eps": _f(tl.get("clip_eps")) or 0.2,
+        "n_epochs": _i(t.scalar("n_epochs")) or 0,
+        "n_batches": _i(t.scalar("n_batches")) or 0,
+        "n_steps": _i(t.scalar("n_steps")) or 0,
+        "early_stop_step": _i(t.scalar("early_stop_step"))
+        if t.col("early_stop_step") is not None else -1,
+        "target_kl": _f(t.scalar("target_kl")),
+        "clip_eps": _f(t.scalar("clip_eps")) or 0.2,
     }
 
     for key in _TIMELINE_ARRAY_KEYS:
-        if key not in tl:
+        arr = t.col(key)
+        if arr is None:
             continue
-        arr = tl[key]
         if arr.dtype == bool:
             result[key] = [bool(x) for x in arr]
         elif arr.dtype == np.int64 or arr.dtype == np.int32:
@@ -220,10 +141,11 @@ def timeline_overview(dd) -> Dict[str, Any]:
     # from the dict keys themselves (trajectories.npz may be absent).
     for src, dst in (("critic_loss", "critic_loss_"),
                      ("critic_grad", "critic_grad_")):
-        if src in tl:
-            d = _dict_item(tl[src])
-            if isinstance(d, dict):
-                for ch, a in d.items():
+        for col in t.columns:
+            if col.startswith(src + "."):
+                ch = col[len(src) + 1:]
+                a = t.col(col)
+                if a is not None:
                     result[dst + str(ch)] = _nan_to_null(np.asarray(a))
 
     result["key_steps"] = _key_steps(result)
@@ -290,9 +212,9 @@ def _key_steps(ov: Dict[str, Any]) -> List[Dict[str, Any]]:
     return steps
 
 
-def timeline_step(dd, step: int) -> Tuple[int, Dict[str, Any]]:
+def timeline_step(ds: DumpDataset, step: int) -> Tuple[int, Dict[str, Any]]:
     """One minibatch's full record."""
-    ov = timeline_overview(dd)
+    ov = timeline_overview(ds)
     if not ov.get("available"):
         return 404, {"error": ov.get("reason", "timeline not available")}
     n = ov["n_steps"]
@@ -314,11 +236,11 @@ def timeline_step(dd, step: int) -> Tuple[int, Dict[str, Any]]:
 # inspect — the dump-level overview payload
 # ---------------------------------------------------------------------------
 
-def inspect_dump(dd) -> Dict[str, Any]:
+def inspect_dump(ds: DumpDataset) -> Dict[str, Any]:
     """The dump home payload: provenance, capabilities, per-stage
     summaries, and drill-down links."""
     try:
-        m = dd.manifest
+        m = ds.manifest
     except (FileNotFoundError, TypeError):
         m = {}
 
@@ -334,7 +256,7 @@ def inspect_dump(dd) -> Dict[str, Any]:
             "n_trajectories": _i(m.get("n_trajectories")),
             "total_frames": _i(m.get("total_frames")),
         },
-        "capabilities": _capabilities(dd),
+        "capabilities": ds.capabilities(),
         "semantics": {
             "gradsig": "per-frame gradient diagnostics are a <=2000-frame "
                        "sample at theta_old against the full-buffer "
@@ -347,7 +269,7 @@ def inspect_dump(dd) -> Dict[str, Any]:
     }
 
     # -- sampling summary ---------------------------------------------------
-    tm = getattr(dd, "traj_map", []) or []
+    tm = ds.traj_map or []
     ep_lens = [e.get("num_frames") for e in tm if e.get("num_frames")]
     out["sampling"] = {
         "n_episodes": len(tm),
@@ -355,53 +277,62 @@ def inspect_dump(dd) -> Dict[str, Any]:
     }
 
     # -- advantage signal ---------------------------------------------------
-    cb = dd.combine_npz
-    if cb is not None and "combined_adv" in cb:
-        adv = np.asarray(cb["combined_adv"], dtype=np.float64)
+    f = ds.frames
+    adv = f.col("combined_adv")
+    if adv is not None:
+        adv = np.asarray(adv, dtype=np.float64)
         finite = adv[np.isfinite(adv)]
         adv_blk: Dict[str, Any] = {"combined_adv": _summ(adv)}
         if finite.size:
             adv_blk["frac_pos"] = float((finite > 0).mean())
             adv_blk["frac_neg"] = float((finite < 0).mean())
-        adv_blk["winsorize_clip_frac"] = _f(cb.get("adv_winsorize_clip_frac"))
-        adv_blk["winsorized"] = "combined_adv_raw" in cb
-        if "combined_adv_raw" in cb:
+        cb = ds.npz("combine")
+        adv_blk["winsorize_clip_frac"] = _f(cb.scalar("adv_winsorize_clip_frac"))
+        raw = f.col("combined_adv_raw")
+        adv_blk["winsorized"] = raw is not None
+        if raw is not None:
             adv_blk["combined_adv_raw"] = _summ(
-                np.asarray(cb["combined_adv_raw"], dtype=np.float64))
+                np.asarray(raw, dtype=np.float64))
         out["adv"] = adv_blk
 
     # -- gradient signal ----------------------------------------------------
-    gs = dd.gradsig_npz
-    if gs is not None:
+    gs = ds.npz("gradsig")
+    if gs.available:
+        valid = gs.get("valid")
+        n_sampled = _i(gs.scalar("n_sampled"))
+        if n_sampled is None and valid is not None:
+            n_sampled = int(np.asarray(valid).shape[0])
+        n_valid = _i(gs.scalar("n_valid"))
+        if n_valid is None and valid is not None:
+            n_valid = int(np.asarray(valid).sum())
         g_blk: Dict[str, Any] = {
-            "partial": "hist" not in gs,
-            "n_sampled": _i(gs.get("n_sampled")) or int(gs["valid"].shape[0]),
-            "n_valid": _i(gs.get("n_valid")) if "n_valid" in gs else int(
-                np.asarray(gs["valid"]).sum()),
+            "partial": "hist" not in gs.keys(),
+            "n_sampled": n_sampled,
+            "n_valid": n_valid,
         }
         for k in ("gnorm", "coherence", "dir_cos", "proj_mean",
                   "proj_std", "frac_neg", "n_nonfinite", "n_excluded"):
-            if k in gs:
-                v = _f(gs[k])
-                g_blk[k] = _i(gs[k]) if k.startswith("n_") else v
+            v = gs.scalar(k)
+            if v is not None:
+                g_blk[k] = _i(v) if k.startswith("n_") else _f(v)
         out["gradsig"] = g_blk
 
     # -- update outcome -----------------------------------------------------
-    up = dd.update_npz
-    if up is not None:
+    up = ds.update
+    if up.available:
         out["update"] = {
-            k: _f(up[k]) for k in (
+            k: _f(up.get(k)) for k in (
                 "kl_mean", "kl_max", "early_stop_kl_mean",
                 "clip_frac_mean", "ratio_mean", "ratio_max", "ratio_min",
                 "policy_loss_mean", "grad_norm_actor_mean",
-            ) if k in up
+            ) if up.get(k) is not None
         }
         for k in ("epochs_done", "actor_epochs_done", "n_batches"):
-            if k in up:
-                out["update"][k] = _i(up[k])
+            if up.get(k) is not None:
+                out["update"][k] = _i(up.get(k))
 
     # -- timeline summary ---------------------------------------------------
-    tlo = timeline_overview(dd)
+    tlo = timeline_overview(ds)
     if tlo.get("available"):
         n = tlo["n_steps"]
         active = tlo.get("actor_active") or []
@@ -422,22 +353,6 @@ def inspect_dump(dd) -> Dict[str, Any]:
     return out
 
 
-def _capabilities(dd) -> Dict[str, Any]:
-    caps: Dict[str, Any] = {}
-    for name, attr in (
-        ("episodes", "episodes_npz"), ("trajectories", "trajectories_npz"),
-        ("buffer", "buffer_npz"), ("gae", "gae_npz"),
-        ("combine", "combine_npz"), ("update", "update_npz"),
-        ("timeline", "timeline_npz"), ("epoch_frames", "epoch_frames_npz"),
-    ):
-        caps[name] = getattr(dd, attr) is not None
-    gs = dd.gradsig_npz
-    caps["gradsig"] = (
-        False if gs is None else ("full" if "hist" in gs else "partial")
-    )
-    return caps
-
-
 # ---------------------------------------------------------------------------
 # samples — the sampled-gradient table
 # ---------------------------------------------------------------------------
@@ -446,7 +361,7 @@ _SAMPLE_SORTS = ("abs_proj", "proj", "neg_proj", "grad_norm", "w_adv")
 
 
 def gradsig_samples(
-    dd,
+    ds: DumpDataset,
     sort: str = "abs_proj",
     sign: str = "all",
     limit: int = 50,
@@ -459,10 +374,11 @@ def gradsig_samples(
     Returns (status, body).  All statistics are *sampled* — the meta
     block says so explicitly.
     """
-    gs = dd.gradsig_npz
-    if gs is None:
+    g = ds.gradsig
+    if not ds.npz("gradsig").available:
         return 404, {"available": False, "reason": "gradsig.npz not found"}
-    if "sampled_idx" not in gs:
+    sel = g.col("sampled_idx")
+    if sel is None:
         return 404, {"available": False,
                      "reason": "gradsig.npz has no per-frame arrays"}
     if sort not in _SAMPLE_SORTS:
@@ -472,11 +388,11 @@ def gradsig_samples(
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
 
-    sel = np.asarray(gs["sampled_idx"], dtype=np.int64)
-    valid = np.asarray(gs["valid"], dtype=bool)
+    sel = np.asarray(sel, dtype=np.int64)
+    valid = np.asarray(g.col("valid"), dtype=bool)
 
     def _col(name):
-        a = gs.get(name)
+        a = g.col(name)
         return np.asarray(a, dtype=np.float64) if a is not None \
             else np.full(len(sel), np.nan)
 
@@ -486,7 +402,6 @@ def gradsig_samples(
     w_adv = _col("w_adv")
     floor_pen = _col("floor_pen")
 
-    fm = _frame_map(dd)
     n = len(sel)
     keep = np.ones(n, dtype=bool) if include_invalid else valid.copy()
     if sign == "pos":
@@ -508,7 +423,7 @@ def gradsig_samples(
 
     if group_by == "episode":
         return 200, _samples_by_episode(
-            dd, fm, sel, valid, proj, cos, gnorm_a, w_adv, order)
+            ds, sel, valid, proj, cos, gnorm_a, w_adv, order)
 
     rows: List[Dict[str, Any]] = []
     for i in order[offset:offset + limit]:
@@ -522,15 +437,16 @@ def gradsig_samples(
             "w_adv": _f(w_adv[i]),
             "floor_pen": _f(floor_pen[i]),
         }
-        row.update(_locate(dd, fm, bi))
+        row.update(ds.frame_provenance(bi))
         rows.append(row)
 
+    n_sampled = ds.npz("gradsig").scalar("n_sampled")
     return 200, {
         "available": True,
         "meta": {
             "scope": "sampled",
-            "n_sampled": int(gs["n_sampled"]) if "n_sampled" in gs else n,
-            "n_valid": _i(gs.get("n_valid")),
+            "n_sampled": int(n_sampled) if n_sampled is not None else n,
+            "n_valid": _i(ds.npz("gradsig").scalar("n_valid")),
             "n_after_filter": int(order.size),
             "offset": offset,
             "limit": limit,
@@ -544,15 +460,15 @@ def gradsig_samples(
     }
 
 
-def _samples_by_episode(dd, fm, sel, valid, proj, cos, gnorm_a, w_adv,
-                        order) -> Dict[str, Any]:
+def _samples_by_episode(ds: DumpDataset, sel, valid, proj, cos, gnorm_a,
+                        w_adv, order) -> Dict[str, Any]:
     """Aggregate the sampled frames per episode — positive and negative
     projections summed separately (a near-zero net hides opposition)."""
     groups: Dict[int, Dict[str, Any]] = {}
     unmapped = 0
     for i in order:
         bi = int(sel[i])
-        loc = _locate(dd, fm, bi)
+        loc = ds.frame_provenance(bi)
         if not loc.get("mapped"):
             unmapped += 1
             continue
@@ -594,36 +510,33 @@ def _samples_by_episode(dd, fm, sel, valid, proj, cos, gnorm_a, w_adv,
 # trace — one buffer frame across every stage
 # ---------------------------------------------------------------------------
 
-def trace_frame(dd, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
+def trace_frame(ds: DumpDataset, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
     """Everything recorded about one flat buffer index, joined across
     buffer → GAE → combine → gradsig → epoch_frames → timeline."""
-    buf = dd.buffer_npz
-    if buf is None:
-        return 404, {"available": False, "reason": "buffer.npz not found"}
-    n = int(buf["frame_id"].shape[0]) if "frame_id" in buf else (
-        int(buf["log_probs"].shape[0]) if "log_probs" in buf else 0)
+    f = ds.frames
+    n = f.n_rows
     i = int(buffer_idx)
     if i < 0 or i >= n:
         return 404, {"error": f"buffer_idx {i} out of range (n={n})"}
 
-    fm = _frame_map(dd)
     out: Dict[str, Any] = {"buffer_idx": i}
-    out["location"] = _locate(dd, fm, i)
+    out["location"] = ds.frame_provenance(i)
 
     # -- rollout-time record -------------------------------------------------
     rec: Dict[str, Any] = {}
     for k in ("log_probs", "sample_weights", "explore_factor",
               "floor_weight", "uncertainty"):
-        if k in buf:
-            rec[k] = _f(buf[k][i])
+        a = f.col(k)
+        if a is not None and i < len(a):
+            rec[k] = _f(a[i])
     out["buffer"] = rec
 
     # -- GAE stage (per channel) ---------------------------------------------
-    gae = dd.gae_npz
-    if gae is not None:
+    gae = ds.npz("gae")
+    if gae.available:
         per_ch: Dict[str, Any] = {}
         for src in ("advs_all", "rets_all", "values_all"):
-            d = _dict_item(gae[src]) if src in gae else {}
+            d = gae.get_dict(src)
             if not isinstance(d, dict):
                 continue
             for ch, a in d.items():
@@ -632,8 +545,7 @@ def trace_frame(dd, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
                     per_ch.setdefault(str(ch), {})[
                         {"advs_all": "adv", "rets_all": "ret",
                          "values_all": "value"}[src]] = _f(a[i])
-        kfm = _dict_item(gae["key_frame_mask"]) \
-            if "key_frame_mask" in gae else {}
+        kfm = gae.get_dict("key_frame_mask")
         if isinstance(kfm, dict):
             for ch, a in kfm.items():
                 a = np.asarray(a, dtype=bool)
@@ -642,44 +554,49 @@ def trace_frame(dd, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
         out["gae"] = per_ch
 
     # -- combine stage --------------------------------------------------------
-    cb = dd.combine_npz
-    if cb is not None:
+    cb = ds.npz("combine")
+    if cb.available:
         cblk: Dict[str, Any] = {}
         for k in ("combined_adv", "combined_adv_raw", "aw_l1_sum"):
-            if k in cb:
-                cblk[k] = _f(cb[k][i])
+            a = f.col(k)
+            if a is not None and i < len(a):
+                cblk[k] = _f(a[i])
         for src, dst in (("normed_advs", "normed_adv"),
                          ("key_actor_weight_frame", "actor_weight")):
-            d = _dict_item(cb[src]) if src in cb else {}
+            d = cb.get_dict(src)
             if isinstance(d, dict):
                 for ch, a in d.items():
                     a = np.asarray(a)
                     if i < a.size:
                         cblk.setdefault("per_channel", {}).setdefault(
                             str(ch), {})[dst] = _f(a[i])
-        conf = _dict_item(cb["confidences"]) \
-            if "confidences" in cb else {}
+        conf = cb.get_dict("confidences")
         if isinstance(conf, dict):
             cblk["confidences"] = {str(k): _f(v) for k, v in conf.items()}
         out["combine"] = cblk
 
     # -- gradient diagnostic (sampled only) -----------------------------------
-    gs = dd.gradsig_npz
-    if gs is not None and "sampled_idx" in gs:
-        sel = np.asarray(gs["sampled_idx"], dtype=np.int64)
+    g = ds.gradsig
+    sel = g.col("sampled_idx")
+    if sel is not None:
+        sel = np.asarray(sel, dtype=np.int64)
         hit = np.where(sel == i)[0]
         if hit.size:
             j = int(hit[0])
             out["gradsig"] = {
                 "sampled": True,
-                "valid": bool(np.asarray(gs["valid"])[j]),
-                "grad_norm": _f(gs["grad_norm"][j])
-                if "grad_norm" in gs else None,
-                "cos": _f(gs["cos"][j]) if "cos" in gs else None,
-                "proj": _f(gs["proj"][j]) if "proj" in gs else None,
-                "w_adv": _f(gs["w_adv"][j]) if "w_adv" in gs else None,
-                "floor_pen": _f(gs["floor_pen"][j])
-                if "floor_pen" in gs else None,
+                "valid": bool(np.asarray(g.col("valid"))[j])
+                if g.col("valid") is not None else None,
+                "grad_norm": _f(g.col("grad_norm")[j])
+                if g.col("grad_norm") is not None else None,
+                "cos": _f(g.col("cos")[j])
+                if g.col("cos") is not None else None,
+                "proj": _f(g.col("proj")[j])
+                if g.col("proj") is not None else None,
+                "w_adv": _f(g.col("w_adv")[j])
+                if g.col("w_adv") is not None else None,
+                "floor_pen": _f(g.col("floor_pen")[j])
+                if g.col("floor_pen") is not None else None,
             }
         else:
             out["gradsig"] = {
@@ -689,47 +606,49 @@ def trace_frame(dd, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
             }
 
     # -- epoch snapshots -------------------------------------------------------
-    ef = dd.epoch_frames_npz
-    if ef is not None:
+    ef = ds.npz("epoch_frames")
+    if ef.available:
         epochs: Dict[str, Any] = {}
-        for k in ef:
+        for k in ef.keys():
             parts = k.split(".")
             if len(parts) < 2:
                 continue
             name, e = parts[0], parts[1]
             if name in ("ratio", "clip_mask", "new_log_prob"):
-                a = np.asarray(ef[k])
+                a = np.asarray(ef.get(k))
                 if i < a.size:
                     v = a[i]
                     epochs.setdefault(e, {})[name] = (
                         bool(v) if name == "clip_mask" else _f(v))
             elif name == "new_value" and len(parts) >= 3:
-                a = np.asarray(ef[k])
+                a = np.asarray(ef.get(k))
                 if i < a.size:
                     epochs.setdefault(e, {}).setdefault(
                         "new_value", {})[parts[2]] = _f(a[i])
         if epochs:
             out["epoch_frames"] = dict(
                 sorted(epochs.items(), key=lambda kv: int(kv[0])))
-        if "actor_stopped_epoch" in ef:
-            out["actor_stopped_epoch"] = _i(ef["actor_stopped_epoch"])
+        ase = ef.scalar("actor_stopped_epoch")
+        if ase is not None:
+            out["actor_stopped_epoch"] = _i(ase)
 
     # -- timeline reverse refs ---------------------------------------------------
-    tl = dd.timeline_npz
-    if tl is not None:
+    t = ds.timeline
+    if ds.npz("timeline").available:
         refs = []
         for k in ("argmax_ratio_bufidx", "argmin_ratio_bufidx"):
-            if k not in tl:
+            arr = t.col(k)
+            if arr is None:
                 continue
-            arr = np.asarray(tl[k], dtype=np.float64)
+            arr = np.asarray(arr, dtype=np.float64)
             for s in np.where(arr == i)[0]:
                 refs.append({
                     "step": int(s),
                     "role": "argmax_ratio" if "max" in k else "argmin_ratio",
-                    "epoch": _i(tl["epoch_idx"][s])
-                    if "epoch_idx" in tl else None,
-                    "mb_idx": _i(tl["mb_idx"][s])
-                    if "mb_idx" in tl else None,
+                    "epoch": _i(t.col("epoch_idx")[s])
+                    if t.col("epoch_idx") is not None else None,
+                    "mb_idx": _i(t.col("mb_idx")[s])
+                    if t.col("mb_idx") is not None else None,
                 })
         if refs:
             out["timeline_refs"] = refs
@@ -766,7 +685,7 @@ def _hist(arr: np.ndarray, bins: int = 64) -> Optional[Dict[str, Any]]:
     return out
 
 
-def adv_histograms(dd, bins: int = 64) -> Dict[str, Any]:
+def adv_histograms(ds: DumpDataset, bins: int = 64) -> Dict[str, Any]:
     """Per-stage ADV distributions, ordered along the transformation chain:
 
         gae.advs_all (raw) → normed_advs[ch] → aw_normed[ch]
@@ -775,32 +694,26 @@ def adv_histograms(dd, bins: int = 64) -> Dict[str, Any]:
     Each stage gets its own bin edges — shapes are meant to be compared,
     not x-ranges (normalization deliberately changes scale).
     """
+    f = ds.frames
     stages: List[Tuple[str, np.ndarray]] = []
-    gae = dd.gae_npz
-    if gae is not None and "advs_all" in gae:
-        d = _dict_item(gae["advs_all"])
+    advs = ds.npz("gae").get_dict("advs_all")
+    if isinstance(advs, dict):
+        for ch, a in advs.items():
+            stages.append((f"raw adv:{ch}", np.asarray(a)))
+    elif advs is not None:
+        stages.append(("raw adv", np.asarray(advs)))
+    for dict_key, label in (("normed_advs", "normed"),
+                            ("aw_normed", "actor-weighted")):
+        d = ds.npz("combine").get_dict(dict_key)
         if isinstance(d, dict):
             for ch, a in d.items():
-                stages.append((f"raw adv:{ch}", np.asarray(a)))
-        else:
-            stages.append(("raw adv", np.asarray(d)))
-    cb = dd.combine_npz
-    if cb is not None:
-        for dict_key, label in (("normed_advs", "normed"),
-                                ("aw_normed", "actor-weighted")):
-            d = cb.get(dict_key)
-            if d is None:
-                continue
-            d = _dict_item(d)
-            if isinstance(d, dict):
-                for ch, a in d.items():
-                    stages.append((f"{label}:{ch}", np.asarray(a)))
-        if "combined_adv_raw" in cb:
-            stages.append(("combined (pre-winsorize)",
-                           np.asarray(cb["combined_adv_raw"])))
-        if "combined_adv" in cb:
-            stages.append(("combined (final)",
-                           np.asarray(cb["combined_adv"])))
+                stages.append((f"{label}:{ch}", np.asarray(a)))
+    raw = f.col("combined_adv_raw")
+    if raw is not None:
+        stages.append(("combined (pre-winsorize)", np.asarray(raw)))
+    fin = f.col("combined_adv")
+    if fin is not None:
+        stages.append(("combined (final)", np.asarray(fin)))
 
     out: Dict[str, Any] = {"available": False, "stages": []}
     for label, arr in stages:

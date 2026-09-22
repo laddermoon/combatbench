@@ -32,6 +32,7 @@ from baseline.framework.ppo.dumpkit.dump_request import (
     DumpRequest,
     SENTINEL_FILENAME,
 )
+from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
 from baseline.framework.ppo.dumpkit.metric_catalog import (
     catalog as _metric_catalog,
     metric_doc,
@@ -148,244 +149,6 @@ def _start_job(
 
 
 # ---------------------------------------------------------------------------
-# DumpData — lazy NPZ loader with caching
-# ---------------------------------------------------------------------------
-
-class DumpData:
-    """Lazily loads and caches all NPZ/JSON files in a dump directory.
-
-    All arrays are kept in memory after first load.  For a typical dump
-    (~200 MB total) this is acceptable for a debug tool.
-    """
-
-    def __init__(self, dump_dir: Path):
-        self.dump_dir = Path(dump_dir).resolve()
-        if not self.dump_dir.is_dir():
-            raise NotADirectoryError(f"dump dir not found: {self.dump_dir}")
-
-        self._cache: Dict[str, Any] = {}
-
-    # -- generic lazy loader ------------------------------------------------
-
-    def _load_npz(self, name: str) -> Optional[Dict[str, np.ndarray]]:
-        if name in self._cache:
-            return self._cache[name]
-        path = self.dump_dir / f"{name}.npz"
-        if not path.exists():
-            self._cache[name] = None
-            return None
-        data = dict(np.load(path, allow_pickle=True))
-        self._cache[name] = data
-        return data
-
-    def _load_json(self, name: str) -> Optional[Any]:
-        if name in self._cache:
-            return self._cache[name]
-        path = self.dump_dir / f"{name}.json"
-        if not path.exists():
-            self._cache[name] = None
-            return None
-        with open(path, encoding="utf-8") as f:
-            obj = json.load(f)
-        self._cache[name] = obj
-        return obj
-
-    # -- accessors ----------------------------------------------------------
-
-    @property
-    def manifest(self) -> Dict[str, Any]:
-        m = self._load_json("manifest")
-        if m is None:
-            raise FileNotFoundError(f"manifest.json not found in {self.dump_dir}")
-        return m
-
-    @property
-    def traj_map(self) -> List[Dict[str, Any]]:
-        tm = self._load_json("traj_map")
-        if tm is not None:
-            return tm
-        # Fallback: build from frame_ids in trajectories.npz
-        traj_npz = self.trajectories_npz
-        if traj_npz is None:
-            return []
-        frame_ids = traj_npz.get("frame_id")
-        # Backward compat: older dumps store this as "ep_lengths".
-        traj_lengths = traj_npz.get("traj_lengths", traj_npz.get("ep_lengths", np.array([])))
-        if frame_ids is None or len(traj_lengths) == 0:
-            return []
-        return _build_traj_map_from_frame_ids(frame_ids, traj_lengths)
-
-    @property
-    def episodes_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("episodes")
-
-    @property
-    def trajectories_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("trajectories")
-
-    @property
-    def buffer_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("buffer")
-
-    @property
-    def gae_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("gae")
-
-    @property
-    def combine_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("combine")
-
-    @property
-    def update_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("update")
-
-    @property
-    def timeline_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("timeline")
-
-    @property
-    def epoch_frames_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("epoch_frames")
-
-    @property
-    def gradsig_npz(self) -> Optional[Dict[str, np.ndarray]]:
-        return self._load_npz("gradsig")
-
-    def grad_sig(self) -> Optional[Dict[str, Any]]:
-        """Load ``gradsig.npz`` → JSON-safe payload.
-
-        The dump npz merges the run-level histogram payload with the
-        per-frame dump detail (``sampled_idx``/``w_adv``/``floor_pen``).
-        When the diagnostic bailed before the histogram (zero aggregate
-        gradient, no valid frames) only the raw arrays exist — return a
-        degraded ``partial`` payload instead of KeyError → 404.
-        """
-        d = self.gradsig_npz
-        if d is None:
-            return None
-        try:
-            upd = int(self.manifest.get("update", -1))
-        except (FileNotFoundError, TypeError, ValueError):
-            upd = -1
-        extras = (
-            "sampled_idx", "w_adv", "floor_pen", "n_params",
-        )
-        try:
-            out = _grad_sig_json(d, update=upd)
-        except KeyError:
-            out = {
-                "available": True,
-                "partial": True,
-                "update": upd,
-                "n_sampled": int(d["valid"].shape[0]),
-                "n_valid": int(d["valid"].sum()),
-                "grad_norm": _nan_to_null(d["grad_norm"]),
-                "valid": d["valid"].tolist(),
-            }
-        for k in extras + ("proj", "cos"):
-            if k in d and k not in out:
-                out[k] = (
-                    _nan_to_null(d[k]) if d[k].dtype.kind == "f"
-                    else d[k].tolist()
-                )
-        return out
-
-    # -- derived helpers ----------------------------------------------------
-
-    @property
-    def channel_names(self) -> List[str]:
-        traj = self.trajectories_npz
-        if traj is None:
-            return []
-        cn = traj.get("channel_names")
-        if cn is None:
-            return []
-        return [str(x) for x in cn.tolist()]
-
-    @property
-    def observer_keys(self) -> List[str]:
-        """Return observer output keys like ['standing_balance_a', 'height_phi_a', ...]."""
-        ep = self.episodes_npz
-        if ep is None:
-            return []
-        keys = set()
-        for k in ep:
-            if k.startswith("observer_outputs."):
-                # observer_outputs.{key}.{field} or observer_outputs.{key}
-                rest = k[len("observer_outputs."):]
-                parts = rest.split(".")
-                keys.add(parts[0])
-        return sorted(keys)
-
-    @property
-    def agent_ids(self) -> List[str]:
-        """Return agent IDs from episodes.npz (e.g. ['robot_a', 'robot_b'])."""
-        ep = self.episodes_npz
-        if ep is None:
-            return []
-        ids = set()
-        for k in ep:
-            if k.startswith("obs."):
-                ids.add(k[len("obs."):])
-        return sorted(ids)
-
-    @property
-    def has_images(self) -> bool:
-        record_dir = self.dump_dir / "record"
-        return record_dir.is_dir() and (record_dir / "index.json").exists()
-
-    @property
-    def seg_offsets(self) -> np.ndarray:
-        """Cumulative offsets for trajectory slicing in flattened arrays."""
-        traj = self.trajectories_npz
-        if traj is None:
-            return np.array([0])
-        traj_lengths = traj.get("traj_lengths")
-        if traj_lengths is None:
-            traj_lengths = traj["ep_lengths"]  # backward compat: old dumps
-        offsets = np.zeros(len(traj_lengths) + 1, dtype=np.int64)
-        offsets[1:] = np.cumsum(traj_lengths)
-        return offsets
-
-    @property
-    def episode_frame_offsets(self) -> np.ndarray:
-        """Cumulative offsets for episode slicing in flattened arrays."""
-        ep = self.episodes_npz
-        if ep is None:
-            return np.array([0])
-        return ep["episode_frame_offsets"]
-
-    # -- image path ---------------------------------------------------------
-
-    def episode_rendered(self, episode_pos: int) -> bool:
-        """True if record/episode_NNNNN exists with at least one PNG."""
-        ep_dir = self.dump_dir / "record" / f"episode_{episode_pos:05d}"
-        if not ep_dir.is_dir():
-            return False
-        try:
-            next(ep_dir.glob("step_*.png"))
-            return True
-        except StopIteration:
-            return False
-
-    def image_path(self, episode_pos: int, frame: int) -> Optional[Path]:
-        """Return the PNG path for a given episode and frame.
-
-        Recorded step N+1 corresponds to dump frame N (step_00000 is
-        the initial state before any action).
-        """
-        record_dir = self.dump_dir / "record"
-        ep_dir = record_dir / f"episode_{episode_pos:05d}"
-        if not ep_dir.is_dir():
-            return None
-        # Recorded step = frame + 1
-        png = ep_dir / f"step_{frame + 1:05d}.png"
-        if png.exists():
-            return png
-        return None
-
-
-# ---------------------------------------------------------------------------
 # RunData — training-run level data (dump list + train.log metrics)
 # ---------------------------------------------------------------------------
 
@@ -462,6 +225,47 @@ def _grad_sig_json(d: Dict[str, np.ndarray], update: int) -> Dict[str, Any]:
     }
 
 
+def _dump_gradsig(ds: DumpDataset) -> Optional[Dict[str, Any]]:
+    """Dump-level ``gradsig.npz`` → JSON-safe payload.
+
+    The dump npz merges the run-level histogram payload with the
+    per-frame dump detail (``sampled_idx``/``w_adv``/``floor_pen``).
+    When the diagnostic bailed before the histogram (zero aggregate
+    gradient, no valid frames) only the raw arrays exist — return a
+    degraded ``partial`` payload instead of KeyError → 404.
+    """
+    g = ds.npz("gradsig")
+    if not g.available:
+        return None
+    d = {k: g.get(k) for k in g.keys()}
+    try:
+        upd = int(ds.manifest.get("update", -1))
+    except (FileNotFoundError, TypeError, ValueError):
+        upd = -1
+    extras = (
+        "sampled_idx", "w_adv", "floor_pen", "n_params",
+    )
+    try:
+        out = _grad_sig_json(d, update=upd)
+    except KeyError:
+        out = {
+            "available": True,
+            "partial": True,
+            "update": upd,
+            "n_sampled": int(d["valid"].shape[0]),
+            "n_valid": int(d["valid"].sum()),
+            "grad_norm": _nan_to_null(d["grad_norm"]),
+            "valid": d["valid"].tolist(),
+        }
+    for k in extras + ("proj", "cos"):
+        if k in d and k not in out:
+            out[k] = (
+                _nan_to_null(d[k]) if d[k].dtype.kind == "f"
+                else d[k].tolist()
+            )
+    return out
+
+
 class RunData:
     """Training run directory: scan dumps and parse __RAW_STATS__ from train.log."""
 
@@ -510,7 +314,7 @@ class RunData:
         dump_dir = self.run_dir / "dumps" / name
         if not dump_dir.is_dir() or not (dump_dir / "manifest.json").exists():
             return None
-        api = ViewerAPI(DumpData(dump_dir))
+        api = ViewerAPI(DumpDataset(dump_dir))
         self._dump_apis[name] = api
         return api
 
@@ -1347,46 +1151,6 @@ def resolve_run(
     return rd
 
 
-def _build_traj_map_from_frame_ids(
-    frame_ids: np.ndarray,
-    traj_lengths: np.ndarray,
-) -> List[Dict[str, Any]]:
-    """Build traj_map from frame_id array when traj_map.json is missing."""
-    n_trajs = len(traj_lengths)
-    # We don't have episode info, so build a minimal map.
-    ep_map: Dict[int, List[Dict[str, Any]]] = {}
-    offset = 0
-    for traj_idx in range(n_trajs):
-        T = int(traj_lengths[traj_idx])
-        if T == 0:
-            continue
-        fid = str(frame_ids[offset])
-        if fid.startswith("flat:"):
-            offset += T
-            continue
-        parts = fid.split(":")
-        ep_pos = int(parts[0][2:])
-        agent_id = parts[1]
-        t_start = int(parts[2])
-        ep_map.setdefault(ep_pos, []).append({
-            "traj_idx": traj_idx,
-            "agent_id": agent_id,
-            "t_start": t_start,
-            "length": T,
-        })
-        offset += T
-    max_ep = max(ep_map.keys()) if ep_map else 0
-    result = []
-    for i in range(max_ep + 1):
-        result.append({
-            "list_pos": i,
-            "seed": None,
-            "num_frames": None,
-            "trajectories": ep_map.get(i, []),
-        })
-    return result
-
-
 # ---------------------------------------------------------------------------
 # API handlers
 # ---------------------------------------------------------------------------
@@ -1396,13 +1160,6 @@ def _arr_to_list(arr: np.ndarray) -> Any:
     if arr.dtype == object:
         return [str(x) for x in arr]
     return arr.tolist()
-
-
-def _dict_item(arr: np.ndarray) -> Any:
-    """Extract dict from object-dtype array (size 1)."""
-    if arr.dtype == object and arr.size == 1:
-        return arr.item()
-    return arr
 
 
 def _safe_float(v: Any) -> float:
@@ -1419,7 +1176,7 @@ def _safe_float(v: Any) -> float:
 class ViewerAPI:
     """Handles all /api/* endpoints.  Each method returns (status, json_body)."""
 
-    def __init__(self, data: DumpData):
+    def __init__(self, data: DumpDataset):
         self.data = data
 
     def handle(self, path: str, query: str = "") -> Tuple[int, Any]:
@@ -1469,7 +1226,7 @@ class ViewerAPI:
                     and parts[2] == "samples":
                 return self._gradsig_samples(query)
             elif endpoint == "gradsig":
-                gs = self.data.grad_sig()
+                gs = _dump_gradsig(self.data)
                 if gs is None:
                     return 404, {"available": False}
                 return 200, gs
@@ -1492,17 +1249,19 @@ class ViewerAPI:
         m["observer_keys"] = self.data.observer_keys
         m["agent_ids"] = self.data.agent_ids
         m["has_images"] = self.data.has_images
-        m["has_timeline"] = self.data.timeline_npz is not None
-        m["has_epoch_frames"] = self.data.epoch_frames_npz is not None
-        m["has_gradsig"] = self.data.gradsig_npz is not None
+        m["has_timeline"] = self.data.has("timeline")
+        m["has_epoch_frames"] = self.data.has("epoch_frames")
+        m["has_gradsig"] = self.data.has("gradsig")
         # clip_eps and target_kl from timeline
-        tl = self.data.timeline_npz
-        if tl is not None:
-            m["clip_eps"] = float(tl["clip_eps"]) if "clip_eps" in tl else 0.2
-            m["target_kl"] = float(tl["target_kl"]) if "target_kl" in tl else float("nan")
-            m["n_epochs"] = int(tl["n_epochs"]) if "n_epochs" in tl else 0
-            m["n_steps"] = int(tl["n_steps"]) if "n_steps" in tl else 0
-            m["early_stop_step"] = int(tl["early_stop_step"]) if "early_stop_step" in tl else -1
+        t = self.data.timeline
+        if self.data.has("timeline"):
+            m["clip_eps"] = float(t.scalar("clip_eps") or 0.2)
+            tgt = t.scalar("target_kl")
+            m["target_kl"] = float(tgt) if tgt is not None else float("nan")
+            m["n_epochs"] = int(t.scalar("n_epochs") or 0)
+            m["n_steps"] = int(t.scalar("n_steps") or 0)
+            es = t.scalar("early_stop_step")
+            m["early_stop_step"] = int(es) if es is not None else -1
         else:
             m["clip_eps"] = 0.2
             m["target_kl"] = float("nan")
@@ -1529,95 +1288,58 @@ class ViewerAPI:
     # -- /api/episode/<pos>/frame/<f> --------------------------------------
 
     def _episode_frame(self, ep_pos: int, frame: int) -> Tuple[int, Dict[str, Any]]:
-        ep_npz = self.data.episodes_npz
-        if ep_npz is None:
+        ds = self.data
+        if not ds.has("episodes"):
             return 404, {"error": "episodes.npz not found"}
-
-        offsets = self.data.episode_frame_offsets
-        if ep_pos < 0 or ep_pos + 1 >= len(offsets):
+        try:
+            ev = ds.episodes[ep_pos]
+        except IndexError:
             return 404, {"error": f"episode {ep_pos} out of range"}
-        start = int(offsets[ep_pos])
-        end = int(offsets[ep_pos + 1])
-        if frame < 0 or frame >= end - start:
+        if frame < 0 or frame >= ev.n_frames:
             return 404, {"error": f"frame {frame} out of range for episode {ep_pos}"}
 
-        idx = start + frame
         result: Dict[str, Any] = {
             "episode_pos": ep_pos,
             "frame": frame,
-            "has_image": self.data.image_path(ep_pos, frame) is not None,
+            "has_image": ds.image_path(ep_pos, frame) is not None,
         }
 
         # Per-agent obs/actions
-        agents = self.data.agent_ids
-        for aid in agents:
-            obs_key = f"obs.{aid}"
-            act_key = f"actions.{aid}"
-            if obs_key in ep_npz:
-                result[f"obs_{aid}"] = _arr_to_list(ep_npz[obs_key][idx])
-            if act_key in ep_npz:
-                result[f"actions_{aid}"] = _arr_to_list(ep_npz[act_key][idx])
-            ef_key = f"explore_factors.{aid}"
-            if ef_key in ep_npz:
-                result[f"explore_factor_{aid}"] = float(ep_npz[ef_key][idx])
+        for aid in ds.agent_ids:
+            obs = ev.col(f"obs.{aid}", frame)
+            if obs is not None:
+                result[f"obs_{aid}"] = _arr_to_list(np.asarray(obs))
+            act = ev.col(f"actions.{aid}", frame)
+            if act is not None:
+                result[f"actions_{aid}"] = _arr_to_list(np.asarray(act))
+            ef = ev.col(f"explore_factors.{aid}", frame)
+            if ef is not None:
+                result[f"explore_factor_{aid}"] = float(ef)
 
-        # Observer outputs for this frame
-        # Observer output arrays are per-episode (shape=(n_episodes,)
-        # dtype=object), where each element is a per-frame array.
-        # Index by episode position, then by frame within that episode.
+        # Observer outputs for this frame — EpisodeView handles both
+        # flat and per-episode object-array layouts.
         observer_data: Dict[str, Any] = {}
-        for k in ep_npz:
-            if not k.startswith("observer_outputs."):
+        for cname in ev.observer_columns:
+            val = ev.col(cname, frame)
+            if val is None:
                 continue
-            rest = k[len("observer_outputs."):]
-            # observer_outputs.{key} or observer_outputs.{key}.{field}
-            parts = rest.split(".", 1)
-            obs_key = parts[0]
-            field = parts[1] if len(parts) == 2 else None
-            ep_arr = ep_npz[k]
-            # Per-episode object array: ep_arr[ep_pos] → per-frame array
-            if ep_arr.dtype == object and ep_pos < len(ep_arr):
-                frame_arr = ep_arr[ep_pos]
-                if frame_arr is None:
-                    continue
-                frame_arr = np.asarray(frame_arr)
-                if frame < len(frame_arr):
-                    val = frame_arr[frame]
-                else:
-                    continue
-            else:
-                # Fallback: treat as per-frame flat array
-                val = ep_arr[idx]
-            out_key = f"{obs_key}.{field}" if field else obs_key
+            out_key = cname[len("observer."):]
             if np.isscalar(val) or np.ndim(val) == 0:
                 observer_data[out_key] = float(val)
             else:
-                observer_data[out_key] = _arr_to_list(val)
+                observer_data[out_key] = _arr_to_list(np.asarray(val))
         result["observer_outputs"] = observer_data
 
         # Termination info
-        term_records = ep_npz.get("_termination_records")
-        if term_records is not None and term_records.size > 0:
-            try:
-                if term_records.dtype == object:
-                    raw = str(term_records.item())
-                else:
-                    raw = str(term_records.item() if term_records.ndim == 0 else term_records[0])
-                term_data = json.loads(raw)
-                ep_key = f"ep{ep_pos:04d}"
-                if ep_key in term_data:
-                    result["termination"] = term_data[ep_key]
-            except (json.JSONDecodeError, KeyError, IndexError):
-                pass
+        term = ev.termination
+        if term is not None:
+            result["termination"] = term
 
         # Associated trajectories with per-frame channel data
-        tm = self.data.traj_map
-        ep_trajs = tm[ep_pos].get("trajectories", []) if ep_pos < len(tm) else []
-        traj_npz = self.data.trajectories_npz
-        seg_offsets = self.data.seg_offsets
-
+        f = ds.frames
+        tr = ds.trajs
         enriched_trajs = []
-        for t in ep_trajs:
+        for t in ev.trajectories:
             traj_idx = t["traj_idx"]
             t_start = t["t_start"]
             t_len = t["length"]
@@ -1634,32 +1356,30 @@ class ViewerAPI:
                 "traj_frame": traj_frame if covered else -1,
             }
 
-            # Per-frame channel data for this trajectory at this frame
-            if covered and traj_npz is not None and traj_idx < len(seg_offsets) - 1:
-                flat_idx = int(seg_offsets[traj_idx]) + traj_frame
-                for ch in self.data.channel_names:
-                    rew_key = f"reward.{ch}"
-                    aw_key = f"actor_weight.{ch}"
-                    if rew_key in traj_npz:
-                        entry[f"reward_{ch}"] = float(traj_npz[rew_key][flat_idx])
-                    if aw_key in traj_npz:
-                        entry[f"actor_weight_{ch}"] = float(traj_npz[aw_key][flat_idx])
-                # floor_weight, explore_factor
-                if "floor_weight" in traj_npz:
-                    entry["floor_weight"] = float(traj_npz["floor_weight"][flat_idx])
-                if "explore_factor" in traj_npz:
-                    entry["explore_factor"] = float(traj_npz["explore_factor"][flat_idx])
+            if covered and traj_idx < ds.n_trajectories:
+                flat_idx = int(ds.seg_offsets[traj_idx]) + traj_frame
+                for ch in ds.channel_names:
+                    rew = f.col(f"reward.{ch}")
+                    if rew is not None:
+                        entry[f"reward_{ch}"] = float(rew[flat_idx])
+                    aw = f.col(f"actor_weight.{ch}")
+                    if aw is not None:
+                        entry[f"actor_weight_{ch}"] = float(aw[flat_idx])
+                for name in ("floor_weight", "explore_factor"):
+                    a = f.col(name)
+                    if a is not None:
+                        entry[name] = float(a[flat_idx])
                 # Per-channel is_terminated (per-trajectory scalar)
-                for ch in self.data.channel_names:
-                    it_key = f"is_terminated.{ch}"
-                    if it_key in traj_npz:
-                        entry[f"is_terminated_{ch}"] = bool(traj_npz[it_key][traj_idx])
-                # importance (per-trajectory scalar)
-                if "importance" in traj_npz:
-                    entry["importance"] = float(traj_npz["importance"][traj_idx])
-                # frame_id
-                if "frame_id" in traj_npz:
-                    entry["frame_id"] = str(traj_npz["frame_id"][flat_idx])
+                for ch in ds.channel_names:
+                    it = tr.col(f"is_terminated.{ch}")
+                    if it is not None:
+                        entry[f"is_terminated_{ch}"] = bool(it[traj_idx])
+                imp = tr.col("importance")
+                if imp is not None:
+                    entry["importance"] = float(imp[traj_idx])
+                fid = f.col("frame_id")
+                if fid is not None:
+                    entry["frame_id"] = str(fid[flat_idx])
 
             enriched_trajs.append(entry)
 
@@ -1676,7 +1396,7 @@ class ViewerAPI:
         agent: ``agents[aid]["actions"][g][t][dim]`` where g=0 is the
         rollout policy (update u) and g≥1 are reference generations.
         """
-        delta_dir = self.data.dump_dir / "delta" / f"episode_{ep_pos:05d}"
+        delta_dir = self.data.delta_dir(ep_pos)
         npz_path = delta_dir / "delta.npz"
         meta_path = delta_dir / "meta.json"
         if not npz_path.exists() or not meta_path.exists():
@@ -1709,29 +1429,24 @@ class ViewerAPI:
     # -- /api/trajectory/<idx>/overview ------------------------------------
 
     def _find_traj_provenance(self, traj_idx: int) -> Tuple[Optional[int], Optional[int]]:
-        """Find episode_pos and t_start for a trajectory by searching traj_map.
-
-        Returns (episode_pos, t_start) or (None, None) if not found.
-        """
-        tm = self.data.traj_map
-        for ep in tm:
-            for t in ep.get("trajectories", []):
-                if t.get("traj_idx") == traj_idx:
-                    return ep.get("list_pos"), t.get("t_start")
-        return None, None
+        """(episode_pos, t_start) for a trajectory, or (None, None)."""
+        p = self.data.provenance(traj_idx)
+        if p is None:
+            return None, None
+        return p.get("ep_pos"), p.get("t_start")
 
     def _traj_overview(self, traj_idx: int) -> Tuple[int, Dict[str, Any]]:
-        offsets = self.data.seg_offsets
-        if traj_idx < 0 or traj_idx + 1 >= len(offsets):
+        ds = self.data
+        if traj_idx < 0 or traj_idx + 1 >= len(ds.seg_offsets):
             return 404, {"error": f"trajectory {traj_idx} out of range"}
-        start = int(offsets[traj_idx])
-        end = int(offsets[traj_idx + 1])
+        start, end = ds.frames.traj_slice(traj_idx)
+        t = ds.frames.traj(traj_idx)
         T = end - start
 
         result: Dict[str, Any] = {
             "traj_idx": traj_idx,
             "length": T,
-            "channels": self.data.channel_names,
+            "channels": ds.channel_names,
         }
 
         # Episode provenance (for image lookup)
@@ -1740,156 +1455,110 @@ class ViewerAPI:
         result["t_start"] = t_start
 
         # Frame IDs
-        traj_npz = self.data.trajectories_npz
-        if traj_npz is not None and "frame_id" in traj_npz:
-            fids = traj_npz["frame_id"][start:end]
+        fids = t.col("frame_id")
+        if fids is not None:
             result["frame_ids"] = [str(x) for x in fids]
 
-        # Per-channel reward / actor_weight
-        for ch in self.data.channel_names:
-            if traj_npz is not None:
-                rew_key = f"reward.{ch}"
-                aw_key = f"actor_weight.{ch}"
-                if rew_key in traj_npz:
-                    result[f"reward_{ch}"] = _arr_to_list(traj_npz[rew_key][start:end])
-                if aw_key in traj_npz:
-                    result[f"actor_weight_{ch}"] = _arr_to_list(traj_npz[aw_key][start:end])
+        # Per-channel reward / actor_weight / GAE value+adv+ret
+        for ch in ds.channel_names:
+            for pub, out_key in (
+                    ("reward", f"reward_{ch}"),
+                    ("actor_weight", f"actor_weight_{ch}"),
+                    ("value", f"values_{ch}"),
+                    ("adv", f"advs_{ch}"),
+                    ("ret", f"rets_{ch}")):
+                a = t.col(f"{pub}.{ch}")
+                if a is not None:
+                    result[out_key] = _arr_to_list(
+                        np.asarray(a, dtype=np.float32))
 
-        # GAE: value, advantage, return per channel
-        gae = self.data.gae_npz
-        if gae is not None:
-            for ch in self.data.channel_names:
-                for prefix, key in [("values", "values_all"), ("advs", "advs_all"), ("rets", "rets_all")]:
-                    arr = gae.get(key)
-                    if arr is not None:
-                        d = _dict_item(arr)
-                        if isinstance(d, dict) and ch in d:
-                            result[f"{prefix}_{ch}"] = _arr_to_list(
-                                np.asarray(d[ch][start:end], dtype=np.float32)
-                            )
-            # key_frame_mask per channel (per-frame bool)
-            kfm = gae.get("key_frame_mask")
-            if kfm is not None:
-                d = _dict_item(kfm)
-                if isinstance(d, dict):
-                    result["key_frame_mask"] = {
-                        ch: [bool(x) for x in np.asarray(v[start:end])]
-                        for ch, v in d.items()
-                    }
+        # GAE: key masks + bootstrap (dict members, sliced by traj range)
+        gae = ds.npz("gae")
+        if gae.available:
+            d = gae.get_dict("key_frame_mask")
+            if isinstance(d, dict):
+                result["key_frame_mask"] = {
+                    ch: [bool(x) for x in np.asarray(v[start:end])]
+                    for ch, v in d.items()
+                }
             # key_seg_active / key_seg_terminated (per-trajectory bool)
             for seg_key in ("key_seg_active", "key_seg_terminated"):
-                seg = gae.get(seg_key)
-                if seg is not None:
-                    d = _dict_item(seg)
-                    if isinstance(d, dict):
-                        result[seg_key] = {
-                            ch: bool(np.asarray(v)[traj_idx]) if traj_idx < len(v) else False
-                            for ch, v in d.items()
-                        }
-            # bootstrap info
-            bv = gae.get("bootstrap_values")
-            if bv is not None:
-                d = _dict_item(bv)
+                d = gae.get_dict(seg_key)
                 if isinstance(d, dict):
-                    # bootstrap_values is per-trajectory per-channel
-                    # Extract the value for this specific trajectory
-                    result["bootstrap_values"] = {
-                        ch: float(np.asarray(v)[traj_idx])
+                    result[seg_key] = {
+                        ch: bool(np.asarray(v)[traj_idx])
+                        if traj_idx < len(v) else False
                         for ch, v in d.items()
                     }
+            d = gae.get_dict("bootstrap_values")
+            if isinstance(d, dict):
+                result["bootstrap_values"] = {
+                    ch: float(np.asarray(v)[traj_idx])
+                    for ch, v in d.items()
+                }
             bi = gae.get("bootstrap_indices")
             if bi is not None:
                 result["bootstrap_indices"] = _arr_to_list(np.asarray(bi))
-            # Check if this trajectory is a bootstrap segment
-            if bi is not None and traj_idx in np.asarray(bi).tolist():
-                result["is_bootstrap_seg"] = True
+                if traj_idx in np.asarray(bi).tolist():
+                    result["is_bootstrap_seg"] = True
 
-        # Combine: combined_adv
-        combine = self.data.combine_npz
-        if combine is not None:
-            ca = combine.get("combined_adv")
-            if ca is not None:
-                result["combined_adv"] = _arr_to_list(ca[start:end])
-            # aw_l1_sum (per-frame)
-            aw_l1 = combine.get("aw_l1_sum")
-            if aw_l1 is not None:
-                result["aw_l1_sum"] = _arr_to_list(aw_l1[start:end])
-            # confidence / EV per channel
-            conf = combine.get("confidences")
-            if conf is not None:
-                d = _dict_item(conf)
-                if isinstance(d, dict):
-                    result["confidences"] = {ch: float(v) for ch, v in d.items()}
-            ev = combine.get("explained_variances")
-            if ev is not None:
-                d = _dict_item(ev)
-                if isinstance(d, dict):
-                    # Strip "ev_" prefix if present so keys match channel names
-                    result["explained_variances"] = {
-                        (ch[3:] if ch.startswith("ev_") else ch): float(v)
-                        for ch, v in d.items()
-                    }
-            kaw = combine.get("key_actor_weight_frame")
-            if kaw is not None:
-                d = _dict_item(kaw)
-                if isinstance(d, dict):
-                    # key_actor_weight_frame is per-frame per-channel
-                    result["actor_weights"] = {
-                        ch: _arr_to_list(np.asarray(v[start:end], dtype=np.float32))
-                        for ch, v in d.items()
-                    }
-            # normed_advs: per-channel z-score normalized advantage
-            na = combine.get("normed_advs")
-            if na is not None:
-                d = _dict_item(na)
+        # Combine stage
+        combine = ds.npz("combine")
+        if combine.available:
+            for name in ("combined_adv", "aw_l1_sum"):
+                a = t.col(name)
+                if a is not None:
+                    result[name] = _arr_to_list(a)
+            d = combine.get_dict("confidences")
+            if isinstance(d, dict):
+                result["confidences"] = {
+                    ch: float(v) for ch, v in d.items()}
+            d = combine.get_dict("explained_variances")
+            if isinstance(d, dict):
+                # Strip "ev_" prefix if present so keys match channel names
+                result["explained_variances"] = {
+                    (ch[3:] if ch.startswith("ev_") else ch): float(v)
+                    for ch, v in d.items()
+                }
+            d = combine.get_dict("key_actor_weight_frame")
+            if isinstance(d, dict):
+                result["actor_weights"] = {
+                    ch: _arr_to_list(np.asarray(v[start:end],
+                                                dtype=np.float32))
+                    for ch, v in d.items()
+                }
+            for member, pub in (("normed_advs", "normed_adv"),
+                                ("aw_normed", "aw_normed")):
+                d = combine.get_dict(member)
                 if isinstance(d, dict):
                     for ch, v in d.items():
-                        result[f"normed_adv_{ch}"] = _arr_to_list(
-                            np.asarray(v[start:end], dtype=np.float32)
-                        )
-            # aw_normed: per-channel L1-normalized actor weight
-            awn = combine.get("aw_normed")
-            if awn is not None:
-                d = _dict_item(awn)
-                if isinstance(d, dict):
-                    for ch, v in d.items():
-                        result[f"aw_normed_{ch}"] = _arr_to_list(
-                            np.asarray(v[start:end], dtype=np.float32)
-                        )
+                        result[f"{pub}_{ch}"] = _arr_to_list(
+                            np.asarray(v[start:end], dtype=np.float32))
+            for k in ("uncertainty_floor", "uncertainty_coef"):
+                v = combine.scalar(k)
+                if v is not None:
+                    result[k] = float(v)
 
-        # Trajectory-level: floor_weight, explore_factor, importance
-        if traj_npz is not None:
-            if "floor_weight" in traj_npz:
-                result["floor_weight"] = _arr_to_list(traj_npz["floor_weight"][start:end])
-            if "explore_factor" in traj_npz:
-                result["explore_factor"] = _arr_to_list(traj_npz["explore_factor"][start:end])
-            if "importance" in traj_npz:
-                result["importance"] = float(traj_npz["importance"][traj_idx])
-            # is_terminated per channel (per-trajectory)
-            for ch in self.data.channel_names:
-                it_key = f"is_terminated.{ch}"
-                if it_key in traj_npz:
-                    result[f"is_terminated_{ch}"] = bool(traj_npz[it_key][traj_idx])
+        # Trajectory-level + buffer columns
+        for name in ("floor_weight", "explore_factor"):
+            a = t.col(name)
+            if a is not None:
+                result[name] = _arr_to_list(a)
+        imp = ds.trajs.col("importance")
+        if imp is not None and traj_idx < len(imp):
+            result["importance"] = float(imp[traj_idx])
+        for ch in ds.channel_names:
+            it = ds.trajs.col(f"is_terminated.{ch}")
+            if it is not None and traj_idx < len(it):
+                result[f"is_terminated_{ch}"] = bool(it[traj_idx])
 
-        # Buffer: old log_prob, per-frame uncertainty
-        buf = self.data.buffer_npz
-        if buf is not None and "log_probs" in buf:
-            result["old_log_prob"] = _arr_to_list(buf["log_probs"][start:end])
-        if buf is not None and "uncertainty" in buf and len(buf["uncertainty"]) > 0:
+        lp = t.col("log_probs")
+        if lp is not None:
+            result["old_log_prob"] = _arr_to_list(lp)
+        un = t.col("uncertainty")
+        if un is not None and len(un) > 0:
             result["uncertainty"] = _arr_to_list(
-                np.asarray(buf["uncertainty"][start:end], dtype=np.float32)
-            )
-
-        # Combine: uncertainty_floor and uncertainty_coef (per-update scalars)
-        if combine is not None:
-            if "uncertainty_floor" in combine:
-                result["uncertainty_floor"] = float(
-                    np.asarray(combine["uncertainty_floor"]).item()
-                )
-            if "uncertainty_coef" in combine:
-                result["uncertainty_coef"] = float(
-                    np.asarray(combine["uncertainty_coef"]).item()
-                )
+                np.asarray(un, dtype=np.float32))
 
         return 200, result
 
@@ -1937,17 +1606,16 @@ class ViewerAPI:
     # -- /api/trajectory/<idx>/epoch/<e>/overview --------------------------
 
     def _traj_epoch_overview(self, traj_idx: int, epoch: int) -> Tuple[int, Dict[str, Any]]:
-        ef = self.data.epoch_frames_npz
-        if ef is None:
+        ds = self.data
+        ef = ds.npz("epoch_frames")
+        if not ef.available:
             return 404, {"error": "epoch_frames.npz not found"}
-
-        offsets = self.data.seg_offsets
-        if traj_idx < 0 or traj_idx + 1 >= len(offsets):
+        if traj_idx < 0 or traj_idx + 1 >= len(ds.seg_offsets):
             return 404, {"error": f"trajectory {traj_idx} out of range"}
-        start = int(offsets[traj_idx])
-        end = int(offsets[traj_idx + 1])
+        start, end = ds.frames.traj_slice(traj_idx)
+        t = ds.frames.traj(traj_idx)
 
-        n_epochs = int(ef["n_epochs"]) if "n_epochs" in ef else 0
+        n_epochs = int(ef.scalar("n_epochs") or 0)
         if epoch < 0 or epoch >= n_epochs:
             return 404, {"error": f"epoch {epoch} out of range (n_epochs={n_epochs})"}
 
@@ -1962,64 +1630,46 @@ class ViewerAPI:
         result["episode_pos"] = ep_pos
         result["t_start"] = t_start
 
-        ratio_key = f"ratio.{epoch}"
-        clip_key = f"clip_mask.{epoch}"
-        lp_key = f"new_log_prob.{epoch}"
-
-        if ratio_key in ef:
-            result["ratio"] = _arr_to_list(ef[ratio_key][start:end])
-        if clip_key in ef:
-            result["clip_mask"] = [bool(x) for x in ef[clip_key][start:end]]
-        if lp_key in ef:
-            result["new_log_prob"] = _arr_to_list(ef[lp_key][start:end])
+        a = t.col(f"epoch.{epoch}.ratio")
+        if a is not None:
+            result["ratio"] = _arr_to_list(a)
+        a = t.col(f"epoch.{epoch}.clip_mask")
+        if a is not None:
+            result["clip_mask"] = [bool(x) for x in a]
+        a = t.col(f"epoch.{epoch}.log_prob")
+        if a is not None:
+            result["new_log_prob"] = _arr_to_list(a)
 
         # Per-channel new_value
-        for ch in self.data.channel_names:
-            nv_key = f"new_value.{epoch}.{ch}"
-            if nv_key in ef:
-                result[f"new_value_{ch}"] = _arr_to_list(ef[nv_key][start:end])
+        for ch in ds.channel_names:
+            a = t.col(f"epoch.{epoch}.value.{ch}")
+            if a is not None:
+                result[f"new_value_{ch}"] = _arr_to_list(a)
 
-        # Cross-reference: old_log_prob from buffer
-        buf = self.data.buffer_npz
-        if buf is not None and "log_probs" in buf:
-            result["old_log_prob"] = _arr_to_list(buf["log_probs"][start:end])
-
-        # Cross-reference: old_value and return from gae
-        gae = self.data.gae_npz
-        if gae is not None:
-            for ch in self.data.channel_names:
-                va = gae.get("values_all")
-                if va is not None:
-                    d = _dict_item(va)
-                    if isinstance(d, dict) and ch in d:
-                        result[f"old_value_{ch}"] = _arr_to_list(
-                            np.asarray(d[ch][start:end], dtype=np.float32)
-                        )
-                ra = gae.get("rets_all")
-                if ra is not None:
-                    d = _dict_item(ra)
-                    if isinstance(d, dict) and ch in d:
-                        result[f"return_{ch}"] = _arr_to_list(
-                            np.asarray(d[ch][start:end], dtype=np.float32)
-                        )
-
-        # Cross-reference: combined_adv from combine
-        combine = self.data.combine_npz
-        if combine is not None:
-            ca = combine.get("combined_adv")
-            if ca is not None:
-                result["combined_adv"] = _arr_to_list(ca[start:end])
+        # Cross-reference: old_log_prob, old_value, return, combined_adv
+        a = t.col("log_probs")
+        if a is not None:
+            result["old_log_prob"] = _arr_to_list(a)
+        for ch in ds.channel_names:
+            a = t.col(f"value.{ch}")
+            if a is not None:
+                result[f"old_value_{ch}"] = _arr_to_list(
+                    np.asarray(a, dtype=np.float32))
+            a = t.col(f"ret.{ch}")
+            if a is not None:
+                result[f"return_{ch}"] = _arr_to_list(
+                    np.asarray(a, dtype=np.float32))
+        a = t.col("combined_adv")
+        if a is not None:
+            result["combined_adv"] = _arr_to_list(a)
 
         # clip_eps from timeline or update
-        tl = self.data.timeline_npz
-        if tl is not None and "clip_eps" in tl:
-            result["clip_eps"] = float(tl["clip_eps"])
-        else:
-            result["clip_eps"] = 0.2
+        ce = ds.timeline.scalar("clip_eps")
+        result["clip_eps"] = float(ce) if ce is not None else 0.2
 
-        # actor_stopped_epoch
-        if "actor_stopped_epoch" in ef:
-            result["actor_stopped_epoch"] = int(ef["actor_stopped_epoch"])
+        ase = ef.scalar("actor_stopped_epoch")
+        if ase is not None:
+            result["actor_stopped_epoch"] = int(ase)
 
         return 200, result
 
@@ -2047,18 +1697,16 @@ class ViewerAPI:
     # -- /api/trajectory/<idx>/epoch_compare --------------------------------
 
     def _traj_epoch_compare(self, traj_idx: int) -> Tuple[int, Dict[str, Any]]:
-        ef = self.data.epoch_frames_npz
-        if ef is None:
+        ds = self.data
+        ef = ds.npz("epoch_frames")
+        if not ef.available:
             return 404, {"error": "epoch_frames.npz not found"}
-
-        offsets = self.data.seg_offsets
-        if traj_idx < 0 or traj_idx + 1 >= len(offsets):
+        if traj_idx < 0 or traj_idx + 1 >= len(ds.seg_offsets):
             return 404, {"error": f"trajectory {traj_idx} out of range"}
-        start = int(offsets[traj_idx])
-        end = int(offsets[traj_idx + 1])
-        T = end - start
+        t = ds.frames.traj(traj_idx)
+        T = t.n_rows
 
-        n_epochs = int(ef["n_epochs"]) if "n_epochs" in ef else 0
+        n_epochs = int(ef.scalar("n_epochs") or 0)
         result: Dict[str, Any] = {
             "traj_idx": traj_idx,
             "length": T,
@@ -2067,25 +1715,21 @@ class ViewerAPI:
         }
 
         for e in range(n_epochs):
-            ratio_key = f"ratio.{e}"
-            clip_key = f"clip_mask.{e}"
             entry: Dict[str, Any] = {"epoch": e}
-            if ratio_key in ef:
-                entry["ratio"] = _arr_to_list(ef[ratio_key][start:end])
-            if clip_key in ef:
-                entry["clip_mask"] = [bool(x) for x in ef[clip_key][start:end]]
+            a = t.col(f"epoch.{e}.ratio")
+            if a is not None:
+                entry["ratio"] = _arr_to_list(a)
+            a = t.col(f"epoch.{e}.clip_mask")
+            if a is not None:
+                entry["clip_mask"] = [bool(x) for x in a]
             result["epochs"].append(entry)
 
-        # actor_stopped_epoch
-        if "actor_stopped_epoch" in ef:
-            result["actor_stopped_epoch"] = int(ef["actor_stopped_epoch"])
+        ase = ef.scalar("actor_stopped_epoch")
+        if ase is not None:
+            result["actor_stopped_epoch"] = int(ase)
 
-        # clip_eps from timeline
-        tl = self.data.timeline_npz
-        if tl is not None and "clip_eps" in tl:
-            result["clip_eps"] = float(tl["clip_eps"])
-        else:
-            result["clip_eps"] = 0.2
+        ce = ds.timeline.scalar("clip_eps")
+        result["clip_eps"] = float(ce) if ce is not None else 0.2
 
         return 200, result
 
@@ -2260,7 +1904,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def _handle_job_request(
-        self, kind: str, data: "DumpData", dump_name: str,
+        self, kind: str, data: DumpDataset, dump_name: str,
     ):
         """POST .../<render|delta> {"episode": N, "gens": G?}."""
         try:
@@ -2588,7 +2232,7 @@ def serve(
         # handlers can access them via self.server.
         httpd.runs_root = None  # type: ignore[attr-defined]
         if is_dump:
-            data = DumpData(path)
+            data = DumpDataset(path)
             _ = data.manifest  # verify manifest exists
             httpd.api = ViewerAPI(data)  # type: ignore[attr-defined]
             httpd.run_data = None  # type: ignore[attr-defined]
@@ -2619,4 +2263,4 @@ def serve(
             httpd.shutdown()
 
 
-__all__ = ["DumpData", "RunData", "ViewerAPI", "serve"]
+__all__ = ["RunData", "ViewerAPI", "serve"]

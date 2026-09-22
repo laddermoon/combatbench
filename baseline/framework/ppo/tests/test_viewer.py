@@ -1,7 +1,7 @@
 """Tests for the debug viewer server and API.
 
 Tests cover:
-- DumpData: lazy NPZ loading, caching, derived helpers
+- DumpDataset: lazy NPZ loading, caching, derived helpers
 - ViewerAPI: all endpoints return correct JSON structure
 - traj_map.json: generation and fallback
 - Trajectory slicing (seg_offsets)
@@ -30,9 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
+from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
 from baseline.framework.ppo.dumpkit.viewer.server import (
-    DumpData, RunData, ViewerAPI, list_runs, query_runs_index, resolve_run,
-    scan_experiments, experiments_index, experiment_detail,
+    RunData, ViewerAPI, _dump_gradsig, list_runs, query_runs_index,
+    resolve_run, scan_experiments, experiments_index, experiment_detail,
 )
 from baseline.framework.ppo.experiment import (
     ActorEval,
@@ -142,14 +143,14 @@ def _create_test_dump(tmpdir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# DumpData tests
+# DumpDataset tests
 # ---------------------------------------------------------------------------
 
 def test_dump_data_loads_manifest():
     """DumpData loads manifest.json correctly."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
         m = data.manifest
         assert m["update"] == 1
@@ -163,20 +164,20 @@ def test_dump_data_loads_npz_files():
     """DumpData loads all NPZ files."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
-        assert data.episodes_npz is not None
-        assert "obs.robot_a" in data.episodes_npz
-        assert data.trajectories_npz is not None
-        assert "reward.r_test" in data.trajectories_npz
-        assert data.buffer_npz is not None
-        assert "obs" in data.buffer_npz
-        assert data.gae_npz is not None
-        assert "values_all" in data.gae_npz
-        assert data.combine_npz is not None
-        assert "combined_adv" in data.combine_npz
-        assert data.update_npz is not None
-        assert "kl_mean" in data.update_npz
+        assert data.npz("episodes").available
+        assert "obs.robot_a" in data.npz("episodes")
+        assert data.npz("trajectories").available
+        assert "reward.r_test" in data.npz("trajectories")
+        assert data.npz("buffer").available
+        assert "obs" in data.npz("buffer")
+        assert data.npz("gae").available
+        assert "values_all" in data.npz("gae")
+        assert data.npz("combine").available
+        assert "combined_adv" in data.npz("combine")
+        assert data.npz("update").available
+        assert "kl_mean" in data.npz("update")
         print("test_dump_data_loads_npz_files: PASS")
 
 
@@ -184,7 +185,7 @@ def test_dump_data_seg_offsets():
     """DumpData.seg_offsets returns correct cumulative offsets."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
         offsets = data.seg_offsets
         assert len(offsets) == 2  # 1 trajectory → 2 offsets
@@ -197,7 +198,7 @@ def test_dump_data_channel_names():
     """DumpData.channel_names returns channel names."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
         cn = data.channel_names
         assert "r_test" in cn
@@ -208,7 +209,7 @@ def test_dump_data_traj_map():
     """DumpData.traj_map loads from traj_map.json."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
         tm = data.traj_map
         assert len(tm) == 1  # 1 episode
@@ -221,16 +222,16 @@ def test_dump_data_timeline_and_epoch_frames():
     """DumpData loads timeline.npz and epoch_frames.npz when present."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
 
-        tl = data.timeline_npz
-        assert tl is not None
+        tl = data.npz("timeline")
+        assert tl.available
         assert "n_steps" in tl
         assert "kl" in tl
         assert "epoch_idx" in tl
 
-        ef = data.epoch_frames_npz
-        assert ef is not None
+        ef = data.npz("epoch_frames")
+        assert ef.available
         assert "n_epochs" in ef
         # Should have ratio.0 at minimum
         assert "ratio.0" in ef
@@ -245,7 +246,7 @@ def test_api_manifest():
     """GET /api/manifest returns correct metadata."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/manifest")
@@ -261,7 +262,7 @@ def test_api_episode_list():
     """GET /api/episode_list returns episode list."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/episode_list")
@@ -276,7 +277,7 @@ def test_api_traj_map():
     """GET /api/traj_map returns full mapping."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/traj_map")
@@ -289,7 +290,7 @@ def test_api_episode_frame():
     """GET /api/episode/0/frame/0 returns frame data."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/episode/0/frame/0")
@@ -306,7 +307,7 @@ def test_api_episode_frame_out_of_range():
     """GET /api/episode/0/frame/999 returns 404."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/episode/0/frame/999")
@@ -318,7 +319,7 @@ def test_api_traj_overview():
     """GET /api/trajectory/0/overview returns per-frame data."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/overview")
@@ -337,7 +338,7 @@ def test_api_traj_frame():
     """GET /api/trajectory/0/frame/5 returns single frame."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/frame/5")
@@ -353,7 +354,7 @@ def test_api_traj_epoch_overview():
     """GET /api/trajectory/0/epoch/0/overview returns epoch data."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/epoch/0/overview")
@@ -370,7 +371,7 @@ def test_api_traj_epoch_compare():
     """GET /api/trajectory/0/epoch_compare returns all epochs."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/epoch_compare")
@@ -385,7 +386,7 @@ def test_api_timeline_overview():
     """GET /api/timeline/overview returns timeline data."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/timeline/overview")
@@ -404,7 +405,7 @@ def test_api_timeline_step():
     """GET /api/timeline/step/0 returns step detail."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/timeline/step/0")
@@ -419,7 +420,7 @@ def test_api_unknown_endpoint():
     """Unknown API endpoint returns 404."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/unknown")
@@ -431,7 +432,7 @@ def test_api_image_not_found():
     """GET /api/image/0/0 returns 404 when no record dir."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/image/0/0")
@@ -451,7 +452,7 @@ def test_traj_map_fallback_from_frame_ids():
         # Delete traj_map.json to test fallback
         (dump_dir / "traj_map.json").unlink()
 
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         tm = data.traj_map
         assert len(tm) >= 1
         # Should still have trajectory mapping from frame_ids
@@ -467,7 +468,7 @@ def test_api_episode_frame_has_trajectory_channel_data():
     """GET /api/episode/0/frame/0 returns per-trajectory per-frame channel data."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/episode/0/frame/0")
@@ -495,7 +496,7 @@ def test_api_traj_overview_has_enhanced_fields():
     """GET /api/trajectory/0/overview returns key_frame_mask, seg_active, aw_l1_sum."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/overview")
@@ -522,7 +523,7 @@ def test_api_traj_epoch_overview_has_cross_ref_fields():
     """GET /api/trajectory/0/epoch/0/overview returns old_log_prob, old_value, return, combined_adv."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/epoch/0/overview")
@@ -541,7 +542,7 @@ def test_api_manifest_has_clip_eps():
     """GET /api/manifest includes clip_eps, target_kl, n_epochs, n_steps."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/manifest")
@@ -558,7 +559,7 @@ def test_api_epoch_compare_has_clip_eps():
     """GET /api/trajectory/0/epoch_compare includes clip_eps."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         status, body = api.handle("/api/trajectory/0/epoch_compare")
@@ -575,7 +576,7 @@ def test_episode_rendered_flag():
     """episode_rendered / episode_list.rendered reflect record/episode_NNNNN PNGs."""
     with tempfile.TemporaryDirectory() as d:
         dump_dir = _create_test_dump(Path(d))
-        data = DumpData(dump_dir)
+        data = DumpDataset(dump_dir)
         api = ViewerAPI(data)
 
         # Not rendered yet
@@ -882,8 +883,8 @@ def test_dump_data_grad_sig():
             json.dumps({"update": 42}))
         _write_gradsig_npz(dump_dir / "gradsig.npz")
 
-        dd = DumpData(dump_dir)
-        out = dd.grad_sig()
+        dd = DumpDataset(dump_dir)
+        out = _dump_gradsig(dd)
         assert out is not None
         assert out["available"] is True
         assert "partial" not in out
@@ -912,7 +913,7 @@ def test_dump_data_grad_sig():
         (dump_dir2 / "manifest.json").write_text(
             json.dumps({"update": 43}))
         _write_gradsig_npz(dump_dir2 / "gradsig.npz", with_hist=False)
-        out2 = DumpData(dump_dir2).grad_sig()
+        out2 = _dump_gradsig(DumpDataset(dump_dir2))
         assert out2["available"] is True and out2["partial"] is True
         assert out2["update"] == 43
         assert out2["n_sampled"] == 4 and out2["n_valid"] == 3
@@ -925,8 +926,8 @@ def test_dump_data_grad_sig():
         dump_dir3.mkdir()
         (dump_dir3 / "manifest.json").write_text(
             json.dumps({"update": 44}))
-        dd3 = DumpData(dump_dir3)
-        assert dd3.grad_sig() is None
+        dd3 = DumpDataset(dump_dir3)
+        assert _dump_gradsig(dd3) is None
         status3, body3 = ViewerAPI(dd3).handle("/api/gradsig")
         assert status3 == 404 and body3["available"] is False
         print("test_dump_data_grad_sig: PASS")
@@ -1561,7 +1562,7 @@ def test_dump_analysis_endpoints():
     timeline overview carries the previously-unexposed fields."""
     from baseline.framework.ppo.tests.test_dump_analysis import _make_dump
     with tempfile.TemporaryDirectory() as d:
-        dd = DumpData(_make_dump(Path(d), early_stop=2))
+        dd = DumpDataset(_make_dump(Path(d), early_stop=2))
         api = ViewerAPI(dd)
 
         st, body = api.handle("/api/inspect")
@@ -1603,7 +1604,7 @@ def test_dump_analysis_endpoints():
         assert len(body["stages"][-1]["counts"]) == 64
 
         # Missing gradsig → samples 404, inspect still fine.
-        dd2 = DumpData(_make_dump(Path(d) / "nog", with_gradsig=False))
+        dd2 = DumpDataset(_make_dump(Path(d) / "nog", with_gradsig=False))
         api2 = ViewerAPI(dd2)
         st, body = api2.handle("/api/gradsig/samples")
         assert st == 404 and body["available"] is False

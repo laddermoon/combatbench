@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
 from baseline.framework.ppo.dumpkit.dump_delta import compute_delta, MAX_GENS
 from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
-from baseline.framework.ppo.dumpkit.viewer.server import DumpData, ViewerAPI
+from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
+from baseline.framework.ppo.dumpkit.viewer.server import ViewerAPI
 from baseline.framework.ppo.experiment import PPOParams
 from baseline.framework.ppo.policies import TruncatedNormalPolicy
 from baseline.framework.ppo.trainer import ppo_update
@@ -300,7 +301,7 @@ def test_api_episode_delta_available():
         dump_dir, _ = _create_delta_run(Path(d))
         compute_delta(dump_dir, episode_pos=0, gens=2, log=lambda *a: None)
 
-        api = ViewerAPI(DumpData(dump_dir))
+        api = ViewerAPI(DumpDataset(dump_dir))
         status, body = api._episode_delta(0)
         assert status == 200
         assert body["available"] is True
@@ -317,7 +318,7 @@ def test_api_episode_delta_available():
 def test_api_episode_delta_unavailable():
     with tempfile.TemporaryDirectory() as d:
         dump_dir, _ = _create_delta_run(Path(d))
-        api = ViewerAPI(DumpData(dump_dir))
+        api = ViewerAPI(DumpDataset(dump_dir))
         status, body = api._episode_delta(0)
         assert status == 200
         assert body["available"] is False

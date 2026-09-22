@@ -48,16 +48,15 @@ def render_episode(
         ValueError: If episode_index is out of range.
         RuntimeError: If verification fails (diff exceeds threshold).
     """
+    from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
+
     dump_dir = Path(dump_dir)
 
     # --- Load dump metadata ---
-    ep_npz = dump_dir / "episodes.npz"
     env_bp_path = dump_dir / "env_blueprint.yaml"
     policy_bp_path = dump_dir / "stochastic_policy" / "policy_blueprint.yaml"
     options_path = dump_dir / "episode_options.json"
 
-    if not ep_npz.exists():
-        raise FileNotFoundError(f"episodes.npz not found in {dump_dir}")
     if not env_bp_path.exists():
         raise FileNotFoundError(f"env_blueprint.yaml not found in {dump_dir}")
     if not policy_bp_path.exists():
@@ -65,18 +64,20 @@ def render_episode(
             f"stochastic_policy/policy_blueprint.yaml not found in {dump_dir}"
         )
 
-    ep_data = np.load(ep_npz, allow_pickle=True)
-    n_episodes = int(ep_data["n_episodes"])
+    ds = DumpDataset(dump_dir)
+    if not ds.has("episodes"):
+        raise FileNotFoundError(f"episodes.npz not found in {dump_dir}")
+    n_episodes = ds.n_episodes
     if episode_index < 0 or episode_index >= n_episodes:
         raise ValueError(
             f"episode_index {episode_index} out of range (0..{n_episodes - 1})"
         )
 
-    seed = int(ep_data["base_seeds"][episode_index])
-    num_frames = int(ep_data["num_frames"][episode_index])
-    frame_offsets = ep_data["episode_frame_offsets"]
-    frame_start = int(frame_offsets[episode_index])
-    frame_end = int(frame_offsets[episode_index + 1])
+    ev = ds.episodes[episode_index]
+    seed = int(ev.seed)
+    num_frames = ev.n_frames
+    frame_start = ev.start
+    frame_end = ev.end
 
     if verbose:
         print(f"[render] episode {episode_index}/{n_episodes}")
@@ -148,7 +149,7 @@ def render_episode(
         print(f"[render] verifying recorded data against dump...")
     verification_result = _verify_recorded_vs_dump(
         recorded_ep_dir=recorded_ep_dir,
-        ep_data=ep_data,
+        ev=ev,
         frame_start=frame_start,
         frame_end=frame_end,
         verbose=verbose,
@@ -294,7 +295,7 @@ def _run_round_runner(
 
 def _verify_recorded_vs_dump(
     recorded_ep_dir: Path,
-    ep_data: Any,  # np.load result
+    ev: Any,  # frame_access.EpisodeView
     frame_start: int,
     frame_end: int,
     verbose: bool = False,
@@ -324,14 +325,14 @@ def _verify_recorded_vs_dump(
         threshold: float
         frame_mapping: str
     """
-    # Load dump data for this episode
-    dump_obs_a = ep_data["obs.robot_a"][frame_start:frame_end]
-    dump_act_a = ep_data["actions.robot_a"][frame_start:frame_end]
+    # Load dump data for this episode — EpisodeView already slices
+    # to [frame_start, frame_end), so ev.col() returns (T, dim).
+    dump_obs_a = ev.col("obs.robot_a")
+    dump_act_a = ev.col("actions.robot_a")
 
-    has_robot_b = "obs.robot_b" in ep_data
-    if has_robot_b:
-        dump_obs_b = ep_data["obs.robot_b"][frame_start:frame_end]
-        dump_act_b = ep_data["actions.robot_b"][frame_start:frame_end]
+    dump_obs_b = ev.col("obs.robot_b")
+    dump_act_b = ev.col("actions.robot_b")
+    has_robot_b = dump_obs_b is not None
 
     n_frames = frame_end - frame_start
     # With torch.set_num_threads(1), the replay is bit-exact, so we

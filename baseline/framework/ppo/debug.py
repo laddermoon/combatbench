@@ -139,9 +139,9 @@ def _resolve_dump(arg: str, runs_root: str) -> Path:
 
 
 def _open_dump(args):
-    from baseline.framework.ppo.dumpkit.viewer.server import DumpData
+    from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
     try:
-        return DumpData(_resolve_dump(args.dump, args.runs_root))
+        return DumpDataset(_resolve_dump(args.dump, args.runs_root))
     except (FileNotFoundError, NotADirectoryError) as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(2)
@@ -275,12 +275,12 @@ def _cmd_trace(args: argparse.Namespace) -> int:
             print("error: --buffer-index or --frame is required",
                   file=sys.stderr)
             return 2
-        buf = dd.buffer_npz
-        if buf is None or "frame_id" not in buf:
-            print("error: buffer.npz/frame_id unavailable", file=sys.stderr)
+        fids = dd.frames.col("frame_id")
+        if fids is None:
+            print("error: frame_id unavailable in dump", file=sys.stderr)
             return 2
         import numpy as np
-        hit = np.where(buf["frame_id"] == args.frame)[0]
+        hit = np.where(fids == args.frame)[0]
         if not hit.size:
             print(f"error: frame_id '{args.frame}' not found in buffer",
                   file=sys.stderr)

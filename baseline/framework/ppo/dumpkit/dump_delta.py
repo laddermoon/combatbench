@@ -59,20 +59,6 @@ def _load_exported_policy(export_dir: Path):
     return bp.build()
 
 
-def _episode_obs_slice(
-    ep_npz, traj_map: List[Dict[str, Any]], ep_pos: int, agent: str,
-) -> np.ndarray:
-    """Return the (T, obs_dim) obs block for episode ``ep_pos``/``agent``."""
-    offsets = ep_npz["episode_frame_offsets"]
-    if ep_pos < 0 or ep_pos + 1 >= len(offsets):
-        raise IndexError(f"episode {ep_pos} out of range")
-    start, end = int(offsets[ep_pos]), int(offsets[ep_pos + 1])
-    key = f"obs.{agent}"
-    if key not in ep_npz:
-        raise KeyError(f"{key} not in episodes.npz")
-    return np.asarray(ep_npz[key][start:end], dtype=np.float32)
-
-
 def trained_agents(traj_map: List[Dict[str, Any]], ep_pos: int) -> List[str]:
     """Agent ids that produced trajectories in this episode."""
     ep = traj_map[ep_pos]
@@ -90,14 +76,15 @@ def compute_delta(
 
     Writes ``<dump_dir>/delta/episode_{pos:05d}/`` and returns that dir.
     """
+    from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
+
     dump_dir = Path(dump_dir)
     if not 1 <= gens <= MAX_GENS:
         raise ValueError(f"gens must be in [1, {MAX_GENS}], got {gens}")
 
-    manifest = json.loads((dump_dir / "manifest.json").read_text())
-    update = int(manifest["update"])
-    traj_map = json.loads((dump_dir / "traj_map.json").read_text())
-    ep_npz = np.load(dump_dir / "episodes.npz", allow_pickle=True)
+    ds = DumpDataset(dump_dir)
+    update = int(ds.manifest["update"])
+    traj_map = ds.traj_map
 
     if episode_pos < 0 or episode_pos >= len(traj_map):
         raise IndexError(
@@ -145,8 +132,12 @@ def compute_delta(
         "agents": agents,
     }
 
+    ev = ds.episodes[episode_pos]
     for agent in agents:
-        obs = _episode_obs_slice(ep_npz, traj_map, episode_pos, agent)
+        obs_arr = ev.col(f"obs.{agent}")
+        if obs_arr is None:
+            raise KeyError(f"obs.{agent} not in episodes.npz")
+        obs = np.asarray(obs_arr, dtype=np.float32)
         T, obs_dim = obs.shape
         per_gen = []
         for pol in policies:
