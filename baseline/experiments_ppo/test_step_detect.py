@@ -169,14 +169,26 @@ def test_phase_c_lifted_swing_gets_press_weight():
 
 
 def test_phase_c_late_lift_not_punished():
-    """Foot crosses threshold mid-Phase-C: +W before, -W after."""
+    """Foot crosses threshold mid-Phase-C: +W while rising, -W at crest."""
     T = 60
     h = np.full(20, 0.01, dtype=np.float32)
-    h[15:] = 0.08                          # crosses at t=25
+    h[15:] = 0.08                          # crosses at t=25 (one rising step)
     cl, cr, hl, hr = _long_swing(T, h)
     wl, wr = compute_foot_weights(cl, cr, T, h_left=hl, h_right=hr)
-    assert np.all(wl[20:25] > 0)           # still below bar → keep lifting
-    assert np.all(wl[25:30] < 0)           # above bar → descend
+    assert np.all(wl[20:26] > 0)           # below bar / rising → keep lifting
+    assert np.all(wl[26:30] < 0)           # crested above bar → descend
+
+
+def test_phase_c_rising_apex_keeps_lift_weight():
+    """A swing foot above threshold but still rising is not pushed down."""
+    T = 60
+    # rises ~4 mm/frame through the whole swing — crosses the bar mid-C
+    h = (0.02 + 0.004 * np.arange(20)).astype(np.float32)   # 0.02 → 0.096
+    cl, cr, hl, hr = _long_swing(T, h)
+    wl, wr = compute_foot_weights(cl, cr, T, h_left=hl, h_right=hr)
+    # Phase C (t=20..29): h crosses threshold but keeps rising → +W
+    assert np.all(wl[20:30] > 0)
+    assert np.all(wr[20:30] == 0)
 
 
 def test_phase_c_no_height_data_stays_press():
@@ -211,3 +223,79 @@ def test_single_support_mask_excludes_flight_and_jitter():
     m = single_support_mask(cl, cr)
     assert not np.any(m[5:13])              # hop is not a commanded swing
     assert not np.any(m[25:27])             # jitter absorbed by debounce
+
+
+# ----------------------------------------------------------------------
+# step_cycle_bonus — detected cycles add reward over the airborne window
+# ----------------------------------------------------------------------
+
+def _make_step_episode(T: int, events: list):
+    """Minimal Episode with the observer fields exp_step reads."""
+    from baseline.framework.rollout.episode import Episode
+
+    cl, cr, hl, hr = _seq(T, events)
+    standing = np.ones(T, dtype=np.float32)
+    obs = np.zeros((T, 96), dtype=np.float32)
+    obs[:, 45] = 1.2                       # h_torso ≥ 1.1 → standing
+    acts = np.zeros((T, 21), dtype=np.float32)
+    foot = {
+        "h_left_foot": hl, "h_right_foot": hr,
+        "left_foot_contact": cl.astype(np.float32),
+        "right_foot_contact": cr.astype(np.float32),
+    }
+    balance = {"potential": standing}
+    return Episode(
+        base_seed=42, episode_index=0, blueprint_hash="t",
+        num_frames=T, episode_options={},
+        agent_termination_proposal_records={},
+        observations={"robot_a": obs, "robot_b": obs.copy()},
+        actions={"robot_a": acts, "robot_b": acts.copy()},
+        action_extras={"robot_a": {}, "robot_b": {}},
+        explore_factors={"robot_a": np.zeros(T, np.float32),
+                         "robot_b": np.zeros(T, np.float32)},
+        observer_outputs={
+            "foot_state_a": foot, "foot_state_b": dict(foot),
+            "standing_balance_a": balance,
+            "standing_balance_b": dict(balance),
+        },
+        final_observation={"robot_a": obs[-1], "robot_b": obs[-1].copy()},
+        episode_metrics={},
+    )
+
+
+def test_step_cycle_bonus_adds_reward_on_airborne_window():
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 80
+    # two valid cycles: left swing 10..20 (peak .08), right 40..50
+    ep = _make_step_episode(
+        T, [(10, 20, "left", 0.08), (40, 50, "right", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    assert len(trajs) == 1
+    ch = trajs[0].channels
+
+    rl = ch["r_left_foot"].reward
+    # dense clip(h,0,.05) over the ramp + bonus .5/10 = .05/frame
+    expected_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.05
+    np.testing.assert_allclose(rl[10:20], expected_l, rtol=1e-5, atol=1e-6)
+    assert rl[:10].max() == 0.0 and rl[20:].max() < 0.05
+
+    rr = ch["r_right_foot"].reward
+    np.testing.assert_allclose(rr[40:50], expected_l, rtol=1e-5, atol=1e-6)
+    assert rr[:40].max() < 0.05
+
+
+def test_step_cycle_bonus_skips_invalid_swings():
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 60
+    # shallow swing (peak .02 < .05) — attempt only, no bonus
+    ep = _make_step_episode(T, [(10, 20, "left", 0.02)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rl = trajs[0].channels["r_left_foot"].reward
+    # dense term only (clip of the ramped height), no bonus
+    assert rl[10:20].max() <= 0.02 + 1e-6

@@ -43,6 +43,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
+    CONTACT_HOLD_STEPS,
     compute_foot_weights,
     detect_step_cycles,
     single_support_mask,
@@ -103,6 +104,15 @@ class Step(CombatExperimentPPOBase):
     step_lift_threshold: float = 0.05
     step_phi_gate: float = 0.9
     step_min_air_frames: int = 3
+
+    # --- Step-cycle completion bonus ---
+    # The u50 dump showed the payoff ratio between a real step and a
+    # micro-hop is only ~1.07× (dense clip(h,0,0.05) shaping), while the
+    # residual veto on >5 cm frames keeps the mean policy at hmax≈9 mm.
+    # A per-cycle bonus (spread over the airborne window) raises that
+    # ratio to ~50× and aligns the reward with the eval metric exactly:
+    # the same detect_step_cycles definition decides both.
+    step_cycle_bonus: float = 0.5
 
     # --- r_potential actor weight ---
     # Fixed 3.0 in general, but muted to ~0 on commanded single-support
@@ -245,6 +255,33 @@ class Step(CombatExperimentPPOBase):
         contact_r = extract_per_step_field(
             episode.observer_outputs, foot_key, "right_foot_contact", T_full,
         )
+
+        # --- Step-cycle completion bonus ---
+        # Same detector as eval: a swing reaching step_lift_threshold
+        # that lands on a standing frame earns step_cycle_bonus spread
+        # over its airborne window.
+        if (
+            self.step_cycle_bonus > 0
+            and contact_l is not None and contact_r is not None
+            and h_left is not None and h_right is not None
+        ):
+            det = detect_step_cycles(
+                np.asarray(contact_l[:T_full], dtype=bool),
+                np.asarray(contact_r[:T_full], dtype=bool),
+                np.asarray(h_left[:T_full], dtype=np.float32),
+                np.asarray(h_right[:T_full], dtype=np.float32),
+                standing=phi_arr >= self.step_phi_gate,
+                min_air_steps=self.step_min_air_frames,
+                h_thresh=self.step_lift_threshold,
+            )
+            for foot, t_off, t_land, _h_pk in det["cycles"]:
+                per_frame = np.float32(
+                    self.step_cycle_bonus / max(1, t_land - t_off))
+                if foot == "left":
+                    r_left_foot[t_off:t_land] += per_frame
+                else:
+                    r_right_foot[t_off:t_land] += per_frame
+
         if contact_l is not None and contact_r is not None:
             w_left, w_right = compute_foot_weights(
                 np.asarray(contact_l[:T_full], dtype=bool),
@@ -267,6 +304,18 @@ class Step(CombatExperimentPPOBase):
                 np.asarray(contact_l[:T_full], dtype=bool),
                 np.asarray(contact_r[:T_full], dtype=bool),
             ).astype(np.float32)
+            # Dilate ±CONTACT_HOLD_STEPS: the debounce lags real liftoff/
+            # touchdown by up to `hold` frames, so the raw ss_mask misses
+            # the swing's boundary frames — exactly where h>thresh frames
+            # showed up as !ss and kept the full r_potential veto (u50
+            # dump: 334/780 of >5cm frames got aw=3 → contrib −0.26).
+            if ss_mask.any():
+                k = CONTACT_HOLD_STEPS
+                pad_ss = np.pad(
+                    ss_mask, (k, k), mode="edge")
+                ss_mask = np.lib.stride_tricks.sliding_window_view(
+                    pad_ss, 2 * k + 1,
+                ).max(axis=1).astype(np.float32)
         else:
             ss_mask = np.zeros(T_full, dtype=np.float32)
         # Trailing-max φ over ~0.75 s: a commanded swing's φ dip stays

@@ -32,11 +32,15 @@ Weights (W = 1.0)::
         steps 7+                           →  w_L = +W, w_R = +W
     FLIGHT                               →  continues previous state
     SUPPORT_*  steps 1..2   (Phase A)    →  w[support] = -W
-                                            w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
-    SUPPORT_*  steps 3..10  (Phase B)    →  w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD else 0
+                                            w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD
+                                                          or still rising; else 0
+    SUPPORT_*  steps 3..10  (Phase B)    →  w[swing]   = +W if h_swing < SWING_LIFT_THRESHOLD
+                                                          or still rising; else 0
                                             w[support] =  0
     SUPPORT_*  steps 11+    (Phase C)    →  w[swing]   = -W if h_swing >= SWING_LIFT_THRESHOLD
-                                                          else +W (late lift still pushed up)
+                                                          and no longer rising
+                                                          else +W (late lift / rising apex
+                                                          still pushed up)
                                             w[support] =  0
     DOUBLE transition (last_swing set)
         steps 1..6   (grace)              →  w[prev_support] =  0
@@ -299,9 +303,19 @@ def compute_foot_weights(
             # threshold, keep pushing it up (+W).
             if h_left is not None and h_right is not None:
                 h_swing = float(h_left[t]) if swing_is_left else float(h_right[t])
+                h_swing_prev = (
+                    float(h_left[t - 1]) if swing_is_left
+                    else float(h_right[t - 1])
+                ) if t > 0 else h_swing
                 swing_needs_lift = h_swing < swing_lift_threshold
+                # Still rising toward/through the apex — the u50 dump
+                # showed that penalizing the ascent (h>=thresh & rising)
+                # puts negative weight on the frames with the highest
+                # foot advantage, discouraging exactly the apex.
+                swing_rising = h_swing > h_swing_prev
             else:
                 swing_needs_lift = False
+                swing_rising = False
 
             if support_steps <= phase_a_steps:
                 # Phase A: press support foot down.
@@ -309,26 +323,27 @@ def compute_foot_weights(
                     w_right[t] = -weight     # support down
                 else:
                     w_left[t] = -weight
-                # Swing foot: +W if not lifted enough yet.
-                if swing_needs_lift:
+                # Swing foot: +W while below threshold or still rising.
+                if swing_needs_lift or swing_rising:
                     if swing_is_left:
                         w_left[t] = weight
                     else:
                         w_right[t] = weight
             elif support_steps <= phase_b_end:
                 # Phase B: coast on support foot.
-                # Swing foot: +W if not lifted enough yet.
-                if swing_needs_lift:
+                # Swing foot: +W while below threshold or still rising.
+                if swing_needs_lift or swing_rising:
                     if swing_is_left:
                         w_left[t] = weight
                     else:
                         w_right[t] = weight
             else:
                 # Phase C: swing overdue.  If the foot reached the lift
-                # threshold, encourage descent; if it never lifted enough,
-                # keep pushing up — a late lift must not be punished for
-                # still making progress.
-                if swing_needs_lift:
+                # threshold and has crested (no longer rising), encourage
+                # descent; otherwise keep pushing up — a late lift or a
+                # still-rising apex must not be punished for making
+                # progress.
+                if swing_needs_lift or swing_rising:
                     if swing_is_left:
                         w_left[t] = weight
                     else:
