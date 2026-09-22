@@ -48,10 +48,18 @@
 
   /* Home page */
   .home-layout { padding: 16px; height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
-  .ana-row { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
-  @media (max-width: 1200px) { .ana-row { grid-template-columns: 1fr; } }
-  .gs-body { display: flex; gap: 18px; align-items: flex-start; margin-top: 8px; }
-  .gs-side { display: flex; flex-direction: column; gap: 6px; min-width: 210px; flex-shrink: 0; }
+  .ana-trio { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 20px; align-items: start; }
+  @media (max-width: 1200px) { .ana-trio { grid-template-columns: 1fr; } }
+  .ana-cell { min-width: 0; }
+  .ana-cell h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .hist-svg { display: block; width: 100%; }
+  .hist-strip { display: grid; grid-template-columns: 130px 1fr 120px; gap: 8px; align-items: center; margin: 3px 0; font-size: 11px; }
+  .hist-strip .hs-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-strip .hs-range { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+  .steps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 12px; }
+  .steps-grid .chart-container { margin-bottom: 0; }
+  .steps-detail { margin-top: 14px; }
+  .gs-side { display: flex; flex-direction: column; gap: 6px; }
   .gs-side .stat { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .gs-side .stat .label { color: var(--muted); }
   .gs-side .stat .value { color: var(--text); }
@@ -176,7 +184,6 @@
   .timeline-card .stat { font-size: 12px; }
   .timeline-card .stat .label { color: var(--muted); }
   .timeline-card .stat .value { color: var(--text); }
-  .timeline-thumb { margin-top: 8px; }
   .dataflow-card { cursor: pointer; }
   .dataflow-card:hover { border-color: var(--accent); }
   .df-mini { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
@@ -570,26 +577,32 @@
         <div class="card" id="overview-card">
           <h2>Overview <span class="gs-scope" id="ov-meta"></span></h2>
           <div class="caps" id="ov-caps"></div>
-          <div class="timeline-summary" id="ov-stats"></div>
           <div class="ov-flags" id="ov-flags"></div>
         </div>
-        <div class="ana-row">
-          <div class="card" id="gradsig-card">
-            <h2>Gradient Signal <span class="gs-scope">sampled ≤2000 frames · θ_old</span></h2>
-            <div class="desc">Per-frame gradient diagnostics against the full-buffer aggregate G. proj&lt;0 opposes G — not "bad data".</div>
-            <div class="gs-body">
+        <div class="card">
+          <h2>Signal Summary <span class="gs-scope">cross-section of this update</span></h2>
+          <div class="ana-trio">
+            <div class="ana-cell">
+              <h3>ADV distribution · final</h3>
+              <div id="adv-hist"><div class="loading">loading...</div></div>
+            </div>
+            <div class="ana-cell">
+              <h3>ADV transform chain</h3>
+              <div class="desc">raw → normed → weighted → winsorized (own x-axis each)</div>
+              <div id="adv-stages"><div class="loading">loading...</div></div>
+            </div>
+            <div class="ana-cell">
+              <h3>Gradient signal <span class="gs-scope">sampled ≤2000 · θ_old</span></h3>
               <div class="gs-heat" id="gs-heat"></div>
               <div class="gs-side" id="gs-stats"></div>
             </div>
-            <div id="gs-top"></div>
           </div>
-          <div class="card timeline-card" id="timeline-entry">
-            <h2>Update Process</h2>
-            <div class="desc">Per-minibatch record of the update — click a key step or the card to open the full timeline.</div>
-            <div class="stats" id="timeline-stats"></div>
-            <div class="timeline-thumb" id="timeline-thumb"></div>
-            <div class="ks-chips" id="timeline-keysteps"></div>
-          </div>
+          <div id="gs-top"></div>
+        </div>
+        <div class="card">
+          <h2>Update Process <a class="cmp-open-link" id="steps-open-timeline">full timeline →</a></h2>
+          <div class="desc">Per-minibatch record. Click any chart to set the shared step cursor.</div>
+          <div id="steps-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
           <h2>Episode List</h2>
@@ -3042,59 +3055,11 @@
     refreshRenderStatus();
 
     renderDumpOverview();
+    renderAdvSummary();
     renderGradsigCard();
-    renderTimelineStats();
-    $('timeline-entry').onclick = () => navigate('timeline');
+    renderDumpSteps();
+    $('steps-open-timeline').onclick = () => navigate('timeline');
     $('dataflow-entry').onclick = () => navigate('dataflow');
-  }
-
-  function renderTimelineStats() {
-    const el = $('timeline-stats');
-    const thumb = $('timeline-thumb');
-    if (!state.manifest) {
-      el.innerHTML = '<div class="loading">loading...</div>';
-      return;
-    }
-    if (!state.manifest.has_timeline) {
-      el.innerHTML = '<div class="desc">timeline.npz not available for this dump</div>';
-      thumb.innerHTML = '';
-      return;
-    }
-    el.innerHTML = `
-      <div class="stat"><div class="label">Steps</div><div class="value">${state.manifest.n_steps}</div></div>
-      <div class="stat"><div class="label">Epochs</div><div class="value">${state.manifest.n_epochs}</div></div>
-    `;
-    if (state.manifest.early_stop_step >= 0) {
-      el.innerHTML += `<div class="stat"><div class="label">Early Stop</div><div class="value warn">step ${state.manifest.early_stop_step}</div></div>`;
-    }
-    // Load timeline thumbnail
-    fetchJson(api('timeline/overview')).then(tl => {
-      state.timelineData = tl;
-      if (tl.kl && tl.kl.length > 0) {
-        const series = [{label: 'KL', data: tl.kl, color: '#4fa3ff'}];
-        if (tl.target_kl && !isNaN(tl.target_kl)) {
-          series.push({label: 'target_kl', data: new Array(tl.kl.length).fill(tl.target_kl), color: '#e06c75'});
-        }
-        thumb.innerHTML = chartBox(series, {height: 120, earlyStopStep: tl.early_stop_step},
-          {key: 'dump:tl-thumb'});
-        mountCharts(thumb, null);
-      }
-      // Key-step chips — jump straight into the step on the timeline page
-      const ksEl = $('timeline-keysteps');
-      if (tl.key_steps && tl.key_steps.length) {
-        ksEl.innerHTML = tl.key_steps.map(s =>
-          `<span class="ks-chip" data-step="${s.step}" title="${escapeHtml(s.kind)}: step ${s.step} (epoch ${s.epoch}, mb ${s.mb_idx}${s.value !== null && s.value !== undefined ? ', ' + fmt(s.value, 4) : ''})">` +
-          `<span class="k">${escapeHtml(s.kind)}</span>s${s.step}</span>`).join('');
-        ksEl.querySelectorAll('.ks-chip').forEach(c =>
-          c.addEventListener('click', e => {
-            e.stopPropagation();
-            state.selectedStep = parseInt(c.dataset.step);
-            navigate('timeline');
-          }));
-      } else {
-        ksEl.innerHTML = '';
-      }
-    }).catch(() => { thumb.innerHTML = ''; });
   }
 
   // --- Dump analysis cards (shared layer: /api/inspect, /api/gradsig/samples) ---
@@ -3130,38 +3095,6 @@
     }).join('');
     $('ov-caps').innerHTML = caps;
 
-    let st = '';
-    const a = ins.adv && ins.adv.combined_adv;
-    if (a) {
-      st += _kpi('ADV |max|', fmt(Math.max(Math.abs(a.min ?? 0), Math.abs(a.max ?? 0)), 2));
-      st += _kpi('ADV p1/p99', `${fmt(a.p1, 2)} / ${fmt(a.p99, 2)}`);
-      st += _kpi('ADV frac−', _pct(ins.adv.frac_neg));
-      if (ins.adv.winsorize_clip_frac) {
-        st += _kpi('winsorized', _pct(ins.adv.winsorize_clip_frac), 'warn');
-      }
-    }
-    const g = ins.gradsig;
-    if (g) {
-      st += _kpi('‖G‖', fmt(g.gnorm, 3));
-      st += _kpi('coherence', fmt(g.coherence, 3),
-        g.coherence !== null && g.coherence < 0.05 ? 'warn' : '');
-      st += _kpi('proj frac−', _pct(g.frac_neg));
-      st += _kpi('sampled', `${g.n_valid ?? '?'}/${g.n_sampled ?? '?'}`);
-    }
-    const u = ins.update;
-    if (u) {
-      st += _kpi('KL mean/max', `${fmt(u.kl_mean, 3)} / ${fmt(u.kl_max, 3)}`);
-      st += _kpi('actor ‖g‖', fmt(u.grad_norm_actor_mean, 2));
-    }
-    const t = ins.timeline;
-    if (t) {
-      st += _kpi('steps', `${t.actor_steps_done ?? '?'}/${t.n_steps ?? '?'}`);
-      if (t.early_stop_step !== null && t.early_stop_step >= 0) {
-        st += _kpi('early stop', `step ${t.early_stop_step}`, 'warn');
-      }
-    }
-    $('ov-stats').innerHTML = st || '<div class="desc">no summary data</div>';
-
     const fl = $('ov-flags');
     if (ins.flags && ins.flags.length) {
       fl.innerHTML = '<div class="desc" style="margin-bottom:4px">worth inspecting:</div>' +
@@ -3181,12 +3114,293 @@
               sign: q.get('sign') || 'all',
             };
             renderGradsigSamples();
-            $('gradsig-card').scrollIntoView({behavior: 'smooth'});
+            $('gs-top').scrollIntoView({behavior: 'smooth'});
           }
         }));
     } else {
       fl.innerHTML = '';
     }
+  }
+
+  // --- ADV distribution + transform chain (adv/hist endpoint) ---
+
+  function _histSvg(h, W = 380, H = 120, labels = true) {
+    // h: {edges, counts, min, max, p1, p50, p99}
+    const n = h.counts ? h.counts.length : 0;
+    if (!n) return '<div class="desc">no data</div>';
+    const pad = {l: 4, r: 4, t: 4, b: labels ? 15 : 2};
+    const cw = (W - pad.l - pad.r) / n;
+    const maxC = Math.max(1, ...h.counts);
+    let s = `<svg class="hist-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+    for (let i = 0; i < n; i++) {
+      const bh = (h.counts[i] / maxC) * (H - pad.t - pad.b);
+      if (bh > 0)
+        s += `<rect x="${(pad.l + i * cw).toFixed(1)}" y="${(H - pad.b - bh).toFixed(1)}" width="${Math.max(0.5, cw - 0.5).toFixed(1)}" height="${bh.toFixed(1)}" fill="rgba(79,163,255,0.55)"/>`;
+    }
+    const span = h.edges[n] - h.edges[0] || 1;
+    const xOf = v => pad.l + ((v - h.edges[0]) / span) * (W - pad.l - pad.r);
+    for (const [v, col] of [[h.p1, '#e5c07b'], [h.p50, '#98a2b5'], [h.p99, '#e5c07b']]) {
+      if (v === null || v === undefined) continue;
+      const x = xOf(v).toFixed(1);
+      s += `<line x1="${x}" y1="${pad.t}" x2="${x}" y2="${H - pad.b}" stroke="${col}" stroke-width="1" stroke-dasharray="3,2"/>`;
+    }
+    if (h.edges[0] < 0 && h.edges[n] > 0) {
+      const x = xOf(0).toFixed(1);
+      s += `<line x1="${x}" y1="${pad.t}" x2="${x}" y2="${H - pad.b}" stroke="var(--muted)" stroke-width="0.8"/>`;
+    }
+    if (labels) {
+      s += `<text x="${pad.l}" y="${H - 3}" fill="var(--muted)" font-size="9">${fmt(h.edges[0], 2)}</text>`;
+      s += `<text x="${W - pad.r}" y="${H - 3}" text-anchor="end" fill="var(--muted)" font-size="9">${fmt(h.edges[n], 2)}</text>`;
+    }
+    return s + '</svg>';
+  }
+
+  async function renderAdvSummary() {
+    const histEl = $('adv-hist'), stagesEl = $('adv-stages');
+    let body;
+    try { body = await fetchJson(api('adv/hist')); }
+    catch (e) {
+      histEl.innerHTML = `<div class="desc">${escapeHtml(e.message)}</div>`;
+      stagesEl.innerHTML = '';
+      return;
+    }
+    if (!body.available) {
+      histEl.innerHTML = `<div class="desc">${escapeHtml(body.reason || 'unavailable')}</div>`;
+      stagesEl.innerHTML = '';
+      return;
+    }
+    const stages = body.stages;
+    const fin = stages[stages.length - 1];
+    histEl.innerHTML = _histSvg(fin) +
+      `<div class="desc">n=${fin.n_valid} · mean ${fmt(fin.mean, 3)} · std ${fmt(fin.std, 2)} · ` +
+      `p1 ${fmt(fin.p1, 2)} / p99 ${fmt(fin.p99, 2)} — lines: p1·median·p99</div>`;
+    let sh = '';
+    for (const st of stages) {
+      sh += `<div class="hist-strip">` +
+        `<span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
+        `<span>${_histSvg(st, 240, 30, false)}</span>` +
+        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}]</span></div>`;
+    }
+    stagesEl.innerHTML = sh;
+  }
+
+  // --- Update process: per-minibatch step dashboard (timeline.npz) ---
+
+  function _stepDetailHtml(tl, step) {
+    const channels = (state.manifest?.channel_names?.length
+      ? state.manifest.channel_names
+      : Object.keys(tl).filter(k => k.startsWith('critic_loss_'))
+          .map(k => k.slice(12)));
+    let html = '<div class="data-grid">';
+    html += `<div class="data-table"><h3>Actor Stats (step ${step})</h3><table>`;
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    const actorFields = [
+      ['epoch', tl.epoch_idx?.[step], 'num'],
+      ['mb', tl.mb_idx?.[step], 'num'],
+      ['actor_active', tl.actor_active?.[step], 'bool'],
+      ['kl', tl.kl?.[step], 'num'],
+      ['window_mean_kl', (tl.window_mean_kl || tl.running_mean_kl)?.[step], 'num'],
+      ['clip_frac', tl.clip_frac?.[step], 'num'],
+      ['ratio_mean', tl.ratio_mean?.[step], 'num'],
+      ['ratio_max', tl.ratio_max?.[step], 'num'],
+      ['policy_loss', tl.policy_loss?.[step], 'num'],
+      ['actor_grad', tl.actor_grad?.[step], 'num'],
+      ['dtheta_norm', tl.dtheta_norm?.[step], 'num'],
+      ['dtheta_cos_descent', tl.dtheta_cos_descent?.[step], 'num'],
+      ['adv_mean', tl.adv_mean?.[step], 'num'],
+      ['adv_std', tl.adv_std?.[step], 'num'],
+      ['adv_min', tl.adv_min?.[step], 'num'],
+      ['adv_max', tl.adv_max?.[step], 'num'],
+      ['floor_loss', tl.floor_loss?.[step], 'num'],
+      ['dual_clip_frac', tl.dual_clip_frac?.[step], 'num'],
+      ['n_ratio>2', tl.n_ratio_gt2?.[step], 'num'],
+      ['n_ratio<0.5', tl.n_ratio_lt05?.[step], 'num'],
+      ['mb_size', tl.mb_size?.[step], 'num'],
+      ['argmax_ratio bufidx', tl.argmax_ratio_bufidx?.[step], 'bufidx'],
+      ['argmin_ratio bufidx', tl.argmin_ratio_bufidx?.[step], 'bufidx'],
+    ];
+    actorFields.forEach(([label, val, type]) => {
+      if (val === undefined) return;
+      let display = val;
+      if (val === null) display = '-';
+      else if (type === 'bool') display = val ? 'YES' : 'no';
+      else if (type === 'bufidx') display =
+        `<span class="buflink" data-bi="${Math.round(val)}">${Math.round(val)}</span>`;
+      else if (type === 'num') display = fmt(val);
+      const cls = type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num');
+      html += `<tr><td>${label}</td><td class="${cls}">${display}</td></tr>`;
+    });
+    if (typeof tl.kl?.[step] === 'number' && tl.target_kl && !isNaN(tl.target_kl)) {
+      const klRatio = tl.kl[step] / tl.target_kl;
+      html += `<tr><td>kl / target_kl</td><td class="${klRatio > 1 ? 'neg' : 'num'}">${fmt(klRatio, 3)}</td></tr>`;
+    }
+    html += '</table></div>';
+
+    if (channels.length) {
+      html += `<div class="data-table"><h3>Critic Stats (step ${step})</h3><table>`;
+      html += '<tr><th>Channel</th><th>loss</th><th>grad</th></tr>';
+      channels.forEach(ch => {
+        const cl = tl[`critic_loss_${ch}`]?.[step];
+        const cg = tl[`critic_grad_${ch}`]?.[step];
+        if (cl !== undefined || cg !== undefined) {
+          html += `<tr><td>${escapeHtml(ch)}</td>`;
+          html += `<td class="num">${fmt(cl)}</td>`;
+          html += `<td class="num">${fmt(cg)}</td></tr>`;
+        }
+      });
+      html += '</table></div>';
+    }
+    html += '</div>'; // data-grid
+
+    html += '<div class="data-table" style="margin-top:16px"><h3>Early Stop Analysis</h3><table>';
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    html += `<tr><td>early_stop_step</td><td class="${tl.early_stop_step >= 0 ? 'neg' : 'num'}">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
+    html += `<tr><td>target_kl</td><td class="num">${fmt(tl.target_kl, 4)}</td></tr>`;
+    html += `<tr><td>clip_eps</td><td class="num">${fmt(tl.clip_eps, 4)}</td></tr>`;
+    const stopKLs = tl.window_mean_kl || tl.running_mean_kl;
+    if (tl.early_stop_step >= 0 && stopKLs) {
+      const stopKL = stopKLs[tl.early_stop_step];
+      html += `<tr><td>window_mean_kl at stop</td><td class="num">${fmt(stopKL)}</td></tr>`;
+      html += `<tr><td>remaining steps</td><td class="num">${tl.n_steps - tl.early_stop_step - 1}</td></tr>`;
+    }
+    html += '</table></div>';
+    return html;
+  }
+
+  async function renderDumpSteps() {
+    const el = $('steps-container');
+    if (!state.manifest?.has_timeline) {
+      el.innerHTML = '<div class="desc">timeline.npz not available for this dump</div>';
+      return;
+    }
+    if (!state.timelineData) {
+      try {
+        state.timelineData = await fetchJson(api('timeline/overview'));
+      } catch (e) {
+        el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+    }
+    const tl = state.timelineData;
+    if (!tl.available || !tl.n_steps) {
+      el.innerHTML = '<div class="desc">timeline not available</div>';
+      return;
+    }
+    const step = Math.max(0, Math.min(state.selectedStep || 0, tl.n_steps - 1));
+    state.selectedStep = step;
+
+    const ebounds = [];
+    if (tl.epoch_idx) {
+      for (let i = 1; i < tl.epoch_idx.length; i++) {
+        if (tl.epoch_idx[i] !== tl.epoch_idx[i - 1]) {
+          ebounds.push({step: i, epoch: tl.epoch_idx[i]});
+        }
+      }
+    }
+    const copts = {height: 140, currentFrame: step, epochBoundaries: ebounds,
+                   earlyStopStep: tl.early_stop_step};
+    const box = (title, series) => series.length
+      ? `<div class="chart-container"><h3>${escapeHtml(title)}</h3>` +
+        chartBox(series, copts, {key: 'dump:steps:' + title}) + '</div>'
+      : '';
+    const S = (label, key, color, extra = {}) =>
+      tl[key] ? [{label, data: tl[key], color, ...extra}] : [];
+
+    // Step selector row: scrubber + position + key-step chips
+    let html = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+    html += '<button id="ds-prev" class="render-btn">◀</button>';
+    html += `<input id="ds-slider" type="range" min="0" max="${tl.n_steps - 1}" value="${step}" style="flex:1"/>`;
+    html += '<button id="ds-next" class="render-btn">▶</button>';
+    html += `<span class="muted" style="font-size:12px;font-family:ui-monospace,monospace;white-space:nowrap">step ${step}/${tl.n_steps - 1}` +
+      (tl.epoch_idx ? ` · e${tl.epoch_idx[step]}·mb${tl.mb_idx?.[step]}` : '') + '</span>';
+    html += '</div>';
+    if (tl.key_steps && tl.key_steps.length) {
+      html += '<div class="ks-chips" style="margin-bottom:12px">';
+      tl.key_steps.forEach(s => {
+        html += `<span class="ks-chip" data-step="${s.step}" title="${escapeHtml(s.kind)} (epoch ${s.epoch}, mb ${s.mb_idx})">` +
+          `<span class="k">${escapeHtml(s.kind)}</span>s${s.step}</span>`;
+      });
+      html += '</div>';
+    }
+
+    // Featured row — the charts worth checking first
+    html += '<div class="steps-grid">';
+    {
+      const wk = tl.window_mean_kl ? 'window_mean_kl' : 'running_mean_kl';
+      const ser = S('kl', 'kl', '#4fa3ff').concat(S('window_mean_kl', wk, '#e5c07b'));
+      if (tl.target_kl && !isNaN(tl.target_kl)) {
+        ser.push({label: 'target', data: new Array(tl.n_steps).fill(tl.target_kl),
+                  color: '#e06c75', dash: 'dash'});
+      }
+      html += box('KL per minibatch', ser);
+    }
+    html += box('Ratio mean/min/max',
+      S('mean', 'ratio_mean', '#4fa3ff')
+        .concat(S('min', 'ratio_min', '#56b6c2'), S('max', 'ratio_max', '#e06c75')));
+    html += box('Actor ‖g‖ & realized Δθ',
+      S('actor_grad', 'actor_grad', '#6ec86e')
+        .concat(S('dtheta_norm', 'dtheta_norm', '#e5c07b', {axis: 'right'})));
+    html += box('Clip fraction',
+      S('clip_frac', 'clip_frac', '#e06c75')
+        .concat(S('hi (r>1+ε)', 'clip_frac_hi', '#c678dd'),
+                S('lo (r<1−ε)', 'clip_frac_lo', '#e5c07b')));
+    html += box('Policy loss', S('policy_loss', 'policy_loss', '#4fa3ff'));
+    html += '</div>';
+
+    // Expandable groups — same data, organized like the run page
+    let ghtml = '';
+    const gadv = S('adv_mean', 'adv_mean', '#4fa3ff')
+      .concat(S('adv_std', 'adv_std', '#e5c07b'),
+              S('adv_min', 'adv_min', '#56b6c2'), S('adv_max', 'adv_max', '#e06c75'));
+    const gext = S('argmax logr', 'argmax_ratio_logr', '#e06c75')
+      .concat(S('argmin logr', 'argmin_ratio_logr', '#56b6c2'));
+    const gcnt = S('n r>2', 'n_ratio_gt2', '#e06c75')
+      .concat(S('n r<0.5', 'n_ratio_lt05', '#56b6c2'));
+    const gmisc = S('floor_loss', 'floor_loss', '#e5c07b')
+      .concat(S('dual_clip_frac', 'dual_clip_frac', '#c678dd'),
+              S('dtheta_cos_descent', 'dtheta_cos_descent', '#56b6c2'));
+    const chans = Object.keys(tl).filter(k => k.startsWith('critic_loss_'))
+      .map(k => k.slice(12)).sort();
+    const gcloss = chans.map((ch, i) => ({
+      label: ch, data: tl[`critic_loss_${ch}`],
+      color: CHART_COLORS[i % CHART_COLORS.length]})).filter(s => s.data);
+    const gcgrad = chans.map((ch, i) => ({
+      label: ch, data: tl[`critic_grad_${ch}`],
+      color: CHART_COLORS[i % CHART_COLORS.length]})).filter(s => s.data);
+    const extra =
+      box('ADV stats', gadv) + box('Extreme ratio (log)', gext) +
+      box('Extreme ratio count', gcnt) + box('Misc', gmisc) +
+      box('Critic loss (per channel)', gcloss) +
+      box('Critic grad (per channel)', gcgrad);
+    if (extra) {
+      ghtml = `<details class="metrics-expand"><summary>展开更多 · 辅助图</summary>` +
+        `<div class="steps-grid">${extra}</div></details>`;
+    }
+    html += ghtml;
+
+    html += `<div class="steps-detail">${_stepDetailHtml(tl, step)}</div>`;
+    el.innerHTML = html;
+
+    mountCharts(el, i => { state.selectedStep = i; renderDumpSteps(); });
+    const sl = $('ds-slider');
+    if (sl) sl.addEventListener('input', e => {
+      state.selectedStep = parseInt(e.target.value);
+      renderDumpSteps();
+    });
+    const pv = $('ds-prev'), nx = $('ds-next');
+    if (pv) pv.onclick = () => {
+      state.selectedStep = Math.max(0, step - 1); renderDumpSteps();
+    };
+    if (nx) nx.onclick = () => {
+      state.selectedStep = Math.min(tl.n_steps - 1, step + 1); renderDumpSteps();
+    };
+    el.querySelectorAll('.ks-chip').forEach(c =>
+      c.addEventListener('click', () => {
+        state.selectedStep = parseInt(c.dataset.step);
+        renderDumpSteps();
+      }));
+    el.querySelectorAll('.buflink').forEach(bl =>
+      bl.addEventListener('click', () => jumpToBuffer(parseInt(bl.dataset.bi))));
   }
 
   function _gsHeatmap(gs) {
@@ -3223,15 +3437,15 @@
   }
 
   async function renderGradsigCard() {
-    const card = $('gradsig-card');
     let gs;
     try { gs = await fetchJson(api('gradsig')); }
     catch (e) { gs = null; }
     if (!gs || !gs.available) {
-      card.style.display = 'none';
+      $('gs-heat').innerHTML = '<div class="desc">gradsig.npz not captured</div>';
+      $('gs-stats').innerHTML = '';
+      $('gs-top').innerHTML = '';
       return;
     }
-    card.style.display = '';
     state.gradSig = gs;
 
     let st = '';
@@ -4442,84 +4656,9 @@
       }
     });
 
-    // Step detail tables
+    // Step detail tables — shared with the dump home steps section
     const step = state.selectedStep;
-    html += '<div class="data-grid">';
-
-    // Actor Stats
-    html += '<div class="data-table"><h3>Actor Stats (step ' + step + ')</h3><table>';
-    html += '<tr><th>Field</th><th>Value</th></tr>';
-    const actorFields = [
-      ['epoch', tl.epoch_idx?.[step], 'num'],
-      ['mb', tl.mb_idx?.[step], 'num'],
-      ['actor_active', tl.actor_active?.[step], 'bool'],
-      ['kl', tl.kl?.[step], 'num'],
-      ['window_mean_kl', (tl.window_mean_kl || tl.running_mean_kl)?.[step], 'num'],
-      ['clip_frac', tl.clip_frac?.[step], 'num'],
-      ['ratio_mean', tl.ratio_mean?.[step], 'num'],
-      ['ratio_max', tl.ratio_max?.[step], 'num'],
-      ['policy_loss', tl.policy_loss?.[step], 'num'],
-      ['actor_grad', tl.actor_grad?.[step], 'num'],
-      ['dtheta_norm', tl.dtheta_norm?.[step], 'num'],
-      ['dtheta_cos_descent', tl.dtheta_cos_descent?.[step], 'num'],
-      ['adv_mean', tl.adv_mean?.[step], 'num'],
-      ['adv_std', tl.adv_std?.[step], 'num'],
-      ['adv_min', tl.adv_min?.[step], 'num'],
-      ['adv_max', tl.adv_max?.[step], 'num'],
-      ['floor_loss', tl.floor_loss?.[step], 'num'],
-      ['dual_clip_frac', tl.dual_clip_frac?.[step], 'num'],
-      ['n_ratio>2', tl.n_ratio_gt2?.[step], 'num'],
-      ['n_ratio<0.5', tl.n_ratio_lt05?.[step], 'num'],
-      ['mb_size', tl.mb_size?.[step], 'num'],
-      ['argmax_ratio bufidx', tl.argmax_ratio_bufidx?.[step], 'bufidx'],
-      ['argmin_ratio bufidx', tl.argmin_ratio_bufidx?.[step], 'bufidx'],
-    ];
-    actorFields.forEach(([label, val, type]) => {
-      if (val === undefined) return;
-      let display = val;
-      if (val === null) display = '-';
-      else if (type === 'bool') display = val ? 'YES' : 'no';
-      else if (type === 'bufidx') display =
-        `<span class="buflink" data-bi="${Math.round(val)}">${Math.round(val)}</span>`;
-      else if (type === 'num') display = fmt(val);
-      const cls = type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num');
-      html += `<tr><td>${label}</td><td class="${cls}">${display}</td></tr>`;
-    });
-    // KL vs target
-    if (typeof tl.kl?.[step] === 'number' && tl.target_kl && !isNaN(tl.target_kl)) {
-      const klRatio = tl.kl[step] / tl.target_kl;
-      html += `<tr><td>kl / target_kl</td><td class="${klRatio > 1 ? 'neg' : 'num'}">${fmt(klRatio, 3)}</td></tr>`;
-    }
-    html += '</table></div>';
-
-    // Critic Stats
-    html += '<div class="data-table"><h3>Critic Stats (step ' + step + ')</h3><table>';
-    html += '<tr><th>Channel</th><th>loss</th><th>grad</th></tr>';
-    channels.forEach(ch => {
-      const cl = tl[`critic_loss_${ch}`]?.[step];
-      const cg = tl[`critic_grad_${ch}`]?.[step];
-      if (cl !== undefined || cg !== undefined) {
-        html += `<tr><td>${escapeHtml(ch)}</td>`;
-        html += `<td class="num">${fmt(cl)}</td>`;
-        html += `<td class="num">${fmt(cg)}</td></tr>`;
-      }
-    });
-    html += '</table></div>';
-    html += '</div>'; // data-grid
-
-    // Early Stop Analysis
-    html += '<div class="data-table" style="margin-top:16px"><h3>Early Stop Analysis</h3><table>';
-    html += '<tr><th>Field</th><th>Value</th></tr>';
-    html += `<tr><td>early_stop_step</td><td class="${tl.early_stop_step >= 0 ? 'neg' : 'num'}">${tl.early_stop_step >= 0 ? tl.early_stop_step : 'no early stop'}</td></tr>`;
-    html += `<tr><td>target_kl</td><td class="num">${fmt(tl.target_kl, 4)}</td></tr>`;
-    html += `<tr><td>clip_eps</td><td class="num">${fmt(tl.clip_eps, 4)}</td></tr>`;
-    const stopKLs = tl.window_mean_kl || tl.running_mean_kl;
-    if (tl.early_stop_step >= 0 && stopKLs) {
-      const stopKL = stopKLs[tl.early_stop_step];
-      html += `<tr><td>window_mean_kl at stop</td><td class="num">${fmt(stopKL)}</td></tr>`;
-      html += `<tr><td>remaining steps</td><td class="num">${tl.n_steps - tl.early_stop_step - 1}</td></tr>`;
-    }
-    html += '</table></div>';
+    html += _stepDetailHtml(tl, step);
 
     el.innerHTML = html;
     updateContextBar();

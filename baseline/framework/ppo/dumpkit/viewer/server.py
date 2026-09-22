@@ -1475,6 +1475,9 @@ class ViewerAPI:
                 return 200, gs
             elif endpoint == "inspect":
                 return 200, _da.inspect_dump(self.data)
+            elif endpoint == "adv" and len(parts) >= 3 \
+                    and parts[2] == "hist":
+                return 200, _da.adv_histograms(self.data)
             elif endpoint == "trace" and len(parts) >= 3:
                 return _da.trace_frame(self.data, int(parts[2]))
             return 404, {"error": f"unknown endpoint: {endpoint}"}

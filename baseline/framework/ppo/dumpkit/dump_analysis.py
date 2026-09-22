@@ -836,3 +836,67 @@ def trace_frame(dd, buffer_idx: int) -> Tuple[int, Dict[str, Any]]:
             f"episode/{loc['episode']}/frame/{loc['env_frame']}")
     out["links"] = links
     return 200, out
+
+
+# ---------------------------------------------------------------------------
+# ADV distribution histograms — the transformation chain as chart data
+# ---------------------------------------------------------------------------
+
+def _hist(arr: np.ndarray, bins: int = 64) -> Optional[Dict[str, Any]]:
+    """Histogram + compact stats for one float array (own x-range)."""
+    a = np.asarray(arr, dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return None
+    counts, edges = np.histogram(a, bins=bins)
+    out = _summ(a)
+    out["edges"] = [float(e) for e in edges]
+    out["counts"] = [int(c) for c in counts]
+    return out
+
+
+def adv_histograms(dd, bins: int = 64) -> Dict[str, Any]:
+    """Per-stage ADV distributions, ordered along the transformation chain:
+
+        gae.advs_all (raw) → normed_advs[ch] → aw_normed[ch]
+        → combined_adv_raw (pre-winsorize) → combined_adv (final)
+
+    Each stage gets its own bin edges — shapes are meant to be compared,
+    not x-ranges (normalization deliberately changes scale).
+    """
+    stages: List[Tuple[str, np.ndarray]] = []
+    gae = dd.gae_npz
+    if gae is not None and "advs_all" in gae:
+        d = _dict_item(gae["advs_all"])
+        if isinstance(d, dict):
+            for ch, a in d.items():
+                stages.append((f"raw adv:{ch}", np.asarray(a)))
+        else:
+            stages.append(("raw adv", np.asarray(d)))
+    cb = dd.combine_npz
+    if cb is not None:
+        for dict_key, label in (("normed_advs", "normed"),
+                                ("aw_normed", "actor-weighted")):
+            d = cb.get(dict_key)
+            if d is None:
+                continue
+            d = _dict_item(d)
+            if isinstance(d, dict):
+                for ch, a in d.items():
+                    stages.append((f"{label}:{ch}", np.asarray(a)))
+        if "combined_adv_raw" in cb:
+            stages.append(("combined (pre-winsorize)",
+                           np.asarray(cb["combined_adv_raw"])))
+        if "combined_adv" in cb:
+            stages.append(("combined (final)",
+                           np.asarray(cb["combined_adv"])))
+
+    out: Dict[str, Any] = {"available": False, "stages": []}
+    for label, arr in stages:
+        h = _hist(arr, bins)
+        if h is not None:
+            out["stages"].append({"label": label, **h})
+    out["available"] = bool(out["stages"])
+    if not out["available"]:
+        out["reason"] = "no ADV arrays in gae.npz/combine.npz"
+    return out

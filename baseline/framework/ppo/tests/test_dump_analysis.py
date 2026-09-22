@@ -350,6 +350,25 @@ def test_trace_unsampled_and_out_of_range():
         print("test_trace_unsampled_and_out_of_range: PASS")
 
 
+def test_adv_histograms():
+    with tempfile.TemporaryDirectory() as td:
+        dd = _dd(_make_dump(Path(td)))
+        r = da.adv_histograms(dd, bins=16)
+        assert r["available"]
+        labels = [s["label"] for s in r["stages"]]
+        # chain order: raw gae → normed per-channel → pre-winsorize → final
+        assert labels[0] == "raw adv:c0"
+        assert "normed:c0" in labels
+        assert labels[-2] == "combined (pre-winsorize)"
+        assert labels[-1] == "combined (final)"
+        fin = r["stages"][-1]
+        assert len(fin["counts"]) == 16 and len(fin["edges"]) == 17
+        assert sum(fin["counts"]) == fin["n_valid"]
+        assert fin["min"] == -2.0 and fin["max"] == 2.0
+        json.dumps(r, allow_nan=False)
+        print("test_adv_histograms: PASS")
+
+
 if __name__ == "__main__":
     test_inspect_overview()
     test_inspect_degraded_no_gradsig()
@@ -360,4 +379,5 @@ if __name__ == "__main__":
     test_samples_partial_and_missing()
     test_trace_full_join()
     test_trace_unsampled_and_out_of_range()
+    test_adv_histograms()
     print("\nAll test_dump_analysis tests passed.")

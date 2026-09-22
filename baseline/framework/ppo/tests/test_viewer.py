@@ -1594,6 +1594,12 @@ def test_dump_analysis_endpoints():
         st, body = api.handle("/api/trace/99")
         assert st == 404
 
+        st, body = api.handle("/api/adv/hist")
+        assert st == 200 and body["available"]
+        labels = [s["label"] for s in body["stages"]]
+        assert labels[0] == "raw adv:c0" and labels[-1] == "combined (final)"
+        assert len(body["stages"][-1]["counts"]) == 64
+
         # Missing gradsig → samples 404, inspect still fine.
         dd2 = DumpData(_make_dump(Path(d) / "nog", with_gradsig=False))
         api2 = ViewerAPI(dd2)

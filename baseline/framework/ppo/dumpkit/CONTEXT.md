@@ -128,6 +128,7 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     trajectory/<i>/epoch/<e>/overview|frame/<f> | trajectory/<i>/epoch_compare
     timeline/overview | timeline/step/<s>
     inspect                                   # dump_analysis.inspect_dump
+    adv/hist                                  # ADV 变换链各阶段直方图
     gradsig/samples?sort&sign&limit&offset&group_by=episode
     trace/<buffer_idx>                        # 跨阶段单帧溯源
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
