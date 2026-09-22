@@ -194,6 +194,24 @@ def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
     return out
 
 
+def single_support_mask(
+    contact_l: np.ndarray,
+    contact_r: np.ndarray,
+    hold: int = CONTACT_HOLD_STEPS,
+) -> np.ndarray:
+    """Debounced single-support mask: True where exactly one foot is down.
+
+    Uses the same ``_hold_filter`` view as ``compute_foot_weights`` so the
+    mask is consistent with the gait schedule.  Unlike the state machine,
+    FLIGHT is *not* inherited — both-feet-off frames are False (a hop is
+    not a commanded swing and must not be exempt from e.g. a standing-
+    potential actor-weight gate).
+    """
+    cl = _hold_filter(np.asarray(contact_l, dtype=bool), hold)
+    cr = _hold_filter(np.asarray(contact_r, dtype=bool), hold)
+    return cl ^ cr
+
+
 def compute_foot_weights(
     contact_l: np.ndarray,
     contact_r: np.ndarray,

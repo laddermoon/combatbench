@@ -7,7 +7,7 @@ Based on ``exp_standup_step.py``, replacing the sparse ``r_cross`` channel
 (CrossSupportBalanceRewarder) with two dense per-foot height channels
 using the v2 stepping state machine::
 
-    r_potential  = 0.01 × φ(t),             γ=0.99, aw = 3.0 (fixed)
+    r_potential  = 0.01 × φ(t),             γ=0.99, aw = 3.0 × (1 - φ_trail²·ss)
     r_left_foot  = clip(h_left,  0, 0.05),   γ=0.90, aw = state machine × φ²
     r_right_foot = clip(h_right, 0, 0.05),   γ=0.90, aw = state machine × φ²
 
@@ -45,6 +45,7 @@ from baseline.framework.rollout import extract_per_step_field
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     detect_step_cycles,
+    single_support_mask,
 )
 
 from .base import CombatExperimentPPOBase
@@ -103,8 +104,16 @@ class Step(CombatExperimentPPOBase):
     step_phi_gate: float = 0.9
     step_min_air_frames: int = 3
 
-    # --- r_potential actor weight (fixed) ---
+    # --- r_potential actor weight ---
+    # Fixed 3.0 in general, but muted to ~0 on commanded single-support
+    # frames while standing: the u50 dump showed the potential channel
+    # vetoes every real lift (combined adv -0.18/-0.73 on h>3cm frames —
+    # the transient φ dip is punished 30× harder than the foot channel
+    # rewards the lift).  The gate uses a trailing-max of φ so a brief
+    # swing dip stays exempt while a real fall (sustained low φ) snaps
+    # protection back within ~0.75 s.
     r_potential_actor_weight: float = 3.0
+    stand_gate_window: int = 15
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -251,10 +260,27 @@ class Step(CombatExperimentPPOBase):
         # --- No early termination: robot can fall and get back up ---
         is_terminated = False
 
-        # --- Actor weights: r_potential fixed, foot channels gated by φ² ---
+        # --- Actor weights: r_potential swing-exempt, foot channels φ² ---
         phi_sq = (phi_arr ** 2).astype(np.float32)
+        if contact_l is not None and contact_r is not None:
+            ss_mask = single_support_mask(
+                np.asarray(contact_l[:T_full], dtype=bool),
+                np.asarray(contact_r[:T_full], dtype=bool),
+            ).astype(np.float32)
+        else:
+            ss_mask = np.zeros(T_full, dtype=np.float32)
+        # Trailing-max φ over ~0.75 s: a commanded swing's φ dip stays
+        # exempt; a real fall keeps φ low and restores aw=3.0.
+        pad = np.pad(phi_arr, (self.stand_gate_window - 1, 0), mode="edge")
+        phi_trail = np.lib.stride_tricks.sliding_window_view(
+            pad, self.stand_gate_window,
+        ).max(axis=1).astype(np.float32)
+        aw_potential = (
+            self.r_potential_actor_weight
+            * (1.0 - (phi_trail ** 2) * ss_mask)
+        ).astype(np.float32)
         actor_weights = {
-            "r_potential": np.full(T_full, self.r_potential_actor_weight, dtype=np.float32),
+            "r_potential": aw_potential,
             "r_left_foot": (w_left * phi_sq),
             "r_right_foot": (w_right * phi_sq),
         }

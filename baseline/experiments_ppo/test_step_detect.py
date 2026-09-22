@@ -15,6 +15,7 @@ import numpy as np
 from baseline.humanoid21.end2end.stepping_state_machine import (
     compute_foot_weights,
     detect_step_cycles,
+    single_support_mask,
 )
 
 
@@ -184,3 +185,29 @@ def test_phase_c_no_height_data_stays_press():
     cl, cr, _, _ = _long_swing(T, np.zeros(20, dtype=np.float32))
     wl, wr = compute_foot_weights(cl, cr, T)
     assert np.all(wl[20:30] < 0)
+
+
+# ----------------------------------------------------------------------
+# single_support_mask — debounced exactly-one-foot-down mask used to
+# exempt commanded swings from the r_potential actor-weight gate.
+# ----------------------------------------------------------------------
+
+def test_single_support_mask_basic():
+    T = 40
+    cl = np.ones(T, dtype=bool); cr = np.ones(T, dtype=bool)
+    cl[10:20] = False                       # left airborne → SUPPORT_R
+    m = single_support_mask(cl, cr)
+    assert m.dtype == bool
+    assert np.all(m[10:20])                 # single-support frames True
+    assert not np.any(m[:10])               # DOUBLE → False
+    assert not np.any(m[20:])
+
+
+def test_single_support_mask_excludes_flight_and_jitter():
+    T = 40
+    cl = np.ones(T, dtype=bool); cr = np.ones(T, dtype=bool)
+    cl[5:13] = False; cr[5:13] = False      # FLIGHT — not single support
+    cl[25:27] = False                       # 2-frame jitter (< debounce)
+    m = single_support_mask(cl, cr)
+    assert not np.any(m[5:13])              # hop is not a commanded swing
+    assert not np.any(m[25:27])             # jitter absorbed by debounce
