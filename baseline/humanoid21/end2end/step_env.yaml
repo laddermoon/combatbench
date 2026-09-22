@@ -8,8 +8,8 @@
 #
 # Reward channels (in experiment):
 #   r_fall       = 0.01 × φ(t),              aw = 3.0 (fixed)
-#   r_left_foot  = clip(h_left, -0.1, 0.1),   aw = state machine × φ²
-#   r_right_foot = clip(h_right, -0.1, 0.1),  aw = state machine × φ²
+#   r_left_foot  = clip(h_left, 0, 0.05),     aw = state machine × φ²
+#   r_right_foot = clip(h_right, 0, 0.05),    aw = state machine × φ²
 
 parameters:
   initial_distance:

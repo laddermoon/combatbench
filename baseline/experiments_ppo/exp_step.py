@@ -8,8 +8,8 @@ Based on ``exp_standup_step.py``, replacing the sparse ``r_cross`` channel
 using the v2 stepping state machine::
 
     r_potential  = 0.01 × φ(t),             γ=0.99, aw = 3.0 (fixed)
-    r_left_foot  = clip(h_left, -0.1, 0.1),  γ=0.90, aw = state machine × φ²
-    r_right_foot = clip(h_right, -0.1, 0.1), γ=0.90, aw = state machine × φ²
+    r_left_foot  = clip(h_left,  0, 0.05),   γ=0.90, aw = state machine × φ²
+    r_right_foot = clip(h_right, 0, 0.05),   γ=0.90, aw = state machine × φ²
 
 The reward carries only *physical fact* (foot height); the *intent* (which
 foot should rise / descend right now) is carried by ``actor_weight`` via
@@ -69,6 +69,12 @@ class Step(CombatExperimentPPOBase):
 
     # --- Foot height reward saturation (overrides stepping_state_machine default) ---
     foot_height_clip: float = 0.05
+
+    # --- Eval stepping detection ---
+    # A foot "steps" when it leaves the ground (contact False) AND rises
+    # above step_lift_threshold within a standing frame (φ ≥ step_phi_gate).
+    step_lift_threshold: float = 0.05
+    step_phi_gate: float = 0.9
 
     # --- r_potential actor weight (fixed) ---
     r_potential_actor_weight: float = 3.0
@@ -178,14 +184,14 @@ class Step(CombatExperimentPPOBase):
         if h_left is not None:
             r_left_foot = np.clip(
                 np.asarray(h_left[:T_full], dtype=np.float32),
-                -self.foot_height_clip, self.foot_height_clip,
+                0.0, self.foot_height_clip,
             )
         else:
             r_left_foot = np.zeros(T_full, dtype=np.float32)
         if h_right is not None:
             r_right_foot = np.clip(
                 np.asarray(h_right[:T_full], dtype=np.float32),
-                -self.foot_height_clip, self.foot_height_clip,
+                0.0, self.foot_height_clip,
             )
         else:
             r_right_foot = np.zeros(T_full, dtype=np.float32)
@@ -261,6 +267,7 @@ class Step(CombatExperimentPPOBase):
         max_pots = []
         final_pots = []
         success_count = 0
+        step_success_count = 0  # agents that demonstrated stepping
         n_agents = 0
 
         for ep in episodes:
@@ -268,7 +275,7 @@ class Step(CombatExperimentPPOBase):
             if T == 0:
                 continue
 
-            for agent_id, _, phi_key in self._AGENT_OBS:
+            for agent_id, foot_key, phi_key in self._AGENT_OBS:
                 n_agents += 1
                 phi = extract_per_step_field(
                     ep.observer_outputs, phi_key, "potential", T,
@@ -284,10 +291,14 @@ class Step(CombatExperimentPPOBase):
                 if mx >= 0.9:
                     success_count += 1
 
+                if self._check_stepping(ep, foot_key, phi_key, T):
+                    step_success_count += 1
+
         n = max(len(max_pots), 1)
         mean_max_pot = sum(max_pots) / n if max_pots else 0.0
         mean_final_pot = sum(final_pots) / n if final_pots else 0.0
         success_rate = success_count / n
+        step_success_rate = step_success_count / n if n_agents else 0.0
 
         self._success_rate = success_rate
 
@@ -310,8 +321,58 @@ class Step(CombatExperimentPPOBase):
                 "max_pot": round(mean_max_pot, 3),
                 "final_pot": round(mean_final_pot, 3),
                 "success": round(success_rate, 3),
+                "step": round(step_success_rate, 3),
             },
         }
+
+    @staticmethod
+    def _check_stepping(
+        episode, foot_key: str, phi_key: str, T: int,
+    ) -> bool:
+        """Check if the agent demonstrated stepping in this episode.
+
+        Stepping = within standing frames (φ ≥ step_phi_gate), BOTH feet
+        left the ground (contact False) while lifted above
+        ``step_lift_threshold``.  The contact requirement guards against
+        a tilted-but-grounded foot inflating the midpoint height.
+        """
+        phi = extract_per_step_field(
+            episode.observer_outputs, phi_key, "potential", T,
+        )
+        h_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_left_foot", T,
+        )
+        h_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "h_right_foot", T,
+        )
+        c_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "left_foot_contact", T,
+        )
+        c_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "right_foot_contact", T,
+        )
+        if phi is None or h_left is None or h_right is None \
+                or c_left is None or c_right is None:
+            return False
+
+        phi = np.asarray(phi[:T], dtype=np.float32)
+        h_left = np.asarray(h_left[:T], dtype=np.float32)
+        h_right = np.asarray(h_right[:T], dtype=np.float32)
+        standing = phi >= Step.step_phi_gate
+        if not standing.any():
+            return False
+
+        left_lift = (
+            standing
+            & (~np.asarray(c_left[:T], dtype=bool))
+            & (h_left >= Step.step_lift_threshold)
+        ).any()
+        right_lift = (
+            standing
+            & (~np.asarray(c_right[:T], dtype=bool))
+            & (h_right >= Step.step_lift_threshold)
+        ).any()
+        return bool(left_lift and right_lift)
 
     def state(self) -> dict:
         return {
