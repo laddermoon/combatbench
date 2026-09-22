@@ -155,6 +155,21 @@ A1（epochs 8）或 A2（lr 5e-4）+ B1（eps256/ue8）+ C1（floor 排程）。
 
 ## 进展日志
 
+### 2026-09-22 初筛第一轮开跑
+
+三臂 seed=42（与 verify_resume_A 同 seed 对照），GPU 0/1/4，
+`--dump-at 200,300,400` 抓逃逸瞬态：
+
+| run | GPU | 臂 | override（日志已确认生效） |
+|---|---|---|---|
+| `ue8_s42` | 0 | A1 | `update_epochs=8` |
+| `eps256_s42` | 1 | B1 | `episodes_per_update=256, update_epochs=8`（数据减半、单帧消费 8 次，优化步数与基线持平） |
+| `floorsched_s42` | 4 | C1 | `uncertainty_floor=0.25@250`（u250 前与基线逐位一致） |
+
+早期观测：ue8 的 asteps=400（8×50）正常；eps256 每 update 102K 帧
+（asteps=200=8×25mb）。u1 均有初始 KL 尖峰早停（基线同样现象，
+非异常）。杀掉线：u500 未逃逸即停。预期逃逸点若有效 ~u200-300。
+
 ### 2026-09-22 任务启动
 
 - 基线/边界/指标/协议确立（见上）。
