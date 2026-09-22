@@ -105,3 +105,30 @@ debug.py render <dump_dir> --episode N                 # 逐帧渲染看步态
 **历史包袱说明**：更早的尝试（v1 cross_support、v2/v3 硬相位切换、以及
 exp_step 的老 run）背景不完整，不作为决策依据；一切以当前 run 的
 metric + dump 证据为准。
+
+### 2026-09-22（晚）— 第一次"查"出死锁 + 双重干预
+
+**run 174438 跑到 u335 的终局数据**：success=1.0 全程保持，但 swings
+从 3.6 衰减到 ~0.8/episode，hmax 停在 3-12mm，cycles≈0.01 —— **335
+个 update 的停滞确认不是"需要时间"，是策略在收敛到"不抬脚"**。
+
+**u50 dump 死锁证据链**：
+- +W 抬脚意图帧 128k/141k，仅 0.3%/0.8% 在 15 帧内真抬起 >3cm
+- 真抬起的帧 adv=+0.07（87% 正，信用回传正常），但 65% 落在 -W
+  窗口（Phase C 催落地 / DOUBLE-settle）→ aw×adv≈0，成功不被强化
+- 没抬的 +W 帧 adv≈0（critic 正确预测"不会发生"）→ 无 surprise 无梯度
+- `explore_factor` 全零 —— per-frame ef 设施存在但 exp_step 未驱动
+
+**干预（commit 9ef3bec）**：
+1. **Phase C 门控**：`w_swing = -W if h≥0.05 else +W` —— 没抬够的脚
+   永远收到 +W，迟到的抬脚不再被惩罚（4 个新单测，共 11 个全过）。
+2. **站立帧 ef=+0.631（σ×2），低位帧 ef=-0.631（σ×0.5）** —— obs[45]
+   为 h_torso，与 v3 同参数；保护 standup 技能同时集中放大站立期探索。
+
+**新 run**：`train_step_ppo_20260922_222700`（pid 410677, GPU2）
+- u1 验证：ef-verify OK（ef∈{-0.631,+0.631}），eff_std=0.471 vs
+  std=0.311（比值 1.52 符合相位占比），脚通道 adv_std=0.14
+  （旧 run 同期 ~0.09→0.01 衰减），foot reward_mean ~0.02（5×提升）
+- 预约 dump：u50/u150/u300
+- 判据：`swings` 应回升 >3，`hmax` 应爬向 0.02+；`success` 必须
+  维持 ~1.0（σ×2 有拖垮站立的风险，盯紧）
