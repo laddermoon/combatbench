@@ -132,3 +132,22 @@ metric + dump 证据为准。
 - 预约 dump：u50/u150/u300
 - 判据：`swings` 应回升 >3，`hmax` 应爬向 0.02+；`success` 必须
   维持 ~1.0（σ×2 有拖垮站立的风险，盯紧）
+
+**run 222700 u50/u70 结果（第二次"查"）**：
+- 干预生效：`swings` 2.5→13.5/ep（5×），+W→抬脚转化率 0.5%→8-11%
+  （15×），站立帧 h p99 20→31mm，success=1.0 守住。
+- **新落差**：rollout（ef 噪声）p99=31mm vs eval（确定性 policy）
+  hmax=8mm —— 能力在分布尾部，均值还没吸收。
+- **lr 过保守证据**：kl=0.006 vs target 0.03（只用 20% trust region）；
+  warm-start ckpt 本来就是 lr=3e-4 训的，3e-5 是 v1 继承的过度谨慎。
+
+**干预 #2（无代码改动，`--param` 启动补丁）**：lr 3e-5→**1e-4**。
+新 run `train_step_ppo_20260922_230600`（pid 2047479, GPU2），
+u1-u2 确认 `actor_lr=1e-4`、`param_overrides` 已记录、kl=0.011-0.014
+（仍 <0.03，健康区间）、ef/foot adv_std 正常。
+
+**判据（u50 dump 复查）**：
+- `hmax`（eval 确定性）应从 8mm 明显爬升 → 均值在吸收尾部行为
+- rollout 转化率应 >10% 继续走高；`success` 维持 ≥0.99
+- 若 hmax 仍平：下一个嫌疑是 FOOT_WEIGHT 幅值或脚通道在
+  combined_adv 中的占比被 r_potential 尖峰稀释
