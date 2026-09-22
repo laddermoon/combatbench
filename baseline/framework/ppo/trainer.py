@@ -1335,12 +1335,6 @@ def ppo_update(
     all_action_grad_pol: List[float] = []
     all_action_grad_floor: List[float] = []
     actor_params = list(actor.parameters())
-    # Gradient diagnostics for log_std (collected on mb_idx==0 only)
-    all_pol_logstd_grads: List[float] = []
-    all_floor_logstd_grads: List[float] = []
-    all_pol_logstd_grad_sign: List[float] = []
-    all_floor_logstd_grad_sign: List[float] = []
-    all_floor_active_frac: List[float] = []
 
     # B1: Critic updates are decoupled from actor KL early-stop.
     # When the actor hits target_kl, we stop updating the actor but
@@ -1590,41 +1584,6 @@ def ppo_update(
                 )
                 floor_loss = uncertainty_coef * (gap ** 2 * fw_mb).mean()
                 loss = loss + floor_loss
-
-                # --- Gradient diagnostics for exploration parameters ---
-                # P1-7: Moved from ``hasattr(actor, "log_std")`` sniffing
-                # into a policy-owned hook.  The trainer no longer knows
-                # about ``log_std`` — it calls
-                # ``actor.exploration_grad_diagnostics()`` and the policy
-                # decides what to report (Gaussian log_std, mixture
-                # temperature, flow scale, etc.) or returns None.
-                # The hasattr check is for test actors that don't
-                # inherit TrainablePolicy; real actors get the default
-                # ``return None`` from TrainablePolicy.
-                # Must stay inside this branch: floor_loss is only
-                # differentiable here (else it is a constant zero
-                # tensor) and fw_mb is only defined here.
-                if mb_idx == 0 and hasattr(actor, "exploration_grad_diagnostics"):
-                    expl_diag = actor.exploration_grad_diagnostics(
-                        policy_loss, floor_loss,
-                    )
-                    if expl_diag is not None:
-                        all_pol_logstd_grads.append(expl_diag["pol_abs"])
-                        all_floor_logstd_grads.append(expl_diag["floor_abs"])
-                        all_pol_logstd_grad_sign.append(expl_diag["pol_sign"])
-                        all_floor_logstd_grad_sign.append(expl_diag["floor_sign"])
-                        # floor_active_frac: fraction of *floor-weighted*
-                        # frames where uncertainty is below the floor.
-                        # Only counts frames with fw > 0.
-                        fw_active = fw_mb > 0
-                        if fw_active.any():
-                            frac = float(
-                                (actor_eval.uncertainty[fw_active]
-                                 < uncertainty_floor).float().mean().item()
-                            )
-                        else:
-                            frac = 0.0
-                        all_floor_active_frac.append(frac)
             floor_losses.append(float(floor_loss))
 
             if mb_idx == 0:
@@ -1972,23 +1931,6 @@ def ppo_update(
 
         if epoch_frames_data:
             dump_callback("epoch_frames", {"epochs": epoch_frames_data})
-
-    # P1-7: Gradient diagnostics for exploration parameters (printed as
-    # diagnostics lines).  The policy owns the diagnostics via
-    # exploration_grad_diagnostics(); the trainer just aggregates and
-    # prints.  Format unchanged from pre-P1-7 so log parsers don't break.
-    if all_pol_logstd_grads:
-        pol_g = float(np.mean(all_pol_logstd_grads))
-        floor_g = float(np.mean(all_floor_logstd_grads))
-        pol_sign = float(np.mean(all_pol_logstd_grad_sign))
-        floor_sign = float(np.mean(all_floor_logstd_grad_sign))
-        floor_frac = float(np.mean(all_floor_active_frac))
-        diagnostics.append(
-            f"  [GradDiag] log_std grad: pol_abs={pol_g:.6f} "
-            f"floor_abs={floor_g:.6f} ratio={floor_g/(pol_g+1e-12):.2f}x | "
-            f"pol_sign={pol_sign:+.6f} floor_sign={floor_sign:+.6f} | "
-            f"floor_active={floor_frac:.3f}"
-        )
 
     critic_loss_mean: Dict[str, float] = {
         key: float(np.mean(val_losses[key])) if val_losses[key] else 0.0
