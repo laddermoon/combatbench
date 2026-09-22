@@ -121,6 +121,14 @@ POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
 POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 ```
 
+`/compare/<runA>,<runB>,...`（runs 模式 SPA 页，无专属 API）——多 run
+对比页：与 run 首页相同的六分区仪表板，每条线=一个 run（固定调色板、
+跨图同色），x 轴=绝对 update（有数据就画、缺段自然空缺，不对齐长度）。
+顶部 chips 增删 run（URL 同步可分享）+ 摘要表（succ≥0.5/0.9 的 update、
+last10 eval、早停率、耗时）。单图 ≤12 线叠加（run 色+key 虚线），>12 线
+按 run 拆并排面板（恢复 channel 配色）。入口：runs 索引 checkbox /
+run 首页 "compare →" / 页内 chips。
+
 ## Gotchas
 
 - `metrics`/`summary`/`catalog`/`runs` **完全离线**；只有 `dump`（需训练中的 run）、
@@ -144,6 +152,9 @@ POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
   这也是它不属于常规遥测的原因。
 - `param_overrides` 是行级元数据（dict），经 `_flatten_update` 透传、
   只在 Update Detail 显示，不进图、不在 `stats.*` 下。
+- compare 页的 `buildMetricsCharts(null, cmp)` 与单 run 共用一套
+  catalog 解析；cmp 序列带 `run/sub/subColor/subGroup` 字段供标签与
+  拆分逻辑使用——改 emit/emitSpec 时两种模式都要过一遍。
 
 ## 文档索引
 

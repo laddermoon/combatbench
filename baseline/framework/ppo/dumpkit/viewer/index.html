@@ -386,6 +386,21 @@
     position: absolute; top: 16px; right: 24px;
     color: var(--text); font-size: 28px; cursor: pointer;
   }
+  /* Compare page */
+  .cmp-open-link { font-size: 12px; font-weight: 400; color: var(--accent); cursor: pointer; text-decoration: none; margin-left: 8px; }
+  .cmp-open-link:hover { text-decoration: underline; }
+  .cmp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .cmp-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 12px; padding: 4px 10px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .cmp-chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .cmp-chip .x { cursor: pointer; color: var(--muted); margin-left: 2px; }
+  .cmp-chip .x:hover { color: var(--red); }
+  .cmp-chip.cmp-err { border-color: var(--red); }
+  .cmp-add { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .cmp-check { cursor: pointer; }
+  table.cmp-summary { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.cmp-summary th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+  table.cmp-summary td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; font-family: ui-monospace, monospace; }
+  table.cmp-summary td .rundot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -413,6 +428,7 @@
             <option value="100">100 / page</option>
           </select>
           <button id="runs-refresh">Refresh</button>
+          <button id="runs-cmp-btn" disabled>Compare</button>
           <span class="muted" id="runs-count"></span>
         </div>
         <div id="runs-table-container"><div class="loading">loading...</div></div>
@@ -507,7 +523,7 @@
           <div id="update-detail-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
-          <h2>Training Metrics</h2>
+          <h2>Training Metrics <a class="cmp-open-link" id="run-cmp-link">compare →</a></h2>
           <div class="desc">Per-update stats parsed from train.log (__RAW_STATS__). The marker shows the selected update.</div>
           <div id="metrics-container"><div class="loading">loading...</div></div>
         </div>
@@ -591,6 +607,23 @@
     <div class="page" id="page-dataflow">
       <div class="df-flow" id="dataflow-content"></div>
     </div>
+
+    <!-- Compare page (runs-root mode): same sectioned dashboard as a
+         single run, each chart overlays all selected runs -->
+    <div class="page" id="page-compare">
+      <div class="card">
+        <div class="cmp-chips" id="cmp-chips"></div>
+      </div>
+      <div class="card">
+        <h2>Summary</h2>
+        <div id="cmp-summary"></div>
+      </div>
+      <div class="card">
+        <h2>Training Metrics</h2>
+        <div class="desc">Each line is one run (same color everywhere). Click a chart to set a shared update cursor.</div>
+        <div id="cmp-metrics-container"><div class="loading">loading...</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- Floating image widget (global, shared by Episode & Trajectory pages) -->
@@ -638,6 +671,11 @@
     runDumps: null,
     runMetrics: null,
     selectedUpdateIdx: null,   // index into runMetrics array
+    // Compare page (runs-root mode)
+    cmpRuns: [],           // ordered run names from /compare/a,b
+    cmpData: {},           // name -> {entries, byUpdate} | {error}
+    cmpCursor: null,       // shared x-cursor: index into the update axis
+    cmpSel: new Set(),     // checkbox selection on the runs index
     _chartSpecs: {},           // deferred-chart registry (chartbox id → spec), reset per page build
     _chartSeq: 0,              // chart id counter, reset per page build for stable keys
     _chartHidden: {},          // legend toggle state, persists across re-renders (keyed by page/chart key)
@@ -687,6 +725,7 @@
     traj: $('page-traj'),
     timeline: $('page-timeline'),
     dataflow: $('page-dataflow'),
+    compare: $('page-compare'),
   };
 
   // --- URL helpers ---
@@ -728,6 +767,8 @@
       case 'timeline': return `${r}${d}/timeline`;
       case 'dataflow': return `${r}${d}/dataflow`;
       case 'videos': return `${r}/videos`;
+      case 'compare': return '/compare/' +
+        state.cmpRuns.map(encodeURIComponent).join(',');
       default: return r + d + '/';
     }
   }
@@ -891,7 +932,8 @@
   }
 
   function navigate(page, push = true) {
-    if (page === 'runs' || page === 'experiments' || page === 'experiment') {
+    if (page === 'runs' || page === 'experiments' || page === 'experiment'
+        || page === 'compare') {
       // Leave the selected run — back to a runs-root-level page.
       state.runName = null;
       state.dumpName = null;
@@ -910,6 +952,7 @@
     else if (page === 'timeline') renderTimeline();
     else if (page === 'dataflow') renderDataflow();
     else if (page === 'videos') renderVideos();
+    else if (page === 'compare') renderCompare();
   }
 
   // --- Fetch helper ---
@@ -1341,6 +1384,19 @@
         renderExperiment();
         return;
       }
+      const cm = path.match(/^\/compare\/([^/?]+)\/?$/);
+      if (cm) {
+        state.runName = null;
+        state.dumpName = null;
+        state.expName = null;
+        state.mode = 'runs';
+        state.cmpRuns = cm[1].split(',').map(decodeURIComponent).filter(Boolean);
+        state.cmpCursor = null;
+        $('header-meta').textContent = `compare · ${state.cmpRuns.length} runs`;
+        showPage('compare');
+        renderCompare();
+        return;
+      }
       const rm = path.match(/^\/run\/([^/?]+)(\/.*)?$/);
       if (!rm) {
         state.runName = null;
@@ -1463,7 +1519,7 @@
       ['update', 'update'], ['success', 'eval'], [null, 'dumps'],
       [null, 'videos'], ['created', 'created'], ['activity', 'activity'],
     ];
-    let html = '<table class="runs-table"><thead><tr>';
+    let html = '<table class="runs-table"><thead><tr><th></th>';
     cols.forEach(([key, label]) => {
       const arrow = (key && q.sort === key)
         ? (q.order === 'asc' ? '▲' : '▼') : '';
@@ -1472,7 +1528,7 @@
     });
     html += '</tr></thead><tbody>';
     if (!data.runs.length) {
-      html += '<tr><td colspan="9" style="color:var(--muted);' +
+      html += '<tr><td colspan="10" style="color:var(--muted);' +
         'padding:24px;text-align:center">no runs found</td></tr>';
     }
     data.runs.forEach(r => {
@@ -1481,6 +1537,9 @@
       const pct = (r.update != null && r.max_updates)
         ? Math.min(100, 100 * r.update / r.max_updates) : 0;
       html += `<tr class="run-row" data-name="${escapeHtml(r.name)}">`;
+      html += `<td><input type="checkbox" class="cmp-check" ` +
+        `data-name="${escapeHtml(r.name)}"` +
+        `${state.cmpSel.has(r.name) ? ' checked' : ''}></td>`;
       html += `<td><span class="st-badge st-${r.status}">${r.status}</span></td>`;
       html += `<td class="run-name">${escapeHtml(r.name)}</td>`;
       html += `<td>${escapeHtml((r.experiment || '?') + (r.algo ? ' · ' + r.algo : ''))}</td>`;
@@ -1511,6 +1570,14 @@
         const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
         history.pushState({}, '', p);
         applyRoute(p);
+      });
+    });
+    $('runs-table-container').querySelectorAll('.cmp-check').forEach(cb => {
+      cb.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', () => {
+        if (cb.checked) state.cmpSel.add(cb.dataset.name);
+        else state.cmpSel.delete(cb.dataset.name);
+        updateCmpBtn();
       });
     });
     $('runs-table-container').querySelectorAll('.vid-link').forEach(a => {
@@ -1555,6 +1622,26 @@
     renderRunsIndex();
   });
   $('runs-refresh').addEventListener('click', () => renderRunsIndex());
+  // Compare entry points: index checkboxes → compare page; run page
+  // "compare →" link → compare page seeded with the current run.
+  function updateCmpBtn() {
+    const b = $('runs-cmp-btn');
+    const n = state.cmpSel.size;
+    b.textContent = n ? `Compare (${n})` : 'Compare';
+    b.disabled = n === 0;
+  }
+  $('runs-cmp-btn').addEventListener('click', () => {
+    if (!state.cmpSel.size) return;
+    state.cmpRuns = [...state.cmpSel];
+    state.cmpCursor = null;
+    navigate('compare');
+  });
+  $('run-cmp-link').addEventListener('click', () => {
+    if (!state.runName) return;
+    state.cmpRuns = [state.runName];
+    state.cmpCursor = null;
+    navigate('compare');
+  });
 
   // --- Experiments pages (runs-root mode) ---
   async function renderExperiments() {
@@ -2282,14 +2369,28 @@
   // dump-only now, its data lives inside dumps/uNNNNN/gradsig.npz
   // (run-level gradsig/*.npz remains readable for old runs).
 
-  function buildMetricsCharts(metrics) {
-    // Collect all chartable keys — META_KEYS are row-level metadata
-    // (e.g. param_overrides dict), never metrics.
+  function buildMetricsCharts(metrics, cmp) {
+    // cmp = null → single-run mode (metrics = flat entries, x = position).
+    // cmp = {runs: [{name, color, byUpdate: Map}], updates: [...]} →
+    // compare mode: each chart overlays one line per run on the shared
+    // update axis; missing updates/keys are NaN (skipped by makeChart).
     const META_KEYS = new Set(['update', 'param_overrides']);
     const allKeys = new Set();
-    metrics.forEach(u => Object.keys(u).forEach(k => { if (!META_KEYS.has(k)) allKeys.add(k); }));
+    if (cmp) {
+      cmp.runs.forEach(r => r.byUpdate.forEach(e =>
+        Object.keys(e).forEach(k => { if (!META_KEYS.has(k)) allKeys.add(k); })));
+    } else {
+      metrics.forEach(u => Object.keys(u).forEach(k => { if (!META_KEYS.has(k)) allKeys.add(k); }));
+    }
     const seriesFor = key => metrics.map(u => (typeof u[key] === 'number' ? u[key] : NaN));
-    const cur = state.selectedUpdateIdx;  // update cursor drawn on every chart
+    const cmpSeriesFor = cmp
+      ? (r, key) => cmp.updates.map(u => {
+          const e = r.byUpdate.get(u);
+          const v = e ? e[key] : null;
+          return typeof v === 'number' ? v : NaN;
+        })
+      : null;
+    const cur = cmp ? state.cmpCursor : state.selectedUpdateIdx;  // update cursor
 
     // Catalog from /api/catalog (metric_catalog.py — shared with agents).
     const cat = state.catalog ||
@@ -2318,11 +2419,35 @@
     // one-line subtitle (what question it answers) and an expandable
     // "如何读这张图" guide (what to watch / next step / limits).
     const emitChart = (title, series, opts = {}) => {
+      if (cmp && !opts.inPanel) {
+        // Label rule: chart with >1 distinct sub-label → "run·sub",
+        // otherwise just the run name.
+        const subs = new Set(series.map(s => s.sub));
+        series.forEach(s => {
+          s.label = subs.size > 1
+            ? `${cmp.runs[s.run].name}·${s.sub}` : cmp.runs[s.run].name;
+        });
+        // Crowded overlay (>12 lines) → one panel per run; panels keep
+        // the single-run colour coding (subColor) and short labels.
+        // 12 keeps core curated charts overlaid (3 keys × 3 runs = 9).
+        if (series.length > 12) {
+          cmp.runs.forEach((r, ri) => {
+            const sub = series.filter(s => s.run === ri).map(s =>
+              ({...s, label: s.sub, color: s.subColor || s.color,
+                group: s.subGroup || s.group}));
+            if (sub.length)
+              emitChart(`${title} · ${r.name}`, sub,
+                {...opts, inPanel: true,
+                 legendGroups: opts.splitLegendGroups || opts.legendGroups});
+          });
+          return;
+        }
+      }
       const box = chartBox(series, {
           height: opts.height || 160, currentFrame: cur,
-          vMarkers: opts.vMarkers,
+          vMarkers: cmp ? undefined : opts.vMarkers,
         },
-        {key: 'run:' + title,
+        {key: (cmp ? 'cmp:' : 'run:') + title,
          legendGroups: opts.legendGroups, legendDims: opts.legendDims});
       const sub = opts.subtitle
         ? `<div class="chart-sub">${escapeHtml(opts.subtitle)}</div>` : '';
@@ -2332,30 +2457,55 @@
           `<div class="chart-guide-body">${escapeHtml(gd)}</div></details>` : '';
       html += `<div class="metric-chart"><h3>${escapeHtml(title)}</h3>${sub}${guide}${box}</div>`;
     };
-    const emit = (title, keys, opts = {}) => {
-      const series = keys.map((k, i) => ({
-        label: labelFor(k), data: seriesFor(k),
-        color: opts.color || CHART_COLORS[i % CHART_COLORS.length],
+    // One logical key → series list.  Single mode: one series (catalog
+    // colour).  Compare mode: one series per run — colour = run,
+    // dash = key index; `sub`/`subColor` feed the per-run split panels.
+    const keySeries = (k, ki, extra = {}) => {
+      const color = extra.color || CHART_COLORS[ki % CHART_COLORS.length];
+      if (!cmp) {
+        const s = {label: labelFor(k), data: seriesFor(k), color};
+        if (extra.axis) s.axis = extra.axis;
+        return [s];
+      }
+      return cmp.runs.map((r, ri) => ({
+        run: ri, sub: labelFor(k), subColor: color,
+        data: cmpSeriesFor(r, k), color: r.color,
+        dash: ki === 0 ? null :
+          FALLBACK_DASHES[(ki - 1) % FALLBACK_DASHES.length],
+        axis: extra.axis,
       }));
+    };
+    const emit = (title, keys, opts = {}) => {
+      const series = [];
+      keys.forEach((k, i) =>
+        series.push(...keySeries(k, i, {color: opts.color})));
       // Optional right-axis keys (scale mismatch, e.g. epochs vs KL)
       if (opts.right) {
         opts.right.forEach((k, i) => {
           if (!allKeys.has(k)) return;
           used.add(k);
-          series.push({
-            label: labelFor(k), data: seriesFor(k),
-            color: CHART_COLORS[(keys.length + i) % CHART_COLORS.length],
-            axis: 'right',
-          });
+          series.push(...keySeries(k, keys.length + i, {axis: 'right'}));
         });
       }
       // spike_keys: event markers — only nonzero values count (e.g.
-      // early_stop_kl_mean is 0 when not triggered).  Drawn as red
-      // vertical markers plus a legend entry whose data is NaN outside
-      // trigger points.
+      // early_stop_kl_mean is 0 when not triggered).  Single mode:
+      // red vertical markers + legend series.  Compare mode: one
+      // sparse dotted series per run (verticals would be unreadable).
       (opts.spikeKeys || []).forEach(k => {
         if (!allKeys.has(k)) return;
         used.add(k);
+        if (cmp) {
+          cmp.runs.forEach((r, ri) => {
+            series.push({run: ri, sub: labelFor(k),
+              data: cmp.updates.map(u => {
+                const e = r.byUpdate.get(u);
+                const v = e ? e[k] : null;
+                return (typeof v === 'number' && v > 0) ? v : NaN;
+              }),
+              color: r.color, dash: 'dot', width: 1});
+          });
+          return;
+        }
         const idxs = [], data = [];
         metrics.forEach((u, i) => {
           const v = u[k];
@@ -2439,12 +2589,23 @@
             const key = `pc.${m}.${ch}`;
             if (!allKeys.has(key)) return;
             used.add(key);
-            series.push({
-              label: `${ch}·${m}`, data: seriesFor(key),
-              color: CHART_COLORS[ci % CHART_COLORS.length],
-              dash, width: dash === null ? 2.2 : 1.2,
-              group: ch, dim: m,
-            });
+            if (cmp) {
+              cmp.runs.forEach((r, ri) => series.push({
+                run: ri, sub: `${ch}·${m}`, label: r.name,
+                subColor: CHART_COLORS[ci % CHART_COLORS.length],
+                subGroup: ch,
+                data: cmpSeriesFor(r, key), color: r.color,
+                dash, width: dash === null ? 2.2 : 1.2,
+                group: r.name, dim: m,
+              }));
+            } else {
+              series.push({
+                label: `${ch}·${m}`, data: seriesFor(key),
+                color: CHART_COLORS[ci % CHART_COLORS.length],
+                dash, width: dash === null ? 2.2 : 1.2,
+                group: ch, dim: m,
+              });
+            }
           });
         });
         if (!series.length) return false;
@@ -2453,7 +2614,10 @@
         emitChart(spec.title || `${spec.pcm} (per channel)`, series, {
           subtitle: spec.subtitle,
           guide: spec.guide || spec.hint,
-          legendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
+          legendGroups: cmp
+            ? cmp.runs.map(r => ({name: r.name, color: r.color}))
+            : chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
+          splitLegendGroups: chList.map((ch, ci) => ({name: ch, color: CHART_COLORS[ci % CHART_COLORS.length]})),
           legendDims: spec.metrics.map((m, mi) => ({name: m, dash: dashFor(m, mi)})),
         });
         return true;
@@ -2551,6 +2715,152 @@
     }
 
     return html;
+  }
+
+  // --- Compare page (runs-root mode) ---
+  // /compare/runA,runB — same sectioned dashboard as a single run,
+  // each chart overlays all selected runs on the shared update axis.
+  const CMP_COLORS = [...CHART_COLORS, '#56b6c2', '#be8c66'];
+
+  function cmpRunObjs() {
+    return state.cmpRuns.map((name, i) => {
+      const d = state.cmpData[name] || {};
+      return {name, color: CMP_COLORS[i % CMP_COLORS.length],
+              entries: d.entries || [], byUpdate: d.byUpdate || new Map(),
+              error: d.error};
+    }).filter(r => !r.error);
+  }
+
+  async function renderCompare() {
+    if (state.rootMode !== 'runs' || state.currentPage !== 'compare') return;
+    Object.keys(state.cmpData).forEach(n => {
+      if (!state.cmpRuns.includes(n)) delete state.cmpData[n];
+    });
+    await Promise.all(state.cmpRuns.map(async name => {
+      if (state.cmpData[name]) return;
+      try {
+        const entries = await fetchJson(
+          `/run/${encodeURIComponent(name)}/api/run/metrics`);
+        state.cmpData[name] = {
+          entries,
+          byUpdate: new Map(entries.map(e => [e.update, e])),
+        };
+      } catch (e) {
+        state.cmpData[name] = {error: String(e.message || e)};
+      }
+    }));
+    renderCmpChips();
+    renderCmpSummary();
+    renderCmpCharts();
+  }
+
+  function pushCompareUrl() {
+    $('header-meta').textContent = `compare · ${state.cmpRuns.length} runs`;
+    history.pushState({}, '', urlForCurrent());
+  }
+
+  function renderCmpChips() {
+    const el = $('cmp-chips');
+    let html = '';
+    state.cmpRuns.forEach((name, i) => {
+      const err = state.cmpData[name] && state.cmpData[name].error;
+      html += `<span class="cmp-chip${err ? ' cmp-err' : ''}">` +
+        `<i style="background:${CMP_COLORS[i % CMP_COLORS.length]}"></i>` +
+        `${escapeHtml(name)}` +
+        `<span class="x" data-name="${escapeHtml(name)}" title="remove">✕</span>` +
+        `</span>`;
+    });
+    html += '<select class="cmp-add" id="cmp-add">' +
+      '<option value="">+ add run</option></select>';
+    el.innerHTML = html;
+    el.querySelectorAll('.cmp-chip .x').forEach(x => {
+      x.addEventListener('click', () => {
+        state.cmpRuns = state.cmpRuns.filter(n => n !== x.dataset.name);
+        pushCompareUrl();
+        renderCompare();
+      });
+    });
+    const sel = $('cmp-add');
+    fetchJson('/api/runs?size=500&sort=name&order=asc').then(d => {
+      d.runs.forEach(r => {
+        if (state.cmpRuns.includes(r.name)) return;
+        const o = document.createElement('option');
+        o.value = r.name;
+        o.textContent = r.name;
+        sel.appendChild(o);
+      });
+    }).catch(() => {});
+    sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      state.cmpRuns.push(sel.value);
+      pushCompareUrl();
+      renderCompare();
+    });
+  }
+
+  function renderCmpSummary() {
+    const el = $('cmp-summary');
+    const runs = cmpRunObjs();
+    if (!runs.length) {
+      el.innerHTML = '<div class="loading">no run data</div>';
+      return;
+    }
+    const num = v => typeof v === 'number' && !isNaN(v);
+    const pts = (r, k) => r.entries.filter(e => num(e[k]))
+      .map(e => [e.update, e[k]]);
+    const firstGe = (p, th) => {
+      const h = p.find(([, v]) => v >= th);
+      return h ? 'u' + h[0] : '—';
+    };
+    const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null;
+    let html = '<table class="cmp-summary"><thead><tr>' +
+      '<th>run</th><th>start</th><th>succ≥0.5</th><th>succ≥0.9</th>' +
+      '<th>last10 succ</th><th>last10 final_pot</th><th>early-stop</th>' +
+      '<th>mean steps</th><th>total time</th></tr></thead><tbody>';
+    runs.forEach(r => {
+      const succ = pts(r, 'eval.success');
+      const fp = pts(r, 'eval.final_pot');
+      const steps = r.entries.map(e => e['stats.actor_steps']).filter(num);
+      const times = r.entries.map(e => e['time.total']).filter(num);
+      const esRate = steps.length
+        ? steps.filter(s => s < 200).length / steps.length : null;
+      const m10s = mean(succ.slice(-10).map(p => p[1]));
+      const m10f = mean(fp.slice(-10).map(p => p[1]));
+      html += `<tr><td><span class="rundot" ` +
+        `style="background:${r.color}"></span>${escapeHtml(r.name)}</td>` +
+        `<td>u${r.entries.length ? r.entries[0].update : '—'}</td>` +
+        `<td>${firstGe(succ, 0.5)}</td><td>${firstGe(succ, 0.9)}</td>` +
+        `<td>${m10s == null ? '—' : fmt(m10s, 3)}</td>` +
+        `<td>${m10f == null ? '—' : fmt(m10f, 3)}</td>` +
+        `<td>${esRate == null ? '—' : (esRate * 100).toFixed(1) + '%'}</td>` +
+        `<td>${steps.length ? Math.round(mean(steps)) : '—'}</td>` +
+        `<td>${times.length ? Math.round(mean(times) * times.length / 60) + 'min' : '—'}</td>` +
+        `</tr>`;
+    });
+    el.innerHTML = html + '</tbody></table>';
+  }
+
+  function renderCmpCharts() {
+    const el = $('cmp-metrics-container');
+    const runs = cmpRunObjs();
+    if (!runs.length) {
+      el.innerHTML = '<div class="loading">no run data — add runs above</div>';
+      return;
+    }
+    const updates = new Set();
+    runs.forEach(r => r.byUpdate.forEach((e, u) => updates.add(u)));
+    const cmp = {
+      runs,
+      updates: [...updates].sort((a, b) => a - b),
+    };
+    if (state.cmpCursor == null) state.cmpCursor = cmp.updates.length - 1;
+    el.innerHTML = buildMetricsCharts(null, cmp);
+    // Click → shared update cursor (currentFrame marker + value labels
+    // on every chart).
+    mountCharts(el, i => {
+      state.cmpCursor = i;
+      renderCmpCharts();
+    });
   }
 
   // --- Episode render trigger ---
