@@ -151,3 +151,41 @@ u1-u2 确认 `actor_lr=1e-4`、`param_overrides` 已记录、kl=0.011-0.014
 - rollout 转化率应 >10% 继续走高；`success` 维持 ≥0.99
 - 若 hmax 仍平：下一个嫌疑是 FOOT_WEIGHT 幅值或脚通道在
   combined_adv 中的占比被 r_potential 尖峰稀释
+
+### 2026-09-23 — 根因确认：r_potential 否决了抬脚（第三次"查"）
+
+**run 230600（lr=1e-4）u50/u55 数据**：rollout 统计与上一版几乎一致
+（lr 不影响采样），但暴露了两个趋势：
+- `foot reward_mean` 逐 update **下降**（L 0.0225→0.0095）——尾部在变瘦
+- eval hmax 停在 7mm —— 均值没有吸收尾部
+
+**根因（u50 dump 逐帧分解 combined_adv）**：
+
+| lifted 帧 | potcontrib(aw=3.0) | footcontrib | combined |
+|---|---|---|---|
+| h=3-5cm | **-0.82** | +0.025 | **-0.18** |
+| h>5cm | **-2.62** | -0.06 | **-0.73** |
+
+抬脚 → φ 瞬时下跌（critic 无法预料随机抬脚何时发生）→ 负 adv ×
+aw=3.0 → **站立通道以 ~30 倍力量否决每次真抬脚**。策略学的是
+"抬脚对站立有害" —— 这解释了所有历史路线（v3 的 r_fall aw=1.0 是
+同构否决，只是弱 3 倍）为何全部停滞。
+
+**干预 #3（commit e55460c）— 摆动豁免门**：
+```
+aw_pot = 3.0 × (1 − φ_trail² × ss_mask)
+```
+- `ss_mask` = 去抖单支撑（新 helper `single_support_mask`，FLIGHT
+  不继承——跳跃不是被命令的摆动，不豁免）
+- `φ_trail` = φ 的 15 帧滑动 max：摆动的瞬时 φ dip 保持豁免；真摔倒
+  （φ 持续低）0.75s 内保护恢复
+- 倒地 φ=0 → aw_pot=3.0 全保护；站立+DOUBLE → 3.0；站立+单支撑 → ≈0
+
+**新 run**：`train_step_ppo_20260923_000000`（pid 3394695, GPU2,
+lr=1e-4）。u1-u2 确认 `aw_pot mean=2.08`（站立单支撑帧豁免生效）、
+min=0、ef-verify OK、kl=0.011-0.013 健康。
+
+**判据**：lifted 帧的 combined_adv 应由负转正；`foot reward_mean`
+应止跌回升；eval `hmax` 应脱离 8mm。若 combined 仍负 →
+查 ss_mask/φ_trail 实现细节；若转正但 hmax 不涨 →
+探索瓶颈仍在，考虑继续放大站立 σ 或 FOOT_WEIGHT。
