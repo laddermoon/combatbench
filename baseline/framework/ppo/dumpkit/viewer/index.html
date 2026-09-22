@@ -47,9 +47,14 @@
   .page.active { display: block; }
 
   /* Home page */
-  .home-layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px; height: 100%; }
-  .home-left { overflow: auto; }
-  .home-right { overflow: auto; }
+  .home-layout { padding: 16px; height: 100%; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+  .ana-row { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
+  @media (max-width: 1200px) { .ana-row { grid-template-columns: 1fr; } }
+  .gs-body { display: flex; gap: 18px; align-items: flex-start; margin-top: 8px; }
+  .gs-side { display: flex; flex-direction: column; gap: 6px; min-width: 210px; flex-shrink: 0; }
+  .gs-side .stat { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .gs-side .stat .label { color: var(--muted); }
+  .gs-side .stat .value { color: var(--text); }
 
   /* Run page */
   .run-layout { padding: 16px; height: 100%; overflow: auto; }
@@ -559,44 +564,43 @@
       </div>
     </div>
 
-    <!-- Home page -->
+    <!-- Home page — analysis overview -->
     <div class="page" id="page-home">
       <div class="home-layout">
-        <div class="home-left">
-          <div class="card">
-            <h2>Episode List</h2>
-            <div class="desc">Select an episode to view its frame-by-frame data and associated trajectories.</div>
-            <div id="episode-list-container"></div>
-          </div>
+        <div class="card" id="overview-card">
+          <h2>Overview <span class="gs-scope" id="ov-meta"></span></h2>
+          <div class="caps" id="ov-caps"></div>
+          <div class="timeline-summary" id="ov-stats"></div>
+          <div class="ov-flags" id="ov-flags"></div>
         </div>
-        <div class="home-right">
-          <div class="card" id="overview-card">
-            <h2>Overview</h2>
-            <div class="desc" id="ov-meta"></div>
-            <div class="caps" id="ov-caps"></div>
-            <div class="stats" id="ov-stats"></div>
-            <div class="ov-flags" id="ov-flags"></div>
-          </div>
+        <div class="ana-row">
           <div class="card" id="gradsig-card">
             <h2>Gradient Signal <span class="gs-scope">sampled ≤2000 frames · θ_old</span></h2>
             <div class="desc">Per-frame gradient diagnostics against the full-buffer aggregate G. proj&lt;0 opposes G — not "bad data".</div>
-            <div class="stats" id="gs-stats"></div>
-            <div class="gs-heat" id="gs-heat"></div>
+            <div class="gs-body">
+              <div class="gs-heat" id="gs-heat"></div>
+              <div class="gs-side" id="gs-stats"></div>
+            </div>
             <div id="gs-top"></div>
           </div>
-          <div class="card dataflow-card" id="dataflow-entry">
-            <h2>Data Flow</h2>
-            <div class="desc">The logical pipeline of one update — where every number comes from.</div>
-            <div class="df-mini">
-              <span>Episode</span><i>▸</i><span>Trajectory</span><i>▸</i><span>Targets</span><i>▸</i><span>Update</span><i>▸</i><span>Run</span>
-            </div>
-          </div>
           <div class="card timeline-card" id="timeline-entry">
-            <h2>Training Timeline</h2>
-            <div class="desc">Global view of the entire update's training dynamics (KL, loss, gradients per minibatch).</div>
+            <h2>Update Process</h2>
+            <div class="desc">Per-minibatch record of the update — click a key step or the card to open the full timeline.</div>
             <div class="stats" id="timeline-stats"></div>
             <div class="timeline-thumb" id="timeline-thumb"></div>
             <div class="ks-chips" id="timeline-keysteps"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Episode List</h2>
+          <div class="desc">Select an episode to view its frame-by-frame data and associated trajectories.</div>
+          <div id="episode-list-container"></div>
+        </div>
+        <div class="card dataflow-card" id="dataflow-entry">
+          <h2>Data Flow</h2>
+          <div class="desc">The logical pipeline of one update — where every number comes from.</div>
+          <div class="df-mini">
+            <span>Episode</span><i>▸</i><span>Trajectory</span><i>▸</i><span>Targets</span><i>▸</i><span>Update</span><i>▸</i><span>Run</span>
           </div>
         </div>
       </div>
@@ -3098,6 +3102,9 @@
   function _stat(label, value, cls = '') {
     return `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
   }
+  function _kpi(label, value, cls = '') {
+    return `<div class="summary-stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+  }
   function _pct(v, d = 1) {
     return (v === null || v === undefined) ? '-' : (v * 100).toFixed(d) + '%';
   }
@@ -3126,31 +3133,31 @@
     let st = '';
     const a = ins.adv && ins.adv.combined_adv;
     if (a) {
-      st += _stat('ADV |max|', fmt(Math.max(Math.abs(a.min ?? 0), Math.abs(a.max ?? 0)), 2));
-      st += _stat('ADV p1/p99', `${fmt(a.p1, 2)} / ${fmt(a.p99, 2)}`);
-      st += _stat('ADV frac−', _pct(ins.adv.frac_neg));
+      st += _kpi('ADV |max|', fmt(Math.max(Math.abs(a.min ?? 0), Math.abs(a.max ?? 0)), 2));
+      st += _kpi('ADV p1/p99', `${fmt(a.p1, 2)} / ${fmt(a.p99, 2)}`);
+      st += _kpi('ADV frac−', _pct(ins.adv.frac_neg));
       if (ins.adv.winsorize_clip_frac) {
-        st += _stat('winsorized', _pct(ins.adv.winsorize_clip_frac), 'warn');
+        st += _kpi('winsorized', _pct(ins.adv.winsorize_clip_frac), 'warn');
       }
     }
     const g = ins.gradsig;
     if (g) {
-      st += _stat('‖G‖', fmt(g.gnorm, 3));
-      st += _stat('coherence', fmt(g.coherence, 3),
+      st += _kpi('‖G‖', fmt(g.gnorm, 3));
+      st += _kpi('coherence', fmt(g.coherence, 3),
         g.coherence !== null && g.coherence < 0.05 ? 'warn' : '');
-      st += _stat('proj frac−', _pct(g.frac_neg));
-      st += _stat('sampled', `${g.n_valid ?? '?'}/${g.n_sampled ?? '?'}`);
+      st += _kpi('proj frac−', _pct(g.frac_neg));
+      st += _kpi('sampled', `${g.n_valid ?? '?'}/${g.n_sampled ?? '?'}`);
     }
     const u = ins.update;
     if (u) {
-      st += _stat('KL mean/max', `${fmt(u.kl_mean, 3)} / ${fmt(u.kl_max, 3)}`);
-      st += _stat('actor ‖g‖', fmt(u.grad_norm_actor_mean, 2));
+      st += _kpi('KL mean/max', `${fmt(u.kl_mean, 3)} / ${fmt(u.kl_max, 3)}`);
+      st += _kpi('actor ‖g‖', fmt(u.grad_norm_actor_mean, 2));
     }
     const t = ins.timeline;
     if (t) {
-      st += _stat('steps', `${t.actor_steps_done ?? '?'}/${t.n_steps ?? '?'}`);
+      st += _kpi('steps', `${t.actor_steps_done ?? '?'}/${t.n_steps ?? '?'}`);
       if (t.early_stop_step !== null && t.early_stop_step >= 0) {
-        st += _stat('early stop', `step ${t.early_stop_step}`, 'warn');
+        st += _kpi('early stop', `step ${t.early_stop_step}`, 'warn');
       }
     }
     $('ov-stats').innerHTML = st || '<div class="desc">no summary data</div>';
@@ -3187,7 +3194,7 @@
     const hist = gs.hist, ce = gs.cos_edges, ne = gs.norm_edges;
     if (!hist || !hist.length) return '';
     const nR = hist.length, nC = hist[0].length;
-    const W = 460, H = nR * 16 + 30;
+    const W = 560, H = nR * 17 + 30;
     const cw = (W - 46) / nC, ch = (H - 30) / nR;
     const max = Math.max(1, ...hist.flat());
     let s = `<svg width="${W}" height="${H}">`;
