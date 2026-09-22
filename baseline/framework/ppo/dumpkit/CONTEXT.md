@@ -98,6 +98,16 @@ debug.py delta <dump_dir> --episode 0 --gens 3
 
 # —— 交互界面（给人看）
 debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
+
+# —— 分析一个已捕获的 dump（dump_analysis.py，与 HTTP 端点同一实现）
+debug.py inspect  <dump>                    # 总览：能力矩阵+各阶段摘要+事实flags
+debug.py samples  <dump> --sort neg_proj --limit 20 [--sign neg]
+                                            [--group-by episode]   # 梯度样本表
+debug.py trace    <dump> --buffer-index N   # 一帧贯穿 buffer→GAE→combine
+                                            #   →gradsig→epoch→timeline
+                  [--frame ep0007:robot_a:123]
+debug.py timeline <dump> [--step N | --key-steps]
+#   <dump> = dump 目录路径，或 <run>:u<N> 简写（--runs-root 下解析）
 ```
 
 ## HTTP API（viewer 运行时等价物）
@@ -117,6 +127,9 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     trajectory/<i> | trajectory/<i>/frame/<f>
     trajectory/<i>/epoch/<e>/overview|frame/<f> | trajectory/<i>/epoch_compare
     timeline/overview | timeline/step/<s>
+    inspect                                   # dump_analysis.inspect_dump
+    gradsig/samples?sort&sign&limit&offset&group_by=episode
+    trace/<buffer_idx>                        # 跨阶段单帧溯源
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
 POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 ```
@@ -152,6 +165,13 @@ run 首页 "compare →" / 页内 chips。
   这也是它不属于常规遥测的原因。
 - `param_overrides` 是行级元数据（dict），经 `_flatten_update` 透传、
   只在 Update Detail 显示，不进图、不在 `stats.*` 下。
+- `dump_analysis.py` 是 dump 分析的**唯一计算源**：HTTP 端点、前端、
+  CLI 都调它。语义红线（写进响应 meta）：gradsig 是 ≤2000 帧 θ_old
+  抽样、proj<0=反向而非"坏样本"、dtheta_* 是 Adam 后的实际位移而非
+  预更新梯度方向、缺失字段显式缺席不填 0、frame_id 为 flat:* 的帧
+  无 episode 映射（`mapped:false`）。timeline overview 现已透传全部
+  已采字段（dtheta_*/adv_*/argmax|min_ratio_bufidx/dual_clip_frac/
+  floor_loss/mb_size/n_ratio_*），另派生 `key_steps` 快查索引。
 - compare 页的 `buildMetricsCharts(null, cmp)` 与单 run 共用一套
   catalog 解析；cmp 序列带 `run/sub/subColor/subGroup` 字段供标签与
   拆分逻辑使用——改 emit/emitSpec 时两种模式都要过一遍。

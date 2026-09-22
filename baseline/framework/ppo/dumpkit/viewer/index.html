@@ -177,6 +177,28 @@
   .df-mini { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
   .df-mini span { font-size: 11px; color: var(--accent); background: rgba(79,163,255,0.08); border: 1px solid rgba(79,163,255,0.25); padding: 2px 8px; border-radius: 10px; }
   .df-mini i { color: var(--muted); font-style: normal; font-size: 11px; }
+  /* Dump analysis home cards */
+  .caps { display: flex; gap: 5px; flex-wrap: wrap; margin: 8px 0; }
+  .cap { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border); color: var(--muted); opacity: 0.5; }
+  .cap.on { color: #6ec86e; border-color: rgba(110,200,110,0.4); opacity: 1; }
+  .cap.partial { color: #e5c07b; border-color: rgba(229,192,123,0.4); opacity: 1; }
+  .ov-flags { margin-top: 8px; }
+  .ov-flag { font-size: 12px; padding: 6px 9px; border-left: 2px solid var(--accent); background: rgba(79,163,255,0.06); margin-bottom: 4px; cursor: pointer; border-radius: 0 4px 4px 0; }
+  .ov-flag:hover { background: rgba(79,163,255,0.14); }
+  .ov-flag .fk { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-right: 6px; }
+  .gs-scope { font-size: 11px; color: var(--muted); font-weight: normal; }
+  .gs-heat { margin: 10px 0 4px; }
+  .gs-heat svg { display: block; }
+  .gs-axis { font-size: 10px; fill: var(--muted); font-family: ui-monospace, monospace; }
+  .gs-ctl { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; font-size: 11px; color: var(--muted); }
+  .gs-ctl select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; padding: 2px 4px; }
+  .ks-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .ks-chip { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text); background: var(--panel-alt); }
+  .ks-chip:hover { border-color: var(--accent); }
+  .ks-chip .k { color: var(--muted); margin-right: 4px; }
+  .gs-table tr[data-bi] { cursor: pointer; }
+  .gs-table tr[data-bi]:hover td { color: var(--accent); }
+  .buflink { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
   /* Data Flow page */
   .df-flow { max-width: 880px; margin: 0 auto; padding-bottom: 60px; }
   .df-stage { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; }
@@ -548,6 +570,20 @@
           </div>
         </div>
         <div class="home-right">
+          <div class="card" id="overview-card">
+            <h2>Overview</h2>
+            <div class="desc" id="ov-meta"></div>
+            <div class="caps" id="ov-caps"></div>
+            <div class="stats" id="ov-stats"></div>
+            <div class="ov-flags" id="ov-flags"></div>
+          </div>
+          <div class="card" id="gradsig-card">
+            <h2>Gradient Signal <span class="gs-scope">sampled ≤2000 frames · θ_old</span></h2>
+            <div class="desc">Per-frame gradient diagnostics against the full-buffer aggregate G. proj&lt;0 opposes G — not "bad data".</div>
+            <div class="stats" id="gs-stats"></div>
+            <div class="gs-heat" id="gs-heat"></div>
+            <div id="gs-top"></div>
+          </div>
           <div class="card dataflow-card" id="dataflow-entry">
             <h2>Data Flow</h2>
             <div class="desc">The logical pipeline of one update — where every number comes from.</div>
@@ -560,6 +596,7 @@
             <div class="desc">Global view of the entire update's training dynamics (KL, loss, gradients per minibatch).</div>
             <div class="stats" id="timeline-stats"></div>
             <div class="timeline-thumb" id="timeline-thumb"></div>
+            <div class="ks-chips" id="timeline-keysteps"></div>
           </div>
         </div>
       </div>
@@ -3000,6 +3037,8 @@
     });
     refreshRenderStatus();
 
+    renderDumpOverview();
+    renderGradsigCard();
     renderTimelineStats();
     $('timeline-entry').onclick = () => navigate('timeline');
     $('dataflow-entry').onclick = () => navigate('dataflow');
@@ -3036,7 +3075,252 @@
           {key: 'dump:tl-thumb'});
         mountCharts(thumb, null);
       }
+      // Key-step chips — jump straight into the step on the timeline page
+      const ksEl = $('timeline-keysteps');
+      if (tl.key_steps && tl.key_steps.length) {
+        ksEl.innerHTML = tl.key_steps.map(s =>
+          `<span class="ks-chip" data-step="${s.step}" title="${escapeHtml(s.kind)}: step ${s.step} (epoch ${s.epoch}, mb ${s.mb_idx}${s.value !== null && s.value !== undefined ? ', ' + fmt(s.value, 4) : ''})">` +
+          `<span class="k">${escapeHtml(s.kind)}</span>s${s.step}</span>`).join('');
+        ksEl.querySelectorAll('.ks-chip').forEach(c =>
+          c.addEventListener('click', e => {
+            e.stopPropagation();
+            state.selectedStep = parseInt(c.dataset.step);
+            navigate('timeline');
+          }));
+      } else {
+        ksEl.innerHTML = '';
+      }
     }).catch(() => { thumb.innerHTML = ''; });
+  }
+
+  // --- Dump analysis cards (shared layer: /api/inspect, /api/gradsig/samples) ---
+
+  function _stat(label, value, cls = '') {
+    return `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+  }
+  function _pct(v, d = 1) {
+    return (v === null || v === undefined) ? '-' : (v * 100).toFixed(d) + '%';
+  }
+
+  async function renderDumpOverview() {
+    const card = $('overview-card');
+    let ins;
+    try { ins = await fetchJson(api('inspect')); }
+    catch (e) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    state.dumpInspect = ins;
+
+    const m = ins.meta;
+    $('ov-meta').textContent =
+      `update ${m.update ?? '?'} · ${m.experiment ?? ''} · ` +
+      `${m.dump_source ?? 'sentinel'} · ${m.total_frames ?? '?'} frames` +
+      (m.hypothesis ? ` · “${m.hypothesis}”` : '');
+
+    const caps = Object.entries(ins.capabilities || {}).map(([k, v]) => {
+      const on = v === true || v === 'full';
+      const cls = on ? 'on' : (v === 'partial' ? 'partial' : '');
+      return `<span class="cap ${cls}">${k}${v === 'partial' ? '·partial' : ''}</span>`;
+    }).join('');
+    $('ov-caps').innerHTML = caps;
+
+    let st = '';
+    const a = ins.adv && ins.adv.combined_adv;
+    if (a) {
+      st += _stat('ADV |max|', fmt(Math.max(Math.abs(a.min ?? 0), Math.abs(a.max ?? 0)), 2));
+      st += _stat('ADV p1/p99', `${fmt(a.p1, 2)} / ${fmt(a.p99, 2)}`);
+      st += _stat('ADV frac−', _pct(ins.adv.frac_neg));
+      if (ins.adv.winsorize_clip_frac) {
+        st += _stat('winsorized', _pct(ins.adv.winsorize_clip_frac), 'warn');
+      }
+    }
+    const g = ins.gradsig;
+    if (g) {
+      st += _stat('‖G‖', fmt(g.gnorm, 3));
+      st += _stat('coherence', fmt(g.coherence, 3),
+        g.coherence !== null && g.coherence < 0.05 ? 'warn' : '');
+      st += _stat('proj frac−', _pct(g.frac_neg));
+      st += _stat('sampled', `${g.n_valid ?? '?'}/${g.n_sampled ?? '?'}`);
+    }
+    const u = ins.update;
+    if (u) {
+      st += _stat('KL mean/max', `${fmt(u.kl_mean, 3)} / ${fmt(u.kl_max, 3)}`);
+      st += _stat('actor ‖g‖', fmt(u.grad_norm_actor_mean, 2));
+    }
+    const t = ins.timeline;
+    if (t) {
+      st += _stat('steps', `${t.actor_steps_done ?? '?'}/${t.n_steps ?? '?'}`);
+      if (t.early_stop_step !== null && t.early_stop_step >= 0) {
+        st += _stat('early stop', `step ${t.early_stop_step}`, 'warn');
+      }
+    }
+    $('ov-stats').innerHTML = st || '<div class="desc">no summary data</div>';
+
+    const fl = $('ov-flags');
+    if (ins.flags && ins.flags.length) {
+      fl.innerHTML = '<div class="desc" style="margin-bottom:4px">worth inspecting:</div>' +
+        ins.flags.map((f, i) =>
+          `<div class="ov-flag" data-fi="${i}"><span class="fk">${escapeHtml(f.kind)}</span>${escapeHtml(f.text)}</div>`).join('');
+      fl.querySelectorAll('.ov-flag').forEach(el =>
+        el.addEventListener('click', () => {
+          const f = ins.flags[parseInt(el.dataset.fi)];
+          const ev = f.evidence || {};
+          if (ev.endpoint === 'timeline' && ev.step !== undefined) {
+            state.selectedStep = ev.step;
+            navigate('timeline');
+          } else if (ev.endpoint === 'gradsig/samples' && ev.query) {
+            const q = new URLSearchParams(ev.query);
+            state.gsQuery = {
+              sort: q.get('sort') || 'abs_proj',
+              sign: q.get('sign') || 'all',
+            };
+            renderGradsigSamples();
+            $('gradsig-card').scrollIntoView({behavior: 'smooth'});
+          }
+        }));
+    } else {
+      fl.innerHTML = '';
+    }
+  }
+
+  function _gsHeatmap(gs) {
+    // rows = per-frame grad-norm bins (top = largest), cols = cos bins
+    const hist = gs.hist, ce = gs.cos_edges, ne = gs.norm_edges;
+    if (!hist || !hist.length) return '';
+    const nR = hist.length, nC = hist[0].length;
+    const W = 460, H = nR * 16 + 30;
+    const cw = (W - 46) / nC, ch = (H - 30) / nR;
+    const max = Math.max(1, ...hist.flat());
+    let s = `<svg width="${W}" height="${H}">`;
+    for (let r = 0; r < nR; r++) {           // draw top row = highest norm
+      const src = nR - 1 - r;
+      for (let c = 0; c < nC; c++) {
+        const v = hist[src][c];
+        const alpha = v ? 0.1 + 0.9 * Math.log1p(v) / Math.log1p(max) : 0.04;
+        s += `<rect x="${46 + c * cw}" y="${r * ch}" width="${cw - 1}" height="${ch - 1}" fill="rgba(79,163,255,${alpha.toFixed(3)})"/>`;
+      }
+      const lo = ne[src], hi = ne[src + 1];
+      s += `<text class="gs-axis" x="0" y="${r * ch + ch / 2 + 3}">${lo.toExponential(0)}–${hi.toExponential(0)}</text>`;
+    }
+    for (let c = 0; c <= nC; c += Math.max(1, nC / 8 | 0)) {
+      s += `<text class="gs-axis" x="${46 + c * cw - 6}" y="${H - 14}">${fmt(ce[c], 1)}</text>`;
+    }
+    s += `<text class="gs-axis" x="${46}" y="${H - 2}">cos(gᵢ,G) →</text>`;
+    s += `<text class="gs-axis" x="0" y="${H - 2}" transform="rotate(0)"></text>`;
+    s += `<text class="gs-axis" x="${W - 90}" y="10">‖gᵢ‖ ↑</text>`;
+    s += '</svg>';
+    let cap = `norm×cos density (log scale), ${gs.n_frames_in_hist ?? ''} sampled frames in axis`;
+    if ((gs.n_under || 0) + (gs.n_over || 0) > 0) {
+      cap += ` · under ${gs.n_under ?? 0} / over ${gs.n_over ?? 0} outside norm axis`;
+    }
+    return s + `<div class="desc">${cap}</div>`;
+  }
+
+  async function renderGradsigCard() {
+    const card = $('gradsig-card');
+    let gs;
+    try { gs = await fetchJson(api('gradsig')); }
+    catch (e) { gs = null; }
+    if (!gs || !gs.available) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    state.gradSig = gs;
+
+    let st = '';
+    if (gs.partial) {
+      st += _stat('status', 'partial — hist unavailable', 'warn');
+    }
+    st += _stat('‖G‖ (full buffer)', fmt(gs.gnorm, 3));
+    st += _stat('coherence', fmt(gs.coherence, 3));
+    st += _stat('proj mean±std', `${fmt(gs.proj_mean, 3)}±${fmt(gs.proj_std, 2)}`);
+    st += _stat('frac proj<0', _pct(gs.frac_neg));
+    st += _stat('dir cos (prev G)', fmt(gs.dir_cos, 3));
+    st += _stat('valid', `${gs.n_valid ?? '?'}/${gs.n_sampled ?? '?'}`);
+    $('gs-stats').innerHTML = st;
+
+    $('gs-heat').innerHTML = gs.partial ? '' : _gsHeatmap(gs);
+
+    if (!state.gsQuery) state.gsQuery = {sort: 'abs_proj', sign: 'all'};
+    renderGradsigSamples();
+  }
+
+  async function renderGradsigSamples() {
+    const el = $('gs-top');
+    const q = state.gsQuery || {sort: 'abs_proj', sign: 'all'};
+    const sorts = [['abs_proj', '|proj|'], ['proj', 'proj+'],
+      ['neg_proj', 'proj−'], ['grad_norm', '‖g‖'], ['w_adv', 'w·adv']];
+    const ctl = `<div class="gs-ctl">top samples sort ` +
+      `<select id="gs-sort">${sorts.map(([v, l]) =>
+        `<option value="${v}"${v === q.sort ? ' selected' : ''}>${l}</option>`).join('')}</select>` +
+      ` sign <select id="gs-sign">${['all', 'pos', 'neg'].map(v =>
+        `<option${v === q.sign ? ' selected' : ''}>${v}</option>`).join('')}</select>` +
+      `<span id="gs-meta"></span></div>`;
+    let body;
+    try {
+      body = await fetchJson(api(
+        `gradsig/samples?sort=${q.sort}&sign=${q.sign}&limit=15`));
+    } catch (e) {
+      el.innerHTML = ctl + `<div class="desc">${escapeHtml(e.message)}</div>`;
+      _wireGsCtl();
+      return;
+    }
+    let html = ctl;
+    html += '<table class="ep-table gs-table"><thead><tr>' +
+      '<th>buf</th><th>frame</th><th>traj</th><th>proj</th><th>cos</th>' +
+      '<th>‖g‖</th><th>w·adv</th><th>floor_pen</th></tr></thead><tbody>';
+    for (const r of body.rows) {
+      const fr = r.mapped
+        ? `ep${String(r.episode).padStart(4, '0')}:${r.agent}:${r.env_frame}`
+        : (r.traj_idx !== undefined && r.traj_idx !== null ? '(flat)' : '—');
+      html += `<tr data-bi="${r.buffer_idx}" data-traj="${r.traj_idx ?? ''}">` +
+        `<td class="num">${r.buffer_idx}</td>` +
+        `<td>${escapeHtml(fr)}</td>` +
+        `<td class="num">${r.traj_idx ?? '—'}</td>` +
+        `<td class="num ${r.proj < 0 ? 'neg' : ''}">${fmt(r.proj, 2)}</td>` +
+        `<td class="num">${fmt(r.cos, 2)}</td>` +
+        `<td class="num">${fmt(r.grad_norm, 1)}</td>` +
+        `<td class="num">${fmt(r.w_adv, 2)}</td>` +
+        `<td class="num">${fmt(r.floor_pen, 3)}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    const meta = el.querySelector('#gs-meta');
+    if (meta && body.meta) {
+      meta.textContent = ` · ${body.meta.n_after_filter}/${body.meta.n_sampled} sampled frames`;
+    }
+    _wireGsCtl();
+    el.querySelectorAll('tr[data-bi]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const t = tr.dataset.traj;
+        if (t !== '') selectTrajectory(parseInt(t));
+      });
+    });
+  }
+
+  function _wireGsCtl() {
+    const so = $('gs-sort'), si = $('gs-sign');
+    if (so) so.addEventListener('change', () => {
+      state.gsQuery.sort = so.value; renderGradsigSamples();
+    });
+    if (si) si.addEventListener('change', () => {
+      state.gsQuery.sign = si.value; renderGradsigSamples();
+    });
+  }
+
+  // Trace a buffer index to its trajectory and jump there.
+  async function jumpToBuffer(idx) {
+    try {
+      const tr = await fetchJson(api(`trace/${idx}`));
+      if (tr.location && tr.location.traj_idx !== undefined &&
+          tr.location.traj_idx !== null) {
+        selectTrajectory(tr.location.traj_idx);
+      } else {
+        alert(`buffer ${idx}: ${tr.location?.reason || 'not mappable'}`);
+      }
+    } catch (e) {
+      alert(`trace failed: ${e.message}`);
+    }
   }
 
   // --- Data Flow page (logical pipeline) ---
@@ -4055,6 +4339,16 @@
     html += `<span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);min-width:80px;text-align:right" id="tl-step-label">step ${state.selectedStep} / ${tl.n_steps - 1}</span>`;
     html += '</div></div>';
 
+    // Key-step quick nav (early stop, max grad, max dθ, ...)
+    if (tl.key_steps && tl.key_steps.length) {
+      html += '<div class="ks-chips" style="margin:-8px 0 16px">';
+      tl.key_steps.forEach(s => {
+        html += `<span class="ks-chip" data-step="${s.step}" title="${escapeHtml(s.kind)} (epoch ${s.epoch}, mb ${s.mb_idx})">` +
+          `<span class="k">${escapeHtml(s.kind)}</span>s${s.step}</span>`;
+      });
+      html += '</div>';
+    }
+
     // Compute epoch boundaries for markers
     const epochBoundaries = [];
     if (tl.epoch_idx) {
@@ -4159,12 +4453,27 @@
       ['ratio_max', tl.ratio_max?.[step], 'num'],
       ['policy_loss', tl.policy_loss?.[step], 'num'],
       ['actor_grad', tl.actor_grad?.[step], 'num'],
+      ['dtheta_norm', tl.dtheta_norm?.[step], 'num'],
+      ['dtheta_cos_descent', tl.dtheta_cos_descent?.[step], 'num'],
+      ['adv_mean', tl.adv_mean?.[step], 'num'],
+      ['adv_std', tl.adv_std?.[step], 'num'],
+      ['adv_min', tl.adv_min?.[step], 'num'],
+      ['adv_max', tl.adv_max?.[step], 'num'],
+      ['floor_loss', tl.floor_loss?.[step], 'num'],
+      ['dual_clip_frac', tl.dual_clip_frac?.[step], 'num'],
+      ['n_ratio>2', tl.n_ratio_gt2?.[step], 'num'],
+      ['n_ratio<0.5', tl.n_ratio_lt05?.[step], 'num'],
+      ['mb_size', tl.mb_size?.[step], 'num'],
+      ['argmax_ratio bufidx', tl.argmax_ratio_bufidx?.[step], 'bufidx'],
+      ['argmin_ratio bufidx', tl.argmin_ratio_bufidx?.[step], 'bufidx'],
     ];
     actorFields.forEach(([label, val, type]) => {
       if (val === undefined) return;
       let display = val;
       if (val === null) display = '-';
       else if (type === 'bool') display = val ? 'YES' : 'no';
+      else if (type === 'bufidx') display =
+        `<span class="buflink" data-bi="${Math.round(val)}">${Math.round(val)}</span>`;
       else if (type === 'num') display = fmt(val);
       const cls = type === 'bool' ? 'bool' : (type === 'num' && val < 0 ? 'neg' : 'num');
       html += `<tr><td>${label}</td><td class="${cls}">${display}</td></tr>`;
@@ -4209,6 +4518,11 @@
     updateContextBar();
     $('ctx-step').textContent = state.selectedStep;
 
+    // Extreme-ratio frame links → trace to their trajectory
+    el.querySelectorAll('.buflink').forEach(bl => {
+      bl.addEventListener('click', () => jumpToBuffer(parseInt(bl.dataset.bi)));
+    });
+
     // Wire step slider
     const slider = $('tl-slider');
     if (slider) {
@@ -4226,6 +4540,12 @@
     if (btnNext) btnNext.addEventListener('click', () => {
       state.selectedStep = Math.min(tl.n_steps - 1, state.selectedStep + 1);
       renderTimeline();
+    });
+    el.querySelectorAll('.ks-chip').forEach(c => {
+      c.addEventListener('click', () => {
+        state.selectedStep = parseInt(c.dataset.step);
+        renderTimeline();
+      });
     });
 
     // Mount deferred charts: click-to-jump + real legend toggles

@@ -159,4 +159,15 @@ c_i = cos(g_i, G)    (纯方向)
 - **阶段 3.5**：θ_old 截面诊断。只读不改，专用 RNG，训练无感知。
 - **阶段 4-5**：训练过程。参数在变，数据在变。
 
+## 分析层（dump_analysis.py）
+
+对已捕获 dump 的只读分析——本文档的所有阶段数据经
+`DumpData` 惰性读入，`inspect_dump` / `gradsig_samples` /
+`trace_frame` / `timeline_overview` 四个函数产出 JSON-safe 结果，
+HTTP API（`/api/dump/<d>/inspect|gradsig/samples|trace/<i>`）、
+`debug.py` 同名子命令与前端首页卡片共用同一实现（无第二份解析）。
+每个响应的 `meta` 标注 scope（full buffer / sampled / step）与语义
+边界；溯源链 `sampled_idx → frame_id → traj_map` 把梯度样本接回
+episode/agent/frame 与 trajectory 页。
+
 Scene 2 展示阶段 3（训练输入），Scene 3-4 展示阶段 4-5（训练动态）。
