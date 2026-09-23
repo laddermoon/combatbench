@@ -469,6 +469,24 @@ ef05_s1/s2 已收敛停掉（esc u277/u351），GPU 5-7 + 2 空闲。
   正常。对照同 seed：verify_resume_A。
 - 判读预案：u100-150 Δss 持续正 → 方向质量假说再添证据；
   ≈0/负 → adv 分布形状不是瓶颈，关闭该分支。
+- **已停**：发现 `gaussrank_from0` 就是同一臂（同 exp/seed42/同
+  adv_norm=gauss_rank override；额外 overrides 仅 grad_sig 采样
+  关闭+max_updates 日志项，无训练语义差异）。它已跑满 1500u：
+  **逃逸 u532 vs 基线 u387 —— gauss_rank 显著更差**。winsorize4
+  同批 u488 也差。adv 整形方向整体关闭（std 负、gauss_rank 负、
+  winsorize 负）——zscore 已是最优。
+
+### 2026-09-23 第三方向改为：`gc4_s42` grad_clip_norm=4.0（GPU5）
+
+- 线索：基线 grad_norm_actor_mean 从 u1 的 1.4 一路涨到 approach
+  期 3-4+（max 6.0），而 grad_clip_norm=1.0 —— **整个爬坡期每个
+  minibatch 都被裁到 1/3-1/4**。Adam 尺度不变性下主要效应是 mb
+  间权重压平：高梯度 mb 被压到与低梯度 mb 同权。
+- 检验：若 clip 在压制高信号 mb 的有效权重 → gc4 加速；若 clip
+  的方向平滑在承重 → gc4 变慢。这是与 ef/clip/adv 均正交的第四
+  个机制族（梯度处理）。
+- 生效确认 overrides={grad_clip_norm: 4.0}，u4 pre-clip norm 1.414
+  （低于 4.0，早期步不再被裁）。
 
 ef05_s42 同 seed Δ +0.15-0.22 @u230 区间，轨迹指向 ~u300-330 逃逸，
 若成立则探索宽度是第二个稳健杠杆（且与 clip 机制正交——一个提
