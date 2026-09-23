@@ -517,3 +517,58 @@ manifest / payload 必须明确：
 以上是未来实现验收要求，本次文档与公式验证不勾选代码 / 训练验收项。
 若数值约束成为实际运行阻碍，应回到 §8 明确的决策边界再讨论，不能将未验证的
 有限精度近似包装成全参数域的严格正确性保证。
+
+## 12. 实现记录（2026-09-23）
+
+### 落地文件
+
+- `pre_tanh_normal_mlp.py` — `PreTanhNormalPolicy`。`net`（Linear→Tanh→
+  Linear→Tanh→Linear）直接输出 μ（无输出端 tanh）；`log_std` 为 (D,)
+  共享参数，init −1（σ≡e⁻¹）。所有分布辅助计算（探索映射、评分、U、
+  守卫）在 float64 中进行，网络前向保持 float32。
+- `_export_template_pre_tanh_normal.py` — 自包含
+  `ExportedPreTanhNormalPolicy`，零 repo import；float64 辅助函数、
+  RNG 序列（`randn` float64）与训练侧逐行一致。
+- `humanoid21/blueprints/init_policy_pre_tanh_normal.yaml` — humanoid21
+  blueprint（obs 96 / act 21 / hidden 256）。
+- `experiments_ppo/exp_standup_floor04_pretanh.py` — 仅替换 actor
+  blueprint 的对照实验。
+- `test_pre_tanh_normal.py` — 50 个测试。
+
+### 验收清单核对结果（§11）
+
+数学与探索：**全部通过**。密度对 scipy 变换分布逐点对拍；二维网格积分
+归一化；闭式 U 对 z 空间 40 万点 quadrature；σ*/U_max 唯一最大值核对；
+(μ,σ) 网格 × 21 个 e 的单调性；e=0 恒等 / e=±1 数值 / 固定点不变；
+共享 σ 形状 (D,) 且同 e 跨状态相同；U 与动作、e 无关；U 随 μ(s) 变化
+（共享 σ ≠ 常数 U 的区分测试）。
+
+梯度、采样与数值：**通过**。U 与 log_prob 对 (μ, r, e) 的 float64
+gradcheck；log_std / mean head / trunk 梯度完整性；sample 与 evaluate
+对同一 float32 存储动作 log_prob 一致（<1e-5，含 e=±1）；经验矩对
+quadrature；|a|=±1、|a|>a_safe、NaN/Inf、e 越界、μ=6.5 尾部超限
+均 fail loud；evaluate 对安全动作在"采样不可行"参数下仍可评分
+（守卫语义分层：evaluate 检查动作，sample 检查参数+动作）。
+
+工程与可用性：**通过**。act=tanh(μ)；strict loading 拒绝错误
+class/version/kind/缺失多余 key；子进程无 repo 加载 parity；
+B=204800 全 buffer evaluate 无 NaN；standup_floor04 smoke 训练端到端
+通过（rollout→buffer→PPO 更新→eval→export 全链路）。
+
+### 实测数值（smoke，e=0 rollout）
+
+- init `uncertainty=0.594`（σ=e⁻¹, μ≈0 的 L2 U；floor=0.4 未激活，
+  `floor_loss=0`——与 mixture 相同的 floor 语义差异提醒适用，
+  但注意本策略 U_max≈0.985 且大 σ 也使 U→0，floor 从两侧约束）
+- `effective_unsafe_tail_max≈1e-74`（≪预算 1e-12，守卫余量极大）
+- `near_boundary_probability≈2e-11`
+- `coverage_distance≈0.86`（θ 到 θ* 的距离）
+
+### 已知的未决项（有意留给后续）
+
+- a_safe=1−2⁻²⁰、tail budget=1e-12 是首轮值；若训练中守卫误触发，
+  按 §8 决策边界重议，而不是放宽守卫。
+- 不支持参数区域的边界（多大 μ/σ/e 组合安全）只做了点验证，未做
+  完整扫描——守卫本身即是防线。
+- PPO 训练中 e≠0 的覆盖探索路径未在真实 rollout 中验证（本实验
+  rollout 用 e=0）；该路径已被单测覆盖，但其训练动力学属于后续实验。
