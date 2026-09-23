@@ -572,3 +572,32 @@ B=204800 全 buffer evaluate 无 NaN；standup_floor04 smoke 训练端到端
   完整扫描——守卫本身即是防线。
 - PPO 训练中 e≠0 的覆盖探索路径未在真实 rollout 中验证（本实验
   rollout 用 e=0）；该路径已被单测覆盖，但其训练动力学属于后续实验。
+
+## 12.1 变体：StatePreTanhNormalPolicy（2026-09-23）
+
+state-σ 版本，与共享版**仅 σ 来源不同**，无新增设计决策：
+
+- `state_pre_tanh_normal_mlp.py` — `StatePreTanhNormalPolicy`
+  直接**继承** `PreTanhNormalPolicy`，只覆盖 `__init__`（trunk +
+  head([mean|log_std]) 架构）、`_policy_params`（head 输出切分）、
+  `_build_stats`（追加 `sigma_state_std` /
+  `effective_sigma_state_std`）。探索映射、U、评分、守卫、采样 /
+  evaluate 路径全部继承同一份实现——不存在两份可能漂移的数学代码。
+  父类的导出元数据（policy_class / *_kind / 模板文件名）已重构为
+  类属性，`to_blueprint` 也被继承复用。
+- σ 头初始化 `w=0, b=−1` → σ(s)≡e⁻¹，与共享版 init 完全一致；
+  测试用权重复制构造了逐点退化等价（act / log_prob / 同 seed
+  sample 全等）。
+- `_export_template_state_pre_tanh_normal.py` — 自包含导出模板
+  （trunk+head 布局），`distribution_kind` =
+  `tanh_diagonal_normal_state_std_v1`。
+- blueprint `init_policy_state_pre_tanh_normal.yaml`；实验
+  `standup_floor04_pretanh_statesig`。
+- **不加 clamp**：σ 头输出无 ±20 截断。tail-risk 守卫在 σ≈3
+  就已 fail-loud（远比 exp 溢出边界紧），小 σ 方向由评分有限性
+  检查兜住——clamp 在本策略家族是死代码且违反"不静默修复"约定。
+- `test_state_pre_tanh_normal.py` — 20 个测试：退化等价、σ 状态
+  依赖、per-state σ 密度对拍、U 经 σ(s) 变化、守卫继承、σ 头梯度、
+  strict 导出、子进程 parity、B=204800 buffer、blueprint 加载。
+- smoke 训练端到端通过；init 时 `sigma_state_std=0`（正确反映
+  常数 σ 初始化）。

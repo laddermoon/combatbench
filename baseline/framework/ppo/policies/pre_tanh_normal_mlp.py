@@ -68,16 +68,13 @@ _LN_2_SQRT_PI = math.log(2.0 * math.sqrt(math.pi))
 _EI_TOLERANCE = 1e-6            # float32 slack on the [-1, 1] ei range
 
 
-def _build_export_policy_code() -> str:
+def _build_export_policy_code(template_name: str) -> str:
     """Return the source of the ``policy.py`` embedded in export dirs.
 
     Self-contained template — no ``baseline.*`` / ``envs.*`` imports.
     See DESIGN_pre_tanh_normal.md §10.
     """
-    template_path = (
-        Path(__file__).resolve().parent
-        / "_export_template_pre_tanh_normal.py"
-    )
+    template_path = Path(__file__).resolve().parent / template_name
     return template_path.read_text(encoding="utf-8")
 
 
@@ -96,7 +93,20 @@ def _log_jac(z_hat: torch.Tensor) -> torch.Tensor:
 
 
 class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
-    """Diagonal pre-tanh Gaussian with shared per-dim sigma."""
+    """Diagonal pre-tanh Gaussian with shared per-dim sigma.
+
+    Export metadata lives in class attributes so subclasses (e.g. the
+    state-dependent-σ variant) can reuse ``to_blueprint`` unchanged —
+    they only need to point the attributes at their own payload kinds
+    and export template.
+    """
+
+    _POLICY_CLASS = "PreTanhNormalPolicy"
+    _DISTRIBUTION_KIND = "tanh_diagonal_normal_shared_std_v1"
+    _UNCERTAINTY_KIND = "marginal_renyi2_width_v1"
+    _EXPLORATION_KIND = "coverage_radial_logscale_v1"
+    _EXPORTED_CLASS = "ExportedPreTanhNormalPolicy"
+    _EXPORT_TEMPLATE = "_export_template_pre_tanh_normal.py"
 
     def __init__(
         self,
@@ -439,7 +449,7 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
         }
         payload = {
             "format_version": 1,
-            "policy_class": "PreTanhNormalPolicy",
+            "policy_class": self._POLICY_CLASS,
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
@@ -448,30 +458,30 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "obs_dim": self.obs_dim,
             "action_dim": self.action_dim,
             "hidden_dim": self.hidden_dim,
-            "distribution_kind": "tanh_diagonal_normal_shared_std_v1",
-            "uncertainty_kind": "marginal_renyi2_width_v1",
-            "exploration_kind": "coverage_radial_logscale_v1",
+            "distribution_kind": self._DISTRIBUTION_KIND,
+            "uncertainty_kind": self._UNCERTAINTY_KIND,
+            "exploration_kind": self._EXPLORATION_KIND,
             "state_dict": state_dict,
             "state_dict_keys": sorted(state_dict.keys()),
         }
         torch.save(payload, policy_dir / "model.pt")
 
-        policy_code = _build_export_policy_code()
+        policy_code = _build_export_policy_code(self._EXPORT_TEMPLATE)
         (policy_dir / "policy.py").write_text(policy_code, encoding="utf-8")
 
         manifest = {
             "format_version": 1,
-            "policy_class": "PreTanhNormalPolicy",
+            "policy_class": self._POLICY_CLASS,
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
                 "hidden_dim": self.hidden_dim,
             },
-            "distribution_kind": "tanh_diagonal_normal_shared_std_v1",
-            "uncertainty_kind": "marginal_renyi2_width_v1",
-            "exploration_kind": "coverage_radial_logscale_v1",
+            "distribution_kind": self._DISTRIBUTION_KIND,
+            "uncertainty_kind": self._UNCERTAINTY_KIND,
+            "exploration_kind": self._EXPLORATION_KIND,
             "files": ["model.pt", "policy.py", "MANIFEST.json"],
-            "exported_class": "ExportedPreTanhNormalPolicy",
+            "exported_class": self._EXPORTED_CLASS,
         }
         (policy_dir / "MANIFEST.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8",
@@ -479,5 +489,5 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
-            cls=f"file:{policy_py_path}:ExportedPreTanhNormalPolicy",
+            cls=f"file:{policy_py_path}:{self._EXPORTED_CLASS}",
         )
