@@ -488,6 +488,36 @@ ef05_s1/s2 已收敛停掉（esc u277/u351），GPU 5-7 + 2 空闲。
 - 生效确认 overrides={grad_clip_norm: 4.0}，u4 pre-clip norm 1.414
   （低于 4.0，早期步不再被裁）。
 
+### 2026-09-23 逃逸终局：ef 剂量曲线非单调 + gc4 中性
+
+| 臂 | 逃逸（s42） | vs 基线 u365/u387 | 判定 |
+|---|---|---|---|
+| ef03（σ×1.39） | u401 | 更慢 | 轻度放宽反而负（或噪声） |
+| **ef05（σ×1.73）** | **u335** | **−30u~-52u，最优** | 剂量甜点 |
+| ef08（σ×2.41） | u349 | −16u~-38u | 正但弱于 0.5 |
+| gc4（grad_clip_norm=4.0） | u386 | ≈0 | **中性**——clip 压平不承重 |
+
+**ef 剂量曲线（s42）**：0→365，0.3→401，0.5→335，0.8→349。
+峰值在 ~0.5；ef03 为负是反直觉点（单 seed 噪声带 ±30u 内，
+但方向性值得记下）。全部三臂已收敛停掉。
+
+### 2026-09-23 两个排程臂已起
+
+- `efdecay_s42`（GPU3，`standup_floor04_efdecay`）：ef 0.5→0 线性
+  衰减至 u300。检验 ef 收益的时间定位——逃逸 <u335 → 后期宽探索
+  是纯浪费；>u335 → ef 全程有贡献。生效：u9 eff_std=0.628。
+- `tklearly_s42`（GPU4，`standup_floor04_tklearly`）：target_kl
+  =0.10 仅 u≤150，之后回 0.05。直接攻击观测到的"早期 KL 预算
+  闲置"（kl 0.016 vs cap 0.05）——tkl10 恒定失败点恰在自然饱和
+  期（u160+），早窗增压是修正版。生效：overrides 已应用。
+
+### Debug 系统迭代：grad_clip_frac 指标落地
+
+发现 grad clip 观测缺口（只有 pre-clip norm，无触发率）→ 新增
+`stats.grad_clip_frac`（actor）+ `grad_clip_frac_<ch>`（critic），
+viewer Actor Gradient Norm 图 + Critic 健康组登记，GUIDE 字段清单
+同步。注意：老 run（含 gc4/ef03/ef08）不回溯，新 run 才发。
+
 ef05_s42 同 seed Δ +0.15-0.22 @u230 区间，轨迹指向 ~u300-330 逃逸，
 若成立则探索宽度是第二个稳健杠杆（且与 clip 机制正交——一个提
 方向质量，一个降截断损耗，理论上可叠加）。
