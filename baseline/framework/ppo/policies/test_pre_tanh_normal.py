@@ -421,6 +421,24 @@ class TestExploreFactor(unittest.TestCase):
         self.assertFalse(np.allclose(a1, a2, atol=1e-7),
                          "sample should differ from deterministic act")
 
+    def test_reset_reproducibility(self):
+        """Policy.reset(seed) reseeds sampling — the framework's
+        per-episode reproducibility contract."""
+        p = _make_policy()
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        p.reset(42)
+        a1, _ = p.sample(obs)
+        a2, _ = p.sample(obs)
+        p.reset(42)
+        a3, _ = p.sample(obs)
+        np.testing.assert_allclose(a3, a1, rtol=0, atol=0)
+        self.assertFalse(np.allclose(a2, a1, atol=1e-8),
+                         "consecutive samples should differ")
+        p.reset(99)
+        a4, _ = p.sample(obs)
+        self.assertFalse(np.allclose(a4, a1, atol=1e-8),
+                         "different seed should give different action")
+
 
 class TestGuards(unittest.TestCase):
     """Fail-loud behavior at the numeric boundary (DESIGN §8)."""

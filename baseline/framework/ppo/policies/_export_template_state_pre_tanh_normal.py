@@ -313,6 +313,11 @@ class ExportedStatePreTanhNormalPolicy:
             return action_np, None
         return action_np, {"log_prob": float(log_prob.item())}
 
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reseed RNG — required for reproducible per-episode rollouts."""
+        if seed is not None:
+            torch.manual_seed(int(seed))
+
     def evaluate_actions(
         self,
         obs: torch.Tensor,

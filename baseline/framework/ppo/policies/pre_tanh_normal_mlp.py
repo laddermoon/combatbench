@@ -431,6 +431,12 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "log_prob": float(log_prob.item()),
         }
 
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Policy ABC reset hook — reseed torch RNG so per-episode
+        derived seeds make rollouts reproducible."""
+        if seed is not None:
+            torch.manual_seed(int(seed))
+
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------

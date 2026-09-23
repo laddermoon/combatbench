@@ -350,6 +350,22 @@ class TestExport(unittest.TestCase):
                 lp_act["log_prob"], lp_exp["log_prob"], places=6,
             )
 
+    def test_exported_reset_reproducibility(self):
+        """Exported policy honors Policy.reset(seed) — without it,
+        rollout sampling is nondeterministic across runs."""
+        torch.manual_seed(5)
+        p = _make_state()
+        bp = p.to_blueprint(dest_path=tempfile.mkdtemp(prefix="sptn_rs_"))
+        loaded = bp.build()
+        obs = np.random.randn(OBS_DIM).astype(np.float32)
+        loaded.reset(42)
+        a1, _ = loaded.sample(obs)
+        a2, _ = loaded.sample(obs)
+        loaded.reset(42)
+        a3, _ = loaded.sample(obs)
+        np.testing.assert_allclose(a3, a1, rtol=0, atol=0)
+        self.assertFalse(np.allclose(a2, a1, atol=1e-8))
+
     def test_works_without_repo_on_path(self):
         import subprocess
         import sys

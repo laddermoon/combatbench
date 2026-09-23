@@ -601,3 +601,19 @@ state-σ 版本，与共享版**仅 σ 来源不同**，无新增设计决策：
   strict 导出、子进程 parity、B=204800 buffer、blueprint 加载。
 - smoke 训练端到端通过；init 时 `sigma_state_std=0`（正确反映
   常数 σ 初始化）。
+
+## 12.2 复现性修复：Policy.reset(seed)（2026-09-23）
+
+初版两个导出模板漏掉了 `Policy.reset(seed)` —— 框架契约（
+`envs/framework/policy.py`：stochastic policies SHOULD reseed their
+internal RNG；`EpisodeRunner` 每 episode 用 `SeedSequence` 派生
+per-agent 种子并调用 `policy.reset(seed)`）。缺失时 rollout 采样
+消耗 worker 全局 RNG 残流，与调度时序相关 → 不可复现。
+
+修复：训练侧父类与两个导出类均实现
+`reset(seed) → torch.manual_seed(seed)`（与 truncnorm 导出模板
+一致；state 版经继承获得）。
+
+验证：两个独立 `standup_floor04_pretanh` run 各 5 个 update 对拍——
+除 `timing.*` 墙钟字段外 **全部字段 bit-identical**（reward、
+policy_stats、KL、ratio、梯度、eval 指标）。
