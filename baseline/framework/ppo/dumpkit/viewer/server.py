@@ -700,7 +700,15 @@ def _tail_raw_stats(
 
 
 def _pid_alive(pid_path: Path) -> Optional[bool]:
-    """True/False when a pid file exists; None when absent or unreadable."""
+    """True/False when a pid file exists; None when absent or unreadable.
+
+    Guards against PID reuse: a live pid is only trusted when the
+    process started no later than the pid file was written — the
+    launcher forks first and writes the file immediately after, so a
+    process that started *after* the write must be a recycled pid
+    belonging to someone else (e.g. a multiprocessing worker of an
+    unrelated run), and the original training process is gone.
+    """
     try:
         pid = int(pid_path.read_text().strip())
     except (OSError, ValueError):
@@ -709,7 +717,29 @@ def _pid_alive(pid_path: Path) -> Optional[bool]:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    return _pid_start_matches(pid, pid_path)
+
+
+def _pid_start_matches(pid: int, pid_path: Path) -> bool:
+    """True when /proc/<pid> started no later than pid_path's mtime.
+
+    Linux-only probe; falls back to trusting the live pid when the
+    start time cannot be determined.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        # field 22 (starttime, clock ticks since boot) follows the comm
+        # field, which may itself contain ')' — split on the last one.
+        start_ticks = int(stat.rsplit(")", 1)[1].split()[19])
+        btime = next(
+            int(line.split()[1])
+            for line in open("/proc/stat")
+            if line.startswith("btime")
+        )
+        start_epoch = btime + start_ticks / os.sysconf("SC_CLK_TCK")
+        return start_epoch <= pid_path.stat().st_mtime + 1.0
+    except (OSError, ValueError, IndexError, StopIteration):
+        return True
 
 
 def _run_created_ts(
