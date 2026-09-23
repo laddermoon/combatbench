@@ -350,3 +350,19 @@ lr=1e-4, dump u1551/1651/1801 —— 本次为绝对编号）。
 eval：cycles 0→0.25、hmax 49mm、alt 首次非 None；final_pot 0.86
 （真摆动施压站立，正常转换期）。中途崩过一次：prev_gvec 旧维度
 （96042 vs 96810）——已修（commit 9af767f）。
+
+### run 064853 终局（u1705 自动停止）：迈步已学会，但停在饱和指标上
+
+eval 末段（u1630-1700）：success=1.0、**step=0.77-0.86**（约八成
+agent 双脚各完成≥1有效周期）、cycles 4.0-4.8/ep、alt 0.50-0.58、
+hmax 10-12cm、final_pot 0.85-0.89 —— 单 seed(42) 迈步已达标。
+swings ~10/ep 与周期 40 步时钟吻合。
+
+**停止原因 = 框架 bug**：early_stop 追踪 `mean_max_pot`（站立势），
+暖启动后恒 1.000 → 严格大于永不成立 → u1705 触发
+"no improvement for 200"。真实目标（step rate）仍在缓升。
+已修（见下 commit）：best 追踪拆成 `_best_potential` +
+`_best_step`（success≥0.9 时记 step rate），u01500 系 ckpt 继续
+训也可恢复。
+
+**后续**：以此 ckpt(u01550) 为起点跑 seed 43/44 验证三 seed 标尺。

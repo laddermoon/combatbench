@@ -170,6 +170,7 @@ class Step(CombatExperimentPPOBase):
 
     # --- Stateful metrics ---
     _best_potential: float = -1.0
+    _best_step: float = -1.0
     _best_survived: float = -1.0
     _success_rate: float = 0.0
     _last_best_update: int = 0
@@ -511,10 +512,22 @@ class Step(CombatExperimentPPOBase):
 
         self._success_rate = success_rate
 
-        # --- Best: primary = mean_max_pot (standing achievement) ---
-        is_new_best = mean_max_pot > self._best_potential
-        if is_new_best:
+        # --- Best: standing AND stepping tracked separately.
+        # mean_max_pot saturates at 1.000 once the warm-started standup
+        # holds — tracking it alone stalls best-tracking and early-stop
+        # counts "no improvement" while stepping is still climbing
+        # (run 064853 stopped at u1705 with step=0.85 still rising).
+        improved_pot = mean_max_pot > self._best_potential
+        if improved_pot:
             self._best_potential = mean_max_pot
+        improved_step = (
+            success_rate >= 0.9
+            and step_success_rate > self._best_step
+        )
+        if improved_step:
+            self._best_step = step_success_rate
+        is_new_best = improved_pot or improved_step
+        if is_new_best:
             self._last_best_update = update
 
         no_improvement = update - self._last_best_update
