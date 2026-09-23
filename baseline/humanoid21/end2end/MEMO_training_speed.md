@@ -530,6 +530,17 @@ n_batches=25、asteps=100。判读：正 → 步质量>步数量；≈0 → 该
 KL（tklearly）与恒定放大（tkl10）一样劣化。KL cap 维度整体关闭：
 0.03/0.05/0.10 三个点 + 早窗排程全部非正。
 
+### 2026-09-23 新一轮双臂：探索孪生 + lr 下行括线
+
+| run | GPU | 设定 | 假设 |
+|---|---|---|---|
+| `ufloor05_s42` | 4 | `uncertainty_floor=0.5`（子类，类属性） | ef 的孪生杠杆：ef 只宽 rollout σ，floor 顶训练侧熵。若也正 → 探索机制两侧都活；若无效/负 → 收益专属采样侧 |
+| `lr15e4_s42` | 5 | `learning_rate=1.5e-4` | lr 只测过上行（负）；下行括响应曲线。也负 → 3e-4 已最优（维度关闭）；正 → 小步更准成立 |
+
+生效确认：ufloor05 stats.floor=0.5；lr15e4 stats.actor_lr=1.5e-4。
+后备池：dual_clip_c=3.0、--no-confidence 消融、GAE λ（需通道子
+类）、early_stop_kl_window（次要）。
+
 ### Debug 系统迭代：grad_clip_frac 指标落地
 
 发现 grad clip 观测缺口（只有 pre-clip norm，无触发率）→ 新增
