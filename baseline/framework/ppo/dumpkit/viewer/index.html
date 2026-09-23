@@ -1220,6 +1220,13 @@
       // point so the label still shows the latest known value.  The
       // on-line marker is drawn at that point's real index.
       const lastVal = s => {
+        // Event series (spike_keys): NaN means "did not fire", so a
+        // cursor on a non-event point must show nothing — falling back
+        // to the last firing would display a stale value as current.
+        if (s.event) {
+          const i = Math.min(cf, s.data.length - 1);
+          return isNum(s.data[i]) ? {i, v: s.data[i]} : null;
+        }
         for (let i = Math.min(cf, s.data.length - 1); i >= 0; i--) {
           if (isNum(s.data[i])) return {i, v: s.data[i]};
         }
@@ -2549,7 +2556,7 @@
                 const v = e ? e[k] : null;
                 return (typeof v === 'number' && v > 0) ? v : NaN;
               }),
-              color: r.color, dash: 'dot', width: 1});
+              color: r.color, dash: 'dot', width: 1, event: true});
           });
           return;
         }
@@ -2562,7 +2569,7 @@
         });
         opts.vMarkers = (opts.vMarkers || []).concat(idxs);
         series.push({label: labelFor(k), data, color: 'var(--red)',
-                     dash: 'dot', width: 1});
+                     dash: 'dot', width: 1, event: true});
       });
       keys.forEach(k => used.add(k));
       emitChart(title, series, opts);
