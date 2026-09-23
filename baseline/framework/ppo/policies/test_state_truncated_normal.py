@@ -61,7 +61,7 @@ def _set_const_log_std(p: StateTruncatedNormalPolicy, value: float) -> None:
 
 def _policy_sigma(p: StateTruncatedNormalPolicy, obs: torch.Tensor) -> torch.Tensor:
     """Policy σ (no explore scale) for a batch of obs."""
-    _, sigma = p._head_forward(obs)
+    _, sigma = p._policy_params(obs)
     return sigma
 
 
@@ -289,7 +289,7 @@ class TestExploreIntensity(unittest.TestCase):
         with torch.no_grad():
             p.head.weight[ACTION_DIM:, :].normal_(0, 0.3)
         obs = torch.randn(20, OBS_DIM)
-        _, sigma_p = p._head_forward(obs)
+        _, sigma_p = p._policy_params(obs)
 
         ei = torch.full((20,), 0.7)
         _, sigma_eff = p.forward(obs, explore_factor=ei)

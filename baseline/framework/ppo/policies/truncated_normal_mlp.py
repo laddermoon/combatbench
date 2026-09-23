@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 
-def _build_export_policy_code() -> str:
+def _build_export_policy_code(template_name: str) -> str:
     """Return the source of the ``policy.py`` embedded in export dirs.
 
     P0-6: The export is now self-contained — it reads from a real
@@ -42,7 +42,7 @@ def _build_export_policy_code() -> str:
     The template is a real ``.py`` file (not a string literal) so it
     can be linted, type-checked, and tested on its own.
     """
-    template_path = Path(__file__).resolve().parent / "_export_template.py"
+    template_path = Path(__file__).resolve().parent / template_name
     return template_path.read_text(encoding="utf-8")
 
 # Numerical safety bounds for log_std.
@@ -91,7 +91,18 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
     Uncertainty U = 1 / (2 × peak) is a geometric area ratio in [0, 1]:
     0 = deterministic, 1 = uniform.  See DESIGN_truncated_normal.md §3.
+
+    Export metadata lives in class attributes so subclasses (e.g. the
+    state-dependent-σ variant) can reuse ``to_blueprint`` unchanged —
+    they only need to point the attributes at their own payload kinds
+    and export template.  Likewise, the ONLY extension seam is
+    ``_policy_params``: everything else (sampling, scoring, U,
+    explore_factor semantics, stats, export) is shared unchanged.
     """
+
+    _POLICY_CLASS = "TruncatedNormalPolicy"
+    _EXPORTED_CLASS = "ExportedTruncNormPolicy"
+    _EXPORT_TEMPLATE = "_export_template.py"
 
     def __init__(
         self,
@@ -155,27 +166,45 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             return torch.exp(explore_factor * _EXPLORE_K)
         return math.exp(float(explore_factor) * _EXPLORE_K)
 
-    def effective_sigma(self, explore_factor: Any = 0.0) -> torch.Tensor:
-        """σ used for sampling / log_prob (includes explore scale)."""
+    def effective_sigma(
+        self, policy_sigma: torch.Tensor, explore_factor: Any = 0.0,
+    ) -> torch.Tensor:
+        """σ used for sampling / log_prob (includes explore scale).
+
+        ``policy_sigma`` may be (action_dim,) (shared σ) or
+        (B, action_dim) (state-dependent σ); the scale broadcasts
+        against either.
+        """
         scale = self._explore_scale(explore_factor)
-        sigma = self.effective_log_std().exp()
         if isinstance(scale, torch.Tensor):
-            return sigma * scale.unsqueeze(-1)  # (B, 1) * (action_dim,) → (B, action_dim)
-        return sigma * scale
+            return policy_sigma * scale.unsqueeze(-1)  # (B,1) * (…,D)
+        return policy_sigma * scale
 
     def policy_sigma(self) -> torch.Tensor:
         """σ without explore scale — for uncertainty U."""
         return self.effective_log_std().exp()
 
+    def _policy_params(
+        self, obs: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Single forward pass → (mean, policy_sigma).
+
+        ``policy_sigma`` is the *unscaled* σ — explore_factor is applied
+        on top by :meth:`effective_sigma`.  The ONLY method a
+        state-dependent-σ subclass needs to override.
+        """
+        mean = torch.tanh(self.net(obs))  # ensure mean ∈ (-1, 1)
+        return mean, self.policy_sigma()
+
     def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
-        raw_mean = self.net(obs)
-        mean = torch.tanh(raw_mean)  # ensure mean ∈ (-1, 1)
-        sigma = self.effective_sigma(explore_factor)
+        mean, policy_sigma = self._policy_params(obs)
+        sigma = self.effective_sigma(policy_sigma, explore_factor)
         return mean, sigma.expand_as(mean)
 
+    @staticmethod
     def _trunc_params(
-        self, mean: torch.Tensor, sigma: torch.Tensor
+        mean: torch.Tensor, sigma: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute standardized truncation bounds and normalization Z.
 
@@ -251,7 +280,14 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         correct.  uncertainty (U) uses policy σ (without explore
         scale) so it reflects the policy's own certainty.
         """
-        mean, eff_sigma = self.forward(obs, explore_factor=explore_factor)
+        # Single pass yields mean and policy σ; effective σ is the same
+        # tensor scaled per-frame by explore_factor.  This satisfies
+        # P1-8 (no redundant forward for the U computation) by
+        # construction rather than by reuse.  If a future policy makes
+        # explore_factor affect mean (e.g. directional noise injection),
+        # this structure must be revisited.
+        mean, policy_sigma = self._policy_params(obs)
+        eff_sigma = self.effective_sigma(policy_sigma, explore_factor)
         a, b, log_Z = self._trunc_params(mean, eff_sigma)
 
         # log_prob: effective σ
@@ -264,40 +300,51 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         log_prob = log_prob.sum(dim=-1)
 
         # Uncertainty U = 1 / (2 × peak), using policy σ (no explore scale)
-        policy_sigma = self.policy_sigma()
-        # P1-8: Reuse the mean from forward() — mean does not depend on
-        # explore_factor (explore_factor only scales sigma).  This avoids
-        # a redundant full forward pass + autograd graph that doubled the
-        # actor's per-minibatch cost.
-        # If a future policy makes explore_factor affect mean (e.g.
-        # directional noise injection), this reuse must be reverted.
-        policy_mean = mean
         # mean ∈ (-1, 1) so peak is at x = mean
         # peak = 1 / (σ × √(2π) × Z)
         # U = σ × √(2π) × Z / 2
-        _, _, log_Z_policy = self._trunc_params(policy_mean, policy_sigma)
+        _, _, log_Z_policy = self._trunc_params(mean, policy_sigma)
         Z_policy = torch.exp(log_Z_policy)
         U_per_dim = policy_sigma * _SQRT_2PI * Z_policy / _ACTION_WIDTH
         # Arithmetic mean over dims → (B,)
         uncertainty = U_per_dim.mean(dim=-1)
+        # Contract guard: U ∈ [0, 1].  At very large σ the formula
+        # slightly overshoots 1 (~4e-4 at σ≈2e4) because Z = Φ(b)−Φ(a)
+        # subtracts two numbers both ≈1 in float32.  U > 1 is only
+        # ever precision noise (super-uniform regime, where the floor
+        # hinge is inactive anyway), so the clamp is identity in every
+        # meaningful operating range.
+        uncertainty = uncertainty.clamp(0.0, 1.0)
 
         stats: Optional[Dict[str, float]] = None
         if want_stats:
-            with torch.no_grad():
-                stats = {
-                    "uncertainty": float(uncertainty.mean().item()),
-                    "std_mean": float(policy_sigma.mean().item()),
-                    "eff_std_mean": float(eff_sigma.mean().item()),
-                    "std_min": float(policy_sigma.min().item()),
-                    "std_max": float(policy_sigma.max().item()),
-                    "mean_abs": float(policy_mean.abs().mean().item()),
-                }
+            stats = self._build_stats(
+                uncertainty, mean, policy_sigma, eff_sigma,
+            )
 
         return ActorEval(
             log_prob=log_prob,
             uncertainty=uncertainty,
             stats=stats,
         )
+
+    def _build_stats(
+        self,
+        uncertainty: torch.Tensor,
+        policy_mean: torch.Tensor,
+        policy_sigma: torch.Tensor,
+        eff_sigma: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Policy stats dict — subclasses may extend via super()."""
+        with torch.no_grad():
+            return {
+                "uncertainty": float(uncertainty.mean().item()),
+                "std_mean": float(policy_sigma.mean().item()),
+                "eff_std_mean": float(eff_sigma.mean().item()),
+                "std_min": float(policy_sigma.min().item()),
+                "std_max": float(policy_sigma.max().item()),
+                "mean_abs": float(policy_mean.abs().mean().item()),
+            }
 
     # ------------------------------------------------------------------
     # Policy contract (deterministic default behaviour)
@@ -378,7 +425,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         }
         payload = {
             "format_version": 1,
-            "policy_class": "TruncatedNormalPolicy",
+            "policy_class": self._POLICY_CLASS,
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
@@ -397,20 +444,20 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         # P0-6: Write self-contained policy.py from the template file.
         # No string-literal codegen — the template is a real .py file
         # that can be linted and tested.
-        policy_code = _build_export_policy_code()
+        policy_code = _build_export_policy_code(self._EXPORT_TEMPLATE)
         (policy_dir / "policy.py").write_text(policy_code, encoding="utf-8")
 
         # P0-6: MANIFEST.json for artifact traceability.
         manifest = {
             "format_version": 1,
-            "policy_class": "TruncatedNormalPolicy",
+            "policy_class": self._POLICY_CLASS,
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
                 "hidden_dim": self.hidden_dim,
             },
             "files": ["model.pt", "policy.py", "MANIFEST.json"],
-            "exported_class": "ExportedTruncNormPolicy",
+            "exported_class": self._EXPORTED_CLASS,
         }
         (policy_dir / "MANIFEST.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8",
@@ -418,5 +465,5 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
-            cls=f"file:{policy_py_path}:ExportedTruncNormPolicy",
+            cls=f"file:{policy_py_path}:{self._EXPORTED_CLASS}",
         )
