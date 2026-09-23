@@ -460,6 +460,16 @@ bracket ef=0.5 的最优点。新增实验文件 exp_standup_floor04_ef03/
 ef08.py（EF 类属性子类化）。生效确认 eff_std=0.511/0.886。
 ef05_s1/s2 已收敛停掉（esc u277/u351），GPU 5-7 + 2 空闲。
 
+### 2026-09-23 第三方向：`gr_s42` adv_norm=gauss_rank（GPU5）
+
+- 机制假设：advantage 分布尾部离群 episode 拉扯梯度方向；
+  gauss_rank 把 adv 映射到分位数（有界、抗离群），若方向质量是
+  瓶颈则应有效。与 ef（探索宽度）、clip（截断损耗）正交。
+- 生效确认 `param_overrides={adv_norm: gauss_rank}`，adv_std 量级
+  正常。对照同 seed：verify_resume_A。
+- 判读预案：u100-150 Δss 持续正 → 方向质量假说再添证据；
+  ≈0/负 → adv 分布形状不是瓶颈，关闭该分支。
+
 ef05_s42 同 seed Δ +0.15-0.22 @u230 区间，轨迹指向 ~u300-330 逃逸，
 若成立则探索宽度是第二个稳健杠杆（且与 clip 机制正交——一个提
 方向质量，一个降截断损耗，理论上可叠加）。
