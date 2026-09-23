@@ -142,9 +142,10 @@ SECTIONS: List[Dict[str, Any]] = [
              "guide": "policy_loss_mean：PPO-clip 替代目标 −mean(min(r·A, clip(r)·A))，minibatch 平均。\n"
                       "会变正/上升是结构性现象：有利方向收益封顶 ε·|A|，不利方向不封顶（A<0 且 r>1+ε 时贡献 r·A 无界），少数恶化样本可抵消大量改善——正负不代表学没学。"},
             {"title": "Actor Gradient Norm",
-             "keys": ["stats.grad_norm_actor_mean"],
-             "guide": "该 update 内所有 actor minibatch 梯度 L2 范数均值，clip 前原始值（阈值见 grad_clip_norm）。\n"
-                      "持续远高于阈值 → clip 主导步长；孤立尖刺 → 多为某 batch 的 advantage 异常；持续趋 0 → 警惕梯度死亡。"},
+             "keys": ["stats.grad_norm_actor_mean", "stats.grad_clip_frac"],
+             "guide": "grad_norm_actor_mean：该 update 内所有 actor minibatch 梯度 L2 范数均值，clip 前原始值（阈值见 grad_clip_norm）。\n"
+                      "持续远高于阈值 → clip 主导步长；孤立尖刺 → 多为某 batch 的 advantage 异常；持续趋 0 → 警惕梯度死亡。\n"
+                      "grad_clip_frac：pre-clip 范数超过 grad_clip_norm 的 minibatch 占比——1=每步都被裁（cap 绑死，mb 间被压成同权）；0=clip 从未触发。"},
         ]},
         {"title": "更新末态", "charts": [
             {"title": "Post-Update KL 细分",
@@ -207,6 +208,7 @@ SECTIONS: List[Dict[str, Any]] = [
         {"title": "Critic 健康", "charts": [
             {"pc": "vloss_mean"},
             {"pc": "grad_norm_mean"},
+            {"pc": "grad_clip_frac"},
         ]},
      ]},
 

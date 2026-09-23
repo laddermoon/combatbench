@@ -2051,8 +2051,18 @@ def ppo_update(
     ratio_max = float(max(all_ratio_maxs)) if all_ratio_maxs else 1.0
     ratio_min = float(min(all_ratio_mins)) if all_ratio_mins else 1.0
     grad_norm_actor = float(np.mean(all_grad_norms_actor)) if all_grad_norms_actor else 0.0
+    grad_clip_frac = (
+        float(np.mean([n > grad_clip_norm for n in all_grad_norms_actor]))
+        if all_grad_norms_actor else 0.0
+    )
     critic_grad_norm_mean: Dict[str, float] = {
         key: float(np.mean(all_grad_norms_critic[key]))
+        if all_grad_norms_critic[key] else 0.0
+        for key in reward_keys
+    }
+    critic_grad_clip_frac: Dict[str, float] = {
+        key: float(np.mean(
+            [n > grad_clip_norm for n in all_grad_norms_critic[key]]))
         if all_grad_norms_critic[key] else 0.0
         for key in reward_keys
     }
@@ -2104,6 +2114,8 @@ def ppo_update(
         action_grad_pol_mean=action_grad_pol,
         action_grad_floor_mean=action_grad_floor,
         grad_norm_actor_mean=grad_norm_actor,
+        grad_clip_frac=grad_clip_frac,
+        critic_grad_clip_frac=critic_grad_clip_frac,
         epochs_done=len(epoch_kl_stats),
         actor_epochs_done=actor_epochs_done,
         n_batches=n_batches,

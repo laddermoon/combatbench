@@ -938,6 +938,16 @@ class UpdateStats:
     #   quadrant of standard clipping.  0.0 when dual clip is disabled.
     dual_clip_frac_mean: float = 0.0
 
+    # Fraction of actor minibatches whose PRE-clip grad L2 norm exceeded
+    #   grad_clip_norm — clip_grad_norm_ returns the pre-clip norm, so
+    #   this counts how often the clip actually fired.  grad_norm_actor_
+    #   mean alone cannot distinguish "all minibatches at 3×cap" from
+    #   "half unclipped at 1×cap, half at 5×cap".  1.0 = every step
+    #   clipped (cap binds); 0.0 = clip never active.
+    grad_clip_frac: float = 0.0
+    # Per-channel equivalent for the critics.
+    critic_grad_clip_frac: Dict[str, float] = field(default_factory=dict)
+
     @classmethod
     def empty(cls, reward_keys: Tuple[str, ...]) -> "UpdateStats":
         """Construct a zeroed UpdateStats for a skipped (empty-buffer) update.
@@ -1059,6 +1069,7 @@ class UpdateStats:
             "post_clip_dloss_harm": self.post_clip_dloss_harm,
             "adv_winsorize_clip_frac": self.adv_winsorize_clip_frac,
             "dual_clip_frac_mean": self.dual_clip_frac_mean,
+            "grad_clip_frac": self.grad_clip_frac,
         })
         # grad_sig_* scalars only when the dump-triggered diagnostic ran
         # — a measured value is meaningful, an unmeasured zero is not.
@@ -1100,6 +1111,8 @@ class UpdateStats:
             d[f"ret_max_{key}"] = val
         for key, val in self.critic_grad_norm_mean.items():
             d[f"grad_norm_mean_{key}"] = val
+        for key, val in self.critic_grad_clip_frac.items():
+            d[f"grad_clip_frac_{key}"] = val
         return d
 
 
