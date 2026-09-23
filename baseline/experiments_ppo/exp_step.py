@@ -8,10 +8,14 @@ Based on ``exp_standup_step.py``, replacing the sparse ``r_cross`` channel
 using the v2 stepping state machine::
 
     r_potential  = 0.01 × φ(t),             γ=0.99, aw = 3.0 × (1 - φ_trail²·ss)
-    r_left_foot  = clip(h_left,  0, 0.05),   γ=0.90, aw = state machine × φ²
-    r_right_foot = clip(h_right, 0, 0.05),   γ=0.90, aw = state machine × φ²
+    r_left_foot  = clip(sole_l,  0, 0.05),   γ=0.90, aw = clock weights × φ²
+    r_right_foot = clip(sole_r, 0, 0.05),   γ=0.90, aw = clock weights × φ²
 
-The reward carries only *physical fact* (foot height); the *intent* (which
+The reward carries only *physical fact* — sole clearance (min capsule-
+endpoint z − radius), which stays ~0 while any sole edge is at ground
+level.  Run 064853 showed midpoint ``h`` is gameable: rocking the foot
+on its toe/side edge lifts the midpoint >5cm without ever leaving the
+ground; sole clearance cannot be faked that way.  The *intent* (which
 foot should rise / descend right now) is carried BOTH by ``actor_weight``
 AND by the observation: ``GaitClockSimulator`` appends cmd_L / cmd_R /
 window-progress dims so the command is a learnable state feature.  The
@@ -244,23 +248,32 @@ class Step(CombatExperimentPPOBase):
         # --- r_potential: 0.01 × φ(t) per step ---
         r_potential = (self.per_step_phi_coef * phi_arr).astype(np.float32)
 
-        # --- Foot heights (saturated) ---
+        # --- Foot heights / sole clearance (saturated) ---
+        # Reward value uses sole clearance, NOT midpoint h: midpoint
+        # rises when the foot pivots on its toe/side edge, which let
+        # run 064853 "step" by rocking without ever leaving the ground.
         h_left = extract_per_step_field(
             episode.observer_outputs, foot_key, "h_left_foot", T_full,
         )
         h_right = extract_per_step_field(
             episode.observer_outputs, foot_key, "h_right_foot", T_full,
         )
-        if h_left is not None:
+        sole_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "sole_clear_left", T_full,
+        )
+        sole_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "sole_clear_right", T_full,
+        )
+        if sole_left is not None:
             r_left_foot = np.clip(
-                np.asarray(h_left[:T_full], dtype=np.float32),
+                np.asarray(sole_left[:T_full], dtype=np.float32),
                 0.0, self.foot_height_clip,
             )
         else:
             r_left_foot = np.zeros(T_full, dtype=np.float32)
-        if h_right is not None:
+        if sole_right is not None:
             r_right_foot = np.clip(
-                np.asarray(h_right[:T_full], dtype=np.float32),
+                np.asarray(sole_right[:T_full], dtype=np.float32),
                 0.0, self.foot_height_clip,
             )
         else:
@@ -282,6 +295,7 @@ class Step(CombatExperimentPPOBase):
             self.step_cycle_bonus > 0
             and contact_l is not None and contact_r is not None
             and h_left is not None and h_right is not None
+            and sole_left is not None and sole_right is not None
         ):
             det = detect_step_cycles(
                 np.asarray(contact_l[:T_full], dtype=bool),
@@ -289,6 +303,8 @@ class Step(CombatExperimentPPOBase):
                 np.asarray(h_left[:T_full], dtype=np.float32),
                 np.asarray(h_right[:T_full], dtype=np.float32),
                 standing=phi_arr >= self.step_phi_gate,
+                sole_left=np.asarray(sole_left[:T_full], dtype=np.float32),
+                sole_right=np.asarray(sole_right[:T_full], dtype=np.float32),
                 min_air_steps=self.step_min_air_frames,
                 h_thresh=self.step_lift_threshold,
             )
@@ -308,8 +324,8 @@ class Step(CombatExperimentPPOBase):
         # ~0.5% of the time (u01651 dump).
         w_left, w_right = clock_foot_weights(
             T_full,
-            h_left=np.asarray(h_left[:T_full], dtype=np.float32) if h_left is not None else None,
-            h_right=np.asarray(h_right[:T_full], dtype=np.float32) if h_right is not None else None,
+            sole_left=np.asarray(sole_left[:T_full], dtype=np.float32) if sole_left is not None else None,
+            sole_right=np.asarray(sole_right[:T_full], dtype=np.float32) if sole_right is not None else None,
             period=GAIT_PERIOD,
         )
 
@@ -468,6 +484,7 @@ class Step(CombatExperimentPPOBase):
         all_cycles = []         # valid step cycles per agent
         all_swings = []         # swing attempts per agent
         all_hmax = []           # mean swing peak height per agent
+        all_solepk = []         # mean swing peak sole clearance per agent
         all_alt = []            # alternation ratio per agent (>=2 cycles)
         n_agents = 0
 
@@ -501,6 +518,8 @@ class Step(CombatExperimentPPOBase):
                     )
                     all_swings.append(det["n_swings"])
                     all_hmax.append(det["h_swing_max"])
+                    if det["sole_swing_max"] is not None:
+                        all_solepk.append(det["sole_swing_max"])
                     if det["alt_ratio"] is not None:
                         all_alt.append(det["alt_ratio"])
 
@@ -547,6 +566,8 @@ class Step(CombatExperimentPPOBase):
                 "cycles": round(sum(all_cycles) / max(len(all_cycles), 1), 2),
                 "swings": round(sum(all_swings) / max(len(all_swings), 1), 2),
                 "hmax": round(sum(all_hmax) / max(len(all_hmax), 1), 3),
+                "solepk": round(sum(all_solepk) / max(len(all_solepk), 1), 3)
+                        if all_solepk else None,
                 "alt": round(sum(all_alt) / max(len(all_alt), 1), 3)
                       if all_alt else None,
             },
@@ -576,8 +597,15 @@ class Step(CombatExperimentPPOBase):
         c_right = extract_per_step_field(
             episode.observer_outputs, foot_key, "right_foot_contact", T,
         )
+        sole_left = extract_per_step_field(
+            episode.observer_outputs, foot_key, "sole_clear_left", T,
+        )
+        sole_right = extract_per_step_field(
+            episode.observer_outputs, foot_key, "sole_clear_right", T,
+        )
         if phi is None or h_left is None or h_right is None \
-                or c_left is None or c_right is None:
+                or c_left is None or c_right is None \
+                or sole_left is None or sole_right is None:
             return None
 
         standing = np.asarray(phi[:T], dtype=np.float32) >= Step.step_phi_gate
@@ -587,6 +615,8 @@ class Step(CombatExperimentPPOBase):
             np.asarray(h_left[:T], dtype=np.float32),
             np.asarray(h_right[:T], dtype=np.float32),
             standing,
+            sole_left=np.asarray(sole_left[:T], dtype=np.float32),
+            sole_right=np.asarray(sole_right[:T], dtype=np.float32),
             min_air_steps=Step.step_min_air_frames,
             h_thresh=Step.step_lift_threshold,
         )
@@ -594,12 +624,14 @@ class Step(CombatExperimentPPOBase):
     def state(self) -> dict:
         return {
             "best_potential": self._best_potential,
+            "best_step": self._best_step,
             "success_rate": self._success_rate,
             "last_best_update": self._last_best_update,
         }
 
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
+        self._best_step = float(state.get("best_step", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
         self._last_best_update = int(state.get("last_best_update", 0))
 

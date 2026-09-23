@@ -39,6 +39,35 @@ def _seq(T: int, events: list) -> tuple:
     return cl, cr, hl, hr
 
 
+def _seq_with_sole(T: int, events: list) -> tuple:
+    """Like ``_seq`` but also returns sole-clearance arrays.
+
+    events: (start, end, foot, h_peak) or (start, end, foot, h_peak,
+    sole_peak).  When sole_peak is omitted it equals h_peak — a flat
+    lift where midpoint and sole rise together.  Pass sole_peak ≈ 0 to
+    model foot-rocking (midpoint rises by tilting while a sole edge
+    stays at ground level).
+    """
+    cl = np.ones(T, dtype=bool)
+    cr = np.ones(T, dtype=bool)
+    hl = np.zeros(T, dtype=np.float32)
+    hr = np.zeros(T, dtype=np.float32)
+    sl = np.zeros(T, dtype=np.float32)
+    sr = np.zeros(T, dtype=np.float32)
+    for ev in events:
+        a, b, foot, hp = ev[:4]
+        sp = ev[4] if len(ev) > 4 else hp
+        if foot == "left":
+            cl[a:b] = False
+            hl[a:b] = np.linspace(0.0, hp, b - a)
+            sl[a:b] = np.linspace(0.0, sp, b - a)
+        else:
+            cr[a:b] = False
+            hr[a:b] = np.linspace(0.0, hp, b - a)
+            sr[a:b] = np.linspace(0.0, sp, b - a)
+    return cl, cr, hl, hr, sl, sr
+
+
 def test_clean_alternating_gait():
     T = 200
     cl, cr, hl, hr = _seq(T, [
@@ -131,6 +160,40 @@ def test_nonstanding_liftoff_rejected():
     assert r["n_cycles_left"] == 0
     assert r["n_cycles_right"] == 1
     assert r["stepped"] is False  # only one foot has a valid cycle
+
+
+def test_foot_rocking_is_not_a_step():
+    """Regression for the run-064853 reward hack: pivoting on the toe or
+    side edge lifts the foot midpoint past h_thresh while sole clearance
+    stays ~0 — must not count as a cycle."""
+    T = 200
+    cl, cr, hl, hr, sl, sr = _seq_with_sole(T, [
+        (50, 60, "left", 0.08, 0.005),   # midpoint 8cm, sole 5mm
+        (70, 80, "right", 0.08, 0.005),
+        (90, 100, "left", 0.08, 0.005),
+        (110, 120, "right", 0.08, 0.005),
+    ])
+    standing = np.ones(T, dtype=bool)
+    r = detect_step_cycles(cl, cr, hl, hr, standing, sl, sr)
+    assert r["n_swings"] == 4          # attempts still counted
+    assert len(r["cycles"]) == 0       # but none are valid
+    assert r["stepped"] is False
+    assert abs(r["sole_swing_max"] - 0.005) < 1e-6
+
+
+def test_real_lift_with_sole_clear_counts():
+    """Flat lift: sole clearance tracks midpoint → valid cycles."""
+    T = 200
+    cl, cr, hl, hr, sl, sr = _seq_with_sole(T, [
+        (50, 60, "left", 0.08),        # sole defaults to h_peak
+        (70, 80, "right", 0.08),
+    ])
+    standing = np.ones(T, dtype=bool)
+    r = detect_step_cycles(cl, cr, hl, hr, standing, sl, sr)
+    assert r["n_cycles_left"] == 1
+    assert r["n_cycles_right"] == 1
+    assert r["stepped"] is True
+    assert abs(r["sole_swing_max"] - 0.08) < 1e-6
 
 
 # ----------------------------------------------------------------------
@@ -240,6 +303,8 @@ def _make_step_episode(T: int, events: list):
     acts = np.zeros((T, 21), dtype=np.float32)
     foot = {
         "h_left_foot": hl, "h_right_foot": hr,
+        "sole_clear_left": hl.copy(),      # flat lift: sole tracks h
+        "sole_clear_right": hr.copy(),
         "left_foot_contact": cl.astype(np.float32),
         "right_foot_contact": cr.astype(np.float32),
     }
@@ -329,7 +394,7 @@ def test_clock_foot_weights_apex_coast():
     hl[:] = 0.0
     hl[4] = 0.06; hl[5] = 0.05  # above thresh, falling -> coast (0)
     wl, wr = clock_foot_weights(
-        T, h_left=hl, h_right=hr, period=P)
+        T, sole_left=hl, sole_right=hr, period=P)
     assert wl[4] > 0       # rising into apex
     assert wl[5] == 0      # high + descending mid-window -> coast
     assert wl[16] < 0      # land phase

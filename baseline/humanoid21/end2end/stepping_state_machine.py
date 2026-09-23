@@ -150,6 +150,13 @@ SWING_LIFT_THRESHOLD: float = 0.05
 encouragement turns off.  If the swing foot hasn't risen above this,
 a +W actor weight is applied to keep pushing it up."""
 
+SOLE_CLEAR_THRESHOLD: float = 0.03
+"""Minimum sole clearance (m) for a swing to count as a real step.
+Sole clearance = min world-z over the four foot capsule endpoints minus
+geom radius: ~0 while any sole edge is at ground level, so foot-rocking
+(pivot on toe/side edge) cannot fake it — unlike midpoint ``h``, which
+rises under a pure tilt (run 064853 exploited exactly this)."""
+
 
 def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
     """Remove short bursts in both directions (post-hoc, no delay).
@@ -398,13 +405,13 @@ GAIT_LAND_FRAC: float = 0.75
 
 def clock_foot_weights(
     T: int,
-    h_left: Optional[np.ndarray] = None,
-    h_right: Optional[np.ndarray] = None,
+    sole_left: Optional[np.ndarray] = None,
+    sole_right: Optional[np.ndarray] = None,
     *,
     period: int = GAIT_PERIOD,
     land_frac: float = GAIT_LAND_FRAC,
     weight: float = FOOT_WEIGHT,
-    lift_threshold: float = SWING_LIFT_THRESHOLD,
+    lift_threshold: float = SOLE_CLEAR_THRESHOLD,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Per-frame actor weights driven by the observable gait clock.
 
@@ -418,19 +425,23 @@ def clock_foot_weights(
     Rules per frame ``t`` (later gated by φ² in the experiment — the
     raw schedule runs regardless of standing state):
 
-    - commanded foot: ``+W`` while below ``lift_threshold`` or still
-      rising (apex-aligned); once the window passes ``land_frac`` of its
-      length the command flips to ``-W`` so the foot lands before the
-      window ends.  A commanded foot that is already high and no longer
-      rising mid-window gets 0 (coast).
+    - commanded foot: ``+W`` while sole clearance is below
+      ``lift_threshold`` or still rising (apex-aligned); once the window
+      passes ``land_frac`` of its length the command flips to ``-W`` so
+      the foot lands before the window ends.  A commanded foot that is
+      already clear and no longer rising mid-window gets 0 (coast).
     - support foot: ``-W`` — it must stay down; an uncommanded lift is
       always punished (self-correction built in).
+
+    ``sole_*`` must be sole clearance (min capsule-endpoint z − radius),
+    NOT midpoint height — midpoint rises under foot-rocking and would
+    mark a pivot as "lifted".
     """
     w_left = np.zeros(T, dtype=np.float32)
     w_right = np.zeros(T, dtype=np.float32)
     half = max(1, period // 2)
-    hl = np.asarray(h_left, dtype=np.float32) if h_left is not None else None
-    hr = np.asarray(h_right, dtype=np.float32) if h_right is not None else None
+    sl = np.asarray(sole_left, dtype=np.float32) if sole_left is not None else None
+    sr = np.asarray(sole_right, dtype=np.float32) if sole_right is not None else None
 
     for t in range(T):
         pos = t % period
@@ -439,7 +450,7 @@ def clock_foot_weights(
         else:
             cmd_left, wprog = False, (pos - half) / half
 
-        h_cmd = (hl if cmd_left else hr)
+        h_cmd = (sl if cmd_left else sr)
         h_cmd_t = float(h_cmd[t]) if h_cmd is not None else None
         h_prev = (
             float(h_cmd[t - 1]) if h_cmd is not None and t > 0 else h_cmd_t
@@ -469,10 +480,13 @@ def detect_step_cycles(
     h_left: np.ndarray,
     h_right: np.ndarray,
     standing: np.ndarray,
+    sole_left: Optional[np.ndarray] = None,
+    sole_right: Optional[np.ndarray] = None,
     *,
     hold: int = CONTACT_HOLD_STEPS,
     min_air_steps: int = 3,
     h_thresh: float = SWING_LIFT_THRESHOLD,
+    sole_thresh: float = SOLE_CLEAR_THRESHOLD,
 ) -> dict:
     """Post-hoc detection of valid step cycles on debounced contacts.
 
@@ -481,10 +495,14 @@ def detect_step_cycles(
     least ``min_air_steps`` frames.  A *valid step cycle* additionally
     requires:
 
-      1. peak foot height during the swing >= ``h_thresh``;
-      2. the run ends with F regaining contact (lands) — runs that end in
+      1. peak foot midpoint height during the swing >= ``h_thresh``;
+      2. when ``sole_*`` clearance arrays are given, peak sole clearance
+         during the swing >= ``sole_thresh`` — this rejects foot-rocking
+         (pivot on toe/side edge lifts the midpoint but leaves sole
+         clearance ~0);
+      3. the run ends with F regaining contact (lands) — runs that end in
          FLIGHT (hop/stumble) or at episode end do not count;
-      3. the landing frame is also a standing frame (falling down is not
+      4. the landing frame is also a standing frame (falling down is not
          a step).
 
     Because the run is contiguous SUPPORT_* by construction, the other
@@ -510,11 +528,14 @@ def detect_step_cycles(
     h_left = np.asarray(h_left, dtype=np.float32)
     h_right = np.asarray(h_right, dtype=np.float32)
     standing = np.asarray(standing, dtype=bool)
+    sole_l = np.asarray(sole_left, dtype=np.float32) if sole_left is not None else None
+    sole_r = np.asarray(sole_right, dtype=np.float32) if sole_right is not None else None
     T = len(contact_l)
 
     cycles = []
     n_swings = 0
     h_peaks = []
+    sole_peaks = []
 
     t = 0
     while t < T:
@@ -533,13 +554,20 @@ def detect_step_cycles(
             continue
         h_swing = h_left if swing_is_left else h_right
         h_peak = float(h_swing[a:b].max())
+        sole_swing = sole_l if swing_is_left else sole_r
+        sole_peak = (
+            float(sole_swing[a:b].max()) if sole_swing is not None else None
+        )
         n_swings += 1
         h_peaks.append(h_peak)
+        if sole_peak is not None:
+            sole_peaks.append(sole_peak)
 
         landed = b < T and (
             bool(contact_l[b]) if swing_is_left else bool(contact_r[b])
         )
-        if landed and standing[b] and h_peak >= h_thresh:
+        sole_ok = sole_peak is None or sole_peak >= sole_thresh
+        if landed and standing[b] and h_peak >= h_thresh and sole_ok:
             cycles.append(("left" if swing_is_left else "right", a, b, h_peak))
 
     n_alt = sum(
@@ -553,6 +581,9 @@ def detect_step_cycles(
         "n_cycles_right": len(cycles) - n_left,
         "n_swings": n_swings,
         "h_swing_max": float(np.mean(h_peaks)) if h_peaks else 0.0,
+        "sole_swing_max": (
+            float(np.mean(sole_peaks)) if sole_peaks else None
+        ),
         "alt_ratio": (n_alt / (len(cycles) - 1)) if len(cycles) >= 2 else None,
         "stepped": n_left >= 1 and (len(cycles) - n_left) >= 1,
     }

@@ -1,8 +1,12 @@
 """Observer plugin that outputs per-step foot heights and contact states.
 
-Outputs four values per step:
+Outputs six values per step:
   - h_left_foot:  left foot midpoint height above standing foot height
   - h_right_foot: right foot midpoint height above standing foot height
+  - sole_clear_left:  left sole clearance — min world-z over the four
+    foot capsule endpoints minus geom radius (~0 while any part of the
+    sole is at ground level; only rises when the WHOLE foot is airborne)
+  - sole_clear_right: same for the right foot
   - left_foot_contact:  whether left foot is in contact with ground
   - right_foot_contact: whether right foot is in contact with ground
 
@@ -37,6 +41,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
+import numpy as np
+
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 
@@ -54,6 +60,39 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 #   < 0  when squatting
 STANDING_FOOT_Z: float = 0.027
 
+# Foot capsule geometry (battle XML ``foot1/foot2`` class defaults,
+# identical for robot_a and robot_b): each foot is two capsules running
+# heel→toe side by side.  ``fromto`` endpoints are in the body frame.
+FOOT_GEOM_RADIUS: float = 0.027
+FOOT_ENDPOINTS_LOCAL = (
+    (-0.07, -0.01, 0.0), (0.14, -0.03, 0.0),   # foot1 from / to
+    (-0.07,  0.01, 0.0), (0.14,  0.03, 0.0),   # foot2 from / to
+)
+
+
+def _quat_rot_z(quat: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Rotate ``points`` (...,3) by MuJoCo quaternion ``quat`` [w,x,y,z]
+    and return the world z-coordinates."""
+    w, x, y, z = quat
+    # Rotation-matrix third row for [w,x,y,z] (MuJoCo convention).
+    r31 = 2.0 * (x * z + w * y)
+    r32 = 2.0 * (y * z - w * x)
+    r33 = 1.0 - 2.0 * (x * x + y * y)
+    return points[..., 0] * r31 + points[..., 1] * r32 + points[..., 2] * r33
+
+
+def sole_clearance(xpos, xquat) -> float:
+    """Min world-z of the four foot capsule endpoints minus geom radius.
+
+    ~0 while any edge of the sole is at ground level (standing flat or
+    pivot-rocking on toe/side); >0 only when the entire foot is off the
+    ground.  This is the rock-proof counterpart of midpoint ``h`` which
+    rises when the foot merely tilts.
+    """
+    pts = np.asarray(FOOT_ENDPOINTS_LOCAL, dtype=np.float64)
+    z = float(xpos[2]) + _quat_rot_z(np.asarray(xquat, dtype=np.float64), pts)
+    return float(z.min()) - FOOT_GEOM_RADIUS
+
 
 class FootStateObserver(BaseObserverPlugin):
     """Per-agent foot state observer.
@@ -68,6 +107,8 @@ class FootStateObserver(BaseObserverPlugin):
 
         self._h_left: float = 0.0
         self._h_right: float = 0.0
+        self._sole_left: float = 0.0
+        self._sole_right: float = 0.0
         self._left_contact: bool = False
         self._right_contact: bool = False
         self._ground_geom_name: str = ""
@@ -128,6 +169,19 @@ class FootStateObserver(BaseObserverPlugin):
         self._h_left = left_z - self.standing_foot_z
         self._h_right = right_z - self.standing_foot_z
 
+        body_xpos = robot_state.get('body_xpos')
+        body_xquat = robot_state.get('body_xquat')
+        if body_xpos is not None and body_xquat is not None:
+            self._sole_left = sole_clearance(
+                body_xpos[left_key], body_xquat[left_key],
+            )
+            self._sole_right = sole_clearance(
+                body_xpos[right_key], body_xquat[right_key],
+            )
+        else:
+            self._sole_left = 0.0
+            self._sole_right = 0.0
+
         # --- Contact detection ---
         cv = derived_state.get('contacts')
         self._left_contact, self._right_contact = self._detect_contact(
@@ -142,6 +196,8 @@ class FootStateObserver(BaseObserverPlugin):
         return {
             "h_left_foot": self._h_left,
             "h_right_foot": self._h_right,
+            "sole_clear_left": self._sole_left,
+            "sole_clear_right": self._sole_right,
             "left_foot_contact": self._left_contact,
             "right_foot_contact": self._right_contact,
         }
