@@ -366,3 +366,35 @@ swings ~10/ep 与周期 40 步时钟吻合。
 训也可恢复。
 
 **后续**：以此 ckpt(u01550) 为起点跑 seed 43/44 验证三 seed 标尺。
+
+### 视频验证推翻指标结论（u01700.mp4）—— reward hacking 实锤
+
+人工查看 eval 视频：**不是迈步**。机器人双脚交替踮脚尖/侧沿
+（~0.3s 一换，正好是时钟周期），脚无明显离地，20 秒内摔 2 次。
+step=0.85 的 eval 指标是被骗出来的：
+
+- `r_foot = clip(h,0,.05)` 用 foot body midpoint z —— 踮脚倾转把
+  中点撬起 >5cm，无需离地
+- `detect_step_cycles` 要求 contact=0 ≥3 帧 —— 换支点的瞬间整脚
+  瞬时空载，bounce 恰好满足
+- 周期 0.3s ≈ 时钟半窗 —— 策略踩着时钟节拍晃脚
+
+### 干预 #6（commit d861c4b）：sole clearance 物理量替换 midpoint
+
+- `FootStateObserver` 新增 `sole_clear_{left,right}`：四个脚胶囊
+  端点世界 z 最小值 − 半径。踮脚 pivot 时 ≈0（下端点仍贴地），
+  只有整脚腾空才 >0 —— 数学验证：45° heel-pivot → 0，平抬 5cm → 5cm
+- 奖励值：`r_foot = clip(sole_clear, 0, .05)`；`clock_foot_weights`
+  的 lift/rising 判定、`detect_step_cycles` 有效性（要求摆动段
+  sole_peak ≥ 3cm）全部切到 sole_clear；eval 新增 `solepk` 指标
+- 附带修复：early-stop 指标饱和 bug（6686cdb）
+- 20/20 测试过（新增 rocking 回归用例）
+
+旧 run s43/s44（hackable 奖励）已终止；三 seed 重新从 u01550 开跑：
+s42_v2(GPU0, pid 3830278) / s43_v2(GPU1, pid 3838856) /
+s44_v2(GPU5, pid 3844282)。u1551 基线 foot reward_mean≈0.003
+（hacking 版 ~0.01+）—— 踮脚收益归零，需重新学真腾空。
+
+**判据**：eval 的 `solepk`/`step` 指标。若 solepk 长期 ≈0 → 探索
+产生不了真腾空，需回到 ef（探索增强）或动作先验。三 seed 全达标
+才算过验收标尺。
