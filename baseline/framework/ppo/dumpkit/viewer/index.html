@@ -338,9 +338,9 @@
   .traj-controls select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 3px 6px; border-radius: 4px; font-size: 12px; }
 
   /* Charts */
-  .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
-  .chart-container h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-  svg.chart { width: 100%; height: 200px; cursor: crosshair; }
+  .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .chart-container h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  svg.chart { width: 100%; height: 140px; cursor: crosshair; }
   .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; }
   .chart-legend .leg-item { display: flex; align-items: center; gap: 4px; cursor: pointer; }
   .chart-legend .leg-item.disabled { opacity: 0.4; }
@@ -470,8 +470,8 @@
   .trk-dot { position: absolute; width: 6px; height: 6px; border-radius: 3px; transform: translate(-3px, -3px); pointer-events: none; z-index: 2; }
   .trk-pt { position: absolute; font-size: 10px; font-family: ui-monospace, monospace; transform: translate(6px, -8px); pointer-events: none; z-index: 2; white-space: nowrap; text-shadow: 0 0 3px var(--panel-alt), 0 0 3px var(--panel-alt); }
   .trk-sep { border-top: 1px dashed var(--border); margin: 10px 0 4px; }
-  .merge-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
-  .merge-group-head { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin-bottom: 8px; display: flex; gap: 16px; align-items: baseline; }
+  .merge-group { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
+  .merge-group-head { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin-bottom: 6px; display: flex; gap: 16px; align-items: baseline; }
   .merge-group-head .ch { color: var(--accent); font-weight: 600; }
   .merge-group-head .conf-on { color: #6ec86e; }
   .merge-group-head .conf-off { color: var(--muted); }
@@ -1262,7 +1262,7 @@
   }
 
   // --- SVG chart helper ---
-  const CHART_COLORS = ['#4fa3ff', '#e06c75', '#6ec86e', '#e5c07b', '#c678dd', '#d19a66'];
+  const CHART_COLORS = ['#4da6ff', '#ff5c57', '#3ddc84', '#ffc233', '#c77dff', '#ff8c42'];
 
   // Named dash styles for series.dash / legend dim swatches.
   const DASH_PATTERNS = {dot: '2,3', dash: '6,3', longdash: '10,4', dashdot: '8,3,2,3'};
@@ -3817,7 +3817,7 @@
   // Each lane draws that trajectory's signals inside its clip span
   // [t_start, t_start+len): per-channel reward (solid) + actor_weight
   // (dashed).  Click lane → jump to tool ② for that trajectory.
-  const EP_CH_COLORS = ['#4fa3ff', '#6ec86e', '#c678dd', '#e6a23c', '#56b6c2'];
+  const EP_CH_COLORS = ['#4da6ff', '#3ddc84', '#c77dff', '#ff9f43', '#4dd0e1'];
 
   // Value range of a series for legend display: "lo–hi".
   function _rng(data) {
