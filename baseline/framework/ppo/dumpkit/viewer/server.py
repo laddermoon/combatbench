@@ -1280,6 +1280,10 @@ class ViewerAPI:
                 return self._advnorm(query)
             elif endpoint == "merge":
                 return 200, _da.merge_summary(self.data)
+            elif endpoint == "postupdate":
+                return 200, _da.post_update_summary(self.data)
+            elif endpoint == "delta_list":
+                return 200, {"episodes": self._delta_list()}
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -1963,6 +1967,27 @@ class ViewerAPI:
         v = p.get("adv_norm")
         return str(v) if v is not None else None
 
+    def _delta_list(self) -> List[Dict[str, Any]]:
+        """Computed policy-drift deltas: dump_dir/delta/episode_*/meta.json."""
+        out: List[Dict[str, Any]] = []
+        root = self.data.dump_dir / "delta"
+        if not root.is_dir():
+            return out
+        for ep_dir in sorted(root.iterdir()):
+            meta = ep_dir / "meta.json"
+            if not meta.exists():
+                continue
+            try:
+                m = json.loads(meta.read_text(encoding="utf-8"))
+                out.append({
+                    "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
+                    "gen_updates": m.get("gen_updates", []),
+                    "missing_updates": m.get("missing_updates", []),
+                })
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
+        return out
+
     def _pipeline(self) -> Dict[str, Any]:
         out = _da.pipeline_summary(self.data)
         params = self._channel_gae_params()
@@ -1975,6 +2000,44 @@ class ViewerAPI:
         st = out.get("stages", {}).get("advnorm", {})
         if st.get("method") is None:
             st["method"] = self._adv_norm_method()
+
+        # ⑤ Grad Analyze — scalars only; the heatmap/samples live on the
+        # tool page via /api/gradsig + /api/gradsig/samples.
+        gs = _dump_gradsig(self.data)
+        out["stages"]["gradsig"] = (
+            {
+                "available": True,
+                "partial": bool(gs.get("partial")),
+                "gnorm": gs.get("gnorm"),
+                "coherence": gs.get("coherence"),
+                "frac_neg": gs.get("frac_neg"),
+                "dir_cos": gs.get("dir_cos"),
+                "n_sampled": gs.get("n_sampled"),
+                "n_valid": gs.get("n_valid"),
+            } if gs else {"available": False})
+
+        # ⑦ Post Update — scalars only; full per-epoch detail on the tool
+        # page via /api/postupdate.
+        pu = _da.post_update_summary(self.data)
+        upd = pu.get("update") or {}
+        out["stages"]["postupdate"] = {
+            "available": pu.get("available", False),
+            "n_epochs": pu.get("n_epochs"),
+            "actor_stopped_epoch": pu.get("actor_stopped_epoch"),
+            "epochs_done": upd.get("epochs_done"),
+            "actor_epochs_done": upd.get("actor_epochs_done"),
+            "kl_mean": upd.get("kl_mean"),
+            "kl_max": upd.get("kl_max"),
+            "clip_frac_mean": upd.get("clip_frac_mean"),
+            "post_clip_dloss_mean": upd.get("post_clip_dloss_mean"),
+            "post_clip_dloss_gain": upd.get("post_clip_dloss_gain"),
+            "post_clip_dloss_harm": upd.get("post_clip_dloss_harm"),
+            "rbin": pu.get("rbin") or {},
+        }
+
+        # ⑧ Delta Analyze — which episodes already have computed deltas.
+        out["stages"]["delta"] = {"episodes": self._delta_list()}
+
         out["channel_gae_params"] = params
         return out
 

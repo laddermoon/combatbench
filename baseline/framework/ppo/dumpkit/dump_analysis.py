@@ -1016,3 +1016,116 @@ def merge_summary(ds: DumpDataset, bins: int = 64) -> Dict[str, Any]:
     out["adv_winsorize_clip_frac"] = _f(comb.scalar("adv_winsorize_clip_frac"))
     out["available"] = bool(channels) or fin is not None
     return out
+
+
+def post_update_summary(ds: DumpDataset) -> Dict[str, Any]:
+    """Stage ⑦ Post Update — what the optimizer did to θ_old.
+
+    Buffer-level aggregates per epoch (epoch_frames.npz: ratio /
+    clip_mask / new_log_prob / new_value evaluated on the full buffer
+    after each epoch), plus update.npz scalars (KL, rbin ratio profile,
+    post_clip_dloss) and per-epoch minibatch stats grouped from
+    timeline.npz (epoch_idx).  The per-trajectory drill-down stays on
+    the epoch_* endpoints — this is the whole-buffer view.
+    """
+    upd = ds.npz("update")
+    ef = ds.npz("epoch_frames")
+    out: Dict[str, Any] = {"available": bool(ef.available or upd.available)}
+
+    # -- update-level scalars ------------------------------------------------
+    if upd.available:
+        scal: Dict[str, Any] = {}
+        for k in ("kl_mean", "kl_max", "early_stop_kl_mean",
+                  "clip_frac_mean", "clip_frac_hi_mean", "clip_frac_lo_mean",
+                  "ratio_mean", "ratio_min", "ratio_max",
+                  "post_clip_dloss_mean", "post_clip_dloss_gain",
+                  "post_clip_dloss_harm", "policy_loss_mean",
+                  "grad_norm_actor_mean", "grad_norm_actor_pre_clip"):
+            v = upd.scalar(k)
+            if v is not None:
+                scal[k] = _f(v)
+        for k in ("epochs_done", "actor_epochs_done", "n_batches",
+                  "n_trajectories", "total_frames"):
+            v = upd.scalar(k)
+            if v is not None:
+                scal[k] = int(v)
+        out["update"] = scal
+        out["rbin"] = {k: _f(upd.scalar(k))
+                       for k in upd.keys() if k.startswith("rbin_")}
+
+    # -- per-epoch aggregates over the full buffer ---------------------------
+    n_epochs = int(ef.scalar("n_epochs") or 0) if ef.available else 0
+    out["n_epochs"] = n_epochs
+    ase = ef.scalar("actor_stopped_epoch") if ef.available else None
+    out["actor_stopped_epoch"] = int(ase) if ase is not None else -1
+
+    tl = ds.timeline if ds.npz("timeline").available else None
+    clip_eps = _f(tl.scalar("clip_eps")) if tl is not None else None
+    if clip_eps is None:
+        clip_eps = 0.2
+    out["clip_eps"] = clip_eps
+
+    old_lp = ds.frames.col("log_probs")
+    old_vals = ds.npz("gae").get_dict("values_all") or {}
+
+    # timeline minibatch stats grouped by epoch
+    tl_by_epoch: Dict[int, Dict[str, Any]] = {}
+    if tl is not None:
+        ei = tl.col("epoch_idx")
+        if ei is not None:
+            ei = np.asarray(ei)
+            for e in range(n_epochs):
+                m = ei == e
+                if not m.any():
+                    continue
+                ent: Dict[str, Any] = {"n_mb": int(m.sum())}
+                for k in ("kl", "clip_frac", "policy_loss", "actor_grad",
+                          "dtheta_norm"):
+                    a = tl.col(k)
+                    if a is not None:
+                        v = np.asarray(a, dtype=np.float64)[m]
+                        ent[k + "_mean"] = _f(np.nanmean(v))
+                aa = tl.col("actor_active")
+                if aa is not None:
+                    ent["actor_active_frac"] = _f(
+                        np.asarray(aa, dtype=np.float64)[m].mean())
+                tl_by_epoch[e] = ent
+
+    epochs: List[Dict[str, Any]] = []
+    for e in range(n_epochs):
+        ent = dict(tl_by_epoch.get(e, {"n_mb": 0}))
+        ent["epoch"] = e
+        r = ef.get(f"ratio.{e}")
+        if r is not None:
+            r = np.asarray(r, dtype=np.float64)
+            r = r[np.isfinite(r)]
+            if r.size:
+                ent["buf_ratio_mean"] = _f(r.mean())
+                ent["buf_ratio_min"] = _f(r.min())
+                ent["buf_ratio_max"] = _f(r.max())
+                ent["buf_frac_out"] = _f(np.mean(np.abs(r - 1) > clip_eps))
+        cm = ef.get(f"clip_mask.{e}")
+        if cm is not None:
+            ent["buf_clip_frac"] = _f(np.asarray(cm, dtype=np.float64).mean())
+        nlp = ef.get(f"new_log_prob.{e}")
+        if nlp is not None and old_lp is not None:
+            d = np.asarray(nlp, dtype=np.float64) - np.asarray(old_lp, dtype=np.float64)
+            d = d[np.isfinite(d)]
+            if d.size:
+                ent["dlogp_mean"] = _f(d.mean())
+                ent["dlogp_std"] = _f(d.std())
+        vd: Dict[str, Any] = {}
+        for ch in ds.channel_names:
+            nv = ef.get(f"new_value.{e}.{ch}")
+            ov = old_vals.get(ch)
+            if nv is not None and ov is not None:
+                diff = (np.asarray(nv, dtype=np.float64)
+                        - np.asarray(ov, dtype=np.float64))
+                diff = diff[np.isfinite(diff)]
+                if diff.size:
+                    vd[ch] = _f(diff.mean())
+        if vd:
+            ent["value_drift"] = vd
+        epochs.append(ent)
+    out["epochs"] = epochs
+    return out

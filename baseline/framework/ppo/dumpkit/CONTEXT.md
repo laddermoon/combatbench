@@ -94,7 +94,8 @@ debug.py render <dump_dir> --episode 0
 
 # —— 策略这几代漂了多少？（离线确定性回放，无需 run 在跑）
 debug.py delta <dump_dir> --episode 0 --gens 3
-#   → dumps/uNNNNN/delta/episode_NNNNN/（仅 CLI；viewer 不展示）
+#   → dumps/uNNNNN/delta/episode_NNNNN/；viewer ⑧ Delta Analyze 页可
+#     按需触发（与 render 共享单 job 槽）并画图
 
 # —— 交互界面（给人看）
 debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
@@ -136,6 +137,8 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     trajectory/<i>/gae?channel&gamma&lam      # 服务端复用 compute_gae 重算
     advnorm?channel&method&traj               # 复用 normalize_advantages 试算
     merge                                     # 通道合并：normed×conf×aw→combined
+    postupdate                                # ⑦全 buffer 逐 epoch 聚合
+    delta_list                                # ⑧已算 delta 清单
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
 POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 ```
@@ -148,40 +151,43 @@ last10 eval、早停率、耗时）。单图 ≤12 线叠加（run 色+key 虚�
 按 run 拆并排面板（恢复 channel 配色）。入口：runs 索引 checkbox /
 run 首页 "compare →" / 页内 chips。
 
-## Viewer 页面结构（dump 层，2026-02 重构）
+## Viewer 页面结构（dump 层，八模块管线）
 
-dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
+dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总卡 +
+`open tool →` 链接；工具页 = 该功能的详细钻取，各自独立 URL、
+保持内聚（不跨界放别阶段的图）。
 
-- **dump 主页 = 管线看板**：①Episode→Trajectory ②Reward→ADV ③ADV
-  Normalization ④Channel Merge 四张汇总卡（`/api/pipeline`）+
-  Update Process（timeline 摘要，"full timeline →" 下钻）+ Gradient
-  Signal。每卡只放汇总 + `open tool →` 入口，**没有 episode 列表**。
-- **工具页**（各自独立 URL，结构同构：traj picker + 大图 + 缩略图
-  时间线 + scrubber + 页专属曲线）。分工原则：主页看汇总/分布，
-  工具页只做 trajectory 级下钻——分布图不进工具页。
-  - `/episode/<pos>` —— ①的钻取：与其它工具页同一个视频编辑器骨架
-    （大图+缩略图+scrubber，帧游标共享）。下方 Tracks 卡 = episode
-    轴上的多轨道区：先 scalar key 选择器（只枚举 episode 侧列：
-    `observer.<o>.<f>` 标量 + `obs/actions/explore_factors.<aid>[i]`
-    向量，`/episode/<pos>/overview` 给清单、`/series?keys=` 取序列），
-    每条 key 一条 sparkline 轨；再每条 traj 一条 lane——lane 内画
-    该 traj 的逐帧信号（每通道 reward 实线 + actor_weight 虚线，各自
-    min-max 归一化到 lane 高，clip=[t_start,t_start+len) 之外留空），
-    标签列显示 traj·agent·当前帧值，点击 lane 跳 `/gae/<i>`。
-    所有轨道共享 playhead，scalar 轨点击设帧。帧级原始数据只在
-    最底部 frame readout（obs/actions/observer dict 按需展开）。
-  - `/gae/<i>` —— ②的钻取：视频编辑器布局（大图 + 缩略图时间线 +
-    reward/value/δ/adv 曲线），γ/λ 滑杆触发服务端
-    `/trajectory/<i>/gae` 用**训练同款 `compute_gae`** 重算
-    （验证过与 dump 存储值逐位一致）。旧 `/trajectory/<i>` URL 仍
-    兼容落到此页。
-  - `/advnorm` —— ③的钻取：通道选择 + method tabs（trained 方法高亮），
-    视频编辑器 stage + 单 traj raw vs normed 曲线，服务端
-    `normalize_advantages` 现算。分布直方图只在主页汇总卡。
-  - `/merge` —— ④的钻取：视频编辑器 stage + 单 traj per-channel
-    normed/aw/combined 曲线 + 帧读数（每通道 conf/ev/terminated 在
-    traj 表内）。合并的汇总与分布只在主页汇总卡。
-- `/timeline` 保留为 update 内部 step 级钻取页。
+- **dump 主页**：①Episode→Trajectory ②Reward→ADV ③ADV Norm
+  ④ADV Combine ⑤Grad Analyze（θ_old 下逐帧梯度信号标量）
+  ⑥Update Process（featured per-minibatch 曲线 + step 游标——
+  minibatch 序列即最粗粒度，是八块里唯一保留曲线的主页卡）
+  ⑦Post Update（epochs/早停/KL + rbin 位移签名条）
+  ⑧Delta Analyze（已算 delta 覆盖清单）。全部数据走
+  `/api/pipeline`（stages: ep2traj/gae/advnorm/merge/gradsig/
+  postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
+- **工具页**（结构同构：选择器 + 视频编辑器骨架大图/缩略图/
+  scrubber + 页专属曲线，帧游标跨页共享）：
+  - `/episode/<pos>` —— ①：episode 轴多轨道区：scalar key 轨
+    （只枚举 episode 侧列，`/episode/<pos>/overview` 清单 +
+    `/series?keys=` 序列，`vec[i]` 下标语法）+ 每 traj 一条 lane
+    （lane 内画每通道 reward 实线 + actor_weight 虚线，clip 区间
+    外留空，点击跳 ②）。帧级原始数据只在 frame readout。
+  - `/gae/<i>` —— ②：reward/value/δ/adv 曲线 + γ/λ 滑杆
+    （服务端复用 `compute_gae` 重算，与存储值逐位一致）。
+  - `/advnorm` —— ③：通道 + method tabs，单 traj raw vs normed。
+  - `/merge` —— ④：单 traj per-channel normed/aw/combined + 帧读数。
+  - `/gradsig` —— ⑤：norm×cos 热图 + 聚合标量 + top-samples 表
+    （sort/sign 控件），点行跳 traj 页。
+  - `/postupdate` —— ⑦：上卡 = 全 buffer 逐 epoch 聚合表
+    （`/api/postupdate`：timeline 按 epoch_idx 分组的 minibatch
+    统计 + epoch_frames 的 ratio/clip/Δlogp/value-drift + rbin +
+    post_clip_dloss）；下卡 = 共享骨架 + epoch 选择器 + 该 traj 的
+    per-epoch ratio/clip/new_value 曲线（`/trajectory/<i>/epoch_*`）。
+  - `/delta/<pos>` —— ⑧：episode picker + gens 选择器 +
+    Compute Δ（POST `/api/delta`，与 render 共享单 job 槽）+
+    episode 轴骨架 + 每 agent ‖Δ_g(t)‖ 曲线 + 当前帧分代动作
+    排序对比图。
+  - `/timeline` —— ⑥的钻取：全量 minibatch 图 + step detail。
 
 复用红线：GAE 与 adv 归一化预览**只能**调
 `baseline/framework/ppo/algos/advantages.py` 的 `compute_gae` /

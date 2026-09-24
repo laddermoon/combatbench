@@ -196,6 +196,26 @@
   .cap.on { color: #6ec86e; border-color: rgba(110,200,110,0.4); opacity: 1; }
   .cap.partial { color: #e5c07b; border-color: rgba(229,192,123,0.4); opacity: 1; }
   .gs-scope { font-size: 11px; color: var(--muted); font-weight: normal; }
+  .ana-duo { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .ana-duo { grid-template-columns: 1fr; } }
+  .ana-cell { min-width: 0; }
+  .gs-heat { margin: 10px 0 4px; }
+  .gs-heat svg { display: block; }
+  .gs-axis { font-size: 10px; fill: var(--muted); font-family: ui-monospace, monospace; }
+  .gs-side { display: flex; flex-direction: column; gap: 6px; }
+  .gs-side .stat { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; border-bottom: 1px dashed var(--border); padding: 3px 0; }
+  .gs-side .stat .label { color: var(--muted); }
+  .gs-side .stat .value { color: var(--text); }
+  .gs-side .stat .value.warn { color: var(--orange); }
+  .gs-ctl { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; font-size: 11px; color: var(--muted); }
+  .gs-ctl select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font-size: 11px; padding: 2px 4px; }
+  .gs-table tr[data-bi] { cursor: pointer; }
+  .gs-table tr[data-bi]:hover td { color: var(--accent); }
+  .delta-trigger { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+  .delta-trigger select { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; color: var(--text); padding: 2px 6px; font-size: 12px; }
+  .rbin { display: flex; height: 14px; border-radius: 3px; overflow: hidden; margin: 4px 0; }
+  .rbin div { min-width: 0; }
+  .rbin-legend { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); }
   .ks-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .ks-chip { font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text); background: var(--panel-alt); }
   .ks-chip:hover { border-color: var(--accent); }
@@ -646,10 +666,42 @@
           <div class="stage-stats" id="sum-merge"><div class="loading">loading...</div></div>
           <div class="stage-mini" id="sum-merge-hists"></div>
         </div>
-        <div class="card">
-          <h2>Update Process <a class="cmp-open-link" id="steps-open-timeline">full timeline →</a></h2>
-          <div class="desc">Per-minibatch record. Click any chart to set the shared step cursor.</div>
+        <div class="card stage-card" id="stage-gradsig">
+          <div class="stage-head">
+            <span class="stage-num">⑤</span>
+            <h2>Grad Analyze <span class="gs-scope">θ_old</span></h2>
+            <a class="stage-open" id="open-gradsig">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-gradsig"><div class="loading">loading...</div></div>
+          <div class="desc">Per-frame gradient signal under θ_old — which frames dominate the update direction.</div>
+        </div>
+        <div class="card stage-card" id="stage-update">
+          <div class="stage-head">
+            <span class="stage-num">⑥</span>
+            <h2>Update Process</h2>
+            <a class="stage-open" id="steps-open-timeline">open tool →</a>
+          </div>
+          <div class="desc">Per-minibatch record — the coarsest granularity of the update itself. Click any chart to set the shared step cursor.</div>
           <div id="steps-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card stage-card" id="stage-postupdate">
+          <div class="stage-head">
+            <span class="stage-num">⑦</span>
+            <h2>Post Update <span class="gs-scope">θ_new on buffer</span></h2>
+            <a class="stage-open" id="open-postupdate">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-postupdate"><div class="loading">loading...</div></div>
+          <div class="stage-mini" id="sum-postupdate-rbin"></div>
+          <div class="desc">How far the update pushed the policy — per-epoch ratio/clip/value drift on the same buffer.</div>
+        </div>
+        <div class="card stage-card" id="stage-delta">
+          <div class="stage-head">
+            <span class="stage-num">⑧</span>
+            <h2>Delta Analyze <span class="gs-scope">cross-generation</span></h2>
+            <a class="stage-open" id="open-delta">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-delta"><div class="loading">loading...</div></div>
+          <div class="desc">Policy drift across generations — deterministic actions replayed on stored observations.</div>
         </div>
       </div>
     </div>
@@ -740,6 +792,61 @@
       </div>
     </div>
 
+    <!-- Tool ⑤ Grad Analyze — buffer-level gradient diagnosis under
+         θ_old: norm×cos heatmap, aggregate stats, top-sample table that
+         traces back into trajectories. -->
+    <div class="page" id="page-gradsig">
+      <div class="tool-head" id="gs-tool-head"></div>
+      <div class="card">
+        <div class="ana-duo">
+          <div class="ana-cell"><div class="gs-heat" id="gs-heat"></div></div>
+          <div class="ana-cell"><div class="gs-side" id="gs-stats"></div></div>
+        </div>
+        <div id="gs-top"></div>
+      </div>
+    </div>
+
+    <!-- Tool ⑦ Post Update — what the update did to θ_old, on the same
+         buffer: per-epoch ratio/clip/value drift (buffer level), then a
+         trajectory-level epoch comparison on the shared stage. -->
+    <div class="page" id="page-postupdate">
+      <div class="tool-head" id="pu-tool-head"></div>
+      <div class="card" id="pu-buffer"></div>
+      <div class="card">
+        <h2>Per-trajectory epoch evolution <span class="gs-scope">this trajectory under each epoch's policy</span></h2>
+        <div class="ve-stage">
+          <div class="ve-bigimg" id="pu-bigimg"></div>
+          <div class="ve-thumbs" id="pu-thumbs"></div>
+          <div class="ve-scrub">
+            <button id="pu-btn-prev" class="t-nav">◀</button>
+            <input id="pu-slider" type="range" min="0" max="0" value="0" />
+            <button id="pu-btn-next" class="t-nav">▶</button>
+            <span class="t-info" id="pu-frame-label">- / -</span>
+          </div>
+        </div>
+        <div id="pu-traj-body"></div>
+      </div>
+    </div>
+
+    <!-- Tool ⑧ Delta Analyze — cross-generation drift: deterministic
+         actions of past policy generations replayed on this episode's
+         stored observations. Episode-axis stage, then per-agent drift
+         charts. -->
+    <div class="page" id="page-delta">
+      <div class="tool-head" id="delta-tool-head"></div>
+      <div class="ve-stage">
+        <div class="ve-bigimg" id="delta-bigimg"></div>
+        <div class="ve-thumbs" id="delta-thumbs"></div>
+        <div class="ve-scrub">
+          <button id="delta-btn-prev" class="t-nav">◀</button>
+          <input id="delta-slider" type="range" min="0" max="0" value="0" />
+          <button id="delta-btn-next" class="t-nav">▶</button>
+          <span class="t-info" id="delta-frame-label">- / -</span>
+        </div>
+      </div>
+      <div class="card"><div id="delta-body"></div></div>
+    </div>
+
     <!-- Timeline (Scene 4) -->
     <div class="page" id="page-timeline">
       <div class="timeline-layout" id="timeline-content"></div>
@@ -777,11 +884,11 @@
   </div>
 
   <div id="context-bar">
-    <div class="ctx-item" data-pages="episode"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
-    <div class="ctx-item" data-pages="gae advnorm merge"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
-    <div class="ctx-item" data-pages="episode gae advnorm merge"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item" data-pages="episode delta"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
+    <div class="ctx-item" data-pages="gae advnorm merge postupdate"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
+    <div class="ctx-item" data-pages="episode gae advnorm merge postupdate delta"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
     <div class="ctx-item" data-pages="timeline"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
-    <div class="ctx-item" data-pages="episode gae advnorm merge"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
+    <div class="ctx-item" data-pages="episode gae advnorm merge postupdate delta"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
   </div>
 </div>
 
@@ -840,6 +947,20 @@
     _stageLen: 0,             // current traj-stage length (shared keyboard nav)
     _stageRerender: null,     // current traj-stage redraw fn
 
+    // ⑤ Grad Analyze tool state
+    gradSig: null,
+    gsQuery: null,            // {sort, sign}
+
+    // ⑦ Post Update tool state
+    postUpdate: null,         // cached /api/postupdate payload
+    trajEpochCompare: null,
+    trajEpochOverview: null,
+    selectedEpoch: 0,
+
+    // ⑧ Delta Analyze tool state
+    deltaData: null,          // /episode/<pos>/delta payload for selectedEpisode
+    deltaGens: 3,
+
     // Pipeline summary cache (dump home cards)
     pipeline: null,
 
@@ -861,6 +982,9 @@
     gae: $('page-gae'),
     advnorm: $('page-advnorm'),
     merge: $('page-merge'),
+    gradsig: $('page-gradsig'),
+    postupdate: $('page-postupdate'),
+    delta: $('page-delta'),
     timeline: $('page-timeline'),
     dataflow: $('page-dataflow'),
     compare: $('page-compare'),
@@ -904,6 +1028,9 @@
       case 'gae': return `${r}${d}/gae/${state.selectedTraj}`;
       case 'advnorm': return `${r}${d}/advnorm`;
       case 'merge': return `${r}${d}/merge`;
+      case 'gradsig': return `${r}${d}/gradsig`;
+      case 'postupdate': return `${r}${d}/postupdate`;
+      case 'delta': return `${r}${d}/delta/${state.selectedEpisode ?? 0}`;
       case 'timeline': return `${r}${d}/timeline`;
       case 'dataflow': return `${r}${d}/dataflow`;
       case 'videos': return `${r}/videos`;
@@ -972,6 +1099,15 @@
     if (state.currentPage === 'merge') {
       crumbs.push({label: 'Channel Merge', page: 'merge'});
     }
+    if (state.currentPage === 'gradsig') {
+      crumbs.push({label: 'Grad Analyze', page: 'gradsig'});
+    }
+    if (state.currentPage === 'postupdate') {
+      crumbs.push({label: `Post Update · traj ${state.selectedTraj ?? ''}`, page: 'postupdate'});
+    }
+    if (state.currentPage === 'delta') {
+      crumbs.push({label: `Delta Analyze · ep ${state.selectedEpisode ?? ''}`, page: 'delta'});
+    }
     if (state.currentPage === 'timeline') {
       crumbs.push({label: 'Timeline', page: 'timeline'});
     }
@@ -1024,6 +1160,9 @@
     else if (page === 'gae') renderGae();
     else if (page === 'advnorm') renderAdvnorm();
     else if (page === 'merge') renderMerge();
+    else if (page === 'gradsig') renderGradsigPage();
+    else if (page === 'postupdate') renderPostUpdate();
+    else if (page === 'delta') renderDeltaPage();
     else if (page === 'timeline') renderTimeline();
     else if (page === 'dataflow') renderDataflow();
     else if (page === 'videos') renderVideos();
@@ -1333,6 +1472,13 @@
     state.epSeries = {};
     state.epKeys = [];
     state.epTrajOv = {};
+    state.gradSig = null;
+    state.gsQuery = null;
+    state.postUpdate = null;
+    state.trajEpochCompare = null;
+    state.trajEpochOverview = null;
+    state.selectedEpoch = 0;
+    state.deltaData = null;
   }
 
   async function selectDump(name) {
@@ -1512,6 +1658,20 @@
     } else if (sub.startsWith('/merge')) {
       showPage('merge');
       renderMerge();
+    } else if (sub.startsWith('/gradsig')) {
+      showPage('gradsig');
+      renderGradsigPage();
+    } else if (sub.startsWith('/postupdate')) {
+      showPage('postupdate');
+      renderPostUpdate();
+    } else if ((mm = sub.match(/^\/delta(?:\/(\d+))?/))) {
+      if (mm[1] !== undefined) {
+        state.selectedEpisode = parseInt(mm[1]);
+        state.deltaData = null;
+      }
+      state.selectedFrame = 0;
+      showPage('delta');
+      renderDeltaPage();
     } else if (sub.startsWith('/timeline')) {
       showPage('timeline');
       renderTimeline();
@@ -2931,6 +3091,10 @@
       if (state.currentPage === 'home') renderHome();
       else if (state.currentPage === 'episode') renderEpisode();
       else if (state.currentPage === 'gae') renderGaePage();
+      else if (state.currentPage === 'advnorm') renderNormTraj();
+      else if (state.currentPage === 'merge') renderMergeTraj();
+      else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
+      else if (state.currentPage === 'delta') renderDeltaPage();
       scheduleRenderPoll();
     } catch (e) {
       alert(String(e));
@@ -2961,19 +3125,28 @@
           if (state.currentPage === 'home') renderHome();
           else if (state.currentPage === 'episode') renderEpisode();
           else if (state.currentPage === 'gae') renderGaePage();
+          else if (state.currentPage === 'advnorm') renderNormTraj();
+          else if (state.currentPage === 'merge') renderMergeTraj();
+          else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
+          else if (state.currentPage === 'delta') renderDeltaPage();
         }
         scheduleRenderPoll();
       } else if (prev && prev.status === 'running') {
-        // Render just finished — reload the episode list (✓ flag) and
-        // refresh whichever view consumes the images.
+        // Job just finished — reload the episode list (✓ flag), drop any
+        // cached delta payload so it refetches, and refresh the view.
         if (state.dumpName || state.mode === 'dump') {
           try {
             state.episodeList = await fetchJson(api('episode_list'));
           } catch (e) { /* dump unloaded meanwhile — ignore */ }
+          if (prev.kind === 'delta') state.deltaData = null;
         }
         if (state.currentPage === 'home') renderHome();
         else if (state.currentPage === 'episode') renderEpisode();
         else if (state.currentPage === 'gae') renderGaePage();
+        else if (state.currentPage === 'advnorm') renderNormTraj();
+        else if (state.currentPage === 'merge') renderMergeTraj();
+        else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
+        else if (state.currentPage === 'delta') renderDeltaPage();
       }
     } catch (e) { /* status endpoint unavailable — ignore */ }
   }
@@ -2988,6 +3161,9 @@
     $('open-gae').onclick = () => selectTrajectory(state.selectedTraj ?? 0);
     $('open-advnorm').onclick = () => navigate('advnorm');
     $('open-merge').onclick = () => navigate('merge');
+    $('open-gradsig').onclick = () => navigate('gradsig');
+    $('open-postupdate').onclick = () => navigate('postupdate');
+    $('open-delta').onclick = () => navigate('delta');
   }
 
   // --- Pipeline stage cards (dump home) --------------------------------
@@ -3072,6 +3248,80 @@
         `<div class="mini-hist"><div class="mh-title">${escapeHtml(h2.label)}</div>${_histSvg(h2, 380, 60, false)}</div>`
       ).join('');
     }
+
+    // ⑤ Grad Analyze — scalars only; heatmap + top-samples live on the
+    // tool page.
+    {
+      const s = st.gradsig || {};
+      if (!s.available) {
+        $('sum-gradsig').innerHTML = '<div class="desc">gradsig.npz not captured</div>';
+      } else {
+        $('sum-gradsig').innerHTML =
+          _kv('‖G‖', fmt(s.gnorm, 3)) +
+          _kv('coherence', fmt(s.coherence, 3)) +
+          _kv('frac proj<0', _pct(s.frac_neg)) +
+          _kv('dir cos (prev G)', fmt(s.dir_cos, 3)) +
+          _kv('sampled', `${s.n_valid ?? '?'}/${s.n_sampled ?? '?'}`) +
+          (s.partial ? _kv('status', 'partial — no hist') : '');
+      }
+    }
+
+    // ⑦ Post Update — scalars + the rbin ratio profile (the signature
+    // of how far θ_new moved on the same buffer).
+    {
+      const s = st.postupdate || {};
+      if (!s.available) {
+        $('sum-postupdate').innerHTML = '<div class="desc">no update/epoch data</div>';
+        $('sum-postupdate-rbin').innerHTML = '';
+      } else {
+        const stopped = (s.actor_stopped_epoch ?? -1) >= 0;
+        $('sum-postupdate').innerHTML =
+          _kv('epochs', `${s.actor_epochs_done ?? '?'}/${s.n_epochs ?? '?'}${stopped ? ` (stopped @e${s.actor_stopped_epoch})` : ''}`) +
+          _kv('kl mean/max', `${fmt(s.kl_mean, 4)} / ${fmt(s.kl_max, 4)}`) +
+          _kv('clip_frac', _pct(s.clip_frac_mean)) +
+          _kv('post_clip Δloss', `${fmt(s.post_clip_dloss_mean, 4)} (gain ${fmt(s.post_clip_dloss_gain, 3)} / harm ${fmt(s.post_clip_dloss_harm, 3)})`);
+        $('sum-postupdate-rbin').innerHTML = _rbinBar(s.rbin || {});
+      }
+    }
+
+    // ⑧ Delta Analyze — computed-delta coverage (it is on-demand work,
+    // so the card only reports what exists).
+    {
+      const eps = (st.delta || {}).episodes || [];
+      if (!eps.length) {
+        $('sum-delta').innerHTML = '<div class="desc">no deltas computed yet — the tool page computes them on demand</div>';
+      } else {
+        const latest = eps[eps.length - 1];
+        $('sum-delta').innerHTML =
+          _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`) +
+          _kv('episodes', eps.map(e => e.episode).join(', ')) +
+          _kv('latest', `ep${latest.episode} · gens ${latest.gen_updates.map(u => 'u' + u).join('/')}` +
+              (latest.missing_updates?.length ? ` · missing ${latest.missing_updates.map(u => 'u' + u).join('/')}` : ''));
+      }
+    }
+  }
+
+  // 9-cell ratio-bin profile: 4 bins on each side of the clip band plus
+  // the dead-zero bucket — the post-update displacement signature.
+  function _rbinBar(rbin) {
+    const cells = [
+      ['pos<1−ε', rbin.rbin_pos_ltlo, '#e06c75'],
+      ['pos lo', rbin.rbin_pos_lo, '#e5c07b'],
+      ['pos hi', rbin.rbin_pos_hi, '#98a2b5'],
+      ['pos>1+ε', rbin.rbin_pos_gthi, '#4fa3ff'],
+      ['neg<1−ε', rbin.rbin_neg_ltlo, '#e06c75'],
+      ['neg lo', rbin.rbin_neg_lo, '#e5c07b'],
+      ['neg hi', rbin.rbin_neg_hi, '#98a2b5'],
+      ['neg>1+ε', rbin.rbin_neg_gthi, '#4fa3ff'],
+      ['zero', rbin.rbin_zero, 'var(--border)'],
+    ];
+    const total = cells.reduce((a, [, v]) => a + (v || 0), 0);
+    if (!total) return '';
+    const bar = cells.map(([lab, v, c]) =>
+      `<div style="width:${(100 * (v || 0) / total).toFixed(2)}%;background:${c}" title="${lab}: ${_pct(v)}"></div>`).join('');
+    return `<div class="mini-hist" style="grid-column:1/-1"><div class="mh-title">ratio bins (post-update · pos adv left / neg adv right)</div>` +
+      `<div class="rbin">${bar}</div>` +
+      `<div class="rbin-legend"><span>&lt;1−ε red · inside band light · &gt;1+ε blue</span><span>zero ${(100 * (rbin.rbin_zero || 0) / total).toFixed(1)}%</span></div></div>`;
   }
 
   // --- Dump analysis helpers (shared layer: /api/inspect) ---
@@ -3907,9 +4157,11 @@
       state.gaePreview = null;
       renderGae();
     } else if (state.currentPage === 'advnorm') {
-      renderNormTraj();
+      renderAdvnorm();
     } else if (state.currentPage === 'merge') {
-      renderMergeTraj();
+      renderMerge();
+    } else if (state.currentPage === 'postupdate') {
+      renderPostUpdate();
     }
   }
 
@@ -4309,6 +4561,641 @@
     if (lg) lg.onclick = () => selectTrajectory(state.selectedTraj);
   }
 
+  // --- Tool ⑤ Grad Analyze --------------------------------------------
+  // Buffer-level per-frame gradient diagnosis under θ_old: which frames
+  // dominate the update direction (‖gᵢ‖ × cos(gᵢ, G) density), the
+  // aggregate stats, and a sortable top-samples table that traces back
+  // into trajectories.
+
+  function _stat(label, value, cls = '') {
+    return `<div class="stat"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`;
+  }
+  function _pct(v, d = 1) {
+    return (v === null || v === undefined) ? '-' : (v * 100).toFixed(d) + '%';
+  }
+
+  function _gsHeatmap(gs) {
+    // rows = per-frame grad-norm bins (top = largest), cols = cos bins
+    const hist = gs.hist, ce = gs.cos_edges, ne = gs.norm_edges;
+    if (!hist || !hist.length) return '';
+    const nR = hist.length, nC = hist[0].length;
+    const W = 560, H = nR * 17 + 30;
+    const cw = (W - 46) / nC, ch = (H - 30) / nR;
+    const max = Math.max(1, ...hist.flat());
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
+    for (let r = 0; r < nR; r++) {           // draw top row = highest norm
+      const src = nR - 1 - r;
+      for (let c = 0; c < nC; c++) {
+        const v = hist[src][c];
+        const alpha = v ? 0.1 + 0.9 * Math.log1p(v) / Math.log1p(max) : 0.04;
+        s += `<rect x="${46 + c * cw}" y="${r * ch}" width="${cw - 1}" height="${ch - 1}" fill="rgba(79,163,255,${alpha.toFixed(3)})"/>`;
+      }
+      const lo = ne[src], hi = ne[src + 1];
+      s += `<text class="gs-axis" x="0" y="${r * ch + ch / 2 + 3}">${lo.toExponential(0)}–${hi.toExponential(0)}</text>`;
+    }
+    for (let c = 0; c <= nC; c += Math.max(1, nC / 8 | 0)) {
+      s += `<text class="gs-axis" x="${46 + c * cw - 6}" y="${H - 14}">${fmt(ce[c], 1)}</text>`;
+    }
+    s += `<text class="gs-axis" x="${46}" y="${H - 2}">cos(gᵢ,G) →</text>`;
+    s += `<text class="gs-axis" x="${W - 90}" y="10">‖gᵢ‖ ↑</text>`;
+    s += '</svg>';
+    let cap = `norm×cos density (log scale), ${gs.n_frames_in_hist ?? ''} sampled frames in axis`;
+    if ((gs.n_under || 0) + (gs.n_over || 0) > 0) {
+      cap += ` · under ${gs.n_under ?? 0} / over ${gs.n_over ?? 0} outside norm axis`;
+    }
+    return s + `<div class="desc">${cap}</div>`;
+  }
+
+  async function renderGradsigPage() {
+    $('gs-tool-head').innerHTML =
+      `<span class="t-title">Grad Analyze</span>` +
+      `<span class="t-info">per-frame gradient signal under θ_old</span>`;
+    let gs;
+    try { gs = await fetchJson(api('gradsig')); }
+    catch (e) { gs = null; }
+    if (!gs || !gs.available) {
+      $('gs-heat').innerHTML = '<div class="desc">gradsig.npz not captured</div>';
+      $('gs-stats').innerHTML = '';
+      $('gs-top').innerHTML = '';
+      return;
+    }
+    state.gradSig = gs;
+    $('gs-tool-head').innerHTML +=
+      `<span class="t-info">${gs.n_sampled ?? '?'} sampled frames · update ${gs.update ?? '?'}</span>`;
+
+    let st = '';
+    if (gs.partial) {
+      st += _stat('status', 'partial — hist unavailable', 'warn');
+    }
+    st += _stat('‖G‖ (full buffer)', fmt(gs.gnorm, 3));
+    st += _stat('coherence', fmt(gs.coherence, 3));
+    st += _stat('proj mean±std', `${fmt(gs.proj_mean, 3)}±${fmt(gs.proj_std, 2)}`);
+    st += _stat('frac proj<0', _pct(gs.frac_neg));
+    st += _stat('dir cos (prev G)', fmt(gs.dir_cos, 3));
+    st += _stat('valid', `${gs.n_valid ?? '?'}/${gs.n_sampled ?? '?'}`);
+    $('gs-stats').innerHTML = st;
+
+    $('gs-heat').innerHTML = gs.partial ? '' : _gsHeatmap(gs);
+
+    if (!state.gsQuery) state.gsQuery = {sort: 'abs_proj', sign: 'all'};
+    renderGradsigSamples();
+  }
+
+  async function renderGradsigSamples() {
+    const el = $('gs-top');
+    const q = state.gsQuery || {sort: 'abs_proj', sign: 'all'};
+    const sorts = [['abs_proj', '|proj|'], ['proj', 'proj+'],
+      ['neg_proj', 'proj−'], ['grad_norm', '‖g‖'], ['w_adv', 'w·adv']];
+    const ctl = `<div class="gs-ctl">top samples sort ` +
+      `<select id="gs-sort">${sorts.map(([v, l]) =>
+        `<option value="${v}"${v === q.sort ? ' selected' : ''}>${l}</option>`).join('')}</select>` +
+      ` sign <select id="gs-sign">${['all', 'pos', 'neg'].map(v =>
+        `<option${v === q.sign ? ' selected' : ''}>${v}</option>`).join('')}</select>` +
+      `<span id="gs-meta"></span></div>`;
+    let body;
+    try {
+      body = await fetchJson(api(
+        `gradsig/samples?sort=${q.sort}&sign=${q.sign}&limit=15`));
+    } catch (e) {
+      el.innerHTML = ctl + `<div class="desc">${escapeHtml(e.message)}</div>`;
+      _wireGsCtl();
+      return;
+    }
+    let html = ctl;
+    html += '<table class="ep-table gs-table"><thead><tr>' +
+      '<th>buf</th><th>frame</th><th>traj</th><th>proj</th><th>cos</th>' +
+      '<th>‖g‖</th><th>w·adv</th><th>floor_pen</th></tr></thead><tbody>';
+    for (const r of body.rows) {
+      const fr = r.mapped
+        ? `ep${String(r.episode).padStart(4, '0')}:${r.agent}:${r.env_frame}`
+        : (r.traj_idx !== undefined && r.traj_idx !== null ? '(flat)' : '—');
+      html += `<tr data-bi="${r.buffer_idx}" data-traj="${r.traj_idx ?? ''}">` +
+        `<td class="num">${r.buffer_idx}</td>` +
+        `<td>${escapeHtml(fr)}</td>` +
+        `<td class="num">${r.traj_idx ?? '—'}</td>` +
+        `<td class="num ${r.proj < 0 ? 'neg' : ''}">${fmt(r.proj, 2)}</td>` +
+        `<td class="num">${fmt(r.cos, 2)}</td>` +
+        `<td class="num">${fmt(r.grad_norm, 1)}</td>` +
+        `<td class="num">${fmt(r.w_adv, 2)}</td>` +
+        `<td class="num">${fmt(r.floor_pen, 3)}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    const meta = el.querySelector('#gs-meta');
+    if (meta && body.meta) {
+      meta.textContent = ` · ${body.meta.n_after_filter}/${body.meta.n_sampled} sampled frames`;
+    }
+    _wireGsCtl();
+    el.querySelectorAll('tr[data-bi]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const t = tr.dataset.traj;
+        if (t !== '') selectTrajectory(parseInt(t));
+      });
+    });
+  }
+
+  function _wireGsCtl() {
+    const so = $('gs-sort'), si = $('gs-sign');
+    if (so) so.addEventListener('change', () => {
+      state.gsQuery.sort = so.value; renderGradsigSamples();
+    });
+    if (si) si.addEventListener('change', () => {
+      state.gsQuery.sign = si.value; renderGradsigSamples();
+    });
+  }
+
+  // --- Tool ⑦ Post Update ----------------------------------------------
+  // What the update did to θ_old, measured on the same buffer it was
+  // trained on. Upper card: whole-buffer per-epoch aggregates (ratio
+  // spread, clip mass, Δlogp, value drift) + the rbin displacement
+  // signature + post_clip_dloss. Lower: shared traj stage + per-epoch
+  // curves for one trajectory.
+
+  async function renderPostUpdate() {
+    if (state.selectedTraj === null) state.selectedTraj = 0;
+    $('pu-tool-head').innerHTML =
+      `<span class="t-title">Post Update — θ_old → θ_new</span>` +
+      _trajPickerHtml('pu');
+    _wireTrajPicker('pu', _pickTraj);
+
+    const buf = $('pu-buffer');
+    if (!state.postUpdate) {
+      try { state.postUpdate = await fetchJson(api('postupdate')); }
+      catch (e) { state.postUpdate = {error: e.message}; }
+    }
+    buf.innerHTML = _puBufferHtml(state.postUpdate);
+    renderPostUpdateTraj();
+  }
+
+  function _puBufferHtml(pu) {
+    if (!pu || pu.error)
+      return `<div class="desc">${escapeHtml(pu?.error || 'no data')}</div>`;
+    if (!pu.available)
+      return '<div class="desc">no update.npz / epoch_frames.npz in this dump</div>';
+    const u = pu.update || {};
+    const stopped = (pu.actor_stopped_epoch ?? -1) >= 0;
+    let h = `<h2>Update summary <span class="gs-scope">whole buffer · n_epochs=${pu.n_epochs}</span></h2>`;
+    h += '<div class="stage-stats">'
+      + _kv('epochs', `${u.actor_epochs_done ?? '?'}/${pu.n_epochs}${stopped ? ` (actor stopped @e${pu.actor_stopped_epoch})` : ''}`)
+      + _kv('kl mean/max', `${fmt(u.kl_mean, 4)} / ${fmt(u.kl_max, 4)}`)
+      + _kv('early-stop kl', fmt(u.early_stop_kl_mean, 4))
+      + _kv('clip_frac', `${_pct(u.clip_frac_mean)} (hi ${_pct(u.clip_frac_hi_mean)} / lo ${_pct(u.clip_frac_lo_mean)})`)
+      + _kv('ratio min/max', `${fmt(u.ratio_min, 2)} / ${fmt(u.ratio_max, 2)}`)
+      + _kv('policy_loss', fmt(u.policy_loss_mean, 4))
+      + _kv('post_clip Δloss', `${fmt(u.post_clip_dloss_mean, 4)} (gain ${fmt(u.post_clip_dloss_gain, 3)} / harm ${fmt(u.post_clip_dloss_harm, 3)})`)
+      + _kv('‖∇actor‖', `${fmt(u.grad_norm_actor_mean, 2)} (pre-clip ${fmt(u.grad_norm_actor_pre_clip, 2)})`)
+      + '</div>';
+    h += _rbinBar(pu.rbin || {});
+    if (pu.epochs && pu.epochs.length) {
+      const chs = state.manifest?.channel_names || [];
+      h += '<table class="data-table" style="margin-top:10px"><tr>' +
+        '<th>epoch</th><th>mb</th><th>tl kl</th><th>tl clip</th><th>tl ‖g‖</th><th>tl Δθ</th>' +
+        '<th>buf ratio μ</th><th>min/max</th><th>frac |r−1|>ε</th><th>Δlogp μ±σ</th>' +
+        chs.map(c => `<th>ΔV ${escapeHtml(c)}</th>`).join('') +
+        '<th>status</th></tr>';
+      for (const e of pu.epochs) {
+        const stoppedE = stopped && e.epoch >= pu.actor_stopped_epoch;
+        h += `<tr><td><strong>${e.epoch}</strong></td>` +
+          `<td class="num">${e.n_mb ?? 0}</td>` +
+          `<td class="num">${fmt(e.kl_mean, 4)}</td>` +
+          `<td class="num">${_pct(e.clip_frac_mean)}</td>` +
+          `<td class="num">${fmt(e.actor_grad_mean, 2)}</td>` +
+          `<td class="num">${fmt(e.dtheta_norm_mean, 4)}</td>` +
+          `<td class="num">${fmt(e.buf_ratio_mean, 4)}</td>` +
+          `<td class="num">${fmt(e.buf_ratio_min, 2)}/${fmt(e.buf_ratio_max, 2)}</td>` +
+          `<td class="num">${_pct(e.buf_frac_out)}</td>` +
+          `<td class="num">${fmt(e.dlogp_mean, 3)}±${fmt(e.dlogp_std, 2)}</td>` +
+          chs.map(c => `<td class="num">${fmt(e.value_drift?.[c], 4)}</td>`).join('') +
+          `<td class="${stoppedE ? 'neg' : 'muted'}">${stoppedE ? 'stopped' : 'active'}</td></tr>`;
+      }
+      h += '</table>';
+      h += `<div class="desc" style="margin-top:4px">tl* = per-minibatch stats during the epoch (timeline.npz); buf* = full-buffer eval after the epoch (epoch_frames.npz). A red ratio/Δlogp row is the KL cap biting.</div>`;
+    }
+    return h;
+  }
+
+  async function renderPostUpdateTraj() {
+    const tb = $('pu-traj-body');
+    let ov;
+    try {
+      ov = await _trajOv();
+    } catch (e) {
+      tb.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const frame = renderTrajStage('pu', ov, renderPostUpdateTraj);
+
+    // epoch comparison for this trajectory
+    if (!state.trajEpochCompare || state.trajEpochCompare.traj_idx !== state.selectedTraj) {
+      try {
+        state.trajEpochCompare = await fetchJson(api(`trajectory/${state.selectedTraj}/epoch_compare`));
+      } catch (e) {
+        state.trajEpochCompare = {error: true, n_epochs: 0};
+      }
+    }
+    const ec = state.trajEpochCompare;
+    const nEpochs = ec.n_epochs || 0;
+    state._chartSeq = 0; state._chartSpecs = {};
+    let html = '';
+    if (nEpochs > 0) {
+      if (state.selectedEpoch >= nEpochs) state.selectedEpoch = nEpochs - 1;
+      if (!state.trajEpochOverview
+          || state.trajEpochOverview.epoch !== state.selectedEpoch
+          || state.trajEpochOverview.traj_idx !== state.selectedTraj) {
+        try {
+          state.trajEpochOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/epoch/${state.selectedEpoch}/overview`));
+        } catch (e) {
+          state.trajEpochOverview = {error: true, epoch: state.selectedEpoch};
+        }
+      }
+      html += `<div class="t-sel" style="margin:8px 0"><span class="t-info">epoch</span><select id="epoch-selector">` +
+        ec.epochs.map(e => `<option value="${e.epoch}"${e.epoch === state.selectedEpoch ? ' selected' : ''}>Epoch ${e.epoch}${ec.actor_stopped_epoch >= 0 && e.epoch >= ec.actor_stopped_epoch ? ' (stopped)' : ''}</option>`).join('') +
+        `</select></div>` + buildTrajEpochHtml(frame);
+    } else {
+      html += '<div class="desc">epoch_frames.npz not captured for this dump</div>';
+    }
+    tb.innerHTML = html;
+    mountCharts(tb, f => { state.selectedFrame = f; renderPostUpdateTraj(); });
+    const es = $('epoch-selector');
+    if (es) es.addEventListener('change', e => selectEpoch(parseInt(e.target.value)));
+    tb.querySelectorAll('tr[data-epoch]').forEach(tr =>
+      tr.addEventListener('click', () => selectEpoch(parseInt(tr.dataset.epoch))));
+  }
+
+  function selectEpoch(e) {
+    state.selectedEpoch = e;
+    state.trajEpochOverview = null;
+    if (state.currentPage === 'postupdate') renderPostUpdateTraj();
+  }
+
+  // Epoch color ramp: epoch 0 is faint, the last epoch is solid accent —
+  // the light→dark progression makes the update direction readable.
+  function epochColor(e, n) {
+    const a = n <= 1 ? 1 : 0.25 + 0.75 * (e / (n - 1));
+    return `rgba(79,163,255,${a.toFixed(2)})`;
+  }
+
+  function buildTrajEpochHtml(frame) {
+    const ec = state.trajEpochCompare;
+    if (!ec || ec.error || !(ec.n_epochs > 0)) {
+      return '';
+    }
+    const eo = state.trajEpochOverview;
+    const nEpochs = ec.n_epochs;
+    const clipEps = ec.clip_eps ?? state.manifest?.clip_eps ?? 0.2;
+    const channels = state.manifest?.channel_names || [];
+    const stoppedAt = ec.actor_stopped_epoch;
+
+    let html = '<div class="section-sep"></div>';
+    html += '<div class="section-sep-label">Epoch Comparison</div>';
+
+    // All epochs' ratio overlaid in one chart — gradient light→dark = epoch 0→N
+    if (ec.epochs && ec.epochs.length > 0) {
+      const series = ec.epochs
+        .filter(e => e.ratio && e.ratio.length > 0)
+        .map(e => ({
+          label: `epoch ${e.epoch}`,
+          data: e.ratio,
+          color: epochColor(e.epoch, nEpochs),
+        }));
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Ratio across Epochs — clip_eps=${fmt(clipEps, 3)}</h3>`;
+        html += chartBox(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
+        html += `</div>`;
+      }
+    }
+
+    // Per-epoch summary table — one row per epoch, click to inspect
+    if (ec.epochs && ec.epochs.length > 0) {
+      html += '<div class="data-table"><h3>Epoch Summary</h3><table>';
+      html += '<tr><th>Epoch</th><th>clip_frac</th><th>clip_hi/lo</th><th>ratio_mean</th><th>ratio_min</th><th>ratio_max</th><th>max |r−1|</th><th>status</th></tr>';
+      ec.epochs.forEach(e => {
+        const cm = e.clip_mask || [];
+        const ratio = (e.ratio || []).filter(v => typeof v === 'number' && !isNaN(v));
+        const clipFrac = cm.length ? cm.filter(x => x).length / cm.length : NaN;
+        const clipHi = ratio.length ? ratio.filter(r => r > 1 + clipEps).length / ratio.length : NaN;
+        const clipLo = ratio.length ? ratio.filter(r => r < 1 - clipEps).length / ratio.length : NaN;
+        const rMean = ratio.length ? ratio.reduce((a, b) => a + b, 0) / ratio.length : NaN;
+        const rMin = ratio.length ? Math.min(...ratio) : NaN;
+        const rMax = ratio.length ? Math.max(...ratio) : NaN;
+        const maxDev = ratio.length ? Math.max(...ratio.map(r => Math.abs(r - 1))) : NaN;
+        const stopped = stoppedAt !== undefined && stoppedAt >= 0 && e.epoch >= stoppedAt;
+        const active = e.epoch === state.selectedEpoch ? ' class="active-epoch"' : '';
+        html += `<tr data-epoch="${e.epoch}"${active}>`;
+        html += `<td><strong>${e.epoch}</strong></td>`;
+        html += `<td class="num">${fmt(clipFrac)}</td>`;
+        html += `<td class="num">${fmt(clipHi)}/${fmt(clipLo)}</td>`;
+        html += `<td class="num">${fmt(rMean)}</td>`;
+        html += `<td class="num">${fmt(rMin)}</td>`;
+        html += `<td class="num">${fmt(rMax)}</td>`;
+        html += `<td class="num">${fmt(maxDev)}</td>`;
+        html += `<td class="${stopped ? 'neg' : 'muted'}">${stopped ? 'stopped' : 'active'}</td>`;
+        html += `</tr>`;
+      });
+      html += '</table></div>';
+    }
+
+    // === Per-epoch detail (selected epoch) ===
+    if (!eo || eo.error) {
+      return html;
+    }
+    html += '<div class="section-sep"></div>';
+    html += `<div class="section-sep-label">Epoch ${eo.epoch} Detail</div>`;
+
+    // Per-epoch ratio chart with clip band
+    if (eo.ratio) {
+      html += `<div class="chart-container">`;
+      html += `<h3>Ratio (epoch ${eo.epoch})</h3>`;
+      const series = [{label: 'ratio', data: eo.ratio, color: '#4fa3ff'}];
+      series.push({label: 'clip lo', data: new Array(eo.ratio.length).fill(1 - clipEps), color: '#e06c75'});
+      series.push({label: 'clip hi', data: new Array(eo.ratio.length).fill(1 + clipEps), color: '#e06c75'});
+      html += chartBox(series, {currentFrame: frame, clipBand: {lo: 1 - clipEps, hi: 1 + clipEps}});
+      html += `</div>`;
+    }
+
+    // new_value vs old_value vs return — one chart per channel
+    channels.forEach(ch => {
+      const nvKey = `new_value_${ch}`;
+      const ovKey = `old_value_${ch}`;
+      const retKey = `return_${ch}`;
+      const series = [];
+      if (eo[nvKey]) series.push({label: `new_value`, data: eo[nvKey], color: '#4fa3ff'});
+      if (eo[ovKey]) series.push({label: `old_value`, data: eo[ovKey], color: '#e06c75'});
+      if (eo[retKey]) series.push({label: `return`, data: eo[retKey], color: '#e5c07b'});
+      if (series.length > 0) {
+        html += `<div class="chart-container">`;
+        html += `<h3>Critic Value: ${escapeHtml(ch)} (epoch ${eo.epoch})</h3>`;
+        html += chartBox(series, {currentFrame: frame});
+        html += `</div>`;
+      }
+    });
+
+    // Actor Dynamics table
+    html += '<div class="data-grid">';
+    html += `<div class="data-table"><h3>Actor Dynamics (epoch ${eo.epoch}, frame ${frame})</h3><table>`;
+    html += '<tr><th>Field</th><th>Value</th></tr>';
+    const ratio = eo.ratio?.[frame];
+    const clipMask = eo.clip_mask?.[frame];
+    const oldLp = eo.old_log_prob?.[frame];
+    const newLp = eo.new_log_prob?.[frame];
+    html += `<tr><td>old_log_prob</td><td class="num">${fmt(oldLp)}</td></tr>`;
+    html += `<tr><td>new_log_prob</td><td class="num">${fmt(newLp)}</td></tr>`;
+    html += `<tr><td>ratio</td><td class="${ratio && Math.abs(ratio - 1) > clipEps ? 'neg' : 'num'}">${fmt(ratio)}</td></tr>`;
+    html += `<tr><td>clip_eps</td><td class="num">${fmt(clipEps, 3)}</td></tr>`;
+    html += `<tr><td>clip_mask</td><td class="bool">${clipMask ? 'YES' : 'no'}</td></tr>`;
+    if (eo.combined_adv) {
+      html += `<tr><td>combined_adv</td><td class="${eo.combined_adv[frame] < 0 ? 'neg' : 'num'}">${fmt(eo.combined_adv[frame])}</td></tr>`;
+    }
+    if (typeof oldLp === 'number' && typeof newLp === 'number' &&
+        typeof ratio === 'number' && typeof eo.combined_adv?.[frame] === 'number') {
+      const surr1 = Math.exp(newLp - oldLp) * eo.combined_adv[frame];
+      const surr2 = Math.max(Math.min(ratio, 1 + clipEps), 1 - clipEps) * eo.combined_adv[frame];
+      html += `<tr><td>surr1 (est)</td><td class="num">${fmt(surr1)}</td></tr>`;
+      html += `<tr><td>surr2 (est)</td><td class="num">${fmt(surr2)}</td></tr>`;
+    }
+    html += '</table></div>';
+
+    // Critic Dynamics table
+    html += `<div class="data-table"><h3>Critic Dynamics (epoch ${eo.epoch}, frame ${frame})</h3><table>`;
+    html += '<tr><th>Channel</th><th>old_value</th><th>new_value</th><th>return</th></tr>';
+    channels.forEach(ch => {
+      const ovVal = eo[`old_value_${ch}`]?.[frame];
+      const nv = eo[`new_value_${ch}`]?.[frame];
+      const ret = eo[`return_${ch}`]?.[frame];
+      html += `<tr><td>${escapeHtml(ch)}</td>`;
+      html += `<td class="num">${fmt(ovVal)}</td>`;
+      html += `<td class="num">${fmt(nv)}</td>`;
+      html += `<td class="num">${fmt(ret)}</td></tr>`;
+    });
+    html += '</table></div>';
+    html += '</div>'; // data-grid
+
+    if (stoppedAt !== undefined && stoppedAt >= 0) {
+      html += `<div class="desc" style="margin-top:8px;color:var(--orange)">⚠ Actor stopped at epoch ${stoppedAt}</div>`;
+    }
+
+    return html;
+  }
+
+  // --- Tool ⑧ Delta Analyze ---------------------------------------------
+  // Cross-generation drift: for a chosen episode, replay each checkpoint
+  // generation's deterministic policy on the stored observations. The
+  // computation is on-demand (debug.py delta) and shares the viewer's
+  // single background-job slot with renders.
+
+  async function startDelta(pos, gens) {
+    try {
+      const r = await fetch(api('delta'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({episode: pos, gens}),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        alert(j.error || `delta failed (${r.status})`);
+        return;
+      }
+      state.renderJob = {kind: 'delta', dump: j.dump, episode: pos, status: 'running'};
+      renderDeltaPage();
+      scheduleRenderPoll();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function renderDeltaPage() {
+    if (state.selectedEpisode === null) state.selectedEpisode = 0;
+    const pos = state.selectedEpisode;
+    const n = state.episodeList?.length ?? 0;
+    const epInfo = state.trajMap?.[pos];
+    const T = epInfo?.num_frames || 0;
+
+    // tool head: episode picker + compute controls
+    const job = state.renderJob;
+    const running = job && job.status === 'running';
+    const thisJob = running && job.kind === 'delta' && job.episode === pos &&
+      (state.dumpName ? job.dump === state.dumpName : true);
+    let h = `<span class="t-title">Delta Analyze</span>`;
+    h += `<span class="t-sel"><button class="t-nav" id="delta-nav-prev">‹</button>`;
+    h += `<input id="delta-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${pos}"/>`;
+    h += `<button class="t-nav" id="delta-nav-next">›</button>`;
+    h += `<span class="t-info">of ${n} episodes</span></span>`;
+    if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
+    const d0 = state.deltaData;
+    if (d0 && d0.available && d0.episode_pos === pos) {
+      h += `<span class="t-info">✓ gens ${d0.gen_updates.map(u => 'u' + u).join('/')}</span>`;
+    } else if (thisJob) {
+      h += `<span class="t-info">⏳ computing delta…</span>`;
+    } else {
+      const dis = running ? ' disabled title="another job is running"' : '';
+      const opts = [...Array(10)].map((_, i) =>
+        `<option value="${i + 1}"${i + 1 === state.deltaGens ? ' selected' : ''}>${i + 1}</option>`).join('');
+      h += `<span class="delta-trigger" style="margin:0">` +
+        `<span class="muted">compare against</span>` +
+        `<select id="delta-gens"${dis}>${opts}</select>` +
+        `<span class="muted"> generations</span> ` +
+        `<button id="delta-btn" class="render-btn"${dis}>Compute Δ</button></span>`;
+    }
+    $('delta-tool-head').innerHTML = h;
+    const sel = $('delta-sel');
+    sel.addEventListener('change', () =>
+      selectDeltaEpisode(Math.max(0, Math.min(n - 1, parseInt(sel.value) || 0))));
+    $('delta-nav-prev').onclick = () => selectDeltaEpisode(Math.max(0, pos - 1));
+    $('delta-nav-next').onclick = () => selectDeltaEpisode(Math.min(n - 1, pos + 1));
+    const dBtn = $('delta-btn');
+    if (dBtn) dBtn.onclick = () => {
+      const gens = parseInt(($('delta-gens') || {}).value || '3');
+      state.deltaGens = gens;
+      if (confirm(`Compute policy-drift delta for episode ${pos}?\nReplays ${gens} past generations on stored observations (can take a while).`))
+        startDelta(pos, gens);
+    };
+    const dGens = $('delta-gens');
+    if (dGens) dGens.addEventListener('change', () => { state.deltaGens = parseInt(dGens.value); });
+
+    // shared stage over the episode axis (visual context for the drift)
+    const ov = {length: T, episode_pos: pos, t_start: 0, frame_ids: null};
+    const frame = T > 0 ? renderTrajStage('delta', ov, renderDeltaPage)
+                        : (state.selectedFrame || 0);
+    $('ctx-frameid').textContent = `ep${String(pos).padStart(4, '0')}:${frame}`;
+
+    // delta payload
+    if (!state.deltaData || state.deltaData.episode_pos !== pos) {
+      try {
+        state.deltaData = await fetchJson(api(`episode/${pos}/delta`));
+      } catch (e) {
+        state.deltaData = {available: false, error: e.message};
+      }
+    }
+    state._chartSeq = 0; state._chartSpecs = {};
+    $('delta-body').innerHTML = _deltaBodyHtml(pos, frame);
+    mountCharts($('delta-body'), f => { state.selectedFrame = f; renderDeltaPage(); });
+  }
+
+  function selectDeltaEpisode(pos) {
+    state.selectedEpisode = pos;
+    state.selectedFrame = 0;
+    state.deltaData = null;
+    history.replaceState({}, '', urlForCurrent());
+    updateContextBar();
+    renderDeltaPage();
+  }
+
+  function _deltaBodyHtml(pos, frame) {
+    const d = state.deltaData;
+    if (!d || !d.available) {
+      if (d && d.error) return `<div class="desc">${escapeHtml(d.error)}</div>`;
+      const job = state.renderJob;
+      const failed = job && job.kind === 'delta' && job.episode === pos &&
+        job.status === 'error' &&
+        (state.dumpName ? job.dump === state.dumpName : true);
+      return '<div class="desc">no delta computed for this episode — pick the generation count above and Compute Δ. ' +
+        'Both sides are deterministic replays on stored observations; episode actions are unused.</div>' +
+        (failed ? `<div class="dump-msg">delta failed (exit ${job.returncode}) — see ${escapeHtml(job.log || 'log')}</div>` : '');
+    }
+    let html = `<div class="desc" style="margin-bottom:8px">Deterministic action of each policy generation on this episode's observations (episode actions unused — both sides deterministic). Trained agents only.</div>`;
+    for (const [aid, adata] of Object.entries(d.agents || {})) {
+      const acts = adata.actions;            // (G+1, T, D): row 0 = current policy
+      const G = acts.length - 1;
+      if (G < 1 || frame >= acts[0].length) continue;
+      const T = acts[0].length;
+      const D = acts[0][0].length;
+
+      html += `<h3>${escapeHtml(aid)}</h3>`;
+
+      // Chart 1: ‖Δ_g(t)‖₂ per frame, one line per reference generation
+      const series = [];
+      for (let g = 1; g <= G; g++) {
+        const norm = new Array(T);
+        for (let t = 0; t < T; t++) {
+          let s = 0;
+          for (let k = 0; k < D; k++) {
+            const dd = acts[0][t][k] - acts[g][t][k];
+            s += dd * dd;
+          }
+          norm[t] = Math.sqrt(s);
+        }
+        // gen1 darkest, farther generations lighter
+        const alpha = G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0;
+        series.push({
+          label: `‖Δ vs u${String(d.gen_updates[g]).padStart(5, '0')}‖`,
+          data: norm,
+          color: `rgba(79,163,255,${alpha.toFixed(2)})`,
+        });
+      }
+      html += chartBox(series, {currentFrame: frame});
+
+      // Chart 2: deterministic actions at the selected frame — dims sorted
+      // by gen-0 (current policy) descending; crossings = sign-flipped drift
+      const genLabels = d.gen_updates.map((u, g) =>
+        `u${String(u).padStart(5, '0')}${g === 0 ? ' (cur)' : ''}`);
+      const frameActs = acts.map(a => a[frame]);
+      html += `<div style="color:var(--muted);font-size:11px;margin:6px 0 2px">Deterministic action per generation at frame ${frame} — dims sorted by current policy's action (desc); a line wholly above/below gen-0 means one-sided drift, crossings mean sign-flipped dims.</div>`;
+      html += makeSortedActionChart(genLabels, frameActs);
+    }
+    if (d.missing_updates && d.missing_updates.length) {
+      html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">missing exports: ${d.missing_updates.map(u => 'u' + String(u).padStart(5, '0')).join(', ')}</div>`;
+    }
+    return html;
+  }
+
+  // Per-dim deterministic-action comparison across generations: dims
+  // sorted by the current policy's action (desc) so one-sided drift vs
+  // sign-flipped dims are readable at a glance.
+  function makeSortedActionChart(genLabels, values, options = {}) {
+    const D = values[0].length;
+    if (!D) return '';
+    const perm = values[0]
+      .map((v, i) => i)
+      .sort((a, b) => values[0][b] - values[0][a]);
+
+    const width = options.width || 800, height = options.height || 180;
+    const margin = {top: 10, right: 12, bottom: 30, left: 44};
+    const w = width - margin.left - margin.right;
+    const h = height - margin.top - margin.bottom;
+    const yLo = -1.08, yHi = 1.08;
+    const xScale = i => margin.left + (D <= 1 ? w / 2 : (i / (D - 1)) * w);
+    const yScale = v => margin.top + h - ((v - yLo) / (yHi - yLo)) * h;
+
+    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + (h / 4) * i;
+      const val = yHi - (i / 4) * (yHi - yLo);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${val.toFixed(1)}</text>`;
+    }
+    const yz = yScale(0);
+    svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
+    perm.forEach((d, i) => {
+      const x = xScale(i);
+      svg += `<text x="${x}" y="${margin.top + h + 12}" text-anchor="middle" fill="var(--muted)" font-size="8" font-family="ui-monospace,monospace">d${d}</text>`;
+    });
+    svg += `<text x="${width - margin.right}" y="${margin.top + h + 24}" text-anchor="end" fill="var(--muted)" font-size="9">dims sorted by current action (desc)</text>`;
+
+    values.forEach((vals, g) => {
+      const G = values.length - 1;
+      const alpha = g === 0 ? 1.0 : (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 0.85);
+      const color = g === 0 ? 'var(--accent)' : `rgba(224,108,117,${alpha.toFixed(2)})`;
+      let pts = '';
+      perm.forEach((d, i) => { pts += `${xScale(i)},${yScale(vals[d])} `; });
+      svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="${g === 0 ? 2 : 1.5}"/>`;
+      perm.forEach((d, i) => {
+        svg += `<circle cx="${xScale(i)}" cy="${yScale(vals[d])}" r="${g === 0 ? 3 : 2.2}" fill="${color}"><title>${escapeHtml(genLabels[g])} · dim ${d}: ${fmt(vals[d], 4)}</title></circle>`;
+      });
+    });
+    svg += '</svg>';
+
+    let legend = '<div class="chart-legend">';
+    genLabels.forEach((lab, g) => {
+      const G = values.length - 1;
+      const alpha = g === 0 ? 1.0 : (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 0.85);
+      const color = g === 0 ? 'var(--accent)' : `rgba(224,108,117,${alpha.toFixed(2)})`;
+      legend += `<div class="leg-item"><div class="leg-color" style="background:${color}"></div>${escapeHtml(lab)}</div>`;
+    });
+    legend += '</div>';
+    return svg + legend;
+  }
+
   // --- Timeline page (Scene 4) ---
   async function renderTimeline() {
     const el = $('timeline-content');
@@ -4515,7 +5402,7 @@
   // Keyboard
   document.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (['episode', 'gae', 'advnorm', 'merge'].includes(state.currentPage)) {
+    if (['episode', 'gae', 'advnorm', 'merge', 'postupdate', 'delta'].includes(state.currentPage)) {
       // All trajectory-centric pages share the stage frame cursor.
       const gmax = (state._stageLen ?? 1) - 1;
       const rr = state._stageRerender;
