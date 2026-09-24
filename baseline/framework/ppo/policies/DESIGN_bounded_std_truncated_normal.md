@@ -491,11 +491,15 @@ payload/manifest 至少包含：
 
 ### 13.2 验收结果
 
-- 父类重构 run 级 bit-identical：同一 session 内旧代码控制 run 与重构 run
-  的 update 指标逐位一致（`kl_mean=0.05109779164195061`）。
-  注意：与 2026-09-16~23 的历史 run（`kl_mean=0.05421725160704227`）存在
-  run 级差异，但旧代码控制 run 同样得到 0.0511——是期间的环境变化
-  （线程/库版本类），非本次重构引入。
+- 父类重构 run 级 bit-identical：当前代码（含本重构）GPU run
+  `verify_gpu_rerun` 与历史 run `verify_resume_A` 的 update 1–5 全部训练
+  指标逐位一致（u1 `kl_mean=0.05421725160704227`；唯一差异是
+  `grad_sig_*` 诊断字段在 9/21 后改为 dump-only 而不再默认输出）。
+- 教训：早先验证 run 误加 `CUDA_VISIBLE_DEVICES=""`，`loop.py` 的设备
+  选择是 `cuda if available else cpu`，于是 actor 落在 CPU——
+  `torch.exp(-1)` 在 CUDA/CPU 上相差 1 ulp（0.36787948 vs 0.36787945），
+  级联放大成 kl 差异；rollout worker 始终 CPU 故 buffer 一致，掩盖了
+  真正原因。bit-identical 对拍必须保持 actor 设备一致。
 - 测试：policies 全套 234 通过（bounded 43 + truncnorm + state 77 + 其他）；
   `policies/todo/` 目录有遗留 stale 测试（import 不存在的模块），与本次无关。
 - 导出 parity：训练类与导出类 act/sample bit-identical，reset 重播一致。
