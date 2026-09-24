@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
 import torch
@@ -79,6 +79,22 @@ def _std_normal_icdf(u: torch.Tensor) -> torch.Tensor:
     return _SQRT_2 * torch.erfinv(2.0 * u_clamped - 1.0)
 
 
+class _DistParams(NamedTuple):
+    """Distribution tensors produced by ``_distribution_params``.
+
+    ``std_control`` is the pre-mapping σ control coordinate (clamped
+    log-σ for the base class, raw sigmoid input for bounded-σ variants).
+    It carries no distribution math itself — it exists so stats and
+    subclass hooks can inspect the source parameter without a second
+    forward pass.  ``policy_sigma`` is σ without explore_factor (used
+    for U); ``eff_sigma`` includes it (used for scoring / sampling).
+    """
+    mean: torch.Tensor
+    std_control: torch.Tensor
+    policy_sigma: torch.Tensor
+    eff_sigma: torch.Tensor
+
+
 class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     """Truncated normal policy on [-1, 1].
 
@@ -95,9 +111,17 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     Export metadata lives in class attributes so subclasses (e.g. the
     state-dependent-σ variant) can reuse ``to_blueprint`` unchanged —
     they only need to point the attributes at their own payload kinds
-    and export template.  Likewise, the ONLY extension seam is
-    ``_policy_params``: everything else (sampling, scoring, U,
-    explore_factor semantics, stats, export) is shared unchanged.
+    and export template.  Distribution extension seams:
+
+    - ``_policy_params(obs) -> (mean, policy_sigma)``: subclasses whose
+      σ source differs but whose σ *mapping* (explore scale applied to
+      σ itself) stays the same only override this.
+    - ``_distribution_params(obs, explore_factor) -> _DistParams``:
+      subclasses whose explore_factor acts on a *pre-mapping* control
+      coordinate (e.g. a sigmoid input that saturates) override this —
+      the raw control cannot be recovered from an already-transformed σ.
+
+    Everything else (sampling, scoring, U, stats, export) is shared.
     """
 
     _POLICY_CLASS = "TruncatedNormalPolicy"
@@ -196,11 +220,30 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         mean = torch.tanh(self.net(obs))  # ensure mean ∈ (-1, 1)
         return mean, self.policy_sigma()
 
+    def _distribution_params(
+        self, obs: torch.Tensor, explore_factor: Any = 0.0,
+    ) -> _DistParams:
+        """Single seam: obs + explore_factor → all distribution tensors.
+
+        The base implementation composes ``_policy_params`` and
+        ``effective_sigma``.  Subclasses whose explore_factor acts on a
+        pre-mapping control coordinate (bounded-σ variants) override
+        this method — recovering that coordinate from an already
+        transformed σ is impossible in saturated regions.
+        """
+        mean, policy_sigma = self._policy_params(obs)
+        eff_sigma = self.effective_sigma(policy_sigma, explore_factor)
+        return _DistParams(
+            mean=mean,
+            std_control=torch.log(policy_sigma),
+            policy_sigma=policy_sigma,
+            eff_sigma=eff_sigma,
+        )
+
     def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
-        mean, policy_sigma = self._policy_params(obs)
-        sigma = self.effective_sigma(policy_sigma, explore_factor)
-        return mean, sigma.expand_as(mean)
+        params = self._distribution_params(obs, explore_factor)
+        return params.mean, params.eff_sigma.expand_as(params.mean)
 
     @staticmethod
     def _trunc_params(
@@ -286,8 +329,10 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         # construction rather than by reuse.  If a future policy makes
         # explore_factor affect mean (e.g. directional noise injection),
         # this structure must be revisited.
-        mean, policy_sigma = self._policy_params(obs)
-        eff_sigma = self.effective_sigma(policy_sigma, explore_factor)
+        params = self._distribution_params(obs, explore_factor)
+        mean, policy_sigma, eff_sigma = (
+            params.mean, params.policy_sigma, params.eff_sigma,
+        )
         a, b, log_Z = self._trunc_params(mean, eff_sigma)
 
         # log_prob: effective σ
@@ -318,9 +363,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         stats: Optional[Dict[str, float]] = None
         if want_stats:
-            stats = self._build_stats(
-                uncertainty, mean, policy_sigma, eff_sigma,
-            )
+            stats = self._build_stats(uncertainty, params)
 
         return ActorEval(
             log_prob=log_prob,
@@ -331,19 +374,17 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     def _build_stats(
         self,
         uncertainty: torch.Tensor,
-        policy_mean: torch.Tensor,
-        policy_sigma: torch.Tensor,
-        eff_sigma: torch.Tensor,
+        params: _DistParams,
     ) -> Dict[str, float]:
         """Policy stats dict — subclasses may extend via super()."""
         with torch.no_grad():
             return {
                 "uncertainty": float(uncertainty.mean().item()),
-                "std_mean": float(policy_sigma.mean().item()),
-                "eff_std_mean": float(eff_sigma.mean().item()),
-                "std_min": float(policy_sigma.min().item()),
-                "std_max": float(policy_sigma.max().item()),
-                "mean_abs": float(policy_mean.abs().mean().item()),
+                "std_mean": float(params.policy_sigma.mean().item()),
+                "eff_std_mean": float(params.eff_sigma.mean().item()),
+                "std_min": float(params.policy_sigma.min().item()),
+                "std_max": float(params.policy_sigma.max().item()),
+                "mean_abs": float(params.mean.abs().mean().item()),
             }
 
     # ------------------------------------------------------------------
@@ -438,6 +479,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             "hidden_dim": self.hidden_dim,
             "state_dict": state_dict,
             "state_dict_keys": sorted(state_dict.keys()),
+            **self._export_extra(),
         }
         torch.save(payload, policy_dir / "model.pt")
 
@@ -458,6 +500,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             },
             "files": ["model.pt", "policy.py", "MANIFEST.json"],
             "exported_class": self._EXPORTED_CLASS,
+            **self._export_extra(),
         }
         (policy_dir / "MANIFEST.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8",
@@ -467,3 +510,12 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         return PolicyBlueprint(
             cls=f"file:{policy_py_path}:{self._EXPORTED_CLASS}",
         )
+
+    def _export_extra(self) -> Dict[str, Any]:
+        """Extra payload/manifest fields injected by subclasses.
+
+        Empty in the base class so legacy artifacts stay byte-identical;
+        bounded-σ variants inject their distribution/config metadata
+        (bounds, parameterization kind, explore_alpha) here.
+        """
+        return {}

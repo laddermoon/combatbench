@@ -29,6 +29,7 @@ import torch
 from torch import nn
 
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
+    _DistParams,
     _LOG_STD_SAFE_MAX,
     _LOG_STD_SAFE_MIN,
     TruncatedNormalPolicy,
@@ -117,18 +118,14 @@ class StateTruncatedNormalPolicy(TruncatedNormalPolicy):
     def _build_stats(
         self,
         uncertainty: torch.Tensor,
-        policy_mean: torch.Tensor,
-        policy_sigma: torch.Tensor,
-        eff_sigma: torch.Tensor,
+        params: _DistParams,
     ) -> Dict[str, float]:
         """Parent stats + ``std_std``: spread of σ across the batch.
 
         ~0 means the σ head is (near-)constant and the policy is
         behaving like the global-σ baseline.
         """
-        stats = super()._build_stats(
-            uncertainty, policy_mean, policy_sigma, eff_sigma,
-        )
+        stats = super()._build_stats(uncertainty, params)
         with torch.no_grad():
-            stats["std_std"] = float(policy_sigma.std().item())
+            stats["std_std"] = float(params.policy_sigma.std().item())
         return stats
