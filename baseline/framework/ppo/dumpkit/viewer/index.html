@@ -732,31 +732,46 @@
     </div>
 
     <!-- Tool ③ ADV Normalization — per-channel raw vs transformed
-         distributions, method switchable (server-side recompute) -->
+         distributions, method switchable (server-side recompute).
+         Buffer-level histograms on top; the trajectory drill-down uses
+         the same video-editor stage as the GAE page. -->
     <div class="page" id="page-advnorm">
       <div class="tool-head" id="norm-tool-head"></div>
       <div class="card"><div id="norm-body"></div></div>
       <div class="card">
-        <h2>Trajectory slice</h2>
+        <h2>Trajectory drill-down <span class="gs-scope" id="norm-traj-scope"></span></h2>
         <div class="desc">Raw vs normalized advantage along one trajectory under the selected method.</div>
-        <div class="t-sel" style="margin-bottom:8px">
-          <span class="k" style="color:var(--muted);font-size:12px">traj</span>
-          <input id="norm-traj" type="number" min="0" value="0" />
+        <div class="ve-stage">
+          <div class="ve-bigimg" id="norm-bigimg"></div>
+          <div class="ve-thumbs" id="norm-thumbs"></div>
+          <div class="ve-scrub">
+            <button id="norm-btn-prev" class="t-nav">◀</button>
+            <input id="norm-slider" type="range" min="0" max="0" value="0" />
+            <button id="norm-btn-next" class="t-nav">▶</button>
+            <span class="t-info" id="norm-frame-label">- / -</span>
+          </div>
         </div>
         <div id="norm-traj-body"></div>
       </div>
     </div>
 
-    <!-- Tool ④ Channel Merge — per-channel normed adv × weight → combined -->
+    <!-- Tool ④ Channel Merge — per-channel normed adv × weight → combined.
+         Same trajectory-centric stage as the other tool pages. -->
     <div class="page" id="page-merge">
       <div class="tool-head" id="merge-tool-head"></div>
       <div class="card"><div id="merge-body"></div></div>
       <div class="card">
-        <h2>Trajectory drill-down</h2>
+        <h2>Trajectory drill-down <span class="gs-scope" id="merge-traj-scope"></span></h2>
         <div class="desc">Per-channel normed adv and merge weights along one trajectory, plus the combined signal.</div>
-        <div class="t-sel" style="margin-bottom:8px">
-          <span class="k" style="color:var(--muted);font-size:12px">traj</span>
-          <input id="merge-traj" type="number" min="0" value="0" />
+        <div class="ve-stage">
+          <div class="ve-bigimg" id="merge-bigimg"></div>
+          <div class="ve-thumbs" id="merge-thumbs"></div>
+          <div class="ve-scrub">
+            <button id="merge-btn-prev" class="t-nav">◀</button>
+            <input id="merge-slider" type="range" min="0" max="0" value="0" />
+            <button id="merge-btn-next" class="t-nav">▶</button>
+            <span class="t-info" id="merge-frame-label">- / -</span>
+          </div>
         </div>
         <div id="merge-traj-body"></div>
       </div>
@@ -807,11 +822,11 @@
 
   <div id="context-bar">
     <div class="ctx-item" data-pages="episode"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
-    <div class="ctx-item" data-pages="gae merge"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
-    <div class="ctx-item" data-pages="episode gae"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item" data-pages="gae advnorm merge"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
+    <div class="ctx-item" data-pages="episode gae advnorm merge"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
     <div class="ctx-item" data-pages="gae"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
     <div class="ctx-item" data-pages="timeline"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
-    <div class="ctx-item" data-pages="episode gae"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
+    <div class="ctx-item" data-pages="episode gae advnorm merge"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
   </div>
 </div>
 
@@ -873,8 +888,8 @@
     // ADV-norm / merge tool state
     normChannel: null,
     normMethod: null,         // null = trained method
-    normTraj: 0,
-    mergeTraj: 0,
+    _stageLen: 0,             // current traj-stage length (shared keyboard nav)
+    _stageRerender: null,     // current traj-stage redraw fn
 
     // Pipeline summary cache (dump home cards)
     pipeline: null,
@@ -4228,6 +4243,138 @@
     }
   }
 
+  // --- Shared trajectory-viewer scaffold -------------------------------
+  // Every trajectory-centric tool page (gae / advnorm / merge) uses the
+  // same skeleton: traj picker in the tool head, big current frame,
+  // thumbnail timeline, scrubber, then page-specific curves below.
+
+  function _trajPickerHtml(idp) {
+    const n = state.manifest?.n_trajectories ?? 0;
+    const t = state.selectedTraj ?? 0;
+    return `<span class="t-sel"><button class="t-nav" id="${idp}-nav-prev">‹</button>` +
+      `<input id="${idp}-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${t}"/>` +
+      `<button class="t-nav" id="${idp}-nav-next">›</button>` +
+      `<span class="t-info">of ${n} trajs</span></span>`;
+  }
+
+  function _wireTrajPicker(idp, onPick) {
+    const n = state.manifest?.n_trajectories ?? 0;
+    const t = state.selectedTraj ?? 0;
+    const sel = $(idp + '-sel');
+    sel.addEventListener('change', () =>
+      onPick(Math.max(0, Math.min(n - 1, parseInt(sel.value) || 0))));
+    $(idp + '-nav-prev').onclick = () => onPick(Math.max(0, t - 1));
+    $(idp + '-nav-next').onclick = () => onPick(Math.min(n - 1, t + 1));
+  }
+
+  // Switch trajectory while staying on the current tool page.
+  function _pickTraj(i) {
+    if (i === state.selectedTraj) return;
+    state.selectedTraj = i;
+    state.trajOverview = null;
+    history.replaceState({}, '', urlForCurrent());
+    updateContextBar();
+    if (state.currentPage === 'gae') {
+      state.trajEpochCompare = null;
+      state.trajEpochOverview = null;
+      state.gaePreview = null;
+      renderGae();
+    } else if (state.currentPage === 'advnorm') {
+      renderNormTraj();
+    } else if (state.currentPage === 'merge') {
+      renderMergeTraj();
+    }
+  }
+
+  async function _trajOv() {
+    if (!state.trajOverview || state.trajOverview.traj_idx !== state.selectedTraj) {
+      state.trajOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/overview`));
+    }
+    return state.trajOverview;
+  }
+
+  // The "video editor" stage — big frame + thumbnail strip + scrubber.
+  // Expects elements <prefix>-bigimg / -thumbs / -slider / -btn-prev /
+  // -btn-next / -frame-label.  `rerender` is the page's own redraw fn.
+  // Returns the clamped current frame index.
+  function renderTrajStage(prefix, ov, rerender) {
+    const frame = Math.max(0, Math.min(state.selectedFrame || 0, ov.length - 1));
+    state.selectedFrame = frame;
+    const T = ov.length;
+    state._stageLen = T;
+    state._stageRerender = rerender;
+    const epPos = ov.episode_pos;
+    const epFrame0 = ov.t_start || 0;
+    const rendered = epPos !== null && epPos !== undefined &&
+      state.episodeList?.[epPos]?.rendered;
+
+    const big = $(prefix + '-bigimg');
+    if (rendered) {
+      big.innerHTML = `<img id="${prefix}-img" src="${imgUrl(epPos, epFrame0 + frame)}" alt=""/>`;
+      const im = $(prefix + '-img');
+      im.onclick = () => {
+        $('img-modal-src').src = im.src;
+        $('img-modal').classList.add('visible');
+      };
+    } else {
+      const job = state.renderJob;
+      const running = job && job.status === 'running';
+      const thisJob = running && job.kind === 'render' && job.episode === epPos &&
+        (state.dumpName ? job.dump === state.dumpName : true);
+      big.innerHTML = `<div class="no-img">${
+        epPos === null || epPos === undefined ? 'no source episode for this trajectory' :
+        thisJob ? '⏳ rendering episode ' + epPos + '…' :
+        `episode ${epPos} not rendered`}</div>`;
+      if (epPos !== null && epPos !== undefined && !thisJob) {
+        const btn = document.createElement('button');
+        btn.className = 'render-btn';
+        btn.textContent = 'Render episode';
+        btn.style.marginTop = '8px';
+        btn.onclick = () => {
+          if (confirm(`Render episode ${epPos}?\nReplays the dumped episode with the stochastic policy (can take a while).`))
+            startRender(epPos);
+        };
+        big.querySelector('.no-img').appendChild(document.createElement('br'));
+        big.querySelector('.no-img').appendChild(btn);
+      }
+      refreshRenderStatus();
+    }
+
+    const th = $(prefix + '-thumbs');
+    const k = Math.max(1, Math.ceil(T / 24));
+    if (rendered) {
+      let h = '';
+      for (let f = 0; f < T; f += k) {
+        h += `<div class="ve-thumb${f <= frame && frame < f + k ? ' cur' : ''}" data-f="${f}">` +
+             `<img loading="lazy" src="${imgUrl(epPos, epFrame0 + f)}"/>` +
+             `<span class="t-label">${f}</span></div>`;
+      }
+      th.innerHTML = h;
+      th.querySelectorAll('.ve-thumb').forEach(el =>
+        el.addEventListener('click', () => {
+          state.selectedFrame = parseInt(el.dataset.f);
+          rerender();
+        }));
+      const cur = th.querySelector('.ve-thumb.cur');
+      if (cur) cur.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    } else {
+      th.innerHTML = `<div class="ve-thumb missing" style="width:100%">render the episode to see frames</div>`;
+    }
+
+    const sl = $(prefix + '-slider');
+    sl.max = T - 1;
+    sl.value = frame;
+    $(prefix + '-frame-label').textContent = `${frame + 1} / ${T}` +
+      (ov.frame_ids ? ` · ${ov.frame_ids[frame]}` : '');
+    $(prefix + '-btn-prev').onclick = () => { state.selectedFrame = Math.max(0, frame - 1); rerender(); };
+    $(prefix + '-btn-next').onclick = () => { state.selectedFrame = Math.min(T - 1, frame + 1); rerender(); };
+    sl.oninput = e => { state.selectedFrame = parseInt(e.target.value); rerender(); };
+
+    updateContextBar();
+    if (ov.frame_ids) $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
+    return frame;
+  }
+
   // --- Tool ② Reward → ADV (GAE) — video-editor layout ---
   async function selectTrajectory(trajIdx) {
     state.selectedTraj = trajIdx;
@@ -4257,7 +4404,7 @@
     await _ensurePipeline();
     if (!state.trajOverview || state.trajOverview.traj_idx !== state.selectedTraj) {
       try {
-        state.trajOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/overview`));
+        await _trajOv();
       } catch (e) {
         $('gae-curves').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;
@@ -4290,14 +4437,9 @@
 
   function _gaeToolHead() {
     const ov = state.trajOverview;
-    const n = state.manifest?.n_trajectories ?? 0;
-    const t = state.selectedTraj;
     const channels = ov?.channels || [];
     let h = `<span class="t-title">Reward → ADV</span>`;
-    h += `<span class="t-sel"><button class="t-nav" id="gae-nav-prev">‹</button>`;
-    h += `<input id="gae-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${t}"/>`;
-    h += `<button class="t-nav" id="gae-nav-next">›</button>`;
-    h += `<span class="t-info">of ${n} trajs</span></span>`;
+    h += _trajPickerHtml('gae');
     if (channels.length > 1) {
       h += `<span class="t-sel"><span class="t-info">channel</span><select id="gae-ch">` +
         channels.map(c => `<option${c === state.gaeChannel ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('') +
@@ -4310,10 +4452,7 @@
       h += `<span class="t-info">${prov} · len ${ov.length} · ${term}</span>`;
     }
     $('gae-tool-head').innerHTML = h;
-    $('gae-sel').addEventListener('change', e =>
-      selectTrajectory(Math.max(0, Math.min(n - 1, parseInt(e.target.value) || 0))));
-    $('gae-nav-prev').onclick = () => selectTrajectory(Math.max(0, t - 1));
-    $('gae-nav-next').onclick = () => selectTrajectory(Math.min(n - 1, t + 1));
+    _wireTrajPicker('gae', selectTrajectory);
     const chSel = $('gae-ch');
     if (chSel) chSel.addEventListener('change', () => {
       state.gaeChannel = chSel.value;
@@ -4330,75 +4469,9 @@
     const ov = state.trajOverview;
     const gp = state.gaePreview;
     if (!ov) return;
-    const frame = Math.max(0, Math.min(state.selectedFrame || 0, ov.length - 1));
-    state.selectedFrame = frame;
-    const T = ov.length;
+    // Shared trajectory stage: big frame + thumbnails + scrubber.
+    const frame = renderTrajStage('gae', ov, renderGaePage);
     const ch = state.gaeChannel;
-
-    // --- big image + thumbnail strip ---
-    const epPos = ov.episode_pos;
-    const epFrame0 = ov.t_start || 0;
-    const rendered = epPos !== null && epPos !== undefined &&
-      state.episodeList?.[epPos]?.rendered;
-    const big = $('gae-bigimg');
-    if (rendered) {
-      big.innerHTML = `<img id="gae-img" src="${imgUrl(epPos, epFrame0 + frame)}" alt=""/>`;
-      const im = $('gae-img');
-      im.onclick = () => { $('img-modal-src').src = im.src; $('img-modal').classList.add('visible'); };
-    } else {
-      const job = state.renderJob;
-      const running = job && job.status === 'running';
-      const thisJob = running && job.episode === epPos &&
-        (state.dumpName ? job.dump === state.dumpName : true);
-      big.innerHTML = `<div class="no-img">${
-        epPos === null || epPos === undefined ? 'no source episode for this trajectory' :
-        thisJob ? '⏳ rendering episode ' + epPos + '…' :
-        `episode ${epPos} not rendered`}</div>`;
-      if (epPos !== null && epPos !== undefined && !thisJob) {
-        const btn = document.createElement('button');
-        btn.className = 'render-btn';
-        btn.textContent = 'Render episode';
-        btn.style.marginTop = '8px';
-        btn.onclick = () => {
-          if (confirm(`Render episode ${epPos}?\nReplays the dumped episode with the stochastic policy (can take a while).`))
-            startRender(epPos);
-        };
-        big.querySelector('.no-img').appendChild(document.createElement('br'));
-        big.querySelector('.no-img').appendChild(btn);
-      }
-      refreshRenderStatus();
-    }
-
-    // thumbnails — every k-th frame, ~24 tiles
-    const th = $('gae-thumbs');
-    const k = Math.max(1, Math.ceil(T / 24));
-    if (rendered) {
-      let h = '';
-      for (let f = 0; f < T; f += k) {
-        h += `<div class="ve-thumb${f <= frame && frame < f + k ? ' cur' : ''}" data-f="${f}">` +
-             `<img loading="lazy" src="${imgUrl(epPos, epFrame0 + f)}"/>` +
-             `<span class="t-label">${f}</span></div>`;
-      }
-      th.innerHTML = h;
-      th.querySelectorAll('.ve-thumb').forEach(el =>
-        el.addEventListener('click', () => {
-          state.selectedFrame = parseInt(el.dataset.f);
-          renderGaePage();
-        }));
-      const cur = th.querySelector('.ve-thumb.cur');
-      if (cur) cur.scrollIntoView({block: 'nearest', inline: 'nearest'});
-    } else {
-      th.innerHTML = `<div class="ve-thumb missing" style="width:100%">render the episode to see frames</div>`;
-    }
-
-    // scrubber
-    $('gae-slider').max = T - 1;
-    $('gae-slider').value = frame;
-    $('gae-frame-label').textContent = `${frame + 1} / ${T}` +
-      (ov.frame_ids ? ` · ${ov.frame_ids[frame]}` : '');
-    $('gae-btn-prev').onclick = () => { state.selectedFrame = Math.max(0, frame - 1); renderGaePage(); };
-    $('gae-btn-next').onclick = () => { state.selectedFrame = Math.min(T - 1, frame + 1); renderGaePage(); };
-    $('gae-slider').oninput = e => { state.selectedFrame = parseInt(e.target.value); renderGaePage(); };
 
     // --- γ/λ params ---
     const tp = _gaeTrainedParams(ch);
@@ -4467,8 +4540,6 @@
     }
     $('gae-curves').innerHTML = html;
     mountCharts($('gae-curves'), f => { state.selectedFrame = f; renderGaePage(); });
-    updateContextBar();
-    if (ov.frame_ids) $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
 
     // --- epoch comparison (what the update did to this trajectory) ---
     const ecEl = $('gae-epoch');
@@ -4673,9 +4744,10 @@
       state.normChannel = channels[0];
     const trained = state.pipeline?.stages?.advnorm?.method || 'zscore';
     if (!state.normMethod) state.normMethod = trained;
+    if (state.selectedTraj === null) state.selectedTraj = 0;
 
-    // header: channel + method selectors
-    let h = `<span class="t-title">ADV Normalization</span>`;
+    // header: traj picker (shared) + channel + method selectors
+    let h = `<span class="t-title">ADV Normalization</span>` + _trajPickerHtml('norm');
     if (channels.length > 1) {
       h += `<span class="t-sel"><span class="t-info">channel</span><select id="norm-ch">` +
         channels.map(c => `<option${c === state.normChannel ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('') + `</select></span>`;
@@ -4687,22 +4759,17 @@
         .map(m => `<button class="method-tab${m === state.normMethod ? ' active' : ''}${m === trained ? ' current' : ''}" data-m="${m}">${m}</button>`).join('') +
       `</span></span>`;
     $('norm-tool-head').innerHTML = h;
+    _wireTrajPicker('norm', _pickTraj);
     $('norm-tool-head').querySelectorAll('.method-tab').forEach(b =>
       b.addEventListener('click', () => { state.normMethod = b.dataset.m; renderAdvnorm(); }));
     const chSel = $('norm-ch');
     if (chSel) chSel.addEventListener('change', () => { state.normChannel = chSel.value; renderAdvnorm(); });
-    $('norm-traj').max = Math.max(0, (state.manifest?.n_trajectories ?? 1) - 1);
-    $('norm-traj').value = state.normTraj;
-    $('norm-traj').onchange = e => {
-      state.normTraj = Math.max(0, parseInt(e.target.value) || 0);
-      renderAdvnorm();
-    };
 
+    // buffer-level distributions
     const el = $('norm-body');
     try {
       const d = await fetchJson(api(
-        `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${state.normMethod}` +
-        `&traj=${state.normTraj}`));
+        `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${state.normMethod}`));
       const isTrained = state.normMethod === trained;
       let html = `<div class="stage-stats">` +
         _kv('trained method', trained) +
@@ -4717,39 +4784,57 @@
         `<div class="desc">n=${d.normed.n_valid} · μ=${fmt(d.normed.mean, 4)} σ=${fmt(d.normed.std, 4)} · p1 ${fmt(d.normed.p1, 2)} / p99 ${fmt(d.normed.p99, 2)}</div>`
         : '<div class="desc">no data</div>';
       el.innerHTML = html;
-
-      // trajectory slice: raw vs normed along the timeline
-      const tb = $('norm-traj-body');
-      if (d.traj) {
-        state._chartSeq = 0; state._chartSpecs = {};
-        tb.innerHTML = `<div class="chart-container"><h3>traj ${d.traj.traj_idx} — raw vs ${escapeHtml(state.normMethod)}</h3>` +
-          chartBox([
-            {label: 'raw adv', data: d.traj.raw, color: '#98a2b5'},
-            {label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'},
-          ], {}, {key: 'norm:traj'}) + '</div>' +
-          `<div class="t-sel" style="margin-top:6px"><a class="stage-open" id="norm-to-gae">inspect this trajectory in GAE tool →</a></div>`;
-        mountCharts(tb);
-        $('norm-to-gae').onclick = () => selectTrajectory(d.traj.traj_idx);
-      } else {
-        tb.innerHTML = '';
-      }
     } catch (e) {
       el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
+    await renderNormTraj();
+  }
+
+  // Trajectory drill-down on the advnorm page: same stage scaffold as the
+  // GAE page, curves show raw vs normalized adv under the chosen method.
+  async function renderNormTraj() {
+    const tb = $('norm-traj-body');
+    $('norm-traj-scope').textContent = `traj ${state.selectedTraj ?? '-'}`;
+    let ov, d;
+    try {
+      ov = await _trajOv();
+      d = await fetchJson(api(
+        `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${state.normMethod}` +
+        `&traj=${state.selectedTraj}`));
+    } catch (e) {
+      tb.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const frame = renderTrajStage('norm', ov, renderNormTraj);
+    state._chartSeq = 0; state._chartSpecs = {};
+    let html = '';
+    if (d.traj) {
+      const cur = {currentFrame: frame};
+      html += `<div class="chart-container"><h3>raw vs ${escapeHtml(state.normMethod)} · ${escapeHtml(state.normChannel)}</h3>` +
+        chartBox([
+          {label: 'raw adv', data: d.traj.raw, color: '#98a2b5'},
+          {label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'},
+        ], cur, {key: 'norm:traj'}) + '</div>';
+      html += `<div class="stage-stats" style="margin-top:4px">` +
+        _kv('frame', frame) +
+        _kv('raw adv', fmt(d.traj.raw?.[frame], 4)) +
+        _kv('normed', fmt(d.traj.normed?.[frame], 4)) +
+        _kv('in norm mask', d.traj.active?.[frame] ? 'yes' : 'no') + `</div>`;
+      html += `<div class="t-sel" style="margin-top:6px"><a class="stage-open" id="norm-to-gae">inspect this trajectory in GAE tool →</a></div>`;
+    }
+    tb.innerHTML = html;
+    mountCharts(tb, f => { state.selectedFrame = f; renderNormTraj(); });
+    const lg = $('norm-to-gae');
+    if (lg) lg.onclick = () => selectTrajectory(state.selectedTraj);
   }
 
   // --- Tool ④ Channel Merge ---------------------------------------------
   async function renderMerge() {
-    const channels = state.manifest?.channel_names || [];
+    if (state.selectedTraj === null) state.selectedTraj = 0;
     $('merge-tool-head').innerHTML =
-      `<span class="t-title">Channel Merge</span>` +
+      `<span class="t-title">Channel Merge</span>` + _trajPickerHtml('merge') +
       `<span class="t-info">combined_adv = Σ_c aw_normed_c × conf_c × normed_adv_c</span>`;
-    $('merge-traj').max = Math.max(0, (state.manifest?.n_trajectories ?? 1) - 1);
-    $('merge-traj').value = state.mergeTraj;
-    $('merge-traj').onchange = e => {
-      state.mergeTraj = Math.max(0, parseInt(e.target.value) || 0);
-      renderMerge();
-    };
+    _wireTrajPicker('merge', _pickTraj);
 
     const el = $('merge-body');
     try {
@@ -4780,54 +4865,75 @@
     } catch (e) {
       el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
+    await renderMergeTraj();
+  }
 
-    // trajectory drill-down: per-channel normed adv + weights + combined
+  // Trajectory drill-down on the merge page: same stage scaffold as the
+  // GAE page; curves show per-channel normed adv, merge weights, and the
+  // combined signal with a shared frame cursor.
+  async function renderMergeTraj() {
     const tb = $('merge-traj-body');
+    $('merge-traj-scope').textContent = `traj ${state.selectedTraj ?? '-'}`;
+    let ov;
     try {
-      const ov = await fetchJson(api(`trajectory/${state.mergeTraj}/overview`));
-      state._chartSeq = 0; state._chartSpecs = {};
-      let html = '';
-      const chs = ov.channels || [];
-      {
-        const ser = [];
-        chs.forEach((ch2, i) => {
-          if (ov[`normed_adv_${ch2}`])
-            ser.push({label: `normed ${ch2}`, data: ov[`normed_adv_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
-        });
-        if (ser.length) html += `<div class="chart-container"><h3>normalized adv per channel</h3>` +
-          chartBox(ser, {}, {key: 'merge:normed'}) + '</div>';
-      }
-      {
-        const ser = [];
-        chs.forEach((ch2, i) => {
-          if (ov[`aw_normed_${ch2}`])
-            ser.push({label: `aw ${ch2}`, data: ov[`aw_normed_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
-        });
-        if (ser.length) html += `<div class="chart-container"><h3>merge weights (aw_normed = aw/Σ|aw|)</h3>` +
-          chartBox(ser, {}, {key: 'merge:aw'}) + '</div>';
-      }
-      if (ov.combined_adv)
-        html += `<div class="chart-container"><h3>combined_adv</h3>` +
-          chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#e06c75'}], {}, {key: 'merge:comb'}) + '</div>';
-      if (chs.length) {
-        html += `<table class="data-table" style="margin-top:10px"><tr><th>channel</th><th>confidence</th><th>ev</th><th>terminated</th><th>bootstrap V</th></tr>`;
-        chs.forEach(ch2 => {
-          const term = ov[`is_terminated_${ch2}`];
-          html += `<tr><td>${escapeHtml(ch2)}</td><td class="num">${fmt(ov.confidences?.[ch2], 3)}</td>` +
-            `<td class="num">${fmt(ov.explained_variances?.[ch2], 3)}</td>` +
-            `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>` +
-            `<td class="num">${term ? '-' : fmt(ov.bootstrap_values?.[ch2], 3)}</td></tr>`;
-        });
-        html += `</table>`;
-        html += `<div class="t-sel" style="margin-top:8px"><a class="stage-open" id="merge-to-gae">inspect in GAE tool →</a></div>`;
-      }
-      tb.innerHTML = html;
-      mountCharts(tb);
-      const lg = $('merge-to-gae');
-      if (lg) lg.onclick = () => selectTrajectory(state.mergeTraj);
+      ov = await _trajOv();
     } catch (e) {
       tb.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
     }
+    const frame = renderTrajStage('merge', ov, renderMergeTraj);
+    const cur = {currentFrame: frame};
+    state._chartSeq = 0; state._chartSpecs = {};
+    let html = '';
+    const chs = ov.channels || [];
+    {
+      const ser = [];
+      chs.forEach((ch2, i) => {
+        if (ov[`normed_adv_${ch2}`])
+          ser.push({label: `normed ${ch2}`, data: ov[`normed_adv_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
+      });
+      if (ser.length) html += `<div class="chart-container"><h3>normalized adv per channel</h3>` +
+        chartBox(ser, cur, {key: 'merge:normed'}) + '</div>';
+    }
+    {
+      const ser = [];
+      chs.forEach((ch2, i) => {
+        if (ov[`aw_normed_${ch2}`])
+          ser.push({label: `aw ${ch2}`, data: ov[`aw_normed_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
+      });
+      if (ser.length) html += `<div class="chart-container"><h3>merge weights (aw_normed = aw/Σ|aw|)</h3>` +
+        chartBox(ser, cur, {key: 'merge:aw'}) + '</div>';
+    }
+    if (ov.combined_adv)
+      html += `<div class="chart-container"><h3>combined_adv</h3>` +
+        chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#e06c75'}], cur, {key: 'merge:comb'}) + '</div>';
+    // frame readout: each channel's contribution at the cursor
+    if (chs.length) {
+      html += `<div class="stage-stats" style="margin-top:4px">` + _kv('frame', frame);
+      chs.forEach(ch2 => {
+        const na = ov[`normed_adv_${ch2}`]?.[frame];
+        const aw = ov[`aw_normed_${ch2}`]?.[frame];
+        const cf = ov.confidences?.[ch2];
+        const contrib = (na !== null && na !== undefined && aw !== null && aw !== undefined)
+          ? aw * (cf ?? 1) * na : null;
+        html += _kv(ch2, `n=${fmt(na, 3)} w=${fmt(aw, 3)} → ${fmt(contrib, 3)}`);
+      });
+      html += _kv('combined', fmt(ov.combined_adv?.[frame], 4)) + `</div>`;
+      html += `<table class="data-table" style="margin-top:10px"><tr><th>channel</th><th>confidence</th><th>ev</th><th>terminated</th><th>bootstrap V</th></tr>`;
+      chs.forEach(ch2 => {
+        const term = ov[`is_terminated_${ch2}`];
+        html += `<tr><td>${escapeHtml(ch2)}</td><td class="num">${fmt(ov.confidences?.[ch2], 3)}</td>` +
+          `<td class="num">${fmt(ov.explained_variances?.[ch2], 3)}</td>` +
+          `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>` +
+          `<td class="num">${term ? '-' : fmt(ov.bootstrap_values?.[ch2], 3)}</td></tr>`;
+      });
+      html += `</table>`;
+      html += `<div class="t-sel" style="margin-top:8px"><a class="stage-open" id="merge-to-gae">inspect in GAE tool →</a></div>`;
+    }
+    tb.innerHTML = html;
+    mountCharts(tb, f => { state.selectedFrame = f; renderMergeTraj(); });
+    const lg = $('merge-to-gae');
+    if (lg) lg.onclick = () => selectTrajectory(state.selectedTraj);
   }
 
   // --- Timeline page (Scene 4) ---
@@ -5068,10 +5174,13 @@
     if (state.currentPage === 'episode') {
       if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); e.preventDefault(); }
-    } else if (state.currentPage === 'gae') {
-      const gmax = (state.trajOverview?.length ?? 1) - 1;
-      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(gmax, state.selectedFrame + 1); renderGaePage(); e.preventDefault(); }
-      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderGaePage(); e.preventDefault(); }
+    } else if (['gae', 'advnorm', 'merge'].includes(state.currentPage)) {
+      // All trajectory-centric pages share the stage frame cursor.
+      const gmax = (state._stageLen ?? 1) - 1;
+      const rr = state._stageRerender;
+      if (!rr) return;
+      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(gmax, state.selectedFrame + 1); rr(); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); rr(); e.preventDefault(); }
     } else if (state.currentPage === 'run') {
       if (e.key === 'ArrowRight') { selectUpdateIdx(state.selectedUpdateIdx + 1); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { selectUpdateIdx(state.selectedUpdateIdx - 1); e.preventDefault(); }
