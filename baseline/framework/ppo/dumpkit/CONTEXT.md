@@ -155,7 +155,9 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
   Normalization ④Channel Merge 四张汇总卡（`/api/pipeline`）+
   Update Process（timeline 摘要，"full timeline →" 下钻）+ Gradient
   Signal。每卡只放汇总 + `open tool →` 入口，**没有 episode 列表**。
-- **工具页**（各自独立 URL，实现同构：对象选择器 + 帧时间线 + 曲线）：
+- **工具页**（各自独立 URL，结构同构：traj picker + 大图 + 缩略图
+  时间线 + scrubber + 页专属曲线）。分工原则：主页看汇总/分布，
+  工具页只做 trajectory 级下钻——分布图不进工具页。
   - `/episode/<pos>` —— ①的钻取：episode 原始 observer 数据 vs 转出的
     逐 traj reward/actor_weight；帧图经浮动窗展示，未渲染时显式
     Render 按钮（不自动渲染）。
@@ -165,10 +167,11 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
     （验证过与 dump 存储值逐位一致）。旧 `/trajectory/<i>` URL 仍
     兼容落到此页。
   - `/advnorm` —— ③的钻取：通道选择 + method tabs（trained 方法高亮），
-    raw vs normed 分布直方图 + 单 traj 切片曲线，服务端
-    `normalize_advantages` 现算。
-  - `/merge` —— ④的钻取：每通道 raw/normed adv、aw、贡献分布 +
-    combined_adv 直方图，可按 traj 下钻逐帧曲线。
+    视频编辑器 stage + 单 traj raw vs normed 曲线，服务端
+    `normalize_advantages` 现算。分布直方图只在主页汇总卡。
+  - `/merge` —— ④的钻取：通道合并标量表（conf/ev/n_active/winsorize）
+    + 视频编辑器 stage + 单 traj per-channel normed/aw/combined 曲线。
+    分布直方图只在主页汇总卡。
 - `/timeline` 保留为 update 内部 step 级钻取页。
 
 复用红线：GAE 与 adv 归一化预览**只能**调

@@ -492,10 +492,6 @@
   .method-tab { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: ui-monospace, monospace; }
   .method-tab.active { border-color: var(--accent); color: var(--accent); }
   .method-tab.current::after { content: " ·trained"; color: var(--muted); font-size: 10px; }
-  .merge-ch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
-  .merge-ch-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
-  .merge-ch-card h3 { margin: 0 0 6px; font-size: 13px; }
-  .ch-kv { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-bottom: 6px; font-family: ui-monospace, monospace; }
 </style>
 </head>
 <body>
@@ -728,16 +724,12 @@
       <div class="card"><div id="gae-curves"></div></div>
     </div>
 
-    <!-- Tool ③ ADV Normalization — per-channel raw vs transformed
-         distributions, method switchable (server-side recompute).
-         Buffer-level histograms on top; the trajectory drill-down uses
-         the same video-editor stage as the GAE page. -->
+    <!-- Tool ③ ADV Normalization — raw vs normed adv along a trajectory,
+         method switchable (server-side recompute).  Buffer-level
+         distribution histograms live on the dump home page. -->
     <div class="page" id="page-advnorm">
       <div class="tool-head" id="norm-tool-head"></div>
-      <div class="card"><div id="norm-body"></div></div>
       <div class="card">
-        <h2>Trajectory drill-down <span class="gs-scope" id="norm-traj-scope"></span></h2>
-        <div class="desc">Raw vs normalized advantage along one trajectory under the selected method.</div>
         <div class="ve-stage">
           <div class="ve-bigimg" id="norm-bigimg"></div>
           <div class="ve-thumbs" id="norm-thumbs"></div>
@@ -752,14 +744,12 @@
       </div>
     </div>
 
-    <!-- Tool ④ Channel Merge — per-channel normed adv × weight → combined.
-         Same trajectory-centric stage as the other tool pages. -->
+    <!-- Tool ④ Channel Merge — per-channel merge scalars on top, then the
+         same trajectory-centric stage as the other tool pages. -->
     <div class="page" id="page-merge">
       <div class="tool-head" id="merge-tool-head"></div>
       <div class="card"><div id="merge-body"></div></div>
       <div class="card">
-        <h2>Trajectory drill-down <span class="gs-scope" id="merge-traj-scope"></span></h2>
-        <div class="desc">Per-channel normed adv and merge weights along one trajectory, plus the combined signal.</div>
         <div class="ve-stage">
           <div class="ve-bigimg" id="merge-bigimg"></div>
           <div class="ve-thumbs" id="merge-thumbs"></div>
@@ -4345,35 +4335,13 @@
       (state.pipeline?.stages?.advnorm?.methods_available || ['zscore', 'std', 'gauss_rank'])
         .map(m => `<button class="method-tab${m === state.normMethod ? ' active' : ''}${m === trained ? ' current' : ''}" data-m="${m}">${m}</button>`).join('') +
       `</span></span>`;
+    h += `<span class="t-info">trained: ${escapeHtml(trained)}</span>`;
     $('norm-tool-head').innerHTML = h;
     _wireTrajPicker('norm', _pickTraj);
     $('norm-tool-head').querySelectorAll('.method-tab').forEach(b =>
       b.addEventListener('click', () => { state.normMethod = b.dataset.m; renderAdvnorm(); }));
     const chSel = $('norm-ch');
     if (chSel) chSel.addEventListener('change', () => { state.normChannel = chSel.value; renderAdvnorm(); });
-
-    // buffer-level distributions
-    const el = $('norm-body');
-    try {
-      const d = await fetchJson(api(
-        `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${state.normMethod}`));
-      const isTrained = state.normMethod === trained;
-      let html = `<div class="stage-stats">` +
-        _kv('trained method', trained) +
-        _kv('preview method', state.normMethod + (isTrained ? ' ≡ trained' : '')) +
-        _kv('active frames', d.n_active) + `</div>`;
-      html += `<h3 style="margin:14px 0 4px">raw advantage · ${escapeHtml(state.normChannel)}</h3>`;
-      html += d.raw ? _histSvg(d.raw, 900, 130) +
-        `<div class="desc">n=${d.raw.n_valid} · μ=${fmt(d.raw.mean, 4)} σ=${fmt(d.raw.std, 4)} · p1 ${fmt(d.raw.p1, 2)} / p99 ${fmt(d.raw.p99, 2)}</div>`
-        : '<div class="desc">no data</div>';
-      html += `<h3 style="margin:14px 0 4px">normalized · ${escapeHtml(state.normMethod)}${isTrained ? ' (trained)' : ' — preview'}</h3>`;
-      html += d.normed ? _histSvg(d.normed, 900, 130) +
-        `<div class="desc">n=${d.normed.n_valid} · μ=${fmt(d.normed.mean, 4)} σ=${fmt(d.normed.std, 4)} · p1 ${fmt(d.normed.p1, 2)} / p99 ${fmt(d.normed.p99, 2)}</div>`
-        : '<div class="desc">no data</div>';
-      el.innerHTML = html;
-    } catch (e) {
-      el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
-    }
     await renderNormTraj();
   }
 
@@ -4381,7 +4349,6 @@
   // GAE page, curves show raw vs normalized adv under the chosen method.
   async function renderNormTraj() {
     const tb = $('norm-traj-body');
-    $('norm-traj-scope').textContent = `traj ${state.selectedTraj ?? '-'}`;
     let ov, d;
     try {
       ov = await _trajOv();
@@ -4423,31 +4390,21 @@
       `<span class="t-info">combined_adv = Σ_c aw_normed_c × conf_c × normed_adv_c</span>`;
     _wireTrajPicker('merge', _pickTraj);
 
+    // Merge parameters actually used in this update — scalars only;
+    // distributions live on the dump home page.
     const el = $('merge-body');
     try {
       const d = await fetchJson(api('merge'));
-      let html = `<div class="merge-ch-grid">`;
+      let html = `<table class="data-table"><tr><th>channel</th><th>confidence</th><th>ev</th><th>active frames</th></tr>`;
       for (const c of d.channels || []) {
-        html += `<div class="merge-ch-card"><h3>${escapeHtml(c.name)}</h3>`;
-        html += `<div class="ch-kv"><span>conf=${fmt(c.confidence, 3)}</span><span>ev=${fmt(c.ev, 3)}</span><span>active=${c.n_active}</span></div>`;
-        for (const [label, key] of [['raw adv', 'raw_adv'], ['normed adv', 'normed_adv'],
-                                    ['actor weight', 'actor_weight'], ['contribution', 'contribution']]) {
-          if (c[key]) html += `<div class="mini-hist" style="margin-bottom:6px"><div class="mh-title">${label}</div>${_histSvg(c[key], 320, 56, false)}</div>`;
-        }
-        html += `</div>`;
+        html += `<tr><td>${escapeHtml(c.name)}</td>` +
+          `<td class="num">${fmt(c.confidence, 4)}</td>` +
+          `<td class="num">${fmt(c.ev, 4)}</td>` +
+          `<td class="num">${c.n_active}</td></tr>`;
       }
-      html += `</div>`;
-      // combined result
-      if (d.combined) {
-        html += `<div class="section-sep"></div><div class="section-sep-label">Combined (actor signal)</div>`;
-        if (d.combined_pre_winsorize) {
-          html += `<h3 style="margin:8px 0 4px">pre-winsorize</h3>${_histSvg(d.combined_pre_winsorize, 900, 110)}`;
-        }
-        html += `<h3 style="margin:8px 0 4px">combined_adv (final)` +
-          (d.adv_winsorize_sigma ? ` · winsorize ±${d.adv_winsorize_sigma}σ, clip ${(100 * (d.adv_winsorize_clip_frac || 0)).toFixed(2)}%` : '') +
-          `</h3>${_histSvg(d.combined, 900, 110)}` +
-          `<div class="desc">n=${d.combined.n_valid} · μ=${fmt(d.combined.mean, 4)} σ=${fmt(d.combined.std, 4)}</div>`;
-      }
+      html += `</table>`;
+      if (d.adv_winsorize_sigma)
+        html += `<div class="desc" style="margin-top:6px">combined_adv winsorized at ±${fmt(d.adv_winsorize_sigma, 2)}σ — clipped ${(100 * (d.adv_winsorize_clip_frac || 0)).toFixed(2)}% of frames</div>`;
       el.innerHTML = html;
     } catch (e) {
       el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
@@ -4460,7 +4417,6 @@
   // combined signal with a shared frame cursor.
   async function renderMergeTraj() {
     const tb = $('merge-traj-body');
-    $('merge-traj-scope').textContent = `traj ${state.selectedTraj ?? '-'}`;
     let ov;
     try {
       ov = await _trajOv();
