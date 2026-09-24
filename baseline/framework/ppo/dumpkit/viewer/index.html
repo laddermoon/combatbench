@@ -459,9 +459,6 @@
   .trk-label .key-del:hover { color: #e06c75; }
   .trk-lane { position: relative; flex: 1; height: 24px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 3px; }
   .trk-lane.seekable { cursor: crosshair; }
-  .trk-clip { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; cursor: pointer; }
-  .trk-clip:hover { filter: brightness(1.35); }
-  .trk-clip.cur { box-shadow: 0 0 0 1px var(--accent); }
   .trk-playhead { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent); pointer-events: none; }
   .trk-lane svg.trk-curve { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .trk-ax { position: absolute; right: 3px; font-size: 9px; line-height: 1.2; color: var(--muted); font-family: ui-monospace, monospace; pointer-events: none; text-shadow: 0 0 3px var(--panel-alt); z-index: 1; }
@@ -473,10 +470,9 @@
   .merge-group { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
   .merge-group-head { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin-bottom: 6px; display: flex; gap: 16px; align-items: baseline; }
   .merge-group-head .ch { color: var(--accent); font-weight: 600; }
+  .merge-group-head .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
   .merge-group-head .conf-on { color: #6ec86e; }
   .merge-group-head .conf-off { color: var(--muted); }
-  .trk-lane.tall { height: 44px; }
-  .trk-lane[data-traj] { cursor: pointer; }
   .trk-label .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
   .trk-label .lg.aw { height: 2px; vertical-align: 2px; }
   .trk-leg { font-size: 10px; color: var(--muted); line-height: 1.5; }
@@ -725,9 +721,10 @@
     </div>
 
     <!-- Tool ① Episode → Trajectory — same video-editor scaffold as the
-         other tools.  Below the stage: trajectory clips on the episode
-         axis (multi-track), pinnable scalar-key curve tracks, and the
-         raw per-frame readout. -->
+         other tools.  Below the stage: pinnable scalar-key curve tracks
+         on the episode axis, per-trajectory groups (reward + actor_weight
+         charts per channel, merge-page style), and the raw per-frame
+         readout. -->
     <div class="page" id="page-episode">
       <div class="tool-head" id="ep-tool-head"></div>
       <div class="ve-stage">
@@ -3807,23 +3804,20 @@
     const frame = renderTrajStage('ep',
       {length: ov.n_frames, episode_pos: pos, t_start: 0}, renderEpisode);
 
+    state._chartSeq = 0; state._chartSpecs = {};
     await _epTracks(ov, frame);
     _epKeyBar(ov);
     await _epKeyTracks(ov, frame);
     await renderEpisodeFrame();
   }
 
-  // Trajectory lanes on the episode axis — one lane per trajectory.
-  // Each lane draws that trajectory's signals inside its clip span
-  // [t_start, t_start+len): per-channel reward (solid) + actor_weight
-  // (dashed).  Click lane → jump to tool ② for that trajectory.
+  // Trajectory groups — one bordered group per trajectory, merge-page
+  // style.  Group head shows agent + clip span on the episode axis;
+  // inside, each channel gets a reward chart and an actor_weight chart
+  // on the trajectory's own frame axis.  Clicking a chart seeks the
+  // episode frame cursor (t_start + clicked index).
   const EP_CH_COLORS = ['#4da6ff', '#3ddc84', '#c77dff', '#ff9f43', '#4dd0e1'];
-
-  // Value range of a series for legend display: "lo–hi".
-  function _rng(data) {
-    const n = _snorm(data);
-    return n ? `${fmt(n.lo, 2)}–${fmt(n.hi, 2)}` : '—';
-  }
+  const EP_AGENT_COLORS = {robot_a: '#4da6ff', robot_b: '#ff9f43'};
 
   // Shared {lo,hi,rg} normalization for a series (null-tolerant).
   function _snorm(data) {
@@ -3892,7 +3886,6 @@
   function _trkTipHide() { if (_trkTip) _trkTip.style.display = 'none'; }
 
   async function _epTracks(ov, frame) {
-    const T = Math.max(1, ov.n_frames);
     const el = $('ep-tracks');
     if (!state.epTrajOv) state.epTrajOv = {};
     // Fetch each trajectory's overview (reward/aw per channel) once.
@@ -3908,124 +3901,50 @@
     }));
 
     const chs = state.manifest?.channel_names || [];
-    const ph = `<div class="trk-playhead" style="left:${((frame + 0.5) / T * 100).toFixed(2)}%"></div>`;
     let h = '';
     for (const t of trajs) {
       const to = state.epTrajOv[t.traj_idx];
-      const inSpan = frame >= t.t_start && frame < t.t_start + t.length;
       const tf = frame - t.t_start;
-      // Label: traj id + agent + per-channel legend (color, signal, range)
-      // + current-frame values.
-      let lab = `traj ${t.traj_idx} · ${escapeHtml(t.agent_id)}`;
+      const inSpan = tf >= 0 && tf < t.length;
+      const ac = EP_AGENT_COLORS[t.agent_id] || 'var(--muted)';
+      h += `<div class="merge-group" data-traj="${t.traj_idx}">` +
+        `<div class="merge-group-head">` +
+        `<span class="ch">traj ${t.traj_idx}</span>` +
+        `<span><span class="lg" style="background:${ac}"></span>${escapeHtml(t.agent_id)}</span>` +
+        `<span class="t-info">episode [${t.t_start}, ${t.t_start + t.length})</span>` +
+        `<span class="t-info">${inSpan ? `frame ${frame} &rarr; t=${tf}` : 'playhead outside clip'}</span>` +
+        `<a class="stage-open" data-traj-link="${t.traj_idx}">&rarr; Reward&rarr;ADV</a>` +
+        `</div>`;
       if (to && !to.error) {
-        let leg = '';
+        const cur = inSpan ? {currentFrame: tf} : {};
         chs.forEach((ch, i) => {
           const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
-          const cn = ch.replace(/^r_/, '');
-          const rw = to[`reward_${ch}`], aw = to[`actor_weight_${ch}`];
-          if (rw) leg += `<div class="trk-leg"><span class="lg" ` +
-            `style="background:${colr}"></span>${escapeHtml(cn)} reward ` +
-            `<span class="rg">${_rng(rw)}</span></div>`;
-          if (aw) leg += `<div class="trk-leg"><span class="lg aw" ` +
-            `style="background:${colr}"></span>${escapeHtml(cn)} aw ` +
-            `<span class="rg">${_rng(aw)}</span></div>`;
+          if (to[`reward_${ch}`])
+            h += `<div class="chart-container"><h3>reward &middot; ${escapeHtml(ch)}</h3>` +
+              chartBox([{label: 'reward', data: to[`reward_${ch}`], color: colr}],
+                cur, {key: `eptrk:${t.traj_idx}:${ch}:r`}) + '</div>';
+          if (to[`actor_weight_${ch}`])
+            h += `<div class="chart-container"><h3>actor_weight &middot; ${escapeHtml(ch)}</h3>` +
+              chartBox([{label: 'actor_weight', data: to[`actor_weight_${ch}`], color: colr}],
+                cur, {key: `eptrk:${t.traj_idx}:${ch}:aw`}) + '</div>';
         });
-        lab += leg;
-        let cur = '';
-        for (const ch of chs) {
-          const r = to[`reward_${ch}`]?.[tf];
-          const aw = to[`actor_weight_${ch}`]?.[tf];
-          if (inSpan && r !== undefined)
-            cur += ` ${ch.replace(/^r_/, '')}:${fmt(r, 2)}` +
-              (aw !== undefined ? `(aw ${fmt(aw, 1)})` : '');
-        }
-        lab += `<div class="t-info">${inSpan ? cur || '—' : 'outside clip'}</div>`;
-      }
-      // Lane: multi-line SVG inside the clip span + a value marker at
-      // the playhead∩curve point for every series.
-      let lane = '';
-      if (to && !to.error) {
-        const series = [];
-        chs.forEach((ch, i) => {
-          const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
-          const rw = to[`reward_${ch}`], aw = to[`actor_weight_${ch}`];
-          if (rw) series.push({data: rw, color: colr});
-          if (aw) series.push({data: aw, color: colr, dash: true});
-        });
-        lane = _sparkSpan(series, t.t_start, t.length, T, 42);
-        if (inSpan) {
-          for (const s of series) {
-            const v = s.data[tf];
-            if (v === null || v === undefined || !isFinite(v) || !s.n) continue;
-            lane += _trkPoint(frame, T, _sparkYpct(v, s.n, 42, 3, 4),
-              s.color, fmt(v, s.dash ? 3 : 4));
-          }
-        }
-      } else if (to && to.error) {
-        lane = `<span class="desc" style="padding:0 6px">${escapeHtml(to.error)}</span>`;
       } else {
-        lane = `<span class="desc" style="padding:0 6px">…</span>`;
+        h += `<div class="desc">${escapeHtml((to && to.error) || '…')}</div>`;
       }
-      h += `<div class="trk-row"><div class="trk-label">${lab}</div>` +
-        `<div class="trk-lane tall" data-traj="${t.traj_idx}" ` +
-        `title="traj ${t.traj_idx} · ${escapeHtml(t.agent_id)} · frames [${t.t_start}, ${t.t_start + t.length}) — click → Reward→ADV">` +
-        lane + ph + `</div></div>`;
+      h += '</div>';
     }
     el.innerHTML = h || '<div class="desc">no trajectories mapped to this episode</div>';
-    el.querySelectorAll('.trk-lane[data-traj]').forEach(lane => {
-      const t = trajs.find(x => String(x.traj_idx) === lane.dataset.traj);
-      const to = state.epTrajOv[t.traj_idx];
-      lane.addEventListener('click', () =>
-        selectTrajectory(parseInt(lane.dataset.traj)));
-      _wireLaneTip(lane, T, fx => {
-        if (!to || to.error) return null;
-        if (fx < t.t_start || fx >= t.t_start + t.length)
-          return [{color: 'var(--muted)', name: 'outside traj clip', value: ''}];
-        const tf = fx - t.t_start;
-        const rows = [];
-        chs.forEach((ch, i) => {
-          const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
-          const cn = ch.replace(/^r_/, '');
-          const r = to[`reward_${ch}`]?.[tf];
-          const aw = to[`actor_weight_${ch}`]?.[tf];
-          if (to[`reward_${ch}`])
-            rows.push({color: colr, name: `${cn} reward`,
-              value: r !== undefined && r !== null ? fmt(r, 4) : '—'});
-          if (to[`actor_weight_${ch}`])
-            rows.push({color: colr, dash: true, name: `${cn} aw`,
-              value: aw !== undefined && aw !== null ? fmt(aw, 3) : '—'});
-        });
-        return rows;
+    el.querySelectorAll('[data-traj-link]').forEach(a =>
+      a.addEventListener('click', () => selectTrajectory(parseInt(a.dataset.trajLink))));
+    // Per-group chart mounting so clicks map back through t_start.
+    el.querySelectorAll('.merge-group[data-traj]').forEach(g => {
+      const t = trajs.find(x => String(x.traj_idx) === g.dataset.traj);
+      if (!t) return;
+      mountCharts(g, i => {
+        state.selectedFrame = Math.max(0, Math.min(ov.n_frames - 1, t.t_start + i));
+        renderEpisode();
       });
     });
-  }
-
-  // Multi-series sparkline drawn into [x0, x0+len) of a 0..T-1 axis.
-  // Each series is min-max normalized to the lane height independently
-  // (channels have different units — the lane shows shape).  The norm
-  // {lo,hi,rg} is stored back on s.n for playhead-marker positioning.
-  function _sparkSpan(series, x0, len, T, H) {
-    const parts = [];
-    for (const s of series) {
-      const data = s.data;
-      if (!data || !data.length) continue;
-      const n = s.n || (s.n = _snorm(data));
-      if (!n) continue;
-      let d = '', pen = false;
-      for (let i = 0; i < Math.min(data.length, len); i++) {
-        const y = data[i];
-        if (y === null || y === undefined || !isFinite(y)) { pen = false; continue; }
-        const yy = (H - 3 - (y - n.lo) / n.rg * (H - 7)).toFixed(1);
-        d += `${pen ? 'L' : 'M'}${(x0 + i)},${yy}`;
-        pen = true;
-      }
-      parts.push(`<path d="${d}" fill="none" stroke="${s.color}" ` +
-        `stroke-width="${s.dash ? 1 : 1.4}" ${s.dash ? 'stroke-dasharray="3 2" ' : ''}` +
-        `vector-effect="non-scaling-stroke" opacity="${s.dash ? 0.7 : 1}"/>`);
-    }
-    if (!parts.length) return '';
-    return `<svg class="trk-curve" viewBox="0 0 ${Math.max(1, T - 1)} ${H}" ` +
-      `preserveAspectRatio="none">${parts.join('')}</svg>`;
   }
 
   // Click on a lane background seeks the episode frame cursor.
@@ -4163,8 +4082,6 @@
 
       const agents = state.manifest.agent_ids || [];
       let html = '';
-      state._chartSeq = 0;
-      state._chartSpecs = {};
 
       // --- Episode-level data (obs/actions/observer outputs) ---
 
