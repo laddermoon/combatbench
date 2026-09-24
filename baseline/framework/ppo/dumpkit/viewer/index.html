@@ -744,11 +744,10 @@
       </div>
     </div>
 
-    <!-- Tool ④ Channel Merge — per-channel merge scalars on top, then the
-         same trajectory-centric stage as the other tool pages. -->
+    <!-- Tool ④ Channel Merge — trajectory drill-down only; the merge
+         scalars (conf/ev/winsorize) already live on the dump home card. -->
     <div class="page" id="page-merge">
       <div class="tool-head" id="merge-tool-head"></div>
-      <div class="card"><div id="merge-body"></div></div>
       <div class="card">
         <div class="ve-stage">
           <div class="ve-bigimg" id="merge-bigimg"></div>
@@ -4389,26 +4388,6 @@
       `<span class="t-title">Channel Merge</span>` + _trajPickerHtml('merge') +
       `<span class="t-info">combined_adv = Σ_c aw_normed_c × conf_c × normed_adv_c</span>`;
     _wireTrajPicker('merge', _pickTraj);
-
-    // Merge parameters actually used in this update — scalars only;
-    // distributions live on the dump home page.
-    const el = $('merge-body');
-    try {
-      const d = await fetchJson(api('merge'));
-      let html = `<table class="data-table"><tr><th>channel</th><th>confidence</th><th>ev</th><th>active frames</th></tr>`;
-      for (const c of d.channels || []) {
-        html += `<tr><td>${escapeHtml(c.name)}</td>` +
-          `<td class="num">${fmt(c.confidence, 4)}</td>` +
-          `<td class="num">${fmt(c.ev, 4)}</td>` +
-          `<td class="num">${c.n_active}</td></tr>`;
-      }
-      html += `</table>`;
-      if (d.adv_winsorize_sigma)
-        html += `<div class="desc" style="margin-top:6px">combined_adv winsorized at ±${fmt(d.adv_winsorize_sigma, 2)}σ — clipped ${(100 * (d.adv_winsorize_clip_frac || 0)).toFixed(2)}% of frames</div>`;
-      el.innerHTML = html;
-    } catch (e) {
-      el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
-    }
     await renderMergeTraj();
   }
 

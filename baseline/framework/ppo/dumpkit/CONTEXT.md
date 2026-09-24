@@ -169,9 +169,9 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
   - `/advnorm` —— ③的钻取：通道选择 + method tabs（trained 方法高亮），
     视频编辑器 stage + 单 traj raw vs normed 曲线，服务端
     `normalize_advantages` 现算。分布直方图只在主页汇总卡。
-  - `/merge` —— ④的钻取：通道合并标量表（conf/ev/n_active/winsorize）
-    + 视频编辑器 stage + 单 traj per-channel normed/aw/combined 曲线。
-    分布直方图只在主页汇总卡。
+  - `/merge` —— ④的钻取：视频编辑器 stage + 单 traj per-channel
+    normed/aw/combined 曲线 + 帧读数（每通道 conf/ev/terminated 在
+    traj 表内）。合并的汇总与分布只在主页汇总卡。
 - `/timeline` 保留为 update 内部 step 级钻取页。
 
 复用红线：GAE 与 adv 归一化预览**只能**调
