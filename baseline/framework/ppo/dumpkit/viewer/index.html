@@ -470,6 +470,15 @@
   .trk-lane[data-traj] { cursor: pointer; }
   .trk-label .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
   .trk-label .lg.aw { height: 2px; vertical-align: 2px; }
+  .trk-leg { font-size: 10px; color: var(--muted); line-height: 1.5; }
+  .trk-leg .rg { color: var(--text); }
+  .trk-hl { position: absolute; top: -1px; bottom: -1px; width: 1px; background: rgba(255,255,255,0.35); pointer-events: none; display: none; }
+  .trk-tip { position: fixed; z-index: 1000; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; padding: 6px 9px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,0.45); max-width: 340px; }
+  .trk-tip .tt-f { color: var(--muted); margin-bottom: 3px; }
+  .trk-tip .tt-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .trk-tip .tt-row .tt-v { margin-left: auto; padding-left: 12px; color: var(--text); }
+  .trk-tip .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .trk-tip .lg.aw { height: 2px; }
   .ep-keybar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
   .ep-keybar select, .ep-keybar input { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-family: ui-monospace, monospace; }
   .ep-keybar input[type=number] { width: 64px; }
@@ -3800,6 +3809,58 @@
   // [t_start, t_start+len): per-channel reward (solid) + actor_weight
   // (dashed).  Click lane → jump to tool ② for that trajectory.
   const EP_CH_COLORS = ['#4fa3ff', '#6ec86e', '#c678dd', '#e6a23c', '#56b6c2'];
+
+  // Value range of a series for legend display: "lo–hi".
+  function _rng(data) {
+    let lo = Infinity, hi = -Infinity;
+    for (const y of data || []) {
+      if (y === null || y === undefined || !isFinite(y)) continue;
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    return isFinite(lo) ? `${fmt(lo, 2)}–${fmt(hi, 2)}` : '—';
+  }
+
+  // One floating tooltip shared by all track lanes.  rows = [{color,
+  // dash, name, value}].  Also moves the lane's hover line to x.
+  let _trkTip = null;
+  function _wireLaneTip(lane, T, resolve) {
+    const hl = document.createElement('div');
+    hl.className = 'trk-hl';
+    lane.appendChild(hl);
+    lane.addEventListener('mousemove', e => {
+      const r = lane.getBoundingClientRect();
+      const fx = Math.max(0, Math.min(T - 1,
+        Math.round((e.clientX - r.left) / r.width * (T - 1))));
+      hl.style.display = 'block';
+      hl.style.left = `${(((fx + 0.5) / T) * 100).toFixed(2)}%`;
+      const rows = resolve(fx);
+      if (!rows) { _trkTipHide(); return; }
+      if (!_trkTip) {
+        _trkTip = document.createElement('div');
+        _trkTip.className = 'trk-tip';
+        document.body.appendChild(_trkTip);
+      }
+      _trkTip.innerHTML = `<div class="tt-f">episode frame ${fx}</div>` +
+        rows.map(rw =>
+          `<div class="tt-row"><span class="lg${rw.dash ? ' aw' : ''}" ` +
+          `style="background:${rw.color}"></span>${escapeHtml(rw.name)}` +
+          `<span class="tt-v">${rw.value}</span></div>`).join('');
+      _trkTip.style.display = 'block';
+      const tw = _trkTip.offsetWidth, th = _trkTip.offsetHeight;
+      let x = e.clientX + 14, y = e.clientY + 14;
+      if (x + tw > window.innerWidth - 8) x = e.clientX - tw - 14;
+      if (y + th > window.innerHeight - 8) y = e.clientY - th - 14;
+      _trkTip.style.left = x + 'px';
+      _trkTip.style.top = y + 'px';
+    });
+    lane.addEventListener('mouseleave', () => {
+      hl.style.display = 'none';
+      _trkTipHide();
+    });
+  }
+  function _trkTipHide() { if (_trkTip) _trkTip.style.display = 'none'; }
+
   async function _epTracks(ov, frame) {
     const T = Math.max(1, ov.n_frames);
     const el = $('ep-tracks');
@@ -3823,9 +3884,23 @@
       const to = state.epTrajOv[t.traj_idx];
       const inSpan = frame >= t.t_start && frame < t.t_start + t.length;
       const tf = frame - t.t_start;
-      // Label: traj id + agent + mini legend + current-frame values.
+      // Label: traj id + agent + per-channel legend (color, signal, range)
+      // + current-frame values.
       let lab = `traj ${t.traj_idx} · ${escapeHtml(t.agent_id)}`;
       if (to && !to.error) {
+        let leg = '';
+        chs.forEach((ch, i) => {
+          const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
+          const cn = ch.replace(/^r_/, '');
+          const rw = to[`reward_${ch}`], aw = to[`actor_weight_${ch}`];
+          if (rw) leg += `<div class="trk-leg"><span class="lg" ` +
+            `style="background:${colr}"></span>${escapeHtml(cn)} reward ` +
+            `<span class="rg">${_rng(rw)}</span></div>`;
+          if (aw) leg += `<div class="trk-leg"><span class="lg aw" ` +
+            `style="background:${colr}"></span>${escapeHtml(cn)} aw ` +
+            `<span class="rg">${_rng(aw)}</span></div>`;
+        });
+        lab += leg;
         let cur = '';
         for (const ch of chs) {
           const r = to[`reward_${ch}`]?.[tf];
@@ -3858,9 +3933,32 @@
         lane + ph + `</div></div>`;
     }
     el.innerHTML = h || '<div class="desc">no trajectories mapped to this episode</div>';
-    el.querySelectorAll('.trk-lane[data-traj]').forEach(lane =>
+    el.querySelectorAll('.trk-lane[data-traj]').forEach(lane => {
+      const t = trajs.find(x => String(x.traj_idx) === lane.dataset.traj);
+      const to = state.epTrajOv[t.traj_idx];
       lane.addEventListener('click', () =>
-        selectTrajectory(parseInt(lane.dataset.traj))));
+        selectTrajectory(parseInt(lane.dataset.traj)));
+      _wireLaneTip(lane, T, fx => {
+        if (!to || to.error) return null;
+        if (fx < t.t_start || fx >= t.t_start + t.length)
+          return [{color: 'var(--muted)', name: 'outside traj clip', value: ''}];
+        const tf = fx - t.t_start;
+        const rows = [];
+        chs.forEach((ch, i) => {
+          const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
+          const cn = ch.replace(/^r_/, '');
+          const r = to[`reward_${ch}`]?.[tf];
+          const aw = to[`actor_weight_${ch}`]?.[tf];
+          if (to[`reward_${ch}`])
+            rows.push({color: colr, name: `${cn} reward`,
+              value: r !== undefined && r !== null ? fmt(r, 4) : '—'});
+          if (to[`actor_weight_${ch}`])
+            rows.push({color: colr, dash: true, name: `${cn} aw`,
+              value: aw !== undefined && aw !== null ? fmt(aw, 3) : '—'});
+        });
+        return rows;
+      });
+    });
   }
 
   // Multi-series sparkline drawn into [x0, x0+len) of a 0..T-1 axis.
@@ -3968,8 +4066,11 @@
       const err = (state.epSeriesErr || {})[k];
       const val = s && s[frame] !== null && s[frame] !== undefined ? fmt(s[frame], 4) : '';
       h += `<div class="trk-row"><div class="trk-label" title="${escapeHtml(k)}">${escapeHtml(k)}` +
-        `<a class="key-del" data-k="${escapeHtml(k)}">✕</a></div>` +
-        `<div class="trk-lane seekable">` +
+        `<a class="key-del" data-k="${escapeHtml(k)}">✕</a>` +
+        (s ? `<div class="trk-leg"><span class="lg" style="background:#e5c07b"></span>` +
+          `range <span class="rg">${_rng(s)}</span></div>` : '') +
+        `</div>` +
+        `<div class="trk-lane seekable" data-key="${escapeHtml(k)}">` +
         (s ? _spark(s, T) : `<span class="desc" style="padding:0 6px">${escapeHtml(err || '…')}</span>`) +
         (val ? `<span class="trk-val">${val}</span>` : '') +
         ph + `</div></div>`;
@@ -3982,6 +4083,16 @@
         state.epKeys = state.epKeys.filter(x => x !== a.dataset.k);
         renderEpisode();
       }));
+    el.querySelectorAll('.trk-lane[data-key]').forEach(lane => {
+      const k = lane.dataset.key;
+      const s = (state.epSeries || {})[k];
+      _wireLaneTip(lane, T, fx => {
+        if (!s) return null;
+        const v = s[fx];
+        return [{color: '#e5c07b', name: k,
+          value: v !== null && v !== undefined ? fmt(v, 4) : '—'}];
+      });
+    });
     _wireLaneSeek(el, T);
   }
 
