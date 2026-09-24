@@ -464,7 +464,11 @@
   .trk-clip.cur { box-shadow: 0 0 0 1px var(--accent); }
   .trk-playhead { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent); pointer-events: none; }
   .trk-lane svg.trk-curve { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .trk-val { position: absolute; right: 4px; top: 2px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text); pointer-events: none; text-shadow: 0 0 3px var(--panel-alt); }
+  .trk-ax { position: absolute; right: 3px; font-size: 9px; line-height: 1.2; color: var(--muted); font-family: ui-monospace, monospace; pointer-events: none; text-shadow: 0 0 3px var(--panel-alt); z-index: 1; }
+  .trk-ax.top { top: 1px; }
+  .trk-ax.bot { bottom: 1px; }
+  .trk-dot { position: absolute; width: 6px; height: 6px; border-radius: 3px; transform: translate(-3px, -3px); pointer-events: none; z-index: 2; }
+  .trk-pt { position: absolute; font-size: 10px; font-family: ui-monospace, monospace; transform: translate(6px, -8px); pointer-events: none; z-index: 2; white-space: nowrap; text-shadow: 0 0 3px var(--panel-alt), 0 0 3px var(--panel-alt); }
   .trk-sep { border-top: 1px dashed var(--border); margin: 10px 0 4px; }
   .trk-lane.tall { height: 44px; }
   .trk-lane[data-traj] { cursor: pointer; }
@@ -3812,13 +3816,34 @@
 
   // Value range of a series for legend display: "lo–hi".
   function _rng(data) {
+    const n = _snorm(data);
+    return n ? `${fmt(n.lo, 2)}–${fmt(n.hi, 2)}` : '—';
+  }
+
+  // Shared {lo,hi,rg} normalization for a series (null-tolerant).
+  function _snorm(data) {
     let lo = Infinity, hi = -Infinity;
     for (const y of data || []) {
       if (y === null || y === undefined || !isFinite(y)) continue;
       if (y < lo) lo = y;
       if (y > hi) hi = y;
     }
-    return isFinite(lo) ? `${fmt(lo, 2)}–${fmt(hi, 2)}` : '—';
+    return isFinite(lo) ? {lo, hi, rg: hi - lo || 1} : null;
+  }
+
+  // y position in % of lane height (0 = top) for value y under norm n,
+  // matching the sparkline mapping yy = H-padT - frac*(H-padT-padB).
+  function _sparkYpct(y, n, H, padT, padB) {
+    return (H - padT - (y - n.lo) / n.rg * (H - padT - padB)) / H * 100;
+  }
+
+  // Dot + value label at the playhead∩curve point (HTML overlay).
+  // x follows the curve's frame axis: fx / (T-1) of lane width.
+  function _trkPoint(fx, T, yPct, color, txt) {
+    const xp = (fx / Math.max(1, T - 1) * 100).toFixed(2);
+    const yp = yPct.toFixed(1);
+    return `<div class="trk-dot" style="left:${xp}%;top:${yp}%;background:${color}"></div>` +
+      `<div class="trk-pt" style="left:${xp}%;top:${yp}%;color:${color}">${escapeHtml(txt)}</div>`;
   }
 
   // One floating tooltip shared by all track lanes.  rows = [{color,
@@ -3911,7 +3936,8 @@
         }
         lab += `<div class="t-info">${inSpan ? cur || '—' : 'outside clip'}</div>`;
       }
-      // Lane: multi-line SVG inside the clip span.
+      // Lane: multi-line SVG inside the clip span + a value marker at
+      // the playhead∩curve point for every series.
       let lane = '';
       if (to && !to.error) {
         const series = [];
@@ -3922,6 +3948,14 @@
           if (aw) series.push({data: aw, color: colr, dash: true});
         });
         lane = _sparkSpan(series, t.t_start, t.length, T, 42);
+        if (inSpan) {
+          for (const s of series) {
+            const v = s.data[tf];
+            if (v === null || v === undefined || !isFinite(v) || !s.n) continue;
+            lane += _trkPoint(frame, T, _sparkYpct(v, s.n, 42, 3, 4),
+              s.color, fmt(v, s.dash ? 3 : 4));
+          }
+        }
       } else if (to && to.error) {
         lane = `<span class="desc" style="padding:0 6px">${escapeHtml(to.error)}</span>`;
       } else {
@@ -3963,25 +3997,20 @@
 
   // Multi-series sparkline drawn into [x0, x0+len) of a 0..T-1 axis.
   // Each series is min-max normalized to the lane height independently
-  // (channels have different units — the lane shows shape).
+  // (channels have different units — the lane shows shape).  The norm
+  // {lo,hi,rg} is stored back on s.n for playhead-marker positioning.
   function _sparkSpan(series, x0, len, T, H) {
     const parts = [];
     for (const s of series) {
       const data = s.data;
       if (!data || !data.length) continue;
-      let lo = Infinity, hi = -Infinity;
-      for (const y of data) {
-        if (y === null || y === undefined || !isFinite(y)) continue;
-        if (y < lo) lo = y;
-        if (y > hi) hi = y;
-      }
-      if (!isFinite(lo)) continue;
-      const rg = hi - lo || 1;
+      const n = s.n || (s.n = _snorm(data));
+      if (!n) continue;
       let d = '', pen = false;
       for (let i = 0; i < Math.min(data.length, len); i++) {
         const y = data[i];
         if (y === null || y === undefined || !isFinite(y)) { pen = false; continue; }
-        const yy = (H - 3 - (y - lo) / rg * (H - 7)).toFixed(1);
+        const yy = (H - 3 - (y - n.lo) / n.rg * (H - 7)).toFixed(1);
         d += `${pen ? 'L' : 'M'}${(x0 + i)},${yy}`;
         pen = true;
       }
@@ -4064,15 +4093,17 @@
     for (const k of want) {
       const s = (state.epSeries || {})[k];
       const err = (state.epSeriesErr || {})[k];
-      const val = s && s[frame] !== null && s[frame] !== undefined ? fmt(s[frame], 4) : '';
+      const n = s ? _snorm(s) : null;
+      const v = s ? s[frame] : null;
+      const hasV = v !== null && v !== undefined && isFinite(v);
       h += `<div class="trk-row"><div class="trk-label" title="${escapeHtml(k)}">${escapeHtml(k)}` +
-        `<a class="key-del" data-k="${escapeHtml(k)}">✕</a>` +
-        (s ? `<div class="trk-leg"><span class="lg" style="background:#e5c07b"></span>` +
-          `range <span class="rg">${_rng(s)}</span></div>` : '') +
-        `</div>` +
+        `<a class="key-del" data-k="${escapeHtml(k)}">✕</a></div>` +
         `<div class="trk-lane seekable" data-key="${escapeHtml(k)}">` +
         (s ? _spark(s, T) : `<span class="desc" style="padding:0 6px">${escapeHtml(err || '…')}</span>`) +
-        (val ? `<span class="trk-val">${val}</span>` : '') +
+        (n ? `<span class="trk-ax top">${fmt(n.hi, 2)}</span>` +
+             `<span class="trk-ax bot">${fmt(n.lo, 2)}</span>` : '') +
+        (n && hasV ? _trkPoint(frame, T, _sparkYpct(v, n, 22, 2, 3),
+          '#e5c07b', fmt(v, 4)) : '') +
         ph + `</div></div>`;
     }
     const el = $('ep-keytracks');
@@ -4098,19 +4129,14 @@
 
   // Tiny SVG sparkline for one scalar series (null-tolerant).
   function _spark(data, T) {
-    let lo = Infinity, hi = -Infinity;
-    for (const y of data) {
-      if (y === null || y === undefined || !isFinite(y)) continue;
-      if (y < lo) lo = y;
-      if (y > hi) hi = y;
-    }
-    if (!isFinite(lo)) return '';
-    const rg = hi - lo || 1, H = 22;
+    const n = _snorm(data);
+    if (!n) return '';
+    const H = 22;
     let d = '', pen = false;
     for (let i = 0; i < data.length; i++) {
       const y = data[i];
       if (y === null || y === undefined || !isFinite(y)) { pen = false; continue; }
-      const yy = (H - 2 - (y - lo) / rg * (H - 5)).toFixed(1);
+      const yy = (H - 2 - (y - n.lo) / n.rg * (H - 5)).toFixed(1);
       d += `${pen ? 'L' : 'M'}${i},${yy}`;
       pen = true;
     }
