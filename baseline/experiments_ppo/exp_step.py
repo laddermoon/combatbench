@@ -134,16 +134,23 @@ class Step(CombatExperimentPPOBase):
     # (healthy swing ≈0.9-0.97 vs collapse <0.5).
     lift_phi_gate: float = 0.8
 
+    # --- Residual potential pressure during healthy swings ---
+    # Full exemption (exempt_frac=1.0) left zero "stay balanced" policy
+    # gradient on stable single-support frames — falls during swing then
+    # only get punished *after* φ already collapsed.  0.75 keeps a mild
+    # aw≈0.75 potential pressure on healthy swings; collapsing frames
+    # (φ<gate) always get the full aw.
+    swing_exempt_frac: float = 0.75
+
     # --- r_potential actor weight ---
-    # Fixed 3.0 in general, but muted to ~0 on commanded single-support
-    # frames while standing: the u50 dump showed the potential channel
-    # vetoes every real lift (combined adv -0.18/-0.73 on h>3cm frames —
-    # the transient φ dip is punished 30× harder than the foot channel
-    # rewards the lift).  The gate uses a trailing-max of φ so a brief
-    # swing dip stays exempt while a real fall (sustained low φ) snaps
-    # protection back within ~0.75 s.
+    # Fixed 3.0 in general, partially exempted on stable single-support
+    # frames (see swing_exempt_frac) and fully restored the moment
+    # φ drops below lift_phi_gate: the u50 dump showed the potential
+    # channel vetoes every real lift (combined adv -0.18/-0.73 on h>3cm
+    # frames — the transient φ dip is punished 30× harder than the foot
+    # channel rewards the lift), while the u1801 dump showed a pure
+    # trailing-max gate keeps the veto off through entire collapses.
     r_potential_actor_weight: float = 3.0
-    stand_gate_window: int = 15
 
     # --- Env ---
     env_blueprint = ""  # overridden via _env_pb()
@@ -368,15 +375,17 @@ class Step(CombatExperimentPPOBase):
         else:
             ss_mask = np.zeros(T_full, dtype=np.float32)
         # Swing exemption requires the frame to be CURRENTLY stable
-        # (φ ≥ lift_phi_gate): the old trailing-max φ kept exempting for
-        # ~15 frames into a collapse — the u1801 dump showed aw_potential
-        # ≈0.1 during the 15 frames preceding mid-swing falls (79% of
-        # falls happen foot-still-airborne), so the potential channel
-        # was silenced exactly while the fall developed.  Now the veto
-        # returns the moment φ drops below the gate.
+        # (φ ≥ lift_phi_gate), and even then is only PARTIAL: the old
+        # trailing-max φ kept exempting ~15 frames into a collapse —
+        # u1801 showed aw_potential ≈0.1 during the 15 frames preceding
+        # mid-swing falls (79% of falls happen foot-still-airborne), so
+        # the potential channel was silenced exactly while the fall
+        # developed AND gave no "stay balanced during swing" gradient
+        # on healthy swings.  Now: stable swing → aw = w·(1-exempt_frac)
+        # (residual stability pressure), unstable → full veto.
         aw_potential = (
             self.r_potential_actor_weight
-            * (1.0 - stable * ss_mask)
+            * (1.0 - self.swing_exempt_frac * stable * ss_mask)
         ).astype(np.float32)
         # +W is φ²-gated (only encourage lifts while standing), but -W
         # must NOT be attenuated: punishment matters most exactly when φ
