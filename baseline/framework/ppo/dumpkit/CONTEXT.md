@@ -160,14 +160,16 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
   时间线 + scrubber + 页专属曲线）。分工原则：主页看汇总/分布，
   工具页只做 trajectory 级下钻——分布图不进工具页。
   - `/episode/<pos>` —— ①的钻取：与其它工具页同一个视频编辑器骨架
-    （大图+缩略图+scrubber，帧游标共享）。下方两块专属内容：
-    **Trajectories 多轨道**——每条 traj 一条 lane，clip=[t_start,
-    t_start+len) 按 agent 着色（traj_map.json 存 agent_id/t_start/
-    length），点击 clip 跳 `/gae/<i>`；**Scalar tracks**——key 选择器
-    枚举 `observer.<o>.<f>` 标量列与 `obs/actions.<aid>[i]` 向量列
-    （`/episode/<pos>/overview` 给 key 清单，`/series?keys=` 取序列），
-    每条 key 一条 sparkline 轨，点击轨道设帧游标。非结构化的帧级
-    原始数据只在最底部 frame readout（`/episode/<pos>/frame/<f>`）。
+    （大图+缩略图+scrubber，帧游标共享）。下方 Tracks 卡 = episode
+    轴上的多轨道区：先 scalar key 选择器（只枚举 episode 侧列：
+    `observer.<o>.<f>` 标量 + `obs/actions/explore_factors.<aid>[i]`
+    向量，`/episode/<pos>/overview` 给清单、`/series?keys=` 取序列），
+    每条 key 一条 sparkline 轨；再每条 traj 一条 lane——lane 内画
+    该 traj 的逐帧信号（每通道 reward 实线 + actor_weight 虚线，各自
+    min-max 归一化到 lane 高，clip=[t_start,t_start+len) 之外留空），
+    标签列显示 traj·agent·当前帧值，点击 lane 跳 `/gae/<i>`。
+    所有轨道共享 playhead，scalar 轨点击设帧。帧级原始数据只在
+    最底部 frame readout（obs/actions/observer dict 按需展开）。
   - `/gae/<i>` —— ②的钻取：视频编辑器布局（大图 + 缩略图时间线 +
     reward/value/δ/adv 曲线），γ/λ 滑杆触发服务端
     `/trajectory/<i>/gae` 用**训练同款 `compute_gae`** 重算

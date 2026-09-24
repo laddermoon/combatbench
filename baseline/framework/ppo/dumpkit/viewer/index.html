@@ -445,6 +445,11 @@
   .trk-playhead { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent); pointer-events: none; }
   .trk-lane svg.trk-curve { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .trk-val { position: absolute; right: 4px; top: 2px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text); pointer-events: none; text-shadow: 0 0 3px var(--panel-alt); }
+  .trk-sep { border-top: 1px dashed var(--border); margin: 10px 0 4px; }
+  .trk-lane.tall { height: 44px; }
+  .trk-lane[data-traj] { cursor: pointer; }
+  .trk-label .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
+  .trk-label .lg.aw { height: 2px; vertical-align: 2px; }
   .ep-keybar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
   .ep-keybar select, .ep-keybar input { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-family: ui-monospace, monospace; }
   .ep-keybar input[type=number] { width: 64px; }
@@ -666,13 +671,11 @@
         </div>
       </div>
       <div class="card">
-        <h2>Trajectories <span class="gs-scope">clips on the episode axis · click clip → Reward→ADV</span></h2>
-        <div id="ep-tracks"></div>
-      </div>
-      <div class="card">
-        <h2>Scalar tracks <span class="gs-scope">key → per-frame curve · click a track to set the frame</span></h2>
+        <h2>Tracks <span class="gs-scope">episode axis · click a track to set the frame</span></h2>
         <div id="ep-keybar" class="ep-keybar"></div>
         <div id="ep-keytracks"></div>
+        <div class="trk-sep"></div>
+        <div id="ep-tracks"></div>
       </div>
       <div class="card">
         <h2>Frame readout <span class="gs-scope">raw per-frame data</span></h2>
@@ -1329,6 +1332,7 @@
     state.epOverview = null;
     state.epSeries = {};
     state.epKeys = [];
+    state.epTrajOv = {};
   }
 
   async function selectDump(name) {
@@ -3462,6 +3466,7 @@
     state.selectedFrame = 0;
     state.epOverview = null;
     state.epSeries = {};
+    state.epTrajOv = {};
     navigate('episode');   // navigate() → renderEpisode()
   }
 
@@ -3480,6 +3485,14 @@
     h += `<button class="t-nav" id="ep-nav-next">›</button>`;
     h += `<span class="t-info">of ${n} episodes</span></span>`;
     if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
+    const term = state.epOverview?.termination;
+    if (term && typeof term === 'object' && !Array.isArray(term)) {
+      const ts = Object.entries(term).map(([aid, recs]) => {
+        const r = Array.isArray(recs) && recs.length ? recs[0] : recs;
+        return `${aid.replace('robot_', '')}:${Array.isArray(r) ? r[0] + '@' + r[1] : r}`;
+      }).join(' ');
+      h += `<span class="t-info">term ${escapeHtml(ts)}</span>`;
+    }
     const job = state.renderJob;
     const thisJob = job && job.status === 'running' && job.kind === 'render' &&
       job.episode === pos && (state.dumpName ? job.dump === state.dumpName : true);
@@ -3520,48 +3533,117 @@
       state.epSeries = {};
     }
     const ov = state.epOverview;
+    _epToolHead();   // refresh head now that termination/clips are loaded
 
     // Shared stage: big frame + thumbnails + scrubber (episode frames).
     const frame = renderTrajStage('ep',
       {length: ov.n_frames, episode_pos: pos, t_start: 0}, renderEpisode);
 
-    _epTracks(ov, frame);
+    await _epTracks(ov, frame);
     _epKeyBar(ov);
     await _epKeyTracks(ov, frame);
     await renderEpisodeFrame();
   }
 
-  // Trajectory clips on the episode axis — one lane per trajectory,
-  // clip = [t_start, t_start+length), colored by agent, click → tool ②.
-  function _epTracks(ov, frame) {
+  // Trajectory lanes on the episode axis — one lane per trajectory.
+  // Each lane draws that trajectory's signals inside its clip span
+  // [t_start, t_start+len): per-channel reward (solid) + actor_weight
+  // (dashed).  Click lane → jump to tool ② for that trajectory.
+  const EP_CH_COLORS = ['#4fa3ff', '#6ec86e', '#c678dd', '#e6a23c', '#56b6c2'];
+  async function _epTracks(ov, frame) {
     const T = Math.max(1, ov.n_frames);
-    const palette = ['#4fa3ff', '#e6a23c', '#6ec86e', '#c678dd', '#56b6c2'];
-    const agents = ov.agents || [];
-    const col = aid => {
-      const i = agents.indexOf(aid);
-      return palette[(i >= 0 ? i : 0) % palette.length];
-    };
+    const el = $('ep-tracks');
+    if (!state.epTrajOv) state.epTrajOv = {};
+    // Fetch each trajectory's overview (reward/aw per channel) once.
+    const trajs = ov.trajectories || [];
+    const missing = trajs.filter(t => !state.epTrajOv[t.traj_idx]);
+    await Promise.all(missing.map(async t => {
+      try {
+        state.epTrajOv[t.traj_idx] =
+          await fetchJson(api(`trajectory/${t.traj_idx}/overview`));
+      } catch (e) {
+        state.epTrajOv[t.traj_idx] = {error: e.message};
+      }
+    }));
+
+    const chs = state.manifest?.channel_names || [];
     const ph = `<div class="trk-playhead" style="left:${((frame + 0.5) / T * 100).toFixed(2)}%"></div>`;
     let h = '';
-    for (const t of ov.trajectories || []) {
-      const l = (t.t_start / T * 100).toFixed(2);
-      const w = (t.length / T * 100).toFixed(2);
-      const cur = frame >= t.t_start && frame < t.t_start + t.length;
-      h += `<div class="trk-row"><div class="trk-label">traj ${t.traj_idx} · ${escapeHtml(t.agent_id)}</div>` +
-        `<div class="trk-lane seekable">` +
-        `<div class="trk-clip${cur ? ' cur' : ''}" data-traj="${t.traj_idx}" ` +
-        `style="left:${l}%;width:${w}%;background:${col(t.agent_id)}66;border:1px solid ${col(t.agent_id)}" ` +
-        `title="traj ${t.traj_idx} · ${escapeHtml(t.agent_id)} · frames [${t.t_start}, ${t.t_start + t.length})"></div>` +
-        ph + `</div></div>`;
+    for (const t of trajs) {
+      const to = state.epTrajOv[t.traj_idx];
+      const inSpan = frame >= t.t_start && frame < t.t_start + t.length;
+      const tf = frame - t.t_start;
+      // Label: traj id + agent + mini legend + current-frame values.
+      let lab = `traj ${t.traj_idx} · ${escapeHtml(t.agent_id)}`;
+      if (to && !to.error) {
+        let cur = '';
+        for (const ch of chs) {
+          const r = to[`reward_${ch}`]?.[tf];
+          const aw = to[`actor_weight_${ch}`]?.[tf];
+          if (inSpan && r !== undefined)
+            cur += ` ${ch.replace(/^r_/, '')}:${fmt(r, 2)}` +
+              (aw !== undefined ? `(aw ${fmt(aw, 1)})` : '');
+        }
+        lab += `<div class="t-info">${inSpan ? cur || '—' : 'outside clip'}</div>`;
+      }
+      // Lane: multi-line SVG inside the clip span.
+      let lane = '';
+      if (to && !to.error) {
+        const series = [];
+        chs.forEach((ch, i) => {
+          const colr = EP_CH_COLORS[i % EP_CH_COLORS.length];
+          const rw = to[`reward_${ch}`], aw = to[`actor_weight_${ch}`];
+          if (rw) series.push({data: rw, color: colr});
+          if (aw) series.push({data: aw, color: colr, dash: true});
+        });
+        lane = _sparkSpan(series, t.t_start, t.length, T, 42);
+      } else if (to && to.error) {
+        lane = `<span class="desc" style="padding:0 6px">${escapeHtml(to.error)}</span>`;
+      } else {
+        lane = `<span class="desc" style="padding:0 6px">…</span>`;
+      }
+      h += `<div class="trk-row"><div class="trk-label">${lab}</div>` +
+        `<div class="trk-lane tall" data-traj="${t.traj_idx}" ` +
+        `title="traj ${t.traj_idx} · ${escapeHtml(t.agent_id)} · frames [${t.t_start}, ${t.t_start + t.length}) — click → Reward→ADV">` +
+        lane + ph + `</div></div>`;
     }
-    const el = $('ep-tracks');
     el.innerHTML = h || '<div class="desc">no trajectories mapped to this episode</div>';
-    el.querySelectorAll('.trk-clip').forEach(c =>
-      c.addEventListener('click', e => {
-        e.stopPropagation();
-        selectTrajectory(parseInt(c.dataset.traj));
-      }));
-    _wireLaneSeek(el, T);
+    el.querySelectorAll('.trk-lane[data-traj]').forEach(lane =>
+      lane.addEventListener('click', () =>
+        selectTrajectory(parseInt(lane.dataset.traj))));
+  }
+
+  // Multi-series sparkline drawn into [x0, x0+len) of a 0..T-1 axis.
+  // Each series is min-max normalized to the lane height independently
+  // (channels have different units — the lane shows shape).
+  function _sparkSpan(series, x0, len, T, H) {
+    const parts = [];
+    for (const s of series) {
+      const data = s.data;
+      if (!data || !data.length) continue;
+      let lo = Infinity, hi = -Infinity;
+      for (const y of data) {
+        if (y === null || y === undefined || !isFinite(y)) continue;
+        if (y < lo) lo = y;
+        if (y > hi) hi = y;
+      }
+      if (!isFinite(lo)) continue;
+      const rg = hi - lo || 1;
+      let d = '', pen = false;
+      for (let i = 0; i < Math.min(data.length, len); i++) {
+        const y = data[i];
+        if (y === null || y === undefined || !isFinite(y)) { pen = false; continue; }
+        const yy = (H - 3 - (y - lo) / rg * (H - 7)).toFixed(1);
+        d += `${pen ? 'L' : 'M'}${(x0 + i)},${yy}`;
+        pen = true;
+      }
+      parts.push(`<path d="${d}" fill="none" stroke="${s.color}" ` +
+        `stroke-width="${s.dash ? 1 : 1.4}" ${s.dash ? 'stroke-dasharray="3 2" ' : ''}` +
+        `vector-effect="non-scaling-stroke" opacity="${s.dash ? 0.7 : 1}"/>`);
+    }
+    if (!parts.length) return '';
+    return `<svg class="trk-curve" viewBox="0 0 ${Math.max(1, T - 1)} ${H}" ` +
+      `preserveAspectRatio="none">${parts.join('')}</svg>`;
   }
 
   // Click on a lane background seeks the episode frame cursor.
@@ -3687,39 +3769,10 @@
       const data = await fetchJson(api(`episode/${pos}/frame/${frame}`));
       state.epData = data;
 
-      const channels = state.manifest.channel_names || [];
       const agents = state.manifest.agent_ids || [];
       let html = '';
       state._chartSeq = 0;
       state._chartSpecs = {};
-
-      // --- Episode info bar ---
-      const epInfo = state.trajMap?.[pos];
-      html += '<div class="ep-info-bar">';
-      html += `<div class="info-item"><span class="info-label">Episode:</span><span class="info-value">${pos}</span></div>`;
-      if (epInfo?.seed !== null && epInfo?.seed !== undefined) {
-        html += `<div class="info-item"><span class="info-label">Seed:</span><span class="info-value">${epInfo.seed}</span></div>`;
-      }
-      html += `<div class="info-item"><span class="info-label">Frame:</span><span class="info-value">${frame + 1} / ${state.epOverview?.n_frames ?? '?'}</span></div>`;
-      if (data.termination) {
-        // Per-agent termination: {robot_a: [[reason, step]], robot_b: [...]}
-        const term = data.termination;
-        let termSummary = '';
-        if (typeof term === 'object' && !Array.isArray(term)) {
-          const reasons = [];
-          for (const [aid, recs] of Object.entries(term)) {
-            if (Array.isArray(recs) && recs.length > 0) {
-              const r = Array.isArray(recs[0]) ? recs[0][0] : recs[0];
-              reasons.push(`${aid}: ${r}`);
-            }
-          }
-          termSummary = reasons.join(', ') || 'unknown';
-        } else {
-          termSummary = String(term);
-        }
-        html += `<div class="info-item"><span class="info-label">Termination:</span><span class="info-value">${escapeHtml(termSummary)}</span></div>`;
-      }
-      html += '</div>';
 
       // --- Episode-level data (obs/actions/observer outputs) ---
 
@@ -3791,90 +3844,7 @@
         html += '</div>';
       }
 
-      // Termination (per-agent)
-      if (data.termination) {
-        html += '<h3 data-collapse="term"><span class="collapse-icon">▼</span> Termination</h3>';
-        const term = data.termination;
-        if (typeof term === 'object' && !Array.isArray(term)) {
-          html += '<div id="term"><table class="data-table" style="width:100%">';
-          html += '<tr><th>Agent</th><th>Reason</th><th>Step</th></tr>';
-          for (const [aid, records] of Object.entries(term)) {
-            if (Array.isArray(records)) {
-              records.forEach(rec => {
-                const reason = Array.isArray(rec) ? rec[0] : rec;
-                const step = Array.isArray(rec) ? rec[1] : '-';
-                html += `<tr><td>${escapeHtml(aid)}</td><td class="bool">${escapeHtml(String(reason))}</td><td class="num">${step}</td></tr>`;
-              });
-            } else {
-              html += `<tr><td>${escapeHtml(aid)}</td><td colspan="2">${escapeHtml(String(records))}</td></tr>`;
-            }
-          }
-          html += '</table></div>';
-        } else {
-          html += `<pre id="term">${escapeHtml(JSON.stringify(term, null, 2))}</pre>`;
-        }
-      }
-
-      // --- Section separator ---
-      html += '<div class="section-sep"></div>';
-      html += '<div class="section-sep-label">Trajectories</div>';
-
-      // --- Trajectory data (auto-fill grid) ---
-      if (data.trajectories && data.trajectories.length > 0) {
-        html += '<div class="traj-grid">';
-        data.trajectories.forEach(t => {
-          if (!t.covered) {
-            html += `<div class="traj-card uncovered">
-              <div class="traj-header"><b>Trajectory ${t.traj_idx}</b> <span class="badge muted">uncovered</span></div>
-              <div class="traj-extras">${escapeHtml(t.agent_id)} · t_start=${t.t_start} · len=${t.length} · frame ${frame} not in range</div>
-            </div>`;
-            return;
-          }
-          html += `<div class="traj-card" data-traj="${t.traj_idx}">`;
-          html += `<div class="traj-header">
-            <b>Trajectory ${t.traj_idx}</b>
-            <span style="font-size:10px;color:var(--muted)">${escapeHtml(t.agent_id)} · t=${t.t_start}+${t.traj_frame} · len=${t.length}</span>
-          </div>`;
-          if (t.frame_id) {
-            html += `<div class="traj-frameid">frame_id: ${escapeHtml(t.frame_id)}</div>`;
-          }
-          // Channel table with full column names
-          html += '<table class="traj-ch-tbl">';
-          html += '<tr><th>Channel</th><th>reward</th><th>actor_weight</th><th>terminated</th></tr>';
-          channels.forEach(ch => {
-            const rw = t[`reward_${ch}`];
-            const aw = t[`actor_weight_${ch}`];
-            const it = t[`is_terminated_${ch}`];
-            html += `<tr><td class="ch-name">${escapeHtml(ch)}</td>`;
-            html += `<td class="num">${fmt(rw,3)}</td>`;
-            html += `<td class="num">${fmt(aw,3)}</td>`;
-            html += `<td class="${it ? 'bool' : 'muted'}">${it ? 'yes' : 'no'}</td></tr>`;
-          });
-          html += '</table>';
-          // Extra fields with full names
-          const extras = [];
-          if (t.floor_weight !== undefined) extras.push(`floor_weight: ${fmt(t.floor_weight,3)}`);
-          if (t.explore_factor !== undefined) extras.push(`explore_factor: ${fmt(t.explore_factor,3)}`);
-          if (t.importance !== undefined) extras.push(`importance: ${fmt(t.importance,3)}`);
-          if (extras.length > 0) {
-            html += `<div class="traj-extras">${extras.join(' · ')}</div>`;
-          }
-          html += '</div>';
-        });
-        html += '</div>';
-      } else {
-        html += '<div style="color:var(--muted);padding:8px">No trajectories associated with this episode frame.</div>';
-      }
-
       $('ep-data-panel').innerHTML = html;
-
-      // Wire trajectory clicks
-      $('ep-data-panel').querySelectorAll('.traj-card[data-traj]').forEach(el => {
-        el.addEventListener('click', () => {
-          const trajIdx = parseInt(el.dataset.traj);
-          selectTrajectory(trajIdx);
-        });
-      });
 
       // Wire collapsible headers
       $('ep-data-panel').querySelectorAll('h3[data-collapse]').forEach(h => {
