@@ -185,7 +185,7 @@ class Step(CombatExperimentPPOBase):
 
     # --- Stateful metrics ---
     _best_potential: float = -1.0
-    _best_step: float = -1.0
+    _best_quality: float = -1.0
     _best_survived: float = -1.0
     _success_rate: float = 0.0
     _last_best_update: int = 0
@@ -550,15 +550,24 @@ class Step(CombatExperimentPPOBase):
         # holds — tracking it alone stalls best-tracking and early-stop
         # counts "no improvement" while stepping is still climbing
         # (run 064853 stopped at u1705 with step=0.85 still rising).
+        # step rate saturates too (1.0), so the tracked metric is a
+        # quality score: stepping minus falls.  A resumed converged
+        # checkpoint can then keep improving gait stability instead of
+        # dying instantly on a saturated step counter (s42_stable would
+        # have stopped at u2020, 5 updates after resume).
+        falls_mean = (
+            sum(all_falls) / max(len(all_falls), 1) if all_falls else 0.0
+        )
+        quality = step_success_rate - 0.1 * falls_mean
         improved_pot = mean_max_pot > self._best_potential
         if improved_pot:
             self._best_potential = mean_max_pot
         improved_step = (
             success_rate >= 0.9
-            and step_success_rate > self._best_step
+            and quality > self._best_quality
         )
         if improved_step:
-            self._best_step = step_success_rate
+            self._best_quality = quality
         is_new_best = improved_pot or improved_step
         if is_new_best:
             self._last_best_update = update
@@ -584,7 +593,7 @@ class Step(CombatExperimentPPOBase):
                         if all_solepk else None,
                 "alt": round(sum(all_alt) / max(len(all_alt), 1), 3)
                       if all_alt else None,
-                "falls": round(sum(all_falls) / max(len(all_falls), 1), 2)
+                "falls": round(falls_mean, 2)
                         if all_falls else None,
             },
         }
@@ -640,14 +649,18 @@ class Step(CombatExperimentPPOBase):
     def state(self) -> dict:
         return {
             "best_potential": self._best_potential,
-            "best_step": self._best_step,
+            "best_quality": self._best_quality,
             "success_rate": self._success_rate,
             "last_best_update": self._last_best_update,
         }
 
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
-        self._best_step = float(state.get("best_step", -1.0))
+        # "best_quality" is absent in pre-stability-gate checkpoints —
+        # defaulting to -1 lets a resumed run re-anchor improvement
+        # tracking at its first eval instead of inheriting a saturated
+        # step counter that can never improve (instant early-stop).
+        self._best_quality = float(state.get("best_quality", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
         self._last_best_update = int(state.get("last_best_update", 0))
 
