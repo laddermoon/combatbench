@@ -470,6 +470,11 @@
   .trk-dot { position: absolute; width: 6px; height: 6px; border-radius: 3px; transform: translate(-3px, -3px); pointer-events: none; z-index: 2; }
   .trk-pt { position: absolute; font-size: 10px; font-family: ui-monospace, monospace; transform: translate(6px, -8px); pointer-events: none; z-index: 2; white-space: nowrap; text-shadow: 0 0 3px var(--panel-alt), 0 0 3px var(--panel-alt); }
   .trk-sep { border-top: 1px dashed var(--border); margin: 10px 0 4px; }
+  .merge-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  .merge-group-head { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin-bottom: 8px; display: flex; gap: 16px; align-items: baseline; }
+  .merge-group-head .ch { color: var(--accent); font-weight: 600; }
+  .merge-group-head .conf-on { color: #6ec86e; }
+  .merge-group-head .conf-off { color: var(--muted); }
   .trk-lane.tall { height: 44px; }
   .trk-lane[data-traj] { cursor: pointer; }
   .trk-label .lg { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px; }
@@ -4677,24 +4682,30 @@
     state._chartSeq = 0; state._chartSpecs = {};
     let html = '';
     const chs = ov.channels || [];
-    {
-      const ser = [];
-      chs.forEach((ch2, i) => {
-        if (ov[`normed_adv_${ch2}`])
-          ser.push({label: `normed ${ch2}`, data: ov[`normed_adv_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
-      });
-      if (ser.length) html += `<div class="chart-container"><h3>normalized adv per channel</h3>` +
-        chartBox(ser, cur, {key: 'merge:normed'}) + '</div>';
-    }
-    {
-      const ser = [];
-      chs.forEach((ch2, i) => {
-        if (ov[`aw_normed_${ch2}`])
-          ser.push({label: `aw ${ch2}`, data: ov[`aw_normed_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
-      });
-      if (ser.length) html += `<div class="chart-container"><h3>merge weights (aw_normed = aw/Σ|aw|)</h3>` +
-        chartBox(ser, cur, {key: 'merge:aw'}) + '</div>';
-    }
+    // use_confidence=False forces every channel's conf to exactly 1.0 in
+    // the trainer; any conf ≠ 1.0 means EV-confidence was applied.
+    const confEnabled = chs.some(
+      ch2 => (ov.confidences?.[ch2] ?? 1.0) !== 1.0);
+    // One group per channel: header (conf + enabled state) then its two
+    // curves — normed adv and merge weight — on separate charts.
+    chs.forEach((ch2, i) => {
+      const colr = CHART_COLORS[i % CHART_COLORS.length];
+      html += `<div class="merge-group"><div class="merge-group-head">` +
+        `<span class="ch">${escapeHtml(ch2)}</span>` +
+        `<span>conf <b>${fmt(ov.confidences?.[ch2], 3)}</b></span>` +
+        `<span>ev <b>${fmt(ov.explained_variances?.[ch2], 3)}</b></span>` +
+        `<span class="${confEnabled ? 'conf-on' : 'conf-off'}">` +
+        `confidence ${confEnabled ? 'on' : 'off'}</span></div>`;
+      if (ov[`normed_adv_${ch2}`])
+        html += `<div class="chart-container"><h3>normed adv · ${escapeHtml(ch2)}</h3>` +
+          chartBox([{label: 'normed adv', data: ov[`normed_adv_${ch2}`], color: colr}],
+            cur, {key: `merge:${ch2}:adv`}) + '</div>';
+      if (ov[`aw_normed_${ch2}`])
+        html += `<div class="chart-container"><h3>merge weight (aw_normed) · ${escapeHtml(ch2)}</h3>` +
+          chartBox([{label: 'aw_normed', data: ov[`aw_normed_${ch2}`], color: colr}],
+            cur, {key: `merge:${ch2}:aw`}) + '</div>';
+      html += `</div>`;
+    });
     if (ov.combined_adv)
       html += `<div class="chart-container"><h3>combined_adv</h3>` +
         chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#e06c75'}], cur, {key: 'merge:comb'}) + '</div>';
