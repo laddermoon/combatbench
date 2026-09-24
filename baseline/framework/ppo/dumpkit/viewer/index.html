@@ -4562,7 +4562,8 @@
     if (!state.normMethod) state.normMethod = trained;
     if (state.selectedTraj === null) state.selectedTraj = 0;
 
-    // header: traj picker (shared) + channel + method selectors
+    // header: traj picker (shared) + channel selector.  The method tabs
+    // live between the raw and normed charts (renderNormTraj).
     let h = `<span class="t-title">ADV Normalization</span>` + _trajPickerHtml('norm');
     if (channels.length > 1) {
       h += `<span class="t-sel"><span class="t-info">channel</span><select id="norm-ch">` +
@@ -4570,24 +4571,22 @@
     } else if (channels.length === 1) {
       h += `<span class="t-info">channel ${escapeHtml(channels[0])}</span>`;
     }
-    h += `<span class="t-sel"><span class="t-info">method</span><span class="method-tabs">` +
-      (state.pipeline?.stages?.advnorm?.methods_available || ['zscore', 'std', 'gauss_rank'])
-        .map(m => `<button class="method-tab${m === state.normMethod ? ' active' : ''}${m === trained ? ' current' : ''}" data-m="${m}">${m}</button>`).join('') +
-      `</span></span>`;
     h += `<span class="t-info">trained: ${escapeHtml(trained)}</span>`;
     $('norm-tool-head').innerHTML = h;
     _wireTrajPicker('norm', _pickTraj);
-    $('norm-tool-head').querySelectorAll('.method-tab').forEach(b =>
-      b.addEventListener('click', () => { state.normMethod = b.dataset.m; renderAdvnorm(); }));
     const chSel = $('norm-ch');
     if (chSel) chSel.addEventListener('change', () => { state.normChannel = chSel.value; renderAdvnorm(); });
     await renderNormTraj();
   }
 
   // Trajectory drill-down on the advnorm page: same stage scaffold as the
-  // GAE page, curves show raw vs normalized adv under the chosen method.
+  // GAE page.  raw adv on top, method tabs between the charts, and the
+  // normed chart compares the selected method against the trained one.
   async function renderNormTraj() {
     const tb = $('norm-traj-body');
+    const trained = state.pipeline?.stages?.advnorm?.method || 'zscore';
+    const methods = state.pipeline?.stages?.advnorm?.methods_available ||
+      ['zscore', 'std', 'gauss_rank'];
     let ov, d;
     try {
       ov = await _trajOv();
@@ -4598,6 +4597,22 @@
       tb.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
       return;
     }
+    // Trained-method result for the same traj/channel, cached — it is
+    // the reference line the selected method is compared against.
+    let dT = d;
+    if (state.normMethod !== trained) {
+      const ck = `${state.normChannel}:${state.selectedTraj}:${trained}`;
+      try {
+        if (!state._normTrained || state._normTrained.key !== ck) {
+          const r = await fetchJson(api(
+            `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${trained}` +
+            `&traj=${state.selectedTraj}`));
+          state._normTrained = {key: ck, d: r};
+        }
+        dT = state._normTrained.d;
+      } catch (e) { /* trained line unavailable — show selected only */ }
+    }
+    const sameAsTrained = state.normMethod === trained;
     const frame = renderTrajStage('norm', ov, renderNormTraj);
     state._chartSeq = 0; state._chartSpecs = {};
     let html = '';
@@ -4606,17 +4621,30 @@
       html += `<div class="chart-container"><h3>raw adv · ${escapeHtml(state.normChannel)}</h3>` +
         chartBox([{label: 'raw adv', data: d.traj.raw, color: '#98a2b5'}],
           cur, {key: 'norm:raw'}) + '</div>';
-      html += `<div class="chart-container"><h3>normed (${escapeHtml(state.normMethod)}) · ${escapeHtml(state.normChannel)}</h3>` +
-        chartBox([{label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'}],
-          cur, {key: 'norm:normed'}) + '</div>';
+      html += `<div class="t-sel" style="justify-content:center;margin:10px 0 2px">` +
+        `<span class="t-info">normalize →</span><span class="method-tabs">` +
+        methods.map(m => `<button class="method-tab${m === state.normMethod ? ' active' : ''}` +
+          `${m === trained ? ' current' : ''}" data-m="${m}">${m}</button>`).join('') +
+        `</span><span class="t-info">${sameAsTrained ? 'viewing the trained method' : `vs trained ${escapeHtml(trained)}`}</span></div>`;
+      const ser = [];
+      if (!sameAsTrained && dT.traj)
+        ser.push({label: `trained ${trained}`, data: dT.traj.normed, color: '#98a2b5'});
+      ser.push({label: sameAsTrained ? `${state.normMethod} (trained)` : state.normMethod,
+        data: d.traj.normed, color: '#e5c07b'});
+      html += `<div class="chart-container"><h3>normed adv · ${escapeHtml(state.normChannel)}</h3>` +
+        chartBox(ser, cur, {key: 'norm:normed'}) + '</div>';
       html += `<div class="stage-stats" style="margin-top:4px">` +
         _kv('frame', frame) +
         _kv('raw adv', fmt(d.traj.raw?.[frame], 4)) +
-        _kv('normed', fmt(d.traj.normed?.[frame], 4)) +
+        _kv(`normed·${state.normMethod}`, fmt(d.traj.normed?.[frame], 4)) +
+        (sameAsTrained ? '' :
+          _kv(`normed·${trained} (trained)`, fmt(dT.traj?.normed?.[frame], 4))) +
         _kv('in norm mask', d.traj.active?.[frame] ? 'yes' : 'no') + `</div>`;
       html += `<div class="t-sel" style="margin-top:6px"><a class="stage-open" id="norm-to-gae">inspect this trajectory in GAE tool →</a></div>`;
     }
     tb.innerHTML = html;
+    tb.querySelectorAll('.method-tab').forEach(b =>
+      b.addEventListener('click', () => { state.normMethod = b.dataset.m; renderNormTraj(); }));
     mountCharts(tb, f => { state.selectedFrame = f; renderNormTraj(); });
     const lg = $('norm-to-gae');
     if (lg) lg.onclick = () => selectTrajectory(state.selectedTraj);
