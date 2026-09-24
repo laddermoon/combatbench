@@ -399,3 +399,42 @@ def test_clock_foot_weights_apex_coast():
     assert wl[5] == 0      # high + descending mid-window -> coast
     assert wl[16] < 0      # land phase
     assert wr[5] < 0       # support always pressed
+
+
+def test_clock_foot_weights_stability_gate():
+    """Unstable frames flip the commanded foot's +W to -W."""
+    from baseline.humanoid21.end2end.stepping_state_machine import (
+        clock_foot_weights,
+    )
+    T, P = 40, 40
+    stable = np.ones(T, dtype=bool)
+    stable[3:8] = False               # wobbly inside left lift phase
+    wl, wr = clock_foot_weights(T, period=P, stable=stable)
+    assert (wl[0:3] > 0).all()         # stable -> normal +W
+    assert (wl[3:8] < 0).all()         # unstable -> punished lift
+    assert (wl[8:15] > 0).all()        # recovered -> +W again
+    assert (wl[15:20] < 0).all()       # land phase unchanged
+    assert (wr[3:8] < 0).all()         # support foot -W unaffected
+
+
+def test_count_falls():
+    from baseline.humanoid21.end2end.stepping_state_machine import (
+        count_falls,
+    )
+    # brief stumble (2 frames) does not count; sustained collapse does
+    phi = np.concatenate([
+        np.full(50, 0.95), np.full(2, 0.3), np.full(50, 0.95),
+        np.full(20, 0.2), np.full(60, 0.95),
+    ])
+    assert count_falls(phi) == 1
+    # ending fallen counts once
+    phi2 = np.concatenate([np.full(50, 0.95), np.full(30, 0.2)])
+    assert count_falls(phi2) == 1
+    # never stood -> no falls
+    assert count_falls(np.full(100, 0.2)) == 0
+    # two separate collapses
+    phi3 = np.concatenate([
+        np.full(30, 0.95), np.full(15, 0.2), np.full(40, 0.95),
+        np.full(15, 0.2), np.full(20, 0.9),
+    ])
+    assert count_falls(phi3) == 2

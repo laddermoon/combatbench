@@ -412,6 +412,7 @@ def clock_foot_weights(
     land_frac: float = GAIT_LAND_FRAC,
     weight: float = FOOT_WEIGHT,
     lift_threshold: float = SOLE_CLEAR_THRESHOLD,
+    stable: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Per-frame actor weights driven by the observable gait clock.
 
@@ -432,6 +433,12 @@ def clock_foot_weights(
       already clear and no longer rising mid-window gets 0 (coast).
     - support foot: ``-W`` — it must stay down; an uncommanded lift is
       always punished (self-correction built in).
+    - stability gate: when ``stable`` is given, a ``+W`` command on an
+      unstable frame flips to ``-W`` — lifting while wobbly is actively
+      punished instead of merely unrewarded.  The u1801 dump showed
+      ~5% of liftoffs happen at φ<0.5 and a quarter of airborne frames
+      sit at φ<0.23 (body already falling, foot still up); under the
+      unconditional clock those frames still earned +W.
 
     ``sole_*`` must be sole clearance (min capsule-endpoint z − radius),
     NOT midpoint height — midpoint rises under foot-rocking and would
@@ -461,6 +468,8 @@ def clock_foot_weights(
         if wprog < land_frac:
             w_cmd = weight if (h_cmd_t is None or needs_lift or rising) else 0.0
         else:
+            w_cmd = -weight
+        if w_cmd > 0 and stable is not None and not stable[t]:
             w_cmd = -weight
         if cmd_left:
             w_left[t], w_right[t] = w_cmd, -weight
@@ -587,3 +596,35 @@ def detect_step_cycles(
         "alt_ratio": (n_alt / (len(cycles) - 1)) if len(cycles) >= 2 else None,
         "stepped": n_left >= 1 and (len(cycles) - n_left) >= 1,
     }
+
+
+def count_falls(
+    phi: np.ndarray,
+    *,
+    stand_hi: float = 0.7,
+    fall_lo: float = 0.5,
+    min_frames: int = 10,
+) -> int:
+    """Count real falls: standing (φ≥``stand_hi``) then φ<``fall_lo``
+    sustained for at least ``min_frames`` consecutive frames.
+
+    Single/double-frame φ dips are stumbles or sensor noise, not falls —
+    a genuine knockdown keeps φ low for many frames before the standup
+    policy recovers it (~40 frames).  The u1801 dump used these exact
+    thresholds: 7812 raw dips vs 1192 sustained events (~1.16/traj).
+    """
+    phi = np.asarray(phi, dtype=np.float32)
+    n = len(phi)
+    falls = 0
+    j = 0
+    while j < n - 1:
+        if phi[j] >= stand_hi and phi[j + 1] < fall_lo:
+            k = j + 1
+            while k < n and phi[k] < fall_lo:
+                k += 1
+            if k - (j + 1) >= min_frames:
+                falls += 1
+            j = k
+        else:
+            j += 1
+    return falls

@@ -640,7 +640,7 @@ class TrajTable(Table):
         arr = ds.npz("trajectories").get(name)
         if arr is not None and not (
                 arr.dtype == object and arr.size == 1) \
-                and len(arr) == self._n_rows_base():
+                and arr.ndim >= 1 and len(arr) == self._n_rows_base():
             return arr
         for prefix, key in (("key_seg_active", "key_seg_active"),
                             ("key_seg_terminated", "key_seg_terminated"),
@@ -659,7 +659,8 @@ class TrajTable(Table):
             if k == "frame_id":
                 continue
             a = self._ds.npz("trajectories").get(k)
-            if a is not None and a.dtype != object and len(a) == n:
+            if a is not None and a.dtype != object and a.ndim >= 1 \
+                    and len(a) == n:
                 cols.append(k)
         for member, pub in (("key_seg_active", "key_seg_active"),
                             ("key_seg_terminated", "key_seg_terminated"),

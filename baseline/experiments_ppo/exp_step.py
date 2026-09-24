@@ -51,6 +51,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     CONTACT_HOLD_STEPS,
     GAIT_PERIOD,
     clock_foot_weights,
+    count_falls,
     detect_step_cycles,
     single_support_mask,
 )
@@ -122,6 +123,16 @@ class Step(CombatExperimentPPOBase):
     # ratio to ~50× and aligns the reward with the eval metric exactly:
     # the same detect_step_cycles definition decides both.
     step_cycle_bonus: float = 0.5
+
+    # --- Lift stability gate ---
+    # The clock commands a lift every window regardless of balance; the
+    # u1801 dump showed ~1.16 real falls per 20 s trajectory, 66% of
+    # them right after a genuine swing — the policy lifts on schedule
+    # even when wobbly (liftoff φ p5 = 0.07).  Below lift_phi_gate the
+    # commanded foot's +W flips to -W so wobbly lifts are punished, not
+    # just unrewarded.  0.8 splits the bimodal swing-φ distribution
+    # (healthy swing ≈0.9-0.97 vs collapse <0.5).
+    lift_phi_gate: float = 0.8
 
     # --- r_potential actor weight ---
     # Fixed 3.0 in general, but muted to ~0 on commanded single-support
@@ -327,6 +338,7 @@ class Step(CombatExperimentPPOBase):
             sole_left=np.asarray(sole_left[:T_full], dtype=np.float32) if sole_left is not None else None,
             sole_right=np.asarray(sole_right[:T_full], dtype=np.float32) if sole_right is not None else None,
             period=GAIT_PERIOD,
+            stable=(phi_arr >= self.lift_phi_gate),
         )
 
         # --- No early termination: robot can fall and get back up ---
@@ -486,6 +498,7 @@ class Step(CombatExperimentPPOBase):
         all_hmax = []           # mean swing peak height per agent
         all_solepk = []         # mean swing peak sole clearance per agent
         all_alt = []            # alternation ratio per agent (>=2 cycles)
+        all_falls = []          # real falls per agent (φ<0.5 for >=10 f)
         n_agents = 0
 
         for ep in episodes:
@@ -501,6 +514,7 @@ class Step(CombatExperimentPPOBase):
                 if phi is not None and len(phi) > 0:
                     mx = float(np.max(phi))
                     fn = float(phi[-1])
+                    all_falls.append(count_falls(phi))
                 else:
                     mx = 0.0
                     fn = 0.0
@@ -570,6 +584,8 @@ class Step(CombatExperimentPPOBase):
                         if all_solepk else None,
                 "alt": round(sum(all_alt) / max(len(all_alt), 1), 3)
                       if all_alt else None,
+                "falls": round(sum(all_falls) / max(len(all_falls), 1), 2)
+                        if all_falls else None,
             },
         }
 
