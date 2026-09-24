@@ -4577,11 +4577,12 @@
     let html = '';
     if (d.traj) {
       const cur = {currentFrame: frame};
-      html += `<div class="chart-container"><h3>raw vs ${escapeHtml(state.normMethod)} · ${escapeHtml(state.normChannel)}</h3>` +
-        chartBox([
-          {label: 'raw adv', data: d.traj.raw, color: '#98a2b5'},
-          {label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'},
-        ], cur, {key: 'norm:traj'}) + '</div>';
+      html += `<div class="chart-container"><h3>raw adv · ${escapeHtml(state.normChannel)}</h3>` +
+        chartBox([{label: 'raw adv', data: d.traj.raw, color: '#98a2b5'}],
+          cur, {key: 'norm:raw'}) + '</div>';
+      html += `<div class="chart-container"><h3>normed (${escapeHtml(state.normMethod)}) · ${escapeHtml(state.normChannel)}</h3>` +
+        chartBox([{label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'}],
+          cur, {key: 'norm:normed'}) + '</div>';
       html += `<div class="stage-stats" style="margin-top:4px">` +
         _kv('frame', frame) +
         _kv('raw adv', fmt(d.traj.raw?.[frame], 4)) +
