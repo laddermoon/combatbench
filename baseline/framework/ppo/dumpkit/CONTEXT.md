@@ -94,7 +94,7 @@ debug.py render <dump_dir> --episode 0
 
 # —— 策略这几代漂了多少？（离线确定性回放，无需 run 在跑）
 debug.py delta <dump_dir> --episode 0 --gens 3
-#   → dumps/uNNNNN/delta/episode_NNNNN/（viewer episode 页自动显示）
+#   → dumps/uNNNNN/delta/episode_NNNNN/（仅 CLI；viewer 不展示）
 
 # —— 交互界面（给人看）
 debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
@@ -163,7 +163,7 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
     reward/value/δ/adv 曲线），γ/λ 滑杆触发服务端
     `/trajectory/<i>/gae` 用**训练同款 `compute_gae`** 重算
     （验证过与 dump 存储值逐位一致）。旧 `/trajectory/<i>` URL 仍
-    兼容落到此页。底部保留 epoch 对比（该 update 对此 traj 的影响）。
+    兼容落到此页。
   - `/advnorm` —— ③的钻取：通道选择 + method tabs（trained 方法高亮），
     raw vs normed 分布直方图 + 单 traj 切片曲线，服务端
     `normalize_advantages` 现算。
