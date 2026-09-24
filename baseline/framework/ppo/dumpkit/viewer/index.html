@@ -3404,37 +3404,6 @@
     html += box('Policy loss', S('policy_loss', 'policy_loss', '#4fa3ff'));
     html += '</div>';
 
-    // Expandable groups — same data, organized like the run page
-    let ghtml = '';
-    const gadv = S('adv_mean', 'adv_mean', '#4fa3ff')
-      .concat(S('adv_std', 'adv_std', '#e5c07b'),
-              S('adv_min', 'adv_min', '#56b6c2'), S('adv_max', 'adv_max', '#e06c75'));
-    const gext = S('argmax logr', 'argmax_ratio_logr', '#e06c75')
-      .concat(S('argmin logr', 'argmin_ratio_logr', '#56b6c2'));
-    const gcnt = S('n r>2', 'n_ratio_gt2', '#e06c75')
-      .concat(S('n r<0.5', 'n_ratio_lt05', '#56b6c2'));
-    const gmisc = S('floor_loss', 'floor_loss', '#e5c07b')
-      .concat(S('dual_clip_frac', 'dual_clip_frac', '#c678dd'),
-              S('dtheta_cos_descent', 'dtheta_cos_descent', '#56b6c2'));
-    const chans = Object.keys(tl).filter(k => k.startsWith('critic_loss_'))
-      .map(k => k.slice(12)).sort();
-    const gcloss = chans.map((ch, i) => ({
-      label: ch, data: tl[`critic_loss_${ch}`],
-      color: CHART_COLORS[i % CHART_COLORS.length]})).filter(s => s.data);
-    const gcgrad = chans.map((ch, i) => ({
-      label: ch, data: tl[`critic_grad_${ch}`],
-      color: CHART_COLORS[i % CHART_COLORS.length]})).filter(s => s.data);
-    const extra =
-      box('ADV stats', gadv) + box('Extreme ratio (log)', gext) +
-      box('Extreme ratio count', gcnt) + box('Misc', gmisc) +
-      box('Critic loss (per channel)', gcloss) +
-      box('Critic grad (per channel)', gcgrad);
-    if (extra) {
-      ghtml = `<details class="metrics-expand"><summary>展开更多 · 辅助图</summary>` +
-        `<div class="steps-grid">${extra}</div></details>`;
-    }
-    html += ghtml;
-
     html += `<div class="steps-detail">${_stepDetailHtml(tl, step)}</div>`;
     el.innerHTML = html;
 
