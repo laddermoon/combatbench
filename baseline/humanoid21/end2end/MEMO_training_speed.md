@@ -558,6 +558,17 @@ KL（tklearly）与恒定放大（tkl10）一样劣化。KL cap 维度整体关�
 
 剩余未测真实杠杆：dual_clip_c=3.0、--no-confidence 消融、GAE λ。
 
+### 2026-09-24 最后三条候选臂齐发
+
+| run | GPU | 设定 | 假设 |
+|---|---|---|---|
+| `dclip3_s42` | 3 | `dual_clip_c=3.0`（--param） | 负 adv 侧 ratio 地板：限制 A<0 时 r>3 的大步——若大负步在拉歪方向则应有效 |
+| `noconf_s42` | 4 | `--no-confidence` | EV-confidence 加权消融：关掉看是承重件还是死重（理解>提速） |
+| `lam085_s42` | 5 | `gae_lambda=0.85`（子类） | adv 偏差-方差轴：λ↓ = 高偏差低方差——方向质量假说下低方差应有利 |
+
+生效确认：dclip3 override 已应用；noconf log "[confidence] off"；
+lam085 config gae_lambda=0.85。三条后 lever 库基本扫完。
+
 ### Debug 系统迭代：grad_clip_frac 指标落地
 
 发现 grad clip 观测缺口（只有 pre-clip norm，无触发率）→ 新增
