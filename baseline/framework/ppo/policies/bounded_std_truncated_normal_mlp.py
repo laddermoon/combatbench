@@ -103,6 +103,7 @@ class BoundedStdTruncatedNormalPolicy(TruncatedNormalPolicy):
         # Invert the bounded map so σ(v_init, e=0) == init_std.
         p0 = (math.log(self.init_std) - self._r_min) / self._delta_r
         v_init = math.log(p0) - math.log1p(-p0)  # logit(p0)
+        self._v_init = float(v_init)  # state-σ subclass reuses it as head bias
         self.raw_std = nn.Parameter(
             torch.full((self.action_dim,), v_init, dtype=torch.float32)
         )
