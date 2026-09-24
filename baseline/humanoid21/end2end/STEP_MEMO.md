@@ -470,3 +470,28 @@ u1750 视频人工复核：真短暂离地 + 大量踮脚残留；模式为"一�
 
 三 seed 均在 step 饱和后由 `_best_step` early-stop 自动终止，
 `policy/`（best-of-run 导出）齐备，可作下一阶段暖启动底座。
+
+### 干预 #7：稳定门控抬脚指令（s42_stable，进行中）
+
+**用户视频反馈（s44_v3）**：站起来后确实抬脚，但会摔倒。
+
+**dump 归因（u01801, s44_v3）**：
+- 每条 20s 轨迹平均真摔 1.16 次（φ<0.5 持续 ≥10 帧），66% 紧跟真腾空
+- 离地瞬间 φ p5=0.07 —— 一成抬脚发起于明显失衡态
+- 摆动中 φ 双模态：健康 ~0.9-0.97 / 崩溃 <0.23 —— 摔倒中脚仍悬空
+  的帧仍在吃 +W/0 权重
+
+**修法**（commit 见 git log）：
+- `clock_foot_weights(stable=…)`：φ<0.8 帧上指令脚 +W→-W —
+  晃着抬脚被惩罚而非零梯度放任
+- eval 新增 `falls` 指标（φ≥0.7→<0.5 ≥10帧 计数）
+- best/early-stop 改追 `quality = step − 0.1·falls`（step 已饱和 1.0，
+  旧指标 resume 后必秒停 —— 已实证）
+- 顺手修了 `trajs` 表标量 member 崩 `columns` 的 bug
+
+**运行**：`train_step_s42_stable`（pid 3718373, GPU0），
+resume 自 s42_v2 u02015 ckpt。首评 u2020：step=1.000 solepk=0.100
+alt=0.621 falls=1.660 —— 基线锚定。
+
+**判据**：falls 降至 <0.5 且 step 保持 ≥0.9 → 稳定步态成立；
+falls 不降或 step 崩 → 下一轮干预（考虑窗口级 gate/终端惩罚）。
