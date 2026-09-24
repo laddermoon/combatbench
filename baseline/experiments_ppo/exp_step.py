@@ -375,10 +375,18 @@ class Step(CombatExperimentPPOBase):
             self.r_potential_actor_weight
             * (1.0 - (phi_trail ** 2) * ss_mask)
         ).astype(np.float32)
+        # +W is φ²-gated (only encourage lifts while standing), but -W
+        # must NOT be attenuated: punishment matters most exactly when φ
+        # is low (wobbly lift-off / airborne-while-falling), and φ²
+        # would shrink it to ~4% there — the stability gate's -W flip
+        # would be toothless.  s42_stable u2020-2065 confirmed: falls
+        # stayed ~1.8 while the gate was nominally active.
+        aw_left = np.where(w_left > 0, w_left * phi_sq, w_left)
+        aw_right = np.where(w_right > 0, w_right * phi_sq, w_right)
         actor_weights = {
             "r_potential": aw_potential,
-            "r_left_foot": (w_left * phi_sq),
-            "r_right_foot": (w_right * phi_sq),
+            "r_left_foot": aw_left.astype(np.float32),
+            "r_right_foot": aw_right.astype(np.float32),
         }
 
         all_rewards = {
