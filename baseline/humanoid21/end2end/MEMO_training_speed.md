@@ -569,6 +569,41 @@ KL（tklearly）与恒定放大（tkl10）一样劣化。KL cap 维度整体关�
 生效确认：dclip3 override 已应用；noconf log "[confidence] off"；
 lam085 config gae_lambda=0.85。三条后 lever 库基本扫完。
 
+### 2026-09-24 三臂终局：λ 是唯一存活轴；confidence 是承重件
+
+同口径 online_success≥0.5（基线 verify_resume_A u387；括号内为
+fpm≥0.9 口径，基线 u394）：
+
+| run | 逃逸 | Δ | 判定 |
+|---|---|---|---|
+| `dclip3_s42` | u459（fpm u470） | **+72u** | **已杀：负**——dual_clip_c=3.0 拖慢逃逸。负 adv 侧的 ratio 地板没有救回方向质量，反而截掉了对高估帧的合法下压。`dual_clip` 维度关闭 |
+| `noconf_s42` | u549（fpm u572） | **+162u** | **已杀：严重负**——消融证明 EV-confidence 是**承重件**而非死重。注意本任务只有 r_potential 单通道：confidence 的价值不在跨通道选择，而在**按 critic 可信度对 adv 幅度做逐 update 门控**（EV 低 → conf<1 → 自动缩步）。关闭后等效于撤掉"模型不自信时走小步"的安全阀 |
+| `lam085_s42` | u362（fpm u368） | **−25u** | **正向，待确认**——λ=0.85 偏差-方差轴首次给出正信号：低方差 adv 每单位 KL 买到更准的方向（方向质量假说又一次兑现）。但弱于 ef05（−52u），且单 seed A/B 有 s2 倒转教训，按协议补 s1/s2 |
+
+**lever 库盘点（至此 PPO update 路径全图已扫）**：
+- 关闭：episodes_per_update、target_kl（恒定+排程）、lr（响应曲线
+  1.5e-4<<3e-4>5e-4）、update_epochs、minibatch_size（2048 中性/
+  8192 负/4096 最优）、clip_eps（0.1 负/0.3 方差压缩/0.4 负/∞负）、
+  adv_norm 变体（std/gauss_rank/winsorize 均负）、dual_clip_c、
+  uncertainty_floor（训练侧熵下压无效）、ef 排程（衰减丢收益）、
+  组合（KL 预算不叠加）
+- 保留：explore_factor=0.5（三 seed 全胜，最强杠杆）
+- 消融结论：EV-confidence 是承重件（+162u 代价）
+- **唯一开放轴：gae_lambda**（0.95→387 / 0.85→362，−25u）
+
+### 2026-09-24 λ 轴收口三臂：确认 + 括线
+
+| run | GPU | 设定 | 目的 |
+|---|---|---|---|
+| `lam085_s1` | 3 | lam085 seed=1 | 协议确认：≥2/3 seed 一致才算数 |
+| `lam085_s2` | 4 | lam085 seed=2 | 同上 |
+| `lam075_s42` | 5 | `gae_lambda=0.75`（新 exp 子类） | λ 响应曲线括线：更好→继续下探；更差→0.85 甜点，维度关闭 |
+
+判读：s1/s2 基线逃逸 u343 / u342（s2 未逃逸）。lam085 三 seed 一致
+提前 → λ 进入保留集；lam075_s42 <u362 → λ 响应单调，续探 0.65；
+>u387 → 0.85 是甜点；u362–u387 之间 → λ 收益本身在噪声内，
+整个维度按"无稳健杠杆"关闭。
+
 ### Debug 系统迭代：grad_clip_frac 指标落地
 
 发现 grad clip 观测缺口（只有 pre-clip norm，无触发率）→ 新增
