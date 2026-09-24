@@ -332,13 +332,15 @@ class Step(CombatExperimentPPOBase):
         # index — the policy sees it in obs, so +W intents become a
         # learnable state→action mapping.  Replaces the contact-reactive
         # state machine, whose commands converted to real lifts only
-        # ~0.5% of the time (u01651 dump).
+        # ~0.5% of the time (u01651 dump).  stable gates both the lift
+        # command (below) and the swing exemption (aw_potential below).
+        stable = (phi_arr >= self.lift_phi_gate)
         w_left, w_right = clock_foot_weights(
             T_full,
             sole_left=np.asarray(sole_left[:T_full], dtype=np.float32) if sole_left is not None else None,
             sole_right=np.asarray(sole_right[:T_full], dtype=np.float32) if sole_right is not None else None,
             period=GAIT_PERIOD,
-            stable=(phi_arr >= self.lift_phi_gate),
+            stable=stable,
         )
 
         # --- No early termination: robot can fall and get back up ---
@@ -365,15 +367,16 @@ class Step(CombatExperimentPPOBase):
                 ).max(axis=1).astype(np.float32)
         else:
             ss_mask = np.zeros(T_full, dtype=np.float32)
-        # Trailing-max φ over ~0.75 s: a commanded swing's φ dip stays
-        # exempt; a real fall keeps φ low and restores aw=3.0.
-        pad = np.pad(phi_arr, (self.stand_gate_window - 1, 0), mode="edge")
-        phi_trail = np.lib.stride_tricks.sliding_window_view(
-            pad, self.stand_gate_window,
-        ).max(axis=1).astype(np.float32)
+        # Swing exemption requires the frame to be CURRENTLY stable
+        # (φ ≥ lift_phi_gate): the old trailing-max φ kept exempting for
+        # ~15 frames into a collapse — the u1801 dump showed aw_potential
+        # ≈0.1 during the 15 frames preceding mid-swing falls (79% of
+        # falls happen foot-still-airborne), so the potential channel
+        # was silenced exactly while the fall developed.  Now the veto
+        # returns the moment φ drops below the gate.
         aw_potential = (
             self.r_potential_actor_weight
-            * (1.0 - (phi_trail ** 2) * ss_mask)
+            * (1.0 - stable * ss_mask)
         ).astype(np.float32)
         # +W is φ²-gated (only encourage lifts while standing), but -W
         # must NOT be attenuated: punishment matters most exactly when φ
