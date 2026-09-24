@@ -443,6 +443,61 @@
   table.cmp-summary th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
   table.cmp-summary td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; font-family: ui-monospace, monospace; }
   table.cmp-summary td .rundot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+
+  /* --- Pipeline stage cards (dump home) --- */
+  .stage-card { cursor: default; }
+  .stage-head { display: flex; align-items: baseline; gap: 10px; }
+  .stage-head h2 { margin: 0; flex: 1; }
+  .stage-num { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .stage-open { font-size: 12px; color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .stage-open:hover { text-decoration: underline; }
+  .stage-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 8px 0; font-size: 12px; }
+  .stage-stats .kv { display: flex; gap: 5px; }
+  .stage-stats .k { color: var(--muted); }
+  .stage-stats .v { font-family: ui-monospace, monospace; }
+  .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
+  .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
+  .mini-hist .mh-title { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+
+  /* --- Tool page header (shared by ep2traj / gae / advnorm / merge) --- */
+  .tool-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
+  .tool-head .t-title { font-weight: 600; font-size: 13px; }
+  .tool-head .t-sel { display: flex; align-items: center; gap: 6px; }
+  .tool-head select, .tool-head input[type=number] { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .tool-head input[type=number] { width: 80px; }
+  .tool-head .t-nav { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
+  .tool-head .t-nav:hover { border-color: var(--accent); }
+  .tool-head .t-info { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+
+  /* --- Video-editor layout (GAE page) --- */
+  .ve-stage { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+  .ve-bigimg { display: flex; justify-content: center; align-items: center; min-height: 220px; background: #000; border-radius: 4px; position: relative; }
+  .ve-bigimg img { max-width: 100%; max-height: 420px; image-rendering: auto; }
+  .ve-bigimg .no-img { color: var(--muted); font-size: 12px; text-align: center; padding: 40px 0; }
+  .ve-thumbs { display: flex; gap: 3px; margin-top: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .ve-thumb { flex: 0 0 auto; width: 72px; height: 48px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; position: relative; background: #000; overflow: hidden; }
+  .ve-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ve-thumb .t-label { position: absolute; bottom: 0; left: 0; right: 0; font-size: 9px; color: #fff; background: rgba(0,0,0,.55); text-align: center; font-family: ui-monospace, monospace; }
+  .ve-thumb.cur { border-color: var(--accent); outline: 1px solid var(--accent); }
+  .ve-thumb.missing { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 9px; }
+  .ve-scrub { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .ve-scrub input[type=range] { flex: 1; }
+  .ve-params { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
+  .ve-params .p-group { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .ve-params .p-name { color: var(--muted); font-weight: 600; }
+  .ve-params input[type=range] { width: 160px; }
+  .ve-params .p-val { font-family: ui-monospace, monospace; min-width: 46px; }
+  .ve-params .p-cur { font-size: 11px; color: var(--muted); }
+
+  /* --- advnorm / merge pages --- */
+  .method-tabs { display: flex; gap: 6px; }
+  .method-tab { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: ui-monospace, monospace; }
+  .method-tab.active { border-color: var(--accent); color: var(--accent); }
+  .method-tab.current::after { content: " ·trained"; color: var(--muted); font-size: 10px; }
+  .merge-ch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .merge-ch-card { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+  .merge-ch-card h3 { margin: 0 0 6px; font-size: 13px; }
+  .ch-kv { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-bottom: 6px; font-family: ui-monospace, monospace; }
 </style>
 </head>
 <body>
@@ -580,31 +635,49 @@
       </div>
     </div>
 
-    <!-- Home page — analysis overview -->
+    <!-- Dump home — pipeline dashboard: one summary card per stage,
+         each with a drill-down entry into its tool page -->
     <div class="page" id="page-home">
       <div class="home-layout">
         <div class="card" id="overview-card">
           <h2>Overview <span class="gs-scope" id="ov-meta"></span></h2>
           <div class="caps" id="ov-caps"></div>
         </div>
-        <div class="card">
-          <h2>Signal Summary <span class="gs-scope">cross-section of this update</span></h2>
-          <div class="ana-duo">
-            <div class="ana-cell">
-              <h3>ADV distribution · final</h3>
-              <div id="adv-hist"><div class="loading">loading...</div></div>
-            </div>
-            <div class="ana-cell">
-              <h3>Gradient signal <span class="gs-scope">sampled ≤2000 · θ_old</span></h3>
-              <div class="gs-heat" id="gs-heat"></div>
-              <div class="gs-side" id="gs-stats"></div>
-            </div>
+        <div class="card stage-card" id="stage-ep2traj">
+          <div class="stage-head">
+            <span class="stage-num">①</span>
+            <h2>Episode → Trajectory</h2>
+            <a class="stage-open" id="open-ep2traj">open tool →</a>
           </div>
-          <div class="ana-cell" style="margin-top:16px">
-            <h3>ADV transform chain <span class="gs-scope">raw → normed → weighted → winsorized · own x-axis each</span></h3>
-            <div id="adv-stages" class="chain-row"><div class="loading">loading...</div></div>
+          <div class="stage-stats" id="sum-ep2traj"><div class="loading">loading...</div></div>
+          <div class="desc">Verify the user's episode→trajectory conversion: raw observer outputs vs extracted reward / actor_weight.</div>
+        </div>
+        <div class="card stage-card" id="stage-gae">
+          <div class="stage-head">
+            <span class="stage-num">②</span>
+            <h2>Reward → ADV <span class="gs-scope">GAE</span></h2>
+            <a class="stage-open" id="open-gae">open tool →</a>
           </div>
-          <div id="gs-top"></div>
+          <div class="stage-stats" id="sum-gae"><div class="loading">loading...</div></div>
+          <div class="desc">Per-trajectory reward / value / advantage along the frame timeline. γ and λ are adjustable — recomputed server-side with the trainer's own compute_gae.</div>
+        </div>
+        <div class="card stage-card" id="stage-advnorm">
+          <div class="stage-head">
+            <span class="stage-num">③</span>
+            <h2>ADV Normalization</h2>
+            <a class="stage-open" id="open-advnorm">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-advnorm"><div class="loading">loading...</div></div>
+          <div class="stage-mini" id="sum-advnorm-hists"></div>
+        </div>
+        <div class="card stage-card" id="stage-merge">
+          <div class="stage-head">
+            <span class="stage-num">④</span>
+            <h2>Channel Merge</h2>
+            <a class="stage-open" id="open-merge">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-merge"><div class="loading">loading...</div></div>
+          <div class="stage-mini" id="sum-merge-hists"></div>
         </div>
         <div class="card">
           <h2>Update Process <a class="cmp-open-link" id="steps-open-timeline">full timeline →</a></h2>
@@ -612,22 +685,19 @@
           <div id="steps-container"><div class="loading">loading...</div></div>
         </div>
         <div class="card">
-          <h2>Episode List</h2>
-          <div class="desc">Select an episode to view its frame-by-frame data and associated trajectories.</div>
-          <div id="episode-list-container"></div>
-        </div>
-        <div class="card dataflow-card" id="dataflow-entry">
-          <h2>Data Flow <span class="gs-scope">new here? start with this</span></h2>
-          <div class="desc">The logical data model of one PPO update — the mental model behind every page.</div>
-          <div class="df-mini">
-            <span>Episode</span><i>▸</i><span>Trajectory</span><i>▸</i><span>Targets</span><i>▸</i><span>Update</span><i>▸</i><span>Run</span>
+          <h2>Gradient Signal <span class="gs-scope">sampled ≤2000 · θ_old</span></h2>
+          <div class="ana-duo">
+            <div class="ana-cell"><div class="gs-heat" id="gs-heat"></div></div>
+            <div class="ana-cell"><div class="gs-side" id="gs-stats"></div></div>
           </div>
+          <div id="gs-top"></div>
         </div>
       </div>
     </div>
 
-    <!-- Episode detail (Scene 1) -->
+    <!-- Tool ① Episode → Trajectory (verification) -->
     <div class="page" id="page-episode">
+      <div class="tool-head" id="ep-tool-head"></div>
       <div class="ep-layout">
         <div class="ep-data" id="ep-data-panel"></div>
         <div class="ep-controls">
@@ -642,20 +712,53 @@
       </div>
     </div>
 
-    <!-- Trajectory detail (Scene 2 + 3, merged: pre-update data + epoch comparison) -->
-    <div class="page" id="page-traj">
-      <div class="traj-layout">
-        <div class="traj-content" id="traj-content"></div>
-        <div class="traj-controls">
-          <button id="traj-btn-first" title="First">⏮</button>
-          <button id="traj-btn-prev" title="Previous">◀</button>
-          <button id="traj-btn-play" title="Play">▶</button>
-          <button id="traj-btn-next" title="Next">▶</button>
-          <button id="traj-btn-last" title="Last">⏭</button>
-          <input id="traj-slider" type="range" min="0" max="0" value="0" />
-          <div class="frame-label" id="traj-frame-label">- / -</div>
-          <select id="epoch-selector" style="display:none"></select>
+    <!-- Tool ② Reward → ADV — video-editor layout: big frame on top,
+         thumbnail timeline, then value curves. γ/λ live-recomputed. -->
+    <div class="page" id="page-gae">
+      <div class="tool-head" id="gae-tool-head"></div>
+      <div class="ve-stage">
+        <div class="ve-bigimg" id="gae-bigimg"></div>
+        <div class="ve-thumbs" id="gae-thumbs"></div>
+        <div class="ve-scrub">
+          <button id="gae-btn-prev" class="t-nav">◀</button>
+          <input id="gae-slider" type="range" min="0" max="0" value="0" />
+          <button id="gae-btn-next" class="t-nav">▶</button>
+          <span class="t-info" id="gae-frame-label">- / -</span>
         </div>
+      </div>
+      <div class="ve-params" id="gae-params"></div>
+      <div class="card"><div id="gae-curves"></div></div>
+      <div class="card"><div id="gae-epoch"></div></div>
+    </div>
+
+    <!-- Tool ③ ADV Normalization — per-channel raw vs transformed
+         distributions, method switchable (server-side recompute) -->
+    <div class="page" id="page-advnorm">
+      <div class="tool-head" id="norm-tool-head"></div>
+      <div class="card"><div id="norm-body"></div></div>
+      <div class="card">
+        <h2>Trajectory slice</h2>
+        <div class="desc">Raw vs normalized advantage along one trajectory under the selected method.</div>
+        <div class="t-sel" style="margin-bottom:8px">
+          <span class="k" style="color:var(--muted);font-size:12px">traj</span>
+          <input id="norm-traj" type="number" min="0" value="0" />
+        </div>
+        <div id="norm-traj-body"></div>
+      </div>
+    </div>
+
+    <!-- Tool ④ Channel Merge — per-channel normed adv × weight → combined -->
+    <div class="page" id="page-merge">
+      <div class="tool-head" id="merge-tool-head"></div>
+      <div class="card"><div id="merge-body"></div></div>
+      <div class="card">
+        <h2>Trajectory drill-down</h2>
+        <div class="desc">Per-channel normed adv and merge weights along one trajectory, plus the combined signal.</div>
+        <div class="t-sel" style="margin-bottom:8px">
+          <span class="k" style="color:var(--muted);font-size:12px">traj</span>
+          <input id="merge-traj" type="number" min="0" value="0" />
+        </div>
+        <div id="merge-traj-body"></div>
       </div>
     </div>
 
@@ -704,11 +807,11 @@
 
   <div id="context-bar">
     <div class="ctx-item" data-pages="episode"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
-    <div class="ctx-item" data-pages="traj"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
-    <div class="ctx-item" data-pages="episode traj"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
-    <div class="ctx-item" data-pages="traj"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
+    <div class="ctx-item" data-pages="gae merge"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
+    <div class="ctx-item" data-pages="episode gae"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item" data-pages="gae"><span class="ctx-label">Epoch:</span> <span class="ctx-value" id="ctx-epoch">-</span></div>
     <div class="ctx-item" data-pages="timeline"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
-    <div class="ctx-item" data-pages="episode traj"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
+    <div class="ctx-item" data-pages="episode gae"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
   </div>
 </div>
 
@@ -758,12 +861,23 @@
     epPlaying: false,
     epPlayTimer: null,
 
-    // Trajectory page state
+    // Trajectory / GAE page state
     trajOverview: null,
     trajEpochCompare: null,
     trajEpochOverview: null,  // per-epoch data for Scene 3
-    trajPlaying: false,
-    trajPlayTimer: null,
+    gaeChannel: null,         // selected reward channel on the GAE page
+    gaeGamma: null,           // preview γ (null = trained value)
+    gaeLam: null,             // preview λ (null = trained value)
+    gaePreview: null,         // last /trajectory/<i>/gae response
+
+    // ADV-norm / merge tool state
+    normChannel: null,
+    normMethod: null,         // null = trained method
+    normTraj: 0,
+    mergeTraj: 0,
+
+    // Pipeline summary cache (dump home cards)
+    pipeline: null,
 
     // Timeline page state
     timelineData: null,
@@ -783,7 +897,9 @@
     videos: $('page-videos'),
     home: $('page-home'),
     episode: $('page-episode'),
-    traj: $('page-traj'),
+    gae: $('page-gae'),
+    advnorm: $('page-advnorm'),
+    merge: $('page-merge'),
     timeline: $('page-timeline'),
     dataflow: $('page-dataflow'),
     compare: $('page-compare'),
@@ -824,7 +940,9 @@
       case 'experiment': return `/experiment/${encodeURIComponent(state.expName || '')}`;
       case 'run': return `${r}/`;
       case 'episode': return `${r}${d}/episode/${state.selectedEpisode}`;
-      case 'traj': return `${r}${d}/trajectory/${state.selectedTraj}`;
+      case 'gae': return `${r}${d}/gae/${state.selectedTraj}`;
+      case 'advnorm': return `${r}${d}/advnorm`;
+      case 'merge': return `${r}${d}/merge`;
       case 'timeline': return `${r}${d}/timeline`;
       case 'dataflow': return `${r}${d}/dataflow`;
       case 'videos': return `${r}/videos`;
@@ -840,8 +958,8 @@
     state.currentPage = name;
     updateBreadcrumb();
     updateContextBarVisibility();
-    // Hide floating image when leaving episode/traj pages
-    if (name !== 'episode' && name !== 'traj') {
+    // Hide floating image when leaving frame-view pages
+    if (name !== 'episode' && name !== 'gae') {
       hideFloatImage();
     }
   }
@@ -952,13 +1070,17 @@
     } else if (state.rootMode !== 'runs') {
       crumbs.push({label: 'Home', page: 'home'});
     }
-    if (state.currentPage === 'episode' || state.currentPage === 'traj') {
-      if (state.selectedEpisode !== null) {
-        crumbs.push({label: `Episode ${state.selectedEpisode}`, page: 'episode'});
-      }
+    if (state.currentPage === 'episode') {
+      crumbs.push({label: `Episode→Traj ${state.selectedEpisode ?? ''}`, page: 'episode'});
     }
-    if (state.currentPage === 'traj' && state.selectedTraj !== null) {
-      crumbs.push({label: `Trajectory ${state.selectedTraj}`, page: 'traj'});
+    if (state.currentPage === 'gae') {
+      crumbs.push({label: `Reward→ADV · traj ${state.selectedTraj ?? ''}`, page: 'gae'});
+    }
+    if (state.currentPage === 'advnorm') {
+      crumbs.push({label: 'ADV Normalization', page: 'advnorm'});
+    }
+    if (state.currentPage === 'merge') {
+      crumbs.push({label: 'Channel Merge', page: 'merge'});
     }
     if (state.currentPage === 'timeline') {
       crumbs.push({label: 'Timeline', page: 'timeline'});
@@ -1009,8 +1131,10 @@
     else if (page === 'experiment') renderExperiment();
     else if (page === 'run') renderRunHome();
     else if (page === 'home') renderHome();
-    else if (page === 'episode' && state.selectedEpisode !== null) renderEpisode();
-    else if (page === 'traj' && state.selectedTraj !== null) renderTraj();
+    else if (page === 'episode') renderEpisode();
+    else if (page === 'gae') renderGae();
+    else if (page === 'advnorm') renderAdvnorm();
+    else if (page === 'merge') renderMerge();
     else if (page === 'timeline') renderTimeline();
     else if (page === 'dataflow') renderDataflow();
     else if (page === 'videos') renderVideos();
@@ -1374,6 +1498,13 @@
     state.trajEpochCompare = null;
     state.trajEpochOverview = null;
     state.timelineData = null;
+    state.pipeline = null;
+    state.gaeChannel = null;
+    state.gaeGamma = null;
+    state.gaeLam = null;
+    state.gaePreview = null;
+    state.normChannel = null;
+    state.normMethod = null;
     state.selectedEpisode = null;
     state.selectedTraj = null;
     state.selectedFrame = 0;
@@ -1544,14 +1675,22 @@
       state.selectedFrame = 0;
       showPage('episode');
       renderEpisode();
-    } else if ((mm = sub.match(/^\/trajectory\/(\d+)/))) {
+    } else if ((mm = sub.match(/^\/(?:gae|trajectory)\/(\d+)/))) {
+      // /trajectory/<i> is the pre-restructure URL — same target now.
       state.selectedTraj = parseInt(mm[1]);
       state.selectedFrame = 0;
       state.trajOverview = null;
       state.trajEpochCompare = null;
       state.trajEpochOverview = null;
-      showPage('traj');
-      renderTraj();
+      state.gaePreview = null;
+      showPage('gae');
+      renderGae();
+    } else if (sub.startsWith('/advnorm')) {
+      showPage('advnorm');
+      renderAdvnorm();
+    } else if (sub.startsWith('/merge')) {
+      showPage('merge');
+      renderMerge();
     } else if (sub.startsWith('/timeline')) {
       showPage('timeline');
       renderTimeline();
@@ -2969,6 +3108,8 @@
       }
       state.renderJob = {kind: 'render', dump: j.dump, episode: pos, status: 'running'};
       if (state.currentPage === 'home') renderHome();
+      else if (state.currentPage === 'episode') renderEpisode();
+      else if (state.currentPage === 'gae') renderGaePage();
       scheduleRenderPoll();
     } catch (e) {
       alert(String(e));
@@ -2998,6 +3139,7 @@
         if (!prev || prev.status !== 'running') {
           if (state.currentPage === 'home') renderHome();
           else if (state.currentPage === 'episode') renderEpisode();
+          else if (state.currentPage === 'gae') renderGaePage();
         }
         scheduleRenderPoll();
       } else if (prev && prev.status === 'running') {
@@ -3012,6 +3154,8 @@
             } catch (e) { /* dump unloaded meanwhile — ignore */ }
           }
           if (state.currentPage === 'home') renderHome();
+          else if (state.currentPage === 'episode') renderEpisode();
+          else if (state.currentPage === 'gae') renderGaePage();
         }
       }
     } catch (e) { /* status endpoint unavailable — ignore */ }
@@ -3039,64 +3183,99 @@
 
   // --- Home page ---
   function renderHome() {
-    const container = $('episode-list-container');
-    if (!state.episodeList || state.episodeList.length === 0) {
-      container.innerHTML = '<div class="loading">no episodes</div>';
+    renderDumpOverview();
+    renderPipelineCards();
+    renderDumpSteps();
+    renderGradsigCard();
+    $('steps-open-timeline').onclick = () => navigate('timeline');
+    $('open-ep2traj').onclick = () => selectEpisode(state.selectedEpisode ?? 0);
+    $('open-gae').onclick = () => selectTrajectory(state.selectedTraj ?? 0);
+    $('open-advnorm').onclick = () => navigate('advnorm');
+    $('open-merge').onclick = () => navigate('merge');
+  }
+
+  // --- Pipeline stage cards (dump home) --------------------------------
+
+  function _kv(k, v) {
+    return `<div class="kv"><span class="k">${escapeHtml(k)}</span><span class="v">${v}</span></div>`;
+  }
+
+  async function renderPipelineCards() {
+    if (!state.pipeline) {
+      try { state.pipeline = await fetchJson(api('pipeline')); }
+      catch (e) { state.pipeline = {error: e.message}; }
+    }
+    const p = state.pipeline;
+    if (p.error) {
+      $('sum-ep2traj').innerHTML = `<div class="desc">${escapeHtml(p.error)}</div>`;
       return;
     }
-    let html = '<table class="ep-table"><thead><tr>';
-    html += '<th>#</th><th>Seed</th><th>Frames</th><th>Trajectories</th><th>Rendered</th>';
-    html += '</tr></thead><tbody>';
-    const job = state.renderJob;
-    const jobRunning = job && job.status === 'running';
-    const jobThisDump = jobRunning &&
-      (state.dumpName ? job.dump === state.dumpName : true);
-    state.episodeList.forEach(ep => {
-      html += `<tr data-pos="${ep.list_pos}">`;
-      html += `<td>${ep.list_pos}</td>`;
-      html += `<td>${ep.seed ?? '-'}</td>`;
-      html += `<td>${ep.num_frames ?? '-'}</td>`;
-      html += `<td>${ep.n_trajectories}</td>`;
-      if (ep.rendered) {
-        html += '<td class="bool">✓</td>';
-      } else if (jobThisDump && job.episode === ep.list_pos) {
-        html += '<td class="render-busy">⏳ rendering</td>';
-      } else {
-        const dis = jobRunning ? ' disabled title="another render is running"' : '';
-        html += `<td><button class="render-btn" data-pos="${ep.list_pos}"${dis}>Render</button></td>`;
+    const st = p.stages || {};
+
+    // ① Episode → Trajectory
+    {
+      const s = st.ep2traj || {};
+      let h = _kv('episodes', s.n_episodes ?? '-')
+        + _kv('trajectories', s.n_trajectories ?? '-')
+        + _kv('frames', s.total_frames ?? '-');
+      if (s.traj_len_mean !== undefined)
+        h += _kv('traj len', `${fmt(s.traj_len_min,0)}–${fmt(s.traj_len_max,0)}`);
+      for (const [ch, t] of Object.entries(s.per_channel_term || {}))
+        h += _kv(`${ch} term/trunc`, `${t.terminated}/${t.truncated}`);
+      h += _kv('rendered eps', s.n_rendered ?? '-');
+      $('sum-ep2traj').innerHTML = h;
+    }
+
+    // ② Reward → ADV
+    {
+      const chs = st.gae?.channels || [];
+      let h = '';
+      for (const c of chs) {
+        h += _kv(c.name, `γ=${c.gamma ?? '?'} λ=${c.lam ?? '?'}`);
+        if (c.adv) h += _kv('adv', `μ=${fmt(c.adv.mean,3)} σ=${fmt(c.adv.std,3)} [${fmt(c.adv.min,2)},${fmt(c.adv.max,2)}]`);
       }
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    container.innerHTML = html;
+      $('sum-gae').innerHTML = h || '<div class="desc">no GAE data</div>';
+    }
 
-    container.querySelectorAll('tr[data-pos]').forEach(tr => {
-      tr.addEventListener('click', () => {
-        const pos = parseInt(tr.dataset.pos);
-        selectEpisode(pos);
-      });
-    });
+    // ③ ADV normalization — mini hists from the shared stage histograms
+    {
+      const method = st.advnorm?.method;
+      $('sum-advnorm').innerHTML =
+        _kv('method', method ?? '?') +
+        _kv('alternatives', (st.advnorm?.methods_available || []).join(' / '));
+      let hists = [];
+      try {
+        const hb = await fetchJson(api('adv/hist'));
+        if (hb.available) {
+          const raw = hb.stages.filter(s => s.label.startsWith('raw adv'));
+          const normed = hb.stages.filter(s => s.label.startsWith('normed'));
+          hists = raw.concat(normed);
+        }
+      } catch (e) {}
+      $('sum-advnorm-hists').innerHTML = hists.map(h =>
+        `<div class="mini-hist"><div class="mh-title">${escapeHtml(h.label)}</div>${_histSvg(h, 380, 60, false)}</div>`
+      ).join('');
+    }
 
-    // Render buttons — POST spawns `debug.py render` server-side; only
-    // one render runs at a time across the whole viewer.
-    container.querySelectorAll('.render-btn').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        const pos = parseInt(b.dataset.pos);
-        if (!confirm(`Render episode ${pos}?\n` +
-                     `Replays the dumped episode with the stochastic policy ` +
-                     `(can take a while).`)) return;
-        startRender(pos);
-      });
-    });
-    refreshRenderStatus();
-
-    renderDumpOverview();
-    renderAdvSummary();
-    renderGradsigCard();
-    renderDumpSteps();
-    $('steps-open-timeline').onclick = () => navigate('timeline');
-    $('dataflow-entry').onclick = () => navigate('dataflow');
+    // ④ Channel merge
+    {
+      const s = st.merge || {};
+      let h = '';
+      for (const c of s.channels || [])
+        h += _kv(c.name, `conf=${fmt(c.confidence,3)} ev=${fmt(c.ev,3)}`);
+      if (s.adv_winsorize_sigma)
+        h += _kv('winsorize', `±${s.adv_winsorize_sigma}σ (clip ${(100 * (s.adv_winsorize_clip_frac || 0)).toFixed(1)}%)`);
+      $('sum-merge').innerHTML = h || '<div class="desc">no merge data</div>';
+      let hists = [];
+      try {
+        const hb = await fetchJson(api('adv/hist'));
+        if (hb.available)
+          hists = hb.stages.filter(x => x.label.startsWith('combined'));
+      } catch (e) {}
+      $('sum-merge-hists').innerHTML = hists.map(h2 =>
+        `<div class="mini-hist"><div class="mh-title">${escapeHtml(h2.label)}</div>${_histSvg(h2, 380, 60, false)}</div>`
+      ).join('');
+    }
   }
 
   // --- Dump analysis cards (shared layer: /api/inspect, /api/gradsig/samples) ---
@@ -3164,35 +3343,6 @@
       s += `<text x="${W - pad.r}" y="${H - 3}" text-anchor="end" fill="var(--muted)" font-size="9">${fmt(h.edges[n], 2)}</text>`;
     }
     return s + '</svg>';
-  }
-
-  async function renderAdvSummary() {
-    const histEl = $('adv-hist'), stagesEl = $('adv-stages');
-    let body;
-    try { body = await fetchJson(api('adv/hist')); }
-    catch (e) {
-      histEl.innerHTML = `<div class="desc">${escapeHtml(e.message)}</div>`;
-      stagesEl.innerHTML = '';
-      return;
-    }
-    if (!body.available) {
-      histEl.innerHTML = `<div class="desc">${escapeHtml(body.reason || 'unavailable')}</div>`;
-      stagesEl.innerHTML = '';
-      return;
-    }
-    const stages = body.stages;
-    const fin = stages[stages.length - 1];
-    histEl.innerHTML = _histSvg(fin, 560, 150) +
-      `<div class="desc">n=${fin.n_valid} · mean ${fmt(fin.mean, 3)} · std ${fmt(fin.std, 2)} · ` +
-      `p1 ${fmt(fin.p1, 2)} / p99 ${fmt(fin.p99, 2)} — lines: p1·median·p99</div>`;
-    let sh = '';
-    for (const st of stages) {
-      sh += `<div class="chain-stage">` +
-        `<div class="hs-head"><span class="hs-label" title="${escapeHtml(st.label)}">${escapeHtml(st.label)}</span>` +
-        `<span class="hs-range">[${fmt(st.min, 1)}, ${fmt(st.max, 1)}] · n=${st.n_valid}</span></div>` +
-        _histSvg(st, 1200, 90) + `</div>`;
-    }
-    stagesEl.innerHTML = sh;
   }
 
   // --- Update process: per-minibatch step dashboard (timeline.npz) ---
@@ -3586,7 +3736,7 @@
         num: '②', name: 'Trajectory',
         goal: 'Trainable samples — episodes re-sliced per agent, per channel',
         edge: 'build_trajectories — experiment-defined mapping: one episode → any number of trajectories',
-        goto: inDump ? 'traj' : null, gotoLabel: 'Trajectory page →',
+        goto: inDump ? 'episode' : null, gotoLabel: 'Episode→Traj tool →',
         groups: [
           G('per-trajectory', F('length', 'sampled frame span') + F('importance', 'sampling weight') +
              F('last_obs', 'bootstrap state for value at t+T')),
@@ -3603,7 +3753,7 @@
         num: '③', name: 'Training Targets',
         goal: 'The signal the actor actually learns from — computed once, invariant across epochs',
         edge: 'critic forward + GAE + combine',
-        goto: inDump ? 'traj' : null, gotoLabel: 'Trajectory page →',
+        goto: inDump ? 'gae' : null, gotoLabel: 'Reward→ADV tool →',
         groups: [
           G('per-channel', F('EV', 'explained variance — is the critic learning?') +
              F('confidence', '√clip(EV) — trust weight on this channel')),
@@ -3670,12 +3820,9 @@
         if (target === 'episode') {
           if (state.selectedEpisode === null) state.selectedEpisode = 0;
           state.selectedFrame = 0;
-        } else if (target === 'traj') {
-          if (state.selectedTraj === null) state.selectedTraj = 0;
-          state.selectedFrame = 0;
-          state.trajOverview = null;
-          state.trajEpochCompare = null;
-          state.trajEpochOverview = null;
+        } else if (target === 'gae') {
+          selectTrajectory(state.selectedTraj ?? 0);
+          return;
         }
         navigate(target);
       });
@@ -3768,13 +3915,51 @@
   async function selectEpisode(pos) {
     state.selectedEpisode = pos;
     state.selectedFrame = 0;
-    navigate('episode');
-    await renderEpisode();
+    navigate('episode');   // navigate() → renderEpisode()
+  }
+
+  function _epToolHead() {
+    // Tool-page header: episode picker + provenance + render status.
+    const n = state.episodeList?.length ?? 0;
+    const pos = state.selectedEpisode ?? 0;
+    const epInfo = state.trajMap?.[pos];
+    const rendered = state.episodeList?.[pos]?.rendered;
+    const trajs = (epInfo?.trajectories || []).map(t =>
+      `<a class="stage-open" data-traj="${t.traj_idx}">traj ${t.traj_idx} (${escapeHtml(t.agent_id)})</a>`
+    ).join(' · ');
+    let h = `<span class="t-title">Episode → Trajectory</span>`;
+    h += `<span class="t-sel"><button class="t-nav" id="ep-nav-prev">‹</button>`;
+    h += `<input id="ep-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${pos}"/>`;
+    h += `<button class="t-nav" id="ep-nav-next">›</button>`;
+    h += `<span class="t-info">of ${n} episodes</span></span>`;
+    if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
+    const job = state.renderJob;
+    const thisJob = job && job.status === 'running' && job.kind === 'render' &&
+      job.episode === pos && (state.dumpName ? job.dump === state.dumpName : true);
+    h += `<span class="t-info">${rendered ? '✓ rendered' : thisJob ? '⏳ rendering…' : 'not rendered'}</span>`;
+    if (!rendered && !thisJob) h += `<button class="render-btn" id="ep-render-btn">Render</button>`;
+    if (trajs) h += `<span class="t-info">→ ${trajs}</span>`;
+    $('ep-tool-head').innerHTML = h;
+
+    const sel = $('ep-sel');
+    sel.addEventListener('change', () =>
+      selectEpisode(Math.max(0, Math.min(n - 1, parseInt(sel.value) || 0))));
+    $('ep-nav-prev').onclick = () => selectEpisode(Math.max(0, pos - 1));
+    $('ep-nav-next').onclick = () => selectEpisode(Math.min(n - 1, pos + 1));
+    const rb = $('ep-render-btn');
+    if (rb) rb.onclick = () => {
+      if (confirm(`Render episode ${pos}?\nReplays the dumped episode with the stochastic policy (can take a while).`))
+        startRender(pos);
+    };
+    $('ep-tool-head').querySelectorAll('a[data-traj]').forEach(a =>
+      a.addEventListener('click', () => selectTrajectory(parseInt(a.dataset.traj))));
   }
 
   async function renderEpisode() {
+    if (state.selectedEpisode === null) state.selectedEpisode = 0;
+    _epToolHead();
+    refreshRenderStatus();   // resume polling if a render is in flight
     const pos = state.selectedEpisode;
-    if (pos === null) return;
 
     const epInfo = state.trajMap?.[pos];
     const numFrames = epInfo?.num_frames || 0;
@@ -4043,251 +4228,289 @@
     }
   }
 
-  // --- Trajectory page (Scene 2 + 3) ---
+  // --- Tool ② Reward → ADV (GAE) — video-editor layout ---
   async function selectTrajectory(trajIdx) {
     state.selectedTraj = trajIdx;
     state.selectedFrame = 0;
     state.trajOverview = null;
     state.trajEpochCompare = null;
     state.trajEpochOverview = null;
-    navigate('traj');
-    await renderTraj();
+    state.gaePreview = null;
+    navigate('gae');   // navigate() → renderGae()
   }
 
-  async function renderTraj() {
-    if (state.selectedTraj === null) return;
+  async function _ensurePipeline() {
+    if (!state.pipeline) {
+      try { state.pipeline = await fetchJson(api('pipeline')); }
+      catch (e) { state.pipeline = {error: e.message}; }
+    }
+    return state.pipeline;
+  }
 
-    // Load overview if needed
-    if (!state.trajOverview) {
+  function _gaeTrainedParams(ch) {
+    const p = state.pipeline?.channel_gae_params?.[ch] || {};
+    return {gamma: p.gamma ?? 0.99, lam: p.lam ?? 0.95};
+  }
+
+  async function renderGae() {
+    if (state.selectedTraj === null) state.selectedTraj = 0;
+    await _ensurePipeline();
+    if (!state.trajOverview || state.trajOverview.traj_idx !== state.selectedTraj) {
       try {
         state.trajOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/overview`));
-        const T = state.trajOverview.length;
-        $('traj-slider').min = 0;
-        $('traj-slider').max = Math.max(0, T - 1);
-        $('traj-slider').value = state.selectedFrame;
-        // Initialize chart toggles
-        const channels = state.trajOverview.channels || [];
-        channels.forEach((ch, i) => {
-          if (!state.targetChartToggles[ch]) {
-            state.targetChartToggles[ch] = {reward: false, value: true, adv: true, ret: false};
-          }
-        });
       } catch (e) {
-        $('traj-content').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        $('gae-curves').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         return;
       }
+      const chs = state.trajOverview.channels || [];
+      if (!state.gaeChannel || !chs.includes(state.gaeChannel))
+        state.gaeChannel = chs[0];
+      const tp = _gaeTrainedParams(state.gaeChannel);
+      state.gaeGamma = tp.gamma;
+      state.gaeLam = tp.lam;
+      state.gaePreview = null;
     }
-
-    await renderTrajPage();
+    // Channel-specific GAE series (rewards/values/δ/adv/ret) — one request
+    // covers both the trained-params view and the interactive preview.
+    if (!state.gaePreview || state.gaePreview.traj_idx !== state.selectedTraj
+        || state.gaePreview.channel !== state.gaeChannel
+        || state.gaePreview.gamma !== state.gaeGamma
+        || state.gaePreview.lam !== state.gaeLam) {
+      try {
+        state.gaePreview = await fetchJson(api(
+          `trajectory/${state.selectedTraj}/gae?channel=${encodeURIComponent(state.gaeChannel)}` +
+          `&gamma=${state.gaeGamma}&lam=${state.gaeLam}`));
+      } catch (e) {
+        state.gaePreview = {error: e.message};
+      }
+    }
+    _gaeToolHead();
+    await renderGaePage();
   }
 
-  function buildTrajTargetHtml() {
+  function _gaeToolHead() {
     const ov = state.trajOverview;
-    if (!ov) return '';
-    const frame = state.selectedFrame;
-    const channels = ov.channels || [];
-
-    let html = '';
-
-    // === 1. Trajectory Info (trajectory-level) ===
-    html += '<div class="data-table"><h3>Trajectory Info</h3><table>';
-    html += `<tr><th>Field</th><th>Value</th></tr>`;
-    html += `<tr><td>length</td><td class="num">${ov.length}</td></tr>`;
-    if (ov.importance !== undefined) html += `<tr><td>importance</td><td class="num">${fmt(ov.importance)}</td></tr>`;
-    html += '</table></div>';
-
-    // === 2. Per-Frame Data (frame-level shared) ===
-    html += '<div class="section-sep"></div>';
-    html += '<div class="section-sep-label">Per-Frame Data</div>';
-
-    // Combined advantage chart
-    if (ov.combined_adv) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Combined Advantage (actor signal)</h3>`;
-      html += chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#4fa3ff'}], {currentFrame: frame});
-      html += `</div>`;
+    const n = state.manifest?.n_trajectories ?? 0;
+    const t = state.selectedTraj;
+    const channels = ov?.channels || [];
+    let h = `<span class="t-title">Reward → ADV</span>`;
+    h += `<span class="t-sel"><button class="t-nav" id="gae-nav-prev">‹</button>`;
+    h += `<input id="gae-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${t}"/>`;
+    h += `<button class="t-nav" id="gae-nav-next">›</button>`;
+    h += `<span class="t-info">of ${n} trajs</span></span>`;
+    if (channels.length > 1) {
+      h += `<span class="t-sel"><span class="t-info">channel</span><select id="gae-ch">` +
+        channels.map(c => `<option${c === state.gaeChannel ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('') +
+        `</select></span>`;
     }
-
-    // Floor Weight + Explore Factor (both exploration-related, combined)
-    {
-      const series = [];
-      if (ov.floor_weight) {
-        series.push({label: 'floor_weight', data: ov.floor_weight, color: '#d19a66'});
-      }
-      if (ov.explore_factor) {
-        series.push({label: 'explore_factor', data: ov.explore_factor, color: '#c678dd'});
-      }
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>Exploration (Floor Weight + Explore Factor)</h3>`;
-        html += chartBox(series, {currentFrame: frame});
-        html += `</div>`;
-      }
+    if (ov) {
+      const prov = ov.episode_pos !== null && ov.episode_pos !== undefined
+        ? `<a class="stage-open" id="gae-to-ep">ep ${ov.episode_pos} · t_start=${ov.t_start}</a>` : 'no episode';
+      const term = channels.map(ch => ov[`is_terminated_${ch}`] ? `${ch}: term` : `${ch}: trunc`).join(' · ');
+      h += `<span class="t-info">${prov} · len ${ov.length} · ${term}</span>`;
     }
-
-    // Old log prob
-    if (ov.old_log_prob) {
-      html += `<div class="chart-container">`;
-      html += `<h3>Old Log Prob (θ_old)</h3>`;
-      html += chartBox([{label: 'log_prob', data: ov.old_log_prob, color: '#c678dd'}], {currentFrame: frame});
-      html += `</div>`;
-    }
-
-    // Uncertainty + uncertainty floor
-    // Shows per-frame policy uncertainty U (at θ_old) and the floor that
-    // the uncertainty floor loss enforces.  When U < floor, the floor loss
-    // pushes the policy to explore more.  Both come from dump data — no
-    // frontend computation.
-    if (ov.uncertainty) {
-      const series = [{label: 'uncertainty', data: ov.uncertainty, color: '#e06c75'}];
-      // Render the floor as a horizontal reference line spanning all frames.
-      if (ov.uncertainty_floor !== undefined && ov.uncertainty_floor > 0) {
-        const floorLine = new Array(ov.uncertainty.length).fill(ov.uncertainty_floor);
-        series.push({label: 'uncertainty_floor', data: floorLine, color: '#56b6c2', dashed: true});
-      }
-      html += `<div class="chart-container">`;
-      const floorLabel = ov.uncertainty_floor !== undefined && ov.uncertainty_floor > 0
-        ? ` (floor=${ov.uncertainty_floor.toFixed(4)}, coef=${(ov.uncertainty_coef ?? 0).toFixed(4)})`
-        : '';
-      html += `<h3>Uncertainty${floorLabel}</h3>`;
-      html += chartBox(series, {currentFrame: frame});
-      html += `</div>`;
-    }
-
-    // === 3. Cross-Channel Comparison ===
-    // Normalized metrics are comparable across channels — show them together.
-    html += '<div class="section-sep"></div>';
-    html += '<div class="section-sep-label">Cross-Channel Comparison</div>';
-
-    // All channels' Normalized Advantage in one chart
-    {
-      const series = [];
-      channels.forEach((ch, ci) => {
-        const key = `normed_adv_${ch}`;
-        if (ov[key]) {
-          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
-        }
-      });
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>Normalized Advantage (all channels)</h3>`;
-        html += chartBox(series, {currentFrame: frame});
-        html += `</div>`;
-      }
-    }
-
-    // All channels' Actor Weight in one chart
-    {
-      const series = [];
-      channels.forEach((ch, ci) => {
-        const key = `actor_weight_${ch}`;
-        if (ov[key]) {
-          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
-        }
-      });
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>Actor Weight (all channels)</h3>`;
-        html += chartBox(series, {currentFrame: frame});
-        html += `</div>`;
-      }
-    }
-
-    // All channels' Normalized Actor Weight in one chart
-    {
-      const series = [];
-      channels.forEach((ch, ci) => {
-        const key = `aw_normed_${ch}`;
-        if (ov[key]) {
-          series.push({label: ch, data: ov[key], color: CHART_COLORS[ci % CHART_COLORS.length]});
-        }
-      });
-      if (series.length > 0) {
-        html += `<div class="chart-container">`;
-        html += `<h3>Normalized Actor Weight (all channels)</h3>`;
-        html += chartBox(series, {currentFrame: frame});
-        html += `</div>`;
-      }
-    }
-
-    // === 4. Per-Channel Data ===
-    html += '<div class="section-sep"></div>';
-    html += '<div class="section-sep-label">Per-Channel Data</div>';
-
-    channels.forEach((ch, ci) => {
-      html += `<div class="channel-block">`;
-      html += `<h3 class="channel-title">${escapeHtml(ch)}</h3>`;
-
-      // Chart 1: reward + advantage (same magnitude — per-step quantities)
-      {
-        const series = [];
-        if (ov[`reward_${ch}`]) {
-          series.push({label: 'reward', data: ov[`reward_${ch}`], color: '#4fa3ff'});
-        }
-        if (ov[`advs_${ch}`]) {
-          series.push({label: 'advantage', data: ov[`advs_${ch}`], color: '#e5c07b'});
-        }
-        if (series.length > 0) {
-          html += `<div class="chart-container">`;
-          html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Reward & Advantage (per-step)</h4>`;
-          html += chartBox(series, {currentFrame: frame});
-          html += `</div>`;
-        }
-      }
-
-      // Chart 2: return + value (same magnitude — cumulative quantities)
-      {
-        const series = [];
-        if (ov[`rets_${ch}`]) {
-          series.push({label: 'return', data: ov[`rets_${ch}`], color: '#c678dd'});
-        }
-        if (ov[`values_${ch}`]) {
-          series.push({label: 'value', data: ov[`values_${ch}`], color: '#6ec86e'});
-        }
-        if (series.length > 0) {
-          html += `<div class="chart-container">`;
-          html += `<h4 style="margin:0 0 4px 0;color:var(--muted);font-size:11px">Return & Value (cumulative)</h4>`;
-          html += chartBox(series, {currentFrame: frame});
-          html += `</div>`;
-        }
-      }
-
-      html += `</div>`; // channel-block
+    $('gae-tool-head').innerHTML = h;
+    $('gae-sel').addEventListener('change', e =>
+      selectTrajectory(Math.max(0, Math.min(n - 1, parseInt(e.target.value) || 0))));
+    $('gae-nav-prev').onclick = () => selectTrajectory(Math.max(0, t - 1));
+    $('gae-nav-next').onclick = () => selectTrajectory(Math.min(n - 1, t + 1));
+    const chSel = $('gae-ch');
+    if (chSel) chSel.addEventListener('change', () => {
+      state.gaeChannel = chSel.value;
+      const tp = _gaeTrainedParams(state.gaeChannel);
+      state.gaeGamma = tp.gamma; state.gaeLam = tp.lam;
+      state.gaePreview = null;
+      renderGae();
     });
+    const toEp = $('gae-to-ep');
+    if (toEp) toEp.onclick = () => selectEpisode(state.trajOverview.episode_pos);
+  }
 
-    // === 5. Channel Summary Table ===
-    // confidence, explained_variance, terminated, bootstrap V(s_next)
-    // — one row per channel, single 2D table.
-    {
-      const hasAny = channels.some(ch => {
-        return ov.confidences?.[ch] !== undefined
-            || ov.explained_variances?.[ch] !== undefined
-            || ov[`is_terminated_${ch}`] !== undefined
-            || ov.bootstrap_values?.[ch] !== undefined;
-      });
-      if (hasAny) {
-        html += '<div class="section-sep"></div>';
-        html += '<div class="section-sep-label">Channel Summary</div>';
-        html += '<table class="data-table" style="width:100%">';
-        html += '<tr><th>Channel</th><th>confidence</th><th>explained_variance</th><th>terminated</th><th>bootstrap V(s_next)</th></tr>';
-        channels.forEach(ch => {
-          const conf = ov.confidences?.[ch];
-          const ev = ov.explained_variances?.[ch];
-          const term = ov[`is_terminated_${ch}`];
-          const bv = ov.bootstrap_values?.[ch];
-          html += `<tr>`;
-          html += `<td><strong>${escapeHtml(ch)}</strong></td>`;
-          html += `<td class="num">${fmt(conf, 4)}</td>`;
-          html += `<td class="num">${fmt(ev, 4)}</td>`;
-          html += `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>`;
-          html += `<td class="num">${term ? '-' : fmt(bv)}</td>`;
-          html += `</tr>`;
-        });
-        html += '</table>';
+  async function renderGaePage() {
+    const ov = state.trajOverview;
+    const gp = state.gaePreview;
+    if (!ov) return;
+    const frame = Math.max(0, Math.min(state.selectedFrame || 0, ov.length - 1));
+    state.selectedFrame = frame;
+    const T = ov.length;
+    const ch = state.gaeChannel;
+
+    // --- big image + thumbnail strip ---
+    const epPos = ov.episode_pos;
+    const epFrame0 = ov.t_start || 0;
+    const rendered = epPos !== null && epPos !== undefined &&
+      state.episodeList?.[epPos]?.rendered;
+    const big = $('gae-bigimg');
+    if (rendered) {
+      big.innerHTML = `<img id="gae-img" src="${imgUrl(epPos, epFrame0 + frame)}" alt=""/>`;
+      const im = $('gae-img');
+      im.onclick = () => { $('img-modal-src').src = im.src; $('img-modal').classList.add('visible'); };
+    } else {
+      const job = state.renderJob;
+      const running = job && job.status === 'running';
+      const thisJob = running && job.episode === epPos &&
+        (state.dumpName ? job.dump === state.dumpName : true);
+      big.innerHTML = `<div class="no-img">${
+        epPos === null || epPos === undefined ? 'no source episode for this trajectory' :
+        thisJob ? '⏳ rendering episode ' + epPos + '…' :
+        `episode ${epPos} not rendered`}</div>`;
+      if (epPos !== null && epPos !== undefined && !thisJob) {
+        const btn = document.createElement('button');
+        btn.className = 'render-btn';
+        btn.textContent = 'Render episode';
+        btn.style.marginTop = '8px';
+        btn.onclick = () => {
+          if (confirm(`Render episode ${epPos}?\nReplays the dumped episode with the stochastic policy (can take a while).`))
+            startRender(epPos);
+        };
+        big.querySelector('.no-img').appendChild(document.createElement('br'));
+        big.querySelector('.no-img').appendChild(btn);
       }
+      refreshRenderStatus();
     }
 
-    return html;
+    // thumbnails — every k-th frame, ~24 tiles
+    const th = $('gae-thumbs');
+    const k = Math.max(1, Math.ceil(T / 24));
+    if (rendered) {
+      let h = '';
+      for (let f = 0; f < T; f += k) {
+        h += `<div class="ve-thumb${f <= frame && frame < f + k ? ' cur' : ''}" data-f="${f}">` +
+             `<img loading="lazy" src="${imgUrl(epPos, epFrame0 + f)}"/>` +
+             `<span class="t-label">${f}</span></div>`;
+      }
+      th.innerHTML = h;
+      th.querySelectorAll('.ve-thumb').forEach(el =>
+        el.addEventListener('click', () => {
+          state.selectedFrame = parseInt(el.dataset.f);
+          renderGaePage();
+        }));
+      const cur = th.querySelector('.ve-thumb.cur');
+      if (cur) cur.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    } else {
+      th.innerHTML = `<div class="ve-thumb missing" style="width:100%">render the episode to see frames</div>`;
+    }
+
+    // scrubber
+    $('gae-slider').max = T - 1;
+    $('gae-slider').value = frame;
+    $('gae-frame-label').textContent = `${frame + 1} / ${T}` +
+      (ov.frame_ids ? ` · ${ov.frame_ids[frame]}` : '');
+    $('gae-btn-prev').onclick = () => { state.selectedFrame = Math.max(0, frame - 1); renderGaePage(); };
+    $('gae-btn-next').onclick = () => { state.selectedFrame = Math.min(T - 1, frame + 1); renderGaePage(); };
+    $('gae-slider').oninput = e => { state.selectedFrame = parseInt(e.target.value); renderGaePage(); };
+
+    // --- γ/λ params ---
+    const tp = _gaeTrainedParams(ch);
+    const trained = (state.gaeGamma === tp.gamma && state.gaeLam === tp.lam);
+    $('gae-params').innerHTML =
+      `<div class="p-group"><span class="p-name">γ</span>` +
+      `<input id="p-gamma" type="range" min="0.90" max="1.0" step="0.005" value="${state.gaeGamma}"/>` +
+      `<span class="p-val" id="p-gamma-v">${state.gaeGamma.toFixed(3)}</span>` +
+      `<span class="p-cur">trained ${tp.gamma}</span></div>` +
+      `<div class="p-group"><span class="p-name">λ</span>` +
+      `<input id="p-lam" type="range" min="0" max="1" step="0.01" value="${state.gaeLam}"/>` +
+      `<span class="p-val" id="p-lam-v">${state.gaeLam.toFixed(2)}</span>` +
+      `<span class="p-cur">trained ${tp.lam}</span></div>` +
+      `<div class="p-group"><button class="t-nav" id="p-reset"${trained ? ' disabled' : ''}>reset to trained</button>` +
+      (gp && !gp.error ? `<span class="t-info">${gp.terminated ? 'terminated → last_value=0' : `truncated → last_value=${fmt(gp.last_value, 3)}`} · ${gp.active ? 'active' : 'INACTIVE (zeroed)'}</span>` : '');
+    const wire = (id, key, fmtFn) => {
+      const el = $(id);
+      el.addEventListener('input', () => {
+        state[key] = parseFloat(el.value);
+        $(id + '-v').textContent = fmtFn(state[key]);
+      });
+      el.addEventListener('change', () => { state.gaePreview = null; renderGae(); });
+    };
+    wire('p-gamma', 'gaeGamma', v => v.toFixed(3));
+    wire('p-lam', 'gaeLam', v => v.toFixed(2));
+    $('p-reset').onclick = () => {
+      state.gaeGamma = tp.gamma; state.gaeLam = tp.lam;
+      state.gaePreview = null; renderGae();
+    };
+
+    // --- curves ---
+    state._chartSeq = 0;
+    state._chartSpecs = {};
+    const cur = {currentFrame: frame};
+    let html = '';
+    if (gp && !gp.error) {
+      html += `<div class="chart-container"><h3>reward (${escapeHtml(ch)})</h3>` +
+        chartBox([{label: 'reward', data: gp.rewards, color: '#4fa3ff'}], cur, {key: 'gae:reward'}) + '</div>';
+      html += `<div class="chart-container"><h3>value V(s) & return target (${escapeHtml(ch)})</h3>` +
+        chartBox([
+          {label: 'value', data: gp.values, color: '#6ec86e'},
+          {label: 'return', data: gp.rets, color: '#c678dd'},
+        ], cur, {key: 'gae:val'}) + '</div>';
+      html += `<div class="chart-container"><h3>δ_t = r + γ·V′ − V</h3>` +
+        chartBox([{label: 'delta', data: gp.deltas, color: '#56b6c2'}], cur, {key: 'gae:delta'}) + '</div>';
+      const advSer = [];
+      const storedKey = `advs_${ch}`;
+      if (ov[storedKey])
+        advSer.push({label: 'adv (trained)', data: ov[storedKey], color: '#98a2b5'});
+      advSer.push({label: `adv γ=${state.gaeGamma} λ=${state.gaeLam}` +
+        (trained ? ' ≡ trained' : ' preview'), data: gp.advs, color: '#e5c07b'});
+      html += `<div class="chart-container"><h3>advantage — stored vs preview</h3>` +
+        chartBox(advSer, cur, {key: 'gae:adv'}) + '</div>';
+      // frame readout
+      const rv = gp.rewards?.[frame], vv = gp.values?.[frame], dv = gp.deltas?.[frame], av = gp.advs?.[frame];
+      html += `<div class="stage-stats" style="margin-top:4px">` +
+        _kv('frame', frame) + _kv('reward', fmt(rv, 4)) + _kv('value', fmt(vv, 4)) +
+        _kv('δ', fmt(dv, 4)) + _kv('adv', fmt(av, 4)) + `</div>`;
+    } else {
+      html += `<div class="error-msg">${escapeHtml(gp?.error || 'no GAE data')}</div>`;
+    }
+    // combined (post-merge) advantage for context
+    if (ov.combined_adv) {
+      html += `<div class="chart-container"><h3>combined_adv (post-merge, actor signal)</h3>` +
+        chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#e06c75'}], cur, {key: 'gae:combined'}) + '</div>';
+    }
+    $('gae-curves').innerHTML = html;
+    mountCharts($('gae-curves'), f => { state.selectedFrame = f; renderGaePage(); });
+    updateContextBar();
+    if (ov.frame_ids) $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
+
+    // --- epoch comparison (what the update did to this trajectory) ---
+    const ecEl = $('gae-epoch');
+    if (!state.trajEpochCompare) {
+      try {
+        state.trajEpochCompare = await fetchJson(api(`trajectory/${state.selectedTraj}/epoch_compare`));
+      } catch (e) {
+        state.trajEpochCompare = {error: true, n_epochs: 0};
+      }
+    }
+    const ec = state.trajEpochCompare;
+    const nEpochs = ec.n_epochs || 0;
+    if (nEpochs > 0) {
+      if (state.selectedEpoch >= nEpochs) state.selectedEpoch = nEpochs - 1;
+      if (!state.trajEpochOverview
+          || state.trajEpochOverview.epoch !== state.selectedEpoch
+          || state.trajEpochOverview.traj_idx !== state.selectedTraj) {
+        try {
+          state.trajEpochOverview = await fetchJson(api(`trajectory/${state.selectedTraj}/epoch/${state.selectedEpoch}/overview`));
+        } catch (e) {
+          state.trajEpochOverview = {error: true, epoch: state.selectedEpoch};
+        }
+      }
+      ecEl.innerHTML = `<h2>Update effect on this trajectory <span class="gs-scope">epoch comparison</span></h2>` +
+        `<div class="t-sel" style="margin-bottom:8px"><span class="t-info">epoch</span><select id="epoch-selector">` +
+        ec.epochs.map(e => `<option value="${e.epoch}"${e.epoch === state.selectedEpoch ? ' selected' : ''}>Epoch ${e.epoch}${ec.actor_stopped_epoch >= 0 && e.epoch >= ec.actor_stopped_epoch ? ' (stopped)' : ''}</option>`).join('') +
+        `</select></div>` + buildTrajEpochHtml();
+      mountCharts(ecEl, f => { state.selectedFrame = f; renderGaePage(); });
+      $('epoch-selector').addEventListener('change', e => selectEpoch(parseInt(e.target.value)));
+      ecEl.querySelectorAll('tr[data-epoch]').forEach(tr =>
+        tr.addEventListener('click', () => selectEpoch(parseInt(tr.dataset.epoch))));
+      $('ctx-epoch').textContent = state.selectedEpoch;
+    } else {
+      ecEl.innerHTML = '';
+      $('ctx-epoch').textContent = '-';
+    }
+  }
+
+  function selectEpoch(e) {
+    state.selectedEpoch = e;
+    state.trajEpochOverview = null;
+    renderGaePage();
   }
 
   // Epoch color ramp: epoch 0 is faint, the last epoch is solid accent —
@@ -4441,87 +4664,170 @@
     return html;
   }
 
-  async function renderTrajPage() {
-    const ov = state.trajOverview;
-    if (!ov) return;
-    const frame = state.selectedFrame;
-    const trajIdx = state.selectedTraj;
 
-    // Lazy-load epoch comparison data (absent when epoch_frames.npz missing)
-    if (!state.trajEpochCompare) {
-      try {
-        state.trajEpochCompare = await fetchJson(api(`trajectory/${trajIdx}/epoch_compare`));
-      } catch (e) {
-        state.trajEpochCompare = {error: true, n_epochs: 0};
+  // --- Tool ③ ADV Normalization ---------------------------------------
+  async function renderAdvnorm() {
+    await _ensurePipeline();
+    const channels = state.manifest?.channel_names || [];
+    if (!state.normChannel || !channels.includes(state.normChannel))
+      state.normChannel = channels[0];
+    const trained = state.pipeline?.stages?.advnorm?.method || 'zscore';
+    if (!state.normMethod) state.normMethod = trained;
+
+    // header: channel + method selectors
+    let h = `<span class="t-title">ADV Normalization</span>`;
+    if (channels.length > 1) {
+      h += `<span class="t-sel"><span class="t-info">channel</span><select id="norm-ch">` +
+        channels.map(c => `<option${c === state.normChannel ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('') + `</select></span>`;
+    } else if (channels.length === 1) {
+      h += `<span class="t-info">channel ${escapeHtml(channels[0])}</span>`;
+    }
+    h += `<span class="t-sel"><span class="t-info">method</span><span class="method-tabs">` +
+      (state.pipeline?.stages?.advnorm?.methods_available || ['zscore', 'std', 'gauss_rank'])
+        .map(m => `<button class="method-tab${m === state.normMethod ? ' active' : ''}${m === trained ? ' current' : ''}" data-m="${m}">${m}</button>`).join('') +
+      `</span></span>`;
+    $('norm-tool-head').innerHTML = h;
+    $('norm-tool-head').querySelectorAll('.method-tab').forEach(b =>
+      b.addEventListener('click', () => { state.normMethod = b.dataset.m; renderAdvnorm(); }));
+    const chSel = $('norm-ch');
+    if (chSel) chSel.addEventListener('change', () => { state.normChannel = chSel.value; renderAdvnorm(); });
+    $('norm-traj').max = Math.max(0, (state.manifest?.n_trajectories ?? 1) - 1);
+    $('norm-traj').value = state.normTraj;
+    $('norm-traj').onchange = e => {
+      state.normTraj = Math.max(0, parseInt(e.target.value) || 0);
+      renderAdvnorm();
+    };
+
+    const el = $('norm-body');
+    try {
+      const d = await fetchJson(api(
+        `advnorm?channel=${encodeURIComponent(state.normChannel)}&method=${state.normMethod}` +
+        `&traj=${state.normTraj}`));
+      const isTrained = state.normMethod === trained;
+      let html = `<div class="stage-stats">` +
+        _kv('trained method', trained) +
+        _kv('preview method', state.normMethod + (isTrained ? ' ≡ trained' : '')) +
+        _kv('active frames', d.n_active) + `</div>`;
+      html += `<h3 style="margin:14px 0 4px">raw advantage · ${escapeHtml(state.normChannel)}</h3>`;
+      html += d.raw ? _histSvg(d.raw, 900, 130) +
+        `<div class="desc">n=${d.raw.n_valid} · μ=${fmt(d.raw.mean, 4)} σ=${fmt(d.raw.std, 4)} · p1 ${fmt(d.raw.p1, 2)} / p99 ${fmt(d.raw.p99, 2)}</div>`
+        : '<div class="desc">no data</div>';
+      html += `<h3 style="margin:14px 0 4px">normalized · ${escapeHtml(state.normMethod)}${isTrained ? ' (trained)' : ' — preview'}</h3>`;
+      html += d.normed ? _histSvg(d.normed, 900, 130) +
+        `<div class="desc">n=${d.normed.n_valid} · μ=${fmt(d.normed.mean, 4)} σ=${fmt(d.normed.std, 4)} · p1 ${fmt(d.normed.p1, 2)} / p99 ${fmt(d.normed.p99, 2)}</div>`
+        : '<div class="desc">no data</div>';
+      el.innerHTML = html;
+
+      // trajectory slice: raw vs normed along the timeline
+      const tb = $('norm-traj-body');
+      if (d.traj) {
+        state._chartSeq = 0; state._chartSpecs = {};
+        tb.innerHTML = `<div class="chart-container"><h3>traj ${d.traj.traj_idx} — raw vs ${escapeHtml(state.normMethod)}</h3>` +
+          chartBox([
+            {label: 'raw adv', data: d.traj.raw, color: '#98a2b5'},
+            {label: `normed (${state.normMethod})`, data: d.traj.normed, color: '#e5c07b'},
+          ], {}, {key: 'norm:traj'}) + '</div>' +
+          `<div class="t-sel" style="margin-top:6px"><a class="stage-open" id="norm-to-gae">inspect this trajectory in GAE tool →</a></div>`;
+        mountCharts(tb);
+        $('norm-to-gae').onclick = () => selectTrajectory(d.traj.traj_idx);
+      } else {
+        tb.innerHTML = '';
       }
+    } catch (e) {
+      el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
-    const ec = state.trajEpochCompare;
-    const nEpochs = ec.n_epochs || 0;
-    if (nEpochs > 0 && state.selectedEpoch >= nEpochs) {
-      state.selectedEpoch = nEpochs - 1;
-    }
-
-    // Lazy-load per-epoch overview for the selected epoch
-    if (nEpochs > 0 && (
-      !state.trajEpochOverview
-      || state.trajEpochOverview.epoch !== state.selectedEpoch
-      || state.trajEpochOverview.traj_idx !== trajIdx
-    )) {
-      try {
-        state.trajEpochOverview = await fetchJson(api(`trajectory/${trajIdx}/epoch/${state.selectedEpoch}/overview`));
-      } catch (e) {
-        state.trajEpochOverview = {error: true, epoch: state.selectedEpoch};
-      }
-    }
-
-    // Epoch selector in the controls row
-    const epochSel = $('epoch-selector');
-    epochSel.style.display = nEpochs > 0 ? '' : 'none';
-    epochSel.innerHTML = '';
-    for (let e = 0; e < nEpochs; e++) {
-      const stopped = ec.actor_stopped_epoch !== undefined && ec.actor_stopped_epoch >= 0 && e >= ec.actor_stopped_epoch;
-      const opt = document.createElement('option');
-      opt.value = e;
-      opt.textContent = `Epoch ${e}${stopped ? ' (stopped)' : ''}`;
-      epochSel.appendChild(opt);
-    }
-    epochSel.value = state.selectedEpoch;
-
-    state._chartSeq = 0;
-    state._chartSpecs = {};
-    $('traj-content').innerHTML = buildTrajTargetHtml() + buildTrajEpochHtml();
-    $('traj-frame-label').textContent = `${frame + 1} / ${ov.length}`;
-    updateContextBar();
-    $('ctx-epoch').textContent = nEpochs > 0 ? state.selectedEpoch : '-';
-
-    // Floating image follows the trajectory frame
-    if (ov.episode_pos !== null && ov.episode_pos !== undefined) {
-      const epFrame = (ov.t_start || 0) + frame;
-      showFloatImage(imgUrl(ov.episode_pos, epFrame), `Traj ${trajIdx} · Frame ${frame}`);
-    } else {
-      hideFloatImage();
-    }
-
-    if (ov.frame_ids) {
-      $('ctx-frameid').textContent = ov.frame_ids[frame] || '-';
-    }
-
-    // Mount deferred charts: click-to-jump + real legend toggles
-    mountCharts($('traj-content'), f => {
-      state.selectedFrame = f;
-      renderTrajPage();
-    });
-
-    // Epoch summary rows select the inspected epoch
-    $('traj-content').querySelectorAll('tr[data-epoch]').forEach(tr => {
-      tr.addEventListener('click', () => selectEpoch(parseInt(tr.dataset.epoch)));
-    });
   }
 
-  function selectEpoch(e) {
-    state.selectedEpoch = e;
-    state.trajEpochOverview = null;
-    renderTrajPage();
+  // --- Tool ④ Channel Merge ---------------------------------------------
+  async function renderMerge() {
+    const channels = state.manifest?.channel_names || [];
+    $('merge-tool-head').innerHTML =
+      `<span class="t-title">Channel Merge</span>` +
+      `<span class="t-info">combined_adv = Σ_c aw_normed_c × conf_c × normed_adv_c</span>`;
+    $('merge-traj').max = Math.max(0, (state.manifest?.n_trajectories ?? 1) - 1);
+    $('merge-traj').value = state.mergeTraj;
+    $('merge-traj').onchange = e => {
+      state.mergeTraj = Math.max(0, parseInt(e.target.value) || 0);
+      renderMerge();
+    };
+
+    const el = $('merge-body');
+    try {
+      const d = await fetchJson(api('merge'));
+      let html = `<div class="merge-ch-grid">`;
+      for (const c of d.channels || []) {
+        html += `<div class="merge-ch-card"><h3>${escapeHtml(c.name)}</h3>`;
+        html += `<div class="ch-kv"><span>conf=${fmt(c.confidence, 3)}</span><span>ev=${fmt(c.ev, 3)}</span><span>active=${c.n_active}</span></div>`;
+        for (const [label, key] of [['raw adv', 'raw_adv'], ['normed adv', 'normed_adv'],
+                                    ['actor weight', 'actor_weight'], ['contribution', 'contribution']]) {
+          if (c[key]) html += `<div class="mini-hist" style="margin-bottom:6px"><div class="mh-title">${label}</div>${_histSvg(c[key], 320, 56, false)}</div>`;
+        }
+        html += `</div>`;
+      }
+      html += `</div>`;
+      // combined result
+      if (d.combined) {
+        html += `<div class="section-sep"></div><div class="section-sep-label">Combined (actor signal)</div>`;
+        if (d.combined_pre_winsorize) {
+          html += `<h3 style="margin:8px 0 4px">pre-winsorize</h3>${_histSvg(d.combined_pre_winsorize, 900, 110)}`;
+        }
+        html += `<h3 style="margin:8px 0 4px">combined_adv (final)` +
+          (d.adv_winsorize_sigma ? ` · winsorize ±${d.adv_winsorize_sigma}σ, clip ${(100 * (d.adv_winsorize_clip_frac || 0)).toFixed(2)}%` : '') +
+          `</h3>${_histSvg(d.combined, 900, 110)}` +
+          `<div class="desc">n=${d.combined.n_valid} · μ=${fmt(d.combined.mean, 4)} σ=${fmt(d.combined.std, 4)}</div>`;
+      }
+      el.innerHTML = html;
+    } catch (e) {
+      el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+
+    // trajectory drill-down: per-channel normed adv + weights + combined
+    const tb = $('merge-traj-body');
+    try {
+      const ov = await fetchJson(api(`trajectory/${state.mergeTraj}/overview`));
+      state._chartSeq = 0; state._chartSpecs = {};
+      let html = '';
+      const chs = ov.channels || [];
+      {
+        const ser = [];
+        chs.forEach((ch2, i) => {
+          if (ov[`normed_adv_${ch2}`])
+            ser.push({label: `normed ${ch2}`, data: ov[`normed_adv_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
+        });
+        if (ser.length) html += `<div class="chart-container"><h3>normalized adv per channel</h3>` +
+          chartBox(ser, {}, {key: 'merge:normed'}) + '</div>';
+      }
+      {
+        const ser = [];
+        chs.forEach((ch2, i) => {
+          if (ov[`aw_normed_${ch2}`])
+            ser.push({label: `aw ${ch2}`, data: ov[`aw_normed_${ch2}`], color: CHART_COLORS[i % CHART_COLORS.length]});
+        });
+        if (ser.length) html += `<div class="chart-container"><h3>merge weights (aw_normed = aw/Σ|aw|)</h3>` +
+          chartBox(ser, {}, {key: 'merge:aw'}) + '</div>';
+      }
+      if (ov.combined_adv)
+        html += `<div class="chart-container"><h3>combined_adv</h3>` +
+          chartBox([{label: 'combined_adv', data: ov.combined_adv, color: '#e06c75'}], {}, {key: 'merge:comb'}) + '</div>';
+      if (chs.length) {
+        html += `<table class="data-table" style="margin-top:10px"><tr><th>channel</th><th>confidence</th><th>ev</th><th>terminated</th><th>bootstrap V</th></tr>`;
+        chs.forEach(ch2 => {
+          const term = ov[`is_terminated_${ch2}`];
+          html += `<tr><td>${escapeHtml(ch2)}</td><td class="num">${fmt(ov.confidences?.[ch2], 3)}</td>` +
+            `<td class="num">${fmt(ov.explained_variances?.[ch2], 3)}</td>` +
+            `<td class="${term ? 'bool' : 'muted'}">${term ? 'yes' : 'no'}</td>` +
+            `<td class="num">${term ? '-' : fmt(ov.bootstrap_values?.[ch2], 3)}</td></tr>`;
+        });
+        html += `</table>`;
+        html += `<div class="t-sel" style="margin-top:8px"><a class="stage-open" id="merge-to-gae">inspect in GAE tool →</a></div>`;
+      }
+      tb.innerHTML = html;
+      mountCharts(tb);
+      const lg = $('merge-to-gae');
+      if (lg) lg.onclick = () => selectTrajectory(state.mergeTraj);
+    } catch (e) {
+      tb.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
   }
 
   // --- Timeline page (Scene 4) ---
@@ -4746,40 +5052,8 @@
     }
   });
 
-  // Trajectory controls
-  $('traj-slider').addEventListener('input', e => {
-    state.selectedFrame = parseInt(e.target.value);
-    renderTrajPage();
-  });
-  $('traj-btn-first').addEventListener('click', () => { state.selectedFrame = 0; renderTrajPage(); });
-  $('traj-btn-prev').addEventListener('click', () => { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderTrajPage(); });
-  $('traj-btn-next').addEventListener('click', () => { state.selectedFrame = Math.min(parseInt($('traj-slider').max), state.selectedFrame + 1); renderTrajPage(); });
-  $('traj-btn-last').addEventListener('click', () => { state.selectedFrame = parseInt($('traj-slider').max); renderTrajPage(); });
-  $('traj-btn-play').addEventListener('click', () => {
-    if (state.trajPlaying) {
-      clearInterval(state.trajPlayTimer);
-      state.trajPlaying = false;
-      $('traj-btn-play').textContent = '▶';
-    } else {
-      state.trajPlaying = true;
-      $('traj-btn-play').textContent = '⏸';
-      state.trajPlayTimer = setInterval(() => {
-        if (state.selectedFrame >= parseInt($('traj-slider').max)) {
-          clearInterval(state.trajPlayTimer);
-          state.trajPlaying = false;
-          $('traj-btn-play').textContent = '▶';
-          return;
-        }
-        state.selectedFrame++;
-        renderTrajPage();
-      }, 200);
-    }
-  });
-
-  // Epoch selector
-  $('epoch-selector').addEventListener('change', e => {
-    selectEpoch(parseInt(e.target.value));
-  });
+  // (GAE page wires its own slider/params inside renderGaePage — the
+  //  elements live inside dynamically-rendered tool-head/ve containers.)
 
   // Run page update timeline controls
   $('upd-slider').addEventListener('input', e => {
@@ -4794,9 +5068,10 @@
     if (state.currentPage === 'episode') {
       if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); e.preventDefault(); }
-    } else if (state.currentPage === 'traj') {
-      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('traj-slider').max), state.selectedFrame + 1); renderTrajPage(); e.preventDefault(); }
-      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderTrajPage(); e.preventDefault(); }
+    } else if (state.currentPage === 'gae') {
+      const gmax = (state.trajOverview?.length ?? 1) - 1;
+      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(gmax, state.selectedFrame + 1); renderGaePage(); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderGaePage(); e.preventDefault(); }
     } else if (state.currentPage === 'run') {
       if (e.key === 'ArrowRight') { selectUpdateIdx(state.selectedUpdateIdx + 1); e.preventDefault(); }
       else if (e.key === 'ArrowLeft') { selectUpdateIdx(state.selectedUpdateIdx - 1); e.preventDefault(); }

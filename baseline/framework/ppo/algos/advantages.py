@@ -38,9 +38,12 @@ GAE function never tries to guess.
 """
 from __future__ import annotations
 
+import math
 from typing import List, Sequence, Tuple
 
 import numpy as np
+from scipy.special import erfinv as _sp_erfinv
+from scipy.stats import rankdata as _sp_rankdata
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +170,58 @@ def compute_returns_to_go(
         running = float(rewards_arr[i]) + gamma * running
         returns[i] = running
     return returns
+
+
+# ---------------------------------------------------------------------------
+# Advantage normalization
+# ---------------------------------------------------------------------------
+def normalize_advantages(
+    adv: np.ndarray, mask: np.ndarray, method: str = "zscore",
+) -> np.ndarray:
+    """Advantage normalization on active frames.  Inactive frames get zero.
+
+    Normalization is per-channel and per-update: each channel's advantages
+    are independently scaled. This means the *absolute scale* of rewards
+    across channels is irrelevant — only the *relative pattern* within
+    each channel matters. The experiment controls cross-channel
+    importance via actor_weight, not via reward magnitudes.
+
+    Methods:
+    - ``"zscore"`` — (A − mean)/std.  Batch-mean centering; frames near
+      the batch mean can flip sign, which also flips that frame's
+      surrogate gradient direction.
+    - ``"std"`` — A/std.  Scale-only normalization; preserves the raw
+      advantage sign of every frame.
+    - ``"gauss_rank"`` — Gaussian quantile transform: ranks → uniform
+      quantiles → Φ⁻¹.  Output is exactly N(0,1)-shaped: order is
+      preserved, magnitudes are replaced by the expected normal order
+      statistics.  Implicitly bounds the tail at ±Φ⁻¹(1−1/2n) (≈±4.9σ
+      for n=204800) with no threshold parameter — an outlier trajectory
+      cannot dominate the surrogate coefficient the way a −13σ z-score
+      outlier can.
+
+    Edge cases:
+    - No active frames → all zeros (channel contributes nothing).
+    - Zero variance (all advantages equal) → all zeros.  For
+      ``gauss_rank`` this falls out naturally: tied ranks all map to
+      the median quantile → 0.
+    """
+    active = adv[mask]
+    if active.size == 0:
+        return np.zeros_like(adv, dtype=np.float32)
+    result = np.zeros_like(adv, dtype=np.float32)
+    if method == "gauss_rank":
+        # rankdata 'average' gives tied values the same (mean) rank, so
+        # equal advantages map to equal quantiles.  Φ⁻¹(q) = √2·erfinv(2q−1).
+        ranks = _sp_rankdata(active, method="average")
+        q = (ranks - 0.5) / active.size
+        result[mask] = (
+            math.sqrt(2.0) * _sp_erfinv(2.0 * q - 1.0)
+        ).astype(np.float32)
+        return result
+    mean = float(active.mean()) if method == "zscore" else 0.0
+    std = float(active.std())
+    if std < 1e-8:
+        return np.zeros_like(adv, dtype=np.float32)
+    result[mask] = ((active - mean) / std).astype(np.float32)
+    return result

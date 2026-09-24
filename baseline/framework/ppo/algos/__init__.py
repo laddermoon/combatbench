@@ -14,9 +14,11 @@ needed for P1-1's λ-invariant EV computation).
 from .advantages import (
     compute_gae,
     compute_returns_to_go,
+    normalize_advantages,
 )
 
 __all__ = [
     "compute_gae",
     "compute_returns_to_go",
+    "normalize_advantages",
 ]

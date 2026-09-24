@@ -1208,6 +1208,7 @@ class ViewerAPI:
 
     def __init__(self, data: DumpDataset):
         self.data = data
+        self._run_config_cache: Optional[Dict[str, Any]] = None
 
     def handle(self, path: str, query: str = "") -> Tuple[int, Any]:
         """Route an /api/... path and return (HTTP status, response body).
@@ -1245,6 +1246,8 @@ class ViewerAPI:
                     return self._traj_epoch_frame(traj_idx, int(parts[4]), int(parts[6]))
                 elif len(parts) >= 4 and parts[3] == "epoch_compare":
                     return self._traj_epoch_compare(traj_idx)
+                elif len(parts) >= 4 and parts[3] == "gae":
+                    return self._traj_gae(traj_idx, query)
                 elif len(parts) >= 3:
                     return self._traj_overview(traj_idx)
             elif endpoint == "timeline" and len(parts) >= 3:
@@ -1267,6 +1270,12 @@ class ViewerAPI:
                 return 200, _da.adv_histograms(self.data)
             elif endpoint == "trace" and len(parts) >= 3:
                 return _da.trace_frame(self.data, int(parts[2]))
+            elif endpoint == "pipeline":
+                return 200, self._pipeline()
+            elif endpoint == "advnorm":
+                return self._advnorm(query)
+            elif endpoint == "merge":
+                return 200, _da.merge_summary(self.data)
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -1793,6 +1802,98 @@ class ViewerAPI:
             )
         except ValueError as e:
             return 400, {"error": f"bad query parameter: {e}"}
+
+    # -- Pipeline tool pages ------------------------------------------------
+
+    def _run_config(self) -> Dict[str, Any]:
+        """The run's config.json (one level up from dumps/) — the fallback
+        source for channel γ/λ and adv_norm on dumps that predate the
+        captured fields."""
+        if self._run_config_cache is None:
+            cfg = self.data.dump_dir.parent.parent / "config.json"
+            try:
+                self._run_config_cache = json.loads(cfg.read_text())
+            except Exception:
+                self._run_config_cache = {}
+        return self._run_config_cache
+
+    def _channel_gae_params(self) -> Dict[str, Dict[str, Optional[float]]]:
+        """γ/λ per channel: dump-stored first, run config.json fallback."""
+        out: Dict[str, Dict[str, Optional[float]]] = {}
+        gae = self.data.npz("gae")
+        for member, key in (("channel_gammas", "gamma"),
+                            ("channel_lambdas", "lam")):
+            d = gae.get_dict(member)
+            if isinstance(d, dict):
+                for ch, v in d.items():
+                    out.setdefault(ch, {})[key] = float(v)
+        cfg = self._run_config()
+        for rc in (cfg.get("experiment", {}).get("reward_channels") or []):
+            name = rc.get("name")
+            if not name:
+                continue
+            ent = out.setdefault(name, {})
+            if ent.get("gamma") is None and rc.get("gamma") is not None:
+                ent["gamma"] = float(rc["gamma"])
+            if ent.get("lam") is None and rc.get("gae_lambda") is not None:
+                ent["lam"] = float(rc["gae_lambda"])
+        for ch in self.data.channel_names:
+            out.setdefault(ch, {})
+        return out
+
+    def _adv_norm_method(self) -> Optional[str]:
+        v = self.data.npz("combine").scalar("adv_norm")
+        if v is not None:
+            return str(v)
+        cfg = self._run_config()
+        p = (cfg.get("experiment", {}).get("ppo_params") or {})
+        v = p.get("adv_norm")
+        return str(v) if v is not None else None
+
+    def _pipeline(self) -> Dict[str, Any]:
+        out = _da.pipeline_summary(self.data)
+        params = self._channel_gae_params()
+        for ch in out.get("stages", {}).get("gae", {}).get("channels", []):
+            p = params.get(ch["name"], {})
+            if ch.get("gamma") is None:
+                ch["gamma"] = p.get("gamma")
+            if ch.get("lam") is None:
+                ch["lam"] = p.get("lam")
+        st = out.get("stages", {}).get("advnorm", {})
+        if st.get("method") is None:
+            st["method"] = self._adv_norm_method()
+        out["channel_gae_params"] = params
+        return out
+
+    def _traj_gae(self, traj_idx: int, query: str) -> Tuple[int, Any]:
+        """Recompute GAE for one trajectory — reuses the trainer's own
+        compute_gae so the preview can never diverge from training."""
+        qs = urllib.parse.parse_qs(query)
+        ch = (qs.get("channel") or [None])[0]
+        if ch is None:
+            chs = self.data.channel_names
+            ch = chs[0] if chs else None
+        if ch is None:
+            return 400, {"error": "no channel specified"}
+        params = self._channel_gae_params().get(ch, {})
+        try:
+            gamma = float((qs.get("gamma") or [params.get("gamma") or 0.99])[0])
+            lam = float((qs.get("lam") or [params.get("lam") or 0.95])[0])
+        except ValueError:
+            return 400, {"error": "gamma/lam must be floats"}
+        return _da.gae_preview(self.data, traj_idx, ch, gamma, lam)
+
+    def _advnorm(self, query: str) -> Tuple[int, Any]:
+        qs = urllib.parse.parse_qs(query)
+        chs = self.data.channel_names
+        ch = (qs.get("channel") or [chs[0] if chs else None])[0]
+        if ch is None:
+            return 400, {"error": "no channel specified"}
+        method = (qs.get("method") or [self._adv_norm_method() or "zscore"])[0]
+        traj = (qs.get("traj") or [None])[0]
+        return _da.advnorm_preview(
+            self.data, ch, method,
+            traj_idx=int(traj) if traj is not None else None)
 
 
 # ---------------------------------------------------------------------------

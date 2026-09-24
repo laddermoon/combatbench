@@ -131,6 +131,10 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     adv/hist                                  # ADV 变换链各阶段直方图
     gradsig/samples?sort&sign&limit&offset&group_by=episode
     trace/<buffer_idx>                        # 跨阶段单帧溯源
+    pipeline                                  # dump 主页管线卡的汇总
+    trajectory/<i>/gae?channel&gamma&lam      # 服务端复用 compute_gae 重算
+    advnorm?channel&method&traj               # 复用 normalize_advantages 试算
+    merge                                     # 通道合并：normed×conf×aw→combined
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
 POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 ```
@@ -142,6 +146,35 @@ POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 last10 eval、早停率、耗时）。单图 ≤12 线叠加（run 色+key 虚线），>12 线
 按 run 拆并排面板（恢复 channel 配色）。入口：runs 索引 checkbox /
 run 首页 "compare →" / 页内 chips。
+
+## Viewer 页面结构（dump 层，2026-02 重构）
+
+dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
+
+- **dump 主页 = 管线看板**：①Episode→Trajectory ②Reward→ADV ③ADV
+  Normalization ④Channel Merge 四张汇总卡（`/api/pipeline`）+
+  Update Process（timeline 摘要，"full timeline →" 下钻）+ Gradient
+  Signal。每卡只放汇总 + `open tool →` 入口，**没有 episode 列表**。
+- **工具页**（各自独立 URL，实现同构：对象选择器 + 帧时间线 + 曲线）：
+  - `/episode/<pos>` —— ①的钻取：episode 原始 observer 数据 vs 转出的
+    逐 traj reward/actor_weight；帧图经浮动窗展示，未渲染时显式
+    Render 按钮（不自动渲染）。
+  - `/gae/<i>` —— ②的钻取：视频编辑器布局（大图 + 缩略图时间线 +
+    reward/value/δ/adv 曲线），γ/λ 滑杆触发服务端
+    `/trajectory/<i>/gae` 用**训练同款 `compute_gae`** 重算
+    （验证过与 dump 存储值逐位一致）。旧 `/trajectory/<i>` URL 仍
+    兼容落到此页。底部保留 epoch 对比（该 update 对此 traj 的影响）。
+  - `/advnorm` —— ③的钻取：通道选择 + method tabs（trained 方法高亮），
+    raw vs normed 分布直方图 + 单 traj 切片曲线，服务端
+    `normalize_advantages` 现算。
+  - `/merge` —— ④的钻取：每通道 raw/normed adv、aw、贡献分布 +
+    combined_adv 直方图，可按 traj 下钻逐帧曲线。
+- `/timeline` 保留为 update 内部 step 级钻取页。
+
+复用红线：GAE 与 adv 归一化预览**只能**调
+`baseline/framework/ppo/algos/advantages.py` 的 `compute_gae` /
+`normalize_advantages`（`_normalize_adv` 已从 trainer 移入 algos，
+trainer 与 viewer 共用同一实现），前端不做算法重写。
 
 ## Gotchas
 

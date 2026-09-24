@@ -724,3 +724,295 @@ def adv_histograms(ds: DumpDataset, bins: int = 64) -> Dict[str, Any]:
     if not out["available"]:
         out["reason"] = "no ADV arrays in gae.npz/combine.npz"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Pipeline tool pages — stage-wise summaries + interactive recomputation
+#
+# These back the dump-level "tool pages": Episode→Trajectory, Reward→ADV
+# (GAE preview), ADV normalization preview, and channel merge.  Every
+# recompute path reuses the *trainer's own* numpy functions
+# (``compute_gae`` / ``normalize_advantages``) so the preview can never
+# diverge from what training actually did.
+# ---------------------------------------------------------------------------
+
+from baseline.framework.ppo.algos import (  # noqa: E402  (kept with the stage helpers)
+    compute_gae as _compute_gae,
+    normalize_advantages as _normalize_adv,
+)
+
+
+def _channel_params(ds: DumpDataset) -> Dict[str, Dict[str, Optional[float]]]:
+    """Per-channel GAE/transform params stored in the dump (new dumps) —
+    ``None`` values when the dump predates the capture."""
+    out: Dict[str, Dict[str, Optional[float]]] = {
+        ch: {"gamma": None, "lam": None} for ch in ds.channel_names
+    }
+    gae = ds.npz("gae")
+    for member, key in (("channel_gammas", "gamma"),
+                        ("channel_lambdas", "lam")):
+        d = gae.get_dict(member)
+        if isinstance(d, dict):
+            for ch, v in d.items():
+                out.setdefault(ch, {"gamma": None, "lam": None})[key] = _f(v)
+    return out
+
+
+def _norm_mask(ds: DumpDataset, ch: str) -> Optional[np.ndarray]:
+    """Trainer's normalization mask: key_frame_mask & (actor_weight != 0)."""
+    gae = ds.npz("gae")
+    mask = gae.get_dict("key_frame_mask")
+    aw = ds.npz("combine").get_dict("key_actor_weight_frame")
+    if not isinstance(mask, dict) or ch not in mask:
+        return None
+    m = np.asarray(mask[ch], dtype=bool)
+    if isinstance(aw, dict) and ch in aw:
+        m = m & (np.asarray(aw[ch]) != 0.0)
+    return m
+
+
+def pipeline_summary(ds: DumpDataset) -> Dict[str, Any]:
+    """Scalar summaries for the dump-home pipeline cards."""
+    out: Dict[str, Any] = {"stages": {}}
+
+    # ① Episode → Trajectory
+    ep2traj: Dict[str, Any] = {
+        "n_episodes": int(ds.manifest.get("n_episodes") or 0),
+        "n_trajectories": int(ds.n_trajectories),
+        "total_frames": int(ds.manifest.get("total_frames") or 0),
+        "n_rendered": 0,
+    }
+    try:
+        ep2traj["n_rendered"] = sum(
+            1 for ep in ds.traj_map if ds.episode_rendered(ep["list_pos"]))
+    except Exception:
+        pass
+    tl = ds.trajs.col("traj_lengths")
+    if tl is None:
+        tl = ds.frames.col("traj_lengths")
+    if tl is not None:
+        ep2traj["traj_len_mean"] = _f(np.asarray(tl, dtype=np.float64).mean())
+        ep2traj["traj_len_min"] = _f(np.asarray(tl).min())
+        ep2traj["traj_len_max"] = _f(np.asarray(tl).max())
+    term: Dict[str, Any] = {}
+    for ch in ds.channel_names:
+        it = ds.trajs.col(f"is_terminated.{ch}")
+        if it is not None:
+            a = np.asarray(it, dtype=bool)
+            term[ch] = {"terminated": int(a.sum()),
+                        "truncated": int((~a).sum())}
+    ep2traj["per_channel_term"] = term
+    out["stages"]["ep2traj"] = ep2traj
+
+    # ② Reward → ADV (GAE)
+    chparams = _channel_params(ds)
+    gae = ds.npz("gae")
+    advs = gae.get_dict("advs_all")
+    gae_stage: Dict[str, Any] = {"channels": []}
+    if isinstance(advs, dict):
+        for ch in ds.channel_names:
+            a = np.asarray(advs[ch]) if ch in advs else None
+            entry: Dict[str, Any] = {
+                "name": ch,
+                "gamma": chparams.get(ch, {}).get("gamma"),
+                "lam": chparams.get(ch, {}).get("lam"),
+            }
+            if a is not None:
+                m = _norm_mask(ds, ch)
+                act = a[m] if m is not None else a
+                entry["adv"] = _summ(act)
+            gae_stage["channels"].append(entry)
+    out["stages"]["gae"] = gae_stage
+
+    # ③ ADV normalization
+    comb = ds.npz("combine")
+    adv_norm = comb.scalar("adv_norm")
+    norm_stage: Dict[str, Any] = {
+        "method": str(adv_norm) if adv_norm is not None else None,
+        "methods_available": ["zscore", "std", "gauss_rank"],
+    }
+    out["stages"]["advnorm"] = norm_stage
+
+    # ④ Channel merge
+    conf = comb.get_dict("confidences") or {}
+    evs = {(k[3:] if k.startswith("ev_") else k): v
+           for k, v in (comb.get_dict("explained_variances") or {}).items()}
+    win_sig = comb.scalar("adv_winsorize_sigma")
+    merge_stage: Dict[str, Any] = {
+        "adv_winsorize_sigma": _f(win_sig),
+        "adv_winsorize_clip_frac": _f(comb.scalar("adv_winsorize_clip_frac")),
+        "channels": [
+            {
+                "name": ch,
+                "confidence": _f(conf.get(ch)),
+                "ev": _f(evs.get(ch)),
+            }
+            for ch in ds.channel_names
+        ],
+    }
+    out["stages"]["merge"] = merge_stage
+
+    return out
+
+
+def gae_preview(
+    ds: DumpDataset, traj_idx: int, channel: str,
+    gamma: float, lam: float,
+) -> Tuple[int, Dict[str, Any]]:
+    """Recompute GAE for one trajectory with arbitrary γ/λ.
+
+    Replicates the trainer's per-segment call exactly: inactive segments
+    return zeros; terminated → last_value=0; truncated → the dumped
+    bootstrap critic value.
+    """
+    if traj_idx < 0 or traj_idx >= ds.n_trajectories:
+        return 404, {"error": f"trajectory {traj_idx} out of range"}
+    gae = ds.npz("gae")
+    values = gae.get_dict("values_all")
+    if not isinstance(values, dict) or channel not in values:
+        return 404, {"error": f"no values for channel {channel}"}
+    rewards = ds.frames.col(f"reward.{channel}")
+    if rewards is None:
+        return 404, {"error": f"no reward for channel {channel}"}
+
+    s, e = ds.frames.traj_slice(traj_idx)
+    rewards = np.asarray(rewards[s:e], dtype=np.float32)
+    vals = np.asarray(values[channel], dtype=np.float32)[s:e]
+
+    active_d = gae.get_dict("key_seg_active") or {}
+    term_d = gae.get_dict("key_seg_terminated") or {}
+    active = bool(np.asarray(active_d.get(channel, np.ones(ds.n_trajectories)))[traj_idx])
+    terminated = bool(np.asarray(term_d.get(channel, np.zeros(ds.n_trajectories)))[traj_idx])
+
+    # last_value: trainer semantics — 0 when terminated or no bootstrap
+    # captured, else bootstrap_values[ch][position in bootstrap_indices].
+    last_value = 0.0
+    if active and not terminated:
+        bi = gae.get("bootstrap_indices")
+        bv = gae.get_dict("bootstrap_values")
+        if bi is not None and isinstance(bv, dict) and channel in bv:
+            bi_list = np.asarray(bi).tolist()
+            if traj_idx in bi_list:
+                last_value = float(np.asarray(bv[channel])[bi_list.index(traj_idx)])
+
+    out: Dict[str, Any] = {
+        "traj_idx": traj_idx, "channel": channel,
+        "gamma": gamma, "lam": lam,
+        "active": active, "terminated": terminated,
+        "last_value": last_value,
+        "rewards": _nan_to_null(rewards),
+        "values": _nan_to_null(vals),
+    }
+    if not active:
+        z = np.zeros(len(rewards), dtype=np.float32)
+        out["advs"] = _nan_to_null(z)
+        out["rets"] = _nan_to_null(z)
+        out["deltas"] = _nan_to_null(z)
+        return 200, out
+
+    advs, rets = _compute_gae(rewards, vals, last_value=last_value,
+                              gamma=gamma, lam=lam)
+    # δ_t = r_t + γ·V(s_{t+1}) − V(s_t);  V(s_T) = last_value
+    next_v = np.append(vals[1:], np.float32(last_value))
+    deltas = rewards + np.float32(gamma) * next_v - vals
+    out["advs"] = _nan_to_null(advs)
+    out["rets"] = _nan_to_null(rets)
+    out["deltas"] = _nan_to_null(deltas)
+    return 200, out
+
+
+def advnorm_preview(
+    ds: DumpDataset, channel: str, method: str,
+    traj_idx: Optional[int] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    """Preview advantage normalization under an arbitrary method.
+
+    Applies the trainer's ``normalize_advantages`` to the dumped raw
+    advantages on the trainer's mask (key_frame_mask & aw≠0).
+    """
+    if method not in ("zscore", "std", "gauss_rank"):
+        return 400, {"error": f"unknown method {method!r}"}
+    gae = ds.npz("gae")
+    advs = gae.get_dict("advs_all")
+    if not isinstance(advs, dict) or channel not in advs:
+        return 404, {"error": f"no advantages for channel {channel}"}
+    adv = np.asarray(advs[channel], dtype=np.float32)
+    mask = _norm_mask(ds, channel)
+    if mask is None:
+        return 404, {"error": "no key_frame_mask"}
+    normed = _normalize_adv(adv, mask, method=method)
+
+    out: Dict[str, Any] = {
+        "channel": channel, "method": method,
+        "n_active": int(mask.sum()),
+        "raw": _hist(adv[mask]),
+        "normed": _hist(normed[mask]),
+    }
+    if traj_idx is not None:
+        if traj_idx < 0 or traj_idx >= ds.n_trajectories:
+            return 404, {"error": f"trajectory {traj_idx} out of range"}
+        s, e = ds.frames.traj_slice(traj_idx)
+        out["traj"] = {
+            "traj_idx": traj_idx,
+            "raw": _nan_to_null(adv[s:e]),
+            "normed": _nan_to_null(normed[s:e]),
+            "active": [bool(x) for x in np.asarray(mask[s:e])],
+        }
+    return 200, out
+
+
+def merge_summary(ds: DumpDataset, bins: int = 64) -> Dict[str, Any]:
+    """Buffer-level merge view: per-channel normed adv / weights /
+    contribution + the combined result, all as histograms."""
+    comb = ds.npz("combine")
+    gae = ds.npz("gae")
+    normed = comb.get_dict("normed_advs") or {}
+    awn = comb.get_dict("aw_normed") or {}
+    kaw = comb.get_dict("key_actor_weight_frame") or {}
+    conf = comb.get_dict("confidences") or {}
+    evs = {(k[3:] if k.startswith("ev_") else k): v
+           for k, v in (comb.get_dict("explained_variances") or {}).items()}
+    advs = gae.get_dict("advs_all") or {}
+
+    channels: List[Dict[str, Any]] = []
+    for ch in ds.channel_names:
+        m = _norm_mask(ds, ch)
+        entry: Dict[str, Any] = {
+            "name": ch,
+            "confidence": _f(conf.get(ch)),
+            "ev": _f(evs.get(ch)),
+            "n_active": int(m.sum()) if m is not None else 0,
+        }
+        na = normed.get(ch)
+        aw = awn.get(ch)
+        if na is not None:
+            a = np.asarray(na)
+            entry["normed_adv"] = _hist(a[m] if m is not None else a, bins)
+        if aw is not None:
+            a = np.asarray(aw)
+            entry["aw_normed"] = _hist(a[m] if m is not None else a, bins)
+        raw_aw = kaw.get(ch)
+        if raw_aw is not None:
+            a = np.asarray(raw_aw)
+            entry["actor_weight"] = _hist(a[m] if m is not None else a, bins)
+        if na is not None and aw is not None:
+            c = float(conf.get(ch) or 1.0)
+            contrib = np.asarray(awn[ch]) * c * np.asarray(na)
+            entry["contribution"] = _hist(
+                contrib[m] if m is not None else contrib, bins)
+        if ch in advs:
+            a = np.asarray(advs[ch])
+            entry["raw_adv"] = _hist(a[m] if m is not None else a, bins)
+        channels.append(entry)
+
+    out: Dict[str, Any] = {"channels": channels}
+    fin = ds.frames.col("combined_adv")
+    if fin is not None:
+        out["combined"] = _hist(np.asarray(fin), bins)
+    raw = ds.frames.col("combined_adv_raw")
+    if raw is not None:
+        out["combined_pre_winsorize"] = _hist(np.asarray(raw), bins)
+    out["adv_winsorize_sigma"] = _f(comb.scalar("adv_winsorize_sigma"))
+    out["adv_winsorize_clip_frac"] = _f(comb.scalar("adv_winsorize_clip_frac"))
+    out["available"] = bool(channels) or fin is not None
+    return out
