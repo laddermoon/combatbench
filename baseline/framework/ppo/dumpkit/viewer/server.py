@@ -1232,6 +1232,10 @@ class ViewerAPI:
                 return 200, self.data.traj_map
             elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "frame":
                 return self._episode_frame(int(parts[2]), int(parts[4]))
+            elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "overview":
+                return self._episode_overview(int(parts[2]))
+            elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "series":
+                return self._episode_series(int(parts[2]), query)
             elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "delta":
                 return self._episode_delta(int(parts[2]))
             elif endpoint == "image" and len(parts) >= 4:
@@ -1425,6 +1429,115 @@ class ViewerAPI:
         result["trajectories"] = enriched_trajs
 
         return 200, result
+
+    # -- /api/episode/<pos>/overview & /series ------------------------------
+
+    def _episode_scalar_keys(self, ev) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Enumerate plottable keys for one episode.
+
+        Scalar columns (shape (T,)) are listed directly; vector columns
+        (shape (T, D)) are exposed as ``name[i]`` indexable keys.
+        """
+        scalar_keys: List[str] = []
+        vector_keys: List[Dict[str, Any]] = []
+        for aid in self.data.agent_ids:
+            for base in ("obs", "actions", "explore_factors"):
+                name = f"{base}.{aid}"
+                arr = ev.col(name)
+                if arr is None:
+                    continue
+                if arr.ndim == 1:
+                    scalar_keys.append(name)
+                elif arr.ndim == 2:
+                    vector_keys.append({"key": name, "dim": int(arr.shape[1])})
+        for cname in ev.observer_columns:
+            arr = ev.col(cname)
+            if arr is None:
+                continue
+            if arr.ndim == 1:
+                scalar_keys.append(cname)
+            elif arr.ndim == 2:
+                vector_keys.append({"key": cname, "dim": int(arr.shape[1])})
+        return scalar_keys, vector_keys
+
+    def _episode_overview(self, ep_pos: int) -> Tuple[int, Dict[str, Any]]:
+        """Episode-level summary for the multi-track tool page.
+
+        traj clips (agent/t_start/length → lane view), plottable scalar
+        keys, and per-episode meta — everything except per-frame data,
+        which stays on /episode/<pos>/frame/<f>.
+        """
+        ds = self.data
+        if not ds.has("episodes"):
+            return 404, {"error": "episodes.npz not found"}
+        try:
+            ev = ds.episodes[ep_pos]
+        except IndexError:
+            return 404, {"error": f"episode {ep_pos} out of range"}
+
+        scalar_keys, vector_keys = self._episode_scalar_keys(ev)
+        result: Dict[str, Any] = {
+            "episode_pos": ep_pos,
+            "n_frames": ev.n_frames,
+            "seed": ev.seed,
+            "termination": ev.termination,
+            "rendered": ds.episode_rendered(ep_pos),
+            "agents": list(ds.agent_ids),
+            "trajectories": [
+                {
+                    "traj_idx": t["traj_idx"],
+                    "agent_id": t["agent_id"],
+                    "t_start": t["t_start"],
+                    "length": t["length"],
+                }
+                for t in ev.trajectories
+            ],
+            "scalar_keys": scalar_keys,
+            "vector_keys": vector_keys,
+        }
+        return 200, result
+
+    def _episode_series(self, ep_pos: int, query: str) -> Tuple[int, Dict[str, Any]]:
+        """Per-frame scalar series for ``?keys=k1,k2``.
+
+        Key grammar: ``<column>`` for scalar columns, ``<column>[i]``
+        for indexing one component of a vector column (e.g.
+        ``actions.robot_a[3]``).
+        """
+        ds = self.data
+        if not ds.has("episodes"):
+            return 404, {"error": "episodes.npz not found"}
+        try:
+            ev = ds.episodes[ep_pos]
+        except IndexError:
+            return 404, {"error": f"episode {ep_pos} out of range"}
+
+        qs = urllib.parse.parse_qs(query)
+        keys = [k for k in (qs.get("keys", [""])[0]).split(",") if k]
+        series: Dict[str, Any] = {}
+        errors: Dict[str, str] = {}
+        for key in keys[:16]:
+            m = re.match(r"^(.+)\[(\d+)\]$", key)
+            name, idx = (m.group(1), int(m.group(2))) if m else (key, None)
+            arr = ev.col(name)
+            if arr is None:
+                errors[key] = "unknown column"
+                continue
+            if idx is not None:
+                if arr.ndim < 2 or idx >= arr.shape[1]:
+                    errors[key] = f"index {idx} out of range"
+                    continue
+                arr = arr[:, idx]
+            elif arr.ndim != 1:
+                errors[key] = "vector column — use name[i]"
+                continue
+            series[key] = DumpDataset.to_jsonable(arr)
+        return 200, {
+            "episode_pos": ep_pos,
+            "n_frames": ev.n_frames,
+            "series": series,
+            "errors": errors,
+        }
 
     # -- /api/episode/<pos>/delta --------------------------------------------
 

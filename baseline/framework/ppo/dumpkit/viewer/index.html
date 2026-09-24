@@ -223,7 +223,6 @@
   .df-note b { color: var(--text); }
 
   /* Scene 1: Episode detail */
-  .ep-layout { display: flex; flex-direction: column; height: 100%; }
   .ep-data { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .ep-data h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; user-select: none; }
   .ep-data h3:hover { color: var(--accent); }
@@ -303,11 +302,6 @@
   .ep-data .traj-item .traj-channels .ch-val { color: var(--text); }
   .ep-data .traj-item.uncovered { opacity: 0.5; cursor: default; }
   .ep-data .traj-item.uncovered:hover { border-color: var(--border); background: var(--panel); }
-  .ep-controls { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 10px; }
-  .ep-controls button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .ep-controls button:hover { border-color: var(--accent); }
-  .ep-controls input[type="range"] { flex: 1; }
-  .ep-controls .frame-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); min-width: 100px; text-align: right; }
 
   /* Scene 2+3: Trajectory detail */
   .traj-layout { height: 100%; display: flex; flex-direction: column; }
@@ -370,33 +364,6 @@
   .toggle-bar label { cursor: pointer; font-size: 11px; color: var(--text); }
 
   /* Floating image widget */
-  .float-img {
-    position: fixed;
-    bottom: 60px;
-    right: 20px;
-    width: 260px;
-    height: 200px;
-    background: #000;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-    z-index: 1000;
-    cursor: grab;
-    display: none;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-  }
-  .float-img.visible { display: flex; align-items: center; justify-content: center; }
-  .float-img img { max-width: 100%; max-height: 100%; pointer-events: none; }
-  .float-img .float-header {
-    position: absolute; top: 0; left: 0; right: 0;
-    background: rgba(0,0,0,0.7); color: var(--muted);
-    font-size: 10px; padding: 2px 6px; display: flex; justify-content: space-between; align-items: center;
-    pointer-events: none;
-  }
-  .float-img .float-close {
-    cursor: pointer; color: var(--red); pointer-events: auto; padding: 0 4px;
-  }
-  .float-img.dragging { cursor: grabbing; }
 
   /* Large image modal */
   .img-modal-overlay {
@@ -465,6 +432,22 @@
   .ve-thumb.missing { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 9px; }
   .ve-scrub { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .ve-scrub input[type=range] { flex: 1; }
+  /* Multi-track lanes (episode axis): trajectory clips + scalar curves */
+  .trk-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .trk-label { width: 190px; flex: none; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trk-label .key-del { color: var(--muted); cursor: pointer; margin-left: 6px; }
+  .trk-label .key-del:hover { color: #e06c75; }
+  .trk-lane { position: relative; flex: 1; height: 24px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 3px; }
+  .trk-lane.seekable { cursor: crosshair; }
+  .trk-clip { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; cursor: pointer; }
+  .trk-clip:hover { filter: brightness(1.35); }
+  .trk-clip.cur { box-shadow: 0 0 0 1px var(--accent); }
+  .trk-playhead { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent); pointer-events: none; }
+  .trk-lane svg.trk-curve { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .trk-val { position: absolute; right: 4px; top: 2px; font-size: 10px; font-family: ui-monospace, monospace; color: var(--text); pointer-events: none; text-shadow: 0 0 3px var(--panel-alt); }
+  .ep-keybar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .ep-keybar select, .ep-keybar input { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .ep-keybar input[type=number] { width: 64px; }
   .ve-params { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
   .ve-params .p-group { display: flex; align-items: center; gap: 8px; font-size: 12px; }
   .ve-params .p-name { color: var(--muted); font-weight: 600; }
@@ -666,20 +649,34 @@
       </div>
     </div>
 
-    <!-- Tool ① Episode → Trajectory (verification) -->
+    <!-- Tool ① Episode → Trajectory — same video-editor scaffold as the
+         other tools.  Below the stage: trajectory clips on the episode
+         axis (multi-track), pinnable scalar-key curve tracks, and the
+         raw per-frame readout. -->
     <div class="page" id="page-episode">
       <div class="tool-head" id="ep-tool-head"></div>
-      <div class="ep-layout">
-        <div class="ep-data" id="ep-data-panel"></div>
-        <div class="ep-controls">
-          <button id="ep-btn-first" title="First frame">⏮</button>
-          <button id="ep-btn-prev" title="Previous">◀</button>
-          <button id="ep-btn-play" title="Play">▶</button>
-          <button id="ep-btn-next" title="Next">▶</button>
-          <button id="ep-btn-last" title="Last frame">⏭</button>
+      <div class="ve-stage">
+        <div class="ve-bigimg" id="ep-bigimg"></div>
+        <div class="ve-thumbs" id="ep-thumbs"></div>
+        <div class="ve-scrub">
+          <button id="ep-btn-prev" class="t-nav">◀</button>
           <input id="ep-slider" type="range" min="0" max="0" value="0" />
-          <div class="frame-label" id="ep-frame-label">- / -</div>
+          <button id="ep-btn-next" class="t-nav">▶</button>
+          <span class="t-info" id="ep-frame-label">- / -</span>
         </div>
+      </div>
+      <div class="card">
+        <h2>Trajectories <span class="gs-scope">clips on the episode axis · click clip → Reward→ADV</span></h2>
+        <div id="ep-tracks"></div>
+      </div>
+      <div class="card">
+        <h2>Scalar tracks <span class="gs-scope">key → per-frame curve · click a track to set the frame</span></h2>
+        <div id="ep-keybar" class="ep-keybar"></div>
+        <div id="ep-keytracks"></div>
+      </div>
+      <div class="card">
+        <h2>Frame readout <span class="gs-scope">raw per-frame data</span></h2>
+        <div class="ep-data" id="ep-data-panel"></div>
       </div>
     </div>
 
@@ -769,13 +766,6 @@
   </div>
 
   <!-- Floating image widget (global, shared by Episode & Trajectory pages) -->
-  <div class="float-img" id="float-img">
-    <div class="float-header">
-      <span id="float-img-label">frame</span>
-      <span class="float-close" id="float-img-close">✕</span>
-    </div>
-    <img id="float-img-src" src="" alt="" />
-  </div>
 
   <!-- Large image modal -->
   <div class="img-modal-overlay" id="img-modal">
@@ -833,8 +823,6 @@
 
     // Episode page state
     epData: null,
-    epPlaying: false,
-    epPlayTimer: null,
 
     // Trajectory / GAE page state
     trajOverview: null,
@@ -928,10 +916,6 @@
     state.currentPage = name;
     updateBreadcrumb();
     updateContextBarVisibility();
-    // Hide floating image when leaving frame-view pages
-    if (name !== 'episode' && name !== 'gae') {
-      hideFloatImage();
-    }
   }
 
   function updateContextBarVisibility() {
@@ -941,73 +925,6 @@
     });
   }
 
-  // --- Floating image widget ---
-  function showFloatImage(url, label) {
-    const widget = $('float-img');
-    $('float-img-src').src = url;
-    $('float-img-label').textContent = label || '';
-    widget.classList.add('visible');
-  }
-
-  function hideFloatImage() {
-    $('float-img').classList.remove('visible');
-  }
-
-  // Click floating image → open modal (unless clicking close button)
-  $('float-img').addEventListener('mousedown', e => {
-    if (e.target.classList.contains('float-close')) return;
-    // Start drag tracking
-    const widget = $('float-img');
-    const rect = widget.getBoundingClientRect();
-    widget._dragStart = {
-      mouseX: e.clientX, mouseY: e.clientY,
-      offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top,
-      moved: false,
-    };
-  });
-
-  document.addEventListener('mousemove', e => {
-    if (!$('float-img')._dragStart) return;
-    const ds = $('float-img')._dragStart;
-    const dx = e.clientX - ds.mouseX;
-    const dy = e.clientY - ds.mouseY;
-    if (!ds.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;  // threshold
-    ds.moved = true;
-    const widget = $('float-img');
-    widget.classList.add('dragging');
-    if (widget.style.right !== 'auto') {
-      widget.style.right = 'auto';
-      widget.style.bottom = 'auto';
-    }
-    let x = e.clientX - ds.offsetX;
-    let y = e.clientY - ds.offsetY;
-    x = Math.max(0, Math.min(window.innerWidth - widget.offsetWidth, x));
-    y = Math.max(0, Math.min(window.innerHeight - widget.offsetHeight, y));
-    widget.style.left = x + 'px';
-    widget.style.top = y + 'px';
-  });
-
-  document.addEventListener('mouseup', e => {
-    const widget = $('float-img');
-    if (widget._dragStart) {
-      const wasDrag = widget._dragStart.moved;
-      widget.classList.remove('dragging');
-      widget._dragStart = null;
-      // If not a drag, treat as click → open modal
-      if (!wasDrag && !e.target.classList.contains('float-close')) {
-        const src = $('float-img-src').src;
-        if (src) {
-          $('img-modal-src').src = src;
-          $('img-modal').classList.add('visible');
-        }
-      }
-    }
-  });
-
-  // Close modal
-  $('img-modal-close').addEventListener('click', () => $('img-modal').classList.remove('visible'));
-  $('img-modal').addEventListener('click', e => { if (e.target === $('img-modal')) $('img-modal').classList.remove('visible'); });
-  $('float-img-close').addEventListener('click', e => { e.stopPropagation(); hideFloatImage(); });
   $('nav-dataflow').addEventListener('click', () => navigate('dataflow'));
 
   function updateBreadcrumb() {
@@ -1409,6 +1326,9 @@
     state.selectedTraj = null;
     state.selectedFrame = 0;
     state.selectedStep = 0;
+    state.epOverview = null;
+    state.epSeries = {};
+    state.epKeys = [];
   }
 
   async function selectDump(name) {
@@ -3540,6 +3460,8 @@
   async function selectEpisode(pos) {
     state.selectedEpisode = pos;
     state.selectedFrame = 0;
+    state.epOverview = null;
+    state.epSeries = {};
     navigate('episode');   // navigate() → renderEpisode()
   }
 
@@ -3582,18 +3504,176 @@
 
   async function renderEpisode() {
     if (state.selectedEpisode === null) state.selectedEpisode = 0;
+    const pos = state.selectedEpisode;
     _epToolHead();
     refreshRenderStatus();   // resume polling if a render is in flight
-    const pos = state.selectedEpisode;
 
-    const epInfo = state.trajMap?.[pos];
-    const numFrames = epInfo?.num_frames || 0;
+    // Episode overview: meta + traj clips + plottable scalar keys.
+    if (!state.epOverview || state.epOverview.episode_pos !== pos) {
+      try {
+        state.epOverview = await fetchJson(api(`episode/${pos}/overview`));
+      } catch (e) {
+        $('ep-data-panel').innerHTML =
+          `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+        return;
+      }
+      state.epSeries = {};
+    }
+    const ov = state.epOverview;
 
-    $('ep-slider').min = 0;
-    $('ep-slider').max = Math.max(0, numFrames - 1);
-    $('ep-slider').value = state.selectedFrame;
+    // Shared stage: big frame + thumbnails + scrubber (episode frames).
+    const frame = renderTrajStage('ep',
+      {length: ov.n_frames, episode_pos: pos, t_start: 0}, renderEpisode);
 
+    _epTracks(ov, frame);
+    _epKeyBar(ov);
+    await _epKeyTracks(ov, frame);
     await renderEpisodeFrame();
+  }
+
+  // Trajectory clips on the episode axis — one lane per trajectory,
+  // clip = [t_start, t_start+length), colored by agent, click → tool ②.
+  function _epTracks(ov, frame) {
+    const T = Math.max(1, ov.n_frames);
+    const palette = ['#4fa3ff', '#e6a23c', '#6ec86e', '#c678dd', '#56b6c2'];
+    const agents = ov.agents || [];
+    const col = aid => {
+      const i = agents.indexOf(aid);
+      return palette[(i >= 0 ? i : 0) % palette.length];
+    };
+    const ph = `<div class="trk-playhead" style="left:${((frame + 0.5) / T * 100).toFixed(2)}%"></div>`;
+    let h = '';
+    for (const t of ov.trajectories || []) {
+      const l = (t.t_start / T * 100).toFixed(2);
+      const w = (t.length / T * 100).toFixed(2);
+      const cur = frame >= t.t_start && frame < t.t_start + t.length;
+      h += `<div class="trk-row"><div class="trk-label">traj ${t.traj_idx} · ${escapeHtml(t.agent_id)}</div>` +
+        `<div class="trk-lane seekable">` +
+        `<div class="trk-clip${cur ? ' cur' : ''}" data-traj="${t.traj_idx}" ` +
+        `style="left:${l}%;width:${w}%;background:${col(t.agent_id)}66;border:1px solid ${col(t.agent_id)}" ` +
+        `title="traj ${t.traj_idx} · ${escapeHtml(t.agent_id)} · frames [${t.t_start}, ${t.t_start + t.length})"></div>` +
+        ph + `</div></div>`;
+    }
+    const el = $('ep-tracks');
+    el.innerHTML = h || '<div class="desc">no trajectories mapped to this episode</div>';
+    el.querySelectorAll('.trk-clip').forEach(c =>
+      c.addEventListener('click', e => {
+        e.stopPropagation();
+        selectTrajectory(parseInt(c.dataset.traj));
+      }));
+    _wireLaneSeek(el, T);
+  }
+
+  // Click on a lane background seeks the episode frame cursor.
+  function _wireLaneSeek(root, T) {
+    root.querySelectorAll('.trk-lane.seekable').forEach(lane =>
+      lane.addEventListener('click', e => {
+        const r = lane.getBoundingClientRect();
+        const f = Math.round((e.clientX - r.left) / r.width * (T - 1));
+        state.selectedFrame = Math.max(0, Math.min(T - 1, f));
+        renderEpisode();
+      }));
+  }
+
+  // Scalar-key picker: flat observer columns directly, vector columns as
+  // name[i] with an index input.
+  function _epKeyBar(ov) {
+    if (!state.epKeys) state.epKeys = [];
+    const bar = $('ep-keybar');
+    let h = `<select id="ep-key-sel"><option value="">+ add scalar track…</option>`;
+    h += '<optgroup label="per-frame scalars">';
+    for (const k of ov.scalar_keys || [])
+      h += `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`;
+    h += '</optgroup><optgroup label="vector columns — pick index">';
+    for (const v of ov.vector_keys || [])
+      h += `<option value="vec:${escapeHtml(v.key)}:${v.dim}">${escapeHtml(v.key)}[i] · dim ${v.dim}</option>`;
+    h += '</optgroup></select>';
+    h += `<input id="ep-key-idx" type="number" min="0" value="0" style="display:none"/>`;
+    h += `<button class="t-nav" id="ep-key-add" style="display:none">add</button>`;
+    bar.innerHTML = h;
+
+    const sel = $('ep-key-sel'), idx = $('ep-key-idx'), add = $('ep-key-add');
+    sel.addEventListener('change', () => {
+      const v = sel.value;
+      if (!v) { idx.style.display = 'none'; add.style.display = 'none'; return; }
+      if (v.startsWith('vec:')) {
+        const dim = parseInt(v.split(':')[2]);
+        idx.max = dim - 1;
+        idx.style.display = ''; add.style.display = '';
+        add.onclick = () => {
+          const key = `${v.split(':')[1]}[${Math.max(0, Math.min(dim - 1, parseInt(idx.value) || 0))}]`;
+          if (!state.epKeys.includes(key)) state.epKeys.push(key);
+          sel.value = ''; idx.style.display = 'none'; add.style.display = 'none';
+          renderEpisode();
+        };
+      } else {
+        if (!state.epKeys.includes(v)) state.epKeys.push(v);
+        sel.value = '';
+        renderEpisode();
+      }
+    });
+  }
+
+  // One curve lane per pinned key, aligned to the episode axis.
+  async function _epKeyTracks(ov, frame) {
+    const want = state.epKeys || [];
+    const missing = want.filter(k => !(state.epSeries || {})[k]);
+    if (missing.length) {
+      try {
+        const r = await fetchJson(api(
+          `episode/${ov.episode_pos}/series?keys=${missing.map(encodeURIComponent).join(',')}`));
+        state.epSeries = Object.assign(state.epSeries || {}, r.series);
+        state.epSeriesErr = r.errors || {};
+      } catch (e) {
+        state.epSeriesErr = {fetch: e.message};
+      }
+    }
+    const T = Math.max(1, ov.n_frames);
+    const ph = `<div class="trk-playhead" style="left:${((frame + 0.5) / T * 100).toFixed(2)}%"></div>`;
+    let h = '';
+    for (const k of want) {
+      const s = (state.epSeries || {})[k];
+      const err = (state.epSeriesErr || {})[k];
+      const val = s && s[frame] !== null && s[frame] !== undefined ? fmt(s[frame], 4) : '';
+      h += `<div class="trk-row"><div class="trk-label" title="${escapeHtml(k)}">${escapeHtml(k)}` +
+        `<a class="key-del" data-k="${escapeHtml(k)}">✕</a></div>` +
+        `<div class="trk-lane seekable">` +
+        (s ? _spark(s, T) : `<span class="desc" style="padding:0 6px">${escapeHtml(err || '…')}</span>`) +
+        (val ? `<span class="trk-val">${val}</span>` : '') +
+        ph + `</div></div>`;
+    }
+    const el = $('ep-keytracks');
+    el.innerHTML = h;
+    el.querySelectorAll('.key-del').forEach(a =>
+      a.addEventListener('click', e => {
+        e.stopPropagation();
+        state.epKeys = state.epKeys.filter(x => x !== a.dataset.k);
+        renderEpisode();
+      }));
+    _wireLaneSeek(el, T);
+  }
+
+  // Tiny SVG sparkline for one scalar series (null-tolerant).
+  function _spark(data, T) {
+    let lo = Infinity, hi = -Infinity;
+    for (const y of data) {
+      if (y === null || y === undefined || !isFinite(y)) continue;
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    if (!isFinite(lo)) return '';
+    const rg = hi - lo || 1, H = 22;
+    let d = '', pen = false;
+    for (let i = 0; i < data.length; i++) {
+      const y = data[i];
+      if (y === null || y === undefined || !isFinite(y)) { pen = false; continue; }
+      const yy = (H - 2 - (y - lo) / rg * (H - 5)).toFixed(1);
+      d += `${pen ? 'L' : 'M'}${i},${yy}`;
+      pen = true;
+    }
+    return `<svg class="trk-curve" viewBox="0 0 ${Math.max(1, data.length - 1)} ${H}" ` +
+      `preserveAspectRatio="none"><path d="${d}" fill="none" stroke="#e5c07b" ` +
+      `stroke-width="1" vector-effect="non-scaling-stroke"/></svg>`;
   }
 
   async function renderEpisodeFrame() {
@@ -3601,20 +3681,11 @@
     const frame = state.selectedFrame;
     if (pos === null) return;
 
-    $('ep-frame-label').textContent = `${frame + 1} / ${parseInt($('ep-slider').max) + 1}`;
-    $('ep-slider').value = frame;
     updateContextBar();
 
     try {
       const data = await fetchJson(api(`episode/${pos}/frame/${frame}`));
       state.epData = data;
-
-      // Image (floating widget)
-      if (data.has_image) {
-        showFloatImage(imgUrl(pos, frame), `Episode ${pos} · Frame ${frame}`);
-      } else {
-        hideFloatImage();
-      }
 
       const channels = state.manifest.channel_names || [];
       const agents = state.manifest.agent_ids || [];
@@ -3629,7 +3700,7 @@
       if (epInfo?.seed !== null && epInfo?.seed !== undefined) {
         html += `<div class="info-item"><span class="info-label">Seed:</span><span class="info-value">${epInfo.seed}</span></div>`;
       }
-      html += `<div class="info-item"><span class="info-label">Frame:</span><span class="info-value">${frame + 1} / ${parseInt($('ep-slider').max) + 1}</span></div>`;
+      html += `<div class="info-item"><span class="info-label">Frame:</span><span class="info-value">${frame + 1} / ${state.epOverview?.n_frames ?? '?'}</span></div>`;
       if (data.termination) {
         // Per-agent termination: {robot_a: [[reason, step]], robot_b: [...]}
         const term = data.termination;
@@ -4460,38 +4531,9 @@
   }
 
   // --- Event wiring ---
-  // Episode controls
-  $('ep-slider').addEventListener('input', e => {
-    state.selectedFrame = parseInt(e.target.value);
-    renderEpisodeFrame();
-  });
-  $('ep-btn-first').addEventListener('click', () => { state.selectedFrame = 0; renderEpisodeFrame(); });
-  $('ep-btn-prev').addEventListener('click', () => { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); });
-  $('ep-btn-next').addEventListener('click', () => { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); });
-  $('ep-btn-last').addEventListener('click', () => { state.selectedFrame = parseInt($('ep-slider').max); renderEpisodeFrame(); });
-  $('ep-btn-play').addEventListener('click', () => {
-    if (state.epPlaying) {
-      clearInterval(state.epPlayTimer);
-      state.epPlaying = false;
-      $('ep-btn-play').textContent = '▶';
-    } else {
-      state.epPlaying = true;
-      $('ep-btn-play').textContent = '⏸';
-      state.epPlayTimer = setInterval(() => {
-        if (state.selectedFrame >= parseInt($('ep-slider').max)) {
-          clearInterval(state.epPlayTimer);
-          state.epPlaying = false;
-          $('ep-btn-play').textContent = '▶';
-          return;
-        }
-        state.selectedFrame++;
-        renderEpisodeFrame();
-      }, 200);
-    }
-  });
-
-  // (GAE page wires its own slider/params inside renderGaePage — the
-  //  elements live inside dynamically-rendered tool-head/ve containers.)
+  // (Tool pages wire their own controls inside their render functions —
+  //  the elements live inside dynamically-rendered tool-head/ve-stage
+  //  containers, and the shared stage wires its scrubber itself.)
 
   // Run page update timeline controls
   $('upd-slider').addEventListener('input', e => {
@@ -4503,10 +4545,7 @@
   // Keyboard
   document.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (state.currentPage === 'episode') {
-      if (e.key === 'ArrowRight') { state.selectedFrame = Math.min(parseInt($('ep-slider').max), state.selectedFrame + 1); renderEpisodeFrame(); e.preventDefault(); }
-      else if (e.key === 'ArrowLeft') { state.selectedFrame = Math.max(0, state.selectedFrame - 1); renderEpisodeFrame(); e.preventDefault(); }
-    } else if (['gae', 'advnorm', 'merge'].includes(state.currentPage)) {
+    if (['episode', 'gae', 'advnorm', 'merge'].includes(state.currentPage)) {
       // All trajectory-centric pages share the stage frame cursor.
       const gmax = (state._stageLen ?? 1) - 1;
       const rr = state._stageRerender;

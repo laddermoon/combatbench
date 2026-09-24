@@ -123,6 +123,7 @@ GET /api/run/{info,dumps,metrics,videos}                      (run 模式)
 GET /api/run/gradsig/<update>                                 (run 模式, 旧 run)
 GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     manifest | episode_list | traj_map | gradsig
+    episode/<pos>/overview | episode/<pos>/series?keys=k1,k2
     episode/<pos>/frame/<f> | episode/<pos>/delta | image/<a>/<b>
     trajectory/<i> | trajectory/<i>/frame/<f>
     trajectory/<i>/epoch/<e>/overview|frame/<f> | trajectory/<i>/epoch_compare
@@ -158,9 +159,15 @@ dump 以下按**变换管线**组织，不再是 episode/traj/timeline 平铺：
 - **工具页**（各自独立 URL，结构同构：traj picker + 大图 + 缩略图
   时间线 + scrubber + 页专属曲线）。分工原则：主页看汇总/分布，
   工具页只做 trajectory 级下钻——分布图不进工具页。
-  - `/episode/<pos>` —— ①的钻取：episode 原始 observer 数据 vs 转出的
-    逐 traj reward/actor_weight；帧图经浮动窗展示，未渲染时显式
-    Render 按钮（不自动渲染）。
+  - `/episode/<pos>` —— ①的钻取：与其它工具页同一个视频编辑器骨架
+    （大图+缩略图+scrubber，帧游标共享）。下方两块专属内容：
+    **Trajectories 多轨道**——每条 traj 一条 lane，clip=[t_start,
+    t_start+len) 按 agent 着色（traj_map.json 存 agent_id/t_start/
+    length），点击 clip 跳 `/gae/<i>`；**Scalar tracks**——key 选择器
+    枚举 `observer.<o>.<f>` 标量列与 `obs/actions.<aid>[i]` 向量列
+    （`/episode/<pos>/overview` 给 key 清单，`/series?keys=` 取序列），
+    每条 key 一条 sparkline 轨，点击轨道设帧游标。非结构化的帧级
+    原始数据只在最底部 frame readout（`/episode/<pos>/frame/<f>`）。
   - `/gae/<i>` —— ②的钻取：视频编辑器布局（大图 + 缩略图时间线 +
     reward/value/δ/adv 曲线），γ/λ 滑杆触发服务端
     `/trajectory/<i>/gae` 用**训练同款 `compute_gae`** 重算
