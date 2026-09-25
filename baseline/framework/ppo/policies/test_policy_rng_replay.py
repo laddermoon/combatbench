@@ -37,6 +37,9 @@ from baseline.framework.ppo.policies.state_bounded_std_truncated_normal_mlp impo
 from baseline.framework.ppo.policies.mixture_truncated_normal_mlp import (
     MixtureTruncatedNormalPolicy,
 )
+from baseline.framework.ppo.policies.shared_mixture_truncated_normal_mlp import (
+    SharedMixtureTruncatedNormalPolicy,
+)
 
 OBS_DIM, ACT_DIM, HID = 96, 21, 256
 
@@ -46,6 +49,7 @@ POLICY_CLASSES = {
     "bounded": BoundedStdTruncatedNormalPolicy,
     "state_bounded": StateBoundedStdTruncatedNormalPolicy,
     "mixture": MixtureTruncatedNormalPolicy,
+    "mixture_shared": SharedMixtureTruncatedNormalPolicy,
 }
 
 

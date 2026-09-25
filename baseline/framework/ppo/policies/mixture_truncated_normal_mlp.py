@@ -120,8 +120,7 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
         )
-        K, D = self.num_components, self.action_dim
-        self.head = nn.Linear(hidden_dim, K + 2 * K * D)
+        self.head = nn.Linear(hidden_dim, self._head_out_dim())
         self._init_head()
 
         self.to(torch.device(device))
@@ -175,8 +174,24 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
                     base_b.unsqueeze(0)
                     + torch.randn_like(mb) * self.component_init_noise
                 )
-            self.head.weight[K + K * D:].zero_()
-            self.head.bias[K + K * D:].fill_(-1.0)
+            self._init_sigma_block()
+
+    def _init_sigma_block(self) -> None:
+        """σ block init: w=0, b=-1 → σ ≡ e⁻¹ (called under no_grad).
+
+        Shared-σ heads carry no σ rows, so the slice is empty and this
+        is a no-op; the bounded state-σ cell overrides the bias fill to
+        its own v_init.
+        """
+        K, D = self.num_components, self.action_dim
+        self.head.weight[K + K * D:].zero_()
+        self.head.bias[K + K * D:].fill_(-1.0)
+
+    def _head_out_dim(self) -> int:
+        """Head output width — state-σ cells append a σ block after the
+        logits and means; shared-σ cells override to drop that block."""
+        K, D = self.num_components, self.action_dim
+        return K + 2 * K * D
 
     @property
     def device(self) -> torch.device:
