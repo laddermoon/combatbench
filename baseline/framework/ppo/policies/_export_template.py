@@ -134,6 +134,12 @@ class _TruncNormalInferenceNet(nn.Module):
         self.log_std = nn.Parameter(
             torch.full((action_dim,), -1.0, dtype=torch.float32)
         )
+        self._gen = torch.Generator()
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reseed this net's private RNG (per-episode reproducibility)."""
+        if seed is not None:
+            self._gen.manual_seed(int(seed))
 
     def effective_log_std(self) -> torch.Tensor:
         return torch.clamp(self.log_std, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX)
@@ -175,7 +181,16 @@ class _TruncNormalInferenceNet(nn.Module):
         a, b, log_Z = self._trunc_params(mean, sigma)
         cdf_a = _std_normal_cdf(a)
         cdf_b = _std_normal_cdf(b)
-        u = torch.rand_like(mean) * (cdf_b - cdf_a) + cdf_a
+        u = (
+            torch.rand(
+                mean.shape,
+                generator=self._gen,
+                device=mean.device,
+                dtype=mean.dtype,
+            )
+            * (cdf_b - cdf_a)
+            + cdf_a
+        )
         eps = _std_normal_icdf(u)
         action = mean + sigma * eps
         action = torch.clamp(action, _ACTION_LOW + 1e-6, _ACTION_HIGH - 1e-6)
@@ -283,7 +298,7 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
         return action_np, {"log_prob": float(log_prob.item())}
 
     def reset(self, seed: Optional[int] = None) -> None:
-        """Optional: reseed RNG for reproducible rollouts."""
-        if seed is not None:
-            torch.manual_seed(seed)
+        """Reseed the inference net's private RNG for reproducible
+        rollouts (per-policy stream, independent of other agents)."""
+        self._policy.reset(seed)
         return None

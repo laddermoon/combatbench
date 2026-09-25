@@ -23,7 +23,7 @@ keeps the comparison clean.  See DESIGN_state_truncated_normal.md.
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import nn
@@ -78,6 +78,10 @@ class StateTruncatedNormalPolicy(TruncatedNormalPolicy):
         # Device is derived from parameters via the @property below, so
         # .to(device) / .cuda() / DataParallel all keep it in sync (P0-4).
         self.to(torch.device(device))
+
+        # Per-policy RNG — same contract as the parent's __init__.
+        self._gen = torch.Generator(device=self.device)
+        self._last_seed: Optional[int] = None
 
     def _init_head(self) -> None:
         """Init so σ(obs) = e⁻¹ ≈ 0.368 everywhere at step 0.

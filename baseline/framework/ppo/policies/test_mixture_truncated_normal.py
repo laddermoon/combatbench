@@ -371,8 +371,18 @@ class TestMixtureSemantics(unittest.TestCase):
         self.assertTrue(torch.allclose(
             det, torch.full_like(det, 0.3), atol=1e-4,
         ))
-        # log_prob ≈ component-1 conditional density
-        actions = torch.rand(10, ACTION_DIM) * 2 - 1
+        # log_prob ≈ component-1 conditional density.  This holds only
+        # inside component 1's support bulk — in its far tails a
+        # negligible-weight component with much higher density still
+        # dominates the mixture floor (π·p_k can exceed π₁·p₁ even at
+        # π₀≈e⁻³⁰), which is correct mixture behavior, not a bug.
+        # Deterministic actions near μ₁=0.3 (σ=0.223 → ±1.3σ).
+        actions = (
+            torch.linspace(0.0, 0.6, 10)
+            .unsqueeze(-1)
+            .expand(-1, ACTION_DIM)
+            .contiguous()
+        )
         ev = p.evaluate_actions(obs, actions, torch.zeros(10))
         log_pi, mean, sigma = p._head_forward(obs)
         a = actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6).unsqueeze(1)

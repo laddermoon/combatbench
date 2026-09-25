@@ -199,16 +199,6 @@ class BoundedStdTruncatedNormalPolicy(TruncatedNormalPolicy):
         )
 
     # ------------------------------------------------------------------
-    # Policy ABC reset hook (rollout reproducibility)
-    # ------------------------------------------------------------------
-
-    def reset(self, seed: Optional[int] = None) -> None:
-        """Reseed torch RNG so per-episode derived seeds make rollouts
-        reproducible when the same policy instance is reused."""
-        if seed is not None:
-            torch.manual_seed(int(seed))
-
-    # ------------------------------------------------------------------
     # Stats / export metadata
     # ------------------------------------------------------------------
 

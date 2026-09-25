@@ -117,6 +117,26 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         self.to(torch.device(device))
 
+        # Per-policy RNG — same contract as TruncatedNormalPolicy:
+        # per-episode ``reset(seed)`` reseeds this instance's own stream.
+        self._gen = torch.Generator(device=self.device)
+        self._last_seed: Optional[int] = None
+
+    def _ensure_gen(self, device: torch.device) -> torch.Generator:
+        """Return the policy RNG, migrating it if the device changed."""
+        if self._gen.device != device:
+            last = self._last_seed
+            self._gen = torch.Generator(device=device)
+            if last is not None:
+                self._gen.manual_seed(last)
+        return self._gen
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reseed this policy's private RNG with the per-episode seed."""
+        self._last_seed = None if seed is None else int(seed)
+        if seed is not None:
+            self._ensure_gen(self.device).manual_seed(int(seed))
+
     def _init_head(self) -> None:
         """Init: uniform weights, σ ≡ e⁻¹, broken component symmetry.
 
@@ -313,7 +333,9 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             # the seeded degenerate-equivalence test exact.
             idx = torch.zeros(B, dtype=torch.long, device=mean.device)
         else:
-            idx = torch.multinomial(log_pi.exp(), 1).squeeze(-1)
+            idx = torch.multinomial(
+                log_pi.exp(), 1, generator=self._ensure_gen(mean.device),
+            ).squeeze(-1)
         sel = idx.view(-1, 1, 1).expand(-1, 1, D)
         mu_k = mean.gather(1, sel).squeeze(1)      # (B,D)
         sg_k = sigma.gather(1, sel).squeeze(1)     # (B,D)
@@ -323,7 +345,12 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         #   a = μ + √2·σ·erfinv(q)
         erf_a = torch.erf((_ACTION_LOW - mu_k) / (_SQRT_2 * sg_k))
         erf_b = torch.erf((_ACTION_HIGH - mu_k) / (_SQRT_2 * sg_k))
-        u = torch.rand_like(mu_k)
+        u = torch.rand(
+            mu_k.shape,
+            generator=self._ensure_gen(mu_k.device),
+            device=mu_k.device,
+            dtype=mu_k.dtype,
+        )
         q = (1.0 - u) * erf_a + u * erf_b
         q = q.clamp(-1.0 + _ERFINV_EPS, 1.0 - _ERFINV_EPS)
         action = mu_k + _SQRT_2 * sg_k * torch.erfinv(q)

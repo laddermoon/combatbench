@@ -118,6 +118,12 @@ class _MixtureTruncNormInferenceNet(nn.Module):
         )
         K, D = self.num_components, self.action_dim
         self.head = nn.Linear(hidden_dim, K + 2 * K * D)
+        self._gen = torch.Generator()
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reseed this net's private RNG (per-episode reproducibility)."""
+        if seed is not None:
+            self._gen.manual_seed(int(seed))
 
     def _head_forward(
         self, obs: torch.Tensor,
@@ -182,14 +188,21 @@ class _MixtureTruncNormInferenceNet(nn.Module):
         if K == 1:
             idx = torch.zeros(B, dtype=torch.long, device=mean.device)
         else:
-            idx = torch.multinomial(log_pi.exp(), 1).squeeze(-1)
+            idx = torch.multinomial(
+                log_pi.exp(), 1, generator=self._gen,
+            ).squeeze(-1)
         sel = idx.view(-1, 1, 1).expand(-1, 1, D)
         mu_k = mean.gather(1, sel).squeeze(1)
         sg_k = sigma.gather(1, sel).squeeze(1)
 
         erf_a = torch.erf((_ACTION_LOW - mu_k) / (_SQRT_2 * sg_k))
         erf_b = torch.erf((_ACTION_HIGH - mu_k) / (_SQRT_2 * sg_k))
-        u = torch.rand_like(mu_k)
+        u = torch.rand(
+            mu_k.shape,
+            generator=self._gen,
+            device=mu_k.device,
+            dtype=mu_k.dtype,
+        )
         q = (1.0 - u) * erf_a + u * erf_b
         q = q.clamp(-1.0 + _ERFINV_EPS, 1.0 - _ERFINV_EPS)
         action = mu_k + _SQRT_2 * sg_k * torch.erfinv(q)
@@ -301,7 +314,7 @@ class ExportedMixtureTruncNormPolicy(Policy, StochasticPolicy):
         return action_np, {"log_prob": float(log_prob.item())}
 
     def reset(self, seed: Optional[int] = None) -> None:
-        """Optional: reseed RNG for reproducible rollouts."""
-        if seed is not None:
-            torch.manual_seed(seed)
+        """Reseed the inference net's private RNG for reproducible
+        rollouts (per-policy stream, independent of other agents)."""
+        self._policy.reset(seed)
         return None

@@ -79,6 +79,21 @@
 - **接口**：`Policy.act/sample`、`StochasticPolicy`、
   `TrainablePolicy.evaluate_actions`、`reset(seed)` 重放，全部按
   `TruncatedNormalPolicy` 家族契约。
+- **policy RNG（2026-09-25 统一）**：每个策略实例持有私有
+  `torch.Generator`，`reset(seed)` → `gen.manual_seed`；所有采样
+  点（rand/multinomial）走该 generator，**不碰全局 torch RNG**。
+  由此：① 同一进程内两个 agent 的 policy 各自持有独立流，
+  `seeds.policies[agent]` 真正生效；② episode 级重放成立——
+  给定 episode 派生 seed 可单独重放该 episode 的采样序列；
+  ③ worker 调度/worker 数变化不影响各 episode 采样。
+  **退化语义**：rollout 在 policy_a_bp==policy_b_bp 时共享同一
+  实例，reset 被调用两次，**后调用的 seed 生效**（单流，确定性，
+  与旧 manual_seed 行为等价）。
+  **谱系断裂声明**：采样 RNG 来源从"worker 全局流"换成
+  "per-episode generator"后，所有格与此前 run（含基线
+  `train_standup_floor04_ppo_20260920_164819`）不再 bit-identical——
+  这是有意的语义升级；bit-identical 验证以改动后的新参考 run 为准。
+  训练侧与导出侧（模板内联 Generator）语义一致。
 - **数据链路**：动作空间只存 float32 动作；评分在截断动作空间进行；
   不引入 latent 通道。
 - **U 与 floor**：`ActorEval.uncertainty` 始终是 e=0 的策略分布的 U；
@@ -109,6 +124,10 @@
      正式训练按需启动 |
 | D10 | pre-tanh 族 | 不属于本体系；已标记 on hold，见
      DESIGN_pre_tanh_normal.md |
+| D11 | policy RNG 机制 | 每实例 `torch.Generator` + `reset(seed)`
+     reseed；替代旧的"ABC no-op / torch.manual_seed"混合状态。
+     修复双 agent 共享全局流时后 reset 覆盖先 reset 的缺陷；
+     接受与历史 run 的 RNG 谱系断裂（§4 已声明） |
 
 ## 6. 已完成格的验证记录（摘要）
 

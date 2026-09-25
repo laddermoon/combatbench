@@ -157,6 +157,32 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         # .to(device) / .cuda() / DataParallel all keep it in sync.
         self.to(torch.device(device))
 
+        # Per-policy RNG: each instance owns its sampling stream so that
+        # per-episode ``reset(seed)`` gives true per-policy reproducibility
+        # (two co-acting agents never share or overwrite a global stream).
+        self._gen = torch.Generator(device=self.device)
+        self._last_seed: Optional[int] = None
+
+    def _ensure_gen(self, device: torch.device) -> torch.Generator:
+        """Return the policy RNG, migrating it if the device changed.
+
+        If ``.to(device)`` moved the parameters after construction, the
+        generator is recreated on the new device and reseeded with the
+        last seed seen by :meth:`reset` (or left at its default seed).
+        """
+        if self._gen.device != device:
+            last = self._last_seed
+            self._gen = torch.Generator(device=device)
+            if last is not None:
+                self._gen.manual_seed(last)
+        return self._gen
+
+    def reset(self, seed: Optional[int] = None) -> None:
+        """Reseed this policy's private RNG with the per-episode seed."""
+        self._last_seed = None if seed is None else int(seed)
+        if seed is not None:
+            self._ensure_gen(self.device).manual_seed(int(seed))
+
     @property
     def device(self) -> torch.device:
         """Runtime device of this policy's parameters.
@@ -286,7 +312,16 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         #   action = mean + σ × ε
         cdf_a = _std_normal_cdf(a)
         cdf_b = _std_normal_cdf(b)
-        u = torch.rand_like(mean) * (cdf_b - cdf_a) + cdf_a
+        u = (
+            torch.rand(
+                mean.shape,
+                generator=self._ensure_gen(mean.device),
+                device=mean.device,
+                dtype=mean.dtype,
+            )
+            * (cdf_b - cdf_a)
+            + cdf_a
+        )
         eps = _std_normal_icdf(u)
         action = mean + sigma * eps
         # Numerical safety: clamp to [-1, 1]
