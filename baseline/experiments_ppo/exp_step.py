@@ -151,7 +151,11 @@ class Step(CombatExperimentPPOBase):
     # native style, and stepping amplifies it.  Penalize the squared
     # sqrt-compressed obs dims (v² ∝ |ω|) on stable frames only —
     # recovery flailing while fallen stays unpunished.
-    torso_sway_coef: float = 0.008
+    # coef dose-response: 0.008 even with the floor still crushed
+    # stepping (v5: step 0.73, solepk 0.044) — this policy's gait
+    # fundamentally *needs* sway for CoM transfer, so only a gentle
+    # pressure is tolerable.
+    torso_sway_coef: float = 0.003
     torso_actor_weight: float = 1.0
     # Flat penalty (v4: sway² · coef) crushed stepping — solepk fell to
     # 0.038 and step to 0.64 because natural gait sway was punished too.
