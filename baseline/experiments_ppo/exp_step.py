@@ -91,11 +91,13 @@ class Step(CombatExperimentPPOBase):
     action_dim: int = 21
 
     # --- Reward channels ---
-    _channel_names = ("r_potential", "r_left_foot", "r_right_foot")
+    _channel_names = ("r_potential", "r_left_foot", "r_right_foot",
+                      "r_torso")
     _channel_gammas = {
         "r_potential": 0.99,
         "r_left_foot": 0.90,
         "r_right_foot": 0.90,
+        "r_torso": 0.99,
     }
     _gae_lambda: float = 0.95
 
@@ -141,6 +143,16 @@ class Step(CombatExperimentPPOBase):
     # aw≈0.75 potential pressure on healthy swings; collapsing frames
     # (φ<gate) always get the full aw.
     swing_exempt_frac: float = 0.75
+
+    # --- Torso sway penalty (r_torso) ---
+    # User video review: genuine lifts but violent torso sway and still
+    # frequent falls.  u2100 dump: roll/pitch |ω| median ≈2.0 rad/s even
+    # while "standing still" — the warm-started policy wobbles as its
+    # native style, and stepping amplifies it.  Penalize the squared
+    # sqrt-compressed obs dims (v² ∝ |ω|) on stable frames only —
+    # recovery flailing while fallen stays unpunished.
+    torso_sway_coef: float = 0.008
+    torso_actor_weight: float = 1.0
 
     # --- r_potential actor weight ---
     # Fixed 3.0 in general, partially exempted on stable single-support
@@ -265,6 +277,19 @@ class Step(CombatExperimentPPOBase):
 
         # --- r_potential: 0.01 × φ(t) per step ---
         r_potential = (self.per_step_phi_coef * phi_arr).astype(np.float32)
+
+        # --- r_torso: -coef × (v49² + v50²) per step ---
+        # obs[49:52] is body angular velocity after sign·sqrt(|ω|/2)
+        # compression, so v² = |ω|/2 — the squared obs dims are already
+        # proportional to sway magnitude (roll+pitch; yaw is allowed).
+        if obs_all is not None and obs_all.shape[1] >= 51:
+            sway = (
+                obs_all[:T_full, 49].astype(np.float32) ** 2
+                + obs_all[:T_full, 50].astype(np.float32) ** 2
+            )
+            r_torso = (-self.torso_sway_coef * sway).astype(np.float32)
+        else:
+            r_torso = np.zeros(T_full, dtype=np.float32)
 
         # --- Foot heights / sole clearance (saturated) ---
         # Reward value uses sole clearance, NOT midpoint h: midpoint
@@ -399,12 +424,16 @@ class Step(CombatExperimentPPOBase):
             "r_potential": aw_potential,
             "r_left_foot": aw_left.astype(np.float32),
             "r_right_foot": aw_right.astype(np.float32),
+            # Sway penalty only counts while standing — recovery flail
+            # after a fall is legitimate motion, not gait noise.
+            "r_torso": (self.torso_actor_weight * stable).astype(np.float32),
         }
 
         all_rewards = {
             "r_potential": r_potential,
             "r_left_foot": r_left_foot,
             "r_right_foot": r_right_foot,
+            "r_torso": r_torso,
         }
 
         channels: Dict[str, ChannelData] = {}
@@ -519,6 +548,7 @@ class Step(CombatExperimentPPOBase):
         all_solepk = []         # mean swing peak sole clearance per agent
         all_alt = []            # alternation ratio per agent (>=2 cycles)
         all_falls = []          # real falls per agent (φ<0.5 for >=10 f)
+        all_sway = []           # mean roll/pitch |ω| on stable frames
         n_agents = 0
 
         for ep in episodes:
@@ -535,6 +565,16 @@ class Step(CombatExperimentPPOBase):
                     mx = float(np.max(phi))
                     fn = float(phi[-1])
                     all_falls.append(count_falls(phi))
+                    obs_arr = ep.observations.get(agent_id)
+                    if obs_arr is not None and len(obs_arr) >= T:
+                        v = np.asarray(obs_arr[:T, 49:51],
+                                       dtype=np.float32)
+                        # |ω_axis| = 2·v² (undo sign·sqrt(|ω|/2));
+                        # report |ωx|+|ωy| — monotone sway magnitude.
+                        sway_mag = 2.0 * (v[:, 0] ** 2 + v[:, 1] ** 2)
+                        m = np.asarray(phi) >= 0.8
+                        if m.any():
+                            all_sway.append(float(sway_mag[m].mean()))
                 else:
                     mx = 0.0
                     fn = 0.0
@@ -615,6 +655,8 @@ class Step(CombatExperimentPPOBase):
                       if all_alt else None,
                 "falls": round(falls_mean, 2)
                         if all_falls else None,
+                "sway": round(sum(all_sway) / max(len(all_sway), 1), 2)
+                       if all_sway else None,
             },
         }
 
