@@ -153,11 +153,10 @@ class Step(CombatExperimentPPOBase):
     # native style, and stepping amplifies it.  Penalize the squared
     # sqrt-compressed obs dims (v² ∝ |ω|) on stable frames only —
     # recovery flailing while fallen stays unpunished.
-    # coef dose-response: 0.008 even with the floor still crushed
-    # stepping (v5: step 0.73, solepk 0.044) — this policy's gait
-    # fundamentally *needs* sway for CoM transfer, so only a gentle
-    # pressure is tolerable.
-    torso_sway_coef: float = 0.003
+    # coef dose-response: 0.008/0.003 both crushed stepping (v4-v6:
+    # this policy's gait fundamentally *needs* sway for CoM transfer).
+    # Disabled (0.0) — sway is cosmetic noise, not the fall cause.
+    torso_sway_coef: float = 0.0
     torso_actor_weight: float = 1.0
     # Flat penalty (v4: sway² · coef) crushed stepping — solepk fell to
     # 0.038 and step to 0.64 because natural gait sway was punished too.
@@ -174,7 +173,11 @@ class Step(CombatExperimentPPOBase):
     # over the whole downed span) under-weights the causal frames;
     # a sharp per-event penalty at collapse onset gives clean credit
     # assignment back to the destabilizing swing.
-    fall_penalty: float = 0.5
+    # 0.5 was too strong: the policy dodges the penalty by stepping
+    # less (v7: falls 0.09 but step 0.49 — it's cheaper to not swing
+    # than to swing safely).  0.2 keeps the sharp event signal while
+    # leaving completed cycles clearly net-positive.
+    fall_penalty: float = 0.2
     r_fall_actor_weight: float = 2.0
 
     # --- r_potential actor weight ---
