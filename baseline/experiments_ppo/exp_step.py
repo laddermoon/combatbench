@@ -153,6 +153,12 @@ class Step(CombatExperimentPPOBase):
     # recovery flailing while fallen stays unpunished.
     torso_sway_coef: float = 0.008
     torso_actor_weight: float = 1.0
+    # Flat penalty (v4: sway² · coef) crushed stepping — solepk fell to
+    # 0.038 and step to 0.64 because natural gait sway was punished too.
+    # Only the violent tail is noise: penalize sway ABOVE a floor so
+    # ordinary stepping sway is free (u2100 dump: standing p50=1.28,
+    # p75=1.85 in v² units).
+    torso_sway_floor: float = 1.5
 
     # --- r_potential actor weight ---
     # Fixed 3.0 in general, partially exempted on stable single-support
@@ -287,7 +293,10 @@ class Step(CombatExperimentPPOBase):
                 obs_all[:T_full, 49].astype(np.float32) ** 2
                 + obs_all[:T_full, 50].astype(np.float32) ** 2
             )
-            r_torso = (-self.torso_sway_coef * sway).astype(np.float32)
+            r_torso = (
+                -self.torso_sway_coef
+                * np.maximum(sway - self.torso_sway_floor, 0.0)
+            ).astype(np.float32)
         else:
             r_torso = np.zeros(T_full, dtype=np.float32)
 
