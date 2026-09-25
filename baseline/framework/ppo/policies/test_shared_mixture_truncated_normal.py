@@ -45,6 +45,22 @@ def _make_policy(**kwargs) -> SharedMixtureTruncatedNormalPolicy:
     return SharedMixtureTruncatedNormalPolicy(**defaults)
 
 
+def _set_const_mixture(p, logits, mus, log_stds) -> None:
+    """Force a state-independent mixture: π=softmax(logits), μ=mus,
+    σ=exp(log_stds).  Head biases carry π/μ; σ goes into ``log_std``."""
+    K_, D = p.num_components, p.action_dim
+    mus_t = torch.as_tensor(mus, dtype=torch.float32).reshape(K_, D)
+    ls_t = torch.as_tensor(log_stds, dtype=torch.float32).reshape(K_, D)
+    with torch.no_grad():
+        p.head.weight.zero_()
+        p.head.bias.zero_()
+        p.head.bias[:K_] = torch.as_tensor(logits, dtype=torch.float32)
+        p.head.bias[K_:K_ + K_ * D] = torch.atanh(
+            mus_t.clamp(-0.9999, 0.9999)
+        ).flatten()
+        p.log_std.copy_(ls_t)
+
+
 class TestInit(unittest.TestCase):
     def test_init(self):
         """π uniform, σ ≡ e⁻¹ per (k,d), components not identical."""
@@ -144,16 +160,24 @@ class TestLogProb(unittest.TestCase):
                 self.assertAlmostEqual(ours, expected, places=4)
 
     def test_mixture_integrates_to_one(self):
-        """MC estimate of ∫ exp(log_prob) da ≈ 1 over [-1,1]^D."""
-        p = _make_policy()
-        obs = torch.randn(1, OBS_DIM)
-        n = 200_000
-        x = torch.rand(n, ACTION_DIM) * 2.0 - 1.0
-        ev = p.evaluate_actions(
-            obs.expand(n, -1), x, torch.zeros(n),
+        """Grid integral of a fixed 2-D mixture density ≈ 1."""
+        p = _make_policy(num_components=3, action_dim=2)
+        logits = [0.4, -0.2, 0.9]
+        mus = np.array([[-0.5, 0.3], [0.4, -0.4], [0.8, 0.7]])
+        sigmas = np.array([[0.15, 0.4], [0.3, 0.2], [0.6, 0.5]])
+        _set_const_mixture(p, logits, mus, np.log(sigmas))
+        n = 400
+        g = np.linspace(-1.0, 1.0, n)
+        xx, yy = np.meshgrid(g, g)
+        pts = torch.tensor(
+            np.stack([xx.ravel(), yy.ravel()], axis=1), dtype=torch.float32,
         )
-        integral = (2.0 ** ACTION_DIM / n) * float(ev.log_prob.exp().sum())
-        self.assertAlmostEqual(integral, 1.0, places=2)
+        obs = torch.zeros(len(pts), OBS_DIM)
+        ev = p.evaluate_actions(obs, pts, torch.zeros(len(pts)))
+        integral = (4.0 / (n - 1) ** 2) * float(ev.log_prob.exp().sum())
+        self.assertAlmostEqual(
+            integral, 1.0, places=2, msg=f"mixture integral = {integral}",
+        )
 
 
 class TestExploreFactor(unittest.TestCase):

@@ -436,7 +436,7 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         stats: Optional[Dict[str, float]] = None
         if want_stats:
             stats = self._build_stats(
-                log_pi, mean, policy_sigma, eff_sigma, uncertainty,
+                log_pi, mean, raw, policy_sigma, eff_sigma, uncertainty,
             )
 
         return ActorEval(
@@ -449,6 +449,7 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         log_pi: torch.Tensor,
         mean: torch.Tensor,
+        raw: torch.Tensor,
         policy_sigma: torch.Tensor,
         eff_sigma: torch.Tensor,
         uncertainty: torch.Tensor,

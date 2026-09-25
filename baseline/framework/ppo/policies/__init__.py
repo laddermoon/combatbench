@@ -8,6 +8,9 @@ from .mixture_truncated_normal_mlp import MixtureTruncatedNormalPolicy
 from .shared_mixture_truncated_normal_mlp import (
     SharedMixtureTruncatedNormalPolicy,
 )
+from .shared_mixture_bounded_std_truncated_normal_mlp import (
+    SharedMixtureBoundedStdTruncatedNormalPolicy,
+)
 # Pre-tanh family: STATUS unfinished/on hold — implemented but not
 # training-validated; see DESIGN_pre_tanh_normal.md status note.
 from .pre_tanh_normal_mlp import PreTanhNormalPolicy
@@ -20,6 +23,7 @@ __all__ = [
     "StateBoundedStdTruncatedNormalPolicy",
     "MixtureTruncatedNormalPolicy",
     "SharedMixtureTruncatedNormalPolicy",
+    "SharedMixtureBoundedStdTruncatedNormalPolicy",
     "PreTanhNormalPolicy",
     "StatePreTanhNormalPolicy",
     "StateTruncatedNormalPolicy",

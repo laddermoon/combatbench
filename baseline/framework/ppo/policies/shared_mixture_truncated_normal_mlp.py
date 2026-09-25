@@ -87,6 +87,7 @@ class SharedMixtureTruncatedNormalPolicy(MixtureTruncatedNormalPolicy):
         self,
         log_pi: torch.Tensor,
         mean: torch.Tensor,
+        raw: torch.Tensor,
         policy_sigma: torch.Tensor,
         eff_sigma: torch.Tensor,
         uncertainty: torch.Tensor,
@@ -95,7 +96,7 @@ class SharedMixtureTruncatedNormalPolicy(MixtureTruncatedNormalPolicy):
         dependence in this cell (same convention as the shared-σ
         single-component policies)."""
         stats = super()._build_stats(
-            log_pi, mean, policy_sigma, eff_sigma, uncertainty,
+            log_pi, mean, raw, policy_sigma, eff_sigma, uncertainty,
         )
         stats.pop("sigma_state_std", None)
         return stats

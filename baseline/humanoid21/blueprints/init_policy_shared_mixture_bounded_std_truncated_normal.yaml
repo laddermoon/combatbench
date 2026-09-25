@@ -1,0 +1,8 @@
+version: 1
+cls: "baseline.framework.ppo.policies.shared_mixture_bounded_std_truncated_normal_mlp:SharedMixtureBoundedStdTruncatedNormalPolicy"
+config:
+  obs_dim: 96
+  action_dim: 21
+  hidden_dim: 256
+  num_components: 3
+  device: "cpu"
