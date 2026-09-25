@@ -173,7 +173,8 @@ class TestSampling(unittest.TestCase):
         """At init: π uniform, σ ≡ e⁻¹, components not identical."""
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
-        log_pi, mean, sigma = p._head_forward(obs)
+        log_pi, mean, raw = p._forward_raw(obs)
+        sigma = p._policy_sigma(raw)
         self.assertTrue(torch.allclose(
             log_pi.exp(), torch.full_like(log_pi, 1.0 / K), atol=1e-6,
         ), "init π should be uniform")
@@ -384,7 +385,8 @@ class TestMixtureSemantics(unittest.TestCase):
             .contiguous()
         )
         ev = p.evaluate_actions(obs, actions, torch.zeros(10))
-        log_pi, mean, sigma = p._head_forward(obs)
+        log_pi, mean, raw = p._forward_raw(obs)
+        sigma = p._policy_sigma(raw)
         a = actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6).unsqueeze(1)
         log_Z = p._log_trunc_Z(mean, sigma)
         z = (a - mean) / sigma
@@ -522,9 +524,10 @@ class TestExploreFactor(unittest.TestCase):
     def test_effective_sigma_per_component(self):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
-        log_pi, mean, sigma_p = p._head_forward(obs)
+        log_pi, mean, raw = p._forward_raw(obs)
+        sigma_p = p._policy_sigma(raw)
         for e, expect in [(-1.0, 1.0 / 3.0), (0.0, 1.0), (1.0, 3.0)]:
-            eff = p._effective_sigma(sigma_p, e)
+            eff = p._explored_sigma(raw, e)
             torch.testing.assert_close(
                 eff / sigma_p,
                 torch.full_like(eff, expect), rtol=0, atol=1e-6,
@@ -534,9 +537,10 @@ class TestExploreFactor(unittest.TestCase):
         """Per-frame e broadcasts (B,) → (B,1,1) over (B,K,D)."""
         p = _make_policy()
         obs = torch.randn(8, OBS_DIM)
-        _, _, sigma_p = p._head_forward(obs)
+        _, _, raw = p._forward_raw(obs)
+        sigma_p = p._policy_sigma(raw)
         ei = torch.linspace(-1.0, 1.0, 8)
-        eff = p._effective_sigma(sigma_p, ei)
+        eff = p._explored_sigma(raw, ei)
         expect = torch.exp(ei * math.log(3.0)).view(-1, 1, 1)
         torch.testing.assert_close(eff, sigma_p * expect, rtol=0, atol=1e-6)
 

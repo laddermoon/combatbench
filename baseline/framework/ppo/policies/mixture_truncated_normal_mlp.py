@@ -58,18 +58,14 @@ _ERFINV_EPS = 1e-7
 _ACTION_EPS = 1e-6
 
 
-def _build_export_policy_code() -> str:
+def _build_export_policy_code(template_name: str) -> str:
     """Return the source of the ``policy.py`` embedded in export dirs.
 
     The export is self-contained — it reads from a real template file
-    (``_export_template_mixture_truncnorm.py``) that has no imports from
-    ``baseline.*`` or ``envs.*``.  See TruncatedNormalPolicy.to_blueprint
-    for the full rationale (P0-6).
+    that has no imports from ``baseline.*`` or ``envs.*``.  See
+    TruncatedNormalPolicy.to_blueprint for the full rationale (P0-6).
     """
-    template_path = (
-        Path(__file__).resolve().parent
-        / "_export_template_mixture_truncnorm.py"
-    )
+    template_path = Path(__file__).resolve().parent / template_name
     return template_path.read_text(encoding="utf-8")
 
 
@@ -83,7 +79,20 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
     σ carries no business bounds — only the same ±20 numerical safety
     clamp as the other truncated-normal policies.
+
+    Subclass seams (the 2×2×2 family axes, DESIGN_truncnorm_family.md):
+
+    - ``_sigma_raw`` — where the σ control quantity comes from (head
+      block for state-σ cells, broadcast parameter for shared-σ cells).
+    - ``_policy_sigma`` / ``_explored_sigma`` — the raw→σ map and the
+      explore-factor mechanism (exp·3^e unbounded vs sigmoid v+αe
+      bounded).
+    - ``_export_extra`` — export metadata identity fields.
     """
+
+    _POLICY_CLASS = "MixtureTruncatedNormalPolicy"
+    _EXPORTED_CLASS = "ExportedMixtureTruncNormPolicy"
+    _EXPORT_TEMPLATE = "_export_template_mixture_truncnorm.py"
 
     def __init__(
         self,
@@ -178,26 +187,37 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     # Distribution helpers
     # ------------------------------------------------------------------
 
-    def _head_forward(
+    def _forward_raw(
         self, obs: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """One trunk+head pass → (log_pi, mean, policy_sigma).
+        """One trunk+head pass → (log_pi, mean, raw σ-control).
 
-        Shapes: log_pi (B,K), mean (B,K,D), policy_sigma (B,K,D).
-        ``policy_sigma`` is unscaled — explore_factor is applied on top
-        by :meth:`_effective_sigma`.
+        Shapes: log_pi (B,K), mean (B,K,D), raw (B,K,D).  ``raw`` is the
+        σ control quantity — log_std for unbounded cells, v for bounded
+        cells — produced by :meth:`_sigma_raw` (state-σ cells slice the
+        head, shared-σ cells broadcast a parameter).
         """
         K, D = self.num_components, self.action_dim
         out = self.head(self.trunk(obs))
         logits = out[..., :K]
         raw_mean = out[..., K:K + K * D].reshape(-1, K, D)
-        raw_log_std = out[..., K + K * D:].reshape(-1, K, D)
         log_pi = torch.log_softmax(logits, dim=-1)
         mean = torch.tanh(raw_mean)
-        sigma = torch.clamp(
-            raw_log_std, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX,
+        raw = self._sigma_raw(out, obs.shape[0])
+        return log_pi, mean, raw
+
+    def _sigma_raw(
+        self, head_out: torch.Tensor, batch_size: int,
+    ) -> torch.Tensor:
+        """raw σ-control (B,K,D) — here: the head's last block."""
+        K, D = self.num_components, self.action_dim
+        return head_out[..., K + K * D:].reshape(-1, K, D)
+
+    def _policy_sigma(self, raw: torch.Tensor) -> torch.Tensor:
+        """σ at e=0 — used for the uncertainty measure U."""
+        return torch.clamp(
+            raw, _LOG_STD_SAFE_MIN, _LOG_STD_SAFE_MAX,
         ).exp()
-        return log_pi, mean, sigma
 
     def _explore_scale(self, explore_factor: Any = 0.0) -> Any:
         """scale = exp(ei·ln3): ei=0→1, +1→3, -1→1/3."""
@@ -205,14 +225,15 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             return torch.exp(explore_factor * _EXPLORE_K)
         return math.exp(float(explore_factor) * _EXPLORE_K)
 
-    def _effective_sigma(
-        self, policy_sigma: torch.Tensor, explore_factor: Any = 0.0,
+    def _explored_sigma(
+        self, raw: torch.Tensor, explore_factor: Any = 0.0,
     ) -> torch.Tensor:
-        """σ for sampling / log_prob (includes explore scale)."""
+        """σ for sampling / log_prob (includes the explore mechanism)."""
+        sigma = self._policy_sigma(raw)
         scale = self._explore_scale(explore_factor)
         if isinstance(scale, torch.Tensor):
-            return policy_sigma * scale.view(-1, 1, 1)  # (B,K,D)
-        return policy_sigma * scale
+            return sigma * scale.view(-1, 1, 1)  # (B,K,D)
+        return sigma * scale
 
     @staticmethod
     def _log_trunc_Z(
@@ -322,8 +343,8 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         Returns (action, mixture log_prob summed over dims).
         """
-        log_pi, mean, policy_sigma = self._head_forward(obs)
-        sigma = self._effective_sigma(policy_sigma, explore_factor)
+        log_pi, mean, raw = self._forward_raw(obs)
+        sigma = self._explored_sigma(raw, explore_factor)
         B, K, D = mean.shape
 
         # Component selection — one index for the whole action vector.
@@ -364,7 +385,7 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     def deterministic_action(self, obs: torch.Tensor) -> torch.Tensor:
         """Highest-weight component's mean vector (argmax on ties →
         smallest index, matching torch.argmax semantics)."""
-        log_pi, mean, _ = self._head_forward(obs)
+        log_pi, mean, _ = self._forward_raw(obs)
         idx = log_pi.argmax(dim=-1)  # (B,)
         sel = idx.view(-1, 1, 1).expand(-1, 1, self.action_dim)
         return mean.gather(1, sel).squeeze(1)
@@ -383,12 +404,13 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     ) -> ActorEval:
         """Score actions under the full mixture and compute U.
 
-        log_prob uses effective σ (with explore scale) so the PPO
-        importance ratio is correct; U uses policy σ (unscaled) and is
+        log_prob uses effective σ (with explore shift) so the PPO
+        importance ratio is correct; U uses policy σ (e=0) and is
         action-independent.
         """
-        log_pi, mean, policy_sigma = self._head_forward(obs)
-        eff_sigma = self._effective_sigma(policy_sigma, explore_factor)
+        log_pi, mean, raw = self._forward_raw(obs)
+        policy_sigma = self._policy_sigma(raw)
+        eff_sigma = self._explored_sigma(raw, explore_factor)
 
         actions_c = torch.clamp(
             actions, _ACTION_LOW + _ACTION_EPS, _ACTION_HIGH - _ACTION_EPS,
@@ -569,12 +591,8 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         }
         payload = {
             "format_version": 1,
-            "policy_class": "MixtureTruncatedNormalPolicy",
-            "distribution_kind": "mixture_truncated_normal_v1",
-            "std_source": "state",
-            "std_parameterization": "log_std_v1",
-            "uncertainty_kind": "marginal_renyi2_width_v1",
-            "exploration_kind": "log_std_multiplicative_v1",
+            "policy_class": self._POLICY_CLASS,
+            **self._export_extra(),
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
@@ -590,25 +608,21 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         }
         torch.save(payload, policy_dir / "model.pt")
 
-        policy_code = _build_export_policy_code()
+        policy_code = _build_export_policy_code(self._EXPORT_TEMPLATE)
         (policy_dir / "policy.py").write_text(policy_code, encoding="utf-8")
 
         manifest = {
             "format_version": 1,
-            "policy_class": "MixtureTruncatedNormalPolicy",
-            "distribution_kind": "mixture_truncated_normal_v1",
-            "std_source": "state",
-            "std_parameterization": "log_std_v1",
-            "exploration_kind": "log_std_multiplicative_v1",
+            "policy_class": self._POLICY_CLASS,
+            **self._export_extra(),
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
                 "hidden_dim": self.hidden_dim,
                 "num_components": self.num_components,
             },
-            "uncertainty_kind": "marginal_renyi2_width_v1",
             "files": ["model.pt", "policy.py", "MANIFEST.json"],
-            "exported_class": "ExportedMixtureTruncNormPolicy",
+            "exported_class": self._EXPORTED_CLASS,
         }
         (policy_dir / "MANIFEST.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8",
@@ -616,5 +630,20 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         policy_py_path = policy_dir / "policy.py"
         return PolicyBlueprint(
-            cls=f"file:{policy_py_path}:ExportedMixtureTruncNormPolicy",
+            cls=f"file:{policy_py_path}:{self._EXPORTED_CLASS}",
         )
+
+    def _export_extra(self) -> Dict[str, Any]:
+        """Distribution identity metadata for the export.
+
+        Values describe this cell (state-σ, unbounded mixture);
+        subclasses override the fields that differ.  The export
+        templates validate these fields strictly at load time.
+        """
+        return {
+            "distribution_kind": "mixture_truncated_normal_v1",
+            "std_source": "state",
+            "std_parameterization": "log_std_v1",
+            "uncertainty_kind": "marginal_renyi2_width_v1",
+            "exploration_kind": "log_std_multiplicative_v1",
+        }

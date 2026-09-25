@@ -55,6 +55,33 @@ _SAT_LO = 1e-3
 _SAT_HI = 1.0 - 1e-3
 
 
+def _bounded_map_geometry(
+    sigma_min: float, sigma_max: float, init_std: float,
+) -> Tuple[float, float, float, float, float]:
+    """(r_min, r_max, delta_r, p0, v_init) for the sigmoid σ map.
+
+    Shared by every bounded-σ cell (single and mixture) so all variants
+    anchor on identical constants and calibration.
+    """
+    r_min = math.log(sigma_min)
+    r_max = math.log(sigma_max)
+    delta_r = r_max - r_min
+    p0 = (math.log(init_std) - r_min) / delta_r
+    v_init = math.log(p0) - math.log1p(-p0)  # logit(p0)
+    return r_min, r_max, delta_r, p0, v_init
+
+
+def _default_explore_alpha(delta_r: float, p0: float) -> float:
+    """α calibrated so d(log σ)/de at (v_init, e=0) equals ln 3 — the
+    legacy multiplicative 3^e slope (first-order match at init only)."""
+    return math.log(3.0) / (delta_r * p0 * (1.0 - p0))
+
+
+def _bounded_sigma_value(v_e: torch.Tensor, r_min: float, delta_r: float):
+    """σ = exp(r_min + Δr · sigmoid(v_e))  ∈ (σ_min, σ_max)."""
+    return torch.exp(r_min + delta_r * torch.sigmoid(v_e))
+
+
 class BoundedStdTruncatedNormalPolicy(TruncatedNormalPolicy):
     """Truncated normal on [-1, 1] with sigmoid-bounded shared σ."""
 
