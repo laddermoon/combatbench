@@ -8,6 +8,7 @@ Subclass and override class attributes + abstract methods.
 """
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -33,6 +34,28 @@ from baseline.framework.sac.experiment import (
 )
 
 
+def _coerce_set_value(raw: Any, current: Any) -> Any:
+    """Coerce a ``--set`` string value to the declared attribute's type.
+
+    Same convention as experiments_ppo.base: bool → "1/true/yes/on"
+    (checked before int — bool is an int subclass); int/float/str →
+    direct cast; anything else (None, containers) →
+    ``ast.literal_eval`` with string fallback.
+    """
+    if isinstance(current, bool):
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(current, int):
+        return int(raw)
+    if isinstance(current, float):
+        return float(raw)
+    if isinstance(current, str):
+        return raw
+    try:
+        return ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        return raw
+
+
 class CombatExperimentSACBase(ExperimentSAC):
     """Class-attribute style base for humanoid21 combat SAC experiments.
 
@@ -42,6 +65,27 @@ class CombatExperimentSACBase(ExperimentSAC):
     - ``build_slices()`` — episode → trajectory slices
     - ``on_eval()`` — eval processing + best-of-run
     """
+
+    def __init__(self, **kwargs):
+        """Accept ``--set KEY=VALUE`` patches from the training CLI.
+
+        KEY must name a declared, non-callable, non-private class
+        attribute of the experiment; values are coerced to the
+        declared attribute's type.  Unknown keys raise TypeError.
+        Subclasses with their own ``__init__`` are unaffected.
+        """
+        for key, raw in kwargs.items():
+            cur = getattr(type(self), key, None)
+            if (
+                key.startswith("_")
+                or not hasattr(type(self), key)
+                or callable(cur)
+            ):
+                raise TypeError(
+                    f"{type(self).__name__}: unknown --set parameter "
+                    f"{key!r} (must be a declared class attribute)"
+                )
+            setattr(self, key, _coerce_set_value(raw, cur))
 
     # --- Identity ---
     name: str = ""

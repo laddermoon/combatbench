@@ -127,8 +127,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
-        help="Set experiment constructor parameter (can be repeated). "
-             "Example: --set policy_blueprint_path=.../policy_blueprint.yaml",
+        help="Set experiment parameter (can be repeated). For "
+             "class-attribute-style experiments each KEY must be a "
+             "declared class attribute; the value is coerced to the "
+             "declared type. "
+             "Example: --set uncertainty_floor=0.5 "
+             "--set explore_factor=0.3",
     )
     return parser.parse_args()
 
