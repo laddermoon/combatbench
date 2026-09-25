@@ -24,9 +24,14 @@
 | (no, yes, no) | `StateTruncatedNormalPolicy` | ✅ 实现+测试 |
 | (no, yes, yes) | `StateBoundedStdTruncatedNormalPolicy` | ✅ 3-seed 训练验证 |
 | (yes, yes, no) | `MixtureTruncatedNormalPolicy` | ✅ 实现+测试（类名保留，不改名） |
-| (yes, no, no) | `SharedMixtureTruncatedNormalPolicy` | ⬜ 待实现 |
-| (yes, no, yes) | `SharedMixtureBoundedStdTruncatedNormalPolicy` | ⬜ 待实现 |
-| (yes, yes, yes) | `StateMixtureBoundedStdTruncatedNormalPolicy` | ⬜ 待实现 |
+| (yes, no, no) | `SharedMixtureTruncatedNormalPolicy` | ✅ 实现+测试+smoke |
+| (yes, no, yes) | `SharedMixtureBoundedStdTruncatedNormalPolicy` | ✅ 实现+测试+smoke |
+| (yes, yes, yes) | `StateMixtureBoundedStdTruncatedNormalPolicy` | ✅ 实现+测试+smoke |
+
+**8/8 格已全部落地**（实现、单元测试、导出 parity、退化等价、
+RNG replay、smoke）。训练级验证目前只覆盖 (no,no,no)/(no,no,yes)/
+(no,yes,yes) 三格；其余格按 D9 验收标准到 smoke 为止，正式训练
+按需启动。
 
 注意命名约定：单个词 `Mixture`/`State`/`BoundedStd` 各标记一个轴的 B 值；
 `MixtureTruncatedNormalPolicy` 历史遗留名字，实际占 (yes,yes,no) 格。
@@ -128,6 +133,10 @@
      reseed；替代旧的"ABC no-op / torch.manual_seed"混合状态。
      修复双 agent 共享全局流时后 reset 覆盖先 reset 的缺陷；
      接受与历史 run 的 RNG 谱系断裂（§4 已声明） |
+| D12 | MoG σ 接缝形态 | `_forward_raw`（π/μ/raw）+
+     `_policy_sigma`/`_explored_sigma` 两个 σ map；state↔shared
+     只换 `_sigma_raw`（head 块 ↔ 参数广播），bound↔unbound 只换
+     两个 σ map。`_build_stats` 接收 raw 供 bounded 格诊断 |
 
 ## 6. 已完成格的验证记录（摘要）
 
@@ -143,10 +152,30 @@
   不能加 `CUDA_VISIBLE_DEVICES=""`**——历史教训，见
   DESIGN_bounded_std_truncated_normal.md §13.2）。
 
-## 7. 待实施项（无新决策，纯执行）
+## 7. 实施记录（八格落地，2026-09-25/26）
 
-1. `MixtureTruncatedNormalPolicy` σ 来源接缝重构（u1 对拍 bit-identical）
-2. `SharedMixtureTruncatedNormalPolicy`：(yes,no,no)
-3. `SharedMixtureBoundedStdTruncatedNormalPolicy`：(yes,no,yes)
-4. `StateMixtureBoundedStdTruncatedNormalPolicy`：(yes,yes,yes)
-5. 每格：导出模板、blueprint、`__init__` 注册、测试、实验文件
+1. **Phase 0（接缝重构）**：`MixtureTruncatedNormalPolicy._head_forward`
+   拆成 `_forward_raw`（π/μ/raw）+ `_policy_sigma`/`_explored_sigma`；
+   `to_blueprint` 抽出 `_export_extra()`；bounded 几何参数
+   （`r_min/Δr/v_init/α` 标定）提取为 `bounded_std_truncated_normal_mlp`
+   模块级 helper。重构后采样/forward 逐位一致。
+2. **Phase 1**：`SharedMixtureTruncatedNormalPolicy` (yes,no,no) —
+   `(K,D)` log_std 参数（init −1），head 缩到 `K+K·D`（无 σ 块），
+   π/μ 保持 state-dependent。
+3. **Phase 2**：`SharedMixtureBoundedStdTruncatedNormalPolicy`
+   (yes,no,yes) — `(K,D)` raw_std v 参数 + bounded map + `v+αe`；
+   `_build_stats` 增加 raw 参数供 bounded 诊断；stats = 混合诊断 +
+   bounded 诊断（位置/饱和率/灵敏度/`effective_uncertainty`）。
+4. **Phase 3**：`StateMixtureBoundedStdTruncatedNormalPolicy`
+   (yes,yes,yes) — 继承 shared bounded 兄弟，`_head_out_dim` 恢复
+   `K+2K·D`、`_sigma_raw` 切 head v 块（w=0, b=v_init）、
+   `sigma_state_std` 回归。
+5. 每格交付：策略文件 + 自包含导出模板（strict metadata + bounded
+   config 校验）+ 单元测试（含 state↔shared 退化等价逐位对拍）+
+   blueprint + 实验注册 + RNG replay 覆盖 + smoke run。
+
+**遗留观察项**（非阻塞）：
+- `policies/todo/test_blueprint_episode.py` 收集报错（import 已删除的
+  `tanh_gaussian_mlp` 顶层模块）——存量问题，策略测试口径是顶层
+  `test_*.py`。
+- MoG 格 ef 的边际 U 非单调性（D5）在训练中的实际影响待观察。
