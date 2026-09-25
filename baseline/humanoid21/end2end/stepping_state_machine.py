@@ -628,3 +628,32 @@ def count_falls(
         else:
             j += 1
     return falls
+
+
+def fall_onset_mask(
+    phi: np.ndarray,
+    *,
+    stand_hi: float = 0.7,
+    fall_lo: float = 0.5,
+    min_frames: int = 10,
+) -> np.ndarray:
+    """Boolean mask marking the onset frame of each real fall —
+    same detection as :func:`count_falls`.  Used to place a sharp
+    per-event penalty exactly on the collapse transition, which the
+    discounted-return critic then propagates back onto the causal
+    (destabilizing) frames."""
+    phi = np.asarray(phi, dtype=np.float32)
+    n = len(phi)
+    mask = np.zeros(n, dtype=bool)
+    j = 0
+    while j < n - 1:
+        if phi[j] >= stand_hi and phi[j + 1] < fall_lo:
+            k = j + 1
+            while k < n and phi[k] < fall_lo:
+                k += 1
+            if k - (j + 1) >= min_frames:
+                mask[j + 1] = True
+            j = k
+        else:
+            j += 1
+    return mask

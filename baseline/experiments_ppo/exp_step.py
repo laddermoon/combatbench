@@ -53,6 +53,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     clock_foot_weights,
     count_falls,
     detect_step_cycles,
+    fall_onset_mask,
     single_support_mask,
 )
 
@@ -92,12 +93,13 @@ class Step(CombatExperimentPPOBase):
 
     # --- Reward channels ---
     _channel_names = ("r_potential", "r_left_foot", "r_right_foot",
-                      "r_torso")
+                      "r_torso", "r_fall")
     _channel_gammas = {
         "r_potential": 0.99,
         "r_left_foot": 0.90,
         "r_right_foot": 0.90,
         "r_torso": 0.99,
+        "r_fall": 0.99,
     }
     _gae_lambda: float = 0.95
 
@@ -163,6 +165,17 @@ class Step(CombatExperimentPPOBase):
     # ordinary stepping sway is free (u2100 dump: standing p50=1.28,
     # p75=1.85 in v² units).
     torso_sway_floor: float = 1.5
+
+    # --- Fall event penalty (r_fall) ---
+    # Dump check: pre-fall sway is NOT extreme (median 1.16 vs stable
+    # 1.28) — sway doesn't predict falls, so the sway penalty can't fix
+    # them (it only trades stepping for stiffness, v4-v6 all confirmed
+    # step decay).  The diffuse φ-return cost of a fall (~0.3 spread
+    # over the whole downed span) under-weights the causal frames;
+    # a sharp per-event penalty at collapse onset gives clean credit
+    # assignment back to the destabilizing swing.
+    fall_penalty: float = 0.5
+    r_fall_actor_weight: float = 2.0
 
     # --- r_potential actor weight ---
     # Fixed 3.0 in general, partially exempted on stable single-support
@@ -304,6 +317,12 @@ class Step(CombatExperimentPPOBase):
         else:
             r_torso = np.zeros(T_full, dtype=np.float32)
 
+        # --- r_fall: -penalty at each sustained-collapse onset ---
+        r_fall = (
+            -self.fall_penalty
+            * fall_onset_mask(phi_arr).astype(np.float32)
+        )
+
         # --- Foot heights / sole clearance (saturated) ---
         # Reward value uses sole clearance, NOT midpoint h: midpoint
         # rises when the foot pivots on its toe/side edge, which let
@@ -440,6 +459,8 @@ class Step(CombatExperimentPPOBase):
             # Sway penalty only counts while standing — recovery flail
             # after a fall is legitimate motion, not gait noise.
             "r_torso": (self.torso_actor_weight * stable).astype(np.float32),
+            "r_fall": np.full(T_full, self.r_fall_actor_weight,
+                              dtype=np.float32),
         }
 
         all_rewards = {
@@ -447,6 +468,7 @@ class Step(CombatExperimentPPOBase):
             "r_left_foot": r_left_foot,
             "r_right_foot": r_right_foot,
             "r_torso": r_torso,
+            "r_fall": r_fall,
         }
 
         channels: Dict[str, ChannelData] = {}
