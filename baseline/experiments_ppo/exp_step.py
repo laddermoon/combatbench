@@ -126,7 +126,11 @@ class Step(CombatExperimentPPOBase):
     # A per-cycle bonus (spread over the airborne window) raises that
     # ratio to ~50× and aligns the reward with the eval metric exactly:
     # the same detect_step_cycles definition decides both.
-    step_cycle_bonus: float = 0.5
+    # 0.5 ≈ fall cost made swings roughly break-even — policy turned
+    # risk-averse (v7: falls 0.09 but step 0.49).  1.0 vs penalty 0.2
+    # gives a clear 5:1 upside so the gradient favors "swing carefully"
+    # over "don't swing".
+    step_cycle_bonus: float = 1.0
 
     # --- Lift stability gate ---
     # The clock commands a lift every window regardless of balance; the
