@@ -11,7 +11,7 @@
 Same seed=42 and all other params as `standup_floor04`.  A/B pair
 against train_standup_floor04_ppo_20260920_164819.
 
-Watch `policy_stats.std_std` (batch-internal spatial variance of σ):
+Watch `policy_stats.sigma_state_std` (batch-internal spatial variance of σ):
 ≈0 means the σ head stays constant (degenerate — behaves like the
 baseline); >0 means state-dependent exploration is actually used.
 """

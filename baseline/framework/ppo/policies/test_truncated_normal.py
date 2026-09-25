@@ -338,6 +338,15 @@ class TestExportStrictLoading(unittest.TestCase):
         self.assertEqual(p["arch"]["hidden_dim"], HIDDEN_DIM)
         self.assertIn("state_dict_keys", p)
         self.assertIsInstance(p["state_dict_keys"], list)
+        # Distribution identity metadata (strictly validated at load)
+        self.assertEqual(
+            p["distribution_kind"], "diagonal_truncated_normal_v1")
+        self.assertEqual(p["std_source"], "shared")
+        self.assertEqual(p["std_parameterization"], "log_std_v1")
+        self.assertEqual(
+            p["uncertainty_kind"], "marginal_peak_width_v1")
+        self.assertEqual(
+            p["exploration_kind"], "log_std_multiplicative_v1")
 
     def test_export_roundtrip_exact(self):
         """Export → reload produces identical actions on non-zero input.
@@ -400,6 +409,30 @@ class TestExportStrictLoading(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             bp.build()
         self.assertIn("class mismatch", str(ctx.exception).lower())
+
+    def test_export_rejects_wrong_metadata(self):
+        """Wrong distribution-identity field → RuntimeError."""
+        bp, _ = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = self._load_payload()
+            payload[key] = "bogus"
+            self._save_payload(payload)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
+
+    def test_export_rejects_missing_metadata(self):
+        """Missing distribution-identity field → RuntimeError."""
+        bp, _ = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = self._load_payload()
+            del payload[key]
+            self._save_payload(payload)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
 
     def test_export_no_silent_param_swallowing(self):
         """**_ignored removed: unknown kwargs must raise TypeError.
@@ -539,10 +572,10 @@ class TestExportParity(unittest.TestCase):
         bp = p.to_blueprint(dest_path=tempfile.mkdtemp(prefix="parity_"))
         loaded = bp.build()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
-        # Use the same random seed for both sampling calls
-        torch.manual_seed(12345)
+        # Use the same seed for both sampling calls (per-policy RNG)
+        p.reset(12345)
         expected_action, expected_lp = p.sample(obs, explore_factor=0.5, want_extra=True)
-        torch.manual_seed(12345)
+        loaded.reset(12345)
         actual_action, actual_lp = loaded.sample(obs, explore_factor=0.5, want_extra=True)
         np.testing.assert_allclose(actual_action, expected_action, rtol=0, atol=0,
                                    err_msg="Sampled action parity failed")

@@ -723,6 +723,21 @@ class TestStats(unittest.TestCase):
         self.assertAlmostEqual(s["std_mean"], math.exp(-1.0), places=4)
         # Components near-identical at init → overlap ≈ 1
         self.assertGreater(s["component_overlap"], 0.9)
+        # σ head is (w=0, b=-1) at init → σ constant → spread ≈ 0
+        self.assertAlmostEqual(s["sigma_state_std"], 0.0, places=6)
+
+    def test_sigma_state_std_positive_when_sigma_varies(self):
+        """Perturbing the σ head makes σ state-dependent → stat > 0."""
+        p = _make_policy()
+        obs = torch.randn(50, OBS_DIM)
+        with torch.no_grad():
+            # σ rows live after logits (K) and means (K·D) in the head
+            p.head.weight[K + K * ACTION_DIM:, :].normal_(0, 0.3)
+        ev = p.evaluate_actions(
+            obs, torch.zeros(50, ACTION_DIM), torch.zeros(50),
+            want_stats=True,
+        )
+        self.assertGreater(ev.stats["sigma_state_std"], 1e-3)
 
 
 class TestDegenerateEquivalence(unittest.TestCase):
@@ -779,9 +794,9 @@ class TestDegenerateEquivalence(unittest.TestCase):
         only by float rounding."""
         state, mix = self._make_pair()
         obs = torch.randn(64, OBS_DIM)
-        torch.manual_seed(123)
+        state.reset(123)
         a_s, _ = state.sample_action(obs)
-        torch.manual_seed(123)
+        mix.reset(123)
         a_m, _ = mix.sample_action(obs)
         torch.testing.assert_close(a_m, a_s, rtol=0, atol=1e-5)
 
@@ -803,6 +818,15 @@ class TestExport(unittest.TestCase):
         self.assertEqual(payload["format_version"], 1)
         self.assertEqual(payload["policy_class"], "MixtureTruncatedNormalPolicy")
         self.assertEqual(payload["arch"]["num_components"], K)
+        # Distribution identity metadata (strictly validated at load)
+        self.assertEqual(
+            payload["distribution_kind"], "mixture_truncated_normal_v1")
+        self.assertEqual(payload["std_source"], "state")
+        self.assertEqual(payload["std_parameterization"], "log_std_v1")
+        self.assertEqual(
+            payload["uncertainty_kind"], "marginal_renyi2_width_v1")
+        self.assertEqual(
+            payload["exploration_kind"], "log_std_multiplicative_v1")
 
     def test_manifest(self):
         self._make_export()
@@ -820,6 +844,14 @@ class TestExport(unittest.TestCase):
         self.assertEqual(
             manifest["uncertainty_kind"], "marginal_renyi2_width_v1",
         )
+        self.assertEqual(
+            manifest["distribution_kind"], "mixture_truncated_normal_v1",
+        )
+        self.assertEqual(manifest["std_source"], "state")
+        self.assertEqual(
+            manifest["std_parameterization"], "log_std_v1")
+        self.assertEqual(
+            manifest["exploration_kind"], "log_std_multiplicative_v1")
         self.assertEqual(manifest["arch"]["num_components"], K)
 
     def test_rejects_wrong_k(self):
@@ -865,6 +897,30 @@ class TestExport(unittest.TestCase):
             bp.build()
         self.assertIn("class mismatch", str(ctx.exception).lower())
 
+    def test_rejects_wrong_metadata(self):
+        """Wrong distribution-identity field → RuntimeError."""
+        bp = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = torch.load(self._model_path, map_location="cpu")
+            payload[key] = "bogus"
+            torch.save(payload, self._model_path)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
+
+    def test_rejects_missing_metadata(self):
+        """Missing distribution-identity field → RuntimeError."""
+        bp = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = torch.load(self._model_path, map_location="cpu")
+            del payload[key]
+            torch.save(payload, self._model_path)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
+
     def test_no_repo_imports(self):
         self._make_export()
         code = (Path(self._tmp) / "policy.py").read_text()
@@ -885,9 +941,9 @@ class TestExport(unittest.TestCase):
             actual = loaded.act(obs)[0]
             np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
         obs = np.random.randn(OBS_DIM).astype(np.float32)
-        torch.manual_seed(12345)
+        p.reset(12345)
         a_exp, lp_exp = p.sample(obs, explore_factor=0.5, want_extra=True)
-        torch.manual_seed(12345)
+        loaded.reset(12345)
         a_act, lp_act = loaded.sample(
             obs, explore_factor=0.5, want_extra=True,
         )

@@ -208,6 +208,10 @@ class _TruncNormalInferenceNet(nn.Module):
 # ---------------------------------------------------------------------------
 
 _EXPORT_FORMAT_VERSION = 1
+_DISTRIBUTION_KIND = "diagonal_truncated_normal_v1"
+_STD_PARAMETERIZATION = "log_std_v1"
+_EXPLORATION_KIND = "log_std_multiplicative_v1"
+_STD_SOURCE = "shared"
 
 
 class ExportedTruncNormPolicy(Policy, StochasticPolicy):
@@ -249,6 +253,18 @@ class ExportedTruncNormPolicy(Policy, StochasticPolicy):
                 f"Policy class mismatch: file says {pcls!r}, "
                 f"loader expects 'TruncatedNormalPolicy'."
             )
+        for key, expected in (
+            ("distribution_kind", _DISTRIBUTION_KIND),
+            ("std_parameterization", _STD_PARAMETERIZATION),
+            ("exploration_kind", _EXPLORATION_KIND),
+            ("std_source", _STD_SOURCE),
+        ):
+            got = payload.get(key, "missing")
+            if got != expected:
+                raise RuntimeError(
+                    f"{key} mismatch: file says {got!r}, "
+                    f"loader expects {expected!r}."
+                )
         arch = payload.get("arch", {})
         obs_dim = int(arch.get("obs_dim", payload.get("obs_dim", 0)))
         action_dim = int(arch.get("action_dim", payload.get("action_dim", 0)))

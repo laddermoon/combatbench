@@ -570,6 +570,11 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         payload = {
             "format_version": 1,
             "policy_class": "MixtureTruncatedNormalPolicy",
+            "distribution_kind": "mixture_truncated_normal_v1",
+            "std_source": "state",
+            "std_parameterization": "log_std_v1",
+            "uncertainty_kind": "marginal_renyi2_width_v1",
+            "exploration_kind": "log_std_multiplicative_v1",
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
@@ -591,6 +596,10 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         manifest = {
             "format_version": 1,
             "policy_class": "MixtureTruncatedNormalPolicy",
+            "distribution_kind": "mixture_truncated_normal_v1",
+            "std_source": "state",
+            "std_parameterization": "log_std_v1",
+            "exploration_kind": "log_std_multiplicative_v1",
             "arch": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,

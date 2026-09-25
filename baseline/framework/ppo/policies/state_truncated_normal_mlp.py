@@ -11,7 +11,8 @@ renormalized — same math, same sampling, same log_prob, same
 explore_factor scaling, same uncertainty definition U = 1/(2×peak) as
 the global-σ baseline.  All of that is inherited unchanged; this class
 only overrides the σ source (``_policy_params``), the network
-architecture (``__init__``), and the stats dict (adds ``std_std``).
+architecture (``__init__``), and the stats dict (adds
+``sigma_state_std``).
 Only the parameterization of σ differs, so A/B against
 ``TruncatedNormalPolicy`` isolates exactly one variable:
 state-dependence of exploration width.
@@ -23,7 +24,7 @@ keeps the comparison clean.  See DESIGN_state_truncated_normal.md.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
@@ -124,12 +125,20 @@ class StateTruncatedNormalPolicy(TruncatedNormalPolicy):
         uncertainty: torch.Tensor,
         params: _DistParams,
     ) -> Dict[str, float]:
-        """Parent stats + ``std_std``: spread of σ across the batch.
+        """Parent stats + ``sigma_state_std``: spread of σ across the batch.
 
         ~0 means the σ head is (near-)constant and the policy is
         behaving like the global-σ baseline.
         """
         stats = super()._build_stats(uncertainty, params)
         with torch.no_grad():
-            stats["std_std"] = float(params.policy_sigma.std().item())
+            stats["sigma_state_std"] = float(
+                params.policy_sigma.std().item()
+            )
         return stats
+
+    def _export_extra(self) -> Dict[str, Any]:
+        """Same identity metadata, with std_source = state."""
+        extra = super()._export_extra()
+        extra["std_source"] = "state"
+        return extra

@@ -403,21 +403,21 @@ class TestStats(unittest.TestCase):
         ev = p.evaluate_actions(obs, actions, torch.full((10,), 0.0), want_stats=True)
         self.assertIsNotNone(ev.stats)
         for key in ["uncertainty", "std_mean", "eff_std_mean",
-                    "std_min", "std_max", "std_std", "mean_abs"]:
+                    "std_min", "std_max", "sigma_state_std", "mean_abs"]:
             self.assertIn(key, ev.stats)
 
-    def test_std_std_zero_at_init(self):
-        """std_std ≈ 0 at init (σ constant), > 0 once σ-head is trained."""
+    def test_sigma_state_std_zero_at_init(self):
+        """sigma_state_std ≈ 0 at init (σ constant), > 0 once σ-head is trained."""
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         actions = torch.zeros(50, ACTION_DIM)
         ev = p.evaluate_actions(obs, actions, torch.full((50,), 0.0), want_stats=True)
-        self.assertAlmostEqual(ev.stats["std_std"], 0.0, places=6)
+        self.assertAlmostEqual(ev.stats["sigma_state_std"], 0.0, places=6)
 
         with torch.no_grad():
             p.head.weight[ACTION_DIM:, :].normal_(0, 0.5)
         ev2 = p.evaluate_actions(obs, actions, torch.full((50,), 0.0), want_stats=True)
-        self.assertGreater(ev2.stats["std_std"], 1e-3)
+        self.assertGreater(ev2.stats["sigma_state_std"], 1e-3)
 
 
 class TestDegenerateEquivalence(unittest.TestCase):
@@ -476,9 +476,9 @@ class TestDegenerateEquivalence(unittest.TestCase):
     def test_sample_action_bit_identical(self):
         base, state = self._make_equivalent_pair()
         obs = torch.randn(64, OBS_DIM)
-        torch.manual_seed(123)
+        base.reset(123)
         a_b, lp_b = base.sample_action(obs)
-        torch.manual_seed(123)
+        state.reset(123)
         a_s, lp_s = state.sample_action(obs)
         torch.testing.assert_close(a_s, a_b, rtol=0, atol=0)
         torch.testing.assert_close(lp_s, lp_b, rtol=0, atol=0)
@@ -526,6 +526,15 @@ class TestExportStrictLoading(unittest.TestCase):
         self.assertEqual(p["arch"]["hidden_dim"], HIDDEN_DIM)
         self.assertIn("state_dict_keys", p)
         self.assertIsInstance(p["state_dict_keys"], list)
+        # Distribution identity metadata (strictly validated at load)
+        self.assertEqual(
+            p["distribution_kind"], "diagonal_truncated_normal_v1")
+        self.assertEqual(p["std_source"], "state")
+        self.assertEqual(p["std_parameterization"], "log_std_v1")
+        self.assertEqual(
+            p["uncertainty_kind"], "marginal_peak_width_v1")
+        self.assertEqual(
+            p["exploration_kind"], "log_std_multiplicative_v1")
 
     def test_export_roundtrip_exact(self):
         """Export → reload produces identical actions on non-zero input."""
@@ -578,6 +587,30 @@ class TestExportStrictLoading(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             bp.build()
         self.assertIn("class mismatch", str(ctx.exception).lower())
+
+    def test_export_rejects_wrong_metadata(self):
+        """Wrong distribution-identity field → RuntimeError."""
+        bp, _ = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = self._load_payload()
+            payload[key] = "bogus"
+            self._save_payload(payload)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
+
+    def test_export_rejects_missing_metadata(self):
+        """Missing distribution-identity field → RuntimeError."""
+        bp, _ = self._make_export()
+        for key in ("distribution_kind", "std_parameterization",
+                    "exploration_kind", "std_source"):
+            payload = self._load_payload()
+            del payload[key]
+            self._save_payload(payload)
+            with self.assertRaises(RuntimeError, msg=key):
+                bp.build()
+            self._make_export()
 
     def test_export_no_silent_param_swallowing(self):
         """Unknown kwargs must raise TypeError."""
@@ -683,9 +716,9 @@ class TestExportParity(unittest.TestCase):
         bp = p.to_blueprint(dest_path=tempfile.mkdtemp(prefix="stn_parity_"))
         loaded = bp.build()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
-        torch.manual_seed(12345)
+        p.reset(12345)
         expected_action, expected_lp = p.sample(obs, explore_factor=0.5, want_extra=True)
-        torch.manual_seed(12345)
+        loaded.reset(12345)
         actual_action, actual_lp = loaded.sample(obs, explore_factor=0.5, want_extra=True)
         np.testing.assert_allclose(actual_action, expected_action, rtol=0, atol=0,
                                    err_msg="Sampled action parity failed")

@@ -89,7 +89,7 @@ forward / sample_action / evaluate_actions 输出 **bit-identical**
 ## 7. stats 增量
 
 沿用基线 keys（uncertainty/std_mean/eff_std_mean/std_min/std_max/
-mean_abs），新增 `std_std`：batch 内 σ 的空间方差。≈0 表示 σ head
+mean_abs），新增 `sigma_state_std`：batch 内 σ 的空间方差。≈0 表示 σ head
 接近常数（行为退化为全局 σ 基线）；>0 表示状态依赖性被实际使用。
 
 ## 8. 接入方式

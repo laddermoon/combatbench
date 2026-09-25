@@ -547,10 +547,17 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         )
 
     def _export_extra(self) -> Dict[str, Any]:
-        """Extra payload/manifest fields injected by subclasses.
+        """Distribution identity metadata for the export.
 
-        Empty in the base class so legacy artifacts stay byte-identical;
-        bounded-σ variants inject their distribution/config metadata
-        (bounds, parameterization kind, explore_alpha) here.
+        Base values describe the unbounded shared-σ cell; subclasses
+        override (bounded replaces the whole dict, state variants flip
+        ``std_source``).  The export templates validate these fields
+        strictly at load time.
         """
-        return {}
+        return {
+            "distribution_kind": "diagonal_truncated_normal_v1",
+            "std_source": "shared",
+            "std_parameterization": "log_std_v1",
+            "uncertainty_kind": "marginal_peak_width_v1",
+            "exploration_kind": "log_std_multiplicative_v1",
+        }

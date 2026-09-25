@@ -188,11 +188,11 @@ class TestDegenerateEquivalence(unittest.TestCase):
 
     def test_sample_bit_identical(self):
         for e in (0.0, 0.5, -0.5):
-            torch.manual_seed(9)
+            self.state.reset(9)
             a1, lp1 = self.state.sample_action(
                 self.obs, explore_factor=e,
             )
-            torch.manual_seed(9)
+            self.shared.reset(9)
             a2, lp2 = self.shared.sample_action(
                 self.obs, explore_factor=e,
             )
@@ -516,11 +516,11 @@ class TestExport(unittest.TestCase):
         ep = self.mod.ExportedStateBoundedStdTruncNormPolicy()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         for e in (0.0, 0.5, -0.7):
-            torch.manual_seed(21)
+            self.p.reset(21)
             a_t, lp_t = self.p.sample(
                 obs, explore_factor=e, want_extra=True,
             )
-            torch.manual_seed(21)
+            ep.reset(21)
             a_e, lp_e = ep.sample(
                 obs, explore_factor=e, want_extra=True,
             )
