@@ -342,14 +342,14 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
     ch = trajs[0].channels
 
     rl = ch["r_left_foot"].reward
-    # dense clip(h,0,.05) over the ramp + bonus .5/10 = .05/frame
-    expected_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.05
+    # dense clip(h,0,.05) over the ramp + bonus 1.0/10 = .1/frame
+    expected_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.1
     np.testing.assert_allclose(rl[10:20], expected_l, rtol=1e-5, atol=1e-6)
-    assert rl[:10].max() == 0.0 and rl[20:].max() < 0.05
+    assert rl[:10].max() == 0.0 and rl[20:].max() < 0.1
 
     rr = ch["r_right_foot"].reward
     np.testing.assert_allclose(rr[40:50], expected_l, rtol=1e-5, atol=1e-6)
-    assert rr[:40].max() < 0.05
+    assert rr[:40].max() < 0.1
 
 
 def test_step_cycle_bonus_skips_invalid_swings():
