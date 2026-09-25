@@ -1,5 +1,12 @@
 """PreTanhNormalPolicy — diagonal Gaussian in pre-tanh space.
 
+[STATUS: 未完成 / on hold] 本策略族（含 state 变体）暂停开发：实现已
+落地并通过单元测试，但未经正式训练验证，也未按 TruncatedNormal /
+BoundedStd 家族的标准完成端到端验收。短期内不计划完善，代码保留
+供后续参考或继续。新实验请优先使用 truncated_normal /
+bounded_std_truncated_normal 系列。
+
+
 The distribution lives on the latent z; the action is a = tanh(z):
 
     z_d ~ N(mu_d(s), sigma_d^2),    a_d = tanh(z_d)

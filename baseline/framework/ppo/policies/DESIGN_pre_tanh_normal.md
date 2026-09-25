@@ -1,5 +1,14 @@
 # Design: PreTanhNormalPolicy — 共享 σ、动作覆盖单调可控的 pre-tanh 正态策略
 
+> **STATUS: 未完成 / on hold（2026-09-25 标记）**
+>
+> 本策略族（`PreTanhNormalPolicy` 与 `StatePreTanhNormalPolicy`）暂停开发：
+> 实现已落地、单元测试存在，但未经正式训练验证，也未达到
+> TruncatedNormal / BoundedStd 家族的端到端验收标准（训练验证、
+> 多 seed、ef 实战路径）。短期内不计划完善，代码与本文档保留供后续
+> 参考或继续。新工作请优先使用 `truncated_normal` /
+> `bounded_std_truncated_normal` 系列。
+
 ## 1. 状态与已确认的决策
 
 本文冻结第一版的数学语义与数值验收要求，**不表示代码已实现或训练已验证**。

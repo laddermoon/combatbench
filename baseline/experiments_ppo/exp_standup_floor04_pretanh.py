@@ -1,5 +1,10 @@
 """Policy A/B variant of `standup_floor04`: pre-tanh normal actor.
 
+[STATUS: 未完成 / on hold] PreTanhNormalPolicy 族暂停开发，未做正式
+训练验证。本实验保留供参考，不建议启动——见
+DESIGN_pre_tanh_normal.md 的状态说明。
+
+
   standup_floor04          : TruncatedNormalPolicy — σ is a global
                              nn.Parameter shared by all states
   standup_floor04_statesig : StateTruncatedNormalPolicy — σ = f(obs)

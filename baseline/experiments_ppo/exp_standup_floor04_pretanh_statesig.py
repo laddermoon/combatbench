@@ -1,5 +1,10 @@
 """Policy A/B variant of `standup_floor04`: state-σ pre-tanh actor.
 
+[STATUS: 未完成 / on hold] StatePreTanhNormalPolicy 族暂停开发，未做
+正式训练验证。本实验保留供参考，不建议启动——见
+DESIGN_pre_tanh_normal.md 的状态说明。
+
+
   standup_floor04_pretanh          : PreTanhNormalPolicy — shared σ
   standup_floor04_pretanh_statesig : StatePreTanhNormalPolicy — σ = f(obs)
                                      head output (init σ ≡ e⁻¹ ≡ shared

@@ -1,6 +1,11 @@
 """StatePreTanhNormalPolicy — state-dependent σ variant of
 PreTanhNormalPolicy.
 
+[STATUS: 未完成 / on hold] 与父类 PreTanhNormalPolicy 一同暂停开发：
+未经验证的训练实验，短期内不计划完善。详见
+pre_tanh_normal_mlp.py 与 DESIGN_pre_tanh_normal.md 的状态说明。
+
+
 Identical distribution, exploration mapping, uncertainty, scoring path
 and guards — the ONLY difference is where σ comes from:
 
