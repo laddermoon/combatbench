@@ -409,6 +409,8 @@ def main() -> None:
         os.close(log_fd)
     else:
         run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "pid", "w") as f:
+            f.write(str(os.getpid()) + "\n")
 
     # --- Logging setup ---
     log_path = _setup_logging(run_dir, background=args.background)
