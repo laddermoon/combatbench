@@ -27,15 +27,15 @@
 | A1 | 全部 8 格在该任务上可训练 | 47/48 run 收敛到 ≥99%；唯一失败是 ef 触发的崩溃（A4） |
 | A2 | **MoG 加速收敛** | ef0 批次 12 对配对：u@100% 中位 −72u，95%CI [−131,−19]，唯一排 0 的轴效应；改善集中在弱格（机制一致） |
 | A3 | **ef=0.5 加速收敛** | 24 对配对：u@50% −41（CI[−71,−12]），u@100% −68（CI[−105,−30]），两个 CI 均排 0 |
-| A4 | **ef 的安全性依赖 σ 有界化** | bounded 格 ef：Δbest=0.000（12/12 无损）；unbounded 格 ef：`statesig_s42` 灾难性崩溃（600u 全程 success≈0-2%，σ 卡 ~0.39，U 0.16）。无界乘性 ef + state-σ 是当前最危险组合 |
-| A5 | **unbounded + state-σ 是最脆弱格** | 两轮中仅有的 2 个未达标 run 都来自它：ef0_s44（u100 未达，best 0.898）+ ef05_s42（崩溃） |
+| A4 | **ef 的安全性依赖 σ 有界化** | bounded 格 ef：Δbest=0.000（12/12 无损）；unbounded 格 ef：`statesig_s42` 灾难性崩溃（600u 全程 success≈0-2%，σ 卡 ~0.39，U 0.16）。ef 崩溃风险集中在无界格 |
+| A5 | **`statesig` 格（单分量+state-σ+unbounded）是最脆弱格** | 两轮仅有的 2 个未达标 run 都来自它：ef0_s44（u100 未达，best 0.898）+ ef05_s42（崩溃）。注意归因边界：`mixture` 同为 unbounded+state-σ（但带 MoG）却两轮全优——脆弱性是这个三元组合特有的，非单因子问题（推测：MoG 的分量冗余吸收了 state-σ 无界的失控风险） |
 
 ### B 级 — 线索级（方向一致但未达显著/单点观察）
 
 | # | 结论 | 证据与保留 |
 |---|------|-----------|
 | B1 | bounded-σ 是"稳定器"：压缩尾部风险多于移动均值 | ef0 中 statesig_s44 的 u50 545→355、u100 n/r→490（bounded 版修复）；ef05 中 bounded 格 Δu100=−80 大于 unbounded 的 −53 且零代价。方向一致、机制吻合，但 ef0 内 Δu100 CI[−89,+26] 跨 0 |
-| B2 | state-σ 增加方差，净收益未证明 | ef0 Δu100=+13±76（纯噪声水平）；但两轮里最差结果都含 state-σ。也可能 ef 在 state 格平均收益更大（Δu50 −54 vs −29）——高方差高收益的取舍，未定 |
+| B2 | state-σ 因子本身中性：收益/风险都取决于所在格 | ef0 轴效应 Δu100=+13±76（噪声水平）；`statesig` 两轮失败但它含 state-σ（A5 归因在格不在因子）；ef 在 state 格平均收益更大（Δu50 −54 vs −29）——若属实是优点，待定 |
 | B3 | `mixture` 与 `mix_shared_bnd` 谁是前沿格未决 | ef0：里程碑口径 mix_shared_bnd 第一（u100 中位 345），AUSC 口径 mixture 第一（0.480 vs 0.426）；ef05 下 mixture 依然 AUSC 领先。两格大概率打平或差异小于噪声 |
 | B4 | ef=0.5 下单格最强表现出现在 MoG+bounded+state | `mixture_boundedstd_statesig_s42` AUSC=0.622、`mixture_s42` 0.618，全场最高；但单 seed 高值，需复证 |
 
@@ -51,7 +51,7 @@
 
 **当前最可信的设计建议**：MoG + bounded-σ + ef≈0.5。
 三个 A 级效应叠加指向同一方向——MoG 提速（A2）、ef 提速（A3）、bounded 让 ef 安全且收益最大化（A4+B1）。
-state-σ 是开放项：它可能带来更大 ef 收益（B2）但也带来两轮中全部的失败模式（A5）。
+state-σ 是开放项：单分量无界形态（`statesig`）失败两次（A5），但同一因子在 MoG 内（`mixture`）和 bounded 形态（`bnd_statesig`/`mix_bnd_statesig`）都是顶级表现——风险属于具体格而非 state-σ 因子本身。
 
 **若要继续缩小不确定性，最划算的下一步**：前沿 3-4 格（`mixture`、`mix_shared_bnd`、`mix_bounded_statesig`、`boundedstd_statesig` + `base` 对照）补 seed 至 5-6 个/格，用 AUSC+配对差判定；或扫 ef 强度（bounded 格上 0.3/0.7/1.0）。
 
