@@ -391,6 +391,46 @@ def test_step_cycle_bonus_off_window_lift_unpaid():
     assert rl.max() == 0.0
 
 
+def test_step_cycle_bonus_same_foot_repeat_unpaid():
+    """A cycle repeating the last stepped foot loses the bonus —
+    the alternation token.  Dense reward still pays (in-window)."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 80
+    # left cycles in window 0 (t 2-8) and window 2 (t 42-48); the
+    # intervening right window (t 20-40) produces NO valid right cycle
+    ep = _make_step_episode(T, [(2, 8, "left", 0.08), (42, 48, "left", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rl = trajs[0].channels["r_left_foot"].reward
+
+    # first cycle: dense (pos 2-7 gated on) + bonus 1.0/6 ≈ .167
+    assert rl[2:8].max() > 0.15
+    # repeat after the skipped right window: dense only, no bonus
+    assert 0.0 < rl[42:48].max() < 0.06
+
+
+def test_step_cycle_bonus_alternation_restores_payment():
+    """After the other foot completes a cycle, the token flips and
+    the original foot's bonus pays again."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 80
+    # L (win0), R (win1, t 22-28 → pos 22-27), L (win2, t 42-48)
+    ep = _make_step_episode(
+        T, [(2, 8, "left", 0.08), (22, 28, "right", 0.08),
+            (42, 48, "left", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    ch = trajs[0].channels
+    # all three cycles fully paid (dense + ~.167 bonus per frame)
+    assert ch["r_left_foot"].reward[2:8].max() > 0.15
+    assert ch["r_right_foot"].reward[22:28].max() > 0.15
+    assert ch["r_left_foot"].reward[42:48].max() > 0.15
+
+
 def test_step_cycle_bonus_skips_invalid_swings():
     from baseline.experiments_ppo.exp_step import Step
 

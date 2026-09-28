@@ -410,10 +410,23 @@ class Step(CombatExperimentPPOBase):
             )
             paid_windows = set()
             bonuses = []
+            # Alternation token: the completion bonus only pays when the
+            # cycle's foot differs from the last DETECTED valid cycle's
+            # foot.  u2200 dump showed 79% of same-foot repeats are
+            # cross-window — the other foot "taps" (1-3 airborne frames,
+            # debounce-filtered, invalid) instead of completing its
+            # cycle, then the dominant foot steps again.  With the
+            # token, a repeat earns no bonus — the only way back to
+            # bonus income is the other foot completing a real cycle.
+            # The token flips on EVERY detected cycle (paid or not) —
+            # it tracks what physically stepped last, not what was paid.
+            last_stepped = None
             for foot, t_off, t_land, _h_pk in det["cycles"]:
                 wid = int(t_off) // half
                 gate = gate_l if foot == "left" else gate_r
-                if not gate[t_off] or wid in paid_windows:
+                alternating = last_stepped is None or foot != last_stepped
+                last_stepped = foot
+                if not gate[t_off] or wid in paid_windows or not alternating:
                     continue
                 paid_windows.add(wid)
                 bonuses.append((foot, t_off, t_land))

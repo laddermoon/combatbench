@@ -410,3 +410,28 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
 - 策略消费 `ctx.reference_action` + `delta_factor` + `delta_mix`：σ_eff² = (1−λ)·σ_policy² + λ·(c·|m_θ−a_ref|)² 形式的尺度混合（各策略族按自身 σ 语义适配，bounded 变体需先转回 σ 域再混）。
 - 实验侧装配 `SamplingSpec`（历史 export 目录 → `ReferenceSpec`）。
 - `delta`（frozen）备选模式未实现——如需对照实验再加字段。
+
+## 14. S3 策略响应设计草案（reference_action + delta_mix 消费）
+
+> 整理自 2026-10 讨论；待用户拍板后实施。
+
+### 14.1 已锁定语义
+
+- `a_ref` = wrapper 在 rollout 时算好的历史策略加权确定性动作（动作空间集成，冻结数据，逐帧记录）
+- `Δ_θ(s) = m_θ(s) − a_ref` 由策略在 sample/evaluate 时用**当前参数**重算（动态 Δ，非 rollout 冻结）
+- 梯度：`a_ref` 常数；`m_θ` 完整求导不 detach（数学基线；detach 留作对照变体）
+- `σ_eff² = (1−λ)·σ_policy,ef² + λ·(c·|Δ|)² + ε²`；λ=0 必须退回 ef-only 行为
+- 复合顺序：族内先处理 ef → σ² 域混入 Δ 项
+
+### 14.2 待决策点
+
+1. bounded 混合位置：σ 域 + clamp（倾向）vs raw 域偏移
+2. MoG Δ 粒度：per-component `(K,D)`（倾向，对齐"探索按分量"）vs representative `(D,)`
+3. ε 形式：固定 ε² 下界 vs λ=1 残余 σ_policy 项
+4. λ>0 smoke 验收标准（eff_std_mean 随 ‖Δ‖ 单调、ratio 守门等）
+
+### 14.3 代码落点
+
+- single 族：`effective_sigma`/`_distribution_params` 单缝，ef→ctx 参数切换
+- MoG 族：`_explored_sigma` 单缝；μ_k/π 在 `_forward_raw` 已有
+- 10 个 export 模板同步；λ=0 路径 bit-identical 为验收基准
