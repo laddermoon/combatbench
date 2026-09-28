@@ -112,7 +112,7 @@ class TestBoundedSigmaMap(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(4, OBS_DIM)
         with self.assertRaises(ValueError):
-            p.sample_action(obs, explore_factor=1.5)
+            p.sample_action(obs, ctx=SamplingContext(explore_factor=1.5))
         with self.assertRaises(ValueError):
             p.evaluate_actions(
                 obs,  torch.zeros(4, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.full((4,), -1.2)))
@@ -123,7 +123,7 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(64, OBS_DIM)
         for e in (0.0, 0.5, -1.0):
-            a, _ = p.sample_action(obs, explore_factor=e)
+            a, _ = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue((a >= -1.0).all() and (a <= 1.0).all())
 
     def test_sample_vs_evaluate_log_prob(self):
@@ -251,9 +251,9 @@ class TestDegenerateEquivalence(unittest.TestCase):
             shared, state = self._make_equivalent_pair()
             obs = torch.randn(64, OBS_DIM)
             shared.reset(123)
-            a_h, lp_h = shared.sample_action(obs, explore_factor=e)
+            a_h, lp_h = shared.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             state.reset(123)
-            a_s, lp_s = state.sample_action(obs, explore_factor=e)
+            a_s, lp_s = state.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             torch.testing.assert_close(a_s, a_h, rtol=0, atol=0)
             torch.testing.assert_close(lp_s, lp_h, rtol=0, atol=0)
 

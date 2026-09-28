@@ -91,3 +91,22 @@ class SamplingContext:
         """Rebuild a ctx from already-sliced field values (same filtering)."""
         names = {f.name for f in _dc_fields(cls)}
         return cls(**{k: v for k, v in fields.items() if k in names})
+
+    # ------------------------------------------------------------------
+    # Policy-side helpers
+    # ------------------------------------------------------------------
+    def has_delta(self) -> bool:
+        """True iff the delta-scale mechanism is active this frame/batch.
+
+        Policies must short-circuit when False (return σ_ef untouched) —
+        that is what makes the λ=0 / no-reference path bit-identical to
+        the pre-delta behavior.  ``delta_mix`` may be a scalar or a batched
+        tensor; batched ⇒ checked elementwise-conservatively (any ≠ 0
+        activates, the mix itself stays per-element).
+        """
+        if self.reference_action is None:
+            return False
+        dm = self.delta_mix
+        if hasattr(dm, "any"):  # ndarray / torch.Tensor
+            return bool((dm != 0).any())
+        return dm != 0

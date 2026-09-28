@@ -423,12 +423,12 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
 - `σ_eff² = (1−λ)·σ_policy,ef² + λ·(c·|Δ|)² + ε²`；λ=0 必须退回 ef-only 行为
 - 复合顺序：族内先处理 ef → σ² 域混入 Δ 项
 
-### 14.2 待决策点
+### 14.2 决策（已定）
 
-1. bounded 混合位置：σ 域 + clamp（倾向）vs raw 域偏移
-2. MoG Δ 粒度：per-component `(K,D)`（倾向，对齐"探索按分量"）vs representative `(D,)`
-3. ε 形式：固定 ε² 下界 vs λ=1 残余 σ_policy 项
-4. λ>0 smoke 验收标准（eff_std_mean 随 ‖Δ‖ 单调、ratio 守门等）
+1. **bounded 混合位置 = σ² 域 + clamp**：`σ_eff = clip(√((1−λ)σ²+λ(cΔ)²+ε²), σ_min, σ_max)`，c/λ 跨族量纲统一
+2. **MoG Δ 粒度 = per-component `(K,D)`**：`Δ_k = μ_k(s) − a_ref`，对齐"探索按分量"原则
+3. **ε = 固定 ε² 下界**（量级取各族 σ_min²）
+4. **smoke 验收**：λ=0 bit-identical（对照 ef-only）；λ>0 检查 `eff_std_mean` 随 ‖Δ‖ 单调 + ratio 守门 + 无 NaN
 
 ### 14.3 代码落点
 

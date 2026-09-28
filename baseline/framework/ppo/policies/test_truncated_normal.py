@@ -219,16 +219,16 @@ class TestExploreIntensity(unittest.TestCase):
         p.log_std.data.fill_(0.0)  # σ = 1.0
 
         # Neutral
-        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), explore_factor=0.0)
+        _, sigma_neutral = p.forward(torch.randn(1, OBS_DIM), ctx=SamplingContext(explore_factor=0.0))
         self.assertAlmostEqual(sigma_neutral[0, 0].item(), 1.0, places=5)
 
         # Suppressed
-        _, sigma_suppressed = p.forward(torch.randn(1, OBS_DIM), explore_factor=-1.0)
+        _, sigma_suppressed = p.forward(torch.randn(1, OBS_DIM), ctx=SamplingContext(explore_factor=-1.0))
         self.assertAlmostEqual(sigma_suppressed[0, 0].item(), 1.0 / 3.0,
                                places=5)
 
         # Expanded
-        _, sigma_expanded = p.forward(torch.randn(1, OBS_DIM), explore_factor=1.0)
+        _, sigma_expanded = p.forward(torch.randn(1, OBS_DIM), ctx=SamplingContext(explore_factor=1.0))
         self.assertAlmostEqual(sigma_expanded[0, 0].item(), 3.0, places=5)
 
     def test_scale_does_not_affect_uncertainty(self):

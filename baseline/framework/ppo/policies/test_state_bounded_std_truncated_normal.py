@@ -170,8 +170,8 @@ class TestDegenerateEquivalence(unittest.TestCase):
 
     def test_forward_bit_identical(self):
         for e in (0.0, 0.5, -1.0, 1.0):
-            m1, s1 = self.state.forward(self.obs, explore_factor=e)
-            m2, s2 = self.shared.forward(self.obs, explore_factor=e)
+            m1, s1 = self.state.forward(self.obs, ctx=SamplingContext(explore_factor=e))
+            m2, s2 = self.shared.forward(self.obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue(torch.equal(m1, m2), f"mean differs at e={e}")
             self.assertTrue(torch.equal(s1, s2), f"sigma differs at e={e}")
 
@@ -190,11 +190,11 @@ class TestDegenerateEquivalence(unittest.TestCase):
         for e in (0.0, 0.5, -0.5):
             self.state.reset(9)
             a1, lp1 = self.state.sample_action(
-                self.obs, explore_factor=e,
+                self.obs, ctx=SamplingContext(explore_factor=e),
             )
             self.shared.reset(9)
             a2, lp2 = self.shared.sample_action(
-                self.obs, explore_factor=e,
+                self.obs, ctx=SamplingContext(explore_factor=e),
             )
             self.assertTrue(torch.equal(a1, a2), f"action differs e={e}")
             self.assertTrue(torch.equal(lp1, lp2))
@@ -223,7 +223,7 @@ class TestStateDependence(unittest.TestCase):
         p = self._perturbed()
         obs = torch.randn(256, OBS_DIM) * 5  # large obs → large |v|
         for e in (0.0, 1.0, -1.0):
-            _, sigma = p.forward(obs, explore_factor=e)
+            _, sigma = p.forward(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue(
                 (sigma >= SIGMA_MIN - 1e-6).all()
                 and (sigma <= SIGMA_MAX + 1e-6).all()
@@ -256,13 +256,13 @@ class TestExploreFactor(unittest.TestCase):
         self.obs = torch.randn(16, OBS_DIM)
 
     def test_e0_identity(self):
-        m0, s0 = self.p.forward(self.obs, explore_factor=0.0)
+        m0, s0 = self.p.forward(self.obs, ctx=SamplingContext(explore_factor=0.0))
         ev = self.p.evaluate_actions(
             self.obs,  torch.rand(16, ACTION_DIM) * 2 - 1, 
             ctx=SamplingContext(explore_factor=torch.zeros(16)))
         # e=0 tensor path must reproduce scalar path exactly
         mt, st = self.p.forward(
-            self.obs, explore_factor=torch.zeros(16)
+            self.obs, ctx=SamplingContext(explore_factor=torch.zeros(16))
         )
         self.assertTrue(torch.equal(m0, mt))
         self.assertTrue(torch.equal(s0, st))
@@ -272,7 +272,7 @@ class TestExploreFactor(unittest.TestCase):
         prev = None
         for e in es:
             _, sigma = self.p.forward(
-                self.obs, explore_factor=float(e)
+                self.obs, ctx=SamplingContext(explore_factor=float(e))
             )
             if prev is not None:
                 self.assertTrue(
@@ -284,24 +284,24 @@ class TestExploreFactor(unittest.TestCase):
     def test_tensor_e_per_frame(self):
         """(B,) e broadcast: row i must equal scalar-e forward on frame i."""
         ef = torch.linspace(-1, 1, 16)
-        m, sigma = self.p.forward(self.obs, explore_factor=ef)
-        _, s_lo = self.p.forward(self.obs, explore_factor=-1.0)
-        _, s_hi = self.p.forward(self.obs, explore_factor=1.0)
+        m, sigma = self.p.forward(self.obs, ctx=SamplingContext(explore_factor=ef))
+        _, s_lo = self.p.forward(self.obs, ctx=SamplingContext(explore_factor=-1.0))
+        _, s_hi = self.p.forward(self.obs, ctx=SamplingContext(explore_factor=1.0))
         self.assertTrue((sigma >= s_lo - 1e-7).all())
         self.assertTrue((sigma <= s_hi + 1e-7).all())
         for i in (0, 5, 15):
             mi, si = self.p.forward(
-                self.obs, explore_factor=torch.full((16,), float(ef[i]))
+                self.obs, ctx=SamplingContext(explore_factor=torch.full((16,), float(ef[i])))
             )
             self.assertTrue(torch.equal(sigma[i : i + 1], si[i : i + 1]))
 
     def test_out_of_range_e_raises(self):
         for e in (1.5, -2.0, float("nan"), float("inf")):
             with self.assertRaises(ValueError, msg=str(e)):
-                self.p.forward(self.obs, explore_factor=e)
+                self.p.forward(self.obs, ctx=SamplingContext(explore_factor=e))
         with self.assertRaises(ValueError):
             self.p.forward(
-                self.obs, explore_factor=torch.full((16,), 2.0)
+                self.obs, ctx=SamplingContext(explore_factor=torch.full((16,), 2.0))
             )
 
     def test_negative_v_direction(self):
@@ -311,8 +311,8 @@ class TestExploreFactor(unittest.TestCase):
         with torch.no_grad():
             p.head.bias[d:].fill_(-2.0)  # v << 0
         obs = torch.randn(4, OBS_DIM)
-        _, s_lo = p.forward(obs, explore_factor=-1.0)
-        _, s_hi = p.forward(obs, explore_factor=1.0)
+        _, s_lo = p.forward(obs, ctx=SamplingContext(explore_factor=-1.0))
+        _, s_hi = p.forward(obs, ctx=SamplingContext(explore_factor=1.0))
         self.assertTrue((s_hi > s_lo).all())
 
 
@@ -410,7 +410,7 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(64, OBS_DIM)
         for e in (-1.0, 1.0):
-            a, _ = p.sample_action(obs, explore_factor=e)
+            a, _ = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue((a >= -1.0).all() and (a <= 1.0).all())
 
     def test_reset_replay(self):

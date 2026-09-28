@@ -26,6 +26,53 @@ from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 # Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
 _EXPLORE_K = math.log(3.0)
 
+#: σ-domain floor for the reference-delta scale: σ_delta² is clamped
+#: at _DELTA_EPS² so a vanishing Δ (λ=1) cannot collapse σ_eff to 0.
+_DELTA_EPS = 1e-2
+
+
+def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
+    """ctx scalar field → float, or (B,) tensor → broadcastable (B,1,...)."""
+    if not torch.is_tensor(x):
+        return float(x)
+    while x.ndim < target.ndim:
+        x = x.unsqueeze(-1)
+    return x
+
+
+def delta_mix_sigma(
+    mean: torch.Tensor,
+    sigma: torch.Tensor,
+    ctx: Optional["SamplingContext"],
+    sigma_min: Optional[float] = None,
+    sigma_max: Optional[float] = None,
+) -> torch.Tensor:
+    """σ²-domain mix of the policy σ with the reference-delta scale.
+
+        σ_eff² = (1−λ)·σ² + λ·max((c·|m − a_ref|)², ε²)
+
+    ``mean``/``sigma`` may be (B, D) (single-component) or (B, K, D)
+    (per-component mixture); ``a_ref`` broadcasts from (D,) or (B, D).
+    Bounded callers pass ``sigma_min``/``sigma_max`` to re-apply their
+    support.  Returns ``sigma`` untouched when the mechanism is off
+    (no reference or λ = 0 everywhere) — that short-circuit keeps the
+    inactive path bit-identical to plain ef behavior.
+    """
+    if ctx is None or not ctx.has_delta():
+        return sigma
+    ref = torch.as_tensor(
+        ctx.reference_action, dtype=sigma.dtype, device=sigma.device,
+    )
+    while ref.ndim < mean.ndim:
+        ref = ref.unsqueeze(-2)
+    c = _ctx_bcast(ctx.delta_factor, sigma)
+    lam = _ctx_bcast(ctx.delta_mix, sigma)
+    delta2 = (c * (mean - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
+    if sigma_min is not None:
+        mixed = mixed.clamp(sigma_min, sigma_max)
+    return mixed
+
 __all__ = [
     "TruncatedNormalPolicy",
 ]
@@ -247,19 +294,39 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         mean = torch.tanh(self.net(obs))  # ensure mean ∈ (-1, 1)
         return mean, self.policy_sigma()
 
-    def _distribution_params(
-        self, obs: torch.Tensor, explore_factor: Any = 0.0,
-    ) -> _DistParams:
-        """Single seam: obs + explore_factor → all distribution tensors.
+    def _delta_sigma(
+        self, mean: torch.Tensor, sigma: torch.Tensor,
+        ctx: Optional[SamplingContext],
+    ) -> torch.Tensor:
+        """Apply the reference-delta σ mix (see ``delta_mix_sigma``).
 
-        The base implementation composes ``_policy_params`` and
-        ``effective_sigma``.  Subclasses whose explore_factor acts on a
-        pre-mapping control coordinate (bounded-σ variants) override
-        this method — recovering that coordinate from an already
-        transformed σ is impossible in saturated regions.
+        ``sigma_min``/``sigma_max`` are picked up from the instance when
+        present (bounded-σ subclasses) so the delta scale respects the
+        same support as the policy σ.
         """
+        return delta_mix_sigma(
+            mean, sigma, ctx,
+            getattr(self, "sigma_min", None),
+            getattr(self, "sigma_max", None),
+        )
+
+    def _distribution_params(
+        self, obs: torch.Tensor, ctx: Optional[SamplingContext] = None,
+    ) -> _DistParams:
+        """Single seam: obs + ctx → all distribution tensors.
+
+        The base implementation composes ``_policy_params``,
+        ``effective_sigma`` (ef scaling) and ``_delta_sigma``
+        (reference-delta mix).  Subclasses whose explore_factor acts on
+        a pre-mapping control coordinate (bounded-σ variants) override
+        this method — recovering that coordinate from an already
+        transformed σ is impossible in saturated regions — and must
+        apply ``_delta_sigma`` on their own eff_sigma.
+        """
+        ef = ctx.explore_factor if ctx is not None else 0.0
         mean, policy_sigma = self._policy_params(obs)
-        eff_sigma = self.effective_sigma(policy_sigma, explore_factor)
+        eff_sigma = self.effective_sigma(policy_sigma, ef)
+        eff_sigma = self._delta_sigma(mean, eff_sigma, ctx)
         return _DistParams(
             mean=mean,
             std_control=torch.log(policy_sigma),
@@ -267,9 +334,9 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             eff_sigma=eff_sigma,
         )
 
-    def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, ctx: Optional[SamplingContext] = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns (mean, effective_sigma), both (B, action_dim) or broadcastable."""
-        params = self._distribution_params(obs, explore_factor)
+        params = self._distribution_params(obs, ctx)
         return params.mean, params.eff_sigma.expand_as(params.mean)
 
     @staticmethod
@@ -298,13 +365,13 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     # ------------------------------------------------------------------
 
     def sample_action(
-        self, obs: torch.Tensor, *, explore_factor: Any = 0.0,
+        self, obs: torch.Tensor, *, ctx: Optional[SamplingContext] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample action ∈ [-1, 1] via inverse-CDF reparameterization.
 
         Returns (action, log_prob) where log_prob is summed over dims.
         """
-        mean, sigma = self.forward(obs, explore_factor=explore_factor)
+        mean, sigma = self.forward(obs, ctx=ctx)
         a, b, log_Z = self._trunc_params(mean, sigma)
 
         # Inverse-CDF sampling:
@@ -360,19 +427,17 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         (without explore scale) so it reflects the policy's own
         certainty.
 
-        TODO(S3): consume ctx.reference_action / delta_factor /
-        delta_mix — currently ignored (framework plumbing only).
+        ``ctx.reference_action`` + ``delta_factor``/``delta_mix`` engage
+        the reference-delta σ mix (see ``delta_mix_sigma``); inactive
+        fields reduce to plain ef behavior bit-identically.
         """
-        explore_factor = (
-            ctx.explore_factor if ctx is not None else 0.0
-        )
         # Single pass yields mean and policy σ; effective σ is the same
         # tensor scaled per-frame by explore_factor.  This satisfies
         # P1-8 (no redundant forward for the U computation) by
         # construction rather than by reuse.  If a future policy makes
         # explore_factor affect mean (e.g. directional noise injection),
         # this structure must be revisited.
-        params = self._distribution_params(obs, explore_factor)
+        params = self._distribution_params(obs, ctx)
         mean, policy_sigma, eff_sigma = (
             params.mean, params.policy_sigma, params.eff_sigma,
         )
@@ -459,15 +524,10 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Stochastic action — sample from truncated normal with ctx."""
-        explore_factor = (
-            ctx.explore_factor if ctx is not None else 0.0
-        )
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
-            action, log_prob = self.sample_action(
-                obs_tensor, explore_factor=explore_factor,
-            )
+            action, log_prob = self.sample_action(obs_tensor, ctx=ctx)
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:
             return action_np, None

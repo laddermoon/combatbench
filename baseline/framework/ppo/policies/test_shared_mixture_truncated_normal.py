@@ -111,7 +111,7 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(64, OBS_DIM)
         for e in (0.0, 0.5, -1.0):
-            a, _ = p.sample_action(obs, explore_factor=e)
+            a, _ = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue((a >= -1.0).all() and (a <= 1.0).all())
 
     def test_sample_vs_evaluate_log_prob(self):
@@ -300,9 +300,9 @@ class TestDegenerateEquivalence(unittest.TestCase):
             state, shared = self._make_equivalent_pair()
             obs = torch.randn(64, OBS_DIM)
             state.reset(123)
-            a_s, lp_s = state.sample_action(obs, explore_factor=e)
+            a_s, lp_s = state.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             shared.reset(123)
-            a_h, lp_h = shared.sample_action(obs, explore_factor=e)
+            a_h, lp_h = shared.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             torch.testing.assert_close(a_h, a_s, rtol=0, atol=0)
             torch.testing.assert_close(lp_h, lp_s, rtol=0, atol=0)
 

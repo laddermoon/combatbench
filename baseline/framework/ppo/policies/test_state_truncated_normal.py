@@ -272,14 +272,14 @@ class TestExploreIntensity(unittest.TestCase):
         _set_const_log_std(p, 0.0)  # σ = 1.0
         obs = torch.randn(1, OBS_DIM)
 
-        _, sigma_neutral = p.forward(obs, explore_factor=0.0)
+        _, sigma_neutral = p.forward(obs, ctx=SamplingContext(explore_factor=0.0))
         self.assertAlmostEqual(sigma_neutral[0, 0].item(), 1.0, places=5)
 
-        _, sigma_suppressed = p.forward(obs, explore_factor=-1.0)
+        _, sigma_suppressed = p.forward(obs, ctx=SamplingContext(explore_factor=-1.0))
         self.assertAlmostEqual(sigma_suppressed[0, 0].item(), 1.0 / 3.0,
                                places=5)
 
-        _, sigma_expanded = p.forward(obs, explore_factor=1.0)
+        _, sigma_expanded = p.forward(obs, ctx=SamplingContext(explore_factor=1.0))
         self.assertAlmostEqual(sigma_expanded[0, 0].item(), 3.0, places=5)
 
     def test_scale_is_multiplicative_on_state_sigma(self):
@@ -293,7 +293,7 @@ class TestExploreIntensity(unittest.TestCase):
         _, sigma_p = p._policy_params(obs)
 
         ei = torch.full((20,), 0.7)
-        _, sigma_eff = p.forward(obs, explore_factor=ei)
+        _, sigma_eff = p.forward(obs, ctx=SamplingContext(explore_factor=ei))
         ratio = (sigma_eff / sigma_p)
         expected = math.exp(0.7 * math.log(3.0))
         self.assertTrue(
@@ -469,8 +469,8 @@ class TestDegenerateEquivalence(unittest.TestCase):
         base, state = self._make_equivalent_pair()
         obs = torch.randn(64, OBS_DIM)
         ei = torch.linspace(-1.0, 1.0, 64)
-        m_b, s_b = base.forward(obs, explore_factor=ei)
-        m_s, s_s = state.forward(obs, explore_factor=ei)
+        m_b, s_b = base.forward(obs, ctx=SamplingContext(explore_factor=ei))
+        m_s, s_s = state.forward(obs, ctx=SamplingContext(explore_factor=ei))
         torch.testing.assert_close(m_s, m_b, rtol=0, atol=0)
         torch.testing.assert_close(s_s, s_b, rtol=0, atol=0)
 

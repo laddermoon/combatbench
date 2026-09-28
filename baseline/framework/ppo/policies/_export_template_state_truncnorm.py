@@ -55,7 +55,8 @@ class SamplingContext:
     """Self-contained sampling context — mirrors the framework's
     ``baseline.framework.ppo.sampling_context.SamplingContext`` so this
     file needs no repo import.  Fields are per-frame values (scalars or
-    arrays); the exported policies consume only ``explore_factor``.
+    arrays); the exported policies consume ``explore_factor`` plus the
+    ``reference_action``/``delta_factor``/``delta_mix`` fields.
 
     A plain class (not a dataclass): this file is exec-loaded without a
     real module entry, so ``from __future__ import annotations`` +
@@ -72,6 +73,56 @@ class SamplingContext:
         self.reference_action = reference_action
         self.delta_factor = delta_factor
         self.delta_mix = delta_mix
+
+    def has_delta(self) -> bool:
+        """True iff the reference-delta scale is active — mirrors the
+        upstream ``SamplingContext.has_delta``."""
+        if self.reference_action is None:
+            return False
+        dm = self.delta_mix
+        if dm is None:
+            return False
+        if hasattr(dm, "any"):  # ndarray / torch.Tensor
+            return bool((dm != 0).any())
+        return dm != 0
+
+
+#: σ-domain floor for the reference-delta scale (σ_delta² ≥ ε²).
+_DELTA_EPS = 1e-2
+
+
+def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
+    """ctx scalar field → float, or a (B,) tensor → broadcastable."""
+    if not torch.is_tensor(x):
+        return float(x)
+    while x.ndim < target.ndim:
+        x = x.unsqueeze(-1)
+    return x
+
+
+def delta_mix_sigma(
+    mean: torch.Tensor,
+    sigma: torch.Tensor,
+    ctx: Optional["SamplingContext"],
+    sigma_min: Optional[float] = None,
+    sigma_max: Optional[float] = None,
+) -> torch.Tensor:
+    """σ²-domain mix of the policy σ with the reference-delta scale —
+    inlined copy of ``truncated_normal_mlp.delta_mix_sigma``."""
+    if ctx is None or not ctx.has_delta():
+        return sigma
+    ref = torch.as_tensor(
+        ctx.reference_action, dtype=sigma.dtype, device=sigma.device,
+    )
+    while ref.ndim < mean.ndim:
+        ref = ref.unsqueeze(-2)
+    c = _ctx_bcast(ctx.delta_factor, sigma)
+    lam = _ctx_bcast(ctx.delta_mix, sigma)
+    delta2 = (c * (mean - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
+    if sigma_min is not None:
+        mixed = mixed.clamp(sigma_min, sigma_max)
+    return mixed
 
 
 class StochasticPolicy:
@@ -185,9 +236,11 @@ class _StateTruncNormalInferenceNet(nn.Module):
             return policy_sigma * scale.unsqueeze(-1)
         return policy_sigma * scale
 
-    def forward(self, obs: torch.Tensor, *, explore_factor: Any = 0.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, *, ctx: Optional["SamplingContext"] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        ef = ctx.explore_factor if ctx is not None else 0.0
         mean, policy_sigma = self._head_forward(obs)
-        return mean, self.effective_sigma(policy_sigma, explore_factor)
+        sigma = self.effective_sigma(policy_sigma, ef)
+        return mean, delta_mix_sigma(mean, sigma, ctx)
 
     def _trunc_params(
         self, mean: torch.Tensor, sigma: torch.Tensor,
@@ -202,9 +255,9 @@ class _StateTruncNormalInferenceNet(nn.Module):
         return a, b, log_Z
 
     def sample_action(
-        self, obs: torch.Tensor, *, explore_factor: Any = 0.0,
+        self, obs: torch.Tensor, *, ctx: Optional["SamplingContext"] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        mean, sigma = self.forward(obs, explore_factor=explore_factor)
+        mean, sigma = self.forward(obs, ctx=ctx)
         a, b, log_Z = self._trunc_params(mean, sigma)
         cdf_a = _std_normal_cdf(a)
         cdf_b = _std_normal_cdf(b)
@@ -329,12 +382,11 @@ class ExportedStateTruncNormPolicy(Policy, StochasticPolicy):
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Stochastic action — sample from truncated normal (StochasticPolicy interface)."""
-        explore_factor = ctx.explore_factor if ctx is not None else 0.0
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action, log_prob = self._policy.sample_action(
-                obs_tensor, explore_factor=explore_factor,
+                obs_tensor, ctx=ctx,
             )
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:

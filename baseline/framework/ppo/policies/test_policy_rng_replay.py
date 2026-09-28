@@ -22,6 +22,7 @@ import unittest
 import numpy as np
 import torch
 
+from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
     TruncatedNormalPolicy,
 )
@@ -92,9 +93,9 @@ class TestTrainingPolicyReplay(unittest.TestCase):
             with self.subTest(cell=name):
                 p = _make(cls)
                 p.reset(9)
-                a1, _ = p.sample_action(self.obs, explore_factor=0.5)
+                a1, _ = p.sample_action(self.obs, ctx=SamplingContext(explore_factor=0.5))
                 p.reset(9)
-                a2, _ = p.sample_action(self.obs, explore_factor=0.5)
+                a2, _ = p.sample_action(self.obs, ctx=SamplingContext(explore_factor=0.5))
                 self.assertTrue(torch.equal(a1, a2))
                 self.assertFalse(torch.equal(a1, torch.zeros_like(a1)))
 

@@ -38,6 +38,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
+from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.policies.bounded_std_truncated_normal_mlp import (
     BoundedStdTruncatedNormalPolicy,
 )
@@ -139,25 +140,29 @@ class StateBoundedStdTruncatedNormalPolicy(BoundedStdTruncatedNormalPolicy):
         return mean, self._bounded_sigma(v)
 
     def _distribution_params(
-        self, obs: torch.Tensor, explore_factor: Any = 0.0,
+        self, obs: torch.Tensor, ctx: Optional[SamplingContext] = None,
     ) -> _DistParams:
         """(μ, v(obs)) → bounded σ; explore shifts v *before* the sigmoid.
 
         v is already (B, D): a scalar explore_factor broadcasts over
         batch and dims; a (B,) tensor yields per-frame (B, D) σ — same
-        broadcast contract as the shared variant.
+        broadcast contract as the shared variant.  The reference-delta
+        mix runs in σ² domain after the bounded map and is re-clamped.
         """
-        self._check_ei(explore_factor)
+        ef = ctx.explore_factor if ctx is not None else 0.0
+        self._check_ei(ef)
         mean, v = self._raw_v(obs)
-        if isinstance(explore_factor, torch.Tensor):
-            v_e = v + self.explore_alpha * explore_factor.unsqueeze(-1)
+        if isinstance(ef, torch.Tensor):
+            v_e = v + self.explore_alpha * ef.unsqueeze(-1)
         else:
-            v_e = v + self.explore_alpha * float(explore_factor)
+            v_e = v + self.explore_alpha * float(ef)
+        eff_sigma = self._bounded_sigma(v_e)
+        eff_sigma = self._delta_sigma(mean, eff_sigma, ctx)
         return _DistParams(
             mean=mean,
             std_control=v,
             policy_sigma=self._bounded_sigma(v),
-            eff_sigma=self._bounded_sigma(v_e),
+            eff_sigma=eff_sigma,
         )
 
     # ------------------------------------------------------------------

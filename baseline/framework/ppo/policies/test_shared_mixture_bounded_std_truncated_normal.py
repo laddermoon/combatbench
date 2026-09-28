@@ -146,7 +146,7 @@ class TestBoundedSigmaMap(unittest.TestCase):
         obs = torch.randn(4, OBS_DIM)
         for bad in (1.5, -2.0, torch.full((4,), 1.2), float("nan")):
             with self.assertRaises(ValueError, msg=str(bad)):
-                p.sample_action(obs, explore_factor=bad)
+                p.sample_action(obs, ctx=SamplingContext(explore_factor=bad))
         with self.assertRaises(ValueError):
             p.evaluate_actions(
                 obs,  torch.zeros(4, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.full((4,), 1.2)))
@@ -168,7 +168,7 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(64, OBS_DIM)
         for e in (0.0, 0.5, -1.0):
-            a, _ = p.sample_action(obs, explore_factor=e)
+            a, _ = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue((a >= -1.0).all() and (a <= 1.0).all())
 
     def test_sample_vs_evaluate_log_prob(self):
@@ -296,9 +296,9 @@ class TestK1Equivalence(unittest.TestCase):
         single, mix = self._make_pair()
         obs = torch.randn(64, OBS_DIM)
         single.reset(123)
-        a_s, _ = single.sample_action(obs, explore_factor=0.3)
+        a_s, _ = single.sample_action(obs, ctx=SamplingContext(explore_factor=0.3))
         mix.reset(123)
-        a_m, _ = mix.sample_action(obs, explore_factor=0.3)
+        a_m, _ = mix.sample_action(obs, ctx=SamplingContext(explore_factor=0.3))
         torch.testing.assert_close(a_m, a_s, rtol=0, atol=1e-5)
 
 

@@ -46,6 +46,7 @@ from baseline.framework.ppo.policies.truncated_normal_mlp import (
     _LOG_STD_SAFE_MAX,
     _LOG_STD_SAFE_MIN,
     _SQRT_2,
+    delta_mix_sigma,
 )
 
 __all__ = [
@@ -352,15 +353,34 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
     # Sampling
     # ------------------------------------------------------------------
 
+    def _delta_sigma(
+        self, mean: torch.Tensor, sigma: torch.Tensor,
+        ctx: Optional[SamplingContext],
+    ) -> torch.Tensor:
+        """Per-component reference-delta σ mix: Δ_k = μ_k − a_ref.
+
+        ``sigma`` is (B, K, D); ``a_ref`` broadcasts from (D,) or
+        (B, D).  Bounded subclasses get their [σ_min, σ_max] support
+        re-applied via the getattr'd bounds.
+        """
+        return delta_mix_sigma(
+            mean, sigma, ctx,
+            getattr(self, "sigma_min", None),
+            getattr(self, "sigma_max", None),
+        )
+
     def sample_action(
-        self, obs: torch.Tensor, *, explore_factor: Any = 0.0,
+        self, obs: torch.Tensor, *, ctx: Optional[SamplingContext] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Pick one component (shared across dims), inverse-CDF sample.
 
         Returns (action, mixture log_prob summed over dims).
         """
         log_pi, mean, raw = self._forward_raw(obs)
-        sigma = self._explored_sigma(raw, explore_factor)
+        sigma = self._explored_sigma(
+            raw, ctx.explore_factor if ctx is not None else 0.0,
+        )
+        sigma = self._delta_sigma(mean, sigma, ctx)
         B, K, D = mean.shape
 
         # Component selection — one index for the whole action vector.
@@ -426,8 +446,9 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         PPO importance ratio is correct; U uses policy σ (e=0) and is
         action-independent.
 
-        TODO(S3): consume ctx.reference_action / delta_factor /
-        delta_mix — currently ignored (framework plumbing only).
+        ``ctx.reference_action`` + ``delta_factor``/``delta_mix`` engage
+        the per-component reference-delta σ mix (see ``_delta_sigma``);
+        inactive fields reduce to plain ef behavior bit-identically.
         """
         explore_factor = (
             ctx.explore_factor if ctx is not None else 0.0
@@ -435,6 +456,7 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         log_pi, mean, raw = self._forward_raw(obs)
         policy_sigma = self._policy_sigma(raw)
         eff_sigma = self._explored_sigma(raw, explore_factor)
+        eff_sigma = self._delta_sigma(mean, eff_sigma, ctx)
 
         actions_c = torch.clamp(
             actions, _ACTION_LOW + _ACTION_EPS, _ACTION_HIGH - _ACTION_EPS,
@@ -577,17 +599,12 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Stochastic action — mixture sample with ctx."""
-        explore_factor = (
-            ctx.explore_factor if ctx is not None else 0.0
-        )
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(
             obs_array, dtype=torch.float32, device=self.device,
         ).unsqueeze(0)
         with torch.no_grad():
-            action, log_prob = self.sample_action(
-                obs_tensor, explore_factor=explore_factor,
-            )
+            action, log_prob = self.sample_action(obs_tensor, ctx=ctx)
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:
             return action_np, None

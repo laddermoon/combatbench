@@ -150,13 +150,13 @@ class TestExploreFactor(unittest.TestCase):
     """Additive exploration on raw v: v_e = v + α·e."""
 
     def _eff_sigma(self, p, obs, e):
-        _, sigma = p.forward(obs, explore_factor=e)
+        _, sigma = p.forward(obs, ctx=SamplingContext(explore_factor=e))
         return sigma
 
     def test_e0_is_identity(self):
         p = _make_policy()
         obs = torch.randn(16, OBS_DIM)
-        _, s0 = p.forward(obs, explore_factor=0.0)
+        _, s0 = p.forward(obs, ctx=SamplingContext(explore_factor=0.0))
         pol = p.policy_sigma().expand_as(s0)
         self.assertTrue(torch.equal(s0, pol),
                         "e=0 must exactly reproduce policy σ")
@@ -206,9 +206,9 @@ class TestExploreFactor(unittest.TestCase):
     def test_mean_invariant_under_e(self):
         p = _make_policy()
         obs = torch.randn(8, OBS_DIM)
-        m0, _ = p.forward(obs, explore_factor=0.0)
+        m0, _ = p.forward(obs, ctx=SamplingContext(explore_factor=0.0))
         for e in (-1.0, -0.3, 0.7, 1.0):
-            me, _ = p.forward(obs, explore_factor=e)
+            me, _ = p.forward(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue(torch.equal(m0, me),
                             f"μ changed under e={e}")
 
@@ -216,7 +216,7 @@ class TestExploreFactor(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(6, OBS_DIM)
         e = torch.linspace(-1, 1, 6)
-        _, sigma = p.forward(obs, explore_factor=e)
+        _, sigma = p.forward(obs, ctx=SamplingContext(explore_factor=e))
         self.assertEqual(sigma.shape, (6, ACTION_DIM))
         diffs = sigma[1:] - sigma[:-1]
         self.assertTrue((diffs > 0).all())
@@ -226,11 +226,11 @@ class TestExploreFactor(unittest.TestCase):
         obs = torch.randn(4, OBS_DIM)
         for bad in (-2.0, 1.5, float("nan"), float("inf")):
             with self.assertRaises(ValueError, msg=f"e={bad}"):
-                p.forward(obs, explore_factor=bad)
+                p.forward(obs, ctx=SamplingContext(explore_factor=bad))
         with self.assertRaises(ValueError):
-            p.forward(obs, explore_factor=torch.tensor([0.0, 1.2, 0.0]))
+            p.forward(obs, ctx=SamplingContext(explore_factor=torch.tensor([0.0, 1.2, 0.0])))
         with self.assertRaises(ValueError):
-            p.forward(obs, explore_factor=torch.tensor([0.0, float("nan")]))
+            p.forward(obs, ctx=SamplingContext(explore_factor=torch.tensor([0.0, float("nan")])))
 
 
 class TestLogProb(unittest.TestCase):
@@ -241,8 +241,8 @@ class TestLogProb(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         e = torch.rand(50) * 2 - 1
-        actions, log_probs = p.sample_action(obs, explore_factor=e)
-        mean, sigma = p.forward(obs, explore_factor=e)
+        actions, log_probs = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
+        mean, sigma = p.forward(obs, ctx=SamplingContext(explore_factor=e))
         for i in range(5):
             for d in range(ACTION_DIM):
                 m = float(mean[i, d])
@@ -277,7 +277,7 @@ class TestLogProb(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         e = torch.rand(50) * 2 - 1
-        actions, lp_sample = p.sample_action(obs, explore_factor=e)
+        actions, lp_sample = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
         ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=e))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-4)
@@ -396,7 +396,7 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(500, OBS_DIM)
         for e in (-1.0, 1.0):
-            actions, _ = p.sample_action(obs, explore_factor=e)
+            actions, _ = p.sample_action(obs, ctx=SamplingContext(explore_factor=e))
             self.assertTrue((actions >= -1.0).all())
             self.assertTrue((actions <= 1.0).all())
 

@@ -51,6 +51,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     CONTACT_HOLD_STEPS,
     GAIT_LAND_FRAC,
     GAIT_PERIOD,
+    _hold_filter,
     clock_foot_weights,
     count_falls,
     detect_step_cycles,
@@ -384,6 +385,23 @@ class Step(CombatExperimentPPOBase):
         lift_phase = wprog < GAIT_LAND_FRAC
         gate_l = cmd_left & lift_phase
         gate_r = (~cmd_left) & lift_phase
+
+        # --- Tap suppression ---
+        # Zero the dense reward on contact-off runs too short to ever
+        # count as a swing (debounced contact still reads True).
+        # u2200 dump: 81% of failed-window lifts are 1-3 frame "taps" —
+        # an aborted weight transfer.  A tap used to still collect
+        # clip(sole)×few frames; now it earns literally nothing, so the
+        # only way to profit from a commanded window is to COMMIT.
+        if contact_l is not None and contact_r is not None:
+            air_l = ~_hold_filter(
+                np.asarray(contact_l[:T_full], dtype=bool),
+                CONTACT_HOLD_STEPS)
+            air_r = ~_hold_filter(
+                np.asarray(contact_r[:T_full], dtype=bool),
+                CONTACT_HOLD_STEPS)
+            gate_l = gate_l & air_l
+            gate_r = gate_r & air_r
 
         # --- Step-cycle completion bonus ---
         # Same detector as eval: a swing reaching step_lift_threshold

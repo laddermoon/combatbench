@@ -431,6 +431,22 @@ def test_step_cycle_bonus_alternation_restores_payment():
     assert ch["r_left_foot"].reward[42:48].max() > 0.15
 
 
+def test_tap_lift_earns_no_dense_reward():
+    """A 1-3 frame liftoff (debounce-filtered, can never be a cycle)
+    earns zero dense reward even inside the commanded window."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 40
+    # left "tap": 2-frame air run inside its own lift phase
+    ep = _make_step_episode(T, [(5, 7, "left", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rl = trajs[0].channels["r_left_foot"].reward
+    assert rl[5:7].max() == 0.0
+    assert rl.max() == 0.0
+
+
 def test_step_cycle_bonus_skips_invalid_swings():
     from baseline.experiments_ppo.exp_step import Step
 
