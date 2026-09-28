@@ -27,10 +27,11 @@
      导出策略蓝图用于 rollout（同时实现 Policy 和 StochasticPolicy）
 3. build_jobs(policy_bp, base_seed, n_episodes, stochastic=True) → List[Job]
      实验构建 rollout 任务（哪个环境、哪个对手、什么种子）
-     explore_factor 注入到每个 Job 的 explore_factor_a / explore_factor_b 字段
+     explore_factor 包进 SamplingSpec 注入每个 Job 的 sampling_a / sampling_b 字段
 4. ParallelRollouter.collect(jobs) → List[Episode]
      框架并行执行 rollout，收集完整 episode
-     stochastic=True 时策略包入 ExploratoryPolicy，调用 sample()
+     stochastic=True 时策略包入 SamplingPolicy，按 spec 逐帧构造
+     SamplingContext 调 sample()
 5. build_trajectories(episodes) → List[Trajectory]
      实验把 episode 切成 trajectory，填入每个 channel 的
      reward / is_terminated / actor_weight
@@ -65,7 +66,7 @@
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
 | 训练统计反馈 | `on_update(stats, update)` | 调用它，传入 typed UpdateStats |
 | 探索 | `exploration(update)` → ExplorationSpec | 返回 uncertainty_floor / uncertainty_coef（训练侧防坍缩） |
-| Rollout 探索 | `build_jobs()` → Job.explore_factor_a/b | 路由 explore_factor 到 ExploratoryPolicy → sample() |
+| Rollout 探索 | `build_jobs()` → Job.sampling_a/b (SamplingSpec) | 路由 spec 到 SamplingPolicy → 逐帧 SamplingContext → sample() |
 | Checkpoint | `state()` / `load_state()` | 存模型+config、恢复 |
 
 ---
@@ -153,7 +154,7 @@ ExplorationSpec(
 
 - **Trajectory.floor_weight**：`(T,)` per-frame 权重，控制哪些帧贡献到 floor loss。`None` → buffer 填 ones（所有帧等权，向后兼容）。实验在 `build_trajectories` 时填入，例如只让 BALANCE 阶段的帧生效：`floor_weight=balance_mask.astype(np.float32)`。归一化方式为 `(gap² * fw).mean()`（除以 B），floor loss 强度随 active 帧占比线性缩放。
 
-> **注意**：``explore_factor``（rollout 采样时的附加探索强度）**不在** ``ExplorationSpec`` 里。它在 ``build_jobs`` 中决定，写入每个 ``Job`` 的 ``explore_factor_a`` / ``explore_factor_b`` 字段。这样 ``build_jobs`` 可以按 per-job / per-agent / per-frame 设置不同的探索强度，比单个 spec 字段表达力更强。实验通常从 ``self.explore_factor``（``CommonParams`` 字段）读取默认值。
+> **注意**：``explore_factor``（rollout 采样时的附加探索强度）**不在** ``ExplorationSpec`` 里。它在 ``build_jobs`` 中决定，包进 :class:`SamplingSpec` 写入每个 ``Job`` 的 ``sampling_a`` / ``sampling_b`` 字段。这样 ``build_jobs`` 可以按 per-job / per-agent / per-frame 设置不同的探索强度，比单个 spec 字段表达力更强。实验通常从 ``self.explore_factor``（``CommonParams`` 字段）读取默认值。
 
 详见 `DESIGN_unified_exploration_control.md`。
 

@@ -211,9 +211,10 @@ class StandupStepV3(CombatExperimentPPOBase):
         ``phase_explore_factor`` decides ef per frame from obs[45]
         (h_torso): σ×0.5 in STANDUP, σ×2.0 in BALANCE.
         """
-        from baseline.framework.rollout import Job
+        from baseline.framework.rollout import Job, SamplingSpec
         env_bp = self._env_pb().materialize(max_steps=self.max_steps)
         rng = np.random.default_rng(base_seed)
+        sampling = SamplingSpec(explore_factor=phase_explore_factor)
         jobs = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
@@ -226,8 +227,8 @@ class StandupStepV3(CombatExperimentPPOBase):
                 env_bp=env_bp,
                 seed=seed,
                 episode_options={"initial_distance": initial_distance},
-                explore_factor_a=phase_explore_factor,
-                explore_factor_b=phase_explore_factor,
+                sampling_a=sampling,
+                sampling_b=sampling,
                 stochastic=stochastic,
             ))
         return jobs

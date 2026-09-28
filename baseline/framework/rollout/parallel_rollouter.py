@@ -41,7 +41,7 @@ from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
 from .exploratory_policy import SamplingPolicy
-from .job import Job, SamplingSpec, resolve_sampling
+from .job import Job, SamplingSpec
 
 _logger = logging.getLogger(__name__)
 
@@ -295,7 +295,7 @@ class ParallelRollouter:
         # dict and must be top-level functions to be picklable.
         tasks = []
         for job in jobs:
-            spec_a, spec_b = resolve_sampling(job)
+            spec_a, spec_b = job.sampling_a, job.sampling_b
             tasks.append((
                 job.policy_a_bp.to_dict(),
                 job.policy_b_bp.to_dict(),

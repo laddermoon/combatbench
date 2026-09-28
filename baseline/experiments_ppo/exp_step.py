@@ -49,6 +49,7 @@ from baseline.framework.rollout import extract_per_step_field
 
 from baseline.humanoid21.end2end.stepping_state_machine import (
     CONTACT_HOLD_STEPS,
+    GAIT_LAND_FRAC,
     GAIT_PERIOD,
     clock_foot_weights,
     count_falls,
@@ -369,10 +370,27 @@ class Step(CombatExperimentPPOBase):
             episode.observer_outputs, foot_key, "right_foot_contact", T_full,
         )
 
+        # --- Command-window gating ---
+        # The dense clearance reward only pays while the foot is the
+        # commanded foot AND inside its lift phase (wprog < land_frac).
+        # Unconditional dense reward let the u02380 policy collect
+        # reward for "adjustment" lifts inside the other foot's window
+        # and repeat lifts inside its own — the observed same-foot
+        # double/triple steps (alt≈0.74 ≈ 1/4 non-alternating).
+        pos = np.arange(T_full) % GAIT_PERIOD
+        half = max(1, GAIT_PERIOD // 2)
+        cmd_left = pos < half
+        wprog = np.where(cmd_left, pos / half, (pos - half) / half)
+        lift_phase = wprog < GAIT_LAND_FRAC
+        gate_l = cmd_left & lift_phase
+        gate_r = (~cmd_left) & lift_phase
+
         # --- Step-cycle completion bonus ---
         # Same detector as eval: a swing reaching step_lift_threshold
         # that lands on a standing frame earns step_cycle_bonus spread
-        # over its airborne window.
+        # over its airborne window.  Only the FIRST on-command valid
+        # cycle per window pays; after it lands the rest of the window's
+        # dense gate closes, so a repeat lift earns nothing.
         if (
             self.step_cycle_bonus > 0
             and contact_l is not None and contact_r is not None
@@ -390,13 +408,28 @@ class Step(CombatExperimentPPOBase):
                 min_air_steps=self.step_min_air_frames,
                 h_thresh=self.step_lift_threshold,
             )
+            paid_windows = set()
+            bonuses = []
             for foot, t_off, t_land, _h_pk in det["cycles"]:
+                wid = int(t_off) // half
+                gate = gate_l if foot == "left" else gate_r
+                if not gate[t_off] or wid in paid_windows:
+                    continue
+                paid_windows.add(wid)
+                bonuses.append((foot, t_off, t_land))
+                gate[t_land:(wid + 1) * half] = False
+            r_left_foot *= gate_l.astype(np.float32)
+            r_right_foot *= gate_r.astype(np.float32)
+            for foot, t_off, t_land in bonuses:
                 per_frame = np.float32(
                     self.step_cycle_bonus / max(1, t_land - t_off))
                 if foot == "left":
                     r_left_foot[t_off:t_land] += per_frame
                 else:
                     r_right_foot[t_off:t_land] += per_frame
+        else:
+            r_left_foot *= gate_l.astype(np.float32)
+            r_right_foot *= gate_r.astype(np.float32)
 
         # --- Clock-driven foot commands (observable via obs[96:99]) ---
         # The commanded foot is a deterministic function of the frame
@@ -520,9 +553,10 @@ class Step(CombatExperimentPPOBase):
         where stepping must be discovered, and keeps the standup phase
         deterministic so the warm-started skill is not perturbed.
         """
-        from baseline.framework.rollout import Job
+        from baseline.framework.rollout import Job, SamplingSpec
         env_bp = self._env_pb().materialize(max_steps=self.max_steps)
         rng = np.random.default_rng(base_seed)
+        sampling = SamplingSpec(explore_factor=_phase_explore_factor)
         jobs = []
         for i in range(n_episodes):
             seed = int(base_seed + i)
@@ -535,8 +569,8 @@ class Step(CombatExperimentPPOBase):
                 env_bp=env_bp,
                 seed=seed,
                 episode_options={"initial_distance": initial_distance},
-                explore_factor_a=_phase_explore_factor,
-                explore_factor_b=_phase_explore_factor,
+                sampling_a=sampling,
+                sampling_b=sampling,
                 stochastic=stochastic,
             ))
         return jobs

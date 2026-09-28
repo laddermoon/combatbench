@@ -332,9 +332,10 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
     from baseline.experiments_ppo.exp_step import Step
 
     T = 80
-    # two valid cycles: left swing 10..20 (peak .08), right 40..50
+    # two valid on-command cycles: left swing 10..20 (left window,
+    # pos 10-19) and right swing 25..35 (right window, pos 25-34).
     ep = _make_step_episode(
-        T, [(10, 20, "left", 0.08), (40, 50, "right", 0.08)])
+        T, [(10, 20, "left", 0.08), (25, 35, "right", 0.08)])
     exp = Step()
     trajs = exp._build_agent_trajectory(
         ep, "robot_a", "foot_state_a", "standing_balance_a")
@@ -342,14 +343,52 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
     ch = trajs[0].channels
 
     rl = ch["r_left_foot"].reward
-    # dense clip(h,0,.05) over the ramp + bonus 1.0/10 = .1/frame
-    expected_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.1
+    # dense clip(h,0,.05) gated to the lift phase (pos<15 → frames
+    # 10-14 only), + bonus 1.0/10 = .1/frame over the whole window
+    dense_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05)
+    dense_l[5:] = 0.0   # pos 15-19 = landing phase, gate closed
+    expected_l = dense_l + 0.1
     np.testing.assert_allclose(rl[10:20], expected_l, rtol=1e-5, atol=1e-6)
     assert rl[:10].max() == 0.0 and rl[20:].max() < 0.1
 
     rr = ch["r_right_foot"].reward
-    np.testing.assert_allclose(rr[40:50], expected_l, rtol=1e-5, atol=1e-6)
-    assert rr[:40].max() < 0.1
+    # pos 25-34 → wprog .25-.7, all inside the right lift phase:
+    # dense pays on every airborne frame + .1 bonus
+    expected_r = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.1
+    np.testing.assert_allclose(rr[25:35], expected_r, rtol=1e-5, atol=1e-6)
+    assert rr[:25].max() == 0.0
+
+
+def test_step_cycle_bonus_repeat_in_same_window_unpaid():
+    """A second same-foot cycle inside one command window earns
+    neither bonus nor dense reward (the anti double-step gate)."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 40
+    # two left swings in the SAME left window (pos 2-7 and 12-17)
+    ep = _make_step_episode(
+        T, [(2, 8, "left", 0.08), (12, 18, "left", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rl = trajs[0].channels["r_left_foot"].reward
+
+    assert rl[2:8].max() > 0.1            # first cycle: dense + bonus
+    assert rl[12:18].max() == 0.0         # repeat: window exhausted
+
+
+def test_step_cycle_bonus_off_window_lift_unpaid():
+    """Lifting during the OTHER foot's window earns nothing."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 40
+    # left lifts at t=25-35 → pos 25-34 is the RIGHT command window
+    ep = _make_step_episode(T, [(25, 35, "left", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rl = trajs[0].channels["r_left_foot"].reward
+    assert rl.max() == 0.0
 
 
 def test_step_cycle_bonus_skips_invalid_swings():

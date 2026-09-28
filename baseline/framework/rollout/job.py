@@ -133,21 +133,12 @@ class Job:
         ``simulator.reset(options=...)``.  This must be a plain,
         JSON-serializable dict — it is persisted in episode manifests.
         Do NOT put policy-related fields here.
-    explore_factor_a / explore_factor_b:
-        Exploration intensity for each policy.  Either a constant
-        ``float`` (same value every step) or a callable
-        ``(obs, step) -> float`` (per-frame).  Consumed by the sampling
-        wrapper which wraps the raw policy before passing it to
-        :class:`EpisodeRunner`.  Defaults to ``0.0`` (neutral).
-        Only used when ``stochastic=True``.
-
-        **兼容字段**：等价于 ``sampling_a/b = SamplingSpec(
-        explore_factor=ef)``。同时显式设置且不一致时
-        :func:`resolve_sampling` 会 raise。
     sampling_a / sampling_b:
         Full per-agent sampling spec (explore_factor + reference +
-        delta config).  ``None`` → synthesized from
-        ``explore_factor_a/b`` for backward compatibility.
+        delta config).  Consumed by the sampling wrapper which wraps
+        the raw policy before passing it to :class:`EpisodeRunner`.
+        Defaults to a neutral ``SamplingSpec()``.  Only used when
+        ``stochastic=True``.
     stochastic:
         If True (default), policies are wrapped in a sampling wrapper
         and ``sample()`` is called for stochastic rollout.  If False,
@@ -160,31 +151,6 @@ class Job:
     env_bp: EnvBlueprint
     seed: int
     episode_options: Dict[str, Any] = field(default_factory=dict)
-    explore_factor_a: EfSpec = 0.0
-    explore_factor_b: EfSpec = 0.0
-    sampling_a: Optional[SamplingSpec] = None
-    sampling_b: Optional[SamplingSpec] = None
+    sampling_a: SamplingSpec = field(default_factory=SamplingSpec)
+    sampling_b: SamplingSpec = field(default_factory=SamplingSpec)
     stochastic: bool = True
-
-
-def resolve_sampling(job: Job) -> Tuple[SamplingSpec, SamplingSpec]:
-    """Resolve a Job's per-agent SamplingSpecs with legacy ef fallback.
-
-    ``sampling_x is None`` → ``SamplingSpec(explore_factor=job.explore_factor_x)``.
-    Both set explicitly and inconsistent → raise (fail-loud: never
-    silently pick one of two conflicting intents).
-    """
-    def _one(spec: Optional[SamplingSpec], ef: EfSpec, side: str) -> SamplingSpec:
-        if spec is None:
-            return SamplingSpec(explore_factor=ef)
-        if spec.explore_factor != ef and ef != 0.0:
-            raise ValueError(
-                f"Job: sampling_{side} and explore_factor_{side} are both "
-                f"set and inconsistent ({spec.explore_factor!r} vs {ef!r})"
-            )
-        return spec
-
-    return (
-        _one(job.sampling_a, job.explore_factor_a, "a"),
-        _one(job.sampling_b, job.explore_factor_b, "b"),
-    )

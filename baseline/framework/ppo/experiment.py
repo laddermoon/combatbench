@@ -173,10 +173,10 @@ class ExplorationSpec:
 
     ``explore_factor`` (rollout-time sampling exploration) is **NOT**
     part of this spec — it is decided inside ``build_jobs`` and placed
-    into each :class:`Job`'s ``explore_factor_a`` /
-    ``explore_factor_b`` fields.  This separation gives ``build_jobs``
-    per-job / per-agent / per-frame granularity that a single spec
-    field cannot express.
+    into each :class:`Job`'s ``sampling_a`` / ``sampling_b``
+    (:class:`SamplingSpec`) fields.  This separation gives
+    ``build_jobs`` per-job / per-agent / per-frame granularity that a
+    single spec field cannot express.
 
     PPO trust-region knobs (``clip_eps``, ``target_kl``) live in
     :class:`PPOParams` and are not overridable per-update.
@@ -1309,8 +1309,8 @@ class ExperimentPPO(ABC):
 
         Note: ``explore_factor`` (rollout-time sampling) is NOT part
         of this spec — it is decided inside ``build_jobs`` and placed
-        into each :class:`Job`'s ``explore_factor_a`` /
-        ``explore_factor_b`` fields.
+        into each :class:`Job`'s ``sampling_a`` / ``sampling_b``
+        (:class:`SamplingSpec`) fields.
 
         Args:
             update: Current update index (1-based, matches the loop).
@@ -1391,8 +1391,8 @@ class ExperimentPPO(ABC):
         This unified method replaces v1's separate ``build_rollout_jobs``
         and ``build_eval_jobs``.
 
-        The experiment decides ``explore_factor_a`` /
-        ``explore_factor_b`` internally — it may read class
+        The experiment decides ``sampling_a`` / ``sampling_b``
+        internally — it may read class
         attributes, internal state, or any other source.  This is the
         experiment's implementation detail, not a framework parameter.
 

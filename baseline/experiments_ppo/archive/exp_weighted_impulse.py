@@ -27,7 +27,7 @@ from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajec
 from baseline.framework.rollout import extract_per_step_scalar, extract_per_step_field
 
 from .base import CombatExperimentPPOBase
-from baseline.framework.rollout.job import Job
+from baseline.framework.rollout.job import Job, SamplingSpec
 
 
 class WeightedImpulseExperiment(CombatExperimentPPOBase):
@@ -145,8 +145,8 @@ class WeightedImpulseExperiment(CombatExperimentPPOBase):
                     "initial_distance": initial_distance,
                     "impulse_params": impulse_params
 },
-    explore_factor_a=self.explore_factor,
-    explore_factor_b=self.explore_factor,
+    sampling_a=SamplingSpec(explore_factor=self.explore_factor),
+    sampling_b=SamplingSpec(explore_factor=self.explore_factor),
 ))
         return jobs
 

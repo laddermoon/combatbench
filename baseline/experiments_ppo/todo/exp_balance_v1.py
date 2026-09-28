@@ -36,7 +36,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
 )
 
 from .base import CombatExperimentPPOBase
-from baseline.framework.rollout.job import Job
+from baseline.framework.rollout.job import Job, SamplingSpec
 
 
 class BalanceV1(CombatExperimentPPOBase):
@@ -194,8 +194,8 @@ class BalanceV1(CombatExperimentPPOBase):
     env_bp=env_bp,
     seed=seed,
     episode_options={"impulse_params": impulse_params},
-    explore_factor_a=self.explore_factor,
-    explore_factor_b=self.explore_factor,
+    sampling_a=SamplingSpec(explore_factor=self.explore_factor),
+    sampling_b=SamplingSpec(explore_factor=self.explore_factor),
 ))
         return jobs
 

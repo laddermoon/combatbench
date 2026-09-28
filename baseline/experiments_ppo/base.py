@@ -29,7 +29,7 @@ from baseline.framework.ppo import (
     TrainablePolicy,
 )
 from baseline.framework.critic_mlp import CriticMLP
-from baseline.framework.rollout.job import Job
+from baseline.framework.rollout.job import Job, SamplingSpec
 
 
 def _coerce_set_value(raw: Any, current: Any) -> Any:
@@ -310,9 +310,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Build self-play rollout jobs.
 
         ``explore_factor`` is read from ``self.explore_factor``
-        and placed into each :class:`Job`'s ``explore_factor_a`` /
-        ``explore_factor_b`` fields.  ``stochastic`` is placed into
-        each :class:`Job`'s ``stochastic`` field.
+        and wrapped into :class:`SamplingSpec` on each :class:`Job`'s
+        ``sampling_a`` / ``sampling_b`` fields.  ``stochastic`` is
+        placed into each :class:`Job`'s ``stochastic`` field.
 
         Subclass can override for non-self-play scenarios.
         """
@@ -374,7 +374,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         stochastic: bool = True,
     ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
-        ei = self.explore_factor
+        sampling = SamplingSpec(explore_factor=self.explore_factor)
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -390,8 +390,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     env_bp=env_bp,
                     seed=seed,
                     episode_options={"initial_distance": initial_distance},
-                    explore_factor_a=ei,
-                    explore_factor_b=ei,
+                    sampling_a=sampling,
+                    sampling_b=sampling,
                     stochastic=stochastic,
                 ))
             return jobs
@@ -424,8 +424,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 env_bp=env_bps[agent_id],
                 seed=seed,
                 episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
-                explore_factor_a=ei,
-                explore_factor_b=ei,
+                sampling_a=sampling,
+                sampling_b=sampling,
                 stochastic=stochastic,
             ))
         return jobs

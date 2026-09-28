@@ -563,14 +563,27 @@ def _export_stochastic_policy(
     )
     inner_code = template_path.read_text(encoding="utf-8")
 
-    # Serialize explore_factor for both agents.
-    ef_a_src = _serialize_explore_factor(job.explore_factor_a)
-    ef_b_src = _serialize_explore_factor(job.explore_factor_b)
+    # Serialize explore_factor for both agents.  The baked-in dump
+    # wrapper can only reproduce ef scheduling — a spec carrying a
+    # reference or delta config is out of scope for dump replay.
+    spec_a, spec_b = job.sampling_a, job.sampling_b
+    for side, spec in (("a", spec_a), ("b", spec_b)):
+        if (spec.reference is not None or spec.delta_factor != 0.0
+                or spec.delta_mix != 0.0):
+            raise NotImplementedError(
+                f"dump stochastic export does not support "
+                f"sampling_{side} reference/delta config "
+                f"(reference={spec.reference is not None}, "
+                f"delta_factor={spec.delta_factor}, "
+                f"delta_mix={spec.delta_mix})"
+            )
+    ef_a_src = _serialize_explore_factor(spec_a.explore_factor)
+    ef_b_src = _serialize_explore_factor(spec_b.explore_factor)
 
     # Generate wrapper class.
     # If ef_a == ef_b (common case), use one function for both.
     # Otherwise, generate two functions.
-    if job.explore_factor_a == job.explore_factor_b:
+    if spec_a.explore_factor == spec_b.explore_factor:
         ef_block = ef_a_src
         wrapper_class = _WRAPPER_SAME_EF
     else:

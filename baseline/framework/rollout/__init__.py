@@ -6,8 +6,8 @@ See ``baseline/framework/rollout/DESIGN.md`` for the full design.
 from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
-from .exploratory_policy import ExploratoryPolicy
-from .job import EfSpec, Job
+from .exploratory_policy import ExploratoryPolicy, SamplingPolicy
+from .job import EfSpec, Job, ReferenceSpec, SamplingSpec
 from .observer_utils import (
     coerce_per_step,
     extract_per_step_field,
@@ -23,6 +23,9 @@ __all__ = [
     "ExploratoryPolicy",
     "Job",
     "ParallelRollouter",
+    "ReferenceSpec",
+    "SamplingPolicy",
+    "SamplingSpec",
     "blueprint_hash",
     "coerce_per_step",
     "extract_per_step_field",
