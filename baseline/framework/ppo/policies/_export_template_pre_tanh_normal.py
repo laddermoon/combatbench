@@ -69,6 +69,18 @@ class SamplingContext:
         self.delta_factor = delta_factor
         self.delta_mix = delta_mix
 
+    def has_delta(self) -> bool:
+        """True iff the reference-delta scale is active — mirrors the
+        upstream ``SamplingContext.has_delta``."""
+        if self.reference_action is None:
+            return False
+        dm = self.delta_mix
+        if dm is None:
+            return False
+        if hasattr(dm, "any"):  # ndarray / torch.Tensor
+            return bool((dm != 0).any())
+        return dm != 0
+
 
 class _PreTanhNormalInferenceNet(nn.Module):
     """MLP + shared per-dim log_std — same param names as training side."""
@@ -317,6 +329,11 @@ class ExportedPreTanhNormalPolicy:
         ctx: Optional["SamplingContext"] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
+        if ctx is not None and ctx.has_delta():
+            raise NotImplementedError(
+                "pre-tanh cells do not implement the reference-delta "
+                "σ mix (ctx.reference_action with delta_mix != 0)"
+            )
         explore_factor = ctx.explore_factor if ctx is not None else 0.0
         obs = np.asarray(observation, dtype=np.float32).reshape(-1)
         obs_tensor = torch.as_tensor(
@@ -342,6 +359,11 @@ class ExportedPreTanhNormalPolicy:
         actions: torch.Tensor,
         ctx: Any = None,
     ) -> torch.Tensor:
+        if ctx is not None and ctx.has_delta():
+            raise NotImplementedError(
+                "pre-tanh cells do not implement the reference-delta "
+                "σ mix (ctx.reference_action with delta_mix != 0)"
+            )
         explore_factor = ctx.explore_factor if ctx is not None else 0.0
         with torch.no_grad():
             return self._net.evaluate_actions(
