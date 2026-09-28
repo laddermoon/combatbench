@@ -385,11 +385,27 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
 
 - `StochasticPolicy.sample(obs, *, ctx=None, want_extra=False)`
 - `TrainablePolicy.evaluate_actions(obs, actions, ctx=None, *, want_stats=False)`
-- `Job.explore_factor_a/b` 保留为兼容糖（`resolve_sampling` 合成 spec；显式冲突 → raise）
 - `ExploratoryPolicy` 保留为 `SamplingPolicy` 兼容壳
 - 导出模板内置本地 `SamplingContext`（普通 class，非 dataclass——export 文件 exec 加载时 `cls.__module__` 为 None，dataclass 字符串注解会崩）
 
-### 13.4 待办（阶段 2）
+### 13.4 Job 单源化（2026-10，S1 收口后续）
+
+兼容糖已彻底移除——`Job.sampling_a/b` 是唯一 spec 入口：
+
+- `Job.explore_factor_a/b` 字段**已删除**；`sampling_a/b` 改为非 Optional，
+  `field(default_factory=SamplingSpec)`——不传 spec 的构造点（SAC、gating 脚本、
+  test_dump）零感知。
+- `resolve_sampling()` **已删除**（原逻辑退化为恒等读取）；rollouter 直接读
+  `job.sampling_a/b`。
+- 迁移的构造点：`experiments_ppo/base.py` ×2、`exp_step.py`、
+  `exp_standup_step_v3.py`（活跃）；`todo/` ×11 + `archive/` ×2（parked，
+  机械迁移保持可编译）。
+- `dump_capture._export_stochastic_policy` 改读 `job.sampling_*.explore_factor`；
+  spec 携带 `reference`/`delta_factor`/`delta_mix` 时显式
+  `NotImplementedError`——dump 回放 wrapper 只能烘焙 ef 调度，不静默丢机制。
+- `rollout/__init__.py` 导出 `SamplingSpec`/`ReferenceSpec`/`SamplingPolicy`。
+
+### 13.5 待办（阶段 2）
 
 - 策略消费 `ctx.reference_action` + `delta_factor` + `delta_mix`：σ_eff² = (1−λ)·σ_policy² + λ·(c·|m_θ−a_ref|)² 形式的尺度混合（各策略族按自身 σ 语义适配，bounded 变体需先转回 σ 域再混）。
 - 实验侧装配 `SamplingSpec`（历史 export 目录 → `ReferenceSpec`）。

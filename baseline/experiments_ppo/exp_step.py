@@ -694,7 +694,14 @@ class Step(CombatExperimentPPOBase):
         falls_mean = (
             sum(all_falls) / max(len(all_falls), 1) if all_falls else 0.0
         )
-        quality = step_success_rate - 0.1 * falls_mean
+        alt_mean = (
+            sum(all_alt) / max(len(all_alt), 1) if all_alt else 0.0
+        )
+        # alt enters quality so best-ckpt tracking prefers strict
+        # left-right alternation, not just high step counts — the
+        # same-foot double-step pattern (u02380 video) keeps step=1.0
+        # but low alt.
+        quality = step_success_rate - 0.1 * falls_mean + 0.1 * alt_mean
         improved_pot = mean_max_pot > self._best_potential
         if improved_pot:
             self._best_potential = mean_max_pot
@@ -706,6 +713,13 @@ class Step(CombatExperimentPPOBase):
             self._best_quality = quality
         is_new_best = improved_pot or improved_step
         if is_new_best:
+            self._last_best_update = update
+
+        if self._last_best_update < 0:
+            # Fresh resume anchor: load_state leaves it at -1 so a
+            # resumed run gets a full improvement budget instead of
+            # inheriting the old run's counter (u02405 resume
+            # early-stopped instantly at u2410).
             self._last_best_update = update
 
         no_improvement = update - self._last_best_update
@@ -800,7 +814,13 @@ class Step(CombatExperimentPPOBase):
         # step counter that can never improve (instant early-stop).
         self._best_quality = float(state.get("best_quality", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
-        self._last_best_update = int(state.get("last_best_update", 0))
+        # NOT restored: the checkpoint's last_best_update belongs to
+        # the old run — resuming with it instantly triggers early-stop.
+        # -1 flags "needs anchor"; the first eval sets it to the
+        # current update, giving the resumed phase a fresh 200-eval
+        # budget.  best_potential/best_quality ARE kept so exports
+        # still require beating the old bar.
+        self._last_best_update = -1
 
 
 EXPERIMENT_CLASS = Step
