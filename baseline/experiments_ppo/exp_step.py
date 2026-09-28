@@ -161,8 +161,11 @@ class Step(CombatExperimentPPOBase):
     # recovery flailing while fallen stays unpunished.
     # coef dose-response: 0.008/0.003 both crushed stepping (v4-v6:
     # this policy's gait fundamentally *needs* sway for CoM transfer).
-    # Disabled (0.0) — sway is cosmetic noise, not the fall cause.
-    torso_sway_coef: float = 0.0
+    # v9: penalty is now masked to double-support frames only (see
+    # r_torso construction) — post-landing oscillation is waste and
+    # drives the same-foot adjustment steps; swing sway stays free.
+    # Half the previous dose since coverage halves too.
+    torso_sway_coef: float = 0.004
     torso_actor_weight: float = 1.0
     # Flat penalty (v4: sway² · coef) crushed stepping — solepk fell to
     # 0.038 and step to 0.64 because natural gait sway was punished too.
@@ -402,6 +405,13 @@ class Step(CombatExperimentPPOBase):
                 CONTACT_HOLD_STEPS)
             gate_l = gate_l & air_l
             gate_r = gate_r & air_r
+            # Sway penalty only on double-support frames: post-landing
+            # oscillation is pure waste and drives the same-foot
+            # "adjustment" repeats (u2200/u02380 video).  Swing-phase
+            # sway is the CoM-transfer mechanism — punishing it
+            # collapsed stepping every time (v4-v7), so it stays free.
+            ds = (~air_l) & (~air_r)
+            r_torso = r_torso * ds.astype(np.float32)
 
         # --- Step-cycle completion bonus ---
         # Same detector as eval: a swing reaching step_lift_threshold
