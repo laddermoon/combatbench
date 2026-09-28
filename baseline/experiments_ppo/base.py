@@ -341,19 +341,24 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def extract_explore_factor(episode, agent_id: str, T: int) -> np.ndarray:
-        """Extract per-frame explore_factor for one agent, truncated to T.
+    def extract_sampling_ctx(episode, agent_id: str, T: int) -> Optional[Dict[str, np.ndarray]]:
+        """Extract all per-frame SamplingContext fields for one agent.
 
-        Reads from ``episode.explore_factors[agent_id]`` — the
-        per-frame value that was passed to ``policy.sample()`` at
-        rollout time, recorded by the episode runner.  Returns a ``(T,)``
-        float32 array defaulting to 0.0 (neutral) when the episode has
-        no recorded explore_factor.
+        Reads ``episode.sampling_contexts[agent_id]`` — the grouped view
+        of every ctx field passed to ``policy.sample()`` at rollout
+        (``explore_factor`` plus e.g. ``reference_action``,
+        ``delta_factor``, ``delta_mix``).  Each field is truncated to
+        ``(T, ...)``.  Returns ``None`` when the episode recorded no
+        ctx for this agent — the buffer then treats every field as
+        neutral (explore_factor=0).
         """
-        ei = episode.explore_factors.get(agent_id)
-        if ei is None:
-            return np.full(T, 0.0, dtype=np.float32)
-        return np.asarray(ei, dtype=np.float32)[:T]
+        fields = episode.sampling_contexts.get(agent_id)
+        if not fields:
+            return None
+        return {
+            name: np.asarray(arr, dtype=np.float32)[:T]
+            for name, arr in fields.items()
+        }
 
     @staticmethod
     def _agent_from_rollout_seed(seed: int) -> str:

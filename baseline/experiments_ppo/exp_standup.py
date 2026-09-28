@@ -165,7 +165,7 @@ class Standup(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
+            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
         )]
 
     def on_update(self, stats, update):

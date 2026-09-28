@@ -20,6 +20,7 @@ Conventions follow baseline/framework/sac/tests/test_trainer.py:
 - No pytest fixtures required (but pytest-compatible).
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import math
 import random
@@ -82,7 +83,7 @@ class SimpleActor(nn.Module):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
-        explore_factor: torch.Tensor,
+        ctx: Optional[SamplingContext] = None,
         *, want_stats: bool = False,
     ) -> ActorEval:
         mean = self.net(obs)
@@ -550,13 +551,11 @@ def test_buffer_log_probs_sliced_correctly():
     # Recompute log_probs for each trajectory independently and compare
     with torch.no_grad():
         ev1 = actor.evaluate_actions(
-            torch.as_tensor(t1.obs), torch.as_tensor(t1.actions),
-            torch.full((len(t1.obs),), 0.0),
-        )
+            torch.as_tensor(t1.obs),  torch.as_tensor(t1.actions), 
+            ctx=SamplingContext(explore_factor=torch.full((len(t1.obs),), 0.0)))
         ev2 = actor.evaluate_actions(
-            torch.as_tensor(t2.obs), torch.as_tensor(t2.actions),
-            torch.full((len(t2.obs),), 0.0),
-        )
+            torch.as_tensor(t2.obs),  torch.as_tensor(t2.actions), 
+            ctx=SamplingContext(explore_factor=torch.full((len(t2.obs),), 0.0)))
     expected = np.concatenate([
         ev1.log_prob.numpy(), ev2.log_prob.numpy()
     ]).astype(np.float32)
@@ -2979,7 +2978,7 @@ def _manual_frame_grads(actor, obs, act, ei, w, adv, fw, floor, coef, sel):
     """
     sel_t = torch.as_tensor(np.asarray(sel), dtype=torch.long)
     ev = actor.evaluate_actions(
-        obs[sel_t], act[sel_t], explore_factor=ei[sel_t])
+        obs[sel_t],  act[sel_t],  ctx=SamplingContext(explore_factor=ei[sel_t]))
     scalar = (w[sel_t] * adv[sel_t]) * ev.log_prob
     if coef > 0.0 and floor > 0.0:
         gap = torch.relu(floor - ev.uncertainty)
@@ -3021,7 +3020,7 @@ def test_grad_signal_diag_math_and_determinism():
                         norm_edges=None, seed=7)
     diags: list = []
     scalars, hist, dump, g_vec = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, floor, coef, 17, spec,
         torch.device("cpu"), diags)
 
     # Dedicated RNG reproduces the same sorted frame subset.
@@ -3079,13 +3078,13 @@ def test_grad_signal_diag_math_and_determinism():
     spec_prev = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
                              norm_edges=None, seed=7, prev_g=g_vec)
     s2, _, _, _ = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec_prev,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, floor, coef, 17, spec_prev,
         torch.device("cpu"), [])
     assert abs(s2["grad_sig_dir_cos"] - 1.0) < 1e-5
     spec_neg = GradDiagSpec(sample_size=40, cos_bins=16, norm_bins=8,
                             norm_edges=None, seed=7, prev_g=-g_vec)
     s3, _, _, _ = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec_neg,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, floor, coef, 17, spec_neg,
         torch.device("cpu"), [])
     assert abs(s3["grad_sig_dir_cos"] + 1.0) < 1e-5
 
@@ -3112,7 +3111,7 @@ def test_grad_signal_diag_math_and_determinism():
 
     # Determinism: identical spec → identical sampled indices.
     _, _, dump2, _ = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, 17, spec,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, floor, coef, 17, spec,
         torch.device("cpu"), [])
     np.testing.assert_array_equal(
         dump["sampled_idx"], dump2["sampled_idx"])
@@ -3130,7 +3129,7 @@ def test_grad_signal_diag_sum_matches_batch_grad():
     spec = GradDiagSpec(sample_size=30, cos_bins=8, norm_bins=4,
                         norm_edges=None, seed=11)
     _, _, dump, _ = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, floor, coef, 16, spec,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, floor, coef, 16, spec,
         torch.device("cpu"), [])
     sel = dump["sampled_idx"]
 
@@ -3139,7 +3138,7 @@ def test_grad_signal_diag_sum_matches_batch_grad():
 
     sel_t = torch.as_tensor(sel, dtype=torch.long)
     ev = actor.evaluate_actions(
-        obs[sel_t], act[sel_t], explore_factor=ei[sel_t])
+        obs[sel_t],  act[sel_t],  ctx=SamplingContext(explore_factor=ei[sel_t]))
     total = ((w[sel_t] * adv[sel_t]) * ev.log_prob
              - coef * torch.relu(floor - ev.uncertainty).pow(2)
              * fw[sel_t]).sum()
@@ -3162,7 +3161,7 @@ def test_grad_signal_diag_norm_overflow_rows():
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
                         norm_edges=np.geomspace(1e-6, 1e-4, 5), seed=7)
     scalars, hist, dump, _ = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw, 0.3, 0.05, 17, spec,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw, 0.3, 0.05, 17, spec,
         torch.device("cpu"), [])
     assert hist is not None
     n_valid = int(hist["n_valid"])
@@ -3186,7 +3185,7 @@ def test_grad_signal_diag_zero_adv_no_hist():
     spec = GradDiagSpec(sample_size=40, cos_bins=8, norm_bins=4,
                         norm_edges=None, seed=7)
     scalars, hist, dump, g_vec = _grad_signal_diag(
-        actor, obs, act, ei, w, adv, fw,
+        actor, obs, act, {"explore_factor": ei}, w, adv, fw,
         uncertainty_floor=0.0, uncertainty_coef=0.0, mb_size=17,
         spec=spec, device=torch.device("cpu"), diagnostics=[])
     assert scalars["grad_sig_n_frames"] == 0
@@ -3342,7 +3341,7 @@ def test_grad_signal_diag_no_trainable_params_raises():
                         norm_edges=None, seed=1)
     try:
         _grad_signal_diag(
-            actor, obs, act, ei, w, adv, fw,
+            actor, obs, act, {"explore_factor": ei}, w, adv, fw,
             0.3, 0.05, 16, spec, torch.device("cpu"), [])
         raise AssertionError("expected RuntimeError")
     except RuntimeError as e:

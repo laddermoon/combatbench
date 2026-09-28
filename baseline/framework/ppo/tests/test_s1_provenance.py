@@ -57,6 +57,8 @@ def _make_episode(obs_dict, actions_dict, num_frames=None):
                            for k, v in obs_dict.items()},
         explore_factors={k: np.zeros(len(v), dtype=np.float32)
                          for k, v in obs_dict.items()},
+        sampling_contexts={k: {"explore_factor": np.zeros(len(v), dtype=np.float32)}
+                           for k, v in obs_dict.items()},
         agent_termination_proposal_records={},
     )
 
@@ -230,6 +232,9 @@ def _make_synthetic_episode(
         actions={agent_id: np.zeros((T, 21), dtype=np.float32)},
         final_observation={agent_id: np.zeros(96, dtype=np.float32)},
         explore_factors={agent_id: np.zeros(T, dtype=np.float32)},
+        sampling_contexts={
+            agent_id: {"explore_factor": np.zeros(T, dtype=np.float32)},
+        },
         agent_termination_proposal_records=term_records,
     )
 

@@ -488,7 +488,7 @@ class StandupStepV3(CombatExperimentPPOBase):
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            explore_factor=self.extract_explore_factor(episode, agent_id, T_full),
+            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
             floor_weight=balance_mask.astype(np.float32),
         )]
 
@@ -538,10 +538,10 @@ class StandupStepV3(CombatExperimentPPOBase):
         if not trajs:
             return
         t0 = trajs[0]
-        ef = t0.explore_factor
+        ef = (t0.sampling_ctx or {}).get("explore_factor")
         obs = np.asarray(t0.obs, dtype=np.float32)
         if ef is None:
-            print("  [ef-verify] FAIL: Trajectory.explore_factor is None "
+            print("  [ef-verify] FAIL: sampling_ctx has no explore_factor "
                   "— rollout did not record per-frame ef", flush=True)
             return
         ef = np.asarray(ef, dtype=np.float32)

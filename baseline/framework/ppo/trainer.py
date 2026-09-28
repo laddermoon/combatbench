@@ -58,6 +58,7 @@ from baseline.framework.ppo.algos import compute_gae
 from baseline.framework.ppo.algos import normalize_advantages as _normalize_adv
 
 from .experiment import GradDiagSpec, PPOParams, TrainablePolicy, UpdateStats
+from .sampling_context import SamplingContext
 from .trajectory import RewardChannel, Trajectory
 
 
@@ -110,7 +111,9 @@ class PPOBuffer:
     - ``key_seg_actor_weight[key]`` — scalar or ``(T,)`` array aw per traj
 
     Flat arrays (concatenated across trajectories):
-    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``, ``explore_factor``
+    - ``obs``, ``actions``, ``log_probs``, ``sample_weights``
+    - ``ctx_fields`` — per-frame SamplingContext fields ``{field: (N,·)}``
+      (``explore_factor`` and any recorded reference/delta fields)
     - ``final_obs`` — per-trajectory last observation (for bootstrap)
     - ``traj_lengths`` — per-trajectory frame count
     """
@@ -148,7 +151,7 @@ class PPOBuffer:
             self.actions = np.zeros((0, 0), np.float32)
             self.log_probs = np.zeros(0, dtype=np.float32)
             self.sample_weights = np.zeros(0, dtype=np.float32)
-            self.explore_factor: Optional[np.ndarray] = None
+            self.ctx_fields: Dict[str, np.ndarray] = {}
             self.floor_weight: Optional[np.ndarray] = None
             self.uncertainty: Optional[np.ndarray] = None
             self.final_obs: List[np.ndarray] = []
@@ -172,13 +175,50 @@ class PPOBuffer:
         # --- explore_factor (required) ---
         # Threaded into evaluate_actions so log_prob is computed under
         # the same distribution that produced the actions at rollout time.
-        all_ei = np.concatenate([
-            t.explore_factor if t.explore_factor is not None
-            else np.full(len(t.obs), 0.0, dtype=np.float32)
-            for t in trajectories
-        ]).astype(np.float32)
-        all_ei_t = torch.as_tensor(all_ei, dtype=torch.float32, device=device)
-        self.explore_factor = all_ei
+        # Trajectories built without sampling_ctx (synthetic tests, code
+        # predating the ctx pipeline) get the neutral value.
+        def _ef_column(t: Trajectory) -> np.ndarray:
+            v = (t.sampling_ctx or {}).get("explore_factor")
+            if v is None:
+                v = np.full(len(t.obs), 0.0, dtype=np.float32)
+            return np.asarray(v, dtype=np.float32)
+
+        all_ei = np.concatenate(
+            [_ef_column(t) for t in trajectories],
+        ).astype(np.float32)
+
+        # --- sampling_ctx fields ---
+        # Every non-explore_factor ctx field must be present on EVERY
+        # trajectory — a batch mixing ctx schemas (e.g. some episodes
+        # ran with a reference policy, some without) is a config error,
+        # not something to paper over with defaults.
+        self.ctx_fields: Dict[str, np.ndarray] = {
+            "explore_factor": all_ei,
+        }
+        extra_field_names: List[str] = sorted({
+            name for t in trajectories if t.sampling_ctx
+            for name in t.sampling_ctx if name != "explore_factor"
+        })
+        for name in extra_field_names:
+            missing = [
+                i for i, t in enumerate(trajectories)
+                if not t.sampling_ctx or name not in t.sampling_ctx
+            ]
+            if missing:
+                raise ValueError(
+                    f"PPOBuffer: sampling_ctx field {name!r} is missing "
+                    f"from {len(missing)} trajectories (indices "
+                    f"{missing[:5]}...) — a training batch must carry a "
+                    f"uniform sampling_ctx schema"
+                )
+            self.ctx_fields[name] = np.concatenate(
+                [t.sampling_ctx[name] for t in trajectories],
+            ).astype(np.float32)
+
+        ctx_fields_t: Dict[str, torch.Tensor] = {
+            name: torch.as_tensor(arr, dtype=torch.float32, device=device)
+            for name, arr in self.ctx_fields.items()
+        }
 
         # --- floor_weight (optional, defaults to ones for backward compat) ---
         # Per-frame weight for the uncertainty floor loss.  None → ones
@@ -191,7 +231,9 @@ class PPOBuffer:
         ]).astype(np.float32)
         self.floor_weight = all_fw
 
-        kwargs: Dict[str, Any] = {"explore_factor": all_ei_t}
+        kwargs: Dict[str, Any] = {
+            "ctx": SamplingContext.from_fields(ctx_fields_t),
+        }
 
         # This call is also the canonical measurement point for the
         # policy's exploration state, hence ``want_stats=True``. It is the
@@ -459,7 +501,7 @@ def _grad_signal_diag(
     actor: TrainablePolicy,
     obs_t: torch.Tensor,
     act_t: torch.Tensor,
-    ei_t: torch.Tensor,
+    ctx_fields_t: Dict[str, torch.Tensor],
     w_t: torch.Tensor,
     adv_t: torch.Tensor,
     floor_weight_t: torch.Tensor,
@@ -509,13 +551,16 @@ def _grad_signal_diag(
     n_params = sum(int(p.numel()) for p in params)
     floor_active = uncertainty_coef > 0.0 and uncertainty_floor > 0.0
 
+    def _ctx(sl) -> SamplingContext:
+        return SamplingContext.from_batch(ctx_fields_t, sl)
+
     def _frame_scalar(sl) -> Tuple[torch.Tensor, torch.Tensor]:
         """Per-frame improvement-direction scalar + floor penalty on a
         frame slice.  Returns ``(scalar, floor_pen)`` — the penalty is
         already subtracted from the scalar and is returned separately
         only for reporting."""
         ev = actor.evaluate_actions(
-            obs_t[sl], act_t[sl], explore_factor=ei_t[sl],
+            obs_t[sl], act_t[sl], _ctx(sl),
         )
         if not ev.log_prob.requires_grad:
             raise RuntimeError(
@@ -1186,13 +1231,19 @@ def ppo_update(
     adv_t = torch.as_tensor(combined_adv, dtype=torch.float32, device=device)
     w_t = torch.as_tensor(buf.sample_weights, dtype=torch.float32, device=device)
 
-    # --- explore_factor (required) ---
-    # Per-frame exploration intensity recorded at rollout time.  Threaded
+    # --- sampling_ctx fields (required) ---
+    # Per-frame SamplingContext fields recorded at rollout time.  Threaded
     # through to evaluate_actions so log_prob is computed under the same
-    # distribution that produced the actions.
-    ei_t = torch.as_tensor(
-        buf.explore_factor, dtype=torch.float32, device=device,
-    )
+    # distribution that produced the actions.  ``_ctx(sl)`` rebuilds a
+    # SamplingContext for a batch slice (whole batch, minibatch, or any
+    # index tensor).
+    ctx_fields_t: Dict[str, torch.Tensor] = {
+        name: torch.as_tensor(arr, dtype=torch.float32, device=device)
+        for name, arr in buf.ctx_fields.items()
+    }
+
+    def _ctx(sl) -> SamplingContext:
+        return SamplingContext.from_batch(ctx_fields_t, sl)
 
     # --- floor_weight (optional per-frame mask for uncertainty floor) ---
     # When provided by the experiment, restricts the floor loss to
@@ -1250,7 +1301,7 @@ def ppo_update(
         (
             grad_sig_scalars, grad_sig_payload, gradsig_dump, grad_sig_gvec,
         ) = _grad_signal_diag(
-            actor, obs_t, act_t, ei_t, w_t, adv_t, floor_weight_t,
+            actor, obs_t, act_t, ctx_fields_t, w_t, adv_t, floor_weight_t,
             float(uncertainty_floor), float(uncertainty_coef),
             pp.minibatch_size, grad_diag, device, diagnostics,
         )
@@ -1431,10 +1482,8 @@ def ppo_update(
                     timeline_steps.append(_timeline_step)
                 continue
 
-            # Construct kwargs for evaluate_actions.
-            eval_kwargs: Dict[str, Any] = {"explore_factor": ei_t[idx]}
             actor_eval = actor.evaluate_actions(
-                obs_t[idx], act_t[idx], **eval_kwargs,
+                obs_t[idx], act_t[idx], _ctx(idx),
             )
             new_lp = actor_eval.log_prob
 
@@ -1754,7 +1803,7 @@ def ppo_update(
         if dump_callback is not None:
             with torch.no_grad():
                 epoch_eval = actor.evaluate_actions(
-                    obs_t, act_t, explore_factor=ei_t,
+                    obs_t, act_t, _ctx(slice(None)),
                 )
                 epoch_new_lp = epoch_eval.log_prob
                 epoch_log_ratio = torch.clamp(
@@ -1945,7 +1994,7 @@ def ppo_update(
             for _s in range(0, n, _CHUNK):
                 _idx = slice(_s, min(_s + _CHUNK, n))
                 new_lp_all[_idx] = actor.evaluate_actions(
-                    obs_t[_idx], act_t[_idx], explore_factor=ei_t[_idx],
+                    obs_t[_idx], act_t[_idx], _ctx(_idx),
                 ).log_prob
             r_all = torch.exp(
                 torch.clamp(new_lp_all - old_lp_t, -20.0, 20.0)

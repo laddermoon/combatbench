@@ -19,6 +19,7 @@ from torch import nn
 from envs.framework.policy import Policy, PolicyBlueprint
 
 from baseline.framework.ppo import ActorEval, TrainablePolicy
+from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
 # explore_factor ∈ [-1, 1]: 0 = neutral, +1 = max explore, -1 = max suppress.
@@ -346,18 +347,25 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
-        explore_factor: torch.Tensor,
+        ctx: Optional[SamplingContext] = None,
         *,
         want_stats: bool = False,
     ) -> ActorEval:
         """Score actions and compute uncertainty for PPO.
 
-        ``explore_factor`` is a ``(B,)`` tensor recording the per-frame
-        exploration intensity used at rollout time.  log_prob uses
-        effective σ (with explore scale) so the PPO importance ratio is
-        correct.  uncertainty (U) uses policy σ (without explore
-        scale) so it reflects the policy's own certainty.
+        ``ctx`` replays the per-frame SamplingContext recorded at
+        rollout time — its ``explore_factor`` field is a ``(B,)``
+        tensor.  log_prob uses effective σ (with explore scale) so the
+        PPO importance ratio is correct.  uncertainty (U) uses policy σ
+        (without explore scale) so it reflects the policy's own
+        certainty.
+
+        TODO(S3): consume ctx.reference_action / delta_factor /
+        delta_mix — currently ignored (framework plumbing only).
         """
+        explore_factor = (
+            ctx.explore_factor if ctx is not None else 0.0
+        )
         # Single pass yields mean and policy σ; effective σ is the same
         # tensor scaled per-frame by explore_factor.  This satisfies
         # P1-8 (no redundant forward for the U computation) by
@@ -447,10 +455,13 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         observation: Any,
         *,
-        explore_factor: float = 0.0,
+        ctx: Optional[SamplingContext] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        """Stochastic action — sample from truncated normal with explore_factor."""
+        """Stochastic action — sample from truncated normal with ctx."""
+        explore_factor = (
+            ctx.explore_factor if ctx is not None else 0.0
+        )
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():

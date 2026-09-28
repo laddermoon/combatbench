@@ -358,3 +358,39 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
 | 2026-09-09 | 若恢复，**从阶段 0 诊断开始**，不直接实现 | 诊断是完整实现的严格子集，且能先验证 `Δ` 是否携带可用信号 |
 | 2026-09-09 | 优先用法 1，用法 2 降级为对照实验 | 用法 1 无 train/deploy 失配、震荡响应合理（§6） |
 | 2026-09-09 | 参考策略语义定为通用 blueprint，非"上一个 update" | 为 EMA 留出 drop-in 空间（§10.3） |
+
+## 13. SamplingContext 重构落地记录（阶段 1 已完成，未提交）
+
+> 本节记录 2026-10 的 `SamplingContext` 收口重构——**只通框架管线，策略尚未消费 reference/delta 字段**。
+
+### 13.1 分层结构
+
+| 层 | 类型 | 位置 | 生命周期 |
+|---|---|---|---|
+| 意图配置 | `SamplingSpec`（+`ReferenceSpec`） | `Job.sampling_a/b` | 实验构造，pickle 跨进程 |
+| 逐帧容器 | `SamplingContext` | `ppo/sampling_context.py` | wrapper 每帧构造 → extras 记录 → `evaluate_actions` 原样回放 |
+| 策略内部 | ef→σ 机制 | 各 policy `_explored_sigma` 等 | 不变 |
+
+### 13.2 已确定语义
+
+- **`reference_action` 方案（非 frozen Δ）**：ctx 携带历史策略在当前 obs 上加权后的确定性动作；策略回放时自行计算动态 Δ——PPO 比值在相同**外部规则**下成立（c/λ/ef/ref 固定，θ 变化）。
+- **动作空间加权，非参数 EMA**：`ReferenceSpec` 携带 K 代 policy blueprint + 归一权重；worker wrap 时 build 一次、每帧 `Σw·act(obs)`。框架零跨 update 状态——历史策略选取与权重完全由实验侧决定。
+- **c/λ 静态**：`delta_factor`/`delta_mix` 是 spec 级静态值，逐帧记录只为回放完整性（后续如需逐帧调度再升 EfSpec 型）。
+- **ctx 原样记录**：记录值 == 传给 `sample()` 的值，中间层不解释字段。逐帧值进 extras（`sctx__<field>` 扁平键，复用 `extras__<agent>__<key>` npz 管线）；`explore_factor` 同时保留旧键兼容既有消费者。
+- **记录管线**：`extras → Episode.sampling_contexts（派生 property，无新字段）→ Trajectory.sampling_ctx → PPOBuffer.ctx_fields → _ctx(sl) minibatch 重建`。跨 trajectory ctx schema 不一致 → Buffer 显式 raise（不静默补零）。
+- **eval 路径不消费 spec**：`stochastic=False` 不包 wrapper，参考策略永不构建。
+- **复用键修复**：worker 任务分组与 inner/wrapper 两级复用——inner 随 policy blueprint 重建、wrapper 随 spec 重建（旧代码复用键不含 ef，同 policy 不同 spec 会静默错配）。
+
+### 13.3 接口变更
+
+- `StochasticPolicy.sample(obs, *, ctx=None, want_extra=False)`
+- `TrainablePolicy.evaluate_actions(obs, actions, ctx=None, *, want_stats=False)`
+- `Job.explore_factor_a/b` 保留为兼容糖（`resolve_sampling` 合成 spec；显式冲突 → raise）
+- `ExploratoryPolicy` 保留为 `SamplingPolicy` 兼容壳
+- 导出模板内置本地 `SamplingContext`（普通 class，非 dataclass——export 文件 exec 加载时 `cls.__module__` 为 None，dataclass 字符串注解会崩）
+
+### 13.4 待办（阶段 2）
+
+- 策略消费 `ctx.reference_action` + `delta_factor` + `delta_mix`：σ_eff² = (1−λ)·σ_policy² + λ·(c·|m_θ−a_ref|)² 形式的尺度混合（各策略族按自身 σ 语义适配，bounded 变体需先转回 σ 域再混）。
+- 实验侧装配 `SamplingSpec`（历史 export 目录 → `ReferenceSpec`）。
+- `delta`（frozen）备选模式未实现——如需对照实验再加字段。

@@ -13,6 +13,7 @@ by test_pre_tanh_normal.py.  This file verifies what is DIFFERENT:
 5. Export: strict loading, self-containment, parity
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import math
 import tempfile
@@ -115,8 +116,8 @@ class TestDegenerateEquivalence(unittest.TestCase):
         obs = torch.randn(64, OBS_DIM)
         actions = torch.tanh(torch.randn(64, ACTION_DIM))
         ei = torch.linspace(-1.0, 1.0, 64)
-        ev_s = shared.evaluate_actions(obs, actions, ei)
-        ev_t = state.evaluate_actions(obs, actions, ei)
+        ev_s = shared.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
+        ev_t = state.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
         torch.testing.assert_close(
             ev_t.log_prob, ev_s.log_prob, rtol=0, atol=1e-10,
         )
@@ -159,18 +160,16 @@ class TestStateSigma(unittest.TestCase):
         p = _make_state()
         obs = torch.randn(50, OBS_DIM)
         ev_init = p.evaluate_actions(
-            obs, torch.zeros(50, ACTION_DIM), torch.zeros(50),
-            want_stats=True,
-        )
+            obs,  torch.zeros(50, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(50)), 
+            want_stats=True)
         self.assertAlmostEqual(
             ev_init.stats["sigma_state_std"], 0.0, places=7,
             msg="const-σ init must report zero state std",
         )
         self._randomize_sigma_head(p)
         ev = p.evaluate_actions(
-            obs, torch.zeros(50, ACTION_DIM), torch.zeros(50),
-            want_stats=True,
-        )
+            obs,  torch.zeros(50, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(50)), 
+            want_stats=True)
         self.assertGreater(ev.stats["sigma_state_std"], 1e-4)
 
     def test_per_state_sigma_scores_correctly(self):
@@ -181,7 +180,7 @@ class TestStateSigma(unittest.TestCase):
         obs = torch.randn(20, OBS_DIM)
         actions = torch.tanh(torch.randn(20, ACTION_DIM))
         mu, r = p._policy_params(obs)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(20))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(20)))
         a = actions.numpy().astype(np.float64)
         mu_np = mu.detach().numpy()
         sig_np = r.exp().detach().numpy()
@@ -204,8 +203,7 @@ class TestStateSigma(unittest.TestCase):
         self._randomize_sigma_head(p)
         obs = torch.randn(200, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(200, ACTION_DIM), torch.zeros(200),
-        )
+            obs,  torch.zeros(200, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(200)))
         # Same-σ batch would give near-constant U; σ variation must
         # show up beyond the μ-driven variation alone.
         self.assertGreater(float(ev.uncertainty.std()), 1e-4)
@@ -235,14 +233,13 @@ class TestSharedMathInherited(unittest.TestCase):
         actions = torch.zeros(4, ACTION_DIM)
         actions[0, 0] = 1.0
         with self.assertRaises(RuntimeError):
-            p.evaluate_actions(obs, actions, torch.zeros(4))
+            p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
         actions[0, 0] = float("nan")
         with self.assertRaises(ValueError):
-            p.evaluate_actions(obs, actions, torch.zeros(4))
+            p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
         with self.assertRaises(ValueError):
             p.evaluate_actions(
-                obs, torch.zeros(4, ACTION_DIM), torch.full((4,), 2.0),
-            )
+                obs,  torch.zeros(4, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.full((4,), 2.0)))
 
     def test_sample_and_evaluate_consistency(self):
         torch.manual_seed(42)
@@ -252,8 +249,7 @@ class TestSharedMathInherited(unittest.TestCase):
             actions, lp = p.sample_action(obs, explore_factor=e)
             self.assertTrue((actions.abs() <= _ACTION_SAFE).all())
             ev = p.evaluate_actions(
-                obs, actions, torch.full((50,), e),
-            )
+                obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((50,), e)))
             diff = (lp - ev.log_prob).abs().max().item()
             self.assertLess(diff, 1e-5, f"e={e}: diff={diff}")
 
@@ -261,7 +257,7 @@ class TestSharedMathInherited(unittest.TestCase):
         p = _make_state()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.tanh(torch.randn(10, ACTION_DIM))
-        ev = p.evaluate_actions(obs, actions, torch.zeros(10))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         (-ev.log_prob.mean() + ev.uncertainty.mean()).backward()
         g = p.head.weight.grad
         self.assertFalse(
@@ -282,8 +278,7 @@ class TestSharedMathInherited(unittest.TestCase):
         actions = torch.tanh(torch.randn(B, ACTION_DIM))
         with torch.no_grad():
             ev = p.evaluate_actions(
-                obs, actions, torch.zeros(B), want_stats=True,
-            )
+                obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(B)),  want_stats=True)
         self.assertTrue(torch.isfinite(ev.log_prob).all())
         self.assertTrue(torch.isfinite(ev.uncertainty).all())
 
@@ -339,12 +334,10 @@ class TestExport(unittest.TestCase):
         for e in (0.0, 0.5, -0.7):
             torch.manual_seed(12345)
             a_exp, lp_exp = p.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             torch.manual_seed(12345)
             a_act, lp_act = loaded.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             np.testing.assert_allclose(a_act, a_exp, rtol=0, atol=0)
             self.assertAlmostEqual(
                 lp_act["log_prob"], lp_exp["log_prob"], places=6,

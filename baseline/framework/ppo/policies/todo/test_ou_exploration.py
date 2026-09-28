@@ -13,6 +13,7 @@ Test categories (matching the implementation plan):
 8. Backward compatibility: existing tests still pass (verified separately).
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import numpy as np
 import torch
@@ -83,8 +84,8 @@ class TestDegenerateEquivalence:
         acts = torch.tanh(torch.randn(8, ACTION_DIM))
 
         with torch.no_grad():
-            ev1 = bp.evaluate_actions(obs, acts, torch.full((8,), 0.5), want_stats=True)
-            ev2 = fp.evaluate_actions(obs, acts, torch.full((8,), 0.5), want_stats=True)
+            ev1 = bp.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.full((8,), 0.5)),  want_stats=True)
+            ev2 = fp.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.full((8,), 0.5)),  want_stats=True)
 
         assert torch.allclose(ev1.log_prob, ev2.log_prob, atol=1e-6)
         # Stats are not compared: the baseline uses closed-form entropy
@@ -141,7 +142,7 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, lp_sample = policy.sample_action(obs, noise_shift=shift)
-            ev = policy.evaluate_actions(obs, action, torch.full((16,), 0.5), noise_shift=shift)
+            ev = policy.evaluate_actions(obs,  action,  ctx=SamplingContext(explore_factor=torch.full((16,), 0.5)),  noise_shift=shift)
             lp_eval = ev.log_prob
 
         assert torch.allclose(lp_sample, lp_eval, atol=1e-5), (
@@ -158,8 +159,8 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, _ = policy.sample_action(obs, noise_shift=shift)
-            ev_with = policy.evaluate_actions(obs, action, torch.full((16,), 0.5), noise_shift=shift)
-            ev_without = policy.evaluate_actions(obs, action, torch.full((16,), 0.5))
+            ev_with = policy.evaluate_actions(obs,  action,  ctx=SamplingContext(explore_factor=torch.full((16,), 0.5)),  noise_shift=shift)
+            ev_without = policy.evaluate_actions(obs,  action,  ctx=SamplingContext(explore_factor=torch.full((16,), 0.5)))
 
         # They should differ — the shift changes which raw_action is scored.
         assert not torch.allclose(ev_with.log_prob, ev_without.log_prob, atol=1e-3)
@@ -171,11 +172,10 @@ class TestSamplingScoringConsistency:
         acts = torch.tanh(torch.randn(8, ACTION_DIM))
 
         with torch.no_grad():
-            ev_none = policy.evaluate_actions(obs, acts, torch.full((8,), 0.5))
+            ev_none = policy.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.full((8,), 0.5)))
             ev_zero = policy.evaluate_actions(
-                obs, acts, torch.full((8,), 0.5),
-                noise_shift=torch.zeros(8, ACTION_DIM),
-            )
+                obs,  acts,  ctx=SamplingContext(explore_factor=torch.full((8,), 0.5)), 
+                noise_shift=torch.zeros(8, ACTION_DIM))
         assert torch.allclose(ev_none.log_prob, ev_zero.log_prob, atol=1e-6)
 
     def test_per_dim_path_matches(self):
@@ -187,7 +187,7 @@ class TestSamplingScoringConsistency:
 
         with torch.no_grad():
             action, lp_sample = policy.sample_action(obs, noise_shift=shift)
-            ev = policy.evaluate_actions(obs, action, torch.full((8,), 0.5), noise_shift=shift)
+            ev = policy.evaluate_actions(obs,  action,  ctx=SamplingContext(explore_factor=torch.full((8,), 0.5)),  noise_shift=shift)
 
         assert torch.allclose(lp_sample, ev.log_prob, atol=1e-5)
 

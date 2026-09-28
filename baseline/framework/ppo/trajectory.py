@@ -90,11 +90,13 @@ class Trajectory:
             no advantage contribution).
         importance: Sample weight for this trajectory — scales both critic
             loss and policy loss.
-        explore_factor: ``(T,)`` float32 — per-frame exploration
-            intensity used at rollout time.  Threaded into
+        sampling_ctx: ``{field: (T, ...)}`` — all per-frame
+            SamplingContext fields recorded at rollout (includes
+            ``explore_factor`` plus e.g. ``reference_action``,
+            ``delta_factor``, ``delta_mix``).  Threaded into
             ``evaluate_actions`` so log_prob is computed under the same
-            distribution that produced the actions.  When None, defaults
-            to 0.0 (neutral) in the buffer.
+            distribution that produced the actions.  When None, the
+            buffer treats every field as neutral (explore_factor=0).
         floor_weight: ``(T,)`` float32 — per-frame weight for the
             uncertainty floor loss.  Allows the experiment to restrict
             the floor loss to specific frames (e.g. only BALANCE-phase
@@ -109,5 +111,5 @@ class Trajectory:
     last_obs: np.ndarray
     channels: Dict[str, ChannelData]
     importance: float = 1.0
-    explore_factor: Optional[np.ndarray] = None
+    sampling_ctx: Optional[Dict[str, np.ndarray]] = None
     floor_weight: Optional[np.ndarray] = None

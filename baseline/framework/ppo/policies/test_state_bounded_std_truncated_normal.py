@@ -17,6 +17,7 @@ Verifies (per DESIGN_bounded_std_truncated_normal.md §3.2/§11):
    subprocess, reset(seed) replay
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import math
 import subprocess
@@ -151,9 +152,8 @@ class TestInit(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(64, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.rand(64, ACTION_DIM) * 2 - 1,
-            torch.zeros(64), want_stats=True,
-        )
+            obs,  torch.rand(64, ACTION_DIM) * 2 - 1, 
+            ctx=SamplingContext(explore_factor=torch.zeros(64)),  want_stats=True)
         self.assertEqual(ev.stats["sigma_state_std"], 0.0)
 
 
@@ -179,8 +179,8 @@ class TestDegenerateEquivalence(unittest.TestCase):
         acts = torch.rand(32, ACTION_DIM) * 2 - 1
         for e in (0.0, 0.7, -0.3):
             ef = torch.full((32,), e)
-            ev1 = self.state.evaluate_actions(self.obs, acts, ef)
-            ev2 = self.shared.evaluate_actions(self.obs, acts, ef)
+            ev1 = self.state.evaluate_actions(self.obs,  acts,  ctx=SamplingContext(explore_factor=ef))
+            ev2 = self.shared.evaluate_actions(self.obs,  acts,  ctx=SamplingContext(explore_factor=ef))
             self.assertTrue(torch.equal(ev1.log_prob, ev2.log_prob))
             self.assertTrue(
                 torch.equal(ev1.uncertainty, ev2.uncertainty)
@@ -215,9 +215,8 @@ class TestStateDependence(unittest.TestCase):
         p = self._perturbed()
         obs = torch.randn(256, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.rand(256, ACTION_DIM) * 2 - 1,
-            torch.zeros(256), want_stats=True,
-        )
+            obs,  torch.rand(256, ACTION_DIM) * 2 - 1, 
+            ctx=SamplingContext(explore_factor=torch.zeros(256)),  want_stats=True)
         self.assertGreater(ev.stats["sigma_state_std"], 0.0)
 
     def test_sigma_bounded_under_state_variation(self):
@@ -259,9 +258,8 @@ class TestExploreFactor(unittest.TestCase):
     def test_e0_identity(self):
         m0, s0 = self.p.forward(self.obs, explore_factor=0.0)
         ev = self.p.evaluate_actions(
-            self.obs, torch.rand(16, ACTION_DIM) * 2 - 1,
-            torch.zeros(16),
-        )
+            self.obs,  torch.rand(16, ACTION_DIM) * 2 - 1, 
+            ctx=SamplingContext(explore_factor=torch.zeros(16)))
         # e=0 tensor path must reproduce scalar path exactly
         mt, st = self.p.forward(
             self.obs, explore_factor=torch.zeros(16)
@@ -330,7 +328,7 @@ class TestLogProb(unittest.TestCase):
         obs = torch.randn(8, OBS_DIM)
         acts = torch.rand(8, ACTION_DIM) * 1.6 - 0.8
         mean, sigma = p.forward(obs)
-        ev = p.evaluate_actions(obs, acts, torch.zeros(8))
+        ev = p.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.zeros(8)))
         m_np = mean.detach().numpy()
         s_np = sigma.detach().numpy()
         a_np = acts.numpy()
@@ -354,7 +352,7 @@ class TestLogProb(unittest.TestCase):
         obs = torch.randn(8, OBS_DIM)
         torch.manual_seed(6)
         acts, lp_sample = p.sample_action(obs)
-        ev = p.evaluate_actions(obs, acts, torch.zeros(8))
+        ev = p.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.zeros(8)))
         self.assertTrue(
             torch.allclose(ev.log_prob, lp_sample, atol=1e-5)
         )
@@ -368,10 +366,9 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(16, OBS_DIM)
         acts = torch.rand(16, ACTION_DIM) * 2 - 1
-        u0 = p.evaluate_actions(obs, acts, torch.zeros(16)).uncertainty
+        u0 = p.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.zeros(16))).uncertainty
         u1 = p.evaluate_actions(
-            obs, acts, torch.full((16,), 0.8)
-        ).uncertainty
+            obs,  acts,  ctx=SamplingContext(explore_factor=torch.full((16,), 0.8))).uncertainty
         self.assertTrue(torch.equal(u0, u1))
 
     def test_u_matches_closed_form(self):
@@ -382,7 +379,7 @@ class TestUncertainty(unittest.TestCase):
             p.head.weight[d:].normal_(0.0, 0.3)
         obs = torch.randn(8, OBS_DIM)
         acts = torch.rand(8, ACTION_DIM) * 2 - 1
-        ev = p.evaluate_actions(obs, acts, torch.zeros(8))
+        ev = p.evaluate_actions(obs,  acts,  ctx=SamplingContext(explore_factor=torch.zeros(8)))
         mean, sigma = p.forward(obs)
         # U = σ·√(2π)·Z/2 per dim, mean over dims
         from scipy.stats import norm as _n
@@ -421,9 +418,9 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         p.reset(123)
-        a1, _ = p.sample(obs, explore_factor=0.4)
+        a1, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.4))
         p.reset(123)
-        a2, _ = p.sample(obs, explore_factor=0.4)
+        a2, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.4))
         self.assertTrue(np.array_equal(a1, a2))
 
     def test_state_dict_keys(self):
@@ -445,9 +442,8 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(16, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.rand(16, ACTION_DIM) * 2 - 1,
-            torch.zeros(16), want_stats=True,
-        )
+            obs,  torch.rand(16, ACTION_DIM) * 2 - 1, 
+            ctx=SamplingContext(explore_factor=torch.zeros(16)),  want_stats=True)
         for k in (
             "uncertainty", "std_mean", "eff_std_mean", "std_min",
             "std_max", "mean_abs",
@@ -518,12 +514,10 @@ class TestExport(unittest.TestCase):
         for e in (0.0, 0.5, -0.7):
             self.p.reset(21)
             a_t, lp_t = self.p.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             ep.reset(21)
             a_e, lp_e = ep.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             self.assertTrue(np.array_equal(a_t, a_e), f"e={e}")
             self.assertAlmostEqual(lp_t["log_prob"], lp_e["log_prob"])
 
@@ -563,9 +557,9 @@ class TestExport(unittest.TestCase):
         ep = self.mod.ExportedStateBoundedStdTruncNormPolicy()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         ep.reset(99)
-        a1, _ = ep.sample(obs, explore_factor=0.3)
+        a1, _ = ep.sample(obs,  ctx=SamplingContext(explore_factor=0.3))
         ep.reset(99)
-        a2, _ = ep.sample(obs, explore_factor=0.3)
+        a2, _ = ep.sample(obs,  ctx=SamplingContext(explore_factor=0.3))
         self.assertTrue(np.array_equal(a1, a2))
 
     def test_export_works_without_repo(self):
@@ -577,7 +571,7 @@ class TestExport(unittest.TestCase):
             "pol = m.ExportedStateBoundedStdTruncNormPolicy()\n"
             "obs = np.zeros(%d, dtype=np.float32)\n" % OBS_DIM +
             "a, _ = pol.act(obs); assert a.shape == (%d,)\n" % ACTION_DIM +
-            "a, _ = pol.sample(obs, explore_factor=0.5)\n"
+            "a, _ = pol.sample(obs,  ctx=m.SamplingContext(explore_factor=0.5))\n"
             "assert a.shape == (%d,) and np.all(np.abs(a) <= 1.0)\n" % ACTION_DIM +
             "print('OK')\n"
         )

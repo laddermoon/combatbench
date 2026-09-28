@@ -123,6 +123,7 @@ import torch.nn as nn
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import Policy, PolicyBlueprint
 
+from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 from baseline.framework.rollout.job import Job
 
@@ -286,7 +287,7 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
     @abstractmethod
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor,
-        explore_factor: torch.Tensor,
+        ctx: Optional["SamplingContext"] = None,
         *, want_stats: bool = False,
     ) -> ActorEval:
         """Recompute log_prob and uncertainty for obs/actions.
@@ -297,18 +298,18 @@ class TrainablePolicy(StochasticPolicy, Policy, ABC):
           in [0, 1], used by the framework for the uncertainty floor loss.
         - ``stats``: optional diagnostics (only when ``want_stats=True``).
 
-        ``explore_factor`` is a ``(B,)`` tensor recording the per-frame
-        exploration intensity used at rollout time.  The policy uses it
-        to reproduce the same distribution that produced the actions,
-        ensuring the PPO importance ratio is correct.  ``uncertainty``
-        uses the policy's own distribution without exploration scaling.
+        ``ctx`` replays the per-frame :class:`SamplingContext` recorded
+        at rollout time — its tensor fields are ``(B, ·)`` batches.
+        The policy uses it to reproduce the same distribution that
+        produced the actions, ensuring the PPO importance ratio is
+        correct.  ``uncertainty`` uses the policy's own distribution
+        without exploration scaling.
 
         Args:
             obs: ``(B, obs_dim)`` observations.
             actions: ``(B, action_dim)`` actions taken at rollout time.
-            explore_factor: ``(B,)`` per-frame exploration intensity
-                recorded at rollout time.  Required — the policy must
-                know what distribution produced the actions.
+            ctx: ``SamplingContext`` with ``(B, ·)`` fields, or ``None``
+                for neutral legacy behaviour.
             want_stats: When True, also populate ``ActorEval.stats`` with
                 distributional diagnostics over this batch.  The
                 framework sets this only for the single whole-batch call

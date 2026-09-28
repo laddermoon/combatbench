@@ -9,21 +9,28 @@
 - As a ``StochasticPolicy`` (``sample()`` → stochastic sampling with
   exploration control) for training rollouts.
 
-The :class:`ExploratoryPolicy` wrapper consumes a ``StochasticPolicy``
+The :class:`SamplingPolicy` wrapper consumes a ``StochasticPolicy``
 and exposes it as a ``Policy`` to the ``EpisodeRunner``.
 """
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
+
+if TYPE_CHECKING:
+    from baseline.framework.ppo.sampling_context import SamplingContext
 
 
 class StochasticPolicy(ABC):
     """Interface for policies that support stochastic sampling.
 
     ``sample()`` returns a stochastically sampled action.  The optional
-    ``explore_factor ∈ [-1, 1]`` (0 = neutral) scales the sampling
-    distribution; the mapping is policy-defined.
+    ``ctx`` (:class:`SamplingContext`) carries the per-frame sampling
+    inputs — ``explore_factor``, ``reference_action``, ``delta_factor``,
+    ``delta_mix`` — that the wrapper resolved for this step.  ``None``
+    means neutral legacy sampling (equivalent to ``explore_factor=0``);
+    the mapping from ctx fields to the sampling distribution is
+    policy-defined.
     """
 
     @abstractmethod
@@ -31,10 +38,10 @@ class StochasticPolicy(ABC):
         self,
         observation: Any,
         *,
-        explore_factor: float = 0.0,
+        ctx: Optional["SamplingContext"] = None,
         want_extra: bool = False,
     ) -> Tuple[Any, Optional[dict]]:
-        """Sample an action with optional exploration intensity.
+        """Sample an action under the given sampling context.
 
         Returns ``(action, extra)`` where *extra* is an optional dict
         of policy-defined auxiliary data (e.g. log-prob, value).

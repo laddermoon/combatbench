@@ -14,6 +14,7 @@ Or without pytest:
     PYTHONPATH=. python3 baseline/framework/ppo/policies/test_policy_families.py
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import importlib
 import sys
@@ -112,8 +113,8 @@ class TestBaseClassEquivalence(unittest.TestCase):
         ref.log_std.data.copy_(baseline.log_std.data)
 
         # Compare evaluate_actions log_prob.
-        ev_base = baseline.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
-        ev_ref = ref.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
+        ev_base = baseline.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
+        ev_ref = ref.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
 
         diff = (ev_base.log_prob - ev_ref.log_prob).abs().max().item()
         self.assertLess(
@@ -283,7 +284,7 @@ def monte_carlo_normalization(
     for i in range(n_obs):
         o = obs[i:i+1].expand(grid.shape[0], -1)
         with torch.no_grad():
-            ev = policy.evaluate_actions(o, grid, torch.full((grid.shape[0],), 0.5))
+            ev = policy.evaluate_actions(o,  grid,  ctx=SamplingContext(explore_factor=torch.full((grid.shape[0],), 0.5)))
         total += float(ev.log_prob.exp().sum().item()) * da
     return total / n_obs
 
@@ -337,7 +338,7 @@ def gradient_completeness(
     policy.zero_grad()
 
     # Forward + backward through evaluate_actions
-    ev = policy.evaluate_actions(obs, actions, torch.full((32,), 0.5))
+    ev = policy.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((32,), 0.5)))
     loss = ev.log_prob.mean()
     loss.backward()
 
@@ -392,8 +393,8 @@ class TestStateGaussian(unittest.TestCase):
         # The log-std half is already initialized to produce log_std ≈ -1.0
         # via _init_head. Baseline's log_std is also -1.0. So they should match.
 
-        ev_base = baseline.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
-        ev_policy = policy.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
+        ev_base = baseline.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
+        ev_policy = policy.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
 
         diff = (ev_base.log_prob - ev_policy.log_prob).abs().max().item()
         self.assertLess(
@@ -426,7 +427,7 @@ class TestStateGaussian(unittest.TestCase):
         torch.manual_seed(42)
         actions, lp_sample = policy.sample_action(self.obs)
         # Score the same actions via evaluate_actions.
-        ev = policy.evaluate_actions(self.obs, actions, torch.full((self.batch_size,), 0.5))
+        ev = policy.evaluate_actions(self.obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-5, f"sample_action vs evaluate_actions log_prob diff = {diff:.2e}")
 
@@ -578,8 +579,8 @@ class TestLowRankGaussian(unittest.TestCase):
         policy.head.weight.data[2*ad:, :] = 0.0
         policy.head.bias.data[2*ad:] = 0.0
 
-        ev_ref = ref.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
-        ev_policy = policy.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
+        ev_ref = ref.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
+        ev_policy = policy.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
 
         # LowRankMultivariateNormal uses a different log_prob computation
         # path than Normal (Woodbury identity + PD margin ε on cov_diag),
@@ -618,7 +619,7 @@ class TestLowRankGaussian(unittest.TestCase):
         )
         torch.manual_seed(42)
         actions, lp_sample = policy.sample_action(self.obs)
-        ev = policy.evaluate_actions(self.obs, actions, torch.full((self.batch_size,), 0.5))
+        ev = policy.evaluate_actions(self.obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-4, f"sample vs evaluate log_prob diff = {diff:.2e}")
 
@@ -777,8 +778,8 @@ class TestMoGaussian(unittest.TestCase):
         policy.head.bias.data[1+ad:].copy_(ref.head.bias.data[ad:])
         # Logits are zero (uniform = only component).
 
-        ev_ref = ref.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
-        ev_policy = policy.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
+        ev_ref = ref.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
+        ev_policy = policy.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
 
         # MoG uses logsumexp over K=1 (a no-op) + log_softmax (returns 0
         # for K=1), so the math should be identical.  But the computation
@@ -813,7 +814,7 @@ class TestMoGaussian(unittest.TestCase):
         )
         torch.manual_seed(42)
         actions, lp_sample = policy.sample_action(self.obs)
-        ev = policy.evaluate_actions(self.obs, actions, torch.full((self.batch_size,), 0.5))
+        ev = policy.evaluate_actions(self.obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-5, f"sample vs evaluate log_prob diff = {diff:.2e}")
 
@@ -986,8 +987,8 @@ class TestRealNVPFlow(unittest.TestCase):
         policy.base_head.bias.data[ad:].copy_(ref.head.bias.data[ad:])
         # Flow layers are already identity (zeroed by _init_heads).
 
-        ev_ref = ref.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
-        ev_policy = policy.evaluate_actions(self.obs, self.actions, torch.full((self.batch_size,), 0.5))
+        ev_ref = ref.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
+        ev_policy = policy.evaluate_actions(self.obs,  self.actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
 
         # With identity flow, the log_prob should match ① closely.
         # Small differences may arise from the flow's forward/inverse
@@ -1057,7 +1058,7 @@ class TestRealNVPFlow(unittest.TestCase):
 
         torch.manual_seed(42)
         actions, lp_sample = policy.sample_action(self.obs)
-        ev = policy.evaluate_actions(self.obs, actions, torch.full((self.batch_size,), 0.5))
+        ev = policy.evaluate_actions(self.obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((self.batch_size,), 0.5)))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-4, f"sample vs evaluate log_prob diff = {diff:.2e}")
 

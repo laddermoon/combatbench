@@ -47,6 +47,29 @@ class Policy:
         raise NotImplementedError
 
 
+class SamplingContext:
+    """Self-contained sampling context — mirrors the framework's
+    ``baseline.framework.ppo.sampling_context.SamplingContext`` so this
+    file needs no repo import.  Fields are per-frame values (scalars or
+    arrays); the exported policies consume only ``explore_factor``.
+
+    A plain class (not a dataclass): this file is exec-loaded without a
+    real module entry, so ``from __future__ import annotations`` +
+    ``@dataclass`` would fail to resolve string annotations.
+    """
+
+    __slots__ = (
+        "explore_factor", "reference_action", "delta_factor", "delta_mix",
+    )
+
+    def __init__(self, explore_factor=None, reference_action=None,
+                 delta_factor=None, delta_mix=None):
+        self.explore_factor = explore_factor
+        self.reference_action = reference_action
+        self.delta_factor = delta_factor
+        self.delta_mix = delta_mix
+
+
 class StochasticPolicy:
     """Minimal StochasticPolicy stub for the exported policy."""
 
@@ -54,7 +77,7 @@ class StochasticPolicy:
         self,
         observation: Any,
         *,
-        explore_factor: float = 0.0,
+        ctx: Optional["SamplingContext"] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         raise NotImplementedError
@@ -367,10 +390,11 @@ class ExportedStateMixtureBoundedStdTruncNormPolicy(Policy, StochasticPolicy):
         self,
         observation: Any,
         *,
-        explore_factor: float = 0.0,
+        ctx: Optional["SamplingContext"] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """Stochastic action — mixture sample with explore_factor."""
+        explore_factor = ctx.explore_factor if ctx is not None else 0.0
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(obs_array, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():

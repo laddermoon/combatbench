@@ -16,6 +16,7 @@ Verifies (per DESIGN_bounded_std_truncated_normal.md §11):
    parity, reset(seed) replay
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import math
 import tempfile
@@ -267,7 +268,7 @@ class TestLogProb(unittest.TestCase):
         N = 100000
         x = torch.rand(N, ACTION_DIM) * 2.0 - 1.0
         obs_batch = obs.expand(N, -1)
-        ev = p.evaluate_actions(obs_batch, x, torch.full((N,), 0.0))
+        ev = p.evaluate_actions(obs_batch,  x,  ctx=SamplingContext(explore_factor=torch.full((N,), 0.0)))
         integral = (2.0 ** ACTION_DIM / N) * torch.exp(ev.log_prob).sum().item()
         self.assertAlmostEqual(integral, 1.0, places=1)
 
@@ -277,7 +278,7 @@ class TestLogProb(unittest.TestCase):
         obs = torch.randn(50, OBS_DIM)
         e = torch.rand(50) * 2 - 1
         actions, lp_sample = p.sample_action(obs, explore_factor=e)
-        ev = p.evaluate_actions(obs, actions, e)
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=e))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-4)
 
@@ -289,8 +290,7 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(100, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(100, ACTION_DIM), torch.zeros(100),
-        )
+            obs,  torch.zeros(100, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(100)))
         self.assertTrue((ev.uncertainty >= 0.0).all())
         self.assertTrue((ev.uncertainty <= 1.0).all())
 
@@ -298,16 +298,15 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.zeros(10, ACTION_DIM)
-        u0 = p.evaluate_actions(obs, actions, torch.zeros(10)).uncertainty
-        u1 = p.evaluate_actions(obs, actions, torch.ones(10)).uncertainty
+        u0 = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10))).uncertainty
+        u1 = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.ones(10))).uncertainty
         self.assertLess((u0 - u1).abs().max().item(), 1e-5)
 
     def test_u_matches_formula(self):
         p = _make_policy()
         obs = torch.zeros(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         with torch.no_grad():
             mean = torch.tanh(p.net(obs))
         sigma = float(p.policy_sigma()[0])
@@ -330,7 +329,7 @@ class TestUncertainty(unittest.TestCase):
         us = []
         for v in (-3.0, -1.0, 0.0, 1.0, 3.0):
             p.raw_std.data.fill_(v)
-            ev = p.evaluate_actions(obs, actions, torch.zeros(8))
+            ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(8)))
             us.append(ev.uncertainty.mean().item())
         for a, b in zip(us, us[1:]):
             self.assertGreater(b, a, f"U not increasing: {us}")
@@ -343,8 +342,7 @@ class TestUncertainty(unittest.TestCase):
         us = []
         for e in (-1.0, -0.5, 0.0, 0.5, 1.0):
             ev = p.evaluate_actions(
-                obs, actions, torch.full((8,), e), want_stats=True,
-            )
+                obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((8,), e)),  want_stats=True)
             us.append(ev.stats["effective_uncertainty"])
         for a, b in zip(us, us[1:]):
             self.assertGreater(b, a, f"U_eff not increasing: {us}")
@@ -357,7 +355,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(10))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         loss = ev.log_prob.mean() + ev.uncertainty.mean()
         loss.backward()
         self.assertIsNotNone(p.raw_std.grad)
@@ -370,8 +368,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         ev.uncertainty.mean().backward()
         self.assertIsNotNone(p.raw_std.grad)
         self.assertTrue((p.raw_std.grad > 0).all())
@@ -380,7 +377,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(10))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         ev.log_prob.mean().backward()
         for param in p.net.parameters():
             self.assertIsNotNone(param.grad)
@@ -415,9 +412,9 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         p.reset(7)
-        a1, _ = p.sample(obs, explore_factor=0.5, want_extra=True)
+        a1, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.5),  want_extra=True)
         p.reset(7)
-        a2, _ = p.sample(obs, explore_factor=0.5, want_extra=True)
+        a2, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.5),  want_extra=True)
         np.testing.assert_array_equal(a1, a2)
 
     def test_state_dict_has_no_log_std(self):
@@ -431,9 +428,8 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-            want_stats=True,
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)), 
+            want_stats=True)
         self.assertIsNotNone(ev.stats)
         for key in (
             "uncertainty", "std_mean", "eff_std_mean", "std_min",
@@ -503,13 +499,11 @@ class TestExport(unittest.TestCase):
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         p.reset(9)
         expected, extra_p = p.sample(
-            obs, explore_factor=0.4, want_extra=True,
-        )
+            obs,  ctx=SamplingContext(explore_factor=0.4),  want_extra=True)
         loaded = bp.build()
         loaded.reset(9)
         actual, extra_l = loaded.sample(
-            obs, explore_factor=0.4, want_extra=True,
-        )
+            obs,  ctx=SamplingContext(explore_factor=0.4),  want_extra=True)
         np.testing.assert_allclose(actual, expected, rtol=0, atol=0)
         self.assertAlmostEqual(
             extra_p["log_prob"], extra_l["log_prob"], places=6,

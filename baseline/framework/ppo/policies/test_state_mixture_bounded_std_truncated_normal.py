@@ -9,6 +9,7 @@ shared sibling's trunk + logit/mean head rows, pin v head to a constant
 and raw_std to the same value → bit-identical behaviour.
 """
 import json
+from baseline.framework.ppo.sampling_context import SamplingContext
 import math
 import tempfile
 import unittest
@@ -114,8 +115,7 @@ class TestBoundedSigmaMap(unittest.TestCase):
             p.sample_action(obs, explore_factor=1.5)
         with self.assertRaises(ValueError):
             p.evaluate_actions(
-                obs, torch.zeros(4, ACTION_DIM), torch.full((4,), -1.2),
-            )
+                obs,  torch.zeros(4, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.full((4,), -1.2)))
 
 
 class TestSampling(unittest.TestCase):
@@ -132,7 +132,7 @@ class TestSampling(unittest.TestCase):
             p.head.weight[K + K * ACTION_DIM:].normal_(0, 0.3)
         obs = torch.randn(50, OBS_DIM)
         actions, lp_sample = p.sample_action(obs)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(50))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(50)))
         self.assertLess(
             (lp_sample - ev.log_prob).abs().max().item(), 1e-4,
         )
@@ -141,9 +141,9 @@ class TestSampling(unittest.TestCase):
         p = _make_policy()
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         p.reset(123)
-        a1, _ = p.sample(obs, explore_factor=0.4)
+        a1, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.4))
         p.reset(123)
-        a2, _ = p.sample(obs, explore_factor=0.4)
+        a2, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.4))
         np.testing.assert_array_equal(a1, a2)
 
 
@@ -152,8 +152,8 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.rand(10, ACTION_DIM) * 2 - 1
-        ev1 = p.evaluate_actions(obs, actions, torch.zeros(10))
-        ev2 = p.evaluate_actions(obs, actions, 0.5 * torch.ones(10))
+        ev1 = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
+        ev2 = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=0.5 * torch.ones(10)))
         self.assertTrue(torch.equal(ev1.uncertainty, ev2.uncertainty))
 
 
@@ -162,9 +162,8 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-            want_stats=True,
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)), 
+            want_stats=True)
         for key in [
             # mixture diagnostics
             "uncertainty", "std_mean", "eff_std_mean", "std_min", "std_max",
@@ -186,16 +185,14 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(50, ACTION_DIM), torch.zeros(50),
-            want_stats=True,
-        )
+            obs,  torch.zeros(50, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(50)), 
+            want_stats=True)
         self.assertAlmostEqual(ev.stats["sigma_state_std"], 0.0, places=6)
         with torch.no_grad():
             p.head.weight[K + K * ACTION_DIM:].normal_(0, 0.5)
         ev2 = p.evaluate_actions(
-            obs, torch.zeros(50, ACTION_DIM), torch.zeros(50),
-            want_stats=True,
-        )
+            obs,  torch.zeros(50, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(50)), 
+            want_stats=True)
         self.assertGreater(ev2.stats["sigma_state_std"], 1e-3)
 
 
@@ -265,8 +262,8 @@ class TestDegenerateEquivalence(unittest.TestCase):
         obs = torch.randn(64, OBS_DIM)
         actions = torch.rand(64, ACTION_DIM) * 2 - 1
         ei = torch.linspace(-1.0, 1.0, 64)
-        ev_h = shared.evaluate_actions(obs, actions, ei)
-        ev_s = state.evaluate_actions(obs, actions, ei)
+        ev_h = shared.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
+        ev_s = state.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
         torch.testing.assert_close(ev_s.log_prob, ev_h.log_prob, rtol=0, atol=0)
         torch.testing.assert_close(
             ev_s.uncertainty, ev_h.uncertainty, rtol=0, atol=0,
@@ -378,9 +375,9 @@ class TestExport(unittest.TestCase):
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         for e in (0.0, 0.5, -0.7):
             p.reset(9)
-            a_t, lp_t = p.sample(obs, explore_factor=e, want_extra=True)
+            a_t, lp_t = p.sample(obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             loaded.reset(9)
-            a_e, lp_e = loaded.sample(obs, explore_factor=e, want_extra=True)
+            a_e, lp_e = loaded.sample(obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             self.assertTrue(np.array_equal(a_t, a_e), f"e={e}")
             self.assertAlmostEqual(lp_t["log_prob"], lp_e["log_prob"])
 

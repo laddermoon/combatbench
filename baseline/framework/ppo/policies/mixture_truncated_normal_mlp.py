@@ -36,6 +36,7 @@ from torch import nn
 from envs.framework.policy import Policy, PolicyBlueprint
 
 from baseline.framework.ppo import ActorEval, TrainablePolicy
+from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
@@ -413,16 +414,24 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         obs: torch.Tensor,
         actions: torch.Tensor,
-        explore_factor: torch.Tensor,
+        ctx: Optional[SamplingContext] = None,
         *,
         want_stats: bool = False,
     ) -> ActorEval:
         """Score actions under the full mixture and compute U.
 
-        log_prob uses effective σ (with explore shift) so the PPO
-        importance ratio is correct; U uses policy σ (e=0) and is
+        ``ctx`` replays the per-frame SamplingContext recorded at
+        rollout time — its ``explore_factor`` field is a ``(B,)``
+        tensor.  log_prob uses effective σ (with explore shift) so the
+        PPO importance ratio is correct; U uses policy σ (e=0) and is
         action-independent.
+
+        TODO(S3): consume ctx.reference_action / delta_factor /
+        delta_mix — currently ignored (framework plumbing only).
         """
+        explore_factor = (
+            ctx.explore_factor if ctx is not None else 0.0
+        )
         log_pi, mean, raw = self._forward_raw(obs)
         policy_sigma = self._policy_sigma(raw)
         eff_sigma = self._explored_sigma(raw, explore_factor)
@@ -564,10 +573,13 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self,
         observation: Any,
         *,
-        explore_factor: float = 0.0,
+        ctx: Optional[SamplingContext] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        """Stochastic action — mixture sample with explore_factor."""
+        """Stochastic action — mixture sample with ctx."""
+        explore_factor = (
+            ctx.explore_factor if ctx is not None else 0.0
+        )
         obs_array = np.asarray(observation, dtype=np.float32)
         obs_tensor = torch.as_tensor(
             obs_array, dtype=torch.float32, device=self.device,

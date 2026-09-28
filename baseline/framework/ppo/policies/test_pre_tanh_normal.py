@@ -16,6 +16,7 @@ Verifies (per DESIGN_pre_tanh_normal.md §11):
 7. Export: strict loading, self-containment, parity
 """
 from __future__ import annotations
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 import math
 import tempfile
@@ -179,7 +180,7 @@ class TestLogProb(unittest.TestCase):
         _set_const_policy(p, mu, np.log(sig))
         obs = torch.zeros(30, OBS_DIM)
         actions = torch.rand(30, ACTION_DIM) * 1.8 - 0.9
-        ev = p.evaluate_actions(obs, actions, torch.zeros(30))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(30)))
         ref = np.ones(30)
         for d in range(ACTION_DIM):
             ref *= _pdf_ref(mu[d], sig[d], actions[:, d].numpy())
@@ -203,7 +204,7 @@ class TestLogProb(unittest.TestCase):
             dtype=torch.float32,
         )
         obs = torch.zeros(len(pts), OBS_DIM)
-        ev = p.evaluate_actions(obs, pts, torch.zeros(len(pts)))
+        ev = p.evaluate_actions(obs,  pts,  ctx=SamplingContext(explore_factor=torch.zeros(len(pts))))
         dg = g[1] - g[0]
         integral = float(ev.log_prob.exp().sum()) * dg * dg
         self.assertAlmostEqual(
@@ -218,7 +219,7 @@ class TestLogProb(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(50, OBS_DIM)
         actions, lp_sample = p.sample_action(obs)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(50))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(50)))
         diff = (lp_sample - ev.log_prob).abs().max().item()
         self.assertLess(diff, 1e-5, f"sample vs evaluate diff = {diff}")
 
@@ -229,8 +230,7 @@ class TestLogProb(unittest.TestCase):
         for e in (-1.0, -0.5, 0.5, 1.0):
             actions, lp_sample = p.sample_action(obs, explore_factor=e)
             ev = p.evaluate_actions(
-                obs, actions, torch.full((40,), e),
-            )
+                obs,  actions,  ctx=SamplingContext(explore_factor=torch.full((40,), e)))
             diff = (lp_sample - ev.log_prob).abs().max().item()
             self.assertLess(diff, 1e-5, f"e={e}: diff = {diff}")
 
@@ -243,16 +243,14 @@ class TestUncertainty(unittest.TestCase):
         _set_const_policy(p, mu, np.log(sig))
         obs = torch.zeros(4, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(4, ACTION_DIM), torch.zeros(4),
-        )
+            obs,  torch.zeros(4, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(4)))
         return float(ev.uncertainty[0])
 
     def test_u_in_range(self):
         p = _make_policy()
         obs = torch.randn(100, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(100, ACTION_DIM), torch.zeros(100),
-        )
+            obs,  torch.zeros(100, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(100)))
         u = ev.uncertainty
         self.assertTrue((u >= 0.0).all(), f"U < 0: min={u.min()}")
         self.assertTrue((u <= 1.0).all(), f"U > 1: max={u.max()}")
@@ -300,8 +298,8 @@ class TestUncertainty(unittest.TestCase):
         obs = torch.randn(20, OBS_DIM)
         a1 = torch.zeros(20, ACTION_DIM)
         a2 = torch.rand(20, ACTION_DIM) * 2 - 1
-        ev1 = p.evaluate_actions(obs, a1, torch.zeros(20))
-        ev2 = p.evaluate_actions(obs, a2, torch.ones(20))
+        ev1 = p.evaluate_actions(obs,  a1,  ctx=SamplingContext(explore_factor=torch.zeros(20)))
+        ev2 = p.evaluate_actions(obs,  a2,  ctx=SamplingContext(explore_factor=torch.ones(20)))
         torch.testing.assert_close(
             ev1.uncertainty, ev2.uncertainty, rtol=0, atol=0,
         )
@@ -313,8 +311,7 @@ class TestUncertainty(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(200, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(200, ACTION_DIM), torch.zeros(200),
-        )
+            obs,  torch.zeros(200, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(200)))
         self.assertGreater(float(ev.uncertainty.std()), 1e-6)
 
 
@@ -406,9 +403,8 @@ class TestExploreFactor(unittest.TestCase):
                 p.sample_action(obs, explore_factor=e)
         with self.assertRaises(ValueError):
             p.evaluate_actions(
-                obs, torch.zeros(4, ACTION_DIM),
-                torch.full((4,), 1.5),
-            )
+                obs,  torch.zeros(4, ACTION_DIM), 
+                ctx=SamplingContext(explore_factor=torch.full((4,), 1.5)))
 
     def test_sample_differs_from_act(self):
         """Stochastic sampling actually explores — differs from the
@@ -417,7 +413,7 @@ class TestExploreFactor(unittest.TestCase):
         obs = np.random.randn(OBS_DIM).astype(np.float32)
         a1, _ = p.act(obs)
         torch.manual_seed(123)
-        a2, _ = p.sample(obs, explore_factor=0.0)
+        a2, _ = p.sample(obs,  ctx=SamplingContext(explore_factor=0.0))
         self.assertFalse(np.allclose(a1, a2, atol=1e-7),
                          "sample should differ from deterministic act")
 
@@ -450,7 +446,7 @@ class TestGuards(unittest.TestCase):
             actions = torch.zeros(4, ACTION_DIM)
             actions[0, 0] = bad
             with self.assertRaises(RuntimeError):
-                p.evaluate_actions(obs, actions, torch.zeros(4))
+                p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
 
     def test_action_beyond_safe_margin_raises(self):
         p = _make_policy()
@@ -460,7 +456,7 @@ class TestGuards(unittest.TestCase):
         # to land strictly above _ACTION_SAFE after quantization.
         actions[0, 0] = 1.0 - (1.0 - _ACTION_SAFE) * 0.25
         with self.assertRaises(RuntimeError):
-            p.evaluate_actions(obs, actions, torch.zeros(4))
+            p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
 
     def test_nonfinite_action_raises(self):
         p = _make_policy()
@@ -468,10 +464,10 @@ class TestGuards(unittest.TestCase):
         actions = torch.zeros(4, ACTION_DIM)
         actions[0, 0] = float("nan")
         with self.assertRaises(ValueError):
-            p.evaluate_actions(obs, actions, torch.zeros(4))
+            p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
         actions[0, 0] = float("inf")
         with self.assertRaises(ValueError):
-            p.evaluate_actions(obs, actions, torch.zeros(4))
+            p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
 
     def test_unsafe_sampling_params_raise(self):
         """mu far into saturation with small sigma: the effective
@@ -496,7 +492,7 @@ class TestGuards(unittest.TestCase):
         )
         obs = torch.zeros(4, OBS_DIM)
         actions = torch.zeros(4, ACTION_DIM)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(4))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(4)))
         self.assertTrue(torch.isfinite(ev.log_prob).all())
 
     def test_tail_risk_value(self):
@@ -516,7 +512,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(10))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         (-ev.log_prob.mean()).backward()
         self.assertIsNotNone(p.log_std.grad)
         self.assertFalse(
@@ -536,8 +532,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         ev.uncertainty.mean().backward()
         self.assertIsNotNone(p.log_std.grad)
         self.assertFalse(
@@ -556,7 +551,7 @@ class TestGradients(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         actions = torch.randn(10, ACTION_DIM).clamp(-0.9, 0.9)
-        ev = p.evaluate_actions(obs, actions, torch.zeros(10))
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(10)))
         (-ev.log_prob.mean() + ev.uncertainty.mean()).backward()
         for param in p.net[0].parameters():
             self.assertIsNotNone(param.grad)
@@ -605,8 +600,7 @@ class TestBufferScale(unittest.TestCase):
         actions = torch.tanh(torch.randn(B, ACTION_DIM))
         with torch.no_grad():
             ev = p.evaluate_actions(
-                obs, actions, torch.zeros(B), want_stats=True,
-            )
+                obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(B)),  want_stats=True)
         self.assertEqual(ev.log_prob.shape, (B,))
         self.assertTrue(torch.isfinite(ev.log_prob).all())
         self.assertTrue(torch.isfinite(ev.uncertainty).all())
@@ -620,9 +614,8 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-            want_stats=True,
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)), 
+            want_stats=True)
         self.assertIsNotNone(ev.stats)
         for key in [
             "uncertainty", "effective_uncertainty",
@@ -643,11 +636,9 @@ class TestStats(unittest.TestCase):
         obs = torch.randn(50, OBS_DIM)
         actions = torch.zeros(50, ACTION_DIM)
         ev0 = p.evaluate_actions(
-            obs, actions, torch.zeros(50), want_stats=True,
-        )
+            obs,  actions,  ctx=SamplingContext(explore_factor=torch.zeros(50)),  want_stats=True)
         ev1 = p.evaluate_actions(
-            obs, actions, torch.ones(50), want_stats=True,
-        )
+            obs,  actions,  ctx=SamplingContext(explore_factor=torch.ones(50)),  want_stats=True)
         self.assertAlmostEqual(
             ev0.stats["uncertainty"], ev1.stats["uncertainty"], places=7,
         )
@@ -664,9 +655,8 @@ class TestStats(unittest.TestCase):
         p = _make_policy()
         obs = torch.randn(10, OBS_DIM)
         ev = p.evaluate_actions(
-            obs, torch.zeros(10, ACTION_DIM), torch.zeros(10),
-            want_stats=True,
-        )
+            obs,  torch.zeros(10, ACTION_DIM),  ctx=SamplingContext(explore_factor=torch.zeros(10)), 
+            want_stats=True)
         s = ev.stats
         self.assertAlmostEqual(
             s["latent_std_mean"], math.exp(-1.0), places=5,
@@ -785,12 +775,10 @@ class TestExport(unittest.TestCase):
         for e in (0.0, 0.5, -0.7):
             torch.manual_seed(12345)
             a_exp, lp_exp = p.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             torch.manual_seed(12345)
             a_act, lp_act = loaded.sample(
-                obs, explore_factor=e, want_extra=True,
-            )
+                obs,  ctx=SamplingContext(explore_factor=e),  want_extra=True)
             np.testing.assert_allclose(a_act, a_exp, rtol=0, atol=0)
             self.assertAlmostEqual(
                 lp_act["log_prob"], lp_exp["log_prob"], places=6,
@@ -804,8 +792,8 @@ class TestExport(unittest.TestCase):
         obs = torch.randn(8, OBS_DIM)
         actions = torch.tanh(torch.randn(8, ACTION_DIM))
         ei = torch.linspace(-1.0, 1.0, 8)
-        ev = p.evaluate_actions(obs, actions, ei)
-        lp_exp = loaded.evaluate_actions(obs, actions, ei)
+        ev = p.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
+        lp_exp = loaded.evaluate_actions(obs,  actions,  ctx=SamplingContext(explore_factor=ei))
         torch.testing.assert_close(
             lp_exp, ev.log_prob.detach(), rtol=0, atol=1e-10,
         )

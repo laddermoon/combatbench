@@ -293,8 +293,9 @@ def _serialize_trajectories(
             fw_list.append(np.asarray(t.floor_weight, dtype=np.float32))
         else:
             fw_list.append(np.ones(len(t.obs), dtype=np.float32))
-        if t.explore_factor is not None:
-            ef_list.append(np.asarray(t.explore_factor, dtype=np.float32))
+        ef = (t.sampling_ctx or {}).get("explore_factor")
+        if ef is not None:
+            ef_list.append(np.asarray(ef, dtype=np.float32))
         else:
             ef_list.append(np.zeros(len(t.obs), dtype=np.float32))
         imp_list.append(np.array(t.importance, dtype=np.float32))
@@ -319,7 +320,7 @@ def _serialize_buffer(buf: PPOBuffer, frame_ids: np.ndarray) -> Dict[str, Any]:
         "actions": buf.actions,
         "log_probs": buf.log_probs,
         "sample_weights": buf.sample_weights,
-        "explore_factor": buf.explore_factor,
+        "explore_factor": buf.ctx_fields["explore_factor"],
         "floor_weight": buf.floor_weight,
         "uncertainty": buf.uncertainty if buf.uncertainty is not None else np.zeros(0, dtype=np.float32),
         "traj_lengths": np.array(buf.traj_lengths),
@@ -456,7 +457,7 @@ _WRAPPER_SAME_EF = '''
 class ExportedExploratoryPolicy(Policy):
     """Stochastic policy with baked-in explore_factor.
 
-    act() delegates to inner.sample(obs, explore_factor=_explore_factor(obs, step)),
+    act() delegates to inner.sample(obs, ctx=SamplingContext(explore_factor=ef)),
     reproducing training rollout behavior for both agent A and agent B.
     """
     def __init__(self, model_path=None, **_):
@@ -467,7 +468,8 @@ class ExportedExploratoryPolicy(Policy):
         ef = _explore_factor(observation, self._step)
         self._step += 1
         action, extra = self._inner.sample(
-            observation, explore_factor=ef, want_extra=want_extra,
+            observation, ctx=SamplingContext(explore_factor=ef),
+            want_extra=want_extra,
         )
         if extra is not None:
             extra["explore_factor"] = float(ef)
@@ -503,7 +505,8 @@ class ExportedExploratoryPolicy(Policy):
         ef = self._ef_fn(observation, self._step)
         self._step += 1
         action, extra = self._inner.sample(
-            observation, explore_factor=ef, want_extra=want_extra,
+            observation, ctx=SamplingContext(explore_factor=ef),
+            want_extra=want_extra,
         )
         if extra is not None:
             extra["explore_factor"] = float(ef)
@@ -533,7 +536,7 @@ def _export_stochastic_policy(
       embedded explore_factor callable + ExportedExploratoryPolicy wrapper
     - ``policy_blueprint.yaml`` — points to ExportedExploratoryPolicy
 
-    The wrapper's ``act()`` calls ``inner.sample(obs, explore_factor=ef)``,
+    The wrapper's ``act()`` calls ``inner.sample(obs, ctx=SamplingContext(explore_factor=ef))``,
     reproducing training rollout behavior.  When ``round_runner`` loads
     this blueprint and calls ``act()``, it gets stochastic sampling with
     the same per-frame explore_factor as training.

@@ -2,7 +2,8 @@
 
 Each job is a :class:`Job` (frozen dataclass) specifying two policy
 blueprints, an env blueprint, a seed, env-only options, and per-policy
-explore_factor.
+sampling specs (``SamplingSpec`` — explore_factor + optional reference
+policies + delta config).
 
 ``robot_a`` and ``robot_b`` may use different policies.
 The collector returns a flat ``List[Episode]`` in the same order as
@@ -12,13 +13,23 @@ Workers reuse EnvRuntime + Policy instances across episodes that share
 the same blueprint, avoiding repeated MuJoCo model loading and policy
 deserialization.  When blueprints change (e.g. different agent_id),
 the old env is torn down and a new one is created.
+
+**Spec-aware reuse**: a job's ``SamplingSpec`` is part of the identity
+of the *wrapped* policy handed to the runner — two jobs sharing the
+same policy blueprint but different specs must NOT reuse the previous
+wrapper (it would silently apply the wrong explore_factor / reference).
+To keep blueprint reuse cheap, the batch loop keeps the *unwrapped*
+inner policy separate from its wrapper: a blueprint change rebuilds the
+inner; a blueprint **or spec** change rebuilds only the wrapper.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import multiprocessing as mp
+import pickle
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -29,8 +40,8 @@ from envs.framework.policy import PolicyBlueprint
 from .episode import Episode, blueprint_hash
 from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
-from .exploratory_policy import ExploratoryPolicy
-from .job import EfSpec, Job
+from .exploratory_policy import SamplingPolicy
+from .job import Job, SamplingSpec, resolve_sampling
 
 _logger = logging.getLogger(__name__)
 
@@ -48,16 +59,28 @@ def _worker_init() -> None:  # pragma: no cover - runs in child
         pass
 
 
-def _wrap_policy(policy, ef: EfSpec, stochastic: bool):
+def _spec_key(spec_dict: Dict[str, Any]) -> str:
+    """Stable identity key for a serialized SamplingSpec.
+
+    ``explore_factor`` may be a callable (not JSON-serializable), so the
+    key is the md5 of the pickled dict — deterministic within a process
+    and sufficient for grouping/change detection inside one collect()
+    call.
+    """
+    return hashlib.md5(pickle.dumps(spec_dict)).hexdigest()
+
+
+def _wrap_policy(policy, spec_dict: Dict[str, Any], stochastic: bool):
     """Wrap a policy for the EpisodeRunner.
 
-    When ``stochastic=True``, wrap in :class:`ExploratoryPolicy` so
-    ``sample()`` is called with per-frame explore_factor.
-    When ``stochastic=False``, return the policy as-is so ``act()``
-    (deterministic) is called directly.
+    When ``stochastic=True``, wrap in :class:`SamplingPolicy` so
+    ``sample()`` is called with a per-frame SamplingContext built from
+    the spec.  When ``stochastic=False``, return the policy as-is so
+    ``act()`` (deterministic) is called directly — specs (including any
+    reference policies) are never consumed on the eval path.
     """
     if stochastic:
-        return ExploratoryPolicy(policy, explore_factor=ef)
+        return SamplingPolicy(policy, SamplingSpec.from_dict(spec_dict))
     return policy
 
 
@@ -67,8 +90,8 @@ def _run_job(
     env_bp_dict: Dict[str, Any],
     seed: int,
     options: Optional[Dict[str, Any]],
-    ef_a: EfSpec,
-    ef_b: EfSpec,
+    spec_a_dict: Dict[str, Any],
+    spec_b_dict: Dict[str, Any],
     stochastic: bool,
 ) -> Episode:
     """Run one episode: create env + policies from scratch, collect, return."""
@@ -82,8 +105,8 @@ def _run_job(
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policy_a=_wrap_policy(policy_a, ef_a, stochastic),
-        policy_b=_wrap_policy(policy_b, ef_b, stochastic),
+        policy_a=_wrap_policy(policy_a, spec_a_dict, stochastic),
+        policy_b=_wrap_policy(policy_b, spec_b_dict, stochastic),
     )
     runner.run_episode(
         seed=seed, options=options, want_extras=True,
@@ -92,7 +115,7 @@ def _run_job(
 
 
 def _run_job_batch(
-    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], EfSpec, EfSpec, bool]],
+    tasks: List[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], int, Optional[Dict[str, Any]], Dict[str, Any], Dict[str, Any], bool]],
 ) -> List[Episode]:
     """Run a batch of jobs, reusing EnvRuntime + Policy when blueprints match.
 
@@ -100,6 +123,12 @@ def _run_job_batch(
     new policy weights), only the policy is rebuilt via ``set_policy_*``.
     If only the env changed, only the runtime is rebuilt via ``set_runtime``.
     When policy_a == policy_b, a single Policy instance is built and shared.
+
+    The *wrapper* identity additionally includes the SamplingSpec: a spec
+    change (different explore_factor / reference / delta config) forces a
+    re-wrap even when the inner policy blueprint is unchanged.  The inner
+    policy itself is only rebuilt when its blueprint changes, so spec-only
+    variation stays cheap.
     """
     episodes: List[Episode] = []
     runner: Optional[EpisodeRunner] = None
@@ -107,16 +136,25 @@ def _run_job_batch(
     current_env_key: Optional[str] = None
     current_pa_key: Optional[str] = None
     current_pb_key: Optional[str] = None
+    current_sa_key: Optional[str] = None
+    current_sb_key: Optional[str] = None
+    # Unwrapped inner policies — reused across spec-only changes.
+    inner_a = None
+    inner_b = None
 
-    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, ef_a, ef_b, stochastic in tasks:
+    for policy_a_bp_dict, policy_b_bp_dict, env_bp_dict, seed, options, spec_a_dict, spec_b_dict, stochastic in tasks:
         env_key = json.dumps(env_bp_dict, sort_keys=True, ensure_ascii=False)
         pa_key = json.dumps(policy_a_bp_dict, sort_keys=True, ensure_ascii=False)
         pb_key = json.dumps(policy_b_bp_dict, sort_keys=True, ensure_ascii=False)
+        sa_key = _spec_key(spec_a_dict)
+        sb_key = _spec_key(spec_b_dict)
         same_policy = pa_key == pb_key
 
         env_changed = env_key != current_env_key
         pa_changed = pa_key != current_pa_key
         pb_changed = pb_key != current_pb_key
+        sa_changed = sa_key != current_sa_key
+        sb_changed = sb_key != current_sb_key
 
         if runner is None or env_changed:
             # Full (re)build — env is the expensive part.
@@ -128,28 +166,51 @@ def _run_job_batch(
             env_hash = blueprint_hash(env_bp)
             recorder = EpisodeRecorder(blueprint_hash=env_hash)
             runtime = env_bp.build(recorders=[recorder])
-            policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-            policy_b = policy_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+            inner_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+            inner_b = inner_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
             runner = EpisodeRunner(
                 runtime=runtime,
-                policy_a=_wrap_policy(policy_a, ef_a, stochastic),
-                policy_b=_wrap_policy(policy_b, ef_b, stochastic),
+                policy_a=_wrap_policy(inner_a, spec_a_dict, stochastic),
+                policy_b=_wrap_policy(inner_b, spec_b_dict, stochastic),
             )
             current_env_key = env_key
             current_pa_key = pa_key
             current_pb_key = pb_key
+            current_sa_key = sa_key
+            current_sb_key = sb_key
         else:
-            # Env unchanged — only update policies that changed.
+            # Env unchanged — rebuild inner policies only when their
+            # blueprints changed; re-wrap when blueprint OR spec changed.
             if pa_changed:
-                new_pa = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-                runner.set_policy_a(_wrap_policy(new_pa, ef_a, stochastic))
-                if same_policy:
-                    runner.set_policy_b(_wrap_policy(new_pa, ef_b, stochastic))
-                current_pa_key = pa_key
-            if pb_changed and not same_policy:
-                new_pb = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
-                runner.set_policy_b(_wrap_policy(new_pb, ef_b, stochastic))
-                current_pb_key = pb_key
+                inner_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+            if same_policy:
+                # Shared inner: covers pa_changed AND transitions back
+                # into self-play (A!=B → A==B leaves a stale inner_b).
+                inner_b = inner_a
+            elif pb_changed:
+                inner_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+
+            # Wrapper staleness: a's wrapper depends on (inner_a, spec_a);
+            # b's on (inner_b, spec_b).  When policies are shared, inner_b
+            # tracks inner_a, so pb_changed (a transition into/out of
+            # self-play) also makes b's wrapper stale.
+            if pa_changed or sa_changed:
+                runner.set_policy_a(
+                    _wrap_policy(inner_a, spec_a_dict, stochastic),
+                )
+            wrap_b_stale = (
+                (pa_changed or pb_changed or sb_changed)
+                if same_policy
+                else (pb_changed or sb_changed)
+            )
+            if wrap_b_stale:
+                runner.set_policy_b(
+                    _wrap_policy(inner_b, spec_b_dict, stochastic),
+                )
+            current_pa_key = pa_key
+            current_pb_key = pb_key
+            current_sa_key = sa_key
+            current_sb_key = sb_key
 
         runner.run_episode(
             seed=seed, options=options, want_extras=True,
@@ -229,35 +290,35 @@ class ParallelRollouter:
         if not jobs:
             raise ValueError("jobs must not be empty")
 
-        # Serialize blueprints to plain dicts for pickling into workers.
-        # explore_factor (float or callable) is passed through as-is;
-        # callables must be top-level functions to be picklable.
-        tasks = [
-            (
+        # Serialize blueprints + specs to plain dicts for pickling into
+        # workers.  explore_factor callables ride along inside the spec
+        # dict and must be top-level functions to be picklable.
+        tasks = []
+        for job in jobs:
+            spec_a, spec_b = resolve_sampling(job)
+            tasks.append((
                 job.policy_a_bp.to_dict(),
                 job.policy_b_bp.to_dict(),
                 job.env_bp.to_dict(),
                 int(job.seed),
                 dict(job.episode_options) if job.episode_options else None,
-                job.explore_factor_a,
-                job.explore_factor_b,
+                spec_a.to_dict(),
+                spec_b.to_dict(),
                 job.stochastic,
-            )
-            for job in jobs
-        ]
+            ))
 
         if self._num_workers <= 1:
             episodes = _run_job_batch(tasks)
         else:
             assert self._executor is not None
-            # Group tasks by blueprint identity so that each group can
-            # reuse a single EnvRuntime + Policy across all its episodes.
+            # Group tasks by blueprint+spec identity so that each group
+            # can reuse a single EnvRuntime + Policy across its episodes.
             groups: Dict[str, List[Tuple[int, Tuple]]] = {}
             for i, task in enumerate(tasks):
                 key = json.dumps(
                     {"pa": task[0], "pb": task[1], "env": task[2]},
                     sort_keys=True, ensure_ascii=False,
-                )
+                ) + "|" + _spec_key(task[5]) + "|" + _spec_key(task[6])
                 groups.setdefault(key, []).append((i, task))
 
             # Split each group into chunks sized for the worker pool.

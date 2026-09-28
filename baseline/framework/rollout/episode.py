@@ -256,6 +256,42 @@ def _stack_action_extras(
     return out
 
 
+#: Prefix marking per-frame SamplingContext fields inside action_extras.
+#: ``sctx__<field>`` keys are written by the sampling wrapper and stack
+#: into ``action_extras`` like any other extras key — giving them free
+#: dump serialization via ``extras__<agent>__sctx__<field>`` npz keys.
+_CTX_FIELD_PREFIX = "sctx__"
+
+
+def _derive_sampling_ctx(
+    explore_factors: Mapping[str, np.ndarray],
+    action_extras: Mapping[str, Mapping[str, np.ndarray]],
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Group ctx fields into ``{agent_id: {field: (T,...)}}``.
+
+    ``explore_factor`` arrives via the legacy extras key (already stacked
+    into ``explore_factors``); every other ctx field arrives flat under
+    the ``sctx__`` prefix inside ``action_extras``.  Works identically
+    for freshly-built and npz-loaded episodes since both carry the same
+    extras keys.
+    """
+    out: Dict[str, Dict[str, np.ndarray]] = {}
+    for agent_id, fields in action_extras.items():
+        ctx: Dict[str, np.ndarray] = {}
+        if agent_id in explore_factors:
+            ctx["explore_factor"] = explore_factors[agent_id]
+        for key, value in fields.items():
+            if key.startswith(_CTX_FIELD_PREFIX):
+                ctx[key[len(_CTX_FIELD_PREFIX):]] = value
+        if ctx:
+            out[agent_id] = ctx
+    # Agents with recorded explore_factor but no action_extras entry at
+    # all still carry a meaningful ctx — don't drop them.
+    for agent_id, ef in explore_factors.items():
+        out.setdefault(agent_id, {}).setdefault("explore_factor", ef)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Episode
 # ---------------------------------------------------------------------------
@@ -321,6 +357,20 @@ class Episode:
     Captured by ``EpisodeRecorder.on_post_episode``.  Contains any
     metrics written by world plugins (e.g. push_count, fall_count).
     """
+
+    @property
+    def sampling_contexts(self) -> Dict[str, Dict[str, np.ndarray]]:
+        """Per-agent per-frame SamplingContext fields ``{field: (T, ...)}``.
+
+        Derived grouped view of the ctx values passed to
+        ``policy.sample()`` at each step: ``explore_factor`` (from the
+        legacy extras key) plus every ``sctx__<field>`` extras key
+        (e.g. ``reference_action``, ``delta_factor``, ``delta_mix``).
+        Trainers rebuild minibatch ctx objects from these arrays so
+        log_prob recomputation replays the same exogenous inputs.
+        Empty dict when no ctx was recorded.
+        """
+        return _derive_sampling_ctx(self.explore_factors, self.action_extras)
 
     @property
     def agent_termination_reason(self) -> Mapping[str, str]:
