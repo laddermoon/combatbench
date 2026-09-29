@@ -619,6 +619,7 @@ class RunData:
                     snapshot = json.load(f)
             except (json.JSONDecodeError, OSError):
                 pass
+        status, failure = self._probe()
         return {
             "run_name": self.run_dir.name,
             "experiment_name": exp_name,
@@ -627,12 +628,13 @@ class RunData:
             "code_snapshot": snapshot,
             "has_train_log": self.train_log_path.exists(),
             "n_dumps": len(self.dumps()),
-            "status": self.status(),
+            "status": status,
+            "error": (failure or {}).get("exception"),
             "dump_pending": (self.run_dir / SENTINEL_FILENAME).exists(),
         }
 
-    def status(self) -> str:
-        """Live status — same rules as the runs index."""
+    def _probe(self) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """(status, failure) — same rules as the runs index."""
         max_updates = None
         cfg_path = self.run_dir / "config.json"
         if cfg_path.exists():
@@ -645,15 +647,23 @@ class RunData:
             except (json.JSONDecodeError, OSError):
                 pass
         log = self.train_log_path
-        last, _ = (
-            _tail_raw_stats(log) if log.exists() else (None, None)
+        last, _e, failure = (
+            _tail_raw_stats(log) if log.exists() else (None, None, None)
         )
         update = last.get("update") if isinstance(last, dict) else None
         try:
             activity = log.stat().st_mtime
         except OSError:
             activity = self.run_dir.stat().st_mtime
-        return _determine_status(self.run_dir, update, max_updates, activity)
+        return (
+            _determine_status(
+                self.run_dir, update, max_updates, activity, failure),
+            failure,
+        )
+
+    def status(self) -> str:
+        """Live status — same rules as the runs index."""
+        return self._probe()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -663,15 +673,77 @@ class RunData:
 _RUN_NAME_TS = re.compile(r"_(\d{8})_(\d{6})$")
 
 
+_TRAIN_MARK = re.compile(
+    r"__RAW_STATS__|^\[(update|eval|Rollout|Policy|PPO Opt|warn|early_stop|dump)")
+_INTERRUPT_EXCS = {"KeyboardInterrupt", "SystemExit", "GeneratorExit"}
+_SHUTDOWN_NOISE = {"BrokenPipeError", "BlockingIOError"}
+
+
+def _tail_failure(lines: List[str]) -> Optional[Dict[str, Any]]:
+    """Crash/interrupt detection on decoded log-tail lines.
+
+    A traceback only counts as a failure when it is terminal — i.e. no
+    training markers (__RAW_STATS__/[update ...] etc.) appear after its
+    block, meaning the process died there instead of surviving a caught
+    exception.  KeyboardInterrupt/SystemExit anywhere in the tail means
+    the run was stopped by the user, not failed.  Shutdown noise
+    ("Exception ignored in:" tracebacks like BrokenPipeError during
+    interpreter teardown) is ignored when it is the whole story.
+    """
+    tbi = [
+        i for i, l in enumerate(lines)
+        if "Traceback (most recent call last)" in l
+    ]
+    if not tbi:
+        return None
+
+    def exc_of(i: int) -> Optional[str]:
+        # First non-indented, non-empty line after the marker is the
+        # exception summary; File frames are indented.
+        for j in range(i + 1, len(lines)):
+            l = lines[j]
+            if "Traceback (most recent call last)" in l:
+                return None
+            if not l.strip() or l.startswith((" ", "\t")):
+                continue
+            return l.strip()
+        return None
+
+    if any(_TRAIN_MARK.search(l) for l in lines[tbi[-1] + 1:]):
+        return None  # last traceback is mid-log — run survived it
+    excs = [exc_of(i) or "" for i in tbi]
+    if any(
+        e.split(":")[0].strip() in _INTERRUPT_EXCS or "CancelledError" in e
+        for e in excs
+    ):
+        return {"interrupted": True}
+    if excs and all(
+        e.split(":")[0].strip() in _SHUTDOWN_NOISE for e in excs
+    ):
+        return None
+    # Report the first traceback of the contiguous trailing cluster —
+    # the root cause — not teardown noise that may follow it.
+    root = tbi[-1]
+    for i in reversed(tbi[:-1]):
+        if any(_TRAIN_MARK.search(l) for l in lines[i + 1:root]):
+            break
+        root = i
+    exc = exc_of(root)
+    return {"crash": True,
+            "exception": (exc or "traceback at end of log")[:240]}
+
+
 def _tail_raw_stats(
     log_path: Path, tail_bytes: int = 262144,
-) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """(latest stats, latest stats with eval_info) from train.log's tail.
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]],
+           Optional[Dict[str, Any]]]:
+    """(latest stats, latest stats with eval_info, failure) from the tail.
 
     Index view needs only the latest update — tail-read avoids parsing
     whole logs for every run on every listing.  eval_info only exists on
     eval_interval updates, so the scan keeps going backwards until it
     also finds one line carrying eval results (or exhausts the tail).
+    The same read is reused for crash/interrupt detection.
     """
     try:
         size = log_path.stat().st_size
@@ -679,10 +751,12 @@ def _tail_raw_stats(
             f.seek(max(0, size - tail_bytes))
             tail = f.read()
     except OSError:
-        return None, None
+        return None, None, None
+    lines = tail.decode("utf-8", errors="replace").splitlines()
+    failure = _tail_failure(lines)
     latest: Optional[Dict[str, Any]] = None
     latest_eval: Optional[Dict[str, Any]] = None
-    for line in reversed(tail.decode("utf-8", errors="replace").splitlines()):
+    for line in reversed(lines):
         i = line.find("__RAW_STATS__")
         if i < 0:
             continue
@@ -696,7 +770,53 @@ def _tail_raw_stats(
             latest_eval = d
         if latest is not None and latest_eval is not None:
             break
-    return latest, latest_eval
+    return latest, latest_eval, failure
+
+
+def _read_log_tail(
+    log_path: Path, n_lines: int, before: Optional[int],
+) -> Dict[str, Any]:
+    """Backward byte-window read of train.log for the log viewer.
+
+    Logs are tens of MB with multi-KB __RAW_STATS__ lines — the viewer
+    pages backwards in byte windows instead of loading the file.
+    ``before`` is an exclusive byte offset (absent → end of file); the
+    response's ``start`` is the byte offset of the first returned line,
+    so passing it back as ``before`` fetches the preceding window with
+    no gap or overlap.
+    """
+    try:
+        size = log_path.stat().st_size
+        f = open(log_path, "rb")
+    except OSError:
+        return {"lines": [], "start": 0, "end": 0, "total_bytes": 0,
+                "has_more": False}
+    CHUNK, CAP = 256 * 1024, 4 * 1024 * 1024
+    with f:
+        end = size if before is None else max(0, min(int(before), size))
+        start, buf = end, b""
+        while start > 0 and buf.count(b"\n") <= n_lines and len(buf) < CAP:
+            step = min(CHUNK, start)
+            start -= step
+            f.seek(start)
+            buf = f.read(step) + buf
+    parts = buf.split(b"\n")
+    if buf.endswith(b"\n"):
+        parts = parts[:-1]  # trailing empty piece after the last \n
+    if start > 0 and parts:
+        start += len(parts[0]) + 1  # first piece is a partial line
+        parts = parts[1:]
+    dropped = max(0, len(parts) - n_lines)
+    keep = parts[dropped:]
+    start += sum(len(p) + 1 for p in parts[:dropped])
+    return {
+        "lines": [p.decode("utf-8", errors="replace").rstrip("\r")
+                  for p in keep],
+        "start": start,
+        "end": end,
+        "total_bytes": size,
+        "has_more": start > 0,
+    }
 
 
 def _pid_alive(pid_path: Path) -> Optional[bool]:
@@ -774,8 +894,10 @@ def _determine_status(
     update: Optional[int],
     max_updates: Optional[int],
     activity: float,
+    failure: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Run status from pid liveness, completion, and log freshness."""
+    """Run status from pid liveness, completion, log freshness, and a
+    terminal traceback in the log tail."""
     alive = _pid_alive(run_dir / "pid")
     fresh = (time.time() - activity) < 90.0
     if alive:
@@ -785,6 +907,8 @@ def _determine_status(
     if alive is None and fresh:
         # No pid file but the log moved within the last 90s.
         return "running"
+    if failure and failure.get("crash"):
+        return "failed"
     if update is None:
         return "unknown"
     return "stopped"
@@ -800,8 +924,9 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             cfg = None
     log_path = run_dir / "train.log"
-    last, last_eval = (
-        _tail_raw_stats(log_path) if log_path.exists() else (None, None)
+    last, last_eval, failure = (
+        _tail_raw_stats(log_path) if log_path.exists()
+        else (None, None, None)
     )
     exp = (cfg or {}).get("experiment") or {}
     common = exp.get("common_params") or {}
@@ -812,7 +937,8 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
         activity = log_path.stat().st_mtime
     except OSError:
         activity = run_dir.stat().st_mtime
-    status = _determine_status(run_dir, update, max_updates, activity)
+    status = _determine_status(
+        run_dir, update, max_updates, activity, failure)
     dumps_dir = run_dir / "dumps"
     n_dumps = 0
     if dumps_dir.is_dir():
@@ -832,6 +958,7 @@ def _scan_run_summary(run_dir: Path) -> Dict[str, Any]:
         "experiment": exp.get("name"),
         "algo": (cfg or {}).get("algorithm"),
         "status": status,
+        "error": (failure or {}).get("exception"),
         "update": update,
         "max_updates": max_updates,
         "eval_success": eval_info.get("success"),
@@ -2168,6 +2295,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._handle_video(path)
             return
 
+        # Raw train.log — full-file download for the run-page log card.
+        if path == "/train.log" and self.run_data is not None:
+            self._serve_file(
+                self.run_data.train_log_path,
+                "text/plain; charset=utf-8")
+            return
+
         # Static files / SPA
         self._handle_static(path)
 
@@ -2296,6 +2430,22 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return 200, rd.metrics()
         if path == "/api/run/videos":
             return 200, rd.videos()
+        if path == "/api/run/log":
+            # ?lines=N&before=<byte> — paged tail read of train.log.
+            qs = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            try:
+                n = int((qs.get("lines") or ["300"])[0])
+            except ValueError:
+                n = 300
+            n = max(1, min(2000, n))
+            before: Optional[int] = None
+            if (qs.get("before") or [None])[0] is not None:
+                try:
+                    before = int(qs["before"][0])
+                except (ValueError, IndexError):
+                    before = None
+            return 200, _read_log_tail(rd.train_log_path, n, before)
         m = re.match(r"^/api/run/gradsig/(\d+)$", path)
         if m:
             gs = rd.grad_sig(int(m.group(1)))

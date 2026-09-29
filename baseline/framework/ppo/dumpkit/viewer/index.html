@@ -143,6 +143,10 @@
   .st-running { background: rgba(110,200,110,0.15); color: var(--green); }
   .st-finished { background: rgba(79,163,255,0.15); color: var(--accent); }
   .st-stopped { background: rgba(209,154,102,0.15); color: var(--orange); }
+  .st-failed { background: rgba(224,108,117,0.18); color: var(--red); }
+  .log-view { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.45; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px; max-height: 55vh; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
+  .log-view .log-err { color: var(--red); }
+  .log-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
   .st-unknown { background: var(--panel-alt); color: var(--muted); }
   .prog-cell { display: flex; align-items: center; gap: 6px; }
   .prog-bar { width: 60px; height: 4px; background: var(--panel-alt); border-radius: 2px; overflow: hidden; flex-shrink: 0; }
@@ -625,6 +629,11 @@
           <h2>Training Metrics <a class="cmp-open-link" id="run-cmp-link">compare →</a></h2>
           <div class="desc">Per-update stats parsed from train.log (__RAW_STATS__). The marker shows the selected update.</div>
           <div id="metrics-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card" id="run-log-card">
+          <h2>Log <span class="gs-scope">train.log — paged tail view</span></h2>
+          <div class="log-bar" id="log-bar"></div>
+          <pre class="log-view" id="log-view"><span class="loading">loading...</span></pre>
         </div>
       </div>
       <div class="update-controls run-bottom-bar">
@@ -1759,7 +1768,9 @@
       html += `<td><input type="checkbox" class="cmp-check" ` +
         `data-name="${escapeHtml(r.name)}"` +
         `${state.cmpSel.has(r.name) ? ' checked' : ''}></td>`;
-      html += `<td><span class="st-badge st-${r.status}">${r.status}</span></td>`;
+      html += `<td><span class="st-badge st-${r.status}"` +
+        (r.error ? ` title="${escapeHtml(r.error)}">${escapeHtml(r.status)} ⚠` : `>${r.status}`) +
+        `</span></td>`;
       html += `<td class="run-name">${escapeHtml(r.name)}</td>`;
       html += `<td>${escapeHtml((r.experiment || '?') + (r.algo ? ' · ' + r.algo : ''))}</td>`;
       html += `<td><div class="prog-cell"><div class="prog-bar">` +
@@ -1983,7 +1994,9 @@
       const prog = (r.update != null && r.max_updates)
         ? `${r.update}/${r.max_updates}` : (r.update != null ? `${r.update}` : '-');
       html += `<tr class="run-row exp-run-row" data-name="${escapeHtml(r.name)}">` +
-        `<td><span class="st-badge st-${r.status}">${r.status}</span></td>` +
+        `<td><span class="st-badge st-${r.status}"` +
+        (r.error ? ` title="${escapeHtml(r.error)}">${escapeHtml(r.status)} ⚠` : `>${r.status}`) +
+        `</span></td>` +
         `<td class="run-name">${escapeHtml(r.name)}</td>` +
         `<td>${prog}</td>` +
         `<td>${r.eval_success != null ? fmt(r.eval_success, 2) : '-'}</td>` +
@@ -2229,7 +2242,14 @@
     html += row([
       ['run', info.run_name], ['dir', info.run_dir],
       ['algo', cfg.algorithm], ['saved_at', cfg.saved_at],
+      ['status', info.status],
     ]);
+    if (info.error)
+      html += '<div class="ep-info-bar"><div class="info-item">' +
+        '<span class="info-label">error</span>' +
+        `<span class="info-value" style="color:var(--red)">${escapeHtml(info.error)}</span>` +
+        ' <a href="#run-log-card" style="color:var(--muted)">→ log</a>' +
+        '</div></div>';
     if (snap.commit) {
       html += row([
         ['branch', snap.branch],
@@ -2257,6 +2277,63 @@
     el.innerHTML = html;
   }
 
+  // --- train.log tail viewer -----------------------------------------
+  // Logs are tens of MB — the page shows a paged tail window served by
+  // /api/run/log?lines&before=.  "load earlier" prepends the previous
+  // window (byte-offset paging, no gaps); "open full" streams the file.
+  const LOG_LINES = 300;
+  const LOG_ERR_RE = /Traceback|\b\w+Error\b|\bException\b|KeyboardInterrupt|\bfatal\b/i;
+  function _logHtml(lines) {
+    return lines.map(l => {
+      const e = escapeHtml(l);
+      return LOG_ERR_RE.test(l) ? `<span class="log-err">${e}</span>` : e;
+    }).join('\n');
+  }
+  async function renderRunLog() {
+    const el = $('log-view'), bar = $('log-bar');
+    if (!el || !bar) return;
+    const rawUrl = location.pathname.replace(/[^/]*$/, '') + 'train.log';
+    bar.innerHTML =
+      `<span class="t-info" id="log-info"></span>` +
+      `<button class="t-nav" id="log-refresh">⟳ refresh tail</button>` +
+      `<button class="t-nav" id="log-earlier">↑ load earlier</button>` +
+      `<a class="stage-open" href="${rawUrl}" target="_blank" rel="noopener">open full log ↗</a>`;
+    const fmtSz = b => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB'
+      : Math.round(b / 1e3) + ' KB';
+    const setInfo = r =>
+      $('log-info').textContent =
+        `train.log ${fmtSz(r.total_bytes)} · showing lines ending at byte ${r.end}`;
+    async function tail() {
+      el.textContent = 'loading…';
+      try {
+        const r = await fetchJson(api(`run/log?lines=${LOG_LINES}`));
+        state._logStart = r.start;
+        state._logMore = r.has_more;
+        el.innerHTML = _logHtml(r.lines);
+        el.scrollTop = el.scrollHeight;
+        setInfo(r);
+        $('log-earlier').disabled = !r.has_more;
+      } catch (e) {
+        el.textContent = String(e.message || e);
+      }
+    }
+    $('log-refresh').onclick = tail;
+    $('log-earlier').onclick = async () => {
+      if (!state._logMore) return;
+      try {
+        const r = await fetchJson(
+          api(`run/log?lines=${LOG_LINES}&before=${state._logStart}`));
+        state._logStart = r.start;
+        state._logMore = r.has_more;
+        const prevH = el.scrollHeight;
+        el.innerHTML = _logHtml(r.lines) + '\n' + el.innerHTML;
+        el.scrollTop = el.scrollHeight - prevH;
+        $('log-earlier').disabled = !r.has_more;
+      } catch (e) { /* keep current view */ }
+    };
+    await tail();
+  }
+
   async function renderRunHome() {
     if (state.runInfo) {
       $('header-meta').textContent =
@@ -2273,8 +2350,10 @@
       renderRunInfoPanel();
     } catch (e) {
       $('dump-list-container').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      renderRunLog();   // log still matters (esp. for a crashed run)
       return;
     }
+    renderRunLog();   // tail viewer — independent of metrics/dumps
 
     // Videos card
     const vc = $('videos-card-container');
