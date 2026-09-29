@@ -3240,7 +3240,10 @@
           try {
             state.episodeList = await fetchJson(api('episode_list'));
           } catch (e) { /* dump unloaded meanwhile — ignore */ }
-          if (prev.kind === 'delta') state.deltaData = null;
+          if (prev.kind === 'delta') {
+            state.deltaData = null;
+            state.pipeline = null;   // ⑧ card coverage is stale now
+          }
         }
         if (state.currentPage === 'home') renderHome();
         else if (state.currentPage === 'episode') renderEpisode();
@@ -3427,20 +3430,47 @@
       }
     }
 
-    // ⑧ Delta Analyze — computed-delta coverage (it is on-demand work,
-    // so the card only reports what exists).
+    // ⑧ Delta Analyze — computed-delta coverage + inline trigger (the
+    // job slot is shared with render; disabled while either runs).
     {
       const eps = (st.delta || {}).episodes || [];
+      const job = state.renderJob;
+      const running = !!(job && job.status === 'running');
+      const thisDelta = running && job.kind === 'delta' &&
+        (!state.dumpName || job.dump === state.dumpName);
+      const nEp = st.ep2traj?.n_episodes ?? state.episodeList?.length ?? 0;
+      const el = $('sum-delta');
+      let h = '';
       if (!eps.length) {
-        $('sum-delta').innerHTML = '<div class="desc">no deltas computed yet — the tool page computes them on demand</div>';
+        h = '<div class="desc">no deltas computed yet</div>';
       } else {
         const latest = eps[eps.length - 1];
-        $('sum-delta').innerHTML =
-          _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`) +
+        h = _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`) +
           _kv('episodes', eps.map(e => e.episode).join(', ')) +
           _kv('latest', `ep${latest.episode} · gens ${latest.gen_updates.map(u => 'u' + u).join('/')}` +
               (latest.missing_updates?.length ? ` · missing ${latest.missing_updates.map(u => 'u' + u).join('/')}` : ''));
       }
+      const dis = running ? ' disabled' : '';
+      const opts = [...Array(10)].map((_, i) =>
+        `<option value="${i + 1}"${i + 1 === state.deltaGens ? ' selected' : ''}>${i + 1}</option>`).join('');
+      h += `<div class="delta-trigger" style="margin:8px 0 0">` +
+        `<span class="muted">compute</span>` +
+        `<input id="sum-delta-ep" type="number" min="0" max="${Math.max(0, nEp - 1)}" value="${state.selectedEpisode ?? 0}" style="width:56px"${dis}/>` +
+        `<span class="muted">ep ×</span>` +
+        `<select id="sum-delta-gens"${dis}>${opts}</select>` +
+        `<span class="muted">gens</span>` +
+        `<button id="sum-delta-btn" class="render-btn"${dis}>Compute Δ</button>` +
+        (thisDelta ? `<span class="muted">⏳ ep${job.episode}…</span>` : '') +
+        `</div>`;
+      el.innerHTML = h;
+      const btn = $('sum-delta-btn');
+      if (btn) btn.onclick = () => {
+        const ep = Math.max(0, Math.min(nEp - 1, parseInt($('sum-delta-ep').value) || 0));
+        const gens = parseInt($('sum-delta-gens').value || '3');
+        state.deltaGens = gens;
+        state.selectedEpisode = ep;
+        startDelta(ep, gens);
+      };
     }
   }
 
@@ -5114,7 +5144,8 @@
         return;
       }
       state.renderJob = {kind: 'delta', dump: j.dump, episode: pos, status: 'running'};
-      renderDeltaPage();
+      if (state.currentPage === 'delta') renderDeltaPage();
+      else renderHome();
       scheduleRenderPoll();
     } catch (e) {
       alert(String(e));

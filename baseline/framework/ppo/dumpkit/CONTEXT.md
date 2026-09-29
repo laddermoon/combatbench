@@ -174,7 +174,9 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
   KL·clip·‖g‖·dloss 聚合——主页八卡全部无曲线，时间线级
   分析只留在 /timeline 工具页）
   ⑦Post Update（epochs/早停/KL + rbin 位移签名条）
-  ⑧Delta Analyze（已算 delta 覆盖清单）。全部数据走
+  ⑧Delta Analyze（已算 delta 覆盖清单 + 内嵌触发行：
+  ep 号 × gens 数 → Compute Δ，POST `/api/delta`，与 render
+  共享单 job 槽、任务态复用 renderJob 轮询）。全部数据走
   `/api/pipeline`（stages: ep2traj/gae/advnorm/merge/gradsig/
   update/postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
 - **工具页**（结构同构：选择器 + 视频编辑器骨架大图/缩略图/
