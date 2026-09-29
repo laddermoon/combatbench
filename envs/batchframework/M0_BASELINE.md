@@ -42,9 +42,11 @@
 | PyTorch | 2.7.1+cu126 | 训练与策略推理 |
 | NumPy | 2.2.6 | |
 
-### 1.3 历史参考 Run（候选，未正式选定）
+### 1.3 历史参考 Run
 
-| | Run A | Run B（**[候选] 推荐为主参考**） |
+**主参考已选定（用户确认 2026-09-29）：Run B `baseline/runs/train_standup_floor04_ppo_20260920_164819`。**
+
+| | Run A（旁证） | Run B（**主参考**） |
 |---|---|---|
 | 路径 | `baseline/runs/train_standup_floor04_ppo_20260916_103522` | `baseline/runs/train_standup_floor04_ppo_20260920_164819` |
 | snapshot commit | `bf589247`（base `06fb1caf`） | `5bdf8625`（base `009d7462`） |
@@ -57,7 +59,15 @@
 
 两个 Run 的 `config.json` 已核实：实验参数完全一致（见 §2.6）。差异仅在框架版本（Run B 的 ppo_params 含 `early_stop_kl_window` 等较新字段）与随机实现细节。
 
-**推荐 Run B 为主参考**（snapshot 距 HEAD 更近、框架字段更全），Run A 作旁证。**[候选] 待用户确认。**
+Run B 已作为主参考；Run A 保留为旁证，不再单独做验收。
+
+#### HEAD 逐位一致性验证（已执行，2026-09-29）
+
+用当前 HEAD 以相同配置跑前 5 个 update（`--set max_updates=5`，GPU3，run `baseline/runs/m0_bitverify_head`），与 Run B 的 `__RAW_STATS__` 逐字段比较（timing 除外）：
+
+- **所有共同指标逐位相同**：episode/buffer 统计、reward min/max/mean/std、逐 epoch KL、uncertainty/std、ratio/clip_frac、adv/ret、ev/confidence、eval@5（max_pot=0.261, success=0.0）——0 个数值差异。
+- **差异仅限日志字段集合**：Run B 含 `grad_sig_*` 7 个梯度诊断字段（HEAD 已移除）；HEAD 新增 `grad_clip_frac`、`dual_clip_frac_mean`、`adv_winsorize_clip_frac` 等——非数值差异。
+- **结论**：HEAD 的环境语义 + 采样 + PPO 数值链路与 Run B 完全一致。后续只需参照 HEAD 代码和 Run B；数值差异在日志 schema，不在行为。
 
 ### 1.4 参考策略探针（已存在于 Run 目录）
 
@@ -242,7 +252,7 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 
 ### 5.1 待用户确认 **[候选]**
 
-1. 主参考 Run：推荐 **Run B（20260920_164819）**，Run A 旁证。
+1. ~~主参考 Run~~ **已选定 Run B（20260920_164819）**，HEAD 5-update 逐位一致验证通过（§1.3）。
 2. 验收门槛候选值（讨论值，未冻结）：eval success 差距 ≤2pp、final_pot 差距 ≤0.02、样本量容忍 1.25×、端到端加速目标 2×。
 3. GPU 分配：8×4090 中训练用卡与空闲基线测试卡的划分。
 
@@ -258,7 +268,7 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 - [x] 任务契约清单（§2）
 - [x] 能力矩阵与缺口（§3）
 - [x] M1 测试输入最小范围（§4）
-- [ ] 主参考 Run 正式选定 — 待用户确认 §5.1-1
+- [x] 主参考 Run 选定（Run B）+ HEAD 逐位一致验证（§1.3）
 - [ ] 验收门槛冻结 — 待用户确认 §5.1-2
 - [ ] CPU 复评与成本分解 — 延后（§5.2）
 - [ ] 评估种子/留出集固化 — 随 M1 fixture 生成时一并冻结
