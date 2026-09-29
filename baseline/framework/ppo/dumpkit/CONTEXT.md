@@ -120,7 +120,9 @@ GET /api/mode | /api/catalog | /api/render-status
 GET /api/runs?q=&page=&size=&sort=&order=                     (runs 模式)
 GET /run/<name>/api/run/{info,dumps,metrics,videos}           (runs 模式)
 GET /run/<name>/api/run/gradsig/<update>                      (runs 模式, 旧 run)
-GET /api/run/{info,dumps,metrics,videos}                      (run 模式)
+GET /run/<name>/api/run/log?lines=N&before=<byte>             (runs 模式, tail 分页)
+GET /run/<name>/train.log                                     (runs 模式, 整文件流)
+GET /api/run/{info,dumps,metrics,videos,log}                  (run 模式)
 GET /api/run/gradsig/<update>                                 (run 模式, 旧 run)
 GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     manifest | episode_list | traj_map | gradsig
@@ -142,6 +144,15 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
 POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
 ```
+
+**run status**：running（pid 存活或 90s 内日志有更新）/ finished
+（update≥max_updates）/ **failed**（进程已死且 log 尾部有 terminal
+traceback——判据：最后一个 Traceback 之后没有任何训练标记行；
+KeyboardInterrupt/SystemExit 归 user-stopped→stopped；"Exception
+ignored" 类关闭噪音不算）/ stopped / unknown。失败时 run summary 和
+run_info 附带 `error` 异常单行。run 页底部 Log 卡 = `/api/run/log`
+分页 tail（默认 300 行，before=字节偏移向前翻，无重叠无缝隙）+
+`/train.log` 整文件下载链接。
 
 `/compare/<runA>,<runB>,...`（runs 模式 SPA 页，无专属 API）——多 run
 对比页：与 run 首页相同的六分区仪表板，每条线=一个 run（固定调色板、
