@@ -205,6 +205,29 @@ def _hold_filter(contact: np.ndarray, hold: int) -> np.ndarray:
     return out
 
 
+def air_duration_weight(
+    contact: np.ndarray, full_at: int = CONTACT_HOLD_STEPS,
+) -> np.ndarray:
+    """Per-frame ramp weight inside each contact-off (airborne) run.
+
+    Frame ``k`` of a run (0-based) pays ``(k+1)/full_at`` clipped to 1:
+    a 1-3 frame tap earns only a fraction while a committed lift of
+    ``full_at``+ frames earns full reward.  This is the soft version of
+    debounce zeroing — hard zeroing stalled the clean-retrain ramp
+    (solepk stuck ~-0.005 at u1900: no paid frames between "not
+    lifting" and a >=4-frame in-window air), while still keeping taps
+    strictly dominated by real lifts.
+    """
+    contact = np.asarray(contact, dtype=bool)
+    T = len(contact)
+    idx = np.arange(T)
+    last_ground = np.maximum.accumulate(np.where(contact, idx, -1))
+    pos = idx - last_ground - 1        # 0-based frame index in air run
+    w = np.clip((pos + 1) / float(full_at), 0.0, 1.0)
+    w[contact] = 0.0
+    return w.astype(np.float32)
+
+
 def single_support_mask(
     contact_l: np.ndarray,
     contact_r: np.ndarray,

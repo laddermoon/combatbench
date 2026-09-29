@@ -52,6 +52,7 @@ from baseline.humanoid21.end2end.stepping_state_machine import (
     GAIT_LAND_FRAC,
     GAIT_PERIOD,
     _hold_filter,
+    air_duration_weight,
     clock_foot_weights,
     count_falls,
     detect_step_cycles,
@@ -389,13 +390,17 @@ class Step(CombatExperimentPPOBase):
         gate_l = cmd_left & lift_phase
         gate_r = (~cmd_left) & lift_phase
 
-        # --- Tap suppression ---
-        # Zero the dense reward on contact-off runs too short to ever
-        # count as a swing (debounced contact still reads True).
-        # u2200 dump: 81% of failed-window lifts are 1-3 frame "taps" —
-        # an aborted weight transfer.  A tap used to still collect
-        # clip(sole)×few frames; now it earns literally nothing, so the
-        # only way to profit from a commanded window is to COMMIT.
+        # --- Tap discount ---
+        # Dense reward is ramped by airborne-run duration: frame k of a
+        # run pays (k+1)/4, so 1-3 frame taps earn a fraction while a
+        # committed >=4-frame lift earns full reward.  The hard zeroing
+        # this replaces starved the clean-retrain ramp — with no paid
+        # frames between "not lifting" and a full in-window swing,
+        # solepk plateaued ~-0.005 for 200+ updates (u1900 dump).  The
+        # ramp restores a continuous gradient ("lift longer → earn
+        # more") while taps stay strictly dominated.
+        dur_l = np.ones(T_full, dtype=np.float32)
+        dur_r = np.ones(T_full, dtype=np.float32)
         if contact_l is not None and contact_r is not None:
             air_l = ~_hold_filter(
                 np.asarray(contact_l[:T_full], dtype=bool),
@@ -403,8 +408,10 @@ class Step(CombatExperimentPPOBase):
             air_r = ~_hold_filter(
                 np.asarray(contact_r[:T_full], dtype=bool),
                 CONTACT_HOLD_STEPS)
-            gate_l = gate_l & air_l
-            gate_r = gate_r & air_r
+            dur_l = air_duration_weight(
+                np.asarray(contact_l[:T_full], dtype=bool))
+            dur_r = air_duration_weight(
+                np.asarray(contact_r[:T_full], dtype=bool))
             # Sway penalty only on double-support frames: post-landing
             # oscillation is pure waste and drives the same-foot
             # "adjustment" repeats (u2200/u02380 video).  Swing-phase
@@ -459,8 +466,8 @@ class Step(CombatExperimentPPOBase):
                 paid_windows.add(wid)
                 bonuses.append((foot, t_off, t_land))
                 gate[t_land:(wid + 1) * half] = False
-            r_left_foot *= gate_l.astype(np.float32)
-            r_right_foot *= gate_r.astype(np.float32)
+            r_left_foot *= gate_l.astype(np.float32) * dur_l
+            r_right_foot *= gate_r.astype(np.float32) * dur_r
             for foot, t_off, t_land in bonuses:
                 per_frame = np.float32(
                     self.step_cycle_bonus / max(1, t_land - t_off))
@@ -469,8 +476,8 @@ class Step(CombatExperimentPPOBase):
                 else:
                     r_right_foot[t_off:t_land] += per_frame
         else:
-            r_left_foot *= gate_l.astype(np.float32)
-            r_right_foot *= gate_r.astype(np.float32)
+            r_left_foot *= gate_l.astype(np.float32) * dur_l
+            r_right_foot *= gate_r.astype(np.float32) * dur_r
 
         # --- Clock-driven foot commands (observable via obs[96:99]) ---
         # The commanded foot is a deterministic function of the frame

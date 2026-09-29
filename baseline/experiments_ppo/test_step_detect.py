@@ -344,8 +344,10 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
 
     rl = ch["r_left_foot"].reward
     # dense clip(h,0,.05) gated to the lift phase (pos<15 → frames
-    # 10-14 only), + bonus 1.0/10 = .1/frame over the whole window
-    dense_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05)
+    # 10-14 only), ramped by air duration [.25,.5,.75,1,1,...],
+    # + bonus 1.0/10 = .1/frame over the whole window
+    dur = np.clip((np.arange(10) + 1) / 4.0, 0.0, 1.0)
+    dense_l = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) * dur
     dense_l[5:] = 0.0   # pos 15-19 = landing phase, gate closed
     expected_l = dense_l + 0.1
     np.testing.assert_allclose(rl[10:20], expected_l, rtol=1e-5, atol=1e-6)
@@ -353,8 +355,10 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
 
     rr = ch["r_right_foot"].reward
     # pos 25-34 → wprog .25-.7, all inside the right lift phase:
-    # dense pays on every airborne frame + .1 bonus
-    expected_r = np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) + 0.1
+    # dense (duration-ramped) pays on every airborne frame + .1 bonus
+    expected_r = (
+        np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) * dur + 0.1
+    )
     np.testing.assert_allclose(rr[25:35], expected_r, rtol=1e-5, atol=1e-6)
     assert rr[:25].max() == 0.0
 
@@ -431,9 +435,10 @@ def test_step_cycle_bonus_alternation_restores_payment():
     assert ch["r_left_foot"].reward[42:48].max() > 0.15
 
 
-def test_tap_lift_earns_no_dense_reward():
-    """A 1-3 frame liftoff (debounce-filtered, can never be a cycle)
-    earns zero dense reward even inside the commanded window."""
+def test_tap_lift_earns_partial_dense_reward():
+    """A 1-3 frame liftoff earns the duration-ramped fraction (frame k
+    pays (k+1)/4), strictly less than a committed lift — enough to keep
+    the exploration gradient alive, not enough to farm."""
     from baseline.experiments_ppo.exp_step import Step
 
     T = 40
@@ -443,8 +448,10 @@ def test_tap_lift_earns_no_dense_reward():
     trajs = exp._build_agent_trajectory(
         ep, "robot_a", "foot_state_a", "standing_balance_a")
     rl = trajs[0].channels["r_left_foot"].reward
-    assert rl[5:7].max() == 0.0
-    assert rl.max() == 0.0
+    # sole ramp = linspace(0, .08, 2) → clip → [0, .05]; dur = [.25,.5]
+    np.testing.assert_allclose(rl[5], 0.0 * 0.25, atol=1e-6)
+    np.testing.assert_allclose(rl[6], 0.05 * 0.50, rtol=1e-5, atol=1e-6)
+    assert rl.max() <= 0.05 * 0.5 + 1e-6
 
 
 def test_step_cycle_bonus_skips_invalid_swings():
