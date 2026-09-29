@@ -445,16 +445,22 @@ class Step(CombatExperimentPPOBase):
             )
             paid_windows = set()
             bonuses = []
-            # Alternation token: the completion bonus only pays when the
-            # cycle's foot differs from the last DETECTED valid cycle's
-            # foot.  u2200 dump showed 79% of same-foot repeats are
-            # cross-window — the other foot "taps" (1-3 airborne frames,
-            # debounce-filtered, invalid) instead of completing its
-            # cycle, then the dominant foot steps again.  With the
-            # token, a repeat earns no bonus — the only way back to
-            # bonus income is the other foot completing a real cycle.
-            # The token flips on EVERY detected cycle (paid or not) —
-            # it tracks what physically stepped last, not what was paid.
+            # Alternation token → per-frame dense gate: once a foot
+            # completes a valid cycle, ITS dense reward stays blocked
+            # until the OTHER foot lands a valid cycle.  The previous
+            # version only token-gated the bonus — the dominant foot
+            # kept collecting dense reward in every own window, so
+            # single-foot stepping stayed profitable forever (clean
+            # run converged to alt=0 with ~14 same-foot cycles/ep).
+            # With dense blocked too, the only income after stepping
+            # is the OTHER foot — strict alternation becomes the only
+            # paying policy.  blocked[t] tracks the physically last
+            # stepped foot (detected, paid or not).
+            blocked = np.full(T_full, "", dtype=object)
+            for foot, _t_off, t_land, _h_pk in det["cycles"]:
+                blocked[t_land:] = foot
+            gate_l = gate_l & (blocked != "left")
+            gate_r = gate_r & (blocked != "right")
             last_stepped = None
             for foot, t_off, t_land, _h_pk in det["cycles"]:
                 wid = int(t_off) // half

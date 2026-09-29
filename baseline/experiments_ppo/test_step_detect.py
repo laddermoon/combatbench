@@ -396,8 +396,9 @@ def test_step_cycle_bonus_off_window_lift_unpaid():
 
 
 def test_step_cycle_bonus_same_foot_repeat_unpaid():
-    """A cycle repeating the last stepped foot loses the bonus —
-    the alternation token.  Dense reward still pays (in-window)."""
+    """A cycle repeating the last stepped foot earns nothing — the
+    alternation token now blocks the dense gate too, so single-foot
+    stepping has zero income."""
     from baseline.experiments_ppo.exp_step import Step
 
     T = 80
@@ -411,8 +412,8 @@ def test_step_cycle_bonus_same_foot_repeat_unpaid():
 
     # first cycle: dense (pos 2-7 gated on) + bonus 1.0/6 ≈ .167
     assert rl[2:8].max() > 0.15
-    # repeat after the skipped right window: dense only, no bonus
-    assert 0.0 < rl[42:48].max() < 0.06
+    # repeat after the skipped right window: gate blocked → zero
+    assert rl[42:48].max() == 0.0
 
 
 def test_step_cycle_bonus_alternation_restores_payment():
