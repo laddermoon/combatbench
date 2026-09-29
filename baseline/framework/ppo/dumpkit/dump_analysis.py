@@ -345,6 +345,9 @@ def inspect_dump(ds: DumpDataset) -> Dict[str, Any]:
             "key_steps": tlo.get("key_steps"),
         }
 
+    # -- pipeline stage overview (same numbers as /api/pipeline) --------------
+    out["pipeline_stages"] = full_pipeline(ds)["stages"]
+
     out["links"] = {
         "samples": "gradsig/samples?sort=abs_proj&limit=20",
         "timeline": "timeline/overview",
@@ -1227,3 +1230,301 @@ def delta_episode_heatmap(ep_dir) -> Optional[Dict[str, Any]]:
         "col_mean": [_f(v) for v in hm.mean(axis=0)],
         "row_mean": [_f(v) for v in hm.mean(axis=1)],
     }
+
+
+# ---------------------------------------------------------------------------
+# Viewer-pipeline assembly (moved out of viewer/server.py so the CLI shares
+# the exact same numbers — debug.py query/inspect must never diverge).
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+
+def channel_gae_params(ds: DumpDataset) -> Dict[str, Dict[str, Optional[float]]]:
+    """γ/λ per channel: dump-stored first, run config.json fallback."""
+    out: Dict[str, Dict[str, Optional[float]]] = {}
+    gae = ds.npz("gae")
+    for member, key in (("channel_gammas", "gamma"),
+                        ("channel_lambdas", "lam")):
+        d = gae.get_dict(member)
+        if isinstance(d, dict):
+            for ch, v in d.items():
+                out.setdefault(ch, {})[key] = float(v)
+    cfg = _run_config(ds)
+    for rc in (cfg.get("experiment", {}).get("reward_channels") or []):
+        name = rc.get("name")
+        if not name:
+            continue
+        ent = out.setdefault(name, {})
+        if ent.get("gamma") is None and rc.get("gamma") is not None:
+            ent["gamma"] = float(rc["gamma"])
+        if ent.get("lam") is None and rc.get("gae_lambda") is not None:
+            ent["lam"] = float(rc["gae_lambda"])
+    for ch in ds.channel_names:
+        out.setdefault(ch, {})
+    return out
+
+
+def _run_config(ds: DumpDataset) -> Dict[str, Any]:
+    """The run's config.json (one level up from dumps/) — the fallback
+    source for channel γ/λ and adv_norm on dumps that predate the
+    captured fields."""
+    cfg = ds.dump_dir.parent.parent / "config.json"
+    try:
+        return _json.loads(cfg.read_text())
+    except Exception:
+        return {}
+
+
+def adv_norm_method(ds: DumpDataset) -> Optional[str]:
+    v = ds.npz("combine").scalar("adv_norm")
+    if v is not None:
+        return str(v)
+    p = (_run_config(ds).get("experiment", {}).get("ppo_params") or {})
+    v = p.get("adv_norm")
+    return str(v) if v is not None else None
+
+
+def delta_list(ds: DumpDataset) -> List[Dict[str, Any]]:
+    """Computed policy-drift deltas: dump_dir/delta/episode_*/meta.json."""
+    out: List[Dict[str, Any]] = []
+    root = ds.dump_dir / "delta"
+    if not root.is_dir():
+        return out
+    for ep_dir in sorted(root.iterdir()):
+        meta = ep_dir / "meta.json"
+        if not meta.exists():
+            continue
+        try:
+            m = _json.loads(meta.read_text(encoding="utf-8"))
+            out.append({
+                "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
+                "gen_updates": m.get("gen_updates", []),
+                "missing_updates": m.get("missing_updates", []),
+                "heatmap": delta_episode_heatmap(ep_dir),
+            })
+        except (_json.JSONDecodeError, OSError, ValueError):
+            continue
+    return out
+
+
+def rollout_list(ds: DumpDataset) -> List[Dict[str, Any]]:
+    """Computed rollout replays: dump_dir/rollout/episode_*/meta.json."""
+    out: List[Dict[str, Any]] = []
+    root = ds.dump_dir / "rollout"
+    if not root.is_dir():
+        return out
+    for ep_dir in sorted(root.iterdir()):
+        meta = ep_dir / "meta.json"
+        if not meta.exists():
+            continue
+        try:
+            m = _json.loads(meta.read_text(encoding="utf-8"))
+            stats = m.get("stats", {})
+            mean_norm = [
+                s["mean_norm"] for s in stats.values()
+                if isinstance(s, dict) and "mean_norm" in s
+            ]
+            out.append({
+                "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
+                "rollout_update": m.get("rollout_update"),
+                "agents": m.get("agents", []),
+                "mean_norm": (
+                    sum(mean_norm) / len(mean_norm) if mean_norm else None
+                ),
+            })
+        except (_json.JSONDecodeError, OSError, ValueError):
+            continue
+    return out
+
+
+def delta_stats(actions: np.ndarray, gen_updates: List[int]) -> Dict[str, Any]:
+    """Per-agent drift stats from a delta actions matrix (G+1, T, D).
+
+    Row 0 is the reference (post-update policy); rows 1.. are past
+    generations.  Mirrors the numbers the viewer's delta page shows:
+    per-gen mean‖Δ‖, the peak frame of the mean drift curve, adjacent-
+    generation direction consistency, and update-attribution means
+    ‖a_g − a_{g−1}‖.
+    """
+    a = np.asarray(actions, dtype=np.float64)
+    G = a.shape[0] - 1
+    if G < 1:
+        return {}
+    ref = a[0]
+    norms = [np.linalg.norm(a[g] - ref, axis=-1) for g in range(1, G + 1)]
+    mean_curve = np.mean(norms, axis=0)
+
+    per_gen = [{
+        "update": int(gen_updates[g]),
+        "mean_norm": _f(norms[g - 1].mean()),
+        "max_norm": _f(norms[g - 1].max()),
+    } for g in range(1, G + 1)]
+
+    # update attribution: ‖a_g − a_{g−1}‖ mean per adjacent pair —
+    # row g-1 is the *newer* gen, so pair label = "u_old→u_new".
+    attrib = []
+    for g in range(1, G + 1):
+        n = np.linalg.norm(a[g] - a[g - 1], axis=-1)
+        attrib.append({
+            "pair": f"u{int(gen_updates[g])}→u{int(gen_updates[g - 1])}",
+            "mean_norm": _f(n.mean()),
+        })
+
+    # direction consistency: mean over all (frame, adjacent-pair) cosines
+    # cos(Δ_g, Δ_{g+1}) — flat mean, same weighting as the viewer page.
+    cos_all: List[np.ndarray] = []
+    for g in range(1, G):
+        d1 = ref - a[g]
+        d2 = ref - a[g + 1]
+        num = (d1 * d2).sum(axis=-1)
+        den = np.linalg.norm(d1, axis=-1) * np.linalg.norm(d2, axis=-1)
+        ok = den > 1e-12
+        if ok.any():
+            cos_all.append(num[ok] / den[ok])
+    return {
+        "per_gen": per_gen,
+        "peak_frame": int(np.argmax(mean_curve)),
+        "peak_norm": _f(mean_curve.max()),
+        "dir_consistency": (
+            _f(np.concatenate(cos_all).mean()) if cos_all else None
+        ),
+        "update_attrib": attrib,
+    }
+
+
+def grad_sig_json(d: Dict[str, np.ndarray], update: int) -> Dict[str, Any]:
+    """gradsig npz dict → JSON-safe payload.
+
+    Shared by the legacy run-level artifact (``gradsig/uNNNNN.npz``)
+    and the dump artifact (``dumps/uNNNNN/gradsig.npz``) — both carry
+    the same hist + scalar + per-frame keys.
+    """
+    return {
+        "available": True,
+        "update": int(update),
+        "hist": d["hist"].tolist(),
+        "cos_edges": d["cos_edges"].tolist(),
+        "norm_edges": d["norm_edges"].tolist(),
+        "n_sampled": int(d["n_sampled"]),
+        "n_valid": int(d["n_valid"]),
+        "n_excluded": int(d["n_excluded"]),
+        "n_frames_in_hist": int(d["n_frames_in_hist"]),
+        "hist_under": d["hist_under"].tolist(),
+        "hist_over": d["hist_over"].tolist(),
+        "n_under": int(d["n_under"]),
+        "n_over": int(d["n_over"]),
+        "gnorm": float(d["gnorm"]),
+        "coherence": float(d["coherence"]),
+        "dir_cos": float(d["dir_cos"]),
+        "proj_mean": float(d["proj_mean"]),
+        "proj_std": float(d["proj_std"]),
+        "frac_neg": float(d["frac_neg"]),
+        "grad_norm": _nan_to_null(d["grad_norm"]),
+        "cos": _nan_to_null(d["cos"]),
+        "proj": _nan_to_null(d["proj"]),
+        "valid": d["valid"].tolist(),
+        "norm_quantiles": d["norm_quantiles"].tolist(),
+        "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
+        "norm_edges_derived": bool(d["norm_edges_derived"]),
+    }
+
+
+def dump_gradsig(ds: DumpDataset) -> Optional[Dict[str, Any]]:
+    """Dump-level ``gradsig.npz`` → JSON-safe payload.
+
+    The dump npz merges the run-level histogram payload with the
+    per-frame dump detail (``sampled_idx``/``w_adv``/``floor_pen``).
+    When the diagnostic bailed before the histogram (zero aggregate
+    gradient, no valid frames) only the raw arrays exist — return a
+    degraded ``partial`` payload instead of KeyError → 404.
+    """
+    g = ds.npz("gradsig")
+    if not g.available:
+        return None
+    d = {k: g.get(k) for k in g.keys()}
+    try:
+        upd = int(ds.manifest.get("update", -1))
+    except (FileNotFoundError, TypeError, ValueError):
+        upd = -1
+    extras = (
+        "sampled_idx", "w_adv", "floor_pen", "n_params",
+    )
+    try:
+        out = grad_sig_json(d, update=upd)
+    except KeyError:
+        out = {
+            "available": True,
+            "partial": True,
+            "update": upd,
+            "n_sampled": int(d["valid"].shape[0]),
+            "n_valid": int(d["valid"].sum()),
+            "grad_norm": _nan_to_null(d["grad_norm"]),
+            "valid": d["valid"].tolist(),
+        }
+    for k in extras + ("proj", "cos"):
+        if k in d and k not in out:
+            out[k] = (
+                _nan_to_null(d[k]) if d[k].dtype.kind == "f"
+                else d[k].tolist()
+            )
+    return out
+
+
+def full_pipeline(ds: DumpDataset) -> Dict[str, Any]:
+    """The complete dump-home pipeline payload — the same dict the
+    viewer serves at ``/api/pipeline`` and the CLI emits via
+    ``debug.py query <dump> pipeline``."""
+    out = pipeline_summary(ds)
+    params = channel_gae_params(ds)
+    for ch in out.get("stages", {}).get("gae", {}).get("channels", []):
+        p = params.get(ch["name"], {})
+        if ch.get("gamma") is None:
+            ch["gamma"] = p.get("gamma")
+        if ch.get("lam") is None:
+            ch["lam"] = p.get("lam")
+    st = out.get("stages", {}).get("advnorm", {})
+    if st.get("method") is None:
+        st["method"] = adv_norm_method(ds)
+
+    # ⑤ Grad Analyze — scalars only; the heatmap/samples live on the
+    # tool page via /api/gradsig + /api/gradsig/samples.
+    gs = dump_gradsig(ds)
+    out["stages"]["gradsig"] = (
+        {
+            "available": True,
+            "partial": bool(gs.get("partial")),
+            "gnorm": gs.get("gnorm"),
+            "coherence": gs.get("coherence"),
+            "frac_neg": gs.get("frac_neg"),
+            "dir_cos": gs.get("dir_cos"),
+            "n_sampled": gs.get("n_sampled"),
+            "n_valid": gs.get("n_valid"),
+        } if gs else {"available": False})
+
+    # ⑦ Post Update — scalars only; full per-epoch detail on the tool
+    # page via /api/postupdate.
+    pu = post_update_summary(ds)
+    upd = pu.get("update") or {}
+    out["stages"]["postupdate"] = {
+        "available": pu.get("available", False),
+        "n_epochs": pu.get("n_epochs"),
+        "actor_stopped_epoch": pu.get("actor_stopped_epoch"),
+        "epochs_done": upd.get("epochs_done"),
+        "actor_epochs_done": upd.get("actor_epochs_done"),
+        "kl_mean": upd.get("kl_mean"),
+        "kl_max": upd.get("kl_max"),
+        "clip_frac_mean": upd.get("clip_frac_mean"),
+        "post_clip_dloss_mean": upd.get("post_clip_dloss_mean"),
+        "post_clip_dloss_gain": upd.get("post_clip_dloss_gain"),
+        "post_clip_dloss_harm": upd.get("post_clip_dloss_harm"),
+        "rbin": pu.get("rbin") or {},
+    }
+
+    # ⑧ Delta Analyze — which episodes already have computed deltas.
+    out["stages"]["delta"] = {"episodes": delta_list(ds)}
+    # ⓪ Rollout — which episodes already have a_det replays.
+    out["stages"]["rollout"] = {"episodes": rollout_list(ds)}
+
+    out["channel_gae_params"] = params
+    return out

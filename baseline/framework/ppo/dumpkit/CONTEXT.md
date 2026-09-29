@@ -114,8 +114,16 @@ debug.py trace    <dump> --buffer-index N   # 一帧贯穿 buffer→GAE→combin
                                             #   →gradsig→epoch→timeline
                   [--frame ep0007:robot_a:123]
 debug.py timeline <dump> [--step N | --key-steps]
+debug.py query    <dump> <endpoint>[?qs]    # 任意 /api/* 端点的离线等价物
+                                            #   ——同一 ViewerAPI.handle 分发，
+                                            #   端点失败时退出码非零
 #   <dump> = dump 目录路径，或 <run>:u<N> 简写（--runs-root 下解析）
 ```
+
+`query` 例子：`pipeline`、`episode/0/delta`（含 stats）、
+`episode/0/rollout`、`trajectory/0/gae?channel=r_potential`、
+`gradsig/samples?sort=neg_proj`、`delta_list`、`inspect`。
+也就是说上面 HTTP API 表里的每个 GET dump 端点都能离线跑。
 
 ## HTTP API（viewer 运行时等价物）
 
@@ -276,8 +284,15 @@ trainer 与 viewer 共用同一实现），前端不做算法重写。
   抽样、proj<0=反向而非"坏样本"、dtheta_* 是 Adam 后的实际位移而非
   预更新梯度方向、缺失字段显式缺席不填 0、frame_id 为 flat:* 的帧
   无 episode 映射（`mapped:false`）。timeline overview 现已透传全部
-  已采字段（dtheta_*/adv_*/argmax|min_ratio_bufidx/dual_clip_frac/
-  floor_loss/mb_size/n_ratio_*），另派生 `key_steps` 快查索引。
+  已采字段（dtheta_*、adv_*、argmax|min_ratio_bufidx、dual_clip_frac、
+  floor_loss、mb_size、n_ratio_*），另派生 `key_steps` 快查索引。
+  **派生统计也归 Python**：`/api/episode/<pos>/delta` 返回
+  `agents[aid].stats`（`delta_stats()`：per-gen mean‖Δ‖、peak 帧、
+  dir consistency、相邻代归因均值），前端标量行只渲染不再计算；
+  `pipeline` 的完整组装（GAE γ/λ 回退、adv_norm 回退、gradsig/
+  postupdate 摘要、delta/rollout 覆盖）在 `full_pipeline()`，
+  `inspect_dump()` 的 `pipeline_stages` 字段与 `/api/pipeline`
+  同一份数字。
 - compare 页的 `buildMetricsCharts(null, cmp)` 与单 run 共用一套
   catalog 解析；cmp 序列带 `run/sub/subColor/subGroup` 字段供标签与
   拆分逻辑使用——改 emit/emitSpec 时两种模式都要过一遍。

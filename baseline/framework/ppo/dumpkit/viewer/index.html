@@ -5474,32 +5474,21 @@
       norms.push(row);
     }
     const meanCurve = new Array(T).fill(0);
-    let dirCosSum = 0, dirCosN = 0;
-    for (let t = 0; t < T; t++) {
+    for (let t = 0; t < T; t++)
       for (let g = 1; g <= G; g++) meanCurve[t] += norms[g][t] / G;
-      for (let g = 1; g < G; g++) {
-        let dot = 0, n1 = 0, n2 = 0;
-        for (let k = 0; k < D; k++) {
-          const d1 = acts[0][t][k] - acts[g][t][k];
-          const d2 = acts[0][t][k] - acts[g + 1][t][k];
-          dot += d1 * d2; n1 += d1 * d1; n2 += d2 * d2;
-        }
-        if (n1 > 1e-12 && n2 > 1e-12) {
-          dirCosSum += dot / Math.sqrt(n1 * n2); dirCosN++;
-        }
-      }
-    }
-    let peakF = 0;
-    for (let t = 1; t < T; t++) if (meanCurve[t] > meanCurve[peakF]) peakF = t;
 
     let html = `<div class="desc" style="margin-bottom:8px">Deterministic act() of each generation on this episode's observations — ref = u${gens[0]} (post-update policy), rows below are past gens (u${gens[0] - 1} = rollout). Agent: <b>${escapeHtml(aid)}</b></div>`;
 
-    // scalar strip
+    // scalar strip — derived stats come from the API (dump_analysis.delta_stats),
+    // the page only renders them; per-frame curves below stay local.
+    const st = adata.stats || {};
     html += '<div class="stage-stats">' +
-      _kv('mean ‖Δ‖', gens.slice(1).map((u, i) =>
-        `u${u} ${fmt(norms[i + 1].reduce((a, b) => a + b, 0) / T, 3)}`).join(' · ')) +
-      _kv('peak drift', `f${peakF} (${fmt(meanCurve[peakF], 3)})`) +
-      (dirCosN ? _kv('dir consistency', fmt(dirCosSum / dirCosN, 3)) : '') +
+      _kv('mean ‖Δ‖', (st.per_gen || []).map(p =>
+        `u${p.update} ${fmt(p.mean_norm, 3)}`).join(' · ')) +
+      (st.peak_frame != null
+        ? _kv('peak drift', `f${st.peak_frame} (${fmt(st.peak_norm, 3)})`) : '') +
+      (st.dir_consistency != null
+        ? _kv('dir consistency', fmt(st.dir_consistency, 3)) : '') +
       '</div>';
 
     // per-gen drift curves (gens toggled off in the legend are hidden)
@@ -5533,7 +5522,11 @@
       }
       const vis = diffSeries.filter((_, i) => !hidden.has(gens[i + 1]));
       if (vis.length) {
-        html += '<h3>update attribution · ‖a_g − a_{g−1}‖</h3>';
+        html += '<h3>update attribution · ‖a_g − a_{g−1}‖' +
+          ((st.update_attrib || []).length
+            ? ` <span class="desc">${st.update_attrib.map(p =>
+                `${escapeHtml(p.pair)} ${fmt(p.mean_norm, 3)}`).join(' · ')}</span>`
+            : '') + '</h3>';
         html += chartBox(vis, {currentFrame: frame});
       }
     }

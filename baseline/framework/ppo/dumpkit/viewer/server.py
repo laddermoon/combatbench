@@ -168,106 +168,6 @@ _LEGACY_POLICY_STAT_KEYS = frozenset({
 _FRAMEWORK_STAT_KEYS = frozenset({"uncertainty_mean"})
 
 
-def _nan_to_null(arr: np.ndarray) -> List[Any]:
-    """float array → JSON-safe list; non-finite values become ``None``.
-
-    ``json.dumps`` emits a bare ``NaN``/``Infinity`` literal for
-    non-finite floats — invalid JSON that makes ``fetch().json()``
-    throw client-side.  Explicit nulls keep the payload parseable.
-    """
-    return [
-        (float(v) if np.isfinite(v) else None)
-        for v in np.asarray(arr, dtype=np.float64).ravel()
-    ]
-
-
-def _grad_sig_json(d: Dict[str, np.ndarray], update: int) -> Dict[str, Any]:
-    """gradsig npz dict → JSON-safe payload.
-
-    Shared by the legacy run-level artifact (``gradsig/uNNNNN.npz``)
-    and the dump artifact (``dumps/uNNNNN/gradsig.npz``) — both carry
-    the same hist + scalar + per-frame keys.
-    """
-    return {
-        "available": True,
-        "update": int(update),
-        # hist[norm_bin, cos_bin] — frame counts (per-frame
-        # norm bins × cos bins vs the aggregate direction).
-        "hist": d["hist"].tolist(),
-        "cos_edges": d["cos_edges"].tolist(),
-        "norm_edges": d["norm_edges"].tolist(),
-        "n_sampled": int(d["n_sampled"]),
-        "n_valid": int(d["n_valid"]),
-        "n_excluded": int(d["n_excluded"]),
-        "n_frames_in_hist": int(d["n_frames_in_hist"]),
-        # Under/overflow edge rows — cosine profiles of
-        # frames outside the frozen quantile norm axis.
-        "hist_under": d["hist_under"].tolist(),
-        "hist_over": d["hist_over"].tolist(),
-        "n_under": int(d["n_under"]),
-        "n_over": int(d["n_over"]),
-        # Aggregate-direction scalars.
-        "gnorm": float(d["gnorm"]),
-        "coherence": float(d["coherence"]),
-        "dir_cos": float(d["dir_cos"]),
-        "proj_mean": float(d["proj_mean"]),
-        "proj_std": float(d["proj_std"]),
-        "frac_neg": float(d["frac_neg"]),
-        # Raw per-frame arrays — the frontend bins the
-        # projection histogram itself.  Non-finite values
-        # (invalid frames) become null: a literal NaN or
-        # Infinity in the JSON would break fetch().json().
-        "grad_norm": _nan_to_null(d["grad_norm"]),
-        "cos": _nan_to_null(d["cos"]),
-        "proj": _nan_to_null(d["proj"]),
-        "valid": d["valid"].tolist(),
-        "norm_quantiles": d["norm_quantiles"].tolist(),
-        "norm_quantile_levels": [0.05, 0.25, 0.5, 0.75, 0.95],
-        "norm_edges_derived": bool(d["norm_edges_derived"]),
-    }
-
-
-def _dump_gradsig(ds: DumpDataset) -> Optional[Dict[str, Any]]:
-    """Dump-level ``gradsig.npz`` → JSON-safe payload.
-
-    The dump npz merges the run-level histogram payload with the
-    per-frame dump detail (``sampled_idx``/``w_adv``/``floor_pen``).
-    When the diagnostic bailed before the histogram (zero aggregate
-    gradient, no valid frames) only the raw arrays exist — return a
-    degraded ``partial`` payload instead of KeyError → 404.
-    """
-    g = ds.npz("gradsig")
-    if not g.available:
-        return None
-    d = {k: g.get(k) for k in g.keys()}
-    try:
-        upd = int(ds.manifest.get("update", -1))
-    except (FileNotFoundError, TypeError, ValueError):
-        upd = -1
-    extras = (
-        "sampled_idx", "w_adv", "floor_pen", "n_params",
-    )
-    try:
-        out = _grad_sig_json(d, update=upd)
-    except KeyError:
-        out = {
-            "available": True,
-            "partial": True,
-            "update": upd,
-            "n_sampled": int(d["valid"].shape[0]),
-            "n_valid": int(d["valid"].sum()),
-            "grad_norm": _nan_to_null(d["grad_norm"]),
-            "valid": d["valid"].tolist(),
-        }
-    for k in extras + ("proj", "cos"):
-        if k in d and k not in out:
-            out[k] = (
-                _nan_to_null(d[k]) if d[k].dtype.kind == "f"
-                else d[k].tolist()
-            )
-    return out
-
-
 class RunData:
     """Training run directory: scan dumps and parse __RAW_STATS__ from train.log."""
 
@@ -409,7 +309,7 @@ class RunData:
             return None
         try:
             with np.load(p) as d:
-                return _grad_sig_json(dict(d), update=int(update))
+                return _da.grad_sig_json(dict(d), update=int(update))
         except (OSError, KeyError, ValueError):
             return None
 
@@ -1337,7 +1237,6 @@ class ViewerAPI:
 
     def __init__(self, data: DumpDataset):
         self.data = data
-        self._run_config_cache: Optional[Dict[str, Any]] = None
 
     def handle(self, path: str, query: str = "") -> Tuple[int, Any]:
         """Route an /api/... path and return (HTTP status, response body).
@@ -1394,7 +1293,7 @@ class ViewerAPI:
                     and parts[2] == "samples":
                 return self._gradsig_samples(query)
             elif endpoint == "gradsig":
-                gs = _dump_gradsig(self.data)
+                gs = _da.dump_gradsig(self.data)
                 if gs is None:
                     return 404, {"available": False}
                 return 200, gs
@@ -1414,9 +1313,9 @@ class ViewerAPI:
             elif endpoint == "postupdate":
                 return 200, _da.post_update_summary(self.data)
             elif endpoint == "delta_list":
-                return 200, {"episodes": self._delta_list()}
+                return 200, {"episodes": _da.delta_list(self.data)}
             elif endpoint == "rollout_list":
-                return 200, {"episodes": self._rollout_list()}
+                return 200, {"episodes": _da.rollout_list(self.data)}
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -1683,7 +1582,11 @@ class ViewerAPI:
 
         Returns per-generation deterministic actions for each trained
         agent: ``agents[aid]["actions"][g][t][dim]`` where g=0 is the
-        rollout policy (update u) and g≥1 are reference generations.
+        post-update policy (update u) and g≥1 are past generations.
+        Also returns ``agents[aid]["stats"]`` — the derived scalar
+        stats (per-gen mean‖Δ‖, peak frame, direction consistency,
+        update attribution) computed in ``dump_analysis.delta_stats``
+        so the frontend and the CLI read the same numbers.
         """
         delta_dir = self.data.delta_dir(ep_pos)
         npz_path = delta_dir / "delta.npz"
@@ -1697,7 +1600,11 @@ class ViewerAPI:
         for aid in meta.get("agents", []):
             key = f"actions.{aid}"
             if key in npz:
-                agents[aid] = {"actions": _arr_to_list(npz[key])}
+                a = npz[key]
+                agents[aid] = {
+                    "actions": _arr_to_list(a),
+                    "stats": _da.delta_stats(a, meta["gen_updates"]),
+                }
         return 200, {
             "available": True,
             "episode_pos": ep_pos,
@@ -2109,156 +2016,8 @@ class ViewerAPI:
 
     # -- Pipeline tool pages ------------------------------------------------
 
-    def _run_config(self) -> Dict[str, Any]:
-        """The run's config.json (one level up from dumps/) — the fallback
-        source for channel γ/λ and adv_norm on dumps that predate the
-        captured fields."""
-        if self._run_config_cache is None:
-            cfg = self.data.dump_dir.parent.parent / "config.json"
-            try:
-                self._run_config_cache = json.loads(cfg.read_text())
-            except Exception:
-                self._run_config_cache = {}
-        return self._run_config_cache
-
-    def _channel_gae_params(self) -> Dict[str, Dict[str, Optional[float]]]:
-        """γ/λ per channel: dump-stored first, run config.json fallback."""
-        out: Dict[str, Dict[str, Optional[float]]] = {}
-        gae = self.data.npz("gae")
-        for member, key in (("channel_gammas", "gamma"),
-                            ("channel_lambdas", "lam")):
-            d = gae.get_dict(member)
-            if isinstance(d, dict):
-                for ch, v in d.items():
-                    out.setdefault(ch, {})[key] = float(v)
-        cfg = self._run_config()
-        for rc in (cfg.get("experiment", {}).get("reward_channels") or []):
-            name = rc.get("name")
-            if not name:
-                continue
-            ent = out.setdefault(name, {})
-            if ent.get("gamma") is None and rc.get("gamma") is not None:
-                ent["gamma"] = float(rc["gamma"])
-            if ent.get("lam") is None and rc.get("gae_lambda") is not None:
-                ent["lam"] = float(rc["gae_lambda"])
-        for ch in self.data.channel_names:
-            out.setdefault(ch, {})
-        return out
-
-    def _adv_norm_method(self) -> Optional[str]:
-        v = self.data.npz("combine").scalar("adv_norm")
-        if v is not None:
-            return str(v)
-        cfg = self._run_config()
-        p = (cfg.get("experiment", {}).get("ppo_params") or {})
-        v = p.get("adv_norm")
-        return str(v) if v is not None else None
-
-    def _delta_list(self) -> List[Dict[str, Any]]:
-        """Computed policy-drift deltas: dump_dir/delta/episode_*/meta.json."""
-        out: List[Dict[str, Any]] = []
-        root = self.data.dump_dir / "delta"
-        if not root.is_dir():
-            return out
-        for ep_dir in sorted(root.iterdir()):
-            meta = ep_dir / "meta.json"
-            if not meta.exists():
-                continue
-            try:
-                m = json.loads(meta.read_text(encoding="utf-8"))
-                out.append({
-                    "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
-                    "gen_updates": m.get("gen_updates", []),
-                    "missing_updates": m.get("missing_updates", []),
-                    "heatmap": _da.delta_episode_heatmap(ep_dir),
-                })
-            except (json.JSONDecodeError, OSError, ValueError):
-                continue
-        return out
-
-    def _rollout_list(self) -> List[Dict[str, Any]]:
-        """Computed rollout replays: dump_dir/rollout/episode_*/meta.json."""
-        out: List[Dict[str, Any]] = []
-        root = self.data.dump_dir / "rollout"
-        if not root.is_dir():
-            return out
-        for ep_dir in sorted(root.iterdir()):
-            meta = ep_dir / "meta.json"
-            if not meta.exists():
-                continue
-            try:
-                m = json.loads(meta.read_text(encoding="utf-8"))
-                stats = m.get("stats", {})
-                mean_norm = [
-                    s["mean_norm"] for s in stats.values()
-                    if isinstance(s, dict) and "mean_norm" in s
-                ]
-                out.append({
-                    "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
-                    "rollout_update": m.get("rollout_update"),
-                    "agents": m.get("agents", []),
-                    "mean_norm": (
-                        sum(mean_norm) / len(mean_norm) if mean_norm else None
-                    ),
-                })
-            except (json.JSONDecodeError, OSError, ValueError):
-                continue
-        return out
-
     def _pipeline(self) -> Dict[str, Any]:
-        out = _da.pipeline_summary(self.data)
-        params = self._channel_gae_params()
-        for ch in out.get("stages", {}).get("gae", {}).get("channels", []):
-            p = params.get(ch["name"], {})
-            if ch.get("gamma") is None:
-                ch["gamma"] = p.get("gamma")
-            if ch.get("lam") is None:
-                ch["lam"] = p.get("lam")
-        st = out.get("stages", {}).get("advnorm", {})
-        if st.get("method") is None:
-            st["method"] = self._adv_norm_method()
-
-        # ⑤ Grad Analyze — scalars only; the heatmap/samples live on the
-        # tool page via /api/gradsig + /api/gradsig/samples.
-        gs = _dump_gradsig(self.data)
-        out["stages"]["gradsig"] = (
-            {
-                "available": True,
-                "partial": bool(gs.get("partial")),
-                "gnorm": gs.get("gnorm"),
-                "coherence": gs.get("coherence"),
-                "frac_neg": gs.get("frac_neg"),
-                "dir_cos": gs.get("dir_cos"),
-                "n_sampled": gs.get("n_sampled"),
-                "n_valid": gs.get("n_valid"),
-            } if gs else {"available": False})
-
-        # ⑦ Post Update — scalars only; full per-epoch detail on the tool
-        # page via /api/postupdate.
-        pu = _da.post_update_summary(self.data)
-        upd = pu.get("update") or {}
-        out["stages"]["postupdate"] = {
-            "available": pu.get("available", False),
-            "n_epochs": pu.get("n_epochs"),
-            "actor_stopped_epoch": pu.get("actor_stopped_epoch"),
-            "epochs_done": upd.get("epochs_done"),
-            "actor_epochs_done": upd.get("actor_epochs_done"),
-            "kl_mean": upd.get("kl_mean"),
-            "kl_max": upd.get("kl_max"),
-            "clip_frac_mean": upd.get("clip_frac_mean"),
-            "post_clip_dloss_mean": upd.get("post_clip_dloss_mean"),
-            "post_clip_dloss_gain": upd.get("post_clip_dloss_gain"),
-            "post_clip_dloss_harm": upd.get("post_clip_dloss_harm"),
-            "rbin": pu.get("rbin") or {},
-        }
-
-        # ⑧ Delta Analyze — which episodes already have computed deltas.
-        out["stages"]["delta"] = {"episodes": self._delta_list()}
-        # ⓪ Rollout — which episodes already have a_det replays.
-        out["stages"]["rollout"] = {"episodes": self._rollout_list()}
-
-        out["channel_gae_params"] = params
-        return out
+        return _da.full_pipeline(self.data)
 
     def _traj_gae(self, traj_idx: int, query: str) -> Tuple[int, Any]:
         """Recompute GAE for one trajectory — reuses the trainer's own
@@ -2270,7 +2029,7 @@ class ViewerAPI:
             ch = chs[0] if chs else None
         if ch is None:
             return 400, {"error": "no channel specified"}
-        params = self._channel_gae_params().get(ch, {})
+        params = _da.channel_gae_params(self.data).get(ch, {})
         try:
             gamma = float((qs.get("gamma") or [params.get("gamma") or 0.99])[0])
             lam = float((qs.get("lam") or [params.get("lam") or 0.95])[0])
@@ -2284,7 +2043,7 @@ class ViewerAPI:
         ch = (qs.get("channel") or [chs[0] if chs else None])[0]
         if ch is None:
             return 400, {"error": "no channel specified"}
-        method = (qs.get("method") or [self._adv_norm_method() or "zscore"])[0]
+        method = (qs.get("method") or [_da.adv_norm_method(self.data) or "zscore"])[0]
         traj = (qs.get("traj") or [None])[0]
         return _da.advnorm_preview(
             self.data, ch, method,

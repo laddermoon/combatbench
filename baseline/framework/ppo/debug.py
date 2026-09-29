@@ -32,6 +32,7 @@ Usage by question::
         debug.py samples  <dump> --sort neg_proj --limit 20
         debug.py trace    <dump> --buffer-index N  (or --frame ep:A:t)
         debug.py timeline <dump> [--step N | --key-steps]
+        debug.py query    <dump> <endpoint>  # any /api/* path, offline
           <dump> = dump dir path, or <run>:u<N> shorthand.
 
     See a dumped episode frame by frame / did the policy drift?
@@ -253,6 +254,20 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.dump_analysis import inspect_dump
     _emit(inspect_dump(_open_dump(args)), args.pretty)
     return 0
+
+
+def _cmd_query(args: argparse.Namespace) -> int:
+    """Generic pass-through to any dump API endpoint — same dispatch as
+    the viewer's /api/* routes, so CLI and HTTP can never diverge."""
+    from baseline.framework.ppo.dumpkit.viewer.server import ViewerAPI
+    ds = _open_dump(args)
+    endpoint, _, query = args.endpoint.partition("?")
+    path = endpoint.strip("/")
+    if not path.startswith("api/"):
+        path = "api/" + path
+    status, body = ViewerAPI(ds).handle(path, query)
+    _emit(body, args.pretty)
+    return 0 if 200 <= status < 300 else 1
 
 
 def _cmd_samples(args: argparse.Namespace) -> int:
@@ -758,6 +773,29 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_RUNS_ROOT)
     p_inspect.add_argument("--pretty", action="store_true")
     p_inspect.set_defaults(func=_cmd_inspect)
+
+    p_query = sub.add_parser(
+        "query",
+        help="Generic dump API query — any /api/* endpoint, offline.",
+        description=(
+            "Pass-through to the same endpoint dispatch the viewer "
+            "uses: pipeline, adv/hist, advnorm, merge, postupdate, "
+            "gradsig, delta_list, rollout_list, inspect, "
+            "episode/<pos>/delta, episode/<pos>/rollout, "
+            "trajectory/<i>/epoch/<e>/overview, trajectory/<i>/gae, "
+            "timeline/overview, trace/<idx>, ...  Query params go "
+            "after '?' (e.g. 'trajectory/0/gae?channel=r_fall'). "
+            "Exit code is non-zero when the endpoint fails."
+        ),
+    )
+    p_query.add_argument("dump", type=str, help=_DUMP_HELP)
+    p_query.add_argument("endpoint", type=str,
+        help="API path, e.g. 'pipeline' or 'episode/0/delta' "
+             "('api/' prefix optional; '?' query string supported).")
+    p_query.add_argument("--runs-root", type=str,
+        default=_DEFAULT_RUNS_ROOT)
+    p_query.add_argument("--pretty", action="store_true")
+    p_query.set_defaults(func=_cmd_query)
 
     p_samples = sub.add_parser(
         "samples",
