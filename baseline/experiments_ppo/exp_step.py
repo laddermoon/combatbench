@@ -741,8 +741,22 @@ class Step(CombatExperimentPPOBase):
         # alt enters quality so best-ckpt tracking prefers strict
         # left-right alternation, not just high step counts — the
         # same-foot double-step pattern (u02380 video) keeps step=1.0
-        # but low alt.
-        quality = step_success_rate - 0.1 * falls_mean + 0.1 * alt_mean
+        # but low alt.  Solepk (clipped at 0.10) also enters: during
+        # the pre-stepping ramp it climbs steadily while step stays 0,
+        # so a still-learning run keeps resetting the no-improvement
+        # counter instead of dying mid-ramp (clean_s42 was killed at
+        # u1745 with solepk ≈ −0.005 and rising).  The clip caps its
+        # influence once genuine clearance is achieved.
+        solepk_mean = (
+            sum(all_solepk) / max(len(all_solepk), 1)
+            if all_solepk else 0.0
+        )
+        quality = (
+            step_success_rate
+            - 0.1 * falls_mean
+            + 0.1 * alt_mean
+            + min(solepk_mean, 0.10)
+        )
         improved_pot = mean_max_pot > self._best_potential
         if improved_pot:
             self._best_potential = mean_max_pot
