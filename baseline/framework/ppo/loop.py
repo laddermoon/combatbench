@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import multiprocessing.process
 import math
 import os
 import random
@@ -587,11 +588,33 @@ def train_ppo(
     channels = experiment.reward_channels()
     reward_keys = tuple(ch.name for ch in channels)
 
-    # --- Signal handling: kill entire process group (including rollout
-    #     workers) on SIGTERM/SIGINT so --background runs can be cleanly
-    #     stopped without orphaned subprocesses. ---
+    # --- Signal handling: on SIGTERM/SIGINT, take down the rollout
+    #     workers without killing sibling runs.  Batch launch scripts
+    #     put all runs in one process group, so killpg(getpgrp()) would
+    #     wipe out the whole batch — only our own children are ours. ---
     def _shutdown_handler(signum, frame):
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+        if os.getpgrp() == os.getpid():
+            # Group leader (--background setsid, or per-run setsid):
+            # the group is exclusively ours — killpg also reaps any
+            # grandchildren spawned below the rollout workers.
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        else:
+            # Shared process group: kill only children this process
+            # created.  Iterate the raw set (no joins) so the handler
+            # never blocks on multiprocessing locks.
+            try:
+                kids = [
+                    p.pid for p in list(multiprocessing.process._children)
+                    if p.pid is not None
+                ]
+            except Exception:
+                kids = []
+            for pid in kids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        os._exit(128 + signum)
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
 
