@@ -178,15 +178,19 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
   postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
 - **工具页**（结构同构：选择器 + 视频编辑器骨架大图/缩略图/
   scrubber + 页专属曲线，帧游标跨页共享）：
-  - `/episode/<pos>` —— ①：episode 轴多轨道区：scalar key 轨
-    （只枚举 episode 侧列，`/episode/<pos>/overview` 清单 +
-    `/series?keys=` 序列，`vec[i]` 下标语法）+ 每 traj 一条 lane
-    （lane 内画每通道 reward 实线 + actor_weight 虚线，clip 区间
-    外留空，点击跳 ②）。帧级原始数据只在 frame readout。
+  - `/episode/<pos>` —— ①：scalar key 轨（只枚举 episode 侧列，
+    `/episode/<pos>/overview` 清单 + `/series?keys=` 序列，`vec[i]`
+    下标语法，lane 角落标 min/max 刻度、playhead∩曲线交点处标值）
+    + **traj 分组卡**（merge 式：组头 agent/clip 区间/跳②链接，
+    组内每通道 reward + actor_weight 各一张 chartBox，x=traj 本地
+    帧，点击换算回 episode 帧）。帧级原始数据只在 frame readout。
   - `/gae/<i>` —— ②：reward/value/δ/adv 曲线 + γ/λ 滑杆
     （服务端复用 `compute_gae` 重算，与存储值逐位一致）。
-  - `/advnorm` —— ③：通道 + method tabs，单 traj raw vs normed。
-  - `/merge` —— ④：单 traj per-channel normed/aw/combined + 帧读数。
+  - `/advnorm` —— ③：通道选择 + method tabs（夹在 raw/normed 两图
+    之间）；normed 图叠加 trained method 灰线作参照。
+  - `/merge` —— ④：按通道分组（组头 conf/ev/confidence on-off
+    标记——conf 全=1.0 判 off），组内 normed adv + aw_normed 分图；
+    combined_adv 在最下。帧读数含每通道 n·w→contrib 分解。
   - `/gradsig` —— ⑤：norm×cos 热图 + 聚合标量 + top-samples 表
     （sort/sign 控件），点行跳 traj 页。
   - `/postupdate` —— ⑦：上卡 = 全 buffer 逐 epoch 聚合表
