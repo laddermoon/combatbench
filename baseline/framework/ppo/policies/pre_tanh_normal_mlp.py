@@ -108,6 +108,10 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
     they only need to point the attributes at their own payload kinds
     and export template.
     """
+    # Capability flag read by SamplingPolicy at wrap time:
+    # refuses a delta-demanding SamplingSpec when False/absent.
+    SUPPORTS_REFERENCE_DELTA = False
+
 
     _POLICY_CLASS = "PreTanhNormalPolicy"
     _DISTRIBUTION_KIND = "tanh_diagonal_normal_shared_std_v1"

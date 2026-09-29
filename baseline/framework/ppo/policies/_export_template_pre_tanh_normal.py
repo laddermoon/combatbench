@@ -254,6 +254,10 @@ class _PreTanhNormalInferenceNet(nn.Module):
 
 class ExportedPreTanhNormalPolicy:
     """Inference-side policy loaded from the exported model.pt payload."""
+    # Capability flag read by SamplingPolicy at wrap time — pre-tanh
+    # cells do NOT implement the reference-delta σ mix.
+    SUPPORTS_REFERENCE_DELTA = False
+
 
     def __init__(self, model_path: Optional[str] = None):
         if model_path is None:

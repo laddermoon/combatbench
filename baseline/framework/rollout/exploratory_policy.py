@@ -75,6 +75,24 @@ class SamplingPolicy(Policy):
             raise TypeError(
                 f"spec must be a SamplingSpec; got {type(spec).__name__}"
             )
+        # Intent-vs-capability handshake: a spec that demands the
+        # reference-delta σ mix must not wrap a policy that lacks it —
+        # otherwise the mechanism silently degrades to plain ef sampling
+        # and the run reports misleading metrics.  Pre-ctx exports and
+        # pre-tanh cells fail here at wrap time, not mid-rollout.
+        delta_demanded = (
+            spec.reference is not None and float(spec.delta_mix) != 0.0
+        )
+        if delta_demanded and not getattr(
+            inner, "SUPPORTS_REFERENCE_DELTA", False
+        ):
+            raise TypeError(
+                f"SamplingSpec demands the reference-delta σ mix "
+                f"(reference set, delta_mix={spec.delta_mix}) but "
+                f"{type(inner).__name__} does not declare "
+                f"SUPPORTS_REFERENCE_DELTA — export the policy with "
+                f"current code or pick a supported policy cell"
+            )
         self.inner = inner
         self._spec = spec
         self._step: int = 0

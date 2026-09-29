@@ -183,6 +183,10 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
     Everything else (sampling, scoring, U, stats, export) is shared.
     """
+    # Capability flag read by SamplingPolicy at wrap time:
+    # refuses a delta-demanding SamplingSpec when False/absent.
+    SUPPORTS_REFERENCE_DELTA = True
+
 
     _POLICY_CLASS = "TruncatedNormalPolicy"
     _EXPORTED_CLASS = "ExportedTruncNormPolicy"

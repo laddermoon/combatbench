@@ -320,6 +320,10 @@ class ExportedStateTruncNormPolicy(Policy, StochasticPolicy):
     (P0-5).  This module is self-contained — no imports from
     ``baseline.*`` (P0-6).
     """
+    # Capability flag read by SamplingPolicy at wrap time — this cell
+    # implements the reference-delta σ mix (delta_mix_sigma above).
+    SUPPORTS_REFERENCE_DELTA = True
+
 
     def __init__(self, model_path: Optional[str] = None):
         payload_path = (

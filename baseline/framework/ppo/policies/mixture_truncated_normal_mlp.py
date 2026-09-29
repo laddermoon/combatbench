@@ -91,6 +91,10 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
       bounded).
     - ``_export_extra`` — export metadata identity fields.
     """
+    # Capability flag read by SamplingPolicy at wrap time:
+    # refuses a delta-demanding SamplingSpec when False/absent.
+    SUPPORTS_REFERENCE_DELTA = True
+
 
     _POLICY_CLASS = "MixtureTruncatedNormalPolicy"
     _EXPORTED_CLASS = "ExportedMixtureTruncNormPolicy"

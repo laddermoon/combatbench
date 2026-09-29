@@ -267,6 +267,74 @@ class TestGradient(unittest.TestCase):
         self.assertGreater(p.net[0].weight.grad.abs().sum().item(), 0.0)
 
 
+class TestCapabilityGate(unittest.TestCase):
+    """Wrap-time intent-vs-capability check in SamplingPolicy."""
+
+    def _spec(self):
+        from baseline.framework.rollout.job import (
+            ReferenceSpec, SamplingSpec,
+        )
+        from envs.framework.policy import PolicyBlueprint
+        import tempfile
+        torch.manual_seed(0)
+        p = TruncatedNormalPolicy(OBS_DIM, ACT_DIM, HID)
+        tmp = tempfile.mkdtemp()
+        bp = p.to_blueprint(dest_path=tmp)
+        return SamplingSpec(
+            reference=ReferenceSpec(policies=(bp,), weights=(1.0,)),
+            delta_factor=10.0,
+            delta_mix=0.5,
+        ), tmp
+
+    def test_delta_spec_rejects_uncapable_policy(self):
+        from baseline.framework.rollout import SamplingPolicy
+        from baseline.framework.ppo.policies.pre_tanh_normal_mlp import (
+            PreTanhNormalPolicy,
+        )
+        spec, _ = self._spec()
+        torch.manual_seed(0)
+        pre_tanh = PreTanhNormalPolicy(OBS_DIM, ACT_DIM, HID)
+        with self.assertRaises(TypeError):
+            SamplingPolicy(pre_tanh, spec)
+
+    def test_delta_spec_rejects_old_export(self):
+        """A sample-able object without the flag = pre-delta export."""
+        from baseline.framework.rollout import SamplingPolicy
+
+        class _OldExport:
+            def sample(self, obs, *, ctx=None, want_extra=False):
+                return np.zeros(ACT_DIM, dtype=np.float32), None
+
+        spec, _ = self._spec()
+        with self.assertRaises(TypeError):
+            SamplingPolicy(_OldExport(), spec)
+
+    def test_delta_spec_accepts_capable_policy(self):
+        from baseline.framework.rollout import SamplingPolicy
+        spec, _ = self._spec()
+        torch.manual_seed(0)
+        p = TruncatedNormalPolicy(OBS_DIM, ACT_DIM, HID)
+        SamplingPolicy(p, spec)  # no raise
+
+    def test_delta_mix_without_reference_rejected(self):
+        """λ>0 without a reference ensemble is a malformed spec — the
+        mechanism could never activate, so it fails at construction
+        rather than silently degrading to plain ef sampling."""
+        from baseline.framework.rollout import SamplingSpec
+        with self.assertRaises(ValueError):
+            SamplingSpec(explore_factor=0.5, delta_mix=0.5)
+
+    def test_pretanh_fail_loud_on_active_ctx(self):
+        from baseline.framework.ppo.policies.pre_tanh_normal_mlp import (
+            PreTanhNormalPolicy,
+        )
+        torch.manual_seed(0)
+        p = PreTanhNormalPolicy(OBS_DIM, ACT_DIM, HID)
+        ctx = _ctx(ref=np.zeros(ACT_DIM, dtype=np.float32), c=1.0, lam=0.5)
+        with self.assertRaises(NotImplementedError):
+            p.sample(np.zeros(OBS_DIM, dtype=np.float32), ctx=ctx)
+
+
 class TestExportParityActive(unittest.TestCase):
     """Exported policy + active-delta ctx == training class, same seed."""
 

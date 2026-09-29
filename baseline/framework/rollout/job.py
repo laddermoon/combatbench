@@ -94,6 +94,14 @@ class SamplingSpec:
                 f"SamplingSpec: delta_factor must be finite, "
                 f"got {self.delta_factor}"
             )
+        # delta_mix != 0 without a reference ensemble can never activate
+        # — reject at construction so a malformed spec cannot silently
+        # degrade to plain ef sampling while reporting λ > 0 downstream.
+        if float(self.delta_mix) != 0.0 and self.reference is None:
+            raise ValueError(
+                f"SamplingSpec: delta_mix={self.delta_mix} requires a "
+                f"reference ensemble (reference=None)"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         return {

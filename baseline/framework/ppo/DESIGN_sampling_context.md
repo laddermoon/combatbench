@@ -139,7 +139,7 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
 
 实现一族策略时，以下必须成立：
 
-1. **λ=0 / 无 reference 短路**：`ctx.has_delta()` 为假时直接返回
+1. **λ=0 / 无 reference 短路**：delta 谓词为假时直接返回
    `σ_ef`，不做任何多余浮点运算（λ=0 bit-identical 基准）。
 2. **广播兼容**：ctx 字段接受 scalar 或 (B,)；`a_ref` 接受 (D,) 或
    (B,D)；内部统一升维到与 σ 相同形状。
@@ -149,6 +149,25 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
    `eff_std_mean` 等统计自动反映混合后尺度——策略不用额外上报。
 5. **导出等价**：export 模板内置同款 `_delta_sigma*` 实现，
    导出策略数值与源策略逐位一致（rollout 的 inner 就是导出件）。
+
+### 5.1 跨进程边界契约
+
+导出 `policy.py` 在 rollout worker 内 exec 加载，而 worker 在 spawn
+时冻结了自己的 import——因此**模板内嵌代码只能读 ctx 的四个字段**
+（`explore_factor`/`reference_action`/`delta_factor`/`delta_mix`，
+自 ctx 管线落地起就存在），不得调用 ctx 的方法：ctx 对象可能由
+旧版 `SamplingContext` 构造，字段语义稳定但方法可能不存在。
+
+反之方向由显式能力握手负责，**不允许静默降级**：
+
+- 策略类声明 `SUPPORTS_REFERENCE_DELTA`（8 个 delta cell 为
+  `True`；pre_tanh 族为 `False`；旧导出物缺省即不支持）。
+- `SamplingPolicy.__init__` 在 wrap 时校验：`spec.reference` 非空
+  且 `delta_mix != 0` 要求 inner 声明该能力，否则 `TypeError`。
+- `SamplingSpec` 构造时校验：`delta_mix != 0` 必须配
+  `reference`——没有参考系的 λ>0 永远无法激活，属于非法配置。
+- 三层校验（spec 构造 → wrap → policy 内部谓词）逐级把
+  "意图 vs 能力"的错配提前到最早可报错的边界。
 
 ---
 

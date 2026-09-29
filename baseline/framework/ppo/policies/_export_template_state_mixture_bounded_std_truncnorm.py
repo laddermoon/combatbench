@@ -363,6 +363,10 @@ class ExportedStateMixtureBoundedStdTruncNormPolicy(Policy, StochasticPolicy):
     metadata fields, the bounded-σ config (``sigma_min``/``sigma_max``/
     ``explore_alpha``), and ``num_components`` before attempting to load.
     """
+    # Capability flag read by SamplingPolicy at wrap time — this cell
+    # implements the reference-delta σ mix (delta_mix_sigma above).
+    SUPPORTS_REFERENCE_DELTA = True
+
 
     def __init__(self, model_path: Optional[str] = None):
         payload_path = (
