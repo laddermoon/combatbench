@@ -208,10 +208,10 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
     job 槽）+ episode 轴视频骨架；body 三层：标量行（per-gen
     mean‖Δ‖/peak 帧/相邻代 dir-cos）→ gens×frames 漂移热轨
     （点击列=帧游标）→ ‖Δ_g(t)‖ 曲线 + 相邻代差分
-    ‖a_g−a_{g−1}‖（update 归因）；帧级下钻 = dims×gens 有符号
-    热图（蓝负红正，右列 ref 值，hover 出 ref/gen/Δ 三项）+
-    保留分代动作排序图。中性原则：动作维只标 d0..d20，不引入
-    关节语义。
+    ‖a_g−a_{g−1}‖（update 归因）；帧级下钻 = Δ 散点图
+    （x=d0..d20 动作维, y=a_g−a_ref, 每代一色, hover 出
+    ref/gen/Δ 三项——绝对值量级远大于 Δ，不放原值曲线）。
+    中性原则：动作维只标 d0..d20，不引入关节语义。
   - `/timeline` —— ⑥的钻取：全量 minibatch 图 + step detail。
 
 复用红线：GAE 与 adv 归一化预览**只能**调
