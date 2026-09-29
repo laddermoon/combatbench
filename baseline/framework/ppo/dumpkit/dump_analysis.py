@@ -1192,3 +1192,38 @@ def post_update_summary(ds: DumpDataset) -> Dict[str, Any]:
         epochs.append(ent)
     out["epochs"] = epochs
     return out
+
+
+def delta_episode_heatmap(ep_dir) -> Optional[Dict[str, Any]]:
+    """⑧ drift heatmap for one computed delta episode.
+
+    rows = past generations, cols = action dims; cell = mean over
+    frames AND agents of |a_g(t, d) - a_ref(t, d)|.  Row 0 of
+    delta.npz is the rollout policy itself (deterministic act), so it
+    is the reference and not a heatmap row.
+    """
+    dz = ep_dir / "delta.npz"
+    if not dz.exists():
+        return None
+    try:
+        z = np.load(dz)
+    except (OSError, ValueError):
+        return None
+    gens = [int(u) for u in z["gen_updates"].tolist()] \
+        if "gen_updates" in z.files else []
+    mats = []
+    for k in z.files:
+        if not k.startswith("actions."):
+            continue
+        a = np.asarray(z[k], dtype=np.float64)
+        if a.ndim == 3 and a.shape[0] > 1:
+            mats.append(np.abs(a[1:] - a[0:1]).mean(axis=1))  # (G, D)
+    if not mats:
+        return None
+    hm = np.stack(mats).mean(axis=0)  # average over agents
+    return {
+        "gen_rows": gens[1:1 + hm.shape[0]],
+        "data": [[_f(v) for v in row] for row in hm],
+        "col_mean": [_f(v) for v in hm.mean(axis=0)],
+        "row_mean": [_f(v) for v in hm.mean(axis=1)],
+    }

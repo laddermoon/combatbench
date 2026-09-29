@@ -570,7 +570,7 @@ class RunData:
             if isinstance(v, (int, float)):
                 out[f"ep.{k}"] = float(v)
 
-        # Experiment-defined metrics (on_update() return value) get
+        # Experiment-defined metrics (post_update() return value) get
         # their own exp.* namespace — parallel to policy.*, absent in
         # logs written before this field existed.
         exp = raw.get("experiment")
@@ -2110,6 +2110,7 @@ class ViewerAPI:
                     "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
                     "gen_updates": m.get("gen_updates", []),
                     "missing_updates": m.get("missing_updates", []),
+                    "heatmap": _da.delta_episode_heatmap(ep_dir),
                 })
             except (json.JSONDecodeError, OSError, ValueError):
                 continue

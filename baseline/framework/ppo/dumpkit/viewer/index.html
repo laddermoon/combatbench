@@ -437,6 +437,9 @@
   .upd-bar-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
   .upd-bar-stop { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); }
   .upd-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .delta-ep { margin: 8px 0 4px; }
+  .delta-ep-head { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 2px; }
+  .delta-ep svg { max-width: 620px; }
   .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
   .mini-hist .mh-title { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
 
@@ -732,6 +735,7 @@
             <a class="stage-open" id="open-delta">open tool →</a>
           </div>
           <div class="stage-stats" id="sum-delta"><div class="loading">loading...</div></div>
+          <div id="sum-delta-maps"></div>
           <div class="desc">Policy drift across generations — deterministic actions replayed on stored observations.</div>
         </div>
       </div>
@@ -3444,11 +3448,7 @@
       if (!eps.length) {
         h = '<div class="desc">no deltas computed yet</div>';
       } else {
-        const latest = eps[eps.length - 1];
-        h = _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`) +
-          _kv('episodes', eps.map(e => e.episode).join(', ')) +
-          _kv('latest', `ep${latest.episode} · gens ${latest.gen_updates.map(u => 'u' + u).join('/')}` +
-              (latest.missing_updates?.length ? ` · missing ${latest.missing_updates.map(u => 'u' + u).join('/')}` : ''));
+        h = _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`);
       }
       const dis = running ? ' disabled' : '';
       const opts = [...Array(10)].map((_, i) =>
@@ -3471,7 +3471,41 @@
         state.selectedEpisode = ep;
         startDelta(ep, gens);
       };
+      // one drift heatmap per computed episode: rows = past gens,
+      // cols = action dims, cell = mean|a_g − a_ref| over frames & agents.
+      $('sum-delta-maps').innerHTML = eps.map(ep => {
+        const hm = ep.heatmap;
+        const miss = ep.missing_updates?.length
+          ? ` · missing ${ep.missing_updates.map(u => 'u' + u).join('/')}` : '';
+        return `<div class="delta-ep"><div class="delta-ep-head">ep${ep.episode}` +
+          (hm ? ` · ref u${ep.gen_updates[0]} (rollout) · ${hm.gen_rows.length} gens` : ' · no matrix') +
+          `${miss}</div>` + (hm ? _deltaHeatHtml(hm) : '') + `</div>`;
+      }).join('');
     }
+  }
+
+  function _deltaHeatHtml(hm) {
+    const data = hm.data || [];
+    const G = data.length, D = data[0]?.length || 0;
+    if (!G || !D) return '';
+    const vmax = Math.max(1e-9, ...data.flat().filter(v => v !== null));
+    const W = 560, lm = 42, tm = 15, cw = (W - lm) / D, ch = 15;
+    const H = tm + G * ch + 18;
+    const col = v => `rgba(224,108,117,${(0.06 + 0.94 * Math.sqrt(Math.min(1, (v ?? 0) / vmax))).toFixed(3)})`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
+    for (let d = 0; d < D; d++)
+      s += `<text class="gs-axis" x="${(lm + d * cw + cw / 2).toFixed(1)}" y="${tm - 4}" text-anchor="middle">${fmt(hm.col_mean?.[d] ?? 0, 2)}</text>`;
+    data.forEach((row, g) => {
+      const y = tm + g * ch;
+      s += `<text class="gs-axis" x="${lm - 4}" y="${y + ch / 2 + 3}" text-anchor="end">u${hm.gen_rows[g]}</text>`;
+      row.forEach((v, d) =>
+        s += `<rect x="${(lm + d * cw).toFixed(1)}" y="${y}" width="${(cw - 1).toFixed(1)}" height="${ch - 1}" fill="${col(v)}"/>`);
+    });
+    const bw = (W - lm) / G;
+    hm.gen_rows.forEach((u, g) =>
+      s += `<text class="gs-axis" x="${(lm + g * bw + bw / 2).toFixed(1)}" y="${tm + G * ch + 12}" text-anchor="middle">u${u} ${fmt(hm.row_mean?.[g] ?? 0, 3)}</text>`);
+    s += '</svg>';
+    return s;
   }
 
   // 9-cell ratio-bin profile: 4 bins on each side of the clip band plus
