@@ -672,6 +672,15 @@
           <h2>Overview <span class="gs-scope" id="ov-meta"></span></h2>
           <div class="caps" id="ov-caps"></div>
         </div>
+        <div class="card stage-card" id="stage-rollout">
+          <div class="stage-head">
+            <span class="stage-num">⓪</span>
+            <h2>Rollout <span class="gs-scope">exploration</span></h2>
+            <a class="stage-open" id="open-rollout">open tool →</a>
+          </div>
+          <div class="stage-stats" id="sum-rollout"><div class="loading">loading...</div></div>
+          <div class="desc">Realized exploration — sampled vs deterministic action of the rollout policy, per frame.</div>
+        </div>
         <div class="card stage-card" id="stage-ep2traj">
           <div class="stage-head">
             <span class="stage-num">①</span>
@@ -892,6 +901,24 @@
       <div class="card"><div id="delta-body"></div></div>
     </div>
 
+    <!-- Tool ⓪ Rollout — realized exploration: sampled actions vs the
+         rollout policy's deterministic act() on stored observations.
+         Episode-axis stage, then per-agent ε charts. -->
+    <div class="page" id="page-rollout">
+      <div class="tool-head" id="rollout-tool-head"></div>
+      <div class="ve-stage">
+        <div class="ve-bigimg" id="rollout-bigimg"></div>
+        <div class="ve-thumbs" id="rollout-thumbs"></div>
+        <div class="ve-scrub">
+          <button id="rollout-btn-prev" class="t-nav">◀</button>
+          <input id="rollout-slider" type="range" min="0" max="0" value="0" />
+          <button id="rollout-btn-next" class="t-nav">▶</button>
+          <span class="t-info" id="rollout-frame-label">- / -</span>
+        </div>
+      </div>
+      <div class="card"><div id="rollout-body"></div></div>
+    </div>
+
     <!-- Timeline (Scene 4) -->
     <div class="page" id="page-timeline">
       <div class="timeline-layout" id="timeline-content"></div>
@@ -929,9 +956,9 @@
   </div>
 
   <div id="context-bar">
-    <div class="ctx-item" data-pages="episode delta"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
+    <div class="ctx-item" data-pages="episode delta rollout"><span class="ctx-label">Episode:</span> <span class="ctx-value" id="ctx-episode">-</span></div>
     <div class="ctx-item" data-pages="gae advnorm merge postupdate"><span class="ctx-label">Trajectory:</span> <span class="ctx-value" id="ctx-traj">-</span></div>
-    <div class="ctx-item" data-pages="episode gae advnorm merge postupdate delta"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
+    <div class="ctx-item" data-pages="episode gae advnorm merge postupdate delta rollout"><span class="ctx-label">Frame:</span> <span class="ctx-value" id="ctx-frame">-</span></div>
     <div class="ctx-item" data-pages="timeline"><span class="ctx-label">Step:</span> <span class="ctx-value" id="ctx-step">-</span></div>
     <div class="ctx-item" data-pages="episode gae advnorm merge postupdate delta"><span class="ctx-label">Frame ID:</span> <span class="ctx-value" id="ctx-frameid">-</span></div>
   </div>
@@ -1008,6 +1035,10 @@
     deltaAgent: null,
     deltaHiddenGens: new Set(),
     deltaList: null,
+    // ⓪ Rollout tool state
+    rolloutData: null,
+    rolloutList: null,
+    rolloutAgent: null,
 
     // Pipeline summary cache (dump home cards)
     pipeline: null,
@@ -1033,6 +1064,7 @@
     gradsig: $('page-gradsig'),
     postupdate: $('page-postupdate'),
     delta: $('page-delta'),
+    rollout: $('page-rollout'),
     timeline: $('page-timeline'),
     dataflow: $('page-dataflow'),
     compare: $('page-compare'),
@@ -1079,6 +1111,7 @@
       case 'gradsig': return `${r}${d}/gradsig`;
       case 'postupdate': return `${r}${d}/postupdate`;
       case 'delta': return `${r}${d}/delta/${state.selectedEpisode ?? 0}`;
+      case 'rollout': return `${r}${d}/rollout/${state.selectedEpisode ?? 0}`;
       case 'timeline': return `${r}${d}/timeline`;
       case 'dataflow': return `${r}${d}/dataflow`;
       case 'videos': return `${r}/videos`;
@@ -1156,6 +1189,9 @@
     if (state.currentPage === 'delta') {
       crumbs.push({label: `Delta Analyze · ep ${state.selectedEpisode ?? ''}`, page: 'delta'});
     }
+    if (state.currentPage === 'rollout') {
+      crumbs.push({label: `Rollout · ep ${state.selectedEpisode ?? ''}`, page: 'rollout'});
+    }
     if (state.currentPage === 'timeline') {
       crumbs.push({label: 'Timeline', page: 'timeline'});
     }
@@ -1211,6 +1247,7 @@
     else if (page === 'gradsig') renderGradsigPage();
     else if (page === 'postupdate') renderPostUpdate();
     else if (page === 'delta') renderDeltaPage();
+    else if (page === 'rollout') renderRolloutPage();
     else if (page === 'timeline') renderTimeline();
     else if (page === 'dataflow') renderDataflow();
     else if (page === 'videos') renderVideos();
@@ -1712,6 +1749,14 @@
     } else if (sub.startsWith('/postupdate')) {
       showPage('postupdate');
       renderPostUpdate();
+    } else if ((mm = sub.match(/^\/rollout(?:\/(\d+))?/))) {
+      if (mm[1] !== undefined) {
+        state.selectedEpisode = parseInt(mm[1]);
+        state.rolloutData = null;
+      }
+      state.selectedFrame = 0;
+      showPage('rollout');
+      renderRolloutPage();
     } else if ((mm = sub.match(/^\/delta(?:\/(\d+))?/))) {
       if (mm[1] !== undefined) {
         state.selectedEpisode = parseInt(mm[1]);
@@ -2548,7 +2593,7 @@
           legendGroups: spec.legendGroups, legendDims: spec.legendDims,
         });
         const svg = box.querySelector('svg.chart');
-        if (svg && onJump) {
+        if (svg && onJump && !spec.options?.noJump) {
           svg.addEventListener('click', e => {
             const n = parseInt(svg.dataset.chartN);
             if (!n) return;
@@ -3213,6 +3258,7 @@
       else if (state.currentPage === 'merge') renderMergeTraj();
       else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
       else if (state.currentPage === 'delta') renderDeltaPage();
+      else if (state.currentPage === 'rollout') renderRolloutPage();
       scheduleRenderPoll();
     } catch (e) {
       alert(String(e));
@@ -3247,6 +3293,7 @@
           else if (state.currentPage === 'merge') renderMergeTraj();
           else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
           else if (state.currentPage === 'delta') renderDeltaPage();
+          else if (state.currentPage === 'rollout') renderRolloutPage();
         }
         scheduleRenderPoll();
       } else if (prev && prev.status === 'running') {
@@ -3261,6 +3308,11 @@
             state.deltaList = null;  // coverage changed
             state.pipeline = null;   // ⑧ card coverage is stale now
           }
+          if (prev.kind === 'rollout') {
+            state.rolloutData = null;
+            state.rolloutList = null;
+            state.pipeline = null;   // ⓪ card coverage is stale now
+          }
         }
         if (state.currentPage === 'home') renderHome();
         else if (state.currentPage === 'episode') renderEpisode();
@@ -3269,6 +3321,7 @@
         else if (state.currentPage === 'merge') renderMergeTraj();
         else if (state.currentPage === 'postupdate') renderPostUpdateTraj();
         else if (state.currentPage === 'delta') renderDeltaPage();
+        else if (state.currentPage === 'rollout') renderRolloutPage();
       }
     } catch (e) { /* status endpoint unavailable — ignore */ }
   }
@@ -3285,6 +3338,7 @@
     $('open-gradsig').onclick = () => navigate('gradsig');
     $('open-postupdate').onclick = () => navigate('postupdate');
     $('open-delta').onclick = () => navigate('delta');
+    $('open-rollout').onclick = () => navigate('rollout');
   }
 
   // --- Pipeline stage cards (dump home) --------------------------------
@@ -3304,6 +3358,41 @@
       return;
     }
     const st = p.stages || {};
+
+    // ⓪ Rollout — realized-exploration coverage + inline trigger (the
+    // job slot is shared with render/delta; disabled while either runs).
+    {
+      const eps = (st.rollout || {}).episodes || [];
+      const job = state.renderJob;
+      const running = !!(job && job.status === 'running');
+      const thisJob = running && job.kind === 'rollout' &&
+        (!state.dumpName || job.dump === state.dumpName);
+      const nEp = st.ep2traj?.n_episodes ?? state.episodeList?.length ?? 0;
+      let h = '';
+      if (!eps.length) {
+        h = '<div class="desc">no rollout replay computed yet</div>';
+      } else {
+        const latest = eps[eps.length - 1];
+        h = _kv('computed', `${eps.length} episode${eps.length > 1 ? 's' : ''}`)
+          + _kv('episodes', eps.map(e => e.episode).join(' · '))
+          + _kv('latest', `ep${latest.episode} · rollout u${latest.rollout_update}` +
+              (latest.mean_norm != null ? ` · mean‖ε‖ ${fmt(latest.mean_norm, 3)}` : ''));
+      }
+      const dis = running ? ' disabled' : '';
+      h += `<div class="delta-trigger" style="margin:8px 0 0">` +
+        `<span class="muted">episode #</span>` +
+        `<input id="sum-rollout-ep" type="number" min="0" max="${Math.max(0, nEp - 1)}" value="${state.selectedEpisode ?? 0}" style="width:56px"${dis}/>` +
+        `<button id="sum-rollout-btn" class="render-btn"${dis}>Compute ε</button>` +
+        (thisJob ? `<span class="muted">⏳ ep${job.episode}…</span>` : '') +
+        `</div>`;
+      $('sum-rollout').innerHTML = h;
+      const rbtn = $('sum-rollout-btn');
+      if (rbtn) rbtn.onclick = () => {
+        const ep = Math.max(0, Math.min(nEp - 1, parseInt($('sum-rollout-ep').value) || 0));
+        state.selectedEpisode = ep;
+        startRollout(ep);
+      };
+    }
 
     // ① Episode → Trajectory
     {
@@ -3492,7 +3581,7 @@
         const miss = ep.missing_updates?.length
           ? ` · missing ${ep.missing_updates.map(u => 'u' + u).join('/')}` : '';
         return `<div class="delta-ep" data-i="${i}"><div class="delta-ep-head">ep${ep.episode}` +
-          (hm ? ` · ref u${ep.gen_updates[0]} (rollout) · ${hm.gen_rows.length} gens` : ' · no matrix') +
+          (hm ? ` · ref u${ep.gen_updates[0]} (post-update) · ${hm.gen_rows.length} gens` : ' · no matrix') +
           `${miss}</div>` + (hm ? _deltaHeatHtml(hm) : '') + `</div>`;
       }).join('');
       if (eps.some(ep => ep.heatmap)) _bindDeltaHeat(mapsEl, eps);
@@ -5223,6 +5312,27 @@
     }
   }
 
+  async function startRollout(pos) {
+    try {
+      const r = await fetch(api('rollout'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({episode: pos}),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        alert(j.error || `rollout replay failed (${r.status})`);
+        return;
+      }
+      state.renderJob = {kind: 'rollout', dump: j.dump, episode: pos, status: 'running'};
+      if (state.currentPage === 'rollout') renderRolloutPage();
+      else renderHome();
+      scheduleRenderPoll();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function renderDeltaPage() {
     // read-only page — computing happens on the dump-home ⑧ card;
     // the picker only lists episodes that already have a delta.
@@ -5382,7 +5492,7 @@
     let peakF = 0;
     for (let t = 1; t < T; t++) if (meanCurve[t] > meanCurve[peakF]) peakF = t;
 
-    let html = `<div class="desc" style="margin-bottom:8px">Deterministic act() of each generation on this episode's observations — ref = u${gens[0]} (rollout policy), rows below are past gens. Agent: <b>${escapeHtml(aid)}</b></div>`;
+    let html = `<div class="desc" style="margin-bottom:8px">Deterministic act() of each generation on this episode's observations — ref = u${gens[0]} (post-update policy), rows below are past gens (u${gens[0] - 1} = rollout). Agent: <b>${escapeHtml(aid)}</b></div>`;
 
     // scalar strip
     html += '<div class="stage-stats">' +
@@ -5484,6 +5594,201 @@
     leg += '</div>';
     return leg + s + '</svg>';
   }
+
+  // --- Tool ⓪ Rollout — realized exploration ε(t) ---------------------
+  // ε_raw(t,d) = atanh(a_sampled) − atanh(a_det): the noise that
+  // actually entered the environment, in pre-tanh space where the
+  // sampling σ lives.  a_det is the rollout policy's deterministic
+  // act() replayed on stored observations (server-computed ε too —
+  // the atanh clamp / saturation handling is a numerical detail that
+  // belongs to the backend).
+
+  async function renderRolloutPage() {
+    // read-only page — computing happens on the dump-home ⓪ card;
+    // the picker only lists episodes that already have a_det.
+    if (!state.rolloutList) {
+      try {
+        state.rolloutList = (await fetchJson(api('rollout_list'))).episodes || [];
+      } catch (e) { state.rolloutList = []; }
+    }
+    const computed = state.rolloutList.map(e => e.episode);
+    const job = state.renderJob;
+    const running = job && job.status === 'running';
+    const jobEp = running && job.kind === 'rollout' &&
+      (state.dumpName ? job.dump === state.dumpName : true) ? job.episode : null;
+
+    if (!computed.length) {
+      $('rollout-tool-head').innerHTML = `<span class="t-title">Rollout / Exploration</span>` +
+        `<span class="t-info">${jobEp !== null
+          ? `⏳ computing ep${jobEp}…`
+          : 'no rollout replay computed — trigger one from the ⓪ card on the dump home'}</span>`;
+      $('rollout-body').innerHTML = '<div class="desc">no rollout data for this dump</div>';
+      $('rollout-bigimg').innerHTML = '';
+      $('rollout-thumbs').innerHTML = '';
+      return;
+    }
+    if (!computed.includes(state.selectedEpisode))
+      state.selectedEpisode = computed[0];
+    const pos = state.selectedEpisode;
+    const epInfo = state.trajMap?.[pos];
+    const T = epInfo?.num_frames || 0;
+
+    if (!state.rolloutData || state.rolloutData.episode_pos !== pos) {
+      try {
+        state.rolloutData = await fetchJson(api(`episode/${pos}/rollout`));
+      } catch (e) {
+        state.rolloutData = {available: false, error: e.message};
+      }
+    }
+    const d0 = state.rolloutData;
+    const agentIds = Object.keys(d0?.agents || {});
+    if (!agentIds.includes(state.rolloutAgent))
+      state.rolloutAgent = agentIds[0] || null;
+
+    // tool head: computed-episode picker + agent tabs + status
+    const ci = computed.indexOf(pos);
+    let h = `<span class="t-title">Rollout / Exploration</span>`;
+    h += `<span class="t-sel"><button class="t-nav" id="ro-nav-prev">‹</button>`;
+    h += `<select id="ro-sel">` + computed.map(e =>
+      `<option value="${e}"${e === pos ? ' selected' : ''}>ep${e}</option>`).join('') + `</select>`;
+    h += `<button class="t-nav" id="ro-nav-next">›</button>`;
+    h += `<span class="t-info">${ci + 1}/${computed.length} with ε</span></span>`;
+    if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
+    if (agentIds.length > 1) {
+      h += `<span class="t-sel"><span class="muted">agent</span>` +
+        agentIds.map(a =>
+          `<button class="t-nav${a === state.rolloutAgent ? ' sel' : ''}" data-agent="${a}">${escapeHtml(a)}</button>`
+        ).join('') + `</span>`;
+    }
+    if (d0 && d0.available && d0.episode_pos === pos) {
+      h += `<span class="t-info">✓ rollout u${d0.rollout_update}</span>`;
+    } else if (jobEp !== null) {
+      h += `<span class="t-info">⏳ computing ep${jobEp}…</span>`;
+    }
+    $('rollout-tool-head').innerHTML = h;
+    const sel = $('ro-sel');
+    sel.addEventListener('change', () => selectRolloutEpisode(+sel.value));
+    $('ro-nav-prev').onclick = () =>
+      selectRolloutEpisode(computed[Math.max(0, ci - 1)]);
+    $('ro-nav-next').onclick = () =>
+      selectRolloutEpisode(computed[Math.min(computed.length - 1, ci + 1)]);
+    $('rollout-tool-head').querySelectorAll('[data-agent]').forEach(b =>
+      b.addEventListener('click', () => {
+        state.rolloutAgent = b.dataset.agent;
+        renderRolloutPage();
+      }));
+
+    // shared stage over the episode axis (visual context for ε)
+    const ov = {length: T, episode_pos: pos, t_start: 0, frame_ids: null};
+    const frame = T > 0 ? renderTrajStage('rollout', ov, renderRolloutPage)
+                        : (state.selectedFrame || 0);
+    $('ctx-frameid').textContent = `ep${String(pos).padStart(4, '0')}:${frame}`;
+
+    state._chartSeq = 0; state._chartSpecs = {};
+    const body = $('rollout-body');
+    body.innerHTML = _rolloutBodyHtml(pos, frame, state.rolloutAgent);
+    mountCharts(body, f => { state.selectedFrame = f; renderRolloutPage(); });
+    const jump = body.querySelector('.ro-jump-ep');
+    if (jump) jump.addEventListener('click', () => selectEpisode(pos, true));
+  }
+
+  function selectRolloutEpisode(pos) {
+    state.selectedEpisode = pos;
+    state.selectedFrame = 0;
+    state.rolloutData = null;
+    history.replaceState({}, '', urlForCurrent());
+    updateContextBar();
+    renderRolloutPage();
+  }
+
+  function _rolloutBodyHtml(pos, frame, aid) {
+    const d = state.rolloutData;
+    if (!d || !d.available) {
+      if (d && d.error) return `<div class="desc">${escapeHtml(d.error)}</div>`;
+      const job = state.renderJob;
+      const failed = job && job.kind === 'rollout' && job.episode === pos &&
+        job.status === 'error' &&
+        (state.dumpName ? job.dump === state.dumpName : true);
+      return '<div class="desc">no rollout replay computed for this episode — trigger one from the ⓪ card on the dump home.</div>' +
+        (failed ? `<div class="dump-msg">rollout job failed (exit ${job.returncode}) — see ${escapeHtml(job.log || 'log')}</div>` : '');
+    }
+    const adata = (d.agents || {})[aid];
+    if (!adata) return '<div class="desc">no rollout data for this agent</div>';
+    const eps = adata.eps_raw;         // (T, D) pre-tanh residual
+    const epsN = adata.eps_norm;       // (T,)
+    const aS = adata.a_sampled, aDet = adata.a_det;
+    const T = eps.length, D = eps[0].length;
+    const st = (d.stats || {})[aid] || {};
+
+    let html = `<div class="desc" style="margin-bottom:8px">ε<sub>raw</sub>(t,d) = atanh(a<sub>sampled</sub>) − atanh(a<sub>det</sub>) — realized exploration noise in pre-tanh space. a<sub>det</sub> = rollout policy u${d.rollout_update} deterministic act() on stored obs. Agent: <b>${escapeHtml(aid)}</b></div>`;
+
+    // scalar strip
+    html += '<div class="stage-stats">' +
+      _kv('mean ‖ε‖', fmt(st.mean_norm, 4)) +
+      _kv('peak', `f${st.peak_frame ?? '-'} (${fmt(st.peak_norm, 3)})`) +
+      _kv('ρ₁ lag-1', fmt(st.rho1, 3)) +
+      (st.lf_ratio != null ? _kv('LF power share', _pct(st.lf_ratio)) : '') +
+      _kv('saturation', _pct(adata.sat_frac ?? st.sat_frac)) +
+      '</div>';
+
+    // ‖ε(t)‖ over the episode
+    html += '<h3>‖ε_raw(t)‖ — exploration magnitude over the episode</h3>';
+    html += chartBox([
+      {label: '‖ε_raw‖', data: epsN, color: '#4fa3ff'},
+    ], {currentFrame: frame});
+
+    // exploration fingerprint: spectrum + autocorrelation
+    if ((st.spec || []).length || (st.acf || []).length) {
+      html += '<h3>exploration fingerprint <span class="gs-scope">white noise → flat · OU → low-freq + slow-decay</span></h3>';
+      if ((st.spec || []).length)
+        html += '<div class="desc" style="margin:4px 0 0">ε power spectrum (x = cycles/episode bin)</div>' +
+          chartBox([{label: 'power', data: st.spec, color: '#c678dd'}],
+            {noJump: true});
+      if ((st.acf || []).length)
+        html += '<div class="desc" style="margin:4px 0 0">lag-k autocorrelation of ε (x = lag)</div>' +
+          chartBox([{label: 'acf', data: st.acf, color: '#6ec86e'}],
+            {noJump: true});
+    }
+
+    // frame-level drilldown: ε per action dim at the cursor frame
+    html += `<h3>ε_raw @ frame ${frame} <span class="ro-jump-ep">→ episode</span></h3>`;
+    html += _rolloutScatterHtml(eps, aS, aDet, frame);
+
+    return html;
+  }
+
+  // frame-level drilldown: scatter of ε_raw per action dim — single
+  // series, saturated dims (|a|≈1, ε is a lower bound only) marked.
+  function _rolloutScatterHtml(eps, aS, aDet, frame) {
+    const D = eps[0].length;
+    const W = 1000, H = 170;
+    const m = {top: 12, right: 14, bottom: 24, left: 52};
+    const iw = W - m.left - m.right, ih = H - m.top - m.bottom;
+    let vmax = 1e-9;
+    for (let d = 0; d < D; d++) vmax = Math.max(vmax, Math.abs(eps[frame][d]));
+    const y = v => m.top + ih / 2 - (v / vmax) * (ih / 2 - 5);
+    const x = d => m.left + (D <= 1 ? iw / 2 : (d / (D - 1)) * iw);
+    const SAT = 0.9999;
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
+    for (const [v, lab] of [[-vmax, `-${fmt(vmax, 2)}`], [0, '0'], [vmax, `+${fmt(vmax, 2)}`]]) {
+      const yy = y(v);
+      s += `<line x1="${m.left}" y1="${yy}" x2="${W - m.right}" y2="${yy}" stroke="var(--border)"${v === 0 ? ' stroke-width="1.2"' : ''}/>` +
+           `<text class="gs-axis" x="${m.left - 6}" y="${yy + 3}" text-anchor="end">${lab}</text>`;
+    }
+    for (let d = 0; d < D; d++) {
+      if (d % Math.ceil(D / 10) && d !== D - 1) continue;
+      s += `<text class="gs-axis" x="${x(d).toFixed(1)}" y="${H - 8}" text-anchor="middle">d${d}</text>`;
+    }
+    for (let d = 0; d < D; d++) {
+      const v = eps[frame][d];
+      const sat = Math.abs(aS[frame][d]) >= SAT;
+      s += `<circle cx="${x(d).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4" fill="${sat ? '#e06c75' : '#4fa3ff'}" fill-opacity="0.8">` +
+           `<title>d${d} · ε ${fmt(v, 4)} · sampled ${fmt(aS[frame][d], 3)} · det ${fmt(aDet[frame][d], 3)}${sat ? ' · SATURATED' : ''}</title></circle>`;
+    }
+    return s + '</svg>' +
+      `<div class="desc" style="margin-top:2px">red = saturated |a|≥${SAT} (ε is a lower bound only)</div>`;
+  }
+
   // --- Timeline page (Scene 4) ---
   async function renderTimeline() {
     const el = $('timeline-content');
@@ -5690,7 +5995,7 @@
   // Keyboard
   document.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (['episode', 'gae', 'advnorm', 'merge', 'postupdate', 'delta'].includes(state.currentPage)) {
+    if (['episode', 'gae', 'advnorm', 'merge', 'postupdate', 'delta', 'rollout'].includes(state.currentPage)) {
       // All trajectory-centric pages share the stage frame cursor.
       const gmax = (state._stageLen ?? 1) - 1;
       const rr = state._stageRerender;

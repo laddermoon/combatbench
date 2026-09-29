@@ -38,6 +38,7 @@ from baseline.framework.ppo.dumpkit.metric_catalog import (
     metric_doc,
 )
 from baseline.framework.ppo.dumpkit import dump_analysis as _da
+from baseline.framework.ppo.dumpkit.dump_rollout import ATANH_CLAMP
 
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
@@ -78,6 +79,7 @@ def _render_status() -> Dict[str, Any]:
 _JOB_CMD = {
     "render": ("render", "render_ep{:05d}.log"),
     "delta": ("delta", "delta_ep{:05d}.log"),
+    "rollout": ("rollout", "rollout_ep{:05d}.log"),
 }
 
 
@@ -1365,6 +1367,8 @@ class ViewerAPI:
                 return self._episode_series(int(parts[2]), query)
             elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "delta":
                 return self._episode_delta(int(parts[2]))
+            elif endpoint == "episode" and len(parts) >= 4 and parts[3] == "rollout":
+                return self._episode_rollout(int(parts[2]))
             elif endpoint == "image" and len(parts) >= 4:
                 return self._image(int(parts[2]), int(parts[3]))
             elif endpoint == "trajectory" and len(parts) >= 3:
@@ -1411,6 +1415,8 @@ class ViewerAPI:
                 return 200, _da.post_update_summary(self.data)
             elif endpoint == "delta_list":
                 return 200, {"episodes": self._delta_list()}
+            elif endpoint == "rollout_list":
+                return 200, {"episodes": self._rollout_list()}
             return 404, {"error": f"unknown endpoint: {endpoint}"}
         except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
             return 404, {"error": str(e)}
@@ -1698,6 +1704,60 @@ class ViewerAPI:
             "update": meta["update"],
             "gen_updates": meta["gen_updates"],
             "missing_updates": meta.get("missing_updates", []),
+            "agents": agents,
+        }
+
+    # -- /api/episode/<pos>/rollout ------------------------------------------
+
+    def _episode_rollout(self, ep_pos: int) -> Tuple[int, Dict[str, Any]]:
+        """Realized-exploration data produced by ``debug.py rollout``.
+
+        ``det.npz`` holds the rollout policy's deterministic actions
+        ``a_det.<agent>`` (T, action_dim).  The sampled actions come from
+        episodes.npz.  The response carries the raw-space residual
+        ``eps_raw = atanh(a_sampled) - atanh(a_det)`` — the noise the
+        environment actually received.
+        """
+        ro_dir = (
+            self.data.dump_dir / "rollout" / f"episode_{ep_pos:05d}"
+        )
+        npz_path = ro_dir / "det.npz"
+        meta_path = ro_dir / "meta.json"
+        if not npz_path.exists() or not meta_path.exists():
+            return 200, {"available": False, "episode_pos": ep_pos}
+
+        meta = json.loads(meta_path.read_text())
+        npz = np.load(npz_path)
+        ev = self.data.episodes[ep_pos]
+        agents: Dict[str, Any] = {}
+        for aid in meta.get("agents", []):
+            key = f"a_det.{aid}"
+            a_sampled = ev.col(f"actions.{aid}")
+            if key not in npz or a_sampled is None:
+                continue
+            a_det = np.asarray(npz[key], dtype=np.float32)
+            a_s = np.asarray(a_sampled, dtype=np.float32)
+            eps_raw = (
+                np.arctanh(np.clip(a_s, -ATANH_CLAMP, ATANH_CLAMP))
+                - np.arctanh(np.clip(a_det, -ATANH_CLAMP, ATANH_CLAMP))
+            )
+            agents[aid] = {
+                "a_det": _arr_to_list(a_det),
+                "a_sampled": _arr_to_list(a_s),
+                "eps_raw": _arr_to_list(eps_raw.astype(np.float32)),
+                "eps_norm": _arr_to_list(
+                    np.linalg.norm(eps_raw, axis=1).astype(np.float32)
+                ),
+                "sat_frac": float(
+                    (np.abs(a_s) >= ATANH_CLAMP * 0.9999).mean()
+                ),
+            }
+        return 200, {
+            "available": True,
+            "episode_pos": ep_pos,
+            "update": meta["update"],
+            "rollout_update": meta["rollout_update"],
+            "stats": meta.get("stats", {}),
             "agents": agents,
         }
 
@@ -2116,6 +2176,35 @@ class ViewerAPI:
                 continue
         return out
 
+    def _rollout_list(self) -> List[Dict[str, Any]]:
+        """Computed rollout replays: dump_dir/rollout/episode_*/meta.json."""
+        out: List[Dict[str, Any]] = []
+        root = self.data.dump_dir / "rollout"
+        if not root.is_dir():
+            return out
+        for ep_dir in sorted(root.iterdir()):
+            meta = ep_dir / "meta.json"
+            if not meta.exists():
+                continue
+            try:
+                m = json.loads(meta.read_text(encoding="utf-8"))
+                stats = m.get("stats", {})
+                mean_norm = [
+                    s["mean_norm"] for s in stats.values()
+                    if isinstance(s, dict) and "mean_norm" in s
+                ]
+                out.append({
+                    "episode": int(ep_dir.name.rsplit("_", 1)[-1]),
+                    "rollout_update": m.get("rollout_update"),
+                    "agents": m.get("agents", []),
+                    "mean_norm": (
+                        sum(mean_norm) / len(mean_norm) if mean_norm else None
+                    ),
+                })
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
+        return out
+
     def _pipeline(self) -> Dict[str, Any]:
         out = _da.pipeline_summary(self.data)
         params = self._channel_gae_params()
@@ -2165,6 +2254,8 @@ class ViewerAPI:
 
         # ⑧ Delta Analyze — which episodes already have computed deltas.
         out["stages"]["delta"] = {"episodes": self._delta_list()}
+        # ⓪ Rollout — which episodes already have a_det replays.
+        out["stages"]["rollout"] = {"episodes": self._rollout_list()}
 
         out["channel_gae_params"] = params
         return out
@@ -2327,7 +2418,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         # Render / delta endpoints — run mode: /api/dump/<name>/<kind>;
         # single-dump mode: /api/<kind>.  Both only need the dump
         # directory, so they are allowed regardless of run status.
-        m = re.match(r"^/api/dump/([^/]+)/(render|delta)$", path)
+        m = re.match(r"^/api/dump/([^/]+)/(render|delta|rollout)$", path)
         if m and self.run_data is not None:
             name = urllib.parse.unquote(m.group(1))
             api = self.run_data.get_dump_api(name)
@@ -2336,7 +2427,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
                 return
             self._handle_job_request(m.group(2), api.data, name)
             return
-        if path in ("/api/render", "/api/delta") and self.api is not None:
+        if path in ("/api/render", "/api/delta", "/api/rollout") and self.api is not None:
             data = self.api.data
             self._handle_job_request(
                 path.rsplit("/", 1)[-1], data, data.dump_dir.name,
@@ -2348,7 +2439,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     def _handle_job_request(
         self, kind: str, data: DumpDataset, dump_name: str,
     ):
-        """POST .../<render|delta> {"episode": N, "gens": G?}."""
+        """POST .../<render|delta|rollout> {"episode": N, "gens": G?}."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")

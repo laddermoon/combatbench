@@ -20,7 +20,8 @@ run          train.log 里的 __RAW_STATS__ JSON 行 —— 每 update 一条扁
                    （cos(g_i,G) × ‖g_i‖ 分箱 + 逐帧 proj/cos 数组），
                    由 dump 请求触发；run 级 gradsig/meta.json 冻结
                    norm 分箱边界（norm_axis: per_frame_norm）
-  └─ 派生产物  record/（render 的 PNG 帧）、delta/（跨代 policy 漂移）
+  └─ 派生产物  record/（render 的 PNG 帧）、delta/（跨代 policy 漂移）、
+                   rollout/（rollout 策略确定性回放 → realized ε）
 ```
 
 注：旧 run 可能仍有 run 级 `gradsig/uNNNNN.npz`（dump-only 改造前
@@ -97,6 +98,11 @@ debug.py delta <dump_dir> --episode 0 --gens 3
 #   → dumps/uNNNNN/delta/episode_NNNNN/；viewer ⑧ Delta Analyze 页可
 #     按需触发（与 render 共享单 job 槽）并画图
 
+# —— rollout 时探索噪声实际多大？（realized exploration ε）
+debug.py rollout <dump_dir> --episode 0
+#   → dumps/uNNNNN/rollout/episode_NNNNN/det.npz（rollout 策略
+#     u_{N-1} 的确定性 act() 回放）；viewer ⓪ 卡触发 + /rollout 页
+
 # —— 交互界面（给人看）
 debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
 
@@ -127,7 +133,8 @@ GET /api/run/gradsig/<update>                                 (run 模式, 旧 r
 GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     manifest | episode_list | traj_map | gradsig
     episode/<pos>/overview | episode/<pos>/series?keys=k1,k2
-    episode/<pos>/frame/<f> | episode/<pos>/delta | image/<a>/<b>
+    episode/<pos>/frame/<f> | episode/<pos>/delta | episode/<pos>/rollout
+    image/<a>/<b>
     trajectory/<i> | trajectory/<i>/frame/<f>
     trajectory/<i>/epoch/<e>/overview|frame/<f> | trajectory/<i>/epoch_compare
     timeline/overview | timeline/step/<s>
@@ -141,8 +148,9 @@ GET /api/dump/<d>/<ep> 或 run 模式 /run/<n>/api/dump/<d>/<ep>：
     merge                                     # 通道合并：normed×conf×aw→combined
     postupdate                                # ⑦全 buffer 逐 epoch 聚合
     delta_list                                # ⑧已算 delta 清单
+    rollout_list                              # ⓪已算 ε 清单
 POST /run/<name>/api/run/dump-request   {hypothesis}          (running run)
-POST /api/dump/<d>/render|delta         {episode[,gens]}      (单 job 槽)
+POST /api/dump/<d>/render|delta|rollout {episode[,gens]}      (单 job 槽)
 ```
 
 **run status**：running（pid 存活或 90s 内日志有更新）/ finished
@@ -168,7 +176,8 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
 `open tool →` 链接；工具页 = 该功能的详细钻取，各自独立 URL、
 保持内聚（不跨界放别阶段的图）。
 
-- **dump 主页**：①Episode→Trajectory ②Reward→ADV ③ADV Norm
+- **dump 主页**：⓪Rollout（ε 覆盖 + episode # → Compute ε 触发）
+  ①Episode→Trajectory ②Reward→ADV ③ADV Norm
   ④ADV Combine ⑤Grad Analyze（θ_old 下逐帧梯度信号标量）
   ⑥Update Process（纯标量汇总：执行量/early-stop/停点进度条/
   KL·clip·‖g‖·dloss 聚合——主页八卡全部无曲线，时间线级
@@ -179,7 +188,7 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
   renderJob 轮询；每个已算 episode 渲染一张 G×21 漂移热图——
   `delta_episode_heatmap()` 对帧和 agent 轴平均 |a_g−a_ref|，
   上边缘列均值、下边缘行均值）。全部数据走
-  `/api/pipeline`（stages: ep2traj/gae/advnorm/merge/gradsig/
+  `/api/pipeline`（stages: rollout/ep2traj/gae/advnorm/merge/gradsig/
   update/postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
 - **工具页**（结构同构：选择器 + 视频编辑器骨架大图/缩略图/
   scrubber + 页专属曲线，帧游标跨页共享）：
@@ -213,6 +222,20 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
     ref/gen/Δ 三项——绝对值量级远大于 Δ，不放原值曲线）；
     图例可点击 toggle 单代显示（`state.deltaHiddenGens`，对
     三张图统一生效）。中性原则：动作维只标 d0..d20，不引入关节语义。
+    **ref 语义**：gen_updates[0] = u_N（post-update，dump 的产物）；
+    u_{N-1}（rollout 策略）是第二行——其 ‖Δ‖ 即"这次 update 自身
+    推了多远"，u_{N-2}.. 为更早代。
+  - `/rollout/<pos>` —— ⓪：只读页（结构同 delta 页：picker 只列
+    已算 episode、默认首个、agent tabs）。核心量 = realized
+    exploration **ε_raw(t,d) = atanh(a_sampled) − atanh(a_det)**，
+    在 pre-tanh 空间（tanh 饱和段差分失真；|a|≥0.9999 标
+    SATURATED，ε 仅为下界）。a_det 来自 `rollout/episode_NNNNN/
+    det.npz`（rollout 策略 u_{N-1} 的确定性回放，job kind
+    `rollout` 与 render/delta 共享单槽）。body：标量行
+    （mean‖ε‖/peak/ρ₁/LF share/sat%）→ ‖ε(t)‖ 曲线 → 探索指纹
+    （ε 功率谱 + lag-k ACF——白噪声平谱 vs OU 低频占优）→ 帧下钻
+    ε-散点（x=d0..d20, y=ε_raw，饱和维红点）。stats 在
+    `compute_rollout` 时算好写进 meta.json（`rollout_stats`）。
   - `/timeline` —— ⑥的钻取：全量 minibatch 图 + step detail。
 
 复用红线：GAE 与 adv 归一化预览**只能**调

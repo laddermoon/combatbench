@@ -35,8 +35,9 @@ Usage by question::
           <dump> = dump dir path, or <run>:u<N> shorthand.
 
     See a dumped episode frame by frame / did the policy drift?
-        debug.py render <dump_dir> --episode 0   # PNGs + auto-verify
-        debug.py delta  <dump_dir> --episode 0 --gens 3
+        debug.py render  <dump_dir> --episode 0   # PNGs + auto-verify
+        debug.py delta   <dump_dir> --episode 0 --gens 3
+        debug.py rollout <dump_dir> --episode 0   # realized exploration
 
     Interactive UI (human-facing):
         debug.py viewer [run_dir|dump_dir|runs_root] --port 8766
@@ -386,6 +387,35 @@ def _cmd_delta(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rollout(args: argparse.Namespace) -> int:
+    from baseline.framework.ppo.dumpkit.dump_rollout import compute_rollout
+
+    dump_dir = Path(args.dump_dir).resolve()
+    if not dump_dir.is_dir():
+        print(f"error: dump directory does not exist: {dump_dir}", file=sys.stderr)
+        return 2
+    if not (dump_dir / "episodes.npz").exists():
+        print(
+            f"error: {dump_dir} is not a valid dump directory "
+            f"(missing episodes.npz)",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        out_dir = compute_rollout(
+            dump_dir=dump_dir,
+            episode_pos=args.episode,
+        )
+    except (FileNotFoundError, ValueError, IndexError, KeyError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    print()
+    print(f"Rollout data: {out_dir}")
+    return 0
+
+
 def _cmd_render(args: argparse.Namespace) -> int:
     from baseline.framework.ppo.dumpkit.dump_render import render_episode
 
@@ -453,6 +483,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  viewer   Interactive UI over all of the above.\n"
             "  render   PNG frames for a dumped episode (+ auto-verify).\n"
             "  delta    Policy drift across generations for a dumped episode.\n"
+            "  rollout  Realized exploration (sampled vs deterministic action).\n"
             "\n"
             "read commands print JSON to stdout (--pretty to indent);\n"
             "see dumpkit/CONTEXT.md for the full capability map."
@@ -552,6 +583,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many generations back to compare (1..10, default 3).",
     )
     p_delta.set_defaults(func=_cmd_delta)
+
+    # --- rollout subcommand ---
+    p_rollout = sub.add_parser(
+        "rollout",
+        help="Realized-exploration replay: deterministic act() of the rollout policy on a dumped episode.",
+        description=(
+            "Replay the episode's stored observations through the "
+            "deterministic act() of the rollout policy "
+            "(policy_exports/u{update-1}) and store a_det into "
+            "<dump_dir>/rollout/episode_NNNNN/.  The viewer derives "
+            "eps_raw = atanh(a_sampled) - atanh(a_det), the realized "
+            "exploration step in pre-tanh space."
+        ),
+    )
+    p_rollout.add_argument(
+        "dump_dir",
+        type=str,
+        help="Dump directory (e.g. runs/.../dumps/u00008/).",
+    )
+    p_rollout.add_argument(
+        "--episode",
+        type=int,
+        required=True,
+        help="Episode list position to analyse (0-based).",
+    )
+    p_rollout.set_defaults(func=_cmd_rollout)
 
     # --- viewer subcommand ---
     p_viewer = sub.add_parser(

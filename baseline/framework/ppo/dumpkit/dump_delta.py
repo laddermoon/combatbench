@@ -2,16 +2,18 @@
 
 See ``baseline/framework/ppo/TODO_reference_policy_delta_exploration.md``.
 
-For a dump captured at update ``u``, the rollout policy is
-``policy_exports/u{u-1:05d}`` (``policy_exports/uNNNNN`` is the
-*post-update-NNNNN* policy — rollout at update N consumes the version
-produced by update N-1).
-For each generation ``g = 1..K`` we load ``policy_exports/u{u-1-g:05d}``
+For a dump captured at update ``u``, the reference (row 0) is
+``policy_exports/u{u:05d}`` — the *post-update-u* policy, i.e. the
+artifact this update produced (``policy_exports/uNNNNN`` is the
+post-update-NNNNN policy; rollout at update N consumes version N-1).
+For each generation ``g = 1..K`` we load ``policy_exports/u{u-g:05d}``
 and evaluate the deterministic ``act()`` of every generation's policy
 on the episode's stored observations.  The per-frame action-space
 displacement ``Δ_g(t) = a_0(t) - a_g(t)`` is the quantity of interest —
-the action-space drift that update ``u-g .. u`` of training produced,
-evaluated on the states the current policy actually visited.
+the action-space drift that updates ``u-g .. u`` of training produced,
+evaluated on the states the rollout policy actually visited.  Row 1
+(u{u-1}) is the rollout policy itself, so its column measures the
+*current* update's own effect.
 
 Only **trained** agents are evaluated: an agent counts as trained iff
 ``traj_map`` contains trajectories sourced from ``(episode, agent)`` —
@@ -25,8 +27,9 @@ Output layout::
 
     <dump_dir>/delta/episode_{pos:05d}/
         delta.npz   # actions.{agent}: (G+1, T, action_dim)
-                    # gen_updates: (G+1,) int — row 0 is the rollout
-                    #   policy, rows 1.. are the reference generations
+                    # gen_updates: (G+1,) int — row 0 is the
+                    #   post-update policy, rows 1.. are the reference
+                    #   generations (row 1 = the rollout policy)
         meta.json   # {update, episode_pos, agents, gen_updates,
                     #  missing_updates, n_frames, action_dim}
 """
@@ -102,15 +105,15 @@ def compute_delta(
     run_dir = dump_dir.parent.parent
     exports_root = run_dir / "policy_exports"
 
-    # Load policy generations: gen 0 = rollout policy (u-1), then
-    # u-2..u-1-gens — policy_exports/uNNNNN is the post-update-NNNNN
+    # Load policy generations: gen 0 = post-update policy (u), then
+    # u-1..u-gens — policy_exports/uNNNNN is the post-update-NNNNN
     # version, and update N's rollout consumed version N-1.
     # Missing exports are skipped but recorded — never silently dropped.
     policies: List[Any] = []
     gen_updates: List[int] = []
     missing: List[int] = []
     for g in range(0, gens + 1):
-        u_ref = update - 1 - g
+        u_ref = update - g
         export_dir = exports_root / f"u{u_ref:05d}"
         if u_ref < 0 or not export_dir.is_dir():
             missing.append(u_ref)
