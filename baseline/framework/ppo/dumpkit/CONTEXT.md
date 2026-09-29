@@ -170,12 +170,13 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
 
 - **dump 主页**：①Episode→Trajectory ②Reward→ADV ③ADV Norm
   ④ADV Combine ⑤Grad Analyze（θ_old 下逐帧梯度信号标量）
-  ⑥Update Process（featured per-minibatch 曲线 + step 游标——
-  minibatch 序列即最粗粒度，是八块里唯一保留曲线的主页卡）
+  ⑥Update Process（纯标量汇总：执行量/early-stop/停点进度条/
+  KL·clip·‖g‖·dloss 聚合——主页八卡全部无曲线，时间线级
+  分析只留在 /timeline 工具页）
   ⑦Post Update（epochs/早停/KL + rbin 位移签名条）
   ⑧Delta Analyze（已算 delta 覆盖清单）。全部数据走
   `/api/pipeline`（stages: ep2traj/gae/advnorm/merge/gradsig/
-  postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
+  update/postupdate/delta）+ `/api/adv/hist`（③④的迷你直方图）。
 - **工具页**（结构同构：选择器 + 视频编辑器骨架大图/缩略图/
   scrubber + 页专属曲线，帧游标跨页共享）：
   - `/episode/<pos>` —— ①：scalar key 轨（只枚举 episode 侧列，

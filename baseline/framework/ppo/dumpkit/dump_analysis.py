@@ -852,6 +852,69 @@ def pipeline_summary(ds: DumpDataset) -> Dict[str, Any]:
     }
     out["stages"]["merge"] = merge_stage
 
+    # ⑥ Update Process — process-level scalars only (how far the walk got,
+    # where it stopped, extrema along the way). Per-minibatch curves live
+    # on the /timeline tool page.
+    tl = ds.npz("timeline")
+    upd = ds.npz("update")
+    update_stage: Dict[str, Any] = {
+        "available": bool(tl.available or upd.available)}
+    if tl.available:
+        def _m(key: str) -> Optional[float]:
+            a = tl.get(key)
+            if a is None:
+                return None
+            a = np.asarray(a, dtype=np.float64)
+            return _f(np.nanmean(a)) if np.isfinite(a).any() else None
+
+        update_stage["n_steps"] = _i(tl.scalar("n_steps"))
+        update_stage["n_epochs"] = _i(tl.scalar("n_epochs"))
+        update_stage["target_kl"] = _f(tl.scalar("target_kl"))
+        update_stage["clip_eps"] = _f(tl.scalar("clip_eps"))
+        ess = _i(tl.scalar("early_stop_step"))
+        update_stage["early_stop_step"] = ess
+        if ess is not None and ess >= 0:
+            ei, mi = tl.get("epoch_idx"), tl.get("mb_idx")
+            if ei is not None and ess < len(ei):
+                update_stage["early_stop_epoch"] = int(ei[ess])
+            if mi is not None and ess < len(mi):
+                update_stage["early_stop_mb"] = int(mi[ess])
+        wk = tl.get("window_mean_kl")
+        if wk is None:
+            wk = tl.get("running_mean_kl")
+        if wk is not None:
+            wk = np.asarray(wk, dtype=np.float64)
+            if np.isfinite(wk).any():
+                update_stage["peak_window_kl"] = _f(np.nanmax(wk))
+            if ess is not None and 0 <= ess < wk.size:
+                update_stage["window_kl_at_stop"] = _f(wk[ess])
+        update_stage["kl_mean"] = _m("kl")
+        update_stage["clip_frac_mean"] = _m("clip_frac")
+        update_stage["clip_frac_hi_mean"] = _m("clip_frac_hi")
+        update_stage["clip_frac_lo_mean"] = _m("clip_frac_lo")
+        update_stage["dual_clip_frac_mean"] = _m("dual_clip_frac")
+        update_stage["grad_norm_actor_mean"] = _m("actor_grad")
+        update_stage["dtheta_cos_descent_mean"] = _m("dtheta_cos_descent")
+        dth = tl.get("dtheta_norm")
+        if dth is not None:
+            dth = np.asarray(dth, dtype=np.float64)
+            if np.isfinite(dth).any():
+                update_stage["sum_dtheta_norm"] = _f(np.nansum(dth))
+    if upd.available:
+        # update.npz trainer scalars are authoritative where they overlap
+        for k in ("kl_mean", "clip_frac_mean", "clip_frac_hi_mean",
+                  "clip_frac_lo_mean", "grad_norm_actor_mean",
+                  "grad_norm_actor_pre_clip", "post_clip_dloss_mean",
+                  "post_clip_dloss_gain", "post_clip_dloss_harm"):
+            v = _f(upd.scalar(k))
+            if v is not None:
+                update_stage[k] = v
+        for k in ("epochs_done", "actor_epochs_done", "n_batches"):
+            v = upd.scalar(k)
+            if v is not None:
+                update_stage[k] = int(v)
+    out["stages"]["update"] = update_stage
+
     return out
 
 

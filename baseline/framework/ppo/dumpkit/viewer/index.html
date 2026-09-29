@@ -430,6 +430,13 @@
   .stage-stats .k { color: var(--muted); }
   .stage-stats .v { font-family: ui-monospace, monospace; }
   .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
+  .upd-bar { margin: 4px 0 8px; }
+  .upd-bar-track { position: relative; height: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .upd-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(61, 220, 132, .30); }
+  .upd-bar-fill.stopped { background: rgba(224, 108, 117, .30); }
+  .upd-bar-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .upd-bar-stop { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); }
+  .upd-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
   .mini-hist .mh-title { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
 
@@ -704,8 +711,9 @@
             <h2>Update Process</h2>
             <a class="stage-open" id="steps-open-timeline">open tool →</a>
           </div>
-          <div class="desc">Per-minibatch record — the coarsest granularity of the update itself. Click any chart to set the shared step cursor.</div>
-          <div id="steps-container"><div class="loading">loading...</div></div>
+          <div class="stage-stats" id="sum-update"><div class="loading">loading...</div></div>
+          <div id="sum-update-bar"></div>
+          <div class="desc">How the optimizer walked — execution, early stop, process extrema. Per-minibatch curves live on the timeline tool.</div>
         </div>
         <div class="card stage-card" id="stage-postupdate">
           <div class="stage-head">
@@ -3249,7 +3257,6 @@
   function renderHome() {
     renderDumpOverview();
     renderPipelineCards();
-    renderDumpSteps();
     $('steps-open-timeline').onclick = () => navigate('timeline');
     $('open-ep2traj').onclick = () => selectEpisode(state.selectedEpisode ?? 0);
     $('open-gae').onclick = () => selectTrajectory(state.selectedTraj ?? 0);
@@ -3357,6 +3364,48 @@
           _kv('dir cos (prev G)', fmt(s.dir_cos, 3)) +
           _kv('sampled', `${s.n_valid ?? '?'}/${s.n_sampled ?? '?'}`) +
           (s.partial ? _kv('status', 'partial — no hist') : '');
+      }
+    }
+
+    // ⑥ Update Process — scalars + stop-point bar only; the walk's
+    // per-minibatch curves live on the /timeline tool page.
+    {
+      const s = st.update || {};
+      const el = $('sum-update'), barEl = $('sum-update-bar');
+      if (!s.available || !s.n_steps) {
+        el.innerHTML = '<div class="desc">no timeline/update data</div>';
+        barEl.innerHTML = '';
+      } else {
+        const n = s.n_steps;
+        const ess = s.early_stop_step;
+        const stopped = (ess ?? -1) >= 0;
+        const done = stopped ? ess + 1 : n;
+        const mbPerEp = s.n_epochs ? Math.round(n / s.n_epochs) : null;
+        el.innerHTML =
+          _kv('steps', `${done}/${n}` + (s.n_epochs ? ` (${s.n_epochs} ep × ${mbPerEp ?? '?'} mb)` : '')) +
+          _kv('early stop', stopped
+            ? `@${ess}` + (s.early_stop_epoch !== undefined ? ` e${s.early_stop_epoch}·mb${s.early_stop_mb ?? '?'}` : '')
+              + (s.window_kl_at_stop !== undefined ? ` · win_kl ${fmt(s.window_kl_at_stop, 3)}` : '')
+            : 'no') +
+          _kv('epochs', `actor ${s.actor_epochs_done ?? '?'}/${s.n_epochs ?? '?'} · critic ${s.epochs_done ?? '?'}/${s.n_epochs ?? '?'}`) +
+          _kv('KL', `mean ${fmt(s.kl_mean, 4)} · peak win ${fmt(s.peak_window_kl, 3)} / tgt ${fmt(s.target_kl, 3)}`) +
+          _kv('clip', `${_pct(s.clip_frac_mean)} · hi ${_pct(s.clip_frac_hi_mean)} / lo ${_pct(s.clip_frac_lo_mean)}` +
+              (s.dual_clip_frac_mean !== undefined ? ` · dual ${_pct(s.dual_clip_frac_mean)}` : '')) +
+          _kv('‖g‖→Δθ', `${fmt(s.grad_norm_actor_mean, 3)}` +
+              (s.grad_norm_actor_pre_clip !== undefined ? ` (pre ${fmt(s.grad_norm_actor_pre_clip, 3)})` : '') +
+              (s.sum_dtheta_norm !== undefined ? ` · Σ‖Δθ‖ ${fmt(s.sum_dtheta_norm, 3)}` : '') +
+              (s.dtheta_cos_descent_mean !== undefined ? ` · cos_desc ${fmt(s.dtheta_cos_descent_mean, 2)}` : '')) +
+          _kv('dloss', `gain ${fmt(s.post_clip_dloss_gain, 4)} / harm ${fmt(s.post_clip_dloss_harm, 4)}`);
+        const ticks = [];
+        if (s.n_epochs > 1)
+          for (let e = 1; e < s.n_epochs; e++)
+            ticks.push(`<div class="upd-bar-tick" style="left:${(e * 100 / s.n_epochs).toFixed(2)}%"></div>`);
+        barEl.innerHTML =
+          `<div class="upd-bar"><div class="upd-bar-track">` +
+          `<div class="upd-bar-fill${stopped ? ' stopped' : ''}" style="width:${(done * 100 / n).toFixed(2)}%"></div>` +
+          ticks.join('') +
+          (stopped ? `<div class="upd-bar-stop" style="left:${(done * 100 / n).toFixed(2)}%"></div>` : '') +
+          `</div><div class="upd-bar-label"><span>step 0</span><span>${stopped ? `stop @${ess}` : 'ran full'} · ${done}/${n}</span><span>${n - 1}</span></div></div>`;
       }
     }
 
@@ -3557,111 +3606,6 @@
     }
     html += '</table></div>';
     return html;
-  }
-
-  async function renderDumpSteps() {
-    const el = $('steps-container');
-    if (!state.manifest?.has_timeline) {
-      el.innerHTML = '<div class="desc">timeline.npz not available for this dump</div>';
-      return;
-    }
-    if (!state.timelineData) {
-      try {
-        state.timelineData = await fetchJson(api('timeline/overview'));
-      } catch (e) {
-        el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
-        return;
-      }
-    }
-    const tl = state.timelineData;
-    if (!tl.available || !tl.n_steps) {
-      el.innerHTML = '<div class="desc">timeline not available</div>';
-      return;
-    }
-    const step = Math.max(0, Math.min(state.selectedStep || 0, tl.n_steps - 1));
-    state.selectedStep = step;
-
-    const ebounds = [];
-    if (tl.epoch_idx) {
-      for (let i = 1; i < tl.epoch_idx.length; i++) {
-        if (tl.epoch_idx[i] !== tl.epoch_idx[i - 1]) {
-          ebounds.push({step: i, epoch: tl.epoch_idx[i]});
-        }
-      }
-    }
-    const copts = {height: 140, currentFrame: step, epochBoundaries: ebounds,
-                   earlyStopStep: tl.early_stop_step};
-    const box = (title, series) => series.length
-      ? `<div class="chart-container"><h3>${escapeHtml(title)}</h3>` +
-        chartBox(series, copts, {key: 'dump:steps:' + title}) + '</div>'
-      : '';
-    const S = (label, key, color, extra = {}) =>
-      tl[key] ? [{label, data: tl[key], color, ...extra}] : [];
-
-    // Step selector row: scrubber + position + key-step chips
-    let html = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
-    html += '<button id="ds-prev" class="render-btn">◀</button>';
-    html += `<input id="ds-slider" type="range" min="0" max="${tl.n_steps - 1}" value="${step}" style="flex:1"/>`;
-    html += '<button id="ds-next" class="render-btn">▶</button>';
-    html += `<span class="muted" style="font-size:12px;font-family:ui-monospace,monospace;white-space:nowrap">step ${step}/${tl.n_steps - 1}` +
-      (tl.epoch_idx ? ` · e${tl.epoch_idx[step]}·mb${tl.mb_idx?.[step]}` : '') + '</span>';
-    html += '</div>';
-    if (tl.key_steps && tl.key_steps.length) {
-      html += '<div class="ks-chips" style="margin-bottom:12px">';
-      tl.key_steps.forEach(s => {
-        html += `<span class="ks-chip" data-step="${s.step}" title="${escapeHtml(s.kind)} (epoch ${s.epoch}, mb ${s.mb_idx})">` +
-          `<span class="k">${escapeHtml(s.kind)}</span>s${s.step}</span>`;
-      });
-      html += '</div>';
-    }
-
-    // Featured row — the charts worth checking first
-    html += '<div class="steps-grid">';
-    {
-      const wk = tl.window_mean_kl ? 'window_mean_kl' : 'running_mean_kl';
-      const ser = S('kl', 'kl', '#4fa3ff').concat(S('window_mean_kl', wk, '#e5c07b'));
-      if (tl.target_kl && !isNaN(tl.target_kl)) {
-        ser.push({label: 'target', data: new Array(tl.n_steps).fill(tl.target_kl),
-                  color: '#e06c75', dash: 'dash'});
-      }
-      html += box('KL per minibatch', ser);
-    }
-    html += box('Ratio mean/min/max',
-      S('mean', 'ratio_mean', '#4fa3ff')
-        .concat(S('min', 'ratio_min', '#56b6c2'), S('max', 'ratio_max', '#e06c75')));
-    html += box('Actor ‖g‖ & realized Δθ',
-      S('actor_grad', 'actor_grad', '#6ec86e')
-        .concat(S('dtheta_norm', 'dtheta_norm', '#e5c07b', {axis: 'right'})));
-    html += box('Clip fraction',
-      S('clip_frac', 'clip_frac', '#e06c75')
-        .concat(S('hi (r>1+ε)', 'clip_frac_hi', '#c678dd'),
-                S('lo (r<1−ε)', 'clip_frac_lo', '#e5c07b')));
-    html += box('Policy loss', S('policy_loss', 'policy_loss', '#4fa3ff'));
-    html += '</div>';
-
-    html += `<div class="steps-detail">${_stepDetailHtml(tl, step)}</div>`;
-    el.innerHTML = html;
-
-    mountCharts(el, i => { state.selectedStep = i; renderDumpSteps(); });
-    const sl = $('ds-slider');
-    if (sl) sl.addEventListener('input', e => {
-      state.selectedStep = parseInt(e.target.value);
-      renderDumpSteps();
-    });
-    const pv = $('ds-prev'), nx = $('ds-next');
-    if (pv) pv.onclick = () => {
-      state.selectedStep = Math.max(0, step - 1); renderDumpSteps();
-    };
-    if (nx) nx.onclick = () => {
-      state.selectedStep = Math.min(tl.n_steps - 1, step + 1); renderDumpSteps();
-    };
-    el.querySelectorAll('.ks-chip').forEach(c =>
-      c.addEventListener('click', () => {
-        state.selectedStep = parseInt(c.dataset.step);
-        renderDumpSteps();
-      }));
-    el.querySelectorAll('.buflink').forEach(bl =>
-      bl.addEventListener('click', () => jumpToBuffer(parseInt(bl.dataset.bi))));
   }
 
   // Trace a buffer index to its trajectory and jump there.
