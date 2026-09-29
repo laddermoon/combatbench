@@ -439,6 +439,10 @@
   .upd-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .delta-ep { margin: 8px 0 4px; }
   .dh-cell { cursor: crosshair; }
+  .drift-strip { cursor: crosshair; }
+  .dd-cell { cursor: crosshair; }
+  .delta-jump-ep { color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 400; margin-left: 10px; }
+  .delta-jump-ep:hover { text-decoration: underline; }
   .delta-ep-head { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 2px; }
   .delta-ep svg { display: block; }
   .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
@@ -452,6 +456,7 @@
   .tool-head input[type=number] { width: 80px; }
   .tool-head .t-nav { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
   .tool-head .t-nav:hover { border-color: var(--accent); }
+  .tool-head .t-nav.sel { border-color: var(--accent); color: var(--accent); }
   .tool-head .t-info { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
 
   /* --- Video-editor layout (GAE page) --- */
@@ -997,6 +1002,7 @@
     // ⑧ Delta Analyze tool state
     deltaData: null,          // /episode/<pos>/delta payload for selectedEpisode
     deltaGens: 3,
+    deltaAgent: null,
 
     // Pipeline summary cache (dump home cards)
     pipeline: null,
@@ -3838,9 +3844,9 @@
 
   // --- Episode page (Scene 1) ---
   // --- Policy Drift Δ section (debug.py delta output) ---
-  async function selectEpisode(pos) {
+  async function selectEpisode(pos, keepFrame = false) {
     state.selectedEpisode = pos;
-    state.selectedFrame = 0;
+    if (!keepFrame) state.selectedFrame = 0;
     state.epOverview = null;
     state.epSeries = {};
     state.epTrajOv = {};
@@ -5218,7 +5224,20 @@
     const epInfo = state.trajMap?.[pos];
     const T = epInfo?.num_frames || 0;
 
-    // tool head: episode picker + compute controls
+    // delta payload first — the head needs agent ids / coverage badge
+    if (!state.deltaData || state.deltaData.episode_pos !== pos) {
+      try {
+        state.deltaData = await fetchJson(api(`episode/${pos}/delta`));
+      } catch (e) {
+        state.deltaData = {available: false, error: e.message};
+      }
+    }
+    const d0 = state.deltaData;
+    const agentIds = Object.keys(d0?.agents || {});
+    if (!agentIds.includes(state.deltaAgent))
+      state.deltaAgent = agentIds[0] || null;
+
+    // tool head: episode picker + agent tabs + compute controls
     const job = state.renderJob;
     const running = job && job.status === 'running';
     const thisJob = running && job.kind === 'delta' && job.episode === pos &&
@@ -5229,7 +5248,12 @@
     h += `<button class="t-nav" id="delta-nav-next">›</button>`;
     h += `<span class="t-info">of ${n} episodes</span></span>`;
     if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
-    const d0 = state.deltaData;
+    if (agentIds.length > 1) {
+      h += `<span class="t-sel"><span class="muted">agent</span>` +
+        agentIds.map(a =>
+          `<button class="t-nav${a === state.deltaAgent ? ' sel' : ''}" data-agent="${a}">${escapeHtml(a)}</button>`
+        ).join('') + `</span>`;
+    }
     if (d0 && d0.available && d0.episode_pos === pos) {
       h += `<span class="t-info">✓ gens ${d0.gen_updates.map(u => 'u' + u).join('/')}</span>`;
     } else if (thisJob) {
@@ -5239,9 +5263,9 @@
       const opts = [...Array(10)].map((_, i) =>
         `<option value="${i + 1}"${i + 1 === state.deltaGens ? ' selected' : ''}>${i + 1}</option>`).join('');
       h += `<span class="delta-trigger" style="margin:0">` +
-        `<span class="muted">compare against</span>` +
+        `<span class="muted">vs past</span>` +
         `<select id="delta-gens"${dis}>${opts}</select>` +
-        `<span class="muted"> generations</span> ` +
+        `<span class="muted">gens</span> ` +
         `<button id="delta-btn" class="render-btn"${dis}>Compute Δ</button></span>`;
     }
     $('delta-tool-head').innerHTML = h;
@@ -5259,6 +5283,11 @@
     };
     const dGens = $('delta-gens');
     if (dGens) dGens.addEventListener('change', () => { state.deltaGens = parseInt(dGens.value); });
+    $('delta-tool-head').querySelectorAll('[data-agent]').forEach(b =>
+      b.addEventListener('click', () => {
+        state.deltaAgent = b.dataset.agent;
+        renderDeltaPage();
+      }));
 
     // shared stage over the episode axis (visual context for the drift)
     const ov = {length: T, episode_pos: pos, t_start: 0, frame_ids: null};
@@ -5266,17 +5295,14 @@
                         : (state.selectedFrame || 0);
     $('ctx-frameid').textContent = `ep${String(pos).padStart(4, '0')}:${frame}`;
 
-    // delta payload
-    if (!state.deltaData || state.deltaData.episode_pos !== pos) {
-      try {
-        state.deltaData = await fetchJson(api(`episode/${pos}/delta`));
-      } catch (e) {
-        state.deltaData = {available: false, error: e.message};
-      }
-    }
     state._chartSeq = 0; state._chartSpecs = {};
-    $('delta-body').innerHTML = _deltaBodyHtml(pos, frame);
-    mountCharts($('delta-body'), f => { state.selectedFrame = f; renderDeltaPage(); });
+    const body = $('delta-body');
+    body.innerHTML = _deltaBodyHtml(pos, frame, state.deltaAgent);
+    mountCharts(body, f => { state.selectedFrame = f; renderDeltaPage(); });
+    _bindDeltaStrip(body);
+    _bindDeltaDrill(body);
+    const jump = body.querySelector('.delta-jump-ep');
+    if (jump) jump.addEventListener('click', () => selectEpisode(pos, true));
   }
 
   function selectDeltaEpisode(pos) {
@@ -5300,50 +5326,198 @@
         'Both sides are deterministic replays on stored observations; episode actions are unused.</div>' +
         (failed ? `<div class="dump-msg">delta failed (exit ${job.returncode}) — see ${escapeHtml(job.log || 'log')}</div>` : '');
     }
-    let html = `<div class="desc" style="margin-bottom:8px">Deterministic action of each policy generation on this episode's observations (episode actions unused — both sides deterministic). Trained agents only.</div>`;
-    for (const [aid, adata] of Object.entries(d.agents || {})) {
-      const acts = adata.actions;            // (G+1, T, D): row 0 = current policy
-      const G = acts.length - 1;
-      if (G < 1 || frame >= acts[0].length) continue;
-      const T = acts[0].length;
-      const D = acts[0][0].length;
+    const adata = (d.agents || {})[aid];
+    if (!adata) return '<div class="desc">no delta data for this agent</div>';
+    const acts = adata.actions;            // (G+1, T, D): row 0 = rollout policy
+    const G = acts.length - 1;
+    if (G < 1) return '<div class="desc">empty delta matrix</div>';
+    const T = acts[0].length, D = acts[0][0].length;
+    const gens = d.gen_updates;            // gens[0] = rollout policy update
 
-      html += `<h3>${escapeHtml(aid)}</h3>`;
+    // per-gen drift curves ‖a_g(t) − a_ref(t)‖₂
+    const norms = [null];
+    for (let g = 1; g <= G; g++) {
+      const row = new Array(T);
+      for (let t = 0; t < T; t++) {
+        let s = 0;
+        for (let k = 0; k < D; k++) {
+          const dd = acts[0][t][k] - acts[g][t][k];
+          s += dd * dd;
+        }
+        row[t] = Math.sqrt(s);
+      }
+      norms.push(row);
+    }
+    const meanCurve = new Array(T).fill(0);
+    let dirCosSum = 0, dirCosN = 0;
+    for (let t = 0; t < T; t++) {
+      for (let g = 1; g <= G; g++) meanCurve[t] += norms[g][t] / G;
+      for (let g = 1; g < G; g++) {
+        let dot = 0, n1 = 0, n2 = 0;
+        for (let k = 0; k < D; k++) {
+          const d1 = acts[0][t][k] - acts[g][t][k];
+          const d2 = acts[0][t][k] - acts[g + 1][t][k];
+          dot += d1 * d2; n1 += d1 * d1; n2 += d2 * d2;
+        }
+        if (n1 > 1e-12 && n2 > 1e-12) {
+          dirCosSum += dot / Math.sqrt(n1 * n2); dirCosN++;
+        }
+      }
+    }
+    let peakF = 0;
+    for (let t = 1; t < T; t++) if (meanCurve[t] > meanCurve[peakF]) peakF = t;
 
-      // Chart 1: ‖Δ_g(t)‖₂ per frame, one line per reference generation
-      const series = [];
+    let html = `<div class="desc" style="margin-bottom:8px">Deterministic act() of each generation on this episode's observations — ref = u${gens[0]} (rollout policy), rows below are past gens. Agent: <b>${escapeHtml(aid)}</b></div>`;
+
+    // scalar strip
+    html += '<div class="stage-stats">' +
+      _kv('mean ‖Δ‖', gens.slice(1).map((u, i) =>
+        `u${u} ${fmt(norms[i + 1].reduce((a, b) => a + b, 0) / T, 3)}`).join(' · ')) +
+      _kv('peak drift', `f${peakF} (${fmt(meanCurve[peakF], 3)})`) +
+      (dirCosN ? _kv('dir consistency', fmt(dirCosSum / dirCosN, 3)) : '') +
+      '</div>';
+
+    // gens × frames heat strip — the timeline-level overview
+    html += `<h3>drift ‖Δ_g(t)‖ · gens × frames <span class="muted">(click a column to set the frame cursor)</span></h3>`;
+    html += _driftStripHtml(norms, gens, frame);
+
+    // per-gen drift curves
+    const alpha = g => (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0);
+    html += chartBox(
+      norms.slice(1).map((row, i) => ({
+        label: `‖Δ vs u${gens[i + 1]}‖`, data: row,
+        color: `rgba(79,163,255,${alpha(i + 1).toFixed(2)})`,
+      })).concat([{label: 'mean', data: meanCurve, color: '#ffc233', width: 1.5}]),
+      {currentFrame: frame});
+
+    // adjacent-gen diffs — which update produced the change
+    if (G >= 2) {
+      const diffSeries = [];
       for (let g = 1; g <= G; g++) {
-        const norm = new Array(T);
+        const row = new Array(T);
         for (let t = 0; t < T; t++) {
           let s = 0;
           for (let k = 0; k < D; k++) {
-            const dd = acts[0][t][k] - acts[g][t][k];
+            const dd = acts[g][t][k] - acts[g - 1][t][k];
             s += dd * dd;
           }
-          norm[t] = Math.sqrt(s);
+          row[t] = Math.sqrt(s);
         }
-        // gen1 darkest, farther generations lighter
-        const alpha = G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0;
-        series.push({
-          label: `‖Δ vs u${String(d.gen_updates[g]).padStart(5, '0')}‖`,
-          data: norm,
-          color: `rgba(79,163,255,${alpha.toFixed(2)})`,
+        diffSeries.push({
+          label: `u${gens[g]}→u${gens[g - 1]}`, data: row,
+          color: CHART_COLORS[(g - 1) % CHART_COLORS.length],
         });
       }
-      html += chartBox(series, {currentFrame: frame});
-
-      // Chart 2: deterministic actions at the selected frame — dims sorted
-      // by gen-0 (current policy) descending; crossings = sign-flipped drift
-      const genLabels = d.gen_updates.map((u, g) =>
-        `u${String(u).padStart(5, '0')}${g === 0 ? ' (cur)' : ''}`);
-      const frameActs = acts.map(a => a[frame]);
-      html += `<div style="color:var(--muted);font-size:11px;margin:6px 0 2px">Deterministic action per generation at frame ${frame} — dims sorted by current policy's action (desc); a line wholly above/below gen-0 means one-sided drift, crossings mean sign-flipped dims.</div>`;
-      html += makeSortedActionChart(genLabels, frameActs);
+      html += '<h3>update attribution · ‖a_g − a_{g−1}‖</h3>';
+      html += chartBox(diffSeries, {currentFrame: frame});
     }
+
+    // frame-level drilldown: dims × gens signed heatmap
+    html += `<h3>action dims @ frame ${frame} <span class="delta-jump-ep">→ episode</span></h3>`;
+    html += _drillHeatHtml(acts, gens, frame);
+
+    // absolute per-dim actions at the cursor frame (dims sorted by ref)
+    const genLabels = gens.map((u, g) =>
+      `u${String(u).padStart(5, '0')}${g === 0 ? ' (ref)' : ''}`);
+    const frameActs = acts.map(a => a[frame]);
+    html += `<div style="color:var(--muted);font-size:11px;margin:10px 0 2px">Deterministic action per generation at frame ${frame} — dims sorted by ref policy's action (desc); a line wholly above/below ref means one-sided drift, crossings mean sign-flipped dims.</div>`;
+    html += makeSortedActionChart(genLabels, frameActs);
+
     if (d.missing_updates && d.missing_updates.length) {
       html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">missing exports: ${d.missing_updates.map(u => 'u' + String(u).padStart(5, '0')).join(', ')}</div>`;
     }
     return html;
+  }
+
+  // gens × frames drift strip: rows = past gens, x = episode frame,
+  // cell = ‖a_g(t) − a_ref(t)‖.  Click a column to set the cursor.
+  function _driftStripHtml(norms, gens, frame) {
+    const G = gens.length - 1, T = norms[1].length;
+    const W = 1000, lm = 46, rh = 15, tm = 4;
+    const cw = (W - lm) / T, H = tm + G * rh + 4;
+    let vmax = 1e-9;
+    for (let g = 1; g <= G; g++)
+      for (let t = 0; t < T; t++) vmax = Math.max(vmax, norms[g][t]);
+    let s = `<svg class="drift-strip" data-t="${T}" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
+    for (let g = 1; g <= G; g++) {
+      const y = tm + (g - 1) * rh;
+      s += `<text class="gs-axis" x="${lm - 5}" y="${y + rh / 2 + 3}" text-anchor="end">u${gens[g]}</text>`;
+      for (let t = 0; t < T; t++) {
+        const v = norms[g][t];
+        const a = 0.05 + 0.95 * Math.sqrt(v / vmax);
+        s += `<rect x="${(lm + t * cw).toFixed(1)}" y="${y}" width="${(cw + 0.5).toFixed(1)}" height="${rh - 1}" fill="rgba(224,108,117,${a.toFixed(3)})"><title>u${gens[g]} · f${t} ‖Δ‖=${v.toFixed(4)}</title></rect>`;
+      }
+    }
+    const cx = lm + (frame + 0.5) * cw;
+    s += `<line x1="${cx.toFixed(1)}" y1="${tm - 2}" x2="${cx.toFixed(1)}" y2="${tm + G * rh}" stroke="#e6e6e6" stroke-width="1.2"/>`;
+    s += `<text class="gs-axis" x="${lm}" y="${H - 1}">f0</text><text class="gs-axis" x="${W - 12}" y="${H - 1}">f${T - 1}</text>`;
+    return s + '</svg>';
+  }
+
+  function _bindDeltaStrip(container) {
+    const svg = container.querySelector('svg.drift-strip');
+    if (!svg) return;
+    svg.addEventListener('click', e => {
+      const r = svg.getBoundingClientRect();
+      const T = +svg.dataset.t, lm = 46, vb = 1000;
+      const x = (e.clientX - r.left) / r.width * vb;
+      const t = Math.max(0, Math.min(T - 1, Math.floor((x - lm) / ((vb - lm) / T))));
+      state.selectedFrame = t;
+      renderDeltaPage();
+    });
+  }
+
+  // dims × gens signed heatmap at the cursor frame + ref value column.
+  function _drillHeatHtml(acts, gens, frame) {
+    const G = gens.length - 1, D = acts[0][0].length;
+    const W = 760, lm = 46, rm = 58, rh = 16, tm = 16;
+    const cw = (W - lm - rm) / G, H = tm + D * rh + 6;
+    let vmax = 1e-9;
+    for (let d = 0; d < D; d++)
+      for (let g = 1; g <= G; g++)
+        vmax = Math.max(vmax, Math.abs(acts[g][frame][d] - acts[0][frame][d]));
+    const cell = v => v >= 0
+      ? `rgba(224,108,117,${(0.08 + 0.92 * Math.sqrt(v / vmax)).toFixed(3)})`
+      : `rgba(79,163,255,${(0.08 + 0.92 * Math.sqrt(-v / vmax)).toFixed(3)})`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;max-width:760px">`;
+    for (let g = 1; g <= G; g++)
+      s += `<text class="gs-axis" x="${(lm + (g - 0.5) * cw).toFixed(1)}" y="${tm - 5}" text-anchor="middle">u${gens[g]}</text>`;
+    s += `<text class="gs-axis" x="${W - rm + 8}" y="${tm - 5}">ref</text>`;
+    for (let d = 0; d < D; d++) {
+      const y = tm + d * rh;
+      s += `<text class="gs-axis" x="${lm - 5}" y="${y + rh / 2 + 3}" text-anchor="end">d${d}</text>`;
+      for (let g = 1; g <= G; g++) {
+        const v = acts[g][frame][d] - acts[0][frame][d];
+        s += `<rect class="dd-cell" data-d="${d}" data-g="${g}" x="${(lm + (g - 1) * cw).toFixed(1)}" y="${y}" width="${(cw - 1).toFixed(1)}" height="${rh - 1}" fill="${cell(v)}"/>`;
+      }
+      s += `<text class="gs-axis" x="${W - rm + 8}" y="${y + rh / 2 + 3}">${fmt(acts[0][frame][d], 3)}</text>`;
+    }
+    return s + '</svg>';
+  }
+
+  function _bindDeltaDrill(container) {
+    const tip = document.createElement('div');
+    tip.className = 'trk-tip';
+    tip.style.display = 'none';
+    container.appendChild(tip);
+    container.addEventListener('mousemove', e => {
+      const c = e.target.closest('.dd-cell');
+      if (!c) { tip.style.display = 'none'; return; }
+      const acts = state.deltaData?.agents?.[state.deltaAgent]?.actions;
+      if (!acts) return;
+      const g = +c.dataset.g, d = +c.dataset.d, f = state.selectedFrame || 0;
+      const gens = state.deltaData.gen_updates;
+      const ref = acts[0][f][d], val = acts[g][f][d];
+      tip.innerHTML =
+        `<div class="tt-f">f${f} · dim ${d}</div>` +
+        `<div class="tt-row"><span>u${gens[g]}</span><span class="tt-v">${fmt(val, 4)}</span></div>` +
+        `<div class="tt-row"><span>ref u${gens[0]}</span><span class="tt-v">${fmt(ref, 4)}</span></div>` +
+        `<div class="tt-row"><span>Δ</span><span class="tt-v">${fmt(val - ref, 4)}</span></div>`;
+      tip.style.display = 'block';
+      tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + 'px';
+      tip.style.top = (e.clientY + 12) + 'px';
+    });
+    container.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
   }
 
   // Per-dim deterministic-action comparison across generations: dims
