@@ -3,8 +3,10 @@
 See ``baseline/framework/ppo/TODO_reference_policy_delta_exploration.md``.
 
 For a dump captured at update ``u``, the rollout policy is
-``policy_exports/u{u:05d}`` (exported at the start of update ``u``).
-For each generation ``g = 1..K`` we load ``policy_exports/u{u-g:05d}``
+``policy_exports/u{u-1:05d}`` (``policy_exports/uNNNNN`` is the
+*post-update-NNNNN* policy — rollout at update N consumes the version
+produced by update N-1).
+For each generation ``g = 1..K`` we load ``policy_exports/u{u-1-g:05d}``
 and evaluate the deterministic ``act()`` of every generation's policy
 on the episode's stored observations.  The per-frame action-space
 displacement ``Δ_g(t) = a_0(t) - a_g(t)`` is the quantity of interest —
@@ -100,15 +102,17 @@ def compute_delta(
     run_dir = dump_dir.parent.parent
     exports_root = run_dir / "policy_exports"
 
-    # Load policy generations: gen 0 = rollout policy (u), then u-1..u-gens.
+    # Load policy generations: gen 0 = rollout policy (u-1), then
+    # u-2..u-1-gens — policy_exports/uNNNNN is the post-update-NNNNN
+    # version, and update N's rollout consumed version N-1.
     # Missing exports are skipped but recorded — never silently dropped.
     policies: List[Any] = []
     gen_updates: List[int] = []
     missing: List[int] = []
     for g in range(0, gens + 1):
-        u_ref = update - g
+        u_ref = update - 1 - g
         export_dir = exports_root / f"u{u_ref:05d}"
-        if u_ref < 1 or not export_dir.is_dir():
+        if u_ref < 0 or not export_dir.is_dir():
             missing.append(u_ref)
             continue
         policies.append(_load_exported_policy(export_dir))

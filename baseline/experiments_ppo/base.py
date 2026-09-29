@@ -27,9 +27,10 @@ from baseline.framework.ppo import (
     ExplorationSpec,
     PPOParams,
     TrainablePolicy,
+    UpdateArtifacts,
 )
 from baseline.framework.critic_mlp import CriticMLP
-from baseline.framework.rollout.job import Job, SamplingSpec
+from baseline.framework.rollout.job import Job, ReferenceSpec, SamplingSpec
 
 
 def _coerce_set_value(raw: Any, current: Any) -> Any:
@@ -91,6 +92,15 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 )
             setattr(self, key, _coerce_set_value(raw, cur))
 
+        if self.delta_mix != 0.0 and self.reference_horizon <= 0:
+            raise ValueError(
+                f"{type(self).__name__}: delta_mix={self.delta_mix} "
+                f"requires reference_horizon > 0 "
+                f"(got {self.reference_horizon}) — a nonzero delta_mix "
+                f"can never activate without a reference ensemble"
+            )
+        self._ref_history: List[PolicyBlueprint] = []
+
     # --- Identity ---
     name: str = ""
 
@@ -113,6 +123,20 @@ class CombatExperimentPPOBase(ExperimentPPO):
     explore_factor: float = 0.0
     uncertainty_floor: float = 0.3
     uncertainty_coef: float = 0.01
+
+    # --- Reference-delta exploration ---
+    # delta_mix (λ): blend weight between the policy's own σ and the
+    #   Δ-derived σ — σ_eff² = (1−λ)·σ² + λ·max((c·|μ−a_ref|)², ε²).
+    #   0 = mechanism off (default).  1 = σ driven purely by drift from
+    #   the reference ensemble.
+    # delta_factor (c): Δ→σ scale — how large a drift counts as
+    #   "one σ worth" of exploration.
+    # reference_horizon (H): number of recent trained policy versions
+    #   forming the uniform reference ensemble.  Populated from
+    #   post_update's UpdateArtifacts.policy_bp each update.
+    delta_mix: float = 0.0
+    delta_factor: float = 0.0
+    reference_horizon: int = 0
 
     # --- Shared training ---
     learning_rate: float = 1e-4
@@ -241,13 +265,24 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # Update feedback & Exploration scheduling
     # ------------------------------------------------------------------
 
-    def on_update(self, stats, update: int):
-        """Default: no-op.  Override to accumulate training stats for
-        closed-loop exploration scheduling, and/or to emit
-        experiment-defined metrics (``exp.*`` in the viewer), e.g.::
+    def post_update(self, stats, update: int, *, artifacts=None):
+        """Default: track the trained-policy version chain for the
+        reference-delta mechanism, then no-op.
 
-            def on_update(self, stats, update):
-                metrics = super().on_update(stats, update) or {}
+        ``artifacts.policy_bp`` is this update's post-update exported
+        policy — appended to ``self._ref_history`` (bounded by
+        ``reference_horizon``) so ``build_jobs`` can assemble the
+        uniform :class:`ReferenceSpec` ensemble on later updates.
+
+        Override to additionally accumulate training stats for
+        closed-loop exploration scheduling, and/or to emit
+        experiment-defined metrics (``exp.*`` in the viewer) — always
+        via ``super().post_update(stats, update, artifacts=artifacts)``
+        so the reference chain keeps working, e.g.::
+
+            def post_update(self, stats, update, *, artifacts=None):
+                metrics = super().post_update(
+                    stats, update, artifacts=artifacts) or {}
                 self._kl_history.append(stats.kl_mean)
                 metrics["kl_3u_mean"] = sum(self._kl_history[-3:]) / 3
                 return metrics
@@ -260,6 +295,16 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     coef *= 4.0  # KL flat for 3 updates, push exploration
                 return ExplorationSpec(uncertainty_coef=coef)
         """
+        if (
+            isinstance(artifacts, UpdateArtifacts)
+            and artifacts.policy_bp is not None
+        ):
+            hist = getattr(self, "_ref_history", None)
+            if hist is None:
+                hist = self._ref_history = []
+            hist.append(artifacts.policy_bp)
+            if self.reference_horizon > 0:
+                del hist[:-self.reference_horizon]
         return None
 
     def exploration(self, update: int) -> ExplorationSpec:
@@ -272,7 +317,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         Note: ``explore_factor`` is NOT part of this spec — it is
         read from ``self.explore_factor`` inside ``build_jobs``.
 
-        Subclasses that want a schedule override ``on_update`` (to absorb
+        Subclasses that want a schedule override ``post_update`` (to absorb
         stats) and this method (to read accumulated state).
         """
         return ExplorationSpec(
@@ -305,20 +350,51 @@ class CombatExperimentPPOBase(ExperimentPPO):
         base_seed: int,
         n_episodes: int,
         *,
+        update: int,
         stochastic: bool = True,
     ) -> List[Job]:
         """Build self-play rollout jobs.
 
-        ``explore_factor`` is read from ``self.explore_factor``
-        and wrapped into :class:`SamplingSpec` on each :class:`Job`'s
-        ``sampling_a`` / ``sampling_b`` fields.  ``stochastic`` is
+        The sampling spec is assembled by :meth:`_sampling_spec` —
+        ``explore_factor`` always, plus the reference-delta ensemble
+        (uniform over the last ``reference_horizon`` trained versions)
+        when ``delta_mix != 0`` and history exists.  ``stochastic`` is
         placed into each :class:`Job`'s ``stochastic`` field.
 
-        Subclass can override for non-self-play scenarios.
+        ``update`` is part of the framework contract; the base
+        implementation does not need it (history, not call ordering,
+        drives the spec).  Subclass can override for non-self-play
+        scenarios.
         """
         return self._build_selfplay_jobs(
             self._env_pb(), policy_bp, base_seed, n_episodes, stochastic,
         )
+
+    def _sampling_spec(self) -> SamplingSpec:
+        """Assemble this round's :class:`SamplingSpec`.
+
+        With ``delta_mix != 0`` and a non-empty trained-version history,
+        the spec carries a uniform :class:`ReferenceSpec` over the last
+        ``reference_horizon`` versions plus ``delta_factor`` /
+        ``delta_mix``.  Otherwise it is the plain ``explore_factor``
+        spec — including the warmup update(s) before any trained
+        version exists, where a nonzero ``delta_mix`` has no reference
+        to mix against.
+        """
+        history = getattr(self, "_ref_history", None) or []
+        if self.delta_mix != 0.0 and history:
+            window = history[-self.reference_horizon:]
+            n = len(window)
+            return SamplingSpec(
+                explore_factor=self.explore_factor,
+                reference=ReferenceSpec(
+                    policies=tuple(window),
+                    weights=tuple([1.0 / n] * n),
+                ),
+                delta_factor=self.delta_factor,
+                delta_mix=self.delta_mix,
+            )
+        return SamplingSpec(explore_factor=self.explore_factor)
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
         """Load the ParameterizedEnvBlueprint from ``env_blueprint`` filename.
@@ -374,7 +450,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         stochastic: bool = True,
     ) -> List[Job]:
         rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec(explore_factor=self.explore_factor)
+        sampling = self._sampling_spec()
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -435,7 +511,19 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # ------------------------------------------------------------------
 
     def state(self) -> dict:
-        return {}
+        """Persist the trained-version reference chain.
+
+        Subclasses overriding ``state()`` should merge
+        ``super().state()`` into their dict so the chain survives
+        resume — otherwise a resumed run's reference ensemble restarts
+        empty and diverges from a continuous run.
+        """
+        return {
+            "ref_history": [bp.to_dict() for bp in self._ref_history],
+        }
 
     def load_state(self, state: dict) -> None:
-        pass
+        self._ref_history = [
+            PolicyBlueprint.from_dict(d)
+            for d in state.get("ref_history", [])
+        ]

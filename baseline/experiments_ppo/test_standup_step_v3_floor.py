@@ -215,20 +215,20 @@ def test_zero_frame_episode_does_not_crash():
     assert not e._floor_disabled
 
 
-def test_on_update_no_longer_disables():
-    """on_update only records uncertainty; does not disable floor."""
+def test_post_update_no_longer_disables():
+    """post_update only records uncertainty; does not disable floor."""
     e = StandupStepV3()
     # High uncertainty for many updates — should NOT disable floor.
     for u in range(1, 20):
-        e.on_update(SimpleNamespace(policy_stats={"uncertainty": 0.99}), u)
+        e.post_update(SimpleNamespace(policy_stats={"uncertainty": 0.99}), u)
     assert not e._floor_disabled
     assert e.exploration(20).uncertainty_coef == e.uncertainty_coef
 
 
-def test_on_update_missing_uncertainty_does_not_crash():
-    """on_update must tolerate missing 'uncertainty' key (defensive)."""
+def test_post_update_missing_uncertainty_does_not_crash():
+    """post_update must tolerate missing 'uncertainty' key (defensive)."""
     e = StandupStepV3()
-    e.on_update(SimpleNamespace(policy_stats={}), 1)
+    e.post_update(SimpleNamespace(policy_stats={}), 1)
     assert not e._floor_disabled
 
 
@@ -273,9 +273,9 @@ if __name__ == "__main__":
     print("test_empty_episodes_does_not_crash: PASS")
     test_zero_frame_episode_does_not_crash()
     print("test_zero_frame_episode_does_not_crash: PASS")
-    test_on_update_no_longer_disables()
-    print("test_on_update_no_longer_disables: PASS")
-    test_on_update_missing_uncertainty_does_not_crash()
-    print("test_on_update_missing_uncertainty_does_not_crash: PASS")
+    test_post_update_no_longer_disables()
+    print("test_post_update_no_longer_disables: PASS")
+    test_post_update_missing_uncertainty_does_not_crash()
+    print("test_post_update_missing_uncertainty_does_not_crash: PASS")
     test_state_round_trip()
     print("test_state_round_trip: PASS")

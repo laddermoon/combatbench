@@ -526,7 +526,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Replay the episode's stored observations through the "
             "deterministic act() of each policy generation "
-            "(policy_exports/u{update-g}) and record the action vectors "
+            "(policy_exports/u{update-1-g}) and record the action vectors "
             "into <dump_dir>/delta/episode_NNNNN/.  Episode actions are "
             "not used — both sides of the delta are deterministic.  Only "
             "agents that produced trajectories (per traj_map) are "

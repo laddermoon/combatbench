@@ -586,7 +586,7 @@ class Step(CombatExperimentPPOBase):
     # Rollout jobs — phase-dependent explore_factor
     # ------------------------------------------------------------------
 
-    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True):
+    def build_jobs(self, policy_bp, base_seed, n_episodes, *, update, stochastic=True):
         """Per-frame explore_factor: σ×0.5 while low, σ×2.0 while standing.
 
         Overrides the scalar ``self.explore_factor`` — the callable on
@@ -841,6 +841,7 @@ class Step(CombatExperimentPPOBase):
 
     def state(self) -> dict:
         return {
+            **super().state(),
             "best_potential": self._best_potential,
             "best_quality": self._best_quality,
             "success_rate": self._success_rate,
@@ -848,6 +849,7 @@ class Step(CombatExperimentPPOBase):
         }
 
     def load_state(self, state: dict) -> None:
+        super().load_state(state)
         self._best_potential = float(state.get("best_potential", -1.0))
         # "best_quality" is absent in pre-stability-gate checkpoints —
         # defaulting to -1 lets a resumed run re-anchor improvement

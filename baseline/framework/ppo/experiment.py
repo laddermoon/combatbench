@@ -110,8 +110,10 @@ What the Experiment controls vs what the framework handles
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields as _dc_fields, replace
+from pathlib import Path
 from typing import (
     Any, Dict, List, Mapping, Optional, Tuple,
 )
@@ -657,7 +659,7 @@ class GradDiagSpec:
 
 @dataclass(frozen=True)
 class UpdateStats:
-    """Typed summary of one ``ppo_update`` call, passed to ``on_update``.
+    """Typed summary of one ``ppo_update`` call, passed to ``post_update``.
 
     The framework guarantees every typed field.  Per-channel dicts are
     keyed by ``RewardChannel.name``.  The ``policy_stats`` sub-mapping
@@ -875,7 +877,7 @@ class UpdateStats:
     diagnostics: List[str] = field(default_factory=list)
 
     # P0-3: Marks an update that was skipped because the buffer was empty
-    # (build_trajectories returned []).  Consumers like on_update() can
+    # (build_trajectories returned []).  Consumers like post_update() can
     # check this to avoid polluting KL history with zeros.
     is_empty: bool = False
 
@@ -1117,6 +1119,33 @@ class UpdateStats:
         return d
 
 
+@dataclass(frozen=True)
+class UpdateArtifacts:
+    """Artifacts produced by a single update, handed to ``post_update``.
+
+    Every field points at a real object that already exists at call
+    time — the hook reports completed facts, never planned writes:
+
+    - ``policy_bp``: the exported blueprint of the **post-update**
+      policy (``policy_exports/uNNNNN`` = the weights produced by
+      update ``NNNNN``).  Rollout at update ``N+1`` and the periodic
+      eval at update ``N`` are downstream consumers of this same
+      export — ``post_update`` simply reports it as this update's
+      training result.  ``None`` when the update produced no policy
+      (empty buffer — ``post_update`` is skipped anyway).
+    - ``checkpoint_path``: the ``checkpoint_uNNNNN.pt`` scheduled for
+      this update, or ``None`` when the schedule saves none.  The hook
+      fires just before the write so the checkpoint captures
+      post-``post_update`` experiment state (resume-equivalence); the
+      write follows in the same round and a failure aborts training,
+      so the path is never observed unwritten.  On the early-stop path
+      the checkpoint has already been written when the hook runs.
+    """
+
+    policy_bp: Optional[PolicyBlueprint] = None
+    checkpoint_path: Optional[Path] = None
+
+
 # ---------------------------------------------------------------------------
 # ExperimentPPO ABC
 # ---------------------------------------------------------------------------
@@ -1164,7 +1193,7 @@ class ExperimentPPO(ABC):
             def build_critic(self, channel_name, device):
                 ...
 
-            def build_jobs(self, policy_bp, base_seed, n_episodes):
+            def build_jobs(self, policy_bp, base_seed, n_episodes, *, update, stochastic=True):
                 ...
 
             def build_trajectories(self, episode):
@@ -1220,6 +1249,21 @@ class ExperimentPPO(ABC):
         """Return PPO-specific hyperparameters."""
         ...
 
+    def run_name(self) -> str:
+        """Return this run's name — the experiment owns run identity.
+
+        Default reproduces the historical framework convention::
+
+            train_<experiment.name>_ppo_<YYYYMMDD_HHMMSS>
+
+        Override to encode run semantics (e.g. sweep coordinates) into
+        the name.  The CLI's ``--run-name`` always wins; the framework
+        only uses the returned name to form the run directory under its
+        own storage root (``runs/<run_name>``) — the experiment defines
+        *what* the run is called, never *where* it is stored.
+        """
+        return f"train_{self.name}_ppo_{time.strftime('%Y%m%d_%H%M%S')}"
+
     @abstractmethod
     def build_actor(self, device: torch.device) -> TrainablePolicy:
         """Build and return the actor policy on the given device."""
@@ -1240,36 +1284,48 @@ class ExperimentPPO(ABC):
         ...
 
     # ==================================================================
-    # Update feedback & Exploration scheduling
+    # Post-update feedback & Exploration scheduling
     # ==================================================================
     #
     # These two hooks form a symmetric pair, mirroring the on_eval /
     # build_trajectories pair for curriculum scheduling:
     #
-    #   on_update(stats, update)  →  experiment absorbs training stats
-    #                                 into internal state (e.g. KL history)
+    #   post_update(stats, update, artifacts=...)  →  experiment absorbs
+    #                                 training stats and this update's
+    #                                 produced artifacts into internal
+    #                                 state (e.g. KL history, exported-
+    #                                 policy reference chains)
     #   exploration(update)       →  experiment reads internal state and
     #                                 returns an ExplorationSpec (or None)
     #
-    # The framework calls on_update *after* ppo_update and exploration
-    # *before* the next rollout.  On the first update, exploration runs
-    # before any on_update has been called, so the experiment's initial
-    # state (set in __init__ or class attributes) is used.
+    # The framework calls post_update *at the end of the update round*
+    # — after ppo_update, eval, and checkpoint — so every artifact it
+    # reports already exists on disk.  exploration() runs before the
+    # next rollout.  On the first update, exploration runs before any
+    # post_update has been called, so the experiment's initial state
+    # (set in __init__ or class attributes) is used.
 
-    def on_update(
-        self, stats: "UpdateStats", update: int,
+    def post_update(
+        self,
+        stats: "UpdateStats",
+        update: int,
+        *,
+        artifacts: Optional["UpdateArtifacts"] = None,
     ) -> Optional[Mapping[str, float]]:
-        """Absorb training statistics into internal state.
+        """Absorb training statistics and this update's artifacts.
 
-        Called once per update **after** ``ppo_update`` completes, with
-        the typed :class:`UpdateStats` for that update.  The experiment
-        can accumulate history (e.g. a rolling KL window) into instance
-        state, which ``exploration()`` will read on the next update.
+        Called once per update **after** ``ppo_update`` and the periodic
+        eval, just before this round's checkpoint write — the artifacts
+        it reports are anchored to *this* update.  The experiment
+        can accumulate history (e.g. a rolling KL window, or a chain of
+        exported policy blueprints for reference-action exploration)
+        into instance state, which ``exploration()`` / ``build_jobs()``
+        will read on later updates.
 
         This is the training-stats counterpart of ``on_eval()``:
         ``on_eval`` closes the loop on *reward weighting* using eval
-        episodes, while ``on_update`` closes the loop on *exploration
-        strength* using training statistics.
+        episodes, while ``post_update`` closes the loop on *exploration
+        strength* using training statistics and produced artifacts.
 
         Args:
             stats: Typed summary of this update's PPO results.  See
@@ -1278,6 +1334,12 @@ class ExperimentPPO(ABC):
                 diagnostics but has **no cross-family contract** —
                 treat it as opaque hints.
             update: Current update index (1-based, matches the loop).
+            artifacts: This update's produced artifacts — see
+                :class:`UpdateArtifacts`.  ``policy_bp`` is the
+                post-update exported policy (the object update
+                ``N+1``'s rollout will consume); ``checkpoint_path``
+                is the checkpoint written this update, or ``None``
+                when the schedule saved none.
 
         Returns:
             Optional experiment-defined metrics for this update.  Any
@@ -1291,9 +1353,10 @@ class ExperimentPPO(ABC):
             during ``build_trajectories()`` (which sees every episode)
             and reported here — e.g. stash ``self._final_pots`` while
             building, then ``return {"online_success": ...}``.  A
-            subclass that overrides ``on_update`` for its own state
-            tracking should ``super().on_update(stats, update)`` and
-            merge the returned dict so it doesn't drop base metrics.
+            subclass that overrides ``post_update`` for its own state
+            tracking should ``super().post_update(stats, update,
+            artifacts=artifacts)`` and merge the returned dict so it
+            doesn't drop base metrics.
         """
         return None
 
@@ -1304,7 +1367,7 @@ class ExperimentPPO(ABC):
 
         Called once per update **before** ``ppo_update``.  Returns
         ``uncertainty_floor`` and ``uncertainty_coef`` for the uncertainty floor
-        loss.  Reads whatever internal state ``on_update`` has
+        loss.  Reads whatever internal state ``post_update`` has
         accumulated.
 
         Note: ``explore_factor`` (rollout-time sampling) is NOT part
@@ -1331,7 +1394,7 @@ class ExperimentPPO(ABC):
         multipliers), consistent with the resume path that force-aligns
         optimizer LRs to ``CommonParams`` values.
 
-        May read state accumulated by ``on_update()`` — enabling
+        May read state accumulated by ``post_update()`` — enabling
         closed-loop schedules (e.g. decay once a rolling KL window
         saturates).  The *actual* applied LRs are logged to
         ``__RAW_STATS__`` under ``stats.actor_lr`` / ``stats.critic_lr``
@@ -1365,7 +1428,7 @@ class ExperimentPPO(ABC):
                     return {"dual_clip_c": 3.0}
                 return None
 
-        May read state accumulated by ``on_update()`` for closed-loop
+        May read state accumulated by ``post_update()`` for closed-loop
         schedules.  Blacklisted fields (``name``, ``seed``,
         ``rollout_workers``) and unknown fields raise ``ValueError``.
         CLI ``--param KEY=VALUE[@UPDATE]`` patches apply *after* this
@@ -1384,6 +1447,7 @@ class ExperimentPPO(ABC):
         base_seed: int,
         n_episodes: int,
         *,
+        update: int,
         stochastic: bool = True,
     ) -> List[Job]:
         """Build rollout jobs for training or evaluation.
@@ -1397,10 +1461,16 @@ class ExperimentPPO(ABC):
         experiment's implementation detail, not a framework parameter.
 
         Args:
-            policy_bp: The actor's exported policy blueprint.
+            policy_bp: The policy version this rollout consumes —
+                for training rollouts the export produced by the
+                previous update (``policy_exports/u{update-1:05d}``);
+                for eval the export produced by this update.
             base_seed: Base random seed for this batch.  Each job should
                 use ``base_seed + i`` as its seed.
             n_episodes: Number of episodes to build.
+            update: Current update index (1-based, matches the loop).
+                Required keyword-only — the experiment must never infer
+                the round from call ordering side channels.
             stochastic: If True (default), jobs are stochastic —
                 policies are wrapped in :class:`ExploratoryPolicy` and
                 ``sample()`` is called for training rollouts.  If False,
@@ -1440,7 +1510,7 @@ class ExperimentPPO(ABC):
         Returns an empty list to skip all episodes entirely.  When ``[]``
         is returned, the framework skips the PPO update for this round
         (``ppo_update`` returns a zeroed ``UpdateStats`` with
-        ``is_empty=True``), skips ``on_update`` so the experiment's KL
+        ``is_empty=True``), skips ``post_update`` so the experiment's KL
         history is not polluted, but still runs eval, checkpoint, and
         logging as normal.
         """

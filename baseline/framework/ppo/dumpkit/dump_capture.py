@@ -531,7 +531,8 @@ def _export_stochastic_policy(
     """Export a self-contained stochastic policy with baked-in explore_factor.
 
     Creates ``<dump_dir>/stochastic_policy/`` containing:
-    - ``model.pt`` — copied from ``policy_exports/u{N:05d}/model.pt``
+    - ``model.pt`` — copied from ``policy_exports/u{N-1:05d}/model.pt``
+      (the rollout-era policy version; ``uNNNNN`` = post-update-NNNNN)
     - ``policy.py`` — self-contained: inner ExportedTruncNormPolicy +
       embedded explore_factor callable + ExportedExploratoryPolicy wrapper
     - ``policy_blueprint.yaml`` — points to ExportedExploratoryPolicy
@@ -543,7 +544,8 @@ def _export_stochastic_policy(
 
     Returns the path to ``policy_blueprint.yaml``.
     """
-    export_src = run_dir / "policy_exports" / f"u{update:05d}"
+    # Rollout at update N consumed the version produced by update N-1.
+    export_src = run_dir / "policy_exports" / f"u{update - 1:05d}"
     model_pt = export_src / "model.pt"
     if not model_pt.exists():
         raise FileNotFoundError(
@@ -640,7 +642,7 @@ def _render_record_guide(
         policy_export = stochastic_policy_path
         policy_desc = "stochastic wrapped (explore_factor baked in)"
     else:
-        policy_export = run_dir / "policy_exports" / f"u{update:05d}" / "policy_blueprint.yaml"
+        policy_export = run_dir / "policy_exports" / f"u{update - 1:05d}" / "policy_blueprint.yaml"
         policy_desc = "raw θ_old (deterministic — no explore_factor)"
     record_output = dump_dir / "record"
 

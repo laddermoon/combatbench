@@ -35,10 +35,11 @@ class StandupFloor04LR(StandupFloor04):
     _prev_post_kl_max: float = 0.0
     _cur_actor_lr: float = 0.0   # 0 = never adjusted → base LR
 
-    def on_update(self, stats: UpdateStats, update: int):
+    def post_update(self, stats: UpdateStats, update: int, *, artifacts=None):
         # Merge super's experiment metrics (online_success etc.) so the
         # exp.* charts keep working under this override.
-        metrics = dict(super().on_update(stats, update) or {})
+        metrics = dict(super().post_update(
+            stats, update, artifacts=artifacts) or {})
         if not stats.is_empty:
             self._prev_early_stop = stats.early_stop_kl_mean > 0.0
             self._prev_post_kl_max = stats.post_kl_max

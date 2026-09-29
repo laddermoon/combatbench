@@ -114,6 +114,9 @@ class BalanceRecover(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        update: int,
+        stochastic: bool = True,
     ) -> List[Job]:
         self._validate_config()
         env_pb = self._env_pb()

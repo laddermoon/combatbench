@@ -26,7 +26,7 @@ Key namespaces emitted by ``RunData._flatten_update``:
 - ``ep.*``      rollout episode_stats
 - ``pc.<m>.<ch>`` per-channel buffer stats
 - ``time.*``    per-update phase timings
-- ``exp.*``     experiment.on_update() return value (ZONES)
+- ``exp.*``     experiment.post_update() return value (ZONES)
 - ``eval.*``    experiment.on_eval() info dict — sparse (ZONES)
 - ``policy.*``  policy_stats contributed by the policy (ZONES)
 
@@ -89,7 +89,7 @@ SECTIONS: List[Dict[str, Any]] = [
                   "不能说明：单次评估不能证明稳定提升；受评估样本、场景、随机性影响，也不说明变化的原因。"},
      ],
      "expanded": [
-        {"title": "在线指标（实验 on_update 输出）", "zone_rest": "exp"},
+        {"title": "在线指标（实验 post_update 输出）", "zone_rest": "exp"},
      ]},
 
     # 2 ────────────────────────────────────────────────────────────
@@ -374,7 +374,7 @@ ZONES: List[Dict[str, Any]] = [
      "title": "Experiment metrics",
      "color": "#7fb069",
      "sparse": False,
-     "hint": "实验自定义指标——experiment.on_update() 的返回值，每个 update 记录一次。\n"
+     "hint": "实验自定义指标——experiment.post_update() 的返回值，每个 update 记录一次。\n"
              "语义由实验定义（如在线成功率的连续曲线），框架仅透传展示。"},
     {"prefix": "eval.",
      "zone": "eval",

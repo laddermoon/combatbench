@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -209,6 +210,21 @@ def test_resume_continuation_is_bit_identical(tmp_path):
 
     # Strongest check: the final checkpoint payloads — params, Adam
     # moments, experiment state, and the saved RNG streams — all equal.
+    # ref_history embeds absolute export paths which legitimately
+    # differ across run dirs; normalize each blueprint's cls to the
+    # version directory name (uNNNNN) so the comparison checks the
+    # *version chain*, not the filesystem location.
+    def _norm_ckpt(ckpt):
+        ckpt = dict(ckpt)
+        st = dict(ckpt.get("state") or {})
+        normed = []
+        for bp in st.get("ref_history", []):
+            m = re.search(r"u\d{5}", str(bp.get("cls", "")))
+            normed.append(m.group(0) if m else bp.get("cls"))
+        st["ref_history"] = normed
+        ckpt["state"] = st
+        return ckpt
+
     ckpt_a = torch.load(
         dir_a / "checkpoints" / f"checkpoint_u{END_UPDATE:05d}.pt",
         map_location="cpu", weights_only=False,
@@ -217,7 +233,7 @@ def test_resume_continuation_is_bit_identical(tmp_path):
         dir_b2 / "checkpoints" / f"checkpoint_u{END_UPDATE:05d}.pt",
         map_location="cpu", weights_only=False,
     )
-    diffs = _deep_equal(ckpt_a, ckpt_b, "ckpt_u4")
+    diffs = _deep_equal(_norm_ckpt(ckpt_a), _norm_ckpt(ckpt_b), "ckpt_u4")
     assert not diffs, (
         "final checkpoints differ:\n" + "\n".join(diffs[:30])
     )

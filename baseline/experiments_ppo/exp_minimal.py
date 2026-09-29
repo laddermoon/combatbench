@@ -180,9 +180,10 @@ class MinimalExperiment(CombatExperimentPPOBase):
         }
 
     def state(self) -> dict:
-        return {"best_potential": self._best_potential}
+        return {**super().state(), "best_potential": self._best_potential}
 
     def load_state(self, state: dict) -> None:
+        super().load_state(state)
         self._best_potential = float(state.get("best_potential", -1.0))
 
 

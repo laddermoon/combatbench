@@ -198,11 +198,13 @@ class BasicBalance(CombatExperimentPPOBase):
 
     def state(self) -> dict:
         return {
+            **super().state(),
             "survival_rate": self._survival_rate,
             "best_survived": self._best_survived,
         }
 
     def load_state(self, state: dict) -> None:
+        super().load_state(state)
         self._survival_rate = float(state.get("survival_rate", 0.0))
         self._best_survived = float(state.get("best_survived", -1.0))
 

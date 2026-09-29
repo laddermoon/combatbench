@@ -1006,7 +1006,7 @@ def test_metric_doc():
     d = metric_doc("pc.ev.r_test")
     assert d["zone"] == "framework" and "explained variance" in d["hint"]
     d = metric_doc("exp.online_success")
-    assert d["zone"] == "experiment" and "on_update" in d["hint"]
+    assert d["zone"] == "experiment" and "post_update" in d["hint"]
     d = metric_doc("eval.success")
     assert d["zone"] == "eval" and "on_eval" in d["hint"]
     d = metric_doc("policy.foo")
@@ -1043,7 +1043,7 @@ def test_run_summary():
 
         es = s["metrics"]["exp.online_success"]
         assert es["zone"] == "experiment" and es["n"] == 2
-        assert "on_update" in es["hint"]
+        assert "post_update" in es["hint"]
 
         ev = s["metrics"]["eval.success"]
         assert ev["zone"] == "eval" and ev["n"] == 1  # sparse, honest

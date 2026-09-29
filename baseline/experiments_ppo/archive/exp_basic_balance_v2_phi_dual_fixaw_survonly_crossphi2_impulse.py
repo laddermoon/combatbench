@@ -125,6 +125,9 @@ class BasicBalanceV2PhiDualFixAWSurvOnlyCrossPhi2Impulse(CombatExperimentPPOBase
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        update: int,
+        stochastic: bool = True,
     ) -> List[Job]:
         env_pb = self._env_pb()
         impulse = self._impulse_params()

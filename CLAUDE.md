@@ -291,7 +291,7 @@ baseline/runs/<run_name>/
 ├── REPRODUCE.md             # Reproduction commands
 ├── checkpoints/             # Periodic checkpoints (checkpoint_uNNNNN.pt)
 ├── policy/                  # Best-of-run exported policy
-├── policy_exports/          # Per-update policy blueprints
+├── policy_exports/          # Per-update policy blueprints (uNNNNN = post-update-NNNNN 版本)
 └── videos/                  # Evaluation videos (uNNNNN.mp4)
 ```
 

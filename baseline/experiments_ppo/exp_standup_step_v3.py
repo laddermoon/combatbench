@@ -204,7 +204,7 @@ class StandupStepV3(CombatExperimentPPOBase):
         bp_path = Path(__file__).resolve().parent.parent / "humanoid21" / "end2end" / "standup_step_v3_env.yaml"
         return ParameterizedEnvBlueprint.load(bp_path)
 
-    def build_jobs(self, policy_bp, base_seed, n_episodes, *, stochastic=True):
+    def build_jobs(self, policy_bp, base_seed, n_episodes, *, update, stochastic=True):
         """Override to use phase-dependent per-frame explore_factor.
 
         ``self.explore_factor`` is ignored — the callable
@@ -233,12 +233,13 @@ class StandupStepV3(CombatExperimentPPOBase):
             ))
         return jobs
 
-    def on_update(self, stats, update: int) -> None:
+    def post_update(self, stats, update: int, *, artifacts=None) -> None:
         """Track uncertainty history for diagnostics.
 
         Floor disable is now driven by stepping success in ``on_eval``,
         not by uncertainty level here.
         """
+        super().post_update(stats, update, artifacts=artifacts)
         if self._uncertainty_history is None:
             self._uncertainty_history = []
         u = float(stats.policy_stats.get("uncertainty", 0.0))
@@ -694,6 +695,7 @@ class StandupStepV3(CombatExperimentPPOBase):
 
     def state(self) -> dict:
         return {
+            **super().state(),
             "best_potential": self._best_potential,
             "success_rate": self._success_rate,
             "floor_disabled": self._floor_disabled,
@@ -702,6 +704,7 @@ class StandupStepV3(CombatExperimentPPOBase):
         }
 
     def load_state(self, state: dict) -> None:
+        super().load_state(state)
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
         self._floor_disabled = bool(state.get("floor_disabled", False))

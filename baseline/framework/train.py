@@ -373,7 +373,16 @@ def main() -> None:
             experiment.common_params = lambda: cp
             experiment.ppo_params = lambda: pp
 
-    run_name = args.run_name or f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
+    # The experiment owns run identity; the framework owns only the
+    # storage root below.  PPO experiments expose run_name() (default
+    # reproduces the historical train_<name>_<algo>_<ts> convention);
+    # the SAC path keeps the inline format until SAC migrates.
+    if args.run_name:
+        run_name = args.run_name
+    elif algo == "ppo":
+        run_name = experiment.run_name()
+    else:
+        run_name = f"train_{experiment.name}_{algo}_{time.strftime('%Y%m%d_%H%M%S')}"
 
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()

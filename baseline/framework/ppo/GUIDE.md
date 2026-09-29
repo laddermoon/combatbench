@@ -11,7 +11,7 @@
 - **多 reward channel**：每个 reward 组件有独立的 critic、独立的 gamma 和 GAE lambda
 - **Trajectory 级控制**：实验决定如何切分 episode、每个 channel 的 reward / 终止标志 / actor_weight
 - **Curriculum scheduling**：通过 `build_trajectories` 动态调整 `actor_weight`，无需框架介入
-- **探索调度**：`on_update()` + `exploration()` 这对 hook 让实验根据训练统计动态调整探索强度
+- **探索调度**：`post_update()` + `exploration()` 这对 hook 让实验根据训练统计动态调整探索强度
 - **Checkpoint resume**：实验状态自动序列化/恢复
 
 ---
@@ -19,36 +19,41 @@
 ## 2. 数据流
 
 ```
-每个 update 的完整流程:
+每个 update 的完整流程（策略版本流模型 — policy_exports/uNNNNN 是
+"update N 训练完成后的策略"，rollout 只是它的一个消费点）:
 
 1. exploration(update) → ExplorationSpec
      实验决定本轮训练侧防坍缩参数（uncertainty_floor, uncertainty_coef）
-2. actor.to_blueprint() → PolicyBlueprint
-     导出策略蓝图用于 rollout（同时实现 Policy 和 StochasticPolicy）
-3. build_jobs(policy_bp, base_seed, n_episodes, stochastic=True) → List[Job]
+2. build_jobs(policy_bp, base_seed, n_episodes, update=u) → List[Job]
      实验构建 rollout 任务（哪个环境、哪个对手、什么种子）
+     policy_bp 是上一轮 post-update 导出的版本 u-1（首轮为 u00000 = 初始权重）
      explore_factor 包进 SamplingSpec 注入每个 Job 的 sampling_a / sampling_b 字段
-4. ParallelRollouter.collect(jobs) → List[Episode]
+3. ParallelRollouter.collect(jobs) → List[Episode]
      框架并行执行 rollout，收集完整 episode
      stochastic=True 时策略包入 SamplingPolicy，按 spec 逐帧构造
      SamplingContext 调 sample()
-5. build_trajectories(episodes) → List[Trajectory]
+4. build_trajectories(episodes) → List[Trajectory]
      实验把 episode 切成 trajectory，填入每个 channel 的
      reward / is_terminated / actor_weight
-6. PPOBuffer(trajs, actor, channels)
+5. PPOBuffer(trajs, actor, channels)
      框架批量调用 actor.evaluate_actions 计算 old log_prob，
      为每个 channel 计算 GAE → advantage + return
-7. ppo_update(actor, critics, buf, ...)
+6. ppo_update(actor, critics, buf, ...)
      每 channel: normalize advantage (z-score on active frames)
      L1 归一化: 每帧 Σ_c |aw_c| = 1
      合并: combined_adv = Σ_c aw_c_normed × confidence_c × norm_adv_c
      Critic 更新: MSE(V_c, return_c)
      Actor 更新: PPO clipped surrogate on combined_adv
-8. on_update(stats, update)
-     实验吸收本轮训练统计到内部状态
-9. (每 eval_interval 轮) build_jobs(det_policy_bp, ..., stochastic=False) → eval episodes
+7. actor.to_blueprint() → policy_exports/u{u:05d}
+     本轮训练结果（版本 u）——eval、下一轮 rollout、
+     post_update 的 UpdateArtifacts 三方复用同一导出物
+8. (每 eval_interval 轮) build_jobs(policy_bp, ..., update=u, stochastic=False) → eval episodes
      on_eval(eval_episodes, update) → {is_new_best, info, stop_training?}
+9. post_update(stats, update, artifacts=UpdateArtifacts)
+     实验吸收本轮训练统计 + 本轮产出工件
+     （artifacts.policy_bp = 版本 u 导出；artifacts.checkpoint_path = 本轮 ckpt 或 None）
 10. save checkpoint (每 N 轮): actor/critic/optimizer + experiment.state()
+     （post_update 之后快照——resume 等价性要求实验状态完整进 ckpt）
 ```
 
 **核心分工：**
@@ -64,7 +69,7 @@
 | Critic 更新 | — | MSE on returns |
 | Actor 更新 | — | PPO clipped surrogate |
 | Eval & 调度 | `on_eval`（完全控制） | 跑 eval rollout、导出策略 |
-| 训练统计反馈 | `on_update(stats, update)` | 调用它，传入 typed UpdateStats |
+| 训练统计反馈 | `post_update(stats, update, *, artifacts)` | 调用它，传入 typed UpdateStats + UpdateArtifacts |
 | 探索 | `exploration(update)` → ExplorationSpec | 返回 uncertainty_floor / uncertainty_coef（训练侧防坍缩） |
 | Rollout 探索 | `build_jobs()` → Job.sampling_a/b (SamplingSpec) | 路由 spec 到 SamplingPolicy → 逐帧 SamplingContext → sample() |
 | Checkpoint | `state()` / `load_state()` | 存模型+config、恢复 |
@@ -237,10 +242,10 @@ def on_eval(self, episodes, update) -> Dict[str, Any]:
 | `ppo_params()` | **必须** | 训练开始 | 返回 PPO 超参 |
 | `build_actor(device)` | **必须** | 训练开始 | 构建并返回 actor |
 | `build_critic(name, device)` | **必须** | 训练开始（每 channel 一次） | 构建并返回 V critic |
-| `build_jobs(bp, seed, n, stochastic=)` | **必须** | 每 update（训练+eval） | 构建 rollout 任务列表 |
+| `build_jobs(bp, seed, n, *, update, stochastic=)` | **必须** | 每 update（训练+eval） | 构建 rollout 任务列表 |
 | `build_trajectories(episodes)` | **必须** | 每 update | episode → trajectory |
 | `on_eval(episodes, update)` | **必须** | 每 eval_interval 轮 | 计算 eval 指标、判断 best、更新状态 |
-| `on_update(stats, update)` | 可选 | 每 update 后 | 吸收训练统计到内部状态，默认 no-op |
+| `post_update(stats, update, *, artifacts)` | 可选 | 每 update 后 | 吸收训练统计+本轮工件到内部状态，默认 no-op |
 | `exploration(update)` | 可选 | 每 update 前 | 返回 ExplorationSpec（uncertainty_floor/coef），默认 None |
 | `param_overrides(update)` | 可选 | 每 update 最前 | 返回 `{字段名: 值}` 覆盖本 update 的 CommonParams/PPOParams，默认 None |
 | `state()` | 可选 | checkpoint 时 | 序列化内部状态 |
@@ -304,13 +309,13 @@ class MyExperiment(ExperimentPPO):
 
 ### 5.2 探索调度
 
-通过 `on_update` + `exploration` 这对 hook 实现训练侧的防坍缩调度：
+通过 `post_update` + `exploration` 这对 hook 实现训练侧的防坍缩调度：
 
 ```python
 class MyExperiment(ExperimentPPO):
     _kl_history: List[float] = []
 
-    def on_update(self, stats, update):
+    def post_update(self, stats, update, *, artifacts=None):
         self._kl_history.append(stats.kl_mean)
 
     def exploration(self, update):
@@ -326,7 +331,7 @@ class MyExperiment(ExperimentPPO):
 ```
 
 > **rollout 侧的 ``explore_factor`` 调度**：如果需要根据 KL 历史动态调整
-> rollout 时的探索强度，在 ``on_update`` 里修改 ``self.explore_factor``
+> rollout 时的探索强度，在 ``post_update`` 里修改 ``self.explore_factor``
 > （``CommonParams`` 字段），``build_jobs`` 会自动读取它。这和
 > ``exploration()`` 返回的 ``ExplorationSpec`` 是两个独立的旋钮。
 
@@ -369,7 +374,7 @@ def reward_channels(self):
 v2 checkpoint 还保存了全局 RNG 状态（python `random` / `numpy` / torch CPU / torch CUDA）与 loop 计数器（`prev_gvec`、`n_evals_done`）。因此：
 
 - **同实验、同 config 的 `--resume-from` 续训与不间断训练 bit-identical**：模型参数、optimizer 状态、minibatch 顺序（`torch.randperm` 消耗 CUDA RNG）、RAW_STATS 全部一致。由 `tests/test_resume_equivalence.py` 的双进程等价测试保证。
-- 前提：rollout/eval/gradsig 的随机性全部由 per-update 派生种子驱动（`cp.seed + u*episodes` 等），不依赖全局 RNG——框架已如此设计；**实验代码若在 `build_trajectories`/`on_update` 中引入未持久化的随机源，等价性即被打破**——请使用 `np.random.default_rng(派生种子)`，不要消费全局 RNG。
+- 前提：rollout/eval/gradsig 的随机性全部由 per-update 派生种子驱动（`cp.seed + u*episodes` 等），不依赖全局 RNG——框架已如此设计；**实验代码若在 `build_trajectories`/`post_update` 中引入未持久化的随机源，等价性即被打破**——请使用 `np.random.default_rng(派生种子)`，不要消费全局 RNG。
 
 以下情形**不保证** bit-identical，load 时会打印警告：
 

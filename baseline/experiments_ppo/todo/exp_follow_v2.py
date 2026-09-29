@@ -207,6 +207,9 @@ class FollowV2(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        update: int,
+        stochastic: bool = True,
     ) -> List[Job]:
         env_pb = self._env_pb()
         speed = self.current_speed

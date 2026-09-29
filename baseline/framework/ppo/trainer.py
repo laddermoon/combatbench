@@ -849,7 +849,7 @@ def ppo_update(
     # scenario in curriculum learning (all episodes filtered out).  Short
     # circuit to a zeroed UpdateStats instead of crashing in nn.Linear
     # on a 0-sample forward pass.  The loop checks is_empty and skips
-    # on_update to avoid polluting the experiment's KL history.
+    # post_update to avoid polluting the experiment's KL history.
     reward_keys = tuple(ch.name for ch in reward_channels)
     if buf.is_empty():
         return UpdateStats.empty(reward_keys)
@@ -2039,7 +2039,7 @@ def ppo_update(
     # not from the last epoch's (possibly empty) mean.  Before this fix,
     # `epoch_kl_stats[-1]["kl_mean"]` was 0.0 after early stop because the
     # trailing epochs had no actor minibatches, hiding the KL blow-up from
-    # every downstream consumer (on_update exploration schedulers,
+    # every downstream consumer (post_update exploration schedulers,
     # the [PPO Opt] log line, the debug viewer).
     final_kl = float(np.mean(all_actor_kls)) if all_actor_kls else 0.0
     max_kl_overall = float(np.max(all_actor_kls)) if all_actor_kls else 0.0

@@ -15,6 +15,7 @@ from .experiment import (
     ExplorationSpec,
     PPOParams,
     TrainablePolicy,
+    UpdateArtifacts,
     UpdateStats,
 )
 from .stochastic_policy import StochasticPolicy
@@ -27,5 +28,6 @@ __all__ = [
     "PPOParams",
     "StochasticPolicy",
     "TrainablePolicy",
+    "UpdateArtifacts",
     "UpdateStats",
 ]

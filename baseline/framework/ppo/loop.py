@@ -46,6 +46,8 @@ from typing import Any, Dict, List, Optional, Set
 import numpy as np
 import torch
 
+from envs.framework.policy import PolicyBlueprint
+
 from baseline.framework.rollout import Episode, ParallelRollouter
 
 from .experiment import (
@@ -57,6 +59,7 @@ from .experiment import (
     LRSpec,
     PPOParams,
     TrainablePolicy,
+    UpdateArtifacts,
     resolve_update_params,
 )
 from .trainer import PPOBuffer, ppo_update, set_seed
@@ -78,7 +81,7 @@ _EXP_METRIC_KEY = re.compile(r"^[a-z0-9_]+$")
 def _sanitize_exp_metrics(m: Any) -> Dict[str, float]:
     """Keep only finite scalar metrics with safe key names.
 
-    ``on_update()`` may return arbitrary objects; anything that is not a
+    ``post_update()`` may return arbitrary objects; anything that is not a
     finite ``int``/``float``/``bool`` scalar, or whose key is not a
     lowercase ``[a-z0-9_]`` identifier (dots would corrupt the viewer's
     ``exp.*`` flattening), is silently dropped.  ``None`` and
@@ -694,6 +697,16 @@ def train_ppo(
             )
 
     with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
+        # Policy-version export stream — ``policy_exports/uNNNNN`` is
+        # the *post-update-NNNNN* policy.  Rollout at update ``u``
+        # consumes the version produced by update ``u-1``; the init /
+        # resumed weights are exported once here as ``u{start-1}``
+        # (idempotent on resume — the checkpoint holds the same state).
+        policy_bp = actor.to_blueprint(
+            dest_path=str(
+                run_dir / "policy_exports" / f"u{start_update - 1:05d}"
+            ),
+        )
         u = start_update
         while True:
             t_update_start = time.perf_counter()
@@ -776,23 +789,17 @@ def train_ppo(
                         for pg in copt.param_groups:
                             pg["lr"] = lr_spec.critic_lr
 
-            # 1. Export stochastic policy blueprint for training rollouts.
-            #    Stochastic (log_std included) so rollout samples explore.
-            #    A fresh export each update ensures workers use the latest weights.
-            t0 = time.perf_counter()
-            export_dir = run_dir / "policy_exports" / f"u{u:05d}"
-            policy_bp = actor.to_blueprint(
-                dest_path=str(export_dir),
-            )
-            t_export = time.perf_counter() - t0
-
-            # 2. Build rollout jobs.
-            #    Experiment decides agent assignment, initial distance, seeds,
-            #    and explore_factor (internally, placed into Job fields).
+            # 1. Build rollout jobs on the current policy version —
+            #    the export produced by the previous update (or the
+            #    init/resume export before the loop).  No fresh export
+            #    here: rollout is just one consumer of the version
+            #    stream.  Experiment decides agent assignment, initial
+            #    distance, seeds, and sampling specs internally.
             t0 = time.perf_counter()
             rollout_seed = cp.seed + u * cp_u.episodes_per_update
             jobs = experiment.build_jobs(
                 policy_bp, rollout_seed, cp_u.episodes_per_update,
+                update=u,
             )
             t_jobs = time.perf_counter() - t0
 
@@ -959,19 +966,23 @@ def train_ppo(
             # by deferring all printing to the loop).
             for line in stats.diagnostics:
                 print(line, flush=True)
-            # 5b. Update feedback — let the experiment absorb this update's
-            #     training stats into internal state (e.g. KL history for
-            #     closed-loop exploration scheduling).  exploration() on the
-            #     next update will read whatever on_update() writes here.
-            #
-            # P0-3: Skip on_update for empty-buffer updates so the
-            # experiment's KL history doesn't get polluted with zeros
-            # (which would be misread as "KL too flat, push exploration").
-            exp_metrics: Optional[Dict[str, float]] = None
+            # 5b. Post-update policy export — version ``u`` is the
+            #     *result* of this update's training (stochastic export,
+            #     log_std included).  Its consumers: the periodic eval
+            #     below, rollout at u+1, and the experiment via
+            #     post_update's UpdateArtifacts.  Empty-buffer rounds
+            #     produce no version — the weights never changed.
+            trained_bp: Optional[PolicyBlueprint] = None
+            t_export = 0.0
             if not stats.is_empty:
-                exp_metrics = _sanitize_exp_metrics(
-                    experiment.on_update(stats, u)
+                t0 = time.perf_counter()
+                trained_bp = actor.to_blueprint(
+                    dest_path=str(
+                        run_dir / "policy_exports" / f"u{u:05d}"
+                    ),
                 )
+                policy_bp = trained_bp
+                t_export = time.perf_counter() - t0
             else:
                 print(f"  [skip] build_trajectories returned no usable frames "
                       f"(episodes={len(episodes)}); PPO update skipped",
@@ -985,12 +996,11 @@ def train_ppo(
             if u % cp_u.eval_interval == 0:
                 t0 = time.perf_counter()
                 eval_seed = cp.seed + 100_000 + u * 97
-                eval_export_dir = run_dir / "policy_exports" / f"u{u:05d}_eval"
-                det_bp = actor.to_blueprint(
-                    dest_path=str(eval_export_dir),
-                )
+                # Eval reuses this update's trained export — the
+                # post-update weights are exactly what eval rolls out.
                 eval_jobs = experiment.build_jobs(
-                    det_bp, eval_seed, cp_u.eval_episodes,
+                    policy_bp, eval_seed, cp_u.eval_episodes,
+                    update=u,
                     stochastic=False,
                 )
                 eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
@@ -1003,8 +1013,9 @@ def train_ppo(
 
                 if result.get("stop_training", False):
                     print(f"[early_stop] no improvement for {getattr(experiment, '_no_improvement_limit', '?')} evals, stopping at update {u}", flush=True)
+                    stop_ckpt = ckpt_dir / f"checkpoint_u{u:05d}.pt"
                     save_checkpoint(
-                        ckpt_dir / f"checkpoint_u{u:05d}.pt",
+                        stop_ckpt,
                         actor=actor,
                         critics=critics,
                         actor_optimizer=actor_optimizer,
@@ -1016,6 +1027,16 @@ def train_ppo(
                         n_evals_done=n_evals_done,
                         param_overrides=applied_ovr,
                     )
+                    # The round did complete its training — report this
+                    # update's artifacts before breaking.
+                    if not stats.is_empty:
+                        experiment.post_update(
+                            stats, u,
+                            artifacts=UpdateArtifacts(
+                                policy_bp=trained_bp,
+                                checkpoint_path=stop_ckpt,
+                            ),
+                        )
                     break
 
                 # Build eval line from info dict
@@ -1083,7 +1104,60 @@ def train_ppo(
                         if last_video_proc is not None:
                             print(f"  [video:{video_path.name}]", flush=True)
 
-            # 7. Logging — framework-computed stats from Trajectory + Episode.
+            # 7. Post-update feedback — the experiment absorbs this
+            #    update's training stats AND its produced artifacts
+            #    (post-update exported policy + this round's checkpoint)
+            #    into internal state.  exploration() on the next update
+            #    will read whatever post_update() writes here.
+            #
+            #    artifacts.checkpoint_path anchors to THIS update: the
+            #    checkpoint scheduled for this round (eval_interval or
+            #    u==1), or None.  post_update runs BEFORE the write so
+            #    the checkpoint below captures post-state — a resumed
+            #    run must see the same experiment state a continuous
+            #    run had (ref_history etc.).  The write follows in the
+            #    same round; a failure aborts the loop, so the path is
+            #    never observed unwritten.
+            #
+            # P0-3: Skip post_update for empty-buffer updates so the
+            # experiment's KL history doesn't get polluted with zeros
+            # (which would be misread as "KL too flat, push exploration").
+            exp_metrics: Optional[Dict[str, float]] = None
+            if not stats.is_empty:
+                exp_metrics = _sanitize_exp_metrics(
+                    experiment.post_update(
+                        stats, u,
+                        artifacts=UpdateArtifacts(
+                            policy_bp=trained_bp,
+                            checkpoint_path=(
+                                ckpt_dir / f"checkpoint_u{u:05d}.pt"
+                                if u % cp_u.eval_interval == 0 or u == 1
+                                else None
+                            ),
+                        ),
+                    )
+                )
+
+            # 8. Periodic checkpoint — saved at eval intervals and at u=1
+            #    so the first update is always recoverable.  Stores
+            #    experiment.state() AFTER post_update absorbed this
+            #    round, preserving resume-equivalence.
+            if u % cp_u.eval_interval == 0 or u == 1:
+                save_checkpoint(
+                    ckpt_dir / f"checkpoint_u{u:05d}.pt",
+                    actor=actor,
+                    critics=critics,
+                    actor_optimizer=actor_optimizer,
+                    critic_optimizers=critic_optimizers,
+                    experiment=experiment,
+                    cp=cp,
+                    update=u,
+                    prev_gvec=prev_gvec,
+                    n_evals_done=n_evals_done,
+                    param_overrides=applied_ovr,
+                )
+
+            # 9. Logging — framework-computed stats from Trajectory + Episode.
             #    Two layers: human-readable summary lines + machine-readable
             #    __RAW_STATS__ JSON for external log parsing / plotting.
             ep_stats = _episode_stats(episodes)
@@ -1231,22 +1305,5 @@ def train_ppo(
                 f" eval={t_eval:.1f}s",
                 flush=True,
             )
-
-            # 8. Periodic checkpoint — saved at eval intervals and at u=1
-            #    so the first update is always recoverable.
-            if u % cp_u.eval_interval == 0 or u == 1:
-                save_checkpoint(
-                    ckpt_dir / f"checkpoint_u{u:05d}.pt",
-                    actor=actor,
-                    critics=critics,
-                    actor_optimizer=actor_optimizer,
-                    critic_optimizers=critic_optimizers,
-                    experiment=experiment,
-                    cp=cp,
-                    update=u,
-                    prev_gvec=prev_gvec,
-                    n_evals_done=n_evals_done,
-                    param_overrides=applied_ovr,
-                )
 
             u += 1

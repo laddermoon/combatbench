@@ -1825,7 +1825,7 @@ def test_approx_kl_reflects_real_kl_after_early_stop():
 
     This is the core P0-1 regression.  Before the fix, `kl_mean` was
     read from the last epoch's mean_kl, which after actor early-stop was
-    always 0.0 (the actor never ran in those epochs), so `on_update`
+    always 0.0 (the actor never ran in those epochs), so `post_update`
     consumers saw `kl_mean=0` exactly when KL had actually blown up.
     """
     stats, pp, _ = _run_high_kl_update(target_kl=0.001, update_epochs=4)

@@ -208,6 +208,9 @@ class BalanceV2(CombatExperimentPPOBase):
         policy_bp,
         base_seed: int,
         n_episodes: int,
+        *,
+        update: int,
+        stochastic: bool = True,
     ) -> List[Job]:
         env_pb = self._env_pb()
         env_bp = env_pb.materialize(max_steps=self.max_steps)

@@ -101,7 +101,7 @@ def _traj_from_episode(ep: Episode, agent_id: str, seed=11):
 
 
 def _create_delta_run(tmpdir: Path, trained_agents=("robot_a", "robot_b"),
-                      export_updates=(1, 2, 3, 4), update=4):
+                      export_updates=(0, 1, 2, 3), update=4):
     """Build run_dir with a dump at u{update} + real policy exports.
 
     Returns (dump_dir, run_dir).
@@ -166,7 +166,7 @@ def test_delta_self_play_both_agents():
         meta = json.loads((out_dir / "meta.json").read_text())
 
         assert meta["update"] == 4
-        assert meta["gen_updates"] == [4, 3, 2, 1]
+        assert meta["gen_updates"] == [3, 2, 1, 0]
         assert meta["missing_updates"] == []
         assert sorted(meta["agents"]) == ["robot_a", "robot_b"]
 
@@ -205,7 +205,7 @@ def test_delta_missing_export_recorded():
 
         meta = json.loads((out_dir / "meta.json").read_text())
         assert meta["missing_updates"] == [2]
-        assert meta["gen_updates"] == [4, 3, 1]
+        assert meta["gen_updates"] == [3, 1, 0]
         npz = np.load(out_dir / "delta.npz")
         assert npz["actions.robot_a"].shape == (3, T, ACT_DIM)
     print("test_delta_missing_export_recorded: PASS")
@@ -305,7 +305,7 @@ def test_api_episode_delta_available():
         status, body = api._episode_delta(0)
         assert status == 200
         assert body["available"] is True
-        assert body["gen_updates"] == [4, 3, 2]
+        assert body["gen_updates"] == [3, 2, 1]
         assert set(body["agents"]) == {"robot_a", "robot_b"}
         acts = body["agents"]["robot_a"]["actions"]
         assert len(acts) == 3 and len(acts[0]) == T and len(acts[0][0]) == ACT_DIM

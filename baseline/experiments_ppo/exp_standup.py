@@ -94,7 +94,7 @@ class Standup(CombatExperimentPPOBase):
     _best_potential: float = -1.0
     _success_rate: float = 0.0
     # Final potentials of the current update's trajectories, collected
-    # by _build_agent_trajectory and consumed by on_update's metrics.
+    # by _build_agent_trajectory and consumed by post_update's metrics.
     _ep_final_pots: Optional[list] = None
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
@@ -168,7 +168,7 @@ class Standup(CombatExperimentPPOBase):
             sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
         )]
 
-    def on_update(self, stats, update):
+    def post_update(self, stats, update, *, artifacts=None):
         """Per-update experiment metrics (logged as exp.*).
 
         online_success: fraction of this update's trajectories whose
@@ -177,6 +177,7 @@ class Standup(CombatExperimentPPOBase):
 
         final_potential_mean: mean final potential across trajectories.
         """
+        super().post_update(stats, update, artifacts=artifacts)
         finals = self._ep_final_pots or []
         self._ep_final_pots = []
         if not finals:
@@ -256,11 +257,13 @@ class Standup(CombatExperimentPPOBase):
 
     def state(self) -> dict:
         return {
+            **super().state(),
             "best_potential": self._best_potential,
             "success_rate": self._success_rate,
         }
 
     def load_state(self, state: dict) -> None:
+        super().load_state(state)
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
 
