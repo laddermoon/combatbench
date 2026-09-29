@@ -206,8 +206,7 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
   - `/delta/<pos>` —— ⑧：episode picker + agent tabs（单选，
     不合并）+ Compute Δ（POST `/api/delta`，与 render 共享单
     job 槽）+ episode 轴视频骨架；body 三层：标量行（per-gen
-    mean‖Δ‖/peak 帧/相邻代 dir-cos）→ gens×frames 漂移热轨
-    （点击列=帧游标）→ ‖Δ_g(t)‖ 曲线 + 相邻代差分
+    mean‖Δ‖/peak 帧/相邻代 dir-cos）→ ‖Δ_g(t)‖ 曲线 + 相邻代差分
     ‖a_g−a_{g−1}‖（update 归因）；帧级下钻 = Δ 散点图
     （x=d0..d20 动作维, y=a_g−a_ref, 每代一色, hover 出
     ref/gen/Δ 三项——绝对值量级远大于 Δ，不放原值曲线）。

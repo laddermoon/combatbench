@@ -439,7 +439,6 @@
   .upd-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .delta-ep { margin: 8px 0 4px; }
   .dh-cell { cursor: crosshair; }
-  .drift-strip { cursor: crosshair; }
   .delta-jump-ep { color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 400; margin-left: 10px; }
   .delta-jump-ep:hover { text-decoration: underline; }
   .delta-ep-head { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 2px; }
@@ -5298,7 +5297,6 @@
     const body = $('delta-body');
     body.innerHTML = _deltaBodyHtml(pos, frame, state.deltaAgent);
     mountCharts(body, f => { state.selectedFrame = f; renderDeltaPage(); });
-    _bindDeltaStrip(body);
     const jump = body.querySelector('.delta-jump-ep');
     if (jump) jump.addEventListener('click', () => selectEpisode(pos, true));
   }
@@ -5375,10 +5373,6 @@
       (dirCosN ? _kv('dir consistency', fmt(dirCosSum / dirCosN, 3)) : '') +
       '</div>';
 
-    // gens × frames heat strip — the timeline-level overview
-    html += `<h3>drift ‖Δ_g(t)‖ · gens × frames <span class="muted">(click a column to set the frame cursor)</span></h3>`;
-    html += _driftStripHtml(norms, gens, frame);
-
     // per-gen drift curves
     const alpha = g => (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0);
     html += chartBox(
@@ -5418,44 +5412,6 @@
       html += `<div style="color:var(--muted);font-size:11px;margin-top:6px">missing exports: ${d.missing_updates.map(u => 'u' + String(u).padStart(5, '0')).join(', ')}</div>`;
     }
     return html;
-  }
-
-  // gens × frames drift strip: rows = past gens, x = episode frame,
-  // cell = ‖a_g(t) − a_ref(t)‖.  Click a column to set the cursor.
-  function _driftStripHtml(norms, gens, frame) {
-    const G = gens.length - 1, T = norms[1].length;
-    const W = 1000, lm = 46, rh = 15, tm = 4;
-    const cw = (W - lm) / T, H = tm + G * rh + 4;
-    let vmax = 1e-9;
-    for (let g = 1; g <= G; g++)
-      for (let t = 0; t < T; t++) vmax = Math.max(vmax, norms[g][t]);
-    let s = `<svg class="drift-strip" data-t="${T}" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
-    for (let g = 1; g <= G; g++) {
-      const y = tm + (g - 1) * rh;
-      s += `<text class="gs-axis" x="${lm - 5}" y="${y + rh / 2 + 3}" text-anchor="end">u${gens[g]}</text>`;
-      for (let t = 0; t < T; t++) {
-        const v = norms[g][t];
-        const a = 0.05 + 0.95 * Math.sqrt(v / vmax);
-        s += `<rect x="${(lm + t * cw).toFixed(1)}" y="${y}" width="${(cw + 0.5).toFixed(1)}" height="${rh - 1}" fill="rgba(224,108,117,${a.toFixed(3)})"><title>u${gens[g]} · f${t} ‖Δ‖=${v.toFixed(4)}</title></rect>`;
-      }
-    }
-    const cx = lm + (frame + 0.5) * cw;
-    s += `<line x1="${cx.toFixed(1)}" y1="${tm - 2}" x2="${cx.toFixed(1)}" y2="${tm + G * rh}" stroke="#e6e6e6" stroke-width="1.2"/>`;
-    s += `<text class="gs-axis" x="${lm}" y="${H - 1}">f0</text><text class="gs-axis" x="${W - 12}" y="${H - 1}">f${T - 1}</text>`;
-    return s + '</svg>';
-  }
-
-  function _bindDeltaStrip(container) {
-    const svg = container.querySelector('svg.drift-strip');
-    if (!svg) return;
-    svg.addEventListener('click', e => {
-      const r = svg.getBoundingClientRect();
-      const T = +svg.dataset.t, lm = 46, vb = 1000;
-      const x = (e.clientX - r.left) / r.width * vb;
-      const t = Math.max(0, Math.min(T - 1, Math.floor((x - lm) / ((vb - lm) / T))));
-      state.selectedFrame = t;
-      renderDeltaPage();
-    });
   }
 
   // frame-level drilldown: scatter of Δ = a_g − a_ref per action dim,
