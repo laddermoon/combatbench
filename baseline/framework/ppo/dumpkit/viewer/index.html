@@ -440,7 +440,7 @@
   .delta-ep { margin: 8px 0 4px; }
   .dh-cell { cursor: crosshair; }
   .delta-ep-head { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 2px; }
-  .delta-ep svg { max-width: 620px; }
+  .delta-ep svg { display: block; }
   .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
   .mini-hist .mh-title { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
 
@@ -3493,7 +3493,7 @@
     if (!G || !D) return '';
     const vmax = Math.max(1e-9, ...data.flat().filter(v => v !== null));
     const W = 1000, lm = 48, rm = 64, tm = 18;
-    const cw = (W - lm - rm) / D, ch = 17;
+    const cw = (W - lm - rm) / D, ch = 22;
     const H = tm + G * ch + 8;
     const col = v => `rgba(224,108,117,${(0.06 + 0.94 * Math.sqrt(Math.min(1, (v ?? 0) / vmax))).toFixed(3)})`;
     let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
