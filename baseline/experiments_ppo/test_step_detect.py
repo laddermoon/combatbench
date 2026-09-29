@@ -355,9 +355,11 @@ def test_step_cycle_bonus_adds_reward_on_airborne_window():
 
     rr = ch["r_right_foot"].reward
     # pos 25-34 → wprog .25-.7, all inside the right lift phase:
-    # dense (duration-ramped) pays on every airborne frame + .1 bonus
+    # dense (duration-ramped) pays on every airborne frame + .1 bonus.
+    # The right foot is also the unstepped foot here (left landed at
+    # t=20), so its dense gets the 2x boost.
     expected_r = (
-        np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) * dur + 0.1
+        np.clip(np.linspace(0.0, 0.08, 10), 0, 0.05) * dur * 2.0 + 0.1
     )
     np.testing.assert_allclose(rr[25:35], expected_r, rtol=1e-5, atol=1e-6)
     assert rr[:25].max() == 0.0
@@ -453,6 +455,27 @@ def test_tap_lift_earns_partial_dense_reward():
     np.testing.assert_allclose(rl[5], 0.0 * 0.25, atol=1e-6)
     np.testing.assert_allclose(rl[6], 0.05 * 0.50, rtol=1e-5, atol=1e-6)
     assert rl.max() <= 0.05 * 0.5 + 1e-6
+
+
+def test_unstepped_foot_dense_boost():
+    """After the left foot completes a cycle, the right foot's air
+    frames earn 2x the duration-ramped dense reward (self-balancing
+    boost for whichever foot is behind)."""
+    from baseline.experiments_ppo.exp_step import Step
+
+    T = 40
+    # left cycle in window 0 (t 2-8), then a right 2-frame tap inside
+    # the right command window (pos 22-23)
+    ep = _make_step_episode(
+        T, [(2, 8, "left", 0.08), (22, 24, "right", 0.08)])
+    exp = Step()
+    trajs = exp._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    rr = trajs[0].channels["r_right_foot"].reward
+    # right tap frames: sole ramp linspace(0,.08,2) -> clip [0,.05],
+    # dur [.25,.5], boost 2x -> [0, .05]
+    np.testing.assert_allclose(rr[22], 0.0, atol=1e-6)
+    np.testing.assert_allclose(rr[23], 0.05 * 0.5 * 2.0, rtol=1e-5, atol=1e-6)
 
 
 def test_step_cycle_bonus_skips_invalid_swings():

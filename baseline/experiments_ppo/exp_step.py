@@ -461,6 +461,15 @@ class Step(CombatExperimentPPOBase):
                 blocked[t_land:] = foot
             gate_l = gate_l & (blocked != "left")
             gate_r = gate_r & (blocked != "right")
+            # Unstepped-foot boost: the foot that has NOT completed a
+            # cycle gets 2x dense reward on its air frames.  u2900 dump
+            # showed the weak foot is reward-rich but capability-poor —
+            # φ≈0.997 in its windows yet median air runs are 2 frames
+            # / 1.2cm.  The boost doubles the lift-longer gradient for
+            # whichever foot is behind (self-balancing, not a hardcoded
+            # left/right asymmetry).
+            boost_l = np.where(blocked == "right", 2.0, 1.0).astype(np.float32)
+            boost_r = np.where(blocked == "left", 2.0, 1.0).astype(np.float32)
             last_stepped = None
             for foot, t_off, t_land, _h_pk in det["cycles"]:
                 wid = int(t_off) // half
@@ -472,8 +481,8 @@ class Step(CombatExperimentPPOBase):
                 paid_windows.add(wid)
                 bonuses.append((foot, t_off, t_land))
                 gate[t_land:(wid + 1) * half] = False
-            r_left_foot *= gate_l.astype(np.float32) * dur_l
-            r_right_foot *= gate_r.astype(np.float32) * dur_r
+            r_left_foot *= gate_l.astype(np.float32) * dur_l * boost_l
+            r_right_foot *= gate_r.astype(np.float32) * dur_r * boost_r
             for foot, t_off, t_land in bonuses:
                 per_frame = np.float32(
                     self.step_cycle_bonus / max(1, t_land - t_off))
