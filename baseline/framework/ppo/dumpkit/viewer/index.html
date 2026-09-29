@@ -441,6 +441,11 @@
   .dh-cell { cursor: crosshair; }
   .delta-jump-ep { color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 400; margin-left: 10px; }
   .delta-jump-ep:hover { text-decoration: underline; }
+  .dlegend { display: flex; gap: 14px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2px 0 6px; }
+  .dleg { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text); }
+  .dleg:hover { color: var(--accent); }
+  .dleg .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dleg.off { opacity: 0.35; text-decoration: line-through; }
   .delta-ep-head { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 2px; }
   .delta-ep svg { display: block; }
   .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
@@ -1001,6 +1006,7 @@
     deltaData: null,          // /episode/<pos>/delta payload for selectedEpisode
     deltaGens: 3,
     deltaAgent: null,
+    deltaHiddenGens: new Set(),
 
     // Pipeline summary cache (dump home cards)
     pipeline: null,
@@ -5297,6 +5303,13 @@
     const body = $('delta-body');
     body.innerHTML = _deltaBodyHtml(pos, frame, state.deltaAgent);
     mountCharts(body, f => { state.selectedFrame = f; renderDeltaPage(); });
+    body.querySelectorAll('.dleg').forEach(el =>
+      el.addEventListener('click', () => {
+        const g = +el.dataset.g;
+        const hs = state.deltaHiddenGens;
+        hs.has(g) ? hs.delete(g) : hs.add(g);
+        renderDeltaPage();
+      }));
     const jump = body.querySelector('.delta-jump-ep');
     if (jump) jump.addEventListener('click', () => selectEpisode(pos, true));
   }
@@ -5373,13 +5386,15 @@
       (dirCosN ? _kv('dir consistency', fmt(dirCosSum / dirCosN, 3)) : '') +
       '</div>';
 
-    // per-gen drift curves
+    // per-gen drift curves (gens toggled off in the legend are hidden)
+    const hidden = state.deltaHiddenGens;
     const alpha = g => (G > 1 ? 1.0 - 0.55 * (g - 1) / (G - 1) : 1.0);
     html += chartBox(
       norms.slice(1).map((row, i) => ({
         label: `‖Δ vs u${gens[i + 1]}‖`, data: row,
         color: `rgba(79,163,255,${alpha(i + 1).toFixed(2)})`,
-      })).concat([{label: 'mean', data: meanCurve, color: '#ffc233', width: 1.5}]),
+      })).filter((_, i) => !hidden.has(gens[i + 1]))
+        .concat([{label: 'mean', data: meanCurve, color: '#ffc233', width: 1.5}]),
       {currentFrame: frame});
 
     // adjacent-gen diffs — which update produced the change
@@ -5400,8 +5415,11 @@
           color: CHART_COLORS[(g - 1) % CHART_COLORS.length],
         });
       }
-      html += '<h3>update attribution · ‖a_g − a_{g−1}‖</h3>';
-      html += chartBox(diffSeries, {currentFrame: frame});
+      const vis = diffSeries.filter((_, i) => !hidden.has(gens[i + 1]));
+      if (vis.length) {
+        html += '<h3>update attribution · ‖a_g − a_{g−1}‖</h3>';
+        html += chartBox(vis, {currentFrame: frame});
+      }
     }
 
     // frame-level drilldown: Δ per action dim, one color per gen
@@ -5440,7 +5458,9 @@
       if (d % Math.ceil(D / 10) && d !== D - 1) continue;
       s += `<text class="gs-axis" x="${x(d).toFixed(1)}" y="${H - 8}" text-anchor="middle">d${d}</text>`;
     }
+    const hidden = state.deltaHiddenGens || (state.deltaHiddenGens = new Set());
     for (let g = 1; g <= G; g++) {
+      if (hidden.has(gens[g])) continue;
       const colr = CHART_COLORS[(g - 1) % CHART_COLORS.length];
       for (let d = 0; d < D; d++) {
         const v = acts[g][frame][d] - acts[0][frame][d];
@@ -5448,14 +5468,15 @@
              `<title>u${gens[g]} · d${d} · Δ ${fmt(v, 4)} (ref ${fmt(acts[0][frame][d], 3)} → ${fmt(acts[g][frame][d], 3)})</title></circle>`;
       }
     }
-    // legend
-    let lx = m.left;
+    // clickable HTML legend — toggle a gen off/on
+    let leg = '<div class="dlegend">';
     for (let g = 1; g <= G; g++) {
-      s += `<circle cx="${lx}" cy="8" r="4" fill="${CHART_COLORS[(g - 1) % CHART_COLORS.length]}"/>` +
-           `<text class="gs-axis" x="${lx + 7}" y="11">u${gens[g]}</text>`;
-      lx += 14 + String('u' + gens[g]).length * 6;
+      const off = hidden.has(gens[g]);
+      leg += `<span class="dleg${off ? ' off' : ''}" data-g="${gens[g]}">` +
+             `<span class="dot" style="background:${CHART_COLORS[(g - 1) % CHART_COLORS.length]}"></span>u${gens[g]}</span>`;
     }
-    return s + '</svg>';
+    leg += '</div>';
+    return leg + s + '</svg>';
   }
   // --- Timeline page (Scene 4) ---
   async function renderTimeline() {
