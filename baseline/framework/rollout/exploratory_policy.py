@@ -43,6 +43,50 @@ if TYPE_CHECKING:
 EfSpec = Union[float, Callable[[np.ndarray, int], float]]
 
 
+def _try_build_ref_ensemble(ref_pairs) -> Optional[Callable]:
+    """Fast weighted reference forward over all reference nets, or ``None``.
+
+    Reference policies are ``file:`` exports whose runtime objects carry
+    the inner inference net at ``policy._policy`` with a
+    ``deterministic_action`` method.  The serial path pays one full
+    ``act()`` call (obs→tensor→forward→numpy) per reference per frame;
+    the fast path instead converts the observation once, invokes each
+    net's ``deterministic_action`` directly, and accumulates the
+    weighted sum in torch — roughly a 3× reduction of the per-frame
+    reference cost at a full ``reference_horizon`` window.  Returns
+    ``None`` on any deviation from the convention; the caller then
+    falls back to the serial loop, which is always correct.  Internal
+    convention only — no interface changes.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    nets_w = []
+    for w, pol in ref_pairs:
+        net = getattr(pol, "_policy", None)
+        if net is None or not callable(
+            getattr(net, "deterministic_action", None)
+        ):
+            return None
+        nets_w.append((w, net))
+
+    @torch.no_grad()
+    def batched(observation: Any) -> np.ndarray:
+        x = torch.as_tensor(
+            np.asarray(observation, dtype=np.float32)
+        ).unsqueeze(0)
+        acc: Optional[torch.Tensor] = None
+        for w, net in nets_w:
+            a = net.deterministic_action(x).squeeze(0)
+            acc = w * a if acc is None else acc + w * a
+        assert acc is not None
+        return acc.cpu().numpy().astype(np.float32)
+
+    return batched
+
+
 class SamplingPolicy(Policy):
     """Wrap a :class:`StochasticPolicy` with a :class:`SamplingSpec`.
 
@@ -107,9 +151,18 @@ class SamplingPolicy(Policy):
             )
         else:
             self._ref_pairs = ()
+        # Fast path: one obs→tensor conversion + direct
+        # ``deterministic_action`` calls + weighted sum in torch,
+        # instead of K full ``act()`` round-trips.  First use is
+        # verified against the serial loop once — any drift disables
+        # the fast path permanently.
+        self._ensemble = (
+            _try_build_ref_ensemble(self._ref_pairs)
+            if self._ref_pairs else None
+        )
+        self._ensemble_validated = False
 
-    def _reference_action(self, observation: Any) -> np.ndarray:
-        """Weighted deterministic action of the reference ensemble."""
+    def _serial_reference_action(self, observation: Any) -> np.ndarray:
         acc: Optional[np.ndarray] = None
         for w, ref_policy in self._ref_pairs:
             action, _ = ref_policy.act(observation)
@@ -119,6 +172,19 @@ class SamplingPolicy(Policy):
         # ReferenceSpec validation: policies must be non-empty).
         assert acc is not None
         return acc.astype(np.float32)
+
+    def _reference_action(self, observation: Any) -> np.ndarray:
+        """Weighted deterministic action of the reference ensemble."""
+        if self._ensemble is None:
+            return self._serial_reference_action(observation)
+        batched = self._ensemble(observation)
+        if not self._ensemble_validated:
+            self._ensemble_validated = True
+            ref = self._serial_reference_action(observation)
+            if not np.allclose(batched, ref, atol=1e-5):
+                self._ensemble = None
+                return ref
+        return batched
 
     def _build_ctx(self, observation: Any, ef: float) -> SamplingContext:
         ref = (
