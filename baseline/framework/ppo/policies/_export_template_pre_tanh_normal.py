@@ -82,6 +82,21 @@ class SamplingContext:
         return dm != 0
 
 
+def _ctx_has_delta(ctx) -> bool:
+    """Field-based delta check — safe against ctx objects built by an
+    older SamplingContext class (spawned workers freeze their imports)."""
+    if ctx is None:
+        return False
+    if getattr(ctx, "reference_action", None) is None:
+        return False
+    dm = getattr(ctx, "delta_mix", None)
+    if dm is None:
+        return False
+    if hasattr(dm, "any"):  # ndarray / torch.Tensor
+        return bool((dm != 0).any())
+    return dm != 0
+
+
 class _PreTanhNormalInferenceNet(nn.Module):
     """MLP + shared per-dim log_std — same param names as training side."""
 
@@ -329,7 +344,7 @@ class ExportedPreTanhNormalPolicy:
         ctx: Optional["SamplingContext"] = None,
         want_extra: bool = False,
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
-        if ctx is not None and ctx.has_delta():
+        if _ctx_has_delta(ctx):
             raise NotImplementedError(
                 "pre-tanh cells do not implement the reference-delta "
                 "σ mix (ctx.reference_action with delta_mix != 0)"
@@ -359,7 +374,7 @@ class ExportedPreTanhNormalPolicy:
         actions: torch.Tensor,
         ctx: Any = None,
     ) -> torch.Tensor:
-        if ctx is not None and ctx.has_delta():
+        if _ctx_has_delta(ctx):
             raise NotImplementedError(
                 "pre-tanh cells do not implement the reference-delta "
                 "σ mix (ctx.reference_action with delta_mix != 0)"

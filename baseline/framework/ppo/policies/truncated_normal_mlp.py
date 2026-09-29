@@ -58,7 +58,19 @@ def delta_mix_sigma(
     (no reference or λ = 0 everywhere) — that short-circuit keeps the
     inactive path bit-identical to plain ef behavior.
     """
-    if ctx is None or not ctx.has_delta():
+    # Attribute-based activation check — NOT ctx.has_delta().  This helper
+    # is inlined into exported policy files, where ``ctx`` may be an
+    # instance of an OLDER SamplingContext class (spawned rollout workers
+    # freeze their imports at start): the four fields have existed since
+    # the ctx pipeline landed, but methods may not.  Never call methods
+    # on objects crossing that boundary.
+    if ctx is None:
+        return sigma
+    ref = getattr(ctx, "reference_action", None)
+    dm = getattr(ctx, "delta_mix", None)
+    if ref is None or dm is None:
+        return sigma
+    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
         return sigma
     ref = torch.as_tensor(
         ctx.reference_action, dtype=sigma.dtype, device=sigma.device,

@@ -114,7 +114,16 @@ def delta_mix_sigma(
 ) -> torch.Tensor:
     """σ²-domain mix of the policy σ with the reference-delta scale —
     inlined copy of ``truncated_normal_mlp.delta_mix_sigma``."""
-    if ctx is None or not ctx.has_delta():
+    # Attribute-based activation check — NOT ctx.has_delta(): ``ctx`` may
+    # be an instance of an older SamplingContext class held by a spawned
+    # rollout worker; its fields exist but newer methods may not.
+    if ctx is None:
+        return sigma
+    ref = getattr(ctx, "reference_action", None)
+    dm = getattr(ctx, "delta_mix", None)
+    if ref is None or dm is None:
+        return sigma
+    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
         return sigma
     ref = torch.as_tensor(
         ctx.reference_action, dtype=sigma.dtype, device=sigma.device,
