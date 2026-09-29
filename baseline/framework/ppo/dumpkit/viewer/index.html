@@ -3454,9 +3454,9 @@
       const opts = [...Array(10)].map((_, i) =>
         `<option value="${i + 1}"${i + 1 === state.deltaGens ? ' selected' : ''}>${i + 1}</option>`).join('');
       h += `<div class="delta-trigger" style="margin:8px 0 0">` +
-        `<span class="muted">compute</span>` +
+        `<span class="muted">episode #</span>` +
         `<input id="sum-delta-ep" type="number" min="0" max="${Math.max(0, nEp - 1)}" value="${state.selectedEpisode ?? 0}" style="width:56px"${dis}/>` +
-        `<span class="muted">ep ×</span>` +
+        `<span class="muted">vs past</span>` +
         `<select id="sum-delta-gens"${dis}>${opts}</select>` +
         `<span class="muted">gens</span>` +
         `<button id="sum-delta-btn" class="render-btn"${dis}>Compute Δ</button>` +
