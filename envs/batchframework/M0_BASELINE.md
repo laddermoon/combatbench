@@ -66,8 +66,9 @@ Run B 已作为主参考；Run A 保留为旁证，不再单独做验收。
 用当前 HEAD 以相同配置跑前 5 个 update（`--set max_updates=5`，GPU3，run `baseline/runs/m0_bitverify_head`），与 Run B 的 `__RAW_STATS__` 逐字段比较（timing 除外）：
 
 - **所有共同指标逐位相同**：episode/buffer 统计、reward min/max/mean/std、逐 epoch KL、uncertainty/std、ratio/clip_frac、adv/ret、ev/confidence、eval@5（max_pot=0.261, success=0.0）——0 个数值差异。
-- **差异仅限日志字段集合**：Run B 含 `grad_sig_*` 7 个梯度诊断字段（HEAD 已移除）；HEAD 新增 `grad_clip_frac`、`dual_clip_frac_mean`、`adv_winsorize_clip_frac` 等——非数值差异。
-- **结论**：HEAD 的环境语义 + 采样 + PPO 数值链路与 Run B 完全一致。后续只需参照 HEAD 代码和 Run B；数值差异在日志 schema，不在行为。
+- **差异仅限日志字段集合**：Run B 含本次输出中未出现的 `grad_sig_*` 梯度诊断字段；HEAD 新增 `grad_clip_frac`、`dual_clip_frac_mean`、`adv_winsorize_clip_frac` 等——非数值差异。
+- **证据边界**：前 5 个 update 中共同记录的指标数值完全相等（非原始 tensor/checkpoint 字节比较）。这支持采用该版本代码 + Run B 为参照，但不证明所有执行路径或后续 1495 个 update 均等价；日志 schema 差异不是数值差异。
+- **固定版本**：验证 Run 的 `code_snapshot.json` 指向 `2a40d7bf2a6ea7405622313dcdbf7685d4812ea9`，base 为 `3cbcc5a33c1e5af2284aa05b9ccca91581f391a9`。本文的“HEAD”是当时被验证的代码，不是未来任意 HEAD；后续参考样例保存依赖文件 SHA-256，依赖变化必须重新验证。
 
 ### 1.4 参考策略探针（已存在于 Run 目录）
 
@@ -81,7 +82,7 @@ Run B 已作为主参考；Run A 保留为旁证，不再单独做验收。
 
 ### 1.5 种子与随机性协议 **[冻结]**
 
-主路径随机性全部由 `SeedSequence.spawn` 派生（`envs/framework/SEED.md`）。训练侧的派生规则（`loop.py` + `base.py`，HEAD 版本）：
+episode 内部使用 `SeedSequence.spawn`；训练批和 Job 层仍使用算术派生，不能把 `envs/framework/SEED.md` 的全链路设计表述误当作当前实现。训练侧实际规则（`loop.py` + `base.py`，被验证版本）：
 
 ```
 训练 seed = 42
@@ -203,7 +204,7 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 `Episode`（冻结 dataclass）：`base_seed, episode_index, blueprint_hash, num_frames, episode_options, agent_termination_proposal_records, observations{agent:(T,96)}, actions{agent:(T,21)}, action_extras{agent:{key:(T,...)}}, explore_factors{agent:(T,)}, observer_outputs{stacked}, final_observation{agent:(96,)}, episode_metrics`。
 - `num_frames=T` 动作步数；`final_observation` 是 `obs_{T+1}`，用于 bootstrap。
 - `sampling_contexts` 是派生视图：`explore_factor` + `action_extras` 中所有 `sctx__` 前缀键。
-- 真终止判定：`agent_termination_proposal_records[agent][0].reason != "timeout"`。
+- 真终止判定：`agent_termination_proposal_records[agent][0][0] != "timeout"`（记录是 `(reason, step)` 元组）。
 
 **每 update 数据量**：512 episodes × 2 agents = 1024 trajectories × 200 steps = 204,800 transitions。eval：64 episodes × 2 agents = 128 条 agent 轨迹，指标按 agent 轨迹计（success 分母 128）。
 
@@ -253,12 +254,12 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 ### 5.1 待用户确认 **[候选]**
 
 1. ~~主参考 Run~~ **已选定 Run B（20260920_164819）**，HEAD 5-update 逐位一致验证通过（§1.3）。
-2. 验收门槛候选值（讨论值，未冻结）：eval success 差距 ≤2pp、final_pot 差距 ≤0.02、样本量容忍 1.25×、端到端加速目标 2×。
+2. **[冻结，用户已确认]** 质量非劣效：`success_MJX >= success_CPU - 0.02`（2 个百分点），`final_pot_MJX >= final_pot_CPU - 0.02`；达到相同能力的有效 agent transitions 不超过 CPU 的 1.25 倍；相同任务与预算下端到端 `wall_time_CPU / wall_time_MJX >= 2.0`。不能用物理步吞吐代替端到端速度，也不能将这组训练级门槛当作 V1/V2 字段比较容差。具体多 seed 汇总、能力阈值稳定窗口和资源分配须在 M6/M7 启动前预注册；不得看结果后调宽门槛。
 3. GPU 分配：8×4090 中训练用卡与空闲基线测试卡的划分。
 
 ### 5.2 本阶段未执行（负载原因，协议已定义）**[协议]**
 
-1. **CPU 复评**：用 Run B 成熟策略在 HEAD 跑 eval 协议（64 eps，stochastic=False），确认 `success` 仍 ≈1.0，排除"HEAD 上 eval 已退化"的隐性前提。建议在高负载缓解后执行，约分钟级。
+1. **CPU 复评**：用 Run B 成熟策略在 HEAD 跑 eval 协议（64 eps，stochastic=False），确认 `success` 仍 ≈1.0，排除"HEAD 上 eval 已退化"的隐性前提。建议在高负载缓解后执行；前 5 个 update 一致不代替成熟策略复评。
 2. **CPU 成本分解**：模型初始化 / reset（含 RandomFallen 内部 sim）/ 物理推进 / 观测+奖励 / 策略推理 / 进程通信 / buffer / PPO / eval 分段计时。现有 `time.*` 只有 rollout/buffer/ppo/eval 四段，需要在 worker 内插桩细拆——**特别注意 RandomFallenStatePlugin 的内部 sim 每 episode 最多 1000 物理步，可能占 reset 成本大头**。
 3. **性能计时口径**：稳态取连续非 eval 更新的中位数；单独报告冷启动（JIT 编译）与含 eval 的 update；样本效率用 agent transitions 计数而非 update 数。
 
@@ -269,8 +270,8 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 - [x] 能力矩阵与缺口（§3）
 - [x] M1 测试输入最小范围（§4）
 - [x] 主参考 Run 选定（Run B）+ HEAD 逐位一致验证（§1.3）
-- [ ] 验收门槛冻结 — 待用户确认 §5.1-2
+- [x] 四项验收门槛冻结 — 用户确认，见 §5.1-2
 - [ ] CPU 复评与成本分解 — 延后（§5.2）
 - [ ] 评估种子/留出集固化 — 随 M1 fixture 生成时一并冻结
 
-**M0 结论**：任务侧转换源可直接用 HEAD；主要缺口集中在 XML 对齐、接触语义、摔倒初始化、设备端热路径四点。在 §5.1 确认后进入 M1。
+**M0 结论**：采用 §1.3 记录的已验证代码 + Run B 为参照；主要缺口集中在 XML 对齐、接触语义、摔倒初始化、设备端热路径四点。用户已授权进入 M1；CPU 成熟策略复评、成本分解与资源安排仍待执行，不因 M1 开始而视为通过。M1 使用指南见 [M1_VALIDATION.md](M1_VALIDATION.md)。
