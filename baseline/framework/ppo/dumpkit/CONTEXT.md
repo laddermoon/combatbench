@@ -203,14 +203,16 @@ dump 以下按**因果链**组织为八个功能模块。主页 = 功能汇总�
     统计 + epoch_frames 的 ratio/clip/Δlogp/value-drift + rbin +
     post_clip_dloss）；下卡 = 共享骨架 + epoch 选择器 + 该 traj 的
     per-epoch ratio/clip/new_value 曲线（`/trajectory/<i>/epoch_*`）。
-  - `/delta/<pos>` —— ⑧：episode picker + agent tabs（单选，
-    不合并）+ Compute Δ（POST `/api/delta`，与 render 共享单
-    job 槽）+ episode 轴视频骨架；body 三层：标量行（per-gen
+  - `/delta/<pos>` —— ⑧：只读页——episode 下拉只列**已算过**
+    delta 的 episode（`/api/delta_list`，默认首个，选中非计算
+    episode 自动回退首个）+ agent tabs（单选不合并）；Compute Δ
+    只在主页⑧卡触发。body：episode 轴视频骨架 + 标量行（per-gen
     mean‖Δ‖/peak 帧/相邻代 dir-cos）→ ‖Δ_g(t)‖ 曲线 + 相邻代差分
     ‖a_g−a_{g−1}‖（update 归因）；帧级下钻 = Δ 散点图
     （x=d0..d20 动作维, y=a_g−a_ref, 每代一色, hover 出
-    ref/gen/Δ 三项——绝对值量级远大于 Δ，不放原值曲线）。
-    中性原则：动作维只标 d0..d20，不引入关节语义。
+    ref/gen/Δ 三项——绝对值量级远大于 Δ，不放原值曲线）；
+    图例可点击 toggle 单代显示（`state.deltaHiddenGens`，对
+    三张图统一生效）。中性原则：动作维只标 d0..d20，不引入关节语义。
   - `/timeline` —— ⑥的钻取：全量 minibatch 图 + step detail。
 
 复用红线：GAE 与 adv 归一化预览**只能**调

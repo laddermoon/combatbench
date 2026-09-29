@@ -1007,6 +1007,7 @@
     deltaGens: 3,
     deltaAgent: null,
     deltaHiddenGens: new Set(),
+    deltaList: null,
 
     // Pipeline summary cache (dump home cards)
     pipeline: null,
@@ -3257,6 +3258,7 @@
           } catch (e) { /* dump unloaded meanwhile — ignore */ }
           if (prev.kind === 'delta') {
             state.deltaData = null;
+            state.deltaList = null;  // coverage changed
             state.pipeline = null;   // ⑧ card coverage is stale now
           }
         }
@@ -5222,9 +5224,32 @@
   }
 
   async function renderDeltaPage() {
-    if (state.selectedEpisode === null) state.selectedEpisode = 0;
+    // read-only page — computing happens on the dump-home ⑧ card;
+    // the picker only lists episodes that already have a delta.
+    if (!state.deltaList) {
+      try {
+        state.deltaList = (await fetchJson(api('delta_list'))).episodes || [];
+      } catch (e) { state.deltaList = []; }
+    }
+    const computed = state.deltaList.map(e => e.episode);
+    const job = state.renderJob;
+    const running = job && job.status === 'running';
+    const jobEp = running && job.kind === 'delta' &&
+      (state.dumpName ? job.dump === state.dumpName : true) ? job.episode : null;
+
+    if (!computed.length) {
+      $('delta-tool-head').innerHTML = `<span class="t-title">Delta Analyze</span>` +
+        `<span class="t-info">${jobEp !== null
+          ? `⏳ computing ep${jobEp}…`
+          : 'no deltas computed — trigger one from the ⑧ card on the dump home'}</span>`;
+      $('delta-body').innerHTML = '<div class="desc">no delta data for this dump</div>';
+      $('delta-bigimg').innerHTML = '';
+      $('delta-thumbs').innerHTML = '';
+      return;
+    }
+    if (!computed.includes(state.selectedEpisode))
+      state.selectedEpisode = computed[0];
     const pos = state.selectedEpisode;
-    const n = state.episodeList?.length ?? 0;
     const epInfo = state.trajMap?.[pos];
     const T = epInfo?.num_frames || 0;
 
@@ -5241,16 +5266,14 @@
     if (!agentIds.includes(state.deltaAgent))
       state.deltaAgent = agentIds[0] || null;
 
-    // tool head: episode picker + agent tabs + compute controls
-    const job = state.renderJob;
-    const running = job && job.status === 'running';
-    const thisJob = running && job.kind === 'delta' && job.episode === pos &&
-      (state.dumpName ? job.dump === state.dumpName : true);
+    // tool head: computed-episode picker + agent tabs + status
+    const ci = computed.indexOf(pos);
     let h = `<span class="t-title">Delta Analyze</span>`;
     h += `<span class="t-sel"><button class="t-nav" id="delta-nav-prev">‹</button>`;
-    h += `<input id="delta-sel" type="number" min="0" max="${Math.max(0, n - 1)}" value="${pos}"/>`;
+    h += `<select id="delta-sel">` + computed.map(e =>
+      `<option value="${e}"${e === pos ? ' selected' : ''}>ep${e}</option>`).join('') + `</select>`;
     h += `<button class="t-nav" id="delta-nav-next">›</button>`;
-    h += `<span class="t-info">of ${n} episodes</span></span>`;
+    h += `<span class="t-info">${ci + 1}/${computed.length} with Δ</span></span>`;
     if (epInfo?.seed !== undefined) h += `<span class="t-info">seed ${epInfo.seed}</span>`;
     if (agentIds.length > 1) {
       h += `<span class="t-sel"><span class="muted">agent</span>` +
@@ -5260,33 +5283,16 @@
     }
     if (d0 && d0.available && d0.episode_pos === pos) {
       h += `<span class="t-info">✓ gens ${d0.gen_updates.map(u => 'u' + u).join('/')}</span>`;
-    } else if (thisJob) {
-      h += `<span class="t-info">⏳ computing delta…</span>`;
-    } else {
-      const dis = running ? ' disabled title="another job is running"' : '';
-      const opts = [...Array(10)].map((_, i) =>
-        `<option value="${i + 1}"${i + 1 === state.deltaGens ? ' selected' : ''}>${i + 1}</option>`).join('');
-      h += `<span class="delta-trigger" style="margin:0">` +
-        `<span class="muted">vs past</span>` +
-        `<select id="delta-gens"${dis}>${opts}</select>` +
-        `<span class="muted">gens</span> ` +
-        `<button id="delta-btn" class="render-btn"${dis}>Compute Δ</button></span>`;
+    } else if (jobEp !== null) {
+      h += `<span class="t-info">⏳ computing ep${jobEp}…</span>`;
     }
     $('delta-tool-head').innerHTML = h;
     const sel = $('delta-sel');
-    sel.addEventListener('change', () =>
-      selectDeltaEpisode(Math.max(0, Math.min(n - 1, parseInt(sel.value) || 0))));
-    $('delta-nav-prev').onclick = () => selectDeltaEpisode(Math.max(0, pos - 1));
-    $('delta-nav-next').onclick = () => selectDeltaEpisode(Math.min(n - 1, pos + 1));
-    const dBtn = $('delta-btn');
-    if (dBtn) dBtn.onclick = () => {
-      const gens = parseInt(($('delta-gens') || {}).value || '3');
-      state.deltaGens = gens;
-      if (confirm(`Compute policy-drift delta for episode ${pos}?\nReplays ${gens} past generations on stored observations (can take a while).`))
-        startDelta(pos, gens);
-    };
-    const dGens = $('delta-gens');
-    if (dGens) dGens.addEventListener('change', () => { state.deltaGens = parseInt(dGens.value); });
+    sel.addEventListener('change', () => selectDeltaEpisode(+sel.value));
+    $('delta-nav-prev').onclick = () =>
+      selectDeltaEpisode(computed[Math.max(0, ci - 1)]);
+    $('delta-nav-next').onclick = () =>
+      selectDeltaEpisode(computed[Math.min(computed.length - 1, ci + 1)]);
     $('delta-tool-head').querySelectorAll('[data-agent]').forEach(b =>
       b.addEventListener('click', () => {
         state.deltaAgent = b.dataset.agent;
@@ -5331,7 +5337,7 @@
       const failed = job && job.kind === 'delta' && job.episode === pos &&
         job.status === 'error' &&
         (state.dumpName ? job.dump === state.dumpName : true);
-      return '<div class="desc">no delta computed for this episode — pick the generation count above and Compute Δ. ' +
+      return '<div class="desc">no delta computed for this episode — trigger one from the ⑧ card on the dump home. ' +
         'Both sides are deterministic replays on stored observations; episode actions are unused.</div>' +
         (failed ? `<div class="dump-msg">delta failed (exit ${job.returncode}) — see ${escapeHtml(job.log || 'log')}</div>` : '');
     }
