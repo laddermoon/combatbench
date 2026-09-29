@@ -5314,7 +5314,7 @@
     renderDeltaPage();
   }
 
-  function _deltaBodyHtml(pos, frame) {
+  function _deltaBodyHtml(pos, frame, aid) {
     const d = state.deltaData;
     if (!d || !d.available) {
       if (d && d.error) return `<div class="desc">${escapeHtml(d.error)}</div>`;
