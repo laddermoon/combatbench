@@ -71,7 +71,9 @@ def save(path, value, overwrite=False):
         stream.write("\n")
 
 
-def write_fixtures(adapter, cases, outdir):
+def write_fixtures(adapter, cases, outdir, tolerances=None):
+    """tolerances: {case_id: {"tolerance": {...}, "field_tolerances": {...}}}；
+    未列出的 case 默认精确比较（atol=rtol=0）。"""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     ids = [case["id"] for case in cases]
@@ -80,7 +82,10 @@ def write_fixtures(adapter, cases, outdir):
     files = {}
     for case in cases:
         name = f"{case['id']}.json"
-        bundle = capture(case, adapter)
+        spec = (tolerances or {}).get(case["id"], {})
+        bundle = capture(case, adapter,
+                         tolerance=spec.get("tolerance"),
+                         field_tolerances=spec.get("field_tolerances"))
         save(outdir / name, bundle, overwrite=True)
         files[name] = digest(bundle)
     index = {"schema_version": SCHEMA_VERSION, "format": "fixture-index", "files": files}
@@ -176,7 +181,24 @@ def compare(expected, actual, tolerance, field_tolerances=None):
                     idx = tuple(index)
                     fail(path + str(idx), "value/nonfinite", a[idx].item(), b[idx].item())
             return
-        if type(a) is not type(b):
+        # 标量按语义比较：整数比数值（int/np.integer/JSON 往返等价），
+        # 浮点比容差（float/np.floating 等价）；bool 精确。数组仍严格
+        # 检查 shape+dtype——dtype 变化是真实契约差异。
+        a_int = isinstance(a, (int, np.integer)) and not isinstance(a, (bool, np.bool_))
+        b_int = isinstance(b, (int, np.integer)) and not isinstance(b, (bool, np.bool_))
+        a_flt = isinstance(a, (float, np.floating)) and not isinstance(a, (bool, np.bool_))
+        b_flt = isinstance(b, (float, np.floating)) and not isinstance(b, (bool, np.bool_))
+        if isinstance(a, (bool, np.bool_)) or isinstance(b, (bool, np.bool_)):
+            if type(a) is not type(b) or bool(a) != bool(b):
+                fail(path, "value" if type(a) is type(b) else "type", a, b)
+        elif a_int and b_int:
+            if int(a) != int(b):
+                fail(path, "value", a, b)
+        elif a_flt and b_flt:
+            if not (math.isfinite(a) and math.isfinite(b)) or \
+                    abs(a - b) > tolerance["atol"] + tolerance["rtol"] * abs(a):
+                fail(path, "value/nonfinite", a, b)
+        elif type(a) is not type(b):
             fail(path, "type", type(a).__name__, type(b).__name__)
         elif isinstance(a, dict):
             for key in sorted(set(a) | set(b)):
@@ -205,7 +227,47 @@ def compare(expected, actual, tolerance, field_tolerances=None):
     return failures
 
 
-def capture(case, adapter):
+CONTACT_ENTRY_KEYS = (
+    "geom1", "geom2", "body1", "body2", "aff1", "aff2",
+    "force_mag", "force_world", "position", "normal",
+)
+
+
+def canonical_contacts(raw, active_mask=None):
+    """把接触 SoA 整理成顺序无关的 canonical 列表：仅活跃项，按
+    (geom1, geom2, 量化位置, 原始位置) 排序。跨后端比较不能假设接触存储
+    顺序一致；canonical 化后通用比较器可直接逐项对比。
+
+    raw: CPU 形态（ncon 标量 + 定长数组）或 batch 形态（padding + mask）。
+    active_mask: 可选 (C,) bool；None 表示 raw 已只含活跃项。
+    """
+    if active_mask is None:
+        idxs = np.arange(len(raw["geom1"]))
+    else:
+        idxs = np.where(np.asarray(active_mask))[0]
+    entries = []
+    for i in idxs:
+        entry = {}
+        for key in CONTACT_ENTRY_KEYS:
+            v = raw[key][i]
+            # 跨后端 canonical dtype：整型统一 int64，浮点统一 float64。
+            # 否则比较器的严格 dtype 校验会把 int32/int8 等实现细节误判为失败。
+            v = np.asarray(v)
+            if v.dtype.kind in "iu":
+                v = np.int64(v) if v.ndim == 0 else v.astype(np.int64)
+            elif v.dtype.kind == "f":
+                v = float(v) if v.ndim == 0 else v.astype(np.float64)
+            entry[key] = v
+        entries.append(entry)
+    entries.sort(key=lambda e: (
+        int(e["geom1"]), int(e["geom2"]),
+        tuple(np.round(np.asarray(e["position"], dtype=np.float64), 3)),
+        tuple(np.asarray(e["position"], dtype=np.float64)),
+    ))
+    return entries
+
+
+def capture(case, adapter, tolerance=None, field_tolerances=None):
     check_case(case)
     source = provenance(adapter)
     expected = adapter.execute(copy.deepcopy(case))
@@ -213,9 +275,16 @@ def capture(case, adapter):
         raise ValueError("reference must return a nonempty output object")
     if compare(expected, expected, {"atol": 0.0, "rtol": 0.0}):
         raise ValueError("nonfinite reference output")
+    tol = {"atol": 0.0, "rtol": 0.0} if tolerance is None else dict(tolerance)
+    check_tolerance(tol)
+    ft = {} if field_tolerances is None else dict(field_tolerances)
+    for path, rule in ft.items():
+        if not isinstance(path, str) or not path.startswith("output."):
+            raise ValueError("field tolerance must use an output.* path")
+        check_tolerance(rule)
     return {"schema_version": SCHEMA_VERSION, "case": copy.deepcopy(case),
             "source": source, "validator": {str(Path(__file__).resolve()): file_hash(__file__)},
-            "tolerance": {"atol": 0.0, "rtol": 0.0}, "field_tolerances": {}, "expected": expected}
+            "tolerance": tol, "field_tolerances": ft, "expected": expected}
 
 
 def replay(bundle, adapter, approved_digest):
@@ -279,8 +348,9 @@ def main():
     run.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.command == "make-fixtures":
-        from .validation_cpu import CPUAdapter, all_cases
-        index = write_fixtures(CPUAdapter(), all_cases(), args.dir)
+        from .validation_cpu import CPUAdapter, CASE_TOLERANCES, all_cases
+        index = write_fixtures(CPUAdapter(), all_cases(), args.dir,
+                               tolerances=CASE_TOLERANCES)
         print(json.dumps({"status": "pass", "fixtures": len(index["files"]),
                           "index": str((args.dir / "index.json").resolve())}))
         return 0

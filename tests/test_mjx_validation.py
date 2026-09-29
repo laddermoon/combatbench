@@ -144,7 +144,7 @@ def test_contact_force_consistency():
     contacts_mjx = sim_mjx.get_derived_state(["contacts"])["contacts"]
 
     ncon_mj = contacts_mj["ncon"]
-    ncon_mjx = int(contacts_mjx["contact_count"][0])
+    ncon_mjx = int(contacts_mjx["ncon"][0])
 
     assert ncon_mj == ncon_mjx, f"Contact count mismatch at init: MuJoCo={ncon_mj}, MJX={ncon_mjx}"
 
@@ -363,6 +363,36 @@ def test_history_consistency():
     print(f"[PASS] test_history_consistency ({n_steps} steps)")
 
 
+def test_m2_cross_backend_fixtures():
+    """M2 acceptance: replay the cross-backend fixtures through MJXAdapter.
+
+    Covers dynamics (1/25 substeps, moving state), external-force one-substep
+    semantics, state_io write→forward→read, and B=2 env isolation. MJX adapter
+    must report unsupported (not fail) for mjSTATE-blob and logic cases.
+    """
+    import json
+    from envs.batchframework import validation as v
+    from envs.batchframework.validation_mjx import MJXAdapter
+
+    fx = Path(project_root) / "envs/batchframework/validation_fixtures"
+    index = json.loads((fx / "index.json").read_text())
+    adapter = MJXAdapter()
+
+    must_pass = ["dyn-standing-s1", "dyn-standing-s25", "dyn-moving-2x5",
+                 "extforce-torso-push", "state-io-write-read", "batch-isolation-2"]
+    must_unsupported = ["standing-1-substeps", "standing-25-substeps",
+                        "standup-timeout-bootstrap"]
+    for cid in must_pass:
+        bundle = v.load(fx / f"{cid}.json")
+        rep = v.replay(bundle, adapter, index["files"][f"{cid}.json"])
+        assert rep["status"] == "pass", f"{cid}: {rep['failures'][:3]}"
+    for cid in must_unsupported:
+        bundle = v.load(fx / f"{cid}.json")
+        rep = v.replay(bundle, adapter, index["files"][f"{cid}.json"])
+        assert rep["status"] == "unsupported", f"{cid}: {rep['status']}"
+    print("[PASS] test_m2_cross_backend_fixtures (6 pass, 3 unsupported)")
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("MJX vs MuJoCo Validation Tests")
@@ -377,6 +407,7 @@ if __name__ == "__main__":
     test_nonzero_action_consistency()
     test_batch_consistency()
     test_history_consistency()
+    test_m2_cross_backend_fixtures()
 
     print()
     print("=" * 70)

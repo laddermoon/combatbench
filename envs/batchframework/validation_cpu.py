@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from .validation import Unsupported
+from .validation import Unsupported, canonical_contacts
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,10 +137,115 @@ def physics_case(steps=1):
 def all_cases():
     cases = reward_cases()
     cases += [physics_case(1), physics_case(25), trajectory_case()]
+    cases += dynamics_cases()
+    cases += [external_force_case(), state_io_case(), batch_isolation_case()]
     ids = [case["id"] for case in cases]
     if len(ids) != len(set(ids)):
         raise ValueError("case ids must be unique")
     return cases
+
+
+def _snapshot_state(sim):
+    return {"qpos": np.asarray(sim.data.qpos).copy(),
+            "qvel": np.asarray(sim.data.qvel).copy()}
+
+
+def _snapshot_at(dist, post_steps=0, action=None):
+    """建临时 CPU sim，reset 后可选地先走几步再取状态快照。"""
+    from envs.humanoid21.simulator import Humanoid21Simulator
+
+    sim = Humanoid21Simulator()
+    try:
+        sim.reset(seed=42, options={"initial_distance": dist})
+        if action is not None or post_steps:
+            sim.set_action(action if action is not None else sim.get_action())
+            for _ in range(post_steps):
+                sim.physical_step()
+        state = _snapshot_state(sim)
+        action0 = {rid: np.asarray(sim.get_core_state()[rid]["joint_pos_norm"],
+                                   dtype=np.float32)
+                   for rid in ("robot_a", "robot_b")}
+        return state, action0
+    finally:
+        sim.close()
+
+
+def dynamics_cases():
+    """跨后端物理对照：显式 qpos/qvel 状态 + 固定动作序列 + 子步数。
+
+    不用 mjSTATE blob——MJX 没有 warmstart 概念，跨后端 case 只搬运
+    qpos/qvel，warmstart 偏差属于已记录的固有边界。initial_action 按
+    reset 同公式从状态的关节角归一化反推，保证 PD 初始无偏差。
+    """
+    standing, init_standing = _snapshot_at(2.0)
+    tilted, init_tilted = _snapshot_at(
+        2.0, post_steps=12,
+        action={"robot_a": np.linspace(-0.3, 0.3, 21, dtype=np.float32),
+                "robot_b": np.linspace(0.3, -0.3, 21, dtype=np.float32)})
+    action_a = np.linspace(-0.2, 0.2, 21, dtype=np.float32)
+    action_b = np.linspace(0.2, -0.2, 21, dtype=np.float32)
+    cases = []
+    for steps in (1, 25):
+        cases.append({"id": f"dyn-standing-s{steps}", "kind": "action_sequence",
+                      "level": "V1", "seed": 42, "episode": 0, "frame": 0,
+                      "input": {"operation": "dynamics", "state": standing,
+                                "initial_action": init_standing,
+                                "actions": [{"robot_a": action_a,
+                                             "robot_b": action_b}],
+                                "substeps": steps}})
+    cases.append({"id": "dyn-moving-2x5", "kind": "action_sequence", "level": "V1",
+                  "seed": 42, "episode": 0, "frame": 0,
+                  "input": {"operation": "dynamics", "state": tilted,
+                            "initial_action": init_tilted,
+                            "actions": [{"robot_a": -action_a,
+                                         "robot_b": -action_b},
+                                        {"robot_a": action_a,
+                                         "robot_b": action_b}],
+                            "substeps": 5}})
+    return cases
+
+
+def external_force_case():
+    standing, init = _snapshot_at(2.0)
+    return {"id": "extforce-torso-push", "kind": "physics", "level": "V1",
+            "seed": 42, "episode": 0, "frame": 0,
+            "input": {"operation": "external_force", "state": standing,
+                      "initial_action": init,
+                      "applies": [{"body": "torso", "robot": "robot_a",
+                                   "force": np.array([80.0, 0.0, 40.0]),
+                                   "torque": np.array([5.0, 0.0, 0.0])}],
+                      "substeps": 3}}
+
+
+def state_io_case():
+    """写入 core state 后立即读回 derived（不推进物理），验证写后刷新。"""
+    standing, _ = _snapshot_at(2.0)
+    # 注意：写入不能产生深穿透姿态。实测把 robot_a 传送到与 robot_b 重叠的
+    # 位置后，接触力 CPU≈332N / MJX≈3.7e6N——两个约束求解器在深穿透下
+    # 本质分歧。该边界见 M2_RESULTS.md；本 case 只验证写后刷新读回。
+    write = {"robot_a": {"root_pos": np.array([-0.7, 0.15, 1.35]),
+                         "joint_pos_norm": np.linspace(-0.3, 0.3, 21)}}
+    return {"id": "state-io-write-read", "kind": "physics", "level": "V1",
+            "seed": 42, "episode": 0, "frame": 0,
+            "input": {"operation": "state_io", "state": standing,
+                      "write": write, "env_ids": [0]}}
+
+
+def batch_isolation_case():
+    """B=2 不同初态 + 不同动作：逐 env 输出对照，探测跨 env 泄漏。"""
+    s0, i0 = _snapshot_at(1.5)
+    s1, i1 = _snapshot_at(3.5)
+    states = [s0, s1]
+    initial_actions = [i0, i1]
+    actions = [{"robot_a": np.linspace(-0.4, 0.4, 21, dtype=np.float32),
+                "robot_b": np.linspace(0.4, -0.4, 21, dtype=np.float32)},
+               {"robot_a": np.zeros(21, dtype=np.float32),
+                "robot_b": np.zeros(21, dtype=np.float32)}]
+    return {"id": "batch-isolation-2", "kind": "physics", "level": "V1",
+            "seed": 42, "episode": 0, "frame": 0,
+            "input": {"operation": "batch_isolation",
+                      "env_states": states, "actions": actions, "substeps": 3,
+                      "initial_actions": initial_actions}}
 
 
 def trajectory_case():
@@ -225,6 +330,15 @@ class CPUAdapter:
         self.dependencies = sorted(set(paths))
 
     def execute(self, case):
+        op = case["input"].get("operation")
+        if op == "dynamics":
+            return self._dynamics(case["input"])
+        if op == "external_force":
+            return self._extforce(case["input"])
+        if op == "state_io":
+            return self._state_io(case["input"])
+        if op == "batch_isolation":
+            return self._batch_isolation(case["input"])
         if case["kind"] == "logic":
             if case["input"]["operation"] == "trajectory":
                 return trajectory_output(case["input"])
@@ -280,6 +394,137 @@ class CPUAdapter:
             return {"frames": frames}
         finally:
             sim.close()
+
+    # ------------------------------------------------------------------
+    # 跨后端 case 执行器（M2）：显式 qpos/qvel 状态 + canonical 接触
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _restore_raw(sim, state):
+        """写回显式 qpos/qvel 并 forward——跨后端状态契约，不依赖 mjSTATE blob。"""
+        import mujoco
+
+        sim.data.qpos[:] = state["qpos"]
+        sim.data.qvel[:] = state["qvel"]
+        # warmstart/ctrl/外力不属于跨后端状态契约：清零保证恢复求解确定性
+        #（MJX 侧残留 qacc_warmstart/ctrl/xfrc 会把接触力拉偏 ~4%）。
+        sim.data.qacc_warmstart[:] = 0.0
+        sim.data.ctrl[:] = 0.0
+        sim.data.xfrc_applied[:] = 0.0
+        sim.data.qfrc_applied[:] = 0.0
+        sim._data_cache.clear()
+        sim._cached_contacts_vec = None
+        mujoco.mj_forward(sim.model, sim.data)
+
+    @staticmethod
+    def _frame(sim):
+        derived = sim.get_derived_state(["contacts", "torso_distance"])
+        return {"qpos": sim.data.qpos.copy(), "qvel": sim.data.qvel.copy(),
+                "core": sim.get_core_state(),
+                "observation": sim.get_observation(),
+                "torso_distance": derived["torso_distance"],
+                "contacts": canonical_contacts(derived["contacts"])}
+
+    def _dynamics(self, inputs):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+
+        if set(inputs) != {"operation", "state", "initial_action", "actions", "substeps"}:
+            raise ValueError("unknown or missing dynamics input")
+        if type(inputs["substeps"]) is not int or inputs["substeps"] < 1:
+            raise Unsupported("substeps must be a positive int")
+        if not inputs["actions"]:
+            raise ValueError("action sequence must be nonempty")
+        sim = Humanoid21Simulator()
+        try:
+            sim.reset(seed=42)
+            self._restore_raw(sim, inputs["state"])
+            sim.set_action(inputs["initial_action"])
+            frames = []
+            for action in inputs["actions"]:
+                if set(action) != {"robot_a", "robot_b"}:
+                    raise ValueError("both agent actions required")
+                sim.set_action(action)
+                for _ in range(inputs["substeps"]):
+                    sim.physical_step()
+                frames.append(self._frame(sim))
+            return {"frames": frames}
+        finally:
+            sim.close()
+
+    def _extforce(self, inputs):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+
+        if set(inputs) != {"operation", "state", "initial_action", "applies", "substeps"}:
+            raise ValueError("unknown or missing external_force input")
+        sim = Humanoid21Simulator()
+        try:
+            sim.reset(seed=42)
+            self._restore_raw(sim, inputs["state"])
+            sim.set_action(inputs["initial_action"])
+            for ap in inputs["applies"]:
+                sim.apply_external_force(ap["body"], np.asarray(ap["force"]),
+                                         None if ap.get("torque") is None else np.asarray(ap["torque"]),
+                                         ap["robot"])
+            for _ in range(inputs["substeps"]):
+                sim.physical_step()
+            # xfrc_applied 每物理步清零——残留非零即语义错误
+            residual = float(np.abs(np.asarray(sim.data.xfrc_applied)).max())
+            return {"frames": [self._frame(sim)], "residual_xfrc_max": residual}
+        finally:
+            sim.close()
+
+    def _state_io(self, inputs):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+
+        if set(inputs) != {"operation", "state", "write", "env_ids"}:
+            raise ValueError("unknown or missing state_io input")
+        if inputs["env_ids"] != [0]:
+            raise Unsupported("CPU oracle is single-env; env_ids must be [0]")
+        sim = Humanoid21Simulator()
+        try:
+            sim.reset(seed=42)
+            self._restore_raw(sim, inputs["state"])
+            sim.set_core_state(inputs["write"])
+            return {"frame": self._frame(sim)}
+        finally:
+            sim.close()
+
+    def _batch_isolation(self, inputs):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+
+        if set(inputs) != {"operation", "env_states", "actions", "initial_actions", "substeps"}:
+            raise ValueError("unknown or missing batch_isolation input")
+        n = len(inputs["env_states"])
+        if n != len(inputs["actions"]) or n != len(inputs["initial_actions"]):
+            raise ValueError("per-env inputs length mismatch")
+        envs = []
+        for i in range(n):
+            sim = Humanoid21Simulator()
+            try:
+                sim.reset(seed=42)
+                self._restore_raw(sim, inputs["env_states"][i])
+                sim.set_action(inputs["initial_actions"][i])
+                sim.set_action(inputs["actions"][i])
+                for _ in range(inputs["substeps"]):
+                    sim.physical_step()
+                envs.append(self._frame(sim))
+            finally:
+                sim.close()
+        return {"envs": envs}
+
+
+# 跨后端 fixture 容差（CPU oracle 生成时写入 bundle；严格度按 M2 实测设定）。
+# 依据：FP64 下动力学推进差 ~1e-13，float32 观测 ~1e-7，接触位置 ~3e-6；
+# 取 atol/rtol=1e-5 既覆盖数值噪声，又远小于任何语义性偏差（如外力未清零、
+# 深穿透求解分歧 ~1e6、action 未生效）。不在表内的字段（id、geom、mask 等
+# 整型/结构字段）不受容差影响，仍精确比较。
+CASE_TOLERANCES = {
+    "dyn-standing-s1": {"field_tolerances": {"output.frames": {"atol": 1e-5, "rtol": 1e-5}}},
+    "dyn-standing-s25": {"field_tolerances": {"output.frames": {"atol": 1e-5, "rtol": 1e-5}}},
+    "dyn-moving-2x5": {"field_tolerances": {"output.frames": {"atol": 1e-5, "rtol": 1e-5}}},
+    "extforce-torso-push": {"field_tolerances": {"output.frames": {"atol": 1e-5, "rtol": 1e-5}}},
+    "state-io-write-read": {"field_tolerances": {"output.frame": {"atol": 1e-5, "rtol": 1e-5}}},
+    "batch-isolation-2": {"field_tolerances": {"output.envs": {"atol": 1e-5, "rtol": 1e-5}}},
+}
 
 
 Adapter = CPUAdapter
