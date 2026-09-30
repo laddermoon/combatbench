@@ -773,11 +773,24 @@ class Step(CombatExperimentPPOBase):
             sum(all_solepk) / max(len(all_solepk), 1)
             if all_solepk else 0.0
         )
+        cycles_mean = (
+            sum(all_cycles) / max(len(all_cycles), 1)
+            if all_cycles else 0.0
+        )
+        # alt is coin-flip noise on tiny cycle counts: a single
+        # alternating episode out of ~128 eval agents yields alt=0.5
+        # (+0.05 quality), which set an unreachable bar at u2305 and
+        # killed clean_43f at u2505 while cycles climbed 0.2→2.7 the
+        # whole time.  Scale the alt term by cycle-count confidence
+        # (full weight at >=10 cycles/ep) and add a small cycles term
+        # so ramp-up progress registers as improvement.
+        alt_conf = min(1.0, cycles_mean / 10.0)
         quality = (
             step_success_rate
             - 0.1 * falls_mean
-            + 0.1 * alt_mean
+            + 0.1 * alt_mean * alt_conf
             + min(solepk_mean, 0.10)
+            + 0.005 * min(cycles_mean, 20.0)
         )
         improved_pot = mean_max_pot > self._best_potential
         if improved_pot:
