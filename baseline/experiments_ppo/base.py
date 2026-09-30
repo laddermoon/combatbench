@@ -185,6 +185,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # --- Parallelism ---
     rollout_workers: int = max(1, (os.cpu_count() or 1) // 2)
 
+    # Rollout inference placement: "cpu" = in-worker local path (status
+    # quo); "gpu" = centralized UDS inference server with GPU-batched
+    # forwards (workers ship obs+noise, server returns action+extras).
+    rollout_inference: str = "cpu"
+
     seed: int = 42
 
     # --- Policy blueprint ---
@@ -245,6 +250,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
             video_eval_interval=self.video_eval_interval,
             rollout_workers=self.rollout_workers,
             seed=self.seed,
+            rollout_inference=self.rollout_inference,
         )
 
     def ppo_params(self) -> PPOParams:

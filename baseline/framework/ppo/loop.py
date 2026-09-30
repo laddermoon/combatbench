@@ -719,7 +719,10 @@ def train_ppo(
                 flush=True,
             )
 
-    with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
+    with ParallelRollouter(
+        num_workers=cp.rollout_workers,
+        rollout_inference=cp.rollout_inference,
+    ) as rollouter:
         # Policy-version export stream — ``policy_exports/uNNNNN`` is
         # the *post-update-NNNNN* policy.  Rollout at update ``u``
         # consumes the version produced by update ``u-1``; the init /

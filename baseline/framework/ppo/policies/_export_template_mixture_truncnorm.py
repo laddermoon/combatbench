@@ -263,7 +263,13 @@ class _MixtureTruncNormInferenceNet(nn.Module):
 
     def sample_action(
         self, obs: torch.Tensor, *, ctx: Optional["SamplingContext"] = None,
+        uniform: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # ``uniform`` (B, D+1): column 0 selects the mixture component via
+        # inverse-CDF on the cumulated weights (replacing multinomial);
+        # columns 1: are the per-dim action draws (replacing the internal
+        # RNG).  The batched inference server injects per-request noise
+        # here so results are independent of batch composition.
         ef = ctx.explore_factor if ctx is not None else 0.0
         log_pi, mean, policy_sigma = self._head_forward(obs)
         sigma = self._effective_sigma(policy_sigma, ef)
@@ -272,6 +278,13 @@ class _MixtureTruncNormInferenceNet(nn.Module):
 
         if K == 1:
             idx = torch.zeros(B, dtype=torch.long, device=mean.device)
+        elif uniform is not None:
+            cum = torch.cumsum(log_pi.exp(), dim=-1)
+            idx = (
+                torch.searchsorted(cum, uniform[:, 0].unsqueeze(-1).contiguous())
+                .squeeze(-1)
+                .clamp_(max=K - 1)
+            )
         else:
             idx = torch.multinomial(
                 log_pi.exp(), 1, generator=self._gen,
@@ -282,11 +295,15 @@ class _MixtureTruncNormInferenceNet(nn.Module):
 
         erf_a = torch.erf((_ACTION_LOW - mu_k) / (_SQRT_2 * sg_k))
         erf_b = torch.erf((_ACTION_HIGH - mu_k) / (_SQRT_2 * sg_k))
-        u = torch.rand(
-            mu_k.shape,
-            generator=self._gen,
-            device=mu_k.device,
-            dtype=mu_k.dtype,
+        u = (
+            uniform[:, 1:]
+            if uniform is not None
+            else torch.rand(
+                mu_k.shape,
+                generator=self._gen,
+                device=mu_k.device,
+                dtype=mu_k.dtype,
+            )
         )
         q = (1.0 - u) * erf_a + u * erf_b
         q = q.clamp(-1.0 + _ERFINV_EPS, 1.0 - _ERFINV_EPS)

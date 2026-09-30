@@ -310,21 +310,28 @@ class _StateBoundedStdInferenceNet(nn.Module):
 
     def sample_action(
         self, obs: torch.Tensor, *, ctx: Optional["SamplingContext"] = None,
+        uniform: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # ``uniform`` (B, D+1): column 0 is reserved for mixture-component
+        # selection (unused here); columns 1: are the per-dim action draws
+        # that replace the internal RNG — used by the batched inference
+        # server so noise stays per-request regardless of batch
+        # composition.  ``None`` (default) keeps the internal ``_gen``.
         mean, sigma = self.forward(obs, ctx=ctx)
         a, b, log_Z = self._trunc_params(mean, sigma)
         cdf_a = _std_normal_cdf(a)
         cdf_b = _std_normal_cdf(b)
-        u = (
-            torch.rand(
+        u_raw = (
+            uniform[:, 1:]
+            if uniform is not None
+            else torch.rand(
                 mean.shape,
                 generator=self._gen,
                 device=mean.device,
                 dtype=mean.dtype,
             )
-            * (cdf_b - cdf_a)
-            + cdf_a
         )
+        u = u_raw * (cdf_b - cdf_a) + cdf_a
         eps = _std_normal_icdf(u)
         action = mean + sigma * eps
         action = torch.clamp(action, _ACTION_LOW + 1e-6, _ACTION_HIGH - 1e-6)

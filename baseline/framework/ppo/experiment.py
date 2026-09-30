@@ -368,6 +368,10 @@ class CommonParams:
     video_eval_interval: int
     rollout_workers: int
     seed: int
+    # "cpu" = local in-worker inference (status quo); "gpu" = centralized
+    # UDS inference server with GPU-batched forwards.  Fixed for the whole
+    # run — the ParallelRollouter is built once before the loop.
+    rollout_inference: str = "cpu"
 
 
 @dataclass(frozen=True)
@@ -535,7 +539,7 @@ class PPOParams:
 #       does not perform.
 
 _PARAM_OVERRIDE_BLACKLIST = frozenset(
-    {"name", "seed", "rollout_workers"}
+    {"name", "seed", "rollout_workers", "rollout_inference"}
 )
 
 

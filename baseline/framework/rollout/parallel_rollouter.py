@@ -42,6 +42,8 @@ from .episode_collection import EpisodeCollection
 from .episode_recorder import EpisodeRecorder
 from .exploratory_policy import SamplingPolicy
 from .job import Job, SamplingSpec
+from .inference_server import InferenceServerHandle
+from .remote_policy import RemoteSamplingPolicy
 
 _logger = logging.getLogger(__name__)
 
@@ -70,7 +72,32 @@ def _spec_key(spec_dict: Dict[str, Any]) -> str:
     return hashlib.md5(pickle.dumps(spec_dict)).hexdigest()
 
 
-def _wrap_policy(policy, spec_dict: Dict[str, Any], stochastic: bool):
+def _is_remote_eligible(
+    policy_bp_dict: Dict[str, Any],
+    spec_dict: Dict[str, Any],
+    stochastic: bool,
+) -> bool:
+    """True when this agent's wrapper should be a RemoteSamplingPolicy.
+
+    Remote inference applies only to the stochastic rollout path and only
+    to file-exported policies (``cls: "file:..."``) — the convention that
+    guarantees a ``._policy.sample_action`` net on the server.  Scripted
+    (``module:Class``) blueprints and the deterministic eval path keep
+    the local build/wrap behavior untouched.
+    """
+    return bool(
+        stochastic
+        and spec_dict.get("_remote_addr")
+        and str(policy_bp_dict.get("cls", "")).startswith("file:")
+    )
+
+
+def _wrap_policy(
+    policy,
+    spec_dict: Dict[str, Any],
+    stochastic: bool,
+    policy_bp_dict: Optional[Dict[str, Any]] = None,
+):
     """Wrap a policy for the EpisodeRunner.
 
     When ``stochastic=True``, wrap in :class:`SamplingPolicy` so
@@ -78,10 +105,20 @@ def _wrap_policy(policy, spec_dict: Dict[str, Any], stochastic: bool):
     the spec.  When ``stochastic=False``, return the policy as-is so
     ``act()`` (deterministic) is called directly — specs (including any
     reference policies) are never consumed on the eval path.
+
+    If the spec carries ``_remote_addr`` (injected by ``collect`` in GPU
+    inference mode) and the blueprint is a file export, the inner policy
+    is discarded and a :class:`RemoteSamplingPolicy` shell is returned —
+    the whole sampling semantics then runs batched on the inference
+    server while ``EpisodeRunner`` still sees a plain Policy.
     """
-    if stochastic:
-        return SamplingPolicy(policy, SamplingSpec.from_dict(spec_dict))
-    return policy
+    if not stochastic:
+        return policy
+    if policy_bp_dict is not None and _is_remote_eligible(
+        policy_bp_dict, spec_dict, stochastic,
+    ):
+        return RemoteSamplingPolicy(policy_bp_dict, spec_dict)
+    return SamplingPolicy(policy, SamplingSpec.from_dict(spec_dict))
 
 
 def _run_job(
@@ -100,13 +137,21 @@ def _run_job(
 
     recorder = EpisodeRecorder(blueprint_hash=env_hash)
     runtime = env_bp.build(recorders=[recorder])
-    policy_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-    policy_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+    remote_a = _is_remote_eligible(policy_a_bp_dict, spec_a_dict, stochastic)
+    remote_b = _is_remote_eligible(policy_b_bp_dict, spec_b_dict, stochastic)
+    policy_a = (
+        None if remote_a
+        else PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+    )
+    policy_b = (
+        None if remote_b
+        else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+    )
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policy_a=_wrap_policy(policy_a, spec_a_dict, stochastic),
-        policy_b=_wrap_policy(policy_b, spec_b_dict, stochastic),
+        policy_a=_wrap_policy(policy_a, spec_a_dict, stochastic, policy_a_bp_dict),
+        policy_b=_wrap_policy(policy_b, spec_b_dict, stochastic, policy_b_bp_dict),
     )
     runner.run_episode(
         seed=seed, options=options, want_extras=True,
@@ -156,6 +201,12 @@ def _run_job_batch(
         sa_changed = sa_key != current_sa_key
         sb_changed = sb_key != current_sb_key
 
+        # Remote-eligible agents skip the local inner build entirely —
+        # their network lives on the inference server; the worker only
+        # ships obs + noise and receives action + extras.
+        remote_a = _is_remote_eligible(policy_a_bp_dict, spec_a_dict, stochastic)
+        remote_b = _is_remote_eligible(policy_b_bp_dict, spec_b_dict, stochastic)
+
         if runner is None or env_changed:
             # Full (re)build — env is the expensive part.
             if runner is not None:
@@ -166,12 +217,23 @@ def _run_job_batch(
             env_hash = blueprint_hash(env_bp)
             recorder = EpisodeRecorder(blueprint_hash=env_hash)
             runtime = env_bp.build(recorders=[recorder])
-            inner_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
-            inner_b = inner_a if same_policy else PolicyBlueprint.from_dict(policy_b_bp_dict).build()
+            inner_a = (
+                None if remote_a
+                else PolicyBlueprint.from_dict(policy_a_bp_dict).build()
+            )
+            inner_b = (
+                inner_a if same_policy
+                else (None if remote_b
+                      else PolicyBlueprint.from_dict(policy_b_bp_dict).build())
+            )
             runner = EpisodeRunner(
                 runtime=runtime,
-                policy_a=_wrap_policy(inner_a, spec_a_dict, stochastic),
-                policy_b=_wrap_policy(inner_b, spec_b_dict, stochastic),
+                policy_a=_wrap_policy(
+                    inner_a, spec_a_dict, stochastic, policy_a_bp_dict,
+                ),
+                policy_b=_wrap_policy(
+                    inner_b, spec_b_dict, stochastic, policy_b_bp_dict,
+                ),
             )
             current_env_key = env_key
             current_pa_key = pa_key
@@ -181,13 +243,13 @@ def _run_job_batch(
         else:
             # Env unchanged — rebuild inner policies only when their
             # blueprints changed; re-wrap when blueprint OR spec changed.
-            if pa_changed:
+            if pa_changed and not remote_a:
                 inner_a = PolicyBlueprint.from_dict(policy_a_bp_dict).build()
             if same_policy:
                 # Shared inner: covers pa_changed AND transitions back
                 # into self-play (A!=B → A==B leaves a stale inner_b).
                 inner_b = inner_a
-            elif pb_changed:
+            elif pb_changed and not remote_b:
                 inner_b = PolicyBlueprint.from_dict(policy_b_bp_dict).build()
 
             # Wrapper staleness: a's wrapper depends on (inner_a, spec_a);
@@ -196,7 +258,9 @@ def _run_job_batch(
             # self-play) also makes b's wrapper stale.
             if pa_changed or sa_changed:
                 runner.set_policy_a(
-                    _wrap_policy(inner_a, spec_a_dict, stochastic),
+                    _wrap_policy(
+                        inner_a, spec_a_dict, stochastic, policy_a_bp_dict,
+                    ),
                 )
             wrap_b_stale = (
                 (pa_changed or pb_changed or sb_changed)
@@ -205,7 +269,9 @@ def _run_job_batch(
             )
             if wrap_b_stale:
                 runner.set_policy_b(
-                    _wrap_policy(inner_b, spec_b_dict, stochastic),
+                    _wrap_policy(
+                        inner_b, spec_b_dict, stochastic, policy_b_bp_dict,
+                    ),
                 )
             current_pa_key = pa_key
             current_pb_key = pb_key
@@ -245,16 +311,32 @@ class ParallelRollouter:
         ``> 1`` spawns a persistent process pool.
     mp_context:
         Multiprocessing start method (default ``"spawn"``).
+    rollout_inference:
+        ``"cpu"`` (default) keeps the existing local path — workers build
+        the exported policy and run ``SamplingPolicy`` in-process.
+        ``"gpu"`` spawns a centralized UDS inference server on first use;
+        stochastic file-export policies are then wrapped in
+        :class:`RemoteSamplingPolicy` shells that block on the socket
+        while the server runs the batched forward on GPU.  Environment
+        stepping and all CPU work are unchanged.
     """
 
     def __init__(
         self,
         num_workers: int = 1,
         mp_context: str = "spawn",
+        rollout_inference: str = "cpu",
     ) -> None:
+        if rollout_inference not in ("cpu", "gpu"):
+            raise ValueError(
+                f"rollout_inference must be 'cpu' or 'gpu', "
+                f"got {rollout_inference!r}"
+            )
         self._num_workers = max(1, int(num_workers))
         self._mp_context = mp_context
+        self._rollout_inference = rollout_inference
         self._executor: Optional[ProcessPoolExecutor] = None
+        self._inference_server: Optional[InferenceServerHandle] = None
 
         if self._num_workers > 1:
             ctx = mp.get_context(mp_context)
@@ -290,20 +372,46 @@ class ParallelRollouter:
         if not jobs:
             raise ValueError("jobs must not be empty")
 
+        # GPU inference mode: lazily spawn the shared UDS server and
+        # publish its address inside every spec dict.  The worker-side
+        # wrapper consumes ``_remote_addr`` (see ``_wrap_policy``); the
+        # CPU path is untouched.
+        remote_addr: Optional[str] = None
+        if self._rollout_inference == "gpu" and any(
+            job.stochastic for job in jobs
+        ):
+            if self._inference_server is None:
+                import os
+
+                device = os.environ.get("CB_INFER_DEVICE", "cuda")
+                capacity = int(
+                    os.environ.get("CB_INFER_CAPACITY", "128")
+                )
+                self._inference_server = InferenceServerHandle(
+                    device=device, capacity=capacity,
+                )
+                self._inference_server.wait_ready()
+            remote_addr = self._inference_server.address
+
         # Serialize blueprints + specs to plain dicts for pickling into
         # workers.  explore_factor callables ride along inside the spec
         # dict and must be top-level functions to be picklable.
         tasks = []
         for job in jobs:
             spec_a, spec_b = job.sampling_a, job.sampling_b
+            spec_a_dict = spec_a.to_dict()
+            spec_b_dict = spec_b.to_dict()
+            if remote_addr is not None:
+                spec_a_dict["_remote_addr"] = remote_addr
+                spec_b_dict["_remote_addr"] = remote_addr
             tasks.append((
                 job.policy_a_bp.to_dict(),
                 job.policy_b_bp.to_dict(),
                 job.env_bp.to_dict(),
                 int(job.seed),
                 dict(job.episode_options) if job.episode_options else None,
-                spec_a.to_dict(),
-                spec_b.to_dict(),
+                spec_a_dict,
+                spec_b_dict,
                 job.stochastic,
             ))
 
@@ -339,10 +447,13 @@ class ParallelRollouter:
         return episodes
 
     def close(self) -> None:
-        """Shut down the worker pool (idempotent)."""
+        """Shut down the worker pool and inference server (idempotent)."""
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
+        if self._inference_server is not None:
+            self._inference_server.close()
+            self._inference_server = None
 
     def __enter__(self) -> "ParallelRollouter":
         return self

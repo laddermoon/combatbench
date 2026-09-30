@@ -223,13 +223,24 @@ class _PreTanhNormalInferenceNet(nn.Module):
 
     def sample_action(
         self, obs: torch.Tensor, *, explore_factor: Any = 0.0,
+        uniform: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # ``uniform`` (B, D+1): column 0 is reserved for mixture-component
+        # selection (unused here); columns 1: are per-dim uniforms that
+        # the inverse normal CDF maps to standard-normal draws, replacing
+        # the global RNG — used by the batched inference server so noise
+        # stays per-request regardless of batch composition.
         mu, r = self._policy_params(obs)
         mu_e, r_e = self._explored_params(mu, r, explore_factor)
         sigma_e = r_e.exp()
         self._check_support(mu_e, sigma_e)
 
-        z = mu_e + sigma_e * torch.randn_like(mu_e)
+        if uniform is not None:
+            u = uniform[:, 1:].to(mu_e.dtype).clamp(1e-6, 1.0 - 1e-6)
+            eps = _SQRT_2 * torch.erfinv(2.0 * u - 1.0)
+        else:
+            eps = torch.randn_like(mu_e)
+        z = mu_e + sigma_e * eps
         action = torch.tanh(z).float()
         self._check_actions(action)
 
