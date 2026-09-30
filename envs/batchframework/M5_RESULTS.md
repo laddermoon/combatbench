@@ -66,8 +66,12 @@ ctx schema `{delta_factor, delta_mix, explore_factor}` 全字段齐全，
 train.py --experiment standup_floor04 --algo ppo --collector device \
   --collector-batch-size 256 --param max_updates=1 --param eval_interval=9999
 ```
-（run `m5_w4_device_u1_b256`；B=512 在 warp collision scratch 处 OOM——
-naconmax 随 B 膨胀，24GiB 卡最多 ~256+）
+（run `m5_w4_device_u1_b256`；B=512/cap48 在 warp collision scratch 处
+OOM——`nconmax=B*48` 把接触槽开到 24K。复测 `nconmax_per_world=16`
+后 B=512 可跑且**更快**（58K vs 34.8K env-substeps/s，cap 降低同时
+缩小了接触工作集）；B=1024/cap16 仍 OOM。cap 降低以 warp 截断语义
+丢弃超容量接触——本任务双机+地面实测远低于 16，但属于需要显式
+声明的近似，正式采用前应先测量峰值 ncon。）
 
 **结果**：512 episodes → 1024 trajs → 204,800 frames → PPO update 完整跑通
 （KL early-stop、critic EV=0.489、uncertainty floor 链路均正常）。
