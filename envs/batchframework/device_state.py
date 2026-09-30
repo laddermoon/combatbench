@@ -92,14 +92,25 @@ class ContactFlatNamespace:
 
 @dataclass
 class EpisodeNamespace:
-    """per-env 簿记。runtime 拥有；插件仅可置位 reset_request / term_reason。"""
+    """per-env / per-agent 簿记。runtime 拥有；插件可置位
+    reset_request / term_reason / agent_terminated。
+
+    终止是两级的（对齐旧框架 ``agent_terminated`` 语义）：
+    - ``agent_terminated (B, n_agents)``：单个 agent（robot_a/b）的终止
+      标记，**跨步持久**直到该 env reset；env 只在全部 agent 终止时结束。
+    - ``terminated_flag (B,)``：env 级终止/复位标记（本步置位即消费）；
+      也作为"全 agent 终止"的派生/直接置位出口。
+    """
 
     episode_steps: torch.Tensor     # (B,) i64 — 本 episode 已完成的 action step
     active_mask: torch.Tensor       # (B,) bool — env 未终止
-    terminated_flag: torch.Tensor   # (B,) bool — 本步被标记终止
+    terminated_flag: torch.Tensor   # (B,) bool — env 级终止（本步消费）
     term_reason: torch.Tensor       # (B,) i8 — TerminationReason code（-1=无）
+    agent_terminated: torch.Tensor  # (B, n_agents) bool — 跨步持久
+    agent_term_reason: torch.Tensor # (B, n_agents) i8
     reset_request: torch.Tensor     # (B,) bool — 插件请求 reset 该 env
     time: torch.Tensor              # (B,) f32 — episode 内累计物理秒
+    n_agents: int = 2
 
 
 @dataclass
@@ -179,7 +190,11 @@ class DeviceBatchState:
     # episode 簿记辅助
     # ------------------------------------------------------------------
     def clear_step_flags(self) -> None:
-        """每个 action step 边界：清 terminated/reset 请求标志。"""
+        """每个 action step 边界：清 env 级终止/reset 请求标志。
+
+        ``agent_terminated`` 是跨步持久的 per-episode 状态，
+        不在此清理——由 partial reset 按行清零。
+        """
         self.episode.terminated_flag.zero_()
         self.episode.term_reason.fill_(-1)
         self.episode.reset_request.zero_()
