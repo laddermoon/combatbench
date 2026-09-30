@@ -52,6 +52,11 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
 
     def __init__(self, batch_size: int = 1,
                  nconmax_per_world: int = 48, **_kwargs):
+        # warp 路径不用 jax，但父类构造会初始化 XLA 后端；XLA 默认预分配
+        # ~75% 显存（24GiB 卡 ~18GB），会把 warp mempool 挤到 OOM。必须在
+        # super().__init__ 之前设置——XLA 在首次后端使用时才读取此变量。
+        import os
+        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
         super().__init__(batch_size=batch_size, precision="fp32")
         import warp as wp
         import mujoco_warp as mjw

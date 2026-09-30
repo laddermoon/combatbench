@@ -66,12 +66,18 @@ ctx schema `{delta_factor, delta_mix, explore_factor}` 全字段齐全，
 train.py --experiment standup_floor04 --algo ppo --collector device \
   --collector-batch-size 256 --param max_updates=1 --param eval_interval=9999
 ```
-（run `m5_w4_device_u1_b256`；B=512/cap48 在 warp collision scratch 处
-OOM——`nconmax=B*48` 把接触槽开到 24K。复测 `nconmax_per_world=16`
-后 B=512 可跑且**更快**（58K vs 34.8K env-substeps/s，cap 降低同时
-缩小了接触工作集）；B=1024/cap16 仍 OOM。cap 降低以 warp 截断语义
-丢弃超容量接触——本任务双机+地面实测远低于 16，但属于需要显式
-声明的近似，正式采用前应先测量峰值 ncon。）
+（run `m5_w4_device_u1_b256`；B=512/cap48 曾在 warp collision scratch
+处 OOM。**事后定位的根因不是接触容量**：`WarpHumanoid21Simulator`
+继承 `MjxHumanoid21Simulator`，父类构造初始化 jax 后端时 XLA 默认
+预分配 ~75% 显存（~18GB），warp mempool 只剩 ~3GB 缝隙。修复（构造
+前 `XLA_PYTHON_CLIENT_PREALLOCATE=false`）后 B=512/cap48 全程只占
+4.4GB；裸 `put_data` 复测 B=8192/cap48 也仅 ~4GB——M2 probe 当时能
+跑正是因为 warp 数据本身很小。修复后实测天花板：B=1024→10.5GB ✅、
+B=1536→20.7GB ✅、B=2048→OOM（单 768MB 分配）。注意此时吞吐在
+B=512→1536 间饱和于 ~24-26K substeps/s（与 M2 空卡 probe 的 75-147K
+不同——本次 GPU0 有其他租户进程，数字需重测；但"显存限制 B"的结论
+已不再成立）。`nconmax_per_world=16` 仍更快（58K vs 34.8K）且更省，
+属于需要显式声明的截断近似，正式采用前应先测峰值 ncon。）
 
 **结果**：512 episodes → 1024 trajs → 204,800 frames → PPO update 完整跑通
 （KL early-stop、critic EV=0.489、uncertainty floor 链路均正常）。
@@ -91,14 +97,20 @@ OOM——`nconmax=B*48` 把接触槽开到 24K。复测 `nconmax_per_world=16`
 launch-latency 受限：25 子步块耗时 B=64→0.51s、B=256→0.26s、B=512→0.38s（局部
 波动），单 warp step ~10-15ms 几乎不随 B 变化——吞吐随 B 线性（B=256 约 25K
 env-substeps/s，B=512 约 34K）。M2 报告的 308K 是 **B=8192** 下的数字，而
-512-ep update 物理上只有 512 个 env 可并行，且 B>256 已撞显存。要追平 96-worker
-CPU（~472K substeps/s 实测），需要 B≥8K 级别的并行度或 solver/launch 层优化
-（CUDA graph、求解器迭代数、collision 配置）——这超出 M5 范围，归 R2/M6 决策项。
+512-ep update 物理上只有 512 个 env 可并行。~~且 B>256 已撞显存~~ ——显存
+瓶颈实为 jax 预分配假象（见上），修复后 cap48 可到 B≈1536。但吞吐在该区间
+并未继续线性增长（B=512/1024/1536 ≈ 24-26K，有 GPU 租户干扰需重测）——
+是否仍是 launch-latency 饱和，需在空卡上重测确认。要追平 96-worker
+CPU（~472K substeps/s 实测），需要 solver/launch 层优化
+（CUDA graph、求解器迭代数、collision 配置）或多卡分波——这超出 M5 范围，
+归 R2/M6 决策项。
 
 **诚实含义**：R1 放行的"collector 性能分解"完成，同时暴露了本任务在单 4090 +
 512-ep/update 的形状下 warp 无加速收益——ROADMAP 的"不宣称训练加速"原则
-在此被数据强制执行。可行方向：(a) episodes_per_update 提到数千级再上设备；
-(b) 更大显存卡/多卡分波；(c) warp solver 层面降延迟。M6 前需要就此做取舍。
+在此被数据强制执行。可行方向：(a) 空卡重测 B=512~1536 的吞吐-显存曲线确定
+真实饱和点；(b) episodes_per_update 提到数千级再上设备；(c) 多卡分波（8 卡
+基本空闲）；(d) warp solver 层面降延迟（CUDA graph、迭代数、collision 配置）。
+M6 前需要就此做取舍。
 
 ## 5. W5：debug/溯源/拒绝路径
 
