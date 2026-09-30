@@ -145,6 +145,50 @@ class TestSamplingSpecAssembly:
         assert spec.reference is None
         assert spec.delta_mix == 0.0
 
+    def test_frozen_ensemble_excludes_self(self, tmp_path):
+        """Frozen mode: ensemble is also strictly-past — Gen0 already
+        supplies the current policy via its own deterministic action;
+        a self member would only bias a_ref toward μ₀ (Δ diluted by
+        a mechanically-zero member)."""
+        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+                 reference_horizon="10", delta_mode="frozen")
+        for u in range(1, 4):
+            e.post_update(
+                SimpleNamespace(), u,
+                artifacts=UpdateArtifacts(policy_bp=_bp(tmp_path, f"u{u}")),
+            )
+        spec = e._sampling_spec()
+        assert spec.delta_mode == "frozen"
+        assert isinstance(spec.reference, ReferenceSpec)
+        # u3 is the current rollout policy — excluded, same as dynamic.
+        assert [_bp_dirname(b) for b in spec.reference.policies] == [
+            "u1", "u2",
+        ]
+        assert spec.reference.weights == pytest.approx((1/2,) * 2)
+
+    def test_frozen_self_only_history_plain_spec(self, tmp_path):
+        """Frozen mode with a single history member (= the current
+        policy) finds no strictly-past version — the mechanism stays
+        off (plain spec) exactly like dynamic warmup."""
+        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+                 reference_horizon="10", delta_mode="frozen")
+        e.post_update(
+            SimpleNamespace(), 1,
+            artifacts=UpdateArtifacts(policy_bp=_bp(tmp_path, "u1")),
+        )
+        spec = e._sampling_spec()
+        assert spec.reference is None
+        assert spec.delta_mix == 0.0
+
+    def test_frozen_requires_delta_mix(self, tmp_path):
+        with pytest.raises(ValueError, match="delta_mix"):
+            _exp(tmp_path, delta_mode="frozen")
+
+    def test_delta_mode_invalid_value(self, tmp_path):
+        with pytest.raises(ValueError, match="delta_mode"):
+            _exp(tmp_path, delta_mix="1.0", reference_horizon="10",
+                 delta_mode="banana")
+
     def test_delta_off_plain_spec_despite_history(self, tmp_path):
         e = _exp(tmp_path, reference_horizon="10")
         e.post_update(

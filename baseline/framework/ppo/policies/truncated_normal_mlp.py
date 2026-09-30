@@ -40,6 +40,45 @@ def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
     return x
 
 
+def _delta_of(
+    mean: torch.Tensor,
+    ctx: Optional["SamplingContext"],
+) -> Optional[torch.Tensor]:
+    """The Δ payload the σ-mix consumes this call, or ``None``.
+
+    Resolution order — an explicit ``ctx.delta`` payload wins over the
+    fresh ``mean − a_ref`` path.  ``ctx.delta`` is the *action-level*
+    Δ (``det_action − a_ref``, ``(D,)`` per frame): an input produced
+    by the sampling layer in frozen mode, or replayed data at train
+    time — in both cases NOT a function of the current forward's
+    θ-dependent mean.  ``delta_mix = 0`` disables the mechanism
+    entirely; both payloads absent yields ``None`` (mechanism off, or
+    malformed ctx — ``delta_mix_sigma`` distinguishes the two via the
+    ``delta_mix != 0`` activation invariant, in both modes).
+    """
+    if ctx is None:
+        return None
+    dm = getattr(ctx, "delta_mix", None)
+    if dm is None:
+        return None
+    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
+        return None
+
+    def _bcast(v: Any) -> torch.Tensor:
+        t = torch.as_tensor(v, dtype=mean.dtype, device=mean.device)
+        while t.ndim < mean.ndim:
+            t = t.unsqueeze(-2)
+        return t
+
+    frozen = getattr(ctx, "delta", None)
+    if frozen is not None:
+        return _bcast(frozen)
+    ref = getattr(ctx, "reference_action", None)
+    if ref is None:
+        return None
+    return mean - _bcast(ref)
+
+
 def delta_mix_sigma(
     mean: torch.Tensor,
     sigma: torch.Tensor,
@@ -49,42 +88,55 @@ def delta_mix_sigma(
 ) -> torch.Tensor:
     """σ²-domain mix of the policy σ with the reference-delta scale.
 
-        σ_eff² = (1−λ)·σ² + λ·max((c·|m − a_ref|)², ε²)
+        σ_eff² = (1−λ)·σ² + λ·max((c·|Δ|)², σ², ε²)
+
+    where Δ is either recomputed (dynamic mode: ``m_θ − a_ref``) or
+    supplied as a ``ctx.delta`` input (frozen mode: the sampling layer
+    computed ``det_action(current policy) − a_ref`` at rollout — σ_eff
+    stays constant w.r.t. θ inside an update, which is the whole point
+    of the mode).
 
     ``mean``/``sigma`` may be (B, D) (single-component) or (B, K, D)
     (per-component mixture); ``a_ref`` broadcasts from (D,) or (B, D).
     Bounded callers pass ``sigma_min``/``sigma_max`` to re-apply their
     support.  Returns ``sigma`` untouched when the mechanism is off
-    (no reference or λ = 0 everywhere) — that short-circuit keeps the
-    inactive path bit-identical to plain ef behavior.
+    (no reference, no frozen payload, or λ = 0 everywhere) — that
+    short-circuit keeps the inactive path bit-identical to plain ef
+    behavior.
 
-    ``mean`` is detached inside the Δ term: σ_eff is an exogenous scale
-    w.r.t. m_θ, so log_prob cannot rise by collapsing μ toward a_ref
-    (the σ-channel cheat from TODO_reference_policy_delta_exploration.md
-    §8).  The policy σ still receives gradients via its (1−λ) term.
+    ``Δ`` contributes no gradient: dynamic mode detaches ``mean``
+    (σ_eff is an exogenous scale w.r.t. m_θ — collapsing μ toward a_ref
+    must not raise log_prob; see TODO_reference_policy_delta_exploration
+    .md §8), and frozen payloads are data by construction.  The policy σ
+    still receives gradients via its (1−λ) term and via the σ-floor
+    branch — the floor (TODO §5.1, required) makes low-drift phases
+    fall back to the policy's own scale instead of the ε floor.
     """
     # Attribute-based activation check — NOT ctx.has_delta().  This helper
     # is inlined into exported policy files, where ``ctx`` may be an
     # instance of an OLDER SamplingContext class (spawned rollout workers
-    # freeze their imports at start): the four fields have existed since
-    # the ctx pipeline landed, but methods may not.  Never call methods
-    # on objects crossing that boundary.
-    if ctx is None:
+    # freeze their imports at start): the fields exist but methods may
+    # not.  Never call methods on objects crossing that boundary.
+    delta = _delta_of(mean, ctx)
+    if delta is None:
+        # λ ≠ 0 but no Δ source at all — the rollout-side record lost
+        # its payload (stale buffer or pipeline bug).  Fail loud in
+        # BOTH modes rather than silently degrading to plain σ.
+        dm = getattr(ctx, "delta_mix", None) if ctx is not None else None
+        if dm is not None and (
+            bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0
+        ):
+            raise ValueError(
+                "delta ctx carries delta_mix != 0 but neither `delta` "
+                "nor `reference_action` — the rollout-side sctx__ "
+                "payload record is missing (stale buffer or pipeline "
+                "bug)"
+            )
         return sigma
-    ref = getattr(ctx, "reference_action", None)
-    dm = getattr(ctx, "delta_mix", None)
-    if ref is None or dm is None:
-        return sigma
-    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
-        return sigma
-    ref = torch.as_tensor(
-        ctx.reference_action, dtype=sigma.dtype, device=sigma.device,
-    )
-    while ref.ndim < mean.ndim:
-        ref = ref.unsqueeze(-2)
     c = _ctx_bcast(ctx.delta_factor, sigma)
     lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * (mean.detach() - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    delta2 = (c * delta.detach()).pow(2).clamp_min(_DELTA_EPS ** 2)
+    delta2 = torch.maximum(delta2, sigma.pow(2))
     mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
     if sigma_min is not None:
         mixed = mixed.clamp(sigma_min, sigma_max)
@@ -420,7 +472,8 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         z = (action - mean) / sigma
         log_prob = (-0.5 * z * z - torch.log(sigma) - 0.5 * math.log(2 * math.pi)
                     - log_Z)
-        return action, log_prob.sum(dim=-1)
+        log_prob = log_prob.sum(dim=-1)
+        return action, log_prob
 
     def deterministic_action(self, obs: torch.Tensor) -> torch.Tensor:
         """Return mean action (no sampling)."""
@@ -552,9 +605,7 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         if not want_extra or log_prob is None:
             return action_np, None
-        return action_np, {
-            "log_prob": float(log_prob.item()),
-        }
+        return action_np, {"log_prob": float(log_prob.item())}
 
     def to_blueprint(
         self, dest_path: Optional[str] = None,

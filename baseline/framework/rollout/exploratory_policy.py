@@ -192,6 +192,25 @@ class SamplingPolicy(Policy):
             if self._ref_pairs
             else None
         )
+        # Frozen mode: Δ = det_action(current policy) − a_ref is an
+        # action-level quantity computed HERE — the reference ensemble
+        # supplies a_ref, the inner policy supplies μ₀ via its
+        # deterministic act().  It enters the ctx as an input field
+        # (`delta`, mutually exclusive with `reference_action`), is
+        # consumed verbatim by the σ-mix, and flows back out through
+        # record_fields() → sctx__delta for frozen replay at train.
+        if self._spec.delta_mode == "frozen" and ref is not None:
+            mu0, _ = self.inner.act(observation)
+            delta = (
+                np.asarray(mu0, dtype=np.float32) - ref
+            ).astype(np.float32)
+            return SamplingContext(
+                explore_factor=ef,
+                reference_action=None,
+                delta_factor=float(self._spec.delta_factor),
+                delta_mix=float(self._spec.delta_mix),
+                delta=delta,
+            )
         return SamplingContext(
             explore_factor=ef,
             reference_action=ref,

@@ -41,7 +41,11 @@ Frame = ``u32 payload_len`` + ``payload``; ``payload[0]`` is the type byte.
   supports_delta})``.  On failure: ``b"r" + pickle({"error": str})``.
 - ``b"A"`` act — payload
   ``b"A" + <qdBHH>(spec_id, ef, want_extra, obs_len, noise_len) + obs + noise``
-  → reply ``b"a" + <dB>(log_prob, has_ref) + action + ref_action``.
+  → reply ``b"a" + <dBB>(log_prob, has_ref, has_delta) + action
+  + ref_action + delta``.  ``ref_action`` is present iff ``has_ref``
+  (suppressed under ``delta_mode="frozen"`` — the recorded payload is
+  Δ, not a_ref); ``delta`` iff ``has_delta`` (frozen mode only; the
+  action-level ``det_action(current) − a_ref``, ``(D,)`` flat).
 - ``b"P"`` ping — reply ``b"p"`` (readiness probe).
 - ``b"X"`` shutdown — server exits its loop.
 """
@@ -65,7 +69,7 @@ import numpy as np
 _logger = logging.getLogger(__name__)
 
 _ACT_HDR = struct.Struct("<QdBHH")
-_ACT_REPLY_HDR = struct.Struct("<dB")
+_ACT_REPLY_HDR = struct.Struct("<dBB")
 
 #: Default padded batch capacity.  Every forward is executed at exactly
 #: this many rows (dead rows carry zeroed obs / midpoint noise) so the
@@ -140,8 +144,8 @@ def send_act(
     want_extra: bool,
     obs: np.ndarray,
     noise: np.ndarray,
-) -> Tuple[np.ndarray, float, Optional[np.ndarray]]:
-    """Client-side: ACT round-trip → (action, log_prob, ref_action|None)."""
+) -> Tuple[np.ndarray, float, Optional[np.ndarray], Optional[np.ndarray]]:
+    """Client-side ACT round-trip → (action, log_prob, ref|None, delta|None)."""
     obs = np.asarray(obs, dtype=np.float32).reshape(-1)
     noise = np.asarray(noise, dtype=np.float32).reshape(-1)
     hdr = _ACT_HDR.pack(spec_id, float(ef), int(bool(want_extra)),
@@ -154,15 +158,22 @@ def send_act(
         raise RuntimeError(f"inference server: {pickle.loads(reply[1:])}")
     if not reply or reply[0:1] != b"a":
         raise RuntimeError("inference server: malformed act reply")
-    log_prob, has_ref = _ACT_REPLY_HDR.unpack(reply[1:1 + _ACT_REPLY_HDR.size])
+    log_prob, has_ref, has_delta = _ACT_REPLY_HDR.unpack(
+        reply[1:1 + _ACT_REPLY_HDR.size])
     rest = reply[1 + _ACT_REPLY_HDR.size:]
-    n_act = (len(rest) - (len(noise) - 1) * 4 if has_ref else len(rest)) // 4
-    action = np.frombuffer(rest[: n_act * 4], dtype=np.float32).copy()
-    ref = (
-        np.frombuffer(rest[n_act * 4:], dtype=np.float32).copy()
-        if has_ref else None
-    )
-    return action, float(log_prob), ref
+    d = len(noise) - 1  # action_dim
+    action = np.frombuffer(rest[: d * 4], dtype=np.float32).copy()
+    pos = d * 4
+    ref = None
+    if has_ref:
+        ref = np.frombuffer(rest[pos: pos + d * 4], dtype=np.float32).copy()
+        pos += d * 4
+    delta = None
+    if has_delta:
+        delta = np.frombuffer(rest[pos:], dtype=np.float32).copy()
+        if delta.size > d:
+            delta = delta.reshape(-1, d)  # per-component (K, D)
+    return action, float(log_prob), ref, delta
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +184,9 @@ class _SpecSession:
 
     __slots__ = (
         "spec_id", "inner_net", "inner_policy", "refs", "delta_factor",
-        "delta_mix", "obs_dim", "action_dim", "uses_ctx", "supports_uniform",
-        "supports_delta", "_ref_stack", "_ref_weights",
+        "delta_mix", "delta_frozen", "obs_dim", "action_dim", "uses_ctx",
+        "supports_uniform", "supports_delta", "supports_delta_out",
+        "_ref_stack", "_ref_weights",
         "_graph", "_g_obs", "_g_noise", "_g_ef", "_g_out", "_graph_done",
     )
 
@@ -206,6 +218,12 @@ class _SpecSession:
         sig = inspect.signature(net.sample_action)
         self.uses_ctx = "ctx" in sig.parameters
         self.supports_uniform = "uniform" in sig.parameters
+        # Frozen-delta needs the inner net's deterministic action to
+        # compute Δ = det_action(current policy) − a_ref server-side.
+        self.supports_delta_out = (
+            self.uses_ctx
+            and callable(getattr(net, "deterministic_action", None))
+        )
         if not self.uses_ctx and "explore_factor" not in sig.parameters:
             raise TypeError(
                 f"{type(net).__name__}.sample_action accepts neither "
@@ -228,6 +246,14 @@ class _SpecSession:
                     self.refs.append((float(w), pol))
         self.delta_factor = float(spec_dict.get("delta_factor", 0.0))
         self.delta_mix = float(spec_dict.get("delta_mix", 0.0))
+        self.delta_frozen = spec_dict.get("delta_mode") == "frozen"
+        if self.delta_frozen and not self.supports_delta_out:
+            raise TypeError(
+                f"{type(net).__name__} cannot supply the frozen-delta "
+                f"payload (missing `ctx` support or "
+                f"`deterministic_action`) — re-export the policy with "
+                f"current code"
+            )
 
         # Stack the reference ensemble into one vmapped forward when all
         # refs share the same module class — a delta run with K=10 refs
@@ -269,11 +295,15 @@ class _SpecSession:
 
     def _compute(
         self, obs_t: Any, ef_t: Any, noise_t: Any,
-    ) -> Tuple[Any, Any, Optional[Any]]:
+    ) -> Tuple[Any, Any, Optional[Any], Optional[Any]]:
         """Full sampling semantics on already-padded device tensors.
 
-        Returns ``(action, log_prob, ref_action_or_None)``.  Kept free of
-        CPU→GPU syncs so it is safe to run under CUDA-graph capture.
+        Returns ``(action, log_prob, ref_action_or_None, delta_or_None)``.
+        ``delta`` is the per-frame Δ the σ-mix consumed — non-``None``
+        only in frozen-delta mode, where ``ref_action`` is withheld from
+        the reply (the two payloads are mutually exclusive on the wire).
+        Kept free of CPU→GPU syncs so it is safe to run under CUDA-graph
+        capture.
         """
         import torch
 
@@ -308,10 +338,23 @@ class _SpecSession:
                     acc = w * a if acc is None else acc + w * a
                 ref_pad = acc
 
+        delta_pad: Optional[torch.Tensor] = None
+        if self.delta_frozen and ref_pad is not None:
+            # Δ = det_action(current policy) − a_ref — an action-level
+            # quantity computed server-side (the inner net IS the
+            # current policy); it enters ctx as an input field.
+            delta_pad = (
+                self.inner_net.deterministic_action(obs_t) - ref_pad
+            )
         if self.uses_ctx:
             ctx = SimpleNamespace(
                 explore_factor=ef_t,
-                reference_action=ref_pad,
+                # Mutual exclusion at the input contract: frozen mode
+                # feeds `delta`, dynamic feeds `reference_action`.
+                reference_action=(
+                    None if delta_pad is not None else ref_pad
+                ),
+                delta=delta_pad,
                 delta_factor=self.delta_factor,
                 delta_mix=self.delta_mix,
             )
@@ -324,7 +367,7 @@ class _SpecSession:
                 obs_t, explore_factor=ef_t,
                 **({"uniform": noise_t} if self.supports_uniform else {}),
             )
-        return action_all, lp_all, ref_pad
+        return action_all, lp_all, ref_pad, delta_pad
 
     def _ensure_graph(
         self, capacity: int, device: Any, obs_t: Any, ef_t: Any,
@@ -490,7 +533,7 @@ def _forward_group(
     with torch.no_grad():
         if sess._graph is not None:
             sess.replay_inputs(obs_t, ef_t, noise_t)
-            action_all, lp_all, ref_pad = sess._g_out
+            action_all, lp_all, ref_pad, delta_pad = sess._g_out
         else:
             if not sess._graph_done and sess.graphable(device):
                 sess._ensure_graph(
@@ -500,30 +543,38 @@ def _forward_group(
                     # Capture does not execute — replay once to produce
                     # outputs for the just-staged inputs.
                     sess._graph.replay()
-                    action_all, lp_all, ref_pad = sess._g_out
+                    action_all, lp_all, ref_pad, delta_pad = sess._g_out
                 else:
-                    action_all, lp_all, ref_pad = sess._compute(
+                    action_all, lp_all, ref_pad, delta_pad = sess._compute(
                         obs_t, ef_t, noise_t,
                     )
             else:
-                action_all, lp_all, ref_pad = sess._compute(
+                action_all, lp_all, ref_pad, delta_pad = sess._compute(
                     obs_t, ef_t, noise_t,
                 )
 
     action_np = action_all[:B].detach().cpu().numpy().astype(np.float32)
     lp_np = lp_all[:B].detach().cpu().numpy().astype(np.float64)
+    # Frozen mode withholds ref from the wire — the recorded payload is
+    # Δ, not a_ref (mutually exclusive).
     ref_np = (
         ref_pad[:B].detach().cpu().numpy().astype(np.float32)
-        if ref_pad is not None else None
+        if ref_pad is not None and not sess.delta_frozen else None
+    )
+    delta_np = (
+        delta_pad[:B].detach().cpu().numpy().astype(np.float32)
+        if delta_pad is not None else None
     )
 
     for i, r in enumerate(reqs):
         hdr = _ACT_REPLY_HDR.pack(
             float(lp_np[i]), int(ref_np is not None),
+            int(delta_np is not None),
         )
         payload = (
             b"a" + hdr + action_np[i].tobytes()
             + (ref_np[i].tobytes() if ref_np is not None else b"")
+            + (delta_np[i].tobytes() if delta_np is not None else b"")
         )
         try:
             _send_frame(r.conn.sock, payload)
@@ -624,6 +675,7 @@ def serve(
                             "action_dim": sess.action_dim,
                             "supports_uniform": sess.supports_uniform,
                             "supports_delta": sess.supports_delta,
+                            "supports_delta_out": sess.supports_delta_out,
                         }))
                     except Exception as exc:  # keep server alive
                         _logger.warning("register failed: %s", exc)

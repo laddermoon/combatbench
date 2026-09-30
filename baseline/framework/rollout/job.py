@@ -77,14 +77,29 @@ class SamplingSpec:
         reference: 历史策略加权参考；``None`` = 无参考机制。
         delta_factor: Δ→σ 标定系数 c（静态，随 ctx 逐帧记录）。
         delta_mix: 原尺度/Δ 尺度混合权重 λ ∈ [0,1]（静态）。
+        delta_mode: ``"dynamic"``（回放时按当前 θ 重算 Δ=m_θ−a_ref）
+            或 ``"frozen"``（rollout 逐帧记录 Δ，回放冻结——σ_eff 对
+            θ 静止，消除值级耦合）。两模式互斥，不能同时启用。
     """
 
     explore_factor: EfSpec = 0.0
     reference: Optional[ReferenceSpec] = None
     delta_factor: float = 0.0
     delta_mix: float = 0.0
+    delta_mode: str = "dynamic"
 
     def __post_init__(self) -> None:
+        if self.delta_mode not in ("dynamic", "frozen"):
+            raise ValueError(
+                f"SamplingSpec: delta_mode must be 'dynamic' or "
+                f"'frozen', got {self.delta_mode!r}"
+            )
+        if self.delta_mode == "frozen" and float(self.delta_mix) == 0.0:
+            raise ValueError(
+                "SamplingSpec: delta_mode='frozen' requires "
+                "delta_mix != 0 — the mode only selects how the delta "
+                "payload is recorded"
+            )
         if not (0.0 <= float(self.delta_mix) <= 1.0):
             raise ValueError(
                 f"SamplingSpec: delta_mix must be in [0,1], got {self.delta_mix}"
@@ -111,6 +126,7 @@ class SamplingSpec:
             "reference": self.reference.to_dict() if self.reference else None,
             "delta_factor": float(self.delta_factor),
             "delta_mix": float(self.delta_mix),
+            "delta_mode": self.delta_mode,
         }
 
     @classmethod
@@ -121,6 +137,7 @@ class SamplingSpec:
             reference=ReferenceSpec.from_dict(ref) if ref else None,
             delta_factor=float(d.get("delta_factor", 0.0)),
             delta_mix=float(d.get("delta_mix", 0.0)),
+            delta_mode=str(d.get("delta_mode", "dynamic")),
         )
 
 

@@ -123,10 +123,12 @@ class _ServerFixture(unittest.TestCase):
         def worker(ci, idxs):
             for i in idxs:
                 obs, noise, ef = reqs[i]
-                a, lp, ref = send_act(conns[ci], sid, ef, True, obs, noise)
+                a, lp, ref, delta = send_act(
+                    conns[ci], sid, ef, True, obs, noise)
                 outs[i] = (
                     a.copy(), lp,
                     None if ref is None else ref.copy(),
+                    None if delta is None else delta.copy(),
                 )
 
         threads = [
@@ -204,6 +206,55 @@ class TestBatchIndependence(_ServerFixture):
             np.testing.assert_array_equal(serial[i][0], fanned[i][0])
             self.assertEqual(serial[i][1], fanned[i][1])
             np.testing.assert_array_equal(serial[i][2], fanned[i][2])
+            np.testing.assert_array_equal(serial[i][3], fanned[i][3])
+
+
+class TestFrozenDeltaWire(_ServerFixture):
+    """delta_mode='frozen' over the remote path: the reply carries the
+    Δ payload (sctx__delta) instead of reference_action."""
+
+    def _frozen_remote(self, seed: int = 0) -> RemoteSamplingPolicy:
+        spec = dict(self._spec_dict)
+        spec["delta_mode"] = "frozen"
+        spec["_remote_addr"] = self._srv.address
+        rp = RemoteSamplingPolicy(self._bp_inner.to_dict(), spec)
+        rp.reset(seed)
+        return rp
+
+    def test_frozen_extras_contract(self):
+        rp = self._frozen_remote(seed=42)
+        obs = np.random.default_rng(0).random(OBS_DIM).astype(np.float32)
+        action, extra = rp.act(obs, want_extra=True)
+        self.assertEqual(action.shape, (ACTION_DIM,))
+        # Mutual exclusion: delta payload present, reference absent
+        # (the payload itself is the mode marker — no flag field).
+        self.assertIn("sctx__delta", extra)
+        self.assertNotIn("sctx__delta_frozen", extra)
+        self.assertNotIn("sctx__reference_action", extra)
+        # Action-level payload (D,) — det_action(Gen0) − a_ref.
+        self.assertEqual(
+            np.asarray(extra["sctx__delta"]).shape, (ACTION_DIM,),
+        )
+        rp.close()
+
+    def test_frozen_delta_matches_local(self):
+        """Server-emitted Δ equals det_action(inner) − a_ref — the
+        current policy supplies μ₀ via its deterministic action."""
+        rp = self._frozen_remote(seed=99)
+        obs = np.random.default_rng(5).random(OBS_DIM).astype(np.float32)
+        _, extra = rp.act(obs, want_extra=True)
+        inner = PolicyBlueprint.from_dict(self._bp_inner.to_dict()).build()
+        ref = PolicyBlueprint.from_dict(self._bp_ref.to_dict()).build()
+        with torch.no_grad():
+            ref_act = ref._policy.deterministic_action(
+                torch.as_tensor(obs).unsqueeze(0))
+            mu0 = inner._policy.deterministic_action(
+                torch.as_tensor(obs).unsqueeze(0))
+        delta_local = (mu0.squeeze(0) - ref_act.squeeze(0)).numpy()
+        np.testing.assert_allclose(
+            extra["sctx__delta"], delta_local, atol=1e-5,
+        )
+        rp.close()
 
 
 class TestNumericParity(_ServerFixture):

@@ -65,19 +65,22 @@ class SamplingContext:
 
     __slots__ = (
         "explore_factor", "reference_action", "delta_factor", "delta_mix",
+        "delta",
     )
 
     def __init__(self, explore_factor=None, reference_action=None,
-                 delta_factor=None, delta_mix=None):
+                 delta_factor=None, delta_mix=None,
+                 delta=None):
         self.explore_factor = explore_factor
         self.reference_action = reference_action
         self.delta_factor = delta_factor
         self.delta_mix = delta_mix
+        self.delta = delta
 
     def has_delta(self) -> bool:
         """True iff the reference-delta scale is active — mirrors the
         upstream ``SamplingContext.has_delta``."""
-        if self.reference_action is None:
+        if self.reference_action is None and self.delta is None:
             return False
         dm = self.delta_mix
         if dm is None:
@@ -100,6 +103,37 @@ def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
     return x
 
 
+def _delta_of(mean, ctx):
+    """The Δ payload the σ-mix consumes this call, or ``None``.
+
+    An explicit ``ctx.delta`` payload wins over the fresh
+    ``mean − a_ref`` path — ``ctx.delta`` is the action-level Δ
+    (``det_action − a_ref``) supplied by the sampling layer / replay,
+    never a function of current θ.  ``delta_mix = 0`` or missing
+    inputs disable the mechanism entirely.
+    """
+    if ctx is None:
+        return None
+    dm = getattr(ctx, "delta_mix", None)
+    if dm is None:
+        return None
+    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
+        return None
+    def _bcast(v):
+        t = torch.as_tensor(v, dtype=mean.dtype, device=mean.device)
+        while t.ndim < mean.ndim:
+            t = t.unsqueeze(-2)
+        return t
+
+    frozen = getattr(ctx, "delta", None)
+    if frozen is not None:
+        return _bcast(frozen)
+    ref = getattr(ctx, "reference_action", None)
+    if ref is None:
+        return None
+    return mean - _bcast(ref)
+
+
 def delta_mix_sigma(
     mean: torch.Tensor,
     sigma: torch.Tensor,
@@ -112,23 +146,27 @@ def delta_mix_sigma(
     (σ_eff exogenous w.r.t. m_θ — see the source docstring)."""
     # Attribute-based activation check — NOT ctx.has_delta(): ``ctx`` may
     # be an instance of an older SamplingContext class held by a spawned
-    # rollout worker; its fields exist but newer methods may not.
-    if ctx is None:
+    # rollout worker; its fields exist but methods may not.
+    delta = _delta_of(mean, ctx)
+    if delta is None:
+        dm = getattr(ctx, "delta_mix", None) if ctx is not None else None
+        if dm is not None and (
+            bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0
+        ):
+            raise ValueError(
+                "delta ctx carries delta_mix != 0 but neither `delta` "
+                "nor `reference_action` — the rollout-side sctx__ "
+                "payload record is missing (stale buffer or pipeline "
+                "bug)"
+            )
         return sigma
-    ref = getattr(ctx, "reference_action", None)
-    dm = getattr(ctx, "delta_mix", None)
-    if ref is None or dm is None:
-        return sigma
-    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
-        return sigma
-    ref = torch.as_tensor(
-        ctx.reference_action, dtype=sigma.dtype, device=sigma.device,
-    )
-    while ref.ndim < mean.ndim:
-        ref = ref.unsqueeze(-2)
     c = _ctx_bcast(ctx.delta_factor, sigma)
     lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * (mean.detach() - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    delta2 = (c * delta.detach()).pow(2).clamp_min(_DELTA_EPS ** 2)
+    # σ floor (TODO §5.1, required): the delta scale may only INFLATE
+    # σ_eff above the policy's own σ — low-drift phases degenerate to
+    # plain σ_ef instead of collapsing toward the ε floor.
+    delta2 = torch.maximum(delta2, sigma.pow(2))
     mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
     if sigma_min is not None:
         mixed = mixed.clamp(sigma_min, sigma_max)
@@ -293,7 +331,8 @@ class _StateTruncNormalInferenceNet(nn.Module):
         action = torch.clamp(action, _ACTION_LOW + 1e-6, _ACTION_HIGH - 1e-6)
         z = (action - mean) / sigma
         log_prob = (-0.5 * z * z - torch.log(sigma) - 0.5 * math.log(2 * math.pi) - log_Z)
-        return action, log_prob.sum(dim=-1)
+        log_prob = log_prob.sum(dim=-1)
+        return action, log_prob
 
     def deterministic_action(self, obs: torch.Tensor) -> torch.Tensor:
         mean, _ = self.forward(obs)

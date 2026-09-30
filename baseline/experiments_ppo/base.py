@@ -99,6 +99,17 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 f"(got {self.reference_horizon}) — a nonzero delta_mix "
                 f"can never activate without a reference ensemble"
             )
+        if self.delta_mode not in ("dynamic", "frozen"):
+            raise ValueError(
+                f"{type(self).__name__}: delta_mode must be "
+                f"'dynamic' or 'frozen', got {self.delta_mode!r}"
+            )
+        if self.delta_mode == "frozen" and self.delta_mix == 0.0:
+            raise ValueError(
+                f"{type(self).__name__}: delta_mode='frozen' requires "
+                f"delta_mix != 0 — the mode only selects how the delta "
+                f"payload is recorded"
+            )
         self._ref_history: List[PolicyBlueprint] = []
 
     # --- Identity ---
@@ -131,14 +142,21 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   the reference ensemble.
     # delta_factor (c): Δ→σ scale — how large a drift counts as
     #   "one σ worth" of exploration.
-    # reference_horizon (H): number of past policy versions forming the
-    #   uniform reference ensemble — strictly BEFORE the current policy:
-    #   the newest history entry is the post-update export of the round
-    #   that just finished, i.e. the rollout-time behavior policy itself,
-    #   so it is excluded (self-reference would pin Δ≈0 mechanically).
+    # reference_horizon (H): number of policy versions forming the
+    #   uniform reference ensemble — strictly BEFORE the current policy
+    #   in both modes: the newest history entry is the just-finished
+    #   update's export (= the rollout-time behavior policy itself,
+    #   Gen0), excluded because a self member pins Δ≈0 mechanically.
+    # delta_mode: "dynamic" replays a_ref and recomputes Δ = m_θ−a_ref
+    #   at train; "frozen" computes Δ = det_action(Gen0) − a_ref at
+    #   rollout, records it, and replays it verbatim — σ_eff stays
+    #   constant w.r.t. θ inside an update, removing the value-level
+    #   σ(m) coupling that destabilizes PPO under the dynamic
+    #   parameterization.
     delta_mix: float = 0.0
     delta_factor: float = 0.0
     reference_horizon: int = 0
+    delta_mode: str = "dynamic"
 
     # --- Shared training ---
     learning_rate: float = 1e-4
@@ -384,20 +402,24 @@ class CombatExperimentPPOBase(ExperimentPPO):
         """Assemble this round's :class:`SamplingSpec`.
 
         With ``delta_mix != 0`` and a non-empty trained-version history,
-        the spec carries a uniform :class:`ReferenceSpec` over the last
-        ``reference_horizon`` versions **before the current policy** plus
-        ``delta_factor`` / ``delta_mix``.  The newest history entry is
-        the just-finished update's export — the rollout-time behavior
-        policy itself — and is excluded: including it would contribute a
-        mechanically zero Δ member (at n=1 the whole ensemble is self →
-        σ_eff collapses to the ε floor).  Otherwise it is the plain
-        ``explore_factor`` spec — including warmup updates where no
-        strictly-past version exists.
+        the spec carries a uniform :class:`ReferenceSpec` plus
+        ``delta_factor`` / ``delta_mix`` / ``delta_mode``.  The ensemble
+        is the last ``reference_horizon`` versions **before** the
+        current policy, in both modes: the newest history entry is the
+        just-finished update's export — the rollout-time behavior
+        policy itself (= Gen0 in Δ = det_action(Gen0) − a_ref) — and is
+        excluded because a self member pins Δ toward 0 mechanically
+        (at n=1 the whole ensemble would be self).  Gen0 still
+        participates in frozen Δ through the inner policy's own
+        deterministic action — it does not need ensemble membership.
+
+        Otherwise it is the plain ``explore_factor`` spec — including
+        warmup updates where no eligible version exists.
         """
         history = getattr(self, "_ref_history", None) or []
-        past = history[:-1]  # drop self — see docstring
-        if self.delta_mix != 0.0 and past:
-            window = past[-self.reference_horizon:]
+        pool = history[:-1]
+        if self.delta_mix != 0.0 and pool:
+            window = pool[-self.reference_horizon:]
             n = len(window)
             return SamplingSpec(
                 explore_factor=self.explore_factor,
@@ -407,6 +429,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 ),
                 delta_factor=self.delta_factor,
                 delta_mix=self.delta_mix,
+                delta_mode=self.delta_mode,
             )
         return SamplingSpec(explore_factor=self.explore_factor)
 

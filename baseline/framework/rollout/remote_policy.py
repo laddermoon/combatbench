@@ -121,6 +121,7 @@ class RemoteSamplingPolicy(Policy):
         self._ef_spec = spec_dict.get("explore_factor", 0.0)
         self._delta_factor = float(spec_dict.get("delta_factor", 0.0))
         self._delta_mix = float(spec_dict.get("delta_mix", 0.0))
+        self._delta_frozen = spec_dict.get("delta_mode") == "frozen"
         self._has_ref = spec_dict.get("reference") is not None
 
         reply = send_register(self._conn, policy_bp_dict, spec_dict)
@@ -139,6 +140,14 @@ class RemoteSamplingPolicy(Policy):
                 "remote policy does not declare SUPPORTS_REFERENCE_DELTA "
                 "— export the policy with current code or pick a "
                 "supported policy cell"
+            )
+
+        if self._delta_frozen and not reply.get("supports_delta_out", False):
+            raise TypeError(
+                "SamplingSpec demands frozen-delta mode but the remote "
+                "policy cannot supply the Δ payload (missing `ctx` "
+                "support or `deterministic_action`) — re-export the "
+                "policy with current code"
             )
 
         if not reply.get("supports_uniform", False):
@@ -174,7 +183,7 @@ class RemoteSamplingPolicy(Policy):
         obs = np.asarray(observation, dtype=np.float32).reshape(-1)
         noise = self._rng.random(self._action_dim + 1).astype(np.float32)
 
-        action, log_prob, ref = send_act(
+        action, log_prob, ref, delta = send_act(
             self._conn, self._spec_id, ef, want_extra, obs, noise,
         )
 
@@ -182,7 +191,11 @@ class RemoteSamplingPolicy(Policy):
         if want_extra:
             extra["log_prob"] = float(log_prob)
         # Reproduce ctx.record_fields() ordering: reference_action,
-        # delta_factor, delta_mix (non-None fields), then legacy ef.
+        # delta_factor, delta_mix, delta (non-None fields), then
+        # legacy ef.  Frozen mode records `sctx__delta` (the
+        # action-level Δ the server computed as det_action(current)
+        # − a_ref) instead of reference_action — the two payloads
+        # never coexist; the payload itself is the mode marker.
         if ref is not None:
             extra["sctx__reference_action"] = np.asarray(
                 ref, dtype=np.float32,
@@ -193,6 +206,8 @@ class RemoteSamplingPolicy(Policy):
         extra["sctx__delta_mix"] = np.asarray(
             self._delta_mix, dtype=np.float32,
         )
+        if delta is not None:
+            extra["sctx__delta"] = np.asarray(delta, dtype=np.float32)
         extra["explore_factor"] = ef
         return action, extra
 

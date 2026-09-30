@@ -37,12 +37,21 @@ SamplingSpec(
     reference: Optional[ReferenceSpec], # 历史策略加权参考
     delta_factor: float = 0.0,          # c：Δ→σ 标定系数（静态）
     delta_mix: float = 0.0,             # λ ∈ [0,1]：原尺度/Δ尺度混合权重
+    delta_mode: str = "dynamic",        # "dynamic" | "frozen"，互斥
 )
 ```
 
 `ReferenceSpec(policies, weights)`：K 个历史 policy blueprint +
 归一化非负权重。框架**不维护**跨 update 的历史策略管理——
 选哪几代、权重多少，完全是实验侧职责。
+
+`delta_mode` 选择 Δ 载荷的记录形态，二者互斥：
+
+- `"dynamic"`（默认）：ctx 携带 `reference_action`，Δ =
+  `m_θ − a_ref` 由策略按当前 θ 重算。
+- `"frozen"`：ctx 携带 `delta`——**动作级 Δ** =
+  `det_action(当前策略) − a_ref`，由采样层（SamplingPolicy /
+  推理 server）在 rollout 时逐帧算好；回放原值不随 θ 变。
 
 ### 2.2 SamplingContext（框架 → 策略的逐帧输入）
 
@@ -52,12 +61,19 @@ SamplingContext(
     reference_action: Array | None,      # Σw·act_k(obs)，wrapper 已加权
     delta_factor: float | Tensor,
     delta_mix: float | Tensor,
+    delta: Array | None,                 # frozen 模式的动作级 Δ 输入
 )
 ```
 
 - `reference_action`：当 spec 携带 reference 时，wrapper 每帧用
   各历史策略对**当前 observation** 做确定性 `act()` 加权得到；
-  无 reference 时为 `None`。
+  无 reference 时为 `None`。frozen 模式下不进 ctx（与 `delta`
+  互斥）。
+- `delta`：frozen 模式的逐帧 Δ 输入 `(D,)`——由采样层用
+  `det_action(当前策略) − a_ref` 算好放入，σ-mix 原样消费。
+  **载荷即模式**：`sctx__delta` 存在即 frozen，`sctx__reference_action`
+  存在即 dynamic；`delta_mix ≠ 0` 但两个载荷都缺失 = 畸形 ctx
+  （载荷丢失），σ-mix 报错而非静默退化——两模式同一判据。
 - 字段可以是标量（逐帧构造）或批量张量（训练回放时切片得到），
   策略内部必须同时兼容两者。
 
@@ -128,8 +144,10 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
 
 - **记录即输入**：记录的字段值 == 传给 `sample()` 的值，中间层
   不解释、不加工。
-- **回放即重算**：训练侧拿到同样的 `a_ref`，但 Δ 用当前 θ 的
-  `m_θ(s)` 重新计算——这正是"相同外部规则、不同参数"的含义。
+- **回放语义按 `delta_mode` 分两种**：dynamic 模式训练侧拿到
+  同样的 `a_ref`，Δ 用当前 θ 的 `m_θ(s)` 重算——"相同外部规则、
+  不同参数"；frozen 模式 `delta` 本身就是要回放的字段值，σ_eff
+  在 update 内对 θ 完全静止（修掉 `σ=c·|m_θ−a_ref|` 的值级耦合）。
 - 旧 dump 键 `explore_factor`/`ef__<agent>` 不变；新字段一律
   `sctx__<field>` 扁平键（npz 兼容，无 object array）。
 
@@ -153,9 +171,9 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
 ### 5.1 跨进程边界契约
 
 导出 `policy.py` 在 rollout worker 内 exec 加载，而 worker 在 spawn
-时冻结了自己的 import——因此**模板内嵌代码只能读 ctx 的四个字段**
-（`explore_factor`/`reference_action`/`delta_factor`/`delta_mix`，
-自 ctx 管线落地起就存在），不得调用 ctx 的方法：ctx 对象可能由
+时冻结了自己的 import——因此**模板内嵌代码只能读 ctx 的字段**
+（`explore_factor`/`reference_action`/`delta_factor`/`delta_mix`/
+`delta`），不得调用 ctx 的方法：ctx 对象可能由
 旧版 `SamplingContext` 构造，字段语义稳定但方法可能不存在。
 
 反之方向由显式能力握手负责，**不允许静默降级**：
@@ -178,8 +196,9 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
 - dump 导出的 `ExportedExploratoryPolicy` 只支持烘焙 ef 调度；
   spec 携带 reference/delta 时 `NotImplementedError`（fail-loud）。
 - c/λ 当前为 spec 级静态值；如需逐帧调度，按 EfSpec 同型升级。
-- frozen-Δ 模式（rollout 时冻结 Δ 值而非 a_ref）未实现——
-  ctx 管线支持，作为对照变体待补。
+- frozen-Δ 已实现（`delta_mode="frozen"`）：Δ 定义为**动作级**
+  `det_action(当前策略) − a_ref`，由采样层算好作为 ctx 输入——
+  mixture 单元同样共享该 (D,) 载荷广播到各分量。
 - ReferenceSpec 的选取策略（哪几代、什么权重）是实验设计，
   不在框架内。
 

@@ -24,9 +24,22 @@
 
 - ``explore_factor``：逐帧探索强度 ∈ [-1, 1]（0 = 中性），映射由策略定义。
 - ``reference_action``：历史策略在当前 obs 上加权确定性动作 ``(D,)``；
-  ``None`` = 无参考机制。策略自行决定如何消费（本阶段未消费）。
+  ``None`` = 无参考机制。dynamic 模式下策略内部用它算
+  ``Δ = m_θ − a_ref``；frozen 模式下不进入 ctx（与 ``delta`` 载荷
+  在输入契约上互斥）。
 - ``delta_factor``：Δ→σ 标定系数 c（spec 静态值，逐帧记录供断言）。
 - ``delta_mix``：原尺度/Δ尺度混合权重 λ（spec 静态值，逐帧记录）。
+  **同时也是机制开关判据**：λ≠0 但 ``delta`` 与 ``reference_action``
+  均缺失 = 畸形 ctx（载荷丢失），σ-mix 报错而非静默退化——两模式
+  同一不变量，无需额外模式标记字段。
+- ``delta``：**动作级 Δ 载荷** ``(D,)`` = ``det_action(当前策略)
+  − a_ref``，由采样层（``SamplingPolicy`` / 推理 server）在
+  rollout 时逐帧算好写入 ctx；σ-mix 原样消费，``record_fields``
+  记为 ``sctx__delta``，训练侧回放同一数值而不随 θ 重算——这消除
+  了 ``σ_eff = c·|m_θ − a_ref|`` 对当前参数的值级耦合（PPO 重算
+  分布必须对 θ 近似静止）。``None`` = dynamic/无 delta 机制。
+  载荷即模式：记录里 ``sctx__delta`` 存在即 frozen，
+  ``sctx__reference_action`` 存在即 dynamic。
 """
 from __future__ import annotations
 
@@ -49,6 +62,7 @@ class SamplingContext:
     reference_action: Optional[Any] = None
     delta_factor: Any = 0.0
     delta_mix: Any = 0.0
+    delta: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Rollout-side: extras recording
@@ -104,7 +118,7 @@ class SamplingContext:
         tensor; batched ⇒ checked elementwise-conservatively (any ≠ 0
         activates, the mix itself stays per-element).
         """
-        if self.reference_action is None:
+        if self.reference_action is None and self.delta is None:
             return False
         dm = self.delta_mix
         if hasattr(dm, "any"):  # ndarray / torch.Tensor
