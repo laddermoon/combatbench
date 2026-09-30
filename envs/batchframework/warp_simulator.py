@@ -483,6 +483,9 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
             active_mask=torch.ones(B, dtype=torch.bool, device=dev),
             terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
             term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
+            agent_terminated=torch.zeros(B, 2, dtype=torch.bool, device=dev),
+            agent_term_reason=torch.full(
+                (B, 2), -1, dtype=torch.int8, device=dev),
             reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
             time=torch.zeros(B, dtype=torch.float32, device=dev),
         )

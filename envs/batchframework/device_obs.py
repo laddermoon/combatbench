@@ -36,6 +36,68 @@ def _sqrt_signed_t(v: torch.Tensor, div2_inside: bool = False) -> torch.Tensor:
     return torch.sign(v) * torch.sqrt(torch.abs(v)) / 2.0
 
 
+class FlatContactForces:
+    """活跃接触的 per-contact 力分解与归属分类（flat packed 视图）。
+
+    由 ``contact_forces_flat`` 计算一次，观测构建器与 rewarder 等
+    设备端消费者共享——接触力只有一份实现，避免两处漂移。
+
+    字段全部为长度 M（活跃接触数）的张量；``robot_body``/``ground``
+    只覆盖"ground↔robot"接触，其余项为哨兵值。
+    """
+
+    def __init__(self, sel, worldid, geom1, geom2, body1, body2,
+                 aff1, aff2, force_mag, force_world):
+        self.sel = sel              # (M,) 活跃接触在 flat 数组中的下标
+        self.worldid = worldid      # (M,) i64
+        self.geom1 = geom1          # (M,) i64
+        self.geom2 = geom2
+        self.body1 = body1          # (M,) i64 — geom→body
+        self.body2 = body2
+        self.aff1 = aff1            # (M,) i64 — 归属（0=环境, 1=a, 2=b）
+        self.aff2 = aff2
+        self.force_mag = force_mag      # (M,) f32
+        self.force_world = force_world  # (M,3) f32
+
+
+def contact_forces_flat(state, geom_bodyid: torch.Tensor,
+                        geom_aff: torch.Tensor) -> FlatContactForces:
+    """flat contacts → 活跃项的力/归属分类。
+
+    condim=3 ⇒ 每接触 4 行 efc：normal=sum, f1=r0-r1, f2=r2-r3；
+    ``force_world = frameᵀ @ [normal,f1,f2]``（与 mjx_simulator
+    ``_extract_contacts_batch`` 同公式）。不活跃槽位不参与。
+    ``geom_bodyid``/``geom_aff`` 是 geom_id→body/affiliation 的
+    设备端查找表（后端提供）。
+    """
+    c = state.sim.contacts_flat
+    dev = c.worldid.device
+    C = c.worldid.shape[0]
+    idx = torch.arange(C, device=dev)
+    n_active = c.n_active.reshape(()).long()
+    active = (idx < n_active) & (c.dist <= 0)
+    sel = torch.nonzero(active, as_tuple=False).squeeze(-1)
+
+    geom = c.geom[sel].long()
+    body = geom_bodyid[geom.clamp(min=0)]
+    aff = geom_aff[geom.clamp(min=0)]
+    w = c.worldid[sel].long()
+
+    adr = c.efc_address[sel].long()
+    if adr.ndim > 1:
+        adr = adr[:, 0]
+    ef_rows = adr.clamp(min=0)[:, None] + torch.arange(4, device=dev)
+    ef = c.efc_force[w[:, None].clamp(min=0), ef_rows.clamp(min=0)]
+    fl = torch.stack([ef.sum(dim=-1), ef[:, 0] - ef[:, 1],
+                      ef[:, 2] - ef[:, 3]], dim=-1)
+    fw = torch.einsum("mij,mj->mi", c.frame[sel].transpose(-1, -2), fl)
+    fmag = torch.linalg.norm(fw, dim=-1)
+
+    return FlatContactForces(sel, w, geom[:, 0], geom[:, 1],
+                             body[:, 0], body[:, 1], aff[:, 0], aff[:, 1],
+                             fmag, fw)
+
+
 class WarpObsBuilder:
     """从 DeviceBatchState 构建 96 维观测（torch，fp32）。
 
@@ -50,6 +112,11 @@ class WarpObsBuilder:
         self._geom_bodyid = torch.as_tensor(
             np.asarray(sim._model.geom_bodyid), dtype=torch.long,
             device=self._dev)
+        # 归属表（0=环境, 1=robot_a, 2=robot_b）——rewarder 接触分类用
+        aff = np.zeros(sim._model.ngeom, dtype=np.int64)
+        for gid, a in sim._meta["geom_id_to_aff"].items():
+            aff[gid] = int(a)
+        self._geom_aff = torch.as_tensor(aff, device=self._dev)
         self._robots: Dict[str, Dict[str, Any]] = {}
         for rid in ("robot_a", "robot_b"):
             cache = sim._robots[rid]
@@ -69,43 +136,24 @@ class WarpObsBuilder:
             )
 
     # ------------------------------------------------------------------
+    @property
+    def contact_tables(self):
+        """(geom_bodyid, geom_aff) 查找表——contact_forces_flat 的入参。"""
+        return self._geom_bodyid, self._geom_aff
+
     def _feet_forces(self, state, rid: str) -> torch.Tensor:
-        """双足地面接触力（按体重归一）——flat contacts + index_add。"""
-        c = state.sim.contacts_flat
-        C = c.worldid.shape[0]
-        dev = self._dev
-        idx = torch.arange(C, device=dev)
-        n_active = c.n_active.reshape(()).long()
-        active = (idx < n_active) & (c.dist <= 0)      # (C,) bool
-
-        sel = torch.nonzero(active, as_tuple=False).squeeze(-1)
-        out = torch.zeros(self._B, 2, dtype=torch.float32, device=dev)
-        if sel.numel() == 0:
+        """双足地面接触力（按体重归一）——共享 contact_forces_flat。"""
+        cf = contact_forces_flat(state, *self.contact_tables)
+        out = torch.zeros(self._B, 2, dtype=torch.float32, device=self._dev)
+        if cf.sel.numel() == 0:
             return out
-        w = c.worldid[sel].long()
-        g = c.geom[sel].long()                       # (M,2)
-        body = self._geom_bodyid[g.clamp(min=0)]     # (M,2)
-
-        # condim=3 → 每接触 4 行 efc：normal=sum, f1=r0-r1, f2=r2-r3
-        adr = c.efc_address[sel].long()
-        if adr.ndim > 1:
-            adr = adr[:, 0]
-        ef_rows = adr.clamp(min=0)[:, None] + torch.arange(4, device=dev)
-        ef = c.efc_force[w[:, None].clamp(min=0), ef_rows.clamp(min=0)]  # (M,4)
-        normal = ef.sum(dim=-1)
-        fl = torch.stack([normal, ef[:, 0] - ef[:, 1],
-                          ef[:, 2] - ef[:, 3]], dim=-1)                 # (M,3)
-        fw = torch.einsum("mij,mj->mi",
-                          c.frame[sel].transpose(-1, -2), fl)
-        fmag = torch.linalg.norm(fw, dim=-1)
-
-        g1_ground = g[:, 0] == self._ground_gid
-        ground = g1_ground | (g[:, 1] == self._ground_gid)
-        other = torch.where(g1_ground, body[:, 1], body[:, 0])
+        g1_ground = cf.geom1 == self._ground_gid
+        ground = g1_ground | (cf.geom2 == self._ground_gid)
+        other = torch.where(g1_ground, cf.body2, cf.body1)
         kp = self._robots[rid]["kp_ids"]
-        fm = fmag * ground
-        out[:, 0].index_add_(0, w, fm * (other == kp["foot_right"]))
-        out[:, 1].index_add_(0, w, fm * (other == kp["foot_left"]))
+        fm = cf.force_mag * ground
+        out[:, 0].index_add_(0, cf.worldid, fm * (other == kp["foot_right"]))
+        out[:, 1].index_add_(0, cf.worldid, fm * (other == kp["foot_left"]))
         return out / self._robots[rid]["body_weight"]
 
     # ------------------------------------------------------------------
