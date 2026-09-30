@@ -69,8 +69,11 @@ train.py --experiment standup_floor04 --algo ppo --collector device \
 （run `m5_w4_device_u1_b256`；B=512/cap48 曾在 warp collision scratch
 处 OOM。**事后定位的根因不是接触容量**：`WarpHumanoid21Simulator`
 继承 `MjxHumanoid21Simulator`，父类构造初始化 jax 后端时 XLA 默认
-预分配 ~75% 显存（~18GB），warp mempool 只剩 ~3GB 缝隙。修复（构造
-前 `XLA_PYTHON_CLIENT_PREALLOCATE=false`）后 B=512/cap48 全程只占
+预分配 ~75% 显存（~18GB），warp mempool 只剩 ~3GB 缝隙。修复：父类
+ctor 加 `_init_jax=False` 入口（warp 子类默认使用）——跳过
+`jax.devices()`/`mjx.put_model`/`_build_jax_statics` 三处 jax 调用，
+`_jax_statics` 改用同构 numpy 表；另保留 `XLA_PYTHON_CLIENT_PREALLOCATE
+=false` setdefault 作防御。修复后 B=512/cap48 全程只占
 4.4GB；裸 `put_data` 复测 B=8192/cap48 也仅 ~4GB——M2 probe 当时能
 跑正是因为 warp 数据本身很小。修复后实测天花板：B=1024→10.5GB ✅、
 B=1536→20.7GB ✅、B=2048→OOM（单 768MB 分配）。注意此时吞吐在

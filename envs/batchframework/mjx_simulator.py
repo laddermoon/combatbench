@@ -70,6 +70,7 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         device: Optional[jax.Device] = None,
         precision: str = "fp64",
         impl: str = "jax",
+        _init_jax: bool = True,
     ):
         # float64 is required for close MJX/MuJoCo consistency (see validation
         # test): with float32, contact solver diverges within ~10 steps.
@@ -90,7 +91,11 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         self._initial_distance = initial_distance
         self._initial_pose_a = initial_pose_a
         self._initial_pose_b = initial_pose_b
-        self._device = device or jax.devices()[0]
+        # _init_jax=False（warp 子类用）：跳过一切会初始化 XLA 后端的调用
+        # （jax.devices()/mjx.put_model/jp.array）——XLA 默认预分配 ~75%
+        # 显存，而 warp 路径根本不消费 jax 数据。共享的 numpy 表与 host
+        # 提取路径不依赖 jax 后端，不受影响。
+        self._device = device or (jax.devices()[0] if _init_jax else None)
 
         # --- Load MuJoCo model + MJX model ---
         self._model = mujoco.MjSpec.from_file(self.ARENA_XML).compile()
@@ -107,7 +112,8 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
             _mjxw_types.GraphMode = _WarpGraphMode
             if not hasattr(_wp.types, "warp_type_to_np_dtype"):
                 _wp.types.warp_type_to_np_dtype = _wp_types.warp_type_to_np_dtype
-        self._mjx_model = mjx.put_model(self._model, impl=self._impl)
+        self._mjx_model = mjx.put_model(self._model, impl=self._impl) \
+            if _init_jax else None
 
         # --- Build runtime tables from meta ---
         self._meta = Humanoid21Meta.build_runtime_tables(self._model)
@@ -140,9 +146,12 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
                 "ctrl_hi": ctrl_hi,
             }
 
-        # --- Precompute static JAX arrays for PD control ---
+        # --- Precompute static arrays for PD control ---
         # Per-robot: qpos_indices, qvel_indices, actuator_ids, norm ref/scale, gear, ctrl_lo/hi, KP, KD
-        self._jax_statics = self._build_jax_statics()
+        # _init_jax=False 时给 numpy 版本——warp 子类只把表当数据消费
+        # （np.asarray 上载到 warp），不需要 XLA 后端。
+        self._jax_statics = self._build_jax_statics() if _init_jax \
+            else self._build_statics(np, np.float32)
 
         # --- Body name → body id mapping for external force ---
         self._body_name_to_id = {}
@@ -166,28 +175,32 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         self._jit_step = None
         self._jit_step_scan = None
 
-    def _build_jax_statics(self) -> Dict[str, Any]:
-        """Precompute JAX arrays needed inside JIT-compiled step functions."""
+    def _build_statics(self, xp, dtype) -> Dict[str, Any]:
+        """Build the per-robot PD table; `xp` is jp or np depending on backend."""
         statics = {}
         for robot_id in ["robot_a", "robot_b"]:
             r = self._robots[robot_id]
             norm = self._norm_params[robot_id]
             pd = self._pd_tables[robot_id]
             statics[robot_id] = {
-                "qpos_indices": jp.array(r["qpos_indices"], dtype=jp.int32),
-                "qvel_indices": jp.array(r["qvel_indices"], dtype=jp.int32),
-                "actuator_ids": jp.array(r["actuator_ids"], dtype=jp.int32),
-                "norm_ref": jp.array(norm["reference"], dtype=jp.float32),
-                "norm_scale": jp.array(norm["scale"], dtype=jp.float32),
-                "gear": jp.array(pd["gear"], dtype=self._dtype),
-                "ctrl_lo": jp.array(pd["ctrl_lo"], dtype=self._dtype),
-                "ctrl_hi": jp.array(pd["ctrl_hi"], dtype=self._dtype),
-                "kp": jp.array(self.KP, dtype=self._dtype),
-                "kd": jp.array(self.KD, dtype=self._dtype),
+                "qpos_indices": xp.asarray(r["qpos_indices"], dtype=xp.int32),
+                "qvel_indices": xp.asarray(r["qvel_indices"], dtype=xp.int32),
+                "actuator_ids": xp.asarray(r["actuator_ids"], dtype=xp.int32),
+                "norm_ref": xp.asarray(norm["reference"], dtype=xp.float32),
+                "norm_scale": xp.asarray(norm["scale"], dtype=xp.float32),
+                "gear": xp.asarray(pd["gear"], dtype=dtype),
+                "ctrl_lo": xp.asarray(pd["ctrl_lo"], dtype=dtype),
+                "ctrl_hi": xp.asarray(pd["ctrl_hi"], dtype=dtype),
+                "kp": xp.asarray(self.KP, dtype=dtype),
+                "kd": xp.asarray(self.KD, dtype=dtype),
                 "root_qpos_adr": r["root_qpos_adr"],
                 "root_qvel_adr": r["root_qvel_adr"],
             }
         return statics
+
+    def _build_jax_statics(self) -> Dict[str, Any]:
+        """Precompute JAX arrays needed inside JIT-compiled step functions."""
+        return self._build_statics(jp, self._dtype)
 
     # ------------------------------------------------------------------
     # Properties
