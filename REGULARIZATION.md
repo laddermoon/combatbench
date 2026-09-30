@@ -80,18 +80,24 @@ AI 时代用户不手写代码。分工是：
 ### 3.3 杠杆（Lever）
 
 **杠杆 = 用户可以选择的、已建成的机制**。用户心智模型是"杠杆目录 + 选型直觉"，
-AI 心智模型是"每个杠杆的契约"。当前已识别的杠杆域：
+AI 心智模型是"每个杠杆的契约"。
 
-| 域 | 杠杆举例 |
+**重要：能力清单是审计出来的，不是预设的。** 下表只是当前认知的粗略参照，
+不是完整目录，也不构成后续工作的边界——没人能一次性说清这个项目有哪些能力。
+正则化的本体就是逐目录走一遍项目，把能力一个一个挖出来、分级、补文档。
+盘点过程中发现下表之外的资产是常态，不是意外。
+
+| 域 | 当前已知的杠杆举例（不完整） |
 |---|---|
 | 策略分布 | TruncNorm 家族 8 格（truncated / bounded / state-σ / pre-tanh / mixture 及组合） |
 | 探索控制 | `explore_factor`（rollout 侧 [-1,1]）、`uncertainty_floor`+`coef`（训练侧）、SamplingContext delta/reference_action 机制 |
 | 奖励/评估 | 多 critic per-channel actor_weight、φ² 动态权重、PBRS 势能族 reward、8+ reward channels |
-| 算法与执行 | PPO / SAC；CPU ParallelRollouter / DeviceRollouter（WIP） |
+| 执行方式 | CPU ParallelRollouter / DeviceRollouter（WIP） |
 | 环境规则 | world plugins（scoring / non-fall / wind / instant push / fallen reset / timeout）、observer plugins、blueprints |
 | 调试分析 | dumpkit 全家（runs/summary/metrics/dump/render/delta/rollout/inspect/trace/viewer + HTTP API） |
 | 运行器 | RoundRunner / MatchRunner / recorder / replay |
 | 课程 | 四阶段 curriculum（legacy 资产，可用性待核实） |
+| …… | 其余待盘点挖出 |
 
 ### 3.4 两条执行路径与一组共享资产
 
@@ -118,6 +124,10 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 | AI 转换规范 | `envs/batchframework/discuss.md` + `ROADMAP.md` —— 转换规则、验证层级 V0–V5、Agent 禁止事项、升级条件 | A 层（加速路径特例） |
 
 ## 4. 三层文档体系
+
+> **本节是初步规范，不是终版。** 文档组织形态随盘点过程演化——发现现有文档
+> 归不进本规范时，正确动作是新增/调整文档类型并回写本节，不是硬塞。
+> 规范本身的变化记入 §7.3 审计日志。
 
 ### 4.1 三层受众
 
@@ -155,16 +165,37 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 - 现有 `CONTEXT.md`（per-directory AI memo）、`DESIGN_*.md`、`REVIEW_*.md`、
   `CLAUDE.md` 均属此层。
 
-### 4.3 放置与命名约定（提案，待用户确认后冻结）
+### 4.3 放置与命名约定（初版，允许演化）
+
+**基本盘：每个有功能的目录都要有 `README.md`**，它是该目录的必备文档。
+
+README.md 的内部结构约定：
+
+```
+# 目录名 / 功能名
+（前半：给人看 —— 这是什么、怎么用、入口在哪）
+
+## For AI / 开发者说明        ← 固定小节名（待定稿）
+（后半：给开发者 AI 看 —— 契约要点、gotchas、改动约束）
+```
+
+一个目录默认一个文件服务 U + D 两层：**人读的内容在前（直观），AI/开发者
+内容在后（人也看得到）**。当某目录的 AI 向内容大到影响人读体验时（如
+dumpkit 那种能力地图/命令手册体量），拆出独立 `CONTEXT.md`，README 中留
+指针。现有 `CONTEXT.md` 惯例（per-directory AI memo）继续有效，与
+README 内嵌小节是同一层的两种载体。
+
+各层总表：
 
 | 层 | 位置 | 命名 | 例子 |
 |---|---|---|---|
-| U | `docs/` 与根目录 | 人读 markdown，双语随现有惯例 | `README.md`、`docs/RULE.md`、杠杆目录文档（名待定，如 `docs/LEVERS.md`） |
-| A | 与杠杆同目录 | `USAGE.md`（新增约定）或沿用 `*SPEC.md` | `baseline/framework/ppo/policies/USAGE.md`、`envs/humanoid21/DATASPEC.md` |
-| D | 与代码同目录 | `CONTEXT.md` / `DESIGN_*.md` / `REVIEW_*.md` | `baseline/framework/ppo/dumpkit/CONTEXT.md` |
-| 跨层入口 | 根目录 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、README 文档体系节 | — |
+| U | 每个功能目录 + `docs/` + 根目录 | `README.md` 前半、人读 markdown，双语随现有惯例 | `docs/RULE.md`、杠杆目录文档（名待定） |
+| A | 与杠杆同目录 | `USAGE.md`（新增约定）或沿用 `*SPEC.md` | `envs/humanoid21/DATASPEC.md`、待建的 `policies/USAGE.md` |
+| D | 与代码同目录 | `README.md` 后半"开发者说明"节；超出阈值拆 `CONTEXT.md`；`DESIGN_*.md` / `REVIEW_*.md` | `baseline/framework/ppo/dumpkit/CONTEXT.md` |
+| 跨层入口 | 根目录 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、`REGULARIZATION_DETAIL.md`（审计日志）、README 文档体系节 | — |
 
-总账 `CAPABILITY_LEDGER.md` 放项目根目录，格式见 §6。
+总账 `CAPABILITY_LEDGER.md` 放项目根目录，格式见 §6；审计日志
+`REGULARIZATION_DETAIL.md` 格式见 §7.4。
 
 ### 4.4 README 入口义务
 
@@ -188,6 +219,7 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 | **WIP** | 开发中，暂不可用 | 不暴露（状态可见） | 总账登记缺口清单与所属里程碑 |
 | **LEGACY** | 能跑但已被取代 | 不暴露 | 指明替代者；保留原因写明 |
 | **UNSUPPORTED** | 不可用 / 不会支持 | 显式拒绝 | 调用时明确失败或文档显式劝退 |
+| **OUT-OF-SCOPE** | 不在本期盘点范围（如 SAC） | 不暴露 | 总账登记一句即可，不做补齐 |
 
 规则：
 
@@ -219,8 +251,9 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 
 ### 7.1 阶段划分
 
-- **Phase 0 — 立规矩**（本轮）：本文冻结 v1；README 文档体系说明；建立
-  `CAPABILITY_LEDGER.md` 骨架（初始盘点快照先登记"初判待核实"）。
+- **Phase 0 — 立规矩**（本轮）：本文冻结 v1；建立 `CAPABILITY_LEDGER.md`
+  骨架（初始盘点快照登记为"初判待核实"）与 `REGULARIZATION_DETAIL.md`
+  审计日志；README 文档体系节（在文档命名约定确认后落地）。
 - **Phase 1 — 全量盘点**：按域逐个核实真实状态（读代码、跑测试、查文档），
   把总账从"初判"变成"核实"。产出：可信的总账 + 补齐优先级清单。
 - **Phase 2+ — 逐域正则化**：每次会话认领一个工作包（一个域或一组杠杆），
@@ -239,7 +272,32 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 5. 总账更新（哪些能力状态变了，依据是什么）；
 6. commit（仓库规则：每个任务完成即提交）。
 
-### 7.3 红线
+### 7.3 审计日志（REGULARIZATION_DETAIL.md）
+
+**正则化的本质是审计 + 排查，一切发现和改动必须留痕。**
+沿用仓库既有 `xxx_DETAIL.md` 时序日志约定，建根目录
+`REGULARIZATION_DETAIL.md`，按时间追加。每个动作一条记录：
+
+```
+## [YYYY-MM-DD HH:MM] 动作描述
+
+**域/对象：** <涉及的能力/目录/文件>
+**类别：** 盘点发现 | 代码修复 | 文档增删改 | 状态变更 | 规范调整
+**做了什么：** <动作本身>
+**为什么：** <动机与依据；bug 则写 bug 现象+根因；重命名则写改名理由>
+**结果/证据：** <测试输出、命令结果、或"见 commit xxx">
+**后续：** <引出什么新工作项，或总账哪个条目要更新>
+```
+
+要求：
+
+- 发现的**问题**和做的**改动**都要记，包括"查了某能力、确认没问题"
+  这类负结果——审计日志的价值在于可核查"检查过什么、跳过了什么"。
+- 文档规范本身的调整（§4 演化）也要记，说明为什么旧分类装不下、
+  新增了什么类型。
+- 日志与 commit 对应：每条日志尽量指向 commit hash。
+
+### 7.4 红线
 
 - **文档不撒谎**：标记 WIP 的能力，文档必须明说"当前不可用"，不能含糊；
   能力边界内的承诺必须是真的。
@@ -259,7 +317,10 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
   既定架构决策，见 `envs/batchframework/discuss.md` §7）；
 - 不清理 `baseline/runs/`（gitignored 训练产物，规模自理）；
 - 不承诺加速路径效果达标（那是 M6/M7 验收的事，正则化只登记其真实状态）；
-- 不为"文档好看"而隐藏复杂度：杠杆的限制与前提必须如实写。
+- 不为"文档好看"而隐藏复杂度：杠杆的限制与前提必须如实写；
+- **SAC 路径本轮不盘点**——`baseline/framework/sac/` 与 `experiments_sac/`
+  目前不成熟，整体标记 OUT-OF-SCOPE，总账只登记"不在本期范围"，
+  不做补齐也不做选型推荐。
 
 ## 9. 初始盘点快照（v0，全部"初判待核实"——Phase 1 的输入）
 
@@ -269,10 +330,10 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 | `envs/humanoid21/` | simulator + combat/observer/disturbance plugins + XML | STABLE? | DATASPEC/OBSERVATION/CONTROLSPEC 已齐 |
 | `envs/batchframework/` | MJX/Warp 设备运行时 + DeviceRollouter | WIP | M5 闭环已过，M6 学习中；按 ROADMAP 登记 |
 | `baseline/framework/` PPO | trainer/loop/multi-critic/confidence/dump | STABLE? | 主训练路径 |
-| `baseline/framework/` SAC | sac/* | USABLE? | 成熟度待核实 |
+| `baseline/framework/` SAC + `experiments_sac/` | sac/* | OUT-OF-SCOPE | 用户明确：不成熟，本轮不盘点 |
 | `baseline/framework/ppo/policies/` | TruncNorm 8 格 + SamplingContext | USABLE→STABLE | 有测试与选型文档；部分格子已淘汰需标 |
 | `baseline/framework/ppo/dumpkit/` | debug 全家 | STABLE | A/D 层范本已存在 |
-| `baseline/experiments_ppo|sac/` | 实验注册表 + base.py | USABLE | README 已有；契约文档待补 |
+| `baseline/experiments_ppo/` | PPO 实验注册表 + base.py | USABLE | README 已有；契约文档待补 |
 | `baseline/humanoid21/rewards/` | PBRS reward 族 | 待核实 | 8+ channel，变体碎片化（REVIEW 记录） |
 | `baseline/humanoid21/blueprints/` | 48 yaml | USABLE? | 数量膨胀，需盘点合并方向 |
 | `baseline/humanoid21/curriculum/` | 四阶段 + gating + mixed policy + V1 实验 70+ | LEGACY | 被 experiments_ppo 取代；归档边界待划 |
@@ -284,14 +345,17 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 
 ## 10. 待决问题（冻结前需确认）
 
-1. **U 层杠杆目录的文件名与位置**（提案：`docs/LEVERS.md` 或根目录一份——
-   需用户定夺）。
-2. **A 层契约文档命名**：新约定 `USAGE.md` vs 沿用现有 `*SPEC.md` 惯例 vs
+1. **README 内嵌 AI 节的固定小节名**：提案"## For AI / 开发者说明"，
+   以及"多大体量拆独立 CONTEXT.md"的阈值判据（提案：超过 README 篇幅一半，
+   或含大型命令/API 速查表时拆分）。
+2. **U 层杠杆目录的文件名与位置**（提案：`docs/LEVERS.md` 或根目录一份——
+   需用户定夺）。注意该目录是盘点的**产出物**，Phase 1 之前只有骨架。
+3. **A 层契约文档命名**：新约定 `USAGE.md` vs 沿用现有 `*SPEC.md` 惯例 vs
    其他——需统一后冻结。
-3. **语言约定**：U 层双语（现有 README/docs 惯例）？A/D 层中文为主（现有
+4. **语言约定**：U 层双语（现有 README/docs 惯例）？A/D 层中文为主（现有
    CONTEXT/DESIGN 惯例）？
-4. **combatbench.tech 平台侧是否在正则化范围内**（代码在 sibling 目录
+5. **combatbench.tech 平台侧是否在正则化范围内**（代码在 sibling 目录
    `combatbench-research/`）。
-5. **Phase 1 盘点的优先顺序**：建议从"用户最先接触的杠杆"开始
+6. **Phase 1 盘点的优先顺序**：建议从"用户最先接触的杠杆"开始
    （experiment 注册表 → 策略族 → 探索杠杆 → reward/plugin → 环境 → 加速路径），
    待确认。
