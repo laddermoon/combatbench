@@ -971,3 +971,55 @@ SHA256 两次跨进程一致；阶跃/正弦/静置三组物理实测数据如�
 **Next:** 继续深挖（按价值：blueprint 物化边界、recorder/replay
 保真度、device 路径 obs 逐维对照、experiments_ppo 里 param 注入的
 边界行为）或等用户裁决。
+
+## [2026-10-01] Phase 2 深挖 #3 —— rollout 一致性 / blueprint 边界 / replay 精度
+
+**Category:** test
+**What:** 三件实证验证 + 一处文档缺口。
+
+### ParallelRollouter 跨 worker 数一致性（实测通过）
+
+- 4 个相同 Job（random policy，600 帧/ep）分别跑 `num_workers=1`
+  （进程内串行）与 `num_workers=2`（spawn 子进程）：
+  obs+actions 全量 SHA256 **完全一致**。
+- 坑位记录：`mp_context="spawn"` 默认意味着调用方必须是真实
+  .py 文件 + `__main__` 守卫——stdin/REPL 里直接跑 ParallelRollouter
+  会 BrokenProcessPool（worker 重 import `__main__` 递归 spawn）。
+  这是 spawn 的固有约束，但**没有任何文档提示**——AI/用户在 notebook
+  或脚本片段里调它会撞上。建议在 ParallelRollouter docstring 加一行。
+
+### episode_options ≠ blueprint 参数（语义边界，文档已有但易误用）
+
+- 实测：`episode_options={"max_steps": 40}` **不生效**——options 只进
+  `simulator.reset(options)`，blueprint 参数（TimeoutPlugin 的
+  max_steps）在 materialize 时固化。episode 仍跑满 600 帧（=30s×20Hz，
+  恰好印证 RULE.md 的回合时长）。
+- `Job.episode_options` docstring 已写明 "environment-only，
+  forwarded to simulator.reset"——契约正确，但命名上 `episode_options`
+  读起来像能改 episode 长度。属易误用命名，非 bug。
+
+### ParameterizedEnvBlueprint（实测验过）
+
+- `materialize(unknown_key=1)` → `ValueError`（列出合法参数名）；
+  缺必填参数 → `ValueError`；`${param}` 占位符引用未知参数 →
+  `KeyError`。全 fail-loud，无误吞。
+
+### ReplaySimulator 精度说明（静态核查）
+
+- `_rehydrate` 把 JSON 数值一律降为 `float32`——而 CPU 物理是
+  float64。**回放状态有 fp32 量化**，对逐帧数值复算（如拿回放状态
+  重算 reward）会引入 ~1e-7 级误差。对录像/可视化场景无影响，
+  但"回放即重演"的语义边界值得在 replay.py docstring 里写明
+  （目前只提了 stride 匹配和 manifest 版本）。
+- 32 个 replay/recorder 测试全过。
+
+### 指标目录一致性抽查（阴性结果）
+
+- dumpkit `metric_catalog.py`（97 条目）抽查 KL/grad_sig/adv 等关键
+  键与 loop/trainer 发射端命名对得上——未发现目录漂移。
+
+**Result/evidence:** workers 1 vs 2 指纹相等；materialize 三类边界
+异常实测；replay rehydrate 降精度属设计内（docstring 未提）。
+**Next:** Phase 2 暂告一段落。剩余可挖方向：dumpkit viewer API
+契约测试重建（test_viewer 重写）、standup rewarder 四阶段门限的
+对照测试、设备端 obs 与 host 逐维 diff 细查。等用户裁决或指示。
