@@ -200,7 +200,12 @@ Experiment.build_jobs → Job(sampling_a/b=SamplingSpec)
   `det_action(当前策略) − a_ref`，由采样层算好作为 ctx 输入——
   mixture 单元同样共享该 (D,) 载荷广播到各分量。
 - ReferenceSpec 的选取策略（哪几代、什么权重）是实验设计，
-  不在框架内。
+  不在框架内。当前 `experiments_ppo/base.py` 的实现：ensemble =
+  严格早于当前策略（Gen0）的最近 H 代（`history[:-1]` 尾部 H 条，
+  等权 1/H），且采用**满窗 warmup 门**——strictly-past 版本不足
+  H 时发 plain spec（Δ 机制关闭），首个 delta 激活 update =
+  H+2。目的：让记录的 Δ 全程保持"vs H 窗口均值"同一语义，避免
+  n=1..H−1 增长期混入"相邻代漂移"量纲。
 
 ---
 

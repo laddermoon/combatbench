@@ -147,6 +147,10 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   in both modes: the newest history entry is the just-finished
     #   update's export (= the rollout-time behavior policy itself,
     #   Gen0), excluded because a self member pins Δ≈0 mechanically.
+    #   H is also the warmup gate: delta activates only once H
+    #   strictly-past versions exist (first delta-active update = H+2),
+    #   so the ensemble size — and thus the recorded Δ semantics —
+    #   stays constant at n=H instead of ramping 1→H.
     # delta_mode: "dynamic" replays a_ref and recomputes Δ = m_θ−a_ref
     #   at train; "frozen" computes Δ = det_action(Gen0) − a_ref at
     #   rollout, records it, and replays it verbatim — σ_eff stays
@@ -401,7 +405,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
     def _sampling_spec(self) -> SamplingSpec:
         """Assemble this round's :class:`SamplingSpec`.
 
-        With ``delta_mix != 0`` and a non-empty trained-version history,
+        With ``delta_mix != 0`` and a **full** strictly-past window,
         the spec carries a uniform :class:`ReferenceSpec` plus
         ``delta_factor`` / ``delta_mix`` / ``delta_mode``.  The ensemble
         is the last ``reference_horizon`` versions **before** the
@@ -413,12 +417,25 @@ class CombatExperimentPPOBase(ExperimentPPO):
         participates in frozen Δ through the inner policy's own
         deterministic action — it does not need ensemble membership.
 
+        **Warmup gate**: delta does NOT activate on a partial window —
+        the mechanism stays off (plain spec) until ``pool`` holds all
+        ``reference_horizon`` strictly-past versions, i.e. the first
+        delta-active update is ``H + 2`` (H refs + Gen0 + one update
+        boundary).  Rationale: a growing n=1..H−1 ensemble would make
+        the recorded ``sctx__delta`` mix "adjacent-generation drift"
+        and "drift vs window centroid" — two different quantities
+        under one constant c — whereas a full window keeps the Δ
+        distribution semantically uniform for analysis.
+
         Otherwise it is the plain ``explore_factor`` spec — including
         warmup updates where no eligible version exists.
         """
         history = getattr(self, "_ref_history", None) or []
         pool = history[:-1]
-        if self.delta_mix != 0.0 and pool:
+        if (
+            self.delta_mix != 0.0
+            and len(pool) >= self.reference_horizon > 0
+        ):
             window = pool[-self.reference_horizon:]
             n = len(window)
             return SamplingSpec(
