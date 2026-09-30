@@ -640,3 +640,74 @@ V1 时代实验/设计稿 + 3 个测试文件）
 `list_ppo_experiments()` 实测 31 项；`exp_*_ef03/ef08` 抽查确认
 薄子类模式。
 **Next:** `baseline/humanoid21`（rewards/plugins/blueprints/curriculum）。
+
+## [2026-10-01] baseline/humanoid21 —— 训练资产层（rewards/plugins/blueprints + 历史层积）
+
+**Domain/object:** `baseline/humanoid21/`（~35k 行：rewards/24、
+plugins/11、blueprints/**62 个 yaml**、curriculum/87 py 旧注册表、
+end2end/26、mocap/10、fight/follow/balance_recover、tests/、
+顶层 replay_* 脚本）
+**Category:** discovery
+**What:** 测试实跑 + 引用图核查。**tests/: 0 run / 1 collection error /
+2 failed**——本目录测试面很薄且全有问题。
+
+### 测试实况（覆盖薄弱）
+
+- `tests/` 仅 2 个文件：
+  - `test_curriculum_gate.py` —— **collection error**：import 已删除的
+    `baseline.humanoid21.common`（CurriculumStageGate 随旧注册表迁移消失）。
+  - `test_fight_mixed_policy.py` —— 2 个用例都失败：需要
+    `baseline/humanoid21/runs/curriculum_follow_20260615_131515/policy_exports/u10294/`
+    的历史训练产物（runs/ 被 gitignore，环境里不存在）——**环境依赖型
+    测试，不是代码回归**，但也等于从来没法在干净环境跑。
+- 另外根 `tests/test_stage_seg_rewards.py`（23 用例）测本目录
+  `curriculum/experiments/exp_basic_balance_v2_stage_seg`——属于本域
+  但被放在根 tests/，且测的是 archive 级实验。
+- **结论：35k 行训练资产只有 ~2 个有效测试文件的覆盖**——rewards/
+  plugins/ 的核心 reward channel 实现几乎无单测（它们的验证依赖
+  "训练曲线正确"这种间接证据 + batchframework 的 fixture 对照）。
+
+### 分层实况
+
+- **活资产**：`rewards/standing_balance_4stage.py`（standup 主线
+  rewarder，batchframework 已做 NATIVE 设备版）、
+  `plugins/standup_termination.py` 等被 live exp 引用；
+  62 个 blueprints 中**活实验只引用 2 个**
+  （`standup_4stage_dense_v2_env.yaml` 给 standup 系 +
+  `basic_balance_v2_phi_dual_env.yaml` 给 basic_balance；
+  `exp_standup_step_v3` 直覆 `_env_pb`）——**~60 个 yaml 是历史层积**
+  （balance_recover_×6、standup_orig_×6、rollover_×N、V1/V2 各阶段）。
+- **旧注册表**：`curriculum/experiments/`（87 py，自己的 base.py）
+  是 superseded 的 V1/V2 实验注册表，只被 `curriculum/run_*_chain.py`
+  链式脚本和 obsolete/ 引用——CLAUDE.md 已声明 superseded，属实。
+- **mocap/**：AMC/ASF 动捕解析 + retarget，引用 `battle_v1.xml`
+  （P-H21-6 已记）——独立的动捕工具链，与主线训练无耦合。
+- **end2end/、fight/、follow/、balance_recover/**：V1 时代实验资产
+  （状态机、混合策略、env yaml），名义上还可实例化但与当前
+  experiments_ppo 主线脱节。
+- 顶层 `replay_4stage_recorder.py`/`replay_hybrid.py`/
+  `replay_standup_switch.py`：旧策略回放脚本。
+
+### 问题
+
+**P-BH-1（资产膨胀核心）**：62 blueprints / 87 curriculum exps /
+~20 rewards 中大量是为单次消融/阶段服务的"一次性"文件——
+无"活/死"标记，靠考古才能分辨。这是项目**杠杆目录膨胀最大的一处**。
+建议：blueprints/ 下按时代分子目录（`v1/`、`v2/`、`standup4stage/`）
+或至少在 README 里列"当前引用中的蓝图清单"（就 2 个）。
+
+**P-BH-2**：`test_curriculum_gate.py` 整文件过时（import 已删模块）。
+
+**P-BH-3**：`test_fight_mixed_policy.py` 依赖历史 run 产物——
+要么改成生成 fixture，要么标 skipif 缺失。
+
+**能力入账**：reward 族（standing_balance_4stage 等 ~15 个 channel
+实现，USABLE——设备版已验证等价但 CPU 侧无单测）、训练 plugins
+（USABLE）、blueprints（USABLE 但膨胀）、curriculum/ 全套（LEGACY）、
+mocap 工具链（USABLE，独立）、end2end/fight/follow/balance_recover
+资产（LEGACY）。
+
+**Result/evidence:** pytest tests/ 1 collection error + 2 failed；
+62 yaml 中 grep 出仅 2 个被活实验引用；87 个 curriculum 实验文件
+无外部引用。
+**Next:** `policy/`（参考策略目录）。
