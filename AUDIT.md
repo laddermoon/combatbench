@@ -512,3 +512,87 @@ capability_registry（STABLE 设计，覆盖面待扩）、host_compat 桥
 dyn-standing-s25 现场对照 MJX pass / Warp 6 字段超 fp64 容差
 （fp32 容差内）；注册表静态核查。
 **Next:** `baseline/framework`（最大的一块）。
+
+## [2026-10-01] baseline/framework —— 训练框架（PPO 主干 + dumpkit + rollout）
+
+**Domain/object:** `baseline/framework/`（~50k 行 py 不含 sac：train.py、
+code_snapshot、critic_mlp、`ppo/`（experiment/loop/trainer/trajectory/
+algos/policies×8/dumpkit/tests）、`rollout/`（ParallelRollouter/
+inference_server/remote_policy/episode/job）、`obsolete/`）
+**Category:** discovery
+**What:** 测试全量实跑 + 关键路径静态核查。**597 passed / 6 failed /
+2+3 collection errors / ~6min**——6 个失败全部证实为**测试过时**
+（实现是有意改动），4 个 collection error 是候选设计占位和私有名漂移。
+
+### 通过项（测试覆盖很好）
+
+- `ppo/trainer.py`（2.2k 行实现 + 3.8k 行测试）、`loop.py`、
+  `experiment.py`/`CommonParams`/`PPOParams`、GAE algos、trajectory——
+  多 critic 主干测试密集且全绿。
+- `ppo/policies/` 8 个生产策略族全部有独立测试文件且通过
+  （truncated_normal / bounded_std / state / pre_tanh / mixture /
+  state_mixture / shared_mixture / shared_mixture_bounded_std），
+  配 `_export_template_*.py` 导出模板 + POLICY_SELECTION.md 选型文档——
+  策略族是**文档与测试双达标**的区域。
+- `rollout/`：ParallelRollouter、Job/Episode、episode_recorder、
+  test_exploratory_policy/test_remote_inference 全过。
+- `inference_server.py`+`remote_policy.py`：远程 GPU 推理服务模式
+  （UDS、固定 batch 容量保证 bit-identical、per-request 噪声注入），
+  被 `parallel_rollouter.py` 的 `_remote_addr` spec 路径真实接线——
+  活特性不是摆设。
+- `dumpkit/`：capture→dataset→analysis→viewer 管线 + CONTEXT.md
+  （既有 D 层文档范本），dump_analysis/frame_access/dump tests 通过。
+- `code_snapshot.py`：git 分支快照机制（REPRODUCE.md 生成）。
+
+### 发现的问题
+
+**P-TF-1（4 个过时测试）：dump_delta 语义已改，测试夹具没跟上**
+- `test_dump_delta.py` 4 个失败全部指向同一处：`compute_delta` 的
+  gen 语义在 `85738c03`（"delta ref fix"）被**有意**改为
+  row0=post-update u_N（原 row0=rollout 用的 u_{N-1}）——commit
+  message 写明了动机和正确性论证。
+- 测试夹具还按旧语义建 `export_updates=(0,1,2,3)` for update=4，
+  断言旧 `gen_updates=[3,2,1,0]`——**实现正确、测试过期**。
+- 建议：夹具改为 `export_updates=(1,2,3,4)` + 断言 `[4,3,2,1]`。
+
+**P-TF-2（1 个过时测试）：`test_checkpoint_rng_state_roundtrip`**
+- `9af767fc` 新增守护：checkpoint 里 prev_gvec 长度 ≠ actor 参数量时
+  丢弃（obs/param 扩展场景防呆）。测试传 5 维 gvec 给 198 参数的假
+  actor——新守护正确丢弃，`resume_ctx["prev_gvec"]=None` → 断言失败。
+- **实现正确、测试没适配**。建议：gvec 改成与 actor 参数等长。
+
+**P-TF-3（1 个过时测试）：`test_humanoid21_back_compat_alias`**
+- 断言 `baseline.humanoid21.base.Critic` 别名存在——该模块已在
+  common→framework/critic_mlp 的迁移中删除。**别名被有意移除**，
+  测试是删模块时漏网的。
+
+**P-TF-4（2 个 collection error）**
+- `ppo/tests/test_viewer.py`：import `_dump_gradsig`——该私有函数已
+  移入 `dump_analysis.dump_gradsig`（server.py 内现为 `_da.dump_gradsig`）。
+  viewer 测试文件整体过时（1661 行，覆盖面大，值得修而非删）。
+- `ppo/policies/todo/test_*.py` ×3：import `tanh_gaussian_mlp`、
+  `FixedSigmaGaussianMLPPolicy` 等——`todo/` 目录是**策略候选设计
+  停车场**（DESIGN_*.md×6 + 未实现代码桩），测试本就跑不起来。
+  属"设计稿的测试"，不算回归，但建议在 todo/README 里写明"这些
+  测试是目标规格的草稿，依赖未实现的类"。
+
+**P-TF-5（文档小滞后）**：`ppo/README.md` 目录结构说 policies/
+  = "truncated_normal_mlp + todo/ 在建策略族"——实际 8 个族都已毕业
+  为生产策略，todo/ 剩的是未实现候选。
+
+**P-TF-6（资产标记）**：`obsolete/`（旧 ppo_loop/ppo_trainer/sac_*
+  + eval/probe 脚本 + golden_data）按命名契约是留档——确认无活代码
+  引用即可，不细审。
+
+**能力入账**：ExperimentPPO 契约/CommonParams（STABLE）、多 critic
+ppo_update+PPOBuffer（STABLE）、loop 编排含 checkpoint/resume/dump
+调度（STABLE）、ParallelRollouter（STABLE）、RemoteSamplingPolicy+
+inference_server（USABLE，GPU 推理服务）、dumpkit 全家桶（USABLE，
+viewer 测试过时）、8 策略族+导出模板（STABLE）、code_snapshot
+（STABLE）、policies/todo 候选族（UNSUPPORTED，仅设计文档）、
+obsolete/（LEGACY）。
+
+**Result/evidence:** `pytest ppo/ rollout/ test_critic_mlp.py`:
+597 passed / 6 failed（全过时测试）/ 4 collection errors；
+git log 85738c03 + 9af767fc 证实两处语义改为有意。
+**Next:** `baseline/experiments_ppo`。
