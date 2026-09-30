@@ -65,3 +65,6 @@ explicit = [
 
 [tool.pytest.ini_options]
 testpaths = ["envs/framework/tests", "envs/humanoid21/tests", "baseline/common", "baseline/humanoid21/tests"]
+markers = [
+    "slow: 慢速测试（统计分布对照、长 rollout），默认仍运行",
+]

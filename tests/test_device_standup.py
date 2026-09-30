@@ -25,7 +25,8 @@ from envs.batchframework.device_state import (  # noqa: E402
     ContactFlatNamespace, DeviceBatchState, EpisodeNamespace, IoNamespace,
     RngNamespace, SimNamespace,
 )
-from envs.batchframework.device_plugin import DeviceCtx  # noqa: E402
+from envs.batchframework.device_plugin import (  # noqa: E402
+    DeviceCtx, DeviceMutator)
 from envs.batchframework.device_standup import (  # noqa: E402
     OUT_KEYS, DeviceStandup4StageRewarder,
 )
@@ -508,3 +509,153 @@ def run_device_rewarder_warp(warp, agent_idx):
     rewarder.on_post_action_step(ctx)
     return {k: v.detach().cpu().numpy()
             for k, v in rewarder.get_output().items()}
+
+
+# ---------------------------------------------------------------------------
+# T3 — DeviceFallenResetPlugin（RandomFallenStatePlugin 原生版）
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+class TestFallenResetPlugin:
+    """验收 A：同注入态逻辑 + 行隔离；验收 B：摔倒分布统计等价。"""
+
+    @staticmethod
+    def _make(B=4, **kw):
+        from envs.batchframework.warp_simulator import WarpHumanoid21Simulator
+        from envs.batchframework.device_standup import DeviceFallenResetPlugin
+        sim = WarpHumanoid21Simulator(batch_size=B)
+        sim.reset(seeds=np.arange(B, dtype=np.int64))
+        kw.setdefault("sim_factory",
+                      lambda b: WarpHumanoid21Simulator(batch_size=b))
+        kw.setdefault("max_phy_steps", 400)
+        plugin = DeviceFallenResetPlugin(**kw).bind_shared_sim(sim)
+        state = sim.build_device_state()
+        plugin.declare_state(state)
+        state.rng.seed_offsets.copy_(
+            torch.arange(B, dtype=torch.int64, device="cuda"))
+        return sim, plugin, state
+
+    def _run_pre_episode(self, sim, plugin, state, env_ids=None):
+        ctx = DeviceCtx(state, plugin_name=plugin.name)
+        ctx.reset_env_ids = env_ids
+        ctx._mutator_impl = DeviceMutator(sim)
+        ctx._grant_mutator()
+        plugin.on_pre_episode(ctx)
+
+    def test_already_fallen_captures_step1(self):
+        """注入 torso z < threshold 的状态 → 第 1 步即捕获（语义对照）。"""
+        sim, plugin, state = self._make(B=4)
+        # 把 env0/2 的 robot_a torso 压到地面高度
+        adr_a = sim._robots["robot_a"]["root_qpos_adr"]
+        adr_b = sim._robots["robot_b"]["root_qpos_adr"]
+        q = state.sim.qpos.clone()
+        q[[0, 2], adr_a + 2] = 0.15
+        q[[0, 2], adr_b + 2] = 0.15
+        sim.dev_set_integration_rows(torch.arange(4, device="cuda"), q,
+                                     state.sim.qvel.clone())
+        self._run_pre_episode(sim, plugin, state)
+        pool = state.plugin[plugin.name]
+        steps = pool["init_steps"].cpu()
+        hits = pool["init_hit"].cpu()
+        assert hits[0] and hits[2]
+        assert steps[0] == 1 and steps[2] == 1
+        # 写回后目标机器人 root z 应低（含摔倒态）
+        z_a = state.sim.qpos[:, adr_a + 2].cpu()
+        assert float(z_a[0]) < 0.4
+
+    def test_partial_reset_isolation(self):
+        """部分 reset：未涉及 env 行逐位不变。"""
+        sim, plugin, state = self._make(B=4)
+        before = (state.sim.qpos.clone(), state.sim.qvel.clone())
+        self._run_pre_episode(sim, plugin, state,
+                              env_ids=torch.tensor([1, 3], device="cuda"))
+        for e in (0, 2):
+            torch.testing.assert_close(before[0][e], state.sim.qpos[e])
+            torch.testing.assert_close(before[1][e], state.sim.qvel[e])
+        pool = state.plugin[plugin.name]
+        steps = pool["init_steps"].cpu()
+        assert steps[1] >= 1 and steps[3] >= 1
+
+    def test_fallen_state_written_back(self):
+        """摔倒后目标机器人维度确实更新（与 reset 站姿不同）。"""
+        sim, plugin, state = self._make(B=2, max_phy_steps=600)
+        stand_q = state.sim.qpos.clone()
+        self._run_pre_episode(sim, plugin, state)
+        diff = (state.sim.qpos - stand_q).abs().max(dim=-1).values.cpu()
+        assert float(diff[0]) > 1e-3 or float(diff[1]) > 1e-3
+        # 写回后高度必须 < threshold 或达到 max（hit 标志一致性）
+        adr_a = sim._robots["robot_a"]["root_qpos_adr"]
+        hit = state.plugin[plugin.name]["init_hit"].cpu()
+        z = state.sim.qpos[:, adr_a + 2].cpu()
+        for e in range(2):
+            if bool(hit[e]):
+                assert float(z[e]) < 0.35  # 首个达标态 ±1步容差
+
+    def test_seed_determinism_and_diversity(self):
+        """同 seed_offsets 同 reset 序号 → 相同 action；env 间独立。"""
+        sim, plugin, state = self._make(B=4)
+        dev = torch.device("cuda")
+        ids = torch.arange(4, device=dev)
+        a1 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
+        a2 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
+        torch.testing.assert_close(a1, a2)          # 同次调用确定性
+        plugin._count += 1
+        a3 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
+        assert not torch.allclose(a1, a3)           # 下一次 reset 不同
+        assert not torch.allclose(a1[0], a1[1])     # env 间独立
+        assert a1.abs().max() <= 1.0
+
+    @pytest.mark.slow
+    def test_distribution_vs_cpu(self):
+        """验收 B：CPU RandomFallenStatePlugin vs 设备版的摔倒分布。
+
+        指标：hit rate、init_steps 分布、写回 torso 高度/quat/关节统计。
+        fp32-vs-fp64 + 随机源不同 → 只要求统计级一致（宽松容差）。
+        """
+        from types import SimpleNamespace
+        from envs.humanoid21.disturbance_plugins import (
+            RandomFallenStatePlugin)
+        from envs.humanoid21.simulator import Humanoid21Simulator
+
+        N = 24
+        # --- CPU 参考分布 ---
+        cpu_sim = Humanoid21Simulator()
+        cpu_stats = dict(steps=[], ha=[], hb=[])
+        for i in range(N):
+            cpu_sim.reset(seed=i)
+            p = RandomFallenStatePlugin(
+                target_robots=["robot_a", "robot_b"], max_phy_steps=1000,
+                height_threshold=0.3, reset_interval=5, random_seed=1000 + i)
+            ctx = SimpleNamespace(accessor=cpu_sim, mutator=cpu_sim,
+                                  metrics={})
+            p.on_pre_episode(ctx)
+            core = cpu_sim.get_core_state()
+            cpu_stats["steps"].append(ctx.metrics["robot_a_fallen_init_steps"])
+            cpu_stats["ha"].append(float(core["robot_a"]["root_pos"][2]))
+            cpu_stats["hb"].append(float(core["robot_b"]["root_pos"][2]))
+
+        # --- 设备分布（B=N 并行摔倒） ---
+        sim, plugin, state = self._make(B=N, max_phy_steps=1000,
+                                        reset_interval=5)
+        self._run_pre_episode(sim, plugin, state)
+        pool = state.plugin[plugin.name]
+        dev_steps = pool["init_steps"].cpu().numpy()
+        dev_hit = pool["init_hit"].cpu().numpy()
+        adr_a = sim._robots["robot_a"]["root_qpos_adr"]
+        adr_b = sim._robots["robot_b"]["root_qpos_adr"]
+        dev_ha = state.sim.qpos[:, adr_a + 2].cpu().numpy()
+        dev_hb = state.sim.qpos[:, adr_b + 2].cpu().numpy()
+
+        cpu_hit = np.array([s < 1000 for s in cpu_stats["steps"]])
+        print(f"\nCPU: hit={cpu_hit.mean():.2f} "
+              f"steps med={np.median(cpu_stats['steps']):.0f} "
+              f"ha mean={np.mean(cpu_stats['ha']):.3f}±{np.std(cpu_stats['ha']):.3f}")
+        print(f"DEV: hit={dev_hit.mean():.2f} "
+              f"steps med={np.median(dev_steps):.0f} "
+              f"ha mean={dev_ha.mean():.3f}±{dev_ha.std():.3f}")
+
+        # 统计等价：hit 率、高度分布量级、步数中位数同数量级
+        assert dev_hit.mean() > 0.8 and cpu_hit.mean() > 0.8
+        assert abs(dev_ha.mean() - np.mean(cpu_stats["ha"])) < 0.1
+        assert abs(dev_hb.mean() - np.mean(cpu_stats["hb"])) < 0.1
+        med_c, med_d = np.median(cpu_stats["steps"]), np.median(dev_steps)
+        assert 0.3 < med_c / max(med_d, 1) < 3.0
