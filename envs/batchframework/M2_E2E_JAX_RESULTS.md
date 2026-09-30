@@ -68,7 +68,43 @@ policy jit 自身编译秒级。
 - 若后续评估 warp，应直接用**接触密集动作**测试，零动作数字会
   高估一个数量级
 
-## 4. 方法学备注
+## 4. mujoco-warp 对照实验（`probe_e2e_warp.py`）
+
+同一实验换 warp 后端：`mjw.put_data(mjm, mjd, nworld=B)` 原生批量
+（NWORLDS 布局，非 vmap），PD 用 `wp.kernel` 写在 warp stream 上
+（每子步 1 kernel + `mjw.step`），policy 仍走 JAX——`wp.to_jax` 零拷贝
+视图读 qpos/qvel，结果经 `wp.from_jax` 写回。每动作步一次 host sync。
+
+| B | warp env-substeps/s | mjx-jax env-substeps/s | 倍数 |
+|---|---|---|---|
+| 8 | 514 | 110 | ~4.7× |
+| 128 | 10,482 | 355 | ~30× |
+| 256 | 24,758 | 408 | ~61× |
+| 512 | 45,172 | — | — |
+| 1,024 | 75,403 | — | — |
+| 2,048 | 146,813 | — | — |
+| 4,096 | 254,083 | — | — |
+| 8,192 | **308,100** | — | — |
+
+补充：kernel 编译一次 ~93s（缓存于 `~/.cache/warp`，二次启动 ~3s）；
+200 子步随机大力矩下 qpos 全部有限，物理未发散；接触容量默认
+48/world（真实工况下可能截断——warp 对超容量接触做丢弃处理，语义
+验证阶段需单独确认影响）。
+
+### 结论修正
+
+- **warp 仍有 scaling**：B=8192 才趋缓（254K→308K），mjx-jax 在
+  B=128 就已饱和——验证了"瓶颈是 jax 后端的稠密 vmap 模型，而非
+  任务本身不可 GPU 化"
+- 单张 4090 上 warp ≈ **0.65× CPU 生产吞吐**（308K vs 472K/s），
+  且未完全饱和；更大 batch 或更强卡（A100/H100）大概率反超
+- **mjx-jax vs warp 差 ~200×**：同样语义、同样模型，后端差异是
+  决定性的。mujoco-warp 是唯一有翻盘潜力的候选
+- 但 warp 接入不是免费的：NWORLDS 布局与现有 vmap 代码不兼容，
+  `mjx.Data` 接口不通用，需要独立适配层；且 warp 的 MuJoCo 覆盖是
+  子集（验证语义等价性需要重新跑 M1/M2 fixture 体系）
+
+## 5. 方法学备注
 
 - 不用 `jax.jit` 套全 episode：外层 jit 会把 25 子步 scan 内联进整个
   200 步图，XLA 编译 >15min 超时。改为逐动作步驱动（编译 ~100s，
