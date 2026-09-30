@@ -1,0 +1,169 @@
+"""设备端观测构建器：``_get_robot_view_batch`` 的 torch 复刻。
+
+输入是 ``DeviceBatchState.sim`` 的活跃张量视图（warp 后端零拷贝），
+全程无 host 传输。公式逐字段对齐 ``mjx_simulator._get_robot_view_batch``
+（即 CPU ``_get_robot_view`` 的批量语义）；两者之间只允许 fp32 噪声级
+差异，由 W4 的对照测试锁定。
+
+feet_forces 走 contact **flat** 视图 + index_add 聚合，不经 padded
+中间形态（padded 是插件契约；内部消费者用 flat 更省且语义相同）。
+"""
+from __future__ import annotations
+
+from typing import Any, Dict
+
+import numpy as np
+import torch
+
+KP_NAMES = ("head", "hand_right", "hand_left", "foot_right", "foot_left")
+
+
+def _quat_to_rot_t(quat: torch.Tensor) -> torch.Tensor:
+    """(B,4) [w,x,y,z] → (B,3,3)。"""
+    w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    r0 = torch.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w),
+                      2 * (x * z + y * w)], dim=-1)
+    r1 = torch.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z),
+                      2 * (y * z - x * w)], dim=-1)
+    r2 = torch.stack([2 * (x * z - y * w), 2 * (y * z + x * w),
+                      1 - 2 * (x * x + y * y)], dim=-1)
+    return torch.stack([r0, r1, r2], dim=-2)
+
+
+def _sqrt_signed_t(v: torch.Tensor, div2_inside: bool = False) -> torch.Tensor:
+    if div2_inside:
+        return torch.sign(v) * torch.sqrt(torch.abs(v / 2.0))
+    return torch.sign(v) * torch.sqrt(torch.abs(v)) / 2.0
+
+
+class WarpObsBuilder:
+    """从 DeviceBatchState 构建 96 维观测（torch，fp32）。
+
+    构造时从 simulator 的 meta 缓存提取全部索引/归一化常量并转为
+    CUDA 张量；``build()`` 为纯设备端计算。
+    """
+
+    def __init__(self, sim: "WarpHumanoid21Simulator"):  # noqa: F821
+        self._dev = torch.device("cuda:0")
+        self._B = sim.batch_size
+        self._ground_gid = int(sim._ground_geom_id)
+        self._geom_bodyid = torch.as_tensor(
+            np.asarray(sim._model.geom_bodyid), dtype=torch.long,
+            device=self._dev)
+        self._robots: Dict[str, Dict[str, Any]] = {}
+        for rid in ("robot_a", "robot_b"):
+            cache = sim._robots[rid]
+            norm = sim._norm_params[rid]
+            t = lambda a, dt=torch.float32: torch.as_tensor(  # noqa: E731
+                np.asarray(a), dtype=dt, device=self._dev)
+            self._robots[rid] = dict(
+                torso_id=int(cache["root_body_id"]),
+                root_qva=int(cache["root_qvel_adr"]),
+                qpos_idx=t(cache["qpos_indices"], torch.long),
+                qvel_idx=t(cache["qvel_indices"], torch.long),
+                norm_ref=t(norm["reference"]),
+                norm_scale=t(norm["scale"]),
+                kp_ids={n: int(b) for n, b in
+                        cache["keypoint_body_ids"].items()},
+                body_weight=float(cache["body_weight"]),
+            )
+
+    # ------------------------------------------------------------------
+    def _feet_forces(self, state, rid: str) -> torch.Tensor:
+        """双足地面接触力（按体重归一）——flat contacts + index_add。"""
+        c = state.sim.contacts_flat
+        C = c.worldid.shape[0]
+        dev = self._dev
+        idx = torch.arange(C, device=dev)
+        n_active = c.n_active.reshape(()).long()
+        active = (idx < n_active) & (c.dist <= 0)      # (C,) bool
+
+        sel = torch.nonzero(active, as_tuple=False).squeeze(-1)
+        out = torch.zeros(self._B, 2, dtype=torch.float32, device=dev)
+        if sel.numel() == 0:
+            return out
+        w = c.worldid[sel].long()
+        g = c.geom[sel].long()                       # (M,2)
+        body = self._geom_bodyid[g.clamp(min=0)]     # (M,2)
+
+        # condim=3 → 每接触 4 行 efc：normal=sum, f1=r0-r1, f2=r2-r3
+        adr = c.efc_address[sel].long()
+        if adr.ndim > 1:
+            adr = adr[:, 0]
+        ef_rows = adr.clamp(min=0)[:, None] + torch.arange(4, device=dev)
+        ef = c.efc_force[w[:, None].clamp(min=0), ef_rows.clamp(min=0)]  # (M,4)
+        normal = ef.sum(dim=-1)
+        fl = torch.stack([normal, ef[:, 0] - ef[:, 1],
+                          ef[:, 2] - ef[:, 3]], dim=-1)                 # (M,3)
+        fw = torch.einsum("mij,mj->mi",
+                          c.frame[sel].transpose(-1, -2), fl)
+        fmag = torch.linalg.norm(fw, dim=-1)
+
+        g1_ground = g[:, 0] == self._ground_gid
+        ground = g1_ground | (g[:, 1] == self._ground_gid)
+        other = torch.where(g1_ground, body[:, 1], body[:, 0])
+        kp = self._robots[rid]["kp_ids"]
+        fm = fmag * ground
+        out[:, 0].index_add_(0, w, fm * (other == kp["foot_right"]))
+        out[:, 1].index_add_(0, w, fm * (other == kp["foot_left"]))
+        return out / self._robots[rid]["body_weight"]
+
+    # ------------------------------------------------------------------
+    def _robot_obs(self, state, rid: str, opp: str) -> torch.Tensor:
+        s, r, ro = state.sim, self._robots[rid], self._robots[opp]
+        torso, opp_torso = r["torso_id"], ro["torso_id"]
+
+        self_pos = s.xpos[:, torso]
+        self_quat = s.xquat[:, torso]
+        opp_pos = s.xpos[:, opp_torso]
+        opp_quat = s.xquat[:, opp_torso]
+
+        R = _quat_to_rot_t(self_quat)                 # body→world
+        Ri = R.transpose(-1, -2)                      # world→body
+
+        def loc(v):  # 世界系向量 → 自机体系
+            return torch.einsum("bij,bj->bi", Ri, v)
+
+        height = self_pos[:, 2:3]
+        projected_gravity = -R[:, 2, :]
+        rq = r["root_qva"]
+        linear_vel = loc(s.qvel[:, rq:rq + 3])
+        angular_vel = s.qvel[:, rq + 3:rq + 6]        # 本就机体系
+        feet = self._feet_forces(state, rid)
+        arena_center_local = loc(-self_pos)
+        rel_pos = loc(opp_pos - self_pos)
+        rel_vel = loc(s.cvel[:, opp_torso, 3:6])
+        opp_fwd = _quat_to_rot_t(opp_quat)[:, :, 0]
+        face = loc(opp_fwd)
+
+        kp_pos, kp_vel = {}, {}
+        for n in KP_NAMES:
+            b = ro["kp_ids"][n]
+            kp_pos[n] = loc(s.xpos[:, b] - self_pos)
+            kp_vel[n] = loc(s.cvel[:, b, 3:6])
+
+        jpn = (s.qpos[:, r["qpos_idx"]] - r["norm_ref"]) / r["norm_scale"]
+        jvn = s.qvel[:, r["qvel_idx"]] / r["norm_scale"]
+
+        return torch.cat([
+            jpn, _sqrt_signed_t(jvn), projected_gravity, height,
+            linear_vel, _sqrt_signed_t(angular_vel, div2_inside=True),
+            feet, arena_center_local, rel_pos, rel_vel, face,
+            kp_pos["head"], kp_pos["hand_right"], kp_pos["hand_left"],
+            kp_pos["foot_right"], kp_pos["foot_left"],
+            kp_vel["head"],                            # head 速度不变换
+            torch.cat([_sqrt_signed_t(kp_vel[n])
+                       for n in KP_NAMES[1:]], dim=-1),
+        ], dim=-1)
+
+    # ------------------------------------------------------------------
+    def build(self, state) -> Dict[str, torch.Tensor]:
+        """→ {"robot_a": (B,96), "robot_b": (B,96)}；写入 io.obs_* 缓冲。"""
+        obs = {
+            "robot_a": self._robot_obs(state, "robot_a", "robot_b"),
+            "robot_b": self._robot_obs(state, "robot_b", "robot_a"),
+        }
+        if state.io.obs_a is not None:
+            state.io.obs_a.copy_(obs["robot_a"])
+            state.io.obs_b.copy_(obs["robot_b"])
+        return obs

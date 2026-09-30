@@ -30,6 +30,14 @@ from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 
+from .device_state import (
+    ContactFlatNamespace,
+    DeviceBatchState,
+    EpisodeNamespace,
+    IoNamespace,
+    RngNamespace,
+    SimNamespace,
+)
 from .mjx_simulator import MjxHumanoid21Simulator
 
 
@@ -54,10 +62,14 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         self._wmodel = mjw.put_model(self._model)
         self._nconmax_per_world = nconmax_per_world
         self._wdata = None          # mjw.Data
-        self._ext_np = None         # (B, nbody, 6) 挂起外力（同 _ext_force_jax 语义）
+        self._ext_dev = None        # wp.array (B, nbody, 6) 挂起外力（设备端）
+        self._sched_dev = None      # wp.array (B, S, nbody, 6) 子步 schedule
         self._action_np = None      # {robot: (B,21)} 当前 PD 目标动作
         self._pd_kernel = None
         self._pd_arrays = None
+        self._views = None          # dict[str, torch.Tensor] — mjw.Data 零拷贝视图
+        self._dev_state = None      # DeviceBatchState
+        self._obs_builder = None    # device_obs.WarpObsBuilder（惰性）
 
     # ------------------------------------------------------------------
     # warp <-> 父类提取函数的桥：numpy 快照伪装成 mjx.Data 形态
@@ -173,8 +185,24 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         wp.synchronize()
 
         self._action_np = {"robot_a": action_a, "robot_b": action_b}
-        self._ext_np = np.zeros((B, self._model.nbody, 6), dtype=np.float64)
+        if self._ext_dev is None:
+            self._ext_dev = wp.zeros((B, self._model.nbody, 6),
+                                     dtype=wp.float32, device="cuda:0")
+        else:
+            self._ext_dev.zero_()
+        self._sched_dev = None
         self._refresh_pd_target()
+        if self._dev_state is not None:
+            import torch
+            dev = torch.device("cuda:0")
+            self._dev_state.io.action_a.copy_(
+                torch.as_tensor(action_a, device=dev))
+            self._dev_state.io.action_b.copy_(
+                torch.as_tensor(action_b, device=dev))
+            self._dev_state.clear_step_flags()
+            self._dev_state.episode.episode_steps.zero_()
+            self._dev_state.episode.active_mask.fill_(True)
+            self._dev_state.episode.time.zero_()
         self._history_buffer = None
         self._history_n_steps = 0
 
@@ -240,6 +268,45 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         self._pd_arrays["target"].assign(
             self._wp.array(target.astype(np.float32), device="cuda:0"))
 
+    # ------------------------------------------------------------------
+    # 设备视图：mjw.Data 字段 → torch 零拷贝视图
+    # ------------------------------------------------------------------
+    def _torch_views(self) -> Dict[str, Any]:
+        """缓存的 torch 视图字典。_wdata/_ext_dev/_pd_arrays 存活期内有效。
+
+        物理循环与设备插件共享同一组视图；torch 侧就地写直接落到
+        warp 底层存储。stream 有序性由 physical_step 的 ScopedStream
+        （warp kernel 绑到 torch 当前流）保证。
+        """
+        if self._views is None:
+            if self._wdata is None:
+                raise RuntimeError("Call reset() before device access")
+            import torch  # noqa: F401 — 确保 CUDA 上下文先于 wp 视图创建
+            wp, d, pa = self._wp, self._wdata, self._pd_arrays
+            wt = wp.to_torch
+            self._views = dict(
+                qpos=wt(d.qpos), qvel=wt(d.qvel), ctrl=wt(d.ctrl),
+                xpos=wt(d.xpos), xquat=wt(d.xquat), xipos=wt(d.xipos),
+                xanchor=wt(d.xanchor), cvel=wt(d.cvel),
+                xfrc_applied=wt(d.xfrc_applied),
+                qfrc_applied=wt(d.qfrc_applied),
+                qacc_warmstart=wt(d.qacc_warmstart),
+                xfrc_pending=wt(self._ext_dev),
+                act_target=wt(pa["target"]),
+                # contact flat-packed（跨 world，worldid 归属，前 nacon 项活跃）
+                con_worldid=wt(d.contact.worldid),
+                con_geom=wt(d.contact.geom),
+                con_dist=wt(d.contact.dist),
+                con_pos=wt(d.contact.pos),
+                con_frame=wt(d.contact.frame),
+                con_dim=wt(d.contact.dim),
+                con_efc_address=wt(d.contact.efc_address),
+                efc_force=wt(d.efc.force),
+                nacon=wt(d.nacon),
+                xfrc_sched=None,   # 上传 schedule 时填入
+            )
+        return self._views
+
     def physical_step(self, n_steps: int = 1, keep_history: bool = False) -> None:
         if self._wdata is None:
             raise RuntimeError("Call reset() before physical_step()")
@@ -248,26 +315,37 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
                 "warp backend: keep_history 未实现（验证/吞吐路径均不需要）")
         wp, mjw, pa = self._wp, self._mjw, self._pd_arrays
         d = self._wdata
-        for i in range(n_steps):
-            wp.launch(self._pd_kernel, dim=(self._batch_size, 42),
-                      inputs=[d.qpos, d.qvel, pa["target"], pa["qpos_idx"],
-                              pa["qvel_idx"], pa["act_ids"], pa["gear"],
-                              pa["lo"], pa["hi"], pa["kp"], pa["kd"], d.ctrl],
-                      device="cuda:0")
-            # 挂起外力只作用于第一个子步（CPU xfrc_applied 每步清零语义）
-            if i == 0 and self._ext_np is not None and np.abs(self._ext_np).max() > 0:
-                d.xfrc_applied.assign(
-                    wp.array(self._ext_np.astype(np.float32), device="cuda:0"))
-            else:
-                d.xfrc_applied.assign(pa["zero_xfrc"])
-            mjw.step(self._wmodel, d)
-        # CPU physical_step 末尾清零 data 上的施加力
-        d.xfrc_applied.assign(pa["zero_xfrc"])
-        d.qfrc_applied.assign(
-            wp.zeros((self._batch_size, self._model.nv), dtype=wp.float32,
-                     device="cuda:0"))
-        if self._ext_np is not None:
-            self._ext_np[:] = 0.0
+        v = self._torch_views()
+        xf, pend = v["xfrc_applied"], v["xfrc_pending"]
+        sched = v["xfrc_sched"]
+        if sched is not None and sched.shape[1] != n_steps:
+            raise ValueError(
+                f"force schedule has {sched.shape[1]} substeps, "
+                f"physical_step got n_steps={n_steps}")
+        # ScopedStream：把 warp kernel（pd/mjw.step）绑到 torch 当前流，
+        # 与 torch 侧 xfrc 组合（zero_/add_）严格有序，全程零额外 host sync。
+        with wp.ScopedStream(wp.stream_from_torch()):
+            for i in range(n_steps):
+                wp.launch(self._pd_kernel, dim=(self._batch_size, 42),
+                          inputs=[d.qpos, d.qvel, pa["target"], pa["qpos_idx"],
+                                  pa["qvel_idx"], pa["act_ids"], pa["gear"],
+                                  pa["lo"], pa["hi"], pa["kp"], pa["kd"],
+                                  d.ctrl],
+                          device="cuda:0")
+                # CPU xfrc_applied 每子步清零语义：pending 只进首个子步；
+                # schedule 逐子步消费（插件"每物理步修改"的设备端等价物）。
+                xf.zero_()
+                if i == 0:
+                    xf.add_(pend)
+                if sched is not None:
+                    xf.add_(sched[:, i])
+                mjw.step(self._wmodel, d)
+            # CPU physical_step 末尾清零 data 上的施加力 / solver 偏置
+            xf.zero_()
+            pend.zero_()
+            v["qfrc_applied"].zero_()
+        self._sched_dev = None
+        v["xfrc_sched"] = None
 
     # ------------------------------------------------------------------
     # set_action / apply_external_force
@@ -292,18 +370,28 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         body_id = self._body_name_to_id.get(f"{body_name}{suffix}")
         if body_id is None:
             raise ValueError(f"Body not found: {body_name}{suffix}")
-        self._ext_np[:, body_id, :3] += np.asarray(force, dtype=np.float64)
+        import torch
+        pend = self._torch_views()["xfrc_pending"]
+        pend[:, body_id, :3] += torch.as_tensor(
+            np.asarray(force), dtype=torch.float32, device=pend.device)
         if torque is not None:
-            self._ext_np[:, body_id, 3:6] += np.asarray(torque, dtype=np.float64)
+            pend[:, body_id, 3:6] += torch.as_tensor(
+                np.asarray(torque), dtype=torch.float32, device=pend.device)
 
     @property
     def _ext_force_jax(self):
-        """与父类同名的挂起外力缓冲（validation adapter 直接读）。"""
-        return self._ext_np
+        """与父类同名的挂起外力缓冲（validation adapter 直接读）。
+
+        warp 侧真实缓冲是设备端 ``_ext_dev``；此属性返回 host 快照。
+        """
+        if self._ext_dev is None:
+            return None
+        return (self._torch_views()["xfrc_pending"]
+                .detach().cpu().numpy().astype(np.float64))
 
     @_ext_force_jax.setter
     def _ext_force_jax(self, _value):
-        # 父类 __init__ 赋值 _ext_force_jax=None；warp 侧真实缓冲是 _ext_np。
+        # 父类 __init__ 赋值 _ext_force_jax=None；warp 侧真实缓冲是 _ext_dev。
         pass
 
     # ------------------------------------------------------------------
@@ -362,6 +450,172 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
     # get_core_state / get_derived_state / get_observation 继承自父类，
     # 唯一差异是 contact 的 _impl 字段由 _contacts_padded 适配。
 
+    # ------------------------------------------------------------------
+    # M3 设备数据平面：DeviceBatchState 绑定 + device mutator
+    # ------------------------------------------------------------------
+    def build_device_state(self) -> DeviceBatchState:
+        """构造（或返回已有的）设备数据平面。
+
+        sim 字段是 mjw.Data 的活视图；episode/io/rng 为本对象持有的
+        CUDA 张量（reset 不重建——wdata 对象跨 reset 存活，视图不失效）。
+        """
+        if self._dev_state is not None:
+            return self._dev_state
+        import torch
+        v = self._torch_views()
+        B, dev = self._batch_size, torch.device("cuda:0")
+        obs_dim = self._obs_dim()
+        sim_ns = SimNamespace(
+            qpos=v["qpos"], qvel=v["qvel"], ctrl=v["ctrl"],
+            xpos=v["xpos"], xquat=v["xquat"], xipos=v["xipos"],
+            xanchor=v["xanchor"], cvel=v["cvel"],
+            xfrc_applied=v["xfrc_applied"], act_target=v["act_target"],
+            contacts_flat=ContactFlatNamespace(
+                worldid=v["con_worldid"], geom=v["con_geom"],
+                dist=v["con_dist"], pos=v["con_pos"], frame=v["con_frame"],
+                dim=v["con_dim"], efc_address=v["con_efc_address"],
+                efc_force=v["efc_force"], n_active=v["nacon"],
+                cap_per_world=self._nconmax_per_world,
+            ),
+        )
+        episode_ns = EpisodeNamespace(
+            episode_steps=torch.zeros(B, dtype=torch.int64, device=dev),
+            active_mask=torch.ones(B, dtype=torch.bool, device=dev),
+            terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
+            term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
+            reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
+            time=torch.zeros(B, dtype=torch.float32, device=dev),
+        )
+        io_ns = IoNamespace(
+            action_a=torch.zeros(B, self.ACTION_DIM, device=dev),
+            action_b=torch.zeros(B, self.ACTION_DIM, device=dev),
+            obs_a=torch.zeros(B, obs_dim, device=dev),
+            obs_b=torch.zeros(B, obs_dim, device=dev),
+            reward=torch.zeros(B, device=dev),
+        )
+        rng_ns = RngNamespace(
+            seed_offsets=torch.zeros(B, dtype=torch.int64, device=dev),
+            step_counter=torch.zeros((), dtype=torch.int64, device=dev),
+        )
+        self._dev_state = DeviceBatchState(B, sim_ns, episode_ns, io_ns, rng_ns)
+        return self._dev_state
+
+    def _obs_dim(self) -> int:
+        if getattr(self, "_obs_dim_cached", None) is None:
+            self._obs_dim_cached = int(
+                self.get_observation()["robot_a"].shape[-1])
+        return self._obs_dim_cached
+
+    def _norm_consts_t(self):
+        """norm ref/scale 的 torch 常量（dev_set_action 用）。"""
+        if getattr(self, "_norm_t", None) is None:
+            import torch
+            self._norm_t = {
+                rid: (torch.as_tensor(p["reference"], dtype=torch.float32,
+                                      device="cuda:0"),
+                      torch.as_tensor(p["scale"], dtype=torch.float32,
+                                      device="cuda:0"))
+                for rid, p in self._norm_params.items()
+            }
+        return self._norm_t
+
+    # --- device mutator（插件经 mutator 调用；输入均为 CUDA torch.Tensor） ---
+
+    def dev_set_action(self, action_a, action_b) -> None:
+        """动作 → PD target，全设备端。形状 (B,21)，clip 到 [-1,1]。"""
+        st = self.build_device_state()
+        v = self._torch_views()
+        norm = self._norm_consts_t()
+        for rid, act, cols in (("robot_a", action_a, slice(0, 21)),
+                               ("robot_b", action_b, slice(21, 42))):
+            a = act.clamp(-1.0, 1.0)
+            getattr(st.io, f"action_{rid[-1]}").copy_(a)
+            ref, scale = norm[rid]
+            v["act_target"][:, cols] = a * scale + ref
+
+    def dev_add_ext_force(self, body_id: int, force,
+                          torque=None) -> None:
+        """累加挂起外力（设备端）；作用于下一 physical_step 的首个子步。"""
+        pend = self._torch_views()["xfrc_pending"]
+        pend[:, body_id, :3] += force
+        if torque is not None:
+            pend[:, body_id, 3:6] += torque
+
+    def dev_upload_force_schedule(self, sched) -> None:
+        """上传子步外力 schedule：(B, n_steps, nbody, 6) torch CUDA 张量。
+
+        下一个 physical_step(n_steps) 逐子步消费后被清除；
+        n_steps 必须与届时调用的 n_steps 一致。
+        """
+        if sched.shape[0] != self._batch_size or \
+                sched.shape[2:] != (self._model.nbody, 6):
+            raise ValueError(
+                f"force schedule must be (B, n_steps, {self._model.nbody}, 6), "
+                f"got {tuple(sched.shape)}")
+        self._sched_dev = sched.contiguous()
+        self._torch_views()["xfrc_sched"] = self._sched_dev
+
+    def dev_reset_rows(self, env_ids) -> None:
+        """部分 reset：指定 env 恢复初始姿态（默认 options），其余不动。
+
+        初始姿态在 host 计算（确定性、每 env 独立），仅写回 env_ids 行；
+        该 env 的 qvel/ctrl/warmstart/qfrc/xfrc 一并清零（"全新求解"契约），
+        io.action/act_target 行恢复为初始姿态对应的 PD 目标。末调用
+        ``mjw.forward`` 重建全 world derived 字段（未重置 world 的 qpos
+        未变，重算无害）。
+        """
+        import torch
+        st = self.build_device_state()
+        v = self._torch_views()
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long,
+                                  device=v["qpos"].device)
+        qpos_all, act_a, act_b = self._compute_reset_state(None, None)
+        dev = v["qpos"].device
+        qp = torch.as_tensor(qpos_all, dtype=torch.float32, device=dev)
+        v["qpos"][env_ids] = qp[env_ids]
+        v["qvel"][env_ids] = 0.0
+        for k in ("ctrl", "qacc_warmstart", "xfrc_applied", "qfrc_applied"):
+            v[k][env_ids] = 0.0
+        st.io.action_a[env_ids] = torch.as_tensor(
+            act_a, dtype=torch.float32, device=dev)[env_ids]
+        st.io.action_b[env_ids] = torch.as_tensor(
+            act_b, dtype=torch.float32, device=dev)[env_ids]
+        norm = self._norm_consts_t()
+        v["act_target"][env_ids, :21] = (
+            st.io.action_a[env_ids] * norm["robot_a"][1]
+            + norm["robot_a"][0])
+        v["act_target"][env_ids, 21:] = (
+            st.io.action_b[env_ids] * norm["robot_b"][1]
+            + norm["robot_b"][0])
+        with self._wp.ScopedStream(self._wp.stream_from_torch()):
+            self._mjw.forward(self._wmodel, self._wdata)
+        self._wp.synchronize()
+
+    def dev_set_integration_rows(self, env_ids, qpos_t, qvel_t) -> None:
+        """原始 qpos/qvel 行写入（跨后端搬运/回放用），随后 forward 刷新。"""
+        import torch
+        v = self._torch_views()
+        env_ids = torch.as_tensor(env_ids, dtype=torch.long,
+                                  device=v["qpos"].device)
+        v["qpos"][env_ids] = qpos_t
+        v["qvel"][env_ids] = qvel_t
+        for k in ("ctrl", "qacc_warmstart", "xfrc_applied", "qfrc_applied"):
+            v[k][env_ids] = 0.0
+        with self._wp.ScopedStream(self._wp.stream_from_torch()):
+            self._mjw.forward(self._wmodel, self._wdata)
+        self._wp.synchronize()
+
+    def device_obs_builder(self):
+        """惰性构造设备端观测器（公式复刻见 device_obs.py）。"""
+        if self._obs_builder is None:
+            from .device_obs import WarpObsBuilder
+            self._obs_builder = WarpObsBuilder(self)
+        return self._obs_builder
+
     def close(self) -> None:
         self._wdata = None
+        self._views = None
+        self._dev_state = None
+        self._ext_dev = None
+        self._sched_dev = None
         self._history_buffer = None
