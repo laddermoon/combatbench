@@ -195,10 +195,11 @@ def test_host_slow_rejected_and_registry():
         "envs.batchframework.device_runtime:DeviceTimeoutPlugin",
         {"max_steps": 9}, sim)
     assert isinstance(p, DeviceTimeoutPlugin) and p._max == 9
-    # PENDING 条目拒绝
+    # UNSUPPORTED 条目拒绝（RandomFallenStatePlugin 已于 M4 转 NATIVE）
     with pytest.raises(ValueError):
         reg.resolve_plugin(
-            "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin",
+            "baseline.humanoid21.plugins.standup_termination"
+            ":StandupTerminationPlugin",
             {}, sim)
 
 

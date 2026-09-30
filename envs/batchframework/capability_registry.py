@@ -42,22 +42,51 @@ REGISTRY: Dict[str, CapabilityEntry] = {
         Capability.NATIVE,
         factory=lambda cfg, **kw: _mk_timeout(cfg),
         note="per-env timeout，设备原生"),
-    # --- standup 目标实验（M4 转换前占位，标注待转换） ---
+    # --- standup 目标实验（M4 已转换，见 M4_RESULTS.md） ---
     "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin":
-        CapabilityEntry(Capability.PENDING,
-                        note="M4 原生转换目标；暂不可经 compat 复用"
-                             "（逐 env 随机姿态注入语义不等价）"),
-    "baseline.humanoid21.rewards.standup_4stage:Standup4StageRewarder":
-        CapabilityEntry(Capability.UNSUPPORTED,
-                        note="M4 原生 observer 转换目标"),
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_fallen(cfg, **kw),
+                        note="DeviceFallenResetPlugin；摔倒分布统计等价"
+                             "（fp32 并行 rollout，验收见 M4_RESULTS §3）"),
+    "baseline.humanoid21.rewards.standup_4stage:StandingBalance4StageRewarder":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_standup_rewarder(
+                            cfg, **kw),
+                        note="DeviceStandup4StageRewarder observer；"
+                             "常量引用 CPU 模块单一来源"),
     "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin":
         CapabilityEntry(Capability.UNSUPPORTED, note="M4 原生转换目标"),
 }
 
 
-def _mk_timeout(cfg):
+def _mk_timeout(cfg, **_kw):
     from .device_runtime import DeviceTimeoutPlugin
     return DeviceTimeoutPlugin(max_steps=int(cfg.get("max_steps", 200)))
+
+
+def _mk_fallen(cfg, sim=None, **_kw):
+    """需要共享 batch sim（bind_shared_sim）——由 resolve_plugin 传入。"""
+    from .device_standup import DeviceFallenResetPlugin
+    from .warp_simulator import WarpHumanoid21Simulator
+    if sim is None:
+        raise ValueError("DeviceFallenResetPlugin factory requires sim=")
+    return DeviceFallenResetPlugin(
+        sim_factory=lambda b: WarpHumanoid21Simulator(batch_size=b),
+        target_robots=cfg.get("target_robots", ["robot_a", "robot_b"]),
+        max_phy_steps=int(cfg.get("max_phy_steps", 1000)),
+        height_threshold=float(cfg.get("height_threshold", 0.3)),
+        reset_interval=int(cfg.get("reset_interval", 5)),
+    ).bind_shared_sim(sim)
+
+
+def _mk_standup_rewarder(cfg, sim=None, **_kw):
+    """observer 版 NATIVE factory——经 resolve_observer 实例化。"""
+    from .device_standup import DeviceStandup4StageRewarder
+    if sim is None:
+        raise ValueError("DeviceStandup4StageRewarder factory requires sim=")
+    aid = cfg.get("agent_id", "robot_a")
+    return DeviceStandup4StageRewarder.from_sim(
+        sim, 0 if aid == "robot_a" else 1)
 
 
 def register(cls_path: str, entry: CapabilityEntry) -> None:
@@ -84,7 +113,7 @@ def resolve_plugin(cls_path: str, config: Dict[str, Any], sim,
     if entry.capability is Capability.NATIVE:
         if entry.factory is None:
             raise ValueError(f"{cls_path}: registered NATIVE without factory")
-        return entry.factory(config)
+        return entry.factory(config, sim=sim)
     if entry.capability in (Capability.UNSUPPORTED, Capability.PENDING):
         raise ValueError(
             f"plugin '{cls_path}' is {entry.capability.value} on the device "
@@ -98,3 +127,17 @@ def resolve_plugin(cls_path: str, config: Dict[str, Any], sim,
         return HostBatchCompatAdapter(inner, sim, stats=stats)
     from .host_compat import LegacyPluginAdapter
     return LegacyPluginAdapter(inner, sim)
+
+
+def resolve_observer(cls_path: str, config: Dict[str, Any], sim) -> Any:
+    """实例化 blueprint observer（NATIVE factory → BaseDeviceObserver）。
+
+    observer 无 compat 路径——复用旧 BaseObserverPlugin 走
+    host_compat.LegacyObserverAdapter，需要时显式构造。
+    """
+    entry = lookup(cls_path)
+    if entry.capability is not Capability.NATIVE or entry.factory is None:
+        raise ValueError(
+            f"observer '{cls_path}' is {entry.capability.value} on the "
+            f"device path: {entry.note}")
+    return entry.factory(config, sim=sim)

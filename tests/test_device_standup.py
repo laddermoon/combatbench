@@ -582,13 +582,17 @@ class TestFallenResetPlugin:
         self._run_pre_episode(sim, plugin, state)
         diff = (state.sim.qpos - stand_q).abs().max(dim=-1).values.cpu()
         assert float(diff[0]) > 1e-3 or float(diff[1]) > 1e-3
-        # 写回后高度必须 < threshold 或达到 max（hit 标志一致性）
+        # 写回后 hit 标志一致性：hit 条件是两目标 root 高度的 min
+        # < threshold（任一达标即停），因此断言 min(za, zb) < 0.35——
+        # 非先倒地机器人此刻可以仍在高位（双峰分布语义，见 M4_RESULTS §3）。
         adr_a = sim._robots["robot_a"]["root_qpos_adr"]
+        adr_b = sim._robots["robot_b"]["root_qpos_adr"]
         hit = state.plugin[plugin.name]["init_hit"].cpu()
-        z = state.sim.qpos[:, adr_a + 2].cpu()
+        za = state.sim.qpos[:, adr_a + 2].cpu()
+        zb = state.sim.qpos[:, adr_b + 2].cpu()
         for e in range(2):
             if bool(hit[e]):
-                assert float(z[e]) < 0.35  # 首个达标态 ±1步容差
+                assert min(float(za[e]), float(zb[e])) < 0.35
 
     def test_seed_determinism_and_diversity(self):
         """同 seed_offsets 同 reset 序号 → 相同 action；env 间独立。"""
