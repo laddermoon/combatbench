@@ -104,7 +104,8 @@ def delta_mix_sigma(
     sigma_max: Optional[float] = None,
 ) -> torch.Tensor:
     """σ²-domain mix of the policy σ with the reference-delta scale —
-    inlined copy of ``truncated_normal_mlp.delta_mix_sigma``."""
+    inlined copy of ``truncated_normal_mlp.delta_mix_sigma``.  ``mean`` is detached in the Δ term
+    (σ_eff exogenous w.r.t. m_θ — see the source docstring)."""
     # Attribute-based activation check — NOT ctx.has_delta(): ``ctx`` may
     # be an instance of an older SamplingContext class held by a spawned
     # rollout worker; its fields exist but newer methods may not.
@@ -123,7 +124,7 @@ def delta_mix_sigma(
         ref = ref.unsqueeze(-2)
     c = _ctx_bcast(ctx.delta_factor, sigma)
     lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * (mean - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    delta2 = (c * (mean.detach() - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
     mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
     if sigma_min is not None:
         mixed = mixed.clamp(sigma_min, sigma_max)
@@ -227,6 +228,14 @@ class _SharedMixtureBoundedStdInferenceNet(nn.Module):
     @staticmethod
     def _check_ei(explore_factor: Any) -> None:
         """explore_factor must stay within [-1, 1] — no silent clamp."""
+        if (
+            isinstance(explore_factor, torch.Tensor)
+            and explore_factor.is_cuda
+            and torch.cuda.is_current_stream_capturing()
+        ):
+            # GPU→CPU validation syncs are illegal while a CUDA graph is
+            # being captured; eager calls keep the full check.
+            return
         if isinstance(explore_factor, torch.Tensor):
             if not bool(torch.isfinite(explore_factor).all()):
                 raise ValueError("explore_factor contains non-finite values")

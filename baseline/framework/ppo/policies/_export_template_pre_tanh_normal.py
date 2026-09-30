@@ -124,6 +124,14 @@ class _PreTanhNormalInferenceNet(nn.Module):
 
     @staticmethod
     def _check_ei(explore_factor: Any) -> None:
+        if (
+            isinstance(explore_factor, torch.Tensor)
+            and explore_factor.is_cuda
+            and torch.cuda.is_current_stream_capturing()
+        ):
+            # GPU→CPU validation syncs are illegal while a CUDA graph
+            # is being captured; eager calls keep the full check.
+            return
         if isinstance(explore_factor, torch.Tensor):
             bad = (explore_factor < -1.0 - _EI_TOLERANCE) | (
                 explore_factor > 1.0 + _EI_TOLERANCE
@@ -176,6 +184,9 @@ class _PreTanhNormalInferenceNet(nn.Module):
     def _check_support(
         self, mu_e: torch.Tensor, sigma_e: torch.Tensor,
     ) -> None:
+        if mu_e.is_cuda and torch.cuda.is_current_stream_capturing():
+            # See _check_ei — validation syncs are skipped under capture.
+            return
         p_tail = self._tail_risk(mu_e, sigma_e)
         worst = float(p_tail.max())
         if worst > _TAIL_RISK_BUDGET:
@@ -188,6 +199,9 @@ class _PreTanhNormalInferenceNet(nn.Module):
 
     @staticmethod
     def _check_actions(actions: torch.Tensor) -> None:
+        if actions.is_cuda and torch.cuda.is_current_stream_capturing():
+            # See _check_ei — validation syncs are skipped under capture.
+            return
         if not bool(torch.isfinite(actions).all()):
             raise ValueError("actions contain non-finite values")
         worst = float(actions.abs().max())

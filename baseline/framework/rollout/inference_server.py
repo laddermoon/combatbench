@@ -80,6 +80,12 @@ DEFAULT_CAPACITY = 128
 #: reference ensemble resident in GPU memory; eviction is oldest-first.
 _MAX_SPECS = 256
 
+#: Set False once any CUDA-graph capture fails — a capture error can
+#: leave the process-wide stream-capture state poisoned (subsequent
+#: ``torch.cuda.graph`` entries crash inside ``empty_cache``), so the
+#: whole server falls back to the eager path permanently.
+_CAPTURE_OK = True
+
 
 def _spec_id_of(policy_bp_dict: Dict[str, Any], spec_dict: Dict[str, Any]) -> int:
     """Content-hash of the registration payload → stable int64 spec id."""
@@ -248,7 +254,11 @@ class _SpecSession:
         """Can this spec's forward be captured as a CUDA graph?"""
         import torch
 
-        if device.type != "cuda" or not self.supports_uniform:
+        if (
+            not _CAPTURE_OK
+            or device.type != "cuda"
+            or not self.supports_uniform
+        ):
             return False
         if not all(
             callable(getattr(rn, "deterministic_action", None))
@@ -356,8 +366,11 @@ class _SpecSession:
             self._graph = graph
             _logger.debug("captured CUDA graph for spec %d", self.spec_id)
         except Exception:
+            global _CAPTURE_OK
+            _CAPTURE_OK = False  # poisoned capture state — never retry
             _logger.warning(
-                "CUDA-graph capture failed for spec %d; using eager path",
+                "CUDA-graph capture failed for spec %d; disabling "
+                "capture for the whole server (eager path)",
                 self.spec_id, exc_info=True,
             )
             self._graph = None

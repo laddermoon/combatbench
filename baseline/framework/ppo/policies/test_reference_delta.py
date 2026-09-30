@@ -242,19 +242,21 @@ class TestSampleEvalConsistency(unittest.TestCase):
 
 
 class TestGradient(unittest.TestCase):
-    """Both σ paths stay differentiable: policy σ via (1−λ), Δ via m_θ."""
+    """σ_eff is exogenous w.r.t. m_θ: the Δ term detaches ``mean``, so
+    the only live σ path is the policy σ via its (1−λ) coefficient.
+    Detaching closes the cheat channel where PPO raises log_prob by
+    collapsing μ toward a_ref instead of improving actions."""
 
-    def test_both_paths_live(self):
+    def test_delta_detached_from_mean(self):
         torch.manual_seed(0)
         p = _make(TruncatedNormalPolicy)
         obs = torch.randn(4, OBS_DIM)
         ctx = _ctx(ref=torch.randn(ACT_DIM), c=10.0, lam=0.5)
         _, sigma = p.forward(obs, ctx=ctx)
         sigma.sum().backward()
-        g_mean = p.net[0].weight.grad.abs().sum().item()
-        g_std = p.log_std.grad.abs().sum().item()
-        self.assertGreater(g_mean, 0.0)   # Δ path through m_θ
-        self.assertGreater(g_std, 0.0)    # (1−λ) σ-policy path
+        g_mean = p.net[0].weight.grad
+        self.assertTrue(g_mean is None or g_mean.abs().sum().item() == 0.0)
+        self.assertGreater(p.log_std.grad.abs().sum().item(), 0.0)
 
     def test_lam1_kills_sigma_path(self):
         torch.manual_seed(0)
@@ -264,7 +266,8 @@ class TestGradient(unittest.TestCase):
         _, sigma = p.forward(obs, ctx=ctx)
         sigma.sum().backward()
         self.assertEqual(p.log_std.grad.abs().sum().item(), 0.0)
-        self.assertGreater(p.net[0].weight.grad.abs().sum().item(), 0.0)
+        g_mean = p.net[0].weight.grad
+        self.assertTrue(g_mean is None or g_mean.abs().sum().item() == 0.0)
 
 
 class TestCapabilityGate(unittest.TestCase):

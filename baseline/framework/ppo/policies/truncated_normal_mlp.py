@@ -57,6 +57,11 @@ def delta_mix_sigma(
     support.  Returns ``sigma`` untouched when the mechanism is off
     (no reference or λ = 0 everywhere) — that short-circuit keeps the
     inactive path bit-identical to plain ef behavior.
+
+    ``mean`` is detached inside the Δ term: σ_eff is an exogenous scale
+    w.r.t. m_θ, so log_prob cannot rise by collapsing μ toward a_ref
+    (the σ-channel cheat from TODO_reference_policy_delta_exploration.md
+    §8).  The policy σ still receives gradients via its (1−λ) term.
     """
     # Attribute-based activation check — NOT ctx.has_delta().  This helper
     # is inlined into exported policy files, where ``ctx`` may be an
@@ -79,7 +84,7 @@ def delta_mix_sigma(
         ref = ref.unsqueeze(-2)
     c = _ctx_bcast(ctx.delta_factor, sigma)
     lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * (mean - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
+    delta2 = (c * (mean.detach() - ref)).pow(2).clamp_min(_DELTA_EPS ** 2)
     mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
     if sigma_min is not None:
         mixed = mixed.clamp(sigma_min, sigma_max)
