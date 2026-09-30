@@ -857,3 +857,117 @@ assets/、debug_approach/_debug 等边角。
 
 **Next:** 审计第一轮完成。等用户对建议清单（S1-S8 + P-* 各项）
 裁决后进入修复/文档阶段；或按指示继续深挖特定方向。
+
+## [2026-10-01] Phase 2 深挖 #1 —— P-H21-4 验收不达标的根因测量
+
+**Category:** test + discovery（在 `envs/humanoid21` 内深挖）
+**What:** 不动代码，直接跑验收方法的物理测量，回答"是差一点不达标
+还是差得远"。
+
+### 实测数据（全部复现 ACCEPTANCE_CRITERIA.md 的方法）
+
+**验收 1（1Hz 满量程正弦跟踪，关重力，要求 heavy<0.05 / light<0.02 rad
+均值误差）**：
+- 当前 heavy 均值误差 **0.59 rad**（超标 12×）、light **0.47 rad**
+  （超标 24×）；逐关节最大误差达 1.37 rad。
+- **误差与指令幅度严格线性**（amp 1.0→0.59，0.5→0.30，0.2→0.12，
+  0.1→0.07）——典型相位滞后主导的一阶滞后特性，等效滞后时间常数
+  ~0.12s；不是饱和失控（饱和率：仅 2 个关节 >40%，多数 <5%）。
+- 要达到指标（滞后 <0.05rad @ full-range 1Hz）需 τ≈10ms——当前
+  结构下需要扭矩量级提升或前馈补偿，**靠微调 KP 做不到**。
+
+**验收 2（阶跃 90% 到达 <100 步=0.2s）**：
+- 实测 t90 = **115–186 步**（0.23–0.37s），21 个关节全部超标；
+  2 个关节 400 步内**到不了 90%**（饱和受限）。
+- 失败幅度 ~1.5–2×，不是临界。
+
+**验收 3（静态站立零指令：torque 一阶导极小 + 承重关节 <30% 额定力矩）**：
+- 静态站立时腹部/腰部关节（0-2）持续占用 **66–90%** 额度力矩，
+  手部关节 ~43%——**远超 30% 上限**；等效于机器人站姿本身就接近
+  执行器极限（初始位形静态不自平衡 + PD 无积分项→持续姿态误差
+  换持续力矩）。
+- 力矩变化率 mean|Δctrl| 在关节 0 达 **1.8/step**，"稳态" qvel 峰值
+  0.89 rad/s——静止站立有明显高频力矩振荡，"零震荡"不达标。
+
+**历史核查**：`ACCEPTANCE_CRITERIA.md` 与 `test_acceptance.py` 写于
+`a7a36357`/`542ee5fb`（4 月初，声称"编写并通过"），此后 simulator
+有十几次变更（观测维度、contact 管线、向量化 PD、圆形场地）但
+**KP/KD/执行器 gear 一行未动**（git log -S 确认）。疑点：
+要么当初就没真跑过全量验收就声明了"通过"，要么 battle_v1→circular_v2
+的物理差异（condim 1→3、impratio 1→10、接触模型质变）改变了结论。
+**无论哪种，当前现实是：PD 底层不满足它自己的验收文档，而
+return-dict 测试结构把这件事藏住了。**
+
+**衍生风险**：`policy/humanoid21/standing` 和所有 standup 系列实验的
+"站立"都建立在这套欠阻尼/欠刚度的 PD 上——训练能收敛是因为 RL 会
+适应环境特性，但任何声称"PD 达标"的文档都在误导。
+
+## [2026-10-01] Phase 2 深挖 #2 —— 三个框架级问题测试证实/排除
+
+**Category:** test
+**What:** 新增两个 audit 测试 + 两个实测验证。
+
+### P-H21-2 已证实（test_audit_combat_observer_events.py，2 passed）
+
+- `CombatScoringObserver` 读 `ctx.metrics['events']`（无写入方），
+  真实事件在 `ctx.events`——**health/cumulative_damage 正常，
+  events/step_hit_events/step_damage_taken 恒为空**。
+- 测试锁死当前行为（observer miss event；若 metrics 里有则能读到——
+  证明纯粹是容器错位）。
+- **影响面已确认**：`envs/humanoid21/blueprint.yaml`（标准战斗蓝图）
+  就挂了这个 observer——所有标准战斗 rollout 的 combat_scoring 输出
+  里事件字段全是空的；任何想基于击中事件造 reward 的用户会拿到静默
+  全零。
+
+### P-FW-9（新发现，测试证实）：mutator 沙箱是**宣示性的，不是强制的**
+
+- `test_audit_mutator_leak.py`（1 passed）证实：`_MutatorView` 无
+  生命周期校验，`_revoke_mutator` 只是 `ctx.mutator = None`——
+  插件在可写钩子里 `self._m = ctx.mutator` 缓存引用后，在只读钩子
+  `on_post_action_step`（此时 ctx.mutator 已为 None）里用缓存引用
+  `set_action` **成功写入**。
+- 含义：capability 分离（accessor/mutator）对守规矩的插件是约束，
+  对不守规矩的插件**没有任何强制力**。对"AI 写的插件"这个场景
+  是真实风险——AI 生成的插件完全可能意外缓存 mutator。
+- 建议：`_MutatorView` 加 validity flag（grant 时置真、revoke 时置假，
+  方法入口检查），成本 ~10 行。
+
+### 确定性实测（P-DET，排除一个历史疑点）
+
+- **同 seed 同动作序列：进程内 + 跨进程 bit-identical**（500 物理步
+  qpos/qvel/contact.dist 全部 SHA256 相等）——当前 XML 未开
+  MuJoCo 线程/island，单机完全确定性。
+- `REVIEW_OVERVIEW.md:118` 引用的
+  `MUJOCO_CROSS_PROCESS_NONDETERMINISM.md` **文件已删除**——历史
+  问题档案丢失，当前实测不复现（以前的问题可能与多线程渲染或
+  旧 XML 配置有关）。
+- **不同 seed → 完全相同的轨迹**：`simulator.reset(seed)` 的 seed
+  参数静默丢弃（P-H21-7 实测确认后果）——**初始状态多样性完全
+  依赖插件**（RandomFallenStatePlugin 等），simulator 层贡献为零。
+  当前设计下是自洽的（固定初始位形是刻意选择），但契约语义上
+  "reset(seed)"承诺了它没兑现的东西。
+
+### EpisodeRunner seed 链（静态核查，设计正确）
+
+- `SeedSequence.spawn(n)` 端到端派生：runtime/policy_a/policy_b/
+  各 seedable 插件各占一个孩子序列；插件按 attach 顺序按位置分配
+  （换插件顺序会改派生结果——固有语义，文档化即可）。
+- `set_episode_seed` 在 `runtime.reset` **之前**调用——保证
+  `on_pre_episode` 里插件就能用已播种的 RNG 采样初始扰动。顺序正确。
+- `seed=None` 在入口解析为具体 uint32，不再向下传 None。链路完整。
+
+### MatchRunner ↔ RoundRunner 契约核对
+
+- `RoundRunner.run(seed, initial_health_a, initial_health_b,
+  score_log_file)` 返回 `health_a/health_b`——MatchRunner 的 HP
+  结转、KO 即时终止、双边归零判平局逻辑均一致，未见 bug。
+
+**能力/状态修订**：`policy/baseline` 快照库与 `docs/ENVIRONMENT.md`
+维持前判；新增：**框架 mutator 沙箱 = USABLE-but-advisory**（记入
+总账备注）。
+
+**Result/evidence:** 新增 2 个 audit 测试（共 3 passed）；确定性
+SHA256 两次跨进程一致；阶跃/正弦/静置三组物理实测数据如上。
+**Next:** 继续深挖（按价值：blueprint 物化边界、recorder/replay
+保真度、device 路径 obs 逐维对照、experiments_ppo 里 param 注入的
+边界行为）或等用户裁决。
