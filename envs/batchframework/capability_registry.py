@@ -48,7 +48,8 @@ REGISTRY: Dict[str, CapabilityEntry] = {
                         factory=lambda cfg, **kw: _mk_fallen(cfg, **kw),
                         note="DeviceFallenResetPlugin；摔倒分布统计等价"
                              "（fp32 并行 rollout，验收见 M4_RESULTS §3）"),
-    "baseline.humanoid21.rewards.standup_4stage:StandingBalance4StageRewarder":
+    "baseline.humanoid21.rewards.standing_balance_4stage"
+    ":StandingBalance4StageRewarder":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_standup_rewarder(
                             cfg, **kw),
