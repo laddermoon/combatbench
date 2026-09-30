@@ -189,10 +189,10 @@ README.md 的写作逻辑三段式（不强制小节名，强制信息顺序）�
 | U | 每个功能目录 README.md 的直观+宏观部分；`docs/`；根目录 README.md |
 | A | README.md 微观部分；现有 `*SPEC.md` 契约文件 |
 | D | README.md 微观部分；`CONTEXT.md` / `DESIGN_*.md` / `REVIEW_*.md` |
-| 跨层入口 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、`REGULARIZATION_DETAIL.md`、根 README.md |
+| 跨层入口 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、`AUDIT.md`、根 README.md |
 
 总账 `CAPABILITY_LEDGER.md` 放项目根目录，格式见 §6；审计日志
-`REGULARIZATION_DETAIL.md` 格式见 §7.3。
+`AUDIT.md` 格式见 §7.3。
 
 ### 4.4 README 入口义务
 
@@ -249,26 +249,27 @@ README.md 的写作逻辑三段式（不强制小节名，强制信息顺序）�
 ### 7.1 阶段划分
 
 - **Phase 0 — 立规矩**（本轮）：本文冻结 v1；建立 `CAPABILITY_LEDGER.md`
-  与 `REGULARIZATION_DETAIL.md` 骨架。
-- **Phase 1 — 逐目录 README 盘点（审计与文档合一）**：按序走遍每个功能
-  目录，为该目录写 `README.md`（英文，直观→宏观→微观三段式）。写 README
-  的过程就是审计：读代码、核实真实状态、把发现的能力补进总账、把发现的
-  问题记入审计日志。这是当前的主线工作，**先把这一件事做完**。
+  与 `AUDIT.md` 骨架。
+- **Phase 1 — 纯审计（当前主线）**：按序走遍每个功能目录，彻底核实
+  真实状态，产出追加式审计报告 `AUDIT.md`。逐目录记录：有什么资产、
+  什么问题、测试真实状态、文档与代码是否对得上、疑似 bug、建议删/修
+  清单。**不写 README、不写其他文档**（文档规范暂停，待审计完成后
+  再按真实盘点结果设计）。
 
   **Phase 1 硬性约束（审计纪律）：**
   - **不改已有代码、不删任何文件**。发现的过期/无用文件、疑似 bug、
-    失效测试，一律记入审计日志（`REGULARIZATION_DETAIL.md`）作为
-    **建议项**，由用户决定是否修复/删除。
-  - **可以跑测试、可以写新测试文件**（包括为暴露问题而写的复现测试），
-    但不修改已有测试来"修好"失败。
-  - 只有三类文件允许写：各目录 `README.md`、根目录两个账本
-    （ledger/detail log）、新增测试文件。
-  - README 写"当前真实状态"，不是"应该的状态"——文档与代码不符时，
-    README 按代码写，差异作为问题记入审计日志。
-- **Phase 2+ — 逐域正则化**：README 盘点完成且用户审阅建议清单后，按
-  总账优先级做"收敛代码 → 补测试 → 写 A 层契约 → 写 U 层选型 → 更新
-  总账"全流程。审计日志中累积的建议项是 Phase 2 的任务池——**只有进入
-  Phase 2 且用户确认后才可以改代码/删文件**。
+    失效测试，一律记入 `AUDIT.md` 作为**建议项**，由用户决定是否
+    修复/删除。
+  - **可以跑测试、可以写新测试文件**（命名 `test_audit_*.py`，放
+    `tests/` 或就近目录）来证实/暴露问题；不修改已有测试来"修好"失败。
+  - 只有三类文件允许写：`AUDIT.md`、`CAPABILITY_LEDGER.md`、新增
+    `test_audit_*.py`。
+  - 每条发现必须带：问题是什么、怎么发现的、证据（测试输出/代码位置）、
+    建议处理。负结果（"查了没问题"）也要记。
+- **Phase 2+ — 逐域正则化**：审计完成且用户审阅建议清单后，按
+  总账优先级做"收敛代码 → 补测试 → 三层文档 → 更新总账"全流程。
+  `AUDIT.md` 中累积的建议项是 Phase 2 的任务池——**只有进入 Phase 2
+  且用户确认后才可以改代码/删文件**。
 - **持续**：此后新能力落地时按同一规范带齐文档与总账登记，
   正则化变成项目的落地标准而非一次性运动。
 
@@ -292,11 +293,11 @@ envs/framework → envs/humanoid21 → envs/batchframework
 5. 总账更新（哪些能力状态变了，依据是什么）；
 6. commit（仓库规则：每个任务完成即提交）。
 
-### 7.3 审计日志（REGULARIZATION_DETAIL.md）
+### 7.3 审计报告（AUDIT.md）
 
 **正则化的本质是审计 + 排查，一切发现和改动必须留痕。**
 沿用仓库既有 `xxx_DETAIL.md` 时序日志约定，建根目录
-`REGULARIZATION_DETAIL.md`，按时间追加。每个动作一条记录：
+`AUDIT.md`，按时间追加。每个动作一条记录：
 
 ```
 ## [YYYY-MM-DD HH:MM] 动作描述

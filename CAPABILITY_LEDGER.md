@@ -37,7 +37,7 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 
 - `envs/framework/tests/` — 157 pass / 3 fail / 5 collection errors; stale
   tests for deliberately-removed APIs. Fix = small mechanical pass
-  (see REGULARIZATION_DETAIL.md S1–S5). Pending user decision.
+  (see AUDIT.md S1–S5). Pending user decision.
 - `envs/framework/CONTEXT.md` — stale throughout (describes removed
   `parallel_runner.py`/`runtime_plugin.py`/old runner API). Rewrite or merge
   into README. Pending user decision.

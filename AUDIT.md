@@ -1,8 +1,13 @@
-# Regularization Detail Log
+# CombatBench Audit Report
 
-Chronological audit log for the regularization effort (see `REGULARIZATION.md`
-§7.3). Append one entry per action. Negative results ("checked X, it's fine")
-count — the log must show what was inspected, not only what was changed.
+Append-only audit report for the regularization effort (see `REGULARIZATION.md`
+§7.3). One entry per directory pass or per notable finding. Negative results
+("checked X, it's fine") count — the report must show what was inspected,
+not only what was changed.
+
+**Audit discipline (Phase 1):** record-only. No edits or deletions of existing
+code/docs; findings are *suggestions* for the user to decide. New
+`test_audit_*.py` files may be written to prove/expose problems.
 
 Entry format:
 
@@ -33,7 +38,7 @@ open questions and start with READMEs.
 
 ## [2026-10-01] Ledger + audit log created
 
-**Domain/object:** `CAPABILITY_LEDGER.md`, `REGULARIZATION_DETAIL.md`
+**Domain/object:** `CAPABILITY_LEDGER.md`, `AUDIT.md`
 **Category:** doc-change
 **What:** Created both root files. Ledger seeded with SAC = OUT-OF-SCOPE only.
 **Why:** Phase 0 deliverables; all future discoveries land here.
@@ -81,8 +86,8 @@ artifacts of the OLD API remain:
 - `envs/framework/episode_runner.py` docstring (line ~46) still says
   "cross-process orchestration is handled by ``parallel_runner``" — file gone.
 - `envs/framework/README.md` — stale (documents `runtime_plugin.py` section
-  and old runner semantics). **Rewritten this pass** (README is the audit
-  deliverable).
+  and old runner semantics). A rewritten README was drafted then **reverted**
+  per user decision — doc-writing paused; audit only.
 
 **Why:** Documents which capabilities/tests are real vs. ghost; feeds Phase 2
 task pool.
@@ -105,3 +110,22 @@ deliberate.
 - S8: new thin-runner behaviors (`post_termination_action="hold"`,
   `want_extras` forwarding, duck-type policy check) have NO tests —
   candidates for new test file.
+
+## [2026-10-01] Pivot: docs paused, audit-only mode; log renamed AUDIT.md
+
+**Domain/object:** `REGULARIZATION.md` §7.1, `REGULARIZATION_DETAIL.md`,
+`envs/framework/README.md`
+**Category:** spec-change
+**What:** User rejected the rewritten `envs/framework/README.md` ("says
+everything, says nothing") and paused all doc-writing. Phase 1 redefined as
+**pure audit**: directory-by-directory inspection, findings appended to this
+report. `REGULARIZATION_DETAIL.md` → `AUDIT.md` (this file is now the audit
+report itself). Stale-test fixes in `test_policy.py` and the README rewrite
+were fully reverted to the pre-audit state.
+**Why:** Audit findings must precede doc design; writing docs before
+understanding the codebase produced low-value output.
+**Result/evidence:** `envs/framework/README.md` restored from `dc9a2d06^`;
+`test_policy.py` restored to HEAD; working tree clean except the three
+bookkeeping files.
+**Next:** formal Phase 1 starts at `envs/framework` (this entry's findings
+stand as its first record).
