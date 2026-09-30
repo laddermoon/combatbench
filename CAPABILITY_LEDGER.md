@@ -11,11 +11,11 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 
 | Status | Count | Meaning |
 |---|---|---|
-| STABLE | 3 | Contract clear, tested, documented |
-| USABLE | 6 | Works with documented limits |
+| STABLE | 5 | Contract clear, tested, documented |
+| USABLE | 11 | Works with documented limits |
 | WIP | 0 | In progress, not usable yet |
 | LEGACY | 1 | Works but superseded |
-| UNSUPPORTED | 0 | Not usable / explicitly rejected |
+| UNSUPPORTED | 1 | Not usable / explicitly rejected |
 | OUT-OF-SCOPE | 1 | Excluded from this round (SAC) |
 
 ## Capabilities
@@ -32,6 +32,16 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 | `recorder_viewer` web viewer | envs/framework | USABLE | CLI + bundled viewer.html | README | — |
 | `ParallelRunner` (process pool) | envs/framework | LEGACY | — | gone | Removed in 73fe8da3; superseded by `baseline/framework/rollout` |
 | SAC training path (`baseline/framework/sac/`, `experiments_sac/`) | training | OUT-OF-SCOPE | — | — | Declared immature; not inventoried this round |
+
+| `Humanoid21Simulator` (MuJoCo backend, 96-dim obs, normalized PD, broadcast cam) | envs/humanoid21 | STABLE (caveats) | 43 tests pass; blueprint round-trip | DATASPEC/CONTROLSPEC/OBSERVATION_zh | **P-H21-1** stale contacts cache (feet_forces lag); seed arg unused; render failure → black frame |
+| `CombatScoringPlugin` (per-substep damage, KO, score log) | envs/humanoid21 | STABLE | exercised by matches/experiments | plugins.py docstring | — |
+| `CombatScoringObserver` | envs/humanoid21 | USABLE (bug) | — | — | **P-H21-2**: reads `metrics['events']` (never written) → events/step_hit_events/step_damage_taken always empty |
+| `NonFallConstraintPlugin` | envs/humanoid21 | UNSUPPORTED | — | — | **P-H21-3**: reads nonexistent `static_data['robot_info']`/`norm_params` → silent no-op; zero references |
+| `FrozenRobotPlugin` | envs/humanoid21 | USABLE | — | — | — |
+| Disturbance family (12 classes: RandomPush/InitPerturb/Wind/HeadStrike/RandomFallen/Impulse/ConstantForce/HeightLimit/StateBank/…) | envs/humanoid21 | USABLE | referenced by live exp_standup*/exp_step experiments | — | per-plugin maturity varies; not individually tested |
+| `Humanoid21BalanceAnalysisObserver` (CoM/ankle support analysis + plan-view render) | envs/humanoid21 | USABLE | test_balance_analysis.py | — | heavy compute; visualization path |
+| `blueprint.yaml` (parameterized rules: initial_distance/max_steps) | envs/humanoid21 | USABLE | — | — | README calls it `rule_blueprint.yaml` (stale name) |
+| Arena XMLs | envs/humanoid21 | mixed | — | CONTACT_DESIGN.md | `battle_circular_v2.xml` = live default; `battle_v1`/`battle_v2` = legacy refs only |
 
 ## Almost-Done List (priority candidates to finish)
 

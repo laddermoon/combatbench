@@ -280,3 +280,140 @@ passed；基线仍是 157+3+5，口径不变）。
 `pytest -q --ignore=<5个stale文件>` = 159 passed / 3 failed。
 **Next:** envs/framework 审计暂告一段落（建议项交用户裁决）；
 下一目录 `envs/humanoid21`。
+
+## [2026-10-01] envs/humanoid21 —— 逐文件深审（模拟器 + 插件 + 扰动族）
+
+**Domain/object:** `envs/humanoid21/`（simulator 1381 行、plugins 612、
+observer_plugins 602、disturbance_plugins 1551、meta 558、3 个 XML、
+7 个测试文件 + 资产目录）
+**Category:** discovery
+**What:** 逐文件精读；跑通现有测试 **43 passed / 0 failed / 19.8s**；
+新增审计探针 `tests/test_audit_stale_contacts.py`（2 用例均通过——
+证实了一个缓存失效缺口）；手动调用了 5 个验收测试的内部逻辑拿到
+pytest 看不到的真实结果。
+
+### 通过项
+
+- `simulator.py` —— 96 维观测拼装与 OBSERVATION_zh.md 布局一致；
+  PD 控制向量化路径与标量路径按位等价（注释说明）；`set_core_state`/
+  `get_core_state` 的机体系↔世界系速度转换对称；blueprint 往返正常；
+  `to_blueprint` 捕获全部构造参数。
+- `meta.py` —— Humanoid21Meta 静态参数单一数据源 + 模型加载时校验
+  （`validate(model)` 在 `__init__` 中执行，fail-loud）。
+- `plugins.py::CombatScoringPlugin` —— 每物理子步算伤害
+  （quadratic threshold + part weight + dt），KO 判定在
+  `on_post_action_step`；`priority = OBSERVER_DISPATCHER_PRIORITY + 1`
+  保证 observer 读到本步伤害——与 observer_plugin.py 文档约定一致。
+  score_log_file 每回合可通过 episode_options 覆盖，句柄复用正确。
+- `plugins.py::FrozenRobotPlugin` —— 状态冻结实现正确。
+- `disturbance_plugins.py` —— 12 个扰动/状态池类均有
+  `set_episode_seed`（接 EpisodeRunner 派生链）+ `require_mutator` 声明；
+  被 `baseline/experiments_ppo/exp_standup*`/`exp_step` 等活实验引用——
+  真实可用能力，非死代码。
+- `observer_plugins.py::Humanoid21BalanceAnalysisObserver` —— 完整的
+  去脚质心/双踝支撑几何分析 + plan-view 渲染，公开接口只走
+  accessor（合规），规划视图为自绘像素图。
+- `blueprint.yaml` —— 参数化蓝图（`initial_distance`/`max_steps` 旋钮），
+  引用的类全部存在。
+- `ReplaySimulator`/contacts SoA/`get_derived_state(fields)` per-field
+  缓存——设计一致。
+
+### 发现的问题
+
+**P-H21-1（真实 bug，测试证实）：`_cached_contacts_vec` 在 physical_step 后不失效**
+- `simulator.py` 有两套缓存：`_data_cache`（physical_step/reset/
+  set_action 时清空）和 `_cached_contacts_vec`（只在 reset 清空，
+  `get_derived_state(['contacts'])` 时写入，**physical_step 不清**）。
+- `_get_feet_forces` 优先读 `_cached_contacts_vec` → 若上一动作步有
+  人取过 contacts（恰好 CombatScoringPlugin 每子步都取），本步观测的
+  feet_forces（96 维中的 2 维）用的是**上一步的接触数据**。
+- 缓解：挂 CombatScoringPlugin 时它每 post_phy_step 都调
+  `get_derived_state(['contacts'])` 刷新 cv，所以标准战斗蓝图下被掩盖；
+  但任何不持续取 contacts 的配置都会中招。
+- 证据：`test_audit_stale_contacts.py` 2 passed——① step 后缓存对象
+  还是同一个（未失效）；② 4000N 上推一物理步后，stale 路径读数与
+  fresh `_extract_contacts` 重算显著不一致。
+- 建议：`_cached_contacts_vec` 并入 `_data_cache` 统一失效（一行修复，
+  但留给用户裁决）。
+
+**P-H21-2（真实 bug，静态证据确凿）：`CombatScoringObserver` 读的是
+`metrics['events']`，而击中事件写在 `ctx.events`**
+- `plugins.py:508-514` 往 `ctx.events` append hit 事件；
+  `observer_plugins.py:582` 读 `metrics.get("events", [])`——
+  全仓库没有任何地方写 `metrics['events']`。
+- 后果：observer 输出的 `events`/`step_hit_events`/`step_damage_taken`
+  **恒为空/0**；`health`/`cumulative_damage_taken`/`is_ko` 正常（走 metrics）。
+- 另注意：`ctx.events` 整局累计、不清步——即便改读 ctx.events 也仍不是
+  "本步"语义，需要另行按步截断/清空。
+- 建议：改读 `ctx.events` 并定义清步语义（谁清、何时清需要决策）。
+
+**P-H21-3（死插件，静默失效）：`NonFallConstraintPlugin` 对当前
+simulator 是 no-op**
+- 它读 `static_data['robot_info'][robot_id]` 和
+  `static_data[robot_id]['norm_params']`——当前 `get_static_data()`
+  的 schema 里**两个键都不存在**（norm_params 是 simulator 私有
+  `_norm_params`）。`robot_info` 为空 dict → 循环 continue → 插件
+  什么都不做，也不报错。
+- 全仓库（含 blueprints）无任何引用。疑似按旧版 static_data schema
+  写的遗留。
+- 建议：删除或重写；至少文档标记不可用。属"fail-silent 违例"典型。
+
+**P-H21-4（测试形同虚设）：7 个测试无法失败，且验收标准当前就未达标**
+- `test_acceptance.py` 5 个用例（tracking_error / jump /
+  response_latency / zero_oscillation / absolute_stability）全部
+  `return {'pass': ...}` 而**不 assert**——pytest 永远判过。
+- 手动调用拿到真实结果：**tracking_error=False, response_latency=False,
+  zero_oscillation=False**（站姿 PD 控制的跟踪误差/延迟/振荡验收当前
+  不达标）；jump=True、absolute_stability=True。
+- `test_observation_symmetry.py` `return True/False` 不 assert
+  （当前实际 True）。`test_data_interfaces.py::test_static_data`
+  return simulator 同样虚过。
+- `test_videos/` 12 个 mp4 是这些测试 `record_video=True` 默认值的
+  历史产物，已提交进仓库。
+- 建议：acceptance 用例改成真 assert（这样会把"43 passed"变成
+  3 failed——**这正是审计要的诚实信号**）；或标记为 manual/benchmark。
+
+**P-H21-5（README 多处过期）**
+- 引用 `rule_blueprint.yaml`，实际文件叫 `blueprint.yaml`。
+- CLI 示例用 `--blueprint/--policy-a/--policy-b`，实际参数是
+  `--env-blueprint/--policy-a-blueprint/--policy-b-blueprint`。
+- 结果示例 `termination_reasons: ['timeout']`——实际是 per-agent dict。
+- 末尾引用 `SPEC.md`——不存在（实际是 DATASPEC/CONTROLSPEC/
+  OBSERVATION_zh）。
+- 目录结构图没列 `disturbance_plugins.py`/`meta.py`/3 个 XML。
+
+**P-H21-6（资产盘点）**
+- 当前生效 arena：`battle_circular_v2.xml`（`ARENA_XML` 硬编码；
+  condim=3、impratio=10、24 段圆墙）。
+- `battle_v1.xml`/`battle_v2.xml` 不再是默认路径，仅被
+  `scripts/migrate_feet_forces_norm.py`、`baseline/humanoid21/mocap/`、
+  `balance_recover/gating/debug_mujoco_reset.py` 等旧代码引用；
+  `REVIEW_SUMMARY.md` 还在说"battle_v1 是当前模型、battle_v1_new 待
+  切换"——`battle_v1_new.xml` 已删，整篇是考古文档。
+- `CLAUDE.md` 目录结构也只列 v1/v2，没提 circular_v2。
+- `obs_analysis/`、`pose_images/`：分析产物/姿态配图，留作档案合理，
+  但属非代码资产。
+
+**P-H21-7（小问题集合）**
+- `simulator.py:3` `os.environ['MUJOCO_GL'] = 'egl'` 硬覆盖（不是
+  setdefault），而下一行 PYOPENGL_PLATFORM 用 setdefault——不一致，
+  且 import 时改全局环境对嵌入方不友好。
+- `reset(seed=...)` 的 seed **从未被使用**（mj_resetData 确定论）——
+  框架种子契约承诺 simulator 消费 seed，这里静默丢弃；当前无 RNG
+  所以无害，但任何未来随机初始化都不会有种子效果。
+- `get_sensor_data()` 恒返回 `{}`（DATASPEC 没定义传感器——契约内 stub，
+  记录为事实）。
+- `get_broadcastview_image` catch 所有异常 → `warnings.warn` + 返回
+  全黑 720×1280——渲染失败在录制里静默变黑帧。
+- 相机代码硬编码 `arena_radius = 3.44`（与 circular XML 耦合，改 XML
+  半径就错）。
+- `DAMAGE_TARGET_PARTS` 含 `waist_upper/waist_lower`，但
+  `_get_part_category` 永远只产出 `torso`——两个死枚举值。
+- 伤害力有 `min(force, 1200)` 上限——docstring 未写，只在代码里。
+- `plugins.py:266` 用 `while len(ctx.events)>0: pop()` 清列表
+  （等价 clear()，风格怪但无害）。
+
+**Result/evidence:** pytest 43 passed（其中 7 个不可失败）；
+`test_audit_stale_contacts.py` 2 passed；手动调 acceptance 函数输出
+`{'pass': False}`×3。
+**Next:** `envs/batchframework`。
