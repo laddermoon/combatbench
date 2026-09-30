@@ -283,12 +283,17 @@ class DeviceRollouter:
                     "device collector requires uniform policy blueprints "
                     "per collect() call (M5 scope)")
 
-        # per-job per-agent 标量 ef（跨 job 可异值——记录进 extras）
+        # per-job per-agent 标量 ef（跨 job 可异值——记录进 extras）；
+        # stochastic 标志必须全体一致（eval 波与采样波不混合）
         ef_list = [(
             _check_spec(j.sampling_a.to_dict(), f"{i}/a"),
             _check_spec(j.sampling_b.to_dict(), f"{i}/b"),
             bool(j.stochastic),
         ) for i, j in enumerate(jobs)]
+        if len({e[2] for e in ef_list}) > 1:
+            raise ValueError(
+                "device collector requires uniform Job.stochastic "
+                "per collect() call")
 
         if self._env_key != env_key:
             self._teardown()
@@ -420,28 +425,23 @@ class DeviceRollouter:
         env_hash = blueprint_hash(env_bp)
         for i, job in enumerate(wave):
             episodes[w0 + i] = self._assemble_episode(
-                job, w0 + i, i, efs[i], env_hash, np_bufs,
+                job, w0 + i, i, efs[i], stochastic, env_hash, np_bufs,
                 rec.term_records[i], metrics_np, T)
         self.timing["assemble"] += time.perf_counter() - t0
 
     # ------------------------------------------------------------------
-    def _assemble_episode(self, job, ep_index, row, ef_spec, env_hash,
-                          np_bufs, term_records, metrics_np, T) -> Episode:
+    def _assemble_episode(self, job, ep_index, row, ef_spec, stochastic,
+                          env_hash, np_bufs, term_records, metrics_np,
+                          T) -> Episode:
         """per-env 帧 dict → Episode.from_buffer_frames（复用 stack 语义）。"""
         term_step = int(np_bufs["env_term"][row])
         t_use = term_step if 0 < term_step <= T else T
-        frames = []
-        for t in range(t_use):
-            frames.append({
-                "observation": {rid: np_bufs["obs"][rid][t, row]
-                                for rid in AGENT_IDS},
-                "action": {rid: np_bufs["act"][rid][t, row]
-                           for rid in AGENT_IDS},
-                "observer_outputs": {
-                    # 标量叶子——与 CPU 一致地走 _try_stack 的 list 分支
-                    name: {k: v[t, row].item() for k, v in fields.items()}
-                    for name, fields in np_bufs["obs_out"].items()},
-                "action_extras": {
+        # stochastic=False（eval 波）与 CPU 对齐：per-agent extras=None
+        # → _stack_action_extras 整组丢弃，sampling_contexts 为空
+        extras_fn = None
+        if stochastic:
+            def extras_fn(t):
+                return {
                     "robot_a": {
                         "log_prob": float(np_bufs["lp"]["robot_a"][t, row]),
                         "explore_factor": float(np_bufs["ef_a"][row]),
@@ -455,7 +455,21 @@ class DeviceRollouter:
                         "sctx__delta_factor": np.float32(ef_spec[1][1]),
                         "sctx__delta_mix": np.float32(ef_spec[1][2]),
                     },
-                },
+                }
+        frames = []
+        for t in range(t_use):
+            frames.append({
+                "observation": {rid: np_bufs["obs"][rid][t, row]
+                                for rid in AGENT_IDS},
+                "action": {rid: np_bufs["act"][rid][t, row]
+                           for rid in AGENT_IDS},
+                "observer_outputs": {
+                    # 标量叶子——与 CPU 一致地走 _try_stack 的 list 分支
+                    name: {k: v[t, row].item() for k, v in fields.items()}
+                    for name, fields in np_bufs["obs_out"].items()},
+                "action_extras": (
+                    extras_fn(t) if extras_fn is not None else
+                    {"robot_a": None, "robot_b": None}),
             })
         metrics = {"backend": "warp-fp32"}
         for rid_i, rid in enumerate(AGENT_IDS):

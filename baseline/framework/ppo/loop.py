@@ -143,6 +143,7 @@ def save_run_config(
     smoke: bool = False,
     algo: str = "ppo",
     dump_at: Optional[List[int]] = None,
+    collector: str = "cpu",
 ) -> None:
     """Build and save ``run_dir/config.json`` from experiment's public interface."""
     cp = experiment.common_params()
@@ -175,6 +176,9 @@ def save_run_config(
         "algorithm": algo,
         "smoke": smoke,
         "dump_at": sorted(dump_at) if dump_at else [],
+        # Rollout backend provenance — episode_metrics['backend'] marks
+        # per-episode origin; this records which collector produced them.
+        "collector": collector,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -569,6 +573,8 @@ def train_ppo(
     dump_updates: Optional[Set[int]] = None,
     dump_hypothesis: str = "",
     dump_full_grad: bool = False,
+    collector: str = "cpu",
+    collector_batch_size: int = 64,
 ) -> None:
     """PPO training loop using the ExperimentPPO interface.
 
@@ -719,10 +725,26 @@ def train_ppo(
                 flush=True,
             )
 
-    with ParallelRollouter(
-        num_workers=cp.rollout_workers,
-        rollout_inference=cp.rollout_inference,
-    ) as rollouter:
+    if collector == "device":
+        # Wave-synchronous batch collector on mujoco-warp — same
+        # collect(jobs) -> List[Episode] contract as ParallelRollouter.
+        # Unsupported blueprints/specs fail fast at collect time.
+        from envs.batchframework.device_rollouter import DeviceRollouter
+        rollouter = DeviceRollouter(batch_size=collector_batch_size,
+                                    device=str(device))
+        print(f"[collector] device (DeviceRollouter, "
+              f"batch_size={collector_batch_size})", flush=True)
+    elif collector == "cpu":
+        rollouter = ParallelRollouter(
+            num_workers=cp.rollout_workers,
+            rollout_inference=cp.rollout_inference,
+        )
+        print(f"[collector] cpu (ParallelRollouter, "
+              f"workers={cp.rollout_workers})", flush=True)
+    else:
+        raise ValueError(f"unknown collector {collector!r}")
+
+    with rollouter:
         # Policy-version export stream — ``policy_exports/uNNNNN`` is
         # the *post-update-NNNNN* policy.  Rollout at update ``u``
         # consumes the version produced by update ``u-1``; the init /
@@ -830,9 +852,21 @@ def train_ppo(
             t_jobs = time.perf_counter() - t0
 
             # 3. Rollout — parallel episode collection across workers.
+            #    DeviceRollouter additionally exposes a per-phase
+            #    ``timing`` accumulator (reset/policy/step/assemble) —
+            #    reset it each update so the log carries per-update
+            #    numbers, not cumulative.
+            _ct = getattr(rollouter, "timing", None)
+            if _ct is not None:
+                for _k in _ct:
+                    _ct[_k] = 0.0 if isinstance(_ct[_k], float) else 0
             t0 = time.perf_counter()
             episodes: List[Episode] = rollouter.collect(jobs)
             t_rollout = time.perf_counter() - t0
+            collector_timing = (
+                {k: round(v, 2) for k, v in _ct.items()}
+                if _ct is not None else None
+            )
 
             # 4. Build trajectories — experiment receives ALL episodes at once.
             #    This is the key V2 design point: the experiment can compute
@@ -1304,6 +1338,7 @@ def train_ppo(
                     "export": round(t_export, 2),
                     "jobs": round(t_jobs, 2),
                     "rollout": round(t_rollout, 2),
+                    "collector": collector_timing,
                     "buffer": round(t_buffer, 2),
                     "ppo": round(t_ppo, 2),
                     "eval": round(t_eval, 2),

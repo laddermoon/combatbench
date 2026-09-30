@@ -126,6 +126,20 @@ def _parse_args() -> argparse.Namespace:
              "Repeatable.",
     )
     parser.add_argument(
+        "--collector", choices=["cpu", "device"], default="cpu",
+        help="Rollout collector backend. 'cpu' = ParallelRollouter "
+             "worker pool (default, unchanged). 'device' = "
+             "DeviceRollouter — wave-synchronous batch episodes on "
+             "mujoco-warp (PPO only; requires the env blueprint's "
+             "plugins/observers to be NATIVE in the capability "
+             "registry, unsupported configs fail fast).",
+    )
+    parser.add_argument(
+        "--collector-batch-size", type=int, default=64,
+        help="Device collector wave size (envs stepped in lockstep). "
+             "Ignored with --collector cpu.",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment parameter (can be repeated). For "
              "class-attribute-style experiments each KEY must be a "
@@ -426,13 +440,19 @@ def main() -> None:
 
     resume_from = Path(args.resume_from).resolve() if args.resume_from else None
 
+    if algo == "sac" and args.collector != "cpu":
+        print(f"[error] --collector {args.collector} is only supported "
+              f"for --algo ppo", flush=True)
+        sys.exit(2)
+
     if algo == "sac":
         from baseline.framework.sac.loop import save_run_config_sac
         save_run_config_sac(experiment, run_dir, smoke=args.smoke)
     else:
         from baseline.framework.ppo.loop import save_run_config
         save_run_config(experiment, run_dir, smoke=args.smoke, algo=algo,
-                        dump_at=sorted(dump_updates))
+                        dump_at=sorted(dump_updates),
+                        collector=args.collector)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -470,6 +490,8 @@ def main() -> None:
             dump_updates=dump_updates,
             dump_hypothesis=args.dump_hypothesis,
             dump_full_grad=args.dump_full_grad,
+            collector=args.collector,
+            collector_batch_size=args.collector_batch_size,
         )
 
 
