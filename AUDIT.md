@@ -770,3 +770,90 @@ ModuleNotFoundError、todo 路径补丁后加载+act 成功；
 `git show f232b8c5` 证实迁移为有意。
 **Next:** 剩余目录——docs/、scripts/、examples/、根 tests/、
 assets/、debug_approach/_debug 等边角。
+
+## [2026-10-01] 剩余目录收尾（docs/examples/scripts/assets/根 tests/本地资产/根文档）
+
+**Domain/object:** 仓库其余部分
+**Category:** discovery + test
+
+### docs/（平台向文档，6 文件双语）
+
+- **`ENVIRONMENT.md`（+_zh）严重过期**：描述"四面墙方形房间、9 个
+  固定相机、`assets/humanoid.xml`、`assets/textures/wall.png`"——
+  实际是 `battle_circular_v2.xml`（24 段圆形墙）、纹理在
+  `envs/humanoid21/textures/`（wall_0..23.png + floor_circular.png），
+  `assets/` 下只有 `images/hero.png`。**对外规则文档描述的场地几何
+  与实际物理不符**——如果平台方/用户按它理解比赛空间会被误导。
+- `RULE.md`：规则语义（30s×6 回合、手/脚→头/躯干 HP 判定）与
+  CombatScoringPlugin 一致（DAMAGE_TARGET_PARTS 含 waist_upper/lower
+  对应"上下腰"——虽然代码里这两个枚举是死的见 P-H21-7）。
+- `SUBMISSION.md`：combatbench.tech CLI 提交流程——平台侧无法在本
+  仓库验证，未见明显矛盾。
+
+### examples/（实测可跑，文档标签过时）
+
+- 9 个生命周期示例（01 认识环境 → 09 recorder/round runner）+
+  `_common.py`——**01 实测跑通**（96 维 obs 摘要正常写出）。
+- README 自称"提案文档 v2，等待确认后再落地"——但示例已全部实现。
+  标签过时（小问题）。
+
+### scripts/
+
+- 仅 `migrate_feet_forces_norm.py`：一次性权重迁移脚本（给旧
+  checkpoint 的 feet_forces 维度补归一化），引用 `battle_v1.xml`。
+  留档合理，建议 README 注明"一次性脚本，已执行过"。
+
+### 根 tests/
+
+- 归属混杂：7 个文件属 batchframework（已审）、
+  `test_stage_seg_rewards.py` 属 baseline/humanoid21 curriculum、
+  `debug_fall_images/` 是图像 fixture 目录。建议按归属迁移或加索引。
+
+### 本地资产（不入库，确认无泄漏）
+
+- `1.1 T800 模型资源/`（113MB）、`1.2 题目拳击数据/`（9.5MB）、
+  `_debug/`（506MB 录制 dump）、`debug_approach/`（54MB PNG）——
+  `git ls-files` 均为 0，`8dac0e30` 已把它们移出跟踪。**磁盘占用
+  ~680MB 但不污染仓库**，状态正确。
+
+### 根文档状态
+
+- `README.md`/`README_zh.md`/`CLAUDE.md` 仍引用
+  `get_termination_flags()`（P-FW-2 已记）、battle_v1/v2
+  （P-H21-6 已记）。
+- `ISSUES.md`、`REVIEW_OVERVIEW.md`、`REVIEW_TIMELINE.md`、
+  `VALUE_PLAN.md`、`V2_TRAINING_TIME_LOG.md`、`bootstrip.md`：
+  历史规划/审查文档，作为时间线档案保留合理。
+
+### 本轮审计总结（Phase 1 完成度）
+
+已深审：`envs/framework`、`envs/humanoid21`、`envs/batchframework`、
+`baseline/framework`（不含 sac）、`baseline/experiments_ppo`、
+`baseline/humanoid21`、`policy/`、其余全部目录。
+
+**测试面总账**（本轮实跑）：
+
+| 域 | 结果 |
+|---|---|
+| envs/framework | 159 pass / 3 fail（缺方法）/ 5 collection err |
+| envs/humanoid21 | 43 pass（7 个不可失败）+ 审计探针 2 pass |
+| batchframework（根 tests/） | 64 pass / 1 fail（stale 门禁） |
+| baseline/framework | 597 pass / 6 fail（全过时）/ 4 collection err |
+| baseline/experiments_ppo | 51 pass / 0 fail |
+| baseline/humanoid21 | 1 collection err / 2 fail（环境依赖） |
+
+**高优先级裁决项汇总**（详见上文各条目）：
+
+1. P-POL-1：81 个 baseline 策略快照一行修复可救（建议优先）
+2. P-H21-4：humanoid21 acceptance 测试形同虚设且**标准当前未达标**
+   （tracking/latency/oscillation 实测 False——PD 控制质量存疑，
+   这可能是个被掩盖的真实性能问题）
+3. P-H21-2：CombatScoringObserver events 字段恒空（read 错容器）
+4. P-H21-1：contacts 缓存跨步失效（masked by scoring plugin）
+5. P-BF-1：fixture 批准链滞后，跨后端验证当前全红
+6. P-FW 系列：framework 测试债 + CONTEXT/DESIGN 文档过期
+7. P-POL-2：policy/README 契约性错误（会误导 AI 写出错误接口）
+8. docs/ENVIRONMENT.md：场地几何与实现不符
+
+**Next:** 审计第一轮完成。等用户对建议清单（S1-S8 + P-* 各项）
+裁决后进入修复/文档阶段；或按指示继续深挖特定方向。
