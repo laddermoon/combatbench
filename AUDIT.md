@@ -596,3 +596,47 @@ obsolete/（LEGACY）。
 597 passed / 6 failed（全过时测试）/ 4 collection errors；
 git log 85738c03 + 9af767fc 证实两处语义改为有意。
 **Next:** `baseline/experiments_ppo`。
+
+## [2026-10-01] baseline/experiments_ppo —— PPO 实验注册表
+
+**Domain/object:** `baseline/experiments_ppo/`（28 个活实验 + base.py
+583 行 + 注册表 + `archive/` 28 个 V2 时代实验 + `todo/` ~20 个
+V1 时代实验/设计稿 + 3 个测试文件）
+**Category:** discovery
+**What:** 注册表实测 + 测试实跑 + 结构抽查。**51 passed / 0 failed**。
+
+### 实况
+
+- **注册表健康**：`exp_*.py` 自动发现 + `EXPERIMENT_CLASS` 约定实测
+  可用——`list_ppo_experiments()` 返回 31 个实验（含 `__init__` 内
+  注册的 minimal）。KeyError 时列出全部可选名，fail-loud。
+- **`CombatExperimentPPOBase`（base.py）**：declared-attribute kwargs
+  白名单（`test_set_kwargs.py` 覆盖 `--set KEY=VALUE` 注入），
+  exploration/ppo_params/build_jobs/sampling_spec/env_bp 全链默认，
+  子类只改类属性+少量方法——**实验定义成本极低，这正是"AI 按用户
+  意图写实验"的正确形态**。
+- 实验文件本身是剂量扫描阵：`standup_floor04` 系列 ~20 个变体
+  （ef 剂量 0.3/0.5/0.8、policy 族×8、lam/lr/ufloor/floorsched/
+  tklearly），docstring 写明假设与参照实验——实验即文档，质量好。
+- `archive/`（28 个 `exp_basic_balance_v2*`）+ `todo/`（~20 个 V1 时代
+  exp + EXPERIMENT_LOG + REVIEW_SUMMARY）：**有意分层的历史 strata**，
+  不在 glob 发现范围内，不会污染注册表。
+- 测试：test_set_kwargs / test_standup_step_v3_floor /
+  test_step_detect 共 51 用例全过——测的是 base 的 kwargs 注入和
+  step 检测工具函数。
+
+### 观察（非问题）
+
+- **W-EXP-1**：实验命名即文档，但**没有"当前推荐跑哪个"的索引**——
+  README 只讲机制（怎么列/怎么冒烟/怎么加实验），不讲选型。对一个
+  想让 AI 代做实验的用户来说，"31 个实验里哪个是当前主线"要靠读
+  文件名猜（standup_floor04* 是最新剂量阵）。建议：README 加一节
+  "当前活跃实验线"（几行即可，或指向某个 LEVER 目录）。
+- **W-EXP-2**：`todo/` 和 `archive/` 的命名语义不同（todo=未做/
+  候选，archive=做过已归档）但外人看都是"旧东西"——目录名语义
+  建议各加一行 README 说明。
+
+**Result/evidence:** `pytest baseline/experiments_ppo` 51 passed；
+`list_ppo_experiments()` 实测 31 项；`exp_*_ef03/ef08` 抽查确认
+薄子类模式。
+**Next:** `baseline/humanoid21`（rewards/plugins/blueprints/curriculum）。
