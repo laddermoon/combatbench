@@ -129,3 +129,154 @@ understanding the codebase produced low-value output.
 bookkeeping files.
 **Next:** formal Phase 1 starts at `envs/framework` (this entry's findings
 stand as its first record).
+
+---
+
+> 自此以下审计日志一律用中文书写。
+
+## [2026-10-01] envs/framework —— 逐文件深审（第一轮完整盘点）
+
+**Domain/object:** `envs/framework/`（全部 14 个 .py + 5 个 .md + tests/）
+**Category:** discovery
+**What:** 逐文件精读全部源码，对照文档逐项验证契约，并新增 1 个审计探针
+测试文件 `tests/test_audit_terminal_frame.py`（2 个用例，均通过——其中
+一个用例**证实了一个真实的语义问题**）。当前测试基线：
+**159 passed / 3 failed / 5 collection errors**（新增 2 个测试算入
+passed；基线仍是 157+3+5，口径不变）。
+
+### 通过项（查过且确认没问题）
+
+- `backend.py` —— `IDataAccessor`/`IDataMutator`/`BaseSimulator` 契约干净；
+  `get_observation`/`get_action` 已在 accessor 契约内。
+- `context.py` —— `_AccessorView`/`_MutatorView` 白名单代理真实有效：
+  `__slots__` + `__setattr__` 封锁 + `__getattr__` 白名单转发 +
+  `__sim` 名字改写，sandbox 不是摆设。
+- `plugin.py` —— 生命周期钩子文档与实际派发一致；`require_mutator`/
+  `priority` 语义清晰；`on_attach`/`on_detach` 契约完整。
+- `observer_plugin.py` —— dispatcher 优先级常量 `OBSERVER_DISPATCHER_PRIORITY`
+  集中暴露；`BaseObserverPlugin` 现为 `BaseRuntimeUnit` 纯别名（向后兼容，
+  文档有说明）；去重 token 机制是显式契约（Note C2）。
+- `episode_runner.py` —— 薄 runner 语义清晰：seed 派生链
+  （SeedSequence.spawn：runtime + 2 policy + seedable plugins）、
+  `post_termination_action`（policy/hold）、`run_episode` 返回 None、
+  duck-type policy 校验。`_reset_all` 顺序正确（plugin 先 reseed，
+  再 runtime.reset，最后 policy.reset）。
+- `blueprint.py` / `parameterized_blueprint.py` —— ClassSpec 往返协议
+  干净；`BLUEPRINT_EXCLUDE` 过滤逻辑正确；参数化替换的全引用/内联两种
+  规则实现与文档一致。
+- `round_runner.py` / `match_runner.py` —— 薄组装层；options 合并逻辑
+  正确（caller options 优先）；CLI 完整。
+- `replay.py` —— ReplaySimulator 实现完整：read-only 违例抛
+  `ReplayReadOnlyError`（`set_action` 刻意静默是文档化契约）、
+  manifest_version>=2 门控、单集/目录两种模式、dtype 再水化。
+- `recorder.py` —— `EpisodeBufferRecorder`/`BaseFrameRecorder` 职责清晰，
+  on-disk schema（manifest_version=2）与 replay.py 对齐。
+- `recorder_viewer.py` + `_recorder_viewer.html` —— bundled asset 存在，
+  HTTP viewer 正常。
+- `__init__.py` —— 所有导出符号均存在且可导入（逐一核对）。
+- `common_plugins.py::TimeoutPlugin` —— 在 on_post_action_step 中判终止，
+  与 episode_step 递增时序一致（已被审计测试的对照用例证实）。
+
+### 发现的问题
+
+**P-FW-1（文档大规模漂移，`get_termination_flags` 不存在）**
+- 现象：`runtime.get_termination_flags()` 在 **6 处文档**被当作公共 API
+  示例：根 `README.md:59`、`README_zh.md:59`、`CLAUDE.md:195`、
+  `envs/framework/README.md:173`、`envs/framework/CONTEXT.md:159`、
+  `envs/framework/DESIGN.md:178-184`。
+- 实情：`EnvRuntime` 上没有这个方法。真实的终止查询接口是
+  `is_episode_over()` / `is_agent_active(aid)` / `get_agent_termination()` /
+  `is_episode_active`。
+- 证据：`grep -rn get_termination_flags` 命中全部是文档，无一处实现。
+- 建议：全局替换为真实接口；这是"用户/AI 读文档照抄必炸"级问题。
+
+**P-FW-2（语义问题，已被测试证实）：物理步中途终止 → 终止帧 observer 输出陈旧 + 落盘帧文件名碰撞**
+- 现象：`_RuntimeCore.step` 在 `on_pre_phy_step`/`on_post_phy_step` 中
+  检测到全员终止时**提前 return**，跳过了 `on_post_action_step` 钩子，
+  因此 observer dispatcher 不会为这最后一步刷新 observer 输出。但
+  `EnvRuntime.step` 仍然触发 recorder 的 `on_post_action_step`——
+  recorder 收到的 `observer_outputs` 是**上一步的陈旧值**。
+- 次生问题：终止帧里 `ctx.episode_step` 未递增（与上一帧相同），
+  `BaseFrameRecorder` 用它做文件名 → `step_XXXXX.json/png` **被覆盖**，
+  落盘录制少一帧。
+- 影响：KO/倒地这类在物理循环中产生的终止，其"致命一击"那一步的
+  reward observer 输出不会被计入；`EpisodeBufferRecorder`（训练侧数据来源）
+  最后一帧 observer_outputs 是旧值。
+- 证据：`tests/test_audit_terminal_frame.py`（2 passed）：
+  kill_at=15, phy_steps=10 → recorder 收到 2 帧，observer 只刷新 1 次，
+  第二帧 observer_outputs == 第一步的旧值；对照组（TimeoutPlugin 在
+  on_post_action_step 终止）行为正常。
+- 文档矛盾：`recorder.py` 模块 docstring 声称"recorders always run
+  after the observer dispatcher has refreshed"——物理中终止时不成立。
+- 建议：需决策——是设计意图（终止帧不做全量刷新）还是 bug；
+  至少要修 docstring 或让 `_RuntimeCore` 在早退前补一轮 observer 刷新。
+  文件名碰撞则需要 recorder 用单调序号而非 episode_step 命名。
+
+**P-FW-3（Policy 契约双轨并存，测试测的是已删除 API）**
+- 现状契约（policy.py + EpisodeRunner + 所有已部署 policy）：
+  `act(obs, want_extra=False) -> (action, extra)` 二元组。
+- `tests/test_policy.py`（HEAD 与工作区一致）测试的是**旧契约**：
+  `act(obs) -> action`、`act_with_extras()`、`call_policy()`、
+  `coerce_action()`。后两个函数在 `27fd9add` 引入、`029b18af`/
+  `7fd36063` 重构期删除，测试从未同步。
+- `policy/README.md:54,127` 文档写的也是旧契约 `act(obs) -> ndarray`。
+- 建议：确认新契约是终态后重写该测试文件；CONTEXT.md:63 的
+  `coerce_action`/`call_policy` 描述同步删除。
+
+**P-FW-4（沙箱可被绕过）：`ctx._simulator` 直通裸模拟器**
+- `SimContext.__init__` 里 `self._simulator = simulator` 是普通属性，
+  插件在只读钩子中可通过 `ctx._simulator.set_core_state(...)` 绕过整个
+  accessor/mutator 授权机制。`_AccessorView` 用名字改写防 `._simulator`，
+  但 ctx 自己就把裸对象挂在外面。
+- 可能是刻意留的逃生口，但未文档化；与"沙箱真实"的设计宣称矛盾。
+- 建议：确认是有意逃生口（写进文档）还是漏洞（改成名字改写）。
+
+**P-FW-5（静默失败，违 fail-loud）**
+- `IDataMutator.apply_external_force` 默认实现是 `pass`——后端没实现时
+  调用静默成功（backend.py:71-91，注释说是"可选实现"）。
+- `VideoRecorderPlugin.on_post_episode` catch 所有异常只 print——
+  strict=True 下视频保存失败也不抛出。
+- `BaseFrameRecorder._safe_accessor_call` 把 accessor 异常吞成
+  `{"__error__": ...}`——有文档说明，属刻意防御，但值得知晓。
+- `_safe_call` 的 strict=False 日志格式串 `"%s '%s' failed at %s"`
+  传参是 `(label, hook_name, label)`——log 文案打出来是
+  `Plugin 'x' 'hook' failed at Plugin 'x'`，语义错误（应为
+  `(label, hook_name, hook_name)` 之类）。小问题。
+
+**P-FW-6（测试现状，与前次记录一致并复核）**
+- 5 个 collection error 文件确认根因是 runner 重构遗留：
+  `test_episode_runner.py` / `test_parallel_runner.py` /
+  `test_policy.py` / `test_reset_chain.py` / `test_seed.py`。
+- 3 个 fail：`test_video_recorder.py::TestRoundRunnerVideoSavePath`
+  （旧 `videosave_path`/`_merge_video_path_into_options` API 已删，
+  现机制为 `episode_options["video_output_path"]`）。
+- 新薄 runner 行为无测试覆盖：`post_termination_action="hold"`、
+  `want_extras` 转发、duck-type 校验。
+- `tests/README.md` 测试清单表格未列 `test_seed.py` 等已存在文件，
+  也滞后。
+
+**P-FW-7（文档过期清单，本轮新增确认）**
+- `DESIGN.md:150` `ctx.termination_proposals: List[str]`——现已改为
+  per-agent `agent_termination_proposals` + `agent_terminated`。
+- `SEED.md:56,130-131` 引用 `run_n_episodes`/`parallel_runner._derive_seeds`。
+- `RESET.md:199,286` 引用 `run_n_episodes(options_fn=...)`。
+- `episode_runner.py:46` docstring 引用已删的 `parallel_runner`。
+- `policy.py:5` 模块 docstring 引用 `ParallelRunner`。
+- `REVIEW_SUMMARY.md` 是历史评审文档（自己也记录了部分过期问题），
+  属考古资料，建议保留但标记。
+
+**P-FW-8（小问题）**
+- `EpisodeBufferRecorder.get_episode_data` docstring 的 frame schema
+  漏列了实际会写入的 `"observation"` 键。
+- `EnvBlueprint.from_runtime` 遇多个 TimeoutPlugin 时后者静默覆盖
+  `max_steps_from_plugin`（边界情况，通常不触发）。
+- `EnvBlueprint.load` 不做 `${DIR}` 替换，而 `PolicyBlueprint.load` 做
+  ——不对称；env blueprint 的 config 无法引用同目录资源文件，
+  可能是有意也可能是遗漏。
+- `env_runtime.py` 顶部 TODO(framework/B2) 记录了 batched runtime
+  的规划债（与 batchframework 对应，属已知）。
+
+**Result/evidence:** 上述逐条对应源码行号与测试输出；
+`pytest -q --ignore=<5个stale文件>` = 159 passed / 3 failed。
+**Next:** envs/framework 审计暂告一段落（建议项交用户裁决）；
+下一目录 `envs/humanoid21`。

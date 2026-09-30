@@ -24,7 +24,7 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 |---|---|---|---|---|---|
 | `EnvRuntime` + plugin lifecycle (accessor/mutator, 6 hooks, per-agent termination) | envs/framework | STABLE | pytest: permission/dispatch/lifecycle suites pass (157 total) | README, DESIGN.md, RESET.md | — |
 | Observer pipeline (`BaseObserverPlugin` + dispatcher) | envs/framework | STABLE | pytest: observer dispatch/ordering suites pass | README | — |
-| Recorder/replay (`PostActionRecorder`, `BaseFrameRecorder` v2, `ReplaySimulator`) | envs/framework | STABLE | pytest: recorder lifecycle + replay suites pass | README | ~50KB/step derived_state footgun; no provenance metadata |
+| Recorder/replay (`PostActionRecorder`, `BaseFrameRecorder` v2, `ReplaySimulator`) | envs/framework | STABLE (caveat) | pytest: recorder lifecycle + replay suites pass | README | ~50KB/step derived_state footgun; no provenance metadata; **AUDIT P-FW-2**: mid-physics termination → terminal frame has stale observer_outputs + `step_XXXXX` filename collision (test-proven) |
 | `EpisodeRunner` (thin episode loop) | envs/framework | USABLE | runs; new behaviors untested | README | hold/want_extras/duck-type untested; stale test file exists |
 | `RoundRunner` / `MatchRunner` (round + match eval, CLI) | envs/framework | USABLE | CLI functional; core tests pass | README, CLAUDE.md | 3 stale tests for removed `videosave_path` API |
 | `EnvBlueprint` / `ParameterizedEnvBlueprint` (env as YAML) | envs/framework | USABLE | test_blueprint.py passes | README | — |
@@ -42,6 +42,12 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
   `parallel_runner.py`/`runtime_plugin.py`/old runner API). Rewrite or merge
   into README. Pending user decision.
 - `episode_runner.py` docstring references removed `parallel_runner` (line ~46).
+- `get_termination_flags()` — referenced as public API in 6 docs
+  (README.md/README_zh.md/CLAUDE.md/envs/framework README+CONTEXT+DESIGN)
+  but does not exist; real API: `is_episode_over()`/`get_agent_termination()`
+  (AUDIT P-FW-1).
+- `ctx._simulator` sandbox bypass — raw simulator reachable from read-only
+  hooks (AUDIT P-FW-4).
 
 ## Explicitly Unavailable List
 
