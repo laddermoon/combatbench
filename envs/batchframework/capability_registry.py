@@ -56,7 +56,9 @@ REGISTRY: Dict[str, CapabilityEntry] = {
                         note="DeviceStandup4StageRewarder observer；"
                              "常量引用 CPU 模块单一来源"),
     "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin":
-        CapabilityEntry(Capability.UNSUPPORTED, note="M4 原生转换目标"),
+        CapabilityEntry(Capability.UNSUPPORTED,
+                        note="不在 standup_4stage_dense_v2 蓝图内；"
+                             "需要时显式做原生转换"),
 }
 
 
