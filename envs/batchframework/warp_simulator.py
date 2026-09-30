@@ -51,7 +51,8 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
     """
 
     def __init__(self, batch_size: int = 1,
-                 nconmax_per_world: int = 48, **_kwargs):
+                 nconmax_per_world: int = 48,
+                 njmax_per_world: int = 512, **_kwargs):
         # warp 路径不用 jax：_init_jax=False 让父类跳过 jax.devices()/
         # mjx.put_model/jp.array——XLA 默认预分配 ~75% 显存（24GiB ~18GB），
         # 曾把 warp mempool 挤到 OOM。env 变量是防御性保险：若未来代码
@@ -68,6 +69,11 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         self._mjw = mjw
         self._wmodel = mjw.put_model(self._model)
         self._nconmax_per_world = nconmax_per_world
+        # njmax 是 per-world 约束槽上限：接触最多 4 efc 行/contact（worst
+        # case cap48 → ~192），再加关节 limit/friction/equality 约百余条；
+        # 默认启发式只有 64，u55 曾触发 "nefc overflow - increase njmax to 65"
+        # device assert 崩进程。512 余量充足，显存代价可忽略。
+        self._njmax_per_world = njmax_per_world
         self._wdata = None          # mjw.Data
         self._ext_dev = None        # wp.array (B, nbody, 6) 挂起外力（设备端）
         self._sched_dev = None      # wp.array (B, S, nbody, 6) 子步 schedule
@@ -177,9 +183,14 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
         mjd0 = mujoco.MjData(self._model)
         mujoco.mj_resetData(self._model, mjd0)
         if self._wdata is None:
+            # nconmax/njmax 均为 per-world 语义——put_data 内部
+            # naconmax = nconmax × nworld。曾误传 B×48 使每 world 槽位
+            # = B×48、总量 = B²×48：显存二次方增长（B=1536 → ~20GB）且
+            # 单 world 接触上限被放大到可触碰 njmax 溢出断言。
             self._wdata = self._mjw.put_data(
                 self._model, mjd0, nworld=B,
-                nconmax=B * self._nconmax_per_world)
+                nconmax=self._nconmax_per_world,
+                njmax=self._njmax_per_world)
         d = self._wdata
         d.qpos.assign(wp.array(qpos_all.astype(np.float32), device="cuda:0"))
         d.qvel.assign(wp.zeros((B, self._model.nv), dtype=wp.float32, device="cuda:0"))

@@ -67,20 +67,19 @@ train.py --experiment standup_floor04 --algo ppo --collector device \
   --collector-batch-size 256 --param max_updates=1 --param eval_interval=9999
 ```
 （run `m5_w4_device_u1_b256`；B=512/cap48 曾在 warp collision scratch
-处 OOM。**事后定位的根因不是接触容量**：`WarpHumanoid21Simulator`
+处 OOM。**事后定位根因是两层叠加**：① `WarpHumanoid21Simulator`
 继承 `MjxHumanoid21Simulator`，父类构造初始化 jax 后端时 XLA 默认
-预分配 ~75% 显存（~18GB），warp mempool 只剩 ~3GB 缝隙。修复：父类
-ctor 加 `_init_jax=False` 入口（warp 子类默认使用）——跳过
-`jax.devices()`/`mjx.put_model`/`_build_jax_statics` 三处 jax 调用，
-`_jax_statics` 改用同构 numpy 表；另保留 `XLA_PYTHON_CLIENT_PREALLOCATE
-=false` setdefault 作防御。修复后 B=512/cap48 全程只占
-4.4GB；裸 `put_data` 复测 B=8192/cap48 也仅 ~4GB——M2 probe 当时能
-跑正是因为 warp 数据本身很小。修复后实测天花板：B=1024→10.5GB ✅、
-B=1536→20.7GB ✅、B=2048→OOM（单 768MB 分配）。注意此时吞吐在
-B=512→1536 间饱和于 ~24-26K substeps/s（与 M2 空卡 probe 的 75-147K
-不同——本次 GPU0 有其他租户进程，数字需重测；但"显存限制 B"的结论
-已不再成立）。`nconmax_per_world=16` 仍更快（58K vs 34.8K）且更省，
-属于需要显式声明的截断近似，正式采用前应先测峰值 ncon。）
+预分配 ~75% 显存（~18GB）——已修（ctor 加 `_init_jax=False`）；
+② 更深的 bug：`put_data` 的 `nconmax` 是 **per-world** 语义
+（`naconmax = nconmax × nworld`），代码误传 `B×48` 使总容量 = B²×48
+——显存随 B **二次方**增长（B=1536 → ~20GB），且单 world 接触上限
+放大后可在训练中触碰 `njmax` 溢出断言（u55 "nefc overflow" 实崩）。
+修正为 `nconmax=48`（per-world）+ 显式 `njmax=512` 后实测：
+B=512→3.0GB/58.8K、B=2048→3.3GB/237K、B=8192→4.4GB/**504K**
+env-substeps/s（已超 CPU 池 ~472K）——"显存限制 B"的结论彻底
+不成立，M2 probe 能跑 B=8192 正因为它用的就是 per-world 默认 48。
+`nconmax_per_world=16` 的截断近似结论不变：采不采用仍需先测峰值
+ncon，但不再出于显存理由。）
 
 **结果**：512 episodes → 1024 trajs → 204,800 frames → PPO update 完整跑通
 （KL early-stop、critic EV=0.489、uncertainty floor 链路均正常）。
@@ -101,19 +100,19 @@ launch-latency 受限：25 子步块耗时 B=64→0.51s、B=256→0.26s、B=512�
 波动），单 warp step ~10-15ms 几乎不随 B 变化——吞吐随 B 线性（B=256 约 25K
 env-substeps/s，B=512 约 34K）。M2 报告的 308K 是 **B=8192** 下的数字，而
 512-ep update 物理上只有 512 个 env 可并行。~~且 B>256 已撞显存~~ ——显存
-瓶颈实为 jax 预分配假象（见上），修复后 cap48 可到 B≈1536。但吞吐在该区间
-并未继续线性增长（B=512/1024/1536 ≈ 24-26K，有 GPU 租户干扰需重测）——
-是否仍是 launch-latency 饱和，需在空卡上重测确认。要追平 96-worker
-CPU（~472K substeps/s 实测），需要 solver/launch 层优化
-（CUDA graph、求解器迭代数、collision 配置）或多卡分波——这超出 M5 范围，
-归 R2/M6 决策项。
+瓶颈是 jax 预分配 + `nconmax` 传值语义错误（均为本代码层 bug，已修）。
+修复后 cap48 下 B=8192 实测 **504K env-substeps/s > CPU 池 472K**——
+加速潜力的原始论证恢复成立。剩余问题是任务形状：512-ep/update 只
+喂得饱 B=512 波次（~59K/s），要发挥 B≥2048 的吞吐需要更大 update
+批量或多卡分波。要追平/反超 96-worker CPU，候选路径：
+(a) episodes_per_update 提到 2K-8K 级（注意 ROADMAP 暂停条件：若加速
+只在改批量后成立，不算等价迁移成功，但可另立优化实验）；
+(b) 多卡分波；(c) warp solver 层面降延迟（CUDA graph、迭代数、
+collision 配置）；(d) 部分 reset/摔倒初始化开销优化（reset 占 ~16%）。
 
 **诚实含义**：R1 放行的"collector 性能分解"完成，同时暴露了本任务在单 4090 +
 512-ep/update 的形状下 warp 无加速收益——ROADMAP 的"不宣称训练加速"原则
-在此被数据强制执行。可行方向：(a) 空卡重测 B=512~1536 的吞吐-显存曲线确定
-真实饱和点；(b) episodes_per_update 提到数千级再上设备；(c) 多卡分波（8 卡
-基本空闲）；(d) warp solver 层面降延迟（CUDA graph、迭代数、collision 配置）。
-M6 前需要就此做取舍。
+在此被数据强制执行。
 
 ## 5. W5：debug/溯源/拒绝路径
 
