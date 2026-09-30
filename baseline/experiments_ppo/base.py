@@ -131,9 +131,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   the reference ensemble.
     # delta_factor (c): Δ→σ scale — how large a drift counts as
     #   "one σ worth" of exploration.
-    # reference_horizon (H): number of recent trained policy versions
-    #   forming the uniform reference ensemble.  Populated from
-    #   post_update's UpdateArtifacts.policy_bp each update.
+    # reference_horizon (H): number of past policy versions forming the
+    #   uniform reference ensemble — strictly BEFORE the current policy:
+    #   the newest history entry is the post-update export of the round
+    #   that just finished, i.e. the rollout-time behavior policy itself,
+    #   so it is excluded (self-reference would pin Δ≈0 mechanically).
     delta_mix: float = 0.0
     delta_factor: float = 0.0
     reference_horizon: int = 0
@@ -310,7 +312,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 hist = self._ref_history = []
             hist.append(artifacts.policy_bp)
             if self.reference_horizon > 0:
-                del hist[:-self.reference_horizon]
+                # Keep H+1: the newest entry is the current policy
+                # itself — the ensemble takes the H before it.
+                del hist[:-(self.reference_horizon + 1)]
         return None
 
     def exploration(self, update: int) -> ExplorationSpec:
@@ -381,15 +385,19 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
         With ``delta_mix != 0`` and a non-empty trained-version history,
         the spec carries a uniform :class:`ReferenceSpec` over the last
-        ``reference_horizon`` versions plus ``delta_factor`` /
-        ``delta_mix``.  Otherwise it is the plain ``explore_factor``
-        spec — including the warmup update(s) before any trained
-        version exists, where a nonzero ``delta_mix`` has no reference
-        to mix against.
+        ``reference_horizon`` versions **before the current policy** plus
+        ``delta_factor`` / ``delta_mix``.  The newest history entry is
+        the just-finished update's export — the rollout-time behavior
+        policy itself — and is excluded: including it would contribute a
+        mechanically zero Δ member (at n=1 the whole ensemble is self →
+        σ_eff collapses to the ε floor).  Otherwise it is the plain
+        ``explore_factor`` spec — including warmup updates where no
+        strictly-past version exists.
         """
         history = getattr(self, "_ref_history", None) or []
-        if self.delta_mix != 0.0 and history:
-            window = history[-self.reference_horizon:]
+        past = history[:-1]  # drop self — see docstring
+        if self.delta_mix != 0.0 and past:
+            window = past[-self.reference_horizon:]
             n = len(window)
             return SamplingSpec(
                 explore_factor=self.explore_factor,

@@ -77,9 +77,11 @@ class TestPostUpdateContract:
                 SimpleNamespace(), u,
                 artifacts=UpdateArtifacts(policy_bp=_bp(tmp_path, f"u{u}")),
             )
-        assert len(e._ref_history) == 3
+        # Buffer keeps H+1 entries: the newest is the current policy
+        # itself; the ensemble draws the H strictly-past versions.
+        assert len(e._ref_history) == 4
         assert [_bp_dirname(b) for b in e._ref_history] == [
-            "u3", "u4", "u5",
+            "u2", "u3", "u4", "u5",
         ]
 
     def test_ref_history_unbounded_when_horizon_zero(self, tmp_path):
@@ -121,10 +123,27 @@ class TestSamplingSpecAssembly:
             )
         spec = e._sampling_spec()
         assert isinstance(spec.reference, ReferenceSpec)
-        assert len(spec.reference.policies) == 3
-        assert spec.reference.weights == pytest.approx((1/3, 1/3, 1/3))
+        # u3 is the current rollout policy — excluded (self-reference);
+        # the ensemble is the strictly-past u1, u2.
+        assert [_bp_dirname(b) for b in spec.reference.policies] == [
+            "u1", "u2",
+        ]
+        assert spec.reference.weights == pytest.approx((1/2, 1/2))
         assert spec.delta_factor == 5.0
         assert spec.delta_mix == 1.0
+
+    def test_self_only_history_plain_spec(self, tmp_path):
+        """A single history member is the current policy itself —
+        nothing strictly-past exists, so delta stays off (plain spec)."""
+        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+                 reference_horizon="10")
+        e.post_update(
+            SimpleNamespace(), 1,
+            artifacts=UpdateArtifacts(policy_bp=_bp(tmp_path, "u1")),
+        )
+        spec = e._sampling_spec()
+        assert spec.reference is None
+        assert spec.delta_mix == 0.0
 
     def test_delta_off_plain_spec_despite_history(self, tmp_path):
         e = _exp(tmp_path, reference_horizon="10")
