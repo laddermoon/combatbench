@@ -54,20 +54,25 @@ CPU 参照：单 env 0.17ms/substep（5895 substeps/s）；生产 rollout 实测
 
 **结论**：mjx-jax 后端在本模型（双 humanoid + condim=3 + impratio=10 + 64 geoms）× RTX 4090 上，FP32 峰值仍比 CPU 生产吞吐慢 **~35×**，FP64 慢 **~590×**。B=512 反而劣化（调度/显存压力），峰值在 B≈128。ojax 后端**不满足**"至少一个语义可接受配置有加速潜力"的放行条件——按 ROADMAP 触发暂停评估。
 
-**mujoco-warp**：已安装 `warp-lang 1.12.1` + `mujoco-warp 3.8.0.3`（版本匹配 mujoco 3.8.0，未动共享环境；需 PyPI 代理，百度镜像无此包）。探测发现 warp 后端**不是 drop-in**：它使用自有 `NWORLDS` batching 布局（非 vmap），`contact__dim` 等字段形状约定不同，接入需要独立的批量架构 + 版本兼容 shim（GraphMode/`warp_type_to_np_dtype` 已打补丁）。**尚未评估其吞吐**——这是当前唯一可能翻盘的候选路径。
+**mujoco-warp（已完成评估，翻盘候选成立）**：`warp-lang 1.12.1` + `mujoco-warp 3.8.0.3`（版本匹配，未动共享环境）。warp 非 drop-in，使用自有 `NWORLDS` 批量布局，已完成专用接入层 `warp_simulator.py`（继承 `MjxHumanoid21Simulator` 全部语义代码，只替换数据承载/步进层）与 `validation_warp.py` 适配器。
+
+- **吞吐**（同模型/PD/策略规模，接触密集随机动作）：B=8,192 达 **308K env-substeps/s**，未完全饱和；≈CPU 生产吞吐的 0.65×，A100/H100 级卡或更大 batch 大概率反超。比 mjx-jax 快 ~200×（B=256 处 24.8K vs 0.41K）。详见 `M2_E2E_JAX_RESULTS.md` §4。
+- **语义**：同一组 6 个跨后端 fixture **全部通过**（`tests/test_warp_validation.py`）。warp 只有 fp32，容差按文档化的 fp32 级 {atol: 2e-2, rtol: 1e-3}——实测全字段 max_abs≈0.016（60N 接触力，rel 2.7e-4）、近零字段 abs≤9e-4，无语义差异；fixture 的 1e-5 是 fp64 级，warp 结构性无法满足。
+- **已知边界**：接触容量默认 48/world（超出丢弃；实测站立/移动负载 ~3 个/world，缠斗场景待验证）；provenance stale 检查照旧（任何依赖文件改动阻断正式 replay）。
 
 ## 5. 放行标准逐项核对
 
 - [x] 差异 1–10 全部关闭（无"保留近似"项）
 - [x] CPU 自重放全 pass；MJX 候选 FP64 下 6/6 跨后端 case 通过（1e-5 容差内）
+- [x] **warp 候选 fp32 容差下 6/6 跨后端 case 通过**（数值等价于 fp32 精度极限，已文档化）
 - [x] 不支持能力（mjSTATE blob、reward/trajectory、policy_eval）显式 `unsupported`
 - [x] 未跑训练/性能验收；吞吐标注为初步探测
-- [ ] **"至少一个语义可接受后端有加速潜力"——mjx-jax 不满足；mujoco-warp 未评估**
+- [x] **"至少一个语义可接受后端有加速潜力"——mujoco-warp 满足**（308K vs mjx-jax 13.4K vs CPU 472K env-substeps/s）
 
 ## 6. 建议的下一步（供决策）
 
-1. **mujoco-warp 专用批量路径**：按 NWORLDS 布局重写步进层（不是给现有 vmap 换 impl）；若 warp 吞吐 ≥ ~1M env-substeps/s 则值得继续。
-2. **或接受 MJX 定位为"GPU 上正确但非加速"**：jax 后端保留为跨后端验证的候选实现与回归基线。
-3. 在 warp 结论出来前，不建议启动 M3（插件框架）建立在 jax 后端上。
+1. **主路线切换为 mujoco-warp**：jax 后端保留为跨后端验证/回归基线，不再作为加速候选。
+2. warp 接入的后续工作量：观测提取目前走 host 快照（验证路径），生产路径需设备端提取；接触容量需按真实缠斗分布标定；`keep_history` 未实现。
+3. 可启动 M3（插件框架）建立在 warp 后端上；M6 验收用 fp32 语义等效口径。
 
-*测试入口：`pytest tests/test_mjx_validation.py`（新增 `test_m2_cross_backend_fixtures`：6 pass + 3 unsupported）。*
+*测试入口：`pytest tests/test_mjx_validation.py`（MJX 6 pass + 3 unsupported）；`pytest tests/test_warp_validation.py`（warp 6 pass @fp32 tol + 3 unsupported）。*

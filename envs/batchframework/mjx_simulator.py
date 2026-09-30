@@ -228,6 +228,40 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         ``options['initial_distance']`` 由调用方注入）。``initial_distance``
         与 ``initial_pose_a/b`` 支持标量或长度 B 的序列（per-env）。
         """
+        B = self._batch_size
+        qpos_all, action_a, action_b = self._compute_reset_state(seeds, options)
+
+        # 模板 data 只提供形状/dtype；qpos/qvel/xfrc 在 broadcast 后被覆盖，
+        # 由随后的 batched forward 重建全部 derived 字段（对应 CPU 的 mj_forward）。
+        data = mujoco.MjData(self._model)
+        mujoco.mj_resetData(self._model, data)
+        self._build_jit_functions()
+        single = mjx.put_data(self._model, data, impl=self._impl)
+        batched = jax.tree.map(
+            lambda x: jp.broadcast_to(x, (B,) + x.shape), single)
+        batched = batched.replace(
+            qpos=jp.array(qpos_all),
+            qvel=jp.zeros((B, self._model.nv), dtype=self._dtype),
+            xfrc_applied=jp.zeros((B, self._model.nbody, 6), dtype=self._dtype),
+            qfrc_applied=jp.zeros((B, self._model.nv), dtype=self._dtype),
+        )
+        self._mjx_data = self._jit_forward(batched)
+
+        self._action_jax = {"robot_a": jp.array(action_a), "robot_b": jp.array(action_b)}
+        # 挂起外力缓冲：apply_external_force 累加到这里，下一个 physical_step
+        # 的第一个物理子步生效后清零（对齐 CPU 的 xfrc_applied 语义）。
+        self._ext_force_jax = jp.zeros((B, self._model.nbody, 6), dtype=self._dtype)
+
+        self._history_buffer = None
+        self._history_n_steps = 0
+
+    def _compute_reset_state(self, seeds, options):
+        """Per-env reset 姿态计算（纯 numpy，跨后端共享）。
+
+        返回 (qpos_all (B,nq), action_a (B,21), action_b (B,21))。
+        与 CPU reset 一致：初始姿态确定性，seeds 只记录；``initial_distance``
+        与 ``initial_pose_a/b`` 支持标量或长度 B 的序列。
+        """
         from scipy.spatial.transform import Rotation as Rot
 
         B = self._batch_size
@@ -277,27 +311,7 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
                 else:
                     action_b[i] = action
 
-        # 模板 data 只提供形状/dtype；qpos/qvel/xfrc 在 broadcast 后被覆盖，
-        # 由随后的 batched forward 重建全部 derived 字段（对应 CPU 的 mj_forward）。
-        self._build_jit_functions()
-        single = mjx.put_data(self._model, data, impl=self._impl)
-        batched = jax.tree.map(
-            lambda x: jp.broadcast_to(x, (B,) + x.shape), single)
-        batched = batched.replace(
-            qpos=jp.array(qpos_all),
-            qvel=jp.zeros((B, self._model.nv), dtype=self._dtype),
-            xfrc_applied=jp.zeros((B, self._model.nbody, 6), dtype=self._dtype),
-            qfrc_applied=jp.zeros((B, self._model.nv), dtype=self._dtype),
-        )
-        self._mjx_data = self._jit_forward(batched)
-
-        self._action_jax = {"robot_a": jp.array(action_a), "robot_b": jp.array(action_b)}
-        # 挂起外力缓冲：apply_external_force 累加到这里，下一个 physical_step
-        # 的第一个物理子步生效后清零（对齐 CPU 的 xfrc_applied 语义）。
-        self._ext_force_jax = jp.zeros((B, self._model.nbody, 6), dtype=self._dtype)
-
-        self._history_buffer = None
-        self._history_n_steps = 0
+        return qpos_all, action_a, action_b
 
     def _build_jit_functions(self):
         """Build JIT-compiled forward, single-step and scan-step functions."""
@@ -596,7 +610,10 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
             for c in range(max_contacts):
                 if not active[lead_idx + (c,)]:
                     continue
-                addr = int(efc_address[c])
+                # efc_address 语义非 batched (C,)，但 NWORLDS 后端（warp）
+                # 的行址逐 world 不同，允许传入 (B, ..., C) 逐 lead 寻址。
+                addr = int(efc_address[lead_idx + (c,)]
+                           if efc_address.ndim > 1 else efc_address[c])
                 nr = int(n_rows[c])
                 ef = efc_force[lead_idx + (slice(addr, addr + nr),)]
 
@@ -901,6 +918,23 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         qpos_new = np.asarray(self._mjx_data.qpos).copy()  # (B, nq)
         qvel_new = np.asarray(self._mjx_data.qvel).copy()  # (B, nv)
 
+        self._write_core_state(state, env_ids, qpos_new, qvel_new)
+
+        # Transfer to device 并重建 derived 字段——对齐 CPU 末尾的 mj_forward：
+        # 写入后立刻读取观测/接触必须返回与新状态一致的数据。qacc_warmstart、
+        # ctrl、xfrc/qfrc 一并清零：状态写入的跨后端契约是"全新求解"，
+        # 不继承先前步进的求解偏置/外力残留（见 set_integration_state）。
+        B, nv = self._batch_size, self._model.nv
+        self._mjx_data = self._jit_forward(self._mjx_data.replace(
+            qpos=jp.array(qpos_new), qvel=jp.array(qvel_new),
+            qacc_warmstart=jp.zeros((B, nv), dtype=self._dtype),
+            ctrl=jp.zeros((B, self._model.nu), dtype=self._dtype),
+            xfrc_applied=jp.zeros((B, self._model.nbody, 6), dtype=self._dtype),
+            qfrc_applied=jp.zeros((B, nv), dtype=self._dtype),
+        ))
+
+    def _write_core_state(self, state, env_ids, qpos_new, qvel_new):
+        """core-state 字段 → 原始 qpos/qvel 数组的映射（纯 numpy，跨后端共享）。"""
         for robot_id in ["robot_a", "robot_b"]:
             if robot_id not in state:
                 continue
@@ -933,19 +967,6 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
                 if "joint_vel_norm" in robot_state:
                     jvn = robot_state["joint_vel_norm"][i]
                     qvel_new[eid, qvel_idx] = jvn * norm["scale"]
-
-        # Transfer to device 并重建 derived 字段——对齐 CPU 末尾的 mj_forward：
-        # 写入后立刻读取观测/接触必须返回与新状态一致的数据。qacc_warmstart、
-        # ctrl、xfrc/qfrc 一并清零：状态写入的跨后端契约是"全新求解"，
-        # 不继承先前步进的求解偏置/外力残留（见 set_integration_state）。
-        B, nv = self._batch_size, self._model.nv
-        self._mjx_data = self._jit_forward(self._mjx_data.replace(
-            qpos=jp.array(qpos_new), qvel=jp.array(qvel_new),
-            qacc_warmstart=jp.zeros((B, nv), dtype=self._dtype),
-            ctrl=jp.zeros((B, self._model.nu), dtype=self._dtype),
-            xfrc_applied=jp.zeros((B, self._model.nbody, 6), dtype=self._dtype),
-            qfrc_applied=jp.zeros((B, nv), dtype=self._dtype),
-        ))
 
     # ------------------------------------------------------------------
     # set_integration_state
