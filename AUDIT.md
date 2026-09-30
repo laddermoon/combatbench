@@ -711,3 +711,62 @@ mocap 工具链（USABLE，独立）、end2end/fight/follow/balance_recover
 62 yaml 中 grep 出仅 2 个被活实验引用；87 个 curriculum 实验文件
 无外部引用。
 **Next:** `policy/`（参考策略目录）。
+
+## [2026-10-01] policy/ —— 参考策略库（一个全量损坏点 + 一处过时契约文档）
+
+**Domain/object:** `policy/`（random/、humanoid21/standing/、
+baseline/ 5 族 ~138 个训练策略快照 57MB、blueprints/、README.md）
+**Category:** discovery + test
+**What:** 逐目录核查 + 实际加载验证。
+
+### 实况
+
+- `policy/random/policy.py` —— RandomCombatPolicy 实现**当前** Policy
+  ABC（`act(obs, want_extra)`），`policy/blueprints/random.yaml`
+  加载实测 OK。
+- `policy/humanoid21/standing/policy.py` —— StandingCombatPolicy 实测
+  import + act 正常（21 维动作）。
+- `policy/blueprints/` 只有 random + standing 两个蓝图——**baseline
+  族的快照没有对应顶层 blueprint**（各自目录内带 policy_blueprint.yaml）。
+
+### 发现的问题
+
+**P-POL-1（全量损坏，但一处之遥）：`policy/baseline/` 下 81 个策略
+快照全部无法加载**
+- 每个快照的 `policy.py` 都 `import baseline.framework.ppo.policies
+  .tanh_gaussian_mlp`——该模块在 `f232b8c5` 被移入 `policies/todo/`
+  （commit 明说 "import chains intentionally left broken"）。
+- **实测**：`policy/baseline/fight/u11868/policy.py` import 失败；
+  但把模块路径改到 `...policies.todo.tanh_gaussian_mlp` 后，
+  `model.pt` 权重正常加载、`act()` 输出合法 21 维动作——
+  **权重完好，只差一行 import 路径**。
+- 规模：81 个 policy.py ×（fight/fight_v2/fight_v2_oppopool/follow/
+  follow_v2 五族），57MB 权重全部不可用。
+- 影响：这是"参考对手池/基线对战"能力——打榜前的自对弈对手全灭。
+- 建议（用户裁决）：批量把 import 改到 todo 路径（机械修复，
+  81 文件同改一行）；或把 tanh_gaussian_mlp 移回正式位置（它已
+  被验证能承载这些权重）+ 更新导出模板。
+
+**P-POL-2（契约文档整体过时，对 AI 有误导性）：`policy/README.md`**
+- 描述的核心类 `BaseCombatPolicy`（ABC + gym spaces + kwargs 透传）
+  **在代码中不存在**——README 里整段类定义是旧世代的伪代码。
+- 描述的旧 `act(observation) -> ndarray` 签名 + `act_with_extras`
+  钩子——当前契约是 `act(observation, want_extra) -> (action, extra)`。
+- 提到的 `load_policy(...)` 函数、`ParallelRunner` 都不存在。
+- **按这个 README 写策略的 AI 会产出接口错误的代码**——这是"文档
+  比没有更糟"的典型，优先级高。
+- 建议：重写为指向 `envs/framework/policy.py` 的当前契约 +
+  `random/policy.py` 作为最小样板。
+
+**P-POL-3（小）**：README 目录规范仍说"必须继承 BaseCombatPolicy"——
+同上，契约已变为 `envs.framework.policy.Policy`。
+
+**能力入账**：RandomCombatPolicy（STABLE）、StandingCombatPolicy
+（USABLE）、baseline 快照库 81 个（**UNSUPPORTED——import 路径损坏，
+一处之遥可修**）、policy/blueprints（USABLE 但只覆盖 2 个策略）。
+
+**Result/evidence:** import 实测 random/standing OK、fight/u11868
+ModuleNotFoundError、todo 路径补丁后加载+act 成功；
+`git show f232b8c5` 证实迁移为有意。
+**Next:** 剩余目录——docs/、scripts/、examples/、根 tests/、
+assets/、debug_approach/_debug 等边角。
