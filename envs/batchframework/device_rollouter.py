@@ -438,7 +438,8 @@ class DeviceRollouter:
                 "action": {rid: np_bufs["act"][rid][t, row]
                            for rid in AGENT_IDS},
                 "observer_outputs": {
-                    name: {k: v[t, row] for k, v in fields.items()}
+                    # 标量叶子——与 CPU 一致地走 _try_stack 的 list 分支
+                    name: {k: v[t, row].item() for k, v in fields.items()}
                     for name, fields in np_bufs["obs_out"].items()},
                 "action_extras": {
                     "robot_a": {
