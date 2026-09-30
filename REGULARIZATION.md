@@ -167,35 +167,32 @@ M8 要的"AI 入口说明、转换规范、支持矩阵"就是本文 A 层文档
 
 ### 4.3 放置与命名约定（初版，允许演化）
 
-**基本盘：每个有功能的目录都要有 `README.md`**，它是该目录的必备文档。
+**基本盘：每个有功能的目录都要有 `README.md`，用英文写。**
 
-README.md 的内部结构约定：
+README.md 的写作逻辑三段式（不强制小节名，强制信息顺序）：
 
 ```
-# 目录名 / 功能名
-（前半：给人看 —— 这是什么、怎么用、入口在哪）
-
-## For AI / 开发者说明        ← 固定小节名（待定稿）
-（后半：给开发者 AI 看 —— 契约要点、gotchas、改动约束）
+1. 直观（Intuitive）：这是什么、干什么用、怎么上手 —— 给人看，一眼懂
+2. 宏观（Macro）：目录内部结构、各部分的关系 —— 给人看，建立地图
+3. 微观（Micro）：核心细节、契约要点、坑、状态标记 —— 偏给 AI 看，
+   人也看得到
 ```
 
-一个目录默认一个文件服务 U + D 两层：**人读的内容在前（直观），AI/开发者
-内容在后（人也看得到）**。当某目录的 AI 向内容大到影响人读体验时（如
-dumpkit 那种能力地图/命令手册体量），拆出独立 `CONTEXT.md`，README 中留
-指针。现有 `CONTEXT.md` 惯例（per-directory AI memo）继续有效，与
-README 内嵌小节是同一层的两种载体。
+- 一个目录一个文件服务 U + D 两层；内容量过大时（如 dumpkit 的能力地图
+  体量）微观部分拆出独立 `CONTEXT.md`/`DESIGN_*.md`，README 留指针。
+- 现有 `CONTEXT.md` / `*SPEC.md` / `DESIGN_*.md` / `REVIEW_*.md` 等文件
+  继续有效；新写的统一契约文档（A 层）放到逐域正则化阶段再定规范，
+  现阶段不预造文件名。
 
-各层总表：
-
-| 层 | 位置 | 命名 | 例子 |
-|---|---|---|---|
-| U | 每个功能目录 + `docs/` + 根目录 | `README.md` 前半、人读 markdown，双语随现有惯例 | `docs/RULE.md`、杠杆目录文档（名待定） |
-| A | 与杠杆同目录 | `USAGE.md`（新增约定）或沿用 `*SPEC.md` | `envs/humanoid21/DATASPEC.md`、待建的 `policies/USAGE.md` |
-| D | 与代码同目录 | `README.md` 后半"开发者说明"节；超出阈值拆 `CONTEXT.md`；`DESIGN_*.md` / `REVIEW_*.md` | `baseline/framework/ppo/dumpkit/CONTEXT.md` |
-| 跨层入口 | 根目录 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、`REGULARIZATION_DETAIL.md`（审计日志）、README 文档体系节 | — |
+| 层 | 载体（当前生效的最小约定） |
+|---|---|
+| U | 每个功能目录 README.md 的直观+宏观部分；`docs/`；根目录 README.md |
+| A | README.md 微观部分；现有 `*SPEC.md` 契约文件 |
+| D | README.md 微观部分；`CONTEXT.md` / `DESIGN_*.md` / `REVIEW_*.md` |
+| 跨层入口 | `REGULARIZATION.md`（本文）、`CAPABILITY_LEDGER.md`、`REGULARIZATION_DETAIL.md`、根 README.md |
 
 总账 `CAPABILITY_LEDGER.md` 放项目根目录，格式见 §6；审计日志
-`REGULARIZATION_DETAIL.md` 格式见 §7.4。
+`REGULARIZATION_DETAIL.md` 格式见 §7.3。
 
 ### 4.4 README 入口义务
 
@@ -252,14 +249,37 @@ README 内嵌小节是同一层的两种载体。
 ### 7.1 阶段划分
 
 - **Phase 0 — 立规矩**（本轮）：本文冻结 v1；建立 `CAPABILITY_LEDGER.md`
-  骨架（初始盘点快照登记为"初判待核实"）与 `REGULARIZATION_DETAIL.md`
-  审计日志；README 文档体系节（在文档命名约定确认后落地）。
-- **Phase 1 — 全量盘点**：按域逐个核实真实状态（读代码、跑测试、查文档），
-  把总账从"初判"变成"核实"。产出：可信的总账 + 补齐优先级清单。
-- **Phase 2+ — 逐域正则化**：每次会话认领一个工作包（一个域或一组杠杆），
-  做"收敛代码 → 补测试 → 写 A 层契约 → 写 U 层选型 → 更新总账"全流程。
-- **持续**：此后新能力落地时按同一规范带齐三层文档与总账登记，
+  与 `REGULARIZATION_DETAIL.md` 骨架。
+- **Phase 1 — 逐目录 README 盘点（审计与文档合一）**：按序走遍每个功能
+  目录，为该目录写 `README.md`（英文，直观→宏观→微观三段式）。写 README
+  的过程就是审计：读代码、核实真实状态、把发现的能力补进总账、把发现的
+  问题记入审计日志。这是当前的主线工作，**先把这一件事做完**。
+
+  **Phase 1 硬性约束（审计纪律）：**
+  - **不改已有代码、不删任何文件**。发现的过期/无用文件、疑似 bug、
+    失效测试，一律记入审计日志（`REGULARIZATION_DETAIL.md`）作为
+    **建议项**，由用户决定是否修复/删除。
+  - **可以跑测试、可以写新测试文件**（包括为暴露问题而写的复现测试），
+    但不修改已有测试来"修好"失败。
+  - 只有三类文件允许写：各目录 `README.md`、根目录两个账本
+    （ledger/detail log）、新增测试文件。
+  - README 写"当前真实状态"，不是"应该的状态"——文档与代码不符时，
+    README 按代码写，差异作为问题记入审计日志。
+- **Phase 2+ — 逐域正则化**：README 盘点完成且用户审阅建议清单后，按
+  总账优先级做"收敛代码 → 补测试 → 写 A 层契约 → 写 U 层选型 → 更新
+  总账"全流程。审计日志中累积的建议项是 Phase 2 的任务池——**只有进入
+  Phase 2 且用户确认后才可以改代码/删文件**。
+- **持续**：此后新能力落地时按同一规范带齐文档与总账登记，
   正则化变成项目的落地标准而非一次性运动。
+
+Phase 1 建议顺序（沿架构自底向上，可按实际调整）：
+
+```
+envs/framework → envs/humanoid21 → envs/batchframework
+→ baseline/framework → baseline/experiments_ppo
+→ baseline/humanoid21（rewards/plugins/blueprints/curriculum/…）
+→ policy → docs / examples / tests / scripts → 根目录
+```
 
 ### 7.2 每个工作包的完成标准
 
@@ -343,19 +363,12 @@ README 内嵌小节是同一层的两种载体。
 | `examples/` `tests/` `scripts/` | 示例/测试/脚本 | 待核实 | — |
 | combatbench.tech 平台 | 网站/后端/Elo | 范围外? | 属 combatbench-research，边界待确认 |
 
-## 10. 待决问题（冻结前需确认）
+## 10. 待决问题（暂缓，随盘点自然定）
 
-1. **README 内嵌 AI 节的固定小节名**：提案"## For AI / 开发者说明"，
-   以及"多大体量拆独立 CONTEXT.md"的阈值判据（提案：超过 README 篇幅一半，
-   或含大型命令/API 速查表时拆分）。
-2. **U 层杠杆目录的文件名与位置**（提案：`docs/LEVERS.md` 或根目录一份——
-   需用户定夺）。注意该目录是盘点的**产出物**，Phase 1 之前只有骨架。
-3. **A 层契约文档命名**：新约定 `USAGE.md` vs 沿用现有 `*SPEC.md` 惯例 vs
-   其他——需统一后冻结。
-4. **语言约定**：U 层双语（现有 README/docs 惯例）？A/D 层中文为主（现有
-   CONTEXT/DESIGN 惯例）？
-5. **combatbench.tech 平台侧是否在正则化范围内**（代码在 sibling 目录
-   `combatbench-research/`）。
-6. **Phase 1 盘点的优先顺序**：建议从"用户最先接触的杠杆"开始
-   （experiment 注册表 → 策略族 → 探索杠杆 → reward/plugin → 环境 → 加速路径），
-   待确认。
+这些问题不阻塞当前主线（Phase 1 逐目录写 README），写的过程中遇到再定：
+
+- U 层杠杆总目录的最终文件名与位置（总账本身就是雏形）；
+- A 层统一契约文档的命名（`USAGE.md` / `*SPEC.md` / 其他）；
+- 非 README 类文档的语言约定（README 已定：英文）；
+- combatbench.tech 平台侧是否入正则化范围；
+- 各目录 README 的先后顺序微调。
