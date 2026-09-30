@@ -417,3 +417,98 @@ simulator 是 no-op**
 `test_audit_stale_contacts.py` 2 passed；手动调 acceptance 函数输出
 `{'pass': False}`×3。
 **Next:** `envs/batchframework`。
+
+## [2026-10-01] envs/batchframework —— 设备批量路径（Warp/MJX，M0–M6 进行中）
+
+**Domain/object:** `envs/batchframework/`（~7.8k 行 py：两套契约
+`batch_plugin/batch_context`（numpy 原型）+ `device_*`（torch 设备路径）、
+`mjx_simulator` 1063 行、`warp_simulator` 642、`validation*` 治具体系、
+`capability_registry`、`device_rollouter`、12 份 M 系列里程碑文档、
+3 个 probe 脚本、34 个 validation_fixtures）
+**Category:** discovery
+**What:** 逐文件结构核查 + 在 4090 上**实跑**了验证链路与测试套件。
+这是目前审计过工程质量最高的目录：digest 治具门禁、能力注册表
+fail-closed、每阶段 plan/results 文档链完整。
+
+### 架构实况（与 ROADMAP/discuss.md 一致）
+
+- 两代契约并存且是**有意设计**：`batch_plugin.py`/`batch_context.py`
+  （numpy BatchSimContext）是 legacy 兼容层的契约载体——`host_compat.py`
+  的 `_CachingSimProxy`/`HostBatchCompatAdapter`/`LegacyPluginAdapter`
+  把旧插件桥接进设备运行时，ctx 逐字复用 batch_context——**不是死代码**。
+- 现行主干是 `device_*`（torch）：`DeviceBatchState`/`BatchRuntime`/
+  `BaseDevicePlugin`/`DeviceCtx`；`device_rollouter.py::DeviceRollouter`
+  被 `baseline/framework/ppo/loop.py` 引用——设备 rollout 已接入
+  训练主路径作为 collector 选项。
+- `capability_registry.py`：插件/observer 显式登记 NATIVE/COMPAT/
+  HOST_SLOW/UNSUPPORTED，未注册即启动失败——discuss.md 的
+  "不猜测映射、不静默回退"红线在代码里真实落实。
+- 注册表现状：NATIVE 仅 3 项（DeviceTimeoutPlugin、
+  RandomFallenStatePlugin→DeviceFallenResetPlugin、
+  StandingBalance4StageRewarder→DeviceStandup4StageRewarder）+
+  1 项 UNSUPPORTED（StandupTerminationPlugin）。**即 CPU 侧几十个
+  插件/observer 中目前只有 3 个有设备原生实现**——转换面还很大，
+  这是"加速路径覆盖面"的真实水位。
+- `validation.py` 治具体系：capture（CPU 参考捕获，含 50 个源文件
+  sha256 + 环境指纹）→ digest → replay（任一候选适配器逐字段比较，
+  支持 per-field 容差）。stale 检测是真正的 fail-closed 门禁。
+
+### 实测结果
+
+- `pytest tests/`（7 个 batchframework 文件，GPU1）：
+  **64 passed / 1 failed / 34min**（耗时大头是 warp 内核 JIT 首编译）。
+- **实跑 MJX 对照**：现场 capture `dyn-standing-s25`（当前代码）→
+  MJX replay = **PASS**（1e-5 容差内 0 failure）。
+- **实跑 Warp 对照**：同 fixture = 6 个 contact 力字段超 1e-5
+  （max ~2e-3 abs / ~1.5e-5 rel @139N）。**这不是回归**——
+  M2_RESULTS 已记录 warp 仅 fp32，其专属容差为 {atol 2e-2, rtol 1e-3}
+  （实测 2e-3 << 2e-2，在声明范围内）。
+- **唯一失败 `test_mjx_validation.py::test_m2_cross_backend_fixtures`
+  （该文件最后一个测试）**：committed fixtures 的源指纹与当前代码不符
+  （4 个文件已变：`experiments_ppo/base.py`、`ppo/experiment.py`、
+  `ppo/sampling_context.py`、`rollout/job.py`）→ replay 全部判 stale。
+  门禁按设计工作，但意味着**整条跨后端 fixture 验证链当前对任何
+  修改过这些文件的提交都是红的**——需要 `make-fixtures` 重新捕获 +
+  重新批准 digest 才能恢复绿灯。
+- MJX 适配器按设计拒绝两类 case：reward/trajectory（"host-side oracle"）
+  和 action_sequence 非 dynamics 输入（"无 mjSTATE blob"）——
+  显式 unsupported 而非假装支持，正确。
+
+### 问题与观察
+
+**P-BF-1（流程风险，非代码 bug）：fixture 批准滞后于代码演进**
+34 个 committed fixtures 的整体 stale 说明"代码变了 → 治具重捕获 +
+人工批准"这一步没有跟上主路径变更节奏。ROADMAP 风险表自己也写了
+"主路径变更后加速实现静默过期→stale 检测"——检测有效，但**响应靠
+人工**。建议：文档化"哪些源文件变更必须触发 fixture 重批准"的清单
+（现在 50 个指纹文件谁来背锅不明确），或在 CI 定期跑 replay 告警。
+
+**P-BF-2（组织）：测试与源码分离且命名无归属**
+batchframework 的 7 个测试文件住在仓库根 `tests/`（该目录还混着
+`test_stage_seg_rewards.py`（属 baseline curriculum）和
+`debug_fall_images/` 产物目录）。模块内无 tests/，新人/AI 不易发现
+归属关系。建议：README/CONTEXT 里明确指向根 tests/ 的归属清单，
+或迁回模块内。
+
+**P-BF-3（小）：`probe_*`/`validation_*`/`m6_compare` 是里程碑手脚架**
+probe_e2e_jax/warp（M2）、probe_standup_xeval（M4）、m6_compare（M6
+对照工具）都是一次性验证脚本，留档合理（M 文档引用它们），但无
+README 说明各自何时该跑。`m4_t4_results.json` 是 probe 的数据产物
+（默认输出路径就指它）。
+
+**P-BF-4（状态核对）**：M6（learning-equivalence pilot）有 M6_PLAN +
+m6_compare.py 但**无 M6_RESULTS.md**——按 ROADMAP 语义 M6 未结题；
+计划中的 ~28h 训练臂是否跑过需向用户确认（runs/ 下应有
+m6_pilot_* 目录可查）。
+
+**能力入账**：BatchRuntime+device 插件体系（USABLE，fake_backend
+可 CPU 侧测生命周期）、DeviceRollouter（USABLE，已接 PPO collector）、
+WarpHumanoid21Simulator（USABLE@fp32 容差）、mjx_simulator
+（USABLE@1e-5）、validation 治具体系（STABLE，fail-closed 实测有效）、
+capability_registry（STABLE 设计，覆盖面待扩）、host_compat 桥
+（USABLE，COMP/HOST_SLOW 路径）。
+
+**Result/evidence:** pytest 64 passed/1 failed（stale gate）；
+dyn-standing-s25 现场对照 MJX pass / Warp 6 字段超 fp64 容差
+（fp32 容差内）；注册表静态核查。
+**Next:** `baseline/framework`（最大的一块）。
