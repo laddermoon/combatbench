@@ -1023,3 +1023,126 @@ SHA256 两次跨进程一致；阶跃/正弦/静置三组物理实测数据如�
 **Next:** Phase 2 暂告一段落。剩余可挖方向：dumpkit viewer API
 契约测试重建（test_viewer 重写）、standup rewarder 四阶段门限的
 对照测试、设备端 obs 与 host 逐维 diff 细查。等用户裁决或指示。
+
+---
+
+## 2026-07-12 Phase 3 — envs/framework 逐文件精读（注释/死代码专场）
+
+**Scope:** envs/framework 全部 13 个源文件逐行过一遍，专题是"注释与实现不符、
+残留死代码、半成品痕迹"。新增 2 个审计探针。
+**发现 15 项（P3-1 ~ P3-15），其中实锤 bug 2 个、探针锁死 2 个、
+死代码/陈旧注释 8 处、契约不对称 3 处。**
+
+### P3-1（实锤 bug，探针锁死）：abandoned/未终结回合的 recorder `on_post_episode` 丢失
+
+- **发现方法：** 精读 `_RuntimeCore.reset`（env_runtime.py:134-138）。注释声称
+  abandon 时 "so recorder manifests and observer state are flushed"，但
+  `_handle_termination()` 只调 `plugin_manager.invoke`；recorder 存在
+  `EnvRuntime._recorders`，由 `_invoke_recorders` 分发——core 层根本够不到。
+- **后果一**：`reset()` 放弃进行中的回合时，插件侧收到
+  `on_post_episode(reason="abandoned")`，**recorder 侧什么都不收到**——
+  正在写的 episode 目录没有 manifest flush，index.json 里这个 episode
+  永远处于未收尾状态。
+- **后果二**（同根因）：`EnvRuntime.close()` 只调 `recorder.on_detach`，
+  对仍活跃的回合同样不发 `on_post_episode`。
+- **探针**：`tests/test_audit_reset_recorder_gap.py`——两次 reset 后
+  recorder 计数为 `pre_episodes=2, post_episodes=0`，锁死两个缺口。
+- **建议**：`_RuntimeCore.reset` 的 abandon 分支与 `EnvRuntime.close` 都应
+  把终止事件透传给 recorder（例如 core 回调或 EnvRuntime 包一层）。
+
+### P3-2（实锤 bug，探针锁死）：VideoRecorderPlugin 的回合级 output_path 覆盖是永久污染
+
+- **发现方法：** 精读 `common_plugins.py:68-77`。docstring 声称
+  `episode_options["video_output_path"]` "覆盖**本次** episode 的保存位置"，
+  实现却是 `self.output_path = Path(override)` 直接改写实例状态，无 restore。
+- **后果**：某回合传了 override 后，之后所有不传 override 的回合继续写到
+  上次的路径（互相覆盖同一个 mp4）。MatchRunner 每回合 new 一个插件所以
+  不踩坑；但 EnvRuntime 直挂共享插件的用法会中招。
+- **探针**：`tests/test_audit_video_path_leak.py`——三回合后
+  `output_path` 仍停留在 episode-2 的 override，锁死该行为。
+- **建议**：ctor 默认值存 `_default_output_path`，每回合 pre_episode 里
+  `self.output_path = Path(override or self._default_output_path)`。
+
+### P3-3（小 bug）：`_safe_call` 日志格式参数错位
+
+- `env_runtime.py:51`：`"%s '%s' failed at %s", label, hook_name, label`——
+  第三个位置又传了一遍 label，日志输出形如
+  `Plugin 'x' 'on_post_episode' failed at Plugin 'x'`。应传 hook 上下文
+  或干脆删掉第三个占位。仅影响 strict=False 路径的错误日志可读性。
+
+### P3-4 ~ P3-8：死代码 / 陈旧注释 / 失效引用（5 处）
+
+| 编号 | 位置 | 内容 |
+|---|---|---|
+| P3-4 | round_runner.py:19 | `import numpy as np` 全文未使用——死 import |
+| P3-5 | episode_runner.py:46 | docstring 引 `parallel_runner`（已删模块） |
+| P3-6 | policy.py:5 | docstring 引 `ParallelRunner`（已删类） |
+| P3-7 | policy.py:69 | "The :func:`load_policy` loader"——本模块无此函数（真实入口是 PolicyBlueprint.build）；同名函数只存在于 batchframework 的探针脚本里 |
+| P3-8 | env_runtime.py:14 | `TODO(framework/B2)` 提议 VectorizedSimulator/EnvRuntimeBatched 并提到 `RolloutCollector`（旧名）——该 TODO 已被 envs/batchframework 整体实现，注释未更新指向 |
+| — | round_runner.py:8-10 | 模块 docstring 的 `run()` 签名过时：缺 want_extras/initial_health_*/score_log_file 参数和 health_a/health_b 返回键 |
+| — | recorder.py:55-66 | per-step JSON schema 注释缺 `observation` 键——实现 L381 实际写它，ReplaySimulator.get_observation 也读它 |
+| — | round_runner.py:148/194/263 | 三处函数内 `import json`（其中 263 又 `as _json`）——重复残留 |
+
+### P3-9 ~ P3-11：契约不对称（3 处，均确认存在、严重度低）
+
+- **P3-9 `${DIR}` 不对称**：`PolicyBlueprint.load` 做 `${DIR}` 替换
+  （policy.py:397），`EnvBlueprint.load` / `ParameterizedEnvBlueprint.load`
+  不做。当前所有 env blueprint 的 simulator config 只有标量
+  （ARENA_XML 是类常量不入蓝图），暂无实际影响；一旦有人给 env 蓝图配
+  外部资产路径就会踩到。
+- **P3-10 `is_agent_terminated` 签名不对称**：`SimContext` 上是方法
+  `is_agent_terminated(agent_id) -> bool`（context.py:237），
+  `ReadOnlySimContext` 上是字段 `is_agent_terminated: Dict[str,bool]`
+  （context.py:285）。同名成员两种调用约定——把插件代码搬到 observer
+  （read-only ctx）会 TypeError。属设计不一致，非 bug。
+- **P3-11 浅快照**：`ReadOnlySimContext.from_sim_context` 的
+  metrics/events/proposals 都是 `MappingProxyType(dict(...))` 浅拷贝——
+  嵌套可变对象仍与活 ctx 共享。observer 若改了 metrics 里的嵌套 dict 会
+  污染真黑板。与 mutator-leak 同类（宣示性隔离），严重度更低。
+
+### P3-12 ~ P3-14：实现细节不符/隐性坑（确认存在，文档未写）
+
+- **P3-12**：`attach_observer_plugin` 在活跃回合中 attach 会立刻
+  `refresh(force=True)`，但新 observer 的 `on_pre_episode` 从未被调——
+  依赖回合初始化的 observer 会带脏状态上场。无文档说明。
+- **P3-13**：`detach_observer_plugin` 后 `observer_plugins` dict 保留
+  `name: None` 键，`get_observer_outputs()` 会返回 `{name: None}`。
+  to_blueprint 跳过 None 没问题，但输出字典里残留幽灵键。
+- **P3-14**：`ReplaySimulator.reset(options={"episode": N})` 的 "episode"
+  键经 `EnvRuntime.reset` 一并写进 `ctx.episode_options`——插件黑板会
+  看到一个 replay 专用的 stray key。无污染后果，但命名空间未隔离。
+  另外 `ReplaySimulator.get_derived_state(fields=...)` 接受但忽略
+  `fields` 参数（返回全量）——超集返回语义安全，签名兼容性 OK。
+
+### P3-15（遗留调试插桩）：`_TURB_DEBUG` 打印体系
+
+- `envs/humanoid21/simulator.py:14-15` + `disturbance_plugins.py:19-20`：
+  `COMBATBENCH_TURB_DEBUG` / `COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS`
+  环境变量门控的 `print(..., flush=True)` 调试输出（turb_apply /
+  turb_phys_pre / turb_phys_post / turb_debug），源自 441a73fe
+  "fix random push"（2026-04-12）扰动力调试会话。
+- **核查**：全仓库 `.md` 零引用；非 logging 走 print；模块级 env 读取
+  （import 时定型，进程内不可切换）。默认关闭所以无害。
+- **判定**：留存的诊断插桩，非死代码但**完全无文档**——AI/用户无法发现
+  这个杠杆。建议：要么写进 disturbance_plugins 的文档并改用 logging，
+  要么随扰动功能稳定后删除。
+
+### 阴性结果（本专场查了没问题的）
+
+- `blueprint.py` 主体、`_resolve_class` 的 dotted-form 兼容路径、
+  `from_runtime` 的 TimeoutPlugin 特例——实现与注释一致。
+- `observer_plugin.py` 的 BaseRuntimeUnit/CompositeObserver/dispatcher
+  注释全部属实（含 _process_ctx token 跳过 metrics 的 Note 是诚实的）；
+  `BaseObserverPlugin = BaseRuntimeUnit` 别名有明确注释说明来历。
+- `parameterized_blueprint.py` 与 policy.py 的 Parameter/替换逻辑重复是
+  有意为之（policy.py:451 注释说明为避免跨模块 import）。
+- `match_runner.py`：HP 结转/round seed 派生/契约与 RoundRunner 对得上；
+  `load_env_blueprint` 用 ParameterizedEnvBlueprint.load 统吃两种文档
+  （无参数节则空参数物化）——实现正确。
+- `recorder_viewer.py`：86 行小工具，无死代码。
+
+**Result/evidence:** 2 个新探针（reset_recorder_gap、video_path_leak）全过
+——均锁死当前缺陷行为，注释注明修复后应翻转断言。
+**Next:** 继续 Phase 3 下一个域：envs/humanoid21 的工具性文件
+（disturbance_plugins/plugins/observer_plugins 的注释与死代码复查，
+第一轮审的是行为，这轮专看注释与残留）。
