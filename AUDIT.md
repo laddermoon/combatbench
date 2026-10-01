@@ -1342,3 +1342,63 @@ fail-loud 边界显式）——但仍有 7 项发现。
 COMPAT 条目为零、PENDING 无产生路径）；MRO 检查缺陷为静态确认。
 **Next:** Phase 3 继续 baseline/framework/rollout +
 baseline/framework/ppo/dumpkit 的工具性代码精读。
+
+---
+
+## baseline/framework/rollout 第二轮：逐文件精读（2026-02 补）
+
+> 范围：rollout 工具层全部文件逐文件过——job/episode/episode_recorder/
+> episode_collection/exploratory_policy/remote_policy/inference_server/
+> parallel_rollouter/bench_rollout/observer_utils/__init__/_bench_export。
+> 定位：训练管线的数据采集层——EpisodeRunner→Episode 序列化→收集/落盘，
+> 以及可选的 GPU 远程推理路径。
+
+### 文件状态总览
+
+- `job.py` / `episode.py` / `episode_collection.py` / `observer_utils.py` /
+  `__init__.py`：**干净**——docstring 与实现一致，契约文档质量高
+  （blueprint_hash、EfSpec、split_by_termination 的 `""`-reason 约定
+  与 `Episode.agent_termination_reason` 的空串回退自洽）。
+- `exploratory_policy.py`：**干净且注释诚实**——reference-ensemble 快路径
+  首帧对账机制、sctx__ 前缀的 pickle 安全动机、SUPPORTS_REFERENCE_DELTA
+  意图握手都有真实说明。
+- `remote_policy.py` + `inference_server.py`（1050+ 行）：活跃子系统，
+  线协议/确定性边界（GPU↔GPU bit-identical、CPU↔GPU ~1e-7）文档完备；
+  `test_remote_inference.py` 18 项实测通过（40s，真实协议往返）。
+- `parallel_rollouter.py`：主路径——spawn-context 陷阱此前已记
+  （stdin/REPL 无 `__main__` 守卫即崩）。
+
+### 本轮新发现问题（2 项确认 + 2 项记录）
+
+- **P-RO-1（确认，工具失效）**：`bench_rollout.py` 双重过期——
+  (a) import `baseline.framework.ppo.policies.tanh_gaussian_mlp`，
+  该模块已移入 `policies/todo/`（与 P-POL-1 同一 stale-import 类）；
+  (b) docstring 用法示例引用 `baseline/humanoid21/blueprints/
+  stage1_env.yaml`——文件已不存在。性能基准工具当前完全不可运行；
+  `_bench_export/model.pt` 是其专属 fixture 但随工具一起失用。
+  建议：修复 import+blueprint 引用，或将工具与 fixture 一并归档 obsolete。
+- **P-RO-2（确认，与 P3-1 同根）**：`episode_recorder.py` 整条
+  Episode 产出依赖 `on_post_episode`——回合被 reset 放弃（P3-1 的
+  死路径）时该钩子不触发，`get_last_episode()` 静默返回**上一个**
+  回合的数据。正常 ParallelRollouter 流程不会放弃回合（跑到终止），
+  严重度低，但同一根因在数据管线上表现为"重复旧 Episode"而非显错。
+  另：`on_post_episode` 内 `except Exception` 裸捕获包住了观测读取
+  ——后端任何异常都变成空 obs 静默入库，建议至少记 warning。
+- **P-RO-3（记录，残留风险）**：`EfSpec` 类型别名在
+  `exploratory_policy.py:43` 与 `job.py` 重复定义（当前完全一致，
+  但漂移后两边注释也不会互相提醒）。建议收敛到 job.py 单源。
+- **P-RO-4（记录，布局非标准）**：两个测试文件直接放在包目录
+  （`rollout/test_*.py`）而非 `tests/` 子目录——pytest 照常收集，
+  但与仓库其他域的 tests/ 约定不一致。不影响功能。
+
+### 深度复核确认无问题的点（阴性结果）
+
+- `SamplingSpec`/`ReferenceSpec`/`Job` 验证链：delta_mode 取值、
+  weights 归一、frozen 依赖 reference——均有 fail-loud 校验。
+- `Episode.save/load`：stem 路径约定 + npz/json 双写一致；
+  `_to_jsonable` 递归处理 numpy 类型。
+- `EpisodeCollection.append` 校验 blueprint_hash 一致性（异构混排
+  拒绝）；`split_by_termination` 对 timeout/"" 语义与上游字段吻合。
+- `SamplingPolicy.reset()` 正确重置 `_step` 计数器与 inner.reset。
+- 远程推理握手：spec 注册幂等（内容哈希缓存）、确定性 padding、
+  cuDNN benchmark 显式关闭（L597）保证 kernel 选择稳定。
