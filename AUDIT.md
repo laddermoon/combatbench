@@ -1678,3 +1678,81 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
 **优先级建议（仅供裁决）**：P-POL-1 一行修复价值最高（81 个资产复活）；
 三个实现 bug 各自独立可修；dump_rollout 的 atanh 修正影响所有
 已产出 dump 的解读口径，建议优先定语义。
+
+---
+
+## Phase 4 — 全项目文档审计（2026-02 补）
+
+> 范围：除 `runs/` 下自动生成的 REPRODUCE/RECORD_GUIDE 之外的全部
+> ~90 份 Markdown。方法：逐份读 + 关键声明与代码对照（import/路径/
+> CLI 参数/API 名实测）。
+> 结论分四档：**现役契约文档**（准确、高价值）/ **历史记录**（过时但合理，
+> 是时间轴证据）/ **脱节文档**（声称是现状但与代码不符，最危险）/
+> **个人备忘**（无契约义务）。
+
+### A. 现役契约文档（核实准确，价值高）
+
+| 文档 | 核实内容 |
+|---|---|
+| `envs/humanoid21/DATASPEC.md` | static/derived state 全部键名、contacts_vec SoA 字段、96 维布局(42+13+2+39)、feet_forces 体重归一化、sqrt 速度压缩——逐一与 simulator.py 对上。**A 层契约样板** |
+| `envs/humanoid21/CONTROLSPEC.md` | 归一化位置控制、Target=a*Scale+Ref、KP/KD 固化原则——与实现一致 |
+| `envs/humanoid21/OBSERVATION_zh.md` | 96 维观测布局与 DATASPEC 互洽 |
+| `envs/humanoid21/CONTACT_DESIGN.md` | battle_v2 接触参数的实测推导，含 v1 教训附录——高质量工程记录 |
+| `envs/humanoid21/ACCEPTANCE_CRITERIA.md` | 文档本身写得好——但**它是"未兑现的验收单"**：实现达不到（P-H21-4），且没有任何测试真的断言这些指标 |
+| `docs/RULE.md` + `_zh` | HP 规则与 plugins.py 完全对上（ATTACK_PARTS=hand/foot、DAMAGE_RULES head3.0/torso1.0、force_scale=100、dt=0.002、100HP、KO）——准确 |
+| `docs/SUBMISSION.md` + `_zh` | `${DIR}` 策略打包语法与 PolicyBlueprint 实现一致（平台侧无法离线核实） |
+| `baseline/framework/ppo/GUIDE.md` | 全部 hook 名与 experiment.py 实测一致（on_eval/post_update/exploration/build_jobs/...）；数据流描述与 loop.py 吻合——**当前最好的"怎么写实验"文档** |
+| `baseline/framework/ppo/README.md` | 文档索引准确，CLI 快速上手可用 |
+| `baseline/experiments_ppo/README.md` | 注册机制描述与 `_discover()` 一致（顶层 exp_*.py、archive/todo 排除）；flags 全核实（`--set`/`--param`/`--reset-update` 都存在）；唯一漂移：列了 `on_update()` hook，实际只有 `post_update` |
+| `baseline/framework/ppo/DESIGN_*` 四份 + `policies/DESIGN_*` 六份 + `POLICY_SELECTION.md` | 设计决策记录，与现行 v2 框架/TruncNorm 家族一致；POLICY_SELECTION 有实测数据背书（48 run） |
+| `dumpkit/CONTEXT.md` / `DATA_FLOW.md` | 能力地图准确（含 gen_updates[0]=post-update 的正确语义）；唯一问题：把 atanh 域 eps 当作"采样噪声"描述——继承 P-DK-1 的 tanh 时代前提 |
+| `envs/batchframework/discuss.md` + `ROADMAP.md` | 治理级文档，定方向不定 API；M0-M6 PLAN/RESULTS 是对应的里程碑档案 |
+
+### B. 脱节文档（声称是现状、实际对不上——危害最大）
+
+| 文档 | 脱节点（已验证） | 危害 |
+|---|---|---|
+| **`policy/README.md`** | `BaseCombatPolicy` 类不存在；`load_policy()` 函数不存在；`act()` 签名错（实际返回 `(action, extra)` 元组且 `want_extra` kwarg）；`combatbench.policy` 包路径不存在；引用已删 `ParallelRunner`；示例 `policy.act(obs)` 返回值形态全错 | **全仓最危险的文档**：整篇描述的是上一代已删除的策略契约，按它写代码的 AI 会产出完全错误的接口 |
+| **`envs/humanoid21/README.md`** | `rule_blueprint.yaml` 不存在（实际 `blueprint.yaml`）；CLI 参数 `--blueprint/--policy-a` 是上一代（实际 `--env-blueprint/--policy-a-blueprint` 且吃蓝图 YAML 路径而非 `module:Class?k=v`）；`SPEC.md` 链接死；目录结构表与命令自相矛盾；CombatScoringObserver "输出命中事件"声称（P-H21-2 实际恒空） | 该目录的快速开始**全部不可执行** |
+| **`baseline/humanoid21/README.md`** | `curriculum/train.py`/`curriculum/framework/`/`analyze_*.py` 均不存在；rewards 表 9 项 vs 实际 22 文件；plugins 表 4 vs 10；blueprints 表 12 vs ~33；整个训练流程指向已死的 curriculum 注册表 | 目录地图严重失真 |
+| **`baseline/humanoid21/curriculum/README.md`** | 描述 `framework/{config,ppo_trainer,training_loop}.py` + `train.py`——**整套 v1 框架已删**（在 obsolete/ 且无 README 指路），无任何 legacy 声明 | 读它等于学一个已删除的框架 |
+| **`README.md`（根）** | `get_termination_flags()` 不存在（真实 API：`is_episode_over()`/`is_agent_active()`/`get_agent_termination()`）；`assets/` 标注"MuJoCo XML models"实为纯图片；`OBSERVABILITY.md` 链接死；快速开始策略能加载前会撞 P-POL-1；"125+ runs"实为 874；"开发自己策略"一节全部指向已死的 curriculum 路径，**完全不提 train.py/experiments_ppo/GUIDE.md 这条活路** | 项目门面文档指错了主路径 |
+| **`CLAUDE.md`** | 同 `get_termination_flags`；环境结构表列 `runtime_plugin.py`（已删）等旧文件；"Gymnasium-compatible"措辞过强（gymnasium 仅用于 `spaces`，无 `gym.Env` 适配器）；curriculum 描述为"legacy"但没说它 import 即崩 | AI 入门文档半过时 |
+| **`envs/framework/README.md` / `DESIGN.md`** | `get_termination_flags()` 示例代码不可运行；CONTEXT.md 大面积引用已删模块（此前条目已记） | 契约示例不可信 |
+| **`examples/README.md`** | 自述"规划草案 v2，等待确认后落地"——实际 01-09 全部实现且比提案多 3 个；文档从未更新为实现文档 | 把既有成果描述成未决提案 |
+| **`baseline/humanoid21/follow/README.md`** | 引用 `baseline/experiments_v2/exp_follow.py`——目录已不存在 | 路径死 |
+| **`baseline/humanoid21/end2end/README.md`** | 同上 `experiments_v2` 死路径 | 路径死 |
+| **`baseline/humanoid21/blueprints/README.md`** | 整段是旧 CLI 调试命令（`--blueprint`/`--policy-a`/`curriculum.yaml` 均不存在） | 纯废文档 |
+| **`envs/framework/RESET.md` §6/§3.2** | 规范表仍写 observer 钩子名 `on_reset`/`on_post_step`，但 G6 早已重命名为 `on_pre_episode`/`on_post_action_step`（代码已验证）；§7 状态栏声称"G1-G6 已落地"但 §3.4/§6 正文未同步 | 同一文档内部新旧并存 |
+| **`envs/framework/SEED.md`** | `ParallelRunner` 段落、`_derive_seeds` 描述基于已删 runner；EpisodeRunner 侧的派生机制核实仍准确 | 半过时 |
+| **`envs/framework/tests/README.md`** | 文件表列 5 个测试，实际 21 个文件 | 覆盖率描述失真 |
+| **`envs/humanoid21/tests/README.md`** | 只描述 test_data_interfaces；7 个从不 assert 的 acceptance 测试的存在未提及 | 同上当 |
+| **`ISSUES.md`** | 只登记 1 个问题（且已部分修复），与审计面差距悬殊——AUDIT.md 事实上接管了这个职责 | 残缺但可被 AUDIT 取代 |
+
+### C. 历史记录/备忘（过时但定位合理，不需修）
+
+`REVIEW_*`（untracked，自标"不纳入 Git"）、`V2_TRAINING_TIME_LOG`、`bootstrip.md` 各处、`curriculum/TRAINING_V1|V2`、`STANDUP_V2_TRAINING_HISTORY`、`balance_recover/` 六份、`end2end/` 四份、`FIXPLAN.md`、`policies/todo/*` 八份、`RESULTS_*`、`EXPERIMENT_LOG_*`、`obs_analysis/*`——
+全部是诚实的时间戳档案。**问题不在内容而在准入**：它们和契约文档混排、
+没有"历史档案"标记，AI/新人无法一眼区分"这是规范"还是"这是墓碑"。
+
+### D. 缺失的文档（按缺口影响排序）
+
+1. **准确的策略契约文档**——policy/README 全面失效后，"怎么写一个能提交的策略"没有任何正确文档。SUBMISSION.md 只说打包格式，不说 Policy/act 签名。这是面向参赛者的第一缺口。
+2. **EnvBlueprint/PolicyBlueprint 的 YAML schema 文档**——蓝图是"复现别人实验"的核心杠杆，schema 只能从源码和样例逆向。
+3. **round_runner/match_runner CLI 参考**——现有文档全是旧参数名。
+4. **训练路径导览**——README 完全不提 `train.py`+`experiments_ppo`+`GUIDE.md` 这条活路；需要一个"我要训练/评估/调试"的任务→工具地图（DUMP/viewer/REPRODUCE 什么时候用）。
+5. **rewards/plugins/blueprints 目录清单**——22 个 reward、10 个 plugin、33 个 blueprint 没有权威清单（humanoid21 README 表已失真）。
+6. **Known-Issues 活跃登记**——ISSUES.md 名存实亡；需要一个"当前已知坑"活文档（AUDIT.md 暂代）。
+7. **Determinism/seed 保证说明**——SEED.md 半过时；审计已证实进程内/跨进程 bit-identical，这个事实值得写成面向用户的承诺文档。
+8. **dumpkit 用户向入门**——CONTEXT.md 是 AI 能力地图，缺"我训崩了，第一步看什么"的决策树式文档（DATA_FLOW 偏结构不偏流程）。
+9. **batchframework 使用说明**——全是里程碑档案，没有"怎么跑一个 device 实验/什么时候别用"的用户向文档。
+10. **`episode_options` 已支持 key 目录**——散落在 RESET.md §4.2 + 各插件 docstring，且 RESET 表还是规划时的"新增"标注意味着口径未更新。
+
+### 处置建议（不动手写）
+
+- S15：B 档脱节文档中 `policy/README.md`、`envs/humanoid21/README.md`、
+  `baseline/humanoid21/README.md`+`curriculum/README.md`、根 README 五篇
+  建议优先重写或加"已过时"横幅——它们都是"入口级"文档，错误成本最高。
+- S16：历史文档统一打 archival 标记（一行 header 即可），把"规范/档案"
+  二分显式化。
+- S17：D 档缺口按 1→3→2→4 优先级补。
