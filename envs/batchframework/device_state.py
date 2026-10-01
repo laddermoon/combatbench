@@ -198,3 +198,54 @@ class DeviceBatchState:
         self.episode.terminated_flag.zero_()
         self.episode.term_reason.fill_(-1)
         self.episode.reset_request.zero_()
+
+
+# ---------------------------------------------------------------------------
+# runtime 侧命名空间分配（E1-W3：簿记所有权归 runtime，不归 sim/backend）
+# ---------------------------------------------------------------------------
+def alloc_episode_namespace(B: int, dev: torch.device,
+                            n_agents: int = 2) -> EpisodeNamespace:
+    return EpisodeNamespace(
+        episode_steps=torch.zeros(B, dtype=torch.int64, device=dev),
+        active_mask=torch.ones(B, dtype=torch.bool, device=dev),
+        terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
+        term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
+        agent_terminated=torch.zeros(B, n_agents, dtype=torch.bool,
+                                     device=dev),
+        agent_term_reason=torch.full((B, n_agents), -1, dtype=torch.int8,
+                                     device=dev),
+        reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
+        time=torch.zeros(B, dtype=torch.float32, device=dev),
+        n_agents=n_agents,
+    )
+
+
+def alloc_io_namespace(B: int, dev: torch.device, action_dim: int,
+                       obs_dim: int) -> IoNamespace:
+    return IoNamespace(
+        action_a=torch.zeros(B, action_dim, device=dev),
+        action_b=torch.zeros(B, action_dim, device=dev),
+        obs_a=torch.zeros(B, obs_dim, device=dev),
+        obs_b=torch.zeros(B, obs_dim, device=dev),
+        reward=torch.zeros(B, device=dev),
+    )
+
+
+def alloc_rng_namespace(B: int, dev: torch.device) -> RngNamespace:
+    return RngNamespace(
+        seed_offsets=torch.zeros(B, dtype=torch.int64, device=dev),
+        step_counter=torch.zeros((), dtype=torch.int64, device=dev),
+    )
+
+
+def compose_state(batch_size: int, sim_ns: SimNamespace, dev: torch.device,
+                  action_dim: int, obs_dim: int,
+                  n_agents: int = 2) -> DeviceBatchState:
+    """runtime 组装数据平面：sim_ns 由后端提供，簿记命名空间在此分配。"""
+    return DeviceBatchState(
+        batch_size,
+        sim_ns,
+        alloc_episode_namespace(batch_size, dev, n_agents),
+        alloc_io_namespace(batch_size, dev, action_dim, obs_dim),
+        alloc_rng_namespace(batch_size, dev),
+    )

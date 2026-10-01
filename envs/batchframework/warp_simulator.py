@@ -112,6 +112,10 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
         return self._batch_size
 
     @property
+    def device(self) -> torch.device:
+        return self._torch_device
+
+    @property
     def _wmodel(self):
         return self._backend._wmodel
 
@@ -162,17 +166,8 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
             torch.as_tensor(qpos_all, dtype=torch.float32,
                             device=self._torch_device))
         self._write_actions(a_np, b_np)
-        st = self._dev_state
-        if st is not None:
-            st.clear_step_flags()
-            st.episode.episode_steps.zero_()
-            st.episode.active_mask.fill_(True)
-            st.episode.agent_terminated.zero_()
-            st.episode.agent_term_reason.fill_(-1)
-            st.episode.time.zero_()
-            st.rng.seed_offsets.copy_(torch.as_tensor(
-                self._reset_seeds, dtype=torch.int64,
-                device=self._torch_device))
+        # episode/rng 簿记清理由 runtime.reset 负责（W3 所有权边界）；
+        # io.action 镜像经 _write_actions → attach_state 状态同步。
 
     def physical_step(self, n_steps: int = 1,
                       keep_history: bool = False) -> None:
@@ -228,14 +223,19 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
 
     def dev_set_action(self, action_a: torch.Tensor,
                        action_b: torch.Tensor) -> None:
-        """动作 → PD target，全设备端。形状 (B,21)，clip 到 [-1,1]。"""
-        st = self.build_device_state()
+        """动作 → PD target，全设备端。形状 (B,21)，clip 到 [-1,1]。
+
+        io.action 镜像写入 runtime attach 的状态（若有）；act_target
+        是物理输入寄存器，始终写。
+        """
+        st = self._dev_state
         norm = self._norm_consts_t()
         target = self._backend.ensure_act_target(2 * self.ACTION_DIM)
         for rid, act, cols in (("robot_a", action_a, slice(0, 21)),
                                ("robot_b", action_b, slice(21, 42))):
             a = act.clamp(-1.0, 1.0)
-            getattr(st.io, f"action_{rid[-1]}").copy_(a)
+            if st is not None:
+                getattr(st.io, f"action_{rid[-1]}").copy_(a)
             ref, scale = norm[rid]
             target[:, cols] = a * scale + ref
 
@@ -271,7 +271,7 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
         ids = env_ids.to(torch.long)
         if ids.numel() == 0:
             return
-        st = self.build_device_state()
+        st = self._dev_state
         ids_np = ids.detach().cpu().numpy().astype(np.int64)
         qpos_all, act_a, act_b = self._binding.compute_reset_state(
             self._batch_size, None, options)
@@ -286,18 +286,19 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
         dev = self._torch_device
         act_a_t = torch.as_tensor(act_a, dtype=torch.float32, device=dev)
         act_b_t = torch.as_tensor(act_b, dtype=torch.float32, device=dev)
-        st.io.action_a[ids] = act_a_t[ids]
-        st.io.action_b[ids] = act_b_t[ids]
+        if st is not None:
+            st.io.action_a[ids] = act_a_t[ids]
+            st.io.action_b[ids] = act_b_t[ids]
         self._action_np["robot_a"][ids_np] = act_a[ids_np]
         self._action_np["robot_b"][ids_np] = act_b[ids_np]
         norm = self._norm_consts_t()
+        ref_a, scale_a = norm["robot_a"]
+        ref_b, scale_b = norm["robot_b"]
         target = self._backend.ensure_act_target(2 * self.ACTION_DIM)
         target[ids, :self.ACTION_DIM] = (
-            st.io.action_a[ids] * norm["robot_a"][1]
-            + norm["robot_a"][0])
+            act_a_t[ids] * scale_a + ref_a)
         target[ids, self.ACTION_DIM:] = (
-            st.io.action_b[ids] * norm["robot_b"][1]
-            + norm["robot_b"][0])
+            act_b_t[ids] * scale_b + ref_b)
 
     def dev_set_integration_rows(
             self, env_ids: torch.Tensor,
@@ -313,23 +314,15 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
             qvel=qvel_rows.to(torch.float32),
             mask=mask)
 
-    # ------------------ DeviceBatchState 组装（W3 迁往 runtime） ------------------
-    def build_device_state(self) -> DeviceBatchState:
-        """构造（或返回已有的）设备数据平面。
+    # ------------------ 数据平面（W3：runtime 拥有簿记） ------------------
+    def build_sim_namespace(self) -> SimNamespace:
+        """物理命名空间——backend.views() 的活视图组装（后端职责边界）。
 
-        sim 字段是 backend.views() 的活视图；episode/io/rng 为本对象
-        持有的 CUDA 张量（reset 不重建——wdata 对象跨 reset 存活，
-        视图不失效）。
-
-        ⚠️ 过渡职责：episode/io/rng 簿记本应由 runtime 分配
-        （W3 工作项）；此处暂保留以维持现有调用点。
+        只含物理：qpos/qvel/ctrl/derived/wrench/接触平铺视图。
+        episode/io/rng/plugin 簿记一律归 runtime（compose_state）。
         """
-        if self._dev_state is not None:
-            return self._dev_state
         v = self._backend.views()
-        B, dev = self._batch_size, self._torch_device
-        obs_dim = self._obs_dim()
-        sim_ns = SimNamespace(
+        return SimNamespace(
             qpos=v["qpos"], qvel=v["qvel"], ctrl=v["ctrl"],
             xpos=v["xpos"], xquat=v["xquat"], xipos=v["xipos"],
             xanchor=v["xanchor"], cvel=v["cvel"],
@@ -342,38 +335,34 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
                 cap_per_world=self._backend._nconmax_per_world,
             ),
         )
-        episode_ns = EpisodeNamespace(
-            episode_steps=torch.zeros(B, dtype=torch.int64, device=dev),
-            active_mask=torch.ones(B, dtype=torch.bool, device=dev),
-            terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
-            term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
-            agent_terminated=torch.zeros(B, 2, dtype=torch.bool,
-                                         device=dev),
-            agent_term_reason=torch.full((B, 2), -1, dtype=torch.int8,
-                                         device=dev),
-            reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
-            time=torch.zeros(B, dtype=torch.float32, device=dev),
-        )
-        io_ns = IoNamespace(
-            action_a=torch.zeros(B, self.ACTION_DIM, device=dev),
-            action_b=torch.zeros(B, self.ACTION_DIM, device=dev),
-            obs_a=torch.zeros(B, obs_dim, device=dev),
-            obs_b=torch.zeros(B, obs_dim, device=dev),
-            reward=torch.zeros(B, device=dev),
-        )
-        rng_ns = RngNamespace(
-            seed_offsets=torch.zeros(B, dtype=torch.int64, device=dev),
-            step_counter=torch.zeros((), dtype=torch.int64, device=dev),
-        )
-        self._dev_state = DeviceBatchState(
-            B, sim_ns, episode_ns, io_ns, rng_ns)
-        return self._dev_state
 
-    def _obs_dim(self) -> int:
+    def attach_state(self, state: DeviceBatchState) -> None:
+        """runtime 注册其持有的 DeviceBatchState——dev_set_action /
+        dev_reset_rows 的 io.action 镜像写入此对象（单源）。"""
+        self._dev_state = state
+
+    def obs_dim(self) -> int:
+        """观测维度（host 路径提取一次，缓存）。"""
         if getattr(self, "_obs_dim_cached", None) is None:
             self._obs_dim_cached = int(
                 self.get_observation()["robot_a"].shape[-1])
         return self._obs_dim_cached
+
+    def build_device_state(self) -> DeviceBatchState:
+        """兼容入口（standalone/测试路径）：组装完整数据平面并 attach。
+
+        与 runtime 路径共用同一组装函数（device_state.compose_state），
+        簿记分配逻辑只有一份；runtime 使用时由 BatchRuntime 组装后
+        attach_state()，两者不得并存两个 state 对象。
+        """
+        if self._dev_state is None:
+            from .device_state import compose_state
+            st = compose_state(self._batch_size,
+                               self.build_sim_namespace(),
+                               self._torch_device,
+                               self.ACTION_DIM, self.obs_dim())
+            self.attach_state(st)
+        return self._dev_state
 
     # ------------------ host accessor（验证/回放路径） ------------------
     def get_core_state(self, history: bool = False) -> Dict[str, np.ndarray]:

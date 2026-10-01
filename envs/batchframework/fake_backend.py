@@ -17,10 +17,8 @@ import torch
 
 from .device_state import (
     DeviceBatchState,
-    EpisodeNamespace,
-    IoNamespace,
-    RngNamespace,
     SimNamespace,
+    compose_state,
 )
 from .physics import (
     BackendDescriptor,
@@ -54,46 +52,45 @@ class FakeBatchBackend:
     def batch_size(self) -> int:
         return self._B
 
+    # ------------------------------------------------------------------
+    # 数据平面（E1-W3：簿记分配逻辑归 device_state.compose_state；
+    # 后端只提供物理命名空间 + attach_state 注册 io 镜像目标）
+    # ------------------------------------------------------------------
+    def build_sim_namespace(self) -> SimNamespace:
+        if getattr(self, "_sim_ns", None) is None:
+            B, dev = self._B, self._dev
+            self._sim_ns = SimNamespace(
+                qpos=torch.zeros(B, self.NQ, device=dev),
+                qvel=torch.zeros(B, self.NV, device=dev),
+                ctrl=torch.zeros(B, self.NU, device=dev),
+                xpos=torch.zeros(B, self.NBODY, 3, device=dev),
+                xquat=torch.zeros(B, self.NBODY, 4, device=dev),
+                xipos=torch.zeros(B, self.NBODY, 3, device=dev),
+                xanchor=torch.zeros(B, self.NQ, 3, device=dev),
+                cvel=torch.zeros(B, self.NBODY, 6, device=dev),
+                xfrc_applied=torch.zeros(B, self.NBODY, 6, device=dev),
+                act_target=torch.zeros(B, self.NU, device=dev),
+                contacts_flat=None,
+            )
+        return self._sim_ns
+
+    def attach_state(self, state: DeviceBatchState) -> None:
+        """runtime 注册其持有的数据平面（dev_* 的 io 镜像写目标）。"""
+        self._state = state
+
+    @property
+    def device(self) -> torch.device:
+        return self._dev
+
+    def obs_dim(self) -> int:
+        return self.OBS_DIM
+
     def build_device_state(self) -> DeviceBatchState:
-        if self._state is not None:
-            return self._state
-        B, dev = self._B, self._dev
-        sim = SimNamespace(
-            qpos=torch.zeros(B, self.NQ, device=dev),
-            qvel=torch.zeros(B, self.NV, device=dev),
-            ctrl=torch.zeros(B, self.NU, device=dev),
-            xpos=torch.zeros(B, self.NBODY, 3, device=dev),
-            xquat=torch.zeros(B, self.NBODY, 4, device=dev),
-            xipos=torch.zeros(B, self.NBODY, 3, device=dev),
-            xanchor=torch.zeros(B, self.NQ, 3, device=dev),
-            cvel=torch.zeros(B, self.NBODY, 6, device=dev),
-            xfrc_applied=torch.zeros(B, self.NBODY, 6, device=dev),
-            act_target=torch.zeros(B, self.NU, device=dev),
-            contacts_flat=None,
-        )
-        episode = EpisodeNamespace(
-            episode_steps=torch.zeros(B, dtype=torch.int64, device=dev),
-            active_mask=torch.ones(B, dtype=torch.bool, device=dev),
-            terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
-            term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
-            agent_terminated=torch.zeros(B, 2, dtype=torch.bool, device=dev),
-            agent_term_reason=torch.full(
-                (B, 2), -1, dtype=torch.int8, device=dev),
-            reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
-            time=torch.zeros(B, dtype=torch.float32, device=dev),
-        )
-        io = IoNamespace(
-            action_a=torch.zeros(B, self.ACTION_DIM, device=dev),
-            action_b=torch.zeros(B, self.ACTION_DIM, device=dev),
-            obs_a=torch.zeros(B, self.OBS_DIM, device=dev),
-            obs_b=torch.zeros(B, self.OBS_DIM, device=dev),
-            reward=torch.zeros(B, device=dev),
-        )
-        rng = RngNamespace(
-            seed_offsets=torch.zeros(B, dtype=torch.int64, device=dev),
-            step_counter=torch.zeros((), dtype=torch.int64, device=dev),
-        )
-        self._state = DeviceBatchState(B, sim, episode, io, rng)
+        """兼容入口（standalone/测试）：组装 + attach，单源缓存。"""
+        if self._state is None:
+            self.attach_state(compose_state(
+                self._B, self.build_sim_namespace(), self._dev,
+                self.ACTION_DIM, self.OBS_DIM))
         return self._state
 
     # ------------------------------------------------------------------

@@ -69,7 +69,25 @@ class BatchRuntime:
     # ------------------------------------------------------------------
     @property
     def state(self) -> DeviceBatchState:
-        return self.sim.build_device_state()
+        """runtime 拥有的数据平面（E1-W3）。
+
+        物理命名空间来自 sim.build_sim_namespace()；episode/io/rng
+        簿记由 compose_state（device_state 模块）分配——sim/backend
+        不再创建或持有簿记张量。组装后经 sim.attach_state 注册，
+        dev_* mutator 的 io.action 镜像写入此对象（单一来源）。
+        """
+        if getattr(self, "_state", None) is None:
+            from .device_state import compose_state
+            obs_dim = (self.obs_builder.obs_dim()
+                       if hasattr(self.obs_builder, "obs_dim")
+                       else self.sim.obs_dim())
+            dev = getattr(self.sim, "device", None)
+            st = compose_state(
+                self.sim.batch_size, self.sim.build_sim_namespace(),
+                dev, self.sim.ACTION_DIM, obs_dim)
+            self.sim.attach_state(st)
+            self._state = st
+        return self._state
 
     def attach(self, plugin: BaseDevicePlugin) -> None:
         if plugin.plane is ExecutionPlane.HOST_SLOW and not self._allow_host_slow:
