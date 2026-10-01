@@ -1497,3 +1497,59 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
 - S11：决定 `policies/todo/` 归属——修测试 import 让归档自洽，
   或整体移入 `obsolete/` 并改 import 前缀。
 - S12：`loop.py:1075` 的 early-stop 日志改为通用措辞。
+
+---
+
+## baseline/framework/ppo policies + algos + tests 第二轮：精读续（2026-02 补）
+
+> 范围：`ppo/policies/truncated_normal_mlp.py` 全读（706 行，家族基类），
+> 其余 8 个变体抽查 docstring；`ppo/algos/advantages.py` 全读（227 行）；
+> `ppo/tests/` + `policies/test_*.py` 全量实测。
+> 定位：8 个策略族的共享实现与优势估计算子。
+
+### 测试实测（本单元新跑）
+
+`pytest policies/ tests/ algos/`（剔除 todo 与 test_viewer）：
+**577 passed / 5 failed**，两簇：
+
+- **test_dump_delta.py ×4（测试过时，非实现回归）**：
+  `compute_delta` 现行语义为 row 0 = dump 所属 update 的 post-update
+  策略（`policy_exports/u{u}`），docstring（L5-16）与实现一致并给出
+  了语义理由（"row 1 = rollout policy 本身"）。但 4 个测试仍按旧
+  语义断言（row 0 = rollout 策略 u−1，gen_updates 从 u−1 起计），
+  且 fixture 不建 u4 的 export 导致 missing_updates 多出 4。
+  判定：**有意的语义变更后测试未跟进**。修测试即可。
+- **test_trainer.py::test_checkpoint_rng_state_roundtrip（测试过时）**：
+  新增正确的 `prev_gvec` 长度守卫（loop.py:471-481，obs 扩展后
+  丢弃尺寸不符的旧梯度向量）把测试里长度 5 的假向量当畸形数据丢
+  弃——守卫行为正确，测试应改用与 actor 参数量一致的 gvec。
+- 另确认 2 个 collection error：`tests/test_viewer.py` import
+  `_dump_gradsig`——该函数已移至 `dumpkit/dump_analysis.py`
+  （`server.py:1296` 现以 `_da.dump_gradsig` 调用），重命名后测试
+  未跟进；`policies/todo/` 3 个测试同 P-POL-1 类。
+
+### 本轮新发现（文档/残留级）
+
+- **P-BFW-8（确认）**：`algos/advantages.py:3` docstring 引用
+  `baseline/DESIGN.md` §3.6——该文件不存在。
+- **P-BFW-9（确认）**：`truncated_normal_mlp.py:627` docstring 声称
+  "A parity test in ``test_truncated_normal.py`` verifies …
+  bit-identical"——文件存在且通过，引用为真（阴性，记入以免再查）。
+- `policies/__init__.py` 导出 10 个策略类（含 pre_tanh 族并注明
+  "unfinished/on hold"——注释诚实）；`todo/` 归档含 8 个旧实现 +
+  设计文档 + 自身已失效测试（见 P-BFW-5）。
+
+### 阴性结果（复核确认）
+
+- `TruncatedNormalPolicy`：截断正态采样（inverse-CDF 重参数化 +
+  归一化项入 log_prob）、U=σ√(2π)Z/2 的精度越界说明（大 σ 时
+  ~4e-4 超 1 并 clamp）、export 自包含（P0-6：模板文件非字符串
+  拼接、无 repo import）、SUPPORTS_REFERENCE_DELTA 握手——实现与
+  注释逐条吻合。
+- `delta_mix_sigma`：frozen/dynamic 两路语义、σ-floor
+  （`max((c|Δ|)², σ², ε²)`）、Δ detach 的理由、payload 缺失时
+  fail-loud——均与注释一致；导出版本注意事项（跨进程旧类实例
+  只能读属性不能调方法）有显式注释。
+- `compute_gae`/`normalize_advantages`：terminated vs truncated
+  契约（last_value 显式传入）、gauss_rank 的 tied-rank 处理、
+  std<1e-8 短路——实现与注释一致；入参校验 fail-loud。
