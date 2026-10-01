@@ -1553,3 +1553,64 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
 - `compute_gae`/`normalize_advantages`：terminated vs truncated
   契约（last_value 显式传入）、gauss_rank 的 tied-rank 处理、
   std<1e-8 短路——实现与注释一致；入参校验 fail-loud。
+
+---
+
+## ppo/dumpkit 第二轮：逐文件精读（2026-02 补）
+
+> 范围：`dump_request.py`、`dump_capture.py`（954 行全读）、
+> `dump_rollout.py`（全读）、`dump_render.py`（前 120 行 + 引用核对）、
+> `frame_access.py`（头部契约 + 结构核对）、`metric_catalog.py`（此前已
+> 抽查无漂移）、`viewer/server.py`（结构 + gradsig 段）。
+> 定位：训练调试工具链——dump 捕获、帧访问层、离线诊断、viewer 后端。
+
+### 本轮新发现问题
+
+- **P-DK-1（确认，语义陈旧——tanh 时代遗留）**：`dump_rollout.py`
+  的核心量在 atanh 域计算：`eps_raw = atanh(a_sampled) − atanh(a_det)`，
+  docstring 明示 "a_det = tanh(mu) so atanh(a_det) recovers the raw
+  mean"——这是 TanhGaussian 时代的建模前提。当前策略族（TruncNorm
+  全部 8 个变体）的 deterministic action 就是 mean 本身，采样噪声
+  住在线性 σ 域而非 atanh 域：atanh 残差是对线性残差的非线性
+  翘曲（|a|→1 处发散放大），其 acf/频谱/saturated 统计仍**可计算**
+  但"这就是采样噪声"的解读不成立。`viewer/server.py:1625-1649`
+  的 rollout 端点重复同一前提。建议：改为线性残差
+  `a_sampled − a_det`（truncnorm 下即 σ·z 的直接量），或按
+  distribution_kind 分派。
+- **P-DK-2（确认，硬编码基类）**：`dump_capture.py`
+  `_export_stochastic_policy`（L562-565）无条件读取
+  `policies/_export_template.py`（base TruncNorm 模板）并在两个
+  wrapper 模板里写死 `ExportedTruncNormPolicy`——对 mixture /
+  state-σ / bounded-σ / pre-tanh 任一非基类家族，dump 的
+  stochastic_policy 是错模板+对 model.pt，导出的 policy.py 与
+  权重不匹配（加载时模板校验会报错——晚败型失败，不在捕获时报）。
+  另：`dump` 对携带 reference/delta 配置的 spec 显式
+  NotImplementedError（L572-581，fail-loud 正确）。
+- **P-DK-3（记录，序列化脆弱）**：`_serialize_explore_factor` 用
+  `inspect.getsource` + `str.replace` 改函数名内联 callable——
+  多行签名/装饰器/引用非标量全局量会静默产出坏代码（只捕获
+  int/float/str/bool 全局标量）。适用范围有限但文档有声明。
+- **P-DK-4（记录）**：`dump_capture.py:65` 注解用了未 import 的
+  `Tuple`——`from __future__ import annotations` 下无运行期影响，
+  纯整洁度问题。
+- **P-DK-5（记录）**：`_flatten_observer_outputs` 的 key 集取自
+  首个 episode（L168-169）——后续 episode 出现额外 observer key 会
+  静默不进 episodes.npz。
+
+### 阴性结果（复核确认）
+
+- `dump_request.py`：sentinel 原子 rename 一次性消费、损坏文件
+  警告而不删不崩——契约与实现一致。
+- `frame_access.py` 头部契约（行空间语义、列式懒加载、None 语义
+  不造零、traj_map 回退重建）与其使用方一致。
+- `_make_frame_ids`：obs 内容 hash 定位 trajectory 归属，匹配失败
+  标 `flat:` 不静默。
+- `capture_dump` manifest 全字段（git provenance、has_* 标志）与
+  落盘文件名表和模块头声明一致。
+
+### dumpkit 遗留建议
+
+- S13：dump_rollout 的 atanh 域分析改为线性域（或按导出清单的
+  distribution_kind 分派解释器）。
+- S14：stochastic_policy 导出按 MANIFEST 的 exported_class 选择
+  对应模板，或在 capture 时对非基类家族 fail-loud 而不写错文件。
