@@ -1146,3 +1146,114 @@ SHA256 两次跨进程一致；阶跃/正弦/静置三组物理实测数据如�
 **Next:** 继续 Phase 3 下一个域：envs/humanoid21 的工具性文件
 （disturbance_plugins/plugins/observer_plugins 的注释与死代码复查，
 第一轮审的是行为，这轮专看注释与残留）。
+
+---
+
+## 2026-07-12 Phase 3 续 — envs/humanoid21 逐文件精读（注释/死代码专场）
+
+**Scope:** plugins.py / disturbance_plugins.py / observer_plugins.py /
+simulator.py / meta.py + 资产目录。本轮看注释准确性与残留代码
+（第一轮审的是行为）。
+**发现 13 项（P3-16 ~ P3-28），含同类 bug 第二实例、CPU/device 语义分歧 1 处、
+4 套无文档调试通道的集中登记。**
+
+### P3-16（实锤 bug，与 P3-2 同类）：ConstantForcePlugin 的 episode_options 覆盖永久污染实例
+
+- **位置：** `disturbance_plugins.py:1216-1224`。`on_pre_episode` 从
+  `ctx.episode_options["impulse_params"][agent_id]` 读覆盖值，直接写进
+  `self.force / self.direction / self.duration_action_steps / self.body_name`。
+- **后果**：传过一次 impulse_params 的回合之后，不带参数的回合继续用上次
+  的覆盖值；且 `to_blueprint()` 会把被污染的值序列化——蓝图快照失真。
+- **对照**：CombatScoringPlugin 的 `score_log_file` 做的是**正确**范式
+  （plugins.py:274 —— 每回合读 `opts.get(..., self.score_log_file)` 比较
+  路径、不改写 ctor 字段）。三类"per-episode override"已有两种实现，
+  一正两误（P3-2 + 本条），值得统一。
+- **建议**：ctor 默认值存私有字段，per-episode override 走本地变量；
+  顺手把 VideoRecorderPlugin 一起改。
+
+### P3-17（语义分歧）：CPU 与 device 的 `ctx.events` 生命周期不同
+
+- **CPU**（context.py:256）：`events` 只在 `clear_episode_state`（reset）清空，
+  **整个回合持续累积**。
+- **Device**（batch_context.py `clear_step_state` + host_compat.py:169/406）：
+  每个 action step 开始前清空，并 drain 到 `last_events`。
+- **后果**：插件/observer 写 "事件" 语义时两条路径行为不同——CPU 上是
+  回合累积列表，device 上是单步瞬态。与 P-H21-2 叠加构成三层错位：
+  CombatScoringObserver (a) 读了错误容器 `metrics["events"]`；
+  (b) 即便改读 `ctx.events`，CPU 语义也是"回合至今全部事件"而非
+  docstring 声称的 "current step"；(c) device 上则是"本步事件"。
+- **建议**：定一个权威语义（推荐 per-step 瞬态，与 device 对齐），
+  CPU `_RuntimeCore.step` 开头清 events；CombatScoringObserver 改读
+  ctx.events。
+
+### P3-18 ~ P3-22：死代码 / 死分支 / 死 import（5 处）
+
+| 编号 | 位置 | 内容 |
+|---|---|---|
+| P3-18 | plugins.py:147 | `DAMAGE_TARGET_PARTS` 含 `waist_upper`/`waist_lower`，但 `_get_part_category`（L310-324）只会产出 head/torso/hand/larm/uarm/thigh/shin/foot——两个条目永远匹配不到（waist 已折叠进 'torso'）。死集合条目，误导读者以为 waist 是独立伤害目标 |
+| P3-19 | plugins.py:362 | `hit_cat in ('torso','waist_upper','waist_lower')` 同理——后两个是永远进不来的死分支 |
+| P3-20 | plugins.py:56,110 | `NonFallConstraintPlugin.on_post_phy_step` 的 `changed` 变量赋值后从未读取——死变量 |
+| P3-21 | observer_plugins.py:3 | `import mujoco` 全文未使用——死 import |
+| P3-22 | simulator.py:249 | `get_sensor_data` 永远返回 `{}`——自述"暂时返回空字典，未来可扩展"的占位实现。注意后果面：BaseFrameRecorder 的 step JSON 里 `sensor_data` 字段恒空，ReplaySimulator 回放也恒空——能力处于半成品状态但接口已就位 |
+
+### P3-23（隐性坑）：KO 判定只在动作步边界，HP=0 后伤害继续累计
+
+- `CombatScoringPlugin`：伤害在 `on_post_phy_step` 逐物理步施加
+  （正确——注释里写明了动机是不错过瞬时接触），但
+  `request_termination(KO)` 只在 `on_post_action_step` 判定
+  （plugins.py:520-524）。HP 到 0 之后，本动作步剩余物理步仍继续
+  累计 `damage_taken` 并写 score log。
+- health 有 `max(0.0, ...)` 钳制所以不会变负；但 damage_taken 会超杀
+  累计、terminal 帧的 hit events 里含"死人又挨了几步打"。语义上
+  可辩护（伤害是物理事实），但与"KO 立即终止"直觉不符，且无注释
+  说明这是有意选择。
+
+### P3-24（性能/资源）：FrozenRobotPlugin 每物理步全量重写两个机器人状态
+
+- `plugins.py:585-612`：每个 post_phy_step 都构造含**对方机器人**的完整
+  core_state 并 `set_core_state`（触发 mj_forward）。对方机器人的值是
+  刚读出来的原值——25 次/动作步的无谓全量写回。功能正确但浪费；
+  且 `initial_state` 只在 `frozen_robot_id in core_state` 时设置，
+  配置错误的 robot_id 会沿用上个回合的初始状态（静默失效模式）。
+
+### P3-25（资源泄漏级）：内部仿真实例从不关闭
+
+- `RandomFallenStatePlugin._internal_sim` / `ImpulsePerturbationPlugin._internal_sim`
+  懒构造 `Humanoid21Simulator()`，插件无 `on_detach`——MuJoCo model/data
+  （及潜在 renderer）挂到进程结束。训练 worker 每 worker 一个插件实例，
+  量不大，但插件规范没要求/没示范清理内部资源。
+
+### P3-26（无文档调试通道集中登记）
+
+本目录共有 **4 套独立调试通道**，全部 `print`/文件直写，零文档：
+| 通道 | 位置 | 开关 |
+|---|---|---|
+| TURB_DEBUG | simulator.py:14, disturbance_plugins.py:19 | `COMBATBENCH_TURB_DEBUG`, `..._MAX_PHYS_STEPS` |
+| FALL_DEBUG | disturbance_plugins.py:818 | `COMBATBENCH_FALL_DEBUG`, `..._DIR` |
+| SCORE_DEBUG | plugins.py:193 | `COMBAT_SCORE_DEBUG_FILE` |
+| debug_torque | simulator.py:55,1090 | ctor 参数（蓝图可见，唯一半正式的） |
+
+建议：统一收敛到一个 debug 规范（至少一份 CONTEXT/README 登记四者），
+或删除已完成使命的（TURB/FALL 是 4 月扰动调试遗留）。
+
+### P3-27（资产残留）
+
+- `test_videos/` 下 2 个 mp4 是 acceptance 测试输出残留被提交
+  （test_acceptance.py:23 的 VIDEO_DIR 指向这里——属输出目录被入库）。
+- `battle_v1.xml` / `battle_v2.xml` 仍在目录内；当前 ARENA_XML 指向
+  circular_v2，但旧 XML 仍被 baseline 工具链引用（retarget.py、
+  debug_mujoco_reset.py）——非纯死资产，但新旧混用无文档说明。
+- `obs_analysis/` `pose_images/` 为有意提交的研究产物（commit 86b4f141
+  force-add）——保留合理，但目录用途缺说明。
+- `observer_plugins.py:32` `ARENA_HALF_EXTENT=3.05` 是方形场遗留常量
+  （现圆形墙），仅影响可视化贴图裁剪，cosmetic。
+- `Humanoid21BalanceAnalysisObserver._last_accessor` 把活 accessor 缓存
+  出场（L210），`get_visualization_image` 事后用它取**当前**帧配
+  **历史**分析输出——错配风险，属于 accessor 常驻能力的另一面
+  （与 mutator-leak 同族，只读方向危害低）。
+
+**Result/evidence:** 全部经逐行阅读 + grep 交叉验证；P3-16/P3-17 与已有
+探针同族（video_path_leak / combat_observer_events）。
+**Next:** Phase 3 继续 envs/batchframework 工具性文件精读
+（device_runtime/device_plugin/host_compat/capability_registry/validation 的
+注释与残留），然后是 baseline/framework/rollout + ppo/dumpkit。
