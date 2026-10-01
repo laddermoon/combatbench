@@ -1257,3 +1257,88 @@ simulator.py / meta.py + 资产目录。本轮看注释准确性与残留代码
 **Next:** Phase 3 继续 envs/batchframework 工具性文件精读
 （device_runtime/device_plugin/host_compat/capability_registry/validation 的
 注释与残留），然后是 baseline/framework/rollout + ppo/dumpkit。
+
+---
+
+## 2026-07-12 Phase 3 续 — envs/batchframework 逐文件精读（注释/死代码专场）
+
+**Scope:** capability_registry / device_runtime / device_plugin / host_compat /
+batch_context / batch_plugin / backend / device_state / device_obs /
+fake_backend / device_standup / device_rollouter / probes。总体印象：
+**该域代码质量显著高于其他域**（M 编号溯源、注释诚实、
+fail-loud 边界显式）——但仍有 7 项发现。
+
+### P3-29（死枚举 + docstring 不符）：Capability.PENDING 不可达
+
+- `capability_registry.py:10` docstring 声称"未注册的类 = pending"，
+  但 `lookup()`（L99-103）对未注册类返回的是 `UNSUPPORTED` 条目。
+  枚举值 `PENDING` 在全注册表中无任何条目使用、lookup 也不产生——
+  **死枚举值**。语义上 "pending 按 UNSUPPORTED 拒绝" 与实现结果相同，
+  但 docstring 的"= pending"表述错了。
+
+### P3-30（半成品管道 ×2）：`last_events` 与 `SyncStats.summary()` 均无消费者
+
+- `HostBatchCompatAdapter._push_ctx`（host_compat.py:167-169）与
+  `LegacyPluginAdapter._drain_env_ctx`（L404-406）把 batch ctx 的 events
+  drain 进 `self.last_events`——**全仓库无任何读取方**。
+  后果：(a) 兼容插件发出的事件在 device 路径上实际进入无人看的列表
+  （等价丢弃）；(b) 该列表无限增长，长跑 rollout 内存缓涨。
+- `SyncStats` 统计 host↔device 传输，`resolve_plugin(stats=)` 可注入，
+  但 `summary()` 无任何调用方（grep 全仓仅定义处）——计量管道建好了
+  但没人看表。与 dumpkit 的 SyncStats 审计意图脱节。
+- **建议**：last_events 接到 device rollouter 的 Episode 事件字段或删除；
+  SyncStats.summary 接到 rollout 结束报告或删除。
+
+### P3-31（实锤缺陷）：LegacyPluginAdapter 的子步钩子拒绝检查是浅的
+
+- `host_compat.py:320-327`：`if h in type(plugin).__dict__`——只检查插件
+  **自己类的** `__dict__`，不看 MRO。`class MyPush(RandomPushPlugin)`
+  这种继承覆写会穿透检查被接受；随后 `on_pre_batch_step`（L433-436）
+  真的会把其继承的 `on_pre_phy_step` 在块边界调一次——**正是报错信息里
+  声称不允许的 "silent block-boundary fallback"**。
+- 对不覆写子步钩子的插件，这两个 dispatch（L433-439）永远命中基类
+  no-op——**双死调用**（检查挡住的人进不来，进来的人没有该钩子）。
+- **建议**：检查改为 `type(plugin).on_pre_phy_step is not
+  BasePlugin.on_pre_phy_step`（MRO 感知）；或删掉块级 dispatch 死代码。
+
+### P3-32（契约弱化）：device observer 的"只读"只是约定
+
+- CPU 侧 observer 拿 `ReadOnlySimContext`（构造性只读：accessor 白名单
+  + 无 mutator 字段）。device 侧 `DeviceObserverDispatcher.on_*` 直接把
+  **活 `DeviceCtx`** 传给 observer（device_plugin.py:286-299）——
+  `ctx.state.episode`/`ctx.state.sim` 的张量全部可原地写，
+  `ctx.mutator` 只是恰好为 None。observer 可直接改
+  `ep.terminated_flag` 或物理状态而框架无感知。
+- 同类弱化：`DeviceCtx._grant/_revoke` 同样是把共享的
+  `self._mutator`（BatchRuntime 里唯一实例）赋给 ctx.mutator——
+  缓存引用的 stash 问题与 CPU `P-FW-9` 完全相同，且单例共享更脆。
+- `ReadOnlyBatchSimContext` docstring（batch_context.py:308-311）声称
+  "快照后修改不影响只读视图"，但 `self.accessor = ctx.accessor` 共享
+  活 accessor——ctx 字段快照了，accessor 读的是实时状态。
+- **建议**：至少 docstring 写明 device observer 的只读是约定；
+  DeviceCtx 的 mutator 加有效性位（同 CPU 修复方案）。
+
+### P3-33（零租户设施）：整个 numpy 兼容契约当前无一个具体插件
+
+- `batch_plugin.py`（427 行）+ `batch_context.py`（342 行）+
+  `HostBatchCompatAdapter` 构成完整的 BaseBatchPlugin 兼容契约，
+  但 `REGISTRY` 中 **COMPAT / HOST_SLOW 条目数为零**——grep 全仓无
+  任何 BaseBatchPlugin 具体实现。LegacyPluginAdapter（单 env BasePlugin
+  兼容）同样无注册租户。
+- **判定**：设施先于需求建好（M3 W3 按 ROADMAP 交付），不是死代码
+  但属"建好未用"——当前唯一生产路径是纯 NATIVE（standup 实验）。
+  若长期无租户，batch_plugin.py 是候选收缩对象。
+
+### P3-34 ~ P3-35：小项
+
+- `batch_plugin.py` 与 `device_plugin.py` 的 `OBSERVER_DISPATCHER_PRIORITY`
+  重复定义（=1_000_000 各一份）——双源常量，改一处漏另一处的风险。
+- `device_runtime.py` 注释完备、行级 reset 语义与实现一致；
+  `fake_backend.py` 定位清晰（契约后端 + 新后端模板）；
+  `warp_simulator.py` 头部对 fp32-only/布局差异/host 快照路径的声明
+  全部属实；`probe_*`/`m6_compare`/`device_examples` 头部注释准确。
+
+**Result/evidence:** grep 交叉验证（last_events/summary 无调用方、
+COMPAT 条目为零、PENDING 无产生路径）；MRO 检查缺陷为静态确认。
+**Next:** Phase 3 继续 baseline/framework/rollout +
+baseline/framework/ppo/dumpkit 的工具性代码精读。
