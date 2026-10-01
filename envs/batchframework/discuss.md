@@ -571,6 +571,16 @@ class BatchRollouter:
 | H1 | Warp masked advance/reset 能保持未选中行的完整未来物理状态，且不让无效行污染容量 | warm-start/外力/接触下逐行对照，多次 reset/推进 | 后端增加经验证的隔离机制；否则早停等能力保持 pending，不能只恢复 qpos/qvel |
 | H2 | 统一视图的采样时刻与 patch/forward 语义能与 CPU 对齐 | 单步、子步、状态写入后读、接触力时序 fixtures | 将差异留在显式 compatibility profile；无法保持的配置拒绝 |
 | H3 | 完整 solver/integration snapshot 的字段集合足以同版本恢复 | capture→推进→restore→重放，检查隐含状态 | 降低所支持的 snapshot 等级，不称精确恢复 |
+
+> **H1–H3 已于 E1-W0/W2 落地结论（probe_isolation.py 实测，详见
+> E1_PLAN.md 附录）**：H1 的原语假设不成立——warp 1.12.1 无
+> masked advance（`mjw.step` 无 mask 参数），契约改为
+> `advance()` 全行推进 + `capture(mask)`/`restore(mask)` 原语，
+> ENDED 行冻结由 runtime 以 write-back 组合（冻结行逐位稳定、
+> 不污染他行）；H2 确认 `mjw.step` 内部刷新 derived，写后须显式
+> forward——已编码为 `RefreshPolicy`；H3 按预案降级——integration
+> 快照为近似恢复（~1e-7/10 步，warp 同输入本就非逐位确定），
+> 契约不承诺逐位续跑。
 | H4 | 低成本 debug 检查足以发现常见只读/越权写错误 | 故意越权与缓存 mutator 负例，成本测量 | 加强隔离或限定受信任扩展；不宣称 tensor 安全沙箱 |
 | H5 | CPU 子步中止/零帧/终止后 observer 的 Episode 表达可无歧义兼容 | 精确 hook/计数/recorder 对照及现有 trajectory 消费 | 生产迁移拒绝相应 profile；必要时另行讨论 CPU 契约，不能批量侧自改 |
 | H6 | per-job 设备 RNG 可与现策略分布数学及 graph 重放共存 | 重排/分卡/padding 原始随机输入对照、log-prob 与分布检查 | 使用显式能力较弱的开发模式；不伪称分片稳定，原生目标仍待解决 |

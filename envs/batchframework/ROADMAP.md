@@ -159,7 +159,7 @@ E8 综合工程验收与稳定接口发布
 
 #### E1：仿真器与框架在代码上解耦
 
-**当前状态（2026-10-01）：实施计划已起草为 [E1_PLAN.md](E1_PLAN.md)，Draft 待审阅。** 关键发现：warp 1.12.1 无 masked-advance 原语（`mjw.step` 无 mask、`opt.disableflags` 为标量）——冻结行机制需经 W0 探针在 write-back / reset-park 间选型。
+**当前状态（2026-10-02）：W0–W6 已实施完成并提交。** `physics.py` 物理契约、`Humanoid21Binding` 任务语义提取、`WarpBackend` 纯物理后端、runtime 簿记所有权迁移、任务绑定收口（task_tables/metrics schema）、device 注入与依赖方向测试均已落地；85 项相关测试绿，cuda:1 非默认设备冒烟通过。详见 [E1_PLAN.md](E1_PLAN.md) §7 放行检查单与实施摘要。已知残余：facade 兼容 shim、ENDED 行 sealed 语义切换（E2）、reset host 同步（E7）；`test_mjx_validation` 的 fixture-stale 与 `test_stage_seg_rewards` collection 错误为本重构前的既有问题。
 
 - 提取共享模型、归一化和状态映射逻辑，让正式 Warp 路径不再通过 MJX 父类承载；本轮不发展 JAX 执行路线，历史实现保留或隔离，不未经确认删除资产。
 - 定义设备后端契约、物理视图、受控写与快照接口；runtime 自己分配 episode/plugin/IO/RNG 簿记。

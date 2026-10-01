@@ -1,6 +1,6 @@
 # E1 实施计划：仿真器与框架在代码上解耦
 
-状态：**Draft / 2026-10-01 / 待审阅**。依据 [ROADMAP E1](ROADMAP.md) 放行条件与
+状态：**W0–W5 已实施并提交（2026-10-02），W6 回归进行中**。依据 [ROADMAP E1](ROADMAP.md) 放行条件与
 [E0 契约草案](discuss.md) D2/D4/D5/D18.2。E1 只做**结构解耦**，保持当前可观测
 行为（wave 语义、auto-reset、记录口径）不变；语义升级（sealed-ENDED、终止历史
 设备化、InitializationProgram）属于 E2/E3。
@@ -163,14 +163,57 @@ W0 探针 → W1 契约 → W2 绑定提取 → W3 状态迁移 → W4 任务收
 
 ## 7. 放行检查单（对齐 ROADMAP E1）
 
-- [ ] FakeBackend 与 WarpBackend 通过同一套契约测试
-- [ ] 物理/PD/观测/状态写入/外力/容量负例回归全绿
-- [ ] 非默认设备（cuda:1）跑通
-- [ ] 核心模块无 warp/mjw/humanoid21 import（依赖检查脚本）
-- [ ] `WarpHumanoid21Simulator` 不再继承 `MjxHumanoid21Simulator`
-- [ ] 通用路径无 `sim._*`/`st.plugin` 私有字段访问
-- [ ] W0 结论写回 discuss.md（H1/H2/H3 状态更新）
-- [ ] CPU 路径零行为变化（git diff 无 envs/humanoid21/simulator.py 行为改动）
+- [x] FakeBackend 与 WarpBackend 通过同一套契约测试
+      （`test_physics_contract.py`，fake 11/11；warp 经
+      `WarpHumanoid21Simulator` facade + 26 项 validation fixtures）
+- [x] 物理/PD/观测/状态写入/外力/容量负例回归全绿
+      （warp_runtime + device_runtime + device_standup + device_rollouter
+      + physics_contract + warp_validation + batch_validation = 85 项绿；
+      `test_mjx_validation` 的 fixture-stale 失败与 `test_stage_seg_rewards`
+      的 collection 错误均为本重构前的既有问题——base.py hash 漂移于
+      17d031fd、baseline.framework.experiment 于 9044ff41 被删）
+- [x] 非默认设备（cuda:1）跑通（in-process `device='cuda:1'` +
+      `torch.cuda.set_device(1)`，BatchRuntime 端到端 8 步验证）
+- [x] 核心模块无 warp/mjw/humanoid21 import
+      （`test_dependency_direction.py` 10/10）
+- [x] `WarpHumanoid21Simulator` 不再继承 `MjxHumanoid21Simulator`
+      （组合 binding+backend；断言测试固化）
+- [x] 通用路径无 `sim._*`/`st.plugin` 私有字段访问
+      （task_tables()/views()/export_episode_metrics() 收口；
+      `device_rollouter` 的 fallen pool 嗅探已移除）
+- [x] W0 结论写回 discuss.md（H1/H2/H3 状态更新）
+- [x] CPU 路径零行为变化（envs/humanoid21/simulator.py 未动）
+
+### 实施摘要（W2–W5 落地形态）
+
+- **W1** `physics.py`：`PhysicsBackend` 协议 + `BackendDescriptor` +
+  `ContractError/CapacityError` + `RefreshPolicy`/`SnapshotLevel`；
+  FakeBatchBackend 实现协议；`test_physics_contract.py` 共享契约测试。
+- **W2** `envs/humanoid21/batch_binding.py`：任务语义唯一实现
+  （模型/meta/norm/PD/reset 姿态/core-state 映射/host 提取公式）；
+  `mjx_simulator` 改为委托（1063→~530 行）；`backends/warp_backend.py`
+  为纯物理后端（mjw.Data 所有权、advance/capture/restore、PD
+  ControlProgram、wrench 缓冲、host_snapshot）；`warp_simulator.py`
+  重写为组合 facade。
+- **W3** `device_state.compose_state()` 成为簿记分配唯一入口；
+  `BatchRuntime.state` 自行组装并 `sim.attach_state()` 注册；
+  facade `reset()` 不再碰 episode/rng。
+- **W4** `Humanoid21DeviceTables`（binding.device_tables(device)）
+  收口全部任务元数据；`export_episode_metrics()` 插件契约替代
+  rollouter 的 pool 嗅探。
+- **W5** device 注入贯通 `DeviceRollouter → facade → WarpBackend`；
+  依赖方向静态测试；in-process cuda:1 冒烟。
+
+### 残余（移交 E2/E6，非 E1 阻塞）
+
+- facade 上仍保留 `_robots/_model/_meta/_norm_params/_torch_views/
+  _mjx_data` 等兼容 shim 供验证路径使用——E5 迁移清理时再收。
+- ENDED 行 write-back 冻结原语已在契约层提供（capture/restore），
+  runtime 侧组合与 sealed-ENDED 语义切换留给 E2。
+- `dev_reset_rows` 每行 reset 含 host 姿态计算与同步——E7 优化项，
+  语义已收口。
+- warp 后端同输入不逐位确定（~1e-7/10 步快照漂移）——契约已按
+  近似恢复定义；跨后端对照沿用容差协议。
 
 ---
 
