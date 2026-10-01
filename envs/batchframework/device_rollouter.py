@@ -219,7 +219,14 @@ class DeviceRollouter:
 
     def __init__(self, batch_size: int = 64, device: str = "cuda"):
         self.batch_size = int(batch_size)
-        self.device = device
+        # device 归一化为显式索引（"cuda" → "cuda:<current>"）——
+        # warp/torch 的 kernel 绑定与视图都需要确定的设备 id（W5）。
+        dev = torch.device(device)
+        if dev.type == "cuda" and dev.index is None:
+            idx = torch.cuda.current_device() if torch.cuda.is_available() \
+                else 0
+            dev = torch.device("cuda", idx)
+        self.device = str(dev)
         self._sim = None
         self._rt: Optional[BatchRuntime] = None
         self._env_key: Optional[str] = None
@@ -237,7 +244,8 @@ class DeviceRollouter:
                 f"device collector supports {_SUPPORTED_SIM_CLS}, got "
                 f"{env_bp.simulator.cls!r}")
         from .warp_simulator import WarpHumanoid21Simulator
-        sim = WarpHumanoid21Simulator(batch_size=self.batch_size)
+        sim = WarpHumanoid21Simulator(batch_size=self.batch_size,
+                                      device=self.device)
         sim.reset()
         rt = BatchRuntime(
             sim, obs_builder=sim.device_obs_builder(),
