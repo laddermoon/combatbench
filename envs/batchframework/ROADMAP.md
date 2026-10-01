@@ -159,6 +159,8 @@ E8 综合工程验收与稳定接口发布
 
 #### E1：仿真器与框架在代码上解耦
 
+**当前状态（2026-10-01）：实施计划已起草为 [E1_PLAN.md](E1_PLAN.md)，Draft 待审阅。** 关键发现：warp 1.12.1 无 masked-advance 原语（`mjw.step` 无 mask、`opt.disableflags` 为标量）——冻结行机制需经 W0 探针在 write-back / reset-park 间选型。
+
 - 提取共享模型、归一化和状态映射逻辑，让正式 Warp 路径不再通过 MJX 父类承载；本轮不发展 JAX 执行路线，历史实现保留或隔离，不未经确认删除资产。
 - 定义设备后端契约、物理视图、受控写与快照接口；runtime 自己分配 episode/plugin/IO/RNG 簿记。
 - 注入 device/stream、模型配置和容量，移除通用路径的 `cuda:0` 假定与 Humanoid 私有字段访问；接触布局/求解器细节留在后端绑定。
