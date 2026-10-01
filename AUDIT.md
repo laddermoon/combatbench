@@ -1402,3 +1402,98 @@ baseline/framework/ppo/dumpkit 的工具性代码精读。
 - `SamplingPolicy.reset()` 正确重置 `_step` 计数器与 inner.reset。
 - 远程推理握手：spec 注册幂等（内容哈希缓存）、确定性 padding、
   cuDNN benchmark 显式关闭（L597）保证 kernel 选择稳定。
+
+---
+
+## baseline/framework 顶层 + ppo 核心 第二轮：逐文件精读（2026-02 补）
+
+> 范围：`code_snapshot.py`、`train.py`、`critic_mlp.py`、`__init__.py`；
+> `ppo/experiment.py`（1613 行）、`ppo/loop.py`（1370）、`ppo/trainer.py`
+> （2165）、`ppo/sampling_context.py`、`ppo/stochastic_policy.py`、
+> `ppo/trajectory.py`、`ppo/debug.py`；`ppo/policies/` 目录结构。
+> 定位：训练框架主干——实验契约、训练循环、PPO 更新、调试工具入口。
+
+### 总体评价
+
+这是目前全仓库注释质量最高的区域：几乎每个数值决策都有 provenance
+注释（P0-1/P0-3/B1/B8/A4 等编号可追溯历史修复），契约文档与实现高度
+一致（UpdateStats 命名规范、ctx 字段即契约、checkpoint v2 格式、
+KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**重构后的
+文档残留**——docstring 引用了已被新机制取代的旧 API。
+
+### 本轮新发现问题
+
+- **P-BFW-1（确认，复现命令不完整）**：`code_snapshot.py`
+  `format_repro_command` 只回放部分 CLI 参数。被静默丢弃的有：
+  `--seed`、`--param`（整个 per-update patch 机制）、`--collector`、
+  `--collector-batch-size`、`--adv-winsorize-sigma`、
+  `--adv-winsorize-from-update`、`--adv-norm`、`--adv-norm-from-update`、
+  `--dual-clip-c`、`--dual-clip-from-update`、`--reset-update`。
+  例如原命令带 `--collector device --param dual_clip_c=3@282` 的运行，
+  按 REPRODUCE.md 复现会变成 CPU collector 且无 dual-clip——
+  **可复现性工具的复现命令本身不忠实**，且无任何提示。
+- **P-BFW-2（确认，docstring 引用已删 API）**：
+  - `trainer.py:829` `ppo_update` docstring 说 explore_factor "was
+    already applied to the policy before rollout via
+    ``set_exploration``"——`set_exploration` 已不存在（仅剩
+    `policies/todo/` 归档文件里的引用），现机制是 SamplingContext
+    逐帧回放；
+  - `critic_mlp.py:6` docstring 称对应 actor backbone 是
+    `TanhGaussianMLPPolicy`——已移入 `policies/todo/`。
+- **P-BFW-3（确认，示例代码误导）**：`ExperimentPPO` 类 docstring 的
+  "Typical subclass structure" 仍列出 `compute_episode_metrics` /
+  `compare_eval` / `scheduler_info` 三个方法——它们已被 `on_eval`
+  取代、框架从不调用。照此示例写实验的 AI 会产出三个死方法。
+  另：`on_eval` docstring 标 update "0-based"，实际 `start_update=1`
+  全循环 1-based（`build_jobs`/`post_update` 文档均标 1-based，
+  仅此一处不一致）。
+- **P-BFW-4（确认，模块图过时）**：`experiment.py` 头部数据流图
+  （L79）把 `explore_factor` 画为 Trajectory 字段——现字段为
+  `sampling_ctx` dict。
+- **P-BFW-5（确认，归档区自测失效）**：`policies/todo/` 内 3 个测试
+  （test_blueprint_episode/test_ou_exploration/test_policy_families）
+  仍 import 移动前路径 `policies.tanh_gaussian_mlp`——移动时没带走
+  自身测试的 import，归档区连自测都跑不起来（即 P-POL-1 的第 4 个
+  collection error 来源之一）。
+- **P-BFW-6（记录，日志措辞错）**：`loop.py:1075` early-stop 行硬编码
+  "no improvement for {_no_improvement_limit} evals"——读私有属性
+  且假定停止原因；`stop_training` 可因任何原因返回，措辞会误导。
+- **P-BFW-7（记录，注释措辞错）**：`loop.py` ~L699 注释称 exploration
+  spec "kept so ppo_update can read its trust-region fields"——
+  ExplorationSpec 只携带 uncertainty_floor/coef，trust-region 字段
+  在 PPOParams。无害但措辞误导。
+
+### 复核确认无问题（阴性结果）
+
+- `code_snapshot.py` 核心机制可靠：`.git/snapshot.lock` flock 串行化、
+  `write-tree`/`commit-tree` 不动 HEAD、`read-tree` 恢复原暂存区、
+  非 git 环境静默跳过。问题只在 repro 命令生成（P-BFW-1）。
+- checkpoint 链完整：原子写（tmp+os.replace）、v2 格式存 RNG
+  （python/numpy/torch_cpu/torch_cuda）+ loop_state、resume 时
+  CUDA device 数变化有显式警告、obs 扩展 zero-pad 权重+optimizer
+  state、prev_gvec 长度校验防错、`saved_update+1` 语义注释明确。
+- PPOBuffer：`sampling_ctx` schema 不一致（部分 trajectory 缺字段）
+  fail-loud 报错而非静默补零；zero-length trajectory 的 offset
+  簿记一致；empty buffer 双路径（构造时+ppo_update 入口）均安全。
+- `_grad_signal_diag`：identity 校验（mean(p_i)=‖G‖）用 z-score
+  而非固定阈值、非有限梯度显式排除并计数、dedicated RNG 不碰
+  训练流、norm bins 跨 update 冻结且 meta.json 有 norm_axis 语义
+  守卫——设计严密。
+- `trainer.py` 早停语义与文档一致：k3 KL、滑窗跨 epoch、B1 actor
+  停而 critic 续、timeline/epoch_frames 只在 dump_callback 激活时
+  产生开销。
+- `SamplingContext`/`StochasticPolicy`/`Trajectory` 三个契约文件
+  注释全部与实现一致（record_fields 的 None=缺失语义、from_batch
+  的未知字段容忍、has_delta 的逐元素保守判据）。
+- `debug.py` CLI：14 个子命令均有实现，epilog 与 dumpkit/CONTEXT.md
+  呼应；`dump_request.py` sentinel 协议与 loop.py 的轮询消费吻合。
+
+### 建议清单（留待裁决，不在本轮动手）
+
+- S9：修 `format_repro_command` 补齐参数回放（或至少在命令头部
+  注明"以下参数不会回放"清单）。
+- S10：同步 `ExperimentPPO`/`ppo_update`/模块头图/`critic_mlp`
+  四处 stale 文档（P-BFW-2/3/4）——全部是纯文档修复。
+- S11：决定 `policies/todo/` 归属——修测试 import 让归档自洽，
+  或整体移入 `obsolete/` 并改 import 前缀。
+- S12：`loop.py:1075` 的 early-stop 日志改为通用措辞。
