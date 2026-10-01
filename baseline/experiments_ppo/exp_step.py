@@ -241,6 +241,7 @@ class Step(CombatExperimentPPOBase):
     # --- Stateful metrics ---
     _best_potential: float = -1.0
     _best_quality: float = -1.0
+    _quality_ema: float | None = None
     _best_survived: float = -1.0
     _success_rate: float = 0.0
     _last_best_update: int = 0
@@ -795,14 +796,34 @@ class Step(CombatExperimentPPOBase):
         improved_pot = mean_max_pot > self._best_potential
         if improved_pot:
             self._best_potential = mean_max_pot
+        # A single lucky eval can set a quality peak that a slowly
+        # climbing run then fails to beat for 200 evals (clean_43g
+        # died at u3055 while step crept 0.14→0.31 underneath eval
+        # noise ±0.05).  Track an EMA of quality as a trend line: if
+        # the *smoothed* trend exceeds the best raw spike, the run is
+        # genuinely improving and the no-improvement counter resets.
+        # Best-ckpt export still keys off raw quality.
+        if self._quality_ema is None:
+            self._quality_ema = quality
+        else:
+            self._quality_ema = 0.85 * self._quality_ema + 0.15 * quality
         improved_step = (
             success_rate >= 0.9
             and quality > self._best_quality
         )
         if improved_step:
             self._best_quality = quality
+        trend_improved = (
+            success_rate >= 0.9
+            and self._quality_ema > self._best_quality
+        )
+        if trend_improved:
+            # Ratchet the bar up to the trend level so a genuine
+            # plateau (ema flat at the bar) still accumulates the
+            # no-improvement counter.
+            self._best_quality = self._quality_ema
         is_new_best = improved_pot or improved_step
-        if is_new_best:
+        if is_new_best or trend_improved:
             self._last_best_update = update
 
         if self._last_best_update < 0:
@@ -893,6 +914,10 @@ class Step(CombatExperimentPPOBase):
             **super().state(),
             "best_potential": self._best_potential,
             "best_quality": self._best_quality,
+            "quality_ema": (
+                self._quality_ema if self._quality_ema is not None
+                else -1.0
+            ),
             "success_rate": self._success_rate,
             "last_best_update": self._last_best_update,
         }
@@ -905,6 +930,8 @@ class Step(CombatExperimentPPOBase):
         # tracking at its first eval instead of inheriting a saturated
         # step counter that can never improve (instant early-stop).
         self._best_quality = float(state.get("best_quality", -1.0))
+        _ema = float(state.get("quality_ema", -1.0))
+        self._quality_ema = _ema if _ema >= 0 else None
         self._success_rate = float(state.get("success_rate", 0.0))
         # NOT restored: the checkpoint's last_best_update belongs to
         # the old run — resuming with it instantly triggers early-stop.
