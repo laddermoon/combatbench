@@ -11,7 +11,7 @@ xfrc 积分漂移），只保证"状态会变、写入可见、时序正确"，�
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import torch
 
@@ -21,6 +21,14 @@ from .device_state import (
     IoNamespace,
     RngNamespace,
     SimNamespace,
+)
+from .physics import (
+    BackendDescriptor,
+    CapacitySpec,
+    FieldSpec,
+    RefreshPolicy,
+    SamplePhase,
+    SnapshotLevel,
 )
 
 
@@ -161,6 +169,90 @@ class FakeBatchBackend:
                                   device=self._dev)
         st.sim.qpos[env_ids] = qpos_t
         st.sim.qvel[env_ids] = qvel_t
+
+    # ------------------------------------------------------------------
+    # PhysicsBackend 契约（E1-W1；与上面 dev_* 旧 API 共存过渡）
+    # ------------------------------------------------------------------
+    _VIEWS_MAP = {
+        "qpos": "qpos", "qvel": "qvel", "ctrl": "ctrl",
+        "xpos": "xpos", "xquat": "xquat", "xipos": "xipos",
+        "xanchor": "xanchor", "cvel": "cvel",
+        "xfrc_applied": "xfrc_applied", "act_target": "act_target",
+    }
+
+    def describe(self) -> BackendDescriptor:
+        return BackendDescriptor(
+            backend="fake", backend_version="1",
+            device=str(self._dev), batch_size=self._B,
+            nq=self.NQ, nv=self.NV, nbody=self.NBODY, nu=self.NU,
+            fields={k: FieldSpec(k, SamplePhase.INTEGRATION,
+                                 writable=k in ("qpos", "qvel", "ctrl"))
+                    for k in self._VIEWS_MAP},
+            capacities={},
+            capabilities=frozenset({"snapshot:integration"}),
+        )
+
+    def views(self):
+        """契约视图字典——与 sim 命名空间共享底层张量。"""
+        st = self.build_device_state()
+        return {k: getattr(st.sim, attr) for k, attr in
+                self._VIEWS_MAP.items()}
+
+    def initialize(self, qpos, *, qvel=None, mask=None) -> None:
+        st = self.build_device_state()
+        rows = (torch.arange(self._B, device=self._dev) if mask is None
+                else torch.nonzero(mask, as_tuple=False).squeeze(-1))
+        st.sim.qpos[rows] = qpos
+        if qvel is not None:
+            st.sim.qvel[rows] = qvel
+        else:
+            st.sim.qvel[rows] = 0.0
+        for t in (st.sim.ctrl, st.sim.xfrc_applied, st.sim.act_target):
+            t[rows] = 0.0
+
+    def apply_patch(self, mask, fields: Mapping[str, torch.Tensor], *,
+                    refresh: RefreshPolicy = RefreshPolicy.FORWARD) -> None:
+        st = self.build_device_state()
+        rows = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+        for k, val in fields.items():
+            if k not in self._VIEWS_MAP:
+                raise ValueError(f"unknown view field {k!r}")
+            getattr(st.sim, self._VIEWS_MAP[k])[rows] = val
+
+    def advance(self, n_substeps: int, control=None) -> None:
+        """契约版步进：control.apply(views) → 积分。"""
+        st = self.build_device_state()
+        vv = self.views()
+        sched = self._sched
+        for i in range(n_substeps):
+            if control is not None:
+                control.apply(vv)
+            st.sim.xfrc_applied.zero_()
+            if i == 0:
+                st.sim.xfrc_applied.add_(self._pend)
+            if sched is not None:
+                st.sim.xfrc_applied.add_(sched[:, i])
+            self.xfrc_log.append(st.sim.xfrc_applied.clone())
+            st.sim.qvel += st.sim.xfrc_applied[:, 0, :self.NV] * self.DT
+            st.sim.qpos[:, :self.NV] += st.sim.qvel * self.DT
+        st.sim.xfrc_applied.zero_()
+        self._pend.zero_()
+        self._sched = None
+        self.step_calls += 1
+
+    def capture(self, mask, level: SnapshotLevel = SnapshotLevel.INTEGRATION
+                ) -> Dict[str, torch.Tensor]:
+        st = self.build_device_state()
+        rows = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+        return {k: getattr(st.sim, attr)[rows].clone()
+                for k, attr in self._VIEWS_MAP.items()}
+
+    def restore(self, mask, snapshot: Mapping[str, torch.Tensor]) -> None:
+        self.apply_patch(mask, snapshot, refresh=RefreshPolicy.FORWARD)
+
+    def status(self) -> Dict[str, Any]:
+        return {"backend": "fake", "batch_size": self._B,
+                "step_calls": self.step_calls}
 
     # ------------------------------------------------------------------
     def get_physical_frequency(self) -> float:
