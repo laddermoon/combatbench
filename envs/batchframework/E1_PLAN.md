@@ -171,3 +171,21 @@ W0 探针 → W1 契约 → W2 绑定提取 → W3 状态迁移 → W4 任务收
 - [ ] 通用路径无 `sim._*`/`st.plugin` 私有字段访问
 - [ ] W0 结论写回 discuss.md（H1/H2/H3 状态更新）
 - [ ] CPU 路径零行为变化（git diff 无 envs/humanoid21/simulator.py 行为改动）
+
+---
+
+## 附录：W0 探针结果（2026-10-01，probe_isolation.py，B=256/64/16，cuda:4）
+
+| 假设 | 结果 | 结论 |
+|---|---|---|
+| H1 masked advance | warp 1.12.1 无原语（`mjw.step` 无 mask，`opt.disableflags` 标量） | **`advance()` 契约改为全行推进 + `capture/restore(mask)` 原语**；END 行冻结 = runtime 策略组合这两个原语 |
+| write-back 冻结 | 冻结行逐位稳定 ✓；冻结不污染运行行（masked 写只触 ended 行内存，world 独立） | **选定 write-back 冻结**，action-step 粒度（每 25 子步一次写回即足够——窗内漂移有界不累积） |
+| warp 运行间确定性 | **同 seed 双实例 50 步后 qpos 不逐位一致** | warp 非逐位确定后端（contact atomic 顺序等）；契约不承诺同后端重放逐位一致 |
+| H3 快照恢复 | 全部候选字段集 restore 后 k=10 步漂移 ~1e-7 | integration 快照是**近似恢复**（~1e-7/10步），不承诺逐位续跑 |
+| H2 视图时效 | `mjw.step` 内刷新 derived ✓；写 qpos 不 forward → xpos 陈旧 ✓；forward 后可见 ✓ | refresh 语义：advance 后 post_integrate 视图有效；patch 后需显式 forward |
+| `reset(seeds)` 确定性 | 逐位确定 ✓（`_compute_reset_state` 无 RNG，seeds 仅记录） | wave 初始化可复现 |
+
+**对 E1 设计的修订**：
+1. `PhysicsBackend` 契约：`advance()` 推进全部 world（warp 无法 mask）；`capture(mask)`/`restore(mask)` 是冻结/快照的原语，runtime 组合实现 ENDED 行密封。
+2. ENDED 行冻结的必要性不仅是语义——ended 行自由演化可能触发 njmax 断言杀掉整个 batch（u55 教训），写回冻结使行状态有界。
+3. 快照等级修正：`integration` 级不承诺逐位续跑（后端本身非确定），契约改述为"同版本近似恢复，误差 ~fp32 solver 噪声级"。
