@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-import numpy as np
 import torch
 
 from baseline.humanoid21.rewards.standing_balance_4stage import (
@@ -60,9 +59,10 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
 
     @classmethod
     def from_sim(cls, sim, agent_idx: int, obs_builder=None) -> "DeviceStandup4StageRewarder":
-        """从 warp sim 的 meta 缓存提取 body id / 查找表。"""
+        """从任务设备表提取 body id / 查找表（W4：不再读 sim 私有字段）。"""
+        tables = sim.task_tables()
         rid = "robot_a" if agent_idx == 0 else "robot_b"
-        cache = sim._robots[rid]
+        cache = tables.robots[rid]
         kp = cache["keypoint_body_ids"]
         torso_id = kp.get("torso", cache["root_body_id"])
         if obs_builder is None:
@@ -72,10 +72,10 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
             torso=int(torso_id),
             hand_l=int(kp["hand_left"]), hand_r=int(kp["hand_right"]),
             foot_l=int(kp["foot_left"]), foot_r=int(kp["foot_right"]),
-            ground_gid=int(sim._ground_geom_id),
+            ground_gid=tables.ground_geom_id,
             robot_aff=agent_idx + 1,
             geom_bodyid=geom_bodyid, geom_aff=geom_aff,
-            nbody=int(sim._model.nbody),
+            nbody=tables.nbody,
         ))
 
     # ------------------------------------------------------------------
@@ -275,7 +275,7 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
             sim_factory: ``callable(batch_size) -> simulator``，构造专用
                 摔倒 sim（仅发生部分 reset 时才实例化）。该 sim 需有
                 dev_set_integration_rows / dev_set_action / physical_step /
-                _torch_views（即 warp 后端绑定接口）。
+                views()（即 warp 后端绑定接口）。
             sync_chunk: 每多少物理步做一次 host 侧 done 检查（reset 路径
                 的有限同步，不在 rollout 热路径上）。
             salt: 插件随机盐（区分其他用同一 seed_offsets 的插件）。
@@ -329,7 +329,7 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
                 "called before attach.")
 
     def bind_shared_sim(self, sim) -> "DeviceFallenResetPlugin":
-        """注入共享 sim 引用（插件需要读取 meta/_torch_views 并在全量
+        """注入共享 sim 引用（插件需要 task_tables()/views() 并在全量
         reset 时原地摔倒）。"""
         self._sim = sim
         return self
@@ -379,10 +379,11 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
             io_b0 = st.io.action_b[env_ids].clone()
         else:
             host = self._internal_sim(B)
-            hv = host._torch_views()
+            hv = host.views()
             host_qpos, host_qvel = hv["qpos"], hv["qvel"]
             host.dev_set_integration_rows(env_ids, qpos0, qvel0)
 
+        t = self._tables()
         # --- action：目标随机（per-robot 独立）；非目标保持 joint_pos_norm ---
         rand = self._draw_actions(env_ids, st.rng.seed_offsets, dev)
         act_full = [torch.zeros(B, 21, device=dev),
@@ -391,15 +392,14 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
             if rid in self._targets:
                 act_full[idx][env_ids] = rand[:, idx]
             else:
-                ref, scale = self._norm_t(sim, rid, dev)
-                qi = torch.as_tensor(sim._robots[rid]["qpos_indices"],
-                                     dtype=torch.long, device=dev)
+                ref, scale = t.norm_pair(rid)
+                qi = t.robots[rid]["qpos_indices"]
                 act_full[idx][env_ids] = (
                     (qpos0[:, qi] - ref) / scale).clamp(-1.0, 1.0)
         host.dev_set_action(act_full[0], act_full[1])
 
         # --- 摔倒循环：逐 env 首个达标态捕获 ---
-        tgt_adr = [sim._robots[rid]["root_qpos_adr"] + 2
+        tgt_adr = [t.robots[rid]["root_qpos_adr"] + 2
                    for rid in ("robot_a", "robot_b") if rid in self._targets]
         done = torch.zeros(B, dtype=torch.bool, device=dev)
         first_step = torch.zeros(B, dtype=torch.int64, device=dev)
@@ -412,7 +412,7 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         for rid in ("robot_a", "robot_b"):
             if rid in self._targets:
                 continue
-            c = sim._robots[rid]
+            c = t.robots[rid]
             nt_qp.extend(range(c["root_qpos_adr"], c["root_qpos_adr"] + 7))
             nt_qp.extend(c["qpos_indices"])
             nt_qv.extend(range(c["root_qvel_adr"], c["root_qvel_adr"] + 6))
@@ -462,7 +462,7 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         # --- 只写回目标机器人维度（基底 = 摔倒前快照） ---
         tgt_qp, tgt_qv = [], []
         for rid in self._targets:
-            c = sim._robots[rid]
+            c = t.robots[rid]
             tgt_qp.extend(range(c["root_qpos_adr"], c["root_qpos_adr"] + 7))
             tgt_qp.extend(c["qpos_indices"])
             tgt_qv.extend(range(c["root_qvel_adr"], c["root_qvel_adr"] + 6))
@@ -482,10 +482,10 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         if in_place:
             st.io.action_a[env_ids] = io_a0
             st.io.action_b[env_ids] = io_b0
-            v = sim._torch_views()
+            v = sim.views()
             for idx, (a0, rid) in enumerate(
                     ((io_a0, "robot_a"), (io_b0, "robot_b"))):
-                ref, scale = self._norm_t(sim, rid, dev)
+                ref, scale = t.norm_pair(rid)
                 v["act_target"][env_ids, idx * 21:(idx + 1) * 21] = \
                     a0.clamp(-1.0, 1.0) * scale + ref
 
@@ -499,9 +499,18 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         # 池行已被 runtime 清零；真正逻辑在随后的 on_pre_episode
         return None
 
-    def _norm_t(self, sim, rid, dev):
-        p = sim._norm_params[rid]
-        return (torch.as_tensor(np.asarray(p["reference"]),
-                                dtype=torch.float32, device=dev),
-                torch.as_tensor(np.asarray(p["scale"]),
-                                dtype=torch.float32, device=dev))
+    def export_episode_metrics(self, state) -> Dict[str, torch.Tensor]:
+        """W4 指标契约：init_steps/init_height/init_hit → 逐 agent 命名。"""
+        pool = state.plugin[self.name]
+        out: Dict[str, torch.Tensor] = {}
+        for i, rid in enumerate(("robot_a", "robot_b")):
+            out[f"{rid}_fallen_init_steps"] = pool["init_steps"]
+            out[f"{rid}_fallen_init_height"] = pool["init_height"][:, i]
+            out[f"{rid}_fallen_init_height_threshold"] = pool["init_hit"]
+        return out
+
+    def _tables(self):
+        """任务设备表（惰性缓存自 bind_shared_sim 注入的 sim）。"""
+        if getattr(self, "_tables_cache", None) is None:
+            self._tables_cache = self._sim.task_tables()
+        return self._tables_cache

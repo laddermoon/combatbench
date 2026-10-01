@@ -153,6 +153,15 @@ class Humanoid21Binding:
             raise ValueError(f"Body not found: {full}")
         return bid
 
+    def device_tables(self, device) -> "Humanoid21DeviceTables":
+        """任务设备表（每设备缓存一份）——插件/观测器的任务元数据接口。"""
+        dev = str(device)  # torch.device / str 均规范化
+        if getattr(self, "_tables_cache", None) is None:
+            self._tables_cache = {}
+        if dev not in self._tables_cache:
+            self._tables_cache[dev] = Humanoid21DeviceTables(self, dev)
+        return self._tables_cache[dev]
+
     # ------------------------------------------------------------------
     # Reset 姿态计算（纯 numpy，跨后端共享）
     # ------------------------------------------------------------------
@@ -671,3 +680,58 @@ class Humanoid21Binding:
         result["body_id_to_aff"] = dict(self.meta["body_id_to_aff"])
         result["geom_id_to_aff"] = dict(self.meta["geom_id_to_aff"])
         return result
+
+
+# ---------------------------------------------------------------------------
+# 设备端任务表（E1-W4：任务侧代码的显式元数据接口，替代 sim._robots 等
+# 私有字段直读）
+# ---------------------------------------------------------------------------
+class Humanoid21DeviceTables:
+    """Humanoid21 任务设备端常量表——task binding 对插件/观测器暴露的
+    全部"任务私有知识"，一次性转为目标设备上的 torch 张量。
+
+    消费方（WarpObsBuilder / DeviceStandup4StageRewarder /
+    DeviceFallenResetPlugin）只认本对象，不再触碰 simulator/binding
+    的私有字段。
+    """
+
+    def __init__(self, binding: "Humanoid21Binding", device):
+        import torch
+        self.device = torch.device(device)
+        self.action_dim = binding.ACTION_DIM
+        self.ground_geom_id = int(binding.ground_geom_id)
+        self.nbody = int(binding.model.nbody)
+        self.ngeom = int(binding.model.ngeom)
+        self.geom_bodyid = torch.as_tensor(
+            np.asarray(binding.model.geom_bodyid), dtype=torch.long,
+            device=self.device)
+        aff = np.zeros(self.ngeom, dtype=np.int64)
+        for gid, a in binding.meta["geom_id_to_aff"].items():
+            aff[gid] = int(a)
+        self.geom_aff = torch.as_tensor(aff, device=self.device)
+
+        def t(a, dt=torch.float32):
+            return torch.as_tensor(np.asarray(a), dtype=dt,
+                                   device=self.device)
+
+        self.robots: Dict[str, Dict[str, Any]] = {}
+        for rid in ("robot_a", "robot_b"):
+            cache = binding.robots[rid]
+            norm = binding.norm_params[rid]
+            self.robots[rid] = dict(
+                root_body_id=int(cache["root_body_id"]),
+                root_qpos_adr=int(cache["root_qpos_adr"]),
+                root_qvel_adr=int(cache["root_qvel_adr"]),
+                qpos_indices=t(cache["qpos_indices"], torch.long),
+                qvel_indices=t(cache["qvel_indices"], torch.long),
+                norm_ref=t(norm["reference"]),
+                norm_scale=t(norm["scale"]),
+                keypoint_body_ids={n: int(b) for n, b in
+                                   cache["keypoint_body_ids"].items()},
+                body_weight=float(cache["body_weight"]),
+            )
+
+    def norm_pair(self, robot_id: str):
+        """(norm_ref, norm_scale) torch 对——action↔关节角换算。"""
+        r = self.robots[robot_id]
+        return r["norm_ref"], r["norm_scale"]

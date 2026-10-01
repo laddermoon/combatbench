@@ -413,14 +413,9 @@ class DeviceRollouter:
             env_term=rec.env_term_step.cpu().numpy(),
             ef_a=ef_a_t.cpu().numpy(), ef_b=ef_b_t.cpu().numpy(),
         )
-        fallen_pool = next(
-            (v for k, v in st.plugin.items() if "fallen" in k.lower()),
-            None)
-        metrics_np = {}
-        if fallen_pool:
-            for k in ("init_steps", "init_height", "init_hit"):
-                if k in fallen_pool:
-                    metrics_np[k] = fallen_pool[k].cpu().numpy()
+        # 插件 episode 指标——显式 schema 导出（W4），不再嗅探 pool 键名
+        metrics_np = {k: v.detach().cpu().numpy()
+                      for k, v in rt.export_episode_metrics().items()}
 
         env_hash = blueprint_hash(env_bp)
         for i, job in enumerate(wave):
@@ -470,16 +465,9 @@ class DeviceRollouter:
                     {"robot_a": None, "robot_b": None}),
             })
         metrics = {"backend": "warp-fp32"}
-        for rid_i, rid in enumerate(AGENT_IDS):
-            if "init_steps" in metrics_np:
-                metrics[f"{rid}_fallen_init_steps"] = int(
-                    metrics_np["init_steps"][row])
-            if "init_height" in metrics_np:
-                metrics[f"{rid}_fallen_init_height"] = float(
-                    metrics_np["init_height"][row, rid_i])
-            if "init_hit" in metrics_np:
-                metrics[f"{rid}_fallen_init_height_threshold"] = bool(
-                    metrics_np["init_hit"][row])
+        for k, arr in metrics_np.items():
+            v = arr[row]
+            metrics[k] = v.item() if np.ndim(v) == 0 else v.tolist()
         return Episode.from_buffer_frames(
             frames=frames,
             final_observation={rid: np_bufs["final_obs"][rid][row]

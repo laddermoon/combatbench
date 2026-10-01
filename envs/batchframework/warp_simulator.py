@@ -33,7 +33,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..humanoid21.batch_binding import Humanoid21Binding
+from ..humanoid21.batch_binding import (
+    Humanoid21Binding,
+    Humanoid21DeviceTables,
+)
 from ..humanoid21.meta import Humanoid21Meta
 from .backend import BaseBatchSimulator
 from .backends.warp_backend import WarpBackend
@@ -146,13 +149,26 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
     # device sim 契约
     # ------------------------------------------------------------------
     def device_obs_builder(self):
-        """设备端观测构造器（WarpObsBuilder 读 facade 的 model/meta/robots）。"""
+        """设备端观测构造器——构造参数是 task_tables（W4 收口后
+        不再读 sim 私有字段）。"""
         from .device_obs import WarpObsBuilder
-        return WarpObsBuilder(self)
+        return WarpObsBuilder(self.task_tables(), self._batch_size)
 
     def _torch_views(self):
         """dev API 底层的视图入口（等价 backend.views()）。"""
         return self._backend.views()
+
+    def views(self):
+        """物理视图公共入口（PhysicsBackend.views 直通）。
+
+        插件/任务代码读设备张量一律走这里（或 state.sim 命名空间），
+        不再依赖 ``_torch_views`` 私有名。
+        """
+        return self._backend.views()
+
+    def task_tables(self) -> "Humanoid21DeviceTables":
+        """任务设备表——插件/观测器消费任务元数据的唯一接口（W4）。"""
+        return self._binding.device_tables(self._torch_device)
 
     def reset(self, seeds: Optional[np.ndarray] = None,
               options: Optional[Dict[str, Any]] = None) -> None:

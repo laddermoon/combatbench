@@ -204,6 +204,15 @@ class BaseDevicePlugin:
         """(B,) i64 per-env 种子；reset 前调用。默认 no-op。"""
         return None
 
+    # --- episode 指标导出（E1-W4：显式 schema，替代采集端嗅探 pool 键） ---
+    def export_episode_metrics(self, state: DeviceBatchState
+                               ) -> Dict[str, torch.Tensor]:
+        """→ {metric_name: (B, ...) torch.Tensor}——按行取值的 episode
+        指标表。由采集端在波末统一物化到 host 并写入 Episode.metrics。
+        默认空集。键名需唯一（跨插件冲突时后 attach 覆盖先 attach）。
+        """
+        return {}
+
     # --- 生命周期 hooks（默认全 no-op） ---
     def on_pre_episode(self, ctx: DeviceCtx) -> None:
         return None

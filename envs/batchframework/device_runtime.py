@@ -116,6 +116,13 @@ class BatchRuntime:
     def get_observer_output(self, name: str) -> Any:
         return self.dispatcher.get_output(name)
 
+    def export_episode_metrics(self) -> Dict[str, torch.Tensor]:
+        """聚合全部已 attach 插件声明的 episode 指标（显式 schema）。"""
+        out: Dict[str, torch.Tensor] = {}
+        for p in self._plugins:
+            out.update(p.export_episode_metrics(self.state))
+        return out
+
     # ------------------------------------------------------------------
     # Hook 调度
     # ------------------------------------------------------------------

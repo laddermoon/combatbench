@@ -105,34 +105,30 @@ class WarpObsBuilder:
     CUDA 张量；``build()`` 为纯设备端计算。
     """
 
-    def __init__(self, sim: "WarpHumanoid21Simulator"):  # noqa: F821
-        self._dev = torch.device("cuda:0")
-        self._B = sim.batch_size
-        self._ground_gid = int(sim._ground_geom_id)
-        self._geom_bodyid = torch.as_tensor(
-            np.asarray(sim._model.geom_bodyid), dtype=torch.long,
-            device=self._dev)
-        # 归属表（0=环境, 1=robot_a, 2=robot_b）——rewarder 接触分类用
-        aff = np.zeros(sim._model.ngeom, dtype=np.int64)
-        for gid, a in sim._meta["geom_id_to_aff"].items():
-            aff[gid] = int(a)
-        self._geom_aff = torch.as_tensor(aff, device=self._dev)
+    def __init__(self, tables, batch_size: int):
+        """Args:
+            tables: ``Humanoid21DeviceTables``——任务设备端常量表
+                （W4 收口后的唯一任务元数据来源）。
+            batch_size: batch 行数 B。
+        """
+        self._tables = tables
+        self._dev = tables.device
+        self._B = int(batch_size)
+        self._ground_gid = tables.ground_geom_id
+        self._geom_bodyid = tables.geom_bodyid
+        self._geom_aff = tables.geom_aff
         self._robots: Dict[str, Dict[str, Any]] = {}
         for rid in ("robot_a", "robot_b"):
-            cache = sim._robots[rid]
-            norm = sim._norm_params[rid]
-            t = lambda a, dt=torch.float32: torch.as_tensor(  # noqa: E731
-                np.asarray(a), dtype=dt, device=self._dev)
+            cache = tables.robots[rid]
             self._robots[rid] = dict(
-                torso_id=int(cache["root_body_id"]),
-                root_qva=int(cache["root_qvel_adr"]),
-                qpos_idx=t(cache["qpos_indices"], torch.long),
-                qvel_idx=t(cache["qvel_indices"], torch.long),
-                norm_ref=t(norm["reference"]),
-                norm_scale=t(norm["scale"]),
-                kp_ids={n: int(b) for n, b in
-                        cache["keypoint_body_ids"].items()},
-                body_weight=float(cache["body_weight"]),
+                torso_id=cache["root_body_id"],
+                root_qva=cache["root_qvel_adr"],
+                qpos_idx=cache["qpos_indices"],
+                qvel_idx=cache["qvel_indices"],
+                norm_ref=cache["norm_ref"],
+                norm_scale=cache["norm_scale"],
+                kp_ids=cache["keypoint_body_ids"],
+                body_weight=cache["body_weight"],
             )
 
     # ------------------------------------------------------------------
@@ -205,6 +201,10 @@ class WarpObsBuilder:
         ], dim=-1)
 
     # ------------------------------------------------------------------
+    def obs_dim(self) -> int:
+        """观测维度（state 无关，固定 96——见 OBSERVATION_zh.md）。"""
+        return 96
+
     def build(self, state) -> Dict[str, torch.Tensor]:
         """→ {"robot_a": (B,96), "robot_b": (B,96)}；写入 io.obs_* 缓冲。"""
         obs = {
