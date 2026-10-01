@@ -56,7 +56,7 @@ The framework is built around a set of explicit abstract interfaces. Core interf
 
 World plugins and observer plugins are **orthogonal extension axes**: to change rules (e.g., add a foul system) add a world plugin; to change rewards or observation encoding add an observer plugin — they do not interfere. Recorders are a third axis independent of both — responsible for persisting key episodes during training for debugging and replay.
 
-**`EnvRuntime`** — the public API for developers. `step(action_a, action_b)` drives both-sided actions, `get_observation()` returns observations, `get_observer_output()` returns rewards and other plugin outputs, `get_termination_flags()` returns termination status. Companion `RoundRunner` (single-round execution) and `MatchRunner` (multi-round match + HP accumulation).
+**`EnvRuntime`** — the public API for developers. `step(action_a, action_b)` drives both-sided actions, `get_observation()` returns observations, `get_observer_output()` returns rewards and other plugin outputs, `is_episode_over()` / `is_agent_active()` / `get_agent_termination()` report termination status. Companion `RoundRunner` (single-round execution) and `MatchRunner` (multi-round match + HP accumulation).
 
 **`EnvBlueprint`** — the entire environment serialized as YAML: simulator class + config, ordered world plugin list, observer plugin mapping, runtime parameters. Load one YAML file to fully reproduce someone else's experiment.
 
@@ -77,7 +77,7 @@ Training end-to-end on the full combat task fails (the robot cannot survive the 
 | 3. Follow opponent | Track a moving opponent while balancing | Balance + locomotion + orientation |
 | 4. Full combat | Fight under HP rules | Attack-defense tradeoff |
 
-For detailed training procedures see [Baseline V1 Training Guide](baseline/humanoid21/curriculum/TRAINING_V1.md) and [Baseline V2 Training Guide](baseline/humanoid21/curriculum/TRAINING_V2.md). Framework documentation in [curriculum/README.md](baseline/humanoid21/curriculum/README.md).
+For the current training path see [`baseline/experiments_ppo/README.md`](baseline/experiments_ppo/README.md) (experiment registry + `train.py` CLI) and [`baseline/framework/ppo/GUIDE.md`](baseline/framework/ppo/GUIDE.md) (framework guide). The historical curriculum process is recorded in [Baseline V1 Training Guide](baseline/humanoid21/curriculum/TRAINING_V1.md) and [Baseline V2 Training Guide](baseline/humanoid21/curriculum/TRAINING_V2.md) — note `curriculum/` is a legacy archive: its old experiment registry no longer runs, and the curriculum mechanism is now expressed inside `build_trajectories()` actor weights.
 
 **Safety Gate** is the core innovation of the baseline: an MLP classifier predicts whether the current state is safe, and when unsafe, control is handed to a frozen conservative recovery policy. It uses a hysteresis state machine — preferring to over-protect rather than risk handing control back too early.
 
@@ -149,6 +149,9 @@ from envs.framework.common_plugins import VideoRecorderPlugin
 blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
 
 # Load preset baseline policies
+# NOTE: the shipped snapshots under policy/baseline/ currently carry a stale
+# import (AUDIT P-POL-1) — until that is fixed, use e.g.
+# policy/blueprints/random.yaml / humanoid21/standing.yaml for a runnable demo.
 fight_policy = PolicyBlueprint.load("policy/baseline/fight/u11936/policy_blueprint.yaml").build()
 follow_policy = PolicyBlueprint.load("policy/baseline/follow/u11416/policy_blueprint.yaml").build()
 
@@ -172,16 +175,18 @@ More examples in the [`examples/`](examples/) directory, including full match ev
 
 ```
 combatbench/
-├── assets/          # MuJoCo XML models, textures, meshes
+├── assets/          # Images and textures (arena XML models live in envs/humanoid21/)
 ├── envs/
 │   ├── framework/   # Reusable core framework (backend contracts, runtime, plugin system)
 │   └── humanoid21/  # 21-DOF humanoid robot environment
 ├── policy/          # Preset policies (baseline training results, random, for evaluation)
 ├── baseline/        # Training baselines (PPO curriculum + safety gate)
+│   ├── framework/   # Unified training framework (PPO; SAC experimental)
+│   ├── experiments_ppo/  # PPO experiment registry (exp_*.py auto-discovery)
 │   └── humanoid21/
-│       ├── curriculum/   # Four-stage curriculum training framework
-│       ├── rewards/      # 8 composable reward modules
-│       └── runs/         # 125+ training records
+│       ├── curriculum/   # Legacy curriculum archive (superseded by experiments_ppo)
+│       ├── rewards/      # 20+ composable reward/observer modules
+│       └── runs/         # 800+ training records
 ├── docs/            # Rules, environment specs, design documents
 ├── examples/        # 9 example scripts (covering full development cycle)
 ```
@@ -196,11 +201,11 @@ The framework is fully extensible: if the current interfaces cannot meet your ne
 
 Related documentation:
 
-- **Baseline overview**: [`baseline/humanoid21/README.md`](baseline/humanoid21/README.md) — directory structure, training flow, reward modules
-- **Curriculum training framework**: [`baseline/humanoid21/curriculum/README.md`](baseline/humanoid21/curriculum/README.md) — Framework V1/V2 differences, experiment configs, CLI usage
-- **Baseline V1 training guide**: [`baseline/humanoid21/curriculum/TRAINING_V1.md`](baseline/humanoid21/curriculum/TRAINING_V1.md)
-- **Baseline V2 training guide**: [`baseline/humanoid21/curriculum/TRAINING_V2.md`](baseline/humanoid21/curriculum/TRAINING_V2.md)
-- **Policy interface & blueprints**: [`envs/framework/DESIGN.md`](envs/framework/DESIGN.md) — `PolicyBlueprint` serialization, `Policy` abstract base class
+- **Training CLI & experiment registry**: [`baseline/experiments_ppo/README.md`](baseline/experiments_ppo/README.md) — launch, smoke, resume, `--set`/`--param` overrides
+- **PPO framework guide**: [`baseline/framework/ppo/GUIDE.md`](baseline/framework/ppo/GUIDE.md) — hooks, data flow, multi-critic channels
+- **Baseline overview**: [`baseline/humanoid21/README.md`](baseline/humanoid21/README.md) — directory structure, reward modules
+- **Policy contract**: [`policy/README.md`](policy/README.md) — `Policy` interface and `PolicyBlueprint` packaging
+- **Historical curriculum records**: [`baseline/humanoid21/curriculum/TRAINING_V1.md`](baseline/humanoid21/curriculum/TRAINING_V1.md), [`TRAINING_V2.md`](baseline/humanoid21/curriculum/TRAINING_V2.md) — legacy training process notes
 - **Control spec**: [`envs/humanoid21/CONTROLSPEC.md`](envs/humanoid21/CONTROLSPEC.md) — action space, PD control, frequency conventions
 - **Data spec**: [`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md) — observation vector layout, coordinate frame conventions
 
@@ -215,7 +220,7 @@ Design contracts and in-depth documents:
 - **Humanoid21 data contract**: [`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md)
 - **Humanoid21 control contract**: [`envs/humanoid21/CONTROLSPEC.md`](envs/humanoid21/CONTROLSPEC.md)
 - **Humanoid21 baseline guide**: [`baseline/humanoid21/README.md`](baseline/humanoid21/README.md)
-- **Training observability contract**: [`baseline/humanoid21/curriculum/OBSERVABILITY.md`](baseline/humanoid21/curriculum/OBSERVABILITY.md)
+- **Debug tooling map**: [`baseline/framework/ppo/dumpkit/CONTEXT.md`](baseline/framework/ppo/dumpkit/CONTEXT.md) — dump capture, viewer, metrics catalog
 
 Rules and environment:
 

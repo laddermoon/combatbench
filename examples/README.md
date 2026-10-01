@@ -1,6 +1,7 @@
-# CombatBench Examples — 规划草案 v2（面向策略开发生命周期）
+# CombatBench Examples — 面向策略开发生命周期的示例集
 
-> 这是一个**提案文档**，等待你确认后再落地实现。
+> 本目录的 9 个示例（`01`–`09`）均已实现，按策略开发者真实会走的
+> 阶段组织；每个例子一个 python 文件，产物落到 `examples/out/<name>/`。
 
 ## 立场
 
@@ -131,9 +132,29 @@ CombatBench 的定位是**一个格斗 benchmark 平台**：我们提供 Env + F
   `out/06_evaluate_policy/videos/round_N.mp4`（通过 `MatchRunner.run(video_dir=...)`）。
 
 **读完知道**：
-- `MatchRunner` 的 `env_factory(initial_health_a, initial_health_b)` 契约——血量延续怎么实现。
+- `MatchRunner` 的 `env_factory()` 契约——无参调用一次构建 runtime，
+  回合间 HP 延续经 `episode_options` 的 `initial_health_*` 传递
+  （见 `envs/framework/RESET.md` G3）。
 - 回合级 seed 是如何从 match base seed 用 `SeedSequence.spawn` 派生（见 `SEED.md`）。
 - 把自己的 policy 塞进去代替 `StandingPolicy`，立刻就能按 benchmark 规则评测。
+
+---
+
+### `07_curriculum_recipe.py` — 阶段 2 延伸：课程化扰动 recipe
+
+**展示**：用 `options_fn`（每回合下发不同 `episode_options`）表达课程
+强度递增——扰动力/初始状态随 episode 序号变化，框架原生通道，无需
+重建 runtime。
+
+### `08_rollout_collection.py` — 阶段 3 延伸：rollout 模块
+
+**展示**：新 rollout 模块——`EpisodeRecorder` + `ParallelRollouter`
+的多进程采样与 episode 落盘。
+
+### `09_episode_recorder_round_runner.py` — 阶段 4 延伸：单 episode 录制
+
+**展示**：`RoundRunner` + `EpisodeRecorder` 做单回合录制，产出可直接
+回放的轨迹文件。
 
 ---
 
@@ -149,6 +170,9 @@ examples/
 ├── 04_collect_rollouts.py
 ├── 05_replay_and_inspect.py
 ├── 06_evaluate_policy.py
+├── 07_curriculum_recipe.py
+├── 08_rollout_collection.py
+├── 09_episode_recorder_round_runner.py
 └── out/                               # 所有产物（建议加到 .gitignore）
     ├── 01_explore_env/
     ├── 04_collect_rollouts/
@@ -189,18 +213,15 @@ if __name__ == "__main__":
 
 1. **一个文件一件事**，无 CLI 参数，直接 `python xxx.py`。
 2. **产物进 `examples/out/<name>/`**，不污染别处。
-3. **宁缺毋滥 —— 6 个，覆盖 5 个阶段**（01 独立阶段 0；02 阶段 1；03 阶段 2；04 阶段 3；05 阶段 4；06 阶段 5）。
+3. **宁缺毋滥**（01–06 各对应阶段 0–5；07–09 是阶段 2/3/4 的延伸 recipe）。
 4. **不重复 baseline/ 的训练脚本**，不做 Gym 适配演示，不写玩具 Simulator。
 
 ---
 
-## 请你确认
+## 实现说明
 
-1. **"生命周期 5 阶段 → 6 个例子"的切分是否吻合你想传达的主线？**
-2. `03_training_aids` 里列的三件套（课程扰动 / 早停 / 自定义 reward observer）是不是**最该突出的训练辅助能力**？有没有第四件应该上？
-3. `04_collect_rollouts` 特意强调 `store_extras` 这条"给 on-policy RL 留的通道"，要不要更显眼（例如单独再开一个例子专讲 extras 格式）？
-4. `06_evaluate_policy` 用 `StandingPolicy` 冒充"我的 policy"够不够有说服力？还是引入一个简单的 `HeuristicAttackPolicy` 更能让读者代入？
-5. `_common.py` 的做法 vs 每个文件自包含（哪怕重复 30 行样板），你偏向哪个？
-6. 产物目录 `examples/out/` 是否接受？
+本文最初是规划草案，示例已全部实现（01–09）。实现时的取舍：
 
-确认后我开始实现。
+- `env_factory()` 为无参契约——HP 延续走 `episode_options`（框架 G3 重构后）。
+- 依赖链：`04 → 05`（05 吃 04 的产物）；其余独立。
+- 所有例子直接 `PYTHONPATH=. python3 examples/NN_xxx.py` 运行。

@@ -1,36 +1,43 @@
 # Framework 测试
 
-测试 CombatBench 框架的核心安全机制。
+测试 CombatBench 框架的核心安全机制与运行契约。
 
-## 测试重点
+## 测试文件一览
 
-这些测试专注于框架的**关键风险点**，而不是简单的覆盖率：
+> 状态列标注当前实测结果（详见根目录 `AUDIT.md`）：
 
-| 测试文件 | 重点 | 风险等级 |
-|---------|------|---------|
-| `test_permission_control.py` | 权限授予/撤销机制 | P0 |
-| `test_plugin_dispatch.py` | 插件调度顺序与异常隔离 | P0 |
-| `test_lifecycle.py` | 钩子调用顺序与终止传播 | P0 |
-| `test_observer_system.py` | Observer 去重与调度 | P1 |
-| `test_edge_cases.py` | 边界情况与特殊条件 | P2 |
+| 测试文件 | 重点 | 状态 |
+|---------|------|------|
+| `test_permission_control.py` | 权限授予/撤销机制（mutator 只在可写钩子暴露） | P0 通过 |
+| `test_plugin_dispatch.py` | 插件调度顺序与异常隔离 | P0 通过 |
+| `test_lifecycle.py` | 钩子调用顺序与终止传播 | P0 通过 |
+| `test_observer_system.py` | Observer 去重与调度 | P1 通过 |
+| `test_observer_dispatcher_ordering.py` | dispatcher 顺序 + 只读 ctx 强制 | 通过 |
+| `test_edge_cases.py` | 边界情况与特殊条件 | P2 部分失败 |
+| `test_episode_runner.py` | EpisodeRunner：rollout 形态、seed 确定性、extras 捕获 | 部分失败 |
+| `test_reset_chain.py` | RESET.md 不变式 I1–I6 | 通过 |
+| `test_seed.py` | SEED.md 契约（派生树、None 解析） | 通过 |
+| `test_blueprint.py` | EnvBlueprint/PolicyBlueprint 序列化 | 通过 |
+| `test_policy.py` | Policy ABC 契约 | 通过 |
+| `test_recorder_lifecycle.py` | Recorder 钩子顺序 + 落盘 schema | 通过 |
+| `test_replay_simulator.py` | ReplaySimulator 回放往返 | 通过 |
+| `test_sandbox.py` | accessor/mutator 沙箱白名单 | 通过 |
+| `test_strict_mode.py` | strict 模式异常语义 | 通过 |
+| `test_video_recorder.py` | VideoRecorderPlugin | 部分失败 |
+| `test_parallel_runner.py` | ⚠️ collection error——测试已删除的 ParallelRunner | 失效 |
+| `test_audit_*.py`（4 个） | 审计探针：锁死已确认的缺陷行为（mutator 泄漏、终止帧、reset/recorder 缺口、video 路径污染） | 探针 |
 
 ## 运行测试
 
 ```bash
 # 运行所有框架测试
-pytest envs/framework/tests/
+PYTHONPATH=. pytest envs/framework/tests/
 
 # 运行特定文件
-pytest envs/framework/tests/test_permission_control.py
+PYTHONPATH=. pytest envs/framework/tests/test_permission_control.py
 
 # 显示详细输出
-pytest envs/framework/tests/ -v
-
-# 运行并显示覆盖率
-pytest envs/framework/tests/ --cov=envs.framework --cov-report=html
-
-# 只运行 P0 测试
-pytest envs/framework/tests/ -m "not slow"
+PYTHONPATH=. pytest envs/framework/tests/ -v
 ```
 
 ## 核心测试场景
@@ -83,3 +90,6 @@ def test_same_observer_instance_deduplicated():
 2. **使用 Mock** - 快速、可靠、可重复
 3. **清晰的行为验证** - 每个测试有明确的预期行为
 4. **独立性** - 测试之间无依赖，可并行运行
+
+> `test_audit_*.py` 是例外：它们是审计期间写的**缺陷锁存探针**——
+> 故意断言当前（有缺陷的）行为，修好后应翻转断言。

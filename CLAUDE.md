@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It provides a Gymnasium-compatible RL environment where two 21-DOF humanoid robots fight each other. The project includes a physics engine, collision detection, scoring system, and a custom multi-critic PPO/SAC training framework with curriculum learning support.
+CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It provides a custom RL runtime (`EnvRuntime` + plugin system; gymnasium is only used for `spaces` type annotations — there is no `gym.Env` adapter) where two 21-DOF humanoid robots fight each other. The project includes a physics engine, collision detection, scoring system, and a custom multi-critic PPO/SAC training framework with curriculum learning support.
 
 ## Project Structure
 
@@ -15,7 +15,7 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
   - `humanoid21/` - 21-DOF humanoid robot environment
     - `simulator.py` - Main simulator (`Humanoid21Simulator`)
     - `plugins.py` - Combat plugins (scoring, non-fall constraint, frozen robot)
-    - `observer_plugins.py` - Gymnasium observation plugin
+    - `observer_plugins.py` - Observation/reward observer plugins (CombatScoringObserver, balance analysis)
     - `disturbance_plugins.py` - External disturbance plugins
     - `battle_v1.xml` / `battle_v2.xml` - Arena MuJoCo models
     - `DATASPEC.md` - Data interface specification
@@ -56,7 +56,7 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
     - `rewards/` - Reward observer implementations (standup, balance, etc.)
     - `plugins/` - Custom termination/disturbance plugins
     - `blueprints/` - Environment blueprint YAML files
-    - `curriculum/` - Legacy curriculum experiments + gating/mixed-policy scripts (`experiments/` is the old registry — superseded by `experiments_ppo/`)
+    - `curriculum/` - Legacy curriculum scripts + gating/mixed-policy assets (`experiments/` old registry is **import-broken** — imports deleted `baseline.framework.experiment`; superseded by `experiments_ppo/`)
   - `runs/` - Training run outputs (gitignored, can be very large)
 
 ## Framework Architecture
@@ -181,7 +181,7 @@ Read-only observation/reward computation:
 Main public API for policy execution:
 
 ```python
-from combatbench.envs.framework import EnvRuntime
+from envs.framework import EnvRuntime
 
 runtime = EnvRuntime(simulator, world_plugins=[], observer_plugins={})
 
@@ -192,7 +192,9 @@ runtime.step(action_a, action_b)
 # Data access
 obs_a, obs_b = runtime.get_observation()  # Get per-agent observations
 reward = runtime.get_observer_output("robot_a_reward")  # Get observer plugin output
-terminated, truncated = runtime.get_termination_flags()
+over = runtime.is_episode_over()          # all agents terminated
+active = runtime.is_agent_active("robot_a")
+reasons = runtime.get_agent_termination() # {agent: reason or None}
 
 # Plugin management
 runtime.attach_plugin(plugin)
@@ -403,7 +405,7 @@ in the per-step JSON panel.
 
 **Using RoundRunner in Python code:**
 ```python
-from combatbench.envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner, VideoRecorderPlugin
+from envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner, VideoRecorderPlugin
 
 blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
 policy_a = PolicyBlueprint.load("policy/blueprints/random.yaml").build()
@@ -444,7 +446,7 @@ my_policy/
 Policies are loaded via `PolicyBlueprint` (YAML/JSON):
 
 ```python
-from combatbench.envs.framework import PolicyBlueprint
+from envs.framework import PolicyBlueprint
 
 # Load from YAML file
 policy = PolicyBlueprint.load("my_policy/policy_blueprint.yaml").build()

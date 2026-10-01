@@ -9,6 +9,8 @@ Backend-agnostic engine底座 for the combatbench multi-agent fighting sim. Prov
 **capability-scoped plugin lifecycle** over any physics backend (MuJoCo / Isaac /
 PyBullet) via the `BaseSimulator` contract, plus a read-only observer pipeline,
 recording, and replay. Any training code consumes this through `EnvRuntime`.
+Batch/process-parallel execution lives in `baseline/framework/rollout/` — this
+package is deliberately single-process.
 
 ## Mental Model
 
@@ -18,7 +20,8 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   `get_physical_frequency`). Nothing above this knows about MuJoCo etc.
 - **`SimContext`** (`context.py`) — per-episode blackboard. Exposes `ctx.accessor`
   (always), `ctx.mutator` (granted per-plugin-per-hook; `None` when denied),
-  `ctx.metrics` / `ctx.events` / `ctx.request_termination`.
+  `ctx.metrics` / `ctx.events` / `ctx.request_termination` /
+  `ctx.episode_options` / `ctx.base_seed`.
 - **`BasePlugin`** (`plugin.py`) — world-rule unit. Writes physics only at writable
   hooks AND only if it declares `require_mutator=True`. Both conditions checked
   per-call in `_PluginManager.invoke`.
@@ -27,8 +30,10 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   `_ObserverDispatcherPlugin`, which owns the highest priority (`+1_000_000`) so
   its snapshots are always **fresh** for downstream plugins on the same hook.
 - **`EnvRuntime`** (`env_runtime.py`) — the only public runtime entry. Takes
-  `simulator`, `plugins`, `observer_plugins`, `recorders`. `step(action_a, action_b)`
-  and `reset` return nothing; consumers pull via `get_observer_output(name)`.
+  `simulator`, `plugins`, `observer_plugins`, `recorders`. `step(action_a,
+  action_b)` and `reset` return nothing; consumers pull via `get_observation()`
+  / `get_observer_output(name)` / `is_episode_over()` /
+  `get_agent_termination()`.
 - **`PostActionRecorder` / `BaseFrameRecorder`** (`recorder.py`) — side-effect
   observers that persist the full `IDataAccessor` surface to a standard on-disk
   layout (`static.json` + per-step JSON + PNG) with `manifest_version=2`.
@@ -36,19 +41,16 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
   recorder's layout. Lets observers/plugins/training code run against recordings
   unchanged. Mutators raise `ReplayReadOnlyError` except `set_action` (silent no-op
   for EnvRuntime compatibility; actions come from the recording).
-- **`EpisodeRunner`** (`episode_runner.py`) — the layer **above** `EnvRuntime`.
-  Owns the `policy.act → runtime.step → pull obs/reward` loop for the two fixed
-  agents (`robot_a` / `robot_b`), deterministic seed splitting via
-  `numpy.random.SeedSequence`, configurable rollout capture per side, and
-  `on_step` / `on_episode_end` hooks. `RoundRunner` / `RoundRunner` are now
-  thin subclasses that only add combat-specific printing and the legacy result
-  dict — generic loop logic lives in `EpisodeRunner`.
-- **`ParallelRunner`** (`parallel_runner.py`) — process-level fan-out over
-  `EpisodeRunner`. Takes a **factory** `(worker_id) -> EpisodeRunner` (picklable,
-  top-level); spawns N persistent worker processes; distributes episodes by
-  seed. Reuses `SeedSequence` derivation identical to `EpisodeRunner.run_n_episodes`
-  so sequential and parallel runs produce the same seeds. `num_workers <= 1`
-  short-circuits to in-process, skipping mp entirely — useful for debugging.
+- **`EpisodeRunner`** (`episode_runner.py`) — thin per-episode loop above
+  `EnvRuntime`: derives seeds (`SeedSequence`), resets runtime + policies, then
+  runs `policy.act → runtime.step` until `is_episode_over()`. Returns `None` —
+  all episode data is pulled from attached recorders afterward. Handles
+  per-agent termination (`post_termination_action`: `"policy"` keeps calling
+  `act` after that agent terminated, `"hold"` replays its last action).
+- **`RoundRunner`** (`round_runner.py`) / **`MatchRunner`** (`match_runner.py`) —
+  compose `EpisodeRunner`: RoundRunner adds CLI/result-dict/video plumbing for a
+  single round; MatchRunner runs N rounds with HP carry-over via
+  `episode_options["initial_health_*"]`.
 
 ## Entry Points
 
@@ -57,29 +59,25 @@ recording, and replay. Any training code consumes this through `EnvRuntime`.
 - `plugin.py` — `BasePlugin` + `require_mutator` permission flag.
 - `observer_plugin.py` — `BaseRuntimeUnit`, `BaseObserverPlugin`,
   `_ObserverDispatcherPlugin` (priority `+1_000_000`).
-  `runtime_plugin.py` is a backward-compat shim; new code imports from
-  `observer_plugin`.
 - `env_runtime.py` — `EnvRuntime` + internal `_RuntimeCore` + `_PluginManager`.
-- `policy.py` — canonical `Policy` Protocol + `coerce_action` / `call_policy`
-  helpers. The single source of truth for the policy contract; the sibling
-  `combatbench.policy.BaseCombatPolicy` ABC is a concrete implementation.
-- `episode_runner.py` — `EpisodeRunner`, `ObserverBinding`, `RolloutConfig`,
-  `AgentTrajectory`, `EpisodeResult`, `StepContext` (re-exports `Policy` for
-  back-compat with pre-split callers).
-- `round_runner.py` — `RoundRunner` / `RoundRunner` (thin subclass of
-  `EpisodeRunner` + legacy result-dict surface + `videosave_path` plumbing).
-- `parallel_runner.py` — `ParallelRunner` / `RunnerFactory` type alias. Process
-  pool on top of `EpisodeRunner`.
-- `recorder.py` / `replay.py` — record-and-replay pair. See their module docstrings.
-- `DESIGN.md` / `README.md` — human-facing architecture doc; this file intentionally
-  does not duplicate them.
+- `policy.py` — canonical `Policy` ABC (`act` / `reset` / `to_blueprint`) +
+  `PolicyBlueprint` / `ParameterizedPolicyBlueprint` loaders. The single source
+  of truth for the policy contract.
+- `episode_runner.py` — `EpisodeRunner` (+ `AGENT_IDS`).
+- `round_runner.py` — `RoundRunner` (+ `__main__` CLI).
+- `match_runner.py` — `MatchRunner` (+ `__main__` CLI).
+- `recorder.py` / `replay.py` / `recorder_viewer.py` — record-and-replay trio.
+- `blueprint.py` / `parameterized_blueprint.py` — `EnvBlueprint` YAML loading
+  and `${param}` materialization.
+- `DESIGN.md` / `README.md` / `RESET.md` / `SEED.md` — human-facing design docs;
+  this file intentionally does not duplicate them.
 
 ## How to Use
 
 Run tests from `things/combatbench`:
 
 ```bash
-python3 -m pytest envs/framework/tests/ -q
+PYTHONPATH=. python3 -m pytest envs/framework/tests/ -q
 ```
 
 Minimal consumer skeleton (real example in `README.md`):
@@ -94,42 +92,37 @@ runtime = EnvRuntime(
     phy_steps_per_action=10,
 )
 runtime.reset()
-while runtime.is_episode_active:
+while not runtime.is_episode_over():
     runtime.step(action_a, action_b)
     obs_a, obs_b = runtime.get_observation()
 ```
 
-Higher-level rollout (recommended — handles seeds / obs / reward / capture):
+Per-episode driver (recommended — handles seed derivation / resets):
 
 ```python
-from envs.framework import EnvRuntime, EpisodeRunner, RolloutConfig
-runtime = EnvRuntime(
-    simulator=MySimulator(),
-    observer_plugins={
-        "robot_a_obs": ObsPlugin("robot_a"), "robot_a_reward": RewPlugin("robot_a"),
-        "robot_b_obs": ObsPlugin("robot_b"), "robot_b_reward": RewPlugin("robot_b"),
-    },
-)
-runner = EpisodeRunner(
-    runtime=runtime,
-    policies={"robot_a": policy_a, "robot_b": policy_b},
-    rollout=RolloutConfig(capture_a=True, capture_b=False),  # one-sided rollout
-)
-results = runner.run_n_episodes(n=100, base_seed=42)
+from envs.framework import EnvRuntime, EpisodeRunner
+runtime = EnvRuntime(simulator=MySimulator(), ...)
+runner = EpisodeRunner(runtime=runtime, policy_a=policy_a, policy_b=policy_b)
+runner.run_episode(seed=42, options={"initial_health_a": 80})
+# episode data lives in the attached recorders; nothing is returned
 ```
 
-Fan out over processes (factory MUST be top-level importable — no lambdas):
+Single round / full match (with video):
 
 ```python
-from envs.framework import ParallelRunner
-
-def make_runner(worker_id: int) -> EpisodeRunner:
-    # Build a FRESH runtime + policies inside each worker.
-    return EpisodeRunner(runtime=build_runtime(), policies={...})
-
-with ParallelRunner(make_runner, num_workers=8) as pr:
-    results = pr.run(n=1000, base_seed=42)   # same seeds as sequential
+from envs.framework import EnvBlueprint, PolicyBlueprint, RoundRunner
+bp = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
+with RoundRunner(
+    blueprint=bp,
+    policy_a=PolicyBlueprint.load("policy/blueprints/random.yaml").build(),
+    policy_b=PolicyBlueprint.load("policy/blueprints/humanoid21/standing.yaml").build(),
+) as runner:
+    result = runner.run(seed=42)   # {steps, termination_reasons, health_a, health_b, seed}
 ```
+
+Batch / multi-process rollout lives in `baseline/framework/rollout`
+(`ParallelRollouter`, `Job`) — `Job.seed` + `Job.episode_options` carry the
+per-episode inputs; each worker internally runs `EpisodeRunner`.
 
 Replay a recording:
 
@@ -155,8 +148,12 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
   are writable; `on_post_action_step` / `on_post_episode` are read-only. `set_*`
   calls on a read-only hook go through `ctx.mutator`, which is `None` → raises.
 - **`EnvRuntime.step` / `reset` return nothing**. Pull observations via
-  `get_observation()`, observer plugin outputs (rewards etc.) via
-  `get_observer_output(name)`, termination via `get_termination_flags()`.
+  `get_observation()`, observer outputs via `get_observer_output(name)`,
+  termination via `is_episode_over()` / `is_agent_active(agent_id)` /
+  `get_agent_termination()`. (No `get_termination_flags()` — that API was
+  removed; several old docs still reference it.)
+- **`EpisodeRunner.run_episode` returns `None`** — read episode data from
+  recorders; the runner deliberately aggregates nothing.
 - **`_RuntimeCore` / `_PluginManager` / `_ObserverDispatcherPlugin` are private**.
   They are not re-exported from `__init__.py`; do not build against them.
 - **Recorder schema is versioned**. `MANIFEST_VERSION=2` includes `derived_state`
@@ -178,22 +175,17 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
   exact strings.
 - **Observer output shape contract** (see `observer_plugin.py` docstring):
   observation plugins return a policy-ready value directly (no `(obs, info)`
-  tuples); reward plugins return a scalar **or** a dict with a `reward` /
-  `total_reward` / `r` key. `EpisodeRunner` relies on this — older plugins with
-  envelope shapes need a custom `ObserverBinding.reward_extractor`.
-- **Seed propagation in `EpisodeRunner`**: a user seed is split by
-  `SeedSequence` into distinct child seeds for runtime / `robot_a` policy /
-  `robot_b` policy so policies cannot accidentally correlate. `run_n_episodes`
-  derives N child seeds from `base_seed` — same `base_seed` ⇒ same batch.
-- **`RoundRunner.run()` closes the runtime** at the end (legacy contract used
-  by `MatchRunner` to recycle runtimes per round). `EpisodeRunner.run_episode`
-  does NOT close the runtime — caller owns lifecycle.
-- **`ParallelRunner` factories must be top-level picklable**. No lambdas, no
-  closures over un-picklable state (GPU tensors, open files, mp.Lock, etc.).
-  Default start method is `"spawn"` for safety with MuJoCo / CUDA / torch; each
-  worker re-imports the module and builds its own runner from scratch. If you
-  need strict=False best-effort mode, failed episodes come back as `None` in
-  the result list — iterate with `if r is not None` before unpacking.
+  tuples); reward plugins return a scalar or a dict.
+- **Seed propagation in `EpisodeRunner`**: `run_episode(seed)` derives a
+  `_EpisodeSeeds` bundle (runtime / policy_a / policy_b / seedable plugins) via
+  `SeedSequence.spawn`; `seed=None` resolves to a concrete uint32 published on
+  `ctx.base_seed`. Batch seed assignment is the Job builder's job (rollout layer).
+- **`RoundRunner` owns the runtime lifecycle** — `runtime.close()` on
+  `runner.close()` / context exit. `EpisodeRunner` does NOT close the runtime —
+  caller owns lifecycle.
+- **Per-episode options**: `run_episode(options=...)` / `runtime.reset(options=)`
+  publish on `ctx.episode_options`; plugins read them in `on_pre_episode`.
+  Environment-only keys — policy knobs don't belong here.
 
 ## Open Questions / Notes for AI
 
@@ -205,5 +197,10 @@ runtime = EnvRuntime(simulator=replay, phy_steps_per_action=1, ...)
   be backward-compatible (new keys only).
 - `Gym` / `SB3` adapters are intentionally **outside** this package; do not add
   them here. See DESIGN.md §7.
+- Known gaps from the audit (see root `AUDIT.md`): abandoned-episode recorder
+  `on_post_episode` is not invoked (P3-1); `VideoRecorderPlugin` episode-level
+  `output_path` override permanently mutates the plugin (P3-2); `_MutatorView`
+  lifetime is not enforced — a cached mutator reference stays usable on
+  read-only hooks (P-FW-9).
 
 <!-- USER NOTES (auto-curator will not rewrite below this line) -->

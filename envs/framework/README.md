@@ -170,7 +170,8 @@ runtime = EnvRuntime(
 runtime.reset()
 obs_a, obs_b = runtime.get_observation()
 reward = runtime.get_observer_output("robot_a_reward")
-terminated, truncated = runtime.get_termination_flags()
+over = runtime.is_episode_over()               # True when all agents terminated
+reasons = runtime.get_agent_termination()      # {"robot_a": "timeout", ...}
 ```
 
 ## ♻️ 外部适配说明

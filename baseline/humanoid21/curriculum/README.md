@@ -1,56 +1,61 @@
-# Curriculum — 课程学习训练框架
+# Curriculum — 课程学习训练框架（遗留）
 
-## 目录用途
+> **⚠️ 历史档案**：本目录是旧一代（v1）训练框架的遗留目录，**当前不可运行**。
+>
+> - 实验注册表 `curriculum/experiments/` import 已删除的
+>   `baseline.framework.experiment`，加载即 `ModuleNotFoundError`。
+> - 原 `framework/` 子目录（`config.py` / `ppo_trainer.py` /
+>   `training_loop.py`）与统一入口 `train.py` 已删除，v1 框架代码存档在
+>   [`../../framework/obsolete/`](../../framework/obsolete/)。
+> - 保留下来的：gating/混合策略脚本（见下）、gating 模型与数据目录、
+>   以及完整的训练过程记录文档——作为历史证据与可复用思路留存。
+>
+> **当前训练路径请使用** [`../../experiments_ppo/`](../../experiments_ppo/README.md)
+> + `baseline/framework/train.py`。
 
-`curriculum/` 是 Humanoid21 基线策略的核心训练目录，实现了基于 PPO 的课程学习框架。通过将格斗任务拆解为多个阶段（平衡 → 门控 → 跟踪 → 对抗），从简单技能开始逐步叠加难度，让策略循序渐进地掌握完整能力。
+## 目录用途（历史定位）
 
-## 框架架构
+`curriculum/` 曾是 Humanoid21 基线策略的核心训练目录：把格斗任务拆解为
+多个阶段（平衡 → 门控 → 跟踪 → 对抗）逐步叠加难度。该机制已由 v2 框架
+（`baseline/framework/ppo/` + `experiments_ppo/`）取代——实验现在通过
+`build_trajectories()` 里的 `actor_weight` 直接做课程调度，不再需要框架级
+课程钩子。
 
-### `framework/` — 通用训练框架
+## 现存内容
 
-训练框架与具体实验解耦，新增实验只需一个配置文件，无需修改框架代码。
+### 策略与脚本（存活，但多数依赖旧接口）
 
 | 文件 | 说明 |
 |------|------|
-| `config.py` | `Experiment` 抽象基类，定义实验接口：reward keys、权重调度、reward 提取、评估指标、episode 分段 |
-| `ppo_trainer.py` | PPO 训练器：buffer、update、rollout helpers，支持 sub-episode 分段（排除 fallback 策略介入的帧） |
-| `training_loop.py` | 训练循环：checkpoint 管理、视频渲染、评估调度 |
+| `train_gating_network.py` | 门控网络（Gating MLP 分类器）训练脚本 |
+| `collect_gating_data.py` / `collect_gating_data_refine.py` | 门控数据收集脚本 |
+| `fight_mixed_policy.py` / `fight_mixed_policy_v2.py` | 混合策略：主学习策略 + 冻结恢复策略，经 Gating MLP 切换 |
+| `mixed_policy.py` / `height_switch_policy.py` / `hybrid_actor.py` / `standup_fallback_policy.py` | 各类策略组合/切换包装器 |
+| `weakened_policy.py` | 弱化策略包装器（对导出策略动作加高斯噪声） |
+| `run_4stage_chain.py` / `run_orig_chain.py` / `run_repro_chain.py` | 分阶段训练链的调度脚本 |
+| `gating_model*/`、`gating_data*/` | 训好的门控模型与收集数据 |
 
-### `experiments/` — 实验配置
+### `experiments/` — 旧实验注册表（已失效）
 
-每个 `exp_*.py` 文件导出 `EXPERIMENT: Experiment`，定义该实验的奖励方案、课程调度和环境配置。通过 `__init__.py` 自动注册。
+原自动发现 `exp_*.py` 的注册表，导出 `EXPERIMENT` 配置。**当前 import 即崩**
+（依赖已删的 `baseline.framework.experiment`），仅供考古。
 
-### 其他文件
+### 训练记录文档（历史档案，有参考价值）
 
-| 文件 | 说明 |
+| 文档 | 内容 |
 |------|------|
-| `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验 |
-| `fight_mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
-| `mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
-| `weakened_policy.py` | 弱化策略包装器，对导出策略的动作添加高斯噪声 |
-| `collect_gating_data.py` | 门控数据收集脚本 |
-| `collect_gating_data_refine.py` | 多级扰动门控数据收集脚本 |
-| `train_gating_network.py` | 门控网络训练脚本 |
-| `analyze_training.py` | 通用训练日志分析工具（支持所有实验） |
+| `TRAINING_V1.md` | Baseline V1 四阶段课程训练过程 |
+| `TRAINING_V2.md` | Baseline V2 训练过程 |
+| `STANDUP_V2_TRAINING_HISTORY.md` | standup_v2 的完整训练史 |
+| `REVIEW_SUMMARY.md` / `experiments/REVIEW_SUMMARY.md` | 复盘记录 |
+| `experiments/STANDUP_ORIG_*.md` | 原始 standup 奖励分析 |
 
-### Sub-episode 分段
+### 历史机制说明（仅供读旧代码时参考）
 
-训练框架支持 **sub-episode 分段**：
-- 当门控网络判断需要平衡恢复介入时，自动截断轨迹
-- 平衡恢复策略介入的帧被排除，不参与 PPO 梯度更新
-- 每个分段独立计算 GAE，避免状态不连续导致的梯度错误
-- 通过 `Experiment.prepare_training_segments()` 实现分段逻辑（默认返回完整 episode，需分段的实验覆盖此方法）
-
-### 实验配置
-
-Baseline V1 实验（不带 `_v2` 后缀）使用 4 个 reward（`r_fall`, `r_cross`, `r_relation`, `r_damage`），Baseline V2 实验使用 6 个 reward（`r_fall`, `r_cross`, `r_damage`, `r_hold`, `r_radial`, `r_tangential`），奖励方案更精细。
-
-### CLI 使用
-
-- 所有实验统一通过 `--experiment` 选择，无需额外 flag
-- 需要分段的实验（如跟踪/对抗阶段）通过覆盖 `prepare_training_segments()` 自动启用 sub-episode 分段
-
-## 训练指导文档
-
-- **Baseline V1 训练指南**：[`TRAINING_V1.md`](TRAINING_V1.md)
-- **Baseline V2 训练指南**：[`TRAINING_V2.md`](TRAINING_V2.md)
+- **Sub-episode 分段**：门控判定需要平衡恢复介入时截断轨迹，恢复策略
+  介入的帧不参与 PPO 更新，每段独立算 GAE——v1 通过
+  `Experiment.prepare_training_segments()` 实现；v2 中等价能力由实验在
+  `build_trajectories()` 里自行切分完成。
+- **奖励 channel**：V1 实验 4 个 channel（r_fall/r_cross/r_relation/
+  r_damage），V2 扩到 6 个（+r_hold/r_radial/r_tangential）。v2 框架的
+  channel 机制沿用了这套思路（见 `ppo/GUIDE.md`）。

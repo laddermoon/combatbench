@@ -8,7 +8,8 @@ API 与记录约定。
 1. **独立可设**：每个需要随机性的组件（simulator / policy / plugin）必
    须能被独立赋予一个 `int` 种子。
 2. **父向子链路通**：父组件能确定性地派生出子组件的种子；这条链路从
-   `ParallelRunner` 一直到最叶子的 plugin RNG 全程闭合，不允许有任何
+   batch 入口（`run_n_episodes` / `ParallelRollouter.collect` 的 Job）
+   一直到最叶子的 plugin RNG 全程闭合，不允许有任何
    "自己 `np.random.default_rng()`" 的孤岛。
 
 ## 随机性消费者
@@ -122,14 +123,16 @@ Plugin 字典的 key 用 `id(plugin)` 而非 `plugin.name`：
 的误导。
 
 ### 运行时日志
-`EpisodeRunner` / `ParallelRunner` 入口打一条 INFO：
-`"episode base_seed=<int>"`。这是调试可复现性的第一落点。
+`EpisodeRunner` 入口打一条 INFO：`"episode base_seed=<int>"`。这是调试
+可复现性的第一落点。
 
-## `ParallelRunner`
+## Batch 并行执行（`ParallelRollouter`）
 
-已经与 `EpisodeRunner.run_n_episodes` 派生同样的 batch-level 子种子
-（见 `parallel_runner._derive_seeds`）。**此处保持不变**——只需把批内每
-个 episode 的 seed 从 `uint32` 改为 `SeedSequence` 在 episode 层 spawn。
+`ParallelRunner` 已删除。当前批量执行走 `baseline/framework/rollout`
+的 `ParallelRollouter`：每个 `Job` 自带 `seed`（episode base seed，由
+实验的 `build_jobs()` 按任务策略分配），worker 进程内由
+`EpisodeRunner` 按本文件的派生规则展开 plugin/policy 子种子——
+batch 层的派生职责因此上移到了 job 构建方。
 
 ## 实现顺序
 

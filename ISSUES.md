@@ -1,5 +1,9 @@
 # Known Issues
 
+> **说明**：本文件是早期的已知问题登记，覆盖面有限。当前更完整的问题
+> 清单见根目录 [`AUDIT.md`](AUDIT.md)（逐目录审计报告，含验证证据）。
+
+
 ## ISSUE-001: mujoco.Renderer EGL context leak on simulator without close()
 
 **Status:** Partially fixed (close() added to Humanoid21Simulator; underlying

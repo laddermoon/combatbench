@@ -1,107 +1,77 @@
 # Humanoid21 Baseline
 
-Humanoid21 环境的基线训练实现，包含课程学习（Curriculum Learning）训练框架、奖励插件、环境蓝图和实验配置。
+Humanoid21 环境的基线训练实现：奖励插件、环境插件、环境蓝图、训练实验，
+以及课程学习阶段的遗留资产。
+
+> **当前训练路径**：新增实验与训练走
+> [`../experiments_ppo/`](../experiments_ppo/README.md) 注册表 +
+> `baseline/framework/train.py`。`curriculum/` 是旧一代训练框架的遗留
+> （见下文），不再维护。
 
 ## 目录结构
 
 ```
 baseline/humanoid21/
-├── blueprints/        # 环境蓝图（YAML）
-├── curriculum/        # 课程学习训练框架
-├── plugins/           # 训练用环境插件
-├── rewards/           # 奖励插件
+├── blueprints/        # 环境/初始策略蓝图（YAML，~57 个）
+├── rewards/           # 奖励与诊断 observer（22 个模块）
+├── plugins/           # 训练用环境插件（终止条件、对手行为、扰动）
 ├── tests/             # 单元测试
+├── curriculum/        # ⚠️ 遗留：旧训练框架/脚本/历史记录（注册表已失效）
+├── balance_recover/   # 平衡恢复子项目（脚本、数据、文档）
+├── end2end/           # 端到端方案备忘（分段条件奖励思路）
+├── fight/             # 对抗训练子目录
+├── follow/            # 跟随训练子目录
 └── runs/              # 训练产物（gitignored）
 ```
 
 ### `blueprints/`
 
-环境蓝图 YAML 文件，定义训练环境配置（插件组合、参数、初始策略等）。
+环境蓝图与初始策略蓝图 YAML。按用途分三类：
 
-| 文件 | 说明 |
-|------|------|
-| `basic_balance_env.yaml` | 基础平衡训练环境 |
-| `basic_balance_v2_env.yaml` | V2 基础平衡环境 |
-| `balance_recover_env.yaml` | 平衡恢复训练环境 |
-| `balance_recover_v2_env.yaml` | V2 平衡恢复环境 |
-| `balance_recover_plus_v2_env.yaml` | 增强版平衡恢复环境 |
-| `standup_env.yaml` | 起身训练环境 |
-| `follow_env.yaml` | 跟踪对手训练环境 |
-| `follow_v2_env.yaml` | V2 跟踪对手环境 |
-| `fight_env.yaml` | 对抗训练环境 |
-| `fight_v2_env.yaml` | V2 对抗环境 |
-| `fight_mixed.yaml` | 混合策略对抗环境（参数化蓝图） |
-| `mixed.yaml` | 混合策略环境（参数化蓝图） |
-| `init_policy.yaml` | 初始策略蓝图 |
-
-### `curriculum/`
-
-课程学习训练框架，支持四阶段训练（平衡 → 门控网络 → 跟踪 → 对抗）。详见 [`curriculum/README.md`](curriculum/README.md)。
-
-**主要文件**：
-
-| 文件 | 说明 |
-|------|------|
-| `train.py` | 统一训练 CLI 入口，通过 `--experiment` 选择实验配置 |
-| `train_gating_network.py` | Gating MLP 分类器训练脚本 |
-| `fight_mixed_policy.py` | 混合策略：主学习 Fight 策略 + 冻结 Follow 策略 + 恢复策略，通过 Gating MLP 切换 |
-| `mixed_policy.py` | 混合策略：主学习策略 + 冻结恢复策略，通过 Gating MLP 切换 |
-| `weakened_policy.py` | 弱化策略包装器，对导出策略的动作添加可调高斯噪声 |
-| `collect_gating_data.py` | 使用弱化策略收集 Gating 分类器训练数据 |
-| `collect_gating_data_refine.py` | 多级扰动覆盖的 Gating 数据收集 |
-| `analyze_logs.py` | 通用训练日志监控工具 |
-| `analyze_fight_logs.py` | Fight 实验日志分析工具 |
-| `analyze_follow_logs.py` | Follow 实验日志分析工具 |
-| `analyze_standup_logs.py` | Standup 实验日志分析工具 |
-
-**`curriculum/framework/`** — 通用训练框架，详见 [`curriculum/README.md`](curriculum/README.md)。
-
-**`curriculum/experiments/`**
-
-实验配置注册表，自动发现 `exp_*.py` 文件。每个文件导出 `EXPERIMENT: ExperimentConfig`。
-
-| 文件 | 说明 |
-|------|------|
-| `exp_basic_balance.py` | 基础平衡实验 |
-| `exp_basic_balance_v2.py` | Baseline V2 基础平衡实验 |
-| `exp_balance_recover.py` | 平衡恢复实验 |
-| `exp_balance_recover_v2.py` | Baseline V2 平衡恢复实验 |
-| `exp_balance_recover_plus.py` | 增强版平衡恢复实验 |
-| `exp_balance_recover_plus_refine.py` | 多级扰动课程（防遗忘） |
-| `exp_balance_recover_plus_v2.py` | Baseline V2 增强版平衡恢复实验 |
-| `exp_standup.py` | 起身训练实验 |
-| `exp_follow.py` | 跟踪对手实验 |
-| `exp_follow_v2.py` | Baseline V2 跟踪对手实验 |
-| `exp_fight.py` | 对抗实验 |
-| `exp_fight_v2.py` | Baseline V2 对抗实验 |
-| `exp_fight_v2_oppopool.py` | Baseline V2 对手池对抗实验 |
-
-### `plugins/`
-
-训练用环境插件，用于控制对手行为和自定义终止条件。
-
-| 文件 | 说明 |
-|------|------|
-| `standing_termination.py` | 站立/平衡实验的终止条件插件 |
-| `balance_score_termination.py` | 平衡评分终止插件 |
-| `imbalance_termination.py` | 失衡终止插件 |
-| `random_move.py` | 对手随机移动插件（用于跟踪训练） |
+| 类别 | 文件（举例） | 说明 |
+|------|------|------|
+| 任务环境（`*_env.yaml`） | `basic_balance_env.yaml`、`basic_balance_v2_env.yaml`、`standup_env.yaml`、`follow_env.yaml`、`fight_env.yaml`、`balance_recover*_env.yaml` 等 ~45 个 | 各训练阶段的环境配置（插件组合、参数） |
+| 参数化蓝图 | `fight_mixed.yaml`、`fight_mixed_v2.yaml`、`mixed.yaml`、`hybrid_env.yaml`、`standup_fallback.yaml` | 带 `parameters:` 节的可物化蓝图 |
+| 初始策略（`init_policy*.yaml`） | `init_policy.yaml` + 12 个 `init_policy_<family>.yaml` | 各策略族的初始权重策略蓝图 |
 
 ### `rewards/`
 
-奖励插件，实现各训练阶段的奖励函数。
+奖励/诊断 observer 插件，按实验蓝图组合使用。主要实现：
 
-| 文件 | 说明 |
-|------|------|
-| `balance.py` | 平衡分析奖励（基于支撑面投影） |
-| `cross_support.py` | 交叉支撑平衡奖励 |
-| `standing_posture.py` | 站立姿态评分 |
-| `posture_reward.py` | 姿态诊断观测器（记录 4 项姿态指标） |
-| `action_limit.py` | 动作限制（关节姿态）奖励 |
-| `follow_opponent.py` | 跟踪对手奖励（距离控制） |
-| `opponent_relation.py` | 对手关系奖励（相对位置/朝向） |
-| `damage.py` | 净伤害奖励（造成伤害 - 受到伤害） |
-| `standup.py` | 起身势能奖励（分段势能函数） |
+| 文件 | 类 | 说明 |
+|------|-----|------|
+| `cross_support.py` | `CrossSupportBalanceRewarder` | 交叉支撑平衡奖励 |
+| `balance.py` | `BalanceValueRewarder` | 基于支撑面投影的平衡分析 |
+| `standing_posture.py` | `StandingPostureRewarder` | 站立姿态评分 |
+| `posture_reward.py` | `PostureRewarder` | 姿态诊断观测（4 项指标） |
+| `action_limit.py` | `ActionLimitRewarder` | 关节姿态限位奖励 |
+| `follow_opponent.py` | `InZoneHoldRewarder` | 跟随/驻留奖励 |
+| `opponent_relation.py` | `OpponentRelationRewarder` | 相对位置/朝向奖励 |
+| `damage.py` | `NetDamageRewarder` | 净伤害奖励（造成 − 承受） |
+| `punch_motion.py` | `PunchMotionRewarder` | 出拳动作奖励 |
+| `rollover.py` | `RolloverRewarder` | 翻身奖励 |
+| `standup.py` ~ `standup_v3.py`、`standup_4stage.py`、`standup_energy.py`、`standup_repro_v2.py` | `Standup*Rewarder` | 起身势能奖励的历代实现（v1/v2/v2_r7/v2_r10/v3/四阶段/能量版/复现版） |
+| `standing_balance_3stage.py` / `standing_balance_4stage.py` | `StandingBalance*Rewarder` | 分阶段站立平衡奖励 |
+| `phase_observer.py` | `PhaseObserver` | 相位观测器 |
+| `fall_contact_observer.py` | `FallContactObserver` | 倒地接触观测 |
+| `wall_contact.py` | `WallContactObserver` | 靠墙接触观测 |
+| `distance_potential.py` | （函数模块） | 距离势能奖励计算工具函数 |
+
+### `plugins/`
+
+训练用环境插件（终止条件、对手控制、扰动初始化）：
+
+| 文件 | 类 | 说明 |
+|------|-----|------|
+| `standing_termination.py` | `StandingTerminationPlugin` | 站立/平衡终止条件 |
+| `standup_termination.py` | `StandupTerminationPlugin` | 起身终止条件 |
+| `standup_4stage_termination.py` | `Standup4StageTerminationPlugin` | 四阶段起身终止 |
+| `standup_energy_termination.py` | `StandupEnergyTerminationPlugin` | 能量式起身终止 |
+| `imbalance_termination.py` | `ImbalanceTerminationPlugin` | 失衡终止 |
+| `balance_score_termination.py` | `BalanceScoreTerminationPlugin` | 平衡评分终止 |
+| `random_fall.py` | `RandomFallenStatePlugin` | 随机倒伏初始状态 |
+| `random_move.py` | `RandomMovePlugin` | 对手随机移动（跟随训练靶） |
+| `height_observer.py` / `height_phi_observer.py` / `height_phi_min_observer.py` | `HeightObserver` / `HeightPhiObserver` / `HeightPhiMinObserver` | 高度/φ 健康指标观测 |
 
 ### `tests/`
 
@@ -110,23 +80,28 @@ baseline/humanoid21/
 | `test_curriculum_gate.py` | 课程门控测试 |
 | `test_fight_mixed_policy.py` | 混合对抗策略测试 |
 
+### `curriculum/` ⚠️ 遗留目录
+
+旧一代（v1）课程学习训练框架的遗留资产。`curriculum/experiments/` 注册表
+import 已删模块 `baseline.framework.experiment`，**当前不可运行**；
+顶层脚本（gating 训练、混合策略、数据收集等）与多份历史训练记录保留备查。
+详见 [`curriculum/README.md`](curriculum/README.md)。
+
 ## 训练流程
 
-课程学习按四阶段递进：
-
-1. **平衡（Balance）** — 学会站立不倒
-2. **门控网络（Gating）** — 训练状态危险判别器
-3. **跟踪（Follow）** — 接近对手到有效距离
-4. **对抗（Fight）** — 在保持平衡的前提下打击对手
-
-详细训练说明请参考：
-- [Baseline V1 训练指南](curriculum/TRAINING_V1.md)
-- [Baseline V2 训练指南](curriculum/TRAINING_V2.md)
+当前标准路径（PPO v2 框架）：
 
 ```bash
 # 列出可用实验
-python3 baseline/humanoid21/curriculum/train.py --list-experiments
+PYTHONPATH=. python3 baseline/framework/train.py --list-experiments
 
 # 运行指定实验
-python3 baseline/humanoid21/curriculum/train.py --experiment basic_balance
+PYTHONPATH=. python3 baseline/framework/train.py --experiment basic_balance --smoke
 ```
+
+实验定义在 [`../experiments_ppo/`](../experiments_ppo/README.md)，框架机制见
+[`../framework/ppo/GUIDE.md`](../framework/ppo/GUIDE.md)。
+
+历史四阶段课程（平衡 → 门控 → 跟踪 → 对抗）的过程记录在
+`curriculum/TRAINING_V1.md` / `TRAINING_V2.md` /
+`STANDUP_V2_TRAINING_HISTORY.md`。

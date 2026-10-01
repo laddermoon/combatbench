@@ -11,7 +11,7 @@
 | 文件 | 作用 |
 |---|---|
 | `follow_env.yaml` | 环境蓝图（插件 + observer 配置） |
-| `baseline/experiments_v2/exp_follow.py` | V2 实验定义（奖励、课程、eval） |
+| `baseline/experiments_ppo/todo/exp_follow_v2.py` | V2 实验定义（奖励、课程、eval）。**注意：目前在 `todo/` 目录下，不会被注册表自动发现**——要重新启用需移回 `experiments_ppo/` 顶层 |
 
 ## 环境配置
 
@@ -97,8 +97,10 @@ Level 12: 1.5 m/s
 cd /data1/mono/things/combatbench
 
 # 从 recovery_v1_gen3 最新 checkpoint warm start
+# 注意：follow 实验目前归档在 experiments_ppo/todo/，不在注册表中，
+# 需先将 exp_follow_v2.py 移回 experiments_ppo/ 顶层才能 --experiment
 PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 baseline/framework/train.py \
-  --experiment follow --algo ppo \
+  --experiment follow_v2 --algo ppo \
   --resume-from baseline/runs/recovery_v1_gen3/checkpoints/checkpoint_u00445.pt \
   --background
 ```
@@ -112,17 +114,15 @@ PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 baseline/framework/train.py \
 ```bash
 cd /data1/mono/things/combatbench
 
+# 前提：先把 exp_follow_v2.py 从 todo/ 移回 experiments_ppo/ 顶层注册
+
 # 后台训练
 PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 baseline/framework/train.py \
-  --experiment follow --algo ppo --background
-
-# 前台训练（调试用）
-PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 baseline/framework/train.py \
-  --experiment follow --algo ppo
+  --experiment follow_v2 --algo ppo --background
 
 # Smoke test（2 updates, 8 episodes, 快速验证）
 PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 python3 baseline/framework/train.py \
-  --experiment follow --algo ppo --smoke
+  --experiment follow_v2 --algo ppo --smoke
 ```
 
 ## 监控
@@ -140,7 +140,7 @@ kill <pid>  # pid 在 train.log 开头或 run_dir/pid 文件中
 
 ## 与 V1 follow_v2 的区别
 
-| | V1 (`curriculum/experiments/exp_follow_v2.py`) | V2 (`experiments_v2/exp_follow.py`, name=`follow`) |
+| | V1 (`curriculum/experiments/exp_follow_v2.py`) | V2 (`experiments_ppo/todo/exp_follow_v2.py`, name=`follow_v2`，当前在 todo/ 归档未注册) |
 |---|---|---|
 | 框架 | CombatExperimentBase (V1) | CombatExperimentV2Base (V2) |
 | 安全护盾 | MixedPolicy + Gating MLP + Fallback | 无，策略直接面对环境 |

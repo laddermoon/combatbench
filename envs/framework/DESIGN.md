@@ -175,18 +175,20 @@ action_b = np.ndarray(shape=(21,), dtype=np.float32)
 
 ### 4. EnvRuntime 的输出约定
 
-`EnvRuntime.reset(...)` 与 `EnvRuntime.step(...)` 都不返回值。上层通过 `get_observation()` 取观测，observer plugin 取奖励等输出，`get_termination_flags()` 取终止状态：
+`EnvRuntime.reset(...)` 与 `EnvRuntime.step(...)` 都不返回值。上层通过 `get_observation()` 取观测，observer plugin 取奖励等输出，`is_episode_over()` / `get_agent_termination()` 取终止状态：
 
 ```python
 runtime.reset(seed=seed)
 obs_a, obs_b = runtime.get_observation()
 reward_a = runtime.get_observer_output("robot_a_reward")
-terminated, truncated = runtime.get_termination_flags()
+over = runtime.is_episode_over()               # True when all agents terminated
+reasons = runtime.get_agent_termination()      # {"robot_a": "timeout", ...}
 ```
 
 - **observation** 由 `BaseSimulator.get_observation()` 提供。
 - **observer output** 由对应的 observer plugin 负责生成（奖励、调试信号等）。
-- **termination flags** 由 runtime 根据终止原因统一解析。
+- **termination** 记录在每个 agent 的 termination proposal 里，
+  `get_agent_termination()` 返回 `{agent_id: 首个终止原因 | None}`。
 
 ### 5. ObserverPlugin 的最小实现契约
 

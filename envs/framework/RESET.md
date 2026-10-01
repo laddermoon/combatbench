@@ -25,7 +25,7 @@
 | L0 | `BaseSimulator` | `reset(seed: int, options: dict \| None)` | `_RuntimeCore.reset` |
 | L0+ | `SimContext` | `clear_episode_state()` | `_RuntimeCore.reset` |
 | L1 | `BasePlugin` | `set_episode_seed(seed: int)`<br>`on_pre_episode(ctx)`<br>`on_post_episode(ctx)` | `EpisodeRunner` / `_RuntimeCore` |
-| L1 | `BaseObserverPlugin` | `on_reset(ctx_ro)`<br>`on_post_episode(ctx_ro)` | `_ObserverDispatcherPlugin`（内部） |
+| L1 | `BaseObserverPlugin` | `on_pre_episode(ctx_ro)`<br>`on_post_episode(ctx_ro)` | `_ObserverDispatcherPlugin`（内部） |
 | L2 | `PostActionRecorder` | `on_pre_episode(ctx_ro, obs)`<br>`on_post_episode(ctx_ro, obs)` | `EnvRuntime._invoke_recorders` |
 | L3 | `Policy` | `reset(seed: int)` | `EpisodeRunner._reset_all` |
 | L4 | `EnvRuntime` | `reset(seed, options)` | 外部 |
@@ -73,7 +73,7 @@ L2 读取。
 4) simulator.reset(seed=seed, options=options)         # backend 消费 sim 相关 key
 5) plugin_manager.invoke("on_pre_episode", ctx, allow_mutator=True)
      - 内置观察者派发器（priority=1e6）先跑：对每个 observer 调
-       observer.on_reset(ReadOnlySimContext(ctx))
+       observer.on_pre_episode(ReadOnlySimContext(ctx))
      - 其他 plugin 按 priority 递减顺序跑 on_pre_episode；
        可读 ctx.episode_options 取本 episode 参数，可读 ctx.metrics /
        ctx.accessor，可写 ctx.metrics / ctx.events / ctx.mutator（若
@@ -94,10 +94,11 @@ L2 读取。
 
 - `simulator.reset`（backend 写初态） **先于** plugin `on_pre_episode`
   （plugin 读初态）。
-- observer `on_reset` **先于** 其他 plugin 的 `on_pre_episode`（由
+- observer `on_pre_episode` **先于** 其他 plugin 的 `on_pre_episode`（由
   dispatcher 的 priority=1_000_000 保证）。后果：其他 plugin 在
   `on_pre_episode` 里写的 `ctx.metrics`，observer 在本步**看不到**——
-  需要看到 → 移到 `on_post_action_step`，不要指望 on_reset。
+  需要看到 → 移到 `on_post_action_step`，不要指望 observer 的
+  `on_pre_episode`。
 - recorder `on_pre_episode` **晚于** 所有 plugin 的 `on_pre_episode`。
   recorder 看到的是 plugin 已处理完的完整 `ctx`。
 - `policy.reset` 在 `runtime.reset` **返回之后**。policy 不参与 runtime
@@ -168,14 +169,13 @@ class CurriculumPushPlugin(BasePlugin):
 
 | 事件 | `BasePlugin` | `BaseObserverPlugin` | `PostActionRecorder` |
 |---|---|---|---|
-| episode 开始 | `on_pre_episode(ctx)` | `on_reset(ctx_ro)` *(经 dispatcher)* | `on_pre_episode(ctx_ro, obs)` |
-| 每 action step 末 | `on_post_action_step(ctx)` | `on_post_step(ctx_ro)` *(经 dispatcher)* | `on_post_action_step(ctx_ro, obs)` |
+| episode 开始 | `on_pre_episode(ctx)` | `on_pre_episode(ctx_ro)` *(经 dispatcher)* | `on_pre_episode(ctx_ro, obs)` |
+| 每 action step 末 | `on_post_action_step(ctx)` | `on_post_action_step(ctx_ro)` *(经 dispatcher)* | `on_post_action_step(ctx_ro, obs)` |
 | episode 结束 | `on_post_episode(ctx)` | `on_post_episode(ctx_ro)` *(经 dispatcher)* | `on_post_episode(ctx_ro, obs)` |
 
-**名字不统一是历史遗留**，短期内保留兼容；长期应当统一为
-`on_pre_episode / on_post_step / on_post_episode` 三个名字，dispatcher
-透明转发。此处不做强制，但新插件建议按 `BasePlugin` 命名实现，以便将来
-一次性收口。
+~~名字不统一是历史遗留~~ G6 已统一：observer 侧也使用
+`on_pre_episode` / `on_post_action_step` / `on_post_episode` 三个名字
+（旧名 `on_reset` / `on_post_step` 已删除，无兼容层）。
 
 ---
 
@@ -199,7 +199,9 @@ class CurriculumPushPlugin(BasePlugin):
 - `run_n_episodes` 增加 `options_fn: Callable[[int], dict] | None`（可选，
   每个 episode 派发不同 options——课程化的关键入口）；
 - `ParallelRunner` 对应增加同名入参，走 pickle 通道（要求 options 可
-  picklable，由 caller 保证）。
+  picklable，由 caller 保证）。*（注：ParallelRunner 后被删除，
+  批量 rollout 走 `baseline/framework/rollout` 的 `ParallelRollouter`，
+  episode_options 经 `Job.episode_options` 透传。）*
 
 ### G2. `ctx.episode_options` 字段不存在 — ✅ 已落地
 
@@ -284,7 +286,8 @@ Observer 侧的 `on_reset` / `on_post_step` 已重命名为
 1. **G2 + G5**：`ctx.episode_options` 字段 + `base_seed` 归属收紧。
    （纯加字段 + 清理，零行为变更，先落。）
 2. **G1**：`EpisodeRunner.run_episode(options=...)` + `run_n_episodes(options_fn=...)`
-   + `ParallelRunner` 对应入参。
+   + ~~`ParallelRunner` 对应入参~~（该类已删，对应能力由
+     `ParallelRollouter` 的 `Job.episode_options` 承担）。
 3. **G4**：mid-episode reset 的"优雅终止" 处理，加不变式 I1/I2 的测试。
 4. **G3**：`MatchRunner` 重构——`env_factory` 无参 + 循环内改 reset。
    `CombatScoringPlugin` 从 `ctx.episode_options` 读 HP。
