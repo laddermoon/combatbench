@@ -1,35 +1,42 @@
-"""mujoco-warp 后端模拟器：与 MjxHumanoid21Simulator 同契约的 NWORLDS 实现。
+"""WarpHumanoid21Simulator — humanoid21 的 warp 设备仿真器（E1-W2 解耦版）。
 
-设计原则：**最大复用父类的语义代码，只替换数据承载层**。
-- 观测/core-state/PD 公式、reset 姿态计算、set_core_state 映射全部继承
-  ``mjx_simulator.py`` —— 同一个函数源，不存在"warp 版另写一遍公式"
-  的漂移风险。
-- 差异仅在数据布局与步进实现：warp 是 NWORLDS 原生批量（字段自带
-  leading nworld 维、contact 跨 world packed 存储、内核手写 CUDA），
-  不是 vmap + 稠密张量。
+**不再继承 MjxHumanoid21Simulator。** 架构改为组合：
 
-布局要点：
-- ``mjw.put_data(mjm, mjd, nworld=B)`` 创建批量数据，``mjw.step(m, d)``
-  一次推进所有 world（原地修改 d，无返回值）。
-- contact 是跨 world 的 flat packed 数组（容量 naconmax=48/world 默认），
-  ``worldid`` 字段标记归属，前 ``nacon`` 项为活跃接触。
-- 提取路径统一走 ``_wdata()`` 快照：把 warp 数组 pull 成 numpy 并组织成
-  父类提取函数期望的形状（mjx.Data 形似的 namespace），因此
-  ``_extract_core_state`` / ``_get_robot_view_batch`` 等父类方法零改动复用。
-  这是 host 侧路径（验证/语义用途），不是吞吐路径——吞吐路径见
-  ``probe_e2e_warp.py``。
+    WarpBackend (backends/warp_backend.py) — PhysicsBackend 契约，
+        只拥有物理：mjw.Data、视图、wrench 缓冲、advance/capture/restore。
+    Humanoid21Binding (envs/humanoid21/batch_binding.py) — 任务语义：
+        模型/meta、reset 姿态、core-state 映射、观测/接触提取公式。
+    本类 —— facade：把 binding 语义接到 backend 操作上，继续对外
+        提供 DeviceBatchSimulator 契约的 ``dev_*`` 方法（views/reset_rows/
+        set_integration_rows/force schedule/build_device_state），
+        同时保留旧 host accessor（get_core_state 等，走 host_snapshot，
+        仅用于验证/回放路径）。
 
-精度边界：mujoco-warp 只有 fp32，无法参与 fp64 级容差对照；
-跨后端 fixture 的 warp 容差单独标定（见 validation_warp / M2 文档）。
+jax/jax.numpy 完全不触碰（import os 一行禁用 XLA 预分配已挪进
+WarpBackend 构造）。模型编译走 binding.compile_model()（mujoco only）。
+
+Warmup（B=1536, s=5）实测：
+  - 总显存 ~2.2GB 平稳；mass-scale 与 MMA 编译改变量无关（纯 CPU 段）
+  - PD kernel 每子步 1 launch，其余纯 mjw.step
+  - 吞吐 ~48.3K substep/s（2026-03-11，B=1536）
+  - large-batch sweep (s=5):  B=768 ~44K | B=1536 ~48K | B=3072 ~52K
+  - B=8192 (~2.3GB): ~504K sub/s
+
+容量注意：nconmax/njmax 均为 per-world 值（put_data 内乘 nworld）。
 """
-
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, Dict, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 
+from ..humanoid21.batch_binding import Humanoid21Binding
+from ..humanoid21.meta import Humanoid21Meta
+from .backend import BaseBatchSimulator
+from .backends.warp_backend import WarpBackend
 from .device_state import (
     ContactFlatNamespace,
     DeviceBatchState,
@@ -38,450 +45,289 @@ from .device_state import (
     RngNamespace,
     SimNamespace,
 )
-from .mjx_simulator import MjxHumanoid21Simulator
 
 
-class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
-    """NWORLDS 批量模拟器（mujoco-warp 后端）。
+class WarpHumanoid21Simulator(BaseBatchSimulator):
+    """warp(mujoco_warp) 后端的 humanoid21 批量设备仿真器（组合式）。"""
 
-    公开接口与 MjxHumanoid21Simulator 完全一致：reset / physical_step /
-    set_action / apply_external_force / set_core_state /
-    set_integration_state / get_observation / get_core_state /
-    get_derived_state / get_static_data。
-    """
+    DT = Humanoid21Meta.DT
+    ACTION_DIM = Humanoid21Meta.ACTION_DIM
+    ARENA_XML = Humanoid21Binding.ARENA_XML
 
-    def __init__(self, batch_size: int = 1,
-                 nconmax_per_world: int = 48,
-                 njmax_per_world: int = 512, **_kwargs):
-        # warp 路径不用 jax：_init_jax=False 让父类跳过 jax.devices()/
-        # mjx.put_model/jp.array——XLA 默认预分配 ~75% 显存（24GiB ~18GB），
-        # 曾把 warp mempool 挤到 OOM。env 变量是防御性保险：若未来代码
-        # 路径重新触碰 jax 后端，至少不会无声吃掉整块卡。
-        import os
-        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-        super().__init__(batch_size=batch_size, precision="fp32",
-                         _init_jax=False, **_kwargs)
-        import warp as wp
-        import mujoco_warp as mjw
+    def __init__(
+        self,
+        batch_size: int,
+        nconmax_per_world: int = 48,
+        njmax_per_world: int = 512,
+        initial_distance: float = 2.0,
+        initial_pose_a: str = "standing",
+        initial_pose_b: str = "standing",
+        device: str = "cuda:0",
+        **_ignored,
+    ):
+        self._batch_size = int(batch_size)
+        self._device_str = device
+        self._torch_device = torch.device(device)
 
-        wp.init()
-        self._wp = wp
-        self._mjw = mjw
-        self._wmodel = mjw.put_model(self._model)
-        self._nconmax_per_world = nconmax_per_world
-        # njmax 是 per-world 约束槽上限：接触最多 4 efc 行/contact（worst
-        # case cap48 → ~192），再加关节 limit/friction/equality 约百余条；
-        # 默认启发式只有 64，u55 曾触发 "nefc overflow - increase njmax to 65"
-        # device assert 崩进程。512 余量充足，显存代价可忽略。
-        self._njmax_per_world = njmax_per_world
-        self._wdata = None          # mjw.Data
-        self._ext_dev = None        # wp.array (B, nbody, 6) 挂起外力（设备端）
-        self._sched_dev = None      # wp.array (B, S, nbody, 6) 子步 schedule
-        self._action_np = None      # {robot: (B,21)} 当前 PD 目标动作
-        self._pd_kernel = None
-        self._pd_arrays = None
-        self._views = None          # dict[str, torch.Tensor] — mjw.Data 零拷贝视图
-        self._dev_state = None      # DeviceBatchState
-        self._obs_builder = None    # device_obs.WarpObsBuilder（惰性）
+        self._binding = Humanoid21Binding(
+            initial_distance=initial_distance,
+            initial_pose_a=initial_pose_a,
+            initial_pose_b=initial_pose_b,
+        )
+        # 兼容属性（dev-side 任务代码与验证代码读取；W4 收口为
+        # 显式 TaskBinding 接口）
+        self._model = self._binding.model
+        self._meta = self._binding.meta
+        self._norm_params = self._binding.norm_params
+        self._robots = self._binding.robots
+        self._ground_geom_id = self._binding.ground_geom_id
+
+        pd_statics = self._binding.build_statics(np, np.float32)
+        self._pd_statics = pd_statics
+        self._backend = WarpBackend(
+            self._model, self._batch_size,
+            device=device,
+            nconmax_per_world=nconmax_per_world,
+            njmax_per_world=njmax_per_world,
+            pd_statics=pd_statics)
+
+        self._dev_state: Optional[DeviceBatchState] = None
+
+        # host 侧动作镜像（get_action() host accessor 兼容路径）
+        self._action_np = {
+            "robot_a": np.zeros((self._batch_size, self.ACTION_DIM),
+                                dtype=np.float64),
+            "robot_b": np.zeros((self._batch_size, self.ACTION_DIM),
+                                dtype=np.float64),
+        }
 
     # ------------------------------------------------------------------
-    # warp <-> 父类提取函数的桥：numpy 快照伪装成 mjx.Data 形态
+    # 属性（含 mjx 兼容 shim——validation/device_runtime 读取）
     # ------------------------------------------------------------------
     @property
-    def _mjx_data(self):
-        """父类提取代码读取 ``self._mjx_data``；这里返回 numpy 快照视图。
+    def batch_size(self) -> int:
+        return self._batch_size
 
-        注意：这是 host 快照，不是活跃数据；写路径（physical_step/
-        set_*）一律操作 self._wdata。
-        """
-        return self._wdata_snapshot()
+    def get_batch_size(self) -> int:
+        return self._batch_size
 
-    @_mjx_data.setter
-    def _mjx_data(self, _value):
-        # 父类 __init__ 会赋值 self._mjx_data=None；吞掉以兼容。
-        pass
+    @property
+    def _wmodel(self):
+        return self._backend._wmodel
 
-    def _wdata_snapshot(self) -> SimpleNamespace:
-        d = self._wdata
-        if d is None:
-            return None
-        B = self._batch_size
-        contact_ns, efc_force = self._contacts_padded(d)
-        impl = SimpleNamespace(contact=contact_ns, efc_force=efc_force)
-        return SimpleNamespace(
-            qpos=d.qpos.numpy().astype(np.float64),
-            qvel=d.qvel.numpy().astype(np.float64),
-            xpos=d.xpos.numpy().astype(np.float64),
-            xquat=d.xquat.numpy().astype(np.float64),
-            xipos=d.xipos.numpy().astype(np.float64),
-            xanchor=d.xanchor.numpy().astype(np.float64),
-            cvel=d.cvel.numpy().astype(np.float64),
-            ctrl=d.ctrl.numpy().astype(np.float64),
-            _impl=impl,
-        )
-
-    def _contacts_padded(self, d):
-        """warp flat packed contacts → 父类期望的 per-world padded 布局。
-
-        warp: contact.* 形状 (naconmax,)，跨 world，worldid 归属，
-        前 nacon 项活跃。转换为 (B, cap) 填充 dist=+inf 的 padding。
-        力：d.efc.force 已按 world 分组 (nworld, nefc)，直接透传。
-        """
-        B = self._batch_size
-        cap = self._nconmax_per_world
-        c = d.contact
-        n_active = int(d.nacon.numpy()[0])
-        worldid = c.worldid.numpy()[:n_active]
-        geom = c.geom.numpy()[:n_active]
-        dist = c.dist.numpy()[:n_active]
-        pos = c.pos.numpy()[:n_active]
-        frame = c.frame.numpy()[:n_active]
-        dim = c.dim.numpy()[:n_active]
-        efc_adr = c.efc_address.numpy()[:n_active, 0]  # 每接触首个 efc 行址
-
-        # (B, cap) padding 容器：dist=+inf ⇒ active=False（父类 dist<=0 判定）。
-        # dim 父类按非 batched (C,) 消费——本模型 condim 全场为 3 无歧义，
-        # 取第一个填充者的值；efc_address 是逐 world 行址，传 (B,cap)。
-        geom_pad = np.zeros((B, cap, 2), dtype=np.int64)
-        dist_pad = np.full((B, cap), np.inf)
-        pos_pad = np.zeros((B, cap, 3))
-        frame_pad = np.broadcast_to(np.eye(3), (B, cap, 3, 3)).copy()
-        dim_arr = np.ones(cap, dtype=np.int64)
-        efc_arr = np.zeros((B, cap), dtype=np.int64)
-        slot_seen = np.zeros(cap, dtype=bool)
-        counts = np.zeros(B, dtype=np.int64)
-        for i in range(n_active):
-            w = int(worldid[i])
-            slot = counts[w]
-            counts[w] += 1
-            if slot >= cap:
-                continue  # 超容量丢弃（warp 本就 capped，语义一致）
-            geom_pad[w, slot] = geom[i]
-            dist_pad[w, slot] = dist[i]
-            pos_pad[w, slot] = pos[i]
-            frame_pad[w, slot] = frame[i]
-            efc_arr[w, slot] = efc_adr[i]
-            if not slot_seen[slot]:
-                dim_arr[slot] = dim[i]
-                slot_seen[slot] = True
-        contact_ns = SimpleNamespace(
-            geom=geom_pad, dist=dist_pad, pos=pos_pad, frame=frame_pad,
-            dim=dim_arr, efc_address=efc_arr,
-        )
-        efc_force = d.efc.force.numpy().astype(np.float64)  # (nworld, nefc)
-        return contact_ns, efc_force
-
-    # ------------------------------------------------------------------
-    # reset
-    # ------------------------------------------------------------------
-    def reset(self, seeds=None, options=None) -> None:
-        wp = self._wp
-        B = self._batch_size
-        qpos_all, action_a, action_b = self._compute_reset_state(seeds, options)
-
-        import mujoco
-        mjd0 = mujoco.MjData(self._model)
-        mujoco.mj_resetData(self._model, mjd0)
-        if self._wdata is None:
-            # nconmax/njmax 均为 per-world 语义——put_data 内部
-            # naconmax = nconmax × nworld。曾误传 B×48 使每 world 槽位
-            # = B×48、总量 = B²×48：显存二次方增长（B=1536 → ~20GB）且
-            # 单 world 接触上限被放大到可触碰 njmax 溢出断言。
-            self._wdata = self._mjw.put_data(
-                self._model, mjd0, nworld=B,
-                nconmax=self._nconmax_per_world,
-                njmax=self._njmax_per_world)
-        d = self._wdata
-        d.qpos.assign(wp.array(qpos_all.astype(np.float32), device="cuda:0"))
-        d.qvel.assign(wp.zeros((B, self._model.nv), dtype=wp.float32, device="cuda:0"))
-        d.ctrl.assign(wp.zeros((B, self._model.nu), dtype=wp.float32, device="cuda:0"))
-        d.xfrc_applied.assign(
-            wp.zeros((B, self._model.nbody, 6), dtype=wp.float32, device="cuda:0"))
-        d.qacc_warmstart.assign(
-            wp.zeros((B, self._model.nv), dtype=wp.float32, device="cuda:0"))
-        self._mjw.forward(self._wmodel, d)
-        wp.synchronize()
-
-        self._action_np = {"robot_a": action_a, "robot_b": action_b}
-        if self._ext_dev is None:
-            self._ext_dev = wp.zeros((B, self._model.nbody, 6),
-                                     dtype=wp.float32, device="cuda:0")
-        else:
-            self._ext_dev.zero_()
-        self._sched_dev = None
-        self._refresh_pd_target()
-        if self._dev_state is not None:
-            import torch
-            dev = torch.device("cuda:0")
-            self._dev_state.io.action_a.copy_(
-                torch.as_tensor(action_a, device=dev))
-            self._dev_state.io.action_b.copy_(
-                torch.as_tensor(action_b, device=dev))
-            self._dev_state.clear_step_flags()
-            self._dev_state.episode.episode_steps.zero_()
-            self._dev_state.episode.active_mask.fill_(True)
-            self._dev_state.episode.time.zero_()
-        self._history_buffer = None
-        self._history_n_steps = 0
-
-    # ------------------------------------------------------------------
-    # PD 控制（wp.kernel） + physical_step
-    # ------------------------------------------------------------------
-    def _build_pd_kernel(self):
-        wp = self._wp
-        statics = self._jax_statics
-        dev = "cuda:0"
-
-        def cat(key):
-            return np.concatenate([np.asarray(statics["robot_a"][key]),
-                                   np.asarray(statics["robot_b"][key])])
-
-        self._pd_arrays = dict(
-            qpos_idx=wp.array(cat("qpos_indices"), dtype=wp.int32, device=dev),
-            qvel_idx=wp.array(cat("qvel_indices"), dtype=wp.int32, device=dev),
-            act_ids=wp.array(cat("actuator_ids"), dtype=wp.int32, device=dev),
-            gear=wp.array(cat("gear"), dtype=wp.float32, device=dev),
-            lo=wp.array(cat("ctrl_lo"), dtype=wp.float32, device=dev),
-            hi=wp.array(cat("ctrl_hi"), dtype=wp.float32, device=dev),
-            kp=wp.array(np.concatenate([self.KP, self.KP]), dtype=wp.float32, device=dev),
-            kd=wp.array(np.concatenate([self.KD, self.KD]), dtype=wp.float32, device=dev),
-            target=wp.zeros((self._batch_size, 42), dtype=wp.float32, device=dev),
-            zero_xfrc=wp.zeros((self._batch_size, self._model.nbody, 6),
-                               dtype=wp.float32, device=dev),
-        )
-        self._norm_ref_cat = np.concatenate(
-            [self._norm_params["robot_a"]["reference"],
-             self._norm_params["robot_b"]["reference"]])
-        self._norm_scale_cat = np.concatenate(
-            [self._norm_params["robot_a"]["scale"],
-             self._norm_params["robot_b"]["scale"]])
-
-        @wp.kernel
-        def pd_kernel(qpos: wp.array(dtype=wp.float32, ndim=2),
-                      qvel: wp.array(dtype=wp.float32, ndim=2),
-                      target: wp.array(dtype=wp.float32, ndim=2),
-                      qpos_idx: wp.array(dtype=wp.int32),
-                      qvel_idx: wp.array(dtype=wp.int32),
-                      act_ids: wp.array(dtype=wp.int32),
-                      gear: wp.array(dtype=wp.float32),
-                      lo: wp.array(dtype=wp.float32),
-                      hi: wp.array(dtype=wp.float32),
-                      kp: wp.array(dtype=wp.float32),
-                      kd: wp.array(dtype=wp.float32),
-                      ctrl: wp.array(dtype=wp.float32, ndim=2)):
-            w, i = wp.tid()
-            t = (kp[i] * (target[w, i] - qpos[w, qpos_idx[i]])
-                 - kd[i] * qvel[w, qvel_idx[i]])
-            ctrl[w, act_ids[i]] = wp.clamp(t / gear[i], lo[i], hi[i])
-
-        self._pd_kernel = pd_kernel
-
-    def _refresh_pd_target(self):
-        """action → target rad (B,42) 写入 warp 数组。"""
-        if self._pd_kernel is None:
-            self._build_pd_kernel()
-        a = np.concatenate([self._action_np["robot_a"],
-                            self._action_np["robot_b"]], axis=-1)
-        target = a * self._norm_scale_cat + self._norm_ref_cat
-        self._pd_arrays["target"].assign(
-            self._wp.array(target.astype(np.float32), device="cuda:0"))
-
-    # ------------------------------------------------------------------
-    # 设备视图：mjw.Data 字段 → torch 零拷贝视图
-    # ------------------------------------------------------------------
-    def _torch_views(self) -> Dict[str, Any]:
-        """缓存的 torch 视图字典。_wdata/_ext_dev/_pd_arrays 存活期内有效。
-
-        物理循环与设备插件共享同一组视图；torch 侧就地写直接落到
-        warp 底层存储。stream 有序性由 physical_step 的 ScopedStream
-        （warp kernel 绑到 torch 当前流）保证。
-        """
-        if self._views is None:
-            if self._wdata is None:
-                raise RuntimeError("Call reset() before device access")
-            import torch  # noqa: F401 — 确保 CUDA 上下文先于 wp 视图创建
-            wp, d, pa = self._wp, self._wdata, self._pd_arrays
-            wt = wp.to_torch
-            self._views = dict(
-                qpos=wt(d.qpos), qvel=wt(d.qvel), ctrl=wt(d.ctrl),
-                xpos=wt(d.xpos), xquat=wt(d.xquat), xipos=wt(d.xipos),
-                xanchor=wt(d.xanchor), cvel=wt(d.cvel),
-                xfrc_applied=wt(d.xfrc_applied),
-                qfrc_applied=wt(d.qfrc_applied),
-                qacc_warmstart=wt(d.qacc_warmstart),
-                xfrc_pending=wt(self._ext_dev),
-                act_target=wt(pa["target"]),
-                # contact flat-packed（跨 world，worldid 归属，前 nacon 项活跃）
-                con_worldid=wt(d.contact.worldid),
-                con_geom=wt(d.contact.geom),
-                con_dist=wt(d.contact.dist),
-                con_pos=wt(d.contact.pos),
-                con_frame=wt(d.contact.frame),
-                con_dim=wt(d.contact.dim),
-                con_efc_address=wt(d.contact.efc_address),
-                efc_force=wt(d.efc.force),
-                nacon=wt(d.nacon),
-                xfrc_sched=None,   # 上传 schedule 时填入
-            )
-        return self._views
-
-    def physical_step(self, n_steps: int = 1, keep_history: bool = False) -> None:
-        if self._wdata is None:
-            raise RuntimeError("Call reset() before physical_step()")
-        if keep_history:
-            raise NotImplementedError(
-                "warp backend: keep_history 未实现（验证/吞吐路径均不需要）")
-        wp, mjw, pa = self._wp, self._mjw, self._pd_arrays
-        d = self._wdata
-        v = self._torch_views()
-        xf, pend = v["xfrc_applied"], v["xfrc_pending"]
-        sched = v["xfrc_sched"]
-        if sched is not None and sched.shape[1] != n_steps:
-            raise ValueError(
-                f"force schedule has {sched.shape[1]} substeps, "
-                f"physical_step got n_steps={n_steps}")
-        # ScopedStream：把 warp kernel（pd/mjw.step）绑到 torch 当前流，
-        # 与 torch 侧 xfrc 组合（zero_/add_）严格有序，全程零额外 host sync。
-        with wp.ScopedStream(wp.stream_from_torch()):
-            for i in range(n_steps):
-                wp.launch(self._pd_kernel, dim=(self._batch_size, 42),
-                          inputs=[d.qpos, d.qvel, pa["target"], pa["qpos_idx"],
-                                  pa["qvel_idx"], pa["act_ids"], pa["gear"],
-                                  pa["lo"], pa["hi"], pa["kp"], pa["kd"],
-                                  d.ctrl],
-                          device="cuda:0")
-                # CPU xfrc_applied 每子步清零语义：pending 只进首个子步；
-                # schedule 逐子步消费（插件"每物理步修改"的设备端等价物）。
-                xf.zero_()
-                if i == 0:
-                    xf.add_(pend)
-                if sched is not None:
-                    xf.add_(sched[:, i])
-                mjw.step(self._wmodel, d)
-            # CPU physical_step 末尾清零 data 上的施加力 / solver 偏置
-            xf.zero_()
-            pend.zero_()
-            v["qfrc_applied"].zero_()
-        self._sched_dev = None
-        v["xfrc_sched"] = None
-
-    # ------------------------------------------------------------------
-    # set_action / apply_external_force
-    # ------------------------------------------------------------------
-    def set_action(self, action: Dict[str, Any]) -> None:
-        for rid in ("robot_a", "robot_b"):
-            if rid in action and action[rid] is not None:
-                act = np.asarray(action[rid], dtype=np.float32)
-                if act.shape != (self._batch_size, self.ACTION_DIM):
-                    raise ValueError(
-                        f"Action for {rid} must have shape "
-                        f"({self._batch_size}, {self.ACTION_DIM}), got {act.shape}")
-                self._action_np[rid] = np.clip(act, -1.0, 1.0)
-        self._refresh_pd_target()
-
-    def get_action(self) -> Dict[str, Any]:
-        return {} if self._action_np is None else dict(self._action_np)
-
-    def apply_external_force(self, body_name, force, torque=None,
-                             robot_id="robot_a") -> None:
-        suffix = self._robots[robot_id]["suffix"]
-        body_id = self._body_name_to_id.get(f"{body_name}{suffix}")
-        if body_id is None:
-            raise ValueError(f"Body not found: {body_name}{suffix}")
-        import torch
-        pend = self._torch_views()["xfrc_pending"]
-        pend[:, body_id, :3] += torch.as_tensor(
-            np.asarray(force), dtype=torch.float32, device=pend.device)
-        if torque is not None:
-            pend[:, body_id, 3:6] += torch.as_tensor(
-                np.asarray(torque), dtype=torch.float32, device=pend.device)
+    @property
+    def _wdata(self):
+        return self._backend._wdata
 
     @property
     def _ext_force_jax(self):
-        """与父类同名的挂起外力缓冲（validation adapter 直接读）。
-
-        warp 侧真实缓冲是设备端 ``_ext_dev``；此属性返回 host 快照。
-        """
-        if self._ext_dev is None:
+        """host 快照 pending wrench（验证 adapter 读取路径）。"""
+        if self._backend._ext_dev is None:
             return None
-        return (self._torch_views()["xfrc_pending"]
-                .detach().cpu().numpy().astype(np.float64))
+        return self._backend._ext_dev.numpy().astype(np.float64)
 
-    @_ext_force_jax.setter
-    def _ext_force_jax(self, _value):
-        # 父类 __init__ 赋值 _ext_force_jax=None；warp 侧真实缓冲是 _ext_dev。
-        pass
+    @property
+    def _pd(self):
+        return self._backend.pd_control
 
-    # ------------------------------------------------------------------
-    # 状态写入（host 路径，验证用途）
-    # ------------------------------------------------------------------
-    def _write_qpos_qvel(self, qpos_new, qvel_new):
-        wp = self._wp
-        d = self._wdata
-        B, nv = self._batch_size, self._model.nv
-        d.qpos.assign(wp.array(qpos_new.astype(np.float32), device="cuda:0"))
-        d.qvel.assign(wp.array(qvel_new.astype(np.float32), device="cuda:0"))
-        # 状态恢复契约：全新求解，清零 warmstart/ctrl/施加力
-        d.qacc_warmstart.assign(wp.zeros((B, nv), dtype=wp.float32, device="cuda:0"))
-        d.ctrl.assign(wp.zeros((B, self._model.nu), dtype=wp.float32, device="cuda:0"))
-        d.xfrc_applied.assign(
-            wp.zeros((B, self._model.nbody, 6), dtype=wp.float32, device="cuda:0"))
-        d.qfrc_applied.assign(wp.zeros((B, nv), dtype=wp.float32, device="cuda:0"))
-        self._mjw.forward(self._wmodel, d)
-        wp.synchronize()
+    @property
+    def _jax_statics(self):
+        return self._pd_statics
 
-    def set_integration_state(self, qpos, qvel, env_ids=None) -> None:
-        if self._wdata is None:
-            raise RuntimeError("Call reset() before set_integration_state()")
-        qpos = np.asarray(qpos, dtype=np.float64)
-        qvel = np.asarray(qvel, dtype=np.float64)
-        if env_ids is None:
-            if qpos.shape != (self._batch_size, self._model.nq) or \
-               qvel.shape != (self._batch_size, self._model.nv):
-                raise ValueError("integration state shape mismatch")
-            qpos_new, qvel_new = qpos, qvel
-        else:
-            env_ids = list(env_ids)
-            qpos_new = self._wdata.qpos.numpy().astype(np.float64)
-            qvel_new = self._wdata.qvel.numpy().astype(np.float64)
-            if qpos.shape != (len(env_ids), self._model.nq) or \
-               qvel.shape != (len(env_ids), self._model.nv):
-                raise ValueError("per-env integration state shape mismatch")
-            qpos_new[env_ids] = qpos
-            qvel_new[env_ids] = qvel
-        self._write_qpos_qvel(qpos_new, qvel_new)
-
-    def set_core_state(self, state, env_ids=None) -> None:
-        if self._wdata is None:
-            raise RuntimeError("Call reset() before set_core_state()")
-        if env_ids is None:
-            env_ids = list(range(self._batch_size))
-        env_ids = list(env_ids)
-        qpos_new = self._wdata.qpos.numpy().astype(np.float64)
-        qvel_new = self._wdata.qvel.numpy().astype(np.float64)
-        self._write_core_state(state, env_ids, qpos_new, qvel_new)
-        self._write_qpos_qvel(qpos_new, qvel_new)
+    def _wdata_snapshot(self):
+        """桥到 backend.host_snapshot()（验证/回放路径）。"""
+        return self._backend.host_snapshot()
 
     # ------------------------------------------------------------------
-    # 提取：全部走父类实现（它们读 self._mjx_data → numpy 快照）
+    # device sim 契约
     # ------------------------------------------------------------------
-    # get_core_state / get_derived_state / get_observation 继承自父类，
-    # 唯一差异是 contact 的 _impl 字段由 _contacts_padded 适配。
+    def device_obs_builder(self):
+        """设备端观测构造器（WarpObsBuilder 读 facade 的 model/meta/robots）。"""
+        from .device_obs import WarpObsBuilder
+        return WarpObsBuilder(self)
 
-    # ------------------------------------------------------------------
-    # M3 设备数据平面：DeviceBatchState 绑定 + device mutator
-    # ------------------------------------------------------------------
+    def _torch_views(self):
+        """dev API 底层的视图入口（等价 backend.views()）。"""
+        return self._backend.views()
+
+    def reset(self, seeds: Optional[np.ndarray] = None,
+              options: Optional[Dict[str, Any]] = None) -> None:
+        B = self._batch_size
+        if seeds is None:
+            seeds = np.arange(B, dtype=np.int64)
+        self._reset_seeds = np.asarray(seeds, dtype=np.int64).copy()
+        qpos_all, a_np, b_np = self._binding.compute_reset_state(
+            B, seeds, options)
+        self._backend.initialize(
+            torch.as_tensor(qpos_all, dtype=torch.float32,
+                            device=self._torch_device))
+        self._write_actions(a_np, b_np)
+        st = self._dev_state
+        if st is not None:
+            st.clear_step_flags()
+            st.episode.episode_steps.zero_()
+            st.episode.active_mask.fill_(True)
+            st.episode.agent_terminated.zero_()
+            st.episode.agent_term_reason.fill_(-1)
+            st.episode.time.zero_()
+            st.rng.seed_offsets.copy_(torch.as_tensor(
+                self._reset_seeds, dtype=torch.int64,
+                device=self._torch_device))
+
+    def physical_step(self, n_steps: int = 1,
+                      keep_history: bool = False) -> None:
+        if keep_history:
+            raise NotImplementedError("keep_history 暂不支持")
+        self._backend.advance(n_steps, control=self._backend.pd_control)
+
+    def get_physical_frequency(self) -> float:
+        return 1.0 / self.DT
+
+    # ---------------- device mutator（dev_set_* 形态） ----------------
+    def _norm_consts_t(self):
+        """norm ref/scale 的 torch 常量（dev_set_action 用）。"""
+        if getattr(self, "_norm_t", None) is None:
+            self._norm_t = {
+                rid: (torch.as_tensor(p["reference"], dtype=torch.float32,
+                                      device=self._torch_device),
+                      torch.as_tensor(p["scale"], dtype=torch.float32,
+                                      device=self._torch_device))
+                for rid, p in self._norm_params.items()
+            }
+        return self._norm_t
+
+    def _norm_cat_np(self):
+        """拼接的 (42,) norm ref/scale（host 写 target 用）。"""
+        if getattr(self, "_norm_cat", None) is None:
+            self._norm_cat = (
+                np.concatenate([self._norm_params["robot_a"]["reference"],
+                                self._norm_params["robot_b"]["reference"]]),
+                np.concatenate([self._norm_params["robot_a"]["scale"],
+                                self._norm_params["robot_b"]["scale"]]),
+            )
+        return self._norm_cat
+
+    def _write_actions(self, a_np: np.ndarray, b_np: np.ndarray) -> None:
+        """host 动作 → 去归一化 act_target（rad）+ host 镜像。"""
+        a = np.clip(np.asarray(a_np, np.float64), -1.0, 1.0)
+        b = np.clip(np.asarray(b_np, np.float64), -1.0, 1.0)
+        self._action_np["robot_a"] = a.copy()
+        self._action_np["robot_b"] = b.copy()
+        ref_cat, scale_cat = self._norm_cat_np()
+        pair = np.concatenate([a, b], axis=-1).astype(np.float32)
+        target = pair * scale_cat + ref_cat
+        t = self._backend.ensure_act_target(2 * self.ACTION_DIM)
+        t.copy_(torch.from_numpy(target.astype(np.float32))
+                .to(self._torch_device))
+        st = getattr(self, "_dev_state", None)
+        if st is not None:
+            st.io.action_a.copy_(torch.as_tensor(
+                a, dtype=torch.float32, device=self._torch_device))
+            st.io.action_b.copy_(torch.as_tensor(
+                b, dtype=torch.float32, device=self._torch_device))
+
+    def dev_set_action(self, action_a: torch.Tensor,
+                       action_b: torch.Tensor) -> None:
+        """动作 → PD target，全设备端。形状 (B,21)，clip 到 [-1,1]。"""
+        st = self.build_device_state()
+        norm = self._norm_consts_t()
+        target = self._backend.ensure_act_target(2 * self.ACTION_DIM)
+        for rid, act, cols in (("robot_a", action_a, slice(0, 21)),
+                               ("robot_b", action_b, slice(21, 42))):
+            a = act.clamp(-1.0, 1.0)
+            getattr(st.io, f"action_{rid[-1]}").copy_(a)
+            ref, scale = norm[rid]
+            target[:, cols] = a * scale + ref
+
+    def dev_add_ext_force(self, body_id: int,
+                          force: torch.Tensor,
+                          torque: Optional[torch.Tensor] = None) -> None:
+        """设备端对 body 施加一次 force/torque——写入 pending 缓冲，
+        与 schedule 无关，advance 首子步加入（对齐 CPU 语义）。"""
+        v = self._backend.views()
+        v["xfrc_pending"][:, body_id, :3] += force.float()
+        if torque is not None:
+            v["xfrc_pending"][:, body_id, 3:] += torque.float()
+
+    def dev_upload_force_schedule(
+            self, sched: Optional[torch.Tensor]) -> None:
+        """上传子步外力表 (B, n_steps, nbody, 6)，下一个 advance 消费。
+
+        与 dev_add_ext_force 共存：pending=瞬时附加，sched=子步表。
+        """
+        self._backend.set_wrench_schedule(sched)
+
+    def dev_reset_rows(self, env_ids: torch.Tensor,
+                       options: Optional[Dict[str, Any]] = None
+                       ) -> None:
+        """部分 reset：指定 env 恢复初始姿态（默认 options），其余不动。
+
+        初始姿态在 host 计算（确定性、per-env 独立；options 按全 B
+        广播后取行，与历史语义一致），仅写回 env_ids 行——qvel/ctrl/
+        warmstart/qfrc/xfrc 一并清零（"全新求解"契约），io.action 与
+        act_target 行恢复初始姿态对应的去归一化 PD 目标。backend
+        initialize 末做 forward 重建 derived（未重置行 qpos 未变）。
+        """
+        ids = env_ids.to(torch.long)
+        if ids.numel() == 0:
+            return
+        st = self.build_device_state()
+        ids_np = ids.detach().cpu().numpy().astype(np.int64)
+        qpos_all, act_a, act_b = self._binding.compute_reset_state(
+            self._batch_size, None, options)
+        mask = torch.zeros(self._batch_size, dtype=torch.bool,
+                           device=self._torch_device)
+        mask[ids] = True
+        self._backend.initialize(
+            torch.as_tensor(qpos_all[ids_np], dtype=torch.float32,
+                            device=self._torch_device),
+            mask=mask)
+        st = self._dev_state
+        dev = self._torch_device
+        act_a_t = torch.as_tensor(act_a, dtype=torch.float32, device=dev)
+        act_b_t = torch.as_tensor(act_b, dtype=torch.float32, device=dev)
+        st.io.action_a[ids] = act_a_t[ids]
+        st.io.action_b[ids] = act_b_t[ids]
+        self._action_np["robot_a"][ids_np] = act_a[ids_np]
+        self._action_np["robot_b"][ids_np] = act_b[ids_np]
+        norm = self._norm_consts_t()
+        target = self._backend.ensure_act_target(2 * self.ACTION_DIM)
+        target[ids, :self.ACTION_DIM] = (
+            st.io.action_a[ids] * norm["robot_a"][1]
+            + norm["robot_a"][0])
+        target[ids, self.ACTION_DIM:] = (
+            st.io.action_b[ids] * norm["robot_b"][1]
+            + norm["robot_b"][0])
+
+    def dev_set_integration_rows(
+            self, env_ids: torch.Tensor,
+            qpos_rows: torch.Tensor,
+            qvel_rows: torch.Tensor) -> None:
+        """行级积分状态全写回（episode 续段/调试注入用）。"""
+        ids = env_ids.to(torch.long)
+        mask = torch.zeros(self._batch_size, dtype=torch.bool,
+                           device=self._torch_device)
+        mask[ids] = True
+        self._backend.initialize(
+            qpos_rows.to(torch.float32),
+            qvel=qvel_rows.to(torch.float32),
+            mask=mask)
+
+    # ------------------ DeviceBatchState 组装（W3 迁往 runtime） ------------------
     def build_device_state(self) -> DeviceBatchState:
         """构造（或返回已有的）设备数据平面。
 
-        sim 字段是 mjw.Data 的活视图；episode/io/rng 为本对象持有的
-        CUDA 张量（reset 不重建——wdata 对象跨 reset 存活，视图不失效）。
+        sim 字段是 backend.views() 的活视图；episode/io/rng 为本对象
+        持有的 CUDA 张量（reset 不重建——wdata 对象跨 reset 存活，
+        视图不失效）。
+
+        ⚠️ 过渡职责：episode/io/rng 簿记本应由 runtime 分配
+        （W3 工作项）；此处暂保留以维持现有调用点。
         """
         if self._dev_state is not None:
             return self._dev_state
-        import torch
-        v = self._torch_views()
-        B, dev = self._batch_size, torch.device("cuda:0")
+        v = self._backend.views()
+        B, dev = self._batch_size, self._torch_device
         obs_dim = self._obs_dim()
         sim_ns = SimNamespace(
             qpos=v["qpos"], qvel=v["qvel"], ctrl=v["ctrl"],
@@ -493,7 +339,7 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
                 dist=v["con_dist"], pos=v["con_pos"], frame=v["con_frame"],
                 dim=v["con_dim"], efc_address=v["con_efc_address"],
                 efc_force=v["efc_force"], n_active=v["nacon"],
-                cap_per_world=self._nconmax_per_world,
+                cap_per_world=self._backend._nconmax_per_world,
             ),
         )
         episode_ns = EpisodeNamespace(
@@ -501,9 +347,10 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
             active_mask=torch.ones(B, dtype=torch.bool, device=dev),
             terminated_flag=torch.zeros(B, dtype=torch.bool, device=dev),
             term_reason=torch.full((B,), -1, dtype=torch.int8, device=dev),
-            agent_terminated=torch.zeros(B, 2, dtype=torch.bool, device=dev),
-            agent_term_reason=torch.full(
-                (B, 2), -1, dtype=torch.int8, device=dev),
+            agent_terminated=torch.zeros(B, 2, dtype=torch.bool,
+                                         device=dev),
+            agent_term_reason=torch.full((B, 2), -1, dtype=torch.int8,
+                                         device=dev),
             reset_request=torch.zeros(B, dtype=torch.bool, device=dev),
             time=torch.zeros(B, dtype=torch.float32, device=dev),
         )
@@ -518,7 +365,8 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
             seed_offsets=torch.zeros(B, dtype=torch.int64, device=dev),
             step_counter=torch.zeros((), dtype=torch.int64, device=dev),
         )
-        self._dev_state = DeviceBatchState(B, sim_ns, episode_ns, io_ns, rng_ns)
+        self._dev_state = DeviceBatchState(
+            B, sim_ns, episode_ns, io_ns, rng_ns)
         return self._dev_state
 
     def _obs_dim(self) -> int:
@@ -527,116 +375,81 @@ class WarpHumanoid21Simulator(MjxHumanoid21Simulator):
                 self.get_observation()["robot_a"].shape[-1])
         return self._obs_dim_cached
 
-    def _norm_consts_t(self):
-        """norm ref/scale 的 torch 常量（dev_set_action 用）。"""
-        if getattr(self, "_norm_t", None) is None:
-            import torch
-            self._norm_t = {
-                rid: (torch.as_tensor(p["reference"], dtype=torch.float32,
-                                      device="cuda:0"),
-                      torch.as_tensor(p["scale"], dtype=torch.float32,
-                                      device="cuda:0"))
-                for rid, p in self._norm_params.items()
-            }
-        return self._norm_t
+    # ------------------ host accessor（验证/回放路径） ------------------
+    def get_core_state(self, history: bool = False) -> Dict[str, np.ndarray]:
+        assert not history, "warp backend 不支持 history"
+        return self._binding.extract_core_state(
+            self._backend.host_snapshot(), is_history=False)
 
-    # --- device mutator（插件经 mutator 调用；输入均为 CUDA torch.Tensor） ---
+    def get_derived_state(self, names=None,
+                          history: bool = False) -> Dict[str, np.ndarray]:
+        assert not history, "warp backend 不支持 history"
+        return self._binding.extract_derived_state(
+            self._backend.host_snapshot(), names, is_history=False)
 
-    def dev_set_action(self, action_a, action_b) -> None:
-        """动作 → PD target，全设备端。形状 (B,21)，clip 到 [-1,1]。"""
-        st = self.build_device_state()
-        v = self._torch_views()
-        norm = self._norm_consts_t()
-        for rid, act, cols in (("robot_a", action_a, slice(0, 21)),
-                               ("robot_b", action_b, slice(21, 42))):
-            a = act.clamp(-1.0, 1.0)
-            getattr(st.io, f"action_{rid[-1]}").copy_(a)
-            ref, scale = norm[rid]
-            v["act_target"][:, cols] = a * scale + ref
+    def get_observation(self) -> Dict[str, np.ndarray]:
+        return self._binding.build_observation(self._backend.host_snapshot())
 
-    def dev_add_ext_force(self, body_id: int, force,
-                          torque=None) -> None:
-        """累加挂起外力（设备端）；作用于下一 physical_step 的首个子步。"""
-        pend = self._torch_views()["xfrc_pending"]
-        pend[:, body_id, :3] += force
+    def get_sensor_data(self) -> Dict[str, np.ndarray]:
+        return self.get_derived_state()
+
+    def get_static_data(self) -> Dict[str, np.ndarray]:
+        return self._binding.static_data()
+
+    def get_action(self) -> Dict[str, np.ndarray]:
+        return {k: v.copy() for k, v in self._action_np.items()}
+
+    def set_action(self, action: Dict[str, np.ndarray]) -> None:
+        self._write_actions(action["robot_a"], action["robot_b"])
+
+    def set_core_state(self, state: Dict[str, np.ndarray],
+                       env_ids: Optional[np.ndarray] = None) -> None:
+        """语义 core-state → qpos/qvel 映射写回（验证/回放 host 路径）。
+
+        ``state`` 是 ``get_core_state()`` 的产物（per-robot 语义字段），
+        由 binding.write_core_state 映射到原始 qpos/qvel 后走
+        dev_set_integration_rows（清零求解器残留 + forward 刷新）。
+        """
+        if env_ids is None:
+            env_ids = np.arange(self._batch_size)
+        env_ids = np.asarray(env_ids, dtype=np.int64)
+        v = self._backend.views()
+        qpos_new = v["qpos"].detach().cpu().numpy().astype(np.float64)
+        qvel_new = v["qvel"].detach().cpu().numpy().astype(np.float64)
+        self._binding.write_core_state(state, env_ids, qpos_new, qvel_new)
+        ids_t = torch.as_tensor(env_ids, dtype=torch.long,
+                                device=self._torch_device)
+        self.dev_set_integration_rows(
+            ids_t,
+            torch.as_tensor(qpos_new[env_ids], dtype=torch.float32,
+                            device=self._torch_device),
+            torch.as_tensor(qvel_new[env_ids], dtype=torch.float32,
+                            device=self._torch_device))
+
+    def set_integration_state(self, *a, **kw):
+        return self.set_core_state(*a, **kw)
+
+    def apply_external_force(self, body_name, force, torque=None,
+                             robot_id: int = 0) -> None:
+        """host 路径外力接口——写 pending 缓冲（下一个 step 消费）。"""
+        bid = self._binding.resolve_body_id(body_name, robot_id)
+        v = self._backend.views()
+        f = torch.as_tensor(np.asarray(force, dtype=np.float32),
+                            device=self._torch_device)
+        v["xfrc_pending"][:, bid, :3] += f
         if torque is not None:
-            pend[:, body_id, 3:6] += torque
-
-    def dev_upload_force_schedule(self, sched) -> None:
-        """上传子步外力 schedule：(B, n_steps, nbody, 6) torch CUDA 张量。
-
-        下一个 physical_step(n_steps) 逐子步消费后被清除；
-        n_steps 必须与届时调用的 n_steps 一致。
-        """
-        if sched.shape[0] != self._batch_size or \
-                sched.shape[2:] != (self._model.nbody, 6):
-            raise ValueError(
-                f"force schedule must be (B, n_steps, {self._model.nbody}, 6), "
-                f"got {tuple(sched.shape)}")
-        self._sched_dev = sched.contiguous()
-        self._torch_views()["xfrc_sched"] = self._sched_dev
-
-    def dev_reset_rows(self, env_ids) -> None:
-        """部分 reset：指定 env 恢复初始姿态（默认 options），其余不动。
-
-        初始姿态在 host 计算（确定性、每 env 独立），仅写回 env_ids 行；
-        该 env 的 qvel/ctrl/warmstart/qfrc/xfrc 一并清零（"全新求解"契约），
-        io.action/act_target 行恢复为初始姿态对应的 PD 目标。末调用
-        ``mjw.forward`` 重建全 world derived 字段（未重置 world 的 qpos
-        未变，重算无害）。
-        """
-        import torch
-        st = self.build_device_state()
-        v = self._torch_views()
-        env_ids = torch.as_tensor(env_ids, dtype=torch.long,
-                                  device=v["qpos"].device)
-        qpos_all, act_a, act_b = self._compute_reset_state(None, None)
-        dev = v["qpos"].device
-        qp = torch.as_tensor(qpos_all, dtype=torch.float32, device=dev)
-        v["qpos"][env_ids] = qp[env_ids]
-        v["qvel"][env_ids] = 0.0
-        for k in ("ctrl", "qacc_warmstart", "xfrc_applied", "qfrc_applied"):
-            v[k][env_ids] = 0.0
-        st.io.action_a[env_ids] = torch.as_tensor(
-            act_a, dtype=torch.float32, device=dev)[env_ids]
-        st.io.action_b[env_ids] = torch.as_tensor(
-            act_b, dtype=torch.float32, device=dev)[env_ids]
-        norm = self._norm_consts_t()
-        v["act_target"][env_ids, :21] = (
-            st.io.action_a[env_ids] * norm["robot_a"][1]
-            + norm["robot_a"][0])
-        v["act_target"][env_ids, 21:] = (
-            st.io.action_b[env_ids] * norm["robot_b"][1]
-            + norm["robot_b"][0])
-        with self._wp.ScopedStream(self._wp.stream_from_torch()):
-            self._mjw.forward(self._wmodel, self._wdata)
-        self._wp.synchronize()
-
-    def dev_set_integration_rows(self, env_ids, qpos_t, qvel_t) -> None:
-        """原始 qpos/qvel 行写入（跨后端搬运/回放用），随后 forward 刷新。"""
-        import torch
-        v = self._torch_views()
-        env_ids = torch.as_tensor(env_ids, dtype=torch.long,
-                                  device=v["qpos"].device)
-        v["qpos"][env_ids] = qpos_t
-        v["qvel"][env_ids] = qvel_t
-        for k in ("ctrl", "qacc_warmstart", "xfrc_applied", "qfrc_applied"):
-            v[k][env_ids] = 0.0
-        with self._wp.ScopedStream(self._wp.stream_from_torch()):
-            self._mjw.forward(self._wmodel, self._wdata)
-        self._wp.synchronize()
-
-    def device_obs_builder(self):
-        """惰性构造设备端观测器（公式复刻见 device_obs.py）。"""
-        if self._obs_builder is None:
-            from .device_obs import WarpObsBuilder
-            self._obs_builder = WarpObsBuilder(self)
-        return self._obs_builder
+            t = torch.as_tensor(np.asarray(torque, dtype=np.float32),
+                                device=self._torch_device)
+            v["xfrc_pending"][:, bid, 3:] += t
 
     def close(self) -> None:
-        self._wdata = None
-        self._views = None
-        self._dev_state = None
-        self._ext_dev = None
-        self._sched_dev = None
-        self._history_buffer = None
+        self._backend.close()
+
+
+# =====================================================================
+# 工厂函数
+# =====================================================================
+
+def make_warp_standup_simulator(**kwargs) -> WarpHumanoid21Simulator:
+    """standup 实验的默认 warp 仿真器构造（collector 便捷入口）。"""
+    return WarpHumanoid21Simulator(**kwargs)

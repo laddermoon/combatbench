@@ -22,26 +22,8 @@ import jax.numpy as jp
 from jax import tree_util
 
 from envs.batchframework.backend import BaseBatchSimulator
+from envs.humanoid21.batch_binding import Humanoid21Binding
 from envs.humanoid21.meta import Humanoid21Meta
-
-
-def _quat_to_rot_np(quat: np.ndarray) -> np.ndarray:
-    """Batched [w,x,y,z] → (...,3,3) rotation matrix (numpy, leading dims preserved)."""
-    quat = np.asarray(quat, dtype=np.float64)
-    w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
-    return np.stack([
-        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=-1),
-        np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=-1),
-        np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=-1),
-    ], axis=-2)
-
-
-def _sqrt_signed(v: np.ndarray, div2_inside: bool = False) -> np.ndarray:
-    """CPU 观测的非线性压缩：joint_vel 用 sign*sqrt(|v|)/2，angular/kp_vel 用
-    sign*sqrt(|v/2|)。div2_inside 区分两种公式（角速度 /2 在 sqrt 内）。"""
-    if div2_inside:
-        return np.sign(v) * np.sqrt(np.abs(v / 2.0))
-    return np.sign(v) * np.sqrt(np.abs(v)) / 2.0
 
 
 class MjxHumanoid21Simulator(BaseBatchSimulator):
@@ -97,9 +79,19 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         # 提取路径不依赖 jax 后端，不受影响。
         self._device = device or (jax.devices()[0] if _init_jax else None)
 
-        # --- Load MuJoCo model + MJX model ---
-        self._model = mujoco.MjSpec.from_file(self.ARENA_XML).compile()
-        self._model.opt.timestep = self.DT
+        # --- 任务绑定：模型/meta/归一化/PD 表/初始姿态（跨后端单一来源） ---
+        self._binding = Humanoid21Binding(
+            initial_distance=initial_distance,
+            initial_pose_a=initial_pose_a,
+            initial_pose_b=initial_pose_b)
+        # 兼容别名：本类 jax 侧方法与外部消费方仍以这些属性访问。
+        self._model = self._binding.model
+        self._meta = self._binding.meta
+        self._robots = self._binding.robots
+        self._ground_geom_id = self._binding.ground_geom_id
+        self._norm_params = self._binding.norm_params
+        self._pd_tables = self._binding.pd_tables
+        self._body_name_to_id = self._binding.body_name_to_id
         if self._impl == "warp":
             # 版本缝隙（仅探测用）：mujoco-mjx 3.8 内置的
             # mujoco.mjx.warp.types.GraphMode 是 int 存根，put_model 期待
@@ -115,54 +107,12 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         self._mjx_model = mjx.put_model(self._model, impl=self._impl) \
             if _init_jax else None
 
-        # --- Build runtime tables from meta ---
-        self._meta = Humanoid21Meta.build_runtime_tables(self._model)
-        self._robots = self._meta["robots"]
-        self._ground_geom_id = self._meta["ground_geom_id"]
-
-        # --- Normalization params ---
-        self._norm_params = {}
-        for robot_id in ["robot_a", "robot_b"]:
-            jnt_ranges = self._robots[robot_id]["jnt_ranges"]  # (21, 2)
-            lower = jnt_ranges[:, 0]
-            upper = jnt_ranges[:, 1]
-            self._norm_params[robot_id] = {
-                "reference": ((lower + upper) / 2.0).astype(np.float32),
-                "scale": ((upper - lower) / 2.0).astype(np.float32),
-            }
-
-        # --- PD tables ---
-        self._pd_tables = {}
-        for robot_id in ["robot_a", "robot_b"]:
-            act_ids = self._robots[robot_id]["actuator_ids"]
-            gear = np.array(self._model.actuator_gear[act_ids, 0], dtype=np.float64)
-            gear[gear == 0] = 1.0
-            ctrl_lo = np.array(self._model.actuator_ctrlrange[act_ids, 0], dtype=np.float64)
-            ctrl_hi = np.array(self._model.actuator_ctrlrange[act_ids, 1], dtype=np.float64)
-            self._pd_tables[robot_id] = {
-                "actuator_ids": act_ids,
-                "gear": gear,
-                "ctrl_lo": ctrl_lo,
-                "ctrl_hi": ctrl_hi,
-            }
-
         # --- Precompute static arrays for PD control ---
         # Per-robot: qpos_indices, qvel_indices, actuator_ids, norm ref/scale, gear, ctrl_lo/hi, KP, KD
-        # _init_jax=False 时给 numpy 版本——warp 子类只把表当数据消费
+        # _init_jax=False 时给 numpy 版本——warp 路径只把表当数据消费
         # （np.asarray 上载到 warp），不需要 XLA 后端。
-        self._jax_statics = self._build_jax_statics() if _init_jax \
-            else self._build_statics(np, np.float32)
-
-        # --- Body name → body id mapping for external force ---
-        self._body_name_to_id = {}
-        for robot_id, suffix in Humanoid21Meta.ROBOT_SUFFIXES.items():
-            for body_name in Humanoid21Meta.ROBOT_BODY_NAMES:
-                full = f"{body_name}{suffix}"
-                bid = mujoco.mj_name2id(
-                    self._model, mujoco.mjtObj.mjOBJ_BODY, full
-                )
-                if bid >= 0:
-                    self._body_name_to_id[full] = bid
+        self._jax_statics = self._binding.build_statics(jp, self._dtype) \
+            if _init_jax else self._binding.build_statics(np, np.float32)
 
         # --- Init JAX state ---
         self._mjx_data: Optional[mjx.Data] = None
@@ -175,32 +125,9 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         self._jit_step = None
         self._jit_step_scan = None
 
-    def _build_statics(self, xp, dtype) -> Dict[str, Any]:
-        """Build the per-robot PD table; `xp` is jp or np depending on backend."""
-        statics = {}
-        for robot_id in ["robot_a", "robot_b"]:
-            r = self._robots[robot_id]
-            norm = self._norm_params[robot_id]
-            pd = self._pd_tables[robot_id]
-            statics[robot_id] = {
-                "qpos_indices": xp.asarray(r["qpos_indices"], dtype=xp.int32),
-                "qvel_indices": xp.asarray(r["qvel_indices"], dtype=xp.int32),
-                "actuator_ids": xp.asarray(r["actuator_ids"], dtype=xp.int32),
-                "norm_ref": xp.asarray(norm["reference"], dtype=xp.float32),
-                "norm_scale": xp.asarray(norm["scale"], dtype=xp.float32),
-                "gear": xp.asarray(pd["gear"], dtype=dtype),
-                "ctrl_lo": xp.asarray(pd["ctrl_lo"], dtype=dtype),
-                "ctrl_hi": xp.asarray(pd["ctrl_hi"], dtype=dtype),
-                "kp": xp.asarray(self.KP, dtype=dtype),
-                "kd": xp.asarray(self.KD, dtype=dtype),
-                "root_qpos_adr": r["root_qpos_adr"],
-                "root_qvel_adr": r["root_qvel_adr"],
-            }
-        return statics
-
     def _build_jax_statics(self) -> Dict[str, Any]:
         """Precompute JAX arrays needed inside JIT-compiled step functions."""
-        return self._build_statics(jp, self._dtype)
+        return self._binding.build_statics(jp, self._dtype)
 
     # ------------------------------------------------------------------
     # Properties
@@ -218,17 +145,6 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
     # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
-    @staticmethod
-    def _broadcast_option(options, key, default, batch_size):
-        """options 中的标量或 (B,) 序列 → 长度 B 的 per-env 列表。"""
-        value = options.get(key, default) if options else default
-        if isinstance(value, str) or np.isscalar(value):
-            return [value] * batch_size
-        seq = list(value)
-        if len(seq) != batch_size:
-            raise ValueError(f"options[{key}] must be scalar or length {batch_size}")
-        return seq
-
     def reset(
         self,
         seeds: Optional[np.ndarray] = None,
@@ -242,7 +158,9 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         与 ``initial_pose_a/b`` 支持标量或长度 B 的序列（per-env）。
         """
         B = self._batch_size
-        qpos_all, action_a, action_b = self._compute_reset_state(seeds, options)
+        qpos_all, action_a, action_b = self._binding.compute_reset_state(
+            B, seeds, options)
+        self._reset_seeds = None if seeds is None else np.asarray(seeds).copy()
 
         # 模板 data 只提供形状/dtype；qpos/qvel/xfrc 在 broadcast 后被覆盖，
         # 由随后的 batched forward 重建全部 derived 字段（对应 CPU 的 mj_forward）。
@@ -269,62 +187,12 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         self._history_n_steps = 0
 
     def _compute_reset_state(self, seeds, options):
-        """Per-env reset 姿态计算（纯 numpy，跨后端共享）。
-
-        返回 (qpos_all (B,nq), action_a (B,21), action_b (B,21))。
-        与 CPU reset 一致：初始姿态确定性，seeds 只记录；``initial_distance``
-        与 ``initial_pose_a/b`` 支持标量或长度 B 的序列。
-        """
-        from scipy.spatial.transform import Rotation as Rot
-
-        B = self._batch_size
-        data = mujoco.MjData(self._model)
-        mujoco.mj_resetData(self._model, data)
-
-        dists = [float(v) for v in self._broadcast_option(
-            options, "initial_distance", self._initial_distance, B)]
-        poses_a = self._broadcast_option(options, "initial_pose_a", self._initial_pose_a, B)
-        poses_b = self._broadcast_option(options, "initial_pose_b", self._initial_pose_b, B)
+        """委托 binding——保留入口兼容既有调用方/子类。"""
+        out = self._binding.compute_reset_state(
+            self._batch_size, seeds, options)
         self._reset_seeds = None if seeds is None else np.asarray(seeds).copy()
+        return out
 
-        qpos_all = np.broadcast_to(np.asarray(data.qpos), (B, data.qpos.size)).copy()
-        action_a = np.zeros((B, self.ACTION_DIM), dtype=np.float32)
-        action_b = np.zeros((B, self.ACTION_DIM), dtype=np.float32)
-
-        for i in range(B):
-            for robot_id, pose_name, x_offset in [
-                ("robot_a", poses_a[i], -dists[i] / 2.0),
-                ("robot_b", poses_b[i], dists[i] / 2.0),
-            ]:
-                pose_config = self.INITIAL_POSES[pose_name]
-                cache = self._robots[robot_id]
-                root_qpos_adr = cache["root_qpos_adr"]
-                qpos_indices = cache["qpos_indices"]
-
-                root_pos = np.asarray(pose_config["root_pos"], dtype=np.float64).copy()
-                root_pos[0] = x_offset
-                qpos_all[i, root_qpos_adr : root_qpos_adr + 3] = root_pos
-
-                # 与 CPU reset 相同的 scipy 旋转：robot_b 绕 z 轴转 180° 面向 robot_a。
-                root_quat = np.asarray(pose_config["root_quat"], dtype=np.float64).copy()
-                if robot_id == "robot_b":
-                    q_scipy = np.array([root_quat[1], root_quat[2], root_quat[3], root_quat[0]])
-                    q_new = (Rot.from_euler("z", np.pi) * Rot.from_quat(q_scipy)).as_quat()
-                    root_quat = np.array([q_new[3], q_new[0], q_new[1], q_new[2]])
-
-                qpos_all[i, root_qpos_adr + 3 : root_qpos_adr + 7] = root_quat
-                qpos_all[i, qpos_indices] = pose_config["joint_pos"]
-
-                # 与 CPU 相同：初始动作由实际关节位置反推，而非预设近似值。
-                norm = self._norm_params[robot_id]
-                action = ((qpos_all[i, qpos_indices] - norm["reference"])
-                          / norm["scale"]).astype(np.float32)
-                if robot_id == "robot_a":
-                    action_a[i] = action
-                else:
-                    action_b[i] = action
-
-        return qpos_all, action_a, action_b
 
     def _build_jit_functions(self):
         """Build JIT-compiled forward, single-step and scan-step functions."""
@@ -457,50 +325,8 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         return self._extract_core_state(self._mjx_data, is_history=False)
 
     def _extract_core_state(self, data: mjx.Data, is_history: bool) -> Dict[str, Any]:
-        """Extract core state from MJX data (JAX → numpy)."""
-        result: Dict[str, Any] = {}
-
-        for robot_id in ["robot_a", "robot_b"]:
-            r = self._robots[robot_id]
-            norm = self._norm_params[robot_id]
-
-            root_qa = r["root_qpos_adr"]
-            root_qva = r["root_qvel_adr"]
-            qpos_idx = r["qpos_indices"]
-            qvel_idx = r["qvel_indices"]
-
-            # Root pos and rot
-            root_pos_np = np.asarray(data.qpos[..., root_qa : root_qa + 3])
-            root_rot_np = np.asarray(data.qpos[..., root_qa + 3 : root_qa + 7])
-
-            # MuJoCo free joint 的 qvel 两半坐标系不同（与 CPU get_core_state 一致）：
-            # qvel[0:3] 线速度是世界系 → 乘 R^T 转机体系；
-            # qvel[3:6] 角速度本就以机体系存放 → 直接取用，不做旋转。
-            root_vel_np = np.asarray(data.qvel[..., root_qva : root_qva + 3])
-            root_ang_vel_local = np.asarray(data.qvel[..., root_qva + 3 : root_qva + 6])
-
-            R_inv = np.swapaxes(_quat_to_rot_np(root_rot_np), -1, -2)
-            root_vel_local = np.einsum("...ij,...j->...i", R_inv, root_vel_np)
-
-            # Joint pos/vel
-            joint_pos = np.asarray(data.qpos[..., qpos_idx])
-            joint_vel = np.asarray(data.qvel[..., qvel_idx])
-
-            ref = norm["reference"]
-            scale = norm["scale"]
-            joint_pos_norm = (joint_pos - ref) / scale
-            joint_vel_norm = joint_vel / scale
-
-            result[robot_id] = {
-                "root_pos": root_pos_np.astype(np.float32),
-                "root_rot": root_rot_np.astype(np.float32),
-                "root_vel_local": root_vel_local.astype(np.float32),
-                "root_angular_vel_local": root_ang_vel_local.astype(np.float32),
-                "joint_pos_norm": joint_pos_norm.astype(np.float32),
-                "joint_vel_norm": joint_vel_norm.astype(np.float32),
-            }
-
-        return result
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.extract_core_state(data, is_history)
 
     # ------------------------------------------------------------------
     # get_derived_state
@@ -519,327 +345,26 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
     def _extract_derived_state(
         self, data: mjx.Data, fields: Optional[Sequence[str]], is_history: bool
     ) -> Dict[str, Any]:
-        if fields is None:
-            fields = ["torso_distance", "contacts", "robot_a", "robot_b"]
-        else:
-            fields = list(fields)
-            unknown = set(fields) - {"torso_distance", "contacts", "robot_a", "robot_b"}
-            if unknown:
-                raise KeyError(f"get_derived_state: unknown fields {unknown}")
-
-        result: Dict[str, Any] = {}
-
-        if "torso_distance" in fields:
-            torso_a_id = self._robots["robot_a"]["root_body_id"]
-            torso_b_id = self._robots["robot_b"]["root_body_id"]
-            pos_a = np.asarray(data.xpos[..., torso_a_id, :])
-            pos_b = np.asarray(data.xpos[..., torso_b_id, :])
-            dist = np.linalg.norm(pos_b - pos_a, axis=-1, keepdims=True)
-            result["torso_distance"] = dist.astype(np.float32)
-
-        if "contacts" in fields:
-            result["contacts"] = self._extract_contacts_batch(data)
-
-        for rid in ("robot_a", "robot_b"):
-            if rid in fields:
-                opp_id = "robot_b" if rid == "robot_a" else "robot_a"
-                view = self._get_robot_view_batch(data, rid, opp_id)
-                view.update(self._collect_body_joint_arrays(data, rid))
-                result[rid] = view
-
-        return result
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.extract_derived_state(data, fields, is_history)
 
     def _extract_contacts_batch(self, data: mjx.Data) -> Dict[str, Any]:
-        """Extract contacts from batched MJX data.
-
-        Uses efc_force to compute proper contact forces matching
-        mujoco.mj_contactForce. For pyramidal cone with condim=3:
-          normal = sum(efc[0:4])
-          friction1 = efc[0] - efc[1]
-          friction2 = efc[2] - efc[3]
-        For condim=1 (frictionless): normal = efc[0].
-
-        force_world = frame.T @ [normal, friction1, friction2]
-        """
-        contact = data._impl.contact
-        geom = np.asarray(contact.geom)
-        dist = np.asarray(contact.dist)
-        pos = np.asarray(contact.pos)
-        frame = np.asarray(contact.frame)
-        efc_address = np.asarray(contact.efc_address)
-        contact_dim = np.asarray(contact.dim)
-        efc_force = np.asarray(data._impl.efc_force)
-
-        # 支持任意前导维：history=False 时 (B, C)，history=True 时 (B, T, C)，
-        # 无 batch 时 (C,) 统一补一维再处理。
-        if geom.ndim == 1:
-            geom = geom[np.newaxis, np.newaxis]
-            dist = dist[np.newaxis, np.newaxis]
-            pos = pos[np.newaxis, np.newaxis]
-            frame = frame[np.newaxis, np.newaxis]
-            efc_force = efc_force[np.newaxis, np.newaxis]
-        elif geom.ndim == 2:
-            geom = geom[np.newaxis]
-            dist = dist[np.newaxis]
-            pos = pos[np.newaxis]
-            frame = frame[np.newaxis]
-            efc_force = efc_force[np.newaxis]
-
-        # efc_address and contact_dim are NOT batched (shared model metadata)
-        lead_shape = dist.shape[:-1]
-        max_contacts = dist.shape[-1]
-        active = dist <= 0  # (B, max_contacts)
-
-        # Body IDs from geom IDs
-        geom_bodyid = np.asarray(self._model.geom_bodyid)
-        body1 = geom_bodyid[geom[..., 0].astype(np.int64)]
-        body2 = geom_bodyid[geom[..., 1].astype(np.int64)]
-
-        # Affiliation
-        geom_id_to_aff = self._meta["geom_id_to_aff"]
-        aff_table = np.zeros(self._model.ngeom, dtype=np.int8)
-        for gid, aff in geom_id_to_aff.items():
-            aff_table[gid] = aff
-        aff1 = aff_table[geom[..., 0].astype(np.int64)]
-        aff2 = aff_table[geom[..., 1].astype(np.int64)]
-
-        # 与 CPU 语义对齐：ncon = 每 env 的活跃接触数（CPU 是标量，batch 是 (B,)）。
-        # padding 槽位由 active_mask 标记，容量由 capacity 报告。
-        contact_count = np.sum(active, axis=-1).astype(np.int32)
-
-        # Compute contact forces from efc_force.
-        # For pyramidal cone with dim=3: 4 constraint rows per contact.
-        # For dim=1: 1 constraint row.
-        # n_rows = max(1, 2*(dim-1)) for pyramidal cone.
-        n_rows = np.maximum(1, 2 * (contact_dim - 1))  # (max_contacts,)
-
-        # Gather efc_force for each contact
-        # efc_address: (max_contacts,) — NOT batched (shared model)
-        # efc_force: (B, max_efc) — batched
-        force_mag = np.zeros(lead_shape + (max_contacts,), dtype=np.float64)
-        force_world = np.zeros(lead_shape + (max_contacts, 3), dtype=np.float64)
-
-        for lead_idx in np.ndindex(lead_shape):
-            for c in range(max_contacts):
-                if not active[lead_idx + (c,)]:
-                    continue
-                # efc_address 语义非 batched (C,)，但 NWORLDS 后端（warp）
-                # 的行址逐 world 不同，允许传入 (B, ..., C) 逐 lead 寻址。
-                addr = int(efc_address[lead_idx + (c,)]
-                           if efc_address.ndim > 1 else efc_address[c])
-                nr = int(n_rows[c])
-                ef = efc_force[lead_idx + (slice(addr, addr + nr),)]
-
-                if nr == 1:
-                    normal = ef[0]
-                    f1, f2 = 0.0, 0.0
-                elif nr == 4:
-                    normal = ef[0] + ef[1] + ef[2] + ef[3]
-                    f1 = ef[0] - ef[1]
-                    f2 = ef[2] - ef[3]
-                else:
-                    normal = ef.sum()
-                    f1 = ef[0] - ef[1] if nr >= 2 else 0.0
-                    f2 = ef[2] - ef[3] if nr >= 4 else 0.0
-
-                force_local = np.array([normal, f1, f2])
-                force_mag[lead_idx + (c,)] = np.linalg.norm(force_local)
-                # frame[*,c] is (3,3) with rows [normal, tangent1, tangent2]
-                # force_world = frame.T @ force_local (matches original simulator)
-                force_world[lead_idx + (c,)] = frame[lead_idx + (c,)].T @ force_local
-
-        return {
-            "ncon": contact_count,
-            "capacity": int(max_contacts),
-            "active_mask": active,
-            "geom1": geom[..., 0].astype(np.int32),
-            "geom2": geom[..., 1].astype(np.int32),
-            "body1": body1.astype(np.int32),
-            "body2": body2.astype(np.int32),
-            "aff1": aff1,
-            "aff2": aff2,
-            "force_mag": force_mag.astype(np.float32),
-            "force_world": force_world.astype(np.float32),
-            "position": pos.astype(np.float32),
-            "normal": frame[..., 0, :].astype(np.float32),
-            "frame": frame.astype(np.float32),
-        }
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.extract_contacts_batch(data)
 
     def _get_robot_view_batch(
         self, data: mjx.Data, robot_id: str, opponent_id: str
     ) -> Dict[str, Any]:
-        """Per-robot view (batched). 逐字段对齐 CPU ``_get_robot_view``。
-
-        与 CPU 相同的语义要点：
-        - 线速度 qvel[0:3] 世界系 → R^T 转机体系；角速度 qvel[3:6] 本就在机体系；
-        - relative_vel 用的是**对手** torso 的 cvel 线速度（字段名带 relative
-          但 CPU 语义如此，不为"修正命名"改公式）；
-        - 观测中关节速度做 sign*sqrt(|v|)/2，角速度做 sign*sqrt(|v/2|)，
-          对手 head 关键点速度不变换，其余 4 个做 sign*sqrt(|v|)/2；
-        - 字典字段保留原始物理值，sqrt 变换只作用于扁平 observation。
-        """
-        cache = self._robots[robot_id]
-        opp_cache = self._robots[opponent_id]
-        norm = self._norm_params[robot_id]
-
-        torso_id = cache["root_body_id"]
-        opp_torso_id = opp_cache["root_body_id"]
-
-        self_pos = np.asarray(data.xpos[..., torso_id, :])
-        self_quat = np.asarray(data.xquat[..., torso_id, :])  # [w,x,y,z]
-        opp_pos = np.asarray(data.xpos[..., opp_torso_id, :])
-        opp_quat = np.asarray(data.xquat[..., opp_torso_id, :])
-
-        R_self = _quat_to_rot_np(self_quat)      # body→world, (...,3,3)
-        R_self_inv = np.swapaxes(R_self, -1, -2)  # world→body
-
-        height = self_pos[..., 2:3]                              # (...,1)
-        projected_gravity = -R_self[..., 2, :]                   # (...,3) 与 CPU -R[2,:] 一致
-
-        root_qva = cache["root_qvel_adr"]
-        linear_vel = np.einsum(                                  # 机体系线速度
-            "...ij,...j->...i", R_self_inv,
-            np.asarray(data.qvel[..., root_qva : root_qva + 3]))
-        angular_vel = np.asarray(data.qvel[..., root_qva + 3 : root_qva + 6])  # 本就在机体系
-
-        feet_forces = self._get_feet_forces_batch(data, robot_id)
-        arena_center_local = np.einsum("...ij,...j->...i", R_self_inv, -self_pos)
-
-        # 对手基础位姿：relative_vel 取对手 torso 线速度转到自机体系（CPU 语义）。
-        relative_pos_local = np.einsum("...ij,...j->...i", R_self_inv, opp_pos - self_pos)
-        opp_vel_global = np.asarray(data.cvel[..., opp_torso_id, 3:6])
-        relative_vel_local = np.einsum("...ij,...j->...i", R_self_inv, opp_vel_global)
-        opp_forward = _quat_to_rot_np(opp_quat)[..., :, 0]       # 对手局部 x 轴（世界系）
-        face_vector = np.einsum("...ij,...j->...i", R_self_inv, opp_forward)
-
-        kp = opp_cache["keypoint_body_ids"]
-        kp_names = ["head", "hand_right", "hand_left", "foot_right", "foot_left"]
-        kp_pos_local, kp_vel_local = {}, {}
-        for name in kp_names:
-            bid = kp[name]
-            kp_pos_local[name] = np.einsum(
-                "...ij,...j->...i", R_self_inv,
-                np.asarray(data.xpos[..., bid, :]) - self_pos).astype(np.float32)
-            kp_vel_local[name] = np.einsum(
-                "...ij,...j->...i", R_self_inv,
-                np.asarray(data.cvel[..., bid, 3:6])).astype(np.float32)
-
-        qpos_idx = cache["qpos_indices"]
-        qvel_idx = cache["qvel_indices"]
-        joint_pos_norm = (np.asarray(data.qpos[..., qpos_idx]) - norm["reference"]) / norm["scale"]
-        joint_vel_norm = np.asarray(data.qvel[..., qvel_idx]) / norm["scale"]
-
-        # 96 维扁平观测：字段顺序与变换与 CPU 完全一致。
-        joint_vel_obs = _sqrt_signed(joint_vel_norm)
-        ang_vel_obs = _sqrt_signed(angular_vel, div2_inside=True)
-        kp_vel_rest_obs = np.concatenate(
-            [_sqrt_signed(kp_vel_local[n]) for n in kp_names[1:]], axis=-1)
-        observation = np.concatenate([
-            joint_pos_norm, joint_vel_obs, projected_gravity, height,
-            linear_vel, ang_vel_obs, feet_forces, arena_center_local,
-            relative_pos_local, relative_vel_local, face_vector,
-            kp_pos_local["head"], kp_pos_local["hand_right"], kp_pos_local["hand_left"],
-            kp_pos_local["foot_right"], kp_pos_local["foot_left"],
-            kp_vel_local["head"],                      # head 速度不变换
-            kp_vel_rest_obs,
-        ], axis=-1).astype(np.float32)
-
-        return {
-            "root_state": {
-                "height": height.astype(np.float32),
-                "projected_gravity": projected_gravity.astype(np.float32),
-                "linear_vel": linear_vel.astype(np.float32),
-                "angular_vel": angular_vel.astype(np.float32),
-                "arena_center_local": arena_center_local.astype(np.float32),
-            },
-            "feet_forces": feet_forces,
-            "opponent_basic_pose": {
-                "relative_pos": relative_pos_local.astype(np.float32),
-                "relative_vel": relative_vel_local.astype(np.float32),
-                "face_vector": face_vector.astype(np.float32),
-            },
-            "opponent_keypoint_pos": kp_pos_local,
-            "opponent_keypoint_vel": kp_vel_local,
-            "observation": observation,
-            "uprightness": np.asarray(R_self[..., 2, 2:3]).astype(np.float32),
-            "opponent_in_local": {
-                "pos": relative_pos_local.astype(np.float32),
-                "vel": relative_vel_local.astype(np.float32),
-                "rot": face_vector.astype(np.float32),
-            },
-        }
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.robot_view_batch(data, robot_id, opponent_id)
 
     def _collect_body_joint_arrays(self, data: mjx.Data, robot_id: str) -> Dict[str, Any]:
-        """CPU ``_collect_body_joint_arrays`` 的批量版：per-body 世界系数组 + joint anchor。"""
-        cache = self._robots[robot_id]
-        body_ids = cache["body_ids_sorted"]
-        body_names = cache["body_names"]
-
-        def by_body(arr):
-            vals = np.asarray(arr[..., body_ids, :], dtype=np.float32)
-            return {name: vals[..., i, :] for i, name in enumerate(body_names)}
-
-        cvel = np.asarray(data.cvel[..., body_ids, :], dtype=np.float32)
-        joint_ids_by_name = cache["joint_ids_by_name"]
-        return {
-            "body_xpos": by_body(data.xpos),
-            "body_xipos": by_body(data.xipos),
-            "body_xquat": by_body(data.xquat),
-            "body_linvel_world": {name: cvel[..., i, 3:6] for i, name in enumerate(body_names)},
-            "body_angvel_world": {name: cvel[..., i, 0:3] for i, name in enumerate(body_names)},
-            "joint_world_anchor": {
-                name: np.asarray(data.xanchor[..., jid, :], dtype=np.float32)
-                for name, jid in joint_ids_by_name.items()
-            },
-        }
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.collect_body_joint_arrays(data, robot_id)
 
     def _get_feet_forces_batch(self, data: mjx.Data, robot_id: str) -> np.ndarray:
-        """Get feet contact forces, **normalized by body weight m*g** (dimensionless).
-
-        Uses the same force_mag computed in _extract_contacts_batch (from efc_force),
-        matching the original simulator's _get_feet_forces which uses mj_contactForce output.
-
-        The division by ``body_weight`` must stay in lockstep with
-        ``Humanoid21Simulator._get_feet_forces`` — the two backends are
-        required to produce bit-comparable observations, so a unit change
-        in one without the other would silently desync them. See that
-        method's docstring for why the normalization exists.
-        """
-        cache = self._robots[robot_id]
-        kp = cache["keypoint_body_ids"]
-        foot_right_id = kp["foot_right"]
-        foot_left_id = kp["foot_left"]
-        ground_gid = self._ground_geom_id
-        body_weight = cache["body_weight"]
-
-        # Extract contacts to get force_mag (same as _extract_contacts_batch)
-        contacts = self._extract_contacts_batch(data)
-
-        geom1 = contacts["geom1"]  # (B, max_contacts)
-        geom2 = contacts["geom2"]  # (B, max_contacts)
-        body1 = contacts["body1"]  # (B, max_contacts)
-        body2 = contacts["body2"]  # (B, max_contacts)
-        force_mag = contacts["force_mag"]  # (B, max_contacts)
-        active_mask = contacts["active_mask"]  # (B, max_contacts)
-
-        g1_ground = geom1 == ground_gid
-        g2_ground = geom2 == ground_gid
-        ground_mask = (g1_ground | g2_ground) & active_mask
-
-        other_body = np.where(g1_ground, body2, body1)
-
-        right_force = np.sum(
-            np.where(ground_mask & (other_body == foot_right_id), force_mag, 0.0),
-            axis=-1,
-        )
-        left_force = np.sum(
-            np.where(ground_mask & (other_body == foot_left_id), force_mag, 0.0),
-            axis=-1,
-        )
-
-        return (
-            np.stack([right_force, left_force], axis=-1) / body_weight
-        ).astype(np.float32)
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.feet_forces_batch(data, robot_id)
 
     # ------------------------------------------------------------------
     # get_observation
@@ -867,32 +392,8 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         }
 
     def get_static_data(self) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        for robot_id in ["robot_a", "robot_b"]:
-            cache = self._robots[robot_id]
-            body_names = list(cache["body_names"])
-            body_masses = np.asarray(cache["body_masses"], dtype=np.float32)
-            result[robot_id] = {
-                "dof_names": list(self.CONTROLLED_JOINTS),
-                "body_names": body_names,
-                "body_masses_by_name": {
-                    name: float(mass) for name, mass in zip(body_names, body_masses)
-                },
-                "joint_names": list(cache["joint_names"]),
-                "controlled_joint_names": list(cache["controlled_joint_names"]),
-                "root_joint_name": cache["root_joint_name"],
-                "keypoint_body_names": dict(cache["keypoint_body_names"]),
-                "keypoint_joint_names": dict(cache["keypoint_joint_names"]),
-                "joint_limits": cache["jnt_ranges"].copy(),
-            }
-        result["dt"] = float(self.DT)
-        result["ground_geom_name"] = "ground"
-        result["ground_geom_id"] = self._ground_geom_id
-        result["geom_id_to_name"] = dict(self._meta["geom_id_to_name"])
-        result["body_id_to_name"] = dict(self._meta["body_id_to_name"])
-        result["body_id_to_aff"] = dict(self._meta["body_id_to_aff"])
-        result["geom_id_to_aff"] = dict(self._meta["geom_id_to_aff"])
-        return result
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        return self._binding.static_data()
 
     # ------------------------------------------------------------------
     # set_action
@@ -947,39 +448,8 @@ class MjxHumanoid21Simulator(BaseBatchSimulator):
         ))
 
     def _write_core_state(self, state, env_ids, qpos_new, qvel_new):
-        """core-state 字段 → 原始 qpos/qvel 数组的映射（纯 numpy，跨后端共享）。"""
-        for robot_id in ["robot_a", "robot_b"]:
-            if robot_id not in state:
-                continue
-            robot_state = state[robot_id]
-            cache = self._robots[robot_id]
-            norm = self._norm_params[robot_id]
-            root_qa = cache["root_qpos_adr"]
-            root_qva = cache["root_qvel_adr"]
-            qpos_idx = cache["qpos_indices"]
-            qvel_idx = cache["qvel_indices"]
-
-            for i, eid in enumerate(env_ids):
-                if "root_pos" in robot_state:
-                    qpos_new[eid, root_qa : root_qa + 3] = robot_state["root_pos"][i]
-                if "root_rot" in robot_state:
-                    qpos_new[eid, root_qa + 3 : root_qa + 7] = robot_state["root_rot"][i]
-                if "root_vel_local" in robot_state:
-                    # 线速度机体系 → 世界系写回 qvel[0:3]（与 CPU set_core_state 对称）
-                    quat = qpos_new[eid, root_qa + 3 : root_qa + 7]
-                    R_mat = _quat_to_rot_np(quat)
-                    qvel_new[eid, root_qva : root_qva + 3] = R_mat @ np.asarray(
-                        robot_state["root_vel_local"][i], dtype=np.float64)
-                if "root_angular_vel_local" in robot_state:
-                    # 角速度本就以机体系存放于 qvel[3:6]，直接写入（CPU 同样不旋转）
-                    qvel_new[eid, root_qva + 3 : root_qva + 6] = np.asarray(
-                        robot_state["root_angular_vel_local"][i], dtype=np.float64)
-                if "joint_pos_norm" in robot_state:
-                    jpn = robot_state["joint_pos_norm"][i]
-                    qpos_new[eid, qpos_idx] = jpn * norm["scale"] + norm["reference"]
-                if "joint_vel_norm" in robot_state:
-                    jvn = robot_state["joint_vel_norm"][i]
-                    qvel_new[eid, qvel_idx] = jvn * norm["scale"]
+        """委托 ``Humanoid21Binding``（语义单一来源，见 batch_binding.py）。"""
+        self._binding.write_core_state(state, env_ids, qpos_new, qvel_new)
 
     # ------------------------------------------------------------------
     # set_integration_state
