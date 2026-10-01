@@ -1614,3 +1614,67 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
   distribution_kind 分派解释器）。
 - S14：stochastic_policy 导出按 MANIFEST 的 exported_class 选择
   对应模板，或在 capture 时对非基类家族 fail-loud 而不写错文件。
+
+---
+
+## 剩余区域：obsolete / curriculum / experiments_ppo / policy / docs / examples / 散落文件（2026-02 补）
+
+> 范围：前一轮未逐文件覆盖的收尾区域。方法：import 级验证 +
+> 死引用 grep + 注册表实测。
+
+### 本区域发现
+
+- **P-OBS-1（确认，死代码档案）**：`baseline/framework/obsolete/` 11 个
+  文件（v1 框架 `ppo_loop/ppo_trainer/sac_loop/sac_trainer/experiment`
+  + 4 个 eval/probe 脚本）**不被任何活代码 import**（全仓 grep 无
+  非自身引用）。属于有意留档的 v1 框架——但 `experiment.py` 的删除
+  使下游产生了真实断链（见下条）。
+- **P-OBS-2（确认，import 级死亡）**：`baseline/humanoid21/curriculum/`
+  的实验注册表整个死：`curriculum/experiments/__init__.py` 和
+  `base.py` 等 5 个文件 import 已删除的 `baseline.framework.experiment`
+  （实测 `ModuleNotFoundError`）。curriculum/ 顶层脚本多数只依赖
+  `rollout`（仍存活），但注册表和依赖它的 eval/probe 脚本（包括
+  `obsolete/` 里的 `eval_all_levels.py` 等 4 个）全不可用。
+  CLAUDE.md 标"legacy superseded"但现状比 legacy 更糟：**import 即崩**。
+- **P-TST-1（确认，连带死亡）**：根目录 `tests/test_stage_seg_rewards.py`
+  collection error——import 上述已死注册表。该测试守护的
+  stage_seg 相位奖励 off-by-one 修复当前**无任何活测试守护**。
+- **P-EXP-1（确认，工作正常）**：`experiments_ppo` 注册表实测
+  30 个实验全部可发现；`_discover()` 只 glob 顶层 `exp_*.py`——
+  `archive/`（28 个）和 `todo/`（21 个）被正确排除。
+  `base.py`（583 行）精读过：`--set` 参数 coercion 类型正确
+  （bool 先于 int 检查）、delta_mix/reference_horizon/delta_mode
+  三个组合约束 fail-loud、self-play job 构建干净。质量良好。
+- **P-POL-1 复核**：`policy/baseline/` 81 个快照 policy.py 全部
+  import 已删除的 `tanh_gaussian_mlp`（实测 u10328 加载
+  ModuleNotFoundError）；另有一个 `.pyc` 残留（untracked，无碍）。
+  `policy/random`、`policy/humanoid21/standing` 蓝图实测可构建可
+  act。
+- **P-DOC-1（补充确认）**：`docs/ENVIRONMENT_zh.md` 与英文版同样
+  描述"四面墙方形场地 + 4 台墙角相机"——实际是 `battle_v2` 圆形
+  24 段墙（circular_v2）。中英双版本同步过期。
+- **P-MISC-1（记录）**：`_debug/run01-03/`、`debug_approach/`（百余张
+  调试 PNG）是历史调试产物直接堆在仓库根；`scripts/` 只有一个
+  `migrate_feet_forces_norm.py`（一次性迁移脚本，已完成使命，
+  建议在 ledger 标记为一次性工具）。
+- **P-EXM-1（阴性）**：`examples/` 10 个脚本的共享 `_common.py`
+  import 实测通过；仅 2 个文件 import `baseline.framework.rollout`
+  （存活模块）。无 import 级断链（未做运行级验证——运行需要完整
+  仿真环境，留作后续抽查项）。
+
+### 本轮总结与处置建议汇总
+
+第 2.5 轮（框架/工具代码精读）累计确认问题分类：
+
+| 类别 | 数量 | 代表 |
+|---|---|---|
+| 实现 bug | 3 | recorder on_post_episode 漏调、ConstantForce/VideoRecorder sticky override、observer events 容器错位 |
+| 语义陈旧 | 3 | dump_rollout atanh 域、dump_capture 硬编码 TruncNorm 模板、DAMAGE_TARGET_PARTS 死条目 |
+| 注释/文档漂移 | ~8 | on_eval "0-based"、experiment.py 示例过期方法名、format_repro_command 不全、critic_mlp TanhGaussian 引用 |
+| 死代码/残留 | ~10 | _TURB_DEBUG 插桩、last_events/SyncStats 无消费者、changed 死变量、numpy 兼容层零租户、obsolete 目录 |
+| import 级断链 | 4 | curriculum 注册表、policy/baseline×81、tests/stage_seg、bench_rollout |
+| 测试过时 | ~10 | dump_delta×4、prev_gvec、viewer _dump_gradsig、policies/todo 自测 |
+
+**优先级建议（仅供裁决）**：P-POL-1 一行修复价值最高（81 个资产复活）；
+三个实现 bug 各自独立可修；dump_rollout 的 atanh 修正影响所有
+已产出 dump 的解读口径，建议优先定语义。
