@@ -127,6 +127,15 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
         return self._backend._wdata
 
     @property
+    def _mjx_data(self):
+        """兼容 shim：验证代码读此名拿 host 快照（含 _impl contacts）。
+
+        经解耦后实际返回 ``WarpBackend.host_snapshot()`` 的
+        numpy namespace——属性名保留只为不破坏验证/回放调用点。
+        """
+        return self._backend.host_snapshot()
+
+    @property
     def _ext_force_jax(self):
         """host 快照 pending wrench（验证 adapter 读取路径）。"""
         if self._backend._ext_dev is None:
@@ -431,8 +440,35 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
             torch.as_tensor(qvel_new[env_ids], dtype=torch.float32,
                             device=self._torch_device))
 
-    def set_integration_state(self, *a, **kw):
-        return self.set_core_state(*a, **kw)
+    def set_integration_state(self, qpos, qvel, env_ids=None) -> None:
+        """原始 qpos/qvel 行写回（验证/回放 host 路径）。
+
+        env_ids=None 时 qpos/qvel 必须是全批 (B, nq/nv)；否则形状
+        (len(env_ids), nq/nv) 按行写入。清零求解器残留 + forward。
+        """
+        qpos = np.asarray(qpos, dtype=np.float64)
+        qvel = np.asarray(qvel, dtype=np.float64)
+        if env_ids is None:
+            if qpos.shape != (self._batch_size, self._model.nq) or \
+                    qvel.shape != (self._batch_size, self._model.nv):
+                raise ValueError("integration state shape mismatch")
+            rows_q, rows_v = qpos, qvel
+            ids_t = torch.arange(self._batch_size,
+                                 device=self._torch_device)
+        else:
+            env_ids = np.asarray(list(env_ids), dtype=np.int64)
+            if qpos.shape != (len(env_ids), self._model.nq) or \
+                    qvel.shape != (len(env_ids), self._model.nv):
+                raise ValueError("per-env integration state shape mismatch")
+            rows_q, rows_v = qpos, qvel
+            ids_t = torch.as_tensor(env_ids, dtype=torch.long,
+                                    device=self._torch_device)
+        self.dev_set_integration_rows(
+            ids_t,
+            torch.as_tensor(rows_q, dtype=torch.float32,
+                            device=self._torch_device),
+            torch.as_tensor(rows_v, dtype=torch.float32,
+                            device=self._torch_device))
 
     def apply_external_force(self, body_name, force, torque=None,
                              robot_id: int = 0) -> None:
