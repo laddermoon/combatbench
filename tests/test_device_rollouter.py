@@ -76,7 +76,7 @@ def _assert_episode_contract(ep, T=_MAX_STEPS):
         assert ep.explore_factors[rid].shape == (T,)
         ex = ep.action_extras[rid]
         for k in ("log_prob", "explore_factor",
-                  "sctx__delta_factor", "sctx__delta_mix"):
+                  "sctx__delta_factor"):
             assert k in ex and ex[k].shape == (T,)
         assert np.isfinite(ex["log_prob"]).all()
         assert ep.agent_termination_proposal_records[rid] == (
@@ -172,7 +172,7 @@ def test_ppo_pipeline_compat(env_bp, policy_bp):
         assert t.channels["r_potential"].reward.shape == (_MAX_STEPS,)
         assert t.channels["r_potential"].is_terminated is False
         assert sorted(t.sampling_ctx) == [
-            "delta_factor", "delta_mix", "explore_factor"]
+            "delta_factor", "explore_factor"]
     buf = PPOBuffer(trajectories=trajs, actor=actor, device="cuda",
                     reward_keys=["r_potential"])
     rec = np.concatenate([

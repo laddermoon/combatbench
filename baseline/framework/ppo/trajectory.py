@@ -93,7 +93,7 @@ class Trajectory:
         sampling_ctx: ``{field: (T, ...)}`` — all per-frame
             SamplingContext fields recorded at rollout (includes
             ``explore_factor`` plus e.g. ``reference_action``,
-            ``delta_factor``, ``delta_mix``).  Threaded into
+            ``delta_factor``, ``delta``).  Threaded into
             ``evaluate_actions`` so log_prob is computed under the same
             distribution that produced the actions.  When None, the
             buffer treats every field as neutral (explore_factor=0).

@@ -92,11 +92,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 )
             setattr(self, key, _coerce_set_value(raw, cur))
 
-        if self.delta_mix != 0.0 and self.reference_horizon <= 0:
+        if self.delta_factor != 0.0 and self.reference_horizon <= 0:
             raise ValueError(
-                f"{type(self).__name__}: delta_mix={self.delta_mix} "
+                f"{type(self).__name__}: delta_factor={self.delta_factor} "
                 f"requires reference_horizon > 0 "
-                f"(got {self.reference_horizon}) — a nonzero delta_mix "
+                f"(got {self.reference_horizon}) — a nonzero delta_factor "
                 f"can never activate without a reference ensemble"
             )
         if self.delta_mode not in ("dynamic", "frozen"):
@@ -104,10 +104,10 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 f"{type(self).__name__}: delta_mode must be "
                 f"'dynamic' or 'frozen', got {self.delta_mode!r}"
             )
-        if self.delta_mode == "frozen" and self.delta_mix == 0.0:
+        if self.delta_mode == "frozen" and self.delta_factor == 0.0:
             raise ValueError(
                 f"{type(self).__name__}: delta_mode='frozen' requires "
-                f"delta_mix != 0 — the mode only selects how the delta "
+                f"delta_factor != 0 — the mode only selects how the delta "
                 f"payload is recorded"
             )
         self._ref_history: List[PolicyBlueprint] = []
@@ -136,12 +136,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
     uncertainty_coef: float = 0.01
 
     # --- Reference-delta exploration ---
-    # delta_mix (λ): blend weight between the policy's own σ and the
-    #   Δ-derived σ — σ_eff² = (1−λ)·σ² + λ·max((c·|μ−a_ref|)², ε²).
-    #   0 = mechanism off (default).  1 = σ driven purely by drift from
-    #   the reference ensemble.
-    # delta_factor (c): Δ→σ scale — how large a drift counts as
-    #   "one σ worth" of exploration.
+    # delta_factor (c): Δ→σ floor scale — σ_eff = max(σ, c·|Δ|) per dim,
+    #   where Δ is the drift between the current policy's deterministic
+    #   action and the reference ensemble's.  0 = mechanism off
+    #   (default).  The delta can only widen exploration, never narrow
+    #   it — it is a floor on the sampling scale, not a blend.
     # reference_horizon (H): number of policy versions forming the
     #   uniform reference ensemble — strictly BEFORE the current policy
     #   in both modes: the newest history entry is the just-finished
@@ -157,7 +156,6 @@ class CombatExperimentPPOBase(ExperimentPPO):
     #   constant w.r.t. θ inside an update, removing the value-level
     #   σ(m) coupling that destabilizes PPO under the dynamic
     #   parameterization.
-    delta_mix: float = 0.0
     delta_factor: float = 0.0
     reference_horizon: int = 0
     delta_mode: str = "dynamic"
@@ -390,7 +388,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         The sampling spec is assembled by :meth:`_sampling_spec` —
         ``explore_factor`` always, plus the reference-delta ensemble
         (uniform over the last ``reference_horizon`` trained versions)
-        when ``delta_mix != 0`` and history exists.  ``stochastic`` is
+        when ``delta_factor != 0`` and history exists.  ``stochastic`` is
         placed into each :class:`Job`'s ``stochastic`` field.
 
         ``update`` is part of the framework contract; the base
@@ -405,9 +403,9 @@ class CombatExperimentPPOBase(ExperimentPPO):
     def _sampling_spec(self) -> SamplingSpec:
         """Assemble this round's :class:`SamplingSpec`.
 
-        With ``delta_mix != 0`` and a **full** strictly-past window,
+        With ``delta_factor != 0`` and a **full** strictly-past window,
         the spec carries a uniform :class:`ReferenceSpec` plus
-        ``delta_factor`` / ``delta_mix`` / ``delta_mode``.  The ensemble
+        ``delta_factor`` / ``delta_mode``.  The ensemble
         is the last ``reference_horizon`` versions **before** the
         current policy, in both modes: the newest history entry is the
         just-finished update's export — the rollout-time behavior
@@ -421,11 +419,11 @@ class CombatExperimentPPOBase(ExperimentPPO):
         the mechanism stays off (plain spec) until ``pool`` holds all
         ``reference_horizon`` strictly-past versions, i.e. the first
         delta-active update is ``H + 2`` (H refs + Gen0 + one update
-        boundary).  Rationale: a growing n=1..H−1 ensemble would make
-        the recorded ``sctx__delta`` mix "adjacent-generation drift"
-        and "drift vs window centroid" — two different quantities
-        under one constant c — whereas a full window keeps the Δ
-        distribution semantically uniform for analysis.
+        boundary).  Rationale: a growing n=1..H−1 ensemble would blend
+        "adjacent-generation drift" and "drift vs window centroid" —
+        two different quantities under one constant c — whereas a full
+        window keeps the recorded ``sctx__delta`` semantically uniform
+        for analysis.
 
         Otherwise it is the plain ``explore_factor`` spec — including
         warmup updates where no eligible version exists.
@@ -433,7 +431,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         history = getattr(self, "_ref_history", None) or []
         pool = history[:-1]
         if (
-            self.delta_mix != 0.0
+            self.delta_factor != 0.0
             and len(pool) >= self.reference_horizon > 0
         ):
             window = pool[-self.reference_horizon:]
@@ -445,7 +443,6 @@ class CombatExperimentPPOBase(ExperimentPPO):
                     weights=tuple([1.0 / n] * n),
                 ),
                 delta_factor=self.delta_factor,
-                delta_mix=self.delta_mix,
                 delta_mode=self.delta_mode,
             )
         return SamplingSpec(explore_factor=self.explore_factor)
@@ -477,7 +474,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
         Reads ``episode.sampling_contexts[agent_id]`` — the grouped view
         of every ctx field passed to ``policy.sample()`` at rollout
         (``explore_factor`` plus e.g. ``reference_action``,
-        ``delta_factor``, ``delta_mix``).  Each field is truncated to
+        ``delta_factor``, ``delta``).  Each field is truncated to
         ``(T, ...)``.  Returns ``None`` when the episode recorded no
         ctx for this agent — the buffer then treats every field as
         neutral (explore_factor=0).

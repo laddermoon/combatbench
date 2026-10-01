@@ -3387,11 +3387,15 @@ def test_checkpoint_rng_state_roundtrip():
 
     obs_dim, act_dim = 8, 3
     cp = _make_common_params()
-    gvec = np.arange(5, dtype=np.float32)
 
     # --- "Original" run: seed, consume, checkpoint, keep consuming ---
     set_seed(cp.seed)
     actor = SimpleActor(obs_dim, act_dim)
+    # prev_gvec must match the actor's flat param count — load drops a
+    # stale-length vector (obs/param expansion guard).
+    gvec = np.arange(
+        sum(int(p.numel()) for p in actor.parameters()), dtype=np.float32,
+    )
     critics = make_critics(("r_a", "r_b"), obs_dim)
     actor_opt, critic_opts = make_optimizers(actor, critics)
     experiment = _DummyExperiment(cp.name)

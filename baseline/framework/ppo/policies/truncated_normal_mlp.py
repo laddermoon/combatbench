@@ -26,11 +26,6 @@ from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 # Mapping: scale = exp(ei * ln(3)), so ei=0→1, ei=+1→3, ei=-1→1/3.
 _EXPLORE_K = math.log(3.0)
 
-#: σ-domain floor for the reference-delta scale: σ_delta² is clamped
-#: at _DELTA_EPS² so a vanishing Δ (λ=1) cannot collapse σ_eff to 0.
-_DELTA_EPS = 1e-2
-
-
 def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
     """ctx scalar field → float, or (B,) tensor → broadcastable (B,1,...)."""
     if not torch.is_tensor(x):
@@ -40,28 +35,28 @@ def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
     return x
 
 
+def _ctx_nonzero(x: Any) -> bool:
+    """True iff a ctx scalar field is nonzero (scalar or any-element)."""
+    if x is None:
+        return False
+    return bool((x != 0).any()) if hasattr(x, "any") else bool(x != 0)
+
+
 def _delta_of(
     mean: torch.Tensor,
     ctx: Optional["SamplingContext"],
 ) -> Optional[torch.Tensor]:
-    """The Δ payload the σ-mix consumes this call, or ``None``.
+    """The Δ payload the σ floor consumes this call, or ``None``.
 
     Resolution order — an explicit ``ctx.delta`` payload wins over the
     fresh ``mean − a_ref`` path.  ``ctx.delta`` is the *action-level*
     Δ (``det_action − a_ref``, ``(D,)`` per frame): an input produced
     by the sampling layer in frozen mode, or replayed data at train
     time — in both cases NOT a function of the current forward's
-    θ-dependent mean.  ``delta_mix = 0`` disables the mechanism
-    entirely; both payloads absent yields ``None`` (mechanism off, or
-    malformed ctx — ``delta_mix_sigma`` distinguishes the two via the
-    ``delta_mix != 0`` activation invariant, in both modes).
+    θ-dependent mean.  Payload presence is the activation contract —
+    ``delta_max_sigma`` decides what a missing payload means.
     """
     if ctx is None:
-        return None
-    dm = getattr(ctx, "delta_mix", None)
-    if dm is None:
-        return None
-    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
         return None
 
     def _bcast(v: Any) -> torch.Tensor:
@@ -79,68 +74,63 @@ def _delta_of(
     return mean - _bcast(ref)
 
 
-def delta_mix_sigma(
+def delta_max_sigma(
     mean: torch.Tensor,
     sigma: torch.Tensor,
     ctx: Optional["SamplingContext"],
     sigma_min: Optional[float] = None,
     sigma_max: Optional[float] = None,
 ) -> torch.Tensor:
-    """σ²-domain mix of the policy σ with the reference-delta scale.
+    """Element-wise σ floor from the reference delta.
 
-        σ_eff² = (1−λ)·σ² + λ·max((c·|Δ|)², σ², ε²)
+        σ_eff = max(σ, c·|Δ|)
 
     where Δ is either recomputed (dynamic mode: ``m_θ − a_ref``) or
     supplied as a ``ctx.delta`` input (frozen mode: the sampling layer
     computed ``det_action(current policy) − a_ref`` at rollout — σ_eff
     stays constant w.r.t. θ inside an update, which is the whole point
-    of the mode).
+    of the mode).  The max keeps σ_eff ≥ σ in every dim — the delta
+    can only widen exploration, never narrow it; dims whose drift is
+    small keep the policy's own scale.
 
     ``mean``/``sigma`` may be (B, D) (single-component) or (B, K, D)
     (per-component mixture); ``a_ref`` broadcasts from (D,) or (B, D).
     Bounded callers pass ``sigma_min``/``sigma_max`` to re-apply their
     support.  Returns ``sigma`` untouched when the mechanism is off
-    (no reference, no frozen payload, or λ = 0 everywhere) — that
-    short-circuit keeps the inactive path bit-identical to plain ef
-    behavior.
+    (``delta_factor = 0``, or no reference and no frozen payload) —
+    that short-circuit keeps the inactive path bit-identical to plain
+    ef behavior.
 
     ``Δ`` contributes no gradient: dynamic mode detaches ``mean``
     (σ_eff is an exogenous scale w.r.t. m_θ — collapsing μ toward a_ref
     must not raise log_prob; see TODO_reference_policy_delta_exploration
-    .md §8), and frozen payloads are data by construction.  The policy σ
-    still receives gradients via its (1−λ) term and via the σ-floor
-    branch — the floor (TODO §5.1, required) makes low-drift phases
-    fall back to the policy's own scale instead of the ε floor.
+    .md §8), and frozen payloads are data by construction.
     """
     # Attribute-based activation check — NOT ctx.has_delta().  This helper
     # is inlined into exported policy files, where ``ctx`` may be an
     # instance of an OLDER SamplingContext class (spawned rollout workers
     # freeze their imports at start): the fields exist but methods may
     # not.  Never call methods on objects crossing that boundary.
+    c = getattr(ctx, "delta_factor", None) if ctx is not None else None
+    if not _ctx_nonzero(c):
+        return sigma
     delta = _delta_of(mean, ctx)
     if delta is None:
-        # λ ≠ 0 but no Δ source at all — the rollout-side record lost
+        # c ≠ 0 but no Δ source at all — the rollout-side record lost
         # its payload (stale buffer or pipeline bug).  Fail loud in
         # BOTH modes rather than silently degrading to plain σ.
-        dm = getattr(ctx, "delta_mix", None) if ctx is not None else None
-        if dm is not None and (
-            bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0
-        ):
-            raise ValueError(
-                "delta ctx carries delta_mix != 0 but neither `delta` "
-                "nor `reference_action` — the rollout-side sctx__ "
-                "payload record is missing (stale buffer or pipeline "
-                "bug)"
-            )
-        return sigma
-    c = _ctx_bcast(ctx.delta_factor, sigma)
-    lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * delta.detach()).pow(2).clamp_min(_DELTA_EPS ** 2)
-    delta2 = torch.maximum(delta2, sigma.pow(2))
-    mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
+        raise ValueError(
+            "delta ctx carries delta_factor != 0 but neither `delta` "
+            "nor `reference_action` — the rollout-side sctx__ "
+            "payload record is missing (stale buffer or pipeline "
+            "bug)"
+        )
+    out = torch.maximum(
+        sigma, (_ctx_bcast(c, sigma) * delta.detach()).abs(),
+    )
     if sigma_min is not None:
-        mixed = mixed.clamp(sigma_min, sigma_max)
-    return mixed
+        out = out.clamp(sigma_min, sigma_max)
+    return out
 
 __all__ = [
     "TruncatedNormalPolicy",
@@ -371,13 +361,13 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self, mean: torch.Tensor, sigma: torch.Tensor,
         ctx: Optional[SamplingContext],
     ) -> torch.Tensor:
-        """Apply the reference-delta σ mix (see ``delta_mix_sigma``).
+        """Apply the reference-delta σ floor (see ``delta_max_sigma``).
 
         ``sigma_min``/``sigma_max`` are picked up from the instance when
         present (bounded-σ subclasses) so the delta scale respects the
         same support as the policy σ.
         """
-        return delta_mix_sigma(
+        return delta_max_sigma(
             mean, sigma, ctx,
             getattr(self, "sigma_min", None),
             getattr(self, "sigma_max", None),
@@ -390,8 +380,8 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
         The base implementation composes ``_policy_params``,
         ``effective_sigma`` (ef scaling) and ``_delta_sigma``
-        (reference-delta mix).  Subclasses whose explore_factor acts on
-        a pre-mapping control coordinate (bounded-σ variants) override
+        (reference-delta σ floor).  Subclasses whose explore_factor acts
+        on a pre-mapping control coordinate (bounded-σ variants) override
         this method — recovering that coordinate from an already
         transformed σ is impossible in saturated regions — and must
         apply ``_delta_sigma`` on their own eff_sigma.
@@ -501,8 +491,8 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         (without explore scale) so it reflects the policy's own
         certainty.
 
-        ``ctx.reference_action`` + ``delta_factor``/``delta_mix`` engage
-        the reference-delta σ mix (see ``delta_mix_sigma``); inactive
+        ``ctx.reference_action``/``ctx.delta`` + ``delta_factor`` engage
+        the reference-delta σ floor (see ``delta_max_sigma``); inactive
         fields reduce to plain ef behavior bit-identically.
         """
         # Single pass yields mean and policy σ; effective σ is the same

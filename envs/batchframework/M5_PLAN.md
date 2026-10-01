@@ -46,7 +46,7 @@ jobs (512) ──chunk(B)──▶ DeviceRollouter
 |---|---|
 | `explore_factor` 标量 / `(B,)` | ✅ |
 | `explore_factor` callable | ❌ 拒绝（须 host 逐帧求值） |
-| reference / delta_mix≠0 / delta_mode | ❌ 拒绝（M5 范围外） |
+| reference / delta_factor≠0 / delta_mode | ❌ 拒绝（M5 范围外） |
 | per-agent 早停（KO 类） | ❌ 拒绝——同步定长模式只支持 env 级终止；standup 不触发 |
 | `stochastic=False` | ✅ deterministic_action 批量 |
 | 非 `WarpHumanoid21Simulator` 后端 env_bp | ❌ 拒绝（blueprint simulator 字段校验） |

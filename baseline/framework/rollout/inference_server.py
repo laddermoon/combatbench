@@ -10,7 +10,7 @@ Design contract
 ---------------
 
 1. **Whole-semantics remote.**  The server owns the complete
-   ``SamplingPolicy`` computation: reference-policy ensemble, delta-mix
+   ``SamplingPolicy`` computation: reference-policy ensemble, delta-floor
    context, and stochastic sampling.  Workers send only ``obs`` +
    per-request noise + the resolved ``explore_factor``; they receive the
    action, the log_prob, and the reference action (for ``sctx__`` extras).
@@ -184,7 +184,7 @@ class _SpecSession:
 
     __slots__ = (
         "spec_id", "inner_net", "inner_policy", "refs", "delta_factor",
-        "delta_mix", "delta_frozen", "obs_dim", "action_dim", "uses_ctx",
+        "delta_frozen", "obs_dim", "action_dim", "uses_ctx",
         "supports_uniform", "supports_delta", "supports_delta_out",
         "_ref_stack", "_ref_weights",
         "_graph", "_g_obs", "_g_noise", "_g_ef", "_g_out", "_graph_done",
@@ -245,7 +245,6 @@ class _SpecSession:
                     # take the serial act() path per request.
                     self.refs.append((float(w), pol))
         self.delta_factor = float(spec_dict.get("delta_factor", 0.0))
-        self.delta_mix = float(spec_dict.get("delta_mix", 0.0))
         self.delta_frozen = spec_dict.get("delta_mode") == "frozen"
         if self.delta_frozen and not self.supports_delta_out:
             raise TypeError(
@@ -264,7 +263,7 @@ class _SpecSession:
 
         # CUDA-graph state — the fixed-capacity padded batch gives a
         # *constant* input/output shape per spec, so the whole pipeline
-        # (ref ensemble → ctx σ-mix → stochastic sample) can be captured
+        # (ref ensemble → ctx σ floor → stochastic sample) can be captured
         # once and replayed with a single launch.  This both collapses
         # per-request Python dispatch overhead and hardens determinism:
         # a replayed graph can never deviate from its captured kernel
@@ -299,7 +298,7 @@ class _SpecSession:
         """Full sampling semantics on already-padded device tensors.
 
         Returns ``(action, log_prob, ref_action_or_None, delta_or_None)``.
-        ``delta`` is the per-frame Δ the σ-mix consumed — non-``None``
+        ``delta`` is the per-frame Δ the σ floor consumed — non-``None``
         only in frozen-delta mode, where ``ref_action`` is withheld from
         the reply (the two payloads are mutually exclusive on the wire).
         Kept free of CPU→GPU syncs so it is safe to run under CUDA-graph
@@ -312,7 +311,7 @@ class _SpecSession:
             # IMPORTANT: run the reference ensemble on the *padded*
             # batch.  GEMM kernel choice depends on batch shape — a
             # (B,·) slice forward would make ref values (and hence the
-            # delta-mixed σ) drift at the ULP level with batch
+            # delta-floored σ) drift at the ULP level with batch
             # composition, breaking the fixed-shape determinism
             # contract.
             if self._ref_stack is not None:
@@ -356,7 +355,6 @@ class _SpecSession:
                 ),
                 delta=delta_pad,
                 delta_factor=self.delta_factor,
-                delta_mix=self.delta_mix,
             )
             action_all, lp_all = self.inner_net.sample_action(
                 obs_t, ctx=ctx,

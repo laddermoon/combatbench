@@ -75,7 +75,6 @@ class _ServerFixture(unittest.TestCase):
             explore_factor=EF,
             reference=ReferenceSpec(policies=(cls._bp_ref,), weights=(1.0,)),
             delta_factor=5.0,
-            delta_mix=1.0,
         ).to_dict()
         cls._srv = InferenceServerHandle(
             device=cls.device, capacity=cls.capacity,
@@ -165,7 +164,6 @@ class TestFunctional(_ServerFixture):
         self.assertIn("explore_factor", extra)
         self.assertIn("sctx__reference_action", extra)
         self.assertIn("sctx__delta_factor", extra)
-        self.assertIn("sctx__delta_mix", extra)
         self.assertEqual(
             np.asarray(extra["sctx__reference_action"]).shape,
             (ACTION_DIM,),
@@ -280,7 +278,6 @@ class TestNumericParity(_ServerFixture):
             explore_factor=EF,
             reference_action=ref_act,
             delta_factor=5.0,
-            delta_mix=1.0,
         )
         with torch.no_grad():
             a_l, lp_l = inner._policy.sample_action(

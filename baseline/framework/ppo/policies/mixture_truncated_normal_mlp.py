@@ -46,7 +46,7 @@ from baseline.framework.ppo.policies.truncated_normal_mlp import (
     _LOG_STD_SAFE_MAX,
     _LOG_STD_SAFE_MIN,
     _SQRT_2,
-    delta_mix_sigma,
+    delta_max_sigma,
 )
 
 __all__ = [
@@ -361,13 +361,13 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         self, mean: torch.Tensor, sigma: torch.Tensor,
         ctx: Optional[SamplingContext],
     ) -> torch.Tensor:
-        """Per-component reference-delta σ mix: Δ_k = μ_k − a_ref.
+        """Per-component reference-delta σ floor: Δ_k = μ_k − a_ref.
 
         ``sigma`` is (B, K, D); ``a_ref`` broadcasts from (D,) or
         (B, D).  Bounded subclasses get their [σ_min, σ_max] support
         re-applied via the getattr'd bounds.
         """
-        return delta_mix_sigma(
+        return delta_max_sigma(
             mean, sigma, ctx,
             getattr(self, "sigma_min", None),
             getattr(self, "sigma_max", None),
@@ -450,8 +450,8 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         PPO importance ratio is correct; U uses policy σ (e=0) and is
         action-independent.
 
-        ``ctx.reference_action`` + ``delta_factor``/``delta_mix`` engage
-        the per-component reference-delta σ mix (see ``_delta_sigma``);
+        ``ctx.reference_action``/``ctx.delta`` + ``delta_factor`` engage
+        the per-component reference-delta σ floor (see ``_delta_sigma``);
         inactive fields reduce to plain ef behavior bit-identically.
         """
         explore_factor = (

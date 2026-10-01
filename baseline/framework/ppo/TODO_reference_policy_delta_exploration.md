@@ -373,9 +373,9 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
 
 ### 13.2 已确定语义
 
-- **`reference_action` 方案（非 frozen Δ）**：ctx 携带历史策略在当前 obs 上加权后的确定性动作；策略回放时自行计算动态 Δ——PPO 比值在相同**外部规则**下成立（c/λ/ef/ref 固定，θ 变化）。
+- **`reference_action` 方案（非 frozen Δ）**：ctx 携带历史策略在当前 obs 上加权后的确定性动作；策略回放时自行计算动态 Δ——PPO 比值在相同**外部规则**下成立（c/ef/ref 固定，θ 变化）。
 - **动作空间加权，非参数 EMA**：`ReferenceSpec` 携带 K 代 policy blueprint + 归一权重；worker wrap 时 build 一次、每帧 `Σw·act(obs)`。框架零跨 update 状态——历史策略选取与权重完全由实验侧决定。
-- **c/λ 静态**：`delta_factor`/`delta_mix` 是 spec 级静态值，逐帧记录只为回放完整性（后续如需逐帧调度再升 EfSpec 型）。
+- **c 静态**：`delta_factor` 是 spec 级静态值，逐帧记录只为回放完整性（后续如需逐帧调度再升 EfSpec 型）。
 - **ctx 原样记录**：记录值 == 传给 `sample()` 的值，中间层不解释字段。逐帧值进 extras（`sctx__<field>` 扁平键，复用 `extras__<agent>__<key>` npz 管线）；`explore_factor` 同时保留旧键兼容既有消费者。
 - **记录管线**：`extras → Episode.sampling_contexts（派生 property，无新字段）→ Trajectory.sampling_ctx → PPOBuffer.ctx_fields → _ctx(sl) minibatch 重建`。跨 trajectory ctx schema 不一致 → Buffer 显式 raise（不静默补零）。
 - **eval 路径不消费 spec**：`stochastic=False` 不包 wrapper，参考策略永不构建。
@@ -401,37 +401,36 @@ eval job 是 `stochastic=False`，`a_ref` 应当无关。要确保 wrapper 像 `
   `exp_standup_step_v3.py`（活跃）；`todo/` ×11 + `archive/` ×2（parked，
   机械迁移保持可编译）。
 - `dump_capture._export_stochastic_policy` 改读 `job.sampling_*.explore_factor`；
-  spec 携带 `reference`/`delta_factor`/`delta_mix` 时显式
+  spec 携带 `reference`/`delta_factor` 时显式
   `NotImplementedError`——dump 回放 wrapper 只能烘焙 ef 调度，不静默丢机制。
 - `rollout/__init__.py` 导出 `SamplingSpec`/`ReferenceSpec`/`SamplingPolicy`。
 
 ### 13.5 待办（阶段 2）
 
-- 策略消费 `ctx.reference_action` + `delta_factor` + `delta_mix`：σ_eff² = (1−λ)·σ_policy² + λ·(c·|m_θ−a_ref|)² 形式的尺度混合（各策略族按自身 σ 语义适配，bounded 变体需先转回 σ 域再混）。
+- 策略消费 `ctx.reference_action`/`ctx.delta` + `delta_factor`：`σ_eff = max(σ_policy,ef, c·|Δ|)` 逐元素取 max（各策略族按自身 σ 语义适配，bounded 变体在 σ 域取 max 后 clamp 回 [σ_min, σ_max]）。
 - 实验侧装配 `SamplingSpec`（历史 export 目录 → `ReferenceSpec`）。
-- `delta`（frozen）备选模式未实现——如需对照实验再加字段。
+- `delta`（frozen）模式已实现：采样层算好动作级 Δ 作为 ctx 输入。
 
-## 14. S3 策略响应设计草案（reference_action + delta_mix 消费）
+## 14. S3 策略响应设计（reference_action + delta_factor 消费）
 
-> 整理自 2026-10 讨论；待用户拍板后实施。
+> 整理自 2026-10 讨论；2026-12 简化为 max 语义（弃用 λ 混合）。
 
 ### 14.1 已锁定语义
 
 - `a_ref` = wrapper 在 rollout 时算好的历史策略加权确定性动作（动作空间集成，冻结数据，逐帧记录）
-- `Δ_θ(s) = m_θ(s) − a_ref` 由策略在 sample/evaluate 时用**当前参数**重算（动态 Δ，非 rollout 冻结）
-- 梯度：`a_ref` 常数；`m_θ` 完整求导不 detach（数学基线；detach 留作对照变体）
-- `σ_eff² = (1−λ)·σ_policy,ef² + λ·(c·|Δ|)² + ε²`；λ=0 必须退回 ef-only 行为
-- 复合顺序：族内先处理 ef → σ² 域混入 Δ 项
+- `Δ_θ(s) = m_θ(s) − a_ref`（dynamic）或 `ctx.delta` 回放（frozen）
+- 梯度：`a_ref`/`delta` 是数据；dynamic 的 `m_θ` 一侧 detach——σ_eff 对 m_θ 外生（防 μ 坍缩作弊通道）
+- `σ_eff = max(σ_policy,ef, c·|Δ|)` 逐元素；c=0 必须退回 ef-only 行为
+- 复合顺序：族内先处理 ef → σ 域与 c·|Δ| 取 max
 
 ### 14.2 决策（已定）
 
-1. **bounded 混合位置 = σ² 域 + clamp**：`σ_eff = clip(√((1−λ)σ²+λ(cΔ)²+ε²), σ_min, σ_max)`，c/λ 跨族量纲统一
+1. **组合规则 = 逐元素 max（非 λ 混合）**：Δ 是探索下限——只能抬宽、不能压窄；Δ→0 自然退化，无显式 ε 下界。bounded：`clip(max(σ, c·|Δ|), σ_min, σ_max)`，c 跨族量纲统一
 2. **MoG Δ 粒度 = per-component `(K,D)`**：`Δ_k = μ_k(s) − a_ref`，对齐"探索按分量"原则
-3. **ε = 固定 ε² 下界**（量级取各族 σ_min²）
-4. **smoke 验收**：λ=0 bit-identical（对照 ef-only）；λ>0 检查 `eff_std_mean` 随 ‖Δ‖ 单调 + ratio 守门 + 无 NaN
+3. **smoke 验收**：c=0 bit-identical（对照 ef-only）；c>0 检查 `eff_std_mean` 随 ‖Δ‖ 单调 + ratio 守门 + 无 NaN
 
 ### 14.3 代码落点
 
 - single 族：`effective_sigma`/`_distribution_params` 单缝，ef→ctx 参数切换
 - MoG 族：`_explored_sigma` 单缝；μ_k/π 在 `_forward_raw` 已有
-- 10 个 export 模板同步；λ=0 路径 bit-identical 为验收基准
+- 10 个 export 模板同步；c=0 路径 bit-identical 为验收基准

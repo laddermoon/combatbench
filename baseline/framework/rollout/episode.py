@@ -365,7 +365,7 @@ class Episode:
         Derived grouped view of the ctx values passed to
         ``policy.sample()`` at each step: ``explore_factor`` (from the
         legacy extras key) plus every ``sctx__<field>`` extras key
-        (e.g. ``reference_action``, ``delta_factor``, ``delta_mix``).
+        (e.g. ``reference_action``, ``delta_factor``, ``delta``).
         Trainers rebuild minibatch ctx objects from these arrays so
         log_prob recomputation replays the same exogenous inputs.
         Empty dict when no ctx was recorded.

@@ -27,7 +27,7 @@ class StochasticPolicy(ABC):
     ``sample()`` returns a stochastically sampled action.  The optional
     ``ctx`` (:class:`SamplingContext`) carries the per-frame sampling
     inputs — ``explore_factor``, ``reference_action``, ``delta_factor``,
-    ``delta_mix`` — that the wrapper resolved for this step.  ``None``
+    ``delta`` — that the wrapper resolved for this step.  ``None``
     means neutral legacy sampling (equivalent to ``explore_factor=0``);
     the mapping from ctx fields to the sampling distribution is
     policy-defined.

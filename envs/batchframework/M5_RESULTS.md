@@ -22,8 +22,7 @@ Episode vs `DeviceRollouter.collect` 产出（同 jobs：seed 100-103，u1500 �
 为当前格式——旧导出 pre-ctx API 无法跑 CPU 采样路径，属格式过期而非后端差异）。
 
 **结构逐项一致**：num_frames=200、终止记录 `(('timeout',200),)` ×2 agents、
-obs (200,96)、act (200,21)、extras 键 `{log_prob, explore_factor, sctx__delta_factor,
-sctx__delta_mix}`、observer 9 字段、final_observation (96,)、episode_options 透传、
+obs (200,96)、act (200,21)、extras 键 `{log_prob, explore_factor, sctx__delta_factor}`、observer 9 字段、final_observation (96,)、episode_options 透传、
 explore_factors (T,)。唯一有意差异：`episode_metrics["backend"]="warp-fp32"`
 （溯源标记，CPU 侧无此键）。
 
@@ -38,7 +37,7 @@ explore_factors (T,)。唯一有意差异：`episode_metrics["backend"]="warp-fp
 两侧误差同量级（fp32 噪声）→ 采样分布 = 训练分布，无 batching/clipping/ctx 串扰。
 
 **管线消费**：`StandupFloor04.build_trajectories` 产出 8 trajs（4 ep × 2 agents），
-ctx schema `{delta_factor, delta_mix, explore_factor}` 全字段齐全，
+ctx schema `{delta_factor, explore_factor}` 全字段齐全，
 `PPOBuffer` 构建无异常且 buffer.log_probs 与记录值差 <1.3e-5；
 `r_potential` 通道提取正常（is_terminated=False → `V(final_obs)` bootstrap 路径）。
 
@@ -56,7 +55,7 @@ ctx schema `{delta_factor, delta_mix, explore_factor}` 全字段齐全，
 - 溯源：`[collector] device ...` 启动行 + `config.json["collector"]` +
   每 update `RAW_STATS.timing.collector`（reset/policy/step/assemble/n_waves）。
 - 不支持即拒绝：非 file: policy bp、混合 env/policy bp、混合 stochastic、
-  callable ef、reference ensemble、delta_mix≠0、未知 episode_options 键、
+  callable ef、reference ensemble、delta_factor≠0、未知 episode_options 键、
   注册表非 NATIVE 插件/observer（PENDING/UNSUPPORTED 按 UNSUPPORTED 拒绝）。
 
 ## 4. W4：完整 512-ep update —— 技术闭环 ✅，性能结论 ⚠️

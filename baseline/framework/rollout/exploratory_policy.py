@@ -120,19 +120,19 @@ class SamplingPolicy(Policy):
                 f"spec must be a SamplingSpec; got {type(spec).__name__}"
             )
         # Intent-vs-capability handshake: a spec that demands the
-        # reference-delta σ mix must not wrap a policy that lacks it —
+        # reference-delta σ floor must not wrap a policy that lacks it —
         # otherwise the mechanism silently degrades to plain ef sampling
         # and the run reports misleading metrics.  Pre-ctx exports and
         # pre-tanh cells fail here at wrap time, not mid-rollout.
         delta_demanded = (
-            spec.reference is not None and float(spec.delta_mix) != 0.0
+            spec.reference is not None and float(spec.delta_factor) != 0.0
         )
         if delta_demanded and not getattr(
             inner, "SUPPORTS_REFERENCE_DELTA", False
         ):
             raise TypeError(
-                f"SamplingSpec demands the reference-delta σ mix "
-                f"(reference set, delta_mix={spec.delta_mix}) but "
+                f"SamplingSpec demands the reference-delta σ floor "
+                f"(reference set, delta_factor={spec.delta_factor}) but "
                 f"{type(inner).__name__} does not declare "
                 f"SUPPORTS_REFERENCE_DELTA — export the policy with "
                 f"current code or pick a supported policy cell"
@@ -197,7 +197,7 @@ class SamplingPolicy(Policy):
         # supplies a_ref, the inner policy supplies μ₀ via its
         # deterministic act().  It enters the ctx as an input field
         # (`delta`, mutually exclusive with `reference_action`), is
-        # consumed verbatim by the σ-mix, and flows back out through
+        # consumed verbatim by the σ floor, and flows back out through
         # record_fields() → sctx__delta for frozen replay at train.
         if self._spec.delta_mode == "frozen" and ref is not None:
             mu0, _ = self.inner.act(observation)
@@ -208,14 +208,12 @@ class SamplingPolicy(Policy):
                 explore_factor=ef,
                 reference_action=None,
                 delta_factor=float(self._spec.delta_factor),
-                delta_mix=float(self._spec.delta_mix),
                 delta=delta,
             )
         return SamplingContext(
             explore_factor=ef,
             reference_action=ref,
             delta_factor=float(self._spec.delta_factor),
-            delta_mix=float(self._spec.delta_mix),
         )
 
     def act(

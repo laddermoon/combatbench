@@ -94,27 +94,27 @@ class TestPostUpdateContract:
         assert len(e._ref_history) == 3
 
 
-class TestDeltaMixValidation:
-    def test_delta_mix_requires_horizon(self, tmp_path):
+class TestDeltaValidation:
+    def test_delta_factor_requires_horizon(self, tmp_path):
         with pytest.raises(ValueError, match="reference_horizon"):
-            _exp(tmp_path, delta_mix="1.0")
+            _exp(tmp_path, delta_factor="1.0")
 
-    def test_delta_mix_with_horizon_ok(self, tmp_path):
-        e = _exp(tmp_path, delta_mix="1.0", reference_horizon="10")
-        assert e.delta_mix == 1.0
+    def test_delta_factor_with_horizon_ok(self, tmp_path):
+        e = _exp(tmp_path, delta_factor="1.0", reference_horizon="10")
+        assert e.delta_factor == 1.0
         assert e.reference_horizon == 10
 
 
 class TestSamplingSpecAssembly:
     def test_warmup_no_history_plain_spec(self, tmp_path):
-        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+        e = _exp(tmp_path, delta_factor="5.0",
                  reference_horizon="10")
         spec = e._sampling_spec()
         assert spec.reference is None
-        assert spec.delta_mix == 0.0
+        assert spec.delta_factor == 0.0
 
     def test_delta_spec_uniform_weights(self, tmp_path):
-        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+        e = _exp(tmp_path, delta_factor="5.0",
                  reference_horizon="10")
         # Partial window (9 strictly-past < H=10): still plain spec —
         # the warmup gate keeps Δ semantics uniform at n=H.
@@ -125,7 +125,7 @@ class TestSamplingSpecAssembly:
             )
         spec = e._sampling_spec()
         assert spec.reference is None
-        assert spec.delta_mix == 0.0
+        assert spec.delta_factor == 0.0
         # One more export completes the window: u11 is the current
         # rollout policy (Gen0, excluded); the ensemble is u1..u10.
         e.post_update(
@@ -140,12 +140,11 @@ class TestSamplingSpecAssembly:
         assert spec.reference.weights == pytest.approx(
             tuple([0.1] * 10))
         assert spec.delta_factor == 5.0
-        assert spec.delta_mix == 1.0
 
     def test_self_only_history_plain_spec(self, tmp_path):
         """A single history member is the current policy itself —
         nothing strictly-past exists, so delta stays off (plain spec)."""
-        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+        e = _exp(tmp_path, delta_factor="5.0",
                  reference_horizon="10")
         e.post_update(
             SimpleNamespace(), 1,
@@ -153,7 +152,7 @@ class TestSamplingSpecAssembly:
         )
         spec = e._sampling_spec()
         assert spec.reference is None
-        assert spec.delta_mix == 0.0
+        assert spec.delta_factor == 0.0
 
     def test_frozen_ensemble_excludes_self(self, tmp_path):
         """Frozen mode: ensemble is also strictly-past — Gen0 already
@@ -161,7 +160,7 @@ class TestSamplingSpecAssembly:
         a self member would only bias a_ref toward μ₀ (Δ diluted by
         a mechanically-zero member).  Same full-window warmup gate as
         dynamic: activates at update H+2."""
-        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+        e = _exp(tmp_path, delta_factor="5.0",
                  reference_horizon="10", delta_mode="frozen")
         for u in range(1, 12):
             e.post_update(
@@ -181,7 +180,7 @@ class TestSamplingSpecAssembly:
         """Frozen mode with a single history member (= the current
         policy) finds no strictly-past version — the mechanism stays
         off (plain spec) exactly like dynamic warmup."""
-        e = _exp(tmp_path, delta_mix="1.0", delta_factor="5.0",
+        e = _exp(tmp_path, delta_factor="5.0",
                  reference_horizon="10", delta_mode="frozen")
         e.post_update(
             SimpleNamespace(), 1,
@@ -189,15 +188,15 @@ class TestSamplingSpecAssembly:
         )
         spec = e._sampling_spec()
         assert spec.reference is None
-        assert spec.delta_mix == 0.0
+        assert spec.delta_factor == 0.0
 
-    def test_frozen_requires_delta_mix(self, tmp_path):
-        with pytest.raises(ValueError, match="delta_mix"):
+    def test_frozen_requires_delta_factor(self, tmp_path):
+        with pytest.raises(ValueError, match="delta_factor"):
             _exp(tmp_path, delta_mode="frozen")
 
     def test_delta_mode_invalid_value(self, tmp_path):
         with pytest.raises(ValueError, match="delta_mode"):
-            _exp(tmp_path, delta_mix="1.0", reference_horizon="10",
+            _exp(tmp_path, delta_factor="1.0", reference_horizon="10",
                  delta_mode="banana")
 
     def test_delta_off_plain_spec_despite_history(self, tmp_path):
@@ -207,7 +206,7 @@ class TestSamplingSpecAssembly:
             artifacts=UpdateArtifacts(policy_bp=_bp(tmp_path, "u1")),
         )
         spec = e._sampling_spec()
-        assert spec.reference is None and spec.delta_mix == 0.0
+        assert spec.reference is None and spec.delta_factor == 0.0
 
 
 class TestRefHistoryPersistence:
@@ -226,7 +225,7 @@ class TestRefHistoryPersistence:
         ]
         # Restored chain still assembles a valid spec.
         spec = e2._sampling_spec()
-        assert spec.reference is not None or e2.delta_mix == 0.0
+        assert spec.reference is not None or e2.delta_factor == 0.0
 
     def test_state_merges_with_subclass(self, tmp_path):
         """Subclass state() dicts merging super() keep ref_history."""

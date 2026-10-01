@@ -147,7 +147,7 @@ class StateBoundedStdTruncatedNormalPolicy(BoundedStdTruncatedNormalPolicy):
         v is already (B, D): a scalar explore_factor broadcasts over
         batch and dims; a (B,) tensor yields per-frame (B, D) σ — same
         broadcast contract as the shared variant.  The reference-delta
-        mix runs in σ² domain after the bounded map and is re-clamped.
+        σ floor runs elementwise after the bounded map and is re-clamped.
         """
         ef = ctx.explore_factor if ctx is not None else 0.0
         self._check_ei(ef)

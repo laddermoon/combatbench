@@ -1,15 +1,15 @@
-"""Reference-delta σ mix (S3) — per-cell semantics + export parity.
+"""Reference-delta σ floor (S3) — per-cell semantics + export parity.
 
 The mechanism: when ``SamplingContext`` carries ``reference_action``
 (dynamic mode — Δ = m_θ − a_ref recomputed at evaluate) or ``delta``
 (frozen mode — the rollout-time Δ replayed verbatim) with
-``delta_mix = λ > 0``, the effective scale becomes
+``delta_factor = c ≠ 0``, the effective scale becomes
 
-    σ_eff² = (1−λ)·σ_ef² + λ·max((c·|Δ|)², σ_ef², ε²)
+    σ_eff = max(σ_ef, c·|Δ|)
 
 applied per-component for mixture cells and clamped to
 ``[sigma_min, sigma_max]`` for bounded cells.  An inactive ctx (no
-reference/payload or λ = 0 everywhere) must leave σ bit-identical.
+reference/payload or c = 0 everywhere) must leave σ bit-identical.
 """
 from __future__ import annotations
 
@@ -22,8 +22,7 @@ import torch
 from baseline.framework.ppo.sampling_context import SamplingContext
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
     TruncatedNormalPolicy,
-    _DELTA_EPS,
-    delta_mix_sigma,
+    delta_max_sigma,
 )
 from baseline.framework.ppo.policies.state_truncated_normal_mlp import (
     StateTruncatedNormalPolicy,
@@ -71,12 +70,11 @@ def _make(cls, seed_net: int = 0):
     return cls(OBS_DIM, ACT_DIM, HID)
 
 
-def _ctx(ef=0.0, ref=None, c=10.0, lam=0.0, delta=None):
+def _ctx(ef=0.0, ref=None, c=0.0, delta=None):
     return SamplingContext(
         explore_factor=ef,
         reference_action=ref,
         delta_factor=c,
-        delta_mix=lam,
         delta=delta,
     )
 
@@ -87,7 +85,7 @@ def _bounds(p):
 
 
 class TestInactivePath(unittest.TestCase):
-    """λ=0 or missing reference ⇒ σ and samples stay bit-identical."""
+    """c=0 or missing reference ⇒ σ and samples stay bit-identical."""
 
     def setUp(self):
         torch.manual_seed(0)
@@ -99,14 +97,14 @@ class TestInactivePath(unittest.TestCase):
             with self.subTest(cell=name):
                 p = _make(cls)
                 _, s0 = p.forward(self.obs, ctx=_ctx(ef=0.4))
-                _, s_lam0 = p.forward(self.obs, ctx=_ctx(
-                    ef=0.4, ref=self.ref, c=10.0, lam=0.0))
-                self.assertTrue(torch.equal(s0, s_lam0))
-                # λ≠0 + no payload = malformed ctx (the lost-record
+                _, s_c0 = p.forward(self.obs, ctx=_ctx(
+                    ef=0.4, ref=self.ref, c=0.0))
+                self.assertTrue(torch.equal(s0, s_c0))
+                # c≠0 + no payload = malformed ctx (the lost-record
                 # signature) — raises rather than silently sampling.
                 with self.assertRaises(ValueError):
                     p.forward(self.obs, ctx=_ctx(
-                        ef=0.4, ref=None, c=10.0, lam=0.7))
+                        ef=0.4, ref=None, c=10.0))
 
     def test_sample_bit_identical(self):
         for name, cls in ALL_CLASSES.items():
@@ -116,16 +114,16 @@ class TestInactivePath(unittest.TestCase):
                 a0, _ = p.sample_action(self.obs, ctx=_ctx(ef=0.4))
                 p.reset(11)
                 a1, _ = p.sample_action(self.obs, ctx=_ctx(
-                    ef=0.4, ref=self.ref, c=10.0, lam=0.0))
+                    ef=0.4, ref=self.ref, c=0.0))
                 self.assertTrue(torch.equal(a0, a1))
                 p.reset(11)
                 with self.assertRaises(ValueError):
                     p.sample_action(self.obs, ctx=_ctx(
-                        ef=0.4, ref=None, c=10.0, lam=0.7))
+                        ef=0.4, ref=None, c=10.0))
 
 
 class TestFormula(unittest.TestCase):
-    """σ²-domain mix formula, single-component cells end to end."""
+    """Element-wise max formula, single-component cells end to end."""
 
     def setUp(self):
         torch.manual_seed(0)
@@ -133,20 +131,16 @@ class TestFormula(unittest.TestCase):
         self.ref = torch.randn(ACT_DIM) * 0.5
 
     def test_formula(self):
-        lam, c = 0.7, 10.0
+        c = 10.0
         for name, cls in SINGLE_CLASSES.items():
             with self.subTest(cell=name):
                 p = _make(cls)
                 mean0, s_ef = p.forward(self.obs, ctx=_ctx(ef=0.2))
                 mean1, s_on = p.forward(self.obs, ctx=_ctx(
-                    ef=0.2, ref=self.ref, c=c, lam=lam))
+                    ef=0.2, ref=self.ref, c=c))
                 self.assertTrue(torch.equal(mean0, mean1))
-                delta2 = (c * (mean0 - self.ref)).pow(2)
-                delta2 = delta2.clamp_min(_DELTA_EPS ** 2)
-                delta2 = torch.maximum(delta2, s_ef.pow(2))
-                exp = torch.sqrt(
-                    (1.0 - lam) * s_ef.pow(2) + lam * delta2
-                )
+                exp = torch.maximum(
+                    s_ef, (c * (mean0 - self.ref)).abs())
                 smin, smax = _bounds(p)
                 if smin is not None:
                     exp = exp.clamp(smin, smax)
@@ -158,21 +152,21 @@ class TestFormula(unittest.TestCase):
         ref_d = torch.randn(ACT_DIM)
         ref_b = ref_d.unsqueeze(0).expand(self.obs.shape[0], -1).contiguous()
         _, s_d = p.forward(
-            self.obs, ctx=_ctx(ref=ref_d, c=5.0, lam=0.5))
+            self.obs, ctx=_ctx(ref=ref_d, c=5.0))
         _, s_b = p.forward(
-            self.obs, ctx=_ctx(ref=ref_b, c=5.0, lam=0.5))
+            self.obs, ctx=_ctx(ref=ref_b, c=5.0))
         self.assertTrue(torch.equal(s_d, s_b))
 
-    def test_eps_floor(self):
-        """λ=1 with Δ=0 falls back to the policy's own σ — the σ floor
-        (max((cΔ)², σ²)) dominates the ε floor in the low-drift regime."""
+    def test_zero_delta_falls_back(self):
+        """Δ=0 → c·|Δ|=0 → max(σ, 0) = σ: the delta floor is a no-op
+        in the zero-drift regime."""
         for name, cls in SINGLE_CLASSES.items():
             with self.subTest(cell=name):
                 p = _make(cls)
                 mean, _ = p.forward(self.obs)
                 _, s_ef = p.forward(self.obs, ctx=_ctx(ef=0.0))
                 _, s = p.forward(self.obs, ctx=_ctx(
-                    ref=mean.detach(), c=10.0, lam=1.0))
+                    ref=mean.detach(), c=10.0))
                 torch.testing.assert_close(s, s_ef, rtol=0, atol=0)
 
     def test_bounded_clamp(self):
@@ -183,7 +177,7 @@ class TestFormula(unittest.TestCase):
                 mean, _ = p.forward(self.obs)
                 ref = mean.detach() - 1e4
                 _, s = p.forward(self.obs, ctx=_ctx(
-                    ref=ref, c=10.0, lam=1.0))
+                    ref=ref, c=10.0))
                 torch.testing.assert_close(
                     s, torch.full_like(s, p.sigma_max), rtol=0, atol=0)
 
@@ -197,9 +191,9 @@ class TestMoG(unittest.TestCase):
         mean[:, 0, :] = 1.0          # only head 0 is far from ref
         sigma = torch.full((2, 3, ACT_DIM), 0.5)
         ref = torch.zeros(ACT_DIM)
-        out = delta_mix_sigma(mean, sigma, _ctx(ref=ref, c=10.0, lam=1.0))
+        out = delta_max_sigma(mean, sigma, _ctx(ref=ref, c=10.0))
         self.assertEqual(out.shape, sigma.shape)
-        # head 0: max(10, σ) = 10 ; heads 1/2: max(ε, σ) = σ floor
+        # head 0: max(σ, 10·|Δ|=10) = 10 ; heads 1/2: max(σ, 0) = σ
         torch.testing.assert_close(
             out[:, 0], torch.full_like(out[:, 0], 10.0))
         torch.testing.assert_close(
@@ -214,7 +208,7 @@ class TestMoG(unittest.TestCase):
                 sigma = p._explored_sigma(raw, 0.0)
                 ref = mean[0, 0].detach()       # ref at row-0 head-0
                 out = p._delta_sigma(mean, sigma, _ctx(
-                    ref=ref, c=10.0, lam=0.9))
+                    ref=ref, c=10.0))
                 # row 0 head 0 sits at the reference → smaller scale
                 self.assertLess(
                     out[0, 0].mean().item(),
@@ -244,27 +238,27 @@ class TestFrozenMode(unittest.TestCase):
         for name, cls in SINGLE_CLASSES.items():
             with self.subTest(cell=name):
                 p = _make(cls)
-                lam, c = 1.0, 5.0
+                c = 5.0
                 # Rollout side (frozen): wrapper-computed Δ enters ctx.
                 delta = (
                     p.deterministic_action(self.obs) - self.ref
                 ).detach().numpy()
                 _, s_roll = p.forward(self.obs, ctx=_ctx(
-                    c=c, lam=lam, delta=delta))
+                    c=c, delta=delta))
                 # Dynamic reference: same Δ recomputed as m − a_ref.
                 _, s_dyn = p.forward(self.obs, ctx=_ctx(
-                    ref=self.ref, c=c, lam=lam))
+                    ref=self.ref, c=c))
                 torch.testing.assert_close(s_roll, s_dyn, rtol=0, atol=0)
                 # Replay side: the same recorded payload, verbatim.
                 _, s_rep = p.forward(self.obs, ctx=_ctx(
-                    c=c, lam=lam, delta=delta))
+                    c=c, delta=delta))
                 torch.testing.assert_close(s_rep, s_roll, rtol=0, atol=0)
 
     def test_frozen_sigma_independent_of_theta(self):
         """Perturbing the mean head must not move frozen-mode σ_eff —
         the value-level σ(m) coupling is the failure this mode removes."""
         p = _make(TruncatedNormalPolicy)
-        ctx = _ctx(c=5.0, lam=1.0, delta=np.full(ACT_DIM, 0.1, dtype=np.float32))
+        ctx = _ctx(c=5.0, delta=np.full(ACT_DIM, 0.1, dtype=np.float32))
         _, s_before = p.forward(self.obs, ctx=ctx)
         with torch.no_grad():
             for w in p.net.parameters():
@@ -279,19 +273,19 @@ class TestFrozenMode(unittest.TestCase):
         p = _make(TruncatedNormalPolicy)
         delta = np.full(ACT_DIM, 0.1, dtype=np.float32)
         _, s_frozen = p.forward(self.obs, ctx=_ctx(
-            c=5.0, lam=1.0, delta=delta))
+            c=5.0, delta=delta))
         _, s_both = p.forward(self.obs, ctx=_ctx(
-            ref=self.ref, c=5.0, lam=1.0, delta=delta))
+            ref=self.ref, c=5.0, delta=delta))
         torch.testing.assert_close(s_both, s_frozen, rtol=0, atol=0)
 
     def test_frozen_missing_payload_raises(self):
-        """λ ≠ 0 + neither payload nor ref = malformed ctx — fail loud
+        """c ≠ 0 + neither payload nor ref = malformed ctx — fail loud
         in both modes rather than silently degrade to plain σ (the
-        delta_mix value is the activation invariant; no mode flag)."""
+        delta_factor value is the activation invariant; no mode flag)."""
         for name, cls in SINGLE_CLASSES.items():
             with self.subTest(cell=name):
                 p = _make(cls)
-                ctx = _ctx(ref=None, c=5.0, lam=1.0)
+                ctx = _ctx(ref=None, c=5.0)
                 with self.assertRaises(ValueError):
                     p.forward(self.obs, ctx=ctx)
 
@@ -315,7 +309,6 @@ class TestFrozenMode(unittest.TestCase):
                     policies=(ref_bp,), weights=(1.0,),
                 ),
                 delta_factor=5.0,
-                delta_mix=1.0,
                 delta_mode="frozen",
             )
             wrapper = SamplingPolicy(p, spec)
@@ -340,12 +333,12 @@ class TestFrozenMode(unittest.TestCase):
         ctx carries `delta`, dynamic carries `reference_action`), not
         in a recorder-side skip rule."""
         delta = np.full(ACT_DIM, 0.1, dtype=np.float32)
-        ctx = _ctx(c=5.0, lam=1.0, delta=delta)
+        ctx = _ctx(c=5.0, delta=delta)
         fields = ctx.record_fields()
         self.assertNotIn("reference_action", fields)
         self.assertNotIn("delta_frozen", fields)
         np.testing.assert_array_equal(fields["delta"], delta)
-        ctx_dyn = _ctx(ref=self.ref, c=5.0, lam=1.0)
+        ctx_dyn = _ctx(ref=self.ref, c=5.0)
         fields_dyn = ctx_dyn.record_fields()
         self.assertIn("reference_action", fields_dyn)
         self.assertNotIn("delta", fields_dyn)
@@ -358,7 +351,7 @@ class TestFrozenMode(unittest.TestCase):
                 p = _make(cls)
                 k = p.num_components
                 delta = np.full(ACT_DIM, 0.05, dtype=np.float32)
-                ctx = _ctx(c=5.0, lam=1.0, delta=delta)
+                ctx = _ctx(c=5.0, delta=delta)
                 _, mean, raw = p._forward_raw(self.obs)
                 sigma = p._explored_sigma(raw, 0.0)
                 out = p._delta_sigma(mean, sigma, ctx)
@@ -377,7 +370,7 @@ class TestSampleEvalConsistency(unittest.TestCase):
         for name, cls in ALL_CLASSES.items():
             with self.subTest(cell=name):
                 p = _make(cls)
-                ctx = _ctx(ef=0.3, ref=self.ref, c=8.0, lam=0.6)
+                ctx = _ctx(ef=0.3, ref=self.ref, c=8.0)
                 a, lp_sample = p.sample_action(self.obs, ctx=ctx)
                 ev = p.evaluate_actions(self.obs, a, ctx=ctx)
                 torch.testing.assert_close(
@@ -385,45 +378,45 @@ class TestSampleEvalConsistency(unittest.TestCase):
 
 
 class TestGradient(unittest.TestCase):
-    """σ_eff is exogenous w.r.t. m_θ: the Δ term detaches ``mean``, so
-    the only live σ path is the policy σ via its (1−λ) coefficient.
+    """σ_eff is exogenous w.r.t. m_θ: the Δ term detaches ``mean``.
     Detaching closes the cheat channel where PPO raises log_prob by
-    collapsing μ toward a_ref instead of improving actions."""
+    collapsing μ toward a_ref instead of improving actions.  σ keeps
+    receiving gradients exactly in the dims where it wins the max."""
 
     def test_delta_detached_from_mean(self):
         torch.manual_seed(0)
         p = _make(TruncatedNormalPolicy)
         obs = torch.randn(4, OBS_DIM)
-        ctx = _ctx(ref=torch.randn(ACT_DIM), c=10.0, lam=0.5)
+        ctx = _ctx(ref=torch.randn(ACT_DIM) * 0.3, c=0.5)
         _, sigma = p.forward(obs, ctx=ctx)
         sigma.sum().backward()
         g_mean = p.net[0].weight.grad
         self.assertTrue(g_mean is None or g_mean.abs().sum().item() == 0.0)
         self.assertGreater(p.log_std.grad.abs().sum().item(), 0.0)
 
-    def test_lam1_sigma_path_via_floor(self):
-        """λ=1 + σ floor: dims where c|Δ| < σ fall back to the policy σ —
-        the σ head keeps receiving gradients in the low-drift regime
-        (the floor is what keeps σ trainable under λ=1)."""
+    def test_low_delta_sigma_path_alive(self):
+        """Dims where c|Δ| < σ keep the σ gradient — the floor only
+        widens where drift dominates, so σ stays trainable in the
+        low-drift regime."""
         torch.manual_seed(0)
         p = _make(TruncatedNormalPolicy)
         obs = torch.randn(4, OBS_DIM)
-        # Ref ON the mean → Δ≈0 → floor region → σ_eff = σ_θ.
+        # Ref ON the mean → Δ≈0 → σ wins the max everywhere → σ_eff = σ_θ.
         mean, _ = p.forward(obs)
-        ctx = _ctx(ref=mean[0].detach(), c=10.0, lam=1.0)
+        ctx = _ctx(ref=mean[0].detach(), c=10.0)
         _, sigma = p.forward(obs, ctx=ctx)
         sigma.sum().backward()
         self.assertGreater(p.log_std.grad.abs().sum().item(), 0.0)
 
-    def test_lam1_delta_region_kills_sigma_path(self):
-        """λ=1 with a dominating Δ keeps the σ path dead — the delta
-        scale owns those dims (no σ gradient via the delta branch)."""
+    def test_large_delta_kills_sigma_path(self):
+        """A dominating Δ makes the σ path dead in those dims — the
+        delta floor owns them (exactly zero σ gradient via max)."""
         torch.manual_seed(0)
         p = _make(TruncatedNormalPolicy)
         obs = torch.randn(4, OBS_DIM)
-        # Ref far away → c|Δ| ≫ σ for every dim → delta branch everywhere.
+        # Ref far away → c|Δ| ≫ σ for every dim → delta floor everywhere.
         mean, _ = p.forward(obs)
-        ctx = _ctx(ref=mean[0].detach() - 10.0, c=10.0, lam=1.0)
+        ctx = _ctx(ref=mean[0].detach() - 10.0, c=10.0)
         _, sigma = p.forward(obs, ctx=ctx)
         sigma.sum().backward()
         self.assertEqual(p.log_std.grad.abs().sum().item(), 0.0)
@@ -447,7 +440,6 @@ class TestCapabilityGate(unittest.TestCase):
         return SamplingSpec(
             reference=ReferenceSpec(policies=(bp,), weights=(1.0,)),
             delta_factor=10.0,
-            delta_mix=0.5,
         ), tmp
 
     def test_delta_spec_rejects_uncapable_policy(self):
@@ -480,13 +472,13 @@ class TestCapabilityGate(unittest.TestCase):
         p = TruncatedNormalPolicy(OBS_DIM, ACT_DIM, HID)
         SamplingPolicy(p, spec)  # no raise
 
-    def test_delta_mix_without_reference_rejected(self):
-        """λ>0 without a reference ensemble is a malformed spec — the
+    def test_delta_factor_without_reference_rejected(self):
+        """c≠0 without a reference ensemble is a malformed spec — the
         mechanism could never activate, so it fails at construction
         rather than silently degrading to plain ef sampling."""
         from baseline.framework.rollout import SamplingSpec
         with self.assertRaises(ValueError):
-            SamplingSpec(explore_factor=0.5, delta_mix=0.5)
+            SamplingSpec(explore_factor=0.5, delta_factor=0.5)
 
     def test_pretanh_fail_loud_on_active_ctx(self):
         from baseline.framework.ppo.policies.pre_tanh_normal_mlp import (
@@ -494,7 +486,7 @@ class TestCapabilityGate(unittest.TestCase):
         )
         torch.manual_seed(0)
         p = PreTanhNormalPolicy(OBS_DIM, ACT_DIM, HID)
-        ctx = _ctx(ref=np.zeros(ACT_DIM, dtype=np.float32), c=1.0, lam=0.5)
+        ctx = _ctx(ref=np.zeros(ACT_DIM, dtype=np.float32), c=1.0)
         with self.assertRaises(NotImplementedError):
             p.sample(np.zeros(OBS_DIM, dtype=np.float32), ctx=ctx)
 
@@ -511,7 +503,6 @@ class TestExportParityActive(unittest.TestCase):
             reference_action=np.random.RandomState(0)
                 .randn(ACT_DIM).astype(np.float32),
             delta_factor=8.0,
-            delta_mix=0.6,
         )
 
     def test_exported_stream_matches_training(self):

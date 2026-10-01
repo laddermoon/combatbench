@@ -52,7 +52,7 @@ class SamplingContext:
     ``baseline.framework.ppo.sampling_context.SamplingContext`` so this
     file needs no repo import.  Fields are per-frame values (scalars or
     arrays); the exported policies consume ``explore_factor`` plus the
-    ``reference_action``/``delta_factor``/``delta_mix`` fields.
+    ``reference_action``/``delta_factor``/``delta`` fields.
 
     A plain class (not a dataclass): this file is exec-loaded without a
     real module entry, so ``from __future__ import annotations`` +
@@ -60,17 +60,16 @@ class SamplingContext:
     """
 
     __slots__ = (
-        "explore_factor", "reference_action", "delta_factor", "delta_mix",
+        "explore_factor", "reference_action", "delta_factor",
         "delta",
     )
 
     def __init__(self, explore_factor=None, reference_action=None,
-                 delta_factor=None, delta_mix=None,
+                 delta_factor=None,
                  delta=None):
         self.explore_factor = explore_factor
         self.reference_action = reference_action
         self.delta_factor = delta_factor
-        self.delta_mix = delta_mix
         self.delta = delta
 
     def has_delta(self) -> bool:
@@ -78,16 +77,13 @@ class SamplingContext:
         upstream ``SamplingContext.has_delta``."""
         if self.reference_action is None and self.delta is None:
             return False
-        dm = self.delta_mix
-        if dm is None:
+        c = self.delta_factor
+        if c is None:
             return False
-        if hasattr(dm, "any"):  # ndarray / torch.Tensor
-            return bool((dm != 0).any())
-        return dm != 0
+        if hasattr(c, "any"):  # ndarray / torch.Tensor
+            return bool((c != 0).any())
+        return c != 0
 
-
-#: σ-domain floor for the reference-delta scale (σ_delta² ≥ ε²).
-_DELTA_EPS = 1e-2
 
 
 def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
@@ -99,21 +95,23 @@ def _ctx_bcast(x: Any, target: torch.Tensor) -> Any:
     return x
 
 
+def _ctx_nonzero(x):
+    """True iff a ctx scalar field is nonzero (scalar or any-element)."""
+    if x is None:
+        return False
+    return bool((x != 0).any()) if hasattr(x, "any") else bool(x != 0)
+
+
 def _delta_of(mean, ctx):
-    """The Δ payload the σ-mix consumes this call, or ``None``.
+    """The Δ payload the σ floor consumes this call, or ``None``.
 
     An explicit ``ctx.delta`` payload wins over the fresh
     ``mean − a_ref`` path — ``ctx.delta`` is the action-level Δ
     (``det_action − a_ref``) supplied by the sampling layer / replay,
-    never a function of current θ.  ``delta_mix = 0`` or missing
-    inputs disable the mechanism entirely.
+    never a function of current θ.  Payload presence is the contract;
+    ``delta_max_sigma`` decides what a missing payload means.
     """
     if ctx is None:
-        return None
-    dm = getattr(ctx, "delta_mix", None)
-    if dm is None:
-        return None
-    if not (bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0):
         return None
     def _bcast(v):
         t = torch.as_tensor(v, dtype=mean.dtype, device=mean.device)
@@ -130,43 +128,43 @@ def _delta_of(mean, ctx):
     return mean - _bcast(ref)
 
 
-def delta_mix_sigma(
+def delta_max_sigma(
     mean: torch.Tensor,
     sigma: torch.Tensor,
     ctx: Optional["SamplingContext"],
     sigma_min: Optional[float] = None,
     sigma_max: Optional[float] = None,
 ) -> torch.Tensor:
-    """σ²-domain mix of the policy σ with the reference-delta scale —
-    inlined copy of ``truncated_normal_mlp.delta_mix_sigma``.  ``mean`` is detached in the Δ term
-    (σ_eff exogenous w.r.t. m_θ — see the source docstring)."""
+    """Element-wise σ floor from the reference delta —
+    inlined copy of ``truncated_normal_mlp.delta_max_sigma``.
+
+        σ_eff = max(σ, c·|Δ|)
+
+    ``mean`` is detached in the Δ term (σ_eff exogenous w.r.t. m_θ —
+    see the source docstring).  The max keeps σ_eff ≥ σ in every dim:
+    the delta can only widen exploration, never narrow it."""
     # Attribute-based activation check — NOT ctx.has_delta(): ``ctx`` may
     # be an instance of an older SamplingContext class held by a spawned
     # rollout worker; its fields exist but methods may not.
+    c = getattr(ctx, "delta_factor", None) if ctx is not None else None
+    if not _ctx_nonzero(c):
+        return sigma
     delta = _delta_of(mean, ctx)
     if delta is None:
-        dm = getattr(ctx, "delta_mix", None) if ctx is not None else None
-        if dm is not None and (
-            bool((dm != 0).any()) if hasattr(dm, "any") else dm != 0
-        ):
-            raise ValueError(
-                "delta ctx carries delta_mix != 0 but neither `delta` "
-                "nor `reference_action` — the rollout-side sctx__ "
-                "payload record is missing (stale buffer or pipeline "
-                "bug)"
-            )
-        return sigma
-    c = _ctx_bcast(ctx.delta_factor, sigma)
-    lam = _ctx_bcast(ctx.delta_mix, sigma)
-    delta2 = (c * delta.detach()).pow(2).clamp_min(_DELTA_EPS ** 2)
-    # σ floor (TODO §5.1, required): the delta scale may only INFLATE
-    # σ_eff above the policy's own σ — low-drift phases degenerate to
-    # plain σ_ef instead of collapsing toward the ε floor.
-    delta2 = torch.maximum(delta2, sigma.pow(2))
-    mixed = torch.sqrt((1.0 - lam) * sigma.pow(2) + lam * delta2)
+        # c ≠ 0 but no Δ source — the rollout-side record lost its
+        # payload (stale buffer or pipeline bug); fail loud.
+        raise ValueError(
+            "delta ctx carries delta_factor != 0 but neither `delta` "
+            "nor `reference_action` — the rollout-side sctx__ "
+            "payload record is missing (stale buffer or pipeline "
+            "bug)"
+        )
+    out = torch.maximum(
+        sigma, (_ctx_bcast(c, sigma) * delta.detach()).abs(),
+    )
     if sigma_min is not None:
-        mixed = mixed.clamp(sigma_min, sigma_max)
-    return mixed
+        out = out.clamp(sigma_min, sigma_max)
+    return out
 
 
 class StochasticPolicy:
@@ -357,7 +355,7 @@ class _SharedMixtureBoundedStdInferenceNet(nn.Module):
         self._check_ei(ef)
         log_pi, mean, _ = self._head_forward(obs)
         sigma = self._effective_sigma(obs.shape[0], ef)
-        sigma = delta_mix_sigma(
+        sigma = delta_max_sigma(
             mean, sigma, ctx, self._sigma_min, self._sigma_max,
         )
         B, K, D = mean.shape
@@ -431,7 +429,7 @@ class ExportedSharedMixtureBoundedStdTruncNormPolicy(Policy, StochasticPolicy):
     ``explore_alpha``), and ``num_components`` before attempting to load.
     """
     # Capability flag read by SamplingPolicy at wrap time — this cell
-    # implements the reference-delta σ mix (delta_mix_sigma above).
+    # implements the reference-delta σ floor (delta_max_sigma above).
     SUPPORTS_REFERENCE_DELTA = True
 
 

@@ -59,27 +59,26 @@ class SamplingContext:
     """
 
     __slots__ = (
-        "explore_factor", "reference_action", "delta_factor", "delta_mix",
+        "explore_factor", "reference_action", "delta_factor",
     )
 
     def __init__(self, explore_factor=None, reference_action=None,
-                 delta_factor=None, delta_mix=None):
+                 delta_factor=None):
         self.explore_factor = explore_factor
         self.reference_action = reference_action
         self.delta_factor = delta_factor
-        self.delta_mix = delta_mix
 
     def has_delta(self) -> bool:
         """True iff the reference-delta scale is active — mirrors the
         upstream ``SamplingContext.has_delta``."""
         if self.reference_action is None:
             return False
-        dm = self.delta_mix
-        if dm is None:
+        c = self.delta_factor
+        if c is None:
             return False
-        if hasattr(dm, "any"):  # ndarray / torch.Tensor
-            return bool((dm != 0).any())
-        return dm != 0
+        if hasattr(c, "any"):  # ndarray / torch.Tensor
+            return bool((c != 0).any())
+        return c != 0
 
 
 def _ctx_has_delta(ctx) -> bool:
@@ -89,12 +88,12 @@ def _ctx_has_delta(ctx) -> bool:
         return False
     if getattr(ctx, "reference_action", None) is None:
         return False
-    dm = getattr(ctx, "delta_mix", None)
-    if dm is None:
+    c = getattr(ctx, "delta_factor", None)
+    if c is None:
         return False
-    if hasattr(dm, "any"):  # ndarray / torch.Tensor
-        return bool((dm != 0).any())
-    return dm != 0
+    if hasattr(c, "any"):  # ndarray / torch.Tensor
+        return bool((c != 0).any())
+    return c != 0
 
 
 class _PreTanhNormalInferenceNet(nn.Module):
@@ -280,7 +279,7 @@ class _PreTanhNormalInferenceNet(nn.Module):
 class ExportedPreTanhNormalPolicy:
     """Inference-side policy loaded from the exported model.pt payload."""
     # Capability flag read by SamplingPolicy at wrap time — pre-tanh
-    # cells do NOT implement the reference-delta σ mix.
+    # cells do NOT implement the reference-delta σ floor.
     SUPPORTS_REFERENCE_DELTA = False
 
 
@@ -376,7 +375,7 @@ class ExportedPreTanhNormalPolicy:
         if _ctx_has_delta(ctx):
             raise NotImplementedError(
                 "pre-tanh cells do not implement the reference-delta "
-                "σ mix (ctx.reference_action with delta_mix != 0)"
+                "σ floor (ctx.reference_action with delta_factor != 0)"
             )
         explore_factor = ctx.explore_factor if ctx is not None else 0.0
         obs = np.asarray(observation, dtype=np.float32).reshape(-1)
@@ -406,7 +405,7 @@ class ExportedPreTanhNormalPolicy:
         if _ctx_has_delta(ctx):
             raise NotImplementedError(
                 "pre-tanh cells do not implement the reference-delta "
-                "σ mix (ctx.reference_action with delta_mix != 0)"
+                "σ floor (ctx.reference_action with delta_factor != 0)"
             )
         explore_factor = ctx.explore_factor if ctx is not None else 0.0
         with torch.no_grad():

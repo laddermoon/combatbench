@@ -1546,8 +1546,8 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
   ~4e-4 超 1 并 clamp）、export 自包含（P0-6：模板文件非字符串
   拼接、无 repo import）、SUPPORTS_REFERENCE_DELTA 握手——实现与
   注释逐条吻合。
-- `delta_mix_sigma`：frozen/dynamic 两路语义、σ-floor
-  （`max((c|Δ|)², σ², ε²)`）、Δ detach 的理由、payload 缺失时
+- `delta_max_sigma`：frozen/dynamic 两路语义、σ-floor
+  （`max(c·|Δ|, σ)` 逐元素）、Δ detach 的理由、payload 缺失时
   fail-loud——均与注释一致；导出版本注意事项（跨进程旧类实例
   只能读属性不能调方法）有显式注释。
 - `compute_gae`/`normalize_advantages`：terminated vs truncated
@@ -1643,7 +1643,7 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
   30 个实验全部可发现；`_discover()` 只 glob 顶层 `exp_*.py`——
   `archive/`（28 个）和 `todo/`（21 个）被正确排除。
   `base.py`（583 行）精读过：`--set` 参数 coercion 类型正确
-  （bool 先于 int 检查）、delta_mix/reference_horizon/delta_mode
+  （bool 先于 int 检查）、delta_factor/reference_horizon/delta_mode
   三个组合约束 fail-loud、self-play job 构建干净。质量良好。
 - **P-POL-1 复核**：`policy/baseline/` 81 个快照 policy.py 全部
   import 已删除的 `tanh_gaussian_mlp`（实测 u10328 加载

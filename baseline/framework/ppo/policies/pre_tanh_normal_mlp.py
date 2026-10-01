@@ -326,15 +326,15 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
         """Score stored actions under the e-mapped distribution and
         compute the policy-distribution L2 U.
 
-        The reference-delta σ mix is out of scope for pre-tanh cells:
-        an active ``ctx.has_delta()`` raises instead of silently
+        The reference-delta σ floor is out of scope for pre-tanh
+        cells: an active ``ctx.has_delta()`` raises instead of silently
         degrading to plain ef behavior.
         """
         if ctx is not None and ctx.has_delta():
             raise NotImplementedError(
                 "PreTanhNormalPolicy does not implement the "
-                "reference-delta σ mix (ctx.reference_action with "
-                "delta_mix != 0)"
+                "reference-delta σ floor (ctx.reference_action with "
+                "delta_factor != 0)"
             )
         explore_factor = (
             ctx.explore_factor if ctx is not None else 0.0
@@ -445,8 +445,8 @@ class PreTanhNormalPolicy(nn.Module, TrainablePolicy, Policy):
         if ctx is not None and ctx.has_delta():
             raise NotImplementedError(
                 "PreTanhNormalPolicy does not implement the "
-                "reference-delta σ mix (ctx.reference_action with "
-                "delta_mix != 0)"
+                "reference-delta σ floor (ctx.reference_action with "
+                "delta_factor != 0)"
             )
         explore_factor = (
             ctx.explore_factor if ctx is not None else 0.0

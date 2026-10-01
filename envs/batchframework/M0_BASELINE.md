@@ -199,7 +199,7 @@ initial_distance  = default_rng(rollout_seed).uniform(1.5, 3.5)   # 逐 episode
 
 ### 2.7 Rollout 数据契约（M5 边界，HEAD 版本）**[冻结]**
 
-`Job`（冻结 dataclass）：`policy_a_bp, policy_b_bp, env_bp, seed:int, episode_options, sampling_a/b:SamplingSpec, stochastic:bool`。`SamplingSpec`：`explore_factor`（standup=0.0）、`reference/delta_factor/delta_mix`（standup 未启用，`delta_mix=0`）。
+`Job`（冻结 dataclass）：`policy_a_bp, policy_b_bp, env_bp, seed:int, episode_options, sampling_a/b:SamplingSpec, stochastic:bool`。`SamplingSpec`：`explore_factor`（standup=0.0）、`reference/delta_factor`（standup 未启用，`delta_factor=0`）。
 
 `Episode`（冻结 dataclass）：`base_seed, episode_index, blueprint_hash, num_frames, episode_options, agent_termination_proposal_records, observations{agent:(T,96)}, actions{agent:(T,21)}, action_extras{agent:{key:(T,...)}}, explore_factors{agent:(T,)}, observer_outputs{stacked}, final_observation{agent:(96,)}, episode_metrics`。
 - `num_frames=T` 动作步数；`final_observation` 是 `obs_{T+1}`，用于 bootstrap。

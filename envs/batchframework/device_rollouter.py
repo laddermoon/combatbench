@@ -20,7 +20,7 @@ jobs 同序返回。下游（build_trajectories / PPOBuffer / GAE / dump）
 支持边界（不满足即 raise，不静默降级）：
 
 - sampling spec 仅支持标量 ``explore_factor``（per-env 可异值）；
-  callable / reference / delta_mix!=0 一律拒绝；
+  callable / reference / delta_factor!=0 一律拒绝；
 - blueprint 插件/observer 必须在 capability_registry 中为 NATIVE；
 - per-agent 早停按 ``post_termination_action="policy"`` 语义处理
   （终止 agent 仍继续采样动作——与 EpisodeRunner 默认一致）。
@@ -172,7 +172,7 @@ class _WaveRecorder(BaseDevicePlugin):
 # Job 校验 / 策略加载
 # ---------------------------------------------------------------------------
 def _check_spec(spec_dict: Dict[str, Any], tag: str):
-    """返回 (explore_factor, delta_factor, delta_mix) 标量三元组；
+    """返回 (explore_factor, delta_factor) 标量对；
     不支持的 spec 直接拒绝。"""
     ef = spec_dict.get("explore_factor", 0.0)
     if callable(ef):
@@ -183,11 +183,11 @@ def _check_spec(spec_dict: Dict[str, Any], tag: str):
         raise ValueError(
             f"job[{tag}]: reference ensemble not supported on device "
             f"collector (M5 scope)")
-    if float(spec_dict.get("delta_mix", 0.0)) != 0.0:
+    if float(spec_dict.get("delta_factor", 0.0)) != 0.0:
         raise ValueError(
-            f"job[{tag}]: delta_mix != 0 not supported on device collector")
-    return (float(ef), float(spec_dict.get("delta_factor", 0.0)),
-            float(spec_dict.get("delta_mix", 0.0)))
+            f"job[{tag}]: delta_factor != 0 not supported on device "
+            f"collector")
+    return (float(ef), float(spec_dict.get("delta_factor", 0.0)))
 
 
 def _load_policy(policy_bp_dict: Dict[str, Any], device: str):
@@ -447,13 +447,11 @@ class DeviceRollouter:
                         "explore_factor": float(np_bufs["ef_a"][row]),
                         # SamplingPolicy.act 的 ctx.record_fields() 等价物
                         "sctx__delta_factor": np.float32(ef_spec[0][1]),
-                        "sctx__delta_mix": np.float32(ef_spec[0][2]),
                     },
                     "robot_b": {
                         "log_prob": float(np_bufs["lp"]["robot_b"][t, row]),
                         "explore_factor": float(np_bufs["ef_b"][row]),
                         "sctx__delta_factor": np.float32(ef_spec[1][1]),
-                        "sctx__delta_mix": np.float32(ef_spec[1][2]),
                     },
                 }
         frames = []

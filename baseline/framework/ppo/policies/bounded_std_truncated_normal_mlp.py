@@ -208,8 +208,8 @@ class BoundedStdTruncatedNormalPolicy(TruncatedNormalPolicy):
 
         Scalar explore_factor broadcasts over dims ((D,) σ); a (B,)
         tensor yields per-frame (B, D) σ — same broadcast contract as
-        the parent's ``effective_sigma``.  The reference-delta mix runs
-        in σ² domain after the bounded map and is re-clamped to
+        the parent's ``effective_sigma``.  The reference-delta σ floor
+        runs elementwise after the bounded map and is re-clamped to
         [sigma_min, sigma_max].
         """
         ef = ctx.explore_factor if ctx is not None else 0.0

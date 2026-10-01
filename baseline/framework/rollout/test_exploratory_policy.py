@@ -102,7 +102,7 @@ def _bps(kind: str, n: int) -> list:
     ]
 
 
-def _spec(bps, lam: float = 1.0, ef: float = 0.0, c: float = 5.0):
+def _spec(bps, ef: float = 0.0, c: float = 5.0):
     w = [1.0 / len(bps)] * len(bps)
     return SamplingSpec(
         explore_factor=ef,
@@ -110,7 +110,6 @@ def _spec(bps, lam: float = 1.0, ef: float = 0.0, c: float = 5.0):
             policies=tuple(bps), weights=tuple(w),
         ),
         delta_factor=c,
-        delta_mix=lam,
     )
 
 
