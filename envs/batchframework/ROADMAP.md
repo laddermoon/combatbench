@@ -204,7 +204,7 @@ E8 综合工程验收与稳定接口发布
 
 #### E5：把 CPU 实验迁移变成有约束的工程流程
 
-**状态：已计划（E5_PLAN.md）**——审计/manifest 机制 + basic_balance（首个逐 agent 终止案例）驱动单元迁移与端到端接入。
+**状态：已完成（E5_PLAN.md）**——`migration_audit.py`（blueprint→单元能力/配置处置表，unknown 键即失败）+ `migration_manifest.py`（证据 manifest + unit_hash 失效追踪，落盘 `migration_manifests/`）；basic_balance 迁移落地：`DeviceDualImbalancePlugin`（首个真实**逐 agent 终止**用例）+ CrossSupport/Posture/HeightPhi 三 observer，13 项同注入态对拍 + e2e collect + 单/双卡冒烟全过。
 
 - 完整解析 simulator/plugin/observer/采样能力及配置，输出原生/兼容/待转换/不支持和原因；未使用的配置项也必须解释，不能静默忽略。
 - 源任务、模型、配置、目标实现、依赖版本、验证用例与结果形成可追踪 manifest；来源变化使相关验证失效。
