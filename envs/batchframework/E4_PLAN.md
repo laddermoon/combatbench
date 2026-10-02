@@ -1,6 +1,6 @@
 # E4 计划：单次训练的 1–8 卡 rollout
 
-**状态**：提案（2026-10-02）
+**状态**：✅ 已完成（2026-10-02，W0–W6 全部落地）
 **上游**：[discuss.md](./discuss.md) D12/D13（coordinator/worker 协议、错误模型）| [E3_PLAN.md](./E3_PLAN.md)（已完成：同构分组、RecordStore、exporter、sync_stats）
 **ROADMAP 对应**：E4 —— "单次训练的 1–8 卡 rollout"
 
@@ -148,14 +148,21 @@ class MultiDeviceRollouter:
 | Job/EnvBlueprint pickle 含不可序列化成员 | 低 | W0 探针验证；必要时走 to_dict/from_dict 重建 |
 | 分片改变 job 顺序影响训练随机性 | 低 | seed 在 Job 上携带与行号无关（已验证语义），W5 等价测试守住 |
 
-## 放行条件
+## 放行条件核对（实际结果）
 
-1. 1 卡 worker 模式与 in-process 单卡对同批 jobs 产出逐字段等价 Episode；
-2. 2 卡 collect：每个 JobRef 恰好一次、顺序=输入序、各 shard 随机身份正确（同 job 在任卡上结果一致）；
-3. worker kill → collect 显式失败（非挂起/部分返回）；close 幂等且 worker 全 join；
-4. `--collector device --collector-devices` 冒烟训练正常，learner 侧无改动；
-5. 报告 per-worker `record_store_bytes` + `sync_stats` + executor 版本集合；
-6. padding 行不产出 Episode；shard 边界无缺漏重复。
+1. ⚠️ 部分调整：warp 物理非逐位确定（E1-W0：~1e-7/10 步漂移），"逐字段等价"改为**契约级不变量**（num_frames/term records/形状/有限值/job 身份归属/输入序）——`test_multi_rollouter.py` 覆盖；
+2. ✅ 2 卡 collect：JobRef 全覆盖恰好一次（merge_results 校验）、顺序=输入序、seed/options 归属正确；
+3. ✅ worker kill → `WorkerLost` 显式失败（<1ms 检测）；close 幂等、全 join；
+4. ✅ `--collector device --collector-devices 0,1` 冒烟训练 2 updates 正常（terms={timeout:16}），learner 零改动；
+5. ✅ `last_collect_report` 含 per-worker report（record_store_bytes/sync_stats/policy_versions 经 worker 透传汇总）；
+6. ✅ padding 不产出 Episode（`test_two_gpu_padding_and_identity` 5 jobs / B=4）；shard 边界在 `test_shard_plan` 7 项纯函数测试守住。
+
+## 实现备注（与提案的差异）
+
+- `episode_index` 在 worker 内由 `dr.collect` 赋 shard 局部序号——worker 侧 `dataclasses.replace` 重写为全局 JobRef（测试抓到并修复）；
+- `MultiDeviceRollouter` 构造参数 `devices` 为物理卡序号列表；worker 用 `torch.cuda.set_device(k)` 直选（无 CUDA_VISIBLE_DEVICES 遮罩，W0 已验证）；
+- 等齐用"轮询 queue + `is_alive`"而非 `get(timeout)`——worker 死亡即便无消息也能检测；
+- 版本一致性：merge 校验 collect_id/覆盖性；executor 版本经 `report["policy_versions"]` 上行汇总（同 bp 同路径同 stat → 同 hash；跨 worker 不一致会在 report 中可见，未做硬断言——留 E6 manifest 强化）。
 
 **明确不在本阶段**：动态负载均衡/work stealing、多机、异步滞后策略、CUDA Graph、跨 collect 插件状态恢复（D13.2 pending 项）、learner 侧分布式。
 
