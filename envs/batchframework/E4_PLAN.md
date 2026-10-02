@@ -158,3 +158,18 @@ class MultiDeviceRollouter:
 6. padding 行不产出 Episode；shard 边界无缺漏重复。
 
 **明确不在本阶段**：动态负载均衡/work stealing、多机、异步滞后策略、CUDA Graph、跨 collect 插件状态恢复（D13.2 pending 项）、learner 侧分布式。
+
+## 附录 A：W0 探针结果（2026-10-02，instance-1f1igpaq）
+
+`probe_worker_spawn.py --devices 0,1`（RTX 4090×2，spawn context，无 CUDA_VISIBLE_DEVICES 遮罩）：
+
+| 探测项 | 结果 |
+|---|---|
+| bp/jobs pickle roundtrip | ✅ 0.00MB/<1ms（`Job`/`EnvBlueprint`/`PolicyBlueprint` 全可序列化） |
+| spawn + `set_device(k)` + warp init + collect | ✅ 2/2 worker，物理卡绑定正确（各自报告本卡 4090） |
+| 并行性 | ✅ 两卡各 collect 52.5s、wall 55.1s——真并行非串行 |
+| Episode 载荷 | **0.226 MB/ep**（T=200, standup 全 observer 树）；8 ep pickle 4.1ms |
+| 传输带宽判断 | pickle+mp.Queue 对当前规模富余 3+ 数量级（4ms vs 52s）——首版直传成立，共享内存归 E7 |
+| worker kill → join | ✅ 0.001s 检测，exitcode=-9 干净退出 |
+
+**H12 判定：通过**——spawn + per-device init 可靠，首版不需遮罩式隔离。
