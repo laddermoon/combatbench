@@ -170,6 +170,8 @@ E8 综合工程验收与稳定接口发布
 
 #### E2：补全生命周期、插件与随机契约
 
+**当前状态（2026-10-02）：实施计划已提案待审**（[E2_PLAN.md](E2_PLAN.md)）。计划拆为 W0 CPU 语义核对 → W1 数据模型（四 mask/计数器/终止历史）→ W2 sealed-ENDED+显式 reset → W3 子步 hook 与终止屏障 → W4 声明式插件契约 → W5 随机服务 → W6 契约测试矩阵。关键判断：`step()` 不再 auto-reset，ENDED 行封存至波末——源码核查证明其与现状 Episode 输出严格等价（`t_use=term_step` 截断使 mid-wave reset 后的数据从未被消费）。
+
 - 实现 E.4 生命周期，尤其终止记录、终止后动作政策、reset-before/after 可见性、主动重置、首次观测、部分 reset 与跨 episode 状态。
 - 插件声明必需读写能力、hook、输出 schema、状态初始化与随机用途域；observer 不通过共享可变上下文绕过权限。
 - 原生子步反馈与事前 schedule 分别建模；HOST 兼容不自动冒充原生等价。
