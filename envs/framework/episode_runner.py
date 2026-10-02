@@ -39,11 +39,12 @@ Non-responsibilities
   via their own callback / wrapper.
 - **Result aggregation.** :meth:`run_episode` returns ``None``. Anything you
   want to know about the episode lives in the attached recorders.
-- **Combat semantics (winner / HP / damage).** Those belong to a subclass
-  (e.g. :class:`envs.framework.round_runner.RoundRunner`) or to a
-  post-hoc reducer over recorder data.
+- **Combat semantics (winner / HP / damage).** Those belong to the wrapper
+  layer (e.g. :class:`envs.framework.round_runner.RoundRunner`, which
+  composes this runner) or to a post-hoc reducer over recorder data.
 - **Process-level parallelism.** This runner is constructed inside each
-  worker; cross-process orchestration is handled by ``parallel_runner``.
+  worker; cross-process orchestration lives in
+  ``baseline/framework/rollout`` (``ParallelRollouter``).
 - **Batch / multi-episode driving.** ``run_n_episodes`` is intentionally
   not provided here — outer loops (training updates, eval sweeps, dataset
   collection) own batch semantics and can call :meth:`run_episode` in a loop.

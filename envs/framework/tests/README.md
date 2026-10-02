@@ -8,24 +8,28 @@
 
 | 测试文件 | 重点 | 状态 |
 |---------|------|------|
-| `test_permission_control.py` | 权限授予/撤销机制（mutator 只在可写钩子暴露） | P0 通过 |
-| `test_plugin_dispatch.py` | 插件调度顺序与异常隔离 | P0 通过 |
-| `test_lifecycle.py` | 钩子调用顺序与终止传播 | P0 通过 |
-| `test_observer_system.py` | Observer 去重与调度 | P1 通过 |
+| `test_permission_control.py` | 权限授予/撤销机制（mutator 只在可写钩子暴露） | 通过 |
+| `test_plugin_dispatch.py` | 插件调度顺序与异常隔离 | 通过 |
+| `test_lifecycle.py` | 钩子调用顺序与终止传播 | 通过 |
+| `test_observer_system.py` | Observer 去重与调度 | 通过 |
 | `test_observer_dispatcher_ordering.py` | dispatcher 顺序 + 只读 ctx 强制 | 通过 |
-| `test_edge_cases.py` | 边界情况与特殊条件 | P2 部分失败 |
-| `test_episode_runner.py` | EpisodeRunner：rollout 形态、seed 确定性、extras 捕获 | 部分失败 |
+| `test_edge_cases.py` | 边界情况与特殊条件 | 通过 |
+| `test_episode_runner_behaviors.py` | 薄 runner 契约：返回 None、hold/policy 终止策略、want_extras 透传、duck-type 校验 | 通过 |
 | `test_reset_chain.py` | RESET.md 不变式 I1–I6 | 通过 |
 | `test_seed.py` | SEED.md 契约（派生树、None 解析） | 通过 |
 | `test_blueprint.py` | EnvBlueprint/PolicyBlueprint 序列化 | 通过 |
-| `test_policy.py` | Policy ABC 契约 | 通过 |
+| `test_policy.py` | Policy ABC 契约（`(action, extra)` 签名） | 通过 |
 | `test_recorder_lifecycle.py` | Recorder 钩子顺序 + 落盘 schema | 通过 |
 | `test_replay_simulator.py` | ReplaySimulator 回放往返 | 通过 |
 | `test_sandbox.py` | accessor/mutator 沙箱白名单 | 通过 |
 | `test_strict_mode.py` | strict 模式异常语义 | 通过 |
-| `test_video_recorder.py` | VideoRecorderPlugin | 部分失败 |
-| `test_parallel_runner.py` | ⚠️ collection error——测试已删除的 ParallelRunner | 失效 |
+| `test_video_recorder.py` | VideoRecorderPlugin options 覆盖 + find_plugins | 通过 |
 | `test_audit_*.py`（4 个） | 审计探针：锁死已确认的缺陷行为（mutator 泄漏、终止帧、reset/recorder 缺口、video 路径污染） | 探针 |
+
+> 已删除：`test_episode_runner.py`、`test_parallel_runner.py`——两者测试的是
+> runner 重构（`73fe8da3`）前的旧 API（`RolloutConfig`/`ObserverBinding`/
+> `run_n_episodes`/`ParallelRunner`），新契约由 `test_episode_runner_behaviors.py`
+> 覆盖；并行能力现属 `baseline/framework/rollout/`。
 
 ## 运行测试
 

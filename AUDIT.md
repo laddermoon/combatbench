@@ -1756,3 +1756,49 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
 - S16：历史文档统一打 archival 标记（一行 header 即可），把"规范/档案"
   二分显式化。
 - S17：D 档缺口按 1→3→2→4 优先级补。
+
+## [2026-10-01] envs/framework — S1–S8 建议执行记录
+
+**对象**：`envs/framework/` 测试层 + `CONTEXT.md` + `episode_runner.py` docstring
+**类别**：修复执行（用户对 AUDIT 第一批建议 S1–S8 拍板"按建议处理"）
+
+**做了什么**：
+
+- **S1**：删除 `tests/test_episode_runner.py`、`tests/test_parallel_runner.py`
+  ——两者测试的是 runner 重构（`73fe8da3`）前的旧 API（`RolloutConfig`/
+  `ObserverBinding`/`run_n_episodes`/`ParallelRunner`），新契约由新文件覆盖。
+- **S2**：`test_policy.py` 重写——`act` 签名升级为
+  `(obs, *, want_extra) -> (action, extra)`；删除 `TestCoerceAction`/
+  `TestCallPolicy`（`coerce_action`/`call_policy` 已从 policy.py 移除）；
+  `TestBuiltinPolicies` 适配 tuple 返回值。
+- **S3**：`test_reset_chain.py`——`EpisodeRunner` 构造改为
+  `policy_a=/policy_b=`；删 `run_n_episodes`/`options_fn` 测试（API 已删）；
+  `TestI3` 改为经 `_ObsCaptureRecorder`（PostActionRecorder 子类）比对观测
+  序列，因 `run_episode` 现返回 None。
+- **S4**：`test_seed.py`——`EpisodeSeeds`→`_EpisodeSeeds`；删整节
+  `TestDeriveBatchSeeds`（`_derive_batch_seeds`/`_parallel_derive_seeds` 已删，
+  批量种子分配现属 `baseline/framework/rollout` 的 `Job.seed`）；
+  `runner.policies`→`policy_a/policy_b`；两处 `result.seed` 改为
+  `ctx.base_seed`（run_episode 不再返回 result）。
+- **S5**：删 `TestRoundRunnerVideoSavePath` 中 3 个针对已删
+  `_merge_video_path_into_options`/`videosave_path` 的测试；其中仍有效的
+  `find_plugins` 测试挪入 `TestPerEpisodeOptionsOverride`。
+- **S6**：`CONTEXT.md` 已在上一轮文档修复中重写（mental model/entry points/
+  gotchas 全部对齐当前 API）。
+- **S7**：`episode_runner.py` docstring L~46 `parallel_runner` 残留改为指向
+  `baseline/framework/rollout` 的 `ParallelRollouter`；"subclass" 误述改为
+  "composes"。
+- **S8**：新增 `test_episode_runner_behaviors.py`（11 个测试）：
+  `run_episode` 返回 None；duck-type 校验（无 `act` 拒收、非 Policy 子类
+  鸭型放行 P0-6）；`post_termination_action="hold"` 重放最后动作且停调
+  `act`；`"policy"` 模式继续调用；pre-episode 已终止 agent 仍获一次 act
+  （锁存"a_active 恒从 True 起步"设计）；`want_extras` 透传到 act 与
+  recorder `action_extras`；`EpisodeRunner.close` 不关 runtime。
+
+**结果/证据**：`pytest envs/framework/tests/ -x -q` →
+**216 passed, 0 failed, 0 collection errors**（修复前 159 pass / 3 fail /
+5 err）。`tests/README.md` 文件清单已同步更新。
+
+**备注**：顺带发现 `run_episode` 的 hold 分支中 `last_action_a is None`
+RuntimeError 实际不可达（`a_active` 恒从 True 起步，首轮必然先调
+`act`）——属防御性死代码，已用测试锁存当前语义，未改实现。
