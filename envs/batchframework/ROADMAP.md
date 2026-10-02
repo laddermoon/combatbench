@@ -170,7 +170,7 @@ E8 综合工程验收与稳定接口发布
 
 #### E2：补全生命周期、插件与随机契约
 
-**当前状态（2026-10-02）：实施计划已提案待审**（[E2_PLAN.md](E2_PLAN.md)）。计划拆为 W0 CPU 语义核对 → W1 数据模型（四 mask/计数器/终止历史）→ W2 sealed-ENDED+显式 reset → W3 子步 hook 与终止屏障 → W4 声明式插件契约 → W5 随机服务 → W6 契约测试矩阵。关键判断：`step()` 不再 auto-reset，ENDED 行封存至波末——源码核查证明其与现状 Episode 输出严格等价（`t_use=term_step` 截断使 mid-wave reset 后的数据从未被消费）。
+**当前状态（2026-10-02）：W0–W6 主体已落地。** W0 产出 [LIFECYCLE_TRACE.md](LIFECYCLE_TRACE.md)（D7 契约核对无误，无需修订）；W1–W5 已实施：四 mask 分离 + 分离计数器、`term_history` 即归档（多 reason 保序/去重/自定义字符串经 `reason_registry` 往返）、sealed-ENDED（快照封存+逐步写回，`step()` 无 auto-reset）、`reset_rows`/`abandon`/`mark_failed`、子步 hook 槽位+子步级屏障（子步内终止 `episode_step` 不 +1，CPU 同语义）、声明式装配校验、`RngView` 随机服务（fallen 已迁移，序列逐位不变）。新增契约矩阵 `test_device_lifecycle_contract.py` 17 项；设备全量回归 67 项绿 + device collector 训练冒烟正常。欠账：HOST plane lazy 物化（无消费者）、debug 写检查（H4）、字段级 mutator 授权（E5 收紧）、save/restore 整态契约项。详见 [E2_PLAN.md](E2_PLAN.md)。
 
 - 实现 E.4 生命周期，尤其终止记录、终止后动作政策、reset-before/after 可见性、主动重置、首次观测、部分 reset 与跨 episode 状态。
 - 插件声明必需读写能力、hook、输出 schema、状态初始化与随机用途域；observer 不通过共享可变上下文绕过权限。

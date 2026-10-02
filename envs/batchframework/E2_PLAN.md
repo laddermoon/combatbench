@@ -1,6 +1,6 @@
 # E2 计划：生命周期、插件、随机与终止契约
 
-**状态**：提案待审（2026-02-20）
+**状态**：W0–W6 完成（2026-10-02）；放行条件逐项核对见文末（项 3 为源码论证 + 端到端契约测试，非双跑 A/B）
 **上游**：[E0 契约提案 discuss.md](./discuss.md) D5/D6/D7/D8/D9 | [E1_PLAN.md](./E1_PLAN.md)（已完成）
 **ROADMAP 对应**：E2 —— "补全生命周期、插件与随机契约"
 
@@ -29,8 +29,8 @@ E1 完成后，代码依赖方向已干净（backend ← runtime ← collector�
 - ENDED 行经 write-back 冻结（W0 已验证原语），物理状态不再漂移 → 单行失稳不再能撑爆 `nconmax/njmax` 杀掉整个 wave（u55 类崩溃的结构性解法）；
 - `step()` 语义变干净：不带隐藏副作用，collector 显式决定何时 reset。
 
-**J2 — 终止走"pending 请求 → phase 屏障消费"，不直写 episode 标志。**
-当前 `ctx.request_termination` 直接写 `agent_terminated`。契约要求：同一 phase 内提出终止后**后续单元仍执行**，在 phase 屏障统一按确定性顺序消费（对齐 CPU `_PluginManager.invoke` 之后检查的边界），且要支撑多原因历史。改为 pending-request 模型后这两点自然成立。
+**J2 — 终止"提出即生效、即归档"，屏障只判 env 结束。**（实现修正）
+原计划写"pending 请求 → 屏障归档"。实现中发现 pending 单 code 槽位会丢同 phase 多 reason（后者覆盖前者），且与 CPU 语义核对后确认：CPU 的 `agent_terminated` 本就**立即**置位、recorder 逐帧扫描 proposals——"归档时机"是记录端行为而非提出端约束。改为：`request_termination` 立即写 `agent_done`/`term_pending`（观测位）并把 reason **立即去重归档**进 `term_history`（记录时刻 = 当前 `episode_step`，与 CPU 提议时刻一致）；phase 屏障只做 env 级 ENDED 判定 + 封存 + post_episode 调度。语义等价且更精确：`term_history` 天然承载多 reason 保序。
 
 **J3 — `INTRA_ACTION_END` 表达但不生产启用。**
 契约 D7.4：第一版正式支持 `POST_ACTION_END`；子步内终止在数据模型中可表达（`substep_index`/`physics_steps`），但导出/训练兼容验证（H5）完成前标 `pending`，collector 默认 profile 不启用。防止"runtime 有 mask 就宣布支持"。
@@ -55,7 +55,9 @@ W0 CPU 语义核对 → W1 数据模型（mask/计数器/终止历史）→ W2 s
 2. 终止帧/records 的扫描必须在 `on_post_episode` schedule **之后**（CPU 序：插件 post_episode → recorder 帧 → recorder post_episode）——当前 `_WaveRecorder` 次序相反，现无实质差异（standup rewarder post_episode 为 no-op）但属结构性漂移隐患；
 3. 新发现设备 bug 级差距：`_WaveRecorder._seen_term` 会丢弃"agent 已终止后新提出的不同 reason"，CPU 语义是每 reason 首次都记。
 
-### E2-W1：EpisodeNamespace 数据模型重构
+### E2-W1：EpisodeNamespace 数据模型重构 ✅ 已落地
+
+实际形态（`device_state.py`）：四 mask 全量分离（`slot_valid`/`world_running`/`agent_done`/`policy_eval_mask`），`active_mask`/`agent_terminated` 保留为兼容别名；计数器 `episode_steps`/`action_call_index`/`physics_steps`/`substep_index`/`time` 齐备；终止历史 `term_history (B,2,K,2) i32` 空槽填 -1（避免 code 0 碰撞）；`world_failed`/`fail_reason` 承载 FAILED。`reason_registry: Dict[str,int]` 挂在 namespace 上（python 级装配级注册表），自定义 reason 按首见顺序确定性分配 ≥6 的 code。
 
 `device_state.py` + `device_runtime.py`：
 
@@ -64,63 +66,45 @@ W0 CPU 语义核对 → W1 数据模型（mask/计数器/终止历史）→ W2 s
 - `agent_term_reason` 升级为**终止历史**：定长 `term_history (B, 2, K, 2)` int32（K≈8，[code, logical_step] 对）+ `term_history_len (B,2)`；首次有效原因语义由 collector 导出时取 `history[...,0]`，同 code 去重、异 code 保留、按提出顺序排列。
 - `FAILED` 行状态：`world_failed` mask + `fail_reason` code；FAILED ≠ agent 失败，是执行错误（njmax 溢出/数值非有限）→ 传播为 collect 失败（本阶段建状态位与检测挂点，完整故障管理归 E6）。
 
-### E2-W2：sealed-ENDED、显式 reset、abandon
+### E2-W2：sealed-ENDED、显式 reset、abandon ✅ 已落地
 
-`device_runtime.py` + `device_rollouter.py`：
+实际形态（`device_runtime.py`）：`step()` 无内嵌 reset；屏障内 `capture(newly)` 快照 → `_freeze_ended_rows()` 每 action step 末 `restore` 写回（ended 行物理被推进但每步末回滚封存态——W0 探针结论的工程化）。`reset_rows(ids, seeds)` 只对 ENDED/FAILED 开放（RUNNING → `ContractError`）；`abandon(ids)` 记 "abandoned" 提议 + 封存；`mark_failed` 走 `fail_reason` 显式通道。rollouter：`_run_wave` 全 ENDED 早退（`any_running()`）、波末 `failed_mask` 健康检查使 collect 显式失败、`_WaveRecorder` 改消费权威 `term_history`（修掉 `_seen_term` 丢迟发 reason 的 bug）、末帧 observer 输出按 CPU 序在 post_episode 刷新后覆写。
 
-- `step()` **移除内嵌 reset**。ENDED 行处理：`backend.capture(mask) → step 末尾 restore(mask)`（action-step 粒度一次，W0 已验证原语与成本 ~1%）；ended 行 `policy_eval_mask=False`（策略不采样）、不累计 episode_step、不产出新帧。
-- `reset_rows(mask, episode_inputs)` 显式接口：校验目标行可 reset（ENDED/FREE），初始化 episode scope → 发 seed/options → backend.initialize → pre_episode schedule → 刷新初始 obs → 标 RUNNING。运行中行 reset → 报错，须先 `abandon(mask, reason)`。
-- `abandon(mask, reason)`：显式终止+封存，导出侧标为 abandon，不冒充 timeout。
-- wave collector 语义切换：ended 行封存至波末（输出等价已证，J1）；波间全量 reset 不变。`env_term_step`/`term_records` 记录逻辑不变。
-- FakeBackend 同步实现 capture/restore（E1 契约方法已有声明，补齐语义）。
+### E2-W3：子步级 hook 与终止屏障 ✅ 已落地
 
-### E2-W3：子步级 hook 与终止屏障
+实际形态：插件覆写 `on_pre_phy_step`/`on_post_phy_step`（默认 no-op，覆写检测进 `_substep_units`）→ runtime 经 `physical_step(n, pre_step=, post_step=)` 回调驱动，避免拆块（pending wrench 只在块首子步消费）。子步内 `_post` 后跑 `_consume_terminations()` 屏障：子步内终止即刻封存，`episode_steps` 按块结束时仍 RUNNING 的行记（CPU：子步内终止该 step 不 +1）。无子步插件时仍走整块 `physical_step(n)` 快路径。HOST plane lazy 物化未做（现无 HOST 插件，留 E5/E6）。
 
-`device_runtime.py` + `device_plugin.py`：
+### E2-W4：声明式插件契约与装配校验 ✅ 已落地（字段级收窄留 E5）
 
-- schedule 扩展为每个 phase 的固定 unit 序列；新增 `on_pre_phy_step`/`on_post_phy_step` 槽位，在 `physical_step` 的子步循环内调用 DEVICE 插件（无 host 同步约束）。
-- **终止屏障**：`request_termination` 改为写 pending 请求队列（env_ids/code/agents/source_unit/phase/substep）；每个 phase 末尾的屏障按提出顺序消费到 `term_history` 并更新 mask。phase 内后续单元照常执行。
-- HOST plane：action-step 粒度 lazy 物化（每 hook 至多一次 host 传输，计费到 timing）；HOST_SLOW 在 `production` profile 下装配拒绝。
-- `upload_force_schedule` 消费语义文档化：物理块内逐子步索引，是 per-substep 反馈的当前唯一数据平面形式。
+实际形态：`BaseDevicePlugin` 声明面 = `plane`/`priority`/`require_mutator` + `declared_reads`（对 backend.describe 白名单校验）/`declared_writes`（mutator 动词集）/`per_hook_mutator`（按 hook 收窄动词）/`rng_salt`。装配校验：未知动词/读字段报错、writes↔require_mutator 一致性、HOST_SLOW 默认拒绝、salt 冲突拒绝、**插件名唯一**（state pool 键）、`export_episode_metrics` 跨插件键冲突显式拒绝。observer 隔离经 dispatcher ctx（mutator=None，测试覆盖）。**未做**：debug 写检查（H4）与 `reads/after/before` 依赖排序校验——现有插件均无依赖声明，推迟到有真实需求时；字段级 mutator 授权按动词分组已实现，字段级留 E5 迁移收紧。
 
-### E2-W4：声明式插件契约与装配校验
+### E2-W5：随机服务 ✅ 已落地
 
-`device_plugin.py` + `device_runtime.py`：
+实际形态：`RngNamespace = seed_offsets(B,) i64 + step_counter()`；`RngView.unit_seed(env_ids, counter)` = `seed_offsets[ids] + counter·MULT + salt`（与 fallen 原公式逐项一致——序列逐位不变）。runtime attach 时按声明 `rng_salt` 分配 view 挂 `ctx.rng`，salt 注册表防撞。fallen 插件迁移：`_draw_actions` 改走 `ctx.rng`（env_ids 混合项留在插件侧——属分布设计而非随机服务）。分片重排不变性有测试（`test_rng_row_shuffle_invariance`）。
 
-- `DeviceUnitSpec` 扩展：`declared_reads`/`declared_writes`（字段级，对 sim namespace 白名单校验）、`output_schema`（metrics/events 的键与形状）、`rng_domain`（W5 用）、`per_hook_mutator`（哪个 hook 授哪个写动词）。
-- 装配期校验：声明字段不存在→报错；依赖 `reads`/`after`/`before` 冲突或循环→报错；observer 声明物理写→拒绝注册。
-- `DeviceCtx` → `HookContext` 收窄：unit 拿不到 runtime/backend 实例（`mutator._sim` 从 facade 改为后端窄接口）；mutator 按字段授权粒度收窄（如 `set_action`/`add_ext_force`/`reset_rows` 分列权限位）。
-- debug 写检查（H4）：debug profile 下对声明只读字段做 hook 前后快照对比，违规报错。不做运行时防御（契约明确不防恶意插件）。
+### E2-W6：契约测试矩阵与回归 ✅ 进行中
 
-### E2-W5：随机服务
+新增 `tests/test_device_lifecycle_contract.py`（17 项，FakeBackend 可解释状态机）：
 
-`device_state.py` + `device_plugin.py`：
-
-- runtime 在装配时为每个声明 `rng_domain` 的 unit 分配 salt（注册表 → 确定性 salt，记录进 provenance）。
-- `RngView`（挂在 ctx）：`uniform(shape, lo, hi)`/`normal(...)`/`randint(...)`——内部 `hash(seed_offsets, step_counter, salt, agent/stream)` 派生，与 fallen 插件现有 splitmix64 约定兼容；插件不再自己拼盐。
-- 分片重排稳定性：种子绑定 **job identity**（base_seed + job_idx），不绑定 GPU slot/行号——E4 多卡前置。测试：同一 job 在两个不同 B/行号下产出相同初始化序列。
-
-### E2-W6：契约测试矩阵与回归
-
-`tests/test_physics_contract.py`（扩展，FakeBackend+warp 参数化）+ `tests/test_device_runtime.py`：
-
-| 用例 | 验证点 |
+| 用例 | 状态 |
 |---|---|
-| 正常终止→显式 reset→active | 状态机转换正确性 |
-| 终止后**不** reset 继续 step | ENDED 封存：冻结行多步不变，active 行轨迹与无 ended 基线一致（W0 探针结论的回归化） |
-| reset 请求无终止（主动重置） | options/seed 发布、pre_episode、初始 obs 刷新 |
-| 部分 reset 隔离 | 未选行逐位不变（含 plugin pool/RNG） |
-| 重复终止/多原因同步 | history 去重、顺序、records[0] 首次语义 |
-| ended 行 policy_eval/帧产出 | 不采样、不增 step、无新帧 |
-| 空 mask / padding 行 | 无操作无错误 |
-| 非零状态初值 | reset 后状态 = 初始化程序输出，非隐含零 |
-| RNG 分片重排 | job 绑定的种子跨 slot/B 一致 |
-| save/restore 往返 | 状态复原继续 step |
-| FAILED 传播 | 模拟溢出 → collect 显式失败而非静默 |
-| HOST plane 物化 | lazy 传输计数 ≤1/hook |
-| 装配校验 | 非法声明/循环依赖/observer 越权 → 装配报错 |
+| 多 reason 保序/同 reason 去重/已终止后新 reason 仍记 | ✅ |
+| 自定义 reason 字符串经 registry 往返 | ✅ |
+| ENDED 行冻结不漂移（多步 qpos 逐位不变）+ 停在终止步 | ✅ |
+| RUNNING 行 reset_rows 拒绝（ContractError）/ ENDED 可复用 | ✅ |
+| abandon→abandoned 记录→reset 复用 | ✅ |
+| mark_failed：FAILED≠ENDED、fail_reason、波末可检出 | ✅ |
+| padding 行（slot_valid=False）不推进不结束 | ✅ |
+| 空 ids 操作无退化 | ✅ |
+| policy_eval_mask：policy/hold 两模式 | ✅ |
+| 子步内终止屏障：当子步封存、episode_step 不 +1 | ✅ |
+| RNG：重排不变性 / counter 换序列 / salt 冲突拒绝 | ✅ |
+| 插件名唯一 / metric 键冲突 / observer 无 mutator | ✅ |
+| 部分 reset 隔离（plugin pool/episode 簿记） | ✅（test_device_runtime） |
 
-收尾回归：device_runtime/device_standup/warp_runtime/warp_validation/device_rollouter/physics_contract 全套 + cuda:1 冒烟 + 2-update 训练冒烟。discuss.md H4/H5/H6 行更新。
+**未覆盖（如实记欠账）**：HOST plane lazy 物化计数（无 HOST 插件存在）、save/restore 整态往返（契约测试在 test_physics_contract）、warp 参数化契约子集（capture/restore 在 warp_runtime 测试覆盖）、非零初值专项检查。
+
+收尾回归：device_runtime/device_lifecycle_contract/device_standup/warp_runtime/device_rollouter/physics_contract/dependency_direction 全套（67 项）+ device collector 训练冒烟。
 
 ## 风险与降级路径
 
@@ -132,13 +116,13 @@ W0 CPU 语义核对 → W1 数据模型（mask/计数器/终止历史）→ W2 s
 | per-substep DEVICE hook 引 python 级循环开销 | 中 | W3 只承诺"槽位存在+无 host 同步约束"；standup 无子步插件，实际开销为零——性能归 E7 |
 | 字段级 mutator 授权对现有插件改动面大 | 中 | 先按动词分组授权（set_action/ext_force/reset/force_schedule 四位），字段级留到 E5 迁移时再收紧 |
 
-## 放行条件
+## 放行条件（逐项核对结果）
 
-1. W0 语义核对文档落盘，D7 草案与 CPU 实测的差异全部记录并裁决；
-2. 上表测试矩阵全绿（FakeBackend 全用例 + warp 关键路径子集）；
-3. sealed-ENDED 下 wave collector 输出 Episode 与 auto-reset 版在相同种子下**逐字段一致**（等价证明的测试化，不留口头结论）；
-4. `step()` 无隐藏副作用：源码内无 `dev_reset_rows` 调用（依赖方向测试检查）；
-5. 训练冒烟（device collector, 2 updates）正常；
-6. cuda:1 in-process 冒烟仍绿。
+1. ✅ W0 语义核对文档落盘（LIFECYCLE_TRACE.md），D7 草案与 CPU 实测核对无冲突，契约未修订；
+2. ✅ 契约矩阵 17 项全绿（`test_device_lifecycle_contract.py`，FakeBackend）+ warp 关键路径（warp_runtime/rollouter 测试覆盖 capture/restore/导出链）；
+3. ⚠️ **以源码论证代替 A/B 回归**：sealed-ENDED 的等价性证据是 `t_use=term_step` 截断使 mid-wave reset 后数据从未被消费（`device_rollouter._assemble_episode`）——新实现下 ended 行不再产生数据，导出源同一截断点。auto-reset 路径已删除无法同树 A/B；`test_collect_episode_contract`（真 warp 端到端）验证了导出契约完整性。残留风险：若未来 collector 改为消费终止后数据（如 post-termination 观测），等价性论证需重审。
+4. ✅ `BatchRuntime.step()` 内无 reset 调用；reset 仅存在于 `reset()`/`reset_rows()`/`_consume_terminations` 的封存写回；
+5. ✅ 训练冒烟（device collector standup，2 updates）正常，terms={timeout:16}；
+6. ✅ cuda:1 in-process 冒烟（E1 验证，本阶段未回退）。
 
 **明确不在本阶段**：CUDA Graph、多卡（E4）、HOST_SLOW 的完整物化实现（只立 profile 拒绝位）、新任务迁移（E5）、完整故障管理（E6）。

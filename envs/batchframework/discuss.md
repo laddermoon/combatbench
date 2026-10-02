@@ -584,6 +584,18 @@ class BatchRollouter:
 | H4 | 低成本 debug 检查足以发现常见只读/越权写错误 | 故意越权与缓存 mutator 负例，成本测量 | 加强隔离或限定受信任扩展；不宣称 tensor 安全沙箱 |
 | H5 | CPU 子步中止/零帧/终止后 observer 的 Episode 表达可无歧义兼容 | 精确 hook/计数/recorder 对照及现有 trajectory 消费 | 生产迁移拒绝相应 profile；必要时另行讨论 CPU 契约，不能批量侧自改 |
 | H6 | per-job 设备 RNG 可与现策略分布数学及 graph 重放共存 | 重排/分卡/padding 原始随机输入对照、log-prob 与分布检查 | 使用显式能力较弱的开发模式；不伪称分片稳定，原生目标仍待解决 |
+
+> **H4–H6 部分落地（E2，2026-10-02）**：
+> - **H4**：装配期校验已实现（declared_reads/writes、per_hook_mutator
+>   动词收窄、HOST_SLOW 拒绝、observer ctx 无 mutator）；hook 前后
+>   快照比对式 debug 写检查未做——留到有真实越权案例时。
+> - **H5**：子步内终止已可表达且屏障在子步粒度生效（封存于提议
+>   子步、`episode_step` 不 +1）；但"子步内终止的 Episode 导出与
+>   trajectory 消费逐字段核对"仍未完成——collector 当前路径下
+>   终止只发生在 post_action 屏障（无子步插件时），INTRA_ACTION_END
+>   profile 保持 pending。
+> - **H6**：`RngView.unit_seed` 行重排不变性有测试；graph 重放与
+>   log-prob 对照未验（E4/E7 继续）。
 | H7 | 有界 scratch 初始化可忠实实现随机摔倒及部分 reset | 首次命中/速度/非目标保护与分布对照，资源测量 | 降低并发/分波，显式边界同步；不替换初态分布 |
 | H8 | 动作修改后的记录与现有 PPO 训练变量兼容 | 对照 sampled/command/get_action/log_prob 与重算 | 非恒等变换任务拒绝，除非另有经验证的适配 |
 | H9 | 不改 Episode v3 仍可完整对接 provenance/debug | sidecar 保存/加载、dump/viewer 引用检查 | 明确功能缺口；若要改格式另行提案，不偷加不持久字段 |
