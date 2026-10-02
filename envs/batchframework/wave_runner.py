@@ -41,7 +41,8 @@ def run_wave(rt: BatchRuntime,
              T: int,
              timing: Optional[Dict[str, float]] = None,
              sync: Optional[Dict[str, int]] = None,
-             check_every: int = 8) -> None:
+             check_every: int = 8,
+             step_hook=None) -> None:
     """一个 wave：lockstep T 步或全 ENDED 早退。
 
     ``exec_a is exec_b``（self-play 共享）时传 ``ctx_ab``（合并前向）。
@@ -81,6 +82,8 @@ def run_wave(rt: BatchRuntime,
         rt.step((a_a, a_b))
         if timing is not None:
             timing["step"] += time.perf_counter() - tp
+        if step_hook is not None:
+            step_hook(t, rt)          # E6-W2 按需捕获：帧 t 已写完整
         if (t + 1) % check_every == 0 or t == T - 1:
             if sync is not None:
                 sync["early_exit_check"] += 1

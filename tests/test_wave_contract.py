@@ -8,6 +8,7 @@
 - 向量化 exporter 与 ``Episode.from_buffer_frames`` golden 路径
   逐字段等价。
 """
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -391,3 +392,36 @@ def test_job_keyed_action_noise():
     _run_u(rt4, rec4, store4, [20, 21, 22, 11])
     torch.testing.assert_close(store4.act["robot_a"][:, 3],
                                act1["robot_a"][:, 1])
+
+
+def test_debug_capture(tmp_path):
+    """E6-W2：命中 (job,frame) → npz 快照+帧切片 + manifest provenance。"""
+    from envs.batchframework.debug_capture import (
+        CaptureRequest, WaveDebugCapture)
+    sim, rt, store, rec = _make_wave()
+    jobs = [SimpleNamespace(seed=100 + i, episode_options={})
+            for i in range(B)]
+    cap = WaveDebugCapture(
+        CaptureRequest(job_refs=(1, 3), frames=(2,),
+                       out_dir=str(tmp_path)), jobs)
+    cap.set_wave({r: r for r in range(B)}, store, {"binding": "fake"})
+    rt.reset(seeds=torch.arange(B, dtype=torch.int64))
+    rt.obs_builder.build(rt.state)
+    rec.begin_wave()
+    run_wave(rt, _ConstExec(), _ConstExec(), store, stochastic=True,
+             ctx_a=None, ctx_b=None, ctx_ab=None, T=T, step_hook=cap)
+
+    assert len(cap.entries) == 2
+    for e in cap.entries:
+        assert e["wave_step"] == 2 and e["episode_step"] >= 0
+        npz = np.load(tmp_path / e["file"])
+        assert f"obs/{AGENTS[0]}" in npz and f"act/{AGENTS[1]}" in npz
+        assert "obs_out/sum/qsum" in npz
+        assert npz["state/qpos"].shape[-1] == store.obs[AGENTS[0]].shape[-1] - 1
+    mpath = cap.write_manifest(collect_id=1)
+    doc = json.loads(mpath.read_text())
+    assert doc["kind"] == "device_capture"
+    assert doc["collect_id"] == 1
+    assert len(doc["captures"]) == 2
+    assert "git_commit" in doc and "versions" in doc
+    assert doc["provenance"]["binding"] == "fake"

@@ -44,6 +44,7 @@ from envs.framework.blueprint import EnvBlueprint
 from .binding_registry import resolve_binding
 from .coordinator import group_jobs
 from .capability_registry import resolve_observer, resolve_plugin
+from .debug_capture import CaptureRequest, WaveDebugCapture
 from .device_plugin import BaseDevicePlugin
 from .device_runtime import BatchRuntime, DeviceTimeoutPlugin
 from .episode_exporter import export_episode
@@ -152,6 +153,8 @@ class DeviceRollouter:
                            "d2h_export": 0}
         # 最近一次 collect 的资源报告（D10.3：不只报 simulator 显存）
         self.last_collect_report: Dict[str, Any] = {}
+        # collect 调用计数——debug capture manifest 的 collect_id
+        self._collect_count = 0
 
     # ------------------------------------------------------------------
     def _build_runtime(self, env_bp: EnvBlueprint, T: int) -> None:
@@ -197,9 +200,15 @@ class DeviceRollouter:
         return self._executor(bp_dict).policy
 
     # ------------------------------------------------------------------
-    def collect(self, jobs: Sequence[Job]) -> List[Episode]:
+    def collect(self, jobs: Sequence[Job],
+                capture: "Optional[CaptureRequest]" = None
+                ) -> List[Episode]:
         if not jobs:
             raise ValueError("jobs must not be empty")
+
+        self._collect_count += 1
+        cap = (WaveDebugCapture(capture, jobs) if capture is not None
+               else None)
 
         # 同构键分组：env_bp + policy 对 + stochastic（每波内统一；
         # 跨组顺序执行，返回顺序=输入顺序）——键函数与多卡
@@ -242,14 +251,17 @@ class DeviceRollouter:
                 wave_idx = idxs[w0:w0 + B]
                 self._run_wave(g_jobs[w0:w0 + B], wave_idx,
                               efs[w0:w0 + B], exec_a, exec_b,
-                              stochastic, env_bp, rt, T, episodes)
+                              stochastic, env_bp, rt, T, episodes,
+                              jobs, cap)
 
+        if cap is not None:
+            cap.write_manifest(self._collect_count)
         self._write_collect_report()
         return [e for e in episodes]
 
     # ------------------------------------------------------------------
     def _run_wave(self, wave, wave_idx, efs, exec_a, exec_b, stochastic,
-                 env_bp, rt, T, episodes):
+                 env_bp, rt, T, episodes, jobs=None, cap=None):
         sim, rec, store = self._sim, self._recorder, self._store
         B, n = self.batch_size, len(wave)
         st = rt.state
@@ -292,9 +304,20 @@ class DeviceRollouter:
         self.timing["reset"] += time.perf_counter() - t0
 
         rec.begin_wave()
+        hook = None
+        if cap is not None:
+            cap.set_wave({r: gi for r, gi in enumerate(wave_idx)}, store,
+                        {"binding": self._binding.name,
+                         "device": self.device,
+                         "env_bp_hash": blueprint_hash(env_bp),
+                         "exec_a_version": exec_a.version,
+                         "exec_b_version": exec_b.version,
+                         "batch_size": B, "T": T})
+            hook = cap
         run_wave(rt, exec_a, exec_b, store, stochastic=stochastic,
                  ctx_a=ctx_a, ctx_b=ctx_b, ctx_ab=ctx_ab,
-                 T=T, timing=self.timing, sync=self.sync_stats)
+                 T=T, timing=self.timing, sync=self.sync_stats,
+                 step_hook=hook)
         self.timing["n_waves"] += 1
 
         # 波界健康检查：FAILED 行（容量溢出/非有限态）显式失败

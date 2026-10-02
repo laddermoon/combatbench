@@ -20,6 +20,7 @@ worker 内策略缓存沿用 PolicyExecutorCache（有界 LRU）；上行 report
 from __future__ import annotations
 
 import traceback
+from pathlib import Path
 from typing import Any, List
 
 from .coordinator import ShardPlan, ShardResult
@@ -60,12 +61,27 @@ def worker_main(device_index: int, batch_size: int, cmd_q, out_q,
             out_q.put({"kind": "error", "phase": "dispatch",
                        "tb": f"unknown cmd {cmd!r}"})
             continue
-        _, collect_id, shards = msg
+        _, collect_id, shards = msg[:3]
+        capture_req = msg[3] if len(msg) > 3 else None
         try:
             results: List[ShardResult] = []
             for shard in shards:
                 assert isinstance(shard, ShardPlan)
-                eps = dr.collect(list(shard.jobs))
+                cap = None
+                if capture_req is not None:
+                    # 全局 job_ref → shard 内局部下标；out_dir 按 worker
+                    # 分子目录（多卡写同一目录会互相覆盖 manifest）。
+                    from .debug_capture import CaptureRequest
+                    local = tuple(i for i, ref in enumerate(shard.job_refs)
+                                  if ref in capture_req.job_refs)
+                    if local:
+                        cap = CaptureRequest(
+                            job_refs=local, frames=capture_req.frames,
+                            out_dir=str(
+                                Path(capture_req.out_dir)
+                                / f"worker{device_index}"),
+                            level=capture_req.level)
+                eps = dr.collect(list(shard.jobs), capture=cap)
                 # episode_index = 全局 JobRef（dr.collect 给的是 shard
                 # 内局部序号）
                 import dataclasses

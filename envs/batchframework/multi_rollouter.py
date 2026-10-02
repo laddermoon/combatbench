@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from baseline.framework.rollout.episode import Episode
 from baseline.framework.rollout.job import Job
 
+from .debug_capture import CaptureRequest
 from .coordinator import (
     ShardError, ShardPlan, ShardResult, WorkerLost,
     merge_results, plan_shards)
@@ -82,7 +83,9 @@ class MultiDeviceRollouter:
             self.hello.append(msg)
 
     # ------------------------------------------------------------------
-    def collect(self, jobs: Sequence[Job]) -> List[Episode]:
+    def collect(self, jobs: Sequence[Job],
+                capture: Optional["CaptureRequest"] = None
+                ) -> List[Episode]:
         if self._closed:
             raise RuntimeError("MultiDeviceRollouter is closed")
         if not jobs:
@@ -95,7 +98,7 @@ class MultiDeviceRollouter:
 
         t0 = time.perf_counter()
         for w, shards in enumerate(plans):
-            self._cmd_qs[w].put(("collect", cid, shards))
+            self._cmd_qs[w].put(("collect", cid, shards, capture))
         pending = set(range(len(self._procs)))
         results: List[ShardResult] = []
         # 等齐：轮询 queue + 存活检查（死进程 → WorkerLost）
