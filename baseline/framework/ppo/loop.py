@@ -144,6 +144,7 @@ def save_run_config(
     algo: str = "ppo",
     dump_at: Optional[List[int]] = None,
     collector: str = "cpu",
+    collector_devices: str = "",
 ) -> None:
     """Build and save ``run_dir/config.json`` from experiment's public interface."""
     cp = experiment.common_params()
@@ -179,6 +180,7 @@ def save_run_config(
         # Rollout backend provenance — episode_metrics['backend'] marks
         # per-episode origin; this records which collector produced them.
         "collector": collector,
+        "collector_devices": collector_devices,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -575,6 +577,7 @@ def train_ppo(
     dump_full_grad: bool = False,
     collector: str = "cpu",
     collector_batch_size: int = 64,
+    collector_devices: str = "",
 ) -> None:
     """PPO training loop using the ExperimentPPO interface.
 
@@ -729,11 +732,25 @@ def train_ppo(
         # Wave-synchronous batch collector on mujoco-warp — same
         # collect(jobs) -> List[Episode] contract as ParallelRollouter.
         # Unsupported blueprints/specs fail fast at collect time.
-        from envs.batchframework.device_rollouter import DeviceRollouter
-        rollouter = DeviceRollouter(batch_size=collector_batch_size,
-                                    device=str(device))
-        print(f"[collector] device (DeviceRollouter, "
-              f"batch_size={collector_batch_size})", flush=True)
+        dev_list = [int(x) for x in collector_devices.split(",")
+                    if x.strip()]
+        if len(dev_list) > 1:
+            from envs.batchframework.multi_rollouter import (
+                MultiDeviceRollouter)
+            rollouter = MultiDeviceRollouter(
+                devices=dev_list,
+                batch_size_per_worker=collector_batch_size)
+            print(f"[collector] device-multi (MultiDeviceRollouter, "
+                  f"devices={dev_list}, "
+                  f"batch_size/worker={collector_batch_size})",
+                  flush=True)
+        else:
+            from envs.batchframework.device_rollouter import (
+                DeviceRollouter)
+            rollouter = DeviceRollouter(
+                batch_size=collector_batch_size, device=str(device))
+            print(f"[collector] device (DeviceRollouter, "
+                  f"batch_size={collector_batch_size})", flush=True)
     elif collector == "cpu":
         rollouter = ParallelRollouter(
             num_workers=cp.rollout_workers,

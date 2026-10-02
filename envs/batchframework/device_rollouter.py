@@ -42,6 +42,7 @@ from baseline.framework.rollout.job import Job
 from envs.framework.blueprint import EnvBlueprint
 
 from .binding_registry import resolve_binding
+from .coordinator import group_jobs
 from .capability_registry import resolve_observer, resolve_plugin
 from .device_plugin import BaseDevicePlugin
 from .device_runtime import BatchRuntime, DeviceTimeoutPlugin
@@ -201,16 +202,9 @@ class DeviceRollouter:
             raise ValueError("jobs must not be empty")
 
         # 同构键分组：env_bp + policy 对 + stochastic（每波内统一；
-        # 跨组顺序执行，返回顺序=输入顺序）
-        def _key(j: Job):
-            return (json.dumps(j.env_bp.to_dict(), sort_keys=True),
-                    json.dumps(j.policy_a_bp.to_dict(), sort_keys=True),
-                    json.dumps(j.policy_b_bp.to_dict(), sort_keys=True),
-                    bool(j.stochastic))
-
-        groups: Dict[Any, List[int]] = {}
-        for i, j in enumerate(jobs):
-            groups.setdefault(_key(j), []).append(i)
+        # 跨组顺序执行，返回顺序=输入顺序）——键函数与多卡
+        # coordinator 共用（coordinator.homogeneous_key）。
+        groups = group_jobs(jobs)
         for k in self.sync_stats:
             self.sync_stats[k] = 0
 
@@ -218,7 +212,7 @@ class DeviceRollouter:
         for key, idxs in groups.items():
             g_jobs = [jobs[i] for i in idxs]
             env_bp = g_jobs[0].env_bp
-            env_key, _, _, _ = key
+            env_key = key[0]
             T = int(env_bp.max_steps or 0)
             if T <= 0:
                 raise ValueError(

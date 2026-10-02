@@ -140,6 +140,14 @@ def _parse_args() -> argparse.Namespace:
              "Ignored with --collector cpu.",
     )
     parser.add_argument(
+        "--collector-devices", type=str, default="",
+        help="Comma-separated physical GPU indices for multi-device "
+             "rollout workers, e.g. '0,1,2,3'. Only with "
+             "--collector device: >1 index spawns per-device worker "
+             "processes (MultiDeviceRollouter); empty/single keeps "
+             "the in-process DeviceRollouter on the default device.",
+    )
+    parser.add_argument(
         "--set", action="append", default=[], metavar="KEY=VALUE",
         help="Set experiment parameter (can be repeated). For "
              "class-attribute-style experiments each KEY must be a "
@@ -444,6 +452,10 @@ def main() -> None:
         print(f"[error] --collector {args.collector} is only supported "
               f"for --algo ppo", flush=True)
         sys.exit(2)
+    if args.collector_devices and args.collector != "device":
+        print(f"[error] --collector-devices requires --collector device",
+              flush=True)
+        sys.exit(2)
 
     if algo == "sac":
         from baseline.framework.sac.loop import save_run_config_sac
@@ -452,7 +464,8 @@ def main() -> None:
         from baseline.framework.ppo.loop import save_run_config
         save_run_config(experiment, run_dir, smoke=args.smoke, algo=algo,
                         dump_at=sorted(dump_updates),
-                        collector=args.collector)
+                        collector=args.collector,
+                        collector_devices=args.collector_devices)
     print(f"[config] saved to {run_dir / 'config.json'}", flush=True)
     print(f"[algo] {algo.upper()}", flush=True)
     print(f"[log] {log_path}", flush=True)
@@ -492,6 +505,7 @@ def main() -> None:
             dump_full_grad=args.dump_full_grad,
             collector=args.collector,
             collector_batch_size=args.collector_batch_size,
+            collector_devices=args.collector_devices,
         )
 
 
