@@ -1,0 +1,160 @@
+{
+  "blueprint_name": "basic_balance_v2_phi_dual_env.yaml",
+  "experiment_name": "basic_balance",
+  "runtime_fields": {
+    "max_steps": 600,
+    "phy_steps_per_action": 25,
+    "strict": true
+  },
+  "source_bp_hash": "8836ff583cf9a7bc",
+  "units": [
+    {
+      "capability": "native",
+      "cls": "envs.humanoid21.simulator:Humanoid21Simulator",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "debug_torque",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_distance",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_pose_a",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_pose_b",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "Humanoid21Simulator",
+      "stale": false,
+      "unit_hash": "1f74cbbc2d44278e"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.plugins.imbalance_termination:DualImbalanceTerminationPlugin",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "force_threshold",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "tolerance",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "DualImbalanceTerminationPlugin",
+      "stale": false,
+      "unit_hash": "68d2e1dd5924f399"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "cross_support_a",
+      "stale": false,
+      "unit_hash": "f79e0065705bbcbc"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "cross_support_b",
+      "stale": false,
+      "unit_hash": "a6f4aca37303c11d"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.rewards.posture_reward:PostureRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "posture_a",
+      "stale": false,
+      "unit_hash": "3171eac23d3778ae"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.rewards.posture_reward:PostureRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "posture_b",
+      "stale": false,
+      "unit_hash": "14b438929b81f3b8"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "height_phi_a",
+      "stale": false,
+      "unit_hash": "7aad95a4ab916316"
+    },
+    {
+      "capability": "unsupported",
+      "cls": "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "height_phi_b",
+      "stale": false,
+      "unit_hash": "d9bbea90a374b68d"
+    }
+  ]
+}

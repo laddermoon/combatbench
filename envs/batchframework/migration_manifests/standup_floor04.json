@@ -1,0 +1,106 @@
+{
+  "blueprint_name": "standup_4stage_dense_v2_env.yaml",
+  "experiment_name": "standup_floor04",
+  "runtime_fields": {
+    "max_steps": 200,
+    "phy_steps_per_action": 25,
+    "strict": true
+  },
+  "source_bp_hash": "291ac4ca0eac6d4b",
+  "units": [
+    {
+      "capability": "native",
+      "cls": "envs.humanoid21.simulator:Humanoid21Simulator",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "debug_torque",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_distance",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_pose_a",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "initial_pose_b",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "Humanoid21Simulator",
+      "stale": false,
+      "unit_hash": "1f74cbbc2d44278e"
+    },
+    {
+      "capability": "native",
+      "cls": "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "height_threshold",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "max_phy_steps",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "reset_interval",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "target_robots",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "RandomFallenStatePlugin",
+      "stale": false,
+      "unit_hash": "cf3c5432364dd963"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "standing_balance_a",
+      "stale": false,
+      "unit_hash": "161efade10533678"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "",
+      "evidence": [],
+      "name": "standing_balance_b",
+      "stale": false,
+      "unit_hash": "2206b0855845c92d"
+    }
+  ]
+}

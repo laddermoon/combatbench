@@ -52,3 +52,5 @@ obsolete
 *.json
 # M1 验证参考样例是受控证据，需要入库
 !envs/batchframework/validation_fixtures/*.json
+# E5 迁移 manifest 是可追踪证据，需要入库
+!envs/batchframework/migration_manifests/*.json
