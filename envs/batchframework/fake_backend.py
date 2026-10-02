@@ -140,8 +140,10 @@ class FakeBatchBackend:
         st = self.build_device_state()
         st.io.action_a.copy_(action_a.clamp(-1.0, 1.0))
         st.io.action_b.copy_(action_b.clamp(-1.0, 1.0))
-        st.sim.act_target[:, :self.ACTION_DIM] = st.io.action_a
-        st.sim.act_target[:, self.ACTION_DIM:] = st.io.action_b
+        na = min(self.ACTION_DIM, self.NU)
+        nb = max(0, self.NU - na)
+        st.sim.act_target[:, :na] = st.io.action_a[:, :na]
+        st.sim.act_target[:, na:na + nb] = st.io.action_b[:, :nb]
 
     def dev_add_ext_force(self, body_id: int, force, torque=None) -> None:
         self._pend[:, body_id, :3] += force

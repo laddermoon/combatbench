@@ -86,6 +86,10 @@ class BatchRuntime:
         self._seal_snap: Optional[Dict[str, torch.Tensor]] = None
         self._mutator = DeviceMutator(sim)
         self.dispatcher = DeviceObserverDispatcher()
+        # 同步点分类记账（E3-W5）：每个 host sync（bool(.any())/D2H 读回）
+        # 记一类——先显式计量，优化归 E7。
+        self.sync_stats = {"term_barrier": 0, "freeze_check": 0,
+                           "any_running": 0, "reset": 0}
         self.attach(self.dispatcher)
 
     # ------------------------------------------------------------------
@@ -254,6 +258,7 @@ class BatchRuntime:
               options: Optional[Dict[str, Any]] = None) -> None:
         """全量 reset 所有 env。"""
         st = self.state
+        self.sync_stats["reset"] += 1
         seeds_np = None if seeds is None else np_seeds(seeds)
         self.sim.reset(seeds=seeds_np, options=options)
         st.reset_episode_rows(
@@ -340,6 +345,7 @@ class BatchRuntime:
         st = self.state
         ep = st.episode
 
+        self.sync_stats["term_barrier"] += 1
         # reset_request → 等价 CPU reset-while-active：对全员提 "abandoned"
         rr = ep.reset_request & ep.world_running & ep.slot_valid
         if bool(rr.any()):
@@ -393,6 +399,7 @@ class BatchRuntime:
         """
         ep = self.state.episode
         sealed = ep.slot_valid & ~ep.world_running
+        self.sync_stats["freeze_check"] += 1
         if self._seal_snap is None or not bool(sealed.any()):
             return
         dense = {k: b[sealed] for k, b in self._seal_snap.items()}
@@ -433,6 +440,7 @@ class BatchRuntime:
 
     def any_running(self) -> bool:
         """是否仍有 RUNNING 行（collector 波提前退出判断；低频）。"""
+        self.sync_stats["any_running"] += 1
         ep = self.state.episode
         return bool((ep.world_running & ep.slot_valid).any())
 

@@ -212,6 +212,11 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
     def on_post_episode(self, ctx: DeviceCtx) -> None:
         pass  # 输出缓存由下一步重建；episode 汇总由采集端负责
 
+    @property
+    def output_schema(self):
+        """OUT_KEYS 全部为 (B,) f32 标量叶——RecordStore 据此预分配。"""
+        return {k: (torch.float32, ()) for k in OUT_KEYS}
+
     def get_output(self) -> Dict[str, torch.Tensor]:
         """dict of (B,) 张量；首次 build 前为 None。"""
         return self._out

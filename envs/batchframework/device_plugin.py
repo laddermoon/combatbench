@@ -387,6 +387,15 @@ class BaseDeviceObserver:
     def on_envs_reset(self, ctx: DeviceCtx) -> None:
         return None
 
+    @property
+    def output_schema(self):
+        """``{leaf: (dtype, shape_suffix)}``——声明式输出契约（E3-W3）。
+
+        ``None`` = 未声明（兼容路径：RecordStore 只收 (B,) 张量叶）。
+        声明后 store 校验每帧每叶存在且形状匹配，缺失/不符即报错。
+        """
+        return None
+
     def get_output(self) -> Any:
         raise NotImplementedError
 
