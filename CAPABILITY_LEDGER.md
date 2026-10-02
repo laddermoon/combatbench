@@ -45,17 +45,16 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 
 ## Almost-Done List (priority candidates to finish)
 
-- `envs/framework/tests/` — 157 pass / 3 fail / 5 collection errors; stale
-  tests for deliberately-removed APIs. Fix = small mechanical pass
-  (see AUDIT.md S1–S5). Pending user decision.
-- `envs/framework/CONTEXT.md` — stale throughout (describes removed
-  `parallel_runner.py`/`runtime_plugin.py`/old runner API). Rewrite or merge
-  into README. Pending user decision.
-- `episode_runner.py` docstring references removed `parallel_runner` (line ~46).
-- `get_termination_flags()` — referenced as public API in 6 docs
-  (README.md/README_zh.md/CLAUDE.md/envs/framework README+CONTEXT+DESIGN)
-  but does not exist; real API: `is_episode_over()`/`get_agent_termination()`
-  (AUDIT P-FW-1).
+- ~~`envs/framework/tests/` stale tests~~ — **DONE**: now 216 pass / 0 fail /
+  0 collection errors (S1–S5 applied; dead-API test files removed, new
+  `test_episode_runner_behaviors.py` covers the thin-runner contract).
+- ~~`envs/framework/CONTEXT.md` stale~~ — **DONE**: rewritten against current
+  API (S6).
+- ~~`episode_runner.py` docstring `parallel_runner` ref~~ — **DONE** (S7).
+- ~~`get_termination_flags()` in docs~~ — **DONE**: all 6 stale references
+  replaced with `is_episode_over()`/`is_agent_active()`/`get_agent_termination()`
+  (README.md + README_zh.md + CLAUDE.md + envs/framework README/CONTEXT/DESIGN;
+  remaining hits are intentional audit-record mentions).
 - `ctx._simulator` sandbox bypass — raw simulator reachable from read-only
   hooks (AUDIT P-FW-4).
 

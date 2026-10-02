@@ -1802,3 +1802,25 @@ KL 滑窗跨 epoch 的设计理由全部对得上）。本区问题集中在**�
 **备注**：顺带发现 `run_episode` 的 hold 分支中 `last_action_a is None`
 RuntimeError 实际不可达（`a_active` 恒从 True 起步，首轮必然先调
 `act`）——属防御性死代码，已用测试锁存当前语义，未改实现。
+
+## [2026-10-01] P-FW-1 残留清理：README_zh.md
+
+**对象**：`README_zh.md`
+**类别**：修复执行（用户要求查 P-FW-1 是否还有未修到的）
+
+**做了什么**：
+
+- 复查 `grep -rn get_termination_flags`：6 处原文档中 5 处已修，
+  **README_zh.md:59 漏修**（上一轮只改了英文版）。已按英文版同款改法
+  修复为 `is_episode_over()`/`is_agent_active()`/`get_agent_termination()`。
+- 顺带发现 README_zh 还有与英文版同一批的滞后点，一并对齐：
+  L80 课程段改为指向 `experiments_ppo/README.md` + `ppo/GUIDE.md`
+  （curriculum 标注归档）；快速开始 Python 段补 P-POL-1 失效 import
+  提示；目录结构补 `framework/`+`experiments_ppo/`、rewards 改 20+、
+  runs 改 800+、assets 描述修正；"开发自己的策略"文档清单中
+  curriculum/OBSERVABILITY 死链替换为当前活文档。
+- `CAPABILITY_LEDGER.md` Almost-Done 清单中 4 条已办事项标记 DONE。
+
+**结果/证据**：`grep -rn get_termination_flags` 现仅剩 3 类有意保留的
+命中：CONTEXT.md 的"该 API 已移除"提示、AUDIT.md 审计记录、
+CAPABILITY_LEDGER 历史条目。
