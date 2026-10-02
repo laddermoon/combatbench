@@ -634,3 +634,80 @@ class TestHeightPhi:
         assert out["initial_phi"][0].item() == pytest.approx(1.0)
         assert out["initial_phi"][1].item() == pytest.approx(
             0.0 * (0.5 / 1.28), abs=1e-6)
+
+
+# ===========================================================================
+# W3 端到端：basic_balance blueprint 真机 collect（GPU-gated）
+# ===========================================================================
+_MAX_STEPS_E2E = 64
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+class TestBasicBalanceE2E:
+    """device collect → Episode 契约 + build_trajectories 无差别消费。"""
+
+    @pytest.fixture(scope="class")
+    def env_bp(self):
+        from envs.framework.parameterized_blueprint import (
+            ParameterizedEnvBlueprint)
+        pb = ParameterizedEnvBlueprint.load(
+            project_root / "baseline/humanoid21/blueprints"
+            / "basic_balance_v2_phi_dual_env.yaml")
+        return pb.materialize(max_steps=_MAX_STEPS_E2E)
+
+    @pytest.fixture(scope="class")
+    def policy_bp(self, tmp_path_factory):
+        from baseline.framework.ppo.policies.truncated_normal_mlp import (
+            TruncatedNormalPolicy)
+        pol = TruncatedNormalPolicy(obs_dim=96, action_dim=21,
+                                    hidden_dim=256, device="cpu")
+        dest = tmp_path_factory.mktemp("pol") / "export"
+        return pol.to_blueprint(str(dest))
+
+    def _jobs(self, env_bp, policy_bp, n, seed0=0):
+        from baseline.framework.rollout.job import Job, SamplingSpec
+        return [Job(policy_a_bp=policy_bp, policy_b_bp=policy_bp,
+                    env_bp=env_bp, seed=seed0 + i,
+                    episode_options={"initial_distance": 2.0 + 0.05 * i},
+                    sampling_a=SamplingSpec(0.0), sampling_b=SamplingSpec(0.0),
+                    stochastic=True)
+                for i in range(n)]
+
+    def test_collect_and_trajectories(self, env_bp, policy_bp):
+        from envs.batchframework.device_rollouter import DeviceRollouter
+        from baseline.experiments_ppo.exp_basic_balance import BasicBalance
+
+        with DeviceRollouter(batch_size=4) as dr:
+            eps = dr.collect(self._jobs(env_bp, policy_bp, 4))
+        assert len(eps) == 4
+        for i, ep in enumerate(eps):
+            assert ep.episode_index == i
+            assert ep.base_seed == i
+            assert ep.num_frames >= 1
+            for rid in ("robot_a", "robot_b"):
+                T = ep.num_frames
+                assert ep.observations[rid].shape == (T, 96)
+                assert ep.actions[rid].shape == (T, 21)
+                assert ep.final_observation[rid].shape == (96,)
+                # per-agent 终止记录结构合法
+                recs = ep.agent_termination_proposal_records[rid]
+                assert all(isinstance(r, str) and isinstance(s, int)
+                           for r, s in recs)
+            # observer 键位与实验消费名一致
+            for name in ("cross_support_a", "cross_support_b",
+                         "posture_a", "posture_b",
+                         "height_phi_a", "height_phi_b"):
+                assert name in ep.observer_outputs, name
+            phi_a = ep.observer_outputs["height_phi_a"]
+            assert np.asarray(phi_a["phi"]).shape == (ep.num_frames,)
+            cross_a = ep.observer_outputs["cross_support_a"]
+            assert "reward" in cross_a
+            assert np.asarray(cross_a["reward"]).shape == (ep.num_frames,)
+
+        trajs = BasicBalance().build_trajectories(eps)
+        assert len(trajs) > 0
+        for t in trajs:
+            assert "r_fall" in t.channels and "r_cross" in t.channels
+            assert t.obs.shape[1] == 96 and t.actions.shape[1] == 21
+            assert np.isfinite(t.channels["r_fall"].reward).all()
+            assert np.isfinite(t.channels["r_cross"].reward).all()
