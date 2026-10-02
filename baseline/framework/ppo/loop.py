@@ -210,6 +210,7 @@ def save_checkpoint(
     prev_gvec: Optional[np.ndarray] = None,
     n_evals_done: int = 0,
     param_overrides: Optional[Dict[str, Any]] = None,
+    rollout_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     # A4: Atomic checkpoint write.  Write to a temporary file then rename,
@@ -247,6 +248,10 @@ def save_checkpoint(
                     else []
                 ),
             },
+            # E6-W4：rollout 侧身份——collector 拓扑/executor 版本/
+            # manifest 新鲜度。resume 时逐项校验，拓扑变更显式拒绝，
+            # 不静默沿用旧验证。
+            "rollout_state": dict(rollout_state or {}),
             # Loop-local state that is not derivable from the model:
             # prev_gvec feeds the next update's grad_sig_dir_cos;
             # n_evals_done keeps video cadence aligned.
@@ -261,6 +266,34 @@ def save_checkpoint(
         tmp_path,
     )
     os.replace(tmp_path, ckpt_path)
+
+
+def _check_resume_rollout(saved: Optional[Dict[str, Any]],
+                          collector: str, collector_devices: str,
+                          collector_batch_size: int,
+                          warn_only: bool = False) -> None:
+    """E6-W4：resume 时校验 rollout 拓扑与 checkpoint 一致性。
+
+    任一已记录字段漂移（collector 类型/设备集合/批大小）→ RuntimeError
+    ——拓扑变更的"恢复"实际上是新实验，不能沿用旧验证标签。
+    ``warn_only``：旧 checkpoint 无 rollout_state → 打印警告不阻断。
+    """
+    if not saved:
+        if warn_only:
+            print("[resume] checkpoint predates rollout_state "
+                  "provenance — collector topology not validated",
+                  flush=True)
+        return
+    cur = {"collector": collector,
+           "collector_devices": collector_devices,
+           "collector_batch_size": collector_batch_size}
+    mismatched = {k: (saved.get(k), v) for k, v in cur.items()
+                  if saved.get(k) is not None and saved.get(k) != v}
+    if mismatched:
+        raise RuntimeError(
+            f"[resume] rollout topology changed {mismatched} — refusing "
+            f"to resume with a different collector configuration; "
+            f"start a fresh run instead")
 
 
 def _pad_input_dims(
@@ -483,6 +516,8 @@ def load_checkpoint(
                 prev_gvec = None
             resume_ctx["prev_gvec"] = prev_gvec
             resume_ctx["n_evals_done"] = int(loop_state.get("n_evals_done", 0))
+        # E6-W4：rollout 侧身份回传给 run() 做拓扑校验
+        resume_ctx["rollout_state"] = payload.get("rollout_state")
 
     # Return the next update to run.  The checkpoint stores the update
     # that was *completed* and saved; resuming should start from the next
@@ -760,6 +795,25 @@ def train_ppo(
               f"workers={cp.rollout_workers})", flush=True)
     else:
         raise ValueError(f"unknown collector {collector!r}")
+
+    # E6-W4：恢复拓扑校验——collector 类型/设备集合/批大小与 checkpoint
+    # 不一致 → 显式拒绝，不静默沿用旧验证。executor 版本由 checkpoint
+    # 权重一致性覆盖；manifest 新鲜度由 rollouter 装配期自查。
+    saved_rs = resume_ctx.get("rollout_state")
+    _check_resume_rollout(saved_rs, collector, collector_devices,
+                          collector_batch_size,
+                          warn_only=(resume_from is not None
+                                     and not saved_rs))
+
+    def _rollout_state() -> Dict[str, Any]:
+        """checkpoint 的 rollout 侧身份：拓扑 + 最近 collect 的
+        executor 版本/manifest 新鲜度（E6-W4）。"""
+        rep = getattr(rollouter, "last_collect_report", {}) or {}
+        return {"collector": collector,
+                "collector_devices": collector_devices,
+                "collector_batch_size": collector_batch_size,
+                "policy_versions": rep.get("policy_versions"),
+                "manifest": rep.get("manifest")}
 
     with rollouter:
         # Policy-version export stream — ``policy_exports/uNNNNN`` is
@@ -1103,6 +1157,7 @@ def train_ppo(
                         prev_gvec=prev_gvec,
                         n_evals_done=n_evals_done,
                         param_overrides=applied_ovr,
+                        rollout_state=_rollout_state(),
                     )
                     # The round did complete its training — report this
                     # update's artifacts before breaking.
@@ -1232,6 +1287,7 @@ def train_ppo(
                     prev_gvec=prev_gvec,
                     n_evals_done=n_evals_done,
                     param_overrides=applied_ovr,
+                    rollout_state=_rollout_state(),
                 )
 
             # 9. Logging — framework-computed stats from Trajectory + Episode.

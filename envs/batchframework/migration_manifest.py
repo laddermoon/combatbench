@@ -21,7 +21,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from envs.framework.blueprint import EnvBlueprint
 
@@ -187,3 +187,50 @@ class MigrationManifest:
                    runtime_fields=d.get("runtime_fields", {}),
                    units=[UnitManifest.from_dict(u)
                           for u in d.get("units", [])])
+
+
+# ---------------------------------------------------------------------------
+# 运行时查询（E6-W4）：collect/resume 路径的过期证据检测
+# ---------------------------------------------------------------------------
+def check_manifest(m: MigrationManifest, env_bp) -> Dict[str, Any]:
+    """manifest × live blueprint → 新鲜度判定。
+
+    ``blueprint_drift``：整体指纹变了但单元全部新鲜——如 max_steps
+    变化（runtime 字段，不属单元证据范围），证据仍然有效但如实标注。
+    ``stale_units``：单元 cls+config 漂移——过期证据，不可沿用。
+    """
+    from .migration_audit import _unit_hash
+    bp_hash = _unit_hash("blueprint", env_bp.to_dict())
+    stale = m.validate_freshness(env_bp)
+    return {"experiment": m.experiment_name,
+            "blueprint": m.blueprint_name,
+            "source_bp_hash": m.source_bp_hash,
+            "blueprint_drift": bp_hash != m.source_bp_hash,
+            "stale_units": stale,
+            "fresh": not stale}
+
+
+def find_manifest_for(env_bp) -> Optional[MigrationManifest]:
+    """在 MANIFEST_DIR 中找适用于该 blueprint 的 manifest。
+
+    判定：manifest 记录的全部单元都能在 live blueprint 中解析到
+    （simulator cls 相同 + observer 名/plugin cls 均在）——不匹配
+    即视为该 manifest 与此 blueprint 无关。无匹配返回 None。
+    """
+    for p in sorted(MANIFEST_DIR.glob("*.json")):
+        try:
+            m = MigrationManifest.load(p)
+        except Exception:
+            continue
+        live_by_name = dict(env_bp.observer_plugins)
+        live_cls = {s.cls for s in env_bp.plugins}
+        live_cls.add(env_bp.simulator.cls)
+        ok = True
+        for u in m.units:
+            if u.role == "observer":
+                ok &= u.name in live_by_name
+            else:
+                ok &= u.cls in live_cls
+        if ok and m.units:
+            return m
+    return None

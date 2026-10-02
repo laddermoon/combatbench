@@ -87,5 +87,38 @@ def run_wave(rt: BatchRuntime,
         if (t + 1) % check_every == 0 or t == T - 1:
             if sync is not None:
                 sync["early_exit_check"] += 1
+                sync["health_scan"] = sync.get("health_scan", 0) + 1
+            _health_scan(rt)
             if not rt.any_running():
                 break
+
+
+def _health_scan(rt: BatchRuntime) -> None:
+    """E6-W5：容量溢出与非有限态检测（挂在既有检查 cadence 上）。
+
+    - contacts：per-world 活跃接触数 ≥ cap → 该 world 静默截断可能
+      （warp 全局 capped，per-world 饱和是唯一可检信号）→ FAILED(capacity)；
+    - 非有限：qpos/qvel 出现 NaN/Inf → FAILED(non_finite)。
+    行级隔离，不影响其他行；FAILED 行在波末健康检查显式报错。
+    """
+    st = rt.state
+    ep = st.episode
+    running = ep.world_running & ep.slot_valid
+    if not bool(running.any()):
+        return
+
+    cf = getattr(st.sim, "contacts_flat", None)
+    if cf is not None and cf.worldid is not None:
+        n = int(cf.n_active.reshape(()).item())  # 已在 sync 点，无额外成本
+        if n > 0:
+            counts = torch.bincount(
+                cf.worldid[:n].long(), minlength=st.batch_size)
+            over = (counts >= cf.cap_per_world) & running
+            if bool(over.any()):
+                rt.mark_failed(
+                    torch.nonzero(over).squeeze(-1), "capacity")
+
+    bad = (~torch.isfinite(st.sim.qpos).all(dim=-1)
+           | ~torch.isfinite(st.sim.qvel).all(dim=-1)) & running
+    if bool(bad.any()):
+        rt.mark_failed(torch.nonzero(bad).squeeze(-1), "non_finite")

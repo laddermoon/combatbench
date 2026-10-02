@@ -90,3 +90,51 @@ def test_evidence_levels_guarded():
         u.add_evidence("bogus_level", True)
     u.add_evidence("e2e_collect", True, detail="4 eps contract ok")
     assert u.evidence[0].level == "e2e_collect"
+
+
+# ===========================================================================
+# E6-W4：运行时 manifest 新鲜度 + resume 拓扑校验
+# ===========================================================================
+def test_find_and_check_manifest_for_basic_balance():
+    """materialize(max_steps=不同) → 单元仍 fresh，blueprint 漂移如实标注。"""
+    from envs.batchframework.migration_manifest import (
+        check_manifest, find_manifest_for)
+    env_bp = _bp(max_steps=64)
+    m = find_manifest_for(env_bp)
+    assert m is not None and m.experiment_name == "basic_balance"
+    st = check_manifest(m, env_bp)
+    assert st["fresh"] and not st["stale_units"]
+    # 测试 bp 以 max_steps=64 materialize → 整体指纹漂移但单元有效
+    assert st["blueprint_drift"] is True
+
+
+def test_manifest_unrelated_blueprint():
+    """剔除一个 manifest 单元 → 该 manifest 不再适用（返回 None 或走
+    stale 判定而非误配）。"""
+    import dataclasses
+    from envs.batchframework.migration_manifest import find_manifest_for
+    env_bp = _bp()
+    spec = env_bp.observer_plugins["posture_a"]
+    bp2 = dataclasses.replace(
+        env_bp,
+        observer_plugins={k: v for k, v in env_bp.observer_plugins.items()
+                          if k != "posture_a"})
+    m = find_manifest_for(bp2)
+    # posture_a 缺失 → basic_balance manifest 不适用；standup manifest
+    # 也不含该单元 → None
+    assert m is None or m.experiment_name != "basic_balance"
+
+
+def test_resume_rollout_topology_check():
+    from baseline.framework.ppo.loop import _check_resume_rollout
+    saved = {"collector": "device", "collector_devices": "0,1",
+             "collector_batch_size": 64}
+    # 一致 → 通过
+    _check_resume_rollout(saved, "device", "0,1", 64)
+    # 拓扑变更 → 拒绝
+    with pytest.raises(RuntimeError, match="topology changed"):
+        _check_resume_rollout(saved, "device", "0", 64)
+    with pytest.raises(RuntimeError, match="topology changed"):
+        _check_resume_rollout(saved, "cpu", "", 64)
+    # 无 rollout_state 的旧 checkpoint → warn_only 不抛
+    _check_resume_rollout(None, "device", "0,1", 64, warn_only=True)

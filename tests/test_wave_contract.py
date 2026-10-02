@@ -425,3 +425,63 @@ def test_debug_capture(tmp_path):
     assert len(doc["captures"]) == 2
     assert "git_commit" in doc and "versions" in doc
     assert doc["provenance"]["binding"] == "fake"
+
+
+def test_health_scan_marks_nan_failed():
+    """E6-W5：非有限状态 → FAILED(non_finite)，行封存不产空 Episode。"""
+    sim, rt, store, rec = _make_wave()
+    rt.reset(seeds=torch.arange(B, dtype=torch.int64))
+    rt.obs_builder.build(rt.state)
+    rec.begin_wave()
+
+    def poison(t, rt_):
+        if t == 1:
+            rt_.state.sim.qpos[2] = float("nan")   # 注入行 2 NaN
+
+    run_wave(rt, _ConstExec(), _ConstExec(), store, stochastic=True,
+             ctx_a=None, ctx_b=None, ctx_ab=None, T=T, step_hook=poison)
+    assert bool(rt.failed_mask[2])
+    assert int(rt.state.episode.fail_reason[2]) == 1   # non_finite
+    # 其余行不受影响、正常终了
+    assert not bool(rt.failed_mask[0])
+    assert not bool(rt.state.episode.world_running[2])
+
+
+def test_health_scan_contact_overflow():
+    """E6-W5：per-world 活跃接触 ≥ cap → FAILED(capacity)，不静默截断。"""
+    from types import SimpleNamespace as NS
+    sim, rt, store, rec = _make_wave()
+    rt.reset(seeds=torch.arange(B, dtype=torch.int64))
+    rt.obs_builder.build(rt.state)
+    rec.begin_wave()
+    st = rt.state
+    cap = 4
+    # 行 1 恰好 cap 个活跃接触（== 饱和 → 可能溢出，按 capacity 报）
+    n_act = cap + 2
+    st.sim.contacts_flat = NS(
+        worldid=torch.tensor([1] * cap + [0, 0]),
+        n_active=torch.tensor(n_act, dtype=torch.int32),
+        cap_per_world=cap,
+        dist=torch.zeros(n_act), geom=None, pos=None, frame=None,
+        dim=None, efc_address=None, efc_force=None)
+
+    run_wave(rt, _ConstExec(), _ConstExec(), store, stochastic=True,
+             ctx_a=None, ctx_b=None, ctx_ab=None, T=T)
+    assert bool(rt.failed_mask[1])
+    assert int(rt.state.episode.fail_reason[1]) == 0   # capacity
+    assert not bool(rt.failed_mask[0])
+
+
+def test_repeated_wave_store_bounded():
+    """E6-W5：重复波次 RecordStore 缓冲恒定，无无界增长。"""
+    sim, rt, store, rec = _make_wave()
+    n0 = store.n_bytes()
+    for _ in range(3):
+        rt.reset(seeds=torch.arange(B, dtype=torch.int64))
+        rt.obs_builder.build(rt.state)
+        rec.begin_wave()
+        run_wave(rt, _ConstExec(), _ConstExec(), store,
+                 stochastic=True, ctx_a=None, ctx_b=None,
+                 ctx_ab=None, T=T)
+        store.finalize(rt.state.episode, rt.state.io)
+    assert store.n_bytes() == n0

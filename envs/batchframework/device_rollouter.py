@@ -155,6 +155,10 @@ class DeviceRollouter:
         self.last_collect_report: Dict[str, Any] = {}
         # collect 调用计数——debug capture manifest 的 collect_id
         self._collect_count = 0
+        # 装配期 manifest 新鲜度判定（E6-W4）；无 manifest → None
+        self._manifest_status: Optional[Dict[str, Any]] = None
+        # host Episode 导出累计字节（E6-W5 预算记账）
+        self._host_export_bytes = 0
 
     # ------------------------------------------------------------------
     def _build_runtime(self, env_bp: EnvBlueprint, T: int) -> None:
@@ -191,6 +195,21 @@ class DeviceRollouter:
         self._io_schema = io_schema
         self._recorder, self._store = rec, store
         self._env_key = json.dumps(env_bp.to_dict(), sort_keys=True)
+        # E6-W4：迁移 manifest 新鲜度——单元证据过期（cls/config 漂移）
+        # 在执行前拒绝，不静默沿用；blueprint 整体漂移（如 max_steps）
+        # 只标注进 report（runtime 字段不属单元证据范围）。
+        from .migration_manifest import check_manifest, find_manifest_for
+        self._manifest_status = None
+        m = find_manifest_for(env_bp)
+        if m is not None:
+            st_ = check_manifest(m, env_bp)
+            self._manifest_status = st_
+            if st_["stale_units"]:
+                raise RuntimeError(
+                    f"migration manifest stale: units "
+                    f"{st_['stale_units']} changed since evidence was "
+                    f"recorded (experiment={st_['experiment']!r}) — "
+                    f"re-run validation before executing on device")
 
     def _executor(self, bp_dict: Dict[str, Any]) -> PolicyExecutor:
         return self._policies.get(bp_dict, self.device)
@@ -216,6 +235,7 @@ class DeviceRollouter:
         groups = group_jobs(jobs)
         for k in self.sync_stats:
             self.sync_stats[k] = 0
+        self._host_export_bytes = 0
 
         episodes: List[Optional[Episode]] = [None] * len(jobs)
         for key, idxs in groups.items():
@@ -346,6 +366,14 @@ class DeviceRollouter:
                      for name, bufs in store.obs_out.items()},
             env_term=store.env_term_step.cpu().numpy(),
         )
+        # E6-W5：host 导出峰值记账——不只报 simulator 显存
+        self._host_export_bytes += sum(
+            v.nbytes for d in
+            (np_bufs["obs"], np_bufs["act"], np_bufs["log_prob"],
+             np_bufs["final_obs"])
+            for v in d.values()) + sum(
+                leaf.nbytes for bufs in np_bufs["obs_out"].values()
+                for leaf in bufs.values())
         # 插件 episode 指标——显式 schema 导出（W4），不嗅探 pool 键名
         metrics_np = {k: v.detach().cpu().numpy()
                       for k, v in rt.export_episode_metrics().items()}
@@ -368,6 +396,8 @@ class DeviceRollouter:
                    else {})
         self.last_collect_report = {
             "record_store_bytes": self._store.n_bytes(),
+            "host_export_bytes": self._host_export_bytes,
+            "manifest": self._manifest_status,
             "policy_versions": sorted({ex.version for _, (_, ex)
                                        in self._policies._items.items()}),
             "binding": self._binding.name if self._binding else None,
