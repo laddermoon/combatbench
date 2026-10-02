@@ -31,6 +31,10 @@ class CapabilityEntry:
     factory: Optional[Callable[..., Any]] = None   # (config, **ctx) → plugin
     adapter: Optional[str] = None                  # "batch" | "legacy" | "observer"
     note: str = ""
+    # {config_key: 处置说明}——blueprint config 里**不在**单元构造签名
+    # 中的键必须在此显式解释（如 "由 from_blueprint 消费"/"无设备语义，
+    # 已确认忽略"），否则 migration_audit 判定为 unknown 处置失败。
+    config_notes: Optional[Dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +63,30 @@ REGISTRY: Dict[str, CapabilityEntry] = {
         CapabilityEntry(Capability.UNSUPPORTED,
                         note="不在 standup_4stage_dense_v2 蓝图内；"
                              "需要时显式做原生转换"),
+    # --- basic_balance 目标实验（E5 迁移，验收见 E5_PLAN §放行） ---
+    "baseline.humanoid21.plugins.imbalance_termination"
+    ":DualImbalanceTerminationPlugin":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_dual_imbalance(
+                            cfg, **kw),
+                        note="DeviceDualImbalancePlugin；逐 agent 终止，"
+                             "接触判定逐字段对齐（fp32 近似）"),
+    "baseline.humanoid21.rewards.cross_support"
+    ":CrossSupportBalanceRewarder":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_cross_support(
+                            cfg, **kw),
+                        note="DeviceCrossSupportObserver；状态机张量化"),
+    "baseline.humanoid21.rewards.posture_reward:PostureRewarder":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_posture(cfg, **kw),
+                        note="DevicePostureObserver；"
+                             "STANDING_JOINT_POS 引用 CPU 常量"),
+    "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_height_phi(
+                            cfg, **kw),
+                        note="DeviceHeightPhiObserver"),
 }
 
 
@@ -90,6 +118,45 @@ def _mk_standup_rewarder(cfg, sim=None, **_kw):
     aid = cfg.get("agent_id", "robot_a")
     return DeviceStandup4StageRewarder.from_sim(
         sim, 0 if aid == "robot_a" else 1)
+
+
+def _mk_dual_imbalance(cfg, sim=None, **_kw):
+    from .device_balance import DeviceDualImbalancePlugin
+    if sim is None:
+        raise ValueError("DeviceDualImbalancePlugin factory requires sim=")
+    return DeviceDualImbalancePlugin.from_sim(
+        sim,
+        force_threshold=float(cfg.get("force_threshold", 1.0)),
+        tolerance=int(cfg.get("tolerance", 1)),
+        min_height=float(cfg.get("min_height", 0.0)))
+
+
+def _mk_cross_support(cfg, sim=None, **_kw):
+    from .device_balance import DeviceCrossSupportObserver
+    if sim is None:
+        raise ValueError("DeviceCrossSupportObserver factory requires sim=")
+    aid = cfg.get("agent_id", "robot_a")
+    params = {k: v for k, v in cfg.items() if k != "agent_id"}
+    return DeviceCrossSupportObserver.from_sim(
+        sim, 0 if aid == "robot_a" else 1, **params)
+
+
+def _mk_posture(cfg, sim=None, **_kw):
+    from .device_balance import DevicePostureObserver
+    if sim is None:
+        raise ValueError("DevicePostureObserver factory requires sim=")
+    aid = cfg.get("agent_id", "robot_a")
+    return DevicePostureObserver.from_sim(sim, 0 if aid == "robot_a" else 1)
+
+
+def _mk_height_phi(cfg, sim=None, **_kw):
+    from .device_balance import DeviceHeightPhiObserver
+    if sim is None:
+        raise ValueError("DeviceHeightPhiObserver factory requires sim=")
+    aid = cfg.get("agent_id", "robot_a")
+    return DeviceHeightPhiObserver.from_sim(
+        sim, 0 if aid == "robot_a" else 1,
+        standing_height=float(cfg.get("standing_height", 1.28)))
 
 
 def register(cls_path: str, entry: CapabilityEntry) -> None:

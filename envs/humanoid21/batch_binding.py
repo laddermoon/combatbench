@@ -728,6 +728,10 @@ class Humanoid21DeviceTables:
                 norm_scale=t(norm["scale"]),
                 keypoint_body_ids={n: int(b) for n, b in
                                    cache["keypoint_body_ids"].items()},
+                keypoint_joint_ids={
+                    n: int(cache["joint_ids_by_name"][jname])
+                    for n, jname in cache["keypoint_joint_names"].items()
+                    if jname in cache["joint_ids_by_name"]},
                 body_weight=float(cache["body_weight"]),
             )
 
