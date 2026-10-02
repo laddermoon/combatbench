@@ -34,13 +34,22 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570123,
+          "passed": true
+        }
+      ],
       "name": "Humanoid21Simulator",
+      "role": "simulator",
       "stale": false,
       "unit_hash": "1f74cbbc2d44278e"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.plugins.imbalance_termination:DualImbalanceTerminationPlugin",
       "config_disposition": [
         {
@@ -55,13 +64,36 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.8570027,
+          "passed": true
+        },
+        {
+          "detail": "device collect terms={imbalance_robot_a/b} 逐agent终止",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1790921491.8570108,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.857013,
+          "passed": true
+        }
+      ],
       "name": "DualImbalanceTerminationPlugin",
+      "role": "plugin",
       "stale": false,
       "unit_hash": "68d2e1dd5924f399"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder",
       "config_disposition": [
         {
@@ -71,13 +103,29 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.8570051,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570137,
+          "passed": true
+        }
+      ],
       "name": "cross_support_a",
+      "role": "observer",
       "stale": false,
       "unit_hash": "f79e0065705bbcbc"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder",
       "config_disposition": [
         {
@@ -87,13 +135,29 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.857006,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570142,
+          "passed": true
+        }
+      ],
       "name": "cross_support_b",
+      "role": "observer",
       "stale": false,
       "unit_hash": "a6f4aca37303c11d"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.rewards.posture_reward:PostureRewarder",
       "config_disposition": [
         {
@@ -103,13 +167,29 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.8570068,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570151,
+          "passed": true
+        }
+      ],
       "name": "posture_a",
+      "role": "observer",
       "stale": false,
       "unit_hash": "3171eac23d3778ae"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.rewards.posture_reward:PostureRewarder",
       "config_disposition": [
         {
@@ -119,13 +199,29 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.8570075,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570156,
+          "passed": true
+        }
+      ],
       "name": "posture_b",
+      "role": "observer",
       "stale": false,
       "unit_hash": "14b438929b81f3b8"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver",
       "config_disposition": [
         {
@@ -135,13 +231,29 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.8570082,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570163,
+          "passed": true
+        }
+      ],
       "name": "height_phi_a",
+      "role": "observer",
       "stale": false,
       "unit_hash": "7aad95a4ab916316"
     },
     {
-      "capability": "unsupported",
+      "capability": "native",
       "cls": "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver",
       "config_disposition": [
         {
@@ -151,8 +263,24 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1790921491.857009,
+          "passed": true
+        },
+        {
+          "detail": "collector=device + devices=0,1 各2 updates",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8570168,
+          "passed": true
+        }
+      ],
       "name": "height_phi_b",
+      "role": "observer",
       "stale": false,
       "unit_hash": "d9bbea90a374b68d"
     }

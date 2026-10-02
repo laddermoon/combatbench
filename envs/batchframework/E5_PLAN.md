@@ -1,6 +1,6 @@
 # E5 计划：CPU 实验迁移成为有约束的工程流程
 
-**状态**：提案（2026-10-02）
+**状态**：已完成（W0–W4 全部落地，验收见下）
 **上游**：[discuss.md](./discuss.md) D14/D15.2/D16 | [E3_PLAN.md](./E3_PLAN.md)/[E4_PLAN.md](./E4_PLAN.md)（已完成）
 **ROADMAP 对应**：E5 —— "把 CPU 实验迁移变成有约束的工程流程"
 
@@ -111,3 +111,28 @@ W0 审计工具 + manifest schema（机制层，不依赖具体迁移）
 5. manifest 落盘且源变更可使相关 evidence 失效（测试覆盖 stale 判定）。
 
 **明确不在本阶段**：一次迁完所有实验；HOST_SLOW/compat 适配层的全面实现（仅在迁移确实需要时按需补）；跨 collect 状态链；observer 多端输出的新形态（schema 已支持，用例驱动再加）；reference/delta 采样迁移。
+
+---
+
+## 执行结果（2026-10-02）
+
+全部工作包完成，放行条件逐项核对：
+
+| 条件 | 结果 |
+|---|---|
+| 1. 审计无 unknown | ✅ standup/basic_balance 两审计 0 unknown 键；`test_audit_no_unknown_keys` |
+| 2. 逐单元等价证据 | ✅ `test_device_balance` 13 项同注入态对拍（CUDA），manifest evidence=unit_replay |
+| 3. e2e collect + build_trajectories | ✅ `TestBasicBalanceE2E`：4 ep 契约合法，两通道 trajectory 正常；逐 agent 终止真实行使（terms={imbalance_robot_a/b}） |
+| 4. 单/双卡冒烟 | ✅ `--collector device` 与 `--collector-devices 0,1` 各 2 updates，两通道 conf/aw 正常 |
+| 5. manifest 失效追踪 | ✅ `test_manifest_freshness_and_stale`：config 漂移 → 仅该单元 stale；落盘 `migration_manifests/*.json`（gitignore 已放行） |
+
+**执行中抓到并修掉的 bug**：
+- `DeviceCrossSupportObserver` 初版让 WAIT→TRACKING 迁移当步又跑了一遍 tracking 逻辑（CPU 是早退）——counter 多 +1，由 `test_short_segment_penalty` 对拍暴露；
+- `validate_freshness` 初版按 cls 索引 live spec——同名 observer 多实例（cross_support_a/b）互相覆盖误报 stale，改为 observer 按 name、plugin/simulator 按 cls；
+- `manifests` 被 `*.json` gitignore 拦掉——加例外后入库。
+
+**残余偏差记录**：
+- `cross_support_*` 的 Episode `observer_outputs` 叶结构是 `{reward: list}`（CPU 是裸 scalar list）——`extract_per_step_scalar` 对两者兼容，记录于此而非伪装 bit-identical；
+- `DeviceDualImbalancePlugin` 的 contact 判定是 fp32 并行快照语义，不等同 CPU 逐点串行迭代——单测已锁语义等价边界。
+
+提交：`c324c914`（W0–W2 实现+测试）→ `3ad283a1`（gitignore+manifest 落盘）→ 本次收尾。

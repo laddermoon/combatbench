@@ -64,6 +64,7 @@ class UnitManifest:
     name: str
     cls: str
     capability: str
+    role: str = "plugin"                       # simulator/plugin/observer
     device_cls: str = ""                       # 设备实现类（NATIVE 时填）
     config_disposition: List[Dict[str, Any]] = field(default_factory=list)
     unit_hash: str = ""
@@ -80,7 +81,7 @@ class UnitManifest:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "cls": self.cls,
-                "capability": self.capability,
+                "capability": self.capability, "role": self.role,
                 "device_cls": self.device_cls,
                 "config_disposition": self.config_disposition,
                 "unit_hash": self.unit_hash, "stale": self.stale,
@@ -89,7 +90,7 @@ class UnitManifest:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "UnitManifest":
         return cls(name=d["name"], cls=d["cls"],
-                   capability=d["capability"],
+                   capability=d["capability"], role=d.get("role", "plugin"),
                    device_cls=d.get("device_cls", ""),
                    config_disposition=d.get("config_disposition", []),
                    unit_hash=d.get("unit_hash", ""),
@@ -112,7 +113,7 @@ class MigrationManifest:
                    experiment_name: str = "",
                    blueprint_name: str = "") -> "MigrationManifest":
         units = [UnitManifest(
-            name=u.name, cls=u.cls, capability=u.capability,
+            name=u.name, cls=u.cls, capability=u.capability, role=u.role,
             config_disposition=[{"key": d.key,
                                  "disposition": d.disposition,
                                  "note": d.note}
@@ -139,13 +140,17 @@ class MigrationManifest:
         找不到匹配 cls 的旧单元标 stale，新增单元以
         ``"untracked:<cls>"`` 形式返回。
         """
-        live = {spec.cls: spec for spec in env_bp.plugins}
-        live.update({spec.cls: spec
-                     for spec in env_bp.observer_plugins.values()})
-        live[env_bp.simulator.cls] = env_bp.simulator
+        # 单元身份：observer 按 blueprint 键名（同 cls 可多实例、
+        # config 不同）；plugin/simulator 按 cls（至多一实例语义上
+        # 唯一，同名多实例由装配期名字唯一校验挡掉）。
+        live_by_name = {n: spec
+                        for n, spec in env_bp.observer_plugins.items()}
+        live_by_cls = {spec.cls: spec for spec in env_bp.plugins}
+        live_by_cls[env_bp.simulator.cls] = env_bp.simulator
         stale: List[str] = []
         for u in self.units:
-            spec = live.get(u.cls)
+            spec = (live_by_name.get(u.name) if u.role == "observer"
+                    else live_by_cls.get(u.cls))
             if spec is None:
                 u.stale = True
                 stale.append(u.name)

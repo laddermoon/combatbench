@@ -34,8 +34,24 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "standup device collect",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1790921491.8170493,
+          "passed": true
+        },
+        {
+          "detail": "standup_floor04 device+multi 冒烟",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8170524,
+          "passed": true
+        }
+      ],
       "name": "Humanoid21Simulator",
+      "role": "simulator",
       "stale": false,
       "unit_hash": "1f74cbbc2d44278e"
     },
@@ -65,8 +81,24 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "standup device collect",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1790921491.8170538,
+          "passed": true
+        },
+        {
+          "detail": "standup_floor04 device+multi 冒烟",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8170545,
+          "passed": true
+        }
+      ],
       "name": "RandomFallenStatePlugin",
+      "role": "plugin",
       "stale": false,
       "unit_hash": "cf3c5432364dd963"
     },
@@ -81,8 +113,24 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "standup device collect",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1790921491.8170552,
+          "passed": true
+        },
+        {
+          "detail": "standup_floor04 device+multi 冒烟",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8170557,
+          "passed": true
+        }
+      ],
       "name": "standing_balance_a",
+      "role": "observer",
       "stale": false,
       "unit_hash": "161efade10533678"
     },
@@ -97,8 +145,24 @@
         }
       ],
       "device_cls": "",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "standup device collect",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1790921491.8170564,
+          "passed": true
+        },
+        {
+          "detail": "standup_floor04 device+multi 冒烟",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1790921491.8170574,
+          "passed": true
+        }
+      ],
       "name": "standing_balance_b",
+      "role": "observer",
       "stale": false,
       "unit_hash": "2206b0855845c92d"
     }
