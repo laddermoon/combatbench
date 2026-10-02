@@ -251,8 +251,10 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
 
     差异声明：CPU 内部 sim 是 fp64 串行摔倒；本实现 fp32 并行——
     **摔倒姿态分布只承诺统计等价**（验收 B），不承诺逐 seed 逐位一致。
-    随机源 = splitmix64(seed_offset, reset_count, salt)，与 CPU 共享
-    RandomState 的抽取序列不同构，但 per-env 独立、逐 episode 可复现。
+    随机源 = splitmix64(seed_offset + salt)（counter=0，E6-W1 起
+    job-keyed——CPU 语义本就是 RandomState(job_seed) 每 episode 重建，
+    行历史计数反而是偏差）；与 CPU RandomState 序列不同构，但
+    per-env 独立、逐 episode 可复现、跨分片/重跑逐位一致。
     """
 
     def __init__(
@@ -291,9 +293,6 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         self._sim_factory = sim_factory
         self._internal = None       # 专用摔倒 sim（惰性）
         self._sim = None            # 共享 sim（bind_shared_sim 注入）
-        self._count = None          # (B,) i64 per-env reset 计数——必须在
-        # 插件自有属性而非 plugin pool：pool 行会被 partial reset 清零，
-        # 清零会让同 env 每次 reset 抽到同一随机序列。
 
     @property
     def name(self) -> str:
@@ -307,16 +306,13 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
     def declare_state(self, state) -> None:
         nq = state.sim.qpos.shape[1]
         nv = state.sim.qvel.shape[1]
-        st = state.declare_state(self.name, "captured_qpos", (nq,),
-                                 torch.float32)
+        state.declare_state(self.name, "captured_qpos", (nq,),
+                            torch.float32)
         state.declare_state(self.name, "captured_qvel", (nv,), torch.float32)
         state.declare_state(self.name, "init_steps", (), torch.int32)
         state.declare_state(self.name, "init_height", (2,), torch.float32,
                             init=float("nan"))
         state.declare_state(self.name, "init_hit", (), torch.bool)
-        self._count = torch.zeros(state.batch_size, dtype=torch.int64,
-                                  device=st.device)
-
     def on_attach(self) -> None:
         if self._sim is None:
             raise RuntimeError(
@@ -344,8 +340,11 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         """(K,2,21) uniform[-1,1)——每 env 每机器人每次 reset 独立抽取
         （CPU：每 episode 每目标机器人各抽一次 uniform[-1,1]^21）。
         机器人间共享同一 action 会导致双机同步倒地、初态分布失真。"""
-        seeds = (rng_view.unit_seed(env_ids, self._count[env_ids])
-                 + env_ids * (-7046029254386353131))            # (K,)
+        # E6-W1：draw = f(job_seed, salt)——counter=0（单 job 单 episode
+        # 单次 reset 抽取，CPU 语义是 RandomState(job_seed) 每 episode
+        # 重建）；不混入 env_ids（行号）——同一 job 落不同行/分片必须
+        # 得到相同序列，pad 行重复抽无妨（数据被丢弃）。
+        seeds = rng_view.unit_seed(env_ids)                     # (K,)
         j = torch.arange(42, dtype=torch.int64, device=dev)
         bits = _splitmix64(seeds[:, None] + j[None, :])          # (K,42)
         u = _lshr(bits, 11).to(torch.float64) * (2.0 ** -53)     # [0,1)
@@ -493,7 +492,6 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
         pool["init_steps"][env_ids] = first_step[env_ids].to(torch.int32)
         pool["init_height"][env_ids] = h_buf[env_ids]
         pool["init_hit"][env_ids] = done[env_ids]
-        self._count[env_ids] += 1
 
     def on_envs_reset(self, ctx: DeviceCtx) -> None:
         # 池行已被 runtime 清零；真正逻辑在随后的 on_pre_episode

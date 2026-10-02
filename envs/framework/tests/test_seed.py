@@ -2,8 +2,6 @@
 
 Covers the contract spelled out in ``envs/framework/SEED.md``:
   * ``_resolve_seed`` never returns ``None``
-  * ``_derive_batch_seeds`` is deterministic and matches between
-    :class:`EpisodeRunner` and :class:`ParallelRunner`
   * ``EpisodeRunner._derive_seeds`` uses ``SeedSequence.spawn`` and gives
     every consumer (runtime, policies, seedable plugins) a unique,
     reproducible ``int`` seed
@@ -13,6 +11,9 @@ Covers the contract spelled out in ``envs/framework/SEED.md``:
     plugins are NOT routed to seed allocation
   * :class:`BaseFrameRecorder` persists ``base_seed`` in the episode
     ``manifest.json``
+
+(Batch-level seed derivation moved to ``baseline/framework/rollout`` with
+``Job.seed``; it is exercised there, not in this file.)
 """
 from __future__ import annotations
 
@@ -28,11 +29,9 @@ from envs.framework.env_runtime import EnvRuntime
 from envs.framework.episode_runner import (
     AGENT_IDS,
     EpisodeRunner,
-    EpisodeSeeds,
-    _derive_batch_seeds,
+    _EpisodeSeeds,
     _resolve_seed,
 )
-from envs.framework.parallel_runner import _derive_seeds as _parallel_derive_seeds
 from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
 from envs.framework.recorder import BaseFrameRecorder
@@ -47,8 +46,8 @@ class _ZeroPolicy(Policy):
         self.action_dim = action_dim
         self.reset_seeds: List[Optional[int]] = []
 
-    def act(self, observation: Any) -> np.ndarray:
-        return np.zeros(self.action_dim, dtype=np.float32)
+    def act(self, observation: Any, *, want_extra: bool = False):
+        return np.zeros(self.action_dim, dtype=np.float32), None
 
     def reset(self, seed: Optional[int] = None) -> None:
         self.reset_seeds.append(seed)
@@ -101,7 +100,6 @@ def _build_runner(
     max_steps: int = 3,
 ) -> EpisodeRunner:
     from envs.framework.common_plugins import TimeoutPlugin
-    from envs.framework.episode_runner import ObserverBinding
 
     plugins: List[BasePlugin] = [TimeoutPlugin(max_steps=max_steps)]
     plugins.extend(extra_plugins or [])
@@ -119,11 +117,8 @@ def _build_runner(
     )
     return EpisodeRunner(
         runtime=runtime,
-        policies={"robot_a": _ZeroPolicy(), "robot_b": _ZeroPolicy()},
-        observer_bindings={
-            "robot_a": ObserverBinding(obs_name="robot_a_obs", reward_name="robot_a_reward"),
-            "robot_b": ObserverBinding(obs_name="robot_b_obs", reward_name="robot_b_reward"),
-        },
+        policy_a=_ZeroPolicy(),
+        policy_b=_ZeroPolicy(),
     )
 
 
@@ -156,38 +151,6 @@ class TestResolveSeed:
 
 
 # ---------------------------------------------------------------------------
-# _derive_batch_seeds — shared between EpisodeRunner and ParallelRunner
-# ---------------------------------------------------------------------------
-class TestDeriveBatchSeeds:
-    def test_deterministic_for_same_base(self):
-        a = _derive_batch_seeds(42, 8)
-        b = _derive_batch_seeds(42, 8)
-        np.testing.assert_array_equal(a, b)
-
-    def test_different_base_gives_different_batch(self):
-        a = _derive_batch_seeds(42, 8)
-        b = _derive_batch_seeds(43, 8)
-        assert not np.array_equal(a, b)
-
-    def test_parallel_runner_uses_same_derivation(self):
-        """ParallelRunner._derive_seeds must call the shared helper so
-        sequential and parallel paths run the same episodes."""
-        direct = _derive_batch_seeds(123, 5)
-        via_parallel = _parallel_derive_seeds(123, 5)
-        np.testing.assert_array_equal(direct, via_parallel)
-
-    def test_parallel_none_resolved_at_entry(self):
-        """``base_seed=None`` in ParallelRunner must yield a concrete
-        batch (not crash) and two independent calls typically differ."""
-        a = _parallel_derive_seeds(None, 4)
-        b = _parallel_derive_seeds(None, 4)
-        assert a.shape == (4,)
-        assert b.shape == (4,)
-        # Overwhelmingly likely to differ; if this flakes, entropy source broke.
-        assert not np.array_equal(a, b)
-
-
-# ---------------------------------------------------------------------------
 # EpisodeRunner._derive_seeds — via SeedSequence.spawn
 # ---------------------------------------------------------------------------
 class TestEpisodeSeedsDerivation:
@@ -199,7 +162,7 @@ class TestEpisodeSeedsDerivation:
         s2 = runner._derive_seeds(42)
 
         assert s1 == s2
-        assert isinstance(s1, EpisodeSeeds)
+        assert isinstance(s1, _EpisodeSeeds)
         assert s1.base == 42
         assert set(s1.policies.keys()) == set(AGENT_IDS)
         assert id(tracker) in s1.plugins
@@ -313,8 +276,8 @@ class TestResetAllOrdering:
     def test_policy_reset_receives_derived_seed(self, mock_simulator):
         runner = _build_runner(mock_simulator)
         runner.run_episode(seed=42)
-        a = runner.policies["robot_a"]
-        b = runner.policies["robot_b"]
+        a = runner.policy_a
+        b = runner.policy_b
         assert isinstance(a, _ZeroPolicy) and isinstance(b, _ZeroPolicy)
         assert len(a.reset_seeds) == 1 and len(b.reset_seeds) == 1
         # Derived seeds are concrete ints (never None).
@@ -323,13 +286,16 @@ class TestResetAllOrdering:
         # Two policies get DIFFERENT seeds (spawn, not shared).
         assert a.reset_seeds[0] != b.reset_seeds[0]
 
-    def test_none_seed_resolves_and_writes_back_to_result(self, mock_simulator):
+    def test_none_seed_resolves_and_publishes_on_ctx(self, mock_simulator):
+        """``run_episode`` returns ``None`` — the resolved base seed is
+        published on ``ctx.base_seed`` (and persisted by recorders)."""
         runner = _build_runner(mock_simulator)
-        result = runner.run_episode(seed=None)
-        assert isinstance(result.seed, int)
+        assert runner.run_episode(seed=None) is None
+        resolved = runner.runtime.ctx.base_seed
+        assert isinstance(resolved, int)
         # Record matches what the runner used to derive the rest.
-        seeds_rederived = runner._derive_seeds(result.seed)
-        assert seeds_rederived.base == result.seed
+        seeds_rederived = runner._derive_seeds(resolved)
+        assert seeds_rederived.base == resolved
 
 
 # ---------------------------------------------------------------------------
@@ -365,13 +331,14 @@ class TestRecorderManifestBaseSeed:
         runner = _build_runner(mock_simulator)
         runner.runtime.attach_recorder(recorder)
 
-        result = runner.run_episode(seed=None)
+        runner.run_episode(seed=None)
 
         manifest = json.loads(
             (tmp_path / "rec" / "episode_00000" / "manifest.json").read_text()
         )
-        # Manifest captures the RESOLVED int — same value as result.seed.
-        assert manifest["base_seed"] == result.seed
+        # Manifest captures the RESOLVED int — same value as ctx.base_seed.
+        resolved = runner.runtime.ctx.base_seed
+        assert manifest["base_seed"] == resolved
         assert isinstance(manifest["base_seed"], int)
 
 

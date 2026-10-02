@@ -88,9 +88,13 @@ class PolicyExecutor:
             ctx_a: Optional[SamplingContext],
             ctx_b: Optional[SamplingContext],
             ctx_ab: Optional[SamplingContext],
-            shared: bool) -> Tuple[torch.Tensor, torch.Tensor,
-                                   Optional[torch.Tensor],
-                                   Optional[torch.Tensor]]:
+            shared: bool,
+            u_a: Optional[torch.Tensor] = None,
+            u_b: Optional[torch.Tensor] = None,
+            u_ab: Optional[torch.Tensor] = None
+            ) -> Tuple[torch.Tensor, torch.Tensor,
+                       Optional[torch.Tensor],
+                       Optional[torch.Tensor]]:
         raise NotImplementedError
 
     def close(self) -> None:
@@ -145,19 +149,22 @@ class TruncatedNormalExecutor(PolicyExecutor):
             stateful=False)
 
     def act(self, obs_a, obs_b, *, stochastic, ctx_a, ctx_b, ctx_ab,
-            shared) -> Tuple[torch.Tensor, torch.Tensor,
-                             Optional[torch.Tensor],
-                             Optional[torch.Tensor]]:
+            shared, u_a=None, u_b=None, u_ab=None
+            ) -> Tuple[torch.Tensor, torch.Tensor,
+                       Optional[torch.Tensor],
+                       Optional[torch.Tensor]]:
         with torch.no_grad():
             if stochastic:
                 if shared:
                     B = obs_a.shape[0]
                     both = torch.cat([obs_a, obs_b], dim=0)
                     a_all, lp_all = self.policy.sample_action(
-                        both, ctx=ctx_ab)
+                        both, ctx=ctx_ab, u=u_ab)
                     return a_all[:B], a_all[B:], lp_all[:B], lp_all[B:]
-                a_a, lp_a = self.policy.sample_action(obs_a, ctx=ctx_a)
-                a_b, lp_b = self.policy.sample_action(obs_b, ctx=ctx_b)
+                a_a, lp_a = self.policy.sample_action(obs_a, ctx=ctx_a,
+                                                      u=u_a)
+                a_b, lp_b = self.policy.sample_action(obs_b, ctx=ctx_b,
+                                                      u=u_b)
                 return a_a, a_b, lp_a, lp_b
             return (self.policy.deterministic_action(obs_a),
                     self.policy.deterministic_action(obs_b),

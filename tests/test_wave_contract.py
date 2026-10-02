@@ -54,7 +54,7 @@ class _ConstExec(PolicyExecutor):
     version = "test-exec"
 
     def act(self, obs_a, obs_b, *, stochastic, ctx_a, ctx_b, ctx_ab,
-            shared):
+            shared, u_a=None, u_b=None, u_ab=None):
         n = obs_a.shape[0]
         a = torch.full((n, ACT_DIM), 0.25, device=obs_a.device)
         b = torch.full((n, ACT_DIM), -0.10, device=obs_b.device)
@@ -338,3 +338,56 @@ def test_exporter_matches_golden_path():
             # 标量叶 CPU 语义为 list[T]
             assert isinstance(leaf, type(gold_leaf))
     assert got.episode_metrics == golden.episode_metrics
+
+
+class _UNoiseExec(PolicyExecutor):
+    """动作 = 注入 u 映射到 [-1,1]——验证 E6-W1 job-keyed 噪声接线。"""
+
+    capabilities = PolicyCapabilities(
+        stochastic=True, deterministic=True,
+        ctx_fields=frozenset(), stateful=False)
+    version = "u-exec"
+
+    def act(self, obs_a, obs_b, *, stochastic, ctx_a, ctx_b, ctx_ab,
+            shared, u_a=None, u_b=None, u_ab=None):
+        n = obs_a.shape[0]
+        if not stochastic:
+            z = torch.zeros(n, ACT_DIM, device=obs_a.device)
+            return z, z, None, None
+        assert u_a is not None and u_b is not None
+        return (u_a * 2 - 1, u_b * 2 - 1,
+                torch.zeros(n, device=obs_a.device),
+                torch.zeros(n, device=obs_b.device))
+
+
+def _run_u(rt, rec, store, seeds):
+    rt.reset(seeds=torch.as_tensor(seeds, dtype=torch.int64))
+    rt.obs_builder.build(rt.state)
+    rec.begin_wave()
+    run_wave(rt, _UNoiseExec(), _UNoiseExec(), store,
+             stochastic=True, T=T)
+
+
+def test_job_keyed_action_noise():
+    """E6-W1：动作噪声 = f(job_seed, episode_step)——同 seed 重跑逐位
+    一致、改 seed 变、行位（行号/pad）不影响。"""
+    seeds = [10, 11, 12, 13]
+    sim, rt, store, rec = _make_wave()
+    _run_u(rt, rec, store, seeds)
+    act1 = {r: store.act[r].cpu().clone() for r in AGENTS}
+
+    sim2, rt2, store2, rec2 = _make_wave()
+    _run_u(rt2, rec2, store2, seeds)
+    for r in AGENTS:                                # 同 seed 重跑逐位一致
+        torch.testing.assert_close(store2.act[r], act1[r])
+
+    sim3, rt3, store3, rec3 = _make_wave()
+    _run_u(rt3, rec3, store3, [s + 100 for s in seeds])
+    assert not torch.allclose(store3.act["robot_a"],
+                              act1["robot_a"])      # 改 seed → 不同流
+
+    # 行位无关：把 seed 11 放到行 3，其噪声流应与原先行 1 相同
+    sim4, rt4, store4, rec4 = _make_wave()
+    _run_u(rt4, rec4, store4, [20, 21, 22, 11])
+    torch.testing.assert_close(store4.act["robot_a"][:, 3],
+                               act1["robot_a"][:, 1])

@@ -4,14 +4,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from envs.framework.policy import Policy, call_policy, coerce_action
+from envs.framework.policy import Policy
 
 
 class _MinimalPolicy(Policy):
     """Minimal Policy subclass: just overrides ``act``."""
 
-    def act(self, observation):
-        return np.ones(3, dtype=np.float32)
+    def act(self, observation, *, want_extra: bool = False):
+        return np.ones(3, dtype=np.float32), None
 
 
 class _RichPolicy(Policy):
@@ -21,11 +21,11 @@ class _RichPolicy(Policy):
         self.reset_seeds = []
         self.closed = False
 
-    def act(self, observation):
-        return np.array([1.0, 2.0, 3.0])
-
-    def act_with_extras(self, observation):
-        return self.act(observation), {"logprob": -0.5, "value": 1.2}
+    def act(self, observation, *, want_extra: bool = False):
+        action = np.array([1.0, 2.0, 3.0])
+        if want_extra:
+            return action, {"logprob": -0.5, "value": 1.2}
+        return action, None
 
     def reset(self, seed=None):
         self.reset_seeds.append(seed)
@@ -52,8 +52,8 @@ class TestPolicyABC:
         """Ducks no longer quack — scheme B is nominal, not structural."""
 
         class LooksLikePolicy:
-            def act(self, obs):
-                return np.zeros(3, dtype=np.float32)
+            def act(self, obs, *, want_extra=False):
+                return np.zeros(3, dtype=np.float32), None
 
         assert not isinstance(LooksLikePolicy(), Policy)
 
@@ -65,6 +65,19 @@ class TestPolicyABC:
         assert p.reset(123) is None
         assert p.reset(seed=42) is None
 
+    def test_act_returns_action_extra_tuple(self):
+        """The canonical contract: ``act`` always returns ``(action, extra)``."""
+        action, extra = _MinimalPolicy().act(None)
+        assert isinstance(action, np.ndarray)
+        assert extra is None
+
+    def test_want_extra_forwarded(self):
+        """``want_extra=True`` lets the policy attach its side-channel payload."""
+        action, extra = _RichPolicy().act(None, want_extra=True)
+        assert extra == {"logprob": -0.5, "value": 1.2}
+        _, extra = _RichPolicy().act(None, want_extra=False)
+        assert extra is None
+
     def test_no_init_contract(self):
         """The ABC intentionally does not define ``__init__``. Subclasses
         can take whatever constructor args they want."""
@@ -74,84 +87,14 @@ class TestPolicyABC:
                 self.scale = scale
                 self.seed = seed
 
-            def act(self, observation):
-                return np.full(2, self.scale, dtype=np.float32)
+            def act(self, observation, *, want_extra: bool = False):
+                return np.full(2, self.scale, dtype=np.float32), None
 
         p = CustomInit(1.5, seed=7)
         assert p.scale == 1.5
         assert p.seed == 7
-        np.testing.assert_array_equal(p.act(None), [1.5, 1.5])
-
-
-class TestCoerceAction:
-    def test_float32_ndarray_no_copy(self):
-        a = np.ones(4, dtype=np.float32)
-        out = coerce_action(a)
-        assert out is a  # astype(copy=False) returns same object
-
-    def test_float64_ndarray_converted(self):
-        a = np.ones(4, dtype=np.float64)
-        out = coerce_action(a)
-        assert out.dtype == np.float32
-
-    def test_list_converted(self):
-        out = coerce_action([1.0, 2.0, 3.0])
-        assert isinstance(out, np.ndarray)
-        assert out.dtype == np.float32
-        np.testing.assert_array_equal(out, [1.0, 2.0, 3.0])
-
-    def test_none_rejected(self):
-        with pytest.raises(TypeError, match="None"):
-            coerce_action(None)
-
-
-class TestCallPolicy:
-    """``call_policy`` is intentionally duck-typed — it only cares that the
-    object has ``act`` / ``act_with_extras``. The runner boundary
-    (``EpisodeRunner._validate_policies``) enforces the nominal Policy ABC."""
-
-    def test_minimal_policy_no_extras(self):
-        action, extras = call_policy(_MinimalPolicy(), None, want_extras=False)
-        assert action.dtype == np.float32
-        assert extras == {}
-
-    def test_minimal_policy_asked_for_extras_falls_back(self):
-        """``want_extras=True`` on a policy without ``act_with_extras`` just
-        uses plain ``act`` and returns an empty extras dict — not an error."""
-        action, extras = call_policy(_MinimalPolicy(), None, want_extras=True)
-        assert action.dtype == np.float32
-        assert extras == {}
-
-    def test_rich_policy_with_extras(self):
-        action, extras = call_policy(_RichPolicy(), None, want_extras=True)
-        assert action.dtype == np.float32
-        assert extras == {"logprob": -0.5, "value": 1.2}
-
-    def test_rich_policy_without_extras_skips_act_with_extras(self):
-        action, extras = call_policy(_RichPolicy(), None, want_extras=False)
-        assert extras == {}
-
-    def test_act_with_extras_bad_return_type_rejected(self):
-        class Bad(Policy):
-            def act(self, obs):
-                return np.zeros(3)
-
-            def act_with_extras(self, obs):
-                return np.zeros(3)  # not a tuple
-
-        with pytest.raises(TypeError, match="must return .action, extras_dict."):
-            call_policy(Bad(), None, want_extras=True)
-
-    def test_act_with_extras_bad_extras_type_rejected(self):
-        class Bad(Policy):
-            def act(self, obs):
-                return np.zeros(3)
-
-            def act_with_extras(self, obs):
-                return np.zeros(3), [1, 2]  # list, not dict
-
-        with pytest.raises(TypeError, match="extras must be a dict"):
-            call_policy(Bad(), None, want_extras=True)
+        action, _ = p.act(None)
+        np.testing.assert_array_equal(action, [1.5, 1.5])
 
 
 class TestBuiltinPolicies:
@@ -169,22 +112,22 @@ class TestBuiltinPolicies:
         p = RandomCombatPolicy(seed=1)
         assert isinstance(p, Policy)
 
-        a0 = p.act(None)
+        a0, _ = p.act(None)
         assert a0.dtype == np.float32
         assert a0.shape == (21,)
 
         # Reset with a fresh seed produces a different action sequence.
         p.reset(seed=2)
-        a1 = p.act(None)
+        a1, _ = p.act(None)
         # Reset back to the same seed must reproduce the same action.
         p.reset(seed=2)
-        a2 = p.act(None)
+        a2, _ = p.act(None)
         np.testing.assert_array_equal(a1, a2)
         assert not np.array_equal(a0, a1)
 
     def test_random_policy_accepts_unknown_kwargs(self):
         """Subclasses that accept ``**kwargs`` stay forgiving against
-        load_policy's query-string parameters that don't apply."""
+        blueprint config keys that don't apply."""
         import sys
         from pathlib import Path
 

@@ -73,3 +73,31 @@ E1–E5 建完机制与迁移流程，但当前系统对"出问题时怎么办"�
 4. 异常不被当成空 Episode/零奖励/可忽略单卡缺失 ← 已有语义 + W5 矩阵逐项断言。
 
 **明确不在本阶段**：多机恢复、跨 collect 插件状态链持久化、CUDA Graph、异步 D2H、checkpoint 格式 v3、Episode v3 格式改动、自动重试故障 worker（保持 all-or-nothing 语义）。
+
+---
+
+## W0 审计结果（执行核对表）
+
+### 失败路径现状
+
+| 路径 | 现状 | 结论 |
+|---|---|---|
+| FAILED 行 | `device_rollouter.py:302` 收集 rows+reasons 显式抛错 | ✅ 不产空 Episode |
+| mark_failed / FAIL_CODES | `{"capacity":0,"non_finite":1}` code 齐备 | ⚠️ **non_finite 无检测点**——无任何 isfinite 调用 |
+| **contacts 溢出** | `_contacts_padded`：`slot >= cap: continue` **静默丢弃** | ❌ 违反"溢出必报"——warp 全局 capped，per-world 饱和是唯一可检信号 |
+| worker 退出 | all-or-nothing `WorkerLost` | ✅ |
+| 队列拥塞 | `cmd_q maxsize=1` 背压 | ✅ |
+| 资源释放 | close 幂等 join→terminate→报告 | ✅ |
+| 重复 collect | RecordStore 每波新建（torch 缓存复用），executor LRU 有界 | ⚠️ 需 W5 实测断言 |
+
+### RNG 身份缺口
+
+| 单元 | 现状 | 修复 |
+|---|---|---|
+| `TruncatedNormalPolicy._gen` | 设备路径**从不 reset**→噪声全局序列依赖 | W1 u 注入 |
+| `DeviceFallenResetPlugin._count` | per-行跨 collect 递增 | W1 改 job 键（CPU `reset_count` 本身就是槽位历史语义，设备侧 job 键更严格） |
+| `seed_offsets` | = job.seed，job-keyed | ✅ 已对 |
+
+### resume_ctx 现状
+
+携带 `prev_gvec`/`n_evals_done` + learner RNG（cuda device-count 变更仅告警跳过）。**collector 拓扑（devices/B）、executor 版本、manifest 新鲜度均不校验** → W4 目标。

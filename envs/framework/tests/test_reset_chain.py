@@ -11,12 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from envs.framework import EnvRuntime
-from envs.framework.episode_runner import (
-    AGENT_IDS,
-    EpisodeRunner,
-    ObserverBinding,
-    RolloutConfig,
-)
+from envs.framework.episode_runner import AGENT_IDS, EpisodeRunner
 from envs.framework.plugin import BasePlugin
 from envs.framework.policy import Policy
 from envs.framework.recorder import PostActionRecorder
@@ -30,18 +25,11 @@ class _StaticActionPolicy(Policy):
     """Deterministic zero-action policy — keeps trajectories bit-equal across
     runs at the same seed (no policy RNG involvement)."""
 
-    def act(self, obs: Any) -> np.ndarray:
-        return np.zeros(21, dtype=np.float32)
+    def act(self, obs: Any, *, want_extra: bool = False):
+        return np.zeros(21, dtype=np.float32), None
 
     def reset(self, seed: Optional[int] = None) -> None:
         return None
-
-
-def _bindings() -> Dict[str, ObserverBinding]:
-    return {
-        agent: ObserverBinding(obs_name=f"{agent}_obs", reward_name=None)
-        for agent in AGENT_IDS
-    }
 
 
 class _ZeroObserver(BaseObserverPlugin):
@@ -119,39 +107,65 @@ class TestI2_TerminationProposalsCleanAfterReset:
 
 # ---------------------------------------------------------------------------
 # I3 — same base_seed → bit-equal trajectories
-# (smaller and faster than the existing test_seed.py determinism tests; this
-# one specifically exercises the reset chain with options.)
+# ``run_episode`` returns ``None`` now; trajectories are read off an attached
+# recorder (the thin-runner contract).
 # ---------------------------------------------------------------------------
+class _ObsCaptureRecorder(PostActionRecorder):
+    """In-memory recorder: snapshots the pre-action observation mapping and
+    the applied action mapping at every action step."""
+
+    def __init__(self) -> None:
+        self.observations: List[Dict[str, Any]] = []
+        self.actions: List[Dict[str, Any]] = []
+
+    def on_post_action_step(
+        self, ctx, observation, action, observer_outputs, action_extras=None
+    ) -> None:
+        self.observations.append(
+            {k: np.asarray(v).copy() for k, v in observation.items()}
+        )
+        self.actions.append(
+            {k: np.asarray(v).copy() for k, v in action.items()}
+        )
+
+
 class TestI3_SameSeedSameTrajectory:
     def test_same_seed_produces_identical_observations_and_options(self):
         from .conftest import MockSimulator
 
         def _build_runner():
+            recorder = _ObsCaptureRecorder()
             runtime = EnvRuntime(
                 simulator=MockSimulator(),
                 observer_plugins={
                     "robot_a_obs": _ZeroObserver(),
                     "robot_b_obs": _ZeroObserver(),
                 },
+                recorders=[recorder],
                 max_steps=3,
             )
-            return EpisodeRunner(
+            runner = EpisodeRunner(
                 runtime=runtime,
-                policies={a: _StaticActionPolicy() for a in AGENT_IDS},
-                observer_bindings=_bindings(),
-                rollout=RolloutConfig(capture_a=True, capture_b=False),
+                policy_a=_StaticActionPolicy(),
+                policy_b=_StaticActionPolicy(),
             )
+            return runner, recorder
 
         opts = {"initial_distance": 1.5, "push_force": 42.0}
-        r1 = _build_runner().run_episode(seed=12345, options=opts)
-        r2 = _build_runner().run_episode(seed=12345, options=opts)
-        assert r1.seed == r2.seed
-        assert r1.num_steps == r2.num_steps
-        traj1 = r1.trajectories["robot_a"]
-        traj2 = r2.trajectories["robot_a"]
-        assert len(traj1.observations) == len(traj2.observations)
-        for o1, o2 in zip(traj1.observations, traj2.observations):
-            assert np.array_equal(o1, o2)
+        runner1, rec1 = _build_runner()
+        runner1.run_episode(seed=12345, options=opts)
+        runner2, rec2 = _build_runner()
+        runner2.run_episode(seed=12345, options=opts)
+
+        assert runner1.runtime.ctx.base_seed == runner2.runtime.ctx.base_seed == 12345
+        assert runner1.runtime.ctx.episode_step == runner2.runtime.ctx.episode_step
+        assert len(rec1.observations) == len(rec2.observations)
+        for o1, o2 in zip(rec1.observations, rec2.observations):
+            for aid in AGENT_IDS:
+                assert np.array_equal(o1[aid], o2[aid])
+        for a1, a2 in zip(rec1.actions, rec2.actions):
+            for aid in AGENT_IDS:
+                assert np.array_equal(a1[aid], a2[aid])
 
 
 # ---------------------------------------------------------------------------
@@ -238,41 +252,11 @@ class TestI4_OptionsVisibleToPluginsAndObservers:
         )
         runner = EpisodeRunner(
             runtime=runtime,
-            policies={a: _StaticActionPolicy() for a in AGENT_IDS},
-            observer_bindings=_bindings(),
+            policy_a=_StaticActionPolicy(),
+            policy_b=_StaticActionPolicy(),
         )
         runner.run_episode(seed=1, options={"hp_a": 75.0, "hp_b": 50.0})
         assert plugin.pre_episode_options == {"hp_a": 75.0, "hp_b": 50.0}
-
-    def test_run_n_episodes_options_fn_called_per_index(self):
-        from .conftest import MockSimulator
-
-        captured_indices: List[int] = []
-
-        def options_fn(idx: int) -> Dict[str, Any]:
-            captured_indices.append(idx)
-            return {"epoch_index": idx, "push": idx * 10.0}
-
-        plugin = _OptionsCapturingPlugin()
-        runtime = EnvRuntime(
-            simulator=MockSimulator(),
-            plugins=[plugin],
-            observer_plugins={
-                "robot_a_obs": _ZeroObserver(),
-                "robot_b_obs": _ZeroObserver(),
-            },
-            max_steps=1,
-        )
-        runner = EpisodeRunner(
-            runtime=runtime,
-            policies={a: _StaticActionPolicy() for a in AGENT_IDS},
-            observer_bindings=_bindings(),
-        )
-        runner.run_n_episodes(3, base_seed=42, options_fn=options_fn)
-        # options_fn must have been called once per episode with the right index
-        assert captured_indices == [0, 1, 2]
-        # And the LAST episode's options must be the last ones the plugin saw
-        assert plugin.pre_episode_options == {"epoch_index": 2, "push": 20.0}
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +471,8 @@ class TestG5_BaseSeedOwnership:
 
         runner = EpisodeRunner(
             runtime=runtime,
-            policies={a: _StaticActionPolicy() for a in AGENT_IDS},
-            observer_bindings=_bindings(),
+            policy_a=_StaticActionPolicy(),
+            policy_b=_StaticActionPolicy(),
         )
         runner.run_episode(seed=4242)
         # EpisodeRunner _resolve_seed → 4242 → published on ctx.base_seed.

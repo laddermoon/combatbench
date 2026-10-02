@@ -22,8 +22,13 @@ from typing import Any, Dict, Optional
 import torch
 
 from .device_runtime import BatchRuntime
+from .device_state import _SEED_COUNTER_MULT, rng_uniform
 from .policy_executor import PolicyExecutor
 from .record_store import RecordStore
+
+# 策略噪声注入盐（E6-W1）：per-agent 独立流，与插件 rng_salt 域分离。
+_U_SALT_A = 0xAC710A
+_U_SALT_B = 0xAC710B
 
 
 def run_wave(rt: BatchRuntime,
@@ -52,10 +57,23 @@ def run_wave(rt: BatchRuntime,
     for t in range(T):
         store.write_inputs(t, st, ep.world_running & ep.slot_valid)
         tp = time.perf_counter()
+        u_a = u_b = u_ab = None
+        if stochastic:
+            # E6-W1：动作噪声 job-keyed——f(job_seed, episode_step, salt)。
+            # 同一 job 单独重跑/任意分片得到相同外生流；已 ENDED 行的
+            # u 照常计算（动作不驱动物理，无害）。
+            base = (st.rng.seed_offsets
+                    + ep.episode_steps.to(torch.int64)
+                    * _SEED_COUNTER_MULT)
+            act_dim = st.io.action_a.shape[-1]
+            u_a = rng_uniform(base + _U_SALT_A, act_dim)
+            u_b = rng_uniform(base + _U_SALT_B, act_dim)
+            if shared:
+                u_ab = torch.cat([u_a, u_b], dim=0)
         a_a, a_b, lp_a, lp_b = exec_a.act(
             st.io.obs_a, st.io.obs_b, stochastic=stochastic,
             ctx_a=ctx_a, ctx_b=ctx_b, ctx_ab=ctx_ab,
-            shared=shared)
+            shared=shared, u_a=u_a, u_b=u_b, u_ab=u_ab)
         if timing is not None:
             timing["policy"] += time.perf_counter() - tp
         store.write_actions(t, a_a, a_b, lp_a, lp_b)

@@ -86,41 +86,18 @@ class TestPerEpisodeOptionsOverride:
         )
         assert str(plugin.output_path) == "ep2.mp4"
 
-
-class TestRoundRunnerVideoSavePath:
-    """``RoundRunner.run(videosave_path=...)`` must route the path through
-    ``options`` rather than mutating the plugin directly."""
-
-    def test_videosave_path_merges_into_options(self):
-        from envs.framework.round_runner import RoundRunner
-
-        merged = RoundRunner._merge_video_path_into_options(
-            options=None, videosave_path="shot.mp4"
-        )
-        assert merged == {
-            VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY: "shot.mp4"
-        }
-
-    def test_caller_options_win_over_videosave_path(self):
-        from envs.framework.round_runner import RoundRunner
-
-        merged = RoundRunner._merge_video_path_into_options(
-            options={VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY: "caller.mp4"},
-            videosave_path="shot.mp4",
-        )
-        assert merged[VideoRecorderPlugin.OPTIONS_OUTPUT_PATH_KEY] == "caller.mp4"
-
-    def test_videosave_path_none_passes_options_through(self):
-        from envs.framework.round_runner import RoundRunner
-
-        opts = {"hp_a": 100.0}
-        assert RoundRunner._merge_video_path_into_options(opts, None) is opts
-        assert RoundRunner._merge_video_path_into_options(None, None) is None
-
     def test_find_plugins_returns_video_recorder(self, mock_simulator):
+        """``runtime.find_plugins(cls)`` locates attached plugin instances —
+        the public way to introspect a runtime's plugin set."""
         from envs.framework.env_runtime import EnvRuntime
 
         plugin = VideoRecorderPlugin(output_path="initial.mp4")
         runtime = EnvRuntime(simulator=mock_simulator, plugins=[plugin])
         found = runtime.find_plugins(VideoRecorderPlugin)
         assert found == (plugin,)
+
+
+# NOTE: ``TestRoundRunnerVideoSavePath`` was deleted — the
+# ``videosave_path`` kwarg / ``_merge_video_path_into_options`` helper were
+# removed in the RoundRunner refactor (video is now a ctor-time
+# ``video_plugin``; the CLI exposes ``--video``).

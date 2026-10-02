@@ -429,10 +429,16 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
     def sample_action(
         self, obs: torch.Tensor, *, ctx: Optional[SamplingContext] = None,
+        u: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample action ∈ [-1, 1] via inverse-CDF reparameterization.
 
         Returns (action, log_prob) where log_prob is summed over dims.
+
+        ``u``: optional injected uniform noise (same shape as ``mean``).
+        When given, the private RNG is bypassed — used by the device
+        rollouter to inject job-keyed noise (E6-W1); the CPU path
+        leaves it None and keeps ``self._gen`` semantics unchanged.
         """
         mean, sigma = self.forward(obs, ctx=ctx)
         a, b, log_Z = self._trunc_params(mean, sigma)
@@ -443,16 +449,17 @@ class TruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         #   action = mean + σ × ε
         cdf_a = _std_normal_cdf(a)
         cdf_b = _std_normal_cdf(b)
-        u = (
-            torch.rand(
+        if u is None:
+            u = torch.rand(
                 mean.shape,
                 generator=self._ensure_gen(mean.device),
                 device=mean.device,
                 dtype=mean.dtype,
             )
-            * (cdf_b - cdf_a)
-            + cdf_a
-        )
+        else:
+            u = u.to(device=mean.device, dtype=mean.dtype).clamp(
+                1e-6, 1.0 - 1e-6)
+        u = u * (cdf_b - cdf_a) + cdf_a
         eps = _std_normal_icdf(u)
         action = mean + sigma * eps
         # Numerical safety: clamp to [-1, 1]

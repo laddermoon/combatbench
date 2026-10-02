@@ -224,6 +224,19 @@ def splitmix64(x: torch.Tensor) -> torch.Tensor:
 _SEED_COUNTER_MULT = 6364136223846793005  # Knuth MMIX LCG 乘子
 
 
+def rng_uniform(base_seeds: torch.Tensor, n_cols: int) -> torch.Tensor:
+    """(M,) i64 基础种子 → (M, n_cols) f32 uniform[0,1)，逐位可复现。
+
+    每个 base seed 经 splitmix64 网格展开成 n_cols 个独立 draw；
+    同一 (seed, col) 组合永远得到同一值——供 job-keyed 策略噪声
+    注入（E6-W1）等需要"外生流 = f(种子, 计数器)"的场景使用。
+    """
+    j = torch.arange(n_cols, dtype=torch.int64, device=base_seeds.device)
+    bits = splitmix64(base_seeds[:, None] + j[None, :])
+    return (_lshr64(bits, 11).to(torch.float64) * (2.0 ** -53)).to(
+        torch.float32)
+
+
 class RngView:
     """per-unit 确定性随机派生视图（挂到 ctx.rng）。
 

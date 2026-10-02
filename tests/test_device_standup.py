@@ -595,9 +595,17 @@ class TestFallenResetPlugin:
         a1 = plugin._draw_actions(ids, rng, dev)
         a2 = plugin._draw_actions(ids, rng, dev)
         torch.testing.assert_close(a1, a2)          # 同次调用确定性
-        plugin._count += 1
+        # E6-W1 job-keyed：同 seed 落到不同行 → 抽取逐位一致
+        state.rng.seed_offsets.copy_(
+            torch.arange(100, 104, dtype=torch.int64, device=dev))
         a3 = plugin._draw_actions(ids, rng, dev)
-        assert not torch.allclose(a1, a3)           # 下一次 reset 不同
+        perm = torch.tensor([2, 0, 3, 1], device=dev)
+        a3p = plugin._draw_actions(perm, rng, dev)
+        torch.testing.assert_close(a3[perm], a3p)   # 行位无关
+        state.rng.seed_offsets.copy_(
+            torch.arange(200, 204, dtype=torch.int64, device=dev))
+        a4 = plugin._draw_actions(ids, rng, dev)
+        assert not torch.allclose(a3, a4)           # 不同 job seed 不同
         assert not torch.allclose(a1[0], a1[1])     # env 间独立
         assert a1.abs().max() <= 1.0
 
