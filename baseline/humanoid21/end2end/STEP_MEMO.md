@@ -621,3 +621,21 @@ hmax≈0.12, falls≈0.03, sway≈1.15** —— 双脚交替迈步收敛。
 `train_step_clean_44f`（seed44, GPU1, pid 2246337），
 全程最终配方（ramp+令牌+封锁+boost），dump @2200/2800/3400/4000。
 s42 轨迹参考：~u2300 step 涌现 → ~u3500 step=1.0 → ~u4000 alt≈0.97。
+
+### 三 seed 验证完成（u1500 起点，最终配方）
+
+| seed | run | 收敛 update | step | alt | cycles | solepk | falls | sway |
+|---|---|---|---|---|---|---|---|---|
+| 42 | train_step_clean_42e | u4005 | 1.0 | 0.97 | 46/ep | 0.10 | 0.03 | 1.15 |
+| 43 | train_step_clean_43f→g→h | u4250 | 1.0 | 0.93 | 47/ep | 0.10 | 0.04 | 1.08 |
+| 44 | train_step_clean_44f→44g | u4575 | 1.0 | 0.95 | 46/ep | 0.11 | 0.03 | 1.03 |
+
+**早停指标两次误杀及修复**：
+- 43f @u2505：alt=0.5 单 episode 噪声尖峰立了不可逾越的标杆 →
+  alt 按 cycles 数置信度加权 + cycles 计入 quality（6c852f26）
+- 43g @u3055：step=0.344 评估噪声尖峰 vs 缓慢爬坡 → quality
+  EMA 趋势线，平滑趋势越峰即算改进且标杆随之上调（e536fa1f）
+- 44g @u4575 与 43h @u4250 均为**真平台停止**（step=1.0 饱和、
+  alt 企稳、200 eval 无改善）
+
+**验收视频**：`runs/train_step_clean_{42e,43h,44g}/videos/` 末段。
