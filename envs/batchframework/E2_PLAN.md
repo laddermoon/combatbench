@@ -45,16 +45,15 @@ W0 CPU 语义核对 → W1 数据模型（mask/计数器/终止历史）→ W2 s
 → W3 子步 hook 与终止屏障 → W4 声明式插件契约 → W5 随机服务 → W6 契约测试矩阵+回归
 ```
 
-### E2-W0：CPU 生命周期语义核对（纯调研，产出文档）
+### E2-W0：CPU 生命周期语义核对（纯调研，产出文档）✅ 已完成
 
-读 `envs/framework/env_runtime.py`（`_RuntimeCore.step`/`_PluginManager.invoke`）、`recorder.py`、CPU 侧 recorder/observer 时序，产出 **`LIFECYCLE_TRACE.md`** 附表：
+产出：**[LIFECYCLE_TRACE.md](./LIFECYCLE_TRACE.md)**——CPU 权威时序（5 终止屏障）、proposals append-only + recorder 帧扫描去重的真实两段式模型、子步内终止的精确后果表、reset 链、observer 刷新时机、seed 派生、post_termination_action。
 
-- CPU 每个 phase 的精确执行序：哪一步消费 `termination_proposals`、同步多请求的顺序、recorder 读观测/observer 输出的时机；
-- 重复终止同一 agent 的实际行为（覆盖还是去重）；
-- 子步内终止时：已记录帧数 vs `episode_step` 的差异、final_obs 是 reset 前还是后；
-- `post_termination_action` 在 CPU 实际是什么（policy 继续？hold？）。
+**核对结论：D7 契约无需修订**——草案与实测逐项吻合（含"observer 输出可能是 post_episode 刷新值"的预判）。两条实现级精度要求转入 W1/W2：
 
-这是 H5 验证的前半段。**若核对结果与 D7 草案冲突，先回来改契约再动代码。**
+1. `request_termination` 必须**立即**写 `agent_done`（CPU 中同 phase 后续插件可见 `agent_terminated`），屏障只归档历史与判定 env 结束，不得延迟提出效果；
+2. 终止帧/records 的扫描必须在 `on_post_episode` schedule **之后**（CPU 序：插件 post_episode → recorder 帧 → recorder post_episode）——当前 `_WaveRecorder` 次序相反，现无实质差异（standup rewarder post_episode 为 no-op）但属结构性漂移隐患；
+3. 新发现设备 bug 级差距：`_WaveRecorder._seen_term` 会丢弃"agent 已终止后新提出的不同 reason"，CPU 语义是每 reason 首次都记。
 
 ### E2-W1：EpisodeNamespace 数据模型重构
 
