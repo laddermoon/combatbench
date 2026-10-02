@@ -1,6 +1,6 @@
 # E3 计划：单卡设备采样引擎与批量 Episode 导出
 
-**状态**：提案（2026-10-02）
+**状态**：✅ 已完成（2026-10-02，W1–W6 全部落地）
 **上游**：[discuss.md](./discuss.md) D9/D10/D11 | [E2_PLAN.md](./E2_PLAN.md)（已完成）
 **ROADMAP 对应**：E3 —— "完成单卡设备采样引擎，保留 Episode 边界"
 
@@ -159,11 +159,20 @@ def export_episodes(store, wave_jobs, env_hash, efs, stochastic,
 
 ## 放行条件
 
-1. collector 源码无 `WarpHumanoid21Simulator`/`TruncatedNormalPolicy`/`96`/`21` 字面量（依赖方向测试扩展检查）；
-2. `tests/test_device_rollouter.py` 现有 5 项全绿（Episode 契约/log_prob 回放/PPOBuffer 兼容/padding/拒绝路径）；
-3. 新增：FakeBackend 混合长度波导出 + 参考实现逐字段等价 + 同步计数上限断言；
-4. RecordStore 字节数与 host 峰值在 collect 结果 metrics 中可报告；
-5. device collector 训练冒烟正常；
-6. `Job` 混合 env_bp/policy/stochastic 按同构键分组执行（每波内仍统一），跨组 job 顺序与输入一致返回。
+1. ✅ collector 源码无 `WarpHumanoid21Simulator`/`TruncatedNormalPolicy`/`96`/`21` 字面量——构造经 `resolve_binding(env_bp.simulator.cls)`，形状经 `IoSchema`；
+2. ✅ `tests/test_device_rollouter.py` 5 项全绿（真 warp 端到端复测）；
+3. ✅ `tests/test_wave_contract.py` 7 项：FakeBackend 混长波/封存行隔离/frame_valid/自定义 reason/全 ENDED 早退/deterministic 波/exporter vs golden 逐字段等价；
+4. ✅ `last_collect_report` 报 `record_store_bytes` + `policy_versions` + `sync_stats`（runtime 侧 term_barrier/freeze_check/any_running/reset + rollouter 侧 early_exit/health_check/d2h_export）；host 峰值未单列（一次批量 D2H，尺寸=store 字节数，记为已知上界）；
+5. ✅ device collector 训练冒烟正常（standup_floor04，2 updates，terms={timeout:16}）；
+6. ✅ jobs 按 (env_bp, policy_a, policy_b, stochastic) 同构键分组，组间顺序执行，返回序=输入序。
 
 **明确不在本阶段**：多卡协调（E4）、CUDA Graph/异步 D2H（E7）、reference/delta/callable-ef 采样（能力声明拒绝，非本阶段实现）、分块续采（T<max_steps 跨波续 episode——显式推迟）、HOST plane lazy 物化。
+
+## 实现备注（与提案的差异）
+
+- **W1**：`DeviceBinding` 为基类（非 Protocol），`make_sim()`/`io_schema(sim)`；`_Humanoid21WarpBinding` 声明 `episode_options_keys` 白名单。observer schema 不经 binding——由 `BaseDeviceObserver.output_schema` 逐 unit 声明，`RecordStore` 据此预分配/校验。
+- **W2**：`act()` 返回 `(a_a, a_b, lp_a, lp_b)` 元组（非 PolicyOutput 对象）；`check_spec` 用 `required_ctx_fields(spec) ⊆ capabilities.ctx_fields` 表达能力子集检查。缓存键 = model.pt 路径 + stat 校验；`version` = state_dict sha256[:16]。`policy_eval_mask` 未贯通到 executor——当前两 agent 恒采样等价 CPU "policy" 语义，hold 模式未接线（留 E7/E5）。
+- **W3**：`WaveRunner` 落地为函数 `run_wave(rt, exec_a, exec_b, store, ...)`（无状态，不需类）；`_WaveRecorder` 改名 `_RecorderAdapter` 仍是薄插件（借 hook 序），缓冲所有权全在 `RecordStore`。修复：`run_wave` 的 `frame_valid` 每步取当前 running mask（初版错误地用了波首快照）。
+- **W4**：exporter 为单行函数 `export_episode(np_bufs, job, row, ...)`（rollouter 逐行调用）；标量 observer 叶导出为 `list[T]`（与 `_try_stack` 对齐），向量叶为 ndarray。
+- **W5**：`BatchRuntime.sync_stats`（term_barrier/freeze_check/any_running/reset）+ rollouter `sync_stats`（early_exit_check/health_check/d2h_export），汇入 `last_collect_report["sync_stats"]`。早退检查降为每 8 步（ended 行已封存，纯省算力）。
+- **FakeBackend 修复**：`dev_set_action` 原实现 `act_target[:,4:] = action_b` 在 NU==ACTION_DIM 时维度错——改为按目标宽度切 RHS。

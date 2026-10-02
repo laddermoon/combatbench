@@ -181,7 +181,7 @@ E8 综合工程验收与稳定接口发布
 
 #### E3：完成单卡设备采样引擎，保留 Episode 边界
 
-**当前状态（2026-10-02）：实施计划已提案**（[E3_PLAN.md](E3_PLAN.md)）。W1 绑定注册表（解耦 collector/backend/obs/schema）→ W2 PolicyExecutor+有界版本化缓存 → W3 RecordStore+后端无关 WaveRunner（FakeBackend 可测混长波）→ W4 向量化 EpisodeExporter（`from_buffer_frames` 降级为 golden 参考）→ W5 同步点计量+波契约测试 → W6 回归。
+**当前状态（2026-10-02）：W1–W6 已完成。** `binding_registry`（sim_cls→DeviceBinding，io_schema/options 白名单）、`policy_executor`（能力声明检查 + 有界 LRU + state_dict 版本 hash）、`record_store`（schema 驱动预分配 + `output_schema` 校验 + `frame_valid`）、`run_wave`（后端无关，FakeBackend 可测混长波）、`episode_exporter`（向量化导出，`from_buffer_frames` 降为 golden 对照）、`sync_stats` 分类记账均已落地。`collect()` 按同构键分组、返回序=输入序。测试：tests/ 目录 100 项绿（`test_wave_contract` 7 项 + 设备全量 + warp 端到端 5 项）；device collector 冒烟正常。已知残余：`policy_eval_mask` 未贯通 executor（"hold" 模式未接线）、host 导出峰值未单列。详见 [E3_PLAN.md](E3_PLAN.md) 放行条件核对与实现备注。
 
 - collector 不再构造具体后端或指定单一策略类，消费解析后的任务/策略执行器；输出 schema 来自绑定，不写死 96/21 或 standup 指标。
 - 用预分配的设备缓冲存 obs/action/extras/observer/终止事件/final observation/有效长度；批量导出，不逐帧创建大批临时字典。
