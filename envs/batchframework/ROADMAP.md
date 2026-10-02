@@ -193,6 +193,8 @@ E8 综合工程验收与稳定接口发布
 
 #### E4：单次训练的 1–8 卡 rollout
 
+**当前状态（2026-10-02）：实施计划已提案**（[E4_PLAN.md](E4_PLAN.md)）。W0 spawn/CUDA-init/传输探针 → W1 分片协议（JobRef/同构组→worker 确定性映射/重排校验）→ W2 worker 进程（spawn+握手+命令循环，内嵌现有 DeviceRollouter）→ W3 MultiDeviceRollouter facade（all-or-nothing 事务/背压/有序 close）→ W4 `--collector-devices` 接入 → W5 契约测试（含 1 卡 worker vs in-process 等价、故障注入）→ W6 回归。
+
 - 增加 coordinator 与 worker 协议、显式设备列表、策略/任务版本分发与启动自检；CUDA 初始化在 worker 内完成，避免继承不安全的已初始化上下文。
 - 静态确定性分片作为首版；同构组内按容量分波，结果按 job 身份重排。动态负载均衡不是首版必要条件。
 - 分离 worker 内 GPU 缓冲、host Episode 导出、进程通信和 coordinator 合并；可选择共享内存/紧凑序列化，公共 Episode API 不变。
