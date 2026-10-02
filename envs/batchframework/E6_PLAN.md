@@ -72,6 +72,30 @@ E1–E5 建完机制与迁移流程，但当前系统对"出问题时怎么办"�
 3. 多次采样无无界缓存增长 ← W5 内存稳定性测试；
 4. 异常不被当成空 Episode/零奖励/可忽略单卡缺失 ← 已有语义 + W5 矩阵逐项断言。
 
+---
+
+## 执行结果（2026-10-03）
+
+全部工作包完成，放行条件逐项核对：
+
+| 条件 | 结果 |
+|---|---|
+| 1. 可定位并重放失败样例 | ✅ `debug_capture`（job_ref×frame → INTEGRATION 快照+帧切片 npz + provenance manifest + jobs.pkl）+ `debug_replay` 三模式；真机验证 rerun 复现逐 agent 终止记录、obs_0 差 ~1e-7 |
+| 2. 按既定协议恢复 | ✅ W1 job-keyed 外生流 + checkpoint `rollout_state` 拓扑校验（`_check_resume_rollout` 漂移即拒绝）+ 装配期 manifest 新鲜度（stale 单元拒绝执行） |
+| 3. 无无界缓存增长 | ✅ `test_repeated_wave_store_bounded`：3 波 RecordStore 字节恒定；executor LRU 有界；report 增 `host_export_bytes` |
+| 4. 异常不静默 | ✅ 既有 FAILED→raise 之外，新增 health scan：contacts per-world 饱和→FAILED(capacity)（修掉 `_contacts_padded` 静默丢弃漏洞面的热路径对应），NaN/Inf→FAILED(non_finite) |
+
+**W1 的实质性修复**（超出原计划预期的问题）：
+- `PolicyExecutor.act()` 从不调用 `policy.reset(seed)`——设备端动作噪声曾是**全局调用序列依赖**（同 job 单独重跑 vs 批中不同位置 → 不同噪声）。现在 `sample_action(u=)` 注入式噪声由 `splitmix64(seed_offsets, episode_step, agent_salt)` 逐行生成，job-keyed 逐位可复现。
+- `DeviceFallenResetPlugin._count` 行历史计数 + `env_ids` 混入 → 同样改 job-keyed（CPU `RandomState(job_seed)` 每 episode 重建本就是 job-keyed 语义）。
+- 契约测试 `test_job_keyed_action_noise`：同 seed 重跑逐位一致、改 seed 变、行位无关。
+
+**验证**：tests/ 139 项绿（含真 warp 端到端、2 卡 multi、lifecycle/波契约）；device 冒烟 2 updates 正常；capture→recorded/rerun/cpu-eval 三模式真机跑通（cpu-eval 输出独立文件、轨迹差异如实记录 fp64-vs-fp32）。
+
+**残余**：per-world 饱和判定用 `count >= cap` 保守策略（恰好 cap 也会报 FAILED）——诚实偏向误报而非静默；multi-worker 捕获 manifest 按 worker 分目录；HOST plane 物化与异步 D2H 仍归 E7。
+
+提交：`c3950236`（W0–W1）→ `658a3a0c`（W2–W3）→ `47116c65`（W4–W5）→ 本次收尾。
+
 **明确不在本阶段**：多机恢复、跨 collect 插件状态链持久化、CUDA Graph、异步 D2H、checkpoint 格式 v3、Episode v3 格式改动、自动重试故障 worker（保持 all-or-nothing 语义）。
 
 ---

@@ -56,7 +56,7 @@ CombatBench 是一个基于 MuJoCo 的开源人形机器人对战仿真平台：
 
 世界插件和观测插件是**正交的两条扩展轴**：要改规则（比如加犯规系统）加世界插件；要改奖励或观测编码加观测插件，互不影响。录制器则是独立于这两者的第三轴——负责把训练过程中的关键 episode 固化下来供调试和回放。
 
-**`EnvRuntime`** — 开发者的公共 API。`step(action_a, action_b)` 驱动双边动作，`get_observation()` 取观测，`get_observer_output()` 取奖励等插件输出，`get_termination_flags()` 取终止状态。配套 `RoundRunner`（单回合执行）和 `MatchRunner`（多局比赛 + HP 累积）。
+**`EnvRuntime`** — 开发者的公共 API。`step(action_a, action_b)` 驱动双边动作，`get_observation()` 取观测，`get_observer_output()` 取奖励等插件输出，`is_episode_over()` / `is_agent_active()` / `get_agent_termination()` 取终止状态。配套 `RoundRunner`（单回合执行）和 `MatchRunner`（多局比赛 + HP 累积）。
 
 **`EnvBlueprint`** — 整个环境序列化为 YAML：模拟器类+配置、世界插件有序列表、观测插件映射、运行时参数。加载一个 YAML 文件即可完整复现别人的实验。
 
@@ -77,7 +77,7 @@ CombatBench 是一个基于 MuJoCo 的开源人形机器人对战仿真平台：
 | 3. 跟随对手 | 一边平衡一边追踪移动的对手 | 平衡 + 移动 + 朝向 |
 | 4. 完整对战 | HP 规则下正式打 | 攻防权衡 |
 
-详细训练流程见 [Baseline V1 训练指南](baseline/humanoid21/curriculum/TRAINING_V1.md) 和 [Baseline V2 训练指南](baseline/humanoid21/curriculum/TRAINING_V2.md)，框架说明见 [curriculum/README.md](baseline/humanoid21/curriculum/README.md)。
+当前训练路径见 [`baseline/experiments_ppo/README.md`](baseline/experiments_ppo/README.md)（实验注册表 + `train.py` CLI）和 [`baseline/framework/ppo/GUIDE.md`](baseline/framework/ppo/GUIDE.md)（框架指南）。历史课程流程记录在 [Baseline V1 训练指南](baseline/humanoid21/curriculum/TRAINING_V1.md) 和 [Baseline V2 训练指南](baseline/humanoid21/curriculum/TRAINING_V2.md)——注意 `curriculum/` 是归档目录：旧实验注册表已不可运行，课程机制现在通过 `build_trajectories()` 的 actor 权重表达。
 
 **安全门**（Safety Gate）是基线的核心创新：一个 MLP 分类器预测当前状态是否安全，不安全时把控制权交给冻结的保守恢复策略。用了滞后状态机——宁可多保护一会儿，也不冒险太早交还控制权。
 
@@ -149,6 +149,9 @@ from envs.framework.common_plugins import VideoRecorderPlugin
 blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
 
 # 加载预置基线策略
+# 注意：policy/baseline/ 下的快照当前带有一条失效 import（见 AUDIT.md
+# P-POL-1）——修复前可先用 policy/blueprints/random.yaml 或
+# humanoid21/standing.yaml 跑通流程。
 fight_policy = PolicyBlueprint.load("policy/baseline/fight/u11936/policy_blueprint.yaml").build()
 follow_policy = PolicyBlueprint.load("policy/baseline/follow/u11416/policy_blueprint.yaml").build()
 
@@ -172,16 +175,18 @@ print(f"Steps: {result['steps']}, HP A: {result['health_a']}, HP B: {result['hea
 
 ```
 combatbench/
-├── assets/          # MuJoCo XML 模型、纹理、网格
+├── assets/          # 图片与纹理（场地 XML 模型在 envs/humanoid21/）
 ├── envs/
 │   ├── framework/   # 可复用核心框架（后端契约、运行时、插件系统）
 │   └── humanoid21/  # 21 自由度人形机器人环境
 ├── policy/          # 预置策略（baseline 训练成果、random，供体验和评测）
 ├── baseline/        # 训练基线（PPO 课程 + 安全门）
+│   ├── framework/   # 统一训练框架（PPO；SAC 实验性）
+│   ├── experiments_ppo/  # PPO 实验注册表（exp_*.py 自动发现）
 │   └── humanoid21/
-│       ├── curriculum/   # 四阶段课程训练框架
-│       ├── rewards/      # 8 个可组合奖励模块
-│       └── runs/         # 125+ 训练记录
+│       ├── curriculum/   # 旧课程训练归档（已被 experiments_ppo 取代）
+│       ├── rewards/      # 20+ 可组合奖励/观测模块
+│       └── runs/         # 800+ 训练记录
 ├── docs/            # 规则、环境规格、设计文档
 ├── examples/        # 9 个示例脚本（覆盖完整开发周期）
 ```
@@ -196,11 +201,11 @@ CombatBench 提供了一套完整的 Baseline，基于四阶段课程学习 + �
 
 相关文档：
 
-- **Baseline 概览**：[`baseline/humanoid21/README.md`](baseline/humanoid21/README.md) — 目录结构、训练流程、奖励模块
-- **课程训练框架**：[`baseline/humanoid21/curriculum/README.md`](baseline/humanoid21/curriculum/README.md) — Framework V1/V2 区别、实验配置、CLI 用法
-- **Baseline V1 训练指南**：[`baseline/humanoid21/curriculum/TRAINING_V1.md`](baseline/humanoid21/curriculum/TRAINING_V1.md)
-- **Baseline V2 训练指南**：[`baseline/humanoid21/curriculum/TRAINING_V2.md`](baseline/humanoid21/curriculum/TRAINING_V2.md)
-- **策略接口与蓝图**：[`envs/framework/DESIGN.md`](envs/framework/DESIGN.md) — `PolicyBlueprint` 序列化、`Policy` 抽象基类
+- **训练 CLI 与实验注册表**：[`baseline/experiments_ppo/README.md`](baseline/experiments_ppo/README.md) — 启动、smoke、resume、`--set`/`--param` 覆盖
+- **PPO 框架指南**：[`baseline/framework/ppo/GUIDE.md`](baseline/framework/ppo/GUIDE.md) — 钩子、数据流、多 critic 通道
+- **Baseline 概览**：[`baseline/humanoid21/README.md`](baseline/humanoid21/README.md) — 目录结构、奖励模块
+- **策略契约**：[`policy/README.md`](policy/README.md) — `Policy` 接口与 `PolicyBlueprint` 打包
+- **历史课程记录**：[`baseline/humanoid21/curriculum/TRAINING_V1.md`](baseline/humanoid21/curriculum/TRAINING_V1.md)、[`TRAINING_V2.md`](baseline/humanoid21/curriculum/TRAINING_V2.md) — 旧训练流程笔记
 - **控制规格**：[`envs/humanoid21/CONTROLSPEC.md`](envs/humanoid21/CONTROLSPEC.md) — 动作空间、PD 控制、频率约定
 - **数据规格**：[`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md) — 观测向量布局、坐标系约定
 
@@ -215,7 +220,7 @@ CombatBench 提供了一套完整的 Baseline，基于四阶段课程学习 + �
 - **Humanoid21 数据契约**：[`envs/humanoid21/DATASPEC.md`](envs/humanoid21/DATASPEC.md)
 - **Humanoid21 控制契约**：[`envs/humanoid21/CONTROLSPEC.md`](envs/humanoid21/CONTROLSPEC.md)
 - **Humanoid21 基线指南**：[`baseline/humanoid21/README.md`](baseline/humanoid21/README.md)
-- **训练可观测性契约**：[`baseline/humanoid21/curriculum/OBSERVABILITY.md`](baseline/humanoid21/curriculum/OBSERVABILITY.md)
+- **调试工具地图**：[`baseline/framework/ppo/dumpkit/CONTEXT.md`](baseline/framework/ppo/dumpkit/CONTEXT.md) — dump 采集、viewer、指标目录
 
 规则与环境：
 

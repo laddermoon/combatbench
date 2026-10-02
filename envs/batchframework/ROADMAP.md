@@ -215,7 +215,7 @@ E8 综合工程验收与稳定接口发布
 
 #### E6：调试、恢复、容量与故障管理
 
-**状态：已计划（E6_PLAN.md）**
+**状态：已完成（E6_PLAN.md）**——job-keyed 随机身份（u 注入 + 插件 job 键计数器）、`debug_capture`/`debug_replay`（recorded/rerun/cpu-eval 三模式分标签）、checkpoint `rollout_state` 拓扑校验、装配期 manifest 新鲜度门、health scan（contacts 饱和→capacity、NaN→non_finite）、host 导出字节记账。
 
 - 按需捕获指定 job/agent/frame 的真实设备状态与观测奖励；provenance 含逻辑配置、实际后端、模型/代码版本、策略版本和采样身份。
 - 区分实际轨迹回放、同后端重跑、CPU 交叉评估；复用现有 dump/viewer/指标，不以 CPU 重算结果覆盖设备原始记录。
