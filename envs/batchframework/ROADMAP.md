@@ -181,6 +181,8 @@ E8 综合工程验收与稳定接口发布
 
 #### E3：完成单卡设备采样引擎，保留 Episode 边界
 
+**当前状态（2026-10-02）：实施计划已提案**（[E3_PLAN.md](E3_PLAN.md)）。W1 绑定注册表（解耦 collector/backend/obs/schema）→ W2 PolicyExecutor+有界版本化缓存 → W3 RecordStore+后端无关 WaveRunner（FakeBackend 可测混长波）→ W4 向量化 EpisodeExporter（`from_buffer_frames` 降级为 golden 参考）→ W5 同步点计量+波契约测试 → W6 回归。
+
 - collector 不再构造具体后端或指定单一策略类，消费解析后的任务/策略执行器；输出 schema 来自绑定，不写死 96/21 或 standup 指标。
 - 用预分配的设备缓冲存 obs/action/extras/observer/终止事件/final observation/有效长度；批量导出，不逐帧创建大批临时字典。
 - 先实现明确的同步波次模式，支持该模式内的提前终止与长度差异。采样块切分不改变 episode 语义，未完成片段不能伪装成 timeout；是否加入补位调度在基础正确后单独评审。
