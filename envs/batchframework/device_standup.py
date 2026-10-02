@@ -36,6 +36,11 @@ from .device_obs import contact_forces_flat
 from .device_plugin import (
     BaseDeviceObserver, BaseDevicePlugin, DeviceCtx,
 )
+from .device_state import (
+    _lshr64 as _lshr,
+    RngView,
+    splitmix64 as _splitmix64,
+)
 
 # 输出字段顺序（get_output dict 的稳定键序）
 OUT_KEYS = ("stage", "potential", "f_score", "contact_score", "d_score",
@@ -214,21 +219,6 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
 # ---------------------------------------------------------------------------
 # RandomFallenStatePlugin 的设备端原生版（M4 T3）
 # ---------------------------------------------------------------------------
-def _lshr(x: torch.Tensor, s: int) -> torch.Tensor:
-    """int64 逻辑右移（torch 的 >> 是算术右移，负数会带符号位）。"""
-    return (x >> s) & ((1 << (64 - s)) - 1)
-
-
-def _splitmix64(x: torch.Tensor) -> torch.Tensor:
-    """splitmix64（int64 环绕语义）——per-env 独立可复现随机源。"""
-    i64 = torch.int64
-    z = x + torch.tensor(-7046029254386353131, dtype=i64,
-                       device=x.device)  # 0x9E3779B97F4A7C15
-    z = (z ^ _lshr(z, 30)) * torch.tensor(-4658895280553007687, dtype=i64,
-                                         device=z.device)  # 0xBF58476D1CE4E5B9
-    z = (z ^ _lshr(z, 27)) * torch.tensor(-7723592293110705685, dtype=i64,
-                                         device=z.device)  # 0x94D049BB133111EB
-    return z ^ _lshr(z, 31)
 
 
 class DeviceFallenResetPlugin(BaseDevicePlugin):
@@ -340,15 +330,17 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
             self._internal.reset()
         return self._internal
 
+    @property
+    def rng_salt(self) -> int:
+        return self._salt
+
     # ------------------------------------------------------------------
-    def _draw_actions(self, env_ids, seed_offsets, dev) -> torch.Tensor:
+    def _draw_actions(self, env_ids, rng_view, dev) -> torch.Tensor:
         """(K,2,21) uniform[-1,1)——每 env 每机器人每次 reset 独立抽取
         （CPU：每 episode 每目标机器人各抽一次 uniform[-1,1]^21）。
         机器人间共享同一 action 会导致双机同步倒地、初态分布失真。"""
-        seeds = (seed_offsets[env_ids]
-                 + self._count[env_ids] * 6364136223846793005
-                 + env_ids * (-7046029254386353131)
-                 + self._salt)                                   # (K,)
+        seeds = (rng_view.unit_seed(env_ids, self._count[env_ids])
+                 + env_ids * (-7046029254386353131))            # (K,)
         j = torch.arange(42, dtype=torch.int64, device=dev)
         bits = _splitmix64(seeds[:, None] + j[None, :])          # (K,42)
         u = _lshr(bits, 11).to(torch.float64) * (2.0 ** -53)     # [0,1)
@@ -385,7 +377,10 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
 
         t = self._tables()
         # --- action：目标随机（per-robot 独立）；非目标保持 joint_pos_norm ---
-        rand = self._draw_actions(env_ids, st.rng.seed_offsets, dev)
+        # ctx.rng 由 runtime 按声明的 rng_salt 分配；脱离 runtime 的直接
+        # 调用（测试/工具）现场构建同 salt 视图，序列一致。
+        rng_view = ctx.rng or RngView(st, self._salt)
+        rand = self._draw_actions(env_ids, rng_view, dev)
         act_full = [torch.zeros(B, 21, device=dev),
                     torch.zeros(B, 21, device=dev)]
         for idx, rid in enumerate(("robot_a", "robot_b")):

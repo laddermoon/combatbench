@@ -107,10 +107,13 @@ class FakeBatchBackend:
         self.xfrc_log.clear()
         self.step_calls = 0
 
-    def physical_step(self, n_steps: int = 1, keep_history: bool = False) -> None:
+    def physical_step(self, n_steps: int = 1, keep_history: bool = False,
+                      pre_step=None, post_step=None) -> None:
         st = self.build_device_state()
         sched = self._sched
         for i in range(n_steps):
+            if pre_step is not None:
+                pre_step(i)
             # PD 占位：ctrl = clamp(act_target)
             st.sim.ctrl.copy_(st.sim.act_target.clamp(-1.0, 1.0))
             # 外力组合（与 warp 后端同语义：pending 首子步 / sched 逐子步）
@@ -123,6 +126,8 @@ class FakeBatchBackend:
             # 最小动力学占位：qpos += qvel·dt；外力让 vel 漂移
             st.sim.qvel += st.sim.xfrc_applied[:, 0, :self.NV] * self.DT
             st.sim.qpos[:, :self.NV] += st.sim.qvel * self.DT
+            if post_step is not None:
+                post_step(i)
         st.sim.xfrc_applied.zero_()
         self._pend.zero_()
         self._sched = None
@@ -216,12 +221,15 @@ class FakeBatchBackend:
                 raise ValueError(f"unknown view field {k!r}")
             getattr(st.sim, self._VIEWS_MAP[k])[rows] = val
 
-    def advance(self, n_substeps: int, control=None) -> None:
+    def advance(self, n_substeps: int, control=None, *,
+                pre_step=None, post_step=None) -> None:
         """契约版步进：control.apply(views) → 积分。"""
         st = self.build_device_state()
         vv = self.views()
         sched = self._sched
         for i in range(n_substeps):
+            if pre_step is not None:
+                pre_step(i)
             if control is not None:
                 control.apply(vv)
             st.sim.xfrc_applied.zero_()
@@ -232,6 +240,8 @@ class FakeBatchBackend:
             self.xfrc_log.append(st.sim.xfrc_applied.clone())
             st.sim.qvel += st.sim.xfrc_applied[:, 0, :self.NV] * self.DT
             st.sim.qpos[:, :self.NV] += st.sim.qvel * self.DT
+            if post_step is not None:
+                post_step(i)
         st.sim.xfrc_applied.zero_()
         self._pend.zero_()
         self._sched = None

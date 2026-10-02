@@ -22,7 +22,7 @@ import torch
 project_root = Path(__file__).resolve().parent.parent
 
 from envs.batchframework.device_state import (  # noqa: E402
-    ContactFlatNamespace, DeviceBatchState, EpisodeNamespace, IoNamespace,
+    ContactFlatNamespace, DeviceBatchState, IoNamespace,
     RngNamespace, SimNamespace,
 )
 from envs.batchframework.device_plugin import (  # noqa: E402
@@ -200,17 +200,8 @@ def make_device_state(contacts_per_env, xpos, xquat, device):
         act_target=t(np.zeros((B, 4), np.float32)),
         contacts_flat=contacts,
     )
-    ep = EpisodeNamespace(
-        episode_steps=torch.zeros(B, dtype=torch.int64, device=device),
-        active_mask=torch.ones(B, dtype=torch.bool, device=device),
-        terminated_flag=torch.zeros(B, dtype=torch.bool, device=device),
-        term_reason=torch.full((B,), -1, dtype=torch.int8, device=device),
-        agent_terminated=torch.zeros(B, 2, dtype=torch.bool, device=device),
-        agent_term_reason=torch.full(
-            (B, 2), -1, dtype=torch.int8, device=device),
-        reset_request=torch.zeros(B, dtype=torch.bool, device=device),
-        time=torch.zeros(B, dtype=torch.float32, device=device),
-    )
+    from envs.batchframework.device_state import alloc_episode_namespace
+    ep = alloc_episode_namespace(B, device)
     io = IoNamespace(action_a=torch.zeros(B, 21, device=device),
                      action_b=torch.zeros(B, 21, device=device))
     rng = RngNamespace(
@@ -597,13 +588,15 @@ class TestFallenResetPlugin:
     def test_seed_determinism_and_diversity(self):
         """同 seed_offsets 同 reset 序号 → 相同 action；env 间独立。"""
         sim, plugin, state = self._make(B=4)
+        from envs.batchframework.device_state import RngView
+        rng = RngView(state, plugin._salt)
         dev = torch.device("cuda")
         ids = torch.arange(4, device=dev)
-        a1 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
-        a2 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
+        a1 = plugin._draw_actions(ids, rng, dev)
+        a2 = plugin._draw_actions(ids, rng, dev)
         torch.testing.assert_close(a1, a2)          # 同次调用确定性
         plugin._count += 1
-        a3 = plugin._draw_actions(ids, state.rng.seed_offsets, dev)
+        a3 = plugin._draw_actions(ids, rng, dev)
         assert not torch.allclose(a1, a3)           # 下一次 reset 不同
         assert not torch.allclose(a1[0], a1[1])     # env 间独立
         assert a1.abs().max() <= 1.0

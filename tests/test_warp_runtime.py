@@ -37,8 +37,9 @@ def test_warp_runtime_smoke():
     assert st.io.obs_a.shape == (4, 96)
     assert torch.isfinite(st.io.obs_a).all()
     rt.step()
-    # timeout 触发 → 全 env 复位
-    assert st.episode.episode_steps.tolist() == [0] * 4
+    # timeout 触发 → 全 env ENDED 封存（step() 不 auto-reset，E2-W2）
+    assert st.episode.episode_steps.tolist() == [2] * 4
+    assert st.episode.world_running.tolist() == [False] * 4
     # reset 后观测回到初始姿态附近（非 NaN、高度合理）
     obs = st.io.obs_a
     assert torch.isfinite(obs).all()

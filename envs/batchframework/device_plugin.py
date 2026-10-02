@@ -8,7 +8,17 @@
 
 终止编码（episode.term_reason i8）::
 
-    -1 = 无, 0 = TIMEOUT, 1 = KO, 2 = FOUL, 3 = OUT_OF_BOUNDS, 4 = CUSTOM
+    -1 = 无, 0 = TIMEOUT, 1 = KO, 2 = FOUL, 3 = OUT_OF_BOUNDS, 4 = CUSTOM,
+    5 = ABANDONED（reset-while-active / 显式 abandon）
+
+终止模型（对齐 CPU ``agent_termination_proposals``，见
+LIFECYCLE_TRACE.md §2）：
+
+- ``request_termination`` **立即**置 ``agent_done``——同 phase 后续
+  插件可见（CPU 提出即生效语义）；同时写 ``term_pending`` 待归档。
+- 每个 phase 结束后的屏障把 pending 归档进 ``term_history``
+  （per-agent，每 reason 首次出现记 (code, step)，去重保序）。
+- env 结束判定在屏障：``agent_done.all(-1)`` 或 env 级/reset_request。
 """
 from __future__ import annotations
 
@@ -16,49 +26,76 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
-from .device_state import DeviceBatchState, ExecutionPlane
+from .device_state import (
+    DeviceBatchState,
+    ExecutionPlane,
+    TERM_CODES,
+    TERM_NAMES,
+)
 
-# 终止原因 → i8 code（与 batch_context.TerminationReason 字符串对应）
-TERM_CODES: Dict[str, int] = {
-    "timeout": 0, "ko": 1, "foul": 2, "out_of_bounds": 3, "custom": 4,
-}
-TERM_NAMES: Dict[int, str] = {v: k for k, v in TERM_CODES.items()}
+# 执行错误码（episode.fail_reason i8；FAILED 是执行错误不是任务失败）
+FAIL_CODES: Dict[str, int] = {"capacity": 0, "non_finite": 1}
+FAIL_NAMES: Dict[int, str] = {v: k for k, v in FAIL_CODES.items()}
 
 
 # ---------------------------------------------------------------------------
 # Mutator — 可写 hook 中授予的写接口
 # ---------------------------------------------------------------------------
 class DeviceMutator:
-    """对后端 device 写方法的窄封装。只暴露契约内操作。"""
+    """对后端 device 写方法的窄封装。只暴露契约内操作。
 
-    __slots__ = ("_sim",)
+    按 hook/插件声明收窄（E2-W4）：runtime 授予时带 ``allowed`` 动词
+    集合；None = 全部允许（兼容旧插件），否则越权调用抛
+    ``PermissionError``。hook 结束随 ctx._revoke_mutator 一并失效。
+    """
+
+    __slots__ = ("_sim", "_allowed")
+
+    _VERBS = ("set_action", "add_ext_force", "upload_force_schedule",
+              "reset_rows", "set_integration_rows")
 
     def __init__(self, sim):
         object.__setattr__(self, "_sim", sim)
+        object.__setattr__(self, "_allowed", None)
 
     def __setattr__(self, name, value):
         raise AttributeError("DeviceMutator is immutable")
 
+    def _set_scope(self, allowed) -> None:
+        object.__setattr__(self, "_allowed", allowed)
+
+    def _check(self, verb: str) -> None:
+        al = self._allowed
+        if al is not None and verb not in al:
+            raise PermissionError(
+                f"mutator verb {verb!r} not granted for this hook/plugin "
+                f"(allowed: {sorted(al)})")
+
     def set_action(self, action_a: torch.Tensor, action_b: torch.Tensor) -> None:
         """(B,21) 动作张量 → PD target。on_pre_action_step 内可调用。"""
+        self._check("set_action")
         self._sim.dev_set_action(action_a, action_b)
 
     def add_ext_force(self, body_id: int, force: torch.Tensor,
                       torque: Optional[torch.Tensor] = None) -> None:
         """累加挂起外力 (B,3)[,(B,3)]；作用于下一物理块的首个子步。"""
+        self._check("add_ext_force")
         self._sim.dev_add_ext_force(body_id, force, torque)
 
     def upload_force_schedule(self, sched: torch.Tensor) -> None:
         """(B, n_steps, nbody, 6) 逐子步外力表；下一 physical_step 消费。"""
+        self._check("upload_force_schedule")
         self._sim.dev_upload_force_schedule(sched)
 
     def reset_rows(self, env_ids: torch.Tensor) -> None:
         """部分 reset：恢复初始姿态并重建 derived（forward）。"""
+        self._check("reset_rows")
         self._sim.dev_reset_rows(env_ids)
 
     def set_integration_rows(self, env_ids: torch.Tensor,
                              qpos: torch.Tensor, qvel: torch.Tensor) -> None:
         """写原始 qpos/qvel 行 + forward 刷新（跨后端搬运/回放用）。"""
+        self._check("set_integration_rows")
         self._sim.dev_set_integration_rows(env_ids, qpos, qvel)
 
 
@@ -76,7 +113,8 @@ class DeviceCtx:
     """
 
     __slots__ = ("state", "mutator", "plugin_name", "reset_env_ids",
-                 "terminated_env_ids", "phy_substeps", "_mutator_impl")
+                 "terminated_env_ids", "phy_substeps", "rng",
+                 "_mutator_impl")
 
     def __init__(self, state: DeviceBatchState, plugin_name: str = ""):
         self.state = state
@@ -85,6 +123,7 @@ class DeviceCtx:
         self.reset_env_ids: Optional[torch.Tensor] = None
         self.terminated_env_ids: Optional[torch.Tensor] = None
         self.phy_substeps: int = 0   # 本物理块子步数（pre/post_batch_step 有效）
+        self.rng = None              # RngView——声明 rng_salt 的 unit 才有
         self._mutator_impl: Optional[DeviceMutator] = None
 
     @property
@@ -107,40 +146,88 @@ class DeviceCtx:
     def batch_size(self) -> int:
         return self.state.batch_size
 
+    @property
+    def substep_index(self) -> torch.Tensor:
+        """(B,) i32 当前物理子步位置——仅 on_pre/post_phy_step 内有意义。"""
+        return self.state.episode.substep_index
+
     def request_termination(
         self,
         env_ids: torch.Tensor,
         reason: str,
         agents: Optional[Sequence[int]] = None,
     ) -> None:
-        """标记终止。
+        """提出终止请求（提出即生效、即归档——CPU 同语义）。
 
-        - ``agents=None``：env 级终止（整 episode 结束，等价旧框架
-          ``agent_id=None`` 的全员终止）——同时写 agent_terminated 全部位
-          并置 env 级 terminated_flag。
-        - ``agents=[0]``：仅终止指定 agent（0=robot_a, 1=robot_b）；
-          env 在该 env 全部 agent 终止后才由 runtime 消费为 env 终止
-          （对齐旧框架 ``all_agents_terminated`` 语义）。
+        - ``agent_done`` / ``agent_term_reason`` / ``term_pending`` 立即
+          写入：同 phase 的后续插件立即可见（对齐 CPU
+          ``ctx.agent_terminated`` 直写）。
+        - ``agents=None``：env 级终止（全员终止，等价旧框架
+          ``agent_id=None``）；``agents=[0]`` 仅终止指定 agent——env 在
+          全部 agent 终止后才由屏障判为 ENDED
+          （``all_agents_terminated`` 语义）。
+        - reason 立即记入 ``term_history``（每 (agent, reason) 首次出现
+          记 (code, 当前 episode_step)；同 reason 去重、异 reason 保序、
+          已终止后再提出的新 reason 仍记录——CPU recorder 逐帧扫描语义）。
+        - 自定义 reason 字符串经 ``reason_registry`` 分配确定性 code，
+          原始字符串不丢失（导出端反查）。
+        - env 是否 ENDED 由 phase 屏障判定（见
+          ``BatchRuntime._consume_terminations``）。
         """
-        code = TERM_CODES.get(reason, TERM_CODES["custom"])
         ep = self.state.episode
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ep.agent_done.device).reshape(-1)
+        if ids.numel() == 0:
+            return
+        reg = ep.reason_registry
+        code = reg.get(reason)
+        if code is None:
+            code = len(reg)
+            reg[reason] = code
         if agents is None:
-            ep.agent_terminated[env_ids] = True
-            ep.agent_term_reason[env_ids] = code
-            ep.terminated_flag[env_ids] = True
-            ep.term_reason[env_ids] = code
-            ep.active_mask[env_ids] = False
-        else:
-            for a in agents:
-                ep.agent_terminated[env_ids, a] = True
-                ep.agent_term_reason[env_ids, a] = code
+            agents = range(ep.n_agents)
+            ep.term_reason[ids] = code
+        for a in agents:
+            ep.agent_done[ids, a] = True
+            ep.agent_term_reason[ids, a] = code
+            ep.term_pending[ids, a] = True
+            ep.term_pending_code[ids, a] = code
+            _archive_reason(ep, ids, a, code)
+
 
     # runtime 内部使用
-    def _grant_mutator(self) -> None:
+    def _grant_mutator(self, allowed=None) -> None:
+        if self._mutator_impl is not None:
+            self._mutator_impl._set_scope(allowed)
         self.mutator = self._mutator_impl
 
     def _revoke_mutator(self) -> None:
+        if self._mutator_impl is not None:
+            self._mutator_impl._set_scope(None)
         self.mutator = None
+
+
+def _archive_reason(ep, env_ids: torch.Tensor, agent: int,
+                    code: int) -> None:
+    """(env_ids, agent, code) 首次出现 → term_history 追加 (code, step)。
+
+    同 code 去重（已存在不重复记）；超 ``term_history_k`` 置 overflow
+    标志（显式截断，不静默丢）。提出即归档——记录时刻 = 当前
+    episode_step（与 CPU recorder 帧扫描的提议时刻一致）。
+    """
+    K = ep.term_history_k
+    hist = ep.term_history[env_ids, agent]              # (M,K,2)
+    exists = (hist[..., 0] == code).any(-1)             # (M,)
+    hlen = ep.term_history_len[env_ids, agent]          # (M,)
+    fresh = ~exists
+    ep.term_history_overflow[env_ids, agent] |= (fresh & (hlen >= K))
+    add = env_ids[fresh & (hlen < K)]
+    if add.numel():
+        slots = ep.term_history_len[add, agent]
+        ep.term_history[add, agent, slots, 0] = code
+        ep.term_history[add, agent, slots, 1] = \
+            ep.episode_steps[add].to(torch.int32)
+        ep.term_history_len[add, agent] += 1
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +250,31 @@ class BaseDevicePlugin:
     - ``on_envs_reset(ctx)``    本插件状态池行已清零后的回调
       （env_ids 在 ctx.reset_env_ids；默认 no-op——约定优于隐式发现）
 
-    hook 表（与 batch_plugin.py 同序）::
+    hook 表（与 batch_plugin.py 同序；E2-W3 起含子步粒度）::
 
         on_pre_episode      env 重置后、第一步前           read-write
         on_pre_action_step  action 入队后、物理块前      read-write(io.action)
         on_pre_batch_step   physical_step(n) 前          read-write(外力)
+        on_pre_phy_step     每个物理子步前               read-write(子步力)
+        on_post_phy_step    每个物理子步后               read-write(投影)
         on_post_batch_step  physical_step(n) 后          read-write(受限投影)
         on_post_action_step 每 action step               read-only(+term/reward)
         on_post_episode     env 终止后                   read-only
+
+    子步 hook 仅 DEVICE plane 可声明；有任一插件覆写时 runtime 退化为
+    逐子步驱动 physical_step(1)（warp 后端本就是 python 级子步循环，
+    无额外 host 同步约束）。插件内不得 .cpu()/.item()（热路径禁令）。
+
+    声明式能力面（E2-W4，装配期校验；默认空 = 不校验向后兼容）：
+
+    - ``declared_reads``    sim namespace 字段名集（装配期对
+      backend.describe().fields 白名单校验）
+    - ``declared_writes``   mutator 动词集（set_action/add_ext_force/
+      upload_force_schedule/reset_rows/set_integration_rows）
+    - ``per_hook_mutator``  ``{hook_name: frozenset(verbs)}``——按 hook
+      收窄 mutator 动词；None = 不收窄（兼容）
+    - ``rng_salt``          int——声明后 runtime 给 ctx.rng 分配绑定
+      RngView；None = 不使用随机服务
     """
 
     @property
@@ -188,6 +292,23 @@ class BaseDevicePlugin:
     @property
     def require_mutator(self) -> bool:
         return False
+
+    # --- 声明式能力面（装配期校验） ---
+    @property
+    def declared_reads(self) -> Sequence[str]:
+        return ()
+
+    @property
+    def declared_writes(self) -> Sequence[str]:
+        return ()
+
+    @property
+    def per_hook_mutator(self) -> Optional[Dict[str, frozenset]]:
+        return None
+
+    @property
+    def rng_salt(self) -> Optional[int]:
+        return None
 
     # --- attach 期 ---
     def declare_state(self, state: DeviceBatchState) -> None:
@@ -225,6 +346,14 @@ class BaseDevicePlugin:
         return None
 
     def on_pre_batch_step(self, ctx: DeviceCtx) -> None:
+        return None
+
+    def on_pre_phy_step(self, ctx: DeviceCtx) -> None:
+        """每个物理子步前（DEVICE 插件；ctx.substep_index 为子步位置）。"""
+        return None
+
+    def on_post_phy_step(self, ctx: DeviceCtx) -> None:
+        """每个物理子步后。"""
         return None
 
     def on_post_batch_step(self, ctx: DeviceCtx) -> None:

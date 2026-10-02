@@ -346,11 +346,14 @@ class WarpBackend:
             with self._wp.ScopedStream(self._wp.stream_from_torch()):
                 self._mjw.forward(self._wmodel, self._wdata)
 
-    def advance(self, n_substeps: int, control=None) -> None:
+    def advance(self, n_substeps: int, control=None, *,
+                pre_step=None, post_step=None) -> None:
         """全行推进 n 子步；control.apply(views) 每子步前调用。
 
         消费型输入：pending wrench 仅首子步加入；schedule 逐子步取
         sched[:, i]，步末清零（对齐 CPU physical_step 语义）。
+        ``pre_step(i)``/``post_step(i)`` 逐子步回调（runtime 的
+        on_pre/post_phy_step 插槽；须为设备侧操作，不得 host 同步）。
         """
         if self._wdata is None:
             raise ContractError("advance before initialize()")
@@ -365,6 +368,8 @@ class WarpBackend:
         # 与 torch 侧 xfrc 组合（zero_/add_）严格有序。
         with wp.ScopedStream(wp.stream_from_torch()):
             for i in range(n_substeps):
+                if pre_step is not None:
+                    pre_step(i)
                 if control is not None:
                     control.apply(v)
                 xf, pend = v["xfrc_applied"], v["xfrc_pending"]
@@ -374,6 +379,8 @@ class WarpBackend:
                 if sched is not None:
                     xf.add_(sched[:, i])
                 mjw.step(self._wmodel, d)
+                if post_step is not None:
+                    post_step(i)
             # CPU physical_step 末尾清零施加力/求解偏置
             v["xfrc_applied"].zero_()
             pend.zero_()

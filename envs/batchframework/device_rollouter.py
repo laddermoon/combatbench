@@ -9,9 +9,11 @@ jobs 同序返回。下游（build_trajectories / PPOBuffer / GAE / dump）
 - 所有 job 必须共享同一 env blueprint 与同一对 policy blueprint
   （M5 范围：standup 类 self-play 实验；混合 bp 显式拒绝）；
 - N 个 job 按 ``batch_size`` 分波，每波 B 个 env lockstep 推进；
-- 波内 env 若提前终止：该 env 行由 runtime 自动部分 reset 进入下一
-  episode——**帧截取到首个 env 终止步**，后续行数据不串台；
-- 热路径零 host sync；波末一次批量 ``.cpu()`` 组装 Episode。
+- 波内 env 若提前终止：该行进入 **sealed-ENDED**——物理封存冻结
+  （E2-W2；帧截取到首个 env 终止步，与旧 auto-reset 版输出严格
+  等价：截断后的数据本来就被丢弃）；
+- 热路径每步至多一次 host sync（终止屏障的 any 检查）；波末一次
+  批量 ``.cpu()`` 组装 Episode。
 
 策略加载：``job.policy_*_bp`` 的 ``file:`` 导出蓝图 → 重建
 ``TruncatedNormalPolicy``（weights 来自 policy_exports/uNNNNN，
@@ -41,7 +43,7 @@ from baseline.framework.rollout.job import Job
 from envs.framework.blueprint import EnvBlueprint
 
 from .capability_registry import resolve_observer, resolve_plugin
-from .device_plugin import BaseDevicePlugin, TERM_NAMES
+from .device_plugin import BaseDevicePlugin
 from .device_runtime import BatchRuntime, DeviceTimeoutPlugin
 
 AGENT_IDS = ("robot_a", "robot_b")
@@ -74,7 +76,6 @@ class _WaveRecorder(BaseDevicePlugin):
         self.term_records: List[Dict[str, List]] = []
         self.final_obs: Optional[Dict[str, torch.Tensor]] = None
         self.env_term_step: Optional[torch.Tensor] = None
-        self._seen_term: Optional[torch.Tensor] = None
         self._t = 0
 
     @property
@@ -93,8 +94,6 @@ class _WaveRecorder(BaseDevicePlugin):
         self.obs_bufs = {}
         self.term_records = [dict(robot_a=[], robot_b=[])
                              for _ in range(self._B)]
-        self._seen_term = torch.zeros(self._B, 2, dtype=torch.bool,
-                                      device=self._dev)
         self.env_term_step = torch.full((self._B,), -1, dtype=torch.int32,
                                         device=self._dev)
         # final_obs 兜底初始化为当前 io.obs（未终止 env 用末步 obs）
@@ -120,37 +119,50 @@ class _WaveRecorder(BaseDevicePlugin):
                     bufs[k] = buf
                 buf[t].copy_(v)
 
-        ep = ctx.episode
-        # per-agent 终止首次出现 → (reason, episode_step)；env 已终止
-        # 的行（属于下一 episode）不再记录
-        new = ep.agent_terminated & ~self._seen_term \
-            & (self.env_term_step < 0).unsqueeze(-1)
-        self._seen_term |= ep.agent_terminated
-        if bool(new.any()):
-            ids = torch.nonzero(new, as_tuple=False).cpu()
-            steps = ep.episode_steps.cpu()
-            reasons = ep.agent_term_reason.cpu()
-            for e, a in ids.tolist():
-                self.term_records[e][AGENT_IDS[a]].append(
-                    (TERM_NAMES.get(int(reasons[e, a]), "custom"),
-                     int(steps[e])))
-
-        # env 级终止：捕获 final_obs 行。此刻 io.obs 已是 obs_{t+1}
-        # （obs 构建在 step 内早于终止消费），恰是 bootstrap 后继态。
-        env_term = ep.terminated_flag | ep.agent_terminated.all(dim=-1)
-        first = env_term & (self.env_term_step < 0)
-        if bool(first.any()):
-            ids = torch.nonzero(first, as_tuple=False).squeeze(-1)
-            self.env_term_step[ids] = ep.episode_steps[ids].to(torch.int32)
-            if self.final_obs is None:
-                self.final_obs = {"robot_a": ctx.io.obs_a.clone(),
-                                  "robot_b": ctx.io.obs_b.clone()}
-            self.final_obs["robot_a"][ids] = ctx.io.obs_a[ids]
-            self.final_obs["robot_b"][ids] = ctx.io.obs_b[ids]
         self._t += 1
 
+    def on_post_episode(self, ctx) -> None:
+        """env 结束行（本步新 ENDED）：CPU 序——插件 post_episode/observer
+        刷新之后才记末帧（observer 输出取 post_episode 刷新值）。
+
+        - ``env_term_step`` 只记本波**首次** env 终止（显式 reset_rows 后
+          同一行再来 episode 不入本波记录）。
+        - ``final_obs`` = 终止时刻 obs_{t+1}（无 reset 的封存态观测）。
+        - 末帧 observer 输出用此刻的 post_episode 刷新值覆写
+          （CPU: recorder 帧在 plugins on_post_episode 之后跑）。
+        - ``term_records`` 不在此填——推到 ``finalize_wave`` 统一从
+          ``term_history`` 导出（覆盖 post_episode 内的迟发提议）。
+        """
+        ids = ctx.terminated_env_ids
+        if ids is None or len(ids) == 0:
+            return
+        ep = ctx.episode
+        fresh = ids[self.env_term_step[ids] < 0]
+        if fresh.numel() == 0:
+            return
+        self.env_term_step[fresh] = ep.episode_steps[fresh].to(torch.int32)
+        if self.final_obs is None:
+            self.final_obs = {"robot_a": ctx.io.obs_a.clone(),
+                              "robot_b": ctx.io.obs_b.clone()}
+        self.final_obs["robot_a"][fresh] = ctx.io.obs_a[fresh]
+        self.final_obs["robot_b"][fresh] = ctx.io.obs_b[fresh]
+        # 覆写末帧 observer 输出（帧索引 self._t - 1）
+        t = self._t - 1
+        for name in self._names:
+            out = self._rt.get_observer_output(name)
+            if out is None:
+                continue
+            bufs = self.obs_bufs.get(name)
+            if bufs is None:
+                continue
+            for k, v in out.items():
+                buf = bufs.get(k)
+                if buf is not None:
+                    buf[t, fresh] = v[fresh]
+
     def finalize_wave(self, ctx_io) -> None:
-        """波末兜底：未终止 env 的 final_obs = 末步 io.obs。"""
+        """波末收尾：未终止行 final_obs 兜底 + term_history → records 导出。"""
+        ep = self._rt.state.episode
         if self.final_obs is None:
             self.final_obs = {"robot_a": ctx_io.obs_a.clone(),
                               "robot_b": ctx_io.obs_b.clone()}
@@ -159,13 +171,29 @@ class _WaveRecorder(BaseDevicePlugin):
             if bool(live.any()):
                 self.final_obs["robot_a"][live] = ctx_io.obs_a[live]
                 self.final_obs["robot_b"][live] = ctx_io.obs_b[live]
+        # 终止历史 → per-agent records（history 已按原因去重保序，
+        # 每记录 = (reason_str, episode_step)，与 CPU recorder 同构；
+        # 自定义 reason 经 reason_registry 反查原始字符串）。
+        names = {v: k for k, v in ep.reason_registry.items()}
+        hist = ep.term_history.cpu()
+        hlen = ep.term_history_len.cpu()
+        steps = ep.episode_steps.cpu()
+        for e in range(self._B):
+            for a in range(2):
+                recs = self.term_records[e][AGENT_IDS[a]]
+                for k in range(int(hlen[e, a])):
+                    code, step = int(hist[e, a, k, 0]), int(hist[e, a, k, 1])
+                    recs.append((names.get(code, "custom"), step))
+                if not recs:
+                    # 波内从未终止的行：episode 被波截断——记 abandoned
+                    #（当前 wave 设计 T≥max_steps 时不可达；显式记录
+                    # 而非留空，避免下游把"无记录"当成功终止）。
+                    recs.append(("abandoned", int(steps[e])))
 
     def on_envs_reset(self, ctx) -> None:
-        # 行复位后允许该 env 的下一 episode 重新记终止（env_term_step
-        # 保留——该行本波只产出一个 episode，复位后的终止不入记录）
-        ids = ctx.reset_env_ids
-        if ids is not None and len(ids):
-            self._seen_term[ids] = False
+        # sealed-ENDED 下波内无自动 reset；显式 reset_rows 的行第二个
+        # episode 的记录由 env_term_step<0 门限天然排除，无需额外处理。
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +433,17 @@ class DeviceRollouter:
             tp = time.perf_counter()
             rt.step((a_a, a_b))
             self.timing["step"] += time.perf_counter() - tp
+            if not rt.any_running():
+                break   # 全部 ENDED/FAILED——剩余帧本就会被截断丢弃
         self.timing["n_waves"] += 1
+
+        # 波界健康检查：FAILED 行（容量溢出/非有限态）显式失败
+        if bool(rt.failed_mask.any()):
+            frows = torch.nonzero(rt.failed_mask).squeeze(-1).tolist()
+            freasons = rt.state.episode.fail_reason[rt.failed_mask].tolist()
+            raise RuntimeError(
+                f"device collect failed: FAILED rows {frows} "
+                f"reasons={freasons}")
 
         # --- 波末组装：一次 .cpu() ---
         t0 = time.perf_counter()

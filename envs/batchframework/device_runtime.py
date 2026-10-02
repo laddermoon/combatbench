@@ -1,20 +1,27 @@
-"""BatchRuntime — 设备端批量运行时（M3 W2）。
+"""BatchRuntime — 设备端批量运行时（E2 生命周期）。
 
 驱动契约（每个 ``step()`` = 一个 action step = n_substeps 物理步）::
 
-    clear_step_flags
+    clear_step_flags（本步消费标志）
+    policy_eval_mask 刷新（world_running × post_termination_action）
     [dev_set_action(actions)]            ← runtime 写入
-    on_pre_action_step   (rw: io.action)
+    on_pre_action_step   (rw: io.action)            【屏障：提出即生效】
     on_pre_batch_step    (rw: pending force / force schedule)
-    sim.physical_step(n_substeps)        ← 设备内连续推进
+    for s in substep:（仅当有插件覆写子步 hook 才逐子步驱动）
+        on_pre_phy_step → physical_step(1) → on_post_phy_step
+    否则 sim.physical_step(n_substeps) 整块推进
     on_post_batch_step   (rw: 受限投影)
-    episode_steps += 1, time += dt·n, obs 构建 → io.obs
-    on_post_action_step  (ro；可置 term/reset_request/写 reward)
-    ── 终止消费 ──
-    on_post_episode      (ro; terminated_env_ids)
-    dev_reset_rows + plugin_pool 行清零 + episode 行复位
-    on_envs_reset        (rw; reset_env_ids) —— 插件重初始化本 env 行
-    on_pre_episode       (rw; reset_env_ids 非 None = 部分 reset)
+    episode_steps/physics_steps/... += 1（仅 RUNNING 行）
+    obs 构建 → io.obs
+    on_post_action_step  (ro；可提终止/写 reward)
+    ── 终止屏障 ──
+    pending → term_history 归档；ENDED 行封存（capture 快照 +
+    每步 restore 冻结——warp 无 masked-step，见 physics.py 契约头注）
+    on_post_episode      (ro; terminated_env_ids=本步新 ENDED 行)
+
+    step() **不做 reset**。ENDED 行保持封存直到 collector 显式
+    ``reset_rows``；对 RUNNING 行直接 reset 是契约错误，须先
+    ``abandon``。语义依据见 LIFECYCLE_TRACE.md。
 
 per-env 终止是行级语义：KO/timeout 只影响对应 env；其余 env 的
 物理状态、插件状态、episode 计数完全不受扰动。
@@ -26,40 +33,57 @@ from typing import Any, Dict, List, Optional, Sequence
 import torch
 
 from .device_plugin import (
+    _archive_reason,
     BaseDeviceObserver,
     BaseDevicePlugin,
     DeviceCtx,
     DeviceMutator,
     DeviceObserverDispatcher,
+    FAIL_CODES,
+    TERM_CODES,
     TERM_NAMES,
 )
-from .device_state import DeviceBatchState, ExecutionPlane
+from .device_state import DeviceBatchState, ExecutionPlane, RngView
+from .physics import ContractError
 
 
 class BatchRuntime:
     """设备端批量运行时。
 
     Args:
-        sim: 后端模拟器。必须实现 ``build_device_state()`` +
+        sim: 后端模拟器。必须实现 ``build_sim_namespace()``/``attach_state`` +
             dev_set_action/dev_add_ext_force/dev_upload_force_schedule/
-            dev_reset_rows/dev_set_integration_rows + ``physical_step``。
+            dev_reset_rows/dev_set_integration_rows + ``physical_step``
+            + ``capture``/``restore``（sealed-ENDED 冻结原语）。
         obs_builder: 每 action step 的观测构建器（``build(state)``），
             在 on_post_action_step 之前运行。
         phy_substeps: 每 action step 的物理子步数。
         strict: hook 异常直接传播（False 时打印并继续——仅调试用）。
         allow_host_slow: 是否允许 plane=HOST_SLOW 插件接入
             （训练 rollout 应为 False）。
+        post_termination_action: ``"policy"``（默认，已终止 agent 继续
+            采样——CPU EpisodeRunner 同语义）或 ``"hold"``（已终止 agent
+            不采样，回放最后动作由 collector 负责）。
     """
 
     def __init__(self, sim, obs_builder=None, phy_substeps: int = 25,
-                 strict: bool = True, allow_host_slow: bool = False):
+                 strict: bool = True, allow_host_slow: bool = False,
+                 post_termination_action: str = "policy"):
+        if post_termination_action not in ("policy", "hold"):
+            raise ValueError(
+                f"post_termination_action must be 'policy' or 'hold', "
+                f"got {post_termination_action!r}")
         self.sim = sim
         self.obs_builder = obs_builder
         self.phy_substeps = int(phy_substeps)
         self._strict = bool(strict)
         self._allow_host_slow = bool(allow_host_slow)
+        self.post_termination_action = post_termination_action
         self._plugins: List[BaseDevicePlugin] = []
         self._ctxs: Dict[int, DeviceCtx] = {}   # id(plugin) → ctx
+        self._substep_units: List[BaseDevicePlugin] = []  # 覆写子步 hook 的
+        self._rng_salts: Dict[int, str] = {}    # salt → unit name（防撞）
+        self._seal_snap: Optional[Dict[str, torch.Tensor]] = None
         self._mutator = DeviceMutator(sim)
         self.dispatcher = DeviceObserverDispatcher()
         self.attach(self.dispatcher)
@@ -96,18 +120,79 @@ class BatchRuntime:
                 f"disallows it (allow_host_slow=False)")
         if plugin in self._plugins:
             return
+        if any(p.name == plugin.name for p in self._plugins):
+            raise ValueError(
+                f"duplicate plugin name {plugin.name!r} — plugin state pool "
+                f"is keyed by name; give the second instance a distinct name")
+        self._validate_unit_spec(plugin)
         plugin.declare_state(self.state)
         ctx = DeviceCtx(self.state, plugin_name=plugin.name)
         ctx._mutator_impl = self._mutator
+        if plugin.rng_salt is not None:
+            salt = int(plugin.rng_salt)
+            clash = self._rng_salts.get(salt)
+            if clash is not None and clash != plugin.name:
+                raise ValueError(
+                    f"rng salt {salt:#x} clash between {clash!r} and "
+                    f"{plugin.name!r}")
+            self._rng_salts[salt] = plugin.name
+            ctx.rng = RngView(self.state, salt)
         self._ctxs[id(plugin)] = ctx
         self._plugins.append(plugin)
         self._plugins.sort(key=lambda p: p.priority, reverse=True)
+        # 子步 hook 覆写检测（默认实现是 no-op——覆写才进子步驱动）
+        if (type(plugin).on_pre_phy_step is not BaseDevicePlugin.on_pre_phy_step
+                or type(plugin).on_post_phy_step
+                is not BaseDevicePlugin.on_post_phy_step):
+            if plugin.plane is not ExecutionPlane.DEVICE:
+                raise ValueError(
+                    f"plugin '{plugin.name}': substep hooks require "
+                    f"plane=DEVICE (declared {plugin.plane})")
+            self._substep_units.append(plugin)
         plugin.on_attach()
+
+    def _validate_unit_spec(self, plugin: BaseDevicePlugin) -> None:
+        """装配期校验声明式能力面（E2-W4）。
+
+        声明为空集 → 跳过校验（向后兼容）；声明非空则必须全部合法。
+        """
+        writes = set(plugin.declared_writes or ())
+        unknown = writes - set(DeviceMutator._VERBS)
+        if unknown:
+            raise ValueError(
+                f"plugin '{plugin.name}' declares unknown mutator verbs "
+                f"{sorted(unknown)}; legal: {DeviceMutator._VERBS}")
+        if writes and not plugin.require_mutator:
+            raise ValueError(
+                f"plugin '{plugin.name}' declares writes {sorted(writes)} "
+                f"but require_mutator=False")
+        phm = plugin.per_hook_mutator
+        if phm:
+            for hook, verbs in phm.items():
+                bad = set(verbs) - set(DeviceMutator._VERBS)
+                if bad:
+                    raise ValueError(
+                        f"plugin '{plugin.name}'.per_hook_mutator[{hook!r}] "
+                        f"has unknown verbs {sorted(bad)}")
+        reads = set(plugin.declared_reads or ())
+        if reads:
+            try:
+                fields = set(self.sim.describe().fields.keys())
+            except Exception:
+                fields = set()
+            ns_fields = set(vars(self.sim.build_sim_namespace()).keys())
+            unknown_r = reads - fields - ns_fields
+            if unknown_r:
+                raise ValueError(
+                    f"plugin '{plugin.name}' declares reads on unknown "
+                    f"fields {sorted(unknown_r)}")
 
     def detach(self, plugin: BaseDevicePlugin) -> None:
         if plugin in self._plugins:
             self._plugins.remove(plugin)
             self._ctxs.pop(id(plugin), None)
+            if plugin in self._substep_units:
+                self._substep_units.remove(plugin)
             plugin.on_detach()
 
     def set_observer(self, name: str, unit: Optional[BaseDeviceObserver]) -> None:
@@ -117,23 +202,36 @@ class BatchRuntime:
         return self.dispatcher.get_output(name)
 
     def export_episode_metrics(self) -> Dict[str, torch.Tensor]:
-        """聚合全部已 attach 插件声明的 episode 指标（显式 schema）。"""
+        """聚合全部已 attach 插件声明的 episode 指标（显式 schema）。
+
+        跨插件键名冲突 = 装配错误——静默覆盖会让采集端丢指标，显式拒绝。
+        """
         out: Dict[str, torch.Tensor] = {}
+        owners: Dict[str, str] = {}
         for p in self._plugins:
-            out.update(p.export_episode_metrics(self.state))
+            for k, v in p.export_episode_metrics(self.state).items():
+                if k in owners:
+                    raise ValueError(
+                        f"episode metric {k!r} exported by both "
+                        f"{owners[k]!r} and {p.name!r}")
+                owners[k] = p.name
+                out[k] = v
         return out
 
     # ------------------------------------------------------------------
     # Hook 调度
     # ------------------------------------------------------------------
     def _invoke(self, hook: str, writable: bool,
-                reset_env_ids=None, terminated_env_ids=None) -> None:
-        for p in self._plugins:
+                reset_env_ids=None, terminated_env_ids=None,
+                units: Optional[List[BaseDevicePlugin]] = None) -> None:
+        for p in (self._plugins if units is None else units):
             ctx = self._ctxs[id(p)]
             ctx.reset_env_ids = reset_env_ids
             ctx.terminated_env_ids = terminated_env_ids
+            phm = p.per_hook_mutator
+            allowed = phm.get(hook) if phm else None
             if writable and p.require_mutator:
-                ctx._grant_mutator()
+                ctx._grant_mutator(allowed)
             else:
                 ctx._revoke_mutator()
             try:
@@ -158,15 +256,9 @@ class BatchRuntime:
         st = self.state
         seeds_np = None if seeds is None else np_seeds(seeds)
         self.sim.reset(seeds=seeds_np, options=options)
-        ep = st.episode
-        ep.episode_steps.zero_()
-        ep.active_mask.fill_(True)
-        ep.terminated_flag.zero_()
-        ep.term_reason.fill_(-1)
-        ep.agent_terminated.zero_()
-        ep.agent_term_reason.fill_(-1)
-        ep.reset_request.zero_()
-        ep.time.zero_()
+        st.reset_episode_rows(
+            torch.arange(st.batch_size, device=st.sim.qpos.device))
+        self._seal_snap = None
         if seeds is not None:
             st.rng.seed_offsets.copy_(
                 torch.as_tensor(seeds, dtype=torch.int64,
@@ -177,6 +269,173 @@ class BatchRuntime:
             p.set_episode_seeds(seed_args)
         self._invoke("on_pre_episode", writable=True, reset_env_ids=None)
 
+    def reset_rows(self, env_ids: torch.Tensor,
+                   seeds: Optional[torch.Tensor] = None,
+                   options: Optional[Dict[str, Any]] = None) -> None:
+        """显式部分 reset：只允许 ENDED/FAILED 行。
+
+        对 RUNNING 行调用是契约错误（丢弃未完成 episode）——必须先
+        ``abandon``。顺序对齐 CPU reset 链：backend 写初态 → 插件行
+        清零/episode 簿记复位 → on_envs_reset → on_pre_episode。
+        """
+        st = self.state
+        ep = st.episode
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ep.episode_steps.device).reshape(-1)
+        if ids.numel() == 0:
+            return
+        running = ep.world_running[ids] & ep.slot_valid[ids]
+        if bool(running.any()):
+            raise ContractError(
+                f"reset_rows on RUNNING rows "
+                f"{ids[running].tolist()} — call abandon() first")
+        self.sim.dev_reset_rows(ids)
+        st.reset_plugin_rows(ids)
+        st.reset_episode_rows(ids)
+        if seeds is not None:
+            st.rng.seed_offsets[ids] = torch.as_tensor(
+                seeds, dtype=torch.int64,
+                device=st.rng.seed_offsets.device).reshape(-1)
+        self._invoke("on_envs_reset", writable=True, reset_env_ids=ids)
+        self._invoke("on_pre_episode", writable=True, reset_env_ids=ids)
+
+    def abandon(self, env_ids: torch.Tensor,
+                reason: str = "abandoned") -> None:
+        """显式终止（不 reset）：记 "abandoned" 终止 + post_episode + 封存。
+
+        用于诊断/取消/预算耗尽；不得冒充 timeout。ENDED 行经后续
+        ``reset_rows`` 才能复用。
+        """
+        ep = self.state.episode
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ep.episode_steps.device).reshape(-1)
+        reg = ep.reason_registry
+        code = reg.get(reason)
+        if code is None:
+            code = len(reg)
+            reg[reason] = code
+        live = ids[ep.world_running[ids] & ep.slot_valid[ids]]
+        if live.numel():
+            ep.term_reason[live] = code
+            for a in range(ep.n_agents):
+                ep.agent_done[live, a] = True
+                ep.agent_term_reason[live, a] = code
+                ep.term_pending[live, a] = True
+                ep.term_pending_code[live, a] = code
+                _archive_reason(ep, live, a, code)
+        self._consume_terminations()
+
+    # ------------------------------------------------------------------
+    # 终止屏障 + sealed-ENDED
+    # ------------------------------------------------------------------
+    def _consume_terminations(self) -> None:
+        """phase 屏障：判 env 结束；新 ENDED 行封存 + on_post_episode。
+
+        reason 归档发生在 ``request_termination`` 提出时刻（每 (agent,
+        reason) 首次出现记 (code, episode_step)，同 code 去重、异 code
+        保序、超 K 置 ``term_history_overflow``）；本屏障不搬运 reason，
+        只做：reset_request→abandoned 提议、env 级 ENDED 判定、
+        状态快照封存、post_episode 调度、冻结写回。
+        """
+        st = self.state
+        ep = st.episode
+
+        # reset_request → 等价 CPU reset-while-active：对全员提 "abandoned"
+        rr = ep.reset_request & ep.world_running & ep.slot_valid
+        if bool(rr.any()):
+            rr_ids = torch.nonzero(rr, as_tuple=False).squeeze(-1)
+            aband = TERM_CODES["abandoned"]
+            ep.term_reason[rr_ids] = aband
+            for a in range(ep.n_agents):
+                ep.agent_done[rr_ids, a] = True
+                ep.agent_term_reason[rr_ids, a] = aband
+                ep.term_pending[rr_ids, a] = True
+                ep.term_pending_code[rr_ids, a] = aband
+                _archive_reason(ep, rr_ids, a, aband)
+
+        # env 结束 = 全 agent done | env 级 flag 直写（插件兼容口）
+        # ——仅限 RUNNING 行；ENDED/FAILED 不重复触发。
+        newly = ((ep.agent_done.all(dim=-1) | ep.terminated_flag)
+                 & ep.world_running & ep.slot_valid)
+        if not bool(newly.any()):
+            return
+        ep.world_running[newly] = False
+        ep.policy_eval_mask[newly] = False
+        # terminated_flag = "本步新 ENDED"（步内多次屏障取并集；
+        # 插件直写的旧兼容口也被并进来，屏障仍是唯一出口）
+        ep.terminated_flag |= newly
+
+        # 封存：捕获终止时刻的完整积分态（ENDED 行本步参与了 advance，
+        # 其终止状态 = 刚跑完的那步——正确语义）
+        snap = self.sim.capture(newly)
+        if self._seal_snap is None:
+            self._seal_snap = {
+                k: torch.zeros(
+                    (st.batch_size,) + v.shape[1:], dtype=v.dtype,
+                    device=v.device)
+                for k, v in snap.items()}
+        for k, v in snap.items():
+            self._seal_snap[k][newly] = v
+
+        ids = torch.nonzero(newly, as_tuple=False).squeeze(-1)
+        self._invoke("on_post_episode", writable=False,
+                     terminated_env_ids=ids)
+        # post_episode 中插件仍可提终止（request_termination 即归档；
+        # 对仍 RUNNING 的其他行于下个屏障生效——CPU 无跨 env 对应物）
+        self._freeze_ended_rows()
+
+    def _freeze_ended_rows(self) -> None:
+        """把封存态写回 ENDED/FAILED 行，撤销本步 advance 造成的漂移。
+
+        warp 无 masked-step（W0 实测），冻结 = 每 action step 边界一次
+        capture/restore write-back。ENDED 行物理仍被推进但每步末被
+        写回封存态 → 状态不漂移、接触有界，单行失稳不再撑爆 nconmax。
+        """
+        ep = self.state.episode
+        sealed = ep.slot_valid & ~ep.world_running
+        if self._seal_snap is None or not bool(sealed.any()):
+            return
+        dense = {k: b[sealed] for k, b in self._seal_snap.items()}
+        self.sim.restore(sealed, dense)
+
+    def mark_failed(self, env_ids: torch.Tensor,
+                    reason: str = "capacity") -> None:
+        """把行标记为 FAILED（执行错误）。显式传播——不静默吞掉。
+
+        FAILED 行同样被冻结封存；collector 应在波界检查
+        ``failed_mask`` 并使 collect 失败。
+        """
+        ep = self.state.episode
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ep.episode_steps.device).reshape(-1)
+        ep.world_failed[ids] = True
+        ep.world_running[ids] = False
+        ep.policy_eval_mask[ids] = False
+        ep.fail_reason[ids] = FAIL_CODES.get(reason, 0)
+        # FAILED 行也封存：捕获当前态快照供冻结写回（state 完整性）
+        st = self.state
+        mask = torch.zeros(st.batch_size, dtype=torch.bool,
+                           device=ep.episode_steps.device)
+        mask[ids] = True
+        snap = self.sim.capture(mask)
+        if self._seal_snap is None:
+            self._seal_snap = {
+                k: torch.zeros(
+                    (st.batch_size,) + v.shape[1:], dtype=v.dtype,
+                    device=v.device)
+                for k, v in snap.items()}
+        for k, v in snap.items():
+            self._seal_snap[k][mask] = v
+
+    @property
+    def failed_mask(self) -> torch.Tensor:
+        return self.state.episode.world_failed
+
+    def any_running(self) -> bool:
+        """是否仍有 RUNNING 行（collector 波提前退出判断；低频）。"""
+        ep = self.state.episode
+        return bool((ep.world_running & ep.slot_valid).any())
+
     def step(self, actions=None,
              n_substeps: Optional[int] = None) -> None:
         """一个 action step。
@@ -185,56 +444,66 @@ class BatchRuntime:
             actions: 可选 (action_a (B,21), action_b (B,21)) torch 张量；
                 None 表示沿用上一动作。
             n_substeps: 物理子步数（默认构造时的 phy_substeps）。
+
+        注意：``step()`` **不 auto-reset**（E2-W2）。ENDED 行封存；
+        终止/reset 语义见模块 docstring 与 LIFECYCLE_TRACE.md。
         """
         st = self.state
         ep = st.episode
         n = int(n_substeps or self.phy_substeps)
 
         st.clear_step_flags()
+        # policy_eval_mask：ENDED 行不采样；"hold" 下已终 agent 也不采样
+        run2 = (ep.world_running & ep.slot_valid).unsqueeze(-1)
+        if self.post_termination_action == "hold":
+            ep.policy_eval_mask.copy_(run2 & ~ep.agent_done)
+        else:
+            ep.policy_eval_mask.copy_(
+                run2.expand(-1, ep.n_agents))
         if actions is not None:
             self.sim.dev_set_action(actions[0], actions[1])
         self._invoke("on_pre_action_step", writable=True)
         for c in self._ctxs.values():
             c.phy_substeps = n
         self._invoke("on_pre_batch_step", writable=True)
-        self.sim.physical_step(n)
+
+        run_i64 = (ep.world_running & ep.slot_valid).to(torch.int64)
+        if self._substep_units:
+            # 有插件覆写子步 hook → 回调进后端子步循环（不能拆成
+            # physical_step(1)×n——pending wrench 只在块首子步消费一次）
+            subs = self._substep_units
+            ep_ = ep
+
+            def _pre(i: int) -> None:
+                ep_.substep_index.fill_(i)
+                self._invoke("on_pre_phy_step", writable=True, units=subs)
+
+            def _post(i: int) -> None:
+                self._invoke("on_post_phy_step", writable=True, units=subs)
+                # 子步级终止屏障（CPU 对齐：每物理子步后检查 env 结束；
+                # 新 ENDED 行立即封存，余下子步由冻结写回保持不漂移）
+                self._consume_terminations()
+
+            self.sim.physical_step(n, pre_step=_pre, post_step=_post)
+        else:
+            self.sim.physical_step(n)
+        ep.physics_steps += run_i64 * n
         self._invoke("on_post_batch_step", writable=True)
 
-        ep.episode_steps[ep.active_mask] += 1
-        ep.time += float(self.sim.DT) * n
+        # 计数器按"块结束时仍 RUNNING 的行"记——子步屏障内结束的行
+        # 本 action step 未完整走完，不自增（CPU：子步内终止
+        # episode_step 不 +1；记录帧记提议时刻步号）。无子步 hook 的
+        # 快路径下屏障只在块末跑一次，post_run 与 run_i64 相同。
+        post_run = (ep.world_running & ep.slot_valid).to(torch.int64)
+        ep.episode_steps += post_run
+        ep.action_call_index += post_run
+        ep.time += float(self.sim.DT) * n * post_run.to(torch.float32)
         st.rng.step_counter += 1
         if self.obs_builder is not None:
             self.obs_builder.build(st)
 
         self._invoke("on_post_action_step", writable=False)
-
-        # --- 终止 / reset 消费（行级） ---
-        # env 终止 = 显式 env 级 flag 或全部 agent 均已终止（旧框架
-        # all_agents_terminated 语义）；~active_mask 防御覆盖未消费行。
-        need_reset = (ep.terminated_flag | ep.reset_request
-                      | ep.agent_terminated.all(dim=-1) | ~ep.active_mask)
-        term_mask = ep.terminated_flag | ep.agent_terminated.all(dim=-1)
-        if not bool(need_reset.any()):
-            return
-        term_ids = torch.nonzero(term_mask, as_tuple=False).squeeze(-1)
-        if term_ids.numel():
-            self._invoke("on_post_episode", writable=False,
-                         terminated_env_ids=term_ids)
-        reset_ids = torch.nonzero(need_reset, as_tuple=False).squeeze(-1)
-
-        self.sim.dev_reset_rows(reset_ids)
-        st.reset_plugin_rows(reset_ids)
-        ep.episode_steps[reset_ids] = 0
-        ep.time[reset_ids] = 0.0
-        ep.active_mask[reset_ids] = True
-        ep.terminated_flag[reset_ids] = False
-        ep.term_reason[reset_ids] = -1
-        ep.agent_terminated[reset_ids] = False
-        ep.agent_term_reason[reset_ids] = -1
-        ep.reset_request[reset_ids] = False
-
-        self._invoke("on_envs_reset", writable=True, reset_env_ids=reset_ids)
-        self._invoke("on_pre_episode", writable=True, reset_env_ids=reset_ids)
+        self._consume_terminations()
 
     # ------------------------------------------------------------------
     def terminated_info(self) -> Dict[str, Any]:

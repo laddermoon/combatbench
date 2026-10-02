@@ -60,19 +60,21 @@ class RecorderPlugin(BaseDevicePlugin):
 class AgentTerminator(BaseDevicePlugin):
     """第 kill_step 步终止 env kill_env 的指定 agent。"""
 
-    def __init__(self, kill_step=1, kill_env=1, agent=0):
+    def __init__(self, kill_step=1, kill_env=1, agent=0,
+                 name="agent_terminator", reason="ko"):
         self._ks, self._ke, self._ka = kill_step, kill_env, agent
+        self._name, self._reason = name, reason
 
     @property
     def name(self):
-        return "agent_terminator"
+        return self._name
 
     def on_post_action_step(self, ctx: DeviceCtx):
         if int(ctx.state.rng.step_counter.item()) == self._ks:
             ctx.request_termination(
                 torch.tensor([self._ke],
                              device=ctx.episode.terminated_flag.device),
-                "ko", agents=[self._ka])
+                self._reason, agents=[self._ka])
 
 
 # ---------------------------------------------------------------------------
@@ -106,29 +108,42 @@ def test_hook_order_and_mutator_grant():
 
 
 def test_per_agent_termination_not_env_end():
-    """单个 agent 终止不能误停整个 env——两个 agent 都终止才复位。"""
+    """单个 agent 终止不能误停整个 env——两个 agent 都终止才 ENDED。"""
     sim, rt = _rt()
     rt.attach(AgentTerminator(kill_step=1, kill_env=1, agent=0))
     rt.step()
     ep = rt.state.episode
-    assert ep.agent_terminated[1, 0].item() is True
-    assert ep.episode_steps.tolist() == [1, 1, 1, 1]   # env 未复位
-    assert ep.active_mask.tolist() == [True] * 4
+    assert ep.agent_done[1, 0].item() is True
+    assert ep.episode_steps.tolist() == [1, 1, 1, 1]   # env 仍在跑
+    assert ep.world_running.tolist() == [True] * 4
 
     rt2_sim = FakeBatchBackend(batch_size=4)
     rt2_sim.reset()
     rt2 = BatchRuntime(rt2_sim, phy_substeps=5)
-    rt2.attach(AgentTerminator(kill_step=1, kill_env=1, agent=0))
-    rt2.attach(AgentTerminator(kill_step=1, kill_env=1, agent=1))
+    rt2.attach(AgentTerminator(kill_step=1, kill_env=1, agent=0,
+                               name="term_a0"))
+    rt2.attach(AgentTerminator(kill_step=1, kill_env=1, agent=1,
+                               name="term_a1"))
     rt2.step()
     ep2 = rt2.state.episode
-    # 两 agent 均终止 → env 1 复位：episode_steps 清 0，其余 env 不动
+    # 两 agent 均终止 → env 1 进入 ENDED（封存，不自动 reset）：
+    # episode_steps 停在终止步，world_running=False，其余 env 不动
+    assert ep2.episode_steps.tolist() == [1, 1, 1, 1]
+    assert ep2.world_running.tolist() == [True, False, True, True]
+    assert ep2.terminated_flag.tolist() == [False, True, False, False]
+    assert ep2.agent_done[1].tolist() == [True, True]
+    # 终止历史已归档：(ko, step=1)
+    assert ep2.term_history_len[1].tolist() == [1, 1]
+    assert ep2.term_history[1, 0, 0, 0].item() == 1  # ko
+    # 显式 reset 后行恢复
+    rt2.reset_rows(torch.tensor([1]))
     assert ep2.episode_steps.tolist() == [1, 0, 1, 1]
-    assert ep2.agent_terminated[1].tolist() == [False, False]
+    assert ep2.agent_done[1].tolist() == [False, False]
+    assert ep2.world_running[1].item() is True
 
 
 def test_partial_reset_isolation():
-    """plugin pool 行与 episode 行只清被 reset 的 env。"""
+    """plugin pool 行与 episode 行只清被显式 reset 的 env。"""
     sim, rt = _rt()
     from envs.batchframework.device_examples import (
         EpLenCounterPlugin, JitterResetPlugin)
@@ -137,23 +152,36 @@ def test_partial_reset_isolation():
     rt.attach(jit)
     rt.reset()
     rt.step(); rt.step()
-    rt.attach(AgentTerminator(kill_step=3, kill_env=2, agent=0))
-    rt.attach(AgentTerminator(kill_step=3, kill_env=2, agent=1))
+    rt.attach(AgentTerminator(kill_step=3, kill_env=2, agent=0,
+                              name="term_a0"))
+    rt.attach(AgentTerminator(kill_step=3, kill_env=2, agent=1,
+                              name="term_a1"))
     rt.step()
     st = rt.state
+    # env2 ENDED 封存：计数器/簿记停在终止步；其余行正常推进
+    assert st.episode.world_running[2].item() is False
+    rt.reset_rows(torch.tensor([2]))
     # env2 复位：计数器行清零→on_envs_reset 不写 count；jitter 行重置为 7
     assert st.plugin["ep_len_counter"]["count"].tolist() == [3, 3, 0, 3]
     assert st.plugin["jitter_reset"]["phase"][:, 0].tolist() == [7, 7, 7, 7]
     assert st.episode.episode_steps.tolist() == [3, 3, 0, 3]
+    assert st.episode.world_running[2].item() is True
 
 
 def test_device_timeout_plugin():
+    """timeout → ENDED 封存（不自动 reset）；显式 reset_rows 后复用。"""
     sim, rt = _rt()
     rt.attach(DeviceTimeoutPlugin(max_steps=2))
     rt.reset()
     rt.step()
     assert rt.state.episode.episode_steps.tolist() == [1] * 4
     rt.step()
+    ep = rt.state.episode
+    assert ep.episode_steps.tolist() == [2] * 4      # 停在终止步
+    assert ep.world_running.tolist() == [False] * 4   # 全部 ENDED
+    assert ep.terminated_flag.tolist() == [True] * 4
+    # RUNNING 行拒绝 reset
+    rt.reset()                                       # 全量 reset 恢复
     assert rt.state.episode.episode_steps.tolist() == [0] * 4
 
 

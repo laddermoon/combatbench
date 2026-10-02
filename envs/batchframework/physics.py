@@ -154,12 +154,15 @@ class PhysicsBackend(Protocol):
         ...
 
     def advance(self, n_substeps: int,
-                control: Optional[ControlProgram] = None) -> None:
+                control: Optional[ControlProgram] = None, *,
+                pre_step=None, post_step=None) -> None:
         """全行推进 n_substeps 个物理子步。
 
         ``control`` 非 None 时每个子步前调用 ``control.apply(views)``。
-        消费型输入按契约处理：pending wrench 仅首个子步、schedule 逐子步
-        消费后清除。
+        ``pre_step(i)``/``post_step(i)``（可选）在每个物理子步的积分
+        前/后回调——用于 runtime 的逐子步插件 hook（必须是设备侧
+        torch 操作，禁止 host 同步）。消费型输入按契约处理：pending
+        wrench 仅首个子步、schedule 逐子步消费后清除。
         """
         ...
 

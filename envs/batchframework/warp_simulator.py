@@ -195,10 +195,21 @@ class WarpHumanoid21Simulator(BaseBatchSimulator):
         # io.action 镜像经 _write_actions → attach_state 状态同步。
 
     def physical_step(self, n_steps: int = 1,
-                      keep_history: bool = False) -> None:
+                      keep_history: bool = False,
+                      pre_step=None, post_step=None) -> None:
         if keep_history:
             raise NotImplementedError("keep_history 暂不支持")
-        self._backend.advance(n_steps, control=self._backend.pd_control)
+        self._backend.advance(n_steps, control=self._backend.pd_control,
+                              pre_step=pre_step, post_step=post_step)
+
+    # sealed-ENDED 冻结原语（BatchRuntime 的契约要求）
+    def capture(self, mask, level=None):
+        from .physics import SnapshotLevel
+        return self._backend.capture(
+            mask, SnapshotLevel.INTEGRATION if level is None else level)
+
+    def restore(self, mask, snapshot) -> None:
+        self._backend.restore(mask, snapshot)
 
     def get_physical_frequency(self) -> float:
         return 1.0 / self.DT
