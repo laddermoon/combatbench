@@ -412,7 +412,6 @@ class CPUAdapter:
         sim.data.xfrc_applied[:] = 0.0
         sim.data.qfrc_applied[:] = 0.0
         sim._data_cache.clear()
-        sim._cached_contacts_vec = None
         mujoco.mj_forward(sim.model, sim.data)
 
     @staticmethod

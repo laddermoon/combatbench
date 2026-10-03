@@ -376,7 +376,6 @@ class Humanoid21Simulator(BaseSimulator):
             cached = self._data_cache.get(ck)
             if cached is None:
                 cached = self._extract_contacts()
-                self._cached_contacts_vec = cached
                 self._data_cache[ck] = cached
             result['contacts'] = cached
 
@@ -842,9 +841,10 @@ class Humanoid21Simulator(BaseSimulator):
 
         ground_geom_id = self._ground_geom_id
 
-        cv = getattr(self, '_cached_contacts_vec', None)
+        cv = self._data_cache.get('_derived_contacts')
         if cv is None:
             cv = self._extract_contacts()
+            self._data_cache['_derived_contacts'] = cv
         ncon = cv['ncon']
         if ncon == 0:
             return np.array([0.0, 0.0], dtype=np.float32)
@@ -921,7 +921,6 @@ class Humanoid21Simulator(BaseSimulator):
                 - initial_pose_b: 机器人B的初始姿态
         """
         self._data_cache.clear()
-        self._cached_contacts_vec = None
         mujoco.mj_resetData(self.model, self.data)
 
         # 设置初始距离
