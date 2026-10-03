@@ -145,17 +145,13 @@ class EpisodeRecorder(PostActionRecorder):
                     )
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
-        # Capture obs_{T+1} for RL bootstrap. Defensive: if the accessor
-        # cannot produce an observation here we record an empty mapping
-        # so trainers can detect & skip rather than crash deep inside
-        # episode assembly.
-        try:
-            final_obs = ctx.accessor.get_observation()
-            self._final_observation = {
-                str(agent): np.asarray(value) for agent, value in final_obs.items()
-            }
-        except Exception:
-            self._final_observation = {}
+        # Capture obs_{T+1} for RL bootstrap. Accessor failures must
+        # propagate: an empty final_observation would silently drop every
+        # agent trajectory in build_trajectories (fin_obs is None → skip).
+        final_obs = ctx.accessor.get_observation()
+        self._final_observation = {
+            str(agent): np.asarray(value) for agent, value in final_obs.items()
+        }
 
         # Validate: every agent must have at least one termination proposal
         # (episode ends only when all_agents_terminated is True).
