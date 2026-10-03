@@ -1,122 +1,111 @@
-# 终止帧保留方案（P-FW-2 的契约级修复）
+# 终止帧契约修订 —— 定稿方案
 
-> 背景：AUDIT.md P-FW-2 报告子步内终止帧的 observer 输出陈旧 +
-> recorder 文件名碰撞。核对后发现更深一层的问题：**终止 transition
-> 被整体丢弃**——`term_step = episode_step`（未递增）使该帧被
-> `frames[:term_step]` 排除，"动作导致终止"的 transition 不进入轨迹。
+> 已定稿语义已于 `082187be` 在 `_RuntimeCore.step` 落地；本文档是
+> 外溢修改面的实施计划。
 
-## 问题判定
+## 已定契约（runtime 层，已落地）
 
-子步内终止帧四要素齐全：`obs_t`（动作前观测）、`action_t`
-（`get_action()` 执行值）、`s_{t+1}`（终止时刻物理状态，良定义）、
-`terminated=True` 及完整 reason。它与 post_action 终止帧在 MDP 语义上
-**无差别**，但二者边界判定不同：
+1. `episode_step` = `step()` 调用计数，**无条件 +1/次**。不隐含
+   "完整物理步"。
+2. `physics_step` = 实际物理子步计数。**动作是否物理生效由帧的
+   physics_step 增量判定**，与 episode_step 无关。
+3. `on_post_action_step` 对每个**进入的** step() 恰好触发一次，
+   作用于该步到达的最终状态（完整步或中途终止态）；终止处理
+   （`on_post_episode`）统一在 post_action 之后触发。
+4. 记录层忠实不变——recorder 无条件收帧，取舍全部在轨迹层。
 
-| 提出时机 | episode_step 递增？ | term_step | 帧是否进轨迹 |
+## 帧分类与轨迹判定
+
+| 帧 | physics delta | observer 值 | 轨迹处理 |
 |---|---|---|---|
-| post_action（Timeout 等） | 已递增 (i→i+1) | i+1 | ✅ 含 |
-| 子步内（KO/imbalance） | 未递增 (=i) | i | ❌ 丢 |
+| 正常帧 | S | 步末态 post_action 值 | 进 |
+| 中途终止帧 | 1..S-1 | **终止态** post_action 值 | 进（终止 transition） |
+| post_action 终止帧 | S | 终止态 post_action 值 | 进（同原行为） |
+| 退化帧（pre_action/首子步 pre_phy 全员终止） | 0 | 未变状态重算 | **记录在案，轨迹排除** |
 
-边界结果取决于 `episode_step += 1` 写在物理循环之后这一**实现位置**
-——是实现事故，不是语义设计。后果：导致终止的动作拿不到
-reward credit（KO 奖励/摔倒惩罚缺最后一档信号），是系统性偏差。
+关键推论：`episode_step` 无条件递增后，recorder 在 post_action
+扫描到的 records 值天然是**含端点边界**（中途终止帧记 i+1，
+`frames[:term_step]` 自动含终止帧）。唯一需要额外判定的是
+退化帧——靠末帧 physics delta==0 排除。
 
-**决定：终止帧保留，作为该 agent 轨迹的最后 transition。**
+## 外溢修改面
 
-## 新契约（修订 D7 生命周期定义）
+### W1 — 契约文档与注释收口
 
-1. **帧边界含端点**：`frame_boundary[agent]` = 该 agent 首个
-   termination proposal **所在帧索引 + 1**。轨迹消费 =
-   `frames[:frame_boundary]`。该规则统一覆盖全部提出点
-   （pre_episode/pre_action/子步前后/post_action），无需按 phase
-   分支；env 未终止的 agent boundary = 本波帧数。
-   - `term_records` 保持 `(reason, episode_step_at_proposal)` 不变
-     ——降为 provenance，不再充当轨迹边界。
-   - `num_frames` = 记录的帧数（含终止帧）。
-   - zero-frame episode 维持拒绝（`on_pre_episode` 即终止 → 无帧可记）。
-2. **终止帧 observer 输出 = 终止语义下最后刷新点的值**：
-   - env 级终止帧（全 agent terminated）→ post_episode 刷新值；
-   - 行内终止帧（A 死 B 活，env 续跑）→ 正常 post_action 刷新值
-     （该帧本就完整走完）。
-   - reward 类 observer 若要给终止 transition 计 reward，输出必须在
-     `on_post_episode` 产生——这是单元的明确语义要求（见 W3 核对项）。
-3. **记录帧 metadata**：终止帧 JSON/字段标 `partial_terminal`
-   （首 proposal 在物理循环内提出）供 dump/viewer 区分。
+- `context.py`：`episode_step`/`physics_step` 字段 docstring 改写
+  新定义；
+- `plugin.py`：`on_post_action_step` docstring——"每步恰好一次、
+  作用于步末状态、不隐含完整步"；插件开发者须知：hook 可见
+  `all_agents_terminated=True` 的终止态；
+- `observer_plugin.py`：dispatcher 触发条件注释（post_action 现在
+  覆盖终止帧——dedup token 已含 physics_step/proposals 天然兼容）；
+- `recorder.py` 模块 docstring：原声明"recorders always run after
+  dispatcher refreshed"在新语义下**由假变真**，修正表述；
+- `CLAUDE.md` hook 表、`DESIGN.md`、`LIFECYCLE_TRACE.md` 同步；
+- `AUDIT.md` P-FW-2 条目更新为"契约修订已解决"。
 
-## 工作包
+### W2 — Episode 数据面
 
-### W1 — CPU 侧边界与帧
+- `from_buffer_frames`：导出逐帧 `physics_step`（帧 dict 已有该键，
+  当前被丢弃）→ `Episode.physics_steps: np.ndarray (T,)`；
+- `Episode` 增派生 property `agent_frame_boundary[aid]`：
+  `min(records[aid][0].step, 最后物理帧索引+1)`——语义集中在一处，
+  records 保持 provenance 不动；
+- `save/load` 补 `physics_steps`；旧 npz 无该字段 → 回退为
+  "全帧物理"假设（旧语义不可精确重建，如实标注）；
+- `episode.py` docstring 切片示例改 boundary。
 
-- `EpisodeRecorder`：每帧扫描 proposals 时同时记
-  `frame_boundary[agent] = 当前帧索引 + 1`（首见 reason 帧）。
-- `Episode` 增 `agent_frame_boundary: Mapping[str, int]`；num_frames
-  含终止帧；docstring 更新 term_step→boundary 语义。
-- 消费侧：`build_trajectories`/`extract_per_step_*` 改
-  `[:frame_boundary]`（timeout/post_action 场景结果不变，
-  子步内终止多含一帧）。
-- `BaseFrameRecorder`：文件名改单调帧号（`step_{i:05d}`，
-  `_frame_counter` 在 on_pre_episode 归零）；episode_step 写进
-  JSON 不变；`partial_terminal` 标记；docstring 修正为
-  "终止帧 observer 输出对应 post_episode 刷新点"。
+### W3 — 消费侧切换
 
-### W2 — 设备侧边界与帧
+- 6 个活跃实验（5 PPO `exp_basic_balance`/`exp_standup`/
+  `exp_standup_step_v3`/`exp_step`/`exp_minimal` + 1 SAC
+  `exp_sac_balance`）：`T = term_step if fell else T_full` →
+  `T = ep.agent_frame_boundary[aid]`；`fell`/`is_terminated`
+  语义不动；
+- reason-only 消费（dump_capture、reason 查询工具）不动；
+- `experiments_ppo/{todo,archive}/` 死代码不改，标注语义已漂。
 
-- `EpisodeNamespace` 增 `term_frame` (B, A) i32：首 proposal 时刻的
-  **帧序号**。实现：runtime 在 step() 开头对 running 行递增
-  `frame_seq`（每行已记录帧数），proposal 时
-  `term_frame = frame_seq`——帧序号空间统一，不受 episode_step
-  递增时机影响。
-- `RecordStore.env_term_step` 语义保持（provenance），导出侧改
-  `t_use = frame_boundary`（ENDED 行 = term_frame+1 / env 级 =
-  env_term_step+1；跑满行 = T）。`frame_valid[t]` 已含终止帧
-  （写入时刻行仍 running），无需改标记。
-- **修 `_RecorderAdapter.on_post_episode` off-by-one**：当前写
-  `self._t - 1` 假设末帧 post_action 已执行——子步内终止时 `_t`
-  未递增，覆写错帧（现被截断掩盖）。改为按帧序号定位（ended 行
-  的末帧索引 = `term_frame`，由 store 记录而非 `_t` 推算）。
-- `export_episode`：`num_frames = frame_boundary`；
-  `agent_frame_boundary` 导出；term_records 原样透传。
+### W4 — 设备侧对齐
 
-### W3 — 终止帧 observer 输出核对
+- `ep.episode_steps += run_i64`（本步进入运行的行，无条件）替代
+  `post_run`；核对 `action_call_index` 既有语义是否重复；
+- `term_history` 记录值对齐 CPU（post_action 扫描时值 = 边界）：
+  consume 时刻读值 vs seal 时换算，实现时定；
+- `BatchRuntime.step`：`on_post_action_step` 插件对"本步 running
+  的行（含中途 ENDED）"触发——mask 语义修订；
+- `env_term_step` seal 读 post-increment 值 → 自动变含端点；
+- `_RecorderAdapter.on_post_episode` 的末帧覆写变冗余——可删
+  （终止帧已有 post_action 终止态值）；
+- `episode_exporter`：`num_frames`/`t_use` 语义随 env_term_step
+  变化，`agent_frame_boundary` 导出对齐 CPU property。
 
-逐个核 standup + basic_balance 的 reward/状态 observer 的
-`on_post_episode` 输出是否构成有效的终止 transition 值：
+### W5 — 测试与回归
 
-- `HeightPhiObserver`（phi/height/uprightness）：终止态可算 →
-  应在 post_episode 产出真值；
-- `CrossSupportBalanceRewarder`/`PostureRewarder`/
-  `StandingBalance4StageRewarder`：当前 post_episode 为 no-op →
-  终止帧携最后 post_action 值。逐单元决策：补 post_episode 计算
-  或显式声明"终止帧 = 上一帧值"并在 manifest 记录理由；
-- 双端一致性：CPU observer 的 post_episode 实现 vs 设备
-  DeviceObserver 的覆写值需同注入态对拍（E5 模式）。
+- `test_audit_terminal_frame.py` 重写为新契约断言（终止帧
+  observer=终止态值、records=含端点、episode_step 唯一→文件名
+  不撞）；
+- `test_wave_contract`/`test_device_lifecycle`/`test_device_rollouter`/
+  `test_multi_rollouter` 的 term_step/num_frames 预期更新；
+- Episode 构造 fixtures（dump 测试等）补 `physics_steps`；
+- CPU + device 冒烟训练，如实记录 reward 记账变化（终止
+  transition 计入轨迹后 r_fall/r_cross 尾段变化预期内）。
 
-### W4 — 回归、冒烟与文档
+### W6 — 已知风险项（审阅清单）
 
-- 契约测试更新：子步终止 → `num_frames = t+1`、帧含终止帧、
-  observer 值 = post_episode 值；golden-path 等价重跑；
-  部分终止（A 先死 B 续跑）per-agent boundary 各自正确。
-- 全量 tests/ 回归 + device 冒烟；如实记录 r_fall/r_cross
-  return 变化（reward 记账变化预期内）。
-- AUDIT.md P-FW-2 条目更新；LIFECYCLE_TRACE.md 补契约修订；
-  `episode.py`/`recorder.py` docstring 修正。
+- **插件在终止态 post_action 的副作用**：已扫 7 处实现——
+  `ScoringPlugin` 获益（KO 补判/终帧 hit event 入账）、push 计数器
+  无害（episode 即结束）、`TimeoutPlugin` 在恰好打满 max 的终止帧
+  会补录一条 timeout record（排在真 reason 后，良性）；
+- **observer 在终止态计算**：终止态可能 NaN/极端——值如实记录，
+  退化帧反正不进轨迹；
+- **legacy npz**：旧数据无 `physics_steps`，boundary 派生回退旧
+  语义，不复原旧切片；
+- **post_episode 双刷新**：终止帧 post_action 刷新后 post_episode
+  再刷一遍——幂等，可接受。
 
-## 风险与如实声明
+## 不做
 
-- **reward 记账变化**：所有实验的终止 transition 从此计入轨迹，
-  历史 run 与改后不可直接比较。这是语义变更而非 bugfix 补丁，
-  由本文件记录变更理由。
-- **observer post_episode 语义依赖**：W3 是本次方案的最大不确定
-  面——reward observer 若在终止态产不出正确值，终止帧的 channel
-  值是"上一帧拷贝"语义，必须显式记录而非假装正确。
-- **不设兼容开关**：单一边界语义；加 flag 等于双语义并存，比变更
-  本身更难维护。
-- 不做：trajectory 格式新增 done-mask 字段（现有
-  `is_true_terminated` 逻辑足够）、zero-frame episode 放行。
-
-## 与已完成工作的接口
-
-- E2 sealed-ENDED/`term_history` 已保留全部 reason + step →
-  provenance 不缺数据，只补帧序号；
-- E3 `RecordStore.frame_valid` 已覆盖终止帧（写入时刻行 running）；
-- E6 `debug_capture` 不受影响（捕获按帧索引）。
+- 不加 done-mask 新字段（`is_terminated`/reason 已足够）；
+- 不改 `term_records` 既有 provenance 形状；
+- archive/todo 实验不迁移；
+- zero-frame episode 维持拒绝。
