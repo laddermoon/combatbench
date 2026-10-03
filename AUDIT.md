@@ -2155,3 +2155,41 @@ view 内加 epoch 校验）。
   **274 passed**（227 + 47）。
 - `python3 -c "import envs.humanoid21.plugins"` 正常，
   导出 `CombatScoringPlugin`/`FrozenRobotPlugin`。
+
+## [2026-10-01] P-H21-4 假验收测试处置：降级为手动脚本 + 两个假测试改真 assert
+
+**对象**：`envs/humanoid21/tests/test_acceptance.py` → `acceptance_check.py`、
+`test_observation_symmetry.py`、`test_data_interfaces.py`、
+`test_videos/`、`ACCEPTANCE_CRITERIA.md`、`tests/README.md`
+**类别**：修复执行（用户裁决：降级为手动脚本 + 附带项全做）
+
+### 处置
+
+1. **`test_acceptance.py` → `envs/humanoid21/acceptance_check.py`**
+   （git mv）：五个 `test_*` 函数改名 `measure_*`（pytest 不再收集），
+   删 pytest fixture/import、删死 import（matplotlib 全文件零使用），
+   `sys.path` 修正为新位置，视频输出目录改 `acceptance_videos/`，
+   `__main__` 手动入口保留。文件头注明实测现状——该文件是 670 行
+   的 PD 质量测量仪器，作为唯一复测工具保留而非删除。
+2. **`test_videos/`（5 个 mp4）删除**：更正前审计条目——这些 mp4
+   **从未入库**（`.gitignore` 的 `*.mp4` 规则一直覆盖），只是本地
+   生成产物，本次清理本地目录。`acceptance_videos/` 同样被 `*.mp4`
+   规则覆盖。
+3. **`test_observation_symmetry.py`**：`return True/False` →
+   `assert not tests_failed`（实测当前通过，等于白捡一条真回归）。
+   `__main__` 入口同步改直接调用。
+4. **`test_data_interfaces.py::test_static_data`**：内部本就全是
+   真 assert——只删尾部 `return sim`（PytestReturnNotNoneWarning
+   消除）。更正前审计"虚过"表述：该用例的断言一直有效，只是尾部
+   return 触发警告。
+5. **`ACCEPTANCE_CRITERIA.md`**：顶部加现状标注——§1/§2/§3 三项
+   当前结构性不达标（目标契约性质，复测走 acceptance_check.py）。
+6. **`tests/README.md`**：文件表去掉 test_acceptance 行、补移动
+   说明；`test_audit_stale_contacts` 标注改为"已修复回归"（配合
+   用户同步做的探针→回归改写）。
+
+### 验证
+
+- `pytest envs/humanoid21/tests/` → **42 passed, 0 warnings**
+  （原 47：-5 个假绿收集项；真实覆盖不降反升——symmetry 现在会真挂）。
+- `acceptance_check.py` py_compile 通过；不在 pytest 收集路径。

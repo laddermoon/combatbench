@@ -8,12 +8,17 @@
 |------|------|------|
 | `test_data_interfaces.py` | 数据接口完整测试：static/core/derived state、96 维观测分解、归一化、坐标系转换、face_vector、关键点一致性、数值范围 | 通过 |
 | `test_extended_schema.py` | 扩展 schema（contacts_vec、keypoint 表等） | 通过 |
-| `test_observation_symmetry.py` | 双方观测的对称性 | 通过 |
+| `test_observation_symmetry.py` | 双方观测的对称性（已改为真 assert） | 通过 |
 | `test_balance_analysis.py` | 平衡分析的几何投影指标 | 通过 |
 | `test_state_pool_plugins.py` | state-pool 插件（episode 末帧捕获等） | 通过 |
-| `test_acceptance.py` | ⚠️ ACCEPTANCE_CRITERIA 的三项指标脚本——**结构上不做 assert**，只打印测量值。手动运行的实测值显示跟踪误差/响应延迟/力矩振荡三项当前不达标（见 AUDIT.md P-H21-4） | 形同虚设 |
 | `test_audit_combat_observer_events.py` | 审计探针：锁死 CombatScoringObserver 读错事件容器（P-H21-2） | 探针 |
-| `test_audit_stale_contacts.py` | 审计探针：锁死 contacts 缓存跨物理步不失效（P-H21-1） | 探针 |
+| `test_audit_stale_contacts.py` | 审计回归：contacts 缓存跨物理步失效不变式（P-H21-1，已修复） | 回归 |
+
+> `test_acceptance.py` 已移出本目录 → `../acceptance_check.py`
+> （手动测量脚本，`measure_*` 函数不随 pytest 收集）。实测 3/5 项
+> 在当前 KP/KD 下结构性不达标（跟踪误差/响应延迟/力矩振荡，
+> 见 AUDIT.md P-H21-4）；`test_videos/` 产物目录已删（本就
+> gitignored，未入库）。
 
 ## 运行测试
 
@@ -36,7 +41,8 @@ PYTHONPATH=. pytest envs/humanoid21/tests/ -x -q
 - `../DATASPEC.md` — 数据规范
 - `../CONTROLSPEC.md` — 控制规范
 - `../OBSERVATION_zh.md` — 观测空间设计
-- `../ACCEPTANCE_CRITERIA.md` — 底层控制验收标准（未被 test_acceptance 真正断言）
+- `../ACCEPTANCE_CRITERIA.md` — 底层控制验收标准（含现状标注：3/4 项当前未达标）
+- `../acceptance_check.py` — 配套手动测量脚本（`PYTHONPATH=. python3 envs/humanoid21/acceptance_check.py`）
 
 ## 添加新测试
 

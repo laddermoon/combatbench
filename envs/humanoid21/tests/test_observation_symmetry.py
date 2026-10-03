@@ -206,12 +206,14 @@ def test_observation_symmetry():
         for test in tests_failed:
             print(f"  ❌ {test}")
         print("\n⚠️  观测数据存在对称性问题，请检查实现！")
-        return False
     else:
         print("\n✅ 所有测试通过！观测数据对称性验证成功！")
-        return True
+
+    assert not tests_failed, (
+        f"观测对称性违例: {tests_failed}"
+    )
 
 
 if __name__ == "__main__":
-    success = test_observation_symmetry()
-    sys.exit(0 if success else 1)
+    test_observation_symmetry()
+    sys.exit(0)

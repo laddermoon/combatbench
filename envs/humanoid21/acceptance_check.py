@@ -1,37 +1,34 @@
 #!/usr/bin/env python3
-"""
-Humanoid21 验收测试 (Acceptance Tests)
+"""Humanoid21 底层控制验收测量（手动脚本，不是 pytest 测试）。
 
-按照 ACCEPTANCE_CRITERIA.md 验证 KP/KD 参数是否满足所有指标
+按照 ACCEPTANCE_CRITERIA.md 测量 KP/KD 参数的实际指标。
+
+**现状（2026-10 审计 P-H21-4，实测）：**
+tracking_error / response_latency / zero_oscillation 三项在当前 KP/KD 下
+**不达标且已验证为结构性不可达**（正弦误差与幅度线性、~120ms 等效滞后、
+静态站立力矩占用 66-90% 上限）；jump / absolute_stability 达标。
+详见根目录 AUDIT.md。本脚本保留为唯一的 PD 质量测量仪器——重调
+增益或改动接触模型后可再次运行复测，不随 pytest 收集（函数已改名
+``measure_*``）。
+
+运行：
+    PYTHONPATH=. python3 envs/humanoid21/acceptance_check.py
 """
 
 import numpy as np
 import sys
 from pathlib import Path
-import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple
 import imageio
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from envs.humanoid21.simulator import Humanoid21Simulator
 
-import pytest
 
-
-# 视频输出目录
-VIDEO_DIR = Path(__file__).parent / 'test_videos'
+# 视频输出目录（本地产物；*.mp4 在 .gitignore 中）
+VIDEO_DIR = Path(__file__).parent / 'acceptance_videos'
 VIDEO_DIR.mkdir(exist_ok=True)
-
-
-@pytest.fixture(scope="module")
-def sim():
-    return Humanoid21Simulator()
-
-
-@pytest.fixture
-def record_video():
-    return False
 
 
 def save_video(frames: list, filename: str, fps: int = 30):
@@ -44,7 +41,7 @@ def save_video(frames: list, filename: str, fps: int = 30):
     return output_path
 
 
-def test_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
+def measure_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 1: 跟踪误差与刚度
     
@@ -162,7 +159,7 @@ def test_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) -> 
     return {'pass': overall_pass, 'details': results}
 
 
-def test_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
+def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试机器人初始蹲姿，然后立即输入站姿。
     这个过程中的机器人的响应速度以及跳跃高度。
@@ -264,7 +261,7 @@ def test_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, 
     return {'pass': overall_pass, 'details': results}
 
 
-def test_response_latency(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
+def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 2: 响应延迟与过冲
     
@@ -382,7 +379,7 @@ def test_response_latency(sim: Humanoid21Simulator, record_video: bool = True) -
     return {'pass': overall_pass, 'details': results}
 
 
-def test_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
+def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 3: 零震荡与控制努力
 
@@ -493,7 +490,7 @@ def test_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -
     return {'pass': overall_pass, 'details': results}
 
 
-def test_absolute_stability(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
+def measure_absolute_stability(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
     """
     测试 4: 系统绝对稳定性
     
@@ -611,7 +608,7 @@ def test_absolute_stability(sim: Humanoid21Simulator, record_video: bool = True)
     return {'pass': stability_pass, 'crashed': crashed, 'diverged': diverged}
 
 
-def run_all_acceptance_tests():
+def run_all_acceptance_measures():
     """运行所有验收测试"""
     print("\n" + "=" * 70)
     print("Humanoid21 验收测试套件")
@@ -624,19 +621,19 @@ def run_all_acceptance_tests():
     
     try:
         # 跳跃测试
-        results['jump'] = test_jump(sim)
+        results['jump'] = measure_jump(sim)
 
         # 测试 1: 跟踪误差
-        results['tracking'] = test_tracking_error(sim)
+        results['tracking'] = measure_tracking_error(sim)
         
         # 测试 2: 响应延迟
-        results['response'] = test_response_latency(sim)
+        results['response'] = measure_response_latency(sim)
         
         # 测试 3: 零震荡
-        results['oscillation'] = test_zero_oscillation(sim)
+        results['oscillation'] = measure_zero_oscillation(sim)
         
         # 测试 4: 绝对稳定性
-        results['stability'] = test_absolute_stability(sim)
+        results['stability'] = measure_absolute_stability(sim)
         
         # 汇总结果
         print("\n" + "=" * 70)
@@ -666,5 +663,5 @@ def run_all_acceptance_tests():
 
 
 if __name__ == '__main__':
-    success = run_all_acceptance_tests()
+    success = run_all_acceptance_measures()
     sys.exit(0 if success else 1)

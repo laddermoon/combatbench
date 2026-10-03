@@ -100,7 +100,6 @@ def test_static_data():
         print(f"  关节行程范围示例: [{joint_limits[0, 0]:.3f}, {joint_limits[0, 1]:.3f}]")
 
     print("\n✓ 静态属性测试通过")
-    return sim
 
 
 # ==================== 测试 2: 核心状态 ====================

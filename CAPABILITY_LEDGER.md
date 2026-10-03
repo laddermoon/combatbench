@@ -33,7 +33,7 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 | `ParallelRunner` (process pool) | envs/framework | LEGACY | — | gone | Removed in 73fe8da3; superseded by `baseline/framework/rollout` |
 | SAC training path (`baseline/framework/sac/`, `experiments_sac/`) | training | OUT-OF-SCOPE | — | — | Declared immature; not inventoried this round |
 
-| `Humanoid21Simulator` (MuJoCo backend, 96-dim obs, normalized PD, broadcast cam) | envs/humanoid21 | STABLE (caveats) | 43 tests pass; blueprint round-trip | DATASPEC/CONTROLSPEC/OBSERVATION_zh | **P-H21-1** stale contacts cache (feet_forces lag); seed arg unused; render failure → black frame |
+| `Humanoid21Simulator` (MuJoCo backend, 96-dim obs, normalized PD, broadcast cam) | envs/humanoid21 | STABLE (caveats) | 42 tests pass; blueprint round-trip | DATASPEC/CONTROLSPEC/OBSERVATION_zh/ACCEPTANCE_CRITERIA | **P-H21-1** stale contacts cache (feet_forces lag); seed arg unused; render failure → black frame. **P-H21-4**: PD acceptance demoted to manual `acceptance_check.py` — 3/4 criteria verified unmet (structural), documented in ACCEPTANCE_CRITERIA.md |
 | `CombatScoringPlugin` (per-substep damage, KO, score log) | envs/humanoid21 | STABLE | exercised by matches/experiments | plugins.py docstring | — |
 | `CombatScoringObserver` | envs/humanoid21 | USABLE (bug) | — | — | **P-H21-2**: reads `metrics['events']` (never written) → events/step_hit_events/step_damage_taken always empty |
 | ~~`NonFallConstraintPlugin`~~ | envs/humanoid21 | REMOVED | — | — | **P-H21-3** resolved: dead plugin deleted (was silent no-op on stale static_data schema); README lists `FrozenRobotPlugin` instead |
