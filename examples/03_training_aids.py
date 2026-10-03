@@ -41,7 +41,9 @@ class CurriculumPushPlugin(BasePlugin):
     ``options["push_force"]`` 注入**——插件不持有课程进度状态。
 
     设计要点：
-    - **课程进度由 runner 拥有**（``run_n_episodes(options_fn=...)``），
+    - **课程进度由 runner/调用方拥有**——单局经
+      ``run_episode(seed, options={"push_force": ...})`` 注入，批量经
+      ``ParallelRollouter`` 的 ``Job.episode_options`` 逐任务派发；
       插件只读 ``ctx.episode_options["push_force"]`` 并执行。这把"现在该
       多大力"和"怎么施力"解耦——你可以在不改插件的前提下换 schedule
       （linear / step / cosine / 完全外部 controller）。详见 RESET.md §4。

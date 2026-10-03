@@ -2,8 +2,8 @@
 
 This module is the **single source of truth** for what counts as a
 "policy" in this project. Anything plugged into :class:`EpisodeRunner`,
-:class:`RoundRunner`, or :class:`ParallelRunner` must subclass
-:class:`Policy` defined here.
+:class:`RoundRunner`/:class:`MatchRunner`, or a ``ParallelRollouter``
+worker must subclass :class:`Policy` defined here.
 
 Contract
 --------

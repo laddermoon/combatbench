@@ -89,14 +89,16 @@ CombatBench 的定位是**一个格斗 benchmark 平台**：我们提供 Env + F
 ### `04_collect_rollouts.py` — 阶段 3：可复现地、并行地采样
 **角色**：要灌数据的训练工程师 / BC / offline RL 开发者。
 **展示**：
-- 用 `ParallelRunner(num_workers=4)` 跑 16 局，统计单进程 vs 多进程的 wall-clock 加速比。
-- 给 `RolloutConfig(store_extras=True)` 开启，把 policy 返回的 `{"log_prob": ..., "value": ...}` 一起存下来 → **训练算法可以直接从这里吃数据**。
-- 所有 `EpisodeResult` 用 `BaseFrameRecorder` 同步落盘到 `out/04_collect_rollouts/rec/`；打印 `manifest.json` 里的 `base_seed` 字段。
-- 用同一 `base_seed` 重跑一次，断言产出的 per-episode seeds 完全一致（复现性保证）。
+- 用 `EpisodeRunner` 顺序跑 16 局（并行采样属 `baseline/framework/rollout`
+  的 `ParallelRollouter`，不在本示例范围）。
+- 以 `want_extras=True` 把 policy 返回的 `{"log_prob": ..., "value": ...}`
+  一起透传给 recorder → **训练算法可以直接从这里吃数据**。
+- 所有帧用 `BaseFrameRecorder` 同步落盘到 `out/04_collect_rollouts/rec/`；打印 `manifest.json` 里的 `base_seed` 字段。
+- 用同一 `base_seed` 重跑一次，断言产出的轨迹完全一致（复现性保证）。
 
 **读完知道**：
-- ParallelRunner 的 factory 契约，为什么要传函数不是 runner 实例。
-- `store_extras` 是框架**专门为 on-policy RL 预留**的通道。
+- per-episode seed 由 `SeedSequence.spawn` 派生的链路长什么样。
+- `want_extras`/`action_extras` 是框架**专门为 on-policy RL 预留**的通道。
 - 一条"可以直接喂给 PPO / BC 的数据管线"在框架层如何成立。
 
 ---

@@ -199,9 +199,10 @@ class CurriculumPushPlugin(BasePlugin):
 - `run_n_episodes` 增加 `options_fn: Callable[[int], dict] | None`（可选，
   每个 episode 派发不同 options——课程化的关键入口）；
 - `ParallelRunner` 对应增加同名入参，走 pickle 通道（要求 options 可
-  picklable，由 caller 保证）。*（注：ParallelRunner 后被删除，
-  批量 rollout 走 `baseline/framework/rollout` 的 `ParallelRollouter`，
-  episode_options 经 `Job.episode_options` 透传。）*
+  picklable，由 caller 保证）。*（注：`ParallelRunner` 与
+  `run_n_episodes` 后随 runner 重构一并删除；批量 rollout 走
+  `baseline/framework/rollout` 的 `ParallelRollouter`，per-episode
+  options 经 `Job.episode_options` 逐任务透传——课程化派发等价物。）*
 
 ### G2. `ctx.episode_options` 字段不存在 — ✅ 已落地
 
@@ -285,9 +286,10 @@ Observer 侧的 `on_reset` / `on_post_step` 已重命名为
 
 1. **G2 + G5**：`ctx.episode_options` 字段 + `base_seed` 归属收紧。
    （纯加字段 + 清理，零行为变更，先落。）
-2. **G1**：`EpisodeRunner.run_episode(options=...)` + `run_n_episodes(options_fn=...)`
-   + ~~`ParallelRunner` 对应入参~~（该类已删，对应能力由
-     `ParallelRollouter` 的 `Job.episode_options` 承担）。
+2. **G1**：`EpisodeRunner.run_episode(options=...)`
+   + ~~`run_n_episodes(options_fn=...)` / `ParallelRunner` 对应入参~~
+   （两者均已删，对应能力由 `ParallelRollouter` 的
+     `Job.episode_options` 承担）。
 3. **G4**：mid-episode reset 的"优雅终止" 处理，加不变式 I1/I2 的测试。
 4. **G3**：`MatchRunner` 重构——`env_factory` 无参 + 循环内改 reset。
    `CombatScoringPlugin` 从 `ctx.episode_options` 读 HP。

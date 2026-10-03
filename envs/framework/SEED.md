@@ -8,7 +8,8 @@ API 与记录约定。
 1. **独立可设**：每个需要随机性的组件（simulator / policy / plugin）必
    须能被独立赋予一个 `int` 种子。
 2. **父向子链路通**：父组件能确定性地派生出子组件的种子；这条链路从
-   batch 入口（`run_n_episodes` / `ParallelRollouter.collect` 的 Job）
+   batch 入口（`ParallelRollouter.collect` 的 `Job.seed`，或任何上层
+   直接调 `EpisodeRunner.run_episode(seed=...)`）
    一直到最叶子的 plugin RNG 全程闭合，不允许有任何
    "自己 `np.random.default_rng()`" 的孤岛。
 
@@ -53,10 +54,10 @@ simulator       policy.reset      plugin.set_episode_seed
 
 ## 禁止事项
 
-1. **不允许 `None` 向下传播**。`run_episode(seed=None)` 与
-   `run_n_episodes(base_seed=None)` 在 runner 入口立即解析为一个具体
-   `int`（用 `secrets.randbits(32)` 或 `np.random.SeedSequence().entropy`），
-   并把解析出的值写回 `EpisodeResult.seed` 与日志。这样**任何 episode
+1. **不允许 `None` 向下传播**。`run_episode(seed=None)` 在 runner
+   入口立即解析为一个具体 `int`（`secrets.randbits(32)`，见
+   `episode_runner._resolve_seed`），并把解析出的值发布到
+   `ctx.base_seed`、写进日志与 recorder manifest。这样**任何 episode
    都是可复现的**，哪怕调用方没显式给种子。
 2. **不允许算术推导** `seed + i`, `seed * k`, `hash(seed, i)` 等——引入
    隐性相关。**只用 `SeedSequence.spawn`**。
@@ -89,15 +90,15 @@ per-policy 子种子。实现方如持有 RNG，需用 `seed` 重建。
 ### `EpisodeRunner` 内部派生函数
 
 ```python
-def _derive_seeds(self, base_seed: int) -> EpisodeSeeds:
+def _derive_seeds(self, base_seed: int) -> _EpisodeSeeds:
     """Return a structured bundle with concrete int seeds for every consumer."""
 ```
 
-其中 `EpisodeSeeds` 至少包含：
+其中 `_EpisodeSeeds`（runner 内部 dataclass，不落盘）至少包含：
 
 ```python
 @dataclass(frozen=True)
-class EpisodeSeeds:
+class _EpisodeSeeds:
     base: int                       # 入口 seed（已解析，非 None）
     runtime: int
     policies: Dict[str, int]        # agent_id -> int
@@ -113,9 +114,11 @@ Plugin 字典的 key 用 `id(plugin)` 而非 `plugin.name`：
 
 ## 记录
 
-### `EpisodeResult`
-只记 `base_seed: int`（单个数）。派生规则是确定的 → 只要 base_seed 与
-代码版本一致，任何子种子都可重算。
+### `ctx.base_seed`
+`run_episode` 返回 `None`，episode 结果由 recorder/外层 harness 承载；
+解析后的 base seed 的唯一用户可见出口是 `ctx.base_seed`（单个数）。
+派生规则是确定的 → 只要 base_seed 与代码版本一致，任何子种子都可
+重算。
 
 ### Recorder 落盘（`episode_manifest.json`）
 同理——只写 `base_seed`。Replay 时调用方按同样的 `_derive_seeds` 重算
@@ -138,7 +141,7 @@ batch 层的派生职责因此上移到了 job 构建方。
 
 1. `BasePlugin.set_episode_seed` 默认 no-op + 把 humanoid21 现有
    `RandomPushPlugin` / `InitialStatePerturbationPlugin` 的私有方法提升到基类契约。
-2. `EpisodeRunner._derive_seeds` 改为返回 `EpisodeSeeds`，全程 `spawn`；
+2. `EpisodeRunner._derive_seeds` 改为返回 `_EpisodeSeeds`，全程 `spawn`；
    `_reset_all` 给所有 seedable plugin 打种子，再 `runtime.reset`，再
    `policy.reset`。入口解析 `None → int`。
 3. 给无 seed 的 plugin（`PeriodicUpwardForcePlugin` 等）加 `random_seed`

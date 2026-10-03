@@ -2034,3 +2034,60 @@ view 内加 epoch 校验）。
   0 collection errors**。
 - `CAPABILITY_LEDGER.md` 三行过时备注（"untested"/"stale test file"）
   已清除。
+
+## [2026-10-01] P-FW-7 文档过期清单修复 + REVIEW_SUMMARY.md 处置
+
+**对象**：`DESIGN.md` / `SEED.md` / `RESET.md` / `policy.py` /
+`examples/README.md` / `examples/03_training_aids.py` /
+`envs/framework/REVIEW_SUMMARY.md`
+**类别**：修复执行（用户指示 + REVIEW_SUMMARY 删除裁决）
+
+### 文档修复
+
+- `DESIGN.md:151`：`ctx.termination_proposals: List[str]` → 实际字段
+  `agent_termination_proposals: Dict[str, List[str]]` +
+  `agent_terminated: Dict[str, bool]`，补 `request_termination(reason,
+  agent_id=None)` 的唯一写入口语义（None=全局 / 指定 id=单方）。
+- `SEED.md` 四处：L11 `run_n_episodes` → `ParallelRollouter` 的
+  `Job.seed` / 直接 `run_episode(seed=...)`；L56-60 禁止条款改引
+  `_resolve_seed` + `ctx.base_seed`（`EpisodeResult` 已删）；
+  `EpisodeSeeds` → `_EpisodeSeeds`（内部 dataclass 不落盘）；
+  "EpisodeResult 记录"节改为 `ctx.base_seed`。
+- `RESET.md` 两处（历史 gap 记录）：`run_n_episodes(options_fn=...)`
+  补"已删、批量 options 走 `Job.episode_options`"的更正注记，
+  与既有 `ParallelRunner` 注记风格一致。
+- `policy.py:5` 模块 docstring：`ParallelRunner` → `ParallelRollouter`
+  worker。
+- `examples/README.md` 04 示例描述：`ParallelRunner`/`RolloutConfig`
+  (`store_extras`)/`EpisodeResult` 全部改为实际实现
+  （EpisodeRunner 顺序跑 + `want_extras` + `SeedSequence.spawn`）。
+- `examples/03_training_aids.py` docstring：`run_n_episodes(options_fn)`
+  → `run_episode(options=...)` / `Job.episode_options`。
+- `episode_runner.py:46`（S7 已修）、`CONTEXT.md`（S6 已重写）复核无误。
+
+### REVIEW_SUMMARY.md → 已删除
+
+按用户裁决"问题已解决则删"。逐项核对 §11 记录的 8 条技术债：
+
+| 条目 | 状态 |
+|---|---|
+| 1. 文档滞后（CONTEXT/DESIGN/CLAUDE） | ✅ 已解决（CONTEXT S6 重写、DESIGN 本次修、CLAUDE 无 runtime_plugin） |
+| 2. 钩子命名三套不统一 | 已由 RESET.md §6 承载（长期设计建议） |
+| 3. BaseObserverPlugin 空别名 | 有意保留的兼容别名，observer_plugin.py:106-110 自文档 |
+| 4. 录制体积 footgun | CONTEXT.md:165 + CAPABILITY_LEDGER 已载 |
+| 5. 单 env 无向量化 | 架构路线说明，batchframework 为对应轨道 |
+| 6. _AccessorView 沙箱非绝对 | context.py:69 docstring + P-FW-4 残留边界条目 |
+| 7. process_token 不含 metrics/events | observer_plugin.py:283-287 内联注释（framework/C2） |
+| 8. match_runner seed 派生 | 原文即判定"符合 SEED.md 规范"，非问题 |
+
+无独有未承载信息 → 删除。注：文件被 `.gitignore`（`REVIEW_*.md`）
+排除，删除不进 commit；`REVIEW_OVERVIEW.md` 索引中该行已标注
+"已删（见 AUDIT.md P-FW-7）"，顺带标出另外两个失效引用
+（baseline/framework、experiments_v2——后者目录已不存在）。
+
+### 验证
+
+- 活跃文档/代码中 `run_n_episodes`/`ParallelRunner`/`parallel_runner`
+  残留：仅剩 RESET.md 更正注记、SEED.md "已删除"陈述、
+  tests/README.md 删除说明——全为有意保留的历史注记。
+- `pytest envs/framework/tests/ -q` → **224 passed**。

@@ -148,7 +148,8 @@ accessor.get_broadcastview_image()
 ```python
 ctx.metrics: Dict[str, Any]
 ctx.events: List[Any]
-ctx.termination_proposals: List[str]
+ctx.agent_termination_proposals: Dict[str, List[str]]   # agent_id -> reasons
+ctx.agent_terminated: Dict[str, bool]                   # agent_id -> 已终止
 ```
 
 - **`metrics`**
@@ -159,8 +160,11 @@ ctx.termination_proposals: List[str]
   - 保存当前 step 发生的瞬时事件。
   - 例如：命中事件、越界事件、关键状态切换。
 
-- **`termination_proposals`**
-  - 保存 episode 终止建议。
+- **`agent_termination_proposals` / `agent_terminated`**
+  - per-agent 终止状态（`robot_a`/`robot_b` 各自独立）。
+  - 写入唯一入口是 `ctx.request_termination(reason, agent_id=None)`：
+    `agent_id=None` 对全体生效（timeout/越界），指定 id 只终止单方
+    （KO/犯规），episode 在 `all_agents_terminated` 时结束。
   - 例如：`timeout`、`ko`、`foul`。
 
 ### 3. EnvRuntime 的输入约定
