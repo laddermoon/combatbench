@@ -92,7 +92,8 @@ def worker_main(device_index: int, batch_size: int, cmd_q, out_q,
                     group_key=shard.group_key,
                     job_refs=shard.job_refs,
                     episodes=eps,
-                    report=dict(dr.last_collect_report)))
+                    report={**dict(dr.last_collect_report),
+                            "timing": dict(dr.timing)}))
             out_q.put({"kind": "collect_done", "collect_id": collect_id,
                        "device": device_index, "results": results})
         except BaseException:

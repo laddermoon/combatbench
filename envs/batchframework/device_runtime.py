@@ -88,8 +88,17 @@ class BatchRuntime:
         self.dispatcher = DeviceObserverDispatcher()
         # 同步点分类记账（E3-W5）：每个 host sync（bool(.any())/D2H 读回）
         # 记一类——先显式计量，优化归 E7。
-        self.sync_stats = {"term_barrier": 0, "freeze_check": 0,
+        # E7-W0：barrier 内部逐 sync 记数（*_syncs），hook 按名累计
+        # host 提交时间（hook_timing），consume 内部耗时
+        # （barrier_time）——physics_wall 内含的子步 hook/屏障可用
+        # 减法还原 kernel 估计。
+        self.sync_stats = {"term_barrier": 0, "term_barrier_syncs": 0,
+                           "freeze_check": 0, "freeze_syncs": 0,
                            "any_running": 0, "reset": 0}
+        self.hook_timing: Dict[str, float] = {}
+        self.barrier_time: float = 0.0
+        self.seg_timing: Dict[str, float] = {
+            "physics_wall": 0.0, "obs_build": 0.0}
         self.attach(self.dispatcher)
 
     # ------------------------------------------------------------------
@@ -228,6 +237,8 @@ class BatchRuntime:
     def _invoke(self, hook: str, writable: bool,
                 reset_env_ids=None, terminated_env_ids=None,
                 units: Optional[List[BaseDevicePlugin]] = None) -> None:
+        import time as _time
+        _t0 = _time.perf_counter()
         for p in (self._plugins if units is None else units):
             ctx = self._ctxs[id(p)]
             ctx.reset_env_ids = reset_env_ids
@@ -250,6 +261,9 @@ class BatchRuntime:
                 ctx._revoke_mutator()
                 ctx.reset_env_ids = None
                 ctx.terminated_env_ids = None
+        self.hook_timing[hook] = (
+            self.hook_timing.get(hook, 0.0)
+            + _time.perf_counter() - _t0)
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -342,12 +356,15 @@ class BatchRuntime:
         只做：reset_request→abandoned 提议、env 级 ENDED 判定、
         状态快照封存、post_episode 调度、冻结写回。
         """
+        import time as _time
+        _t0 = _time.perf_counter()
         st = self.state
         ep = st.episode
 
         self.sync_stats["term_barrier"] += 1
         # reset_request → 等价 CPU reset-while-active：对全员提 "abandoned"
         rr = ep.reset_request & ep.world_running & ep.slot_valid
+        self.sync_stats["term_barrier_syncs"] += 1
         if bool(rr.any()):
             rr_ids = torch.nonzero(rr, as_tuple=False).squeeze(-1)
             aband = TERM_CODES["abandoned"]
@@ -363,7 +380,9 @@ class BatchRuntime:
         # ——仅限 RUNNING 行；ENDED/FAILED 不重复触发。
         newly = ((ep.agent_done.all(dim=-1) | ep.terminated_flag)
                  & ep.world_running & ep.slot_valid)
+        self.sync_stats["term_barrier_syncs"] += 1
         if not bool(newly.any()):
+            self.barrier_time += _time.perf_counter() - _t0
             return
         ep.world_running[newly] = False
         ep.policy_eval_mask[newly] = False
@@ -389,6 +408,7 @@ class BatchRuntime:
         # post_episode 中插件仍可提终止（request_termination 即归档；
         # 对仍 RUNNING 的其他行于下个屏障生效——CPU 无跨 env 对应物）
         self._freeze_ended_rows()
+        self.barrier_time += _time.perf_counter() - _t0
 
     def _freeze_ended_rows(self) -> None:
         """把封存态写回 ENDED/FAILED 行，撤销本步 advance 造成的漂移。
@@ -400,6 +420,7 @@ class BatchRuntime:
         ep = self.state.episode
         sealed = ep.slot_valid & ~ep.world_running
         self.sync_stats["freeze_check"] += 1
+        self.sync_stats["freeze_syncs"] += 1
         if self._seal_snap is None or not bool(sealed.any()):
             return
         dense = {k: b[sealed] for k, b in self._seal_snap.items()}
@@ -490,6 +511,8 @@ class BatchRuntime:
 
         run_i64 = (ep.world_running & ep.slot_valid).to(torch.int64)
         dt = float(self.sim.DT)
+        import time as _time
+        _t0 = _time.perf_counter()
         if self._substep_units:
             # 有插件覆写子步 hook → 回调进后端子步循环（不能拆成
             # physical_step(1)×n——pending wrench 只在块首子步消费一次）
@@ -520,6 +543,7 @@ class BatchRuntime:
             self.sim.physical_step(n)
             ep.physics_steps += run_i64 * n
             ep.time += dt * n * run_i64.to(torch.float32)
+        self.seg_timing["physics_wall"] += _time.perf_counter() - _t0
         self._invoke("on_post_batch_step", writable=True)
 
         # episode_steps = 进入 step() 的无条件调用计数（含本步内已
@@ -527,8 +551,10 @@ class BatchRuntime:
         # term_records/frame boundary 承担，不由计数器隐含）
         ep.episode_steps += entered_i64
         st.rng.step_counter += 1
+        _t0 = _time.perf_counter()
         if self.obs_builder is not None:
             self.obs_builder.build(st)
+        self.seg_timing["obs_build"] += _time.perf_counter() - _t0
 
         self._invoke("on_post_action_step", writable=False)
         self._consume_terminations()

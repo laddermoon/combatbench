@@ -150,9 +150,12 @@ class DeviceRollouter:
         self._recorder: Optional[_RecorderAdapter] = None
         self._store: Optional[RecordStore] = None
         self._policies = PolicyExecutorCache(capacity=policy_cache_size)
-        # 计时分解——按 collect 调用累计
+        # 计时分解——按 collect 调用累计；E7-W0 起 assemble 细分为
+        # finalize/D2H/export 三段，step 内部经 rt.seg_timing/
+        # hook_timing/barrier_time 细分（last_collect_report 汇总）。
         self.timing = {"reset": 0.0, "policy": 0.0, "step": 0.0,
-                       "assemble": 0.0, "n_waves": 0}
+                       "finalize": 0.0, "d2h": 0.0, "export": 0.0,
+                       "n_waves": 0}
         # 同步点分类记账（E3-W5）：值随每次 collect 重置
         self.sync_stats = {"early_exit_check": 0, "health_check": 0,
                            "d2h_export": 0}
@@ -358,6 +361,8 @@ class DeviceRollouter:
         # --- 波末组装：一次批量 D2H + 向量化导出 ---
         t0 = time.perf_counter()
         store.finalize(st.episode, st.io)
+        self.timing["finalize"] += time.perf_counter() - t0
+        t0 = time.perf_counter()
         self.sync_stats["d2h_export"] += 1
         agent_ids = self._io_schema.agent_ids
         np_bufs = dict(
@@ -383,8 +388,10 @@ class DeviceRollouter:
         # 插件 episode 指标——显式 schema 导出（W4），不嗅探 pool 键名
         metrics_np = {k: v.detach().cpu().numpy()
                       for k, v in rt.export_episode_metrics().items()}
+        self.timing["d2h"] += time.perf_counter() - t0
 
         env_hash = blueprint_hash(env_bp)
+        t0 = time.perf_counter()
         for i, (job, gi) in enumerate(zip(wave, wave_idx)):
             episodes[gi] = export_episode(
                 np_bufs, job=job, ep_index=gi, row=i,
@@ -392,7 +399,7 @@ class DeviceRollouter:
                 stochastic=stochastic, env_hash=env_hash,
                 term_records=store.term_records[i],
                 metrics_np=metrics_np, T=T)
-        self.timing["assemble"] += time.perf_counter() - t0
+        self.timing["export"] += time.perf_counter() - t0
 
     # ------------------------------------------------------------------
     def _write_collect_report(self) -> None:
@@ -409,6 +416,15 @@ class DeviceRollouter:
             "binding": self._binding.name if self._binding else None,
             "sync_stats": {**self.sync_stats, **{
                 f"rt.{k}": v for k, v in rt_sync.items()}},
+            # E7-W0：step 内部分项（host 提交时间视角；GPU 执行经
+            # sync 点隐式计入）。physics_wall 含子步 hook/屏障——
+            # kernel 估计 = physics_wall − substep hooks − barrier_time。
+            "step_segments": dict(self._rt.seg_timing)
+                             if self._rt is not None else {},
+            "hook_timing": dict(self._rt.hook_timing)
+                           if self._rt is not None else {},
+            "barrier_time": (self._rt.barrier_time
+                             if self._rt is not None else 0.0),
         }
 
     # ------------------------------------------------------------------

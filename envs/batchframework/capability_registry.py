@@ -87,7 +87,18 @@ REGISTRY: Dict[str, CapabilityEntry] = {
                         factory=lambda cfg, **kw: _mk_height_phi(
                             cfg, **kw),
                         note="DeviceHeightPhiObserver"),
+    # --- E7-W0 计量探针（device_examples 模板5；仅 benchmark 蓝图引用） ---
+    "envs.batchframework.device_examples:SubstepProbePlugin":
+        CapabilityEntry(Capability.NATIVE,
+                        factory=lambda cfg, **kw: _mk_substep_probe(
+                            cfg, **kw),
+                        note="空子步 hook——测子步驱动路径固定开销"),
 }
+
+
+def _mk_substep_probe(cfg, **_kw):
+    from .device_examples import SubstepProbePlugin
+    return SubstepProbePlugin()
 
 
 def _mk_timeout(cfg, **_kw):

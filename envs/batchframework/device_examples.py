@@ -104,3 +104,19 @@ class JitterResetPlugin(BaseDevicePlugin):
             ctx.pstate["phase"][ctx.reset_env_ids] = self._v
 
     on_envs_reset = on_pre_episode  # 同一初始化逻辑；分开覆写亦可
+
+
+class SubstepProbePlugin(BaseDevicePlugin):
+    """模板5：空子步 hook——E7-W0 计量探针。
+
+    覆写 ``on_post_phy_step``（空体）使 runtime 进入子步驱动路径：
+    每子步 pre/post 回调 + 终止屏障全走，但回调本身零负载——
+    测得的增量即"子步路径固定开销"（屏障/调度），不含插件业务。
+    """
+
+    @property
+    def name(self) -> str:
+        return "e7_substep_probe"
+
+    def on_post_phy_step(self, ctx: DeviceCtx) -> None:
+        pass
