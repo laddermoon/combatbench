@@ -123,16 +123,25 @@ class VideoRecorderPlugin(BasePlugin):
             else:
                 raise RuntimeError(f"ffmpeg exited with code {proc.returncode}")
         except FileNotFoundError:
-            # ffmpeg not available, fall back to cv2
+            # ffmpeg 未安装 → cv2 兜底。两者都不可用属硬失败：
+            # 录了的帧必须保存出来，否则调用方以为有视频实际没有（P-FW-5 fail-loud）。
             try:
                 import cv2
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps, (width, height))
-                for frame in self._frames:
-                    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            except ImportError as e:
+                raise RuntimeError(
+                    f"VideoRecorderPlugin: 无法保存视频到 {self.output_path} —— "
+                    "ffmpeg 与 opencv-python 均不可用"
+                ) from e
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps, (width, height))
+            if not writer.isOpened():
                 writer.release()
-                print(f"Video saved to {self.output_path} (cv2 fallback, moov may be at end)")
-            except ImportError:
-                print("Warning: neither ffmpeg nor opencv-python available, cannot save video")
-        except Exception as e:
-            print(f"Error saving video: {e}")
+                raise RuntimeError(
+                    f"VideoRecorderPlugin: cv2.VideoWriter 打开输出失败: {self.output_path}"
+                )
+            for frame in self._frames:
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            writer.release()
+            print(f"Video saved to {self.output_path} (cv2 fallback, moov may be at end)")
+        # 其他异常（ffmpeg 写管道断、rc!=0、IO 错等）一律向外抛：
+        # strict runtime 会中止 episode 并带原始栈，这正是 fail-loud 语义。

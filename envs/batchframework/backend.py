@@ -255,8 +255,15 @@ class IBatchDataMutator(ABC):
             force: (B, 3) 力向量，持续作用直到覆盖或清除
             torque: (B, 3) 可选力矩向量，同样持续有效
             robot_id: 机器人 ID
+
+        Note:
+            "可选实现"不等于"可静默调用"：默认实现抛 ``NotImplementedError``。
+            后端不支持外力时必须立刻失败，不允许静默丢力（P-FW-5）。
         """
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__}.apply_external_force: "
+            "该批量后端未实现外力接口"
+        )
 
 
 # ---------------------------------------------------------------------------

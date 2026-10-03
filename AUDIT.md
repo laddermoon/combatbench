@@ -1965,3 +1965,48 @@ view 内加 epoch 校验）。
 注：7 个 gating 调试脚本均被 `.gitignore`（`debug_*` 规则）排除，
 属工作区一次性诊断工具——迁移改动不进 commit，但已在本地生效，
 保证将来运行时不会因 `ctx._simulator` AttributeError 而挂掉。
+
+## [2026-10-01] P-FW-5 静默失败 → fail-loud 修复
+
+**对象**：`envs/framework/backend.py`、`envs/batchframework/backend.py`、
+`envs/framework/common_plugins.py`
+**类别**：修复执行（用户指示"改成 fail loud"）
+
+### 实施内容
+
+1. **`IDataMutator.apply_external_force`**（framework/backend.py:71）：
+   默认实现 `pass` → `raise NotImplementedError`。docstring 改写为
+   "可选能力 ≠ 可选调用"——后端不支持外力时调用方必须立刻失败，
+   不允许静默丢扰动让实验在无外力下无声跑完。
+   - 子类排查：`Humanoid21Simulator`（simulator.py:1179）与
+     `ReplaySimulator`（raise ReplayReadOnlyError）均有正确实现；
+     conftest `MockSimulator` 未实现——继承新默认即自动 fail-loud，
+     框架测试无一路径静默依赖它。
+   - 调用方排查：disturbance_plugins / host_compat / validation_*
+     全部面向已实现后端，无误伤。
+2. **`IBatchDataMutator.apply_external_force`**（batchframework/backend.py:235）：
+   同款 `pass` 默认实现，同步改 `raise NotImplementedError`。
+   `MjxHumanoid21Simulator`/`WarpHumanoid21Simulator` 均已实现。
+3. **`VideoRecorderPlugin.on_post_episode`**（common_plugins.py）：
+   - 删兜底 `except Exception: print("Error saving video...")`——
+     ffmpeg 非零退出、管道断裂、IO 错等一律向外抛（strict runtime
+     即中止 episode 并带原始栈）。
+   - cv2 兜底路径：ffmpeg 缺失时 `import cv2` 失败 →
+     `RuntimeError("无法保存视频…ffmpeg 与 opencv-python 均不可用")`
+     替代原"Warning: cannot save video"静默丢帧。
+   - 顺带补一个同级静默点：`cv2.VideoWriter` **打开失败本身不报错**
+     （`isOpened()==False` 时 write 全静默丢弃）——加显式检查并抛错。
+   - ffmpeg→cv2 降级链保留：那是有真实替代方案的合理 fallback。
+
+4. **新测试** `test_audit_fail_loud.py`（5 个用例）：
+   - 未实现后端的 `apply_external_force` 直接调用 + 经 `_MutatorView`
+     转发均抛 `NotImplementedError`；
+   - 无编码器（ffmpeg FileNotFoundError + cv2 ImportError）→ RuntimeError；
+   - ffmpeg 非零退出 → RuntimeError 不再被吞；
+   - cv2 VideoWriter 打开失败 → RuntimeError。
+
+### 验证
+
+- `PYTHONPATH=. pytest envs/framework/tests/ -q` → **224 passed**
+  （219 + 新测试 5 个）。
+- `git status` 仅涉及上述 4 个源文件 + 1 个新测试文件。

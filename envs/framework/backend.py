@@ -85,10 +85,15 @@ class IDataMutator(ABC):
             robot_id: 机器人 ID ('robot_a' 或 'robot_b')
 
         Note:
-            默认实现为空，子类可以选择性实现以支持外部扰动功能。
+            这是"可选能力"，不是"可选调用"：默认实现抛 ``NotImplementedError``。
+            后端不支持外力时调用方必须立刻失败——绝不允许静默丢掉扰动、
+            让实验在无外力的情况下无声跑完（P-FW-5）。
             这个方法建议在 on_pre_phy_step 钩子中被调用，用于在物理步前施加外力。
         """
-        pass  # 默认实现为空，子类可选实现
+        raise NotImplementedError(
+            f"{type(self).__name__}.apply_external_force: "
+            "该后端未实现外力接口"
+        )
 
 
 class BaseSimulator(IDataAccessor, IDataMutator):
