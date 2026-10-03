@@ -23,7 +23,7 @@ class RandomCombatPolicy(Policy):
         action_dim: int = 21,
         **_ignored: Any,
     ) -> None:
-        # Accept and silently drop unknown kwargs so load_policy query-string
+        # Accept and silently drop unknown kwargs so PolicyBlueprint config
         # parameters that don't apply (e.g. ``model_path``) don't crash.
         self.scale = float(scale)
         self.action_dim = int(action_dim)

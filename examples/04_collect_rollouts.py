@@ -27,7 +27,7 @@ from envs.framework.recorder import BaseFrameRecorder
 
 # ---------------------------------------------------------------------------
 # A policy that returns extras — mimics what an on-policy RL actor looks like:
-# ``act_with_extras`` returns (action, {"log_prob": ..., "value": ...}).
+# ``act(obs, want_extra=True)`` returns (action, {"log_prob": ..., "value": ...}).
 # ---------------------------------------------------------------------------
 class MockActorWithExtras(Policy):
     """Deterministic 'actor': returns a noisy zero action plus fake
@@ -42,11 +42,12 @@ class MockActorWithExtras(Policy):
     def reset(self, seed=None) -> None:
         self._rng = np.random.default_rng(seed)
 
-    def act(self, observation):  # pragma: no cover - we always go through act_with_extras
-        raise AssertionError("store_extras=True should call act_with_extras")
-
-    def act_with_extras(self, observation) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def act(
+        self, observation, *, want_extra: bool = False
+    ) -> Tuple[np.ndarray, Any]:
         action = self._rng.normal(0.0, self.noise_scale, self.action_dim).astype(np.float32)
+        if not want_extra:
+            return action, None
         # Fake RL heads — in real code these come from the actor network.
         log_prob = float(-0.5 * np.sum(action ** 2) / (self.noise_scale ** 2))
         value = float(np.sum(observation[:8]) * 0.01)  # dummy value head
@@ -61,10 +62,8 @@ def _build_runner(worker_id: int, recorder: BaseFrameRecorder) -> EpisodeRunner:
     runtime.attach_recorder(recorder)
     return EpisodeRunner(
         runtime=runtime,
-        policies={
-            "robot_a": MockActorWithExtras(noise_scale=0.1),
-            "robot_b": MockActorWithExtras(noise_scale=0.1),
-        },
+        policy_a=MockActorWithExtras(noise_scale=0.1),
+        policy_b=MockActorWithExtras(noise_scale=0.1),
     )
 
 
@@ -90,9 +89,16 @@ def _collect_sequential_with_recorder(n_episodes: int, base_seed: int, out_dir: 
     runner = _build_runner(worker_id=0, recorder=recorder)
 
     start = time.time()
-    for ep in range(n_episodes):
-        seed = base_seed + ep
-        runner.run_episode(seed=seed)
+    # Per-episode seeds come from SeedSequence.spawn — never base_seed + i
+    # (see SEED.md).
+    episode_seeds = [
+        int(ss.generate_state(1, dtype=np.uint32)[0])
+        for ss in np.random.SeedSequence(base_seed).spawn(n_episodes)
+    ]
+    for ep, seed in enumerate(episode_seeds):
+        # want_extras=True asks policies for their side-channel payload so the
+        # recorder's save_action_extras captures log_prob / value.
+        runner.run_episode(seed=seed, want_extras=True)
         print(f"  Episode {ep} (seed={seed}) complete")
     elapsed = time.time() - start
 

@@ -1820,3 +1820,40 @@ RuntimeError 实际不可达（`a_active` 恒从 True 起步，首轮必然先�
 **结果/证据**：`grep -rn get_termination_flags` 现仅剩 3 类有意保留的
 命中：CONTEXT.md 的"该 API 已移除"提示、AUDIT.md 审计记录、
 CAPABILITY_LEDGER 历史条目。
+
+## [2026-10-01] P-FW-3 旧 Policy 契约残留清理
+
+**对象**：examples/ + `envs/framework/policy.py` docstring + `policy/` 注释
+**类别**：修复执行（用户拍板"按实际情况修复"）
+
+**做了什么**：
+
+- `examples/04_collect_rollouts.py`：`act_with_extras()` 改为新契约
+  `act(obs, *, want_extra) -> (action, extra)`；`policies={}` 构造改
+  `policy_a/policy_b`；`run_episode` 补 `want_extras=True`（否则 extras
+  不会被请求）；`base_seed + ep` 种子算术改为 `SeedSequence.spawn`
+  （对齐 SEED.md）。
+- `examples/02_scripted_baseline.py`：SinusoidPolicy `act` 改 tuple 签名；
+  `policies={}` 改 `policy_a/policy_b`；recorder `action_extras` 补默认 None。
+- `examples/03_training_aids.py`：两处 `policies={}` 改 kwarg；种子算术
+  同步改 SeedSequence.spawn。
+- `examples/05_replay_and_inspect.py`：`policies={}` 改 kwarg；live 重跑
+  种子改为 `SeedSequence(base_seed).spawn(ep_index+1)[ep_index]`，与 04
+  的派生方式保持一致（spawn 按索引确定性，不依赖总数）。
+- `examples/07_curriculum_recipe.py` `_RandomPolicy.act` 改 tuple 签名。
+- `examples/08_rollout_collection.py`：`policies={}` 改 kwarg。
+- `envs/framework/policy.py` docstring `load_policy` → `PolicyBlueprint`。
+- `policy/random/policy.py`、`policy/humanoid21/standing/policy.py` 注释中
+  `load_policy` → `PolicyBlueprint`/`file:` 加载。
+
+**验证**：全仓库 grep 确认无 `call_policy`/`coerce_action`/`act_with_extras`/
+`policies={` 残留（batchframework probe 的局部同名 `load_policy` 函数、
+`_EpisodeSeeds.policies` 内部字段为同名不同物）；rollout 层与 gating 调试
+脚本全部已是新契约；`pytest envs/framework/tests/` 217 全过；
+9 个修改文件语法检查通过。
+
+**有意不动**：
+- `envs/framework/REVIEW_SUMMARY.md`——gitignore 的冻结复盘文档，历史
+  记录不改写（其测试清单表行提及 `coerce_action`/`call_policy` 属当时的
+  事实描述）。
+- `baseline/framework/ppo/policies/todo/checkpoint.py`——归档代码注释。

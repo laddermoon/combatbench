@@ -54,7 +54,7 @@ class SimpleRecorder(PostActionRecorder):
         }
         self.num_steps = 0
 
-    def on_post_action_step(self, ctx, observation, action, observer_outputs, action_extras):
+    def on_post_action_step(self, ctx, observation, action, observer_outputs, action_extras=None):
         for agent_id in ("robot_a", "robot_b"):
             self.trajectories[agent_id]["actions"].append(action[agent_id])
             self.trajectories[agent_id]["rewards"].append(0.0)  # No reward extraction for now
@@ -65,7 +65,8 @@ class SinusoidPolicy(Policy):
     """正弦波驱动所有关节 —— 确定性、可复现、肉眼可见的滑稽动作。
 
     实现要点：
-    - ``act`` 必须实现（ABC 要求），返回一个 21 维 ndarray。
+    - ``act`` 必须实现（ABC 要求），返回 ``(action, extra)`` 二元组——
+      21 维 ndarray 动作 + 可选的 extra 侧信道（这里用不到，返回 None）。
     - ``reset`` 可选：我们这里用它来保存一个随每 episode 变化的相位偏移。
     - 没有 ``__init__`` 契约要求——你怎么存状态都行。
     """
@@ -85,7 +86,7 @@ class SinusoidPolicy(Policy):
         rng = np.random.default_rng(seed)
         self._phase_offset = float(rng.uniform(0.0, 2.0 * np.pi))
 
-    def act(self, observation: Any) -> np.ndarray:
+    def act(self, observation: Any, *, want_extra: bool = False):
         # 20Hz 决策频率 → 每步对应 dt = 1/20s。
         dt = 1.0 / 20.0
         t = self._step * dt
@@ -95,7 +96,7 @@ class SinusoidPolicy(Policy):
         action = self.amplitude * np.sin(
             2.0 * np.pi * self.frequency_hz * t + self._phase_offset + joint_phase
         )
-        return action.astype(np.float32)
+        return action.astype(np.float32), None
 
 
 def _run(seed: int) -> EpisodeResult:
@@ -106,10 +107,8 @@ def _run(seed: int) -> EpisodeResult:
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policies={
-            "robot_a": SinusoidPolicy(frequency_hz=1.5, amplitude=0.5),
-            "robot_b": RandomCombatPolicy(scale=0.2),
-        },
+        policy_a=SinusoidPolicy(frequency_hz=1.5, amplitude=0.5),
+        policy_b=RandomCombatPolicy(scale=0.2),
     )
     runner.run_episode(seed=seed)
 

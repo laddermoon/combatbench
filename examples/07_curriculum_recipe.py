@@ -144,8 +144,10 @@ class _RandomPolicy(Policy):
     def reset(self, seed: Optional[int] = None) -> None:
         self._rng = np.random.default_rng(seed)
 
-    def act(self, observation: Any) -> np.ndarray:
-        return (self._rng.standard_normal(self._action_dim) * 0.1).astype(np.float32)
+    def act(self, observation: Any, *, want_extra: bool = False):
+        return (
+            self._rng.standard_normal(self._action_dim) * 0.1
+        ).astype(np.float32), None
 
 
 def _policy_factory() -> Policy:

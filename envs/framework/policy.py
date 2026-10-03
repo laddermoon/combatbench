@@ -66,8 +66,8 @@ No ``__init__`` contract
 This ABC intentionally does **not** define ``__init__``. Subclasses are
 free to design their constructors however they want (load checkpoints,
 take hyperparameters, wire RNGs, decide deterministic-vs-stochastic
-behaviour — whatever). The :func:`load_policy` loader just calls
-``cls(**kwargs)`` with parsed query-string arguments; subclasses that
+behaviour — whatever). The :class:`PolicyBlueprint` loader just calls
+``cls(**kwargs)`` with the blueprint's ``config`` mapping; subclasses that
 want to participate should accept ``**kwargs`` so unknown parameters
 don't crash construction.
 """

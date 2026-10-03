@@ -96,10 +96,8 @@ def _demo_sequential(blueprint: EnvBlueprint, out_dir: Path, n_episodes: int = 3
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policies={
-            "robot_a": _robot_a_factory(),
-            "robot_b": _robot_b_factory(),
-        },
+        policy_a=_robot_a_factory(),
+        policy_b=_robot_b_factory(),
     )
 
     print(f"\n[1] Sequential record — {n_episodes} episodes ...")

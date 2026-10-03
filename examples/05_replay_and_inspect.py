@@ -62,13 +62,19 @@ def _make_live_video(base_seed: int, episode_index: int, out_path: Path) -> None
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policies={
-            "robot_a": MockActorWithExtras(noise_scale=0.1),
-            "robot_b": MockActorWithExtras(noise_scale=0.1),
-        },
+        policy_a=MockActorWithExtras(noise_scale=0.1),
+        policy_b=MockActorWithExtras(noise_scale=0.1),
     )
 
-    runner.run_episode(seed=base_seed + episode_index)
+    # Reproduce the same per-episode seed example 04 used: the
+    # episode_index-th SeedSequence.spawn child of base_seed (child index is
+    # deterministic and independent of the spawned count).
+    seed = int(
+        np.random.SeedSequence(base_seed)
+        .spawn(episode_index + 1)[episode_index]
+        .generate_state(1, dtype=np.uint32)[0]
+    )
+    runner.run_episode(seed=seed)
 
 
 def main() -> None:

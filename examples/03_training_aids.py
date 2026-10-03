@@ -219,10 +219,8 @@ def main() -> None:
 
     runner = EpisodeRunner(
         runtime=runtime,
-        policies={
-            "robot_a": RandomCombatPolicy(scale=0.3),
-            "robot_b": RandomCombatPolicy(scale=0.3),
-        },
+        policy_a=RandomCombatPolicy(scale=0.3),
+        policy_b=RandomCombatPolicy(scale=0.3),
     )
 
     print("\n[Running 4 episodes to观察课程扰动与早停是否生效]\n")
@@ -234,8 +232,13 @@ def main() -> None:
     base_seed = 100
     num_episodes = 4
 
-    for ep in range(num_episodes):
-        seed = base_seed + ep  # Simple seed derivation
+    # Per-episode seeds from SeedSequence.spawn — never base_seed + i
+    # (see envs/framework/SEED.md).
+    episode_seeds = [
+        int(ss.generate_state(1, dtype=np.uint32)[0])
+        for ss in np.random.SeedSequence(base_seed).spawn(num_episodes)
+    ]
+    for ep, seed in enumerate(episode_seeds):
         options = push_schedule(ep)
         runner.run_episode(seed=seed, options=options)
 
@@ -287,10 +290,8 @@ def main() -> None:
     )
     EpisodeRunner(
         runtime=runtime2,
-        policies={
-            "robot_a": RandomCombatPolicy(scale=0.1),
-            "robot_b": RandomCombatPolicy(scale=0.1),
-        },
+        policy_a=RandomCombatPolicy(scale=0.1),
+        policy_b=RandomCombatPolicy(scale=0.1),
     ).run_episode(seed=0)
 
     print("\nDone. 下一步：examples/04_collect_rollouts.py 看怎么并行、可复现地灌数据。")
