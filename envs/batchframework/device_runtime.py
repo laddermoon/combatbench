@@ -362,8 +362,20 @@ class BatchRuntime:
         ep = st.episode
 
         self.sync_stats["term_barrier"] += 1
+        # W1 融合快路径：单 bool(.any()) 覆盖全部提议来源——
+        # request_termination 写入的 agent_done、直写兼容口
+        # terminated_flag / reset_request。有提议才进慢路径（此时
+        # 内部检查次数无所谓——真实终止每 episode 至多几次）。
+        running_valid = ep.world_running & ep.slot_valid
+        pending = ((ep.reset_request | ep.terminated_flag
+                    | ep.agent_done.all(dim=-1)) & running_valid)
+        self.sync_stats["term_barrier_syncs"] += 1
+        if not bool(pending.any()):
+            self.barrier_time += _time.perf_counter() - _t0
+            return
+
         # reset_request → 等价 CPU reset-while-active：对全员提 "abandoned"
-        rr = ep.reset_request & ep.world_running & ep.slot_valid
+        rr = ep.reset_request & running_valid
         self.sync_stats["term_barrier_syncs"] += 1
         if bool(rr.any()):
             rr_ids = torch.nonzero(rr, as_tuple=False).squeeze(-1)
@@ -379,7 +391,7 @@ class BatchRuntime:
         # env 结束 = 全 agent done | env 级 flag 直写（插件兼容口）
         # ——仅限 RUNNING 行；ENDED/FAILED 不重复触发。
         newly = ((ep.agent_done.all(dim=-1) | ep.terminated_flag)
-                 & ep.world_running & ep.slot_valid)
+                 & running_valid)
         self.sync_stats["term_barrier_syncs"] += 1
         if not bool(newly.any()):
             self.barrier_time += _time.perf_counter() - _t0

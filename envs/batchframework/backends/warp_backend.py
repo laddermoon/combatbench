@@ -23,6 +23,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional, Sequence
 
+import os
+
 import numpy as np
 import torch
 
@@ -161,6 +163,14 @@ class WarpBackend:
         self._pd = None               # WarpPDControl
         self._views = None            # dict[str, torch.Tensor] 零拷贝视图
         self._torch_device = torch.device(device)
+        # E7-W2b CUDA Graph：无回调 advance 整段图化。
+        # CB_WARP_GRAPH=0 可关（A/B 对照/排障）。图按 (n_substeps,
+        # control 身份) 缓存；initialize() 重建 mjw.Data 后失效。
+        self._use_graph = os.environ.get("CB_WARP_GRAPH", "1") != "0"
+        self._graph_broken = False    # 捕获失败一次性回退 eager
+        self._graphs: Dict[Any, Any] = {}
+        self._graph_stream = None     # (torch.Stream, wp.Stream) 保活
+        self.graph_stats = {"capture": 0, "replay": 0, "capture_fail": 0}
 
         if pd_statics is not None:
             self._pd = WarpPDControl(self, pd_statics)
@@ -280,6 +290,8 @@ class WarpBackend:
                 self._model, mjd0, nworld=B,
                 nconmax=self._nconmax_per_world,
                 njmax=self._njmax_per_world)
+            # 图绑死旧 Data 的 buffer 地址——initialize 后全部作废
+            self._graphs.clear()
         d = self._wdata
         # pending wrench 缓冲必须先于 views() 存在（视图登记其指针）
         if self._ext_dev is None:
@@ -367,6 +379,13 @@ class WarpBackend:
         # ScopedStream：warp kernel（control/mjw.step）绑到 torch 当前流，
         # 与 torch 侧 xfrc 组合（zero_/add_）严格有序。
         with wp.ScopedStream(wp.stream_from_torch()):
+            if pre_step is None and post_step is None:
+                # E7-W2b：无回调路径走 CUDA Graph——mjw 求解器的
+                # capture_while 在捕获态转 device 侧 while-node。
+                if self._try_graph(n_substeps, control):
+                    self._sched_dev = None
+                    v["xfrc_sched"] = None
+                    return
             for i in range(n_substeps):
                 if pre_step is not None:
                     pre_step(i)
@@ -387,6 +406,76 @@ class WarpBackend:
             v["qfrc_applied"].zero_()
         self._sched_dev = None
         v["xfrc_sched"] = None
+
+    # ------------------------------------------------------------------
+    # E7-W2b CUDA Graph（无回调 advance 的整段图化）
+    # ------------------------------------------------------------------
+    def _advance_inner(self, n_substeps: int, control=None) -> None:
+        """``advance`` 的无回调主体——供图捕获复用；调用方负责流上下文。"""
+        mjw, d = self._mjw, self._wdata
+        v = self.views()
+        xf, pend = v["xfrc_applied"], v["xfrc_pending"]
+        for i in range(n_substeps):
+            if control is not None:
+                control.apply(v)
+            xf.zero_()
+            if i == 0:
+                xf.add_(pend)
+            mjw.step(self._wmodel, d)
+        xf.zero_()
+        pend.zero_()
+        v["qfrc_applied"].zero_()
+
+    def _graph_capture(self, n_substeps: int, control):
+        """在专用捕获流上录一段 advance 块。
+
+        捕获期必须流稳定：``advance`` 内层的
+        ``ScopedStream(stream_from_torch())`` 每次新建 wp.Stream
+        wrapper——``device.captures`` 按 Stream 对象身份索引，
+        换流会让 mjw 的 ``capture_while`` 退化为 host 轮询（捕获期
+        非法）。故捕获用单一 wstream + torch side-stream 双上下文，
+        且走不经 ScopedStream 的 ``_advance_inner``。
+        """
+        wp = self._wp
+        if self._graph_stream is None:
+            s = torch.cuda.Stream(device=self._torch_device)
+            self._graph_stream = (s, wp.stream_from_torch(s))
+        s, wstream = self._graph_stream  # 保活：graph 绑定该流地址
+        with torch.cuda.stream(s), wp.ScopedStream(wstream):
+            with wp.ScopedCapture(device=self._device_str,
+                                  stream=wstream) as cap:
+                self._advance_inner(n_substeps, control)
+        return cap.graph
+
+    def _try_graph(self, n_substeps: int, control) -> bool:
+        """无回调 advance 的图化执行。返回 False 时走调用方的 eager 路径。
+
+        约束（如实降级而非硬撑）：
+        - 子步外力表（``xfrc_sched`` 非 None）：sched 由调用方每次新
+          建张量上传，图重放会读捕获时的旧地址——暂走 eager。
+        - CUDA 图捕获失败：记 graph_broken，后续永久走 eager（一次
+          性回退，不逐调用重试）。
+        - 语义等价性已由 spike 验证（eager-vs-graph 差 ≈ mjw 自身
+          run-to-run 噪声，见 E7_BASELINE/W2a 记录）。
+        """
+        if (not self._use_graph or self._graph_broken
+                or self._wdata is None or self._sched_dev is not None):
+            return False
+        key = (n_substeps, 0 if control is None else id(control))
+        g = self._graphs.get(key)
+        if g is None:
+            try:
+                g = self._graph_capture(n_substeps, control)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                self._graph_broken = True
+                return False
+            self._graphs[key] = g
+            self.graph_stats["capture"] += 1
+        self._wp.capture_launch(g, stream=self._wp.stream_from_torch())
+        self.graph_stats["replay"] += 1
+        return True
 
     def capture(self, mask: torch.Tensor,
                 level: SnapshotLevel = SnapshotLevel.INTEGRATION
