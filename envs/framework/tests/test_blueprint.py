@@ -21,7 +21,7 @@ from envs.framework.blueprint import ClassSpec, EnvBlueprint, _resolve_class
 from envs.framework.common_plugins import TimeoutPlugin, VideoRecorderPlugin
 from envs.framework.env_runtime import EnvRuntime
 from envs.framework.plugin import BasePlugin
-from envs.framework.recorder import EpisodeBufferRecorder
+from envs.framework.recorder import PostActionRecorder
 from envs.framework.observer_plugin import BaseObserverPlugin
 
 # Re-import MockSimulator from conftest indirectly via fixture.
@@ -156,7 +156,7 @@ class TestFiltering:
         assert timeout_plugins[0].max_steps == 42
 
     def test_recorders_never_appear_in_blueprint(self, mock_simulator):
-        recorder = EpisodeBufferRecorder()
+        recorder = PostActionRecorder()
         runtime = EnvRuntime(
             simulator=mock_simulator,
             recorders=[recorder],
@@ -175,7 +175,7 @@ class TestBuildExtras:
     def test_build_accepts_recorders(self, mock_simulator):
         runtime = EnvRuntime(simulator=mock_simulator)
         blueprint = runtime.to_blueprint()
-        recorder = EpisodeBufferRecorder()
+        recorder = PostActionRecorder()
         new_runtime = blueprint.build(recorders=[recorder])
         assert recorder in new_runtime.recorders
 

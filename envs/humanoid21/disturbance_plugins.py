@@ -1270,7 +1270,7 @@ class EpisodeEndCaptureObserver(BaseRuntimeUnit):
     """在每个 action step 的 ``on_post_action_step`` 中直接从
     ``ctx.accessor`` 读取 core_state + observation，并覆盖 ``self._output``。
 
-    ``EpisodeBufferRecorder`` 只在 ``on_post_action_step`` 时调用
+    recorders 只在 ``on_post_action_step`` 时调用
     ``get_output()`` 缓存帧，因此必须在此 hook 中写入（不能用
     ``on_post_episode``，因为 recorder 不会在该 hook 中抓 observer
     outputs）。每步覆盖确保最后一帧保存的是 episode-end 状态。

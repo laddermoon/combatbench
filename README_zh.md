@@ -51,7 +51,7 @@ CombatBench 是一个基于 MuJoCo 的开源人形机器人对战仿真平台：
 - 实例：96 维观测构造器、8 个奖励模块（`cross_support` / `damage` / `follow_opponent` 等）、平衡分析调试器
 
 **`PostActionRecorder`**（录制器）— 第三类运行时钩子，和插件平级但本质不同：纯副作用，不修改仿真状态也不产出被 runtime 消费的输出。在每步动作后记录 pre-action 观测、action、post-action observer outputs，形成完整的 $(s_t, a_t, s'_{t+1})$ 转移快照。
-- 实例：`BaseFrameRecorder`（落盘格式：每步 PNG 图像 + JSON 状态，含 manifest 和 index，足以确定性回放每一次 `IDataAccessor` 读取）、`EpisodeBufferRecorder`（内存缓存，供训练器直接消费）
+- 实例：`BaseFrameRecorder`（落盘格式：每步 PNG 图像 + JSON 状态，含 manifest 和 index，足以确定性回放每一次 `IDataAccessor` 读取）
 - 配套 `ReplaySimulator`：实现 `BaseSimulator` 接口，从录制文件回放——observer / plugin / 训练代码无需修改即可在录制数据上重跑，这让"录制 → 逐帧检查 → 定位问题"形成闭环
 
 世界插件和观测插件是**正交的两条扩展轴**：要改规则（比如加犯规系统）加世界插件；要改奖励或观测编码加观测插件，互不影响。录制器则是独立于这两者的第三轴——负责把训练过程中的关键 episode 固化下来供调试和回放。

@@ -51,7 +51,7 @@ The framework is built around a set of explicit abstract interfaces. Core interf
 - Instances: 96-dim observation constructor, 8 reward modules (`cross_support` / `damage` / `follow_opponent` etc.), balance analysis debugger
 
 **`PostActionRecorder`** (recorder) — third type of runtime hook, peer-level with plugins but fundamentally different: pure side-effect, does not modify simulation state or produce outputs consumed by the runtime. Records pre-action observation, action, post-action observer outputs after each step, forming a complete $(s_t, a_t, s'_{t+1})$ transition snapshot.
-- Instances: `BaseFrameRecorder` (disk format: per-step PNG image + JSON state, with manifest and index, sufficient for deterministic replay of every `IDataAccessor` read), `EpisodeBufferRecorder` (in-memory buffer for trainer consumption)
+- Instances: `BaseFrameRecorder` (disk format: per-step PNG image + JSON state, with manifest and index, sufficient for deterministic replay of every `IDataAccessor` read)
 - Companion `ReplaySimulator`: implements `BaseSimulator` interface, replays from recording files — observer / plugin / training code can re-run on recorded data without modification, closing the loop of "record → frame-by-frame inspection → problem diagnosis"
 
 World plugins and observer plugins are **orthogonal extension axes**: to change rules (e.g., add a foul system) add a world plugin; to change rewards or observation encoding add an observer plugin — they do not interfere. Recorders are a third axis independent of both — responsible for persisting key episodes during training for debugging and replay.

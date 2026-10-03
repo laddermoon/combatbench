@@ -1,8 +1,7 @@
 """``EpisodeRecorder``: post-action recorder producing one :class:`Episode`.
 
 See ``baseline/common/rollout/DESIGN.md`` §3 for scope and rationale.
-Mirrors :class:`envs.framework.recorder.EpisodeBufferRecorder` for the
-per-step buffering, but adds:
+Buffers the raw per-step ``PostActionRecorder`` frame data, and adds:
 
 * Captures ``final_observation`` (``obs_{T+1}``) on ``on_post_episode``
   by reading ``ctx.accessor.get_observation()`` so RL bootstrap targets
@@ -24,11 +23,7 @@ from .episode import Episode
 
 
 def _snapshot(value: Any) -> Any:
-    """Allocation-light deep-ish copy preserving ndarrays.
-
-    Same semantics as :func:`envs.framework.recorder._snapshot`, copied
-    locally to avoid importing a private helper.
-    """
+    """Allocation-light deep-ish copy preserving ndarrays."""
     if isinstance(value, np.ndarray):
         return np.array(value, copy=True)
     if isinstance(value, dict):

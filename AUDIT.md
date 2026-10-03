@@ -169,7 +169,7 @@ passed；基线仍是 157+3+5，口径不变）。
 - `replay.py` —— ReplaySimulator 实现完整：read-only 违例抛
   `ReplayReadOnlyError`（`set_action` 刻意静默是文档化契约）、
   manifest_version>=2 门控、单集/目录两种模式、dtype 再水化。
-- `recorder.py` —— `EpisodeBufferRecorder`/`BaseFrameRecorder` 职责清晰，
+- `recorder.py` —— `PostActionRecorder`/`BaseFrameRecorder` 职责清晰，
   on-disk schema（manifest_version=2）与 replay.py 对齐。
 - `recorder_viewer.py` + `_recorder_viewer.html` —— bundled asset 存在，
   HTTP viewer 正常。
@@ -200,8 +200,9 @@ passed；基线仍是 157+3+5，口径不变）。
   `BaseFrameRecorder` 用它做文件名 → `step_XXXXX.json/png` **被覆盖**，
   落盘录制少一帧。
 - 影响：KO/倒地这类在物理循环中产生的终止，其"致命一击"那一步的
-  reward observer 输出不会被计入；`EpisodeBufferRecorder`（训练侧数据来源）
-  最后一帧 observer_outputs 是旧值。
+  reward observer 输出不会被计入；`EpisodeRecorder`（训练侧数据来源，
+  `baseline/framework/rollout/episode_recorder.py`）最后一帧
+  observer_outputs 是旧值。
 - 证据：`tests/test_audit_terminal_frame.py`（2 passed）：
   kill_at=15, phy_steps=10 → recorder 收到 2 帧，observer 只刷新 1 次，
   第二帧 observer_outputs == 第一步的旧值；对照组（TimeoutPlugin 在
@@ -266,8 +267,6 @@ passed；基线仍是 157+3+5，口径不变）。
   属考古资料，建议保留但标记。
 
 **P-FW-8（小问题）**
-- `EpisodeBufferRecorder.get_episode_data` docstring 的 frame schema
-  漏列了实际会写入的 `"observation"` 键。
 - `EnvBlueprint.from_runtime` 遇多个 TimeoutPlugin 时后者静默覆盖
   `max_steps_from_plugin`（边界情况，通常不触发）。
 - `EnvBlueprint.load` 不做 `${DIR}` 替换，而 `PolicyBlueprint.load` 做

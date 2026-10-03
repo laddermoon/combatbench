@@ -403,7 +403,7 @@ class Episode:
     ) -> "Episode":
         """Build an :class:`Episode` from raw recorder frames.
 
-        ``frames`` follows the :class:`EpisodeBufferRecorder` shape
+        ``frames`` follows the post-action recorder frame shape
         (one dict per ``on_post_action_step`` call): each must have
         ``observation``, ``action``, ``observer_outputs``, optionally
         ``action_extras``.
