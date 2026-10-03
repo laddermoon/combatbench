@@ -45,7 +45,7 @@ The framework is built around a set of explicit abstract interfaces. Core interf
 **`SimContext`** — shared blackboard across plugins. Stores `metrics` (health, damage, counts), `events` (hits, out-of-bounds), `termination_proposals` (timeout / ko / foul). Plugins communicate through it rather than calling each other directly.
 
 **`BasePlugin`** (world plugin) — referee for world rules, with 6 lifecycle hooks (pre/post episode, pre/post action step, pre/post physics step). Declare `require_mutator=True` to write physics.
-- Instances: `CombatScoringPlugin` (HP deduction), `NonFallConstraintPlugin` (fall prevention), `InitialStatePerturbationPlugin` (initial perturbation), `ContinuousWindPlugin` (wind), `InstantPushPlugin` (instant push), `TimeoutPlugin` (timeout termination)
+- Instances: `CombatScoringPlugin` (HP deduction), `FrozenRobotPlugin` (frozen robot), `InitialStatePerturbationPlugin` (initial perturbation), `ContinuousWindPlugin` (wind), `InstantPushPlugin` (instant push), `TimeoutPlugin` (timeout termination)
 
 **`BaseObserverPlugin`** (observer plugin) — read-only output constructor, builds observations, rewards, debug signals from `IDataAccessor`. Dispatched in batch by the internal `_ObserverDispatcherPlugin`, with only one context switch per lifecycle.
 - Instances: 96-dim observation constructor, 8 reward modules (`cross_support` / `damage` / `follow_opponent` etc.), balance analysis debugger

@@ -45,7 +45,7 @@ CombatBench 是一个基于 MuJoCo 的开源人形机器人对战仿真平台：
 **`SimContext`** — 跨插件共享的黑板。存放 `metrics`（血量、伤害、计数）、`events`（命中、越界）、`termination_proposals`（timeout / ko / foul），插件间通过它通信而非直接互调。
 
 **`BasePlugin`**（世界插件）— 世界规则的裁判，拥有 6 个生命周期钩子（episode 前后、action step 前后、physics step 前后），声明 `require_mutator=True` 即可写物理。
-- 实例：`CombatScoringPlugin`（HP 扣分）、`NonFallConstraintPlugin`（防摔约束）、`InitialStatePerturbationPlugin`（初始扰动）、`ContinuousWindPlugin`（风力）、`InstantPushPlugin`（瞬时推力）、`TimeoutPlugin`（超时终止）
+- 实例：`CombatScoringPlugin`（HP 扣分）、`FrozenRobotPlugin`（冻结机器人）、`InitialStatePerturbationPlugin`（初始扰动）、`ContinuousWindPlugin`（风力）、`InstantPushPlugin`（瞬时推力）、`TimeoutPlugin`（超时终止）
 
 **`BaseObserverPlugin`**（观测插件）— 只读输出构造器，从 `IDataAccessor` 构建观测、奖励、调试信号。由内部 `_ObserverDispatcherPlugin` 统一批量调度，每个生命周期只做一次上下文转换。
 - 实例：96 维观测构造器、8 个奖励模块（`cross_support` / `damage` / `follow_opponent` 等）、平衡分析调试器

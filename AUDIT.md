@@ -2127,3 +2127,31 @@ view 内加 epoch 校验）。
 - `pytest envs/framework/tests/` → **227 passed**。
 - `envs/humanoid21/blueprint.yaml`（parameterized）load+materialize 正常。
 - 三个模块独立 import 无环。
+
+## [2026-10-01] P-H21-3 `NonFallConstraintPlugin` 死插件删除
+
+**对象**：`envs/humanoid21/plugins.py`、`README.md`、`README_zh.md`
+**类别**：修复执行（用户裁决"插件删掉"）
+
+### 处置
+
+- 删除 `NonFallConstraintPlugin` 类（plugins.py:22-110，89 行）：
+  按旧版 `static_data['robot_info']`/`norm_params` schema 写的遗留，
+  当前 schema 两键皆无 → 恒 no-op 且不报错，属 fail-silent 典型。
+- 连带清理：模块 docstring 条目、`from scipy... import Rotation as R`
+  （该 import 全文件仅此类使用；`json`/`os`/`time` 仍被
+  `CombatScoringPlugin` 使用保留）。
+- `README.md`/`README_zh.md` 插件实例清单：
+  `NonFallConstraintPlugin` → `FrozenRobotPlugin`（同文件现存插件）。
+- `envs/humanoid21/REVIEW_SUMMARY.md`（gitignored 历史复盘）保留不动——
+  它记录的是复盘当时的事实。
+- `CAPABILITY_LEDGER.md` 该行状态 UNSUPPORTED → REMOVED。
+
+### 验证
+
+- 引用排查：删除后全仓 `NonFallConstraint` 仅剩 gitignored
+  REVIEW_SUMMARY 与本审计记录；**无蓝图、无代码、无测试引用**。
+- `pytest envs/framework/tests/ envs/humanoid21/tests/ -q` →
+  **274 passed**（227 + 47）。
+- `python3 -c "import envs.humanoid21.plugins"` 正常，
+  导出 `CombatScoringPlugin`/`FrozenRobotPlugin`。

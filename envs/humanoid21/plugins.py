@@ -2,9 +2,8 @@
 Humanoid21 战斗仿真插件
 
 包含以下功能插件：
-1. NonFallConstraintPlugin - 防摔倒约束
-2. CombatScoringPlugin - 战斗计分与KO判断（使用新的 combat_contacts 接口）
-3. FrozenRobotPlugin - 冻结机器人
+1. CombatScoringPlugin - 战斗计分与KO判断（使用新的 combat_contacts 接口）
+2. FrozenRobotPlugin - 冻结机器人
 
 按照 DATASPEC.md 规范使用数据接口。
 """
@@ -15,99 +14,8 @@ import time
 from typing import Any, Dict, Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 from envs.framework import BasePlugin, OBSERVER_DISPATCHER_PRIORITY
 from envs.framework.context import SimContext, TerminationReason
-
-class NonFallConstraintPlugin(BasePlugin):
-    """
-    防摔倒约束插件
-
-    在物理步之后，如果机器人的 pitch 或 roll 超过阈值，
-    会强行将其拉回阈值范围内，并重置角速度。
-    """
-    def __init__(self, pitch_limit_deg: float = 5.0, roll_limit_deg: float = 5.0):
-        self.pitch_limit_deg = pitch_limit_deg
-        self.roll_limit_deg = roll_limit_deg
-
-    def to_blueprint(self) -> Dict[str, Any]:
-        return {
-            "pitch_limit_deg": self.pitch_limit_deg,
-            "roll_limit_deg": self.roll_limit_deg,
-        }
-
-    @classmethod
-    def from_blueprint(cls, config: Dict[str, Any]) -> "NonFallConstraintPlugin":
-        return cls(**config)
-
-    @property
-    def name(self) -> str:
-        return "non_fall_constraint"
-
-    @property
-    def require_mutator(self) -> bool:
-        return True  # 声明写入权限
-
-    def on_post_phy_step(self, ctx: SimContext) -> None:
-        core_state = ctx.accessor.get_core_state()
-        static_data = ctx.accessor.get_static_data()
-        robot_info = static_data.get('robot_info', {})
-
-        changed = False
-
-        for robot_id in ['robot_a', 'robot_b']:
-            if robot_id not in robot_info:
-                continue
-
-            info = robot_info[robot_id]
-            root_qpos_adr = info['root_qpos_adr']
-            root_qvel_adr = info['root_qvel_adr']
-            norm_params = static_data[robot_id]['norm_params']
-
-            # 获取当前朝向 (四元数 [w,x,y,z])
-            root_rot = core_state[robot_id]['root_rot']
-            if np.linalg.norm(root_rot) < 1e-8:
-                continue
-
-            # 转换为欧拉角
-            try:
-                rot = R.from_quat([root_rot[1], root_rot[2], root_rot[3], root_rot[0]])
-                euler = rot.as_euler('xyz', degrees=True)
-            except ValueError:
-                continue
-
-            roll, pitch, yaw = euler
-            clamped_roll = float(np.clip(roll, -self.roll_limit_deg, self.roll_limit_deg))
-            clamped_pitch = float(np.clip(pitch, -self.pitch_limit_deg, self.pitch_limit_deg))
-
-            if not (np.isclose(roll, clamped_roll) and np.isclose(pitch, clamped_pitch)):
-                # 需要拉回：构建新的状态
-                new_state = {
-                    robot_id: {
-                        'root_pos': core_state[robot_id]['root_pos'].copy(),
-                        'root_rot': None,  # 下面设置
-                        'joint_pos_norm': core_state[robot_id]['joint_pos_norm'].copy(),
-                        'joint_vel_norm': core_state[robot_id]['joint_vel_norm'].copy(),
-                        'root_vel_local': core_state[robot_id]['root_vel_local'].copy(),
-                        'root_angular_vel_local': core_state[robot_id]['root_angular_vel_local'].copy(),
-                    }
-                }
-
-                # 计算新的四元数
-                clamped_rotation = R.from_euler('xyz', [clamped_roll, clamped_pitch, yaw], degrees=True)
-                clamped_xyzw = clamped_rotation.as_quat()
-                new_state[robot_id]['root_rot'] = np.array([
-                    clamped_xyzw[3], clamped_xyzw[0], clamped_xyzw[1], clamped_xyzw[2]
-                ], dtype=np.float32)
-
-                # 清零水平线性速度
-                new_state[robot_id]['root_vel_local'] = np.zeros(3, dtype=np.float32)
-
-                ctx.mutator.set_core_state(new_state)
-
-                # 记录拉回次数
-                ctx.metrics[f'{robot_id}_clamp_count'] = ctx.metrics.get(f'{robot_id}_clamp_count', 0) + 1
-                changed = True
 
 
 class CombatScoringPlugin(BasePlugin):

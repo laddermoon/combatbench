@@ -36,7 +36,7 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 | `Humanoid21Simulator` (MuJoCo backend, 96-dim obs, normalized PD, broadcast cam) | envs/humanoid21 | STABLE (caveats) | 43 tests pass; blueprint round-trip | DATASPEC/CONTROLSPEC/OBSERVATION_zh | **P-H21-1** stale contacts cache (feet_forces lag); seed arg unused; render failure → black frame |
 | `CombatScoringPlugin` (per-substep damage, KO, score log) | envs/humanoid21 | STABLE | exercised by matches/experiments | plugins.py docstring | — |
 | `CombatScoringObserver` | envs/humanoid21 | USABLE (bug) | — | — | **P-H21-2**: reads `metrics['events']` (never written) → events/step_hit_events/step_damage_taken always empty |
-| `NonFallConstraintPlugin` | envs/humanoid21 | UNSUPPORTED | — | — | **P-H21-3**: reads nonexistent `static_data['robot_info']`/`norm_params` → silent no-op; zero references |
+| ~~`NonFallConstraintPlugin`~~ | envs/humanoid21 | REMOVED | — | — | **P-H21-3** resolved: dead plugin deleted (was silent no-op on stale static_data schema); README lists `FrozenRobotPlugin` instead |
 | `FrozenRobotPlugin` | envs/humanoid21 | USABLE | — | — | — |
 | Disturbance family (12 classes: RandomPush/InitPerturb/Wind/HeadStrike/RandomFallen/Impulse/ConstantForce/HeightLimit/StateBank/…) | envs/humanoid21 | USABLE | referenced by live exp_standup*/exp_step experiments | — | per-plugin maturity varies; not individually tested |
 | `Humanoid21BalanceAnalysisObserver` (CoM/ankle support analysis + plan-view render) | envs/humanoid21 | USABLE | test_balance_analysis.py | — | heavy compute; visualization path |
