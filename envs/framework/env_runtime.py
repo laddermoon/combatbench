@@ -152,17 +152,20 @@ class _RuntimeCore:
         self.ctx.mutator.set_action(action)
         self.ctx._revoke_mutator()
         self.plugin_manager.invoke("on_pre_action_step", self.ctx, allow_mutator=True)
-        if self._check_and_handle_termination():
-            return
-        for _ in range(self.phy_steps_per_action):
-            self.plugin_manager.invoke("on_pre_phy_step", self.ctx, allow_mutator=True)
-            if self._check_and_handle_termination():
-                return
-            self.simulator.physical_step()
-            self.ctx.physics_step += 1
-            self.plugin_manager.invoke("on_post_phy_step", self.ctx, allow_mutator=True)
-            if self._check_and_handle_termination():
-                return
+        if not self.ctx.all_agents_terminated:
+            for _ in range(self.phy_steps_per_action):
+                self.plugin_manager.invoke("on_pre_phy_step", self.ctx, allow_mutator=True)
+                if self.ctx.all_agents_terminated:
+                    break
+                self.simulator.physical_step()
+                self.ctx.physics_step += 1
+                self.plugin_manager.invoke("on_post_phy_step", self.ctx, allow_mutator=True)
+                if self.ctx.all_agents_terminated:
+                    break
+        # episode_step counts entered step() calls — unconditionally
+        # +1 per call, complete or terminated mid-loop. Whether the
+        # action physically executed is told by the physics_step
+        # delta on the frame, not by episode_step.
         self.ctx.episode_step += 1
         self.plugin_manager.invoke("on_post_action_step", self.ctx, allow_mutator=False)
         self._check_and_handle_termination()
