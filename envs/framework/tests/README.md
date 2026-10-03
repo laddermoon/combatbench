@@ -24,7 +24,7 @@
 | `test_sandbox.py` | accessor/mutator 沙箱白名单 | 通过 |
 | `test_strict_mode.py` | strict 模式异常语义 | 通过 |
 | `test_video_recorder.py` | VideoRecorderPlugin options 覆盖 + find_plugins | 通过 |
-| `test_audit_*.py`（4 个） | 审计探针：锁死已确认的缺陷行为（mutator 泄漏、终止帧、reset/recorder 缺口、video 路径污染） | 探针 |
+| `test_audit_*.py`（6 个） | 审计探针：`mutator_leak`/`terminal_frame`/`reset_recorder_gap`/`video_path_leak` 锁死已确认缺陷；`simulator_reach`/`fail_loud` 锁死已修复的回归（P-FW-4/P-FW-5） | 探针/回归 |
 
 > 已删除：`test_episode_runner.py`、`test_parallel_runner.py`——两者测试的是
 > runner 重构（`73fe8da3`）前的旧 API（`RolloutConfig`/`ObserverBinding`/

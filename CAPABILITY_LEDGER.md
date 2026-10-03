@@ -25,10 +25,10 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 | `EnvRuntime` + plugin lifecycle (accessor/mutator, 6 hooks, per-agent termination) | envs/framework | STABLE | pytest: permission/dispatch/lifecycle suites pass (157 total) | README, DESIGN.md, RESET.md | — |
 | Observer pipeline (`BaseObserverPlugin` + dispatcher) | envs/framework | STABLE | pytest: observer dispatch/ordering suites pass | README | — |
 | Recorder/replay (`PostActionRecorder`, `BaseFrameRecorder` v2, `ReplaySimulator`) | envs/framework | STABLE (caveat) | pytest: recorder lifecycle + replay suites pass | README | ~50KB/step derived_state footgun; no provenance metadata; **AUDIT P-FW-2**: mid-physics termination → terminal frame has stale observer_outputs + `step_XXXXX` filename collision (test-proven) |
-| `EpisodeRunner` (thin episode loop) | envs/framework | USABLE | runs; new behaviors untested | README | hold/want_extras/duck-type untested; stale test file exists |
-| `RoundRunner` / `MatchRunner` (round + match eval, CLI) | envs/framework | USABLE | CLI functional; core tests pass | README, CLAUDE.md | 3 stale tests for removed `videosave_path` API |
+| `EpisodeRunner` (thin episode loop) | envs/framework | USABLE | test_episode_runner_behaviors.py covers hold/want_extras/duck-type | README | — |
+| `RoundRunner` / `MatchRunner` (round + match eval, CLI) | envs/framework | USABLE | CLI functional; core tests pass | README, CLAUDE.md | — |
 | `EnvBlueprint` / `ParameterizedEnvBlueprint` (env as YAML) | envs/framework | USABLE | test_blueprint.py passes | README | — |
-| `Policy` ABC / `PolicyBlueprint` / `ParameterizedPolicyBlueprint` | envs/framework | USABLE | blueprint round-trip works | README, policy/README.md | stale test file for removed `call_policy`/`coerce_action` |
+| `Policy` ABC / `PolicyBlueprint` / `ParameterizedPolicyBlueprint` | envs/framework | USABLE | blueprint round-trip works; test_policy.py on new `(action, extra)` contract | README, policy/README.md | — |
 | `recorder_viewer` web viewer | envs/framework | USABLE | CLI + bundled viewer.html | README | — |
 | `ParallelRunner` (process pool) | envs/framework | LEGACY | — | gone | Removed in 73fe8da3; superseded by `baseline/framework/rollout` |
 | SAC training path (`baseline/framework/sac/`, `experiments_sac/`) | training | OUT-OF-SCOPE | — | — | Declared immature; not inventoried this round |
@@ -45,9 +45,10 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 
 ## Almost-Done List (priority candidates to finish)
 
-- ~~`envs/framework/tests/` stale tests~~ — **DONE**: now 216 pass / 0 fail /
-  0 collection errors (S1–S5 applied; dead-API test files removed, new
-  `test_episode_runner_behaviors.py` covers the thin-runner contract).
+- ~~`envs/framework/tests/` stale tests~~ — **DONE**: dead-API test files
+  removed, survivors migrated to new contracts, thin-runner behaviors pinned
+  by `test_episode_runner_behaviors.py` (S1–S8); currently 224 pass /
+  0 fail / 0 collection errors (AUDIT P-FW-6).
 - ~~`envs/framework/CONTEXT.md` stale~~ — **DONE**: rewritten against current
   API (S6).
 - ~~`episode_runner.py` docstring `parallel_runner` ref~~ — **DONE** (S7).

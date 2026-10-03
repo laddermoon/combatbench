@@ -2010,3 +2010,27 @@ view 内加 epoch 校验）。
 - `PYTHONPATH=. pytest envs/framework/tests/ -q` → **224 passed**
   （219 + 新测试 5 个）。
 - `git status` 仅涉及上述 4 个源文件 + 1 个新测试文件。
+
+## [2026-10-01] P-FW-6 过期测试处置 —— 状态复核结案
+
+**对象**：`envs/framework/tests/`
+**类别**：复核 + 收尾（用户指示"顺应新实现，没必要可删"）
+
+### 复核结论：P-FW-6 各子项均已由 S1–S8 落地，本次复核确认
+
+| 原问题 | 处置 | 现状 |
+|---|---|---|
+| `test_episode_runner.py` / `test_parallel_runner.py` collection error | 已删——测的是已删 API（`RolloutConfig`/`ObserverBinding`/`run_n_episodes`/`ParallelRunner`），无迁移价值 | 文件不存在，README 有删除说明 |
+| `test_policy.py` 测旧契约（`call_policy`/`coerce_action`/`act(obs)→array`） | 重写为 `(action, extra)` 契约 | 通过 |
+| `test_reset_chain.py` 引已删符号 | 改 `policy_a/policy_b` 构造，TestI3 改 recorder 比对，`run_n_episodes` 用例删 | 通过（I1–I6 不变式仍被守护） |
+| `test_seed.py` 引 `_EpisodeSeeds` 旧名/批量派生 | 改 `_EpisodeSeeds`，批量种子用例删（归 rollout 层） | 通过 |
+| `TestRoundRunnerVideoSavePath` 3 个 fail | 删失效部分，`find_plugins` 有效用例保留 | 通过 |
+| 薄 runner 新行为无覆盖 | `test_episode_runner_behaviors.py`（11 用例）：返回 None、hold/policy、want_extras、duck-type、close 语义 | 通过 |
+| `tests/README.md` 清单滞后 | 重写为全量文件表 + 删除说明 | 本次又校正一处：`test_audit_*` 4 个 → 6 个（补 `simulator_reach`/`fail_loud` 两个回归探针） |
+
+### 验证
+
+- `pytest envs/framework/tests/ -q` → **224 passed / 0 failed /
+  0 collection errors**。
+- `CAPABILITY_LEDGER.md` 三行过时备注（"untested"/"stale test file"）
+  已清除。
