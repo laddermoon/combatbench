@@ -1857,3 +1857,53 @@ CAPABILITY_LEDGER 历史条目。
   记录不改写（其测试清单表行提及 `coerce_action`/`call_policy` 属当时的
   事实描述）。
 - `baseline/framework/ppo/policies/todo/checkpoint.py`——归档代码注释。
+
+## [2026-10-01] P-FW-4 `ctx._simulator` 沙箱旁路 —— 使用者排查 + 封堵方案
+
+**对象**：`envs/framework/context.py:178`（`SimContext._simulator`）
+**类别**：排查 + 方案（用户确认"不是逃生口"）
+
+### 使用者排查（全仓 grep `ctx._simulator` / `accessor._simulator`）
+
+- **生产代码/实验/蓝图：零使用**。注册表内 30 个 experiments_ppo、
+  rewards/plugins/blueprints、rollout 层、batchframework——无一处通过
+  `ctx._simulator` 取裸后端。
+- **唯一使用群**：`baseline/humanoid21/balance_recover/gating/debug_*.py`
+  共 9 个调试脚本（debug_obs_compare / debug_time_track2 /
+  debug_snapshot_compare / debug_step_diverge / debug_deep_snapshot /
+  debug_ctrl_compare / debug_lifecycle / debug_obs_compare 等），
+  全是 balance_recover 调试战役期间的一次性诊断插件，拿
+  `ctx._simulator` 是为了读 `sim.data`（`qacc_warmstart`/`solver_niter`/
+  `ncon`/raw contacts）——**IDataAccessor 契约外的 MuJoCo 内部状态**，
+  属于合理的"框架没提供的诊断面"需求，不是恶意绕过。
+- **框架自身零消费**：`SimContext._simulator` 赋值后无任何框架代码读取
+  （`_RuntimeCore`/`EnvRuntime` 各自持有 simulator 引用），是纯粹的
+  暴露面。
+- `ReadOnlySimContext`（observer/recorder 侧）无此字段、
+  `_AccessorView`/`_MutatorView` 已名字混淆——**唯一未封堵的洞就是
+  `SimContext._simulator` 这一个属性**。
+
+### 封堵方案（待拍板）
+
+推荐 **方案 A：直接删除 `SimContext._simulator`**（最干净，符合"不是
+逃生口"的判定）：
+
+1. `context.py:178` 删 `self._simulator = simulator`（无内部消费，直接删，
+   连名字混淆都不用做）。
+2. 9 个 gating 调试脚本改为**harness 层持引用**：它们都自己 build
+   runtime，插件构造后可显式注入——
+   `plugin.sim = runtime.simulator`（EnvRuntime 有公开 `simulator` 属性），
+   插件钩子内用 `self.sim` 代替 `ctx._simulator`。每个脚本 ~3 行改动，
+   语义不变（诊断插件本来就在沙箱外受信，只是引用路径改到正确的层）。
+3. 新增审计测试 `test_audit_simulator_reach.py`：
+   断言插件钩子里 `ctx._simulator`/`ctx.accessor._simulator`/
+   `ctx.mutator._simulator`（只读钩 mutator=None 时）均不可达。
+4. DESIGN.md/CONTEXT.md 沙箱小节补一句"SimContext 不携带后端引用"。
+
+备选 **方案 B：名字混淆存 `self.__sim`**——与 `_AccessorView` 同款的
+"显式 opt-out" 约定。若将来确实需要受控的诊断级透传再开这个口子；
+但按"不是逃生口"的判定，A 更贴切（不留门）。
+
+关联：P-FW-9（`_MutatorView` 缓存引用跨钩子不失效）是同类沙箱问题的
+另一面——A 方案落地后建议一并处理（grant/revoke 改为生成新 view 或
+view 内加 epoch 校验）。
