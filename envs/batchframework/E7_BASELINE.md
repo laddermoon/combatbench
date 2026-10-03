@@ -104,6 +104,50 @@ basic_balance）**均无子步插件**，走的已是 hooks-off 路径；该成�
   行则退而求其次。
 - 接触聚合/通信优化按现数据无依据，暂缓。
 
+## 5.5 W1/W2b 落地后复测（`14d21f67`，同机同日；load~140 噪声大，量级为准）
+
+### W1（屏障融合单检查）
+
+| 指标 | 改动前 | 改动后 |
+|---|---|---|
+| term_barrier_syncs/collect（hooks-on） | 20,800（2/屏障） | **10,402（≈1/屏障 + 真实终止的慢路径）** |
+| hooks-off 每步屏障 | 2 次 × 2 sync | 2 次 × 1 sync |
+
+wall-time 收益在当前机器负载（load~142，其他租户占 CPU/GPU0）
+下淹没在噪声里——W1 的价值是**结构性减半**（sync 计数是硬指标），
+不是本轮可分辨的百分点。hooks-off 主路径 syncs 800→402/collect。
+
+### W2b（无回调 advance → CUDA Graph）
+
+| B | 基线 wall | 图化 wall | 基线 sub/s | 图化 sub/s | collect 加速 |
+|---|----------|----------|-----------|-----------|-------------|
+| 512 | 62.1s | 12.6s | 41,220 | **202,543** | **4.9×** |
+| 2048 | 67.4s | 21.3s | 151,847 | **480,515** | **3.2×** |
+
+- `physics_wall`：51.4s → **0.15s**（B=2048，25 子步×几十 kernel
+  的提交序列 → 单次 graph launch）。小批量收益更大（B=64 T=40
+  冒烟：step 14.1s→1.85s 量级）。
+- reset 连带受益：13.0s → 3.1s（摔倒初始化循环走同一 advance
+  路径，n=1 也有独立图）。
+- **B=2048 图化吞吐 480K env-sub/s 已超 CPU 生产参考 ~472K**——
+  且这是含契约层全开销的 collect 路径（不是裸探针）。
+- 语义等价性：spike 验证 eager-vs-graph 差（dqpos 3.7e-3）与 mjw
+  自身 run-to-run 噪声（6.0e-3）同量级；42 项 GPU 契约测试全绿。
+
+### 图化后的新瓶颈画像（B=2048, hooks off, 21.3s wall）
+
+| 段 | 时间 | 占比 | 性质 |
+|---|------|------|------|
+| obs_build | 14.0s | 66% | obs_builder torch 小算子序列——**新 F1** |
+| post_action hooks | 1.5s | 7% | observer/记录器写缓冲 |
+| physics_wall | 0.15s | <1% | graph replay 提交 |
+| reset | 3.1s | 15% | 摔倒初始化（已部分图化） |
+| policy + d2h + export | ~1.2s | 6% | — |
+
+下一个优化候选（W2 续）：obs_builder 的 torch 算子序列同样是
+launch-bound 形态——可评图化（obs 输出是固定形状张量，输入是
+固定 mjw 视图，理论上可并入同一图或独立图）或算子融合。
+
 ## 6. 已知限制
 
 - `hook_timing`/`physics_wall` 是 host 提交时间，非 GPU kernel
