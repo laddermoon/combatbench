@@ -167,8 +167,9 @@ class DeviceCtx:
           全部 agent 终止后才由屏障判为 ENDED
           （``all_agents_terminated`` 语义）。
         - reason 立即记入 ``term_history``（每 (agent, reason) 首次出现
-          记 (code, 当前 episode_step)；同 reason 去重、异 reason 保序、
-          已终止后再提出的新 reason 仍记录——CPU recorder 逐帧扫描语义）。
+          记 (code, 本步 1-based 帧序号 ``action_call_index``)；同
+          reason 去重、异 reason 保序、已终止后再提出的新 reason 仍
+          记录——CPU recorder 逐帧扫描语义）。
         - 自定义 reason 字符串经 ``reason_registry`` 分配确定性 code，
           原始字符串不丢失（导出端反查）。
         - env 是否 ENDED 由 phase 屏障判定（见
@@ -212,8 +213,10 @@ def _archive_reason(ep, env_ids: torch.Tensor, agent: int,
     """(env_ids, agent, code) 首次出现 → term_history 追加 (code, step)。
 
     同 code 去重（已存在不重复记）；超 ``term_history_k`` 置 overflow
-    标志（显式截断，不静默丢）。提出即归档——记录时刻 = 当前
-    episode_step（与 CPU recorder 帧扫描的提议时刻一致）。
+    标志（显式截断，不静默丢）。提出即归档——记录值 =
+    ``action_call_index``（步首即递增的 1-based 帧序号；在步内任意
+    提议点都等于 CPU recorder 在 ``on_post_action_step`` 扫描时读到
+    的 episode_step，即含端点边界 = 帧索引 + 1）。
     """
     K = ep.term_history_k
     hist = ep.term_history[env_ids, agent]              # (M,K,2)
@@ -226,7 +229,7 @@ def _archive_reason(ep, env_ids: torch.Tensor, agent: int,
         slots = ep.term_history_len[add, agent]
         ep.term_history[add, agent, slots, 0] = code
         ep.term_history[add, agent, slots, 1] = \
-            ep.episode_steps[add].to(torch.int32)
+            ep.action_call_index[add].to(torch.int32)
         ep.term_history_len[add, agent] += 1
 
 

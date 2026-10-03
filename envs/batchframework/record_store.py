@@ -49,6 +49,11 @@ class RecordStore:
         self.log_prob = {rid: torch.zeros(T, B, device=dev, dtype=f32)
                          for rid in io_schema.agent_ids}
         self.frame_valid = torch.zeros(T, B, dtype=bl, device=dev)
+        # 逐帧累计物理子步数（on_post_action_step 时快照
+        # ep.physics_steps）——Episode.physics_steps 的设备侧来源；
+        # 相邻帧差 = 该帧实际执行的物理子步数（0 = 退化帧）。
+        self.phys_steps = torch.zeros(T, B, dtype=torch.int32,
+                                      device=dev)
         self.env_term_step = torch.full((B,), -1, dtype=torch.int32,
                                         device=dev)
         self.final_obs: Dict[str, torch.Tensor] = {
@@ -76,7 +81,8 @@ class RecordStore:
             return sum(t.numel() * t.element_size() for t in d.values())
         total = _sum(self.obs) + _sum(self.act) + _sum(self.log_prob) \
             + _sum(self.final_obs)
-        total += self.frame_valid.numel() + self.env_term_step.numel() * 4
+        total += self.frame_valid.numel() + self.phys_steps.numel() * 4 \
+            + self.env_term_step.numel() * 4
         for bufs in self.obs_out.values():
             total += _sum(bufs)
         return int(total)
@@ -155,6 +161,10 @@ class RecordStore:
                 else:
                     buf[t, rows] = v[rows]
 
+    def write_phys_step(self, t: int, phys_steps: torch.Tensor) -> None:
+        """帧物理计数快照：``ep.physics_steps``（逐行累计子步数）。"""
+        self.phys_steps[t].copy_(phys_steps)
+
     def seal_rows(self, ids: torch.Tensor, ep, io) -> None:
         """本步新 ENDED 行：记 env_term_step + 捕获终止时刻 final_obs。
 
@@ -165,7 +175,9 @@ class RecordStore:
         fresh = ids[self.env_term_step[ids] < 0]
         if fresh.numel() == 0:
             return
-        self.env_term_step[fresh] = ep.episode_steps[fresh].to(torch.int32)
+        # 含端点边界 = 本步 1-based 帧序号（action_call_index 步首即
+        # 增——无论提议点在步内何处，都等于 CPU 的 records step）
+        self.env_term_step[fresh] = ep.action_call_index[fresh].to(torch.int32)
         for rid, obs in zip(self.schema.agent_ids, (io.obs_a, io.obs_b)):
             self.final_obs[rid][fresh] = obs[fresh]
         self._final_captured[fresh] = True

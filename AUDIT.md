@@ -190,28 +190,25 @@ passed；基线仍是 157+3+5，口径不变）。
 - 证据：`grep -rn get_termination_flags` 命中全部是文档，无一处实现。
 - 建议：全局替换为真实接口；这是"用户/AI 读文档照抄必炸"级问题。
 
-**P-FW-2（语义问题，已被测试证实）：物理步中途终止 → 终止帧 observer 输出陈旧 + 落盘帧文件名碰撞**
-- 现象：`_RuntimeCore.step` 在 `on_pre_phy_step`/`on_post_phy_step` 中
-  检测到全员终止时**提前 return**，跳过了 `on_post_action_step` 钩子，
-  因此 observer dispatcher 不会为这最后一步刷新 observer 输出。但
-  `EnvRuntime.step` 仍然触发 recorder 的 `on_post_action_step`——
-  recorder 收到的 `observer_outputs` 是**上一步的陈旧值**。
-- 次生问题：终止帧里 `ctx.episode_step` 未递增（与上一帧相同），
-  `BaseFrameRecorder` 用它做文件名 → `step_XXXXX.json/png` **被覆盖**，
-  落盘录制少一帧。
-- 影响：KO/倒地这类在物理循环中产生的终止，其"致命一击"那一步的
-  reward observer 输出不会被计入；`EpisodeRecorder`（训练侧数据来源，
-  `baseline/framework/rollout/episode_recorder.py`）最后一帧
-  observer_outputs 是旧值。
-- 证据：`tests/test_audit_terminal_frame.py`（2 passed）：
-  kill_at=15, phy_steps=10 → recorder 收到 2 帧，observer 只刷新 1 次，
-  第二帧 observer_outputs == 第一步的旧值；对照组（TimeoutPlugin 在
-  on_post_action_step 终止）行为正常。
-- 文档矛盾：`recorder.py` 模块 docstring 声称"recorders always run
-  after the observer dispatcher has refreshed"——物理中终止时不成立。
-- 建议：需决策——是设计意图（终止帧不做全量刷新）还是 bug；
-  至少要修 docstring 或让 `_RuntimeCore` 在早退前补一轮 observer 刷新。
-  文件名碰撞则需要 recorder 用单调序号而非 episode_step 命名。
+**P-FW-2（已解决——契约修订，`082187be` 起）：物理步中途终止 → 终止帧语义修订为合法终止 transition**
+- 原现象：`_RuntimeCore.step` 在 `on_pre_phy_step`/`on_post_phy_step` 中
+  检测到全员终止时提前 return，跳过 `on_post_action_step` 与
+  `episode_step += 1`——终止帧 observer 输出陈旧、`term_step` 排他截断
+  丢弃该帧、`BaseFrameRecorder` 文件名碰撞。
+- 裁决：**是契约缺陷**。终止帧四要素齐全（obs_t/action_t/终止态/done），
+  丢弃是实现事故不是设计——"action 导致终止"在 post_action 提出保留、
+  子步内提出被丢，同逻辑事件结果不同。
+- 修订后语义（详见 `envs/batchframework/TERMINAL_FRAME_PLAN.md`）：
+  - `episode_step` = step() 调用计数，无条件 +1 → records 值天然为
+    含端点边界，文件名碰撞随之消失；
+  - `on_post_action_step` 每进入步恰好触发一次、作用于步末态
+    （终止帧 = 终止态刷新值，observer 无需 post_episode 特判）；
+  - **退化帧**（pre_action/首子步 pre_phy 全员终止，physics delta=0，
+    action 未物理生效）仍记录在案但按 `agent_frame_boundary` 排除出轨迹；
+  - 终止 transition 的 reward 从此计入轨迹——reward 记账变化，
+    历史 run 与改后不可直接比（预期内）。
+- 验证：`envs/framework/tests/test_audit_terminal_frame.py` 已按新契约
+  重写断言。
 
 **P-FW-3（Policy 契约双轨并存，测试测的是已删除 API）**
 - 现状契约（policy.py + EpisodeRunner + 所有已部署 policy）：

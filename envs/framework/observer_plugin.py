@@ -48,7 +48,10 @@ class BaseRuntimeUnit(ABC):
     * :meth:`on_post_action_step` — refresh the unit's internal state from
       the current ``ctx``. The standard call pattern downstream is
       "step the env → call ``on_post_action_step`` (done by the
-      dispatcher) → read :meth:`get_output`".
+      dispatcher) → read :meth:`get_output`". It fires **once per entered
+      step, on the state the step ended at** — including steps terminated
+      inside the physics loop, where ``ctx`` describes the terminal state
+      (``all_agents_terminated`` may already be True).
     * :meth:`on_post_episode` — optional end-of-episode finalisation
       (final metrics, summary statistics, ...).
 

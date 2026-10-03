@@ -206,7 +206,7 @@ class BaseRuntimeUnit(ABC):
 - **`BaseObserverPlugin`** 继承自 `BaseRuntimeUnit`。
 - 它自身不是 `BasePlugin`，而是被内部 dispatcher 统一托管。
 - dispatcher 才是唯一挂到内部 runtime core 的只读插件。
-- dispatcher 的时机映射是固定的：观察者的 `on_pre_episode` / `on_post_action_step` / `on_post_episode` 分别对应内部 runtime core 的 `on_pre_episode` / `on_post_action_step` / `on_post_episode` 钩子；手动刷新走 `on_manual_refresh`。
+- dispatcher 的时机映射是固定的：观察者的 `on_pre_episode` / `on_post_action_step` / `on_post_episode` 分别对应内部 runtime core 的同名钩子；手动刷新走 `on_manual_refresh`。其中 `on_post_action_step` **对每个进入的 step() 恰好触发一次、作用于该步到达的最终状态**（含子步内终止态）——observer 无需为终止帧特判 `on_post_episode`。
 
 ### 6. 实现原则
 

@@ -109,3 +109,42 @@
 - 不改 `term_records` 既有 provenance 形状；
 - archive/todo 实验不迁移；
 - zero-frame episode 维持拒绝。
+
+## 实施落地记录（未提交，待 review）
+
+W1–W5 已全部落地。与计划相比的实现决定：
+
+- **`action_call_index` 复用为"本步 1-based 帧序号"**：步首即增
+  （`entered_i64`），`_archive_reason` 与 `seal_rows` 统一读它——
+  步内任意提议点都等于 CPU 记录帧扫描到的 `episode_step`；
+  `episode_steps` 仍在步尾无条件自增（步内读到上一步值，
+  CPU parity）。
+- **新增 pre-action 终止屏障**：`on_pre_batch_step` 后
+  `_consume_terminations()`——pre_action 全员终止的行不跑物理，
+  产生物理增量=0 的退化帧（CPU 同语义）。
+- **`physics_steps`/`time` 改逐子步记账**：`on_post_phy_step` invoke
+  前按 running mask 累加（CPU：physics_step++ 在终止检查前）；
+  `_pre` 回调内也补了 consume——pre_phy 提议的行不再多跑一个
+  子步（旧实现此处漏屏障，pre_phy 提议会被延迟一个子步才封存）。
+- **`_RecorderAdapter.on_post_episode` 删掉 `_t-1` 覆写**：旧写法
+  在子步屏障内 post_episode 先于 post_action 触发时会把值写到前一
+  帧（且 `_t=0` 时越界写到 T-1）；新契约下终止帧值=post_action
+  刷新值，post_action 写入已正确。
+- **RecordStore 新增 `phys_steps (T,B)` 列**，exporter 导为
+  `Episode.physics_steps`；`np_bufs` 缺 `phys` 键时回退 None
+  （测试/手写缓冲兼容）。
+- **序列化**：`physics_steps` 作为 v3 npz 的可选新增键——旧文件
+  无该键 → load 为 None → boundary 回退"全帧物理"假设；format
+  version 不升（双向兼容：旧代码 load 新文件会忽略多余键）。
+
+验证：
+
+- 258 项（framework + wave/device lifecycle/runtime/rollouter）+
+  66 项（wave/lifecycle 重跑）全过；717 项大回归中仅
+  `test_s1_provenance` 两个失败为本改动引入（SimpleNamespace mock
+  缺 `agent_frame_boundary`，已修）；其余 5 个失败在干净树上
+  复现（`test_trainer` resume_ctx/`test_critic_mlp` 模块缺失/
+  viewer collection error——既有问题）。
+- CPU 端到端核验：mid-physics KO → num_frames=2、records=(ko,2)、
+  physics_steps=[10,15]、boundary=2；pre_action 全员终止 →
+  num_frames=1、physics_steps=[0]、boundary=0（退化帧排除）。

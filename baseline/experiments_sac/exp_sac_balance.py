@@ -125,15 +125,10 @@ class SacBalance(CombatExperimentSACBase):
         if T_full == 0:
             return []
 
-        # Truncate at agent's termination step
+        # Truncate at agent's inclusive frame boundary
         records = episode.agent_termination_proposal_records.get(agent_id, ())
-        if records:
-            first_reason, term_step = records[0]
-            fell = first_reason.startswith("imbalance")
-            T = term_step if fell else T_full
-        else:
-            fell = False
-            T = T_full
+        fell = bool(records) and records[0][0].startswith("imbalance")
+        T = episode.agent_frame_boundary.get(agent_id, T_full)
 
         if T == 0:
             return []

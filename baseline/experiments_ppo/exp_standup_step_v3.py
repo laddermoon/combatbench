@@ -393,6 +393,11 @@ class StandupStepV3(CombatExperimentPPOBase):
         T_full = episode.num_frames
         if T_full == 0:
             return []
+        # Inclusive per-agent frame boundary (terminal frame kept,
+        # trailing degenerate frame excluded)
+        T = episode.agent_frame_boundary.get(agent_id, T_full)
+        if T == 0:
+            return []
 
         obs_all = episode.observations.get(agent_id)
         acts_all = episode.actions.get(agent_id)
@@ -409,9 +414,9 @@ class StandupStepV3(CombatExperimentPPOBase):
             episode.observer_outputs, phi4stage_key, "potential", T_full,
         )
         if phi4_arr is not None:
-            phi4_arr = phi4_arr[:T_full]
+            phi4_arr = phi4_arr[:T]
         else:
-            phi4_arr = np.zeros(T_full, dtype=np.float32)
+            phi4_arr = np.zeros(T, dtype=np.float32)
         phi4_arr = np.clip(phi4_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract φ_height (HeightPhiObserver "phi") ---
@@ -419,9 +424,9 @@ class StandupStepV3(CombatExperimentPPOBase):
             episode.observer_outputs, phi_height_key, "phi", T_full,
         )
         if phi_h_arr is not None:
-            phi_h_arr = phi_h_arr[:T_full]
+            phi_h_arr = phi_h_arr[:T]
         else:
-            phi_h_arr = np.zeros(T_full, dtype=np.float32)
+            phi_h_arr = np.zeros(T, dtype=np.float32)
         phi_h_arr = np.clip(phi_h_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Extract h_torso for phase determination ---
@@ -429,12 +434,12 @@ class StandupStepV3(CombatExperimentPPOBase):
             episode.observer_outputs, phi4stage_key, "h_torso", T_full,
         )
         if h_torso is not None:
-            h_torso = h_torso[:T_full]
+            h_torso = h_torso[:T]
         else:
-            h_torso = np.zeros(T_full, dtype=np.float32)
+            h_torso = np.zeros(T, dtype=np.float32)
 
         # --- Compute phase mask ---
-        balance_mask = self._compute_phase_mask(h_torso, T_full)
+        balance_mask = self._compute_phase_mask(h_torso, T)
         standup_mask = ~balance_mask
 
         # --- r_potential: dense reward, critic learns at all times ---
@@ -444,16 +449,16 @@ class StandupStepV3(CombatExperimentPPOBase):
         r_fall = (self.per_step_phi_coef * phi_h_arr).astype(np.float32)
 
         # --- Foot heights (saturated, non-negative) ---
-        h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)
-        h_right = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full)
+        h_left = self._extract_foot_field(episode, foot_key, "h_left_foot", T_full)[:T]
+        h_right = self._extract_foot_field(episode, foot_key, "h_right_foot", T_full)[:T]
         r_left = np.clip(h_left, 0.0, self.foot_height_clip).astype(np.float32)
         r_right = np.clip(h_right, 0.0, self.foot_height_clip).astype(np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
-        contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)
-        contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)
+        contact_l = self._extract_foot_field(episode, foot_key, "left_foot_contact", T_full)[:T]
+        contact_r = self._extract_foot_field(episode, foot_key, "right_foot_contact", T_full)[:T]
         w_left, w_right = self._compute_foot_weights_masked(
-            contact_l.astype(bool), contact_r.astype(bool), balance_mask, T_full,
+            contact_l.astype(bool), contact_r.astype(bool), balance_mask, T,
             h_left=h_left, h_right=h_right,
         )
 
@@ -485,12 +490,12 @@ class StandupStepV3(CombatExperimentPPOBase):
 
         # 轨迹来源由 dump capture 时用 obs 内容自动推断，实验不填 provenance。
         return [Trajectory(
-            obs=obs_all,
-            actions=acts_all,
+            obs=obs_all[:T],
+            actions=acts_all[:T],
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
+            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T),
             floor_weight=balance_mask.astype(np.float32),
         )]
 

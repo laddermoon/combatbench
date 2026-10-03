@@ -91,7 +91,13 @@ class BasePlugin:
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         """
-        [Timing]: After all physics steps corresponding to one action step have finished.
+        [Timing]: Fires exactly once per entered ``EnvRuntime.step()`` — on the
+            state the step reached when it ended. For a step terminated
+            mid-physics-loop this is the terminal state at proposal time;
+            ``episode_step`` has already been incremented (it counts entered
+            step calls, not completed steps) and ``all_agents_terminated`` may
+            already be True. Whether the action physically executed is told by
+            the frame's ``physics_step`` delta, not by this hook firing.
         [Responsibility]: Metric aggregation, termination proposals, reward computation.
         [Permission]: Read-only (ctx.mutator is None).
         """

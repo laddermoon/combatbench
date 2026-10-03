@@ -5,7 +5,10 @@ A ``PostActionRecorder`` is a side-effect-only observer invoked by
 ``BasePlugin`` instances, recorders:
 
 * Always run **after** the observer dispatcher has refreshed observer outputs,
-  so they see consistent per-step observer snapshots.
+  so they see consistent per-step observer snapshots. On a step terminated
+  inside the physics loop, ``on_post_action_step`` still fires once on the
+  terminal state, so the recorded observer outputs reflect that terminal
+  state rather than the previous frame's values.
 * Receive a pre-assembled mapping of observer outputs alongside the read-only
   ``SimContext``.
 * Must be pure side effects: they can write files, accumulate statistics, or

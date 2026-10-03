@@ -236,6 +236,9 @@ def _make_synthetic_episode(
             agent_id: {"explore_factor": np.zeros(T, dtype=np.float32)},
         },
         agent_termination_proposal_records=term_records,
+        agent_frame_boundary={
+            agent_id: (term_records[agent_id][0][1]
+                       if termination_reason else T)},
     )
 
 

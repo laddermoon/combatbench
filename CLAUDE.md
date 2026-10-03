@@ -138,8 +138,8 @@ class SimContext:
     metrics: Dict[str, Any]              # Shared metrics (HP, damage, counts)
     events: List[Any]                    # Instantaneous events (hits, fouls)
     termination_proposals: List[str]     # Episode termination requests
-    episode_step: int                    # Action-level step counter
-    physics_step: int                    # Physics-level step counter
+    episode_step: int                    # step() call counter (+1 per entered step, unconditional)
+    physics_step: int                    # Physics-level step counter (executed substeps only)
 
     def request_termination(self, reason: str) -> None:
         """Propose episode end with reason"""
@@ -161,7 +161,7 @@ World rule plugin with lifecycle hooks:
 | `on_pre_action_step` | Before action | ✓ | Action mapping, clamping |
 | `on_pre_phy_step` | Before physics step | ✓ | External disturbances |
 | `on_post_phy_step` | After physics step | ✓ | State constraints |
-| `on_post_action_step` | After action step | ✗ | Metrics, rewards, termination |
+| `on_post_action_step` | Once per entered step, on its final state (incl. mid-substep terminal) | ✗ | Metrics, rewards, termination |
 | `on_post_episode` | After episode ends | ✗ | Logging, aggregation |
 
 **Properties:**

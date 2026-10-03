@@ -119,7 +119,7 @@ class EpisodeNamespace:
     - ``request_termination`` **立即**写 ``agent_done``（同 phase 后续
       插件可见，CPU 同语义）、标记 ``term_pending``（本步提议观测位），
       并把 reason **立即归档**进 ``term_history``——每 (agent, reason)
-      首次出现记 (code, episode_step)，异 reason 保序、同 reason 去重、
+      首次出现记 (code, action_call_index)，异 reason 保序、同 reason 去重、
       已终止后再提出的新 reason 仍记录（CPU recorder 逐帧扫描等价）；
     - 自定义 reason 字符串经 ``reason_registry`` 分配确定性 code
       （≥6 按首见序），原始字符串不丢失；
@@ -151,8 +151,12 @@ class EpisodeNamespace:
     reset_request: torch.Tensor     # (B,) bool — 插件请求结束并复位该 env
 
     # --- 计数器（分离；不假定互相换算） ---
-    episode_steps: torch.Tensor     # (B,) i64 — 完成的 action step
-    action_call_index: torch.Tensor # (B,) i64 — episode 内 step() 调用序号
+    episode_steps: torch.Tensor     # (B,) i64 — 进入 step() 的无条件
+                                    # 调用计数（步尾自增；CPU
+                                    # ctx.episode_step 对齐——步内读到
+                                    # 的是上一步的值）
+    action_call_index: torch.Tensor # (B,) i64 — 本步 1-based 帧序号，
+                                    # 步首即增（提议归档/封存的边界值）
     physics_steps: torch.Tensor     # (B,) i64 — episode 内已执行物理子步
     substep_index: torch.Tensor     # (B,) i32 — 当前子步（仅子步循环内有效）
     time: torch.Tensor              # (B,) f32 — episode 内累计物理秒

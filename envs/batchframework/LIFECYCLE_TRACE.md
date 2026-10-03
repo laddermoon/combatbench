@@ -1,6 +1,7 @@
-# LIFECYCLE_TRACE — CPU 生命周期权威时序核对（E2-W0 产出）
+# LIFECYCLE_TRACE — CPU 生命周期权威时序核对（E2-W0 产出，终止帧契约修订后更新）
 
-**状态**：已核对（2026-02-20），与 `envs/framework/RESET.md` 规范交叉验证一致
+**状态**：已核对（2026-02-20），与 `envs/framework/RESET.md` 规范交叉验证一致；
+终止帧契约修订（`082187be`）后时序描述已同步更新。
 **核对对象**：`envs/framework/env_runtime.py`、`context.py`、`observer_plugin.py`、`episode_runner.py`、`common_plugins.py`、`baseline/framework/rollout/episode_recorder.py`、`episode.py`
 **用途**：E2 设备侧生命周期实现的**语义来源**。此处记的是 CPU 实测行为，不是愿望。
 
@@ -15,32 +16,36 @@ EnvRuntime.step
  3. observation = simulator.get_observation()       # ★ pre-action obs_t，先于一切
  4. _core.step({"robot_a":a,"robot_b":b})
      a. mutator.set_action(action)                  # runtime 自己写，非插件
-     b. on_pre_action_step(mutator按插件授予)        # 【屏障A】all_agents_terminated→提前return
+     b. on_pre_action_step(mutator按插件授予)        # 【屏障A】all_agents_terminated→跳过循环
      c. for s in range(S):                          # S = phy_steps_per_action
-          on_pre_phy_step(mutator)                  # 【屏障B】→提前return
+          on_pre_phy_step(mutator)                  # 【屏障B】→break
           simulator.physical_step()
           ctx.physics_step += 1                     # 只计实际执行的子步
-          on_post_phy_step(mutator)                 # 【屏障C】→提前return
-     d. ctx.episode_step += 1                       # ★ 子步循环完整跑完才+1
-     e. on_post_action_step(无mutator)              # dispatcher(1e6)先刷新observers
-        …                                           # 【屏障D】→_handle_termination
-     f. _handle_termination():                      # 仅当 all_agents_terminated
+          on_post_phy_step(mutator)                 # 【屏障C】→break
+     d. ctx.episode_step += 1                       # ★ 无条件——step() 调用计数
+     e. on_post_action_step(无mutator)              # ★ 恰好一次/进入的step，
+        …                                           #   作用于步末态（含终止态）；
+                                                  #   dispatcher(1e6)先刷新observers
+     f. _check_and_handle_termination():            # ★ 唯一终止处理点（屏障D）
           is_episode_active=False
-          on_post_episode(无mutator)                # ★ dispatcher先跑→observers.on_post_episode
+          on_post_episode(无mutator)                # dispatcher先跑→observers.on_post_episode
  5. _invoke_recorders("on_post_action_step", obs_t, extras)
-     # ★ 无条件执行——即便 core.step 提前 return（子步内终止）也记录一帧
+     # ★ 无条件执行——即便 core.step 因终止 break（子步内终止）也记录一帧
      # 帧内容: observation=obs_t(步骤3), action=simulator.get_action()(实际执行值),
-     #        observer_outputs=此刻的值(若env已结束→是on_post_episode之后刷新过的)
+     #        observer_outputs=步末态 post_action 刷新值（终止帧=终止态值）
      # 帧内顺带扫描 agent_termination_proposals → (reason, episode_step) 去重记录
  6. if ended: _invoke_recorders("on_post_episode")   # 捕获 final_obs=当前obs(未reset)
 ```
 
 ### 屏障语义（实测）
 
-- 终止检查点 = **5 处屏障**：post-pre_action、每子步 post-pre_phy、每子步 post-post_phy、post-post_action（结尾处不 return，正常收尾）。
+- 终止检查点 = **循环内只读检查（`all_agents_terminated`→break）+ 尾部统一
+  `_check_and_handle_termination`**：屏障位置仍为 pre_action 后、每子步
+  pre_phy 后、每子步 post_phy 后；差别是**检查本身不再触发 post_episode**——
+  post_episode 收敛到尾部 post_action 之后统一触发。
 - 触发条件**只有** `all_agents_terminated`；单 agent 终止不结束 env（env 继续跑，见 §6）。
 - 插件在 hook 中 `request_termination` **立即**写 `agent_terminated` bool + append proposals list——**同一 phase 后续插件能看到**（立即生效，非延迟到屏障）。
-- 屏障只做一件事：`if all_agents_terminated: _handle_termination()`。proposals 的消费（去重/记录）在 **recorder 帧**里，不在屏障。
+- proposals 的消费（去重/记录）在 **recorder 帧**里，不在屏障。
 
 ## 2. 终止数据模型（CPU 真实语义）
 
@@ -59,25 +64,25 @@ for aid in AGENT_IDS:
                 (reason, int(ctx.episode_step)))          # ★ 帧时刻的 episode_step
 ```
 
-- **每帧扫描完整 proposals list**——某步新出现的 reason 以**该帧的 episode_step** 记录。pre_action/子步内终止时 `episode_step` 未 +1 → 记录值 = 已完成步数（即帧索引 k）。post_action 终止时已 +1 → 记录值 = k+1。
-- `records[0]` = 首个被记录原因 → `episode.py:330-336`：`obs_a[:term_step]` 截断 + `is_true_terminated = (first_reason != "timeout")` 决定 bootstrap。
-- **截断边界含义**：post_action 终止（如 timeout）→ term_step 含终止帧本身；子步内终止 → term_step 排除那个半截帧（数据不完整所以弃用，final_obs 补 bootstrap）。**这不是巧合约定，是 episode_step 自增时机造成的精确语义**。
+- **每帧扫描完整 proposals list**——某步新出现的 reason 以**该帧的 episode_step** 记录。`episode_step` 无条件递增后，扫描值 = 帧索引+1 = **含端点轨迹边界**，对所有提出点（pre_action/子步内/post_action）一致。
+- `records[0]` = 首个被记录原因 → 消费侧以 `episode.agent_frame_boundary[aid]` 取轨迹边界 + `is_true_terminated = (first_reason != "timeout")` 决定 bootstrap。
+- **边界含义**：中途终止帧（物理增量 ≥1）进入轨迹为终止 transition；**退化帧**（pre_action/首子步 pre_phy 全员终止，物理增量=0，action 未物理生效）记录在 Episode 但按 boundary 排除出轨迹。判定依据 = 帧的 `physics_step` 增量，不依赖 episode_step。
 - `on_post_episode` 校验：每个 agent 必须 ≥1 条 record，否则 RuntimeError。**CPU 无法产出 zero-frame episode**——reset 内即终止的 episode 在 `on_post_episode` 校验处直接报错（recorder 的 on_post_action_step 从未跑过，records 为空）。
 
-## 3. 子步内终止的后果（INTRA_ACTION_END，实测）
+## 3. 子步内终止的后果（INTRA_ACTION_END，修订后语义）
 
-`_core.step` 提前 return 时：
+`_core.step` 子步循环 break 时：
 
 | 量 | 值 |
 |---|---|
 | `physics_step` | = 实际执行的子步数（未完成的 skipped） |
-| `episode_step` | **不自增** |
-| `on_post_action_step` 插件 | **不执行**（含 dispatcher→observers 不刷新） |
-| `on_post_episode` 插件 | 执行（dispatcher 先跑→observers.on_post_episode） |
-| recorder 帧 | **仍记录一帧**：obs=obs_t，observer_outputs=**post_episode 刷新后的值**（若 observer 在 on_post_episode 里改了输出） |
-| 终止记录 step | 未自增的 episode_step（=帧索引） |
+| `episode_step` | **照常 +1**（步调用计数，无条件） |
+| `on_post_action_step` 插件 | **照常执行**——作用于终止态；dispatcher→observers 刷新终止态值 |
+| `on_post_episode` 插件 | 执行（统一在 post_action 之后） |
+| recorder 帧 | 仍记录一帧：obs=obs_t，observer_outputs=**终止态 post_action 刷新值** |
+| 终止记录 step | 已递增的 episode_step（=帧索引+1 = 含端点边界） |
 
-**对设备契约的确认**：D7.2 第 6 条预判正确——"兼容导出遵循 CPU recorder 在 `_core.step` 返回后读取的实际结果"，observer 输出确实可能是 post_episode 刷新值。
+**对设备契约的确认**：终止帧的 observer 输出来自 post_action 刷新（终止态），不再是 post_episode 刷新值——设备侧 `_RecorderAdapter` 的 post_episode 覆写因此变冗余。
 
 ## 4. Reset 链（与 RESET.md §3 一致，代码复核通过）
 
@@ -131,9 +136,9 @@ EpisodeRunner.run_episode:
 |---|---|---|
 | proposals append-only 不 dedup；recorder 帧扫描去重记首次 | `agent_term_reason` 单值覆盖写；recorder 只记 per-agent 首次 | **差距**：同帧多原因只活一个（后写覆盖）；已终止 agent 的新原因被 `_seen_term` 挡掉。CPU 语义=每 reason 首次都记 |
 | 5 屏障 + 提出即生效（同 phase 后续可见） | step 末尾单屏障消费；`request_termination` 直写 `agent_terminated`（提出即生效 ✓ 一致） | **半等价**：屏障位置少（无子步内），但提出可见性一致 |
-| 终止帧仍记录 + term_step 截断规则 | wave recorder 同规则（`env_term_step`/`t_use`） | **等价**（当前仅 post_action 粒度） |
-| 子步内终止：episode_step 不自增、post_action 插件跳过、帧仍记 | 无子步屏障，无法发生 | **差距**→E2-W3（先表达不启用，J3） |
-| on_post_episode 在 recorder 帧前 → final 帧 observer 输出为 post_episode 刷新值 | device：`_WaveRecorder` 帧扫描在自己的 `on_post_action_step`（post_episode 之前）→ final 帧 observer 输出是**刷新前值**。当前无实质差异（`DeviceStandup4StageRewarder.on_post_episode` 是 no-op），但次序是结构性差异 | **差距**：W1 须把 terminated 行的 final 帧扫描置于 post_episode schedule 之后，保持 CPU 序 |
+| 终止帧仍记录 + records=含端点边界（修订后：中途终止帧进轨迹，退化帧按 physics delta 排除） | wave recorder 现行 `env_term_step`/`t_use` 为旧排他语义 | **差距**→设备侧对齐（episode_steps 无条件计数后 env_term_step 自动含端点） |
+| 子步内终止：episode_step 照常+1、post_action 插件照常执行（终止态）、帧仍记 | 无子步屏障，无法发生 | **差距**→需表达"子步内 ENDED 的行也收 post_action"（mask=本步运行行） |
+| post_action 恒先于 post_episode（终帧 observer 输出=终止态 post_action 值） | device `_RecorderAdapter` 以 post_episode 值覆写末帧 | **冗余**→对齐后可删覆写 |
 | final_obs = 终止时刻当前 obs（无 reset） | `env_term` 首次即捕获 io.obs（obs_{t+1}）✓ | **等价** |
 | reset 内终止 → 报错，无 zero-frame episode | wave 模型天然每行 ≥1 帧；reset 内终止语义未定义 | **差距**：reset-time term 需拒绝/报错路径 |
 | reset 隐式 abandon | step 内 auto-reset（非等价物） | **重设计**：E2-W2 显式 abandon + sealed-ENDED |
@@ -149,6 +154,6 @@ EpisodeRunner.run_episode:
 - D7.2 时序图：与实测一致，包括第 6 条"observer 输出可能是 post_episode 刷新值"的预判。
 - D7.3 "同原因重复请求不重复导出"：CPU 提出端不去重、记录端去重——契约只约束导出语义（records），不约束 ctx 内部表示 → 不冲突。设备 pending 队列 + barrier 时把"提出即生效的 `agent_terminated`"保留为立即写（CPU 行为），仅历史记录进屏障 → 完全对齐。
 - D7.3 "新原因在 agent 已终止后仍记录"：实测确认（recorder 扫全 list）；设备当前 `_seen_term` 挡掉后续记录是**设备侧 bug 级差距**，W1/W6 修。
-- D7.4 "INTRA_ACTION_END 表达但不启用"：实测确认 CPU 该路径存在且语义明确（episode_step 不自增、半截帧被截断排除）→ 维持 pending 标记。
+- D7.4 "INTRA_ACTION_END 表达但不启用"：契约修订后该路径语义变更为（episode_step 照常+1、post_action 作用于终止态、终止帧含端点进轨迹、退化帧按 physics delta 排除）→ 设备侧需对齐而非 pending。
 - **新发现需补进实现细节（非契约层）**：proposals 在 CPU 中对"同 phase 后续单元立即可见"（`agent_terminated` bool 即时置位）——设备 pending 模型必须保留这一点：`request_termination` 立即写 `agent_done`，屏障只负责 history 归档与 env 判定，不能把提出效果也延迟。
-- **确认项**：`_WaveRecorder` 的终止帧/records 扫描发生在 runtime `on_post_episode` **之前**，与 CPU（插件 post_episode → recorder 帧）相反。现无实质差异（standup rewarder `on_post_episode` 为 no-op），但 W1 实现时必须恢复 CPU 次序，否则未来"在 post_episode 里更新输出的 observer"会产生静默语义漂移。
+- **确认项**：`_WaveRecorder` 的终止帧/records 扫描发生在 runtime `on_post_episode` **之前**，与 CPU（插件 post_episode → recorder 帧）相反。契约修订后终止帧 observer 值 = post_action 刷新值，该次序差异的主要场景消除；残余一致性项 = `on_post_episode` 里更新输出的 observer 仍需 CPU 次序。

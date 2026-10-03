@@ -142,7 +142,8 @@ def _np_bufs(store):
         final_obs={r: store.final_obs[r].cpu().numpy() for r in AGENTS},
         obs_out={n: {k: v.cpu().numpy() for k, v in fs.items()}
                  for n, fs in store.obs_out.items()},
-        env_term=store.env_term_step.cpu().numpy())
+        env_term=store.env_term_step.cpu().numpy(),
+        phys=store.phys_steps.cpu().numpy())
 
 
 def _export(store, row, ep_index=0, stochastic=True):
@@ -173,10 +174,47 @@ def test_mixed_length_wave():
         assert ep.actions["robot_b"].shape == (t_use, ACT_DIM)
         assert ep.agent_termination_proposal_records["robot_a"] == (
             ("ko", t_use),)
+        # 含端点边界：终止帧在轨迹内（phy_substeps=3 → 逐帧累计 3,6,9）
+        assert ep.physics_steps.tolist() == [3 * (i + 1)
+                                           for i in range(t_use)]
+        assert ep.agent_frame_boundary["robot_a"] == t_use
+        assert ep.agent_frame_boundary["robot_b"] == t_use
     ep = _export(store, 2)
     assert ep.num_frames == T
     assert ep.agent_termination_proposal_records["robot_a"] == (
         ("timeout", T),)
+
+
+def test_degenerate_frame_excluded_from_boundary():
+    """pre_action 屏障终止（物理零增量）→ 帧忠实记录但 boundary=0。"""
+
+    class _PreActionKiller(BaseDevicePlugin):
+        @property
+        def name(self):
+            return "pre_killer"
+
+        def on_pre_action_step(self, ctx):
+            ctx.request_termination(
+                torch.tensor([0], device=ctx.state.sim.qpos.device),
+                "pre_kill")
+
+    sim, rt, store, rec = _make_wave()
+    rt.attach(_PreActionKiller())
+    _run(rt, store, rec)
+    store.finalize(rt.state.episode, rt.state.io)
+
+    ep = _export(store, 0)
+    # 终止帧在 Episode 中（忠实记录），physics delta=0 → 退化帧
+    assert ep.num_frames == 1
+    assert ep.physics_steps.tolist() == [0]
+    assert ep.agent_termination_proposal_records["robot_a"] == (
+        ("pre_kill", 1),)
+    # 消费边界排除退化帧
+    assert ep.agent_frame_boundary["robot_a"] == 0
+    assert ep.agent_frame_boundary["robot_b"] == 0
+    # 其他行不受影响
+    ep2 = _export(store, 1)
+    assert ep2.num_frames == T
 
 
 def test_ended_row_frozen_and_isolated():
@@ -302,6 +340,7 @@ def test_exporter_matches_golden_path():
                     "log_prob": float(np_bufs["log_prob"]["robot_b"][t, row]),
                     "explore_factor": np.float32(0.5),
                     "sctx__delta_factor": np.float32(0.0)}},
+            "physics_step": int(np_bufs["phys"][t, row]),
         })
     golden = Episode.from_buffer_frames(
         frames=frames,
@@ -314,6 +353,7 @@ def test_exporter_matches_golden_path():
             np.arange(B, dtype=np.float32)[row])})
 
     assert got.num_frames == golden.num_frames == t_use
+    assert np.array_equal(got.physics_steps, golden.physics_steps)
     assert got.base_seed == golden.base_seed
     assert got.episode_options == golden.episode_options
     assert (got.agent_termination_proposal_records

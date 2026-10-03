@@ -291,6 +291,11 @@ class Step(CombatExperimentPPOBase):
         T_full = episode.num_frames
         if T_full == 0:
             return []
+        # Inclusive per-agent frame boundary (terminal frame kept,
+        # trailing degenerate frame excluded)
+        T = episode.agent_frame_boundary.get(agent_id, T_full)
+        if T == 0:
+            return []
 
         obs_all = episode.observations.get(agent_id)
         acts_all = episode.actions.get(agent_id)
@@ -307,9 +312,9 @@ class Step(CombatExperimentPPOBase):
             episode.observer_outputs, phi_key, "potential", T_full,
         )
         if phi_arr is not None:
-            phi_arr = phi_arr[:T_full]
+            phi_arr = phi_arr[:T]
         else:
-            phi_arr = np.zeros(T_full, dtype=np.float32)
+            phi_arr = np.zeros(T, dtype=np.float32)
         phi_arr = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
 
         # --- r_potential: 0.01 × φ(t) per step ---
@@ -321,15 +326,15 @@ class Step(CombatExperimentPPOBase):
         # proportional to sway magnitude (roll+pitch; yaw is allowed).
         if obs_all is not None and obs_all.shape[1] >= 51:
             sway = (
-                obs_all[:T_full, 49].astype(np.float32) ** 2
-                + obs_all[:T_full, 50].astype(np.float32) ** 2
+                obs_all[:T, 49].astype(np.float32) ** 2
+                + obs_all[:T, 50].astype(np.float32) ** 2
             )
             r_torso = (
                 -self.torso_sway_coef
                 * np.maximum(sway - self.torso_sway_floor, 0.0)
             ).astype(np.float32)
         else:
-            r_torso = np.zeros(T_full, dtype=np.float32)
+            r_torso = np.zeros(T, dtype=np.float32)
 
         # --- r_fall: -penalty at each sustained-collapse onset ---
         r_fall = (
@@ -355,18 +360,18 @@ class Step(CombatExperimentPPOBase):
         )
         if sole_left is not None:
             r_left_foot = np.clip(
-                np.asarray(sole_left[:T_full], dtype=np.float32),
+                np.asarray(sole_left[:T], dtype=np.float32),
                 0.0, self.foot_height_clip,
             )
         else:
-            r_left_foot = np.zeros(T_full, dtype=np.float32)
+            r_left_foot = np.zeros(T, dtype=np.float32)
         if sole_right is not None:
             r_right_foot = np.clip(
-                np.asarray(sole_right[:T_full], dtype=np.float32),
+                np.asarray(sole_right[:T], dtype=np.float32),
                 0.0, self.foot_height_clip,
             )
         else:
-            r_right_foot = np.zeros(T_full, dtype=np.float32)
+            r_right_foot = np.zeros(T, dtype=np.float32)
 
         # --- Contacts → stepping state machine → foot actor weights ---
         contact_l = extract_per_step_field(
@@ -383,7 +388,7 @@ class Step(CombatExperimentPPOBase):
         # reward for "adjustment" lifts inside the other foot's window
         # and repeat lifts inside its own — the observed same-foot
         # double/triple steps (alt≈0.74 ≈ 1/4 non-alternating).
-        pos = np.arange(T_full) % GAIT_PERIOD
+        pos = np.arange(T) % GAIT_PERIOD
         half = max(1, GAIT_PERIOD // 2)
         cmd_left = pos < half
         wprog = np.where(cmd_left, pos / half, (pos - half) / half)
@@ -400,19 +405,19 @@ class Step(CombatExperimentPPOBase):
         # solepk plateaued ~-0.005 for 200+ updates (u1900 dump).  The
         # ramp restores a continuous gradient ("lift longer → earn
         # more") while taps stay strictly dominated.
-        dur_l = np.ones(T_full, dtype=np.float32)
-        dur_r = np.ones(T_full, dtype=np.float32)
+        dur_l = np.ones(T, dtype=np.float32)
+        dur_r = np.ones(T, dtype=np.float32)
         if contact_l is not None and contact_r is not None:
             air_l = ~_hold_filter(
-                np.asarray(contact_l[:T_full], dtype=bool),
+                np.asarray(contact_l[:T], dtype=bool),
                 CONTACT_HOLD_STEPS)
             air_r = ~_hold_filter(
-                np.asarray(contact_r[:T_full], dtype=bool),
+                np.asarray(contact_r[:T], dtype=bool),
                 CONTACT_HOLD_STEPS)
             dur_l = air_duration_weight(
-                np.asarray(contact_l[:T_full], dtype=bool))
+                np.asarray(contact_l[:T], dtype=bool))
             dur_r = air_duration_weight(
-                np.asarray(contact_r[:T_full], dtype=bool))
+                np.asarray(contact_r[:T], dtype=bool))
             # Sway penalty only on double-support frames: post-landing
             # oscillation is pure waste and drives the same-foot
             # "adjustment" repeats (u2200/u02380 video).  Swing-phase
@@ -434,13 +439,13 @@ class Step(CombatExperimentPPOBase):
             and sole_left is not None and sole_right is not None
         ):
             det = detect_step_cycles(
-                np.asarray(contact_l[:T_full], dtype=bool),
-                np.asarray(contact_r[:T_full], dtype=bool),
-                np.asarray(h_left[:T_full], dtype=np.float32),
-                np.asarray(h_right[:T_full], dtype=np.float32),
+                np.asarray(contact_l[:T], dtype=bool),
+                np.asarray(contact_r[:T], dtype=bool),
+                np.asarray(h_left[:T], dtype=np.float32),
+                np.asarray(h_right[:T], dtype=np.float32),
                 standing=phi_arr >= self.step_phi_gate,
-                sole_left=np.asarray(sole_left[:T_full], dtype=np.float32),
-                sole_right=np.asarray(sole_right[:T_full], dtype=np.float32),
+                sole_left=np.asarray(sole_left[:T], dtype=np.float32),
+                sole_right=np.asarray(sole_right[:T], dtype=np.float32),
                 min_air_steps=self.step_min_air_frames,
                 h_thresh=self.step_lift_threshold,
             )
@@ -457,7 +462,7 @@ class Step(CombatExperimentPPOBase):
             # is the OTHER foot — strict alternation becomes the only
             # paying policy.  blocked[t] tracks the physically last
             # stepped foot (detected, paid or not).
-            blocked = np.full(T_full, "", dtype=object)
+            blocked = np.full(T, "", dtype=object)
             for foot, _t_off, t_land, _h_pk in det["cycles"]:
                 blocked[t_land:] = foot
             gate_l = gate_l & (blocked != "left")
@@ -504,9 +509,9 @@ class Step(CombatExperimentPPOBase):
         # command (below) and the swing exemption (aw_potential below).
         stable = (phi_arr >= self.lift_phi_gate)
         w_left, w_right = clock_foot_weights(
-            T_full,
-            sole_left=np.asarray(sole_left[:T_full], dtype=np.float32) if sole_left is not None else None,
-            sole_right=np.asarray(sole_right[:T_full], dtype=np.float32) if sole_right is not None else None,
+            T,
+            sole_left=np.asarray(sole_left[:T], dtype=np.float32) if sole_left is not None else None,
+            sole_right=np.asarray(sole_right[:T], dtype=np.float32) if sole_right is not None else None,
             period=GAIT_PERIOD,
             stable=stable,
         )
@@ -518,8 +523,8 @@ class Step(CombatExperimentPPOBase):
         phi_sq = (phi_arr ** 2).astype(np.float32)
         if contact_l is not None and contact_r is not None:
             ss_mask = single_support_mask(
-                np.asarray(contact_l[:T_full], dtype=bool),
-                np.asarray(contact_r[:T_full], dtype=bool),
+                np.asarray(contact_l[:T], dtype=bool),
+                np.asarray(contact_r[:T], dtype=bool),
             ).astype(np.float32)
             # Dilate ±CONTACT_HOLD_STEPS: the debounce lags real liftoff/
             # touchdown by up to `hold` frames, so the raw ss_mask misses
@@ -534,7 +539,7 @@ class Step(CombatExperimentPPOBase):
                     pad_ss, 2 * k + 1,
                 ).max(axis=1).astype(np.float32)
         else:
-            ss_mask = np.zeros(T_full, dtype=np.float32)
+            ss_mask = np.zeros(T, dtype=np.float32)
         # Swing exemption requires the frame to be CURRENTLY stable
         # (φ ≥ lift_phi_gate), and even then is only PARTIAL: the old
         # trailing-max φ kept exempting ~15 frames into a collapse —
@@ -563,7 +568,7 @@ class Step(CombatExperimentPPOBase):
             # Sway penalty only counts while standing — recovery flail
             # after a fall is legitimate motion, not gait noise.
             "r_torso": (self.torso_actor_weight * stable).astype(np.float32),
-            "r_fall": np.full(T_full, self.r_fall_actor_weight,
+            "r_fall": np.full(T, self.r_fall_actor_weight,
                               dtype=np.float32),
         }
 
@@ -584,12 +589,12 @@ class Step(CombatExperimentPPOBase):
             )
 
         return [Trajectory(
-            obs=obs_all,
-            actions=acts_all,
+            obs=obs_all[:T],
+            actions=acts_all[:T],
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
+            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T),
         )]
 
     def build_trajectories(self, episodes) -> List[Trajectory]:

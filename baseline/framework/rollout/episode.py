@@ -301,9 +301,14 @@ class Episode:
 
     See ``baseline/common/rollout/DESIGN.md`` §2.1 for the schema rules.
 
-    Convention: ``T = num_frames`` is the number of action steps. The
-    ``final_observation`` field carries ``obs_{T+1}`` (the post-final-action
-    observation) so RL trainers can bootstrap.
+    Convention: ``num_frames`` is the number of recorded frames — every
+    ``step()`` call emits exactly one, including a mid-substep terminal
+    frame and a degenerate frame whose action never executed. The
+    per-agent training slice is ``agent_frame_boundary[aid]`` (inclusive
+    terminal frame, exclusive of a trailing degenerate frame), NOT
+    ``num_frames`` and NOT a raw ``term_step``. The ``final_observation``
+    field carries ``obs_{T+1}`` (the post-final-state observation) so RL
+    trainers can bootstrap.
     """
 
     base_seed: int
@@ -318,22 +323,23 @@ class Episode:
     Maps ``agent_id`` → tuple of ``(reason, episode_step)`` pairs.
     ``reason`` is the termination reason string (e.g. ``"ko"``,
     ``"timeout"``, ``"imbalance_robot_a"``).
-    ``episode_step`` is the value of ``ctx.episode_step`` when the
-    proposal was **first proposed** — i.e. the action-step number
-    (starting from 1) at which ``on_post_action_step`` detected the
-    new reason. The same reason is only recorded once (first
-    occurrence).
+    ``episode_step`` is the value of ``ctx.episode_step`` at the
+    ``on_post_action_step`` scan of the frame where the reason was
+    first seen — since ``episode_step`` counts entered ``step()``
+    calls unconditionally, this equals ``<frame index> + 1`` for every
+    proposal point (pre_action / mid-substep / post_action alike) and
+    is the **inclusive boundary** of that agent's trajectory. The same
+    reason is only recorded once (first occurrence).
 
     Data slicing usage::
 
         # EpisodeRecorder.on_post_episode guarantees records are non-empty.
-        records = episode.agent_termination_proposal_records["robot_a"]
-        first_reason, term_step = records[0]
-        obs_a = episode.observations["robot_a"][:term_step]
-        act_a = episode.actions["robot_a"][:term_step]
+        end = episode.agent_frame_boundary["robot_a"]
+        obs_a = episode.observations["robot_a"][:end]
+        act_a = episode.actions["robot_a"][:end]
 
         # True termination (non-timeout → bootstrap=0):
-        is_true_terminated = first_reason != "timeout"
+        is_true_terminated = records[0][0] != "timeout"
     """
 
     observations: Mapping[str, np.ndarray]
@@ -358,6 +364,18 @@ class Episode:
     metrics written by world plugins (e.g. push_count, fall_count).
     """
 
+    physics_steps: Optional[np.ndarray] = None
+    """Per-frame cumulative ``ctx.physics_step`` at frame time ``(T,)``.
+
+    ``physics_steps[i] - physics_steps[i-1]`` = how many physics substeps
+    that frame's action actually executed (0 for a degenerate frame whose
+    action was staged but never ran — e.g. all agents terminated inside
+    ``on_pre_action_step`` / the first ``on_pre_phy_step`` barrier, so
+    the action was staged but never executed). ``None`` for legacy data
+    without the field; boundary derivation then assumes every frame
+    executed physics.
+    """
+
     @property
     def sampling_contexts(self) -> Dict[str, Dict[str, np.ndarray]]:
         """Per-agent per-frame SamplingContext fields ``{field: (T, ...)}``.
@@ -371,6 +389,34 @@ class Episode:
         Empty dict when no ctx was recorded.
         """
         return _derive_sampling_ctx(self.explore_factors, self.action_extras)
+
+    @property
+    def agent_frame_boundary(self) -> Dict[str, int]:
+        """Per-agent inclusive trajectory end index (exclusive slice bound).
+
+        ``ep.observations[aid][:boundary[aid]]`` is the agent's training
+        trajectory. The boundary is the agent's first termination
+        proposal frame **inclusive** — a frame where physics actually ran
+        (``physics_step`` delta >= 1) is a real transition, including a
+        mid-substep terminal frame. A trailing **degenerate** frame (zero
+        physics delta: action staged but never executed, e.g. all agents
+        terminated inside ``on_pre_action_step``) is recorded faithfully
+        but excluded — it carries no executed transition.
+        """
+        n = int(self.num_frames)
+        last_physical = n
+        if self.physics_steps is not None and n:
+            ps = np.asarray(self.physics_steps, dtype=np.int64)
+            deltas = np.diff(ps, prepend=np.int64(0))
+            physical = np.nonzero(deltas > 0)[0]
+            last_physical = int(physical[-1]) + 1 if physical.size else 0
+        boundary: Dict[str, int] = {}
+        agent_ids = set(self.observations) | set(self.agent_termination_proposal_records)
+        for aid in agent_ids:
+            records = self.agent_termination_proposal_records.get(aid, ())
+            first = records[0][1] if records else n
+            boundary[aid] = int(min(first, last_physical))
+        return boundary
 
     @property
     def agent_termination_reason(self) -> Mapping[str, str]:
@@ -419,6 +465,11 @@ class Episode:
         actions = _stack_agent_field(frames, "action")
         extras = _stack_action_extras(frames)
         explore_factors = _stack_explore_factors(frames)
+        physics_steps = (
+            np.asarray([int(f["physics_step"]) for f in frames], dtype=np.int64)
+            if frames and all("physics_step" in f for f in frames)
+            else None
+        )
 
         observer_frames: List[Mapping[str, Any]] = []
         for frame in frames:
@@ -450,6 +501,7 @@ class Episode:
             observer_outputs=observer_outputs,
             final_observation=final_obs_dict,
             episode_metrics=dict(episode_metrics or {}),
+            physics_steps=physics_steps,
         )
 
     # ------------------------------------------------------------------
@@ -480,6 +532,10 @@ class Episode:
             arrays[f"ef__{agent_id}"] = np.asarray(value, dtype=np.float32)
         for agent_id, value in self.final_observation.items():
             arrays[f"final_obs__{agent_id}"] = np.asarray(value)
+        if self.physics_steps is not None:
+            # Optional additive field: absent in v3 files written before the
+            # inclusive-terminal-frame change; loaders treat it as None.
+            arrays["physics_steps"] = np.asarray(self.physics_steps, dtype=np.int64)
 
         # Observer outputs: split into array-leaves (npz) and list-leaves (json).
         observer_arrays: Dict[str, np.ndarray] = {}
@@ -547,9 +603,12 @@ class Episode:
             explore_factors: Dict[str, np.ndarray] = {}
             final_observation: Dict[str, np.ndarray] = {}
             observer_arrays: Dict[Tuple[str, ...], np.ndarray] = {}
+            physics_steps: Optional[np.ndarray] = None
             for key in keys:
                 value = np.array(npz[key])
-                if key.startswith("obs__"):
+                if key == "physics_steps":
+                    physics_steps = value.astype(np.int64)
+                elif key.startswith("obs__"):
                     observations[key[len("obs__"):]] = value
                 elif key.startswith("act__"):
                     actions[key[len("act__"):]] = value
@@ -599,6 +658,7 @@ class Episode:
             explore_factors=explore_factors,
             observer_outputs=observer_outputs,
             final_observation=final_observation,
+            physics_steps=physics_steps,
         )
 
 

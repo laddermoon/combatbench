@@ -249,7 +249,9 @@ def test_policy_eval_mask_modes():
 # 子步屏障（子步 hook 模式）
 # ---------------------------------------------------------------------------
 def test_substep_termination_barrier():
-    """子步 hook 内提议终止 → 当子步屏障封存；episode_step 不 +1。"""
+    """子步 hook 内提议终止 → 当子步屏障封存；episode_steps 无条件 +1
+    （含端点语义：终止帧仍是一次进入的 step），physics_steps 只记实际
+    执行的 3 个子步。"""
     sim, rt = _rt()
 
     class MidBlockTerm(BaseDevicePlugin):
@@ -268,10 +270,14 @@ def test_substep_termination_barrier():
     rt.reset()
     rt.step()
     ep = rt.state.episode
-    # env0 在第 3 子步后 ENDED——action step 未走完，episode_steps 不 +1
+    # env0 在第 3 子步后 ENDED——episode_steps 对进入的 step 无条件 +1；
+    # physics_steps 记实际执行的 3 个子步（帧物理增量 = 3 > 0 → 该
+    # 终止帧是有效 transition）
     assert ep.world_running[0].item() is False
-    assert ep.episode_steps.tolist() == [0, 1, 1, 1]
-    assert ep.term_history[0, 0, 0, 1].item() == 0   # 提议时刻 step=0
+    assert ep.episode_steps.tolist() == [1, 1, 1, 1]
+    assert ep.physics_steps[0].item() == 3
+    # 提议归档值 = 本步 1-based 帧序号（CPU 记录帧扫描的 episode_step）
+    assert ep.term_history[0, 0, 0, 1].item() == 1
 
 
 # ---------------------------------------------------------------------------

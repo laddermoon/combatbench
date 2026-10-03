@@ -135,7 +135,12 @@ class EpisodeRecorder(PostActionRecorder):
         )
         # Track per-agent termination proposals: for each agent, detect
         # new reasons not yet seen and record (reason, episode_step).
-        # Same reason is only recorded once (first occurrence).
+        # Same reason is only recorded once (first occurrence). The
+        # recorded step is read after ``_RuntimeCore.step`` returned, so
+        # ``episode_step`` is already incremented — it equals
+        # frame_index + 1, the inclusive trajectory boundary (a trailing
+        # zero-physics-delta frame is still filtered out downstream by
+        # ``Episode.agent_frame_boundary``).
         for aid in AGENT_IDS:
             for reason in ctx.agent_termination_proposals.get(aid, ()):
                 if reason not in self._seen_reasons[aid]:

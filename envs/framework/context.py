@@ -178,6 +178,10 @@ class SimContext:
         self._simulator = simulator
 
         # 内部时序状态
+        # episode_step: step() 调用计数——每个进入的 step 无条件 +1，
+        # 不隐含"完整物理步"；终止帧（物理循环中途结束）也会递增。
+        # physics_step: 实际执行的物理子步计数；某帧的 action 是否物理
+        # 生效由该帧的 physics_step 增量判定（0 = 未生效的退化帧）。
         self.episode_step: int = 0
         self.physics_step: int = 0
 

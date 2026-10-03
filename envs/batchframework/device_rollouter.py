@@ -88,11 +88,19 @@ class _RecorderAdapter(BaseDevicePlugin):
     def on_post_action_step(self, ctx) -> None:
         outs = {n: self._rt.get_observer_output(n) for n in self._names}
         self._store.write_observer_step(self._t, outs)
+        self._store.write_phys_step(self._t, ctx.episode.physics_steps)
         self._t += 1
 
     def on_post_episode(self, ctx) -> None:
-        """env 结束行（本步新 ENDED）：CPU 序——插件 post_episode/observer
-        刷新之后才记末帧（observer 输出取 post_episode 刷新值）。"""
+        """env 结束行（本步新 ENDED）：封存 env_term_step + final_obs。
+
+        末帧 observer 输出**不**再覆写——含端点语义下终止帧的值就是
+        ``on_post_action_step`` 刷新写入的（CPU 对齐：帧由 recorder 的
+        post_action 写，post_episode 的二次刷新不进任何帧）。注意本
+        hook 可能在子步屏障内先于本步 post_action 触发——此时终止帧
+        尚未写出，覆写会落到前一帧；旧实现 ``_t - 1`` 的写法在两种
+        时序下都是错的。
+        """
         ids = ctx.terminated_env_ids
         if ids is None or len(ids) == 0:
             return
@@ -101,9 +109,6 @@ class _RecorderAdapter(BaseDevicePlugin):
         if fresh.numel() == 0:
             return
         st.seal_rows(fresh, ctx.episode, ctx.io)
-        # 末帧 observer 输出用 post_episode 刷新值覆写
-        outs = {n: self._rt.get_observer_output(n) for n in self._names}
-        st.write_observer_step(self._t - 1, outs, rows=fresh)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +370,7 @@ class DeviceRollouter:
             obs_out={name: {k: v.cpu().numpy() for k, v in bufs.items()}
                      for name, bufs in store.obs_out.items()},
             env_term=store.env_term_step.cpu().numpy(),
+            phys=store.phys_steps.cpu().numpy(),
         )
         # E6-W5：host 导出峰值记账——不只报 simulator 显存
         self._host_export_bytes += sum(

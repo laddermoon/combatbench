@@ -38,6 +38,9 @@ def export_episode(np_bufs: Mapping[str, Any],
         ef_pair: ``((ef_a, df_a), (ef_b, df_b))``——per-agent
             (explore_factor, delta_factor) 标量。
     """
+    # env_term_step 已是含端点边界（本步 1-based 帧序号 = 帧索引+1），
+    # 终止帧包含在 t_use 内；退化帧（物理增量 0）由 Episode 的
+    # agent_frame_boundary 在消费侧排除，这里仍忠实导出全部记录帧。
     term_step = int(np_bufs["env_term"][row])
     t_use = term_step if 0 < term_step <= T else T
 
@@ -95,4 +98,8 @@ def export_episode(np_bufs: Mapping[str, Any],
         final_observation={rid: np_bufs["final_obs"][rid][row]
                            for rid in agent_ids},
         episode_metrics=metrics,
+        physics_steps=(
+            np_bufs["phys"][:t_use, row].astype(np.int64)
+            if np_bufs.get("phys") is not None else None
+        ),
     )

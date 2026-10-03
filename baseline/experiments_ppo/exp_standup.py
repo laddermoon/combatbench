@@ -119,6 +119,11 @@ class Standup(CombatExperimentPPOBase):
         T_full = episode.num_frames
         if T_full == 0:
             return []
+        # Inclusive per-agent frame boundary (terminal frame kept,
+        # trailing degenerate frame excluded)
+        T = episode.agent_frame_boundary.get(agent_id, T_full)
+        if T == 0:
+            return []
 
         obs_all = episode.observations.get(agent_id)
         acts_all = episode.actions.get(agent_id)
@@ -135,13 +140,13 @@ class Standup(CombatExperimentPPOBase):
             episode.observer_outputs, obs_key, "potential", T_full,
         )
         if phi_arr is not None:
-            phi_arr = phi_arr[:T_full]
+            phi_arr = phi_arr[:T]
             if phi_arr.size and self._ep_final_pots is not None:
                 self._ep_final_pots.append(
                     float(np.clip(phi_arr[-1], 0.0, 1.0))
                 )
         else:
-            phi_arr = np.zeros(T_full, dtype=np.float32)
+            phi_arr = np.zeros(T, dtype=np.float32)
         phi_arr = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
 
         # --- Dense reward: r_t = (1-γ) × φ(t) = 0.01 × φ(t) ---
@@ -155,17 +160,17 @@ class Standup(CombatExperimentPPOBase):
             self._channel_name: ChannelData(
                 reward=r_potential,
                 is_terminated=is_terminated,
-                actor_weight=np.ones(T_full, dtype=np.float32),
+                actor_weight=np.ones(T, dtype=np.float32),
             ),
         }
 
         return [Trajectory(
-            obs=obs_all,
-            actions=acts_all,
+            obs=obs_all[:T],
+            actions=acts_all[:T],
             last_obs=np.asarray(fin_obs, dtype=np.float32),
             channels=channels,
             importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T_full),
+            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T),
         )]
 
     def post_update(self, stats, update, *, artifacts=None):

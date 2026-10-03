@@ -337,7 +337,7 @@ class BatchRuntime:
         """phase 屏障：判 env 结束；新 ENDED 行封存 + on_post_episode。
 
         reason 归档发生在 ``request_termination`` 提出时刻（每 (agent,
-        reason) 首次出现记 (code, episode_step)，同 code 去重、异 code
+        reason) 首次出现记 (code, action_call_index)，同 code 去重、异 code
         保序、超 K 置 ``term_history_overflow``）；本屏障不搬运 reason，
         只做：reset_request→abandoned 提议、env 级 ENDED 判定、
         状态快照封存、post_episode 调度、冻结写回。
@@ -461,8 +461,17 @@ class BatchRuntime:
         n = int(n_substeps or self.phy_substeps)
 
         st.clear_step_flags()
+        # 进入本步的行快照——episode_steps / action_call_index 按"进入
+        # step() 的行"无条件计数（CPU 对齐：episode_step 在 step() 尾部
+        # 无条件 +1，即使该步的动作从未驱动物理）。action_call_index
+        # 步首即增——它是本步的 1-based 帧序号，步内任意提议点都等于
+        # CPU 记录帧扫描时读到的 episode_step（_archive_reason /
+        # seal_rows 的边界值来源）。
+        entered = ep.world_running & ep.slot_valid
+        entered_i64 = entered.to(torch.int64)
+        ep.action_call_index += entered_i64
         # policy_eval_mask：ENDED 行不采样；"hold" 下已终 agent 也不采样
-        run2 = (ep.world_running & ep.slot_valid).unsqueeze(-1)
+        run2 = entered.unsqueeze(-1)
         if self.post_termination_action == "hold":
             ep.policy_eval_mask.copy_(run2 & ~ep.agent_done)
         else:
@@ -474,8 +483,13 @@ class BatchRuntime:
         for c in self._ctxs.values():
             c.phy_substeps = n
         self._invoke("on_pre_batch_step", writable=True)
+        # pre-action 终止屏障（CPU 对齐：on_pre_action_step / 首个
+        # on_pre_phy_step 的全员终止提议在物理前结束本步——ended 行的
+        # 终止帧物理增量为 0，是记录但不进轨迹的"退化帧"）
+        self._consume_terminations()
 
         run_i64 = (ep.world_running & ep.slot_valid).to(torch.int64)
+        dt = float(self.sim.DT)
         if self._substep_units:
             # 有插件覆写子步 hook → 回调进后端子步循环（不能拆成
             # physical_step(1)×n——pending wrench 只在块首子步消费一次）
@@ -485,8 +499,17 @@ class BatchRuntime:
             def _pre(i: int) -> None:
                 ep_.substep_index.fill_(i)
                 self._invoke("on_pre_phy_step", writable=True, units=subs)
+                # pre_phy 终止屏障（CPU 对齐：on_pre_phy_step 的提议在
+                # 本子步物理前生效——ended 行由冻结写回保持不漂移，且
+                # 不再累计本子步 physics_steps）
+                self._consume_terminations()
 
             def _post(i: int) -> None:
+                # 物理记账在 post_phy 检查前（CPU 对齐：physics_step
+                # ++ 在终止检查之前——本子步提议终止的行仍计入本子步）
+                m = ep_.world_running & ep_.slot_valid
+                ep_.physics_steps += m.to(torch.int64)
+                ep_.time += dt * m.to(torch.float32)
                 self._invoke("on_post_phy_step", writable=True, units=subs)
                 # 子步级终止屏障（CPU 对齐：每物理子步后检查 env 结束；
                 # 新 ENDED 行立即封存，余下子步由冻结写回保持不漂移）
@@ -495,17 +518,14 @@ class BatchRuntime:
             self.sim.physical_step(n, pre_step=_pre, post_step=_post)
         else:
             self.sim.physical_step(n)
-        ep.physics_steps += run_i64 * n
+            ep.physics_steps += run_i64 * n
+            ep.time += dt * n * run_i64.to(torch.float32)
         self._invoke("on_post_batch_step", writable=True)
 
-        # 计数器按"块结束时仍 RUNNING 的行"记——子步屏障内结束的行
-        # 本 action step 未完整走完，不自增（CPU：子步内终止
-        # episode_step 不 +1；记录帧记提议时刻步号）。无子步 hook 的
-        # 快路径下屏障只在块末跑一次，post_run 与 run_i64 相同。
-        post_run = (ep.world_running & ep.slot_valid).to(torch.int64)
-        ep.episode_steps += post_run
-        ep.action_call_index += post_run
-        ep.time += float(self.sim.DT) * n * post_run.to(torch.float32)
+        # episode_steps = 进入 step() 的无条件调用计数（含本步内已
+        # ENDED 的行——CPU：终止帧照常 +1，terminated-flag 信息由
+        # term_records/frame boundary 承担，不由计数器隐含）
+        ep.episode_steps += entered_i64
         st.rng.step_counter += 1
         if self.obs_builder is not None:
             self.obs_builder.build(st)
