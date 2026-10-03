@@ -21,7 +21,10 @@ package is deliberately single-process.
 - **`SimContext`** (`context.py`) — per-episode blackboard. Exposes `ctx.accessor`
   (always), `ctx.mutator` (granted per-plugin-per-hook; `None` when denied),
   `ctx.metrics` / `ctx.events` / `ctx.request_termination` /
-  `ctx.episode_options` / `ctx.base_seed`.
+  `ctx.episode_options` / `ctx.base_seed`. Deliberately carries **no raw
+  simulator reference** — backends internals stay behind the accessor/mutator
+  capability views; harness-side diagnostics hold `runtime.simulator` instead
+  (P-FW-4 seal, pinned by `test_audit_simulator_reach.py`).
 - **`BasePlugin`** (`plugin.py`) — world-rule unit. Writes physics only at writable
   hooks AND only if it declares `require_mutator=True`. Both conditions checked
   per-call in `_PluginManager.invoke`.

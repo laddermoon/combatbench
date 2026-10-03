@@ -55,8 +55,11 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
   replaced with `is_episode_over()`/`is_agent_active()`/`get_agent_termination()`
   (README.md + README_zh.md + CLAUDE.md + envs/framework README/CONTEXT/DESIGN;
   remaining hits are intentional audit-record mentions).
-- `ctx._simulator` sandbox bypass — raw simulator reachable from read-only
-  hooks (AUDIT P-FW-4).
+- ~~`ctx._simulator` sandbox bypass~~ — **DONE**: attribute deleted from
+  `SimContext`; 7 gating debug scripts now take an explicit
+  `plugin.sim = runtime.simulator` injection; seal pinned by
+  `test_audit_simulator_reach.py` (AUDIT P-FW-4). Mutator-view lifetime
+  (P-FW-9) is a separate still-open issue.
 
 ## Explicitly Unavailable List
 

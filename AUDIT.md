@@ -1907,3 +1907,61 @@ CAPABILITY_LEDGER 历史条目。
 关联：P-FW-9（`_MutatorView` 缓存引用跨钩子不失效）是同类沙箱问题的
 另一面——A 方案落地后建议一并处理（grant/revoke 改为生成新 view 或
 view 内加 epoch 校验）。
+
+## [2026-10-01] P-FW-4 `ctx._simulator` 沙箱旁路 —— 封堵实施（方案 A）
+
+**对象**：`envs/framework/context.py` + `balance_recover/gating/debug_*.py`
+**类别**：修复执行（用户拍板方案 A）
+
+### 数量更正
+
+前一条排查记录写"9 个调试脚本"，实为笔误——列出的文件名去重后是 **7 个**
+（`debug_obs_compare` 被列了两次）。实际迁移的文件为：
+`debug_obs_compare` / `debug_time_track2` / `debug_snapshot_compare` /
+`debug_step_diverge` / `debug_deep_snapshot` / `debug_ctrl_compare` /
+`debug_lifecycle`。
+
+### 实施内容
+
+1. **`context.py`**：删除 `SimContext.__init__` 里的
+   `self._simulator = simulator`，原位留注释说明"刻意不携带裸后端引用"
+   及诊断场景的正确路径（harness 层持 `runtime.simulator`）。
+   框架内 `self._simulator` 零消费，无需其他改动。
+2. **7 个 gating 调试脚本**：统一改为显式注入模式——
+   插件 `__init__` 加 `self.sim = None`（注明 P-FW-4 来源），
+   `env_bp.build(debug_plugins=[p])` 之后 `p.sim = runtime.simulator`，
+   钩子内 `ctx._simulator` → `self.sim`。
+   `debug_lifecycle.py` 里一处 `ctx.accessor._simulator` 探测性代码
+   （`hasattr` 守卫、结果未被使用）一并删除。
+3. **新测试** `envs/framework/tests/test_audit_simulator_reach.py`：
+   - 探针插件（`require_mutator=True`）+ 探针 observer + 探针 recorder
+     遍历全部钩子，断言 `ctx._simulator` / `ctx.accessor._simulator` /
+     `ctx.mutator._simulator` 均不可达（observer 侧 `ReadOnlySimContext`
+     连 `mutator` 字段都没有）。
+   - 反向测试：只读钩（`on_post_action_step`）里 `ctx.mutator is None`
+     且无任何 `ctx` 路径能拿到后端 → 写物理无门。
+4. **文档**：`DESIGN.md` BasePlugin 边界加禁忌条目；
+   `CONTEXT.md` SimContext 段落注明"不携带裸后端引用"。
+   `CAPABILITY_LEDGER.md` P-FW-4 标 DONE（P-FW-9 单列仍为开放项）。
+
+### 验证
+
+- `PYTHONPATH=. pytest envs/framework/tests/ -q` → **219 passed**
+  （217 + 新测试 2 个）。
+- 全仓 grep `ctx._simulator` / `ctx.accessor._simulator` /
+  `ctx.mutator._simulator`：除注释/新测试自身/审计记录外 **零命中**。
+- 7 个脚本 `python3 -m py_compile` 全部通过。
+
+### 残留边界（如实登记）
+
+- 名字混淆的 `accessor._AccessorView__sim` / `mutator._MutatorView__sim`
+  仍可达——这是 `_AccessorView`/`_MutatorView` 实现自带的"显式 opt-out"
+  约定（需刻意拼名），属文档化逃逸面而非漏洞；若需绝对封闭要改 Python
+  属性模型，超出本轮范围。
+- **P-FW-9 未随本次关闭**：缓存的 `_MutatorView` 引用在 revoke 后仍可用
+  （`self._mutator_view` 单例 + `ctx.mutator=None` 只断 ctx 不断已握引用），
+  待独立修复（view 加 epoch/吊销校验）。
+
+注：7 个 gating 调试脚本均被 `.gitignore`（`debug_*` 规则）排除，
+属工作区一次性诊断工具——迁移改动不进 commit，但已在本地生效，
+保证将来运行时不会因 `ctx._simulator` AttributeError 而挂掉。

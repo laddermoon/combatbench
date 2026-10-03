@@ -64,6 +64,7 @@ graph TD
   - ✅ **建议**：处理生命值扣除、判定击倒（KO）、施加防摔倒约束、记录事件（Events）和统计指标（Metrics）。
   - ✅ **建议**：在允许的生命周期中通过 `ctx.mutator` 修改状态或动作，在只读阶段通过 `ctx.accessor` 读取数据。
   - ❌ **禁忌**：不要把“某个算法喜欢什么奖励”写到这里。世界插件只能产出客观事实，不能带有实验特定的价值判断。
+  - ❌ **禁忌**：不要尝试经 `ctx` 获取裸 simulator——`SimContext` 不携带后端引用（P-FW-4 已封堵，`test_audit_simulator_reach.py` 锁死）。需要后端内部状态的诊断工具应由构建 runtime 的 harness 层自行持有引用（如 `runtime.simulator`），而不是从 ctx 走。
 
 ### 4. BaseObserverPlugin (统一只读观察插件)
 - **定位**：面向策略侧的只读输出构造器，是一种由内部 observer dispatcher 托管的运行时单元。

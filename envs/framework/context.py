@@ -175,7 +175,10 @@ class SimContext:
     """
 
     def __init__(self, simulator: BaseSimulator):
-        self._simulator = simulator
+        # 注意：这里刻意**不**把裸 simulator 挂到 ctx 上——沙箱边界要求
+        # 插件/观察者只能经 ``accessor``（读白名单）与 ``mutator``（授予制）
+        # 接触后端。诊断类工具需要后端内部状态时，由构建 runtime 的
+        # harness 层持有引用（如 ``runtime.simulator``），不从 ctx 走。
 
         # 内部时序状态
         # episode_step: step() 调用计数——每个进入的 step 无条件 +1，
