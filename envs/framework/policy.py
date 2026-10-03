@@ -85,6 +85,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
+from .blueprint import _substitute_dir
+
 
 __all__ = [
     "Policy",
@@ -208,22 +210,19 @@ _POLICY_FULL_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 # Matches every ``${name}`` occurrence inside a string for inline substitution.
 _POLICY_INLINE_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-# Magic variable for blueprint-relative path resolution.  When a YAML file
-# is loaded via :meth:`PolicyBlueprint.load` (or
-# :meth:`ParameterizedPolicyBlueprint.load`), every ``${DIR}`` occurrence in
-# the raw text is replaced with the YAML file's parent directory (absolute).
-# This lets users reference co-uploaded assets without knowing the final
-# extraction path:
+# ``${DIR}`` blueprint-relative path resolution lives in
+# :mod:`envs.framework.blueprint` (``_substitute_dir``) — the same
+# convention applies to ``EnvBlueprint.load`` /
+# ``ParameterizedEnvBlueprint.load``. When a YAML file is loaded via
+# :meth:`PolicyBlueprint.load` (or
+# :meth:`ParameterizedPolicyBlueprint.load`), every ``${DIR}`` occurrence
+# in the raw text is replaced with the YAML file's parent directory
+# (absolute). This lets users reference co-uploaded assets without
+# knowing the final extraction path:
 #
 #   cls: "file:${DIR}/policy.py:MyPolicy"
 #   config:
 #     model_path: "${DIR}/model.pt"
-_DIR_VAR = "${DIR}"
-
-
-def _substitute_dir(raw_text: str, dir_path: Path) -> str:
-    """Replace ``${DIR}`` with the stringified absolute *dir_path*."""
-    return raw_text.replace(_DIR_VAR, str(dir_path.resolve()))
 
 
 def _resolve_policy_class(entry: str) -> type:

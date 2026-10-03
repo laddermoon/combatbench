@@ -108,6 +108,24 @@ def _is_blueprint_excluded(component: Any) -> bool:
     return bool(getattr(component, "BLUEPRINT_EXCLUDE", False))
 
 
+# Magic variable for blueprint-relative path resolution. When a YAML file
+# is loaded via :meth:`EnvBlueprint.load` /
+# :meth:`ParameterizedEnvBlueprint.load` (and the policy-side
+# ``PolicyBlueprint.load`` equivalents), every ``${DIR}`` occurrence in the
+# raw text is replaced with the YAML file's parent directory (absolute).
+# This lets a blueprint reference co-located assets (state banks, model
+# files, nested blueprints) without knowing the final extraction path:
+#
+#   config:
+#     state_bank_path: "${DIR}/state_pool.npz"
+_DIR_VAR = "${DIR}"
+
+
+def _substitute_dir(raw_text: str, dir_path: Path) -> str:
+    """Replace ``${DIR}`` with the stringified absolute *dir_path*."""
+    return raw_text.replace(_DIR_VAR, str(dir_path.resolve()))
+
+
 def _capture_config(component: Any) -> Dict[str, Any]:
     """Extract the construction config of a component (default: ``{}``)."""
     method = getattr(component, "to_blueprint", None)
@@ -386,9 +404,17 @@ class EnvBlueprint:
     def load(cls, path: str | Path) -> "EnvBlueprint":
         """Load a blueprint from disk (YAML or JSON).
 
+        ``${DIR}`` in the raw text is replaced with the YAML file's parent
+        directory (absolute) before parsing — the same convention as
+        :meth:`PolicyBlueprint.load`. This applies to parameterized
+        documents too, so ``${DIR}`` may appear inside parameter defaults
+        or the template body.
+
         See :meth:`from_yaml` for the parameterized-document handling.
         """
-        return cls.from_yaml(Path(path).read_text(encoding="utf-8"))
+        p = Path(path)
+        raw = _substitute_dir(p.read_text(encoding="utf-8"), p.parent)
+        return cls.from_yaml(raw)
 
 
 __all__ = [

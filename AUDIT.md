@@ -2091,3 +2091,39 @@ view 内加 epoch 校验）。
   残留：仅剩 RESET.md 更正注记、SEED.md "已删除"陈述、
   tests/README.md 删除说明——全为有意保留的历史注记。
 - `pytest envs/framework/tests/ -q` → **224 passed**。
+
+## [2026-10-01] P-FW-8 `EnvBlueprint.load` 缺 `${DIR}` 替换 —— 补齐（判为遗漏）
+
+**对象**：`envs/framework/blueprint.py` /
+`envs/framework/parameterized_blueprint.py` / `envs/framework/policy.py`
+**类别**：修复执行（用户裁决"是遗漏，无影响直接改"）
+
+### 影响面核查（改前）
+
+- 全仓 env blueprint YAML **零处**使用 `${DIR}`（该特性原本只对
+  policy 侧开放）→ 加替换是纯增量，`replace()` 对不含该变量的文本
+  零副作用，**无回归面**。
+- env blueprint 确有路径类字段可受益：`state_bank_path`、
+  `policy_blueprint_path`、gating model dir——此前只能经
+  `materialize()` override 传绝对路径，蓝图不可自迁移。
+
+### 实施内容
+
+1. `_DIR_VAR`/`_substitute_dir` 从 `policy.py` 上移到 `blueprint.py`
+   （policy.py 本就 import blueprint 方向无环——policy 不 import
+   blueprint，parameterized_blueprint import blueprint，新依赖安全）。
+2. `EnvBlueprint.load`：解析前对原文做 `${DIR}` → YAML 父目录替换；
+   经 `from_yaml` 自动物化 parameterized 文档的路径同样被覆盖。
+3. `ParameterizedEnvBlueprint.load`：同款替换（直接 load 入口）。
+4. `policy.py`：删本地实现，import 共享 `_substitute_dir`；
+   注释保留 `${DIR}` 语义说明并注明 env 侧同样适用。
+5. `test_blueprint.py` 新 `TestDirSubstitution`（3 用例）：
+   `EnvBlueprint.load` 替换 config 内 `${DIR}`；
+   `ParameterizedEnvBlueprint.load` 替换参数默认值里的 `${DIR}`；
+   不含 `${DIR}` 的文件原样通过。
+
+### 验证
+
+- `pytest envs/framework/tests/` → **227 passed**。
+- `envs/humanoid21/blueprint.yaml`（parameterized）load+materialize 正常。
+- 三个模块独立 import 无环。

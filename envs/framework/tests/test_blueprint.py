@@ -251,3 +251,79 @@ class TestClassSpec:
     def test_class_spec_dict_round_trip(self):
         spec = ClassSpec(cls="m:Foo", config={"a": 1})
         assert ClassSpec.from_dict(spec.to_dict()) == spec
+
+
+# ---------------------------------------------------------------------------
+# ${DIR} substitution on load
+# ---------------------------------------------------------------------------
+class TestDirSubstitution:
+    """``${DIR}`` in a blueprint file resolves to the YAML's parent dir.
+
+    ``PolicyBlueprint.load`` always supported this; env-side ``load`` was
+    missing it (AUDIT P-FW-8) — env blueprints therefore could not
+    reference co-located assets (state banks, nested blueprints, model
+    files). Both ``EnvBlueprint.load`` and
+    ``ParameterizedEnvBlueprint.load`` now substitute before parsing.
+    """
+
+    def test_env_blueprint_load_substitutes_dir(self, tmp_path):
+        sub = tmp_path / "nested"
+        sub.mkdir()
+        path = sub / "env.yaml"
+        path.write_text(
+            "version: 1\n"
+            "simulator:\n"
+            '  cls: "some.module:SomeSim"\n'
+            "  config: {}\n"
+            "plugins:\n"
+            '  - cls: "some.module:SomePlugin"\n'
+            "    config:\n"
+            '      asset_path: "${DIR}/asset.npz"\n',
+            encoding="utf-8",
+        )
+        bp = EnvBlueprint.load(path)
+        assert bp.plugins[0].config["asset_path"] == str(
+            sub.resolve() / "asset.npz"
+        )
+
+    def test_parameterized_env_blueprint_load_substitutes_dir(self, tmp_path):
+        path = tmp_path / "env_param.yaml"
+        path.write_text(
+            "version: 1\n"
+            "parameters:\n"
+            "  bank:\n"
+            '    default: "${DIR}/state_pool.npz"\n'
+            "simulator:\n"
+            '  cls: "some.module:SomeSim"\n'
+            "  config: {}\n"
+            "plugins:\n"
+            '  - cls: "some.module:SomePlugin"\n'
+            "    config:\n"
+            "      state_bank_path: ${bank}\n",
+            encoding="utf-8",
+        )
+        from envs.framework.parameterized_blueprint import (
+            ParameterizedEnvBlueprint,
+        )
+
+        pb = ParameterizedEnvBlueprint.load(path)
+        bp = pb.materialize()
+        assert bp.plugins[0].config["state_bank_path"] == str(
+            tmp_path.resolve() / "state_pool.npz"
+        )
+
+    def test_load_without_dir_var_is_unchanged(self, tmp_path):
+        path = tmp_path / "plain.yaml"
+        path.write_text(
+            "version: 1\n"
+            "simulator:\n"
+            '  cls: "some.module:SomeSim"\n'
+            "  config: {}\n"
+            "plugins:\n"
+            '  - cls: "some.module:SomePlugin"\n'
+            "    config:\n"
+            '      asset_path: "relative/keep.me"\n',
+            encoding="utf-8",
+        )
+        bp = EnvBlueprint.load(path)
+        assert bp.plugins[0].config["asset_path"] == "relative/keep.me"

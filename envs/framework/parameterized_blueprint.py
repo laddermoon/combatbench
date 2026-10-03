@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from .blueprint import BLUEPRINT_VERSION, EnvBlueprint
+from .blueprint import BLUEPRINT_VERSION, EnvBlueprint, _substitute_dir
 
 # Sentinel for "no default value provided".
 _MISSING = object()
@@ -282,7 +282,12 @@ class ParameterizedEnvBlueprint:
 
     @classmethod
     def load(cls, path: str | Path) -> "ParameterizedEnvBlueprint":
-        return cls.from_yaml(Path(path).read_text(encoding="utf-8"))
+        """Load from disk; ``${DIR}`` resolves to the YAML file's parent
+        directory (same convention as ``EnvBlueprint.load`` /
+        ``PolicyBlueprint.load``)."""
+        p = Path(path)
+        raw = _substitute_dir(p.read_text(encoding="utf-8"), p.parent)
+        return cls.from_yaml(raw)
 
 
 __all__ = [
