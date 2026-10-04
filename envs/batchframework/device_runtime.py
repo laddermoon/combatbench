@@ -96,6 +96,10 @@ class BatchRuntime:
                            "freeze_check": 0, "freeze_syncs": 0,
                            "any_running": 0, "reset": 0}
         self.hook_timing: Dict[str, float] = {}
+        # E7-W0：hook 内逐插件耗时——``{hook}::{plugin.name}`` → 秒。
+        # 注意是 host 提交墙钟：插件内的隐式 host sync 会把前面异步
+        # 工作的等待时间也计入该插件名下，归因以"谁发起同步"为准。
+        self.hook_plugin_timing: Dict[str, float] = {}
         self.barrier_time: float = 0.0
         self.seg_timing: Dict[str, float] = {
             "physics_wall": 0.0, "obs_build": 0.0}
@@ -249,6 +253,7 @@ class BatchRuntime:
                 ctx._grant_mutator(allowed)
             else:
                 ctx._revoke_mutator()
+            _tp = _time.perf_counter()
             try:
                 getattr(p, hook)(ctx)
             except Exception:
@@ -261,6 +266,10 @@ class BatchRuntime:
                 ctx._revoke_mutator()
                 ctx.reset_env_ids = None
                 ctx.terminated_env_ids = None
+            key = f"{hook}::{p.name}"
+            self.hook_plugin_timing[key] = (
+                self.hook_plugin_timing.get(key, 0.0)
+                + _time.perf_counter() - _tp)
         self.hook_timing[hook] = (
             self.hook_timing.get(hook, 0.0)
             + _time.perf_counter() - _t0)

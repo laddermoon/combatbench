@@ -414,6 +414,9 @@ class DeviceObserverDispatcher(BaseDevicePlugin):
 
     def __init__(self):
         self.observers: Dict[str, BaseDeviceObserver] = {}
+        # E7-W0：逐 observer 耗时（host 提交墙钟），report 经
+        # rt.dispatcher.observer_timing 透出。
+        self.observer_timing: Dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -442,8 +445,14 @@ class DeviceObserverDispatcher(BaseDevicePlugin):
             u.on_envs_reset(ctx)
 
     def on_post_action_step(self, ctx):
-        for u in self.observers.values():
+        import time as _time
+        for k, u in self.observers.items():
+            _t = _time.perf_counter()
             u.on_post_action_step(ctx)
+            key = f"obs::{k}"
+            self.observer_timing[key] = (
+                self.observer_timing.get(key, 0.0)
+                + _time.perf_counter() - _t)
 
     def on_post_episode(self, ctx):
         for u in self.observers.values():

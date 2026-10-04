@@ -109,6 +109,8 @@ def _reset_counters(dr) -> None:
         for k in rt.sync_stats:
             rt.sync_stats[k] = 0
         rt.hook_timing.clear()
+        rt.hook_plugin_timing.clear()
+        rt.dispatcher.observer_timing.clear()
         rt.seg_timing.update({k: 0.0 for k in rt.seg_timing})
         rt.barrier_time = 0.0
 
@@ -208,6 +210,14 @@ def main() -> None:
         print("  barrier_time:", round(rep.get("barrier_time", 0), 3))
         print("  hook_timing:", {k: round(v, 3) for k, v in
                                (rep.get("hook_timing") or {}).items()})
+        pt = rep.get("hook_plugin_timing") or {}
+        print("  hook_plugin_timing:",
+              {k: round(v, 3) for k, v in
+               sorted(pt.items(), key=lambda kv: -kv[1])[:8]})
+        ot = rep.get("observer_timing") or {}
+        print("  observer_timing:",
+              {k: round(v, 3) for k, v in
+               sorted(ot.items(), key=lambda kv: -kv[1])[:10]})
         print("  sync_stats:", rep.get("sync_stats"))
     else:
         print("  multi-dev wall only; per-worker report 见 --out JSON")

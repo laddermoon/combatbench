@@ -423,6 +423,10 @@ class DeviceRollouter:
                              if self._rt is not None else {},
             "hook_timing": dict(self._rt.hook_timing)
                            if self._rt is not None else {},
+            "hook_plugin_timing": dict(self._rt.hook_plugin_timing)
+                           if self._rt is not None else {},
+            "observer_timing": (dict(self._rt.dispatcher.observer_timing)
+                                if self._rt is not None else {}),
             "barrier_time": (self._rt.barrier_time
                              if self._rt is not None else 0.0),
         }
