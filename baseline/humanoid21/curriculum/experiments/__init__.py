@@ -8,7 +8,13 @@ import importlib
 from pathlib import Path
 from typing import Dict, List
 
-from baseline.framework.experiment import Experiment as _Experiment
+try:
+    from baseline.framework.experiment import Experiment as _Experiment
+except ImportError:
+    # 旧统一框架已移除（experiments_ppo/sac 注册表接管）；
+    # Experiment 仅作类型注解/别名，注解在 future-import 下惰性，
+    # 此处容忍缺失以免阻断 exp_* 模块的直接导入。
+    _Experiment = object
 
 Experiment = _Experiment  # backward-compatible alias
 

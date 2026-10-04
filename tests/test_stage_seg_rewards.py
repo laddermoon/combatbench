@@ -12,9 +12,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from baseline.humanoid21.curriculum.experiments.exp_basic_balance_v2_stage_seg import (
-    BasicBalanceV2StageSegConfig,
-)
+# E8-W4 结算：被测对象 BasicBalanceV2StageSegConfig 已在
+# exp_basic_balance_v2_stage_seg.py 中整体注释（旧框架退役时禁用），
+# 测试主体不存在——模块级 skip 保留文件备将来复活，不阻塞收集。
+try:
+    from baseline.humanoid21.curriculum.experiments.exp_basic_balance_v2_stage_seg import (  # noqa: E501
+        BasicBalanceV2StageSegConfig,
+    )
+    _HAVE_SUBJECT = True
+except ImportError:
+    _HAVE_SUBJECT = False
+
+pytestmark = pytest.mark.skipif(
+    not _HAVE_SUBJECT,
+    reason="subject class commented out in "
+           "exp_basic_balance_v2_stage_seg.py (legacy framework retired)")
 
 
 class FakeEpisode:
