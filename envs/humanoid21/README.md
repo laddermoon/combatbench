@@ -63,8 +63,9 @@ with RoundRunner(
     result = runner.run(seed=42)
 
 print(result)
-# {'steps': 600, 'termination_reasons': [...], 'seed': 42,
-#  'health_a': ..., 'health_b': ...}
+# {'steps': 600,
+#  'termination_reasons': {'robot_a': ['timeout'], 'robot_b': ['timeout']},
+#  'seed': 42, 'health_a': ..., 'health_b': ...}
 ```
 
 ### 录制视频
@@ -91,7 +92,8 @@ with RoundRunner(
 `blueprint.yaml` 声明了标准比赛规则的 `EnvBlueprint`（参数化，支持
 `initial_distance` / `max_steps` 覆盖），包含：
 
-- **Simulator**：`Humanoid21Simulator`（`battle_v2.xml`，默认 2m 初始距离）
+- **Simulator**：`Humanoid21Simulator`（`battle_circular_v2.xml`
+  圆形围栏场地，默认 2m 初始距离）
 - **Plugins**：`CombatScoringPlugin`（100 HP，force_scale=100）
 - **Observer Plugins**：`CombatScoringObserver`（输出双方血量/伤害/KO 状态）
 
@@ -103,7 +105,7 @@ with RoundRunner(
 |------|------|------|
 | 仿真器 | `simulator.py` | MuJoCo 物理引擎封装，PD 控制，静态/核心/派生数据接口 |
 | 元数据 | `meta.py` | XML 解析出的机器人结构表（joint/body/keypoint/affiliation） |
-| 战斗插件 | `plugins.py` | 伤害计算、KO 判定（`CombatScoringPlugin`）、约束/冻结等 |
+| 战斗插件 | `plugins.py` | 伤害计算、KO 判定（`CombatScoringPlugin`）、冻结（`FrozenRobotPlugin`） |
 | 扰动插件 | `disturbance_plugins.py` | 外力扰动、初始状态扰动、随机倒伏等 |
 | 观测插件 | `observer_plugins.py` | `CombatScoringObserver`、平衡分析观测器等 |
 | 规则蓝图 | `blueprint.yaml` | 标准比赛规则蓝图 |
@@ -133,8 +135,9 @@ humanoid21/
 ├── disturbance_plugins.py  # 扰动插件
 ├── observer_plugins.py     # 观测插件（CombatScoringObserver 等）
 ├── blueprint.yaml          # 标准比赛规则蓝图（参数化）
-├── battle_v2.xml           # 场地模型（当前使用，圆形围栏）
+├── battle_circular_v2.xml  # 场地模型（当前使用，圆形围栏）
 ├── battle_v1.xml           # 旧场地模型（历史保留）
+├── battle_v2.xml           # 旧场地模型（历史保留）
 ├── DATASPEC.md             # 数据接口规范
 ├── CONTROLSPEC.md          # 控制接口规范
 ├── OBSERVATION_zh.md       # 观测空间设计

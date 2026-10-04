@@ -2193,3 +2193,26 @@ view 内加 epoch 校验）。
 - `pytest envs/humanoid21/tests/` → **42 passed, 0 warnings**
   （原 47：-5 个假绿收集项；真实覆盖不降反升——symmetry 现在会真挂）。
 - `acceptance_check.py` py_compile 通过；不在 pytest 收集路径。
+
+## [2026-10-01] P-H21-5 `envs/humanoid21/README.md` 残留失真修复
+
+**对象**：`envs/humanoid21/README.md`
+**类别**：修复执行（逐项核对 CLI/返回结构/文件清单后）
+
+### 逐项核对结果
+
+| 审计条目 | 现状 |
+|---|---|
+| `rule_blueprint.yaml` → `blueprint.yaml` | ✅ 前一轮 B 档修复已改 |
+| CLI 参数 `--env-blueprint` 等 | ✅ 已对 `--help` 输出逐参数核实，全部真实 |
+| `termination_reasons: ['timeout']`（list） | **本次修**：实际是 per-agent dict `{'robot_a': [...], 'robot_b': [...]}`（round_runner.py:117-120），示例已改 |
+| `SPEC.md` 引用 | ✅ 前一轮已删 |
+| 目录结构漏 `disturbance_plugins.py`/`meta.py`/XML | ✅ 前一轮已补；**本次补**：第三个 XML `battle_circular_v2.xml` 未列，且它是当前场地（`simulator.py:35 ARENA_XML`）——蓝图节"battle_v2.xml"更正为 circular_v2，目录树三者并立标注 v1/v2 为历史保留 |
+| plugins.py"约束/冻结"描述 | 本次改"冻结（FrozenRobotPlugin）"——NonFallConstraint 已删（P-H21-3） |
+
+### 验证
+
+- `round_runner` 快速开始命令**端到端实跑通过**（seed=42，双方
+  timeout，输出 dict 与新文档一致）。
+- `policy/blueprints/random.yaml`、`policy/blueprints/humanoid21/standing.yaml`
+  均存在；`RandomCombatPolicy(scale=...)` 签名属实。
