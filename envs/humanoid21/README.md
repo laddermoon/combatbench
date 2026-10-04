@@ -117,9 +117,10 @@ with RoundRunner(
 
 **CombatScoringObserver** — 战斗状态观测
 - 输出 `{robot_a, robot_b}`：health / cumulative_damage_taken /
-  step_damage_taken / is_ko
-- 已知缺口：`step_hit_events` 与 `events` 字段当前恒为空
-  （事件容器未接通，见 AUDIT.md P-H21-2）
+  step_damage_taken / step_hit_events / is_ko
+- `events` / `step_hit_events` / `step_damage_taken` 经 `ctx.events`
+  游标差分得出"本步事件"（事件日志只增、observer 记上次读到的位置）——
+  也是消费共享事件 journal 的参考实现
 
 ## 目录结构
 
