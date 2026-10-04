@@ -467,6 +467,41 @@ def test_debug_capture(tmp_path):
     assert doc["provenance"]["binding"] == "fake"
 
 
+def test_debug_replay_recorded(tmp_path):
+    """E8-W1.5：capture → debug_replay.recorded 往返——
+    回放清单逐字段与落盘 npz 一致。"""
+    from envs.batchframework.debug_capture import (
+        CaptureRequest, WaveDebugCapture)
+    from envs.batchframework.debug_replay import recorded
+    sim, rt, store, rec = _make_wave()
+    jobs = [SimpleNamespace(seed=100 + i, episode_options={})
+            for i in range(B)]
+    cap = WaveDebugCapture(
+        CaptureRequest(job_refs=(1,), frames=(2,),
+                       out_dir=str(tmp_path)), jobs)
+    cap.set_wave({r: r for r in range(B)}, store, {"binding": "fake"})
+    rt.reset(seeds=torch.arange(B, dtype=torch.int64))
+    rt.obs_builder.build(rt.state)
+    rec.begin_wave()
+    run_wave(rt, _ConstExec(), _ConstExec(), store, stochastic=True,
+            ctx_a=None, ctx_b=None, ctx_ab=None, T=T, step_hook=cap)
+    cap.write_manifest(collect_id=1)
+
+    doc = recorded(str(tmp_path))
+    assert doc["replay_kind"] == "recorded"
+    assert doc["n_captures"] == 1
+    frame = doc["frames"][0]
+    assert frame["entry"]["job_ref"] == 1
+    assert frame["entry"]["wave_step"] == 2
+    fields = frame["fields"]
+    assert f"obs/{AGENTS[0]}" in fields
+    assert fields[f"obs/{AGENTS[0]}"]["dtype"] == "float32"
+    # 回放清单与实际 npz 键集一致（只读回放不重算）
+    npz = np.load(tmp_path / frame["entry"]["file"])
+    assert set(fields) == set(npz.files)
+    assert (tmp_path / "replay_recorded.json").exists()
+
+
 def test_health_scan_marks_nan_failed():
     """E6-W5：非有限状态 → FAILED(non_finite)，行封存不产空 Episode。"""
     sim, rt, store, rec = _make_wave()
