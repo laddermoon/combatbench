@@ -57,9 +57,10 @@
 
 | 对象 | 现状 | 建议结算 |
 |---|---|---|
-| `WarpHumanoid21Simulator` facade shim | 存在，被 `_mk_fallen` 等 factory 引用 | **保留**（内部依赖，标注"非公开入口"） |
-| `host_compat.py`（COMPAT/HOST_SLOW 适配器） | 无注册条目消费 | **过期保留**：机制留存 + 文档标注无活跃消费 |
-| `coordinator.py`/`batch_plugin.py`/`batch_context.py`（旧批量原型） | 与正式入口并存 | **过期**：标注"历史原型，非公开接口"，不删除（W2 复核引用面后定） |
+| `WarpHumanoid21Simulator`（warp_simulator.py） | `binding_registry` 活跃装配点 + 测试/探针直接引用 | **保留**——内部装配点，标注"非公开入口"（W2 复核：非 facade） |
+| `host_compat.py`（COMPAT/HOST_SLOW 适配器） | 无注册条目消费 | **休眠机制**：代码路径留存 + docstring 标注（已落地） |
+| `batch_plugin.py`/`batch_context.py`（numpy 契约原型） | 零代码引用，仅 docstring 设计参照 | **休眠原型**：docstring 标注"勿在新代码引用"（已落地） |
+| `coordinator.py` | `device_rollouter`/`multi_rollouter`/`worker` 活跃依赖 | **非弃用**——E4 分片协议，多卡内部模块（W0 误判已修正） |
 | `test_m2_cross_backend_fixtures` stale | fixture 依赖哈希过旧 | **修复**：fixture 重录（W4 执行） |
 | `test_stage_seg_rewards.py` collection 错误 | import 坏链 | **修复**：修 import 或移出收集（W4 执行） |
 

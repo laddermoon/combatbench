@@ -1,5 +1,9 @@
 """Batch plugin system — vectorized lifecycle hooks for batch simulation.
 
+> **休眠原型（E8 判定）**：零代码引用；作为 hook 语义的设计参照
+> 保留（``device_plugin.py`` docstring 引用其 hook 顺序）。
+> 不演进、勿在新代码引用——见 PUBLIC_INTERFACE.md §4。
+
 Plugin 运行在 Python 编排层：物理推进 ``physical_step(n_steps)`` 在 GPU
 上连续执行，plugin 只在 action step 边界触发。终止是 per-env 的：plugin
 标记某些 env 终止，runtime 负责重置。

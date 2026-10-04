@@ -1,5 +1,9 @@
 """HOST / HOST_SLOW 兼容层——旧插件经数据转换复用（M3 W3）。
 
+> **休眠机制（E8 判定）**：``capability_registry`` 保留 COMPAT/
+> HOST_SLOW 代码路径但注册表无一条使用——保留以备显式兼容需求，
+> 勿默认走此路。见 PUBLIC_INTERFACE.md §4。
+
 两种适配器：
 
 - ``HostBatchCompatAdapter`` (plane=HOST)：包装 ``BaseBatchPlugin``

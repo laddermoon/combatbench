@@ -1,5 +1,9 @@
 """Batch simulation context — blackboard for vectorized plugin dispatch.
 
+> **休眠原型（E8 判定）**：与 ``batch_plugin.py`` 同为 numpy 契约
+> 原型，零代码引用；作为设计参照保留，勿在新代码引用——
+> 见 PUBLIC_INTERFACE.md §4。
+
 设计原则：
 1. 所有数组第一维是 batch dim (B,)。
 2. JAX 内部细节完全封装，插件写者只面对 numpy。
