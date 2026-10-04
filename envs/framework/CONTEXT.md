@@ -24,7 +24,11 @@ package is deliberately single-process.
   `ctx.episode_options` / `ctx.base_seed`. Deliberately carries **no raw
   simulator reference** — backends internals stay behind the accessor/mutator
   capability views; harness-side diagnostics hold `runtime.simulator` instead
-  (P-FW-4 seal, pinned by `test_audit_simulator_reach.py`).
+  (P-FW-4 seal, pinned by `test_audit_simulator_reach.py`). `ctx.events` is an
+  `EventJournal` — **append-only within an episode** (no pop/clear/remove;
+  framework resets at `clear_episode_state` and bumps `epoch`). "This step's
+  events" is a consumer-side cursor diff `(epoch, len)` — reference:
+  `CombatScoringObserver`.
 - **`BasePlugin`** (`plugin.py`) — world-rule unit. Writes physics only at writable
   hooks AND only if it declares `require_mutator=True`. Both conditions checked
   per-call in `_PluginManager.invoke`.

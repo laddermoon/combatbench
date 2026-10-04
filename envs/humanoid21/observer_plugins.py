@@ -555,25 +555,25 @@ class CombatScoringObserver(BaseObserverPlugin):
         * ``events`` — raw hit events list from the current step.
 
     Per-step semantics are derived by cursor-diff on ``ctx.events``: the
-    event list is an append-only episode journal written by
-    :class:`CombatScoringPlugin` (one entry per action step at
-    ``on_post_action_step``), so "this step's events" = the slice appended
-    since the previous refresh. ``ctx.events`` itself is never mutated
-    here — this observer is the reference example for consuming the
-    shared event journal. Contract note: the diff assumes events are
-    append-only between refreshes; a mid-episode clear triggers a
-    resync (the segment between clear and resync is dropped, not
-    double-counted).
+    event journal is **append-only within an episode** (see
+    ``EventJournal``) and written by :class:`CombatScoringPlugin` (one
+    entry per action step at ``on_post_action_step``), so "this step's
+    events" = the slice appended since the previous refresh. The cursor
+    is ``(events_epoch, count)``: an epoch change means the journal was
+    reset by the framework — the whole current journal counts as new
+    rather than continuing from the stale position. ``ctx.events``
+    itself is never mutated here — this observer is the reference
+    example for consuming the shared event journal.
     """
 
     def __init__(self):
         self._output: Any = None
-        self._prev_event_count = 0
+        self._cursor_epoch = 0
+        self._cursor_count = 0
 
     def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
-        # Baseline = current journal length; robust regardless of whether
-        # the scoring plugin's on_pre_episode clear ran before this hook.
-        self._prev_event_count = len(ctx.events)
+        self._cursor_epoch = ctx.events_epoch
+        self._cursor_count = len(ctx.events)
         self._output = self._build_output(ctx)
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
@@ -595,10 +595,17 @@ class CombatScoringObserver(BaseObserverPlugin):
     def _build_output(self, ctx: ReadOnlySimContext) -> Dict[str, Any]:
         metrics = ctx.metrics
         all_events = list(ctx.events)
-        if len(all_events) < self._prev_event_count:
-            self._prev_event_count = 0
-        events = all_events[self._prev_event_count:]
-        self._prev_event_count = len(all_events)
+        if ctx.events_epoch != self._cursor_epoch:
+            # Journal was reset since the last read (new episode) — every
+            # current entry is new; do not continue from the stale offset.
+            self._cursor_epoch = ctx.events_epoch
+            self._cursor_count = 0
+        elif len(all_events) < self._cursor_count:
+            # Defensive resync for a shrink that bypassed _reset — cannot
+            # happen through the public EventJournal API.
+            self._cursor_count = 0
+        events = all_events[self._cursor_count:]
+        self._cursor_count = len(all_events)
 
         def _robot_status(robot_id: str) -> Dict[str, Any]:
             health_key = f"health_{robot_id[-1]}"  # health_a / health_b

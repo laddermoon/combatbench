@@ -1,9 +1,67 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 from .backend import BaseSimulator, IDataAccessor, IDataMutator
 
 AGENT_IDS: Tuple[str, ...] = ("robot_a", "robot_b")
+
+
+class EventJournal(Sequence):
+    """Append-only 事件日志 —— 一个 episode 内**只增不减**。
+
+    生产者只能 ``append``；公开 API 不提供 pop/remove/clear——
+    事件一经写入不可撤回、不可改写。回合边界的清空由框架统一执行：
+    ``SimContext.clear_episode_state`` 调 ``_reset()``，插件与
+    observer 不拥有清空权（也不应尝试——不存在这些方法，
+    误删会在调用点立即抛 ``AttributeError``）。
+
+    消费范式：journal 是 episode 级累计记录。"本步/自某时点以来的
+    事件"由消费者游标差分得出——``since(mark)`` 返回 ``mark``
+    之后追加的段。``epoch`` 每次 ``_reset`` +1：游标消费者用
+    ``(epoch, len)`` 作游标即可区分"没有新事件"与"journal 被重置
+    后重新增长"（后者应整段重取，而非从旧游标续读）。
+
+    逃逸面说明：``__items`` 经名字混淆隐藏——与 ``_AccessorView``/
+    ``_MutatorView`` 同款"显式 opt-out"约定，防误用而非防蓄意绕过。
+    """
+
+    __slots__ = ("__items", "_epoch")
+
+    def __init__(self) -> None:
+        self.__items: List[Any] = []
+        self._epoch: int = 0
+
+    # ---- 生产者 API：仅追加 ----
+    def append(self, item: Any) -> None:
+        self.__items.append(item)
+
+    # ---- 消费者 API：读 + 游标 ----
+    def since(self, mark: int) -> List[Any]:
+        """``mark``（此前的 ``len()`` 快照）之后追加的事件段。"""
+        return self.__items[mark:]
+
+    @property
+    def epoch(self) -> int:
+        """Journal 代数：每次框架级 ``_reset`` 递增。"""
+        return self._epoch
+
+    def __len__(self) -> int:
+        return len(self.__items)
+
+    def __iter__(self):
+        return iter(self.__items)
+
+    def __getitem__(self, index):
+        return self.__items[index]
+
+    def __repr__(self) -> str:
+        return f"EventJournal(len={len(self.__items)}, epoch={self._epoch})"
+
+    # ---- 框架私有：仅 SimContext.clear_episode_state 调用 ----
+    def _reset(self) -> None:
+        self.__items.clear()
+        self._epoch += 1
 
 
 class TerminationReason:
@@ -202,7 +260,9 @@ class SimContext:
 
         # 派生黑板
         self.metrics: Dict[str, Any] = {}
-        self.events: List[Any] = []
+        # 事件日志：append-only，一个 episode 内只增不减（见 EventJournal）。
+        # 插件只能 append；"本步事件"由消费者游标差分得出，不由容器区分。
+        self.events: EventJournal = EventJournal()
         self.agent_termination_proposals: Dict[str, List[str]] = {
             aid: [] for aid in AGENT_IDS
         }
@@ -260,7 +320,7 @@ class SimContext:
         self.episode_step = 0
         self.physics_step = 0
         self.metrics.clear()
-        self.events.clear()
+        self.events._reset()
         for aid in AGENT_IDS:
             self.agent_termination_proposals[aid].clear()
             self.agent_terminated[aid] = False
@@ -287,6 +347,10 @@ class ReadOnlySimContext:
     all_agents_terminated: bool
     base_seed: Optional[int] = None
     episode_options: Mapping[str, Any] = MappingProxyType({})
+    #: ``ctx.events.epoch`` 快照：游标差分消费者用它与 ``len(events)``
+    #: 组成 (epoch, count) 游标；epoch 变化 = journal 被框架重置，
+    #: 应整段重取而非从旧位置续读。
+    events_epoch: int = 0
 
     @property
     def is_agent_terminated(self) -> Dict[str, bool]:
@@ -301,6 +365,7 @@ class ReadOnlySimContext:
             physics_step=ctx.physics_step,
             metrics=MappingProxyType(dict(ctx.metrics)),
             events=tuple(ctx.events),
+            events_epoch=ctx.events.epoch,
             agent_termination_proposals={
                 aid: tuple(ctx.agent_termination_proposals[aid])
                 for aid in AGENT_IDS

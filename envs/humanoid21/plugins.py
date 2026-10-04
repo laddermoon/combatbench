@@ -171,8 +171,6 @@ class CombatScoringPlugin(BasePlugin):
         )
         ctx.metrics['damage_taken_a'] = 0.0
         ctx.metrics['damage_taken_b'] = 0.0
-        while len(ctx.events) > 0:
-            ctx.events.pop()
         self._score_log_total_step = 0
 
         # Resolve the score-log file the same way as initial_health_*:

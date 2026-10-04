@@ -21,7 +21,8 @@ from .plugin import BasePlugin
 # * **需要在 observer 之前执行的 plugin** —— 把自己的 ``priority`` 设置成
 #   **严格大于** ``OBSERVER_DISPATCHER_PRIORITY``（例如
 #   ``OBSERVER_DISPATCHER_PRIORITY + 1``）。典型用例：
-#     - 计分 / 伤害判定（写入 ``ctx.metrics`` / ``ctx.events``），让
+#     - 计分 / 伤害判定（写入 ``ctx.metrics`` / ``ctx.events``——后者是
+#       append-only 的 EventJournal，只能 append），让
 #       observer 在同一步就能读到本步的击打结果，而不是滞后一步。
 #     - 任何会修改 ``ctx`` 黑板字段、且这些字段会被 observer 读取的 plugin。
 #

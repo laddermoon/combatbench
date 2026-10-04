@@ -147,7 +147,7 @@ accessor.get_broadcastview_image()
 
 ```python
 ctx.metrics: Dict[str, Any]
-ctx.events: List[Any]
+ctx.events: EventJournal                               # append-only（见下）
 ctx.agent_termination_proposals: Dict[str, List[str]]   # agent_id -> reasons
 ctx.agent_terminated: Dict[str, bool]                   # agent_id -> 已终止
 ```
@@ -156,8 +156,17 @@ ctx.agent_terminated: Dict[str, bool]                   # agent_id -> 已终止
   - 必须保存客观的、可解释的标量或结构化统计。
   - 例如：血量、累计伤害、clamp 次数、阶段性计数器。
 
-- **`events`**
-  - 保存当前 step 发生的瞬时事件。
+- **`events`**（`EventJournal`，append-only 事件日志）
+  - **一个 episode 内只增不减**：生产者只能 `append`，没有
+    pop/remove/clear——事件一经写入不可撤回。
+  - 语义是 **episode 级累计 journal**，不是"当前 step 的事件"。
+    "本步/自某时点以来的事件"由**消费者游标差分**得出：
+    `events.since(mark)` 取 mark 之后追加的段；游标用
+    `(epoch, len)`——`epoch` 变化表示 journal 被框架重置，
+    应整段重取而非续读（参考实现：`CombatScoringObserver`）。
+  - 清空权归框架：`SimContext.clear_episode_state`（episode
+    边界）统一 `_reset()` 并递增 `epoch`，插件/observer
+    不拥有清空权。
   - 例如：命中事件、越界事件、关键状态切换。
 
 - **`agent_termination_proposals` / `agent_terminated`**

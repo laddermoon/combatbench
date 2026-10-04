@@ -23,7 +23,9 @@
 *   **`SimContext`**: 跨插件流转数据的黑板。
     *   通过 `ctx.accessor` 提供永久的只读访问。
     *   通过 `ctx.mutator` 提供受引擎严格控制的写入能力（未授权时为 `None`）。
-    *   提供 `ctx.metrics` 和 `ctx.events` 用于存放派生指标。
+    *   提供 `ctx.metrics`（派生指标黑板）和 `ctx.events`（`EventJournal`
+        —— append-only 事件日志：episode 内只增不减，清空权归框架，
+        "本步事件"由消费者游标差分得出）。
     *   提供 `ctx.request_termination(reason)` 机制用于发起终止提案。
 *   **`ReadOnlySimContext`**: 面向 observer plugin 的只读裁剪视图，由内部 dispatcher 统一构造。
 

@@ -65,7 +65,8 @@ L2 读取。
 ```
 1) ctx.clear_episode_state()
      - episode_step = 0, physics_step = 0
-     - metrics.clear(), events.clear(), termination_proposals.clear()
+     - metrics.clear(), events._reset()（EventJournal 清空 + epoch+1）,
+      termination_proposals.clear()
      - episode_options.clear()                          # ❗ 当前 ctx 无此字段
      - base_seed 保留不动                                # 由上层在 runtime.reset 之前写入
 2) ctx.episode_options = dict(options or {})           # ❗ 当前无此步骤
@@ -76,8 +77,8 @@ L2 读取。
        observer.on_pre_episode(ReadOnlySimContext(ctx))
      - 其他 plugin 按 priority 递减顺序跑 on_pre_episode；
        可读 ctx.episode_options 取本 episode 参数，可读 ctx.metrics /
-       ctx.accessor，可写 ctx.metrics / ctx.events / ctx.mutator（若
-       require_mutator=True）
+       ctx.accessor，可写 ctx.metrics / ctx.events（append-only，
+       不可清空——清空权归框架）/ ctx.mutator（若 require_mutator=True）
 6) if ctx.is_terminated: _handle_termination()         # 立即触发 on_post_episode
 ```
 

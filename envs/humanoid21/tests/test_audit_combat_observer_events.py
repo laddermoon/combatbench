@@ -1,8 +1,9 @@
 """Audit regression (P-H21-2, fixed): CombatScoringObserver consumed
 ``metrics['events']`` — a key nothing ever wrote — while hit events live
-on ``ctx.events``. The observer now cursor-diffs the append-only event
-journal: ``step_*`` keys reflect events appended since the previous
-refresh, ``ctx.events`` itself is never mutated.
+on ``ctx.events``. The observer now cursor-diffs the append-only
+``EventJournal``: ``step_*`` keys reflect events appended since the
+previous refresh, using an ``(events_epoch, count)`` cursor so a
+framework-level journal reset is detected exactly.
 
 Run:
     PYTHONPATH=. python3 -m pytest envs/humanoid21/tests/test_audit_combat_observer_events.py -v
@@ -17,20 +18,22 @@ from envs.humanoid21.observer_plugins import CombatScoringObserver
 class _StubCtx:
     """Minimal ctx stand-in matching what _build_output touches."""
 
-    def __init__(self, metrics, events):
+    def __init__(self, metrics, events, events_epoch=0):
         self.metrics = metrics
         self.events = events
+        self.events_epoch = events_epoch
 
 
 _HIT_A = {"type": "hit", "defender": "robot_a", "damage": 3.5}
 _HIT_B = {"type": "hit", "defender": "robot_b", "damage": 1.25}
 
 
-def _ctx(events):
+def _ctx(events, epoch=0):
     return _StubCtx(
         metrics={"health_a": 96.5, "health_b": 98.75,
                  "damage_taken_a": 3.5, "damage_taken_b": 1.25},
         events=list(events),
+        events_epoch=epoch,
     )
 
 
@@ -70,7 +73,7 @@ def test_health_and_cumulative_from_metrics():
 
 
 def test_pre_episode_baseline_resync():
-    """on_pre_episode takes the current journal length as baseline — a
+    """on_pre_episode takes the current journal state as baseline — a
     leftover journal from a previous episode is not double-counted."""
     obs = CombatScoringObserver()
     journal = [_HIT_A]
@@ -83,13 +86,25 @@ def test_pre_episode_baseline_resync():
     assert out["events"] == [_HIT_B]
 
 
-def test_mid_episode_clear_resyncs():
-    """Contract guard: if the journal is ever cleared mid-episode, the
-    cursor resyncs instead of slicing garbage (dropped, not duplicated)."""
+def test_epoch_change_treats_whole_journal_as_new():
+    """A framework reset bumps events_epoch: the cursor must not continue
+    from the stale offset — the whole current journal is 'new' events."""
+    obs = CombatScoringObserver()
+    obs._build_output(_ctx([_HIT_A, _HIT_B], epoch=0))
+    # Journal reset by framework (epoch 0 → 1), already regrown past the
+    # old cursor — a length-only check would silently miss _HIT_B.
+    out = obs._build_output(_ctx([_HIT_A, _HIT_B, _HIT_B], epoch=1))
+    assert out["events"] == [_HIT_A, _HIT_B, _HIT_B]
+    assert out["robot_b"]["step_damage_taken"] == pytest.approx(2.5)
+
+
+def test_shrink_without_epoch_resyncs():
+    """Defensive resync: a shrink that bypassed _reset (impossible via the
+    public EventJournal API) still resyncs instead of slicing garbage."""
     obs = CombatScoringObserver()
     journal = [_HIT_A, _HIT_B]
-    obs._build_output(_ctx(journal))
+    obs._build_output(_ctx(journal, epoch=0))
     journal.clear()
     journal.append(_HIT_B)
-    out = obs._build_output(_ctx(journal))
+    out = obs._build_output(_ctx(journal, epoch=0))
     assert out["events"] == [_HIT_B]
