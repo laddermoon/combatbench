@@ -2216,3 +2216,28 @@ view 内加 epoch 校验）。
   timeout，输出 dict 与新文档一致）。
 - `policy/blueprints/random.yaml`、`policy/blueprints/humanoid21/standing.yaml`
   均存在；`RandomCombatPolicy(scale=...)` 签名属实。
+
+## [2026-10-01] P-H21-6 资产盘点处置：CLAUDE.md 场地清单修正
+
+**对象**：`CLAUDE.md`（envs/humanoid21 目录条目）
+**类别**：修复执行（用户指示"按实际情况修复"；REVIEW_SUMMARY 属
+git 外文档，不管）
+
+### 逐项核对
+
+- `CLAUDE.md` 两处（L11 assets 注释 + L20 目录树）只列 v1/v2 →
+  已改为 `battle_circular_v2.xml` 为当前场地、v1/v2 标注
+  "历史保留/迁移工具用"。
+- `battle_v1/v2.xml` 的旧代码引用**核实为合法而非过期**：
+  `scripts/migrate_feet_forces_norm.py` 是 v1 时代数据的迁移工具，
+  `mocap/retarget*.py` 明确提取 battle_v1 的关节结构——它们的
+  注释本就声明面向 v1，正确。
+- `envs/humanoid21/README.md` 已在 P-H21-5 修复（三个 XML 并立、
+  circular_v2 标当前）。
+- `obs_analysis/`、`pose_images/`：非代码档案资产，保留合理，不动。
+- `envs/humanoid21/REVIEW_SUMMARY.md`：git 外考古文档，按指示不管。
+
+### 验证
+
+- 活跃文档中 `battle_*` 提及仅剩正确表述（README/CLAUDE）。
+- 文档类改动，无代码影响。

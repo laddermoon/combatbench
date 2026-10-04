@@ -8,7 +8,7 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
 
 ## Project Structure
 
-- `assets/` - Images only (arena XML models live in `envs/humanoid21/`: `battle_v1.xml`, `battle_v2.xml`)
+- `assets/` - Images only (arena XML models live in `envs/humanoid21/`: `battle_circular_v2.xml` is current; `battle_v1.xml`/`battle_v2.xml` kept for historical/migration tooling)
 - `envs/` - Environment implementations
   - `framework/` - Core framework interfaces (BasePlugin, SimContext, etc.)
   - `batchframework/` - MJX-based batched simulator (experimental)
@@ -17,7 +17,7 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
     - `plugins.py` - Combat plugins (scoring, non-fall constraint, frozen robot)
     - `observer_plugins.py` - Observation/reward observer plugins (CombatScoringObserver, balance analysis)
     - `disturbance_plugins.py` - External disturbance plugins
-    - `battle_v1.xml` / `battle_v2.xml` - Arena MuJoCo models
+    - `battle_circular_v2.xml` - Current arena MuJoCo model (circular wall, condim=3); `battle_v1.xml` / `battle_v2.xml` are historical arenas kept for old data migration
     - `DATASPEC.md` - Data interface specification
     - `OBSERVATION_zh.md` - Observation space documentation (96-dim)
   - `framework/round_runner.py` - `RoundRunner` class and CLI for running complete rounds
