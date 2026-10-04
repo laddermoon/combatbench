@@ -44,8 +44,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "Humanoid21Simulator",
@@ -93,8 +95,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "DualImbalanceTerminationPlugin",
@@ -130,8 +134,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "cross_support_a",
@@ -167,8 +173,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "cross_support_b",
@@ -204,8 +212,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "posture_a",
@@ -241,8 +251,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "posture_b",
@@ -278,8 +290,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "height_phi_a",
@@ -315,8 +329,10 @@
         },
         {
           "level": "train_smoke",
+          "passed": true,
+          "input_hash": "",
           "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "input_hash": ""
+          "pass_ts": 1791130221.2137194
         }
       ],
       "name": "height_phi_b",
