@@ -48,7 +48,7 @@
 | 单卡 `DeviceRollouter.collect(jobs) -> List[Episode]` | 原生通过 | `test_device_rollouter.py`（契约/padding/logprob replay/unsupported 拒绝）；E7 1 卡矩阵 |
 | 多卡 `MultiDeviceRollouter`（1–8 卡） | 原生通过 | `test_multi_rollouter.py`、`test_shard_plan.py`；E7 §2 规模表（1/2/8 卡） |
 | CPU→设备迁移（basic_balance / standup_floor04） | 原生通过 | 两份 `migration_manifests/*.json`（unit_replay + e2e_collect + **train_smoke**）+ `test_migration_manifest.py` |
-| 短程训练（device collector → PPO loop） | 原生通过（E5 证据） | manifest evidence：`collector=device + devices=0,1 各2 updates`、`standup_floor04 device+multi 冒烟`；W4 触发矩阵判定 E5 后变更是否需复验 |
+| 短程训练（device collector → PPO loop） | 原生通过（复验） | manifest evidence：E5 `devices=0,1 各2 updates` + **E8-W4 复验** `e8_smoke_device_ppo`（终止帧语义后，B=512 2 updates 端到端通过） |
 | CPU `ParallelRollouter` 主路径 | 原生通过 | `envs/framework/tests/` + humanoid21 套件；414 项回归 |
 | hooks-on（子步插件）路径 | 兼容通过 | E7 hooks-on 格（物理 eager 142K sub/s；obs 图仍生效）——可用但非图化，如实标注 |
 | Episode/PPO 接口兼容 | 原生通过 | `test_ppo_pipeline_compat`、`test_logprob_replay_parity`、E5 manifest train_smoke |
@@ -61,8 +61,8 @@
 | `host_compat.py`（COMPAT/HOST_SLOW 适配器） | 无注册条目消费 | **休眠机制**：代码路径留存 + docstring 标注（已落地） |
 | `batch_plugin.py`/`batch_context.py`（numpy 契约原型） | 零代码引用，仅 docstring 设计参照 | **休眠原型**：docstring 标注"勿在新代码引用"（已落地） |
 | `coordinator.py` | `device_rollouter`/`multi_rollouter`/`worker` 活跃依赖 | **非弃用**——E4 分片协议，多卡内部模块（W0 误判已修正） |
-| `test_m2_cross_backend_fixtures` stale | fixture 依赖哈希过旧 | **修复**：fixture 重录（W4 执行） |
-| `test_stage_seg_rewards.py` collection 错误 | import 坏链 | **修复**：修 import 或移出收集（W4 执行） |
+| `test_m2_cross_backend_fixtures` stale | fixture 依赖哈希过旧 | **已重录**（`b1d4906f`，expected 逐件一致仅刷哈希）；**残余**：工作树在途 EventJournal 编辑（context/observer_plugin/observer_plugins/plugins）使依赖哈希漂移——该工作提交后重跑 `make-fixtures` 即绿 |
+| `test_stage_seg_rewards.py` collection 错误 | 被测类已在源码中整体注释（旧框架退役） | **已结算**：`skipif` 保留文件（26 skipped），不阻塞收集；连带的 `curriculum/experiments/__init__` 死 import 已修 |
 
 ## E. 探针与工具（公开操作面）
 
@@ -88,5 +88,18 @@
    `test_debug_replay_recorded`（capture→replay 往返，逐字段
    核对 npz 键集/dtype）；`rerun`/`cpu_eval` 两模式判"工具路径"，
    不承诺专项测试锁定；
-2. CPU→设备迁移 manifest 证据新鲜度 → W4 触发矩阵统一判定
-   （E5 之后的终止帧/图化变更是否在复验范围）。
+2. CPU→设备迁移 manifest 证据新鲜度 → 见下方触发矩阵。
+
+## F. 变更触发矩阵（E5 验收之后，ROADMAP「语义/生命周期/采样
+变化才触发复验」逐条判定）
+
+| E5 后变更 | 性质 | 触发判定 |
+|---|---|---|
+| 终止帧语义（`082187be`/`f342b68e`）：`episode_step` 无条件计数、post_action 每步一次、终止帧保留、`physics_steps`/`agent_frame_boundary`、实验消费侧改 boundary | **数据语义 + 生命周期** | **触发→已复验**：`e8_smoke_device_ppo`（basic_balance，device collector B=512 单卡 2 updates × 8 episodes，terms={imbalance_a/b}，trajs 正常进 PPO buffer）——证据已写回 `basic_balance.json` manifest |
+| E7-W1 屏障融合 | 执行机制（语义不变，契约测试锁定） | 不触发 |
+| E7-W2b/W2c CUDA Graph | 执行机制（eager/graph 等价性已证，golden 对照） | 不触发 |
+| E8 本包（矩阵/文档/skipif/可选导入/fixture 重录） | 无行为变更 | 不触发 |
+
+**结论**：唯一触发项（终止帧语义→device 数据契约）已复验：
+`e8_smoke_device_ppo` 端到端通过（device collect → trajectories
+→ PPO 2 updates）。其余变更均不触发复验。
