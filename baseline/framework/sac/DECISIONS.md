@@ -326,6 +326,128 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 
 **W1 遗留待用户确认**：D-ROLLOUT 采集层归置选型（建议 b）、是否接受 §5 的 C1–C3 作为冻结的独立性标准、以及 `baseline/framework/__init__.py` 与 `train.py` 两处中立改动是否在授权范围内。
 
+### W1 裁决记录（用户确认，2026-10-06）
+
+- **D-ROLLOUT = (b)**：采集/采样层 vendor 进 `sac/` 自有命名空间（job/episode/recorder/rollouter/采样 wrapper 拷贝加修改），裁剪 PPO 的 reference/delta σ-floor 等探索语义；`baseline/framework/rollout/` 对 PPO 路径保持不动。
+- **独立性标准冻结**：C1（`import baseline.framework.sac` / `baseline.experiments_sac` 后不出现 `baseline.framework.ppo*` 模块）、C2（`ppo/` 暂时挪走后 SAC 单测与 `--algo sac --smoke` 路径可运行）、C3（SAC 训练数据路径无 PPO 对象）全部接受。
+- **中立改动授权**：`baseline/framework/__init__.py` 去 eager `ppo` import、`train.py` 双 registry 改 lazy import，均在授权范围内（不属 PPO 内部改动）。
+
+## A2：两个目标任务的语义冻结与验收协议（W2 完成稿，2026-10-06）
+
+本节全部结论均经代码与 run 日志核实，标注引用位置；「冻结」字段在验收前不得因结果不理想而修改。
+
+### A2.1 两任务共同事实（已核实）
+
+- Humanoid21 双 agent：obs_dim=96、act_dim=21（[-1,1] 归一化 PD 目标）、`phy_steps_per_action=25`（dt=2ms → 每动作步 50ms，控制频率 20Hz）。两个实验 `agent_used="both"`，self-play 同一份策略，**每个 episode 产出 2 条 agent 轨迹**。
+- 两个实验都以 `max_steps=200` materialize 蓝图（`experiments_ppo/base.py:254,507`），即 **horizon = 200 动作步 = 5000 物理步 = 10s**。`basic_balance_v2_phi_dual_env.yaml` 蓝图默认值 600 被实验覆盖，实际 horizon 也是 200。
+- Episode 计数语义（`env_runtime.py:148-171`、`context.py:278-311`、`episode.py:394-419`）：
+  - `episode_step` 每进入一个 `step()` 无条件 +1（在 post_action_step hooks 之前递增），`physics_step` 只计实际执行的物理子步；某帧 `physics_step` 增量=0 是「动作未物理生效」的退化帧。
+  - 终止提议记录 `(reason, episode_step)`，其中 `episode_step = 帧索引+1`。
+  - `agent_frame_boundary[aid] = min(该 agent 首次终止提议的 episode_step, 最后一个 physics 增量>0 的帧号+1)`；`obs[:T]` 切片**包含提出终止的那帧**（其动作已物理执行）。
+  - `final_observation` 在 `on_post_episode` 捕获 = **整段 episode 末帧后的观测**，对两个 agent 相同（`episode_recorder.py:152-159`）。
+  - `request_termination(reason)` 无 agent_id → 全局终止双方（TimeoutPlugin 走此路径）；带 `agent_id` → 逐 agent 终止（DualImbalanceTerminationPlugin 走此路径）。
+  - 逐 agent 终止后 episode 为存活方继续；终止方 policy 仍被逐帧查询（`EpisodeRunner.post_termination_action="policy"` 默认值），其后帧照常记录但被 boundary 切片丢弃。
+
+### A2.2 观测者时序 —— 奖励/权重的 s_{t+1} 对齐（W2 重点核实项）
+
+三个 reward/weight 相关 observer 全部在 `on_post_action_step` 计算输出（`standing_balance_4stage.py:145`、`height_phi_observer.py:49`、`cross_support.py:149`）。因此：
+
+| 数据 | 记录位置 | 语义 |
+|---|---|---|
+| `observations[t]` | 帧 t | s_t（动作前） |
+| `actions[t]` | 帧 t | a_t |
+| `observer_outputs[*][t]` | 帧 t | **s_{t+1} 的函数**（post-action 状态）；`r_cross` 还依赖 rewarder 内部 FSM 历史（接触/换脚计时器），是 episode 窗口信号而非纯 s_{t+1} 函数 |
+| `rewards_c[t]`（实验推导） | transition t | 转移 (s_t,a_t)→s_{t+1} 的回报，按下标 t 对齐 —— 与标准 RL 约定一致，无需移位 |
+| `actor_weight[t]`（实验推导） | transition t | **post-action 权重**：`aw_cross[t] = φ²(s_{t+1})`，即按该转移的结果状态评估；不是 `w(s_t)`。含义为「对结局处于直立状态的转移，r_cross 通道对 actor 目标的影响更大」。SAC 按 transition 存储同一数组即可保持语义，权重在 actor 损失中的应用点归 W3 裁决 |
+| `final_observation` | episode 级 | 末帧之后的观测；仅当 `T == num_frames` 时才是该 agent 末转移的 s_{T+1} |
+
+### A2.3 逐任务语义冻结表
+
+**standup（`exp_standup.py` ↔ 蓝图 `standup_4stage_dense_v2_env.yaml`）**
+
+| 项 | 冻结值 |
+|---|---|
+| 初始化 | `RandomFallenStatePlugin` 双机器人随机倒地（`target_robots: both`、`max_phy_steps: 1000`、`height_threshold: 0.3`、`reset_interval: 5`；逐 episode RNG 经 `set_episode_seed` 重建）；`initial_distance ∈ U[1.5,3.5]` |
+| 终止 | 无逐 agent 终止插件；唯一终止 = 全局 `timeout`（step 200） |
+| 奖励 | `r_potential[t] = 0.01·potential[t]`；potential ∈[0,1] 分段：stage1 翻身 `0.10·f_score`、stage2 支撑 `0.10+0.10·contact_score`、stage3 手脚 XY 距离 `0.20+0.10·d_score`、stage4 `0.30+0.70·w_foot·h_score`（w_foot=脚载重比，h_score=躯干高度 0.15→1.28m 归一） |
+| actor 权重 | 恒 1.0 |
+| is_terminated | 恒 False（末转移 bootstrap，`fin_obs` 有效） |
+| 评估 | 64 eval episodes → 128 agent 轨迹；每 agent `success = max_pot ≥ 0.9`，success_rate = 达标 agent 比例；报告 `max_pot / final_pot / max_stage / max_h`；best-of-run 以 mean `max_pot` 选优 |
+
+**basic_balance（`exp_basic_balance.py` ↔ 蓝图 `basic_balance_v2_phi_dual_env.yaml`）**
+
+| 项 | 冻结值 |
+|---|---|
+| 初始化 | 双机器人站姿（无倒地插件）；`initial_distance ∈ U[1.5,3.5]` |
+| 终止 | `DualImbalanceTerminationPlugin`（`force_threshold=1.0`N、`tolerance=1`、`min_height=0`）：post-action-step 粒度检测非脚部 body↔地面接触 ≥1N，单帧即对该 agent 提议 `imbalance_robot_X`；episode 到双方均终止才结束（另一方继续到倒地或 timeout） |
+| 奖励 | `r_fall[t] = 0.01·φ[t]`（`HeightPhiObserver`：`φ = uprightness · h/1.28`）；`r_cross[t] = CrossSupportBalanceRewarder` 标量（默认参数下 ≤0：首次单脚支撑宽限 30 步后 `−0.25·excess/30`、单脚段 <4 步 `−0.45·deficit/4`、A→B 换脚 >18 步 `−0.25·excess/18`；无正奖励项） |
+| actor 权重 | `r_fall` 恒 3.0；`r_cross = φ²(s_{t+1})`（A2.2 的 post-action 语义） |
+| is_terminated | 首条终止提议以 `imbalance` 开头 → True（末转移 done，不 bootstrap）；仅 timeout → False |
+| 评估 | 16 eval episodes → 32 agent；`survived` = 首条终止原因不以 `imbalance` 开头的 agent 数（timeout 计为存活）；survival_rate；best 按 survived 数 |
+| 死字段 | `posture_a/b`（PostureRewarder）接入蓝图并被记录，但实验的 `posture_key` 参数在 `_build_agent_trajectory` 内从未使用 —— 不参与奖励/评估；SAC 侧可保留为诊断观测，不计入任务语义 |
+
+### A2.4 PPO 代码中的静默行为 —— SAC 不复制（fail-loud 分歧点，有意为之）
+
+1. `exp_standup._build_agent_trajectory`：`potential` 字段缺失 → `np.zeros(T)` 静默回退（`exp_standup.py:149`）。**SAC 改为 KeyError。**
+2. `exp_basic_balance`：`cross_support_*` observer 缺失 → `extract_per_step_scalar` 返回 zeros（`observer_utils.py:60-61`），且其 `if r_cross is not None` 分支是死代码（该函数对缺失 observer 从不返回 None）。**SAC 改为 KeyError。**
+3. `exp_basic_balance`：`phi` 缺失 → KeyError（正确范式，SAC 沿用）。
+4. `coerce_per_step`：leaf 为 None → zeros；长度不匹配 → ValueError（保留后者）。
+5. PPO 对 `obs/actions/fin_obs` 缺失 → `return []` 静默丢整条轨迹。**SAC 改为 raise**：畸形 episode 是 bug 而非稀疏数据。
+
+### A2.5 SAC 数据契约冻结（实验侧切片语义）
+
+- 转移 i 字段：`(obs[i], act[i], r_c[i], next_obs[i], done_c[i], aw_c[i])`，`next_obs[i] = obs[i+1]`（i+1 < num_frames 时）否则 `final_observation`。**禁止**对 `T < num_frames` 的 agent 用 `final_observation` 充当下一个状态（那是别的时刻的观测）。
+- 逐 agent 切片：T = `agent_frame_boundary`（含提议帧、排除尾部零物理增量退化帧）；所有通道数组长度恒等于 T；`done_c[T-1]=True` 当且仅当首条提议原因为真终止（本任务族即 `imbalance*`）；timeout → 全部 done=False。
+- 单方先终止：该 agent 切片止于其提议帧；其后为另一 agent 记录的帧一律不得入池；其末转移 next_obs = `obs[T]`（该帧在 episode 中存在），done=True 屏蔽 bootstrap。
+- 中途（物理子步内）终止：本子步增量 ≥1 → 真实帧计入；proposal 记在该帧；runtime 支持，fixture 覆盖。
+- 缺声明的 observer/字段、长度不匹配、缺 obs/act/fin_obs → 一律 raise。
+- `actor_weight` 与 `done` 均按 transition 逐数据点存储；actor 损失中的加权方式、Q 通道语义归 W3。
+
+### A2.6 PPO 参照 run 锚点（仅任务事实锚，不作效率基准）
+
+| run | seed | 配置 | 收敛锚点 |
+|---|---|---|---|
+| `train_standup_ppo_20260821_001328`（u0–2320，后续 5 个 run 均自此谱系续训） | 42 | 512 eps/upd、eval 64 eps/5 upd | success 首次持续 ≥0.9 ≈ u1225 ≈ **125.4M env steps**；u1300+ 恒 1.0；终值 max_pot≈0.999、max_h≈1.28 |
+| `train_basic_balance_ppo_20260908_180553`（u0–2165） | 42 | 1024 eps/upd、eval 16 eps/5 upd | survival 首次持续 ≥0.9 ≈ u160 ≈ **7.8M env steps**（ep_len 由 ~27 渐升至 200）；其后 2000+ update 恒 1.0 |
+
+PPO update 数与 SAC 梯度步数不可直接比较；以上只登记 env-step 锚点与收敛后指标。
+
+### A2.7 验收协议冻结字段
+
+- **任务指标**：定义与 PPO 完全一致 —— standup `success_rate`（agent 粒度 max_pot≥0.9 比例）；balance `survival_rate`（非 imbalance 终止比例）。
+- **训练 seeds**：`42/43/44`，本文件登记，不因结果差替换。
+- **评估流**：确定性策略（`stochastic=False` 等价物）；训练中评估 = 验证流，eval seed 用 `train_seed + 100_000 + eval_index·97`（沿用 PPO 偏移方案、与训练流天然分离）；**最终保留评估**用 `train_seed + 200_000` 起的一组全新 eval seeds，只对最终 checkpoint 跑一次。
+- **评估 episode 数**：standup 64（128 agent）、balance **32**（64 agent —— 有意从 PPO 的 16 加倍以提高分辨率，指标定义不变、口径仍可比）。
+- **通过阈值**：两任务指标均 ≥0.90；**通过判定** = 连续最后 ≥3 次验证评估 ≥0.90 且最终 checkpoint 在保留评估上 ≥0.90。
+- **standup 附加质量闸**：mean `final_pot` ≥0.80 且 mean `max_h` ≥1.20，且对最终 checkpoint 抽 ≥2 episode 视频目检为真实站立收尾（排除瞬间触高即倒）。
+- **balance 附加报告**（非闸门）：r_cross 通道统计、eval φ 均值轨迹、视频交替支撑行为 —— 用于确认通道确实起作用，不改成步数指标。
+- **checkpoint 规则**：固定 env-step 预算跑满后的**最后 checkpoint 为唯一验收 checkpoint**（不做 best-of-run 挑选）；best 导出仅作诊断工件。
+- **预算（per seed 硬上限，触顶即停并进入诊断而非放宽）**：standup ≤40M env steps / ≤80M agent transitions / ≤6M 梯度步 / ≤24h wall；balance ≤12M env steps / ≤24M agent transitions / ≤2M 梯度步 / ≤8h wall。依据：PPO 锚点 125M/7.8M env steps，SAC 应显著低于此，这些上限是失败触发器而非效率目标。
+- **报告字段（每 seed 必报）**：首次达标的 env steps、agent transitions、梯度步数、wall-clock、终值指标；不输出 PPO↔SAC 步数对比。
+- **策略验收分层**：默认策略（单分量 TruncNorm SAC actor）两任务各 3 seeds 全量验收；≥1 个结构不同族（mixture 或 state-σ 变体）两任务各 1 seed 训练级验证；八格全部完成接口/梯度/短训验证。
+- **停止/失败**：NaN 或 Q 发散 → 中止并留诊断快照；预算触顶 → 记为 fail；任何路径失败经 debug 系统定位后回报。
+
+### A2.8 同批 episode 语义对拍 fixture 设计（W3 前置，供实现期落地）
+
+以合成 `Episode` 为主（确定性、零环境成本），另加 1 条真实录制 episode 做双路径对拍：
+
+| Fixture | 构造 | 期望 |
+|---|---|---|
+| FX-1 双方 timeout | T_full=200，双 agent 提议 `("timeout",200)` | boundary=200/200；done 全 False；末转移 next_obs=final_observation |
+| FX-2 单方倒地 | A 提议 `("imbalance_robot_a",80)`、B `("timeout",200)` | A boundary=80、done[-1]=True、aw_cross=φ[:80]²；B boundary=200、done 全 False；A 的末转移 next_obs=obs[80]（非 fin_obs） |
+| FX-3 中途帧+退化尾帧 | physics_steps 末物理帧 delta=7、随后尾部一帧 delta=0 | 增量=7 帧计入、退化帧排除出 boundary |
+| FX-4 缺 `phi` 字段 | observer_outputs 无 `height_phi_a.phi` | KeyError（SAC 有意从严，对照 PPO 的静默 zeros） |
+| FX-5 observer 长度错 | phi 数组长度 ≠ num_frames | ValueError（沿用 coerce_per_step 语义） |
+| FX-6 真实对拍 | 1 条录制的 basic_balance episode（含单 agent 倒地）分别过 PPO `build_trajectories` 与 SAC 切片构造 | 逐转移 `(T, r_fall, r_cross, aw_fall, aw_cross, done)` 完全相等（表示形式差异除外） |
+
+### A2.9 遗留证据缺口与待办
+
+1. PPO balance eval episode 数（16）粒度较粗（1/32≈3.1%），SAC 用 32；若用户要求严格同口径可回退为 16 —— **待确认**。
+2. 各预算上限为拟定值，用户确认后冻结生效。
+3. standup 视频质量检查的执行方式（自动 height 轨迹判据 vs 人工目检频率）在 W6 debug 工具落地时再细化。
+4. `final_observation` 对早终止 agent 的语义偏差：PPO 现状因 done 屏蔽而无害；SAC 契约已冻结为 `obs[T]`，与 PPO 无行为差异但数据更诚实。
+5. `posture_a/b` 是否保留接线：建议保留（诊断用、零训练影响），实现期确认。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
