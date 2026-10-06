@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：本文件顶部为阶段一执行计划，尚未完成调查、实验验证与设计裁决。
+> 状态：阶段一 W1–W3 已完成，对应 A1–A3 见下方裁决区；W4–W8 待执行。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -8,7 +8,7 @@
 
 阶段一要回答：新 SAC 的目标函数是什么、数据如何流动、各层负责什么、怎样证明正确，以及怎样判断两个真实任务训练成功。
 
-本阶段允许代码阅读、依赖核查、数学推导、现有证据核验和必要的小规模验证；不进行生产训练器重写、大规模训练、八格全量迁移或完整 viewer 开发。本次落文仅制定计划，不代表这些工作已执行。
+本阶段允许代码阅读、依赖核查、数学推导、现有证据核验和必要的小规模验证；不进行生产训练器重写、大规模训练、八格全量迁移或完整 viewer 开发。执行证据在各 A 节登记；公式探针、旧测试回归和新契约实现验收严格区分。
 
 阶段结束时应形成以下可审阅产物，可继续记录在本文件的裁决区，并由总体路线图链接：
 
@@ -256,7 +256,7 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 | F6 | replay 采样用全局 `np.random`；checkpoint 不含 replay/RNG/rollout 状态；`loop.py:442` 有 `*0` 死代码 | 〔代码事实〕 | "resume" 实际只是模型 warm-start，非完整续训 |
 | F7 | `exp_sac_balance.py:140-141` obs/acts/fin_obs 为 `None` 时静默 `return []` | 〔代码事实〕 | 违反 fail-loud；丢数据不报错 |
 | F8 | 旧测试 `tests/` 16/16 通过 | 〔运行实测〕 | 只覆盖 replay 机械行为与 trainer smoke，不覆盖契约正确性；不能作为新 SAC 依据 |
-| F9 | `sac_balance_real_v7`：10M env_step / ~1.03M grad_step 跑满，`survival_rate` 末段 ~0.56；`r_cross` 的 `q1_mean≈-177`、`q1_loss≈62` 持续高企；`grad_share_r_cross≈0.2%` 而按 aw 归一化口径应约 19%（r_fall aw=3.0 固定，r_cross aw≈0.72） | 〔历史证据〕 | 历史 run 未达收敛。注：`reward_scale=50` 乘在 TD target 的 reward 上（`trainer.py:194`），Q 值域以缩放后 reward 计，-177 不构成数学越界；但 grad_share 与 aw 语义脱节、r_cross 的 TD 残差量级异常，说明通道合成机制未实现其声明语义——归因待 W2/W3，**不当作既有结论** |
+| F9 | `sac_balance_real_v7`：10M env_step / ~1.03M grad_step，末段 survival≈0.56；r_cross 的 q1_mean≈-177、q1_loss≈62、旧 grad_share≈0.2% | 〔历史日志线索；W3 修正解释〕 | 未达到任务门槛。reward_scale=50 作用于 reward target，且 Q 含熵，不能用未缩放纯奖励界判断 Q 越界。旧 grad_share 实为 `(mean(aw)/scale)²` 的占比，不含真实通道梯度；aw≈0.72 对 3.0 也只是系数比例，不是期望梯度份额。**撤回据此认定实际梯度压制或训练失败原因的推断**；需新诊断和消融，见 A3.9。 |
 
 ### 4. 资产分类矩阵
 
@@ -334,7 +334,7 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 
 ## A2：两个目标任务的语义冻结与验收协议（W2 完成稿，2026-10-06）
 
-本节全部结论均经代码与 run 日志核实，标注引用位置；「冻结」字段在验收前不得因结果不理想而修改。
+本节区分代码事实、历史日志线索和验收设计；历史 run 的源码一致性、续训谱系及资源条件尚未全部核验，不能称为严格可比基准。「冻结」字段在验收前不得因结果不理想而修改。W3 修订：post-action 权重仅是历史事实，其 SAC 应用规则以 A3 为准；用户已确认 basic_balance 改用动作前 actor 门控，见 SAC-R1-D04。
 
 ### A2.1 两任务共同事实（已核实）
 
@@ -344,7 +344,7 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
   - `episode_step` 每进入一个 `step()` 无条件 +1（在 post_action_step hooks 之前递增），`physics_step` 只计实际执行的物理子步；某帧 `physics_step` 增量=0 是「动作未物理生效」的退化帧。
   - 终止提议记录 `(reason, episode_step)`，其中 `episode_step = 帧索引+1`。
   - `agent_frame_boundary[aid] = min(该 agent 首次终止提议的 episode_step, 最后一个 physics 增量>0 的帧号+1)`；`obs[:T]` 切片**包含提出终止的那帧**（其动作已物理执行）。
-  - `final_observation` 在 `on_post_episode` 捕获 = **整段 episode 末帧后的观测**，对两个 agent 相同（`episode_recorder.py:152-159`）。
+  - `final_observation` 在 `on_post_episode` 捕获 = **整段 episode 末帧后的观测**，两个 agent 的采集时刻相同，但各自观测向量不同（`episode_recorder.py:152-159`）。
   - `request_termination(reason)` 无 agent_id → 全局终止双方（TimeoutPlugin 走此路径）；带 `agent_id` → 逐 agent 终止（DualImbalanceTerminationPlugin 走此路径）。
   - 逐 agent 终止后 episode 为存活方继续；终止方 policy 仍被逐帧查询（`EpisodeRunner.post_termination_action="policy"` 默认值），其后帧照常记录但被 boundary 切片丢弃。
 
@@ -358,7 +358,7 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 | `actions[t]` | 帧 t | a_t |
 | `observer_outputs[*][t]` | 帧 t | **s_{t+1} 的函数**（post-action 状态）；`r_cross` 还依赖 rewarder 内部 FSM 历史（接触/换脚计时器），是 episode 窗口信号而非纯 s_{t+1} 函数 |
 | `rewards_c[t]`（实验推导） | transition t | 转移 (s_t,a_t)→s_{t+1} 的回报，按下标 t 对齐 —— 与标准 RL 约定一致，无需移位 |
-| `actor_weight[t]`（实验推导） | transition t | **post-action 权重**：`aw_cross[t] = φ²(s_{t+1})`，即按该转移的结果状态评估；不是 `w(s_t)`。含义为「对结局处于直立状态的转移，r_cross 通道对 actor 目标的影响更大」。SAC 按 transition 存储同一数组即可保持语义，权重在 actor 损失中的应用点归 W3 裁决 |
+| `actor_weight[t]`（实验推导） | transition t | **post-action 权重**：`aw_cross[t] = φ²(s_{t+1})`，即按该转移的结果状态评估；不是 `w(s_t)`。含义为「对结局处于直立状态的转移，r_cross 通道对 actor 目标的影响更大」。存同一数组只能保留历史转移事实，不能保证用于新动作更新时语义不变。W3 已裁决：保留 `actor_weight_post_reference` 供对拍；SAC 实际 actor 使用动作前状态门控（A3.5），不可混称 |
 | `final_observation` | episode 级 | 末帧之后的观测；仅当 `T == num_frames` 时才是该 agent 末转移的 s_{T+1} |
 
 ### A2.3 逐任务语义冻结表
@@ -401,31 +401,31 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 - 单方先终止：该 agent 切片止于其提议帧；其后为另一 agent 记录的帧一律不得入池；其末转移 next_obs = `obs[T]`（该帧在 episode 中存在），done=True 屏蔽 bootstrap。
 - 中途（物理子步内）终止：本子步增量 ≥1 → 真实帧计入；proposal 记在该帧；runtime 支持，fixture 覆盖。
 - 缺声明的 observer/字段、长度不匹配、缺 obs/act/fin_obs → 一律 raise。
-- `actor_weight` 与 `done` 均按 transition 逐数据点存储；actor 损失中的加权方式、Q 通道语义归 W3。
+- `done`、动作前门控事实及动作后参考权重均按 transition 存储；W3 已在 A3 区分实际 actor 权重与 `actor_weight_post_reference`，不得把两个字段互相代用。
 
 ### A2.6 PPO 参照 run 锚点（仅任务事实锚，不作效率基准）
 
 | run | seed | 配置 | 收敛锚点 |
 |---|---|---|---|
-| `train_standup_ppo_20260821_001328`（u0–2320，后续 5 个 run 均自此谱系续训） | 42 | 512 eps/upd、eval 64 eps/5 upd | success 首次持续 ≥0.9 ≈ u1225 ≈ **125.4M env steps**；u1300+ 恒 1.0；终值 max_pot≈0.999、max_h≈1.28 |
+| `train_standup_ppo_20260821_001328`（日志含 u1–2320，续训谱系未核验） | 42 | 512 eps/upd、eval 64 eps/5 upd | W2 日志扫描估算 success 从 u1225 持续 ≥0.9，累计约 **125.4M env steps**；后期接近 1.0（并非每次恒等 1.0） |
 | `train_basic_balance_ppo_20260908_180553`（u0–2165） | 42 | 1024 eps/upd、eval 16 eps/5 upd | survival 首次持续 ≥0.9 ≈ u160 ≈ **7.8M env steps**（ep_len 由 ~27 渐升至 200）；其后 2000+ update 恒 1.0 |
 
-PPO update 数与 SAC 梯度步数不可直接比较；以上只登记 env-step 锚点与收敛后指标。
+PPO update 数与 SAC 梯度步数不可直接比较；以上仅登记 W2 对日志的扫描结果，不证明代码/初始化/资源条件与当前实验一致。此前用单空格正则只匹配到 u1000 以后是日志解析错误（早期格式为 `[eval    5]`），不能据此认定续训。正式对比前还需核验 code_snapshot、参数覆盖、日志完整性和 checkpoint 谱系，不据这些数字承诺 SAC 样本效率。
 
 ### A2.7 验收协议冻结字段
 
 - **任务指标**：定义与 PPO 完全一致 —— standup `success_rate`（agent 粒度 max_pot≥0.9 比例）；balance `survival_rate`（非 imbalance 终止比例）。
 - **训练 seeds**：`42/43/44`，本文件登记，不因结果差替换。
-- **评估流**：确定性策略（`stochastic=False` 等价物）；训练中评估 = 验证流，eval seed 用 `train_seed + 100_000 + eval_index·97`（沿用 PPO 偏移方案、与训练流天然分离）；**最终保留评估**用 `train_seed + 200_000` 起的一组全新 eval seeds，只对最终 checkpoint 跑一次。
+- **评估流**：确定性策略（`stochastic=False` 等价物）；训练中评估 = 验证流，W2 登记的 base_seed 方案为 `train_seed + 100_000 + eval_index·97`，最终保留评估为 `train_seed + 200_000` 起，只对最终 checkpoint 跑一次。**W3 更正：偏移本身不保证互斥**；W5 必须冻结实际 seed manifest/调度并检查训练、验证、保留集无重叠，冲突时在正式训练前修订生成方案，不在看过保留集结果后换 seeds。
 - **评估 episode 数**：standup 64（128 agent）、balance **32**（64 agent —— 有意从 PPO 的 16 加倍以提高分辨率，指标定义不变、口径仍可比）。
 - **通过阈值**：两任务指标均 ≥0.90；**通过判定** = 连续最后 ≥3 次验证评估 ≥0.90 且最终 checkpoint 在保留评估上 ≥0.90。
 - **standup 附加质量闸**：mean `final_pot` ≥0.80 且 mean `max_h` ≥1.20，且对最终 checkpoint 抽 ≥2 episode 视频目检为真实站立收尾（排除瞬间触高即倒）。
 - **balance 附加报告**（非闸门）：r_cross 通道统计、eval φ 均值轨迹、视频交替支撑行为 —— 用于确认通道确实起作用，不改成步数指标。
 - **checkpoint 规则**：固定 env-step 预算跑满后的**最后 checkpoint 为唯一验收 checkpoint**（不做 best-of-run 挑选）；best 导出仅作诊断工件。
-- **预算（per seed 硬上限，触顶即停并进入诊断而非放宽）**：standup ≤40M env steps / ≤80M agent transitions / ≤6M 梯度步 / ≤24h wall；balance ≤12M env steps / ≤24M agent transitions / ≤2M 梯度步 / ≤8h wall。依据：PPO 锚点 125M/7.8M env steps，SAC 应显著低于此，这些上限是失败触发器而非效率目标。
+- **预算（用户已确认的 per seed 硬上限）**：standup ≤40M env steps / ≤80M agent transitions / ≤6M 梯度步 / ≤24h wall；balance ≤12M env steps / ≤24M agent transitions / ≤2M 梯度步 / ≤8h wall。任一上限到达即停止训练，使用停止时的最后 checkpoint 验收，不挑 best；达到预算本身不是失败，未满足指标才判失败。它们是资源约束，不是「SAC 应优于 PPO」的保证；W5 必须明确末批预算调度及评估开销预留。
 - **报告字段（每 seed 必报）**：首次达标的 env steps、agent transitions、梯度步数、wall-clock、终值指标；不输出 PPO↔SAC 步数对比。
 - **策略验收分层**：默认策略（单分量 TruncNorm SAC actor）两任务各 3 seeds 全量验收；≥1 个结构不同族（mixture 或 state-σ 变体）两任务各 1 seed 训练级验证；八格全部完成接口/梯度/短训验证。
-- **停止/失败**：NaN 或 Q 发散 → 中止并留诊断快照；预算触顶 → 记为 fail；任何路径失败经 debug 系统定位后回报。
+- **停止/失败**：NaN 或经预登记规则确认的数值发散 → 中止并留诊断快照；预算触顶且验收未达标 → fail；基础设施中断单列，不得当作成功 seed 或静默换 seed。仅凭 soft Q 超出纯奖励界不判发散。
 
 ### A2.8 同批 episode 语义对拍 fixture 设计（W3 前置，供实现期落地）
 
@@ -436,17 +436,281 @@ PPO update 数与 SAC 梯度步数不可直接比较；以上只登记 env-step 
 | FX-1 双方 timeout | T_full=200，双 agent 提议 `("timeout",200)` | boundary=200/200；done 全 False；末转移 next_obs=final_observation |
 | FX-2 单方倒地 | A 提议 `("imbalance_robot_a",80)`、B `("timeout",200)` | A boundary=80、done[-1]=True、aw_cross=φ[:80]²；B boundary=200、done 全 False；A 的末转移 next_obs=obs[80]（非 fin_obs） |
 | FX-3 中途帧+退化尾帧 | physics_steps 末物理帧 delta=7、随后尾部一帧 delta=0 | 增量=7 帧计入、退化帧排除出 boundary |
-| FX-4 缺 `phi` 字段 | observer_outputs 无 `height_phi_a.phi` | KeyError（SAC 有意从严，对照 PPO 的静默 zeros） |
+| FX-4 缺必需字段 | 分别去掉 height_phi_a.phi、standing_balance_a.potential、cross_support_a | phi 缺失时 PPO/SAC 均 raise；potential/cross 缺失时仅旧 PPO 静默补零，SAC 均 raise |
 | FX-5 observer 长度错 | phi 数组长度 ≠ num_frames | ValueError（沿用 coerce_per_step 语义） |
-| FX-6 真实对拍 | 1 条录制的 basic_balance episode（含单 agent 倒地）分别过 PPO `build_trajectories` 与 SAC 切片构造 | 逐转移 `(T, r_fall, r_cross, aw_fall, aw_cross, done)` 完全相等（表示形式差异除外） |
+| FX-6 真实对拍 | 1 条录制的 basic_balance episode（含单 agent 倒地）分别过 PPO `build_trajectories` 与 SAC 切片构造 | `(T,r_fall,r_cross,done)` 及 post-action 参考权重相等；SAC 实际 actor 权重按 A3 动作前门控单独核对，**不要求等于 PPO 的 aw_cross** |
 
-### A2.9 遗留证据缺口与待办
+### A2.9 用户确认与遗留证据缺口
 
-1. PPO balance eval episode 数（16）粒度较粗（1/32≈3.1%），SAC 用 32；若用户要求严格同口径可回退为 16 —— **待确认**。
-2. 各预算上限为拟定值，用户确认后冻结生效。
-3. standup 视频质量检查的执行方式（自动 height 轨迹判据 vs 人工目检频率）在 W6 debug 工具落地时再细化。
-4. `final_observation` 对早终止 agent 的语义偏差：PPO 现状因 done 屏蔽而无害；SAC 契约已冻结为 `obs[T]`，与 PPO 无行为差异但数据更诚实。
-5. `posture_a/b` 是否保留接线：建议保留（诊断用、零训练影响），实现期确认。
+1. 用户在「OK，继续进行 W3」中确认 balance eval=32 和 A2.7 各预算数值；不再是待确认项。
+2. 用户在 W3 选项中明确选择「动作前 actor 门控（推荐）」；该项替代 A2 对 post-action actor 权重可直接迁移的推断，见 A3.5。
+3. standup 视频质量检查的执行方式在 W6 细化；固定数值门槛不后移。posture_a/b 接线保留为诊断，不新增奖励。
+4. `final_observation` 对早终止 agent 不是正确边界观测；真终止掩码只消除 Bellman bootstrap 影响，不免除 next_obs 的数据正确性要求。
+5. W5 仍须补齐评估时钟和实际 seed manifest 的互斥验证：仅给不同 base_seed 偏移不能证明派生 episode seeds 永不重叠。该项阻塞正式训练，不能再称「天然分离」。
+6. W2 的 FX-1～6 是 fixture 设计，尚未实现或执行；真实 episode 对拍不得由本次公式验证替代。
+
+## A3：SAC 基线与多 critic 数学裁决（W3）
+
+**范围与状态：** 这是阶段一的数学设计，不是总体路线图的阶段三实现。基于 `f77cf82e` 工作树核查旧实现，完成公式推导、反例及 CPU 数值核验；未改任何算法代码、未启动训练。所有下述契约需在后续实现期变成永久单测。用户已确认 A3.5 的动作前门控适配。
+
+### A3.1 本轮决策登记
+
+| 编号 | 决策 | 理由与适用边界 |
+|---|---|---|
+| SAC-R1-D01 | 首版 1-step、两个独立 Q、当前策略采样、固定或自动单一 α | 标准 SAC 锚点；不继承旧 n-step/REDQ/梯度归一化默认值 |
+| SAC-R1-D02 | 通道 Q 为含未来熵的 soft Q；actor 权重非负且逐样本和为 1；组合通道共同 γ、共同 bootstrap 语义 | 精确通道值中的未来熵是公共项，凸组合只计一次；不支持任意 γ/done 混用 |
+| SAC-R1-D03 | **先按通道合成，再选较小的 twin；各通道 target 使用同一个 twin 索引** | 常量权重下合成的 Bellman target 精确等于标量 SAC；逐通道各取 min 不具此性质 |
+| SAC-R1-D04 | basic_balance 使用动作前 φ² 的 actor 门控，原始奖励不变 | **用户已选定**；保留站稳时重视 cross 的意图，不把旧动作的结果权重用于新动作；明确是局部多目标更新规则 |
+| SAC-R1-D05 | actor weight、数据有效性、bootstrap、sample weight 四者分离 | 零 actor weight 不关闭 critic；缺字段不等于无效数据；MSE 不接受负权重 |
+| SAC-R1-D06 | 初版无通道梯度尺度归一化、无共享 trunk、无自动按 γ 分组 | 优先建立可解释的目标与隔离诊断；有消融证据再增加优化机制 |
+| SAC-R1-D07 | γ 不同、bootstrap 不同、负 actor 权重、全零权重、n-step>1 均在首版显式拒绝 | 不把未论证的组合包装成支持；两个目标任务不需要这些组合 |
+| SAC-R1-D08 | 当前历史 grad_share 不作梯度份额证据；诊断分别报告动作梯度、参数梯度、冲突及真实参数位移 | 已找到指标定义与名称不符，撤回 W1 的过强归因 |
+
+### A3.2 单通道标准基线：定义、熵与温度
+
+先在固定 Markov 环境中定义理论；实际机器人只提供观测 o，POMDP/self-play 限制见 A3.10。下标 t 从 0 开始，转移为 `(s_t,a_t,r_t,s_{t+1})`，N 条转移的最终状态是 s_N。`m=1-d`，d 是真终止，timeout 的 m=1；零物理增量帧不构成转移。`sg` 表示 stop-gradient。
+
+```text
+πθ：训练策略；β：采集行为策略（允许不同）；D：回放状态/转移分布
+ℓθ(s,a) = log πθ(a|s)，对整条 21 维动作向量的联合密度取自然对数
+H(π(.|s)) = E[-ℓθ(s,a)]，是 differential entropy，可以为负
+
+Qπ,α(s,a) = E[r_t + Σ_{k≥1} γ^k (r_{t+k} - α ℓθ(s_{t+k},a_{t+k}))]
+a' ~ πθ(.|s')
+y = sg[r + γ m (min_j Qbar_j(s',a') - α ℓθ(s',a'))]
+L_Qj = mean[(Q_j(s,a_replay)-y)²]
+a_new ~ πθ(.|s)
+L_actor = mean[sg(α) ℓθ(s,a_new) - min_j Q_j(s,a_new)]
+```
+
+Q 不包含当前给定动作的熵，actor 中当前熵恰好一次。target 一律无梯度；actor 步冻结 Q 参数但**保留 Q 对动作的导数**，不可把整个 Q forward 放进 no_grad。π 的采样和 log_prob 必须对应同一归一化动作分布：TruncNorm 包含截断归一化常数；tanh 族包含变换 Jacobian；mixture 用联合混合密度而非被选中分量的密度（梯度估计由 W4 验证）。不使用 PPO ratio/GAE，也不把 β 的探索上下文带进 π 的评分。
+
+温度约束 `E_D[H] ≥ H_target`，令 `η=log α`：
+
+```text
+L_α_exact(η) = exp(η) · sg(E_D[-ℓθ] - H_target)
+首版采用常见 log-temperature surrogate：
+L_η = - E_D[η · sg(ℓθ + H_target)]
+∂L_η/∂η = E_D[H] - H_target
+```
+
+两式驻点与调整方向相同，梯度大小相差 α，**不是同一个优化器轨迹**。实测熵低于目标 → 梯度下降增大 η/α；高于目标 → 减小。温度步不回传 actor；actor/critic 不回传 η。自动温度使用与 actor 相同的有效状态集合及归一化 sample weights（默认全 1）。固定 α 模式不创建温度 optimizer；α=0 仅作显式无熵对照，不取 log(0)。
+
+归一化动作立方体 [-1,1]^21 上理论最大熵为 `21 ln 2 ≈14.556 nats`；参数受限的八格策略未必达到它。不得无依据把 uncertainty 当 H，或直接继承 `H_target=-21`、旧 α 下限。首个 oracle 用固定 α；自动温度目标及分布可达范围由 W4 确定。数值非有限即 fail；任何后续 α 边界都要登记为约束并报告饱和，不用静默 clamp 掩盖不可达熵目标。
+
+### A3.3 多通道 soft-Q 方案与常量权重证明
+
+设同一 actor cohort 有 C 个通道，各通道两套独立网络 `Q_{c,1},Q_{c,2}` 和 target，pair 索引 j 在所有通道间一致。默认不共享参数，两个 pair 也不共享。共同 γ∈[0,1)、同一 transition 的 m 在 cohort 内一致；原始 reward 不因 actor 门控改写。
+
+定义 `g_c(s)≥0, Σg_c(s)>0`，`w_c(s)=g_c(s)/Σg(s)`。权重是固定实验函数，不对 θ 或新动作求导。常量配置使用同一归一化规则；总体奖励单位通过显式固定 `reward_scale>0` 定义（基线=1），而不是靠把全部 g 乘常数偷偷改变。
+
+```text
+F_j(s,a;w) = Σ_c w_c(s) Q_{c,j}(s,a)
+j_next = argmin_{j∈{1,2}} Σ_c w_c(s') Qbar_{c,j}(s',a')
+y_c = sg[r_c + γ m (Qbar_{c,j_next}(s',a') - α ℓθ(s',a'))]
+L_Qc,j = 有效数据上的加权 MSE(Q_{c,j}(s,a_replay), y_c)
+
+j_actor = argmin_j F_j(s,a_new;w)
+L_actor = E_D[α ℓθ(s,a_new) - Σ_c w_c(s) Q_{c,j_actor}(s,a_new)]
+```
+
+所有通道使用同一个 a' 和联合 log_prob；actor 同理。tie 固定选 pair 1；不对 argmin 索引反传，在非切换点沿选中分支求导。终止行 m=0 不需计算 next policy/Q，避免 `0×NaN`；timeout 则用真实边界 next_obs。
+
+**标准退化证明（权重 w 恒定时）：** 令 `r_w=Σw_c r_c`，因为 `Σw=1`、γ/m 相同，
+
+```text
+Σ_c w_c y_c
+ = r_w + γ m [Σ_c w_c Qbar_{c,j_next}(s',a') - α ℓθ(s',a')]
+ = r_w + γ m [min_j Σ_c w_c Qbar_{c,j}(s',a') - α ℓθ(s',a')]
+```
+
+这恰是标量 r_w 的 clipped-double-Q SAC target；actor 合成式同样成立。C=1、g>0 → w=1，退化为标准单通道。这里只证明**target 与 actor 目标的代数等价**；多网络逐通道 MSE 不等于对 F 的单个 MSE，因此不保证训练轨迹与单个标量网络相同。
+
+精确 policy evaluation 下，每个通道 `Q_c = R_c + E_entropy`；公共的未来熵项因凸组合恰计一次。实际不同近似器会有不同熵估计误差，不能据此宣称数值上完美分解，也不能把单个 Q_c 称作纯任务 return。所选 Q_c 分支未必是该通道最小值；悲观操作针对 F 而非每个通道分别生效。
+
+### A3.4 其他候选与明确不采用的等价说法
+
+| 候选 | 判断 |
+|---|---|
+| 各通道纯任务 Q + actor 当前熵 | 缺少未来熵对当前行动的价值，α>0 时不能标准退化；不作为默认 |
+| 纯任务 Q + 独立熵 continuation critic | 可以另行设计，但增加网络及 α 变化下的记账要求；两个任务暂不需要 |
+| 各通道各取 min 再加权 | 取最小与求和不交换，不能称为标量 twin-SAC 的相同 target |
+| 未归一化的 soft Q 直接 3:1 求和 | 未来熵变为 4 倍，但 actor 即时熵仍一次；不采用 |
+| 把 actor 权重乘 reward 再学 Q | 是另一种可定义目标，但不是只调制当前 actor 的规则；用户未选择 |
+| 用归一化动作梯度替代 Q 单位 | 改变了目标、相对 α 的尺度及历史依赖；作为以后消融，不进可信基线 |
+
+### A3.5 basic_balance：用户已确认的动作前门控
+
+**被替代的旧假设：** `w_post` 来自 β 执行 a_old 后的 s'_old；在同一 s 上新抽 a_new，不能假定其结果仍是 s'_old。简单 detach 不消除此偏差：它只切断导数，不改变权重来自旧行为结果的事实。即使 β=π，独立的旧/新动作也丢失了结果与动作的相关性；importance ratio 不是这里可直接套用的补丁。
+
+登记的实际规则：
+
+```text
+φ_pre  = clip(与 obs_t 同时刻的 height · uprightness / 1.28, 0, 1)
+φ_post = clip(当前 transition 的 HeightPhiObserver.phi, 0, 1)
+g_fall(s_t) = 3
+g_cross(s_t) = φ_pre²
+w_fall = 3/(3+φ_pre²)，w_cross = φ_pre²/(3+φ_pre²)
+r_fall = 0.01 φ_post，r_cross = 原 CrossSupportBalanceRewarder 输出
+下一状态 target 分支的权重使用 φ_post，即 s' 在 a' 之前的门控。
+```
+
+`φ_post²` 另以 `actor_weight_post_reference` 保存，只用于对拍和时间差诊断；不能在 trainer 里作为实际 actor 权重的后备值。φ_pre=0 时 cross 不贡献该样本的 actor Q 项，但其 critic 仍学习；不把 g=3 解释为 75% 的实际参数梯度。
+
+**采集契约交给 W5 实现：** SAC 自有采集器在取 obs 时，同一快照经正式 accessor 取门控事实并记录 `phi_pre/phi_post`、时序与版本；无需改环境/PPO。不从归一化 obs 的未知下标猜 φ。普通连续 episode 可用 `[initial_phi, phi_post[:-1]]` 做独立一致性校验，但不能对缺数据静默移位补齐；重置插件顺序、额外状态改写和退化帧必须先核验。有效末转移的 φ_post 与 next_obs 必须对应同一物理时刻。
+
+**不能宣称的等价性：** 状态变化后 w 也变。`Σw_c(s) Q_c(s,a)` 使用当前偏好评价各通道未来 return，不等于沿未来每一步使用 `w(s_k)` 的奖励和；也不保证存在固定标量奖励的全局策略改进定理。动态门控是明确标识的 **local_actor_gate** 扩展；常量权重是 **constant_scalarization** 基线。分别记录 objective_mode；不能用常量模式的证明为动态模式背书。
+
+验收保留环境、初始化、原始奖励、边界和评估；actor 时间点的变化是用户接受的 SAC 适配，**不是 PPO 训练目标完全等价**。FX-6 对拍只比较原始任务事实及 post-action 参考权重，SAC 的实际 w_pre 另设测试。
+
+### A3.6 四种权重/掩码及支持矩阵
+
+令 i 为 batch 行、v_ic 是显式通道有效性、b_i 是非负有限 sample weight（基线=1）：
+
+```text
+L_Qc,j = Σ_i b_i v_ic (Q_c,j - sg(y_ic))² / Σ_i b_i v_ic
+actor 可用行 A = 所有 cohort 通道有效的行（首版保守策略）
+L_actor = Σ_{i∈A} b_i [α ℓ_i - F_min,i] / Σ_{i∈A} b_i
+```
+
+v 表示 reward/边界语义可用；m 表示能否 bootstrap；w 只表达通道偏好；b 改变样本分布，不是 β/π importance ratio。它们的作用点不得互换。字段必须完整且 shape/dtype/finite 合法，显式 v=0 不等于允许缺 observer、NaN 或坏长度进入 batch。
+
+| 组合/边界 | 首版行为 |
+|---|---|
+| 单通道、正 g、1-step | 标准 SAC，g 的总体倍数被归一化掉 |
+| 多通道常量非负 g，共同 γ/m | 支持；满足 A3.3 代数对照 |
+| 动态动作前 g(s) | 支持 local_actor_gate，明确局部更新语义及 POMDP 限制 |
+| 动作后/执行动作相关 g(s,a_old,s'_old) 用于新动作 | 拒绝作为 actor 门控；仅保留历史标签 |
+| 某通道 w=0、v=1 | critic 正常学；actor 不贡献该通道 |
+| 某行所有 g=0 | ValueError；不靠 ε 除法悄悄转为熵-only 训练；两目标任务始终有正权重 |
+| g<0 或非有限 | ValueError；可将成本预定义为负 reward（新语义版本），但不允许负 MSE 权重 |
+| 显式某通道 v=0 | 该通道 critic 不用此行；该行不进 actor/α；其他有效通道 critic 可用。记录有效样本计数 |
+| 某通道有效加权分母=0 | 跳过该通道 optimizer 及其 target 更新，不能让 Adam 动量产生空数据更新；不计该通道成功 step |
+| actor 无有效加权行 | 跳过 actor/α，不伪造成功 step；全 batch 无可学习数据则 fail loud |
+| 缺 required 通道、observer 或 shape 不符 | raise；不能用 v=0 自动吞掉 |
+| 不同 γ、不同 bootstrap mask 的同一 cohort | 配置/数据校验拒绝；不静默按 γ 分组或删除熵项 |
+| n-step>1、REDQ/PER、relabel、共享 trunk | 初版不支持；对应配置必须拒绝，不留接受但不生效的旋钮 |
+
+为使 target 的合成定义完整，首版所有 cohort Q 网络始终存在；缺少某行通道测量不意味着删除网络。两个目标任务的每个合法转移均应全通道有效；v 的边界测试用于检验隔离，而非掩盖实际采集错误。
+
+### A3.7 更新顺序、梯度隔离与时钟
+
+一次成功 critic tick k：
+
+1. 校验 batch/权重，冻结本 tick 的 θ_k、α_k、门控版本及 target 快照。用当前 πθ_k 在 s' 抽 a'，构造无梯度的 y_c，缓存选中 twin、log_prob、m 和逐通道 target。
+2. 清零 critic 梯度，按通道独立 MSE 反传并优化；初版梯度裁剪阈值为显式配置，记录裁剪前后范数。actor/温度均不得有新梯度。
+3. 默认每个 critic tick 做一次 actor tick：冻结已更新 critic 参数（不是 action 图），以 πθ_k 在 s 抽 a_new；用合成 F 和 α_k 计算 loss，更新 θ。Q 不更新、不积累 actor 步梯度。
+4. 自动温度复用步骤 3 的**更新前 actor** log_prob，detach 后更新 η；使用相同 actor 有效行/b_i，不重新采样，不偷看 θ_{k+1}。固定温度则跳过。分别记录 α_used=α_k 与 α_after。
+5. 成功优化的 critic 执行 `Qbar ← (1-τ)Qbar + τQ_online`，τ∈(0,1]；时钟为 critic optimizer tick，不是 env step/rollout round/actor tick。暂停或无效通道不更新其 target；增加延迟 actor 更新时仍按这个时钟。
+
+保存 critic/actor/temperature/target 四类计数；默认都是每 critic tick 一次，固定 α 除外。checkpoint 恢复这些时钟，避免 target 半衰期或探索调度改变。actor/target 两次采样使用可恢复的独立 RNG 流；诊断只复用缓存或 fork RNG，不改变训练流。W5/W6 细化序列化与捕获字段。
+
+### A3.8 反例：支持边界为什么必要
+
+1. **min 不可交换**：pair1 的两个 Q 为 `(0,10)`，pair2 为 `(10,0)`，w=(0.5,0.5)。`Σw·min_each=0`，`min_pair ΣwQ=5`；独立各取最小拼出任何 twin 都没预测过的组合。
+2. **未来熵重复**：零 reward、γ=0.9、α=1、后续状态熵恒 1.7，则每通道 Q=15.3。soft Q 直接 3+1 求和变成 61.2；凸组合仍是 15.3。旧代码非 grad_norm 分支已有 L1 归一化，故不能笼统指控它在正恒权重下必然重复计熵；问题要按具体分支判断。
+3. **旧动作结果不是新动作门控**：单状态两动作 0/1，Q_cross(a)=a，结果 φ=a，fall Q=0，归一化 cross 权重为 0/0.25。π(1)=p、β(1)=q，当前动作结果目标为 `0.25p`，旧结果乘新 Q 的期望为 `0.25qp`；对 p 的导数分别 0.25 和 0.25q。q=0.25 时差 4 倍。此例说明相关性丢失，不是在宣称 PPO 本身恰优化这个标量目标。
+4. **actor 门控不是奖励门控**：s0 偏好=(1,0)，下一状态 s1 偏好=(0,1)，s1 只有通道2奖励10，γ=0.9。当前偏好合成纯任务未来 Q 得0，按各时刻门控奖励回传得9；加公共熵不消除差异。
+5. **负权重翻转悲观方向**：Q1=1、Q2=3，`-min(Q1,Q2)=-1`，但负目标的悲观估计是 `min(-Q1,-Q2)=-3`。signed actor 权重还破坏本方案熵系数和=1的证明，因此初版直接拒绝。
+6. **不同 γ/终止破坏公共熵项**：零 reward、相同熵，γ1=0.9 时未来熵=9αH，γ2=0.5 时=αH；一通道终止而另一通道继续也不共享 entropy continuation。不能继续用 A3.3 的公共项证明。
+7. **缺有效样本不等于零目标**：v=0 应无该通道梯度；补 reward=0 并回归会真的把 Q 拉向0。w=0 则相反，应保留该通道有效学习。
+
+### A3.9 旧实现审计与新的诊断语义
+
+代码事实（均为 W3 基线版本的相对路径/行号）：
+
+- `trainer.py:181-203` 给每个通道 target 加熵；`215-227` 用 actor_weight 加权 critic MSE，会把结果门控变成 critic 训练分布；零权重停止学习，且 signed 配置不再是合法非负回归。
+- `trainer.py:264-301`：scale 来自 `mean_batch ||∂Q/∂a||` 的时间 EMA 二阶统计，不是 `sqrt(E_batch ||g||²)`；旧 grad_share 是 `(mean(aw)/scale)² / Σ(...)²`，没有乘上梯度、actor Jacobian 或逐行归一化分母。
+- 反例：两正交动作梯度范数为1/100，aw=3/1，scale=1/100。旧 proxy 的 cross 比例≈0.00001111，而实际加权归一化后的动作梯度平方范数比例为0.10；参数空间再经 actor Jacobian 后还会变化。**旧 grad_share 不能解释成实际梯度占比。**
+- `trainer.py:287-291` 用 `w_c/scale_c` 乘含熵 Q，使未来熵系数成为 `Σw_c/scale_c`，而即时熵仍 α；即使单通道，scale≠1 也不满足本轮标准退化目标。这是可定位的公式偏差，不等于已经找到 v7 失败的因果原因。
+- `trainer.py:317-340` actor 接受 batch_weights、α 未用相同权重；`331-340` 自动默认 -action_dim 并 clamp；`319-324` 未冻结 critic 参数，actor backward 会给 critic 累积梯度（下一次 zero_grad 清除，不等于这些梯度被 optimizer 应用）。
+- 旧 tests 主要检查更新可运行、字段存在和 proxy 和≈1；不能证实梯度份额、熵分解或配置支持正确。
+
+新 debug 规范：记录 g/w 分布、每通道 Q/target/TD 残差、pair 分歧及 j 的选择率；熵即时项 αlogπ 与 Q 总项分别报告。通道贡献使用**共同选中分支**：
+
+```text
+G_c = ∇θ E_D[-w_c(s) Q_{c,j_actor}(s,aθ)]
+G_H = ∇θ E_D[α logπθ(aθ|s)]
+G_total = Σ_c G_c + G_H（裁剪之前）
+```
+
+同时测动作梯度范数、G_c 参数范数、成对 cosine、裁剪前后总范数、优化器后的 `Δθ`。范数份额只表示该定义下的范数比例，向量有相消，不能称作可加的任务贡献百分比；Adam 的参数位移也不能按各 loss 单独更新后相加。Q 的纯奖励界不能直接当 soft Q 上界，尤其连续熵可负、α 在变化。
+
+### A3.10 replay、self-play 和部分观测的限制
+
+- 标准 1-step SAC 允许 β≠π，但依赖转移/奖励机制固定和覆盖充分；不是「任意旧数据都同样可信」。本项目 self-play 的对手也更新，过去对手使有效转移核变化。记录本方/对方 policy_version、样本年龄、reward/objective_version；按 age/version 分桶分析 TD 与评估。容量/保留窗口由 W5 决定，不静默把旧样本当当前 MDP 的精确样本。
+- 96 维观测不包含 CrossSupport rewarder 的 FSM 计时器，物理状态也不完整；相同 o 可能有不同回报历史。上述 Markov 推导是理论锚，Q(o,a) 是部分观测近似，不保证 Bellman closure。动作前门控若使用未包含在 o 的状态事实，也是显式的训练侧辅助信息，不谎称完全可由 o 唯一恢复。若因此训练失败，再以独立版本评估增加历史/观测，不偷偷更改两个基准实验。
+- timeout bootstrap 是继续任务的学习约定，200 步是数据/评估截断，并非把任务价值在10秒强制归零；不跨 reset 取 next_obs。两个 agent 不算两倍 env step，分别登记有效 agent transitions。
+- 初版 n=1。n>1 会引入 β 中间动作的 off-policy 偏差，soft return 还需正确处理中间熵项（本 Q 定义下 k=1...n-1 的熵以及末端 bootstrap 熵）；旧「奖励累加+末端熵」不是自动正确扩展。另立方案与测试后才支持，不类比 GAE λ。
+
+### A3.11 本次验证证据与实现期测试门槛
+
+**已执行：** CPU、torch float64、固定 seed=314159、1线程；两次内存公式探针共17项断言（M16 两个分支），没有写入 replay、加载训练 checkpoint 或运行 MuJoCo。
+
+| 探针 | 输入/判据 | 实测 |
+|---|---|---|
+| M01～03 | C=1/2/5、B=31，随机 Q/r/logp；w∝1...C，α=.17、γ=.99、每3行一条 terminal；比较 Σw y_c 与标量 SAC y | 最大误差 0 / 2.220e-16 / 2.776e-16 |
+| M04～05 | A3.8 的 min 交换及零 reward 熵计数反例 | 0≠5；15.3≠61.2 |
+| M06～07 | H_target=-2，H=-3/-1，η=-1；检查温度梯度及 policy detach | dL/dη=-1/+1；log_prob 无梯度 |
+| M08～09 | 旧动作后门控反例 q=.25；动态偏好两状态反例 | 梯度 .25≠.0625；价值 0≠9 |
+| M10 | 正交 g=(1,100)、aw=(3,1)、scale=(1,100) | proxy_cross=.00001111，动作梯度平方范数比例=.1 |
+| M11 | Q_pred=(2,4)、target=1、v=(1,0)、b=(2,1)，actor 权重不进入 MSE | critic grad=(2,0) |
+| M12～14 | signed 悲观方向；Q(a)=2a、a=tanh(.3) 冻结 Q；target初值1向online=3按τ=.1更新4次 | -1≠-3；actor grad=-1.83027392/Q参数无梯度；target=1.6878 |
+| M15 | P=((.7,.3),(.2,.8))、r=((1,-2),(3,.5))、H=(.4,1.1)、γ=.9、α=.2、w=(.75,.25)，解线性 Bellman 方程 | soft returns 合成误差1.776e-15 |
+| M16 | 固定样本 actor surrogate，single/constant 两配置；中心差分ε=1e-6，误差<1e-8 | autograd/差分分别为 -2.32、-1.47 |
+
+核心对照可在项目目录以 `python3 -B` 执行以下自包含代码复现（只依赖现有 torch）：
+
+```python
+import torch
+torch.set_num_threads(1)
+torch.set_default_dtype(torch.float64)
+torch.manual_seed(314159)
+for c in (1, 2, 5):
+    b = 31
+    w = torch.arange(1, c + 1, dtype=torch.float64)
+    w /= w.sum()
+    q, r, lp = torch.randn(b, 2, c), torch.randn(b, c), torch.randn(b)
+    m = (torch.arange(b) % 3 != 0).double()
+    f = (q * w).sum(-1)
+    j = f.argmin(-1)
+    y = r + .99*m[:, None]*(q[torch.arange(b), j] - .17*lp[:, None])
+    scalar = (r*w).sum(-1) + .99*m*(f.min(-1).values - .17*lp)
+    assert ((y*w).sum(-1) - scalar).abs().max() < 1e-12
+p = torch.tensor([[.7, .3], [.2, .8]])
+r = torch.tensor([[1., -2.], [3., .5]])
+h, w = torch.tensor([.4, 1.1]), torch.tensor([.75, .25])
+a = torch.eye(2) - .9*p
+q = torch.linalg.solve(a, r + .9*.2*(p@h)[:, None])
+scalar = torch.linalg.solve(a, r@w + .9*.2*(p@h))
+assert (q@w - scalar).abs().max() < 1e-12
+
+def objective(t, w):
+    q = torch.stack((torch.stack((2*t+t*t, -t+.2)),
+                     torch.stack((t+t*t+.5, -2*t+1))))
+    return .2*(-.3+t*t) - (q*w).sum(-1).min()
+
+for w in (torch.tensor([1., 0.]), torch.tensor([.75, .25])):
+    t = torch.tensor(.2, requires_grad=True)
+    grad = torch.autograd.grad(objective(t, w), t)[0]
+    fd = (objective(t.detach()+1e-6, w)-objective(t.detach()-1e-6, w))/2e-6
+    assert abs(grad-fd) < 1e-8
+print('SAC scalarization and actor-gradient formula probes passed')
+```
+
+**旧测试回归：** `PYTHONPATH=. CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q -p no:cacheprovider baseline/framework/sac/tests` → **16 passed**，只有 pynvml deprecation warning。这是旧实现回归，不是新契约测试通过。
+
+**实现期永久测试必须新增：** 上述公式及反例；所有拒绝组合的异常；零 w 不冻结 critic；v=0 和空 batch 的 optimizer/target 时钟；actor/Q/α/target 梯度隔离；动作前/后门控时刻；同批 episode 的 FX-1～6；有限噪声下连续训练/恢复及 debug 开关一致性。单分量/mixture 的真实分布梯度由 W4 设计，不能用 M16 的解析 Q 替代。
+
+### A3.12 W3 出口与后续边界
+
+- [x] 单通道公式、温度方向、密度单位、梯度隔离、更新/target 时钟已明确。
+- [x] 多通道 Q/熵记账、常量标准退化、动态门控非等价性均有公式和反例。
+- [x] 支持矩阵覆盖零/负权重、缺失/无效通道、不同 γ/m、n-step；不支持项 fail loud。
+- [x] 动作前 actor 门控已获用户确认，W2 对拍预期同步修订；PPO/环境不改。
+- [x] 数学探针和旧测试已执行；没有声称新 trainer、策略或机器人任务已验证。
+
+**W3 无新增待用户裁决项。** W4 接续解决八格重参数化/mixture 梯度及可达熵；W5 落实门控事实采集、replay/version/时钟、评估 seed 互斥。历史 v7 失败归因仍未确定，需要实现期新诊断和受控消融。共享 trunk/梯度归一化等优化保持候选，不自动继承。
 
 ---
 
