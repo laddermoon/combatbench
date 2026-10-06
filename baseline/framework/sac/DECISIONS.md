@@ -207,6 +207,127 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 
 ---
 
+# 裁决区（本阶段产出）
+
+## A1 — W1 执行结果：现状与依赖/复用矩阵（2026-10-06）
+
+> 本节的每条结论均标注证据类型：**〔代码事实〕** 直接读码/实测可得；**〔运行实测〕** 本次调查实际执行；**〔历史证据〕** 来自旧 run/旧文档，仅作待核验线索。
+
+### 1. 调查基线
+
+- Git：`772e5dca`（`main`，含本阶段计划提交），工作区干净。
+- 环境：`instance-1f1igpaq`，Python 3.10，torch+CUDA 可用。
+- 方法：全量读码 + 选择性实测（import 链、PolicyBlueprint.build、Job 解包、旧测试），未启动任何训练。
+
+### 2. 依赖事实（实测确认）
+
+**2.1 SAC 模块的直接依赖**
+
+| 文件 | 导入 | 性质 |
+|---|---|---|
+| `sac/experiment.py:28` | `baseline.framework.ppo.TrainablePolicy` | **SAC→PPO 直接耦合** |
+| `sac/experiment.py:282` | `Job = Tuple[...]` 别名，遮蔽第 29 行导入的 rollout `Job` dataclass | 幽灵定义，死代码且误导 |
+| `sac/loop.py:32` | `baseline.framework.rollout.{Episode, ParallelRollouter}` | 经 `rollout/__init__` 传递加载 `exploratory_policy` → `ppo.sampling_context` |
+| `experiments_sac/base.py:24` | `baseline.framework.ppo.TrainablePolicy` | 直接耦合 |
+| `experiments_sac/exp_sac_balance.py:33` | `rollout.{extract_per_step_field, extract_per_step_scalar}` | 纯 numpy 工具，中立 |
+| `experiments_sac/__init__.py` | `sac.experiment.ExperimentSAC`；注册 glob 为 `exp_sac_*.py` | 新实验命名须含 `sac` 中缀，否则不注册 |
+| `sac/{replay,networks,trainer}.py` | 仅互相依赖 + numpy/torch | 内部自洽 |
+
+**2.2 传递依赖（import 实测）**
+
+- `import baseline.framework.rollout.job`（任意叶子模块）→ 必然执行 `baseline/framework/__init__.py` → `from .ppo import ...` → 加载 `ppo.experiment/sampling_context/stochastic_policy`。**框架根 `__init__.py` 是全局性 PPO eager import。**
+- `rollout/__init__.py` 还经 `parallel_rollouter → exploratory_policy → ppo.sampling_context` 形成第二条传递边；`SamplingContext`/`StochasticPolicy`/`SamplingSpec`/`SamplingPolicy`/`Job` 这条链本质上是 PPO 的采样探索体系。
+- `train.py:19-20` 顶层 eager import 两个 registry → 跑 PPO 也加载 `experiments_sac`（进而 sac.experiment→ppo），跑 SAC 也加载 `experiments_ppo`。
+- `ppo/experiment.py:130` 反向 import `rollout.job.Job`；`ppo/loop.py` 内 lazy import `envs.batchframework.device_rollouter`（`--collector device`，PPO 独占，SAC 已在 `train.py:451` 禁用）。
+
+**2.3 关键结论：SAC 当前不可能"名义独立"**
+
+即使删掉 `sac/experiment.py:28` 的直接 import，`baseline/framework/__init__.py` 与 `rollout/__init__.py` 两条传递边仍会使 SAC 路径加载 PPO 模块。要达成可测试的独立性，必须处理这三条边（见 §5）。
+
+### 3. 当前 SAC 的健康度（代码事实，非"可用基线"）
+
+| # | 发现 | 证据 | 影响 |
+|---|---|---|---|
+| F1 | 默认 actor blueprint `init_policy.yaml` 指向 `ppo.policies.tanh_gaussian_mlp:TanhGaussianMLPPolicy`，该类已于 `f232b8c5`(2026-09-05) 移入 `policies/todo/`；`PolicyBlueprint.build()` 实测 `ModuleNotFoundError` | 〔运行实测〕 | **当前 SAC 无法构建 actor，训练入口已死**；v1–v7 旧 run 早于该移动 |
+| F2 | `sac/loop.py:605` `v_p_a, v_p_b, v_env, v_seed, v_options = eval_jobs[0]` 把 rollout `Job` dataclass 当五元组解包；`54fc8f54`(2026-09-05) 把 Job 改成 8 字段 frozen dataclass 后此处必 `TypeError` | 〔运行实测〕 `cannot unpack non-iterable Job object` | 首个视频渲染（sac_balance 约 500K env_step 处）即崩溃 |
+| F3 | `sac/loop.py` 调用 `actor.to_blueprint(dest_path=, stochastic=)`、`hasattr(actor, "export_policy_artifacts")`、`actor.sample_action(obs)`；`TrainablePolicy` ABC 只声明 `to_blueprint(dest_path)`——`stochastic` kwarg 仅存在于 todo/ 版 tanh_gaussian，八格 TruncNorm 的 `to_blueprint` 均无该参数 | 〔代码事实〕 | SAC 的 actor 事实契约未被 ABC 表达，且与八格签名不兼容 |
+| F4 | `trainer.py` 中 `actor_weight` 同时加权 critic 回归损失与 actor loss | 〔代码事实〕 | 混同"通道是否学习"与"通道如何影响 actor"两个语义，违反本阶段计划预设的分离原则 |
+| F5 | `replay.py sample_nstep` 沿 `(start_idx+k) % capacity` 线性取后续帧，环形覆盖后可跨轨迹拼接（靠 done 掩码截断只是多数情况下的侥幸） | 〔代码事实〕 | n-step>1 时可能产生跨轨迹污染的 target，W5 需定案 |
+| F6 | replay 采样用全局 `np.random`；checkpoint 不含 replay/RNG/rollout 状态；`loop.py:442` 有 `*0` 死代码 | 〔代码事实〕 | "resume" 实际只是模型 warm-start，非完整续训 |
+| F7 | `exp_sac_balance.py:140-141` obs/acts/fin_obs 为 `None` 时静默 `return []` | 〔代码事实〕 | 违反 fail-loud；丢数据不报错 |
+| F8 | 旧测试 `tests/` 16/16 通过 | 〔运行实测〕 | 只覆盖 replay 机械行为与 trainer smoke，不覆盖契约正确性；不能作为新 SAC 依据 |
+| F9 | `sac_balance_real_v7`：10M env_step / ~1.03M grad_step 跑满，`survival_rate` 末段 ~0.56；`r_cross` 的 `q1_mean≈-177`、`q1_loss≈62` 持续高企；`grad_share_r_cross≈0.2%` 而按 aw 归一化口径应约 19%（r_fall aw=3.0 固定，r_cross aw≈0.72） | 〔历史证据〕 | 历史 run 未达收敛。注：`reward_scale=50` 乘在 TD target 的 reward 上（`trainer.py:194`），Q 值域以缩放后 reward 计，-177 不构成数学越界；但 grad_share 与 aw 语义脱节、r_cross 的 TD 残差量级异常，说明通道合成机制未实现其声明语义——归因待 W2/W3，**不当作既有结论** |
+
+### 4. 资产分类矩阵
+
+| 资产 | 当前角色 | 分类 | 处置方向 |
+|---|---|---|---|
+| `envs.framework.*`（Policy/PolicyBlueprint/EpisodeRunner/Recorder/插件体系） | 运行时底座 | **环境中立，继续用** | 不动 |
+| `envs.humanoid21.*`（含两个目标 env blueprint：balance 的 `basic_balance_v2_phi_dual_env.yaml` 与 PPO 实验同名一致；standup 的 `standup_4stage_dense_v2_env.yaml`） | 任务定义 | **环境中立，继续用** | 不动 |
+| `rollout/episode.py` Episode / `episode_recorder.py` / `episode_collection.py` | 采集数据契约 | **中立但 import 链被 `rollout/__init__` 污染** | 内容可直接用；归置方式见 §5 决策点 |
+| `rollout/job.py`（Job/SamplingSpec/ReferenceSpec）、`exploratory_policy.py`、`parallel_rollouter.py`、`remote_policy.py`、`inference_server.py`、`observer_utils.py` | 采集与采样包装 | **机制中立、承载 ppo 类型** | 同上决策点；`SamplingPolicy` 的探索体系（ef/reference/delta σ-floor）属 PPO 语义，SAC 拷贝时应裁剪为 SAC 自己的探索契约 |
+| `ppo/policies` 八格 TruncNorm | actor 候选族 | **复制适配** | `sample_action` 为逆 CDF 重参数化采样，天然满足 SAC 的 d a/d θ 需求〔代码事实〕；需 SAC 化接口：移除/替换 `evaluate_actions`+SamplingContext 语义、统一 `to_blueprint(stochastic=)`、补 `export_policy_artifacts` 等价物；ef 约定（truncnorm ef∈[-1,1]，0 中性）与旧 tanh_gaussian（ef∈[0,1]，0.5 中性）不一致，须在 SAC 内统一口径 |
+| `ppo/policies/_export_template*.py` + `file:` blueprint 机制 | 部署导出 | **复制适配** | 模板自包含（无 baseline 依赖），逐族拷贝到 sac/；`ExportedTruncNormPolicy.sample(ctx)` 按鸭子类型读 ctx 字段 |
+| `ppo.sampling_context.SamplingContext` / `ppo.stochastic_policy.StochasticPolicy` | rollout 侧探索容器/接口 | **复制适配** | 代码量小（~70+~49 行）；SAC 若要独立探索字段（如 noise injection、ou 噪声等），拷贝后改造 |
+| `TrainablePolicy`/`ActorEval`（ppo.experiment） | actor 契约 | **需改写（SAC 自有）** | SAC 需自有 ABC：`sample_action(obs)→(a,logπ)` 可微、`deterministic_action`、`act`、`to_blueprint(stochastic)`、导出面；`evaluate_actions`/uncertainty 属 PPO 语义不进 SAC |
+| `dumpkit/`（~7.7K 行：frame_access/dump_capture/dump_analysis/metric_catalog/viewer）+ `ppo/debug.py` | debug 系统 | **仅设计参照，不移植** | 直接依赖 `PPOBuffer/Trajectory/UpdateStats/algos`；继承其"沿计算链下钻+单样本溯源+CLI/viewer 同源"的架构思想，SAC 自建 |
+| `code_snapshot.py`、`train.py` 的 `--background/--resume/--seed/--set/--list-experiments`/`_setup_logging` | 工程外壳 | **中立可共用** | train.py 需把两个 registry 改 lazy import；PPO 专属 flag（`--param`/`--dump-at`/collector）对 SAC 目前是静默丢弃，需补 gate 或接线 |
+| `baseline/framework/__init__.py` | 包 init | **需改写** | 去掉 eager `from .ppo import`（外部无 `from baseline.framework import X` 消费方，已核查） |
+| `critic_mlp.py`（framework 根） | 共享 critic MLP | **证据不足/倾向不用** | sac 现有 networks 未使用；W3 再定 |
+| `sac/{experiment,trainer,replay,networks,loop}.py` 现状 | 旧实现 | **逐件裁决：结构可参照，语义需重写** | 通道对象/transition 契约思路保留为候选；actor 契约、aw 语义、n-step、relabel、checkpoint 按 §3 问题清单重写 |
+| `experiments_sac/` 现状 | 旧实验 | **改写** | base.py 保留骨架风格；`exp_sac_balance` 的奖励构成（r_fall=0.01φ、r_cross、φ² 门控 aw）与 PPO `basic_balance` 语义对应关系待 W2 对拍确认 |
+| PPO 专属机制（PPOBuffer/GAE/confidence/dual-clip/param_patches/uncertainty floor/DeviceRollouter/analyze_training.py——后者文件已不存在） | — | **不采用** | 不进 SAC |
+
+### 5. 独立性定义与关键决策点
+
+**建议的可测试标准（待评审冻结）：**
+
+- C1（import 洁净）：`import baseline.framework.sac` 与 `import baseline.experiments_sac` 后，`sys.modules` 中不出现 `baseline.framework.ppo*`。
+- C2（删除存活）：将 `baseline/framework/ppo/` 暂时挪走后，SAC 单测与 `train.py --algo sac --smoke` 路径可运行。
+- C3（语义边界）：SAC 训练数据路径上不出现 PPO 对象（SamplingContext、重要性权重、GAE 等）；探索控制走 SAC 自有契约。
+
+按现状，C1/C2 均不成立（三条传递边 + 两处直接 import + 已死的 actor blueprint）。
+
+**阻塞性决策点（W1 不能替用户定，列明选项）：**
+
+**D-ROLLOUT：采集/采样层的归置。** 选项：
+- (a) `rollout/` 视为共享中立层，仅把 `SamplingContext/StochasticPolicy` 提升出 ppo（改 ppo import 指向新位置，违反"不动 PPO"约束，不推荐）；
+- (b) **SAC vendor 一份采集层**（`job/episode/recorder/rollouter/采样wrapper` 拷贝进 `sac/`，裁剪 reference/delta σ-floor 等 PPO 探索语义）——符合"拷贝加修改"原则，`rollout/` 对 PPO 完全不动，SAC 获得自有探索契约的落点。**W1 倾向此项**；
+- (c) 仅 vendor `sampling_context` 等价物 + 继续用 `ParallelRollouter`（靠 `file:` 导出策略鸭子类型消费 ctx）——最小改动，但 `Job.stochastic` 语义、spec 字段、`sctx__` extras 仍由 PPO 体系定义，C3 不达标。
+
+**D-PKG-INIT：`baseline/framework/__init__.py` 去 eager ppo。** 外部无 `from baseline.framework import X` 消费方（已核查），清空为惰性/空 init 属中立改动、不动 PPO 内部。C1 需要。
+
+**D-CLI：`train.py` 两个 registry 改 lazy import**，SAC 分支补 `--param`/`--dump-at` 等的 gate 或接线。
+
+### 6. 预计修改范围（不含 PPO 内部任何改动）
+
+- `baseline/framework/sac/`：`experiment.py`（自有 actor ABC、Job 别名清除）、`loop.py`（Job 解包/导出契约/`hasattr` 收敛）、`trainer.py`（aw 语义按 W3 裁决重写）、`replay.py`（n-step 跨轨迹防护、RNG 独立化、checkpoint 含 replay 待定）、`networks.py`（按 W3 保留或简化）、新增 `sac/policies/`（八格拷贝适配）与按 D-ROLLOUT 决定的 `sac/` 内采集层。
+- `baseline/experiments_sac/`：`base.py`（actor 契约/蓝图默认）、新增两个目标实验 `exp_sac_*.py`。
+- `baseline/framework/train.py`：registry lazy import、SAC flag gate。
+- `baseline/framework/__init__.py`：去 eager ppo。
+- `baseline/humanoid21/blueprints/`：新增指向 sac policies 的 `init_policy_sac_*.yaml`。
+- **不动**：`baseline/framework/ppo/**`、`envs/**`、`rollout/`（若选 D-ROLLOUT-b）。
+
+### 7. 未决问题与证据缺口
+
+1. v1–v7 的未收敛归因（reward_scale=50 × critic_lr、alpha 钳制、grad_norm 实际权重公式、UTD 0.25×batch256）仅有日志表面信号，W2/W3 才做因果核查。
+2. 旧 SAC 的 `n_critics/in_target_min`（REDQ 字段）、`relabel`、`DataSource`/`ReplayPlan` 多为未被消费的接口——保留价值待 W5。
+3. `TaggedReplay` 环形缓冲与 traj_id 生命周期在覆盖下的正确性需构造性测试。
+4. 八格中 mixture 族的离散分量在 SAC actor loss 下的梯度估计方案，W4 专查。
+5. `--collector device`（batchframework）对 SAC 的必要性评估未做（初版默认 cpu collector）。
+
+### 8. W1 出口自检
+
+- [x] 依赖图与直接/传递依赖已列出（§2）
+- [x] rollout 共享模块对 `ppo.sampling_context` 的依赖已确认（exploratory_policy.py:34；framework/\_\_init\_\_.py eager ppo；train.py:19-20 eager registry）
+- [x] 旧测试实际覆盖面已核实（§3-F8），不作契约正确性证据
+- [x] 独立性有候选可测定义（§5），阻塞决策点已列出供裁决
+- [x] 预计修改范围明确，且不需要改动 PPO 内部（§6）
+
+**W1 遗留待用户确认**：D-ROLLOUT 采集层归置选型（建议 b）、是否接受 §5 的 C1–C3 作为冻结的独立性标准、以及 `baseline/framework/__init__.py` 与 `train.py` 两处中立改动是否在授权范围内。
+
+---
+
 # 历史参考区：旧实现决策（不作为本轮决策）
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
