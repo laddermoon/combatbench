@@ -88,7 +88,7 @@ class WallContactObserver(BaseObserverPlugin):
                 body_robot = body_id_to_name.get(int(body1[i]), '')
             else:
                 continue
-            if not geom_env.endswith('wall'):
+            if not geom_env.startswith('wall'):
                 continue
             if float(force_mag[i]) < self.force_threshold:
                 continue
