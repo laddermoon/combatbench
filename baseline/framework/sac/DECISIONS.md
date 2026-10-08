@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：阶段一 W1–W6 已完成，对应 A1–A6 见下方裁决区；W7–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
+> 状态：阶段一 W1–W7 已完成，对应 A1–A7 见下方裁决区；W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -380,7 +380,7 @@ P2-IND-0 package/lazy registry/train.py 边界
 
 ## 3. 阶段一完成门槛
 
-- [ ] A1–A7 均有可审阅内容，事实、候选和验证结果分开。
+- [x] A1–A7 均有可审阅内容，事实、候选和验证结果分开。
 - [x] 单通道标准 SAC 退化明确，多通道核心语义与支持边界可解释。
 - [x] 两任务奖励/权重/终止的时间对齐已核对，具备对拍方案。
 - [x] 八格保留范围、SAC 梯度差异和探索控制分层明确。
@@ -1456,7 +1456,7 @@ sac/collection/
 | P2-CKPT-1 | checkpoint bundle、replay 持久化、runtime/RNG/counters/manifest | FX-9/10/12 通过 |
 | P2-LOOP-1 | 新 train loop 时钟、UTD credit、eval/export/checkpoint 边界、seed manifest | FX-11/12 通过 |
 | P2-TRAIN-1 | 按 A3/A4 接入新 batch、actor contract 和 S01 actor；不在本包启用八格全量 | 数学/梯度永久测试通过后再短训 |
-| P2-IND-1 | package/lazy registry/train.py SAC 路径改造 | C1–C3 通过；PPO 路径不回归 |
+| P2-IND-0 | package/lazy registry/train.py SAC 路径改造 | C1–C3 通过；PPO 路径不回归 |
 
 顺序建议：P2-COLL-1 与 P2-DATA-1 先行，P2-REPLAY-1/CKPT-1 再接入 P2-LOOP-1；P2-TRAIN-1 最后接真实 batch。任何一项没通过对应 fixture，不进入真实任务训练。
 
@@ -1689,6 +1689,175 @@ sac/debug.py          # runs/summary/metrics/dump/inspect/samples/trace/query/..
 - [x] 故障注入矩阵与阶段二 debug 工作包已列出。
 
 **本 W6 仍未完成实现：** 尚无 `sac/debugkit`、metric events、dump capture、access/analysis 或 viewer；默认数值（tick ring 4096、keep 8、64GiB）是实现起点而非性能实测结论；`physical_replay` 只在相应 state 工件存在时成立。
+
+## A7：风险、验证矩阵与阶段二实施 DAG（W7，2026-10-08）
+
+**范围与状态：** 本节是阶段一的验证收口，不是实现测试报告。已把 A1–A6 的决策、fixture 和阶段二包统一到同一索引；未改生产代码、未启动训练。W3/W4 的数学探针只作为可行性证据，不替代阶段二永久测试。
+
+### A7.1 ID 规范化
+
+- 决策编号：`SAC-R1-D01`～`SAC-R1-D37` 连续且无重复；每条按 `approved / delegated / proposed / design` 标注证据强度，不能混写。
+- Fixture 重名修正：A2 中的 `FX-1`～`FX-6` canonical 为 `FX-A2-01`～`FX-A2-06`；A5 中的 `FX-1`～`FX-14` canonical 为 `FX-A5-01`～`FX-A5-14`；A6 的 `DX-1`～`DX-16` canonical 为 `DX-01`～`DX-16`。
+- 阶段二包 canonical：`P2-IND-0`、`P2-COLL-1`、`P2-DATA-1`、`P2-REPLAY-1`、`P2-DBG-1`、`P2-TRAIN-1`、`P2-LOOP-1`、`P2-CKPT-1`、`P2-DBG-2`、`P2-DBG-3`、`P2-DBG-4`、`P2-ENV-1`。A5 旧写法 `P2-IND-1` 统一为 `P2-IND-0`。
+- 证据状态：`design`（仅有契约）、`probed`（阶段一低成本验证）、`implemented-test`（永久测试）、`integration-passed`、`training-passed`。当前没有 `training-passed` 项。
+
+### A7.2 风险矩阵 schema 与验证层级
+
+每条风险按以下字段登记：`risk_id, decision_refs, contract, failure_mode, blast_radius, likelihood, detectability, severity, validation_level, test_id, input_or_injection, expected, tolerance, evidence_artifact, owner_phase, gate, status`。
+
+- **severity**：`blocker` = 目标错误/恢复错误/独立性破坏；`major` = 可能导致错误训练或诊断失效但有检测路径；`minor` = 可用性/成本问题。
+- **validation_level**：`static`、`unit`、`property`、`integration`、`smoke`、`short-train`、`acceptance`。
+- **gate**：`pre-P2`、`P2-gate`、`pre-P3`、`pre-P4`、`pre-P5`、`pre-P6`、`optional`。
+- blocker 不允许以训练曲线、单个 smoke 或历史 PPO 测试作为唯一证据；必须有一个可独立证伪的输入/预期。
+
+### A7.3 风险矩阵
+
+| risk_id | refs | 失败模式 | severity | 验证/gate | canonical tests / fixtures | status |
+|---|---|---|---|---|---|---|
+| R-MATH-01 | D01–D03,D12 | Bellman target 公式错、熵/U 重复计入或漏计、twin 选择语义错 | blocker | unit+property；P2-gate | T-MATH-01/02/04 | probed（W3） |
+| R-MATH-02 | D05,D08 | actor gate、channel_valid、bootstrap、sample_weight 混用；actor/critic 梯度泄漏 | blocker | unit+integration；P2-gate | T-MATH-03、DX-09 | design |
+| R-MATH-03 | D07,D12 | 不支持组合被静默接受，或 U 模式只改 actor 不改 target/系数 | blocker | static+unit；P2/pre-P4 | T-MATH-04、DX-11 | design |
+| R-POL-01 | D09,D11,D14 | SAC actor API、logπ、可微采样或 TN 数值内核不满足 | blocker | unit+property；P2-gate | T-POL-01/02 | probed（W4 风险已定位） |
+| R-POL-02 | D10,D15 | mixture logits 得不到任务梯度，或分量语义被误改 | major | unit+property；pre-P4 | T-POL-03、DX-10 | probed（方案已验证，生产未实现） |
+| R-POL-03 | D13,D25 | β/π/eval 分布混淆，或 `action` 与实际执行动作不一致 | blocker | unit+integration；P2-gate | T-POL-04、T-DATA-05 | design |
+| R-DATA-01 | D16,D26,A2 | transition 边界、`next_obs`、slice 身份或 provenance 错 | blocker | unit+property+integration；P2-gate | T-DATA-01/02、FX-A5-01～03 | design |
+| R-DATA-02 | D05,D20,A2 | timeout/terminated/bootstrap 错，或 `phi_pre` 来源错 | blocker | unit+integration；P2/pre-P3 | FX-A5-01～06、FX-A5-13、FX-A2-01～06 | design |
+| R-DATA-03 | D17,D36 | 缺 reward/fact/extra 被补零、截断或静默丢弃 | blocker | unit+static；P2-gate | FX-A5-04/05、DX-02 | design |
+| R-RPL-01 | D16,D18 | replay 容量按错单位、采样非 uniform、批内重复或不支持功能被接受 | blocker | unit+property；P2-gate | T-RPL-01/03/05、FX-A5-07 | design |
+| R-RPL-02 | D17,D19,D34 | `sample_id/source_key` 不稳定、覆盖后身份混淆、持久化丢身份 | blocker | unit+property；P2-gate | FX-A5-07/08、DX-03/04 | design |
+| R-RPL-03 | D19,D23 | replay 恢复不完整却被当成完整 resume | blocker | integration；P2-gate | FX-A5-09、T-CKPT-01 | design |
+| R-COL-01 | D21,D26 | collection 仍依赖 PPO、job 顺序/provenance 丢失、worker partial data 入 replay | blocker | static+integration；P2-gate | FX-A5-14、T-COL-01/02 | design |
+| R-COL-02 | D17,D20,D25 | 行为参数、policy fingerprint、pre-action fact 或 executed action 记录错 | blocker | unit+integration；P2/pre-P3 | T-COL-03、FX-A5-13、T-DATA-05 | design |
+| R-CLK-01 | D22 | UTD 小数预算丢失、counters 错位、eval/checkpoint 边界不可恢复 | blocker | unit+property；P2-gate | FX-A5-11/12、T-CLK-01/02 | design |
+| R-CLK-02 | D22,A2 | eval 写 replay、消耗训练 RNG 或使用 stochastic spec | major | integration；pre-P3 | T-CLK-03、DX-13 | design |
+| R-CKPT-01 | D19,D23,D24 | artifact 缺失仍静默 warm-start、optimizer/target/RNG 恢复错 | blocker | integration+property；P2-gate | FX-A5-09/10/12、T-CKPT-01～04 | design |
+| R-CKPT-02 | D24 | 非白名单配置覆盖导致“恢复”语义改变 | blocker | static+integration；P2-gate | FX-A5-10 | design |
+| R-DBG-01 | D28–D31 | 无 canonical events、时钟混乱或常态诊断成本不可控 | major | unit+integration；P2/pre-P5 | T-DBG-01/02、T-PERF-01 | design |
+| R-DBG-02 | D30,D32,D34 | dump 无法重算，或 batch 样本不能追到 source | blocker | integration；pre-P3 前至少有 recompute 基础能力，P5 完整 | T-DBG-03/04、DX-04/14 | design |
+| R-DBG-03 | D35,D36 | 诊断污染训练 RNG/状态，或可选诊断失败造成静默数据缺口 | blocker | unit+integration；P2-gate | DX-13、T-DBG-05 | design |
+| R-DBG-04 | D37 | CLI/HTTP/viewer 各自解析导致结果不一致 | major | integration；pre-P5 | DX-15/16、T-DBG-06 | design |
+| R-TASK-01 | A2,D04 | standup/basic_balance 的奖励、边界、评估指标与冻结语义不一致 | blocker | integration+smoke；pre-P3 | FX-A2-01～06、T-TASK-01 | design |
+| R-TASK-02 | A2 | 评估 seeds、预算、持续达标或最终 checkpoint 口径被修改 | blocker | acceptance；pre-P6 | T-TASK-02 | design |
+| R-TASK-03 | A3.10 | self-play 非平稳与 replay 陈旧数据导致目标不可解释 | major | debug+short-train；pre-P6 | DX-05、T-TASK-03 | design |
+| R-IND-01 | D21,D37,A1 | SAC 直接或传递 import PPO、registry/train.py 静默耦合 | blocker | static+integration；P2-gate | FX-A5-14、DX-16、T-IND-01 | design |
+| R-INT-01 | A5,A6 | fake env/真实 env smoke 前未覆盖端到端路径 | blocker | integration+smoke；P2-gate | T-INT-01/02 | design |
+| R-PERF-01 | D31,D33,A5 | replay/checkpoint/dump 磁盘内存不可控，诊断拖垮训练 | major | property+short-train；P2/pre-P6 | T-PERF-01/02 | design |
+
+### A7.4 测试注册表
+
+| test_id | 输入/注入 | 预期与容差 | 证据 artifact | phase |
+|---|---|---|---|---|
+| T-MATH-01 | 单通道、固定 obs/action/reward/Q/α | target 与手算一致；CPU float64 `atol<=1e-10`，torch float32 `atol<=2e-5` | pytest + `target.npz` | P2-TRAIN-1 |
+| T-MATH-02 | 两通道、常量非负权重、相同 γ/bootstrap | 合并 target 等于标量 SAC；同 tolerance | pytest | P2-TRAIN-1 |
+| T-MATH-03 | actor 参数梯度目标、独立 critic、target net | critic optimizer 不改 actor；actor optimizer 不改 critic；target 只在 target_tick 变 | pytest state digest | P2-TRAIN-1 |
+| T-MATH-04 | `shannon/u_bonus/u_floor` 三种 mode 的合成 batch | actor、target、系数状态一致；互斥配置非法即报错 | pytest + metrics event | P2-TRAIN-1，pre-P4 扩展 |
+| T-POL-01 | S01 actor contract fixture | `sample_action` 返回可微 action/logπ；`deterministic_action`、blueprint、私有 RNG 满足契约 | pytest + export artifact | P2-TRAIN-1 |
+| T-POL-02 | 极端 σ、边界均值、batch 样本 | log_prob 有限、密度积分误差在声明容差、无静默塌缩；固定噪声有限差分通过 | pytest | P2-TRAIN-1 |
+| T-POL-03 | mixture toy Q、K=1/K>1 | 枚举梯度与独立积分/FD 一致；logits 梯度非零且方向正确；K=1 退化一致 | pytest | pre-P4 |
+| T-POL-04 | 相同 obs 下 stochastic behavior、training sample、deterministic eval | 三者显式分离；behavior spec 不改训练 π | pytest/integration | P2-COLL-1 |
+| T-DATA-01 | FX-A5-01/02/03 合成 episode | boundary、next_obs、terminated/truncated/bootstrap exact | pytest | P2-DATA-1 |
+| T-DATA-02 | FX-A2-01～06 + A5 等价构造 | PPO 语义对拍；SAC pre-action gate 独立断言 | pytest + fixture episode | P2-DATA-1/pre-P3 |
+| T-DATA-03 | FX-A5-04/05 缺字段/长度错 | 全部 fail loud，不补零 | pytest | P2-DATA-1 |
+| T-DATA-04 | FX-A5-13 phi_pre | 与 pre-action accessor 同值；shifted `phi_post` 只作回归 | pytest | P2-COLL-1 |
+| T-DATA-05 | action mapping/插件改写模拟 | `action=executed`，原始输出进入 `policy_action`；无二义性 | pytest | P2-COLL-1 |
+| T-RPL-01 | 双 agent 合成 slices，容量以 transition 断言 | 双活帧=2、单活帧=1；capacity/warmup/UTD 分母 exact | pytest | P2-REPLAY-1 |
+| T-RPL-02 | FX-A5-07 wraparound | `sample_id` 单调不复用；覆盖样本不可采样；active slice 统计 exact | pytest | P2-REPLAY-1 |
+| T-RPL-03 | FX-A5-08 source conflict | active duplicate/issued slice 重插/同 key 数据冲突均 raise | pytest | P2-REPLAY-1 |
+| T-RPL-04 | 固定 seed 采样、save/load RNG | batch 内无重复 sample_id；恢复后序列一致 | pytest | P2-REPLAY-1/P2-CKPT-1 |
+| T-RPL-05 | n_step/PER/relabel/stratified 配置 | 配置或准入边界显式拒绝 | pytest | P2-REPLAY-1 |
+| T-COL-01 | jobs 乱序返回/重复 episode_index | `CollectedEpisode` 与 job 顺序、round/job/agent 身份一致 | pytest | P2-COLL-1 |
+| T-COL-02 | worker 任一 job 抛错 | 本轮无 partial data；错误传播；不污染 replay/RNG | pytest/integration | P2-COLL-1 |
+| T-COL-03 | behavior spec/explore metadata | 每个样本记录 requested/effective params、policy fingerprint | pytest | P2-COLL-1 |
+| T-CLK-01 | FX-A5-11 UTD 序列 | requested/actual/dropped/credit exact；round cap 明示丢弃 | pytest | P2-LOOP-1 |
+| T-CLK-02 | resume 前后 counters/边界 | next round/tick/eval/checkpoint 不重复、不回退 | pytest/integration | P2-CKPT-1/P2-LOOP-1 |
+| T-CLK-03 | eval round | eval 不写 replay、不消耗 train/replay RNG、不产生 UTD | integration | P2-LOOP-1 |
+| T-CKPT-01 | FX-A5-09 删 artifact/字段 | resume fail loud；warm_start 只在声明字段足够时成功 | pytest | P2-CKPT-1 |
+| T-CKPT-02 | FX-A5-10 白名单/身份字段 override | 白名单生效并记录；身份字段变更拒绝 resume | pytest | P2-CKPT-1 |
+| T-CKPT-03 | FX-A5-12 seed manifest | train/eval/holdout/debug streams 无重叠；恢复后不重复采集 | pytest | P2-CKPT-1 |
+| T-CKPT-04 | checkpoint 中途失败/半成品目录 | 原子性成立；半成品不可 resume | pytest | P2-CKPT-1 |
+| T-DBG-01 | 合成 round/tick/eval/config event | `sac_metrics_v1` schema、主键、时钟、单位校验 | pytest + events.jsonl | P2-DBG-1 |
+| T-DBG-02 | tick ring 容量与 dump 触发 | 最近 N tick 可查，不写爆磁盘；round 聚合口径一致 | pytest | P2-DBG-2 |
+| T-DBG-03 | 预约 critic_tick dump | `sac_dump_v1` 必需 artifact、hash、manifest、identity 完整 | pytest + dump dir | P2-DBG-3 |
+| T-DBG-04 | 对已捕获 L2 dump 重算 | stored vs recomputed target/loss 在声明容差内；缺失字段显示不可用 | pytest + analysis.json | P2-DBG-4 |
+| T-DBG-05 | 诊断前后 RNG/state digest | replay sample 序列、模型、optimizer、schedule 不变 | pytest | P2-DBG-2/4 |
+| T-DBG-06 | 同一 dump 走 CLI/HTTP | canonical JSON 输出一致；无 `baseline.framework.ppo.*` import | pytest/integration | P2-DBG-4/pre-P5 |
+| T-IND-01 | `import baseline.framework.sac`、单测、smoke | `sys.modules` 无 PPO；临时挪走 `ppo/` 后 SAC 仍通过 | pytest/integration | P2-IND-0 |
+| T-INT-01 | fake/small env + SAC collector | episode→slice→replay→tick→events 端到端通过 | integration test | P2-ENV-1 |
+| T-INT-02 | 真实 humanoid21 少量 episode/update | 真实 smoke 通过；只证明链路，不证明收敛 | smoke log + events | P2-ENV-1 |
+| T-TASK-01 | 录制 episode 对拍与 on_eval | 指标/边界同 A2；SAC 差异字段显式存在 | pytest + eval fixture | P2-DATA-1/pre-P3 |
+| T-TASK-02 | 阶段六验收 run manifest | seeds、阈值、连续窗口、预算、最终 checkpoint 符合 A2 | run manifest/eval log | pre-P6 |
+| T-TASK-03 | 行为版本老化注入 | replay/batch age 与 opponent/policy version 分布可见 | metrics/dump | pre-P6 |
+| T-PERF-01 | 长 round + dump 开关 | L0/L1 成本、disk、内存有界并记录 | metrics event | P2-DBG-2 |
+| T-PERF-02 | replay/checkpoint 序列化规模 | bundle 大小、IO 时间、内存峰值满足实测预算 | benchmark artifact | P2-CKPT-1 |
+
+### A7.5 阶段二 DAG 与 gate
+
+```text
+G2.0 P2-IND-0 ── independence scaffold / lazy registry / CLI gate
+  ├─ P2-COLL-1 ── collection contract / provenance / pre-action facts
+  │    └─ P2-DATA-1 ── transition schema + validators
+  │         └─ P2-REPLAY-1 ── identity/FIFO/uniform/RNG/persist
+  │              ├─ P2-CKPT-1 ── bundle/manifest/resume
+  │              └─ P2-LOOP-1 ── clocks/UTD/eval/checkpoint loop
+  ├─ P2-DBG-1 ── metrics/events/catalog
+  │    └─ P2-DBG-2 ── tick ring + L0/L1
+  └─ P2-TRAIN-1 ── S01 actor + trainer math
+       └─ P2-LOOP-1
+            ├─ P2-DBG-3 ── L2 dump capture
+            │    └─ P2-DBG-4 ── access/analysis/recompute/CLI
+            └─ P2-ENV-1 ── fake env integration → real env smoke
+```
+
+**阶段二 gate：**
+
+- **G2.0**：SAC import 不加载 PPO；registry/train.py 不静默吞 SAC 不支持参数。
+- **G2.1**：collection/data 全部 FX-A5-01～06/13 和 T-COL-* 通过。
+- **G2.2**：replay/clock/checkpoint 的 FX-A5-07～12 与 T-RPL/T-CLK/T-CKPT 通过。
+- **G2.3**：S01 actor 与标准 Shannon SAC 的 MATH/POL 永久测试通过。
+- **G2.4**：fake env 集成通过，metrics event 和 tick ring 可观测。
+- **G2.5**：真实 env smoke 通过；此时仍不声称任务收敛。
+- **G2.6**：L2 dump 可对指定 critic tick 做 recompute 级核对；未通过前不得进入长训验收。
+
+### A7.6 未决项分类与重开条件
+
+**不阻塞阶段二，但必须在对应阶段前解决：**
+
+- 八格全量适配、mixture 生产实现、U 路线训练效果：pre-P4。
+- 完整 viewer/HTTP 页面与所有 DX 故障注入自动化：pre-P5。
+- 多 seed 收敛、预算内效率、self-play 陈旧数据影响：pre-P6。
+- `physical_replay` 的完整 core-state 方案：仅当阶段五需要物理重演时解决。
+
+**仍属设计假设/需在实现中验证：**
+
+- `debug_recent_ticks=4096`、dump keep 8、64GiB 是初始容量建议，不是性能实测结论。
+- `replay.npz + replay_meta.json` 是契约参考实现；序列化格式可微调，但字段、hash、identity 和原子性不可降。
+- `P2-*` 模块名可微调；schema 字段、测试语义和 gate 不可降。
+- bitwise resume/重算只在 config-lock、同代码、同设备、同库版本和确定性内核下追求。
+- 现有旧 SAC tests 16/16 与 PPO policy tests 288/3 skipped 只能作为资产健康度，不计作新契约通过。
+
+**首版明确不承诺：**
+
+- n-step>1、PER、relabel、stratified retention、异步采集、GPU inference server、opponent pool。
+- 无保存 core-state 的逐帧物理重演。
+- 跨设备/CUDA/库版本的 bitwise continuation。
+- 用 Shannon/U 之外的新正则未经裁决直接混入。
+
+### A7.7 W7 低成本核查结果
+
+- 决策编号连续性核查：`SAC-R1-D01`～`D37` 无缺口/重复。
+- Fixture 命名冲突已用 `FX-A2-*`、`FX-A5-*` canonical 解决。
+- 阶段二包编号已统一；`P2-IND-0` 为入口包。
+- 未执行训练；未把旧测试或历史 run 作为新契约的通过证据。
+
+### A7.8 出口状态
+
+- [x] A1–A6 决策、fixture 和阶段二包已建立唯一索引。
+- [x] 风险矩阵 schema、严重度、验证层级和 gate 已冻结。
+- [x] 十个风险域均有可证伪测试或明确阻塞说明。
+- [x] 阶段二依赖 DAG 和 G2.0–G2.6 门槛已冻结。
+- [x] 未决项、暂缓功能和重开条件已分类。
+
+**W7 不声称：**生产实现、永久测试、真实 env smoke、训练收敛或 viewer 已完成。进入 W8 时，需要用户对 A1–A7、阶段二 DAG、资源默认与未决项做最终审阅。
 
 ---
 
