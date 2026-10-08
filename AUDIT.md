@@ -2433,3 +2433,48 @@ git 外文档，不管）
   `policy.py:242` 实现一致；`RandomCombatPolicy(scale/seed/action_dim)`
   与 `policy/random/policy.py:19` 一致；`docs/SUBMISSION.md` 存在。
 - P-POL-2 与 P-POL-3（同文内的 BaseCombatPolicy 字样）合并结案。
+
+## [2026-10-08] docs/examples/scripts/tests 边角审计建议落地
+
+**对象**：`docs/ENVIRONMENT.md|_zh.md`、`examples/README.md`、
+`scripts/README.md`（新）、`tests/README.md`（新）
+**类别**：修复执行（按审计建议逐项）
+
+### docs/ENVIRONMENT.md（+_zh）——重写为实际场地描述
+
+原文描述"方形房间四面墙 / assets/textures 贴图 / assets/humanoid.xml
+模型 / 四角五灯光源 / 9 固定相机"——全部过时。实测
+`battle_circular_v2.xml` 真相并改写双语版：
+
+- 24 段斜面平板拼合的圆形围墙（wall_00..23），半径 ≈3.44m、
+  高 6.10m；`condim=3`、`impratio=10`、`timestep=2ms`
+- 纹理实为 `envs/humanoid21/textures/`：6 张贴图（wall_0..5）交替 +
+  floor_circular + ceiling（`assets/` 下只剩 images/hero.png）
+- 光照实为 **headlight（ambient=diffuse=0.4）+ 渐变天空盒**，
+  原文"四角 5 米四个光源"不实
+- 9 台固定相机位置改为 XML 实测坐标（4 对角 4m + 4 正方位 3m +
+  顶视 6m），另每机器人 back/side trackcom + egocentric；
+  注明广播视角是动态自动取景相机而非固定相机
+
+### examples/README.md —— 过期标签+死 API 引用
+
+- 头部"提案文档 v2 待确认"标签此前轮次已修（现为"均已实现"）。
+- L74 `ctx.termination_proposals` → `ctx.request_termination` /
+  `ctx.agent_termination_proposals`（per-agent 现行契约，与
+  `03_training_aids.py:252` 实际用法一致）。
+
+### scripts/README.md（新）
+
+注明 `migrate_feet_forces_norm.py` 为**一次性迁移脚本、已执行**，
+引用历史 `battle_v1.xml` 属正常。
+
+### tests/README.md（新）—— 归属索引
+
+- 实测：17 个 test_*.py + `debug_fall_images/` fixture 目录；
+  16 个属 batchframework 设备路径、`test_stage_seg_rewards.py` 属
+  curriculum（**可正常 collect，26 tests**——它引的
+  exp_basic_balance_v2_stage_seg 恰好没走断链 import）。
+- 修正审计表述：这批测试**不在** pyproject `testpaths` 内
+  （默认 pytest 不收集，须显式 `pytest tests/`）。
+- 选"加索引"而非"迁移"：文件里大量 `Path(__file__).parents[N]`
+  锚定仓库根，迁移会破路径假设。

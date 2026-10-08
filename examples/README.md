@@ -71,7 +71,7 @@ CombatBench 的定位是**一个格斗 benchmark 平台**：我们提供 Env + F
 
 2. **早停 `FallenEarlyTerminationPlugin(BasePlugin)`**
    - 在 `on_post_action_step` 检测摔倒，`ctx.request_termination("fallen")` 提前结束，少浪费 sample。
-   - 演示 `ctx.termination_proposals` 机制，以及 early termination 如何进入 `EpisodeResult`。
+   - 演示 `ctx.request_termination` → `ctx.agent_termination_proposals`（per-agent）机制，以及 early termination 如何进入 `EpisodeResult`。
 
 3. **自定义 reward term `ClosingDistanceRewardObserver(BaseObserverPlugin)`**
    - 从 `ctx.accessor` 读两个机器人的距离，用 `on_post_action_step` 聚合，`get_output()` 返回可直接喂给训练 loop 的 reward。
