@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：阶段一 W1–W7 已完成，对应 A1–A7 见下方裁决区；W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
+> 状态：阶段一 W1–W8 已完成，对应 A1–A8 见下方裁决区；阶段一设计边界已获用户批准，可进入阶段二实现。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -21,6 +21,7 @@
 | A5 | 数据、实验及恢复契约 | transition/replay/采集/实验/导出/恢复之间如何连接 |
 | A6 | debug 最小捕获与溯源规范 | 首版必须记录什么，怎样重算和定位一个样本 |
 | A7 | 验证矩阵与阶段二工作拆分 | 每项设计如何证伪，哪些阻塞项必须先解决 |
+| A8 | 阶段一收口与用户批准 | 历史决策如何处置，阶段二入口条件是什么 |
 
 每条结论注明来源、代码位置/版本、验证状态和适用条件。区分「已批准约束」「代码观察」「候选方案」「验证结论」，不得将本计划的候选项写成既定事实。
 
@@ -368,7 +369,7 @@ P2-IND-0 package/lazy registry/train.py 边界
 
 **评审包：** A1–A7、候选方案取舍、未决项、支持矩阵、阶段二具体实施顺序。
 
-每条新裁决使用与历史 N1–N11 不混淆的编号，例如 `SAC-R1-D01`，内容包含：问题、候选、证据、选择、拒绝原因、适用范围、验证办法和重开条件。
+每条新裁决使用与历史 N1–N9 及未编号历史条目不混淆的编号，例如 `SAC-R1-D01`，内容包含：问题、候选、证据、选择、拒绝原因、适用范围、验证办法和重开条件。
 
 未决项分三类：
 
@@ -386,10 +387,10 @@ P2-IND-0 package/lazy registry/train.py 边界
 - [x] 八格保留范围、SAC 梯度差异和探索控制分层明确。
 - [x] 数据、依赖、时钟、完整恢复及最小 debug 捕获契约可直接指导阶段二。
 - [x] 训练级验收 seeds、阈值、持续窗口、预算与失败处理已冻结或明确列为阻塞。
-- [ ] 旧决策逐项判定，没有将历史规划的结论自动继承为本轮结论。
-- [ ] 阶段二工作包与测试门槛明确，并获得用户对阶段一结果的审阅确认。
+- [x] 旧决策逐项判定，没有将历史规划的结论自动继承为本轮结论。
+- [x] 阶段二工作包与测试门槛明确，并获得用户对阶段一结果的审阅确认。
 
-上述复选框当前均未完成。批准总体路线图和要求落文，不等于阶段一已经通过。
+上述门槛在 W8 收口时全部完成。这里的「完成」仅表示设计契约获批准，不表示实现、测试或训练已经通过。
 
 ---
 
@@ -1858,6 +1859,63 @@ G2.0 P2-IND-0 ── independence scaffold / lazy registry / CLI gate
 - [x] 未决项、暂缓功能和重开条件已分类。
 
 **W7 不声称：**生产实现、永久测试、真实 env smoke、训练收敛或 viewer 已完成。进入 W8 时，需要用户对 A1–A7、阶段二 DAG、资源默认与未决项做最终审阅。
+
+## A8：阶段一收口与用户批准（W8，2026-10-08）
+
+**用户批准记录：** `W8评审：A1–A7批准，阶段二DAG和默认资源口径批准，首版排除项批准，进入W8汇总。`
+
+**收口结论：** A1–A7 的设计契约、A7 的阶段二 DAG、默认资源/存储口径及首版排除项均已获用户批准；阶段一以「设计契约完成」口径收口，阶段二获准从 `P2-IND-0` 开始。此批准不是实现正确性、测试通过或训练收敛证明。
+
+### A8.1 历史决策逐项判定
+
+历史区实际包含编号 `N1–N9`，另有两个未编号条目（package structure、first-iteration scope）；计划文本中的 `N1–N11` 表述已修正。判定只决定本轮是否继承其结论，不改写历史记录。
+
+| 历史条目 | 原决定摘要 | W8 判定 | 本轮替代/依据 |
+|---|---|---|---|
+| N1 memory/replay | in-memory replay；checkpoint 不持久化 replay；resume 重新 warmup；逐 transition 存 obs/action/next_obs/reward/done/actor_weight 等 | **整体拒绝，字段部分采用** | 完整 resume 默认持久化 replay、游标、身份与 RNG（D19/D23）；显式 transition 字段被 `sac_transition_v1` 吸收，但容量单位与身份语义由 D16/D17 重定义；旧 `traj_id/traj_step` 不作稳定身份 |
+| N2 relabel | 全量扫描 replay，用 reward_features 重算 reward/actor_weight | **首版拒绝，列为后续可选增强** | 首版显式拒绝 relabel（D18）；若未来启用，需要版本化 reward features、权限边界、验证与重开裁决 |
+| N3 trunk grouping | 按 `trunk_group` 共享 Q trunk，默认按 γ 自动分组 | **首版拒绝** | 初版为每通道两套独立 Q 与 target，不共享 trunk、不自动按 γ 分组（D01/D06）；共享 trunk 只能作为后续消融 |
+| N4 async collection | Phase 1 同步采集，replay 写接口保留线程安全 | **同步口径采用，线程安全不继承** | 首版仍同步；异步采集在 A7 首版排除项内。新 replay 不依赖旧锁语义 |
+| N5 σ/α | 宽 `log_std=(-10,2)`，探索完全由 α 控制，`target_entropy=-action_dim` | **部分采用，关键默认值拒绝** | α/自动温度作为 SAC 原生控制保留，但首版 S01 使用 bounded σ，熵目标必须按可达范围标定；`-action_dim` 不自动继承；uncertainty 路线独立定义 |
+| N7 gradient normalization | action-gradient normalization 是主 actor loss，naive weighted Q 为 fallback | **首版拒绝** | D06 排除梯度尺度归一化；D08 要求区分动作梯度、参数梯度、冲突与真实位移，旧 `grad_share` 不作份额证据 |
+| N6 shared batch / multi-head Q | 所有通道共享 batch；多通道走共享 trunk multi-head；`aw=0` 帧不贡献该通道 critic loss | **部分采用，错误语义拒绝** | 共享 batch 与 per-channel sampling 暂缓被采用；共享 trunk 不继承；D05 明确 actor gate 不关闭 critic，`aw=0` 不屏蔽该通道 critic 学习 |
+| 未编号 package structure | 旧 `sac/` 目录与 `experiments_sac` 结构 | **仅作历史结构参考，整体由 A7 DAG 取代** | 实现边界以 `P2-*` 包为准；旧模块名不自动保留，新增 `sac` 自有 collection/debug/policy 层 |
+| 未编号 MVP scope | n-step、multi-head Q、grad norm、relabel/replay_plan 接口、真实训练 run 属 MVP | **整体被本轮范围替代** | 首版只支持 1-step/FIFO/uniform；n-step/relabel/grad norm 移除；真实 env smoke 在 G2.5，长训在阶段六，不属于阶段二入口门槛 |
+| N8 stability tuning | 调整 target_entropy、alpha 边界、reward_scale、critic_lr 来压住 collapse/divergence | **不作为默认决策，保留为风险证据** | 观测到的问题进入风险矩阵；新基线 `reward_scale=1`、显式 α/λ 状态与 fail-loud 边界；任何 clamp/scale 都需新消融 |
+| N9 scale/budget | `max_env_steps=10M`、`utd=0.25`、1M replay、96 workers、按 env step 调度 | **被 A2/A5 验收与计数契约替代** | 正式预算取 A2.7；UTD 分母为有效 agent transition 并使用 fractional credit；历史“比 PPO 省样本”判断不作承诺 |
+
+### A8.2 已批准的阶段一契约边界
+
+- **独立性**：SAC 拥有自有 collection、transition、replay、trainer、debugkit；复制适配允许，PPO 算法语义和类型不可进入 SAC 数据路径。
+- **算法基线**：1-step、双 Q、当前策略采样、固定或自动 α、无共享 trunk、无梯度归一化；`u_bonus/u_floor` 为 Shannon 基线之外的独立替代路线。
+- **首个策略**：S01 单分量、shared σ、bounded σ；mixture 分量枚举方案已证明可行，但生产化属于后续阶段。
+- **数据/恢复**：`sac_transition_v1`、有效 agent transition 计数、完整 replay checkpoint、PPO 风格白名单 override、可选 `config-lock`。
+- **诊断**：`metrics/events.jsonl`、L0–L3、以 `critic_tick` 为最小可重算截面、独立 debug RNG、CLI/HTTP/viewer 共用分析实现。
+- **验收**：两任务 seeds、阈值、连续窗口、最终 checkpoint、预算与失败处理按 A2.7 冻结。
+
+### A8.3 阶段二入口条件与执行顺序
+
+1. `P2-IND-0` 先行：先证明 SAC import、registry 和 CLI 路径不带入 PPO，再开始实现其他包。
+2. `P2-COLL-1`/`P2-DATA-1` 与 `P2-DBG-1` 可按 A7 DAG 并行开发，但只能 mock A5/A6 schema，不能反向修改契约。
+3. replay/checkpoint/clock 的 blocker 测试必须在声称闭环可用前通过；smoke 不能代替这些永久测试。
+4. `P2-TRAIN-1` 只承诺 S01 actor 与标准 Shannon SAC 数学；不提前承诺八格全量或 U 路线训练效果。
+5. `G2.5` 的真实 env smoke 只证明链路可用；进入长训/阶段六前必须通过 `G2.6` 的 L2 dump recompute 能力。
+
+### A8.4 重开与变更条件
+
+- 修改 A2–A7 的 schema、数学、验收、阶段二 DAG、默认资源口径或首版排除项，必须新增 `SAC-R1-*` 决策并更新 A7 风险矩阵。
+- 启用 n-step、PER、relabel、stratified retention、异步采集、opponent pool 或 GPU inference server，必须先补目标、偏差、持久化与诊断设计，不得由旧实现接口隐式启用。
+- 若阶段二测试推翻当前数学/数据假设，回到对应 A 节修正，不用放宽 gate 或调参绕过。
+- 旧 PPO/旧 SAC 测试和历史训练日志只作为代码健康度或风险线索，不作为新契约的通过证据。
+
+### A8.5 阶段一出口状态
+
+- [x] A1–A7 已由用户批准。
+- [x] 历史 N1–N9 与未编号历史条目已逐项判定。
+- [x] 阶段二 DAG、默认资源口径和首版排除项已由用户批准。
+- [x] 阶段一完成门槛全部满足，阶段二获准从 `P2-IND-0` 开始。
+
+**阶段一最终不声称：**生产实现完成、永久测试存在、真实 env smoke 通过、任何任务收敛或 debug viewer 已交付。
 
 ---
 
