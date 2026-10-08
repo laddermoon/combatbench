@@ -39,6 +39,32 @@ report = dr.last_collect_report           # 分项计时/sync 记账/健康统�
 多卡：`MultiDeviceRollouter(devices=[0,1,...], batch_size_per_worker=n)`
 ——jobs 按 shard 分配，各 worker 独立 collect 后合并。
 
+## 跨后端行为验证（Identical 目测）
+
+`dual_backend_video.py`：**同一导出策略、同一初始位姿**，分别在
+GPU（MjWarp `BatchRuntime`）和 CPU（MuJoCo `EnvRuntime`）各跑一回合
+确定性 rollout，两端帧都用 `Humanoid21Simulator` 的 broadcast-view
+相机渲染（像素管线逐一致），输出左右对比视频。验证用临时工具，
+不追求速度（B=1 单波，几十秒）。
+
+```bash
+PYTHONPATH=. python3 -m envs.batchframework.dual_backend_video \
+    --policy baseline/runs/<run>/policy_exports/uNNNNN \
+    --env-blueprint baseline/humanoid21/blueprints/standup_4stage_dense_v2_env.yaml \
+    --seed 12345 --distance 2.0 --device cuda:0 \
+    --out-dir /tmp/dualvid
+```
+
+输出 `gpu.mp4` / `cpu.mp4` / `compare.mp4`（左 GPU 右 CPU）+
+`trajectory.npz`（GPU 逐帧 qpos/qvel）。
+
+机制要点：两端 RNG 流不同，单靠 seed 对不齐摔倒位姿——脚本把
+CPU 侧 post-reset 状态**覆写为 GPU 侧记录到的 post-reset qpos/qvel**，
+保证严格同初始位姿；此后轨迹的任何肉眼可见差异都来自物理后端
+本身（fp32 近似），不是采样/渲染差异。预期观感：同策略下两端
+动作序列基本 identical，长时程可能出现微小发散（混沌敏感性，
+属预期非缺陷）。
+
 ## 边界与限制
 
 - **图化资格**：无子步回调的物理 `advance` 与 `obs_build` 走 CUDA

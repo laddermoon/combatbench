@@ -23,12 +23,18 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
     - 因此本插件将“对应足部与静态世界(body_id=0)的接触合力”定义为
       “通过该足部传递到对应踝部支撑点的支撑反力代理”。
     - 这是一种接触力学上的可观测量；若要得到真正的关节内力，需要额外做逆动力学/约束求解。
+
+    ``_last_accessor`` 缓存最近一次 observer 钩子拿到的 accessor，供
+    ``get_visualization_image()`` 在钩子之外做可视化渲染。该引用存活于
+    整个 episode 期间；它只是读视图，插件不应保存其快照数据跨回合使用。
     """
 
     WORLD_UP = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     PLANE_DISTANCE_TOLERANCE = 1e-4
     SUPPORT_SPAN_TOLERANCE = 1e-8
-    ARENA_HALF_EXTENT = 3.05
+    # plan-view 可视化的世界→像素映射范围：battle_circular_v2 圆形场地
+    # 墙中心半径约 3.41m，方形面板边长即取直径一半的外接范围。
+    ARENA_HALF_EXTENT = 3.41
 
     def __init__(self, agent_id: str):
         if agent_id not in {"robot_a", "robot_b"}:

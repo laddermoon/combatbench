@@ -8,10 +8,10 @@ correct.
 
 Run with:
     cd /data1/mono/things/combatbench
-    PYTHONPATH=. python3 -m pytest baseline/framework/ppo/policies/test_policy_families.py -v
+    PYTHONPATH=. python3 -m pytest baseline.framework.ppo.policies.todo.test_policy_families.py -v
 
 Or without pytest:
-    PYTHONPATH=. python3 baseline/framework/ppo/policies/test_policy_families.py
+    PYTHONPATH=. python3 baseline.framework.ppo.policies.todo.test_policy_families.py
 """
 from __future__ import annotations
 from baseline.framework.ppo.sampling_context import SamplingContext
@@ -241,7 +241,7 @@ class _DiagGaussianRef(TanhSquashedPolicyBase):
 
     @property
     def export_class_path(self):
-        return "baseline.framework.ppo.policies.test_policy_families:_DiagGaussianRef"
+        return "baseline.framework.ppo.policies.todo.test_policy_families:_DiagGaussianRef"
 
 
 # ---------------------------------------------------------------------------

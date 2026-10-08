@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
@@ -29,6 +29,11 @@ from .checkpoint import (
 from .clocks import SACClockState
 from .collection import create_rollouter
 from .diagnostics import SACTickRing
+from .debugkit import (
+    begin_critic_tick_dump,
+    fail_critic_tick_dump,
+    finish_critic_tick_dump,
+)
 from .experiment import CommonParamsSAC, ExperimentSAC, SACParams, SACRewardChannel
 from .metrics import SACMetricsWriter
 from .networks import MultiHeadQCritic
@@ -256,6 +261,10 @@ def train_sac(
     reset_update: bool = False,
     config_lock: bool = False,
     rollouter: Optional[Any] = None,
+    dump_ticks: Optional[Iterable[int]] = None,
+    dump_hypothesis: str = "",
+    debug_strict: bool = False,
+    dump_keep_last: int = 8,
 ) -> None:
     cp = experiment.common_params()
     sp = experiment.sac_params()
@@ -359,6 +368,8 @@ def train_sac(
     ckpt_dir = run_dir / "checkpoints"
     video_dir = run_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
+    dump_root = run_dir / "debug_dumps"
+    scheduled_dump_ticks = {int(t) for t in (dump_ticks or ())}
     last_video_proc: Optional[subprocess.Popen] = None
 
     def _checkpoint(path: Path) -> Path:
@@ -460,18 +471,101 @@ def train_sac(
                 for _ in range(n_grad_steps):
                     update_start = time.perf_counter()
                     batch = replay.sample(sp.batch_size, device)
-                    step_stats = sac_update_v2(
-                        actor=actor,
-                        critic=critic,
-                        actor_optimizer=actor_optimizer,
-                        log_alpha=log_alpha,
-                        alpha_optimizer=alpha_optimizer,
-                        batch=batch,
-                        channels=channels,
-                        sp=sp,
-                        grad_clip_norm=cp.grad_clip_norm,
-                        device=device,
-                    )
+                    next_tick = clocks.critic_tick + 1
+                    dump_tmp: Optional[Path] = None
+                    capture: Optional[Dict[str, Any]] = None
+                    if next_tick in scheduled_dump_ticks:
+                        try:
+                            dump_tmp = begin_critic_tick_dump(
+                                dump_root=dump_root,
+                                critic_tick=next_tick,
+                                clocks=clocks,
+                                batch=batch,
+                                trainer_pre_state=trainer_state_dict(
+                                    actor, critic, actor_optimizer,
+                                    log_alpha, alpha_optimizer,
+                                ),
+                                hypothesis=dump_hypothesis,
+                            )
+                            capture = {}
+                        except Exception as exc:
+                            if debug_strict:
+                                raise
+                            metrics.emit_debug(
+                                clocks,
+                                {"debug.status": 0.0},
+                                stage="begin_dump",
+                                critic_tick=next_tick,
+                                error=str(exc),
+                            )
+                            print(
+                                f"  [dump_failed:capture] tick={next_tick} {exc}",
+                                flush=True,
+                            )
+                    try:
+                        step_stats = sac_update_v2(
+                            actor=actor,
+                            critic=critic,
+                            actor_optimizer=actor_optimizer,
+                            log_alpha=log_alpha,
+                            alpha_optimizer=alpha_optimizer,
+                            batch=batch,
+                            channels=channels,
+                            sp=sp,
+                            grad_clip_norm=cp.grad_clip_norm,
+                            device=device,
+                            capture=capture,
+                        )
+                    except Exception as exc:
+                        if dump_tmp is not None:
+                            fail_critic_tick_dump(dump_tmp, error=exc)
+                        raise
+                    if dump_tmp is not None:
+                        try:
+                            dump_dir = finish_critic_tick_dump(
+                                dump_tmp,
+                                forward_capture=capture or {},
+                                trainer_post_state=trainer_state_dict(
+                                    actor, critic, actor_optimizer,
+                                    log_alpha, alpha_optimizer,
+                                ),
+                                update_stats=step_stats,
+                                actor=actor,
+                                critic=critic,
+                                channels=channels,
+                                sp=sp,
+                                grad_clip_norm=cp.grad_clip_norm,
+                                critic_lr=cp.critic_learning_rate,
+                                keep_last=dump_keep_last,
+                            )
+                            metrics.emit_debug(
+                                clocks,
+                                {
+                                    "debug.status": 1.0,
+                                    "debug.bytes": float(_directory_bytes(dump_dir)),
+                                    "debug.capture_s": float(
+                                        time.perf_counter() - update_start
+                                    ),
+                                },
+                                stage="finish_dump",
+                                critic_tick=next_tick,
+                                path=str(dump_dir),
+                            )
+                        except Exception as exc:
+                            fail_critic_tick_dump(dump_tmp, error=exc)
+                            if debug_strict:
+                                raise
+                            metrics.emit_debug(
+                                clocks,
+                                {"debug.status": 0.0},
+                                stage="finish_dump",
+                                critic_tick=next_tick,
+                                error=str(exc),
+                            )
+                            print(
+                                f"  [dump_failed:finish] tick={next_tick} {exc}",
+                                flush=True,
+                            )
                     clocks.tick_critic()
                     clocks.tick_actor()
                     if alpha_optimizer is not None:

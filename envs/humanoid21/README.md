@@ -143,8 +143,22 @@ humanoid21/
 ├── OBSERVATION_zh.md       # 观测空间设计
 ├── CONTACT_DESIGN.md       # 接触参数设计
 ├── ACCEPTANCE_CRITERIA.md  # 底层控制验收标准
+├── generate_pose_images.py # 姿态参考图生成脚本（产物在 pose_images/）
+├── pose_images/            # 姿态参考图（generate_pose_images.py 产物，可重生成）
+├── obs_analysis/           # 观测空间分析产物（REPORT.md + npy/png，历史研究资产）
 └── tests/                  # 测试
 ```
+
+## 调试通道
+
+以下调试开关均为**默认关闭**的环境变量 / 构造参数，仅供排障，
+不参与正常训练/评测路径：
+
+| 通道 | 开关 | 位置 | 产物 |
+|------|------|------|------|
+| 倒伏过程截图 | `COMBATBENCH_FALL_DEBUG=1`（输出目录 `COMBATBENCH_FALL_DEBUG_DIR`，默认 `/tmp/fall_debug`） | `disturbance_plugins.py::RandomFallenStatePlugin` | 倒伏过程 PNG + 高度日志 |
+| 计分明细日志 | `COMBAT_SCORE_DEBUG_FILE=<path>` | `plugins.py::CombatScoringPlugin` | 逐物理步 JSONL（力、伤害、HP） |
+| 力矩饱和打印 | 构造参数 `debug_torque=True` | `simulator.py::Humanoid21Simulator` | 力矩饱和时/前 1000 步每百步向 stdout 打印 |
 
 ## 相关文档
 

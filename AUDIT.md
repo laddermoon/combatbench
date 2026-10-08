@@ -2689,3 +2689,42 @@ epoch/cursor 游标，P-H21-2 落地后 CPU 侧契约自足）；分歧残余仅
 "CPU 对齐 per-step 瞬态"与 EventJournal 的有意设计相反，不回退。
 权威语义（batch 侧上 journal 或维持 per-step + 文档边界）留待
 batchframework 大改定夺——用户裁决挂起。
+
+## [2026-10-08] P3-23~27 处置：KO 语义文档化 + FrozenRobot 部分写回 + 内部 sim 释放 + 调试通道登记 + 资产残留
+
+**类别**：修复执行
+
+- **P3-23（文档化）**：`CombatScoringPlugin` docstring 补 KO 时序契约——
+  HP 归零后本动作步剩余物理子步仍继续累计 `damage_taken` 是有意语义
+  （伤害是物理事实，KO 仅在动作步边界宣判），health 钳位在 0。
+  不改行为，与历史 run 数据口径一致。
+- **P3-24（修复）**：`FrozenRobotPlugin.on_post_phy_step` 改为只写
+  `frozen_robot_id` 部分 dict（`set_core_state` 本就支持按 robot_id
+  部分写回）——每步省一次 `get_core_state()` 全量读 + 另一机器人的
+  全量回写；`on_pre_episode` 对非法 `frozen_robot_id` 改抛
+  `ValueError`（原为静默 return 沿用旧初始状态）。
+- **P3-25（修复）**：`RandomFallenStatePlugin` / `ImpulsePerturbationPlugin`
+  各补 `on_detach`——懒创建的内部 `Humanoid21Simulator` 在 detach/
+  `runtime.close()` 时显式 `close()`（`plugin_manager.clear()` 本就
+  保证 `on_detach` 触发，缺口只在插件未实现该钩子）。
+- **P3-26（登记）**：`envs/humanoid21/README.md` 新增"调试通道"节，
+  登记三个存活开关：`COMBATBENCH_FALL_DEBUG[_DIR]`（倒伏截图）、
+  `COMBAT_SCORE_DEBUG_FILE`（计分 JSONL）、`debug_torque` ctor 参数
+  （力矩饱和打印）。`_TURB_DEBUG` 已删。
+- **P3-27（清理+标注）**：
+  - `test_videos/`：13 个 mp4 为 gitignored 磁盘残留（本就未入库），
+    本地目录已删，tests/README 记录保持准确。
+  - `ARENA_HALF_EXTENT` 3.05→3.41 + 注释——该常量是 balance
+    plan-view 的活跃投影范围（非死代码），值为方形场遗留，更新为
+    battle_circular_v2 墙中心半径。
+  - `obs_analysis/`（研究产物）、`pose_images/`（可由
+    `generate_pose_images.py` 重生成）补入 README 目录结构；
+    `battle_v1/v2.xml` "历史保留"标注此前已有。
+  - `_last_accessor` 缓存语义补入类 docstring。
+
+### 验证
+
+`pytest envs/framework/tests` → 236 passed；
+`pytest envs/humanoid21/tests` → 47 passed。
+FrozenRobot 手动冒烟：robot_b 全程位移 0.0、robot_a 自由漂移、
+非法 id 在 reset 时抛 ValueError。

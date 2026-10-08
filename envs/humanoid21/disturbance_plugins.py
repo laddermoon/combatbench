@@ -779,6 +779,11 @@ class RandomFallenStatePlugin(BasePlugin):
             self._internal_sim = Humanoid21Simulator()
         return self._internal_sim
 
+    def on_detach(self) -> None:
+        if self._internal_sim is not None:
+            self._internal_sim.close()
+            self._internal_sim = None
+
     def on_pre_episode(self, ctx: SimContext) -> None:
         sim = self._ensure_internal_sim()
 
@@ -973,6 +978,11 @@ class ImpulsePerturbationPlugin(BasePlugin):
             from envs.humanoid21.simulator import Humanoid21Simulator
             self._internal_sim = Humanoid21Simulator()
         return self._internal_sim
+
+    def on_detach(self) -> None:
+        if self._internal_sim is not None:
+            self._internal_sim.close()
+            self._internal_sim = None
 
     def _ensure_policy(self) -> Any:
         if self._policy is None and self.policy_blueprint_path is not None:

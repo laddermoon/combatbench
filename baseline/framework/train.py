@@ -192,10 +192,6 @@ def _validate_sac_args(args: argparse.Namespace) -> None:
         unsupported.append("--dual-clip-c")
     if args.dual_clip_from_update != 0:
         unsupported.append("--dual-clip-from-update")
-    if args.dump_at:
-        unsupported.append("--dump-at")
-    if args.dump_hypothesis:
-        unsupported.append("--dump-hypothesis")
     if args.dump_full_grad:
         unsupported.append("--dump-full-grad")
     if args.param:
@@ -392,9 +388,10 @@ def main() -> None:
                     f"Error: --dump-at expects integer update indices, "
                     f"got {item!r}"
                 )
-    if dump_updates and algo == "ppo":
+    if dump_updates:
+        noun = "critic ticks" if algo == "sac" else "updates"
         print(
-            f"[dump] scheduled at updates {sorted(dump_updates)}"
+            f"[dump] scheduled at {noun} {sorted(dump_updates)}"
             + (f" (full_grad)" if args.dump_full_grad else ""),
             flush=True,
         )
@@ -564,6 +561,8 @@ def main() -> None:
             resume_from=resume_from,
             reset_update=args.reset_update,
             config_lock=args.config_lock,
+            dump_ticks=dump_updates,
+            dump_hypothesis=args.dump_hypothesis,
         )
     else:
         from baseline.framework.ppo.loop import train_ppo

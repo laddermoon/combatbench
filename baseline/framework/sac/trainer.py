@@ -112,6 +112,7 @@ def compute_critic_targets(
     alpha: torch.Tensor,
     reward_scale: float,
     device: torch.device,
+    capture: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, torch.Tensor]:
     """Compute 1-step per-channel Bellman targets without mutating state."""
     next_obs = _require_tensor(batch, "next_obs").to(device)
@@ -119,6 +120,9 @@ def compute_critic_targets(
     bootstrap = _require_tensor(batch, "bootstrap").to(device)
     with torch.no_grad():
         next_actions, next_log_probs = actor.sample_action(next_obs)
+        if capture is not None:
+            capture["next_actions"] = next_actions.detach().cpu()
+            capture["next_log_probs"] = next_log_probs.detach().cpu()
         targets: Dict[str, torch.Tensor] = {}
         for c, ch in enumerate(channels):
             q1_next = critic.q1_target_forward(next_obs, next_actions, ch.name)
@@ -144,6 +148,7 @@ def sac_update_v2(
     device: torch.device,
     grad_norm_stats: Optional[Any] = None,
     grad_norm_step: int = 0,
+    capture: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """Run one standard 1-step Shannon SAC update."""
     del grad_norm_stats, grad_norm_step
@@ -167,6 +172,8 @@ def sac_update_v2(
 
     alpha = log_alpha.exp().detach()
     stats: Dict[str, float] = {}
+    if capture is not None:
+        capture.clear()
     q_targets = compute_critic_targets(
         actor,
         critic,
@@ -175,7 +182,13 @@ def sac_update_v2(
         alpha=alpha,
         reward_scale=sp.reward_scale,
         device=device,
+        capture=capture,
     )
+    if capture is not None:
+        capture["alpha_pre"] = alpha.detach().cpu()
+        capture["targets"] = {
+            name: target.detach().cpu() for name, target in q_targets.items()
+        }
 
     critic.zero_grad_all()
     total_critic_loss = torch.zeros((), device=device)
@@ -188,6 +201,9 @@ def sac_update_v2(
             )
         q1_pred = critic.q1_forward(obs, actions, ch.name)
         q2_pred = critic.q2_forward(obs, actions, ch.name)
+        if capture is not None:
+            capture.setdefault("q1_pred", {})[ch.name] = q1_pred.detach().cpu()
+            capture.setdefault("q2_pred", {})[ch.name] = q2_pred.detach().cpu()
         target = q_targets[ch.name]
         q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
         q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
@@ -205,6 +221,9 @@ def sac_update_v2(
     critic.step_all()
 
     new_actions, new_log_probs = actor.sample_action(obs)
+    if capture is not None:
+        capture["new_actions"] = new_actions.detach().cpu()
+        capture["new_log_probs"] = new_log_probs.detach().cpu()
     q1_all = critic.q1_forward_all(obs, new_actions)
     q2_all = critic.q2_forward_all(obs, new_actions)
     weighted_q = torch.zeros_like(new_log_probs)

@@ -25,6 +25,13 @@ class CombatScoringPlugin(BasePlugin):
     action step, so transient contacts that appear and disappear within the
     50 ms action window are never missed.
 
+    KO timing contract: hit points are a **physical fact** — damage keeps
+    accumulating on every physics substep even after a robot's HP reaches
+    zero mid-action-step, because the KO itself is only adjudicated at the
+    action-step boundary (``on_post_action_step``).  ``damage_taken`` and
+    the score log therefore faithfully record every contact that physically
+    occurred within the terminal action step; ``health`` is clamped at 0.
+
     Damage formula (per substep)::
 
         damage = part_weight × (min(force, MAX_DAMAGE_FORCE) / force_scale)² × dt
@@ -482,7 +489,10 @@ class FrozenRobotPlugin(BasePlugin):
         core_state = ctx.accessor.get_core_state()
 
         if self.frozen_robot_id not in core_state:
-            return
+            raise ValueError(
+                f"FrozenRobotPlugin: frozen_robot_id '{self.frozen_robot_id}' "
+                f"not found in core state (available: {sorted(core_state.keys())})"
+            )
 
         # 保存初始状态（按照新格式）
         self.initial_state = {
@@ -491,18 +501,14 @@ class FrozenRobotPlugin(BasePlugin):
             'joint_pos_norm': core_state[self.frozen_robot_id]['joint_pos_norm'].copy(),
         }
 
-        # 保存另一个机器人的ID
-        self.other_robot_id = 'robot_b' if self.frozen_robot_id == 'robot_a' else 'robot_a'
-
     def on_post_phy_step(self, ctx: SimContext) -> None:
         """在每个物理步后强制重置机器人状态"""
         if self.initial_state is None:
             return
 
-        core_state = ctx.accessor.get_core_state()
-
-        # 构建冻结状态 - 需要包含两个机器人
-        frozen_state = {
+        # set_core_state 支持按 robot_id 部分写回：只覆盖被冻结的机器人，
+        # 另一个机器人的状态原样保留（无需读出再写回）。
+        ctx.mutator.set_core_state({
             self.frozen_robot_id: {
                 'root_pos': self.initial_state['root_pos'].copy(),
                 'root_rot': self.initial_state['root_rot'].copy(),
@@ -510,15 +516,5 @@ class FrozenRobotPlugin(BasePlugin):
                 'joint_vel_norm': np.zeros(21, dtype=np.float32),
                 'root_vel_local': np.zeros(3, dtype=np.float32),
                 'root_angular_vel_local': np.zeros(3, dtype=np.float32),
-            },
-            self.other_robot_id: {
-                'root_pos': core_state[self.other_robot_id]['root_pos'].copy(),
-                'root_rot': core_state[self.other_robot_id]['root_rot'].copy(),
-                'joint_pos_norm': core_state[self.other_robot_id]['joint_pos_norm'].copy(),
-                'joint_vel_norm': core_state[self.other_robot_id]['joint_vel_norm'].copy(),
-                'root_vel_local': core_state[self.other_robot_id]['root_vel_local'].copy(),
-                'root_angular_vel_local': core_state[self.other_robot_id]['root_angular_vel_local'].copy(),
             }
-        }
-
-        ctx.mutator.set_core_state(frozen_state)
+        })
