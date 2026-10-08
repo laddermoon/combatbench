@@ -21,8 +21,12 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.framework.sac.actor import SACActor
-from baseline.framework.sac.collection import SACJob
+from baseline.framework.sac.actor import SACActor, SACActorNotImplementedError
+from baseline.framework.sac.collection import (
+    SACBehaviorSpec,
+    SACFactSpec,
+    SACJob,
+)
 from baseline.framework.sac.experiment import (
     CommonParamsSAC,
     DataSource,
@@ -30,7 +34,6 @@ from baseline.framework.sac.experiment import (
     ReplayPlan,
     SACParams,
     SACRewardChannel,
-    TrajectorySlice,
 )
 
 
@@ -192,16 +195,11 @@ class CombatExperimentSACBase(ExperimentSAC):
     # ------------------------------------------------------------------
 
     def build_actor(self, device: torch.device) -> SACActor:
-        blueprint_dir = (
-            Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
+        raise SACActorNotImplementedError(
+            "SAC actor construction is pending P2-TRAIN-1. The legacy "
+            "humanoid21 actor blueprint points to a PPO policy class and "
+            "must not be loaded on the SAC path."
         )
-        bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
-        actor = bp.build().to(device)
-        if hasattr(actor, "log_std_min"):
-            actor.log_std_min = float(self.log_std_min)
-        if hasattr(actor, "log_std_max"):
-            actor.log_std_max = float(self.log_std_max)
-        return actor
 
     def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
         """Build a single-channel Q critic.
@@ -240,10 +238,23 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        collection_round: int = 0,
+        run_id: str = "",
+        deterministic: bool = False,
     ) -> List[SACJob]:
         return self._build_selfplay_jobs(
-            self._env_pb(), policy_bp, base_seed, n_episodes,
+            self._env_pb(),
+            policy_bp,
+            base_seed,
+            n_episodes,
+            collection_round=collection_round,
+            run_id=run_id,
+            deterministic=deterministic,
         )
+
+    def pre_action_fact_specs(self) -> Tuple[SACFactSpec, ...]:
+        return ()
 
     def _env_pb(self) -> ParameterizedEnvBlueprint:
         if not self.env_blueprint:
@@ -271,8 +282,21 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        collection_round: int,
+        run_id: str,
+        deterministic: bool,
     ) -> List[SACJob]:
         rng = np.random.default_rng(base_seed)
+        behavior = SACBehaviorSpec(
+            mode="deterministic" if deterministic else "stochastic",
+            explore_factor=0.0,
+        )
+        fact_specs = tuple(self.pre_action_fact_specs())
+        metadata = {
+            "experiment": self.name,
+            "agent_used": self.agent_used,
+        }
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
@@ -288,6 +312,13 @@ class CombatExperimentSACBase(ExperimentSAC):
                     env_bp=env_bp,
                     seed=seed,
                     episode_options={"initial_distance": initial_distance},
+                    behavior_a=behavior,
+                    behavior_b=behavior,
+                    fact_specs=fact_specs,
+                    run_id=run_id,
+                    collection_round=collection_round,
+                    job_index=i,
+                    metadata=metadata,
                 ))
             return jobs
 
@@ -318,6 +349,13 @@ class CombatExperimentSACBase(ExperimentSAC):
                 env_bp=env_bps[agent_id],
                 seed=seed,
                 episode_options={"agent_id": agent_id, "initial_distance": initial_distance},
+                behavior_a=behavior,
+                behavior_b=behavior,
+                fact_specs=fact_specs,
+                run_id=run_id,
+                collection_round=collection_round,
+                job_index=i,
+                metadata=metadata,
             ))
         return jobs
 

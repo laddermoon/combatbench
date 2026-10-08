@@ -22,17 +22,16 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-import torch
 
-from baseline.framework.sac.experiment import (
-    DataSource,
-    SACParams,
-    SACRewardChannel,
-    TrajectorySlice,
-)
+from baseline.framework.sac.collection import SACFactSpec
+from baseline.framework.sac.experiment import SACRewardChannel
 from baseline.framework.sac.observer_utils import (
     extract_per_step_field,
     extract_per_step_scalar,
+)
+from baseline.framework.sac.transition import (
+    SACTransitionSlice,
+    build_agent_transition_slice,
 )
 
 from .base import CombatExperimentSACBase
@@ -117,101 +116,112 @@ class SacBalance(CombatExperimentSACBase):
             ),
         )
 
+    def pre_action_fact_specs(self) -> Tuple[SACFactSpec, ...]:
+        provider = "baseline.experiments_sac.fact_providers:HeightPhiPreActionProvider"
+        return tuple(
+            SACFactSpec(
+                name="phi_pre",
+                agent_id=agent_id,
+                provider=provider,
+                config={"standing_height": 1.28},
+            )
+            for agent_id in self._AGENT_IDS
+        )
+
+    def _pre_action_phi(self, episode, agent_id: str) -> np.ndarray:
+        facts = episode.pre_action_facts.get(agent_id)
+        if not isinstance(facts, dict) or "phi_pre" not in facts:
+            raise KeyError(
+                f"Missing required pre-action fact 'phi_pre' for {agent_id!r}"
+            )
+        return np.asarray(facts["phi_pre"], dtype=np.float32).reshape(-1)
+
     def _build_agent_slices(
         self,
         episode,
         agent_id: str,
         cross_key: str,
         phi_key: str,
-    ) -> List[TrajectorySlice]:
+    ) -> List[SACTransitionSlice]:
         T_full = episode.num_frames
         if T_full == 0:
             return []
-
-        # Truncate at agent's inclusive frame boundary
-        records = episode.agent_termination_proposal_records.get(agent_id, ())
-        fell = bool(records) and records[0][0].startswith("imbalance")
         T = episode.agent_frame_boundary.get(agent_id, T_full)
-
         if T == 0:
             return []
 
-        obs_all = episode.observations.get(agent_id)
-        acts_all = episode.actions.get(agent_id)
-        fin_obs = episode.final_observation.get(agent_id)
-
-        if obs_all is None or acts_all is None or fin_obs is None:
-            return []
-
-        obs_all = np.asarray(obs_all, dtype=np.float32)
-        acts_all = np.asarray(acts_all, dtype=np.float32)
-        fin_obs = np.asarray(fin_obs, dtype=np.float32)
-
-        # Extract φ per step
-        phi_arr = extract_per_step_field(
+        phi_post = extract_per_step_field(
             episode.observer_outputs, phi_key, "phi", T_full,
         )
-        if phi_arr is None:
+        if phi_post is None:
             raise KeyError(f"Missing required observer field {phi_key}.phi")
-        phi_arr = np.clip(phi_arr[:T], 0.0, 1.0).astype(np.float32)
+        phi_post = np.asarray(phi_post, dtype=np.float32)
+        phi_post_clipped = np.clip(phi_post[:T], 0.0, 1.0)
 
-        # r_fall: 0.01 × φ(t) per step
-        r_fall = (self.per_step_phi_coef * phi_arr).astype(np.float32)
+        phi_pre = self._pre_action_phi(episode, agent_id)
+        if phi_pre.shape[0] < T:
+            raise ValueError(
+                f"phi_pre length {phi_pre.shape[0]} < transition boundary {T}"
+            )
+        phi_pre_clipped = np.clip(phi_pre[:T], 0.0, 1.0)
 
-        # r_cross
+        r_fall = (self.per_step_phi_coef * phi_post_clipped).astype(np.float32)
         r_cross = extract_per_step_scalar(
             episode.observer_outputs, cross_key, T_full,
         )[:T].astype(np.float32)
 
-        # Per-step dones: True only at the last step if the agent fell
-        # (true termination → no bootstrap). If truncated (timeout),
-        # done=False at all steps → bootstrap from next_obs.
-        dones_fall = np.zeros(T, dtype=bool)
-        dones_cross = np.zeros(T, dtype=bool)
-        if fell and T > 0:
-            dones_fall[-1] = True
-            dones_cross[-1] = True
+        actor_gate = {
+            "r_fall": np.full(T, self._base_actor_weights[0], dtype=np.float32),
+            "r_cross": (
+                self._base_actor_weights[1] * phi_pre_clipped ** 2
+            ).astype(np.float32),
+        }
+        task_facts = {
+            "phi_pre": phi_pre[:T],
+            "phi_post_reference": phi_post[:T],
+        }
+        reward_features = {
+            "cross_support": extract_per_step_scalar(
+                episode.observer_outputs, cross_key, T_full,
+            )[:T],
+        }
+        for field in ("height", "uprightness", "initial_phi"):
+            value = extract_per_step_field(
+                episode.observer_outputs, phi_key, field, T_full,
+            )
+            if value is None:
+                raise KeyError(f"Missing required observer field {phi_key}.{field}")
+            reward_features[field] = np.asarray(value, dtype=np.float32)[:T]
 
-        # Actor weights
-        aw_fall = np.full(T, self._base_actor_weights[0], dtype=np.float32)
-        aw_cross = (self._base_actor_weights[1] * phi_arr ** 2).astype(np.float32)
+        sl = build_agent_transition_slice(
+            episode,
+            agent_id,
+            channel_names=self._channel_names,
+            rewards={"r_fall": r_fall, "r_cross": r_cross},
+            actor_gate=actor_gate,
+            task_facts=task_facts,
+            reward_features=reward_features,
+            versions={
+                "reward_semantics": "basic_balance_phi_cross_v1",
+                "objective_mode": "shannon",
+                "regularizer_mode": "entropy",
+                "policy_arch": "s01_pending",
+            },
+        )
+        return [] if sl is None else [sl]
 
-        return [TrajectorySlice(
-            obs=obs_all[:T],
-            actions=acts_all[:T],
-            last_obs=fin_obs,
-            rewards={
-                "r_fall": r_fall,
-                "r_cross": r_cross,
-            },
-            dones={
-                "r_fall": dones_fall,
-                "r_cross": dones_cross,
-            },
-            actor_weights={
-                "r_fall": aw_fall,
-                "r_cross": aw_cross,
-            },
-            tags={
-                "phi": phi_arr,
-                "fell": np.array([float(fell)] * T, dtype=np.float32),
-            },
-            importance=1.0,
-        )]
-
-    def build_slices(self, episodes: List[Any]) -> List[TrajectorySlice]:
+    def build_slices(self, episodes: List[Any]) -> List[SACTransitionSlice]:
         agent_specs = [
             ("robot_a", "cross_support_a", "height_phi_a"),
             ("robot_b", "cross_support_b", "height_phi_b"),
         ]
 
-        all_slices: List[TrajectorySlice] = []
+        all_slices: List[SACTransitionSlice] = []
         for episode in episodes:
             for agent_id, cross_key, phi_key in agent_specs:
-                agent_slices = self._build_agent_slices(
-                    episode, agent_id, cross_key, phi_key,
+                all_slices.extend(
+                    self._build_agent_slices(episode, agent_id, cross_key, phi_key)
                 )
-                all_slices.extend(agent_slices)
         return all_slices
 
     def on_eval(self, episodes: List[Any], env_step: int) -> Dict[str, Any]:

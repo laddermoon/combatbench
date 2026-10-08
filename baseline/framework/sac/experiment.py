@@ -25,7 +25,8 @@ import torch.nn as nn
 from envs.framework.policy import PolicyBlueprint
 
 from .actor import SACActor
-from .collection import SACJob
+from .collection import SACFactSpec, SACJob
+from .transition import SACTransitionSlice
 
 
 # ---------------------------------------------------------------------------
@@ -356,33 +357,37 @@ class ExperimentSAC(ABC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
+        *,
+        collection_round: int = 0,
+        run_id: str = "",
+        deterministic: bool = False,
     ) -> List[SACJob]:
-        """Build rollout jobs for training or evaluation.
+        """Build SAC collection jobs for training or evaluation.
 
-        Same structure as PPO V2's build_jobs. The caller controls
-        stochastic vs deterministic by passing the appropriate
-        PolicyBlueprint.
+        ``deterministic=True`` denotes evaluation behavior and must not
+        write replay data. Collection metadata is carried by SACJob.
         """
         ...
 
+    def pre_action_fact_specs(self) -> Tuple[SACFactSpec, ...]:
+        """Declare facts captured before ``runtime.step()``.
+
+        Default: no task facts. Experiments that require them (e.g.
+        ``phi_pre``) must override this method.
+        """
+        return ()
+
     # ==================================================================
-    # Phase 3: Episode → TrajectorySlice
+    # Phase 3: Episode → SACTransitionSlice
     # ==================================================================
 
     @abstractmethod
-    def build_slices(self, episodes: List[Any]) -> List[TrajectorySlice]:
-        """Convert all episodes into trajectory slices for replay.
+    def build_slices(self, episodes: List[Any]) -> List[SACTransitionSlice]:
+        """Convert collected episodes into validated ``sac_transition_v1``
+        slices for replay admission.
 
-        Receives the full batch of episodes at once. Each slice is a
-        contiguous segment of an episode with per-channel rewards,
-        dones, actor_weights, tags, and optional reward_features.
-
-        This is the single source of truth for:
-        - How each episode is sliced.
-        - Per-channel rewards and termination.
-        - Per-channel actor_weights (curriculum control).
-        - Tags for stratification and diagnostics.
-        - Reward features for relabeling.
+        This is the single source of truth for reward semantics,
+        per-channel gates, task facts, boundary flags, and provenance.
         """
         ...
 

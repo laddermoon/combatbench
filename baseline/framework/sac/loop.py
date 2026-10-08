@@ -425,7 +425,12 @@ def train_sac(
             t0 = time.perf_counter()
             rollout_seed = cp.seed + rollout_round * cp.episodes_per_update
             jobs = experiment.build_jobs(
-                policy_bp, rollout_seed, cp.episodes_per_update,
+                policy_bp,
+                rollout_seed,
+                cp.episodes_per_update,
+                collection_round=rollout_round,
+                run_id=run_dir.name,
+                deterministic=False,
             )
             t_jobs = time.perf_counter() - t0
 
@@ -532,7 +537,12 @@ def train_sac(
                     dest_path=str(eval_export_dir), stochastic=False,
                 )
                 eval_jobs = experiment.build_jobs(
-                    det_bp, eval_seed, cp.eval_episodes,
+                    det_bp,
+                    eval_seed,
+                    cp.eval_episodes,
+                    collection_round=rollout_round,
+                    run_id=run_dir.name,
+                    deterministic=True,
                 )
                 eval_episodes: List[Any] = rollouter.collect(eval_jobs)
 

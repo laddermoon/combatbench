@@ -15,6 +15,10 @@ import torch.nn as nn
 from envs.framework.policy import PolicyBlueprint
 
 
+class SACActorNotImplementedError(NotImplementedError):
+    """Raised until the SAC-owned S01 actor/export path is implemented."""
+
+
 class SACActor(Protocol):
     """Minimum structural contract consumed by the SAC training loop."""
 
@@ -53,4 +57,4 @@ class SACActor(Protocol):
         ...
 
 
-__all__ = ["SACActor"]
+__all__ = ["SACActor", "SACActorNotImplementedError"]

@@ -141,7 +141,7 @@ def test_sac_cli_rejects_ppo_only_flags():
     assert "--param" in output
 
 
-def test_sac_smoke_stops_at_collection_boundary_without_ppo():
+def test_sac_smoke_stops_at_actor_boundary_without_ppo():
     result = _run_python(
         """
 import argparse
@@ -186,9 +186,9 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         train.main()
     except Exception as exc:
-        assert "P2-COLL-1" in str(exc), str(exc)
+        assert "P2-TRAIN-1" in str(exc), str(exc)
     else:
-        raise AssertionError("SAC collection boundary did not fail")
+        raise AssertionError("SAC actor boundary did not fail")
 
 ppo_modules = [
     name for name in sys.modules

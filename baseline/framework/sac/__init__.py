@@ -9,8 +9,10 @@ the implementation decision log.
 """
 from __future__ import annotations
 
-from .actor import SACActor
-from .collection import SACBehaviorSpec, SACJob
+from .actor import SACActor, SACActorNotImplementedError
+from .collected_episode import CollectedEpisode
+from .collection import SACBehaviorSpec, SACFactSpec, SACJob
+from .collection_rollouter import SACCollectionError, SACParallelRollouter
 from .experiment import (
     CommonParamsSAC,
     DataSource,
@@ -23,12 +25,23 @@ from .experiment import (
 from .networks import MultiHeadQCritic, QTrunkGroup
 from .replay import TaggedReplay
 from .trainer import sac_update_v2
+from .transition import (
+    SAC_TRANSITION_SCHEMA,
+    SACTransitionSlice,
+    build_agent_transition_slice,
+    validate_transition_slice,
+)
 
 __all__ = [
     "CommonParamsSAC",
+    "CollectedEpisode",
     "SACActor",
+    "SACActorNotImplementedError",
     "SACBehaviorSpec",
+    "SACCollectionError",
+    "SACFactSpec",
     "SACJob",
+    "SACParallelRollouter",
     "DataSource",
     "ExperimentSAC",
     "MultiHeadQCritic",
@@ -36,7 +49,11 @@ __all__ = [
     "ReplayPlan",
     "SACParams",
     "SACRewardChannel",
+    "SACTransitionSlice",
+    "SAC_TRANSITION_SCHEMA",
     "TaggedReplay",
     "TrajectorySlice",
+    "build_agent_transition_slice",
     "sac_update_v2",
+    "validate_transition_slice",
 ]

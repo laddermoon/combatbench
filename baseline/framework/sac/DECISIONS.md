@@ -2006,6 +2006,14 @@ S2-W0 P2-IND-0
   - `sac.loop` 在 `P2-COLL-1` 前显式抛出 `SACRollouterNotImplemented`，不再通过 legacy `ParallelRollouter` 进入 PPO 依赖。
   - 证据：`pytest baseline/framework/sac/tests -q` → 22 passed；`pytest baseline/framework/ppo/tests/test_param_overrides.py baseline/framework/ppo/algos/test_advantages.py -q` → 21 passed；`train.py --algo ppo --list-experiments` 与不带 `--algo` 的联合列表正常。
   - 边界：SAC smoke 仍止于 `P2-COLL-1` 未实现；这满足 G2.0，不表示训练闭环可运行。
+- **2026-10-08 `P2-COLL-1` / `P2-DATA-1` 完成（G2.1 数据面实现）：**
+  - SAC 新增自有 collection 层：`SACJob`、`SACBehaviorSpec`、`SACFactSpec`、`CollectedEpisode`、`SACEpisodeRecorder`、`SACEpisodeRunner`、`SACParallelRollouter`；不再依赖 `baseline.framework.rollout`，worker/job 失败会终止整轮且不返回部分数据。
+  - `SACJob` 携带 `run_id/collection_round/job_index/episode_seed/episode_options`、双 agent behavior spec、pre-action fact specs 与 policy/env blueprint；`CollectedEpisode` 记录 job key、policy fingerprint、behavior、worker/wall time。
+  - SAC runner 在每次 `runtime.step()` 前调用声明的 pre-action provider；`policy_action` 独立进入 `action_extras`。`sac_balance` 注册 `phi_pre`，provider 直接从 accessor 按 `uprightness * height / standing_height` 计算。
+  - 新增 `sac_transition_v1`：`SACTransitionSlice`、strict validator、`build_agent_transition_slice()`。字段包含 `obs/actions/next_obs/rewards/channel_valid/terminated/truncated/bootstrap/termination_reason/physics_delta/actor_gate/actor_weight/sample_weight/task_facts/reward_features/policy_action/source_keys/behavior/collection/versions`。
+  - `basic_balance` 和 `standup` 的 SAC 语义分别落到 `exp_sac_balance.py` 与新增 `exp_sac_standup.py`；balance 的 `r_cross` gate 使用 `phi_pre²`，`phi_post` 作为 `phi_post_reference`。
+  - 证据：`pytest baseline/framework/sac/tests/test_collection_data.py -q` → 9 passed；`pytest baseline/framework/sac/tests -q` → 30 passed；SAC/PPO CLI listing 正常；`git diff --check` 通过。
+  - 边界：SAC smoke 现在止于 `P2-TRAIN-1` 的 SAC actor 未实现，而不是 collection 未实现；replay 仍待 `P2-REPLAY-1` 接管 `SACTransitionSlice`。
 
 ---
 
