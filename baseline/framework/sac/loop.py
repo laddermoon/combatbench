@@ -255,6 +255,7 @@ def train_sac(
     resume_from: Optional[Path] = None,
     reset_update: bool = False,
     config_lock: bool = False,
+    rollouter: Optional[Any] = None,
 ) -> None:
     cp = experiment.common_params()
     sp = experiment.sac_params()
@@ -395,7 +396,11 @@ def train_sac(
         flush=True,
     )
 
-    with create_rollouter(num_workers=cp.rollout_workers) as rollouter:
+    active_rollouter = (
+        rollouter if rollouter is not None
+        else create_rollouter(num_workers=cp.rollout_workers)
+    )
+    with active_rollouter as rollouter:
         while clocks.env_step < cp.max_env_steps:
             t_round_start = time.perf_counter()
             round_index = clocks.collection_round + 1
