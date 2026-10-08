@@ -1,18 +1,10 @@
-"""Multi-head Q critic networks for SAC V2.
+"""Twin Q critic networks for SAC V2.
 
-Channels with similar time horizons (gamma) share a trunk network with
-per-channel heads. This reduces the network count from O(C) to O(G)
-where G is the number of trunk groups, while preserving per-channel Q
-values.
-
-Architecture per group:
-    Trunk: Linear(obs+act, hidden) → ReLU → Linear(hidden, hidden) → ReLU
-    Head_c: Linear(hidden, 1)  # one per channel in the group
-
-Twin Q: each group has two independent trunk+heads (Q1, Q2).
-Target networks: deep copies, soft-updated.
-
-See DECISIONS.md N3 for trunk grouping rationale.
+The approved phase-three baseline uses one independent twin-Q group per reward
+channel.  ``QTrunkHeads`` still supports multiple heads as an internal module,
+but ``MultiHeadQCritic`` rejects configurations that place multiple channels in
+the same group; shared trunks are an explicit future ablation, not the default
+implementation.
 """
 from __future__ import annotations
 
@@ -145,6 +137,18 @@ class QTrunkGroup:
         for pg in self.q2_optimizer.param_groups:
             pg["lr"] = lr
 
+    def zero_grad(self) -> None:
+        self.q1_optimizer.zero_grad()
+        self.q2_optimizer.zero_grad()
+
+    def step(self) -> None:
+        self.q1_optimizer.step()
+        self.q2_optimizer.step()
+
+    def parameters(self):
+        yield from self.q1.parameters()
+        yield from self.q2.parameters()
+
     def soft_update(self, tau: float) -> None:
         with torch.no_grad():
             for p, pt in zip(
@@ -212,11 +216,15 @@ class MultiHeadQCritic:
         self.device = device
         self.channel_names = tuple(ch.name for ch in channels)
 
-        # Group channels by trunk_group (or auto-group by gamma)
-        groups: Dict[str, List[str]] = {}
-        for ch in channels:
-            group_key = ch.trunk_group if ch.trunk_group else f"gamma_{ch.gamma:.4f}"
-            groups.setdefault(group_key, []).append(ch.name)
+        declared_groups = [ch.trunk_group for ch in channels if ch.trunk_group]
+        if len(set(declared_groups)) != len(declared_groups):
+            raise ValueError(
+                "shared critic trunk groups are unsupported in the phase-three "
+                "baseline; configure one independent trunk_group per channel"
+            )
+        groups: Dict[str, List[str]] = {
+            f"channel_{ch.name}": [ch.name] for ch in channels
+        }
 
         self.group_keys = list(groups.keys())
         self.channel_to_group: Dict[str, str] = {}
@@ -292,6 +300,9 @@ class MultiHeadQCritic:
         for grp in self.groups.values():
             grp.soft_update(tau)
 
+    def soft_update_channel(self, channel: str, tau: float) -> None:
+        self.groups[self.channel_to_group[channel]].soft_update(tau)
+
     # ------------------------------------------------------------------
     # Optimizers
     # ------------------------------------------------------------------
@@ -305,6 +316,12 @@ class MultiHeadQCritic:
         for grp in self.groups.values():
             grp.q1_optimizer.step()
             grp.q2_optimizer.step()
+
+    def step_channel(self, channel: str) -> None:
+        self.groups[self.channel_to_group[channel]].step()
+
+    def channel_parameters(self, channel: str):
+        return self.groups[self.channel_to_group[channel]].parameters()
 
     def all_parameters(self):
         """Iterate all trainable Q parameters (for grad clip)."""

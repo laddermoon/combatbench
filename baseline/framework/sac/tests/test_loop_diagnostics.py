@@ -91,6 +91,12 @@ def test_tick_metrics_use_sac_namespaces() -> None:
             "td_abs_mean_ra": 0.4,
             "q1_loss_ra": 0.2,
             "actor_weight_mean_ra": 0.8,
+            "actor_weight_next_mean_ra": 0.7,
+            "critic_updated_ra": 1.0,
+            "critic_valid_weight_ra": 6.0,
+            "target_pair1_frac": 0.25,
+            "actor_pair1_frac": 0.75,
+            "actor_valid_count": 8.0,
         },
         batch_size=8,
         replay_size=100,
@@ -103,3 +109,9 @@ def test_tick_metrics_use_sac_namespaces() -> None:
     assert metrics["critic.td_mean"] == 0.4
     assert metrics["critic.q1_loss.ra"] == 0.2
     assert metrics["actor.weight.ra"] == 0.8
+    assert metrics["actor.weight_next.ra"] == 0.7
+    assert metrics["critic.updated.ra"] == 1.0
+    assert metrics["critic.valid_weight.ra"] == 6.0
+    assert metrics["target.pair1_frac"] == 0.25
+    assert metrics["actor.pair1_frac"] == 0.75
+    assert metrics["actor.valid_count"] == 8.0

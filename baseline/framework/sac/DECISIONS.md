@@ -2147,6 +2147,8 @@ S3-W0 P3-AUDIT-0
 `G3.0` 通过标准：以上矩阵已登记，且没有“配置接受但语义未实现”的已知路径。当前仍有 `baseline/framework/train.py` 和 `baseline/framework/code_snapshot.py` 的用户侧未提交改动；P3 审计不触碰它们。
 
 - **`P3-DATA-2` 完成（G3.1 数据面升级）：** `SACTransitionSlice` 升级为 `sac_transition_v2`，新增必需 `actor_gate_next/actor_weight_next` 并校验 shape、非负、行和与归一化；`build_agent_transition_slice()` 要求实验显式提供 next gate。`sac_balance` 使用 `phi_pre` 生成当前 gate、使用 `phi_post` 生成 next gate；`sac_standup` 使用常量 next gate。`SACReplayBuffer` 升级为 `sac_replay_v2` 并在 admission/sample/get_by_sample_ids/persistence 中保留两个字段；v1 replay/checkpoint 在 full resume 中 fail loud。trainer batch 校验已拒绝缺 next-gate 字段的 batch。证据：`test_collection_data + test_replay + test_checkpoint` → 25 passed；完整 SAC suite → 54 passed。
+- **`P3-MATH-1` 完成（G3.2 数学面修正）：** critic target 改为用 `actor_weight_next` 先合成 `F_j` 再共同选择 `j_next`；actor loss 改为用 `actor_weight` 合成 `F_j` 并共同选择 `j_actor`。actor/alpha 只使用所有通道 `channel_valid=True` 的行；每通道 critic 独立 mask/step/target update，空分母跳过该通道。同 cohort γ 不一致、shared critic group、n-step/ensemble 扩展显式拒绝。`actor_weight=0` 不冻结对应 critic 的永久测试已落地。`MultiHeadQCritic` 现在默认每 channel 一个独立 group。
+- **`P3-DIAG-2` 完成基础版（G3.3）：** `sac_dump_v2` 捕获并重算 A3 公式所需的 batch gate、pair index、per-channel Q/target/TD、actor/alpha 有效行；`find-sample` 输出当前/下一 gate；tick metrics 增加 pair 选择率、actor 有效行、每通道 critic 更新与 gate/next-gate 均值；replay stats 增加 collection round、policy fingerprint、reward/objective version 分桶。证据：完整 SAC suite → 57 passed，包含指定 critic tick dump 的新公式 recompute。
 
 ## P3.6 完成定义
 

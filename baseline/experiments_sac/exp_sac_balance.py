@@ -108,11 +108,11 @@ class SacBalance(CombatExperimentSACBase):
         return (
             SACRewardChannel(
                 name="r_fall", gamma=self._gamma, n_step=1,
-                n_critics=2, trunk_group="shared",
+                n_critics=2,
             ),
             SACRewardChannel(
                 name="r_cross", gamma=self._gamma, n_step=1,
-                n_critics=2, trunk_group="shared",
+                n_critics=2,
             ),
         )
 

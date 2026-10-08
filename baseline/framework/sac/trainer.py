@@ -114,11 +114,19 @@ def _validate_batch(
 
 
 def validate_sac_channels(channels: Tuple[SACRewardChannel, ...]) -> None:
+    if not channels:
+        raise SACTrainerError("SAC requires at least one reward channel")
+    gamma = float(channels[0].gamma)
     for ch in channels:
+        if float(ch.gamma) != gamma:
+            raise SACTrainerError(
+                "phase-three SAC supports one common cohort gamma; "
+                f"channel {ch.name!r} uses {ch.gamma}, expected {gamma}"
+            )
         if int(ch.n_step) != 1:
             raise SACTrainerError(
                 f"channel {ch.name!r} uses n_step={ch.n_step}; "
-                "P2-TRAIN-1 supports only n_step=1"
+                "SAC supports only n_step=1"
             )
         if int(ch.n_critics) != 2 or int(ch.in_target_min) != 2:
             raise SACTrainerError(
@@ -137,24 +145,53 @@ def compute_critic_targets(
     reward_scale: float,
     device: torch.device,
     capture: Optional[Dict[str, Any]] = None,
+    target_info: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Dict[str, torch.Tensor]:
-    """Compute 1-step per-channel Bellman targets without mutating state."""
+    """Compute A3 multi-channel 1-step Bellman targets without mutation."""
     next_obs = _require_tensor(batch, "next_obs").to(device)
     rewards = _require_tensor(batch, "rewards").to(device)
     bootstrap = _require_tensor(batch, "bootstrap").to(device)
+    actor_weight_next = _require_tensor(batch, "actor_weight_next").to(device)
     with torch.no_grad():
         next_actions, next_log_probs = actor.sample_action(next_obs)
+        q_next_pairs = torch.stack(
+            (
+                torch.stack(
+                    [
+                        critic.q1_target_forward(next_obs, next_actions, ch.name)
+                        for ch in channels
+                    ],
+                    dim=1,
+                ),
+                torch.stack(
+                    [
+                        critic.q2_target_forward(next_obs, next_actions, ch.name)
+                        for ch in channels
+                    ],
+                    dim=1,
+                ),
+            ),
+            dim=2,
+        )
+        f_next = (q_next_pairs * actor_weight_next[:, :, None]).sum(dim=1)
+        pair_next = f_next.argmin(dim=1)
+        selected_next = q_next_pairs.gather(
+            2,
+            pair_next[:, None, None].expand(-1, q_next_pairs.shape[1], 1),
+        ).squeeze(2)
         if capture is not None:
             capture["next_actions"] = next_actions.detach().cpu()
             capture["next_log_probs"] = next_log_probs.detach().cpu()
+            capture["target_pair_index"] = pair_next.detach().cpu()
+        if target_info is not None:
+            target_info["pair_index"] = pair_next
         targets: Dict[str, torch.Tensor] = {}
         for c, ch in enumerate(channels):
-            q1_next = critic.q1_target_forward(next_obs, next_actions, ch.name)
-            q2_next = critic.q2_target_forward(next_obs, next_actions, ch.name)
-            q_next = torch.min(q1_next, q2_next) - alpha * next_log_probs
             targets[ch.name] = (
                 rewards[:, c] * reward_scale
-                + ch.gamma * bootstrap * q_next
+                + ch.gamma
+                * bootstrap
+                * (selected_next[:, c] - alpha * next_log_probs)
             )
         return targets
 
@@ -191,13 +228,16 @@ def sac_update_v2(
     channel_valid = batch["channel_valid"].to(device)
     bootstrap = _require_tensor(batch, "bootstrap").to(device)
     actor_weight = _require_tensor(batch, "actor_weight").to(device).detach()
+    actor_weight_next = _require_tensor(
+        batch, "actor_weight_next",
+    ).to(device).detach()
     sample_weight = _require_tensor(batch, "sample_weight").to(device).detach()
-    sample_weight = sample_weight / (sample_weight.mean() + 1e-8)
 
     alpha = log_alpha.exp().detach()
     stats: Dict[str, float] = {}
     if capture is not None:
         capture.clear()
+    target_info: Dict[str, torch.Tensor] = {}
     q_targets = compute_critic_targets(
         actor,
         critic,
@@ -207,6 +247,7 @@ def sac_update_v2(
         reward_scale=sp.reward_scale,
         device=device,
         capture=capture,
+        target_info=target_info,
     )
     if capture is not None:
         capture["alpha_pre"] = alpha.detach().cpu()
@@ -216,13 +257,14 @@ def sac_update_v2(
 
     critic.zero_grad_all()
     total_critic_loss = torch.zeros((), device=device)
+    updated_channels: list[str] = []
     for c, ch in enumerate(channels):
         mask = channel_valid[:, c].float() * sample_weight
         mask_sum = mask.sum()
+        stats[f"critic_valid_weight_{ch.name}"] = float(mask_sum.item())
         if not torch.isfinite(mask_sum) or mask_sum.item() <= 0:
-            raise SACTrainerError(
-                f"channel {ch.name!r} has no valid critic samples in batch"
-            )
+            stats[f"critic_updated_{ch.name}"] = 0.0
+            continue
         q1_pred = critic.q1_forward(obs, actions, ch.name)
         q2_pred = critic.q2_forward(obs, actions, ch.name)
         if capture is not None:
@@ -231,8 +273,14 @@ def sac_update_v2(
         target = q_targets[ch.name]
         q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
         q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
-        (q1_loss + q2_loss).backward(retain_graph=True)
+        (q1_loss + q2_loss).backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(critic.channel_parameters(ch.name)), grad_clip_norm,
+        )
+        critic.step_channel(ch.name)
+        updated_channels.append(ch.name)
         total_critic_loss = total_critic_loss + q1_loss.detach() + q2_loss.detach()
+        stats[f"critic_updated_{ch.name}"] = 1.0
         stats[f"q1_loss_{ch.name}"] = float(q1_loss.item())
         stats[f"q2_loss_{ch.name}"] = float(q2_loss.item())
         stats[f"q1_mean_{ch.name}"] = float(q1_pred.mean().item())
@@ -240,24 +288,52 @@ def sac_update_v2(
         stats[f"td_abs_mean_{ch.name}"] = float(
             (q1_pred.detach() - target).abs().mean().item()
         )
+    if not updated_channels:
+        raise SACTrainerError("SAC batch has no valid critic channels")
 
-    torch.nn.utils.clip_grad_norm_(list(critic.all_parameters()), grad_clip_norm)
-    critic.step_all()
+    actor_rows = channel_valid.all(dim=1)
+    actor_mask = actor_rows.float() * sample_weight
+    actor_den = actor_mask.sum()
+    stats["actor_valid_weight"] = float(actor_den.item())
+    stats["actor_valid_count"] = float(actor_rows.sum().item())
+    if not torch.isfinite(actor_den) or actor_den.item() <= 0:
+        raise SACTrainerError("SAC batch has no actor-valid rows")
 
     new_actions, new_log_probs = actor.sample_action(obs)
     if capture is not None:
         capture["new_actions"] = new_actions.detach().cpu()
         capture["new_log_probs"] = new_log_probs.detach().cpu()
+
+    requires_grad = [
+        (param, param.requires_grad) for param in critic.all_parameters()
+    ]
+    for param, _ in requires_grad:
+        param.requires_grad_(False)
     q1_all = critic.q1_forward_all(obs, new_actions)
     q2_all = critic.q2_forward_all(obs, new_actions)
-    weighted_q = torch.zeros_like(new_log_probs)
-    for c, ch in enumerate(channels):
-        q_min = torch.min(q1_all[ch.name], q2_all[ch.name])
-        weighted_q = weighted_q + actor_weight[:, c] * q_min
-        stats[f"actor_weight_mean_{ch.name}"] = float(actor_weight[:, c].mean().item())
+    for param, required in requires_grad:
+        param.requires_grad_(required)
+
+    q_online_pairs = torch.stack(
+        (
+            torch.stack([q1_all[ch.name] for ch in channels], dim=1),
+            torch.stack([q2_all[ch.name] for ch in channels], dim=1),
+        ),
+        dim=2,
+    )
+    f_actor = (q_online_pairs * actor_weight[:, :, None]).sum(dim=1)
+    pair_actor = f_actor.argmin(dim=1)
+    selected_actor = q_online_pairs.gather(
+        2,
+        pair_actor[:, None, None].expand(-1, q_online_pairs.shape[1], 1),
+    ).squeeze(2)
+    weighted_q = (selected_actor * actor_weight).sum(dim=1)
+    if capture is not None:
+        capture["actor_pair_index"] = pair_actor.detach().cpu()
+        capture["weighted_q"] = weighted_q.detach().cpu()
     actor_loss = (
-        sample_weight * (alpha * new_log_probs - weighted_q)
-    ).mean()
+        actor_mask * (alpha * new_log_probs - weighted_q)
+    ).sum() / actor_den
     actor_optimizer.zero_grad()
     actor_loss.backward()
     actor_grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -272,8 +348,10 @@ def sac_update_v2(
             if sp.target_entropy is None else float(sp.target_entropy)
         )
         alpha_loss = -(
-            log_alpha * (new_log_probs.detach() + target_entropy)
-        ).mean()
+            actor_mask
+            * log_alpha
+            * (new_log_probs.detach() + target_entropy)
+        ).sum() / actor_den
         alpha_optimizer.zero_grad()
         alpha_loss.backward()
         alpha_optimizer.step()
@@ -281,7 +359,8 @@ def sac_update_v2(
             log_alpha.clamp_(sp.log_alpha_min, sp.log_alpha_max)
         alpha_loss_value = float(alpha_loss.item())
 
-    critic.soft_update(float(sp.tau))
+    for channel_name in updated_channels:
+        critic.soft_update_channel(channel_name, float(sp.tau))
 
     stats.update({
         "actor_loss": float(actor_loss.item()),
@@ -291,7 +370,18 @@ def sac_update_v2(
         "log_prob_mean": float(new_log_probs.mean().item()),
         "entropy_proxy_mean": float((-new_log_probs).mean().item()),
         "grad_norm_actor": float(actor_grad_norm),
+        "target_pair1_frac": float(
+            target_info["pair_index"].float().mean().item()
+        ),
+        "actor_pair1_frac": float(pair_actor.float().mean().item()),
     })
+    for c, ch in enumerate(channels):
+        stats[f"actor_weight_mean_{ch.name}"] = float(
+            actor_weight[:, c].mean().item()
+        )
+        stats[f"actor_weight_next_mean_{ch.name}"] = float(
+            actor_weight_next[:, c].mean().item()
+        )
     return stats
 
 

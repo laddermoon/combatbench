@@ -58,7 +58,6 @@ class SacStandup(CombatExperimentSACBase):
                 gamma=self._gamma,
                 n_step=1,
                 n_critics=2,
-                trunk_group="shared",
             ),
         )
 

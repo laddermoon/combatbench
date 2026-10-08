@@ -75,7 +75,7 @@ def test_l2_dump_recomputes_standard_sac_losses(tmp_path) -> None:
     )
 
     payload = load_dump(dump_dir)
-    assert payload["manifest"]["schema_version"] == "sac_dump_v1"
+    assert payload["manifest"]["schema_version"] == "sac_dump_v2"
     assert payload["manifest"]["evidence_level"] == "recompute"
     assert payload["batch"]["sample_ids"].tolist() == list(range(16))
 

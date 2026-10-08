@@ -1,6 +1,6 @@
 """SAC L2 dump capture, inspection, and recomputation.
 
-``sac_dump_v1`` captures the exact sampled batch and the model/optimizer state
+``sac_dump_v2`` captures the exact sampled batch and the model/optimizer state
 surrounding one ``critic_tick``.  The minimum supported evidence level is
 ``recompute``: Bellman targets, critic losses, actor decomposition, and the
 alpha loss can be recomputed from the dump without replay storage still being
@@ -27,7 +27,7 @@ from .networks import MultiHeadQCritic
 from .s01_actor import S01Actor
 
 
-SAC_DUMP_SCHEMA = "sac_dump_v1"
+SAC_DUMP_SCHEMA = "sac_dump_v2"
 
 
 class SACDumpError(RuntimeError):
@@ -82,7 +82,7 @@ def _trainer_spec(
             "init_log_std": float(actor.init_log_std),
         },
         "critic": {
-            "kind": "multi_head_q_trunk_heads",
+            "kind": "independent_channel_twin_q",
             "obs_dim": int(critic.obs_dim),
             "action_dim": int(critic.action_dim),
             "hidden_dim": int(critic.hidden_dim),
@@ -310,8 +310,8 @@ def recompute_dump(
         channel_valid = batch["channel_valid"].bool()
         bootstrap = batch["bootstrap"].float()
         actor_weight = batch["actor_weight"].float()
+        actor_weight_next = batch["actor_weight_next"].float()
         sample_weight = batch["sample_weight"].float()
-        sample_weight = sample_weight / (sample_weight.mean() + 1e-8)
         next_log_probs = forward["next_log_probs"].float()
         new_actions = forward["new_actions"].float()
         new_log_probs = forward["new_log_probs"].float()
@@ -320,24 +320,53 @@ def recompute_dump(
 
         recomputed: Dict[str, float] = {"alpha": float(alpha.item())}
         critic_loss = torch.zeros(())
-        q_next_by_channel: Dict[str, torch.Tensor] = {}
+        q1_next = torch.stack(
+            [
+                pre_critic.q1_target_forward(
+                    batch["next_obs"].float(), forward["next_actions"].float(),
+                    ch.name,
+                )
+                for ch in channels
+            ],
+            dim=1,
+        )
+        q2_next = torch.stack(
+            [
+                pre_critic.q2_target_forward(
+                    batch["next_obs"].float(), forward["next_actions"].float(),
+                    ch.name,
+                )
+                for ch in channels
+            ],
+            dim=1,
+        )
+        q_next_pairs = torch.stack((q1_next, q2_next), dim=2)
+        pair_next = (
+            q_next_pairs * actor_weight_next[:, :, None]
+        ).sum(dim=1).argmin(dim=1)
+        selected_next = q_next_pairs.gather(
+            2, pair_next[:, None, None].expand(-1, len(channels), 1),
+        ).squeeze(2)
+        recomputed["target_pair1_frac"] = float(pair_next.float().mean().item())
         for c, ch in enumerate(channels):
-            q1_next = pre_critic.q1_target_forward(
-                batch["next_obs"].float(), forward["next_actions"].float(), ch.name,
+            target = (
+                rewards[:, c] * float(sp.reward_scale)
+                + ch.gamma
+                * bootstrap
+                * (selected_next[:, c] - alpha * next_log_probs)
             )
-            q2_next = pre_critic.q2_target_forward(
-                batch["next_obs"].float(), forward["next_actions"].float(), ch.name,
-            )
-            q_next = torch.min(q1_next, q2_next) - alpha * next_log_probs
-            q_next_by_channel[ch.name] = q_next
-            target = rewards[:, c] * float(sp.reward_scale) + ch.gamma * bootstrap * q_next
             q1_pred = pre_critic.q1_forward(obs, actions, ch.name)
             q2_pred = pre_critic.q2_forward(obs, actions, ch.name)
             mask = channel_valid[:, c].float() * sample_weight
             mask_sum = mask.sum()
+            recomputed[f"critic_valid_weight_{ch.name}"] = float(mask_sum.item())
+            if mask_sum.item() <= 0:
+                recomputed[f"critic_updated_{ch.name}"] = 0.0
+                continue
             q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
             q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
             critic_loss += q1_loss + q2_loss
+            recomputed[f"critic_updated_{ch.name}"] = 1.0
             recomputed[f"q1_loss_{ch.name}"] = float(q1_loss.item())
             recomputed[f"q2_loss_{ch.name}"] = float(q2_loss.item())
             recomputed[f"q1_mean_{ch.name}"] = float(q1_pred.mean().item())
@@ -348,20 +377,43 @@ def recompute_dump(
             recomputed[f"actor_weight_mean_{ch.name}"] = float(
                 actor_weight[:, c].mean().item()
             )
+            recomputed[f"actor_weight_next_mean_{ch.name}"] = float(
+                actor_weight_next[:, c].mean().item()
+            )
 
+        actor_mask = channel_valid.all(dim=1).float() * sample_weight
+        actor_den = actor_mask.sum()
+        recomputed["actor_valid_weight"] = float(actor_den.item())
+        recomputed["actor_valid_count"] = float(
+            channel_valid.all(dim=1).sum().item()
+        )
         q1_all = post_critic.q1_forward_all(obs, new_actions)
         q2_all = post_critic.q2_forward_all(obs, new_actions)
-        weighted_q = torch.zeros_like(new_log_probs)
-        for c, ch in enumerate(channels):
-            weighted_q += actor_weight[:, c] * torch.min(
-                q1_all[ch.name], q2_all[ch.name],
-            )
-        actor_loss = (sample_weight * (alpha * new_log_probs - weighted_q)).mean()
+        q_online_pairs = torch.stack(
+            (
+                torch.stack([q1_all[ch.name] for ch in channels], dim=1),
+                torch.stack([q2_all[ch.name] for ch in channels], dim=1),
+            ),
+            dim=2,
+        )
+        pair_actor = (
+            q_online_pairs * actor_weight[:, :, None]
+        ).sum(dim=1).argmin(dim=1)
+        selected_actor = q_online_pairs.gather(
+            2, pair_actor[:, None, None].expand(-1, len(channels), 1),
+        ).squeeze(2)
+        weighted_q = (selected_actor * actor_weight).sum(dim=1)
+        actor_loss = (
+            actor_mask * (alpha * new_log_probs - weighted_q)
+        ).sum() / actor_den
         target_entropy = (
             -float(spec["actor"]["action_dim"])
             if sp.target_entropy is None else float(sp.target_entropy)
         )
-        alpha_loss = -(log_alpha * (new_log_probs + target_entropy)).mean()
+        alpha_loss = -(
+            actor_mask * log_alpha * (new_log_probs + target_entropy)
+        ).sum() / actor_den
+        recomputed["actor_pair1_frac"] = float(pair_actor.float().mean().item())
 
         recomputed.update({
             "critic_loss": float(critic_loss.item()),
@@ -439,13 +491,17 @@ def find_sample(dump_dir: Path, *, sample_id: int) -> Dict[str, Any]:
         "action": batch["actions"][i],
         "next_obs": batch["next_obs"][i],
         "rewards": batch["rewards"][i],
+        "actor_gate": batch["actor_gate"][i],
+        "actor_weight": batch["actor_weight"][i],
+        "actor_gate_next": batch["actor_gate_next"][i],
+        "actor_weight_next": batch["actor_weight_next"][i],
         "terminated": bool(batch["terminated"][i]),
         "truncated": bool(batch["truncated"][i]),
     }
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect SAC sac_dump_v1 bundles")
+    parser = argparse.ArgumentParser(description="Inspect SAC sac_dump_v2 bundles")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("summary", "recompute"):
         p = sub.add_parser(name)

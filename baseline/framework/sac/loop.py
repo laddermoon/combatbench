@@ -211,6 +211,9 @@ def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: i
         "temperature.alpha": float(step_stats.get("alpha", 0.0)),
         "temperature.loss": float(step_stats.get("alpha_loss", 0.0)),
         "target.tau": float(tau),
+        "target.pair1_frac": float(step_stats.get("target_pair1_frac", 0.0)),
+        "actor.pair1_frac": float(step_stats.get("actor_pair1_frac", 0.0)),
+        "actor.valid_count": float(step_stats.get("actor_valid_count", 0.0)),
         "replay.size": float(replay_size),
     }
     q_values = [
@@ -231,6 +234,12 @@ def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: i
             metrics[f"critic.q2_loss.{name[8:]}"] = float(value)
         elif name.startswith("actor_weight_mean_"):
             metrics[f"actor.weight.{name[18:]}"] = float(value)
+        elif name.startswith("actor_weight_next_mean_"):
+            metrics[f"actor.weight_next.{name[23:]}"] = float(value)
+        elif name.startswith("critic_updated_"):
+            metrics[f"critic.updated.{name[15:]}"] = float(value)
+        elif name.startswith("critic_valid_weight_"):
+            metrics[f"critic.valid_weight.{name[20:]}"] = float(value)
     return metrics
 
 

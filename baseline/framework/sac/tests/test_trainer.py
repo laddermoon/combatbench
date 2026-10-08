@@ -98,27 +98,41 @@ def test_s01_export_blueprint_builds_runtime_policy(tmp_path) -> None:
     np.testing.assert_allclose(action, expected, atol=1e-6)
 
 
-def test_multihead_q_critic_grouping_and_target_sync() -> None:
+def test_multihead_q_critic_uses_independent_groups_and_target_sync() -> None:
     channels = (
-        SACRewardChannel(name="ra", gamma=0.99, trunk_group="g"),
-        SACRewardChannel(name="rb", gamma=0.99, trunk_group="g"),
-        SACRewardChannel(name="rc", gamma=0.9, trunk_group="h"),
+        SACRewardChannel(name="ra", gamma=0.99),
+        SACRewardChannel(name="rb", gamma=0.99),
+        SACRewardChannel(name="rc", gamma=0.99),
     )
     critic = MultiHeadQCritic(
         6, 3, channels, hidden_dim=16, layer_norm=False,
         critic_lr=1e-3, device=torch.device("cpu"),
     )
-    assert len(critic.groups) == 2
-    assert critic.n_networks == 4
+    assert len(critic.groups) == 3
+    assert critic.n_networks == 6
     q1 = critic.q1_forward(torch.randn(4, 6), torch.randn(4, 3), "ra")
     assert q1.shape == (4,)
 
-    group = critic.groups["g"]
+    group = critic.groups["channel_ra"]
     target_param = next(group.q1_target.parameters())
     before = target_param.detach().clone()
     next(group.q1.parameters()).data.fill_(1.0)
     critic.soft_update(0.1)
     assert not torch.equal(before, target_param.detach())
+
+    with pytest.raises(ValueError, match="shared critic trunk"):
+        MultiHeadQCritic(
+            6,
+            3,
+            (
+                SACRewardChannel(name="a", gamma=0.99, trunk_group="shared"),
+                SACRewardChannel(name="b", gamma=0.99, trunk_group="shared"),
+            ),
+            hidden_dim=16,
+            layer_norm=False,
+            critic_lr=1e-3,
+            device=torch.device("cpu"),
+        )
 
 
 def test_critic_target_uses_bootstrap_and_shannon_entropy() -> None:
@@ -140,6 +154,37 @@ def test_critic_target_uses_bootstrap_and_shannon_entropy() -> None:
     )["r0"]
     expected = batch["rewards"][:, 0] * 2.0 + 0.99 * batch["bootstrap"] * (3.0 - 0.5 * 2.0)
     torch.testing.assert_close(targets, expected)
+
+
+def test_critic_target_selects_one_weighted_twin_pair() -> None:
+    actor, critic, channels = _models(C=2)
+    batch = _batch(B=2, C=2)
+    batch["bootstrap"] = torch.ones(2)
+    batch["terminated"] = torch.zeros(2, dtype=torch.bool)
+    batch["actor_weight_next"] = torch.tensor([[0.9, 0.1], [0.1, 0.9]])
+    batch["actor_gate_next"] = batch["actor_weight_next"] * 10.0
+    actor.sample_action = lambda obs: (torch.zeros(2, 3), torch.zeros(2))
+    critic.q1_target_forward = (
+        lambda obs, act, ch: torch.tensor([0.0, 10.0])
+        if ch == "r0" else torch.tensor([10.0, 0.0])
+    )
+    critic.q2_target_forward = (
+        lambda obs, act, ch: torch.tensor([10.0, 0.0])
+        if ch == "r0" else torch.tensor([0.0, 10.0])
+    )
+    target_info = {}
+
+    targets = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), target_info=target_info,
+    )
+
+    assert target_info["pair_index"].tolist() == [0, 0]
+    expected_r0 = batch["rewards"][:, 0] + 0.99 * torch.tensor([0.0, 10.0])
+    expected_r1 = batch["rewards"][:, 1] + 0.99 * torch.tensor([10.0, 0.0])
+    torch.testing.assert_close(targets["r0"], expected_r0)
+    torch.testing.assert_close(targets["r1"], expected_r1)
 
 
 def test_sac_update_mutates_actor_alpha_and_target() -> None:
@@ -211,4 +256,83 @@ def test_trainer_rejects_unsupported_or_invalid_inputs() -> None:
     with pytest.raises(SACTrainerError, match="twin"):
         validate_sac_channels(
             (SACRewardChannel(name="r0", gamma=0.99, n_critics=3),)
+        )
+    with pytest.raises(SACTrainerError, match="common cohort gamma"):
+        validate_sac_channels(
+            (
+                SACRewardChannel(name="r0", gamma=0.99),
+                SACRewardChannel(name="r1", gamma=0.9),
+            )
+        )
+
+
+def test_zero_actor_weight_does_not_freeze_that_channel_critic() -> None:
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _batch(B=16)
+    batch["actor_gate"] = torch.tensor([[1.0, 0.0]]).repeat(16, 1)
+    batch["actor_weight"] = torch.tensor([[1.0, 0.0]]).repeat(16, 1)
+    batch["actor_gate_next"] = batch["actor_gate"].clone()
+    batch["actor_weight_next"] = batch["actor_weight"].clone()
+    group1 = critic.groups["channel_r1"]
+    before = [
+        p.detach().clone() for p in group1.q1.parameters()
+    ]
+
+    stats = sac_update(
+        actor,
+        critic,
+        actor_optimizer,
+        log_alpha,
+        None,
+        batch,
+        channels,
+        SACParams(use_grad_norm=False, tau=0.0),
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+    )
+
+    assert stats["critic_updated_r1"] == 1.0
+    assert stats["actor_weight_mean_r1"] == 0.0
+    assert any(
+        not torch.equal(p, before_p)
+        for p, before_p in zip(group1.q1.parameters(), before)
+    )
+
+
+def test_actor_and_alpha_use_only_all_channel_valid_rows() -> None:
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _batch(B=8)
+    batch["channel_valid"][:4, 1] = False
+
+    stats = sac_update(
+        actor,
+        critic,
+        actor_optimizer,
+        log_alpha,
+        None,
+        batch,
+        channels,
+        SACParams(use_grad_norm=False, tau=0.0),
+        grad_clip_norm=1.0,
+        device=torch.device("cpu"),
+    )
+
+    assert stats["actor_valid_count"] == 4.0
+    assert stats["critic_updated_r0"] == 1.0
+    assert stats["critic_updated_r1"] == 1.0
+
+    no_actor_rows = dict(batch)
+    no_actor_rows["channel_valid"] = torch.tensor(
+        [[True, False]] * 4 + [[False, True]] * 4,
+        dtype=torch.bool,
+    )
+    with pytest.raises(SACTrainerError, match="actor-valid"):
+        sac_update(
+            actor, critic, actor_optimizer, log_alpha, None,
+            no_actor_rows, channels, SACParams(use_grad_norm=False),
+            1.0, torch.device("cpu"),
         )

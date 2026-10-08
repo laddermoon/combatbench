@@ -369,6 +369,23 @@ class SACReplayBuffer:
             self._next_sample_id - sample_ids
             if self.size else np.empty(0, dtype=np.int64)
         )
+        collection_rounds: Dict[str, int] = {}
+        policy_versions: Dict[str, int] = {}
+        reward_semantics: Dict[str, int] = {}
+        objective_modes: Dict[str, int] = {}
+        for meta in self.metadata[: self.size]:
+            if meta is None:
+                continue
+            collection = dict(meta.get("collection") or {})
+            versions = dict(meta.get("versions") or {})
+            round_key = str(collection.get("collection_round", "unknown"))
+            policy_key = str(collection.get("policy_fingerprint", "unknown"))
+            reward_key = str(versions.get("reward_semantics", "unknown"))
+            objective_key = str(versions.get("objective_mode", "unknown"))
+            collection_rounds[round_key] = collection_rounds.get(round_key, 0) + 1
+            policy_versions[policy_key] = policy_versions.get(policy_key, 0) + 1
+            reward_semantics[reward_key] = reward_semantics.get(reward_key, 0) + 1
+            objective_modes[objective_key] = objective_modes.get(objective_key, 0) + 1
         return {
             "size": self.size,
             "capacity": self.capacity,
@@ -379,6 +396,10 @@ class SACReplayBuffer:
             "sample_id_min": int(sample_ids.min()) if self.size else -1,
             "sample_id_max": int(sample_ids.max()) if self.size else -1,
             "sample_age_mean": float(ages.mean()) if self.size else 0.0,
+            "collection_round_counts": collection_rounds,
+            "policy_fingerprint_counts": policy_versions,
+            "reward_semantics_counts": reward_semantics,
+            "objective_mode_counts": objective_modes,
             "per_channel": per_channel,
         }
 
