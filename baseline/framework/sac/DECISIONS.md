@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：阶段一 W1–W4 已完成，对应 A1–A4 见下方裁决区；W5 执行计划已细化但尚未开始，W6–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
+> 状态：阶段一 W1–W5 已完成，对应 A1–A5 见下方裁决区；W6–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -982,6 +982,343 @@ print('enumerated Q-only logits gradient verified')
 - [x] 记录了实际测试及数值失败，不以已有PPO测试替代SAC可行性结论。
 
 **W4设计出口完成；实现门槛尚未完成。** N-SAC-01稳定内核由阶段二落实；全八格SAC永久测试/导出/GPU/短训由总体阶段四完成。下一工作包W5整合数据、实验、时钟与完整恢复契约，必须带入 expectation weights、noise、regularizer_mode/U_kind、φ_pre/post、采集调度实际生效时点。没有启动生产改写或大规模训练。
+
+## A5：数据、采集、时钟与恢复契约（W5，2026-10-08）
+
+**范围与状态：** 本节是阶段一的契约设计，不是生产实现。基于当前工作树复核了 `train.py → ExperimentSAC → Job/rollouter → EpisodeRunner/EnvRuntime/Recorder → build_slices → TaggedReplay → trainer → eval/checkpoint` 的真实链路，并执行了一个低成本 replay 覆盖探针；未改训练代码、未启动训练。用户在 W5 中确认：容量与 UTD 以**有效 agent transition**计；样本来源/行为元数据**强制保存**；首版**显式拒绝** n-step/PER/relabel/stratified retention；完整恢复默认**持久化 replay**。`phi_pre` 由本轮设计选择显式动作前采集；resume 的覆盖语义按用户要求参照 PPO 的“恢复完整状态，但当前白名单优化配置可生效并记录”。
+
+### A5.1 决策登记
+
+| 编号 | 决策 | 适用边界 |
+|---|---|---|
+| SAC-R1-D16 | replay 容量、warmup、UTD 分母统一按**已准入的有效 agent transition**计数 | 一条 `(agent, s,a,r,s')` 计 1；双 agent 同帧最多 2。`env_step` 仍单独记录，不用于 replay 容量 |
+| SAC-R1-D17 | 每条样本强制携带稳定 `sample_id`、确定性 `source_key`、行为策略版本/fingerprint、实际探索参数、schema/语义版本 | 训练可以不消费这些字段，但不得缺省；诊断和恢复依赖它们 |
+| SAC-R1-D18 | 首版 replay 只支持 1-step、FIFO、uniform sampling；n-step>1、PER、relabel、stratified retention 传入即拒绝 | **用户已确认**；不为旧接口保留“看似可用”的旋钮 |
+| SAC-R1-D19 | 完整恢复默认把 replay 内容、游标、身份、采样 RNG 与训练状态一起持久化 | **用户已确认**；可用 rolling latest bundle 控制磁盘，但不得让 `--resume-from` 静默降级成 warm-start |
+| SAC-R1-D20 | `phi_pre` 由 SAC 自有采集 runner 在调用 `runtime.step()` 前，通过 accessor 显式计算并记录 | 用户授权决定；不从归一化 obs 猜下标，不把 `phi_post` 当作 pre-action 事实；移位构造仅可作一致性校验 |
+| SAC-R1-D21 | SAC vendor 自有 collection/job/runner/recorder 层 | 遵循 D-ROLLOUT-b；不引入 `SamplingContext`、ratio、GAE、reference/delta σ-floor |
+| SAC-R1-D22 | 时钟分为 env action step、executed env frame、agent transition、collection round、critic/actor/temperature/target tick、eval/export/checkpoint tick | 所有计数器进入 checkpoint；UTD 使用 fractional credit 且每轮上限之外的部分显式丢弃 |
+| SAC-R1-D23 | checkpoint 分为 `manifest + trainer state + replay snapshot + RNG/counters + experiment state` 的 bundle，并原子落盘 | model-only `.pt` 只能是 warm-start，不是完整恢复 |
+| SAC-R1-D24 | resume 覆盖语义参照 PPO：恢复全部训练状态，白名单优化/调度参数按当前配置在下一 tick 生效并记录；另保留严格 config-lock 模式 | 实验名、schema、通道语义、policy 架构等身份字段不允许覆盖；这与 bitwise exact 不同，见 A5.8 |
+| SAC-R1-D25 | `action` 字段定义为物理环境实际接收/执行的动作 | 若未来 pre-action 插件改写动作，policy 原始输出另存 `policy_action`，不得混用 |
+| SAC-R1-D26 | collection 返回 `CollectedEpisode = Episode + job/collection provenance` | `Episode` 本身的 episode_index 只是 recorder 内局部序号，不能当全局身份 |
+
+### A5.2 W5.0：现状链路复核
+
+**真实链路（代码事实）：**
+
+```text
+train.py
+  ├─ 顶层 eager import PPO/SAC registry
+  └─ --algo sac → get_sac_experiment → sac.loop.train_sac
+       ├─ experiment.build_actor / MultiHeadQCritic / TaggedReplay
+       ├─ ParallelRollouter
+       └─ per collection_round:
+            actor.to_blueprint(stochastic=True)
+            experiment.build_jobs(policy_bp, rollout_seed, n_episodes)
+            rollouter.collect(jobs) → List[Episode]（与 jobs 同序）
+            experiment.build_slices(episodes) → List[TrajectorySlice]
+            replay.add_slices(slices)
+            replay.sample_nstep + sac_update_v2（按新增 transition 数驱动）
+            可选 deterministic eval / relabel / best export / video
+            checkpoint（模型+actor optimizer+α，无 replay/RNG）
+```
+
+| 发现 | 证据/性质 | W5 处理 |
+|---|---|---|
+| `sac/experiment.py` 直接 import `ppo.TrainablePolicy`，并有用 `Job = Tuple[...]` 遮蔽 rollout `Job` dataclass 的幽灵别名 | A1 已确认；本 W5 复看仍存在 | A5.9 定义 SAC 自有 actor 与 `SACJob`，实现期删除该别名 |
+| `train.py` 顶层 eager 加载两个 registry；SAC 路径会加载 PPO | A1 已确认 | W5 契约保留 C1/C2/C3 为测试门槛 |
+| `Episode` 有 `base_seed/episode_index/blueprint_hash/boundary/observer_outputs/final_observation`，但无 collection_round、job_index、policy version、behavior spec | `rollout/episode.py` dataclass 字段 | 不由 `Episode` 强行扩展；collection 返回包装对象携带 provenance |
+| `EnvRuntime.step()` 在 `core.step()` 前捕获 observation；recorder 收到的是 pre-action `obs_t`，observer output 是 post-action `s_{t+1}` 事实 | `env_runtime.py::_invoke_recorders` / `step` | transition schema 显式区分 `obs_t`、`phi_pre`、`phi_post`、`next_obs` |
+| `simulator.get_action()` 在 post-action recorder 中读取，因此 `Episode.actions` 是实际 staged/applied action，不一定是 policy 原样输出 | `env_runtime.py` recorder dispatch | A5 定义 `action=executed action`；若未来动作改写发生，另存 `policy_action` |
+| `Episode.agent_frame_boundary` 已定义逐 agent 边界；`final_observation` 是整段 episode 末帧，不是早终止 agent 的真实后继 | A2 已冻结 | `next_obs` 必须在 slice 构造时逐帧显式生成，禁止一律使用 `final_observation` |
+| `EpisodeRecorder` 会在 episode 结束要求每个 agent 有终止记录；`Episode.load()` 当前没有恢复 `episode_metrics` | `episode_recorder.py`、`episode.py` | SAC collection manifest 需保存 metrics；若沿用 Episode save/load，实现期补齐并回归测试 |
+| `_stack_action_extras` 在 extras 缺失时可能整 agent 丢弃，`_stack_explore_factors` 对缺帧填 0 | `episode.py` stacking helpers | SAC recorder/validator 必须把必需 behavior/pre-action 字段缺失判为错误，不允许补 0 |
+| `TaggedReplay` 是扁平环形数组；`traj_id/traj_step` 只是本地标签，`_traj_lengths` 覆盖后不清理，`buffer_stats()['n_trajectories']` 会累计历史轨迹数 | 低成本探针：capacity=5、插入 3×3 transitions 后 size=5 但 n_traj=3 | replay 改用 run-scoped `sample_id/source_key/slice_id`；slot/generation 仅作诊断，不作身份 |
+| 现有 checkpoint 只含 actor/critic/actor optimizer/log_alpha/alpha optimizer/实验 state/env_step/grad_step；actor LR 被当前 `cp.learning_rate` 强制覆盖；无 critic optimizer、target、replay、RNG、round/eval 计数器 | `sac/loop.py::save/load_checkpoint_sac` | A5.8 定义 bundle manifest 与 PPO 风格 whitelist override，不得称为 exact resume |
+| 现有 `rollout_seed = seed + round*episodes`、`eval_seed = seed + 100000 + round*97` 不保证训练/验证/保留流互斥 | `sac/loop.py` | A5.7/A5.10 改为显式 seed manifest + stream key 派生并做无重叠测试 |
+| 现有 UTD `max(1,int(utd*added))` 丢失小数且 warmup 前无明确口径；一轮跨过多个 eval interval 也只评一次 | `sac/loop.py` | A5.6 冻结 fractional credit、warmup 分母和调度边界 |
+
+**对 A1-F5 的修正：** 旧 `sample_nstep` 确实未校验后继 `traj_id`，`_traj_lengths` 也有过期条目；在严格顺序插入、整 slice 原子写入、容量按 FIFO 覆盖的现有调用下，环形下标多数情况下仍沿原轨迹尾段行进，但这只是调用不变量，不是 replay 自身保证。首版已裁决拒绝 n-step；未来若启用，必须先实现轨迹身份/覆盖校验，不能把现状当成已证明正确。
+
+### A5.3 W5.1：实验侧与框架侧职责边界
+
+| 责任 | ExperimentSAC / 实验文件 | SAC framework |
+|---|---|---|
+| 任务定义 | 实验名、环境蓝图、episode options、reward channels、终止原因映射、observer/fact 需求、评估指标 | 不解释 reward 的语义，不从 obs 下标猜测状态事实 |
+| collection 规格 | `build_jobs` 产出 `SACJob`：policy/env blueprint、seed、options、逐 agent `BehaviorSpec`、需要记录的 pre-action fact key | `SACRollouter` 执行 jobs、保证返回顺序、附加 provenance、传播 worker 异常 |
+| episode→transition | `build_slices` 决定 agent 边界、reward/valid/terminated/bootstrap、actor gate 和 task facts；缺失必需字段 fail loud | `TransitionValidator` 做 shape/dtype/finiteness/schema/通道一致性检查；不“修好”实验数据 |
+| replay 策略 | 声明 uniform FIFO 配置及容量；首版不提供采样分布扩展 | replay 负责插入、覆盖、sample_id、source_key、RNG、统计与持久化 |
+| 目标函数/更新 | 选择 `objective_mode`、`regularizer_mode`、通道配置与 actor gate 语义 | trainer 执行 A3/A4 公式、梯度隔离、时钟和诊断 |
+| 评估 | `on_eval` 解释 episodes、产出任务指标和 best/stop 请求 | eval 调度、导出、结果记录、保留集/验证流边界 |
+| 调度语义 | 可声明静态 schedule config；实验自身 curriculum state 进入 `experiment.state()` | framework 统一计数、持久化 schedule state、记录 requested/effective 参数 |
+| 恢复 | 提供 `state()/load_state()` 与语义版本 | checkpoint bundle 的组装、校验、原子写入与恢复模式 |
+| debug | 声明任务特有诊断字段与单元 | debugkit/日志/RNG 隔离/单样本重放由框架实现 |
+
+未声明的实验能力一律 unsupported：例如多 data source、opponent pool、buffer reset、relabel、异步采集都不在首版承诺内。框架不得为了满足旧接口而保留未实现字段。
+
+### A5.4 W5.2：transition schema（`sac_transition_v1`）
+
+以下均按单条 agent transition 定义；slice/batch 是相同字段沿 T/B 轴堆叠。`schema_version="sac_transition_v1"`。
+
+| 字段 | shape/dtype | 必需性 | 时间语义 / 规则 |
+|---|---|---|---|
+| `schema_version` | scalar int/str | 必需 | 当前固定 `sac_transition_v1` |
+| `sample_id` | scalar uint64 | replay 分配 | 由 replay 在准入时单调分配并持久化；实验侧不得伪造 |
+| `source_key` | scalar string | 必需 | 由 `(run_id, collection_round, job_index, agent_id, frame_index, env_blueprint_hash, transition_schema_version)` 规范化生成；同一 run 内不得重复使用 |
+| `obs` | `(obs_dim,) float32` | 必需 | `s_t`：policy 看到的 pre-action observation |
+| `action` | `(act_dim,) float32` | 必需 | 实际送入 simulator/被执行的动作；范围 `[-1,1]` |
+| `next_obs` | `(obs_dim,) float32` | 必需 | 该 transition 的真实后继：非末转移取 `obs[t+1]`；末转移取该 agent 边界后的真实观测 |
+| `reward` | `(C,) float32` | 必需 | `(s_t,a_t)→s_{t+1}` 的逐通道 reward，不能缺失补零 |
+| `channel_valid` | `(C,) bool` | 必需 | `1` 表示该通道数据可学习；缺 observer 不等于 `0`，而是准入失败 |
+| `terminated` | scalar bool | 必需 | 任务真终止，决定不 bootstrap；timeout 不为 true |
+| `truncated` | scalar bool | 必需 | agent trajectory 到边界但非真终止；timeout 为 true |
+| `bootstrap` | scalar bool/float | 必需 | `0` iff `terminated`；timeout/truncation 为 `1` |
+| `termination_reason` | scalar string | 必需；未终止可为 `""` | 首条提议原因；语义映射由实验负责 |
+| `physics_delta` | scalar int32 | 必需 | 本帧实际执行物理子步数；准入要求 `>0` |
+| `actor_gate` | `(C,) float32` | 必需 | 非负有限 `g_c(s_t)`；全零拒绝 |
+| `actor_weight` | `(C,) float32` | 必需 | `g/Σg`，非负、有限、和为 1；供审计与 trainer 校验 |
+| `sample_weight` | scalar float32 | 必需 | 默认 1；非负有限；不是 importance ratio |
+| `task_facts` | dict[str, array] | 按实验声明 | `basic_balance` 必须含 `phi_pre`、`phi_post_reference`；standup 可不含 phi |
+| `behavior` | struct | 必需 | `policy_version/policy_fingerprint/behavior_mode/requested_explore/effective_explore`；`behavior_log_prob` 可选，仅诊断 |
+| `collection` | struct | 必需 | `run_id/collection_round/job_index/episode_seed/agent_id/frame_index/slice_index/inserted_env_step` |
+| `versions` | struct | 必需 | `env_blueprint_hash/policy_arch/reward_semantics_version/objective_mode/regularizer_mode/transition_schema_version` |
+| `reward_features` | dict[str, array] | 可选 | 首版只作 provenance/诊断；不启用 relabel |
+| `policy_action` | `(act_dim,) float32` | 条件必需 | 若 action mapping/插件可能改写 policy 输出则必须记录；两目标任务当前与 `action` 相同 |
+
+准入规则：
+
+1. 所有必需字段缺省、shape 错误、dtype 不符、NaN/Inf、`actor_gate<0`、`Σg<=0` → `ValueError`，不得补零。
+2. `physics_delta=0` 的帧不产生 transition；若该帧不是 episode 末尾退化帧而是中段空洞，直接报错。
+3. `terminated` 与 `bootstrap` 互斥语义固定：`terminated=True → bootstrap=0`；`truncated/timeout=True → bootstrap=1`。
+4. `next_obs` 必须对应该 agent 的真实后继状态；早终止 agent 不得使用整段 episode 的 `final_observation` 顶替。
+5. `phi_pre` 是采集器在 `a_t` 执行前从 accessor 计算的状态事实；`phi_post_reference` 是 observer 对 `s_{t+1}` 的输出。二者字段名不得互换。
+6. `actor_weight` 不进入 critic target；`channel_valid` 不表示 actor 偏好；`sample_weight` 不改变 Bellman 语义。
+
+### A5.5 W5.3：replay 契约
+
+**身份与插入：**
+
+- `sample_id: uint64` 由 replay 在准入时从 `next_sample_id` 单调分配，在同一 run 生命周期内不复用；slot 覆盖、replay 持久化、重启都不改变它。
+- `source_key` 是进入 replay 前的确定性来源键；active buffer 中重复 `source_key` → raise。对已覆盖样本，靠持久化的 `issued_slice_set`（完整 slice 级 manifest，而不是逐 transition 永久字符串集合）拒绝同一 slice/frame 被重新采集或重插。
+- `slice_id` 由 `(run_id, collection_round, job_index, agent_id, slice_index)` 组成；每条 transition 记录 `frame_index`/`slice_step`。slice 级 issued set 随 run 保存，规模按 slice 数而非样本数增长。
+- slot 下标只表示当前物理位置；另存 `slot_generation/write_epoch` 供 debug 判断引用是否已过期。
+- slice 插入按 `(collection_round, job_index, agent_id, slice_step)` 的顺序原子执行；`slice_len > capacity` 直接失败，不静默保留尾部。
+
+**容量与覆盖：**
+
+- `capacity`、warmup、当前 size 都按已准入的 agent transition rows 计；配置必须满足 `warmup <= capacity`。
+- FIFO 环形覆盖最旧 `sample_id`；不实现类别保留、优先级保留或跨版本 quarantine。
+- `n_trajectories` 统计定义为当前 buffer 中仍至少有一条 transition 的活跃 `slice_id` 数，不再返回历史累计值。
+- 样本 age 用显式计数定义：`transition_age = current_critic_tick - inserted_critic_tick`；另报 `env_step_age = current_env_step - inserted_env_step` 和按 `policy_version` 的分桶统计。
+
+**采样与返回 batch：**
+
+- 使用独立 `np.random.Generator`，seed 由 run seed manifest 的 `stream="replay"` 派生；禁止 `np.random` 全局状态。
+- 首版 `batch_size` 行在一个 minibatch 内 **uniform without replacement**；`batch_size > live_size` 直接失败。
+- batch 必须返回训练字段与 provenance：`obs/action/next_obs/reward/channel_valid/bootstrap/actor_gate/actor_weight/sample_weight/task_facts/sample_id/source_key/policy_version/inserted counters`。
+- 配置中出现 `n_step>1`、PER、relabel、stratified retention、per-channel 异构 γ/m bootstrap → 在配置/准入边界 `ValueError`，不进入“接受但忽略”状态。
+
+**持久化：**
+
+- `replay.npz` 保存所有数值数组；`replay_meta.json` 保存 `sample_id/source_key/slice_id`、版本、counters、采样 RNG state、capacity、`next_sample_id`、active slice map、校验和。
+- 加载后必须验证 `capacity`、字段 shape、`sample_id` 唯一递增、active source_key 无重复、游标与 size 一致；任一不符 fail loud。
+
+### A5.6 W5.4：时钟与 UTD
+
+| 时钟 | 定义 | 计数语义 |
+|---|---|---|
+| `physics_step` | episode 内实际执行物理子步 | 由 runtime/episode 记录；不跨 episode 累积 |
+| `env_step` | `EnvRuntime.step()` 被调用的次数 | 跨 episode 累计；包含物理 delta=0 的退化帧，用于资源/评估调度 |
+| `executed_env_step` | 物理 delta>0 的 env frame 数 | 诊断字段；不直接驱动 UTD |
+| `agent_transition` | 一条通过准入并插入 replay 的 transition | replay/UTD 的单位；双 agent 一帧最多 2 |
+| `collection_round` | 完成一次 job batch 的轮次 | 从 1 开始；checkpoint 恢复后从 `next_collection_round` 继续 |
+| `critic_tick` | 一次成功 critic optimizer.step | UTD 分子；目标网络时钟也以此为基准 |
+| `actor_tick` | 一次成功 actor optimizer.step | 默认每个 critic tick 一次，可由显式 interval 改变 |
+| `temperature_tick` | 一次成功 α/λ optimizer.step | 固定系数模式不计；独立记录 |
+| `target_tick` | 一次成功 target 软更新 | 与成功 critic tick 对齐，但单独持久化 |
+| `eval_index` | 完成一次评估 | 只由评估边界递增；不能从日志行数推断 |
+| `policy_version` | 一次行为策略导出/采集配置版本 | 采集 round 开始前生成；eval 导出不覆盖训练版本语义 |
+| `checkpoint_index` | 完成一次 checkpoint bundle | 原子写入成功后递增 |
+
+**轮内顺序：**
+
+```text
+1. 由 seed manifest 派生本 round 的 job seeds；导出当前行为策略并计算 fingerprint
+2. 构造 SACJob 并执行 collection；worker 异常直接终止本轮
+3. CollectedEpisode → experiment.build_slices → TransitionValidator
+4. replay.add_slices；更新 env_step/agent_transition/insertion counters
+5. warmup 判断与 UTD credit → critic/actor/temperature/target ticks
+6. 到达 eval 边界则 deterministic eval（不进入 replay/UTD）
+7. round 完整结束后写日志、导出、checkpoint
+```
+
+checkpoint 只承诺恢复**完整 round 边界**；worker 中途失败或训练中途 kill 不产生“半轮恢复”。
+
+**UTD 记账：**
+
+```text
+eligible_new = 本轮新增且越过 warmup 阈值的 agent transitions
+credit += utd_ratio * eligible_new          # warmup 前不累计
+requested  = floor(credit)
+actual     = min(requested, max_grad_steps_per_round)
+dropped    = requested - actual             # round cap 之外丢弃，不滚存
+credit    -= requested                      # 保留 <1 的小数预算
+UTD_round  = actual / transitions_added
+```
+
+`requested/actual/dropped/credit` 均记录并持久化。`max_grad_steps_per_round` 是硬上限；被丢弃的 tick 明确报告为未满足训练预算，不在后续轮次偷偷追平。
+
+**评估与预算：**
+
+- 评估按 `next_eval_env_step` 边界调度；一轮跨过多个边界也只执行一次评估，`next_eval_env_step` 前进到当前 env_step 之后的下一个边界并记录被跨越的 index。
+- `max_env_steps` 在完整 round 后检查；由于 episode 长度不可预知，允许 overshoot，但必须记录 overshoot 并按最后 checkpoint 验收，不在 episode 中途截断。
+- `warmup`、eval episodes、video episodes 均不写入 replay；eval 用时和训练用时分别入账。
+
+### A5.7 W5.5：配置、状态与版本分层
+
+| 层 | 内容 | 变更规则 |
+|---|---|---|
+| `RunConfig` | experiment name、算法/schema/version、channels、objective/regularizer mode、policy arch、SACParams、CommonParamsSAC、env blueprint hash、seed policy、resume mode | run 创建时固定；canonical JSON 计算 `config_fingerprint` |
+| `EffectiveConfig` | 当前实际生效的 LR、UTD、eval interval、explore schedule 等白名单可覆盖字段 | resume/热更新时记录 requested/effective/`effective_at_tick` |
+| `ScheduleState` | 探索调度位置、curriculum/动态权重状态、LR schedule state | 必须 checkpoint；不能仅靠 env_step 重放 |
+| `RuntimeCounters` | round、env/transition、四类 update tick、eval/export/checkpoint、`next_sample_id`、UTD credit | 由框架统一维护并持久化 |
+| `ExperimentState` | `experiment.state()` 返回的任务级状态 | 语义归实验，但格式版本必须入 manifest |
+| `RNGState` | collection root、replay、actor/target/temperature/diagnostic/eval streams、torch CPU/CUDA、policy私有 generator | 首选独立 generator；若某实现仍用全局 RNG，必须全量保存，否则不完整 |
+| `DataManifest` | replay schema、capacity、source-key 状态、active slice map、replay RNG | 与 checkpoint 同生命周期校验 |
+
+版本字段至少包括：`checkpoint_format_version`、`transition_schema_version`、`collection_contract_version`、`trainer_objective_version`、`policy_arch_version`、`regularizer_mode`、`objective_mode`、`env_blueprint_hash`、`reward_semantics_version`、`code_snapshot`。
+
+`--set` 写入的是本次 run 的 `EffectiveConfig`，不是偷偷改实验代码语义；未列入白名单的 override 在完整恢复中拒绝。
+
+### A5.8 W5.6：完整恢复、PPO 风格覆盖与 warm-start
+
+**checkpoint bundle：**
+
+```text
+checkpoints/ckpt_<index>/
+  manifest.json            # 版本、配置指纹、counters、artifact hashes、依赖文件列表
+  trainer.pt               # actor、critic online/target、全部 optimizer、α/λ及optimizer、schedule state
+  replay.npz               # replay 数据数组
+  replay_meta.json         # source/sample identity、游标、active slices、checksums
+  runtime_state.pt         # RNG、counters、collection/eval/export/checkpoint 状态
+  experiment_state.json    # experiment.state() + semantics version
+```
+
+写入必须先写临时目录、校验 manifest，再原子 rename；失败/半成品目录不可作为 resume 输入。为控制磁盘，可以实现 `checkpoints/latest/` rolling bundle：每次 checkpoint 替换 latest，历史 `checkpoint_s*.pt` 可以只是不可完整恢复的 archival model artifact，但 manifest 必须明确标记 `resume_kind=warm_start_only`。
+
+**恢复模式：**
+
+| 模式 | 加载内容 | 配置语义 | 承诺 |
+|---|---|---|---|
+| `resume`（默认完整恢复） | trainer + replay + RNG + counters + experiment state | **参照 PPO**：白名单优化/调度字段按当前 `EffectiveConfig` 在下一 tick 生效；每次覆盖记录 event | 若当前 config 与 checkpoint config 相同且环境/内核一致，则为 state-exact continuation |
+| `resume --config-lock` | 同上 | checkpoint config 全部冻结；任何 CLI/当前配置差异均拒绝 | 在相同代码、设备、库版本和确定性条件下追求 bitwise continuation |
+| `warm_start` | 默认只加载 actor/critic 权重；可显式选择 optimizer/α | 新 run 的 config 全部生效 | 不恢复 replay/RNG/counters；新 `run_id`，manifest 记录 parent checkpoint |
+| `reset_update` | 等同于 warm_start 的参数化入口 | 计数器清零 | 不得放在 `resume` 名下暗示完整续训 |
+
+**PPO 对齐点与有意差异：**
+
+- 对齐：PPO 恢复模型+optimizer+experiment state+RNG/loop state，同时让当前 config 的 actor/critic LR 在 resume 后生效；SAC 也允许白名单 LR/UTD/调度类字段生效并记录。
+- 不复制：PPO 在 experiment name 改变时会打印后重置 experiment state；SAC 的完整 `resume` 对实验名/schema/通道/policy 架构不匹配直接拒绝，只有 `warm_start` 可跨实验加载权重。
+- 不复制：PPO 没有 replay；SAC 的 `resume` 默认必须有完整 replay artifact，否则只能 warm_start。
+- 不复制：旧 SAC optimizer mismatch 只打印后继续；SAC 完整恢复中 optimizer/state 形态不符直接失败。
+
+**兼容性矩阵（resume 时）：**
+
+| 检查项 | `resume` | `resume --config-lock` | `warm_start` |
+|---|---|---|---|
+| experiment/schema/objective/channel/policy arch | 必须一致 | 必须一致 | 只需可安全加载权重；不一致字段显式记录 |
+| replay artifact | 必需 | 必需 | 不使用 |
+| RNG/counters | 必需 | 必需 | 重新初始化 |
+| LR/UTD/eval/schedule whitelist | 可按当前 config 覆盖并记录 | 拒绝覆盖 | 新 config |
+| device/code/kernel | 记录并校验可用性；不一致时给兼容性错误 | 要求一致，否则拒绝 | 允许但标记非续训 |
+| artifact 缺失/hash/schema 不符 | fail loud | fail loud | 若被指定字段缺失则 fail loud |
+
+### A5.9 W5.7：SAC 自有 collection/job 边界
+
+阶段二按 D-ROLLOUT-b vendor 到 `baseline/framework/sac/collection/`（模块名可微调）：
+
+```text
+sac/collection/
+  job.py        # SACJob / SACBehaviorSpec / SACFactSpec
+  episode.py    # 中立 Episode 数据拷贝，可加入 pre_action_facts / metrics 持久化
+  recorder.py   # SACEpisodeRecorder，记录 behavior extras、pre-action facts、metrics
+  runner.py     # 从 EpisodeRunner 拷贝修改：调用 pre-action fact provider，再 step
+  rollouter.py  # 从 ParallelRollouter 拷贝裁剪：同序返回 CollectedEpisode，CPU 优先
+```
+
+**`SACJob` 草案字段：**
+
+- `job_index`、`collection_round`、`policy_a_bp`、`policy_b_bp`、`env_bp`、`episode_seed`、`episode_options`；
+- 每 agent 一个 `SACBehaviorSpec`：`explore_factor`、是否 random-start、`policy_mode=stochastic/deterministic`、诊断开关；
+- `fact_specs`：实验声明的 pre-action facts（例如 `phi_pre`）及 post-action observer key；
+- 不含 PPO 的 `SamplingSpec/SamplingContext/reference/delta_factor/ratio` 字段。
+
+**`CollectedEpisode` 草案字段：** `episode`、`job_index`、`collection_round`、`episode_seed`、`agent_ids`、`policy_version`、`policy_fingerprint`、`behavior_specs`、`env_blueprint_hash`、`worker_id`、`wall_time`、`episode_metrics`。collection 返回顺序必须等于 jobs 顺序，不能只靠 episode_index 局部值拼接身份。
+
+**关键行为约束：**
+
+1. self-play 下两个 agent 即使使用同一权重，也必须拥有独立 behavior RNG 流；不得共享一个会互相推进的私有 generator。
+2. `SACRunner` 在 `runtime.step()` 之前调用声明的 `PreActionFactProvider(accessor, agent_id)`；结果随帧进入 `pre_action_facts`，缺失/非有限即失败。
+3. `basic_balance` 的 `phi_pre` 由 root height/uprightness 计算，与 `HeightPhiObserver` 的公式一致；`phi_post` 仍来自 post-action observer。fixture 必须额外验证 `phi_pre[t] == phi_post[t-1]`（t>0）以及 `phi_pre[0]` 与 reset 后实际状态一致。
+4. worker 中任一 job 失败 → 终止该 collect round，不返回部分 episodes；partial data 不入 replay。
+5. eval 使用 deterministic behavior spec，不消费训练 explore factor，也不写 replay。
+6. 首版 CPU collector；GPU inference server、remote policy、async collection均为后续显式工作包。
+
+### A5.10 W5.8：契约验证设计
+
+| Fixture | 输入/构造 | 预期 |
+|---|---|---|
+| FX-1 双方 timeout | 合成 Episode，双 agent 到 T=200 timeout | boundary=200；terminated=False、truncated=True、bootstrap=1；末转移 `next_obs=final_observation` |
+| FX-2 单方 imbalance | A 在 frame80 真终止、B timeout | A 的末转移 `next_obs=obs[80]`；terminated=True/bootstrap=0；B 正常 bootstrap |
+| FX-3 中段终止/退化帧 | 帧内物理 delta>0 后终止，尾部 delta=0 | 终止帧计入；尾部退化帧不产生 transition |
+| FX-4 缺必需字段 | 缺 reward observer、phi、action_extras/pre_action_fact | build/validate raise，不补零、不丢轨迹 |
+| FX-5 长度/类型错 | observer 长度不等于 num_frames、gate 非有限 | ValueError |
+| FX-6 PPO 对拍 | 同一条录制 basic_balance episode 分别过 PPO/SAC 语义转换 | reward、boundary、done、post-action reference 权重一致；SAC 的 pre-action gate 单独断言 |
+| FX-7 replay wraparound | capacity 小于多 slice 总量并覆盖 | `sample_id` 唯一不复用；覆盖样本不再返回；active slice/trajectory 统计正确；slot 不是身份 |
+| FX-8 source conflict | 重复插入同一 `source_key`，或同一 key 数据不同 | 均 raise；覆盖历史后也拒绝同 run 重插 |
+| FX-9 恢复缺件 | 分别删 replay.npz、replay_meta、RNG、optimizer、manifest 字段 | `resume` fail loud；`warm_start` 只在声明字段足够时成功 |
+| FX-10 config override | resume 时只改白名单 LR/UTD；再改实验名/schema/通道 | 白名单生效并记录 override event；身份字段变更拒绝完整 resume |
+| FX-11 UTD | utd=0.5、新增 3 transitions 连续多轮、round cap、跨 warmup | requested/actual/dropped/credit 与冻结公式逐项一致 |
+| FX-12 seed manifest | 训练/eval/holdout 全计划 seeds | 无重叠；同一 `(stream,round,job)` 恢复后不重复采集 |
+| FX-13 phi_pre 对拍 | 真实/合成 balance episode | `phi_pre` 与同一 pre-action 状态一致；与 shifted `phi_post` 的一致性仅作回归校验 |
+| FX-14 import independence | `import baseline.framework.sac`、SAC 单测、SAC smoke | `sys.modules` 无 `baseline.framework.ppo*`；挪走 `ppo/` 后仍通过 |
+
+这些是阶段二必须变成永久测试的设计；当前只完成设计和一个旧 replay 探针，不代表生产实现已经满足。
+
+### A5.11 阶段二实现拆分（由 A5 派生）
+
+| 包 | 内容 | 出口 |
+|---|---|---|
+| P2-COLL-1 | vendor SAC collection/job/recorder/runner；CollectedEpisode provenance；pre-action fact provider | FX-4/6/13 的采集侧通过，无 PPO import |
+| P2-DATA-1 | `sac_transition_v1`、slice schema、validator、两个实验的 build_slices | FX-1～6 通过 |
+| P2-REPLAY-1 | SoA replay、sample_id/source_key、FIFO、uniform no-replacement、RNG、stats | FX-7/8 通过 |
+| P2-CKPT-1 | checkpoint bundle、replay 持久化、runtime/RNG/counters/manifest | FX-9/10/12 通过 |
+| P2-LOOP-1 | 新 train loop 时钟、UTD credit、eval/export/checkpoint 边界、seed manifest | FX-11/12 通过 |
+| P2-TRAIN-1 | 按 A3/A4 接入新 batch、actor contract 和 S01 actor；不在本包启用八格全量 | 数学/梯度永久测试通过后再短训 |
+| P2-IND-1 | package/lazy registry/train.py SAC 路径改造 | C1–C3 通过；PPO 路径不回归 |
+
+顺序建议：P2-COLL-1 与 P2-DATA-1 先行，P2-REPLAY-1/CKPT-1 再接入 P2-LOOP-1；P2-TRAIN-1 最后接真实 batch。任何一项没通过对应 fixture，不进入真实任务训练。
+
+### A5.12 W5.9：出口、限制与仍需注意项
+
+- [x] 真实调用链与现状缺口已复核。
+- [x] 实验/框架职责边界已冻结。
+- [x] transition schema、时间对齐和准入规则已冻结。
+- [x] replay 身份、覆盖、采样、持久化契约已冻结。
+- [x] 时钟、UTD、eval/checkpoint 边界已冻结。
+- [x] config/state/version 分层已冻结。
+- [x] 完整恢复、PPO 风格白名单覆盖、strict config-lock、warm-start 的边界已冻结。
+- [x] SAC 自有 collection/job/runner 边界已冻结。
+- [x] W5 fixture 与阶段二拆分已列出。
+
+**仍需后续落实而非本 W5 已完成：**
+
+1. replay bundle 的实际序列化格式与磁盘成本需在阶段二 benchmark；契约要求完整恢复，但没有宣称已找到最优存储实现。
+2. `basic_balance` 的 `phi_pre` provider 需要在 SAC runner 中实现；移位校验只是回归，不是数据来源。
+3. `strict config-lock` 只保证状态与配置锁；bitwise 还依赖相同代码、设备、库版本和确定性内核，不能跨 GPU/CUDA 版本自动承诺。
+4. `CollectedEpisode` 与 `SACJob` 的最终字段名可在实现期微调，但 provenance、pre-action facts、行为参数和版本不可缺。
+5. 历史 `TrajectorySlice`、旧 `Job` tuple alias、旧 checkpoint、旧 replay 都不是兼容基线；阶段二实现应按新 schema 重写，而不是在原接口上打补丁。
 
 ---
 
