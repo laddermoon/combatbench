@@ -18,6 +18,9 @@
     state.io        本步 IO（action/obs/reward 缓冲）
     state.rng       随机性（per-env seed_offset + 全局 step_counter）
     state.plugin    插件声明的持久张量池（plugin_name → key → Tensor）
+    state.board     共享黑板（ctx.metrics 后端；跨单元声明式键池）
+    state.events    事件池（ctx.events 后端；append-only padded journal）
+    state.episode_options  reset options 的 per-env 张量化快照（只读）
 """
 from __future__ import annotations
 
@@ -193,6 +196,34 @@ class IoNamespace:
 
 
 @dataclass
+class EventNamespace:
+    """per-row padded 事件 journal——append-only 的设备形态（E9 G2）。
+
+    CPU ``EventJournal`` 的张量化对应：只增不减、游标差分消费、
+    框架独占复位。区别是必然损失——事件是定长数值记录而非任意
+    Python 对象：
+
+    - ``records`` (B, K, 4) f32：[code, agent, value, aux]；
+      ``code`` 经 ``event_registry`` 从类型字符串确定性分配（首见序
+      0,1,2,…——原始字符串保留在 registry，导出/调试可反查）；
+    - ``steps`` (B, K) i32：emit 时的 ``action_call_index`` 快照
+      （帧归属，含端点边界语义与 term_history 一致）；
+    - ``count`` (B,) i32：本 epoch 已写入条数（< K 才有空间）；
+    - ``epoch`` (B,) i32：行 reset 递增——消费者持 (epoch, count)
+      游标，epoch 变化 = journal 被框架重置 → 整段重取；
+    - ``overflow`` (B,) bool：超容量显式截断标志（不丢旧、不静默）。
+    """
+
+    records: torch.Tensor         # (B, K, 4) f32 [code, agent, value, aux]
+    steps: torch.Tensor           # (B, K) i32 — action_call_index
+    count: torch.Tensor           # (B,) i32
+    epoch: torch.Tensor           # (B,) i32
+    overflow: torch.Tensor        # (B,) bool
+    event_registry: Dict[str, int] = field(default_factory=dict)
+    cap: int = 64
+
+
+@dataclass
 class RngNamespace:
     """设备端随机性：不设全局 generator 状态。
 
@@ -283,6 +314,15 @@ class DeviceBatchState:
         self.rng = rng
         # plugin_name → {key: Tensor (B, ...)}
         self.plugin: Dict[str, Dict[str, torch.Tensor]] = {}
+        # 共享黑板（E9 G1）：跨单元可见的声明式张量池——
+        # ctx.metrics 的存储后端；键 → (B, *shape)。
+        self.board: Dict[str, torch.Tensor] = {}
+        # 事件池（E9 G2）：ctx.events 的存储后端。
+        self.events: EventNamespace = alloc_events_namespace(
+            self.batch_size, sim.qpos.device)
+        # episode_options（E9 G4）：reset options 的 per-env 张量化快照，
+        # hook 内经 ctx.episode_options 只读可见（键→(B,) 张量）。
+        self.episode_options: Dict[str, torch.Tensor] = {}
 
     # ------------------------------------------------------------------
     # 插件持久状态池
@@ -316,6 +356,48 @@ class DeviceBatchState:
         for pool in self.plugin.values():
             for t in pool.values():
                 t[env_ids] = 0
+
+    # ------------------------------------------------------------------
+    # 共享黑板（ctx.metrics 后端）——跨单元可见的声明式张量池
+    # ------------------------------------------------------------------
+    def declare_shared(self, key: str, shape: Sequence[int],
+                       dtype: torch.dtype, init: float = 0.0,
+                       owner: str = "") -> torch.Tensor:
+        """声明一个共享黑板键 → (B, *shape) 张量（E9 G1）。
+
+        供跨单元数据流使用（插件写、observer 同帧读——CPU
+        ``ctx.metrics`` 的设备形态）。任何单元可在 ``declare_state``
+        阶段声明；同名同型幂等返回已有张量，形状/dtype 冲突报错。
+        生命周期归 runtime：行 reset 填零（与插件池同约定——
+        ``init`` 只作用于首次分配）。
+        """
+        t = self.board.get(key)
+        if t is not None:
+            if tuple(t.shape[1:]) != tuple(shape) or t.dtype != dtype:
+                raise ValueError(
+                    f"declare_shared({key!r}): existing {tuple(t.shape)} "
+                    f"{t.dtype} conflicts with requested "
+                    f"{(self.batch_size, *shape)} {dtype}")
+            return t
+        dev = self.sim.qpos.device
+        t = torch.full((self.batch_size, *shape), init,
+                       dtype=dtype, device=dev)
+        self.board[key] = t
+        return t
+
+    def reset_shared_rows(self, env_ids: torch.Tensor) -> None:
+        """行 reset：共享黑板行清零（episode 边界由框架执行）。"""
+        for t in self.board.values():
+            t[env_ids] = 0
+
+    def reset_events_rows(self, env_ids: torch.Tensor) -> None:
+        """行 reset：事件 journal 复位——count 归零 + epoch 递增
+        （CPU ``EventJournal._reset`` 的行级对应）。records 不清理：
+        count/epoch 已使其不可见，保留供调试检视。"""
+        ev = self.events
+        ev.count[env_ids] = 0
+        ev.epoch[env_ids] += 1
+        ev.overflow[env_ids] = False
 
     # ------------------------------------------------------------------
     # episode 簿记辅助
@@ -406,6 +488,18 @@ def alloc_io_namespace(B: int, dev: torch.device, action_dim: int,
         obs_a=torch.zeros(B, obs_dim, device=dev),
         obs_b=torch.zeros(B, obs_dim, device=dev),
         reward=torch.zeros(B, device=dev),
+    )
+
+
+def alloc_events_namespace(B: int, dev: torch.device,
+                           cap: int = 64) -> EventNamespace:
+    return EventNamespace(
+        records=torch.zeros(B, cap, 4, dtype=torch.float32, device=dev),
+        steps=torch.full((B, cap), -1, dtype=torch.int32, device=dev),
+        count=torch.zeros(B, dtype=torch.int32, device=dev),
+        epoch=torch.zeros(B, dtype=torch.int32, device=dev),
+        overflow=torch.zeros(B, dtype=torch.bool, device=dev),
+        cap=cap,
     )
 
 

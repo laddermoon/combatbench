@@ -55,6 +55,9 @@ M 系文档；本文只描述"现在是什么"。术语与 `envs/framework/DESIG
 | `io` | 本步 IO 缓冲：action_a/b、obs_a/b、reward、reward_channels | 插件可写（hook 限定的部分） |
 | `rng` | seed_offsets(B,) + step_counter()——job-keyed 派生源 | runtime 发布；插件经 `ctx.rng` 读 |
 | `plugin` | 各插件 `declare_state` 的持久张量池 | 所属插件写；partial reset 由 runtime 清零行 |
+| `board` | 共享黑板——`ctx.metrics` 后端（`declare_shared` 声明的跨单元 (B,*shape) 键池） | 声明单元原位写；行复位清零（E9 G1） |
+| `events` | 事件池——`ctx.events` 后端（append-only padded journal，详见 BLACKBOARD_DESIGN §2） | 插件经 `ctx.events.emit` 追加；行复位 count=0+epoch++（E9 G2） |
+| `episode_options` | reset options per-env 快照 `{key: (B,) 张量}` | runtime reset 发布；hook 内经 `ctx.episode_options` 只读（E9 G4） |
 
 接触双形态：`contacts_flat`（后端原始 flat packed，内部消费）与
 `refresh_padded()` 派生的 (B,cap) padded 视图（插件消费；`active =

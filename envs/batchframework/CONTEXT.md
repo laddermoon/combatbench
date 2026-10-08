@@ -43,8 +43,10 @@ GPU 上按波（wave）批量 rollout，产出与 CPU collector **同契约的
   CUDA Graph，后者全是 host sync。行号收集用 nonzero+numel 一次同步。
 - 覆写 `on_pre/post_phy_step` → 物理图化自动失效（eager）；替代是
   `upload_force_schedule`。
-- `ctx.metrics`/`ctx.events`/`ctx.episode_options` **不存在**于
-  DeviceCtx（审计 G1/G2/G4）——从 CPU 移植时注意。
+- `ctx.metrics`/`ctx.events`/`ctx.episode_options` 存在但形态不同
+  （E9 闭合）：metrics 是声明式张量池（先 `declare_shared`）、events
+  是定长数值 journal（emit/since/epoch 游标）、options 仅白名单键
+  的 (B,) 行快照——见 BLACKBOARD_DESIGN.md。
 - `episode_steps` 步尾增 vs `action_call_index` 步首增——归档/
   边界一律用后者；两值恒等但语义不同。
 - manifest 证据 schema 五字段必填（level/passed/input_hash/detail/

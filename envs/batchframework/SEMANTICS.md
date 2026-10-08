@@ -73,10 +73,13 @@ rt.reset(seeds, options)
 reset_rows(ids, seeds, options)
  1. sim.dev_reset_rows(ids)        # 后端写初态 + derived 刷新
  2. st.reset_plugin_rows(ids)      # declare_state 张量对应行清零
- 3. st.reset_episode_rows(ids)     # 簿记复位
- 4. seed_offsets[ids] ← seeds（若给）
- 5. on_envs_reset(writable, reset_env_ids=ids)   # 行级钩子
- 6. on_pre_episode(writable, reset_env_ids=ids)  # 与 CPU 同名语义
+ 3. st.reset_shared_rows(ids)      # 共享黑板行清零（E9）
+ 4. st.reset_events_rows(ids)      # 事件 journal：count=0 + epoch++（E9）
+ 5. st.reset_episode_rows(ids)     # 簿记复位
+ 6. _publish_episode_options       # ctx.episode_options 行快照（若给）
+ 7. seed_offsets[ids] ← seeds（若给）
+ 8. on_envs_reset(writable, reset_env_ids=ids)   # 行级钩子
+ 9. on_pre_episode(writable, reset_env_ids=ids)  # 与 CPU 同名语义
 ```
 
 `on_envs_reset` 与 `on_pre_episode` 的区分：前者是**行级**事件
@@ -87,8 +90,10 @@ reset_rows(ids, seeds, options)
 ### 2.4 options
 
 `binding.episode_options_keys` 白名单键 → collector 把 per-env 值
-广播为张量 → `sim.reset(options)`。**hook 内 `ctx` 无 options 字段**
-（G4 缺口——hook 可见选项须进插件 config 或等机制补齐）。
+广播为张量 → `sim.reset(options)`。同时 runtime 把白名单键物化为
+`state.episode_options`（`{key: (B,) 张量}` 行快照），hook 内经
+`ctx.episode_options` 只读可见（E9 G4 已闭合——与 CPU 差异：张量化
+全体行视图，行差异在值上；CPU 是 per-env dict）。
 
 ### 2.5 reset_request（插件侧）
 
@@ -190,8 +195,9 @@ seed_offsets/相同随机序列；worker 故障使该分片 FAILED，聚合层�
 | 项 | CPU | 设备 | 理由 |
 |---|---|---|---|
 | 数值 | 确定性（同码同输入同轨迹） | run-to-run 有噪声（contact 原子序） | bit-identical 非目标；回放验证用容差 |
-| metrics/events 通道 | ctx.metrics/ctx.events | **无**（G1/G2） | 见 BATCHFRAMEWORK_AUDIT |
-| episode_options hook 可见 | ctx.episode_options | 无（G4） | 同上 |
+| metrics 通道 | `ctx.metrics` dict 任意对象 | `ctx.metrics` 声明式 (B,*shape) 张量池（E9 已闭合；结构化数据须拆键） | BLACKBOARD_DESIGN §1 |
+| events 通道 | `ctx.events` append-only EventJournal（任意对象） | `ctx.events` padded journal（定长数值记录 [code,agent,value,aux] + epoch 游标）（E9 已闭合） | BLACKBOARD_DESIGN §2 |
+| episode_options hook 可见 | ctx.episode_options per-env dict | `ctx.episode_options` {key:(B,)张量} 行快照（E9 已闭合） | §2.4 |
 | 部分 reset | 无（env 级） | 行级 reset_rows/on_envs_reset | 批量必需 |
 | RNG | set_episode_seed + 自管 | job-keyed 派生（更严） | 分片不变性要求 |
 | 子步 hook | 每子步 Python 回调 | 存在但禁图化；schedule 上传为替代 | 融合步进不可逐子步回 host |

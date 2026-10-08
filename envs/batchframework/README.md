@@ -73,6 +73,7 @@ report = dr.last_collect_report           # 分项计时/sync 记账/健康统�
 | `SEMANTICS.md` | 语义规格（seed/reset/生命周期/与 CPU 差异登记） |
 | `CONTEXT.md` | AI 速览 memo（入口 + 常见坑） |
 | `MIGRATION_GUIDE.md` | CPU 实验→设备迁移 7 步流程 |
+| `BLACKBOARD_DESIGN.md` | ctx.metrics/ctx.events 设备通道设计（E9 已落地） |
 | `BATCHFRAMEWORK_AUDIT.md` | 系统审计（vs CPU 差距清单） |
 | `E8_SUPPORT_MATRIX.md` | 能力逐项结算 + 证据指针 |
 | `ROADMAP.md` | E0–E8 工程化路线 + 历史 M0–M8 |

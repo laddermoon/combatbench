@@ -32,9 +32,9 @@ print(rep.to_markdown())"
 
 | 阻塞项 | 判定方法 | 现状（见 BATCHFRAMEWORK_AUDIT） |
 |---|---|---|
-| 插件写 `ctx.metrics` 供 observer 读 | `grep 'ctx\.metrics' <plugin>.py` | **无通道**（G1）——须等共享黑板设计，或改双方直接读 sim 态 |
-| 插件 `ctx.events.append` / observer 消费事件 | `grep 'ctx\.events'` | **无通道**（G2）——同上 |
-| 插件读 `ctx.episode_options` | `grep 'episode_options'` | hook 内不可见（G4）——options 只能经 `sim.reset` 消费 |
+| 插件写 `ctx.metrics` 供 observer 读 | `grep 'ctx\.metrics' <plugin>.py` | **已闭合（E9）**：`ctx.metrics` 共享张量池——见 §1 映射与 BLACKBOARD_DESIGN §1（任意对象→须拆成张量键） |
+| 插件 `ctx.events.append` / observer 消费事件 | `grep 'ctx\.events'` | **已闭合（E9）**：`ctx.events.emit/since`——事件须编码为定长数值记录（BLACKBOARD_DESIGN §2） |
+| 插件读 `ctx.episode_options` | `grep 'episode_options'` | **已闭合（E9 G4）**：`ctx.episode_options` = {白名单键: (B,) 张量}——白名单之外仍不可见 |
 | 插件覆写 `on_pre/post_phy_step` | 逐类检查 | 可走，但**物理图化自动失效**（eager 路径）；优先考虑能否改为 `upload_force_schedule` |
 | `get_sensor_data` / 渲染 / broadcastview | `grep 'sensor_data\|broadcastview'` | 无对应物——sensor 需进 obs_builder，渲染走 debug_capture→CPU replay |
 | 采样 spec 含 callable ef / reference / delta_factor | 看 Job 生成处 | 显式拒绝（G6），需扩展 executor |
@@ -61,8 +61,9 @@ print(rep.to_markdown())"
 | `ctx.episode_step` / `ctx.physics_step` | `ep.episode_steps` / `ep.physics_steps` (B,) i32 | 语义已对齐（E8 终止帧契约） |
 | `plugin.__dict__` 实例状态 | `ctx.pstate[key]` + `declare_state()` | **必须声明**（partial reset 才会清零行） |
 | `np.random` / `set_episode_seed` | `ctx.rng.unit_seed(env_ids, counter)` + `rng_salt` 类属性 | job-keyed splitmix；禁止自备 generator |
-| `ctx.metrics` / `ctx.events` | **无对应物** | 结构性阻塞，见 §0 |
-| `ctx.episode_options` | 无 ctx 字段 | 只能经 `sim.reset(options)`，见 §3.4 |
+| `ctx.metrics[k]`（任意对象） | `ctx.metrics[k]` → (B,*shape) 张量本体（先 `declare_shared`） | 写=原位操作 `[ids]=v`/`.copy_`；结构化数据拆成多键 |
+| `ctx.events.append(e)` | `ctx.events.emit(ids, "kind", agent=, value=, aux=)` | 定长记录 [code,agent,value,aux]；消费用 `since(ids, marks)` + epoch 自检 |
+| `ctx.episode_options` dict | `ctx.episode_options` → {白名单键: (B,) 张量} | 仅白名单键；非白名单选项进插件 config |
 
 ## 2. 写设备单元
 
@@ -177,8 +178,9 @@ humanoid21 已绑（`_Humanoid21WarpBinding`）。新任务 = 实现
 ### 3.4 episode_options
 
 `binding.episode_options_keys` 白名单键 → collector 把 per-env 值
-广播成张量进 `sim.reset(options)`。**插件 hook 内读不到**（G4）——
-需要 hook 可见的选项改写进插件 config（静态）或等 G4 修复。
+广播成张量进 `sim.reset(options)`；同时 runtime 发布
+`ctx.episode_options` 行快照（`{key: (B,) 张量}`），hook 内只读
+可见（E9 G4）。白名单之外的选项改写进插件 config（静态）。
 
 ## 4. 验证阶梯（每级都要留证据）
 

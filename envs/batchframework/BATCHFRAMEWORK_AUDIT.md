@@ -278,11 +278,11 @@ append-only 契约下已实际损坏（AttributeError），改为 (epoch, len)
 
 | # | 差距 | 严重度 | 维度 | 建议处置 |
 |---|---|---|---|---|
-| G1 | 无共享 metrics 黑板 | **高** | A1 | E9 设计：共享声明池或 episode 面扩展 |
-| G2 | 无 events 通道（CPU 刚升级 EventJournal） | **高** | A1 | 复用 term_history 同构机制做通用事件池 |
-| — | 无 MIGRATION_GUIDE | **高（ROI 最高）** | A3 | 单文档即可闭合 |
-| G3 | accessor 形态差异 + 无 sensor 抽象 | 中 | A1 | 文档化映射表（MIGRATION_GUIDE 内） |
-| G4 | episode_options hook 内不可见 | 中低 | A1 | ctx 发布 options 切片，小改 |
+| G1 | 无共享 metrics 黑板 | ~~高~~ **已闭合（E9）** | A1 | `ctx.metrics` 共享张量池落地（BLACKBOARD_DESIGN §1 + test_blackboard） |
+| G2 | 无 events 通道 | ~~高~~ **已闭合（E9）** | A1 | `ctx.events` padded journal 落地（BLACKBOARD_DESIGN §2） |
+| — | 无 MIGRATION_GUIDE | ~~高~~ **已闭合（E9）** | A3 | MIGRATION_GUIDE.md 已交付 |
+| G3 | accessor 形态差异 + 无 sensor 抽象 | 中 | A1 | 已文档化映射表（MIGRATION_GUIDE §1）；sensor 抽象按需 |
+| G4 | episode_options hook 内不可见 | ~~中低~~ **已闭合（E9）** | A1 | `ctx.episode_options` 行快照已发布 |
 | G5 | 无渲染管线 | 中低 | A1 | 设计内，文档已声明 |
 | G6 | 采样 spec 子集 | 中低 | A1 | 显式拒绝已注册，按需扩展 executor |
 | G7 | 无设备评测 runner | 低 | A1 | 按需；CPU 评分路径可用 |

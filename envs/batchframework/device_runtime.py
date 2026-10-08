@@ -277,6 +277,31 @@ class BatchRuntime:
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
+    def _publish_episode_options(self, st: DeviceBatchState,
+                                 env_ids: torch.Tensor,
+                                 options: Optional[Dict[str, Any]]
+                                 ) -> None:
+        """把 reset options 物化为 per-env 行张量快照（E9 G4）。
+
+        options 形如 ``{白名单键: (B,) 数组}``（collector 已广播补
+        padding）；快照供 ``ctx.episode_options`` 在 hook 内只读。
+        """
+        if not options:
+            return
+        dev = st.sim.qpos.device
+        B = st.batch_size
+        for k, v in options.items():
+            t = torch.as_tensor(v, device=dev).reshape(-1)
+            slot = st.episode_options.get(k)
+            if (slot is None or slot.dtype != t.dtype
+                    or slot.shape[0] != B):
+                slot = torch.zeros(B, dtype=t.dtype, device=dev)
+                st.episode_options[k] = slot
+            if t.shape[0] == B:
+                slot[env_ids] = t[env_ids]
+            else:
+                slot[env_ids] = t[: env_ids.shape[0]]
+
     def reset(self, seeds: Optional[torch.Tensor] = None,
               options: Optional[Dict[str, Any]] = None) -> None:
         """全量 reset 所有 env。"""
@@ -284,8 +309,11 @@ class BatchRuntime:
         self.sync_stats["reset"] += 1
         seeds_np = None if seeds is None else np_seeds(seeds)
         self.sim.reset(seeds=seeds_np, options=options)
-        st.reset_episode_rows(
-            torch.arange(st.batch_size, device=st.sim.qpos.device))
+        all_ids = torch.arange(st.batch_size, device=st.sim.qpos.device)
+        st.reset_episode_rows(all_ids)
+        st.reset_shared_rows(all_ids)
+        st.reset_events_rows(all_ids)
+        self._publish_episode_options(st, all_ids, options)
         self._seal_snap = None
         if seeds is not None:
             st.rng.seed_offsets.copy_(
@@ -319,7 +347,10 @@ class BatchRuntime:
                 f"{ids[running].tolist()} — call abandon() first")
         self.sim.dev_reset_rows(ids)
         st.reset_plugin_rows(ids)
+        st.reset_shared_rows(ids)
+        st.reset_events_rows(ids)
         st.reset_episode_rows(ids)
+        self._publish_episode_options(st, ids, options)
         if seeds is not None:
             st.rng.seed_offsets[ids] = torch.as_tensor(
                 seeds, dtype=torch.int64,

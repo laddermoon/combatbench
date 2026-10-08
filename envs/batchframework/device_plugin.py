@@ -100,6 +100,137 @@ class DeviceMutator:
 
 
 # ---------------------------------------------------------------------------
+# 黑板视图（E9 G1/G2）——CPU ctx.metrics / ctx.events 的设备形态
+# ---------------------------------------------------------------------------
+class MetricsView:
+    """``ctx.metrics``——共享黑板只读映射视图。
+
+    键 → (B, *shape) 张量**本体**（原位写即生效：``.copy_()/.fill_()/
+    [ids] = v``）。未声明键读取抛 ``KeyError``——先经
+    ``state.declare_shared`` 声明。不提供 ``__setitem__``（设备侧
+    "赋值"是行掩码原位写，无独立赋值语义）。
+    """
+
+    __slots__ = ("_board",)
+
+    def __init__(self, board: Dict[str, torch.Tensor]):
+        self._board = board
+
+    def __getitem__(self, key: str) -> torch.Tensor:
+        try:
+            return self._board[key]
+        except KeyError:
+            raise KeyError(
+                f"metrics[{key!r}] undeclared — call "
+                f"state.declare_shared({key!r}, shape, dtype) first"
+            ) from None
+
+    def __contains__(self, key) -> bool:
+        return key in self._board
+
+    def __iter__(self):
+        return iter(self._board)
+
+    def __len__(self) -> int:
+        return len(self._board)
+
+    def keys(self):
+        return self._board.keys()
+
+    def items(self):
+        return self._board.items()
+
+
+class EventPoolView:
+    """``ctx.events``——append-only padded journal 视图（E9 G2）。
+
+    CPU ``EventJournal`` 的设备对应：episode 内只增不减、消费靠
+    (epoch, count) 游标差分、复位权归框架。事件为定长记录
+    ``[code, agent, value, aux]``——code 由 ``event_registry`` 从类型
+    字符串确定性分配（首见序）。
+    """
+
+    __slots__ = ("_st",)
+
+    def __init__(self, state: "DeviceBatchState"):
+        self._st = state
+
+    # ---- 生产者 ----
+    def emit(self, env_ids, kind: str, agent=0.0, value=0.0,
+             aux=0.0) -> None:
+        """向指定行各追加一条事件（每调用每行至多一条）。
+
+        ``agent``/``value``/``aux`` 可为标量或 (M,) 张量（逐行广播）。
+        行内容量满（count ≥ cap）→ 置 ``overflow`` 标志，不丢旧、
+        不静默写。
+        """
+        ev = self._st.events
+        ep = self._st.episode
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ev.count.device).reshape(-1)
+        if ids.numel() == 0:
+            return
+        reg = ev.event_registry
+        code = reg.get(kind)
+        if code is None:
+            code = len(reg)
+            reg[kind] = code
+
+        def _b(v):
+            t = torch.as_tensor(v, dtype=torch.float32, device=ids.device)
+            return t.expand(ids.shape[0]) if t.dim() == 0 else t
+
+        c = ev.count[ids]
+        ok = c < ev.cap
+        w = ids[ok]
+        if w.numel():
+            p = ev.count[w]
+            ev.records[w, p, 0] = float(code)
+            ev.records[w, p, 1] = _b(agent)[ok]
+            ev.records[w, p, 2] = _b(value)[ok]
+            ev.records[w, p, 3] = _b(aux)[ok]
+            ev.steps[w, p] = ep.action_call_index[w].to(torch.int32)
+            ev.count[w] = p + 1
+        if (~ok).any():
+            ev.overflow[ids[~ok]] = True
+
+    # ---- 消费者 ----
+    def since(self, env_ids, marks):
+        """游标差分：(records(M,K,4), steps(M,K), mask(M,K))。
+
+        ``marks`` = 此前的 ``len(env_ids)`` 快照；mask 标出
+        [mark, count) 段。**epoch 须消费者自检**——``epoch`` 变化时
+        作废旧 mark 整段重取（对齐 CPU EventJournal 游标语义）。
+        """
+        ev = self._st.events
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ev.count.device).reshape(-1)
+        marks_t = torch.as_tensor(marks, dtype=torch.int32,
+                                  device=ev.count.device).reshape(-1)
+        c = ev.count[ids]
+        ar = torch.arange(ev.cap, device=ev.count.device)
+        mask = (ar[None, :] >= marks_t[:, None]) & (ar[None, :] < c[:, None])
+        return ev.records[ids], ev.steps[ids], mask
+
+    def len(self, env_ids) -> torch.Tensor:
+        """(M,) i32——指定行 journal 当前长度（游标组成之一）。"""
+        ev = self._st.events
+        ids = torch.as_tensor(env_ids, dtype=torch.long,
+                              device=ev.count.device).reshape(-1)
+        return ev.count[ids]
+
+    @property
+    def epoch(self) -> torch.Tensor:
+        """(B,) i32——行 epoch；变化 = 框架复位，游标作废。"""
+        return self._st.events.epoch
+
+    @property
+    def overflow(self) -> torch.Tensor:
+        """(B,) bool——超容量显式截断标志。"""
+        return self._st.events.overflow
+
+
+# ---------------------------------------------------------------------------
 # DeviceCtx — hook 收到的上下文
 # ---------------------------------------------------------------------------
 class DeviceCtx:
@@ -150,6 +281,30 @@ class DeviceCtx:
     def substep_index(self) -> torch.Tensor:
         """(B,) i32 当前物理子步位置——仅 on_pre/post_phy_step 内有意义。"""
         return self.state.episode.substep_index
+
+    @property
+    def metrics(self) -> MetricsView:
+        """共享黑板（CPU ``ctx.metrics`` 的设备形态）。
+
+        键→(B,*shape) 张量本体；写 = 原位张量操作。键先经
+        ``state.declare_shared`` 声明（建议在 ``declare_state`` 阶段）。
+        """
+        return MetricsView(self.state.board)
+
+    @property
+    def events(self) -> EventPoolView:
+        """事件池（CPU ``ctx.events`` 的设备形态，append-only）。"""
+        return EventPoolView(self.state)
+
+    @property
+    def episode_options(self) -> Dict[str, torch.Tensor]:
+        """reset options 的 per-env 快照：``{key: (B,) 张量}``，只读。
+
+        仅 ``binding.episode_options_keys`` 白名单键经此可见
+        （reset 时由 runtime 发布；CPU ``ctx.episode_options`` 的
+        张量化对应——设备侧是全体行共享视图，行差异在张量值上）。
+        """
+        return self.state.episode_options
 
     def request_termination(
         self,
@@ -308,6 +463,20 @@ class BaseDevicePlugin:
     @property
     def per_hook_mutator(self) -> Optional[Dict[str, frozenset]]:
         return None
+
+    @property
+    def shared_reads(self) -> Sequence[str]:
+        """共享黑板读键（E9 审计增强；可空=不声明）。
+
+        仅登记用途——shared 键由 declare_shared 时序决定存在性，
+        装配期不做存在性校验（声明顺序先于跨单元读）。
+        """
+        return ()
+
+    @property
+    def shared_writes(self) -> Sequence[str]:
+        """共享黑板写键（审计增强；可空）。"""
+        return ()
 
     @property
     def rng_salt(self) -> Optional[int]:
