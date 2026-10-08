@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：阶段一 W1–W4 已完成，对应 A1–A4 见下方裁决区；W5–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
+> 状态：阶段一 W1–W4 已完成，对应 A1–A4 见下方裁决区；W5 执行计划已细化但尚未开始，W6–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -140,6 +140,32 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 7. 明确评估、导出、checkpoint、热参数变更的时钟和边界；小数更新预算是否累计、warmup 是否计入必须有一致约定。
 8. 拟定完整恢复状态清单：在线/target 模型、优化器、α、replay 内容/游标/ID、所有 RNG（含策略私有 generator）、实验、调度及计数器。
 9. 区分 exact resume 与 warm-start；定义可恢复的一致性边界、设备/确定性前提、格式不兼容的失败行为和存储成本。
+
+#### W5 执行拆解与产物顺序
+
+**边界：** W5 只做契约设计、代码事实核查和必要的低成本 fixture/序列化探针；不改生产训练路径、不启动训练。所有结论以 A5 落文，接口名可再改，语义不能只靠调用顺序暗示。
+
+| 子项 | 工作内容 | 主要产物 / 门槛 |
+|---|---|---|
+| W5.0 现状链路复核 | 沿 `train.py → ExperimentSAC → rollout/job → Episode → build_slices → replay → trainer → eval/checkpoint` 画出真实调用链；列出仍存在的 PPO 依赖、死契约和旧字段。 | 数据流图与缺口表；不得把旧 `Job`/`TrajectorySlice` 当成已批准接口。 |
+| W5.1 职责边界 | 明确实验侧拥有环境蓝图、job/seed、任务事实、评估、agent 切片、通道语义、数据准入；框架侧拥有采集执行、transition 校验、replay、更新、调度、导出、checkpoint。 | 责任矩阵；每个字段/动作只有一个 owner；未声明实验能力显式 unsupported。 |
+| W5.2 transition schema | 冻结逐 agent transition 草案：`obs_t/action_t/next_obs`、逐通道 reward/valid/terminated/bootstrap、`phi_pre`、`phi_post_reference`、termination reason、physics delta、样本来源与版本、行为策略/探索参数。标注 dtype、shape、单位、允许缺失性和时间对齐。 | 字段表 + `TrajectorySlice`/batch 边界草案；缺必需字段 fail loud，`phi_pre` 不从归一化 obs 猜下标。 |
+| W5.3 replay 契约 | 定义容量单位、插入顺序、覆盖语义、均匀采样 RNG、稳定 `sample_id`、trajectory/source metadata、age/staleness 统计、batch 返回内容。首版 n-step/PER/stratify 是否支持须显式裁决。 | replay 写入/覆盖/采样契约；环形覆盖不得让同一 `traj_id,traj_step` 指到别条轨迹；身份不等于数组下标。 |
+| W5.4 时钟与 UTD | 分别定义 env action steps、physics steps、episodes、rounds、有效 agent transitions、requested/actual critic steps、actor/temperature/target ticks、eval/export/checkpoint ticks；写清 UTD 分子分母、小数累计、warmup 与上限处理。 | 时钟表 + round 内事件顺序；请求值和实际生效值都可记录、恢复。 |
+| W5.5 配置与状态分层 | 区分 run config、experiment static semantics、可变 schedule state、runtime counters；定义配置指纹和语义版本。热参数修改必须显式作用域与生效时点。 | config/state manifest 草案；不允许 checkpoint 静默覆盖当前 config 或被当前 config 静默覆盖。 |
+| W5.6 exact resume 与 warm-start | 拟定 checkpoint manifest：actor、critic online/target、全部 optimizer、α/λ 及 optimizer、replay 内容/游标/source ID/采样 RNG、行为/eval/训练 RNG、计数器、调度器、实验 state、代码/环境/格式版本。 | 状态清单和兼容性矩阵；exact resume 要定义同设备/内核确定性条件，格式不符直接报错；warm-start 明确“加载了什么、丢弃了什么”。 |
+| W5.7 采集与入口边界 | 决定 SAC 自有 rollout/job 的最小接口、policy export 版本、worker seed 派生、失败传播、episode 返回数据的最小集合；保证不引入 `SamplingContext`、ratio、GAE 等 PPO 对象。 | SAC collection contract 草案；并满足 C1–C3 独立性边界。 |
+| W5.8 验证设计 | 把 A2 的 FX-1～6 扩展为 W5 fixture：缺字段、边界 next_obs、replay wraparound、乱序 episode、重复/冲突 sample_id、恢复状态缺失、跨版本 resume。每项指定输入、期望、失败含义和所属实现阶段。 | W5 测试矩阵草案；设计期可先做纯 Python/合成 Episode 探针，不把 fixture 通过等同于生产实现完成。 |
+| W5.9 A5 汇总评审 | 合并字段表、责任矩阵、时钟表、replay 契约、恢复清单、接口草案和未决项；按“阻塞阶段二 / 后续阶段 / 可选增强”分类。 | A5 决策稿；列出必须由用户确认的默认口径与资源/存储取舍。 |
+
+**必须先裁决的问题（进入实现前不能留默认值）：**
+
+1. replay 容量和 UTD 是否统一以**有效 agent transition**计；推荐如此，但需确认。
+2. 每个样本是否强制携带行为策略版本、探索参数和最低限度采样元数据；推荐强制，训练不用也可供 debug/审计。
+3. 首版是否禁止 n-step/PER/relabel/stratified retention，并把相关配置显式拒绝；推荐禁止未验证项。
+4. exact resume 是否默认持久化完整 replay；推荐是，另设显式 warm-start/no-replay 模式。
+5. `phi_pre` 的来源是 observer 显式输出还是由 episode 前向构造；必须能从同一状态快照取得，且缺数据报错。
+6. checkpoint 恢复是否允许覆盖当前学习率/调度/实验名；推荐默认禁止，除非用户在 warm-start 中显式声明。
 
 **出口：** A5 包括接口草案、字段表和状态清单。接口名允许在实现前微调，含义不能依赖隐式时序或无声默认。
 
