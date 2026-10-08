@@ -47,6 +47,10 @@ _OBSERVE = 3
 # 脚部 body 名称（排除在第三点触地检测之外）
 _FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
 
+# 长靠墙判定：非脚部身体接触墙持续满 N 个 action step（0.5 秒）判摔。
+# 短暂撑墙恢复平衡是合法技能，不计。
+_WALL_LEAN_STEPS = 10
+
 
 class _RobotPushState:
     """单个机器人的扰动状态机。"""
@@ -66,6 +70,7 @@ class _RobotPushState:
         "push_count",
         "fall_count",
         "fell_during_push",
+        "wall_streak",
     )
 
     def __init__(self, robot_id: str, body_name: str):
@@ -83,6 +88,7 @@ class _RobotPushState:
         self.push_count: int = 0
         self.fall_count: int = 0
         self.fell_during_push: bool = False
+        self.wall_streak: int = 0
 
 
 class StandingTriggeredForcePlugin(BasePlugin):
@@ -225,6 +231,51 @@ class StandingTriggeredForcePlugin(BasePlugin):
 
         return False
 
+    def _is_wall_contact(self, ctx: SimContext, robot_id: str) -> bool:
+        """检查指定机器人是否有非脚部部位接触场地墙壁。
+
+        与 ``_is_non_foot_grounded`` 相同的接触筛选，但 env 侧 geom 为
+        ``*wall``。短暂碰墙（恢复撑一下）是合法技能，由调用方按持续
+        帧数判"长靠"。
+        """
+        derived_state = ctx.accessor.get_derived_state(['contacts'])
+        cv = derived_state.get('contacts')
+        if cv is None or cv['ncon'] == 0:
+            return False
+
+        static_data = ctx.accessor.get_static_data()
+        body_id_to_name = static_data.get('body_id_to_name', {})
+        geom_id_to_name = static_data.get('geom_id_to_name', {})
+
+        robot_aff = 1 if robot_id == 'robot_a' else 2
+
+        aff1 = cv['aff1']
+        aff2 = cv['aff2']
+        geom1 = cv['geom1']
+        geom2 = cv['geom2']
+        body1 = cv['body1']
+        body2 = cv['body2']
+        force_mag = cv['force_mag']
+
+        for i in range(cv['ncon']):
+            if aff1[i] == 0 and aff2[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom1[i]), '')
+                body_robot = body_id_to_name.get(int(body2[i]), '')
+            elif aff2[i] == 0 and aff1[i] == robot_aff:
+                geom_env = geom_id_to_name.get(int(geom2[i]), '')
+                body_robot = body_id_to_name.get(int(body1[i]), '')
+            else:
+                continue
+            if not geom_env.endswith('wall'):
+                continue
+            if float(force_mag[i]) < self.force_threshold:
+                continue
+            if any(foot in body_robot for foot in _FOOT_BODY_NAMES):
+                continue
+            return True
+
+        return False
+
     def _load_params(self, ctx: SimContext) -> None:
         """从 episode_options["impulse_params"] 读取每个机器人的施力参数。
 
@@ -293,6 +344,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             st.push_count = 0
             st.fall_count = 0
             st.fell_during_push = False
+            st.wall_streak = 0
             ctx.metrics[f"{rid}_push_count"] = 0
             ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
@@ -307,6 +359,14 @@ class StandingTriggeredForcePlugin(BasePlugin):
                 st.standing_timer += 1
             else:
                 st.standing_timer = 0
+
+            # --- 墙接触持续计时：全状态运行 ---
+            # 推中短暂撑墙是合法恢复；只有持续长靠（>=_WALL_LEAN_STEPS）
+            # 才在 PUSHING/OBSERVE 窗口里判摔。
+            if self._is_wall_contact(ctx, rid):
+                st.wall_streak += 1
+            else:
+                st.wall_streak = 0
 
             if st.state == _WAIT_STAND:
                 if st.standing_timer >= self.standing_settle_steps and st.force > 0:
@@ -352,8 +412,11 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     ctx.metrics[f"{rid}_push_active"] = True
 
             elif st.state == _PUSHING:
-                # 摔倒检测（第三点触地）
-                if not st.fell_during_push and self._is_non_foot_grounded(ctx, rid):
+                # 摔倒检测（第三点触地，或长靠墙）
+                if not st.fell_during_push and (
+                    self._is_non_foot_grounded(ctx, rid)
+                    or st.wall_streak >= _WALL_LEAN_STEPS
+                ):
                     st.fell_during_push = True
                     st.fall_count += 1
                     ctx.metrics[f"{rid}_fall_count"] = st.fall_count
@@ -367,7 +430,10 @@ class StandingTriggeredForcePlugin(BasePlugin):
 
             elif st.state == _OBSERVE:
                 # 继续摔倒检测
-                if not st.fell_during_push and self._is_non_foot_grounded(ctx, rid):
+                if not st.fell_during_push and (
+                    self._is_non_foot_grounded(ctx, rid)
+                    or st.wall_streak >= _WALL_LEAN_STEPS
+                ):
                     st.fell_during_push = True
                     st.fall_count += 1
                     ctx.metrics[f"{rid}_fall_count"] = st.fall_count

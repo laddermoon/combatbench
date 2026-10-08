@@ -75,3 +75,12 @@ observer_plugins:
     cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
     config:
       agent_id: "robot_b"
+  # Non-foot body contact with arena walls — the wall-lean exploit.
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"

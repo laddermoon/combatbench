@@ -61,6 +61,18 @@ class BalanceStep(Step):
     PROMOTE_RECOVERY_RATE: float = 0.8
     PROMOTE_PATIENCE: int = 2
 
+    # --- Wall-lean penalty ---
+    # The converged policy discovered the arena walls as a free support
+    # resource: back against a wall absorbs backward pushes and anchors
+    # the lean that counters forward pulls — recovery without balance.
+    # Brief wall braces are legitimate (user feedback), so only frames
+    # beyond a grace run count.  Folded into r_fall — the "don't"
+    # channel — and gated to upright frames (φ≥0.5; fallen frames next
+    # to a wall are involuntary).
+    wall_penalty: float = 0.03
+    wall_grace_steps: int = 10
+    _WALL_OBS = {"robot_a": "wall_contact_a", "robot_b": "wall_contact_b"}
+
     # --- Curriculum / tracking state ---
     _level: int = 0
     _consecutive_pass: int = 0
@@ -95,6 +107,52 @@ class BalanceStep(Step):
     def current_duration_range(self) -> Tuple[int, int]:
         idx = max(0, min(self._level, len(self.LEVEL_DURATION_RANGES) - 1))
         return self.LEVEL_DURATION_RANGES[idx]
+
+    # ------------------------------------------------------------------
+    # Trajectories — Step's recipe + wall-lean penalty on r_fall
+    # ------------------------------------------------------------------
+
+    def _build_agent_trajectory(
+        self, episode, agent_id: str, foot_key: str, phi_key: str,
+    ) -> List:
+        trajs = super()._build_agent_trajectory(
+            episode, agent_id, foot_key, phi_key,
+        )
+        if not trajs or self.wall_penalty <= 0:
+            return trajs
+        wall_key = self._WALL_OBS.get(agent_id)
+        if wall_key is None:
+            return trajs
+        from baseline.framework.rollout import extract_per_step_field
+        T_full = episode.num_frames
+        wc = extract_per_step_field(
+            episode.observer_outputs, wall_key, "wall_contact", T_full,
+        )
+        if wc is None:
+            return trajs
+        from baseline.humanoid21.end2end.wall_contact_observer import (
+            sustained_wall_mask,
+        )
+        phi = extract_per_step_field(
+            episode.observer_outputs, phi_key, "potential", T_full,
+        )
+        standing = (
+            np.asarray(phi, dtype=np.float32) >= 0.5
+            if phi is not None
+            else np.zeros(T_full, dtype=bool)
+        )
+        lean = sustained_wall_mask(wc, grace=self.wall_grace_steps)
+        for t in trajs:
+            T = t.obs.shape[0]
+            pen = (
+                -self.wall_penalty
+                * lean[:T].astype(np.float32)
+                * standing[:T].astype(np.float32)
+            )
+            ch = t.channels.get("r_fall")
+            if ch is not None:
+                ch.reward = (ch.reward + pen).astype(np.float32)
+        return trajs
 
     # ------------------------------------------------------------------
     # Jobs — Step's (initial_distance + phase ef) + impulse_params
@@ -150,11 +208,36 @@ class BalanceStep(Step):
         # --- Push accounting from plugin metrics ---
         total_push = 0
         total_fall = 0
+        wall_frames = 0
+        lean_frames = 0
+        wall_total = 0
+        from baseline.framework.rollout import extract_per_step_field
+        from baseline.humanoid21.end2end.wall_contact_observer import (
+            sustained_wall_mask,
+        )
         for ep in episodes:
             em = dict(getattr(ep, "episode_metrics", None) or {})
             for rid in self._AGENT_IDS:
                 total_push += int(em.get(f"{rid}_push_count", 0))
                 total_fall += int(em.get(f"{rid}_fall_count", 0))
+                wk = self._WALL_OBS.get(rid)
+                if wk is not None and ep.num_frames > 0:
+                    wc = extract_per_step_field(
+                        ep.observer_outputs, wk, "wall_contact",
+                        ep.num_frames,
+                    )
+                    if wc is not None:
+                        wall_frames += int(
+                            np.asarray(wc, dtype=bool).sum()
+                        )
+                        lean_frames += int(
+                            sustained_wall_mask(
+                                wc, grace=self.wall_grace_steps,
+                            ).sum()
+                        )
+                        wall_total += len(wc)
+        wall_rate = wall_frames / max(wall_total, 1)
+        lean_rate = lean_frames / max(wall_total, 1)
         recovery_rate = (
             float(1.0 - total_fall / total_push) if total_push > 0 else 1.0
         )
@@ -227,6 +310,8 @@ class BalanceStep(Step):
             "push_falls": total_fall,
             "level": float(self._level),
             "force": round(self.current_force, 1),
+            "wallc": round(wall_rate, 4),
+            "wallln": round(lean_rate, 4),
         })
         return {
             "is_new_best": is_new_best,
