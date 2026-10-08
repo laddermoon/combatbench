@@ -374,13 +374,24 @@ class ReadOnlySimContext:
     #: 应整段重取而非从旧位置续读。
     events_epoch: int = 0
 
-    @property
-    def is_agent_terminated(self) -> Dict[str, bool]:
-        """Read-only mapping of agent_id -> terminated bool."""
-        return dict(self.agent_terminated)
+    def is_agent_terminated(self, agent_id: str) -> bool:
+        """True if ``agent_id`` has any termination proposal.
+
+        Same calling convention as ``SimContext.is_agent_terminated`` so
+        code written against a writable ctx keeps working under the
+        read-only view. For the whole mapping use ``agent_terminated``.
+        """
+        return bool(self.agent_terminated.get(agent_id, False))
 
     @classmethod
     def from_sim_context(cls, ctx: SimContext) -> "ReadOnlySimContext":
+        """Build a frozen point-in-time view of ``ctx``.
+
+        Shallow snapshot: ``metrics`` / ``episode_options`` are copied at
+        the top level (``MappingProxyType`` blocks reassignment) but
+        nested mutable values are SHARED with the live blackboard —
+        observers must not mutate nested dicts/lists/arrays (P3-11).
+        """
         return cls(
             accessor=ctx.accessor,
             episode_step=ctx.episode_step,

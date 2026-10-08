@@ -454,3 +454,49 @@ class TestObserverInEpisode:
         runtime.step(np.zeros(21), np.zeros(21))
 
         assert observer.reset_count == 2
+
+
+class TestAttachDetachContract:
+    """P3-10/12/13 回归：observer attach/detach 的契约边界"""
+
+    def test_mid_episode_attach_initializes_observer(self, mock_simulator):
+        """P3-12: 活跃回合中 attach 的 observer 立即收到 on_pre_episode
+        （late-join = 以当前状态初始化），而非带脏状态上场。"""
+        runtime = EnvRuntime(simulator=mock_simulator, observer_plugins={})
+        runtime.reset()
+
+        observer = CountingObserver()
+        runtime.attach_observer_plugin("late", observer)
+
+        assert observer.reset_count == 1  # late-join init
+        runtime.step(np.zeros(21), np.zeros(21))
+        assert observer.step_count == 1
+
+    def test_detach_leaves_no_ghost_key(self, mock_simulator):
+        """P3-13: detach 后 observer_plugins 不残留 name: None 幽灵键，
+        get_observer_outputs() 不再返回 {name: None}。"""
+        observer = CountingObserver()
+        runtime = EnvRuntime(
+            simulator=mock_simulator,
+            observer_plugins={"obs": observer},
+        )
+
+        runtime.detach_observer_plugin("obs")
+        assert "obs" not in runtime.observer_plugins
+        assert "obs" not in runtime.get_observer_outputs()
+
+    def test_readonly_ctx_is_agent_terminated_is_method(self, mock_simulator):
+        """P3-10: ReadOnlySimContext.is_agent_terminated 与 SimContext
+        同为方法签名 ``(agent_id) -> bool``——插件代码搬到 observer
+        侧不会因调用约定不同而 TypeError。"""
+        runtime = EnvRuntime(simulator=mock_simulator, observer_plugins={})
+        runtime.reset()
+
+        readonly_ctx = ReadOnlySimContext.from_sim_context(runtime._core.ctx)
+        assert readonly_ctx.is_agent_terminated("robot_a") is False
+        runtime._core.ctx.request_termination("ko", agent_id="robot_a")
+        readonly_ctx = ReadOnlySimContext.from_sim_context(runtime._core.ctx)
+        assert readonly_ctx.is_agent_terminated("robot_a") is True
+        assert readonly_ctx.is_agent_terminated("robot_b") is False
+        # 整体映射仍可经 agent_terminated 字段取
+        assert readonly_ctx.agent_terminated["robot_a"] is True

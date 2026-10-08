@@ -253,15 +253,25 @@ class EnvRuntime:
         return tuple(plugin for plugin in self.plugins if isinstance(plugin, plugin_type))
 
     def attach_observer_plugin(self, name: str, observer_plugin: Optional[BaseObserverPlugin]) -> None:
+        """Attach (or replace) an observer under ``name``.
+
+        Mid-episode attach semantics: the new observer's ``on_pre_episode``
+        is invoked immediately with the CURRENT ctx (late-join = initialize
+        from current state), then the dispatcher refreshes once.
+        """
         current = self.observer_plugins.get(name)
         if current is observer_plugin:
             return
-        self.observer_plugins[name] = observer_plugin
         if observer_plugin is None:
+            self.observer_plugins.pop(name, None)
             self._observer_dispatcher.remove_observer_plugin(name)
         else:
+            self.observer_plugins[name] = observer_plugin
             self._observer_dispatcher.set_observer_plugin(name, observer_plugin)
         if self._core.is_episode_active:
+            if observer_plugin is not None:
+                observer_plugin.on_pre_episode(
+                    ReadOnlySimContext.from_sim_context(self._core.ctx))
             self._observer_dispatcher.refresh(self._core.ctx, force=True)
 
     def detach_observer_plugin(self, name: str) -> None:

@@ -2654,3 +2654,29 @@ episode_options 覆盖——恢复"仅本回合"语义，与各自 docstring 承
 指路注释：本模块保持单 env 参考路径，批量执行见 batchframework。
 
 `pytest envs/framework/tests/` → 233 passed。
+
+## [2026-10-08] P3-10~14 处置：契约不对称修正 + 隐性坑文档化
+
+**对象**：`envs/framework/{context.py,env_runtime.py,replay.py,DESIGN.md}`、
+`tests/{test_observer_system.py,test_edge_cases.py}`
+**类别**：修复执行
+
+- **P3-10**：`ReadOnlySimContext.is_agent_terminated` 由返回 Dict 的
+  property 改为与 `SimContext` 同签名方法 `(agent_id)->bool`——dict
+  形态全仓零调用方，零破坏；整体映射走 `agent_terminated` 字段。
+- **P3-11**：浅快照语义文档化——`from_sim_context` docstring 与
+  DESIGN.md 边界条款注明嵌套可变对象与活黑板共享、改写即污染。
+- **P3-12**：`attach_observer_plugin` 活跃期 attach 补调
+  `on_pre_episode(readonly_ctx)`——late-join 以当前状态初始化，
+  不再带脏状态上场。docstring 写明语义。
+- **P3-13**：detach 改 `pop`——`observer_plugins` 不再残留
+  `name: None` 幽灵键，`get_observer_outputs()` 干净。
+- **P3-14**：`ReplaySimulator.reset` docstring 注明 "episode" 键会
+  原样透传进 `ctx.episode_options`（EnvRuntime 拷贝在前、消费在后，
+  sim 层无法摘除）——保留命名空间语义，不动 options 过滤契约。
+
+### 验证
+
+`pytest envs/framework/tests` → **236 passed**（+3 回归用例）；
+`test_edge_cases.py` 中"替换 observer"用例同步更新为新语义断言
+（attach 即初始化）；`envs/humanoid21/tests` → 47 passed。

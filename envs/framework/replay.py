@@ -275,7 +275,12 @@ class ReplaySimulator(BaseSimulator):
     # ------------------------------------------------------------------
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> None:
         """Load the next episode (or the one requested via
-        ``options={"episode": N}``)."""
+        ``options={"episode": N}``).
+
+        Namespace note: the ``"episode"`` selector key passes straight
+        through into ``ctx.episode_options`` (EnvRuntime copies options
+        verbatim before this method consumes it), so plugins can see it —
+        treat ``episode`` as reserved when replaying."""
         if self._is_closed:
             raise ReplayError("ReplaySimulator is closed.")
 

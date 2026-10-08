@@ -67,9 +67,11 @@ class TestMultipleObserversSameName:
         runtime.reset()
         assert observer_a.reset_count == 1
 
-        # 替换为 observer_b
+        # 替换为 observer_b —— 回合仍活跃，late-join 立即初始化一次
         runtime.attach_observer_plugin("test", observer_b)
+        assert observer_b.reset_count == 1  # mid-episode on_pre_episode (P3-12)
         observer_a.reset_count = 0  # 清零
+        observer_b.reset_count = 0
 
         runtime.reset()
         assert observer_a.reset_count == 0  # 旧的不再被调用
