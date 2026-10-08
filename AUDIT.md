@@ -2571,3 +2571,33 @@ blueprints/{fight_mixed,fight_mixed_v2,mixed,standup_fallback}.yaml}`
   结果"的显式警告。
 
 Phase 2 深挖段至此清零（P-H21-2/P-FW-9/P-DET 均已在前序条目处置）。
+
+## [2026-10-08] P3-1 处置：abandoned/closed 回合的 recorder 善后提到外层
+
+**对象**：`envs/framework/env_runtime.py`、
+`tests/test_audit_reset_recorder_gap.py`
+**类别**：修复执行（用户裁决：善后在 EnvRuntime 层处理，不动 core）
+
+### 设计决策
+
+`_RuntimeCore.reset` 的唯一生产调用方是 `EnvRuntime.reset`（另有一个
+直接实例化 core 的测试，无 recorder 场景）。abandon 可由外层预见
+（`is_episode_active` 为真即必发生），因此把终止序列提升到
+EnvRuntime——不给 core 加回调，recorder 派发保持单层。
+
+### 实施
+
+- `EnvRuntime.reset`：`core.reset` 之前先跑 abandon 序列——
+  `request_termination("abandoned")` → `core._handle_termination()`
+  （插件 on_post_episode，旧 ctx）→ `_invoke_recorders("on_post_episode")`
+  （recorder 拿到同一未清理的旧 ctx，含 "abandoned" proposal）。
+  core.reset 随后发现已无活跃回合，跳过自身 abandon 分支。
+- `EnvRuntime.close`：回合仍活跃时先 `request_termination("closed")` +
+  全链终止通知（插件 + recorder），再 detach_recorder / core.close——
+  顺带补齐"close 时插件也不收 on_post_episode"的缺口。
+- `test_audit_reset_recorder_gap.py` 翻转为回归：两个用例分别锁死
+  abandoned-flush（ctx 含 "abandoned"）与 close-flush（"closed"）。
+
+### 验证
+
+`pytest envs/framework/tests/` → **233 passed**。

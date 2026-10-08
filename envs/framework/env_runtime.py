@@ -326,6 +326,15 @@ class EnvRuntime:
     ) -> None:
         """See :meth:`_RuntimeCore.reset` for the parameter semantics and
         ``envs/framework/RESET.md`` for the full reset chain."""
+        if self._core.is_episode_active:
+            # An in-flight episode is about to be abandoned inside
+            # core.reset. Run the termination here (at the layer that owns
+            # recorders) so recorders flush the abandoned episode's
+            # manifest with the still-populated ctx — core.reset's own
+            # abandon branch then finds nothing left to do.
+            self._core.ctx.request_termination("abandoned")
+            self._core._handle_termination()
+            self._invoke_recorders("on_post_episode")
         self._core.reset(seed=seed, options=options, base_seed=base_seed)
         self._invoke_recorders("on_pre_episode")
         if not self._core.is_episode_active:
@@ -426,6 +435,12 @@ class EnvRuntime:
         return EnvBlueprint.from_runtime(self)
 
     def close(self) -> None:
+        if self._core.is_episode_active:
+            # Flush the open episode through the full termination path —
+            # plugins AND recorders get on_post_episode before teardown.
+            self._core.ctx.request_termination("closed")
+            self._core._handle_termination()
+            self._invoke_recorders("on_post_episode")
         for recorder in list(self._recorders):
             self.detach_recorder(recorder)
         self._core.close()

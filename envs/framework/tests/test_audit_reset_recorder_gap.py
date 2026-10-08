@@ -1,22 +1,18 @@
-"""Audit probe (Phase 3) — NOT a fix.
+"""Regression test (P3-1 fix) — abandoned/closed episodes reach recorders.
 
-Question under audit: ``_RuntimeCore.reset()`` abandons an in-flight
-episode via ``request_termination("abandoned")`` + ``_handle_termination()``,
-whose comment says "so recorder manifests and observer state are flushed".
-But ``_handle_termination`` only invokes **plugin** hooks — recorders live
-in ``EnvRuntime._recorders`` and are invoked via ``_invoke_recorders``,
-which ``EnvRuntime.reset`` never calls for the abandoned episode.
-
-Expected consequence: a PostActionRecorder's ``on_post_episode`` fires for
-a normally-terminated episode but is silently skipped when the episode is
-abandoned by a subsequent ``reset()`` — unflushed manifests / dangling
-episode dirs.
+``EnvRuntime.reset`` now runs the abandon sequence at the EnvRuntime
+layer (before delegating to ``core.reset``), so a ``PostActionRecorder``
+sees ``on_post_episode`` — with the still-populated ctx carrying the
+``"abandoned"`` termination proposal — for episodes abandoned by a
+subsequent ``reset()``. ``EnvRuntime.close`` likewise terminates an
+open episode with reason ``"closed"``, notifying plugins and recorders.
 
 Run: PYTHONPATH=. python3 -m pytest envs/framework/tests/test_audit_reset_recorder_gap.py -q
 """
 from __future__ import annotations
 
 from envs.framework.env_runtime import EnvRuntime
+from envs.framework.plugin import BasePlugin
 from envs.framework.recorder import PostActionRecorder
 
 from .conftest import MockSimulator
@@ -27,6 +23,7 @@ class _CountingRecorder(PostActionRecorder):
         self.pre_episodes = 0
         self.post_episodes = 0
         self.post_steps = 0
+        self.post_episode_reasons = []
 
     @property
     def name(self) -> str:
@@ -41,33 +38,62 @@ class _CountingRecorder(PostActionRecorder):
 
     def on_post_episode(self, ctx) -> None:
         self.post_episodes += 1
+        # Record the per-agent termination proposals visible at flush time.
+        self.post_episode_reasons.append(
+            dict(ctx.agent_termination_proposals))
 
 
-def test_abandoned_episode_skips_recorder_post_episode():
-    """Locks in audited behavior: abandoned episode never reaches recorders.
+class _PostEpisodeCounter(BasePlugin):
+    def __init__(self) -> None:
+        self.post_episodes = 0
 
-    When EnvRuntime.reset forwards the abandoned-episode termination to
-    recorders, this test SHOULD FAIL — flip to ``== 2`` and update the note.
-    """
+    @property
+    def name(self) -> str:
+        return "post_episode_counter"
+
+    def on_post_episode(self, ctx) -> None:
+        self.post_episodes += 1
+
+
+def test_abandoned_episode_reaches_recorder_post_episode():
+    """reset()-abandoned episode flushes recorder with 'abandoned' ctx."""
     sim = MockSimulator()
     rt = EnvRuntime(simulator=sim)
     rec = _CountingRecorder()
     rt.attach_recorder(rec)
 
-    # Episode 1: reset, take one step, then abandon via a second reset.
     rt.reset(seed=1)
     rt.step(None, None)
     rt.reset(seed=2)   # abandons episode 1; episode 2 begins
+
+    assert rec.pre_episodes == 2
+    assert rec.post_episodes == 1
+    # The recorder saw the abandoned ctx, including the proposal.
+    assert any(
+        "abandoned" in proposals
+        for proposals in rec.post_episode_reasons[0].values()
+    )
+
+    rt.close()
+    # close() flushes the still-open episode 2 with reason "closed".
+    assert rec.post_episodes == 2
+    assert any(
+        "closed" in proposals
+        for proposals in rec.post_episode_reasons[1].values()
+    )
+
+
+def test_close_terminates_open_episode_for_plugins_and_recorders():
+    """close() on an active episode fires on_post_episode on both layers."""
+    sim = MockSimulator()
+    plugin = _PostEpisodeCounter()
+    rt = EnvRuntime(simulator=sim, plugins=[plugin])
+    rec = _CountingRecorder()
+    rt.attach_recorder(rec)
+
+    rt.reset(seed=3)
+    rt.step(None, None)
     rt.close()
 
-    # Plugin-side on_post_episode ran for the abandoned episode
-    # (ctx termination reason "abandoned"), but the recorder only ever saw
-    # one pre_episode boundary pair close: episode 1's post_episode is
-    # missing entirely.
-    assert rec.pre_episodes == 2   # both resets reach recorders' pre_episode
-    # The abandoned episode 1 AND the still-open episode 2 (close() only
-    # calls recorder.on_detach, never on_post_episode) are both missing —
-    # recorders see 2 episode starts and zero episode ends.
-    assert rec.post_episodes == 0, (
-        "recorder saw post_episode for the abandoned episode — "
-        "gap may be fixed; flip this test")
+    assert plugin.post_episodes == 1
+    assert rec.post_episodes == 1
