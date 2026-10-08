@@ -7,14 +7,18 @@ produced by update N-1).  We replay its deterministic ``act()`` on the
 episode's stored observations to obtain ``a_det(t)`` — the policy's
 *intended* action at every frame.
 
-The viewer then derives the realized exploration step in raw
-(pre-tanh) space, where the sampling noise actually lives::
+The viewer then derives the realized exploration step in **linear
+action space** — where the sampling noise actually lives for the
+current policy families::
 
-    eps_raw(t, d) = atanh(a_sampled(t, d)) - atanh(a_det(t, d))
+    eps_raw(t, d) = a_sampled(t, d) - a_det(t, d)
 
-``a_det = tanh(mu)`` so ``atanh(a_det)`` recovers the raw mean;
-``atanh(a_sampled)`` recovers ``mu + sigma*z + noise_shift`` — the
-exploration input as it truly entered the environment.
+All active policy families are truncated-normal: ``a_det`` **is** the
+distribution mean, so ``eps_raw`` is exactly ``σ·z`` (the realized
+exploration noise as it entered the environment), possibly clipped at
+the ±1 action bound — see ``sat_frac``.  (Historical note: an earlier
+tanh-Gaussian policy computed this in ``atanh`` space; under TruncNorm
+that would be a wrong nonlinear warp of the residual.)
 
 Only **trained** agents are evaluated (same rule as ``dump_delta``):
 an agent counts as trained iff ``traj_map`` lists a trajectory sourced
@@ -40,14 +44,10 @@ from baseline.framework.ppo.dumpkit.dump_delta import (
     trained_agents,
 )
 
-#: Atanh-domain clamp — sampled actions are tanh outputs, so |a| can
-#: hit exactly 1.0 in float32.  Values at/over this bound are
-#: "saturated": eps is then a lower bound, not an exact residual.
-ATANH_CLAMP = 1.0 - 1e-6
-
-
-def _atanh(a: np.ndarray) -> np.ndarray:
-    return np.arctanh(np.clip(a, -ATANH_CLAMP, ATANH_CLAMP))
+#: Action clip bound — exported policies clamp actions to ±1, so a
+#: sampled value at/over this bound is "saturated": eps is then a
+#: lower bound on the true pre-clip residual, not an exact one.
+ACTION_CLIP_BOUND = 1.0 - 1e-6
 
 
 def rollout_stats(
@@ -165,8 +165,8 @@ def compute_rollout(
         out[f"a_det.{agent}"] = a_det
 
         # Eager stats so the coverage list and the page share numbers.
-        eps_raw = _atanh(a_sampled) - _atanh(a_det)
-        sat = np.abs(a_sampled) >= ATANH_CLAMP * 0.9999
+        eps_raw = a_sampled - a_det
+        sat = np.abs(a_sampled) >= ACTION_CLIP_BOUND * 0.9999
         meta["stats"][agent] = rollout_stats(eps_raw, sat)
         meta.setdefault("n_frames", T)
         meta.setdefault("action_dim", int(a_det.shape[1]))

@@ -5589,12 +5589,13 @@
   }
 
   // --- Tool ⓪ Rollout — realized exploration ε(t) ---------------------
-  // ε_raw(t,d) = atanh(a_sampled) − atanh(a_det): the noise that
-  // actually entered the environment, in pre-tanh space where the
-  // sampling σ lives.  a_det is the rollout policy's deterministic
-  // act() replayed on stored observations (server-computed ε too —
-  // the atanh clamp / saturation handling is a numerical detail that
-  // belongs to the backend).
+  // ε_raw(t,d) = a_sampled − a_det: the noise that actually entered
+  // the environment, in linear action space where the sampling σ
+  // lives under TruncNorm policies (a_det is the distribution mean).
+  // a_det is the rollout policy's deterministic act() replayed on
+  // stored observations (server-computed ε too — the clip-bound /
+  // saturation handling is a numerical detail that belongs to the
+  // backend).
 
   async function renderRolloutPage() {
     // read-only page — computing happens on the dump-home ⓪ card;
@@ -5713,7 +5714,7 @@
     const T = eps.length, D = eps[0].length;
     const st = (d.stats || {})[aid] || {};
 
-    let html = `<div class="desc" style="margin-bottom:8px">ε<sub>raw</sub>(t,d) = atanh(a<sub>sampled</sub>) − atanh(a<sub>det</sub>) — realized exploration noise in pre-tanh space. a<sub>det</sub> = rollout policy u${d.rollout_update} deterministic act() on stored obs. Agent: <b>${escapeHtml(aid)}</b></div>`;
+    let html = `<div class="desc" style="margin-bottom:8px">ε<sub>raw</sub>(t,d) = a<sub>sampled</sub> − a<sub>det</sub> — realized exploration noise in linear action space (σ·z under TruncNorm). a<sub>det</sub> = rollout policy u${d.rollout_update} deterministic act() on stored obs. Agent: <b>${escapeHtml(aid)}</b></div>`;
 
     // scalar strip
     html += '<div class="stage-stats">' +

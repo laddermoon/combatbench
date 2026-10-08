@@ -38,7 +38,7 @@ from baseline.framework.ppo.dumpkit.metric_catalog import (
     metric_doc,
 )
 from baseline.framework.ppo.dumpkit import dump_analysis as _da
-from baseline.framework.ppo.dumpkit.dump_rollout import ATANH_CLAMP
+from baseline.framework.ppo.dumpkit.dump_rollout import ACTION_CLIP_BOUND
 
 _HERE = Path(__file__).resolve().parent
 _BUNDLED_HTML = _HERE / "index.html"
@@ -1621,9 +1621,10 @@ class ViewerAPI:
 
         ``det.npz`` holds the rollout policy's deterministic actions
         ``a_det.<agent>`` (T, action_dim).  The sampled actions come from
-        episodes.npz.  The response carries the raw-space residual
-        ``eps_raw = atanh(a_sampled) - atanh(a_det)`` — the noise the
-        environment actually received.
+        episodes.npz.  The response carries the linear action-space
+        residual ``eps_raw = a_sampled - a_det`` — the noise the
+        environment actually received (under TruncNorm, ``a_det`` is the
+        mean, so this is exactly the realized σ·z, clipped at ±1).
         """
         ro_dir = (
             self.data.dump_dir / "rollout" / f"episode_{ep_pos:05d}"
@@ -1644,10 +1645,7 @@ class ViewerAPI:
                 continue
             a_det = np.asarray(npz[key], dtype=np.float32)
             a_s = np.asarray(a_sampled, dtype=np.float32)
-            eps_raw = (
-                np.arctanh(np.clip(a_s, -ATANH_CLAMP, ATANH_CLAMP))
-                - np.arctanh(np.clip(a_det, -ATANH_CLAMP, ATANH_CLAMP))
-            )
+            eps_raw = a_s - a_det
             agents[aid] = {
                 "a_det": _arr_to_list(a_det),
                 "a_sampled": _arr_to_list(a_s),
@@ -1656,7 +1654,7 @@ class ViewerAPI:
                     np.linalg.norm(eps_raw, axis=1).astype(np.float32)
                 ),
                 "sat_frac": float(
-                    (np.abs(a_s) >= ATANH_CLAMP * 0.9999).mean()
+                    (np.abs(a_s) >= ACTION_CLIP_BOUND * 0.9999).mean()
                 ),
             }
         return 200, {

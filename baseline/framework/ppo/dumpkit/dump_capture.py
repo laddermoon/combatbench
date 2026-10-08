@@ -32,7 +32,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -164,17 +164,33 @@ def _flatten_observer_outputs(
     out: Dict[str, np.ndarray] = {}
     if not episodes:
         return out
-    # Collect all observer keys from the first episode.
-    first = episodes[0]
-    for obs_key, fields in first.observer_outputs.items():
-        if not isinstance(fields, dict):
+    # Union of observer keys across ALL episodes in first-seen order —
+    # a key that appears only in a later episode must not be dropped.
+    obs_keys: List[str] = []
+    for ep in episodes:
+        for k in ep.observer_outputs:
+            if k not in obs_keys:
+                obs_keys.append(k)
+    for obs_key in obs_keys:
+        # Union of field names for dict-valued outputs; an episode whose
+        # value is missing/scalar contributes None per field below.
+        fields_union: List[str] = []
+        is_dict = False
+        for ep in episodes:
+            fields = ep.observer_outputs.get(obs_key)
+            if isinstance(fields, dict):
+                is_dict = True
+                for f in fields:
+                    if f not in fields_union:
+                        fields_union.append(f)
+        if not is_dict:
             # Scalar observer output — stack across episodes.
             out[f"observer_outputs.{obs_key}"] = np.array(
                 [ep.observer_outputs.get(obs_key) for ep in episodes],
                 dtype=object,
             )
             continue
-        for field_name in fields:
+        for field_name in fields_union:
             vals = []
             for ep in episodes:
                 oo = ep.observer_outputs.get(obs_key, {})
@@ -551,6 +567,26 @@ def _export_stochastic_policy(
         raise FileNotFoundError(
             f"model.pt not found at {model_pt} — policy export missing"
         )
+
+    # Fail-loud family check: this export pairs model.pt with the base
+    # TruncNorm template (ExportedTruncNormPolicy).  A non-base family
+    # (mixture/state-σ/bounded-σ/pre-tanh) would produce a policy.py
+    # whose architecture does not match the weights — a late failure at
+    # load time.  Detect the family from the exported blueprint's cls
+    # and refuse up front instead.
+    export_bp_yaml = export_src / "policy_blueprint.yaml"
+    if export_bp_yaml.exists():
+        import re
+        m = re.search(r"cls:\s*\S*:([A-Za-z_][A-Za-z0-9_]*)",
+                      export_bp_yaml.read_text(encoding="utf-8"))
+        exported_cls = m.group(1) if m else None
+        if exported_cls != "ExportedTruncNormPolicy":
+            raise NotImplementedError(
+                f"dump stochastic export supports only the base TruncNorm "
+                f"family (exported class 'ExportedTruncNormPolicy'); got "
+                f"{exported_cls!r} from {export_bp_yaml}. Pair the weights "
+                f"with the family's own _export_template_*.py instead."
+            )
 
     policy_dir = dump_dir / "stochastic_policy"
     policy_dir.mkdir(parents=True, exist_ok=True)

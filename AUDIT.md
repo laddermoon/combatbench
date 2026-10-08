@@ -2827,3 +2827,36 @@ bench_rollout 单/并行双路径实测通过。
 
 `pytest policies/` collect → 395 tests 干净；模拟调用
 `format_repro_command` 验证全参数回放正确。
+
+## [2026-10-08] P-DK-1~5 处置：atanh→线性残差 + 导出模板 fail-loud + observer key 并集
+
+**类别**：修复执行
+
+- **P-DK-1（修复，语义变更）**：dumpkit 的 realized-exploration 诊断
+  从 atanh 域残差改为**线性动作空间残差**
+  `eps_raw = a_sampled − a_det`——当前全部 8 个活跃策略族都是
+  TruncNorm，`a_det` 即分布均值，线性残差恰好等于 σ·z（真实进入
+  环境的探索噪声）。改动三处：`dump_rollout.py`（统计口径 +
+  `ATANH_CLAMP`→`ACTION_CLIP_BOUND`，±1 饱和检测保留）、
+  `viewer/server.py`（API 重算同步）、`viewer/index.html`
+  （注释 + UI 文案）。meta.json 的 stats schema 不变
+  （mean_norm/rho1/sat_frac 等键不动）。
+- **P-DK-2（修复，早败化）**：`_export_stochastic_policy` 在复制
+  model.pt 前读 `policy_exports/uN/policy_blueprint.yaml` 的 cls
+  尾段——非 `ExportedTruncNormPolicy`（mixture/state-σ/bounded-σ/
+  pre-tanh 各家族）即 `NotImplementedError`，把"错模板配真权重"
+  的晚败变成捕获时 fail-loud。
+- **P-DK-3（不修）**：`inspect.getsource` 序列化的限制文档已声明，
+  维持现状。
+- **P-DK-4（修复）**：`dump_capture.py` 补 `Tuple` import（注解此前
+  靠 `from __future__ import annotations` 兜底未炸）。
+- **P-DK-5（修复）**：`_flatten_observer_outputs` 的 observer key
+  集从"仅首个 episode"改为**全 episode 并集**（first-seen 顺序），
+  dict-valued 输出的字段名同取并集；缺失字段沿用现有
+  object-array+None 兜底——后续 episode 独有的 observer key 不再
+  静默丢失。手动回归验证通过。
+
+### 验证
+
+语法 + import 检查通过；`_flatten_observer_outputs` 手工构造
+异构 episode 验证并集行为。
