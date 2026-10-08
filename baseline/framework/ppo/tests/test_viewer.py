@@ -31,8 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from baseline.framework.ppo.dumpkit.dump_request import DumpRequest
 from baseline.framework.ppo.dumpkit.dump_capture import capture_dump
 from baseline.framework.ppo.dumpkit.frame_access import DumpDataset
+from baseline.framework.ppo.dumpkit.dump_analysis import dump_gradsig
 from baseline.framework.ppo.dumpkit.viewer.server import (
-    RunData, ViewerAPI, _dump_gradsig, list_runs, query_runs_index,
+    RunData, ViewerAPI, list_runs, query_runs_index,
     resolve_run, scan_experiments, experiments_index, experiment_detail,
 )
 from baseline.framework.ppo.experiment import (
@@ -884,7 +885,7 @@ def test_dump_data_grad_sig():
         _write_gradsig_npz(dump_dir / "gradsig.npz")
 
         dd = DumpDataset(dump_dir)
-        out = _dump_gradsig(dd)
+        out = dump_gradsig(dd)
         assert out is not None
         assert out["available"] is True
         assert "partial" not in out
@@ -913,7 +914,7 @@ def test_dump_data_grad_sig():
         (dump_dir2 / "manifest.json").write_text(
             json.dumps({"update": 43}))
         _write_gradsig_npz(dump_dir2 / "gradsig.npz", with_hist=False)
-        out2 = _dump_gradsig(DumpDataset(dump_dir2))
+        out2 = dump_gradsig(DumpDataset(dump_dir2))
         assert out2["available"] is True and out2["partial"] is True
         assert out2["update"] == 43
         assert out2["n_sampled"] == 4 and out2["n_valid"] == 3
@@ -927,7 +928,7 @@ def test_dump_data_grad_sig():
         (dump_dir3 / "manifest.json").write_text(
             json.dumps({"update": 44}))
         dd3 = DumpDataset(dump_dir3)
-        assert _dump_gradsig(dd3) is None
+        assert dump_gradsig(dd3) is None
         status3, body3 = ViewerAPI(dd3).handle("/api/gradsig")
         assert status3 == 404 and body3["available"] is False
         print("test_dump_data_grad_sig: PASS")

@@ -2327,3 +2327,39 @@ git 外文档，不管）
   契约测试，保留。
 - 全仓 grep `baseline.humanoid21.base`：除已删测试外零引用。
 - 验证：`pytest test_critic_mlp.py` → 2 passed。
+
+## [2026-10-08] P-TF-4 处置：collection error 两部分分治
+
+**对象**：`baseline/framework/ppo/tests/test_viewer.py`、
+`baseline/framework/ppo/policies/{conftest.py 新增, todo/}`、
+`baseline/framework/ppo/loop.py`（顺带真 bug）
+**类别**：修复执行
+
+### test_viewer.py（活跃测试，修）
+
+- `server.py` 里 `_dump_gradsig` 已移入 `dump_analysis.dump_gradsig`
+  （server 内自用以 `_da.dump_gradsig` 调用）。测试 import 与 3 处
+  调用点改指 `dump_analysis.dump_gradsig` 公开名。
+
+### todo/ 停车场（用户裁定：不改内部）
+
+- 用户指示"todo 目录下只是一些线索性的东西，里面的代码不要改"——
+  撤销了本轮我对 todo/ 内部文件的全部路径迁移改动（git checkout），
+  仅保留用户在 `test_policy_families.py` docstring 里手动改的
+  运行路径标注。
+- collection error 改从外层治理：新增
+  `baseline/framework/ppo/policies/conftest.py` 一行
+  `collect_ignore = ["todo"]`——pytest 不再收集停车场内的
+  test_*.py，文件原样保留作为实现线索。
+
+### 顺带发现并已修：HEAD 真实 bug
+
+- `loop.py:520` `resume_ctx["rollout_state"] = ...` 写在
+  `if resume_ctx is not None:` 块**外**——`resume_ctx=None` 调用
+  直接 TypeError（E6-W4 `47116c65` 引入）。已移入判空块。
+  此前 `test_trainer.py` 4 个 checkpoint 用例因此失败。
+
+### 验证
+
+- `pytest baseline/framework/ppo/` → **637 passed / 0 failed /
+  0 collection errors**（此前 4 fail + 4 collection error）。

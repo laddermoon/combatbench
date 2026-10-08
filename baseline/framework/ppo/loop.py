@@ -516,8 +516,8 @@ def load_checkpoint(
                 prev_gvec = None
             resume_ctx["prev_gvec"] = prev_gvec
             resume_ctx["n_evals_done"] = int(loop_state.get("n_evals_done", 0))
-        # E6-W4：rollout 侧身份回传给 run() 做拓扑校验
-        resume_ctx["rollout_state"] = payload.get("rollout_state")
+            # E6-W4：rollout 侧身份回传给 run() 做拓扑校验
+            resume_ctx["rollout_state"] = payload.get("rollout_state")
 
     # Return the next update to run.  The checkpoint stores the update
     # that was *completed* and saved; resuming should start from the next
