@@ -354,6 +354,20 @@ class ExperimentSAC(ABC):
         return ReplayPlan()
 
     # ==================================================================
+    # Per-round metrics (optional override)
+    # ==================================================================
+
+    def post_round_metrics(self, episodes: List[Any]) -> Dict[str, float]:
+        """Return task-level metrics for the just-finished collection round.
+
+        Called once per round after ``build_slices``. Keys are emitted into
+        the round metrics event under the ``task.`` namespace (e.g.
+        ``{"online_success": 0.5}`` → ``task.online_success``). Only finite
+        numeric values are emitted.
+        """
+        return {}
+
+    # ==================================================================
     # Evaluation
     # ==================================================================
 

@@ -110,10 +110,21 @@ class SacStandup(CombatExperimentSACBase):
                     all_slices.append(sl)
         return all_slices
 
+    def post_round_metrics(self, episodes: List[Any]) -> Dict[str, float]:
+        finals = self._ep_final_pots
+        self._ep_final_pots = []
+        if not finals:
+            return {}
+        return {
+            "online_success": sum(1 for p in finals if p >= 0.9) / len(finals),
+            "final_potential_mean": sum(finals) / len(finals),
+        }
+
     def on_eval(self, episodes: List[Any], env_step: int) -> Dict[str, Any]:
         max_pots: List[float] = []
         final_pots: List[float] = []
         max_stages: List[float] = []
+        max_h_torsos: List[float] = []
         success_count = 0
         for ep in episodes:
             if ep.num_frames == 0:
@@ -125,6 +136,9 @@ class SacStandup(CombatExperimentSACBase):
                 stages = extract_per_step_field(
                     ep.observer_outputs, obs_key, "stage", ep.num_frames,
                 )
+                h_torso = extract_per_step_field(
+                    ep.observer_outputs, obs_key, "h_torso", ep.num_frames,
+                )
                 if phi is None or len(phi) == 0:
                     raise KeyError(
                         f"Missing required eval observer field {obs_key}.potential"
@@ -133,6 +147,9 @@ class SacStandup(CombatExperimentSACBase):
                 max_pots.append(mx)
                 final_pots.append(float(phi[-1]))
                 max_stages.append(float(np.max(stages)) if stages is not None else 0.0)
+                max_h_torsos.append(
+                    float(np.max(h_torso)) if h_torso is not None else 0.0
+                )
                 if mx >= 0.9:
                     success_count += 1
 
@@ -141,6 +158,7 @@ class SacStandup(CombatExperimentSACBase):
         mean_max_pot = float(sum(max_pots) / n) if max_pots else 0.0
         mean_final_pot = float(sum(final_pots) / n) if final_pots else 0.0
         mean_max_stage = float(sum(max_stages) / n) if max_stages else 0.0
+        mean_max_h = float(sum(max_h_torsos) / n) if max_h_torsos else 0.0
         self._success_rate = success_rate
         is_new_best = mean_max_pot > self._best_potential
         if is_new_best:
@@ -151,6 +169,7 @@ class SacStandup(CombatExperimentSACBase):
                 "max_pot": round(mean_max_pot, 3),
                 "final_pot": round(mean_final_pot, 3),
                 "max_stage": round(mean_max_stage, 2),
+                "max_h": round(mean_max_h, 3),
                 "success": round(success_rate, 3),
             },
         }

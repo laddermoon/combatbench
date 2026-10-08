@@ -719,6 +719,9 @@ def train_sac(
                 "timing.collection_s": float(t_rollout),
                 "timing.slice_s": float(t_buffer),
             }
+            for key, value in experiment.post_round_metrics(episodes).items():
+                if isinstance(value, (int, float)) and np.isfinite(value):
+                    round_metrics[f"task.{key}"] = float(value)
             metrics.emit_round(
                 clocks,
                 round_metrics,

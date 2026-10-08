@@ -14,6 +14,7 @@ from envs.framework.plugin import BasePlugin
 from envs.framework.policy import PolicyBlueprint
 
 from baseline.experiments_sac.exp_sac_balance import SacBalance
+from baseline.experiments_sac.exp_sac_standup import SacStandup
 from baseline.framework.sac.collected_episode import CollectedEpisode
 from baseline.framework.sac.collection import SACFactSpec, SACJob
 from baseline.framework.sac.collection_rollouter import (
@@ -146,6 +147,32 @@ class FakeObserver(BaseObserverPlugin):
         return cls(**config)
 
 
+class StandingObserver(BaseObserverPlugin):
+    def __init__(self, agent_id: str = "robot_a") -> None:
+        self.agent_id = agent_id
+        self._step = 0
+
+    def on_pre_episode(self, ctx) -> None:
+        self._step = 0
+
+    def on_post_action_step(self, ctx) -> None:
+        self._step = int(ctx.episode_step)
+
+    def get_output(self):
+        return {
+            "potential": min(1.0, 0.2 + 0.1 * self._step),
+            "stage": 4.0,
+            "h_torso": 1.1,
+        }
+
+    def to_blueprint(self):
+        return {"agent_id": self.agent_id}
+
+    @classmethod
+    def from_blueprint(cls, config):
+        return cls(**config)
+
+
 class EarlyTerminatePlugin(BasePlugin):
     def __init__(self, agent_id: str = "robot_a", at_step: int = 2) -> None:
         self.agent_id = agent_id
@@ -185,7 +212,13 @@ def _module(cls) -> str:
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
-def _env_bp(*, terminate_a_at: Optional[int] = None, balance_observers: bool = False):
+def _env_bp(
+    *,
+    terminate_a_at: Optional[int] = None,
+    balance_observers: bool = False,
+    standing_observers: bool = False,
+    cross_observers: bool = True,
+):
     plugins = ()
     if terminate_a_at is not None:
         plugins = (
@@ -194,16 +227,18 @@ def _env_bp(*, terminate_a_at: Optional[int] = None, balance_observers: bool = F
                 config={"agent_id": "robot_a", "at_step": terminate_a_at},
             ),
         )
-    observers = {
-        "cross_support_a": ClassSpec(
-            cls=_module(FakeObserver),
-            config={"agent_id": "robot_a", "phi": False},
-        ),
-        "cross_support_b": ClassSpec(
-            cls=_module(FakeObserver),
-            config={"agent_id": "robot_b", "phi": False},
-        ),
-    }
+    observers = {}
+    if cross_observers:
+        observers.update({
+            "cross_support_a": ClassSpec(
+                cls=_module(FakeObserver),
+                config={"agent_id": "robot_a", "phi": False},
+            ),
+            "cross_support_b": ClassSpec(
+                cls=_module(FakeObserver),
+                config={"agent_id": "robot_b", "phi": False},
+            ),
+        })
     if balance_observers:
         observers["height_phi_a"] = ClassSpec(
             cls=_module(FakeObserver),
@@ -212,6 +247,15 @@ def _env_bp(*, terminate_a_at: Optional[int] = None, balance_observers: bool = F
         observers["height_phi_b"] = ClassSpec(
             cls=_module(FakeObserver),
             config={"agent_id": "robot_b", "phi": True},
+        )
+    if standing_observers:
+        observers["standing_balance_a"] = ClassSpec(
+            cls=_module(StandingObserver),
+            config={"agent_id": "robot_a"},
+        )
+        observers["standing_balance_b"] = ClassSpec(
+            cls=_module(StandingObserver),
+            config={"agent_id": "robot_b"},
         )
     return EnvBlueprint(
         simulator=ClassSpec(cls=_module(FakeSimulator), config={}),
@@ -446,3 +490,69 @@ def test_validator_rejects_nan_bad_gates_and_bad_source_keys():
     bad_keys = replace(good, source_keys=tuple(["same"] * good.num_transitions))
     with pytest.raises(ValueError, match="unique"):
         validate_transition_slice(bad_keys)
+
+
+def test_balance_missing_required_observer_fails_loudly():
+    ep = SACParallelRollouter(num_workers=1).collect(
+        [
+            _job(
+                0,
+                seed=90,
+                env_bp=_env_bp(balance_observers=True, cross_observers=False),
+                fact_specs=_phi_specs(),
+            )
+        ]
+    )[0]
+    with pytest.raises(KeyError, match="cross_support"):
+        SacBalance().build_slices([ep])
+
+
+def test_balance_missing_phi_observer_fails_loudly():
+    ep = SACParallelRollouter(num_workers=1).collect(
+        [_job(0, seed=91, env_bp=_env_bp(), fact_specs=_phi_specs())]
+    )[0]
+    with pytest.raises(KeyError, match="height_phi"):
+        SacBalance().build_slices([ep])
+
+
+def test_standup_slices_match_dense_potential_semantics():
+    ep = SACParallelRollouter(num_workers=1).collect(
+        [
+            _job(
+                0,
+                seed=92,
+                env_bp=_env_bp(standing_observers=True),
+            )
+        ]
+    )[0]
+    exp = SacStandup()
+    slices = exp.build_slices([ep])
+    assert len(slices) == 2
+    sl = slices[0]
+    assert sl.rewards.shape[1] == 1
+    assert sl.num_transitions == 4
+    # Timeout at episode end: truncated (not terminated), bootstrap continues.
+    assert not sl.terminated.any()
+    assert sl.truncated[-1]
+    assert sl.bootstrap[-1] == 1.0
+    np.testing.assert_allclose(
+        sl.rewards[:, 0], 0.01 * sl.task_facts["potential"], atol=1e-7
+    )
+    np.testing.assert_allclose(sl.actor_gate, np.ones((4, 1), dtype=np.float32))
+    np.testing.assert_allclose(
+        sl.actor_gate_next, np.ones((4, 1), dtype=np.float32)
+    )
+
+    round_metrics = exp.post_round_metrics([ep])
+    assert set(round_metrics) == {"online_success", "final_potential_mean"}
+    assert round_metrics["online_success"] == 0.0
+    # Fake potential at last frame: 0.2 + 0.1*4 = 0.6, for both agents.
+    assert round_metrics["final_potential_mean"] == pytest.approx(0.6)
+    # Consumed once: a second call without new slices returns empty.
+    assert exp.post_round_metrics([ep]) == {}
+
+
+def test_standup_missing_potential_observer_fails_loudly():
+    ep = SACParallelRollouter(num_workers=1).collect([_job(0, seed=93)])[0]
+    with pytest.raises(KeyError, match="standing_balance|potential"):
+        SacStandup().build_slices([ep])

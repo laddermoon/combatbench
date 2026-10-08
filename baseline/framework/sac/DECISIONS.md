@@ -2150,6 +2150,20 @@ S3-W0 P3-AUDIT-0
 - **`P3-MATH-1` 完成（G3.2 数学面修正）：** critic target 改为用 `actor_weight_next` 先合成 `F_j` 再共同选择 `j_next`；actor loss 改为用 `actor_weight` 合成 `F_j` 并共同选择 `j_actor`。actor/alpha 只使用所有通道 `channel_valid=True` 的行；每通道 critic 独立 mask/step/target update，空分母跳过该通道。同 cohort γ 不一致、shared critic group、n-step/ensemble 扩展显式拒绝。`actor_weight=0` 不冻结对应 critic 的永久测试已落地。`MultiHeadQCritic` 现在默认每 channel 一个独立 group。
 - **`P3-DIAG-2` 完成基础版（G3.3）：** `sac_dump_v2` 捕获并重算 A3 公式所需的 batch gate、pair index、per-channel Q/target/TD、actor/alpha 有效行；`find-sample` 输出当前/下一 gate；tick metrics 增加 pair 选择率、actor 有效行、每通道 critic 更新与 gate/next-gate 均值；replay stats 增加 collection round、policy fingerprint、reward/objective version 分桶。证据：完整 SAC suite → 57 passed，包含指定 critic tick dump 的新公式 recompute。
 
+### P3.7 实验语义对拍（P3-EXP-1）结论
+
+对拍 `experiments_ppo/exp_basic_balance.py`、`exp_standup.py` 与 SAC 对应实现，逐字段核对 reward、gate、boundary、eval 与版本语义：
+
+- **一致：** balance `r_fall=0.01·φ_post`、双 agent 独立 `agent_frame_boundary`、imbalance → terminated/`bootstrap=0`、timeout → truncated/`bootstrap=1`、eval `survival_rate` 口径；standup `r_potential=0.01·φ`、无早终止语义、eval `max_pot/final_pot/max_stage/success` 口径、`_AGENT_OBS` 映射与 blueprint observer key 一一对应。
+- **有意差异（沿用已批准语义）：**
+  - PPO 对缺失的 `r_cross`/`potential` observer 静默填 0；SAC 按 fail-loud 契约 `KeyError`，不复制该回退。
+  - PPO balance 的 r_cross actor weight 用 post-step `φ`；SAC 当前 gate 用 `phi_pre`（即 `w(s_t)`），next gate 用 `phi_post`（即 `w(s')`），这是 D38/A3 的正确时序，不是回归。
+- **修复缺口：**
+  - `SacStandup._ep_final_pots` 此前无消费方；新增 `ExperimentSAC.post_round_metrics(episodes)` 可选 hook，loop 将其结果以 `task.*` namespace 写入 round 事件（`task.online_success`、`task.final_potential_mean`），对齐 PPO `post_update` 的 per-update 在线指标。
+  - `SacStandup.on_eval` 补齐 `h_torso` 对应的 `max_h` 指标，与 PPO eval 字段对齐。
+- **新增永久测试：** balance 缺 `cross_support`/`height_phi` observer 与缺 `phi_pre` fail loud；standup dense-potential slice 语义（reward=0.01φ、常量 gate、timeout→truncated+bootstrap）、缺 `potential` observer fail loud、`post_round_metrics` 消费一次即清空。
+- **证据：** 完整 SAC suite → 61 passed。
+
 ## P3.6 完成定义
 
 阶段三完成要求：
