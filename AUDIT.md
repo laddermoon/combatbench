@@ -2728,3 +2728,29 @@ batchframework 大改定夺——用户裁决挂起。
 `pytest envs/humanoid21/tests` → 47 passed。
 FrozenRobot 手动冒烟：robot_b 全程位移 0.0、robot_a 自由漂移、
 非法 id 在 reset 时抛 ValueError。
+
+## [2026-10-08] P3 尾批复核 + P3-22 处置：Phase 3 framework/humanoid21 域清零
+
+**类别**：修复执行 + 复核关闭
+
+- **P3-5/6/7（复核关闭）**：`episode_runner.py`/`policy.py` 的死引用
+  （parallel_runner/ParallelRunner/load_policy）均已在前期重写中消除，
+  现分别指向 `ParallelRollouter` 与 `PolicyBlueprint.build`。
+- **P3-9（复核关闭）**：`${DIR}` 不对称已解——`_substitute_dir` 帮助器
+  共享，`EnvBlueprint.load`/`ParameterizedEnvBlueprint.load`/
+  `PolicyBlueprint.load` 三处均做替换且 docstring 互相引用。
+- **P3-18/19/20（复核关闭）**：`DAMAGE_TARGET_PARTS` 已为
+  `{'head','torso'}`，waist 死分支与 `changed` 死变量均不存在
+  （前期清理已覆盖）。
+- **P3-22（文档化）**：`get_sensor_data` 恒空是诚实映射而非半成品——
+  `battle_circular_v2.xml` 未定义任何 `<sensor>` 元素。补契约文档：
+  `simulator.py` docstring 说明"恒返回 {}，录制 JSON 中 sensor_data
+  恒为空对象"；`backend.py` 抽象方法声明"无传感器建模的后端返回 {}
+  而非抛错"。行为零变化。
+
+至此 Phase 3 的 envs/framework + envs/humanoid21 域全部结案
+（P3-17 挂起、P3-29~35 移交 batchframework 大改）。
+
+### 验证
+
+`pytest envs/framework/tests` → 236 passed（纯文档改动）。

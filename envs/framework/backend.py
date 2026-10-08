@@ -28,6 +28,11 @@ class IDataAccessor(ABC):
 
     @abstractmethod
     def get_sensor_data(self) -> Dict[str, Any]:
+        """获取传感器读数。
+
+        契约：后端未建模传感器时返回 ``{}`` 而非抛错——空集是合法的
+        传感器快照（如 humanoid21 的 arena XML 无 ``<sensor>`` 定义）。
+        """
         pass
 
     @abstractmethod

@@ -255,7 +255,14 @@ class Humanoid21Simulator(BaseSimulator):
         return result
     
     def get_sensor_data(self) -> Dict[str, Any]:
-        """获取传感器数据 (暂时返回空字典，未来可扩展)"""
+        """获取传感器数据。
+
+        当前 arena XML（battle_circular_v2）未定义任何 ``<sensor>``
+        元素，机器人无传感器建模——本方法恒返回 ``{}``。
+        录制产物（BaseFrameRecorder 的 step JSON）中 ``sensor_data``
+        字段因此恒为空对象。若未来在 XML 中加入传感器定义，
+        在此返回对应读数即可，接口与下游管道已就位。
+        """
         return {}
     
     def get_action(self) -> Dict[str, Any]:
