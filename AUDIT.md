@@ -2680,3 +2680,12 @@ episode_options 覆盖——恢复"仅本回合"语义，与各自 docstring 承
 `pytest envs/framework/tests` → **236 passed**（+3 回归用例）；
 `test_edge_cases.py` 中"替换 observer"用例同步更新为新语义断言
 （attach 即初始化）；`envs/humanoid21/tests` → 47 passed。
+
+## [2026-10-08] P3-17 复核：挂起移交 batchframework 大改
+
+CPU `ctx.events` 已是 EventJournal（episode 级 append-only +
+epoch/cursor 游标，P-H21-2 落地后 CPU 侧契约自足）；分歧残余仅在
+`BatchContext.events` 仍为 per-step 普通 list。审计原建议
+"CPU 对齐 per-step 瞬态"与 EventJournal 的有意设计相反，不回退。
+权威语义（batch 侧上 journal 或维持 per-step + 文档边界）留待
+batchframework 大改定夺——用户裁决挂起。
