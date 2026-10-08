@@ -63,11 +63,12 @@ Best practices
    replays to inspect what the learner was doing, without accidentally
    diverging from the recording.
 
-4. **Array dtype note**. The on-disk JSON format loses dtype information
-   (everything is stored as nested lists of Python floats). On load this
-   class rehydrates numeric lists into ``float32`` ndarrays (matching the
-   live simulator convention). If your code needs a different dtype, cast
-   at the read site.
+4. **Array dtype note**. The on-disk JSON format stores nested lists of
+   Python floats (float64). On load this class rehydrates them into
+   ``float32`` ndarrays — while live physics runs in float64, so replayed
+   states carry ~1e-7 quantization vs the original recording. Fine for
+   visualization/inspection; if you recompute rewards or compare states
+   numerically, account for the quantization (or cast at the read site).
 
 5. **Images are lazy**. PNGs are decoded only when
    ``get_broadcastview_image()`` is actually called, and cached per step.

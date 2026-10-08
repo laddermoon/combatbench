@@ -22,7 +22,9 @@ API 与记录约定。
 | 3  | `Plugin`（可选带 RNG）     | K    | `plugin.set_episode_seed(seed)` + `on_pre_episode` |
 
 **K** 运行时确定（取决于挂了哪些插件）。不带 RNG 的 plugin 不需要实现
-`set_episode_seed`。
+`set_episode_seed`。**插件种子按 attach 顺序按位置分配**——改变插件的
+挂载顺序会改变每个插件拿到的种子（`plugin_ss[p]` 按位置索引），复现实验
+时必须保持插件顺序一致。
 
 ## 派生树（`SeedSequence.spawn` 全程）
 

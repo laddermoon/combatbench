@@ -2554,3 +2554,20 @@ blueprints/{fight_mixed,fight_mixed_v2,mixed,standup_fallback}.yaml}`
 
 `pytest baseline/humanoid21/ --collect-only` → 0 collection errors
 （此前 1 error + 2 fail）。
+
+## [2026-10-08] Phase 2 深挖段清零：三处文档缺口补齐
+
+**对象**：`baseline/framework/rollout/parallel_rollouter.py`、
+`envs/framework/replay.py`、`envs/framework/SEED.md`
+**类别**：修复执行（复核后仅剩的 3 处文档级缺口）
+
+- `ParallelRollouter.mp_context` docstring 补 spawn 约束：
+  `num_workers>1` 时调用方必须是真实 .py + `__main__` 守卫，
+  stdin/REPL/notebook 会 BrokenProcessPool（AUDIT 实测过的坑）。
+- `replay.py` 第 4 条改写：原文 "matching the live simulator
+  convention" 有误——live 物理 float64、JSON 落盘 float64、rehydrate
+  强制 float32，回放状态带 ~1e-7 量化差；已写明后果与适用边界。
+- `SEED.md` 补"插件种子按 attach 顺序按位置分配，改顺序即改派生
+  结果"的显式警告。
+
+Phase 2 深挖段至此清零（P-H21-2/P-FW-9/P-DET 均已在前序条目处置）。

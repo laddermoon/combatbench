@@ -310,7 +310,11 @@ class ParallelRollouter:
         ``<= 1`` runs everything in the calling process.
         ``> 1`` spawns a persistent process pool.
     mp_context:
-        Multiprocessing start method (default ``"spawn"``).
+        Multiprocessing start method (default ``"spawn"``). With
+        ``num_workers > 1`` under ``"spawn"``, the CALLING code must live
+        in a real ``.py`` file guarded by ``if __name__ == "__main__":`` —
+        workers re-import ``__main__``, so stdin/REPL/notebook callers
+        hit ``BrokenProcessPool``.
     rollout_inference:
         ``"cpu"`` (default) keeps the existing local path — workers build
         the exported policy and run ``SamplingPolicy`` in-process.
