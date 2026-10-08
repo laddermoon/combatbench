@@ -27,18 +27,30 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 _FOOT_BODY_NAMES = ("foot_left", "foot_right")
 
 
-def sustained_wall_mask(contact, grace: int = 10):
+def sustained_wall_mask(contact, grace: int = 10, bridge: int = 2):
     """Per-frame mask of SUSTAINED wall contact.
 
     A brief wall brace (recovery touch) is a legitimate skill; only a
-    continuous lean is the exploit.  For each maximal run of contact
-    frames, the first ``grace`` frames are free and the rest count.
+    continuous lean is the exploit.  Contact flicker at the force
+    threshold can split a real lean into short runs, so runs separated
+    by <= ``bridge`` non-contact frames are merged first; then the
+    first ``grace`` frames of each merged run are free and the rest
+    count.
 
     ``contact``: bool array (T,) → bool array (T,), True on penalized
     frames.
     """
     import numpy as np
-    c = np.asarray(contact, dtype=bool)
+    c = np.asarray(contact, dtype=bool).copy()
+    # Bridge short gaps inside contact runs.
+    gap = 0
+    for t in range(len(c)):
+        if c[t]:
+            gap = 0
+        else:
+            gap += 1
+            if gap <= bridge:
+                c[t] = True
     mask = np.zeros(c.shape, dtype=bool)
     run = 0
     for t, v in enumerate(c):

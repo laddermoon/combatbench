@@ -71,6 +71,7 @@ class _RobotPushState:
         "fall_count",
         "fell_during_push",
         "wall_streak",
+        "wall_gap",
     )
 
     def __init__(self, robot_id: str, body_name: str):
@@ -89,6 +90,7 @@ class _RobotPushState:
         self.fall_count: int = 0
         self.fell_during_push: bool = False
         self.wall_streak: int = 0
+        self.wall_gap: int = 0
 
 
 class StandingTriggeredForcePlugin(BasePlugin):
@@ -345,6 +347,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             st.fall_count = 0
             st.fell_during_push = False
             st.wall_streak = 0
+            st.wall_gap = 0
             ctx.metrics[f"{rid}_push_count"] = 0
             ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
@@ -362,11 +365,15 @@ class StandingTriggeredForcePlugin(BasePlugin):
 
             # --- 墙接触持续计时：全状态运行 ---
             # 推中短暂撑墙是合法恢复；只有持续长靠（>=_WALL_LEAN_STEPS）
-            # 才在 PUSHING/OBSERVE 窗口里判摔。
+            # 才在 PUSHING/OBSERVE 窗口里判摔。力阈值边缘的接触闪烁
+            # （<=2 帧断续）不重置计时，否则真长靠会被切成短 run。
             if self._is_wall_contact(ctx, rid):
-                st.wall_streak += 1
+                st.wall_streak += st.wall_gap + 1
+                st.wall_gap = 0
             else:
-                st.wall_streak = 0
+                st.wall_gap += 1
+                if st.wall_gap > 2:
+                    st.wall_streak = 0
 
             if st.state == _WAIT_STAND:
                 if st.standing_timer >= self.standing_settle_steps and st.force > 0:
