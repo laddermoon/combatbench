@@ -1,8 +1,8 @@
 """SAC actor boundary types.
 
 The SAC framework owns its actor contract instead of importing the PPO
-``TrainablePolicy`` ABC. This module intentionally stays small: the full
-S01 policy implementation is adapted in a later phase-2 package.
+``TrainablePolicy`` ABC. This module intentionally stays small; concrete
+policy families implement this structural contract.
 """
 from __future__ import annotations
 
@@ -13,10 +13,6 @@ import torch
 import torch.nn as nn
 
 from envs.framework.policy import PolicyBlueprint
-
-
-class SACActorNotImplementedError(NotImplementedError):
-    """Raised until the SAC-owned S01 actor/export path is implemented."""
 
 
 class SACActor(Protocol):
@@ -57,4 +53,4 @@ class SACActor(Protocol):
         ...
 
 
-__all__ = ["SACActor", "SACActorNotImplementedError"]
+__all__ = ["SACActor"]

@@ -101,7 +101,7 @@ class SacStandup(CombatExperimentSACBase):
                         "reward_semantics": "standup_4stage_dense_v2",
                         "objective_mode": "shannon",
                         "regularizer_mode": "entropy",
-                        "policy_arch": "s01_pending",
+                        "policy_arch": "s01_shared_sigma",
                     },
                 )
                 if sl is not None:

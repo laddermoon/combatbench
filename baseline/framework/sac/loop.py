@@ -270,6 +270,17 @@ def train_sac(
     sp = experiment.sac_params()
     channels = experiment.reward_channels()
     channel_names = tuple(ch.name for ch in channels)
+    sources = experiment.data_sources()
+    if not sources:
+        raise ValueError("SAC experiment must declare at least one data source")
+    unsupported_sources = [src.kind for src in sources if src.kind != "self"]
+    if unsupported_sources:
+        raise ValueError(
+            "sac_replay_v1 supports only self data sources; got "
+            f"{unsupported_sources}"
+        )
+    if any(src.sampling_share <= 0 for src in sources):
+        raise ValueError("SAC data source sampling_share must be positive")
 
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)

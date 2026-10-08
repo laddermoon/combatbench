@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -231,54 +230,6 @@ class ReplayPlan:
 
 
 # ---------------------------------------------------------------------------
-# Trajectory slice — the SAC analog of PPO's Trajectory
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TrajectorySlice:
-    """A contiguous slice of an episode, prepared for replay insertion.
-
-    This is the SAC analog of PPO V2's ``Trajectory``. The key
-    differences are:
-    - Per-channel ``done`` is per-step (not per-slice), because SAC
-      needs per-transition termination for Bellman targets.
-    - ``tags`` and ``reward_features`` are carried for replay
-      stratification and relabeling.
-    - ``core_states`` is optional, for buffer-based env reset (Phase 2).
-
-    Attributes:
-        obs: (T, obs_dim) float32.
-        actions: (T, act_dim) float32.
-        last_obs: (obs_dim,) float32 — observation after last action.
-        rewards: Dict[channel_name, (T,) float32].
-        dones: Dict[channel_name, (T,) bool] — per-step per-channel
-            termination. True at step t means the episode truly ended
-            for that channel at step t (no bootstrap). False means
-            truncated (bootstrap from next obs).
-        actor_weights: Dict[channel_name, (T,) float32].
-        tags: Dict[tag_name, (T,) float32] — per-step tags.
-        reward_features: Dict[feature_name, (T,) float32] — raw
-            features for relabeling. Optional.
-        core_states: Optional (T, state_dim) — for buffer-based reset.
-        importance: Sample weight (default 1.0).
-    """
-
-    obs: np.ndarray
-    actions: np.ndarray
-    last_obs: np.ndarray
-    rewards: Dict[str, np.ndarray]
-    dones: Dict[str, np.ndarray]
-    actor_weights: Dict[str, np.ndarray]
-    tags: Dict[str, np.ndarray] = field(default_factory=dict)
-    reward_features: Dict[str, np.ndarray] = field(default_factory=dict)
-    core_states: Optional[np.ndarray] = None
-    importance: float = 1.0
-
-
-
-
-
-# ---------------------------------------------------------------------------
 # ExperimentSAC ABC
 # ---------------------------------------------------------------------------
 
@@ -287,13 +238,13 @@ class ExperimentSAC(ABC):
 
     Design principles (see PLAN.md):
     1. Experiment owns data distribution (data_sources, build_slices,
-       replay_plan, relabel).
+       replay_plan).
     2. Framework owns SAC mechanics (Q updates, alpha, target nets,
        replay buffer management).
-    3. Reward channels are first-class with per-channel gamma, n_step,
-       and pessimism configuration.
-    4. Tags drive stratification, sampling, and diagnostics.
-    5. Relabel enables curriculum + off-policy coexistence.
+    3. Reward channels are first-class, but the first-version trainer
+       accepts only the audited 1-step twin-Q configuration.
+    4. Source identity, task facts, and diagnostics are explicit; replay
+       relabeling and stratified retention are unsupported in v1.
     """
 
     # ==================================================================
@@ -403,26 +354,6 @@ class ExperimentSAC(ABC):
         return ReplayPlan()
 
     # ==================================================================
-    # Phase 5: Relabel (optional override)
-    # ==================================================================
-
-    def relabel(
-        self,
-        reward_features: Dict[str, np.ndarray],
-        tags: Dict[str, np.ndarray],
-        ctx: Dict[str, Any],
-    ) -> Optional[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]]:
-        """Recompute rewards and actor_weights from stored features.
-
-        Called when the experiment signals that curriculum has advanced
-        (via ``on_eval`` returning a relabel request). The framework
-        scans the entire buffer and calls this per-transition-batch.
-
-        Default: None (no relabeling).
-        """
-        return None
-
-    # ==================================================================
     # Evaluation
     # ==================================================================
 
@@ -436,7 +367,7 @@ class ExperimentSAC(ABC):
         - ``is_new_best``: bool
         - ``info``: dict (free-form logging)
         - ``stop_training``: bool (optional)
-        - ``request_relabel``: bool (optional — triggers buffer relabel)
+        - ``request_relabel``: unsupported in v1 and fails loudly in the loop
 
         Args:
             episodes: Raw eval episodes.

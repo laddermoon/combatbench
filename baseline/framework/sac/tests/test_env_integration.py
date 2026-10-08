@@ -120,3 +120,27 @@ def test_fake_env_to_replay_training_metrics_and_checkpoint(tmp_path) -> None:
     assert bundle.resume_mode == "full"
     assert bundle.replay is not None and bundle.replay.size == 4
     assert bundle.runtime_state["clocks"]["critic_tick"] == 4
+
+
+def test_unknown_actor_specification_fails_loudly() -> None:
+    from baseline.experiments_sac.exp_sac_balance import SacBalance
+
+    try:
+        SacBalance(actor_arch="not_an_actor").build_actor(torch.device("cpu"))
+    except ValueError as exc:
+        assert "unsupported SAC actor_arch" in str(exc)
+    else:
+        raise AssertionError("unknown actor spec was silently accepted")
+
+
+def test_loop_rejects_unsupported_declared_data_source(tmp_path) -> None:
+    class BadExperiment(_FakeExperiment):
+        def data_sources(self):
+            return (DataSource(kind="opponent", agent="robot_b"),)
+
+    try:
+        train_sac(BadExperiment(), run_dir=tmp_path / "bad", rollouter=_FakeRollouter())
+    except ValueError as exc:
+        assert "only self data sources" in str(exc)
+    else:
+        raise AssertionError("unsupported data source was silently accepted")

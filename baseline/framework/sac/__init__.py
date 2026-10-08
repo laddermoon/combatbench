@@ -9,7 +9,7 @@ the implementation decision log.
 """
 from __future__ import annotations
 
-from .actor import SACActor, SACActorNotImplementedError
+from .actor import SACActor
 from .collected_episode import CollectedEpisode
 from .collection import SACBehaviorSpec, SACFactSpec, SACJob
 from .checkpoint import (
@@ -34,11 +34,10 @@ from .experiment import (
     ReplayPlan,
     SACParams,
     SACRewardChannel,
-    TrajectorySlice,
 )
 from .metrics import MetricEvent, SACMetricsWriter, load_events
 from .networks import MultiHeadQCritic, QTrunkGroup
-from .replay import SACReplayBuffer, SACReplayError, TaggedReplay
+from .replay import SACReplayBuffer, SACReplayError
 from .s01_actor import S01Actor, S01RuntimePolicy
 from .trainer import SACTrainerError, sac_update, sac_update_v2
 from .transition import (
@@ -52,7 +51,6 @@ __all__ = [
     "CommonParamsSAC",
     "CollectedEpisode",
     "SACActor",
-    "SACActorNotImplementedError",
     "MetricEvent",
     "S01Actor",
     "S01RuntimePolicy",
@@ -78,8 +76,6 @@ __all__ = [
     "SACTrainerError",
     "SACTransitionSlice",
     "SAC_TRANSITION_SCHEMA",
-    "TaggedReplay",
-    "TrajectorySlice",
     "build_agent_transition_slice",
     "find_sample",
     "load_checkpoint_bundle",

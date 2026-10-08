@@ -239,7 +239,7 @@ class CombatExperimentSACBase(ExperimentSAC):
     # ------------------------------------------------------------------
 
     def data_sources(self) -> Tuple[DataSource, ...]:
-        return (DataSource(kind="self", agent="random"),)
+        return (DataSource(kind="self", agent=self.agent_used),)
 
     # ------------------------------------------------------------------
     # Job construction

@@ -1,7 +1,7 @@
 """SAC balance experiment — 2-channel validation.
 
-Mirrors the PPO ``basic_balance`` experiment but uses the SAC
-interface (TrajectorySlice with per-step dones, per-channel n-step).
+Mirrors the PPO ``basic_balance`` task semantics while emitting
+``sac_transition_v1`` agent-transition slices.
 
 Two reward channels:
   - r_fall: 0.01 × φ(t) per step (survival reward, dense)
@@ -205,7 +205,7 @@ class SacBalance(CombatExperimentSACBase):
                 "reward_semantics": "basic_balance_phi_cross_v1",
                 "objective_mode": "shannon",
                 "regularizer_mode": "entropy",
-                "policy_arch": "s01_pending",
+                "policy_arch": "s01_shared_sigma",
             },
         )
         return [] if sl is None else [sl]

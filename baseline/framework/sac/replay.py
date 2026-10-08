@@ -481,12 +481,8 @@ class SACReplayBuffer:
         return self.size
 
 
-TaggedReplay = SACReplayBuffer
-
-
 __all__ = [
     "SAC_REPLAY_SCHEMA",
     "SACReplayBuffer",
     "SACReplayError",
-    "TaggedReplay",
 ]
