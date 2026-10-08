@@ -2014,6 +2014,12 @@ S2-W0 P2-IND-0
   - `basic_balance` 和 `standup` 的 SAC 语义分别落到 `exp_sac_balance.py` 与新增 `exp_sac_standup.py`；balance 的 `r_cross` gate 使用 `phi_pre²`，`phi_post` 作为 `phi_post_reference`。
   - 证据：`pytest baseline/framework/sac/tests/test_collection_data.py -q` → 9 passed；`pytest baseline/framework/sac/tests -q` → 30 passed；SAC/PPO CLI listing 正常；`git diff --check` 通过。
   - 边界：SAC smoke 现在止于 `P2-TRAIN-1` 的 SAC actor 未实现，而不是 collection 未实现；replay 仍待 `P2-REPLAY-1` 接管 `SACTransitionSlice`。
+- **2026-10-08 `P2-DBG-1` 完成（metrics/data-plane 基础）：**
+  - 新增 `SACClockState`，统一 `collection_round/env_step/agent_transition/critic_tick/actor_tick/temperature_tick/target_tick/eval_tick/export_tick/checkpoint_tick`。
+  - 新增 `sac_metrics_v1`：`MetricEvent`、`MetricCatalog`、`SACMetricsWriter`、`load_events`；canonical 路径为 `<run_dir>/metrics/events.jsonl`。
+  - 事件类型限定为 `round/tick/eval/export/checkpoint/debug/config`；metric namespace 按事件校验，显式拒绝 `advantage/ratio/clip/gae/ppo` 命名空间和非有限 metric 值。
+  - 证据：`pytest baseline/framework/sac/tests/test_metrics.py -q` → 6 passed。
+  - 边界：当前只提供 writer/catalog/clock 基础，尚未接入训练 loop、tick ring 或 dump 捕获。
 
 ---
 

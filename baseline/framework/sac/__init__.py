@@ -12,6 +12,7 @@ from __future__ import annotations
 from .actor import SACActor, SACActorNotImplementedError
 from .collected_episode import CollectedEpisode
 from .collection import SACBehaviorSpec, SACFactSpec, SACJob
+from .clocks import SACClockState
 from .collection_rollouter import SACCollectionError, SACParallelRollouter
 from .experiment import (
     CommonParamsSAC,
@@ -22,6 +23,7 @@ from .experiment import (
     SACRewardChannel,
     TrajectorySlice,
 )
+from .metrics import MetricEvent, SACMetricsWriter, load_events
 from .networks import MultiHeadQCritic, QTrunkGroup
 from .replay import TaggedReplay
 from .trainer import sac_update_v2
@@ -37,10 +39,13 @@ __all__ = [
     "CollectedEpisode",
     "SACActor",
     "SACActorNotImplementedError",
+    "MetricEvent",
     "SACBehaviorSpec",
+    "SACClockState",
     "SACCollectionError",
     "SACFactSpec",
     "SACJob",
+    "SACMetricsWriter",
     "SACParallelRollouter",
     "DataSource",
     "ExperimentSAC",
@@ -54,6 +59,7 @@ __all__ = [
     "TaggedReplay",
     "TrajectorySlice",
     "build_agent_transition_slice",
+    "load_events",
     "sac_update_v2",
     "validate_transition_slice",
 ]
