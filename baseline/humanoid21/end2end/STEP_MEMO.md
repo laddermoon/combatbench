@@ -639,3 +639,38 @@ s42 轨迹参考：~u2300 step 涌现 → ~u3500 step=1.0 → ~u4000 alt≈0.97�
   alt 企稳、200 eval 无改善）
 
 **验收视频**：`runs/train_step_clean_{42e,43h,44g}/videos/` 末段。
+
+---
+
+## MoG 链条复验（mbs_ef05 底座 → step_mbs）
+
+standup 换用 sweep 选出的 MoG+bounded-σ+state-σ+ef0.5 策略
+（`standup_mbs_ef05_s42`，conv95×3=U240，online 站稳率 0.98），
+step 从 `checkpoint_u00350` 续训（`step_mbs`，配方零改动）。
+
+**学习速度对比**（步态阶段 update 数）：
+
+| 里程碑 | base 链（u1500 起） | mbs 链（u350 起） |
+|---|---|---|
+| solepk 破零 | +550u | +455u |
+| cycles 爆发 | +1280u | +530u |
+| step=1.0 | +1960u | +1055u |
+| alt≈0.7 | +2400u（需 boost 解锁） | +1100u 自然爬升 |
+
+**三 seed 终态**（均视频验收通过）：
+
+| seed | run | alt | cycles | solepk | falls | sway |
+|---|---|---|---|---|---|---|
+| 42 | step_mbs_s42 (u1885→2085 停) | 0.86 | 45 | 0.095 | 0.02 | 1.37 |
+| 43 | step_mbs_s43→s43b (u2775 停) | 0.82-0.94 | 45-48 | 0.098 | 0.02 | 1.17 |
+| 44 | step_mbs_s44→s44b (u2740 手动停) | 0.89 | 44 | 0.094 | 0.03 | 1.20 |
+
+**关键发现**：MoG 未消除同脚吸引子 —— s42 快速穿过，s43/s44
+各卡了 ~400-700u 的真平台（alt≈0.005，cycles~6/ep 走平，
+EMA 正确判停）。resume 后凭 fresh 预算继续磨，分别在
++~500u / +~600u 处爆发逃逸。吸引子是配方内生属性；MoG 的
+多分量探索提高逃逸速度而非免疫。逃逸均靠续训时间而非新干预。
+
+**第三阶段已启动**：`balance_step_mbs`（balance_step_env.yaml =
+step_env + StandingTriggeredForcePlugin），从 step_mbs_s42 u1885
+续训，12 级推力课程（40N×4 + 100N×8），recovery≥0.8×2 晋级。
