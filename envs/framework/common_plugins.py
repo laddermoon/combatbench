@@ -58,6 +58,9 @@ class VideoRecorderPlugin(BasePlugin):
     def __init__(self, fps: int = 30, output_path: str = "video.mp4"):
         self.fps = fps
         self.output_path = Path(output_path)
+        # ctor default remembered so a per-episode override only lasts
+        # that episode (P3-2).
+        self._default_output_path = self.output_path
         self._interval = 1
         self._frames: List[np.ndarray] = []
 
@@ -71,10 +74,12 @@ class VideoRecorderPlugin(BasePlugin):
         self._interval = max(1, int(round(freq / self.fps)))
 
         # Per-episode override via reset(options=...) — takes precedence
-        # over the ctor default. See class docstring.
+        # over the ctor default for THIS episode only; absence of the key
+        # restores the ctor default rather than keeping a stale override.
         override = ctx.episode_options.get(self.OPTIONS_OUTPUT_PATH_KEY)
-        if override is not None:
-            self.output_path = Path(override)
+        self.output_path = (
+            Path(override) if override is not None else self._default_output_path
+        )
 
         # 录制初始帧
         frame = ctx.accessor.get_broadcastview_image()

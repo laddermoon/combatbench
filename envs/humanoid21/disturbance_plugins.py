@@ -1166,6 +1166,14 @@ class ConstantForcePlugin(BasePlugin):
         self.direction = float(direction)
         self.duration_action_steps = int(duration_action_steps)
         self.body_name = body_name
+        # ctor defaults remembered so episode_options overrides apply to
+        # the current episode only and never pollute later episodes (P3-16).
+        self._defaults = {
+            "force": self.force,
+            "direction": self.direction,
+            "duration_action_steps": self.duration_action_steps,
+            "body_name": self.body_name,
+        }
 
         self._direction_vec: Optional[np.ndarray] = None
         self._remaining_action_steps = 0
@@ -1180,13 +1188,9 @@ class ConstantForcePlugin(BasePlugin):
         return True
 
     def to_blueprint(self) -> Dict[str, Any]:
-        return {
-            "agent_id": self.agent_id,
-            "force": self.force,
-            "direction": self.direction,
-            "duration_action_steps": self.duration_action_steps,
-            "body_name": self.body_name,
-        }
+        # Serialize the ctor config, not the (possibly episode-overridden)
+        # active values.
+        return {"agent_id": self.agent_id, **self._defaults}
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "ConstantForcePlugin":
@@ -1213,6 +1217,13 @@ class ConstantForcePlugin(BasePlugin):
 
         其中 ``direction_angle`` 为相对角度（度），会赋给 ``self.direction``。
         """
+        # Restore ctor defaults first — a previous episode's overrides
+        # must not leak into this one.
+        self.force = self._defaults["force"]
+        self.direction = self._defaults["direction"]
+        self.duration_action_steps = self._defaults["duration_action_steps"]
+        self.body_name = self._defaults["body_name"]
+
         params = ctx.episode_options.get("impulse_params", {})
         per_agent = params.get(self.agent_id, {})
         if per_agent:

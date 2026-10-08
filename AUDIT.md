@@ -2601,3 +2601,28 @@ EnvRuntime——不给 core 加回调，recorder 派发保持单层。
 ### 验证
 
 `pytest envs/framework/tests/` → **233 passed**。
+
+## [2026-10-08] P3-2 + P3-16 处置：episode_options 覆盖永久污染 ×2
+
+**对象**：`envs/framework/common_plugins.py`（VideoRecorderPlugin）、
+`envs/humanoid21/disturbance_plugins.py`（ConstantForcePlugin）、
+`framework/tests/test_audit_video_path_leak.py`（翻转）、
+`humanoid21/tests/test_audit_sticky_episode_options.py`（新增）
+**类别**：修复执行（同一类 bug 的两个实例一并处理）
+
+### 实施
+
+同一模式：ctor 时快照默认值，每回合 `on_pre_episode` 先恢复默认再应用
+episode_options 覆盖——恢复"仅本回合"语义，与各自 docstring 承诺一致。
+
+- `VideoRecorderPlugin`：`self._default_output_path` 快照；override 缺失
+  时回 ctor 默认（原行为：override 永久改写 `self.output_path`）。
+- `ConstantForcePlugin`：`self._defaults` 快照 force/direction/
+  duration_action_steps/body_name 四项；`to_blueprint` 改导出 ctor
+  配置（原行为会导出上回合覆盖值）。
+- 排查同文件另两个 episode_options 消费者（RandomImpulsePlugin、
+  StateBankPlugin）——均走局部变量，无同款污染。
+
+### 验证
+
+`pytest envs/framework/tests + envs/humanoid21/tests` → **280 passed**。
