@@ -21,6 +21,12 @@ from .checkpoint import (
 )
 from .clocks import SACClockState
 from .collection_rollouter import SACCollectionError, SACParallelRollouter
+from .debugkit import (
+    SACDumpError,
+    find_sample,
+    recompute_dump,
+    summarize_dump,
+)
 from .experiment import (
     CommonParamsSAC,
     DataSource,
@@ -55,6 +61,7 @@ __all__ = [
     "SACCheckpointError",
     "SACClockState",
     "SACCollectionError",
+    "SACDumpError",
     "SACFactSpec",
     "SACJob",
     "SACMetricsWriter",
@@ -74,11 +81,14 @@ __all__ = [
     "TaggedReplay",
     "TrajectorySlice",
     "build_agent_transition_slice",
+    "find_sample",
     "load_checkpoint_bundle",
     "load_events",
     "load_model_only",
     "sac_update",
     "sac_update_v2",
+    "recompute_dump",
     "save_checkpoint_bundle",
+    "summarize_dump",
     "validate_transition_slice",
 ]

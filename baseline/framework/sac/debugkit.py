@@ -172,7 +172,7 @@ def finish_critic_tick_dump(
             "evidence_level": "recompute",
             "files": files,
         })
-        final = tmp.with_name(tmp.name.lstrip(".").rsplit("_", 1)[0])
+        final = tmp.parent / f"critic_tick_{int(request['critic_tick']):08d}"
         os.replace(tmp, final)
         prune_critic_tick_dumps(final.parent, keep_last=keep_last)
         return final
@@ -425,11 +425,16 @@ def find_sample(dump_dir: Path, *, sample_id: int) -> Dict[str, Any]:
             f"sample_id={sample_id} occurs {len(matches)} times in dump"
         )
     i = int(matches[0])
+    metadata = batch.get("metadata")
+    if metadata is None:
+        metadata_item = {}
+    else:
+        metadata_item = metadata[i]
     return {
         "sample_id": int(sample_id),
         "index": i,
         "source_key": str(batch["source_keys"][i]),
-        "metadata": dump["batch"].get("metadata", [{}] * len(matches))[i],
+        "metadata": metadata_item,
         "obs": batch["obs"][i],
         "action": batch["actions"][i],
         "next_obs": batch["next_obs"][i],

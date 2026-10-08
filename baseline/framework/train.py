@@ -113,10 +113,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dump-at", action="append", default=[], metavar="UPDATE[,UPDATE...]",
-        help="Schedule a dump (full update capture + gradsig diagnostic) "
-             "at update N. Repeatable or comma-separated, absolute update "
-             "indices — combine with --resume-from to dump an exact "
-             "reproduced update, e.g. --resume-from ckpt_u280 --dump-at 282.",
+        help="Schedule a dump at absolute update N for PPO, or at absolute "
+             "critic tick N for SAC. Repeatable or comma-separated.",
     )
     parser.add_argument(
         "--dump-hypothesis", type=str, default="",
