@@ -33,7 +33,8 @@ from .experiment import (
 from .metrics import MetricEvent, SACMetricsWriter, load_events
 from .networks import MultiHeadQCritic, QTrunkGroup
 from .replay import SACReplayBuffer, SACReplayError, TaggedReplay
-from .trainer import sac_update_v2
+from .s01_actor import S01Actor, S01RuntimePolicy
+from .trainer import SACTrainerError, sac_update, sac_update_v2
 from .transition import (
     SAC_TRANSITION_SCHEMA,
     SACTransitionSlice,
@@ -47,6 +48,8 @@ __all__ = [
     "SACActor",
     "SACActorNotImplementedError",
     "MetricEvent",
+    "S01Actor",
+    "S01RuntimePolicy",
     "SACBehaviorSpec",
     "SACCheckpointBundle",
     "SACCheckpointError",
@@ -65,6 +68,7 @@ __all__ = [
     "ReplayPlan",
     "SACParams",
     "SACRewardChannel",
+    "SACTrainerError",
     "SACTransitionSlice",
     "SAC_TRANSITION_SCHEMA",
     "TaggedReplay",
@@ -73,6 +77,7 @@ __all__ = [
     "load_checkpoint_bundle",
     "load_events",
     "load_model_only",
+    "sac_update",
     "sac_update_v2",
     "save_checkpoint_bundle",
     "validate_transition_slice",

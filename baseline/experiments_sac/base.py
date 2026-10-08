@@ -21,7 +21,8 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.framework.sac.actor import SACActor, SACActorNotImplementedError
+from baseline.framework.sac.actor import SACActor
+from baseline.framework.sac.s01_actor import S01Actor
 from baseline.framework.sac.collection import (
     SACBehaviorSpec,
     SACFactSpec,
@@ -98,10 +99,12 @@ class CombatExperimentSACBase(ExperimentSAC):
     action_dim: int = 21
     actor_hidden_dim: int = 256
     q_hidden_dim: int = 256
+    actor_arch: str = "s01"
+    init_log_std: float = -0.5
 
-    # --- Exploration (SAC: wide range, alpha controls exploration) ---
-    log_std_min: float = -10.0
-    log_std_max: float = 2.0
+    # --- Exploration (bounded shared sigma; alpha controls entropy) ---
+    log_std_min: float = -4.0
+    log_std_max: float = 0.0
 
     # --- Shared training ---
     learning_rate: float = 3e-4
@@ -123,7 +126,7 @@ class CombatExperimentSACBase(ExperimentSAC):
     alpha_lr: float = 3e-4
     log_alpha_min: float = -10.0
     log_alpha_max: float = 2.0
-    use_grad_norm: bool = True
+    use_grad_norm: bool = False
     q_layer_norm: bool = False
     reward_scale: float = 1.0
 
@@ -195,11 +198,20 @@ class CombatExperimentSACBase(ExperimentSAC):
     # ------------------------------------------------------------------
 
     def build_actor(self, device: torch.device) -> SACActor:
-        raise SACActorNotImplementedError(
-            "SAC actor construction is pending P2-TRAIN-1. The legacy "
-            "humanoid21 actor blueprint points to a PPO policy class and "
-            "must not be loaded on the SAC path."
-        )
+        if self.actor_arch != "s01":
+            raise ValueError(
+                f"unsupported SAC actor_arch {self.actor_arch!r}; "
+                "P2-TRAIN-1 supports only 's01'"
+            )
+        return S01Actor(
+            obs_dim=self.obs_dim,
+            action_dim=self.action_dim,
+            hidden_dim=self.actor_hidden_dim,
+            log_std_min=self.log_std_min,
+            log_std_max=self.log_std_max,
+            init_log_std=self.init_log_std,
+            seed=self.seed,
+        ).to(device)
 
     def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
         """Build a single-channel Q critic.

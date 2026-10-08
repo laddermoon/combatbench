@@ -122,7 +122,7 @@ class SACParams:
     alpha_lr: float = 3e-4
     log_alpha_min: float = -10.0
     log_alpha_max: float = 2.0
-    use_grad_norm: bool = True
+    use_grad_norm: bool = False
     grad_norm_est_interval: int = 10
     grad_norm_ema_decay: float = 0.99
     q_hidden_dim: int = 256

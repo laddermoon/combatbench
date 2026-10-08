@@ -38,7 +38,7 @@ from .experiment import (
 )
 from .networks import MultiHeadQCritic
 from .replay import TaggedReplay
-from .trainer import GradNormStats, sac_update_v2
+from .trainer import sac_update_v2
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +302,6 @@ def train_sac(
     sp = experiment.sac_params()
     channels = experiment.reward_channels()
     channel_names = tuple(ch.name for ch in channels)
-    n_steps = {ch.name: ch.n_step for ch in channels}
 
     # Signal handling
     def _shutdown_handler(signum, frame):
@@ -338,18 +337,14 @@ def train_sac(
     if sp.auto_alpha:
         alpha_optimizer = torch.optim.Adam([log_alpha], lr=sp.alpha_lr)
 
-    # Gradient norm stats
-    grad_norm_stats = GradNormStats(
-        channel_names=channel_names,
-        ema_decay=sp.grad_norm_ema_decay,
-    ) if sp.use_grad_norm else None
-
     # Replay buffer
     replay = TaggedReplay(
         capacity=sp.replay_buffer_size,
         obs_dim=actor.obs_dim,
         action_dim=actor.action_dim,
         channel_names=channel_names,
+        rng_seed=cp.seed + 17,
+        replay_plan=experiment.replay_plan(),
     )
 
     # Divergence guard
@@ -461,9 +456,7 @@ def train_sac(
                 n_grad_steps = min(n_grad_steps, sp.max_grad_steps_per_round)
 
                 for _ in range(n_grad_steps):
-                    batch = replay.sample_nstep(
-                        sp.batch_size, device, n_steps,
-                    )
+                    batch = replay.sample(sp.batch_size, device)
                     step_stats = sac_update_v2(
                         actor=actor,
                         critic=critic,
@@ -475,8 +468,7 @@ def train_sac(
                         sp=sp,
                         grad_clip_norm=cp.grad_clip_norm,
                         device=device,
-                        grad_norm_stats=grad_norm_stats,
-                        grad_norm_step=grad_step,
+
                     )
                     for k, v in step_stats.items():
                         sac_stats_accum.setdefault(k, []).append(v)

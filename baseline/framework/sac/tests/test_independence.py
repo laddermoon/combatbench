@@ -141,54 +141,20 @@ def test_sac_cli_rejects_ppo_only_flags():
     assert "--param" in output
 
 
-def test_sac_smoke_stops_at_actor_boundary_without_ppo():
+def test_sac_actor_builds_without_ppo_imports():
     result = _run_python(
         """
-import argparse
 import sys
-import tempfile
-from pathlib import Path
+import torch
 
-import baseline.framework.train as train
+from baseline.experiments_sac.exp_sac_balance import SacBalance
 
-with tempfile.TemporaryDirectory() as tmp:
-    args = argparse.Namespace(
-        experiment="sac_balance",
-        algo="sac",
-        smoke=True,
-        resume_from=None,
-        reset_update=False,
-        run_name=None,
-        list_experiments=False,
-        no_confidence=False,
-        no_snapshot=True,
-        run_dir=str(Path(tmp) / "run"),
-        background=False,
-        seed=None,
-        adv_winsorize_sigma=None,
-        adv_winsorize_from_update=0,
-        adv_norm=None,
-        adv_norm_from_update=0,
-        dual_clip_c=None,
-        dual_clip_from_update=0,
-        dump_at=[],
-        dump_hypothesis="",
-        dump_full_grad=False,
-        param=[],
-        collector="cpu",
-        collector_batch_size=64,
-        collector_devices="",
-        set=[],
-    )
-    train._parse_args = lambda: args
-    train._setup_logging = lambda run_dir, background: run_dir / "train.log"
-
-    try:
-        train.main()
-    except Exception as exc:
-        assert "P2-TRAIN-1" in str(exc), str(exc)
-    else:
-        raise AssertionError("SAC actor boundary did not fail")
+exp = SacBalance(use_grad_norm=False)
+actor = exp.build_actor(torch.device("cpu"))
+assert actor.obs_dim == exp.obs_dim
+assert actor.action_dim == exp.action_dim
+assert actor.policy_arch == "s01_shared_sigma"
+assert actor.policy_fingerprint()
 
 ppo_modules = [
     name for name in sys.modules

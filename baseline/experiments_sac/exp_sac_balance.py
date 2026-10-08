@@ -82,7 +82,7 @@ class SacBalance(CombatExperimentSACBase):
     alpha_lr: float = 1e-4
     # Clamp alpha to prevent total collapse: log_alpha_min=-5 → alpha≈0.007
     log_alpha_min: float = -5.0
-    use_grad_norm: bool = True
+    use_grad_norm: bool = False
     q_hidden_dim: int = 256
     # LayerNorm in Q trunk for stability (prevents Q overestimation crash)
     q_layer_norm: bool = True
