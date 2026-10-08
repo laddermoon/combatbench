@@ -16,10 +16,6 @@ from envs.framework.context import ReadOnlySimContext, SimContext
 from envs.framework.observer_plugin import BaseRuntimeUnit
 
 
-_TURB_DEBUG = os.environ.get("COMBATBENCH_TURB_DEBUG", "0") == "1"
-_TURB_DEBUG_MAX_PHYS_STEPS = max(0, int(os.environ.get("COMBATBENCH_TURB_DEBUG_MAX_PHYS_STEPS", "400")))
-
-
 class RandomPushPlugin(BasePlugin):
     """
     随机推力插件
@@ -86,29 +82,6 @@ class RandomPushPlugin(BasePlugin):
             self._rng.uniform(-0.2, 0.2) * self.force_magnitude
         ])
 
-    def _debug_log(self, ctx: SimContext, stage: str, force: Optional[np.ndarray]) -> None:
-        if not _TURB_DEBUG:
-            return
-        if _TURB_DEBUG_MAX_PHYS_STEPS > 0 and ctx.physics_step > _TURB_DEBUG_MAX_PHYS_STEPS:
-            return
-        core_state = ctx.accessor.get_core_state()[self.target_robot]
-        derived_state = ctx.accessor.get_derived_state()[self.target_robot]
-        root_pos = np.asarray(core_state["root_pos"], dtype=np.float64)
-        root_vel_local = np.asarray(core_state["root_vel_local"], dtype=np.float64)
-        linear_vel = np.asarray(derived_state["root_state"]["linear_vel"], dtype=np.float64)
-        uprightness = float(np.asarray(derived_state["uprightness"], dtype=np.float64).reshape(-1)[0])
-        force_array = np.zeros(3, dtype=np.float64) if force is None else np.asarray(force, dtype=np.float64)
-        print(
-            f"turb_debug[{self.target_robot}] stage={stage} phy={ctx.physics_step} epi={ctx.episode_step} "
-            f"action={self._action_step_count} wait_remaining={self._wait_remaining_action_steps} "
-            f"push_remaining={self._push_remaining_action_steps} active={self._push_active_this_action} "
-            f"force=({force_array[0]:.6f},{force_array[1]:.6f},{force_array[2]:.6f}) |F|={float(np.linalg.norm(force_array)):.6f} "
-            f"root_pos=({root_pos[0]:.6f},{root_pos[1]:.6f},{root_pos[2]:.6f}) "
-            f"root_vel_local=({root_vel_local[0]:.6f},{root_vel_local[1]:.6f},{root_vel_local[2]:.6f}) "
-            f"linear_vel=({linear_vel[0]:.6f},{linear_vel[1]:.6f},{linear_vel[2]:.6f}) upright={uprightness:.6f}",
-            flush=True,
-        )
-
     @property
     def name(self) -> str:
         return "random_push"
@@ -151,14 +124,12 @@ class RandomPushPlugin(BasePlugin):
             self._push_active_this_action = True
             ctx.metrics[f'{self.target_robot}_push_active'] = True
             ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = 0
-            self._debug_log(ctx, "action_continue", self._current_force)
             return
 
         if self._wait_remaining_action_steps > 0:
             self._wait_remaining_action_steps -= 1
             ctx.metrics[f'{self.target_robot}_push_active'] = False
             ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
-            self._debug_log(ctx, "action_wait", None)
             return
 
         self._current_force = self._sample_force()
@@ -170,20 +141,17 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_push_duration_action_steps'] = self.push_duration_steps
         ctx.metrics[f'{self.target_robot}_push_active'] = True
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = 0
-        self._debug_log(ctx, "action_start", self._current_force)
 
     def on_pre_phy_step(self, ctx: SimContext) -> None:
         """在推力激活的动作步内，对每个物理步持续施力"""
         if not self._push_active_this_action or self._current_force is None:
             return
 
-        self._debug_log(ctx, "phy_before_apply", self._current_force)
         ctx.mutator.apply_external_force(
             body_name=self.target_body,
             force=self._current_force,
             robot_id=self.target_robot
         )
-        self._debug_log(ctx, "phy_after_apply", self._current_force)
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         """在动作步结束后推进等待/持续计数器"""
@@ -194,7 +162,6 @@ class RandomPushPlugin(BasePlugin):
                 self._wait_remaining_action_steps = self._sample_interval_action_steps()
         ctx.metrics[f'{self.target_robot}_push_active'] = self._push_active_this_action
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
-        self._debug_log(ctx, "action_end", self._current_force)
 
 
 class InitialStatePerturbationPlugin(BasePlugin):

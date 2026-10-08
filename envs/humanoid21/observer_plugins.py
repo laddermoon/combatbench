@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 
-import mujoco
 import numpy as np
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation as R

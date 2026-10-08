@@ -48,7 +48,7 @@ def _safe_call(
     except Exception:
         if strict:
             raise
-        _logger.exception("%s '%s' failed at %s", label, hook_name, label)
+        _logger.exception("%s '%s' failed", label, hook_name)
 
 
 class _PluginManager:

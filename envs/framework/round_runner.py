@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
 
-import numpy as np
-
 from .blueprint import EnvBlueprint
 from .common_plugins import VideoRecorderPlugin
 from .context import AGENT_IDS

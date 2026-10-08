@@ -2626,3 +2626,23 @@ episode_options 覆盖——恢复"仅本回合"语义，与各自 docstring 承
 ### 验证
 
 `pytest envs/framework/tests + envs/humanoid21/tests` → **280 passed**。
+
+## [2026-10-08] P3-3/4/15/21 处置：日志错位 + 死 import ×2 + 调试插桩删除
+
+**对象**：`envs/framework/env_runtime.py`、`round_runner.py`、
+`envs/humanoid21/{observer_plugins.py,disturbance_plugins.py,simulator.py}`
+**类别**：修复执行
+
+- **P3-3**：`_safe_call` 日志 `"%s '%s' failed at %s"` 第三个占位误传
+  `label`（输出 "failed at Plugin 'x'"）→ 改 `"%s '%s' failed"`。
+- **P3-4**：`round_runner.py` 死 `import numpy` 删除（全文无 `np.`）。
+- **P3-21**：`observer_plugins.py` 死 `import mujoco` 删除（全文无引用）。
+- **P3-15**：`_TURB_DEBUG` 插桩整套删除（用户裁决删而非登记）——
+  `simulator.py` 3 个物理步/施力 dump 块 + `disturbance_plugins.py`
+  的 `_debug_log` 方法及 6 个调用点 + 两文件的
+  `COMBATBENCH_TURB_DEBUG[_MAX_PHYS_STEPS]` 常量。
+  注：同文件 `COMBATBENCH_FALL_DEBUG` 为另一条调试通道（P3-26 待登记）。
+
+### 验证
+
+`pytest envs/framework/tests + envs/humanoid21/tests` → **280 passed**。
