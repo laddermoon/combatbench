@@ -12,6 +12,13 @@ from __future__ import annotations
 from .actor import SACActor, SACActorNotImplementedError
 from .collected_episode import CollectedEpisode
 from .collection import SACBehaviorSpec, SACFactSpec, SACJob
+from .checkpoint import (
+    SACCheckpointBundle,
+    SACCheckpointError,
+    load_checkpoint_bundle,
+    load_model_only,
+    save_checkpoint_bundle,
+)
 from .clocks import SACClockState
 from .collection_rollouter import SACCollectionError, SACParallelRollouter
 from .experiment import (
@@ -41,6 +48,8 @@ __all__ = [
     "SACActorNotImplementedError",
     "MetricEvent",
     "SACBehaviorSpec",
+    "SACCheckpointBundle",
+    "SACCheckpointError",
     "SACClockState",
     "SACCollectionError",
     "SACFactSpec",
@@ -61,7 +70,10 @@ __all__ = [
     "TaggedReplay",
     "TrajectorySlice",
     "build_agent_transition_slice",
+    "load_checkpoint_bundle",
     "load_events",
+    "load_model_only",
     "sac_update_v2",
+    "save_checkpoint_bundle",
     "validate_transition_slice",
 ]
