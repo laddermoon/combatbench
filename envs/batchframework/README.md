@@ -69,6 +69,11 @@ report = dr.last_collect_report           # 分项计时/sync 记账/健康统�
 | 文档 | 内容 |
 |---|---|
 | `PUBLIC_INTERFACE.md` | 公开面/版本锚/弃用清单（**先看这个**） |
+| `DESIGN.md` | 架构规格（分层/对象/数据平面/装配/优化面） |
+| `SEMANTICS.md` | 语义规格（seed/reset/生命周期/与 CPU 差异登记） |
+| `CONTEXT.md` | AI 速览 memo（入口 + 常见坑） |
+| `MIGRATION_GUIDE.md` | CPU 实验→设备迁移 7 步流程 |
+| `BATCHFRAMEWORK_AUDIT.md` | 系统审计（vs CPU 差距清单） |
 | `E8_SUPPORT_MATRIX.md` | 能力逐项结算 + 证据指针 |
 | `ROADMAP.md` | E0–E8 工程化路线 + 历史 M0–M8 |
 | `E1–E7_PLAN.md`/`E7_RESULTS.md`/`E7_BASELINE.md` | 各阶段计划与实测结果 |
