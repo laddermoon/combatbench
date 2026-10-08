@@ -75,10 +75,9 @@ baseline/humanoid21/
 
 ### `tests/`
 
-| 文件 | 说明 |
-|------|------|
-| `test_curriculum_gate.py` | 课程门控测试 |
-| `test_fight_mixed_policy.py` | 混合对抗策略测试 |
+当前无测试文件。原 `test_curriculum_gate.py`（守护已删除的
+`CurriculumStageGate`）与 `test_fight_mixed_policy.py`（依赖已不存在的
+历史 runs/ 导出）于 2026-10 审计中删除——它们守护的对象均属 Legacy 资产。
 
 ### `curriculum/` ⚠️ 遗留目录
 

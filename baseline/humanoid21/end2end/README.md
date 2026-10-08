@@ -26,7 +26,6 @@
 
 后续看，如果有必要的话，可能需要在这中间加一个平衡强化的阶段。在机器人站立起来之后，在加入随机扰动，然后让机器人尽量再保持平衡。
 /data1/mono/things/combatbench/baseline/experiments_ppo/todo/exp_balance_v2.py
-正在训练
 
 第三步，训练机器人跟随。还是从倒地开始，因为这个倒地的这个是一直要强化训练的。然后加上移动靶，就跟现在的这个跟随策略是这个训练是一样的奖励。跟随奖励也是条件奖励，只有在机器人完全站立起来之后才有跟随奖励。
 /data1/mono/things/combatbench/baseline/experiments_ppo/todo/exp_standup_follow.py

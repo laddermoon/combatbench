@@ -2513,3 +2513,44 @@ git 外文档，不管）
 - `pytest envs/framework/tests/` → **232 passed**
 - 冒烟：双 TimeoutPlugin 的 `from_runtime` 触发 warning 且取后者；
   `test_audit_fail_loud` 的直构造 view 补 `_set_valid(True)` 模拟授予。
+
+## [2026-10-08] P-BF 组跳过 + P-BH-1~3 处置（Legacy 标记路线）
+
+**对象**：`baseline/humanoid21/{tests/,blueprints/README.md,README.md,
+blueprints/{fight_mixed,fight_mixed_v2,mixed,standup_fallback}.yaml}`
+**类别**：复核 + 修复执行（用户裁决：P-BF 组全部跳过——batchframework
+正在大改；未引用资产标 Legacy 保留，不为这类代码保留测试）
+
+### P-BF-1~4：跳过（用户指示，该目录正在大改）
+
+复核附记：P-BF-2（tests/README.md 归属索引）与 P-BF-4（M6_RESULTS.md
+已存在、5 个 m6_pilot run 证实跑过）事实上已自然消解；P-BF-1/3 遗留
+（fixture 重批准归属、probe 脚本索引）待大改落定后再议。
+
+### P-BH-1：blueprints 膨胀 → 活跃/Legacy 二分标记
+
+- 精确核实：60 个 yaml 中仅 **12 个被活代码引用**（文件名精确匹配
+  experiments_ppo 顶层 + examples + envs）：2 个 env 蓝图
+  （`basic_balance_v2_phi_dual_env`、`standup_4stage_dense_v2_env`）+
+  10 个 `init_policy_*`（现役 TruncNorm 族）。
+- 其余 ~48 个多数被 `archive|todo` 实验或 `curriculum/` 引用——按用户
+  裁决全部标 **Legacy 保留**（有考虑价值），不删除不挪动。
+- `blueprints/README.md` 新增"活跃 vs Legacy"清单节。
+
+### P-BH-2/3：两个守护 Legacy/死资产的测试删除
+
+- `test_curriculum_gate.py`：守护 `CurriculumStageGate`——该类全仓已
+  不存在（随 v1 框架删除），测试无任何守护对象。
+- `test_fight_mixed_policy.py`：`fight_mixed.yaml` 默认
+  `follow_policy_bp`/`fallback_policy_bp` 指向 `baseline/humanoid21/
+  runs/curriculum_*`——该 runs 目录本机已不存在（gitignored 历史产物），
+  2 个测试均 FileNotFoundError。
+- 连带：4 个含死 runs/ 默认值的参数化蓝图（fight_mixed/fight_mixed_v2/
+  mixed/standup_fallback）头部加 LEGACY 注释，声明必须显式覆盖
+  `*_policy_bp`。
+- `baseline/humanoid21/README.md` tests/ 段同步更新。
+
+### 验证
+
+`pytest baseline/humanoid21/ --collect-only` → 0 collection errors
+（此前 1 error + 2 fail）。

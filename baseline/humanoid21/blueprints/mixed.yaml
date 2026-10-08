@@ -12,6 +12,7 @@
 #   - A string path to a blueprint YAML file
 #   - A PolicyBlueprint dict (version/cls/config)
 
+# LEGACY: 默认 *_policy_bp 指向已不存在的历史 runs/ 导出；使用必须经 pb.build(...) 显式覆盖。
 version: 1
 parameters:
   primary_policy_bp:
