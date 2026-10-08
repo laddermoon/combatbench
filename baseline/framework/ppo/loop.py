@@ -734,7 +734,8 @@ def train_ppo(
     # workers, amortizing environment construction cost over many updates.
     # Exploration state carried across updates.
     #   exploration — the spec currently in force; kept so ppo_update can
-    #                 read its trust-region fields.
+    #                 read its uncertainty_floor/uncertainty_coef fields
+    #                 (trust-region knobs live in PPOParams, not here).
     exploration: Optional[ExplorationSpec] = None
     # Previous diagnostic update's aggregate gradient G, held in memory
     # and passed back via GradDiagSpec.prev_g so the trainer can emit
@@ -1143,7 +1144,7 @@ def train_ppo(
                 is_new_best = result.get("is_new_best", False)
 
                 if result.get("stop_training", False):
-                    print(f"[early_stop] no improvement for {getattr(experiment, '_no_improvement_limit', '?')} evals, stopping at update {u}", flush=True)
+                    print(f"[early_stop] experiment requested stop_training at update {u}", flush=True)
                     stop_ckpt = ckpt_dir / f"checkpoint_u{u:05d}.pt"
                     save_checkpoint(
                         stop_ckpt,

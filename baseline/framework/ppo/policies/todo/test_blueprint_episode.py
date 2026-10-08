@@ -23,7 +23,7 @@ if _REPO_ROOT not in sys.path:
 
 import numpy as np
 
-from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.todo.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from baseline.framework.rollout.episode import Episode
 from baseline.framework.rollout.episode import blueprint_hash as _bp_hash
 from baseline.framework.rollout.episode_recorder import EpisodeRecorder

@@ -27,36 +27,27 @@ from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 _FOOT_BODY_NAMES = ("foot_left", "foot_right")
 
 
-def sustained_wall_mask(contact, grace: int = 10, bridge: int = 2):
-    """Per-frame mask of SUSTAINED wall contact.
+def sustained_wall_mask(contact, window: int = 40, count_thresh: int = 10):
+    """Per-frame mask of sustained wall reliance (touch-and-go safe).
 
-    A brief wall brace (recovery touch) is a legitimate skill; only a
-    continuous lean is the exploit.  Contact flicker at the force
-    threshold can split a real lean into short runs, so runs separated
-    by <= ``bridge`` non-contact frames are merged first; then the
-    first ``grace`` frames of each merged run are free and the rest
-    count.
+    The exploit evolved past consecutive-run detection: the robot taps
+    the wall and bounces off, repeatedly — each contact stays under the
+    run-length grace but the *pattern* still harvests wall support.
+    A legitimate recovery brace uses the wall once or twice per
+    incident; reliance shows up as contact DENSITY.  Frames are
+    penalized (contact or not) while the trailing ``window``-frame
+    contact count exceeds ``count_thresh`` — a single <10-frame brace
+    in a 40-frame window stays free, camping or tap-cycling pays.
 
     ``contact``: bool array (T,) → bool array (T,), True on penalized
     frames.
     """
     import numpy as np
-    c = np.asarray(contact, dtype=bool).copy()
-    # Bridge short gaps inside contact runs.
-    gap = 0
-    for t in range(len(c)):
-        if c[t]:
-            gap = 0
-        else:
-            gap += 1
-            if gap <= bridge:
-                c[t] = True
-    mask = np.zeros(c.shape, dtype=bool)
-    run = 0
-    for t, v in enumerate(c):
-        run = run + 1 if v else 0
-        mask[t] = run > grace
-    return mask
+    c = np.asarray(contact, dtype=bool)
+    pref = np.concatenate([[0], np.cumsum(c.astype(np.int64))])
+    idx = np.arange(len(c)) + 1
+    cnt = pref[idx] - pref[np.maximum(idx - window, 0)]
+    return cnt > count_thresh
 
 
 class WallContactObserver(BaseObserverPlugin):

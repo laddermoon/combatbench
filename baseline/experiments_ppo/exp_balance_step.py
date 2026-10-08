@@ -70,7 +70,8 @@ class BalanceStep(Step):
     # channel — and gated to upright frames (φ≥0.5; fallen frames next
     # to a wall are involuntary).
     wall_penalty: float = 0.03
-    wall_grace_steps: int = 10
+    wall_window: int = 40
+    wall_count_thresh: int = 10
     _WALL_OBS = {"robot_a": "wall_contact_a", "robot_b": "wall_contact_b"}
 
     # --- Curriculum / tracking state ---
@@ -141,7 +142,8 @@ class BalanceStep(Step):
             if phi is not None
             else np.zeros(T_full, dtype=bool)
         )
-        lean = sustained_wall_mask(wc, grace=self.wall_grace_steps)
+        lean = sustained_wall_mask(wc, window=self.wall_window,
+                                 count_thresh=self.wall_count_thresh)
         for t in trajs:
             T = t.obs.shape[0]
             pen = (
@@ -232,7 +234,8 @@ class BalanceStep(Step):
                         )
                         lean_frames += int(
                             sustained_wall_mask(
-                                wc, grace=self.wall_grace_steps,
+                                wc, window=self.wall_window,
+                                count_thresh=self.wall_count_thresh,
                             ).sum()
                         )
                         wall_total += len(wc)

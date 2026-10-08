@@ -47,9 +47,12 @@ _OBSERVE = 3
 # 脚部 body 名称（排除在第三点触地检测之外）
 _FOOT_BODY_NAMES = {'foot_left', 'foot_right'}
 
-# 长靠墙判定：非脚部身体接触墙持续满 N 个 action step（0.5 秒）判摔。
-# 短暂撑墙恢复平衡是合法技能，不计。
-_WALL_LEAN_STEPS = 10
+# 长靠墙判定：40 帧窗口内墙接触帧数超过阈值即"倚墙模式"判摔。
+# 覆盖两种 exploit：连续长靠，以及靠一下弹开再靠的点踏式蹭墙
+# （接触密度而非单次时长才是 exploit 的真信号）。短暂撑墙恢复
+# （单次 <10 帧接触/40帧窗口）是合法技能，不计。
+_WALL_WINDOW = 40
+_WALL_COUNT_THRESH = 10
 
 
 class _RobotPushState:
@@ -70,8 +73,7 @@ class _RobotPushState:
         "push_count",
         "fall_count",
         "fell_during_push",
-        "wall_streak",
-        "wall_gap",
+        "wall_hist",
     )
 
     def __init__(self, robot_id: str, body_name: str):
@@ -89,8 +91,7 @@ class _RobotPushState:
         self.push_count: int = 0
         self.fall_count: int = 0
         self.fell_during_push: bool = False
-        self.wall_streak: int = 0
-        self.wall_gap: int = 0
+        self.wall_hist: list = []
 
 
 class StandingTriggeredForcePlugin(BasePlugin):
@@ -346,8 +347,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             st.push_count = 0
             st.fall_count = 0
             st.fell_during_push = False
-            st.wall_streak = 0
-            st.wall_gap = 0
+            st.wall_hist = []
             ctx.metrics[f"{rid}_push_count"] = 0
             ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
@@ -363,17 +363,13 @@ class StandingTriggeredForcePlugin(BasePlugin):
             else:
                 st.standing_timer = 0
 
-            # --- 墙接触持续计时：全状态运行 ---
-            # 推中短暂撑墙是合法恢复；只有持续长靠（>=_WALL_LEAN_STEPS）
-            # 才在 PUSHING/OBSERVE 窗口里判摔。力阈值边缘的接触闪烁
-            # （<=2 帧断续）不重置计时，否则真长靠会被切成短 run。
-            if self._is_wall_contact(ctx, rid):
-                st.wall_streak += st.wall_gap + 1
-                st.wall_gap = 0
-            else:
-                st.wall_gap += 1
-                if st.wall_gap > 2:
-                    st.wall_streak = 0
+            # --- 墙接触窗口密度：全状态运行 ---
+            # 推中短暂撑墙是合法恢复；窗口内接触密度超阈值（连续长靠
+            # 或点踏式反复蹭墙）才在 PUSHING/OBSERVE 窗口里判摔。
+            st.wall_hist.append(bool(self._is_wall_contact(ctx, rid)))
+            if len(st.wall_hist) > _WALL_WINDOW:
+                st.wall_hist.pop(0)
+            lean = sum(st.wall_hist) > _WALL_COUNT_THRESH
 
             if st.state == _WAIT_STAND:
                 if st.standing_timer >= self.standing_settle_steps and st.force > 0:
@@ -419,10 +415,9 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     ctx.metrics[f"{rid}_push_active"] = True
 
             elif st.state == _PUSHING:
-                # 摔倒检测（第三点触地，或长靠墙）
+                # 摔倒检测（第三点触地，或倚墙模式）
                 if not st.fell_during_push and (
-                    self._is_non_foot_grounded(ctx, rid)
-                    or st.wall_streak >= _WALL_LEAN_STEPS
+                    self._is_non_foot_grounded(ctx, rid) or lean
                 ):
                     st.fell_during_push = True
                     st.fall_count += 1
@@ -438,8 +433,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             elif st.state == _OBSERVE:
                 # 继续摔倒检测
                 if not st.fell_during_push and (
-                    self._is_non_foot_grounded(ctx, rid)
-                    or st.wall_streak >= _WALL_LEAN_STEPS
+                    self._is_non_foot_grounded(ctx, rid) or lean
                 ):
                     st.fell_during_push = True
                     st.fall_count += 1

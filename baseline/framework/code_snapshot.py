@@ -129,7 +129,7 @@ def create_code_snapshot(
 
 
 def format_repro_command(
-    info: dict, *, args,
+    info: dict, *, args, parser,
     original_run_dir: Path,
     original_repo_root: Path,
 ) -> str:
@@ -138,15 +138,27 @@ def format_repro_command(
     Args:
         info: Snapshot info dict from create_code_snapshot.
         args: argparse.Namespace with all original CLI arguments.
+        parser: The argparse.ArgumentParser that produced ``args``.
+            The replay is driven by its action table, so every CLI
+            flag whose value differs from its default is echoed —
+            new flags are picked up automatically instead of being
+            silently dropped.
         original_run_dir: Absolute path of the original run directory.
         original_repo_root: Absolute path of the original git repo root.
     """
+    import argparse
+    import shlex
+
     branch = info["branch"]
     repro_dir = f"/tmp/repro_{info['run_name']}"
 
     lines = [
         f"# --- Reproduce this run ---",
         f"# Code snapshot: branch {branch} (commit {info['commit'][:8]})",
+        f"# Intentionally not replayed: --background, --list-experiments,",
+        f"#   --no-snapshot (forced on). --run-name/--run-dir are rewritten",
+        f"#   to the repro_* output paths below; --resume-from is resolved",
+        f"#   against the original repo root when it still exists.",
         f"git worktree add {repro_dir} {branch}",
         f"cd {repro_dir}",
     ]
@@ -154,10 +166,32 @@ def format_repro_command(
     parts = ["python3 baseline/framework/train.py"]
     parts.append(f"--experiment {args.experiment}")
     parts.append(f"--algo {args.algo}")
-    if args.smoke:
-        parts.append("--smoke")
-    if args.no_confidence:
-        parts.append("--no-confidence")
+
+    # dests handled explicitly above/below — the generic loop skips them.
+    _handled = {
+        "help", "experiment", "algo",
+        "run_name", "run_dir", "resume_from",
+        "background", "list_experiments", "no_snapshot",
+    }
+
+    # Generic replay: every non-default CLI flag rides along, so a repro
+    # gets --seed/--param/--collector-*/--dual-clip-* etc. exactly as the
+    # original invocation had them.
+    for action in parser._actions:
+        if not action.option_strings or action.dest in _handled:
+            continue
+        value = getattr(args, action.dest, action.default)
+        flag = action.option_strings[0]
+        if isinstance(action, argparse._StoreTrueAction) or isinstance(
+            action, argparse._StoreFalseAction
+        ):
+            if value != action.default:
+                parts.append(flag)
+        elif isinstance(action, argparse._AppendAction):
+            for item in value or []:
+                parts.append(f"{flag} {shlex.quote(str(item))}")
+        elif value is not None and value != action.default:
+            parts.append(f"{flag} {shlex.quote(str(value))}")
 
     repro_run_name = f"repro_{info['run_name']}"
 
@@ -171,18 +205,6 @@ def format_repro_command(
     parts.append(f"--run-name {repro_run_name}")
     repro_run_dir = original_repo_root / "baseline" / "runs" / repro_run_name
     parts.append(f"--run-dir {repro_run_dir}")
-
-    # Include --set params for reproducibility
-    for s in getattr(args, "set", []) or []:
-        parts.append(f"--set {s}")
-
-    # Scheduled dumps (--dump-at) and their options
-    for u in getattr(args, "dump_at", []) or []:
-        parts.append(f"--dump-at {u}")
-    if getattr(args, "dump_hypothesis", ""):
-        parts.append(f"--dump-hypothesis {args.dump_hypothesis!r}")
-    if getattr(args, "dump_full_grad", False):
-        parts.append("--dump-full-grad")
 
     # Always skip snapshot on repro to avoid creating another branch
     parts.append("--no-snapshot")

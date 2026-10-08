@@ -27,7 +27,7 @@ def _sac_registry():
     return get_sac_experiment, list_sac_experiments
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(
         description="Unified trainer — PPO and SAC."
     )
@@ -167,7 +167,7 @@ def _parse_args() -> argparse.Namespace:
              "Example: --set uncertainty_floor=0.5 "
              "--set explore_factor=0.3",
     )
-    return parser.parse_args()
+    return parser.parse_args(), parser
 
 
 def _validate_sac_args(args: argparse.Namespace) -> None:
@@ -266,7 +266,7 @@ class _TeeStream:
 
 
 def main() -> None:
-    args = _parse_args()
+    args, parser = _parse_args()
     _validate_sac_args(args)
 
     if args.list_experiments:
@@ -537,7 +537,7 @@ def main() -> None:
         if snapshot_info is not None:
             print(f"[snapshot] branch {snapshot_info['branch']} created (commit {snapshot_info['commit'][:8]})", flush=True)
             repro = format_repro_command(
-                snapshot_info, args=args,
+                snapshot_info, args=args, parser=parser,
                 original_run_dir=run_dir,
                 original_repo_root=Path(snapshot_info["repo_root"]),
             )

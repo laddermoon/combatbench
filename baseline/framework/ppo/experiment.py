@@ -76,7 +76,7 @@ Data flow
     │     actor_weight                 │
     │   ),                             │
     │ }                                │
-    │ explore_factor                │
+    │ sampling_ctx (dict)           │
     └──────────────────────────────────┘
          │
          ▼  (PPOBuffer concatenates all trajectories)
@@ -1203,13 +1203,9 @@ class ExperimentPPO(ABC):
             def build_trajectories(self, episode):
                 ...
 
-            def compute_episode_metrics(self, episode):
-                ...
-
-            def compare_eval(self, esum, best_esum):
-                ...
-
-            def scheduler_info(self):
+            def on_eval(self, episodes, update):
+                # Eval aggregation + early-stop decision (replaces v1's
+                # compute_episode_metrics / compare_eval / scheduler_info).
                 ...
     """
 
@@ -1558,7 +1554,7 @@ class ExperimentPPO(ABC):
 
         Args:
             episodes: Raw eval episodes from rollout.
-            update: Current update index (0-based).
+            update: Current update index (1-based, matches the loop).
 
         Returns:
             Dict with at least::

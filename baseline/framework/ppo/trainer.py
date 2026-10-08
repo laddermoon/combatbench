@@ -825,8 +825,8 @@ def ppo_update(
         exploration: Optional per-update spec from the experiment.
             ``uncertainty_floor`` and ``uncertainty_coef`` are consumed here to
             compute the uncertainty floor loss; ``explore_factor`` was
-            already applied to the policy before rollout via
-            ``set_exploration``.
+            already applied per-frame during rollout by the sampling
+            wrapper (see ``Job.sampling_a/b`` → ``SamplingPolicy``).
         dump_callback: Optional ``callable(stage, data)`` invoked at
             ``"gae"``, ``"combine"``, and ``"update"`` stages with the
             already-computed arrays.  Used by the dump capture path to

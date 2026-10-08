@@ -1,6 +1,6 @@
 """Advantage / return estimators.
 
-Two building blocks (see ``baseline/DESIGN.md`` §3.6):
+Two building blocks (see ``baseline/framework/ppo/GUIDE.md``):
 
   * :func:`compute_gae` — Generalized Advantage Estimation
     (Schulman et al. 2016). Backward recursion on a *single episode*
