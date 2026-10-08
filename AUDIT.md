@@ -2363,3 +2363,16 @@ git 外文档，不管）
 
 - `pytest baseline/framework/ppo/` → **637 passed / 0 failed /
   0 collection errors**（此前 4 fail + 4 collection error）。
+
+## [2026-10-08] P-TF-5 处置：ppo/README.md 目录描述修正
+
+**对象**：`baseline/framework/ppo/README.md:19`
+**类别**：修复执行
+
+- 原描述 `policies/ = truncated_normal_mlp + todo/ 在建策略族` 滞后——
+  实际 `policies/` 顶层已有 **10 个毕业策略模块**（TruncatedNormal
+  家族及 bounded/state/mixture/shared/state_mixture/pre_tanh 等
+  变体），`todo/` 里是用户明确裁定"只留线索、不回改"的候选设计稿
+  停车场（含未实现家族的草稿测试，P-TF-4 已由外层 collect_ignore
+  排除收集）。
+- 修正为该实状描述。

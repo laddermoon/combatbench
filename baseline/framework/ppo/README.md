@@ -16,7 +16,7 @@ ppo/
 ├── stochastic_policy.py  # 训练期随机包装（explore_factor 注入）
 ├── debug.py          # Debug 工具集 CLI（runs/summary/metrics/catalog/dump/render/delta/viewer）
 ├── algos/            # GAE / advantage 计算
-├── policies/         # 生产策略（truncated_normal_mlp）+ todo/ 在建策略族
+├── policies/         # 生产策略族 ×10（TruncatedNormal 家族及其 bounded/state/mixture/shared/pre_tanh 变体）+ todo/ 未毕业候选设计稿
 ├── dumpkit/          # dump 捕获/渲染/delta + debug viewer（CONTEXT.md 在此）
 └── tests/            # pytest 套件
 ```
