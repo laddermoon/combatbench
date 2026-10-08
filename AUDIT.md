@@ -2283,3 +2283,18 @@ git 外文档，不管）
 - `pytest envs/framework/tests/ envs/humanoid21/tests/` → 277 passed。
 - 实跑冒烟：构造+reset(seed=42)+render 一帧 OK，`arena_radius`
   从模型正确读出 3.44。
+
+## [2026-10-08] P-TF-1 复核结案：dump_delta 测试夹具已同步新语义
+
+**对象**：`baseline/framework/ppo/tests/test_dump_delta.py`
+**类别**：复核——已解决，无代码改动
+
+- 用户执行 fix 前实测：**9 passed / 0 failed**。审计记录时的
+  4 个失败已不存在。
+- 修复时点：夹具在 `17d031fd`（delta reference-delta 重构，
+  用户本人的并行开发线）中同步到新语义——现为
+  `export_updates=(0,1,2,3,4)` + 断言 `gen_updates == [4,3,2,1]`，
+  与审计建议的 `(1,2,3,4)`→`[4,3,2,1]` 语义等价且覆盖更全
+  （多保留一档 u_0 基线参照）。
+- `compute_delta` 的 row0=post-update u_N 语义经审计复核为有意
+  改动（`85738c03` commit message 有正确性论证），实现正确。
