@@ -2478,3 +2478,38 @@ git 外文档，不管）
   （默认 pytest 不收集，须显式 `pytest tests/`）。
 - 选"加索引"而非"迁移"：文件里大量 `Path(__file__).parents[N]`
   锚定仓库根，迁移会破路径假设。
+
+## [2026-10-08] P-H21-1/2 复核结案 + P-FW-9 封堵 + P-FW-8 警告补齐
+
+**对象**：`envs/framework/context.py`、`blueprint.py`、`DESIGN.md`、
+`tests/test_audit_mutator_leak.py`、`tests/test_audit_fail_loud.py`
+**类别**：复核结案（H21-1/2）+ 修复执行（FW-9/FW-8）
+
+### P-H21-1/2 复核：已由用户 EventJournal 改造修复
+
+- `_cached_contacts_vec` 已从 simulator.py 消失（P-H21-1）；
+  `test_audit_stale_contacts.py` 作回归保留。
+- `CombatScoringObserver` 改经 `ctx.events` + `(epoch, len)` 游标
+  差分取"本步事件"（P-H21-2）。
+
+### P-FW-9 封堵：`_MutatorView` 生命周期校验
+
+- `_MutatorView` 增 `__valid` 标志 + `_assert_valid()`；三个写方法
+  与 `__getattr__` 转发入口先校验，失效抛
+  `RuntimeError("_MutatorView revoked ... do not stash ctx.mutator")`。
+- `_grant_mutator` 置真/`_revoke_mutator` 置假；view 出生即 invalid
+  （未授予时拿到也写不了）。
+- `test_audit_mutator_leak.py` 翻转为回归：stash 在只读钩子调用
+  抛 RuntimeError，且授予钩子内写仍正常。
+- `DESIGN.md` BasePlugin 边界补"禁缓存 mutator"条目。
+
+### P-FW-8 小项：`from_runtime` 多 TimeoutPlugin 静默覆盖
+
+- `EnvBlueprint.from_runtime` 遇第二个 TimeoutPlugin 时
+  `warnings.warn`（"LAST one wins"语义明示），不再静默。
+
+### 验证
+
+- `pytest envs/framework/tests/` → **232 passed**
+- 冒烟：双 TimeoutPlugin 的 `from_runtime` 触发 warning 且取后者；
+  `test_audit_fail_loud` 的直构造 view 补 `_set_valid(True)` 模拟授予。

@@ -185,12 +185,28 @@ class _MutatorView(IDataMutator):
     Exposes only the methods listed in ``_MUTATOR_ALLOWED``. Non-mutator
     methods (reads, lifecycle) are unreachable. See ``_AccessorView`` for
     the name-mangling rationale.
+
+    Lifecycle: the view is valid only while granted by
+    ``SimContext._grant_mutator``; ``_revoke_mutator`` invalidates it, so
+    a plugin that stashes ``ctx.mutator`` in a writable hook cannot use
+    the stash later in a read-only hook (P-FW-9).
     """
 
-    __slots__ = ("__sim",)
+    __slots__ = ("__sim", "__valid")
 
     def __init__(self, simulator: BaseSimulator) -> None:
         object.__setattr__(self, "_MutatorView__sim", simulator)
+        object.__setattr__(self, "_MutatorView__valid", False)
+
+    def _set_valid(self, valid: bool) -> None:
+        object.__setattr__(self, "_MutatorView__valid", valid)
+
+    def _assert_valid(self) -> None:
+        if not self.__valid:
+            raise RuntimeError(
+                "_MutatorView revoked: mutator is only valid inside the "
+                "hook that granted it — do not stash ctx.mutator"
+            )
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(
@@ -199,6 +215,7 @@ class _MutatorView(IDataMutator):
 
     def __getattr__(self, name: str) -> Any:
         if name in _MUTATOR_ALLOWED:
+            self._assert_valid()
             return getattr(self.__sim, name)
         raise AttributeError(
             f"{type(self).__name__} does not expose {name!r}. "
@@ -206,12 +223,15 @@ class _MutatorView(IDataMutator):
         )
 
     def set_core_state(self, state: Dict[str, Any]) -> None:
+        self._assert_valid()
         self.__sim.set_core_state(state)
 
     def set_action(self, action: Dict[str, Any]) -> None:
+        self._assert_valid()
         self.__sim.set_action(action)
 
     def apply_external_force(self, *args: Any, **kwargs: Any) -> None:
+        self._assert_valid()
         self.__sim.apply_external_force(*args, **kwargs)
 
 
@@ -329,9 +349,11 @@ class SimContext:
 
     # --- 引擎控制权限的辅助方法 ---
     def _grant_mutator(self) -> None:
+        self._mutator_view._set_valid(True)
         self.mutator = self._mutator_view
 
     def _revoke_mutator(self) -> None:
+        self._mutator_view._set_valid(False)
         self.mutator = None
 
 

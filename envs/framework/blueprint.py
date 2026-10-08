@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Type
@@ -208,6 +209,14 @@ class EnvBlueprint:
             if isinstance(plugin, TimeoutPlugin):
                 # Capture so we can round-trip ``max_steps``; do not
                 # serialize as a regular plugin.
+                if max_steps_from_plugin is not None:
+                    warnings.warn(
+                        "EnvBlueprint.from_runtime: multiple TimeoutPlugin "
+                        f"instances found (max_steps "
+                        f"{max_steps_from_plugin} then {int(plugin.max_steps)}); "
+                        "the LAST one wins",
+                        stacklevel=2,
+                    )
                 max_steps_from_plugin = int(plugin.max_steps)
                 continue
             if _is_blueprint_excluded(plugin):

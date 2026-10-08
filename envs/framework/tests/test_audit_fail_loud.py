@@ -42,6 +42,7 @@ class TestApplyExternalForceFailLoud:
         from envs.framework.context import _MutatorView
 
         view = _MutatorView(mock_simulator)
+        view._set_valid(True)  # simulate a live grant (P-FW-9 lifecycle)
         with pytest.raises(NotImplementedError, match="apply_external_force"):
             view.apply_external_force("torso", np.zeros(3))
 
