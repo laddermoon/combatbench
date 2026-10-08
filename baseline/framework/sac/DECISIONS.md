@@ -1917,6 +1917,87 @@ G2.0 P2-IND-0 ── independence scaffold / lazy registry / CLI gate
 
 **阶段一最终不声称：**生产实现完成、永久测试存在、真实 env smoke 通过、任何任务收敛或 debug viewer 已交付。
 
+# 阶段二执行计划：最小可信 SAC 闭环（2026-10-08）
+
+**状态：** 仅制定执行计划；尚未开始生产实现。计划依据 A1–A8，尤其 A5/A6/A7 的契约、风险矩阵与 DAG。任何实现中发现的契约冲突，必须回到对应 A 节新增 `SAC-R1-*` 裁决并更新风险矩阵，不允许为赶进度修改断言以通过测试。
+
+## P2.0 阶段目标与非目标
+
+**目标：** 建成一个可验证、可恢复、可观测的最小 SAC 闭环：独立 import、SAC collection/data、FIFO replay、checkpoint bundle、S01 actor、标准 Shannon SAC trainer、时钟/UTD loop、基础 metrics、fake env 集成、真实 env smoke，以及可对指定 `critic_tick` 做 recompute 的 L2 dump。
+
+**本阶段不承诺：**
+
+- 两个真实任务收敛；`G2.5` 只要求链路 smoke。
+- 八格策略全量生产化、mixture actor 生产实现或 `u_bonus/u_floor` 训练验证。
+- 完整 viewer/HTTP 页面；阶段二只要求 CLI/analysis 所需的数据面与 recompute 能力。
+- n-step、PER、relabel、stratified retention、异步采集、opponent pool、GPU inference server。
+- bitwise resume；只在同代码、同设备、同库版本和确定性内核下追求。
+
+## P2.1 执行顺序
+
+```text
+S2-W0 P2-IND-0
+  → S2-W1 P2-COLL-1 + P2-DATA-1
+  → S2-W2 P2-DBG-1（可与 S2-W1 并行设计/开发）
+  → S2-W3 P2-REPLAY-1
+  → S2-W4 P2-CKPT-1
+  → S2-W5 P2-TRAIN-1
+  → S2-W6 P2-LOOP-1 + P2-DBG-2
+  → S2-W7 P2-ENV-1：fake env → 真实 env smoke
+  → S2-W8 P2-DBG-3 + P2-DBG-4
+  → G2.6 阶段二收口评审
+```
+
+实际开发可按依赖局部调整，但不得跳过 gate；`P2-DBG-1/2` 可以与 collection/data 并行推进，`P2-TRAIN-1` 不应等 collection 全部完成才开始单测，但接入真实 batch 前必须依赖 `P2-DATA-1`/`P2-REPLAY-1`。
+
+## P2.2 工作包计划
+
+| wave | 包 | 实施内容 | 必须落地的永久测试/证据 | 出口 |
+|---|---|---|---|---|
+| S2-W0 | `P2-IND-0` | 清理 SAC import 边界；`baseline/framework/__init__.py` 与 `train.py` registry 改 lazy；SAC 不支持参数显式报错；建立 SAC 自有命名空间入口 | `T-IND-01`；`--list-experiments`；PPO 基本路径回归 | `G2.0` |
+| S2-W1 | `P2-COLL-1` | vendor/copy-adapt collection：SACJob、BehaviorSpec、CollectedEpisode、runner/recorder、provenance、pre-action fact provider、worker failure atomicity | `T-COL-01/02/03`、`T-DATA-04/05`；collection provenance manifest | `G2.1` 的一部分 |
+| S2-W1 | `P2-DATA-1` | `sac_transition_v1`、TransitionSlice/batch schema、validator、边界构造；standup/basic_balance 的 `build_slices` 与任务事实；`phi_pre/phi_post` 分离 | `T-DATA-01～03`、`T-DATA-02` 中可在本阶段完成的部分、`FX-A5-01～06` | `G2.1` |
+| S2-W2 | `P2-DBG-1` | `metrics/events.jsonl` writer、metric catalog、schema version、统一时钟字段、config/debug event | `T-DBG-01`；最小 run 目录可产生合法 events | 支撑 `G2.4` |
+| S2-W3 | `P2-REPLAY-1` | SoA replay、有效 transition 容量、FIFO overwrite、uniform sampling、batch 内不重复、sample_id/source_key/slice_id、采样 RNG、统计与持久化格式 | `T-RPL-01～05`、`FX-A5-07/08` | `G2.2` 的一部分 |
+| S2-W4 | `P2-CKPT-1` | checkpoint bundle、manifest、trainer/replay/RNG/counter/experiment state、原子写入、warm-start 与 config-lock 边界 | `T-CKPT-01～04`、`FX-A5-09/10/12`、`T-PERF-02` | `G2.2` |
+| S2-W5 | `P2-TRAIN-1` | S01 actor copy-adapt、稳定 TN 数值内核、SAC actor contract、双 Q/target、Bellman target、actor loss、固定/自动 α、梯度隔离 | `T-MATH-01～03`、`T-MATH-04` 的 Shannon/固定与自动 α 部分、`T-POL-01/02`；U 路线部分推迟到 pre-P4 | `G2.3` |
+| S2-W6 | `P2-LOOP-1` | collection round、env/transition/tick counters、fractional UTD credit、round cap、eval/export/checkpoint 边界、seed manifest、schedule 状态 | `T-CLK-01～03`、`FX-A5-11/12` | `G2.2`/`G2.4` |
+| S2-W6 | `P2-DBG-2` | tick ring、L0/L1 聚合、debug RNG、资源计数、异常事件 | `T-DBG-02/05`、`T-PERF-01` | `G2.4` |
+| S2-W7 | `P2-ENV-1` | fake/small env episode→slice→replay→tick→events 集成；再接 Humanoid21 最小 smoke | `T-INT-01/02`；run manifest + events | `G2.4`/`G2.5` |
+| S2-W8 | `P2-DBG-3` | dump request/schedule、`critic_tick` L2 capture、`sac_dump_v1`、manifest/hash/retention | `T-DBG-03` | `G2.6` 的一部分 |
+| S2-W8 | `P2-DBG-4` | dump access、analysis、sample trace、target/loss recompute、最小 CLI 输出 | `T-DBG-04/05/06` 中 CLI/recompute 部分；`DX-04/12/13/14` 的核心路径 | `G2.6` |
+| 后续 | `P2-DBG-5/6` | viewer/HTTP、完整 fault-injection harness | 完整 `DX-*` 回归 | 不属本阶段出口，最迟 pre-P5 |
+
+## P2.3 Gate 收口标准
+
+- **G2.0 独立性**：`import baseline.framework.sac`、SAC registry、SAC smoke 路径不加载 PPO；SAC 不支持的 CLI 参数显式报错；PPO 原路径无回归。
+- **G2.1 数据面**：`FX-A5-01～06/13`、`T-COL-*`、核心 `T-DATA-*` 通过；缺字段、非法边界和 `phi_pre` 来源错误全部 fail loud。
+- **G2.2 状态面**：`T-RPL/T-CLK/T-CKPT` 通过；replay 持久化、采样 RNG、UTD credit、白名单 override 与 config-lock 可测试。
+- **G2.3 数学面**：`T-MATH/T-POL` 通过；actor/critic/temperature/target 梯度隔离和状态更新方向可证伪。
+- **G2.4 最小闭环**：fake env 集成跑通，`metrics/events.jsonl` 与 tick ring 能解释一轮训练和若干 critic tick。
+- **G2.5 真实 env smoke**：Humanoid21 最少轮数运行通过；只证明采集、训练、评估、导出、checkpoint 链路，不证明任务学习。
+- **G2.6 可解释闭环**：指定 `critic_tick` 可生成 `sac_dump_v1`，并达到 `recompute` 级证据；未通过前不得开始长训或阶段六验收。
+
+## P2.4 实施规则
+
+1. **先测试契约，再接实现**：每个包先落地对应永久测试或最小失败测试，再实现生产路径；旧 SAC/PPO 测试只作回归，不计作新契约通过。
+2. **不改契约迁就实现**：字段、时钟、身份、fail-loud 边界与 A5/A6 不一致时，回到 DECISIONS 新增裁决。
+3. **独立命名空间**：新增代码进入 `baseline/framework/sac/` 或 `baseline/experiments_sac/`；允许复制后适配，不允许 import PPO 算法内部类型。
+4. **中立共享层最小改动**：只触碰 A8 授权的 `baseline/framework/__init__.py`、`train.py` registry/CLI 边界；不改 PPO 内部和 `envs/` 语义。
+5. **证据优先**：每个 gate 提交时附测试命令、结果、run/dump artifact 路径；没有 artifact 的项目不得标成完成。
+6. **资源默认可观测**：replay、checkpoint、tick ring、dump 写入必须记录大小/耗时；若默认值导致资源问题，先提交实测证据再调整默认。
+7. **不启动长训**：阶段二只允许 fake/small env 集成和 `G2.5` 的真实 env smoke；任何收敛判断都推迟到阶段六。
+
+## P2.5 阶段二完成定义
+
+阶段二完成要求同时满足：
+
+- `G2.0`～`G2.6` 全部通过，并附测试/artifact 证据；
+- 新 SAC 路径可独立 import、采集、入池、训练、评估、导出、checkpoint、resume；
+- L2 dump 能对一个指定 `critic_tick` 重算 target/loss；
+- PPO 路径无回归；
+- 所有已知限制在文档中明确，不存在「配置被接受但功能未实现」。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
