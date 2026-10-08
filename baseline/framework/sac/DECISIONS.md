@@ -2069,7 +2069,7 @@ S2-W0 P2-IND-0
 ## P3.1 已发现的实现差距
 
 1. **target twin 选择不符合 A3：** 当前按每个 channel 分别 `min(Q1,Q2)`；A3 要求先用归一化权重合成 `F_j=Σw_c Q_c,j`，再选择共同 `j_next`。
-2. **actor gate 未按 A3 归一化：** 当前直接使用 `actor_weight`；A3 要求 `g≥0, Σg>0` 并归一化为 `w`。
+2. **actor twin 选择不符合 A3：** 当前 actor 对每个 channel 分别 `min(Q1,Q2)` 后加权；A3 要求对合成 `F_j` 选择共同 `j_actor`。
 3. **next-state gate 缺失：** balance 的实际 `w_pre` 来自 `phi_pre`，target 下一状态权重应使用 `phi_post` 对应的下一时刻 gate；当前 batch 没有独立的 next-state gate 字段。
 4. **shared trunk 与 A3 默认不符：** 当前 `MultiHeadQCritic` 默认/实验使用 shared trunk；A3 首版默认是每通道独立 twin Q。阶段三应切回独立 critic，shared trunk 只能作为后续显式消融。
 5. **actor 有效行过滤不完整：** A3 要求 actor/alpha 只使用所有 cohort 通道均有效的行；当前 actor loss 未显式按全 `channel_valid` 过滤。
@@ -2119,6 +2119,32 @@ S3-W0 P3-AUDIT-0
 - **gate：** `actor_gate` 存原始非负 `g(s)`；`actor_weight` 存归一化 `w(s)`；`actor_gate_next/actor_weight_next` 存 target 所需的 `w(s')`。
 - **actor 有效行：** 仅所有 cohort 通道 `channel_valid=True` 的样本进入 actor/alpha loss；无有效行则跳过对应 optimizer/tick 并记录。
 - **诊断：** 捕获必须保存 pair 选择、当前/下一 gate、per-channel Q/target/TD 和足以重算 loss 的冻结采样输出。
+
+## P3-AUDIT-0 执行结果与新增裁决（2026-10-08）
+
+**状态：** `P3-AUDIT-0` 已完成代码事实核对；本审计不改生产代码。以下差异将进入后续工作包，而不是作为不可执行的注意事项。
+
+| 对象 | 当前事实 | A3/A5 契约 | P3 处理 |
+|---|---|---|---|
+| `actor_gate/actor_weight` | `sac_transition_v1` 已保存 `g` 与归一化 `w`，并验证二者一致 | `g≥0, Σg>0, w=g/Σg` | 已满足；继续使用现有字段 |
+| critic target pair | 每通道独立 `min(Q1,Q2)` | 先用 `w(s')` 合成 `F_j`，共同选择 `j_next` | `P3-MATH-1` 修正 |
+| actor pair | 每通道独立 min 后加权 | 用 `w(s)` 合成 `F_j`，共同选择 `j_actor` | `P3-MATH-1` 修正 |
+| next-state gate | transition/replay/batch/dump 均无 `w(s')` | `basic_balance` target 分支使用 `phi_post` 对应 gate | `P3-DATA-2` 新增显式字段 |
+| critic grouping | `MultiHeadQCritic` 按 `trunk_group` 或 gamma 聚合，两实验配置为 `shared` | 首版默认每通道独立 twin Q | `P3-MATH-1` 默认按 channel 分组；共享 trunk fail loud |
+| `channel_valid` | critic 按通道过滤，但任一通道空 batch 直接失败；actor/alpha 不按“全通道有效”过滤 | 某通道空分母跳过其 optimizer/target；actor/alpha 只用全有效行；全批无 actor 有效行则 fail loud | `P3-MATH-1` 修正 |
+| gamma cohort | 只校验 `n_step=1,twin=2`；未校验共同 γ | 首版同 cohort γ/m 一致 | `P3-MATH-1` 添加配置校验 |
+| replay age/version | `buffer_stats` 只有 sample-age 均值和 gate/reward 均值 | 需要按 critic/env age 与 policy/version 分桶 | `P3-DIAG-2` 补齐 |
+| dump recompute | `sac_dump_v1` 重算旧的 per-channel-min 公式 | 必须能重算 A3 的 joint pair/weight 公式 | `P3-DIAG-2` 升级 dump/recompute |
+
+**新增决策：**
+
+| 编号 | 决策 | 理由与适用边界 |
+|---|---|---|
+| SAC-R1-D38 | next-state actor gate 通过显式 schema 字段进入 batch；建议命名为 `actor_gate_next/actor_weight_next`，schema 升级为 `sac_transition_v2` / `sac_replay_v2` / `sac_dump_v2` | `basic_balance` 的 `phi_post` 是 `s'` 的 pre-next-action gate 事实；不能从当前 `phi_pre` 或 reward feature 隐式推导。v1 数据缺字段，不允许静默当作新语义解释 |
+| SAC-R1-D39 | v2 checkpoint 的 full resume 不兼容 v1 replay；v1 checkpoint 只能走显式 model-only warm start | 防止旧数据缺 next gate 后被错当 v2 训练；模型参数语义仍可在显式 warm-start 中复用 |
+| SAC-R1-D40 | 阶段三首版 critic 分组固定为每通道独立 group；任何把多个 channel 放进同一 critic group 的配置均拒绝 | 这是 A3 已批准的默认实现边界；shared trunk 只能作为后续显式消融，不作为阶段三默认实现 |
+
+`G3.0` 通过标准：以上矩阵已登记，且没有“配置接受但语义未实现”的已知路径。当前仍有 `baseline/framework/train.py` 和 `baseline/framework/code_snapshot.py` 的用户侧未提交改动；P3 审计不触碰它们。
 
 ## P3.6 完成定义
 
