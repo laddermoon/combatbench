@@ -2043,6 +2043,94 @@ S2-W0 P2-IND-0
   - `data_sources()` 已由 loop 校验；v1 只允许 `self` source 和正 `sampling_share`，其他数据源 fail loud。
   - 收口证据：`pytest baseline/framework/sac/tests -q` → 54 passed；`pytest baseline/framework/ppo/tests/test_minimal_example.py baseline/framework/ppo/tests/test_param_overrides.py -q` → 20 passed；静态审计未发现 SAC/experiments_sac 对 `baseline.framework.ppo` 或 `baseline.framework.rollout` 的 import。
 
+# 阶段三执行计划：多 critic 与两个目标实验（2026-10-08）
+
+**状态：** 阶段三计划已定，尚未开始实现。阶段二完成的是最小可信闭环；阶段三必须把 A3 已批准的多通道 soft-Q 数学、两任务语义和持续诊断落实到生产路径。不得把阶段二 smoke 或当前 shared-trunk/raw-gate 实现误认为已经满足 A3。
+
+## P3.0 阶段目标与非目标
+
+**目标：** 将 SAC 从“可运行的最小闭环”升级为“多通道语义可信、两个任务可持续训练、每轮数据/通道贡献可追踪”的实现。
+
+**必须覆盖：**
+
+- A3 的 per-channel soft-Q target、共同 twin-pair 选择、归一化 actor gate、动作前/动作后门控时序；
+- `sac_balance` / `sac_standup` 的任务事实、reward、agent boundary、termination/bootstrap 和 eval 语义；
+- 多轮持续训练、resume、replay 来源/版本追踪；
+- per-channel Q/target/TD/actor contribution 诊断与 recompute；
+- 不支持组合继续 fail loud，不留“接受但不生效”的配置。
+
+**不承诺：**
+
+- 两个任务收敛；正式收敛仍在阶段六。
+- 八格策略全量、mixture actor、U 路线训练验证；属于阶段四。
+- 完整 viewer/HTTP；阶段三只要求机器可读的 per-channel debug 数据面。
+- n-step、PER、relabel、stratified retention、异步采集、opponent pool、GPU inference server。
+
+## P3.1 已发现的实现差距
+
+1. **target twin 选择不符合 A3：** 当前按每个 channel 分别 `min(Q1,Q2)`；A3 要求先用归一化权重合成 `F_j=Σw_c Q_c,j`，再选择共同 `j_next`。
+2. **actor gate 未按 A3 归一化：** 当前直接使用 `actor_weight`；A3 要求 `g≥0, Σg>0` 并归一化为 `w`。
+3. **next-state gate 缺失：** balance 的实际 `w_pre` 来自 `phi_pre`，target 下一状态权重应使用 `phi_post` 对应的下一时刻 gate；当前 batch 没有独立的 next-state gate 字段。
+4. **shared trunk 与 A3 默认不符：** 当前 `MultiHeadQCritic` 默认/实验使用 shared trunk；A3 首版默认是每通道独立 twin Q。阶段三应切回独立 critic，shared trunk 只能作为后续显式消融。
+5. **actor 有效行过滤不完整：** A3 要求 actor/alpha 只使用所有 cohort 通道均有效的行；当前 actor loss 未显式按全 `channel_valid` 过滤。
+6. **时钟边界不足：** 某通道空分母、actor/alpha 空分母、target update 是否跳过，当前没有独立 clock/test。
+7. **诊断不足：** 当前 dump 能重算旧实现，但缺少 pair-index 选择率、next gate、per-channel actor contribution、replay age/version 分桶。
+
+## P3.2 执行顺序
+
+```text
+S3-W0 P3-AUDIT-0
+  → S3-W1 P3-DATA-2
+  → S3-W2 P3-MATH-1
+  → S3-W3 P3-DIAG-2
+  → S3-W4 P3-EXP-1
+  → S3-W5 P3-RUN-1
+  → G3.6 阶段三收口评审
+```
+
+`P3-DATA-2` 与 `P3-MATH-1` 有强依赖：先固定 batch/schema 字段，再改 target/actor 公式。诊断随 trainer 同步改，不允许最后再补。
+
+## P3.3 工作包计划
+
+| wave | 包 | 实施内容 | 必须落地的永久测试/证据 | 出口 |
+|---|---|---|---|---|
+| S3-W0 | `P3-AUDIT-0` | 对当前 trainer/replay/transition/experiments 与 A3 逐项对拍；登记所有偏差；决定是否以 `sac_transition_v2` 承载 next gate | 差异矩阵；新 `SAC-R1-*` 记录；不静默改 schema | `G3.0` |
+| S3-W1 | `P3-DATA-2` | 扩展 transition/replay batch：`actor_gate/actor_weight` 与 `actor_gate_next/actor_weight_next`（或等价的显式 next-gate 字段）；balance 用 `phi_pre/phi_post` 构造；standup 使用常量 next gate；checkpoint/replay persistence 更新 | schema validator、版本、shape/finite、terminal boundary、source identity 测试 | `G3.1` |
+| S3-W2 | `P3-MATH-1` | 实现 A3 soft-Q：归一化 `w`、共同 `j_next`、per-channel target、共同 `j_actor`、actor 全有效行过滤、per-channel critic mask；同 γ cohort 校验；独立 twin Q；shared trunk 默认拒绝 | A3 M01～M16 对应永久测试、零 w/缺 v/空 actor/空 channel/不同 γ/负 gate 反例 | `G3.2` |
+| S3-W3 | `P3-DIAG-2` | 扩展 trainer stats/capture/metrics/dump：j_next/j_actor 选择率、w/next_w 分布、per-channel target/TD/Q、actor contribution 向量范数与 cosine、alpha used/after、replay age/version | `sac_dump_v2` 或向后兼容 dump；recompute 通过；样本可追回 source/frame | `G3.3` |
+| S3-W4 | `P3-EXP-1` | 两实验对拍：observer/fact/reward/boundary/eval/state/version metadata；修正 `data_sources`、objective_mode、policy/reward versions | 同批 episode FX 对拍；缺 observer/fact fail loud；eval/resume 测试 | `G3.4` |
+| S3-W5 | `P3-RUN-1` | 两实验多 round 持续短训：replay 跨轮保留、checkpoint mid-run resume、metrics/dump 可用、sample/source 可解释 | Humanoid21 连续多 round smoke + resume；不判定学习效果 | `G3.5` |
+| S3-W6 | closeout | 审计 PPO 独立性、旧接口残留、配置接受边界、测试证据 | `G3.0`～`G3.5` 全通过；PPO 快速回归 | `G3.6` |
+
+## P3.4 Gate 收口标准
+
+- **G3.0 契约审计：** 所有与 A3/A5/A6 的实现差距已登记；next-gate/schema 版本处理有明确决策。
+- **G3.1 数据契约：** 当前/下一时刻 gate 均可追踪、可持久化、可校验；balance 的 `phi_pre/phi_post` 时序不能错位。
+- **G3.2 数学契约：** A3 公式测试全通过；负 gate、全零 gate、不同 γ、非法 `channel_valid` 组合显式拒绝；`actor_weight=0` 不冻结 critic。
+- **G3.3 诊断契约：** 指定 critic tick dump 可按新公式重算；能回答每个 channel 的 target/TD/actor 贡献来自哪里。
+- **G3.4 任务契约：** 两实验同批 episode 的任务事实、reward、终止边界、eval 指标与版本元数据通过测试。
+- **G3.5 持续运行：** 两实验可多 round 训练、恢复、导出并保留样本来源；不以 loss 下降冒充任务成功。
+- **G3.6 收口：** PPO 无回归，SAC 独立性保持，所有已知限制写明。
+
+## P3.5 默认技术口径
+
+- **schema：** 若新增 next-gate 必需字段，使用显式新版本（建议 `sac_transition_v2`/`sac_replay_v2`/`sac_dump_v2`），不把 v1 字段重新解释。
+- **critic：** A3 首版使用每通道独立 twin Q；`trunk_group` 若表示参数共享应拒绝，除非未来另立共享-trunk 消融决策。
+- **gate：** `actor_gate` 存原始非负 `g(s)`；`actor_weight` 存归一化 `w(s)`；`actor_gate_next/actor_weight_next` 存 target 所需的 `w(s')`。
+- **actor 有效行：** 仅所有 cohort 通道 `channel_valid=True` 的样本进入 actor/alpha loss；无有效行则跳过对应 optimizer/tick 并记录。
+- **诊断：** 捕获必须保存 pair 选择、当前/下一 gate、per-channel Q/target/TD 和足以重算 loss 的冻结采样输出。
+
+## P3.6 完成定义
+
+阶段三完成要求：
+
+- 两目标实验在新多通道契约下持续运行；
+- 每个合法 transition 的 source、版本、gate、reward、bootstrap 可解释；
+- critic/actor/alpha/target 的更新语义与 A3 一致；
+- 指定 critic tick 可重算并展示 per-channel 贡献；
+- 无 PPO import/runtime 依赖；
+- 不声称任务收敛、八格策略完成或完整 debug UI 完成。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
