@@ -2,7 +2,7 @@
 
 The loop is synchronous and SAC-owned: collection produces
 ``CollectedEpisode`` objects, experiments produce validated
-``sac_transition_v1`` slices, and replay admits agent transitions with
+``sac_transition_v2`` slices, and replay admits agent transitions with
 stable ``sample_id``/``source_key`` identity.
 """
 from __future__ import annotations
@@ -276,7 +276,7 @@ def train_sac(
     unsupported_sources = [src.kind for src in sources if src.kind != "self"]
     if unsupported_sources:
         raise ValueError(
-            "sac_replay_v1 supports only self data sources; got "
+            "sac_replay_v2 supports only self data sources; got "
             f"{unsupported_sources}"
         )
     if any(src.sampling_share <= 0 for src in sources):
@@ -641,7 +641,7 @@ def train_sac(
                 is_new_best = result.get("is_new_best", False)
                 if result.get("request_relabel", False):
                     raise RuntimeError(
-                        "SAC relabel requests are unsupported in sac_replay_v1"
+                        "SAC relabel requests are unsupported in sac_replay_v2"
                     )
                 t_eval = time.perf_counter() - t0
                 eval_metrics = {

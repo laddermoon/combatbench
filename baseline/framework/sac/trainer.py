@@ -1,4 +1,4 @@
-"""Standard Shannon-entropy SAC update over ``sac_replay_v1`` batches.
+"""Standard Shannon-entropy SAC update over ``sac_replay_v2`` batches.
 
 P2-TRAIN-1 deliberately implements only the audited 1-step contract:
 per-channel twin Q targets, timeout bootstrap, actor entropy loss, optional
@@ -37,7 +37,8 @@ def _validate_batch(
     required = (
         "obs", "actions", "next_obs", "rewards", "channel_valid",
         "terminated", "truncated", "bootstrap", "actor_gate",
-        "actor_weight", "sample_weight", "sample_ids", "source_keys",
+        "actor_weight", "actor_gate_next", "actor_weight_next",
+        "sample_weight", "sample_ids", "source_keys",
     )
     missing = [name for name in required if name not in batch]
     if missing:
@@ -52,6 +53,8 @@ def _validate_batch(
     bootstrap = _require_tensor(batch, "bootstrap")
     actor_gate = _require_tensor(batch, "actor_gate")
     actor_weight = _require_tensor(batch, "actor_weight")
+    actor_gate_next = _require_tensor(batch, "actor_gate_next")
+    actor_weight_next = _require_tensor(batch, "actor_weight_next")
     sample_weight = _require_tensor(batch, "sample_weight")
 
     B = obs.shape[0]
@@ -62,8 +65,13 @@ def _validate_batch(
         raise SACTrainerError(f"rewards shape {tuple(rewards.shape)} != {(B, C)}")
     if channel_valid.shape != (B, C) or channel_valid.dtype != torch.bool:
         raise SACTrainerError("channel_valid must be bool with shape (B,C)")
-    if actor_gate.shape != (B, C) or actor_weight.shape != (B, C):
-        raise SACTrainerError("actor_gate/actor_weight must have shape (B,C)")
+    if (
+        actor_gate.shape != (B, C)
+        or actor_weight.shape != (B, C)
+        or actor_gate_next.shape != (B, C)
+        or actor_weight_next.shape != (B, C)
+    ):
+        raise SACTrainerError("actor gate/weight fields must have shape (B,C)")
     for name, value in (
         ("terminated", terminated), ("truncated", truncated),
         ("bootstrap", bootstrap), ("sample_weight", sample_weight),
@@ -78,8 +86,24 @@ def _validate_batch(
         raise SACTrainerError("terminated transitions must have bootstrap=0")
     if (truncated & (bootstrap != 1.0)).any():
         raise SACTrainerError("truncated transitions must bootstrap")
-    if (actor_gate < 0).any() or (actor_weight < 0).any():
-        raise SACTrainerError("actor gate/weight cannot be negative")
+    if (
+        (actor_gate < 0).any()
+        or (actor_weight < 0).any()
+        or (actor_gate_next < 0).any()
+        or (actor_weight_next < 0).any()
+    ):
+        raise SACTrainerError("actor gate/weight fields cannot be negative")
+    for gate, weight, label in (
+        (actor_gate, actor_weight, "actor"),
+        (actor_gate_next, actor_weight_next, "actor next"),
+    ):
+        gate_sum = gate.sum(dim=1)
+        if (gate_sum <= 0).any():
+            raise SACTrainerError(f"{label} gate row sums must be positive")
+        if not torch.allclose(
+            weight, gate / gate_sum[:, None], atol=1e-5, rtol=1e-5,
+        ):
+            raise SACTrainerError(f"{label} weight must equal normalized gate")
     if (sample_weight <= 0).any():
         raise SACTrainerError("sample_weight must be positive")
     if len(batch["source_keys"]) != B:

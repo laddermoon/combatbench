@@ -334,7 +334,7 @@ class ExperimentSAC(ABC):
 
     @abstractmethod
     def build_slices(self, episodes: List[Any]) -> List[SACTransitionSlice]:
-        """Convert collected episodes into validated ``sac_transition_v1``
+        """Convert collected episodes into validated ``sac_transition_v2``
         slices for replay admission.
 
         This is the single source of truth for reward semantics,

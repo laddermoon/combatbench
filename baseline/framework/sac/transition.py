@@ -1,8 +1,10 @@
 """SAC transition/slice schema and strict validation.
 
-``sac_transition_v1`` is the replay admission unit.  It is intentionally
+``sac_transition_v2`` is the replay admission unit.  It is intentionally
 independent from PPO trajectory structures: no advantages, ratios, GAE, or
-sampling-context fields are part of this contract.
+sampling-context fields are part of this contract.  Compared with v1 it makes
+the next-state actor gate explicit so target construction does not infer it
+from task-specific features.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import numpy as np
 from .collected_episode import CollectedEpisode
 
 
-SAC_TRANSITION_SCHEMA = "sac_transition_v1"
+SAC_TRANSITION_SCHEMA = "sac_transition_v2"
 ACTION_BOUNDS_ATOL = 1e-5
 
 
@@ -41,6 +43,8 @@ class SACTransitionSlice:
     physics_delta: np.ndarray
     actor_gate: np.ndarray
     actor_weight: np.ndarray
+    actor_gate_next: np.ndarray
+    actor_weight_next: np.ndarray
     sample_weight: np.ndarray
     task_facts: Mapping[str, np.ndarray] = field(default_factory=dict)
     reward_features: Mapping[str, np.ndarray] = field(default_factory=dict)
@@ -124,6 +128,10 @@ def validate_transition_slice(
     channel_valid = np.asarray(sl.channel_valid)
     actor_gate = _as_float_array("actor_gate", sl.actor_gate, ndim=2)
     actor_weight = _as_float_array("actor_weight", sl.actor_weight, ndim=2)
+    actor_gate_next = _as_float_array("actor_gate_next", sl.actor_gate_next, ndim=2)
+    actor_weight_next = _as_float_array(
+        "actor_weight_next", sl.actor_weight_next, ndim=2,
+    )
     if rewards.shape[0] != T or rewards.shape[1] <= 0:
         raise ValueError(f"invalid rewards shape {rewards.shape} for T={T}")
     C = rewards.shape[1]
@@ -140,14 +148,28 @@ def validate_transition_slice(
         raise ValueError(
             f"actor_weight shape {actor_weight.shape} != {(T, C)}"
         )
-    if np.any(actor_gate < 0.0):
-        raise ValueError("actor_gate must be non-negative")
-    gate_sum = actor_gate.sum(axis=1)
-    if np.any(gate_sum <= 0.0):
-        raise ValueError("actor_gate row sums must be positive")
-    expected_weight = actor_gate / gate_sum[:, None]
-    if not np.allclose(actor_weight, expected_weight, atol=1e-5, rtol=1e-5):
-        raise ValueError("actor_weight must equal normalized actor_gate")
+    if actor_gate_next.shape != (T, C):
+        raise ValueError(
+            f"actor_gate_next shape {actor_gate_next.shape} != {(T, C)}"
+        )
+    if actor_weight_next.shape != (T, C):
+        raise ValueError(
+            f"actor_weight_next shape {actor_weight_next.shape} != {(T, C)}"
+        )
+    for name, gate, weight in (
+        ("actor_gate", actor_gate, actor_weight),
+        ("actor_gate_next", actor_gate_next, actor_weight_next),
+    ):
+        if np.any(gate < 0.0):
+            raise ValueError(f"{name} must be non-negative")
+        gate_sum = gate.sum(axis=1)
+        if np.any(gate_sum <= 0.0):
+            raise ValueError(f"{name} row sums must be positive")
+        expected_weight = gate / gate_sum[:, None]
+        if not np.allclose(weight, expected_weight, atol=1e-5, rtol=1e-5):
+            raise ValueError(
+                f"{name.replace('_gate', '_weight')} must equal normalized {name}"
+            )
 
     terminated = _as_bool_array("terminated", sl.terminated)
     truncated = _as_bool_array("truncated", sl.truncated)
@@ -286,6 +308,7 @@ def build_agent_transition_slice(
     channel_names: Sequence[str],
     rewards: Mapping[str, np.ndarray],
     actor_gate: Mapping[str, np.ndarray],
+    actor_gate_next: Mapping[str, np.ndarray],
     channel_valid: Optional[Mapping[str, np.ndarray]] = None,
     task_facts: Optional[Mapping[str, np.ndarray]] = None,
     reward_features: Optional[Mapping[str, np.ndarray]] = None,
@@ -361,6 +384,13 @@ def build_agent_transition_slice(
     gate_mat = np.stack(
         [_series("actor_gate", actor_gate, name) for name in channels], axis=1,
     )
+    gate_next_mat = np.stack(
+        [
+            _series("actor_gate_next", actor_gate_next, name)
+            for name in channels
+        ],
+        axis=1,
+    )
     if channel_valid is None:
         valid_mat = np.ones((T, len(channels)), dtype=np.bool_)
     else:
@@ -391,6 +421,10 @@ def build_agent_transition_slice(
     if np.any(gate_sum <= 0):
         raise ValueError("actor_gate row sums must be positive")
     weight_mat = gate_mat / gate_sum
+    gate_next_sum = gate_next_mat.sum(axis=1, keepdims=True)
+    if np.any(gate_next_sum <= 0):
+        raise ValueError("actor_gate_next row sums must be positive")
+    weight_next_mat = gate_next_mat / gate_next_sum
 
     policy_action = _stack_agent_extras(
         episode, agent_id, "policy_action", T,
@@ -457,6 +491,8 @@ def build_agent_transition_slice(
         physics_delta=np.asarray(physics_delta, dtype=np.float32),
         actor_gate=np.asarray(gate_mat, dtype=np.float32),
         actor_weight=np.asarray(weight_mat, dtype=np.float32),
+        actor_gate_next=np.asarray(gate_next_mat, dtype=np.float32),
+        actor_weight_next=np.asarray(weight_next_mat, dtype=np.float32),
         sample_weight=np.full(T, float(sample_weight), dtype=np.float32),
         task_facts=_mapping_series("task_facts", task_facts),
         reward_features=_mapping_series("reward_features", reward_features),

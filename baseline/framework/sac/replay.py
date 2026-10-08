@@ -1,4 +1,4 @@
-"""SAC replay buffer implementing ``sac_transition_v1`` admission.
+"""SAC replay buffer implementing ``sac_transition_v2`` admission.
 
 The first-version contract is deliberately strict: 1-step transitions,
 FIFO retention, and independent uniform sampling.  Slot index is not an
@@ -19,7 +19,7 @@ from .experiment import ReplayPlan
 from .transition import SACTransitionSlice, validate_transition_slice
 
 
-SAC_REPLAY_SCHEMA = "sac_replay_v1"
+SAC_REPLAY_SCHEMA = "sac_replay_v2"
 
 
 class SACReplayError(RuntimeError):
@@ -77,6 +77,12 @@ class SACReplayBuffer:
         self.actor_weight = np.zeros(
             (self.capacity, len(self.channel_names)), dtype=np.float32
         )
+        self.actor_gate_next = np.zeros(
+            (self.capacity, len(self.channel_names)), dtype=np.float32
+        )
+        self.actor_weight_next = np.zeros(
+            (self.capacity, len(self.channel_names)), dtype=np.float32
+        )
         self.sample_weight = np.ones(self.capacity, dtype=np.float32)
         self.policy_action = np.zeros(
             (self.capacity, self.action_dim), dtype=np.float32
@@ -112,7 +118,7 @@ class SACReplayBuffer:
             unsupported.append(f"freshness_weight={plan.freshness_weight}")
         if unsupported:
             raise SACReplayError(
-                "sac_replay_v1 does not support "
+                "sac_replay_v2 does not support "
                 + ", ".join(unsupported)
             )
 
@@ -197,6 +203,8 @@ class SACReplayBuffer:
         self.physics_delta[p] = sl.physics_delta[t]
         self.actor_gate[p] = sl.actor_gate[t]
         self.actor_weight[p] = sl.actor_weight[t]
+        self.actor_gate_next[p] = sl.actor_gate_next[t]
+        self.actor_weight_next[p] = sl.actor_weight_next[t]
         self.sample_weight[p] = sl.sample_weight[t]
         self.policy_action[p] = (
             sl.actions[t] if sl.policy_action is None else sl.policy_action[t]
@@ -267,6 +275,12 @@ class SACReplayBuffer:
                 "physics_delta": torch.as_tensor(self.physics_delta[slots], device=device),
                 "actor_gate": torch.as_tensor(self.actor_gate[slots], device=device),
                 "actor_weight": torch.as_tensor(self.actor_weight[slots], device=device),
+                "actor_gate_next": torch.as_tensor(
+                    self.actor_gate_next[slots], device=device,
+                ),
+                "actor_weight_next": torch.as_tensor(
+                    self.actor_weight_next[slots], device=device,
+                ),
                 "sample_weight": torch.as_tensor(self.sample_weight[slots], device=device),
                 "policy_action": torch.as_tensor(self.policy_action[slots], device=device),
                 "sample_ids": torch.as_tensor(sample_ids, device=device),
@@ -314,6 +328,8 @@ class SACReplayBuffer:
             "bootstrap": self.bootstrap[idx],
             "actor_gate": self.actor_gate[idx],
             "actor_weight": self.actor_weight[idx],
+            "actor_gate_next": self.actor_gate_next[idx],
+            "actor_weight_next": self.actor_weight_next[idx],
             "sample_weight": self.sample_weight[idx],
             "policy_action": self.policy_action[idx],
             "sample_ids": self.sample_ids[idx],
@@ -327,13 +343,13 @@ class SACReplayBuffer:
 
     def sample_nstep(self, *args: Any, **kwargs: Any) -> None:
         raise SACReplayError(
-            "sac_replay_v1 supports only 1-step transitions; sample_nstep "
+            "sac_replay_v2 supports only 1-step transitions; sample_nstep "
             "is explicitly disabled"
         )
 
     def relabel(self, *args: Any, **kwargs: Any) -> None:
         raise SACReplayError(
-            "sac_replay_v1 does not support relabeling"
+            "sac_replay_v2 does not support relabeling"
         )
 
     def buffer_stats(self) -> Dict[str, Any]:
@@ -391,6 +407,8 @@ class SACReplayBuffer:
             "physics_delta": self.physics_delta,
             "actor_gate": self.actor_gate,
             "actor_weight": self.actor_weight,
+            "actor_gate_next": self.actor_gate_next,
+            "actor_weight_next": self.actor_weight_next,
             "sample_weight": self.sample_weight,
             "policy_action": self.policy_action,
             "sample_ids": self.sample_ids,
@@ -426,7 +444,8 @@ class SACReplayBuffer:
             for name in (
                 "obs", "actions", "next_obs", "rewards", "channel_valid",
                 "terminated", "truncated", "bootstrap", "physics_delta",
-                "actor_gate", "actor_weight", "sample_weight", "policy_action",
+                "actor_gate", "actor_weight", "actor_gate_next",
+                "actor_weight_next", "sample_weight", "policy_action",
                 "sample_ids", "frame_indices",
             ):
                 getattr(self, name)[:] = np.asarray(state[name])

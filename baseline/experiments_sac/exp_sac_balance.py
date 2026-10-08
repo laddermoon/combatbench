@@ -1,7 +1,7 @@
 """SAC balance experiment — 2-channel validation.
 
 Mirrors the PPO ``basic_balance`` task semantics while emitting
-``sac_transition_v1`` agent-transition slices.
+``sac_transition_v2`` agent-transition slices.
 
 Two reward channels:
   - r_fall: 0.01 × φ(t) per step (survival reward, dense)
@@ -176,6 +176,12 @@ class SacBalance(CombatExperimentSACBase):
                 self._base_actor_weights[1] * phi_pre_clipped ** 2
             ).astype(np.float32),
         }
+        actor_gate_next = {
+            "r_fall": np.full(T, self._base_actor_weights[0], dtype=np.float32),
+            "r_cross": (
+                self._base_actor_weights[1] * phi_post_clipped ** 2
+            ).astype(np.float32),
+        }
         task_facts = {
             "phi_pre": phi_pre[:T],
             "phi_post_reference": phi_post[:T],
@@ -199,6 +205,7 @@ class SacBalance(CombatExperimentSACBase):
             channel_names=self._channel_names,
             rewards={"r_fall": r_fall, "r_cross": r_cross},
             actor_gate=actor_gate,
+            actor_gate_next=actor_gate_next,
             task_facts=task_facts,
             reward_features=reward_features,
             versions={

@@ -1,6 +1,6 @@
 """SAC framework — independent off-policy training implementation.
 
-The first-version contract uses validated ``sac_transition_v1`` slices,
+The first-version contract uses validated ``sac_transition_v2`` slices,
 FIFO uniform replay, explicit sample/source identity, and SAC-specific
 metrics/debug contracts.
 

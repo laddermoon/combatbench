@@ -2146,6 +2146,8 @@ S3-W0 P3-AUDIT-0
 
 `G3.0` 通过标准：以上矩阵已登记，且没有“配置接受但语义未实现”的已知路径。当前仍有 `baseline/framework/train.py` 和 `baseline/framework/code_snapshot.py` 的用户侧未提交改动；P3 审计不触碰它们。
 
+- **`P3-DATA-2` 完成（G3.1 数据面升级）：** `SACTransitionSlice` 升级为 `sac_transition_v2`，新增必需 `actor_gate_next/actor_weight_next` 并校验 shape、非负、行和与归一化；`build_agent_transition_slice()` 要求实验显式提供 next gate。`sac_balance` 使用 `phi_pre` 生成当前 gate、使用 `phi_post` 生成 next gate；`sac_standup` 使用常量 next gate。`SACReplayBuffer` 升级为 `sac_replay_v2` 并在 admission/sample/get_by_sample_ids/persistence 中保留两个字段；v1 replay/checkpoint 在 full resume 中 fail loud。trainer batch 校验已拒绝缺 next-gate 字段的 batch。证据：`test_collection_data + test_replay + test_checkpoint` → 25 passed；完整 SAC suite → 54 passed。
+
 ## P3.6 完成定义
 
 阶段三完成要求：

@@ -1,4 +1,4 @@
-"""Permanent tests for SAC collection and ``sac_transition_v1``."""
+"""Permanent tests for SAC collection and ``sac_transition_v2``."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -331,6 +331,7 @@ def _generic_slice(episode: CollectedEpisode, agent_id: str):
         channel_names=("r_main",),
         rewards={"r_main": np.ones(T, dtype=np.float32)},
         actor_gate={"r_main": np.ones(T, dtype=np.float32)},
+        actor_gate_next={"r_main": np.ones(T, dtype=np.float32)},
         task_facts={
             "phi_pre": np.asarray(
                 episode.pre_action_facts[agent_id]["phi_pre"], dtype=np.float32
@@ -409,7 +410,12 @@ def test_balance_build_slices_requires_phi_pre_and_builds_gates():
     np.testing.assert_allclose(
         sl.actor_gate[:, 1], np.clip(sl.task_facts["phi_pre"], 0, 1) ** 2
     )
+    np.testing.assert_allclose(
+        sl.actor_gate_next[:, 1],
+        np.clip(sl.task_facts["phi_post_reference"], 0, 1) ** 2,
+    )
     np.testing.assert_allclose(sl.actor_weight.sum(axis=1), np.ones(4))
+    np.testing.assert_allclose(sl.actor_weight_next.sum(axis=1), np.ones(4))
 
     missing = replace(ep, pre_action_facts={})
     with pytest.raises(KeyError, match="phi_pre"):
@@ -430,6 +436,12 @@ def test_validator_rejects_nan_bad_gates_and_bad_source_keys():
     bad_gate = replace(good, actor_gate=np.zeros_like(good.actor_gate))
     with pytest.raises(ValueError, match="row sums"):
         validate_transition_slice(bad_gate)
+
+    bad_next_gate = replace(
+        good, actor_gate_next=np.zeros_like(good.actor_gate_next),
+    )
+    with pytest.raises(ValueError, match="actor_gate_next.*row sums"):
+        validate_transition_slice(bad_next_gate)
 
     bad_keys = replace(good, source_keys=tuple(["same"] * good.num_transitions))
     with pytest.raises(ValueError, match="unique"):

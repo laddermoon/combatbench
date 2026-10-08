@@ -1,7 +1,7 @@
 """SAC standup experiment — 4-stage dense potential.
 
 Semantically mirrors ``baseline/experiments_ppo/exp_standup.py`` while using
-``sac_transition_v1`` and the SAC-owned collection/data contracts.
+``sac_transition_v2`` and the SAC-owned collection/data contracts.
 """
 from __future__ import annotations
 
@@ -91,6 +91,9 @@ class SacStandup(CombatExperimentSACBase):
                     channel_names=(self._channel_name,),
                     rewards={self._channel_name: reward},
                     actor_gate={
+                        self._channel_name: np.ones(T, dtype=np.float32),
+                    },
+                    actor_gate_next={
                         self._channel_name: np.ones(T, dtype=np.float32),
                     },
                     task_facts={"potential": potential[:T]},

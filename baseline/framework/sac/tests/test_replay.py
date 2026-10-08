@@ -1,4 +1,4 @@
-"""Permanent tests for the ``sac_replay_v1`` contract."""
+"""Permanent tests for the ``sac_replay_v2`` contract."""
 from __future__ import annotations
 
 import numpy as np
@@ -38,6 +38,8 @@ def _slice(
         reason[-1] = "timeout"
     actor_gate = np.ones((T, channels), dtype=np.float32)
     actor_weight = np.full((T, channels), 1.0 / channels, dtype=np.float32)
+    actor_gate_next = np.ones((T, channels), dtype=np.float32)
+    actor_weight_next = np.full((T, channels), 1.0 / channels, dtype=np.float32)
     facts = {}
     if task_facts:
         facts["phi_pre"] = np.linspace(0.1, 0.4, T, dtype=np.float32)
@@ -56,6 +58,8 @@ def _slice(
         physics_delta=np.ones(T, dtype=np.float32) * 0.01,
         actor_gate=actor_gate,
         actor_weight=actor_weight,
+        actor_gate_next=actor_gate_next,
+        actor_weight_next=actor_weight_next,
         sample_weight=np.ones(T, dtype=np.float32),
         task_facts=facts,
         reward_features={"feature": np.ones(T, dtype=np.float32)},
@@ -102,6 +106,11 @@ def test_replay_admission_sampling_identity_and_payload() -> None:
     assert batch["rewards"].shape == (4, 2)
     assert batch["terminated"].shape == (4,)
     assert batch["bootstrap"].shape == (4,)
+    assert batch["actor_gate_next"].shape == (4, 2)
+    assert batch["actor_weight_next"].shape == (4, 2)
+    np.testing.assert_allclose(
+        batch["actor_weight_next"].sum(axis=1).cpu().numpy(), np.ones(4),
+    )
     assert batch["task_facts"]["phi_pre"].shape == (4,)
     assert len(set(batch["sample_ids"].tolist())) == 4
     assert all(isinstance(key, str) and key for key in batch["source_keys"])
@@ -197,6 +206,9 @@ def test_persistence_round_trip_restores_content_rng_and_identity(tmp_path) -> N
     assert after["sample_ids"].tolist() == expected_next["sample_ids"].tolist()
     assert restored.source_keys[: restored.size] == replay.source_keys[: replay.size]
     np.testing.assert_allclose(restored.obs, replay.obs)
+    np.testing.assert_allclose(
+        restored.actor_weight_next, replay.actor_weight_next,
+    )
     assert restored._seen_source_keys == replay._seen_source_keys
 
 

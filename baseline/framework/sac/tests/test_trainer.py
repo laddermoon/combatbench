@@ -34,6 +34,8 @@ def _batch(B: int = 8, obs_dim: int = 6, action_dim: int = 3, C: int = 2):
         "bootstrap": bootstrap,
         "actor_gate": torch.ones(B, C),
         "actor_weight": torch.full((B, C), 1.0 / C),
+        "actor_gate_next": torch.ones(B, C),
+        "actor_weight_next": torch.full((B, C), 1.0 / C),
         "sample_weight": torch.ones(B),
         "policy_action": torch.zeros(B, action_dim),
         "sample_ids": torch.arange(B, dtype=torch.int64),
