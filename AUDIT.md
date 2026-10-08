@@ -2790,3 +2790,40 @@ FrozenRobot 手动冒烟：robot_b 全程位移 0.0、robot_a 自由漂移、
 `pytest envs/framework/tests` → 236 passed；
 `test_episode_recorder.py` + `test_exploratory_policy.py` → 10 passed；
 bench_rollout 单/并行双路径实测通过。
+
+## [2026-10-08] P-BFW-1~9 处置：repro 命令通用回放 + 文档同步 + 归档测试删除
+
+**类别**：修复执行（注：本组改动曾被误入用户工作区提交，内容属实）
+
+- **P-BFW-1（修复，行为性改动）**：`format_repro_command` 由手写
+  白名单改为 **parser 驱动的通用回放**——遍历 `parser._actions`，
+  一切非默认值的 CLI 参数（`--seed`/`--param`/`--collector*`/
+  `--dual-clip-*`/`--adv-*`/`--reset-update`/`--set`/`--dump-*` 等）
+  全部回显，新参数自动纳入不再静默丢失。配套：`_parse_args()`
+  返回 `(args, parser)`；denylist 仅含
+  help/run_name/run_dir/resume_from/background/list_experiments/
+  no_snapshot（在生成命令头部注明）。实测：全量参数模拟调用
+  逐字段正确回显。
+- **P-BFW-2**：`trainer.py` docstring `set_exploration` 死引用 →
+  SamplingPolicy 逐帧机制；`critic_mlp.py` actor backbone 引用
+  `TanhGaussianMLPPolicy` → `TruncatedNormalPolicy`。
+- **P-BFW-3**：`ExperimentPPO` "Typical subclass structure" 三个
+  死方法（compute_episode_metrics/compare_eval/scheduler_info）
+  → `on_eval`；`on_eval` docstring 0-based → 1-based。
+- **P-BFW-4**：experiment.py 模块图 `explore_factor` 字段 →
+  `sampling_ctx (dict)`。
+- **P-BFW-5（按用户裁决删除）**：`policies/todo/` 三个测试
+  （test_blueprint_episode / test_ou_exploration /
+  test_policy_families）整体删除——其守护的
+  state_gaussian_mlp/mog_tanh_mlp 等模块已整体出库，import 修复
+  无意义。todo/ 代码本身按裁决不再维护。
+- **P-BFW-6/7**：`loop.py` early-stop 日志去私有属性读法改通用
+  措辞；exploration 注释修正（trust-region 字段在 PPOParams）。
+- **P-BFW-8**：`advantages.py` docstring `baseline/DESIGN.md` →
+  `ppo/GUIDE.md`。
+- **P-BFW-9**：阴性结果（docstring 引用属实），无需处置。
+
+### 验证
+
+`pytest policies/` collect → 395 tests 干净；模拟调用
+`format_repro_command` 验证全参数回放正确。
