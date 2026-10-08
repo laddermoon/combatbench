@@ -214,6 +214,15 @@ class SACParallelRollouter:
         self.num_workers = int(num_workers)
         self.mp_context = str(mp_context)
 
+    def __enter__(self) -> "SACParallelRollouter":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def close(self) -> None:
+        return None
+
     def collect(self, jobs: Iterable[SACJob]) -> List[CollectedEpisode]:
         job_list = list(jobs)
         if not job_list:

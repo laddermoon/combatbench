@@ -255,10 +255,88 @@ def sac_update_v2(
 sac_update = sac_update_v2
 
 
+def trainer_state_dict(
+    actor: nn.Module,
+    critic: MultiHeadQCritic,
+    actor_optimizer: torch.optim.Optimizer,
+    log_alpha: torch.Tensor,
+    alpha_optimizer: Optional[torch.optim.Optimizer],
+) -> Dict[str, Any]:
+    """Serialize all train/optimizer state needed for full resume."""
+    return {
+        "schema": "sac_trainer_v1",
+        "actor_state_dict": actor.state_dict(),
+        "critic_state_dict": critic.state_dict(),
+        "actor_optimizer_state_dict": actor_optimizer.state_dict(),
+        "log_alpha": log_alpha.detach().cpu(),
+        "alpha_optimizer_state_dict": (
+            alpha_optimizer.state_dict() if alpha_optimizer is not None else None
+        ),
+    }
+
+
+def load_model_state(
+    state: Dict[str, Any],
+    *,
+    actor: nn.Module,
+    critic: MultiHeadQCritic,
+) -> None:
+    """Restore only network weights for an explicit warm start."""
+    if state.get("schema") != "sac_trainer_v1":
+        raise SACTrainerError(
+            f"unsupported trainer schema {state.get('schema')!r}"
+        )
+    actor.load_state_dict(state["actor_state_dict"])
+    critic_state = state["critic_state_dict"]
+    if set(critic_state.keys()) != set(critic.groups.keys()):
+        raise SACTrainerError(
+            f"critic groups mismatch: checkpoint={sorted(critic_state)}, "
+            f"current={sorted(critic.groups)}"
+        )
+    for name, group in critic.groups.items():
+        group_state = critic_state[name]
+        for key in ("q1", "q2", "q1_target", "q2_target"):
+            getattr(group, key).load_state_dict(group_state[key])
+
+
+def load_trainer_state(
+    state: Dict[str, Any],
+    *,
+    actor: nn.Module,
+    critic: MultiHeadQCritic,
+    actor_optimizer: torch.optim.Optimizer,
+    log_alpha: torch.Tensor,
+    alpha_optimizer: Optional[torch.optim.Optimizer],
+) -> None:
+    """Strictly restore ``sac_trainer_v1`` state."""
+    if state.get("schema") != "sac_trainer_v1":
+        raise SACTrainerError(
+            f"unsupported trainer schema {state.get('schema')!r}"
+        )
+    actor.load_state_dict(state["actor_state_dict"])
+    critic_state = state["critic_state_dict"]
+    if set(critic_state.keys()) != set(critic.groups.keys()):
+        raise SACTrainerError(
+            f"critic groups mismatch: checkpoint={sorted(critic_state)}, "
+            f"current={sorted(critic.groups)}"
+        )
+    critic.load_state_dict(critic_state)
+    actor_optimizer.load_state_dict(state["actor_optimizer_state_dict"])
+    log_alpha.data.copy_(state["log_alpha"].to(log_alpha.device))
+    saved_alpha_opt = state.get("alpha_optimizer_state_dict")
+    if (alpha_optimizer is None) != (saved_alpha_opt is None):
+        raise SACTrainerError("alpha optimizer presence does not match checkpoint")
+    if alpha_optimizer is not None:
+        alpha_optimizer.load_state_dict(saved_alpha_opt)
+
+
 __all__ = [
     "SACTrainerError",
     "compute_critic_targets",
+    "load_model_state",
+    "load_trainer_state",
     "sac_update",
     "sac_update_v2",
+    "trainer_state_dict",
     "validate_sac_channels",
 ]

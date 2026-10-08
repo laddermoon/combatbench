@@ -46,6 +46,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume-from", type=str, default=None)
     parser.add_argument(
+        "--config-lock", action="store_true",
+        help="SAC only: resume requires checkpoint config to match exactly "
+             "(no whitelisted optimization overrides).",
+    )
+    parser.add_argument(
         "--reset-update", action="store_true",
         help="Reset update counter to 0 when resuming (for new generation training).",
     )
@@ -310,6 +315,8 @@ def main() -> None:
         set_params[key.strip()] = value.strip()
 
     algo = args.algo or "ppo"
+    if args.config_lock and algo != "sac":
+        raise SystemExit("Error: --config-lock is only supported for --algo sac")
 
     # Try the appropriate registry based on algo
     if algo == "sac":
@@ -551,7 +558,13 @@ def main() -> None:
 
     if algo == "sac":
         from baseline.framework.sac.loop import train_sac
-        train_sac(experiment, run_dir=run_dir, resume_from=resume_from, reset_update=args.reset_update)
+        train_sac(
+            experiment,
+            run_dir=run_dir,
+            resume_from=resume_from,
+            reset_update=args.reset_update,
+            config_lock=args.config_lock,
+        )
     else:
         from baseline.framework.ppo.loop import train_ppo
         train_ppo(

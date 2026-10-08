@@ -1,17 +1,9 @@
-"""SAC V2 training loop — synchronous, env_step-based clock.
+"""SAC training loop with canonical clocks, metrics, and checkpoint bundles.
 
-Orchestrates: rollout → slice insertion → gradient steps → eval →
-log → checkpoint. Uses env_step as the primary clock (not update
-count) so that UTD ratio changes don't break schedule comparability.
-
-Key features:
-- Warmup period before first gradient step.
-- UTD-driven gradient step count.
-- Divergence guardrails (Q magnitude, TD error, alpha collapse).
-- Per-channel diagnostics (Q values, gradient shares, buffer stats).
-- Checkpoint/resume (model only, buffer re-warmups).
-- Video rendering (reuses PPO V2's subprocess approach).
-- Machine-readable __RAW_STATS__ logging.
+The loop is synchronous and SAC-owned: collection produces
+``CollectedEpisode`` objects, experiments produce validated
+``sac_transition_v1`` slices, and replay admits agent transitions with
+stable ``sample_id``/``source_key`` identity.
 """
 from __future__ import annotations
 
@@ -23,27 +15,44 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from .collection import create_rollouter
-from .experiment import (
-    CommonParamsSAC,
-    ExperimentSAC,
-    SACParams,
-    SACRewardChannel,
+from .checkpoint import (
+    load_checkpoint_bundle,
+    load_model_only,
+    save_checkpoint_bundle,
 )
+from .clocks import SACClockState
+from .collection import create_rollouter
+from .diagnostics import SACTickRing
+from .experiment import CommonParamsSAC, ExperimentSAC, SACParams, SACRewardChannel
+from .metrics import SACMetricsWriter
 from .networks import MultiHeadQCritic
-from .replay import TaggedReplay
-from .trainer import sac_update_v2
+from .replay import SACReplayBuffer
+from .trainer import (
+    load_model_state,
+    load_trainer_state,
+    sac_update_v2,
+    trainer_state_dict,
+)
 
 
-# ---------------------------------------------------------------------------
-# Seeding
-# ---------------------------------------------------------------------------
+RESUME_ALLOWED_OVERRIDES = (
+    "saved_at",
+    "experiment.state",
+    "experiment.common_params.learning_rate",
+    "experiment.common_params.critic_learning_rate",
+    "experiment.sac_params.utd_ratio",
+    "experiment.sac_params.max_grad_steps_per_round",
+    "experiment.sac_params.alpha_lr",
+)
+TICK_METRIC_INTERVAL = 64
+TICK_RING_CAPACITY = 4096
+
 
 def set_seed(seed: int) -> None:
     np.random.seed(int(seed))
@@ -52,132 +61,36 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(int(seed))
 
 
-# ---------------------------------------------------------------------------
-# Config serialization
-# ---------------------------------------------------------------------------
-
 def save_run_config_sac(
     experiment: ExperimentSAC,
     run_dir: Path,
     *,
     smoke: bool = False,
-) -> None:
+) -> Dict[str, Any]:
     cp = experiment.common_params()
     sp = experiment.sac_params()
     channels = experiment.reward_channels()
-
     payload = {
         "experiment": {
             "name": cp.name,
-            "reward_channels": [
-                {
-                    "name": ch.name,
-                    "gamma": ch.gamma,
-                    "n_step": ch.n_step,
-                    "n_critics": ch.n_critics,
-                    "in_target_min": ch.in_target_min,
-                    "trunk_group": ch.trunk_group,
-                    "actor_weight_share": ch.actor_weight_share,
-                }
-                for ch in channels
-            ],
+            "reward_channels": [dataclasses.asdict(ch) for ch in channels],
             "common_params": dataclasses.asdict(cp),
             "sac_params": dataclasses.asdict(sp),
             "state": experiment.state(),
         },
         "algorithm": "sac",
-        "smoke": smoke,
+        "smoke": bool(smoke),
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.json", "w") as f:
         json.dump(payload, f, indent=2, default=str)
+    return payload
 
-
-# ---------------------------------------------------------------------------
-# Checkpoint
-# ---------------------------------------------------------------------------
-
-def save_checkpoint_sac(
-    ckpt_path: Path,
-    *,
-    actor: nn.Module,
-    critic: MultiHeadQCritic,
-    actor_optimizer: torch.optim.Optimizer,
-    log_alpha: torch.Tensor,
-    alpha_optimizer: Optional[torch.optim.Optimizer],
-    experiment: ExperimentSAC,
-    cp: CommonParamsSAC,
-    env_step: int,
-    grad_step: int,
-) -> None:
-    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "algorithm": "sac",
-        "actor_state_dict": actor.state_dict(),
-        "critic_state_dict": critic.state_dict(),
-        "actor_optimizer_state_dict": actor_optimizer.state_dict(),
-        "log_alpha": log_alpha.detach().cpu(),
-        "alpha_optimizer_state_dict": (
-            alpha_optimizer.state_dict() if alpha_optimizer is not None else None
-        ),
-        "experiment_name": cp.name,
-        "state": experiment.state(),
-        "env_step": env_step,
-        "grad_step": grad_step,
-    }, ckpt_path)
-
-
-def load_checkpoint_sac(
-    ckpt_path: Path,
-    *,
-    actor: nn.Module,
-    critic: MultiHeadQCritic,
-    actor_optimizer: torch.optim.Optimizer,
-    log_alpha: torch.Tensor,
-    alpha_optimizer: Optional[torch.optim.Optimizer],
-    experiment: ExperimentSAC,
-    cp: CommonParamsSAC,
-) -> tuple[int, int]:
-    payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-
-    actor.load_state_dict(payload["actor_state_dict"])
-    critic.load_state_dict(payload["critic_state_dict"])
-
-    try:
-        actor_optimizer.load_state_dict(payload["actor_optimizer_state_dict"])
-    except (RuntimeError, ValueError) as e:
-        print(f"[checkpoint] Actor optimizer mismatch: {e}", flush=True)
-
-    saved_log_alpha = payload.get("log_alpha")
-    if saved_log_alpha is not None:
-        log_alpha.data.copy_(saved_log_alpha)
-
-    if alpha_optimizer is not None and payload.get("alpha_optimizer_state_dict"):
-        try:
-            alpha_optimizer.load_state_dict(payload["alpha_optimizer_state_dict"])
-        except (RuntimeError, ValueError) as e:
-            print(f"[checkpoint] Alpha optimizer mismatch: {e}", flush=True)
-
-    for pg in actor_optimizer.param_groups:
-        pg["lr"] = cp.learning_rate
-
-    saved_exp = payload.get("experiment_name", "")
-    if saved_exp == cp.name:
-        experiment.load_state(payload.get("state", {}))
-
-    env_step = int(payload.get("env_step", 0))
-    grad_step = int(payload.get("grad_step", 0))
-    return env_step, grad_step
-
-
-# ---------------------------------------------------------------------------
-# Video rendering (shared pattern with PPO V2)
-# ---------------------------------------------------------------------------
 
 def _spawn_video_render(
     *,
-    env_blueprint: str,
+    env_blueprint: Path,
     policy_a_blueprint: Path,
     policy_b_blueprint: Path,
     video_path: Path,
@@ -188,42 +101,48 @@ def _spawn_video_render(
     video_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        sys.executable, "-m", "envs.framework.round_runner",
-        "--env-blueprint", str(env_blueprint),
-        "--policy-a-blueprint", str(policy_a_blueprint),
-        "--policy-b-blueprint", str(policy_b_blueprint),
-        "--video", str(video_path),
-        "--seed", str(seed),
+        sys.executable,
+        "-m",
+        "envs.framework.round_runner",
+        "--env-blueprint",
+        str(env_blueprint),
+        "--policy-a-blueprint",
+        str(policy_a_blueprint),
+        "--policy-b-blueprint",
+        str(policy_b_blueprint),
+        "--video",
+        str(video_path),
+        "--seed",
+        str(seed),
     ]
     if options_json is not None:
         cmd.extend(["--options-json", str(options_json)])
     try:
         log_f = open(log_path, "w")
-        proc = subprocess.Popen(
-            cmd, stdout=log_f, stderr=subprocess.STDOUT,
+        return subprocess.Popen(
+            cmd,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        return proc
     except Exception as e:
         print(f"[WARN] Failed to spawn video render: {e}", flush=True)
         return None
 
 
-# ---------------------------------------------------------------------------
-# Episode stats
-# ---------------------------------------------------------------------------
-
 def _episode_stats(episodes: List[Any]) -> Dict[str, Any]:
     if not episodes:
         return {
-            "n_episodes": 0, "ep_len_mean": 0.0,
-            "ep_len_min": 0, "ep_len_max": 0,
+            "n_episodes": 0,
+            "ep_len_mean": 0.0,
+            "ep_len_min": 0,
+            "ep_len_max": 0,
             "termination_reasons": {},
         }
     lengths = [ep.num_frames for ep in episodes]
     term_counts: Dict[str, int] = {}
     for ep in episodes:
-        for agent_id, reason in ep.agent_termination_reason.items():
+        for reason in ep.agent_termination_reason.values():
             if reason:
                 term_counts[reason] = term_counts.get(reason, 0) + 1
     return {
@@ -235,60 +154,99 @@ def _episode_stats(episodes: List[Any]) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Divergence guardrails
-# ---------------------------------------------------------------------------
+def _rng_state() -> Dict[str, Any]:
+    return {
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": (
+            torch.cuda.get_rng_state_all()
+            if torch.cuda.is_available() else None
+        ),
+    }
+
+
+def _restore_rng_state(state: Mapping[str, Any]) -> None:
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if torch.cuda.is_available() and state.get("cuda") is not None:
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _directory_bytes(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def _planned_updates(
+    *,
+    transitions_added: int,
+    replay_size: int,
+    warmup_steps: int,
+    batch_size: int,
+    utd_ratio: float,
+    max_updates: int,
+    utd_credit: float,
+) -> tuple[int, int, float]:
+    """Fractional UTD accounting; capped updates are dropped, not rolled."""
+    minimum = max(int(warmup_steps), int(batch_size))
+    if replay_size < minimum:
+        return 0, 0, float(utd_credit)
+    credit = float(utd_credit) + float(utd_ratio) * int(transitions_added)
+    requested = int(credit)
+    planned = min(requested, int(max_updates))
+    dropped = requested - planned
+    return planned, dropped, credit - requested
+
+
+def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: int, tau: float) -> Dict[str, float]:
+    metrics: Dict[str, float] = {
+        "batch.size": float(batch_size),
+        "critic.loss": float(step_stats.get("critic_loss", 0.0)),
+        "actor.loss": float(step_stats.get("actor_loss", 0.0)),
+        "actor.log_prob_mean": float(step_stats.get("log_prob_mean", 0.0)),
+        "temperature.alpha": float(step_stats.get("alpha", 0.0)),
+        "temperature.loss": float(step_stats.get("alpha_loss", 0.0)),
+        "target.tau": float(tau),
+        "replay.size": float(replay_size),
+    }
+    q_values = [
+        float(v) for k, v in step_stats.items()
+        if k.startswith("q1_mean_") or k.startswith("q2_mean_")
+    ]
+    td_values = [
+        float(v) for k, v in step_stats.items() if k.startswith("td_abs_mean_")
+    ]
+    if q_values:
+        metrics["critic.q_mean"] = float(np.mean(q_values))
+    if td_values:
+        metrics["critic.td_mean"] = float(np.mean(td_values))
+    for name, value in step_stats.items():
+        if name.startswith("q1_loss_"):
+            metrics[f"critic.q1_loss.{name[8:]}"] = float(value)
+        elif name.startswith("q2_loss_"):
+            metrics[f"critic.q2_loss.{name[8:]}"] = float(value)
+        elif name.startswith("actor_weight_mean_"):
+            metrics[f"actor.weight.{name[18:]}"] = float(value)
+    return metrics
+
 
 class DivergenceGuard:
-    """Monitors SAC training for divergence signatures.
+    """Simple divergence guardrails for the first SAC loop."""
 
-    Checks:
-    - Q value magnitude explosion.
-    - TD error explosion.
-    - Alpha collapse to zero.
-    - Target-online Q divergence.
-    """
-
-    def __init__(
-        self,
-        q_magnitude_limit: float = 1e4,
-        td_error_limit: float = 1e3,
-        alpha_min: float = 1e-6,
-        target_div_ratio: float = 10.0,
-    ):
-        self.q_magnitude_limit = q_magnitude_limit
-        self.td_error_limit = td_error_limit
+    def __init__(self, q_limit: float = 1e4, loss_limit: float = 1e3, alpha_min: float = 1e-6):
+        self.q_limit = q_limit
+        self.loss_limit = loss_limit
         self.alpha_min = alpha_min
-        self.target_div_ratio = target_div_ratio
-        self.warnings: List[str] = []
 
-    def check(self, stats: Dict[str, float]) -> Optional[str]:
-        """Return a warning message if divergence is detected, else None."""
-        self.warnings = []
+    def check(self, stats: Mapping[str, float]) -> Optional[str]:
+        warnings: List[str] = []
+        if abs(float(stats.get("q1_mean", 0.0))) > self.q_limit:
+            warnings.append("Q magnitude explosion")
+        if float(stats.get("critic_loss", 0.0)) > self.loss_limit:
+            warnings.append("TD loss explosion")
+        if float(stats.get("alpha", 1.0)) < self.alpha_min:
+            warnings.append("alpha collapse")
+        return " | ".join(warnings) if warnings else None
 
-        q1_mean = abs(stats.get("q1_mean", 0.0))
-        if q1_mean > self.q_magnitude_limit:
-            msg = f"Q magnitude explosion: |q1_mean|={q1_mean:.1f} > {self.q_magnitude_limit}"
-            self.warnings.append(msg)
-
-        alpha = stats.get("alpha", 0.0)
-        if alpha < self.alpha_min:
-            msg = f"Alpha collapse: alpha={alpha:.2e} < {self.alpha_min}"
-            self.warnings.append(msg)
-
-        q1_loss = stats.get("q1_loss", 0.0)
-        if q1_loss > self.td_error_limit:
-            msg = f"TD error explosion: q1_loss={q1_loss:.1f} > {self.td_error_limit}"
-            self.warnings.append(msg)
-
-        if self.warnings:
-            return " | ".join(self.warnings)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
 
 def train_sac(
     experiment: ExperimentSAC,
@@ -296,25 +254,28 @@ def train_sac(
     run_dir: Path,
     resume_from: Optional[Path] = None,
     reset_update: bool = False,
+    config_lock: bool = False,
 ) -> None:
-    """SAC training loop using the ExperimentSAC interface."""
     cp = experiment.common_params()
     sp = experiment.sac_params()
     channels = experiment.reward_channels()
     channel_names = tuple(ch.name for ch in channels)
 
-    # Signal handling
     def _shutdown_handler(signum, frame):
         os.killpg(os.getpgrp(), signal.SIGKILL)
+
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
-
     set_seed(cp.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    rollouter = create_rollouter(num_workers=cp.rollout_workers)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config = save_run_config_sac(experiment, run_dir)
+    metrics = SACMetricsWriter(run_dir)
+    clocks = SACClockState()
+    tick_ring = SACTickRing(TICK_RING_CAPACITY)
+    metrics.emit_config(clocks, config, run_id=run_dir.name)
 
-    # --- Build models ---
     actor = experiment.build_actor(device)
     critic = MultiHeadQCritic(
         obs_dim=actor.obs_dim,
@@ -325,20 +286,16 @@ def train_sac(
         critic_lr=cp.critic_learning_rate,
         device=device,
     )
-
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cp.learning_rate)
-
-    # Entropy temperature
     log_alpha = torch.tensor(
         np.log(sp.init_alpha), dtype=torch.float32, device=device,
         requires_grad=True,
     )
-    alpha_optimizer: Optional[torch.optim.Optimizer] = None
-    if sp.auto_alpha:
-        alpha_optimizer = torch.optim.Adam([log_alpha], lr=sp.alpha_lr)
-
-    # Replay buffer
-    replay = TaggedReplay(
+    alpha_optimizer = (
+        torch.optim.Adam([log_alpha], lr=sp.alpha_lr)
+        if sp.auto_alpha else None
+    )
+    replay = SACReplayBuffer(
         capacity=sp.replay_buffer_size,
         obs_dim=actor.obs_dim,
         action_dim=actor.action_dim,
@@ -346,116 +303,157 @@ def train_sac(
         rng_seed=cp.seed + 17,
         replay_plan=experiment.replay_plan(),
     )
-
-    # Divergence guard
     guard = DivergenceGuard()
+    utd_credit = 0.0
+    n_evals_done = 0
 
-    # --- Resume ---
-    start_env_step = 0
-    grad_step = 0
     if resume_from is not None:
-        start_env_step, grad_step = load_checkpoint_sac(
-            Path(resume_from),
-            actor=actor,
-            critic=critic,
-            actor_optimizer=actor_optimizer,
-            log_alpha=log_alpha,
-            alpha_optimizer=alpha_optimizer,
-            experiment=experiment,
-            cp=cp,
-        )
-        if reset_update:
-            start_env_step = 0
-            grad_step = 0
-        print(
-            f"[resume] loaded from {resume_from}, "
-            f"env_step={start_env_step}, grad_step={grad_step}",
-            flush=True,
-        )
+        resume_path = Path(resume_from)
+        if resume_path.is_dir():
+            bundle = load_checkpoint_bundle(
+                resume_path,
+                expected_config=config,
+                allowed_overrides=RESUME_ALLOWED_OVERRIDES,
+                config_lock=config_lock,
+                warm_start=reset_update,
+            )
+            if bundle.resume_mode == "full":
+                load_trainer_state(
+                    bundle.trainer_state,
+                    actor=actor,
+                    critic=critic,
+                    actor_optimizer=actor_optimizer,
+                    log_alpha=log_alpha,
+                    alpha_optimizer=alpha_optimizer,
+                )
+                replay = bundle.replay
+                runtime_state = dict(bundle.runtime_state or {})
+                clocks = SACClockState.from_mapping(runtime_state.get("clocks", {}))
+                utd_credit = float(runtime_state.get("utd_credit", 0.0))
+                n_evals_done = int(runtime_state.get("n_evals_done", 0))
+                experiment.load_state(bundle.experiment_state)
+                _restore_rng_state(runtime_state["rng"])
+            else:
+                load_model_state(
+                    bundle.trainer_state,
+                    actor=actor,
+                    critic=critic,
+                )
+            print(
+                f"[resume:{bundle.resume_mode}] {resume_path} "
+                f"clocks={clocks.snapshot()}",
+                flush=True,
+            )
+        else:
+            payload = load_model_only(resume_path)["model_payload"]
+            if isinstance(payload, Mapping) and payload.get("schema") == "sac_trainer_v1":
+                load_model_state(payload, actor=actor, critic=critic)
+            elif isinstance(payload, Mapping) and "actor_state_dict" in payload:
+                actor.load_state_dict(payload["actor_state_dict"])
+            else:
+                raise ValueError(f"unsupported model-only checkpoint: {resume_path}")
+            print(f"[resume:warm_start] {resume_path}", flush=True)
 
-    run_dir.mkdir(parents=True, exist_ok=True)
     policy_dir = run_dir / "policy"
     ckpt_dir = run_dir / "checkpoints"
     video_dir = run_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
-    print(f"run_dir={run_dir} experiment={cp.name} algo=sac", flush=True)
-
-    n_evals_done = 0
     last_video_proc: Optional[subprocess.Popen] = None
+
+    def _checkpoint(path: Path) -> Path:
+        clocks.tick_checkpoint()
+        runtime_state = {
+            "clocks": clocks.snapshot(),
+            "utd_credit": utd_credit,
+            "n_evals_done": n_evals_done,
+            "rng": _rng_state(),
+        }
+        save_checkpoint_bundle(
+            path,
+            trainer_state=trainer_state_dict(
+                actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+            ),
+            replay=replay,
+            runtime_state=runtime_state,
+            experiment_state=experiment.state(),
+            config=config,
+            allowed_overrides=RESUME_ALLOWED_OVERRIDES,
+        )
+        metrics.emit_checkpoint(
+            clocks,
+            {"checkpoint.bytes": _directory_bytes(path)},
+            path=str(path),
+        )
+        return path
 
     print(
         f"[DEBUG] rollout_workers={cp.rollout_workers} "
         f"episodes_per_update={cp.episodes_per_update} "
-        f"replay_buffer_size={sp.replay_buffer_size} "
-        f"batch_size={sp.batch_size} "
-        f"warmup_steps={sp.warmup_steps} "
-        f"utd_ratio={sp.utd_ratio} "
-        f"tau={sp.tau} "
-        f"init_alpha={sp.init_alpha} "
-        f"auto_alpha={sp.auto_alpha} "
-        f"use_grad_norm={sp.use_grad_norm} "
-        f"channels={channel_names} "
-        f"n_networks={critic.n_networks}",
+        f"replay_buffer_size={sp.replay_buffer_size} batch_size={sp.batch_size} "
+        f"warmup_steps={sp.warmup_steps} utd_ratio={sp.utd_ratio} "
+        f"channels={channel_names} n_networks={critic.n_networks}",
         flush=True,
     )
 
-    env_step = start_env_step
-    rollout_round = 0
-
-    # --- Main training loop ---
-    with rollouter:
-        while env_step < cp.max_env_steps:
+    with create_rollouter(num_workers=cp.rollout_workers) as rollouter:
+        while clocks.env_step < cp.max_env_steps:
             t_round_start = time.perf_counter()
-            rollout_round += 1
+            round_index = clocks.collection_round + 1
 
-            # 1. Export stochastic policy for rollout
             t0 = time.perf_counter()
-            export_dir = run_dir / "policy_exports" / f"r{rollout_round:05d}"
-            policy_bp = actor.to_blueprint(
-                dest_path=str(export_dir), stochastic=True,
-            )
+            export_dir = run_dir / "policy_exports" / f"r{round_index:05d}"
+            policy_bp = actor.to_blueprint(str(export_dir), stochastic=True)
+            clocks.tick_export()
             t_export = time.perf_counter() - t0
+            metrics.emit_export(
+                clocks,
+                {"export.bytes": _directory_bytes(export_dir), "timing.export_s": t_export},
+                path=str(export_dir),
+            )
 
-            # 2. Build rollout jobs and collect
             t0 = time.perf_counter()
-            rollout_seed = cp.seed + rollout_round * cp.episodes_per_update
+            rollout_seed = cp.seed + round_index * cp.episodes_per_update
             jobs = experiment.build_jobs(
                 policy_bp,
                 rollout_seed,
                 cp.episodes_per_update,
-                collection_round=rollout_round,
+                collection_round=round_index,
                 run_id=run_dir.name,
                 deterministic=False,
             )
             t_jobs = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            episodes: List[Any] = rollouter.collect(jobs)
+            episodes = rollouter.collect(jobs)
             t_rollout = time.perf_counter() - t0
 
-            # 3. Build slices and insert into replay
             t0 = time.perf_counter()
             slices = experiment.build_slices(episodes)
             transitions_added = replay.add_slices(slices)
-
-            # Count env steps
             ep_stats = _episode_stats(episodes)
-            env_step += ep_stats["n_episodes"] * 0  # actual steps counted below
             actual_steps = sum(ep.num_frames for ep in episodes)
-            env_step += actual_steps
+            clocks.advance_collection(
+                env_steps=actual_steps,
+                agent_transitions=transitions_added,
+            )
             t_buffer = time.perf_counter() - t0
 
-            # 4. SAC gradient updates
             t0 = time.perf_counter()
-            sac_stats_accum: Dict[str, List[float]] = {}
+            accumulated: Dict[str, List[float]] = {}
             n_grad_steps = 0
-
-            if replay.size >= sp.warmup_steps:
-                n_grad_steps = max(1, int(sp.utd_ratio * transitions_added))
-                # Cap to prevent runaway in large batches
-                n_grad_steps = min(n_grad_steps, sp.max_grad_steps_per_round)
+            dropped_updates = 0
+            min_replay = max(int(sp.warmup_steps), int(sp.batch_size))
+            if replay.size >= min_replay:
+                n_grad_steps, dropped_updates, utd_credit = _planned_updates(
+                    transitions_added=transitions_added,
+                    replay_size=replay.size,
+                    warmup_steps=sp.warmup_steps,
+                    batch_size=sp.batch_size,
+                    utd_ratio=sp.utd_ratio,
+                    max_updates=sp.max_grad_steps_per_round,
+                    utd_credit=utd_credit,
+                )
 
                 for _ in range(n_grad_steps):
+                    update_start = time.perf_counter()
                     batch = replay.sample(sp.batch_size, device)
                     step_stats = sac_update_v2(
                         actor=actor,
@@ -468,284 +466,172 @@ def train_sac(
                         sp=sp,
                         grad_clip_norm=cp.grad_clip_norm,
                         device=device,
-
                     )
+                    clocks.tick_critic()
+                    clocks.tick_actor()
+                    if alpha_optimizer is not None:
+                        clocks.tick_temperature()
+                    clocks.tick_target()
                     for k, v in step_stats.items():
-                        sac_stats_accum.setdefault(k, []).append(v)
-                    grad_step += 1
-
-                    # Divergence check
-                    if grad_step % 100 == 0:
-                        warning = guard.check(step_stats)
-                        if warning:
-                            print(f"  [DIVERGENCE WARNING] {warning}", flush=True)
-                            if "explosion" in warning:
-                                print(
-                                    f"  [DIVERGENCE] Stopping training at "
-                                    f"env_step={env_step}, grad_step={grad_step}",
-                                    flush=True,
-                                )
-                                save_checkpoint_sac(
-                                    ckpt_dir / f"checkpoint_s{env_step:08d}.pt",
-                                    actor=actor, critic=critic,
-                                    actor_optimizer=actor_optimizer,
-                                    log_alpha=log_alpha,
-                                    alpha_optimizer=alpha_optimizer,
-                                    experiment=experiment, cp=cp,
-                                    env_step=env_step, grad_step=grad_step,
-                                )
-                                return
+                        accumulated.setdefault(k, []).append(float(v))
+                    tick_metrics = _tick_metrics(
+                        step_stats, sp.batch_size, replay.size, sp.tau,
+                    )
+                    tick_ring.append(
+                        clocks=clocks,
+                        metrics=tick_metrics,
+                        sample_ids=batch["sample_ids"].detach().cpu().tolist(),
+                    )
+                    if clocks.critic_tick % TICK_METRIC_INTERVAL == 0:
+                        tick_metrics["timing.update_s"] = time.perf_counter() - update_start
+                        metrics.emit_tick(clocks, tick_metrics)
+                    warning = guard.check(step_stats)
+                    if warning and "explosion" in warning:
+                        _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
+                        raise RuntimeError(
+                            f"SAC divergence at env_step={clocks.env_step}: {warning}"
+                        )
             else:
                 print(
-                    f"  [warmup] buffer={replay.size}/{sp.warmup_steps}, "
-                    f"skipping updates",
+                    f"  [warmup] buffer={replay.size}/{min_replay}, skipping updates",
                     flush=True,
                 )
-
             t_sac = time.perf_counter() - t0
 
-            # Aggregate SAC stats
-            stats: Dict[str, Any] = {}
-            for k, vals in sac_stats_accum.items():
-                stats[k] = float(np.mean(vals))
-            stats["n_grad_steps"] = n_grad_steps
-            stats["grad_step"] = grad_step
-            stats["buffer_size"] = replay.size
-            stats["env_step"] = env_step
-            stats["transitions_added"] = transitions_added
+            stats = {
+                k: float(np.mean(v)) for k, v in accumulated.items()
+            }
+            stats["n_grad_steps"] = float(n_grad_steps)
+            stats["utd_dropped"] = float(dropped_updates)
 
-            # --- Eval ---
             eval_info: Optional[Dict[str, Any]] = None
             t_eval = 0.0
-            do_eval = env_step >= cp.eval_interval and (
-                env_step // cp.eval_interval > (env_step - actual_steps) // cp.eval_interval
+            prev_env = clocks.env_step - actual_steps
+            do_eval = clocks.env_step >= cp.eval_interval and (
+                clocks.env_step // cp.eval_interval > prev_env // cp.eval_interval
             )
-
             if do_eval:
                 t0 = time.perf_counter()
-                eval_seed = cp.seed + 100_000 + rollout_round * 97
-                eval_export_dir = run_dir / "policy_exports" / f"r{rollout_round:05d}_eval"
-                det_bp = actor.to_blueprint(
-                    dest_path=str(eval_export_dir), stochastic=False,
-                )
+                clocks.tick_eval()
+                eval_seed = cp.seed + 100_000 + round_index * 97
+                eval_export_dir = run_dir / "policy_exports" / f"r{round_index:05d}_eval"
+                det_bp = actor.to_blueprint(str(eval_export_dir), stochastic=False)
+                clocks.tick_export()
                 eval_jobs = experiment.build_jobs(
                     det_bp,
                     eval_seed,
                     cp.eval_episodes,
-                    collection_round=rollout_round,
+                    collection_round=round_index,
                     run_id=run_dir.name,
                     deterministic=True,
                 )
-                eval_episodes: List[Any] = rollouter.collect(eval_jobs)
-
-                result = experiment.on_eval(eval_episodes, env_step)
+                eval_episodes = rollouter.collect(eval_jobs)
+                result = experiment.on_eval(eval_episodes, clocks.env_step)
                 eval_info = result.get("info", {})
                 is_new_best = result.get("is_new_best", False)
-
-                # Relabel request
                 if result.get("request_relabel", False):
-                    n_relabeled = replay.relabel(experiment.relabel, {
-                        "env_step": env_step,
-                        "eval_info": eval_info,
-                    })
-                    if n_relabeled > 0:
-                        print(
-                            f"  [relabel] {n_relabeled} transitions relabeled",
-                            flush=True,
-                        )
-
-                if result.get("stop_training", False):
-                    print(
-                        f"[early_stop] requested by experiment at "
-                        f"env_step={env_step}",
-                        flush=True,
+                    raise RuntimeError(
+                        "SAC relabel requests are unsupported in sac_replay_v1"
                     )
-                    save_checkpoint_sac(
-                        ckpt_dir / f"checkpoint_s{env_step:08d}.pt",
-                        actor=actor, critic=critic,
-                        actor_optimizer=actor_optimizer,
-                        log_alpha=log_alpha,
-                        alpha_optimizer=alpha_optimizer,
-                        experiment=experiment, cp=cp,
-                        env_step=env_step, grad_step=grad_step,
-                    )
-                    break
+                t_eval = time.perf_counter() - t0
+                eval_metrics = {
+                    "eval.episodes": float(len(eval_episodes)),
+                    "timing.eval_s": t_eval,
+                }
+                for k, v in eval_info.items():
+                    if isinstance(v, (int, float)) and np.isfinite(v):
+                        eval_metrics[f"eval.{k}"] = float(v)
+                metrics.emit_eval(clocks, eval_metrics)
 
-                # Best-of-run snapshot
                 info_parts = [
                     f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
                     for k, v in eval_info.items()
                 ]
-                eval_line = f"[eval s{env_step:7d}] " + " ".join(info_parts)
-
+                eval_line = f"[eval s{clocks.env_step:7d}] " + " ".join(info_parts)
                 if is_new_best:
-                    if hasattr(actor, "export_policy_artifacts"):
-                        actor.export_policy_artifacts(
-                            policy_dir=policy_dir,
-                            extra_payload={
-                                "algorithm": "sac_v2",
-                                "experiment": cp.name,
-                                "env_step": env_step,
-                                "best_eval_info": eval_info,
-                            },
-                        )
-                    else:
-                        actor.to_blueprint(dest_path=str(policy_dir), stochastic=False)
+                    actor.to_blueprint(str(policy_dir), stochastic=False)
                     eval_line += "  [new_best]"
-
                 print(eval_line, flush=True)
-                t_eval = time.perf_counter() - t0
 
-                # Video
                 n_evals_done += 1
                 if (
                     cp.video_eval_interval > 0
                     and n_evals_done % cp.video_eval_interval == 0
                 ):
                     if last_video_proc is not None and last_video_proc.poll() is None:
-                        print(f"  [video_skip:prev_running]", flush=True)
+                        print("  [video_skip:prev_running]", flush=True)
                     elif eval_jobs:
-                        v_p_a, v_p_b, v_env, v_seed, v_options = eval_jobs[0]
-                        video_path = video_dir / f"s{env_step:08d}.mp4"
-                        log_path = video_dir / f"s{env_step:08d}.log"
+                        job = eval_jobs[0]
+                        video_path = video_dir / f"s{clocks.env_step:08d}.mp4"
+                        log_path = video_dir / f"s{clocks.env_step:08d}.log"
                         v_env_path = video_dir / "video_env_blueprint.yaml"
                         v_p_a_path = video_dir / "video_policy_a.yaml"
                         v_p_b_path = video_dir / "video_policy_b.yaml"
-                        v_env.save(v_env_path)
-                        v_p_a.save(v_p_a_path)
-                        v_p_b.save(v_p_b_path)
-                        v_options_path: Optional[Path] = None
-                        if v_options:
+                        job.env_bp.save(v_env_path)
+                        job.policy_a_bp.save(v_p_a_path)
+                        job.policy_b_bp.save(v_p_b_path)
+                        v_options_path = None
+                        if job.episode_options:
                             v_options_path = video_dir / "video_options.json"
-                            with open(v_options_path, "w") as f:
-                                json.dump(v_options, f)
+                            v_options_path.write_text(json.dumps(job.episode_options))
                         last_video_proc = _spawn_video_render(
                             env_blueprint=v_env_path,
                             policy_a_blueprint=v_p_a_path,
                             policy_b_blueprint=v_p_b_path,
                             video_path=video_path,
-                            seed=v_seed,
+                            seed=job.seed,
                             log_path=log_path,
                             options_json=v_options_path,
                         )
-                        if last_video_proc is not None:
-                            print(f"  [video:{video_path.name}]", flush=True)
 
-            # --- Logging ---
-            print(
-                f"[round {rollout_round:4d}] "
-                f"[env_step={env_step:7d}/{cp.max_env_steps}] "
-                f"[episodes={ep_stats['n_episodes']} "
-                f"len={ep_stats['ep_len_mean']:.1f} "
-                f"(min={ep_stats['ep_len_min']}, max={ep_stats['ep_len_max']})] "
-                f"[buffer={replay.size} added={transitions_added} "
-                f"grad_steps={n_grad_steps}]",
-                flush=True,
-            )
+                if result.get("stop_training", False):
+                    _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
+                    break
 
-            # SAC stats
-            alpha_val = stats.get("alpha", sp.init_alpha)
-            actor_loss = stats.get("actor_loss", 0.0)
-            q1_loss = stats.get("q1_loss", 0.0)
-            q1_mean = stats.get("q1_mean", 0.0)
-            log_prob = stats.get("log_prob_mean", 0.0)
-            print(
-                f"  [SAC    ] alpha={alpha_val:.4f} actor_loss={actor_loss:.4f} "
-                f"q1_loss={q1_loss:.4f} q1_mean={q1_mean:.3f} "
-                f"log_prob={log_prob:.2f}",
-                flush=True,
-            )
-
-            # Per-channel Q stats
-            for ch in channel_names:
-                q1lk = stats.get(f"q1_loss_{ch}", 0.0)
-                q2lk = stats.get(f"q2_loss_{ch}", 0.0)
-                q1mk = stats.get(f"q1_mean_{ch}", 0.0)
-                aw_mean = float(np.mean([
-                    v for v in [stats.get(f"actor_weights_{ch}_mean")]
-                    if v is not None
-                ])) if False else 0.0  # aw comes from buffer stats
-                grad_share = stats.get(f"grad_share_{ch}", None)
-                grad_scale = stats.get(f"grad_scale_{ch}", None)
-                line = (
-                    f"    - {ch:<12} q1_loss={q1lk:.4f} q2_loss={q2lk:.4f} "
-                    f"q1_mean={q1mk:.3f}"
-                )
-                if grad_share is not None:
-                    line += f" grad_share={grad_share:.1%}"
-                if grad_scale is not None:
-                    line += f" grad_scale={grad_scale:.4f}"
-                print(line, flush=True)
-
-            # Buffer stats
             buf_stats = replay.buffer_stats()
-            print(
-                f"  [Buffer ] size={replay.size}/{sp.replay_buffer_size} "
-                f"util={buf_stats['utilization']:.1%} "
-                f"n_trajs={buf_stats['n_trajectories']}",
-                flush=True,
-            )
-
-            # Per-channel buffer stats
-            for ch in channel_names:
-                cs = buf_stats["per_channel"].get(ch, {})
-                r_mean = cs.get("reward_mean", 0.0)
-                r_std = cs.get("reward_std", 0.0)
-                aw_mean = cs.get("aw_mean", 0.0)
-                done_rate = cs.get("done_rate", 0.0)
-                active_rate = cs.get("active_rate", 0.0)
-                print(
-                    f"    - {ch:<12} reward={r_mean:+.4f}±{r_std:.4f} "
-                    f"aw={aw_mean:.3f} done={done_rate:.1%} "
-                    f"active={active_rate:.1%}",
-                    flush=True,
-                )
-
-            # Raw stats
             t_total = time.perf_counter() - t_round_start
-            raw_log = {
-                "round": rollout_round,
-                "algo": "sac",
-                "env_step": env_step,
-                "grad_step": grad_step,
-                "episode_stats": ep_stats,
-                "buffer_stats": buf_stats,
-                "stats": stats,
-                "timing": {
-                    "total": round(t_total, 2),
-                    "export": round(t_export, 2),
-                    "jobs": round(t_jobs, 2),
-                    "rollout": round(t_rollout, 2),
-                    "buffer": round(t_buffer, 2),
-                    "sac": round(t_sac, 2),
-                    "eval": round(t_eval, 2),
-                },
+            round_metrics = {
+                "collection.episodes": float(ep_stats["n_episodes"]),
+                "collection.env_steps": float(actual_steps),
+                "collection.agent_transitions": float(transitions_added),
+                "collection.wall_time_s": float(t_rollout),
+                "replay.transitions_added": float(transitions_added),
+                "replay.size": float(replay.size),
+                "timing.collection_s": float(t_rollout),
+                "timing.slice_s": float(t_buffer),
             }
-            if eval_info is not None:
-                raw_log["eval_info"] = eval_info
-            print(f"__RAW_STATS__ {json.dumps(raw_log, default=str)}", flush=True)
+            metrics.emit_round(
+                clocks,
+                round_metrics,
+                termination_reasons=ep_stats["termination_reasons"],
+                utd_credit=utd_credit,
+                dropped_updates=dropped_updates,
+                replay_stats=buf_stats,
+                tick_ring_size=len(tick_ring),
+            )
 
             print(
-                f"  | time: total={t_total:.1f}s"
-                f" export={t_export:.2f}s"
-                f" jobs={t_jobs:.2f}s"
-                f" rollout={t_rollout:.1f}s"
-                f" buffer={t_buffer:.2f}s"
-                f" sac={t_sac:.1f}s"
-                f" eval={t_eval:.1f}s",
+                f"[round {clocks.collection_round:4d}] "
+                f"env_step={clocks.env_step}/{cp.max_env_steps} "
+                f"agent_transitions={clocks.agent_transition} "
+                f"episodes={ep_stats['n_episodes']} "
+                f"len={ep_stats['ep_len_mean']:.1f} "
+                f"buffer={replay.size} added={transitions_added} "
+                f"updates={n_grad_steps} dropped={dropped_updates}",
+                flush=True,
+            )
+            print(
+                f"  | time: total={t_total:.1f}s export={t_export:.2f}s "
+                f"jobs={t_jobs:.2f}s rollout={t_rollout:.1f}s "
+                f"slice={t_buffer:.2f}s train={t_sac:.1f}s eval={t_eval:.1f}s",
                 flush=True,
             )
 
-            # Checkpoint
-            if do_eval or rollout_round == 1:
-                save_checkpoint_sac(
-                    ckpt_dir / f"checkpoint_s{env_step:08d}.pt",
-                    actor=actor, critic=critic,
-                    actor_optimizer=actor_optimizer,
-                    log_alpha=log_alpha,
-                    alpha_optimizer=alpha_optimizer,
-                    experiment=experiment, cp=cp,
-                    env_step=env_step, grad_step=grad_step,
-                )
+            if do_eval or clocks.collection_round == 1:
+                _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
 
-    print(f"[done] env_step={env_step}, grad_step={grad_step}", flush=True)
+    metrics.close()
+    print(
+        f"[done] env_step={clocks.env_step} critic_tick={clocks.critic_tick}",
+        flush=True,
+    )
