@@ -32,16 +32,13 @@ import numpy as np
 from envs.framework.policy import Policy
 
 from baseline.framework.ppo.sampling_context import SamplingContext
-from baseline.framework.rollout.job import SamplingSpec
+from baseline.framework.rollout.job import EfSpec, SamplingSpec
 
 if TYPE_CHECKING:
     from baseline.framework.ppo.stochastic_policy import StochasticPolicy
 
-#: Per-frame explore_factor: a constant float, or a callable
-#: ``(obs, step) -> float``.  Callables must be top-level functions to
-#: be picklable across multiprocessing workers.
-EfSpec = Union[float, Callable[[np.ndarray, int], float]]
-
+# ``EfSpec`` is defined once in ``job.py`` and re-exported here for
+# backwards compatibility with existing imports of this module.
 
 def _try_build_ref_ensemble(ref_pairs) -> Optional[Callable]:
     """Fast weighted reference forward over all reference nets, or ``None``.

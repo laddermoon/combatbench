@@ -2754,3 +2754,39 @@ FrozenRobot 手动冒烟：robot_b 全程位移 0.0、robot_a 自由漂移、
 ### 验证
 
 `pytest envs/framework/tests` → 236 passed（纯文档改动）。
+
+## [2026-10-08] P-RO-1~4 处置：bench_rollout 复通 + P3-1 回归修复 + EfSpec 收敛
+
+**类别**：修复执行
+
+- **P-RO-2（回归修复，优先处置）**：复核发现 P3-1 修复引入回归——
+  `request_termination("abandoned"/"closed")` 发生在最后一个
+  `on_post_action_step` 之后，proposal 扫描（原仅在 per-step 钩子里）
+  收不到 → `EpisodeRecorder.on_post_episode` 的 all-agents-terminated
+  校验抛 RuntimeError。修法：扫描逻辑提为
+  `_sweep_termination_proposals(ctx)`，`on_post_episode` 开头补一次
+  终结扫描——正常回合 no-op，abandoned/closed 回合正确落
+  `('abandoned', step)`/`('closed', step)` 记录。新增
+  `test_episode_recorder.py`（2 例回归，沿用包内测试布局约定）。
+  裸 `except Exception` 吞 obs 读取异常的问题复核确认已不存在
+  （accessor 失败显式传播，注释已写明）。
+- **P-RO-1（修复复通）**：`bench_rollout.py` 三处过期全修——
+  (a) import 改 `policies.todo.tanh_gaussian_mlp`；
+  (b) docstring 示例蓝图改 `basic_balance_v2_phi_dual_env.yaml`；
+  (c) `bench_parallel` 的 jobs 从裸 tuple 改 `Job(...)` dataclass
+  （`stochastic=False`，基准测 env+policy 吞吐不掺采样包装器）。
+  连带修复导出模板 `policies/todo/checkpoint.py` 生成 policy.py
+  里的同根死 import（并行路径 spawn worker 加载导出蓝图时才触发）。
+  实测：单进程 4.9 ep/s、并行 2 workers 1.1 ep/s 端到端跑通。
+- **P-RO-3（收敛）**：`exploratory_policy.py` 的 `EfSpec` 本地定义删除，
+  改从 `job.py` 单源导入（re-export 保持向后兼容）。
+- **P-RO-4（不修，记档）**：rollout 包目录内测试文件是该域既有约定
+  （test_exploratory_policy/test_remote_inference 均在此），且
+  `test_exploratory_policy` 用 `_MODULE` 自引用做 spawn pickle——
+  搬迁风险大于收益，维持现状。
+
+### 验证
+
+`pytest envs/framework/tests` → 236 passed；
+`test_episode_recorder.py` + `test_exploratory_policy.py` → 10 passed；
+bench_rollout 单/并行双路径实测通过。

@@ -2,12 +2,12 @@
 
 Usage:
     PYTHONPATH=. python3 baseline/framework/rollout/bench_rollout.py \
-        baseline/humanoid21/blueprints/stage1_env.yaml \
+        baseline/humanoid21/blueprints/basic_balance_v2_phi_dual_env.yaml \
         --episodes 256 --workers 48
 
     # Single-process debug:
     PYTHONPATH=. python3 baseline/framework/rollout/bench_rollout.py \
-        baseline/humanoid21/blueprints/stage1_env.yaml \
+        baseline/humanoid21/blueprints/basic_balance_v2_phi_dual_env.yaml \
         --episodes 4 --workers 1
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ if COMBATBENCH not in sys.path:
 
 import numpy as np
 
-from baseline.framework.ppo.policies.tanh_gaussian_mlp import TanhGaussianMLPPolicy
+from baseline.framework.ppo.policies.todo.tanh_gaussian_mlp import TanhGaussianMLPPolicy
 from baseline.framework.rollout.episode import Episode
 from baseline.framework.rollout.episode_recorder import EpisodeRecorder
 from envs.framework.episode_runner import EpisodeRunner
@@ -97,8 +97,8 @@ def bench_parallel(
     action_dim: int = 21,
 ) -> None:
     """Multi-process benchmark: ParallelRollouter, fresh env+policy per job."""
+    from baseline.framework.rollout.job import Job
     from baseline.framework.rollout.parallel_rollouter import ParallelRollouter
-    from envs.framework.blueprint import EnvBlueprint
     from envs.framework.policy import PolicyBlueprint
 
     env_pb = ParameterizedEnvBlueprint.load(env_bp_yaml)
@@ -113,9 +113,16 @@ def bench_parallel(
     export_dir = Path(__file__).resolve().parent / "_bench_export"
     policy_bp: PolicyBlueprint = actor.to_blueprint(dest_path=str(export_dir))
 
-    # Build jobs (all share the same env blueprint)
+    # Build jobs (all share the same env blueprint; stochastic=False —
+    # this benchmarks env+policy throughput, not the sampling wrapper)
     jobs = [
-        (policy_bp, policy_bp, env_bp, i + 2000, None)
+        Job(
+            policy_a_bp=policy_bp,
+            policy_b_bp=policy_bp,
+            env_bp=env_bp,
+            seed=i + 2000,
+            stochastic=False,
+        )
         for i in range(n_episodes)
     ]
 

@@ -133,6 +133,9 @@ class EpisodeRecorder(PostActionRecorder):
                 ),
             }
         )
+        self._sweep_termination_proposals(ctx)
+
+    def _sweep_termination_proposals(self, ctx: ReadOnlySimContext) -> None:
         # Track per-agent termination proposals: for each agent, detect
         # new reasons not yet seen and record (reason, episode_step).
         # Same reason is only recorded once (first occurrence). The
@@ -150,6 +153,13 @@ class EpisodeRecorder(PostActionRecorder):
                     )
 
     def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        # Final sweep: termination proposals issued *outside* a stepped
+        # frame (e.g. "abandoned" from EnvRuntime.reset or "closed" from
+        # EnvRuntime.close) are appended to ctx after the last
+        # on_post_action_step — pick them up here so every produced
+        # Episode carries its real termination metadata.
+        self._sweep_termination_proposals(ctx)
+
         # Capture obs_{T+1} for RL bootstrap. Accessor failures must
         # propagate: an empty final_observation would silently drop every
         # agent trajectory in build_trajectories (fin_obs is None → skip).
