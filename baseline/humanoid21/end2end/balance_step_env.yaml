@@ -1,0 +1,77 @@
+# End-to-end balance reinforcement: step recipe + push perturbation.
+#
+# Same as step_env.yaml (GaitClockSimulator, RandomFallenStatePlugin,
+# 4-stage potential + FootStateObserver) plus StandingTriggeredForcePlugin:
+# once a robot stands steadily (h > 1.15 for 20 action steps) a random-
+# direction torso push is applied; a third-point ground contact during
+# PUSHING+OBSERVE counts as a push-induced fall.  Per-episode force and
+# duration come from episode_options["impulse_params"], injected by the
+# experiment's curriculum (see exp_balance_step.py).
+#
+# Reward channels are identical to exp_step.py — the push adds no reward
+# term; survival pressure flows through the existing r_potential /
+# r_fall (fall-onset) / foot channels.  Falling under a push is a real
+# fall and pays the onset penalty; getting up and resuming the gait
+# keeps paying.
+#
+# No imbalance termination — robot can be pushed down and get back up.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps (standup ~100 + stepping ~300)."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  # GaitClockSimulator appends 3 dims to obs (indices 96..98):
+  # cmd_L / cmd_R / window-progress — the stepping command the policy
+  # can see (aligned with clock_foot_weights on the reward side).
+  cls: "baseline.humanoid21.end2end.gait_clock_simulator:GaitClockSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    gait_period: 40
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      standing_height_threshold: 1.15
+      standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+      random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+      observe_steps: 20              # 施力后观察 1 秒
+      impulse_body: "torso"
+      force_threshold: 1.0           # 接触力阈值 (N)
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
