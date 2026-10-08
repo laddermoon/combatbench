@@ -88,6 +88,7 @@ CPU 侧 post-reset 状态**覆写为 GPU 侧记录到的 post-reset qpos/qvel**�
 | 接入新任务（binding） | `binding_registry.py` + 参照 `envs/humanoid21/batch_binding.py` |
 | 接入新后端 | `physics.py` 后端契约 + `fake_backend.py` 最小实现参照 |
 | 迁移 CPU 实验 | `migration_audit.py` 审计 → manifest → 逐项转换（E5 流程） |
+| 双后端行为对比 | `dual_backend_video.py`（同策略同位姿 GPU/CPU 对照视频） |
 | 性能归因 | `probe_e7_baseline.py`（分项计时/sync 记账）；判读口径见 E7_BASELINE/E7_RESULTS |
 
 ## 文档索引
