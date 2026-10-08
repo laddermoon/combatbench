@@ -2417,3 +2417,19 @@ git 外文档，不管）
 - `grep policy/baseline`：活跃引用仅余 replay 脚本 help 文本与
   ledger 历史记录；审计记录保留。
 - 两个幸存蓝图 `random.yaml`/`standing.yaml` 实测 `PolicyBlueprint.load` 正常。
+
+## [2026-10-08] P-POL-2/3 复核结案：policy/README.md 已在 e93b4926 重写
+
+**对象**：`policy/README.md`
+**类别**：复核——已解决，无代码改动
+
+- 审计条目记录的过时点（`BaseCombatPolicy` 伪代码、`act(obs)->ndarray`
+  旧签名、`load_policy()`、`ParallelRunner`、`act_with_extras`、
+  "必须继承 BaseCombatPolicy"）在当前 HEAD **零残留**——README 在
+  `e93b4926`（audit-pass 文档修复）已整体重写为 `Policy` ABC +
+  `PolicyBlueprint` 契约。
+- 逐项核验：README 的 `act(obs, *, want_extra)` 签名与
+  `policy.py:116` 一致；`file:${DIR}/x.py:Class` 蓝图格式与
+  `policy.py:242` 实现一致；`RandomCombatPolicy(scale/seed/action_dim)`
+  与 `policy/random/policy.py:19` 一致；`docs/SUBMISSION.md` 存在。
+- P-POL-2 与 P-POL-3（同文内的 BaseCombatPolicy 字样）合并结案。
