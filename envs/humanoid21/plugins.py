@@ -27,7 +27,7 @@ class CombatScoringPlugin(BasePlugin):
 
     Damage formula (per substep)::
 
-        damage = part_weight × (force / force_scale)² × dt
+        damage = part_weight × (min(force, MAX_DAMAGE_FORCE) / force_scale)² × dt
 
     where ``dt`` is the physics timestep in seconds (default 0.002 s).
 
@@ -52,7 +52,9 @@ class CombatScoringPlugin(BasePlugin):
         default, so each episode (round) can log to a distinct file.
     """
     ATTACK_PARTS = {'hand', 'foot'}
-    DAMAGE_TARGET_PARTS = {'head', 'torso', 'waist_upper', 'waist_lower'}
+    # _get_part_category 只会产出 'head'/'torso' 这两种受击分类
+    # （waist/pelvis/butt 一律归入 'torso'）。
+    DAMAGE_TARGET_PARTS = {'head', 'torso'}
 
     # Part weight × (force / force_scale)² × dt.
     # Head is 3× more vulnerable than torso.  The quadratic threshold means
@@ -63,6 +65,10 @@ class CombatScoringPlugin(BasePlugin):
         'head': 3.0,
         'torso': 1.0,
     }
+
+    # 伤害力上限（N）：超过该值的接触力按此值计，避免瞬时尖峰造成
+    # 极端伤害。写进上方伤害公式的 min() 项。
+    MAX_DAMAGE_FORCE = 1200.0
 
     def __init__(
         self,
@@ -265,7 +271,7 @@ class CombatScoringPlugin(BasePlugin):
         # Map hit category to damage rule key
         if hit_cat == 'head':
             damage_part = 'head'
-        elif hit_cat in ('torso', 'waist_upper', 'waist_lower'):
+        elif hit_cat == 'torso':
             damage_part = 'torso'
         else:
             return None
@@ -351,7 +357,7 @@ class CombatScoringPlugin(BasePlugin):
             if part_weight <= 0:
                 continue
 
-            effective_force = min(force, 1200.0)
+            effective_force = min(force, self.MAX_DAMAGE_FORCE)
             damage = part_weight * (effective_force / self.force_scale) ** 2 * self.phy_step_dt
             if damage <= 0:
                 continue

@@ -97,7 +97,8 @@ def measure_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) 
         # 录制视频帧
         if record_video and step % capture_interval == 0:
             frame = sim.get_broadcastview_image()
-            frames.append(frame)
+            if frame is not None:
+                frames.append(frame)
 
         # 每个周期采样一次
         if step % 10 == 0:
@@ -202,7 +203,8 @@ def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[st
         # 录制视频帧
         if record_video and step % capture_interval == 0:
             frame = sim.get_broadcastview_image()
-            frames.append(frame)
+            if frame is not None:
+                frames.append(frame)
 
         # 记录数据 (每10步记录一次)
         if step % 10 == 0:
@@ -315,7 +317,8 @@ def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True
         # 录制视频帧 (每5步录制一帧)
         if record_video and step % 5 == 0:
             frame = sim.get_broadcastview_image()
-            frames.append(frame)
+            if frame is not None:
+                frames.append(frame)
 
         core_state = sim.get_core_state()
         for robot_id in ['robot_a', 'robot_b']:
@@ -424,7 +427,8 @@ def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True
         # 录制视频帧
         if record_video and step % capture_interval == 0:
             frame = sim.get_broadcastview_image()
-            frames.append(frame)
+            if frame is not None:
+                frames.append(frame)
 
         # 记录控制力矩
         if step % 10 == 0:
@@ -548,7 +552,8 @@ def measure_absolute_stability(sim: Humanoid21Simulator, record_video: bool = Tr
             # 录制视频帧
             if record_video and step in capture_steps:
                 frame = sim.get_broadcastview_image()
-                frames.append(frame)
+                if frame is not None:
+                    frames.append(frame)
 
             # 每 1000 步检查一次数值
             if step % 1000 == 0:

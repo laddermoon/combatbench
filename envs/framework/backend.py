@@ -37,7 +37,11 @@ class IDataAccessor(ABC):
 
     @abstractmethod
     def get_broadcastview_image(self) -> Any:
-        """获取广播视角图像（渲染输出）"""
+        """获取广播视角图像（渲染输出）。
+
+        渲染失败时后端应返回 ``None`` 让调用方跳帧，而非返回伪帧
+        （例如全黑图像——那会污染录制产物）。
+        """
         pass
 
     @abstractmethod

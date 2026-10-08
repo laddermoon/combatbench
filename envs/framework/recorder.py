@@ -424,7 +424,13 @@ class BaseFrameRecorder(PostActionRecorder):
 
     def _write_image(self, ctx: ReadOnlySimContext, image_path: Path) -> None:
         import imageio.v2 as imageio  # lazy import; see module docstring
-        image = _ensure_uint8_rgb_image(ctx.accessor.get_broadcastview_image())
+        raw = ctx.accessor.get_broadcastview_image()
+        if raw is None:
+            raise RuntimeError(
+                "broadcast-view render failed (backend returned None); "
+                "refusing to write a fake frame"
+            )
+        image = _ensure_uint8_rgb_image(raw)
         imageio.imwrite(str(image_path), image)
         if not self.quiet:
             print(f"[frame_recorder] saved image: {image_path}", flush=True)

@@ -1,6 +1,6 @@
 import os
 # Set EGL backend BEFORE importing mujoco
-os.environ['MUJOCO_GL'] = 'egl'
+os.environ.setdefault('MUJOCO_GL', 'egl')
 os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 import mujoco
@@ -86,6 +86,14 @@ class Humanoid21Simulator(BaseSimulator):
         self._body_id_to_aff = self._meta['body_id_to_aff']
         self._geom_id_to_aff = self._meta['geom_id_to_aff']
 
+        # 广播相机防出界的场地半径：从 ground geom 的 size[0] 读取，
+        # 与 arena XML 解耦（换场地模型时自动跟随）；无 ground geom 时
+        # 退回 circular_v2 的历史值 3.44。
+        if self._ground_geom_id >= 0:
+            self._arena_radius = float(self.model.geom_size[self._ground_geom_id][0])
+        else:
+            self._arena_radius = 3.44
+
         self._compute_normalization_params()
         self._build_pd_tables()
 
@@ -97,6 +105,11 @@ class Humanoid21Simulator(BaseSimulator):
 
         # 调试用计数器
         self._step_count = 0
+
+        # reset() 传入的种子。当前物理仿真为确定性实现（mj_resetData +
+        # 无 RNG 源），seed 暂不被消费；保存以备未来随机初始化/RNG 消费
+        # 者使用，并满足 BaseSimulator 的种子契约。
+        self._seed: Optional[int] = None
 
         # 广播镜头状态缓存（用于平滑运动）
         self._prev_cam_pos = None
@@ -914,13 +927,16 @@ class Humanoid21Simulator(BaseSimulator):
         重置环境到指定的初始姿态
 
         Args:
-            seed: 随机种子
+            seed: 随机种子。当前实现为确定性仿真（mj_resetData，无 RNG
+                消费者），seed 仅被保存到 ``self._seed`` 供溯源/未来随机
+                初始化使用，不驱动任何随机源。
             options: 可选参数，包括:
                 - initial_distance: 初始距离
                 - initial_pose_a: 机器人A的初始姿态
                 - initial_pose_b: 机器人B的初始姿态
         """
         self._data_cache.clear()
+        self._seed = seed
         mujoco.mj_resetData(self.model, self.data)
 
         # 设置初始距离
@@ -1228,7 +1244,7 @@ class Humanoid21Simulator(BaseSimulator):
             torque = np.asarray(torque, dtype=np.float64)
             self.data.xfrc_applied[body_id, 3:6] += torque
     
-    def get_broadcastview_image(self) -> np.ndarray:
+    def get_broadcastview_image(self) -> Optional[np.ndarray]:
         """Broadcast-view camera that always keeps both robots fully in frame.
 
         Camera design:
@@ -1238,6 +1254,10 @@ class Humanoid21Simulator(BaseSimulator):
           side keeps the camera inside the arena boundary
         - elevation = -20 deg (fixed downward tilt)
         - EMA smoothing on all parameters to reduce jitter
+
+        Returns:
+            uint8 RGB 帧；渲染失败时返回 ``None``（并发出 warning），调用方
+            应跳过该帧而非录制伪帧。
         """
         try:
             torso_a_id = self._robot('robot_a')['root_body_id']
@@ -1268,10 +1288,11 @@ class Humanoid21Simulator(BaseSimulator):
             want_dist = float(np.clip(dist_ab * 1.5, 2.5, 4.0))
 
             # --- side selection & arena clamping ---
-            # Circular arena radius = 3.44 m; keep camera inside the circle.
-            # Camera horizontal position = lookat_xy + dist * (-cos(azi), -sin(azi)) * cos(ele)
+            # Keep camera inside the circular arena (radius from ground geom,
+            # see __init__). Camera horizontal position =
+            # lookat_xy + dist * (-cos(azi), -sin(azi)) * cos(ele)
             # Constraint: |cam_xy| <= arena_radius
-            arena_radius = 3.44
+            arena_radius = self._arena_radius
 
             def _max_dist_for_side(azi_deg: float, ele_deg: float,
                                    lookat: np.ndarray) -> float:
@@ -1377,4 +1398,4 @@ class Humanoid21Simulator(BaseSimulator):
         except Exception as e:
             import warnings
             warnings.warn(f"Failed to render broadcast view: {e}")
-            return np.zeros((720, 1280, 3), dtype=np.uint8)
+            return None

@@ -2241,3 +2241,45 @@ git 外文档，不管）
 
 - 活跃文档中 `battle_*` 提及仅剩正确表述（README/CLAUDE）。
 - 文档类改动，无代码影响。
+
+## [2026-10-08] P-H21-7 小问题集合处置
+
+**对象**：`envs/humanoid21/simulator.py`、`plugins.py`、`acceptance_check.py`、
+`observer_plugins.py`、`envs/framework/recorder.py`、`envs/framework/backend.py`
+**类别**：修复执行（用户复核确认逐项建议，完成后暂不提交、人工 review）
+
+### 逐项处置
+
+1. **`MUJOCO_GL` 硬覆盖** → 改 `os.environ.setdefault`（与下一行
+   PYOPENGL_PLATFORM 一致；嵌入方预设值不再被静默盖掉）。
+2. **`reset(seed)` 未消费** → `self._seed = seed` 落地保存（当前
+   确定性仿真无 RNG 消费者，保存以供溯源/未来随机初始化），
+   docstring 如实注明"seed 不驱动任何随机源"。
+3. **`get_sensor_data()` 恒 `{}`** → 契约内 stub，不动。
+4. **渲染失败返回全黑帧** → `get_broadcastview_image` 失败返回
+   `None`（+warning），签名改 `Optional[np.ndarray]`。调用方梳理：
+   `VideoRecorderPlugin` 本就有 `frame is not None` 守卫（跳帧）；
+   `recorder._write_image` 补 None → RuntimeError（拒绝写伪帧，
+   fail-loud）；`observer_plugins.get_visualization_image` 补
+   None → RuntimeError（替代原模糊的 shape ValueError）；
+   `acceptance_check` 5 处视频帧采集补跳帧守卫；其余下游
+   （visualize_samples/render_state_images/generate_pose_images）
+   为一次性成像脚本，None 下游即炸属可接受 fail-loud。
+   `framework/backend.py` docstring 补"失败应返回 None 而非伪帧"。
+5. **`arena_radius = 3.44` 硬编码** → `__init__` 时从
+   `model.geom_size[ground_geom_id][0]` 派生（无 ground geom 退回
+   3.44），相机代码用 `self._arena_radius`。换 arena XML 自动跟随。
+6. **`waist_upper`/`waist_lower` 死枚举** → `DAMAGE_TARGET_PARTS`
+   收敛为 `{'head','torso'}`（`_get_part_category` 本就只有这两种
+   受击产出）；命中分支的 `in ('torso','waist_upper','waist_lower')`
+   简化为 `== 'torso'`。
+7. **`min(force,1200)` 上限未文档化** → 提为类常量
+   `MAX_DAMAGE_FORCE = 1200.0`，类 docstring 伤害公式同步写明。
+8. **`while pop()` 清 events** → 已被用户的 EventJournal 改造
+   顺带移除（journal append-only，pop 不再存在）。
+
+### 验证
+
+- `pytest envs/framework/tests/ envs/humanoid21/tests/` → 277 passed。
+- 实跑冒烟：构造+reset(seed=42)+render 一帧 OK，`arena_radius`
+  从模型正确读出 3.44。

@@ -62,7 +62,10 @@ class Humanoid21BalanceAnalysisObserver(BaseObserverPlugin):
             raise RuntimeError("Humanoid21BalanceAnalysisObserver has no cached accessor yet. Call runtime.reset() or runtime.step() first.")
         if not isinstance(self._output, dict):
             raise RuntimeError("Humanoid21BalanceAnalysisObserver has no analysis output yet.")
-        broadcast_image = self._ensure_uint8_rgb_image(self._last_accessor.get_broadcastview_image())
+        broadcast_raw = self._last_accessor.get_broadcastview_image()
+        if broadcast_raw is None:
+            raise RuntimeError("broadcast-view render failed (backend returned None)")
+        broadcast_image = self._ensure_uint8_rgb_image(broadcast_raw)
         plan_image = self._render_balance_plan_view(self._output, width=int(broadcast_image.shape[1]), height=int(broadcast_image.shape[0]))
         return np.concatenate([broadcast_image, plan_image], axis=0)
 
