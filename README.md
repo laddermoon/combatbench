@@ -119,8 +119,8 @@ Run a single round (`RoundRunner`):
 ```bash
 python -m envs.framework.round_runner \
   --env-blueprint envs/humanoid21/blueprint.yaml \
-  --policy-a-blueprint policy/baseline/fight/u11936/policy_blueprint.yaml \
-  --policy-b-blueprint policy/baseline/follow/u11416/policy_blueprint.yaml \
+  --policy-a-blueprint policy/blueprints/random.yaml \
+  --policy-b-blueprint policy/blueprints/humanoid21/standing.yaml \
   --video match.mp4
 ```
 
@@ -129,8 +129,8 @@ Run a full match (`MatchRunner`, 6 rounds × 30s, HP accumulation):
 ```bash
 python -m envs.framework.match_runner \
   --env-blueprint envs/humanoid21/blueprint.yaml \
-  --policy-a-blueprint policy/baseline/fight/u11936/policy_blueprint.yaml \
-  --policy-b-blueprint policy/baseline/follow/u11416/policy_blueprint.yaml \
+  --policy-a-blueprint policy/blueprints/random.yaml \
+  --policy-b-blueprint policy/blueprints/humanoid21/standing.yaml \
   --total-rounds 6 \
   --video-dir videos/
 ```
@@ -148,19 +148,18 @@ from envs.framework.common_plugins import VideoRecorderPlugin
 # Load environment blueprint
 blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
 
-# Load preset baseline policies
-# NOTE: the shipped snapshots under policy/baseline/ currently carry a stale
-# import (AUDIT P-POL-1) — until that is fixed, use e.g.
-# policy/blueprints/random.yaml / humanoid21/standing.yaml for a runnable demo.
-fight_policy = PolicyBlueprint.load("policy/baseline/fight/u11936/policy_blueprint.yaml").build()
-follow_policy = PolicyBlueprint.load("policy/baseline/follow/u11416/policy_blueprint.yaml").build()
+# Load preset policies (shipped blueprints: random / humanoid21 standing).
+# A trained fight/follow policy blueprint produced by a training run
+# (baseline/runs/*/policy_exports/*.yaml) can be substituted the same way.
+policy_a = PolicyBlueprint.load("policy/blueprints/random.yaml").build()
+policy_b = PolicyBlueprint.load("policy/blueprints/humanoid21/standing.yaml").build()
 
 # Run one round and record video
 video = VideoRecorderPlugin(fps=30, output_path="match.mp4")
 runner = RoundRunner(
     blueprint=blueprint,
-    policy_a=fight_policy,
-    policy_b=follow_policy,
+    policy_a=policy_a,
+    policy_b=policy_b,
     video_plugin=video,
 )
 result = runner.run(seed=42)

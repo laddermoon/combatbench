@@ -77,8 +77,8 @@ Status values (§5): STABLE / USABLE / WIP / LEGACY / UNSUPPORTED / OUT-OF-SCOPE
 | Dump 帧访问层 | `dumpkit/frame_access.py` | STABLE | 懒加载/None 语义契约与实现一致 |
 | Dump delta 诊断 | `dumpkit/dump_delta.py` | USABLE | 语义自洽（row0=post-update），但 4 个测试仍期望旧语义 |
 | Dump rollout 诊断 | `dumpkit/dump_rollout.py` | USABLE(语义陈旧) | atanh 域前提是 tanh 时代建模，对 TruncNorm 家族解读失真 |
-| Dump viewer | `dumpkit/viewer/` | USABLE | 功能可用；test_viewer 引用了不存在的 `_dump_gradsig` |
-| 已训策略快照 | `policy/baseline/` (81 个) | BROKEN-可修复 | 全部 import 已删除模块；一行路径修复即可复活 |
+| Dump viewer | `dumpkit/viewer/` | USABLE | test_viewer 的 `_dump_gradsig` 引用已修（P-TF-4） |
+| ~~已训策略快照~~ | ~~`policy/baseline/`~~ | REMOVED | 用户裁决废弃删除（P-POL-1，2026-10-08）：契约演进后无保留价值 |
 | Curriculum 注册表 | `humanoid21/curriculum/experiments/` | DEAD | import 已删 `baseline.framework.experiment`，即崩 |
 | v1 框架档案 | `baseline/framework/obsolete/` | ARCHIVE | 11 文件无活引用，纯历史留档 |
 | Numpy 批量兼容层 | `batchframework/batch_plugin.py` | DORMANT | 769 行基础设施零租户插件 |

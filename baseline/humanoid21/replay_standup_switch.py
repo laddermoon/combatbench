@@ -170,8 +170,10 @@ def main():
     parser.add_argument(
         "--fallback-bp",
         type=str,
-        default="/data1/mono/things/combatbench/policy/baseline/follow_v2/u09168/fallback/policy_blueprint.yaml",
-        help="Path to fallback policy blueprint YAML",
+        required=True,
+        help="Path to fallback policy blueprint YAML (historical "
+             "policy/baseline snapshots were removed; export one from a "
+             "training run's policy_exports/)",
     )
     parser.add_argument(
         "--env-blueprint",

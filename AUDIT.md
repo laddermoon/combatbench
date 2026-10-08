@@ -2376,3 +2376,44 @@ git 外文档，不管）
   停车场（含未实现家族的草稿测试，P-TF-4 已由外层 collect_ignore
   排除收集）。
 - 修正为该实状描述。
+
+## [2026-10-08] P-POL-1 处置：baseline 快照库整体废弃删除
+
+**对象**：`policy/baseline/`（81 快照 / 57MB）+ 全部引用点
+**类别**：修复执行（用户裁决："不能用的都废弃——环境和策略代码
+都变了，没有保留价值"）
+
+### 删除
+
+- `git rm -r policy/baseline/`：fight/fight_v2/fight_v2_oppopool/
+  follow/follow_v2 五族共 81 个快照目录（policy.py + model.pt +
+  policy_blueprint.yaml 各一），57MB 权重出库。
+- 此前诊断属实：快照 policy.py 全部 import 已被 `f232b8c5` 有意
+  移入 `policies/todo/` 的模块——用户裁决不修，整体废弃。
+
+### 引用面清理
+
+- `README.md` / `README_zh.md`：round_runner/match_runner 示例的
+  fight/follow 快照蓝图 → 换 `policy/blueprints/random.yaml` +
+  `humanoid21/standing.yaml`；Python 段的 "NOTE: stale import"
+  警告删除，改为指向 `baseline/runs/*/policy_exports/` 新产出路径。
+- `policy/README.md` §3 "Baseline 快照" → 改写为"训练导出策略"，
+  说明快照库已废弃、当前来源是 run 目录的 policy_exports。
+- `replay_hybrid.py` / `replay_standup_switch.py`：指向已删快照的
+  argparse 默认值 → 改 `required=True` + help 注明来源。
+- `CAPABILITY_LEDGER.md`：策略快照行 BROKEN-可修复 → REMOVED；
+  顺带清理 `test_viewer`/`_dump_gradsig` 过时备注（P-TF-4 已修）。
+
+### 有意不动
+
+- `baseline/humanoid21/curriculum/experiments/exp_hybrid.py:58`
+  硬编码了同款死路径——但整个注册表本就 import-broken（审计
+  已认定），属死代码里的死指针，不单列修复。
+- `policy/README.md` 的旧契约描述（BaseCombatPolicy/act 旧签名）
+  属 P-POL-2/3，独立处理。
+
+### 验证
+
+- `grep policy/baseline`：活跃引用仅余 replay 脚本 help 文本与
+  ledger 历史记录；审计记录保留。
+- 两个幸存蓝图 `random.yaml`/`standing.yaml` 实测 `PolicyBlueprint.load` 正常。

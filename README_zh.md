@@ -119,8 +119,8 @@ pip install -r requirements.txt
 ```bash
 python -m envs.framework.round_runner \
   --env-blueprint envs/humanoid21/blueprint.yaml \
-  --policy-a-blueprint policy/baseline/fight/u11936/policy_blueprint.yaml \
-  --policy-b-blueprint policy/baseline/follow/u11416/policy_blueprint.yaml \
+  --policy-a-blueprint policy/blueprints/random.yaml \
+  --policy-b-blueprint policy/blueprints/humanoid21/standing.yaml \
   --video match.mp4
 ```
 
@@ -129,8 +129,8 @@ python -m envs.framework.round_runner \
 ```bash
 python -m envs.framework.match_runner \
   --env-blueprint envs/humanoid21/blueprint.yaml \
-  --policy-a-blueprint policy/baseline/fight/u11936/policy_blueprint.yaml \
-  --policy-b-blueprint policy/baseline/follow/u11416/policy_blueprint.yaml \
+  --policy-a-blueprint policy/blueprints/random.yaml \
+  --policy-b-blueprint policy/blueprints/humanoid21/standing.yaml \
   --total-rounds 6 \
   --video-dir videos/
 ```
@@ -148,19 +148,18 @@ from envs.framework.common_plugins import VideoRecorderPlugin
 # 加载环境蓝图
 blueprint = EnvBlueprint.load("envs/humanoid21/blueprint.yaml")
 
-# 加载预置基线策略
-# 注意：policy/baseline/ 下的快照当前带有一条失效 import（见 AUDIT.md
-# P-POL-1）——修复前可先用 policy/blueprints/random.yaml 或
-# humanoid21/standing.yaml 跑通流程。
-fight_policy = PolicyBlueprint.load("policy/baseline/fight/u11936/policy_blueprint.yaml").build()
-follow_policy = PolicyBlueprint.load("policy/baseline/follow/u11416/policy_blueprint.yaml").build()
+# 加载预置策略（仓库自带蓝图：random / humanoid21 standing）。
+# 训练产出的 fight/follow 策略蓝图（baseline/runs/*/policy_exports/*.yaml）
+# 可以同样方式替换加载。
+policy_a = PolicyBlueprint.load("policy/blueprints/random.yaml").build()
+policy_b = PolicyBlueprint.load("policy/blueprints/humanoid21/standing.yaml").build()
 
 # 运行一回合并录制视频
 video = VideoRecorderPlugin(fps=30, output_path="match.mp4")
 runner = RoundRunner(
     blueprint=blueprint,
-    policy_a=fight_policy,
-    policy_b=follow_policy,
+    policy_a=policy_a,
+    policy_b=policy_b,
     video_plugin=video,
 )
 result = runner.run(seed=42)

@@ -127,10 +127,12 @@ action, extra = policy.act(obs)   # act 返回 (action, extra) 元组
 `policy/humanoid21/standing/`：固定站立姿态的脚本策略，蓝图见
 `policy/blueprints/humanoid21/standing.yaml`。
 
-### 3. Baseline 快照
+### 3. 训练导出策略
 
-`policy/baseline/` 下是历次训练导出的策略快照（fight / follow 家族）。
-加载方式同样是 `PolicyBlueprint.load(<dir>/policy_blueprint.yaml).build()`。
+历史快照库 `policy/baseline/`（81 个 fight/follow 快照）已随环境/策略
+契约演进废弃删除（P-POL-1）。当前训练产出的可部署蓝图在各训练
+run 的 `baseline/runs/<run>/policy_exports/*.yaml`，加载方式同样是
+`PolicyBlueprint.load(<dir>/policy_blueprint.yaml).build()`。
 
 ## 实现自定义 Policy
 

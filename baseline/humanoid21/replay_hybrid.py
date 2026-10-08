@@ -163,7 +163,9 @@ def main():
     parser.add_argument(
         "--balance-model",
         type=str,
-        default="/data1/mono/things/combatbench/policy/baseline/follow_v2/u09168/fallback/model.pt",
+        required=True,
+        help="Path to balance/fallback model.pt (historical policy/baseline "
+             "snapshots were removed; export one from a training run)",
     )
     parser.add_argument(
         "--env-blueprint",
