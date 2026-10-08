@@ -1,8 +1,13 @@
 """HOST / HOST_SLOW 兼容层——旧插件经数据转换复用（M3 W3）。
 
-> **休眠机制（E8 判定）**：``capability_registry`` 保留 COMPAT/
-> HOST_SLOW 代码路径但注册表无一条使用——保留以备显式兼容需求，
-> 勿默认走此路。见 PUBLIC_INTERFACE.md §4。
+> **休眠机制（E8 判定，E9 审计再确认）**：``capability_registry`` 保留
+> COMPAT/HOST_SLOW 代码路径但注册表无一条使用、零测试、零生产用户——
+> 保留为调试/对照参考路径（迁移时在同一 runtime 内 A/B 对比 CPU 原
+> 插件语义），勿默认走此路；迁移正道见 MIGRATION_GUIDE.md 的
+> Layer-A 同输入对照（不依赖本模块）。未做端到端验证，接入前需自验。
+> 2026-10 兼容修复：事件 drain 改 EventJournal 游标差分（原
+> ``events.clear()`` 在 append-only 契约下已损坏）。
+> 见 PUBLIC_INTERFACE.md §4、BATCHFRAMEWORK_AUDIT.md A4。
 
 两种适配器：
 
@@ -335,6 +340,11 @@ class LegacyPluginAdapter(BaseDevicePlugin):
         self._env_ctxs = [SimContext(_SingleEnvSimView(sim, i))
                           for i in range(sim.batch_size)]
         self.last_events: List[Any] = []
+        # EventJournal 游标差分消费（2026-10 EventJournal 契约后：
+        # journal append-only、不可 clear——消费靠 (epoch,len) 游标；
+        # epoch 变化 = 框架 reset，游标作废整段重取）
+        self._event_marks = [0] * int(sim.batch_size)
+        self._event_epochs = [c.events.epoch for c in self._env_ctxs]
 
     @property
     def name(self) -> str:
@@ -405,9 +415,14 @@ class LegacyPluginAdapter(BaseDevicePlugin):
                     str(reasons[-1]), agents=[aid_i])
                 c.agent_terminated[aid] = False
                 c.agent_termination_proposals[aid].clear()
-        if c.events:
-            self.last_events.extend((env_id, e) for e in c.events)
-            c.events.clear()
+        # 事件游标差分：epoch 变化（框架 reset）→ 游标作废重取全段
+        if c.events.epoch != self._event_epochs[env_id]:
+            self._event_marks[env_id] = 0
+            self._event_epochs[env_id] = c.events.epoch
+        new_events = c.events.since(self._event_marks[env_id])
+        if new_events:
+            self.last_events.extend((env_id, e) for e in new_events)
+            self._event_marks[env_id] = len(c.events)
 
     # --- hooks ---
     def on_attach(self) -> None:

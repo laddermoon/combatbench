@@ -265,6 +265,13 @@ batchframework？
 
 两者不互斥；B 是底线，A 看迁移工作量是否真需要对照。
 
+**处置记录（2026-10，E9 收口执行）**：采 B 路线——正式休眠。理由：
+迁移正道（MIGRATION_GUIDE 的 Layer-A 同输入对照）不依赖本模块，
+GPU-only 依赖使扶正成本与当前无用户现状不匹配。同时做了一处
+**诚实修复**：`_drain_env_ctx` 的 `events.clear()` 在 EventJournal
+append-only 契约下已实际损坏（AttributeError），改为 (epoch, len)
+游标差分消费——保持"休眠但代码不失真"的底线。
+
 ---
 
 ## 综合差距清单（按优先级）
