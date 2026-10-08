@@ -160,6 +160,22 @@ class BalanceStep(Step):
         )
         self._recovery_rate = recovery_rate
 
+        # --- Composite quality BEFORE promotion: the level term must be
+        # the level this eval actually ran under.  Crediting the new
+        # level with a recovery measured on the old (easier) force sets
+        # an unreachable bar — u2040 measured rec=0.966 under 100N×1-5,
+        # promoted, recorded q=51.03, and the real level-5 ramp
+        # (0.58→0.72) never caught it → false early-stop at u2240.
+        gait_q = (
+            info.get("step", 0.0)
+            - 0.1 * (info.get("falls") or 0.0)
+            + 0.1 * (info.get("alt") or 0.0)
+            * min(1.0, info.get("cycles", 0.0) / 10.0)
+            + min(info.get("solepk") or 0.0, 0.10)
+            + 0.005 * min(info.get("cycles", 0.0), 20.0)
+        )
+        quality = 10.0 * self._level + recovery_rate + 0.05 * gait_q
+
         # --- Promotion: recovery >= 0.8 for PROMOTE_PATIENCE evals.
         # total_push>0 guard prevents a push-less eval (nobody stood
         # long enough) from counting as a pass.
@@ -173,19 +189,6 @@ class BalanceStep(Step):
             else:
                 self._consecutive_pass = 0
         promoted = self._level > prev_level
-
-        # --- Composite quality: level dominates, recovery breaks ties,
-        # gait quality refines.  Reconstruct the parent's gait quality
-        # from its (rounded) info fields — same formula, same role.
-        gait_q = (
-            info.get("step", 0.0)
-            - 0.1 * (info.get("falls") or 0.0)
-            + 0.1 * (info.get("alt") or 0.0)
-            * min(1.0, info.get("cycles", 0.0) / 10.0)
-            + min(info.get("solepk") or 0.0, 0.10)
-            + 0.005 * min(info.get("cycles", 0.0), 20.0)
-        )
-        quality = 10.0 * self._level + recovery_rate + 0.05 * gait_q
 
         if self._b_quality_ema is None:
             self._b_quality_ema = quality
@@ -253,9 +256,13 @@ class BalanceStep(Step):
         self._level = int(state.get("level", 0))
         self._consecutive_pass = int(state.get("consecutive_pass", 0))
         self._recovery_rate = float(state.get("recovery_rate", 1.0))
-        self._b_best_quality = float(state.get("b_best_quality", -1.0))
-        _ema = float(state.get("b_quality_ema", -1.0))
-        self._b_quality_ema = _ema if _ema >= 0 else None
+        # NOT restored: the checkpoint's composite best may carry a
+        # cross-level misattribution (promotion eval credited to the new
+        # level), and the EMA inherits a stale baseline — a resumed run
+        # re-anchors both at its first eval instead of chasing an
+        # unreachable bar.
+        self._b_best_quality = -1.0
+        self._b_quality_ema = None
         self._b_last_best_update = -1
 
 
