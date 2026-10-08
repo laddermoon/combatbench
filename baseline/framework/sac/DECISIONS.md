@@ -171,16 +171,86 @@ L_actor = E[α × log πθ(a_new | s) - min(Q1, Q2)(s, a_new)]
 
 ### W6：从第一版就可诊断的捕获契约
 
-**具体动作：**
+**执行顺序与边界：** 本工作包仍只做设计和最小验证，不移植 PPO dumpkit、不改生产训练路径、不启动训练。PPO `dumpkit`/`debug.py` 只作为能力参照；SAC 的数据模型是 collection round + 大量 critic tick + replay minibatch，不能沿用 PPO 的「一个 update = 一批 on-policy trajectory + 若干 epoch」截面。
 
-1. 将 SAC 分成采集、转换、replay、target、critic、actor、α/target 更新、评估八类切面。
-2. 定义常规标量与按需重型数据：阶段二必须具备基础标量和可追溯 minibatch；阶段五补足完整 viewer 和重型梯度分析。
-3. 指定关键截面所需内容：样本 ID、抽样概率/权重、来源、模型版本、target 构成、Q/TD、actor 各项、温度、生效配置、更新前后时点。
-4. 离线重算需保存相应参数状态与采样噪声或 RNG 状态；只保存 loss 不构成可重现截面。
-5. replay 覆盖后，dump 中已选样本与必要来源仍自包含；视频重演的可用性和物理重放限制显式声明。
-6. 设计诊断隔离 RNG 与不改变模型状态的约束，缺失数据不补零；CLI/HTTP/UI 使用同一套 SAC 分析函数和指标定义。
+#### W6.0 核对 PPO debug 能力与 SAC 差异
 
-**出口：** A6 有最小 schema、捕获时点、来源映射及开销分层；首版即能回答一次更新为什么得到该 target 和 loss。
+以 `ppo/dumpkit/CONTEXT.md`、`DATA_FLOW.md`、`dump_capture.py`、`dump_analysis.py` 为证据，列出可参照的架构能力：run 总览、指标目录、scheduled/on-demand dump、episode/trajectory 下钻、单样本溯源、离线重算、CLI/HTTP/UI 同一份分析函数。逐项判定「架构思想采用 / 字段语义改写 / 不采用」；不复制 GAE、ratio、clip、epoch early-stop 等 PPO 专有意义。
+
+#### W6.1 冻结 SAC 诊断因果链
+
+把首版分析链固定为：
+
+```text
+CollectedEpisode → TransitionSlice → Replay admission/overwrite
+→ sampled minibatch(sample_id/source_key)
+→ Bellman target 分解 → critic update
+→ actor objective 分解（Q、Shannon/U、gate）
+→ temperature/target-network update
+→ post-update policy/export delta → deterministic eval
+```
+
+每个环节给出输入、输出、可观测字段、失败时归因点；明确 eval 不写 replay、诊断不改训练状态。
+
+#### W6.2 定义指标命名空间与双时钟 x 轴
+
+设计 `__RAW_STATS__`/metrics schema：至少区分 `round.*`、`collect.*`、`replay.*`、`batch.*`、`target.*`、`critic.*`、`actor.*`、`regularizer.*`、`update.*`、`eval.*`、`cost.*`、`debug.*`。同一指标必须标注主时钟（`collection_round`、`env_step`、`agent_transition`、`critic_tick`）和次要时钟；不允许把 env step 与 agent transition 混作 UTD 或 replay 覆盖率分母。
+
+#### W6.3 定义常态指标、tick 聚合和捕获分层
+
+裁决四类开销：
+
+- **L0 常态标量**：每 round/评估必备，成本接近零；
+- **L1 常态结构摘要**：每 round 的 replay 年龄/来源/通道/行为参数分布和更新统计；
+- **L2 预约截面**：指定 `collection_round`、`critic_tick` 或 tick range，保存足以重算该截面的 batch/model/optimizer/RNG/config；
+- **L3 重型诊断**：逐样本梯度、逐通道贡献、action Jacobian、mixture 分量分解、更新前后参数 delta、完整或抽样 replay 快照，仅 dump-only。
+
+给出各层触发方式、保存目录、保留策略、默认关闭项和成本预算。
+
+#### W6.4 定义 SAC cross-section dump schema
+
+一个 dump 不能只叫 `uNNNNN`；设计以 `(collection_round, tick_range)` 或单个 `critic_tick` 为主键的目录/manifest。内容至少覆盖：collection/job provenance、admitted transition manifest、sampled batch 的 `sample_id/source_key` 和必要字段、行为策略 fingerprint、actor/critic/target/regularizer 版本与参数状态、Bellman target 分解、Q/TD/actor 各项、α/λ、optimizer、RNG、EffectiveConfig、更新前后摘要。
+
+#### W6.5 定义离线重算与证据等级
+
+区分三档：
+
+1. **解释级**：仅展示已保存标量/数组，不声称重算；
+2. **逻辑重算级**：相同 schema/代码下对同一 batch 重新计算 target/loss，给数值容差；
+3. **bitwise 级**：仅在 config-lock、同代码、同设备、同库版本、确定性内核和完整 RNG 下追求。
+
+裁决每个截面必须保存多少模型状态与采样噪声；历史 tick 若未预约且未 checkpoint，只能解释级，不伪造可重算性。
+
+#### W6.6 定义样本溯源与回放边界
+
+基于 A5 的 `sample_id/source_key/slice_id` 建立从 batch 样本回到 collection round/job/agent/frame 的查询；dump 必须自包含所选样本，即使 replay 已覆盖。区分：符号字段回放、基于 `core_state` 的物理重演、视频渲染；首版只承诺哪些可离线验证，哪些需要 checkpoint 中额外保存状态，缺件显示不可用而不是补零。
+
+#### W6.7 定义诊断隔离、安全和资源约束
+
+诊断使用独立 RNG stream，不消耗训练采样/训练更新 RNG；除被明确标记的 dry-run 外不修改模型、optimizer、replay、schedule。规定 worker 内诊断禁项、显存/内存上限、序列化失败处理、慢诊断对训练吞吐的测量方式，以及「诊断失败是否终止训练」的 fail-loud/fail-isolated 边界。
+
+#### W6.8 定义 CLI/分析函数/UI 数据面
+
+冻结 SAC 自有 metric catalog、dump manifest schema、离线分析 API 的形状；CLI、HTTP、viewer 必须调用同一分析实现，不允许多份解析。阶段二最小出口可只交付结构化 JSON/CLI；阶段五再完成 viewer，但字段与身份从首版就不能缺。独立性检查要求 SAC debug 不 import `ppo.dumpkit` 或 PPO buffer/trajectory 类型。
+
+#### W6.9 设计故障注入与验证矩阵
+
+至少覆盖：bootstrap/terminated 错、timeout 错、缺 observer/fact、source_key 冲突、replay 覆盖后 dump 溯源、陈旧 policy 版本过多、采样 RNG 恢复、α 失控、Q/TD 异常、actor gate 全零、通道压制、mixture logits 无梯度、U floor/bonus 误接、optimizer mismatch、checkpoint bundle 缺件、诊断 RNG 污染、dump 重算不一致。每项给出注入方法、预期可见指标、应定位到的模块和所属阶段。
+
+#### W6.10 汇总 A6 与阶段二门槛
+
+形成 A6：最小捕获 schema、触发与保留、身份映射、重算等级、开销分层、CLI/UI 同源边界、故障矩阵。列出必须先完成的决策项；只有 A6 能让首版回答「这次 critic tick 为什么得到该 target/loss、用了哪些历史样本、这些样本来自哪里」。
+
+**必须先裁决的问题（进入实现前不能留默认值）：**
+
+1. dump 主键采用 `collection_round`、`critic_tick`，还是 `(round, tick_range)`；推荐支持单 tick 与显式 tick range，不把所有 round 内更新压成一个截面。
+2. 常态日志是每 tick 落盘、内存 ring buffer、还是按 round 聚合；推荐 round 聚合 + 最近 N tick ring + dump 时才完整落盘。
+3. L2 截面是否默认保存 optimizer state；推荐保存，否则无法声明可恢复/复算更新。
+4. dump 默认保留数量与磁盘上限；推荐 latest-N 加显式 pin，后台训练不得无限增长。
+5. 是否要求首版支持物理重演；推荐先支持符号字段与可选渲染，逐帧物理重演只在保存 core-state 的 dump 中承诺。
+6. 诊断失败边界：数据/schema 类失败 fail loud；重型可视化或离线渲染失败是否允许隔离失败而不终止训练，需要确认。
+
+**出口：** A6 有最小 schema、捕获时点、来源映射、重算等级、开销分层及测试门槛；首版即能回答一次指定更新为什么得到该 target 和 loss，并能把所用样本追回 collection/job/agent/frame。
 
 ### W7：建立风险与验证矩阵
 
