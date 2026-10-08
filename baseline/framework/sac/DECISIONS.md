@@ -1919,7 +1919,7 @@ G2.0 P2-IND-0 ── independence scaffold / lazy registry / CLI gate
 
 # 阶段二执行计划：最小可信 SAC 闭环（2026-10-08）
 
-**状态：** 阶段二已开始；`P2-IND-0`/`G2.0` 已实现并通过测试，其余包未开始。计划依据 A1–A8，尤其 A5/A6/A7 的契约、风险矩阵与 DAG。任何实现中发现的契约冲突，必须回到对应 A 节新增 `SAC-R1-*` 裁决并更新风险矩阵，不允许为赶进度修改断言以通过测试。
+**状态：** 阶段二已实现并通过收口验证；`G2.0`～`G2.6` 均已满足。计划依据 A1–A8，尤其 A5/A6/A7 的契约、风险矩阵与 DAG。本阶段仍不声称任务收敛、八格策略全量、U 路线训练效果、viewer/HTTP 或长训验收。
 
 ## P2.0 阶段目标与非目标
 
@@ -2019,7 +2019,29 @@ S2-W0 P2-IND-0
   - 新增 `sac_metrics_v1`：`MetricEvent`、`MetricCatalog`、`SACMetricsWriter`、`load_events`；canonical 路径为 `<run_dir>/metrics/events.jsonl`。
   - 事件类型限定为 `round/tick/eval/export/checkpoint/debug/config`；metric namespace 按事件校验，显式拒绝 `advantage/ratio/clip/gae/ppo` 命名空间和非有限 metric 值。
   - 证据：`pytest baseline/framework/sac/tests/test_metrics.py -q` → 6 passed。
-  - 边界：当前只提供 writer/catalog/clock 基础，尚未接入训练 loop、tick ring 或 dump 捕获。
+- **2026-10-08 `P2-REPLAY-1` 完成：**
+  - 新增 `SACReplayBuffer`：SoA 存储、有效 transition 容量、FIFO overwrite、独立 `np.random.Generator`、batch 内唯一 `sample_id`、`source_key/slice_id/frame_index/metadata` 溯源、replay/RNG 持久化；`n_step/PER/relabel/stratified/freshness` 显式拒绝。
+  - 证据：`pytest baseline/framework/sac/tests/test_replay.py -q` → 18 passed。
+- **2026-10-08 `P2-CKPT-1` 完成：**
+  - 新增 `sac_checkpoint_v1` bundle：manifest/hash、原子目录写入、trainer/replay/runtime/experiment/config 状态、full resume 与 model-only warm-start 分离、白名单 override 与 `config-lock`。
+  - 证据：`pytest baseline/framework/sac/tests/test_checkpoint.py -q` → 16 passed。
+- **2026-10-08 `P2-TRAIN-1` 完成：**
+  - 新增 `S01Actor`（单分量、shared bounded σ、tanh Gaussian、可导出 runtime policy）与标准 Shannon SAC update：1-step Bellman target、双 Q、terminated/truncated/bootstrap 校验、actor entropy loss、auto-α、soft target update。
+  - 证据：SAC suite 中 actor/trainer 永久测试通过；未知 `actor_arch`、非法 batch、`n_step>1`、非双 Q 均 fail loud。
+- **2026-10-08 `P2-LOOP-1` / `P2-DBG-2` 完成：**
+  - SAC loop 接通 collection→slice→replay→updates→eval/export/checkpoint；实现 fractional UTD credit、round cap dropped accounting、完整 clock 推进、tick ring、`metrics/events.jsonl`、checkpoint bundle resume。
+  - 证据：`pytest baseline/framework/sac/tests/test_loop_diagnostics.py -q` 与集成测试通过。
+- **2026-10-08 `P2-ENV-1` 完成：**
+  - fake env 闭环覆盖 episode→slice→replay→trainer→metrics→checkpoint。
+  - Humanoid21 smoke：`sac_balance` 与 `sac_standup` 均完成 collection、slice、replay、8 次 critic/actor/temperature/target tick、policy export 和 checkpoint；`sac_balance` 另验证 eval/new-best policy。真实完整 resume 从 `/tmp/sac_balance_smoke_phase2/checkpoints/checkpoint_s00000039` 恢复成功。
+- **2026-10-08 `P2-DBG-3` / `P2-DBG-4` 完成：**
+  - 新增 `sac_dump_v1` L2 critic-tick dump：request/clocks/batch/forward outputs/trainer pre-post/spec/analysis/manifest/hash/latest-N retention；`--dump-at` 对 SAC 表示 critic tick。
+  - 新增 `baseline.framework.sac.debugkit` CLI：`summary`、`find-sample`、`recompute`；recompute 使用冻结 batch/action/log-prob 与 pre/post trainer state，复核 Bellman target、critic loss、actor loss、alpha loss。
+  - 证据：真实 `/tmp/sac_balance_dump_smoke_phase2/debug_dumps/critic_tick_00000002` recompute passed，最大差 `1.91e-06`。
+- **2026-10-08 `G2.6` 收口：**
+  - 移除误导性旧契约：`TrajectorySlice`、`TaggedReplay`、未实现的 `ExperimentSAC.relabel()` 和 `SACActorNotImplementedError` 不再出现在新 SAC API；`request_relabel` 在 loop 中显式拒绝。
+  - `data_sources()` 已由 loop 校验；v1 只允许 `self` source 和正 `sampling_share`，其他数据源 fail loud。
+  - 收口证据：`pytest baseline/framework/sac/tests -q` → 54 passed；`pytest baseline/framework/ppo/tests/test_minimal_example.py baseline/framework/ppo/tests/test_param_overrides.py -q` → 20 passed；静态审计未发现 SAC/experiments_sac 对 `baseline.framework.ppo` 或 `baseline.framework.rollout` 的 import。
 
 ---
 
