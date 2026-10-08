@@ -30,7 +30,10 @@ from baseline.framework.sac.experiment import (
     SACRewardChannel,
     TrajectorySlice,
 )
-from baseline.framework.rollout import extract_per_step_field, extract_per_step_scalar
+from baseline.framework.sac.observer_utils import (
+    extract_per_step_field,
+    extract_per_step_scalar,
+)
 
 from .base import CombatExperimentSACBase
 
@@ -148,6 +151,8 @@ class SacBalance(CombatExperimentSACBase):
         phi_arr = extract_per_step_field(
             episode.observer_outputs, phi_key, "phi", T_full,
         )
+        if phi_arr is None:
+            raise KeyError(f"Missing required observer field {phi_key}.phi")
         phi_arr = np.clip(phi_arr[:T], 0.0, 1.0).astype(np.float32)
 
         # r_fall: 0.01 × φ(t) per step

@@ -9,6 +9,8 @@ the implementation decision log.
 """
 from __future__ import annotations
 
+from .actor import SACActor
+from .collection import SACBehaviorSpec, SACJob
 from .experiment import (
     CommonParamsSAC,
     DataSource,
@@ -24,6 +26,9 @@ from .trainer import sac_update_v2
 
 __all__ = [
     "CommonParamsSAC",
+    "SACActor",
+    "SACBehaviorSpec",
+    "SACJob",
     "DataSource",
     "ExperimentSAC",
     "MultiHeadQCritic",

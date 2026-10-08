@@ -21,8 +21,8 @@ from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.framework.ppo import TrainablePolicy
-from baseline.framework.rollout.job import Job
+from baseline.framework.sac.actor import SACActor
+from baseline.framework.sac.collection import SACJob
 from baseline.framework.sac.experiment import (
     CommonParamsSAC,
     DataSource,
@@ -191,7 +191,7 @@ class CombatExperimentSACBase(ExperimentSAC):
     # Model construction
     # ------------------------------------------------------------------
 
-    def build_actor(self, device: torch.device) -> TrainablePolicy:
+    def build_actor(self, device: torch.device) -> SACActor:
         blueprint_dir = (
             Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
         )
@@ -240,7 +240,7 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Job]:
+    ) -> List[SACJob]:
         return self._build_selfplay_jobs(
             self._env_pb(), policy_bp, base_seed, n_episodes,
         )
@@ -271,18 +271,18 @@ class CombatExperimentSACBase(ExperimentSAC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Job]:
+    ) -> List[SACJob]:
         rng = np.random.default_rng(base_seed)
 
         if self.agent_used == "both":
             env_bp = env_pb.materialize(max_steps=self.max_steps)
-            jobs: List[Job] = []
+            jobs: List[SACJob] = []
             for i in range(n_episodes):
                 seed = int(base_seed + i)
                 initial_distance = float(
                     rng.uniform(self.init_distance_min, self.init_distance_max)
                 )
-                jobs.append(Job(
+                jobs.append(SACJob(
                     policy_a_bp=policy_bp,
                     policy_b_bp=policy_bp,
                     env_bp=env_bp,
@@ -312,7 +312,7 @@ class CombatExperimentSACBase(ExperimentSAC):
             initial_distance = float(
                 rng.uniform(self.init_distance_min, self.init_distance_max)
             )
-            jobs.append(Job(
+            jobs.append(SACJob(
                 policy_a_bp=policy_bp,
                 policy_b_bp=policy_bp,
                 env_bp=env_bps[agent_id],

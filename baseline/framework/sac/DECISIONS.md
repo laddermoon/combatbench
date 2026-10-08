@@ -1919,7 +1919,7 @@ G2.0 P2-IND-0 ── independence scaffold / lazy registry / CLI gate
 
 # 阶段二执行计划：最小可信 SAC 闭环（2026-10-08）
 
-**状态：** 仅制定执行计划；尚未开始生产实现。计划依据 A1–A8，尤其 A5/A6/A7 的契约、风险矩阵与 DAG。任何实现中发现的契约冲突，必须回到对应 A 节新增 `SAC-R1-*` 裁决并更新风险矩阵，不允许为赶进度修改断言以通过测试。
+**状态：** 阶段二已开始；`P2-IND-0`/`G2.0` 已实现并通过测试，其余包未开始。计划依据 A1–A8，尤其 A5/A6/A7 的契约、风险矩阵与 DAG。任何实现中发现的契约冲突，必须回到对应 A 节新增 `SAC-R1-*` 裁决并更新风险矩阵，不允许为赶进度修改断言以通过测试。
 
 ## P2.0 阶段目标与非目标
 
@@ -1997,6 +1997,15 @@ S2-W0 P2-IND-0
 - L2 dump 能对一个指定 `critic_tick` 重算 target/loss；
 - PPO 路径无回归；
 - 所有已知限制在文档中明确，不存在「配置被接受但功能未实现」。
+
+## P2.6 实施进度记录
+
+- **2026-10-08 `P2-IND-0` / `G2.0` 完成：**
+  - `baseline/framework/__init__.py` 改为 lazy export；`train.py` 改为按 `--algo` lazy registry，并让 `--list-experiments --algo sac` 不加载 PPO。
+  - SAC 新增自有 `actor.py`、`collection.py`、`observer_utils.py` 边界；`experiments_sac` 不再 import `baseline.framework.ppo` 或 `baseline.framework.rollout`。
+  - `sac.loop` 在 `P2-COLL-1` 前显式抛出 `SACRollouterNotImplemented`，不再通过 legacy `ParallelRollouter` 进入 PPO 依赖。
+  - 证据：`pytest baseline/framework/sac/tests -q` → 22 passed；`pytest baseline/framework/ppo/tests/test_param_overrides.py baseline/framework/ppo/algos/test_advantages.py -q` → 21 passed；`train.py --algo ppo --list-experiments` 与不带 `--algo` 的联合列表正常。
+  - 边界：SAC smoke 仍止于 `P2-COLL-1` 未实现；这满足 G2.0，不表示训练闭环可运行。
 
 ---
 

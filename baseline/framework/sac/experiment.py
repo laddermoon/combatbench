@@ -22,11 +22,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-from baseline.framework.ppo import TrainablePolicy
-from baseline.framework.rollout.job import Job
+from .actor import SACActor
+from .collection import SACJob
 
 
 # ---------------------------------------------------------------------------
@@ -275,11 +274,7 @@ class TrajectorySlice:
     importance: float = 1.0
 
 
-# ---------------------------------------------------------------------------
-# Job type alias (same structure as PPO V2)
-# ---------------------------------------------------------------------------
 
-Job = Tuple[PolicyBlueprint, PolicyBlueprint, EnvBlueprint, int, Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +315,7 @@ class ExperimentSAC(ABC):
         ...
 
     @abstractmethod
-    def build_actor(self, device: torch.device) -> TrainablePolicy:
+    def build_actor(self, device: torch.device) -> SACActor:
         """Build and return the actor policy."""
         ...
 
@@ -361,7 +356,7 @@ class ExperimentSAC(ABC):
         policy_bp: PolicyBlueprint,
         base_seed: int,
         n_episodes: int,
-    ) -> List[Job]:
+    ) -> List[SACJob]:
         """Build rollout jobs for training or evaluation.
 
         Same structure as PPO V2's build_jobs. The caller controls

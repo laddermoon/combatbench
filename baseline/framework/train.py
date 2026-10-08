@@ -16,21 +16,29 @@ import sys
 import time
 from pathlib import Path
 
-from baseline.experiments_ppo import get_ppo_experiment, list_ppo_experiments
-from baseline.experiments_sac import get_sac_experiment, list_sac_experiments
+
+def _ppo_registry():
+    from baseline.experiments_ppo import get_ppo_experiment, list_ppo_experiments
+    return get_ppo_experiment, list_ppo_experiments
+
+
+def _sac_registry():
+    from baseline.experiments_sac import get_sac_experiment, list_sac_experiments
+    return get_sac_experiment, list_sac_experiments
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Unified trainer — PPO."
+        description="Unified trainer — PPO and SAC."
     )
     parser.add_argument(
         "--experiment", type=str, default=None,
         help="Experiment name (e.g. basic_balance, hybrid_standup_balance).",
     )
     parser.add_argument(
-        "--algo", type=str, default="ppo", choices=["ppo", "sac"],
-        help="Training algorithm (default: ppo).",
+        "--algo", type=str, default=None, choices=["ppo", "sac"],
+        help="Training algorithm (default: ppo). With --list-experiments, "
+             "limits the listed registry when provided.",
     )
     parser.add_argument(
         "--smoke", action="store_true",
@@ -159,6 +167,48 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validate_sac_args(args: argparse.Namespace) -> None:
+    """Reject PPO-only flags instead of silently ignoring them for SAC."""
+    if args.algo != "sac":
+        return
+
+    unsupported = []
+    if args.no_confidence:
+        unsupported.append("--no-confidence")
+    if args.adv_winsorize_sigma is not None:
+        unsupported.append("--adv-winsorize-sigma")
+    if args.adv_winsorize_from_update != 0:
+        unsupported.append("--adv-winsorize-from-update")
+    if args.adv_norm is not None:
+        unsupported.append("--adv-norm")
+    if args.adv_norm_from_update != 0:
+        unsupported.append("--adv-norm-from-update")
+    if args.dual_clip_c is not None:
+        unsupported.append("--dual-clip-c")
+    if args.dual_clip_from_update != 0:
+        unsupported.append("--dual-clip-from-update")
+    if args.dump_at:
+        unsupported.append("--dump-at")
+    if args.dump_hypothesis:
+        unsupported.append("--dump-hypothesis")
+    if args.dump_full_grad:
+        unsupported.append("--dump-full-grad")
+    if args.param:
+        unsupported.append("--param")
+    if args.collector != "cpu":
+        unsupported.append(f"--collector={args.collector}")
+    if args.collector_batch_size != 64:
+        unsupported.append("--collector-batch-size")
+    if args.collector_devices:
+        unsupported.append("--collector-devices")
+
+    if unsupported:
+        raise SystemExit(
+            "Error: the following options are PPO-only or not yet supported "
+            f"by SAC: {', '.join(unsupported)}"
+        )
+
+
 def _setup_logging(run_dir: Path, background: bool) -> Path:
     """Set up file logging to run_dir/train.log.
 
@@ -218,27 +268,33 @@ class _TeeStream:
 
 def main() -> None:
     args = _parse_args()
+    _validate_sac_args(args)
 
     if args.list_experiments:
+        requested_algo = args.algo
         print("Available experiments:")
-        print("  [PPO]")
-        for name in list_ppo_experiments():
-            try:
-                exp = get_ppo_experiment(name)
-                channels = exp.reward_channels()
-                print(f"    {name}: channels={[ch.name for ch in channels]}")
-            except Exception as e:
-                print(f"    {name}: (requires constructor args: {e})")
-        sac_exps = list_sac_experiments()
-        if sac_exps:
-            print("  [SAC]")
-            for name in sac_exps:
+        if requested_algo in (None, "ppo"):
+            get_ppo_experiment, list_ppo_experiments = _ppo_registry()
+            print("  [PPO]")
+            for name in list_ppo_experiments():
                 try:
-                    exp = get_sac_experiment(name)
+                    exp = get_ppo_experiment(name)
                     channels = exp.reward_channels()
                     print(f"    {name}: channels={[ch.name for ch in channels]}")
                 except Exception as e:
                     print(f"    {name}: (requires constructor args: {e})")
+        if requested_algo in (None, "sac"):
+            get_sac_experiment, list_sac_experiments = _sac_registry()
+            sac_exps = list_sac_experiments()
+            if sac_exps:
+                print("  [SAC]")
+                for name in sac_exps:
+                    try:
+                        exp = get_sac_experiment(name)
+                        channels = exp.reward_channels()
+                        print(f"    {name}: channels={[ch.name for ch in channels]}")
+                    except Exception as e:
+                        print(f"    {name}: (requires constructor args: {e})")
         return
 
     if args.experiment is None:
@@ -253,10 +309,11 @@ def main() -> None:
         key, value = item.split("=", 1)
         set_params[key.strip()] = value.strip()
 
-    algo = args.algo
+    algo = args.algo or "ppo"
 
     # Try the appropriate registry based on algo
     if algo == "sac":
+        get_sac_experiment, list_sac_experiments = _sac_registry()
         try:
             experiment = get_sac_experiment(args.experiment, **set_params)
         except KeyError:
@@ -264,6 +321,7 @@ def main() -> None:
             print(f"  Available SAC: {list_sac_experiments()}")
             raise SystemExit(1)
     else:
+        get_ppo_experiment, list_ppo_experiments = _ppo_registry()
         try:
             experiment = get_ppo_experiment(args.experiment, **set_params)
         except KeyError:

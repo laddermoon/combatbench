@@ -29,8 +29,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from baseline.framework.rollout import Episode, ParallelRollouter
-
+from .collection import create_rollouter
 from .experiment import (
     CommonParamsSAC,
     ExperimentSAC,
@@ -214,7 +213,7 @@ def _spawn_video_render(
 # Episode stats
 # ---------------------------------------------------------------------------
 
-def _episode_stats(episodes: List[Episode]) -> Dict[str, Any]:
+def _episode_stats(episodes: List[Any]) -> Dict[str, Any]:
     if not episodes:
         return {
             "n_episodes": 0, "ep_len_mean": 0.0,
@@ -314,6 +313,8 @@ def train_sac(
     set_seed(cp.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    rollouter = create_rollouter(num_workers=cp.rollout_workers)
+
     # --- Build models ---
     actor = experiment.build_actor(device)
     critic = MultiHeadQCritic(
@@ -407,7 +408,7 @@ def train_sac(
     rollout_round = 0
 
     # --- Main training loop ---
-    with ParallelRollouter(num_workers=cp.rollout_workers) as rollouter:
+    with rollouter:
         while env_step < cp.max_env_steps:
             t_round_start = time.perf_counter()
             rollout_round += 1
@@ -429,7 +430,7 @@ def train_sac(
             t_jobs = time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            episodes: List[Episode] = rollouter.collect(jobs)
+            episodes: List[Any] = rollouter.collect(jobs)
             t_rollout = time.perf_counter() - t0
 
             # 3. Build slices and insert into replay
@@ -533,7 +534,7 @@ def train_sac(
                 eval_jobs = experiment.build_jobs(
                     det_bp, eval_seed, cp.eval_episodes,
                 )
-                eval_episodes: List[Episode] = rollouter.collect(eval_jobs)
+                eval_episodes: List[Any] = rollouter.collect(eval_jobs)
 
                 result = experiment.on_eval(eval_episodes, env_step)
                 eval_info = result.get("info", {})
