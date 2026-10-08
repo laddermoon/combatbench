@@ -93,7 +93,7 @@ def validate_transition_slice(
     *,
     required_task_facts: Sequence[str] = (),
 ) -> SACTransitionSlice:
-    """Validate one ``sac_transition_v1`` slice, failing loudly."""
+    """Validate one ``sac_transition_v2`` slice, failing loudly."""
 
     if not isinstance(sl, SACTransitionSlice):
         raise TypeError(
@@ -316,7 +316,7 @@ def build_agent_transition_slice(
     versions: Optional[Mapping[str, Any]] = None,
     slice_index: int = 0,
 ) -> Optional[SACTransitionSlice]:
-    """Build one contiguous per-agent ``sac_transition_v1`` slice."""
+    """Build one contiguous per-agent ``sac_transition_v2`` slice."""
 
     T_full = int(episode.num_frames)
     if T_full <= 0:

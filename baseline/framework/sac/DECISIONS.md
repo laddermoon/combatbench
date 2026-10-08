@@ -2164,15 +2164,28 @@ S3-W0 P3-AUDIT-0
 - **新增永久测试：** balance 缺 `cross_support`/`height_phi` observer 与缺 `phi_pre` fail loud；standup dense-potential slice 语义（reward=0.01φ、常量 gate、timeout→truncated+bootstrap）、缺 `potential` observer fail loud、`post_round_metrics` 消费一次即清空。
 - **证据：** 完整 SAC suite → 61 passed。
 
+### P3.8 持续训练运行（P3-RUN-1）与 G3.6 收口
+
+真实 Humanoid21 多 round 运行（均为 `--set` 缩小规模，非 smoke 路径）：
+
+- **`sac_balance`：** 17 rounds，`env_step=1579`，`critic_tick=510`；replay capacity=120 下累计插入 2732、`overwritten=2612`（FIFO wraparound 真实发生）；每 round 独立 policy export（`policy_exports/rNNNNN`）；2 次 eval（`eval_interval=600` env_step 调度正确）；3 个 checkpoint（round1 + 两次 eval）。
+- **full resume：** 从 `checkpoint_s00000616` 恢复，clocks 完整还原（`collection_round=7, critic_tick=210, replay restored`），继续 round 8–17 到 `env_step=1580, critic_tick=510`；白名单外配置变更（`max_env_steps`）被 config-lock 正确拒绝。
+- **`sac_standup`：** 5 rounds，`env_step=1200`，`critic_tick=150`；eval 输出 `max_pot/final_pot/max_stage/max_h/success`；round 事件含 `task.online_success`/`task.final_potential_mean`；replay `overwritten=1800`。
+- **来源追踪：** round 事件 `replay_stats` 含 `collection_round_counts`、per-channel `gate_mean/weight_mean/reward_mean/reward_std`、`reward_semantics_counts`、`objective_mode_counts`、`next_sample_id`、`overwritten`。
+- **sac_dump_v2 真实环境验证：** `critic_tick_00000005` dump → `debugkit recompute` `passed=true`，`max_abs_diff=7.63e-06`；`target_pair1_frac/actor_pair1_frac/per-channel Q/loss/TD/gate(next)` 全部对账通过。
+- **回归：** 完整 SAC suite 61 passed；PPO 快速回归（minimal_example/param_overrides/post_update_artifacts）38 passed；`baseline/framework/sac` 与 `baseline/experiments_sac` 内无 `baseline.framework.ppo`/`baseline.framework.rollout` 运行期 import；`transition.py` 过期 `v1` docstring 已修正为 `v2`（checkpoint/metrics/trainer/collection schema 未变，保持 v1 是正确版本语义）。
+
+**阶段三收口判定：通过。** 两实验在 v2 多通道契约下持续训练、评估、导出、checkpoint、full resume；batch→dump→recompute 链路可按 A3 公式逐通道对账；样本来源与版本可追踪。不声称任务收敛（本次运行均为极小预算），不声称八格策略或完整 debug UI 完成。
+
 ## P3.6 完成定义
 
 阶段三完成要求：
 
-- 两目标实验在新多通道契约下持续运行；
-- 每个合法 transition 的 source、版本、gate、reward、bootstrap 可解释；
-- critic/actor/alpha/target 的更新语义与 A3 一致；
-- 指定 critic tick 可重算并展示 per-channel 贡献；
-- 无 PPO import/runtime 依赖；
+- 两目标实验在新多通道契约下持续运行；✅
+- 每个合法 transition 的 source、版本、gate、reward、bootstrap 可解释；✅
+- critic/actor/alpha/target 的更新语义与 A3 一致；✅
+- 指定 critic tick 可重算并展示 per-channel 贡献；✅
+- 无 PPO import/runtime 依赖；✅
 - 不声称任务收敛、八格策略完成或完整 debug UI 完成。
 
 ---
