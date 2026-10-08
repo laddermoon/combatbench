@@ -2313,3 +2313,17 @@ git 外文档，不管）
   在跑训练占满 23.8/24.5G），与断言无关。`CUDA_VISIBLE_DEVICES=3`
   复跑 → **1 passed**。属测试环境敏感而非逻辑失败；该测试设计为
   cuda 可用时顺带验证 cuda RNG 恢复，OOM 属环境不可控，不改代码。
+
+## [2026-10-08] P-TF-3 处置：删除漏网的 back-compat 别名测试
+
+**对象**：`baseline/framework/test_critic_mlp.py`
+**类别**：修复执行
+
+- `baseline.humanoid21.base` 模块在 common→framework/critic_mlp 迁移中
+  被有意删除（实测 `ModuleNotFoundError`），别名非缺陷。
+- `test_humanoid21_back_compat_alias` 断言"旧符号必须仍存在"——与
+  有意的删除直接矛盾，属删模块时漏网的考古测试 → **删除该用例**。
+- 文件内另两个 `CriticMLP` sanity 用例（shape/dim 参数化）为有效
+  契约测试，保留。
+- 全仓 grep `baseline.humanoid21.base`：除已删测试外零引用。
+- 验证：`pytest test_critic_mlp.py` → 2 passed。
