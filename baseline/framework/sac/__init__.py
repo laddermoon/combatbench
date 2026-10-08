@@ -1,8 +1,8 @@
-"""SAC V2 framework — off-policy training with tagged replay.
+"""SAC framework — independent off-policy training implementation.
 
-This package implements a SAC framework designed from the ground up to
-exploit off-policy capabilities: tagged replay buffer, multi-head Q
-critics, per-channel n-step returns, and action-gradient normalization.
+The first-version contract uses validated ``sac_transition_v1`` slices,
+FIFO uniform replay, explicit sample/source identity, and SAC-specific
+metrics/debug contracts.
 
 See ``PLAN.md`` for the full design rationale and ``DECISIONS.md`` for
 the implementation decision log.
@@ -25,7 +25,7 @@ from .experiment import (
 )
 from .metrics import MetricEvent, SACMetricsWriter, load_events
 from .networks import MultiHeadQCritic, QTrunkGroup
-from .replay import TaggedReplay
+from .replay import SACReplayBuffer, SACReplayError, TaggedReplay
 from .trainer import sac_update_v2
 from .transition import (
     SAC_TRANSITION_SCHEMA,
@@ -47,6 +47,8 @@ __all__ = [
     "SACJob",
     "SACMetricsWriter",
     "SACParallelRollouter",
+    "SACReplayBuffer",
+    "SACReplayError",
     "DataSource",
     "ExperimentSAC",
     "MultiHeadQCritic",
