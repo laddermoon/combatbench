@@ -11,13 +11,9 @@ from .recorder import PostActionRecorder
 from .observer_plugin import BaseObserverPlugin, _ObserverDispatcherPlugin
 
 
-# TODO(framework/B2): introduce a VectorizedSimulator interface and a
-# batched variant of EnvRuntime. Current design is single-env only; trainers
-# rely on worker processes (RolloutCollector) which pay per-env reset cost
-# and cannot exploit GPU-resident simulators. A future migration path:
-# - add BaseVectorizedSimulator(batch_size, batched_step, batched_reset)
-# - add EnvRuntimeBatched mirroring EnvRuntime with batched ctx views
-# - keep EnvRuntime as the B=1 specialization.
+# Batched execution is realized by envs/batchframework (BatchRuntime +
+# device-side plugin/observer stack); this module intentionally stays the
+# single-env reference path. See envs/batchframework/CONTEXT.md.
 
 
 _logger = logging.getLogger("combatbench.envs.framework")

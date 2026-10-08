@@ -2646,3 +2646,11 @@ episode_options 覆盖——恢复"仅本回合"语义，与各自 docstring 承
 ### 验证
 
 `pytest envs/framework/tests + envs/humanoid21/tests` → **280 passed**。
+
+## [2026-10-08] P3-8 处置：env_runtime.py 过期 TODO 改为指路注释
+
+`TODO(framework/B2)` 提议的 VectorizedSimulator/EnvRuntimeBatched 已由
+`envs/batchframework` 整体实现（RolloutCollector 亦为旧名）。改为
+指路注释：本模块保持单 env 参考路径，批量执行见 batchframework。
+
+`pytest envs/framework/tests/` → 233 passed。
