@@ -1,4 +1,0 @@
-version: 1
-cls: "file:${DIR}/policy.py:ExportedMLPPolicy"
-config:
-  stochastic: false

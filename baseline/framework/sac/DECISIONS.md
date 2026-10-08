@@ -254,25 +254,115 @@ CollectedEpisode → TransitionSlice → Replay admission/overwrite
 
 ### W7：建立风险与验证矩阵
 
-每项记录验证层级、输入、预期、数值容差、失败含义、证据位置及所属阶段。至少覆盖：
+**执行顺序与边界：** W7 是阶段一的验证设计与实施拆分收口，不补写生产测试、不启动训练。输入是 A1–A6 的代码事实、数学裁决、数据/恢复契约和诊断契约；输出 A7 必须能让阶段二按依赖顺序开工，而不是把风险写成不可执行的原则。
 
-| 风险/契约 | 预期验证 | 主要执行阶段 |
-|---|---|---|
-| 单通道 SAC 数学 | 手算 target、梯度隔离、α 调节方向、target 更新 | 2 |
-| TruncNorm 数值与梯度 | 固定噪声有限差分/解析参考、边界与极端参数 | 2、4 |
-| mixture logits 学习 | toy Q 的期望梯度对照与分量退化等价 | 4；可行性方案在 1 |
-| replay/终止边界 | 环形覆盖、单方结束、timeout、退化帧、缺字段 | 2、3 |
-| 多通道含义 | 单通道退化、零 actor 权重、缺失通道、熵记账 | 3 |
-| 实验语义一致 | 相同 episode 的奖励/边界/评估对拍 | 3 |
-| 探索与优化控制 | 控制单变量，核对生效值、分布与调度恢复 | 4 |
-| debug 正确性 | 截面重算、故障注入、开关诊断结果一致 | 2 起，5 完整 |
-| 完整恢复 | 连续训练与 checkpoint 分段训练对照 | 2 起，7 完整 |
-| 独立性与回归 | 直接/传递依赖检查、PPO 基线路径回归 | 2 起，7 完整 |
-| 任务收敛与替代策略 | 预注册 seed/预算下训练与独立评估 | 6 |
+#### W7.0 汇总决策与证据索引
 
-阶段一负责建立验证设计并执行必要的低成本可行性核查，不声称已通过后续阶段的实现测试。训练曲线、梯度范数、Q1/Q2 差异均不可单独充当因果证明或真实 Q 误差。
+从 A1–A6 抽出全部 `SAC-R1-D*`、FX/DX fixture、阶段二包和已知代码缺口，建立唯一 ID 索引。每项记录：决策内容、适用边界、证据类型（代码事实/运行实测/数学推导/用户裁决/设计假设）、当前验证状态、关联文件与行号。发现编号冲突、遗漏或语义冲突时先修正文档，不进入矩阵。
 
-**出口：** A7 风险可追踪，每项都有验证位置；将阶段二拆成小规模可测试工作包，而不是直接开启长训练。
+#### W7.1 冻结风险矩阵 schema
+
+每条风险使用统一字段：
+
+```text
+risk_id, decision_refs, contract, failure_mode, blast_radius,
+likelihood, detectability, severity, validation_level,
+test_id/fixture, input_or_injection, expected, tolerance,
+evidence_artifact, owner_phase, gate, status
+```
+
+`severity` 至少区分：blocker（使目标错误/不可恢复）、major（可能错误训练但可检测）、minor（诊断/可用性问题）。`validation_level` 分层为：静态/schema、单元、property、集成、smoke、短训、多 seed 正式验收。
+
+#### W7.2 按风险域枚举，而不是按文件枚举
+
+至少覆盖十个风险域：
+
+1. **MATH**：Bellman target、熵/U 记账、梯度隔离、温度方向、target update。
+2. **POLICY**：S01 数值边界、actor ABC、导出/私有 RNG、未来 mixture logits。
+3. **DATA**：transition schema、时间对齐、terminated/truncated/bootstrap、phi_pre/post。
+4. **REPLAY**：sample_id/source_key、FIFO 覆盖、uniform sampling、RNG 与持久化。
+5. **COLLECT**：SACJob/CollectedEpisode、worker 失败、行为参数、PPO 独立性。
+6. **CLOCK**：collection round、agent transition、各类 tick、UTD credit、eval/checkpoint 边界。
+7. **STATE/RESUME**：bundle、manifest、白名单覆盖、config-lock、warm-start 区分。
+8. **DEBUG**：events、capture、溯源、重算、诊断 RNG 隔离、CLI/HTTP 同源。
+9. **TASK**：standup/basic_balance 语义、评估协议、指标、预算和停止规则。
+10. **INTEGRATION**：train.py/registry/import、资源使用、后台模式、PPO 回归。
+
+#### W7.3 把决策映射到可证伪测试
+
+为每个风险指定一个或多个测试 ID。命名建议：`MATH-*`、`POL-*`、`DATA-*`、`RPL-*`、`COL-*`、`CLK-*`、`CKPT-*`、`DBG-*`、`TASK-*`、`IND-*`、`PERF-*`。每项必须写输入、预期、容差/判定、失败含义和证据文件；不能只写“观察曲线正常”。对已有 FX/DX 项直接映射，不重复造编号。
+
+#### W7.4 定义验证层级与通过门槛
+
+明确每类证据能证明什么：
+
+- 静态/schema：接口、字段、import、配置拒绝。
+- 单元：单一函数/类在受控输入下的行为。
+- property：随机/合成数据上的不变量。
+- 集成：collector→slice→replay→trainer→metrics 的端到端小路径。
+- smoke：真实环境少量 episode/updates。
+- 短训：有限 budget 下确认机制趋势和恢复，不作为任务收敛证明。
+- 多 seed 正式验收：阶段六任务成功标准。
+
+同一风险若低风险只需要低层验证；blocker 必须有能直接证伪的测试，不允许只用训练曲线证明。
+
+#### W7.5 冻结容差与证据产物规则
+
+为数值检查定义默认精度原则：整数/布尔/schema exact；纯 NumPy 公式可用 tight tolerance；torch/GPU 只承诺 dtype/device/算法声明容差；bitwise 只在 `config-lock + 同代码/设备/库/确定性内核` 下作为目标。每个测试必须写明证据落点：pytest 断言、dump artifact、metrics event、run manifest 或评估日志。
+
+#### W7.6 统一阶段二工作包与依赖 DAG
+
+合并 A5/A6 已列出的 `P2-*` 包，消除重叠并给出依赖顺序。目标顺序草案：
+
+```text
+P2-IND-0 package/lazy registry/train.py 边界
+  ├─ P2-COLL-1 SAC collection/job/runner
+  ├─ P2-DATA-1 transition/slice/validator
+  │    └─ P2-REPLAY-1 replay identity/FIFO/persist/sample
+  │         └─ P2-CKPT-1 bundle/manifest/RNG/resume
+  ├─ P2-DBG-1 metrics/events/catalog
+  ├─ P2-DBG-2 tick ring + L0/L1
+  └─ P2-TRAIN-1 S01 actor + SAC trainer math
+       └─ P2-LOOP-1 clocks/UTD/eval/checkpoint loop
+            ├─ P2-DBG-3/4 dump/access/analysis
+            └─ P2-ENV-1 fake/small env integration → real env smoke
+```
+
+每个包必须有输入契约、改动范围、测试门槛、出口 artifact、不可做事项；任何包不得以“先跑通再补测试”为由跳过 gate。
+
+#### W7.7 标出阶段门与最晚解决点
+
+把风险分成：
+
+- **进入实现前必须确认**：数学公式、transition/schema、首个 actor、独立性、replay/UTD 口径。
+- **阶段二完成前必须通过**：collection/data/replay/checkpoint/loop/metrics 的单元与集成 gate。
+- **阶段三前必须解决**：两个实验语义、phi_pre、边界、真实 env smoke、基础诊断。
+- **阶段四前必须解决**：八格策略与探索/regularizer 扩展验证。
+- **阶段五前必须解决**：完整 dump/access/CLI/viewer 同源。
+- **阶段六前必须解决**：训练预算、评估 seeds、warm-start/resume 与长训监控。
+- **可选/暂缓**：PER、n-step、relabel、stratified retention、异步、GPU inference server。
+
+#### W7.8 定义 W7 内的低成本核查
+
+仅执行不改生产代码的检查：文档编号一致性、决策引用完整性、测试命名冲突、阶段包依赖是否成环、已有测试是否可作为某些项的证据。禁止把现有 PPO/旧 SAC 测试通过直接计作新契约通过。
+
+#### W7.9 汇总未决项与重开条件
+
+把未决项分为阻塞阶段二、阻塞后续阶段、可选增强。每项写明为什么未决、最晚决策点、需要的新证据、推翻现有决策的条件。用户已确认的口径标成 `approved`；助手推荐但未审阅的标成 `proposed`，不能混写。
+
+#### W7.10 汇总 A7 并更新路线图
+
+形成 A7：完整风险矩阵、测试命名/层级、阶段二 DAG、阶段门、未决项和证据索引。同步 PLAN.md 的状态与阶段二入口条件；提交推送后由 W8 做最终阶段一评审包。
+
+**必须先裁决的问题（进入实现前不能留默认值）：**
+
+1. 风险严重度与 gate 是否采用 `blocker/major/minor` + 七级验证层级；推荐采用。
+2. 阶段二是否以 fake/small env integration 作为真实 env smoke 前置 gate；推荐采用，避免第一版直接依赖昂贵 MuJoCo 长跑。
+3. 阶段二是否允许并行开发 collector/data 与 metrics/debug 基础层；推荐允许，但接口按 A5/A6 schema mock，不反向改契约。
+4. 训练曲线能否作为任何 blocker 的唯一证据；推荐禁止，blocker 必须有独立可证伪测试。
+5. 旧测试是否能改造成新契约测试；推荐只有在输入/断言/身份语义明确映射时才允许，否则新建测试。
+
+**出口：** A7 风险可追踪，每项都有验证位置、证据产物、阶段门和失败含义；阶段二工作包有明确 DAG，而不是直接进入长训练。
 
 ### W8：汇总裁决并提交阶段一评审
 
