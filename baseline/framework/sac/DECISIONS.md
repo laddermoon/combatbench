@@ -1,6 +1,6 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
-> 状态：阶段一 W1–W5 已完成，对应 A1–A5 见下方裁决区；W6–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
+> 状态：阶段一 W1–W6 已完成，对应 A1–A6 见下方裁决区；W7–W8 待执行。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。
 
@@ -291,11 +291,11 @@ CollectedEpisode → TransitionSlice → Replay admission/overwrite
 ## 3. 阶段一完成门槛
 
 - [ ] A1–A7 均有可审阅内容，事实、候选和验证结果分开。
-- [ ] 单通道标准 SAC 退化明确，多通道核心语义与支持边界可解释。
-- [ ] 两任务奖励/权重/终止的时间对齐已核对，具备对拍方案。
-- [ ] 八格保留范围、SAC 梯度差异和探索控制分层明确。
-- [ ] 数据、依赖、时钟、完整恢复及最小 debug 捕获契约可直接指导阶段二。
-- [ ] 训练级验收 seeds、阈值、持续窗口、预算与失败处理已冻结或明确列为阻塞。
+- [x] 单通道标准 SAC 退化明确，多通道核心语义与支持边界可解释。
+- [x] 两任务奖励/权重/终止的时间对齐已核对，具备对拍方案。
+- [x] 八格保留范围、SAC 梯度差异和探索控制分层明确。
+- [x] 数据、依赖、时钟、完整恢复及最小 debug 捕获契约可直接指导阶段二。
+- [x] 训练级验收 seeds、阈值、持续窗口、预算与失败处理已冻结或明确列为阻塞。
 - [ ] 旧决策逐项判定，没有将历史规划的结论自动继承为本轮结论。
 - [ ] 阶段二工作包与测试门槛明确，并获得用户对阶段一结果的审阅确认。
 
@@ -1389,6 +1389,216 @@ sac/collection/
 3. `strict config-lock` 只保证状态与配置锁；bitwise 还依赖相同代码、设备、库版本和确定性内核，不能跨 GPU/CUDA 版本自动承诺。
 4. `CollectedEpisode` 与 `SACJob` 的最终字段名可在实现期微调，但 provenance、pre-action facts、行为参数和版本不可缺。
 5. 历史 `TrajectorySlice`、旧 `Job` tuple alias、旧 checkpoint、旧 replay 都不是兼容基线；阶段二实现应按新 schema 重写，而不是在原接口上打补丁。
+
+## A6：诊断、捕获与溯源契约（W6，2026-10-08）
+
+**范围与状态：** 本节是阶段一的诊断/捕获契约，不是生产实现。已对照 `ppo/dumpkit` 的能力分层与当前 SAC loop/trainer/replay；未移植 PPO 代码、未启动训练。PPO dumpkit 的可借鉴点是「run → dump → episode/trajectory/timeline」数据阶梯、懒加载访问层、CLI/HTTP 共用分析实现；SAC 的截面语义必须围绕 collection round、replay minibatch 与 critic tick 重新设计。
+
+### A6.1 决策登记
+
+| 编号 | 决策 | 适用边界 |
+|---|---|---|
+| SAC-R1-D27 | SAC 诊断因果链固定为 `CollectedEpisode → TransitionSlice → replay admission/overwrite → sampled minibatch → target → critic → actor → regularizer/target update → export/eval` | viewer 页面、CLI 和 dump schema 都按此链组织；不套用 PPO GAE/ratio/clip 页面 |
+| SAC-R1-D28 | 运行指标 canonical 存储为 `metrics/events.jsonl`，事件类型至少区分 `round/tick/eval/export/checkpoint/debug/config` | `train.log` 可保留紧凑 `__RAW_STATS__` 镜像，但不是唯一数据源；每条事件带完整时钟与 schema version |
+| SAC-R1-D29 | 捕获分 L0–L3：常态标量、结构摘要、预约可重算截面、重型分析 | L0/L1 默认可长期开启；L2 按需/预约；L3 仅 dump-only |
+| SAC-R1-D30 | 最小可重算 dump 主键是 `critic_tick`，collection round 是上下文键 | 目录建议 `dumps/critic_c{:08d}/`；round-only 采集 dump 与 L3 tick-range 另立类型，不把一整轮更新压成一个截面 |
+| SAC-R1-D31 | 常态 tick 信息进入有界内存 ring，不逐 tick 全量写盘 | 初始 `debug_recent_ticks=4096`；round 事件写聚合/分布，异常或 dump 时可转储 ring |
+| SAC-R1-D32 | L2 dump 默认保存 actor/critic online/target、actor/critic/regularizer optimizer、α/λ、batch、显式采样噪声/RNG、EffectiveConfig 与更新前后摘要 | 没有 optimizer 的截面只能解释 forward/loss，不承诺复算 optimizer step |
+| SAC-R1-D33 | dump 保留策略为 latest-N + 显式 pin + 总字节上限 | 初始 `keep_last=8`、`max_total_bytes=64GiB`；超限删除最早未 pin dump 并记录 debug event |
+| SAC-R1-D34 | 样本溯源使用 `sample_id/source_key/slice_id`，dump 中 batch 行自包含 | slot/index 只作现场诊断；replay 覆盖后仍能用 dump 数据解释该样本，但完整 episode/video 只在对应 artifact 存在时可用 |
+| SAC-R1-D35 | 诊断必须使用独立 `debug` RNG stream；重型分析不得改训练参数、optimizer、replay、schedule | 逐样本梯度在 clone/隔离会话中计算，或严格保存恢复 `.grad`；诊断采样不消耗训练 RNG |
+| SAC-R1-D36 | schema/训练必需数据缺失 fail loud；可选重型诊断失败默认隔离并写 `failed.json` 与 debug event | `debug_strict=true` 时升级失败；任何路径不得补零伪造缺失数据 |
+| SAC-R1-D37 | SAC debug 拥有自己的 catalog/access/capture/analysis/CLI 层 | 不 import `ppo.dumpkit`、PPOBuffer、Trajectory、UpdateStats；CLI/HTTP/viewer 共用同一 SAC 分析函数 |
+
+### A6.2 PPO 能力对照与 SAC 差异
+
+| PPO dumpkit 能力 | SAC 采用方式 | 不可照搬点 |
+|---|---|---|
+| run summary / metrics / catalog | 采用；指标按 `metrics/events.jsonl` 与 SAC catalog | PPO x 轴是 update；SAC 必须同时支持 collection_round、critic_tick、env_step、agent_transition |
+| sentinel/scheduled dump | 采用请求模型 | PPO dump=一个 on-policy update；SAC 最小可重算单位是一个 critic tick，collection round 只提供来源上下文 |
+| episodes/trajectories/frame 下钻 | 采用分层思路 | SAC replay 样本可能来自旧 round；batch 样本不能假设属于当前 episodes |
+| gradsig / per-sample gradient | 作为 L3 候选能力 | 梯度定义为 SAC actor/critic/regularizer 各项，不含 GAE/ratio/floor surrogate |
+| render/delta/rollout 派生工件 | 保留为后续工具 | 物理重演需要足够 state/seed/blueprint；符号 transition 数据不等于可复现 MuJoCo 轨迹 |
+| CLI/HTTP/UI 同源 | 强制采用 | 只能共享 `sac.debugkit` 的分析函数，不能反向依赖 PPO 实现 |
+
+### A6.3 指标事件与时钟契约
+
+每条 metric event 使用 `sac_metrics_v1`：
+
+```json
+{
+  "schema_version": "sac_metrics_v1",
+  "event_type": "round|tick|eval|export|checkpoint|debug|config",
+  "run_id": "...",
+  "collection_round": 42,
+  "env_step": 123456,
+  "executed_env_step": 123450,
+  "agent_transition": 240000,
+  "critic_tick": 98765,
+  "actor_tick": 98765,
+  "temperature_tick": 98765,
+  "target_tick": 98765,
+  "eval_index": 20,
+  "checkpoint_index": 12,
+  "policy_version": "r00042:abcd1234",
+  "metrics": {},
+  "meta": {}
+}
+```
+
+不要求每个字段在每个事件中非空，但主键必须明确：`round` 事件必须有 `collection_round`；`tick` 事件必须有 `critic_tick`；`eval` 必须有 `eval_index`。UI 可按任一时钟切换 x 轴，但每个指标 catalog entry 必须声明主时钟和单位。
+
+**命名空间：**
+
+| 前缀 | 内容 |
+|---|---|
+| `run.*` | run 配置、版本、resume/override manifest |
+| `collect.*` | jobs、episodes、frames、pre-action facts、episode timing、worker failure |
+| `data.*` | admitted/rejected transitions、boundary 类型、terminated/truncated/degenerate 计数 |
+| `replay.*` | size/capacity、inserted/overwritten、active slices、age、source/policy-version 分布 |
+| `batch.*` | batch size、sample age、source round/job/policy version、behavior params、sample weight |
+| `target.*` | reward sum、bootstrap、entropy/U 正则项、Q twin/min、target/TD 分布 |
+| `critic.<channel>.*` | 各通道 Q1/Q2、pred/target/TD/loss/grad/clip |
+| `actor.*` | actor loss、Q term、entropy/U term、gate/contribution、action/σ/logit 分布、grad |
+| `regularizer.*` | α/λ、target entropy/U、floor mask、penalty、clamp、optimizer state摘要 |
+| `update.*` | requested/actual/dropped UTD ticks、LR、隔离关系、耗时 |
+| `eval.*` | deterministic eval 指标 |
+| `export.*` | policy artifact/fingerprint/version |
+| `checkpoint.*` | bundle、耗时、大小、校验 |
+| `debug.*` | dump 请求/完成/失败、诊断耗时、ring/disk 使用 |
+| `config.*` | effective/requested override event |
+
+通道名、agent 名等进入扁平 metric key 前必须先 sanitize（`.`/空白/控制字符替换为 `_`）；catalog 保存原始名到显示名的映射，避免同名冲突。
+
+### A6.4 L0–L3 捕获分层
+
+| 层 | 默认状态 | 内容 | 用途 |
+|---|---|---|---|
+| L0 | 常开 | round/eval/checkpoint/config/debug 标量事件；每 tick 的小标量进入 ring | 长跑趋势、异常定位入口 |
+| L1 | 常开，轻量 | 每 round 的 replay/batch/target/actor/channel 分布摘要、provenance histogram、UTD 记账 | 判断旧数据、通道压制、α/Q 异常 |
+| L2 | sentinel/CLI/schedule 触发 | 单个 critic tick 的完整 batch + pre/post trainer state + optimizer + RNG/noise + config | 离线逻辑重算 target/loss/update |
+| L3 | 显式请求 | tick range、per-sample gradients、channel contribution、mixture 分解、action Jacobian、replay snapshot/index、core-state replay | 深度诊断；默认可关闭 |
+
+L1 不保存整条 transition；但保存足以解释结构问题的聚合量：活跃 slice 数、policy_version/round/age 分布、terminated/truncated 比例、per-channel valid/reward/actor_gate 分布、batch 来源分布、target/TD 分位数、实际 UTD。
+
+### A6.5 Dump 目录与 `sac_dump_v1`
+
+推荐目录形态：
+
+```text
+dumps/
+  critic_c00098765/                    # L2 最小可重算截面
+    request.json
+    manifest.json
+    events.jsonl                       # 本 dump 相关 debug/config/tick 摘要
+    collection.json                    # round/job/policy/env/provenance manifest
+    collection_episodes.npz            # 当前 round 可选 episode 数据；缺失时 manifest 标注
+    replay_index.npz                   # active sample_id/source_key/slot/age 索引，不是完整 replay
+    batch.npz                          # 本 tick sampled rows + sample_id/source_key + schema 字段
+    target.npz                         # reward/bootstrap/noise/next action/Q/logp/U/target/TD
+    actor_update.npz                   # new action/logp/U/gate/channel Q/contribution/loss terms
+    regularizer.npz                    # α/λ/target/error/floor/clamp
+    trainer_pre.pt                     # actor/critic online/target + optimizers + α/λ + schedule
+    trainer_post.pt
+    runtime_state.pt                   # replay/sampling/train/debug RNG 与 counters 快照
+    analysis.json                      # capture-time summary / checks
+    failed.json                        # 可选；只在捕获失败路径存在
+  round_r00042/                        # L1+ collection-side dump，不承诺 tick 重算
+  range_r00042_c00012000_c00012127/    # L3，可有界 tick range
+```
+
+`manifest.json` 必须包含：`dump_schema_version=sac_dump_v1`、target kind、clocks、run_id、experiment/schema/config/code fingerprints、capture level、evidence level、artifact 列表及 hash、缺失项、请求来源/hypothesis、保留策略标记。
+
+### A6.6 可重算证据等级
+
+| 等级 | 必需工件 | 承诺 |
+|---|---|---|
+| `explain` | manifest、batch/index、已保存中间量 | 只解释已记录值，不重新执行 forward/update |
+| `recompute` | explain + trainer_pre + batch + 显式 action noise/RNG + config | 重新计算 target、critic loss、actor loss、regularizer loss；以声明容差比较 |
+| `apply_update` | recompute + optimizer state + update RNG | 重放 optimizer.step/target update；同代码/设备/库/确定性条件下可追求 bitwise |
+| `physical_replay` | collection episode + env blueprint + seed + 必要 core_state | 只在此类工件存在时承诺；缺件显示不可用 |
+
+默认 L2 目标是 `apply_update` 级别的数据完备性；是否达到 bitwise 仍受代码、设备、库版本和确定性内核约束。未预约的历史 tick 只能给 `explain`，不能事后伪造成可重算。
+
+### A6.7 样本溯源与回放边界
+
+- `batch.npz` 每行必须含 `sample_id/source_key/slice_id/collection_round/job_index/agent_id/frame_index/policy_version/inserted counters`。
+- `source_key` 是规范化身份，不通过 obs 内容反推 frame；`flat:<idx>` 只允许用于无法映射的诊断占位，并在 manifest 计数。
+- 当前 round 的 collection dump 可提供 episode 级页面；历史 replay 样本若对应 episode artifact 已不存在，只能显示 transition/batch/provenance，不得伪造视频或完整轨迹。
+- 物理重演要求保存或能重建 `(env_blueprint, episode_seed, episode_options, plugin state, action sequence)`；若有中途 mutator/随机插件，必须保存相应 RNG/core_state，否则仅做符号级回放。
+- 视频渲染是从 blueprint+policy artifact 再跑环境得到的派生工件；manifest 必须记录它可能与原 MuJoCo 轨迹存在数值漂移，不能把渲染帧当作 bitwise 证明。
+
+### A6.8 诊断隔离与失败边界
+
+1. `debug` RNG stream 由 run seed manifest 独立派生；诊断采样、样本选择、dropout/shuffle 均不得推进 replay/training/eval RNG。
+2. L0/L1 字段缺失或类型/schema 错误属于数据契约失败，训练 fail loud。
+3. L2/L3 是可选重型诊断：捕获失败写 `failed.json`、`debug.capture_status=error` 并继续训练；`debug_strict=true` 时终止训练。已写半成品先落临时目录，不进入正式 dump 索引。
+4. 重型梯度/参数 delta 使用 clone 或严格恢复的隔离会话；诊断结束后训练模型参数、optimizer state、`.grad`、replay cursor、schedule state 必须与诊断前一致。
+5. 诊断自身成本进入 `debug.time_s/debug.memory_bytes/debug.disk_bytes`；超过配置预算可拒绝新的 L3 请求，但不能覆盖已有 pinned dump。
+6. viewer/CLI 的只读分析不得写训练目录，除明确派生工件目录（render/delta/replay）且需要独立 job 状态。
+
+### A6.9 CLI/API/viewer 数据面
+
+阶段二先交付 CLI 与结构化 JSON，阶段五补完整 viewer；但访问层 schema 从首版冻结：
+
+```text
+sac/debugkit/
+  metric_catalog.py   # 指标语义、分区、单位、主时钟
+  events.py           # metrics/events.jsonl reader/writer
+  access.py           # SacDumpDataset：row spaces + lazy npz/pt/json access
+  capture.py          # L2/L3 capture orchestration
+  analysis.py         # inspect/batch/target/sample/timeline/recompute functions
+  requests.py         # dump request/schedule schema
+  viewer/             # 阶段五 HTTP/UI；调用同一 analysis/access
+sac/debug.py          # runs/summary/metrics/dump/inspect/samples/trace/query/...
+```
+
+离线 CLI 子命令至少规划为：`runs`、`summary`、`metrics`、`catalog`、`dump`、`inspect`、`batch`、`target`、`trace`、`timeline`、`recompute`、`query`、`render`、`viewer`。`query` 与 HTTP endpoint 共用同一 dispatch；输出 JSON-safe。
+
+### A6.10 故障注入与验证矩阵
+
+| 编号 | 注入/场景 | 预期观测与定位 |
+|---|---|---|
+| DX-1 | bootstrap/terminated 错、timeout 标成真终止 | `target.bootstrap`/`data.terminated` 异常；batch trace 指到 source frame |
+| DX-2 | 缺 reward observer、phi_pre 或 behavior extra | collection/validation fail loud；事件记录缺失字段，不进入 replay |
+| DX-3 | 重复 source_key 或同 key 不同内容 | replay admission 拒绝；`debug` event 含冲突双方身份 |
+| DX-4 | replay 覆盖后查询旧样本 | dump/batch 仍可解释样本；live replay 显示 overwritten，episode 页按 artifact 可用性降级 |
+| DX-5 | behavior policy 过旧/陈旧数据过多 | `replay.age_*`、`batch.policy_version`、source-round histogram 可见 |
+| DX-6 | 采样 RNG 恢复 | checkpoint 后同一 cursor 产生同一 batch `sample_id` 序列 |
+| DX-7 | α/λ 失控或 fixed/auto 配置错 | `regularizer.*` 与 effective config 可区分 requested/effective/clamped |
+| DX-8 | Q/TD 异常或 reward_scale 误读 | target 分解显示 reward、bootstrap、entropy/U 项，不能直接看混合 loss |
+| DX-9 | actor_gate 全零/通道压制 | `actor.gate/contribution` 与 `critic.<ch>` 分开，零 gate 不等于 critic 不学 |
+| DX-10 | mixture logits 无梯度 | L3 显示 component weights/logits/任务梯度路径；能区分采样无梯度与枚举梯度 |
+| DX-11 | U-bonus/U-floor 接错位置 | target/actor/regularizer 三处字段一致性检查失败 |
+| DX-12 | optimizer/critic target 缺失 | dump/recompute/apply_update 等级降级并明确原因；checkpoint resume fail loud |
+| DX-13 | 诊断消耗训练 RNG | 诊断前后 replay sample 序列与 policy noise 不变，否则测试失败 |
+| DX-14 | dump 重算不一致 | `recompute` 输出 stored/recomputed/abs_diff/tolerance，超限列字段 |
+| DX-15 | CLI 与 HTTP 结果不一致 | 同一输入 dump 的 JSON canonical 输出必须一致 |
+| DX-16 | import independence | `baseline.framework.sac.debugkit` 不加载 `baseline.framework.ppo.*` |
+
+### A6.11 阶段二实现拆分（由 A6 派生）
+
+| 包 | 内容 | 出口 |
+|---|---|---|
+| P2-DBG-1 | `metrics/events.jsonl`、metric catalog、双时钟/多时钟事件写入 | DX-15/16 的基础数据面可用 |
+| P2-DBG-2 | tick ring、round L0/L1 聚合、debug RNG/资源计数 | 常态训练开销可测，诊断不改变状态 |
+| P2-DBG-3 | dump request/schedule、L2 critic-tick capture、manifest/retention | 指定 tick 可产生完整 `sac_dump_v1` |
+| P2-DBG-4 | access/analysis/CLI；sample trace 与 target/loss recompute | DX-4/5/6/12/14/15 通过 |
+| P2-DBG-5 | viewer/API、round/episode/replay/target/actor/regularizer 页面 | 阶段五完整交互能力，不反向改 schema |
+| P2-DBG-6 | fault injection harness | DX-1～14 自动化回归 |
+
+顺序建议：P2-DBG-1/2 与 collection/data 包并行；P2-DBG-3 等 trainer/replay 契约落地后接入；P2-DBG-4 必须在首个真实训练验收前可用，否则无法解释失败训练。
+
+### A6.12 出口状态与限制
+
+- [x] PPO debug 能力已按架构层对照，未把 PPO 指标语义迁入 SAC。
+- [x] SAC 诊断因果链、指标事件、时钟和命名空间已冻结。
+- [x] L0–L3 分层、dump identity、目录 schema、保留策略已冻结。
+- [x] explain/recompute/apply_update/physical_replay 四级证据已冻结。
+- [x] 样本溯源、诊断 RNG、失败隔离、CLI/HTTP 同源与独立性边界已冻结。
+- [x] 故障注入矩阵与阶段二 debug 工作包已列出。
+
+**本 W6 仍未完成实现：** 尚无 `sac/debugkit`、metric events、dump capture、access/analysis 或 viewer；默认数值（tick ring 4096、keep 8、64GiB）是实现起点而非性能实测结论；`physical_replay` 只在相应 state 工件存在时成立。
 
 ---
 
