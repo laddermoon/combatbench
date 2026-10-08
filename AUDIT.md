@@ -2298,3 +2298,18 @@ git 外文档，不管）
   （多保留一档 u_0 基线参照）。
 - `compute_delta` 的 row0=post-update u_N 语义经审计复核为有意
   改动（`85738c03` commit message 有正确性论证），实现正确。
+
+## [2026-10-08] P-TF-2 复核结案：RNG roundtrip 测试夹具已适配
+
+**对象**：`baseline/framework/ppo/tests/test_trainer.py::test_checkpoint_rng_state_roundtrip`
+**类别**：复核——已解决，无代码改动
+
+- 夹具已改为 `np.arange(sum(p.numel() for p in actor.parameters()))`
+  （L3394-3398，注释即引用 `9af767fc` 的 stale-length 守护），
+  正是审计建议的修法。不确定是用户哪次提交顺带修的，但当前
+  HEAD 已是适配后状态。
+- 裸 `pytest` 复跑时**仍报失败**，但失败点是
+  `torch.randperm(64, device="cuda")` → **CUDA OOM**（GPU0 被
+  在跑训练占满 23.8/24.5G），与断言无关。`CUDA_VISIBLE_DEVICES=3`
+  复跑 → **1 passed**。属测试环境敏感而非逻辑失败；该测试设计为
+  cuda 可用时顺带验证 cuda RNG 恢复，OOM 属环境不可控，不改代码。
