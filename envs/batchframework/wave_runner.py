@@ -25,6 +25,7 @@ from .device_runtime import BatchRuntime
 from .device_state import _SEED_COUNTER_MULT, rng_uniform
 from .policy_executor import PolicyExecutor
 from .record_store import RecordStore
+from baseline.framework.ppo.sampling_context import SamplingContext
 
 # 策略噪声注入盐（E6-W1）：per-agent 独立流，与插件 rng_salt 域分离。
 _U_SALT_A = 0xAC710A
@@ -38,6 +39,7 @@ def run_wave(rt: BatchRuntime,
              *,
              stochastic: bool,
              ctx_a=None, ctx_b=None, ctx_ab=None,
+             ef_sched_a=None, ef_sched_b=None,
              T: int,
              timing: Optional[Dict[str, float]] = None,
              sync: Optional[Dict[str, int]] = None,
@@ -46,6 +48,9 @@ def run_wave(rt: BatchRuntime,
     """一个 wave：lockstep T 步或全 ENDED 早退。
 
     ``exec_a is exec_b``（self-play 共享）时传 ``ctx_ab``（合并前向）。
+    ``ef_sched_*``：声明式 ef 程序的逐帧调度器（``_EfSchedule``，见
+    device_rollouter）——提供后覆盖静态 ctx，每步对当前 obs 求值；
+    双 schedule 必须同时给或同时不给。
     ``timing`` 收集 "policy"/"step" 段耗时；``check_every`` 控制
     ``any_running()`` host 检查频率（语义无关——ENDED 行已封存）。
     """
@@ -72,13 +77,28 @@ def run_wave(rt: BatchRuntime,
             u_b = rng_uniform(base + _U_SALT_B, wb)
             if shared:
                 u_ab = torch.cat([u_a, u_b], dim=0)
+        # 声明式 ef 程序：逐帧对当前 obs 求值（设备侧向量化）；
+        # 静态路径不受影响——sched 为 None 时沿用传入的常量 ctx。
+        c_a, c_b, c_ab = ctx_a, ctx_b, ctx_ab
+        if stochastic and ef_sched_a is not None:
+            efa = ef_sched_a.eval(st.io.obs_a)
+            efb = ef_sched_b.eval(st.io.obs_b)
+            c_a = SamplingContext(explore_factor=efa)
+            c_b = SamplingContext(explore_factor=efb)
+            if shared:
+                c_ab = SamplingContext(
+                    explore_factor=torch.cat([efa, efb]))
         a_a, a_b, lp_a, lp_b = exec_a.act(
             st.io.obs_a, st.io.obs_b, stochastic=stochastic,
-            ctx_a=ctx_a, ctx_b=ctx_b, ctx_ab=ctx_ab,
+            ctx_a=c_a, ctx_b=c_b, ctx_ab=c_ab,
             shared=shared, u_a=u_a, u_b=u_b, u_ab=u_ab)
         if timing is not None:
             timing["policy"] += time.perf_counter() - tp
-        store.write_actions(t, a_a, a_b, lp_a, lp_b)
+        ef_a = ef_b = None
+        if stochastic and c_a is not None:
+            ef_a, ef_b = c_a.explore_factor, c_b.explore_factor
+        store.write_actions(
+            t, a_a, a_b, lp_a, lp_b, ef_a=ef_a, ef_b=ef_b)
         tp = time.perf_counter()
         rt.step((a_a, a_b))
         if timing is not None:

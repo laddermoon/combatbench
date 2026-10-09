@@ -25,7 +25,7 @@ Per frame the wrapper:
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Tuple, Union, TYPE_CHECKING
+from typing import Any, Callable, Mapping, Optional, Tuple, Union, TYPE_CHECKING
 
 import numpy as np
 
@@ -219,11 +219,16 @@ class SamplingPolicy(Policy):
         *,
         want_extra: bool = False,
     ) -> Tuple[Any, Optional[dict]]:
-        ef = (
-            float(self._spec.explore_factor(observation, self._step))
-            if callable(self._spec.explore_factor)
-            else float(self._spec.explore_factor)
-        )
+        spec_ef = self._spec.explore_factor
+        if isinstance(spec_ef, Mapping):
+            from baseline.framework.rollout.ef_programs import (
+                eval_ef_program)
+            ef = float(eval_ef_program(spec_ef, observation,
+                                       self._step))
+        elif callable(spec_ef):
+            ef = float(spec_ef(observation, self._step))
+        else:
+            ef = float(spec_ef)
         self._step += 1
         ctx = self._build_ctx(observation, ef)
         action, extra = self.inner.sample(

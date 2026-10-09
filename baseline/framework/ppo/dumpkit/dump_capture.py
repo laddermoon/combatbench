@@ -421,8 +421,15 @@ def _serialize_explore_factor(ef_spec) -> str:
     if isinstance(ef_spec, (int, float)):
         return f"\ndef _explore_factor(obs, step):\n    return {float(ef_spec)!r}\n"
 
+    from typing import Mapping as _Mapping
+    if isinstance(ef_spec, _Mapping):
+        from baseline.framework.rollout.ef_programs import (
+            ef_program_to_source)
+        return "\n" + ef_program_to_source(ef_spec)
+
     if not callable(ef_spec):
-        raise TypeError(f"explore_factor must be float or callable, got {type(ef_spec).__name__}")
+        raise TypeError(f"explore_factor must be float, callable or ef "
+                        f"program mapping, got {type(ef_spec).__name__}")
 
     func = ef_spec
     func_name = func.__name__

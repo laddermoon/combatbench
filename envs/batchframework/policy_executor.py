@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple
 
 import torch
 
@@ -40,12 +40,15 @@ def required_ctx_fields(spec_dict: Dict[str, Any]) -> frozenset:
     """job sampling spec → 需要的 ctx 字段集。
 
     - ``explore_factor``（标量）总是需要；
+    - 声明式 ef 程序（mapping）→ 需要 ``ef_program`` 能力；
     - callable ef / reference / delta_factor≠0 → 需要对应字段，
       本阶段无 executor 声明这些能力 → 显式拒绝。
     """
     req = {"explore_factor"}
     ef = spec_dict.get("explore_factor", 0.0)
-    if callable(ef):
+    if isinstance(ef, Mapping):
+        req.add("ef_program")
+    elif callable(ef):
         # callable 需要逐帧 host 评估——无 executor 声明该能力
         req.add("callable_explore_factor")
     if spec_dict.get("reference") is not None:
@@ -219,7 +222,8 @@ class TorchPolicyExecutor(PolicyExecutor):
     def capabilities(self) -> PolicyCapabilities:
         return PolicyCapabilities(
             stochastic=True, deterministic=True,
-            ctx_fields=frozenset({"explore_factor", "delta_factor"}),
+            ctx_fields=frozenset({"explore_factor", "delta_factor",
+                                  "ef_program"}),
             stateful=False)
 
     def noise_cols(self, action_dim: int) -> int:

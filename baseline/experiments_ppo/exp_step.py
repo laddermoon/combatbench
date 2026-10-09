@@ -78,6 +78,19 @@ def _phase_explore_factor(obs, step):
     return _EF_STAND if float(obs[45]) >= _H_EF_SWITCH else _EF_LOW
 
 
+#: 与 ``_phase_explore_factor`` 等价的声明式 ef 程序——CPU/device
+#: 双后端可执行（device collector 只支持程序形态；callable 保留作
+#: golden 参照）。
+_PHASE_EF_PROGRAM = {
+    "kind": "obs_threshold",
+    "index": 45,
+    "op": "ge",
+    "threshold": _H_EF_SWITCH,
+    "then": _EF_STAND,
+    "else": _EF_LOW,
+}
+
+
 class Step(CombatExperimentPPOBase):
     """End-to-end stepping: standup + per-foot stepping state machine.
 
@@ -625,7 +638,9 @@ class Step(CombatExperimentPPOBase):
         from baseline.framework.rollout import Job, SamplingSpec
         env_bp = self._env_pb().materialize(max_steps=self.max_steps)
         rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec(explore_factor=_phase_explore_factor)
+        # 声明式 ef 程序：CPU/device 同一 spec 双后端可执行
+        sampling = SamplingSpec(
+            explore_factor=dict(_PHASE_EF_PROGRAM))
         jobs = []
         for i in range(n_episodes):
             seed = int(base_seed + i)

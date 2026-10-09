@@ -48,6 +48,10 @@ class RecordStore:
                     for rid in io_schema.agent_ids}
         self.log_prob = {rid: torch.zeros(T, B, device=dev, dtype=f32)
                          for rid in io_schema.agent_ids}
+        # 每帧实际生效的 explore_factor（标量 ef 也记录——导出忠实于
+        # "用了什么"而非"spec 写了什么"）；确定性波不写、不导出。
+        self.ef = {rid: torch.zeros(T, B, device=dev, dtype=f32)
+                   for rid in io_schema.agent_ids}
         self.frame_valid = torch.zeros(T, B, dtype=bl, device=dev)
         # 逐帧累计物理子步数（on_post_action_step 时快照
         # ep.physics_steps）——Episode.physics_steps 的设备侧来源；
@@ -106,13 +110,18 @@ class RecordStore:
 
     def write_actions(self, t: int, a_a: torch.Tensor, a_b: torch.Tensor,
                       lp_a: Optional[torch.Tensor],
-                      lp_b: Optional[torch.Tensor]) -> None:
+                      lp_b: Optional[torch.Tensor],
+                      ef_a: Optional[torch.Tensor] = None,
+                      ef_b: Optional[torch.Tensor] = None) -> None:
         ra, rb = self.schema.agent_ids
         self.act[ra][t].copy_(a_a)
         self.act[rb][t].copy_(a_b)
         if lp_a is not None:
             self.log_prob[ra][t].copy_(lp_a)
             self.log_prob[rb][t].copy_(lp_b)
+        if ef_a is not None:
+            self.ef[ra][t].copy_(ef_a)
+            self.ef[rb][t].copy_(ef_b)
 
     def write_observer_step(self, t: int,
                             outputs: Dict[str, Dict[str, torch.Tensor]],

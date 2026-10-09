@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -115,14 +115,63 @@ class _RecorderAdapter(BaseDevicePlugin):
 # Job 校验
 # ---------------------------------------------------------------------------
 def _spec_ef(spec_dict: Dict[str, Any], tag: str):
-    """提取 (ef_scalar, df_scalar)；类型合法性校验（能力拒绝在
-    ``PolicyExecutor.check_spec``）。"""
+    """提取 (ef_value, df_scalar)；ef 可为标量或声明式 ef 程序 dict。
+    类型合法性校验（能力拒绝在 ``PolicyExecutor.check_spec``）。"""
     ef = spec_dict.get("explore_factor", 0.0)
     if callable(ef):
         raise ValueError(
             f"job[{tag}]: callable explore_factor not supported on device "
-            f"collector (per-frame host evaluation required)")
+            f"collector (per-frame host evaluation required) — use a "
+            f"declarative ef program dict instead (see "
+            f"baseline.framework.rollout.ef_programs)")
+    if isinstance(ef, Mapping):
+        from baseline.framework.rollout.ef_programs import (
+            _EF_PROGRAMS)
+        kind = ef.get("kind")
+        if kind not in _EF_PROGRAMS:
+            raise ValueError(
+                f"job[{tag}]: unknown ef program kind {kind!r}; "
+                f"registered: {sorted(_EF_PROGRAMS)}")
+        return (dict(ef), float(spec_dict.get("delta_factor", 0.0)))
     return (float(ef), float(spec_dict.get("delta_factor", 0.0)))
+
+
+class _EfSchedule:
+    """波内逐帧 ef 调度器：按行分组求值声明式 ef 程序。
+
+    行级异构支持：同 program 的行共享一次向量化 eval，scalar 行
+    填常数。``eval(obs)`` → (B,) 当前帧 ef。
+    """
+
+    def __init__(self, ef_specs: list, batch_size: int,
+                 device: torch.device):
+        import json
+        progs: Dict[str, Tuple[list, Dict[str, Any]]] = {}
+        const = torch.zeros(batch_size, dtype=torch.float32,
+                            device=device)
+        has_prog = False
+        for row, ef in enumerate(ef_specs):
+            if isinstance(ef, Mapping):
+                has_prog = True
+                key = json.dumps(ef, sort_keys=True)
+                progs.setdefault(key, ([], ef))[0].append(row)
+            else:
+                const[row] = float(ef)
+        self._has_prog = has_prog
+        self._const = const
+        self._progs = [
+            (torch.tensor(rows, dtype=torch.long, device=device), spec)
+            for rows, spec in progs.values()]
+
+    def eval(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs (B,·) → (B,) 本帧 ef。"""
+        from baseline.framework.rollout.ef_programs import (
+            eval_ef_program)
+        out = self._const.clone()
+        for rows, spec in self._progs:
+            out[rows] = eval_ef_program(spec, obs[rows]).to(
+                dtype=out.dtype)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -295,17 +344,28 @@ class DeviceRollouter:
         st = rt.state
         dev = torch.device(self.device)
 
-        # per-env ef → (B,) ctx 张量（pad 行填末值）
+        # per-env ef → (B,) ctx 张量（pad 行填末值）；行内出现 ef 程序
+        # dict 时切到逐帧调度路径（_EfSchedule），静态路径零回归。
         ef_pad = list(efs) + [efs[-1]] * max(0, B - n)
-        ef_a_t = torch.tensor([e[0][0] for e in ef_pad],
-                              dtype=torch.float32, device=dev)
-        ef_b_t = torch.tensor([e[1][0] for e in ef_pad],
-                              dtype=torch.float32, device=dev)
-        ctx_a = SamplingContext(explore_factor=ef_a_t)
-        ctx_b = SamplingContext(explore_factor=ef_b_t)
-        # self-play 合并前向时 obs 是 (2B,·)——ctx 也要合并
-        ctx_ab = SamplingContext(
-            explore_factor=torch.cat([ef_a_t, ef_b_t]))
+        ef_a_specs = [e[0][0] for e in ef_pad]
+        ef_b_specs = [e[1][0] for e in ef_pad]
+        has_prog = any(isinstance(e, Mapping)
+                       for e in ef_a_specs + ef_b_specs)
+        sched_a = sched_b = None
+        if has_prog:
+            sched_a = _EfSchedule(ef_a_specs, B, dev)
+            sched_b = _EfSchedule(ef_b_specs, B, dev)
+            ctx_a = ctx_b = ctx_ab = None
+        else:
+            ef_a_t = torch.tensor(ef_a_specs, dtype=torch.float32,
+                                  device=dev)
+            ef_b_t = torch.tensor(ef_b_specs, dtype=torch.float32,
+                                  device=dev)
+            ctx_a = SamplingContext(explore_factor=ef_a_t)
+            ctx_b = SamplingContext(explore_factor=ef_b_t)
+            # self-play 合并前向时 obs 是 (2B,·)——ctx 也要合并
+            ctx_ab = SamplingContext(
+                explore_factor=torch.cat([ef_a_t, ef_b_t]))
 
         t0 = time.perf_counter()
         seeds = torch.tensor(
@@ -344,6 +404,7 @@ class DeviceRollouter:
             hook = cap
         run_wave(rt, exec_a, exec_b, store, stochastic=stochastic,
                  ctx_a=ctx_a, ctx_b=ctx_b, ctx_ab=ctx_ab,
+                 ef_sched_a=sched_a, ef_sched_b=sched_b,
                  T=T, timing=self.timing, sync=self.sync_stats,
                  step_hook=hook)
         self.timing["n_waves"] += 1
@@ -370,6 +431,8 @@ class DeviceRollouter:
             act={rid: store.act[rid].cpu().numpy() for rid in agent_ids},
             log_prob={rid: store.log_prob[rid].cpu().numpy()
                       for rid in agent_ids},
+            ef={rid: store.ef[rid].cpu().numpy()
+                for rid in agent_ids},
             final_obs={rid: store.final_obs[rid].cpu().numpy()
                        for rid in agent_ids},
             obs_out={name: {k: v.cpu().numpy() for k, v in bufs.items()}

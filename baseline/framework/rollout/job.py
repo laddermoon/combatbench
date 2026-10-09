@@ -2,18 +2,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Union
 
 import numpy as np
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
 
-#: Per-frame explore_factor: a constant float, or a callable
-#: ``(obs, step) -> float`` that returns the value for each step.
+#: Per-frame explore_factor: a constant float, a callable
+#: ``(obs, step) -> float``, or a **declarative ef program** — a Mapping
+#: with a ``"kind"`` key evaluated via
+#: :func:`baseline.framework.rollout.ef_programs.eval_ef_program`.
 #: Callables must be top-level functions to be picklable across
-#: multiprocessing workers.
-EfSpec = Union[float, Callable[[np.ndarray, int], float]]
+#: multiprocessing workers; programs are plain JSON-safe dicts and are
+#: the only per-frame form supported on the device collector.
+EfSpec = Union[float, Callable[[np.ndarray, int], float],
+               Mapping[str, Any]]
 
 
 @dataclass(frozen=True)

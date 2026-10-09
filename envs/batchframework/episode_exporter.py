@@ -57,7 +57,14 @@ def export_episode(np_bufs: Mapping[str, Any],
         explore_factors = {}
         for rid, (ef, df) in zip(agent_ids, ef_pair):
             lp = np_bufs["log_prob"][rid][:t_use, row].astype(np.float32)
-            ef_arr = np.full(t_use, np.float32(ef), dtype=np.float32)
+            # 优先用记录的逐帧 ef（ef 程序路径的真实值）；无记录
+            # 时回退标量广播（静态 ef 两值本就相同）。
+            rec = np_bufs.get("ef", {}).get(rid)
+            if rec is not None:
+                ef_arr = rec[:t_use, row].astype(np.float32)
+            else:
+                ef_arr = np.full(t_use, np.float32(ef),
+                                 dtype=np.float32)
             df_arr = np.full(t_use, np.float32(df), dtype=np.float32)
             action_extras[rid] = {
                 "log_prob": lp,
