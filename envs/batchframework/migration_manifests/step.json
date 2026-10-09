@@ -53,6 +53,20 @@
           "level": "wave_contract",
           "pass_ts": 1791537792.5444593,
           "passed": true
+        },
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.0873435,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873456,
+          "passed": true
         }
       ],
       "name": "GaitClockSimulator",
@@ -86,7 +100,22 @@
         }
       ],
       "device_cls": "envs.batchframework.device_standup:DeviceFallenResetPlugin",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.0873473,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873485,
+          "passed": true
+        }
+      ],
       "name": "RandomFallenStatePlugin",
       "role": "plugin",
       "stale": false,
@@ -103,7 +132,22 @@
         }
       ],
       "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.0873497,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873508,
+          "passed": true
+        }
+      ],
       "name": "standing_balance_a",
       "role": "observer",
       "stale": false,
@@ -120,7 +164,22 @@
         }
       ],
       "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
-      "evidence": [],
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.087352,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873532,
+          "passed": true
+        }
+      ],
       "name": "standing_balance_b",
       "role": "observer",
       "stale": false,
@@ -143,6 +202,20 @@
           "input_hash": "",
           "level": "unit_replay",
           "pass_ts": 1791537792.5444624,
+          "passed": true
+        },
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.0873547,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873559,
           "passed": true
         }
       ],
@@ -168,6 +241,20 @@
           "input_hash": "",
           "level": "unit_replay",
           "pass_ts": 1791537792.5444636,
+          "passed": true
+        },
+        {
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "input_hash": "",
+          "level": "e2e_collect",
+          "pass_ts": 1791538457.0873573,
+          "passed": true
+        },
+        {
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "input_hash": "",
+          "level": "train_smoke",
+          "pass_ts": 1791538457.0873585,
           "passed": true
         }
       ],
