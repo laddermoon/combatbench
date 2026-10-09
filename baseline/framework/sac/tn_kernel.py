@@ -47,6 +47,7 @@ class TNKernelStats:
         self._counts: Dict[str, int] = {
             "erfinv_endpoint_clamp": 0,
             "u_endpoint_clamp": 0,
+            "dtype_endpoint_clamp": 0,
             "narrow_support_unresolvable": 0,
             "log_z_fallback_logspace": 0,
         }
@@ -181,7 +182,16 @@ def sample_from_uniform(
         -1.0 + torch.finfo(torch.float64).eps,
         1.0 - torch.finfo(torch.float64).eps,
     )
-    return action.to(mu.dtype)
+    out = action.to(mu.dtype)
+    # The fp64 bound 1-eps64 rounds to exactly 1.0 in fp32; clamp again in
+    # the output dtype so samples stay strictly inside (-1, 1) for the
+    # downstream log_prob domain check.
+    bound = 1.0 - torch.finfo(mu.dtype).eps
+    over = ((out <= -bound) | (out >= bound)).sum().item()
+    if over:
+        KERNEL_STATS.bump("dtype_endpoint_clamp", int(over))
+        out = out.clamp(-bound, bound)
+    return out
 
 
 def log_prob(

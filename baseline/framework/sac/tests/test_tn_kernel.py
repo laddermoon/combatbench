@@ -194,3 +194,24 @@ def test_cuda_path():
     assert a.device.type == "cuda"
     assert torch.isfinite(a).all()
     assert ((a > -1.0) & (a < 1.0)).all()
+
+
+def test_fp32_boundary_overshoot_stays_inside_support():
+    """μ near +1 with small σ and u≈1 overshoots in fp64; after cast to
+    fp32 the fp64 bound rounds to exactly 1.0 — the output-dtype clamp must
+    keep samples strictly inside (-1,1) so log_prob accepts them."""
+    K.KERNEL_STATS.reset()
+    # Saturated mean head + tiny σ: mass piles on the boundary and fp64
+    # samples clamp to 1-eps64, which rounds to exactly 1.0 in fp32.
+    mu = torch.full((2048,), 0.999, dtype=torch.float32)
+    sig = torch.full((2048,), 0.001, dtype=torch.float32)
+    u = torch.linspace(0.0, 1.0, 2048)
+    a = K.sample_from_uniform(mu, sig, u)
+    assert a.dtype == torch.float32
+    assert ((a > -1.0) & (a < 1.0)).all(), f"boundary sample: {a.max()}"
+    K.log_prob(a, mu, sig)
+    assert K.KERNEL_STATS.snapshot()["dtype_endpoint_clamp"] > 0
+    # Mirror at the lower boundary.
+    a_lo = K.sample_from_uniform(-mu, sig, u)
+    assert ((a_lo > -1.0) & (a_lo < 1.0)).all()
+    K.log_prob(a_lo, -mu, sig)
