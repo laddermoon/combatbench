@@ -593,8 +593,11 @@ class Step(CombatExperimentPPOBase):
             "r_fall": r_fall,
         }
 
+        # Iterate all_rewards (not self._channel_names): subclasses like
+        # FollowStep extend _channel_names with channels they inject
+        # post-hoc — iterating the widened set here would KeyError.
         channels: Dict[str, ChannelData] = {}
-        for key in self._channel_names:
+        for key in all_rewards:
             channels[key] = ChannelData(
                 reward=all_rewards[key].astype(np.float32),
                 is_terminated=is_terminated,

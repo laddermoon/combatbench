@@ -1,0 +1,132 @@
+# End-to-end follow stage on the balance stack (new recipe).
+#
+# Single learning agent: random fallen state → stand up → step → chase
+# a scripted moving target (RandomMovePlugin, kinematic standing roam)
+# → face the opponent when inside D_FACE=1.5m.  Keeps the balance
+# stage's perturbation pressure (StandingTriggeredForcePlugin pinned at
+# 100N) so the hard-won push robustness is maintained while following.
+#
+# Differs from balance_step_env.yaml:
+#   - RandomFallenStatePlugin / force plugin target ONLY the learner
+#     (${agent_id}); the opponent is a scripted kinematic target.
+#   - Adds RandomMovePlugin (opponent roam) + ApproachVelocityRewarder /
+#     FaceOpponentObserver (positions and forward axis for follow/face
+#     reward computation).
+#   - Observers are registered for BOTH robots so the learner can be
+#     either side (agent_id picked per rollout seed).
+#
+# Reward channels = exp_step recipe + r_radial / r_tangential / r_face.
+# No imbalance termination — robot can be pushed down and get back up.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps (standup ~100 + follow ~500)."
+  agent_id:
+    default: "robot_a"
+    description: "The learning robot."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The moving target robot (controlled by RandomMovePlugin)."
+  random_move_speed:
+    default: 0.0
+    description: "Opponent movement speed (m/s) — curriculum-controlled."
+  oppo_min_avoid_distance:
+    default: 1.2
+    description: "Minimum distance opponent keeps from learning robot."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  # GaitClockSimulator appends 3 dims to obs (indices 96..98):
+  # cmd_L / cmd_R / window-progress — the stepping command the policy
+  # can see (aligned with clock_foot_weights on the reward side).
+  cls: "baseline.humanoid21.end2end.gait_clock_simulator:GaitClockSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    gait_period: 40
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      standing_height_threshold: 1.15
+      standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+      random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+      observe_steps: 20              # 施力后观察 1 秒
+      impulse_body: "torso"
+      force_threshold: 1.0           # 接触力阈值 (N)
+  - cls: "baseline.humanoid21.plugins.random_move:RandomMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed: ${random_move_speed}
+      min_avoid_distance: ${oppo_min_avoid_distance}
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  # Non-foot body contact with arena walls — the wall-lean exploit.
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  # Push state machine per frame — clean-window survive bonus.
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_b"
+  # Follow: per-frame XY positions of self and opponent.
+  approach_velocity_a:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_a"
+  approach_velocity_b:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_b"
+  # Face: torso forward unit vector (XY projection).
+  face_opponent_a:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_a"
+  face_opponent_b:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_b"
