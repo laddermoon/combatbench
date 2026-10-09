@@ -46,6 +46,34 @@ REGISTRY: Dict[str, CapabilityEntry] = {
         Capability.NATIVE,
         factory=lambda cfg, **kw: _mk_timeout(cfg),
         note="per-env timeout，设备原生"),
+    # --- simulator 条目（device 绑定见 binding_registry；config_notes
+    #     供 migration_audit 处置 + 绑定的未消费键检查） ---
+    "envs.humanoid21.simulator:Humanoid21Simulator": CapabilityEntry(
+        Capability.NATIVE,
+        note="device binding: humanoid21-warp（binding_registry）",
+        config_notes={
+            "debug_torque": "CPU-only 调试打印，设备端无语义——忽略",
+        }),
+    # --- step 目标实验（端到端步态迁移） ---
+    "baseline.humanoid21.end2end.gait_clock_simulator"
+    ":GaitClockSimulator": CapabilityEntry(
+        Capability.NATIVE,
+        note="WarpGaitClockSimulator + GaitClockObsBuilder"
+             "（binding humanoid21-gait-warp）；obs 96→99 附加"
+             "cmd_L/cmd_R/wprog 步态时钟，帧索引 = episode_steps",
+        config_notes={
+            "initial_distance": "绑定消费——转发进 warp sim 构造"
+                                "（CPU 经 **kwargs 入 Humanoid21Simulator）",
+            "initial_pose_a": "同上——绑定消费",
+            "initial_pose_b": "同上——绑定消费",
+            "debug_torque": "CPU-only 调试打印，设备端无语义——忽略",
+        }),
+    "baseline.humanoid21.end2end.foot_state_observer"
+    ":FootStateObserver": CapabilityEntry(
+        Capability.NATIVE,
+        factory=lambda cfg, **kw: _mk_foot_state(cfg, **kw),
+        note="DeviceFootStateObserver；STANDING_FOOT_Z/端点几何引用 "
+             "CPU 模块单一来源，接触判定与 _detect_contact 同式"),
     # --- standup 目标实验（M4 已转换，见 M4_RESULTS.md） ---
     "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin":
         CapabilityEntry(Capability.NATIVE,
@@ -94,6 +122,16 @@ REGISTRY: Dict[str, CapabilityEntry] = {
                             cfg, **kw),
                         note="空子步 hook——测子步驱动路径固定开销"),
 }
+
+
+def _mk_foot_state(cfg, sim=None, **_kw):
+    from .device_step import DeviceFootStateObserver
+    if sim is None:
+        raise ValueError("DeviceFootStateObserver factory requires sim=")
+    aid = cfg.get("agent_id", "robot_a")
+    params = {k: v for k, v in cfg.items() if k != "agent_id"}
+    return DeviceFootStateObserver.from_sim(
+        sim, 0 if aid == "robot_a" else 1, **params)
 
 
 def _mk_substep_probe(cfg, **_kw):

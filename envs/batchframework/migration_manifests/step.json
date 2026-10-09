@@ -1,0 +1,180 @@
+{
+  "blueprint_name": "step_env.yaml",
+  "experiment_name": "step",
+  "runtime_fields": {
+    "max_steps": 400,
+    "phy_steps_per_action": 25,
+    "strict": true
+  },
+  "source_bp_hash": "8407d9ff583ab761",
+  "units": [
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.end2end.gait_clock_simulator:GaitClockSimulator",
+      "config_disposition": [
+        {
+          "disposition": "declared",
+          "key": "debug_torque",
+          "note": "CPU-only 调试打印，设备端无语义——忽略"
+        },
+        {
+          "disposition": "consumed",
+          "key": "gait_period",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "declared",
+          "key": "initial_distance",
+          "note": "绑定消费——转发进 warp sim 构造（CPU 经 **kwargs 入 Humanoid21Simulator）"
+        },
+        {
+          "disposition": "declared",
+          "key": "initial_pose_a",
+          "note": "同上——绑定消费"
+        },
+        {
+          "disposition": "declared",
+          "key": "initial_pose_b",
+          "note": "同上——绑定消费"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_step:WarpGaitClockSimulator",
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py 步态时钟公式/波契约 （episode_steps 簿记耦合、reset/部分 reset 归零、双 agent 共钟、半窗边界）",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1791537792.5444496,
+          "passed": true
+        },
+        {
+          "detail": "TestGaitClockWaveContract：BatchRuntime 帧索引对齐 + TestStepDeviceWarp.test_gait_sim_assembly（真机 99 维装配）",
+          "input_hash": "",
+          "level": "wave_contract",
+          "pass_ts": 1791537792.5444593,
+          "passed": true
+        }
+      ],
+      "name": "GaitClockSimulator",
+      "role": "simulator",
+      "stale": false,
+      "unit_hash": "a1e9d27653975324"
+    },
+    {
+      "capability": "native",
+      "cls": "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "height_threshold",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "max_phy_steps",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "reset_interval",
+          "note": "constructor parameter"
+        },
+        {
+          "disposition": "consumed",
+          "key": "target_robots",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_standup:DeviceFallenResetPlugin",
+      "evidence": [],
+      "name": "RandomFallenStatePlugin",
+      "role": "plugin",
+      "stale": false,
+      "unit_hash": "cf3c5432364dd963"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
+      "evidence": [],
+      "name": "standing_balance_a",
+      "role": "observer",
+      "stale": false,
+      "unit_hash": "161efade10533678"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
+      "evidence": [],
+      "name": "standing_balance_b",
+      "role": "observer",
+      "stale": false,
+      "unit_hash": "2206b0855845c92d"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_step:DeviceFootStateObserver",
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1791537792.5444624,
+          "passed": true
+        }
+      ],
+      "name": "foot_state_a",
+      "role": "observer",
+      "stale": false,
+      "unit_hash": "05327ff5d1e366a8"
+    },
+    {
+      "capability": "native",
+      "cls": "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver",
+      "config_disposition": [
+        {
+          "disposition": "consumed",
+          "key": "agent_id",
+          "note": "constructor parameter"
+        }
+      ],
+      "device_cls": "envs.batchframework.device_step:DeviceFootStateObserver",
+      "evidence": [
+        {
+          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照",
+          "input_hash": "",
+          "level": "unit_replay",
+          "pass_ts": 1791537792.5444636,
+          "passed": true
+        }
+      ],
+      "name": "foot_state_b",
+      "role": "observer",
+      "stale": false,
+      "unit_hash": "4cc620c96a21117c"
+    }
+  ]
+}

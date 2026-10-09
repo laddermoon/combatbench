@@ -59,7 +59,8 @@ def _build_batch_runtime(env_bp: EnvBlueprint, device: str,
     # 与 worker.py 一致：先绑 torch 当前设备，warp 分配跟随它。
     torch.cuda.set_device(torch.device(device).index or 0)
     binding = resolve_binding(env_bp.simulator.cls)
-    sim = binding.make_sim(batch_size, device)
+    sim = binding.make_sim(batch_size, device,
+                           sim_config=dict(env_bp.simulator.config))
     sim.reset()
     rt = BatchRuntime(
         sim, obs_builder=sim.device_obs_builder(),

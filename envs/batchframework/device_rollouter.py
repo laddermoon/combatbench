@@ -221,7 +221,8 @@ class DeviceRollouter:
     def _build_runtime(self, env_bp: EnvBlueprint, T: int) -> None:
         """按 env_bp 装配设备 runtime（blueprint 变化才重建）。"""
         binding = resolve_binding(env_bp.simulator.cls)
-        sim = binding.make_sim(self.batch_size, self.device)
+        sim = binding.make_sim(self.batch_size, self.device,
+                               sim_config=dict(env_bp.simulator.config))
         sim.reset()
         rt = BatchRuntime(
             sim, obs_builder=sim.device_obs_builder(),
