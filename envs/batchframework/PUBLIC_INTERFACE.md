@@ -35,8 +35,9 @@
 （E4 分片协议，多卡内部使用）/`warp_backend.py`/
 `warp_simulator.py`（`WarpHumanoid21Simulator`——binding 装配点，
 测试/探针可直接用但非稳定入口）/`physics.py`/`device_obs.py`/
-`device_balance.py`/`device_standup.py`/`policy_executor.py`/
-`episode_exporter.py`/`fake_backend.py`/`binding_registry.py`
+`device_balance.py`/`device_standup.py`/`policy_executor.py`
+（`register_executor`/`_FAMILY_SPECS` 注册面公开——新策略族接入点，
+条目属内部）/`episode_exporter.py`/`fake_backend.py`/`binding_registry.py`
 （注册表本身公开，条目属内部）/`validation*.py`（验收工具）/
 各 `probe_*.py`/`m6_*.py` 历史探针。
 
@@ -54,6 +55,8 @@
 - 改公开面签名/语义 → 更新本文件 + 契约测试 + 支持矩阵对应行；
 - 新增 blueprint 能力 → `capability_registry.register` 显式登记
   （默认拒绝语义不变）；
+- 新增策略导出类 → `_FAMILY_SPECS` + `register_executor` 登记 +
+  golden 测试；未注册 `policy_class` 一律显式拒绝，禁止静默错载；
 - Episode npz 结构变更 → 升 `EPISODE_FORMAT_VERSION` 并写明
   旧版本读取行为；
 - 新增休眠/移除判定 → 先更新 §4 再动代码。

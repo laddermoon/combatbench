@@ -18,8 +18,11 @@
 
 ### 显式排除（已知框架缺口，登记即可，不要求实现）
 
-- `step_mbs` 的 MoG actor（需要新 `PolicyExecutor` 类型）
-- `exp_step` 的逐帧 callable `explore_factor`（采样 ctx 只支持 per-env 标量）
+- ~~`step_mbs` 的 MoG actor（需要新 `PolicyExecutor` 类型）~~
+  **已闭合**（2026-10-09）：8 truncnorm 族全注册（`policy_executor._FAMILY_SPECS`
+  + `TorchPolicyExecutor`），`StateMixtureBoundedStdTruncatedNormalPolicy`
+  含在内——`step_mbs` actor 可迁
+- `exp_step` 的逐帧 callable `explore_factor`（采样 ctx 只支持 per-env 标量）——仍是契约缺口
 
 ### 验收层级（达到哪级如实报告，不许跳级宣称）
 
@@ -92,8 +95,8 @@ L4  `--collector device` 的 PPO smoke 端到端跑通
 
 已知范围外（遇到登记为缺口即可，不要实现）
 ----------------------------------------
-- `step_mbs` 的 MoG actor（StateMixtureBoundedStdTruncatedNormalPolicy
-  需要新 policy executor 类型）——验证用 `step`（TruncatedNormalPolicy）
+- ~~`step_mbs` 的 MoG actor~~ 已支持（`StateMixtureBoundedStdTruncatedNormalPolicy`
+  已注册 executor）——`step`/`step_mbs` 的 actor 均可走 device 路径
 - exp_step 的逐帧 callable explore_factor（采样 ctx 只支持 per-env
   标量）——如 rollout 需要 ef，记录"需要 per-frame ef 支持"为缺口
 

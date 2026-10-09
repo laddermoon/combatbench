@@ -106,9 +106,14 @@ npz 快照 → CPU replay → CPU VideoRecorder。文档已声明，判定"设�
 **G6 — 采样 spec 子集（中低，显式拒绝已注册）**
 
 `required_ctx_fields`：callable explore_factor / reference_action /
-delta_factor 显式拒绝；executor 仅 `TruncatedNormalExecutor` 一族
-（register_executor 扩展点已开）。注册表如实标 UNSUPPORTED——
-非暗坑，但限制策略多样性实验迁移。
+delta_factor 显式拒绝。注册表如实标 UNSUPPORTED——非暗坑。
+
+> **更新（2026-10-09，POLICY_EXECUTOR_PLAN 落地）**：executor 面已从
+> 单一 `TruncatedNormalExecutor` 扩到全部 8 个 truncnorm 族
+> （`policy_executor._FAMILY_SPECS` + 泛型 `TorchPolicyExecutor`；
+> mixture 族的组件选择噪声经 `u_comp` 注入保持 job-keyed 语义；
+> pre_tanh 两族显式拒绝）。残余 spec 缺口只剩 callable ef /
+> reference / delta 三字段。
 
 **G7 — 无设备侧评测 runner（低）**
 

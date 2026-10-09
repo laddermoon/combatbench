@@ -54,6 +54,9 @@
 | CPU `ParallelRollouter` 主路径 | 原生通过 | `envs/framework/tests/` + humanoid21 套件；414 项回归 |
 | hooks-on（子步插件）路径 | 兼容通过 | E7 hooks-on 格（物理 eager 142K sub/s；obs 图仍生效）——可用但非图化，如实标注 |
 | Episode/PPO 接口兼容 | 原生通过 | `test_ppo_pipeline_compat`、`test_logprob_replay_parity`、E5 manifest train_smoke |
+| 策略 executor —— 8 truncnorm 族（TN/bounded/state/state-bounded/mixture/shared-mixture/shared-mixture-bounded/state-mixture-bounded） | 原生通过 | `test_policy_executor_dispatch.py`（分发+拒绝）、`test_policy_executor_golden.py`（56 项：导出对拍/u 注入重放/log_prob/ef 透传/shared 等价/GPU 对拍）；mixture `u_comp` 组件选择注入 |
+| 策略 executor —— `PreTanhNormalPolicy`/`StatePreTanhNormalPolicy` | **拒绝** | 未注册 policy_class → `_default_factory` 显式 `ValueError`；`test_pre_tanh_export_rejected_not_misloaded` |
+| 采样 spec —— callable ef / reference / delta | **拒绝** | `required_ctx_fields` ⊆ `capabilities.ctx_fields` 检查（G6）；逐帧 callable ef 属契约缺口，非 executor 问题 |
 
 ## D. 旧路径与弃用候选（W2 判定项）
 

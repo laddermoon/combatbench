@@ -39,7 +39,8 @@ print(rep.to_markdown())"
 | 插件读 `ctx.episode_options` | `grep 'episode_options'` | **已闭合（E9 G4）**：`ctx.episode_options` = {白名单键: (B,) 张量}——白名单之外仍不可见 |
 | 插件覆写 `on_pre/post_phy_step` | 逐类检查 | 可走，但**物理图化自动失效**（eager 路径）；优先考虑能否改为 `upload_force_schedule` |
 | `get_sensor_data` / 渲染 / broadcastview | `grep 'sensor_data\|broadcastview'` | 无对应物——sensor 需进 obs_builder，渲染走 debug_capture→CPU replay |
-| 采样 spec 含 callable ef / reference / delta_factor | 看 Job 生成处 | 显式拒绝（G6），需扩展 executor |
+| 采样 spec 含 callable ef / reference / delta_factor | 看 Job 生成处 | 显式拒绝（G6）；reference/delta 需扩展 executor ctx 声明，callable ef 属采样契约缺口（见 §G6 段） |
+| 策略 `policy_class` 非 truncnorm 族 | 导出 payload `policy_class` | 8 族全支持（`_FAMILY_SPECS`）；pre_tanh/未知类显式拒绝——新族接入 = `_FAMILY_SPECS` 一行 + `register_executor` + golden 测试 |
 
 **判定输出**：全部 native → 跳到 §5 直接验证；有 pending → 按 §1–4
 逐个转换；命中结构性阻塞 → 先解决阻塞或标记实验不可迁（写
@@ -235,3 +236,4 @@ humanoid21 已绑（`_Humanoid21WarpBinding`）。新任务 = 实现
 | 4 段平衡奖励 | `device_standup.DeviceStandup4StageRewarder` | `rewards.standing_balance_4stage` |
 | 交叉支撑 | `device_examples.DeviceCrossSupportObserver` | — |
 | 子步插件示例 | `device_examples.SubstepProbePlugin` | — |
+| 策略 executor（8 truncnorm 族分发） | `policy_executor._FAMILY_SPECS` + `TorchPolicyExecutor` | 训练侧 `baseline/framework/ppo/policies/*_mlp.py`（golden：`tests/test_policy_executor_golden.py`） |
