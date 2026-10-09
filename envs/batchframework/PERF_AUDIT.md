@@ -248,37 +248,56 @@ kernel 分解（nsys eager）：Newton 梯度/Cholesky/线搜索族
 
 ### 8.2 版本升级 spike（最大发现）
 
-隔离 venv（不动生产环境）：**mujoco-warp 3.11.0 + warp-lang
-1.14.0 + mujoco 3.10.0**。warp 1.14 仍是 CUDA 12.9 toolkit，
-兼容现有 driver 12.4；mjw ≥3.12 需 warp≥1.15（CUDA 13
-toolkit → driver 12.4 不够），**3.11 是不动驱动的版本上限**。
+隔离 venv（不动生产环境）。**版本边界修正**（初判 3.11 是
+上限，实测不对）：mjw 各版本对 warp-lang 的依赖是下限要求
+（`>=1.15`），pip 默认解析到最新 1.18（CUDA 13.4 toolkit →
+需 driver≥13.0，我们 12.4 不够）；但 **warp 1.14-1.17 全部
+仍是 CUDA 12.9 toolkit**，pin `warp-lang==1.17.0` 即可在
+现有驱动下跑到 **mjw 3.15.0（当前最新）**。
 
-| B | 3.8.0.3 ms/sub | 3.11.0 ms/sub | 加速比 | 3.11 吞吐 |
+实测两档（B=256 稳态 ms/sub / e2e collect 256eps）：
+
+| 版本栈 | B=256 | B=2048 | e2e collect | niter |
 |---|---|---|---|---|
-| 256 | 1.276 | 0.903 | **1.41×** | 0.28M |
-| 512 | 1.41 | 0.980 | 1.44× | 0.52M |
-| 1024 | 1.72 | 1.180 | 1.46× | 0.87M |
-| 2048 | 2.57 | 1.609 | **1.60×** | **1.27M** |
+| mjw 3.8.0.3 + wp1.12（现状） | 1.276 | 2.57 | 8.16s / 31 eps/s | 4.7/12 |
+| mjw 3.11.0 + wp1.14 + mj3.10 | 0.903 | 1.609 | 6.09s / 42 eps/s | 3.7/10 |
+| **mjw 3.15.0 + wp1.17 + mj3.15** | **0.861** | **1.557** | **5.74s / 45 eps/s** | 4.1/9 |
 
-**端到端 collect（256 jobs，max_steps=200）**：
-3.8 → **8.16s（31 eps/s）**；3.11 → **6.09s（42 eps/s）= −25%**。
+→ 升最新档比 3.11 档更快：**裸物理 −33%~-39%，e2e −30%**
+（1.32M env-sub/s @B=2048）。
 
-兼容性核查（全过）：
-- `put_data(nconmax/njmax)` API 保留（新增 nccdmax/naconmax/nvmax）；
-- `opt.impratio`→`impratio_invsqrt` 内部改名，XML impratio=10
-  仍被 put_model 解析（我们不在运行时改该字段）；
-- XML margin/gap 全默认值→3.9 的 margin/gap 语义重设计不影响；
-- `tests/test_device_rollouter.py`（6 项 e2e 契约）+
-  `test_device_lifecycle_contract.py` 在 3.11 下**全绿**；
-- graph capture 正常，`solver_niter` 4.7→3.7（上游 float32
-  收敛改进 + Newton decrement 早退判据）。
+兼容性核查：
+- **API break（3.12 引入）**：`xfrc_applied` dtype 从 flat
+  float32 变为 `spatial_vectorf`（vec6）——
+  `warp_backend.initialize` 的 `wp.zeros((B,nbody,6),f32)`
+  assign 被拒。spike 用 monkeypatch shim（6 宽 f32 zeros→
+  vec6 zeros）绕过即全绿；正式适配 = 该处 dtype 改
+  `wp.spatial_vectorf`（`wt()`/`zero_()`/`xfrc_pending`
+  torch 视图路径不受影响，vec6 经 `wp.to_torch` 仍映射为
+  (B,nbody,6) f32）；
+- `put_data(nconmax/njmax)` API 保留（新增 nccdmax/naconmax/
+  nvmax 容量旋钮）；
+- `opt.impratio`→`impratio_invsqrt` 内部改名，XML
+  impratio=10 仍被 put_model 解析（我们不在运行时改它）；
+- XML margin/gap 全默认值 → 3.9 语义重设计不影响；
+- `tests/test_device_rollouter.py` + lifecycle 契约在
+  3.11 与 3.15（shim）下均**全绿**；graph capture 正常；
+- `solver_niter` 4.7→3.7-4.1（float32 收敛改进 + Newton
+  decrement 早退判据）；
+- ⚠️ 3.11+ 行为差异需复核：`sleep_tolerance` 默认 1e-4→1e-3
+  （我们未用 sleep）；3.12 `dcmotor`/PID actuator 重做（我们
+  未用）；3.13 修了惯性稀疏分解丢 pivot clamp 的回归（3.3.0
+  引入，奇异 M 静默 NaN——很可能是我们 `non_finite` FAILED
+  的部分根因，**正确性红利**）。
 
-轨迹漂移（同 init + 随机动作，200 子步）：
-dqpos mean 5.4e-5 / max 7.5e-2（混沌世界的发散，属预期的
+轨迹漂移（同 init + 随机动作，200 子步，3.8 vs 3.11）：
+dqpos mean 5.4e-5 / max 7.5e-2（混沌接触世界的发散，属预期
 非 bit-identical 版本差；与 CPU 参照的相对距离需专项测量）。
 
-额外收益：上游修复了 `block/tile_cholesky` 无 pivot 下限
-（issue #1415）——我们的 `non_finite` FAILED 很可能部分源于此。
+额外收益：上游修复 `block/tile_cholesky` 无 pivot 下限
+（mujoco_warp#1415）；3.10 的 `mju_threadpool` 让 **CPU
+参照侧也可能提速**（碰撞+island 并行化——两边同升则参照
+关系保持一致）。
 
 ### 8.3 O5 结论
 
@@ -292,11 +311,12 @@ mjw 3.11 升级与参数调优均为"潜在提升选项"，待后续有
 1. **参数调优上限 ~20-23%（impratio=1 / iterations=6+tol=1e-4）
    但全是语义变体**——改的是 CPU 参照对齐的 XML 语义，
    采纳前需要轨迹+训练双重验证，且要同步改 CPU 端才公平。
-2. **版本升级是零语义风险的 1.4-1.6×**——e2e −25%，且附带
-   数值正确性修复；代价是 mujoco 3.8→3.10 的 CPU 参照
-   版本同步升级（需评估 CPU 侧回归）+ 依赖 pinning 变更。
-   版本天花板：mjw ≥3.12 需 warp≥1.15（CUDA 13 toolkit）
-   → driver 12.4 下 3.11 即上限。
+2. **版本升级是零语义风险的 1.4-1.6×**——e2e −25%~-30%，且
+   附带数值正确性修复；代价是 mujoco 3.8→3.15 的 CPU 参照
+   版本同步升级（需评估 CPU 侧回归）+ 依赖 pinning 变更
+   + `xfrc_applied` vec6 适配（~一处 dtype 修改）。
+   版本天花板：**mjw 3.15 可上**（pin warp-lang==1.17，
+   CUDA 12.9）；warp ≥1.18 = CUDA 13 → 需 driver ≥13.0。
 3. 剩余空间：kernel 级定制（fork MJWarp solver）收益未知、
    维护成本高，仅当升级落地后仍需更深优化时再考虑。
 
