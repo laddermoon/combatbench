@@ -754,3 +754,22 @@ def test_trainer_state_dict_round_trips_actor_rng():
     )
     restored, _ = fresh.sample_action(obs)
     assert torch.equal(expected, restored)
+
+
+def test_saturated_mean_head_keeps_mu_inside_support():
+    """tanh saturates to exactly ±1.0 in fp32 for large logits; the actor
+    must clamp μ into the open interval so kernel checks and downstream
+    log_prob accept the distribution (observed crash in P6-PREP-1)."""
+    torch.manual_seed(0)
+    actor = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=32, seed=0)
+    with torch.no_grad():
+        for p in actor.net.parameters():
+            p.mul_(0.0)
+        # Drive the mean head to saturation.
+        actor.net[-1].bias.fill_(20.0)
+    dist = actor.distribution(_obs(8))
+    assert ((dist["mu"] > -1.0) & (dist["mu"] < 1.0)).all()
+    u = torch.rand(8, 1, 2, ACT_DIM)
+    actions, logp, w = actor.expectation_samples(_obs(8), u)
+    assert torch.isfinite(actions).all() and torch.isfinite(logp).all()
+    assert ((actions > -1.0) & (actions < 1.0)).all()

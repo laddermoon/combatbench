@@ -274,6 +274,10 @@ class TNActor(nn.Module):
             else:
                 ctrl = out[:, Kc + Kc * D:].view(B, Kc, D)
             sigma = self._sigma_from_ctrl(ctrl)
+        # tanh saturates to exactly ±1.0 in fp32; the kernel requires μ
+        # strictly inside (-1,1), so clamp in the working dtype.
+        mu_bound = 1.0 - torch.finfo(mu.dtype).eps
+        mu = mu.clamp(-mu_bound, mu_bound)
         return {"mu": mu, "sigma": sigma, "logits": logits, "ctrl": ctrl}
 
     def _distribution_with_e(
