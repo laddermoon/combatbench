@@ -248,3 +248,11 @@ act 校验）、ParameterizedEnvBlueprint（parameters 节 + `${name}` 占位
 目录构成 + "实验=配方/框架=引擎/环境=蓝图"心智模型。
 连带填了 baseline/ 根零 README 的洞。EXPERIMENT_CLASS 导出约定、
 --param 语法、注册发现机制均对照源码核实。
+
+## [2026-10-09] D-DOC-13e 结案：dumpkit/USAGE.md 使用指南
+
+新建 `ppo/dumpkit/USAGE.md`（类型：指南）——补设计文档之外的"怎么用"：
+三种 dump 触发途径（--dump-at 预约 / dump_request.json 哨兵 /
+resume+dump 精确复现）、dumps/uNNNNN/ 产物结构、debug.py 13 个
+子命令全表、viewer 三种入口粒度、四条常见排查路径。
+CONTEXT.md 实为能力地图非操作指南——两者分工在文中互相指路。
