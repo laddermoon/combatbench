@@ -15,17 +15,10 @@
   - `GaitClockSimulator` → 需要**新 simulator binding**（obs +3 维）
   - `FootStateObserver` ×2 → 需要**新设备 observer**
 - 已 native 可复用：`RandomFallenStatePlugin`、`StandingBalance4StageRewarder` ×2
-
-### 显式排除（已知框架缺口，登记即可，不要求实现）
-
-- ~~`step_mbs` 的 MoG actor（需要新 `PolicyExecutor` 类型）~~
-  **已闭合**（2026-10-09）：8 truncnorm 族全注册（`policy_executor._FAMILY_SPECS`
-  + `TorchPolicyExecutor`），`StateMixtureBoundedStdTruncatedNormalPolicy`
-  含在内——`step_mbs` actor 可迁
-- ~~`exp_step` 的逐帧 callable `explore_factor`~~ **已闭合**
-  （2026-10-09）：声明式 ef 程序（`ef_programs.obs_threshold`）
-  双后端可执行，`exp_step` 已迁移到程序 spec——`step`/`step_mbs`
-  的采样侧均可走 device 路径
+- 策略/采样侧已就绪（2026-10-09）：8 truncnorm 族 executor 全注册
+  （含 `StateMixtureBoundedStdTruncatedNormalPolicy`）；逐帧 ef 以
+  声明式程序（`ef_programs.obs_threshold`）双后端执行，`exp_step`
+  已迁移到程序 spec
 
 ### 验收层级（达到哪级如实报告，不许跳级宣称）
 
@@ -95,14 +88,6 @@ L2  新设备单元（GaitClockSimulator 绑定、FootStateObserver）
 L3  DeviceRollouter/MultiDeviceRollouter.collect(jobs) 对 step 环境
     产出合法 Episode（trajectory/termination/bootstrap 字段完整）
 L4  `--collector device` 的 PPO smoke 端到端跑通
-
-已知范围外（遇到登记为缺口即可，不要实现）
-----------------------------------------
-- ~~`step_mbs` 的 MoG actor~~ 已支持（`StateMixtureBoundedStdTruncatedNormalPolicy`
-  已注册 executor）——`step`/`step_mbs` 的 actor 均可走 device 路径
-- ~~exp_step 的逐帧 callable explore_factor~~ 已支持——spec 已改为
-  声明式 ef 程序（`ef_programs.obs_threshold`），device 路径逐帧
-  向量化求值；其余 callable 形态仍需改写为注册程序
 
 训练接入语义（warm-start，重要）
 ------------------------------
