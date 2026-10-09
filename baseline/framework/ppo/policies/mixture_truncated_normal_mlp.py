@@ -375,10 +375,21 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
 
     def sample_action(
         self, obs: torch.Tensor, *, ctx: Optional[SamplingContext] = None,
+        u: Optional[torch.Tensor] = None,
+        u_comp: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Pick one component (shared across dims), inverse-CDF sample.
 
         Returns (action, mixture log_prob summed over dims).
+
+        ``u``: optional injected per-dim uniform noise (B, D); ``u_comp``:
+        optional injected component-selection uniform (B,) — CDF inversion
+        over ``cumsum(π)``, same categorical distribution as multinomial
+        but deterministic given u_comp. Both are used by the device
+        rollouter to inject job-keyed noise; the CPU path leaves them
+        None and keeps ``self._gen`` semantics unchanged. Partial
+        injection (u without u_comp, K>1) is rejected: a half-keyed
+        stream would silently break job-keyed reproducibility.
         """
         log_pi, mean, raw = self._forward_raw(obs)
         sigma = self._explored_sigma(
@@ -393,7 +404,21 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
             # the stream identical to the single-component policies makes
             # the seeded degenerate-equivalence test exact.
             idx = torch.zeros(B, dtype=torch.long, device=mean.device)
+        elif u_comp is not None:
+            cum_pi = torch.cumsum(
+                log_pi.exp(), dim=-1)                    # (B,K), end≈1
+            uc = u_comp.to(device=cum_pi.device,
+                           dtype=cum_pi.dtype).clamp(0.0, 1.0 - 1e-6)
+            idx = torch.searchsorted(
+                cum_pi[..., :-1].contiguous(),
+                uc.unsqueeze(-1)).squeeze(-1)
+            idx = idx.clamp(max=K - 1)
         else:
+            if u is not None:
+                raise ValueError(
+                    "sample_action: u given without u_comp — a "
+                    "half-keyed noise stream breaks job-keyed "
+                    "reproducibility (pass both, or neither)")
             idx = torch.multinomial(
                 log_pi.exp(), 1, generator=self._ensure_gen(mean.device),
             ).squeeze(-1)
@@ -406,12 +431,16 @@ class MixtureTruncatedNormalPolicy(nn.Module, TrainablePolicy, Policy):
         #   a = μ + √2·σ·erfinv(q)
         erf_a = torch.erf((_ACTION_LOW - mu_k) / (_SQRT_2 * sg_k))
         erf_b = torch.erf((_ACTION_HIGH - mu_k) / (_SQRT_2 * sg_k))
-        u = torch.rand(
-            mu_k.shape,
-            generator=self._ensure_gen(mu_k.device),
-            device=mu_k.device,
-            dtype=mu_k.dtype,
-        )
+        if u is None:
+            u = torch.rand(
+                mu_k.shape,
+                generator=self._ensure_gen(mu_k.device),
+                device=mu_k.device,
+                dtype=mu_k.dtype,
+            )
+        else:
+            u = u.to(device=mu_k.device, dtype=mu_k.dtype).clamp(
+                1e-6, 1.0 - 1e-6)
         q = (1.0 - u) * erf_a + u * erf_b
         q = q.clamp(-1.0 + _ERFINV_EPS, 1.0 - _ERFINV_EPS)
         action = mu_k + _SQRT_2 * sg_k * torch.erfinv(q)

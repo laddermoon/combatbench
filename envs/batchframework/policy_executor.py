@@ -99,6 +99,14 @@ class PolicyExecutor:
                        Optional[torch.Tensor]]:
         raise NotImplementedError
 
+    def noise_cols(self, action_dim: int) -> int:
+        """随机波每行需要的 uniform 列数（默认 = action_dim）。
+
+        mixture 等额外噪声通道的 executor 覆写此方法；wave_runner
+        按此宽度生成 job-keyed u。
+        """
+        return action_dim
+
     def close(self) -> None:
         return None
 
@@ -119,25 +127,79 @@ def _load_payload(
     return path, payload
 
 
-class TruncatedNormalExecutor(PolicyExecutor):
-    """TruncatedNormalPolicy 的设备端适配。
+class _FamilySpec(NamedTuple):
+    """一族策略的 executor 装配参数。"""
+    module: str            # baseline.framework.ppo.policies 下的模块名
+    cls_name: str          # 训练侧策略类名
+    bounded: bool = False  # 需要 payload 顶层 sigma_min/max/init_std/explore_alpha
+    is_mixture: bool = False  # sample_action 需要 u_comp 组件选择噪声
 
-    file: 导出蓝图 → 重建 TruncatedNormalPolicy；版本 = state_dict
-    内容 sha256（前 16  hex），不以路径/mtime 充当版本保证。
+
+# payload policy_class → 装配参数。新增策略族 = 这里加一行。
+_FAMILY_SPECS: Dict[str, _FamilySpec] = {
+    "TruncatedNormalPolicy": _FamilySpec(
+        "truncated_normal_mlp", "TruncatedNormalPolicy"),
+    "BoundedStdTruncatedNormalPolicy": _FamilySpec(
+        "bounded_std_truncated_normal_mlp",
+        "BoundedStdTruncatedNormalPolicy", bounded=True),
+    "StateTruncatedNormalPolicy": _FamilySpec(
+        "state_truncated_normal_mlp", "StateTruncatedNormalPolicy"),
+    "StateBoundedStdTruncatedNormalPolicy": _FamilySpec(
+        "state_bounded_std_truncated_normal_mlp",
+        "StateBoundedStdTruncatedNormalPolicy", bounded=True),
+    "MixtureTruncatedNormalPolicy": _FamilySpec(
+        "mixture_truncated_normal_mlp", "MixtureTruncatedNormalPolicy",
+        is_mixture=True),
+    "SharedMixtureTruncatedNormalPolicy": _FamilySpec(
+        "shared_mixture_truncated_normal_mlp",
+        "SharedMixtureTruncatedNormalPolicy", is_mixture=True),
+    "SharedMixtureBoundedStdTruncatedNormalPolicy": _FamilySpec(
+        "shared_mixture_bounded_std_truncated_normal_mlp",
+        "SharedMixtureBoundedStdTruncatedNormalPolicy",
+        bounded=True, is_mixture=True),
+    "StateMixtureBoundedStdTruncatedNormalPolicy": _FamilySpec(
+        "state_mixture_bounded_std_truncated_normal_mlp",
+        "StateMixtureBoundedStdTruncatedNormalPolicy",
+        bounded=True, is_mixture=True),
+}
+
+_BOUNDED_KEYS = ("sigma_min", "sigma_max", "init_std", "explore_alpha")
+
+
+class TorchPolicyExecutor(PolicyExecutor):
+    """训练侧策略类的通用设备端适配。
+
+    file: 导出蓝图 → 按 ``_FamilySpec`` 重建对应 policy 类：
+    ctor kwargs = ``arch`` + （bounded 族）payload 顶层 σ 界配置；
+    版本 = state_dict 内容 sha256（前 16 hex）。
+
+    mixture 族：注入噪声打包为 ``(B, action_dim+1)``——第 0 列是
+    组件选择 uniform（u_comp），其余是逐维逆CDF uniform（u）。
     """
 
     def __init__(self, bp_dict: Dict[str, Any], device: str,
-                 payload: Optional[Dict[str, Any]] = None):
+                 payload: Optional[Dict[str, Any]] = None,
+                 spec: Optional[_FamilySpec] = None):
         if payload is None:
             _, payload = _load_payload(bp_dict)
-        arch = payload["arch"]
-        from baseline.framework.ppo.policies.truncated_normal_mlp import (
-            TruncatedNormalPolicy)
-        self.policy = TruncatedNormalPolicy(
-            obs_dim=int(arch["obs_dim"]),
-            action_dim=int(arch["action_dim"]),
-            hidden_dim=int(arch["hidden_dim"]),
-            device=device)
+        if spec is None:
+            spec = _FAMILY_SPECS[payload["policy_class"]]
+        self._spec = spec
+        kwargs = dict(payload["arch"])
+        if spec.bounded:
+            missing = [k for k in _BOUNDED_KEYS if k not in payload]
+            if missing:
+                raise ValueError(
+                    f"bounded-σ export missing {missing} in payload "
+                    f"top-level (policy_class="
+                    f"{payload['policy_class']!r}) — re-export with "
+                    f"current code")
+            kwargs.update({k: payload[k] for k in _BOUNDED_KEYS})
+        import importlib
+        mod = importlib.import_module(
+            f"baseline.framework.ppo.policies.{spec.module}")
+        cls = getattr(mod, spec.cls_name)
+        self.policy = cls(**kwargs, device=device)
         self.policy.load_state_dict(payload["state_dict"])
         self.policy.eval()
         self._device = device
@@ -160,6 +222,24 @@ class TruncatedNormalExecutor(PolicyExecutor):
             ctx_fields=frozenset({"explore_factor", "delta_factor"}),
             stateful=False)
 
+    def noise_cols(self, action_dim: int) -> int:
+        """每行需要的 uniform 列数；mixture 多 1 列组件选择。"""
+        return action_dim + (1 if self._spec.is_mixture else 0)
+
+    @staticmethod
+    def _split_u(u: torch.Tensor, is_mixture: bool):
+        """打包 u → (u_dim, u_comp)；非 mixture 原样返回。"""
+        if u is None or not is_mixture:
+            return u, None
+        return u[:, 1:], u[:, 0]
+
+    def _sample(self, obs, ctx, u):
+        u_dim, u_comp = self._split_u(u, self._spec.is_mixture)
+        if u_comp is None:
+            return self.policy.sample_action(obs, ctx=ctx, u=u_dim)
+        return self.policy.sample_action(
+            obs, ctx=ctx, u=u_dim, u_comp=u_comp)
+
     def act(self, obs_a, obs_b, *, stochastic, ctx_a, ctx_b, ctx_ab,
             shared, u_a=None, u_b=None, u_ab=None
             ) -> Tuple[torch.Tensor, torch.Tensor,
@@ -170,13 +250,10 @@ class TruncatedNormalExecutor(PolicyExecutor):
                 if shared:
                     B = obs_a.shape[0]
                     both = torch.cat([obs_a, obs_b], dim=0)
-                    a_all, lp_all = self.policy.sample_action(
-                        both, ctx=ctx_ab, u=u_ab)
+                    a_all, lp_all = self._sample(both, ctx_ab, u_ab)
                     return a_all[:B], a_all[B:], lp_all[:B], lp_all[B:]
-                a_a, lp_a = self.policy.sample_action(obs_a, ctx=ctx_a,
-                                                      u=u_a)
-                a_b, lp_b = self.policy.sample_action(obs_b, ctx=ctx_b,
-                                                      u=u_b)
+                a_a, lp_a = self._sample(obs_a, ctx_a, u_a)
+                a_b, lp_b = self._sample(obs_b, ctx_b, u_b)
                 return a_a, a_b, lp_a, lp_b
             return (self.policy.deterministic_action(obs_a),
                     self.policy.deterministic_action(obs_b),
@@ -184,6 +261,15 @@ class TruncatedNormalExecutor(PolicyExecutor):
 
     def close(self) -> None:
         del self.policy
+
+
+class TruncatedNormalExecutor(TorchPolicyExecutor):
+    """TruncatedNormalPolicy 的设备端适配（保留类名兼容既有引用）。"""
+
+    def __init__(self, bp_dict: Dict[str, Any], device: str,
+                 payload: Optional[Dict[str, Any]] = None):
+        super().__init__(bp_dict, device, payload,
+                         spec=_FAMILY_SPECS["TruncatedNormalPolicy"])
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +298,13 @@ def _default_factory(bp_dict: Dict[str, Any], device: str) -> PolicyExecutor:
     return factory(bp_dict, device, payload)
 
 
+def _torch_factory(spec: _FamilySpec):
+    return lambda bp_dict, device, payload: TorchPolicyExecutor(
+        bp_dict, device, payload, spec)
+
+
+for _pcls, _spec in _FAMILY_SPECS.items():
+    register_executor(_pcls, _torch_factory(_spec))
 register_executor(
     "TruncatedNormalPolicy",
     lambda bp_dict, device, payload: TruncatedNormalExecutor(

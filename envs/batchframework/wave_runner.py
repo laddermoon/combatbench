@@ -66,9 +66,10 @@ def run_wave(rt: BatchRuntime,
             base = (st.rng.seed_offsets
                     + ep.episode_steps.to(torch.int64)
                     * _SEED_COUNTER_MULT)
-            act_dim = st.io.action_a.shape[-1]
-            u_a = rng_uniform(base + _U_SALT_A, act_dim)
-            u_b = rng_uniform(base + _U_SALT_B, act_dim)
+            wa = exec_a.noise_cols(st.io.action_a.shape[-1])
+            wb = exec_b.noise_cols(st.io.action_b.shape[-1])
+            u_a = rng_uniform(base + _U_SALT_A, wa)
+            u_b = rng_uniform(base + _U_SALT_B, wb)
             if shared:
                 u_ab = torch.cat([u_a, u_b], dim=0)
         a_a, a_b, lp_a, lp_b = exec_a.act(
