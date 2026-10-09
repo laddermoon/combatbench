@@ -39,6 +39,7 @@ from .metrics import MetricEvent, SACMetricsWriter, load_events
 from .networks import MultiHeadQCritic, QTrunkGroup
 from .replay import SACReplayBuffer, SACReplayError
 from .s01_actor import S01Actor, S01RuntimePolicy
+from .tn_actor import ARCH_SPECS as TN_ARCH_SPECS, TNActor, TNRuntimePolicy
 from .trainer import SACTrainerError, sac_update, sac_update_v2
 from .transition import (
     SAC_TRANSITION_SCHEMA,
@@ -76,6 +77,9 @@ __all__ = [
     "SACTrainerError",
     "SACTransitionSlice",
     "SAC_TRANSITION_SCHEMA",
+    "TN_ARCH_SPECS",
+    "TNActor",
+    "TNRuntimePolicy",
     "build_agent_transition_slice",
     "find_sample",
     "load_checkpoint_bundle",

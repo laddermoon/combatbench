@@ -153,7 +153,7 @@ exp = SacBalance(use_grad_norm=False)
 actor = exp.build_actor(torch.device("cpu"))
 assert actor.obs_dim == exp.obs_dim
 assert actor.action_dim == exp.action_dim
-assert actor.policy_arch == "s01_shared_sigma"
+assert actor.policy_arch == "tn_s01"
 assert actor.policy_fingerprint()
 
 ppo_modules = [

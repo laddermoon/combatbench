@@ -23,6 +23,8 @@ from envs.framework.policy import PolicyBlueprint
 
 from baseline.framework.sac.actor import SACActor
 from baseline.framework.sac.s01_actor import S01Actor
+from baseline.framework.sac.tn_actor import ARCH_SPECS as TN_ARCH_SPECS
+from baseline.framework.sac.tn_actor import TNActor
 from baseline.framework.sac.collection import (
     SACBehaviorSpec,
     SACFactSpec,
@@ -100,6 +102,7 @@ class CombatExperimentSACBase(ExperimentSAC):
     actor_hidden_dim: int = 256
     q_hidden_dim: int = 256
     actor_arch: str = "s01"
+    actor_n_components: int = 3
     init_log_std: float = -0.5
 
     # --- Exploration (bounded shared sigma; alpha controls entropy) ---
@@ -198,20 +201,30 @@ class CombatExperimentSACBase(ExperimentSAC):
     # ------------------------------------------------------------------
 
     def build_actor(self, device: torch.device) -> SACActor:
-        if self.actor_arch != "s01":
-            raise ValueError(
-                f"unsupported SAC actor_arch {self.actor_arch!r}; "
-                "P2-TRAIN-1 supports only 's01'"
-            )
-        return S01Actor(
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
-            hidden_dim=self.actor_hidden_dim,
-            log_std_min=self.log_std_min,
-            log_std_max=self.log_std_max,
-            init_log_std=self.init_log_std,
-            seed=self.seed,
-        ).to(device)
+        arch = str(self.actor_arch)
+        if arch == "legacy_tanh":
+            return S01Actor(
+                obs_dim=self.obs_dim,
+                action_dim=self.action_dim,
+                hidden_dim=self.actor_hidden_dim,
+                log_std_min=self.log_std_min,
+                log_std_max=self.log_std_max,
+                init_log_std=self.init_log_std,
+                seed=self.seed,
+            ).to(device)
+        if arch in TN_ARCH_SPECS:
+            return TNActor(
+                obs_dim=self.obs_dim,
+                action_dim=self.action_dim,
+                arch=arch,
+                hidden_dim=self.actor_hidden_dim,
+                n_components=self.actor_n_components,
+                seed=self.seed,
+            ).to(device)
+        raise ValueError(
+            f"unsupported SAC actor_arch {self.actor_arch!r}; "
+            f"allowed: 'legacy_tanh' + {sorted(TN_ARCH_SPECS)}"
+        )
 
     def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
         """Build a single-channel Q critic.

@@ -2263,6 +2263,22 @@ S4-W0 P4-AUDIT-0：SAC actor 契约与 A4.3 逐项对拍，登记差距；冻结
 
 `G4.0` 通过标准：以上矩阵与命名/接入面冻结完成；无「配置接受但语义未实现」的 arch 值进入注册表。
 
+### P4.7 `P4-KERNEL-1` / `P4-ACTOR-1` 执行记录（2026-10-13）
+
+**P4-KERNEL-1（`5f6f3e53`）：** 新增 `tn_kernel.py` — erf-space TN 内核（support `(-1,1)`，`μ∈[-1,1]`、`σ>0`）：erf 空间非负差分求 Z、erf 空间插值 + `erfinv` 逆 CDF 采样、`log_prob`/`cdf`/解析熵/解析均值方差；`TNKernelStats` 保护计数；敏感段内部 float64，输出 dtype 跟随输入；大 σ 均匀极限下解析均值/方差走级数回退（消除 `1−1` 相消）。永久测试 10 项：积分归一（含 σ=e²⁰ 均匀极限、μ≈±1、σ=1e-4）、采样矩、固定噪声 gradcheck、cdf/logp 自洽、端点保护、非有限输入 fail loud、float32/64/CUDA。
+
+**P4-ACTOR-1（本次提交）：** 新增 `tn_actor.py` — `TNActor` 单一实现按 `arch` 轴覆盖八格（D41 命名），当前仅启用 `s00/s01/s10/s11`，`m*` 构造即报 `P4-MIX-1`：
+
+- 网络：shared-σ 单分量走 `net`（Linear→Tanh→Linear→Tanh→Linear D 维 raw mean）；state-σ 与 mixture 走 trunk+head 布局（state 单分量 head=`[raw_mean|σ_ctrl]`，σ 半零权重+偏置 init 使 σ(obs)≡init_std）；`μ=tanh(raw_mean)` 是 TN 中心。
+- σ 参数化：bounded → `σ=exp(r_min+Δr·sigmoid(v))`，`v_init=logit(p0)≈0.1644`（沿用 PPO 几何常数 σ_min=0.05/σ_max=2.0/init_std=e⁻¹）；unbounded → `σ=exp(clamp(logσ,±20))`。
+- e 映射（D45）：unbounded `logσ + e·ln3`（≡σ·3^e）；bounded `v + α·e`，`α=ln3/(Δr·p0(1−p0))` 标定为 init 点一阶匹配 `3^e` 斜率；`e∉[-1,1]` 拒绝，deterministic 且 e≠0 拒绝。
+- A4.3 契约：`distribution` / `expectation_samples`（`[B,K,M,D]` + 联合 mixture logp + 可微 `integration_weights=p_k/M`，K=1 退化为 1/M）/ `sample_behavior`（返回 `component_id`/`explore_factor`/`log_prob`/`sigma_eff_mean` extras）/ `deterministic_action`（单格=μ）/ `uncertainty("peak"|"l2")`（l2 用 TN 两两重叠积分闭式）/ 私有 CPU `torch.Generator` 可保存恢复 / `TNRuntimePolicy` 导出 strict 校验 `policy_arch=tn_*` + `kernel_version=tn_kernel_v1`。
+- 兼容：`sample_action` shim（K=M=1 squeeze）保持 trainer 接口不变，`P4-TRAIN-2` 再迁移；`actor_arch="legacy_tanh"` 仍走 `S01Actor` 读旧 checkpoint（D42）。
+- 新增 `actor_n_components` 实验属性（m* 格启用前无消费方）。
+- 测试 46 项：分布形状/界、init σ=e⁻¹、expectation 契约（weights 和=1、梯度）、采样-评分一致、e 映射生效值（σ_eff_mean extra）、deterministic=μ、RNG 重放、导出 round-trip + e 注入、unknown/mixture arch 拒绝、payload round-trip、`build_actor` 分发。
+- 证据：`pytest baseline/framework/sac/tests` → **117 passed**；`test_independence` 断言更新为 `policy_arch="tn_s01"`（默认 s01 已是 TN 语义）。
+- 遗留：`loop.py` 目前 `to_blueprint(stochastic=True)` 未传 e —— e 的调度/生效值记录属 P4-KNOB-1；`uncertainty` 尚无消费方，P4-REG-1 接入；debugkit `_build_actor` 仍只认 `S01Actor`，P4-TRAIN-2/dump 迁移时一并处理。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
