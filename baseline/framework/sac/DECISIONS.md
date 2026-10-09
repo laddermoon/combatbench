@@ -2433,6 +2433,59 @@ S5-W0 P5-AUDIT-0   现有 debug 面 × 分析链逐环差距矩阵；sac_dump_v3
 
 **第一版不声称：** HTML viewer、像素级帧渲染、在线 attach、跨 run 统计显著性——均已在 P5.4 冻结为后置范围。
 
+---
+
+## P6.0 阶段六执行计划（诊断驱动两任务稳定收敛）
+
+### P6.1 先行事实（核对结果，非假设）
+
+- 验收口径数值（阶段一已冻结）：standup `success` = `final_pot ≥ 0.9` 的 agent 比例；balance 以 `survival_rate` 为主；候选门槛 ≥90%，不得事后降低。
+- 实验默认预算：`sac_balance` `max_env_steps=10M`、`episodes_per_update=256`、`utd_ratio=0.25`、`eval_interval=100K`、`eval_episodes=32`、`rollout_workers=96`；`sac_standup` `2M`/`64`/`0.5`/`20K`/`16`/半数 CPU。
+- eval seed 已与训练隔离：`eval_seed = seed + 100_000 + round*97`；最终验收将再加一段完全不重叠的 held-out eval。
+- 已具备的能力底座：export/eval/checkpoint/resume、`dump_request.json` 按需截面、`metric_series`/`runs`/`trace` 查询、replay 人口学、五类故障定位测试、divergence guard（Q 爆炸自动 checkpoint + 终止）。
+- PPO 参考：basic_balance 约 27M env_step 首次 survival_rate=1.0；SAC 预算按更高样本效率设定但未经实测——阶段六即为实测。
+- 用户裁决（本次计划）：**替代策略 = `m11`**（mixture + state-σ + bounded，与默认 `s01` 双轴差异）；**执行顺序 = 先单 seed 探路，趋势确认后铺 3 seed**。
+
+### P6.2 验收协议冻结（先于任何训练）
+
+- **达标判据：** 任务验收指标（standup=`eval.success_rate`，balance=`eval.survival_rate`）在**连续 ≥3 次 eval 事件**中 ≥0.9，且末次为该 run 的最终 checkpoint 策略；单次冲高不算。
+- **训练 seed 集：** `s01` 主格 `{42, 1337, 2024}`；`m11` 替代格先 `{42}`，达标证据充分后补 `{1337}`。
+- **最终验收 eval：** 训练结束后用 held-out seeds（`seed+900_000+i`，64 episodes/任务）对最终导出策略独立评估；与训练内 eval 无重叠。
+- **失败预算纪律：** pathfinder run 若在给定 env_step 节点前无上升趋势（判据见下），停止并进入诊断，不烧满预算；任何"调参复跑"必须是单变量改动并记录假设。
+- **每 run 记录项：** env_step@首次≥0.9、env_step@持续达标起点、wall-clock、critic/actor/alpha 终态、replay 终态人口学、dump 列表（固定 tick + 按需）、失败原因（若未达标）。
+- **run 记账：** 每条 run 固定 `--run-name` 含 `{task}_{arch}_s{seed}`，配置经 `--set` 全部显式化并留存在 config.json `knobs`。
+
+### P6.3 工作包顺序
+
+```text
+S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→debug 命令对照表）
+→ S6-W1 P6-PREP-1  启动就绪：预算/并行度估算、磁盘与 keep_last 检查、真实 env 下
+                   dump_request 热路径演练、导出 bp 被 round_runner 加载复核
+→ S6-W2 P6-PATH-1  pathfinder：s01 × {balance, standup} × seed42，后台长训，
+                   里程碑检查点审视（见 P6.4），不收敛则走 P6-DIAG
+→ S6-W3 P6-SEEDS-1 s01 补齐 seed 1337/2024 ×两任务
+→ S6-W4 P6-ALT-1   m11 × 两任务 seed42（达标则补 1337）
+→ S6-W5 P6-FINAL-1 held-out eval + 策略加载/部署复核 + 视频抽检
+→ S6-W6 P6-REC-1   全部 run 证据汇总入 DECISIONS；失败如实记录
+→ G6.x 收口
+```
+
+### P6.4 里程碑与停止判据（pathfinder）
+
+- `standup`（预算 2M）：若在 `env_step=500K` 时 `success_rate` 仍 <0.3 → 停训入诊断；
+- `balance`（预算 10M）：若在 `env_step=2M` 时 `survival_rate` 仍 <0.5 → 停训入诊断；
+- 触发 divergence guard / alpha 撞界且 entropy 崩溃 / 某通道长期零更新 → 立即停训入诊断；
+- 诊断输出必须落到具体链环（mask/旧数据/通道/α/Q），不允许"换超参再跑"式的无证据迭代。
+
+### P6.5 明确不做（阶段六边界）
+
+- 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
+- 不引入未经消融的新机制（要引入须回到阶段四式验证链）；
+- 不做 PPO 联合对比重训（PPO 参考值取自既有记录，不重新训练 PPO）；
+- 不承诺壁钟时长；GPU 资源排队/失败恢复按 checkpoint resume 处理。
+
+---
+
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
 
 # SAC V2 Implementation Decision Log

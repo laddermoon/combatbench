@@ -39,7 +39,7 @@
 | 3 | 多 critic 与两个目标实验 | 任务语义对齐、多通道测试、持续训练链路 | 完成；`P3-AUDIT-0`～`P3-RUN-1` 与 `G3.6` 已通过，`sac_transition_v2/replay_v2/dump_v2`、A3 共同 twin-pair、两实验多 round 训练/resume、v2 dump recompute 均有证据 |
 | 4 | 八格策略与探索/优化控制 | 全策略可替换，控制含义明确且经过验证 | 完成；`G4.0`～`G4.9` 已通过，`tn_kernel` erf 内核、八格 `TNActor`、expectation_samples 训练、三正则模式、e/random_start 旋钮、两实验八格 smoke/resume/dump recompute 均有证据 |
 | 5 | SAC 完整 debug | run 到更新、样本及来源帧的可核对分析链 | 第一版完成；`G5.0`～`G5.7` 已通过：`sac_dump_v3` 逐样本明细、统一 `analysis.py` 层、扩展 CLI、按需 dump、只读 HTTP JSON API、replay 人口学、五类故障注入定位、capture 不变量均有证据。HTML viewer/像素帧渲染后置 |
-| 6 | 两任务稳定收敛 | 多 seed、独立评估、策略产物与替代策略验证 | 未开始 |
+| 6 | 两任务稳定收敛 | 多 seed、独立评估、策略产物与替代策略验证 | 计划已定（`P6.0`：验收协议冻结——连续≥3次eval≥0.9、seed 集、held-out eval、停止判据；替代策略=m11；先单 seed 探路再铺开）；未开始 |
 | 7 | 工程收口 | 可重现、完整恢复、独立性与长期运行验收 | 未开始 |
 
 ## 阶段 1：确定设计边界与验收口径
