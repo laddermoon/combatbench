@@ -98,6 +98,11 @@ def run_summary(run_dir: Path) -> Dict[str, Any]:
         sorted(p.name for p in ckpt_root.iterdir() if p.is_dir())
         if ckpt_root.exists() else []
     )
+    vid_root = run_dir / "videos"
+    videos = (
+        sorted(p.name for p in vid_root.iterdir() if p.suffix == ".mp4")
+        if vid_root.exists() else []
+    )
     experiment = (config.get("experiment") or {})
     return {
         "run_dir": str(run_dir),
@@ -110,6 +115,7 @@ def run_summary(run_dir: Path) -> Dict[str, Any]:
         "last_eval": last_eval,
         "dumps": dumps,
         "checkpoints": checkpoints,
+        "videos": videos,
     }
 
 

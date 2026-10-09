@@ -65,7 +65,15 @@ async function selectRun(name, el) {
       events:s.event_counts},null,1)}</pre>
     <h3>metrics <span class="dim">(click to plot)</span></h3><div id="mlist"></div>
     <div id="chart"></div>
+    <h3>videos</h3><div id="vids"></div>
     <h3>dumps</h3><div id="dumps"></div><div id="dumpview"></div>`;
+  const vv = document.getElementById('vids');
+  for (const v of (s.videos || []).slice(-12)) {
+    const a = document.createElement('a');
+    a.href = `/videos/${name}/${v}`; a.textContent = v; a.target = '_blank';
+    a.style.marginRight = '10px';
+    vv.appendChild(a);
+  }
   const cat = await api('/api/catalog');
   const ml = document.getElementById('mlist');
   const picks = cat.filter(c=>/^(eval\.|temperature\.alpha|actor\.log_prob|critic\.(q_mean|td_mean|loss)|round\.|collection\.)/.test(c.name));

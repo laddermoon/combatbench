@@ -122,12 +122,40 @@ def make_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_static(self, path: Path, ctype: str) -> None:
+            try:
+                resolved = path.resolve()
+                if root not in resolved.parents or not resolved.is_file():
+                    raise KeyError(f"not under served root: {path}")
+                body = resolved.read_bytes()
+            except (KeyError, OSError) as exc:
+                return self._send(
+                    404, {"error": str(getattr(exc, "args", [exc])[0])}
+                )
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
             parsed = urlparse(self.path)
             if parsed.path in ("/", "/viewer", "/index.html"):
                 page = Path(__file__).with_name("sac_viewer.html")
                 if page.exists():
                     return self._send_html(page)
+            if parsed.path.startswith("/videos/"):
+                # /videos/<run_name>/<file> — read-only static under root.
+                rel = Path(*Path(parsed.path).parts[2:])
+                ctype = (
+                    "video/mp4" if rel.suffix == ".mp4"
+                    else "application/octet-stream"
+                )
+                return self._send_static(
+                    _resolve_run(root, rel.parts[0]) / "videos" /
+                    Path(*rel.parts[1:]),
+                    ctype,
+                )
             try:
                 out = _dispatch(
                     root, parsed.path, parse_qs(parsed.query),
