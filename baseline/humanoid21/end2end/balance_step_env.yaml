@@ -84,3 +84,12 @@ observer_plugins:
     cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
     config:
       agent_id: "robot_b"
+  # Push state machine per frame — drives the clean-window survive bonus.
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_b"

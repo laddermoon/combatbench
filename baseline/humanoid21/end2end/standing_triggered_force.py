@@ -351,10 +351,16 @@ class StandingTriggeredForcePlugin(BasePlugin):
             ctx.metrics[f"{rid}_push_count"] = 0
             ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
+            ctx.metrics[f"{rid}_push_phase"] = _WAIT_STAND
+            ctx.metrics[f"{rid}_push_window_clean"] = False
+            ctx.metrics[f"{rid}_push_survived"] = False
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         for rid in self._target_robots:
             st = self._states[rid]
+            # Per-frame push-window bookkeeping for observers/rewards:
+            # survived is a one-step pulse emitted at OBSERVE exit.
+            ctx.metrics[f"{rid}_push_survived"] = False
             height = self._get_height(ctx, rid)
 
             # --- 站立计时器：始终运行，跨状态 ---
@@ -442,6 +448,9 @@ class StandingTriggeredForcePlugin(BasePlugin):
                 if st.observe_remaining > 0:
                     st.observe_remaining -= 1
                 else:
+                    # 观察期结束且无摔 → 发存活脉冲（一帧）
+                    if not st.fell_during_push:
+                        ctx.metrics[f"{rid}_push_survived"] = True
                     # 观察结束，检查 standing_timer 决定下一步
                     if st.standing_timer >= self.standing_settle_steps:
                         # 一直站着，直接进入延迟（只需等随机时间）
@@ -452,6 +461,12 @@ class StandingTriggeredForcePlugin(BasePlugin):
                     else:
                         # 倒过或还没站稳，回到等待
                         st.state = _WAIT_STAND
+
+            # --- 逐帧推窗状态（observer/reward 读取） ---
+            ctx.metrics[f"{rid}_push_phase"] = st.state
+            ctx.metrics[f"{rid}_push_window_clean"] = (
+                st.state in (_PUSHING, _OBSERVE) and not st.fell_during_push
+            )
 
     def on_pre_phy_step(self, ctx: SimContext) -> None:
         for rid in self._target_robots:

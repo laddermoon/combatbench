@@ -21,6 +21,10 @@ only fire while standing, so every recovery attempt was being sampled
 at double σ.  Balance uses σ×1.0 standing / σ×0.5 low
 (``_balance_explore_factor``).
 
+Survival credit: a dense ``push_clean_bonus`` (r_fall) pays per frame
+inside a not-yet-failed PUSHING/OBSERVE window — the fall signal was
+penalty-only, leaving "resisted this push" without direct gradient.
+
 Curriculum (same 12 levels as archived exp_balance_v2):
   level 0-3   40N,  duration windows 1-10 / 11-20 / 21-30 / 31-40 steps
   level 4-11  100N, duration windows 1-5 … 36-40 steps
@@ -97,6 +101,17 @@ class BalanceStep(Step):
     wall_count_thresh: int = 10
     _WALL_OBS = {"robot_a": "wall_contact_a", "robot_b": "wall_contact_b"}
 
+    # --- Push survival bonus ---
+    # The fall signal is penalty-only: a clean PUSHING+OBSERVE window
+    # earns nothing directly — its value arrives diffusely through
+    # continued gait income, so credit for "resisted this specific
+    # push" is weak.  Pay a small dense reward for every frame spent
+    # inside a not-yet-failed push window (~31-35 frames → ≈0.6-0.7
+    # per survived push at the default), folded into r_fall — the
+    # fall/survive ledger — where the fall-onset penalty lives.
+    push_clean_bonus: float = 0.02
+    _PUSH_OBS = {"robot_a": "push_state_a", "robot_b": "push_state_b"}
+
     # --- Curriculum / tracking state ---
     _level: int = 0
     _consecutive_pass: int = 0
@@ -167,6 +182,16 @@ class BalanceStep(Step):
         )
         lean = sustained_wall_mask(wc, window=self.wall_window,
                                  count_thresh=self.wall_count_thresh)
+
+        # --- Dense clean-window survival bonus ---
+        push_key = self._PUSH_OBS.get(agent_id)
+        clean = None
+        if push_key is not None and self.push_clean_bonus > 0:
+            clean = extract_per_step_field(
+                episode.observer_outputs, push_key,
+                "push_window_clean", T_full,
+            )
+
         for t in trajs:
             T = t.obs.shape[0]
             pen = (
@@ -174,6 +199,11 @@ class BalanceStep(Step):
                 * lean[:T].astype(np.float32)
                 * standing[:T].astype(np.float32)
             )
+            if clean is not None:
+                pen = pen + (
+                    self.push_clean_bonus
+                    * np.asarray(clean[:T], dtype=bool).astype(np.float32)
+                )
             ch = t.channels.get("r_fall")
             if ch is not None:
                 ch.reward = (ch.reward + pen).astype(np.float32)
