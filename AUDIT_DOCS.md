@@ -216,3 +216,11 @@ SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
 新建 `experiments_sac/README.md`（类型：指南）——注册机制
 （exp_sac_*自动发现 + EXPERIMENT_CLASS）+ 开发中状态声明 +
 指向 sac/PLAN.md。
+
+## [2026-10-09] D-DOC-13a 结案：episode_options 键目录
+
+新建 `envs/framework/EPISODE_OPTIONS.md`（类型：契约）——全量键登记表
+（simulator 层 4 + plugin 层 6 + 元数据层 1）+ 三层消费语义 +
+batchframework 白名单机制说明 + "当回合生效不留残"契约条款
+（P3-2/16 修复的制度化）。核实来源：逐插件 grep episode_options
+消费点，未依赖记忆。
