@@ -674,3 +674,32 @@ EMA 正确判停）。resume 后凭 fresh 预算继续磨，分别在
 **第三阶段已启动**：`balance_step_mbs`（balance_step_env.yaml =
 step_env + StandingTriggeredForcePlugin），从 step_mbs_s42 u1885
 续训，12 级推力课程（40N×4 + 100N×8），recovery≥0.8×2 晋级。
+
+### 平衡强化迭代记录（balance_step_mbs, s42 u1885 暖启动）
+
+**`balance_step_s42`（u1890-2240，已停）** —— 第一个早停 bug：
+晋级 eval 把旧 level 的 recovery 记到新 level 名下，立了不可逾越
+标杆 → 质量分按测量时 level 记账 + resume 重锚（0562f7ae）。
+
+**墙 exploit 三部曲**（用户视频发现：靠背倚墙卸力）：
+1. `wall_00`…`wall_23` geom 名不匹配 → 检测全哑（3eae1bde）
+2. 接触闪烁切断 run 计数 → ≤2 帧间隙桥接（db7599d7）
+3. 点踏式蹭墙绕过单 run 宽限 → 40 帧窗口接触密度 >10 判摔
+   （4ffe1c48）。修复后诚实基线 recovery≈0.10
+
+**`s42f`（u2640-3435）**：recovery 诚实爬升 0.10→0.757 后末段
+退化到 0.3-0.5 触停。归因：`exp_step` 的相位 ef 在站立帧 σ×2.0
+本为"发现迈步"设计，但**推力只在站稳后触发** —— 每次推中和
+推后恢复都在两倍噪声里采样（85% 训练帧 ef=+0.63），MoG 同时
+塌缩到 1.19 有效分量。改为站立 σ×1.0 / 低位 σ×0.5（334ebcf5）。
+
+**`s42h`（u3230-3455，手动停）**：训练 rollout 真摔率腰斩
+（0.61→0.30 falls/ep），eval 无崩溃但 recovery 仍在 0.55-0.78
+横盘。摔倒归因：**~74% 发生在单脚摆动相位**（物理上最不稳）。
+
+**`s42i`（u3330-，进行中）**：补"撑过推窗"的正梯度 —— 插件逐帧
+暴露 `push_phase/push_window_clean/push_survived`，
+PushStateObserver 逐帧镜像，r_fall 支付 +0.02/帧 clean 奖励
+（≈0.6-0.7/撑过窗）。r_fall critic EV 0.22→0.85，通道梯度×5。
+**u3470 晋级 level 7**（recovery 0.806），而此前两版在同一 level
+卡了 ~700+ update 未过 0.78。
