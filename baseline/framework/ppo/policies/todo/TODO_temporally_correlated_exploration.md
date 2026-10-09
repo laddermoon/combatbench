@@ -1,5 +1,7 @@
 # TODO: 时间相关探索噪声（Temporally Correlated Exploration）
 
+> 类型：记录
+
 **状态**：已实现（Stage 1–5 完成，A/B 对照实验待跑）
 **优先级**：高 —— 直击"学不出节律行为"的根因
 **前置阅读**：`GUIDE.md`、`experiment.py`（`ExplorationSpec` / `TrainablePolicy`）、`trajectory.py`、`loop.py`

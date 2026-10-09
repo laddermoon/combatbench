@@ -1,5 +1,7 @@
 # CombatBench Audit Report
 
+> 类型：记录
+
 Append-only audit report for the regularization effort (see `REGULARIZATION.md`
 §7.3). One entry per directory pass or per notable finding. Negative results
 ("checked X, it's fine") count — the report must show what was inspected,

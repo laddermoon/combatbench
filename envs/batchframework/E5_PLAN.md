@@ -1,5 +1,7 @@
 # E5 计划：CPU 实验迁移成为有约束的工程流程
 
+> 类型：记录
+
 **状态**：已完成（W0–W4 全部落地，验收见下）
 **上游**：[discuss.md](./discuss.md) D14/D15.2/D16 | [E3_PLAN.md](./E3_PLAN.md)/[E4_PLAN.md](./E4_PLAN.md)（已完成）
 **ROADMAP 对应**：E5 —— "把 CPU 实验迁移变成有约束的工程流程"

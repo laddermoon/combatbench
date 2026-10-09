@@ -1,5 +1,7 @@
 # E4 计划：单次训练的 1–8 卡 rollout
 
+> 类型：记录
+
 **状态**：✅ 已完成（2026-10-02，W0–W6 全部落地）
 **上游**：[discuss.md](./discuss.md) D12/D13（coordinator/worker 协议、错误模型）| [E3_PLAN.md](./E3_PLAN.md)（已完成：同构分组、RecordStore、exporter、sync_stats）
 **ROADMAP 对应**：E4 —— "单次训练的 1–8 卡 rollout"

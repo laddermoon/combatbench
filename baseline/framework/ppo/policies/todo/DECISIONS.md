@@ -1,5 +1,7 @@
 # Decision Log — Policy Family Implementation
 
+> 类型：记录
+
 This document records major design decisions made during implementation
 that deviate from or extend the design documents, with rationale.
 

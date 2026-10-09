@@ -1,5 +1,7 @@
 # Debug Viewer — 总体前端入口设计
 
+> 类型：记录
+
 ## 定位
 
 一个 dump 目录 = 一个 update 的完整截面。Viewer 是这个截面的浏览器。

@@ -1,5 +1,7 @@
 # Design: TruncatedNormalPolicy — 动作空间上的截断正态策略
 
+> 类型：记录
+
 ## 1. 动机
 
 当前 `TanhGaussianMLPPolicy` 在 pre-tanh 空间定义正态分布，再通过 tanh 映射到动作空间 `[-1, 1]`。这带来两个问题：

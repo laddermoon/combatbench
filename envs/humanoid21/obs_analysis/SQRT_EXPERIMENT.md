@@ -1,5 +1,7 @@
 # sqrt 观测变换实验对比报告
 
+> 类型：产物
+
 > 日期: 2026-09-01
 > 分支: `obs-sqrt-transform`
 > 基线 commit: `86b4f14` (sqrt 变换前)

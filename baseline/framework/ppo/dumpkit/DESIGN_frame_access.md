@@ -1,5 +1,7 @@
 # DESIGN_frame_access — Dump 数据访问层设计（帧表 / FrameTable）
 
+> 类型：记录
+
 > 状态：**讨论稿 v1**（未实现）
 > 关联：`DATA_FLOW.md`（数据流阶段语义）、`CONTEXT.md`（能力地图）、
 > `viewer/server.py::DumpData`（将被本层取代的现有懒加载器）

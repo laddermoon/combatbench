@@ -1,5 +1,7 @@
 # 观测空间设计 (Observation Space Design)
 
+> 类型：契约
+
 ## 一、总体架构
 
 ```

@@ -1,5 +1,7 @@
 # 实验记录 — 2026-08-10
 
+> 类型：产物
+
 ## 背景
 
 基于 `exp_basic_balance_v2.py`（原始单 agent 基线）和 `exp_basic_balance_v2_phi_dual.py`（dual-agent + φ 动态 actor weight），探索不同奖励结构和 actor weight 策略对 humanoid21 平衡/迈步学习的影响。

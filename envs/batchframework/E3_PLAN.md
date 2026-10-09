@@ -1,5 +1,7 @@
 # E3 计划：单卡设备采样引擎与批量 Episode 导出
 
+> 类型：记录
+
 **状态**：✅ 已完成（2026-10-02，W1–W6 全部落地）
 **上游**：[discuss.md](./discuss.md) D9/D10/D11 | [E2_PLAN.md](./E2_PLAN.md)（已完成）
 **ROADMAP 对应**：E3 —— "完成单卡设备采样引擎，保留 Episode 边界"

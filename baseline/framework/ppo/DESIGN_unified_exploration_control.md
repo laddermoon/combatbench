@@ -1,5 +1,7 @@
 # 探索控制设计（Unified Exploration Control）
 
+> 类型：记录
+
 ---
 
 ## 1. 核心概念

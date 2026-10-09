@@ -1,5 +1,7 @@
 # SAC 独立训练框架 Roadmap
 
+> 类型：记录
+
 > 状态：总体路线图与阶段一结果已获用户批准；W1–W8/A1–A8 已完成，阶段一收口。未开始本轮算法实现。Shannon 熵 SAC 保留为基线，用户已批准 uncertainty 为独立替代路线，见 DECISIONS.md 的 A4。
 > 本文顶部为本轮有效路线图；下方「历史参考区」完整保留旧规划，不构成本轮约束。
 > 原始需求：[bootstrip.md](bootstrip.md)。阶段一详细计划：[DECISIONS.md](DECISIONS.md)。

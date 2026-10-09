@@ -1,5 +1,7 @@
 # SamplingContext 设计（采样条件与参考差分探索）
 
+> 类型：记录
+
 > 面向使用者的对外契约文档。记录框架暴露什么、各层语义是什么、
 > 策略实现要满足什么不变量。实施细节见代码与
 > `TODO_reference_policy_delta_exploration.md`。

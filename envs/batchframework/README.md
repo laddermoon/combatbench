@@ -1,5 +1,7 @@
 # batchframework — MuJoCo-Warp 批量采样框架
 
+> 类型：指南
+
 GPU（mujoco-warp）上的批量 rollout：CPU `ParallelRollouter`/`EnvRuntime`
 的**设备端对等实现**——同一 `collect(jobs) -> List[Episode]` 契约、同一
 Episode/PPO 接口、同一插件/observer 生命周期语义，1–8 卡采样同契约

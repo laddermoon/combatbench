@@ -1,5 +1,7 @@
 # V2 Baseline 训练指南
 
+> 类型：历史 ｜ 取代者：baseline/experiments_ppo/ + baseline/framework/ppo/GUIDE.md（旧课程框架已退役）
+
 本文档说明如何使用 V2 课程学习框架训练 Humanoid21 基线策略。
 
 ## 概述

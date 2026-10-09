@@ -1,5 +1,7 @@
 # SAC 阶段一详细计划：设计边界与验收口径
 
+> 类型：记录
+
 > 状态：阶段一 W1–W8 已完成，对应 A1–A8 见下方裁决区；阶段一设计边界已获用户批准，可进入阶段二实现。Shannon 基线与用户批准的 uncertainty 替代路线已分开定义。算法实现与真实任务训练尚未开始。
 > 总体路线图：[PLAN.md](PLAN.md)，已获用户批准。原始需求：[bootstrip.md](bootstrip.md)。
 > 下方旧 Implementation Decision Log 为历史参考，不是本轮已采纳决定。

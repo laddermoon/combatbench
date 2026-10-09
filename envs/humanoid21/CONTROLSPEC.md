@@ -1,5 +1,7 @@
 # Humanoid21 控制规范 (Control Specification)
 
+> 类型：契约
+
 ## 1. 控制模式：归一化位置控制 (Normalized Position Control)
 策略层与底层物理引擎之间，通过**归一化关节目标位置**进行通信。所有关节的指令统一被压缩并映射到 `[-1, 1]` 的无量纲区间内。
 

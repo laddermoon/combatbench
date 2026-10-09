@@ -1,5 +1,7 @@
 # Debug Viewer — 场景二：Trajectory → Value / Advantage / Return 视图
 
+> 类型：记录
+
 ## 定位与边界
 
 **场景二聚焦于"训练输入数据的截面"**——即 PPO update 中 epoch 循环**之前**计算的所有数据。

@@ -1,5 +1,7 @@
 # Design: PreTanhNormalPolicy — 共享 σ、动作覆盖单调可控的 pre-tanh 正态策略
 
+> 类型：记录
+
 > **STATUS: 未完成 / on hold（2026-09-25 标记）**
 >
 > 本策略族（`PreTanhNormalPolicy` 与 `StatePreTanhNormalPolicy`）暂停开发：

@@ -1,5 +1,7 @@
 # Reference-Policy Δ 诊断实验报告（Stage 0）
 
+> 类型：产物
+
 > 对应设计文档：`TODO_reference_policy_delta_exploration.md`
 > 数据批次：`baseline/runs/_delta_diag/`（48 run，2026-09-28，commit `fc5e4f60`）
 > 图表：`baseline/runs/_delta_diag/figures/delta_vs_gap.png`、`delta_vs_stage.png`

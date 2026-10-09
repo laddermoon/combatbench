@@ -1,5 +1,7 @@
 # CombatBench Capability Ledger
 
+> Type: Record
+
 Companion to `REGULARIZATION.md` §5–§6. This is the persistent audit state:
 every capability discovered during the per-directory README pass gets one row.
 Entries are written incrementally — presence means "discovered", not "verified

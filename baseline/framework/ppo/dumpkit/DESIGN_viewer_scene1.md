@@ -1,5 +1,7 @@
 # Debug Viewer — 场景一：Episode → Trajectory 转换视图
 
+> 类型：记录
+
 ## 目的
 
 回答一个问题：**"这个 episode 的某一帧，环境看到了什么，产生了什么 reward，分给了哪些 channel？"**

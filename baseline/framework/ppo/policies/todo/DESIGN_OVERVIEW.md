@@ -1,5 +1,7 @@
 # Policy Families — Design Overview
 
+> 类型：记录
+
 Status: design phase, no implementation yet.
 Scope: `baseline/common/policies/` only. PPO v2 framework
 (`ppo_trainer_v2.py`, `ppo_loop_v2.py`, `experiment_v2.py`) is expected to

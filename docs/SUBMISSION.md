@@ -1,5 +1,7 @@
 # Policy Submission
 
+> Type: Contract
+
 ## 1. Install the tool
 
 ```bash

@@ -1,5 +1,7 @@
 # Run Dashboard — 主题分区与精选图设计
 
+> 类型：记录
+
 ## 定位与边界
 
 Debug Viewer 的 Run 页是 **Dashboard**：帮助人和 AI **发现问题、定位异常、

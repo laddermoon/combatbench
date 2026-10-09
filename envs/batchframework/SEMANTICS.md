@@ -1,5 +1,7 @@
 # SEMANTICS — 设备批量框架语义规格（seed / reset / 生命周期）
 
+> 类型：契约
+
 CPU 侧 `envs/framework/SEED.md`、`RESET.md`、`LIFECYCLE_TRACE.md` 的
 设备对应件。本文是**规范**（spec）——实现以此为准；`LIFECYCLE_TRACE.md`
 仍是 CPU 侧的语义来源文档。

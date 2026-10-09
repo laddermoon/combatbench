@@ -1,5 +1,7 @@
 # baseline/framework/ppo — Multi-Critic PPO 训练框架
 
+> 类型：指南
+
 面向 CombatBench humanoid21 的 PPO 实现：**每个 reward channel 一个独立 critic**
 （独立 gamma/GAE-lambda），实验通过 hook 完全控制轨迹切分、课程权重、
 探索调度与 per-update 指标；框架负责 rollout → buffer → update → 日志/截面的

@@ -1,5 +1,7 @@
 # E7 结果：有依据的执行优化
 
+> 类型：产物
+
 状态：完成（W0 计量 / W1 屏障收敛 / W2b 物理图化 / W2c 观测图化 / W3 规模记录）。
 探针：`probe_e7_baseline.py`；机器 `instance-1f1igpaq`（8×RTX 4090,
 torch 2.7.1+cu126, warp 1.12.1, mujoco-warp 3.8.0.3）。

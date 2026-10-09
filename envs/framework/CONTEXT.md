@@ -1,5 +1,7 @@
 # CONTEXT
 
+> 类型：指南
+
 > AI-oriented context memo for this directory. Keep concise. Humans may edit freely;
 > auto-curation will preserve hand-written notes.
 

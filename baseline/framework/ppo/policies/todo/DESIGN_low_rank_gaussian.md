@@ -1,5 +1,7 @@
 # Design: ② Low-Rank Covariance Gaussian
 
+> 类型：记录
+
 Reads `DESIGN_OVERVIEW.md` as a prerequisite. This is Stage 2.
 
 New file: `baseline/common/policies/low_rank_gaussian_mlp.py`, class

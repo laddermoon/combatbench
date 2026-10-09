@@ -1,5 +1,7 @@
 # Debug Viewer — 场景四：Update 时间线训练动态视图
 
+> 类型：记录
+
 ## 定位与边界
 
 **场景四聚焦于"整个 update 的训练过程时间线"**——即 PPO 多 epoch × 多 minibatch 的训练循环中，全局指标如何随时间演化。

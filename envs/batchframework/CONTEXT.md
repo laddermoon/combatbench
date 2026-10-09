@@ -1,5 +1,7 @@
 # CONTEXT — envs/batchframework
 
+> 类型：指南
+
 > AI-oriented memo。读这个 + DESIGN.md 即可开始干活；细节去
 > SEMANTICS.md / MIGRATION_GUIDE.md / PUBLIC_INTERFACE.md。
 

@@ -1,5 +1,7 @@
 # TruncNorm 家族策略选型记录
 
+> 类型：指南
+
 日期：2026-09-27
 依据：`RESULTS_truncnorm_sweeps.md`（48 run = 8格 × 3seed × {ef=0, ef=0.5}，
 standup_floor04，floor=0，600 updates）

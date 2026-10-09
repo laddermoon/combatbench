@@ -1,5 +1,7 @@
 # M4 计划：standup 任务转换与环境级验收
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 对应 [ROADMAP.md](ROADMAP.md) §7。输入：`standup_4stage_dense_v2_env.yaml`（`exp_standup_floor04.py` 的目标环境）。M3 已交付设备数据平面、BatchRuntime、观测构建器（96 维，host 对照 ~5e-7）、`DeviceTimeoutPlugin`。
 
 ## 1. 转换对象审计

@@ -1,5 +1,7 @@
 # M3 结果：设备端批量运行时与插件体系
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 对应 [M3_PLAN.md](M3_PLAN.md) / [ROADMAP.md](ROADMAP.md) §6。已实现：设备数据平面契约、warp 后端绑定、原生插件基类 + BatchRuntime、HOST/HOST_SLOW 兼容层、能力注册表、FakeBatchBackend 生命周期测试。
 
 ## 1. 交付清单

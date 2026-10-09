@@ -1,5 +1,7 @@
 # BATCHFRAMEWORK_AUDIT — 批量框架系统审计（2026-10-01）
 
+> 类型：记录
+
 **范围**：`envs/batchframework/` 全量，以 `envs/framework/`（CPU 生产框架）为参照。
 **四个维度**：A1 功能一致性与成熟度差距；A2 设计文档完善性/自洽性；
 A3 AI 迁移指导齐全性与流程标准化；A4 旧插件封装/转换工具。

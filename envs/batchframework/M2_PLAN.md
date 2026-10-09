@@ -1,5 +1,7 @@
 # M2 计划：对等 simulator 与后端可行性
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 对应 [ROADMAP.md](ROADMAP.md) §5 的 M2 阶段。输入契约见 [M0_BASELINE.md](M0_BASELINE.md)，验证工具见 [M1_VALIDATION.md](M1_VALIDATION.md)。本文先给出**已完成审计的差异清单**（工作包 A 的输入），再列执行顺序与放行标准。
 
 ## 1. 审计结果：现有 `mjx_simulator.py` 与 CPU 契约的差异

@@ -1,5 +1,7 @@
 # Reset Architecture
 
+> 类型：契约
+
 本文定义一个 episode 开始时，`reset` 如何在 **runner → runtime → simulator
 → plugins → observers → recorders → policies** 之间传导。配套文档：
 `SEED.md`（seed 派生）、`plugin.md`（hook 权限）。

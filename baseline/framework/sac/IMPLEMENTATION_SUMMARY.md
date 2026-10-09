@@ -1,5 +1,7 @@
 # SAC V2 Implementation Summary
 
+> 类型：产物
+
 ## Overview
 
 This document summarizes the SAC V2 framework implementation, validation

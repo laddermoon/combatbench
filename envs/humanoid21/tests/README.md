@@ -1,5 +1,7 @@
 # Humanoid21 Simulator 测试套件
 
+> 类型：指南
+
 验证 Humanoid21 数据接口是否符合 `DATASPEC.md` 规范，以及控制层行为。
 
 ## 测试文件

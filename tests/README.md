@@ -1,5 +1,7 @@
 # tests/ —— 顶层测试目录索引
 
+> 类型：指南
+
 > **注意**：本目录不在 `pyproject.toml` 的 `testpaths` 内，默认
 > `pytest` 不收集这里。这些测试按归属迁移前暂存于此，需要显式
 > 指定路径运行：`PYTHONPATH=. pytest tests/ -q`（多数需要 CUDA

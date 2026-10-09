@@ -1,5 +1,7 @@
 # CombatBench: 人形机器人对战基准平台
 
+> 类型：指南
+
 ![CombatBench Hero](assets/images/hero.png)
 
 **在线平台：[www.combatbench.tech](http://www.combatbench.tech)**（域名无法访问时可用 IP：[180.76.152.227](http://180.76.152.227)）— 注册账号、提交策略、观看比赛、查看 Elo 排名。

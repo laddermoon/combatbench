@@ -1,5 +1,7 @@
 # Policy 模块
 
+> 类型：指南
+
 本模块存放**参考实现策略**，以及提交给 combatbench.tech 平台的策略目录规范。
 
 > **标准接口定义位置**：`envs/framework/policy.py` 中的 `Policy` 抽象基类是

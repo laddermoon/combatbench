@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> 类型：指南
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview

@@ -1,5 +1,7 @@
 # BLACKBOARD_DESIGN — 设备侧 metrics/events 通道设计（审计 G1/G2）
 
+> 类型：记录
+
 **状态**：设计稿（未实现）。解决 BATCHFRAMEWORK_AUDIT 的两个高优先级
 缺口：`ctx.metrics` 与 `ctx.events` 在 `DeviceCtx` 无对应物，阻塞
 scoring/damage/事件驱动类实验迁移。

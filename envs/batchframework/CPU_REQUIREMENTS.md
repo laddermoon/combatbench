@@ -1,5 +1,7 @@
 # Batch Framework 的 Host CPU 需求分析
 
+> 类型：契约
+
 **结论**：device collector 路径下，一条训练 run 的 host CPU 需求约
 **2–3 个核 + ~6GB RSS**；对照 CPU collector（`rollout_workers=96`）
 同协议需要的 ~96 核，**host 侧压力下降约 40×**。Rollout 的 CPU

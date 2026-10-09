@@ -1,5 +1,7 @@
 # StandupV2 训练历史与关键决策记录
 
+> 类型：产物
+
 ## 概述
 
 StandupV2 实验的目标是训练 21-DoF 人形机器人从随机摔倒姿态恢复站立。使用 PBRS (Potential-Based Reward Shaping) 作为核心奖励机制，配合高度课程 (Curriculum) 逐步增加难度。

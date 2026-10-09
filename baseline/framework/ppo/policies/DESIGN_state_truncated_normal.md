@@ -1,5 +1,7 @@
 # Design: StateTruncatedNormalPolicy — 状态相关 σ 的截断正态策略
 
+> 类型：记录
+
 ## 1. 动机
 
 `TruncatedNormalPolicy` 的 σ 是全局 `nn.Parameter`：所有状态共享同一个

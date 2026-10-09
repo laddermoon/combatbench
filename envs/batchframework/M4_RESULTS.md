@@ -1,5 +1,7 @@
 # M4 结果：standup 任务原生设备化
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 对应 [M4_PLAN.md](M4_PLAN.md)。将 `standup_4stage_dense_v2_env.yaml`
 的插件面（`RandomFallenStatePlugin` + `StandingBalance4StageRewarder`
 + `TimeoutPlugin`）转换为设备端原生实现，并完成固定策略交叉评估。

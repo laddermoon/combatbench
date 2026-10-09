@@ -1,5 +1,7 @@
 # 上下文：时间相关探索噪声（Temporally Correlated Exploration）
 
+> 类型：指南
+
 **状态**：上下文整理完成，待细化方案
 **关联文档**：`TODO_temporally_correlated_exploration.md`（设计草案）、`GUIDE.md`
 **整理日期**：2026-09-02

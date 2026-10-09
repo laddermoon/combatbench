@@ -1,5 +1,7 @@
 # Humanoid21 数据规范 (Data Specification)
 
+> 类型：契约
+
 ## 1. 核心理念 (Core Principles)
 - **按主体隔离**: 策略层绝不能获得包含双机器人的混合数据（如全局 `qpos`）。所有方法必须返回 `Dict[str, np.ndarray]`，并在外层按 `robot_a` 和 `robot_b` 区分。
 - **局部坐标系优先**: 除非必要（如朝向、高度），否则机器人的速度、角速度及对手的相对位置，一律转换到以自身 `Torso` 为原点的局部坐标系下。

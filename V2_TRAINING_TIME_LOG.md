@@ -1,5 +1,7 @@
 # V2 basic_balance_v2 训练时间记录
 
+> 类型：产物
+
 ## 实验信息
 
 - **实验名**: `v2_basic_balance_v2`

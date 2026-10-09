@@ -1,5 +1,7 @@
 # Floor 实验报告 — uncertainty_floor=0.4/0.6 sweep（vs uf0 / ef05 基线）
 
+> 类型：产物
+
 日期：2026-09-30
 状态：24 run（8 格 × 3 seed）全部进入 eval≥95% 平台；因计算调度在 u355–568 提前停止
 （中位 u475），统计按 resume 代际串联、重叠 update 由后代覆盖；u@100% 存在右删失。

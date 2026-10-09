@@ -1,5 +1,7 @@
 # blueprints/
 
+> 类型：指南
+
 环境蓝图与初始策略蓝图目录。文件清单与分类见
 [`../README.md`](../README.md#blueprints)。
 

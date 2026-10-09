@@ -1,5 +1,7 @@
 # Design: TanhGaussianMLPPolicy 迁移到新接口
 
+> 类型：记录
+
 Reads `DESIGN_unified_exploration_control.md` (框架层新接口设计) as prerequisite.
 
 ## 0. 为什么选这个策略作为第一个

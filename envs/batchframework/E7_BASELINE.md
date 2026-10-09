@@ -1,5 +1,7 @@
 # E7-W0 计量基线
 
+> 类型：产物
+
 测量日期：2025-XX（E7-W0a 落地后）；
 探针：`envs/batchframework/probe_e7_baseline.py`（`git 4fb62949` 起）。
 

@@ -1,5 +1,7 @@
 # experiments_ppo
 
+> 类型：指南
+
 本目录存放 PPO 实验定义。`__init__.py` 自动发现本目录**顶层**的 `exp_*.py`
 文件并注册（`archive/`、`todo/` 子目录与 `test_*.py` 不会被扫描）。
 

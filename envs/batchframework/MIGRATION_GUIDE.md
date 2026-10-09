@@ -1,5 +1,7 @@
 # MIGRATION_GUIDE — CPU 实验 → 设备批量框架迁移流程
 
+> 类型：指南
+
 **读者**：AI agent 或工程师，目标是把一个 `envs/framework` 上运行的
 实验（env blueprint + 插件 + observer + PPO 实验类）迁移到
 `envs/batchframework` 设备路径，产出同契约 `Episode` 供 `train.py

@@ -1,5 +1,7 @@
 # Debug Viewer — 场景三：Trajectory × Epoch 训练动态视图
 
+> 类型：记录
+
 ## 定位与边界
 
 **场景三聚焦于"一条 trajectory 在训练过程中的动态"**——即 PPO 多 epoch 训练循环中，这条 trajectory 的每一帧被 actor 和 critic 如何对待。

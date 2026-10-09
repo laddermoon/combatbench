@@ -1,5 +1,7 @@
 # SAC 诊断 Playbook（阶段六 P6-PROTO-1）
 
+> 类型：指南
+
 用途：pathfinder/正式 run 出现异常时，按本表定位到具体链环。每条规则：症状 → 命令 → 看什么 → 结论写法。所有命令从 `things/combatbench/` 运行，`PYTHONPATH=.`。
 
 ```bash

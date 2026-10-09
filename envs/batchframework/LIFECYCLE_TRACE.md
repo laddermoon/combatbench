@@ -1,5 +1,7 @@
 # LIFECYCLE_TRACE — CPU 生命周期权威时序核对（E2-W0 产出，终止帧契约修订后更新）
 
+> 类型：契约
+
 **状态**：已核对（2026-02-20），与 `envs/framework/RESET.md` 规范交叉验证一致；
 终止帧契约修订（`082187be`）后时序描述已同步更新。
 **核对对象**：`envs/framework/env_runtime.py`、`context.py`、`observer_plugin.py`、`episode_runner.py`、`common_plugins.py`、`baseline/framework/rollout/episode_recorder.py`、`episode.py`

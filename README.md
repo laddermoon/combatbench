@@ -1,5 +1,7 @@
 # CombatBench: Humanoid Robot Combat Benchmark
 
+> Type: Guide
+
 ![CombatBench Hero](assets/images/hero.png)
 
 **Online platform: [www.combatbench.tech](http://www.combatbench.tech)** (fallback IP: [180.76.152.227](http://180.76.152.227)) — register, submit policies, watch matches, check Elo rankings.

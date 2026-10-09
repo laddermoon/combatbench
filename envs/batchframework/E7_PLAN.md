@@ -1,5 +1,7 @@
 # E7：有依据的执行优化与规模检查 — 实施计划
 
+> 类型：记录
+
 > ROADMAP 原文：
 > - 在接口不变的前提下评估 CUDA Graph、固定容量接触聚合、kernel 合并、reset 编排、批量导出和通信优化；每次只改变一类执行机制。
 > - 正确区分 host 提交时间、GPU 实际执行与端到端时间；编译、启动、reset、policy、physics、observer、记录、导出、合并分别计量。

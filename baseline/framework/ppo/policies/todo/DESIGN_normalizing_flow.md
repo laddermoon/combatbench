@@ -1,5 +1,7 @@
 # Design: ④ RealNVP Normalizing Flow
 
+> 类型：记录
+
 Reads `DESIGN_OVERVIEW.md` as a prerequisite. This is Stage 4, and is
 **conditional** — per overview §8, only proceed if Stage 3's
 capability-harness A/B doesn't already answer the "do we need more

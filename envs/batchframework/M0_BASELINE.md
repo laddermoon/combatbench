@@ -1,5 +1,7 @@
 # M0 基线与任务契约：standup_floor04
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 日期：2026-09-29。落实 [ROADMAP.md](ROADMAP.md) §3 的 M0 阶段，遵循 [discuss.md](discuss.md) 的原则。
 
 本文是后续所有转换与验证工作的**冻结输入清单**。状态标注约定：

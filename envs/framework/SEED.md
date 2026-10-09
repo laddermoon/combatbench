@@ -1,5 +1,7 @@
 # Seed Architecture
 
+> 类型：契约
+
 `combatbench` 所有随机性都从**单一 `base_seed`**派生。本文定义派生规则、
 API 与记录约定。
 

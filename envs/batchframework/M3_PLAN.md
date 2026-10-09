@@ -1,5 +1,7 @@
 # M3 计划：设备端批量运行时、插件体系与兼容层
 
+> 类型：历史 ｜ 取代者：E 系列路线（ROADMAP.md）——M 路线为历史协议
+
 对应 [ROADMAP.md](ROADMAP.md) §6。M2 已确认 mujoco-warp 是唯一有加速潜力的后端（308K env-substeps/s @B=8192，fixture 在 FP32 容差下通过），本文定义 M3 的架构与执行顺序。前置文档：[discuss.md](discuss.md) §4.5/§6.3、`batch_plugin.py`/`batch_context.py`/`backend.py`（numpy 契约原型）。
 
 ## 1. 架构决策（已确认）
