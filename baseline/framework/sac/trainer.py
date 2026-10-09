@@ -399,6 +399,9 @@ def trainer_state_dict(
     return {
         "schema": "sac_trainer_v1",
         "actor_state_dict": actor.state_dict(),
+        "actor_rng_state": (
+            actor.rng_state() if hasattr(actor, "rng_state") else None
+        ),
         "critic_state_dict": critic.state_dict(),
         "actor_optimizer_state_dict": actor_optimizer.state_dict(),
         "log_alpha": log_alpha.detach().cpu(),
@@ -455,6 +458,13 @@ def load_trainer_state(
         )
     critic.load_state_dict(critic_state)
     actor_optimizer.load_state_dict(state["actor_optimizer_state_dict"])
+    rng_state = state.get("actor_rng_state")
+    if rng_state is not None:
+        if not hasattr(actor, "set_rng_state"):
+            raise SACTrainerError(
+                "checkpoint carries actor_rng_state but actor cannot restore it"
+            )
+        actor.set_rng_state(rng_state)
     log_alpha.data.copy_(state["log_alpha"].to(log_alpha.device))
     saved_alpha_opt = state.get("alpha_optimizer_state_dict")
     if (alpha_optimizer is None) != (saved_alpha_opt is None):

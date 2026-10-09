@@ -259,3 +259,107 @@ def test_build_actor_dispatch():
     assert isinstance(exp2.build_actor(torch.device("cpu")), S01Actor)
     with pytest.raises(ValueError, match="unsupported SAC actor_arch"):
         SacBalance(actor_arch="bogus").build_actor(torch.device("cpu"))
+
+
+@pytest.mark.parametrize("arch", ["s00", "s01", "s10", "s11"])
+@pytest.mark.parametrize("experiment", ["sac_balance", "sac_standup"])
+def test_experiments_build_each_single_arch(arch, experiment):
+    from baseline.experiments_sac import get_sac_experiment
+    exp = get_sac_experiment(experiment, actor_arch=arch, actor_hidden_dim=32)
+    actor = exp.build_actor(torch.device("cpu"))
+    assert isinstance(actor, TNActor)
+    assert actor.policy_arch == f"tn_{arch}"
+
+
+def _trainer_batch(B=16, obs_dim=OBS_DIM, action_dim=ACT_DIM, C=2):
+    gen = torch.Generator().manual_seed(4)
+    terminated = torch.zeros(B, dtype=torch.bool)
+    bootstrap = torch.ones(B)
+    terminated[-1] = True
+    bootstrap[-1] = 0.0
+    return {
+        "obs": torch.randn(B, obs_dim, generator=gen),
+        "actions": torch.rand(B, action_dim, generator=gen) * 1.6 - 0.8,
+        "next_obs": torch.randn(B, obs_dim, generator=gen),
+        "rewards": torch.randn(B, C, generator=gen),
+        "channel_valid": torch.ones(B, C, dtype=torch.bool),
+        "terminated": terminated,
+        "truncated": torch.zeros(B, dtype=torch.bool),
+        "bootstrap": bootstrap,
+        "actor_gate": torch.ones(B, C),
+        "actor_weight": torch.full((B, C), 1.0 / C),
+        "actor_gate_next": torch.ones(B, C),
+        "actor_weight_next": torch.full((B, C), 1.0 / C),
+        "sample_weight": torch.ones(B),
+        "policy_action": torch.zeros(B, action_dim),
+        "sample_ids": torch.arange(B, dtype=torch.int64),
+        "source_keys": [f"src:{i}" for i in range(B)],
+    }
+
+
+@pytest.mark.parametrize("arch", SINGLE_ARCHS)
+def test_sac_update_runs_for_each_single_arch(arch):
+    """P4-SINGLE-1: trainer consumes the shim identically across cells."""
+    from baseline.framework.sac.experiment import SACParams, SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    from baseline.framework.sac.trainer import sac_update
+
+    torch.manual_seed(5)
+    channels = tuple(
+        SACRewardChannel(name=f"r{i}", gamma=0.99) for i in range(2)
+    )
+    actor = TNActor(OBS_DIM, ACT_DIM, arch=arch, hidden_dim=16, seed=6)
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    actor_opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _trainer_batch()
+    before = [p.detach().clone() for p in actor.parameters()]
+
+    stats = sac_update(
+        actor, critic, actor_opt, log_alpha, None, batch, channels,
+        SACParams(use_grad_norm=False, tau=0.0), 1.0, torch.device("cpu"),
+    )
+    assert stats["critic_loss"] >= 0
+    assert math.isfinite(stats["actor_loss"])
+    assert any(
+        not torch.equal(p, b) for p, b in zip(actor.parameters(), before)
+    )
+
+
+def test_trainer_state_dict_round_trips_actor_rng():
+    from baseline.framework.sac.experiment import SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    from baseline.framework.sac.trainer import (
+        load_trainer_state, trainer_state_dict,
+    )
+
+    channels = (SACRewardChannel(name="r0", gamma=0.99),)
+    actor = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=16, seed=9)
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+
+    actor.sample_action(_obs(4))  # advance private RNG
+    state = trainer_state_dict(actor, critic, opt, log_alpha, None)
+
+    obs = _obs(4)
+    expected, _ = actor.sample_action(obs)
+
+    fresh = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=16, seed=0)
+    fresh_opt = torch.optim.Adam(fresh.parameters(), lr=1e-3)
+    fresh_alpha = torch.tensor(0.0, requires_grad=True)
+    load_trainer_state(
+        state, actor=fresh, critic=critic,
+        actor_optimizer=fresh_opt, log_alpha=fresh_alpha,
+        alpha_optimizer=None,
+    )
+    restored, _ = fresh.sample_action(obs)
+    assert torch.equal(expected, restored)
