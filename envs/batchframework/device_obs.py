@@ -99,6 +99,69 @@ def contact_forces_flat(state, geom_bodyid: torch.Tensor,
                              fmag, fw)
 
 
+class DenseContactForces:
+    """``contact_forces_flat`` 的定形版本——供无 host 同步路径使用。
+
+    与 flat 版逐帧语义等价，但不做 ``torch.nonzero``（变长输出强制
+    host 同步/图内非法）：所有字段为全 C 槽位张量，非活跃槽位由
+    ``active`` 标出（``n_active`` 以设备值参与 mask，数据变化时
+    自动更新）。padding 槽位内容是未定义值——消费方必须用
+    ``active``/阈值 mask 归零，不得直接读。
+    """
+
+    def __init__(self, active, worldid, geom1, geom2, body1, body2,
+                 aff1, aff2, force_mag, force_world):
+        self.active = active        # (C,) bool
+        self.worldid = worldid      # (C,) i64（已 clamp 到 [0,B-1]）
+        self.geom1 = geom1          # (C,) i64
+        self.geom2 = geom2
+        self.body1 = body1          # (C,) i64 — geom→body
+        self.body2 = body2
+        self.aff1 = aff1            # (C,) i64 — 归属（0=环境, 1=a, 2=b）
+        self.aff2 = aff2
+        self.force_mag = force_mag      # (C,) f32
+        self.force_world = force_world  # (C,3) f32
+
+
+def contact_forces_dense(state, geom_bodyid: torch.Tensor,
+                         geom_aff: torch.Tensor,
+                         batch_size: int) -> DenseContactForces:
+    """flat contacts → 全槽位 dense 力分解（无 host 同步）。
+
+    与 ``contact_forces_flat`` 同公式（condim=3 ⇒ 4 行 efc：
+    normal=sum, f1=r0-r1, f2=r2-r3；``force_world = frameᵀ @ f``），
+    对全部 C 槽计算——无效槽的 gather 索引 clamp 到合法域，值由
+    ``active``/力阈值 mask 消去。
+    """
+    c = state.sim.contacts_flat
+    dev = c.worldid.device
+    C = c.worldid.shape[0]
+    active = (torch.arange(C, device=dev)
+              < c.n_active.reshape(())) & (c.dist <= 0)
+
+    geom = c.geom.long()                                    # (C,2)
+    body = geom_bodyid[geom.clamp(0, geom_bodyid.shape[0] - 1)]
+    aff = geom_aff[geom.clamp(0, geom_aff.shape[0] - 1)]
+    w = c.worldid.long().clamp(0, batch_size - 1)
+
+    adr = c.efc_address.long()
+    if adr.ndim > 1:
+        adr = adr[:, 0]
+    ef_rows = (adr.clamp(0, c.efc_force.shape[-1] - 4)[:, None]
+               + torch.arange(4, device=dev))
+    ef = c.efc_force[w[:, None], ef_rows]
+    fl = torch.stack([ef.sum(dim=-1), ef[:, 0] - ef[:, 1],
+                      ef[:, 2] - ef[:, 3]], dim=-1)
+    fw = torch.einsum("cij,cj->ci", c.frame.transpose(-1, -2), fl)
+    fmag = torch.linalg.norm(fw, dim=-1)
+    # 非活跃槽的 gather 值是垃圾——力先归零，下游 mask 只需管归属
+    fmag = torch.where(active, fmag, torch.zeros_like(fmag))
+
+    return DenseContactForces(active, w, geom[:, 0], geom[:, 1],
+                              body[:, 0], body[:, 1], aff[:, 0], aff[:, 1],
+                              fmag, fw)
+
+
 class WarpObsBuilder:
     """从 DeviceBatchState 构建 96 维观测（torch，fp32）。
 

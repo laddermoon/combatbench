@@ -32,7 +32,7 @@ from baseline.humanoid21.rewards.standing_balance_4stage import (
     OTHER_PENALTY_K,
 )
 
-from .device_obs import contact_forces_flat
+from .device_obs import contact_forces_dense
 from .device_plugin import (
     BaseDeviceObserver, BaseDevicePlugin, DeviceCtx,
 )
@@ -85,23 +85,19 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
 
     # ------------------------------------------------------------------
     def _contacts_for_agent(self, state):
-        """→ (per-env) hand/foot/extra 分类聚合。"""
-        cf = contact_forces_flat(state, self._t["geom_bodyid"],
-                                 self._t["geom_aff"])
+        """→ (per-env) hand/foot/extra 分类聚合（dense 定形，无 host
+        sync——``torch.nonzero`` 每步强制排空队列，E9-W1 起禁用）。
+
+        与旧 flat+nonzero 路径逐帧等价：无效槽位的 gather 值经
+        clamp+mask 消去；scatter 目标越界行统一进垃圾 bin 后丢弃。"""
+        cf = contact_forces_dense(state, self._t["geom_bodyid"],
+                                  self._t["geom_aff"], state.batch_size)
         B = state.batch_size
         dev = cf.worldid.device
         t = self._t
-        M = cf.sel.numel()
         zeros = torch.zeros(B, dtype=torch.float32, device=dev)
-        extra_bool = torch.zeros(B, t["nbody"], dtype=torch.bool, device=dev)
-        cat_force = torch.zeros(B, 4, dtype=torch.float32, device=dev)
-        cat_touch = torch.zeros(B, 4, dtype=torch.bool, device=dev)
-        # 类别码：0=foot_l 1=foot_r 2=hand_l 3=hand_r；其它 body 单独去重
-        if M == 0:
-            return dict(cat_force=cat_force, cat_touch=cat_touch,
-                        extra_count=zeros)
 
-        strong = cf.force_mag >= 1.0
+        strong = cf.force_mag >= 1.0   # 非活跃槽 fmag 已归零
         # CPU 语义：env 侧 aff==0 且 geom==ground，robot 侧 aff==本 agent
         ga = (cf.aff1 == 0) & (cf.geom1 == t["ground_gid"]) \
             & (cf.aff2 == t["robot_aff"])
@@ -110,30 +106,39 @@ class DeviceStandup4StageRewarder(BaseDeviceObserver):
         rb = torch.where(ga, cf.body2,
                          torch.where(gb, cf.body1,
                                      torch.full_like(cf.body1, -1)))
-        valid = strong & (ga | gb)
-        m = torch.nonzero(valid, as_tuple=False).squeeze(-1)
-        if m.numel() == 0:
-            return dict(cat_force=cat_force, cat_touch=cat_touch,
-                        extra_count=zeros)
-        w, body = cf.worldid[m], rb[m]
-        f = cf.force_mag[m]
+        valid = cf.active & strong & (ga | gb)
+        w, body, f = cf.worldid, rb, cf.force_mag
 
-        cat = torch.full((m.numel(),), -1, dtype=torch.long, device=dev)
+        # 类别码：0=foot_l 1=foot_r 2=hand_l 3=hand_r；-1=其它 body
+        cat = torch.full((w.numel(),), -1, dtype=torch.long, device=dev)
         cat = torch.where(body == t["foot_l"], torch.zeros_like(cat), cat)
         cat = torch.where(body == t["foot_r"], torch.ones_like(cat), cat)
         cat = torch.where(body == t["hand_l"],
                           torch.full_like(cat, 2), cat)
         cat = torch.where(body == t["hand_r"],
                           torch.full_like(cat, 3), cat)
-        hf = cat >= 0
-        idx = w[hf] * 4 + cat[hf]
-        cat_force.view(-1).index_add_(0, idx, f[hf])
-        cat_touch.view(-1)[idx] = True
+        hf = valid & (cat >= 0)
+        # scatter 聚合：有效行 → w*4+cat，其余 → 垃圾 bin（B*4）
+        flat_idx = torch.where(hf, w * 4 + cat.clamp(min=0),
+                               torch.full_like(cat, B * 4))
+        cat_force = torch.zeros(B * 4 + 1, dtype=torch.float32,
+                                device=dev)
+        cat_force.index_add_(0, flat_idx,
+                             torch.where(hf, f, torch.zeros_like(f)))
+        cat_touch = torch.zeros(B * 4 + 1, dtype=torch.int8, device=dev)
+        cat_touch.index_fill_(0, flat_idx, 1)
         # extra = robot 侧 body 不属于手/脚的接触，按 (env, body) 去重
-        ex = ~hf
-        extra_bool[w[ex], body[ex].clamp(min=0)] = True
-        return dict(cat_force=cat_force, cat_touch=cat_touch,
-                    extra_count=extra_bool.sum(dim=-1).float())
+        ex = valid & (cat < 0)
+        extra_flat = torch.zeros(B * t["nbody"] + 1, dtype=torch.int8,
+                                 device=dev)
+        eb_idx = torch.where(ex, w * t["nbody"] + body.clamp(min=0),
+                             torch.full_like(cat, B * t["nbody"]))
+        extra_flat.index_fill_(0, eb_idx, 1)
+        return dict(
+            cat_force=cat_force[:B * 4].view(B, 4),
+            cat_touch=cat_touch[:B * 4].view(B, 4) > 0,
+            extra_count=extra_flat[:B * t["nbody"]].view(
+                B, t["nbody"]).sum(dim=-1).float())
 
     # ------------------------------------------------------------------
     def on_pre_episode(self, ctx: DeviceCtx) -> None:
@@ -437,14 +442,25 @@ class DeviceFallenResetPlugin(BaseDevicePlugin):
             h = torch.stack([host_qpos[env_ids, a] for a in tgt_adr], -1)
             newly = (~done[env_ids]) & (h.min(-1).values
                                         < self.height_threshold)
-            if bool(newly.any()):
-                ids = env_ids[newly]
-                cap_q[ids] = host_qpos[ids]
-                cap_v[ids] = host_qvel[ids]
-                first_step[ids] = step
-                done[ids] = True
-                for t_i, adr in enumerate(tgt_adr):
-                    h_buf[ids, t_i] = host_qpos[ids, adr]
+            # 设备侧 masked capture：cap/first_step/h_buf/done 全用
+            # 条件写回，不读 host——原实现每子步一次 newly.any() 同步
+            # （~1000 次/reset，E9-W2 实测占 reset ~80%）。语义不变：
+            # newly 只在 ~done 的行上置位 ⇒ 捕获的仍是逐 env 首个
+            # 达标步的 qpos/qvel。
+            nb = newly.unsqueeze(-1)
+            cap_q[env_ids] = torch.where(
+                nb, host_qpos[env_ids], cap_q[env_ids])
+            cap_v[env_ids] = torch.where(
+                nb, host_qvel[env_ids], cap_v[env_ids])
+            first_step[env_ids] = torch.where(
+                newly, torch.full_like(first_step[env_ids], step),
+                first_step[env_ids])
+            for t_i, adr in enumerate(tgt_adr):
+                h_buf[env_ids, t_i] = torch.where(
+                    newly, host_qpos[env_ids, adr],
+                    h_buf[env_ids, t_i])
+            done[env_ids] |= newly
+            # 早退检查仍走 host——但只在 sync_chunk 节奏上读一次
             if step % self.sync_chunk == 0 or step == self.max_phy_steps:
                 if bool(done[env_ids].all()):
                     break
