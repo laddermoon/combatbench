@@ -2319,7 +2319,59 @@ S4-W0 P4-AUDIT-0：SAC actor 契约与 A4.3 逐项对拍，登记差距；冻结
 
 ---
 
-# 历史参考区：旧实现决策（不作为本轮决策）
+## P5.0 阶段五执行计划（SAC 原生完整 debug 系统 · 第一版）
+
+### P5.1 现状审计结论（先行事实）
+
+阶段二~四已交付的数据基础（阶段五在其上建分析面，不改训练语义）：
+
+- `sac_dump_v2`：`batch.pt`（含 `sample_ids`/`source_keys`/gate/valid）、`trainer_pre/post.pt`、`forward.pt`（含冻结 `u_next`/`u_actor`/`target_pair_index`/`actor_pair_index`）、`spec.json`、`analysis.json`、`manifest.json`（sha256）；`recompute` 精确复算。
+- `source_key` 编码 `run/rNNNNNN/jNNNNNN/agent/eSEED/fNNNNNN/hHASH/vSCHEMA`，可反解 episode/agent/frame；`sample_id` 单调稳定。
+- `events.jsonl`：config/export/round/tick/checkpoint/eval 事件；metric_catalog 校验命名。
+- CLI 现仅有 `summary`/`find-sample`/`recompute`；dump 只有 `--dump-at` 预约，无按需触发；无样本级排序/trace、无 replay 人口学查询、无 HTTP/viewer。
+
+PPO 侧对标深度（不照搬 GAE/ratio/clip）：`debug.py` CLI 11 个子命令、`dump_analysis.py` 样本级分析、`frame_access.py` 帧回溯、`viewer/server.py` HTTP UI、`dump_request.json` 按需捕获。
+
+### P5.2 工作包顺序
+
+```text
+S5-W0 P5-AUDIT-0   现有 debug 面 × 分析链逐环差距矩阵；sac_dump_v3 增补字段冻结；页面/API 清单冻结
+→ S5-W1 P5-DUMP-1  dump 增补：逐样本 TD/Q_c/target/actor 候选贡献/混合权重明细（若 forward 已有则只落盘），RECORD 说明
+→ S5-W2 P5-CLI-1   debugkit CLI 扩展：catalog/inspect/samples(--sort)/trace(--sample-id|--source-key)/timeline/query
+→ S5-W3 P5-REPLAY-1 replay 人口学：年龄/来源 round/policy·reward version/复用/overwrite 分布，入 metrics + checkpoint replay.pt 离线查询
+→ S5-W4 P5-ONDEMAND-1 dump_request.json 哨兵按需捕获（复制适配 PPO 机制，SAC 语义=critic_tick）
+→ S5-W5 P5-API-1   单一分析模块 + 只读 HTTP JSON server：/api/runs、/api/run、/api/metrics、/api/dumps、/api/dump/*
+→ S5-W6 P5-FAULT-1 五类注入故障可被定位的永久测试：终止掩码错/旧数据过多/alpha 失控/通道压制/Q 异常
+→ S5-W7 P5-INV-1   不变量：capture 开关不改 RNG/更新结果（确定性对拍）；常规 vs 重型诊断成本记录
+→ G5.x 收口：SAC+PPO 回归、证据登记、PLAN 标记
+```
+
+### P5.3 Gate 与验收映射（第一版口径）
+
+- **G5.0 审计：** 分析链每一环列出"已可查询 / 缺字段 / 缺工具"；v3 dump 增补清单与 API 清单冻结后才动实现。
+- **G5.2 CLI：** `trace --sample-id` 能输出 run→round→job→agent→episode_seed→frame 完整链 + 该样本的 TD/Q/target/贡献；`samples` 可按 td_abs/Q 排序；任意 `events.jsonl` 指标可 `query`。
+- **G5.3 replay：** 对给定 checkpoint 能回答"当前 buffer 中样本来自哪些 round/策略版本、平均年龄、每样本被采样次数"；正常训练 round metrics 有 replay 人口学摘要。
+- **G5.4 按需：** 训练进行中写 `dump_request.json` → 下一 critic tick 捕获含 hypothesis 的 dump；与 `--dump-at` 共用同一 capture 路径。
+- **G5.5 API：** HTTP server 与 CLI 调同一分析函数；只读、可指向 run 目录或 runs 根；离线 dump 目录可直接查询（不需训练在线）。
+- **G5.6 故障：** 每类注入故障至少一条测试断言"debug 面能看到并指到正确环节"。
+- **G5.7 不变量：** 同 seed 同配置 capture on/off 两次短训，关键指标序列逐位相等；dump 写盘耗时与体积记录在案。
+
+### P5.4 第一版明确不做
+
+- HTML/交互式 viewer 前端（先 CLI + JSON API，viewer 视使用情况再立第二版工作包）；
+- 像素级帧渲染（transition 不存 core_state，重渲染需重仿真；第一版 `trace` 输出观测/动作/奖励事实而非 PNG）；
+- 训练中在线 HTTP attach（server 只读已落盘工件）；
+- eval 视频索引、render/delta/rollout 子命令（PPO 有；SAC 版待 frame 渲染能力就位后再议）；
+- 跨 run 自动对比/统计显著性（先做"多 run 指标并列查询"，显著性判断留给使用者）。
+
+### P5.5 冻结决策（本计划登记）
+
+- **D50：** SAC debug 第一版的"截面"单位 = critic tick（与 `sac_dump` 一致）；按需触发的最小粒度同为 critic tick，不引入 env_step/round 级新截面。
+- **D51：** 分析实现唯一化原则——`sac_debug/analysis.py`（拟）是 CLI 与 HTTP server 的唯一计算层；CLI 不得内联分析逻辑，server 不得绕过该层直接读 .pt。
+- **D52：** replay 槽位不作身份（PLAN 已规定）；一切样本级查询以 `sample_id`/`source_key` 为键，槽位 index 仅作为物理定位手段出现在 trace 输出中。
+- **D53：** 帧回溯第一版语义 = source_key 反解 + 该帧 transition/reward/task_facts 重放展示；不承诺像素渲染。
+
+---
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
 
