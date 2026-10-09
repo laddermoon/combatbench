@@ -36,6 +36,15 @@ class SACBehaviorSpec:
                 f"SACBehaviorSpec.explore_factor must be finite, "
                 f"got {self.explore_factor}"
             )
+        if abs(float(self.explore_factor)) > 1.0 + 1e-6:
+            raise ValueError(
+                f"SACBehaviorSpec.explore_factor must be in [-1, 1] (A4.8), "
+                f"got {self.explore_factor}"
+            )
+        if self.mode == "deterministic" and abs(float(self.explore_factor)) > 1e-6:
+            raise ValueError(
+                "deterministic behavior requires explore_factor == 0 (D45)"
+            )
 
     @property
     def stochastic(self) -> bool:

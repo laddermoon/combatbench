@@ -150,14 +150,17 @@ def test_explore_bounded_shift():
 
 def test_explore_out_of_range_rejected():
     actor = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=32, seed=8)
-    spec = SACBehaviorSpec(mode="stochastic", explore_factor=1.5)
+    # Spec construction validates too; bypass it to reach the actor check.
+    spec = SACBehaviorSpec(mode="stochastic", explore_factor=0.0)
+    object.__setattr__(spec, "explore_factor", 1.5)
     with pytest.raises(ValueError, match="explore_factor"):
         actor.sample_behavior(_obs(), spec)
 
 
 def test_deterministic_mode_rejects_e():
     actor = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=32, seed=8)
-    spec = SACBehaviorSpec(mode="deterministic", explore_factor=0.3)
+    spec = SACBehaviorSpec(mode="deterministic", explore_factor=0.0)
+    object.__setattr__(spec, "explore_factor", 0.3)
     with pytest.raises(ValueError, match="deterministic"):
         actor.sample_behavior(_obs(), spec)
 
@@ -673,6 +676,46 @@ def test_u_regularizer_runs_and_flows_gradient():
         assert math.isfinite(stats["actor_loss"])
         assert stats["regularizer_shannon"] == 0.0
         assert "reg_actor_term_mean" in stats
+
+
+def test_behavior_spec_records_effective_e_from_blueprint(tmp_path):
+    """Jobs' SACBehaviorSpec must mirror the blueprint-applied e."""
+    from baseline.experiments_sac.exp_sac_balance import SacBalance
+
+    exp = SacBalance(actor_arch="s01", actor_hidden_dim=16)
+    actor = exp.build_actor(torch.device("cpu"))
+    bp = actor.to_blueprint(
+        str(tmp_path / "bp"), stochastic=True, explore_factor=0.4,
+    )
+    jobs = exp.build_jobs(bp, base_seed=0, n_episodes=2)
+    assert jobs and jobs[0].behavior_a.explore_factor == pytest.approx(0.4)
+    # Deterministic export never carries e, and eval spec stays e=0.
+    det_bp = actor.to_blueprint(str(tmp_path / "det"), stochastic=False)
+    jobs_det = exp.build_jobs(det_bp, base_seed=0, n_episodes=1,
+                              deterministic=True)
+    assert jobs_det[0].behavior_a.explore_factor == 0.0
+    assert jobs_det[0].behavior_a.mode == "deterministic"
+
+
+def test_behavior_spec_random_start_flag(tmp_path):
+    from baseline.experiments_sac.exp_sac_balance import SacBalance
+    from envs.framework.policy import PolicyBlueprint
+
+    exp = SacBalance(actor_arch="s01", actor_hidden_dim=16)
+    rand_bp = PolicyBlueprint(
+        cls="policy.random.policy:RandomCombatPolicy",
+        config={"scale": 1.0, "action_dim": exp.action_dim,
+                "random_start": True},
+    )
+    jobs = exp.build_jobs(rand_bp, base_seed=0, n_episodes=1)
+    assert jobs[0].behavior_a.parameters.get("random_start") is True
+
+
+def test_behavior_spec_rejects_out_of_range_e():
+    with pytest.raises(ValueError, match=r"\[-1, 1\]"):
+        SACBehaviorSpec(mode="stochastic", explore_factor=1.2)
+    with pytest.raises(ValueError, match="deterministic"):
+        SACBehaviorSpec(mode="deterministic", explore_factor=0.1)
 
 
 def test_trainer_state_dict_round_trips_actor_rng():

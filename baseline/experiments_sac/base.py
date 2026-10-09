@@ -138,6 +138,10 @@ class CombatExperimentSACBase(ExperimentSAC):
     u_floor: float = 0.0
     u_kind: str = "native"
 
+    # --- Behavior exploration (A4.8 β layer) ---
+    behavior_explore: float = 0.0
+    random_start_transitions: int = 0
+
     # --- Rollout schedule ---
     episodes_per_update: int = 64
     max_env_steps: int = 2_000_000
@@ -323,9 +327,20 @@ class CombatExperimentSACBase(ExperimentSAC):
         deterministic: bool,
     ) -> List[SACJob]:
         rng = np.random.default_rng(base_seed)
+        # Behavior spec mirrors what the runtime policy actually applies:
+        # explore_factor comes from the exported blueprint config so the
+        # recorded provenance cannot drift from the effective value.
+        bp_cfg = dict(getattr(policy_bp, "config", {}) or {})
+        random_start = bool(bp_cfg.get("random_start", False))
         behavior = SACBehaviorSpec(
             mode="deterministic" if deterministic else "stochastic",
-            explore_factor=0.0,
+            explore_factor=(
+                0.0 if deterministic
+                else float(bp_cfg.get("explore_factor", 0.0))
+            ),
+            parameters=(
+                {"random_start": True} if random_start else {}
+            ),
         )
         fact_specs = tuple(self.pre_action_fact_specs())
         metadata = {

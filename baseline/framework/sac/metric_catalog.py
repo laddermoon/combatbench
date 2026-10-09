@@ -28,6 +28,7 @@ _ALLOWED_PREFIXES = {
         "replay.",
         "timing.",
         "task.",
+        "behavior.",
     ),
     "tick": (
         "batch.",

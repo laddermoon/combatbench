@@ -27,6 +27,8 @@ from .checkpoint import (
     save_checkpoint_bundle,
 )
 from .clocks import SACClockState
+from envs.framework.policy import PolicyBlueprint
+
 from .collection import create_rollouter
 from .diagnostics import SACTickRing
 from .debugkit import (
@@ -444,7 +446,31 @@ def train_sac(
 
             t0 = time.perf_counter()
             export_dir = run_dir / "policy_exports" / f"r{round_index:05d}"
-            policy_bp = actor.to_blueprint(str(export_dir), stochastic=True)
+            # A4.8 β layer: behavior e applies at the NEXT collection
+            # round only; random-start swaps in a Uniform[-1,1]^D policy
+            # while agent_transitions are below the configured budget.
+            random_start_active = (
+                int(getattr(experiment, "random_start_transitions", 0)) > 0
+                and clocks.agent_transitions
+                < int(experiment.random_start_transitions)
+            )
+            if random_start_active:
+                policy_bp = PolicyBlueprint(
+                    cls="policy.random.policy:RandomCombatPolicy",
+                    config={
+                        "scale": 1.0,
+                        "action_dim": int(actor.action_dim),
+                        "random_start": True,
+                    },
+                )
+            else:
+                policy_bp = actor.to_blueprint(
+                    str(export_dir),
+                    stochastic=True,
+                    explore_factor=float(
+                        getattr(experiment, "behavior_explore", 0.0)
+                    ),
+                )
             clocks.tick_export()
             t_export = time.perf_counter() - t0
             metrics.emit_export(
@@ -727,6 +753,11 @@ def train_sac(
                 "replay.size": float(replay.size),
                 "timing.collection_s": float(t_rollout),
                 "timing.slice_s": float(t_buffer),
+                # A4.8: effective β-layer values applied this round.
+                "behavior.explore_factor": float(
+                    policy_bp.config.get("explore_factor", 0.0)
+                ),
+                "behavior.random_start": 1.0 if random_start_active else 0.0,
             }
             for key, value in experiment.post_round_metrics(episodes).items():
                 if isinstance(value, (int, float)) and np.isfinite(value):
