@@ -1,5 +1,7 @@
 # 设备端策略 executor 全族支持计划
 
+> 类型：记录
+
 > 目标：device collector 支持全部 PPO 策略导出类，消除
 > "只有 TruncatedNormalExecutor" 的单点限制——`step_mbs`（MoG actor）
 > 等实验因此可完整迁移。日期：2026-10-09。
@@ -17,7 +19,7 @@
   `deterministic_action(obs)` / `evaluate_actions`——单一泛型
   executor + 按类构造即可覆盖，无需逐族重写采样数学。
 
-## 覆盖面（10 个导出类）
+## 覆盖面（8 个 truncnorm 族导出类）
 
 | policy_class | 族特征 |
 |---|---|
@@ -29,8 +31,16 @@
 | `SharedMixtureTruncatedNormalPolicy` | MoG 共享 |
 | `SharedMixtureBoundedStdTruncatedNormalPolicy` | MoG 共享+有界 |
 | `StateMixtureBoundedStdTruncatedNormalPolicy` | step_mbs 用：MoG+有界+状态σ |
-| `PreTanhNormalPolicy` | tanh-squashed normal（不同 distribution_kind） |
-| `StatePreTanhNormalPolicy` | tanh + 状态 σ |
+
+**明确不支持（显式拒绝，非静默错载）：**
+
+| policy_class | 理由 |
+|---|---|
+| `PreTanhNormalPolicy` | tanh-squashed normal，不同 distribution_kind；不支持 |
+| `StatePreTanhNormalPolicy` | 同上 |
+
+未注册类（含上述两个 pre_tanh 族及任何未来新增类）走 W1 的
+显式拒绝路径：错误信息列出 policy_class + 已注册清单。
 
 ## 工作包
 
@@ -45,7 +55,7 @@
 ### W2 GenericTorchPolicyExecutor
 
 - `policy_class` → `baseline.framework.ppo.policies.<module>:<Class>`
-  映射表（10 条，模块名按惯例 `*_mlp`）；
+  映射表（8 条，模块名按惯例 `*_mlp`）；
 - `cls(**arch)` 构造 + `load_state_dict` + `eval()`——arch 参数完备
   性由 golden 测试兜住；
 - `capabilities`/`ctx_fields` 按族声明：先核对各族对
@@ -80,13 +90,14 @@
   处理（arch 是导出口径的一部分，缺参数是导出的 bug）；
 - **ctx_fields 差异**：若某族不支持 delta_factor，如实声明并让
   `check_spec` 拒绝，不为兼容放宽；
-- **pre_tanh 两族**：distribution_kind 不同（tanh normal），若其实
-  验仍在用则一并覆盖；若确认弃用可在映射表标注 UNSUPPORTED；
+- **pre_tanh 两族**：distribution_kind 不同（tanh normal），
+  **不做支持**——显式拒绝路径由 W1 覆盖；golden 测试里专门加一条
+  pre_tanh 导出必须被拒而非错载的回归用例；
 - **obs_dim**：executor 只读 `arch`，99 维 gait-clock obs 无特殊处理。
 
 ## 验收
 
-- 10 族 golden 全绿 + 未知类显式拒绝测试通过；
+- 8 族 golden 全绿 + pre_tanh/未知类显式拒绝测试通过；
 - device collect 用 `step_mbs` 真实 MoG 导出（若 checkpoint 存在）
   或任意 mixture 族导出跑通确定性 eval wave；
 - 全部既有 executor/rollout 契约测试不回归。
