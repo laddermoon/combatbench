@@ -56,7 +56,7 @@ EnvRuntime.step
 - `agent_termination_proposals[aid]`：**append-only list，提出端不去重**。同一 reason 可重复 append；env 级请求（`agent_id=None`）向两个 agent 各 append 一次。
 - `agent_terminated[aid]`：bool，提出时即置 True。
 
-**去重与记录发生在 recorder**（`episode_recorder.py:144-150`）：
+**去重与记录发生在 recorder**（`baseline/framework/rollout/episode_recorder.py::EpisodeRecorder`）：
 
 ```python
 for aid in AGENT_IDS:

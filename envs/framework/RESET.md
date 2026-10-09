@@ -193,8 +193,8 @@ class CurriculumPushPlugin(BasePlugin):
 
 ### G1. `options` 没有透传到 `EpisodeRunner` — ✅ 已落地
 
-`@/data1/mono/things/combatbench/envs/framework/episode_runner.py:582`
-调用 `self.runtime.reset(seed=seeds.runtime)` 时没传 `options`。
+`envs/framework/episode_runner.py::run_episode`（当时的 reset 调用点）
+调用 `self.runtime.reset(seed=...)` 时没传 `options`。
 
 **改法**：
 - `EpisodeRunner.run_episode` 增加 `options: dict | None = None` 入参；
@@ -209,7 +209,7 @@ class CurriculumPushPlugin(BasePlugin):
 
 ### G2. `ctx.episode_options` 字段不存在 — ✅ 已落地
 
-`@/data1/mono/things/combatbench/envs/framework/context.py:171`
+`envs/framework/context.py::SimContext`
 `SimContext.__init__` 没有 `episode_options`；`clear_episode_state()`
 也没有清它。
 
@@ -221,9 +221,8 @@ class CurriculumPushPlugin(BasePlugin):
 
 ### G3. `MatchRunner` 用"重建 runtime"模拟 HP 延续 — ✅ 已落地
 
-`@/data1/mono/things/combatbench/envs/framework/match_runner.py:166`
-每回合 `self.runtime_factory(initial_health_a=..., initial_health_b=...)`
-重建整个 runtime（含 simulator、MuJoCo 模型、plugin 实例）。
+`envs/framework/match_runner.py::MatchRunner`（当时实现）
+每回合重建整个 runtime（含 simulator、MuJoCo 模型、plugin 实例）。
 
 **改法（G1/G2 落地后自然可行）**：
 - `runtime_factory` 改成只接受**一次**（`env_factory()` 无参）；
