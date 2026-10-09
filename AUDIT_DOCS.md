@@ -195,3 +195,10 @@ SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
 
 核实修正：Job 的确定性开关字段名是 `stochastic`（非我猜的 wrap_policies）；
 `episode_options` 是"仅环境配置、JSON 可序列化"的承重契约，已写入文档。
+
+## [2026-10-09] D-DOC-8 结案：baseline/framework 根 README
+
+新建 `baseline/framework/README.md`（类型：指南）：目录结构、
+"实验→CLI→loop→rollout→runs" 数据流图、按任务的文档地图。
+附带修复：CLAUDE.md 引用的 `analyze_training.py` 已不存在
+（sac/DECISIONS 也注明"文件已不存在"）→ 该条目改为 README 指路。

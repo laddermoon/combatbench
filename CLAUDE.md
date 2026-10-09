@@ -47,7 +47,7 @@ CombatBench is a MuJoCo-based humanoid robot combat simulation environment. It p
     - `rollout/` - Shared rollout building blocks (`Episode`, `Job`, `ParallelRollouter`, etc.)
     - `critic_mlp.py` - Shared `CriticMLP` (used by both PPO and SAC)
     - `code_snapshot.py` - Git-based code snapshot for experiment reproducibility
-    - `analyze_training.py` - Training log analysis & visualization
+    - `README.md` - Framework overview (ppo/sac/rollout map)
     - `obsolete/` - Legacy framework code (kept for reference)
   - `experiments_ppo/` - **PPO experiment registry** — auto-discovers `exp_*.py` files
     - `base.py` - `CombatExperimentPPOBase` (shared defaults for humanoid21 combat experiments)
