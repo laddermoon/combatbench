@@ -157,3 +157,26 @@ solver；③ 无 mask 读活状态的插件/debug capture 拿脏数据。
 已修复：freeze=True 屏障（post-substep/post-observer）将
 sealed 检查与 pending 检查融合进同一次 sync，无条件写回；
 测试 seed qvel 后成为真测试（64 项设备测试全绿）。
+
+### O1a' 去 padding（eval 小波）——已落地（`215d6b64`）
+
+eval 异步化否（语义要求同步内联），改为**尺寸匹配 runtime**：
+`DeviceRollouter` 按 B 缓存 bundle（env 级共享
+binding/io_schema/manifest 不变），波派发到 ≥job 数的最小 2
+次幂尺寸 runtime。warp 无 masked-step，这是唯一正确形态。
+
+实测小 B 子步成本（GPU4，graph replay）：
+
+| B | ms/substep |
+|---|---|
+| 32 | 0.994 |
+| 64 | 1.023 |
+| 128 | 1.106 |
+| 256 | 1.229 |
+
+延迟受限确认：B=64 仅比 B=256 便宜 ~17%——但 eval 收益**大于**
+物理占比：**64-job collect（B=256 rollouter）：9.1s → 6.4s
+（−30%）**。除物理外，摔倒 reset 的 scratch sim 与
+export/observer 也随行数缩（reset 1.3→0.88s）。按
+eval_every=5 摊销 ≈ 0.5s/update（~4% total）。多卡路径透明受益
+（每 worker 按自己分到的 job 数选 bundle）。
