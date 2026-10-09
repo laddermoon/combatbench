@@ -11,7 +11,9 @@ collector 不再直接实例化/缓存策略类。职责切分：
   路径不是版本保证，真正的版本是 ``executor.version``（state_dict
   内容 sha256），记入 collect manifest 供 provenance 审计。
 
-新策略接入 = 实现 executor + ``register_executor(kind, factory)``。
+新策略接入 = 实现 executor + ``register_executor(policy_class, factory)``；
+分发键是导出 payload 的 ``policy_class``——未注册类显式拒绝，
+绝不静默错载到别的 executor。
 """
 from __future__ import annotations
 
@@ -101,23 +103,33 @@ class PolicyExecutor:
         return None
 
 
+def _load_payload(
+        bp_dict: Dict[str, Any]) -> Tuple[Path, Dict[str, Any]]:
+    """file: 蓝图 → (model.pt 路径, payload)；非导出蓝图显式拒绝。"""
+    cls = bp_dict.get("cls", "")
+    if not cls.startswith("file:"):
+        raise ValueError(
+            f"device executor requires file: policy export, got {cls!r}")
+    path = Path(cls[5:].rsplit(":", 1)[0]).with_name("model.pt")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict) or "policy_class" not in payload:
+        raise ValueError(
+            f"{path}: not a policy export payload (missing "
+            f"'policy_class')")
+    return path, payload
+
+
 class TruncatedNormalExecutor(PolicyExecutor):
-    """TruncatedNormalPolicy 的设备端适配（当前唯一 executor 实现）。
+    """TruncatedNormalPolicy 的设备端适配。
 
     file: 导出蓝图 → 重建 TruncatedNormalPolicy；版本 = state_dict
     内容 sha256（前 16  hex），不以路径/mtime 充当版本保证。
     """
 
-    def __init__(self, bp_dict: Dict[str, Any], device: str):
-        cls = bp_dict.get("cls", "")
-        if not cls.startswith("file:"):
-            raise ValueError(
-                f"device executor requires file: policy export, "
-                f"got {cls!r}")
-        path = cls[5:].rsplit(":", 1)[0]
-        self._model_path = Path(path).with_name("model.pt")
-        payload = torch.load(self._model_path, map_location="cpu",
-                             weights_only=False)
+    def __init__(self, bp_dict: Dict[str, Any], device: str,
+                 payload: Optional[Dict[str, Any]] = None):
+        if payload is None:
+            _, payload = _load_payload(bp_dict)
         arch = payload["arch"]
         from baseline.framework.ppo.policies.truncated_normal_mlp import (
             TruncatedNormalPolicy)
@@ -180,13 +192,30 @@ class TruncatedNormalExecutor(PolicyExecutor):
 _EXECUTOR_FACTORIES: Dict[str, Any] = {}
 
 
-def register_executor(kind: str, factory) -> None:
-    """kind 供 manifest/诊断引用（当前只有 truncated_normal_file）。"""
-    _EXECUTOR_FACTORIES[kind] = factory
+def register_executor(policy_class: str, factory) -> None:
+    """注册 ``policy_class``（导出 payload 的 policy_class 字段）
+    → executor 工厂。工厂签名 ``(bp_dict, device, payload)``。"""
+    _EXECUTOR_FACTORIES[policy_class] = factory
 
 
 def _default_factory(bp_dict: Dict[str, Any], device: str) -> PolicyExecutor:
-    return TruncatedNormalExecutor(bp_dict, device)
+    path, payload = _load_payload(bp_dict)
+    policy_class = payload["policy_class"]
+    factory = _EXECUTOR_FACTORIES.get(policy_class)
+    if factory is None:
+        raise ValueError(
+            f"{path}: no device executor registered for policy_class "
+            f"{policy_class!r}; registered: "
+            f"{sorted(_EXECUTOR_FACTORIES)}. Implement an executor and "
+            f"register_executor() it, or re-export as a supported "
+            f"policy class.")
+    return factory(bp_dict, device, payload)
+
+
+register_executor(
+    "TruncatedNormalPolicy",
+    lambda bp_dict, device, payload: TruncatedNormalExecutor(
+        bp_dict, device, payload))
 
 
 class PolicyExecutorCache:
