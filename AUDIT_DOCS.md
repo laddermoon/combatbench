@@ -202,3 +202,11 @@ SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
 "实验→CLI→loop→rollout→runs" 数据流图、按任务的文档地图。
 附带修复：CLAUDE.md 引用的 `analyze_training.py` 已不存在
 （sac/DECISIONS 也注明"文件已不存在"）→ 该条目改为 README 指路。
+
+## [2026-10-09] D-DOC-10 + D-DOC-12 结案：policy 子目录 + ppo/tests README
+
+新建 4 份指南级 README：
+- `policy/random/README.md`、`policy/humanoid21/README.md`、
+  `policy/blueprints/README.md`（各自指回 `policy/README.md` 的契约层）
+- `baseline/framework/ppo/tests/README.md`（测试清单表，沿用
+  framework/tests、humanoid21/tests 的既有惯例）
