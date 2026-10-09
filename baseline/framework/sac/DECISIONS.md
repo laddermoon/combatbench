@@ -2477,6 +2477,19 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
 - 触发 divergence guard / alpha 撞界且 entropy 崩溃 / 某通道长期零更新 → 立即停训入诊断；
 - 诊断输出必须落到具体链环（mask/旧数据/通道/α/Q），不允许"换超参再跑"式的无证据迭代。
 
+### P6.4a S6-W0/W1 执行记录（P6-PROTO-1 / P6-PREP-1）
+
+- `P6-PROTO-1`（`ec76d5b1`）：新增 `baseline/framework/sac/DEBUG_PLAYBOOK.md`——症状→debugkit 命令→预期证据对照表（9 节）+ `debug_notes.md` 证据记录格式。
+- `P6-PREP-1` 探针实测（`_probe_s01_standup_v3`、`_probe_s01_balance_v1`，均 1 round）：
+  - **发现并修复两处 fp32 边界缺陷**（真实启动障碍，commit `8810accf`、`a2b0f240`）：
+    1. `sample_from_uniform` 的 fp64 端点 clamp `1−eps64` 转 fp32 舍入为恰好 ±1.0 → `log_prob` 域检查崩溃；修：输出 dtype 空间二次 clamp + `dtype_endpoint_clamp` 计数。
+    2. `mu=tanh(mean_head)` fp32 饱和为恰好 ±1.0 → `_check_params` 崩溃；修：`distribution()` 输出端按 dtype eps clamp。
+  - 吞吐实测（与两条在跑的 PPO 训练共享 192 核）：standup round1 `12800 env / 465s ≈ 27.6 env/s`（rollout 200s + train 264s）；balance round1 `6794 env / 211s ≈ 32 env/s`（早期 episode 均长 26.5，随策略变好会变长，round 时长非线性上升）。
+  - 量级估算：standup 2M ≈ 20h/run；balance 10M 预计数天/run（episode 变长 + `max_grad_steps_per_round=2000` 封顶后 train 段稳定）。
+  - checkpoint 每 eval round 一个、无上限保留：balance 全程约 100 个 × ~1GB replay → 单 run ~100GB，磁盘（729G 可用）需在长训中监控，必要时人工裁剪中间 checkpoint。
+  - 导出 bp 复核通过：`TNRuntimePolicy` blueprint 可由 `PolicyBlueprint.load` 独立加载并推理。
+  - 资源注记：本机已有用户 PPO run ×2（standup / balance_step_mbs）在跑，SAC pathfinder 与其共享 CPU；GPU 分配 standup→cuda:0、balance→cuda:1。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
