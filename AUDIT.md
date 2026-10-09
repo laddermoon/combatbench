@@ -2860,3 +2860,28 @@ bench_rollout 单/并行双路径实测通过。
 
 语法 + import 检查通过；`_flatten_observer_outputs` 手工构造
 异构 episode 验证并集行为。
+
+## [2026-10-09] P-OBS-1/2 + P-TST-1 处置：curriculum 死链引用面清点 + README 标注
+
+**类别**：文档修复 + 复核关闭
+
+- **P-OBS-1（记档关闭）**：`baseline/framework/obsolete/` 11 文件零活
+  引用，目录名自带标签 + CLAUDE.md 已注明——自洽死档，不动。
+- **P-TST-1（复核关闭）**：`tests/test_stage_seg_rewards.py` 审计时
+  的 collection error 已不存在——文件已改为守卫式 skip
+  （`pytestmark=skipif(not _HAVE_SUBJECT)`，reason 明示 legacy
+  framework retired），26 tests 收集干净全 skip，保留备复活。
+- **P-OBS-2（核心处置）**：外部引用面清点完毕——
+  - `curriculum/` 根 5 个脚本（collect_gating_data×2 +
+    run_*_chain×3）走包级 `get_experiment`：import 成功、调用时
+    `ModuleNotFoundError`（延迟死亡，最误导形态）。README 脚本表
+    已标注"不可运行/留档参考"；`experiments/` 一节补写延迟死亡的
+    具体机制（__init__ 有守卫、base.py 裸崩于 _discover）。
+  - `baseline/framework/obsolete/` 4 脚本 +
+    `balance_recover/obsolete/` 2 文件：死目录里的死引用，自洽。
+  - `experiments/` 76 个 exp_* 按裁决留作配置考古参考，不修不删。
+
+### 验证
+
+`import curriculum.experiments` OK；`get_experiment()` 实测在调用时
+ModuleNotFoundError；`test_stage_seg_rewards` 26 collect+skip。

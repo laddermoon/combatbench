@@ -28,17 +28,21 @@
 | 文件 | 说明 |
 |------|------|
 | `train_gating_network.py` | 门控网络（Gating MLP 分类器）训练脚本 |
-| `collect_gating_data.py` / `collect_gating_data_refine.py` | 门控数据收集脚本 |
+| `collect_gating_data.py` / `collect_gating_data_refine.py` | 门控数据收集脚本 — **不可运行**：调用 `experiments.get_experiment()` 会崩（注册表依赖已删的 v1 框架），留档参考 |
 | `fight_mixed_policy.py` / `fight_mixed_policy_v2.py` | 混合策略：主学习策略 + 冻结恢复策略，经 Gating MLP 切换 |
 | `mixed_policy.py` / `height_switch_policy.py` / `hybrid_actor.py` / `standup_fallback_policy.py` | 各类策略组合/切换包装器 |
 | `weakened_policy.py` | 弱化策略包装器（对导出策略动作加高斯噪声） |
-| `run_4stage_chain.py` / `run_orig_chain.py` / `run_repro_chain.py` | 分阶段训练链的调度脚本 |
+| `run_4stage_chain.py` / `run_orig_chain.py` / `run_repro_chain.py` | 分阶段训练链的调度脚本 — **不可运行**：同上，经 `get_experiment()` 走到死注册表，留档参考 |
 | `gating_model*/`、`gating_data*/` | 训好的门控模型与收集数据 |
 
-### `experiments/` — 旧实验注册表（已失效）
+### `experiments/` — 旧实验注册表（已失效，留档参考）
 
-原自动发现 `exp_*.py` 的注册表，导出 `EXPERIMENT` 配置。**当前 import 即崩**
-（依赖已删的 `baseline.framework.experiment`），仅供考古。
+原自动发现 `exp_*.py` 的注册表，导出 `EXPERIMENT` 配置。基类
+`baseline.framework.experiment` 已随 v1 框架删除——包 `__init__.py`
+有守卫（import 包本身不崩），但 `get_experiment()` 扫描 exp_* 时经
+`base.py` 触发 ModuleNotFoundError，属**延迟死亡**：上方依赖它的脚本
+会在调用时才崩而非 import 时报错。76 个 `exp_*.py` 保留作配置考古
+参考（阶段奖励权重、课程参数等），不修复、不删除。
 
 ### 训练记录文档（历史档案，有参考价值）
 
