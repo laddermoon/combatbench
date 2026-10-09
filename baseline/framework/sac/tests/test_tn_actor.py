@@ -363,9 +363,12 @@ def test_build_actor_dispatch():
         SacBalance(actor_arch="bogus").build_actor(torch.device("cpu"))
 
 
-@pytest.mark.parametrize("arch", ["s00", "s01", "s10", "s11"])
+ALL_ARCHS = SINGLE_ARCHS + ["m00", "m01", "m10", "m11"]
+
+
+@pytest.mark.parametrize("arch", ALL_ARCHS)
 @pytest.mark.parametrize("experiment", ["sac_balance", "sac_standup"])
-def test_experiments_build_each_single_arch(arch, experiment):
+def test_experiments_build_each_arch(arch, experiment):
     from baseline.experiments_sac import get_sac_experiment
     exp = get_sac_experiment(experiment, actor_arch=arch, actor_hidden_dim=32)
     actor = exp.build_actor(torch.device("cpu"))

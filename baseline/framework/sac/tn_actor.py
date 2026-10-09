@@ -56,8 +56,8 @@ ARCH_SPECS: Dict[str, Tuple[bool, str, bool]] = {
     "m11": (True, "state", True),
 }
 
-# Mixture cells are enabled by P4-MIX-1; before that they fail loudly.
-_ENABLED_ARCHS = frozenset({"s00", "s01", "s10", "s11"})
+# All eight cells are enabled (mixture path verified in P4-MIX-1).
+_ENABLED_ARCHS = frozenset(ARCH_SPECS)
 
 SIGMA_MIN = 0.05
 SIGMA_MAX = 2.0
@@ -108,8 +108,8 @@ class TNActor(nn.Module):
             )
         if arch not in _ENABLED_ARCHS:
             raise ValueError(
-                f"SAC actor arch {arch!r} is declared but not enabled yet "
-                f"(mixture cells land in P4-MIX-1); enabled={sorted(_ENABLED_ARCHS)}"
+                f"SAC actor arch {arch!r} is not enabled; "
+                f"enabled={sorted(_ENABLED_ARCHS)}"
             )
         self.is_mixture, self.sigma_source, self.sigma_bounded = ARCH_SPECS[arch]
         self.policy_arch = f"tn_{arch}"
@@ -261,8 +261,9 @@ class TNActor(nn.Module):
                 raw_mean, v = out.split(D, dim=-1)
                 mu = torch.tanh(raw_mean).unsqueeze(1)
                 ctrl = v.unsqueeze(1)
-            sigma = self._sigma_from_ctrl(ctrl).expand(B, 1, D)
+            sigma = self._sigma_from_ctrl(ctrl.expand(B, 1, D))
             logits = torch.zeros(B, 1, device=obs.device, dtype=mu.dtype)
+            ctrl = ctrl.expand(B, 1, D)
         else:
             out = self.head(self.trunk(obs))
             logits = out[:, :Kc]
@@ -273,7 +274,7 @@ class TNActor(nn.Module):
             else:
                 ctrl = out[:, Kc + Kc * D:].view(B, Kc, D)
             sigma = self._sigma_from_ctrl(ctrl)
-        return {"mu": mu, "sigma": sigma, "logits": logits}
+        return {"mu": mu, "sigma": sigma, "logits": logits, "ctrl": ctrl}
 
     def _distribution_with_e(
         self, obs: torch.Tensor, e: float,
@@ -282,15 +283,12 @@ class TNActor(nn.Module):
         dist = self.distribution(obs)
         if float(e) == 0.0:
             return dist
-        # Recover the σ control coordinate and re-map with the e shift.
-        sigma = dist["sigma"]
-        if self.sigma_bounded:
-            p = (torch.log(sigma) - self._r_min) / self._delta_r
-            p = p.clamp(1e-9, 1.0 - 1e-9)
-            ctrl = torch.log(p) - torch.log1p(-p)
-        else:
-            ctrl = torch.log(sigma)
-        return {**dist, "sigma": self._sigma_from_ctrl(self._apply_explore(ctrl, e))}
+        return {
+            **dist,
+            "sigma": self._sigma_from_ctrl(
+                self._apply_explore(dist["ctrl"], e)
+            ),
+        }
 
     def expectation_samples(
         self,
@@ -415,6 +413,7 @@ class TNActor(nn.Module):
         mu, sigma = dist["mu"], dist["sigma"]               # [B,K,D]
         logits = dist["logits"]
         p = torch.softmax(logits, dim=-1)                   # [B,K]
+        Kc = mu.shape[1]
 
         if kind == "peak":
             if not self.is_mixture:
@@ -438,7 +437,6 @@ class TNActor(nn.Module):
             return u_d.mean(dim=-1)
 
         # kind == "l2": ∫ p_d² over (-1,1)
-        Kc = mu.shape[1]
         # Pairwise overlap I_kj[d] = ∫ TN_kd · TN_jd dx.
         mu_i = mu[:, :, None, :].expand(-1, -1, Kc, -1)
         mu_j = mu[:, None, :, :].expand(-1, Kc, -1, -1)
