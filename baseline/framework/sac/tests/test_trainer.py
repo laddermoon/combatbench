@@ -8,6 +8,7 @@ import torch
 from baseline.framework.sac.experiment import SACParams, SACRewardChannel
 from baseline.framework.sac.networks import MultiHeadQCritic
 from baseline.framework.sac.s01_actor import S01Actor
+from baseline.framework.sac.tn_actor import TNActor
 from baseline.framework.sac.trainer import (
     SACTrainerError,
     compute_critic_targets,
@@ -43,15 +44,22 @@ def _batch(B: int = 8, obs_dim: int = 6, action_dim: int = 3, C: int = 2):
     }
 
 
+def _as_expectation(actions: torch.Tensor, log_probs: torch.Tensor):
+    """Adapt legacy (a[B,D], logp[B]) monkeypatches to [B,1,1,*] form."""
+    B = actions.shape[0]
+    return (
+        actions[:, None, None, :],
+        log_probs[:, None, None],
+        torch.ones(B, 1, 1),
+    )
+
+
 def _models(C: int = 2, obs_dim: int = 6, action_dim: int = 3):
     torch.manual_seed(5)
     channels = tuple(
         SACRewardChannel(name=f"r{i}", gamma=0.99) for i in range(C)
     )
-    actor = S01Actor(
-        obs_dim, action_dim, hidden_dim=16,
-        log_std_min=-3.0, log_std_max=-0.1, init_log_std=-0.5,
-    )
+    actor = TNActor(obs_dim, action_dim, arch="s01", hidden_dim=16)
     critic = MultiHeadQCritic(
         obs_dim=obs_dim,
         action_dim=action_dim,
@@ -144,9 +152,15 @@ def test_critic_target_uses_bootstrap_and_shannon_entropy() -> None:
 
     next_actions = torch.zeros(4, 3)
     next_log_probs = torch.full((4,), 2.0)
-    actor.sample_action = lambda obs: (next_actions, next_log_probs)
-    critic.q1_target_forward = lambda obs, act, ch: torch.full((4,), 3.0)
-    critic.q2_target_forward = lambda obs, act, ch: torch.full((4,), 4.0)
+    actor.expectation_samples = lambda obs, u: _as_expectation(
+        next_actions, next_log_probs,
+    )
+    critic.q1_target_forward = lambda obs, act, ch: torch.full(
+        (obs.shape[0],), 3.0,
+    )
+    critic.q2_target_forward = lambda obs, act, ch: torch.full(
+        (obs.shape[0],), 4.0,
+    )
 
     targets = compute_critic_targets(
         actor, critic, batch, channels,
@@ -163,7 +177,9 @@ def test_critic_target_selects_one_weighted_twin_pair() -> None:
     batch["terminated"] = torch.zeros(2, dtype=torch.bool)
     batch["actor_weight_next"] = torch.tensor([[0.9, 0.1], [0.1, 0.9]])
     batch["actor_gate_next"] = batch["actor_weight_next"] * 10.0
-    actor.sample_action = lambda obs: (torch.zeros(2, 3), torch.zeros(2))
+    actor.expectation_samples = lambda obs, u: _as_expectation(
+        torch.zeros(2, 3), torch.zeros(2),
+    )
     critic.q1_target_forward = (
         lambda obs, act, ch: torch.tensor([0.0, 10.0])
         if ch == "r0" else torch.tensor([10.0, 0.0])
@@ -180,7 +196,7 @@ def test_critic_target_selects_one_weighted_twin_pair() -> None:
         device=torch.device("cpu"), target_info=target_info,
     )
 
-    assert target_info["pair_index"].tolist() == [0, 0]
+    assert target_info["pair_index"].tolist() == [[[0]], [[0]]]
     expected_r0 = batch["rewards"][:, 0] + 0.99 * torch.tensor([0.0, 10.0])
     expected_r1 = batch["rewards"][:, 1] + 0.99 * torch.tensor([10.0, 0.0])
     torch.testing.assert_close(targets["r0"], expected_r0)

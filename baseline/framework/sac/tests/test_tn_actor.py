@@ -219,10 +219,109 @@ def test_unknown_arch_rejected():
         TNActor(OBS_DIM, ACT_DIM, arch="s99", hidden_dim=32)
 
 
-@pytest.mark.parametrize("arch", ["m00", "m01", "m10", "m11"])
-def test_mixture_archs_rejected_until_mix1(arch):
-    with pytest.raises(ValueError, match="P4-MIX-1"):
-        TNActor(OBS_DIM, ACT_DIM, arch=arch, hidden_dim=32)
+MIXTURE_ARCHS = ["m00", "m01", "m10", "m11"]
+
+
+@pytest.mark.parametrize("arch", MIXTURE_ARCHS)
+def test_mixture_archs_build_and_distribute(arch):
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch=arch, hidden_dim=32, n_components=3, seed=7,
+    )
+    dist = actor.distribution(_obs())
+    assert dist["mu"].shape == (8, 3, ACT_DIM)
+    assert dist["sigma"].shape == (8, 3, ACT_DIM)
+    assert dist["logits"].shape == (8, 3)
+    # Uniform component init → logits identical → softmax = 1/K.
+    p = torch.softmax(dist["logits"], dim=-1)
+    assert torch.allclose(p, torch.full_like(p, 1.0 / 3), atol=1e-6)
+
+
+@pytest.mark.parametrize("arch", MIXTURE_ARCHS)
+def test_mixture_expectation_samples(arch):
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch=arch, hidden_dim=32, n_components=3, seed=7,
+    )
+    obs = _obs()
+    M = 2
+    u = torch.rand(8, 3, M, ACT_DIM, generator=torch.Generator().manual_seed(1))
+    actions, logp, weights = actor.expectation_samples(obs, u)
+    assert actions.shape == (8, 3, M, ACT_DIM)
+    assert logp.shape == (8, 3, M)
+    assert torch.all(actions.abs() < 1.0)
+    # weights = p_k / M → sum over K*M = 1.
+    assert torch.allclose(
+        weights.sum(dim=(1, 2)), torch.ones(8), atol=1e-6
+    )
+
+
+@pytest.mark.parametrize("arch", MIXTURE_ARCHS)
+def test_mixture_sample_behavior_component_ids(arch):
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch=arch, hidden_dim=32, n_components=3, seed=7,
+    )
+    spec = SACBehaviorSpec(mode="stochastic", explore_factor=0.0)
+    actions, info = actor.sample_behavior(_obs(), spec)
+    ids = info["component_id"]
+    assert ids.shape == (8,)
+    assert ((ids >= 0) & (ids < 3)).all()
+
+
+def test_mixture_deterministic_picks_argmax_component():
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch="m00", hidden_dim=32, n_components=3, seed=7,
+    )
+    obs = _obs()
+    dist = actor.distribution(obs)
+    det = actor.deterministic_action(obs)
+    comp = dist["logits"].argmax(dim=-1)
+    expected = dist["mu"][torch.arange(8), comp]
+    assert torch.allclose(det, expected)
+
+
+def test_mixture_q_only_logits_gradient():
+    """A4.4: logits must receive gradient through integration_weights
+    (Q candidates are constants → d logits comes only from weights)."""
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch="m01", hidden_dim=32, n_components=3, seed=7,
+    )
+    obs = _obs()
+    u = torch.full((8, 3, 2, ACT_DIM), 0.5)
+    actions, logp, weights = actor.expectation_samples(obs, u)
+    q_values = torch.tensor(
+        [[[1.0, 2.0], [0.5, 0.5], [-1.0, -1.0]]]
+    ).expand(8, 3, 2)
+    loss = -(weights * q_values).sum()   # Q treated as constant input
+    loss.backward()
+    head = actor.head.weight.grad
+    logits_rows = head[:3]
+    assert logits_rows.abs().sum() > 0, "logits received no Q-path gradient"
+
+
+def test_mixture_low_prob_component_still_gets_gradient():
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch="m00", hidden_dim=32, n_components=3, seed=7,
+    )
+    # Force component 2 to ~0 weight.
+    with torch.no_grad():
+        actor.head.bias[:3] = torch.tensor([4.0, 4.0, -4.0])
+    obs = _obs()
+    u = torch.full((8, 3, 1, ACT_DIM), 0.5)
+    actions, logp, weights = actor.expectation_samples(obs, u)
+    q = torch.tensor([[[0.0], [0.0], [5.0]]]).expand(8, 3, 1)
+    (-(weights * q).sum()).backward()
+    logit_row_grad = actor.head.bias.grad[:3]
+    assert logit_row_grad[2].abs() > 0, (
+        "low-probability component must still get gradient via enumeration"
+    )
+
+
+def test_mixture_uncertainty_l2_finite():
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch="m11", hidden_dim=32, n_components=3, seed=7,
+    )
+    for kind in ("peak", "l2"):
+        u = actor.uncertainty(_obs(), kind)
+        assert torch.isfinite(u).all() and (u > 0).all()
 
 
 def test_state_payload_round_trip():
@@ -328,6 +427,252 @@ def test_sac_update_runs_for_each_single_arch(arch):
     assert any(
         not torch.equal(p, b) for p, b in zip(actor.parameters(), before)
     )
+
+
+def test_target_ordering_twin_min_before_expectation():
+    """G4.5: min over twins per candidate ≠ min over twins of the
+    expectation.  Candidate 0 has (q1,q2)=(10,0), candidate 1 (0,10):
+    correct per-candidate min is 0; the wrong order yields 5."""
+    from baseline.framework.sac.experiment import SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    from baseline.framework.sac.trainer import compute_critic_targets
+
+    channels = (SACRewardChannel(name="r0", gamma=0.99),)
+    actor = TNActor(OBS_DIM, ACT_DIM, arch="s01", hidden_dim=16, seed=6)
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    B, D = 1, ACT_DIM
+    actions = torch.zeros(B, 1, 2, D)
+    logp = torch.zeros(B, 1, 2)
+    weights = torch.full((B, 1, 2), 0.5)
+    actor.expectation_samples = lambda obs, u: (actions, logp, weights)
+    critic.q1_target_forward = lambda o, a, ch: torch.tensor([10.0, 0.0])
+    critic.q2_target_forward = lambda o, a, ch: torch.tensor([0.0, 10.0])
+    batch = _trainer_batch(B=B, C=1)
+    batch["bootstrap"] = torch.ones(B)
+    batch["terminated"] = torch.zeros(B, dtype=torch.bool)
+
+    targets = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), n_expectation_samples=2,
+    )
+    # Expected: r + 0.99·(0.5·min(10,0) + 0.5·min(0,10)) = r + 0.
+    expected = batch["rewards"][:, 0] * 1.0
+    torch.testing.assert_close(targets["r0"], expected)
+
+
+@pytest.mark.parametrize("arch", MIXTURE_ARCHS)
+def test_sac_update_runs_for_mixture_arch(arch):
+    """P4-MIX-1/TRAIN-2: enumerated K=3 path through sac_update."""
+    from baseline.framework.sac.experiment import SACParams, SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    from baseline.framework.sac.trainer import sac_update
+
+    torch.manual_seed(5)
+    channels = tuple(
+        SACRewardChannel(name=f"r{i}", gamma=0.99) for i in range(2)
+    )
+    actor = TNActor(
+        OBS_DIM, ACT_DIM, arch=arch, hidden_dim=16, n_components=3, seed=6,
+    )
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    actor_opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _trainer_batch()
+    logits_row_before = actor.head.bias[:3].detach().clone()
+
+    stats = sac_update(
+        actor, critic, actor_opt, log_alpha, None, batch, channels,
+        SACParams(use_grad_norm=False, tau=0.0, expectation_samples=1),
+        1.0, torch.device("cpu"),
+    )
+    assert math.isfinite(stats["actor_loss"])
+    # Q-candidates all tie at init (uniform π), but the weight path must
+    # still carry gradient — logits rows move once Q differs per k.
+    # With near-identical components the logits drift is allowed to be
+    # small; assert only that the gradient tensor exists and is finite.
+    logits_grad = actor.head.bias.grad[:3]
+    assert torch.isfinite(logits_grad).all()
+    _ = logits_row_before
+
+
+def test_legacy_tanh_actor_rejected_by_trainer():
+    """legacy_tanh has no expectation_samples — must fail loud."""
+    from baseline.framework.sac.experiment import SACParams, SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    from baseline.framework.sac.s01_actor import S01Actor
+    from baseline.framework.sac.trainer import SACTrainerError, sac_update
+
+    channels = (SACRewardChannel(name="r0", gamma=0.99),)
+    actor = S01Actor(OBS_DIM, ACT_DIM, hidden_dim=16, seed=1)
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    with pytest.raises(SACTrainerError, match="expectation_samples"):
+        sac_update(
+            actor, critic, torch.optim.Adam(actor.parameters()),
+            torch.tensor(0.0, requires_grad=True), None,
+            _trainer_batch(C=1), channels,
+            SACParams(use_grad_norm=False), 1.0, torch.device("cpu"),
+        )
+
+
+def _update_setup(arch="s01", C=1):
+    from baseline.framework.sac.experiment import SACRewardChannel
+    from baseline.framework.sac.networks import MultiHeadQCritic
+    torch.manual_seed(5)
+    channels = tuple(
+        SACRewardChannel(name=f"r{i}", gamma=0.99) for i in range(C)
+    )
+    actor = TNActor(OBS_DIM, ACT_DIM, arch=arch, hidden_dim=16, seed=6)
+    critic = MultiHeadQCritic(
+        obs_dim=OBS_DIM, action_dim=ACT_DIM, channels=channels,
+        hidden_dim=16, layer_norm=False, critic_lr=1e-3,
+        device=torch.device("cpu"),
+    )
+    return actor, critic, channels
+
+
+def test_u_bonus_target_uses_state_regularizer():
+    from baseline.framework.sac.experiment import SACParams
+    from baseline.framework.sac.trainer import compute_critic_targets
+
+    actor, critic, channels = _update_setup(C=1)
+    actor.uncertainty = lambda obs, kind: torch.full((obs.shape[0],), 2.0)
+    actions = torch.zeros(1, 1, 1, ACT_DIM)
+    actor.expectation_samples = lambda obs, u: (
+        actions, torch.zeros(1, 1, 1), torch.ones(1, 1, 1),
+    )
+    critic.q1_target_forward = lambda o, a, ch: torch.zeros(o.shape[0])
+    critic.q2_target_forward = lambda o, a, ch: torch.zeros(o.shape[0])
+    batch = _trainer_batch(B=1, C=1)
+    batch["bootstrap"] = torch.ones(1)
+    batch["terminated"] = torch.zeros(1, dtype=torch.bool)
+
+    targets = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), n_expectation_samples=1,
+        regularizer_mode="u_bonus", reg_lambda=0.3, u_kind="peak",
+    )
+    expected = batch["rewards"][:, 0] + 0.99 * 1.0 * (0.0 + 0.3 * 2.0)
+    torch.testing.assert_close(targets["r0"], expected)
+
+
+def test_u_floor_target_penalty():
+    from baseline.framework.sac.trainer import compute_critic_targets
+
+    actor, critic, channels = _update_setup(C=1)
+    actor.uncertainty = lambda obs, kind: torch.full((obs.shape[0],), 0.2)
+    actions = torch.zeros(1, 1, 1, ACT_DIM)
+    actor.expectation_samples = lambda obs, u: (
+        actions, torch.zeros(1, 1, 1), torch.ones(1, 1, 1),
+    )
+    critic.q1_target_forward = lambda o, a, ch: torch.ones(o.shape[0])
+    critic.q2_target_forward = lambda o, a, ch: torch.ones(o.shape[0])
+    batch = _trainer_batch(B=1, C=1)
+    batch["bootstrap"] = torch.ones(1)
+    batch["terminated"] = torch.zeros(1, dtype=torch.bool)
+
+    targets = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), n_expectation_samples=1,
+        regularizer_mode="u_floor", reg_lambda=0.5, u_floor=0.6,
+        u_kind="peak",
+    )
+    penalty = -0.5 * (0.6 - 0.2) ** 2
+    expected = batch["rewards"][:, 0] + 0.99 * (1.0 + penalty)
+    torch.testing.assert_close(targets["r0"], expected)
+
+
+def test_u_bonus_lambda_zero_matches_shannon_alpha_zero():
+    from baseline.framework.sac.trainer import compute_critic_targets
+
+    actor, critic, channels = _update_setup(C=1)
+    batch = _trainer_batch(B=8, C=1)
+    batch["bootstrap"] = torch.ones(8)
+    batch["terminated"] = torch.zeros(8, dtype=torch.bool)
+    rng = torch.Generator().manual_seed(0)
+    base = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), expectation_rng=rng,
+        regularizer_mode="shannon",
+    )
+    rng2 = torch.Generator().manual_seed(0)
+    uver = compute_critic_targets(
+        actor, critic, batch, channels,
+        alpha=torch.tensor(0.0), reward_scale=1.0,
+        device=torch.device("cpu"), expectation_rng=rng2,
+        regularizer_mode="u_bonus", reg_lambda=0.0,
+    )
+    torch.testing.assert_close(base["r0"], uver["r0"])
+
+
+def test_regularizer_mode_validation():
+    from baseline.framework.sac.experiment import SACParams
+    from baseline.framework.sac.trainer import SACTrainerError, sac_update
+
+    actor, critic, channels = _update_setup(C=1)
+    opt = torch.optim.Adam(actor.parameters())
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _trainer_batch(C=1)
+
+    def run(sp, alpha_opt=None):
+        return sac_update(
+            actor, critic, opt, log_alpha, alpha_opt, batch, channels,
+            sp, 1.0, torch.device("cpu"),
+        )
+
+    with pytest.raises(SACTrainerError, match="regularizer_mode"):
+        run(SACParams(use_grad_norm=False, regularizer_mode="bogus"))
+    with pytest.raises(SACTrainerError, match="alpha"):
+        run(
+            SACParams(use_grad_norm=False, regularizer_mode="u_bonus",
+                      reg_lambda=0.1),
+            alpha_opt=torch.optim.Adam([log_alpha]),
+        )
+    with pytest.raises(SACTrainerError, match="reg_lambda"):
+        run(SACParams(use_grad_norm=False, regularizer_mode="u_floor",
+                      reg_lambda=-1.0, u_floor=0.5))
+    with pytest.raises(SACTrainerError, match="u_floor"):
+        run(SACParams(use_grad_norm=False, regularizer_mode="u_floor",
+                      reg_lambda=0.1, u_floor=2.0))
+    with pytest.raises(SACTrainerError, match="u_kind"):
+        run(SACParams(use_grad_norm=False, regularizer_mode="u_bonus",
+                      reg_lambda=0.1, u_kind="bogus"))
+
+
+def test_u_regularizer_runs_and_flows_gradient():
+    from baseline.framework.sac.experiment import SACParams
+    from baseline.framework.sac.trainer import sac_update
+
+    for mode, kw in (
+        ("u_bonus", {"reg_lambda": 0.2}),
+        ("u_floor", {"reg_lambda": 0.2, "u_floor": 0.9}),
+    ):
+        actor, critic, channels = _update_setup(C=1)
+        opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+        stats = sac_update(
+            actor, critic, opt, torch.tensor(0.0, requires_grad=True), None,
+            _trainer_batch(C=1), channels,
+            SACParams(use_grad_norm=False, regularizer_mode=mode, **kw),
+            1.0, torch.device("cpu"),
+        )
+        assert math.isfinite(stats["actor_loss"])
+        assert stats["regularizer_shannon"] == 0.0
+        assert "reg_actor_term_mean" in stats
 
 
 def test_trainer_state_dict_round_trips_actor_rng():

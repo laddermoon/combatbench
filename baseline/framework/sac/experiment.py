@@ -127,6 +127,16 @@ class SACParams:
     q_hidden_dim: int = 256
     q_layer_norm: bool = False
     reward_scale: float = 1.0
+    # A4.5: M — uniform samples enumerated per mixture component in
+    # target/actor expectations (K components are always enumerated).
+    expectation_samples: int = 1
+    # A4.6: mutually exclusive regularizer modes.  "shannon" is the
+    # baseline; "u_bonus"/"u_floor" are the alternative U route with
+    # fixed λ.  u_kind resolves "native" → peak (single) / l2 (mixture).
+    regularizer_mode: str = "shannon"
+    reg_lambda: float = 0.0
+    u_floor: float = 0.0
+    u_kind: str = "native"
 
 
 # ---------------------------------------------------------------------------

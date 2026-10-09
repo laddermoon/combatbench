@@ -333,6 +333,10 @@ def train_sac(
         rng_seed=cp.seed + 17,
         replay_plan=experiment.replay_plan(),
     )
+    # A4.3 RNG stream separation: trainer expectation noise has its own
+    # generator, distinct from actor sampling/behavior streams.
+    expectation_rng = torch.Generator()
+    expectation_rng.manual_seed(cp.seed + 41)
     guard = DivergenceGuard()
     utd_credit = 0.0
     n_evals_done = 0
@@ -355,6 +359,7 @@ def train_sac(
                     actor_optimizer=actor_optimizer,
                     log_alpha=log_alpha,
                     alpha_optimizer=alpha_optimizer,
+                    expectation_rng=expectation_rng,
                 )
                 replay = bundle.replay
                 runtime_state = dict(bundle.runtime_state or {})
@@ -404,6 +409,7 @@ def train_sac(
             path,
             trainer_state=trainer_state_dict(
                 actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+                expectation_rng=expectation_rng,
             ),
             replay=replay,
             runtime_state=runtime_state,
@@ -504,6 +510,7 @@ def train_sac(
                                 trainer_pre_state=trainer_state_dict(
                                     actor, critic, actor_optimizer,
                                     log_alpha, alpha_optimizer,
+                                    expectation_rng=expectation_rng,
                                 ),
                                 hypothesis=dump_hypothesis,
                             )
@@ -534,6 +541,7 @@ def train_sac(
                             sp=sp,
                             grad_clip_norm=cp.grad_clip_norm,
                             device=device,
+                            expectation_rng=expectation_rng,
                             capture=capture,
                         )
                     except Exception as exc:
@@ -548,6 +556,7 @@ def train_sac(
                                 trainer_post_state=trainer_state_dict(
                                     actor, critic, actor_optimizer,
                                     log_alpha, alpha_optimizer,
+                                    expectation_rng=expectation_rng,
                                 ),
                                 update_stats=step_stats,
                                 actor=actor,

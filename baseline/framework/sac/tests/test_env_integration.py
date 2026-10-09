@@ -17,7 +17,7 @@ from baseline.framework.sac.experiment import (
 )
 from baseline.framework.sac.metrics import EVENTS_RELATIVE_PATH, load_events
 from baseline.framework.sac.loop import train_sac
-from baseline.framework.sac.s01_actor import S01Actor
+from baseline.framework.sac.tn_actor import TNActor
 from baseline.framework.sac.tests.test_replay import _slice
 
 
@@ -78,7 +78,7 @@ class _FakeExperiment(ExperimentSAC):
         return (SACRewardChannel(name="r", gamma=0.95),)
 
     def build_actor(self, device):
-        return S01Actor(3, 2, hidden_dim=16, seed=31).to(device)
+        return TNActor(3, 2, arch="s01", hidden_dim=16, seed=31).to(device)
 
     def build_q_critic(self, channel_name: str, device) -> nn.Module:
         raise NotImplementedError("MultiHeadQCritic owns critic construction")

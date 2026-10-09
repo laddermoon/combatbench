@@ -132,6 +132,11 @@ class CombatExperimentSACBase(ExperimentSAC):
     use_grad_norm: bool = False
     q_layer_norm: bool = False
     reward_scale: float = 1.0
+    expectation_samples: int = 1
+    regularizer_mode: str = "shannon"
+    reg_lambda: float = 0.0
+    u_floor: float = 0.0
+    u_kind: str = "native"
 
     # --- Rollout schedule ---
     episodes_per_update: int = 64
@@ -194,6 +199,11 @@ class CombatExperimentSACBase(ExperimentSAC):
             q_hidden_dim=self.q_hidden_dim,
             q_layer_norm=self.q_layer_norm,
             reward_scale=self.reward_scale,
+            expectation_samples=self.expectation_samples,
+            regularizer_mode=self.regularizer_mode,
+            reg_lambda=self.reg_lambda,
+            u_floor=self.u_floor,
+            u_kind=self.u_kind,
         )
 
     # ------------------------------------------------------------------

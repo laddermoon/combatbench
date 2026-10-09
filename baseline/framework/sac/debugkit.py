@@ -25,6 +25,8 @@ from .clocks import SACClockState
 from .experiment import SACParams, SACRewardChannel
 from .networks import MultiHeadQCritic
 from .s01_actor import S01Actor
+from .tn_actor import TNActor
+from .trainer import _forward_all_candidates
 
 
 SAC_DUMP_SCHEMA = "sac_dump_v2"
@@ -71,16 +73,43 @@ def _trainer_spec(
     grad_clip_norm: float,
     critic_lr: float,
 ) -> Dict[str, Any]:
+    if hasattr(actor, "state_payload"):
+        payload = actor.state_payload()
+        arch = str(payload.get("policy_arch", ""))
+        if arch.startswith("tn_"):
+            actor_spec = {
+                "kind": "tn_actor",
+                "policy_arch": arch,
+                "arch": str(payload["arch"]),
+                "obs_dim": int(payload["obs_dim"]),
+                "action_dim": int(payload["action_dim"]),
+                "hidden_dim": int(payload["hidden_dim"]),
+                "num_components": int(payload["num_components"]),
+                "sigma_min": float(payload["sigma_min"]),
+                "sigma_max": float(payload["sigma_max"]),
+                "init_std": float(payload["init_std"]),
+                "explore_alpha": float(payload["explore_alpha"]),
+                "component_init_noise": float(
+                    payload["component_init_noise"]
+                ),
+            }
+        else:
+            actor_spec = {
+                "kind": "s01_shared_sigma",
+                "obs_dim": int(actor.obs_dim),
+                "action_dim": int(actor.action_dim),
+                "hidden_dim": int(actor.hidden_dim),
+                "log_std_min": float(actor.log_std_min),
+                "log_std_max": float(actor.log_std_max),
+                "init_log_std": float(actor.init_log_std),
+            }
+    else:
+        raise SACDumpError(
+            f"actor {type(actor).__name__} has no state_payload; "
+            "cannot write a reconstructable dump spec"
+        )
     return {
-        "actor": {
-            "kind": "s01_shared_sigma",
-            "obs_dim": int(actor.obs_dim),
-            "action_dim": int(actor.action_dim),
-            "hidden_dim": int(actor.hidden_dim),
-            "log_std_min": float(actor.log_std_min),
-            "log_std_max": float(actor.log_std_max),
-            "init_log_std": float(actor.init_log_std),
-        },
+        "actor": actor_spec,
         "critic": {
             "kind": "independent_channel_twin_q",
             "obs_dim": int(critic.obs_dim),
@@ -245,18 +274,33 @@ def load_dump(dump_dir: Path) -> Dict[str, Any]:
     return payload
 
 
-def _build_actor(spec: Mapping[str, Any], state: Mapping[str, Any]) -> S01Actor:
+def _build_actor(spec: Mapping[str, Any], state: Mapping[str, Any]):
     actor_spec = spec["actor"]
-    if actor_spec.get("kind") != "s01_shared_sigma":
-        raise SACDumpError(f"unsupported actor kind {actor_spec.get('kind')!r}")
-    actor = S01Actor(
-        obs_dim=int(actor_spec["obs_dim"]),
-        action_dim=int(actor_spec["action_dim"]),
-        hidden_dim=int(actor_spec["hidden_dim"]),
-        log_std_min=float(actor_spec["log_std_min"]),
-        log_std_max=float(actor_spec["log_std_max"]),
-        init_log_std=float(actor_spec["init_log_std"]),
-    )
+    kind = actor_spec.get("kind")
+    if kind == "s01_shared_sigma":
+        actor = S01Actor(
+            obs_dim=int(actor_spec["obs_dim"]),
+            action_dim=int(actor_spec["action_dim"]),
+            hidden_dim=int(actor_spec["hidden_dim"]),
+            log_std_min=float(actor_spec["log_std_min"]),
+            log_std_max=float(actor_spec["log_std_max"]),
+            init_log_std=float(actor_spec["init_log_std"]),
+        )
+    elif kind == "tn_actor":
+        actor = TNActor(
+            obs_dim=int(actor_spec["obs_dim"]),
+            action_dim=int(actor_spec["action_dim"]),
+            arch=str(actor_spec["arch"]),
+            hidden_dim=int(actor_spec["hidden_dim"]),
+            n_components=int(actor_spec["num_components"]),
+            sigma_min=float(actor_spec["sigma_min"]),
+            sigma_max=float(actor_spec["sigma_max"]),
+            init_std=float(actor_spec["init_std"]),
+            explore_alpha=float(actor_spec["explore_alpha"]),
+            component_init_noise=float(actor_spec["component_init_noise"]),
+        )
+    else:
+        raise SACDumpError(f"unsupported actor kind {kind!r}")
     actor.load_state_dict(state["actor_state_dict"])
     actor.eval()
     return actor
@@ -301,10 +345,10 @@ def recompute_dump(
     actor = _build_actor(spec, pre)
     pre_critic = _build_critic(spec, channels, pre)
     post_critic = _build_critic(spec, channels, post)
-    del actor  # sampling outputs are frozen in forward.pt for exactness
 
     with torch.no_grad():
         obs = batch["obs"].float()
+        next_obs = batch["next_obs"].float()
         actions = batch["actions"].float()
         rewards = batch["rewards"].float()
         channel_valid = batch["channel_valid"].bool()
@@ -312,48 +356,66 @@ def recompute_dump(
         actor_weight = batch["actor_weight"].float()
         actor_weight_next = batch["actor_weight_next"].float()
         sample_weight = batch["sample_weight"].float()
-        next_log_probs = forward["next_log_probs"].float()
-        new_actions = forward["new_actions"].float()
-        new_log_probs = forward["new_log_probs"].float()
         alpha = pre["log_alpha"].float().exp()
         log_alpha = pre["log_alpha"].float()
+        C = len(channels)
 
+        # P4-TRAIN-2: enumerated candidates are frozen via u_next/u_actor;
+        # recompute regenerates actions/logp/weights from rebuilt actor.
+        u_next = forward["u_next"].float()
+        u_actor = forward["u_actor"].float()
+        next_actions, next_log_probs, integ_w_next = actor.expectation_samples(
+            next_obs, u_next,
+        )
+        new_actions, new_log_probs, integ_w = actor.expectation_samples(
+            obs, u_actor,
+        )
         recomputed: Dict[str, float] = {"alpha": float(alpha.item())}
+        recomputed["action_replay_max_diff"] = float(
+            max(
+                (next_actions - forward["next_actions"].float()).abs().max(),
+                (new_actions - forward["new_actions"].float()).abs().max(),
+            ).item()
+        )
         critic_loss = torch.zeros(())
         q1_next = torch.stack(
             [
-                pre_critic.q1_target_forward(
-                    batch["next_obs"].float(), forward["next_actions"].float(),
-                    ch.name,
+                _forward_all_candidates(
+                    lambda o, a: pre_critic.q1_target_forward(o, a, ch.name),
+                    next_obs, next_actions,
                 )
                 for ch in channels
             ],
-            dim=1,
+            dim=-1,
         )
         q2_next = torch.stack(
             [
-                pre_critic.q2_target_forward(
-                    batch["next_obs"].float(), forward["next_actions"].float(),
-                    ch.name,
+                _forward_all_candidates(
+                    lambda o, a: pre_critic.q2_target_forward(o, a, ch.name),
+                    next_obs, next_actions,
                 )
                 for ch in channels
             ],
-            dim=1,
+            dim=-1,
         )
-        q_next_pairs = torch.stack((q1_next, q2_next), dim=2)
-        pair_next = (
-            q_next_pairs * actor_weight_next[:, :, None]
-        ).sum(dim=1).argmin(dim=1)
+        q_next_pairs = torch.stack((q1_next, q2_next), dim=-1)
+        w_next = actor_weight_next[:, None, None, :, None]
+        f_next = (q_next_pairs * w_next).sum(dim=3)
+        pair_next = f_next.argmin(dim=-1)
         selected_next = q_next_pairs.gather(
-            2, pair_next[:, None, None].expand(-1, len(channels), 1),
-        ).squeeze(2)
+            -1, pair_next[..., None, None].expand(-1, -1, -1, C, 1),
+        ).squeeze(-1)
         recomputed["target_pair1_frac"] = float(pair_next.float().mean().item())
         for c, ch in enumerate(channels):
+            v_c = (
+                integ_w_next
+                * (selected_next[..., c] - alpha * next_log_probs)
+            ).sum(dim=(1, 2))
             target = (
                 rewards[:, c] * float(sp.reward_scale)
                 + ch.gamma
                 * bootstrap
-                * (selected_next[:, c] - alpha * next_log_probs)
+                * v_c
             )
             q1_pred = pre_critic.q1_forward(obs, actions, ch.name)
             q2_pred = pre_critic.q2_forward(obs, actions, ch.name)
@@ -387,31 +449,44 @@ def recompute_dump(
         recomputed["actor_valid_count"] = float(
             channel_valid.all(dim=1).sum().item()
         )
-        q1_all = post_critic.q1_forward_all(obs, new_actions)
-        q2_all = post_critic.q2_forward_all(obs, new_actions)
-        q_online_pairs = torch.stack(
-            (
-                torch.stack([q1_all[ch.name] for ch in channels], dim=1),
-                torch.stack([q2_all[ch.name] for ch in channels], dim=1),
-            ),
-            dim=2,
+        q1_all = torch.stack(
+            [
+                _forward_all_candidates(
+                    lambda o, a: post_critic.q1_forward(o, a, ch.name),
+                    obs, new_actions,
+                )
+                for ch in channels
+            ],
+            dim=-1,
         )
-        pair_actor = (
-            q_online_pairs * actor_weight[:, :, None]
-        ).sum(dim=1).argmin(dim=1)
-        selected_actor = q_online_pairs.gather(
-            2, pair_actor[:, None, None].expand(-1, len(channels), 1),
-        ).squeeze(2)
-        weighted_q = (selected_actor * actor_weight).sum(dim=1)
+        q2_all = torch.stack(
+            [
+                _forward_all_candidates(
+                    lambda o, a: post_critic.q2_forward(o, a, ch.name),
+                    obs, new_actions,
+                )
+                for ch in channels
+            ],
+            dim=-1,
+        )
+        q_online_pairs = torch.stack((q1_all, q2_all), dim=-1)
+        w_actor = actor_weight[:, None, None, :, None]
+        f_actor = (q_online_pairs * w_actor).sum(dim=3)
+        pair_actor = f_actor.argmin(dim=-1)
+        f_selected = f_actor.gather(-1, pair_actor[..., None]).squeeze(-1)
+        weighted_q = (
+            integ_w * (alpha * new_log_probs - f_selected)
+        ).sum(dim=(1, 2))
         actor_loss = (
-            actor_mask * (alpha * new_log_probs - weighted_q)
+            actor_mask * weighted_q
         ).sum() / actor_den
+        logp_bar = (integ_w * new_log_probs).sum(dim=(1, 2))
         target_entropy = (
             -float(spec["actor"]["action_dim"])
             if sp.target_entropy is None else float(sp.target_entropy)
         )
         alpha_loss = -(
-            actor_mask * log_alpha * (new_log_probs + target_entropy)
+            actor_mask * log_alpha * (logp_bar + target_entropy)
         ).sum() / actor_den
         recomputed["actor_pair1_frac"] = float(pair_actor.float().mean().item())
 
@@ -419,8 +494,8 @@ def recompute_dump(
             "critic_loss": float(critic_loss.item()),
             "actor_loss": float(actor_loss.item()),
             "alpha_loss": float(alpha_loss.item()),
-            "log_prob_mean": float(new_log_probs.mean().item()),
-            "entropy_proxy_mean": float((-new_log_probs).mean().item()),
+            "log_prob_mean": float(logp_bar.mean().item()),
+            "entropy_proxy_mean": float((-logp_bar).mean().item()),
         })
 
     compared: Dict[str, Dict[str, float]] = {}
