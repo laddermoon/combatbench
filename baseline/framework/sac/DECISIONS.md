@@ -2234,6 +2234,35 @@ S4-W0 P4-AUDIT-0：SAC actor 契约与 A4.3 逐项对拍，登记差距；冻结
 - 不承诺 U 路线优于 Shannon、不默认叠加两种正则、不在阶段四做 U 路线正式训练验收（仅 toy + 单格对照探针）；
 - 不做全八格收敛矩阵（阶段六）；不引入 PER/n-step/relabel。
 
+### P4.5 `P4-AUDIT-0` 契约审计结果（G4.0）
+
+逐项核对当前 SAC actor 面与 A4.3，登记差距如下：
+
+| A4.3 契约 | 当前实现 | 差距 |
+|---|---|---|
+| `distribution(obs)` 返回 π 参数 | `forward()` 返回 `(mean, std)`，std 是共享标量 clamp | 缺分布对象；σ 参数化不是 A4.2 的 `(D,)` sigmoid-v TN bounded 语义 |
+| `expectation_samples(obs, noise)` → `[B,K,M,D]` + 联合 logp + 可微 `integration_weights` | 只有 `sample_action(obs)` 返回 `[B,D]` + 标量 logp | trainer 的 target/actor 两处调用需迁移；K=1 退化仍需按统一结构返回 |
+| `sample_behavior(obs, behavior_spec, rng)` | `SACBehaviorSpec.explore_factor` 已随 job 传递但 runtime policy 未消费 | e→σ 映射（unbounded `3^e`、bounded `v+κe`）未实现；生效值未记录 |
+| `deterministic_action` | 存在，返回 `tanh(mean)` | TN 格需返回未截断中心 μ（mixture 取最大 p_k 分量），语义不同需重定义 |
+| `uncertainty(obs, kind)` | 不存在 | peak/L2 度量、`uncertainty_kind` 解析、逐维 U 均需新增 |
+| RNG 流分离与状态保存 | 单个 CPU `torch.Generator`，`state_payload` 未存 RNG 状态 | actor/target/β/eval 分流与 checkpoint RNG 恢复缺失 |
+| 导出 strict 校验 | `S01RuntimePolicy` 校验 `policy_arch` | 缺 K、σ 参数化/界值、U_kind、内核版本、确定性语义元数据 |
+| 分布本体 | 未截断 tanh-Normal | 不满足八格 TN 定义；`evaluate_actions` 的熵代理是 Normal 熵非 TN 熵 |
+
+**PPO 复制适配边界：** 源面共 8 个 `*_mlp.py`（~3400 行）+ 10 个 `_export_template_*.py`（~4500 行）。复制范围限于：网络布局、σ/μ/logits 参数化与初始化、σ_min/σ_max/κ 常数、K 默认值、导出元数据字段名；不复制 SamplingContext/ratio/GAE 相关接口、`torch.multinomial→gather→Q` 训练路径（A4.4 已证其 logits 梯度缺失）、以及与 PPO collector 共享 RNG 的语义。
+
+### P4.6 冻结决策
+
+| 编号 | 决策 | 理由与边界 |
+|---|---|---|
+| SAC-R1-D41 | 八格 arch 命名固定为 `s00/s01/s10/s11/m00/m01/m10/m11`（第一位 0=shared σ / 1=state σ；第二位 0=unbounded / 1=bounded；`s`=single / `m`=mixture）；`actor_arch` 只允许这些值 | 与 A4.2 表格一一对应；`--set actor_arch=...` 是实验侧唯一接入口 |
+| SAC-R1-D42 | 阶段四把现有 `S01Actor`（tanh-Normal）标记为 `actor_arch="legacy_tanh"` 保留兼容旧 checkpoint，新增八格走 TN 内核；八格默认不提供 legacy 语义 | 旧 checkpoint 可 warm-start 加载；新 run 默认 `s01`，避免把未截断分布冒充 TN |
+| SAC-R1-D43 | `expectation_samples` 返回结构作为 trainer 唯一消费面：`actions[B,K,M,D]`、`log_prob[B,K,M]`、`integration_weights[B,K,M]`（可微，沿 K/M 和为 1）、`component_ids` 或等价诊断 | K=M=1 时必须逐位退化为单采样路径；trainer 不出现按 arch 名分支 |
+| SAC-R1-D44 | `uncertainty(obs, kind)` 的 kind 只允许 `"peak"`（S 格 native）与 `"l2"`（M 格 native）；跨格调用另一度量允许但必须在导出/日志标记 `uncertainty_kind` | 沿用 A4.6「不统一两种 U」；相同 λ/f 跨度量不视为等强度 |
+| SAC-R1-D45 | behavior spec 的 `explore_factor` 保留字段名，语义即 A4.8 的 `e∈[-1,1]`；`mode="deterministic"` 时 `e` 必须为 0 否则拒绝 | 复用已持久化的 provenance 字段，不引入第二套采集参数 |
+
+`G4.0` 通过标准：以上矩阵与命名/接入面冻结完成；无「配置接受但语义未实现」的 arch 值进入注册表。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
