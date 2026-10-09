@@ -267,3 +267,10 @@ resume 等价性有旗舰级位级测试背书（test_resume_equivalence.py，
 跨进程逐位比对整个 checkpoint payload）。REPRODUCE.md 担保边界
 （代码可复现≠位级可复现）写明。自纠一处：1000003 派生点是
 gradsig 采样种子非 reset_update。
+
+## [2026-10-09] D-DOC-4 结案：.gitignore 文档资产陷阱修复
+
+`obsolete` → `obsolete/`（目录模式：仍挡任意深度 obsolete 目录，
+但不再误伤 `obsolete.py` 同名文件——实测验证）；`*.png`/`*.json`/
+`*.csv` 三模式加注释"文档/证据资产需 `git add -f` 显式入库"。
+DOCS.md §7 政策文字已覆盖惯例说明。

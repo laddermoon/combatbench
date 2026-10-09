@@ -43,8 +43,10 @@ VALUE_PLAN.md
 
 debug_*
 
-obsolete
+# 任意深度的 obsolete/ 目录一律忽略（尾斜杠=目录模式，防误伤同名 .py）
+obsolete/
 
+# 以下三类全挡：文档/证据资产需要入库时用 git add -f 显式添加
 *.csv
 
 *.png
