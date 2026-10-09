@@ -240,3 +240,11 @@ act 校验）、ParameterizedEnvBlueprint（parameters 节 + `${name}` 占位
 输出字段、MatchRunner 参数表 + MatchResult 字段（KO 提前终场语义）、
 编程接口示例。**核实中自纠一处**：两文件均为相对 import，CLI 必须
 `python -m envs.framework.{round,match}_runner`——初稿误写直接路径执行。
+
+## [2026-10-09] D-DOC-13d 结案：baseline/README.md 训练路径地图（方案 A）
+
+新建 `baseline/README.md`（类型：指南）——一页训练全链路
+（定义实验→启动→产物→诊断→评估 五步，每步指深挖文档）+
+目录构成 + "实验=配方/框架=引擎/环境=蓝图"心智模型。
+连带填了 baseline/ 根零 README 的洞。EXPERIMENT_CLASS 导出约定、
+--param 语法、注册发现机制均对照源码核实。
