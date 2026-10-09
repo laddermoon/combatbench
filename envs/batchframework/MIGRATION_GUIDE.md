@@ -39,7 +39,7 @@ print(rep.to_markdown())"
 | 插件读 `ctx.episode_options` | `grep 'episode_options'` | **已闭合（E9 G4）**：`ctx.episode_options` = {白名单键: (B,) 张量}——白名单之外仍不可见 |
 | 插件覆写 `on_pre/post_phy_step` | 逐类检查 | 可走，但**物理图化自动失效**（eager 路径）；优先考虑能否改为 `upload_force_schedule` |
 | `get_sensor_data` / 渲染 / broadcastview | `grep 'sensor_data\|broadcastview'` | 无对应物——sensor 需进 obs_builder，渲染走 debug_capture→CPU replay |
-| 采样 spec 含 callable ef / reference / delta_factor | 看 Job 生成处 | 显式拒绝（G6）；reference/delta 需扩展 executor ctx 声明，callable ef 属采样契约缺口（见 §G6 段） |
+| 采样 spec 含 callable ef / reference / delta_factor | 看 Job 生成处 | callable ef：改写为声明式 ef 程序（`ef_programs` 注册表，`obs_threshold` 已支持）即可双后端运行；reference/delta_factor 仍显式拒绝（G6），需扩展 executor ctx 声明 |
 | 策略 `policy_class` 非 truncnorm 族 | 导出 payload `policy_class` | 8 族全支持（`_FAMILY_SPECS`）；pre_tanh/未知类显式拒绝——新族接入 = `_FAMILY_SPECS` 一行 + `register_executor` + golden 测试 |
 
 **判定输出**：全部 native → 跳到 §5 直接验证；有 pending → 按 §1–4

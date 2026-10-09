@@ -112,8 +112,10 @@ delta_factor 显式拒绝。注册表如实标 UNSUPPORTED——非暗坑。
 > 单一 `TruncatedNormalExecutor` 扩到全部 8 个 truncnorm 族
 > （`policy_executor._FAMILY_SPECS` + 泛型 `TorchPolicyExecutor`；
 > mixture 族的组件选择噪声经 `u_comp` 注入保持 job-keyed 语义；
-> pre_tanh 两族显式拒绝）。残余 spec 缺口只剩 callable ef /
-> reference / delta 三字段。
+> pre_tanh 两族显式拒绝）。同日 ef 程序落地
+> （`baseline/framework/rollout/ef_programs`）：callable ef 的
+> obs-threshold 形态已可双后端执行；残余 spec 缺口只剩
+> reference / delta 两字段与其余 callable 形态。
 
 **G7 — 无设备侧评测 runner（低）**
 
