@@ -705,3 +705,11 @@ PushStateObserver 逐帧镜像，r_fall 支付 +0.02/帧 clean 奖励
 （≈0.6-0.7/撑过窗）。r_fall critic EV 0.22→0.85，通道梯度×5。
 **u3470 晋级 level 7**（recovery 0.806），而此前两版在同一 level
 卡了 ~700+ update 未过 0.78。
+
+**`s42i` 终态（u3330-5000，max_updates 封顶）**：
+level 11/11 打通（L7@3470 → L8@3690 → L9@3900 → L10@4190 →
+L11@4310），顶级 100N×36-40 步推下 recovery 0.93-0.95 稳定，
+步态保留（step=1.0, alt=0.80, cycles=37/ep, solepk=0.113,
+falls=0.06, sway=1.54, wallln=0.005）。旧实现终态 level 11
+仅 recovery 0.78 —— 严格墙规则 + 存活奖励下全面超出。
+best policy: `runs/balance_step_s42i/policy/`。
