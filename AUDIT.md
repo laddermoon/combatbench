@@ -2885,3 +2885,29 @@ bench_rollout 单/并行双路径实测通过。
 
 `import curriculum.experiments` OK；`get_experiment()` 实测在调用时
 ModuleNotFoundError；`test_stage_seg_rewards` 26 collect+skip。
+
+## [2026-10-09] Phase 4 B 档（脱节文档）复核结案：全部已由前轮修复
+
+**类别**：复核关闭 + 一处补齐
+
+逐条复核 Phase 4 B 档 16 个文档项，全部已由前几轮处置修复或本就准确：
+
+- `get_termination_flags` 残留：仅余 CONTEXT.md:160 的**否定式注记**
+  （"No get_termination_flags — that API was..."）+ ledger 的 DONE 记录——
+  正确形态。
+- 根 README 已指向 `experiments_ppo` + `GUIDE.md` 活路径、curriculum
+  标为 legacy archive；CLAUDE.md 已明示 `experiments/` import-broken、
+  gymnasium 仅用于 spaces。
+- `RESET.md` 的 on_reset/on_post_step 已改为"旧名已删除"的重命名记录；
+  `SEED.md` ParallelRunner 段已改为删除说明 + 指向 rollout。
+- `follow/`/`end2end`/`blueprints` README 的 experiments_v2 死路径、
+  旧 CLI 命令均已清；`ISSUES.md` 顶部已有 AUDIT.md 指路。
+- 曾实测失败的测试簇（test_dump_delta×4、test_trainer rng、
+  test_viewer collection error）**现已全绿**（90+55 passed）。
+- **唯一实质改动**：`envs/framework/tests/README.md` 测试表补
+  `test_event_journal.py` 行（EventJournal 契约测试漏登记）。
+
+B 档清零。剩余待裁决：P-MISC-1（`_debug/`/`debug_approach/` 根目录
+调试产物堆）、Phase 4 C 档（历史文档 archival 标记 S16）、
+D 档缺口（10 项缺失文档，S17 建议优先级 1→3→2→4）、
+P3-29~35 + P3-17 + P-BF-1~4（batchframework 挂起中）。
