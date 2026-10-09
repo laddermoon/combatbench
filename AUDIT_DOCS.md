@@ -290,3 +290,11 @@ CLAUDE.md（目录树）分工明确。DOCS.md §8 台账表补登 DOCS_INDEX。
 存量整改：活文档仅 4 处违规——RESET.md×3（绝对路径+行号，
 其中 episode_runner 的行号已漂移证实腐化）+ LIFECYCLE_TRACE×1，
 全部改符号引用。DOCS.md 内的 `simulator.py:257` 是反面示例文本，保留。
+
+## [2026-10-09] D-DOC-7 结案：双语同步协议存量落实
+
+4 对双语文件（README、RULE、ENVIRONMENT、SUBMISSION）头部加互相
+指认行（en 版 `> 中文版：X_zh.md`，zh 版 `> English: X.md`，置于
+类型行之下）。SUBMISSION 对加"Last verified: 2026-06，以平台实际
+为准"时效声明——外部平台流程本仓无法验证，诚实标注而非假装准确。
+RULE 对行数差异（81/87）属翻译行文差异，同 commit 同步，不动。

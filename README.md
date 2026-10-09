@@ -1,6 +1,7 @@
 # CombatBench: Humanoid Robot Combat Benchmark
 
 > Type: Guide
+> 中文版：README_zh.md
 
 ![CombatBench Hero](assets/images/hero.png)
 

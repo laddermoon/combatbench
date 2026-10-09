@@ -1,6 +1,8 @@
 # Policy Submission
 
 > Type: Contract
+> 中文版：SUBMISSION_zh.md
+> Last verified: 2026-06 — describes the external combatbench.tech platform flow; the platform itself is authoritative.
 
 ## 1. Install the tool
 

@@ -1,6 +1,7 @@
 # 仿真环境
 
 > 类型：契约
+> English: ENVIRONMENT.md
 
 该仿真环境支持具有 21 自由度 (DoF) 控制的人形机器人。当前场地模型为
 `envs/humanoid21/battle_circular_v2.xml`（`Laddermoon_Arena_Circular`）。

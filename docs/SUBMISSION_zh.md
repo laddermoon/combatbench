@@ -1,6 +1,8 @@
 # 策略提交
 
 > 类型：契约
+> English: SUBMISSION.md
+> 最后核实：2026-06——描述外部 combatbench.tech 平台流程，以平台实际表现为准。
 
 ## 1. 安装工具
 

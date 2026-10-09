@@ -1,6 +1,7 @@
 # CombatBench Rules V1.0 (Health Point Focused)
 
 > Type: Contract
+> 中文版：RULE_zh.md
 
 ## I. Objective
 Control a bipedal robot to deplete the opponent's health points (HP) through valid strikes. The first to reduce the opponent's HP to 0 wins.

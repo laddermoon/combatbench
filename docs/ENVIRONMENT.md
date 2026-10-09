@@ -1,6 +1,7 @@
 # Simulation Environment
 
 > Type: Contract
+> 中文版：ENVIRONMENT_zh.md
 
 The simulation environment supports humanoid robots controlled with 21 Degrees of Freedom (DoF). The active arena model is `envs/humanoid21/battle_circular_v2.xml` (`Laddermoon_Arena_Circular`).
 

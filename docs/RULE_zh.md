@@ -1,6 +1,7 @@
 # CombatBench 规则 V1.0（纯血条极简版）
  
 > 类型：契约
+> English: RULE.md
 
 ## 一、任务目标
  

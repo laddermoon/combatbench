@@ -1,6 +1,7 @@
 # CombatBench: 人形机器人对战基准平台
 
 > 类型：指南
+> English: README.md
 
 ![CombatBench Hero](assets/images/hero.png)
 
