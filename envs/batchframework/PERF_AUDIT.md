@@ -1,0 +1,117 @@
+# Batch Framework 时间审计 —— 深度分析
+
+> 类型：记录  
+> 日期：2026-10-09  
+> 对象：standup 训练负载（512 eps/update，2×B=256，25 substep/step，
+> T=200）  
+> 方法：训练日志分段计时 + `probe_e7_baseline` 计量探针 +
+> 隔离微基准 + nsys kernel 分解  
+> 结论先行：**wave 的 77–85% 是物理 GPU 执行，且物理是
+> 延迟/占用率受限而非算力受限**——"observer 慢"是同步点记账的
+> 假象。真正的优化空间按节 4 排序。
+
+---
+
+## 1. 每 update 顶层分解（稳态均值）
+
+| 段 | device s42 | CPU s42（参照） |
+|---|---|---|
+| rollout | **9.87s** | 10.91s |
+| ppo | 0.74s | 0.68s |
+| buffer | 0.21s | 0.23s |
+| eval（摊销，每 5 更新一次） | **1.84s** | 0.38s |
+| total | 12.68s（中位 10.9，p90 19.8） | 12.22s |
+
+rollout 内部（`probe_e7_baseline` B=256 单卡 collect，median wall 8.94s）：
+
+| 段 | 时间 | 占比 | 说明 |
+|---|---|---|---|
+| step（200 步） | 7.04s | 79% | 见下 |
+| reset | 1.42s | 16% | `device_random_fallen_state` 摔倒模拟 |
+| policy | 0.25s | 3% | executor 前向 |
+| finalize+d2h+export | 0.07s | 1% | — |
+
+step 内部（隔离测量，B=256 含 sync）：
+
+| 段 | ms/step | 占比 |
+|---|---|---|
+| physical_step(25) exec | 29.1 | **77%** |
+| obs_build | 0.5 | 1%（已图化） |
+| barrier/hook/计数/记录残差 | ~8.3 | 22% |
+
+## 2. 关键澄清：observer 不是瓶颈
+
+`probe` 显示 `obs::standing_balance_a` 6.28s（b 仅 0.38s）——**这是
+记账假象**：`contact_forces_flat` 内 `torch.nonzero` 变长输出强制
+host 同步，排在队列里的物理 kernel 执行时间全部记入第一个 sync
+点（observer A）。真实 observer 数学 ≈ 0.4s/wave（observer B 的
+测量值 ≈ 真实成本）。
+
+**隔离验证**：裸物理 200×25 子步 graph replay wall=7.11s ≈ 实测
+wave 的 step 段 7.04s——物理 exec 就是 wave 本体。
+
+## 3. 物理 exec 的结构（B=256，1.42ms/substep）
+
+### 吞吐–batch 缩放（graph replay）
+
+| B | ms/substep | sub/s |
+|---|---|---|
+| 256 | 1.42 | 0.18M |
+| 512 | 1.65 | 0.31M |
+| 1024 | 2.15 | 0.48M |
+| 2048 | 3.44 | 0.60M |
+
+8× 行数 → 墙钟只涨 2.4×：**kernel 延迟受限，非算力受限**。
+
+### kernel 分解（nsys eager，15 子步，busy≈0.87ms/substep）
+
+| 族 | µs/substep | 占比 |
+|---|---|---|
+| **solver**（cholesky 123 + linesearch ~95 + constraint update ~92 + LD/search/jaref ~120） | ~440 | **~50%** |
+| 质量矩阵 ops（qLD_acc 108 + mul_m 26 + JTDAJ 30 + qM 6） | ~170 | ~20% |
+| 前向动力学树（kinematics/crb/cfrc/comvel/cacc/transmission ~103） | ~103 | ~12% |
+| 接触+碰撞（efc_init/jac 25 + narrow 9.5 + broad 6） | ~40 | ~5% |
+| 其它（padding/zero/cost/misc） | ~120 | ~14% |
+
+- solver 每子步实际迭代 ~4–5 次（linesearch_iterative ×4.5/substep）；
+  **收紧 iterations 上限 100→5 无收益**（1.31→1.51ms，噪声），
+  已经在用早停——再压迭代属语义变更需 golden 验证。
+- 单 kernel 均值 ~4µs@B=256 → 每子步 ~60+ 小 kernel，
+  延迟主导；wall 1.42ms vs busy 0.87ms 的差为提交气泡
+  （graph 已大幅压缩，残差是 replay 间隙）。
+
+## 4. 优化空间（按预期收益排序）
+
+| # | 项 | 估计收益 | 工作量 | 语义风险 |
+|---|---|---|---|---|
+| O1 | **eval 路径重叠/改尺寸**：64 eval jobs 跑 B=256 runtime → 75% 物理浪费在 pad 行（9.1s/eval≈train wave）。方案 a：第二卡异步 eval rollouter（训练环改异步）；b：eval 专用 B=64 runtime（kernel 延迟同 → 只省 ~30%） | ~1.8s/update 摊销（total 14%） | 中 | 无 |
+| O2 | **摔倒模拟去同步**：`_draw_actions` 后每物理子步 `bool(newly.any())` host 同步（~1000 sync/reset）。改为设备侧 masked capture + 每 sync_chunk 才同步早退检查 | 1.4s→~0.4s/reset（wave ~10%） | 中 | 无（同数学） |
+| O3 | **每步 sync 合并**：~7+ sync/step（barrier×2 + 2 observer×nonzero + timeout nonzero）。observer 接触表改定形 dense 路径（复用 `_feet_forces_dense` 式），termination/timeout 打包进一次 .any() 读 | 残差 8.3ms/step 收一半 → ~0.8s/wave（~9%） | 中-高 | 无 |
+| O4 | **波密度/打包**：B=2048 吞吐 3.3×（0.60M sub/s）。同协议下单 update 墙钟收益小（2×256 已并行）；真实收益=**每卡多 run 复用**或更少卡 | 每 GPU 吞吐 2–3× | 低（配置） | 无 |
+| O5 | **物理 kernel 深挖**：solver 族 ~50% busy——MJWarp 版本升级/`solver` 参数变体（CG/PG）/nconmax 池尺寸/nsight compute 细剖 | 未知，潜在最大 | 大 | solver 参数=语义变更，需 golden |
+| O6 | **ENDED 行物理浪费**：ENDED 行仍全员推进（冻结写回） | standup 零收益（全 timeout）；早终任务大 | 中 | 无 |
+| O7 | policy MLP / PPO / export | 已 <3%，略 | — | — |
+
+## 5. 单 run 加速的现实边界
+
+- 512eps wave 地板 ≈ 物理 7.1s + reset + 残差 ≈ 9s——**当前
+  9.87s 已贴近**；
+- 要把 rollout 压到 CPU 的一半（~5.5s）需要物理 exec ~4s——
+  唯一可达路径是 O5（kernel 级）+ O2/O3 清干净非物理残差；
+- O4 的方向才是结构性答案：**GPU 在 B=256 只跑到 0.18M sub/s，
+  B=2048 达 0.60M**——standup 单 run 用不满卡，收益要按
+  "多 run/多实验共享一卡"或"吞吐受限任务（大批量/自博弈）"
+  兑现。
+
+## 6. 建议的下一步（可选）
+
+1. O2+O3 落地（纯框架优化，无语义风险，wave 估 ~19%）；
+2. O1a eval 异步化（训练环改动，total ~14%）；
+3. O5 spike：nsys compute 细剖 solver 族 + MJWarp 新版本
+   changelog 对照——若 solver 时间可降，是唯一能把单 run
+   rollout 打对折的路径；
+4. O4 多 run 复用一卡的调度层（若走"并行实验"路线）。
+
+*测量数据：`/tmp/e7_b256.json`（probe）、训练 run
+`train_standup_ppo_20261008_131639`（device）、
+`train_standup_ppo_20261009_105422`（CPU）、`/tmp/eager_prof`（nsys）。*
