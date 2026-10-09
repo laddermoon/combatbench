@@ -2498,6 +2498,16 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
 - **诊断#2（`sac_standup_s01_s42_te0`，38K env 停训）**：熵修复验证成功（α∈[0.15,0.26]、logp≈0、σ≈0.33），但暴露独立失效——`critic.q_mean` 1.7→324 后停在 ~320 自举幻想固定点（全状态均匀 Q + 步间系统性 +3.5 漂移；corr(frame,Q)=0.05 非 episode-ramp；consistency 无违例排除语义 bug）。uniform Q ⇒ actor loss 常数 ⇒ 学习死亡。致命三角（FA+自举+off-policy）实证；旧 run Q=20 是同机制被早塌缩封顶。**单变量修复：`q_layer_norm false→true`**（LayerNorm critic，SAC Q 发散标准解法），保留 te=0。→ `sac_standup_s01_s42_te0_ln`。
 - `sac_balance_s01_s42` 未受同病：α=0.011 缓降、Q≈1.0、TD≈1.7、双 agent 数据多样性天然防漂移；eval 0.125→0.672 波动上升，继续按里程碑观察。
 
+### P6.4c pathfinder 结果（standup ✅ / balance 进行中）
+
+- **`sac_standup_s01_s42_te0_ln` 达标（完成于 2.01M env_step，预算耗尽点）**：
+  - 首次 success≥0.9：`env_step=1,164,800`；100 次 eval 中 43 次 ≥0.9；
+  - 末段连续 ≥15 次 eval `success≥0.969`（多数 1.0），`final_pot` 0.955–0.989、`max_pot` 0.97–0.999 —— 持续站立非短暂起身，满足「连续 ≥3 次 ≥0.9 且末次为最终 checkpoint」判据；
+  - 诊断链验证：te=0 修熵崩（α 均衡健康、logp≈0）+ LN 修 Q 发散（q_mean 稳定于 ~0.5 量级、td≈0.01），两变量各自对应独立证据；
+  - 配方固化为 standup 基线：`actor_arch=s01, target_entropy=0.0, q_layer_norm=true`，其余默认。
+- **多 seed 扩展启动**（pathfinder 可信即铺）：`sac_standup_s01_s1337_te0_ln`（pid 344395, GPU0）、`sac_standup_s01_s2024_te0_ln`（pid 356628, GPU2），配置与 pathfinder 完全一致仅换 seed。
+- `sac_balance_s01_s42`（~6M/10M）：survival 峰值 0.969×2、近 8 次 eval 在 0.81–0.97 波动，尚未连续 ≥3 次 ≥0.9，未到 10M 预算继续观察。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
