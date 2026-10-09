@@ -1,6 +1,6 @@
 """SAC L2 dump capture, inspection, and recomputation.
 
-``sac_dump_v2`` captures the exact sampled batch and the model/optimizer state
+``sac_dump_v3`` captures the exact sampled batch and the model/optimizer state
 surrounding one ``critic_tick``.  The minimum supported evidence level is
 ``recompute``: Bellman targets, critic losses, actor decomposition, and the
 alpha loss can be recomputed from the dump without replay storage still being
@@ -29,7 +29,8 @@ from .tn_actor import TNActor
 from .trainer import _forward_all_candidates
 
 
-SAC_DUMP_SCHEMA = "sac_dump_v2"
+SAC_DUMP_SCHEMA = "sac_dump_v3"
+SUPPORTED_DUMP_SCHEMAS = frozenset({"sac_dump_v2", "sac_dump_v3"})
 
 
 class SACDumpError(RuntimeError):
@@ -63,6 +64,38 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _batch_consistency(batch: Mapping[str, Any]) -> Dict[str, Any]:
+    """Row-level contract violations in a sampled batch (v3 dumps)."""
+    def _t(name: str) -> Optional[torch.Tensor]:
+        v = batch.get(name)
+        return v.detach().cpu() if isinstance(v, torch.Tensor) else None
+
+    terminated = _t("terminated")
+    truncated = _t("truncated")
+    bootstrap = _t("bootstrap")
+    out: Dict[str, Any] = {"checked": False, "violations": {}}
+    if terminated is None or bootstrap is None:
+        return out
+    violations: Dict[str, int] = {}
+    term_bs = int(((terminated.bool()) & (bootstrap > 0)).sum().item())
+    if term_bs:
+        violations["terminated_with_bootstrap"] = term_bs
+    if truncated is not None:
+        trunc_no_bs = int(
+            ((truncated.bool()) & (bootstrap <= 0)).sum().item()
+        )
+        if trunc_no_bs:
+            violations["truncated_without_bootstrap"] = trunc_no_bs
+    out["checked"] = True
+    out["violations"] = violations
+    out["rows"] = int(terminated.numel())
+    out["terminated_rows"] = int(terminated.sum().item())
+    out["truncated_rows"] = (
+        int(truncated.sum().item()) if truncated is not None else 0
+    )
+    return out
 
 
 def _trainer_spec(
@@ -173,6 +206,7 @@ def finish_critic_tick_dump(
     grad_clip_norm: float,
     critic_lr: float,
     keep_last: int = 8,
+    replay_stats: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     """Complete a dump begun by :func:`begin_critic_tick_dump`."""
     tmp = Path(tmp_dir)
@@ -183,10 +217,19 @@ def finish_critic_tick_dump(
         _write_json(tmp / "spec.json", _trainer_spec(
             actor, critic, channels, sp, grad_clip_norm, critic_lr,
         ))
-        _write_json(tmp / "analysis.json", {
+        analysis_payload: Dict[str, Any] = {
             "evidence_level": "recompute",
             "update_stats": dict(update_stats),
-        })
+            "consistency": _batch_consistency(
+                torch.load(
+                    tmp / "batch.pt", map_location="cpu",
+                    weights_only=False,
+                )
+            ),
+        }
+        if replay_stats is not None:
+            analysis_payload["replay_stats"] = _jsonable(dict(replay_stats))
+        _write_json(tmp / "analysis.json", analysis_payload)
         files = {}
         for path in sorted(tmp.iterdir()):
             if path.is_file() and path.name != "manifest.json":
@@ -253,7 +296,7 @@ def load_dump(dump_dir: Path) -> Dict[str, Any]:
     if not manifest_path.exists():
         raise SACDumpError(f"missing dump manifest: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != SAC_DUMP_SCHEMA:
+    if manifest.get("schema_version") not in SUPPORTED_DUMP_SCHEMAS:
         raise SACDumpError(
             f"unsupported dump schema {manifest.get('schema_version')!r}"
         )
@@ -576,7 +619,7 @@ def find_sample(dump_dir: Path, *, sample_id: int) -> Dict[str, Any]:
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect SAC sac_dump_v2 bundles")
+    parser = argparse.ArgumentParser(description="Inspect SAC dump bundles (v2/v3)")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("summary", "recompute"):
         p = sub.add_parser(name)

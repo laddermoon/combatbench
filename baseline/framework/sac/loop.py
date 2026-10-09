@@ -592,6 +592,7 @@ def train_sac(
                                 grad_clip_norm=cp.grad_clip_norm,
                                 critic_lr=cp.critic_learning_rate,
                                 keep_last=dump_keep_last,
+                                replay_stats=replay.buffer_stats(),
                             )
                             metrics.emit_debug(
                                 clocks,

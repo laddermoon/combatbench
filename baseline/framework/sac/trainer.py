@@ -327,6 +327,13 @@ def compute_critic_targets(
             capture["next_log_probs"] = next_log_probs.detach().cpu()
             capture["next_integration_weights"] = integ_w.detach().cpu()
             capture["target_pair_index"] = pair_next.detach().cpu()
+            capture["next_cand_f"] = f_next.gather(
+                -1, pair_next[..., None],
+            ).squeeze(-1).detach().cpu()
+            capture["next_cand_q"] = {
+                ch.name: q_next_pairs[..., c, :].detach().cpu()
+                for c, ch in enumerate(channels)
+            }
         if target_info is not None:
             target_info["pair_index"] = pair_next
         # Continuation regularizer B(s'): shannon uses the per-candidate
@@ -445,10 +452,16 @@ def sac_update_v2(
             continue
         q1_pred = critic.q1_forward(obs, actions, ch.name)
         q2_pred = critic.q2_forward(obs, actions, ch.name)
+        target = q_targets[ch.name]
         if capture is not None:
             capture.setdefault("q1_pred", {})[ch.name] = q1_pred.detach().cpu()
             capture.setdefault("q2_pred", {})[ch.name] = q2_pred.detach().cpu()
-        target = q_targets[ch.name]
+            capture.setdefault("td_q1", {})[ch.name] = (
+                q1_pred - target
+            ).detach().cpu()
+            capture.setdefault("td_q2", {})[ch.name] = (
+                q2_pred - target
+            ).detach().cpu()
         q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
         q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
         (q1_loss + q2_loss).backward()
@@ -551,6 +564,11 @@ def sac_update_v2(
         reg_term = -b_state                                # actor: −Bθ(s)
     if capture is not None:
         capture["actor_pair_index"] = pair_actor.detach().cpu()
+        capture["actor_cand_f"] = f_selected.detach().cpu()
+        capture["actor_cand_q"] = {
+            ch.name: q_online_pairs[..., c, :].detach().cpu()
+            for c, ch in enumerate(channels)
+        }
         capture["weighted_q"] = weighted_q.detach().cpu()
         if reg_term is not None:
             capture["reg_actor"] = reg_term.detach().cpu()
