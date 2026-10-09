@@ -117,6 +117,27 @@ def test_replay_admission_sampling_identity_and_payload() -> None:
     assert batch["metadata"][0]["collection"]["collection_round"] == 1
 
 
+def test_draw_counts_track_reuse_and_survive_round_trip(tmp_path) -> None:
+    replay = SACReplayBuffer(8, 3, 2, ("r",), rng_seed=5)
+    replay.add_slices([_slice(T=8, channels=1)])
+    b1 = replay.sample(4, torch.device("cpu"))
+    assert int(b1["draw_counts"].sum().item()) == 4
+    drawn = set(b1["sample_ids"].tolist())
+    b2 = replay.sample(4, torch.device("cpu"))
+    for i, sid in enumerate(b2["sample_ids"].tolist()):
+        expected = 2 if sid in drawn else 1
+        assert int(b2["draw_counts"][i].item()) == expected
+    stats = replay.buffer_stats()
+    assert stats["draw_count_mean"] == pytest.approx(1.0)
+    assert stats["draw_count_max"] == 2
+    assert "explore_factor_counts" in stats
+    assert "sample_age_quantiles" in stats
+
+    replay.save(tmp_path / "replay.pt")
+    restored = SACReplayBuffer.load(tmp_path / "replay.pt")
+    np.testing.assert_array_equal(restored.draw_counts, replay.draw_counts)
+
+
 def test_sample_is_deterministic_for_same_replay_seed() -> None:
     first = SACReplayBuffer(10, 3, 2, ("r",), rng_seed=123)
     second = SACReplayBuffer(10, 3, 2, ("r",), rng_seed=123)

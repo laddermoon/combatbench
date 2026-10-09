@@ -89,6 +89,7 @@ class SACReplayBuffer:
         )
 
         self.sample_ids = np.full(self.capacity, -1, dtype=np.int64)
+        self.draw_counts = np.zeros(self.capacity, dtype=np.int64)
         self.source_keys: List[Optional[str]] = [None] * self.capacity
         self.slice_ids: List[Optional[str]] = [None] * self.capacity
         self.frame_indices = np.full(self.capacity, -1, dtype=np.int64)
@@ -216,6 +217,7 @@ class SACReplayBuffer:
             arr[p] = float(sl.reward_features[name][t])
 
         self.sample_ids[p] = sample_id
+        self.draw_counts[p] = 0
         self.source_keys[p] = source_key
         self.slice_ids[p] = str(sl.slice_id)
         self.frame_indices[p] = int(t)
@@ -259,6 +261,7 @@ class SACReplayBuffer:
             slots = self.rng.choice(
                 self._live_slots(), size=batch_size, replace=False,
             )
+            self.draw_counts[slots] += 1
             sample_ids = np.asarray(self.sample_ids[slots], dtype=np.int64)
             if len(np.unique(sample_ids)) != batch_size:
                 raise SACReplayError("sampled batch contains duplicate sample_id")
@@ -284,6 +287,9 @@ class SACReplayBuffer:
                 "sample_weight": torch.as_tensor(self.sample_weight[slots], device=device),
                 "policy_action": torch.as_tensor(self.policy_action[slots], device=device),
                 "sample_ids": torch.as_tensor(sample_ids, device=device),
+                "draw_counts": torch.as_tensor(
+                    self.draw_counts[slots], device=device,
+                ),
                 "source_keys": [self.source_keys[int(slot)] for slot in slots],
                 "metadata": [self.metadata[int(slot)] for slot in slots],
                 "indices": np.asarray(slots, dtype=np.int64),
@@ -373,11 +379,14 @@ class SACReplayBuffer:
         policy_versions: Dict[str, int] = {}
         reward_semantics: Dict[str, int] = {}
         objective_modes: Dict[str, int] = {}
+        explore_factors: Dict[str, int] = {}
+        random_start_rows = 0
         for meta in self.metadata[: self.size]:
             if meta is None:
                 continue
             collection = dict(meta.get("collection") or {})
             versions = dict(meta.get("versions") or {})
+            behavior = dict(meta.get("behavior") or {})
             round_key = str(collection.get("collection_round", "unknown"))
             policy_key = str(collection.get("policy_fingerprint", "unknown"))
             reward_key = str(versions.get("reward_semantics", "unknown"))
@@ -386,6 +395,11 @@ class SACReplayBuffer:
             policy_versions[policy_key] = policy_versions.get(policy_key, 0) + 1
             reward_semantics[reward_key] = reward_semantics.get(reward_key, 0) + 1
             objective_modes[objective_key] = objective_modes.get(objective_key, 0) + 1
+            e_key = str(behavior.get("explore_factor", "unknown"))
+            explore_factors[e_key] = explore_factors.get(e_key, 0) + 1
+            if behavior.get("random_start"):
+                random_start_rows += 1
+        draws = self.draw_counts[: self.size]
         return {
             "size": self.size,
             "capacity": self.capacity,
@@ -396,6 +410,14 @@ class SACReplayBuffer:
             "sample_id_min": int(sample_ids.min()) if self.size else -1,
             "sample_id_max": int(sample_ids.max()) if self.size else -1,
             "sample_age_mean": float(ages.mean()) if self.size else 0.0,
+            "sample_age_quantiles": (
+                np.quantile(ages, [0.5, 0.9, 0.99]).tolist()
+                if self.size else []
+            ),
+            "draw_count_mean": float(draws.mean()) if self.size else 0.0,
+            "draw_count_max": int(draws.max()) if self.size else 0,
+            "explore_factor_counts": explore_factors,
+            "random_start_rows": random_start_rows,
             "collection_round_counts": collection_rounds,
             "policy_fingerprint_counts": policy_versions,
             "reward_semantics_counts": reward_semantics,
@@ -433,6 +455,7 @@ class SACReplayBuffer:
             "sample_weight": self.sample_weight,
             "policy_action": self.policy_action,
             "sample_ids": self.sample_ids,
+            "draw_counts": self.draw_counts,
             "source_keys": self.source_keys,
             "slice_ids": self.slice_ids,
             "frame_indices": self.frame_indices,
@@ -470,6 +493,10 @@ class SACReplayBuffer:
                 "sample_ids", "frame_indices",
             ):
                 getattr(self, name)[:] = np.asarray(state[name])
+            if "draw_counts" in state:
+                self.draw_counts[:] = np.asarray(state["draw_counts"])
+            else:
+                self.draw_counts[:] = 0
             self.source_keys = list(state["source_keys"])
             self.slice_ids = list(state["slice_ids"])
             self.metadata = list(state["metadata"])

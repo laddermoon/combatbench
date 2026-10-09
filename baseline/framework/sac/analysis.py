@@ -327,6 +327,10 @@ def dump_samples(
             "reward_sum": float(batch["rewards"][i].sum().item()),
             "terminated": bool(batch["terminated"][i]),
             "truncated": bool(batch["truncated"][i]),
+            "draw_count": (
+                int(batch["draw_counts"][i])
+                if "draw_counts" in batch else "unavailable"
+            ),
             "collection_round": (
                 meta.get("collection") or {}
             ).get("collection_round"),
@@ -426,6 +430,10 @@ def dump_trace(
         "truncated": bool(batch["truncated"][i]),
         "bootstrap": float(batch["bootstrap"][i]),
         "sample_weight": float(batch["sample_weight"][i]),
+        "draw_count": (
+            int(batch["draw_counts"][i])
+            if "draw_counts" in batch else "unavailable"
+        ),
         "per_channel": per_channel,
         "target_side": {
             "pair_index": _row(forward.get("target_pair_index")),
