@@ -256,3 +256,14 @@ act 校验）、ParameterizedEnvBlueprint（parameters 节 + `${name}` 占位
 resume+dump 精确复现）、dumps/uNNNNN/ 产物结构、debug.py 13 个
 子命令全表、viewer 三种入口粒度、四条常见排查路径。
 CONTEXT.md 实为能力地图非操作指南——两者分工在文中互相指路。
+
+## [2026-10-09] D-DOC-13f 结案：DETERMINISM.md 训练层确定性契约
+
+新建 `baseline/framework/DETERMINISM.md`（类型：契约）——seed 流向图
+（rollout `S+u·eps` / eval `S+100000+u·97` / gradsig `S·1000003+u`）、
+担保等级表。**核实发现的事实**：`collect()` 保序返回——num_workers
+不是非确定源；**全仓未设 cudnn.deterministic**——GPU 位级相等不承诺；
+resume 等价性有旗舰级位级测试背书（test_resume_equivalence.py，
+跨进程逐位比对整个 checkpoint payload）。REPRODUCE.md 担保边界
+（代码可复现≠位级可复现）写明。自纠一处：1000003 派生点是
+gradsig 采样种子非 reset_update。
