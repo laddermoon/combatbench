@@ -224,3 +224,12 @@ SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
 batchframework 白名单机制说明 + "当回合生效不留残"契约条款
 （P3-2/16 修复的制度化）。核实来源：逐插件 grep episode_options
 消费点，未依赖记忆。
+
+## [2026-10-09] D-DOC-13b 结案：BLUEPRINTS.md schema 契约
+
+新建 `envs/framework/BLUEPRINTS.md`（类型：契约）——EnvBlueprint 全字段
+schema（version/runtime/simulator/plugins/observer_plugins）、
+PolicyBlueprint schema（含 `file:${DIR}` 自包含导出形态 + duck-type
+act 校验）、ParameterizedEnvBlueprint（parameters 节 + `${name}` 占位
+语义：独占保类型/内嵌字符串化/未声明 KeyError）、`${DIR}` 规则、实例参考表。
+全部字段逐行对照 blueprint.py/policy.py/parameterized_blueprint.py 源码核实。
