@@ -664,3 +664,145 @@ class TestStepDeviceWarp:
             got1, np.tile(np.array([1.0, 0.0, 0.05], np.float32), (4, 1)),
             atol=1e-6)
         sim.close()
+
+
+# ===========================================================================
+# L3：DeviceRollouter / MultiDeviceRollouter collect 契约（CUDA-gated）
+# ===========================================================================
+_T_COLLECT = 48   # >40：帧序列跨过右窗起点（t=20）与周期回卷（t=40）
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="需要 CUDA")
+class TestStepDeviceCollect:
+    """collect(jobs) -> List[Episode] 对 step 蓝图（obs_dim=99）的
+    完整契约：trajectory/终止记录/bootstrap/observer 输出/gait 列值。"""
+
+    @pytest.fixture(scope="class")
+    def env_bp(self):
+        from envs.framework.parameterized_blueprint import (
+            ParameterizedEnvBlueprint)
+        pb = ParameterizedEnvBlueprint.load(
+            project_root / "baseline/humanoid21/end2end/step_env.yaml")
+        return pb.materialize(max_steps=_T_COLLECT)
+
+    @pytest.fixture(scope="class")
+    def policy_bp(self, tmp_path_factory):
+        from baseline.framework.ppo.policies.truncated_normal_mlp import (
+            TruncatedNormalPolicy)
+        pol = TruncatedNormalPolicy(obs_dim=99, action_dim=21,
+                                    hidden_dim=256, device="cpu")
+        dest = tmp_path_factory.mktemp("pol_step") / "export"
+        return pol.to_blueprint(str(dest))
+
+    @staticmethod
+    def _jobs(env_bp, policy_bp, n, seed0=0):
+        """与 Step.build_jobs 同构：声明式 ef 程序 + initial_distance。"""
+        from baseline.framework.rollout.job import Job, SamplingSpec
+        from baseline.experiments_ppo.exp_step import _PHASE_EF_PROGRAM
+        sampling = SamplingSpec(explore_factor=dict(_PHASE_EF_PROGRAM))
+        return [
+            Job(policy_a_bp=policy_bp, policy_b_bp=policy_bp,
+                env_bp=env_bp, seed=seed0 + i,
+                episode_options={"initial_distance": 2.0 + 0.05 * i},
+                sampling_a=sampling, sampling_b=sampling,
+                stochastic=True)
+            for i in range(n)
+        ]
+
+    @staticmethod
+    def _assert_episode(ep, T=_T_COLLECT):
+        from baseline.framework.rollout.episode import Episode
+        assert isinstance(ep, Episode)
+        assert ep.num_frames == T
+        clock_exp = _exp_clock(np.arange(T), 40)
+        for rid in ("robot_a", "robot_b"):
+            assert ep.observations[rid].shape == (T, 99)
+            assert ep.actions[rid].shape == (T, 21)
+            assert ep.final_observation[rid].shape == (99,)
+            assert ep.explore_factors[rid].shape == (T,)
+            # gait-clock 列逐帧匹配 CPU 公式（帧索引对齐的最强检验）
+            np.testing.assert_allclose(
+                ep.observations[rid][:, 96:99], clock_exp, atol=1e-6,
+                err_msg=f"{rid} gait-clock cols")
+            ex = ep.action_extras[rid]
+            for k in ("log_prob", "explore_factor",
+                      "sctx__delta_factor"):
+                assert k in ex and ex[k].shape == (T,)
+            assert np.isfinite(ex["log_prob"]).all()
+            assert ep.agent_termination_proposal_records[rid] == (
+                ("timeout", T),)
+        # observer 输出：standup 势场 + foot_state 六叶
+        for name in ("standing_balance_a", "standing_balance_b"):
+            out = ep.observer_outputs[name]
+            for k in ("potential", "stage", "h_torso", "f_score",
+                      "contact_score", "d_score", "w_foot"):
+                v = np.asarray(out[k], dtype=np.float64)
+                assert v.shape == (T,)
+                assert np.isfinite(v).all()
+        for name in ("foot_state_a", "foot_state_b"):
+            out = ep.observer_outputs[name]
+            for k in ("h_left_foot", "h_right_foot",
+                      "sole_clear_left", "sole_clear_right"):
+                v = np.asarray(out[k], dtype=np.float64)
+                assert v.shape == (T,)
+                assert np.isfinite(v).all()
+            for k in ("left_foot_contact", "right_foot_contact"):
+                v = np.asarray(out[k], dtype=bool)
+                assert v.shape == (T,)
+
+    def test_collect_episode_contract(self, env_bp, policy_bp):
+        from envs.batchframework.device_rollouter import DeviceRollouter
+        with DeviceRollouter(batch_size=4, device="cuda") as dr:
+            eps = dr.collect(self._jobs(env_bp, policy_bp, 4))
+        assert len(eps) == 4
+        for i, ep in enumerate(eps):
+            assert ep.episode_index == i and ep.base_seed == i
+            assert ep.episode_options["initial_distance"] == 2.0 + 0.05 * i
+            self._assert_episode(ep)
+
+    def test_ppo_pipeline_compat(self, env_bp, policy_bp):
+        """device episode 无差别流经 Step.build_trajectories（全部
+        foot_state/clock 字段被真实消费——缺失字段会静默产出零通道，
+        故显式断言各通道有非零信号或按数据规则校验）。"""
+        from baseline.experiments_ppo.exp_step import Step
+        from baseline.framework.ppo.trainer import PPOBuffer
+        from envs.batchframework.device_rollouter import DeviceRollouter
+
+        with DeviceRollouter(batch_size=4, device="cuda") as dr:
+            eps = dr.collect(self._jobs(env_bp, policy_bp, 4))
+            actor = dr._policy(policy_bp.to_dict())
+
+        trajs = Step().build_trajectories(eps)
+        assert len(trajs) == 8
+        for t in trajs:
+            assert t.obs.shape == (_T_COLLECT, 99)
+            assert t.actions.shape == (_T_COLLECT, 21)
+            assert t.last_obs.shape == (99,)
+            for ch in ("r_potential", "r_left_foot", "r_right_foot",
+                       "r_torso", "r_fall"):
+                assert t.channels[ch].reward.shape == (_T_COLLECT,)
+                assert np.isfinite(t.channels[ch].reward).all()
+                assert t.channels[ch].actor_weight.shape == (_T_COLLECT,)
+            assert sorted(t.sampling_ctx) == [
+                "delta_factor", "explore_factor"]
+        buf = PPOBuffer(trajectories=trajs, actor=actor, device="cuda",
+                        reward_keys=list(Step._channel_names))
+        rec = np.concatenate([
+            np.asarray(e.action_extras[r]["log_prob"], dtype=np.float32)
+            for e in eps for r in ("robot_a", "robot_b")])
+        assert np.abs(buf.log_probs - rec).max() < 1e-4
+        assert np.isfinite(buf.log_probs).all()
+
+    @pytest.mark.skipif(torch.cuda.device_count() < 2,
+                        reason="needs >=2 CUDA devices")
+    def test_multi_device_collect(self, env_bp, policy_bp):
+        """MultiDeviceRollouter 分片收集：job 顺序保持，契约同构。"""
+        from envs.batchframework.multi_rollouter import (
+            MultiDeviceRollouter)
+        with MultiDeviceRollouter(devices=[0, 1],
+                                  batch_size_per_worker=4) as mdr:
+            eps = mdr.collect(self._jobs(env_bp, policy_bp, 8))
+        assert len(eps) == 8
+        for i, ep in enumerate(eps):
+            assert ep.episode_index == i and ep.base_seed == i
+            self._assert_episode(ep)
