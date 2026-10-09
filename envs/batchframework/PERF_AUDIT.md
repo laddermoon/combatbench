@@ -180,3 +180,40 @@ binding/io_schema/manifest 不变），波派发到 ≥job 数的最小 2
 export/observer 也随行数缩（reset 1.3→0.88s）。按
 eval_every=5 摊销 ≈ 0.5s/update（~4% total）。多卡路径透明受益
 （每 worker 按自己分到的 job 数选 bundle）。
+
+### O4 波密度/并行路线——已探明（2026-01）
+
+物理子步延迟曲线（GPU4，graph replay，干净卡）：
+
+| B | ms/substep | 吞吐（裸物理） |
+|---|---|---|
+| 64 | 1.02 | 0.06M sub/s |
+| 256 | 1.23 | 0.21M |
+| 512 | 1.41 | 0.36M |
+| 1024 | 1.72 | 0.60M |
+| 2048 | 2.57 | 0.80M |
+| 4096 | 4.21 | 0.97M（未到拐点） |
+
+并行路线实测：
+
+| 路线 | 结果 |
+|---|---|
+| 多进程同卡（K=2/4 proc × B=512） | ❌ 聚合恒 ~0.32M sub/s——CUDA context 时间片轮转，零重叠收益 |
+| 进程内多 stream（2 lane × B=512） | ✅ 真重叠 agg 0.54M（每 lane ~82% 效率），但 < 同行数单波 B=1024 的 0.60M |
+| 端到端 B=2048 collect | **120 eps/s/GPU（3.75× B=256 的 32 eps/s）**；含 reset 2.8s + export 0.9s |
+| 512 jobs 摊 4 worker ×128 | **端到端 7.76s**（vs 2 worker ×256 ~8.5-9s）|
+
+**结论——延迟与吞吐是两个不同最优解**：
+
+1. **吞吐模式**（seed farm、大批量 eval、自博弈）：**大 B
+   单波**。B=2048/4096 仍未饱和；多 lane 被同价大 B 压制；
+   多进程 lane 完全无效。部署：`batch_size_per_worker` 直接
+   调大即可（bundle 机制保证小波仍按 pow2 匹配）。
+2. **延迟模式**（单 run update 更快）：**摊到更多 worker、
+   每 worker 更小 B**。512 eps：2×256≈8.5-9s → 4×128=7.76s；
+   极限是 B≈64 的延迟地板（子步 ~1.0ms）。**部署零代码**——
+   `--collector-devices` 撒满空闲卡即可（512/8=64→B=64
+   bundle 自动命中）。
+3. **进程内 lane** 的生态位只剩"异构 group 并发"（不同
+   env_bp/policy/stochastic 无法合并为一波时的流重叠），
+   ~1.5× 上限，实现复杂，暂记备选。
