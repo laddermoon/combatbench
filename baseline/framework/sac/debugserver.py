@@ -33,6 +33,8 @@ def _resolve_dump(root: Path, query: Dict[str, list]) -> Path:
     run = _resolve_run(root, query["run"][0])
     tick = query.get("tick")
     name = query.get("name")
+    if name:
+        name = name[0]
     if tick:
         name = f"critic_tick_{int(tick[0]):08d}"
     if not name:
@@ -110,8 +112,20 @@ def make_server(root: Path, port: int) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_html(self, path: Path) -> None:
+            body = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
             parsed = urlparse(self.path)
+            if parsed.path in ("/", "/viewer", "/index.html"):
+                page = Path(__file__).with_name("sac_viewer.html")
+                if page.exists():
+                    return self._send_html(page)
             try:
                 out = _dispatch(
                     root, parsed.path, parse_qs(parsed.query),

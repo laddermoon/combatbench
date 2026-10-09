@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>SAC Debug Viewer</title>
+<style>
+  body { font: 13px/1.5 monospace; margin: 0; background:#14161a; color:#d8dde3; }
+  header { padding:8px 14px; background:#1d2126; border-bottom:1px solid #2c3138;
+           position:sticky; top:0; display:flex; gap:14px; align-items:center; }
+  header b { color:#7fb3e0; }
+  #runs { width:340px; border-right:1px solid #2c3138; height:calc(100vh - 42px);
+          overflow-y:auto; float:left; }
+  #runs div { padding:6px 10px; cursor:pointer; border-bottom:1px solid #22262c; }
+  #runs div:hover { background:#1d2126; }
+  #runs div.sel { background:#26313d; }
+  #runs .sub { color:#8a929c; font-size:11px; }
+  #main { margin-left:360px; padding:12px; }
+  h3 { margin:14px 0 6px; color:#9db8d2; font-size:13px; }
+  table { border-collapse:collapse; }
+  td,th { border:1px solid #2c3138; padding:2px 8px; text-align:right; }
+  th { color:#8a929c; font-weight:normal; }
+  canvas { background:#1d2126; border:1px solid #2c3138; margin:4px 8px 4px 0; }
+  pre { background:#1d2126; padding:8px; overflow:auto; max-height:400px; }
+  input,select,button { background:#1d2126; color:#d8dde3; border:1px solid #3a4149;
+          padding:3px 8px; font:inherit; }
+  button { cursor:pointer; }
+  .ok { color:#7fd18a; } .bad { color:#e07f7f; } .dim { color:#8a929c; }
+</style>
+</head>
+<body>
+<header><b>SAC Debug Viewer</b><span id="hdr" class="dim">loading…</span>
+  <button onclick="loadRuns()">refresh</button></header>
+<div id="runs"></div>
+<div id="main"><p class="dim">select a run</p></div>
+<script>
+const api = p => fetch(p).then(r => r.json());
+let curRun = null;
+
+async function loadRuns() {
+  const runs = await api('/api/runs');
+  const el = document.getElementById('runs');
+  el.innerHTML = '';
+  document.getElementById('hdr').textContent = runs.length + ' runs';
+  runs.sort((a,b)=>(b.last_clocks?.env_step||0)-(a.last_clocks?.env_step||0));
+  for (const r of runs) {
+    const d = document.createElement('div');
+    const ev = r.last_eval ? Object.entries(r.last_eval)
+        .filter(([k])=>/success|survival/.test(k))
+        .map(([k,v])=>k.split('.').pop()+'='+(+v).toFixed(3)).join(' ') : '';
+    d.innerHTML = `<b>${r.name}</b><br><span class="sub">${r.experiment_name||''} `
+      + `${r.knobs?.actor_arch||''} env=${r.last_clocks?.env_step??'-'} ${ev}</span>`;
+    d.onclick = () => { selectRun(r.name, d); };
+    el.appendChild(d);
+  }
+}
+
+async function selectRun(name, el) {
+  curRun = name;
+  document.querySelectorAll('#runs div').forEach(x=>x.classList.remove('sel'));
+  el.classList.add('sel');
+  const s = await api('/api/run?name='+name);
+  const m = document.getElementById('main');
+  m.innerHTML = `<h3>${name} <span class="dim">${s.experiment_name||''}</span></h3>
+    <pre>${JSON.stringify({clocks:s.last_clocks, knobs:s.knobs, last_eval:s.last_eval,
+      events:s.event_counts},null,1)}</pre>
+    <h3>metrics <span class="dim">(click to plot)</span></h3><div id="mlist"></div>
+    <div id="chart"></div>
+    <h3>dumps</h3><div id="dumps"></div><div id="dumpview"></div>`;
+  const cat = await api('/api/catalog');
+  const ml = document.getElementById('mlist');
+  const picks = cat.filter(c=>/^(eval\.|temperature\.alpha|actor\.log_prob|critic\.(q_mean|td_mean|loss)|round\.|collection\.)/.test(c.name));
+  for (const c of picks.slice(0, 40)) {
+    const b = document.createElement('button');
+    b.textContent = c.name; b.style.margin='2px';
+    b.onclick = () => plotMetric(name, c.name, c.event_type);
+    ml.appendChild(b);
+  }
+  const dl = document.getElementById('dumps');
+  for (const dn of s.dumps || []) {
+    const b = document.createElement('button');
+    b.textContent = dn; b.style.margin='2px';
+    b.onclick = () => dumpView(name, dn);
+    dl.appendChild(b);
+  }
+}
+
+async function plotMetric(run, key, ev) {
+  const d = await api(`/api/run/metrics?name=${run}&key=${key}&event=${ev||''}`);
+  const pts = d.points.map(p=>[p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0, p.value]);
+  const cv = document.createElement('canvas'); cv.width=720; cv.height=180;
+  const ctx = cv.getContext('2d');
+  const div = document.getElementById('chart'); div.innerHTML=''; div.appendChild(cv);
+  ctx.fillStyle='#8a929c'; ctx.fillText(`${run} :: ${key} (${pts.length} pts)`,8,14);
+  if (!pts.length) return;
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+  const X=v=>50+(v-x0)/((x1-x0)||1)*650, Y=v=>160-(v-y0)/((y1-y0)||1e-12)*130;
+  ctx.strokeStyle='#3a4149'; ctx.strokeRect(50,20,660,140);
+  ctx.fillText(y1.toPrecision(3),8,30); ctx.fillText(y0.toPrecision(3),8,158);
+  ctx.fillText(x0,50,175); ctx.fillText(x1,700,175);
+  ctx.strokeStyle='#7fb3e0'; ctx.beginPath();
+  pts.forEach(([x,y],i)=> i?ctx.lineTo(X(x),Y(y)):ctx.moveTo(X(x),Y(y)));
+  ctx.stroke();
+}
+
+async function dumpView(run, dn) {
+  const d = await api(`/api/dump/inspect?run=${run}&name=${dn}`);
+  const v = document.getElementById('dumpview');
+  v.innerHTML = `<h3>${dn}</h3>
+    <pre>${JSON.stringify({consistency:d.consistency, update_stats:d.update_stats,
+      per_channel:d.per_channel, batch:d.batch}, null, 1)}</pre>
+    <h4>samples <span class="dim">sorted by td_abs</span></h4><div id="samp"></div>`;
+  const sm = await api(`/api/dump/samples?run=${run}&name=${dn}&sort=td_abs&limit=30`);
+  const rows = sm.rows || [];
+  let h = '<table><tr><th>sample_id</th><th>round</th><th>reward</th>' +
+    '<th>td_abs</th><th>q_mean</th><th>logp</th><th>term</th><th>trace</th></tr>';
+  for (const r of rows) {
+    h += `<tr><td>${r.sample_id}</td><td>${r.collection_round??''}</td>` +
+      `<td>${fmt(r.reward_sum)}</td><td>${fmt(r.td_abs)}</td>` +
+      `<td>${fmt(r.q_mean)}</td><td>${fmt(r.logp_expectation)}</td>` +
+      `<td>${r.terminated?'T':(r.truncated?'~':'')}</td>` +
+      `<td><button onclick="trace('${run}','${dn}',${r.sample_id})">trace</button></td></tr>`;
+  }
+  document.getElementById('samp').innerHTML = h + '</table>';
+}
+
+async function trace(run, dn, sid) {
+  const d = await api(`/api/dump/trace?run=${run}&name=${dn}&sample_id=${sid}`);
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(d, null, 1);
+  document.getElementById('dumpview').appendChild(pre);
+}
+
+function fmt(x){ return typeof x==='number' ? +x.toFixed(4) : JSON.stringify(x); }
+loadRuns();
+setInterval(loadRuns, 60000);
+</script>
+</body>
+</html>
