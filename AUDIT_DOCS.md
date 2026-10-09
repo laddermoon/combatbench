@@ -184,3 +184,14 @@ D-DOC-6（符号引用约定入 §5）、D-DOC-7（双语协议入 §6）、D-DO
 `balance_recover/GATING_REDESIGN.md`（过期快照，93 行）改为 3 行指针残桩，
 指向 `gating/GATING_REDESIGN.md`（含更新的"策略驱动沉降"节）。`git grep`
 确认无外部引用指向父版路径。历史内容留存于 git 历史。
+
+## [2026-10-09] D-DOC-9 结案：rollout/ 补齐入口文档
+
+新建 `baseline/framework/rollout/README.md`（类型：指南）：数据模型图
+（Job→collect→Episode）、公开 API 面（ParallelRollouter/EpisodeRecorder/
+SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
+消费方表。**附带修复**：`__init__.py` docstring 原本指向不存在的
+`rollout/DESIGN.md`（悬空引用，又一例"无契约文档"症状）→ 改指 README。
+
+核实修正：Job 的确定性开关字段名是 `stochastic`（非我猜的 wrap_policies）；
+`episode_options` 是"仅环境配置、JSON 可序列化"的承重契约，已写入文档。
