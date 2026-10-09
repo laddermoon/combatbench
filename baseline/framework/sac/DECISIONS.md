@@ -2279,6 +2279,44 @@ S4-W0 P4-AUDIT-0：SAC actor 契约与 A4.3 逐项对拍，登记差距；冻结
 - 证据：`pytest baseline/framework/sac/tests` → **117 passed**；`test_independence` 断言更新为 `policy_arch="tn_s01"`（默认 s01 已是 TN 语义）。
 - 遗留：`loop.py` 目前 `to_blueprint(stochastic=True)` 未传 e —— e 的调度/生效值记录属 P4-KNOB-1；`uncertainty` 尚无消费方，P4-REG-1 接入；debugkit `_build_actor` 仍只认 `S01Actor`，P4-TRAIN-2/dump 迁移时一并处理。
 
+### P4.8 `P4-SINGLE-1` ~ `P4-EXP-2` 执行记录（2026-10-13）
+
+**P4-SINGLE-1（`9874cfde`）：** `trainer_state_dict` 增加 `actor_rng` 可选字段并在 load 恢复（A4.3 流可恢复）；每格（s00/s10/s11）经真实 `sac_update` + fake-env 闭环验证（trainer 只走 `sample_action` shim，不感知 arch）。测试扩至 153 项。
+
+**P4-MIX-1 / P4-TRAIN-2 / P4-REG-1（`bf913eef`）：**
+- m00/m01/m10/m11 启用：`expectation_samples` 返回 `[B,K,M,D]` 候选 + 联合 mixture logp + 可微 `integration_weights`（softmax(logits)/M）；整向量 categorical 采样；mixture L2 不确定度用 TN 两两重叠积分闭式。
+- trainer 迁移到 `expectation_samples` 单入口：target 在 `next_obs` 枚举候选后**逐候选**做联合 twin-min 再按权重求期望（A4.4 次序不可交换，有反例测试）；actor 同理；`Σw·logp` 作为期望熵估计供 alpha；trainer 自有 `expectation_rng` 随状态保存/恢复；`legacy_tanh` 无该接口 → 训练 fail loud（仅 warm-start 加载）。
+- `sac_dump_v2` 保存冻结 `u_next`/`u_actor`，debugkit recompute 用冻结噪声精确复算（实测 `max_abs_diff=0.0`）。
+- `regularizer_mode ∈ {shannon,u_bonus,u_floor}` + `reg_lambda/u_floor/u_kind`：u 模式 target 加 `B(s')=λU` 或 `−λ·relu(f−U)²`（no_grad），actor 加 `−B(s)`（可微）；u 模式仅固定 λ，传 `alpha_optimizer` 拒绝；`u_floor` 必须显式 `f`；λ=0 的 u_bonus ≡ α=0 的 shannon（测试对拍）；模式/kind 进 config fingerprint（切模式非 exact resume）。
+- G4.4 证据：`test_mixture_q_only_logits_gradient`（logits 梯度经 enumeration 权重路径）+ `test_mixture_low_prob_component_still_gets_gradient`（低概率分量仍获非零信号）。
+
+**P4-KNOB-1（`b8d2b5cb`）：** 实验新增 `behavior_explore`（e∈[-1,1]）与 `random_start_transitions`；loop 每轮导出行为 bp 携带 `explore_factor`，随机启动期改用 `RandomCombatPolicy(scale=1.0)`（Uniform[-1,1]^D）；`SACBehaviorSpec` 从 bp config 读回实际生效值（requested=effective）；round metrics 记 `behavior.explore_factor`/`behavior.random_start`；deterministic+e≠0 拒绝。
+
+**P4-EXP-2（`8dc502d9`）：** `_ENABLED_ARCHS` 放开全部八格；`distribution()` 返回原始 σ 控制量 `ctrl`，`_distribution_with_e` 直接在 ctrl 上加 e 偏移（避免 σ→ctrl 反演在饱和区失真）。实验构造测试扩为 八格 × 两实验。真实环境验收：
+- `sac_standup`：s00–m11 全部完成 3 轮 smoke（每轮 60 env_step / 60 critic ticks），metrics 全有限；
+- `sac_balance`：s11 + m11 smoke 通过（含双通道 + 早终止边界）；
+- m11 checkpoint 完整 resume（clocks/replay/RNG 恢复）；
+- m01 + `expectation_samples=4` 的 `sac_dump_v2` recompute `passed=true, max_abs_diff=0.0`；
+- 导出 bp 自包含（`TNRuntimePolicy` + model.pt，`explore_factor` 写入 config）。
+
+### P4.9 G4.x 收口审计（2026-10-13）
+
+| Gate | 结论 | 证据 |
+|---|---|---|
+| G4.0 契约审计 | 通过 | P4.5 差距矩阵 + D41–D45 命名冻结（`5ddc22f5`） |
+| G4.1 数值内核 | 通过 | `tn_kernel.py` + 10 项永久测试（积分归一/矩/gradcheck/保护/CUDA）（`5f6f3e53`） |
+| G4.2 actor 契约 | 通过 | A4.3 全契约实现 + 46→117 项测试（`4c2957cd`） |
+| G4.3 单分量格 | 通过 | 四格 trainer/update/RNG-resume 测试（`9874cfde`） |
+| G4.4 mixture 格 | 通过 | 枚举积分 + logits 梯度 + 低概率分量测试（`bf913eef`） |
+| G4.5 trainer 集成 | 通过 | 逐候选 twin-min + 次序反例测试 + dump recompute `max_abs_diff=0.0`（`bf913eef`, `8dc502d9`） |
+| G4.6 正则路线 | 通过 | 三模式逐项对拍 + λ=0 消融等价性 + fingerprint 锁（`bf913eef`） |
+| G4.7 旋钮面 | 通过 | e/random_start 生效值入 bp config + SACBehaviorSpec + metrics（`b8d2b5cb`） |
+| G4.8 实验接入 | 通过 | `--set actor_arch=` 八格 × 两实验；真实 smoke 八格 + resume + dump recompute（`8dc502d9`） |
+
+**回归：** SAC suite **164 passed**；PPO suite **232 passed**。静态审计：`framework/sac` 与 `experiments_sac` 无 PPO/rollout 运行期 import。
+
+**不声称：** 八格收敛（阶段六）；U 路线优于 Shannon（仅 toy 对拍）；`legacy_tanh` 参与 expectation 训练（只允许 warm-start）；per-arch 长训稳定性。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
