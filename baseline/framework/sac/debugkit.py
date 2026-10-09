@@ -663,7 +663,24 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     dq.add_argument("run_dir", type=Path)
     dq.add_argument("--hypothesis", default="")
     dq.add_argument("--at-tick", type=int, default=None)
+    sv = sub.add_parser("serve", help="read-only HTTP JSON debug server")
+    sv.add_argument("root", type=Path)
+    sv.add_argument("--port", type=int, default=8766)
     args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        from .debugserver import make_server
+        server = make_server(args.root, args.port)
+        print(
+            f"[sac-debug] serving {args.root} on "
+            f"http://127.0.0.1:{args.port}",
+            flush=True,
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        return 0
 
     if args.command == "summary":
         out = summarize_dump(args.dump)

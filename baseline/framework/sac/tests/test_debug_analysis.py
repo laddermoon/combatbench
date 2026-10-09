@@ -165,6 +165,51 @@ def test_on_demand_dump_request_is_consumed(tmp_path):
     assert not (run_dir / "dump_request.json").exists()
 
 
+def test_http_server_endpoints_share_analysis_layer(tmp_path):
+    """P5-API-1: every endpoint hits the same analysis functions."""
+    import urllib.request
+    from urllib.error import HTTPError
+
+    from baseline.framework.sac.debugserver import serve
+
+    run_dir = tmp_path / "run"
+    train_sac(_FakeExperiment(), run_dir=run_dir, rollouter=_FakeRollouter())
+    _make_dump(tmp_path)
+
+    server, _thread = serve(tmp_path, port=0)
+    try:
+        port = server.server_address[1]
+
+        def get(path):
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}{path}"
+            ) as resp:
+                return json.loads(resp.read())
+
+        runs = get("/api/runs")
+        assert any(r["name"] == "run" for r in runs)
+        run = get("/api/run?name=run")
+        assert run["experiment_name"] == "fake_sac"
+        series = get(
+            "/api/run/metrics?name=run&key=collection.env_steps"
+        )
+        assert series["count"] >= 1
+        rep = get("/api/run/replay?name=run")
+        assert rep["size"] > 0
+        dump_dir = tmp_path / "debug_dumps" / "critic_tick_00000005"
+        ins = get(f"/api/dump/inspect?path={dump_dir}")
+        assert ins["batch"]["size"] == 16
+        tr = get(f"/api/dump/trace?path={dump_dir}&sample_id=3")
+        assert tr["sample_id"] == 3
+        cat = get("/api/catalog?prefix=actor.")
+        assert all(s["name"].startswith("actor.") for s in cat)
+        with pytest.raises(HTTPError) as exc:
+            get("/api/nope")
+        assert exc.value.code == 404
+    finally:
+        server.shutdown()
+
+
 def test_query_payload_dotpath(tmp_path):
     dump_dir = _make_dump(tmp_path)
     payload = analysis.load_artifact(dump_dir)
