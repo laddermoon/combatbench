@@ -1,6 +1,7 @@
 # CombatBench Capability Ledger
 
 > Type: Record
+> 台账分工：本文件记能力账；问题账 `AUDIT.md`/`AUDIT_DOCS.md`；规范 `DOCS.md` §8。
 
 Companion to `REGULARIZATION.md` §5–§6. This is the persistent audit state:
 every capability discovered during the per-directory README pass gets one row.

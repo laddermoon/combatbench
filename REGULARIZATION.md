@@ -1,6 +1,7 @@
 # CombatBench 正则化总纲（REGULARIZATION）
 
 > 类型：契约
+> 台账分工：能力账 `CAPABILITY_LEDGER.md`；问题账 `AUDIT.md`/`AUDIT_DOCS.md`；文档规范 `DOCS.md`（§8 全表）。
 
 日期：2026-10-01
 状态：**v0 草案 —— 待用户确认后冻结为 v1**

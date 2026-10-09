@@ -308,3 +308,15 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 豁免说明：PERF_AUDIT/R3_TASK_BRIEF/STATUS_REVIEW 为当日在飞重构
 文档（已有类型头），内容归重构方所有，不动。契约/活文档
 （PUBLIC_INTERFACE/SEMANTICS/CPU_REQUIREMENTS）本就无需进度状态。
+
+## [2026-10-09] D-DOC-16/17/18 结案
+
+- **D-DOC-16**（SAC/PPO 不对称）：记档关闭——SAC 在飞（sac/PLAN.md），
+  GUIDE 级文档随成熟补是正常节奏，不强行提前写。
+- **D-DOC-17**（台账互指）：REGULARIZATION.md 与 CAPABILITY_LEDGER.md
+  头部各补一行分工指针（ISSUES 早先已有 AUDIT 指路）。
+- **D-DOC-18**（examples/out/）：**阴性**——`examples/.gitignore` 本就含
+  `out/` 规则，examples/README 也已声明产物目录约定。无需改动
+  （审计条目基于"未入库"现象推断缺规则，实测规则在子级 gitignore）。
+
+**至此 D-DOC 全部 18 项处置完毕。**
