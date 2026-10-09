@@ -98,7 +98,9 @@ def _dispatch(root: Path, path: str, q: Dict[str, list]) -> Any:
     raise KeyError(f"unknown endpoint {path!r}")
 
 
-def make_server(root: Path, port: int) -> ThreadingHTTPServer:
+def make_server(
+    root: Path, port: int, host: str = "127.0.0.1",
+) -> ThreadingHTTPServer:
     root = Path(root).resolve()
 
     class Handler(BaseHTTPRequestHandler):
@@ -139,12 +141,14 @@ def make_server(root: Path, port: int) -> ThreadingHTTPServer:
         def log_message(self, *args: Any) -> None:  # quiet
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", int(port)), Handler)
+    server = ThreadingHTTPServer((host, int(port)), Handler)
     return server
 
 
-def serve(root: Path, port: int = 8766) -> Tuple[ThreadingHTTPServer, threading.Thread]:
-    server = make_server(root, port)
+def serve(
+    root: Path, port: int = 8766, host: str = "127.0.0.1",
+) -> Tuple[ThreadingHTTPServer, threading.Thread]:
+    server = make_server(root, port, host)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
@@ -156,9 +160,10 @@ def _main() -> int:
     parser = argparse.ArgumentParser(description="SAC debug JSON server")
     parser.add_argument("root", type=Path)
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
-    server = make_server(args.root, args.port)
-    print(f"[sac-debug] serving {args.root} on http://127.0.0.1:{args.port}")
+    server = make_server(args.root, args.port, args.host)
+    print(f"[sac-debug] serving {args.root} on http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

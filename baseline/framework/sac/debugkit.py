@@ -666,14 +666,15 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     sv = sub.add_parser("serve", help="read-only HTTP JSON debug server")
     sv.add_argument("root", type=Path)
     sv.add_argument("--port", type=int, default=8766)
+    sv.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args(argv)
 
     if args.command == "serve":
         from .debugserver import make_server
-        server = make_server(args.root, args.port)
+        server = make_server(args.root, args.port, args.host)
         print(
             f"[sac-debug] serving {args.root} on "
-            f"http://127.0.0.1:{args.port}",
+            f"http://{args.host}:{args.port}",
             flush=True,
         )
         try:
