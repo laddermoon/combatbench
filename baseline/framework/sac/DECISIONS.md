@@ -2188,6 +2188,52 @@ S3-W0 P3-AUDIT-0
 - 无 PPO import/runtime 依赖；✅
 - 不声称任务收敛、八格策略完成或完整 debug UI 完成。
 
+## P4.0 阶段四执行计划（八格策略与标准化探索/优化控制）
+
+**目标：** 按 A4 把 2×2×2 八格 TN 策略体系、枚举 mixture 梯度、三层旋钮（采集 β / π 正则 / 优化）和 S/U 两路线落到 SAC 自有命名空间。阶段四完成的是**接口 + 数值 + 梯度 + 短训验证**，不是全八格 × 两任务 × 多 seed 收敛（属阶段六）。
+
+### P4.1 现状审计结论（先行事实，非计划假设）
+
+- 当前 `S01Actor` 是**未截断 tanh-Normal**（`mean + std·ε` 后 `tanh`），`log_std` 只做 clamp；与 A4.2 的 TN bounded sigmoid-σ 语义不同，且不具备 A4.3 的 `expectation_samples`/`integration_weights`、`sample_behavior(e)`、`uncertainty(kind)`、按流分离的 RNG state/export 元数据。阶段四必须升级 actor 契约并迁到 TN 内核，不是在现类上旁挂 7 个变体。
+- PPO 侧八格实现（`baseline/framework/ppo/policies/*_mlp.py`）只能**复制后适配**：不 import 原类、不继承 `TrainablePolicy`/`SamplingContext`/ratio 语义（D09）。
+- 旧 single TN 内核的 `Z=Φ(b)-Φ(a)` + 固定 clamp 在 A4.5 已被实测证伪（大 σ 塌缩、窄边界失真）；SAC 必须用新的 erf-space 内核（D11 / N-SAC-01）。
+- trainer 当前 `sample_action` 路径要改为消费 `expectation_samples(obs, noise)`（`[B,K,M,D]` 动作 + 联合 log_prob + 可微 `integration_weights`），不按八个类名写分支（A4.3）。
+
+### P4.2 工作包顺序
+
+```text
+S4-W0 P4-AUDIT-0：SAC actor 契约与 A4.3 逐项对拍，登记差距；冻结八格 arch 命名与 --set 接入面
+  → S4-W1 P4-KERNEL-1：N-SAC-01 erf-space TN 数值内核（Z/采样/密度/逆 CDF/保护计数/fail loud）
+  → S4-W2 P4-ACTOR-1：A4.3 actor 契约升级 + S01 迁移到 TN bounded sigmoid-σ
+  → S4-W3 P4-SINGLE-1：S00/S10/S11 单分量格（shared/state × bounded/unbounded）
+  → S4-W4 P4-MIX-1：M00/M01/M10/M11 枚举 mixture（联合 logp、integration_weights、整向量分量采样）
+  → S4-W5 P4-TRAIN-2：trainer 消费 expectation_samples；target/actor 逐候选 twin 枚举；分量级诊断
+  → S4-W6 P4-REG-1：regularizer_mode=shannon/u_bonus/u_floor 三模式、Bθ 记账、λ/f/U_kind 旋钮
+  → S4-W7 P4-KNOB-1：采集 e/random_start、优化旋钮校验、requested/effective 记录、调度状态恢复
+  → S4-W8 P4-EXP-2：两实验 actor_arch 八格可换；每格 toy 短训 + smoke 验收
+  → G4.x 阶段四收口评审
+```
+
+### P4.3 Gate 与验收映射
+
+- **G4.0 契约审计（P4-AUDIT-0）：** actor 契约差距矩阵登记完毕；arch 命名（如 `s00/s01/s10/s11/m00/m01/m10/m11`）与实验接入面冻结；不改动训练实现。
+- **G4.1 数值内核（P4-KERNEL-1）：** N-SAC-01 门槛逐项落地为永久测试：独立积分归一、采样分位点/矩、固定噪声梯度（μ/logσ/v/logits 路径）、尾部概率、action/support 与密度一致、float32/GPU 实际路径、保护触发率可诊断。
+- **G4.2 actor 契约（P4-ACTOR-1）：** `expectation_samples` 权重沿 K/M 求和为 1；`sample_behavior` 的 e 映射（unbounded `3^e`、bounded `v+κe`）生效值可观测；`deterministic_action` 按 A4.2 约定；RNG state 可保存/恢复且各流分离；导出元数据 strict 校验。
+- **G4.3 单分量格（P4-SINGLE-1）：** 四格分布/梯度/导出/RNG 重放测试；shared↔state 拷权重对拍密度一致。
+- **G4.4 mixture 格（P4-MIX-1）：** 枚举积分对 toy 目标的 Q-only logits 梯度与独立积分/有限差分一致（含低概率分量）；K=1 退化与置换/重复分量结构测试；collection 端整向量 categorical 采样。
+- **G4.5 trainer 集成（P4-TRAIN-2）：** actor/target 逐候选 `a_k` 先 min 后按 `p_k` 期望（A4.4 次序不可交换）；`sac_dump` 扩展保存每分量噪声/权重/twin 选择，recompute 对账通过。
+- **G4.6 正则路线（P4-REG-1）：** 三模式 actor/target/系数公式逐项对拍；无隐式叠加；切模式/换 U_kind 不构成 exact resume；λ=0 显式消融可用；auto-λ 仅验证调整方向。
+- **G4.7 旋钮面（P4-KNOB-1）：** A4.8 旋钮表逐项实现或显式拒绝；requested/effective 入 metrics 与 checkpoint。
+- **G4.8 实验接入（P4-EXP-2）：** 两实验 `--set actor_arch=...` 换八格零 trainer 改动；每格完成 toy 短训（回报改善而非仅 loss 有限）+ Humanoid21 smoke。
+- **G4.9 收口：** SAC suite + PPO 回归通过；SAC 内无 PPO policy import；八格逐项证据登记。
+
+### P4.4 明确不做（阶段四边界）
+
+- 不做 score-function/straight-through/Gumbel 的 mixture 梯度替代路径（A4.4 保留为大 K 候选）；
+- 不做 reference/delta σ-floor、mixture 权重温度、独立额外动作噪声（传入即报错）；
+- 不承诺 U 路线优于 Shannon、不默认叠加两种正则、不在阶段四做 U 路线正式训练验收（仅 toy + 单格对照探针）；
+- 不做全八格收敛矩阵（阶段六）；不引入 PER/n-step/relabel。
+
 ---
 
 # 历史参考区：旧实现决策（不作为本轮决策）
