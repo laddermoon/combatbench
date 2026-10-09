@@ -233,3 +233,10 @@ PolicyBlueprint schema（含 `file:${DIR}` 自包含导出形态 + duck-type
 act 校验）、ParameterizedEnvBlueprint（parameters 节 + `${name}` 占位
 语义：独占保类型/内嵌字符串化/未声明 KeyError）、`${DIR}` 规则、实例参考表。
 全部字段逐行对照 blueprint.py/policy.py/parameterized_blueprint.py 源码核实。
+
+## [2026-10-09] D-DOC-13c 结案：RUNNERS.md CLI 参考
+
+新建 `envs/framework/RUNNERS.md`（类型：指南）——RoundRunner 全参数表 +
+输出字段、MatchRunner 参数表 + MatchResult 字段（KO 提前终场语义）、
+编程接口示例。**核实中自纠一处**：两文件均为相对 import，CLI 必须
+`python -m envs.framework.{round,match}_runner`——初稿误写直接路径执行。
