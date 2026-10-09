@@ -619,22 +619,78 @@ def find_sample(dump_dir: Path, *, sample_id: int) -> Dict[str, Any]:
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Inspect SAC dump bundles (v2/v3)")
+    from . import analysis
+
+    parser = argparse.ArgumentParser(
+        description="Inspect SAC runs and dump bundles (v2/v3)"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("summary", "recompute"):
+    for name in ("summary", "recompute", "inspect"):
         p = sub.add_parser(name)
         p.add_argument("dump", type=Path)
     find = sub.add_parser("find-sample")
     find.add_argument("dump", type=Path)
     find.add_argument("sample_id", type=int)
+    cat = sub.add_parser("catalog")
+    cat.add_argument("--prefix", default=None)
+    samp = sub.add_parser("samples")
+    samp.add_argument("dump", type=Path)
+    samp.add_argument("--sort", default="td_abs")
+    samp.add_argument("--channel", default=None)
+    samp.add_argument("--limit", type=int, default=50)
+    tr = sub.add_parser("trace")
+    tr.add_argument("dump", type=Path)
+    tr.add_argument("--sample-id", type=int, default=None)
+    tr.add_argument("--source-key", default=None)
+    ser = sub.add_parser("series")
+    ser.add_argument("run_dir", type=Path)
+    ser.add_argument("--metric", required=True)
+    ser.add_argument("--event", default=None)
+    runs_p = sub.add_parser("runs")
+    runs_p.add_argument("runs_root", type=Path)
+    run_p = sub.add_parser("run")
+    run_p.add_argument("run_dir", type=Path)
+    rep = sub.add_parser("replay")
+    rep.add_argument("path", type=Path)
+    qy = sub.add_parser("query")
+    qy.add_argument("artifact", type=Path)
+    qy.add_argument("path")
     args = parser.parse_args(argv)
 
     if args.command == "summary":
         out = summarize_dump(args.dump)
     elif args.command == "recompute":
         out = recompute_dump(args.dump)
-    else:
+    elif args.command == "inspect":
+        out = analysis.dump_inspect(args.dump)
+    elif args.command == "find-sample":
         out = find_sample(args.dump, sample_id=args.sample_id)
+    elif args.command == "catalog":
+        out = analysis.metric_catalog(prefix=args.prefix)
+    elif args.command == "samples":
+        out = analysis.dump_samples(
+            args.dump, sort=args.sort, channel=args.channel,
+            limit=args.limit,
+        )
+    elif args.command == "trace":
+        out = analysis.dump_trace(
+            args.dump, sample_id=args.sample_id,
+            source_key=args.source_key,
+        )
+    elif args.command == "series":
+        out = analysis.metric_series(
+            args.run_dir, key=args.metric, event=args.event,
+        )
+    elif args.command == "runs":
+        out = analysis.runs_index(args.runs_root)
+    elif args.command == "run":
+        out = analysis.run_summary(args.run_dir)
+    elif args.command == "replay":
+        out = analysis.replay_report(args.path)
+    else:  # query
+        out = analysis.query_payload(
+            analysis.load_artifact(args.artifact), args.path,
+        )
     print(json.dumps(_jsonable(out), indent=2, sort_keys=True))
     return 0 if args.command != "recompute" or out["passed"] else 2
 

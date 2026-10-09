@@ -84,6 +84,17 @@ def save_run_config_sac(
             "common_params": dataclasses.asdict(cp),
             "sac_params": dataclasses.asdict(sp),
             "state": experiment.state(),
+            "knobs": {
+                key: getattr(experiment, key)
+                for key in (
+                    "actor_arch",
+                    "actor_hidden_dim",
+                    "actor_n_components",
+                    "behavior_explore",
+                    "random_start_transitions",
+                )
+                if hasattr(experiment, key)
+            },
         },
         "algorithm": "sac",
         "smoke": bool(smoke),
