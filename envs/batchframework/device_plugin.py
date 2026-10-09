@@ -350,6 +350,38 @@ class DeviceCtx:
             ep.term_pending_code[ids, a] = code
             _archive_reason(ep, ids, a, code)
 
+    def request_termination_mask(
+        self,
+        mask: torch.Tensor,
+        reason: str,
+        agents: Optional[Sequence[int]] = None,
+    ) -> None:
+        """``request_termination`` 的 mask 版——无 ``torch.nonzero``/
+        ``numel()`` host 读取（E9-W3）。
+
+        语义与 ids 版完全等价：``mask`` 为 (B,) bool——True 行提议
+        终止；归档写回全部走设备侧 masked 写入，hook 内不再产生
+        host 同步。热路径插件（每步都可能提议的 timeout 类）应使用
+        本形式；ids 形式保留给低频/诊断调用。
+        """
+        ep = self.state.episode
+        mask = torch.as_tensor(mask, dtype=torch.bool,
+                               device=ep.agent_done.device)
+        reg = ep.reason_registry
+        code = reg.get(reason)
+        if code is None:
+            code = len(reg)
+            reg[reason] = code
+        if agents is None:
+            agents = range(ep.n_agents)
+            ep.term_reason[mask] = code
+        for a in agents:
+            ep.agent_done[mask, a] = True
+            ep.agent_term_reason[mask, a] = code
+            ep.term_pending[mask, a] = True
+            ep.term_pending_code[mask, a] = code
+            _archive_reason_mask(ep, mask, a, code)
+
 
     # runtime 内部使用
     def _grant_mutator(self, allowed=None) -> None:
@@ -386,6 +418,33 @@ def _archive_reason(ep, env_ids: torch.Tensor, agent: int,
         ep.term_history[add, agent, slots, 1] = \
             ep.action_call_index[add].to(torch.int32)
         ep.term_history_len[add, agent] += 1
+
+
+def _archive_reason_mask(ep, mask: torch.Tensor, agent: int,
+                         code: int) -> None:
+    """``_archive_reason`` 的 mask 版——全设备侧 masked 写入，无
+    host 同步（``request_termination_mask`` 用）。
+
+    逐行语义等价：``mask`` 为 (B,) bool——True 行尝试归档；
+    同 code 去重、超 K 置 overflow、非 mask 行原位写回自身值
+    （self-assign，无副作用）。
+    """
+    K = ep.term_history_k
+    B = ep.term_history.shape[0]
+    dev = ep.term_history.device
+    hist_a = ep.term_history[:, agent]                  # (B,K,2) 视图
+    exists = (hist_a[..., 0] == code).any(-1)           # (B,)
+    hlen = ep.term_history_len[:, agent]                # (B,)
+    fresh = mask & ~exists
+    ep.term_history_overflow[:, agent] |= (fresh & (hlen >= K))
+    add = fresh & (hlen < K)
+    slot = hlen.clamp(max=K - 1)
+    ar = torch.arange(B, device=dev)
+    c = torch.full_like(hist_a[ar, slot, 0], code)
+    hist_a[ar, slot, 0] = torch.where(add, c, hist_a[ar, slot, 0])
+    s = ep.action_call_index.to(torch.int32)
+    hist_a[ar, slot, 1] = torch.where(add, s, hist_a[ar, slot, 1])
+    ep.term_history_len[:, agent] = hlen + add.to(hlen.dtype)
 
 
 # ---------------------------------------------------------------------------

@@ -387,7 +387,7 @@ class BatchRuntime:
     # ------------------------------------------------------------------
     # 终止屏障 + sealed-ENDED
     # ------------------------------------------------------------------
-    def _consume_terminations(self) -> None:
+    def _consume_terminations(self, *, freeze: bool = False) -> None:
         """phase 屏障：判 env 结束；新 ENDED 行封存 + on_post_episode。
 
         reason 归档发生在 ``request_termination`` 提出时刻（每 (agent,
@@ -395,6 +395,12 @@ class BatchRuntime:
         保序、超 K 置 ``term_history_overflow``）；本屏障不搬运 reason，
         只做：reset_request→abandoned 提议、env 级 ENDED 判定、
         状态快照封存、post_episode 调度、冻结写回。
+
+        ``freeze=True`` 的屏障点（物理子步后 / post-action）在进入时把
+        "已 ENDED/FAILED 行的漂移撤销"与 pending 检查融进同一次 host
+        sync——sealed 行物理上仍被整批 advance，必须每步写回封存态
+        （此前仅在 new-ENDED 分支顺带写回，无新终止的步不冻结，是
+        漏写）。freeze=False 的屏障点（物理前）无漂移可撤，跳过。
         """
         import time as _time
         _t0 = _time.perf_counter()
@@ -409,8 +415,20 @@ class BatchRuntime:
         running_valid = ep.world_running & ep.slot_valid
         pending = ((ep.reset_request | ep.terminated_flag
                     | ep.agent_done.all(dim=-1)) & running_valid)
-        self.sync_stats["term_barrier_syncs"] += 1
-        if not bool(pending.any()):
+        sealed = None
+        if freeze and self._seal_snap is not None:
+            sealed = ep.slot_valid & ~ep.world_running
+            # 单次 sync 同时取 pending/sealed 两个判定（.tolist() 一次
+            # D2H），避免 freeze 检查成为第二个排队排空点。
+            self.sync_stats["term_barrier_syncs"] += 1
+            need_term, need_freeze = torch.stack(
+                [pending.any(), sealed.any()]).tolist()
+            if need_freeze:
+                self._freeze_ended_rows(sealed)
+        else:
+            self.sync_stats["term_barrier_syncs"] += 1
+            need_term = bool(pending.any())
+        if not need_term:
             self.barrier_time += _time.perf_counter() - _t0
             return
 
@@ -459,22 +477,19 @@ class BatchRuntime:
                      terminated_env_ids=ids)
         # post_episode 中插件仍可提终止（request_termination 即归档；
         # 对仍 RUNNING 的其他行于下个屏障生效——CPU 无跨 env 对应物）
-        self._freeze_ended_rows()
+        # （本步新 ENDED 行的漂移撤销由下一个 freeze=True 屏障承担；
+        # 刚封存的行此处 restore 是 no-op，不再顺带调用）
         self.barrier_time += _time.perf_counter() - _t0
 
-    def _freeze_ended_rows(self) -> None:
+    def _freeze_ended_rows(self, sealed: torch.Tensor) -> None:
         """把封存态写回 ENDED/FAILED 行，撤销本步 advance 造成的漂移。
 
         warp 无 masked-step（W0 实测），冻结 = 每 action step 边界一次
         capture/restore write-back。ENDED 行物理仍被推进但每步末被
         写回封存态 → 状态不漂移、接触有界，单行失稳不再撑爆 nconmax。
-        """
-        ep = self.state.episode
-        sealed = ep.slot_valid & ~ep.world_running
+        调用方（freeze=True 屏障）已在融合检查中确认 sealed 非空且
+        ``_seal_snap`` 存在。"""
         self.sync_stats["freeze_check"] += 1
-        self.sync_stats["freeze_syncs"] += 1
-        if self._seal_snap is None or not bool(sealed.any()):
-            return
         dense = {k: b[sealed] for k, b in self._seal_snap.items()}
         self.sim.restore(sealed, dense)
 
@@ -588,7 +603,7 @@ class BatchRuntime:
                 self._invoke("on_post_phy_step", writable=True, units=subs)
                 # 子步级终止屏障（CPU 对齐：每物理子步后检查 env 结束；
                 # 新 ENDED 行立即封存，余下子步由冻结写回保持不漂移）
-                self._consume_terminations()
+                self._consume_terminations(freeze=True)
 
             self.sim.physical_step(n, pre_step=_pre, post_step=_post)
         else:
@@ -609,7 +624,7 @@ class BatchRuntime:
         self.seg_timing["obs_build"] += _time.perf_counter() - _t0
 
         self._invoke("on_post_action_step", writable=False)
-        self._consume_terminations()
+        self._consume_terminations(freeze=True)
 
     # ------------------------------------------------------------------
     def terminated_info(self) -> Dict[str, Any]:
@@ -643,8 +658,8 @@ class DeviceTimeoutPlugin(BaseDevicePlugin):
 
     def on_post_action_step(self, ctx: DeviceCtx) -> None:
         ep = ctx.episode
-        ids = torch.nonzero(
+        # mask 提议——热路径无 nonzero/host 读取（E9-W3），终止判定
+        # 仍由随后的 term barrier 结算。
+        ctx.request_termination_mask(
             ep.active_mask & (ep.episode_steps >= self._max),
-            as_tuple=False).squeeze(-1)
-        if ids.numel():
-            ctx.request_termination(ids, "timeout")
+            "timeout")

@@ -139,16 +139,23 @@ def test_custom_reason_string_roundtrip():
 # sealed-ENDED
 # ---------------------------------------------------------------------------
 def test_ended_row_frozen_no_drift():
-    """ENDED 行每步写回封存态：qpos 不再漂移（FakeBackend 每步推进 qpos）。"""
+    """ENDED 行每步写回封存态：qpos 不再漂移（FakeBackend 每步推进 qpos）。
+
+    注意 FakeBackend 的 qpos 漂移依赖 qvel 非零（qpos += qvel·dt），
+    默认 reset 后 qvel=0 → 不 seed 的话本测试空转通过。"""
     sim, rt = _rt()
     rt.attach(_Terminator(kill_step=1, kill_env=1, name="tk"))  # 全员终止
     rt.reset()
+    sim.views()["qvel"].fill_(0.5)  # 让行真实漂移——冻结缺失可检
     rt.step()
     ep = rt.state.episode
     assert ep.world_running.tolist() == [True, False, True, True]
     qpos_end = sim.views()["qpos"][1].clone()
+    assert qpos_end.abs().sum() > 0   # sanity：qpos 确实在动
     rt.step(); rt.step()
     assert torch.equal(sim.views()["qpos"][1], qpos_end)  # 冻结不漂移
+    assert not torch.equal(sim.views()["qpos"][0], torch.zeros_like(
+        sim.views()["qpos"][0]))      # RUNNING 行对照：确实漂移过
     assert ep.episode_steps[1].item() == 1                # 停在终止步
     assert ep.episode_steps[0].item() == 3                # 正常行推进
 
