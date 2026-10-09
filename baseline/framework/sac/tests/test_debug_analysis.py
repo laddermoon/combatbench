@@ -147,6 +147,24 @@ def test_replay_report_offline(tmp_path):
     assert rep2["size"] == rep["size"]
 
 
+def test_on_demand_dump_request_is_consumed(tmp_path):
+    """P5-ONDEMAND-1: dump_request.json sentinel triggers capture."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "dump_request.json").write_text(json.dumps({
+        "hypothesis": "on-demand-check",
+        "critic_tick": 2,
+    }))
+    train_sac(
+        _FakeExperiment(), run_dir=run_dir, rollouter=_FakeRollouter(),
+    )
+    dump_dir = run_dir / "debug_dumps" / "critic_tick_00000002"
+    assert dump_dir.is_dir()
+    request = json.loads((dump_dir / "request.json").read_text())
+    assert request["hypothesis"] == "on-demand-check"
+    assert not (run_dir / "dump_request.json").exists()
+
+
 def test_query_payload_dotpath(tmp_path):
     dump_dir = _make_dump(tmp_path)
     payload = analysis.load_artifact(dump_dir)

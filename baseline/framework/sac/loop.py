@@ -408,6 +408,8 @@ def train_sac(
     video_dir.mkdir(parents=True, exist_ok=True)
     dump_root = run_dir / "debug_dumps"
     scheduled_dump_ticks = {int(t) for t in (dump_ticks or ())}
+    dump_request_path = run_dir / "dump_request.json"
+    pending_dump_hypothesis: Dict[int, str] = {}
     last_video_proc: Optional[subprocess.Popen] = None
 
     def _checkpoint(path: Path) -> Path:
@@ -532,6 +534,43 @@ def train_sac(
                 )
 
                 for _ in range(n_grad_steps):
+                    # On-demand dump: a dump_request.json sentinel written
+                    # while training is running schedules a capture at the
+                    # requested critic tick (or the next one).
+                    if dump_request_path.exists():
+                        try:
+                            req = json.loads(
+                                dump_request_path.read_text(encoding="utf-8")
+                            )
+                            dump_request_path.unlink()
+                            target = req.get("critic_tick")
+                            tick_to_capture = (
+                                int(target)
+                                if target else clocks.critic_tick + 1
+                            )
+                            if tick_to_capture <= clocks.critic_tick:
+                                tick_to_capture = clocks.critic_tick + 1
+                            scheduled_dump_ticks.add(tick_to_capture)
+                            if req.get("hypothesis") is not None:
+                                pending_dump_hypothesis[
+                                    tick_to_capture
+                                ] = str(req["hypothesis"])
+                            metrics.emit_debug(
+                                clocks,
+                                {"debug.request": 1.0},
+                                critic_tick=tick_to_capture,
+                            )
+                            print(
+                                f"  [dump_request] scheduled critic_tick="
+                                f"{tick_to_capture} hypothesis="
+                                f"{req.get('hypothesis')!r}",
+                                flush=True,
+                            )
+                        except Exception as exc:
+                            metrics.emit_debug(
+                                clocks, {"debug.status": 0.0},
+                                stage="dump_request", error=str(exc),
+                            )
                     update_start = time.perf_counter()
                     batch = replay.sample(sp.batch_size, device)
                     next_tick = clocks.critic_tick + 1
@@ -549,7 +588,9 @@ def train_sac(
                                     log_alpha, alpha_optimizer,
                                     expectation_rng=expectation_rng,
                                 ),
-                                hypothesis=dump_hypothesis,
+                                hypothesis=pending_dump_hypothesis.pop(
+                                    next_tick, dump_hypothesis,
+                                ),
                             )
                             capture = {}
                         except Exception as exc:

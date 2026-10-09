@@ -655,6 +655,14 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     qy = sub.add_parser("query")
     qy.add_argument("artifact", type=Path)
     qy.add_argument("path")
+    dq = sub.add_parser(
+        "dump",
+        help="write dump_request.json so a running SAC loop captures "
+             "the next (or a given) critic tick",
+    )
+    dq.add_argument("run_dir", type=Path)
+    dq.add_argument("--hypothesis", default="")
+    dq.add_argument("--at-tick", type=int, default=None)
     args = parser.parse_args(argv)
 
     if args.command == "summary":
@@ -687,6 +695,15 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = analysis.run_summary(args.run_dir)
     elif args.command == "replay":
         out = analysis.replay_report(args.path)
+    elif args.command == "dump":
+        request = {"hypothesis": args.hypothesis}
+        if args.at_tick is not None:
+            request["critic_tick"] = int(args.at_tick)
+        target = args.run_dir / "dump_request.json"
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(request) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+        out = {"request_path": str(target), "request": request}
     else:  # query
         out = analysis.query_payload(
             analysis.load_artifact(args.artifact), args.path,
