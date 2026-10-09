@@ -16,6 +16,11 @@ learned through the existing structure:
     gait survives, so robustness is directly on the gradient;
   * pushed down → standup potential still pays for getting back up.
 
+Exploration: the Step stage's σ×2.0 standing boost is dropped — pushes
+only fire while standing, so every recovery attempt was being sampled
+at double σ.  Balance uses σ×1.0 standing / σ×0.5 low
+(``_balance_explore_factor``).
+
 Curriculum (same 12 levels as archived exp_balance_v2):
   level 0-3   40N,  duration windows 1-10 / 11-20 / 21-30 / 31-40 steps
   level 4-11  100N, duration windows 1-5 … 36-40 steps
@@ -40,7 +45,25 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from .exp_step import Step, _phase_explore_factor
+from .exp_step import Step, _EF_LOW, _H_EF_SWITCH
+
+
+def _balance_explore_factor(obs, step):
+    """Per-frame explore_factor for the balance stage.
+
+    The Step stage runs σ×2.0 on standing frames (h≥1.1) to discover
+    stepping.  Under perturbation that boost backfires: pushes only
+    trigger after the robot stands steadily, so every PUSHING/OBSERVE
+    window and every post-push recovery is sampled at double σ — the
+    policy fights its own exploration noise at the exact moments that
+    demand precise corrective stepping (observed: ~85% of training
+    frames at ef=+0.63; recovery plateaued ~0.7 then degraded as the
+    mixture collapsed to ~1.2 effective components).  Standing frames
+    therefore run at σ×1.0; state-dependent σ and the bounded-std
+    range still give the actor its own exploration control.  Low
+    frames keep σ×0.5 to protect the standup/recovery skill.
+    """
+    return 0.0 if float(obs[45]) >= _H_EF_SWITCH else _EF_LOW
 
 
 class BalanceStep(Step):
@@ -165,7 +188,7 @@ class BalanceStep(Step):
         from baseline.framework.rollout import Job, SamplingSpec
         env_bp = self._env_pb().materialize(max_steps=self.max_steps)
         rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec(explore_factor=_phase_explore_factor)
+        sampling = SamplingSpec(explore_factor=_balance_explore_factor)
         force = self.current_force
         dur_min, dur_max = self.current_duration_range
         jobs = []
@@ -198,6 +221,29 @@ class BalanceStep(Step):
                 stochastic=stochastic,
             ))
         return jobs
+
+    def _verify_explore_factor_flow(self, trajs) -> None:
+        """Balance schedule check: ef==0 while standing, ef<0 while low."""
+        if not trajs:
+            return
+        t0 = trajs[0]
+        ef = (t0.sampling_ctx or {}).get("explore_factor")
+        if ef is None:
+            print("  [ef-verify] FAIL: sampling_ctx has no explore_factor",
+                  flush=True)
+            return
+        ef = np.asarray(ef, dtype=np.float32)
+        h_obs = np.asarray(t0.obs, dtype=np.float32)[:, 45]
+        standing = h_obs >= _H_EF_SWITCH
+        ok_low = bool(np.all(ef[~standing] < 0)) if (~standing).any() else True
+        ok_stand = bool(np.all(ef[standing] == 0.0)) if standing.any() else True
+        print(
+            f"  [ef-verify-balance] T={len(ef)} ef_min={ef.min():.3f} "
+            f"ef_max={ef.max():.3f} | low={int((~standing).sum())} ef<0: "
+            f"{'OK' if ok_low else 'FAIL'} | stand={int(standing.sum())} "
+            f"ef==0: {'OK' if ok_stand else 'FAIL'}",
+            flush=True,
+        )
 
     # ------------------------------------------------------------------
     # Eval — Step's gait metrics + push recovery + curriculum
