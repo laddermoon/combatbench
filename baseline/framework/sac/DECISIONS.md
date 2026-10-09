@@ -2492,6 +2492,12 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
   - 导出 bp 复核通过：`TNRuntimePolicy` blueprint 可由 `PolicyBlueprint.load` 独立加载并推理。
   - 资源注记：本机已有用户 PPO run ×2（standup / balance_step_mbs）在跑，SAC pathfinder 与其共享 CPU；GPU 分配 standup→cuda:0、balance→cuda:1。
 
+### P6.4b pathfinder 诊断链（进行中）
+
+- **诊断#1（`sac_standup_s01_s42`，205K env 停训）**：熵崩——α→4.5e-4 趋近 log_alpha_min，logp→+21（σ≈0.11），E[-logp]≈-21=target（控制器收敛但均衡点太确定化）→ Q≈20 vs reward~6e-4 虚高 → 策略锁死。证据：dump critic_tick_00168970。**单变量修复：`target_entropy -21→0`**（均衡 σ≈0.33）。debug_notes 已留档。
+- **诊断#2（`sac_standup_s01_s42_te0`，38K env 停训）**：熵修复验证成功（α∈[0.15,0.26]、logp≈0、σ≈0.33），但暴露独立失效——`critic.q_mean` 1.7→324 后停在 ~320 自举幻想固定点（全状态均匀 Q + 步间系统性 +3.5 漂移；corr(frame,Q)=0.05 非 episode-ramp；consistency 无违例排除语义 bug）。uniform Q ⇒ actor loss 常数 ⇒ 学习死亡。致命三角（FA+自举+off-policy）实证；旧 run Q=20 是同机制被早塌缩封顶。**单变量修复：`q_layer_norm false→true`**（LayerNorm critic，SAC Q 发散标准解法），保留 te=0。→ `sac_standup_s01_s42_te0_ln`。
+- `sac_balance_s01_s42` 未受同病：α=0.011 缓降、Q≈1.0、TD≈1.7、双 agent 数据多样性天然防漂移；eval 0.125→0.672 波动上升，继续按里程碑观察。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
