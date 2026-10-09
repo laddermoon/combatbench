@@ -2405,6 +2405,34 @@ S5-W0 P5-AUDIT-0   现有 debug 面 × 分析链逐环差距矩阵；sac_dump_v3
 
 `/api/runs`、`/api/run?name=`、`/api/run/metrics?key=&event=`、`/api/run/dumps?name=`、`/api/run/replay?name=`、`/api/dump/inspect?path=`、`/api/dump/samples?path=&sort=&channel=&limit=`、`/api/dump/trace?path=&sample_id=|source_key=`、`/api/catalog`、`/api/dump/recompute?path=`（同步调用，第一版不做异步 job）。
 
+### P5.7 执行记录与 G5.x 收口（2026-10-13）
+
+**P5-DUMP-1（`58f4cca4`）：** `sac_dump_v3`——forward.pt 新增 `next_cand_f`/`actor_cand_f`（逐候选 twin-min 后 F，`[B,K,M]`）、`next_cand_q`/`actor_cand_q`（channel→`[B,K,M,2]` 双塔）、`td_q1`/`td_q2`（channel→`[B]`）；analysis.json 新增 `replay_stats` 快照与 `consistency`（`terminated∧bootstrap>0`、`truncated∧bootstrap=0` 行级违例）；`load_dump` 兼容 v2/v3，v3-only 字段报 `unavailable`。真实 m11 dump 验证落盘。
+
+**P5-CLI-1（`73d0ce0a`）：** 新增 `analysis.py` 为唯一计算层；debugkit CLI 扩展 `catalog/inspect/samples/trace/series/runs/run/replay/query`；`parse_source_key` 反解 run→round→job→agent→seed→frame→schema；`param_delta` 由 pre/post state 计算；`save_run_config_sac` 补 `knobs`（actor_arch 等入 config.json——此前 run 级分析无法识别架构，属审计新发现缺口）。
+
+**P5-REPLAY-1（`2a515d0c`）：** replay 增 `draw_counts`（逐样本复用计数，随 state_dict 持久化，旧 checkpoint 缺失时置零——state 增量字段，不 bump schema）；`buffer_stats` 增 `sample_age_quantiles`/`draw_count_*`/`explore_factor_counts`/`random_start_rows`；`replay` CLI 支持 run_dir/checkpoint/replay.pt 三级离线查询。
+
+**P5-ONDEMAND-1（`724e204e`）：** loop 每 critic tick 前轮询 `dump_request.json`（`{"hypothesis","critic_tick?"}`），原子消费并入调度表，与 `--dump-at` 共用 capture 路径；CLI `dump <run_dir>` 写哨兵；per-tick hypothesis 映射。
+
+**P5-API-1（`ec14e19e`）：** `debugserver.py` 只读 HTTP server（stdlib ThreadingHTTPServer，无新依赖），10 个端点全部直连 `analysis` 层；`debugkit serve` 子命令；命名避开根 `.gitignore` 的 `debug_*` 规则。
+
+**P5-FAULT-1 + P5-INV-1（`a1a78054`）：** `test_debug_faults.py`——五类注入故障各有定位断言（终止掩码→`consistency.violations`；旧数据→版本/round 分桶；α失控→`temperature.alpha` 序列单调发散；通道压制→`actor_weight=0` 时 critic 仍更新且 trace 可见；Q 爆炸→`targets_absmax`/`td_abs_max`）。不变量：capture on/off 两次 fake 训练 tick/round metrics 与最终 actor 权重**逐位相等**；成本经 `debug.capture_s`/`debug.bytes` 记录。
+
+| Gate | 结论 | 证据 |
+|---|---|---|
+| G5.0 审计 | 通过 | P5.6 逐环矩阵 + v3 字段/API 冻结 |
+| G5.2 CLI | 通过 | trace 输出完整溯源链 + 逐样本分解；samples 排序；series/query 覆盖 |
+| G5.3 replay | 通过 | draw_count/年龄分位/版本与行为分桶，run_dir→replay.pt 三级查询 |
+| G5.4 按需 | 通过 | `dump_request.json` 实测捕获 critic_tick_2（测试） |
+| G5.5 API | 通过 | 测试内 urllib 打 8 类端点均返回 200/404 正确语义 |
+| G5.6 故障 | 通过 | 5/5 注入故障定位测试 |
+| G5.7 不变量 | 通过 | on/off 对拍逐位一致 + 成本指标 |
+
+**回归：** SAC suite **181 passed**；PPO suite **232 passed**；静态独立性不变。
+
+**第一版不声称：** HTML viewer、像素级帧渲染、在线 attach、跨 run 统计显著性——均已在 P5.4 冻结为后置范围。
+
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
 
 # SAC V2 Implementation Decision Log
