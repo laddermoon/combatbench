@@ -295,9 +295,23 @@ dqpos mean 5.4e-5 / max 7.5e-2（混沌接触世界的发散，属预期
 非 bit-identical 版本差；与 CPU 参照的相对距离需专项测量）。
 
 额外收益：上游修复 `block/tile_cholesky` 无 pivot 下限
-（mujoco_warp#1415）；3.10 的 `mju_threadpool` 让 **CPU
-参照侧也可能提速**（碰撞+island 并行化——两边同升则参照
-关系保持一致）。
+（mujoco_warp#1415）。
+
+**CPU 参照侧（mujoco 3.8→3.15，Humanoid21Simulator 真实
+step 路径，40 动作步×25 子步×3 reps）**：
+
+| 配置 | µs/substep | 判定 |
+|---|---|---|
+| 3.8 单线程 | 94.3 | baseline |
+| 3.15 单线程 | 94.3 | **±0%**——solver 改进对本规模模型无感 |
+| 3.15 + `mju_threadpool(2)` | 104.4 | ❌ 变慢（场景太小，并行开销>收益）|
+| 3.15 + `mju_threadpool(4)` | 97.2 | ❌ 仍慢 |
+
+**CPU 物理一致性：近 bit-identical**——同 init+同随机动作
+200 子步后 dqpos max 9.3e-14 / dqvel max 1.5e-12（纯 FP64
+舍入累积，Newton 收敛改进在我们容差下产出相同解）。
+→ 升级对 CPU 参照**零速度变化、零语义漂移**；全部风险与
+改动集中在 device 侧。
 
 ### 8.3 O5 结论
 
