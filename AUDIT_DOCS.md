@@ -178,3 +178,9 @@ D-DOC-6（符号引用约定入 §5）、D-DOC-7（双语协议入 §6）、D-DO
 
 **遗留**：`.gitignore` 陷阱（D-DOC-4）、doc index（D-DOC-5）、覆盖缺口
 （D-DOC-8~13）、GATING 双份（D-DOC-14）等按序处置。
+
+## [2026-10-09] D-DOC-14 结案：GATING_REDESIGN 双份合并
+
+`balance_recover/GATING_REDESIGN.md`（过期快照，93 行）改为 3 行指针残桩，
+指向 `gating/GATING_REDESIGN.md`（含更新的"策略驱动沉降"节）。`git grep`
+确认无外部引用指向父版路径。历史内容留存于 git 历史。
