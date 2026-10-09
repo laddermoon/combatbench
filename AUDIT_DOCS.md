@@ -210,3 +210,9 @@ SamplingPolicy/Job spec 体系）、spawn 注意事项、gpu inference 模式、
   `policy/blueprints/README.md`（各自指回 `policy/README.md` 的契约层）
 - `baseline/framework/ppo/tests/README.md`（测试清单表，沿用
   framework/tests、humanoid21/tests 的既有惯例）
+
+## [2026-10-09] D-DOC-11 结案：experiments_sac README
+
+新建 `experiments_sac/README.md`（类型：指南）——注册机制
+（exp_sac_*自动发现 + EXPERIMENT_CLASS）+ 开发中状态声明 +
+指向 sac/PLAN.md。
