@@ -115,3 +115,45 @@ wave 的 step 段 7.04s——物理 exec 就是 wave 本体。
 *测量数据：`/tmp/e7_b256.json`（probe）、训练 run
 `train_standup_ppo_20261008_131639`（device）、
 `train_standup_ppo_20261009_105422`（CPU）、`/tmp/eager_prof`（nsys）。*
+
+---
+
+## 7. O2/O3 落地结果（2026-01 后续轮次）
+
+已提交：`73a6927e`（O3a dense 接触表）、`59d6f77b`（O3b mask
+终止 + freeze 契约修复）。
+
+### 实测（B=256，干净 GPU4，probe 3 次中位）
+
+| 指标 | 优化前 | O3a 后 | O3b 后 |
+|---|---|---|---|
+| wave wall | 8.94s | 7.98s | 8.03s（噪声内） |
+| observer a/b | 6.28s / 0.38s | **0.29s / 0.26s** | 0.39s / 0.32s |
+| device_timeout | ~0.01s | 5.52s（承接物理等待） | **0.15s** |
+| barrier_time | ~0.04s | ~0.04s | 5.11s（承接物理等待） |
+| reset（摔倒模拟） | 1.42s | 1.35s | 1.29s |
+| `term_barrier_syncs`/波 | — | ~800 | **402**（=2/步，fused） |
+
+**结论**：observer/timeout 的隐式 sync 全部清除，物理 exec 等待
+现在干净地显形在 `barrier_time`（5.1s ≈ 排队中的物理执行）。
+wave 8.03s ≈ 物理地板 7.1s + reset 残余 + ~0.9s 框架残差——
+**离裸物理地板只剩 ~13%，O3 的 sync 收益已基本拿完**；再往下
+需要动物理本身（O5）或波密度（O4）。
+
+### O2 修正：摔倒模拟是物理主导不是 sync 主导
+
+去 per-子步同步后 reset 仅从 1.42→1.29s——隔离测量证实该循环
+本身就是 ~900 子步物理 exec（~1.4ms/substep），sync 开销是次要
+项。继续压缩需减少子步数（语义变更）或独立 runtime 并行化。
+
+### 附带发现：sealed-ENDED 冻结契约实际未生效（已修复）
+
+`_freeze_ended_rows` 原仅在 new-ENDED 分支内调用——已 ENDED
+行在后续步的漂移从未被写回，契约注释"每步写回封存态"不成立。
+`test_ended_row_frozen_no_drift` 空转通过（FakeBackend 的
+qpos 漂移依赖 qvel，测试从未 seed）。导出与健康扫描均有 mask
+保护故无实际数据污染，但属于：① 契约违约；② ended 行白烧
+solver；③ 无 mask 读活状态的插件/debug capture 拿脏数据。
+已修复：freeze=True 屏障（post-substep/post-observer）将
+sealed 检查与 pending 检查融合进同一次 sync，无条件写回；
+测试 seed qvel 后成为真测试（64 项设备测试全绿）。
