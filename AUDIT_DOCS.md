@@ -274,3 +274,9 @@ gradsig 采样种子非 reset_update。
 但不再误伤 `obsolete.py` 同名文件——实测验证）；`*.png`/`*.json`/
 `*.csv` 三模式加注释"文档/证据资产需 `git add -f` 显式入库"。
 DOCS.md §7 政策文字已覆盖惯例说明。
+
+## [2026-10-09] D-DOC-5 结案：DOCS_INDEX.md 文档路由器
+
+新建根目录 `DOCS_INDEX.md`（类型：指南）——按任务组织的阅读链
+（开发/运行/边界理解/状态判断/遗留参考 五区），与 DOCS.md（怎么写）、
+CLAUDE.md（目录树）分工明确。DOCS.md §8 台账表补登 DOCS_INDEX。
