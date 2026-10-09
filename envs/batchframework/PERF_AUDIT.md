@@ -217,3 +217,77 @@ eval_every=5 摊销 ≈ 0.5s/update（~4% total）。多卡路径透明受益
 3. **进程内 lane** 的生态位只剩"异构 group 并发"（不同
    env_bp/policy/stochastic 无法合并为一波时的流重叠），
    ~1.5× 上限，实现复杂，暂记备选。
+
+## 8. O5 spike（2026-06）：solver/kernel 潜力探明（未改实现）
+
+目标：物理地板（B=256 step 物理 ~5.8s/wave）能否被 solver/
+kernel 层动作降低。**全部测量在 /tmp 临时脚本 + 隔离 venv
+完成，生产代码零改动**。GPU5 干净卡。
+
+### 8.1 同版本参数空间（mjw 3.8.0.3，B=256，稳态 ms/sub）
+
+| 变体 | ms/sub | niter mean/max | 判定 |
+|---|---|---|---|
+| baseline | 1.276 | 4.5 / 13 | Newton+pyramidal 已最优 |
+| solver=CG | 6.862 | 45.7/100 | ❌ 5.4× 更差 |
+| cone=ELLIPTIC | 2.135 | 5.8/15 | ❌ |
+| integrator=RK4 | 4.753 | — | ❌ |
+| integrator=IMPLICITFAST | 1.275 | 4.3/11 | ≈ 无差 |
+| ls_parallel=True | 1.432 | — | ❌ 更差 |
+| iterations=6 + tol=1e-4 | 1.017 | 3.6/6 | ⚠️ −20%，语义变体 |
+| impratio=1 | 0.987 | 3.1/8 | ⚠️ −23%，**语义变体** |
+| tolerance=1e-4 | 1.195 | 4.1/10 | ⚠️ −6% |
+| iterations=3 | 0.761 | 2.6/3 | ⚠️ −41%，语义风险大 |
+| njmax/nconmax 缩池 | ~1.25 | — | ❌ 无效（kernel 按活跃数计费）|
+| disableflag=CONTACT | 0.580 | — | 诊断：接触生成仅 ~7% 成本 |
+| disableflag=CONSTRAINT | 0.488 | — | **诊断：约束求解 = 62% 子步成本** |
+
+kernel 分解（nsys eager）：Newton 梯度/Cholesky/线搜索族
+占 GPU busy ~50%+，每子步 ~60 kernel 均值 ~4µs——**约束求解
+就是物理本体**，唯一能大改的杠杆是"少算迭代/换实现"。
+
+### 8.2 版本升级 spike（最大发现）
+
+隔离 venv（不动生产环境）：**mujoco-warp 3.11.0 + warp-lang
+1.14.0 + mujoco 3.10.0**。warp 1.14 仍是 CUDA 12.9 toolkit，
+兼容现有 driver 12.4；mjw ≥3.12 需 warp≥1.15（CUDA 13
+toolkit → driver 12.4 不够），**3.11 是不动驱动的版本上限**。
+
+| B | 3.8.0.3 ms/sub | 3.11.0 ms/sub | 加速比 | 3.11 吞吐 |
+|---|---|---|---|---|
+| 256 | 1.276 | 0.903 | **1.41×** | 0.28M |
+| 512 | 1.41 | 0.980 | 1.44× | 0.52M |
+| 1024 | 1.72 | 1.180 | 1.46× | 0.87M |
+| 2048 | 2.57 | 1.609 | **1.60×** | **1.27M** |
+
+**端到端 collect（256 jobs，max_steps=200）**：
+3.8 → **8.16s（31 eps/s）**；3.11 → **6.09s（42 eps/s）= −25%**。
+
+兼容性核查（全过）：
+- `put_data(nconmax/njmax)` API 保留（新增 nccdmax/naconmax/nvmax）；
+- `opt.impratio`→`impratio_invsqrt` 内部改名，XML impratio=10
+  仍被 put_model 解析（我们不在运行时改该字段）；
+- XML margin/gap 全默认值→3.9 的 margin/gap 语义重设计不影响；
+- `tests/test_device_rollouter.py`（6 项 e2e 契约）+
+  `test_device_lifecycle_contract.py` 在 3.11 下**全绿**；
+- graph capture 正常，`solver_niter` 4.7→3.7（上游 float32
+  收敛改进 + Newton decrement 早退判据）。
+
+轨迹漂移（同 init + 随机动作，200 子步）：
+dqpos mean 5.4e-5 / max 7.5e-2（混沌世界的发散，属预期的
+非 bit-identical 版本差；与 CPU 参照的相对距离需专项测量）。
+
+额外收益：上游修复了 `block/tile_cholesky` 无 pivot 下限
+（issue #1415）——我们的 `non_finite` FAILED 很可能部分源于此。
+
+### 8.3 O5 结论
+
+1. **参数调优上限 ~20-23%（impratio=1 / iterations=6+tol=1e-4）
+   但全是语义变体**——改的是 CPU 参照对齐的 XML 语义，
+   采纳前需要轨迹+训练双重验证，且要同步改 CPU 端才公平。
+2. **版本升级是零语义风险的 1.4-1.6×**——e2e −25%，且附带
+   数值正确性修复；代价是 mujoco 3.8→3.10 的 CPU 参照
+   版本同步升级（需评估 CPU 侧回归）+ 依赖 pinning 变更。
+3. 剩余空间：kernel 级定制（fork MJWarp solver）收益未知、
+   维护成本高，仅当升级落地后仍需更深优化时再考虑。
+
