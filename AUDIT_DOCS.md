@@ -298,3 +298,13 @@ CLAUDE.md（目录树）分工明确。DOCS.md §8 台账表补登 DOCS_INDEX。
 类型行之下）。SUBMISSION 对加"Last verified: 2026-06，以平台实际
 为准"时效声明——外部平台流程本仓无法验证，诚实标注而非假装准确。
 RULE 对行数差异（81/87）属翻译行文差异，同 commit 同步，不动。
+
+## [2026-10-09] D-DOC-15 结案：batchframework 状态扫描（索引级）
+
+逐份扫 31+ 份 batchframework 文档：E1–E5/E7/E8 各计划已有"状态："行，
+M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN**
+——补状态行（ROADMAP L220 记 E6 已完成 2026-10-02）。
+
+豁免说明：PERF_AUDIT/R3_TASK_BRIEF/STATUS_REVIEW 为当日在飞重构
+文档（已有类型头），内容归重构方所有，不动。契约/活文档
+（PUBLIC_INTERFACE/SEMANTICS/CPU_REQUIREMENTS）本就无需进度状态。
