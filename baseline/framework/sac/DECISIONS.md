@@ -2371,7 +2371,39 @@ S5-W0 P5-AUDIT-0   现有 debug 面 × 分析链逐环差距矩阵；sac_dump_v3
 - **D52：** replay 槽位不作身份（PLAN 已规定）；一切样本级查询以 `sample_id`/`source_key` 为键，槽位 index 仅作为物理定位手段出现在 trace 输出中。
 - **D53：** 帧回溯第一版语义 = source_key 反解 + 该帧 transition/reward/task_facts 重放展示；不承诺像素渲染。
 
----
+### P5.6 `P5-AUDIT-0` 审计结果（G5.0，2026-10-13）
+
+#### 分析链逐环现状
+
+| 链环 | 字段现状 | 查询现状 | 缺口 |
+|---|---|---|---|
+| episode→transition | `source_key` 含 run/round/job/agent/seed/frame；`task_facts`/`reward_features`/`policy_action`/`behavior`/`collection`/`versions` 随 slice 与 replay metadata 持久化 | 无 | `trace` 子命令：source_key 反解 + 逐字段展示 |
+| replay 写入/保留/抽样 | `buffer_stats()` 已有 age/round/policy_fingerprint/reward_semantics/objective_mode 分桶 + overwrite 计数 | round metrics 已带 `collection_round_counts` | 缺**逐样本 draw_count**（复用次数）；缺行为 provenance（e/random_start）分桶；checkpoint `replay.pt` 无离线查询命令 |
+| Bellman target | `forward.pt` 存 `targets`/channel、`u_next`/`next_*` 候选、`target_pair_index`、`reg_next` | recompute 精确复算 | 缺逐候选 `F_j` 网格与逐通道候选 Q（无法解释 pair 为何选 j）；缺逐样本 `td` |
+| 各通道 Q | `q1_pred`/`q2_pred` per-channel 已存 | `samples` 无 | 需落盘即有的 per-channel 网格 |
+| actor Q/熵梯度 | `new_*` 候选、`actor_pair_index`、`weighted_q`、`actor_integration_weights` 已存；`reg_actor` 条件存 | 无 | 逐样本 actor 项分解（α·logp vs −F）可从已有字段推导，不新增存储 |
+| α/target 更新 | `alpha_pre`、stats 含 alpha/temperature/target_tick | tick metrics 有 | 无（series 查询即可覆盖） |
+| 策略变化 | `trainer_pre/post.pt` 全量参数 | 无 | 分析层算 param-delta 摘要（L2/max|Δ|），不必另存 |
+| 真实评估 | eval/export/checkpoint 事件在 events.jsonl | 无 series 查询 | `series` 子命令按 metric key 抽时间序列 |
+| run 总览/多 run | config.json + events.jsonl | 无 | `runs`/`run` 摘要 + HTTP `/api/runs` |
+
+#### `sac_dump_v3` 增补字段冻结
+
+在 `sac_dump_v2` 基础上**只加不改**：
+
+1. `forward.pt`：`next_cand_f` `[B,K,M]`（逐候选 twin-min 后 F_j）、`actor_cand_f` `[B,K,M]`、`next_cand_q`/`actor_cand_q`（dict: channel→`[B,K,M,2]` 双塔）、`td_q1`/`td_q2`（dict: channel→`[B]`）；
+2. `analysis.json`：新增 `replay_stats` 快照（dump 时刻 buffer_stats）与 `consistency`（`terminated∧bootstrap>0` 等行级违例计数）；
+3. `request.json`/`manifest.json`：`schema_version="sac_dump_v3"`；
+4. `load_dump`/分析层接受 v2 与 v3，v3-only 字段对 v2 dump 报告 `unavailable`（D-fail-loud，不静默回退）。
+
+#### CLI 子命令清单冻结（`python -m baseline.framework.sac.debugkit`）
+
+已存在：`summary`、`find-sample`、`recompute`。
+新增：`catalog [--prefix]`、`inspect`、`samples --sort td_abs|q_mean|logp [--channel] [--limit]`、`trace --sample-id|--source-key`、`series <run_dir> --metric`、`runs <runs_root>`、`replay <run_dir|replay.pt>`、`query <artifact> <json-path>`、`serve <runs_root|run_dir> --port`。
+
+#### HTTP endpoint 清单冻结（与 CLI 共用分析层，D51）
+
+`/api/runs`、`/api/run?name=`、`/api/run/metrics?key=&event=`、`/api/run/dumps?name=`、`/api/run/replay?name=`、`/api/dump/inspect?path=`、`/api/dump/samples?path=&sort=&channel=&limit=`、`/api/dump/trace?path=&sample_id=|source_key=`、`/api/catalog`、`/api/dump/recompute?path=`（同步调用，第一版不做异步 job）。
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
 
