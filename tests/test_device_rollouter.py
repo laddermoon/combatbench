@@ -117,6 +117,26 @@ def test_padding_wave_order(env_bp, policy_bp):
         _assert_episode_contract(ep)
 
 
+def test_sized_wave_bundle(env_bp, policy_bp):
+    """去 padding：n < batch_size 的波用 ≥n 的 2 次幂尺寸 runtime。
+
+    20 jobs / batch_size=16 → 波1 B=16（主尺寸），余 4 → B=8
+    bundle；两尺寸的 runtime 按需构建并复用。"""
+    from envs.batchframework.device_rollouter import DeviceRollouter
+    dr = DeviceRollouter(batch_size=16)
+    assert dr._wave_batch(20) == 16   # ≥batch → 主尺寸
+    assert dr._wave_batch(4) == 8     # ≥n 的最小 2 次幂
+    assert dr._wave_batch(9) == 16
+    assert dr._wave_batch(16) == 16
+    with dr:
+        eps = dr.collect(_jobs(env_bp, policy_bp, 20, seed0=200))
+    assert len(eps) == 20
+    assert dr.last_collect_report["wave_batch_sizes"] == [8, 16]
+    for i, ep in enumerate(eps):
+        assert ep.episode_index == i and ep.base_seed == 200 + i
+        _assert_episode_contract(ep)
+
+
 def test_logprob_replay_parity(env_bp, policy_bp):
     """rollout 记录 log_prob 与 evaluate_actions(ctx 重放) 一致。"""
     from envs.batchframework.device_rollouter import DeviceRollouter

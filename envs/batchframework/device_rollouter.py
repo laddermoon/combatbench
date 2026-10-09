@@ -198,6 +198,12 @@ class DeviceRollouter:
         self._env_key: Optional[str] = None
         self._recorder: Optional[_RecorderAdapter] = None
         self._store: Optional[RecordStore] = None
+        # 尺寸匹配的 runtime 缓存（去 padding）：B -> bundle。
+        # 物理子步成本对 B 弱敏感但非零（B=64≈0.83×B=256），
+        # pad 行照付全价——小波用 ≥n 的 2 次幂尺寸 runtime。
+        # self._sim/_rt/_recorder/_store 指向"当前波"的 bundle。
+        self._bundles: Dict[int, Dict[str, Any]] = {}
+        self._wave_bs: set = set()
         self._policies = PolicyExecutorCache(capacity=policy_cache_size)
         # 计时分解——按 collect 调用累计；E7-W0 起 assemble 细分为
         # finalize/D2H/export 三段，step 内部经 rt.seg_timing/
@@ -218,41 +224,15 @@ class DeviceRollouter:
         self._host_export_bytes = 0
 
     # ------------------------------------------------------------------
-    def _build_runtime(self, env_bp: EnvBlueprint, T: int) -> None:
-        """按 env_bp 装配设备 runtime（blueprint 变化才重建）。"""
-        binding = resolve_binding(env_bp.simulator.cls)
-        sim = binding.make_sim(self.batch_size, self.device,
-                               sim_config=dict(env_bp.simulator.config))
-        sim.reset()
-        rt = BatchRuntime(
-            sim, obs_builder=sim.device_obs_builder(),
-            phy_substeps=env_bp.phy_steps_per_action)
-        for spec in env_bp.plugins:
-            rt.attach(resolve_plugin(spec.cls, spec.config, sim))
-        if env_bp.max_steps:
-            rt.attach(DeviceTimeoutPlugin(int(env_bp.max_steps)))
-        for name, spec in env_bp.observer_plugins.items():
-            rt.set_observer(name, resolve_observer(spec.cls, spec.config, sim))
-
-        io_schema = binding.io_schema(sim)
-        # observer schema：声明过的走严格校验；未声明的走 (B,) 兼容路径
-        obs_schemas: Dict[str, Dict[str, ObserverLeaf]] = {}
-        for name, spec in env_bp.observer_plugins.items():
-            obs = rt.dispatcher.observers.get(name)
-            declared = getattr(obs, "output_schema", None)
-            if declared:
-                obs_schemas[name] = {
-                    leaf: ObserverLeaf(dtype=dt, shape_suffix=tuple(sfx))
-                    for leaf, (dt, sfx) in declared.items()}
-        store = RecordStore(io_schema, T, self.batch_size,
-                            torch.device(self.device), obs_schemas)
-        rec = _RecorderAdapter(list(env_bp.observer_plugins), store)
-        rec.set_runtime(rt)
-        rt.attach(rec)
-        self._sim, self._rt, self._binding = sim, rt, binding
-        self._io_schema = io_schema
-        self._recorder, self._store = rec, store
-        self._env_key = json.dumps(env_bp.to_dict(), sort_keys=True)
+    def _ensure_env(self, env_bp: EnvBlueprint, env_key: str) -> None:
+        """env 级共享状态（binding/env_key/manifest）——blueprint
+        变化时丢弃全部已缓存 bundle 后重建。io_schema 是
+        batch 无关的，延后到首个 bundle 的 sim 上构建。"""
+        if self._env_key == env_key:
+            return
+        self._teardown()
+        self._binding = resolve_binding(env_bp.simulator.cls)
+        self._env_key = env_key
         # E6-W4：迁移 manifest 新鲜度——单元证据过期（cls/config 漂移）
         # 在执行前拒绝，不静默沿用；blueprint 整体漂移（如 max_steps）
         # 只标注进 report（runtime 字段不属单元证据范围）。
@@ -268,6 +248,67 @@ class DeviceRollouter:
                     f"{st_['stale_units']} changed since evidence was "
                     f"recorded (experiment={st_['experiment']!r}) — "
                     f"re-run validation before executing on device")
+
+    def _wave_batch(self, n: int) -> int:
+        """波批尺寸（去 padding）：n < batch_size 时用 ≥n 的 2 次幂
+        尺寸 runtime——物理子步成本对 B 弱敏感（B=64≈0.83×B=256）
+        但 pad 行照付全价。尺寸集有界（≤batch_size 的 2 次幂），
+        bundle 按 B 缓存复用。"""
+        B = 8
+        while B < n and B < self.batch_size:
+            B <<= 1
+        return min(B, self.batch_size)
+
+    def _bundle(self, env_bp: EnvBlueprint, T: int, B: int
+                ) -> Dict[str, Any]:
+        bundle = self._bundles.get(B)
+        if bundle is None:
+            bundle = self._build_bundle(env_bp, T, B)
+            self._bundles[B] = bundle
+        return bundle
+
+    def _build_bundle(self, env_bp: EnvBlueprint, T: int, B: int
+                      ) -> Dict[str, Any]:
+        """装配一个指定批尺寸的 runtime bundle（sim+rt+store+rec）。"""
+        binding = self._binding
+        sim = binding.make_sim(B, self.device,
+                               sim_config=dict(env_bp.simulator.config))
+        sim.reset()
+        rt = BatchRuntime(
+            sim, obs_builder=sim.device_obs_builder(),
+            phy_substeps=env_bp.phy_steps_per_action)
+        for spec in env_bp.plugins:
+            rt.attach(resolve_plugin(spec.cls, spec.config, sim))
+        if env_bp.max_steps:
+            rt.attach(DeviceTimeoutPlugin(int(env_bp.max_steps)))
+        for name, spec in env_bp.observer_plugins.items():
+            rt.set_observer(name, resolve_observer(spec.cls, spec.config, sim))
+
+        if self._io_schema is None:
+            self._io_schema = binding.io_schema(sim)
+        # observer schema：声明过的走严格校验；未声明的走 (B,) 兼容路径
+        obs_schemas: Dict[str, Dict[str, ObserverLeaf]] = {}
+        for name, spec in env_bp.observer_plugins.items():
+            obs = rt.dispatcher.observers.get(name)
+            declared = getattr(obs, "output_schema", None)
+            if declared:
+                obs_schemas[name] = {
+                    leaf: ObserverLeaf(dtype=dt, shape_suffix=tuple(sfx))
+                    for leaf, (dt, sfx) in declared.items()}
+        store = RecordStore(self._io_schema, T, B,
+                            torch.device(self.device), obs_schemas)
+        rec = _RecorderAdapter(list(env_bp.observer_plugins), store)
+        rec.set_runtime(rt)
+        rt.attach(rec)
+        return {"B": B, "sim": sim, "rt": rt, "recorder": rec,
+                "store": store}
+
+    def _activate(self, bundle: Dict[str, Any]) -> None:
+        """把"当前波"指针指向 bundle（report/兼容路径读 self._*）。"""
+        self._sim = bundle["sim"]
+        self._rt = bundle["rt"]
+        self._recorder = bundle["recorder"]
+        self._store = bundle["store"]
 
     def _executor(self, bp_dict: Dict[str, Any]) -> PolicyExecutor:
         return self._policies.get(bp_dict, self.device)
@@ -294,6 +335,7 @@ class DeviceRollouter:
         for k in self.sync_stats:
             self.sync_stats[k] = 0
         self._host_export_bytes = 0
+        self._wave_bs = set()
 
         episodes: List[Optional[Episode]] = [None] * len(jobs)
         for key, idxs in groups.items():
@@ -305,10 +347,7 @@ class DeviceRollouter:
                 raise ValueError(
                     "device collector requires env_bp.max_steps "
                     "(wave-synchronous fixed horizon)")
-            if self._env_key != env_key:
-                self._teardown()
-                self._build_runtime(env_bp, T)
-            rt = self._rt
+            self._ensure_env(env_bp, env_key)
 
             exec_a = self._executor(g_jobs[0].policy_a_bp.to_dict())
             exec_b = (exec_a if g_jobs[0].policy_a_bp.to_dict()
@@ -324,13 +363,19 @@ class DeviceRollouter:
                     _spec_ef(j.sampling_b.to_dict(), f"{gi}/b"))
                    for gi, j in enumerate(g_jobs)]
 
-            B = self.batch_size
-            for w0 in range(0, len(g_jobs), B):
+            w0 = 0
+            while w0 < len(g_jobs):
+                # 去 padding：波取 ≤batch_size 的 2 次幂尺寸 runtime
+                B = self._wave_batch(len(g_jobs) - w0)
+                bundle = self._bundle(env_bp, T, B)
+                self._activate(bundle)
+                self._wave_bs.add(B)
                 wave_idx = idxs[w0:w0 + B]
                 self._run_wave(g_jobs[w0:w0 + B], wave_idx,
                               efs[w0:w0 + B], exec_a, exec_b,
-                              stochastic, env_bp, rt, T, episodes,
-                              jobs, cap)
+                              stochastic, env_bp, bundle["rt"], T,
+                              episodes, jobs, cap)
+                w0 += B
 
         if cap is not None:
             cap.write_manifest(self._collect_count)
@@ -341,7 +386,7 @@ class DeviceRollouter:
     def _run_wave(self, wave, wave_idx, efs, exec_a, exec_b, stochastic,
                  env_bp, rt, T, episodes, jobs=None, cap=None):
         sim, rec, store = self._sim, self._recorder, self._store
-        B, n = self.batch_size, len(wave)
+        B, n = rt.state.batch_size, len(wave)
         st = rt.state
         dev = torch.device(self.device)
 
@@ -493,14 +538,16 @@ class DeviceRollouter:
                                 if self._rt is not None else {}),
             "barrier_time": (self._rt.barrier_time
                              if self._rt is not None else 0.0),
+            "wave_batch_sizes": sorted(self._wave_bs),
         }
 
     # ------------------------------------------------------------------
     def _teardown(self):
-        if self._sim is not None:
-            close = getattr(self._sim, "close", None)
+        for bundle in self._bundles.values():
+            close = getattr(bundle["sim"], "close", None)
             if callable(close):
                 close()
+        self._bundles.clear()
         self._sim = self._rt = self._recorder = self._store = None
         self._binding = self._io_schema = None
         self._env_key = None
