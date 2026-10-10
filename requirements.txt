@@ -1,8 +1,31 @@
-mujoco>=3.0
-gymnasium>=0.29
-numpy>=1.24
-scipy>=1.10
-torch>=2.0
-imageio>=2.31
-opencv-python>=4.8
-matplotlib>=3.7
+# CombatBench 已验证运行栈（钉版——宽松约束会让 pip 静默解析到
+# 未验证的新版本，物理语义随版本漂移）。见 docs/RUNTIME.md。
+#
+# 镜像注意：baidubce 镜像缺 mujoco-warp>=3.9 / warp-lang>=1.13，
+# 升版本需 -i https://pypi.org/simple（+代理）。
+
+# --- 物理引擎（CPU 参照 + device 后端共用 mujoco）---
+mujoco==3.8.0
+mujoco-warp==3.8.0.3
+warp-lang==1.12.1
+mujoco-mjx==3.8.0          # jax-mjx 后备/探针路径
+jax==0.6.2                 # 同上，纯 warp 路径可省
+jax-cuda12-plugin==0.6.2   # jax cuda12 后端（jax[cuda12] extra
+jax-cuda12-pjrt==0.6.2     #   的显式形态，extra 解析会冲突）
+
+# --- 训练/数值 ---
+torch==2.7.1
+torchvision==0.22.1
+torchcodec==0.5
+numpy==2.2.6
+scipy==1.15.3
+gymnasium==1.2.3           # 仅 spaces 类型注解
+
+# --- 渲染/工具 ---
+imageio==2.37.0
+imageio-ffmpeg==0.6.0      # 视频导出编码
+opencv-python==4.12.0.88
+matplotlib==3.10.8
+
+# --- 测试 ---
+pytest==8.4.2

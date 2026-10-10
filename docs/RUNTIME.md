@@ -35,18 +35,14 @@
 ## 3. 安装配方
 
 ```bash
-# CPU 路径（最小集）
-pip install -r requirements.txt
-# 或：pip install -e .
-
-# device 路径追加（requirements.txt 未含——隐性依赖）：
-pip install "mujoco==3.8.0" "mujoco-warp==3.8.0.3" \
-            "warp-lang==1.12.1" "mujoco-mjx==3.8.0" "jax[cuda12]==0.6.2"
+pip install -r requirements.txt   # 完整钉版栈（含 device 依赖）
+# 或：pip install -e .            # pyproject 同样钉死核心依赖
 ```
 
-> ⚠️ `requirements.txt` 是 `>=` 宽松约束——`mujoco>=3.0`
-> 在 pypi 官方源会解析到 3.15（与已验证栈不同版本）。
-> 复现旧行为请按上表钉死版本。
+`requirements.txt` 为 `==` 钉版全集（含 mujoco-warp/warp-lang/
+mjx/jax）；`pyproject.toml` 钉核心依赖（不含 jax/mjx 后备
+路径）。宽松 `>=` 会让 pip 静默解析到未验证新版本——
+**物理语义随版本漂移，禁止放宽**。
 
 ## 4. 硬版本约束（O5 spike 实测探明）
 
@@ -106,5 +102,4 @@ nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv
 
 - **无 Dockerfile/bootstrap 脚本**——本文是"已验证快照"，
   非从零可重放配方；首次在新机部署需自行处理 EGL/系统库；
-- jax 仅为 mjx-jax 探针路径所需，纯 warp device 路径不依赖；
-- `requirements.txt` 未含 device 栈钉版（§3 配方为准）。
+- jax 仅为 mjx-jax 探针路径所需，纯 warp device 路径不依赖。
