@@ -2563,6 +2563,32 @@ S7-W0 P7-AUDIT-0   独立性静态审计（sac↔ppo 零依赖、experiments_sac
 
 **验证**：单元测试（latest-N/pinned/临时目录/keep_last=0/缺失目录）+ loop 级集成测试（3 round→3 ckpt→keep_last=1 仅存最新）。SAC suite 191 passed。
 
+### P7.3 P7-RESUME-1 结论：恢复完整性审计 + 分段/连续对拍
+
+**恢复面审计（逐项对照 P7 清单）**
+
+| 要求恢复项 | 位置 | 状态 |
+|---|---|---|
+| replay（含内部采样 rng） | bundle `replay.pt` | ✅ |
+| actor/critic/target nets | `trainer_state`（targets 在 critic state_dict 内） | ✅ |
+| actor/alpha 优化器 | `trainer_state` | ✅ |
+| 温度 log_alpha | `trainer_state` | ✅ |
+| 全部 RNG | np+torch+cuda 全局 + actor rng + expectation rng + replay rng | ✅ |
+| experiment state | `experiment.json` + `load_state` | ✅ |
+| 调度状态 | clocks / utd_credit / n_evals_done | ✅ |
+| python `random` | SAC 运行路径未使用 | n/a |
+| DivergenceGuard | 无状态（纯阈值） | n/a |
+
+**未发现代码缺口**——所需的新增物是端到端证明而非修复。
+
+**对拍测试**（`test_segmented_resume_matches_continuous_training`）：声明确定性条件 = CPU + 固定 seed + 确定性 fake rollouter。连续 3-round run vs（round-3 收集中模拟崩溃 → 从 `checkpoint_s00000008` 全量恢复 → 跑至 env_step=12）：
+
+- 最终 trainer_state 逐位相等：actor 权重、critic 全部子模块（含 q1/q2 target nets 与内嵌优化器 param_groups/state）、log_alpha；
+- post-resume round-3 指标与连续 run 的 round-3 指标逐键相等（仅剔除 wall-clock 字段）；
+- 测试同时验证了 `experiment.state()/load_state` 恢复路径（fake 实验的 slice 游标经其持久化，否则 replay 的 source_key 去重会拒收）。
+
+SAC suite 192 passed。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；

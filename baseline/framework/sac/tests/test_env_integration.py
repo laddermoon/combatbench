@@ -283,3 +283,112 @@ def test_loop_prunes_checkpoints_with_keep_last(tmp_path) -> None:
         p.name for p in (run_dir / "checkpoints").iterdir()
     )
     assert survivors == ["checkpoint_s00000012"]
+
+
+def test_segmented_resume_matches_continuous_training(tmp_path, monkeypatch) -> None:
+    """P7-RESUME-1: crash→resume produces bitwise-identical results to an
+    uninterrupted run under declared determinism (CPU, fixed seeds,
+    deterministic fake rollouter)."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    class _Interrupt(Exception):
+        pass
+
+    class SegExperiment(_FakeExperiment):
+        def __init__(self, crash_at_round=None):
+            self._round = 0
+            self._crash_at = crash_at_round
+
+        def state(self) -> dict:
+            return {"_round": self._round}
+
+        def load_state(self, state: dict) -> None:
+            self._round = int(state.get("_round", 0))
+
+        def build_slices(self, episodes):
+            self._round += 1
+            if self._crash_at is not None and self._round >= self._crash_at:
+                raise _Interrupt(f"simulated crash at round {self._round}")
+            return [_slice(T=4, obs_dim=3, action_dim=2, channels=1,
+                           slice_id=f"slice-{self._round}")]
+
+        def common_params(self) -> CommonParamsSAC:
+            return CommonParamsSAC(
+                name=self.name,
+                learning_rate=1e-3,
+                critic_learning_rate=1e-3,
+                grad_clip_norm=1.0,
+                episodes_per_update=1,
+                max_env_steps=12,
+                eval_interval=1,
+                eval_episodes=1,
+                video_eval_interval=0,
+                rollout_workers=1,
+                seed=31,
+            )
+
+    # Continuous reference: 3 rounds uninterrupted.
+    run_cont = tmp_path / "continuous"
+    train_sac(SegExperiment(), run_dir=run_cont, rollouter=_FakeRollouter())
+
+    # Segment 1: crash during round 3 (checkpoints for rounds 1-2 exist).
+    run_seg1 = tmp_path / "seg1"
+    try:
+        train_sac(SegExperiment(crash_at_round=3), run_dir=run_seg1,
+                  rollouter=_FakeRollouter())
+    except _Interrupt:
+        pass
+    else:
+        raise AssertionError("segment 1 did not crash as designed")
+
+    # Segment 2: resume from the latest checkpoint, run to completion.
+    run_seg2 = tmp_path / "seg2"
+    train_sac(
+        SegExperiment(), run_dir=run_seg2,
+        resume_from=run_seg1 / "checkpoints" / "checkpoint_s00000008",
+        rollouter=_FakeRollouter(),
+    )
+
+    def _final_trainer(run):
+        return torch.load(
+            run / "checkpoints" / "checkpoint_s00000012" / "trainer.pt",
+            map_location="cpu", weights_only=False,
+        )
+
+    cont = _final_trainer(run_cont)
+    seg = _final_trainer(run_seg2)
+
+    def _assert_sd_equal(a, b, prefix=""):
+        if isinstance(a, dict):
+            assert set(a) == set(b), f"{prefix}: key mismatch"
+            for k in a:
+                _assert_sd_equal(a[k], b[k], f"{prefix}.{k}")
+        elif isinstance(a, (list, tuple)):
+            assert len(a) == len(b), f"{prefix}: length mismatch"
+            for i, (x, y) in enumerate(zip(a, b)):
+                _assert_sd_equal(x, y, f"{prefix}[{i}]")
+        elif isinstance(a, torch.Tensor):
+            assert torch.equal(a, b), f"{prefix} diverged after resume"
+        else:
+            assert a == b, f"{prefix} diverged after resume: {a!r} != {b!r}"
+
+    _assert_sd_equal(cont["actor_state_dict"], seg["actor_state_dict"], "actor")
+    assert torch.equal(cont["log_alpha"], seg["log_alpha"])
+    _assert_sd_equal(
+        cont["critic_state_dict"], seg["critic_state_dict"], "critic"
+    )
+
+    # Round-3 metrics must agree between the resumed segment and the
+    # uninterrupted run (modulo wall-clock fields).
+    def _round_metrics(run):
+        return [
+            {k: v for k, v in ev.metrics.items()
+             if not k.startswith("timing.") and "wall_time" not in k}
+            for ev in load_events(run / EVENTS_RELATIVE_PATH)
+            if ev.event_type == "round"
+        ]
+
+    seg_rounds = _round_metrics(run_seg2)
+    cont_rounds = _round_metrics(run_cont)
+    assert len(seg_rounds) == 1  # only round 3 emitted post-resume
+    assert seg_rounds[0] == cont_rounds[2]
