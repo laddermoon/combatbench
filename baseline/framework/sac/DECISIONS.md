@@ -2589,6 +2589,16 @@ S7-W0 P7-AUDIT-0   独立性静态审计（sac↔ppo 零依赖、experiments_sac
 
 SAC suite 192 passed。
 
+### P7.4 P7-ART-1 结论：工件版本登记
+
+**产出**：`ARTIFACTS.md` —— 全部 SAC 工件登记表（位置/schema 常量/生产者/消费者/未知版本拒绝行为/保留策略）。
+
+**审计结果**：9 类工件中 8 类已有显式 schema 且加载端 fail-loud；`config.json` 是唯一无版本标记的对外工件（且参与 resume fingerprint）。
+
+**改动**：`save_run_config_sac` 增加 `config_schema: "sac_run_config_v1"`；同时把 `config_schema` 加入 `RESUME_ALLOWED_OVERRIDES`——fingerprint 计算从两侧删除该键，因此标记前写出的旧 checkpoint 仍可 resume（有专项测试证明 fp_old == fp_new）。
+
+**已登记的已知弱点**（不阻塞）：`sac_collection_v1` 仅为内存边界的文档化标记，无强制校验点；`runtime.pt`/`experiment.json` 为 checkpoint 内部工件不单独版本化（由 bundle schema 兜底）。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；

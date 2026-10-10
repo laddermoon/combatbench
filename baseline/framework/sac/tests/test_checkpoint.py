@@ -185,3 +185,25 @@ def test_prune_checkpoints_noop_on_missing_dir(tmp_path) -> None:
     from baseline.framework.sac.checkpoint import prune_checkpoints
 
     prune_checkpoints(tmp_path / "nonexistent", keep_last=3)
+
+
+def test_config_schema_marker_preserves_resume_fingerprint() -> None:
+    """Pre-marker checkpoints must remain resumable after config_schema
+    was added (P7-ART-1): the marker is excluded via RESUME_ALLOWED_OVERRIDES."""
+    from baseline.framework.sac.checkpoint import config_fingerprint
+    from baseline.framework.sac.loop import RESUME_ALLOWED_OVERRIDES
+
+    base = {
+        "algorithm": "sac",
+        "smoke": False,
+        "experiment": {"name": "x", "sac_params": {"batch_size": 4}},
+    }
+    old_overrides = tuple(
+        o for o in RESUME_ALLOWED_OVERRIDES if o != "config_schema"
+    )
+    fp_old = config_fingerprint(base, allowed_overrides=old_overrides)
+    new_cfg = {**base, "config_schema": "sac_run_config_v1"}
+    fp_new = config_fingerprint(
+        new_cfg, allowed_overrides=RESUME_ALLOWED_OVERRIDES,
+    )
+    assert fp_old == fp_new

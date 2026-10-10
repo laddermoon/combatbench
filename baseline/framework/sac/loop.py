@@ -51,6 +51,9 @@ from .trainer import (
 
 RESUME_ALLOWED_OVERRIDES = (
     "saved_at",
+    # P7-ART-1: config_schema is a post-hoc version marker; removing it
+    # from the fingerprint keeps pre-marker checkpoints resumable.
+    "config_schema",
     "experiment.state",
     "experiment.common_params.learning_rate",
     "experiment.common_params.critic_learning_rate",
@@ -98,6 +101,7 @@ def save_run_config_sac(
             },
         },
         "algorithm": "sac",
+        "config_schema": "sac_run_config_v1",
         "smoke": bool(smoke),
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
