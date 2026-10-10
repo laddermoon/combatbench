@@ -337,3 +337,9 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 （环境即资产/实验不动世界规则/后端可换/训练评测同源）与"为什么有这样的价值"
 （五设计选择→因果链），末尾加"关键点与边界"（EnvRuntime 唯一入口、
 写权限结构性、提案制终止、CPU 参考路径定位、无 Gym 适配）。
+
+**ACH-2 前置重构**：`ACCEPTANCE_CRITERIA.md`→`BENCHMARK.md` +
+`acceptance_check.py`→`benchmark.py`。语义从"验收门槛(pass/fail)"
+转为"性能基准(数字vs参考标线)"；脚本输出改为结构化实测表 +
+`benchmark_output/benchmark_results_<ts>.json` 快照；新增吞吐指标
+（实测 5390 物理步/s ≈10.8×实时）。4 处活文档引用已更新。

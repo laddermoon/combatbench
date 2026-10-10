@@ -144,7 +144,7 @@ humanoid21/
 ├── CONTROLSPEC.md          # 控制接口规范
 ├── OBSERVATION_zh.md       # 观测空间设计
 ├── CONTACT_DESIGN.md       # 接触参数设计
-├── ACCEPTANCE_CRITERIA.md  # 底层控制验收标准
+├── BENCHMARK.md            # 仿真性能基准（指标+标线+快照）
 ├── generate_pose_images.py # 姿态参考图生成脚本（产物在 pose_images/）
 ├── pose_images/            # 姿态参考图（generate_pose_images.py 产物，可重生成）
 ├── obs_analysis/           # 观测空间分析产物（REPORT.md + npy/png，历史研究资产）

@@ -16,7 +16,7 @@
 | `test_audit_combat_observer_events.py` | 审计探针：锁死 CombatScoringObserver 读错事件容器（P-H21-2） | 探针 |
 | `test_audit_stale_contacts.py` | 审计回归：contacts 缓存跨物理步失效不变式（P-H21-1，已修复） | 回归 |
 
-> `test_acceptance.py` 已移出本目录 → `../acceptance_check.py`
+> `test_acceptance.py` 已移出本目录 → `../benchmark.py`（原 `acceptance_check.py`）
 > （手动测量脚本，`measure_*` 函数不随 pytest 收集）。实测 3/5 项
 > 在当前 KP/KD 下结构性不达标（跟踪误差/响应延迟/力矩振荡，
 > 见 AUDIT.md P-H21-4）；`test_videos/` 产物目录已删（本就
@@ -43,8 +43,8 @@ PYTHONPATH=. pytest envs/humanoid21/tests/ -x -q
 - `../DATASPEC.md` — 数据规范
 - `../CONTROLSPEC.md` — 控制规范
 - `../OBSERVATION_zh.md` — 观测空间设计
-- `../ACCEPTANCE_CRITERIA.md` — 底层控制验收标准（含现状标注：3/4 项当前未达标）
-- `../acceptance_check.py` — 配套手动测量脚本（`PYTHONPATH=. python3 envs/humanoid21/acceptance_check.py`）
+- `../BENCHMARK.md` — 仿真性能基准（指标定义+参考标线+实测快照）
+- `../benchmark.py` — 配套手动测量脚本（`PYTHONPATH=. python3 envs/humanoid21/benchmark.py`）
 
 ## 添加新测试
 

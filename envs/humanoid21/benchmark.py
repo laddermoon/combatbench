@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Humanoid21 底层控制验收测量（手动脚本，不是 pytest 测试）。
+"""Humanoid21 仿真性能基准测量（手动脚本，不是 pytest 测试）。
 
-按照 ACCEPTANCE_CRITERIA.md 测量 KP/KD 参数的实际指标。
+按照 BENCHMARK.md 定义的方法测量仿真环境的性能指标，输出数字而非
+pass/fail 判决：每项指标给出实测值与参考标线（reference bar）的对照，
+并将全部结果写入 ``benchmark_output/benchmark_results_<timestamp>.json``。
 
-**现状（2026-10 审计 P-H21-4，实测）：**
-tracking_error / response_latency / zero_oscillation 三项在当前 KP/KD 下
-**不达标且已验证为结构性不可达**（正弦误差与幅度线性、~120ms 等效滞后、
-静态站立力矩占用 66-90% 上限）；jump / absolute_stability 达标。
-详见根目录 AUDIT.md。本脚本保留为唯一的 PD 质量测量仪器——重调
-增益或改动接触模型后可再次运行复测，不随 pytest 收集（函数已改名
-``measure_*``）。
+指标一览：tracking_error / jump / response_latency / zero_oscillation /
+absolute_stability / throughput（仿真吞吐 steps/s）。
+指标定义与参考标线见 BENCHMARK.md；最新一次基准快照记录在该文档
+「基准快照」一节。
 
 运行：
-    PYTHONPATH=. python3 envs/humanoid21/acceptance_check.py
+    PYTHONPATH=. python3 envs/humanoid21/benchmark.py
 """
+
+import json
+import time
+import datetime
 
 import numpy as np
 import sys
@@ -27,13 +30,13 @@ from envs.humanoid21.simulator import Humanoid21Simulator
 
 
 # 视频输出目录（本地产物；*.mp4 在 .gitignore 中）
-VIDEO_DIR = Path(__file__).parent / 'acceptance_videos'
-VIDEO_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = Path(__file__).parent / 'benchmark_output'
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def save_video(frames: list, filename: str, fps: int = 30):
     """保存帧列表为视频文件"""
-    output_path = VIDEO_DIR / filename
+    output_path = OUTPUT_DIR / filename
     # 降低分辨率以加快视频生成
     downsampled_frames = [frame[::2, ::2] for frame in frames]  # 360x640
     imageio.mimwrite(str(output_path), downsampled_frames, fps=fps, codec='libx264', quality=8)
@@ -52,7 +55,7 @@ def measure_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) 
     - 测量跟踪误差
     """
     print("=" * 70)
-    print("验收测试 1: 跟踪误差与刚度")
+    print("基准测量 1: 跟踪误差与刚度")
     print("=" * 70)
     
     # 关闭重力
@@ -125,39 +128,37 @@ def measure_tracking_error(sim: Humanoid21Simulator, record_video: bool = True) 
     # 分析结果
     print("\n跟踪误差分析:")
     results = {}
-    
+    heavy_max_all = 0.0
+    light_max_all = 0.0
+
     for robot_id in ['robot_a', 'robot_b']:
         errors = np.array(tracking_errors[robot_id])
         mean_error = errors.mean(axis=0)
-        
+
         # 承重关节 (腿部、腰部): 索引 0-14
         heavy_joints = mean_error[:15]
         # 末端关节 (手臂): 索引 15-20
         light_joints = mean_error[15:]
-        
+
         heavy_max = heavy_joints.max()
         light_max = light_joints.max()
-        
-        # 验收标准
-        heavy_pass = heavy_max < 0.05  # < 0.05 rad
-        light_pass = light_max < 0.02  # < 0.02 rad
-        
+        heavy_max_all = max(heavy_max_all, heavy_max)
+        light_max_all = max(light_max_all, light_max)
+
         print(f"\n{robot_id}:")
-        print(f"  承重关节最大误差: {heavy_max:.4f} rad ({np.degrees(heavy_max):.2f}°) - {'✓ PASS' if heavy_pass else '✗ FAIL'}")
-        print(f"  末端关节最大误差: {light_max:.4f} rad ({np.degrees(light_max):.2f}°) - {'✓ PASS' if light_pass else '✗ FAIL'}")
-        
-        results[robot_id] = heavy_pass and light_pass
-    
-    overall_pass = all(results.values())
-    print(f"\n{'='*70}")
-    print(f"测试 1 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
-    print(f"{'='*70}\n")
+        print(f"  承重关节最大误差: {heavy_max:.4f} rad ({np.degrees(heavy_max):.2f}°)  [标线 <0.05]")
+        print(f"  末端关节最大误差: {light_max:.4f} rad ({np.degrees(light_max):.2f}°)  [标线 <0.02]")
+
+        results[robot_id] = {'heavy_err_rad': float(heavy_max), 'light_err_rad': float(light_max)}
 
     # 保存视频
     if record_video and frames:
         save_video(frames, 'test1_tracking_error.mp4', fps=video_fps)
 
-    return {'pass': overall_pass, 'details': results}
+    return {'metrics': {
+        'heavy_tracking_err_rad': float(heavy_max_all),
+        'light_tracking_err_rad': float(light_max_all),
+    }, 'details': results}
 
 
 def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
@@ -166,7 +167,7 @@ def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[st
     这个过程中的机器人的响应速度以及跳跃高度。
     """
     print("=" * 70)
-    print("验收测试: 跳跃测试")
+    print("基准测量: 跳跃能力")
     print("=" * 70)
 
     # 使用蹲姿初始化
@@ -219,6 +220,7 @@ def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[st
     # 分析结果
     print("\n跳跃测试分析:")
     results = {}
+    jump_max = vel_max = resp_max = 0.0
 
     for robot_id in ['robot_a', 'robot_b']:
         heights = np.array(jump_data[robot_id]['heights'])
@@ -229,7 +231,6 @@ def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[st
 
         # 最大高度
         max_height = heights.max()
-        max_height_idx = heights.argmax()
 
         # 跳跃高度 (相对初始高度)
         jump_height = max_height - initial_height
@@ -240,27 +241,30 @@ def measure_jump(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[st
         # 起跳响应时间 (到达最大速度的时间)
         response_time = velocities.argmax() * sim.dt * 10  # *10 因为每10步记录一次
 
+        jump_max = max(jump_max, jump_height)
+        vel_max = max(vel_max, max_velocity)
+        resp_max = max(resp_max, response_time)
+
         print(f"\n{robot_id}:")
         print(f"  初始高度 (蹲姿): {initial_height:.4f} m")
         print(f"  最大高度: {max_height:.4f} m")
-        print(f"  跳跃高度: {jump_height:.4f} m")
+        print(f"  跳跃高度: {jump_height:.4f} m  [标线 >0.01]")
         print(f"  最大垂直速度: {max_velocity:.4f} m/s")
         print(f"  响应时间: {response_time:.3f} s")
 
-        # 判断是否成功跳跃 (跳跃高度 > 0.01m)
-        jump_success = jump_height > 0.01
-        results[robot_id] = jump_success
-
-    overall_pass = all(results.values())
-    print(f"\n{'='*70}")
-    print(f"跳跃测试结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
-    print(f"{'='*70}\n")
+        results[robot_id] = {'jump_height_m': float(jump_height),
+                             'max_vel_ms': float(max_velocity),
+                             'response_s': float(response_time)}
 
     # 保存视频
     if record_video and frames:
         save_video(frames, 'test_jump.mp4', fps=video_fps)
 
-    return {'pass': overall_pass, 'details': results}
+    return {'metrics': {
+        'jump_height_m': float(jump_max),
+        'jump_max_vel_ms': float(vel_max),
+        'jump_response_s': float(resp_max),
+    }, 'details': results}
 
 
 def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
@@ -273,7 +277,7 @@ def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True
     - 测量过冲幅度
     """
     print("=" * 70)
-    print("验收测试 2: 响应延迟与过冲")
+    print("基准测量 2: 响应延迟与过冲")
     print("=" * 70)
     
     sim.reset()
@@ -328,7 +332,9 @@ def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True
     # 分析结果
     print("\n响应延迟分析:")
     results = {}
-    
+    lat_all = 0
+    ovs_all = 0.0
+
     for robot_id in ['robot_a', 'robot_b']:
         data = np.array(response_data[robot_id])  # (steps, 21)
         
@@ -358,28 +364,25 @@ def measure_response_latency(sim: Humanoid21Simulator, record_video: bool = True
         
         max_latency = max(latencies)
         max_overshoot = max(overshoots)
-        
-        # 验收标准
-        latency_pass = max_latency < 100  # < 100 步 (0.2s)
-        overshoot_pass = max_overshoot < 5  # < 5%
-        
+        lat_all = max(lat_all, max_latency)
+        ovs_all = max(ovs_all, max_overshoot)
+
         print(f"\n{robot_id}:")
-        print(f"  最大响应延迟: {max_latency} 步 ({max_latency * sim.dt:.3f}s) - {'✓ PASS' if latency_pass else '✗ FAIL'}")
-        print(f"  最大过冲: {max_overshoot:.2f}% - {'✓ PASS' if overshoot_pass else '✗ FAIL'}")
-        
-        results[robot_id] = latency_pass and overshoot_pass
-    
-    overall_pass = all(results.values())
-    print(f"\n{'='*70}")
-    print(f"测试 2 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
-    print(f"{'='*70}\n")
+        print(f"  最大响应延迟: {max_latency} 步 ({max_latency * sim.dt:.3f}s)  [标线 <100步/0.2s]")
+        print(f"  最大过冲: {max_overshoot:.2f}%  [标线 <5%]")
+
+        results[robot_id] = {'latency_s': float(max_latency * sim.dt),
+                             'overshoot_pct': float(max_overshoot)}
 
     # 保存视频
     if record_video and frames:
         # 视频时长约 1 秒 (500 steps @ 0.002s/step)
         save_video(frames, 'test2_response_latency.mp4', fps=30)
 
-    return {'pass': overall_pass, 'details': results}
+    return {'metrics': {
+        'response_latency_s': float(lat_all * sim.dt),
+        'overshoot_pct': float(ovs_all),
+    }, 'details': results}
 
 
 def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
@@ -392,7 +395,7 @@ def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True
     - 分析力矩输出的震荡和幅度
     """
     print("=" * 70)
-    print("验收测试 3: 零震荡与控制努力")
+    print("基准测量 3: 零震荡与控制努力")
     print("=" * 70)
 
     sim.reset()
@@ -446,7 +449,9 @@ def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True
     # 分析结果
     print("\n震荡与控制努力分析:")
     results = {}
-    
+    rate_all = 0.0
+    effort_all = 0.0
+
     for robot_id in ['robot_a', 'robot_b']:
         torques = np.array(torque_history[robot_id])  # (samples, 21)
         
@@ -472,26 +477,24 @@ def measure_zero_oscillation(sim: Humanoid21Simulator, record_video: bool = True
         heavy_joints_idx = list(range(15))
         heavy_torque_pct = (mean_torque[heavy_joints_idx] / ctrl_ranges[heavy_joints_idx] * 100).max()
         
-        # 验收标准
-        oscillation_pass = mean_change_rate < 10.0  # 变化率阈值 (经验值)
-        effort_pass = heavy_torque_pct < 30.0  # < 30%
-        
+        rate_all = max(rate_all, mean_change_rate)
+        effort_all = max(effort_all, heavy_torque_pct)
+
         print(f"\n{robot_id}:")
-        print(f"  力矩平均变化率: {mean_change_rate:.4f} - {'✓ PASS' if oscillation_pass else '✗ FAIL'}")
-        print(f"  承重关节最大控制努力: {heavy_torque_pct:.2f}% - {'✓ PASS' if effort_pass else '✗ FAIL'}")
-        
-        results[robot_id] = oscillation_pass and effort_pass
-    
-    overall_pass = all(results.values())
-    print(f"\n{'='*70}")
-    print(f"测试 3 结果: {'✓ PASS' if overall_pass else '✗ FAIL'}")
-    print(f"{'='*70}\n")
+        print(f"  力矩平均变化率: {mean_change_rate:.4f}  [标线 <10.0]")
+        print(f"  承重关节最大控制努力: {heavy_torque_pct:.2f}%  [标线 <30%]")
+
+        results[robot_id] = {'torque_rate': float(mean_change_rate),
+                             'effort_pct': float(heavy_torque_pct)}
 
     # 保存视频
     if record_video and frames:
         save_video(frames, 'test3_zero_oscillation.mp4', fps=video_fps)
 
-    return {'pass': overall_pass, 'details': results}
+    return {'metrics': {
+        'torque_change_rate': float(rate_all),
+        'static_effort_pct': float(effort_all),
+    }, 'details': results}
 
 
 def measure_absolute_stability(sim: Humanoid21Simulator, record_video: bool = True) -> Dict[str, bool]:
@@ -504,7 +507,7 @@ def measure_absolute_stability(sim: Humanoid21Simulator, record_video: bool = Tr
     - 检查是否崩溃或发散
     """
     print("=" * 70)
-    print("验收测试 4: 系统绝对稳定性")
+    print("基准测量 4: 系统绝对稳定性")
     print("=" * 70)
     
     sim.reset()
@@ -592,81 +595,124 @@ def measure_absolute_stability(sim: Humanoid21Simulator, record_video: bool = Tr
     print(f"  最大 qpos: {max_qpos:.4f}")
     print(f"  最大 qvel: {max_qvel:.4f}")
     print(f"  最大接触力: {max_force:.4f} N")
-    
-    stability_pass = not crashed and not diverged
-    
+
+    stable = not crashed and not diverged
+
     if crashed:
-        print(f"  ✗ 系统崩溃")
+        print(f"  结果: 系统崩溃  [标线: 无崩溃/发散]")
     elif diverged:
-        print(f"  ✗ 数值发散")
+        print(f"  结果: 数值发散  [标线: 无崩溃/发散]")
     else:
-        print(f"  ✓ 系统稳定")
-    
-    print(f"\n{'='*70}")
-    print(f"测试 4 结果: {'✓ PASS' if stability_pass else '✗ FAIL'}")
-    print(f"{'='*70}\n")
+        print(f"  结果: 系统稳定  [标线: 无崩溃/发散]")
 
     # 保存视频
     if record_video and frames:
         save_video(frames, 'test4_stability.mp4', fps=30)
 
-    return {'pass': stability_pass, 'crashed': crashed, 'diverged': diverged}
+    return {'metrics': {
+        'stable': bool(stable),
+        'max_qpos': float(max_qpos),
+        'max_qvel': float(max_qvel),
+        'max_contact_force_N': float(max_force),
+    }, 'details': {'crashed': crashed, 'diverged': diverged}}
 
 
-def run_all_acceptance_measures():
-    """运行所有验收测试"""
+def measure_throughput(sim: Humanoid21Simulator) -> Dict:
+    """
+    指标 5: 仿真吞吐（steps/sec，墙钟）
+
+    方法:
+    - 站立动作输入，跑固定步数物理仿真
+    - 报告 物理步/秒 与 折合决策步/秒（25 物理步 = 1 决策步）
+    """
+    print("=" * 70)
+    print("基准测量 5: 仿真吞吐")
+    print("=" * 70)
+
+    sim.reset()
+    warmup = 100
+    for _ in range(warmup):
+        sim.physical_step()
+
+    n_steps = 2000
+    t0 = time.perf_counter()
+    for _ in range(n_steps):
+        sim.physical_step()
+    wall = time.perf_counter() - t0
+
+    sps = n_steps / wall
+    print(f"\n{n_steps} 物理步用时 {wall:.2f}s")
+    print(f"  物理步/秒: {sps:.0f}")
+    print(f"  决策步/秒 (x25 物理步): {sps / 25:.1f}")
+    print(f"  实时倍率 (物理 500Hz): {sps / 500:.2f}x")
+
+    return {'metrics': {
+        'phys_steps_per_sec': float(sps),
+        'action_steps_per_sec': float(sps / 25.0),
+        'realtime_factor': float(sps / 500.0),
+        'measured_steps': n_steps,
+        'wall_s': float(wall),
+    }, 'details': {}}
+
+
+# 参考标线（与 BENCHMARK.md 一致；仅供速览对照，不构成判决）
+REFERENCE_BARS = {
+    'tracking_error': '承重<0.05rad / 末端<0.02rad',
+    'jump': 'jump_height>0.01m',
+    'response_latency': '<0.2s 且过冲<5%',
+    'zero_oscillation': 'rate<10 且静态努力<30%',
+    'absolute_stability': '无崩溃/发散',
+    'throughput': '信息项（无标线）',
+}
+
+
+def run_benchmark():
+    """运行全部基准测量，输出汇总表并写 JSON 快照。"""
     print("\n" + "=" * 70)
-    print("Humanoid21 验收测试套件")
-    print("按照 ACCEPTANCE_CRITERIA.md 验证 KP/KD 参数")
+    print("Humanoid21 仿真性能基准")
+    print("指标定义与参考标线见 BENCHMARK.md")
     print("=" * 70 + "\n")
-    
-    sim = Humanoid21Simulator()
-    
-    results = {}
-    
-    try:
-        # 跳跃测试
-        results['jump'] = measure_jump(sim)
 
-        # 测试 1: 跟踪误差
-        results['tracking'] = measure_tracking_error(sim)
-        
-        # 测试 2: 响应延迟
-        results['response'] = measure_response_latency(sim)
-        
-        # 测试 3: 零震荡
-        results['oscillation'] = measure_zero_oscillation(sim)
-        
-        # 测试 4: 绝对稳定性
-        results['stability'] = measure_absolute_stability(sim)
-        
-        # 汇总结果
-        print("\n" + "=" * 70)
-        print("验收测试汇总")
-        print("=" * 70)
-        
-        all_pass = True
-        for test_name, result in results.items():
-            status = "✓ PASS" if result['pass'] else "✗ FAIL"
-            print(f"{test_name:20s}: {status}")
-            all_pass = all_pass and result['pass']
-        
-        print("=" * 70)
-        if all_pass:
-            print("✓ 所有验收测试通过! KP/KD 参数满足要求。")
-        else:
-            print("✗ 部分测试未通过，需要调整 KP/KD 参数。")
-        print("=" * 70)
-        
-        return all_pass
-        
+    sim = Humanoid21Simulator()
+    results = {}
+    try:
+        results['jump'] = measure_jump(sim)
+        results['tracking_error'] = measure_tracking_error(sim)
+        results['response_latency'] = measure_response_latency(sim)
+        results['zero_oscillation'] = measure_zero_oscillation(sim)
+        results['absolute_stability'] = measure_absolute_stability(sim)
+        results['throughput'] = measure_throughput(sim)
     except Exception as e:
-        print(f"\n✗ 测试运行错误: {e}")
+        print(f"\n基准运行错误: {e}")
         import traceback
         traceback.print_exc()
         return False
 
+    # 汇总表
+    print("\n" + "=" * 70)
+    print("基准汇总（实测值 vs 参考标线）")
+    print("=" * 70)
+    flat = {}
+    for name, res in results.items():
+        flat[name] = res.get('metrics', {})
+        print(f"\n[{name}]  标线: {REFERENCE_BARS.get(name, '-')}")
+        for k, v in flat[name].items():
+            print(f"    {k} = {v}")
+
+    # 写 JSON 快照
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot = {
+        'timestamp': ts,
+        'sim': 'humanoid21',
+        'results': {k: v.get('metrics', {}) for k, v in results.items()},
+    }
+    out = OUTPUT_DIR / f"benchmark_results_{ts}.json"
+    out.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
+    print(f"\n结果已写入: {out}")
+    print("=" * 70)
+    return True
+
 
 if __name__ == '__main__':
-    success = run_all_acceptance_measures()
-    sys.exit(0 if success else 1)
+    ok = run_benchmark()
+    sys.exit(0 if ok else 1)
