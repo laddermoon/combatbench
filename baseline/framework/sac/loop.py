@@ -24,6 +24,7 @@ import torch.nn as nn
 from .checkpoint import (
     load_checkpoint_bundle,
     load_model_only,
+    prune_checkpoints,
     save_checkpoint_bundle,
 )
 from .clocks import SACClockState
@@ -287,6 +288,7 @@ def train_sac(
     dump_hypothesis: str = "",
     debug_strict: bool = False,
     dump_keep_last: int = 8,
+    checkpoint_keep_last: int = 3,
 ) -> None:
     cp = experiment.common_params()
     sp = experiment.sac_params()
@@ -437,6 +439,7 @@ def train_sac(
             {"checkpoint.bytes": _directory_bytes(path)},
             path=str(path),
         )
+        prune_checkpoints(ckpt_dir, keep_last=checkpoint_keep_last)
         return path
 
     print(

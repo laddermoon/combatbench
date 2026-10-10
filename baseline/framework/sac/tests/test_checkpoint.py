@@ -152,3 +152,36 @@ def test_save_refuses_existing_checkpoint_directory(tmp_path) -> None:
             experiment_state={},
             config=_config(),
         )
+
+
+def test_prune_checkpoints_keeps_latest_n_and_pinned(tmp_path) -> None:
+    from baseline.framework.sac.checkpoint import prune_checkpoints
+
+    root = tmp_path / "checkpoints"
+    root.mkdir()
+    names = [f"checkpoint_s{i:08d}" for i in (100, 200, 300, 400, 500)]
+    for n in names:
+        (root / n).mkdir()
+    (root / "checkpoint_s00000200" / ".pinned").touch()
+    (root / "checkpoint_s00000600.inflight").mkdir()  # atomic-save tmp dir
+    (root / "notes.txt").touch()
+
+    prune_checkpoints(root, keep_last=2)
+
+    survivors = sorted(p.name for p in root.iterdir())
+    assert survivors == [
+        "checkpoint_s00000200",          # pinned
+        "checkpoint_s00000400",
+        "checkpoint_s00000500",
+        "checkpoint_s00000600.inflight", # tmp dir never pruned
+        "notes.txt",
+    ]
+
+    prune_checkpoints(root, keep_last=0)
+    assert (root / "checkpoint_s00000500").exists()  # disabled
+
+
+def test_prune_checkpoints_noop_on_missing_dir(tmp_path) -> None:
+    from baseline.framework.sac.checkpoint import prune_checkpoints
+
+    prune_checkpoints(tmp_path / "nonexistent", keep_last=3)

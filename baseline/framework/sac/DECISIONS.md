@@ -2549,6 +2549,20 @@ S7-W0 P7-AUDIT-0   独立性静态审计（sac↔ppo 零依赖、experiments_sac
 
 **验证**：SAC suite 188 passed；两个真实实验（sac_balance ×2 通道、sac_standup、s/m 架构）默认参数构造通过；新增 25+ 非法值用例全部在构造期被拒绝。
 
+### P7.2 P7-KEEP-1 结论：checkpoint keep_last 保留机制
+
+**动机**：P6 磁盘事故——checkpoint 每 eval 一个且无上限，balance 单 run 峰值 ~147G，人工剪枝回收 ~243G。机制化防止复发。
+
+**实现**：`checkpoint.prune_checkpoints(ckpt_dir, keep_last)` + `train_sac(checkpoint_keep_last=1 → 默认 3)`。
+
+- 仅匹配 `checkpoint_s\d+` 目录——原子写入的 `checkpoint_s*.XXX` 临时目录天然豁免，剪枝永不损坏 in-flight 保存；
+- `.pinned` 标记文件豁免（预留 held-out eval 锚点等人工钉住场景），与 dump 的 `.pinned` 语义一致；
+- divergence checkpoint 与 stop_training checkpoint 写入时必为最新，默认配置下天然存活；
+- `keep_last<=0` 关闭剪枝；
+- 在训 run 不受影响（跑快照代码）。
+
+**验证**：单元测试（latest-N/pinned/临时目录/keep_last=0/缺失目录）+ loop 级集成测试（3 round→3 ckpt→keep_last=1 仅存最新）。SAC suite 191 passed。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；

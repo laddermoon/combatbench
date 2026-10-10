@@ -246,3 +246,40 @@ def test_data_source_invalid_share_fails_at_construction() -> None:
         raise AssertionError(
             f"invalid DataSource silently accepted: share={bad}"
         )
+
+
+def test_loop_prunes_checkpoints_with_keep_last(tmp_path) -> None:
+    class MultiRoundExperiment(_FakeExperiment):
+        _round = 0
+
+        def build_slices(self, episodes):
+            self._round += 1
+            return [_slice(T=4, obs_dim=3, action_dim=2, channels=1,
+                           slice_id=f"slice-{self._round}")]
+
+        def common_params(self) -> CommonParamsSAC:
+            return CommonParamsSAC(
+                name=self.name,
+                learning_rate=1e-3,
+                critic_learning_rate=1e-3,
+                grad_clip_norm=1.0,
+                episodes_per_update=1,
+                max_env_steps=12,
+                eval_interval=1,
+                eval_episodes=1,
+                video_eval_interval=0,
+                rollout_workers=1,
+                seed=31,
+            )
+
+    run_dir = tmp_path / "run"
+    train_sac(
+        MultiRoundExperiment(),
+        run_dir=run_dir,
+        rollouter=_FakeRollouter(),
+        checkpoint_keep_last=1,
+    )
+    survivors = sorted(
+        p.name for p in (run_dir / "checkpoints").iterdir()
+    )
+    assert survivors == ["checkpoint_s00000012"]

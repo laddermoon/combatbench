@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -263,6 +264,32 @@ def load_model_only(path: str | Path) -> Any:
     }
 
 
+_CHECKPOINT_DIR_RE = re.compile(r"^checkpoint_s\d+$")
+
+
+def prune_checkpoints(ckpt_dir: str | Path, *, keep_last: int) -> None:
+    """Bounded latest-N retention for checkpoint bundle directories.
+
+    ``keep_last <= 0`` disables pruning.  Only directories named exactly
+    ``checkpoint_s<digits>`` are eligible: the dotted tmp dirs used by
+    :func:`save_checkpoint_bundle`'s atomic write are skipped so a prune
+    can never corrupt an in-flight save.  A ``.pinned`` marker file
+    exempts a checkpoint (e.g. one reserved for held-out evaluation).
+    """
+    root = Path(ckpt_dir)
+    if int(keep_last) <= 0 or not root.exists():
+        return
+    candidates = [
+        p for p in root.iterdir()
+        if p.is_dir()
+        and _CHECKPOINT_DIR_RE.match(p.name)
+        and not (p / ".pinned").exists()
+    ]
+    candidates.sort(key=lambda p: p.name)
+    for old in candidates[:-int(keep_last)]:
+        shutil.rmtree(old)
+
+
 __all__ = [
     "SAC_CHECKPOINT_SCHEMA",
     "SACCheckpointBundle",
@@ -270,5 +297,6 @@ __all__ = [
     "config_fingerprint",
     "load_checkpoint_bundle",
     "load_model_only",
+    "prune_checkpoints",
     "save_checkpoint_bundle",
 ]
