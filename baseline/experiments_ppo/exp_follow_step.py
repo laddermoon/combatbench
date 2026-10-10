@@ -17,11 +17,12 @@ All gates live in actor_weight (critics always see the raw reward):
 follow rewards only fire when upright (φ²) and outside the hold
 radius; the face reward ramps in between D_FACE=1.5m and D_STRIKE=0.7m.
 
-Push maintenance: the force plugin stays active on the learner at a
-mid-curriculum level (100N × 11-15 steps).  The parent's recovery
-promotion remains armed, so push difficulty re-ramps toward level 11
-as the policy regains robustness while walking — preventing balance
-forgetting without drowning the new follow objective.
+Push maintenance: the force plugin stays active on the learner,
+PINNED at balance level 3 — 40N for 31-40 steps (~1.6-2s).  100N
+proved too heavy to combine with locomotion toward a moving target;
+the pinned setting keeps the anti-push skill exercised without
+dominating the follow objective.  The parent's promotion is frozen
+(PROMOTE_PATIENCE=inf).
 
 Speed curriculum (same 13 levels as follow_v2): eval hold_ratio —
 fraction of standing frames with dist ≤ 1.1m — ≥ 0.5 for
@@ -90,10 +91,16 @@ class FollowStep(BalanceStep):
     PROMOTE_HOLD_RATIO: float = 0.5
     FOLLOW_PROMOTE_PATIENCE: int = 2
 
-    # Warm-start push level: drop from the balance-final 11 to the
-    # mid-curriculum maintenance setting; the parent promotion ramps
-    # it back up as robustness is regained while moving.
-    PUSH_LEVEL_START: int = 6
+    # Push pressure: PINNED at balance-curriculum level 3 — 40N for
+    # 31-40 steps (~1.6-2s).  100N is incompatible with smooth
+    # locomotion toward a moving target (user feedback: the chase gait
+    # can't absorb heavy pushes); the pinned 40N×2s keeps the
+    # anti-push skill warm without dominating the follow objective.
+    # PROMOTE_PATIENCE=inf freezes the parent curriculum so _level
+    # (and thus recovery-based promotion) can never fire.
+    PUSH_FORCE: float = 40.0
+    PUSH_DURATION_RANGE: Tuple[int, int] = (31, 40)
+    PROMOTE_PATIENCE: int = 10**9
 
     _APPROACH_OBS = {
         "robot_a": "approach_velocity_a",
@@ -109,6 +116,10 @@ class FollowStep(BalanceStep):
     }
 
     # --- Follow curriculum / tracking state ---
+    # _level is cosmetic here (push params are pinned constants); pin
+    # the displayed value to the equivalent balance level (3 = 40N,
+    # 31-40 steps) so eval logs read honestly.
+    _level: int = 3
     _speed_level: int = 0
     _f_consecutive_pass: int = 0
     _hold_ratio: float = 0.0
@@ -135,6 +146,16 @@ class FollowStep(BalanceStep):
     def current_speed(self) -> float:
         idx = max(0, min(self._speed_level, len(self.LEVEL_SPEEDS) - 1))
         return float(self.LEVEL_SPEEDS[idx])
+
+    # Push params pinned — the parent's _level bookkeeping still runs
+    # (cosmetic; promotion is frozen) but force/duration are constants.
+    @property
+    def current_force(self) -> float:
+        return self.PUSH_FORCE
+
+    @property
+    def current_duration_range(self) -> Tuple[int, int]:
+        return self.PUSH_DURATION_RANGE
 
     # ------------------------------------------------------------------
     # Trajectories — balance recipe + follow/face channels, learner only
@@ -475,6 +496,11 @@ class FollowStep(BalanceStep):
 
     def load_state(self, state: dict) -> None:
         super().load_state(state)
+        # Push curriculum is pinned — restore _level to the pinned
+        # value regardless of what the ckpt recorded so logs stay
+        # honest (physical params come from the pinned constants).
+        self._level = 3
+        self._consecutive_pass = 0
         if "speed_level" in state:
             # Own-run resume: restore follow curriculum, re-anchor the
             # follow best/EMA (same polluted-anchor rationale as the
@@ -484,12 +510,6 @@ class FollowStep(BalanceStep):
                 state.get("f_consecutive_pass", 0))
             self._hold_ratio = float(state.get("hold_ratio", 0.0))
             self._facing_ratio = float(state.get("facing_ratio", 0.0))
-        else:
-            # Warm-start from a balance ckpt: drop the push curriculum
-            # from the mastered level 11 to mid-curriculum maintenance;
-            # the parent promotion re-ramps it as robustness returns.
-            self._level = self.PUSH_LEVEL_START
-            self._consecutive_pass = 0
         self._f_best_quality = -1.0
         self._f_quality_ema = None
         self._f_last_best_update = -1
