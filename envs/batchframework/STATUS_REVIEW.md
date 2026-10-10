@@ -22,7 +22,8 @@
 | 样本效率 | 达同能力的 agent transitions ≤ CPU 1.25× |
 | 端到端加速 | `wall_CPU / wall_MJX ≥ 2.0`（不能用物理吞吐代替） |
 
-R1（链路闭环）= E5 已过；R3（独立 Agent 迁移）= 任务书已冻结未执行。
+R1（链路闭环）= E5 已过；R3（独立 Agent 迁移）= **已执行**：
+step 实验 L1–L4 通过，结果归档 `R3_RESULTS.md`（2026-10-10）。
 
 ---
 
@@ -35,7 +36,7 @@ R1（链路闭环）= E5 已过；R3（独立 Agent 迁移）= 任务书已冻�
 | 策略 executor —— 8 truncnorm 族 | 原生通过（2026-10-09 补齐） | `test_policy_executor_golden` 56 项 |
 | 逐帧 ef —— 声明式程序 | 原生通过（同日） | `test_ef_program` 14 项 |
 | job-keyed RNG / manifest / capability 注册 / debug capture+replay | 原生通过 | E8 矩阵逐行指针 |
-| 迁移指导（MIGRATION_GUIDE + audit 工具） | 原生通过 | R3 任务书已冻结 |
+| 迁移指导（MIGRATION_GUIDE + audit 工具） | 原生通过 | R3 已执行（step，L1–L4）：`R3_RESULTS.md` + `migration_manifests/step.json` |
 | 每 run host CPU ≈ 2 核 + 6GB | 已计量 | `CPU_REQUIREMENTS.md`（对照 CPU collector ~96 核） |
 
 ---
@@ -83,8 +84,10 @@ standup 是 **update-延迟受限**而非吞吐受限：PPO 每 update 的移动
    选项：(a) 如实记 R2 失败并改门槛定义（并行吞吐/CPU 核时）；
    (b) 换一个吞吐受限任务做 R2 验收对象；(c) 把"等效替换"与
    "加速验收"解耦——前者已通过，后者按任务类型如实记录。
-2. **R3 未执行**：任务书已冻结（`step` 环境 + warm-start），
-   缺口只剩 `GaitClockSimulator` binding + `FootStateObserver`。
+2. ~~**R3 未执行**~~ → **已结算**（`R3_RESULTS.md`）：L1–L4 通过，
+   缺口清零；放行条件中**负例试验（ROADMAP §11 工作包 C）未做**，
+   过程指标（首过率/token 成本）未结构化记录——后续 R3 类试验
+   需补这两项。
 3. **残余 spec 缺口**：reference/delta_factor（executor ctx 未接）、
    `policy_eval_mask`（hold 模式）、其余 callable ef 形态。
 4. **工程残余**：facade shim、hooks-on eager 路径、worker 单核

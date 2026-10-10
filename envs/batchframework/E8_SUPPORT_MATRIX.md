@@ -7,7 +7,11 @@
 证据列一律指向可复现的测试名、manifest 条目或结果文档——
 不接受"曾经跑通过"的无指针结论。
 
-## A. blueprint 单元级（`capability_registry.REGISTRY`，共 11 条）
+## A. blueprint 单元级（`capability_registry.REGISTRY`）
+
+结算时 9 个注册键（表内按单元数 11 条——成对 observer 拆行计）；
+R3 后 **12 键**（+3：`Humanoid21Simulator`/`GaitClockSimulator`/
+`FootStateObserver`）。
 
 | 单元（blueprint cls） | 注册 | 结算 | 证据 |
 |---|---|---|---|
@@ -20,6 +24,9 @@
 | `rewards.posture_reward` → `DevicePostureObserver` ×2 | NATIVE | 原生通过 | 同上 |
 | `plugins.height_phi_observer` → `DeviceHeightPhiObserver` ×2 | NATIVE | 原生通过 | 同上 |
 | `device_examples:SubstepProbePlugin` | NATIVE | 原生通过（限探针） | E7 矩阵 hooks-on 格；仅 benchmark 蓝图使用 |
+| `simulator:Humanoid21Simulator`（R3 新增——config_notes 载体 + binding 指针） | NATIVE | 原生通过 | binding `humanoid21-warp`；`debug_torque` 经 config_notes 声明忽略 |
+| `gait_clock_simulator:GaitClockSimulator` → `WarpGaitClockSimulator`（R3 新增） | NATIVE | 原生通过 | manifest `step.json`（unit_replay+wave_contract+e2e_collect+train_smoke 四级）；`test_device_step.py` 18 项 |
+| `foot_state_observer:FootStateObserver` → `DeviceFootStateObserver` ×2（R3 新增） | NATIVE | 原生通过 | 同上；Layer B 真机 warp-vs-CPU 注入态对拍 |
 | 未注册 cls | — | **拒绝**（启动即失败） | `lookup()` 默认 UNSUPPORTED；`test_unsupported_specs_rejected`、`test_host_slow_rejected_and_registry` |
 
 **COMPAT/HOST_SLOW 机制**：`resolve_plugin` 保留适配器代码路径
@@ -83,7 +90,7 @@
 
 | 状态 | 单元级 | 层间能力 | 说明 |
 |---|---|---|---|
-| 原生通过 | 9 组（10 条） | 15 项 | 全部有测试/证据指针 |
+| 原生通过 | 9 组（10 条）+ R3 新增 3 注册键 | 15 项 | 全部有测试/证据指针（R3：`step.json` manifest） |
 | 兼容通过 | 0 | 1 项（hooks-on） | 如实标注非图化 |
 | 部分覆盖 | 0 | 2 项（debug_replay rerun/cpu_eval、历史探针） | rerun/cpu_eval 为工具路径；探针随用随跑 |
 | 拒绝 | 2 类 | — | StandupTerminationPlugin + 一切未注册 cls |
