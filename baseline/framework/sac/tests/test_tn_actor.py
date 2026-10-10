@@ -641,8 +641,12 @@ def test_regularizer_mode_validation():
             sp, 1.0, torch.device("cpu"),
         )
 
-    with pytest.raises(SACTrainerError, match="regularizer_mode"):
-        run(SACParams(use_grad_norm=False, regularizer_mode="bogus"))
+    # mode/kind enums fail at SACParams construction (P7-AUDIT-0).
+    with pytest.raises(ValueError, match="regularizer_mode"):
+        SACParams(use_grad_norm=False, regularizer_mode="bogus")
+    with pytest.raises(ValueError, match="u_kind"):
+        SACParams(use_grad_norm=False, regularizer_mode="u_bonus",
+                  reg_lambda=0.1, u_kind="bogus")
     with pytest.raises(SACTrainerError, match="alpha"):
         run(
             SACParams(use_grad_norm=False, regularizer_mode="u_bonus",
@@ -655,9 +659,6 @@ def test_regularizer_mode_validation():
     with pytest.raises(SACTrainerError, match="u_floor"):
         run(SACParams(use_grad_norm=False, regularizer_mode="u_floor",
                       reg_lambda=0.1, u_floor=2.0))
-    with pytest.raises(SACTrainerError, match="u_kind"):
-        run(SACParams(use_grad_norm=False, regularizer_mode="u_bonus",
-                      reg_lambda=0.1, u_kind="bogus"))
 
 
 def test_u_regularizer_runs_and_flows_gradient():

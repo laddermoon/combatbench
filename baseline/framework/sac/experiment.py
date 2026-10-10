@@ -69,6 +69,30 @@ class SACRewardChannel:
     trunk_group: Optional[str] = None
     actor_weight_share: bool = True
 
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("SACRewardChannel.name must be non-empty")
+        if not (0.0 < float(self.gamma) <= 1.0):
+            raise ValueError(
+                f"channel {self.name!r}: gamma must be in (0,1], "
+                f"got {self.gamma}"
+            )
+        if int(self.n_step) < 1:
+            raise ValueError(
+                f"channel {self.name!r}: n_step must be >= 1, "
+                f"got {self.n_step}"
+            )
+        if int(self.n_critics) < 1:
+            raise ValueError(
+                f"channel {self.name!r}: n_critics must be >= 1"
+            )
+        if not (1 <= int(self.in_target_min) <= int(self.n_critics)):
+            raise ValueError(
+                f"channel {self.name!r}: in_target_min="
+                f"{self.in_target_min} must be in [1, n_critics="
+                f"{self.n_critics}]"
+            )
+
 
 # ---------------------------------------------------------------------------
 # SAC hyperparameters
@@ -138,6 +162,72 @@ class SACParams:
     u_floor: float = 0.0
     u_kind: str = "native"
 
+    def __post_init__(self) -> None:
+        import math
+
+        errs = []
+        if self.batch_size <= 0:
+            errs.append("batch_size must be > 0")
+        if self.replay_buffer_size < self.batch_size:
+            errs.append(
+                f"replay_buffer_size={self.replay_buffer_size} < "
+                f"batch_size={self.batch_size}"
+            )
+        if self.warmup_steps < 0:
+            errs.append("warmup_steps must be >= 0")
+        if self.utd_ratio <= 0.0:
+            errs.append("utd_ratio must be > 0")
+        if self.max_grad_steps_per_round <= 0:
+            errs.append("max_grad_steps_per_round must be > 0")
+        if not (0.0 <= self.tau <= 1.0):
+            errs.append(f"tau must be in [0,1], got {self.tau}")
+        if self.init_alpha <= 0.0:
+            errs.append(f"init_alpha must be > 0, got {self.init_alpha}")
+        if self.log_alpha_min >= self.log_alpha_max:
+            errs.append(
+                f"log_alpha_min={self.log_alpha_min} >= "
+                f"log_alpha_max={self.log_alpha_max}"
+            )
+        if self.alpha_lr <= 0.0:
+            errs.append("alpha_lr must be > 0")
+        if not (
+            self.log_alpha_min <= math.log(self.init_alpha)
+            <= self.log_alpha_max
+        ):
+            errs.append(
+                f"init_alpha={self.init_alpha} outside "
+                f"[exp(log_alpha_min), exp(log_alpha_max)] clamps"
+            )
+        if self.target_entropy is not None and not math.isfinite(
+            float(self.target_entropy)
+        ):
+            errs.append(
+                f"target_entropy must be finite or None, "
+                f"got {self.target_entropy}"
+            )
+        if self.grad_norm_est_interval < 1:
+            errs.append("grad_norm_est_interval must be >= 1")
+        if not (0.0 <= self.grad_norm_ema_decay < 1.0):
+            errs.append(
+                f"grad_norm_ema_decay must be in [0,1), "
+                f"got {self.grad_norm_ema_decay}"
+            )
+        if self.q_hidden_dim < 1:
+            errs.append("q_hidden_dim must be >= 1")
+        if self.expectation_samples < 1:
+            errs.append("expectation_samples must be >= 1")
+        if not math.isfinite(float(self.reward_scale)):
+            errs.append("reward_scale must be finite")
+        if self.regularizer_mode not in ("shannon", "u_bonus", "u_floor"):
+            errs.append(
+                f"regularizer_mode must be shannon/u_bonus/u_floor, "
+                f"got {self.regularizer_mode!r}"
+            )
+        if self.u_kind not in ("native", "peak", "l2"):
+            errs.append(f"u_kind must be native/peak/l2, got {self.u_kind!r}")
+        if errs:
+            raise ValueError("invalid SACParams: " + "; ".join(errs))
+
 
 # ---------------------------------------------------------------------------
 # Common parameters (shared with PPO V2 but SAC-specific)
@@ -179,6 +269,38 @@ class CommonParamsSAC:
     rollout_workers: int
     seed: int
 
+    def __post_init__(self) -> None:
+        errs = []
+        if not self.name:
+            errs.append("name must be non-empty")
+        if self.learning_rate <= 0.0:
+            errs.append(
+                f"learning_rate must be > 0, got {self.learning_rate}"
+            )
+        if self.critic_learning_rate <= 0.0:
+            errs.append(
+                f"critic_learning_rate must be > 0, "
+                f"got {self.critic_learning_rate}"
+            )
+        if self.grad_clip_norm <= 0.0:
+            errs.append(
+                f"grad_clip_norm must be > 0, got {self.grad_clip_norm}"
+            )
+        if self.episodes_per_update < 1:
+            errs.append("episodes_per_update must be >= 1")
+        if self.max_env_steps < 1:
+            errs.append("max_env_steps must be >= 1")
+        if self.eval_interval < 1:
+            errs.append("eval_interval must be >= 1")
+        if self.eval_episodes < 1:
+            errs.append("eval_episodes must be >= 1")
+        if self.video_eval_interval < 0:
+            errs.append("video_eval_interval must be >= 0")
+        if self.rollout_workers < 1:
+            errs.append("rollout_workers must be >= 1")
+        if errs:
+            raise ValueError("invalid CommonParamsSAC: " + "; ".join(errs))
+
 
 # ---------------------------------------------------------------------------
 # Data source declaration
@@ -211,6 +333,13 @@ class DataSource:
     sampling_share: float = 1.0
     policy_blueprint: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not (self.sampling_share > 0.0):
+            raise ValueError(
+                f"DataSource.sampling_share must be > 0, "
+                f"got {self.sampling_share}"
+            )
 
 
 # ---------------------------------------------------------------------------

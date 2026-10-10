@@ -2527,6 +2527,28 @@ S7-W0 P7-AUDIT-0   独立性静态审计（sac↔ppo 零依赖、experiments_sac
 
 **明确推迟到阶段六产物就绪后**：固定命令可重现验收实验、四条用户成功标准挂接（P6-FINAL-1 产物）。
 
+### P7.1 P7-AUDIT-0 结论：独立性审计 + 配置校验补全
+
+**独立性审计结果（sac ↔ ppo 零依赖成立）**
+
+- `baseline/framework/sac/` 与 `baseline/experiments_sac/` 全量 import 扫描：运行期路径（collection→transition→replay→trainer→loop）无 `baseline.framework.ppo` 与 `baseline.framework.rollout` 的 import；
+- `sac/collection.py` 文件头明确声明刻意不依赖共享 rollout 包（SAC 自建 collection 数据契约）；
+- 允许的外部依赖仅限：环境/运行时抽象（`envs.framework.*`）、policy blueprint 类型、标准库、NumPy/PyTorch——与 PPO 共享的只有环境基础设施，不共享算法内部。
+
+**配置校验审计发现的缺口**
+
+| 位置 | 审计前 | 缺口 |
+|---|---|---|
+| `SACParams` | frozen dataclass，零校验 | replay/batch/warmup/utd/tau/alpha 域/枚举全部无界 |
+| `SACRewardChannel` | 仅 `validate_sac_channels()` 结构校验 | gamma/n_step/n_critics/in_target_min 数值域无界 |
+| `CommonParamsSAC` | 零校验 | lr/clip/interval/workers 无界 |
+| `DataSource` | 零校验 | sampling_share≤0 会被静默归一化 |
+| `trainer._validate_regularizer()` | mode 组合校验已有 | 保留（依赖 mode 的条件校验不适于构造期） |
+
+**处置**：为四个 dataclass 增加 `__post_init__` 集中校验（构造即 fail-loud）；mode-依赖校验（reg_lambda/u_floor/alpha_opt 组合）保留在 trainer 层作纵深防御。两个既有测试的预期随之调整：`regularizer_mode`/`u_kind` 非法值现于构造期抛 `ValueError`（更早失败优于 trainer 期失败）。
+
+**验证**：SAC suite 188 passed；两个真实实验（sac_balance ×2 通道、sac_standup、s/m 架构）默认参数构造通过；新增 25+ 非法值用例全部在构造期被拒绝。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；

@@ -144,3 +144,105 @@ def test_loop_rejects_unsupported_declared_data_source(tmp_path) -> None:
         assert "only self data sources" in str(exc)
     else:
         raise AssertionError("unsupported data source was silently accepted")
+
+
+def test_sac_params_defaults_are_valid() -> None:
+    from baseline.framework.sac.experiment import SACParams
+
+    SACParams()
+    SACParams(tau=0.0)
+
+
+def test_sac_params_invalid_values_fail_at_construction() -> None:
+    from baseline.framework.sac.experiment import SACParams
+
+    bad_kwargs = [
+        {"batch_size": 0},
+        {"replay_buffer_size": 128, "batch_size": 256},
+        {"warmup_steps": -1},
+        {"utd_ratio": 0.0},
+        {"max_grad_steps_per_round": 0},
+        {"tau": -0.1},
+        {"tau": 1.5},
+        {"init_alpha": 0.0},
+        {"init_alpha": -1.0},
+        {"log_alpha_min": 0.0, "log_alpha_max": -1.0},
+        {"init_alpha": 1e8},
+        {"alpha_lr": 0.0},
+        {"expectation_samples": 0},
+        {"reward_scale": float("nan")},
+        {"reward_scale": float("inf")},
+        {"target_entropy": float("nan")},
+        {"grad_norm_est_interval": 0},
+        {"grad_norm_ema_decay": 1.0},
+        {"grad_norm_ema_decay": -0.1},
+        {"q_hidden_dim": 0},
+        {"regularizer_mode": "bogus"},
+        {"u_kind": "bogus"},
+    ]
+    for kw in bad_kwargs:
+        try:
+            SACParams(**kw)
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid SACParams silently accepted: {kw}")
+
+
+def test_sac_reward_channel_invalid_values_fail_at_construction() -> None:
+    from baseline.framework.sac.experiment import SACRewardChannel
+
+    bad_kwargs = [
+        {"name": ""},
+        {"gamma": 0.0},
+        {"gamma": -0.5},
+        {"gamma": 1.5},
+        {"n_step": 0},
+        {"n_critics": 0},
+        {"in_target_min": 0},
+        {"in_target_min": 3},
+    ]
+    for kw in bad_kwargs:
+        try:
+            SACRewardChannel(**{"name": "r", "gamma": 0.99, **kw})
+        except ValueError:
+            continue
+        raise AssertionError(f"invalid SACRewardChannel silently accepted: {kw}")
+
+
+def test_common_params_sac_invalid_values_fail_at_construction() -> None:
+    from baseline.framework.sac.experiment import CommonParamsSAC
+
+    base = dict(
+        name="x", learning_rate=3e-4, critic_learning_rate=3e-4,
+        grad_clip_norm=1.0, episodes_per_update=8, max_env_steps=1000,
+        eval_interval=100, eval_episodes=4, video_eval_interval=0,
+        rollout_workers=2, seed=0,
+    )
+    CommonParamsSAC(**base)
+    for key, bad in (
+        ("name", ""), ("learning_rate", 0.0), ("learning_rate", -1e-3),
+        ("critic_learning_rate", 0.0), ("grad_clip_norm", 0.0),
+        ("episodes_per_update", 0), ("max_env_steps", 0),
+        ("eval_interval", 0), ("eval_episodes", 0),
+        ("video_eval_interval", -1), ("rollout_workers", 0),
+    ):
+        try:
+            CommonParamsSAC(**{**base, key: bad})
+        except ValueError:
+            continue
+        raise AssertionError(
+            f"invalid CommonParamsSAC silently accepted: {key}={bad!r}"
+        )
+
+
+def test_data_source_invalid_share_fails_at_construction() -> None:
+    from baseline.framework.sac.experiment import DataSource
+
+    for bad in (0.0, -0.5):
+        try:
+            DataSource(kind="self", sampling_share=bad)
+        except ValueError:
+            continue
+        raise AssertionError(
+            f"invalid DataSource silently accepted: share={bad}"
+        )
