@@ -2599,6 +2599,23 @@ SAC suite 192 passed。
 
 **已登记的已知弱点**（不阻塞）：`sac_collection_v1` 仅为内存边界的文档化标记，无强制校验点；`runtime.pt`/`experiment.json` 为 checkpoint 内部工件不单独版本化（由 bundle schema 兜底）。
 
+### P7.5 P7-REG-1 结论：回归 + 长训资源清查
+
+**PPO 行为回归**：阶段七全部 5 个提交（89eb169b…3cb36c56）仅触碰 `framework/sac/` 内文件，PPO/共享 rollout 零 diff；PPO suite 232 passed，无行为回归。
+
+**长训资源释放清查**
+
+| 资源 | 机制 | 结论 |
+|---|---|---|
+| metrics 文件 | 每事件 write+flush+fsync | 崩溃不丢已写事件 ✅ |
+| rollout workers | `with ctx.Pool` 每轮建/销 + 外层 `with active_rollouter` | 无常驻泄漏（按轮建池是有意设计，非泄漏）✅ |
+| 视频渲染子进程 | 下次 spawn 前 `poll()` 回收；仅跟踪最近一个 | 最后一个未回收者为孤儿但会自行完成写文件，可接受 ✅ |
+| checkpoint 磁盘 | `checkpoint_keep_last`（P7-KEEP-1） | 已机制化 ✅ |
+| debug dump 磁盘 | `dump_keep_last=8` | 已有界 ✅ |
+| divergence 路径 | 先写终态 ckpt 再 raise，pool 上下文退出 | 清理正常 ✅ |
+
+**SAC suite 193 passed。** 阶段七提前启动段（S7-W0~W5）工程项全部完成；剩余 G7.x 验收挂接等待阶段六最终产物。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
