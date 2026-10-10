@@ -23,10 +23,10 @@
 |---|---|---|
 | mujoco | **3.8.0** | CPU 参照物理（FP64） |
 | mujoco-warp | **3.8.0.3** | device 批量物理后端 |
-| mujoco-mjx | 3.8.0 | jax-mjx 后备路径（probe 用） |
+| mujoco-mjx | 3.8.0 | **仅** jax-mjx 后备/探针路径（requirements 不含） |
 | warp-lang | **1.12.1** | mjw 运行时（自带 CUDA 12.9 toolkit） |
 | torch | 2.7.1 (+cu12 系列) | policy 前向 + device 张量 |
-| jax / jaxlib | 0.6.2 (+jax-cuda12-plugin) | mjx-jax 路径可选 |
+| jax / jaxlib | 0.6.2 (+jax-cuda12-plugin) | **仅** mjx-jax 后备路径（requirements 不含） |
 | numpy / scipy | 2.2.6 / 1.15.3 | |
 | gymnasium | 1.2.3 | 仅 spaces 类型注解 |
 | imageio(+ffmpeg) / opencv | 2.37 / 4.12 | 视频导出（EGL 离屏渲染） |
@@ -39,10 +39,10 @@ pip install -r requirements.txt   # 完整钉版栈（含 device 依赖）
 # 或：pip install -e .            # pyproject 同样钉死核心依赖
 ```
 
-`requirements.txt` 为 `==` 钉版全集（含 mujoco-warp/warp-lang/
-mjx/jax）；`pyproject.toml` 钉核心依赖（不含 jax/mjx 后备
-路径）。宽松 `>=` 会让 pip 静默解析到未验证新版本——
-**物理语义随版本漂移，禁止放宽**。
+`requirements.txt` 为 `==` 钉版全集（**纯 warp 路径**：
+含 mujoco-warp/warp-lang，不含 jax/mjx——见 §8）；
+`pyproject.toml` 钉核心依赖。宽松 `>=` 会让 pip 静默解析到
+未验证新版本——**物理语义随版本漂移，禁止放宽**。
 
 ## 4. 硬版本约束（O5 spike 实测探明）
 
@@ -102,4 +102,9 @@ nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv
 
 - **无 Dockerfile/bootstrap 脚本**——本文是"已验证快照"，
   非从零可重放配方；首次在新机部署需自行处理 EGL/系统库；
-- jax 仅为 mjx-jax 探针路径所需，纯 warp device 路径不依赖。
+- jax/mujoco-mjx 不在 requirements——仅 `mjx_simulator`/
+  `probe_e2e_jax` 后备路径需要，启用时装
+  `mujoco-mjx==3.8.0 jax==0.6.2 jax-cuda12-plugin/pjrt==0.6.2`
+  （`jax[cuda12]` extra 与钉版 jax 解析冲突，须用显式插件包）；
+  `warp_backend` 设的 `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+  在无 jax 环境下无害。

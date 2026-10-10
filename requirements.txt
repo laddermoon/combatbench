@@ -8,10 +8,9 @@
 mujoco==3.8.0
 mujoco-warp==3.8.0.3
 warp-lang==1.12.1
-mujoco-mjx==3.8.0          # jax-mjx 后备/探针路径
-jax==0.6.2                 # 同上，纯 warp 路径可省
-jax-cuda12-plugin==0.6.2   # jax cuda12 后端（jax[cuda12] extra
-jax-cuda12-pjrt==0.6.2     #   的显式形态，extra 解析会冲突）
+# jax 系不含：纯 warp 路径不依赖。仅 mjx_simulator/probe_e2e_jax
+# 后备路径需要，启用时手装 mujoco-mjx==3.8.0 + jax==0.6.2 +
+# jax-cuda12-plugin/pjrt==0.6.2。
 
 # --- 训练/数值 ---
 torch==2.7.1
