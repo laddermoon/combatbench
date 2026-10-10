@@ -2507,6 +2507,9 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
   - 配方固化为 standup 基线：`actor_arch=s01, target_entropy=0.0, q_layer_norm=true`，其余默认。
 - **多 seed 扩展启动**（pathfinder 可信即铺）：`sac_standup_s01_s1337_te0_ln`（pid 344395, GPU0）、`sac_standup_s01_s2024_te0_ln`（pid 356628, GPU2），配置与 pathfinder 完全一致仅换 seed。
 - `sac_balance_s01_s42`（~6M/10M）：survival 峰值 0.969×2、近 8 次 eval 在 0.81–0.97 波动，尚未连续 ≥3 次 ≥0.9，未到 10M 预算继续观察。
+- **配方对照注记**：`sac_balance` 默认本就含 `target_entropy=-10 + q_layer_norm=true`（早期稳定性工作的遗产）——balance pathfinder 的健康部分得益于此；standup 的 te=0 比 balance 的 te=-10 更激进，二者各自证据成立，不要互相复制超参。
+- **矩阵铺开（S6-W3/W4 并行）**：`sac_balance_s01_s1337`（pid 1381368, GPU4）、`sac_balance_s01_s2024`（pid 1399171, GPU5）、`sac_standup_m11_s42_te0_ln`（pid 1368682, GPU3）、`sac_balance_m11_s42`（pid 1416762, GPU6）。m11 沿用各任务已验证优化配方（standup: te=0+LN；balance: 默认 te=-10+LN），只换 arch。
+- **磁盘治理**：每 eval 一个 checkpoint 无上限在长训下失控（standup 曾 101 个 ×~1.1G）；已剪枝至每 run 保留末 3 个 checkpoint，回收 ~243G。后续 run 需周期性剪枝或加 keep_last 机制。
 
 ### P6.5 明确不做（阶段六边界）
 
