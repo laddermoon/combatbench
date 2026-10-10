@@ -8,6 +8,38 @@ Episode/PPO 接口、同一插件/observer 生命周期语义，1–8 卡采样�
 Episode。CPU 实现始终是语义参照系；设备端是 fp32 近似后端，
 不承诺 bit-identical。
 
+## 🏆 这项成果的价值
+
+- **消掉采样瓶颈而不破坏契约**：`collect(jobs) -> List[Episode]` 与
+  CPU `ParallelRollouter` 同一签名——训练代码零改动换后端。实测
+  B=2048 图化 **~480K env-substeps/s，单张 4090 打平 192-worker
+  CPU 生产池**（E7_BASELINE，~472K 对照）。
+- **契约优先的工程方法**：CPU 实现永远是语义参照系——golden 对拍
+  测试把设备行为钉在 CPU 语义上；`PUBLIC_INTERFACE.md` 给公开面
+  配版本锚（Episode npz v3 / blueprint v1），接口稳定性是定义出来
+  的，不是默认的。
+- **迁移显式且可审计**：`capability_registry` 是 blueprint 插件→
+  设备实现的唯一裁决点——未注册即拒绝，不猜测映射、不静默近似；
+  `migration_manifests` 给每个 CPU 蓝图产出可行性证据。
+- **设备侧可调试**：wave 级 `debug_capture` + 三模式 `debug_replay`
+  ——GPU 采样路径不是黑箱。
+- **性能工程诚实**：E7_BASELINE 记录的是测量方法学+瓶颈归因
+  （host 提交是总吞吐主约束，图化可再提数倍；8 卡 151K→166K
+  说明当前扩展 host-bound），不只是峰值数字。
+
+## 💡 为什么有这样的价值（设计依据）
+
+| 设计选择 | 使什么成立 |
+| :--- | :--- |
+| 同一 `Job`/`Episode` 契约贯穿 CPU/device | 训练侧零改动切换后端——加速路径是替换不是分叉 |
+| CPU 为语义参照系 + golden 契约测试 | fp32 近似后端不漂语义——"近似"被约束在数值层 |
+| `capability_registry` 默认拒绝 | 迁移无静默语义缺口——能力缺口在启动期暴露 |
+| ef 声明式程序（框架层设计，见 `baseline/framework/README.md`） | 逐帧探索干预在 device collector 上语义平价 |
+| wave 批内生命周期复刻 | `episode_step`/`physics_step`/终止帧/退化帧语义与 CPU 一致，Episode 可直接进 PPO buffer |
+
+> 在飞状态与已知限制（图化资格、容量规格、多卡 host-bound 等）
+> 见下方「边界与限制」与 `STATUS_REVIEW.md`。
+
 ## 5 分钟跑通
 
 ```bash

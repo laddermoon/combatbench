@@ -358,3 +358,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 预置 8 族策略（TruncNorm 2×2×2 八格）：价值=免设计的探索分布库
 （全格测试覆盖）+48-run sweep 实证选型+可复用判断方法论；诚实
 标注选型结论的 ef/任务条件性与 MVP 格不可分辨现状。
+
+**ACH-5** `envs/batchframework/README.md` 就地升级：价值论证（契约
+不换后端/CPU 语义参照+版本锚/迁移可审计 fail-loud/设备可调试/
+性能工程诚实）+ 实测 480K≈单卡打平 192-worker CPU 池；边界节沿用
+现有「边界与限制」+ STATUS_REVIEW 指路。
