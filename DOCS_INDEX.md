@@ -19,6 +19,7 @@
 
 | 我要… | 按序读 |
 |---|---|
+| 搭建/复现运行环境 | `docs/RUNTIME.md`（版本钉版/驱动约束/镜像坑） |
 | 启动/复现训练 | `baseline/README.md` ② → `CLAUDE.md` §Training CLI → run 的 `REPRODUCE.md` |
 | 跑单回合/整场评估 | `envs/framework/RUNNERS.md` |
 | 查看训练指标/抓 dump | `ppo/dumpkit/USAGE.md` → `CONTEXT.md` |
