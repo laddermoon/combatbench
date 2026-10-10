@@ -348,3 +348,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 工程设计的实测依据/归一化控制接口可比性/接触工程实测/可审计性）+
 设计依据表 + BENCHMARK 快照表 + 关键点与边界（诚实含跟踪保真度
 未达标线现状）。
+
+**ACH-3** `baseline/framework/README.md` 就地升级：探索干预三通道
+机制（采样 ef / 训练侧 uncertainty floor / reference-delta σ 地板）
+作为核心价值论证——框架给原语、实验给旋钮；另列 multi-critic/
+复现契约/debug 取证（A/B 子系统分开论证）。
