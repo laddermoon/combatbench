@@ -2511,6 +2511,22 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
 - **矩阵铺开（S6-W3/W4 并行）**：`sac_balance_s01_s1337`（pid 1381368, GPU4）、`sac_balance_s01_s2024`（pid 1399171, GPU5）、`sac_standup_m11_s42_te0_ln`（pid 1368682, GPU3）、`sac_balance_m11_s42`（pid 1416762, GPU6）。m11 沿用各任务已验证优化配方（standup: te=0+LN；balance: 默认 te=-10+LN），只换 arch。
 - **磁盘治理**：每 eval 一个 checkpoint 无上限在长训下失控（standup 曾 101 个 ×~1.1G）；已剪枝至每 run 保留末 3 个 checkpoint，回收 ~243G。后续 run 需周期性剪枝或加 keep_last 机制。
 
+### P7.0 阶段七提前启动计划（与阶段六训练并行）
+
+**裁决依据**：阶段七大部分是工程核查，不依赖阶段六最终配方/产物；训练跑在代码快照分支上，主线改动不影响在训 run。提前启动只覆盖工程项，验收挂接项等待阶段六产物。
+
+```text
+S7-W0 P7-AUDIT-0   独立性静态审计（sac↔ppo 零依赖、experiments_sac 边界）
+                   + 配置有效性扫描（拒绝未支持组合而非静默）
+→ S7-W1 P7-KEEP-1  checkpoint keep_last 机制（P6 磁盘失控教训的直接修复）
+→ S7-W2 P7-RESUME-1 长程 resume 一致性强化（分段 vs 连续训练对拍）
+→ S7-W3 P7-ART-1   工件版本登记表（checkpoint/replay/dump/导出/metrics schema）
+→ S7-W4 P7-DOC-1   SAC 使用文档（启动/resume/debug/viewer 一条龙）
+→ S7-W5 P7-REG-1   全量回归 + 长训稳定性清查（资源释放/泄漏）
+```
+
+**明确推迟到阶段六产物就绪后**：固定命令可重现验收实验、四条用户成功标准挂接（P6-FINAL-1 产物）。
+
 ### P6.5 明确不做（阶段六边界）
 
 - 不达标时**不降门槛、不改任务语义**；产出失败诊断报告本身就是合规结果；
