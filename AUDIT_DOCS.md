@@ -353,3 +353,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 机制（采样 ef / 训练侧 uncertainty floor / reference-delta σ 地板）
 作为核心价值论证——框架给原语、实验给旋钮；另列 multi-critic/
 复现契约/debug 取证（A/B 子系统分开论证）。
+
+**ACH-4（新增成果项）** `baseline/framework/ppo/policies/README.md` —
+预置 8 族策略（TruncNorm 2×2×2 八格）：价值=免设计的探索分布库
+（全格测试覆盖）+48-run sweep 实证选型+可复用判断方法论；诚实
+标注选型结论的 ef/任务条件性与 MVP 格不可分辨现状。
