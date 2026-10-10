@@ -24,7 +24,7 @@
 | 跑单回合/整场评估 | `envs/framework/RUNNERS.md` |
 | 查看训练指标/抓 dump | `ppo/dumpkit/USAGE.md` → `CONTEXT.md` |
 | GPU/多卡批量采样 | `envs/batchframework/README.md` → `PUBLIC_INTERFACE.md` → `SEMANTICS.md` |
-| 提交策略到平台 | `docs/SUBMISSION.md`（zh 同名） |
+| 提交策略到平台 | `docs/PLATFORM.md` → `SUBMISSION.md`（zh 同名） |
 
 ## 理解边界
 

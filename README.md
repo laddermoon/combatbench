@@ -84,7 +84,7 @@ For the current training path see [`baseline/experiments_ppo/README.md`](baselin
 
 **Safety Gate** is the core innovation of the baseline: an MLP classifier predicts whether the current state is safe, and when unsafe, control is handed to a frozen conservative recovery policy. It uses a hysteresis state machine — preferring to over-protect rather than risk handing control back too early.
 
-### 4. Platform: [combatbench.tech](http://www.combatbench.tech)
+### 4. Platform: [combatbench.tech](http://www.combatbench.tech) — see [docs/PLATFORM.md](docs/PLATFORM.md)
 
 **The website [www.combatbench.tech](http://www.combatbench.tech) (fallback IP [180.76.152.227](http://180.76.152.227)) is the public entry point for the project.** Participants register accounts, submit policies, the backend automatically runs matches, ranks them with Elo, and provides match videos and leaderboards.
 
