@@ -174,9 +174,26 @@ class MyObserver(BaseDeviceObserver):
 
 ### 3.3 binding
 
-humanoid21 已绑（`_Humanoid21WarpBinding`）。新任务 = 实现
-`DeviceBinding`（`make_sim`/`io_schema`/`episode_options_keys`）+
+humanoid21 已绑（`_Humanoid21WarpBinding`；步态时钟变体
+`_GaitClockWarpBinding`）。新任务 = 实现 `DeviceBinding`
+（`make_sim`/`io_schema`/`episode_options_keys`/`sim_config_keys`）+
 `register_binding(sim_cls, binding)`。
+
+**sim_config 处置语义**：collect 时 `binding.make_sim(B, device,
+sim_config=dict(env_bp.simulator.config))`——蓝图 simulator config
+原样进绑定。每个键的去向三选一：
+
+| 去向 | 机制 |
+|---|---|
+| 绑定消费 → 设备 sim 构造参数 | 键列入 `sim_config_keys`；`make_sim` 内 `cfg.pop(k)` 转构造 kwarg（见 `_GaitClockWarpBinding` 消费 `gait_period`） |
+| 有解释地忽略 | 键在该 sim 的 `capability_registry` 条目 `config_notes` 中声明去向（如 `debug_torque` = CPU-only 调试打印，设备端无语义） |
+| 以上皆非 | `DeviceBinding._check_sim_config` 启动即 `ValueError`——**不许静默丢配置** |
+
+与 audit 的 unknown 判定是同一约定的两层：audit 按 **CPU 类构造
+签名**判 `consumed`（静态、离线）；binding 按 `sim_config_keys`
+判（运行期、作用于真实 config）。新任务迁移时两侧都要满足。
+键同时可作 per-env 覆盖时，另加 `episode_options_keys`——
+sim_config 提供静态默认，episode_options 逐行覆盖。
 
 ### 3.4 episode_options
 
@@ -223,7 +240,9 @@ humanoid21 已绑（`_Humanoid21WarpBinding`）。新任务 = 实现
 - **`agents=None` 与 `[0]`**：全员终止 vs 单 agent 终止语义不同，
   env ENDED 判定在屏障层。
 - **config 键去向**：每个 blueprint config 键必须有接收方或
-  `config_notes` 解释——audit 会拦。
+  `config_notes` 解释——两层都拦：audit 按构造签名判 unknown，
+  binding 按 `sim_config_keys` 白名单消费后查 `config_notes`
+  （运行期 `ValueError`）。
 - **测试引用**：写文档/注释引用测试文件时以 `ls tests/` 现状为准。
 
 ## 7. 参考实现索引
@@ -237,3 +256,5 @@ humanoid21 已绑（`_Humanoid21WarpBinding`）。新任务 = 实现
 | 交叉支撑 | `device_examples.DeviceCrossSupportObserver` | — |
 | 子步插件示例 | `device_examples.SubstepProbePlugin` | — |
 | 策略 executor（8 truncnorm 族分发） | `policy_executor._FAMILY_SPECS` + `TorchPolicyExecutor` | 训练侧 `baseline/framework/ppo/policies/*_mlp.py`（golden：`tests/test_policy_executor_golden.py`） |
+| 步态时钟 simulator（sim_config 消费样板） | `device_step.WarpGaitClockSimulator` + `binding_registry._GaitClockWarpBinding` | `baseline/humanoid21/end2end/gait_clock_simulator.py` |
+| 足部接触 observer | `device_step.DeviceFootStateObserver` | `baseline/humanoid21/end2end/foot_state_observer.py` |
