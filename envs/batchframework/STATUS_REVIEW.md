@@ -86,10 +86,11 @@ standup 是 **update-延迟受限**而非吞吐受限：PPO 每 update 的移动
 1. ~~**R2 的 ≥2× 门槛如何结算**~~ → **已定夺（2026-10-10）**：
    R2 以**等效正确性**结算——选项 (c) 落地。standup 的 ≥2× 不达
    标作为实测事实保留在 §3，不作门槛。
-2. ~~**R3 未执行**~~ → **已结算**（`R3_RESULTS.md`）：L1–L4 通过，
-   缺口清零；放行条件中**负例试验（ROADMAP §11 工作包 C）未做**，
+2. ~~**R3 未执行**~~ → **已结算**（`R3_RESULTS.md`）：L1–L4 通过 +
+   负例试验已补做（`test_negative_migration` 11 项，顺手修复
+   `unit_hash` 源码指纹缺口与 manifest 坏文件静默跳过）；
    过程指标（首过率/token 成本）未结构化记录——后续 R3 类试验
-   需补这两项。
+   需埋点。
 3. **残余 spec 缺口**：reference/delta_factor（executor ctx 未接）、
    `policy_eval_mask`（hold 模式）、其余 callable ef 形态。
 4. **工程残余**：facade shim、hooks-on eager 路径、worker 单核

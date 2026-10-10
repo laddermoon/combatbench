@@ -35,6 +35,9 @@ class CapabilityEntry:
     # 中的键必须在此显式解释（如 "由 from_blueprint 消费"/"无设备语义，
     # 已确认忽略"），否则 migration_audit 判定为 unknown 处置失败。
     config_notes: Optional[Dict[str, str]] = None
+    # 设备实现类 "module:Class"——migration manifest 的 unit_hash
+    # 把它所在模块文件纳入指纹，设备实现漂移 → 证据 stale。
+    device_cls: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +48,8 @@ REGISTRY: Dict[str, CapabilityEntry] = {
     "envs.batchframework.device_runtime:DeviceTimeoutPlugin": CapabilityEntry(
         Capability.NATIVE,
         factory=lambda cfg, **kw: _mk_timeout(cfg),
-        note="per-env timeout，设备原生"),
+        note="per-env timeout，设备原生",
+        device_cls="envs.batchframework.device_runtime:DeviceTimeoutPlugin"),
     # --- simulator 条目（device 绑定见 binding_registry；config_notes
     #     供 migration_audit 处置 + 绑定的未消费键检查） ---
     "envs.humanoid21.simulator:Humanoid21Simulator": CapabilityEntry(
@@ -53,7 +57,9 @@ REGISTRY: Dict[str, CapabilityEntry] = {
         note="device binding: humanoid21-warp（binding_registry）",
         config_notes={
             "debug_torque": "CPU-only 调试打印，设备端无语义——忽略",
-        }),
+        },
+        device_cls="envs.batchframework.warp_simulator"
+                   ":WarpHumanoid21Simulator"),
     # --- step 目标实验（端到端步态迁移） ---
     "baseline.humanoid21.end2end.gait_clock_simulator"
     ":GaitClockSimulator": CapabilityEntry(
@@ -67,26 +73,32 @@ REGISTRY: Dict[str, CapabilityEntry] = {
             "initial_pose_a": "同上——绑定消费",
             "initial_pose_b": "同上——绑定消费",
             "debug_torque": "CPU-only 调试打印，设备端无语义——忽略",
-        }),
+        },
+        device_cls="envs.batchframework.device_step:WarpGaitClockSimulator"),
     "baseline.humanoid21.end2end.foot_state_observer"
     ":FootStateObserver": CapabilityEntry(
         Capability.NATIVE,
         factory=lambda cfg, **kw: _mk_foot_state(cfg, **kw),
         note="DeviceFootStateObserver；STANDING_FOOT_Z/端点几何引用 "
-             "CPU 模块单一来源，接触判定与 _detect_contact 同式"),
+             "CPU 模块单一来源，接触判定与 _detect_contact 同式",
+        device_cls="envs.batchframework.device_step:DeviceFootStateObserver"),
     # --- standup 目标实验（M4 已转换，见 M4_RESULTS.md） ---
     "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_fallen(cfg, **kw),
                         note="DeviceFallenResetPlugin；摔倒分布统计等价"
-                             "（fp32 并行 rollout，验收见 M4_RESULTS §3）"),
+                             "（fp32 并行 rollout，验收见 M4_RESULTS §3）",
+                        device_cls="envs.batchframework.device_standup"
+                                   ":DeviceFallenResetPlugin"),
     "baseline.humanoid21.rewards.standing_balance_4stage"
     ":StandingBalance4StageRewarder":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_standup_rewarder(
                             cfg, **kw),
                         note="DeviceStandup4StageRewarder observer；"
-                             "常量引用 CPU 模块单一来源"),
+                             "常量引用 CPU 模块单一来源",
+                        device_cls="envs.batchframework.device_standup"
+                                   ":DeviceStandup4StageRewarder"),
     "baseline.humanoid21.plugins.standup_termination:StandupTerminationPlugin":
         CapabilityEntry(Capability.UNSUPPORTED,
                         note="不在 standup_4stage_dense_v2 蓝图内；"
@@ -98,29 +110,39 @@ REGISTRY: Dict[str, CapabilityEntry] = {
                         factory=lambda cfg, **kw: _mk_dual_imbalance(
                             cfg, **kw),
                         note="DeviceDualImbalancePlugin；逐 agent 终止，"
-                             "接触判定逐字段对齐（fp32 近似）"),
+                             "接触判定逐字段对齐（fp32 近似）",
+                        device_cls="envs.batchframework.device_balance"
+                                   ":DeviceDualImbalancePlugin"),
     "baseline.humanoid21.rewards.cross_support"
     ":CrossSupportBalanceRewarder":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_cross_support(
                             cfg, **kw),
-                        note="DeviceCrossSupportObserver；状态机张量化"),
+                        note="DeviceCrossSupportObserver；状态机张量化",
+                        device_cls="envs.batchframework.device_balance"
+                                   ":DeviceCrossSupportObserver"),
     "baseline.humanoid21.rewards.posture_reward:PostureRewarder":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_posture(cfg, **kw),
                         note="DevicePostureObserver；"
-                             "STANDING_JOINT_POS 引用 CPU 常量"),
+                             "STANDING_JOINT_POS 引用 CPU 常量",
+                        device_cls="envs.batchframework.device_balance"
+                                   ":DevicePostureObserver"),
     "baseline.humanoid21.plugins.height_phi_observer:HeightPhiObserver":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_height_phi(
                             cfg, **kw),
-                        note="DeviceHeightPhiObserver"),
+                        note="DeviceHeightPhiObserver",
+                        device_cls="envs.batchframework.device_balance"
+                                   ":DeviceHeightPhiObserver"),
     # --- E7-W0 计量探针（device_examples 模板5；仅 benchmark 蓝图引用） ---
     "envs.batchframework.device_examples:SubstepProbePlugin":
         CapabilityEntry(Capability.NATIVE,
                         factory=lambda cfg, **kw: _mk_substep_probe(
                             cfg, **kw),
-                        note="空子步 hook——测子步驱动路径固定开销"),
+                        note="空子步 hook——测子步驱动路径固定开销",
+                        device_cls="envs.batchframework.device_examples"
+                                   ":SubstepProbePlugin"),
 }
 
 

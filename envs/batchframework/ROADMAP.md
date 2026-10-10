@@ -571,6 +571,12 @@ JAX 策略重写、JAX trainer、多 GPU 仅在 profiling 和后续需求支持�
 
 ### 工作包 C：负例与维护试验
 
+**已执行（2026-10-10，`tests/test_negative_migration.py` 11 项，
+详 `R3_RESULTS.md` §6）**——发现并修复两个真缺口：`unit_hash`
+纳入源码指纹（v1 源码漂移不判 stale，与 §4 声明不符）；
+`find_manifest_for` 坏文件静默跳过改 warn。残留：指纹粒度为
+模块文件（跨模块依赖不覆盖）。
+
 - 注入不支持插件，要求转换前明确拒绝或升级，而非静默忽略。
 - 修改主路径奖励参数或依赖代码，要求原转换被判定为过期。
 - 注入可检测错误，例如漏 observer、错误 bootstrap、遗漏逐物理步 hook，要求工具定位失败。

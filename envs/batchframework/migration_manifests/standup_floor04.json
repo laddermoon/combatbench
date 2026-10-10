@@ -6,16 +6,16 @@
     "phy_steps_per_action": 25,
     "strict": true
   },
-  "source_bp_hash": "291ac4ca0eac6d4b",
+  "source_bp_hash": "c6415dfd554a8b79",
   "units": [
     {
       "capability": "native",
       "cls": "envs.humanoid21.simulator:Humanoid21Simulator",
       "config_disposition": [
         {
-          "disposition": "consumed",
+          "disposition": "declared",
           "key": "debug_torque",
-          "note": "constructor parameter"
+          "note": "CPU-only 调试打印，设备端无语义——忽略"
         },
         {
           "disposition": "consumed",
@@ -33,27 +33,27 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.warp_simulator:WarpHumanoid21Simulator",
       "evidence": [
         {
-          "detail": "standup device collect",
+          "detail": "standup device collect [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1790921491.8170493,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "standup_floor04 device+multi 冒烟",
+          "detail": "standup_floor04 device+multi 冒烟 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8170524,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "Humanoid21Simulator",
       "role": "simulator",
       "stale": false,
-      "unit_hash": "1f74cbbc2d44278e"
+      "unit_hash": "d690f32740956086"
     },
     {
       "capability": "native",
@@ -80,27 +80,27 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_standup:DeviceFallenResetPlugin",
       "evidence": [
         {
-          "detail": "standup device collect",
+          "detail": "standup device collect [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1790921491.8170538,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "standup_floor04 device+multi 冒烟",
+          "detail": "standup_floor04 device+multi 冒烟 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8170545,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "RandomFallenStatePlugin",
       "role": "plugin",
       "stale": false,
-      "unit_hash": "cf3c5432364dd963"
+      "unit_hash": "d9072c2c48904b6d"
     },
     {
       "capability": "native",
@@ -112,27 +112,27 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
       "evidence": [
         {
-          "detail": "standup device collect",
+          "detail": "standup device collect [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1790921491.8170552,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "standup_floor04 device+multi 冒烟",
+          "detail": "standup_floor04 device+multi 冒烟 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8170557,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "standing_balance_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "161efade10533678"
+      "unit_hash": "e7a1826a2bfcdd6b"
     },
     {
       "capability": "native",
@@ -144,27 +144,27 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
       "evidence": [
         {
-          "detail": "standup device collect",
+          "detail": "standup device collect [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1790921491.8170564,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "standup_floor04 device+multi 冒烟",
+          "detail": "standup_floor04 device+multi 冒烟 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8170574,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "standing_balance_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "2206b0855845c92d"
+      "unit_hash": "20d7ba2e5a7d4158"
     }
   ]
 }

@@ -6,16 +6,16 @@
     "phy_steps_per_action": 25,
     "strict": true
   },
-  "source_bp_hash": "8836ff583cf9a7bc",
+  "source_bp_hash": "949694f704a1c9d5",
   "units": [
     {
       "capability": "native",
       "cls": "envs.humanoid21.simulator:Humanoid21Simulator",
       "config_disposition": [
         {
-          "disposition": "consumed",
+          "disposition": "declared",
           "key": "debug_torque",
-          "note": "constructor parameter"
+          "note": "CPU-only 调试打印，设备端无语义——忽略"
         },
         {
           "disposition": "consumed",
@@ -33,27 +33,27 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.warp_simulator:WarpHumanoid21Simulator",
       "evidence": [
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570123,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "Humanoid21Simulator",
       "role": "simulator",
       "stale": false,
-      "unit_hash": "1f74cbbc2d44278e"
+      "unit_hash": "d690f32740956086"
     },
     {
       "capability": "native",
@@ -70,41 +70,41 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DeviceDualImbalancePlugin",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.8570027,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "device collect terms={imbalance_robot_a/b} 逐agent终止",
+          "detail": "device collect terms={imbalance_robot_a/b} 逐agent终止 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1790921491.8570108,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.857013,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "DualImbalanceTerminationPlugin",
       "role": "plugin",
       "stale": false,
-      "unit_hash": "68d2e1dd5924f399"
+      "unit_hash": "60cf257ff95c301e"
     },
     {
       "capability": "native",
@@ -116,34 +116,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DeviceCrossSupportObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.8570051,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570137,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "cross_support_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "f79e0065705bbcbc"
+      "unit_hash": "da4b869f4c46ae37"
     },
     {
       "capability": "native",
@@ -155,34 +155,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DeviceCrossSupportObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.857006,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570142,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "cross_support_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "a6f4aca37303c11d"
+      "unit_hash": "a57fdd80fc53093b"
     },
     {
       "capability": "native",
@@ -194,34 +194,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DevicePostureObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.8570068,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570151,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "posture_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "3171eac23d3778ae"
+      "unit_hash": "71c07c9d79f893f0"
     },
     {
       "capability": "native",
@@ -233,34 +233,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DevicePostureObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.8570075,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570156,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "posture_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "14b438929b81f3b8"
+      "unit_hash": "1fc042a3a3bf74ca"
     },
     {
       "capability": "native",
@@ -272,34 +272,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DeviceHeightPhiObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.8570082,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570163,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "height_phi_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "7aad95a4ab916316"
+      "unit_hash": "0d6048b0c8e2eb6c"
     },
     {
       "capability": "native",
@@ -311,34 +311,34 @@
           "note": "constructor parameter"
         }
       ],
-      "device_cls": "",
+      "device_cls": "envs.batchframework.device_balance:DeviceHeightPhiObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_balance.py 13 项同注入态对拍",
+          "detail": "tests/test_device_balance.py 13 项同注入态对拍 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1790921491.857009,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "collector=device + devices=0,1 各2 updates",
+          "detail": "collector=device + devices=0,1 各2 updates [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1790921491.8570168,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "level": "train_smoke",
-          "passed": true,
+          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
-          "detail": "collector=device + batch=512 单卡2 updates（E8-W4 复验，终止帧语义后；run=e8_smoke_device_ppo，episodes=8 trajs=16 terms={imbalance_a/b}）",
-          "pass_ts": 1791130221.2137194
+          "level": "train_smoke",
+          "pass_ts": 1791625766.4999595,
+          "passed": true
         }
       ],
       "name": "height_phi_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "d9bbea90a374b68d"
+      "unit_hash": "5b069c55eaf1e228"
     }
   ]
 }

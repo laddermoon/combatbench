@@ -6,7 +6,7 @@
     "phy_steps_per_action": 25,
     "strict": true
   },
-  "source_bp_hash": "8407d9ff583ab761",
+  "source_bp_hash": "8311d4501e66f2fd",
   "units": [
     {
       "capability": "native",
@@ -41,38 +41,38 @@
       "device_cls": "envs.batchframework.device_step:WarpGaitClockSimulator",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py 步态时钟公式/波契约 （episode_steps 簿记耦合、reset/部分 reset 归零、双 agent 共钟、半窗边界）",
+          "detail": "tests/test_device_step.py 步态时钟公式/波契约 （episode_steps 簿记耦合、reset/部分 reset 归零、双 agent 共钟、半窗边界） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1791537792.5444496,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "TestGaitClockWaveContract：BatchRuntime 帧索引对齐 + TestStepDeviceWarp.test_gait_sim_assembly（真机 99 维装配）",
+          "detail": "TestGaitClockWaveContract：BatchRuntime 帧索引对齐 + TestStepDeviceWarp.test_gait_sim_assembly（真机 99 维装配） [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "wave_contract",
-          "pass_ts": 1791537792.5444593,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.0873435,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873456,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "GaitClockSimulator",
       "role": "simulator",
       "stale": false,
-      "unit_hash": "a1e9d27653975324"
+      "unit_hash": "fe08d27fee860bff"
     },
     {
       "capability": "native",
@@ -102,24 +102,24 @@
       "device_cls": "envs.batchframework.device_standup:DeviceFallenResetPlugin",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.0873473,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873485,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "RandomFallenStatePlugin",
       "role": "plugin",
       "stale": false,
-      "unit_hash": "cf3c5432364dd963"
+      "unit_hash": "d9072c2c48904b6d"
     },
     {
       "capability": "native",
@@ -134,24 +134,24 @@
       "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.0873497,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873508,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "standing_balance_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "161efade10533678"
+      "unit_hash": "e7a1826a2bfcdd6b"
     },
     {
       "capability": "native",
@@ -166,24 +166,24 @@
       "device_cls": "envs.batchframework.device_standup:DeviceStandup4StageRewarder",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.087352,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873532,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "standing_balance_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "2206b0855845c92d"
+      "unit_hash": "20d7ba2e5a7d4158"
     },
     {
       "capability": "native",
@@ -198,31 +198,31 @@
       "device_cls": "envs.batchframework.device_step:DeviceFootStateObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照",
+          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1791537792.5444624,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.0873547,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873559,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "foot_state_a",
       "role": "observer",
       "stale": false,
-      "unit_hash": "05327ff5d1e366a8"
+      "unit_hash": "54e59db715999c6b"
     },
     {
       "capability": "native",
@@ -237,31 +237,31 @@
       "device_cls": "envs.batchframework.device_step:DeviceFootStateObserver",
       "evidence": [
         {
-          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照",
+          "detail": "tests/test_device_step.py Layer A 注入态逐字段对照（h/sole/contact 六叶，含摇摆反刷分、wall/他机排除）+ Layer B warp-vs-CPU 真机对照 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "unit_replay",
-          "pass_ts": 1791537792.5444636,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer)",
+          "detail": "tests/test_device_step.py::TestStepDeviceCollect (DeviceRollouter+MultiDeviceRollouter collect → Episode 契约 + gait-clock 逐帧 + Step.build_trajectories + PPOBuffer) [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "e2e_collect",
-          "pass_ts": 1791538457.0873573,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         },
         {
-          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000",
+          "detail": "train_step_ppo_20261009_173147：--collector device --collector-devices 2,3 从 standup ckpt_u01500 热启动，2 updates 全绿，eval success=1.000 [v2 指纹口径升级重盖章 2026-10-10；pytest 证据以本轮复跑为准] ",
           "input_hash": "",
           "level": "train_smoke",
-          "pass_ts": 1791538457.0873585,
+          "pass_ts": 1791625766.4999595,
           "passed": true
         }
       ],
       "name": "foot_state_b",
       "role": "observer",
       "stale": false,
-      "unit_hash": "4cc620c96a21117c"
+      "unit_hash": "54003b11c3543fcc"
     }
   ]
 }

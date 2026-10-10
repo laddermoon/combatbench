@@ -26,6 +26,7 @@ import inspect
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from envs.framework.blueprint import ClassSpec, EnvBlueprint
@@ -59,7 +60,8 @@ class UnitAudit:
     config_disposition: List[ConfigDisposition] = field(default_factory=list)
     cpu_reads: List[str] = field(default_factory=list)     # accessor.* 调用
     cpu_hooks: List[str] = field(default_factory=list)     # 覆写的 on_* 钩子
-    unit_hash: str = ""                                     # cls+config 指纹
+    unit_hash: str = ""                                     # cls+config+src 指纹
+    device_cls: str = ""                                   # 注册条目声明的设备实现类
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -72,6 +74,7 @@ class UnitAudit:
             "cpu_reads": list(self.cpu_reads),
             "cpu_hooks": list(self.cpu_hooks),
             "unit_hash": self.unit_hash,
+            "device_cls": self.device_cls,
         }
 
 
@@ -179,9 +182,44 @@ def _static_surface(cls_path: str) -> Tuple[List[str], List[str]]:
     return reads, hooks
 
 
-def _unit_hash(cls: str, config: Dict[str, Any]) -> str:
-    payload = json.dumps({"cls": cls, "config": config},
-                         sort_keys=True, default=str)
+def _src_fingerprint(cls_path: str) -> Optional[str]:
+    """cls 定义所在**模块文件**的 sha256（16 hex）；解析不出 → ``None``。
+
+    指纹对象是文件而非 ``inspect.getsource(cls)``——模块级常量
+    （如 foot_state 的 STANDING_FOOT_Z、公式阈值）在类源码之外，
+    文件粒度才能覆盖。已知残留：跨模块依赖（基类、他模块 import
+    的常量/函数）不纳入——那需要依赖闭包，超出现阶段粒度。
+    """
+    cls = _import_cls(cls_path)
+    if cls is None:
+        return None
+    try:
+        f = inspect.getsourcefile(cls)
+    except TypeError:
+        return None
+    if not f:
+        return None
+    try:
+        return hashlib.sha256(
+            Path(f).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def _unit_hash(cls: str, config: Dict[str, Any],
+               device_cls: Optional[str] = None) -> str:
+    """单元证据指纹 = {cls 名, config, CPU 模块文件, 设备实现模块文件}。
+
+    任一侧漂移 → 旧证据 stale（discuss D14：源任务、目标实现变化
+    均使验证失效）。源码解析失败的一侧记空串——`REGISTRY` 全
+    NATIVE 条目的可解析性由测试锁定（指纹不静默空转）。
+    """
+    payload = json.dumps(
+        {"cls": cls, "config": config,
+         "cpu_src": _src_fingerprint(cls) or "",
+         "dev_src": (_src_fingerprint(device_cls) or "")
+         if device_cls else ""},
+        sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -215,7 +253,9 @@ def _audit_unit(role: str, name: str, spec: ClassSpec) -> UnitAudit:
         config=dict(spec.config),
         config_disposition=_disposition(spec.cls, spec.config, entry),
         cpu_reads=reads, cpu_hooks=hooks,
-        unit_hash=_unit_hash(spec.cls, spec.config))
+        unit_hash=_unit_hash(spec.cls, spec.config,
+                             getattr(entry, "device_cls", None)),
+        device_cls=getattr(entry, "device_cls", None) or "")
 
 
 def audit_blueprint(env_bp: EnvBlueprint, source: str = "") -> AuditReport:
@@ -247,7 +287,10 @@ def audit_blueprint(env_bp: EnvBlueprint, source: str = "") -> AuditReport:
         capability=sim_cap, note=sim_note,
         config=dict(sim.config),
         config_disposition=_disposition(sim.cls, sim.config, sim_entry),
-        unit_hash=_unit_hash(sim.cls, sim.config)))
+        unit_hash=_unit_hash(
+            sim.cls, sim.config,
+            getattr(sim_entry, "device_cls", None)),
+        device_cls=getattr(sim_entry, "device_cls", None) or ""))
 
     for spec in env_bp.plugins:
         rep.units.append(_audit_unit(

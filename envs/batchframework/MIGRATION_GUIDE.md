@@ -214,8 +214,10 @@ sim_config 提供静态默认，episode_options 逐行覆盖。
 证据写入 `envs/batchframework/migration_manifests/<exp>.json`——
 **schema 必填字段**：`{"level","passed","input_hash","detail",
 "pass_ts"}`（`pass_ts` ISO 时间戳；缺字段会让 `find_manifest_for`
-静默判 manifest 不可用——E8 实际踩过的坑）。`unit_hash` 漂移
-（类源码变化）会让旧证据自动失效→`stale`，须重跑。
+静默判 manifest 不可用——E8 实际踩过的坑；当前会发
+``UserWarning``）。`unit_hash` 漂移会让旧证据自动失效→`stale`
+须重跑——指纹 = cls+config+**CPU 模块文件**+**device_cls 模块
+文件**（类源码与模块常量改动都算漂移；跨模块依赖不覆盖）。
 
 ## 5. 全 native 后的收尾
 

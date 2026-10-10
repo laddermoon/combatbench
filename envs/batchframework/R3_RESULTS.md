@@ -66,11 +66,41 @@
 
 合计 ~+1468/−14，新增 `device_step.py`(259 行） + `test_device_step.py`(808 行）。
 
-## 6. 未覆盖项（如实记录）
+## 6. 负例试验（工作包 C，2026-10-10 补做）
 
-- **ROADMAP §11 工作包 C（负例试验）未做**：注入不支持插件拒迁 /
-  改源码判 manifest stale / 注入可检测错误定位——R3 放行条件
-  "不支持/错误/过期案例不误报成功"尚无实证；
+`tests/test_negative_migration.py` 11 项全绿。执行中**发现并修复
+两个真缺口**：
+
+1. **`unit_hash` 不含源码指纹**（负例核心发现）：v1 只哈希
+   {cls 名, config}——改类源码（同名同 config）旧证据照样新鲜，
+   与 MIGRATION_GUIDE §4 的声明和 discuss D14 的设计意图都不符。
+   已升级 v2 = {cls, config, **CPU 模块文件**, **device_cls 模块
+   文件**}：`CapabilityEntry.device_cls` 声明设备实现类（顺带修复
+   `from_audit` 从不填 `device_cls` 的问题）；指纹口径升级使三份
+   旧 manifest 全部判 stale——**机制自证**——已重跑 pytest 证据级
+   并重新盖章（train_smoke 沿用原 run：collect 行为路径未变，仅
+   audit/manifest 元数据变更）。
+2. **畸形 manifest 静默跳过**：`find_manifest_for` 的
+   `except: continue` 让 stale 保护静默失效（E8 踩过的缺字段坑
+   的同类）——改为 `UserWarning` + 按无关处理。
+
+覆盖矩阵：
+
+| 工作包 C 条款 | 测试 | 结果 |
+|---|---|---|
+| 不支持插件拒迁 | `test_audit_flags_unregistered_plugin_unsupported` + `test_collect_rejects_unregistered_plugin` | audit 判 unsupported+unknown；collect `ValueError` |
+| 改参数/代码判过期 | `test_collect_rejects_config_drifted_blueprint`（config）+ `test_freshness_marks_source_edited_unit_stale`（源码）+ `test_unit_hash_tracks_*` | stale→`RuntimeError`；源码/模块常量/设备实现漂移均判 stale |
+| 错误注入定位 | `test_observer_missing_leaf_names_unit_and_leaf` + `test_observer_wrong_shape_names_leaf` + `test_malformed_manifest_warns_and_skips` | 报错点名单元/叶；坏 manifest warn 不静默 |
+| 指纹非空转 | `test_native_units_source_resolvable` | 全 NATIVE 条目 cpu/dev 源码指纹可解析 |
+
+**残留（如实）**：`unit_hash` 指纹粒度=模块文件——跨模块依赖
+（基类、他模块 import 的常量）变化不触发 stale；
+"能力扩展逐项验收"条款的打包形态未单独立项（现有各套件已覆盖
+其内容）。
+
+## 7. 未覆盖项（如实记录）
+
 - L4 仅 smoke（2 updates），不含训练质量判定（brief 明确允许）；
 - 结论不能外推：本次仅覆盖 step 实验形态，reference/delta_factor
-  等未支持 spec 的迁移路径未验证。
+  等未支持 spec 的迁移路径未验证；
+- 过程指标（首过率/token 成本）未结构化记录——§4 已说明。

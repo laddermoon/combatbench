@@ -6,7 +6,8 @@
 模型：
 
 - ``MigrationManifest`` 由 ``AuditReport`` 派生，每单元带
-  ``unit_hash``（cls+config 指纹）与 ``evidence`` 列表；
+  ``unit_hash``（cls+config+CPU 模块文件+device_cls 模块文件
+  指纹）与 ``evidence`` 列表；
 - 证据条目记录验证等级（``unit_replay`` / ``wave_contract`` /
   ``e2e_collect`` / ``train_smoke``）、输入指纹与时间；
 - ``validate_freshness(env_bp)`` 逐单元重算指纹——source
@@ -19,12 +20,14 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from envs.framework.blueprint import EnvBlueprint
 
+from .capability_registry import lookup as _cap_lookup
 from .migration_audit import AuditReport, _unit_hash
 
 MANIFEST_DIR = Path(__file__).resolve().parent / "migration_manifests"
@@ -118,7 +121,8 @@ class MigrationManifest:
                                  "disposition": d.disposition,
                                  "note": d.note}
                                 for d in u.config_disposition],
-            unit_hash=u.unit_hash) for u in report.units]
+            unit_hash=u.unit_hash,
+            device_cls=u.device_cls) for u in report.units]
         return cls(experiment_name=experiment_name,
                    blueprint_name=blueprint_name or report.source,
                    source_bp_hash=report.source_bp_hash,
@@ -134,7 +138,7 @@ class MigrationManifest:
     # 失效追踪
     # ------------------------------------------------------------------
     def validate_freshness(self, env_bp: EnvBlueprint) -> List[str]:
-        """逐单元重算 cls+config 指纹；变化者标 ``stale``，返回名单。
+        """逐单元重算 cls+config+源码指纹；变化者标 ``stale``。
 
         blueprint 整体漂移（runtime 字段/单元增减）也会反映出来：
         找不到匹配 cls 的旧单元标 stale，新增单元以
@@ -155,7 +159,13 @@ class MigrationManifest:
                 u.stale = True
                 stale.append(u.name)
                 continue
-            if _unit_hash(spec.cls, spec.config) != u.unit_hash:
+            # 设备实现指纹随注册条目当前声明走——device_cls 声明本身
+            # 变化也会让旧证据 stale（即升级指纹口径后旧 manifest 全
+            # 部判 stale，须重新验证盖章，这是设计行为）。
+            entry = _cap_lookup(spec.cls)
+            if _unit_hash(spec.cls, spec.config,
+                          getattr(entry, "device_cls", None)
+                          ) != u.unit_hash:
                 u.stale = True
                 stale.append(u.name)
         return stale
@@ -220,7 +230,12 @@ def find_manifest_for(env_bp) -> Optional[MigrationManifest]:
     for p in sorted(MANIFEST_DIR.glob("*.json")):
         try:
             m = MigrationManifest.load(p)
-        except Exception:
+        except Exception as e:
+            # 坏文件不能静默跳过——stale 保护静默失效是负例之一；
+            # warn 让损坏可定位，同时仍按"与本 blueprint 无关"处理。
+            warnings.warn(
+                f"migration manifest {p.name} failed to load ({e}) — "
+                f"treated as unrelated to this blueprint", stacklevel=2)
             continue
         live_by_name = dict(env_bp.observer_plugins)
         live_cls = {s.cls for s in env_bp.plugins}
