@@ -363,3 +363,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 不换后端/CPU 语义参照+版本锚/迁移可审计 fail-loud/设备可调试/
 性能工程诚实）+ 实测 480K≈单卡打平 192-worker CPU 池；边界节沿用
 现有「边界与限制」+ STATUS_REVIEW 指路。
+
+**ACH-6** 新建 `baseline/framework/sac/README.md` — SAC 框架/调试
+系统成果文档：SAC 原生设计（TaggedReplay source_key 溯源/env_step
+时钟/逐channel twin-Q）、诊断体系对齐 PPO、正确性分层、uncertainty
+路线 A4、复制后适配边界；诚实标注基线 #7 未开始。
