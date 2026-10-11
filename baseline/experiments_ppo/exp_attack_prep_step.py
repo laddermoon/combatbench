@@ -92,7 +92,12 @@ class AttackPrepStep(FollowStep):
     # threshold only gates the state transition — the continuous
     # (1-norm)/2 reward still pays for deeper extension afterward.
     extend_threshold: float = -0.6
-    flex_threshold: float = ELBOW_FLEX_THRESHOLD
+    # +0.7 not +0.95: the natural chamber after a punch sits at elbow
+    # ~+0.75..+0.9 — +0.95 demanded near-joint-limit flexion, so a
+    # punched arm sat in RETRACT forever and could never re-enter READY
+    # (observed: 89 consecutive RETRACT frames at elbow +0.64..0.9).
+    # +0.7 = retract to a real guard position before the next punch.
+    flex_threshold: float = 0.7
     attack_timeout_steps: int = ATTACK_TIMEOUT_STEPS
     D_ARM_GATE: float = 1.1          # m — machine runs inside this dist
     FACING_COS_THRESHOLD: float = 0.5  # cos(60°) facing cone
