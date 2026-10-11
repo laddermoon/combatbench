@@ -2547,6 +2547,28 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
 - standup s2024 按冻结协议记为未达标（预算耗尽，末段仍波动）——凑满 3 seed 达标需补 seed 或接受 2/3+失败记录，待 P6-REC 决议；
 - 全部 run 已停，监控退役；每 run 保留末 3 checkpoint + 完整 metrics/dumps/videos/policy。
 
+### P6.5a P6-FINAL-1 held-out eval 结果（`seed+900_000`，64 episodes/任务）
+
+新工具 `framework/sac/held_out_eval.py`：从 run config 重建实验 → 最新完整 checkpoint → 导出确定性 blueprint → held-out seeds 采集 → `on_eval` 指标。结果写入各 run `held_out_eval.json`：
+
+| Run | ckpt | held-out 指标 | ≥0.9 |
+|---|---|---|---|
+| standup s01 s42 | s02009600 | success **0.992**（final_pot 0.967） | ✅ |
+| standup s01 s1337 | s01651200 | success **0.984** | ✅ |
+| standup s01 s2024 | s02009600 | success **0.516**（max_pot 0.898/final_pot 0.887——能站但不稳） | ✗ |
+| standup m11 s42 | s01971200 | success **0.945** | ✅ |
+| balance s01 s42 | s08424388 | survival **0.953** | ✅ |
+| balance s01 s1337 | s03823225 | survival **0.906** | ✅ |
+| balance s01 s2024 | s01804364 | survival **0.891** | ⚠ 边界 |
+| balance m11 s42 | s01629781 | survival **0.984** | ✅ |
+
+**结论与待决议**：
+
+- 训练内判据 7/8 达标中，held-out 复核 **6 条 ≥0.9**；balance s2024 为边界（0.891，64ep 噪声范围内）；
+- standup s2024 的失败被定量坐实：held-out success 0.516——max_pot 0.898 表明站起能力存在但稳定性不足，作为完整失败记录合规；
+- **待用户决议**：① standup s01 第三 seed（补跑 or 接受 2/3+失败记录）；② balance s2024 的 0.891 计为边界通过还是未过——按"不降门槛"应计为 held-out 未过，则 balance s01 为 2/3，同样需要决议是否补 seed；
+- 附带修复：`held_out_eval._newest_checkpoint` 只认含 manifest 的完整 bundle，排除原子写入残留的 tmp 目录（SIGTERM 打断末次写盘的场景已实测命中）。
+
 ### P7.0 阶段七提前启动计划（与阶段六训练并行）
 
 **裁决依据**：阶段七大部分是工程核查，不依赖阶段六最终配方/产物；训练跑在代码快照分支上，主线改动不影响在训 run。提前启动只覆盖工程项，验收挂接项等待阶段六产物。
