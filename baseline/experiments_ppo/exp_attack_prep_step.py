@@ -22,15 +22,15 @@ archived ``exp_attack_prep`` recipe):
                                    exploit body translation instead of
                                    punching.)
 
-The state machine (ATTACK/FLEX/READY with strict left/right turn-taking)
-emits ±arm_weight actor weights; it only runs on valid segments where
-the learner is standing (φ ≥ 0.5), within D_ARM_GATE=1.1m of the target,
-and facing within ±60°.  Outside segments aw = 0; inside, aw *= φ² so
-recovery still outranks punching when half-fallen.  v2 fixes: an arm
-already extended at a segment boundary starts in FLEX (kills fake
-instant punches and the held-arm ATTACK lock), and ATTACK stalls
-beyond attack_timeout_steps demote to FLEX with the turn passed
-(guaranteed alternation).
+The state machine (reactive per-arm READY/RETRACT cycle — see
+``arm_state_machine.py`` docstring for why strict turn-taking was
+dropped) emits ±arm_weight actor weights; it only runs on valid
+segments where the learner is standing (φ ≥ 0.5), within
+D_ARM_GATE=1.1m of the target, and facing within ±60°.  Outside
+segments aw = 0; inside, aw *= φ² so recovery still outranks
+punching when half-fallen.  Anti-lock: an already-extended arm is in
+RETRACT and must chamber before earning extension weights (no fake
+instant punches).
 
 Best-of-run / early stop use a punch composite —
     quality = punches_per_ep + 0.5 × arm_active_ratio
