@@ -13,14 +13,24 @@ archived ``exp_attack_prep`` recipe):
 
   r_left_elbow / r_right_elbow   — (1 - elbow_norm)/2 ∈ [0,1]
                                    1 = punched out, 0 = chambered
-  r_left_hand_dist /             — raw 3D hand → opp head distance (m)
-      r_right_hand_dist
+  r_left_hand_dist /             — hand→opp-head gap RELATIVE to the
+      r_right_hand_dist            shoulder:  hand→head − shoulder→head.
+                                   Body-lunging moves both terms equally
+                                   (net zero) — only actual arm
+                                   extension pays.  (v2 fix: the raw
+                                   hand→head distance let the policy
+                                   exploit body translation instead of
+                                   punching.)
 
 The state machine (ATTACK/FLEX/READY with strict left/right turn-taking)
 emits ±arm_weight actor weights; it only runs on valid segments where
 the learner is standing (φ ≥ 0.5), within D_ARM_GATE=1.1m of the target,
 and facing within ±60°.  Outside segments aw = 0; inside, aw *= φ² so
-recovery still outranks punching when half-fallen.
+recovery still outranks punching when half-fallen.  v2 fixes: an arm
+already extended at a segment boundary starts in FLEX (kills fake
+instant punches and the held-arm ATTACK lock), and ATTACK stalls
+beyond attack_timeout_steps demote to FLEX with the turn passed
+(guaranteed alternation).
 
 Best-of-run / early stop use a punch composite —
     quality = punches_per_ep + 0.5 × arm_active_ratio
@@ -40,6 +50,7 @@ from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
 from baseline.humanoid21.end2end.arm_state_machine import (
     ARM_WEIGHT,
+    ATTACK_TIMEOUT_STEPS,
     ELBOW_EXTEND_THRESHOLD,
     ELBOW_FLEX_THRESHOLD,
     compute_arm_weights_with_stats,
@@ -75,6 +86,7 @@ class AttackPrepStep(FollowStep):
     arm_weight: float = ARM_WEIGHT
     extend_threshold: float = ELBOW_EXTEND_THRESHOLD
     flex_threshold: float = ELBOW_FLEX_THRESHOLD
+    attack_timeout_steps: int = ATTACK_TIMEOUT_STEPS
     D_ARM_GATE: float = 1.1          # m — machine runs inside this dist
     FACING_COS_THRESHOLD: float = 0.5  # cos(60°) facing cone
     STAND_PHI_MIN: float = 0.5       # φ ≥ this counts as standing
@@ -140,6 +152,10 @@ class AttackPrepStep(FollowStep):
             oo, arm_key, "left_hand_to_opp_head", T_full)
         right_hand_opp = extract_per_step_field(
             oo, arm_key, "right_hand_to_opp_head", T_full)
+        opp_head_lsh = extract_per_step_field(
+            oo, arm_key, "opp_head_to_left_shoulder", T_full)
+        opp_head_rsh = extract_per_step_field(
+            oo, arm_key, "opp_head_to_right_shoulder", T_full)
         self_x = extract_per_step_field(oo, app_key, "self_x", T_full)
         self_y = extract_per_step_field(oo, app_key, "self_y", T_full)
         opp_x = extract_per_step_field(oo, app_key, "opp_x", T_full)
@@ -153,6 +169,7 @@ class AttackPrepStep(FollowStep):
             for v in (
                 left_elbow, right_elbow,
                 left_hand_opp, right_hand_opp,
+                opp_head_lsh, opp_head_rsh,
                 self_x, opp_x, phi,
             )
         )
@@ -203,15 +220,20 @@ class AttackPrepStep(FollowStep):
             extend_threshold=self.extend_threshold,
             flex_threshold=self.flex_threshold,
             arm_weight=self.arm_weight,
+            attack_timeout_steps=self.attack_timeout_steps,
         )
 
         # --- Arm rewards ---
         # Elbow: norm [-1,+1] → [0,1]; 1 = punched out, 0 = chambered.
         r_left_elbow = ((1.0 - np.asarray(left_elbow)) * 0.5)
         r_right_elbow = ((1.0 - np.asarray(right_elbow)) * 0.5)
-        # Hand distance: raw 3D distance to the opponent head (m).
-        r_left_hd = np.asarray(left_hand_opp)
-        r_right_hd = np.asarray(right_hand_opp)
+        # Hand gap relative to the shoulder line:
+        #   r = hand→opp_head − opp_head→shoulder
+        # Minimizing it = extending the arm toward the head; body-lunging
+        # shifts both terms equally so translation can't fake a punch.
+        # ATTACK aw=-W → extend;  FLEX aw=+W → retract.
+        r_left_hd = np.asarray(left_hand_opp) - np.asarray(opp_head_lsh)
+        r_right_hd = np.asarray(right_hand_opp) - np.asarray(opp_head_rsh)
 
         arm_channels = {
             "r_left_elbow": (r_left_elbow, w_le),
@@ -297,6 +319,7 @@ class AttackPrepStep(FollowStep):
                 extend_threshold=self.extend_threshold,
                 flex_threshold=self.flex_threshold,
                 arm_weight=self.arm_weight,
+                attack_timeout_steps=self.attack_timeout_steps,
             )
             punch_counts.append(float(stats["n_punches"]))
             arm_active_ratios.append(float(stats["n_valid_steps"]) / T)

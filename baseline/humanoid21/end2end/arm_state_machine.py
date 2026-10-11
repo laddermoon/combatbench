@@ -29,7 +29,20 @@ Key behaviors:
 
 Initial state (first step of each valid segment):
     The hand closer to the opponent's head becomes the attacker
-    (state = ATTACK, turn = that arm); the other arm starts in FLEX.
+    (state = ATTACK, turn = that arm); the other arm starts in FLEX —
+    UNLESS an arm is already extended (elbow <= extend_threshold) at
+    segment start: an already-extended arm starts in FLEX and must
+    retract before it can attack again, and the turn goes to the
+    non-extended arm.  This prevents both fake "instant punches" at
+    segment boundaries and the deadlock where a statically held-out
+    arm claims ATTACK at every re-init and starves the other arm.
+
+ATTACK timeout: an arm that stays in ATTACK for more than
+``attack_timeout_steps`` without completing is demoted to FLEX and
+the turn passes to the other arm (no punch counted).  This prevents
+deadlock when an arm hovers just above the extend threshold —
+visually straight but never completing — which would otherwise pin
+the other arm in FLEX forever.
 
 The state machine only runs on **valid segments** — contiguous stretches
 where the robot is in attack range and facing the opponent.  Each valid
@@ -72,6 +85,11 @@ ELBOW_FLEX_THRESHOLD: float = 0.95
 # Default arm actor weight magnitude.
 ARM_WEIGHT: float = 3.0
 
+ATTACK_TIMEOUT_STEPS: int = 60
+"""Max consecutive ATTACK steps before the arm is demoted to FLEX (no
+punch counted) and the turn passes — guarantees alternation even when
+an arm stalls just above the extend threshold."""
+
 # Arm states
 _ATTACK = 0
 _FLEX = 1
@@ -110,6 +128,7 @@ def _scan(
     extend_threshold: float,
     flex_threshold: float,
     W: float,
+    attack_timeout_steps: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
     """Core scan: returns four (T,) weight arrays plus punch statistics."""
     T = len(left_elbow)
@@ -125,11 +144,30 @@ def _scan(
 
     for start, end in segments:
         # --- Fresh initial state per segment ---
-        # Hand closer to the opponent's head attacks first.
-        if left_hand_to_opp_head[start] <= right_hand_to_opp_head[start]:
+        # Hand closer to the opponent's head attacks first — but an arm
+        # that is already extended at segment start goes to FLEX (it must
+        # retract before attacking): prevents fake instant punches and
+        # the deadlock where a held-out arm claims ATTACK at every re-init.
+        left_ext = float(left_elbow[start]) <= extend_threshold
+        right_ext = float(right_elbow[start]) <= extend_threshold
+        closer = (
+            _LEFT
+            if left_hand_to_opp_head[start] <= right_hand_to_opp_head[start]
+            else _RIGHT
+        )
+        if left_ext and right_ext:
+            left_state = right_state = _FLEX
+            turn = closer
+        elif left_ext:
+            left_state, right_state, turn = _FLEX, _ATTACK, _RIGHT
+        elif right_ext:
+            left_state, right_state, turn = _ATTACK, _FLEX, _LEFT
+        elif closer == _LEFT:
             left_state, right_state, turn = _ATTACK, _FLEX, _LEFT
         else:
             left_state, right_state, turn = _FLEX, _ATTACK, _RIGHT
+
+        attack_age = 0
 
         for t in range(start, end):
             # --- 1. Emit weights for the current states ---
@@ -148,14 +186,31 @@ def _scan(
                 w_right_hand_dist[t] = W
 
             # --- 2a. ATTACK complete → FLEX, turn passes to the other arm ---
-            if left_state == _ATTACK and float(left_elbow[t]) <= extend_threshold:
-                left_state = _FLEX
-                turn = _RIGHT
-                n_left_punches += 1
-            elif right_state == _ATTACK and float(right_elbow[t]) <= extend_threshold:
-                right_state = _FLEX
-                turn = _LEFT
-                n_right_punches += 1
+            if left_state == _ATTACK:
+                attack_age += 1
+                if float(left_elbow[t]) <= extend_threshold:
+                    left_state = _FLEX
+                    turn = _RIGHT
+                    n_left_punches += 1
+                    attack_age = 0
+                elif attack_age > attack_timeout_steps:
+                    # Stalled attack — demote without a punch, pass turn.
+                    left_state = _FLEX
+                    turn = _RIGHT
+                    attack_age = 0
+            elif right_state == _ATTACK:
+                attack_age += 1
+                if float(right_elbow[t]) <= extend_threshold:
+                    right_state = _FLEX
+                    turn = _LEFT
+                    n_right_punches += 1
+                    attack_age = 0
+                elif attack_age > attack_timeout_steps:
+                    right_state = _FLEX
+                    turn = _LEFT
+                    attack_age = 0
+            else:
+                attack_age = 0
 
             # --- 2b. FLEX complete → READY ---
             if left_state == _FLEX and float(left_elbow[t]) >= flex_threshold:
@@ -194,6 +249,7 @@ def compute_arm_weights(
     extend_threshold: float = ELBOW_EXTEND_THRESHOLD,
     flex_threshold: float = ELBOW_FLEX_THRESHOLD,
     arm_weight: float = ARM_WEIGHT,
+    attack_timeout_steps: int = ATTACK_TIMEOUT_STEPS,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Post-hoc scan over a trajectory to produce arm actor weights.
 
@@ -215,6 +271,7 @@ def compute_arm_weights(
         extend_threshold=extend_threshold,
         flex_threshold=flex_threshold,
         arm_weight=arm_weight,
+        attack_timeout_steps=attack_timeout_steps,
     )
     return w_le, w_re, w_lhd, w_rhd
 
@@ -229,6 +286,7 @@ def compute_arm_weights_with_stats(
     extend_threshold: float = ELBOW_EXTEND_THRESHOLD,
     flex_threshold: float = ELBOW_FLEX_THRESHOLD,
     arm_weight: float = ARM_WEIGHT,
+    attack_timeout_steps: int = ATTACK_TIMEOUT_STEPS,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
     """Same as :func:`compute_arm_weights` but also returns punch statistics.
 
@@ -259,4 +317,5 @@ def compute_arm_weights_with_stats(
         float(extend_threshold),
         float(flex_threshold),
         W,
+        int(attack_timeout_steps),
     )
