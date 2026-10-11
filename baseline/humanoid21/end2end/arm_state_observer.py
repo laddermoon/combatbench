@@ -3,7 +3,7 @@
 Outputs eight raw physical quantities per step (no state-machine logic):
 
   Left / right elbow normalized angle [-1, 1]:
-    -1 = fully flexed (max retraction), +1 = fully extended (max extension)
+    -1 = fully extended (punched out), +1 = fully flexed (chambered)
 
   Left / right hand to opponent head 3D distance (meters, unnormalized)
 

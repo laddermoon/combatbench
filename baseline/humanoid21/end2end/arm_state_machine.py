@@ -28,14 +28,18 @@ Key behaviors:
     complete its punch first.
 
 Initial state (first step of each valid segment):
-    The hand closer to the opponent's head becomes the attacker
-    (state = ATTACK, turn = that arm); the other arm starts in FLEX —
-    UNLESS an arm is already extended (elbow <= extend_threshold) at
-    segment start: an already-extended arm starts in FLEX and must
-    retract before it can attack again, and the turn goes to the
-    non-extended arm.  This prevents both fake "instant punches" at
-    segment boundaries and the deadlock where a statically held-out
-    arm claims ATTACK at every re-init and starves the other arm.
+    ``turn`` persists across segments — whichever arm was due to attack
+    next keeps the initiative when punching resumes, so segment breaks
+    can't reset the alternation.  (The previous per-segment "closer hand
+    attacks first" re-init was a ratchet: the arm that punched last is
+    usually still closer, so it claimed ATTACK at every re-init and the
+    other arm starved.)  Only the very first segment uses the closer
+    hand for the initial turn.
+
+    An arm already extended (elbow <= extend_threshold) at segment
+    start goes to FLEX and must retract before attacking — it can never
+    hold or take the turn while extended.  This prevents fake "instant
+    punches" at segment boundaries and the held-out-arm ATTACK lock.
 
 ATTACK timeout: an arm that stays in ATTACK for more than
 ``attack_timeout_steps`` without completing is demoted to FLEX and
@@ -45,9 +49,9 @@ visually straight but never completing — which would otherwise pin
 the other arm in FLEX forever.
 
 The state machine only runs on **valid segments** — contiguous stretches
-where the robot is in attack range and facing the opponent.  Each valid
-segment runs the state machine independently with a fresh initial state.
-Invalid steps get zero weight.
+where the robot is in attack range and facing the opponent.  States
+re-initialize at each segment boundary (see above); ``turn`` carries
+over.  Invalid steps get zero weight.
 
 Actor weights per state:
 
@@ -142,30 +146,40 @@ def _scan(
     n_right_punches = 0
     segments = _find_segments(valid_mask)
 
+    # ``turn`` persists across segments — see module docstring.
+    turn = -1  # -1 = uninitialized (first segment picks the closer hand)
+
     for start, end in segments:
-        # --- Fresh initial state per segment ---
-        # Hand closer to the opponent's head attacks first — but an arm
-        # that is already extended at segment start goes to FLEX (it must
-        # retract before attacking): prevents fake instant punches and
-        # the deadlock where a held-out arm claims ATTACK at every re-init.
+        # --- Segment re-init: states reset, turn carries over ---
+        # An arm already extended at segment start goes to FLEX (it must
+        # retract before attacking) and can never hold the turn while
+        # extended — the turn passes to the other arm if needed.
         left_ext = float(left_elbow[start]) <= extend_threshold
         right_ext = float(right_elbow[start]) <= extend_threshold
-        closer = (
-            _LEFT
-            if left_hand_to_opp_head[start] <= right_hand_to_opp_head[start]
-            else _RIGHT
+        if turn == -1:
+            closer = (
+                _LEFT
+                if left_hand_to_opp_head[start]
+                <= right_hand_to_opp_head[start]
+                else _RIGHT
+            )
+            if left_ext and not right_ext:
+                turn = _RIGHT
+            elif right_ext and not left_ext:
+                turn = _LEFT
+            else:
+                turn = closer
+        elif left_ext and turn == _LEFT:
+            turn = _RIGHT
+        elif right_ext and turn == _RIGHT:
+            turn = _LEFT
+
+        left_state = (
+            _FLEX if left_ext else (_ATTACK if turn == _LEFT else _READY)
         )
-        if left_ext and right_ext:
-            left_state = right_state = _FLEX
-            turn = closer
-        elif left_ext:
-            left_state, right_state, turn = _FLEX, _ATTACK, _RIGHT
-        elif right_ext:
-            left_state, right_state, turn = _ATTACK, _FLEX, _LEFT
-        elif closer == _LEFT:
-            left_state, right_state, turn = _ATTACK, _FLEX, _LEFT
-        else:
-            left_state, right_state, turn = _FLEX, _ATTACK, _RIGHT
+        right_state = (
+            _FLEX if right_ext else (_ATTACK if turn == _RIGHT else _READY)
+        )
 
         attack_age = 0
 
