@@ -84,7 +84,12 @@ class AttackPrepStep(FollowStep):
 
     # --- Arm state machine parameters (exp_attack_prep recipe) ---
     arm_weight: float = ARM_WEIGHT
-    extend_threshold: float = ELBOW_EXTEND_THRESHOLD
+    # -0.6 not -0.95: a strong unilateral habit from the exploit phase
+    # left one arm stalling ~-0.65 (visibly extended) below -0.95, so
+    # it could never complete and the turn never alternated.  The
+    # threshold only gates the state transition — the continuous
+    # (1-norm)/2 reward still pays for deeper extension afterward.
+    extend_threshold: float = -0.6
     flex_threshold: float = ELBOW_FLEX_THRESHOLD
     attack_timeout_steps: int = ATTACK_TIMEOUT_STEPS
     D_ARM_GATE: float = 1.1          # m — machine runs inside this dist
