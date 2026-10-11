@@ -11,8 +11,10 @@ Four new reward channels driven by the post-hoc arm state machine
 (``arm_state_machine.compute_arm_weights_with_stats``, adapted from the
 archived ``exp_attack_prep`` recipe):
 
-  r_left_elbow / r_right_elbow   — (1 - elbow_norm)/2 ∈ [0,1]
+  r_left_elbow / r_right_elbow   — ((1 - elbow_norm)/2)² ∈ [0,1]
                                    1 = punched out, 0 = chambered
+                                   (quadratic: half-jabs pay little —
+                                   kills the half-extension plateau)
   r_left_hand_dist /             — hand→opp-head gap RELATIVE to the
       r_right_hand_dist            shoulder:  hand→head − shoulder→head.
                                    Body-lunging moves both terms equally
@@ -229,9 +231,14 @@ class AttackPrepStep(FollowStep):
         )
 
         # --- Arm rewards ---
-        # Elbow: norm [-1,+1] → [0,1]; 1 = punched out, 0 = chambered.
-        r_left_elbow = ((1.0 - np.asarray(left_elbow)) * 0.5)
-        r_right_elbow = ((1.0 - np.asarray(right_elbow)) * 0.5)
+        # Elbow: norm [-1,+1] → [0,1]²; 1 = punched out, 0 = chambered.
+        # Quadratic: the linear version paid 0.4 for a lazy half-jab
+        # (elbow ~+0.2) — the policy settled into a half-extension
+        # equilibrium and never reached the punch threshold.  Squaring
+        # cuts half-jab payoff to 0.16 while keeping full-extension at
+        # 1.0, sharpening the gradient where it matters.
+        r_left_elbow = ((1.0 - np.asarray(left_elbow)) * 0.5) ** 2
+        r_right_elbow = ((1.0 - np.asarray(right_elbow)) * 0.5) ** 2
         # Hand gap relative to the shoulder line:
         #   r = hand→opp_head − opp_head→shoulder
         # Minimizing it = extending the arm toward the head; body-lunging
