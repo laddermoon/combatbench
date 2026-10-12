@@ -109,10 +109,11 @@ class PunchPowerStep(AttackPrepStep):
         "r_right_punch_speed": 0.90,
     }
 
-    # Speed reward is raw m/s (~1-8) — keep aw modest relative to the
-    # ±3.0 form channels; the reward magnitude already scales with
-    # punch violence so no extra gain is needed.
-    PUNCH_SPEED_WEIGHT: float = 1.0
+    # Speed reward is raw m/s (~1-8).  Strike frames are sparse (~17%
+    # of rollout) so the effective gradient share is small — at W=1.0
+    # mean speed stayed flat at ~1.6 m/s.  W=3.0 matches ARM_WEIGHT so
+    # punch power gets comparable pressure to punch form.
+    PUNCH_SPEED_WEIGHT: float = 3.0
 
     # --- Tracking state ---
     _pp_best_quality: float = -1.0
