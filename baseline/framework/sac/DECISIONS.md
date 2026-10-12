@@ -3008,6 +3008,33 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.10 R2-W15 收口：R2-1 完成登记
+
+**回归**：SAC suite **213 passed**（R2-0 收口 202 → +11）；PPO suite
+**232 passed** 零回归。diff 范围 `9a0b1c12..affb3526` 全部落在
+`baseline/framework/sac/`。
+
+**R2-1 出口标准对照**：
+
+- ✅ 安全停训事务：信号→边界→终态 checkpoint→终态记录→退出，
+  eval 发布见刊即持久化；
+- ✅ 终止分类 `completed|signal_stop|experiment_stop|diverged|error`，
+  `run_terminal.json`+`terminal` 事件双通道；
+- ✅ 自然完成必有最终 checkpoint（此前依赖 eval 轮碰巧落盘）；
+- ✅ 跨进程真实 MuJoCo 恢复对拍逐位一致（R2.9 旗舰证据，
+  恢复等价性从同进程假环境升级到 PPO 同级证明）；
+- ✅ replay 元数据有界（seen_source_keys 收敛到 live 域）；
+- ✅ 产物保留：checkpoints/dumps/policy_exports 统一 keep_last+.pinned。
+
+**恢复语义边界登记**：安全停点为"collection 提交后 round 边界"与
+"任意 critic tick 完成后"；collection 内部（rollouter.collect 阻塞中）
+不中断，停止延迟 ≤1 round——已文档化，后续如需更快停止须先做
+worker 中断协议设计。**恢复等价性证明域 = round 边界 checkpoint**；
+更新中途（critic tick 间）不生成 checkpoint，不承诺等价。
+
+**转入 R2-2 的输入**：`build_q_critic`/`actor_weight_share`/`actor_blueprint`
+接线裁决、`--param` 类调度接口、生效值快照与恢复。
+
 ## R2.9 R2-W13+W14 结论：跨进程恢复对拍 + 产物保留治理
 
 **R2-W13 跨进程真实恢复对拍（旗舰证据）**：新增
