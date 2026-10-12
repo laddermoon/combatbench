@@ -2569,6 +2569,29 @@ S6-W0 P6-PROTO-1   上述验收协议登记；写 P6 诊断 playbook（异常→
 - **待用户决议**：① standup s01 第三 seed（补跑 or 接受 2/3+失败记录）；② balance s2024 的 0.891 计为边界通过还是未过——按"不降门槛"应计为 held-out 未过，则 balance s01 为 2/3，同样需要决议是否补 seed；
 - 附带修复：`held_out_eval._newest_checkpoint` 只认含 manifest 的完整 bundle，排除原子写入残留的 tmp 目录（SIGTERM 打断末次写盘的场景已实测命中）。
 
+### P6.6 用户裁决记录（2026-10-12）
+
+用户裁定**不再补 seed，接受当前结果**：standup s01 记 2/3+s2024 失败记录，balance s2024 held-out 0.891 按严格口径记未过但不补训。阶段六进入收口。
+
+### P6.7 P6-FINAL-1 产物交付复核（完成）
+
+- **策略部署**：8 条 run 的 `policy/` best-of-run 蓝图全部 `PolicyBlueprint.load` 通过，`TNRuntimePolicy` 实例化后 `act()` 输出合法 21 维动作；且 held-out eval 本身即最强部署证明（checkpoint→蓝图→worker 加载→64 真实 episodes ×8 run）；
+- **视频**：抽检 standup/balance/m11 末次 eval mp4 均 9.83s 有效；各 run 视频计数 s42:20/16、s1337:16/7、m11:19/3（standup/balance）；
+- **完整性**：每 run 保留 config.json+REPRODUCE.md+code_snapshot+末3 ckpt+全量 metrics/dumps/videos/policy+debug_notes+held_out_eval.json。
+
+### G6.x / G7.x 联合收口：四条用户成功标准挂接
+
+| # | 用户标准 | 验收证据 |
+|---|---|---|
+| 1 | 与 PPO `exp_standup`/`exp_basic_balance` 任务语义同等的两实验，稳定训练成功 | `experiments_sac/exp_sac_standup.py`+`exp_sac_balance.py`；held-out：standup success 0.992/0.984（s42/s1337）、balance survival 0.953/0.906（s42/s1337）——多 seed 独立 eval 通过；s2024 双侧失败/边界如实记录 |
+| 2 | SAC 自有 debug 系统：整体进度+关键数据+真实计算链下钻 | `debugkit` 11 子命令（run/series/dump/inspect/samples/trace/replay/catalog/recompute/query/find-sample/serve）、`sac_dump_v3`、`analysis.py` 统一分析层、debugserver JSON API+sac_viewer.html、dump_request 在线捕获；实战验证：两次真实失效（熵崩/Q 发散）均靠该链定位 |
+| 3 | 两实验支持替换策略，保留适配 TN 八格 | `actor_arch` 八格（s00–m11）全可构造/导出/恢复；**训练级验证 m11 两任务达标**（standup 0.945、balance 0.984）；standup+balance 均 s01 多 seed 达标 |
+| 4 | 标准化探索旋钮 + SAC 原生优化手段，可调度可观测可恢复 | 旋钮：target_entropy/auto-alpha/log_alpha 夹界、behavior_explore、random_start、regularizer_mode(shannon/u_bonus/u_floor)、use_grad_norm、expectation_samples——全进 config.json 且构造期 fail-loud；恢复：分段 vs 连续逐位一致（P7-RESUME-1 测试） |
+
+**阶段七验收项挂接**：固定命令复现（REPRODUCE.md+code_snapshot+config.json 每 run 齐备）、分段=连续一致（bitwise 测试）、SAC↔PPO 零依赖（静态审计）、PPO 无回归（232 passed）、不支持功能 fail-loud（data source kind/u 组合/未知 arch/非法配置全拒绝）、工件版本登记（ARTIFACTS.md）、长训资源（keep_last 机制+资源清查表）。
+
+**已知边界如实声明**：standup s01 第三 seed 未达标（s2024 held-out 0.516）、balance s2024 held-out 边界 0.891——按"不降门槛"如实记录，用户已裁决接受。
+
 ### P7.0 阶段七提前启动计划（与阶段六训练并行）
 
 **裁决依据**：阶段七大部分是工程核查，不依赖阶段六最终配方/产物；训练跑在代码快照分支上，主线改动不影响在训 run。提前启动只覆盖工程项，验收挂接项等待阶段六产物。
