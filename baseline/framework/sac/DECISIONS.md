@@ -3011,6 +3011,41 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.17a R2-6 细计划：综合验收与有证据的性能优化
+
+**目标**（PLAN R2-6 出口）：四层验收逐项挂接证据；三个使用场景
+（实验作者/维护者/诊断者）各有可复核的完成记录；性能项先测量后动手。
+
+**上下文核查结论**：
+
+- 测试盘点（229 项）：数学/数值层 test_tn_kernel+test_tn_actor+
+  test_trainer 覆盖 TN 核/梯度/积分/正则分支；系统层跨进程 MuJoCo
+  对拍+安全停训+剪枝已测；诊断层 debug_analysis/faults/loop_diagnostics
+  覆盖全部分析器与缺失数据路径；实验层 eval_evidence+env_integration
+  覆盖证据链构造——**缺的是"在真实工件上证明整条链能用"而非新测试面**。
+- 8 条验收 run 完整（config/ckpt/policy/held_out_eval 齐）；但无
+  debug_dumps（dump 为按需捕获，历史 run 未开）且 `policy/` 无
+  meta.json（先于 R2-5 导出）——离线 dump 分析器无法对旧 run 演
+  示，replay 级分析（run/replay/slice-ctx）可对旧 checkpoint 直接跑。
+- `sac_standup_s01_s2024_te0_ln`（held-out 0.516 失败 run）是理想的
+  案例复盘对象：有完整 replay（1.5GB）、失败 verdict、可对照成功
+  run `sac_standup_s01_s42_te0_ln`。
+- MuJoCo 可导入——`held_out_eval --policy` 可对真实 run 做小样本
+  端到端复核；旧 run 无 meta.json 正好覆盖"缺 meta 优雅降级"路径。
+
+**工作包**：
+
+| 包 | 内容 | 测试/证据 |
+|---|---|---|
+| `R2-W60` | 验收矩阵：四层 × 三场景映射现有测试/工件/命令，缺口显式列出 | DECISIONS 验收表（每项挂 commit/test/artifact） |
+| `R2-W61` | 真实 run 证据链复核：`held_out_eval --policy` 在 s42 standup 小样本（≤8ep）端到端跑通，报告含 identity/details/无 meta 降级；与既有 held_out verdict 一致性核对 | 输出 JSON 逐项断言（人工核对记入 DECISIONS） |
+| `R2-W62` | 失败 run 案例复盘：s2024 standup 的 run 摘要+replay 人口学+slice-ctx+held-out 逐 agent 明细，写成诊断演练记录——证明"异常→证据"链在真实工件上可执行 | 工具输出贴证（非新测试） |
+| `R2-W63` | 性能测量：计时 harness 测 rollouter 建池、replay save/load（1.5GB 量级）、checkpoint I/O、`expectation_samples` 枚举、capture on/off 开销 → 测量报告入 DECISIONS；仅证据成立的瓶颈才优化 | 测量数字（可能产出零优化——如实记录） |
+| `R2-W64` | 收口：验收表成稿、PLAN R2-6 标记、SAC+PPO 回归、提交 | 全量回归 |
+
+**边界**：不跑新长训（smoke 即上限）；测量未证实的瓶颈不优化；
+不改历史 run 产物；验收表只挂可复核证据，不挂"应该可以"。
+
 ## R2.16 R2-5 结论：策略身份绑定 + 逐 agent 评估证据
 
 - **R2-W50 `eval_episode_details`**：`ExperimentSAC` 新增可选钩子
