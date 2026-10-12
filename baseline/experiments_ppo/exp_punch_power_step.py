@@ -252,6 +252,10 @@ class PunchPowerStep(AttackPrepStep):
                 oo, arm_key, "left_hand_speed_to_opp", T)
             r_cs = extract_per_step_field(
                 oo, arm_key, "right_hand_speed_to_opp", T)
+            l_elb = extract_per_step_field(
+                oo, arm_key, "left_elbow_norm", T)
+            r_elb = extract_per_step_field(
+                oo, arm_key, "right_elbow_norm", T)
             self_x = extract_per_step_field(oo, app_key, "self_x", T)
             self_y = extract_per_step_field(oo, app_key, "self_y", T)
             opp_x = extract_per_step_field(oo, app_key, "opp_x", T)
@@ -262,7 +266,7 @@ class PunchPowerStep(AttackPrepStep):
                 oo, face_key, "forward_y", T)
             phi = extract_per_step_field(oo, phi_key, "potential", T)
             if any(v is None for v in (
-                l_cs, r_cs, self_x, opp_x, phi,
+                l_cs, r_cs, l_elb, r_elb, self_x, opp_x, phi,
             )):
                 continue
 
@@ -285,11 +289,18 @@ class PunchPowerStep(AttackPrepStep):
             )
             if not valid.any():
                 continue
-            cs = np.maximum(
-                np.asarray(l_cs, dtype=np.float64),
-                np.asarray(r_cs, dtype=np.float64),
-            )
-            pos = cs[valid & (cs > 0)]
+            # Measure speed exactly where we pay it: extending frames
+            # of completed swings — undiluted by chambered/idle time.
+            strike_l = _completed_swing_mask(
+                np.asarray(l_elb), valid,
+                self.extend_threshold, self.flex_threshold)
+            strike_r = _completed_swing_mask(
+                np.asarray(r_elb), valid,
+                self.extend_threshold, self.flex_threshold)
+            l_strike = np.asarray(l_cs, dtype=np.float64)[strike_l]
+            r_strike = np.asarray(r_cs, dtype=np.float64)[strike_r]
+            strike = np.concatenate([l_strike, r_strike])
+            pos = strike[strike > 0]
             if pos.size:
                 speed_means.append(float(pos.mean()))
                 speed_peaks.append(float(pos.max()))
