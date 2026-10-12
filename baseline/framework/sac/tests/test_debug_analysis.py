@@ -106,8 +106,8 @@ def test_param_delta_counts_nested_critic_state(tmp_path):
 
 
 def test_recompute_reports_u_mode_coverage(tmp_path):
-    """R2-W03 (G7): u-mode dumps report partial coverage instead of
-    silently comparing Shannon-formula values."""
+    """R2-W35: u-mode dumps recompute fully — the U-regularizer target
+    and actor loss are compared exactly, coverage reports full."""
     actor, critic, channels = _models(C=2)
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
     log_alpha = torch.tensor(0.0, requires_grad=True)
@@ -145,15 +145,18 @@ def test_recompute_reports_u_mode_coverage(tmp_path):
     result = recompute_dump(dump_dir)
     cov = result["coverage"]
     assert cov["regularizer_mode"] == "u_bonus"
-    assert cov["status"] == "partial"
-    assert "actor_loss" in cov["unsupported_keys"]
-    assert "alpha_loss" in cov["unsupported_keys"]
-    assert "critic_loss" in cov["unsupported_keys"]
-    # Shannon-formula values must not appear as recomputed truth
-    assert "actor_loss" not in result["recomputed"]
-    assert "critic_loss" not in result["recomputed"]
-    # mode-independent keys are still compared
-    assert "actor_pair1_frac" in cov["compared_keys"]
+    assert cov["status"] == "full"
+    assert cov["unsupported_keys"] == []
+    # U-mode losses are now recomputed and compared exactly
+    assert result["passed"] is True
+    for key in ("actor_loss", "critic_loss", "alpha_loss",
+                "reg_next_mean", "reg_actor_term_mean"):
+        assert key in result["recomputed"], key
+    assert "actor_loss" in cov["compared_keys"]
+    assert "critic_loss" in cov["compared_keys"]
+    # captured regularizer tensors match the recomputed ones
+    fwd = load_dump(dump_dir)["forward"]
+    assert "reg_next" in fwd and "reg_actor" in fwd
 
 
 def test_dump_samples_sorted_by_td(tmp_path):
@@ -277,6 +280,192 @@ def test_objective_decomp_parts_sum_to_recorded(tmp_path):
     }
     assert "actor_q_term" in ch
     assert "entropy_term" in tr["actor_side"]
+
+
+def test_grad_attribution_decomposes_update(tmp_path):
+    """R2-W33: rebuild+autograd per-group/per-term gradient attribution —
+    orthogonal group norms reconstruct the total norm, alpha contribs
+    sum to the total scalar gradient."""
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=1e-3)
+    batch = _batch(B=16)
+    batch["metadata"] = [
+        {"collection": {"collection_round": 1 if i < 10 else 2}}
+        for i in range(16)
+    ]
+    sp = SACParams(use_grad_norm=False, reward_scale=2.0)
+    tmp = begin_critic_tick_dump(
+        dump_root=tmp_path / "debug_dumps", critic_tick=5,
+        clocks=SACClockState(collection_round=2, critic_tick=4),
+        batch=batch,
+        trainer_pre_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        ),
+        hypothesis="grad-attr",
+    )
+    capture = {}
+    stats = sac_update_v2(
+        actor=actor, critic=critic, actor_optimizer=actor_optimizer,
+        log_alpha=log_alpha, alpha_optimizer=alpha_optimizer,
+        batch=batch, channels=channels, sp=sp, grad_clip_norm=1.0,
+        device=torch.device("cpu"), capture=capture,
+    )
+    dump_dir = finish_critic_tick_dump(
+        tmp, forward_capture=capture,
+        trainer_post_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        ),
+        update_stats=stats, actor=actor, critic=critic,
+        channels=channels, sp=sp, grad_clip_norm=1.0, critic_lr=1e-3,
+    )
+    out = analysis.grad_attribution(dump_dir, group_by="collection_round")
+    assert out["n_groups"] == 2
+    for ch in ("r0", "r1"):
+        entry = out["critic"][ch]
+        assert entry["total_grad_norm"] > 0
+        # TD-loss groups share the same Hessian direction set — the
+        # per-group squared norms need not sum to total² (cross terms),
+        # but each group's cosine to total must be a valid [-1,1] value.
+        assert {g["key"] for g in entry["groups"]} == {"1", "2"}
+        for g in entry["groups"]:
+            assert g["grad_norm"] >= 0
+            assert g["cos_to_total"] is None or abs(g["cos_to_total"]) <= 1 + 1e-6
+    terms = {t["term"]: t for t in out["actor"]["terms"]}
+    assert set(terms) == {"q", "entropy", "reg"}
+    assert terms["q"]["grad_norm"] > 0
+    assert terms["entropy"]["grad_norm"] > 0
+    # shannon → reg term contributes nothing
+    assert terms["reg"]["grad_norm"] == 0.0
+    # alpha scalar contributions add to the total exactly
+    contribs = sum(g["grad_contrib"] for g in out["alpha"]["groups"])
+    assert contribs == pytest.approx(out["alpha"]["total_grad"], abs=1e-6)
+    # captured critic grad norms (R2-W30) live in the dump too
+    fwd = load_dump(dump_dir)["forward"]
+    assert set(fwd["grad_norms"]) >= {"r0", "r1", "actor", "alpha"}
+
+
+def test_policy_drift_zero_and_nonzero(tmp_path):
+    """R2-W34: fixed-input drift is exactly zero when post==pre, and
+    positive after a real update."""
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-2)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=1e-2)
+    batch = _batch(B=16)
+    sp = SACParams(use_grad_norm=False)
+    pre_state = trainer_state_dict(
+        actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+    )
+    tmp = begin_critic_tick_dump(
+        dump_root=tmp_path / "debug_dumps", critic_tick=1,
+        clocks=SACClockState(), batch=batch,
+        trainer_pre_state=pre_state, hypothesis="drift",
+    )
+    capture = {}
+    sac_update_v2(
+        actor=actor, critic=critic, actor_optimizer=actor_optimizer,
+        log_alpha=log_alpha, alpha_optimizer=alpha_optimizer,
+        batch=batch, channels=channels, sp=sp, grad_clip_norm=1.0,
+        device=torch.device("cpu"), capture=capture,
+    )
+    dump_dir = finish_critic_tick_dump(
+        tmp, forward_capture=capture,
+        trainer_post_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        ),
+        update_stats={}, actor=actor, critic=critic,
+        channels=channels, sp=sp, grad_clip_norm=1.0, critic_lr=1e-3,
+    )
+    out = analysis.policy_drift(dump_dir)
+    assert out["det_action_drift"]["l2_mean"] > 0
+    assert set(out["per_channel"]) == {"r0", "r1"}
+    for ch in out["per_channel"].values():
+        assert ch["q_drift_sa"]["abs_max"] >= 0
+    assert out["alpha_delta"] != 0
+
+    # zero-drift control: post == pre ⇒ every drift metric is exactly 0
+    actor2, critic2, channels2 = _models(C=2)
+    opt2 = torch.optim.Adam(actor2.parameters())
+    la2 = torch.tensor(0.0, requires_grad=True)
+    aopt2 = torch.optim.Adam([la2])
+    same = trainer_state_dict(actor2, critic2, opt2, la2, aopt2)
+    tmp2 = begin_critic_tick_dump(
+        dump_root=tmp_path / "debug_dumps2", critic_tick=1,
+        clocks=SACClockState(), batch=batch,
+        trainer_pre_state=same, hypothesis="zero",
+    )
+    dump_dir2 = finish_critic_tick_dump(
+        tmp2, forward_capture={},
+        trainer_post_state=same,
+        update_stats={}, actor=actor2, critic=critic2,
+        channels=channels2, sp=sp, grad_clip_norm=1.0, critic_lr=1e-3,
+    )
+    z = analysis.policy_drift(dump_dir2)
+    assert z["det_action_drift"]["abs_max"] == 0.0
+    assert z["logp_drift"]["abs_max"] == 0.0
+    assert z["alpha_delta"] == 0.0
+    for ch in z["per_channel"].values():
+        assert ch["q_drift_sa"]["abs_max"] == 0.0
+
+
+def test_slice_context_rebuilds_live_frames(tmp_path):
+    """R2-W36: slice_context reconstructs the live frame sequence of a
+    slice from a persisted replay state, reports eviction gaps and the
+    same-episode live slices."""
+    from baseline.framework.sac.replay import SACReplayBuffer
+    from baseline.framework.sac.tests.test_replay import _slice
+
+    ep = "run/r000001/j000000/robot_a/e11"
+    replay = SACReplayBuffer(
+        capacity=12, obs_dim=3, action_dim=2,
+        channel_names=["r0", "r1"],
+    )
+    replay.add_slices([_slice(slice_id=f"{ep}/slice0000", T=4)])
+    replay.add_slices([_slice(slice_id=f"{ep}/slice0001", T=4)])
+    replay.save(tmp_path / "replay.pt")
+
+    out = analysis.slice_context(
+        tmp_path / "replay.pt", slice_id=f"{ep}/slice0000",
+    )
+    assert out["live_count"] == 4
+    assert [f["frame_index"] for f in out["live_frames"]] == [0, 1, 2, 3]
+    assert out["missing_frame_indices"] == []
+    assert set(out["same_episode_live_slices"]) == {
+        f"{ep}/slice0000", f"{ep}/slice0001",
+    }
+    # sample_id resolution lands on the same slice
+    sid = out["live_frames"][0]["sample_id"]
+    out2 = analysis.slice_context(
+        tmp_path / "replay.pt", sample_id=sid,
+    )
+    assert out2["slice_id"] == f"{ep}/slice0000"
+    # source_key direct hit (test fixture keys are non-canonical but the
+    # exact-match path still resolves the owning slice)
+    out3 = analysis.slice_context(
+        tmp_path / "replay.pt",
+        source_key=f"run:{ep}/slice0001:agent:2",
+    )
+    assert out3["slice_id"] == f"{ep}/slice0001"
+    assert out3["episode_prefix"] == ep
+    with pytest.raises(ValueError, match="cannot resolve"):
+        analysis.slice_context(tmp_path / "replay.pt")
+
+    # FIFO eviction: capacity 6 forces the first two slice0000 frames out
+    replay2 = SACReplayBuffer(
+        capacity=6, obs_dim=3, action_dim=2,
+        channel_names=["r0", "r1"],
+    )
+    replay2.add_slices([_slice(slice_id=f"{ep}/slice0000", T=4)])
+    replay2.add_slices([_slice(slice_id=f"{ep}/slice0001", T=4)])
+    replay2.save(tmp_path / "replay2.pt")
+    out4 = analysis.slice_context(
+        tmp_path / "replay2.pt", slice_id=f"{ep}/slice0000",
+    )
+    assert out4["live_count"] == 2
+    assert [f["frame_index"] for f in out4["live_frames"]] == [2, 3]
+    assert "evicted" in out4["note"]
 
 
 def test_metric_series_runs_and_catalog(tmp_path):

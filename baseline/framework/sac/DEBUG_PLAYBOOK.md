@@ -18,8 +18,13 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | dump 总览 | `DK inspect <run_dir>/debug_dumps/critic_tick_NNNNNNNN` |
 | 样本表 | `DK samples <dump> --sort td_abs|q_mean|logp --limit N` |
 | 单样本全链 | `DK trace <dump> --sample-id N` |
+| 来源×贡献归因 | `DK attribute <dump> [--group-by collection_round|policy_fingerprint|explore_factor|random_start]` |
+| 目标/actor 分解 | `DK decomp <dump> [--sample-id N]` |
+| 分组梯度归因（重） | `DK grad-attr <dump> [--group-by ...]`（重建 pre-state + autograd，离线按需） |
+| 前后策略漂移 | `DK drift <dump>`（batch obs 上 det-action/logπ/Q 位移） |
+| slice 上下文 | `DK slice-ctx <run|ckpt|replay.pt> [--source-key K|--slice-id S|--sample-id N]` |
 | replay 人口学 | `DK replay <run_dir>` |
-| 精确复算 | `DK recompute <dump>`（应 `max_abs_diff≈0`） |
+| 精确复算 | `DK recompute <dump>`（全正则模式，应 `max_abs_diff≈0`） |
 | JSON API | `DK serve baseline/runs --port 8766` |
 
 ## 1. 不收敛 / 回报平台期
@@ -47,6 +52,8 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 
 - `DK replay <run>`：`sample_age` quantiles、`policy_fingerprint_counts`、`explore_factor_counts`、`random_start_rows`。若最老 bucket 占比过高且 `policy_fingerprint` 陈旧 → off-policy 陈旧主导。
 - `DK inspect <dump>` → `batch.collection_round_counts` 与 `analysis.replay_stats` 对照：batch 分布应接近 buffer 分布（uniform 采样）；偏差大说明 buffer 构成问题。
+- **`DK attribute <dump> --group-by collection_round`**：来源×贡献联合分布——某老 round 的行数占比小但 `critic_loss_share` 占比大 → 陈旧样本主导了这次更新（高 TD 残留），坐实 off-policy 问题。
+- **`DK grad-attr <dump> --group-by collection_round`**（重）：每组对 critic 梯度的范数与 `cos_to_total`——老 round 梯度与总梯度方向对冲（cos<0 或近 0）说明陈旧数据在反向拉扯。
 
 ## 6. 通道压制
 
@@ -58,6 +65,10 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 - `DK inspect` → `param_delta.actor_state_dict.l2`：长期≈0 且 `actor.loss` 平 → 梯度死亡。
 - mixture：`samples/trace` 看 `integration_weights` 是否退化到单一分量（`argmax` 概率≈1）且 `actor_pair_index` 单一——分量坍缩。
 - `DK inspect` → `pair_index.actor_unique` 只剩一个 index 表示双塔长期同选一塔（不必然是错，但值得记录）。
+- **`DK decomp <dump>`**：actor 目标三分解——`per_channel_q` 近 0 而 `entropy_term` 主导 → Q 信号死、纯熵驱动；`reg_term`（U 模式）占比过大 → 正则项淹没任务目标。
+- **`DK grad-attr <dump>`** → `actor.terms`：Q 项梯度范数≈0 或 `cos_to_total`≈0 → Q 对参数无有效拉力；entropy 项反向（cos<0）说明两项在打架。
+- **`DK drift <dump>`**：`det_action_drift.l2_mean` 长期≈0 但 `param_delta.actor.l2`>0 → 参数在动但行为不动（死区/饱和）；l2 大但 eval 不动 → 改了但改错方向。
+- 梯度动力学：`critic.grad_norm.<ch>`、`actor.grad_norm`、`temperature.grad_norm`（tick 指标）；某通道 `critic.clip_applied.<ch>` 长期=1 → 该通道梯度持续越界被裁剪。
 
 ## 8. eval 与训练脱节
 

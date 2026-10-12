@@ -3011,6 +3011,40 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.14 R2-3 结论：计算链深度诊断落地
+
+- **R2-W30 梯度动力学捕获**：per-channel critic grad norm（取
+  `clip_grad_norm_` 返回值，零成本）+ `clip_applied` + `grad_norm_alpha`
+  + actor 统一入 `capture["grad_norms"]`；tick 指标新增
+  `critic.grad_norm.<ch>`/`critic.clip_applied.<ch>`/`actor.grad_norm`/
+  `temperature.grad_norm` 并入 catalog。capture on/off 逐位一致
+  （诊断不改变训练）——有专门不变性测试。
+- **R2-W31 `batch_attribution`**：batch 行按
+  collection_round/policy_fingerprint/explore_factor/random_start 分组
+  × {行数、分通道 critic-loss share（mask·td²/Σ）、|td|、actor 目标
+  share}——"哪个行为版本的样本主导了这次更新"可直接回答。
+- **R2-W32 `objective_decomp`**：target=r·scale+γ·b·(softQ+reg) 与
+  actor=Q分通道+entropy+reg 的逐样本分解；check 字段报告与录制值
+  的最大误差（<1e-4）；trace 行嵌入同套分解。
+- **R2-W33 `grad_attribution`**（重型离线）：重建 pre-state actor/
+  critic + 捕获 u 冻结候选 → critic 按来源组 autograd.grad（范数+
+  cos_to_total），actor 按 {q,entropy,reg} 项分解，alpha 标量分组
+  贡献精确相加=总梯度。不在训练路径。
+- **R2-W34 `policy_drift`**：pre/post det-action L2、logπ、分通道
+  Q（(s,a) 与 (s,π_det(s)) 两处）、α 位移；post==pre 时全零有验证。
+- **R2-W35 recompute 全正则覆盖**：u_bonus/u_floor 的 target/actor/
+  alpha 重算经 `_state_regularizer`+捕获 u 精确复现，coverage
+  status→full、unsupported 保留作前向兼容位；顺带修了 recompute
+  漏掉的 `actor_weight_share` mask 与 fixed-alpha 下 alpha_loss
+  会误比对的问题（alpha_loss 只在 auto_alpha 时重算）。
+- **R2-W36 `slice_context`**：replay.pt 活掩码（sample_id≥0，兼容
+  ptr 回绕）重建同 slice live 帧序列+逐出缺口+同 episode live slices。
+- **R2-W37 登记**：catalog 4 新键、DEBUG_PLAYBOOK §5/§7 新增归因与
+  分解工作流、GUIDE §7 工具表补齐 CLI。
+
+**测试**：SAC suite **225 passed**（+7）；命令层 `attribute/decomp/
+drift/grad-attr/slice-ctx` 全部进 debugkit 子命令。
+
 ## R2.13a R2-3 细计划：SAC 计算链深度诊断
 
 **目标**（PLAN R2-3 出口）：对一个异常更新能回答"哪些样本、来自哪个

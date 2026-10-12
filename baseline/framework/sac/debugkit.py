@@ -26,7 +26,11 @@ from .experiment import SACParams, SACRewardChannel
 from .networks import MultiHeadQCritic
 from .s01_actor import S01Actor
 from .tn_actor import TNActor
-from .trainer import _forward_all_candidates
+from .trainer import (
+    _RegularizerArgs,
+    _forward_all_candidates,
+    _state_regularizer,
+)
 
 
 SAC_DUMP_SCHEMA = "sac_dump_v3"
@@ -376,13 +380,13 @@ def recompute_dump(
 ) -> Dict[str, Any]:
     """Recompute the supported SAC losses from one ``critic_tick`` dump.
 
-    Coverage boundary (G7): the recomputed loss formulas below are the
-    Shannon path. For ``u_bonus``/``u_floor`` dumps the Bellman target
-    uses a per-state U term instead of ``-alpha*logp`` and the actor/alpha
-    losses differ — those keys are NOT recomputed (a wrong number is
-    worse than none) and are reported under ``coverage.unsupported_keys``.
-    Mode-independent quantities (Q predictions, pair indices, masks,
-    action replay, descriptive logp stats) are still compared.
+    Full coverage (R2-W35): both the Shannon path and the U-regularizer
+    paths (``u_bonus``/``u_floor``) are recomputed — the per-state U term
+    comes from the same ``_state_regularizer`` the trainer uses, the
+    candidates are frozen via captured ``u_next``/``u_actor``, so the
+    recomputed values are exact replicas of the recorded update.
+    ``coverage.unsupported_keys`` is retained for forward compatibility
+    (future modes would land there instead of being silently skipped).
     """
     dump = load_dump(dump_dir)
     spec = dump["spec"]
@@ -395,11 +399,11 @@ def recompute_dump(
     channels = tuple(SACRewardChannel(**item) for item in spec["channels"])
     mode = sp.regularizer_mode
     is_shannon = mode == "shannon"
-    shannon_only = {"critic_loss", "actor_loss", "alpha_loss"} | {
-        f"{prefix}_{ch.name}"
-        for ch in channels
-        for prefix in ("q1_loss", "q2_loss", "td_abs_mean")
-    }
+    supported_modes = {"shannon", "u_bonus", "u_floor"}
+    if mode not in supported_modes:
+        raise SACDumpError(
+            f"regularizer_mode {mode!r} is not recomputable"
+        )
 
     actor = _build_actor(spec, pre)
     pre_critic = _build_critic(spec, channels, pre)
@@ -465,6 +469,24 @@ def recompute_dump(
             -1, pair_next[..., None, None].expand(-1, -1, -1, C, 1),
         ).squeeze(-1)
         recomputed["target_pair1_frac"] = float(pair_next.float().mean().item())
+        # Continuation regularizer B(s'): shannon uses the per-candidate
+        # entropy term; U modes add the per-state regularizer once (the
+        # same _state_regularizer the trainer calls).
+        if is_shannon:
+            b_next = -alpha * next_log_probs
+            b_state_next = None
+        else:
+            b_next = torch.zeros_like(next_log_probs)
+            b_state_next = _state_regularizer(
+                actor, next_obs,
+                _RegularizerArgs(
+                    regularizer_mode=mode,
+                    reg_lambda=sp.reg_lambda,
+                    u_floor=sp.u_floor,
+                    u_kind=sp.u_kind,
+                ),
+            )
+            recomputed["reg_next_mean"] = float(b_state_next.mean().item())
         for c, ch in enumerate(channels):
             q1_pred = pre_critic.q1_forward(obs, actions, ch.name)
             q2_pred = pre_critic.q2_forward(obs, actions, ch.name)
@@ -483,14 +505,12 @@ def recompute_dump(
             recomputed[f"actor_weight_next_mean_{ch.name}"] = float(
                 actor_weight_next[:, c].mean().item()
             )
-            if not is_shannon:
-                # U-mode target adds a per-state regularizer instead of
-                # -alpha*logp — the Shannon formula would be wrong here.
-                continue
             v_c = (
                 integ_w_next
-                * (selected_next[..., c] - alpha * next_log_probs)
+                * (selected_next[..., c] + b_next)
             ).sum(dim=(1, 2))
+            if b_state_next is not None:
+                v_c = v_c + b_state_next
             target = (
                 rewards[:, c] * float(sp.reward_scale)
                 + ch.gamma
@@ -533,7 +553,14 @@ def recompute_dump(
             dim=-1,
         )
         q_online_pairs = torch.stack((q1_all, q2_all), dim=-1)
-        w_actor = actor_weight[:, None, None, :, None]
+        share = torch.tensor(
+            [1.0 if ch.actor_weight_share else 0.0 for ch in channels],
+            dtype=actor_weight.dtype, device=actor_weight.device,
+        )
+        w_actor = (
+            actor_weight[:, None, None, :, None]
+            * share[None, None, None, :, None]
+        )
         f_actor = (q_online_pairs * w_actor).sum(dim=3)
         pair_actor = f_actor.argmin(dim=-1)
         recomputed["actor_pair1_frac"] = float(pair_actor.float().mean().item())
@@ -543,16 +570,33 @@ def recompute_dump(
             "entropy_proxy_mean": float((-logp_bar).mean().item()),
         })
 
+        f_selected = f_actor.gather(
+            -1, pair_actor[..., None],
+        ).squeeze(-1)
         if is_shannon:
-            f_selected = f_actor.gather(
-                -1, pair_actor[..., None],
-            ).squeeze(-1)
             weighted_q = (
                 integ_w * (alpha * new_log_probs - f_selected)
             ).sum(dim=(1, 2))
-            actor_loss = (
-                actor_mask * weighted_q
-            ).sum() / actor_den
+            reg_term = torch.zeros_like(weighted_q)
+        else:
+            weighted_q = (integ_w * (-f_selected)).sum(dim=(1, 2))
+            reg_term = -_state_regularizer(
+                actor, obs,
+                _RegularizerArgs(
+                    regularizer_mode=mode,
+                    reg_lambda=sp.reg_lambda,
+                    u_floor=sp.u_floor,
+                    u_kind=sp.u_kind,
+                ),
+            )
+            recomputed["reg_actor_term_mean"] = float(
+                (actor_mask * reg_term).sum().item() / actor_den.item()
+            )
+        actor_objective = weighted_q + reg_term
+        actor_loss = (actor_mask * actor_objective).sum() / actor_den
+        # alpha_loss exists only when auto-alpha is on; otherwise the
+        # recorded stat is the constant 0.0 (fixed-alpha and U modes).
+        if is_shannon and sp.auto_alpha:
             target_entropy = (
                 -float(spec["actor"]["action_dim"])
                 if sp.target_entropy is None else float(sp.target_entropy)
@@ -560,11 +604,13 @@ def recompute_dump(
             alpha_loss = -(
                 actor_mask * log_alpha * (logp_bar + target_entropy)
             ).sum() / actor_den
-            recomputed.update({
-                "critic_loss": float(critic_loss.item()),
-                "actor_loss": float(actor_loss.item()),
-                "alpha_loss": float(alpha_loss.item()),
-            })
+        else:
+            alpha_loss = torch.zeros(())
+        recomputed.update({
+            "critic_loss": float(critic_loss.item()),
+            "actor_loss": float(actor_loss.item()),
+            "alpha_loss": float(alpha_loss.item()),
+        })
 
     compared: Dict[str, Dict[str, float]] = {}
     max_abs = 0.0
@@ -584,10 +630,16 @@ def recompute_dump(
             "abs_diff": diff,
             "ok": ok,
         }
-    unsupported = sorted(k for k in shannon_only if k in reference)
+    unsupported = sorted(
+        k for k in reference
+        if k not in recomputed and (
+            k.startswith(("q1_loss_", "q2_loss_", "td_abs_mean_"))
+            or k in {"critic_loss", "actor_loss", "alpha_loss"}
+        )
+    )
     uncompared = sorted(
         k for k in reference
-        if k not in recomputed and k not in shannon_only
+        if k not in recomputed and k not in unsupported
     )
     return {
         "dump_dir": str(Path(dump_dir)),
@@ -599,20 +651,13 @@ def recompute_dump(
         "recomputed": recomputed,
         "coverage": {
             "regularizer_mode": mode,
-            "status": "full" if is_shannon else "partial",
+            "status": "full",
             "compared_keys": sorted(compared),
             "unsupported_keys": unsupported,
             "uncompared_keys": uncompared,
             "note": (
-                ""
-                if is_shannon
-                else (
-                    f"regularizer_mode={mode!r}: Shannon-formula keys "
-                    "(q*_loss/td_abs_mean/critic_loss/actor_loss/"
-                    "alpha_loss) are not recomputed — the U-mode target "
-                    "and actor loss differ; unsupported keys are excluded "
-                    "from pass/fail. Full U-mode coverage is an R2-3 item."
-                )
+                "all regularizer modes are recomputed (R2-W35); "
+                "unsupported_keys is retained for forward compatibility"
             ),
         },
     }
@@ -709,6 +754,24 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     )
     dc.add_argument("dump", type=Path)
     dc.add_argument("--sample-id", type=int, default=None)
+    dr = sub.add_parser(
+        "drift",
+        help="pre/post fixed-input policy+Q drift on the dump batch",
+    )
+    dr.add_argument("dump", type=Path)
+    ga = sub.add_parser(
+        "grad-attr",
+        help="HEAVY on-demand gradient attribution: rebuilds pre-state "
+             "and takes per-group/per-term autograd grads",
+    )
+    ga.add_argument("dump", type=Path)
+    ga.add_argument(
+        "--group-by", default="collection_round",
+        choices=[
+            "collection_round", "policy_fingerprint",
+            "explore_factor", "random_start",
+        ],
+    )
     ser = sub.add_parser("series")
     ser.add_argument("run_dir", type=Path)
     ser.add_argument("--metric", required=True)
@@ -719,6 +782,15 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     run_p.add_argument("run_dir", type=Path)
     rep = sub.add_parser("replay")
     rep.add_argument("path", type=Path)
+    sc = sub.add_parser(
+        "slice-ctx",
+        help="rebuild the live frames of one slice from a replay state",
+    )
+    sc.add_argument("path", type=Path,
+                    help="run dir, checkpoint dir, or replay.pt")
+    sc.add_argument("--source-key", default=None)
+    sc.add_argument("--slice-id", default=None)
+    sc.add_argument("--sample-id", type=int, default=None)
     qy = sub.add_parser("query")
     qy.add_argument("artifact", type=Path)
     qy.add_argument("path")
@@ -778,6 +850,12 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = analysis.objective_decomp(
             args.dump, sample_id=args.sample_id,
         )
+    elif args.command == "drift":
+        out = analysis.policy_drift(args.dump)
+    elif args.command == "grad-attr":
+        out = analysis.grad_attribution(
+            args.dump, group_by=args.group_by,
+        )
     elif args.command == "series":
         out = analysis.metric_series(
             args.run_dir, key=args.metric, event=args.event,
@@ -788,6 +866,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = analysis.run_summary(args.run_dir)
     elif args.command == "replay":
         out = analysis.replay_report(args.path)
+    elif args.command == "slice-ctx":
+        out = analysis.slice_context(
+            args.path, source_key=args.source_key,
+            slice_id=args.slice_id, sample_id=args.sample_id,
+        )
     elif args.command == "dump":
         request = {"hypothesis": args.hypothesis}
         if args.at_tick is not None:

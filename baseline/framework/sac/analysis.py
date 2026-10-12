@@ -703,6 +703,340 @@ def objective_decomp(
     }
 
 
+def _flat_norm(grads: Iterable[Optional[torch.Tensor]]) -> float:
+    total = 0.0
+    for g in grads:
+        if g is not None:
+            total += float(g.detach().pow(2).sum().item())
+    return float(total ** 0.5)
+
+
+def _flat_dot(
+    a: Iterable[Optional[torch.Tensor]],
+    b: Iterable[Optional[torch.Tensor]],
+) -> float:
+    total = 0.0
+    for ga, gb in zip(a, b):
+        if ga is not None and gb is not None:
+            total += float((ga.detach() * gb.detach()).sum().item())
+    return total
+
+
+def grad_attribution(
+    dump_dir: Path,
+    *,
+    group_by: str = "collection_round",
+) -> Dict[str, Any]:
+    """Heavy on-demand gradient attribution for one critic_tick dump.
+
+    Rebuilds the pre-update actor/critic from the dump spec, recomputes
+    the losses with autograd enabled (captured u draws freeze the
+    candidates, so the graph matches the recorded update), then takes
+    per-group ``autograd.grad``:
+
+    - **critic**: one gradient vector per provenance group per channel —
+      answers "which behavior version's TD formed this channel's update";
+    - **actor**: one gradient vector per objective *term* (Q /
+      entropy / reg) — the SAC analogue of PPO's gradsig decomposition;
+    - **alpha**: scalar per-group contributions (they sum to the total
+      alpha gradient exactly).
+
+    Offline only — never runs in the training path. Cost ≈
+    (n_groups × C + 3) backwards over one batch.
+    """
+    from .debugkit import _build_actor, _build_critic, load_dump
+    from .experiment import SACParams, SACRewardChannel
+    from .trainer import (
+        _RegularizerArgs,
+        _forward_all_candidates,
+        _state_regularizer,
+    )
+
+    if group_by not in _GROUP_KEYS:
+        raise ValueError(
+            f"unknown group_by {group_by!r}; allowed={sorted(_GROUP_KEYS)}"
+        )
+    dump = load_dump(Path(dump_dir))
+    spec = dump["spec"]
+    sp = SACParams(**spec["sac_params"])
+    channels = tuple(SACRewardChannel(**item) for item in spec["channels"])
+    batch, forward = dump["batch"], dump["forward"]
+    pre, post = dump["trainer_pre"], dump["trainer_post"]
+    actor = _build_actor(spec, pre)
+    pre_critic = _build_critic(spec, channels, pre)
+    post_critic = _build_critic(spec, channels, post)
+    for p in post_critic.all_parameters():
+        p.requires_grad_(False)
+
+    device = batch["obs"].device
+    obs = batch["obs"].float()
+    actions = batch["actions"].float()
+    channel_valid = batch["channel_valid"].bool()
+    sample_weight = batch["sample_weight"].float()
+    actor_weight = batch["actor_weight"].float()
+    B = int(obs.shape[0])
+    key_fn = _GROUP_KEYS[group_by]
+    metas = batch.get("metadata") or [{}] * B
+    group_names = []
+    for i in range(B):
+        g = key_fn(metas[i] or {})
+        if g not in group_names:
+            group_names.append(g)
+    group_rows = {
+        g: torch.tensor(
+            [i for i in range(B) if key_fn(metas[i] or {}) == g],
+            device=device,
+        )
+        for g in group_names
+    }
+
+    # ---- critic: per-channel, per-provenance-group gradient attribution
+    critic_out: Dict[str, Any] = {}
+    for c, ch in enumerate(channels):
+        mask = channel_valid[:, c].float() * sample_weight
+        mask_sum = mask.sum()
+        if float(mask_sum.item()) <= 0:
+            continue
+        target = forward["targets"][ch.name].float().to(device)
+        params = list(pre_critic.channel_parameters(ch.name))
+        q1 = pre_critic.q1_forward(obs, actions, ch.name)
+        q2 = pre_critic.q2_forward(obs, actions, ch.name)
+        per_row = mask * ((q1 - target).pow(2) + (q2 - target).pow(2))
+        total_grad = torch.autograd.grad(
+            per_row.sum() / mask_sum, params, retain_graph=True,
+        )
+        total_norm = _flat_norm(total_grad)
+        groups = []
+        for g, rows in group_rows.items():
+            g_loss = per_row[rows].sum() / mask_sum
+            g_grad = torch.autograd.grad(
+                g_loss, params, retain_graph=True,
+            )
+            g_norm = _flat_norm(g_grad)
+            cos = (
+                _flat_dot(g_grad, total_grad) / (g_norm * total_norm)
+                if g_norm > 0 and total_norm > 0 else None
+            )
+            groups.append({
+                "key": g,
+                "rows": int(rows.numel()),
+                "grad_norm": g_norm,
+                "cos_to_total": cos,
+            })
+        critic_out[ch.name] = {
+            "total_grad_norm": total_norm,
+            "groups": groups,
+        }
+
+    # ---- actor: per-term gradient decomposition
+    u_actor = forward["u_actor"].float().to(device)
+    new_actions, new_log_probs, integ_w = actor.expectation_samples(
+        obs, u_actor,
+    )
+    q1_all = torch.stack(
+        [
+            _forward_all_candidates(
+                lambda o, a: post_critic.q1_forward(o, a, ch.name),
+                obs, new_actions,
+            )
+            for ch in channels
+        ],
+        dim=-1,
+    )
+    q2_all = torch.stack(
+        [
+            _forward_all_candidates(
+                lambda o, a: post_critic.q2_forward(o, a, ch.name),
+                obs, new_actions,
+            )
+            for ch in channels
+        ],
+        dim=-1,
+    )
+    q_online_pairs = torch.stack((q1_all, q2_all), dim=-1)
+    share = torch.tensor(
+        [1.0 if ch.actor_weight_share else 0.0 for ch in channels],
+        dtype=actor_weight.dtype, device=device,
+    )
+    w_actor = actor_weight[:, None, None, :, None] * share[None, None, None, :, None]
+    f_actor = (q_online_pairs * w_actor).sum(dim=3)
+    pair_actor = f_actor.detach().argmin(dim=-1)
+    f_selected = f_actor.gather(-1, pair_actor[..., None]).squeeze(-1)
+    alpha = pre["log_alpha"].float().exp().to(device)
+    is_shannon = sp.regularizer_mode == "shannon"
+    if is_shannon:
+        q_term = -(integ_w * f_selected).sum(dim=(1, 2))
+        ent_term = (integ_w * new_log_probs).sum(dim=(1, 2)) * alpha
+    else:
+        q_term = -(integ_w * f_selected).sum(dim=(1, 2))
+        ent_term = torch.zeros_like(q_term)
+    reg_term = torch.zeros_like(q_term)
+    if not is_shannon:
+        reg_term = -_state_regularizer(
+            actor, obs,
+            _RegularizerArgs(
+                regularizer_mode=sp.regularizer_mode,
+                reg_lambda=sp.reg_lambda,
+                u_floor=sp.u_floor,
+                u_kind=sp.u_kind,
+            ),
+        )
+    actor_rows = channel_valid.all(dim=1).float() * sample_weight
+    actor_den = actor_rows.sum()
+    actor_params = list(actor.parameters())
+    terms = {
+        "q": q_term,
+        "entropy": ent_term,
+        "reg": reg_term,
+    }
+    total_obj = (actor_rows * sum(terms.values())).sum() / actor_den
+    total_actor_grad = torch.autograd.grad(
+        total_obj, actor_params, retain_graph=True,
+    )
+    total_actor_norm = _flat_norm(total_actor_grad)
+    term_rows = []
+    for name, term in terms.items():
+        loss = (actor_rows * term).sum() / actor_den
+        if not loss.requires_grad:
+            # identically-zero term (reg in shannon, entropy in U modes)
+            term_rows.append({
+                "term": name, "loss": 0.0,
+                "grad_norm": 0.0, "cos_to_total": None,
+            })
+            continue
+        g = torch.autograd.grad(loss, actor_params, retain_graph=True)
+        g_norm = _flat_norm(g)
+        cos = (
+            _flat_dot(g, total_actor_grad)
+            / (g_norm * total_actor_norm)
+            if g_norm > 0 and total_actor_norm > 0 else None
+        )
+        term_rows.append({
+            "term": name,
+            "loss": float(loss.item()),
+            "grad_norm": g_norm,
+            "cos_to_total": cos,
+        })
+
+    # ---- alpha: exact scalar per-group contributions
+    alpha_out: Dict[str, Any] = {"groups": []}
+    logp_bar = (integ_w.detach() * new_log_probs.detach()).sum(dim=(1, 2))
+    target_entropy = (
+        -float(spec["actor"]["action_dim"])
+        if sp.target_entropy is None else float(sp.target_entropy)
+    )
+    per_row_alpha = -actor_rows * (logp_bar + target_entropy) / actor_den
+    alpha_out["total_grad"] = float(per_row_alpha.sum().item())
+    for g, rows in group_rows.items():
+        alpha_out["groups"].append({
+            "key": g,
+            "rows": int(rows.numel()),
+            "grad_contrib": float(per_row_alpha[rows].sum().item()),
+        })
+
+    return {
+        "dump_dir": str(Path(dump_dir)),
+        "critic_tick": dump["manifest"].get("critic_tick"),
+        "group_by": group_by,
+        "regularizer_mode": sp.regularizer_mode,
+        "n_groups": len(group_names),
+        "critic": critic_out,
+        "actor": {
+            "total_grad_norm": total_actor_norm,
+            "terms": term_rows,
+        },
+        "alpha": alpha_out,
+    }
+
+
+def _log_prob_of(actor: Any, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
+    if hasattr(actor, "log_prob_of"):
+        return actor.log_prob_of(obs, act)
+    return actor.evaluate_actions(obs, act)[0]
+
+
+def policy_drift(dump_dir: Path) -> Dict[str, Any]:
+    """Fixed-input before/after drift for one critic_tick dump.
+
+    Rebuilds pre/post actor and critic, then measures on the dump's own
+    batch states: deterministic-action drift, logπ drift on the recorded
+    behavior actions, per-channel Q drift at (s,a) and at (s,π_det(s)),
+    and the alpha displacement — the SAC analogue of PPO's delta view.
+    """
+    from .debugkit import _build_actor, _build_critic, load_dump
+    from .experiment import SACRewardChannel
+
+    dump = load_dump(Path(dump_dir))
+    spec = dump["spec"]
+    channels = tuple(SACRewardChannel(**item) for item in spec["channels"])
+    pre, post = dump["trainer_pre"], dump["trainer_post"]
+    actor_pre = _build_actor(spec, pre)
+    actor_post = _build_actor(spec, post)
+    critic_pre = _build_critic(spec, channels, pre)
+    critic_post = _build_critic(spec, channels, post)
+    batch = dump["batch"]
+    obs = batch["obs"].float()
+    actions = batch["actions"].float()
+
+    with torch.no_grad():
+        det_pre = actor_pre.deterministic_action(obs)
+        det_post = actor_post.deterministic_action(obs)
+        action_diff = (det_post - det_pre)
+        logp_pre = _log_prob_of(actor_pre, obs, actions).float()
+        logp_post = _log_prob_of(actor_post, obs, actions).float()
+        logp_diff = logp_post - logp_pre
+
+        per_channel: Dict[str, Any] = {}
+        for ch in channels:
+            q_sa_pre = (
+                critic_pre.q1_forward(obs, actions, ch.name)
+                + critic_pre.q2_forward(obs, actions, ch.name)
+            ) / 2.0
+            q_sa_post = (
+                critic_post.q1_forward(obs, actions, ch.name)
+                + critic_post.q2_forward(obs, actions, ch.name)
+            ) / 2.0
+            q_det_pre = (
+                critic_pre.q1_forward(obs, det_post, ch.name)
+                + critic_pre.q2_forward(obs, det_post, ch.name)
+            ) / 2.0
+            q_det_post = (
+                critic_post.q1_forward(obs, det_post, ch.name)
+                + critic_post.q2_forward(obs, det_post, ch.name)
+            ) / 2.0
+            d_sa = (q_sa_post - q_sa_pre)
+            d_det = (q_det_post - q_det_pre)
+            per_channel[ch.name] = {
+                "q_drift_sa": {
+                    "mean": float(d_sa.mean()),
+                    "abs_max": float(d_sa.abs().max()),
+                },
+                "q_drift_at_det_action": {
+                    "mean": float(d_det.mean()),
+                    "abs_max": float(d_det.abs().max()),
+                },
+            }
+        alpha_delta = float(
+            post["log_alpha"].float() - pre["log_alpha"].float()
+        )
+    return {
+        "dump_dir": str(Path(dump_dir)),
+        "critic_tick": dump["manifest"].get("critic_tick"),
+        "n_probe_rows": int(obs.shape[0]),
+        "det_action_drift": {
+            "l2_mean": float(action_diff.norm(dim=-1).mean()),
+            "l2_max": float(action_diff.norm(dim=-1).max()),
+            "abs_max": float(action_diff.abs().max()),
+        },
+        "logp_drift": {
+            "mean": float(logp_diff.mean()),
+            "abs_max": float(logp_diff.abs().max()),
+        },
+        "per_channel": per_channel,
+        "alpha_delta": alpha_delta,
+    }
+
+
 # ---------------------------------------------------------- attribution
 
 
@@ -889,6 +1223,117 @@ def replay_stats_from_state(state: Mapping[str, Any]) -> Dict[str, Any]:
     else:
         out["reuse"] = "unavailable"
     return out
+
+
+def slice_context(
+    path: Path,
+    *,
+    source_key: Optional[str] = None,
+    slice_id: Optional[str] = None,
+    sample_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Rebuild the live neighbourhood of one slice inside a replay state.
+
+    Loads ``replay.pt`` (from a run dir, checkpoint dir, or the file
+    itself), locates the target slice (via ``source_key`` prefix,
+    explicit ``slice_id``, or a ``sample_id`` lookup), then returns the
+    still-live frames of that slice ordered by frame index, the frame
+    gaps left by FIFO eviction, and the live slices of the same episode.
+    """
+    path = Path(path)
+    if path.is_dir() and (path / "checkpoints").is_dir():
+        ckpts = sorted((path / "checkpoints").iterdir())
+        if not ckpts:
+            raise ValueError(f"no checkpoints under {path}")
+        path = ckpts[-1]
+    if path.is_dir():
+        path = path / "replay.pt"
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    size = int(state["size"])
+    # Live slots are those ever written and not yet overwritten — after
+    # the write pointer wraps they are NOT the first `size` entries, so
+    # select by sample_id >= 0 rather than slicing.
+    all_ids = np.asarray(state["sample_ids"])
+    live = np.nonzero(all_ids >= 0)[0][:size]
+    source_keys = [state["source_keys"][i] for i in live]
+    slice_ids = [state["slice_ids"][i] for i in live]
+    frame_indices = np.asarray(state["frame_indices"])[live]
+    sample_ids = all_ids[live]
+    draw_counts = np.asarray(
+        state.get("draw_counts", np.zeros(len(all_ids))), dtype=np.int64,
+    )[live]
+    rewards = np.asarray(state["rewards"])[live]
+    terminated_arr = np.asarray(state["terminated"])[live]
+    truncated_arr = np.asarray(state["truncated"])[live]
+
+    target_slice = slice_id
+    episode_prefix = None
+    if target_slice is None and source_key is not None:
+        parsed = parse_source_key(str(source_key))
+        if parsed.get("parseable"):
+            episode_prefix = (
+                f"{parsed['run_id']}/r{parsed['collection_round']:06d}/"
+                f"j{parsed['job_index']:06d}/{parsed['agent_id']}/"
+                f"e{parsed['episode_seed']}"
+            )
+        # direct hit: the row carrying this source_key names its slice
+        for i, k in enumerate(source_keys):
+            if str(k) == str(source_key):
+                target_slice = slice_ids[i]
+                break
+        # frame evicted: fall back to any live slice in the same episode
+        if target_slice is None and episode_prefix is not None:
+            for sid in slice_ids:
+                if sid and str(sid).startswith(episode_prefix + "/"):
+                    target_slice = sid
+                    break
+    if target_slice is None and sample_id is not None:
+        matches = np.nonzero(sample_ids == int(sample_id))[0]
+        if len(matches) == 1:
+            target_slice = slice_ids[int(matches[0])]
+    if target_slice is None:
+        raise ValueError(
+            "cannot resolve target slice — provide source_key, slice_id, "
+            "or a live sample_id"
+        )
+    episode_prefix = episode_prefix or str(target_slice).rsplit("/slice", 1)[0]
+
+    slots = [
+        i for i, sid in enumerate(slice_ids) if str(sid) == str(target_slice)
+    ]
+    slots.sort(key=lambda i: int(frame_indices[i]))
+    frames = [{
+        "live_index": int(i),
+        "sample_id": int(sample_ids[i]),
+        "frame_index": int(frame_indices[i]),
+        "draw_count": int(draw_counts[i]),
+        "reward_sum": float(rewards[i].sum()),
+        "terminated": bool(terminated_arr[i]),
+        "truncated": bool(truncated_arr[i]),
+    } for i in slots]
+    fi = [f["frame_index"] for f in frames]
+    gaps = (
+        sorted(set(range(fi[0], fi[-1] + 1)) - set(fi))
+        if len(fi) > 1 else []
+    )
+    same_episode: Dict[str, int] = {}
+    for sid in slice_ids:
+        if sid and str(sid).startswith(episode_prefix + "/"):
+            same_episode[str(sid)] = same_episode.get(str(sid), 0) + 1
+    return {
+        "source": str(path),
+        "slice_id": str(target_slice),
+        "episode_prefix": episode_prefix,
+        "live_frames": frames,
+        "live_count": len(frames),
+        "frame_index_range": [fi[0], fi[-1]] if fi else None,
+        "missing_frame_indices": gaps,
+        "same_episode_live_slices": same_episode,
+        "note": (
+            "replay is FIFO — frames absent here were evicted, not "
+            "dropped; use the earliest checkpoint for older context"
+        ),
+    }
 
 
 def replay_report(path: Path) -> Dict[str, Any]:

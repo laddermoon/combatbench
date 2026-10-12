@@ -265,6 +265,10 @@ def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: i
         "target.pair1_frac": float(step_stats.get("target_pair1_frac", 0.0)),
         "actor.pair1_frac": float(step_stats.get("actor_pair1_frac", 0.0)),
         "actor.valid_count": float(step_stats.get("actor_valid_count", 0.0)),
+        "actor.grad_norm": float(step_stats.get("grad_norm_actor", 0.0)),
+        "temperature.grad_norm": float(
+            step_stats.get("grad_norm_alpha", 0.0)
+        ),
         "replay.size": float(replay_size),
     }
     q_values = [
@@ -291,6 +295,10 @@ def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: i
             metrics[f"critic.updated.{name[15:]}"] = float(value)
         elif name.startswith("critic_valid_weight_"):
             metrics[f"critic.valid_weight.{name[20:]}"] = float(value)
+        elif name.startswith("grad_norm_critic_"):
+            metrics[f"critic.grad_norm.{name[17:]}"] = float(value)
+        elif name.startswith("critic_clip_applied_"):
+            metrics[f"critic.clip_applied.{name[20:]}"] = float(value)
     return metrics
 
 

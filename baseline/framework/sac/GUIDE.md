@@ -177,7 +177,14 @@ $DK samples <dump_dir> --sort td_abs       # 样本表（td/q/logp 排序）
 $DK trace <dump_dir> --sample-id N         # 单样本全链溯源+逐通道明细
 $DK replay <run_dir|ckpt|replay.pt>        # replay 人口学：年龄/复用/来源/policy fingerprint
 $DK catalog [--prefix critic]              # 可用指标键
-$DK recompute <dump_dir>                   # 离线重算 critic 目标对拍
+$DK recompute <dump_dir>                   # 离线重算（shannon/u_bonus/u_floor 全覆盖）
+$DK attribute <dump_dir> [--group-by collection_round]
+      # 来源（round/policy_fp/explore/random_start）× critic-loss share/actor 贡献 联合归因
+$DK decomp <dump_dir> [--sample-id N]      # target=reward+γ·b·(softQ+reg) 与 actor=Q+entropy+reg 分解
+$DK drift <dump_dir>                       # pre/post 在 batch obs 上的 det-action/logπ/Q/α 漂移
+$DK grad-attr <dump_dir> [--group-by ...]  # 重型离线梯度归因（重建+autograd，不在训练路径）
+$DK slice-ctx <run|ckpt|replay.pt> --sample-id N
+      # 重建该样本所在 slice 的 live 帧序列+逐出缺口（FIFO）
 $DK serve baseline/runs --port 8766 --host 0.0.0.0
       # 只读 JSON API + HTML viewer（http://<host>:8766/）
 ```
