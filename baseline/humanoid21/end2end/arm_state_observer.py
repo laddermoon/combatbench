@@ -13,10 +13,17 @@ Outputs eight raw physical quantities per step (no state-machine logic):
 
   Left / right hand→opponent-head CLOSING SPEED (m/s, signed):
     -d(hand→opp_head dist)/dt — how fast the fist is closing on the
-    target.  World-frame speed projected onto the target direction:
-    arm swing AND body lunge both count (real punches are a kinetic
-    chain).  Positive = approaching.  Unbounded — the punch_power
-    stage's "as hard as possible" signal.
+    target.  NOTE: this includes the OPPONENT's own motion — kept as a
+    diagnostic field only.
+
+  Left / right hand SPEED-TOWARD-OPPONENT (m/s, signed):
+    v_hand · (opp_head − hand)/|·| — the hand's OWN world-frame
+    velocity projected onto the hand→opp-head direction.  Arm swing
+    AND body lunge both count (a real punch is a kinetic chain), but
+    the opponent's motion does NOT — a stationary hand while the
+    target drifts closer earns nothing.  Positive = fist moving at
+    the target.  Unbounded — the punch_power stage's "as hard as
+    possible" signal.
 
 The experiment's post-hoc state machine (``arm_state_machine.py``) consumes
 these to produce per-step actor weights for four reward channels
@@ -55,6 +62,8 @@ class ArmStateObserver(BaseObserverPlugin):
       opp_head_to_right_shoulder — 3D distance, opponent head → right shoulder (m)
       left_hand_closing_speed    — -d(hand→opp_head)/dt, m/s, signed
       right_hand_closing_speed   — same for right hand
+      left_hand_speed_to_opp     — v_hand · dir(hand→opp_head), m/s
+      right_hand_speed_to_opp    — same for right hand
     """
 
     def __init__(
@@ -80,6 +89,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rh_dist: float | None = None
         self._left_closing_speed: float = 0.0
         self._right_closing_speed: float = 0.0
+        self._prev_lh_pos: np.ndarray | None = None
+        self._prev_rh_pos: np.ndarray | None = None
+        self._left_speed_to_opp: float = 0.0
+        self._right_speed_to_opp: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -98,6 +111,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rh_dist = None
         self._left_closing_speed = 0.0
         self._right_closing_speed = 0.0
+        self._prev_lh_pos = None
+        self._prev_rh_pos = None
+        self._left_speed_to_opp = 0.0
+        self._right_speed_to_opp = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         # --- Joint angles from core_state ---
@@ -173,6 +190,24 @@ class ArmStateObserver(BaseObserverPlugin):
             self._prev_lh_dist = self._left_hand_opp_head
             self._prev_rh_dist = self._right_hand_opp_head
 
+            # Hand's own speed toward the target: v_hand · dir(hand→head).
+            # Unlike closing_speed, the opponent's motion does not
+            # contribute — only the fist's own movement pays.
+            if self._prev_lh_pos is None:
+                self._left_speed_to_opp = 0.0
+                self._right_speed_to_opp = 0.0
+            else:
+                vl = (hl - self._prev_lh_pos) / self.action_dt
+                vr = (hr - self._prev_rh_pos) / self.action_dt
+                dir_l = oh - hl
+                dir_r = oh - hr
+                dir_l /= max(np.linalg.norm(dir_l), 1e-6)
+                dir_r /= max(np.linalg.norm(dir_r), 1e-6)
+                self._left_speed_to_opp = float(vl @ dir_l)
+                self._right_speed_to_opp = float(vr @ dir_r)
+            self._prev_lh_pos = hl
+            self._prev_rh_pos = hr
+
         if hand_left is None or shoulder_left is None:
             self._left_hand_shoulder = 0.0
         else:
@@ -217,6 +252,8 @@ class ArmStateObserver(BaseObserverPlugin):
             "opp_head_to_right_shoulder": self._opp_head_right_shoulder,
             "left_hand_closing_speed": self._left_closing_speed,
             "right_hand_closing_speed": self._right_closing_speed,
+            "left_hand_speed_to_opp": self._left_speed_to_opp,
+            "right_hand_speed_to_opp": self._right_speed_to_opp,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:

@@ -9,17 +9,18 @@ but the new signal rewards raw fist speed toward the opponent's head.
 Two new channels driven by the same reactive arm state machine:
 
   r_left_punch_speed / r_right_punch_speed
-      reward = hand→opp-head CLOSING SPEED (m/s, signed, unbounded)
-               = -d(hand→opp_head dist)/dt  (ArmStateObserver)
+      reward = hand SPEED TOWARD the opponent head (m/s, signed,
+               unbounded): v_hand · dir(hand→opp_head).  Own velocity
+               only — the opponent's motion is excluded so the reward
+               cannot be farmed by a walking target.
       aw     = +SPEED_WEIGHT × clip(w_arm/ARM_WEIGHT, 0, 1) × φ²
                — positive only while the arm is in its READY
                (extension-encouraged) phase; zero while chambering so
                a fast retraction is never penalized.
 
-Because the closing speed is the world-frame hand velocity projected
-onto the target direction, the whole kinetic chain pays: arm swing +
-body lunge.  The retained hand_dist channels (shoulder-relative) still
-punish pure body-charging without arm extension.
+The world-frame hand velocity means the whole kinetic chain pays: arm
+swing + body lunge.  The retained hand_dist channels (shoulder-
+relative) still punish pure body-charging without arm extension.
 
 best-of-run / early stop composite:
     quality = mean positive closing speed on valid frames
@@ -93,9 +94,9 @@ class PunchPowerStep(AttackPrepStep):
         face_key = self._FACE_OBS.get(agent_id)
 
         l_cs = extract_per_step_field(
-            oo, arm_key, "left_hand_closing_speed", T_full)
+            oo, arm_key, "left_hand_speed_to_opp", T_full)
         r_cs = extract_per_step_field(
-            oo, arm_key, "right_hand_closing_speed", T_full)
+            oo, arm_key, "right_hand_speed_to_opp", T_full)
         left_elbow = extract_per_step_field(
             oo, arm_key, "left_elbow_norm", T_full)
         right_elbow = extract_per_step_field(
@@ -201,9 +202,9 @@ class PunchPowerStep(AttackPrepStep):
             _, phi_key = self._AGENT_OBS_MAP[agent_id]
 
             l_cs = extract_per_step_field(
-                oo, arm_key, "left_hand_closing_speed", T)
+                oo, arm_key, "left_hand_speed_to_opp", T)
             r_cs = extract_per_step_field(
-                oo, arm_key, "right_hand_closing_speed", T)
+                oo, arm_key, "right_hand_speed_to_opp", T)
             self_x = extract_per_step_field(oo, app_key, "self_x", T)
             self_y = extract_per_step_field(oo, app_key, "self_y", T)
             opp_x = extract_per_step_field(oo, app_key, "opp_x", T)
