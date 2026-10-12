@@ -125,9 +125,11 @@ class PunchPowerStep(AttackPrepStep):
     # punch power gets comparable pressure to punch form.
     PUNCH_SPEED_WEIGHT: float = 3.0
 
-    # Shoulder speeds are smaller (~0.3-1.5 m/s) — a modest weight so
-    # chain drive is a real incentive without dominating strike form.
-    SHOULDER_DRIVE_WEIGHT: float = 2.0
+    # Shoulder speeds are smaller (~0.5-1.5 m/s).  W=2.0 produced only
+    # ~0.7 m/s of baseline-incidental shoulder motion — no visible
+    # chain drive on video.  W=4.0 makes hip/torso drive a first-class
+    # objective alongside fist speed.
+    SHOULDER_DRIVE_WEIGHT: float = 4.0
 
     # --- Tracking state ---
     _pp_best_quality: float = -1.0
