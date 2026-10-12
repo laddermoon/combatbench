@@ -2962,6 +2962,92 @@ analysis/metric_catalog + tests + 文档）。区间另有一条非 R2 提交
 停训事务缺失（m11 checkpoint 半成品实证）、跨进程真实恢复对拍缺位、
 eval-先于-checkpoint 落盘的次序风险。
 
+## R2.6a R2-1 细计划：生命周期、恢复与资源治理
+
+**目标**：停训/完成/恢复形成可验证的事务语义；replay 元数据与产物保留有界；
+恢复等价性从"同进程假环境"升级到"跨进程真实环境"。
+
+**上下文核查结论**（2026-10-15）：
+
+- `loop.py:341-345`：SIGTERM/SIGINT → `os.killpg(SIGKILL)` 立即自杀——无安全边界，
+  m11 checkpoint 半成品（`.eckuuwfj` 临时目录）即实证；
+- `loop.py:793,801,837`：`metrics.emit_eval` 先于 `_checkpoint` 与 best-policy
+  导出——外部监控读到达标 eval 事件即 SIGTERM，落盘中的 checkpoint 被打断；
+- `loop.py` 结尾（890-894）：自然耗尽 `max_env_steps` 后**不保证有最终 checkpoint**
+  （仅 eval 轮或 round==1 才存），也无终止标记事件——外部无法区分"完成/崩溃"；
+- `replay.py`：`_sample_by_source`/`_source_by_sample` 随槽位淘汰删除（有界=capacity），
+  **唯一无界结构是 `_seen_source_keys`**（逐 transition 唯一键、永久保留、进
+  checkpoint，10M 步量级）；
+- `prune_checkpoints(keep_last,.pinned)` 已存在；`policy_exports/r*_eval` 每次
+  eval 写一份（blueprint+权重），无界增长、无清理；
+- PPO 参照：`tests/_resume_driver.py` 子进程驱动 + 全量 checkpoint 递归对拍；
+  SAC 无 minimal 实验，用 `sac_balance` + dataclasses.replace 缩小参数即可。
+
+### R2-W10 安全停训事务 + eval 发布次序
+
+**改动**：
+
+1. 信号语义重定义：SIGTERM/SIGINT 第一次 → 置 `_stop_requested` flag（停止请求）；
+   第二次 → 保留 SIGKILL 逃生口（防 handler 死循环卡死）。
+2. 安全边界检查点：update 循环内**每个 critic tick 之后**（optimizer step 后所有
+   状态一致）与 collection 返回后各检查一次；命中 → 写最终 checkpoint → 发
+   terminal 事件 → 关 metrics → 正常返回。停止延迟 ≤ 1 个 critic tick（update 中）
+   或 ≤ 1 round（collection 中）。
+3. eval 发布次序修正：`is_new_best` 导出 + `_checkpoint` 提前到
+   `metrics.emit_eval`/print 之前——**eval 事件见刊即代表对应 checkpoint 已落盘**。
+4. 终止记录：`run_terminal.json`（status/reason/env_step/critic_tick/
+   final_checkpoint/时间戳）+ `run.terminal` 指标事件；status ∈
+   `completed|signal_stop|experiment_stop|diverged|error`。divergence/异常路径
+   也在 except 中写记录后重抛。
+
+**测试**：信号 handler 置 flag 而非 kill；注入 stop 的 fake-env loop 产出终态
+record+可加载 checkpoint；eval 事件发射时 checkpoint 目录已存在（mock 断言次序）。
+
+### R2-W11 自然完成最终态
+
+**改动**：主循环结束后统一收尾路径（break/natural 耗尽/信号停止共用）：
+若最终 env_step 尚无对应 checkpoint 则补写 + 写 terminal record。
+`stop_training` break 与 W10 的路径合并为同一 `_terminate(status, reason)` helper。
+
+**测试**：非 eval 轮到达 max_env_steps 后仍存在最终 checkpoint + record。
+
+### R2-W12 `_seen_source_keys` 有界化
+
+**裁决**：去重保证的语义域定义为"**live 样本内不允许重复 source_key**"——
+键随对应槽位淘汰时从 seen 集合移除（source_key 逐槽位唯一，删除安全）。
+已淘汰键的重提交视为陈旧数据而非重复违规（off-policy 本就容忍陈旧样本）。
+加载旧 checkpoint 时 seen 集合与 live 键求交立即收敛有界。
+state 字段名不变 → schema 保持 `sac_replay_v2`（内容有界化，格式不变），
+ARTIFACTS.md 补注。
+
+**测试**：wrap-around 后 seen 集合大小 ≤ live 样本数；live 内重提交仍拒绝；
+加载含超大 seen 集的旧 state 后收敛有界；跨 resume 行为不变。
+
+### R2-W13 跨进程真实恢复对拍
+
+**改动**：`tests/_sac_resume_driver.py`——`sac_balance` + dataclasses.replace
+缩参（episodes/rollout_workers/warmup/batch/replay 全缩，eval_interval 取整使
+checkpoint 边界落在 run 中段）。测试：连续 A(env_step=X) vs B1(前段)→新进程
+B2 resume 到 X；递归对拍最终 checkpoint 全量 payload（weights/optimizers/
+replay 数组/RNG/experiment state）+ round 指标记录（剔 timing）。MuJoCo 不可得
+时 skipif。依赖 rollouter 结果顺序确定性——实现时先验证，若不成立则退化为
+"可恢复+状态一致"而非逐位一致并如实登记。
+
+### R2-W14 产物保留治理
+
+**改动**：`policy_exports/r*_eval` 接入 `keep_last` 有界保留（复用 `.pinned`
+豁免语义 + 删除审计行写入 metrics/log）；videos 保留现状但登记体积模型
+（每 `video_eval_interval` 一份 mp4，R2-4 前不清理）；dumps 按需产生本已有界。
+
+### R2-W15 收口
+
+SAC/PPO 回归 + diff 核查 + R2.7~R2.8 登记 + PLAN 标完成。
+
+### 边界
+
+不改 collection 内部中断（rollouter.collect 阻塞至 round 结束即接受——
+停止延迟以 round 为界已文档化）；不引入异步训练；不动 PPO。
+
 ---
 
 ---
