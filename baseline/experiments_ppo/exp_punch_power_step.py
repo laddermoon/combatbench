@@ -61,6 +61,8 @@ def _completed_swing_mask(
     valid_mask: np.ndarray,
     extend_threshold: float,
     flex_threshold: float,
+    *,
+    extending_only: bool = True,
 ) -> np.ndarray:
     """Frames belonging to READY runs that end in a completed punch.
 
@@ -71,6 +73,13 @@ def _completed_swing_mask(
     contiguous span of READY-state frames ending at the crossing.
     Only valid frames inside completed runs return True — the reward
     is for swinging *through* a real punch, not for waving.
+
+    ``extending_only`` keeps just the actively-extending (elbow_norm
+    decreasing) frames — used for fist-speed pay, where integrating
+    signed speed over the whole run would reward displacement rather
+    than speed.  For shoulder-drive pay the full run is kept: hip
+    rotation precedes elbow extension in a real kinetic chain, so the
+    shoulder accelerates during the pre-extension wind-up.
     """
     T = len(elbow)
     mask = np.zeros(T, dtype=bool)
@@ -90,6 +99,8 @@ def _completed_swing_mask(
             state = _READY
             run_start = t
         prev_e = e
+    if not extending_only:
+        return mask
     # Keep only actively-extending frames: elbow_norm decreasing means
     # the arm is mid-strike — paying speed there rewards the strike's
     # power rather than slow drift displacement.
@@ -235,11 +246,24 @@ class PunchPowerStep(AttackPrepStep):
         w_rs = (
             self.PUNCH_SPEED_WEIGHT * swing_r.astype(np.float32) * phi2
         ).astype(np.float32)
+        # Shoulder drive pays over the WHOLE completed READY run — hip
+        # rotation precedes elbow extension in a kinetic-chain punch,
+        # so paying only on extending frames misses the drive phase.
+        run_l = _completed_swing_mask(
+            np.asarray(left_elbow), arm_valid,
+            self.extend_threshold, self.flex_threshold,
+            extending_only=False,
+        )
+        run_r = _completed_swing_mask(
+            np.asarray(right_elbow), arm_valid,
+            self.extend_threshold, self.flex_threshold,
+            extending_only=False,
+        )
         w_ld = (
-            self.SHOULDER_DRIVE_WEIGHT * swing_l.astype(np.float32) * phi2
+            self.SHOULDER_DRIVE_WEIGHT * run_l.astype(np.float32) * phi2
         ).astype(np.float32)
         w_rd = (
-            self.SHOULDER_DRIVE_WEIGHT * swing_r.astype(np.float32) * phi2
+            self.SHOULDER_DRIVE_WEIGHT * run_r.astype(np.float32) * phi2
         ).astype(np.float32)
 
         for t in trajs:
@@ -354,8 +378,16 @@ class PunchPowerStep(AttackPrepStep):
             if pos.size:
                 speed_means.append(float(pos.mean()))
                 speed_peaks.append(float(pos.max()))
-            l_sh = np.asarray(l_ss, dtype=np.float64)[strike_l]
-            r_sh = np.asarray(r_ss, dtype=np.float64)[strike_r]
+            run_l = _completed_swing_mask(
+                np.asarray(l_elb), valid,
+                self.extend_threshold, self.flex_threshold,
+                extending_only=False)
+            run_r = _completed_swing_mask(
+                np.asarray(r_elb), valid,
+                self.extend_threshold, self.flex_threshold,
+                extending_only=False)
+            l_sh = np.asarray(l_ss, dtype=np.float64)[run_l]
+            r_sh = np.asarray(r_ss, dtype=np.float64)[run_r]
             sh = np.concatenate([l_sh, r_sh])
             sh_pos = sh[sh > 0]
             if sh_pos.size:
