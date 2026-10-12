@@ -2937,6 +2937,31 @@ SAC suite 192 passed。
 - `--param`/`--dump-full-grad` 曾在调研笔记中被记为"SAC 静默忽略"，R2-W04 核实 `train.py` 已有 `_reject_ppo_only_options_for_sac` 显式拒绝——非缺陷，登记纠正；
 - `build_q_critic()` 未接线、`actor_blueprint` 死字段、u_mode recompute 覆盖、策略导出非自包含——分别列入 R2-2/R2-3/R2-5，不在本阶段边界内。
 
+## R2.6 R2-W05 收口：R2-0 完成登记
+
+**回归**：SAC suite **202 passed**（W00 基线 193 → +9）；PPO suite **232 passed**（与基线一致，零回归）。
+
+**diff 范围核查**（`3da38980..baf9e042`）：R2 五个工作包的全部改动落在
+`baseline/framework/sac/`（experiment/loop/checkpoint/networks/debugkit/
+analysis/metric_catalog + tests + 文档）。区间另有一条非 R2 提交
+`9be02eea`（PPO 实验 punch_power + observer，他人工作），PPO 框架本体零改动——
+独立性保持。
+
+**R2-0 出口标准对照**：
+
+- ✅ G1–G8 全部修复并各带回归测试（R2.2~R2.4）；
+- ✅ 能力矩阵落地（R2.5），作为后续阶段真值源；
+- ✅ 文档与实现一致（README/GUIDE/SUMMARY 失实表述已校准）；
+- ✅ `config_lock` strict 模式两侧对称可证（同过异拒，测试在案）；
+- ✅ "被接受却不生效"的公开配置清零——残余项均已显式标注预留
+  （`use_grad_norm` 系、`actor_weight_share`、`actor_blueprint`、
+  `build_q_critic`、DataSource 非 self 类、ReplayPlan 分层/新鲜度），
+  且各自的接线/删除裁决已列入 R2-2/R2-3/R2-5。
+
+**转入 R2-1 的已知输入**：`_seen_source_keys` 无界增长模型、SIGTERM→SIGKILL
+停训事务缺失（m11 checkpoint 半成品实证）、跨进程真实恢复对拍缺位、
+eval-先于-checkpoint 落盘的次序风险。
+
 ---
 
 ---
