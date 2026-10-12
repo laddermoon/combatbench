@@ -18,6 +18,7 @@ EVENT_TYPES = (
     "checkpoint",
     "debug",
     "config",
+    "terminal",
 )
 
 _ALLOWED_PREFIXES = {
@@ -47,6 +48,9 @@ _ALLOWED_PREFIXES = {
     # Config events carry their payload in context; metrics are optional but
     # are kept in a distinct namespace if present.
     "config": ("config.",),
+    # Terminal events carry status/reason/final_checkpoint in context; the
+    # metric payload is a presence flag only.
+    "terminal": ("run.",),
 }
 
 _FORBIDDEN_PREFIXES = (
@@ -159,6 +163,7 @@ DEFAULT_METRIC_SPECS = tuple(
             "debug.request",
         ),
         "config": (),
+        "terminal": ("run.terminal",),
     }.items()
     for name in names
 )

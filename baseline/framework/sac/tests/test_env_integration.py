@@ -1,9 +1,15 @@
 """Fake-environment end-to-end integration for the SAC phase-2 loop."""
 from __future__ import annotations
 
+import dataclasses
+import json
+import os
+import signal
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -120,6 +126,169 @@ def test_fake_env_to_replay_training_metrics_and_checkpoint(tmp_path) -> None:
     assert bundle.resume_mode == "full"
     assert bundle.replay is not None and bundle.replay.size == 4
     assert bundle.runtime_state["clocks"]["critic_tick"] == 4
+
+
+def _terminal_record(run_dir) -> dict:
+    return json.loads((run_dir / "run_terminal.json").read_text())
+
+
+def _restore_sigterm(previous):
+    signal.signal(signal.SIGTERM, previous)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def test_terminal_record_on_natural_completion(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    train_sac(_FakeExperiment(), run_dir=run_dir, rollouter=_FakeRollouter())
+
+    record = _terminal_record(run_dir)
+    assert record["status"] == "completed"
+    assert record["env_step"] == 4
+    assert record["final_checkpoint"] is not None
+    assert (run_dir / "checkpoints" / "checkpoint_s00000004"
+            / "manifest.json").exists()
+
+    terminal_events = [
+        e for e in load_events(run_dir / EVENTS_RELATIVE_PATH)
+        if e.event_type == "terminal"
+    ]
+    assert len(terminal_events) == 1
+    assert terminal_events[0].context["status"] == "completed"
+    assert terminal_events[0].context["final_checkpoint"].endswith(
+        "checkpoint_s00000004"
+    )
+
+
+def test_signal_stop_at_round_boundary_writes_terminal_record(tmp_path) -> None:
+    """SIGTERM during collection stops at the post-insert boundary."""
+
+    class _SignalExperiment(_FakeExperiment):
+        _sent = False
+
+        def build_slices(self, episodes):
+            if not self._sent:
+                self._sent = True
+                os.kill(os.getpid(), signal.SIGTERM)
+            return super().build_slices(episodes)
+
+    previous = signal.getsignal(signal.SIGTERM)
+    run_dir = tmp_path / "run"
+    try:
+        train_sac(
+            _SignalExperiment(), run_dir=run_dir, rollouter=_FakeRollouter()
+        )
+    finally:
+        _restore_sigterm(previous)
+
+    record = _terminal_record(run_dir)
+    assert record["status"] == "signal_stop"
+    assert "round boundary" in record["reason"]
+    # The committed round's checkpoint must exist and be loadable.
+    bundle = load_checkpoint_bundle(record["final_checkpoint"])
+    assert bundle.resume_mode == "full"
+
+
+def test_signal_stop_inside_update_loop_writes_terminal_record(
+    tmp_path, monkeypatch
+) -> None:
+    """SIGTERM during an update stops after the current critic tick."""
+    import baseline.framework.sac.loop as loop_mod
+
+    real_update = loop_mod.sac_update_v2
+    sent = {"flag": False}
+
+    def wrapped(**kwargs):
+        if not sent["flag"]:
+            sent["flag"] = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        return real_update(**kwargs)
+
+    monkeypatch.setattr(loop_mod, "sac_update_v2", wrapped)
+    previous = signal.getsignal(signal.SIGTERM)
+    run_dir = tmp_path / "run"
+    try:
+        train_sac(
+            _FakeExperiment(), run_dir=run_dir, rollouter=_FakeRollouter()
+        )
+    finally:
+        _restore_sigterm(previous)
+
+    record = _terminal_record(run_dir)
+    assert record["status"] == "signal_stop"
+    assert "critic_tick" in record["reason"]
+    assert Path(record["final_checkpoint"]).exists()
+
+
+def test_experiment_stop_training_writes_terminal_record(tmp_path) -> None:
+    class _StopExperiment(_FakeExperiment):
+        def common_params(self) -> CommonParamsSAC:
+            return dataclasses.replace(
+                super().common_params(), eval_interval=2
+            )
+
+        def on_eval(self, episodes, env_step):
+            return {
+                "is_new_best": False,
+                "info": {"success": 1.0},
+                "stop_training": True,
+            }
+
+    run_dir = tmp_path / "run"
+    train_sac(_StopExperiment(), run_dir=run_dir, rollouter=_FakeRollouter())
+
+    record = _terminal_record(run_dir)
+    assert record["status"] == "experiment_stop"
+    assert Path(record["final_checkpoint"]).exists()
+
+
+def test_eval_event_published_after_checkpoint(tmp_path) -> None:
+    """Ordering contract: a visible eval event implies the checkpoint
+    for that env_step (and best-policy export) is already durable."""
+
+    class _EvalExperiment(_FakeExperiment):
+        def common_params(self) -> CommonParamsSAC:
+            return dataclasses.replace(
+                super().common_params(), eval_interval=2, eval_episodes=1
+            )
+
+        def on_eval(self, episodes, env_step):
+            return {
+                "is_new_best": True,
+                "info": {"success": 0.5},
+                "stop_training": False,
+            }
+
+    run_dir = tmp_path / "run"
+    train_sac(_EvalExperiment(), run_dir=run_dir, rollouter=_FakeRollouter())
+
+    events = load_events(run_dir / EVENTS_RELATIVE_PATH)
+    eval_idx = next(
+        i for i, e in enumerate(events) if e.event_type == "eval"
+    )
+    eval_step = events[eval_idx].clocks["env_step"]
+    ckpt_paths = [
+        e.context["path"] for e in events[:eval_idx]
+        if e.event_type == "checkpoint"
+    ]
+    assert any(
+        f"checkpoint_s{eval_step:08d}" in p for p in ckpt_paths
+    ), "eval event was emitted before its env_step checkpoint"
+
+
+def test_error_path_writes_terminal_record(tmp_path) -> None:
+    class _BadExperiment(_FakeExperiment):
+        def build_slices(self, episodes):
+            raise RuntimeError("simulated collection failure")
+
+    run_dir = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="simulated collection failure"):
+        train_sac(
+            _BadExperiment(), run_dir=run_dir, rollouter=_FakeRollouter()
+        )
+
+    record = _terminal_record(run_dir)
+    assert record["status"] == "error"
+    assert "simulated collection failure" in record["reason"]
 
 
 def test_unknown_actor_specification_fails_loudly() -> None:

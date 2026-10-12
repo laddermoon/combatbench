@@ -28,6 +28,7 @@ Update this table whenever a schema is added or bumped.
 | Collection episode | in-memory (rollouter → build_slices) | carries `sac_collection_v1` contract marker; in-memory only, marker is documentary not enforced |
 | Eval videos | `runs/<run>/videos/s<env_step>.mp4` | filename encodes env_step; served by `debugserver /videos/` |
 | Dump request sentinel | `runs/<run>/dump_request.json` | `{critic_tick, hypothesis}`; consumed and deleted by the loop |
+| Terminal record | `runs/<run>/run_terminal.json` | `{status, reason, env_step, agent_transition, critic_tick, collection_round, final_checkpoint, stopped_at_unix}`; written on every exit path (completed/signal_stop/experiment_stop/diverged/error); paired `terminal` event in `sac_metrics_v1` (context carries status/reason/final_checkpoint) |
 
 ## Conventions
 

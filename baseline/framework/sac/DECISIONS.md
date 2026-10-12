@@ -2962,6 +2962,37 @@ analysis/metric_catalog + tests + 文档）。区间另有一条非 R2 提交
 停训事务缺失（m11 checkpoint 半成品实证）、跨进程真实恢复对拍缺位、
 eval-先于-checkpoint 落盘的次序风险。
 
+## R2.7 R2-W10+W11 结论：安全停训事务 + 统一终态
+
+（两包共享同一条终止管线，合并实现。）
+
+**信号语义**：SIGTERM/SIGINT 第一次 → 置 `_stop_requested` flag；第二次 →
+保留 SIGKILL 逃生口。安全边界两处：collection 提交 replay 后（round 边界，
+数据已落 replay 可随 checkpoint 保留）与每个 critic tick 完成之后
+（weights/optimizer/replay 全一致）。停止延迟 ≤ 1 tick（update 中）或
+≤ 1 round（collection 中）——不再 killpg 自杀。
+
+**eval 发布次序**：`is_new_best` 导出 + env_step checkpoint 提前到
+`emit_eval` 之前——**eval 事件见刊 ⇒ 对应 checkpoint 已持久化**，外部监控
+可以安全地在读到 eval 后立即停训。m11 半成品 checkpoint 类事故在该次序下
+不可能复现（SIGTERM 只会推迟到边界生效，届时落盘已完成）。
+
+**统一终态**：所有退出路径（自然耗尽/实验 stop_training/信号停止/发散/
+异常）汇入同一 finalization：终态 checkpoint 去重补齐 → `run_terminal.json`
+（status/reason/时钟/final_checkpoint/时间戳）→ `terminal` 指标事件
+（catalog 新增事件类型，context 带 status/reason/final_checkpoint）→
+`metrics.close()`。发散路径原 checkpoint+raise 语义保留并在 except 中补
+写终态记录；其余异常不写 checkpoint（状态可能已损坏），只写记录。
+
+**工件**：`run_terminal.json` 已登记 ARTIFACTS.md（unversioned 区）；
+`terminal` 事件类型已登记 catalog（`run.terminal` spec）。
+
+**测试**（6 新增，fake-env）：自然完成终态记录+事件；collection 期 SIGTERM
+→ round 边界停 + checkpoint 可加载；update 期 SIGTERM → tick 边界停；
+experiment_stop；eval 事件次序断言（同 env_step 的 checkpoint 事件必须先于
+eval 事件）；异常路径终态记录（status=error，原异常重抛）。
+**SAC suite 208 passed。**
+
 ## R2.6a R2-1 细计划：生命周期、恢复与资源治理
 
 **目标**：停训/完成/恢复形成可验证的事务语义；replay 元数据与产物保留有界；

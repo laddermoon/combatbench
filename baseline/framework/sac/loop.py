@@ -338,8 +338,19 @@ def train_sac(
     if any(src.sampling_share <= 0 for src in sources):
         raise ValueError("SAC data source sampling_share must be positive")
 
+    # R2-W10: graceful-stop protocol. The first SIGTERM/SIGINT only raises
+    # a request flag — the loop finishes the current safe boundary
+    # (a critic tick during updates, or the round boundary during
+    # collection), writes a final checkpoint and a terminal record, then
+    # exits. A second signal is the escape hatch: hard-kill the process
+    # group so a stuck handler can never hang the run forever.
+    _stop_requested = {"flag": False, "signum": None}
+
     def _shutdown_handler(signum, frame):
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+        if _stop_requested["flag"]:
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        _stop_requested["flag"] = True
+        _stop_requested["signum"] = signum
 
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
@@ -453,6 +464,8 @@ def train_sac(
     pending_dump_hypothesis: Dict[int, str] = {}
     last_video_proc: Optional[subprocess.Popen] = None
 
+    _last_checkpoint: Dict[str, Optional[Path]] = {"path": None}
+
     def _checkpoint(path: Path) -> Path:
         clocks.tick_checkpoint()
         runtime_state = {
@@ -478,8 +491,45 @@ def train_sac(
             {"checkpoint.bytes": _directory_bytes(path)},
             path=str(path),
         )
+        _last_checkpoint["path"] = path
         prune_checkpoints(ckpt_dir, keep_last=checkpoint_keep_last)
         return path
+
+    def _write_terminal(status: str, reason: str) -> None:
+        """Persist the terminal record and emit the ``terminal`` event.
+
+        Idempotent-safe: callers may invoke this on every exit path;
+        the record is the authoritative "how did this run end" answer
+        for external tooling (monitors, debugkit, retention cleaners).
+        """
+        record = {
+            "status": str(status),
+            "reason": str(reason),
+            "env_step": int(clocks.env_step),
+            "agent_transition": int(clocks.agent_transition),
+            "critic_tick": int(clocks.critic_tick),
+            "collection_round": int(clocks.collection_round),
+            "final_checkpoint": (
+                str(_last_checkpoint["path"])
+                if _last_checkpoint["path"] is not None
+                else None
+            ),
+            "stopped_at_unix": float(time.time()),
+        }
+        (run_dir / "run_terminal.json").write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        metrics.emit(
+            "terminal",
+            clocks=clocks,
+            metrics={"run.terminal": 1.0},
+            context={
+                "status": record["status"],
+                "reason": record["reason"],
+                "final_checkpoint": record["final_checkpoint"],
+            },
+        )
 
     print(
         f"[DEBUG] rollout_workers={cp.rollout_workers} "
@@ -494,401 +544,468 @@ def train_sac(
         rollouter if rollouter is not None
         else create_rollouter(num_workers=cp.rollout_workers)
     )
-    with active_rollouter as rollouter:
-        while clocks.env_step < cp.max_env_steps:
-            t_round_start = time.perf_counter()
-            round_index = clocks.collection_round + 1
+    terminal_status: Optional[str] = None
+    terminal_reason: str = ""
+    try:
+        with active_rollouter as rollouter:
+            while clocks.env_step < cp.max_env_steps:
+                t_round_start = time.perf_counter()
+                round_index = clocks.collection_round + 1
 
-            t0 = time.perf_counter()
-            export_dir = run_dir / "policy_exports" / f"r{round_index:05d}"
-            # A4.8 β layer: behavior e applies at the NEXT collection
-            # round only; random-start swaps in a Uniform[-1,1]^D policy
-            # while agent_transitions are below the configured budget.
-            random_start_active = (
-                int(getattr(experiment, "random_start_transitions", 0)) > 0
-                and clocks.agent_transitions
-                < int(experiment.random_start_transitions)
-            )
-            if random_start_active:
-                policy_bp = PolicyBlueprint(
-                    cls="policy.random.policy:RandomCombatPolicy",
-                    config={
-                        "scale": 1.0,
-                        "action_dim": int(actor.action_dim),
-                        "random_start": True,
-                    },
+                t0 = time.perf_counter()
+                export_dir = run_dir / "policy_exports" / f"r{round_index:05d}"
+                # A4.8 β layer: behavior e applies at the NEXT collection
+                # round only; random-start swaps in a Uniform[-1,1]^D policy
+                # while agent_transitions are below the configured budget.
+                random_start_active = (
+                    int(getattr(experiment, "random_start_transitions", 0)) > 0
+                    and clocks.agent_transitions
+                    < int(experiment.random_start_transitions)
                 )
-            else:
-                policy_bp = actor.to_blueprint(
-                    str(export_dir),
-                    stochastic=True,
-                    explore_factor=float(
-                        getattr(experiment, "behavior_explore", 0.0)
-                    ),
-                )
-            clocks.tick_export()
-            t_export = time.perf_counter() - t0
-            metrics.emit_export(
-                clocks,
-                {"export.bytes": _directory_bytes(export_dir), "timing.export_s": t_export},
-                path=str(export_dir),
-            )
-
-            t0 = time.perf_counter()
-            rollout_seed = cp.seed + round_index * cp.episodes_per_update
-            jobs = experiment.build_jobs(
-                policy_bp,
-                rollout_seed,
-                cp.episodes_per_update,
-                collection_round=round_index,
-                run_id=run_dir.name,
-                deterministic=False,
-            )
-            t_jobs = time.perf_counter() - t0
-            episodes = rollouter.collect(jobs)
-            t_rollout = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            slices = experiment.build_slices(episodes)
-            transitions_added = replay.add_slices(slices)
-            ep_stats = _episode_stats(episodes)
-            actual_steps = sum(ep.num_frames for ep in episodes)
-            clocks.advance_collection(
-                env_steps=actual_steps,
-                agent_transitions=transitions_added,
-            )
-            t_buffer = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            accumulated: Dict[str, List[float]] = {}
-            n_grad_steps = 0
-            dropped_updates = 0
-            min_replay = max(int(sp.warmup_steps), int(sp.batch_size))
-            if replay.size >= min_replay:
-                n_grad_steps, dropped_updates, utd_credit = _planned_updates(
-                    transitions_added=transitions_added,
-                    replay_size=replay.size,
-                    warmup_steps=sp.warmup_steps,
-                    batch_size=sp.batch_size,
-                    utd_ratio=sp.utd_ratio,
-                    max_updates=sp.max_grad_steps_per_round,
-                    utd_credit=utd_credit,
+                if random_start_active:
+                    policy_bp = PolicyBlueprint(
+                        cls="policy.random.policy:RandomCombatPolicy",
+                        config={
+                            "scale": 1.0,
+                            "action_dim": int(actor.action_dim),
+                            "random_start": True,
+                        },
+                    )
+                else:
+                    policy_bp = actor.to_blueprint(
+                        str(export_dir),
+                        stochastic=True,
+                        explore_factor=float(
+                            getattr(experiment, "behavior_explore", 0.0)
+                        ),
+                    )
+                clocks.tick_export()
+                t_export = time.perf_counter() - t0
+                metrics.emit_export(
+                    clocks,
+                    {"export.bytes": _directory_bytes(export_dir), "timing.export_s": t_export},
+                    path=str(export_dir),
                 )
 
-                for _ in range(n_grad_steps):
-                    # On-demand dump: a dump_request.json sentinel written
-                    # while training is running schedules a capture at the
-                    # requested critic tick (or the next one).
-                    if dump_request_path.exists():
+                t0 = time.perf_counter()
+                rollout_seed = cp.seed + round_index * cp.episodes_per_update
+                jobs = experiment.build_jobs(
+                    policy_bp,
+                    rollout_seed,
+                    cp.episodes_per_update,
+                    collection_round=round_index,
+                    run_id=run_dir.name,
+                    deterministic=False,
+                )
+                t_jobs = time.perf_counter() - t0
+                episodes = rollouter.collect(jobs)
+                t_rollout = time.perf_counter() - t0
+
+                t0 = time.perf_counter()
+                slices = experiment.build_slices(episodes)
+                transitions_added = replay.add_slices(slices)
+                ep_stats = _episode_stats(episodes)
+                actual_steps = sum(ep.num_frames for ep in episodes)
+                clocks.advance_collection(
+                    env_steps=actual_steps,
+                    agent_transitions=transitions_added,
+                )
+                # Safe-stop boundary: the collected round is committed to
+                # replay, models are untouched — a checkpoint here is a
+                # consistent resume point.
+                if _stop_requested["flag"]:
+                    terminal_status = "signal_stop"
+                    terminal_reason = (
+                        f"signal {_stop_requested['signum']} received; "
+                        f"stopped at round boundary after collection "
+                        f"(env_step={clocks.env_step})"
+                    )
+                    break
+                t_buffer = time.perf_counter() - t0
+
+                t0 = time.perf_counter()
+                accumulated: Dict[str, List[float]] = {}
+                n_grad_steps = 0
+                dropped_updates = 0
+                min_replay = max(int(sp.warmup_steps), int(sp.batch_size))
+                if replay.size >= min_replay:
+                    n_grad_steps, dropped_updates, utd_credit = _planned_updates(
+                        transitions_added=transitions_added,
+                        replay_size=replay.size,
+                        warmup_steps=sp.warmup_steps,
+                        batch_size=sp.batch_size,
+                        utd_ratio=sp.utd_ratio,
+                        max_updates=sp.max_grad_steps_per_round,
+                        utd_credit=utd_credit,
+                    )
+
+                    for _ in range(n_grad_steps):
+                        # On-demand dump: a dump_request.json sentinel written
+                        # while training is running schedules a capture at the
+                        # requested critic tick (or the next one).
+                        if dump_request_path.exists():
+                            try:
+                                req = json.loads(
+                                    dump_request_path.read_text(encoding="utf-8")
+                                )
+                                dump_request_path.unlink()
+                                target = req.get("critic_tick")
+                                tick_to_capture = (
+                                    int(target)
+                                    if target else clocks.critic_tick + 1
+                                )
+                                if tick_to_capture <= clocks.critic_tick:
+                                    tick_to_capture = clocks.critic_tick + 1
+                                scheduled_dump_ticks.add(tick_to_capture)
+                                if req.get("hypothesis") is not None:
+                                    pending_dump_hypothesis[
+                                        tick_to_capture
+                                    ] = str(req["hypothesis"])
+                                metrics.emit_debug(
+                                    clocks,
+                                    {"debug.request": 1.0},
+                                    critic_tick=tick_to_capture,
+                                )
+                                print(
+                                    f"  [dump_request] scheduled critic_tick="
+                                    f"{tick_to_capture} hypothesis="
+                                    f"{req.get('hypothesis')!r}",
+                                    flush=True,
+                                )
+                            except Exception as exc:
+                                metrics.emit_debug(
+                                    clocks, {"debug.status": 0.0},
+                                    stage="dump_request", error=str(exc),
+                                )
+                        update_start = time.perf_counter()
+                        batch = replay.sample(sp.batch_size, device)
+                        next_tick = clocks.critic_tick + 1
+                        dump_tmp: Optional[Path] = None
+                        capture: Optional[Dict[str, Any]] = None
+                        if next_tick in scheduled_dump_ticks:
+                            try:
+                                dump_tmp = begin_critic_tick_dump(
+                                    dump_root=dump_root,
+                                    critic_tick=next_tick,
+                                    clocks=clocks,
+                                    batch=batch,
+                                    trainer_pre_state=trainer_state_dict(
+                                        actor, critic, actor_optimizer,
+                                        log_alpha, alpha_optimizer,
+                                        expectation_rng=expectation_rng,
+                                    ),
+                                    hypothesis=pending_dump_hypothesis.pop(
+                                        next_tick, dump_hypothesis,
+                                    ),
+                                )
+                                capture = {}
+                            except Exception as exc:
+                                if debug_strict:
+                                    raise
+                                metrics.emit_debug(
+                                    clocks,
+                                    {"debug.status": 0.0},
+                                    stage="begin_dump",
+                                    critic_tick=next_tick,
+                                    error=str(exc),
+                                )
+                                print(
+                                    f"  [dump_failed:capture] tick={next_tick} {exc}",
+                                    flush=True,
+                                )
                         try:
-                            req = json.loads(
-                                dump_request_path.read_text(encoding="utf-8")
-                            )
-                            dump_request_path.unlink()
-                            target = req.get("critic_tick")
-                            tick_to_capture = (
-                                int(target)
-                                if target else clocks.critic_tick + 1
-                            )
-                            if tick_to_capture <= clocks.critic_tick:
-                                tick_to_capture = clocks.critic_tick + 1
-                            scheduled_dump_ticks.add(tick_to_capture)
-                            if req.get("hypothesis") is not None:
-                                pending_dump_hypothesis[
-                                    tick_to_capture
-                                ] = str(req["hypothesis"])
-                            metrics.emit_debug(
-                                clocks,
-                                {"debug.request": 1.0},
-                                critic_tick=tick_to_capture,
-                            )
-                            print(
-                                f"  [dump_request] scheduled critic_tick="
-                                f"{tick_to_capture} hypothesis="
-                                f"{req.get('hypothesis')!r}",
-                                flush=True,
-                            )
-                        except Exception as exc:
-                            metrics.emit_debug(
-                                clocks, {"debug.status": 0.0},
-                                stage="dump_request", error=str(exc),
-                            )
-                    update_start = time.perf_counter()
-                    batch = replay.sample(sp.batch_size, device)
-                    next_tick = clocks.critic_tick + 1
-                    dump_tmp: Optional[Path] = None
-                    capture: Optional[Dict[str, Any]] = None
-                    if next_tick in scheduled_dump_ticks:
-                        try:
-                            dump_tmp = begin_critic_tick_dump(
-                                dump_root=dump_root,
-                                critic_tick=next_tick,
-                                clocks=clocks,
-                                batch=batch,
-                                trainer_pre_state=trainer_state_dict(
-                                    actor, critic, actor_optimizer,
-                                    log_alpha, alpha_optimizer,
-                                    expectation_rng=expectation_rng,
-                                ),
-                                hypothesis=pending_dump_hypothesis.pop(
-                                    next_tick, dump_hypothesis,
-                                ),
-                            )
-                            capture = {}
-                        except Exception as exc:
-                            if debug_strict:
-                                raise
-                            metrics.emit_debug(
-                                clocks,
-                                {"debug.status": 0.0},
-                                stage="begin_dump",
-                                critic_tick=next_tick,
-                                error=str(exc),
-                            )
-                            print(
-                                f"  [dump_failed:capture] tick={next_tick} {exc}",
-                                flush=True,
-                            )
-                    try:
-                        step_stats = sac_update_v2(
-                            actor=actor,
-                            critic=critic,
-                            actor_optimizer=actor_optimizer,
-                            log_alpha=log_alpha,
-                            alpha_optimizer=alpha_optimizer,
-                            batch=batch,
-                            channels=channels,
-                            sp=sp,
-                            grad_clip_norm=cp.grad_clip_norm,
-                            device=device,
-                            expectation_rng=expectation_rng,
-                            capture=capture,
-                        )
-                    except Exception as exc:
-                        if dump_tmp is not None:
-                            fail_critic_tick_dump(dump_tmp, error=exc)
-                        raise
-                    if dump_tmp is not None:
-                        try:
-                            dump_dir = finish_critic_tick_dump(
-                                dump_tmp,
-                                forward_capture=capture or {},
-                                trainer_post_state=trainer_state_dict(
-                                    actor, critic, actor_optimizer,
-                                    log_alpha, alpha_optimizer,
-                                    expectation_rng=expectation_rng,
-                                ),
-                                update_stats=step_stats,
+                            step_stats = sac_update_v2(
                                 actor=actor,
                                 critic=critic,
+                                actor_optimizer=actor_optimizer,
+                                log_alpha=log_alpha,
+                                alpha_optimizer=alpha_optimizer,
+                                batch=batch,
                                 channels=channels,
                                 sp=sp,
                                 grad_clip_norm=cp.grad_clip_norm,
-                                critic_lr=cp.critic_learning_rate,
-                                keep_last=dump_keep_last,
-                                replay_stats=replay.buffer_stats(),
-                            )
-                            metrics.emit_debug(
-                                clocks,
-                                {
-                                    "debug.status": 1.0,
-                                    "debug.bytes": float(_directory_bytes(dump_dir)),
-                                    "debug.capture_s": float(
-                                        time.perf_counter() - update_start
-                                    ),
-                                },
-                                stage="finish_dump",
-                                critic_tick=next_tick,
-                                path=str(dump_dir),
+                                device=device,
+                                expectation_rng=expectation_rng,
+                                capture=capture,
                             )
                         except Exception as exc:
-                            fail_critic_tick_dump(dump_tmp, error=exc)
-                            if debug_strict:
-                                raise
-                            metrics.emit_debug(
-                                clocks,
-                                {"debug.status": 0.0},
-                                stage="finish_dump",
-                                critic_tick=next_tick,
-                                error=str(exc),
-                            )
-                            print(
-                                f"  [dump_failed:finish] tick={next_tick} {exc}",
-                                flush=True,
-                            )
-                    clocks.tick_critic()
-                    clocks.tick_actor()
-                    if alpha_optimizer is not None:
-                        clocks.tick_temperature()
-                    clocks.tick_target()
-                    for k, v in step_stats.items():
-                        accumulated.setdefault(k, []).append(float(v))
-                    tick_metrics = _tick_metrics(
-                        step_stats, sp.batch_size, replay.size, sp.tau,
-                    )
-                    tick_ring.append(
-                        clocks=clocks,
-                        metrics=tick_metrics,
-                        sample_ids=batch["sample_ids"].detach().cpu().tolist(),
-                    )
-                    if clocks.critic_tick % TICK_METRIC_INTERVAL == 0:
-                        tick_metrics["timing.update_s"] = time.perf_counter() - update_start
-                        metrics.emit_tick(clocks, tick_metrics)
-                    warning = guard.check(step_stats)
-                    if warning and "explosion" in warning:
-                        _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
-                        raise RuntimeError(
-                            f"SAC divergence at env_step={clocks.env_step}: {warning}"
+                            if dump_tmp is not None:
+                                fail_critic_tick_dump(dump_tmp, error=exc)
+                            raise
+                        if dump_tmp is not None:
+                            try:
+                                dump_dir = finish_critic_tick_dump(
+                                    dump_tmp,
+                                    forward_capture=capture or {},
+                                    trainer_post_state=trainer_state_dict(
+                                        actor, critic, actor_optimizer,
+                                        log_alpha, alpha_optimizer,
+                                        expectation_rng=expectation_rng,
+                                    ),
+                                    update_stats=step_stats,
+                                    actor=actor,
+                                    critic=critic,
+                                    channels=channels,
+                                    sp=sp,
+                                    grad_clip_norm=cp.grad_clip_norm,
+                                    critic_lr=cp.critic_learning_rate,
+                                    keep_last=dump_keep_last,
+                                    replay_stats=replay.buffer_stats(),
+                                )
+                                metrics.emit_debug(
+                                    clocks,
+                                    {
+                                        "debug.status": 1.0,
+                                        "debug.bytes": float(_directory_bytes(dump_dir)),
+                                        "debug.capture_s": float(
+                                            time.perf_counter() - update_start
+                                        ),
+                                    },
+                                    stage="finish_dump",
+                                    critic_tick=next_tick,
+                                    path=str(dump_dir),
+                                )
+                            except Exception as exc:
+                                fail_critic_tick_dump(dump_tmp, error=exc)
+                                if debug_strict:
+                                    raise
+                                metrics.emit_debug(
+                                    clocks,
+                                    {"debug.status": 0.0},
+                                    stage="finish_dump",
+                                    critic_tick=next_tick,
+                                    error=str(exc),
+                                )
+                                print(
+                                    f"  [dump_failed:finish] tick={next_tick} {exc}",
+                                    flush=True,
+                                )
+                        clocks.tick_critic()
+                        clocks.tick_actor()
+                        if alpha_optimizer is not None:
+                            clocks.tick_temperature()
+                        clocks.tick_target()
+                        for k, v in step_stats.items():
+                            accumulated.setdefault(k, []).append(float(v))
+                        tick_metrics = _tick_metrics(
+                            step_stats, sp.batch_size, replay.size, sp.tau,
                         )
-            else:
+                        tick_ring.append(
+                            clocks=clocks,
+                            metrics=tick_metrics,
+                            sample_ids=batch["sample_ids"].detach().cpu().tolist(),
+                        )
+                        if clocks.critic_tick % TICK_METRIC_INTERVAL == 0:
+                            tick_metrics["timing.update_s"] = time.perf_counter() - update_start
+                            metrics.emit_tick(clocks, tick_metrics)
+                        warning = guard.check(step_stats)
+                        if warning and "explosion" in warning:
+                            _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
+                            raise RuntimeError(
+                                f"SAC divergence at env_step={clocks.env_step}: {warning}"
+                            )
+                        # Safe-stop boundary: one full critic tick completed —
+                        # weights, optimizers and replay are all consistent.
+                        if _stop_requested["flag"]:
+                            break
+                else:
+                    print(
+                        f"  [warmup] buffer={replay.size}/{min_replay}, skipping updates",
+                        flush=True,
+                    )
+                if _stop_requested["flag"]:
+                    terminal_status = "signal_stop"
+                    terminal_reason = (
+                        f"signal {_stop_requested['signum']} received; "
+                        f"stopped after critic_tick={clocks.critic_tick} "
+                        f"(env_step={clocks.env_step})"
+                    )
+                    break
+                t_sac = time.perf_counter() - t0
+
+                stats = {
+                    k: float(np.mean(v)) for k, v in accumulated.items()
+                }
+                stats["n_grad_steps"] = float(n_grad_steps)
+                stats["utd_dropped"] = float(dropped_updates)
+
+                eval_info: Optional[Dict[str, Any]] = None
+                t_eval = 0.0
+                eval_ckpt_written = False
+                prev_env = clocks.env_step - actual_steps
+                do_eval = clocks.env_step >= cp.eval_interval and (
+                    clocks.env_step // cp.eval_interval > prev_env // cp.eval_interval
+                )
+                if do_eval:
+                    t0 = time.perf_counter()
+                    clocks.tick_eval()
+                    eval_seed = cp.seed + 100_000 + round_index * 97
+                    eval_export_dir = run_dir / "policy_exports" / f"r{round_index:05d}_eval"
+                    det_bp = actor.to_blueprint(str(eval_export_dir), stochastic=False)
+                    clocks.tick_export()
+                    eval_jobs = experiment.build_jobs(
+                        det_bp,
+                        eval_seed,
+                        cp.eval_episodes,
+                        collection_round=round_index,
+                        run_id=run_dir.name,
+                        deterministic=True,
+                    )
+                    eval_episodes = rollouter.collect(eval_jobs)
+                    result = experiment.on_eval(eval_episodes, clocks.env_step)
+                    eval_info = result.get("info", {})
+                    is_new_best = result.get("is_new_best", False)
+                    if result.get("request_relabel", False):
+                        raise RuntimeError(
+                            "SAC relabel requests are unsupported in sac_replay_v2"
+                        )
+                    t_eval = time.perf_counter() - t0
+                    eval_metrics = {
+                        "eval.episodes": float(len(eval_episodes)),
+                        "timing.eval_s": t_eval,
+                    }
+                    for k, v in eval_info.items():
+                        if isinstance(v, (int, float)) and np.isfinite(v):
+                            eval_metrics[f"eval.{k}"] = float(v)
+
+                    # Publish-after-durability ordering (R2-W10): the best
+                    # policy export and the checkpoint for this env_step are
+                    # written BEFORE the eval event is emitted. Anything that
+                    # observes the eval event (e.g. a monitor deciding the
+                    # run met its criterion) can rely on the corresponding
+                    # artifacts already being on disk.
+                    if is_new_best:
+                        actor.to_blueprint(str(policy_dir), stochastic=False)
+                    _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
+                    eval_ckpt_written = True
+                    metrics.emit_eval(clocks, eval_metrics)
+
+                    info_parts = [
+                        f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
+                        for k, v in eval_info.items()
+                    ]
+                    eval_line = f"[eval s{clocks.env_step:7d}] " + " ".join(info_parts)
+                    if is_new_best:
+                        eval_line += "  [new_best]"
+                    print(eval_line, flush=True)
+
+                    n_evals_done += 1
+                    if (
+                        cp.video_eval_interval > 0
+                        and n_evals_done % cp.video_eval_interval == 0
+                    ):
+                        if last_video_proc is not None and last_video_proc.poll() is None:
+                            print("  [video_skip:prev_running]", flush=True)
+                        elif eval_jobs:
+                            job = eval_jobs[0]
+                            video_path = video_dir / f"s{clocks.env_step:08d}.mp4"
+                            log_path = video_dir / f"s{clocks.env_step:08d}.log"
+                            v_env_path = video_dir / "video_env_blueprint.yaml"
+                            v_p_a_path = video_dir / "video_policy_a.yaml"
+                            v_p_b_path = video_dir / "video_policy_b.yaml"
+                            job.env_bp.save(v_env_path)
+                            job.policy_a_bp.save(v_p_a_path)
+                            job.policy_b_bp.save(v_p_b_path)
+                            v_options_path = None
+                            if job.episode_options:
+                                v_options_path = video_dir / "video_options.json"
+                                v_options_path.write_text(json.dumps(job.episode_options))
+                            last_video_proc = _spawn_video_render(
+                                env_blueprint=v_env_path,
+                                policy_a_blueprint=v_p_a_path,
+                                policy_b_blueprint=v_p_b_path,
+                                video_path=video_path,
+                                seed=job.seed,
+                                log_path=log_path,
+                                options_json=v_options_path,
+                            )
+
+                    if result.get("stop_training", False):
+                        terminal_status = "experiment_stop"
+                        terminal_reason = (
+                            "experiment requested stop_training after eval "
+                            f"at env_step={clocks.env_step}"
+                        )
+                        break
+
+                buf_stats = replay.buffer_stats()
+                t_total = time.perf_counter() - t_round_start
+                round_metrics = {
+                    "collection.episodes": float(ep_stats["n_episodes"]),
+                    "collection.env_steps": float(actual_steps),
+                    "collection.agent_transitions": float(transitions_added),
+                    "collection.wall_time_s": float(t_rollout),
+                    "replay.transitions_added": float(transitions_added),
+                    "replay.size": float(replay.size),
+                    "timing.collection_s": float(t_rollout),
+                    "timing.slice_s": float(t_buffer),
+                    # A4.8: effective β-layer values applied this round.
+                    "behavior.explore_factor": float(
+                        policy_bp.config.get("explore_factor", 0.0)
+                    ),
+                    "behavior.random_start": 1.0 if random_start_active else 0.0,
+                }
+                for key, value in experiment.post_round_metrics(episodes).items():
+                    if isinstance(value, (int, float)) and np.isfinite(value):
+                        round_metrics[f"task.{key}"] = float(value)
+                metrics.emit_round(
+                    clocks,
+                    round_metrics,
+                    termination_reasons=ep_stats["termination_reasons"],
+                    utd_credit=utd_credit,
+                    dropped_updates=dropped_updates,
+                    replay_stats=buf_stats,
+                    tick_ring_size=len(tick_ring),
+                )
+
                 print(
-                    f"  [warmup] buffer={replay.size}/{min_replay}, skipping updates",
+                    f"[round {clocks.collection_round:4d}] "
+                    f"env_step={clocks.env_step}/{cp.max_env_steps} "
+                    f"agent_transitions={clocks.agent_transition} "
+                    f"episodes={ep_stats['n_episodes']} "
+                    f"len={ep_stats['ep_len_mean']:.1f} "
+                    f"buffer={replay.size} added={transitions_added} "
+                    f"updates={n_grad_steps} dropped={dropped_updates}",
                     flush=True,
                 )
-            t_sac = time.perf_counter() - t0
-
-            stats = {
-                k: float(np.mean(v)) for k, v in accumulated.items()
-            }
-            stats["n_grad_steps"] = float(n_grad_steps)
-            stats["utd_dropped"] = float(dropped_updates)
-
-            eval_info: Optional[Dict[str, Any]] = None
-            t_eval = 0.0
-            prev_env = clocks.env_step - actual_steps
-            do_eval = clocks.env_step >= cp.eval_interval and (
-                clocks.env_step // cp.eval_interval > prev_env // cp.eval_interval
-            )
-            if do_eval:
-                t0 = time.perf_counter()
-                clocks.tick_eval()
-                eval_seed = cp.seed + 100_000 + round_index * 97
-                eval_export_dir = run_dir / "policy_exports" / f"r{round_index:05d}_eval"
-                det_bp = actor.to_blueprint(str(eval_export_dir), stochastic=False)
-                clocks.tick_export()
-                eval_jobs = experiment.build_jobs(
-                    det_bp,
-                    eval_seed,
-                    cp.eval_episodes,
-                    collection_round=round_index,
-                    run_id=run_dir.name,
-                    deterministic=True,
+                print(
+                    f"  | time: total={t_total:.1f}s export={t_export:.2f}s "
+                    f"jobs={t_jobs:.2f}s rollout={t_rollout:.1f}s "
+                    f"slice={t_buffer:.2f}s train={t_sac:.1f}s eval={t_eval:.1f}s",
+                    flush=True,
                 )
-                eval_episodes = rollouter.collect(eval_jobs)
-                result = experiment.on_eval(eval_episodes, clocks.env_step)
-                eval_info = result.get("info", {})
-                is_new_best = result.get("is_new_best", False)
-                if result.get("request_relabel", False):
-                    raise RuntimeError(
-                        "SAC relabel requests are unsupported in sac_replay_v2"
-                    )
-                t_eval = time.perf_counter() - t0
-                eval_metrics = {
-                    "eval.episodes": float(len(eval_episodes)),
-                    "timing.eval_s": t_eval,
-                }
-                for k, v in eval_info.items():
-                    if isinstance(v, (int, float)) and np.isfinite(v):
-                        eval_metrics[f"eval.{k}"] = float(v)
-                metrics.emit_eval(clocks, eval_metrics)
 
-                info_parts = [
-                    f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}"
-                    for k, v in eval_info.items()
-                ]
-                eval_line = f"[eval s{clocks.env_step:7d}] " + " ".join(info_parts)
-                if is_new_best:
-                    actor.to_blueprint(str(policy_dir), stochastic=False)
-                    eval_line += "  [new_best]"
-                print(eval_line, flush=True)
-
-                n_evals_done += 1
-                if (
-                    cp.video_eval_interval > 0
-                    and n_evals_done % cp.video_eval_interval == 0
-                ):
-                    if last_video_proc is not None and last_video_proc.poll() is None:
-                        print("  [video_skip:prev_running]", flush=True)
-                    elif eval_jobs:
-                        job = eval_jobs[0]
-                        video_path = video_dir / f"s{clocks.env_step:08d}.mp4"
-                        log_path = video_dir / f"s{clocks.env_step:08d}.log"
-                        v_env_path = video_dir / "video_env_blueprint.yaml"
-                        v_p_a_path = video_dir / "video_policy_a.yaml"
-                        v_p_b_path = video_dir / "video_policy_b.yaml"
-                        job.env_bp.save(v_env_path)
-                        job.policy_a_bp.save(v_p_a_path)
-                        job.policy_b_bp.save(v_p_b_path)
-                        v_options_path = None
-                        if job.episode_options:
-                            v_options_path = video_dir / "video_options.json"
-                            v_options_path.write_text(json.dumps(job.episode_options))
-                        last_video_proc = _spawn_video_render(
-                            env_blueprint=v_env_path,
-                            policy_a_blueprint=v_p_a_path,
-                            policy_b_blueprint=v_p_b_path,
-                            video_path=video_path,
-                            seed=job.seed,
-                            log_path=log_path,
-                            options_json=v_options_path,
-                        )
-
-                if result.get("stop_training", False):
+                if (do_eval or clocks.collection_round == 1) and not eval_ckpt_written:
                     _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
-                    break
 
-            buf_stats = replay.buffer_stats()
-            t_total = time.perf_counter() - t_round_start
-            round_metrics = {
-                "collection.episodes": float(ep_stats["n_episodes"]),
-                "collection.env_steps": float(actual_steps),
-                "collection.agent_transitions": float(transitions_added),
-                "collection.wall_time_s": float(t_rollout),
-                "replay.transitions_added": float(transitions_added),
-                "replay.size": float(replay.size),
-                "timing.collection_s": float(t_rollout),
-                "timing.slice_s": float(t_buffer),
-                # A4.8: effective β-layer values applied this round.
-                "behavior.explore_factor": float(
-                    policy_bp.config.get("explore_factor", 0.0)
-                ),
-                "behavior.random_start": 1.0 if random_start_active else 0.0,
-            }
-            for key, value in experiment.post_round_metrics(episodes).items():
-                if isinstance(value, (int, float)) and np.isfinite(value):
-                    round_metrics[f"task.{key}"] = float(value)
-            metrics.emit_round(
-                clocks,
-                round_metrics,
-                termination_reasons=ep_stats["termination_reasons"],
-                utd_credit=utd_credit,
-                dropped_updates=dropped_updates,
-                replay_stats=buf_stats,
-                tick_ring_size=len(tick_ring),
-            )
+    except BaseException as exc:
+        # Terminal record on failure paths too: "how did this run end"
+        # must be answerable for crashed/diverged runs, not just clean
+        # exits. The exception is re-raised unchanged afterwards.
+        _status = (
+            "diverged"
+            if "divergence" in str(exc).lower()
+            else "error"
+        )
+        try:
+            _write_terminal(_status, f"{type(exc).__name__}: {exc}")
+        except Exception:
+            pass  # never mask the original failure
+        metrics.close()
+        raise
 
-            print(
-                f"[round {clocks.collection_round:4d}] "
-                f"env_step={clocks.env_step}/{cp.max_env_steps} "
-                f"agent_transitions={clocks.agent_transition} "
-                f"episodes={ep_stats['n_episodes']} "
-                f"len={ep_stats['ep_len_mean']:.1f} "
-                f"buffer={replay.size} added={transitions_added} "
-                f"updates={n_grad_steps} dropped={dropped_updates}",
-                flush=True,
-            )
-            print(
-                f"  | time: total={t_total:.1f}s export={t_export:.2f}s "
-                f"jobs={t_jobs:.2f}s rollout={t_rollout:.1f}s "
-                f"slice={t_buffer:.2f}s train={t_sac:.1f}s eval={t_eval:.1f}s",
-                flush=True,
-            )
-
-            if do_eval or clocks.collection_round == 1:
-                _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
-
+    # Unified finalization: every graceful exit (natural completion,
+    # experiment stop, signal stop) lands here.
+    if terminal_status is None:
+        terminal_status = "completed"
+        terminal_reason = f"reached max_env_steps={cp.max_env_steps}"
+    final_ckpt = ckpt_dir / f"checkpoint_s{clocks.env_step:08d}"
+    if not (final_ckpt / "manifest.json").exists():
+        _checkpoint(final_ckpt)
+    _write_terminal(terminal_status, terminal_reason)
     metrics.close()
     print(
-        f"[done] env_step={clocks.env_step} critic_tick={clocks.critic_tick}",
+        f"[done] env_step={clocks.env_step} critic_tick={clocks.critic_tick} "
+        f"status={terminal_status}",
         flush=True,
     )
