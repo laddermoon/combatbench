@@ -13,6 +13,10 @@ Update this table whenever a schema is added or bumped.
 | Checkpoint bundle | `runs/<run>/checkpoints/checkpoint_sXXXXXXXX/` | `sac_checkpoint_v1` (`manifest.json:schema`) | `checkpoint.save_checkpoint_bundle` | `checkpoint.load_checkpoint_bundle` | `SACCheckpointError`; per-file sha256 + size verified on load |
 | Trainer state | inside checkpoint: `trainer.pt` | `sac_trainer_v1` (`payload["schema"]`) | `trainer.trainer_state_dict` | `load_trainer_state` / `load_model_state` | `SACTrainerError` |
 | Replay buffer | inside checkpoint: `replay.pt` | `sac_replay_v2` (`state["schema"]`) | `SACReplayBuffer.save` | `SACReplayBuffer.load` | `SACReplayError` |
+
+> R2-W12: `seen_source_keys` inside `sac_replay_v2` is now bounded to
+> keys of live transitions (dedup domain = live buffer). Older payloads
+> with eternal sets load fine and are intersected down on `load_state_dict`.
 | Metrics event stream | `runs/<run>/metrics/events.jsonl` | `sac_metrics_v1` (`schema_version` per event) | `SACMetricsWriter` | `metrics.load_events` | `SACMetricsError`-family rejection |
 | Debug dump | `runs/<run>/debug_dumps/critic_tick_NNNNNN/` | `sac_dump_v3` (`manifest.json:schema_version`; `sac_dump_v2` readable) | `debugkit` dump capture | `debugkit.load_dump` / `analysis` / `debugserver` | unsupported schema → error listing `SUPPORTED_DUMP_SCHEMAS` |
 | Transition slice | in-memory (collection → replay) | `sac_transition_v2` (`slice.schema_version`) | `experiment.build_slices` | `transition.validate_transition_slice` (called by `replay.add_slices`) | `ValueError` naming the unsupported schema |

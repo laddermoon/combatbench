@@ -2993,6 +2993,21 @@ experiment_stop；eval 事件次序断言（同 env_step 的 checkpoint 事件�
 eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 **SAC suite 208 passed。**
 
+## R2.8 R2-W12 结论：`_seen_source_keys` 有界化
+
+**改动**：source_key 随槽位淘汰即从 seen 集合移除（逐 transition 唯一键，
+删除安全）；`load_state_dict` 载入时将 seen 集与 live 键求交立即收敛；
+冲突报错措辞改为 "live buffer samples"；schema 保持 `sac_replay_v2`
+（内容有界、格式不变），ARTIFACTS.md 已补注。
+
+**语义裁决**：去重保证域 = live buffer。已淘汰键的重提交是陈旧数据
+（off-policy 本就容忍），不再是 dedup 违规——这是用明确的语义换
+无界内存/checkpoint 体积的正确权衡，已在 replay.py 字段注释记录。
+
+**测试**（3 新增）：wrap-around 后 seen ⊆ live 且 size=capacity；
+live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
+旧 state 载入后收敛。**SAC suite 210 passed。**
+
 ## R2.6a R2-1 细计划：生命周期、恢复与资源治理
 
 **目标**：停训/完成/恢复形成可验证的事务语义；replay 元数据与产物保留有界；

@@ -176,6 +176,40 @@ def test_duplicate_source_key_is_rejected_atomically() -> None:
     assert replay.size == before
 
 
+def test_seen_source_keys_bounded_by_live_slots() -> None:
+    """R2-W12: dedup domain is the live buffer; the set must shrink on
+    eviction instead of growing forever (it is also persisted into every
+    checkpoint, so an eternal set was an unbounded artifact leak)."""
+    replay = SACReplayBuffer(4, 3, 2, ("r",))
+    replay.add_slices([_slice(slice_id="a", T=4, channels=1)])
+    assert len(replay._seen_source_keys) == 4
+
+    replay.add_slices([_slice(slice_id="b", T=4, channels=1)])
+    assert len(replay._seen_source_keys) == 4
+    assert all(k.startswith("run:b:") for k in replay._seen_source_keys)
+
+    # Resubmitting an evicted key is stale data, not a dedup violation.
+    replay.add_slices([_slice(slice_id="a", T=4, channels=1)])
+    assert all(k.startswith("run:a:") for k in replay._seen_source_keys)
+
+
+def test_seen_source_keys_bounded_on_load_of_legacy_state(tmp_path) -> None:
+    """Old checkpoints may carry an eternal seen set; loading must
+    converge it to the live-key domain immediately."""
+    replay = SACReplayBuffer(4, 3, 2, ("r",))
+    replay.add_slices([_slice(slice_id="a", T=4, channels=1)])
+    state = replay.state_dict()
+    state["seen_source_keys"] = set(state["seen_source_keys"]) | {
+        "run:ghost:agent:0",
+        "run:ghost:agent:1",
+    }
+
+    restored = SACReplayBuffer(4, 3, 2, ("r",))
+    restored.load_state_dict(state)
+    assert restored._seen_source_keys == set(replay._seen_source_keys)
+    assert "run:ghost:agent:0" not in restored._seen_source_keys
+
+
 def test_malformed_slice_is_rejected_before_partial_insertion() -> None:
     replay = SACReplayBuffer(8, 3, 2, ("r",))
     good = _slice(slice_id="good", T=1, channels=1)

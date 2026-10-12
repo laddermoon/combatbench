@@ -106,6 +106,11 @@ class SACReplayBuffer:
             for name in self._reward_feature_names
         }
 
+        # Dedup domain = live buffer: a source_key stays in this set only
+        # while its transition occupies a slot, and is discarded on
+        # eviction (R2-W12 — previously eternal and unbounded, growing
+        # into both RAM and every checkpoint). Resubmitting an evicted
+        # key is stale data, not a dedup violation.
         self._seen_source_keys: set[str] = set()
         self._sample_by_source: Dict[str, int] = {}
         self._source_by_sample: Dict[int, str] = {}
@@ -162,7 +167,7 @@ class SACReplayBuffer:
         conflicts = sorted(set(new_keys) & self._seen_source_keys)
         if conflicts:
             raise SACReplayError(
-                f"source_key conflicts with previously admitted samples: "
+                f"source_key conflicts with live buffer samples: "
                 f"{conflicts[:4]}"
             )
         for sl in validated:
@@ -183,6 +188,7 @@ class SACReplayBuffer:
             old_sample = int(self.sample_ids[p])
             if old_key is not None:
                 self._sample_by_source.pop(old_key, None)
+                self._seen_source_keys.discard(old_key)
             if old_sample >= 0:
                 self._source_by_sample.pop(old_sample, None)
             self.overwritten += 1
@@ -504,7 +510,8 @@ class SACReplayBuffer:
             self._reward_feature_names = tuple(state["reward_feature_names"])
             self.task_facts = dict(state["task_facts"])
             self.reward_features = dict(state["reward_features"])
-            self._seen_source_keys = set(state["seen_source_keys"])
+            live_keys = {k for k in self.source_keys if k is not None}
+            self._seen_source_keys = set(state["seen_source_keys"]) & live_keys
             self._sample_by_source = {
                 str(key): int(sample_id)
                 for key, sample_id in zip(self.source_keys, self.sample_ids)
