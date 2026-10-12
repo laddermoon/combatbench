@@ -3011,6 +3011,72 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.17 R2-6 结论：四层验收挂证 + 测量报告
+
+### 验收矩阵（每层挂可复核证据）
+
+| 层 | 证据 |
+|---|---|
+| 数学/数值 | TN 核八格积分/边界（test_tn_kernel）；actor 采样/logπ/指纹/蓝图往返（test_tn_actor 777 行）；梯度方向与 twin-pair 选择（test_trainer）；全正则分支 recompute（R2-W35，含 U-mode）；配置域校验 intlike/numlike 全覆盖（R2-W01） |
+| 系统 | 跨进程真实 MuJoCo 恢复逐位一致（R2.9，PPO 同级证明）；安全停训事务+终态分类（R2-W10/W11）；eviction/剪枝有界（R2-W12/W14）；故障路径 terminal 记录（diverged/error） |
+| 诊断 | dump→recompute 全模式；attribute/decomp/grad-attr/drift/slice-ctx 全链（R2.14）；HTTP+CLI 共用 analysis 层且已端点测试（R2.15）；缺失数据显式不可用（test_debug_faults）；**真实工件复核见下** |
+| 实验 | 两实验多 seed 训练+held-out 验收（P6.5a，用户已裁定）；逐 agent 证据链（R2-W50~W52）；`held_out_eval --policy` 真实端到端复核（本条） |
+
+### 三使用场景
+
+- **实验作者**：`build_critic`/`param_overrides`/`eval_episode_details`/`--set`/`--param` 全部契约级接线并有测试；新实验接入不改 trainer。
+- **维护者**：信号安全停训、round 边界逐位恢复、checkpoint/replay/exports 有界、`run_terminal.json` 终态可查。
+- **诊断者**：六工作区 viewer + 全链 CLI；本条证明该链在**真实失败 run** 上可执行。
+
+### R2-W61 真实 run 证据链复核（旗舰证据）
+
+`held_out_eval --policy policy --episodes 8` 于
+`sac_standup_s01_s42_te0_ln`（成功 run，历史 held-out 0.992）：
+
+- 发布工件直接加载评估：8 episodes（seeds 900042–900049，与训练
+  eval seed 不相交）→ success 1.0、16 条逐 agent 明细
+  （max_pot/final_pot/success 逐条可复核）；
+- 身份块完整：`model_sha256`、code_version 精确到快照分支
+  `exp/sac_standup_s01_s42_te0_ln_*` + commit；
+- **旧 run 无 meta.json → 优雅降级**（kind="policy_export"、
+  fingerprint=null 如实报告，不伪造身份）；
+- **实测修复一个真 bug**：`--policy policy` 的相对路径先撞中仓库根
+  `policy/` 目录——`_resolve_artifact_path` 改为 run-relative 优先，
+  checkpoint 同路径同修；有单测。
+
+### R2-W62 失败 run 案例复盘（诊断链真实工件演练）
+
+`sac_standup_s01_s2024_te0_ln`（held-out 0.516 失败 run）：
+
+- `debugkit run`：157 rounds / 24,531 critic ticks / 100 evals，
+  末 eval success 0.625、max_pot 0.901——"能站起但不稳"的轨迹；
+- `debugkit replay`（1.5GB 真实 checkpoint）：50 万活样本、
+  rounds 138–157、20 个行为策略指纹、平均复用 52.6 次、最老样本
+  50 万 transition——陈旧度结构一目了然；
+- `debugkit slice-ctx --sample-id 3900000`：完整重建 episode
+  `r000153/j000022/robot_a/e11838` 的 200 帧 live 序列
+  （逐帧 draw_count/reward/终止标记，无缺口）；
+- 结论：异常 verdict → run 概况 → replay 人口学 → 样本级来源，
+  "异常→证据"链在真实工件上逐步可走（dump 级分析无历史工件，
+  属按需捕获的既定边界）。
+
+### R2-W63 性能测量报告（CPU，真实维度）
+
+| 项 | 实测 | 结论 |
+|---|---|---|
+| `expectation_samples` B=256 E=8 | 8.8 ms | 枚举非瓶颈 |
+| `sac_update_v2` capture off/on | 76.6 / 66.1 ms | 捕获开销≈0（测量噪声内），零成本设计确认 |
+| `torch.load` replay.pt 1.51GB | 12.3 s @123MB/s | checkpoint I/O 主成本；相对 ~52s/round 可接受，有界 |
+| trainer.pt / runtime.pt | <0.1 s | 可忽略 |
+
+**裁决：测量未暴露需要优化的瓶颈，本轮不做优化**（常驻 worker、
+GPU 推理等均未获证据支持——如实记录，与"先测量后动手"一致）。
+
+### 测试与收口
+
+SAC suite **230 passed**（+1 路径解析回归测试）；diff 仅触
+`framework/sac/`。
+
 ## R2.17a R2-6 细计划：综合验收与有证据的性能优化
 
 **目标**（PLAN R2-6 出口）：四层验收逐项挂接证据；三个使用场景

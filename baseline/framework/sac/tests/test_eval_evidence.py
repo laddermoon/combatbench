@@ -13,6 +13,7 @@ from baseline.framework.sac.tests.test_env_integration import (
     _FakeExperiment,
     _FakeRollouter,
 )
+from baseline.framework.sac.held_out_eval import _resolve_artifact_path
 from baseline.experiments_sac.exp_sac_balance import SacBalance
 from baseline.experiments_sac.exp_sac_standup import SacStandup
 
@@ -106,6 +107,21 @@ def test_balance_eval_episode_details_match_on_eval() -> None:
     result = exp.on_eval(episodes, env_step=0)
     expected_survived = float(sum(1 for r in rows if r["survived"]))
     assert result["info"]["survived"] == expected_survived
+
+
+def test_resolve_artifact_path_prefers_run_relative(tmp_path) -> None:
+    """A bare 'policy' arg must hit <run>/policy even when an unrelated
+    'policy/' dir exists under the CWD (the repo has one — real bug)."""
+    from pathlib import Path
+
+    run_dir = tmp_path / "run"
+    (run_dir / "policy").mkdir(parents=True)
+    resolved = _resolve_artifact_path(Path("policy"), run_dir)
+    assert resolved == run_dir / "policy"
+    other = _resolve_artifact_path(Path("nowhere"), run_dir)
+    assert other == run_dir / "nowhere"  # neither exists → run-relative
+    abs_path = tmp_path / "abs" / "x"
+    assert _resolve_artifact_path(abs_path, run_dir) == abs_path
 
 
 def test_best_policy_export_writes_meta_json(tmp_path) -> None:

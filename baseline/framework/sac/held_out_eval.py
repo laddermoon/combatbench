@@ -66,6 +66,21 @@ def _newest_checkpoint(run_dir: Path) -> Path:
     return cks[-1]
 
 
+def _resolve_artifact_path(path: Path, run_dir: Path) -> Path:
+    """Resolve a CLI artifact path, preferring run-relative for relatives.
+
+    A bare relative path can accidentally match an unrelated dir under
+    the CWD (the repo's own ``policy/`` did, hiding the intended
+    ``<run>/policy``) — run-relative wins when it exists.
+    """
+    if path.is_absolute():
+        return path
+    run_rel = run_dir / path
+    if run_rel.exists() or not path.exists():
+        return run_rel
+    return path
+
+
 def _sha256(path: Path) -> str:
     import hashlib
 
@@ -116,9 +131,7 @@ def main() -> int:
         # run's policy/ dir ships, not a checkpoint re-export.
         from envs.framework.policy import PolicyBlueprint
 
-        policy_dir = Path(args.policy)
-        if not policy_dir.is_absolute() and not policy_dir.exists():
-            policy_dir = run_dir / policy_dir
+        policy_dir = _resolve_artifact_path(Path(args.policy), run_dir)
         bp = PolicyBlueprint.load(policy_dir / "policy_blueprint.yaml")
         meta_path = policy_dir / "meta.json"
         meta = (
@@ -140,9 +153,7 @@ def main() -> int:
         )
     else:
         if args.checkpoint:
-            ckpt = Path(args.checkpoint)
-            if not ckpt.is_absolute() and not ckpt.exists():
-                ckpt = run_dir / ckpt
+            ckpt = _resolve_artifact_path(Path(args.checkpoint), run_dir)
         else:
             ckpt = _newest_checkpoint(run_dir)
 
