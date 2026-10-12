@@ -10,13 +10,13 @@ Two new channels driven by the same reactive arm state machine:
 
   r_left_punch_speed / r_right_punch_speed
       reward = hand SPEED TOWARD the opponent head (m/s, signed,
-               unbounded): v_hand · dir(hand→opp_head).  Own velocity
-               only — the opponent's motion is excluded so the reward
-               cannot be farmed by a walking target.
-      aw     = +SPEED_WEIGHT × clip(w_arm/ARM_WEIGHT, 0, 1) × φ²
-               — positive only while the arm is in its READY
-               (extension-encouraged) phase; zero while chambering so
-               a fast retraction is never penalized.
+               unbounded): v_hand · dir(hand→opp_head), paid on every
+               frame of a READY run that ENDS IN A COMPLETED PUNCH
+               (elbow crosses extend_threshold).  Swings that never
+               complete — including fast wave-without-punch farming —
+               score zero.  Own velocity only; the opponent's motion
+               is excluded.
+      aw     = +SPEED_WEIGHT × φ² on those swing frames, else 0.
 
 The world-frame hand velocity means the whole kinetic chain pays: arm
 swing + body lunge.  The retained hand_dist channels (shoulder-
@@ -38,12 +38,47 @@ import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
-from baseline.humanoid21.end2end.arm_state_machine import (
-    ARM_WEIGHT,
-    compute_arm_weights_with_stats,
-)
 
 from .exp_attack_prep_step import AttackPrepStep
+
+
+_READY = 0
+_RETRACT = 1
+
+
+def _completed_swing_mask(
+    elbow: np.ndarray,
+    valid_mask: np.ndarray,
+    extend_threshold: float,
+    flex_threshold: float,
+) -> np.ndarray:
+    """Frames belonging to READY runs that end in a completed punch.
+
+    Mirrors ``arm_state_machine._scan`` per-arm semantics: the arm is
+    READY while chambered, a punch completes when elbow <=
+    extend_threshold (only counted on valid frames), and the arm
+    re-arms when elbow >= flex_threshold.  A completed run is the
+    contiguous span of READY-state frames ending at the crossing.
+    Only valid frames inside completed runs return True — the reward
+    is for swinging *through* a real punch, not for waving.
+    """
+    T = len(elbow)
+    mask = np.zeros(T, dtype=bool)
+    if T == 0:
+        return mask
+    state = _RETRACT if float(elbow[0]) <= extend_threshold else _READY
+    run_start = 0 if state == _READY else -1
+    for t in range(T):
+        e = float(elbow[t])
+        if state == _READY and e <= extend_threshold:
+            if valid_mask[t] and run_start >= 0:
+                mask[run_start:t + 1] = True
+            state = _RETRACT
+            run_start = -1
+        elif state == _RETRACT and e >= flex_threshold:
+            state = _READY
+            run_start = t
+    return mask
 
 
 class PunchPowerStep(AttackPrepStep):
@@ -148,22 +183,23 @@ class PunchPowerStep(AttackPrepStep):
             & (phi_arr >= self.STAND_PHI_MIN)
         )
 
-        # Arm phase gates: 1 while the machine wants extension (READY),
-        # 0 while it wants retraction — fast punches pay, fast
-        # re-chamber never penalized.
-        w_le, w_re, _w_lhd, _w_rhd, _stats = compute_arm_weights_with_stats(
-            np.asarray(left_elbow), np.asarray(right_elbow),
-            np.asarray(left_hand_opp), np.asarray(right_hand_opp),
-            valid_mask=arm_valid,
-            extend_threshold=self.extend_threshold,
-            flex_threshold=self.flex_threshold,
-            arm_weight=self.arm_weight,
-            attack_timeout_steps=self.attack_timeout_steps,
+        # Per-arm completed-swing masks: reward is paid only on frames
+        # of READY runs that end in a completed punch — waving without
+        # committing to an extension crossing earns nothing.
+        swing_l = _completed_swing_mask(
+            np.asarray(left_elbow), arm_valid,
+            self.extend_threshold, self.flex_threshold,
         )
-        gate_l = np.clip(w_le / ARM_WEIGHT, 0.0, 1.0)
-        gate_r = np.clip(w_re / ARM_WEIGHT, 0.0, 1.0)
-        w_ls = (self.PUNCH_SPEED_WEIGHT * gate_l * phi2).astype(np.float32)
-        w_rs = (self.PUNCH_SPEED_WEIGHT * gate_r * phi2).astype(np.float32)
+        swing_r = _completed_swing_mask(
+            np.asarray(right_elbow), arm_valid,
+            self.extend_threshold, self.flex_threshold,
+        )
+        w_ls = (
+            self.PUNCH_SPEED_WEIGHT * swing_l.astype(np.float32) * phi2
+        ).astype(np.float32)
+        w_rs = (
+            self.PUNCH_SPEED_WEIGHT * swing_r.astype(np.float32) * phi2
+        ).astype(np.float32)
 
         for t in trajs:
             T = t.obs.shape[0]
