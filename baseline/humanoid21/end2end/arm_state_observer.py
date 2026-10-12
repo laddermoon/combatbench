@@ -31,6 +31,11 @@ Outputs eight raw physical quantities per step (no state-machine logic):
     is driven by hip rotation and leg drive — the proximal end of
     the kinetic chain.  An elbow-only flick leaves it near zero.
 
+  TORSO YAW RATE (rad/s, signed, world z):
+    ω_z of the torso body — how fast the waist twists.  Rotational
+    chain drive shows up here directly even when the shoulder point's
+    linear speed stays modest (short lever arm).
+
 The experiment's post-hoc state machine (``arm_state_machine.py``) consumes
 these to produce per-step actor weights for four reward channels
 (``r_left_elbow``, ``r_right_elbow``, ``r_left_hand_dist``,
@@ -72,6 +77,7 @@ class ArmStateObserver(BaseObserverPlugin):
       right_hand_speed_to_opp    — same for right hand
       left_shoulder_speed_to_opp  — v_shoulder · dir(shoulder→opp_head), m/s
       right_shoulder_speed_to_opp — same for right shoulder
+      torso_yaw_rate             — torso ω_z, world frame, rad/s
     """
 
     def __init__(
@@ -105,6 +111,7 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rs_pos: np.ndarray | None = None
         self._left_shoulder_speed: float = 0.0
         self._right_shoulder_speed: float = 0.0
+        self._torso_yaw_rate: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -131,6 +138,7 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rs_pos = None
         self._left_shoulder_speed = 0.0
         self._right_shoulder_speed = 0.0
+        self._torso_yaw_rate = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         # --- Joint angles from core_state ---
@@ -283,6 +291,16 @@ class ArmStateObserver(BaseObserverPlugin):
             self._prev_ls_pos = sl
             self._prev_rs_pos = sr
 
+        # Torso yaw rate (world-frame ω_z) — hip twist speed.
+        self_av = self_view.get("body_angvel_world", {})
+        torso_av = self_av.get(f"torso_{suffix}")
+        if torso_av is None:
+            self._torso_yaw_rate = 0.0
+        else:
+            self._torso_yaw_rate = float(
+                np.asarray(torso_av, dtype=np.float64)[2]
+            )
+
     # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
@@ -303,6 +321,7 @@ class ArmStateObserver(BaseObserverPlugin):
             "right_hand_speed_to_opp": self._right_speed_to_opp,
             "left_shoulder_speed_to_opp": self._left_shoulder_speed,
             "right_shoulder_speed_to_opp": self._right_shoulder_speed,
+            "torso_yaw_rate": self._torso_yaw_rate,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:
