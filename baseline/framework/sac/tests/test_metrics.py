@@ -122,3 +122,26 @@ def test_load_events_rejects_corrupt_line(tmp_path):
     path.write_text(json.dumps({"bad": True}) + "\n")
     with pytest.raises(ValueError, match="invalid SAC metrics event"):
         load_events(path)
+
+
+def test_catalog_specs_match_emitted_keys():
+    """R2-W03 (G8): catalog spec names must correspond to keys the
+    framework actually emits — phantom entries break discovery, and
+    unlisted emitted keys are invisible to the catalog."""
+    from baseline.framework.sac.metric_catalog import DEFAULT_METRIC_SPECS
+
+    specs = {(s.event_type, s.name) for s in DEFAULT_METRIC_SPECS}
+    # standup emits eval.success (not eval.success_rate); balance emits
+    # eval.survival_rate + eval.survived — verified against real
+    # events.jsonl of acceptance runs.
+    assert ("eval", "eval.success") in specs
+    assert ("eval", "eval.success_rate") not in specs
+    assert ("eval", "eval.survival_rate") in specs
+    assert ("eval", "eval.survived") in specs
+    # emitted tick/round keys previously missing from the catalog
+    assert ("tick", "target.pair1_frac") in specs
+    assert ("tick", "actor.pair1_frac") in specs
+    assert ("tick", "actor.valid_count") in specs
+    assert ("round", "behavior.explore_factor") in specs
+    assert ("round", "behavior.random_start") in specs
+    assert ("debug", "debug.request") in specs

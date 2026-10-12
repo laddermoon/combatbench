@@ -374,7 +374,16 @@ def recompute_dump(
     atol: float = 2e-5,
     rtol: float = 2e-4,
 ) -> Dict[str, Any]:
-    """Recompute the supported SAC losses from one ``critic_tick`` dump."""
+    """Recompute the supported SAC losses from one ``critic_tick`` dump.
+
+    Coverage boundary (G7): the recomputed loss formulas below are the
+    Shannon path. For ``u_bonus``/``u_floor`` dumps the Bellman target
+    uses a per-state U term instead of ``-alpha*logp`` and the actor/alpha
+    losses differ — those keys are NOT recomputed (a wrong number is
+    worse than none) and are reported under ``coverage.unsupported_keys``.
+    Mode-independent quantities (Q predictions, pair indices, masks,
+    action replay, descriptive logp stats) are still compared.
+    """
     dump = load_dump(dump_dir)
     spec = dump["spec"]
     batch = dump["batch"]
@@ -384,6 +393,13 @@ def recompute_dump(
     reference = dump["analysis"]["update_stats"]
     sp = SACParams(**spec["sac_params"])
     channels = tuple(SACRewardChannel(**item) for item in spec["channels"])
+    mode = sp.regularizer_mode
+    is_shannon = mode == "shannon"
+    shannon_only = {"critic_loss", "actor_loss", "alpha_loss"} | {
+        f"{prefix}_{ch.name}"
+        for ch in channels
+        for prefix in ("q1_loss", "q2_loss", "td_abs_mean")
+    }
 
     actor = _build_actor(spec, pre)
     pre_critic = _build_critic(spec, channels, pre)
@@ -450,6 +466,27 @@ def recompute_dump(
         ).squeeze(-1)
         recomputed["target_pair1_frac"] = float(pair_next.float().mean().item())
         for c, ch in enumerate(channels):
+            q1_pred = pre_critic.q1_forward(obs, actions, ch.name)
+            q2_pred = pre_critic.q2_forward(obs, actions, ch.name)
+            mask = channel_valid[:, c].float() * sample_weight
+            mask_sum = mask.sum()
+            recomputed[f"critic_valid_weight_{ch.name}"] = float(mask_sum.item())
+            if mask_sum.item() <= 0:
+                recomputed[f"critic_updated_{ch.name}"] = 0.0
+                continue
+            recomputed[f"critic_updated_{ch.name}"] = 1.0
+            recomputed[f"q1_mean_{ch.name}"] = float(q1_pred.mean().item())
+            recomputed[f"q2_mean_{ch.name}"] = float(q2_pred.mean().item())
+            recomputed[f"actor_weight_mean_{ch.name}"] = float(
+                actor_weight[:, c].mean().item()
+            )
+            recomputed[f"actor_weight_next_mean_{ch.name}"] = float(
+                actor_weight_next[:, c].mean().item()
+            )
+            if not is_shannon:
+                # U-mode target adds a per-state regularizer instead of
+                # -alpha*logp — the Shannon formula would be wrong here.
+                continue
             v_c = (
                 integ_w_next
                 * (selected_next[..., c] - alpha * next_log_probs)
@@ -460,30 +497,13 @@ def recompute_dump(
                 * bootstrap
                 * v_c
             )
-            q1_pred = pre_critic.q1_forward(obs, actions, ch.name)
-            q2_pred = pre_critic.q2_forward(obs, actions, ch.name)
-            mask = channel_valid[:, c].float() * sample_weight
-            mask_sum = mask.sum()
-            recomputed[f"critic_valid_weight_{ch.name}"] = float(mask_sum.item())
-            if mask_sum.item() <= 0:
-                recomputed[f"critic_updated_{ch.name}"] = 0.0
-                continue
             q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
             q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
             critic_loss += q1_loss + q2_loss
-            recomputed[f"critic_updated_{ch.name}"] = 1.0
             recomputed[f"q1_loss_{ch.name}"] = float(q1_loss.item())
             recomputed[f"q2_loss_{ch.name}"] = float(q2_loss.item())
-            recomputed[f"q1_mean_{ch.name}"] = float(q1_pred.mean().item())
-            recomputed[f"q2_mean_{ch.name}"] = float(q2_pred.mean().item())
             recomputed[f"td_abs_mean_{ch.name}"] = float(
                 (q1_pred - target).abs().mean().item()
-            )
-            recomputed[f"actor_weight_mean_{ch.name}"] = float(
-                actor_weight[:, c].mean().item()
-            )
-            recomputed[f"actor_weight_next_mean_{ch.name}"] = float(
-                actor_weight_next[:, c].mean().item()
             )
 
         actor_mask = channel_valid.all(dim=1).float() * sample_weight
@@ -516,30 +536,35 @@ def recompute_dump(
         w_actor = actor_weight[:, None, None, :, None]
         f_actor = (q_online_pairs * w_actor).sum(dim=3)
         pair_actor = f_actor.argmin(dim=-1)
-        f_selected = f_actor.gather(-1, pair_actor[..., None]).squeeze(-1)
-        weighted_q = (
-            integ_w * (alpha * new_log_probs - f_selected)
-        ).sum(dim=(1, 2))
-        actor_loss = (
-            actor_mask * weighted_q
-        ).sum() / actor_den
-        logp_bar = (integ_w * new_log_probs).sum(dim=(1, 2))
-        target_entropy = (
-            -float(spec["actor"]["action_dim"])
-            if sp.target_entropy is None else float(sp.target_entropy)
-        )
-        alpha_loss = -(
-            actor_mask * log_alpha * (logp_bar + target_entropy)
-        ).sum() / actor_den
         recomputed["actor_pair1_frac"] = float(pair_actor.float().mean().item())
-
+        logp_bar = (integ_w * new_log_probs).sum(dim=(1, 2))
         recomputed.update({
-            "critic_loss": float(critic_loss.item()),
-            "actor_loss": float(actor_loss.item()),
-            "alpha_loss": float(alpha_loss.item()),
             "log_prob_mean": float(logp_bar.mean().item()),
             "entropy_proxy_mean": float((-logp_bar).mean().item()),
         })
+
+        if is_shannon:
+            f_selected = f_actor.gather(
+                -1, pair_actor[..., None],
+            ).squeeze(-1)
+            weighted_q = (
+                integ_w * (alpha * new_log_probs - f_selected)
+            ).sum(dim=(1, 2))
+            actor_loss = (
+                actor_mask * weighted_q
+            ).sum() / actor_den
+            target_entropy = (
+                -float(spec["actor"]["action_dim"])
+                if sp.target_entropy is None else float(sp.target_entropy)
+            )
+            alpha_loss = -(
+                actor_mask * log_alpha * (logp_bar + target_entropy)
+            ).sum() / actor_den
+            recomputed.update({
+                "critic_loss": float(critic_loss.item()),
+                "actor_loss": float(actor_loss.item()),
+                "alpha_loss": float(alpha_loss.item()),
+            })
 
     compared: Dict[str, Dict[str, float]] = {}
     max_abs = 0.0
@@ -559,6 +584,11 @@ def recompute_dump(
             "abs_diff": diff,
             "ok": ok,
         }
+    unsupported = sorted(k for k in shannon_only if k in reference)
+    uncompared = sorted(
+        k for k in reference
+        if k not in recomputed and k not in shannon_only
+    )
     return {
         "dump_dir": str(Path(dump_dir)),
         "schema_version": SAC_DUMP_SCHEMA,
@@ -567,6 +597,24 @@ def recompute_dump(
         "max_abs_diff": float(max_abs),
         "compared": compared,
         "recomputed": recomputed,
+        "coverage": {
+            "regularizer_mode": mode,
+            "status": "full" if is_shannon else "partial",
+            "compared_keys": sorted(compared),
+            "unsupported_keys": unsupported,
+            "uncompared_keys": uncompared,
+            "note": (
+                ""
+                if is_shannon
+                else (
+                    f"regularizer_mode={mode!r}: Shannon-formula keys "
+                    "(q*_loss/td_abs_mean/critic_loss/actor_loss/"
+                    "alpha_loss) are not recomputed — the U-mode target "
+                    "and actor loss differ; unsupported keys are excluded "
+                    "from pass/fail. Full U-mode coverage is an R2-3 item."
+                )
+            ),
+        },
     }
 
 

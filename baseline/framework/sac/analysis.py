@@ -181,27 +181,70 @@ def _field(dump: Mapping[str, Any], name: str) -> Any:
     return dump["forward"].get(name, "unavailable")
 
 
+def _accumulate_tensor_delta(pre_node: Any, post_node: Any, acc: List) -> None:
+    """Recursively accumulate |post-pre| over matching tensor leaves.
+
+    SAC state dicts nest by structure (critic group → network/optimizer
+    → tensors); a shallow top-level loop silently counts zero (G6).
+    ``acc`` is [sum_sq, max_abs, elements].
+    """
+    if isinstance(pre_node, torch.Tensor) and isinstance(
+        post_node, torch.Tensor
+    ):
+        if pre_node.shape != post_node.shape:
+            return
+        delta = (post_node.float() - pre_node.float()).abs()
+        acc[0] += float((delta ** 2).sum().item())
+        if delta.numel():
+            acc[1] = max(acc[1], float(delta.max().item()))
+        acc[2] += int(delta.numel())
+    elif isinstance(pre_node, Mapping) and isinstance(post_node, Mapping):
+        for key, pre_v in pre_node.items():
+            if key in post_node:
+                _accumulate_tensor_delta(pre_v, post_node[key], acc)
+    elif isinstance(pre_node, (list, tuple)) and isinstance(
+        post_node, (list, tuple)
+    ):
+        for pre_v, post_v in zip(pre_node, post_node):
+            _accumulate_tensor_delta(pre_v, post_v, acc)
+
+
+def _delta_summary(acc: List) -> Dict[str, Any]:
+    return {
+        "l2": float(acc[0] ** 0.5),
+        "max_abs_delta": float(acc[1]),
+        "elements": int(acc[2]),
+    }
+
+
 def param_delta(dump: Mapping[str, Any]) -> Dict[str, Any]:
-    """Per-tensor pre→post update delta summary (actor + critic + alpha)."""
+    """Pre→post update delta summary (actor + critic), nested-aware.
+
+    Returns an aggregate per scope plus a ``by_key`` breakdown per
+    top-level entry — e.g. each critic group separately, and within a
+    group the q1/q2/target/optimizer sub-states are all recursed into,
+    so network weights and optimizer momentum are both counted.
+    """
     out: Dict[str, Any] = {}
     for scope in ("actor_state_dict", "critic_state_dict"):
         pre = dump["trainer_pre"].get(scope) or {}
         post = dump["trainer_post"].get(scope) or {}
-        total_l2 = 0.0
-        max_abs = 0.0
-        n = 0
-        for key, pre_t in pre.items():
-            post_t = post.get(key)
-            if not isinstance(pre_t, torch.Tensor) or post_t is None:
+        total = [0.0, 0.0, 0]
+        by_key: Dict[str, Any] = {}
+        for key, pre_v in pre.items():
+            post_v = post.get(key)
+            if post_v is None:
+                by_key[key] = "missing_in_post"
                 continue
-            delta = (post_t.float() - pre_t.float()).abs()
-            total_l2 += float((delta ** 2).sum().item())
-            max_abs = max(max_abs, float(delta.max().item()))
-            n += int(delta.numel())
+            acc = [0.0, 0.0, 0]
+            _accumulate_tensor_delta(pre_v, post_v, acc)
+            by_key[key] = _delta_summary(acc)
+            total[0] += acc[0]
+            total[1] = max(total[1], acc[1])
+            total[2] += acc[2]
         out[scope] = {
-            "l2": float(total_l2 ** 0.5),
-            "max_abs_delta": max_abs,
-            "elements": n,
+            **_delta_summary(total),
+            "by_key": by_key,
         }
     return out
 

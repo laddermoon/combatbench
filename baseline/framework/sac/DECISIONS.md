@@ -2834,6 +2834,18 @@ SAC suite 192 passed。
 
 **测试**（5 新增）：strict 同配置过/异配置拒/白名单差异在 strict 下仍拒、非 strict 下放行；pre-strict-field 旧 manifest 兼容；LR 对齐用例（旧 LR 恢复→对齐新值→动量保留）；critic 缺四键/畸形 optimizer 负例。**SAC suite 199 passed。** 端到端探针：`--config-lock`（train.py 已接线）strict resume 成功。
 
+## R2.4 R2-W03 结论：诊断正确性修复（G6 + G7 + G8）
+
+**G6 `param_delta` 递归化**：原实现只迭代顶层映射，critic state 按 `group→{q1,q2,q1_target,q2_target,q1_optimizer,q2_optimizer}→tensors` 嵌套，全部 tensor 在第二、三层，恒定返回 `elements=0`（探针实证）。重写为 `_accumulate_tensor_delta` 递归配对遍历（dict/list/tensor，形状不符跳过），输出保留聚合 l2/max_abs/elements 并新增 `by_key` 分解（每 critic group 单独统计，网络权重与 optimizer 动量可区分；post 缺键记 `missing_in_post`）。
+
+**G7 `recompute_dump` 支持边界显式化**：此前对 u_bonus/u_floor dump 仍按 Shannon 公式重算 target/actor/alpha loss——要么假失败要么假通过。现在：`regularizer_mode != "shannon"` 时**不计算** target 依赖量（q*_loss/td_abs_mean/critic_loss）与 actor_loss/alpha_loss；mode 无关量（q 预测、pair 索引、mask、action replay、logp 描述统计）照常对比；返回新增 `coverage{regularizer_mode, status: full|partial, compared_keys, unsupported_keys, uncompared_keys, note}`，unsupported 键不参与 pass/fail 且 `recomputed` 中不再出现错误值。完整 U 分支重算列入 R2-3。
+
+**G8 catalog 对齐真实键**：对两条验收 run 的 events.jsonl 做一次性 diff——幻影键 `eval.success_rate` 删除（standup 实际发 `eval.success`），补入真实发出但未登记的 `eval.success`、`eval.survived`、`behavior.explore_factor`、`behavior.random_start`、`target.pair1_frac`、`actor.pair1_frac`、`actor.valid_count`、`actor.weight.<channel>`、`critic.q1_loss.<channel>` 等动态通道键、`debug.request`。
+
+**测试**（3 新增）：嵌套 critic delta 非零+by_key 分解；u_bonus dump 的 recompute `status=partial` 且 Shannon 键不出现于 recomputed；catalog spec 与真实键对齐断言。**SAC suite 202 passed。**
+
+---
+
 ---
 
 ---

@@ -11,6 +11,8 @@ from baseline.framework.sac.clocks import SACClockState
 from baseline.framework.sac.debugkit import (
     begin_critic_tick_dump,
     finish_critic_tick_dump,
+    load_dump,
+    recompute_dump,
 )
 from baseline.framework.sac.experiment import SACParams
 from baseline.framework.sac.tests.test_env_integration import (
@@ -86,6 +88,72 @@ def test_dump_inspect_reports_v3_detail(tmp_path):
     for ch in out["per_channel"].values():
         assert "td_abs_max" in ch
     assert "actor_state_dict" in out["param_delta"]
+
+
+def test_param_delta_counts_nested_critic_state(tmp_path):
+    """R2-W03 (G6): critic state dicts nest by group → network/optimizer;
+    a shallow loop reported elements=0 despite real weight changes."""
+    dump_dir = _make_dump(tmp_path)
+    delta = analysis.param_delta(load_dump(dump_dir))
+    critic = delta["critic_state_dict"]
+    assert critic["elements"] > 0
+    assert critic["l2"] > 0.0
+    assert set(critic["by_key"])  # per-group breakdown exists
+    for group_stats in critic["by_key"].values():
+        assert group_stats["elements"] > 0
+    actor = delta["actor_state_dict"]
+    assert actor["elements"] > 0
+
+
+def test_recompute_reports_u_mode_coverage(tmp_path):
+    """R2-W03 (G7): u-mode dumps report partial coverage instead of
+    silently comparing Shannon-formula values."""
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    batch = _batch(B=16)
+    sp = SACParams(
+        use_grad_norm=False, regularizer_mode="u_bonus", reg_lambda=0.2,
+    )
+    tmp = begin_critic_tick_dump(
+        dump_root=tmp_path / "debug_dumps",
+        critic_tick=5,
+        clocks=SACClockState(collection_round=2, critic_tick=4),
+        batch=batch,
+        trainer_pre_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, None,
+        ),
+        hypothesis="u-mode",
+    )
+    capture = {}
+    stats = sac_update_v2(
+        actor=actor, critic=critic, actor_optimizer=actor_optimizer,
+        log_alpha=log_alpha, alpha_optimizer=None,
+        batch=batch, channels=channels, sp=sp, grad_clip_norm=1.0,
+        device=torch.device("cpu"), capture=capture,
+    )
+    dump_dir = finish_critic_tick_dump(
+        tmp,
+        forward_capture=capture,
+        trainer_post_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, None,
+        ),
+        update_stats=stats,
+        actor=actor, critic=critic, channels=channels, sp=sp,
+        grad_clip_norm=1.0, critic_lr=1e-3,
+    )
+    result = recompute_dump(dump_dir)
+    cov = result["coverage"]
+    assert cov["regularizer_mode"] == "u_bonus"
+    assert cov["status"] == "partial"
+    assert "actor_loss" in cov["unsupported_keys"]
+    assert "alpha_loss" in cov["unsupported_keys"]
+    assert "critic_loss" in cov["unsupported_keys"]
+    # Shannon-formula values must not appear as recomputed truth
+    assert "actor_loss" not in result["recomputed"]
+    assert "critic_loss" not in result["recomputed"]
+    # mode-independent keys are still compared
+    assert "actor_pair1_frac" in cov["compared_keys"]
 
 
 def test_dump_samples_sorted_by_td(tmp_path):
